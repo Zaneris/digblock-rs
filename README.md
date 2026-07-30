@@ -11,15 +11,24 @@ future Android target inherits no surface/lifecycle bugs.
 ```sh
 just run                  # desktop (macOS)
 just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
-just run --screenshot shots/x.png --exit
 just check                # fmt + clippy + tests
 just check-ios            # iOS compile gate (no Xcode needed)
 just ios-sim              # simulator build+run   (requires full Xcode)
 just ios-device           # device build          (requires full Xcode)
 ```
 
+Deterministic-capture / metrics flags:
+`--seed <f64>` `--tod <deg>` (freezes the sun) `--screenshot out.png`
+`--frames N` `--exit` `--metrics-csv out.csv` `--mobile` (draw dist 10,
+1024px shadows — the iOS config).
+
+Controls: **WASD/arrows** move · mouse look (click to capture cursor) ·
+**Space** jump · **F** toggle walk/fly · **Esc** release cursor / quit.
+Touch (iOS): left half = anchored joystick, right half = drag look,
+double-tap right = jump.
+
 Debug keys (desktop): **F8** screenshot · **F9** suspend/resume drill ·
-**F10** device-loss drill · **Esc** release cursor / quit.
+**F10** device-loss drill.
 
 ## iOS
 

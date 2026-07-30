@@ -24,6 +24,7 @@ fn main() {
 					args.next().and_then(|v| v.parse().ok()).unwrap_or(10)
 			}
 			"--drill" => options.auto_drill = true,
+			"--mobile" => config = EngineConfig::mobile(),
 			"--seed" => config.seed = args.next().and_then(|v| v.parse().ok()),
 			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
 			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
