@@ -1,0 +1,52 @@
+# Source of truth for DigBlock.xcodeproj — regenerate with `xcodegen` in
+# this directory after editing.
+name: DigBlock
+options:
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  DigBlock:
+    type: application
+    platform: iOS
+    sources:
+      - path: main.m
+      - path: LaunchScreen.storyboard
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ca.valacware.digblock
+        PRODUCT_NAME: DigBlock
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        OTHER_LDFLAGS: "-ldigblock_ios"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/.rust-lib/$(PLATFORM_NAME)"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+    preBuildScripts:
+      - name: Build Rust staticlib
+        shell: /bin/sh
+        script: |
+          set -e
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if [ "$PLATFORM_NAME" = "iphonesimulator" ]; then
+            RUST_TARGET=aarch64-apple-ios-sim
+          else
+            RUST_TARGET=aarch64-apple-ios
+          fi
+          if [ "$CONFIGURATION" = "Release" ]; then
+            FLAG=--release; DIR=release
+          else
+            FLAG=""; DIR=debug
+          fi
+          cd "$SRCROOT/../../.."
+          cargo build -p digblock-ios --target "$RUST_TARGET" $FLAG
+          mkdir -p "$SRCROOT/.rust-lib/$PLATFORM_NAME"
+          cp "target/$RUST_TARGET/$DIR/libdigblock_ios.a" "$SRCROOT/.rust-lib/$PLATFORM_NAME/"
+        outputFiles:
+          - $(SRCROOT)/.rust-lib/$(PLATFORM_NAME)/libdigblock_ios.a
+        basedOnDependencyAnalysis: false
