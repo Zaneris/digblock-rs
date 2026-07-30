@@ -2,7 +2,10 @@
 //! trait. Never touches winit or the surface — it renders into borrowed
 //! `TextureView`s.
 
+mod camera;
 mod engine;
+mod renderer;
+mod texture;
 
 pub use engine::{Engine, EngineConfig};
 

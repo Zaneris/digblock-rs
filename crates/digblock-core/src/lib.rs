@@ -3,6 +3,7 @@
 
 pub mod block;
 pub mod chunk;
+pub mod mesher;
 pub mod metrics;
 pub mod simplex;
 pub mod worldgen;

@@ -11,6 +11,7 @@ pub enum Key {
 	Left,
 	Right,
 	Space,
+	Shift,
 	Escape,
 	Other,
 }
@@ -58,6 +59,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::ArrowLeft => Key::Left,
 		K::ArrowRight => Key::Right,
 		K::Space => Key::Space,
+		K::ShiftLeft | K::ShiftRight => Key::Shift,
 		K::Escape => Key::Escape,
 		_ => Key::Other,
 	}
