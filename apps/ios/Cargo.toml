@@ -1,0 +1,15 @@
+[package]
+name = "digblock-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "digblock_ios"
+crate-type = ["staticlib"]
+
+[dependencies]
+digblock-render.workspace = true
+digblock-platform.workspace = true
+log.workspace = true
+env_logger.workspace = true

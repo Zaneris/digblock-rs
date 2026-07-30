@@ -1,0 +1,12 @@
+[package]
+name = "digblock-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+log.workspace = true
+pollster.workspace = true
+image.workspace = true

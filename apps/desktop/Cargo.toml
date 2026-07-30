@@ -1,0 +1,15 @@
+[package]
+name = "digblock-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "digblock"
+path = "src/main.rs"
+
+[dependencies]
+digblock-render.workspace = true
+digblock-platform.workspace = true
+env_logger.workspace = true
+log.workspace = true

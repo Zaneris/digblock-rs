@@ -1,0 +1,6 @@
+/target
+/shots
+*.csv
+.DS_Store
+xcuserdata/
+build/

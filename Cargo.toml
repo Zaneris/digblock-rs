@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+	"crates/digblock-core",
+	"crates/digblock-render",
+	"crates/digblock-assets",
+	"crates/digblock-platform",
+	"apps/desktop",
+	"apps/ios",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+digblock-core = { path = "crates/digblock-core" }
+digblock-render = { path = "crates/digblock-render" }
+digblock-assets = { path = "crates/digblock-assets" }
+digblock-platform = { path = "crates/digblock-platform" }
+
+wgpu = "26"
+winit = "0.30"
+glam = "0.30"
+crossbeam-channel = "0.5"
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rustc-hash = "2"
+rand = "0.9"
+log = "0.4"
+env_logger = "0.11"
+pollster = "0.4"
+
+[profile.release]
+lto = "thin"
+
+# Fast iteration but usable framerates while debugging a voxel world.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
