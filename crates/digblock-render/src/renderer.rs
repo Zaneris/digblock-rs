@@ -36,9 +36,13 @@ pub struct ChunkGpu {
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
+	water_pipeline: wgpu::RenderPipeline,
 	shadow_pipeline: wgpu::RenderPipeline,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
+	/// Same layout, alpha 0.7 (Java u_Alpha for the transparent pass).
+	frame_water_buf: wgpu::Buffer,
+	frame_water_bg: wgpu::BindGroup,
 	tex_bg: wgpu::BindGroup,
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
@@ -186,7 +190,7 @@ impl Renderer {
 				module: &shader,
 				entry_point: Some("vs"),
 				compilation_options: Default::default(),
-				buffers: &[vertex_layout],
+				buffers: std::slice::from_ref(&vertex_layout),
 			},
 			primitive: wgpu::PrimitiveState {
 				topology: wgpu::PrimitiveTopology::TriangleList,
@@ -208,6 +212,45 @@ impl Renderer {
 				targets: &[Some(wgpu::ColorTargetState {
 					format: surface_format,
 					blend: None,
+					write_mask: wgpu::ColorWrites::ALL,
+				})],
+			}),
+			multiview: None,
+			cache: None,
+		});
+
+		// Water: blended, double-sided (the 0.7 lip is visible from below),
+		// depth test on but depth WRITE off — fixes the Java artifact of
+		// water writing depth in the transparent pass.
+		let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("water"),
+			layout: Some(&layout),
+			vertex: wgpu::VertexState {
+				module: &shader,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: std::slice::from_ref(&vertex_layout),
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				cull_mode: None,
+				..Default::default()
+			},
+			depth_stencil: Some(wgpu::DepthStencilState {
+				format: DEPTH_FORMAT,
+				depth_write_enabled: false,
+				depth_compare: wgpu::CompareFunction::Less,
+				stencil: Default::default(),
+				bias: Default::default(),
+			}),
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &shader,
+				entry_point: Some("fs"),
+				compilation_options: Default::default(),
+				targets: &[Some(wgpu::ColorTargetState {
+					format: surface_format,
+					blend: Some(wgpu::BlendState::ALPHA_BLENDING),
 					write_mask: wgpu::ColorWrites::ALL,
 				})],
 			}),
@@ -294,6 +337,20 @@ impl Renderer {
 				resource: frame_buf.as_entire_binding(),
 			}],
 		});
+		let frame_water_buf = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("frame ubo (water)"),
+			size: std::mem::size_of::<FrameUniforms>() as u64,
+			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		let frame_water_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("frame (water)"),
+			layout: &frame_bgl,
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: frame_water_buf.as_entire_binding(),
+			}],
+		});
 
 		let chunk_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
@@ -350,9 +407,12 @@ impl Renderer {
 
 		Self {
 			solid_pipeline,
+			water_pipeline,
 			shadow_pipeline,
 			frame_buf,
 			frame_bg,
+			frame_water_buf,
+			frame_water_bg,
 			tex_bg,
 			chunk_buf,
 			chunk_bg,
@@ -437,6 +497,7 @@ impl Renderer {
 		near_vp: glam::Mat4,
 		wide_vp: glam::Mat4,
 		wide_due: bool,
+		cam_pos: glam::Vec3,
 	) {
 		let wide_due = wide_due || self.wide_refresh_needed;
 		self.wide_refresh_needed = false;
@@ -467,6 +528,10 @@ impl Renderer {
 		};
 		gpu.queue
 			.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(frame));
+		let mut water_frame = *frame;
+		water_frame.misc[0] = 0.7; // Java transparent-pass u_Alpha
+		gpu.queue
+			.write_buffer(&self.frame_water_buf, 0, bytemuck::bytes_of(&water_frame));
 
 		let mut encoder = gpu
 			.device
@@ -512,6 +577,37 @@ impl Renderer {
 					continue;
 				}
 				if let Some((buf, index_count)) = &chunk.solid {
+					pass.set_bind_group(
+						2,
+						&self.chunk_bg,
+						&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
+					);
+					pass.set_vertex_buffer(0, buf.slice(..));
+					pass.draw_indexed(0..*index_count, 0, 0..1);
+				}
+			}
+
+			// Transparent water: after all solids, back-to-front by chunk
+			// distance (16³ granularity is enough), alpha 0.7, no depth
+			// writes, double-sided.
+			let mut water: Vec<(i64, &ChunkGpu)> = self
+				.chunks
+				.iter()
+				.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
+				.map(|(pos, c)| {
+					let center = glam::Vec3::new(
+						(pos.x * 16 + 8) as f32,
+						(pos.y * 16 + 8) as f32,
+						(pos.z * 16 + 8) as f32,
+					);
+					(-(center.distance_squared(cam_pos) as i64), c)
+				})
+				.collect();
+			water.sort_by_key(|(d, _)| *d);
+			pass.set_pipeline(&self.water_pipeline);
+			pass.set_bind_group(0, &self.frame_water_bg, &[]);
+			for (_, chunk) in water {
+				if let Some((buf, index_count)) = &chunk.water {
 					pass.set_bind_group(
 						2,
 						&self.chunk_bg,

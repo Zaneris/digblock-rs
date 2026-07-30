@@ -240,7 +240,15 @@ impl Game for Engine {
 		let wide_due = std::mem::take(&mut self.wide_due);
 		if let Some(r) = self.renderer.as_mut() {
 			r.render(
-				gpu, target, depth, &frame, view_proj, near_vp, wide_vp, wide_due,
+				gpu,
+				target,
+				depth,
+				&frame,
+				view_proj,
+				near_vp,
+				wide_vp,
+				wide_due,
+				self.camera.pos,
 			);
 			self.metrics.resident_chunks = r.resident_chunks() as u32;
 			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
