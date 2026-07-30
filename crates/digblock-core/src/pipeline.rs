@@ -344,6 +344,26 @@ impl Pipeline {
 	pub fn resident(&self) -> usize {
 		self.store.len()
 	}
+
+	/// Block lookup for physics. None = outside the vertical world or the
+	/// chunk isn't generated yet (the Java null-block: non-solid).
+	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
+		if !(0..=crate::chunk::WORLD_VBLOCK).contains(&y) {
+			return None;
+		}
+		let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
+		match self.store.get(&pos) {
+			Some(ChunkSlot {
+				state: ChunkState::Ready(d),
+				..
+			}) => Some(d.get(
+				x.rem_euclid(16) as usize,
+				y.rem_euclid(16) as usize,
+				z.rem_euclid(16) as usize,
+			)),
+			_ => None,
+		}
+	}
 }
 
 fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {

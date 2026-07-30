@@ -3,9 +3,11 @@ use std::time::Duration;
 use digblock_core::chunk::ChunkPos;
 use digblock_core::metrics::Metrics;
 use digblock_core::pipeline::Pipeline;
+use digblock_core::player::{Player, PlayerIntent, TICK};
 use digblock_core::sun::Sun;
-use digblock_platform::{Game, Gpu, InputEvent, Key};
-use glam::Vec3;
+use digblock_core::touch::{Phase, TouchDriver};
+use digblock_platform::{Game, Gpu, InputEvent, Key, TouchPhase};
+use glam::{Vec2, Vec3};
 
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameUniforms, Renderer};
@@ -68,6 +70,12 @@ pub struct Engine {
 	renderer: Option<Renderer>,
 	pipeline: Pipeline,
 	camera: FlyCamera,
+	player: Player,
+	touch: TouchDriver,
+	/// Walk (player physics) vs debug fly camera; F toggles.
+	walking: bool,
+	fly_key_down: bool,
+	tick_accum: f32,
 	sun: Sun,
 	wide_due: bool,
 	keys: HeldKeys,
@@ -92,6 +100,11 @@ impl Engine {
 			renderer: None,
 			pipeline,
 			camera: FlyCamera::new(far),
+			player: Player::new(),
+			touch: TouchDriver::new(),
+			walking: true,
+			fly_key_down: false,
+			tick_accum: 0.0,
 			sun,
 			wide_due: false,
 			keys: HeldKeys::default(),
@@ -170,14 +183,39 @@ impl Game for Engine {
 				Key::D | Key::Right => self.keys.d = pressed,
 				Key::Space => self.keys.up = pressed,
 				Key::Shift => self.keys.down = pressed,
+				Key::F => {
+					if pressed && !self.fly_key_down {
+						self.walking = !self.walking;
+						if !self.walking {
+							// Enter fly where the player stands.
+							self.camera.pos = self.player.pos;
+						} else {
+							// Re-enter walk at the camera position.
+							self.player.pos = self.camera.pos;
+						}
+						log::info!("mode: {}", if self.walking { "walk" } else { "fly" });
+					}
+					self.fly_key_down = pressed;
+				}
 				_ => {}
 			},
 			InputEvent::MouseDelta { dx, dy } => {
 				self.look_accum.0 += dx as f32;
 				self.look_accum.1 += dy as f32;
 			}
-			InputEvent::FocusLost => self.keys = HeldKeys::default(),
-			InputEvent::Touch { .. } => {} // M8 touch drivers
+			InputEvent::FocusLost => {
+				self.keys = HeldKeys::default();
+				self.touch.clear();
+			}
+			InputEvent::Touch { id, phase, x, y } => {
+				let phase = match phase {
+					TouchPhase::Started => Phase::Started,
+					TouchPhase::Moved => Phase::Moved,
+					TouchPhase::Ended => Phase::Ended,
+					TouchPhase::Cancelled => Phase::Cancelled,
+				};
+				self.touch.handle(id, phase, x, y);
+			}
 		}
 	}
 
@@ -192,33 +230,58 @@ impl Game for Engine {
 		}
 		const LOOK_SENS: f32 = 0.12; // degrees per raw mouse unit
 		let (lx, ly) = std::mem::take(&mut self.look_accum);
-		self.camera.look(lx * LOOK_SENS, ly * LOOK_SENS);
+		let touch_look = self.touch.take_look();
+		self.camera
+			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
 
-		// Fly movement (debug camera; replaced by Player in M8).
-		let speed = 24.0 * dt;
-		let dir = self.camera.dir();
-		let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
-		let right = flat.cross(Vec3::Y);
-		let mut mv = Vec3::ZERO;
-		if self.keys.w {
-			mv += flat;
+		if self.walking {
+			// Fixed 60 Hz player simulation (Java feel was tuned per-frame
+			// at 60fps; the accumulator preserves it at any display rate).
+			let touch_jump = self.touch.take_jump();
+			let key_axis = Vec2::new(
+				(self.keys.d as i32 - self.keys.a as i32) as f32,
+				(self.keys.w as i32 - self.keys.s as i32) as f32,
+			);
+			let intent = PlayerIntent {
+				move_axis: key_axis + self.touch.move_axis(),
+				jump: self.keys.up || touch_jump,
+			};
+			let dir = self.camera.dir();
+			self.tick_accum = (self.tick_accum + dt).min(0.25);
+			let pipeline = &self.pipeline;
+			let block_at = |x: i32, y: i32, z: i32| pipeline.block_at(x, y, z);
+			while self.tick_accum >= TICK {
+				self.tick_accum -= TICK;
+				self.player.tick(TICK, dir, intent, &block_at);
+			}
+			self.camera.pos = self.player.pos;
+		} else {
+			// Debug fly camera.
+			let speed = 24.0 * dt;
+			let dir = self.camera.dir();
+			let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+			let right = flat.cross(Vec3::Y);
+			let mut mv = Vec3::ZERO;
+			if self.keys.w {
+				mv += flat;
+			}
+			if self.keys.s {
+				mv -= flat;
+			}
+			if self.keys.d {
+				mv += right;
+			}
+			if self.keys.a {
+				mv -= right;
+			}
+			if self.keys.up {
+				mv += Vec3::Y;
+			}
+			if self.keys.down {
+				mv -= Vec3::Y;
+			}
+			self.camera.pos += mv.normalize_or_zero() * speed;
 		}
-		if self.keys.s {
-			mv -= flat;
-		}
-		if self.keys.d {
-			mv += right;
-		}
-		if self.keys.a {
-			mv -= right;
-		}
-		if self.keys.up {
-			mv += Vec3::Y;
-		}
-		if self.keys.down {
-			mv -= Vec3::Y;
-		}
-		self.camera.pos += mv.normalize_or_zero() * speed;
 	}
 
 	fn render(
