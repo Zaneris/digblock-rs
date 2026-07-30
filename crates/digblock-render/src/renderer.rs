@@ -36,11 +36,19 @@ pub struct ChunkGpu {
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
+	shadow_pipeline: wgpu::RenderPipeline,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
 	tex_bg: wgpu::BindGroup,
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
+	light_near_buf: wgpu::Buffer,
+	light_near_bg: wgpu::BindGroup,
+	light_wide_buf: wgpu::Buffer,
+	light_wide_bg: wgpu::BindGroup,
+	/// Set at construction: the persistent wide cascade has no contents
+	/// yet (also the device-loss recovery path).
+	pub wide_refresh_needed: bool,
 	index_buf: wgpu::Buffer,
 	// Read from M6 on (shadow passes render into the shadow views).
 	#[allow(dead_code)]
@@ -141,6 +149,26 @@ impl Renderer {
 			push_constant_ranges: &[],
 		});
 
+		// Depth-only shadow pass: group0 = light VP, group1 = chunk origins.
+		let light_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("light"),
+			entries: &[wgpu::BindGroupLayoutEntry {
+				binding: 0,
+				visibility: wgpu::ShaderStages::VERTEX,
+				ty: wgpu::BindingType::Buffer {
+					ty: wgpu::BufferBindingType::Uniform,
+					has_dynamic_offset: false,
+					min_binding_size: None,
+				},
+				count: None,
+			}],
+		});
+		let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("shadow"),
+			bind_group_layouts: &[&light_bgl, &chunk_bgl],
+			push_constant_ranges: &[],
+		});
+
 		let vertex_layout = wgpu::VertexBufferLayout {
 			array_stride: 4,
 			step_mode: wgpu::VertexStepMode::Vertex,
@@ -186,6 +214,71 @@ impl Renderer {
 			multiview: None,
 			cache: None,
 		});
+
+		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("shadow"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
+		});
+		let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("shadow"),
+			layout: Some(&shadow_layout),
+			vertex: wgpu::VertexState {
+				module: &shadow_shader,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: &[wgpu::VertexBufferLayout {
+					array_stride: 4,
+					step_mode: wgpu::VertexStepMode::Vertex,
+					attributes: &[wgpu::VertexAttribute {
+						format: wgpu::VertexFormat::Uint32,
+						offset: 0,
+						shader_location: 0,
+					}],
+				}],
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				cull_mode: Some(wgpu::Face::Back),
+				..Default::default()
+			},
+			depth_stencil: Some(wgpu::DepthStencilState {
+				format: DEPTH_FORMAT,
+				depth_write_enabled: true,
+				depth_compare: wgpu::CompareFunction::Less,
+				stencil: Default::default(),
+				// Replaces the Java heightmap biases (0.0005/0.0008) and
+				// the 3° tilt hack. Tunable during M6 A/B.
+				bias: wgpu::DepthBiasState {
+					constant: 2,
+					slope_scale: 2.0,
+					clamp: 0.0,
+				},
+			}),
+			multisample: Default::default(),
+			fragment: None,
+			multiview: None,
+			cache: None,
+		});
+
+		let make_light = |label: &str| {
+			let buf = device.create_buffer(&wgpu::BufferDescriptor {
+				label: Some(label),
+				size: 64,
+				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+				mapped_at_creation: false,
+			});
+			let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some(label),
+				layout: &light_bgl,
+				entries: &[wgpu::BindGroupEntry {
+					binding: 0,
+					resource: buf.as_entire_binding(),
+				}],
+			});
+			(buf, bg)
+		};
+		let (light_near_buf, light_near_bg) = make_light("light near");
+		let (light_wide_buf, light_wide_bg) = make_light("light wide");
 
 		let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("frame ubo"),
@@ -257,11 +350,17 @@ impl Renderer {
 
 		Self {
 			solid_pipeline,
+			shadow_pipeline,
 			frame_buf,
 			frame_bg,
 			tex_bg,
 			chunk_buf,
 			chunk_bg,
+			light_near_buf,
+			light_near_bg,
+			light_wide_buf,
+			light_wide_bg,
+			wide_refresh_needed: true,
 			index_buf,
 			textures,
 			chunks: FxHashMap::default(),
@@ -323,8 +422,11 @@ impl Renderer {
 		self.chunks.len()
 	}
 
-	/// Encode the frame: (shadow passes arrive in M6) → main pass with
-	/// solid geometry. Water pass lands in M7.
+	/// Encode the frame in one command encoder, fixed order — wide shadow
+	/// (only when due) → near shadow → main pass. Shadow maps are written
+	/// and consumed in the same frame (fixes the Java one-frame lag).
+	/// Water pass lands in M7.
+	#[allow(clippy::too_many_arguments)]
 	pub fn render(
 		&mut self,
 		gpu: &Gpu,
@@ -332,7 +434,24 @@ impl Renderer {
 		depth: &wgpu::TextureView,
 		frame: &FrameUniforms,
 		view_proj: glam::Mat4,
+		near_vp: glam::Mat4,
+		wide_vp: glam::Mat4,
+		wide_due: bool,
 	) {
+		let wide_due = wide_due || self.wide_refresh_needed;
+		self.wide_refresh_needed = false;
+		gpu.queue.write_buffer(
+			&self.light_near_buf,
+			0,
+			bytemuck::bytes_of(&near_vp.to_cols_array_2d()),
+		);
+		if wide_due {
+			gpu.queue.write_buffer(
+				&self.light_wide_buf,
+				0,
+				bytemuck::bytes_of(&wide_vp.to_cols_array_2d()),
+			);
+		}
 		// Chunk bounding-sphere frustum cull against the four side planes
 		// (near/far deliberately ignored, like the Java
 		// sphereInFrustumWithoutNearFar).
@@ -354,6 +473,12 @@ impl Renderer {
 			.create_command_encoder(&wgpu::CommandEncoderDescriptor {
 				label: Some("frame"),
 			});
+
+		if wide_due {
+			self.encode_shadow_pass(&mut encoder, true, wide_vp);
+		}
+		self.encode_shadow_pass(&mut encoder, false, near_vp);
+
 		{
 			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 				label: Some("main"),
@@ -398,6 +523,60 @@ impl Renderer {
 			}
 		}
 		gpu.queue.submit([encoder.finish()]);
+	}
+
+	/// Depth-only cascade render. Solid meshes only — water never casts
+	/// shadows (Java depth passes drew solidMesh exclusively). Casters are
+	/// culled against the light's own frustum.
+	fn encode_shadow_pass(
+		&self,
+		encoder: &mut wgpu::CommandEncoder,
+		wide: bool,
+		light_vp: glam::Mat4,
+	) {
+		let (view, light_bg) = if wide {
+			(&self.textures.shadow_wide_view, &self.light_wide_bg)
+		} else {
+			(&self.textures.shadow_near_view, &self.light_near_bg)
+		};
+		let planes = side_planes(light_vp);
+		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+			label: Some(if wide { "shadow wide" } else { "shadow near" }),
+			color_attachments: &[],
+			depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+				view,
+				depth_ops: Some(wgpu::Operations {
+					load: wgpu::LoadOp::Clear(1.0),
+					store: wgpu::StoreOp::Store,
+				}),
+				stencil_ops: None,
+			}),
+			timestamp_writes: None,
+			occlusion_query_set: None,
+		});
+		pass.set_pipeline(&self.shadow_pipeline);
+		pass.set_bind_group(0, light_bg, &[]);
+		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		for (pos, chunk) in &self.chunks {
+			let c = glam::Vec3::new(
+				(pos.x * 16 + 8) as f32,
+				(pos.y * 16 + 8) as f32,
+				(pos.z * 16 + 8) as f32,
+			);
+			const RADIUS: f32 = 13.86;
+			if !planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS) {
+				continue;
+			}
+			if let Some((buf, index_count)) = &chunk.solid {
+				pass.set_bind_group(
+					1,
+					&self.chunk_bg,
+					&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
+				);
+				pass.set_vertex_buffer(0, buf.slice(..));
+				pass.draw_indexed(0..*index_count, 0, 0..1);
+			}
+		}
 	}
 }
 

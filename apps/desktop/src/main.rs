@@ -25,6 +25,7 @@ fn main() {
 			}
 			"--drill" => options.auto_drill = true,
 			"--seed" => config.seed = args.next().and_then(|v| v.parse().ok()),
+			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
 			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
 			other => {
 				eprintln!("unknown arg: {other}");

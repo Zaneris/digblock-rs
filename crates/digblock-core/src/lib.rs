@@ -7,6 +7,7 @@ pub mod mesher;
 pub mod metrics;
 pub mod pipeline;
 pub mod simplex;
+pub mod sun;
 pub mod worldgen;
 
 pub use block::BlockType;
