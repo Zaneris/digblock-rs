@@ -5,6 +5,7 @@ pub mod block;
 pub mod chunk;
 pub mod mesher;
 pub mod metrics;
+pub mod pipeline;
 pub mod simplex;
 pub mod worldgen;
 

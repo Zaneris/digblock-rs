@@ -1,13 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use digblock_core::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK};
-use digblock_core::mesher::{border_plane, mesh_chunk, MeshData, NeighborPlane, DIRS};
+use digblock_core::chunk::ChunkPos;
 use digblock_core::metrics::Metrics;
-use digblock_core::worldgen::build_chunk;
+use digblock_core::pipeline::Pipeline;
 use digblock_platform::{Game, Gpu, InputEvent, Key};
 use glam::Vec3;
-use rustc_hash::FxHashMap;
 
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameUniforms, Renderer};
@@ -17,15 +14,19 @@ pub struct EngineConfig {
 	pub draw_dist: i32,
 	/// Shadow map resolution: 2048 desktop, 1024 mobile.
 	pub shadow_size: u32,
+	/// Chunk worker threads.
+	pub workers: usize,
 	pub seed: Option<f64>,
 	pub metrics_csv: Option<std::path::PathBuf>,
 }
 
 impl EngineConfig {
 	pub fn desktop() -> Self {
+		let workers = std::thread::available_parallelism().map_or(4, |n| (n.get() - 2).clamp(2, 4));
 		Self {
 			draw_dist: 20,
 			shadow_size: 2048,
+			workers,
 			seed: None,
 			metrics_csv: None,
 		}
@@ -35,6 +36,7 @@ impl EngineConfig {
 		Self {
 			draw_dist: 10,
 			shadow_size: 1024,
+			workers: 2,
 			seed: None,
 			metrics_csv: None,
 		}
@@ -51,11 +53,15 @@ struct HeldKeys {
 	down: bool,
 }
 
+/// Per-frame mesh-upload budget: keeps main-thread GPU upload cost bounded
+/// so streaming can never hitch a frame (the modern form of the Java
+/// one-queue-item-per-frame rule).
+const UPLOAD_BUDGET: usize = 4;
+
 pub struct Engine {
 	config: EngineConfig,
-	seed: f64,
 	renderer: Option<Renderer>,
-	world: FxHashMap<ChunkPos, Arc<ChunkData>>,
+	pipeline: Pipeline,
 	camera: FlyCamera,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
@@ -71,12 +77,12 @@ impl Engine {
 			.seed
 			.unwrap_or_else(|| rand::random::<f64>() * 10000.0);
 		let far = (config.draw_dist * 32) as f32;
-		log::info!("world seed: {seed}");
+		log::info!("world seed: {seed} | {} chunk workers", config.workers);
+		let pipeline = Pipeline::new(seed, config.draw_dist, config.workers);
 		Self {
 			config,
-			seed,
 			renderer: None,
-			world: FxHashMap::default(),
+			pipeline,
 			camera: FlyCamera::new(far),
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
@@ -85,52 +91,31 @@ impl Engine {
 		}
 	}
 
-	fn neighbor_planes(&self, pos: ChunkPos) -> [NeighborPlane; 6] {
-		DIRS.map(|dir| {
-			let (ox, oy, oz) = dir.offset();
-			let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-			if np.y >= WORLD_VCHUNK {
-				return NeighborPlane::Air; // Java airBlock sentinel above the world
-			}
-			if np.y < 0 {
-				return NeighborPlane::Missing; // Java null below the world
-			}
-			match self.world.get(&np) {
-				Some(data) => NeighborPlane::Blocks(border_plane(data, dir.opposite())),
-				None => NeighborPlane::Missing,
-			}
-		})
+	fn camera_chunk(&self) -> ChunkPos {
+		ChunkPos::new(
+			(self.camera.pos.x / 16.0).floor() as i32,
+			0,
+			(self.camera.pos.z / 16.0).floor() as i32,
+		)
 	}
 
-	fn mesh_one(&self, pos: ChunkPos) -> Option<MeshData> {
-		let data = self.world.get(&pos)?;
-		Some(mesh_chunk(data, &self.neighbor_planes(pos)))
-	}
-
-	/// M4 interim: generate + mesh a static grid synchronously at init.
-	/// M5 replaces this with the threaded streaming pipeline.
-	fn build_static_world(&mut self, gpu: &Gpu) {
-		const R: i32 = 3;
-		for x in -R..=R {
-			for z in -R..=R {
-				for y in 0..WORLD_VCHUNK {
-					let pos = ChunkPos::new(x, y, z);
-					self.world
-						.insert(pos, Arc::new(build_chunk(pos, self.seed)));
-				}
-			}
+	fn pump_pipeline(&mut self, gpu: &Gpu) {
+		let center = self.camera_chunk();
+		let Some(renderer) = self.renderer.as_mut() else {
+			return;
+		};
+		let m = self.pipeline.maintain(center, UPLOAD_BUDGET);
+		for pos in m.evicted {
+			renderer.remove_chunk(pos);
 		}
-		let positions: Vec<ChunkPos> = self.world.keys().copied().collect();
-		for pos in positions {
-			if let Some(mesh) = self.mesh_one(pos) {
-				self.renderer
-					.as_mut()
-					.expect("renderer")
-					.upload_chunk(gpu, pos, &mesh);
-			}
+		let uploads = m.meshed.len() as u32;
+		for out in m.meshed {
+			renderer.upload_chunk(gpu, out.pos, &out.mesh);
 		}
-		let resident = self.renderer.as_ref().expect("renderer").resident_chunks();
-		log::info!("static world: {resident} chunks resident");
+		self.metrics.chunks_generated += m.generated;
+		self.metrics.chunks_meshed += uploads;
+		self.metrics.meshes_uploaded += uploads;
+		self.metrics.queue_depth = m.queue_depth;
 	}
 
 	fn frame_uniforms(&self) -> FrameUniforms {
@@ -151,7 +136,6 @@ impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
 		self.size = size;
 		self.renderer = Some(Renderer::new(gpu, surface_format, self.config.shadow_size));
-		self.build_static_world(gpu);
 		log::info!(
 			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
 			self.config.draw_dist,
@@ -224,9 +208,13 @@ impl Game for Engine {
 		size: (u32, u32),
 	) {
 		self.size = size;
+		// Streaming happens here (not update) because uploads need the GPU.
+		self.pump_pipeline(gpu);
 		let frame = self.frame_uniforms();
+		let aspect = size.0 as f32 / size.1.max(1) as f32;
+		let view_proj = self.camera.view_proj(aspect);
 		if let Some(r) = self.renderer.as_mut() {
-			r.render(gpu, target, depth, &frame);
+			r.render(gpu, target, depth, &frame, view_proj);
 			self.metrics.resident_chunks = r.resident_chunks() as u32;
 			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
 		}
@@ -243,18 +231,10 @@ impl Game for Engine {
 	}
 
 	fn rebuild_gpu_resources(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
-		// Device-loss drill: rebuild every device-lifetime object from
-		// CPU-side state (world data survives; meshes regenerate).
+		// Device-loss drill: rebuild every device-lifetime object; meshes
+		// stream back in from retained chunk data via the pipeline.
 		self.renderer = Some(Renderer::new(gpu, surface_format, self.config.shadow_size));
-		let positions: Vec<ChunkPos> = self.world.keys().copied().collect();
-		for pos in positions {
-			if let Some(mesh) = self.mesh_one(pos) {
-				self.renderer
-					.as_mut()
-					.unwrap()
-					.upload_chunk(gpu, pos, &mesh);
-			}
-		}
-		log::info!("engine: renderer rebuilt (device-loss drill)");
+		self.pipeline.remesh_all();
+		log::info!("engine: renderer rebuilt (device-loss drill), re-mesh queued");
 	}
 }

@@ -331,7 +331,21 @@ impl Renderer {
 		target: &wgpu::TextureView,
 		depth: &wgpu::TextureView,
 		frame: &FrameUniforms,
+		view_proj: glam::Mat4,
 	) {
+		// Chunk bounding-sphere frustum cull against the four side planes
+		// (near/far deliberately ignored, like the Java
+		// sphereInFrustumWithoutNearFar).
+		let planes = side_planes(view_proj);
+		let in_frustum = |pos: &ChunkPos| -> bool {
+			let c = glam::Vec3::new(
+				(pos.x * 16 + 8) as f32,
+				(pos.y * 16 + 8) as f32,
+				(pos.z * 16 + 8) as f32,
+			);
+			const RADIUS: f32 = 13.86; // 8·√3, chunk half-diagonal (Java)
+			planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS)
+		};
 		gpu.queue
 			.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(frame));
 
@@ -368,7 +382,10 @@ impl Renderer {
 			pass.set_bind_group(0, &self.frame_bg, &[]);
 			pass.set_bind_group(1, &self.tex_bg, &[]);
 			pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-			for chunk in self.chunks.values() {
+			for (pos, chunk) in &self.chunks {
+				if !in_frustum(pos) {
+					continue;
+				}
 				if let Some((buf, index_count)) = &chunk.solid {
 					pass.set_bind_group(
 						2,
@@ -382,4 +399,19 @@ impl Renderer {
 		}
 		gpu.queue.submit([encoder.finish()]);
 	}
+}
+
+/// Gribb–Hartmann frustum plane extraction: left/right/bottom/top only.
+fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
+	let r0 = m.row(0);
+	let r1 = m.row(1);
+	let r3 = m.row(3);
+	[r3 + r0, r3 - r0, r3 + r1, r3 - r1].map(|p| {
+		let len = p.truncate().length();
+		if len > 0.0 {
+			p / len
+		} else {
+			p
+		}
+	})
 }
