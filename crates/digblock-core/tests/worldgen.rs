@@ -23,7 +23,7 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 		BlockType::Stone
 	} else {
 		match shape.surface {
-			SurfaceKind::Ocean | SurfaceKind::Beach => BlockType::Sand,
+			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River => BlockType::Sand,
 			SurfaceKind::Mountain => BlockType::Stone,
 			SurfaceKind::Snow => {
 				if wy == h {
@@ -200,6 +200,71 @@ fn caves_respect_floor_and_oceans() {
 		}
 	}
 	assert!(checked, "found an ocean column to check");
+	// Same for a river column: the carve gate skips columns whose water
+	// sits above their bed, so nothing below the bed is air either.
+	let mut checked_river = false;
+	'river: for x in (-2048..2048).step_by(3) {
+		for z in (-2048..2048).step_by(5) {
+			let s = column_shape(x, z, seed);
+			if s.water <= s.height || s.height < SEA_LEVEL {
+				continue;
+			}
+			let (cx, cz) = (x.div_euclid(16), z.div_euclid(16));
+			let (lx, lz) = (x.rem_euclid(16) as usize, z.rem_euclid(16) as usize);
+			for wy in 0..=s.height {
+				let chunk = build_chunk(ChunkPos::new(cx, wy.div_euclid(16), cz), seed);
+				let b = chunk.get(lx, wy.rem_euclid(16) as usize, lz);
+				assert_ne!(b, BlockType::Air, "river bed intact at ({x},{wy},{z})");
+			}
+			checked_river = true;
+			break 'river;
+		}
+	}
+	assert!(checked_river, "found a river column to check");
+}
+
+/// Every water cell in and around a river rests on water or solid —
+/// river water never floats over air.
+#[test]
+fn river_water_never_floats() {
+	let seed = 1234.5678;
+	let mut found = None;
+	'outer: for x in (-2048..2048).step_by(5) {
+		for z in (-2048..2048).step_by(7) {
+			let s = column_shape(x, z, seed);
+			// An inland river column (above the sea's own water plane).
+			if s.water > s.height && s.water > SEA_LEVEL {
+				found = Some((x, z));
+				break 'outer;
+			}
+		}
+	}
+	let (rx, rz) = found.expect("sample area contains an inland river");
+	for dcz in -1..=1 {
+		for dcx in -1..=1 {
+			let (cx, cz) = (rx.div_euclid(16) + dcx, rz.div_euclid(16) + dcz);
+			let chunks: Vec<ChunkData> = (0..WORLD_VCHUNK)
+				.map(|cy| build_chunk(ChunkPos::new(cx, cy, cz), seed))
+				.collect();
+			let block_at = |x: usize, wy: i32, z: usize| -> BlockType {
+				chunks[(wy / 16) as usize].get(x, (wy % 16) as usize, z)
+			};
+			for x in 0..CHUNK_SIZE {
+				for z in 0..CHUNK_SIZE {
+					for wy in 1..WORLD_VBLOCK {
+						if block_at(x, wy, z) == BlockType::Water {
+							let below = block_at(x, wy - 1, z);
+							assert_ne!(
+								below,
+								BlockType::Air,
+								"water floats at ({x},{wy},{z}) in chunk ({cx},{cz})"
+							);
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 /// Spawn always lands above the beach line, for a spread of seeds.
@@ -208,8 +273,10 @@ fn spawn_finds_land() {
 	for seed in [0.0, 1.0, 1234.5678, 4242.0, 9999.9] {
 		let s = digblock_core::player::spawn(seed);
 		let (x, z) = (s.x.floor() as i32, s.z.floor() as i32);
-		let h = terrain_height(x, z, seed);
+		let shape = column_shape(x, z, seed);
+		let h = shape.height;
 		assert!(h > SEA_LEVEL + 1, "seed {seed}: spawn over land (h={h})");
+		assert!(shape.water <= h, "seed {seed}: spawn not in a river");
 		assert!((s.y - (h as f32 + 2.5)).abs() < 0.001, "eye above surface");
 		assert!(!carved(x, h, z, seed), "spawn surface is not a cave mouth");
 	}
@@ -272,10 +339,17 @@ fn heightmap_dump() {
 	let mut hmax = 0;
 	for z in (-1024..1024).rev().step_by(step) {
 		for x in (-2048..2048).step_by(step) {
-			let h = terrain_height(x, z, seed);
+			let s = column_shape(x, z, seed);
+			let h = s.height;
 			hmax = hmax.max(h);
 			let g = glyphs[(h as usize * (glyphs.len() - 1)) / WORLD_VBLOCK as usize] as char;
-			out.push(if h <= SEA_LEVEL { '~' } else { g });
+			out.push(if h <= SEA_LEVEL {
+				'~'
+			} else if s.water > h {
+				'≈' // river
+			} else {
+				g
+			});
 		}
 		out.push('\n');
 	}

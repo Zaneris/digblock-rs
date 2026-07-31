@@ -57,6 +57,23 @@ const ORIENT_FREQ: f64 = 0.0004;
 const ORIENT_SEED_OFF: f64 = 61553.0;
 /// Along-range frequency multiplier: ~3x longer than wide.
 const RIDGE_STRETCH: f64 = 0.35;
+/// Rivers: the zero band of a low-frequency field (on warped coords, so
+/// channels meander) carves a U-profile bed below a locally flat water
+/// level derived from the low+mid-frequency surface. Channels fade out
+/// in strongly mountainous terrain, widen across eroded flats, and taper
+/// to nothing at the coast so they meet the sea at grade. Not true
+/// downhill flow — the level can step a block along the run — but the
+/// bands read as connected rivers that end in the ocean.
+const RIVER_FREQ: f64 = 0.0009;
+const RIVER_SEED_OFF: f64 = 83777.0;
+/// Half-width of the channel in field units.
+const RIVER_W: f64 = 0.045;
+/// Max carve depth below the water surface (blocks).
+const RIVER_DEPTH: f64 = 5.0;
+/// River level quantum: the water surface snaps to this many blocks, so
+/// a descending river forms flat pools joined by discrete falls instead
+/// of a per-block staircase of water sheets hugging the slope.
+const RIVER_POOL_STEP: f64 = 4.0;
 
 /// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
 pub const SEA_LEVEL: i32 = 128;
@@ -157,6 +174,8 @@ pub enum SurfaceKind {
 	Mountain,
 	/// Snow-capped rock above the (dithered) snow line.
 	Snow,
+	/// Inside a river channel: sand bed under river water.
+	River,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +204,12 @@ fn gained(v: f64, gain: f64) -> f64 {
 struct Fields {
 	/// Surface height (f64, soft-ceilinged, ≥ 1; floor = the block y).
 	h: f64,
+	/// Height before river carving — what slope classification reads, so
+	/// river banks keep the surface of the terrain they cut through
+	/// instead of registering as artificial cliffs.
+	h_pre: f64,
+	/// Local water surface (f64): SEA_LEVEL, or the river level above it.
+	water: f64,
 }
 
 fn fields(x: i32, z: i32, seed: f64) -> Fields {
@@ -220,15 +245,46 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let alt =
 		((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
 	let detail_amp = PLAINS_AMP * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt);
-	let h = h_ridge + gained(d, 2.0) * detail_amp;
+	let h_pre = soft_ceiling(h_ridge + gained(d, 2.0) * detail_amp).max(1.0);
+
+	// River channel: fade toward mountains, widen over eroded flats,
+	// taper to zero depth at the coast (base at sea level → g = 0).
+	let mut h_final = h_pre;
+	let mut water = f64::from(SEA_LEVEL);
+	let g = smoothstep((base - f64::from(SEA_LEVEL)) / 12.0);
+	if g > 0.0 {
+		let rv = fbm2(wx, wz, RIVER_FREQ, 2, seed + RIVER_SEED_OFF);
+		let w = RIVER_W * (1.0 - 0.6 * rough) * (1.0 + 0.5 * erosion);
+		if rv.abs() < w {
+			// U-profile: deepest at the band center. The water surface
+			// derives from the detail-free height (locally flat across
+			// the channel), snapped to RIVER_POOL_STEP quanta along it.
+			let t = smoothstep(1.0 - rv.abs() / w);
+			let ws_smooth = soft_ceiling(h_ridge) - 2.0 - f64::from(SEA_LEVEL);
+			let ws = f64::from(SEA_LEVEL)
+				+ ((ws_smooth / RIVER_POOL_STEP).floor() * RIVER_POOL_STEP).max(0.0);
+			let bed = ws - 1.0 - RIVER_DEPTH * t * g;
+			if bed < h_pre {
+				h_final = bed.max(1.0);
+			}
+			// Fill to the river level even where the terrain already sat
+			// below the bed — no dry holes mid-channel.
+			if ws > h_final {
+				water = ws;
+			}
+		}
+	}
 	Fields {
-		h: soft_ceiling(h).max(1.0),
+		h: h_final,
+		h_pre,
+		water,
 	}
 }
 
-/// The height a neighbor column contributes to slope classification.
+/// The height a neighbor column contributes to slope classification —
+/// pre-river, so channels don't read as cliffs.
 fn raw_height(x: i32, z: i32, seed: f64) -> f64 {
-	fields(x, z, seed).h
+	fields(x, z, seed).h_pre
 }
 
 /// Discretize fields + neighbor heights into a ColumnShape. Both call
@@ -249,10 +305,13 @@ fn classify(f: &Fields, nbrs: [f64; 4], x: i32, z: i32, seed: f64) -> ColumnShap
 	);
 	// Central-difference rise per block, the max of both axes.
 	let slope = (hxp - hxm).abs().max((hzp - hzm).abs()) * 0.5;
-	// Dithered altitude for the stone/snow lines.
-	let hd = f.h + dith * 6.0;
+	// Dithered altitude for the stone/snow lines (pre-river surface).
+	let hd = f.h_pre + dith * 6.0;
+	let water = f.water.floor() as i32;
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
+	} else if water > height {
+		SurfaceKind::River
 	} else if f64::from(height) <= f64::from(SEA_LEVEL) + 1.0 + (dith + 1.0) * 1.2 {
 		SurfaceKind::Beach
 	} else if slope > STEEP_SLOPE + 0.3 * dith {
@@ -267,7 +326,7 @@ fn classify(f: &Fields, nbrs: [f64; 4], x: i32, z: i32, seed: f64) -> ColumnShap
 	ColumnShape {
 		height,
 		surface,
-		water: SEA_LEVEL,
+		water,
 	}
 }
 
@@ -319,10 +378,10 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 			*s = classify(
 				&grid[gz][gx],
 				[
-					grid[gz][gx - 1].h,
-					grid[gz][gx + 1].h,
-					grid[gz - 1][gx].h,
-					grid[gz + 1][gx].h,
+					grid[gz][gx - 1].h_pre,
+					grid[gz][gx + 1].h_pre,
+					grid[gz - 1][gx].h_pre,
+					grid[gz + 1][gx].h_pre,
 				],
 				x as i32 + px,
 				z as i32 + pz,
@@ -366,7 +425,7 @@ fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 		BlockType::Stone
 	} else {
 		match shape.surface {
-			SurfaceKind::Ocean | SurfaceKind::Beach => BlockType::Sand,
+			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River => BlockType::Sand,
 			SurfaceKind::Mountain => BlockType::Stone,
 			SurfaceKind::Snow => {
 				if wy == h {
@@ -515,6 +574,27 @@ mod tests {
 		}
 	}
 
+	/// Rivers exist inland (water level above the sea's), sit in carved
+	/// channels (water above bed), and never hold water below sea level.
+	#[test]
+	fn rivers_exist_inland() {
+		let seed = 1234.5678;
+		let mut inland = 0u32;
+		for x in (-4096..4096).step_by(13) {
+			for z in (-4096..4096).step_by(11) {
+				let s = column_shape(x, z, seed);
+				assert!(s.water >= SEA_LEVEL, "water never below sea at ({x},{z})");
+				if s.surface == SurfaceKind::River {
+					assert!(s.water > s.height, "river holds water at ({x},{z})");
+					if s.water > SEA_LEVEL {
+						inland += 1;
+					}
+				}
+			}
+		}
+		assert!(inland > 0, "sample contains inland river columns");
+	}
+
 	/// Snow only appears near the (dithered) snow line, never at low
 	/// altitude, and snow surfaces exist somewhere in a mountain sample.
 	#[test]
@@ -548,7 +628,8 @@ mod tests {
 			for z in (-4096..4096).step_by(32) {
 				total += 1;
 				match column_shape(x, z, seed).surface {
-					SurfaceKind::Ocean => ocean += 1,
+					// Rivers are open water for balance purposes.
+					SurfaceKind::Ocean | SurfaceKind::River => ocean += 1,
 					SurfaceKind::Beach => beach += 1,
 					SurfaceKind::Plains => plains += 1,
 					// Snow is high-mountain surface for balance purposes.
