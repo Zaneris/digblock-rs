@@ -198,6 +198,51 @@ fn spawn_finds_land() {
 	}
 }
 
+/// ASCII cave cross-section — run with `--nocapture` to eyeball cave size
+/// and spacing: `cargo test -p digblock-core cave_slice_dump -- --nocapture`
+/// Prints an x/y slice ('.' = carved void, '#' = solid) plus the carved
+/// fraction of below-surface land cells over a larger sample.
+#[test]
+fn cave_slice_dump() {
+	let seed = 0.0;
+	let z = 0;
+	let mut out = String::new();
+	for wy in (40..=190).rev().step_by(2) {
+		for x in -128..128 {
+			let h = terrain_height(x, z, seed);
+			out.push(if wy > h {
+				' '
+			} else if h > SEA_LEVEL && wy >= 1 && carved(x, wy, z, seed) {
+				'.'
+			} else {
+				'#'
+			});
+		}
+		out.push('\n');
+	}
+	println!("{out}");
+	let (mut solid, mut void) = (0u64, 0u64);
+	for x in (-2048..2048).step_by(7) {
+		for z in (-2048..2048).step_by(11) {
+			let h = terrain_height(x, z, seed);
+			if h <= SEA_LEVEL {
+				continue;
+			}
+			for wy in (1..h).step_by(3) {
+				if carved(x, wy, z, seed) {
+					void += 1;
+				} else {
+					solid += 1;
+				}
+			}
+		}
+	}
+	let pct = void as f64 * 100.0 / (void + solid) as f64;
+	println!("carved fraction of land underground: {pct:.2}%");
+	assert!(void > 0, "caves exist");
+	assert!(pct < 15.0, "carving stays a small fraction ({pct:.2}%)");
+}
+
 /// ASCII region map — run with `--nocapture` to eyeball terrain shape:
 /// `cargo test -p digblock-core heightmap_dump -- --nocapture`
 /// The window spans ~4km so continental-scale features are visible.
@@ -207,15 +252,17 @@ fn heightmap_dump() {
 	let glyphs = b" .:-=+*#%@";
 	let mut out = String::new();
 	let step = 32usize;
+	let mut hmax = 0;
 	for z in (-1024..1024).rev().step_by(step) {
 		for x in (-2048..2048).step_by(step) {
 			let h = terrain_height(x, z, seed);
+			hmax = hmax.max(h);
 			let g = glyphs[(h as usize * (glyphs.len() - 1)) / WORLD_VBLOCK as usize] as char;
 			out.push(if h <= SEA_LEVEL { '~' } else { g });
 		}
 		out.push('\n');
 	}
-	println!("{out}");
+	println!("{out}\npeak in window: {hmax}");
 	// Sanity: the window contains both ocean and land at seed 0.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));

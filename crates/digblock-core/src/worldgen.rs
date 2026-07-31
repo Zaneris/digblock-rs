@@ -5,9 +5,10 @@
 //! - **continentalness** picks the base elevation through a spline (deep
 //!   ocean → shelf → coast → plains → highlands) and gates mountains to
 //!   well inland;
-//! - **roughness** scales the detail amplitude from gentle plains to
-//!   ridged mountain ranges (the detail field's absolute value, so ranges
-//!   have crease lines and never dig below their base);
+//! - **roughness** gates where mountain relief appears at all;
+//! - a low-frequency **ridge** field draws the mountain forms themselves
+//!   (its absolute value creases into valleys at zero crossings and rounds
+//!   off over maxima, so ranges rise from their base with walkable slopes);
 //! - a mid-frequency **detail** fBm supplies the local relief.
 //!
 //! Every function here is a pure function of `(x, z, seed)` — column
@@ -25,16 +26,25 @@ use crate::simplex::{fbm2, noise3};
 const CONTINENT_FREQ: f64 = 0.0015;
 const ROUGH_FREQ: f64 = 0.004;
 const DETAIL_FREQ: f64 = 0.015;
+/// Mountain forms live on their own broad field — far lower frequency than
+/// the detail fBm, so 90 blocks of amplitude spreads over hundreds of
+/// blocks of run instead of spiking.
+const RIDGE_FREQ: f64 = 0.004;
 const PLAINS_AMP: f64 = 6.0;
 /// Extra ridged amplitude in fully mountainous regions.
 const MOUNTAIN_AMP: f64 = 90.0;
 const ROUGH_SEED_OFF: f64 = 4079.0;
 const DETAIL_SEED_OFF: f64 = 8161.0;
+const RIDGE_SEED_OFF: f64 = 12281.0;
 
 /// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
 pub const SEA_LEVEL: i32 = 128;
-/// Terrain never reaches the world ceiling (no flat-topped clamping).
+/// Asymptotic terrain ceiling: heights above CEILING_KNEE are compressed
+/// toward this limit but never reach it, so the tallest peaks round off
+/// instead of clamping into flat tops.
 pub const MAX_TERRAIN: f64 = 240.0;
+/// Where the soft ceiling starts to bite.
+const CEILING_KNEE: f64 = 200.0;
 /// Above this the surface turns to bare rock.
 pub const STONE_SURFACE: i32 = 190;
 /// Blocks of dirt (or sand) between the surface and the stone below it.
@@ -45,8 +55,11 @@ pub const DIRT_DEPTH: i32 = 3;
 // reduces the void to worm-like tunnel curves (and the carved volume
 // roughly quadratically). Land columns only (no ocean-floor caves → no
 // water walls at carved openings), never the bedrock layer at y=0.
-const CAVE_FREQ: f64 = 0.05;
-const CAVE_THRESHOLD: f64 = 0.12;
+// Frequency sets tunnel spacing (zero bands sit ~half a wavelength
+// apart); threshold/frequency sets bore width in blocks — so lower
+// frequency + higher threshold = fewer, larger caves.
+const CAVE_FREQ: f64 = 0.02;
+const CAVE_THRESHOLD: f64 = 0.15;
 const CAVE_SEED_OFF: f64 = 16193.0;
 const CAVE_SEED_OFF2: f64 = 27449.0;
 const CAVE_FLOOR: i32 = 1;
@@ -87,6 +100,18 @@ fn inland(c: f64) -> f64 {
 	smoothstep((c - 0.05) / 0.30)
 }
 
+/// Compress heights above CEILING_KNEE asymptotically toward MAX_TERRAIN:
+/// tanh keeps the curve tangent to the identity at the knee and never
+/// reaches the limit, so no peak ever clamps into a flat top.
+fn soft_ceiling(h: f64) -> f64 {
+	if h <= CEILING_KNEE {
+		h
+	} else {
+		let span = MAX_TERRAIN - CEILING_KNEE;
+		CEILING_KNEE + span * ((h - CEILING_KNEE) / span).tanh()
+	}
+}
+
 /// What grows (or doesn't) on a column's surface — the seam where a
 /// future biome system attaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -122,15 +147,17 @@ pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	let c = gained(fbm2(xf, zf, CONTINENT_FREQ, 2, seed), 2.2);
 	let r = gained(fbm2(xf, zf, ROUGH_FREQ, 2, seed + ROUGH_SEED_OFF), 2.2);
 	let d = fbm2(xf, zf, DETAIL_FREQ, 4, seed + DETAIL_SEED_OFF);
+	let m = fbm2(xf, zf, RIDGE_FREQ, 3, seed + RIDGE_SEED_OFF);
 
 	let base = spline(c);
 	// 0..1 mountainousness, gated to inland regions.
 	let rough = smoothstep(((r + 1.0) * 0.5 - 0.55) / 0.3) * inland(c);
-	// Plains relief is signed; the mountain term is ridged (|d|) so ranges
-	// crease at zero crossings and only ever rise above their base.
-	let ridge = gained(d, 2.5).abs();
+	// Ridged (|m|): ranges crease into valleys at zero crossings and only
+	// ever rise above their base. The smoothstep flattens the derivative at
+	// both ends, so summits and valley floors round off instead of spiking.
+	let ridge = smoothstep(gained(m, 2.2).abs());
 	let h = base + gained(d, 2.0) * PLAINS_AMP + ridge * MOUNTAIN_AMP * rough;
-	let height = (h.clamp(1.0, MAX_TERRAIN)).floor() as i32;
+	let height = soft_ceiling(h).max(1.0).floor() as i32;
 
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
