@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod pipeline;
 pub mod player;
 pub mod simplex;
+pub mod sky;
 pub mod sun;
 pub mod touch;
 pub mod worldgen;

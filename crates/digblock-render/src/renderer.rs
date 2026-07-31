@@ -21,14 +21,38 @@ const CHUNK_STRIDE: u64 = 256;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Field order/layout must match the `Frame` struct in BOTH
+/// `chunk.wgsl` and `sky.wgsl` (naga can't check cross-file layout).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrameUniforms {
 	pub view_proj: [[f32; 4]; 4],
+	/// Inverse of view_proj — sky-pass view-ray reconstruction.
+	pub inv_view_proj: [[f32; 4]; 4],
 	pub light_near: [[f32; 4]; 4],
 	pub light_wide: [[f32; 4]; 4],
+	/// xyz = active caster dir (sun or moon), toward the ground;
+	/// w = shadow strength 0..1 (twilight fade).
 	pub light_dir: [f32; 4],
-	/// x = alpha, y = shadows enabled, z = near shadow texel size, w unused.
+	/// rgb = direct light color (sun by day, moonlight by night).
+	pub light_color: [f32; 4],
+	/// rgb = sky-tinted ambient floor.
+	pub ambient: [f32; 4],
+	/// rgb = fog color (sky horizon); w = fog start distance (units).
+	pub fog_color: [f32; 4],
+	/// xyz = camera position; w = 1 / (fog_end − fog_start).
+	pub cam_pos: [f32; 4],
+	/// xyz = direction toward the sun in the SKY (= −light dir);
+	/// w = star intensity 0..1.
+	pub sun_dir: [f32; 4],
+	/// xyz = direction toward the moon; w = sunset glow strength 0..1.
+	pub moon_dir: [f32; 4],
+	/// rgb = sky zenith color.
+	pub zenith: [f32; 4],
+	/// rgb = sky horizon color.
+	pub horizon: [f32; 4],
+	/// x = alpha, y = shadows enabled, z = shadow map texel size (UV),
+	/// w = wide-cascade texel size in world units (normal-offset bias).
 	pub misc: [f32; 4],
 }
 
@@ -58,6 +82,8 @@ pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
 	water_pipeline: wgpu::RenderPipeline,
 	shadow_pipeline: wgpu::RenderPipeline,
+	/// Fullscreen procedural sky, drawn after solids, before water.
+	sky_pipeline: wgpu::RenderPipeline,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
 	/// Same layout, alpha 0.7 (Java u_Alpha for the transparent pass).
@@ -299,6 +325,54 @@ impl Renderer {
 			cache: None,
 		});
 
+		// Sky: fullscreen triangle at NDC depth 1.0, depth-tested against
+		// the solids (LessEqual, no write) so occluded fragments are free;
+		// drawn before water so water blends over it.
+		let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("sky"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SKY.into()),
+		});
+		let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("sky"),
+			bind_group_layouts: &[&frame_bgl],
+			push_constant_ranges: &[],
+		});
+		let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("sky"),
+			layout: Some(&sky_layout),
+			vertex: wgpu::VertexState {
+				module: &sky_shader,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: &[],
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				cull_mode: None,
+				..Default::default()
+			},
+			depth_stencil: Some(wgpu::DepthStencilState {
+				format: DEPTH_FORMAT,
+				depth_write_enabled: false,
+				depth_compare: wgpu::CompareFunction::LessEqual,
+				stencil: Default::default(),
+				bias: Default::default(),
+			}),
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &sky_shader,
+				entry_point: Some("fs"),
+				compilation_options: Default::default(),
+				targets: &[Some(wgpu::ColorTargetState {
+					format: surface_format,
+					blend: None,
+					write_mask: wgpu::ColorWrites::ALL,
+				})],
+			}),
+			multiview: None,
+			cache: None,
+		});
+
 		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("shadow"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
@@ -454,6 +528,7 @@ impl Renderer {
 			solid_pipeline,
 			water_pipeline,
 			shadow_pipeline,
+			sky_pipeline,
 			frame_buf,
 			frame_bg,
 			frame_water_buf,
@@ -669,7 +744,15 @@ impl Renderer {
 					view: target,
 					resolve_target: None,
 					ops: wgpu::Operations {
-						load: wgpu::LoadOp::Clear(crate::SKY),
+						// Fog color, matching the sky horizon — belt and
+						// braces for far-plane precision edges (the sky
+						// pass covers every non-terrain pixel anyway).
+						load: wgpu::LoadOp::Clear(wgpu::Color {
+							r: f64::from(frame.fog_color[0]),
+							g: f64::from(frame.fog_color[1]),
+							b: f64::from(frame.fog_color[2]),
+							a: 1.0,
+						}),
 						store: wgpu::StoreOp::Store,
 					},
 					depth_slice: None,
@@ -708,6 +791,13 @@ impl Renderer {
 				}
 			}
 
+			// Sky after solids (depth test discards occluded fragments —
+			// near-free on TBDR), before water so water blends over it.
+			pass.set_pipeline(&self.sky_pipeline);
+			pass.set_bind_group(0, &self.frame_bg, &[]);
+			pass.draw(0..3, 0..1);
+			stats.draw_calls += 1;
+
 			// Transparent water: after all solids, back-to-front by chunk
 			// distance (16³ granularity is enough), alpha 0.7, no depth
 			// writes, double-sided.
@@ -728,6 +818,8 @@ impl Renderer {
 			self.water_scratch.sort_by_key(|(d, _)| *d);
 			pass.set_pipeline(&self.water_pipeline);
 			pass.set_bind_group(0, &self.frame_water_bg, &[]);
+			// Group 1 was invalidated by the sky pipeline's shorter layout.
+			pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
 			for (_, pos) in &self.water_scratch {
 				let Some(chunk) = self.chunks.get(pos) else {
 					continue;

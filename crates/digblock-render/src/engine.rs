@@ -237,13 +237,47 @@ impl Engine {
 
 	fn frame_uniforms(&self, near_vp: glam::Mat4, wide_vp: glam::Mat4) -> FrameUniforms {
 		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
-		let light_dir = self.sun.dir();
+		let vp = self.camera.view_proj(aspect);
+		let caster = self.sun.caster();
+		let atmos = digblock_core::sky::Atmosphere::sample(self.sun.elevation());
+		// Directions toward the bodies in the sky (opposite the light).
+		let sun = -self.sun.sun_dir();
+		let moon = -self.sun.moon_dir();
+		let far = self.depth();
+		let (fog_start, fog_end) = (0.70 * far, 0.95 * far);
+		let cam = self.camera.pos;
 		FrameUniforms {
-			view_proj: self.camera.view_proj(aspect).to_cols_array_2d(),
+			view_proj: vp.to_cols_array_2d(),
+			inv_view_proj: vp.inverse().to_cols_array_2d(),
 			light_near: near_vp.to_cols_array_2d(),
 			light_wide: wide_vp.to_cols_array_2d(),
-			light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
-			misc: [1.0, 1.0, 1.0 / self.config.shadow_size as f32, 0.0],
+			light_dir: [caster.dir.x, caster.dir.y, caster.dir.z, caster.strength],
+			light_color: [
+				atmos.light_color[0],
+				atmos.light_color[1],
+				atmos.light_color[2],
+				0.0,
+			],
+			ambient: [atmos.ambient[0], atmos.ambient[1], atmos.ambient[2], 0.0],
+			fog_color: [
+				atmos.horizon[0],
+				atmos.horizon[1],
+				atmos.horizon[2],
+				fog_start,
+			],
+			cam_pos: [cam.x, cam.y, cam.z, 1.0 / (fog_end - fog_start)],
+			sun_dir: [sun.x, sun.y, sun.z, atmos.star_intensity],
+			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
+			zenith: [atmos.zenith[0], atmos.zenith[1], atmos.zenith[2], 0.0],
+			horizon: [atmos.horizon[0], atmos.horizon[1], atmos.horizon[2], 0.0],
+			misc: [
+				1.0,
+				1.0,
+				1.0 / self.config.shadow_size as f32,
+				// Wide-cascade texel size in world units (extent / resolution),
+				// the chunk shader's normal-offset distance.
+				far / self.config.shadow_size as f32,
+			],
 		}
 	}
 }
@@ -423,8 +457,9 @@ impl Game for Engine {
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
 		let d = self.depth();
-		let near_vp = self.sun.near_vp(self.camera.pos, d);
-		let wide_vp = self.sun.wide_vp(d);
+		let texels = self.config.shadow_size as f32;
+		let near_vp = self.sun.near_vp(self.camera.pos, d, texels);
+		let wide_vp = self.sun.wide_vp(d, texels);
 		let frame = self.frame_uniforms(near_vp, wide_vp);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
