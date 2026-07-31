@@ -3,32 +3,39 @@ use std::collections::HashMap;
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
 use digblock_core::decoration::{trees_near, STRUCTURE_APRON};
 use digblock_core::worldgen::{
-	build_chunk, carved, terrain_height, DIRT_DEPTH, SEA_LEVEL, STONE_SURFACE,
+	build_chunk, carved, column_shape, terrain_height, SurfaceKind, DIRT_DEPTH, SEA_LEVEL,
 };
 use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
 
-/// The terrain-only expectation (no trees), re-implemented independently.
+/// The terrain-only expectation (no trees), re-implemented from the
+/// column rules over the public per-column shape. Validates fill_chunk's
+/// cell indexing and per-chunk assembly, not the shape function itself.
 fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
-	let h = terrain_height(wx, wz, seed);
+	let shape = column_shape(wx, wz, seed);
+	let h = shape.height;
 	let base = if wy > h {
-		if wy <= SEA_LEVEL {
+		if wy <= shape.water {
 			BlockType::Water
 		} else {
 			BlockType::Air
 		}
 	} else if wy <= h - DIRT_DEPTH {
 		BlockType::Stone
-	} else if h <= SEA_LEVEL + 1 {
-		BlockType::Sand
-	} else if h >= STONE_SURFACE {
-		BlockType::Stone
-	} else if wy == h {
-		BlockType::Grass
 	} else {
-		BlockType::Dirt
+		match shape.surface {
+			SurfaceKind::Ocean | SurfaceKind::Beach => BlockType::Sand,
+			SurfaceKind::Mountain => BlockType::Stone,
+			SurfaceKind::Plains => {
+				if wy == h {
+					BlockType::Grass
+				} else {
+					BlockType::Dirt
+				}
+			}
+		}
 	};
 	let carveable = matches!(base, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
-	if carveable && h > SEA_LEVEL && wy >= 1 && carved(wx, wy, wz, seed) {
+	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
 		BlockType::Air
 	} else {
 		base

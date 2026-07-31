@@ -131,6 +131,9 @@ pub struct ColumnShape {
 	/// World y of the surface block.
 	pub height: i32,
 	pub surface: SurfaceKind,
+	/// World y of the local water surface: SEA_LEVEL everywhere today,
+	/// above it inside future river channels. Water fills `height+1..=water`.
+	pub water: i32,
 }
 
 /// fBm concentrates near zero (octave sums rarely approach ±1); gain +
@@ -140,9 +143,18 @@ fn gained(v: f64, gain: f64) -> f64 {
 	(v * gain).clamp(-1.0, 1.0)
 }
 
-/// The per-column terrain function: control fields → base + modulated
-/// detail → height and surface kind.
-pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
+/// The continuous per-column terrain fields, before block-grid
+/// discretization and surface classification. Split from `classify` so
+/// classification can sample neighbor heights (for slope) without
+/// recursing: `fields`/`raw_height` never classify, `classify` never
+/// evaluates noise beyond its own inputs.
+#[derive(Clone, Copy, Default)]
+struct Fields {
+	/// Surface height (f64, soft-ceilinged, ≥ 1; floor = the block y).
+	h: f64,
+}
+
+fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let (xf, zf) = (f64::from(x), f64::from(z));
 	let c = gained(fbm2(xf, zf, CONTINENT_FREQ, 2, seed), 2.2);
 	let r = gained(fbm2(xf, zf, ROUGH_FREQ, 2, seed + ROUGH_SEED_OFF), 2.2);
@@ -157,8 +169,21 @@ pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	// both ends, so summits and valley floors round off instead of spiking.
 	let ridge = smoothstep(gained(m, 2.2).abs());
 	let h = base + gained(d, 2.0) * PLAINS_AMP + ridge * MOUNTAIN_AMP * rough;
-	let height = soft_ceiling(h).max(1.0).floor() as i32;
+	Fields {
+		h: soft_ceiling(h).max(1.0),
+	}
+}
 
+/// The height a neighbor column contributes to slope classification.
+fn raw_height(x: i32, z: i32, seed: f64) -> f64 {
+	fields(x, z, seed).h
+}
+
+/// Discretize fields + neighbor heights into a ColumnShape. Both call
+/// paths (per-column and padded chunk grid) feed identical f64 inputs
+/// here, so their classifications are bit-identical.
+fn classify(f: &Fields, _hxm: f64, _hxp: f64, _hzm: f64, _hzp: f64) -> ColumnShape {
+	let height = f.h.floor() as i32;
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
 	} else if height <= SEA_LEVEL + 1 {
@@ -168,7 +193,23 @@ pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	} else {
 		SurfaceKind::Plains
 	};
-	ColumnShape { height, surface }
+	ColumnShape {
+		height,
+		surface,
+		water: SEA_LEVEL,
+	}
+}
+
+/// The per-column terrain function: control fields → base + modulated
+/// detail → height and surface kind.
+pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
+	classify(
+		&fields(x, z, seed),
+		raw_height(x - 1, z, seed),
+		raw_height(x + 1, z, seed),
+		raw_height(x, z - 1, seed),
+		raw_height(x, z + 1, seed),
+	)
 }
 
 pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
@@ -177,16 +218,35 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 
 type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
 
-/// Column shapes for a chunk, indexed `[z][x]`.
+/// Column shapes for a chunk, indexed `[z][x]`. Evaluates the fields once
+/// per column of a one-column-padded grid (18×18 = 324 evals) so interior
+/// columns classify against their neighbors' heights without re-deriving
+/// them — 4× cheaper than the 5-evaluation `column_shape` path, and
+/// bit-identical to it (same f64 inputs to the same functions).
 fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
+	const PAD: usize = CHUNK_SIZE + 2;
 	let (px, pz) = (cx * CHUNK_SIZE as i32, cz * CHUNK_SIZE as i32);
+	let mut grid = [[Fields::default(); PAD]; PAD];
+	for (gz, row) in grid.iter_mut().enumerate() {
+		for (gx, f) in row.iter_mut().enumerate() {
+			*f = fields(gx as i32 - 1 + px, gz as i32 - 1 + pz, seed);
+		}
+	}
 	let mut shapes = [[ColumnShape {
 		height: 0,
 		surface: SurfaceKind::Plains,
+		water: SEA_LEVEL,
 	}; CHUNK_SIZE]; CHUNK_SIZE];
 	for (z, row) in shapes.iter_mut().enumerate() {
 		for (x, s) in row.iter_mut().enumerate() {
-			*s = column_shape(x as i32 + px, z as i32 + pz, seed);
+			let (gx, gz) = (x + 1, z + 1);
+			*s = classify(
+				&grid[gz][gx],
+				grid[gz][gx - 1].h,
+				grid[gz][gx + 1].h,
+				grid[gz - 1][gx].h,
+				grid[gz + 1][gx].h,
+			);
 		}
 	}
 	shapes
@@ -210,12 +270,13 @@ pub fn carved(x: i32, y: i32, z: i32, seed: f64) -> bool {
 
 /// One cell of the column rules: stone below DIRT_DEPTH of topsoil;
 /// topsoil is sand on ocean floors and beaches, bare stone on mountain
-/// tops, grass-over-dirt otherwise; water up to SEA_LEVEL, air above.
+/// tops, grass-over-dirt otherwise; water up to the column's water
+/// level, air above.
 #[inline]
 fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	let h = shape.height;
 	if wy > h {
-		if wy <= SEA_LEVEL {
+		if wy <= shape.water {
 			BlockType::Water
 		} else {
 			BlockType::Air
@@ -256,7 +317,7 @@ fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64)
 				let carveable =
 					matches!(block, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
 				if carveable
-					&& shape.height > SEA_LEVEL
+					&& shape.height > shape.water
 					&& wy >= CAVE_FLOOR
 					&& carved(x as i32 + px, wy, z as i32 + pz, seed)
 				{
@@ -284,10 +345,12 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 	let n = CHUNK_SIZE as i32;
 	let shapes = column_shapes(cx, cz, seed);
+	// A column's solid+liquid content reaches to height *or* its local
+	// water surface (river water can sit above carved terrain).
 	let max_h = shapes
 		.iter()
 		.flatten()
-		.map(|s| s.height)
+		.map(|s| s.height.max(s.water))
 		.max()
 		.expect("non-empty shape map");
 	let trees = trees_near(cx * n, cz * n, seed);
