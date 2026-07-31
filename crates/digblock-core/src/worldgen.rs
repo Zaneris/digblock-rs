@@ -205,8 +205,8 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let h_ridge = base + ridge * MOUNTAIN_AMP * rough * (1.0 - 0.75 * erosion);
 	// Altitude-weighted detail (Musgrave-style heterogeneous fractal):
 	// lowlands read calm, high ridges craggy, eroded regions calmer still.
-	let alt = ((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL)))
-		.clamp(0.0, 1.0);
+	let alt =
+		((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
 	let detail_amp = PLAINS_AMP * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt);
 	let h = h_ridge + gained(d, 2.0) * detail_amp;
 	Fields {
