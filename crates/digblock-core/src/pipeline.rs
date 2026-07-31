@@ -20,7 +20,7 @@ use rustc_hash::FxHashMap;
 use crate::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::mesher::{border_plane, mesh_chunk, MeshData, NeighborPlane, DIRS};
 use crate::metrics::JobTiming;
-use crate::worldgen::build_chunk;
+use crate::worldgen::build_column;
 
 pub struct MeshOutput {
 	pub pos: ChunkPos,
@@ -29,10 +29,9 @@ pub struct MeshOutput {
 }
 
 enum Job {
-	Generate {
-		pos: ChunkPos,
-		seed: f64,
-	},
+	/// Generate the whole vertical chunk stack of column (x, z) — one
+	/// heightmap evaluation serves every chunk in the stack.
+	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,
 		gen: u64,
@@ -43,8 +42,9 @@ enum Job {
 
 enum JobResult {
 	Generated {
-		pos: ChunkPos,
-		data: Arc<ChunkData>,
+		x: i32,
+		z: i32,
+		stack: [Arc<ChunkData>; WORLD_VCHUNK as usize],
 		dur_ms: f32,
 	},
 	Meshed {
@@ -94,7 +94,8 @@ pub struct Pipeline {
 	store: FxHashMap<ChunkPos, ChunkSlot>,
 	job_tx: Sender<Job>,
 	result_rx: Receiver<JobResult>,
-	gen_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
+	/// Pending columns (x, z) — generation is per-column, not per-chunk.
+	gen_heap: BinaryHeap<(Reverse<i64>, (i32, i32))>,
 	mesh_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
 	center: ChunkPos,
 	scanned_once: bool,
@@ -109,7 +110,11 @@ fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 
 impl Pipeline {
 	pub fn new(seed: f64, draw_dist: i32, workers: usize) -> Self {
-		let (job_tx, job_rx) = bounded::<Job>(workers * 2);
+		// Deep enough that workers never starve between once-per-frame
+		// top-ups (a shallow queue capped throughput at ~queue+workers jobs
+		// per frame); shallow enough that priority ordering stays relevant —
+		// queued jobs can't be re-prioritized, only staleness-dropped.
+		let (job_tx, job_rx) = bounded::<Job>(workers * 16);
 		let (result_tx, result_rx) = unbounded::<JobResult>();
 		let workers = (0..workers)
 			.map(|i| {
@@ -188,6 +193,7 @@ impl Pipeline {
 				if d2 >= i64::from(r) * i64::from(r) {
 					continue;
 				}
+				let mut new_column = false;
 				for y in 0..WORLD_VCHUNK {
 					let pos = ChunkPos::new(x, y, z);
 					if let std::collections::hash_map::Entry::Vacant(e) = self.store.entry(pos) {
@@ -196,8 +202,11 @@ impl Pipeline {
 							mesh_gen: 0,
 							submitted_gen: 0,
 						});
-						self.gen_heap.push((Reverse(d2), (x, y, z)));
+						new_column = true;
 					}
+				}
+				if new_column {
+					self.gen_heap.push((Reverse(d2), (x, z)));
 				}
 			}
 		}
@@ -219,30 +228,36 @@ impl Pipeline {
 			};
 			self.in_flight = self.in_flight.saturating_sub(1);
 			match result {
-				JobResult::Generated { pos, data, dur_ms } => {
-					out.generated += 1;
+				JobResult::Generated {
+					x,
+					z,
+					stack,
+					dur_ms,
+				} => {
 					out.gen_jobs.record(dur_ms);
 					let c = self.center;
-					if let Some(slot) = self.store.get_mut(&pos) {
-						slot.state = ChunkState::Ready(data);
-						slot.mesh_gen += 1;
-						self.mesh_heap.push((
-							Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), c)),
-							(pos.x, pos.y, pos.z),
-						));
-					}
-					// The Rust equivalent of Java's cross-border re-dirty:
-					// every Ready neighbor re-meshes from fresh snapshots.
-					for dir in DIRS {
-						let (ox, oy, oz) = dir.offset();
-						let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-						if let Some(nslot) = self.store.get_mut(&np) {
-							if matches!(nslot.state, ChunkState::Ready(_)) {
-								nslot.mesh_gen += 1;
-								self.mesh_heap.push((
-									Reverse(dist2(ChunkPos::new(np.x, 0, np.z), self.center)),
-									(np.x, np.y, np.z),
-								));
+					let d = dist2(ChunkPos::new(x, 0, z), c);
+					for (cy, data) in stack.into_iter().enumerate() {
+						let pos = ChunkPos::new(x, cy as i32, z);
+						out.generated += 1;
+						if let Some(slot) = self.store.get_mut(&pos) {
+							slot.state = ChunkState::Ready(data);
+							slot.mesh_gen += 1;
+							self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+						}
+						// The Rust equivalent of Java's cross-border re-dirty:
+						// every Ready neighbor re-meshes from fresh snapshots.
+						for dir in DIRS {
+							let (ox, oy, oz) = dir.offset();
+							let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+							if let Some(nslot) = self.store.get_mut(&np) {
+								if matches!(nslot.state, ChunkState::Ready(_)) {
+									nslot.mesh_gen += 1;
+									self.mesh_heap.push((
+										Reverse(dist2(ChunkPos::new(np.x, 0, np.z), self.center)),
+										(np.x, np.y, np.z),
+									));
+								}
 							}
 						}
 					}
@@ -294,11 +309,12 @@ impl Pipeline {
 	}
 
 	fn next_gen_job(&mut self) -> Option<Job> {
-		let (_, p) = self.gen_heap.pop()?;
-		let pos = ChunkPos::new(p.0, p.1, p.2);
-		match self.store.get(&pos) {
+		let (_, (x, z)) = self.gen_heap.pop()?;
+		// The column's chunks enter and leave the store together; probe y=0.
+		match self.store.get(&ChunkPos::new(x, 0, z)) {
 			Some(slot) if matches!(slot.state, ChunkState::Generating) => Some(Job::Generate {
-				pos,
+				x,
+				z,
 				seed: self.seed,
 			}),
 			_ => None, // evicted or already generated — skip
@@ -350,9 +366,9 @@ impl Pipeline {
 
 	fn requeue(&mut self, job: Job) {
 		match job {
-			Job::Generate { pos, .. } => {
-				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
-				self.gen_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+			Job::Generate { x, z, .. } => {
+				let d = dist2(ChunkPos::new(x, 0, z), self.center);
+				self.gen_heap.push((Reverse(d), (x, z)));
 			}
 			Job::Mesh { pos, gen, .. } => {
 				// Roll back the submitted marker so the job reschedules.
@@ -410,11 +426,12 @@ fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 	while let Ok(job) = rx.recv() {
 		let start = std::time::Instant::now();
 		let result = match job {
-			Job::Generate { pos, seed } => {
-				let data = Arc::new(build_chunk(pos, seed));
+			Job::Generate { x, z, seed } => {
+				let stack = build_column(x, z, seed).map(Arc::new);
 				JobResult::Generated {
-					pos,
-					data,
+					x,
+					z,
+					stack,
 					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
 				}
 			}

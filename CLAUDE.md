@@ -12,7 +12,8 @@ Rust + wgpu rewrite of the DigBlock voxel engine (originally Java/libGDX, 2015�
 just run                  # run desktop app (cargo run -p digblock-desktop)
 just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
 just bench                # deterministic perf run: release build, scripted camera flight,
-                          # inputs disabled, CSV to bench.csv, summary line on exit
+                          # inputs disabled, vsync off, CSV to bench.csv, summary line
+                          # (incl. world fill time) on exit; findings live in BENCH.md
 just check                # full gate: cargo fmt --all --check, clippy -D warnings, cargo test --workspace
 just check-ios            # cargo check -p digblock-ios --target aarch64-apple-ios (no Xcode needed)
 just ios-sim              # simulator build+run (requires full Xcode)
@@ -21,7 +22,7 @@ just ios-device           # device build (requires full Xcode)
 
 Run a single test: `cargo test -p digblock-core --test worldgen` (integration test file) or `cargo test -p digblock-core <test_name>`. CI (`.github/workflows/ci.yml`) runs the same steps as `just check` plus desktop and iOS builds; clippy warnings fail CI.
 
-Deterministic-capture / metrics flags for `just run`: `--seed <f64>`, `--tod <deg>` (freezes the sun), `--screenshot out.png`, `--frames N`, `--exit`, `--metrics-csv out.csv`, `--overlay` (start with the debug overlay on; backquote toggles it at runtime), `--mobile` (draw dist 10, 1024px shadows — the iOS config).
+Deterministic-capture / metrics flags for `just run`: `--seed <f64>`, `--tod <deg>` (freezes the sun), `--screenshot out.png`, `--frames N`, `--exit`, `--metrics-csv out.csv`, `--overlay` (start with the debug overlay on; backquote toggles it at runtime), `--no-vsync` (uncapped present), `--workers N`, `--draw-dist N`, `--mobile` (draw dist 10, 1024px shadows — the iOS config).
 
 Metrics (`digblock-core/src/metrics.rs`) collect per-phase CPU frame timings, GPU pass ms via timestamp queries (feature-detected), chunk-pipeline job timings/queue gauges, and renderer draw stats; everything lands in the 5s log line, the CSV, and the toggleable on-screen overlay (`digblock-render/src/overlay.rs`, zero cost when hidden).
 

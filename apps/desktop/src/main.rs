@@ -14,8 +14,9 @@ fn main() {
 	// Deterministic-capture flags:
 	//   --screenshot out.png [--exit] [--frames N]
 	//   --seed <f64 bits or decimal> --metrics-csv out.csv
-	//   --bench (scripted flight, inputs off; defaults seed 42, tod 45,
-	//            1800 frames, bench.csv)
+	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
+	//            tod 45, 1800 frames, bench.csv)
+	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -27,6 +28,17 @@ fn main() {
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
 			"--bench" => config.bench = true,
+			"--no-vsync" => options.no_vsync = true,
+			"--workers" => {
+				if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
+					config.workers = n;
+				}
+			}
+			"--draw-dist" => {
+				if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
+					config.draw_dist = n;
+				}
+			}
 			"--seed" => config.seed = args.next().and_then(|v| v.parse().ok()),
 			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
 			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
@@ -44,6 +56,8 @@ fn main() {
 		config.tod.get_or_insert(45.0);
 		config.metrics_csv.get_or_insert_with(|| "bench.csv".into());
 		options.exit_after_frames = Some(u64::from(frames.unwrap_or(1800)));
+		// Uncapped so the bench measures real frame cost, not vsync wait.
+		options.no_vsync = true;
 	}
 
 	digblock_platform::run(Engine::new(config), options);

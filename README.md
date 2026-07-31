@@ -12,7 +12,7 @@ future Android target inherits no surface/lifecycle bugs.
 ```sh
 just run                  # desktop (macOS)
 just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
-just bench                # deterministic perf run (release; scripted flight, inputs off)
+just bench                # deterministic perf run (release; scripted flight, inputs off, vsync off)
 just check                # fmt + clippy + tests
 just check-ios            # iOS compile gate (no Xcode needed)
 just ios-sim              # simulator build+run   (requires full Xcode)
@@ -24,7 +24,9 @@ Deterministic-capture / metrics flags:
 `--frames N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass
 ms, pipeline job timings — one row per 5s) `--overlay` (start with the
 debug overlay visible) `--bench` (scripted camera flight, inputs disabled,
-1800 frames, CSV to bench.csv, one-line summary on exit) `--mobile`
+vsync off, 1800 frames, CSV to bench.csv, one-line summary on exit — incl.
+world fill time) `--no-vsync` (uncapped present outside bench)
+`--workers N` `--draw-dist N` (workload knobs) `--mobile`
 (draw dist 10, 1024px shadows — the iOS config).
 
 Controls: **WASD/arrows** move · mouse look (click to capture cursor) ·

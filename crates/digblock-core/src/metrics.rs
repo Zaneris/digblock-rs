@@ -166,6 +166,15 @@ pub struct Metrics {
 	sort_scratch: Vec<f32>,
 	last_frame: Option<Instant>,
 	started_at: Instant,
+	/// First presented frame — the time base for run elapsed / fill time
+	/// (excludes GPU + window init).
+	first_frame_at: Option<Instant>,
+	/// Seconds after the first frame when the chunk pipeline first
+	/// quiesced (initial world fill complete).
+	streamed_at: Option<f32>,
+	/// Full-run frame history (bench mode only; ~7KB per 1800 frames) so
+	/// the exit summary can compute run-level percentiles.
+	run_history: Option<Vec<f32>>,
 	last_report: Instant,
 	report_every: Duration,
 	frames_since_report: u32,
@@ -227,6 +236,9 @@ impl Metrics {
 			sort_scratch: Vec::with_capacity(WINDOW),
 			last_frame: None,
 			started_at: now,
+			first_frame_at: None,
+			streamed_at: None,
+			run_history: None,
 			last_report: now,
 			report_every: Duration::from_secs(5),
 			frames_since_report: 0,
@@ -262,12 +274,18 @@ impl Metrics {
 	/// isn't counted as a frame.
 	pub fn frame(&mut self, mut timings: FrameTimings) {
 		let now = Instant::now();
+		if self.first_frame_at.is_none() {
+			self.first_frame_at = Some(now);
+		}
 		if let Some(last) = self.last_frame {
 			timings.total_ms = (now - last).as_secs_f32() * 1000.0;
 			if self.frame_ms.len() == WINDOW {
 				self.frame_ms.pop_front();
 			}
 			self.frame_ms.push_back(timings.total_ms);
+			if let Some(h) = &mut self.run_history {
+				h.push(timings.total_ms);
+			}
 			if timings.total_ms > HITCH_MS {
 				self.hitches += 1;
 				self.hitches_total += 1;
@@ -292,22 +310,41 @@ impl Metrics {
 	}
 
 	pub fn summary(&mut self) -> Option<Summary> {
-		if self.frame_ms.is_empty() {
-			return None;
-		}
 		self.sort_scratch.clear();
 		self.sort_scratch.extend(self.frame_ms.iter().copied());
-		self.sort_scratch.sort_by(|a, b| a.partial_cmp(b).unwrap());
-		let sorted = &self.sort_scratch;
-		let avg = sorted.iter().sum::<f32>() / sorted.len() as f32;
-		let pct = |p: f32| sorted[((sorted.len() as f32 * p) as usize).min(sorted.len() - 1)];
+		Self::summarize(&mut self.sort_scratch)
+	}
+
+	/// Sorts `frames` in place and computes the percentile summary.
+	fn summarize(frames: &mut [f32]) -> Option<Summary> {
+		if frames.is_empty() {
+			return None;
+		}
+		frames.sort_by(|a, b| a.partial_cmp(b).unwrap());
+		let avg = frames.iter().sum::<f32>() / frames.len() as f32;
+		let pct = |p: f32| frames[((frames.len() as f32 * p) as usize).min(frames.len() - 1)];
 		Some(Summary {
 			fps: 1000.0 / avg,
 			avg_ms: avg,
 			p95_ms: pct(0.95),
 			p99_ms: pct(0.99),
-			worst_ms: *sorted.last().unwrap(),
+			worst_ms: *frames.last().unwrap(),
 		})
+	}
+
+	/// Bench mode: retain every frame time so [`Self::bench_summary`] can
+	/// report run-level percentiles instead of last-window ones.
+	pub fn record_run_history(&mut self) {
+		self.run_history = Some(Vec::with_capacity(2048));
+	}
+
+	/// Record that the chunk pipeline has fully quiesced. The first call
+	/// stamps the fill time (initial world fill); later calls are no-ops.
+	pub fn mark_streamed(&mut self) {
+		if self.streamed_at.is_none() {
+			let base = self.first_frame_at.unwrap_or(self.started_at);
+			self.streamed_at = Some(base.elapsed().as_secs_f32());
+		}
 	}
 
 	/// Snapshot for the debug overlay. Safe before the first frame
@@ -344,22 +381,42 @@ impl Metrics {
 	}
 
 	/// One-line, machine-diffable run summary for benchmark exits.
-	/// Percentiles cover the last WINDOW frames; fps/jobs cover the run.
+	/// With run history recorded, percentiles cover the whole run minus a
+	/// warmup prefix (whose worst frame is reported separately); otherwise
+	/// they fall back to the last WINDOW frames. Elapsed/fps/fill are
+	/// measured from the first presented frame.
 	pub fn bench_summary(&mut self) -> Option<String> {
-		let elapsed = self.started_at.elapsed().as_secs_f32();
+		const WARMUP_FRAMES: usize = 60;
+		let elapsed = self
+			.first_frame_at
+			.unwrap_or(self.started_at)
+			.elapsed()
+			.as_secs_f32();
 		let frames = self.run_frames;
-		let s = self.summary()?;
+		let (s, warmup) = match self.run_history.take().filter(|h| h.len() > WARMUP_FRAMES) {
+			Some(mut h) => {
+				let worst = h[..WARMUP_FRAMES].iter().fold(0.0f32, |a, &b| a.max(b));
+				let s = Self::summarize(&mut h[WARMUP_FRAMES..])?;
+				(s, format!(" (warmup worst {worst:.1})"))
+			}
+			None => (self.summary()?, String::new()),
+		};
+		let fill = self
+			.streamed_at
+			.map_or_else(|| "n/a".to_owned(), |t| format!("{t:.2}s"));
 		let mut gen = self.run_gen_jobs;
 		gen.merge(self.gen_jobs);
 		let mut mesh = self.run_mesh_jobs;
 		mesh.merge(self.mesh_jobs);
+		let per_sec = |n: u32| n as f32 / elapsed.max(0.001);
 		Some(format!(
-			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms | hitches {} | gen {} jobs avg {:.2} max {:.2} ms | mesh {} jobs avg {:.2} max {:.2} ms",
+			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
 			frames as f32 / elapsed.max(0.001),
 			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
 			self.hitches_total,
-			gen.count, gen.avg_ms(), gen.max_ms,
-			mesh.count, mesh.avg_ms(), mesh.max_ms,
+			self.gauges.resident,
+			gen.count, gen.avg_ms(), gen.max_ms, per_sec(gen.count),
+			mesh.count, mesh.avg_ms(), mesh.max_ms, per_sec(mesh.count),
 		))
 	}
 
@@ -462,6 +519,16 @@ impl Metrics {
 	}
 }
 
+impl Drop for Metrics {
+	fn drop(&mut self) {
+		// Flush the partial report window so short or uncapped runs don't
+		// silently lose their tail frames from the CSV.
+		if self.win_frames > 0 && self.csv.is_some() {
+			self.report();
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -515,6 +582,30 @@ mod tests {
 		assert_eq!(s.fps, 0.0);
 		assert_eq!(s.gen_jobs.count, 0);
 		assert!(s.gpu.is_none());
+	}
+
+	#[test]
+	fn streamed_marks_only_once() {
+		let mut m = Metrics::new(None);
+		assert!(m.streamed_at.is_none());
+		m.mark_streamed();
+		let first = m.streamed_at;
+		assert!(first.is_some());
+		std::thread::sleep(Duration::from_millis(2));
+		m.mark_streamed();
+		assert_eq!(m.streamed_at, first);
+	}
+
+	#[test]
+	fn bench_summary_falls_back_below_warmup() {
+		let mut m = Metrics::new(None);
+		m.record_run_history();
+		// Two frames is under the warmup threshold — must fall back to the
+		// window summary instead of returning None.
+		m.frame(FrameTimings::default());
+		m.frame(FrameTimings::default());
+		let line = m.bench_summary().expect("summary");
+		assert!(line.contains("fill n/a"));
 	}
 
 	#[test]

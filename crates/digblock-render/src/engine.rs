@@ -76,7 +76,7 @@ struct HeldKeys {
 /// of streaming frames (BENCH.md) while uploads cost ~0.05ms each, so the
 /// budget doubles under sustained pressure and decays back when idle.
 const UPLOAD_BUDGET_MIN: usize = 4;
-const UPLOAD_BUDGET_MAX: usize = 32;
+const UPLOAD_BUDGET_MAX: usize = 64;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -114,6 +114,9 @@ impl Engine {
 	pub fn new(config: EngineConfig) -> Self {
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref());
 		metrics.workers = config.workers as u32;
+		if config.bench {
+			metrics.record_run_history();
+		}
 		// Java: seed = Math.random() * 10000, a domain offset for the noise.
 		let seed = config
 			.seed
@@ -197,6 +200,11 @@ impl Engine {
 			in_flight: m.in_flight,
 			resident: self.pipeline.resident() as u32,
 		};
+		// First full quiesce = initial world fill complete (the bench's
+		// primary streaming-throughput metric).
+		if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 {
+			self.metrics.mark_streamed();
+		}
 	}
 
 	fn frame_uniforms(&self, near_vp: glam::Mat4, wide_vp: glam::Mat4) -> FrameUniforms {

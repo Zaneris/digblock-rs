@@ -88,10 +88,17 @@ fn window_attrs(title: &str) -> winit::window::WindowAttributes {
 fn create_surface(
 	gpu: &Gpu,
 	window: Arc<Window>,
+	no_vsync: bool,
 ) -> (wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
 	let size = window.inner_size();
 	let surface = gpu.instance.create_surface(window).expect("create surface");
-	let config = surface_config(gpu, &surface, size.width.max(1), size.height.max(1));
+	let config = surface_config(
+		gpu,
+		&surface,
+		size.width.max(1),
+		size.height.max(1),
+		no_vsync,
+	);
 	surface.configure(&gpu.device, &config);
 	(surface, config)
 }
@@ -101,6 +108,7 @@ fn surface_config(
 	surface: &wgpu::Surface<'_>,
 	width: u32,
 	height: u32,
+	no_vsync: bool,
 ) -> wgpu::SurfaceConfiguration {
 	let caps = surface.get_capabilities(&gpu.adapter);
 	// Gamma-space rendering is deliberate (Java look parity): pick a
@@ -116,7 +124,12 @@ fn surface_config(
 		format,
 		width,
 		height,
-		present_mode: wgpu::PresentMode::Fifo,
+		present_mode: if no_vsync {
+			// Falls back to a supported uncapped (or Fifo) mode per-platform.
+			wgpu::PresentMode::AutoNoVsync
+		} else {
+			wgpu::PresentMode::Fifo
+		},
 		desired_maximum_frame_latency: 2,
 		alpha_mode: caps.alpha_modes[0],
 		view_formats: vec![],
@@ -143,7 +156,10 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
 }
 
 impl<G: Game> App<G> {
-	fn init_gpu(window: Arc<Window>) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
+	fn init_gpu(
+		window: Arc<Window>,
+		no_vsync: bool,
+	) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
 		let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 		let surface = instance
 			.create_surface(window.clone())
@@ -174,7 +190,13 @@ impl<G: Game> App<G> {
 			queue,
 		};
 		let size = window.inner_size();
-		let config = surface_config(&gpu, &surface, size.width.max(1), size.height.max(1));
+		let config = surface_config(
+			&gpu,
+			&surface,
+			size.width.max(1),
+			size.height.max(1),
+			no_vsync,
+		);
 		surface.configure(&gpu.device, &config);
 		(gpu, surface, config)
 	}
@@ -201,7 +223,7 @@ impl<G: Game> App<G> {
 		let window = s.window.unwrap_or_else(|| {
 			Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap())
 		});
-		let (surface, config) = create_surface(&s.gpu, window.clone());
+		let (surface, config) = create_surface(&s.gpu, window.clone(), self.options.no_vsync);
 		let depth = create_depth(&s.gpu.device, config.width, config.height);
 		// Engine pipelines/buffers are untouched — the Device survived.
 		// Only notify about a possible size change while backgrounded.
@@ -297,8 +319,9 @@ impl<G: Game> App<G> {
 			el.exit();
 			return;
 		}
-		// Redraw-chained loop: pacing comes from Fifo present, and this
-		// pattern avoids winit's iOS busy-spin issue with poll loops.
+		// Redraw-chained loop: pacing comes from present (Fifo blocks at
+		// vsync; no-vsync chains back-to-back), and this pattern avoids
+		// winit's iOS busy-spin issue with poll loops.
 		r.window.request_redraw();
 	}
 
@@ -361,7 +384,7 @@ impl<G: Game> ApplicationHandler for App<G> {
 			AppState::Uninitialized => {
 				log::info!("lifecycle: initial launch");
 				let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
-				let (gpu, surface, config) = Self::init_gpu(window.clone());
+				let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
 				let depth = create_depth(&gpu.device, config.width, config.height);
 				self.game
 					.init(&gpu, config.format, (config.width, config.height));

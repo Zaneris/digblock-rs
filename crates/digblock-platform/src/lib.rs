@@ -65,6 +65,9 @@ pub struct RunOptions {
 	pub auto_drill: bool,
 	/// Exit after this many presented frames (benchmark runs).
 	pub exit_after_frames: Option<u64>,
+	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
+	/// so benchmarks measure real frame cost, not vsync residue.
+	pub no_vsync: bool,
 }
 
 /// Run the game. Never returns on iOS.

@@ -83,18 +83,35 @@ pub enum NeighborPlane {
 pub fn border_plane(data: &ChunkData, dir: Dir) -> Box<[u8; 256]> {
 	let mut plane = Box::new([0u8; 256]);
 	let n = CHUNK_SIZE;
-	for a in 0..n {
-		for b in 0..n {
-			let (x, y, z) = match dir {
-				Dir::West => (n - 1, a, b),  // our +x border, (y,z)
-				Dir::East => (0, a, b),      // our −x border, (y,z)
-				Dir::North => (b, a, n - 1), // our +z border, (y,x)
-				Dir::South => (b, a, 0),     // our −z border, (y,x)
-				Dir::Top => (b, n - 1, a),   // our +y border, (z,x)
-				Dir::Bottom => (b, 0, a),    // our −y border, (z,x)
-			};
-			plane[a * n + b] = data.blocks[ChunkData::index(x, y, z)];
+	let blocks = &data.blocks;
+	match dir {
+		// ±x borders, plane (a,b) = (y,z): gather with stride n.
+		Dir::West => {
+			for (i, p) in plane.iter_mut().enumerate() {
+				*p = blocks[i * n + (n - 1)];
+			}
 		}
+		Dir::East => {
+			for (i, p) in plane.iter_mut().enumerate() {
+				*p = blocks[i * n];
+			}
+		}
+		// ±z borders, plane (a,b) = (y,x): one contiguous n-byte row per y.
+		Dir::North => {
+			for y in 0..n {
+				let src = (y * n + (n - 1)) * n;
+				plane[y * n..][..n].copy_from_slice(&blocks[src..][..n]);
+			}
+		}
+		Dir::South => {
+			for y in 0..n {
+				let src = (y * n) * n;
+				plane[y * n..][..n].copy_from_slice(&blocks[src..][..n]);
+			}
+		}
+		// ±y borders, plane (a,b) = (z,x): one contiguous n*n-byte slab.
+		Dir::Top => plane.copy_from_slice(&blocks[(n - 1) * n * n..][..n * n]),
+		Dir::Bottom => plane.copy_from_slice(&blocks[..n * n]),
 	}
 	plane
 }
@@ -168,14 +185,27 @@ fn emit_face(out: &mut Vec<u32>, bx: usize, by: usize, bz: usize, dir: Dir, tex:
 /// Mesh a chunk from its snapshot + neighbor planes (indexed by `Dir`).
 pub fn mesh_chunk(data: &ChunkData, neighbors: &[NeighborPlane; 6]) -> MeshData {
 	let n = CHUNK_SIZE;
+	// Sized for a busy surface chunk; realloc past this is rare.
 	let mut mesh = MeshData {
-		solid: Vec::new(),
-		water: Vec::new(),
+		solid: Vec::with_capacity(4096),
+		water: Vec::with_capacity(512),
 	};
+	// Flat-index delta to the in-chunk neighbor, per Dir (layout
+	// (y*n + z)*n + x).
+	let neighbor_off: [isize; 6] = [
+		1,                   // West  (+x)
+		n as isize,          // North (+z)
+		-(n as isize),       // South (−z)
+		-((n * n) as isize), // Bottom (−y)
+		(n * n) as isize,    // Top   (+y)
+		-1,                  // East  (−x)
+	];
 	for y in 0..n {
 		for z in 0..n {
+			let row = (y * n + z) * n;
 			for x in 0..n {
-				let me = data.get(x, y, z);
+				let idx = row + x;
+				let me = BlockType::from_u8(data.blocks[idx]);
 				if me == BlockType::Air {
 					continue;
 				}
@@ -186,7 +216,8 @@ pub fn mesh_chunk(data: &ChunkData, neighbors: &[NeighborPlane; 6]) -> MeshData 
 						&& (0..n as i32).contains(&ny)
 						&& (0..n as i32).contains(&nz)
 					{
-						Some(data.get(nx as usize, ny as usize, nz as usize))
+						let ni = (idx as isize + neighbor_off[dir as usize]) as usize;
+						Some(BlockType::from_u8(data.blocks[ni]))
 					} else {
 						let (a, b) = match dir {
 							Dir::West | Dir::East => (y, z),
