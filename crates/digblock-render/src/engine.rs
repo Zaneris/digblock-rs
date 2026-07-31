@@ -86,6 +86,8 @@ const UPLOAD_MIN: usize = 4;
 
 pub struct Engine {
 	config: EngineConfig,
+	/// Resolved world seed (config.seed or a random one).
+	seed: f64,
 	renderer: Option<Renderer>,
 	pipeline: Pipeline,
 	camera: FlyCamera,
@@ -138,12 +140,14 @@ impl Engine {
 		let pipeline = Pipeline::new(seed, config.draw_dist, config.workers);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
+		let spawn = digblock_core::player::spawn(seed);
 		Self {
 			config,
+			seed,
 			renderer: None,
 			pipeline,
-			camera: FlyCamera::new(far),
-			player: Player::new(),
+			camera: FlyCamera::new(far, spawn),
+			player: Player::new(spawn),
 			touch: TouchDriver::new(),
 			walking: true,
 			fly_key_down: false,
@@ -345,7 +349,12 @@ impl Drop for Engine {
 impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
 		self.size = size;
-		self.renderer = Some(Renderer::new(gpu, surface_format, self.config.shadow_size));
+		self.renderer = Some(Renderer::new(
+			gpu,
+			surface_format,
+			self.config.shadow_size,
+			self.config.draw_dist,
+		));
 		log::info!(
 			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
 			self.config.draw_dist,
@@ -441,8 +450,12 @@ impl Game for Engine {
 		if self.config.bench {
 			const BENCH_SPEED: f32 = 30.0; // blocks per path-second
 			const BENCH_YAW: f32 = 12.0; // degrees per path-second
+								// Altitude follows the terrain so worldgen retunes can't put the
+								// flight underground; still a pure function of the frame index.
 			self.bench_t += TICK;
-			self.camera.pos = Vec3::new(BENCH_SPEED * self.bench_t, 40.0, 8.0);
+			let x = BENCH_SPEED * self.bench_t;
+			let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
+			self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
 			self.camera.look(BENCH_YAW * TICK, 0.0);
 			self.pending.update_ms = ms_since(t_update);
 			return;
@@ -572,7 +585,12 @@ impl Game for Engine {
 	fn rebuild_gpu_resources(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
 		// Device-loss drill: rebuild every device-lifetime object; meshes
 		// stream back in from retained chunk data via the pipeline.
-		self.renderer = Some(Renderer::new(gpu, surface_format, self.config.shadow_size));
+		self.renderer = Some(Renderer::new(
+			gpu,
+			surface_format,
+			self.config.shadow_size,
+			self.config.draw_dist,
+		));
 		self.pipeline.remesh_all();
 		log::info!("engine: renderer rebuilt (device-loss drill), re-mesh queued");
 	}

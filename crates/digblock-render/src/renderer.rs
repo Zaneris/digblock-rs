@@ -15,9 +15,17 @@ use digblock_platform::Gpu;
 
 /// Worst-case faces per 16³ chunk mesh (checkerboard): 2048 blocks × 6.
 const MAX_QUADS: usize = 12288;
-/// Chunk-origin UBO slots (dynamic offsets, 256-byte stride).
-const CHUNK_SLOTS: u32 = 4096;
 const CHUNK_STRIDE: u64 = 256;
+
+/// Chunk-origin UBO slot capacity for a draw distance. Only non-empty
+/// meshes take a slot: sky chunks never upload and fully buried chunks
+/// mesh empty, so per column only the surface band (plus water) survives —
+/// 6 slots per in-range column is a generous ceiling, asserted at upload.
+fn chunk_slots(draw_dist: i32) -> u32 {
+	let r = f64::from(draw_dist) + 1.0;
+	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
+	(columns * 6).next_multiple_of(256).max(4096)
+}
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -72,11 +80,12 @@ struct WideJob {
 	next: usize,
 }
 
-/// Per-frame wide-refresh encode cap. The full resident set is ~2.5k draw
-/// calls ≈ 4-8ms of CPU encode — a guaranteed missed vsync if done in one
-/// frame; sliced, it stays ~1ms/frame and finishes in ~4 frames (the sun
-/// moves imperceptibly in that window).
-const WIDE_SLICE_DRAWS: u32 = 640;
+/// Per-frame wide-refresh encode cap. A full-set encode in one frame is a
+/// guaranteed missed vsync; sliced it stays ~1-2ms/frame. Sized so a
+/// 256-block-tall world's drawn set (surface shell, not the full resident
+/// count) still refreshes within a handful of frames — the sun moves
+/// imperceptibly in that window.
+const WIDE_SLICE_DRAWS: u32 = 1536;
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
@@ -120,6 +129,8 @@ pub struct Renderer {
 	chunks: FxHashMap<ChunkPos, ChunkGpu>,
 	free_slots: Vec<u32>,
 	next_slot: u32,
+	/// Capacity of `chunk_buf` in slots, derived from draw distance.
+	chunk_slots: u32,
 	pub gpu_buffer_bytes: u64,
 	/// Reused water-sort buffer (was a fresh alloc every frame).
 	water_scratch: Vec<(i64, ChunkPos)>,
@@ -131,7 +142,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat, shadow_size: u32) -> Self {
+	pub fn new(
+		gpu: &Gpu,
+		surface_format: wgpu::TextureFormat,
+		shadow_size: u32,
+		draw_dist: i32,
+	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("chunk"),
@@ -467,9 +483,10 @@ impl Renderer {
 			}],
 		});
 
+		let chunk_slots = chunk_slots(draw_dist);
 		let chunk_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
-			size: u64::from(CHUNK_SLOTS) * CHUNK_STRIDE,
+			size: u64::from(chunk_slots) * CHUNK_STRIDE,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -550,6 +567,7 @@ impl Renderer {
 			chunks: FxHashMap::default(),
 			free_slots: Vec::new(),
 			next_slot: 0,
+			chunk_slots,
 			gpu_buffer_bytes: 0,
 			water_scratch: Vec::new(),
 			gpu_timer: GpuTimer::new(gpu),
@@ -575,7 +593,7 @@ impl Renderer {
 			self.next_slot += 1;
 			s
 		});
-		assert!(slot < CHUNK_SLOTS, "chunk UBO slots exhausted");
+		assert!(slot < self.chunk_slots, "chunk UBO slots exhausted");
 		let (ox, oy, oz) = pos.origin();
 		gpu.queue.write_buffer(
 			&self.chunk_buf,

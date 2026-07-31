@@ -1,14 +1,15 @@
-use digblock_core::worldgen::{build_chunk, terrain_height, DIRT_DEPTH, WATER_HEIGHT};
+use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
+use digblock_core::worldgen::{build_chunk, terrain_height, DIRT_DEPTH, SEA_LEVEL};
 use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
 
 /// Column rules: stone below DIRT_DEPTH of topsoil, sand topsoil near or
 /// under the water line (beaches), grass-over-dirt otherwise, water fills
-/// to WATER_HEIGHT, air above.
+/// to SEA_LEVEL, air above.
 #[test]
 fn column_rules() {
 	let seed = 1234.5678;
 	for &(cx, cz) in &[(0, 0), (-3, 7), (100, -100)] {
-		let chunks: Vec<ChunkData> = (0..2)
+		let chunks: Vec<ChunkData> = (0..WORLD_VCHUNK)
 			.map(|cy| build_chunk(ChunkPos::new(cx, cy, cz), seed))
 			.collect();
 		let block_at = |x: usize, wy: i32, z: usize| -> BlockType {
@@ -17,17 +18,17 @@ fn column_rules() {
 		for x in 0..CHUNK_SIZE {
 			for z in 0..CHUNK_SIZE {
 				let h = terrain_height(x as i32 + cx * 16, z as i32 + cz * 16, seed);
-				for wy in 0..32 {
+				for wy in 0..=WORLD_VBLOCK {
 					let b = block_at(x, wy, z);
 					let expect = if wy > h {
-						if wy <= WATER_HEIGHT {
+						if wy <= SEA_LEVEL {
 							BlockType::Water
 						} else {
 							BlockType::Air
 						}
 					} else if wy <= h - DIRT_DEPTH {
 						BlockType::Stone
-					} else if h <= WATER_HEIGHT + 1 {
+					} else if h <= SEA_LEVEL + 1 {
 						BlockType::Sand
 					} else if wy == h {
 						BlockType::Grass
@@ -51,9 +52,9 @@ fn layering_archetypes() {
 	for x in -64..64 {
 		for z in -64..64 {
 			let h = terrain_height(x, z, seed);
-			if h < WATER_HEIGHT {
+			if h < SEA_LEVEL {
 				sea = true;
-			} else if h <= WATER_HEIGHT + 1 {
+			} else if h <= SEA_LEVEL + 1 {
 				beach = true;
 			} else if h >= DIRT_DEPTH {
 				inland = true;
@@ -76,8 +77,8 @@ fn heightmap_dump() {
 	for z in (-32..32).rev() {
 		for x in -64..64 {
 			let h = terrain_height(x, z, seed);
-			let g = glyphs[(h as usize * (glyphs.len() - 1)) / 31] as char;
-			out.push(if h <= WATER_HEIGHT { '~' } else { g });
+			let g = glyphs[(h as usize * (glyphs.len() - 1)) / WORLD_VBLOCK as usize] as char;
+			out.push(if h <= SEA_LEVEL { '~' } else { g });
 		}
 		out.push('\n');
 	}

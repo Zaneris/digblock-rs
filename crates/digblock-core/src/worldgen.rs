@@ -1,16 +1,21 @@
 //! Terrain generation — heightmap from 2 octaves of simplex noise plus a
-//! flat sea level; no caves, ores, trees, or biomes (the Java original had
-//! none). Ported from the Java WorldBuilder; numerics have since been
-//! simplified (plain f64 throughout), so terrain for a given seed differs
-//! from the Java.
+//! flat sea level; no caves, ores, trees, or biomes yet. Ported from the
+//! Java WorldBuilder; numerics have since been simplified (plain f64
+//! throughout), so terrain for a given seed differs from the Java.
+
+use std::sync::Arc;
 
 use crate::block::BlockType;
-use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK, WORLD_VCHUNK};
+use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VBLOCK, WORLD_VCHUNK};
 use crate::simplex::noise2;
 
 const TERRAIN_INTENSITY: f64 = 0.005;
 const TERRAIN_INTENSITY2: f64 = 0.015;
-pub const WATER_HEIGHT: i32 = 14;
+/// Terrain shape knobs, independent of world height (WORLD_VCHUNK). Each
+/// octave contributes 0..2×amplitude; base shifts the whole surface up.
+const OCTAVE_AMPLITUDE: f64 = 8.0;
+const BASE_HEIGHT: f64 = 0.0;
+pub const SEA_LEVEL: i32 = 14;
 /// Blocks of dirt (or sand) between the surface and the stone below it.
 pub const DIRT_DEPTH: i32 = 3;
 
@@ -22,9 +27,9 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 			seed + f64::from(x) * intensity,
 			seed + f64::from(z) * intensity,
 		);
-		(1.0 + n) * f64::from(WORLD_VCHUNK) * CHUNK_SIZE as f64 / 4.0
+		(1.0 + n) * OCTAVE_AMPLITUDE
 	};
-	let noise = octave(TERRAIN_INTENSITY) + octave(TERRAIN_INTENSITY2);
+	let noise = BASE_HEIGHT + octave(TERRAIN_INTENSITY) + octave(TERRAIN_INTENSITY2);
 	if noise < 1.0 {
 		return 1;
 	}
@@ -48,7 +53,7 @@ fn column_heights(cx: i32, cz: i32, seed: f64) -> Heightmap {
 
 /// Column rules: stone below DIRT_DEPTH of topsoil; topsoil is sand where
 /// the surface sits near or under the water line (beaches, sea floor),
-/// otherwise dirt with grass on top; water up to WATER_HEIGHT, air above.
+/// otherwise dirt with grass on top; water up to SEA_LEVEL, air above.
 /// Writes in storage order (x contiguous).
 fn fill_chunk(data: &mut ChunkData, py: i32, heights: &Heightmap) {
 	for y in 0..CHUNK_SIZE {
@@ -58,14 +63,14 @@ fn fill_chunk(data: &mut ChunkData, py: i32, heights: &Heightmap) {
 			let out = &mut data.blocks[row..row + CHUNK_SIZE];
 			for (b, &h) in out.iter_mut().zip(hrow) {
 				let block = if wy > h {
-					if wy <= WATER_HEIGHT {
+					if wy <= SEA_LEVEL {
 						BlockType::Water
 					} else {
 						BlockType::Air
 					}
 				} else if wy <= h - DIRT_DEPTH {
 					BlockType::Stone
-				} else if h <= WATER_HEIGHT + 1 {
+				} else if h <= SEA_LEVEL + 1 {
 					BlockType::Sand
 				} else if wy == h {
 					BlockType::Grass
@@ -90,12 +95,26 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 }
 
 /// Generate the full vertical chunk stack of a column in one call,
-/// computing the 16×16 heightmap once instead of once per chunk.
-pub fn build_column(cx: i32, cz: i32, seed: f64) -> [ChunkData; WORLD_VCHUNK as usize] {
+/// computing the 16×16 heightmap once instead of once per chunk. Chunks
+/// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
+/// sentinel — no fill, no allocation, recognized by pointer downstream.
+pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 	let heights = column_heights(cx, cz, seed);
-	std::array::from_fn(|cy| {
-		let mut data = ChunkData::default();
-		fill_chunk(&mut data, cy as i32 * CHUNK_SIZE as i32, &heights);
-		data
-	})
+	let max_h = heights
+		.iter()
+		.flatten()
+		.copied()
+		.max()
+		.expect("non-empty heightmap");
+	(0..WORLD_VCHUNK)
+		.map(|cy| {
+			let bottom = cy * CHUNK_SIZE as i32;
+			if bottom > max_h && bottom > SEA_LEVEL {
+				return AIR_CHUNK.clone();
+			}
+			let mut data = ChunkData::default();
+			fill_chunk(&mut data, bottom, &heights);
+			Arc::new(data)
+		})
+		.collect()
 }

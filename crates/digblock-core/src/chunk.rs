@@ -3,9 +3,10 @@ use crate::block::BlockType;
 pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
-/// World is 2 chunks (32 blocks) tall, unbounded horizontally — same as the
-/// Java WorldBuilder.WORLD_VCHUNK.
-pub const WORLD_VCHUNK: i32 = 2;
+/// World height in chunks (16 = 256 blocks), unbounded horizontally. The
+/// single knob for world height: columns above the terrain surface resolve
+/// to the shared AIR_CHUNK sentinel, so raising this costs almost nothing.
+pub const WORLD_VCHUNK: i32 = 16;
 pub const WORLD_VBLOCK: i32 = WORLD_VCHUNK * CHUNK_SIZE as i32 - 1;
 
 /// Chunk id in chunk units. y ∈ 0..WORLD_VCHUNK.
@@ -45,6 +46,19 @@ impl Default for ChunkData {
 			blocks: [0; CHUNK_VOLUME],
 		}
 	}
+}
+
+/// The shared all-air chunk. Worldgen returns clones of this Arc for every
+/// chunk above the terrain, so thousands of sky chunks share one 4KB body
+/// and are recognized by pointer to skip meshing and border-plane copies.
+/// `Arc::make_mut` in `set_block` copy-on-writes it, so editing an air
+/// chunk transparently turns it into a normal one.
+pub static AIR_CHUNK: std::sync::LazyLock<std::sync::Arc<ChunkData>> =
+	std::sync::LazyLock::new(|| std::sync::Arc::new(ChunkData::default()));
+
+#[inline]
+pub fn is_air_chunk(d: &std::sync::Arc<ChunkData>) -> bool {
+	std::sync::Arc::ptr_eq(d, &AIR_CHUNK)
 }
 
 impl ChunkData {

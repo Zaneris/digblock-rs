@@ -12,9 +12,15 @@ pub const GRAVITY: f32 = 9.8;
 pub const TERM_VELOCITY: f32 = -20.0;
 pub const WALK_SPEED: f32 = 3.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
-pub const SPAWN: Vec3 = Vec3::new(0.5, 35.0, 0.5);
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
+
+/// Eye spawn position: just above the terrain surface at the origin, so it
+/// tracks any worldgen retune instead of hardcoding a height.
+pub fn spawn(seed: f64) -> Vec3 {
+	let h = crate::worldgen::terrain_height(0, 0, seed);
+	Vec3::new(0.5, h as f32 + 2.5, 0.5)
+}
 
 /// One tick's worth of input.
 #[derive(Default, Clone, Copy)]
@@ -31,12 +37,6 @@ pub struct Player {
 	falling: bool,
 }
 
-impl Default for Player {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 fn cell(v: Vec3) -> (i32, i32, i32) {
 	(v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32)
 }
@@ -48,9 +48,9 @@ fn solid(b: Option<BlockType>) -> bool {
 }
 
 impl Player {
-	pub fn new() -> Self {
+	pub fn new(spawn: Vec3) -> Self {
 		Self {
-			pos: SPAWN,
+			pos: spawn,
 			out: Vec3::ZERO,
 			falling: true,
 		}
@@ -142,6 +142,13 @@ impl Player {
 mod tests {
 	use super::*;
 
+	/// Test spawn: in the air above the flat_world ground.
+	const TEST_SPAWN: Vec3 = Vec3::new(0.5, 35.0, 0.5);
+
+	fn new_player() -> Player {
+		Player::new(TEST_SPAWN)
+	}
+
 	/// Flat ground at y < 10: solid below, air above.
 	fn flat_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
 		let _ = (x, z);
@@ -160,7 +167,7 @@ mod tests {
 
 	#[test]
 	fn falls_and_lands_snapped() {
-		let mut p = Player::new();
+		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default());
 		// Ground top surface at y=10; eye snaps to floor(y)+0.5.
 		assert!((p.pos.y - 11.5).abs() < 0.001, "eye at {}", p.pos.y);
@@ -168,7 +175,7 @@ mod tests {
 
 	#[test]
 	fn walks_at_java_speed() {
-		let mut p = Player::new();
+		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default()); // land
 		let z0 = p.pos.z;
 		tick_n(
@@ -185,7 +192,7 @@ mod tests {
 
 	#[test]
 	fn jumps_and_returns() {
-		let mut p = Player::new();
+		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default());
 		let ground_y = p.pos.y;
 		p.tick(
@@ -216,7 +223,7 @@ mod tests {
 				BlockType::Air
 			})
 		};
-		let mut p = Player::new();
+		let mut p = new_player();
 		for _ in 0..600 {
 			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
 		}
@@ -238,10 +245,10 @@ mod tests {
 	#[test]
 	fn falls_through_unloaded_chunks() {
 		let none = |_: i32, _: i32, _: i32| -> Option<BlockType> { None };
-		let mut p = Player::new();
+		let mut p = new_player();
 		for _ in 0..120 {
 			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &none);
 		}
-		assert!(p.pos.y < SPAWN.y - 10.0, "fell through unloaded world");
+		assert!(p.pos.y < TEST_SPAWN.y - 10.0, "fell through unloaded world");
 	}
 }

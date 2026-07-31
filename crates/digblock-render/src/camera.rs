@@ -13,10 +13,10 @@ pub struct FlyCamera {
 }
 
 impl FlyCamera {
-	pub fn new(far: f32) -> Self {
-		// Java spawn: (0.5, 35, 0.5) looking +z, FOV 75°, near 0.1.
+	pub fn new(far: f32, spawn: Vec3) -> Self {
+		// Java defaults: looking +z, FOV 75°, near 0.1.
 		Self {
-			pos: Vec3::new(0.5, 35.0, 0.5),
+			pos: spawn,
 			yaw_deg: 0.0,
 			pitch_deg: -20.0,
 			fov_y_deg: 75.0,

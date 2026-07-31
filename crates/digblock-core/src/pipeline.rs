@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use rustc_hash::FxHashMap;
 
-use crate::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK};
+use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::mesher::{border_plane, mesh_chunk, MeshData, NeighborPlane, DIRS};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
@@ -44,7 +44,8 @@ enum JobResult {
 	Generated {
 		x: i32,
 		z: i32,
-		stack: [Arc<ChunkData>; WORLD_VCHUNK as usize],
+		/// One Arc per chunk, bottom-up; sky chunks share AIR_CHUNK.
+		stack: Vec<Arc<ChunkData>>,
 		dur_ms: f32,
 	},
 	Meshed {
@@ -259,17 +260,25 @@ impl Pipeline {
 						let pos = ChunkPos::new(x, cy as i32, z);
 						out.generated += 1;
 						if let Some(slot) = self.store.get_mut(&pos) {
+							// Air chunks are stored (uniform lookups) but
+							// never meshed — they can't emit faces.
+							let air = is_air_chunk(&data);
 							slot.state = ChunkState::Ready(data);
-							slot.mesh_gen += 1;
-							self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+							if !air {
+								slot.mesh_gen += 1;
+								self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+							}
 						}
 						// The Rust equivalent of Java's cross-border re-dirty:
-						// every Ready neighbor re-meshes from fresh snapshots.
+						// every Ready neighbor re-meshes from fresh snapshots
+						// (a new air chunk still un-suppresses its neighbors'
+						// border faces, so it bumps them too).
 						for dir in DIRS {
 							let (ox, oy, oz) = dir.offset();
 							let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
 							if let Some(nslot) = self.store.get_mut(&np) {
-								if matches!(nslot.state, ChunkState::Ready(_)) {
+								if matches!(&nslot.state, ChunkState::Ready(d) if !is_air_chunk(d))
+								{
 									nslot.mesh_gen += 1;
 									self.mesh_heap.push((
 										Reverse(dist2(ChunkPos::new(np.x, 0, np.z), self.center)),
@@ -346,6 +355,9 @@ impl Pipeline {
 		let ChunkState::Ready(data) = &slot.state else {
 			return None;
 		};
+		if is_air_chunk(data) {
+			return None; // sky chunk: nothing to mesh
+		}
 		if slot.mesh_gen <= slot.submitted_gen {
 			return None; // an equal-or-newer job is already in flight
 		}
@@ -376,7 +388,13 @@ impl Pipeline {
 				Some(ChunkSlot {
 					state: ChunkState::Ready(d),
 					..
-				}) => NeighborPlane::Blocks(border_plane(d, dir.opposite())),
+				}) => {
+					if is_air_chunk(d) {
+						NeighborPlane::Air // skip the 256-byte border copy
+					} else {
+						NeighborPlane::Blocks(border_plane(d, dir.opposite()))
+					}
+				}
 				_ => NeighborPlane::Missing,
 			}
 		})
@@ -405,7 +423,7 @@ impl Pipeline {
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
 		for (pos, slot) in self.store.iter_mut() {
-			if matches!(slot.state, ChunkState::Ready(_)) {
+			if matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d)) {
 				slot.mesh_gen += 1;
 				self.mesh_heap.push((
 					Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
@@ -509,7 +527,7 @@ fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 		let start = std::time::Instant::now();
 		let result = match job {
 			Job::Generate { x, z, seed } => {
-				let stack = build_column(x, z, seed).map(Arc::new);
+				let stack = build_column(x, z, seed);
 				JobResult::Generated {
 					x,
 					z,
@@ -634,6 +652,35 @@ mod tests {
 	}
 
 	#[test]
+	fn set_block_into_sky_chunk_cows_the_sentinel() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		// Top of the world is far above any terrain: a sentinel sky chunk.
+		let y = crate::chunk::WORLD_VBLOCK - 1;
+		let pos = ChunkPos::new(0, y.div_euclid(16), 0);
+		{
+			let ChunkState::Ready(d) = &p.store[&pos].state else {
+				panic!("sky chunk not ready");
+			};
+			assert!(is_air_chunk(d), "sky chunk is the sentinel");
+		}
+		let before = p.store[&pos].mesh_gen;
+		assert_eq!(p.set_block(0, y, 0, BlockType::Stone), Some(BlockType::Air));
+		let ChunkState::Ready(d) = &p.store[&pos].state else {
+			panic!("sky chunk not ready");
+		};
+		assert!(!is_air_chunk(d), "edit copy-on-wrote the sentinel");
+		assert_eq!(p.block_at(0, y, 0), Some(BlockType::Stone));
+		assert_eq!(
+			crate::chunk::AIR_CHUNK.get(0, y.rem_euclid(16) as usize, 0),
+			BlockType::Air,
+			"shared sentinel untouched"
+		);
+		assert_eq!(p.store[&pos].mesh_gen, before + 1, "edited chunk remeshes");
+	}
+
+	#[test]
 	fn edited_chunk_remeshes_at_new_gen() {
 		let mut p = Pipeline::new(0.0, 4, 2);
 		let center = ChunkPos::new(0, 0, 0);
@@ -717,9 +764,16 @@ mod tests {
 			std::thread::sleep(std::time::Duration::from_millis(1));
 		}
 		assert!(p.resident() > 0);
-		// Every resident chunk has a mesh upload, and interior chunks
-		// (all 4 horizontal neighbors present) meshed with full borders.
-		assert_eq!(uploaded.len(), p.resident(), "all resident chunks meshed");
+		// Every meshable resident chunk has a mesh upload; sky chunks
+		// resolve to the AIR_CHUNK sentinel and are never meshed.
+		let meshable = p
+			.store
+			.values()
+			.filter(|s| matches!(&s.state, ChunkState::Ready(d) if !is_air_chunk(d)))
+			.count();
+		let air = p.resident() - meshable;
+		assert!(air > 0, "tall world has sentinel sky chunks");
+		assert_eq!(uploaded.len(), meshable, "all meshable chunks meshed");
 		// Instrumentation sanity: jobs were timed and aggregated.
 		assert!(gen_jobs.count > 0, "gen jobs recorded");
 		assert!(mesh_jobs.count > 0, "mesh jobs recorded");
