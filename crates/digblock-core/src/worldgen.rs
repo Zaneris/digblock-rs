@@ -36,6 +36,14 @@ const MOUNTAIN_AMP: f64 = 90.0;
 const ROUGH_SEED_OFF: f64 = 4079.0;
 const DETAIL_SEED_OFF: f64 = 8161.0;
 const RIDGE_SEED_OFF: f64 = 12281.0;
+/// Domain warp: the continent and ridge fields sample warped coordinates
+/// so coastlines and ridgelines wander and finger instead of tracing the
+/// smooth blobs plain fBm produces. Amplitude is ~25% of the continent
+/// wavelength (1/CONTINENT_FREQ ≈ 667 blocks).
+const WARP_FREQ: f64 = 0.0008;
+const WARP_AMP: f64 = 160.0;
+const WARP_X_OFF: f64 = 31337.0;
+const WARP_Z_OFF: f64 = 44777.0;
 
 /// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
 pub const SEA_LEVEL: i32 = 128;
@@ -156,10 +164,15 @@ struct Fields {
 
 fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let (xf, zf) = (f64::from(x), f64::from(z));
-	let c = gained(fbm2(xf, zf, CONTINENT_FREQ, 2, seed), 2.2);
+	// Warped coordinates for the region-scale fields; roughness and
+	// detail stay unwarped (their phase relative to the warped fields is
+	// what varies, which is harmless — they are gates/relief, not shapes).
+	let wx = xf + WARP_AMP * fbm2(xf, zf, WARP_FREQ, 2, seed + WARP_X_OFF);
+	let wz = zf + WARP_AMP * fbm2(xf, zf, WARP_FREQ, 2, seed + WARP_Z_OFF);
+	let c = gained(fbm2(wx, wz, CONTINENT_FREQ, 2, seed), 2.2);
 	let r = gained(fbm2(xf, zf, ROUGH_FREQ, 2, seed + ROUGH_SEED_OFF), 2.2);
 	let d = fbm2(xf, zf, DETAIL_FREQ, 4, seed + DETAIL_SEED_OFF);
-	let m = fbm2(xf, zf, RIDGE_FREQ, 3, seed + RIDGE_SEED_OFF);
+	let m = fbm2(wx, wz, RIDGE_FREQ, 3, seed + RIDGE_SEED_OFF);
 
 	let base = spline(c);
 	// 0..1 mountainousness, gated to inland regions.
