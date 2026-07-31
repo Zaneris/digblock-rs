@@ -108,6 +108,13 @@ const STEEP_SLOPE: f64 = 1.4;
 // frequency + higher threshold = fewer, larger caves.
 const CAVE_FREQ: f64 = 0.02;
 const CAVE_THRESHOLD: f64 = 0.15;
+/// Karst anisotropy: band 1's y-frequency is compressed ~2.2x, so its
+/// zero surfaces extend in x/z and stack in y — galleries prefer
+/// near-horizontal levels connected where band 2 wanders, like real
+/// cave systems following bedding planes. Its threshold is raised to
+/// give the vertically-thinner galleries back their headroom.
+const CAVE_FREQ_Y: f64 = 0.045;
+const CAVE_THRESHOLD_1: f64 = 0.18;
 const CAVE_SEED_OFF: f64 = 16193.0;
 const CAVE_SEED_OFF2: f64 = 27449.0;
 const CAVE_FLOOR: i32 = 1;
@@ -396,16 +403,18 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 /// judge "surface not carved" without building the chunk). Short-circuits
 /// so most cells pay for one noise evaluation, not two.
 pub fn carved(x: i32, y: i32, z: i32, seed: f64) -> bool {
-	let band = |off: f64| {
+	let band = |off: f64, freq_y: f64, threshold: f64| {
 		let o = seed + off;
 		let n = noise3(
 			o + f64::from(x) * CAVE_FREQ,
-			o + f64::from(y) * CAVE_FREQ,
+			o + f64::from(y) * freq_y,
 			o + f64::from(z) * CAVE_FREQ,
 		);
-		n.abs() < CAVE_THRESHOLD
+		n.abs() < threshold
 	};
-	band(CAVE_SEED_OFF) && band(CAVE_SEED_OFF2)
+	// Anisotropic gallery band first (cheapest reject), isotropic second.
+	band(CAVE_SEED_OFF, CAVE_FREQ_Y, CAVE_THRESHOLD_1)
+		&& band(CAVE_SEED_OFF2, CAVE_FREQ, CAVE_THRESHOLD)
 }
 
 /// One cell of the column rules: stone below DIRT_DEPTH of topsoil;
