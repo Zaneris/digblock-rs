@@ -56,8 +56,10 @@ fn main() {
 		config.tod.get_or_insert(45.0);
 		config.metrics_csv.get_or_insert_with(|| "bench.csv".into());
 		options.exit_after_frames = Some(u64::from(frames.unwrap_or(1800)));
-		// Uncapped so the bench measures real frame cost, not vsync wait.
-		options.no_vsync = true;
+		// Vsync-paced by default: the flight looks as played and the
+		// over-12.5ms count measures real dropped frames. Add --no-vsync
+		// for uncapped raw-cost measurement (percentiles = true frame
+		// cost; presentation judders inherently at >display rate).
 	}
 
 	digblock_platform::run(Engine::new(config), options);

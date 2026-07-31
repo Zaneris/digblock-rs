@@ -9,7 +9,10 @@ pub struct BlockTextures {
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
 	pub shadow_near_view: wgpu::TextureView,
-	pub shadow_wide_view: wgpu::TextureView,
+	/// Two wide maps, ping-ponged: one is sampled while the other is
+	/// re-rendered a slice per frame (the refresh would otherwise encode
+	/// every resident chunk in one frame and blow the vsync budget).
+	pub shadow_wide_views: [wgpu::TextureView; 2],
 	pub shadow_sampler: wgpu::Sampler,
 }
 
@@ -136,7 +139,7 @@ impl BlockTextures {
 				.create_view(&wgpu::TextureViewDescriptor::default())
 		};
 		let shadow_near_view = make_shadow("shadow near");
-		let shadow_wide_view = make_shadow("shadow wide");
+		let shadow_wide_views = [make_shadow("shadow wide A"), make_shadow("shadow wide B")];
 
 		let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("shadow comparison"),
@@ -152,7 +155,7 @@ impl BlockTextures {
 			array_view,
 			sampler,
 			shadow_near_view,
-			shadow_wide_view,
+			shadow_wide_views,
 			shadow_sampler,
 		}
 	}

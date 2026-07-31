@@ -38,6 +38,22 @@ pub struct ChunkGpu {
 	slot: u32,
 }
 
+/// Wide-cascade refresh in progress: the resident set snapshotted at start,
+/// re-rendered into the back map `WIDE_SLICE_DRAWS` chunks per frame.
+/// Chunks uploaded mid-job appear at the next refresh (same as before the
+/// split); evicted ones are skipped at encode time.
+struct WideJob {
+	vp: glam::Mat4,
+	list: Vec<ChunkPos>,
+	next: usize,
+}
+
+/// Per-frame wide-refresh encode cap. The full resident set is ~2.5k draw
+/// calls ≈ 4-8ms of CPU encode — a guaranteed missed vsync if done in one
+/// frame; sliced, it stays ~1ms/frame and finishes in ~4 frames (the sun
+/// moves imperceptibly in that window).
+const WIDE_SLICE_DRAWS: u32 = 640;
+
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
 	water_pipeline: wgpu::RenderPipeline,
@@ -47,7 +63,9 @@ pub struct Renderer {
 	/// Same layout, alpha 0.7 (Java u_Alpha for the transparent pass).
 	frame_water_buf: wgpu::Buffer,
 	frame_water_bg: wgpu::BindGroup,
-	tex_bg: wgpu::BindGroup,
+	/// One per wide map (binding 3 differs); `wide_front` picks the one
+	/// whose wide map is complete and safe to sample.
+	tex_bgs: [wgpu::BindGroup; 2],
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
 	light_near_buf: wgpu::Buffer,
@@ -57,6 +75,18 @@ pub struct Renderer {
 	/// Set at construction: the persistent wide cascade has no contents
 	/// yet (also the device-loss recovery path).
 	pub wide_refresh_needed: bool,
+	/// Index of the wide map currently sampled; 1-front is the render
+	/// target of the in-progress refresh.
+	wide_front: usize,
+	/// The view-proj the front wide map was rendered with — what the main
+	/// pass must project with until the next flip, regardless of how far
+	/// the sun has moved since.
+	wide_active_vp: glam::Mat4,
+	/// In-progress wide refresh, encoded a slice per frame.
+	wide_job: Option<WideJob>,
+	/// False until the first render() bootstraps a clear of the front map
+	/// (it is uninitialized at construction / device rebuild).
+	wide_front_valid: bool,
 	index_buf: wgpu::Buffer,
 	// Read from M6 on (shadow passes render into the shadow views).
 	#[allow(dead_code)]
@@ -383,31 +413,35 @@ impl Renderer {
 		});
 
 		let textures = BlockTextures::new(gpu, shadow_size);
-		let tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("textures"),
-			layout: &tex_bgl,
-			entries: &[
-				wgpu::BindGroupEntry {
-					binding: 0,
-					resource: wgpu::BindingResource::TextureView(&textures.array_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 1,
-					resource: wgpu::BindingResource::Sampler(&textures.sampler),
-				},
-				wgpu::BindGroupEntry {
-					binding: 2,
-					resource: wgpu::BindingResource::TextureView(&textures.shadow_near_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 3,
-					resource: wgpu::BindingResource::TextureView(&textures.shadow_wide_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 4,
-					resource: wgpu::BindingResource::Sampler(&textures.shadow_sampler),
-				},
-			],
+		let tex_bgs = [0, 1].map(|i| {
+			device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some("textures"),
+				layout: &tex_bgl,
+				entries: &[
+					wgpu::BindGroupEntry {
+						binding: 0,
+						resource: wgpu::BindingResource::TextureView(&textures.array_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 1,
+						resource: wgpu::BindingResource::Sampler(&textures.sampler),
+					},
+					wgpu::BindGroupEntry {
+						binding: 2,
+						resource: wgpu::BindingResource::TextureView(&textures.shadow_near_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 3,
+						resource: wgpu::BindingResource::TextureView(
+							&textures.shadow_wide_views[i],
+						),
+					},
+					wgpu::BindGroupEntry {
+						binding: 4,
+						resource: wgpu::BindingResource::Sampler(&textures.shadow_sampler),
+					},
+				],
+			})
 		});
 
 		let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -424,7 +458,7 @@ impl Renderer {
 			frame_bg,
 			frame_water_buf,
 			frame_water_bg,
-			tex_bg,
+			tex_bgs,
 			chunk_buf,
 			chunk_bg,
 			light_near_buf,
@@ -432,6 +466,10 @@ impl Renderer {
 			light_wide_buf,
 			light_wide_bg,
 			wide_refresh_needed: true,
+			wide_front: 0,
+			wide_active_vp: glam::Mat4::IDENTITY,
+			wide_job: None,
+			wide_front_valid: false,
 			index_buf,
 			textures,
 			chunks: FxHashMap::default(),
@@ -524,6 +562,33 @@ impl Renderer {
 		};
 		let wide_due = wide_due || self.wide_refresh_needed;
 		self.wide_refresh_needed = false;
+		if wide_due {
+			// Kick off (or restart) the sliced re-render of the back map.
+			// light_wide_buf feeds only the shadow-pass encode, so it can
+			// take the new VP now; the main pass keeps projecting with
+			// wide_active_vp until the flip.
+			self.wide_job = Some(WideJob {
+				vp: wide_vp,
+				list: self.chunks.keys().copied().collect(),
+				next: 0,
+			});
+			gpu.queue.write_buffer(
+				&self.light_wide_buf,
+				0,
+				bytemuck::bytes_of(&wide_vp.to_cols_array_2d()),
+			);
+		}
+		// The front wide map lags the engine's wide_vp by up to one job
+		// (a few frames); sample it with the VP it was rendered with. The
+		// sampled index is captured HERE, before the slice encode below can
+		// flip `wide_front` — map and VP must change together on the same
+		// frame or far shadows mis-project for one frame (a visible dark
+		// flash at every refresh). A just-completed map is therefore first
+		// sampled on the next frame, paired with its VP.
+		let wide_sample = self.wide_front;
+		let mut frame = *frame;
+		frame.light_wide = self.wide_active_vp.to_cols_array_2d();
+		let frame = &frame;
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
@@ -535,13 +600,6 @@ impl Renderer {
 			0,
 			bytemuck::bytes_of(&near_vp.to_cols_array_2d()),
 		);
-		if wide_due {
-			gpu.queue.write_buffer(
-				&self.light_wide_buf,
-				0,
-				bytemuck::bytes_of(&wide_vp.to_cols_array_2d()),
-			);
-		}
 		// Chunk bounding-sphere frustum cull against the four side planes
 		// (near/far deliberately ignored, like the Java
 		// sphereInFrustumWithoutNearFar).
@@ -568,12 +626,38 @@ impl Renderer {
 				label: Some("frame"),
 			});
 
-		if wide_due {
-			let (draws, tris) = self.encode_shadow_pass(&mut encoder, true, wide_vp, Q_SHADOW_WIDE);
+		if !self.wide_front_valid {
+			// Startup / device rebuild: the front map is uninitialized;
+			// clear it to depth 1.0 (fully lit) so sampling is sane until
+			// the first refresh completes and flips.
+			encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: Some("shadow wide bootstrap clear"),
+				color_attachments: &[],
+				depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+					view: &self.textures.shadow_wide_views[self.wide_front],
+					depth_ops: Some(wgpu::Operations {
+						load: wgpu::LoadOp::Clear(1.0),
+						store: wgpu::StoreOp::Store,
+					}),
+					stencil_ops: None,
+				}),
+				timestamp_writes: None,
+				occlusion_query_set: None,
+			});
+			self.wide_front_valid = true;
+		}
+		if let Some(mut job) = self.wide_job.take() {
+			let (draws, tris, done) = self.encode_wide_slice(&mut encoder, &mut job);
 			stats.draw_calls += draws;
 			stats.triangles += tris;
+			if done {
+				self.wide_front = 1 - self.wide_front;
+				self.wide_active_vp = job.vp;
+			} else {
+				self.wide_job = Some(job);
+			}
 		}
-		let (casters, tris) = self.encode_shadow_pass(&mut encoder, false, near_vp, Q_SHADOW_NEAR);
+		let (casters, tris) = self.encode_shadow_pass(&mut encoder, near_vp, Q_SHADOW_NEAR);
 		stats.shadow_casters = casters;
 		stats.draw_calls += casters;
 		stats.triangles += tris;
@@ -604,7 +688,7 @@ impl Renderer {
 
 			pass.set_pipeline(&self.solid_pipeline);
 			pass.set_bind_group(0, &self.frame_bg, &[]);
-			pass.set_bind_group(1, &self.tex_bg, &[]);
+			pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
 			pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 			for (pos, chunk) in &self.chunks {
 				if !in_frustum(pos) {
@@ -697,25 +781,20 @@ impl Renderer {
 	/// Depth-only cascade render. Solid meshes only — water never casts
 	/// shadows (Java depth passes drew solidMesh exclusively). Casters are
 	/// culled against the light's own frustum.
+	/// Near-cascade depth render (whole caster set, every frame).
 	/// Returns (draw calls, triangles) encoded.
 	fn encode_shadow_pass(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
-		wide: bool,
 		light_vp: glam::Mat4,
 		ts_first: u32,
 	) -> (u32, u32) {
-		let (view, light_bg) = if wide {
-			(&self.textures.shadow_wide_view, &self.light_wide_bg)
-		} else {
-			(&self.textures.shadow_near_view, &self.light_near_bg)
-		};
 		let planes = side_planes(light_vp);
 		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-			label: Some(if wide { "shadow wide" } else { "shadow near" }),
+			label: Some("shadow near"),
 			color_attachments: &[],
 			depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-				view,
+				view: &self.textures.shadow_near_view,
 				depth_ops: Some(wgpu::Operations {
 					load: wgpu::LoadOp::Clear(1.0),
 					store: wgpu::StoreOp::Store,
@@ -726,32 +805,94 @@ impl Renderer {
 			occlusion_query_set: None,
 		});
 		pass.set_pipeline(&self.shadow_pipeline);
-		pass.set_bind_group(0, light_bg, &[]);
+		pass.set_bind_group(0, &self.light_near_bg, &[]);
 		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 		let (mut draws, mut tris) = (0u32, 0u32);
 		for (pos, chunk) in &self.chunks {
-			let c = glam::Vec3::new(
-				(pos.x * 16 + 8) as f32,
-				(pos.y * 16 + 8) as f32,
-				(pos.z * 16 + 8) as f32,
-			);
-			const RADIUS: f32 = 13.86;
-			if !planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS) {
-				continue;
-			}
-			if let Some((buf, index_count)) = &chunk.solid {
-				pass.set_bind_group(
-					1,
-					&self.chunk_bg,
-					&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-				);
-				pass.set_vertex_buffer(0, buf.slice(..));
-				pass.draw_indexed(0..*index_count, 0, 0..1);
+			if let Some(d) = Self::shadow_draw(&mut pass, &self.chunk_bg, planes, pos, chunk) {
 				draws += 1;
-				tris += *index_count / 3;
+				tris += d / 3;
 			}
 		}
 		(draws, tris)
+	}
+
+	/// Encode the next slice of an in-progress wide refresh into the back
+	/// map (cleared on the first slice, appended thereafter). Returns
+	/// (draws, tris, done).
+	fn encode_wide_slice(
+		&self,
+		encoder: &mut wgpu::CommandEncoder,
+		job: &mut WideJob,
+	) -> (u32, u32, bool) {
+		let planes = side_planes(job.vp);
+		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+			label: Some("shadow wide slice"),
+			color_attachments: &[],
+			depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+				view: &self.textures.shadow_wide_views[1 - self.wide_front],
+				depth_ops: Some(wgpu::Operations {
+					load: if job.next == 0 {
+						wgpu::LoadOp::Clear(1.0)
+					} else {
+						wgpu::LoadOp::Load
+					},
+					store: wgpu::StoreOp::Store,
+				}),
+				stencil_ops: None,
+			}),
+			timestamp_writes: self
+				.gpu_timer
+				.as_ref()
+				.and_then(|t| t.writes(Q_SHADOW_WIDE)),
+			occlusion_query_set: None,
+		});
+		pass.set_pipeline(&self.shadow_pipeline);
+		pass.set_bind_group(0, &self.light_wide_bg, &[]);
+		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		let (mut draws, mut tris) = (0u32, 0u32);
+		while job.next < job.list.len() && draws < WIDE_SLICE_DRAWS {
+			let pos = job.list[job.next];
+			job.next += 1;
+			// Evicted mid-job: skip.
+			let Some(chunk) = self.chunks.get(&pos) else {
+				continue;
+			};
+			if let Some(d) = Self::shadow_draw(&mut pass, &self.chunk_bg, planes, &pos, chunk) {
+				draws += 1;
+				tris += d / 3;
+			}
+		}
+		(draws, tris, job.next >= job.list.len())
+	}
+
+	/// Cull-and-draw one chunk into a depth pass; returns the index count
+	/// if drawn. Solid meshes only — water never casts shadows.
+	fn shadow_draw(
+		pass: &mut wgpu::RenderPass<'_>,
+		chunk_bg: &wgpu::BindGroup,
+		planes: [glam::Vec4; 4],
+		pos: &ChunkPos,
+		chunk: &ChunkGpu,
+	) -> Option<u32> {
+		let c = glam::Vec3::new(
+			(pos.x * 16 + 8) as f32,
+			(pos.y * 16 + 8) as f32,
+			(pos.z * 16 + 8) as f32,
+		);
+		const RADIUS: f32 = 13.86;
+		if !planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS) {
+			return None;
+		}
+		let (buf, index_count) = chunk.solid.as_ref()?;
+		pass.set_bind_group(
+			1,
+			chunk_bg,
+			&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
+		);
+		pass.set_vertex_buffer(0, buf.slice(..));
+		pass.draw_indexed(0..*index_count, 0, 0..1);
+		Some(*index_count)
 	}
 }
 

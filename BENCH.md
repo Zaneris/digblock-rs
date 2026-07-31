@@ -3,6 +3,73 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-07-31 (third pass): frame pacing under fast streaming
+
+The throughput pass made chunks stream in ~8× faster but visibly
+jittered the render loop. Diagnosed with `DIG_SPIKELOG=1` (logs a
+per-phase breakdown of every frame over the 120Hz budget) and a
+vsync-paced bench run (Fifo present — pacing as actually played). The
+bench summary now reports `over-8.3ms` (budget-fit) and `over-12.5ms`
+(visibly dropped frame at 120Hz) counts.
+
+**Bench default changed to vsync-paced.** An uncapped (~350fps) stream
+sampled by a 120Hz compositor judders *by construction* — displayed
+frame deltas vary regardless of how smooth the render loop is — so
+watching an uncapped bench always looks bad. `just bench` is now
+Fifo-paced (smooth, dropped frames measurable); use
+`just bench --no-vsync` for uncapped raw-cost percentiles (the
+second-pass tables below were captured that way and stay valid).
+
+**Post-fix regression**: the first cut of the wide-map split flipped
+`wide_front` mid-frame, after the frame UBO was written — so the flip
+frame sampled the *new* map with the *old* VP, a dark far-shadow flash
+at every 3.33s refresh. Map and VP now always change together (the
+sampled index is captured before the slice encode; a completed map is
+first sampled the next frame).
+
+### What the spike log attributed
+
+- **Streaming bursts**: `drain_results` capped only *meshed* results —
+  `Generated` drains (stack insert + neighbor cascade) were unbounded,
+  and the adaptive upload budget hit 64/frame, so boundary-crossing
+  frames did scan + drain + up to 3.7ms of uploads + a co-spiking
+  encode ≈ 8ms of CPU → missed vsync clusters.
+- **Wide-cascade refresh**: every 3.33s the wide shadow map re-encoded
+  the whole resident set (~2.6k draw calls, 3.8–8.2ms of CPU encode) in
+  a single frame — a guaranteed rhythmic hitch.
+- **Environmental stalls**: ~15ms acquire waits with zero app work
+  (GPU ~1.3ms, all phases ≈ 0). A static-scene control run (no flight,
+  no streaming, camera still) shows the same p99 ~15.7 / worst ~18 per
+  window — compositor/OS noise on this machine, not app-caused.
+
+### Fixes (all kept)
+
+**1. Time-budgeted streaming** (`pipeline.rs`, `engine.rs`):
+`STREAM_BUDGET_MS = 3` per frame. The first half bounds the result
+drain (leftovers wait in the unbounded channel — worker throughput
+unaffected); the rest bounds uploads via a `pending_uploads` carry-over
+queue (min 4/frame so drains can't starve it; evicted chunks are
+filtered out; fill time counts until the queue empties).
+
+**2. Wide-cascade slicing** (`renderer.rs`, `texture.rs`): two wide
+maps ping-ponged. A refresh snapshots the resident set and encodes 640
+draws per frame into the back map (~4 frames per refresh), then flips;
+the main pass keeps sampling the front map with the VP it was rendered
+with (`wide_active_vp`) until the flip. Screenshot pixel-identical to
+the pre-split reference (`shots/post-f64-terrain.png`).
+
+### Results (vsync-paced flight — now the `just bench` default, ×3)
+
+Streaming-attributable dropped frames (>12.5ms with mnt/upl activity)
+fell from dozens per run to **2–4 per 1800 frames**; the wide-refresh
+hitch is gone (slices encode ~1ms). Remaining `over-12.5ms` counts
+(21–42/run) match the static-scene control — environmental. Fill at
+120Hz: 0.78–0.81s.
+
+Cost: uncapped fill 0.55 → **0.58–0.61s** (the budget defers work to
+later frames — accepted for pacing); mesh jobs 13.6k → ~14.4k (drains
+spread over more frames → slightly more cross-border remesh cascades).
+
 ## 2026-07-31 (second pass): uncapped bench + streaming throughput
 
 The bench now runs with **vsync off** (`AutoNoVsync`) and reports **fill

@@ -143,8 +143,15 @@ impl Pipeline {
 
 	/// Call every frame with the player's chunk position. Performs the
 	/// visibility scan on chunk-boundary crossings, tops up workers, and
-	/// drains results (mesh outputs capped at `upload_budget`).
-	pub fn maintain(&mut self, center: ChunkPos, upload_budget: usize) -> Maintenance {
+	/// drains results (mesh outputs capped at `upload_budget`; the whole
+	/// drain stops at `deadline` — undrained results wait in the channel,
+	/// so worker throughput is unaffected, only main-thread pacing).
+	pub fn maintain(
+		&mut self,
+		center: ChunkPos,
+		upload_budget: usize,
+		deadline: Option<std::time::Instant>,
+	) -> Maintenance {
 		let mut out = Maintenance {
 			evicted: Vec::new(),
 			meshed: Vec::new(),
@@ -164,8 +171,8 @@ impl Pipeline {
 			self.scanned_once = true;
 			self.visibility_scan(&mut out.evicted);
 		}
-		self.drain_results(&mut out, upload_budget);
-		out.saturated = out.meshed.len() == upload_budget && !self.result_rx.is_empty();
+		self.drain_results(&mut out, upload_budget, deadline);
+		out.saturated = !self.result_rx.is_empty();
 		out.requeued = self.top_up_workers();
 		out.gen_queue = self.gen_heap.len() as u32;
 		out.mesh_queue = self.mesh_heap.len() as u32;
@@ -221,8 +228,19 @@ impl Pipeline {
 		}
 	}
 
-	fn drain_results(&mut self, out: &mut Maintenance, upload_budget: usize) {
+	fn drain_results(
+		&mut self,
+		out: &mut Maintenance,
+		upload_budget: usize,
+		deadline: Option<std::time::Instant>,
+	) {
 		while out.meshed.len() < upload_budget {
+			// Generated results are the expensive drains (stack insert plus
+			// neighbor re-mesh cascade), so the deadline gates every pull,
+			// not just meshed ones.
+			if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+				break;
+			}
 			let Ok(result) = self.result_rx.try_recv() else {
 				break;
 			};
@@ -471,7 +489,7 @@ mod tests {
 		for step in 0..6 {
 			let center = ChunkPos::new(step * 2, 0, step);
 			for _ in 0..300 {
-				let m = p.maintain(center, 64);
+				let m = p.maintain(center, 64, None);
 				gen_jobs.merge(m.gen_jobs);
 				mesh_jobs.merge(m.mesh_jobs);
 				for pos in m.evicted {
@@ -489,7 +507,7 @@ mod tests {
 		// Drain until fully quiescent.
 		let final_center = ChunkPos::new(10, 0, 5);
 		for _ in 0..500 {
-			let m = p.maintain(final_center, 64);
+			let m = p.maintain(final_center, 64, None);
 			for pos in m.evicted {
 				uploaded.remove(&pos);
 			}

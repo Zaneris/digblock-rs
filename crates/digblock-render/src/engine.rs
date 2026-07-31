@@ -70,13 +70,17 @@ struct HeldKeys {
 	down: bool,
 }
 
-/// Per-frame mesh-upload budget: keeps main-thread GPU upload cost bounded
-/// so streaming can never hitch a frame (the modern form of the Java
-/// one-queue-item-per-frame rule). Adaptive: the fixed 4 saturated ~97%
-/// of streaming frames (BENCH.md) while uploads cost ~0.05ms each, so the
-/// budget doubles under sustained pressure and decays back when idle.
-const UPLOAD_BUDGET_MIN: usize = 4;
-const UPLOAD_BUDGET_MAX: usize = 64;
+/// Per-frame wall-clock budget for main-thread streaming — the modern form
+/// of the Java one-queue-item-per-frame rule. The first half bounds the
+/// result drain (chunk inserts + neighbor cascades); the rest bounds mesh
+/// uploads, with leftovers carried in `pending_uploads` to later frames.
+/// Workers keep producing at full speed — undrained results wait in the
+/// channel — so this trades a longer fill tail for even frame pacing:
+/// streaming + render must fit a 120Hz vsync frame (8.3ms).
+const STREAM_BUDGET_MS: f32 = 3.0;
+/// Uploads always make this much progress per frame even with the budget
+/// exhausted, so a saturated drain can never starve the upload queue.
+const UPLOAD_MIN: usize = 4;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -102,7 +106,8 @@ pub struct Engine {
 	history_scratch: Vec<f32>,
 	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
 	bench_t: f32,
-	upload_budget: usize,
+	/// Meshes drained but not yet uploaded (upload budget carry-over).
+	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	size: (u32, u32),
 }
 
@@ -146,7 +151,7 @@ impl Engine {
 			overlay_visible,
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
-			upload_budget: UPLOAD_BUDGET_MIN,
+			pending_uploads: std::collections::VecDeque::new(),
 			size: (1, 1),
 		}
 	}
@@ -170,21 +175,29 @@ impl Engine {
 			return;
 		};
 		let t_maintain = std::time::Instant::now();
-		let m = self.pipeline.maintain(center, self.upload_budget);
+		let full_deadline = t_maintain + Duration::from_secs_f32(STREAM_BUDGET_MS / 1000.0);
+		let drain_deadline = t_maintain + Duration::from_secs_f32(STREAM_BUDGET_MS / 2000.0);
+		let m = self
+			.pipeline
+			.maintain(center, usize::MAX, Some(drain_deadline));
 		self.pending.maintain_ms = ms_since(t_maintain);
-		self.upload_budget = if m.saturated {
-			(self.upload_budget * 2).min(UPLOAD_BUDGET_MAX)
-		} else {
-			(self.upload_budget - 1).max(UPLOAD_BUDGET_MIN)
-		};
 		let t_upload = std::time::Instant::now();
 		self.metrics.evicted += m.evicted.len() as u32;
-		for pos in m.evicted {
-			renderer.remove_chunk(pos);
+		if !m.evicted.is_empty() {
+			self.pending_uploads
+				.retain(|out| !m.evicted.contains(&out.pos));
+			for pos in m.evicted {
+				renderer.remove_chunk(pos);
+			}
 		}
-		let uploads = m.meshed.len() as u32;
-		for out in m.meshed {
+		self.pending_uploads.extend(m.meshed);
+		let mut uploads = 0u32;
+		while let Some(out) = self.pending_uploads.pop_front() {
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
+			uploads += 1;
+			if uploads as usize >= UPLOAD_MIN && std::time::Instant::now() >= full_deadline {
+				break;
+			}
 		}
 		self.pending.upload_ms = ms_since(t_upload);
 		self.metrics.chunks_generated += m.generated;
@@ -202,7 +215,11 @@ impl Engine {
 		};
 		// First full quiesce = initial world fill complete (the bench's
 		// primary streaming-throughput metric).
-		if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 {
+		if m.gen_queue == 0
+			&& m.mesh_queue == 0
+			&& m.in_flight == 0
+			&& self.pending_uploads.is_empty()
+		{
 			self.metrics.mark_streamed();
 		}
 	}

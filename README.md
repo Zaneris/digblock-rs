@@ -24,10 +24,13 @@ Deterministic-capture / metrics flags:
 `--frames N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass
 ms, pipeline job timings — one row per 5s) `--overlay` (start with the
 debug overlay visible) `--bench` (scripted camera flight, inputs disabled,
-vsync off, 1800 frames, CSV to bench.csv, one-line summary on exit — incl.
-world fill time) `--no-vsync` (uncapped present outside bench)
-`--workers N` `--draw-dist N` (workload knobs) `--mobile`
-(draw dist 10, 1024px shadows — the iOS config).
+1800 frames, CSV to bench.csv, one-line summary on exit — incl. world
+fill time and over-8.3ms/over-12.5ms frame-pacing counts; vsync-paced
+so it looks as played — add `--no-vsync` for uncapped raw-cost
+percentiles) `--no-vsync` (uncapped present) `--workers N`
+`--draw-dist N` (workload knobs) `--mobile` (draw dist 10, 1024px
+shadows — the iOS config). Env: `DIG_SPIKELOG=1` logs a per-phase
+breakdown of every frame over the 120Hz budget.
 
 Controls: **WASD/arrows** move · mouse look (click to capture cursor) ·
 **Space** jump · **F** toggle walk/fly · **`** (backquote) debug overlay ·

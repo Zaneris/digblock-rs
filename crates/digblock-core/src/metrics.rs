@@ -204,6 +204,9 @@ pub struct Metrics {
 	pub gpu: Option<GpuPassMs>,
 	pub gpu_buffer_bytes: u64,
 	pub workers: u32,
+	/// DIG_SPIKELOG=1: log a per-phase breakdown of every frame over the
+	/// 120Hz budget — attributes pacing spikes without wading through CSVs.
+	spike_log: bool,
 	csv: Option<std::io::BufWriter<std::fs::File>>,
 }
 
@@ -264,6 +267,7 @@ impl Metrics {
 			gpu: None,
 			gpu_buffer_bytes: 0,
 			workers: 0,
+			spike_log: std::env::var_os("DIG_SPIKELOG").is_some(),
 			csv,
 		}
 	}
@@ -289,6 +293,24 @@ impl Metrics {
 			if timings.total_ms > HITCH_MS {
 				self.hitches += 1;
 				self.hitches_total += 1;
+			}
+			// Per-spike phase attribution (see `spike_log`).
+			if self.spike_log && timings.total_ms > 8.4 {
+				log::info!(
+					"spike f{} total {:.2} | acq {:.2} upd {:.2} mnt {:.2} upl {:.2} enc {:.2} | gpu sh {:.2} main {:.2} | draws {} tris {}k wide {}",
+					self.run_frames,
+					timings.total_ms,
+					timings.acquire_ms,
+					timings.update_ms,
+					timings.maintain_ms,
+					timings.upload_ms,
+					timings.encode_ms,
+					self.gpu.as_ref().map_or(0.0, |g| g.shadow_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.main_ms),
+					self.render.draw_calls,
+					self.render.triangles / 1000,
+					self.render.wide_refreshed as u32,
+				);
 			}
 			self.last = timings;
 			self.smooth.ema(&timings);
@@ -392,14 +414,26 @@ impl Metrics {
 			.unwrap_or(self.started_at)
 			.elapsed()
 			.as_secs_f32();
+		// Frame-pacing signals: over-8.3 = frames that wouldn't fit a 120Hz
+		// vsync slot (budget-fit, for uncapped runs); over-12.5 = frames
+		// 1.5× the slot — a visibly dropped frame when vsync-paced.
+		const VSYNC_120HZ_MS: f32 = 8.4;
+		const DROP_MS: f32 = 12.5;
 		let frames = self.run_frames;
-		let (s, warmup) = match self.run_history.take().filter(|h| h.len() > WARMUP_FRAMES) {
+		let (s, warmup, miss) = match self.run_history.take().filter(|h| h.len() > WARMUP_FRAMES) {
 			Some(mut h) => {
 				let worst = h[..WARMUP_FRAMES].iter().fold(0.0f32, |a, &b| a.max(b));
-				let s = Self::summarize(&mut h[WARMUP_FRAMES..])?;
-				(s, format!(" (warmup worst {worst:.1})"))
+				let run = &mut h[WARMUP_FRAMES..];
+				let over = run.iter().filter(|&&ms| ms > VSYNC_120HZ_MS).count();
+				let drop = run.iter().filter(|&&ms| ms > DROP_MS).count();
+				let s = Self::summarize(run)?;
+				(
+					s,
+					format!(" (warmup worst {worst:.1})"),
+					format!(" | over-8.3ms {over} over-12.5ms {drop}"),
+				)
 			}
-			None => (self.summary()?, String::new()),
+			None => (self.summary()?, String::new(), String::new()),
 		};
 		let fill = self
 			.streamed_at
@@ -410,7 +444,7 @@ impl Metrics {
 		mesh.merge(self.mesh_jobs);
 		let per_sec = |n: u32| n as f32 / elapsed.max(0.001);
 		Some(format!(
-			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
+			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup}{miss} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
 			frames as f32 / elapsed.max(0.001),
 			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
 			self.hitches_total,

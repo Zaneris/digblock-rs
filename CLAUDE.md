@@ -12,8 +12,9 @@ Rust + wgpu rewrite of the DigBlock voxel engine (originally Java/libGDX, 2015â€
 just run                  # run desktop app (cargo run -p digblock-desktop)
 just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
 just bench                # deterministic perf run: release build, scripted camera flight,
-                          # inputs disabled, vsync off, CSV to bench.csv, summary line
-                          # (incl. world fill time) on exit; findings live in BENCH.md
+                          # inputs disabled, vsync-paced, CSV to bench.csv, summary line
+                          # (fill time + frame-pacing counts) on exit; add --no-vsync for
+                          # uncapped raw-cost percentiles; findings live in BENCH.md
 just check                # full gate: cargo fmt --all --check, clippy -D warnings, cargo test --workspace
 just check-ios            # cargo check -p digblock-ios --target aarch64-apple-ios (no Xcode needed)
 just ios-sim              # simulator build+run (requires full Xcode)
@@ -24,7 +25,7 @@ Run a single test: `cargo test -p digblock-core --test worldgen` (integration te
 
 Deterministic-capture / metrics flags for `just run`: `--seed <f64>`, `--tod <deg>` (freezes the sun), `--screenshot out.png`, `--frames N`, `--exit`, `--metrics-csv out.csv`, `--overlay` (start with the debug overlay on; backquote toggles it at runtime), `--no-vsync` (uncapped present), `--workers N`, `--draw-dist N`, `--mobile` (draw dist 10, 1024px shadows â€” the iOS config).
 
-Metrics (`digblock-core/src/metrics.rs`) collect per-phase CPU frame timings, GPU pass ms via timestamp queries (feature-detected), chunk-pipeline job timings/queue gauges, and renderer draw stats; everything lands in the 5s log line, the CSV, and the toggleable on-screen overlay (`digblock-render/src/overlay.rs`, zero cost when hidden).
+Metrics (`digblock-core/src/metrics.rs`) collect per-phase CPU frame timings, GPU pass ms via timestamp queries (feature-detected), chunk-pipeline job timings/queue gauges, and renderer draw stats; everything lands in the 5s log line, the CSV, and the toggleable on-screen overlay (`digblock-render/src/overlay.rs`, zero cost when hidden). Frame-pacing diagnostics: the bench is vsync-paced by default (`--no-vsync` for uncapped raw cost), and `DIG_SPIKELOG=1` logs per-phase breakdowns of frames over the 120Hz budget. Main-thread streaming work (result drain + mesh uploads) is time-budgeted per frame (`STREAM_BUDGET_MS` in engine.rs) and the wide shadow cascade re-renders sliced across frames into a ping-ponged back map, so streaming throughput cannot hitch the render loop.
 
 Formatting uses hard tabs, max width 100 (`rustfmt.toml`).
 
