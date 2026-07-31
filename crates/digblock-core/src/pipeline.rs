@@ -419,6 +419,70 @@ impl Pipeline {
 		self.store.len()
 	}
 
+	/// Set one block, remeshing the chunk and any border-adjacent Ready
+	/// neighbors (only they can see the edited cell in their border plane).
+	/// Returns the previous block; None if outside the world, the chunk
+	/// isn't Ready, or the edit is a no-op. In-flight meshes of the old
+	/// data are dropped by the generation check in `drain_results`.
+	pub fn set_block(
+		&mut self,
+		x: i32,
+		y: i32,
+		z: i32,
+		b: crate::block::BlockType,
+	) -> Option<crate::block::BlockType> {
+		if !(0..=crate::chunk::WORLD_VBLOCK).contains(&y) {
+			return None;
+		}
+		let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
+		let (lx, ly, lz) = (
+			x.rem_euclid(16) as usize,
+			y.rem_euclid(16) as usize,
+			z.rem_euclid(16) as usize,
+		);
+		let slot = self.store.get_mut(&pos)?;
+		let ChunkState::Ready(data) = &mut slot.state else {
+			return None;
+		};
+		let prev = data.get(lx, ly, lz);
+		if prev == b {
+			return None;
+		}
+		// COW: clones the 4KB array only if a worker still holds a snapshot.
+		Arc::make_mut(data).set(lx, ly, lz, b);
+		slot.mesh_gen += 1;
+		let center = self.center;
+		self.mesh_heap.push((
+			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
+			(pos.x, pos.y, pos.z),
+		));
+		for dir in DIRS {
+			let on_border = match dir {
+				crate::mesher::Dir::West => lx == 15,
+				crate::mesher::Dir::East => lx == 0,
+				crate::mesher::Dir::North => lz == 15,
+				crate::mesher::Dir::South => lz == 0,
+				crate::mesher::Dir::Top => ly == 15,
+				crate::mesher::Dir::Bottom => ly == 0,
+			};
+			if !on_border {
+				continue;
+			}
+			let (ox, oy, oz) = dir.offset();
+			let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+			if let Some(nslot) = self.store.get_mut(&np) {
+				if matches!(nslot.state, ChunkState::Ready(_)) {
+					nslot.mesh_gen += 1;
+					self.mesh_heap.push((
+						Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
+						(np.x, np.y, np.z),
+					));
+				}
+			}
+		}
+		Some(prev)
+	}
+
 	/// Block lookup for physics. None = outside the vertical world or the
 	/// chunk isn't generated yet (the Java null-block: non-solid).
 	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
@@ -475,6 +539,128 @@ fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::block::BlockType;
+
+	/// Run maintain until all queues and workers are idle.
+	fn quiesce(p: &mut Pipeline, center: ChunkPos) {
+		for _ in 0..2000 {
+			let m = p.maintain(center, usize::MAX, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				return;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(1));
+		}
+		panic!("pipeline never quiesced");
+	}
+
+	fn mesh_gen(p: &Pipeline, pos: ChunkPos) -> u64 {
+		p.store[&pos].mesh_gen
+	}
+
+	#[test]
+	fn set_block_edits_and_bumps_border_neighbors() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		let snapshot = |p: &Pipeline| -> Vec<(ChunkPos, u64)> {
+			p.store.iter().map(|(pos, s)| (*pos, s.mesh_gen)).collect()
+		};
+
+		// Pick a value different from whatever generated there.
+		let other = |cur: Option<BlockType>| {
+			if cur == Some(BlockType::Stone) {
+				BlockType::Dirt
+			} else {
+				BlockType::Stone
+			}
+		};
+
+		// Interior edit: only the chunk itself re-meshes.
+		let before = snapshot(&p);
+		let new = other(p.block_at(8, 8, 8));
+		let prev = p.set_block(8, 8, 8, new).expect("edit lands");
+		assert_ne!(prev, new);
+		assert_eq!(p.block_at(8, 8, 8), Some(new));
+		for (pos, gen) in &before {
+			let expect = gen + u64::from(*pos == ChunkPos::new(0, 0, 0));
+			assert_eq!(mesh_gen(&p, *pos), expect, "{pos:?}");
+		}
+
+		// No-op returns None and bumps nothing.
+		let before = snapshot(&p);
+		assert!(p.set_block(8, 8, 8, new).is_none());
+		for (pos, gen) in &before {
+			assert_eq!(mesh_gen(&p, *pos), *gen);
+		}
+
+		// Corner-of-world edit at (0,0,0): local (0,0,0) borders East(−x),
+		// South(−z), Bottom(−y); bottom is outside the world, so exactly
+		// self + 2 neighbors bump.
+		let before = snapshot(&p);
+		let new = other(p.block_at(0, 0, 0));
+		p.set_block(0, 0, 0, new).expect("corner edit");
+		for (pos, gen) in &before {
+			let bumped = *pos == ChunkPos::new(0, 0, 0)
+				|| *pos == ChunkPos::new(-1, 0, 0)
+				|| *pos == ChunkPos::new(0, 0, -1);
+			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+		}
+
+		// Out-of-world y is rejected.
+		assert!(p.set_block(0, -1, 0, BlockType::Stone).is_none());
+		assert!(p.set_block(0, 1000, 0, BlockType::Stone).is_none());
+	}
+
+	#[test]
+	fn set_block_cow_preserves_snapshots() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		let pos = ChunkPos::new(0, 0, 0);
+		let ChunkState::Ready(snapshot) = &p.store[&pos].state else {
+			panic!("chunk not ready");
+		};
+		let snapshot = Arc::clone(snapshot); // simulate an in-flight mesh job
+		let old = snapshot.get(3, 3, 3);
+		let new = if old == BlockType::Stone {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		p.set_block(3, 3, 3, new).expect("edit lands");
+		assert_eq!(snapshot.get(3, 3, 3), old, "job snapshot untouched");
+		assert_eq!(p.block_at(3, 3, 3), Some(new));
+	}
+
+	#[test]
+	fn edited_chunk_remeshes_at_new_gen() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		let new = if p.block_at(8, 8, 8) == Some(BlockType::Stone) {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		p.set_block(8, 8, 8, new).expect("edit lands");
+		let want_gen = mesh_gen(&p, ChunkPos::new(0, 0, 0));
+		// The next maintain cycle must deliver a mesh at the bumped gen.
+		let mut got = None;
+		for _ in 0..2000 {
+			let m = p.maintain(center, usize::MAX, None);
+			if let Some(out) = m
+				.meshed
+				.into_iter()
+				.find(|o| o.pos == ChunkPos::new(0, 0, 0))
+			{
+				got = Some(out.gen);
+				break;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(1));
+		}
+		assert_eq!(got, Some(want_gen), "remesh delivered at the edit's gen");
+	}
 
 	/// Soak: stream around a moving center until stable; every resident
 	/// chunk must end up meshed exactly at its final generation, no stale
@@ -504,15 +690,29 @@ mod tests {
 				}
 			}
 		}
-		// Drain until fully quiescent.
+		// Drain until fully quiescent (bounded, but exit on quiescence so
+		// the test tolerates a loaded machine).
 		let final_center = ChunkPos::new(10, 0, 5);
-		for _ in 0..500 {
+		let mut quiet = 0;
+		for _ in 0..5000 {
 			let m = p.maintain(final_center, 64, None);
+			gen_jobs.merge(m.gen_jobs);
+			mesh_jobs.merge(m.mesh_jobs);
 			for pos in m.evicted {
 				uploaded.remove(&pos);
 			}
 			for out in m.meshed {
 				uploaded.insert(out.pos, out.gen);
+			}
+			// Two consecutive idle observations: results can land between
+			// the channel check and the gauges snapshot.
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				quiet += 1;
+				if quiet >= 2 {
+					break;
+				}
+			} else {
+				quiet = 0;
 			}
 			std::thread::sleep(std::time::Duration::from_millis(1));
 		}

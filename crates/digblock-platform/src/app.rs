@@ -14,7 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::clock::GameClock;
-use crate::input::{map_key, map_touch_phase, InputEvent};
+use crate::input::{map_button, map_key, map_touch_phase, InputEvent};
 use crate::{Game, Gpu, RunOptions};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -428,11 +428,15 @@ impl<G: Game> ApplicationHandler for App<G> {
 			WindowEvent::Focused(false) => {
 				self.game.input(InputEvent::FocusLost);
 			}
-			WindowEvent::MouseInput {
-				state: ElementState::Pressed,
-				..
-			} => {
-				if !self.cursor_grabbed {
+			WindowEvent::MouseInput { state, button, .. } => {
+				if self.cursor_grabbed {
+					self.game.input(InputEvent::MouseButton {
+						button: map_button(button),
+						pressed: state.is_pressed(),
+					});
+				} else if state == ElementState::Pressed {
+					// First click (re-)grabs the cursor and is swallowed so
+					// it doesn't also dig.
 					self.grab_cursor(true);
 				}
 			}

@@ -1,7 +1,7 @@
-//! Debug overlay: metrics text + frame-time graph, drawn as one vertex
-//! buffer of pixel-space quads through a single alpha-blended pipeline.
-//! CPU cost is a few string formats and a small write_buffer; zero when
-//! hidden (the renderer skips prepare/draw entirely).
+//! 2D overlay: the always-on HUD (crosshair) plus the toggleable debug
+//! panel (metrics text + frame-time graph), drawn as one vertex buffer of
+//! pixel-space quads through a single alpha-blended pipeline. With the
+//! panel hidden the cost is a handful of quads and a tiny write_buffer.
 
 use std::fmt::Write as _;
 
@@ -255,11 +255,36 @@ impl Overlay {
 		}
 	}
 
-	/// Rebuild the vertex buffer from this frame's stats. Call only when
-	/// the overlay is visible.
-	pub fn prepare(&mut self, gpu: &Gpu, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
-		self.verts.clear();
+	fn push_crosshair(&mut self, size: (u32, u32)) {
+		const ARM: f32 = 9.0; // half-length in px
+		const THICK: f32 = 2.0;
+		const COLOR: u32 = 0xC0FFFFFF;
+		let (cx, cy) = (size.0 as f32 / 2.0, size.1 as f32 / 2.0);
+		self.push_quad(cx - ARM, cy - THICK / 2.0, ARM * 2.0, THICK, COLOR);
+		self.push_quad(cx - THICK / 2.0, cy - ARM, THICK, ARM * 2.0, COLOR);
+	}
 
+	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair),
+	/// plus the debug panel when `stats` is present.
+	pub fn prepare(&mut self, gpu: &Gpu, size: (u32, u32), stats: Option<(&OverlayStats, &[f32])>) {
+		self.verts.clear();
+		self.push_crosshair(size);
+		if let Some((stats, history)) = stats {
+			self.push_debug_panel(stats, history);
+		}
+		self.vert_count = self.verts.len() as u32;
+		gpu.queue.write_buffer(
+			&self.uniform_buf,
+			0,
+			bytemuck::cast_slice(&[size.0 as f32, size.1 as f32, 0.0, 0.0]),
+		);
+		if !self.verts.is_empty() {
+			gpu.queue
+				.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&self.verts));
+		}
+	}
+
+	fn push_debug_panel(&mut self, stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
 		let mut lines: [(u32, String); 6] = Default::default();
 		let s = stats;
@@ -375,17 +400,6 @@ impl Overlay {
 			self.push_quad(x, gy - h, BAR_W - 0.5, h, color);
 		}
 		self.push_quad(tx, gy - 16.7 * MS_TO_PX, graph_w, 1.0, REF_LINE);
-
-		self.vert_count = self.verts.len() as u32;
-		gpu.queue.write_buffer(
-			&self.uniform_buf,
-			0,
-			bytemuck::cast_slice(&[size.0 as f32, size.1 as f32, 0.0, 0.0]),
-		);
-		if !self.verts.is_empty() {
-			gpu.queue
-				.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&self.verts));
-		}
 	}
 
 	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {

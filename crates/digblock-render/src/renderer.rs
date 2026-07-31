@@ -667,9 +667,7 @@ impl Renderer {
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
-		if let Some((ostats, history)) = overlay {
-			self.overlay.prepare(gpu, size, ostats, history);
-		}
+		self.overlay.prepare(gpu, size, overlay);
 		gpu.queue.write_buffer(
 			&self.light_near_buf,
 			0,
@@ -838,9 +836,10 @@ impl Renderer {
 			}
 		}
 
-		// Debug overlay: own pass over the finished frame — LoadOp::Load,
-		// no depth — so it costs nothing when hidden (never encoded).
-		if overlay.is_some() {
+		// HUD + debug overlay: own pass over the finished frame —
+		// LoadOp::Load, no depth. Always encoded now that the crosshair is
+		// part of it; with the debug panel hidden it's a handful of quads.
+		{
 			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 				label: Some("overlay"),
 				color_attachments: &[Some(wgpu::RenderPassColorAttachment {

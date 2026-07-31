@@ -31,7 +31,10 @@ impl ChunkPos {
 	}
 }
 
-/// Immutable-after-generation block data. Indexed `(y*16 + z)*16 + x`.
+/// Block data, shared with mesh jobs via `Arc`; edits go through
+/// copy-on-write (`Arc::make_mut`), so a job's snapshot stays consistent.
+/// Indexed `(y*16 + z)*16 + x`.
+#[derive(Clone)]
 pub struct ChunkData {
 	pub blocks: [u8; CHUNK_VOLUME],
 }

@@ -11,7 +11,7 @@ mod clock;
 pub mod input;
 mod screenshot;
 
-pub use input::{InputEvent, Key, TouchPhase};
+pub use input::{InputEvent, Key, MouseButton, TouchPhase};
 
 use std::path::PathBuf;
 

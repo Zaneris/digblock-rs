@@ -7,6 +7,7 @@ pub mod mesher;
 pub mod metrics;
 pub mod pipeline;
 pub mod player;
+pub mod raycast;
 pub mod simplex;
 pub mod sky;
 pub mod sun;

@@ -4,9 +4,11 @@ use digblock_core::chunk::ChunkPos;
 use digblock_core::metrics::{FrameTimings, Metrics, PipelineGauges};
 use digblock_core::pipeline::Pipeline;
 use digblock_core::player::{Player, PlayerIntent, TICK};
+use digblock_core::raycast::{raycast, REACH};
 use digblock_core::sun::Sun;
 use digblock_core::touch::{Phase, TouchDriver};
-use digblock_platform::{Game, Gpu, InputEvent, Key, TouchPhase};
+use digblock_core::BlockType;
+use digblock_platform::{Game, Gpu, InputEvent, Key, MouseButton, TouchPhase};
 use glam::{Vec2, Vec3};
 
 use crate::camera::FlyCamera;
@@ -98,6 +100,11 @@ pub struct Engine {
 	wide_due: bool,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
+	/// Click edges pending for the next update (left = dig, right = place).
+	click_dig: bool,
+	click_place: bool,
+	/// What right-click places: the last block dug (default dirt).
+	held_block: BlockType,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -146,6 +153,9 @@ impl Engine {
 			wide_due: false,
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
+			click_dig: false,
+			click_place: false,
+			held_block: BlockType::Dirt,
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -232,6 +242,46 @@ impl Engine {
 			&& self.pending_uploads.is_empty()
 		{
 			self.metrics.mark_streamed();
+		}
+	}
+
+	/// Resolve pending dig/place clicks against the world. Runs in update,
+	/// outside the physics `block_at` borrow: raycast (immutable) →
+	/// set_block (mutable) → player tick (immutable), strictly sequential.
+	fn apply_clicks(&mut self) {
+		let dig = std::mem::take(&mut self.click_dig);
+		let place = std::mem::take(&mut self.click_place);
+		if !dig && !place {
+			return;
+		}
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		let hit = {
+			let pipeline = &self.pipeline;
+			raycast(origin, dir, REACH, &|x, y, z| pipeline.block_at(x, y, z))
+		};
+		let Some(hit) = hit else { return };
+		if dig {
+			if let Some(prev) =
+				self.pipeline
+					.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
+			{
+				self.held_block = prev;
+			}
+		} else if hit.normal != (0, 0, 0) {
+			let target = (
+				hit.cell.0 + hit.normal.0,
+				hit.cell.1 + hit.normal.1,
+				hit.cell.2 + hit.normal.2,
+			);
+			// Never place inside the player: the eye cell and the body cell
+			// (the −1.25 probe the point collider uses).
+			let cell = |v: Vec3| (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
+			let eye = cell(self.camera.pos);
+			let body = cell(self.camera.pos - Vec3::new(0.0, 1.25, 0.0));
+			if target != eye && target != body {
+				self.pipeline
+					.set_block(target.0, target.1, target.2, self.held_block);
+			}
 		}
 	}
 
@@ -346,6 +396,15 @@ impl Game for Engine {
 				self.look_accum.0 += dx as f32;
 				self.look_accum.1 += dy as f32;
 			}
+			InputEvent::MouseButton { button, pressed } => {
+				if pressed {
+					match button {
+						MouseButton::Left => self.click_dig = true,
+						MouseButton::Right => self.click_place = true,
+						MouseButton::Other => {}
+					}
+				}
+			}
 			InputEvent::FocusLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
@@ -394,6 +453,8 @@ impl Game for Engine {
 		let touch_look = self.touch.take_look();
 		self.camera
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
+
+		self.apply_clicks();
 
 		if self.walking {
 			// Fixed 60 Hz player simulation (Java feel was tuned per-frame

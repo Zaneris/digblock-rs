@@ -20,6 +20,13 @@ pub enum Key {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseButton {
+	Left,
+	Right,
+	Other,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TouchPhase {
 	Started,
 	Moved,
@@ -38,6 +45,12 @@ pub enum InputEvent {
 	MouseDelta {
 		dx: f64,
 		dy: f64,
+	},
+	/// Mouse buttons, only while the cursor is captured (the click that
+	/// grabs the cursor is swallowed by the shell).
+	MouseButton {
+		button: MouseButton,
+		pressed: bool,
 	},
 	/// Touch position normalized to 0..1 of the window.
 	Touch {
@@ -67,6 +80,15 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Backquote => Key::Backquote,
 		K::Escape => Key::Escape,
 		_ => Key::Other,
+	}
+}
+
+pub(crate) fn map_button(button: winit::event::MouseButton) -> MouseButton {
+	use winit::event::MouseButton as B;
+	match button {
+		B::Left => MouseButton::Left,
+		B::Right => MouseButton::Right,
+		_ => MouseButton::Other,
 	}
 }
 
