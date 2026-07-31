@@ -3,10 +3,14 @@
 
 use digblock_core::chunk::ChunkPos;
 use digblock_core::mesher::{quad_indices, MeshData};
+use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
+use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_SHADOW_NEAR, Q_SHADOW_WIDE};
+use crate::overlay::Overlay;
 use crate::texture::BlockTextures;
+use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
 /// Worst-case faces per 16³ chunk mesh (checkerboard): 2048 blocks × 6.
@@ -61,6 +65,13 @@ pub struct Renderer {
 	free_slots: Vec<u32>,
 	next_slot: u32,
 	pub gpu_buffer_bytes: u64,
+	/// Reused water-sort buffer (was a fresh alloc every frame).
+	water_scratch: Vec<(i64, ChunkPos)>,
+	/// None when the device lacks TIMESTAMP_QUERY.
+	gpu_timer: Option<GpuTimer>,
+	/// Debug overlay; always constructed (cheap) so the device-loss
+	/// rebuild path recreates it for free.
+	overlay: Overlay,
 }
 
 impl Renderer {
@@ -427,7 +438,16 @@ impl Renderer {
 			free_slots: Vec::new(),
 			next_slot: 0,
 			gpu_buffer_bytes: 0,
+			water_scratch: Vec::new(),
+			gpu_timer: GpuTimer::new(gpu),
+			overlay: Overlay::new(gpu, surface_format),
 		}
+	}
+
+	/// Latest GPU pass reading (2-3 frames latent); None when timestamps
+	/// are unsupported or nothing has been read back yet.
+	pub fn gpu_pass_ms(&self) -> Option<digblock_core::metrics::GpuPassMs> {
+		self.gpu_timer.as_ref().and_then(|t| t.latest)
 	}
 
 	/// Upload (or replace) a chunk's mesh. Empty meshes remove the entry —
@@ -478,10 +498,6 @@ impl Renderer {
 		}
 	}
 
-	pub fn resident_chunks(&self) -> usize {
-		self.chunks.len()
-	}
-
 	/// Encode the frame in one command encoder, fixed order — wide shadow
 	/// (only when due) → near shadow → main pass. Shadow maps are written
 	/// and consumed in the same frame (fixes the Java one-frame lag).
@@ -498,9 +514,22 @@ impl Renderer {
 		wide_vp: glam::Mat4,
 		wide_due: bool,
 		cam_pos: glam::Vec3,
-	) {
+		size: (u32, u32),
+		overlay: Option<(&OverlayStats, &[f32])>,
+	) -> RenderStats {
+		let mut stats = RenderStats {
+			chunks_resident: self.chunks.len() as u32,
+			wide_refreshed: wide_due || self.wide_refresh_needed,
+			..Default::default()
+		};
 		let wide_due = wide_due || self.wide_refresh_needed;
 		self.wide_refresh_needed = false;
+		if let Some(t) = self.gpu_timer.as_mut() {
+			t.begin_frame();
+		}
+		if let Some((ostats, history)) = overlay {
+			self.overlay.prepare(gpu, size, ostats, history);
+		}
 		gpu.queue.write_buffer(
 			&self.light_near_buf,
 			0,
@@ -540,9 +569,14 @@ impl Renderer {
 			});
 
 		if wide_due {
-			self.encode_shadow_pass(&mut encoder, true, wide_vp);
+			let (draws, tris) = self.encode_shadow_pass(&mut encoder, true, wide_vp, Q_SHADOW_WIDE);
+			stats.draw_calls += draws;
+			stats.triangles += tris;
 		}
-		self.encode_shadow_pass(&mut encoder, false, near_vp);
+		let (casters, tris) = self.encode_shadow_pass(&mut encoder, false, near_vp, Q_SHADOW_NEAR);
+		stats.shadow_casters = casters;
+		stats.draw_calls += casters;
+		stats.triangles += tris;
 
 		{
 			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -564,7 +598,7 @@ impl Renderer {
 					}),
 					stencil_ops: None,
 				}),
-				timestamp_writes: None,
+				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_MAIN)),
 				occlusion_query_set: None,
 			});
 
@@ -574,6 +608,7 @@ impl Renderer {
 			pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 			for (pos, chunk) in &self.chunks {
 				if !in_frustum(pos) {
+					stats.chunks_culled += 1;
 					continue;
 				}
 				if let Some((buf, index_count)) = &chunk.solid {
@@ -584,29 +619,35 @@ impl Renderer {
 					);
 					pass.set_vertex_buffer(0, buf.slice(..));
 					pass.draw_indexed(0..*index_count, 0, 0..1);
+					stats.chunks_drawn += 1;
+					stats.triangles += *index_count / 3;
 				}
 			}
 
 			// Transparent water: after all solids, back-to-front by chunk
 			// distance (16³ granularity is enough), alpha 0.7, no depth
 			// writes, double-sided.
-			let mut water: Vec<(i64, &ChunkGpu)> = self
-				.chunks
-				.iter()
-				.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
-				.map(|(pos, c)| {
-					let center = glam::Vec3::new(
-						(pos.x * 16 + 8) as f32,
-						(pos.y * 16 + 8) as f32,
-						(pos.z * 16 + 8) as f32,
-					);
-					(-(center.distance_squared(cam_pos) as i64), c)
-				})
-				.collect();
-			water.sort_by_key(|(d, _)| *d);
+			self.water_scratch.clear();
+			self.water_scratch.extend(
+				self.chunks
+					.iter()
+					.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
+					.map(|(pos, _)| {
+						let center = glam::Vec3::new(
+							(pos.x * 16 + 8) as f32,
+							(pos.y * 16 + 8) as f32,
+							(pos.z * 16 + 8) as f32,
+						);
+						(-(center.distance_squared(cam_pos) as i64), *pos)
+					}),
+			);
+			self.water_scratch.sort_by_key(|(d, _)| *d);
 			pass.set_pipeline(&self.water_pipeline);
 			pass.set_bind_group(0, &self.frame_water_bg, &[]);
-			for (_, chunk) in water {
+			for (_, pos) in &self.water_scratch {
+				let Some(chunk) = self.chunks.get(pos) else {
+					continue;
+				};
 				if let Some((buf, index_count)) = &chunk.water {
 					pass.set_bind_group(
 						2,
@@ -615,21 +656,55 @@ impl Renderer {
 					);
 					pass.set_vertex_buffer(0, buf.slice(..));
 					pass.draw_indexed(0..*index_count, 0, 0..1);
+					stats.water_draws += 1;
+					stats.triangles += *index_count / 3;
 				}
 			}
 		}
+
+		// Debug overlay: own pass over the finished frame — LoadOp::Load,
+		// no depth — so it costs nothing when hidden (never encoded).
+		if overlay.is_some() {
+			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: Some("overlay"),
+				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+					view: target,
+					resolve_target: None,
+					ops: wgpu::Operations {
+						load: wgpu::LoadOp::Load,
+						store: wgpu::StoreOp::Store,
+					},
+					depth_slice: None,
+				})],
+				depth_stencil_attachment: None,
+				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_OVERLAY)),
+				occlusion_query_set: None,
+			});
+			self.overlay.draw(&mut pass);
+		}
+
+		if let Some(t) = self.gpu_timer.as_mut() {
+			t.resolve(&mut encoder);
+		}
 		gpu.queue.submit([encoder.finish()]);
+		if let Some(t) = self.gpu_timer.as_mut() {
+			t.after_submit(gpu);
+		}
+		stats.draw_calls += stats.chunks_drawn + stats.water_draws;
+		stats
 	}
 
 	/// Depth-only cascade render. Solid meshes only — water never casts
 	/// shadows (Java depth passes drew solidMesh exclusively). Casters are
 	/// culled against the light's own frustum.
+	/// Returns (draw calls, triangles) encoded.
 	fn encode_shadow_pass(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
 		wide: bool,
 		light_vp: glam::Mat4,
-	) {
+		ts_first: u32,
+	) -> (u32, u32) {
 		let (view, light_bg) = if wide {
 			(&self.textures.shadow_wide_view, &self.light_wide_bg)
 		} else {
@@ -647,12 +722,13 @@ impl Renderer {
 				}),
 				stencil_ops: None,
 			}),
-			timestamp_writes: None,
+			timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(ts_first)),
 			occlusion_query_set: None,
 		});
 		pass.set_pipeline(&self.shadow_pipeline);
 		pass.set_bind_group(0, light_bg, &[]);
 		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		let (mut draws, mut tris) = (0u32, 0u32);
 		for (pos, chunk) in &self.chunks {
 			let c = glam::Vec3::new(
 				(pos.x * 16 + 8) as f32,
@@ -671,8 +747,11 @@ impl Renderer {
 				);
 				pass.set_vertex_buffer(0, buf.slice(..));
 				pass.draw_indexed(0..*index_count, 0, 0..1);
+				draws += 1;
+				tris += *index_count / 3;
 			}
 		}
+		(draws, tris)
 	}
 }
 

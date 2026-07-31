@@ -1,8 +1,9 @@
 # DigBlock (Rust)
 
 Rust + wgpu rewrite of the DigBlock voxel engine (originally Java/libGDX,
-2015–2017). Faithful port — same terrain, water, day/night sun, and dual
-"Shadow LoD" cascades — with modern internals: threaded chunk pipeline,
+2015–2017). The port started as a faithful recreation — same terrain,
+water, day/night sun, and dual "Shadow LoD" cascades — and is now free to
+diverge and improve from there. Modern internals: threaded chunk pipeline,
 WGSL shaders on Metal, and a lifecycle-robust platform shell designed so a
 future Android target inherits no surface/lifecycle bugs.
 
@@ -11,6 +12,7 @@ future Android target inherits no surface/lifecycle bugs.
 ```sh
 just run                  # desktop (macOS)
 just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
+just bench                # deterministic perf run (release; scripted flight, inputs off)
 just check                # fmt + clippy + tests
 just check-ios            # iOS compile gate (no Xcode needed)
 just ios-sim              # simulator build+run   (requires full Xcode)
@@ -19,11 +21,15 @@ just ios-device           # device build          (requires full Xcode)
 
 Deterministic-capture / metrics flags:
 `--seed <f64>` `--tod <deg>` (freezes the sun) `--screenshot out.png`
-`--frames N` `--exit` `--metrics-csv out.csv` `--mobile` (draw dist 10,
-1024px shadows — the iOS config).
+`--frames N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass
+ms, pipeline job timings — one row per 5s) `--overlay` (start with the
+debug overlay visible) `--bench` (scripted camera flight, inputs disabled,
+1800 frames, CSV to bench.csv, one-line summary on exit) `--mobile`
+(draw dist 10, 1024px shadows — the iOS config).
 
 Controls: **WASD/arrows** move · mouse look (click to capture cursor) ·
-**Space** jump · **F** toggle walk/fly · **Esc** release cursor / quit.
+**Space** jump · **F** toggle walk/fly · **`** (backquote) debug overlay ·
+**Esc** release cursor / quit.
 Touch (iOS): left half = anchored joystick, right half = drag look,
 double-tap right = jump.
 
@@ -47,5 +53,5 @@ personal team.
 - `crates/digblock-assets` — compile-time embedded textures + WGSL (naga-validated in CI)
 - `apps/desktop`, `apps/ios` — thin launchers
 
-The old Java repo (`../DigBlock`) is the behavior reference; it still runs
+The old Java repo (`../DigBlock`) is a historical reference; it still runs
 under JDK 8 for side-by-side screenshot comparison.

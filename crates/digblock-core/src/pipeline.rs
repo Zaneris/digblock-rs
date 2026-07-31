@@ -19,6 +19,7 @@ use rustc_hash::FxHashMap;
 
 use crate::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::mesher::{border_plane, mesh_chunk, MeshData, NeighborPlane, DIRS};
+use crate::metrics::JobTiming;
 use crate::worldgen::build_chunk;
 
 pub struct MeshOutput {
@@ -41,8 +42,15 @@ enum Job {
 }
 
 enum JobResult {
-	Generated { pos: ChunkPos, data: Arc<ChunkData> },
-	Meshed(MeshOutput),
+	Generated {
+		pos: ChunkPos,
+		data: Arc<ChunkData>,
+		dur_ms: f32,
+	},
+	Meshed {
+		out: MeshOutput,
+		dur_ms: f32,
+	},
 }
 
 enum ChunkState {
@@ -58,12 +66,26 @@ struct ChunkSlot {
 	submitted_gen: u64,
 }
 
-/// What the caller (renderer side) must do after a maintain() call.
+/// What the caller (renderer side) must do after a maintain() call, plus
+/// instrumentation for the metrics system.
 pub struct Maintenance {
 	pub evicted: Vec<ChunkPos>,
 	pub meshed: Vec<MeshOutput>,
 	pub generated: u32,
-	pub queue_depth: u32,
+	/// Worker-job durations drained this call (including stale results —
+	/// the work was still done).
+	pub gen_jobs: JobTiming,
+	pub mesh_jobs: JobTiming,
+	/// Mesh results dropped because their generation was superseded.
+	pub stale_dropped: u32,
+	/// Jobs bounced back to a heap because the worker channel was full.
+	pub requeued: u32,
+	/// Hit `upload_budget` with more results still waiting.
+	pub saturated: bool,
+	pub gen_queue: u32,
+	pub mesh_queue: u32,
+	/// Jobs handed to workers whose results haven't been drained yet.
+	pub in_flight: u32,
 }
 
 pub struct Pipeline {
@@ -76,6 +98,7 @@ pub struct Pipeline {
 	mesh_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
 	center: ChunkPos,
 	scanned_once: bool,
+	in_flight: u32,
 	_workers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -108,6 +131,7 @@ impl Pipeline {
 			mesh_heap: BinaryHeap::new(),
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			scanned_once: false,
+			in_flight: 0,
 			_workers: workers,
 		}
 	}
@@ -120,7 +144,14 @@ impl Pipeline {
 			evicted: Vec::new(),
 			meshed: Vec::new(),
 			generated: 0,
-			queue_depth: 0,
+			gen_jobs: JobTiming::default(),
+			mesh_jobs: JobTiming::default(),
+			stale_dropped: 0,
+			requeued: 0,
+			saturated: false,
+			gen_queue: 0,
+			mesh_queue: 0,
+			in_flight: 0,
 		};
 		let center = ChunkPos::new(center.x, 0, center.z);
 		if center != self.center || !self.scanned_once {
@@ -129,8 +160,11 @@ impl Pipeline {
 			self.visibility_scan(&mut out.evicted);
 		}
 		self.drain_results(&mut out, upload_budget);
-		self.top_up_workers();
-		out.queue_depth = (self.gen_heap.len() + self.mesh_heap.len()) as u32;
+		out.saturated = out.meshed.len() == upload_budget && !self.result_rx.is_empty();
+		out.requeued = self.top_up_workers();
+		out.gen_queue = self.gen_heap.len() as u32;
+		out.mesh_queue = self.mesh_heap.len() as u32;
+		out.in_flight = self.in_flight;
 		out
 	}
 
@@ -183,9 +217,11 @@ impl Pipeline {
 			let Ok(result) = self.result_rx.try_recv() else {
 				break;
 			};
+			self.in_flight = self.in_flight.saturating_sub(1);
 			match result {
-				JobResult::Generated { pos, data } => {
+				JobResult::Generated { pos, data, dur_ms } => {
 					out.generated += 1;
+					out.gen_jobs.record(dur_ms);
 					let c = self.center;
 					if let Some(slot) = self.store.get_mut(&pos) {
 						slot.state = ChunkState::Ready(data);
@@ -211,18 +247,21 @@ impl Pipeline {
 						}
 					}
 				}
-				JobResult::Meshed(m) => {
+				JobResult::Meshed { out: m, dur_ms } => {
+					out.mesh_jobs.record(dur_ms);
 					match self.store.get(&m.pos) {
 						// Only the newest generation may reach the GPU.
 						Some(slot) if slot.mesh_gen == m.gen => out.meshed.push(m),
-						_ => {} // stale or evicted — drop
+						_ => out.stale_dropped += 1, // stale or evicted
 					}
 				}
 			}
 		}
 	}
 
-	fn top_up_workers(&mut self) {
+	/// Returns the number of jobs bounced back because workers were
+	/// saturated (0 or 1 — a bounce ends the loop).
+	fn top_up_workers(&mut self) -> u32 {
 		loop {
 			// Nearest-first across both heaps; generation wins ties so
 			// terrain exists before meshes want it.
@@ -242,15 +281,16 @@ impl Pipeline {
 			};
 			let Some(job) = job else { continue };
 			match self.job_tx.try_send(job) {
-				Ok(()) => {}
+				Ok(()) => self.in_flight += 1,
 				Err(TrySendError::Full(job)) => {
 					// Put it back; workers are saturated.
 					self.requeue(job);
-					break;
+					return 1;
 				}
 				Err(TrySendError::Disconnected(_)) => break,
 			}
 		}
+		0
 	}
 
 	fn next_gen_job(&mut self) -> Option<Job> {
@@ -368,21 +408,28 @@ impl Pipeline {
 
 fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 	while let Ok(job) = rx.recv() {
+		let start = std::time::Instant::now();
 		let result = match job {
-			Job::Generate { pos, seed } => JobResult::Generated {
-				pos,
-				data: Arc::new(build_chunk(pos, seed)),
-			},
+			Job::Generate { pos, seed } => {
+				let data = Arc::new(build_chunk(pos, seed));
+				JobResult::Generated {
+					pos,
+					data,
+					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
+				}
+			}
 			Job::Mesh {
 				pos,
 				gen,
 				blocks,
 				neighbors,
-			} => JobResult::Meshed(MeshOutput {
-				pos,
-				gen,
-				mesh: mesh_chunk(&blocks, &neighbors),
-			}),
+			} => {
+				let mesh = mesh_chunk(&blocks, &neighbors);
+				JobResult::Meshed {
+					out: MeshOutput { pos, gen, mesh },
+					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
+				}
+			}
 		};
 		if tx.send(result).is_err() {
 			break; // pipeline dropped
@@ -401,18 +448,22 @@ mod tests {
 	fn streaming_converges() {
 		let mut p = Pipeline::new(0.0, 6, 2);
 		let mut uploaded: FxHashMap<ChunkPos, u64> = FxHashMap::default();
+		let mut gen_jobs = JobTiming::default();
+		let mut mesh_jobs = JobTiming::default();
 		// Walk the center across chunk boundaries.
 		for step in 0..6 {
 			let center = ChunkPos::new(step * 2, 0, step);
 			for _ in 0..300 {
 				let m = p.maintain(center, 64);
+				gen_jobs.merge(m.gen_jobs);
+				mesh_jobs.merge(m.mesh_jobs);
 				for pos in m.evicted {
 					uploaded.remove(&pos);
 				}
 				for out in m.meshed {
 					uploaded.insert(out.pos, out.gen);
 				}
-				if m.queue_depth == 0 {
+				if m.gen_queue + m.mesh_queue == 0 && m.in_flight == 0 {
 					// let in-flight results land
 					std::thread::sleep(std::time::Duration::from_millis(2));
 				}
@@ -434,5 +485,10 @@ mod tests {
 		// Every resident chunk has a mesh upload, and interior chunks
 		// (all 4 horizontal neighbors present) meshed with full borders.
 		assert_eq!(uploaded.len(), p.resident(), "all resident chunks meshed");
+		// Instrumentation sanity: jobs were timed and aggregated.
+		assert!(gen_jobs.count > 0, "gen jobs recorded");
+		assert!(mesh_jobs.count > 0, "mesh jobs recorded");
+		assert!(gen_jobs.max_ms >= gen_jobs.avg_ms());
+		assert!(mesh_jobs.max_ms >= mesh_jobs.avg_ms());
 	}
 }

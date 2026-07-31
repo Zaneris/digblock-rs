@@ -4,6 +4,9 @@
 
 mod camera;
 mod engine;
+mod font;
+mod gpu_timer;
+mod overlay;
 mod renderer;
 mod texture;
 

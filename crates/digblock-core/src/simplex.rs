@@ -1,9 +1,6 @@
-//! Verbatim port of the 2D path of Stefan Gustavson's public-domain
-//! simplex noise (2012-03-09 version, Peter Eastman optimizations) — the
-//! exact implementation the Java DigBlock shipped. Deliberately NOT a
-//! `noise`-crate dependency: gradient tables and constants differ between
-//! implementations, and terrain must be bit-identical to the original.
-//! Verified bit-exact against the Java by `tests/golden.rs`.
+//! Port of the 2D path of Stefan Gustavson's public-domain simplex noise
+//! (2012-03-09 version, Peter Eastman optimizations) — the implementation
+//! the Java DigBlock shipped.
 
 const GRAD3: [(f64, f64); 12] = [
 	(1.0, 1.0),

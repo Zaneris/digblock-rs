@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use digblock_core::chunk::ChunkPos;
-use digblock_core::metrics::Metrics;
+use digblock_core::metrics::{FrameTimings, Metrics, PipelineGauges};
 use digblock_core::pipeline::Pipeline;
 use digblock_core::player::{Player, PlayerIntent, TICK};
 use digblock_core::sun::Sun;
@@ -23,6 +23,11 @@ pub struct EngineConfig {
 	/// Fixed sun angle in degrees for deterministic captures.
 	pub tod: Option<f32>,
 	pub metrics_csv: Option<std::path::PathBuf>,
+	/// Start with the debug overlay visible (` toggles at runtime).
+	pub overlay: bool,
+	/// Benchmark mode: inputs ignored, deterministic scripted camera
+	/// flight, run summary logged on exit.
+	pub bench: bool,
 }
 
 impl EngineConfig {
@@ -35,6 +40,8 @@ impl EngineConfig {
 			seed: None,
 			tod: None,
 			metrics_csv: None,
+			overlay: false,
+			bench: false,
 		}
 	}
 
@@ -46,6 +53,9 @@ impl EngineConfig {
 			seed: None,
 			tod: None,
 			metrics_csv: None,
+			// iOS has no keyboard toggle; flip this for device profiling.
+			overlay: false,
+			bench: false,
 		}
 	}
 }
@@ -62,8 +72,11 @@ struct HeldKeys {
 
 /// Per-frame mesh-upload budget: keeps main-thread GPU upload cost bounded
 /// so streaming can never hitch a frame (the modern form of the Java
-/// one-queue-item-per-frame rule).
-const UPLOAD_BUDGET: usize = 4;
+/// one-queue-item-per-frame rule). Adaptive: the fixed 4 saturated ~97%
+/// of streaming frames (BENCH.md) while uploads cost ~0.05ms each, so the
+/// budget doubles under sustained pressure and decays back when idle.
+const UPLOAD_BUDGET_MIN: usize = 4;
+const UPLOAD_BUDGET_MAX: usize = 32;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -75,18 +88,32 @@ pub struct Engine {
 	/// Walk (player physics) vs debug fly camera; F toggles.
 	walking: bool,
 	fly_key_down: bool,
+	overlay_key_down: bool,
 	tick_accum: f32,
 	sun: Sun,
 	wide_due: bool,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
 	metrics: Metrics,
+	/// Phase timings for the in-progress frame, handed to metrics at the
+	/// end of render().
+	pending: FrameTimings,
+	overlay_visible: bool,
+	history_scratch: Vec<f32>,
+	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
+	bench_t: f32,
+	upload_budget: usize,
 	size: (u32, u32),
+}
+
+fn ms_since(t: std::time::Instant) -> f32 {
+	t.elapsed().as_secs_f32() * 1000.0
 }
 
 impl Engine {
 	pub fn new(config: EngineConfig) -> Self {
-		let metrics = Metrics::new(config.metrics_csv.as_deref());
+		let mut metrics = Metrics::new(config.metrics_csv.as_deref());
+		metrics.workers = config.workers as u32;
 		// Java: seed = Math.random() * 10000, a domain offset for the noise.
 		let seed = config
 			.seed
@@ -95,6 +122,7 @@ impl Engine {
 		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		let pipeline = Pipeline::new(seed, config.draw_dist, config.workers);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
+		let overlay_visible = config.overlay;
 		Self {
 			config,
 			renderer: None,
@@ -104,12 +132,18 @@ impl Engine {
 			touch: TouchDriver::new(),
 			walking: true,
 			fly_key_down: false,
+			overlay_key_down: false,
 			tick_accum: 0.0,
 			sun,
 			wide_due: false,
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			metrics,
+			pending: FrameTimings::default(),
+			overlay_visible,
+			history_scratch: Vec::new(),
+			bench_t: 0.0,
+			upload_budget: UPLOAD_BUDGET_MIN,
 			size: (1, 1),
 		}
 	}
@@ -132,7 +166,16 @@ impl Engine {
 		let Some(renderer) = self.renderer.as_mut() else {
 			return;
 		};
-		let m = self.pipeline.maintain(center, UPLOAD_BUDGET);
+		let t_maintain = std::time::Instant::now();
+		let m = self.pipeline.maintain(center, self.upload_budget);
+		self.pending.maintain_ms = ms_since(t_maintain);
+		self.upload_budget = if m.saturated {
+			(self.upload_budget * 2).min(UPLOAD_BUDGET_MAX)
+		} else {
+			(self.upload_budget - 1).max(UPLOAD_BUDGET_MIN)
+		};
+		let t_upload = std::time::Instant::now();
+		self.metrics.evicted += m.evicted.len() as u32;
 		for pos in m.evicted {
 			renderer.remove_chunk(pos);
 		}
@@ -140,10 +183,20 @@ impl Engine {
 		for out in m.meshed {
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
 		}
+		self.pending.upload_ms = ms_since(t_upload);
 		self.metrics.chunks_generated += m.generated;
-		self.metrics.chunks_meshed += uploads;
 		self.metrics.meshes_uploaded += uploads;
-		self.metrics.queue_depth = m.queue_depth;
+		self.metrics.gen_jobs.merge(m.gen_jobs);
+		self.metrics.mesh_jobs.merge(m.mesh_jobs);
+		self.metrics.stale_dropped += m.stale_dropped;
+		self.metrics.requeued += m.requeued;
+		self.metrics.upload_saturated += m.saturated as u32;
+		self.metrics.gauges = PipelineGauges {
+			gen_queue: m.gen_queue,
+			mesh_queue: m.mesh_queue,
+			in_flight: m.in_flight,
+			resident: self.pipeline.resident() as u32,
+		};
 	}
 
 	fn frame_uniforms(&self, near_vp: glam::Mat4, wide_vp: glam::Mat4) -> FrameUniforms {
@@ -155,6 +208,16 @@ impl Engine {
 			light_wide: wide_vp.to_cols_array_2d(),
 			light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
 			misc: [1.0, 1.0, 1.0 / self.config.shadow_size as f32, 0.0],
+		}
+	}
+}
+
+impl Drop for Engine {
+	fn drop(&mut self) {
+		if self.config.bench {
+			if let Some(line) = self.metrics.bench_summary() {
+				log::info!("{line}");
+			}
 		}
 	}
 }
@@ -175,6 +238,10 @@ impl Game for Engine {
 	}
 
 	fn input(&mut self, event: InputEvent) {
+		// Benchmark runs must be input-independent to stay comparable.
+		if self.config.bench {
+			return;
+		}
 		match event {
 			InputEvent::Key { key, pressed } => match key {
 				Key::W | Key::Up => self.keys.w = pressed,
@@ -196,6 +263,12 @@ impl Game for Engine {
 						log::info!("mode: {}", if self.walking { "walk" } else { "fly" });
 					}
 					self.fly_key_down = pressed;
+				}
+				Key::Backquote => {
+					if pressed && !self.overlay_key_down {
+						self.overlay_visible = !self.overlay_visible;
+					}
+					self.overlay_key_down = pressed;
 				}
 				_ => {}
 			},
@@ -219,7 +292,12 @@ impl Game for Engine {
 		}
 	}
 
+	fn frame_acquired(&mut self, acquire_wait: Duration) {
+		self.pending.acquire_ms = acquire_wait.as_secs_f32() * 1000.0;
+	}
+
 	fn update(&mut self, dt: Duration) {
+		let t_update = std::time::Instant::now();
 		let dt = dt.as_secs_f32();
 		// A fixed --tod freezes the sun angle but keeps the wide-cascade
 		// refresh cadence (the map must still track streamed-in chunks).
@@ -228,6 +306,19 @@ impl Game for Engine {
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
+		// Scripted benchmark flight: constant-speed line with a slow yaw
+		// sweep, advanced one fixed 60Hz tick per frame so the path depends
+		// only on the frame index — identical workload run-to-run.
+		if self.config.bench {
+			const BENCH_SPEED: f32 = 30.0; // blocks per path-second
+			const BENCH_YAW: f32 = 12.0; // degrees per path-second
+			self.bench_t += TICK;
+			self.camera.pos = Vec3::new(BENCH_SPEED * self.bench_t, 40.0, 8.0);
+			self.camera.look(BENCH_YAW * TICK, 0.0);
+			self.pending.update_ms = ms_since(t_update);
+			return;
+		}
+
 		const LOOK_SENS: f32 = 0.12; // degrees per raw mouse unit
 		let (lx, ly) = std::mem::take(&mut self.look_accum);
 		let touch_look = self.touch.take_look();
@@ -282,6 +373,7 @@ impl Game for Engine {
 			}
 			self.camera.pos += mv.normalize_or_zero() * speed;
 		}
+		self.pending.update_ms = ms_since(t_update);
 	}
 
 	fn render(
@@ -301,8 +393,18 @@ impl Game for Engine {
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
 		let wide_due = std::mem::take(&mut self.wide_due);
+		// Overlay data is last frame's numbers (metrics.frame() runs at the
+		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
+		let overlay_stats = if self.overlay_visible {
+			self.metrics
+				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.history_scratch);
+			Some(self.metrics.overlay_stats())
+		} else {
+			None
+		};
 		if let Some(r) = self.renderer.as_mut() {
-			r.render(
+			let t_encode = std::time::Instant::now();
+			let stats = r.render(
 				gpu,
 				target,
 				depth,
@@ -312,11 +414,18 @@ impl Game for Engine {
 				wide_vp,
 				wide_due,
 				self.camera.pos,
+				size,
+				overlay_stats
+					.as_ref()
+					.map(|s| (s, self.history_scratch.as_slice())),
 			);
-			self.metrics.resident_chunks = r.resident_chunks() as u32;
+			self.pending.encode_ms = ms_since(t_encode);
+			self.metrics.render = stats;
+			self.metrics.gpu = r.gpu_pass_ms();
 			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
 		}
-		self.metrics.frame();
+		// total_ms is measured inside frame() from the frame-to-frame delta.
+		self.metrics.frame(std::mem::take(&mut self.pending));
 	}
 
 	fn on_suspend(&mut self) {

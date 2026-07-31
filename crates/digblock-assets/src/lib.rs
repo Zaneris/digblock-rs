@@ -16,8 +16,13 @@ pub mod tex {
 pub mod shader {
 	pub const CHUNK: &str = include_str!("../../../assets/shaders/chunk.wgsl");
 	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
+	pub const OVERLAY: &str = include_str!("../../../assets/shaders/overlay.wgsl");
 
-	pub const ALL: [(&str, &str); 2] = [("chunk.wgsl", CHUNK), ("shadow.wgsl", SHADOW)];
+	pub const ALL: [(&str, &str); 3] = [
+		("chunk.wgsl", CHUNK),
+		("shadow.wgsl", SHADOW),
+		("overlay.wgsl", OVERLAY),
+	];
 }
 
 #[cfg(test)]

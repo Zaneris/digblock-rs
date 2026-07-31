@@ -28,6 +28,9 @@ pub trait Game: 'static {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32));
 	fn resize(&mut self, gpu: &Gpu, size: (u32, u32));
 	fn input(&mut self, event: InputEvent);
+	/// Reports how long the swapchain acquire (vsync wait) took, just
+	/// before `update()`. Metrics facility; default ignores it.
+	fn frame_acquired(&mut self, _acquire_wait: std::time::Duration) {}
 	/// Never called while suspended.
 	fn update(&mut self, dt: std::time::Duration);
 	fn render(
@@ -60,6 +63,8 @@ pub struct RunOptions {
 	/// 40 simulate device loss (renderer rebuild), exit at frame 60.
 	/// Manual equivalents: F9 (hold suspended) and F10.
 	pub auto_drill: bool,
+	/// Exit after this many presented frames (benchmark runs).
+	pub exit_after_frames: Option<u64>,
 }
 
 /// Run the game. Never returns on iOS.

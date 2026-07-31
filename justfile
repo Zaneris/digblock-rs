@@ -3,6 +3,10 @@
 run *ARGS:
 	cargo run -p digblock-desktop -- {{ARGS}}
 
+# Deterministic perf run (release build — dev numbers aren't representative).
+bench *ARGS:
+	cargo run --release -p digblock-desktop -- --bench {{ARGS}}
+
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings

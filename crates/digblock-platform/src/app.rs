@@ -155,8 +155,15 @@ impl<G: Game> App<G> {
 		}))
 		.expect("no compatible GPU adapter");
 		log::info!("adapter: {:?}", adapter.get_info());
+		// GPU pass timing (debug/metrics facility) when the adapter has it.
+		let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+		log::info!(
+			"gpu timestamps: {}",
+			required_features.contains(wgpu::Features::TIMESTAMP_QUERY)
+		);
 		let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
 			label: Some("digblock"),
+			required_features,
 			..Default::default()
 		}))
 		.expect("request device");
@@ -230,6 +237,7 @@ impl<G: Game> App<G> {
 			return;
 		};
 
+		let t_acquire = std::time::Instant::now();
 		let frame = match r.surface.get_current_texture() {
 			Ok(f) => f,
 			Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -249,6 +257,7 @@ impl<G: Game> App<G> {
 			}
 		};
 
+		self.game.frame_acquired(t_acquire.elapsed());
 		let dt = self.clock.tick();
 		self.game.update(dt);
 
@@ -280,6 +289,14 @@ impl<G: Game> App<G> {
 		}
 
 		frame.present();
+		if self
+			.options
+			.exit_after_frames
+			.is_some_and(|n| self.frames_rendered >= n)
+		{
+			el.exit();
+			return;
+		}
 		// Redraw-chained loop: pacing comes from Fifo present, and this
 		// pattern avoids winit's iOS busy-spin issue with poll loops.
 		r.window.request_redraw();
