@@ -3,6 +3,35 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-07-31 (fourth pass): terrain realism cost check
+
+The realism pass (domain warping, erosion field, altitude-weighted
+detail, anisotropic ridge belts, slope/dither surface classification
+with snow, pooled noise-band rivers, karst-anisotropic caves) roughly
+doubles the 2D noise per column (~11 → ~21 `noise2`, plus a 1.27×
+padded-grid factor for neighbor-height slope reads). Per-block cave
+noise — the actual gen-cost driver — gained zero evaluations, so the
+worldgen additions land inside noise:
+
+| metric | before (same day) | after |
+|--------|-------------------|-------|
+| fill (vsync) | 3.98s ×2 | 3.97 / 3.98 / 3.98s |
+| gen job avg | 1.05–1.06 ms | 1.07–1.08 ms (+2%) |
+| fill (uncapped) | 2.02s | 2.07s |
+| p95 / p99 (vsync) | 9.5 / 10.9 | 9.5 / 10.6–11.1 |
+| over-12.5ms (vsync) | 1–2 | 1–5 |
+
+Note these fill/gen numbers are NOT comparable to the third-pass tables
+above — caves, trees, and the 256-block retune landed in between.
+Column classification runs on an 18×18 padded field grid per chunk
+stack (324 evals vs 1280 naive for the 5-sample per-column path); the
+grid and per-column paths are pinned bit-identical by
+`classification_paths_agree`. Skipped after consideration: the optional
+vertical-shaft cave band — it would add a `noise2` per solid block on
+the hottest per-block path for a subtle effect. Reference screenshots:
+`shots/realism-final.png` (seed 42), `shots/realism-river.png` (seed
+1234.5678, estuary + pooled river cascade).
+
 ## 2026-07-31 (third pass): frame pacing under fast streaming
 
 The throughput pass made chunks stream in ~8× faster but visibly
