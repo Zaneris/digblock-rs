@@ -49,6 +49,14 @@ const WARP_Z_OFF: f64 = 44777.0;
 /// roughness field fires.
 const EROSION_FREQ: f64 = 0.0012;
 const EROSION_SEED_OFF: f64 = 52561.0;
+/// Mountain-range orientation: the ridge domain is rotated by a slowly
+/// varying angle and stretched along the rotated axis, so ranges form
+/// oriented belts (like ranges along a plate boundary) instead of
+/// isotropic clusters.
+const ORIENT_FREQ: f64 = 0.0004;
+const ORIENT_SEED_OFF: f64 = 61553.0;
+/// Along-range frequency multiplier: ~3x longer than wide.
+const RIDGE_STRETCH: f64 = 0.35;
 
 /// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
 pub const SEA_LEVEL: i32 = 128;
@@ -177,7 +185,12 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let c = gained(fbm2(wx, wz, CONTINENT_FREQ, 2, seed), 2.2);
 	let r = gained(fbm2(xf, zf, ROUGH_FREQ, 2, seed + ROUGH_SEED_OFF), 2.2);
 	let d = fbm2(xf, zf, DETAIL_FREQ, 4, seed + DETAIL_SEED_OFF);
-	let m = fbm2(wx, wz, RIDGE_FREQ, 3, seed + RIDGE_SEED_OFF);
+	// Ridge field on a rotated, stretched domain (continuous in theta, so
+	// no seams — just a slow shear where the orientation drifts).
+	let theta = std::f64::consts::PI * fbm2(xf, zf, ORIENT_FREQ, 1, seed + ORIENT_SEED_OFF);
+	let (st, ct) = theta.sin_cos();
+	let (u, v) = (ct * wx + st * wz, -st * wx + ct * wz);
+	let m = fbm2(u * RIDGE_STRETCH, v, RIDGE_FREQ, 3, seed + RIDGE_SEED_OFF);
 
 	let base = spline(c);
 	// 0..1 mountainousness, gated to inland regions.
