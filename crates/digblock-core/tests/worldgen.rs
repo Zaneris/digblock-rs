@@ -1,14 +1,16 @@
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
-use digblock_core::worldgen::{build_chunk, terrain_height, DIRT_DEPTH, SEA_LEVEL};
+use digblock_core::worldgen::{build_chunk, terrain_height, DIRT_DEPTH, SEA_LEVEL, STONE_SURFACE};
 use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
 
-/// Column rules: stone below DIRT_DEPTH of topsoil, sand topsoil near or
-/// under the water line (beaches), grass-over-dirt otherwise, water fills
-/// to SEA_LEVEL, air above.
+/// Column rules re-implemented independently of worldgen's internals:
+/// stone below DIRT_DEPTH of topsoil, sand topsoil for ocean floors and
+/// beaches, bare stone above STONE_SURFACE, grass-over-dirt otherwise,
+/// water fills to SEA_LEVEL, air above. Validates fill_chunk's cell
+/// indexing and per-chunk assembly across the whole vertical stack.
 #[test]
 fn column_rules() {
 	let seed = 1234.5678;
-	for &(cx, cz) in &[(0, 0), (-3, 7), (100, -100)] {
+	for &(cx, cz) in &[(0, 0), (-3, 7), (100, -100), (40, 40)] {
 		let chunks: Vec<ChunkData> = (0..WORLD_VCHUNK)
 			.map(|cy| build_chunk(ChunkPos::new(cx, cy, cz), seed))
 			.collect();
@@ -30,6 +32,8 @@ fn column_rules() {
 						BlockType::Stone
 					} else if h <= SEA_LEVEL + 1 {
 						BlockType::Sand
+					} else if h >= STONE_SURFACE {
+						BlockType::Stone
 					} else if wy == h {
 						BlockType::Grass
 					} else {
@@ -42,40 +46,28 @@ fn column_rules() {
 	}
 }
 
-/// The three column archetypes all occur at this seed: a sea-floor column
-/// (sand under water), a beach column (sand above water), and an inland
-/// column (grass over dirt over stone).
+/// Spawn always lands above the beach line, for a spread of seeds.
 #[test]
-fn layering_archetypes() {
-	let seed = 1234.5678;
-	let (mut sea, mut beach, mut inland) = (false, false, false);
-	for x in -64..64 {
-		for z in -64..64 {
-			let h = terrain_height(x, z, seed);
-			if h < SEA_LEVEL {
-				sea = true;
-			} else if h <= SEA_LEVEL + 1 {
-				beach = true;
-			} else if h >= DIRT_DEPTH {
-				inland = true;
-			}
-		}
+fn spawn_finds_land() {
+	for seed in [0.0, 1.0, 1234.5678, 4242.0, 9999.9] {
+		let s = digblock_core::player::spawn(seed);
+		let h = terrain_height(s.x.floor() as i32, s.z.floor() as i32, seed);
+		assert!(h > SEA_LEVEL + 1, "seed {seed}: spawn over land (h={h})");
+		assert!((s.y - (h as f32 + 2.5)).abs() < 0.001, "eye above surface");
 	}
-	assert!(
-		sea && beach && inland,
-		"sea={sea} beach={beach} inland={inland}"
-	);
 }
 
-/// ASCII heightmap dump — run with `--nocapture` to eyeball terrain shape:
+/// ASCII region map — run with `--nocapture` to eyeball terrain shape:
 /// `cargo test -p digblock-core heightmap_dump -- --nocapture`
+/// The window spans ~4km so continental-scale features are visible.
 #[test]
 fn heightmap_dump() {
 	let seed = 0.0;
 	let glyphs = b" .:-=+*#%@";
 	let mut out = String::new();
-	for z in (-32..32).rev() {
-		for x in -64..64 {
+	let step = 32usize;
+	for z in (-1024..1024).rev().step_by(step) {
+		for x in (-2048..2048).step_by(step) {
 			let h = terrain_height(x, z, seed);
 			let g = glyphs[(h as usize * (glyphs.len() - 1)) / WORLD_VBLOCK as usize] as char;
 			out.push(if h <= SEA_LEVEL { '~' } else { g });
@@ -83,7 +75,7 @@ fn heightmap_dump() {
 		out.push('\n');
 	}
 	println!("{out}");
-	// Sanity: terrain is not flat and contains some water at seed 0.
+	// Sanity: the window contains both ocean and land at seed 0.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
 }

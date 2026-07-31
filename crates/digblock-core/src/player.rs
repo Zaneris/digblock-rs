@@ -15,11 +15,29 @@ pub const JUMP_IMPULSE: f32 = 5.0;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
 
-/// Eye spawn position: just above the terrain surface at the origin, so it
-/// tracks any worldgen retune instead of hardcoding a height.
+/// Eye spawn position: the nearest land to the origin. Walks expanding
+/// square rings (8-block stride) until a column clears the beach line, so
+/// spawning tracks the terrain instead of hardcoding a height — and never
+/// drops the player into the ocean.
 pub fn spawn(seed: f64) -> Vec3 {
-	let h = crate::worldgen::terrain_height(0, 0, seed);
-	Vec3::new(0.5, h as f32 + 2.5, 0.5)
+	use crate::worldgen::{terrain_height, SEA_LEVEL};
+	const STEP: i32 = 8;
+	for ring in 0..=64 {
+		let d = ring * STEP;
+		for z in (-d..=d).step_by(STEP as usize) {
+			for x in (-d..=d).step_by(STEP as usize) {
+				if x.abs().max(z.abs()) != d {
+					continue; // interior already visited on earlier rings
+				}
+				let h = terrain_height(x, z, seed);
+				if h > SEA_LEVEL + 1 {
+					return Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5);
+				}
+			}
+		}
+	}
+	// Pathological seed: no land within 512 blocks — tread water.
+	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
 }
 
 /// One tick's worth of input.

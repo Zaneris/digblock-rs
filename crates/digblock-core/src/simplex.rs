@@ -119,6 +119,25 @@ pub fn noise2(xin: f64, yin: f64) -> f64 {
 	70.0 * n
 }
 
+/// Fractal (fBm) sum of `octaves` of `noise2`: frequency doubles and
+/// amplitude halves per octave, normalized back to [-1, 1]. `seed` is a
+/// domain offset (the same convention the terrain heightmap uses); each
+/// octave is offset further so octaves don't share zero crossings.
+pub fn fbm2(x: f64, z: f64, freq: f64, octaves: u32, seed: f64) -> f64 {
+	let mut sum = 0.0;
+	let mut norm = 0.0;
+	let mut amp = 1.0;
+	let mut f = freq;
+	for i in 0..octaves {
+		let o = seed + f64::from(i) * 1013.0;
+		sum += amp * noise2(o + x * f, o + z * f);
+		norm += amp;
+		amp *= 0.5;
+		f *= 2.0;
+	}
+	sum / norm
+}
+
 #[cfg(test)]
 mod tests {
 	// The Java computes F2/G2 at class-init from sqrt; make sure our
@@ -127,5 +146,19 @@ mod tests {
 	fn skew_constants_match() {
 		assert_eq!(super::F2.to_bits(), (0.5 * (3.0f64.sqrt() - 1.0)).to_bits());
 		assert_eq!(super::G2.to_bits(), ((3.0 - 3.0f64.sqrt()) / 6.0).to_bits());
+	}
+
+	#[test]
+	fn fbm_in_range_and_deterministic() {
+		for &(x, z) in &[(0.0, 0.0), (13.7, -42.1), (-999.0, 5.5), (1e4, 1e4)] {
+			let a = super::fbm2(x, z, 0.01, 4, 12.34);
+			let b = super::fbm2(x, z, 0.01, 4, 12.34);
+			assert_eq!(a, b, "deterministic");
+			assert!((-1.0..=1.0).contains(&a), "in range: {a}");
+		}
+		// Different seeds decorrelate.
+		let a = super::fbm2(7.0, 7.0, 0.01, 2, 1.0);
+		let b = super::fbm2(7.0, 7.0, 0.01, 2, 2000.0);
+		assert_ne!(a, b);
 	}
 }
