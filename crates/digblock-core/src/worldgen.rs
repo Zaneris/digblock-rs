@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
 use crate::decoration::{decorate_chunk, trees_near};
-use crate::simplex::{fbm2, noise3};
+use crate::simplex::{fbm2, noise2, noise3};
 
 // The terrain tuning surface. Frequencies are per-block; amplitudes in
 // blocks. Field seeds are domain offsets so the three fields decorrelate.
@@ -68,8 +68,18 @@ pub const MAX_TERRAIN: f64 = 240.0;
 const CEILING_KNEE: f64 = 200.0;
 /// Above this the surface turns to bare rock.
 pub const STONE_SURFACE: i32 = 190;
+/// Above this, rock surfaces are capped with snow.
+pub const SNOW_LINE: f64 = 208.0;
 /// Blocks of dirt (or sand) between the surface and the stone below it.
 pub const DIRT_DEPTH: i32 = 3;
+/// Surface-classification dither: a ~9-block-wavelength noise nudges the
+/// beach band, the stone line, and the snow line (±6 blocks) so altitude
+/// zones meet in ragged natural edges instead of world-wide contours.
+const SURF_DITHER_FREQ: f64 = 0.11;
+const SURF_DITHER_OFF: f64 = 70999.0;
+/// Rise (blocks per block) beyond which a face is bare rock at any
+/// altitude — grass doesn't hold on ~54°+ slopes.
+const STEEP_SLOPE: f64 = 1.4;
 
 // Caves: the intersection of two independent 3D-noise zero bands. One
 // band alone carves space-filling sheets; requiring both fields near zero
@@ -143,11 +153,13 @@ pub enum SurfaceKind {
 	Beach,
 	/// Grass over dirt.
 	Plains,
-	/// Bare rock above STONE_SURFACE.
+	/// Bare rock above STONE_SURFACE — or any steep face.
 	Mountain,
+	/// Snow-capped rock above the (dithered) snow line.
+	Snow,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColumnShape {
 	/// World y of the surface block.
 	pub height: i32,
@@ -222,13 +234,32 @@ fn raw_height(x: i32, z: i32, seed: f64) -> f64 {
 /// Discretize fields + neighbor heights into a ColumnShape. Both call
 /// paths (per-column and padded chunk grid) feed identical f64 inputs
 /// here, so their classifications are bit-identical.
-fn classify(f: &Fields, _hxm: f64, _hxp: f64, _hzm: f64, _hzp: f64) -> ColumnShape {
+///
+/// Order matters: ocean, then the (dithered) beach band, then steepness
+/// — so cliffs are bare rock at any altitude, and snowfields break into
+/// rock faces wherever the terrain stands too steep to hold snow.
+/// `nbrs` is the neighbor heights `[x-1, x+1, z-1, z+1]`.
+fn classify(f: &Fields, nbrs: [f64; 4], x: i32, z: i32, seed: f64) -> ColumnShape {
+	let [hxm, hxp, hzm, hzp] = nbrs;
 	let height = f.h.floor() as i32;
+	let o = seed + SURF_DITHER_OFF;
+	let dith = noise2(
+		o + f64::from(x) * SURF_DITHER_FREQ,
+		o + f64::from(z) * SURF_DITHER_FREQ,
+	);
+	// Central-difference rise per block, the max of both axes.
+	let slope = (hxp - hxm).abs().max((hzp - hzm).abs()) * 0.5;
+	// Dithered altitude for the stone/snow lines.
+	let hd = f.h + dith * 6.0;
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
-	} else if height <= SEA_LEVEL + 1 {
+	} else if f64::from(height) <= f64::from(SEA_LEVEL) + 1.0 + (dith + 1.0) * 1.2 {
 		SurfaceKind::Beach
-	} else if height >= STONE_SURFACE {
+	} else if slope > STEEP_SLOPE + 0.3 * dith {
+		SurfaceKind::Mountain
+	} else if hd >= SNOW_LINE {
+		SurfaceKind::Snow
+	} else if hd >= f64::from(STONE_SURFACE) {
 		SurfaceKind::Mountain
 	} else {
 		SurfaceKind::Plains
@@ -245,10 +276,15 @@ fn classify(f: &Fields, _hxm: f64, _hxp: f64, _hzm: f64, _hzp: f64) -> ColumnSha
 pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	classify(
 		&fields(x, z, seed),
-		raw_height(x - 1, z, seed),
-		raw_height(x + 1, z, seed),
-		raw_height(x, z - 1, seed),
-		raw_height(x, z + 1, seed),
+		[
+			raw_height(x - 1, z, seed),
+			raw_height(x + 1, z, seed),
+			raw_height(x, z - 1, seed),
+			raw_height(x, z + 1, seed),
+		],
+		x,
+		z,
+		seed,
 	)
 }
 
@@ -282,10 +318,15 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 			let (gx, gz) = (x + 1, z + 1);
 			*s = classify(
 				&grid[gz][gx],
-				grid[gz][gx - 1].h,
-				grid[gz][gx + 1].h,
-				grid[gz - 1][gx].h,
-				grid[gz + 1][gx].h,
+				[
+					grid[gz][gx - 1].h,
+					grid[gz][gx + 1].h,
+					grid[gz - 1][gx].h,
+					grid[gz + 1][gx].h,
+				],
+				x as i32 + px,
+				z as i32 + pz,
+				seed,
 			);
 		}
 	}
@@ -327,6 +368,13 @@ fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 		match shape.surface {
 			SurfaceKind::Ocean | SurfaceKind::Beach => BlockType::Sand,
 			SurfaceKind::Mountain => BlockType::Stone,
+			SurfaceKind::Snow => {
+				if wy == h {
+					BlockType::Snow
+				} else {
+					BlockType::Stone
+				}
+			}
 			SurfaceKind::Plains => {
 				if wy == h {
 					BlockType::Grass
@@ -354,8 +402,12 @@ fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64)
 			let out = &mut data.blocks[row..row + CHUNK_SIZE];
 			for (x, (b, &shape)) in out.iter_mut().zip(srow).enumerate() {
 				let mut block = column_block(wy, shape);
-				let carveable =
-					matches!(block, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
+				// Snow is carveable like grass: a cave mouth opens through
+				// the surface block instead of leaving it floating.
+				let carveable = matches!(
+					block,
+					BlockType::Stone | BlockType::Dirt | BlockType::Grass | BlockType::Snow
+				);
 				if carveable
 					&& shape.height > shape.water
 					&& wy >= CAVE_FLOOR
@@ -443,6 +495,48 @@ mod tests {
 		}
 	}
 
+	/// The padded-grid path and the 5-evaluation per-column path must
+	/// classify identically — the invariant that keeps chunk fills and
+	/// per-column probes (trees, spawn) agreeing about the world.
+	#[test]
+	fn classification_paths_agree() {
+		let seed = 1234.5678;
+		for &(cx, cz) in &[(0, 0), (-3, 7), (40, 40), (-17, -29)] {
+			let shapes = column_shapes(cx, cz, seed);
+			for (z, row) in shapes.iter().enumerate() {
+				for (x, &s) in row.iter().enumerate() {
+					let (wx, wz) = (
+						x as i32 + cx * CHUNK_SIZE as i32,
+						z as i32 + cz * CHUNK_SIZE as i32,
+					);
+					assert_eq!(s, column_shape(wx, wz, seed), "at ({wx},{wz})");
+				}
+			}
+		}
+	}
+
+	/// Snow only appears near the (dithered) snow line, never at low
+	/// altitude, and snow surfaces exist somewhere in a mountain sample.
+	#[test]
+	fn snow_implies_altitude() {
+		let seed = 1234.5678;
+		let mut seen = 0u32;
+		for x in (-4096..4096).step_by(17) {
+			for z in (-4096..4096).step_by(19) {
+				let shape = column_shape(x, z, seed);
+				if shape.surface == SurfaceKind::Snow {
+					seen += 1;
+					assert!(
+						f64::from(shape.height) >= SNOW_LINE - 7.0,
+						"snow at h={} ({x},{z})",
+						shape.height
+					);
+				}
+			}
+		}
+		assert!(seen > 0, "sample contains snow surfaces");
+	}
+
 	/// All four surface kinds occur in a large sample, with open terrain
 	/// (plains + ocean) dominating mountains.
 	#[test]
@@ -457,7 +551,8 @@ mod tests {
 					SurfaceKind::Ocean => ocean += 1,
 					SurfaceKind::Beach => beach += 1,
 					SurfaceKind::Plains => plains += 1,
-					SurfaceKind::Mountain => mountain += 1,
+					// Snow is high-mountain surface for balance purposes.
+					SurfaceKind::Mountain | SurfaceKind::Snow => mountain += 1,
 				}
 			}
 		}

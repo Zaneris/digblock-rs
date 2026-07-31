@@ -25,6 +25,13 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 		match shape.surface {
 			SurfaceKind::Ocean | SurfaceKind::Beach => BlockType::Sand,
 			SurfaceKind::Mountain => BlockType::Stone,
+			SurfaceKind::Snow => {
+				if wy == h {
+					BlockType::Snow
+				} else {
+					BlockType::Stone
+				}
+			}
 			SurfaceKind::Plains => {
 				if wy == h {
 					BlockType::Grass
@@ -34,7 +41,10 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 			}
 		}
 	};
-	let carveable = matches!(base, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
+	let carveable = matches!(
+		base,
+		BlockType::Stone | BlockType::Dirt | BlockType::Grass | BlockType::Snow
+	);
 	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
 		BlockType::Air
 	} else {
