@@ -70,6 +70,34 @@ Cost: uncapped fill 0.55 → **0.58–0.61s** (the budget defers work to
 later frames — accepted for pacing); mesh jobs 13.6k → ~14.4k (drains
 spread over more frames → slightly more cross-border remesh cascades).
 
+### Addendum: the uncapped-run "surges", and nearest-first uploads
+
+The surging jitter visible when *watching* the uncapped bench was
+investigated against a suspected streaming bottleneck. Findings:
+
+- A static-scene uncapped control (camera parked, zero streaming, zero
+  uploads) shows the **identical stall fingerprint** as the full flight:
+  43 frames >12.5ms in 1800, avg ~19ms, one every ~40 frames (~115ms
+  cadence) — vs 43 / ~19.5ms / ~40 for the flight. Most flight stall
+  frames do zero maintain/upload work. The stalls are compositor-side
+  acquire waits on this machine, not the streaming path.
+- The stalls are *visible as speed surges* because the bench flight
+  advances one fixed 60Hz tick per frame (for run-to-run determinism):
+  at uncapped fps, camera speed is proportional to instantaneous frame
+  rate, so every stall freezes the flight ~20ms and every fps swing
+  modulates its speed. Real gameplay integrates real dt and doesn't
+  inherit this; the vsync-paced default bench doesn't either.
+
+Kept from the investigation: **nearest-first uploads** (`engine.rs`).
+The gen/mesh heaps were already distance-ordered, but the
+`pending_uploads` carry-over was FIFO — on fast travel the column the
+player is in/above could wait behind distant ring chunks. The queue is
+now sorted nearest-first each frame (µs for its typical size), and
+`UPLOAD_MIN` ≥ stack height guarantees the player's column uploads the
+frame it drains; only the far ring is allowed to lag. Fill/pacing
+unchanged (uncapped 0.58–0.61s, vsync 0.78s, drop counts at the
+environmental floor); screenshot pixel-identical.
+
 ## 2026-07-31 (second pass): uncapped bench + streaming throughput
 
 The bench now runs with **vsync off** (`AutoNoVsync`) and reports **fill

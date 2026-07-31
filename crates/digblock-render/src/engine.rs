@@ -191,6 +191,17 @@ impl Engine {
 			}
 		}
 		self.pending_uploads.extend(m.meshed);
+		// Nearest-first: on fast travel the queue backs up, and the chunks
+		// that matter are the ones at and around the player. UPLOAD_MIN ≥
+		// stack height, so the column the player is in/above always lands
+		// the frame it drains — only the far ring is allowed to lag.
+		if self.pending_uploads.len() > 1 {
+			self.pending_uploads.make_contiguous().sort_by_key(|out| {
+				let dx = out.pos.x - center.x;
+				let dz = out.pos.z - center.z;
+				dx * dx + dz * dz
+			});
+		}
 		let mut uploads = 0u32;
 		while let Some(out) = self.pending_uploads.pop_front() {
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
