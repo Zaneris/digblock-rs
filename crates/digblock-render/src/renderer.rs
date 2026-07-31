@@ -17,14 +17,16 @@ use digblock_platform::Gpu;
 const MAX_QUADS: usize = 12288;
 const CHUNK_STRIDE: u64 = 256;
 
-/// Chunk-origin UBO slot capacity for a draw distance. Only non-empty
-/// meshes take a slot: sky chunks never upload and fully buried chunks
-/// mesh empty, so per column only the surface band (plus water) survives —
-/// 6 slots per in-range column is a generous ceiling, asserted at upload.
+/// Chunk-origin UBO slot capacity for a draw distance. Sky chunks never
+/// upload, but caves can make any buried chunk non-empty, so budget the
+/// full stack of every in-range column (256B a slot — a few MB total).
+/// The upload-time assert stays as the tripwire.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
-	(columns * 6).next_multiple_of(256).max(4096)
+	(columns * digblock_core::chunk::WORLD_VCHUNK as u32)
+		.next_multiple_of(256)
+		.max(4096)
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;

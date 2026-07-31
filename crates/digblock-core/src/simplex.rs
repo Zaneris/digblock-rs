@@ -62,6 +62,26 @@ const PERM_MOD12: [u8; 512] = build_perm_mod12();
 // with doubles; these literals are the exact f64 values.
 const F2: f64 = 0.366_025_403_784_438_6;
 const G2: f64 = 0.211_324_865_405_187_13;
+// 3D skew factors: F3 = 1/3, G3 = 1/6 (Gustavson 2012-03-09).
+const F3: f64 = 1.0 / 3.0;
+const G3: f64 = 1.0 / 6.0;
+
+/// Full 3-component gradient set for the 3D path (GRAD3 above is its 2D
+/// projection, kept separate to preserve the Java-bit-exact 2D noise).
+const GRAD3D: [(f64, f64, f64); 12] = [
+	(1.0, 1.0, 0.0),
+	(-1.0, 1.0, 0.0),
+	(1.0, -1.0, 0.0),
+	(-1.0, -1.0, 0.0),
+	(1.0, 0.0, 1.0),
+	(-1.0, 0.0, 1.0),
+	(1.0, 0.0, -1.0),
+	(-1.0, 0.0, -1.0),
+	(0.0, 1.0, 1.0),
+	(0.0, -1.0, 1.0),
+	(0.0, 1.0, -1.0),
+	(0.0, -1.0, -1.0),
+];
 
 #[inline]
 fn fastfloor(x: f64) -> i32 {
@@ -89,8 +109,8 @@ pub fn noise2(xin: f64, yin: f64) -> f64 {
 
 	let (i1, j1) = if x0 > y0 { (1, 0) } else { (0, 1) };
 
-	let x1 = x0 - f64::from(i1) + G2;
-	let y1 = y0 - f64::from(j1) + G2;
+	let x1 = x0 - i1 as f64 + G2;
+	let y1 = y0 - j1 as f64 + G2;
 	let x2 = x0 - 1.0 + 2.0 * G2;
 	let y2 = y0 - 1.0 + 2.0 * G2;
 
@@ -117,6 +137,74 @@ pub fn noise2(xin: f64, yin: f64) -> f64 {
 		n += t2 * t2 * dot(GRAD3[gi2], x2, y2);
 	}
 	70.0 * n
+}
+
+/// 3D simplex noise in [-1, 1] — the 3D path of the same Gustavson
+/// implementation the 2D port came from. Used for volumetric worldgen
+/// (cave carving; ores later).
+pub fn noise3(xin: f64, yin: f64, zin: f64) -> f64 {
+	let s = (xin + yin + zin) * F3;
+	let i = fastfloor(xin + s);
+	let j = fastfloor(yin + s);
+	let k = fastfloor(zin + s);
+	let t = f64::from(i + j + k) * G3;
+	let x0 = xin - (f64::from(i) - t);
+	let y0 = yin - (f64::from(j) - t);
+	let z0 = zin - (f64::from(k) - t);
+
+	// Rank the coordinates to pick the simplex corner traversal order.
+	#[allow(clippy::collapsible_else_if)]
+	let ((i1, j1, k1), (i2, j2, k2)) = if x0 >= y0 {
+		if y0 >= z0 {
+			((1, 0, 0), (1, 1, 0)) // X Y Z
+		} else if x0 >= z0 {
+			((1, 0, 0), (1, 0, 1)) // X Z Y
+		} else {
+			((0, 0, 1), (1, 0, 1)) // Z X Y
+		}
+	} else {
+		if y0 < z0 {
+			((0, 0, 1), (0, 1, 1)) // Z Y X
+		} else if x0 < z0 {
+			((0, 1, 0), (0, 1, 1)) // Y Z X
+		} else {
+			((0, 1, 0), (1, 1, 0)) // Y X Z
+		}
+	};
+
+	let x1 = x0 - i1 as f64 + G3;
+	let y1 = y0 - j1 as f64 + G3;
+	let z1 = z0 - k1 as f64 + G3;
+	let x2 = x0 - i2 as f64 + 2.0 * G3;
+	let y2 = y0 - j2 as f64 + 2.0 * G3;
+	let z2 = z0 - k2 as f64 + 2.0 * G3;
+	let x3 = x0 - 1.0 + 3.0 * G3;
+	let y3 = y0 - 1.0 + 3.0 * G3;
+	let z3 = z0 - 1.0 + 3.0 * G3;
+
+	let ii = (i & 255) as usize;
+	let jj = (j & 255) as usize;
+	let kk = (k & 255) as usize;
+	let gi = |di: usize, dj: usize, dk: usize| -> usize {
+		PERM_MOD12[ii + di + PERM[jj + dj + PERM[kk + dk] as usize] as usize] as usize
+	};
+	let corners = [
+		(x0, y0, z0, gi(0, 0, 0)),
+		(x1, y1, z1, gi(i1, j1, k1)),
+		(x2, y2, z2, gi(i2, j2, k2)),
+		(x3, y3, z3, gi(1, 1, 1)),
+	];
+
+	let mut n = 0.0;
+	for (x, y, z, g) in corners {
+		let t = 0.6 - x * x - y * y - z * z;
+		if t >= 0.0 {
+			let t = t * t;
+			let (gx, gy, gz) = GRAD3D[g];
+			n += t * t * (gx * x + gy * y + gz * z);
+		}
+	}
+	32.0 * n
 }
 
 /// Fractal (fBm) sum of `octaves` of `noise2`: frequency doubles and
@@ -146,6 +234,24 @@ mod tests {
 	fn skew_constants_match() {
 		assert_eq!(super::F2.to_bits(), (0.5 * (3.0f64.sqrt() - 1.0)).to_bits());
 		assert_eq!(super::G2.to_bits(), ((3.0 - 3.0f64.sqrt()) / 6.0).to_bits());
+	}
+
+	#[test]
+	fn noise3_in_range_and_deterministic() {
+		let mut min = f64::MAX;
+		let mut max = f64::MIN;
+		for i in 0..4000 {
+			// Deterministic scattered sample points.
+			let x = f64::from(i) * 0.731 - 1500.0;
+			let y = f64::from(i % 61) * 1.37;
+			let z = f64::from(i % 253) * 2.11 - 250.0;
+			let n = super::noise3(x, y, z);
+			assert_eq!(n, super::noise3(x, y, z), "deterministic");
+			assert!((-1.0..=1.0).contains(&n), "in range: {n}");
+			min = min.min(n);
+			max = max.max(n);
+		}
+		assert!(min < -0.3 && max > 0.3, "spans a real range: {min}..{max}");
 	}
 
 	#[test]

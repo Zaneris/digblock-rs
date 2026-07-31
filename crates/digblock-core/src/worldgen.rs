@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
-use crate::simplex::fbm2;
+use crate::simplex::{fbm2, noise3};
 
 // The terrain tuning surface. Frequencies are per-block; amplitudes in
 // blocks. Field seeds are domain offsets so the three fields decorrelate.
@@ -38,6 +38,17 @@ pub const MAX_TERRAIN: f64 = 240.0;
 pub const STONE_SURFACE: i32 = 190;
 /// Blocks of dirt (or sand) between the surface and the stone below it.
 pub const DIRT_DEPTH: i32 = 3;
+
+// Caves: the intersection of two independent 3D-noise zero bands. One
+// band alone carves space-filling sheets; requiring both fields near zero
+// reduces the void to worm-like tunnel curves (and the carved volume
+// roughly quadratically). Land columns only (no ocean-floor caves → no
+// water walls at carved openings), never the bedrock layer at y=0.
+const CAVE_FREQ: f64 = 0.05;
+const CAVE_THRESHOLD: f64 = 0.12;
+const CAVE_SEED_OFF: f64 = 16193.0;
+const CAVE_SEED_OFF2: f64 = 27449.0;
+const CAVE_FLOOR: i32 = 1;
 
 /// Base elevation by continentalness: piecewise-linear anchors from deep
 /// ocean floor to highland base. Monotonic in `c`.
@@ -153,6 +164,22 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 	shapes
 }
 
+/// Whether the cave field carves this cell (pure; decoration needs it to
+/// judge "surface not carved" without building the chunk). Short-circuits
+/// so most cells pay for one noise evaluation, not two.
+pub fn carved(x: i32, y: i32, z: i32, seed: f64) -> bool {
+	let band = |off: f64| {
+		let o = seed + off;
+		let n = noise3(
+			o + f64::from(x) * CAVE_FREQ,
+			o + f64::from(y) * CAVE_FREQ,
+			o + f64::from(z) * CAVE_FREQ,
+		);
+		n.abs() < CAVE_THRESHOLD
+	};
+	band(CAVE_SEED_OFF) && band(CAVE_SEED_OFF2)
+}
+
 /// One cell of the column rules: stone below DIRT_DEPTH of topsoil;
 /// topsoil is sand on ocean floors and beaches, bare stone on mountain
 /// tops, grass-over-dirt otherwise; water up to SEA_LEVEL, air above.
@@ -182,15 +209,32 @@ fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	}
 }
 
-/// Writes in storage order (x contiguous).
-fn fill_chunk(data: &mut ChunkData, py: i32, shapes: &ShapeMap) {
+/// Column fill + cave carve, in storage order (x contiguous). Carving
+/// runs only on terrain cells of land columns, so ocean stacks and sky
+/// chunks never pay for the 3D noise.
+fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64) {
+	let (px, py, pz) = (
+		pos.x * CHUNK_SIZE as i32,
+		pos.y * CHUNK_SIZE as i32,
+		pos.z * CHUNK_SIZE as i32,
+	);
 	for y in 0..CHUNK_SIZE {
 		let wy = y as i32 + py;
 		for (z, srow) in shapes.iter().enumerate() {
 			let row = (y * CHUNK_SIZE + z) * CHUNK_SIZE;
 			let out = &mut data.blocks[row..row + CHUNK_SIZE];
-			for (b, &shape) in out.iter_mut().zip(srow) {
-				*b = column_block(wy, shape) as u8;
+			for (x, (b, &shape)) in out.iter_mut().zip(srow).enumerate() {
+				let mut block = column_block(wy, shape);
+				let carveable =
+					matches!(block, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
+				if carveable
+					&& shape.height > SEA_LEVEL
+					&& wy >= CAVE_FLOOR
+					&& carved(x as i32 + px, wy, z as i32 + pz, seed)
+				{
+					block = BlockType::Air;
+				}
+				*b = block as u8;
 			}
 		}
 	}
@@ -199,11 +243,7 @@ fn fill_chunk(data: &mut ChunkData, py: i32, shapes: &ShapeMap) {
 /// Fill one chunk's blocks.
 pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 	let mut data = ChunkData::default();
-	fill_chunk(
-		&mut data,
-		pos.y * CHUNK_SIZE as i32,
-		&column_shapes(pos.x, pos.z, seed),
-	);
+	fill_chunk(&mut data, pos, &column_shapes(pos.x, pos.z, seed), seed);
 	data
 }
 
@@ -226,7 +266,7 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 				return AIR_CHUNK.clone();
 			}
 			let mut data = ChunkData::default();
-			fill_chunk(&mut data, bottom, &shapes);
+			fill_chunk(&mut data, ChunkPos::new(cx, cy, cz), &shapes, seed);
 			Arc::new(data)
 		})
 		.collect()

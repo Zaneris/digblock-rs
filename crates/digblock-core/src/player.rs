@@ -20,7 +20,7 @@ pub const TICK: f32 = 1.0 / 60.0;
 /// spawning tracks the terrain instead of hardcoding a height — and never
 /// drops the player into the ocean.
 pub fn spawn(seed: f64) -> Vec3 {
-	use crate::worldgen::{terrain_height, SEA_LEVEL};
+	use crate::worldgen::{carved, terrain_height, SEA_LEVEL};
 	const STEP: i32 = 8;
 	for ring in 0..=64 {
 		let d = ring * STEP;
@@ -30,7 +30,8 @@ pub fn spawn(seed: f64) -> Vec3 {
 					continue; // interior already visited on earlier rings
 				}
 				let h = terrain_height(x, z, seed);
-				if h > SEA_LEVEL + 1 {
+				// Land, and the surface itself isn't a cave mouth.
+				if h > SEA_LEVEL + 1 && !carved(x, h, z, seed) {
 					return Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5);
 				}
 			}
