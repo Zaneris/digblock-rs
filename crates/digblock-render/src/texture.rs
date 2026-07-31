@@ -48,7 +48,7 @@ impl BlockTextures {
 			size: wgpu::Extent3d {
 				width: SIZE,
 				height: SIZE,
-				depth_or_array_layers: 4,
+				depth_or_array_layers: digblock_assets::tex::LAYERS.len() as u32,
 			},
 			mip_level_count: levels,
 			sample_count: 1,

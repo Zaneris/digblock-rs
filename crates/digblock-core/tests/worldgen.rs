@@ -1,8 +1,9 @@
-use digblock_core::worldgen::{build_chunk, terrain_height, WATER_HEIGHT};
+use digblock_core::worldgen::{build_chunk, terrain_height, DIRT_DEPTH, WATER_HEIGHT};
 use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
 
-/// Column rules: dirt below surface, grass at surface above water,
-/// dirt at surface underwater, water fills to WATER_HEIGHT, air above.
+/// Column rules: stone below DIRT_DEPTH of topsoil, sand topsoil near or
+/// under the water line (beaches), grass-over-dirt otherwise, water fills
+/// to WATER_HEIGHT, air above.
 #[test]
 fn column_rules() {
 	let seed = 1234.5678;
@@ -18,20 +19,51 @@ fn column_rules() {
 				let h = terrain_height(x as i32 + cx * 16, z as i32 + cz * 16, seed);
 				for wy in 0..32 {
 					let b = block_at(x, wy, z);
-					let expect = if wy < h || (wy == h && wy < WATER_HEIGHT) {
-						BlockType::Dirt
+					let expect = if wy > h {
+						if wy <= WATER_HEIGHT {
+							BlockType::Water
+						} else {
+							BlockType::Air
+						}
+					} else if wy <= h - DIRT_DEPTH {
+						BlockType::Stone
+					} else if h <= WATER_HEIGHT + 1 {
+						BlockType::Sand
 					} else if wy == h {
 						BlockType::Grass
-					} else if wy <= WATER_HEIGHT {
-						BlockType::Water
 					} else {
-						BlockType::Air
+						BlockType::Dirt
 					};
 					assert_eq!(b, expect, "({x},{wy},{z}) h={h}");
 				}
 			}
 		}
 	}
+}
+
+/// The three column archetypes all occur at this seed: a sea-floor column
+/// (sand under water), a beach column (sand above water), and an inland
+/// column (grass over dirt over stone).
+#[test]
+fn layering_archetypes() {
+	let seed = 1234.5678;
+	let (mut sea, mut beach, mut inland) = (false, false, false);
+	for x in -64..64 {
+		for z in -64..64 {
+			let h = terrain_height(x, z, seed);
+			if h < WATER_HEIGHT {
+				sea = true;
+			} else if h <= WATER_HEIGHT + 1 {
+				beach = true;
+			} else if h >= DIRT_DEPTH {
+				inland = true;
+			}
+		}
+	}
+	assert!(
+		sea && beach && inland,
+		"sea={sea} beach={beach} inland={inland}"
+	);
 }
 
 /// ASCII heightmap dump — run with `--nocapture` to eyeball terrain shape:

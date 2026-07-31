@@ -74,7 +74,7 @@ struct VsOut {
 }
 
 // Packed vertex: bits 0-4 x, 5-9 y, 10-14 z (chunk-local 0..=16),
-// 15-17 normal index, 18-19 texture layer, 20-21 corner, 22 water-lip.
+// 15-17 normal index, 20-21 corner, 22 water-lip, 23-28 texture layer.
 @vertex
 fn vs(@location(0) packed: u32) -> VsOut {
 	let x = f32(packed & 0x1fu);
@@ -89,7 +89,7 @@ fn vs(@location(0) packed: u32) -> VsOut {
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = vec2f(f32((packed >> 20u) & 1u), f32((packed >> 21u) & 1u));
-	o.layer = (packed >> 18u) & 3u;
+	o.layer = (packed >> 23u) & 63u;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);

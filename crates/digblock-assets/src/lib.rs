@@ -7,10 +7,13 @@ pub mod tex {
 	pub const DIRT: &[u8] = include_bytes!("../../../assets/textures/Dirt.png");
 	pub const GRASS_SIDE: &[u8] = include_bytes!("../../../assets/textures/GrassSide.png");
 	pub const GRASS_TOP: &[u8] = include_bytes!("../../../assets/textures/GrassTop.png");
+	pub const SAND: &[u8] = include_bytes!("../../../assets/textures/Sand.png");
+	pub const STONE: &[u8] = include_bytes!("../../../assets/textures/Stone.png");
 
-	/// Texture-array layer order. Must match the Java texture indices
-	/// (Block.getTextureFromBlockType): 0=Water 1=Dirt 2=GrassSide 3=GrassTop.
-	pub const LAYERS: [&[u8]; 4] = [WATER, DIRT, GRASS_SIDE, GRASS_TOP];
+	/// Texture-array layer order — the layer index is what block PROPS
+	/// reference (digblock-core block.rs `tex` module mirrors this list).
+	/// Append only; never reorder.
+	pub const LAYERS: [&[u8]; 6] = [WATER, DIRT, GRASS_SIDE, GRASS_TOP, SAND, STONE];
 }
 
 pub mod shader {

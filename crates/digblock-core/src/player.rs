@@ -44,7 +44,7 @@ fn cell(v: Vec3) -> (i32, i32, i32) {
 fn solid(b: Option<BlockType>) -> bool {
 	// Java: block != null && != AIR && != WATER. Unloaded (None) is not
 	// solid — the player falls through unloaded terrain, as in the Java.
-	matches!(b, Some(bt) if bt.is_solid())
+	matches!(b, Some(bt) if bt.props().collides)
 }
 
 impl Player {

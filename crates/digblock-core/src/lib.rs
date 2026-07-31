@@ -13,5 +13,5 @@ pub mod sun;
 pub mod touch;
 pub mod worldgen;
 
-pub use block::BlockType;
+pub use block::{BlockProps, BlockType, RenderClass};
 pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};

@@ -3,17 +3,18 @@
 //! the two adjacent block types, so a mesh job needs its own chunk plus six
 //! border planes copied from neighbors — no shared mutation, no locks.
 //!
-//! Face rules distilled from Chunk.setFlags (Java), verified by tests:
-//! - water|water interface → nothing
-//! - a face of `me` toward `neighbor` is emitted iff
-//!   (me is solid, or me is water and neighbor is air)
-//!   and neighbor is not solid
+//! Face rules (originally distilled from Chunk.setFlags in the Java, now
+//! driven by each block's RenderClass — see block.rs), verified by tests:
+//! - an Opaque neighbor occludes any face
+//! - Opaque emits toward any non-occluding neighbor; Cutout the same except
+//!   against its own type; Translucent emits only toward class-None (air)
+//!   and never against its own type — so water|water yields nothing
 //! - a missing (unloaded) neighbor suppresses border faces — whichever
 //!   chunk generates second re-dirties this one, matching the Java
 //! - above the top of the world there is an air sentinel; below the bottom,
 //!   missing (the Java null) — so no bottom faces at world bottom
 
-use crate::block::BlockType;
+use crate::block::{BlockType, RenderClass};
 use crate::chunk::{ChunkData, CHUNK_SIZE};
 
 /// Directions in the Java normal-table order (VertTex.glsl normal()):
@@ -131,24 +132,28 @@ impl MeshData {
 #[inline]
 fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
 	let Some(nb) = neighbor else { return false }; // Missing neighbor
-	if me == BlockType::Water && nb == BlockType::Water {
+	if nb.props().class == RenderClass::Opaque {
 		return false;
 	}
-	let renderable = me.is_solid() || (me == BlockType::Water && nb == BlockType::Air);
-	renderable && !nb.is_solid()
+	match me.props().class {
+		RenderClass::None => false,
+		RenderClass::Opaque => true,
+		RenderClass::Cutout => nb != me,
+		RenderClass::Translucent => nb.props().class == RenderClass::None,
+	}
 }
 
-/// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 18-19 texture
-/// layer, 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22 water-lip.
+/// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 20-21 corner
+/// (0=TL 1=TR 2=BL 3=BR), 22 water-lip, 23-28 texture layer (18-19 unused).
 #[inline]
 fn pack(x: u32, y: u32, z: u32, normal: Dir, tex: u32, corner: u32, lip: bool) -> u32 {
-	debug_assert!(x <= 16 && y <= 16 && z <= 16 && tex < 4 && corner < 4);
+	debug_assert!(x <= 16 && y <= 16 && z <= 16 && tex < 64 && corner < 4);
 	x | (y << 5)
 		| (z << 10)
 		| ((normal as u32) << 15)
-		| (tex << 18)
 		| (corner << 20)
 		| (u32::from(lip) << 22)
+		| (tex << 23)
 }
 
 /// Emit one face quad. Geometry is the Java ChunkMeshGenerator's, in
@@ -206,7 +211,7 @@ pub fn mesh_chunk(data: &ChunkData, neighbors: &[NeighborPlane; 6]) -> MeshData 
 			for x in 0..n {
 				let idx = row + x;
 				let me = BlockType::from_u8(data.blocks[idx]);
-				if me == BlockType::Air {
+				if me.props().class == RenderClass::None {
 					continue;
 				}
 				for &dir in &DIRS {
@@ -233,16 +238,12 @@ pub fn mesh_chunk(data: &ChunkData, neighbors: &[NeighborPlane; 6]) -> MeshData 
 					if !face_visible(me, neighbor) {
 						continue;
 					}
-					let tex = if dir == Dir::Top {
-						me.top_texture()
-					} else {
-						me.side_texture()
-					};
-					let lip = me == BlockType::Water && dir == Dir::Top;
-					let out = if me.is_solid() {
-						&mut mesh.solid
-					} else {
-						&mut mesh.water
+					let class = me.props().class;
+					let tex = me.texture(dir);
+					let lip = class == RenderClass::Translucent && dir == Dir::Top;
+					let out = match class {
+						RenderClass::Translucent => &mut mesh.water,
+						_ => &mut mesh.solid,
 					};
 					emit_face(out, x, y, z, dir, tex, lip);
 				}
@@ -357,13 +358,31 @@ mod tests {
 
 	#[test]
 	fn packed_vertex_roundtrip() {
-		let v = pack(16, 7, 3, Dir::East, 3, 2, true);
+		let v = pack(16, 7, 3, Dir::East, 37, 2, true);
 		assert_eq!(v & 0x1f, 16);
 		assert_eq!((v >> 5) & 0x1f, 7);
 		assert_eq!((v >> 10) & 0x1f, 3);
 		assert_eq!((v >> 15) & 0x7, Dir::East as u32);
-		assert_eq!((v >> 18) & 0x3, 3);
 		assert_eq!((v >> 20) & 0x3, 2);
 		assert_eq!((v >> 22) & 0x1, 1);
+		assert_eq!((v >> 23) & 0x3f, 37);
+	}
+
+	#[test]
+	fn grass_bottom_uses_dirt_texture() {
+		// Per-face table: grass top/side/bottom are three distinct layers.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Grass);
+		let m = mesh_chunk(&d, &ALL_MISSING);
+		let layer_of = |v: u32| (v >> 23) & 0x3f;
+		let normal_of = |v: u32| (v >> 15) & 0x7;
+		for v in &m.solid {
+			let expect = match normal_of(*v) as usize {
+				n if n == Dir::Top as usize => 3,    // GrassTop
+				n if n == Dir::Bottom as usize => 1, // Dirt
+				_ => 2,                              // GrassSide
+			};
+			assert_eq!(layer_of(*v), expect);
+		}
 	}
 }
