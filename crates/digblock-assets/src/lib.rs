@@ -9,11 +9,16 @@ pub mod tex {
 	pub const GRASS_TOP: &[u8] = include_bytes!("../../../assets/textures/GrassTop.png");
 	pub const SAND: &[u8] = include_bytes!("../../../assets/textures/Sand.png");
 	pub const STONE: &[u8] = include_bytes!("../../../assets/textures/Stone.png");
+	pub const WOOD: &[u8] = include_bytes!("../../../assets/textures/Wood.png");
+	pub const WOOD_TOP: &[u8] = include_bytes!("../../../assets/textures/WoodTop.png");
+	pub const LEAVES: &[u8] = include_bytes!("../../../assets/textures/Leaves.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference (digblock-core block.rs `tex` module mirrors this list).
 	/// Append only; never reorder.
-	pub const LAYERS: [&[u8]; 6] = [WATER, DIRT, GRASS_SIDE, GRASS_TOP, SAND, STONE];
+	pub const LAYERS: [&[u8]; 9] = [
+		WATER, DIRT, GRASS_SIDE, GRASS_TOP, SAND, STONE, WOOD, WOOD_TOP, LEAVES,
+	];
 }
 
 pub mod shader {

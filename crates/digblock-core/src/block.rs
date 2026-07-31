@@ -18,6 +18,8 @@ pub enum BlockType {
 	Grass = 3,
 	Sand = 4,
 	Stone = 5,
+	Wood = 6,
+	Leaves = 7,
 }
 
 /// How a block participates in meshing and rendering.
@@ -63,6 +65,9 @@ mod tex {
 	pub const GRASS_TOP: u8 = 3;
 	pub const SAND: u8 = 4;
 	pub const STONE: u8 = 5;
+	pub const WOOD: u8 = 6;
+	pub const WOOD_TOP: u8 = 7;
+	pub const LEAVES: u8 = 8;
 }
 
 /// Indexed by `BlockType as usize` — the repr(u8) discriminants are
@@ -76,11 +81,13 @@ pub const PROPS: [BlockProps; BlockType::COUNT] = {
 		props(R::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT), // Grass
 		props(R::Opaque, true, tex::SAND, tex::SAND, tex::SAND), // Sand
 		props(R::Opaque, true, tex::STONE, tex::STONE, tex::STONE), // Stone
+		props(R::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), // Wood
+		props(R::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), // Leaves
 	]
 };
 
 impl BlockType {
-	pub const COUNT: usize = 6;
+	pub const COUNT: usize = 8;
 	pub const ALL: [BlockType; Self::COUNT] = [
 		BlockType::Air,
 		BlockType::Water,
@@ -88,6 +95,8 @@ impl BlockType {
 		BlockType::Grass,
 		BlockType::Sand,
 		BlockType::Stone,
+		BlockType::Wood,
+		BlockType::Leaves,
 	];
 
 	#[inline]

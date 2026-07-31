@@ -41,11 +41,19 @@ Workspace with four crates and two thin app launchers. The crate boundaries are 
 
 ### Java heritage
 
-The port was originally validated bit-exactly against the Java original; those parity tests have been retired, and behavior — including terrain produced by a given seed — is free to diverge and improve. Some numeric oddities (e.g. f32 multiplies widened to f64 in `worldgen.rs`) are leftovers from reproducing Java arithmetic and can be simplified when touching that code. Comments citing Java code explain provenance, not obligations.
+The port was originally validated bit-exactly against the Java original; those parity tests have been retired, and behavior — including terrain produced by a given seed — has since diverged substantially (256-block world, shaped terrain, caves, trees, dig/place). Comments citing Java code explain provenance, not obligations.
+
+### Blocks (core/block.rs)
+
+Block behavior is data-driven: a const `PROPS` table indexed by the contiguous `repr(u8)` discriminants holds each block's `RenderClass` (None/Opaque/Cutout/Translucent), `collides`, and per-face texture layers. Adding a block = enum variant + PROPS row + PNG + `LAYERS` entry in digblock-assets (layer order is append-only). The mesher, physics, and raycast all key off the table — no per-block special cases elsewhere.
+
+### Worldgen (core/worldgen.rs + decoration.rs)
+
+Everything is a pure function of `(x, z, seed)` — column content never depends on generation order. Terrain: continentalness (spline base height, ocean→plains→highlands) + roughness (plains vs ridged mountain amplitude) + detail fBm; `SEA_LEVEL = 128` of a 256-block world; per-column `SurfaceKind` (Ocean/Beach/Plains/Mountain) is the future-biome seam. Caves carve where two independent 3D-noise bands intersect (land columns only). Trees run as a decoration pass (fill → carve → decorate) using pure apron evaluation: candidates come from a position hash, every chunk within `STRUCTURE_APRON` computes the identical tree independently, so structures span chunk borders with no pipeline state. Sky chunks resolve to the shared `AIR_CHUNK` sentinel Arc (never meshed, recognized by pointer).
 
 ### Chunk pipeline (core/pipeline.rs + mesher.rs)
 
-A worker pool replaces the Java one-item-per-frame loop. The main thread owns the chunk store and scheduling; workers run pure functions (terrain gen, meshing) over immutable snapshots — a mesh job gets its own chunk plus six copied border planes, no shared mutation. Staleness is handled by generation counters: results whose `gen` doesn't match the slot's current counter are dropped. A newly generated chunk bumps its own and all six Ready neighbors' counters.
+A worker pool replaces the Java one-item-per-frame loop. The main thread owns the chunk store and scheduling; workers run pure functions (terrain gen, meshing) over immutable snapshots — a mesh job gets its own chunk plus six copied border planes, no shared mutation. Staleness is handled by generation counters: results whose `gen` doesn't match the slot's current counter are dropped. A newly generated chunk bumps its own and all six Ready neighbors' counters. Block edits go through `Pipeline::set_block` (dig/place): copy-on-write via `Arc::make_mut`, bumping the chunk and only border-adjacent neighbors; the packed vertex format has a 6-bit texture-layer field (bits 23-28).
 
 ### Lifecycle robustness
 

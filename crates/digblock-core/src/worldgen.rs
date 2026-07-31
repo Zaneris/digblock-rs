@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
+use crate::decoration::{decorate_chunk, trees_near};
 use crate::simplex::{fbm2, noise3};
 
 // The terrain tuning surface. Frequencies are per-block; amplitudes in
@@ -240,10 +241,12 @@ fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64)
 	}
 }
 
-/// Fill one chunk's blocks.
+/// Build one chunk: fill → carve (inside fill) → decorate.
 pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
+	let n = CHUNK_SIZE as i32;
 	let mut data = ChunkData::default();
 	fill_chunk(&mut data, pos, &column_shapes(pos.x, pos.z, seed), seed);
+	decorate_chunk(&mut data, pos, &trees_near(pos.x * n, pos.z * n, seed));
 	data
 }
 
@@ -252,6 +255,7 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 /// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
 /// sentinel — no fill, no allocation, recognized by pointer downstream.
 pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
+	let n = CHUNK_SIZE as i32;
 	let shapes = column_shapes(cx, cz, seed);
 	let max_h = shapes
 		.iter()
@@ -259,14 +263,19 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 		.map(|s| s.height)
 		.max()
 		.expect("non-empty shape map");
+	let trees = trees_near(cx * n, cz * n, seed);
+	// Sky starts above both the terrain and anything decoration can reach.
+	let solid_top = trees.iter().map(|t| t.top()).fold(max_h, i32::max);
 	(0..WORLD_VCHUNK)
 		.map(|cy| {
-			let bottom = cy * CHUNK_SIZE as i32;
-			if bottom > max_h && bottom > SEA_LEVEL {
+			let bottom = cy * n;
+			if bottom > solid_top && bottom > SEA_LEVEL {
 				return AIR_CHUNK.clone();
 			}
+			let pos = ChunkPos::new(cx, cy, cz);
 			let mut data = ChunkData::default();
-			fill_chunk(&mut data, ChunkPos::new(cx, cy, cz), &shapes, seed);
+			fill_chunk(&mut data, pos, &shapes, seed);
+			decorate_chunk(&mut data, pos, &trees);
 			Arc::new(data)
 		})
 		.collect()

@@ -369,6 +369,26 @@ mod tests {
 	}
 
 	#[test]
+	fn cutout_culls_same_type_but_not_others() {
+		// Two adjacent leaves over dirt: the shared leaf|leaf face pair is
+		// culled, leaves never occlude the dirt below, and dirt (Opaque)
+		// occludes nothing of itself.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Leaves);
+		d.set(9, 8, 8, B::Leaves);
+		d.set(8, 7, 8, B::Dirt);
+		let m = mesh_chunk(&d, &ALL_MISSING);
+		assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
+		let layer_of = |v: u32| (v >> 23) & 0x3f;
+		let leaf_faces = m.solid.iter().filter(|v| layer_of(**v) == 8).count() / 4;
+		let dirt_faces = m.solid.iter().filter(|v| layer_of(**v) == 1).count() / 4;
+		// Leaf A: 4 (leaf neighbor culled, dirt below occludes). Leaf B: 5.
+		assert_eq!(leaf_faces, 9);
+		// Dirt: 6 — its top face shows through the non-occluding leaf.
+		assert_eq!(dirt_faces, 6);
+	}
+
+	#[test]
 	fn grass_bottom_uses_dirt_texture() {
 		// Per-face table: grass top/side/bottom are three distinct layers.
 		let mut d = ChunkData::default();

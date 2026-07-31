@@ -1,8 +1,39 @@
+use std::collections::HashMap;
+
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
+use digblock_core::decoration::{trees_near, STRUCTURE_APRON};
 use digblock_core::worldgen::{
 	build_chunk, carved, terrain_height, DIRT_DEPTH, SEA_LEVEL, STONE_SURFACE,
 };
 use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
+
+/// The terrain-only expectation (no trees), re-implemented independently.
+fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
+	let h = terrain_height(wx, wz, seed);
+	let base = if wy > h {
+		if wy <= SEA_LEVEL {
+			BlockType::Water
+		} else {
+			BlockType::Air
+		}
+	} else if wy <= h - DIRT_DEPTH {
+		BlockType::Stone
+	} else if h <= SEA_LEVEL + 1 {
+		BlockType::Sand
+	} else if h >= STONE_SURFACE {
+		BlockType::Stone
+	} else if wy == h {
+		BlockType::Grass
+	} else {
+		BlockType::Dirt
+	};
+	let carveable = matches!(base, BlockType::Stone | BlockType::Dirt | BlockType::Grass);
+	if carveable && h > SEA_LEVEL && wy >= 1 && carved(wx, wy, wz, seed) {
+		BlockType::Air
+	} else {
+		base
+	}
+}
 
 /// Column rules re-implemented independently of worldgen's internals:
 /// stone below DIRT_DEPTH of topsoil, sand topsoil for ocean floors and
@@ -14,6 +45,7 @@ use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
 fn column_rules() {
 	let seed = 1234.5678;
 	let mut caves_seen = false;
+	let mut trees_seen = false;
 	for &(cx, cz) in &[(0, 0), (-3, 7), (100, -100), (40, 40)] {
 		let chunks: Vec<ChunkData> = (0..WORLD_VCHUNK)
 			.map(|cy| build_chunk(ChunkPos::new(cx, cy, cz), seed))
@@ -21,46 +53,98 @@ fn column_rules() {
 		let block_at = |x: usize, wy: i32, z: usize| -> BlockType {
 			chunks[(wy / 16) as usize].get(x, (wy % 16) as usize, z)
 		};
+		// Mirror of the decoration pass: trees write into terrain-Air
+		// cells, in candidate order, first writer wins.
+		let mut tree_cells: HashMap<(i32, i32, i32), BlockType> = HashMap::new();
+		for tree in trees_near(cx * 16, cz * 16, seed) {
+			tree.for_each_block(|x, y, z, b| {
+				if expect_terrain(x, y, z, seed) == BlockType::Air {
+					tree_cells.entry((x, y, z)).or_insert(b);
+				}
+			});
+		}
 		for x in 0..CHUNK_SIZE {
 			for z in 0..CHUNK_SIZE {
 				let (wx, wz) = (x as i32 + cx * 16, z as i32 + cz * 16);
 				let h = terrain_height(wx, wz, seed);
 				for wy in 0..=WORLD_VBLOCK {
 					let b = block_at(x, wy, z);
-					let expect = if wy > h {
-						if wy <= SEA_LEVEL {
-							BlockType::Water
-						} else {
-							BlockType::Air
+					let terrain = expect_terrain(wx, wy, wz, seed);
+					if terrain == BlockType::Air && wy <= h {
+						caves_seen = true;
+					}
+					let expect = match tree_cells.get(&(wx, wy, wz)) {
+						Some(&t) if terrain == BlockType::Air => {
+							trees_seen = true;
+							t
 						}
-					} else if wy <= h - DIRT_DEPTH {
-						BlockType::Stone
-					} else if h <= SEA_LEVEL + 1 {
-						BlockType::Sand
-					} else if h >= STONE_SURFACE {
-						BlockType::Stone
-					} else if wy == h {
-						BlockType::Grass
-					} else {
-						BlockType::Dirt
+						_ => terrain,
 					};
-					let carveable = matches!(
-						expect,
-						BlockType::Stone | BlockType::Dirt | BlockType::Grass
-					);
-					let expect =
-						if carveable && h > SEA_LEVEL && wy >= 1 && carved(wx, wy, wz, seed) {
-							caves_seen = true;
-							BlockType::Air
-						} else {
-							expect
-						};
 					assert_eq!(b, expect, "({x},{wy},{z}) h={h}");
 				}
 			}
 		}
 	}
 	assert!(caves_seen, "the sampled chunks contain some carved cells");
+	assert!(trees_seen, "the sampled chunks contain some tree blocks");
+}
+
+/// A tree whose canopy crosses a chunk border must appear identically in
+/// every chunk it spills into — the core correctness property of pure
+/// apron evaluation.
+#[test]
+fn trees_span_chunk_borders_seamlessly() {
+	let seed = 1234.5678;
+	let mut cache: HashMap<ChunkPos, ChunkData> = HashMap::new();
+	for ccz in -6..6 {
+		for ccx in -6..6 {
+			for tree in trees_near(ccx * 16, ccz * 16, seed) {
+				let (lx, lz) = (tree.x.rem_euclid(16), tree.z.rem_euclid(16));
+				let crosses = !(2..=13).contains(&lx) || !(2..=13).contains(&lz);
+				if !crosses {
+					continue;
+				}
+				let mut chunks_touched = std::collections::HashSet::new();
+				tree.for_each_block(|x, y, z, b| {
+					let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
+					chunks_touched.insert((pos.x, pos.z));
+					let chunk = cache.entry(pos).or_insert_with(|| build_chunk(pos, seed));
+					let got = chunk.get(
+						x.rem_euclid(16) as usize,
+						y.rem_euclid(16) as usize,
+						z.rem_euclid(16) as usize,
+					);
+					// The cell holds this tree's block unless terrain or an
+					// earlier tree already occupied it — never bare air.
+					assert!(
+						got == b || got != BlockType::Air,
+						"({x},{y},{z}) empty in {pos:?}"
+					);
+				});
+				assert!(
+					chunks_touched.len() > 1,
+					"tree at ({},{}) spans chunks",
+					tree.x,
+					tree.z
+				);
+				return; // one verified border tree is the property
+			}
+		}
+	}
+	panic!("no border-crossing tree found in the sample area");
+}
+
+/// Trees never grow below the apron contract: every block a tree emits
+/// stays within STRUCTURE_APRON of its origin column.
+#[test]
+fn trees_respect_the_apron() {
+	let seed = 42.0;
+	for tree in trees_near(0, 0, seed) {
+		tree.for_each_block(|x, _y, z, _b| {
+			assert!((x - tree.x).abs() <= STRUCTURE_APRON);
+			assert!((z - tree.z).abs() <= STRUCTURE_APRON);
+		});
+	}
 }
 
 /// Structural cave invariants, independent of the carve function: the
