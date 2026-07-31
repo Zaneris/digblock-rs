@@ -44,6 +44,11 @@ const WARP_FREQ: f64 = 0.0008;
 const WARP_AMP: f64 = 160.0;
 const WARP_X_OFF: f64 = 31337.0;
 const WARP_Z_OFF: f64 = 44777.0;
+/// Erosion: where high, relief is planed down — wide flat valleys and
+/// plateaus appear even inland, instead of mountains everywhere the
+/// roughness field fires.
+const EROSION_FREQ: f64 = 0.0012;
+const EROSION_SEED_OFF: f64 = 52561.0;
 
 /// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
 pub const SEA_LEVEL: i32 = 128;
@@ -177,11 +182,20 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let base = spline(c);
 	// 0..1 mountainousness, gated to inland regions.
 	let rough = smoothstep(((r + 1.0) * 0.5 - 0.55) / 0.3) * inland(c);
+	// 0 = rugged, 1 = planed flat.
+	let e = gained(fbm2(xf, zf, EROSION_FREQ, 2, seed + EROSION_SEED_OFF), 2.2);
+	let erosion = smoothstep((e + 0.3) / 0.9);
 	// Ridged (|m|): ranges crease into valleys at zero crossings and only
 	// ever rise above their base. The smoothstep flattens the derivative at
 	// both ends, so summits and valley floors round off instead of spiking.
 	let ridge = smoothstep(gained(m, 2.2).abs());
-	let h = base + gained(d, 2.0) * PLAINS_AMP + ridge * MOUNTAIN_AMP * rough;
+	let h_ridge = base + ridge * MOUNTAIN_AMP * rough * (1.0 - 0.75 * erosion);
+	// Altitude-weighted detail (Musgrave-style heterogeneous fractal):
+	// lowlands read calm, high ridges craggy, eroded regions calmer still.
+	let alt = ((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL)))
+		.clamp(0.0, 1.0);
+	let detail_amp = PLAINS_AMP * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt);
+	let h = h_ridge + gained(d, 2.0) * detail_amp;
 	Fields {
 		h: soft_ceiling(h).max(1.0),
 	}
