@@ -3,9 +3,10 @@
 // animation clock) — no CPU simulation, no per-frame particle uploads,
 // nothing to rebuild on device loss but the pipeline. One instance per
 // fall-impact cell (xyz center, w spare); vertex_index picks the
-// particle (vi / 6) and quad corner (vi % 6). Particle 0 is a large
-// slow mist slab at the base; 1..N are ballistic droplets on a 0.75s
-// loop (800 cycles per 600s clock wrap — seamless).
+// particle (vi / 6) and quad corner (vi % 6). Particles 0..MIST_N are
+// large slow mist slabs jittered around the base; the rest are
+// ballistic droplets on a 0.75s loop (800 cycles per 600s clock wrap
+// — seamless).
 
 // Must match FrameUniforms in renderer.rs — field order and packing
 // are load-bearing (see water.wgsl).
@@ -33,6 +34,8 @@ struct Frame {
 @group(0) @binding(0) var<uniform> frame: Frame;
 
 const LIFE: f32 = 0.75;
+// Mist slabs per instance — keep in sync with spray.rs MIST_N.
+const MIST_N: u32 = 3u;
 
 const CORNERS = array<vec2f, 6>(
 	vec2f(-0.5, -0.5),
@@ -64,22 +67,29 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	var center: vec3f;
 	var size = vec2f(0.0);
 	var alpha = 0.0;
-	if pi == 0u {
-		// Mist: one soft slab hovering over the splash.
-		center = inst.xyz + vec3f(0.0, 0.5, 0.0);
-		size = vec2f(2.2, 1.4);
-		alpha = 0.12 + 0.05 * sin(t * 1.7 + hash1(seed) * 6.28);
+	if pi < MIST_N {
+		// Mist: soft slabs jittered around the splash, breathing on
+		// offset clocks so the bank never pulses as one.
+		let stack = f32(pi);
+		center = inst.xyz
+			+ vec3f(
+				(hash1(seed + 11.0) - 0.5) * 1.8,
+				0.35 + 0.3 * stack,
+				(hash1(seed + 12.0) - 0.5) * 1.8,
+			);
+		size = vec2f(2.6, 1.5);
+		alpha = 0.13 + 0.05 * sin(t * (1.3 + 0.3 * stack) + hash1(seed) * 6.28);
 	} else {
 		// Droplet: velocity cone out of the impact, ballistic arc,
 		// growing and fading over its looped lifetime.
 		let az = hash1(seed) * 6.2832;
-		let v0 = vec3f(cos(az), 0.0, sin(az)) * (0.6 + 0.8 * hash1(seed + 1.0))
-			+ vec3f(0.0, 2.0 + hash1(seed + 2.0), 0.0);
+		let v0 = vec3f(cos(az), 0.0, sin(az)) * (0.5 + 1.3 * hash1(seed + 1.0))
+			+ vec3f(0.0, 2.2 + 1.6 * hash1(seed + 2.0), 0.0);
 		let t01 = fract(t / LIFE + hash1(seed + 3.0));
 		let tau = t01 * LIFE;
 		center = inst.xyz + v0 * tau + vec3f(0.0, -9.0, 0.0) * (0.5 * tau * tau);
-		size = vec2f(mix(0.06, 0.16, t01));
-		alpha = (1.0 - t01) * smoothstep(0.0, 0.15, t01) * 0.8;
+		size = vec2f(mix(0.07, 0.20, t01));
+		alpha = (1.0 - t01) * smoothstep(0.0, 0.15, t01) * 0.7;
 	}
 	// Camera-facing: rows 0/1 of P·V are the scaled view basis rows —
 	// safe to renormalize for a standard perspective projection.

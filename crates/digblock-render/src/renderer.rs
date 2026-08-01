@@ -780,7 +780,7 @@ impl Renderer {
 				surface_format,
 				DEPTH_FORMAT,
 				&frame_bgl,
-				if draw_dist <= 10 { 8 } else { 20 },
+				if draw_dist <= 10 { 24 } else { 64 },
 			),
 			targets: None,
 			scene_bgl,

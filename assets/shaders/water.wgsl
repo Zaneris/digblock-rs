@@ -440,13 +440,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		fres * (1.0 - 0.7 * frame.water_misc.x),
 	);
 	// Splash foam (after the mirror mix — froth sits on the surface):
-	// the impact cell churns continuously; ring cells light up as an
-	// expanding front passes their distance code and fades outward.
+	// the impact cell holds a steady churn, spatially de-phased so
+	// neighboring cells never pulse in lockstep; ring cells (codes
+	// 1-2 only — a ring starting at r = 0 made the whole impact row
+	// strobe) light up as an expanding front passes their distance.
 	if i.splash > 0u {
-		let churn = step(2.5, f32(i.splash)) * (0.20 + 0.06 * sin(t * 6.0)) * (1.0 - 0.5 * i.uv.y);
+		let impact = step(2.5, f32(i.splash));
+		let wob = sin(t * 6.0 + i.world.x * 2.1 + i.world.z * 1.7);
+		let churn = impact * (0.34 + 0.05 * wob) * (1.0 - 0.5 * i.uv.y);
 		let r = (3.0 - f32(i.splash)) / 3.0;
 		let ph = fract(t * 0.9);
-		let ring = smoothstep(0.22, 0.0, abs(r - ph * 0.8)) * (1.0 - ph) * 0.35;
+		let ring = (1.0 - impact) * smoothstep(0.22, 0.0, abs(r - ph * 0.8)) * (1.0 - ph) * 0.35;
 		col = mix(col, vec3f(1.0), min(churn + ring, 0.6));
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
