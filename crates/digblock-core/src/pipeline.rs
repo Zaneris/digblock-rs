@@ -636,7 +636,7 @@ fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 				}
 			}
 			Job::Mesh { pos, gen, input } => {
-				let mesh = mesh_chunk(&input);
+				let mesh = mesh_chunk(&input, (pos.x * 16, pos.y * 16, pos.z * 16));
 				JobResult::Meshed {
 					out: MeshOutput { pos, gen, mesh },
 					dur_ms: start.elapsed().as_secs_f32() * 1000.0,

@@ -213,18 +213,52 @@ fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
 
 /// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 18-19 ao
 /// (0 darkest .. 3 open), 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22
-/// water-lip, 23-28 texture layer.
+/// water-lip, 23-28 texture layer, 29-31 tint.
 #[inline]
-fn pack((x, y, z): (u32, u32, u32), normal: Dir, tex: u32, corner: u32, lip: bool, ao: u32) -> u32 {
-	debug_assert!(x <= 16 && y <= 16 && z <= 16 && tex < 64 && corner < 4 && ao < 4);
+fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
+	let (x, y, z) = v.pos;
+	debug_assert!(x <= 16 && y <= 16 && z <= 16 && v.tex < 64 && corner < 4 && v.ao < 4);
+	debug_assert!(v.tint < 8);
 	x | (y << 5)
 		| (z << 10)
 		| ((normal as u32) << 15)
-		| (ao << 18)
+		| (v.ao << 18)
 		| (corner << 20)
-		| (u32::from(lip) << 22)
-		| (tex << 23)
+		| (u32::from(v.lip) << 22)
+		| (v.tex << 23)
+		| (v.tint << 29)
 }
+
+/// One vertex's non-positional attributes on their way into `pack`.
+#[derive(Clone, Copy)]
+struct Vert {
+	pos: (u32, u32, u32),
+	tex: u32,
+	lip: bool,
+	ao: u32,
+	tint: u32,
+}
+
+/// Per-block brightness jitter: a 3-bit step from a splitmix64 hash of
+/// the world block coords, breaking texture repetition on large uniform
+/// faces. World coords (not chunk-local) so the pattern doesn't tile
+/// with a 16-block period.
+#[inline]
+fn tint(wx: i64, wy: i64, wz: i64) -> u32 {
+	let mut h = (wx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+		^ (wy as u64).rotate_left(21)
+		^ (wz as u64).rotate_left(42);
+	h ^= h >> 30;
+	h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+	h ^= h >> 27;
+	h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+	h ^= h >> 31;
+	(h & 7) as u32
+}
+
+/// The tint step water always carries (≈ +0.7%, visually neutral) so its
+/// surface stays uniform.
+const WATER_TINT: u32 = 4;
 
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block
 /// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
@@ -308,6 +342,7 @@ fn emit_face(
 	tex: u32,
 	lip: bool,
 	ao: [u32; 4],
+	tint: u32,
 ) {
 	let corners = face_corners(b.0 as i32, b.1 as i32, b.2 as i32, dir);
 	let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
@@ -318,12 +353,15 @@ fn emit_face(
 	for &ci in &order {
 		let (cx, cy, cz) = corners[ci];
 		out.push(pack(
-			(cx as u32, cy as u32, cz as u32),
+			Vert {
+				pos: (cx as u32, cy as u32, cz as u32),
+				tex,
+				lip,
+				ao: ao[ci],
+				tint,
+			},
 			dir,
-			tex,
 			ci as u32,
-			lip,
-			ao[ci],
 		));
 	}
 }
@@ -338,8 +376,9 @@ const PDELTA: [isize; 6] = [
 	-1,                            // East  (−x)
 ];
 
-/// Mesh a chunk from its padded snapshot.
-pub fn mesh_chunk(input: &MeshInput) -> MeshData {
+/// Mesh a chunk from its padded snapshot. `base` is the chunk's world
+/// block origin — the tint hash needs world coordinates.
+pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 	let n = CHUNK_SIZE;
 	// Sized for a busy surface chunk; realloc past this is rare.
 	let mut mesh = MeshData {
@@ -378,16 +417,22 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 					let class = me.props().class;
 					let tex = me.texture(dir);
 					let lip = class == RenderClass::Translucent && dir == Dir::Top;
-					// No AO on water: corner darkening on a translucent
-					// no-depth-write surface reads as dirt rings.
-					let (out, ao) = match class {
-						RenderClass::Translucent => (&mut mesh.water, [3u32; 4]),
+					// No AO or jitter on water: corner darkening and patchy
+					// brightness on a translucent no-depth-write surface
+					// read as dirt.
+					let (out, ao, bt) = match class {
+						RenderClass::Translucent => (&mut mesh.water, [3u32; 4], WATER_TINT),
 						_ => (
 							&mut mesh.solid,
 							face_ao(input, x as i32, y as i32, z as i32, dir),
+							tint(
+								i64::from(base.0) + x as i64,
+								i64::from(base.1) + y as i64,
+								i64::from(base.2) + z as i64,
+							),
 						),
 					};
-					emit_face(out, (x, y, z), dir, tex, lip, ao);
+					emit_face(out, (x, y, z), dir, tex, lip, ao, bt);
 				}
 			}
 		}
@@ -423,9 +468,12 @@ mod tests {
 		MeshInput::build(d, |_, _, _| Src::Missing)
 	}
 
+	/// World origin for tests that don't care about the tint pattern.
+	const ZERO: (i32, i32, i32) = (0, 0, 0);
+
 	#[test]
 	fn lone_dirt_has_six_faces() {
-		let m = mesh_chunk(&isolated(&solo(B::Dirt)));
+		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
 		assert_eq!(m.solid.len(), 6 * 4);
 		assert!(m.water.is_empty());
 	}
@@ -436,7 +484,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 7, 8, B::Dirt); // below
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		// Water: 5 air-adjacent sides + top = faces toward air on all open
 		// sides. Dirt below: 5 visible faces (top hidden? no — top borders
 		// water, water is not solid → dirt top IS visible through water).
@@ -455,7 +503,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(9, 8, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		// Each water block: faces toward air except toward each other.
 		assert_eq!(m.water.len() / 4, 2 * 5);
 	}
@@ -464,7 +512,7 @@ mod tests {
 	fn missing_neighbor_suppresses_border_faces() {
 		let mut d = ChunkData::default();
 		d.set(0, 8, 8, B::Dirt); // on the −x border
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		assert_eq!(
 			m.solid.len() / 4,
 			5,
@@ -483,7 +531,7 @@ mod tests {
 				Src::Missing
 			}
 		});
-		let m = mesh_chunk(&input);
+		let m = mesh_chunk(&input, ZERO);
 		assert_eq!(m.solid.len() / 4, 6, "top face vs air sentinel");
 	}
 
@@ -500,7 +548,7 @@ mod tests {
 				Src::Missing
 			}
 		});
-		let m = mesh_chunk(&input);
+		let m = mesh_chunk(&input, ZERO);
 		assert_eq!(m.solid.len() / 4, 5, "+x face occluded by neighbor block");
 	}
 
@@ -545,7 +593,17 @@ mod tests {
 
 	#[test]
 	fn packed_vertex_roundtrip() {
-		let v = pack((16, 7, 3), Dir::East, 37, 2, true, 1);
+		let v = pack(
+			Vert {
+				pos: (16, 7, 3),
+				tex: 37,
+				lip: true,
+				ao: 1,
+				tint: 5,
+			},
+			Dir::East,
+			2,
+		);
 		assert_eq!(v & 0x1f, 16);
 		assert_eq!((v >> 5) & 0x1f, 7);
 		assert_eq!((v >> 10) & 0x1f, 3);
@@ -554,6 +612,51 @@ mod tests {
 		assert_eq!((v >> 20) & 0x3, 2);
 		assert_eq!((v >> 22) & 0x1, 1);
 		assert_eq!((v >> 23) & 0x3f, 37);
+		assert_eq!(v >> 29, 5);
+	}
+
+	fn tint_of(v: u32) -> u32 {
+		v >> 29
+	}
+
+	#[test]
+	fn tint_varies_by_world_position_and_is_stable() {
+		// The same local block in two different chunks gets different
+		// tints (world-coord hash, no 16-block tiling), and meshing twice
+		// is bit-identical.
+		let d = solo(B::Dirt);
+		let a = mesh_chunk(&isolated(&d), ZERO);
+		let b = mesh_chunk(&isolated(&d), (16, 0, 0));
+		let c = mesh_chunk(&isolated(&d), ZERO);
+		assert_eq!(a.solid, c.solid, "meshing is deterministic");
+		assert_ne!(
+			tint_of(a.solid[0]),
+			tint_of(b.solid[0]),
+			"world offset changes the tint"
+		);
+		// Across a full chunk of stone, tints are non-constant.
+		let mut full = ChunkData::default();
+		for y in 0..4 {
+			for z in 0..16 {
+				for x in 0..16 {
+					full.set(x, y, z, B::Stone);
+				}
+			}
+		}
+		let m = mesh_chunk(&isolated(&full), ZERO);
+		let first = tint_of(m.solid[0]);
+		assert!(
+			m.solid.iter().any(|v| tint_of(*v) != first),
+			"tint varies across the chunk"
+		);
+	}
+
+	#[test]
+	fn water_tint_is_constant() {
+		let m = mesh_chunk(&isolated(&solo(B::Water)), (48, 16, -32));
+		for v in &m.water {
+			assert_eq!(tint_of(*v), WATER_TINT, "water stays uniform");
+		}
 	}
 
 	fn ao_of(v: u32) -> u32 {
@@ -585,7 +688,7 @@ mod tests {
 
 	#[test]
 	fn open_field_face_has_full_ao() {
-		let m = mesh_chunk(&isolated(&solo(B::Dirt)));
+		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
 		for v in &m.solid {
 			assert_eq!(ao_of(*v), 3, "no occluders anywhere");
 		}
@@ -599,7 +702,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Dirt);
 		d.set(9, 9, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
 		assert_eq!(top.iter().filter(|v| ao_of(**v) == 2).count(), 2);
 		assert_eq!(top.iter().filter(|v| ao_of(**v) == 3).count(), 2);
@@ -614,7 +717,7 @@ mod tests {
 		d.set(8, 8, 8, B::Dirt);
 		d.set(9, 9, 8, B::Stone);
 		d.set(8, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
 		assert_eq!(top.iter().filter(|v| ao_of(**v) == 0).count(), 1);
 	}
@@ -635,7 +738,7 @@ mod tests {
 				Src::Air
 			}
 		});
-		let m = mesh_chunk(&input);
+		let m = mesh_chunk(&input, ZERO);
 		let top = quad_of(&m.solid, 15, 8, 8, Dir::Top);
 		assert_eq!(
 			top.iter().filter(|v| ao_of(**v) == 2).count(),
@@ -653,7 +756,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Dirt);
 		d.set(7, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
 		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
 		assert_eq!(order, vec![1, 3, 0, 2], "diagonal through TR–BL");
@@ -662,7 +765,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Dirt);
 		d.set(9, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
 		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
 		assert_eq!(order, vec![0, 1, 2, 3], "default diagonal TL–BR");
@@ -673,7 +776,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(9, 9, 8, B::Stone); // would darken a solid face
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		for v in &m.water {
 			assert_eq!(ao_of(*v), 3, "water skips AO");
 		}
@@ -691,7 +794,7 @@ mod tests {
 		d.set(8, 8, 8, B::Leaves);
 		d.set(9, 8, 8, B::Leaves);
 		d.set(8, 7, 8, B::Dirt);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
 		let layer_of = |v: u32| (v >> 23) & 0x3f;
 		let leaf_faces = m.solid.iter().filter(|v| layer_of(**v) == 8).count() / 4;
@@ -707,7 +810,7 @@ mod tests {
 		// Per-face table: grass top/side/bottom are three distinct layers.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Grass);
-		let m = mesh_chunk(&isolated(&d));
+		let m = mesh_chunk(&isolated(&d), ZERO);
 		let layer_of = |v: u32| (v >> 23) & 0x3f;
 		let normal_of = |v: u32| (v >> 15) & 0x7;
 		for v in &m.solid {

@@ -3,6 +3,33 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-07-31 (fifth pass): visual depth pass (padded snapshot, AO, tint)
+
+Mesh jobs moved from six border planes to a padded 18³ snapshot
+(diagonal neighbors now visible), on top of which landed per-vertex AO
+(bits 18-19), face-axis ambient (shader const), and per-block tint
+jitter (bits 29-31, world-coord hash). Cost accounting, vsync fill,
+step by step:
+
+| step | fill | mesh jobs | mesh avg |
+|------|------|-----------|----------|
+| fourth-pass baseline | 3.97–3.98s | ~67k | — |
+| padded snapshot | 3.39–3.63s | 66–67k | 0.07ms |
+| + 26-way invalidation | 4.44–4.48s | 77.5k | 0.07ms |
+| + AO + axis + tint | 4.75–4.76s | 77.7k | 0.08ms |
+
+The snapshot refactor is a net win (workers stopped holding store Arcs;
+verified bit-exact via a temporary FNV pin over 2×2 columns × 2 seeds).
+The 26-way invalidation is the real cost of border-correct AO: a chunk's
+arrival re-dirties diagonal neighbors whose shells it fills. Unbounded
+that was 85k jobs / 5.3–6.3s fill; three provable skips (air chunks,
+empty-mesh neighbors, queued-undispatched remeshes, all-air shared
+cells) bought it down to +16% jobs. Net fill +20% over the fourth pass;
+p95/p99 and hitch counts unchanged (9.5–9.6 / 10.7–11.1, 0–1 hitches).
+AO itself is ~free at mesh time (12 shell reads per visible face) and
+one mul in the shader. Reference shots: `shots/visual-depth-final.png`,
+`shots/ao.png`, `shots/axis10.png` (low sun).
+
 ## 2026-07-31 (fourth pass): terrain realism cost check
 
 The realism pass (domain warping, erosion field, altitude-weighted
