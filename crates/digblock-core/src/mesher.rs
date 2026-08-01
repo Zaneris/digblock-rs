@@ -191,10 +191,11 @@ pub struct MeshData {
 	/// Water vertices are TWO u32 words each (8 per face): word 0 is the
 	/// solid packing; word 1 carries bits 0-3 surface drop code d (the
 	/// shader lowers the vertex by d/9 — 0 = full height), bit 4 falling,
-	/// bits 5-7 flow dir, bit 8 foam, and bits 10-13 the vertex fall
-	/// distance (blocks of falling water above; bottom-plane verts +1 so
-	/// the interpolated "blocks fallen" is continuous down a column;
-	/// saturates at 15).
+	/// bits 5-7 flow dir, bits 8-9 the splash code (3 = fall impact
+	/// cell, 2/1 = pool cells at Chebyshev distance 1/2 — expanding
+	/// foam rings), and bits 10-13 the vertex fall distance (blocks of
+	/// falling water above; bottom-plane verts +1 so the interpolated
+	/// "blocks fallen" is continuous down a column; saturates at 15).
 	pub water: Vec<u32>,
 }
 
@@ -417,8 +418,11 @@ struct WaterState {
 	/// Horizontal flow direction code (0 still, 1 +x, 2 −x, 3 +z, 4 −z):
 	/// the side with the least water, where in-transit water is headed.
 	flow: u32,
-	/// Falling water striking a colliding block below — the splash cell.
-	foam: bool,
+	/// Splash code: 3 = a fall's impact cell (falling water striking
+	/// the pool surface or solid ground below), 2/1 = surface-water
+	/// cells at Chebyshev distance 1/2 from an impact — the shader's
+	/// expanding foam rings. 0 elsewhere.
+	splash: u32,
 	/// Contiguous falling cells above this one (0 = sheet top), capped
 	/// at 15. When the walk hits the snapshot ceiling with the column
 	/// still falling, this saturates to 15 rather than reporting the
@@ -455,7 +459,45 @@ impl WaterState {
 				1 + amounts.iter().position(|&a| a == min).expect("has min") as u32
 			}
 		};
-		let foam = falling && occludes(input.get(x, y - 1, z));
+		// A fall's landing: falling water whose below-cell is where the
+		// fall ends — resting water (worldgen falls land in pools) or
+		// solid ground (fluid-sim falls punching to a floor).
+		let is_impact = |nx: i32, ny: i32, nz: i32| -> bool {
+			if !BlockType::from_u8(input.get(nx, ny, nz)).is_falling() {
+				return false;
+			}
+			let below_raw = input.get(nx, ny - 1, nz);
+			let below = BlockType::from_u8(below_raw);
+			!below.is_falling() && (below.is_water() || occludes(below_raw))
+		};
+		let splash = if falling && is_impact(x, y, z) {
+			3
+		} else if !falling && !full {
+			// Ring scan: nearest impact in the 5×5 neighborhood at this
+			// level or one above (worldgen falls land one cell above
+			// the pool surface). Chebyshev 1 → 2, 2 → 1. An impact two
+			// blocks into a neighbor chunk sits outside the padded
+			// snapshot — a one-cell notch in an animated ring.
+			let mut best = 0u32;
+			for dz in -2i32..=2 {
+				for dx in -2i32..=2 {
+					if dx == 0 && dz == 0 {
+						continue;
+					}
+					let (nx, nz) = (x + dx, z + dz);
+					if !(-1..=16).contains(&nx) || !(-1..=16).contains(&nz) {
+						continue;
+					}
+					let code = 3 - dx.abs().max(dz.abs()) as u32;
+					if code > best && (is_impact(nx, y, nz) || is_impact(nx, y + 1, nz)) {
+						best = code;
+					}
+				}
+			}
+			best
+		} else {
+			0
+		};
 		let fall_dist = if falling {
 			let mut d = 0u32;
 			let mut cy = y + 1;
@@ -475,14 +517,14 @@ impl WaterState {
 			full,
 			falling,
 			flow,
-			foam,
+			splash,
 			fall_dist,
 		}
 	}
 
 	/// Word-1 bits above the per-vertex drop code.
 	fn flags(self) -> u32 {
-		u32::from(self.falling) << 4 | self.flow << 5 | u32::from(self.foam) << 8
+		u32::from(self.falling) << 4 | self.flow << 5 | self.splash << 8
 	}
 }
 
@@ -1004,6 +1046,52 @@ mod tests {
 
 	fn fall_of(w1: u32) -> u32 {
 		(w1 >> 10) & 0xf
+	}
+
+	fn splash_of(w1: u32) -> u32 {
+		(w1 >> 8) & 3
+	}
+
+	#[test]
+	fn worldgen_style_pool_landing_foams() {
+		// A fall ending on resting water (the worldgen arrangement —
+		// falls land in pools, not on stone) is an impact cell. The old
+		// foam predicate required an opaque block below and never fired
+		// for these.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 7, 8, B::Water);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(splash_of(w1), 3, "pool landing is an impact");
+		}
+	}
+
+	#[test]
+	fn pool_cells_get_splash_rings() {
+		// Fall into the middle of a 7×7 pool: surface cells ring the
+		// impact by Chebyshev distance — 1 → code 2, 2 → code 1,
+		// further → 0. Mid-fall cells above the impact stay ring-free.
+		let mut d = ChunkData::default();
+		for z in 5..=11 {
+			for x in 5..=11 {
+				d.set(x, 7, z, B::Water);
+			}
+		}
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 9, 8, B::WaterFall);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		for (dist, expect) in [(1, 2), (2, 1), (3, 0)] {
+			let top = water_quad(&m.water, 8 + dist, 7, 8, Dir::Top);
+			for (_, w1) in top {
+				assert_eq!(splash_of(w1), expect, "ring at distance {dist}");
+			}
+		}
+		let mid_fall = water_quad(&m.water, 8, 9, 8, Dir::West);
+		for (_, w1) in mid_fall {
+			assert_eq!(splash_of(w1), 0, "mid-air sheet cell has no splash");
+		}
 	}
 
 	#[test]

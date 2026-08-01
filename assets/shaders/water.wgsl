@@ -7,10 +7,11 @@
 // heights shared between adjacent cells (no cracks). Bit 4 marks
 // falling water (side faces scroll downward), bits 5-7 the horizontal
 // flow dir (0 still, 1 +x, 2 −x, 3 +z, 4 −z; top faces scroll along
-// it), bit 8 foam (a fall striking ground: brightened splash pulse),
-// bits 10-13 the vertex fall distance (blocks below the lip, +1 on
-// bottom-plane verts so interpolation is continuous; drives gravity
-// stretch and aeration whitening).
+// it), bits 8-9 the splash code (3 = fall impact cell — continuous
+// churn; 2/1 = pool cells at Chebyshev 1/2 — expanding foam rings;
+// both boost ripple turbulence), bits 10-13 the vertex fall distance
+// (blocks below the lip, +1 on bottom-plane verts so interpolation is
+// continuous; drives gravity stretch and aeration whitening).
 // The animation clock rides in frame.light_color.w. Lighting matches
 // chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
 // UBO copy).
@@ -98,8 +99,8 @@ struct VsOut {
 	@location(4) sc_wide: vec3f,
 	@location(5) fog_dist: f32,
 	@location(6) @interpolate(flat) axis: f32,
-	// Foam strength (flat: whole splash cell brightens).
-	@location(7) @interpolate(flat) foam: f32,
+	// Splash code: 3 impact cell, 2/1 ring cells, 0 none.
+	@location(7) @interpolate(flat) splash: u32,
 	// World position (ripple field domain + view vector).
 	@location(8) world: vec3f,
 	@location(9) @interpolate(flat) ni: u32,
@@ -206,7 +207,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	// Raw corner uv — all scroll/advection happens in fs.
 	o.uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
-	o.foam = f32((w1 >> 8u) & 1u);
+	o.splash = (w1 >> 8u) & 3u;
 	o.layer = (w0 >> 23u) & 63u;
 	o.world = world;
 	o.ni = ni;
@@ -335,7 +336,9 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Rippled normal + Schlick fresnel: alpha rises from the base
 	// (misc.x) toward opaque at grazing angles, so distant/low-angle
 	// water reads as a surface instead of tinted glass.
-	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], 1.0, i.fog_dist);
+	// Impact turbulence: splash cells churn harder.
+	let boost = 1.0 + 0.5 * f32(i.splash);
+	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.fog_dist);
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
 	let mirror = 1.0 - 0.7 * aer;
@@ -349,17 +352,21 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let hs = normalize(vdir - frame.light_dir.xyz);
 	let fres_h = 0.02 + 0.98 * pow(1.0 - max(dot(vdir, hs), 0.0), 5.0);
 	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
-	// Splash foam where a fall strikes ground: brighten toward white,
-	// strongest at the face top, with a slow pulse.
-	if i.foam > 0.0 {
-		let pulse = 0.20 + 0.06 * sin(t * 6.0);
-		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - i.uv.y));
-	}
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through from above.
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
 	col = mix(col, reflection_color(normalize(rr)), fres);
+	// Splash foam (after the mirror mix — froth sits on the surface):
+	// the impact cell churns continuously; ring cells light up as an
+	// expanding front passes their distance code and fades outward.
+	if i.splash > 0u {
+		let churn = step(2.5, f32(i.splash)) * (0.20 + 0.06 * sin(t * 6.0)) * (1.0 - 0.5 * i.uv.y);
+		let r = (3.0 - f32(i.splash)) / 3.0;
+		let ph = fract(t * 0.9);
+		let ring = smoothstep(0.22, 0.0, abs(r - ph * 0.8)) * (1.0 - ph) * 0.35;
+		col = mix(col, vec3f(1.0), min(churn + ring, 0.6));
+	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	// Glassy crest sheen where flow tips over a lip: strongest in the
 	// first fallen block, keyed to the plunging drop edge.
