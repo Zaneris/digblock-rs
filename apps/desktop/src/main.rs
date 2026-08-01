@@ -45,6 +45,10 @@ fn main() {
 			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
 			"--yaw" => config.yaw = args.next().and_then(|v| v.parse().ok()),
 			"--pitch" => config.pitch = args.next().and_then(|v| v.parse().ok()),
+			// SSR override in either direction (--mobile --ssr is the
+			// device-profiling escape hatch).
+			"--ssr" => config.ssr = true,
+			"--no-ssr" => config.ssr = false,
 			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
 			other => {
 				eprintln!("unknown arg: {other}");

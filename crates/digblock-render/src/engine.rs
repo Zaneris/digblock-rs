@@ -34,6 +34,9 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
+	/// Screen-space reflections on water (desktop default; the mobile
+	/// config keeps the procedural-sky fallback only).
+	pub ssr: bool,
 }
 
 impl EngineConfig {
@@ -50,6 +53,7 @@ impl EngineConfig {
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
+			ssr: true,
 		}
 	}
 
@@ -66,6 +70,7 @@ impl EngineConfig {
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
 			bench: false,
+			ssr: false,
 		}
 	}
 }
@@ -382,7 +387,7 @@ impl Engine {
 				// the chunk shader's normal-offset distance.
 				far / self.config.shadow_size as f32,
 			],
-			water_misc: [f32::from(submerged), 0.0, 0.0, 0.0],
+			water_misc: [f32::from(submerged), f32::from(self.config.ssr), 0.0, 0.0],
 		}
 	}
 }
