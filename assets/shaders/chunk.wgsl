@@ -63,6 +63,12 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
+// Face-axis ambient (same order): tops catch the full sky dome, sides
+// less (x and z slightly different so adjoining walls separate tonally),
+// bottoms least. Scales only the ambient term — lambert already
+// differentiates the direct term by orientation.
+const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
+
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
@@ -73,6 +79,8 @@ struct VsOut {
 	@location(5) fog_dist: f32,
 	// Per-vertex ambient occlusion factor, interpolated across the quad.
 	@location(6) ao: f32,
+	// Face-axis ambient factor (constant per face).
+	@location(7) @interpolate(flat) axis: f32,
 }
 
 // Packed vertex: bits 0-4 x, 5-9 y, 10-14 z (chunk-local 0..=16),
@@ -86,7 +94,8 @@ fn vs(@location(0) packed: u32) -> VsOut {
 	if ((packed >> 22u) & 1u) == 1u {
 		y -= 0.3; // water surface sits at +0.7 (Java ChunkMeshGenerator)
 	}
-	let n = NORMALS[(packed >> 15u) & 7u];
+	let ni = (packed >> 15u) & 7u;
+	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
@@ -98,6 +107,7 @@ fn vs(@location(0) packed: u32) -> VsOut {
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
 	// 4-level voxel AO from the mesher: 0 → 0.6, 3 → 1.0.
 	o.ao = 0.6 + 0.4 * f32((packed >> 18u) & 3u) / 3.0;
+	o.axis = AXIS[ni];
 
 	let pn = frame.light_near * vec4f(world, 1.0);
 	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
@@ -156,7 +166,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// strength; ambient is the guaranteed floor. AO attenuates the whole
 	// color — contact darkening the shadow maps can't resolve.
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = tex * i.ao * (frame.ambient.rgb + frame.light_color.rgb * i.direct * sh);
+	var col = tex * i.ao * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
 	// Distance fog toward the sky horizon, hiding chunk pop-in.
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
