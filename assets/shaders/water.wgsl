@@ -337,13 +337,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
-	// Streaks brighten (+-15%) as well as thin the sheet (alpha below).
-	col *= 1.0 + (s - 0.5) * 0.3;
-	// Rippled normal + Schlick fresnel: alpha rises from the base
-	// (misc.x) toward opaque at grazing angles, so distant/low-angle
-	// water reads as a surface instead of tinted glass.
-	// Impact turbulence: splash cells churn harder.
+	// In-scattered water color (the body's own diffuse), streak-bright.
+	var scatter = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	scatter *= 1.0 + (s - 0.5) * 0.3;
+	// Rippled normal + Schlick fresnel. Impact turbulence: splash cells
+	// churn harder.
 	let boost = 1.0 + 0.5 * f32(i.splash);
 	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.fog_dist);
 	let nrm = ripple_normal(i.ni, g);
@@ -359,6 +357,35 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let hs = normalize(vdir - frame.light_dir.xyz);
 	let fres_h = 0.02 + 0.98 * pow(1.0 - max(dot(vdir, hs), 0.0), 5.0);
 	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
+	// Water column thickness along the view ray: reconstruct the solid
+	// scene point behind this fragment from the pre-water depth copy
+	// (exact via inv_view_proj — no projection assumptions).
+	let dims = vec2f(textureDimensions(scene_depth));
+	let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0);
+	let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
+	let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
+	let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
+	let thick = max(scene_dist - i.fog_dist, 0.0);
+	// Refraction: sample the scene through a ripple-perturbed offset
+	// that grows with thickness (clamped so shores don't smear), and
+	// falls back to the straight sample when the offset ray would pull
+	// something in FRONT of the water across the surface.
+	var suv = i.pos.xy / dims;
+	let off = g * (0.10 * min(thick, 1.5));
+	let suv2 = clamp(suv + off, vec2f(0.0), vec2f(1.0));
+	let d_off = textureLoad(scene_depth, vec2i(suv2 * (dims - 1.0)), 0);
+	if d_off >= i.pos.z {
+		suv = suv2;
+	}
+	let refracted = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
+	// Beer-Lambert absorption, red dying first (Jerlov coastal-ish
+	// coefficients per block): shallow water stays clear, deep water
+	// swallows the bottom into the scatter color.
+	let transmit = exp(vec3f(-0.45, -0.16, -0.09) * thick);
+	var col = mix(scatter, refracted, transmit);
+	// Contact foam line where the water meets ground.
+	let shore = 1.0 - smoothstep(0.05, 0.45, thick);
+	col = mix(col, vec3f(0.95, 0.97, 1.0), shore * 0.25 * (0.4 + 0.6 * sh));
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through from above.
 	var rr = reflect(-vdir, nrm);
@@ -381,8 +408,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	col += frame.light_color.rgb * lip * sh * 0.15;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
-	// Aerated water is nearly opaque regardless of angle; streak gaps
-	// (s < 0.5) thin it back toward translucent.
-	let alpha = mix(mix(frame.misc.x, 1.0, fres), 0.92, aer);
+	// Alpha: the fresnel base, forced opaque where absorption ate the
+	// background (col already composites the refracted scene there, and
+	// the dst pixel holds the untinted scene — letting it through would
+	// wash the depth tint out). Aeration pins near-opaque; streak gaps
+	// (s < 0.5) thin falling sheets back toward translucent.
+	let opaque = 1.0 - dot(transmit, vec3f(1.0 / 3.0));
+	let alpha = mix(max(mix(frame.misc.x, 1.0, fres), opaque), 0.92, aer);
 	return vec4f(col, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
 }
