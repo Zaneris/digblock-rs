@@ -63,7 +63,23 @@ fn column_rules() {
 	let seed = 1234.5678;
 	let mut caves_seen = false;
 	let mut trees_seen = false;
-	for &(cx, cz) in &[(0, 0), (-3, 7), (100, -100), (40, 40)] {
+	// Fixed samples cover interesting positions; the scan adds a chunk
+	// with a tree rooted inside it, so the tree-overlay path stays
+	// exercised no matter how terrain retunes move the forests.
+	let mut samples = vec![(0, 0), (-3, 7), (100, -100), (40, 40)];
+	'scan: for cx in -24..24 {
+		for cz in -24..24 {
+			let (bx, bz) = (cx * 16, cz * 16);
+			if trees_near(bx, bz, seed)
+				.iter()
+				.any(|t| (bx..bx + 16).contains(&t.x) && (bz..bz + 16).contains(&t.z))
+			{
+				samples.push((cx, cz));
+				break 'scan;
+			}
+		}
+	}
+	for &(cx, cz) in &samples {
 		let chunks: Vec<ChunkData> = (0..WORLD_VCHUNK)
 			.map(|cy| build_chunk(ChunkPos::new(cx, cy, cz), seed))
 			.collect();

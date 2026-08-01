@@ -120,10 +120,13 @@ const CAVE_SEED_OFF2: f64 = 27449.0;
 const CAVE_FLOOR: i32 = 1;
 
 /// Base elevation by continentalness: piecewise-linear anchors from deep
-/// ocean floor to highland base. Monotonic in `c`.
-const BASE_SPLINE: [(f64, f64); 5] = [
+/// ocean floor through a continental slope and a shallow coastal shelf
+/// to highland base. Monotonic in `c`.
+const BASE_SPLINE: [(f64, f64); 7] = [
 	(-1.0, 60.0),
-	(-0.2, 120.0),
+	(-0.55, 75.0),
+	(-0.25, 105.0),
+	(-0.10, 122.0),
 	(0.0, 130.0),
 	(0.3, 140.0),
 	(1.0, 170.0),
@@ -226,7 +229,10 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	// what varies, which is harmless — they are gates/relief, not shapes).
 	let wx = xf + WARP_AMP * fbm2(xf, zf, WARP_FREQ, 2, seed + WARP_X_OFF);
 	let wz = zf + WARP_AMP * fbm2(xf, zf, WARP_FREQ, 2, seed + WARP_Z_OFF);
-	let c = gained(fbm2(wx, wz, CONTINENT_FREQ, 2, seed), 2.2);
+	// tanh instead of the hard gain-clamp: deep ocean and far inland keep
+	// varying instead of saturating (a clamped c = −1 plateau rendered the
+	// entire deep floor as a billiard table at the spline's first anchor).
+	let c = (fbm2(wx, wz, CONTINENT_FREQ, 2, seed) * 2.2).tanh();
 	let r = gained(fbm2(xf, zf, ROUGH_FREQ, 2, seed + ROUGH_SEED_OFF), 2.2);
 	let d = fbm2(xf, zf, DETAIL_FREQ, 4, seed + DETAIL_SEED_OFF);
 	// Ridge field on a rotated, stretched domain (continuous in theta, so
@@ -249,9 +255,12 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let h_ridge = base + ridge * MOUNTAIN_AMP * rough * (1.0 - 0.75 * erosion);
 	// Altitude-weighted detail (Musgrave-style heterogeneous fractal):
 	// lowlands read calm, high ridges craggy, eroded regions calmer still.
+	// The weighting is V-shaped around sea level — relief also returns
+	// with depth, so the seafloor rolls instead of planing flat.
 	let alt =
 		((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
-	let detail_amp = PLAINS_AMP * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt);
+	let depth = ((f64::from(SEA_LEVEL) - h_ridge) / 40.0).clamp(0.0, 1.0);
+	let detail_amp = PLAINS_AMP * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt.max(0.6 * depth));
 	let h_pre = soft_ceiling(h_ridge + gained(d, 2.0) * detail_amp).max(1.0);
 
 	// River channel: fade toward mountains, widen over eroded flats,
