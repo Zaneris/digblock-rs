@@ -30,6 +30,8 @@ struct Frame {
 	// rgb = sky horizon color
 	horizon: vec4f,
 	misc: vec4f,
+	// x = camera underwater, y = SSR enabled (unused here)
+	water_misc: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;

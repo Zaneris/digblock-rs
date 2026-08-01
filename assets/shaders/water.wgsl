@@ -48,6 +48,8 @@ struct Frame {
 	// z = shadow map texel size (1.0 / resolution, both cascades)
 	// w = wide-cascade texel size in world units (normal-offset bias)
 	misc: vec4f,
+	// x = camera underwater (0/1), y = SSR enabled (0/1), z/w reserved
+	water_misc: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -387,10 +389,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let shore = 1.0 - smoothstep(0.05, 0.45, thick);
 	col = mix(col, vec3f(0.95, 0.97, 1.0), shore * 0.25 * (0.4 + 0.6 * sh));
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
-	// grazing angles and stays see-through from above.
+	// grazing angles and stays see-through from above. From below the
+	// surface (camera underwater) the sky reflection is a lie — damp it.
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
-	col = mix(col, reflection_color(normalize(rr)), fres);
+	col = mix(col, reflection_color(normalize(rr)), fres * (1.0 - 0.7 * frame.water_misc.x));
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// the impact cell churns continuously; ring cells light up as an
 	// expanding front passes their distance code and fades outward.

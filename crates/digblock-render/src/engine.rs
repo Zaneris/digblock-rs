@@ -322,6 +322,14 @@ impl Engine {
 		}
 	}
 
+	/// Camera eye inside a water block? (None = unloaded = dry.)
+	fn eye_in_water(&self) -> bool {
+		let c = self.camera.pos;
+		self.pipeline
+			.block_at(c.x.floor() as i32, c.y.floor() as i32, c.z.floor() as i32)
+			.is_some_and(|b| b.is_water())
+	}
+
 	fn frame_uniforms(&self, near_vp: glam::Mat4, wide_vp: glam::Mat4) -> FrameUniforms {
 		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
 		let vp = self.camera.view_proj(aspect);
@@ -331,8 +339,21 @@ impl Engine {
 		let sun = -self.sun.sun_dir();
 		let moon = -self.sun.moon_dir();
 		let far = self.depth();
-		let (fog_start, fog_end) = (0.70 * far, 0.95 * far);
+		let (mut fog_start, mut fog_end) = (0.70 * far, 0.95 * far);
 		let cam = self.camera.pos;
+		// Underwater: substitute the atmosphere the shaders read — short
+		// blue-green fog, water-colored sky gradient (the clear color and
+		// sky pass follow automatically) — no shader branches needed.
+		// Daylight still scales everything so night dives stay dark.
+		let submerged = self.eye_in_water();
+		let (mut horizon, mut zenith) = (atmos.horizon, atmos.zenith);
+		if submerged {
+			let day = (atmos.light_color[1]).clamp(0.08, 1.0);
+			horizon = [0.05 * day, 0.22 * day, 0.30 * day];
+			zenith = [0.02 * day, 0.10 * day, 0.16 * day];
+			fog_start = 2.0;
+			fog_end = 28.0;
+		}
 		FrameUniforms {
 			view_proj: vp.to_cols_array_2d(),
 			inv_view_proj: vp.inverse().to_cols_array_2d(),
@@ -347,17 +368,12 @@ impl Engine {
 				self.time_secs,
 			],
 			ambient: [atmos.ambient[0], atmos.ambient[1], atmos.ambient[2], 0.0],
-			fog_color: [
-				atmos.horizon[0],
-				atmos.horizon[1],
-				atmos.horizon[2],
-				fog_start,
-			],
+			fog_color: [horizon[0], horizon[1], horizon[2], fog_start],
 			cam_pos: [cam.x, cam.y, cam.z, 1.0 / (fog_end - fog_start)],
 			sun_dir: [sun.x, sun.y, sun.z, atmos.star_intensity],
 			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
-			zenith: [atmos.zenith[0], atmos.zenith[1], atmos.zenith[2], 0.0],
-			horizon: [atmos.horizon[0], atmos.horizon[1], atmos.horizon[2], 0.0],
+			zenith: [zenith[0], zenith[1], zenith[2], 0.0],
+			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
 			misc: [
 				1.0,
 				1.0,
@@ -366,6 +382,7 @@ impl Engine {
 				// the chunk shader's normal-offset distance.
 				far / self.config.shadow_size as f32,
 			],
+			water_misc: [f32::from(submerged), 0.0, 0.0, 0.0],
 		}
 	}
 }

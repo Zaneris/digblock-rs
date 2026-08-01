@@ -37,6 +37,8 @@ struct Frame {
 	// z = shadow map texel size (1.0 / resolution, both cascades)
 	// w = wide-cascade texel size in world units (normal-offset bias)
 	misc: vec4f,
+	// x = camera underwater, y = SSR enabled (unused here)
+	water_misc: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;

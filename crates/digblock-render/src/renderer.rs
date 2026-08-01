@@ -65,6 +65,10 @@ pub struct FrameUniforms {
 	/// x = alpha, y = shadows enabled, z = shadow map texel size (UV),
 	/// w = wide-cascade texel size in world units (normal-offset bias).
 	pub misc: [f32; 4],
+	/// x = camera underwater (0/1), y = SSR enabled (0/1), z/w reserved.
+	/// Appended last — mirror in the Frame structs of water.wgsl,
+	/// chunk.wgsl, and sky.wgsl (hand-synced, order load-bearing).
+	pub water_misc: [f32; 4],
 }
 
 pub struct ChunkGpu {
