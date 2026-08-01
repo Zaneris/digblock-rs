@@ -185,18 +185,19 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 fn reflection_color(origin: vec3f, ray: vec3f, dist: f32) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
-	// March only near water: past ~80 blocks the reflected detail is
-	// sub-pixel and the sky fallback is indistinguishable — this is
-	// what keeps grazing ocean views from marching every pixel.
-	if frame.water_misc.y < 0.5 || dist > 80.0 {
+	if frame.water_misc.y < 0.5 {
 		return sky;
 	}
-	// World-space steps with a growing stride (~76 blocks reach in 28
-	// taps), projected per step; a depth crossing within a thickness
-	// bound is a hit. Explicit-LOD fetches are legal in this varying
-	// branch; the march itself is gated by a uniform flag.
+	// World-space steps with a growing stride, projected per step; a
+	// depth crossing within a thickness bound is a hit. The stride
+	// scales with the fragment's distance (its pixel footprint), so
+	// the fixed tap count resolves fine shoreline detail up close AND
+	// reaches the mountains across a lake from far water — where the
+	// reflection is low-frequency and coarse hits look right.
+	// Explicit-LOD fetches are legal in this varying branch; the march
+	// itself is gated by a uniform flag.
 	let dims = vec2f(textureDimensions(scene_depth));
-	var t_step = 0.4;
+	var t_step = 0.4 * (1.0 + dist * 0.04);
 	var t = t_step * 2.0; // skip immediate self-intersection
 	for (var i = 0; i < 28; i++) {
 		let p = origin + ray * t;
@@ -216,11 +217,9 @@ fn reflection_color(origin: vec3f, ray: vec3f, dist: f32) -> vec3f {
 			let wp = frame.inv_view_proj * vec4f(ndc.xy, d, 1.0);
 			if distance(wp.xyz / wp.w, p) < t_step * 4.0 {
 				let hit = textureSampleLevel(scene_tex, scene_smp, uv, 0.0).rgb;
-				// Fade to sky at screen edges and toward the march's
-				// distance gate so neither boundary pops.
+				// Fade to sky at screen edges so misses never pop.
 				let edge = min(1.0 - abs(ndc.x), 1.0 - abs(ndc.y));
-				let w = smoothstep(0.0, 0.15, edge) * (1.0 - smoothstep(60.0, 80.0, dist));
-				return mix(sky, hit, w);
+				return mix(sky, hit, smoothstep(0.0, 0.15, edge));
 			}
 		}
 		t += t_step;

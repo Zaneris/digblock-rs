@@ -22,9 +22,11 @@ gpu p50 main 1.78–1.90ms + water 0.58–0.89ms vs 2.28ms pre-change
 single main pass — the split + blit + depth copy cost ≈ +0.1–0.4ms.
 Frame pacing unchanged: avg 8.33–8.35, p95 9.3–9.5, hitches 1,
 over-12.5ms 1–4 (sixth-pass profile). Mobile config (SSR off):
-main 0.41–0.56 + water 0.45–0.49ms. SSR worst case (grazing ocean,
-~60% water coverage): +0.80ms — bounded by an 80-block distance gate
-(reflected detail is sub-pixel past it); `--no-ssr` removes it.
+main 0.41–0.56 + water 0.45–0.49ms. SSR marches everywhere with a
+distance-scaled stride (fixed 28 taps; far water takes coarse steps
+that reach the mountains across a lake — an early 80-block cutoff
+killed exactly those reflections); worst case (grazing ocean, ~60%
+water coverage) ≈ +1.7ms, `--no-ssr` removes it.
 Uncapped (`--no-vsync`): avg 2.77ms, 342 fps. Shader ALU additions
 (ripples/fresnel/spec/reflection/advection, phases 1–2) measured
 inside run noise. One caught regression: SSR ungated cost 1.70ms on
