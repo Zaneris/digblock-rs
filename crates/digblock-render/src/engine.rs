@@ -577,7 +577,10 @@ impl Game for Engine {
 		&mut self,
 		gpu: &Gpu,
 		target: &wgpu::TextureView,
-		depth: &wgpu::TextureView,
+		// The renderer owns its own depth (FrameTargets); the platform
+		// depth attachment is unused and removed once the platform side
+		// drops it.
+		_depth: &wgpu::TextureView,
 		size: (u32, u32),
 	) {
 		self.size = size;
@@ -605,7 +608,6 @@ impl Game for Engine {
 			let stats = r.render(
 				gpu,
 				target,
-				depth,
 				&frame,
 				view_proj,
 				near_vp,

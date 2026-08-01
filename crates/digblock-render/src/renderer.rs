@@ -147,6 +147,21 @@ pub struct Renderer {
 	/// Debug overlay; always constructed (cheap) so the device-loss
 	/// rebuild path recreates it for free.
 	overlay: Overlay,
+	/// Size-dependent frame targets, lazily (re)built by `ensure_targets`
+	/// each render — one path covers first frame, resize, resume, and
+	/// device loss (`Renderer::new` starts empty).
+	targets: Option<FrameTargets>,
+}
+
+/// Renderer-owned per-frame render targets. The platform hands over only
+/// the swapchain view; depth (and later the offscreen scene color) live
+/// here so they can be copied and sampled.
+struct FrameTargets {
+	size: (u32, u32),
+	/// Kept for the depth copy encoded between the scene and water passes.
+	#[allow(dead_code)]
+	depth: wgpu::Texture,
+	depth_view: wgpu::TextureView,
 }
 
 impl Renderer {
@@ -639,6 +654,7 @@ impl Renderer {
 			water_scratch: Vec::new(),
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
+			targets: None,
 		}
 	}
 
@@ -697,16 +713,44 @@ impl Renderer {
 		}
 	}
 
+	/// (Re)build the size-dependent frame targets when the size changes.
+	/// Covers first frame, window resize, resume-with-new-size, and the
+	/// device-loss rebuild (which resets `targets` to None).
+	fn ensure_targets(&mut self, gpu: &Gpu, size: (u32, u32)) {
+		if self.targets.as_ref().map(|t| t.size) == Some(size) {
+			return;
+		}
+		let extent = wgpu::Extent3d {
+			width: size.0.max(1),
+			height: size.1.max(1),
+			depth_or_array_layers: 1,
+		};
+		let depth = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("frame depth"),
+			size: extent,
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: DEPTH_FORMAT,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+			view_formats: &[],
+		});
+		let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+		self.targets = Some(FrameTargets {
+			size,
+			depth,
+			depth_view,
+		});
+	}
+
 	/// Encode the frame in one command encoder, fixed order — wide shadow
 	/// (only when due) → near shadow → main pass. Shadow maps are written
 	/// and consumed in the same frame (fixes the Java one-frame lag).
-	/// Water pass lands in M7.
 	#[allow(clippy::too_many_arguments)]
 	pub fn render(
 		&mut self,
 		gpu: &Gpu,
 		target: &wgpu::TextureView,
-		depth: &wgpu::TextureView,
 		frame: &FrameUniforms,
 		view_proj: glam::Mat4,
 		near_vp: glam::Mat4,
@@ -715,6 +759,7 @@ impl Renderer {
 		size: (u32, u32),
 		overlay: Option<(&OverlayStats, &[f32])>,
 	) -> RenderStats {
+		self.ensure_targets(gpu, size);
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
 			wide_refreshed: wide_due || self.wide_refresh_needed,
@@ -841,7 +886,7 @@ impl Renderer {
 					depth_slice: None,
 				})],
 				depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-					view: depth,
+					view: &self.targets.as_ref().expect("ensured above").depth_view,
 					depth_ops: Some(wgpu::Operations {
 						load: wgpu::LoadOp::Clear(1.0),
 						store: wgpu::StoreOp::Store,
