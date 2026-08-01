@@ -7,7 +7,7 @@ use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
-use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_SHADOW_NEAR, Q_SHADOW_WIDE};
+use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_SHADOW_NEAR, Q_SHADOW_WIDE, Q_WATER};
 use crate::overlay::Overlay;
 use crate::texture::BlockTextures;
 use digblock_core::metrics::OverlayStats;
@@ -151,17 +151,31 @@ pub struct Renderer {
 	/// each render — one path covers first frame, resize, resume, and
 	/// device loss (`Renderer::new` starts empty).
 	targets: Option<FrameTargets>,
+	/// Layout of `FrameTargets::scene_bg` (depth copy + scene color +
+	/// linear sampler): blit group 0, water group 3.
+	scene_bgl: wgpu::BindGroupLayout,
+	linear_sampler: wgpu::Sampler,
+	/// Composites the offscreen scene into the swapchain at the start of
+	/// the water pass.
+	blit_pipeline: wgpu::RenderPipeline,
+	surface_format: wgpu::TextureFormat,
 }
 
 /// Renderer-owned per-frame render targets. The platform hands over only
-/// the swapchain view; depth (and later the offscreen scene color) live
-/// here so they can be copied and sampled.
+/// the swapchain view; depth and the offscreen scene color live here so
+/// the water pass can sample both.
 struct FrameTargets {
 	size: (u32, u32),
-	/// Kept for the depth copy encoded between the scene and water passes.
-	#[allow(dead_code)]
+	/// Scene-pass depth attachment; copied to `depth_copy` before water.
 	depth: wgpu::Texture,
 	depth_view: wgpu::TextureView,
+	/// Pre-water solid depth, sampleable (absorption / soft shores / SSR).
+	depth_copy: wgpu::Texture,
+	/// Offscreen scene color view: solids + sky render here; water
+	/// samples it (refraction/SSR) while blending into the swapchain.
+	/// (The view keeps the texture alive.)
+	scene_view: wgpu::TextureView,
+	scene_bg: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -470,6 +484,97 @@ impl Renderer {
 			cache: None,
 		});
 
+		// Scene-target bindings for the water pass: the pre-water solid
+		// depth copy (textureLoad, no sampler), the offscreen scene color,
+		// and a linear sampler (refraction/SSR offsets). The blit uses
+		// only binding 1; water declares this as group 3.
+		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("scene targets"),
+			entries: &[
+				wgpu::BindGroupLayoutEntry {
+					binding: 0,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Depth,
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 1,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Float { filterable: true },
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 2,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+					count: None,
+				},
+			],
+		});
+		let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+			label: Some("scene linear"),
+			address_mode_u: wgpu::AddressMode::ClampToEdge,
+			address_mode_v: wgpu::AddressMode::ClampToEdge,
+			mag_filter: wgpu::FilterMode::Linear,
+			min_filter: wgpu::FilterMode::Linear,
+			..Default::default()
+		});
+		// Fullscreen composite of the offscreen scene into the swapchain:
+		// first draw of the water pass. Depth Always/no-write — the pass
+		// keeps the scene depth for water to test against.
+		let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("blit"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::BLIT.into()),
+		});
+		let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("blit"),
+			bind_group_layouts: &[&scene_bgl],
+			push_constant_ranges: &[],
+		});
+		let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("blit"),
+			layout: Some(&blit_layout),
+			vertex: wgpu::VertexState {
+				module: &blit_shader,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: &[],
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				cull_mode: None,
+				..Default::default()
+			},
+			depth_stencil: Some(wgpu::DepthStencilState {
+				format: DEPTH_FORMAT,
+				depth_write_enabled: false,
+				depth_compare: wgpu::CompareFunction::Always,
+				stencil: Default::default(),
+				bias: Default::default(),
+			}),
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &blit_shader,
+				entry_point: Some("fs"),
+				compilation_options: Default::default(),
+				targets: &[Some(wgpu::ColorTargetState {
+					format: surface_format,
+					blend: None,
+					write_mask: wgpu::ColorWrites::ALL,
+				})],
+			}),
+			multiview: None,
+			cache: None,
+		});
+
 		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("shadow"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
@@ -655,6 +760,10 @@ impl Renderer {
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
 			targets: None,
+			scene_bgl,
+			linear_sampler,
+			blit_pipeline,
+			surface_format,
 		}
 	}
 
@@ -736,10 +845,54 @@ impl Renderer {
 			view_formats: &[],
 		});
 		let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+		let depth_copy = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("solid depth copy"),
+			size: extent,
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: DEPTH_FORMAT,
+			usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+			view_formats: &[],
+		});
+		let scene = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("scene color"),
+			size: extent,
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: self.surface_format,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+			view_formats: &[],
+		});
+		let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
+		let scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("scene targets"),
+			layout: &self.scene_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(
+						&depth_copy.create_view(&wgpu::TextureViewDescriptor::default()),
+					),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(&scene_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+				},
+			],
+		});
 		self.targets = Some(FrameTargets {
 			size,
 			depth,
 			depth_view,
+			depth_copy,
+			scene_view,
+			scene_bg,
 		});
 	}
 
@@ -865,90 +1018,61 @@ impl Renderer {
 		stats.draw_calls += casters;
 		stats.triangles += tris;
 
+		// Water chunk list, shared by both water subpasses below. The
+		// depth prepass makes draw order irrelevant: no sorting.
+		self.water_scratch.clear();
+		self.water_scratch.extend(
+			self.chunks
+				.iter()
+				.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
+				.map(|(pos, _)| *pos),
+		);
 		{
-			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-				label: Some("main"),
-				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-					view: target,
-					resolve_target: None,
-					ops: wgpu::Operations {
-						// Fog color, matching the sky horizon — belt and
-						// braces for far-plane precision edges (the sky
-						// pass covers every non-terrain pixel anyway).
-						load: wgpu::LoadOp::Clear(wgpu::Color {
-							r: f64::from(frame.fog_color[0]),
-							g: f64::from(frame.fog_color[1]),
-							b: f64::from(frame.fog_color[2]),
-							a: 1.0,
+			let targets = self.targets.as_ref().expect("ensured above");
+			// Scene pass: solids + sky into the offscreen color target;
+			// depth is stored for the copy below.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("scene"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: &targets.scene_view,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							// Fog color, matching the sky horizon — belt and
+							// braces for far-plane precision edges (the sky
+							// pass covers every non-terrain pixel anyway).
+							load: wgpu::LoadOp::Clear(wgpu::Color {
+								r: f64::from(frame.fog_color[0]),
+								g: f64::from(frame.fog_color[1]),
+								b: f64::from(frame.fog_color[2]),
+								a: 1.0,
+							}),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+						view: &targets.depth_view,
+						depth_ops: Some(wgpu::Operations {
+							load: wgpu::LoadOp::Clear(1.0),
+							store: wgpu::StoreOp::Store,
 						}),
-						store: wgpu::StoreOp::Store,
-					},
-					depth_slice: None,
-				})],
-				depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-					view: &self.targets.as_ref().expect("ensured above").depth_view,
-					depth_ops: Some(wgpu::Operations {
-						load: wgpu::LoadOp::Clear(1.0),
-						store: wgpu::StoreOp::Store,
+						stencil_ops: None,
 					}),
-					stencil_ops: None,
-				}),
-				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_MAIN)),
-				occlusion_query_set: None,
-			});
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_MAIN)),
+					occlusion_query_set: None,
+				});
 
-			pass.set_pipeline(&self.solid_pipeline);
-			pass.set_bind_group(0, &self.frame_bg, &[]);
-			pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
-			pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-			for (pos, chunk) in &self.chunks {
-				if !in_frustum(pos) {
-					stats.chunks_culled += 1;
-					continue;
-				}
-				if let Some((buf, index_count)) = &chunk.solid {
-					pass.set_bind_group(
-						2,
-						&self.chunk_bg,
-						&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-					);
-					pass.set_vertex_buffer(0, buf.slice(..));
-					pass.draw_indexed(0..*index_count, 0, 0..1);
-					stats.chunks_drawn += 1;
-					stats.triangles += *index_count / 3;
-				}
-			}
-
-			// Sky after solids (depth test discards occluded fragments —
-			// near-free on TBDR), before water so water blends over it.
-			pass.set_pipeline(&self.sky_pipeline);
-			pass.set_bind_group(0, &self.frame_bg, &[]);
-			pass.draw(0..3, 0..1);
-			stats.draw_calls += 1;
-
-			// Transparent water, two subpasses: a depth-only prepass
-			// records the nearest water surface, then the color pass
-			// (alpha 0.7, no depth write, double-sided) shades only
-			// fragments at that depth — one blended layer per pixel, so
-			// cascades read as a single body instead of stacked sheets.
-			// The prepass also makes draw order irrelevant: no sorting.
-			self.water_scratch.clear();
-			self.water_scratch.extend(
-				self.chunks
-					.iter()
-					.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
-					.map(|(pos, _)| *pos),
-			);
-			pass.set_bind_group(0, &self.frame_water_bg, &[]);
-			// Group 1 was invalidated by the sky pipeline's shorter layout.
-			pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
-			for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
-				pass.set_pipeline(pipeline);
-				for pos in &self.water_scratch {
-					let Some(chunk) = self.chunks.get(pos) else {
+				pass.set_pipeline(&self.solid_pipeline);
+				pass.set_bind_group(0, &self.frame_bg, &[]);
+				pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
+				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+				for (pos, chunk) in &self.chunks {
+					if !in_frustum(pos) {
+						stats.chunks_culled += 1;
 						continue;
-					};
-					if let Some((buf, index_count)) = &chunk.water {
+					}
+					if let Some((buf, index_count)) = &chunk.solid {
 						pass.set_bind_group(
 							2,
 							&self.chunk_bg,
@@ -956,8 +1080,89 @@ impl Renderer {
 						);
 						pass.set_vertex_buffer(0, buf.slice(..));
 						pass.draw_indexed(0..*index_count, 0, 0..1);
-						stats.water_draws += 1;
+						stats.chunks_drawn += 1;
 						stats.triangles += *index_count / 3;
+					}
+				}
+
+				// Sky after solids (depth test discards occluded fragments —
+				// near-free on TBDR).
+				pass.set_pipeline(&self.sky_pipeline);
+				pass.set_bind_group(0, &self.frame_bg, &[]);
+				pass.draw(0..3, 0..1);
+				stats.draw_calls += 1;
+			}
+
+			// Pre-water solid depth becomes sampleable: water reads it for
+			// column thickness (absorption, soft shores) while the live
+			// attachment goes on to take the water prepass's writes.
+			encoder.copy_texture_to_texture(
+				targets.depth.as_image_copy(),
+				targets.depth_copy.as_image_copy(),
+				wgpu::Extent3d {
+					width: targets.size.0.max(1),
+					height: targets.size.1.max(1),
+					depth_or_array_layers: 1,
+				},
+			);
+
+			// Water pass into the swapchain: composite the scene (blit),
+			// then transparent water in two subpasses — a depth-only
+			// prepass records the nearest water surface, then the color
+			// pass (no depth write, double-sided) shades only fragments at
+			// that depth, one blended layer per pixel. Depth is discarded
+			// at the end: nothing after this pass reads it.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("water"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: target,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							// The blit overwrites every pixel; Clear beats
+							// Load on TBDR.
+							load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+						view: &targets.depth_view,
+						depth_ops: Some(wgpu::Operations {
+							load: wgpu::LoadOp::Load,
+							store: wgpu::StoreOp::Discard,
+						}),
+						stencil_ops: None,
+					}),
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_WATER)),
+					occlusion_query_set: None,
+				});
+
+				pass.set_pipeline(&self.blit_pipeline);
+				pass.set_bind_group(0, &targets.scene_bg, &[]);
+				pass.draw(0..3, 0..1);
+				stats.draw_calls += 1;
+
+				pass.set_bind_group(0, &self.frame_water_bg, &[]);
+				pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
+				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+				for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
+					pass.set_pipeline(pipeline);
+					for pos in &self.water_scratch {
+						let Some(chunk) = self.chunks.get(pos) else {
+							continue;
+						};
+						if let Some((buf, index_count)) = &chunk.water {
+							pass.set_bind_group(
+								2,
+								&self.chunk_bg,
+								&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
+							);
+							pass.set_vertex_buffer(0, buf.slice(..));
+							pass.draw_indexed(0..*index_count, 0, 0..1);
+							stats.water_draws += 1;
+							stats.triangles += *index_count / 3;
+						}
 					}
 				}
 			}

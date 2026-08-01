@@ -39,13 +39,15 @@ pub mod shader {
 		include_str!("../../../assets/shaders/sky.wgsl"),
 	);
 	pub const OVERLAY: &str = include_str!("../../../assets/shaders/overlay.wgsl");
+	pub const BLIT: &str = include_str!("../../../assets/shaders/blit.wgsl");
 
-	pub const ALL: [(&str, &str); 5] = [
+	pub const ALL: [(&str, &str); 6] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
 		("sky.wgsl", SKY),
 		("overlay.wgsl", OVERLAY),
+		("blit.wgsl", BLIT),
 	];
 }
 
