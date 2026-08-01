@@ -93,6 +93,10 @@ const WIDE_SLICE_DRAWS: u32 = 1536;
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
 	water_pipeline: wgpu::RenderPipeline,
+	/// Depth-only water prepass: records the nearest water surface so
+	/// `water_pipeline` (depth Equal) blends exactly one layer — interior
+	/// faces of cascades never reach the blender.
+	water_depth_pipeline: wgpu::RenderPipeline,
 	shadow_pipeline: wgpu::RenderPipeline,
 	/// Fullscreen procedural sky, drawn after solids, before water.
 	sky_pipeline: wgpu::RenderPipeline,
@@ -135,8 +139,9 @@ pub struct Renderer {
 	/// Capacity of `chunk_buf` in slots, derived from draw distance.
 	chunk_slots: u32,
 	pub gpu_buffer_bytes: u64,
-	/// Reused water-sort buffer (was a fresh alloc every frame).
-	water_scratch: Vec<(i64, ChunkPos)>,
+	/// Reused water chunk list (was a fresh alloc every frame). The
+	/// depth prepass makes draw order irrelevant, so no sort key.
+	water_scratch: Vec<ChunkPos>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// Debug overlay; always constructed (cheap) so the device-loss
@@ -339,7 +344,10 @@ impl Renderer {
 			depth_stencil: Some(wgpu::DepthStencilState {
 				format: DEPTH_FORMAT,
 				depth_write_enabled: false,
-				depth_compare: wgpu::CompareFunction::Less,
+				// LessEqual against the prepass depth: only the nearest
+				// water surface shades (Equal in effect, tolerant of
+				// cross-pipeline depth invariance).
+				depth_compare: wgpu::CompareFunction::LessEqual,
 				stencil: Default::default(),
 				bias: Default::default(),
 			}),
@@ -352,6 +360,47 @@ impl Renderer {
 					format: surface_format,
 					blend: Some(wgpu::BlendState::ALPHA_BLENDING),
 					write_mask: wgpu::ColorWrites::ALL,
+				})],
+			}),
+			multiview: None,
+			cache: None,
+		});
+
+		// Depth-only prepass over the same water geometry: writes the
+		// nearest water depth, color masked off. Stacked water/air
+		// interfaces (fall-sheet backsides, pool surfaces behind them)
+		// then fail the color pass's depth test, so a connected body of
+		// water reads as one surface instead of accumulated alpha layers.
+		let water_depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("water depth"),
+			layout: Some(&layout),
+			vertex: wgpu::VertexState {
+				module: &water_shader,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: std::slice::from_ref(&water_vertex_layout),
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				cull_mode: None,
+				..Default::default()
+			},
+			depth_stencil: Some(wgpu::DepthStencilState {
+				format: DEPTH_FORMAT,
+				depth_write_enabled: true,
+				depth_compare: wgpu::CompareFunction::Less,
+				stencil: Default::default(),
+				bias: Default::default(),
+			}),
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &water_shader,
+				entry_point: Some("fs_depth"),
+				compilation_options: Default::default(),
+				targets: &[Some(wgpu::ColorTargetState {
+					format: surface_format,
+					blend: None,
+					write_mask: wgpu::ColorWrites::empty(),
 				})],
 			}),
 			multiview: None,
@@ -561,6 +610,7 @@ impl Renderer {
 		Self {
 			solid_pipeline,
 			water_pipeline,
+			water_depth_pipeline,
 			shadow_pipeline,
 			sky_pipeline,
 			frame_buf,
@@ -662,7 +712,6 @@ impl Renderer {
 		near_vp: glam::Mat4,
 		wide_vp: glam::Mat4,
 		wide_due: bool,
-		cam_pos: glam::Vec3,
 		size: (u32, u32),
 		overlay: Option<(&OverlayStats, &[f32])>,
 	) -> RenderStats {
@@ -832,42 +881,39 @@ impl Renderer {
 			pass.draw(0..3, 0..1);
 			stats.draw_calls += 1;
 
-			// Transparent water: after all solids, back-to-front by chunk
-			// distance (16³ granularity is enough), alpha 0.7, no depth
-			// writes, double-sided.
+			// Transparent water, two subpasses: a depth-only prepass
+			// records the nearest water surface, then the color pass
+			// (alpha 0.7, no depth write, double-sided) shades only
+			// fragments at that depth — one blended layer per pixel, so
+			// cascades read as a single body instead of stacked sheets.
+			// The prepass also makes draw order irrelevant: no sorting.
 			self.water_scratch.clear();
 			self.water_scratch.extend(
 				self.chunks
 					.iter()
 					.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
-					.map(|(pos, _)| {
-						let center = glam::Vec3::new(
-							(pos.x * 16 + 8) as f32,
-							(pos.y * 16 + 8) as f32,
-							(pos.z * 16 + 8) as f32,
-						);
-						(-(center.distance_squared(cam_pos) as i64), *pos)
-					}),
+					.map(|(pos, _)| *pos),
 			);
-			self.water_scratch.sort_by_key(|(d, _)| *d);
-			pass.set_pipeline(&self.water_pipeline);
 			pass.set_bind_group(0, &self.frame_water_bg, &[]);
 			// Group 1 was invalidated by the sky pipeline's shorter layout.
 			pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
-			for (_, pos) in &self.water_scratch {
-				let Some(chunk) = self.chunks.get(pos) else {
-					continue;
-				};
-				if let Some((buf, index_count)) = &chunk.water {
-					pass.set_bind_group(
-						2,
-						&self.chunk_bg,
-						&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-					);
-					pass.set_vertex_buffer(0, buf.slice(..));
-					pass.draw_indexed(0..*index_count, 0, 0..1);
-					stats.water_draws += 1;
-					stats.triangles += *index_count / 3;
+			for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
+				pass.set_pipeline(pipeline);
+				for pos in &self.water_scratch {
+					let Some(chunk) = self.chunks.get(pos) else {
+						continue;
+					};
+					if let Some((buf, index_count)) = &chunk.water {
+						pass.set_bind_group(
+							2,
+							&self.chunk_bg,
+							&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
+						);
+						pass.set_vertex_buffer(0, buf.slice(..));
+						pass.draw_indexed(0..*index_count, 0, 0..1);
+						stats.water_draws += 1;
+						stats.triangles += *index_count / 3;
+					}
 				}
 			}
 		}

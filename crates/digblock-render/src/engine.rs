@@ -596,7 +596,6 @@ impl Game for Engine {
 				near_vp,
 				wide_vp,
 				wide_due,
-				self.camera.pos,
 				size,
 				overlay_stats
 					.as_ref()

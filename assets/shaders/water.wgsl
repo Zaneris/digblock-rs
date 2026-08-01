@@ -181,6 +181,14 @@ fn shadow_vis(sc_near: vec3f, sc_wide: vec3f, direct: f32) -> f32 {
 	return mix(near, pcf5(shadow_wide, wsc), t);
 }
 
+// Depth-prepass entry: rasterizes the same vs geometry with color
+// writes masked off, recording only the nearest water depth so the
+// color pass blends a single layer.
+@fragment
+fn fs_depth() -> @location(0) vec4f {
+	return vec4f(0.0);
+}
+
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let uv = fract(i.uv);
