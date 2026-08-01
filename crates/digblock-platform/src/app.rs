@@ -17,14 +17,11 @@ use crate::clock::GameClock;
 use crate::input::{map_button, map_key, map_touch_phase, InputEvent};
 use crate::{Game, Gpu, RunOptions};
 
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-
 struct Running {
 	gpu: Arc<Gpu>,
 	window: Arc<Window>,
 	surface: wgpu::Surface<'static>,
 	config: wgpu::SurfaceConfiguration,
-	depth: wgpu::TextureView,
 }
 
 struct Suspended {
@@ -136,25 +133,6 @@ fn surface_config(
 	}
 }
 
-fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-	device
-		.create_texture(&wgpu::TextureDescriptor {
-			label: Some("surface depth"),
-			size: wgpu::Extent3d {
-				width,
-				height,
-				depth_or_array_layers: 1,
-			},
-			mip_level_count: 1,
-			sample_count: 1,
-			dimension: wgpu::TextureDimension::D2,
-			format: DEPTH_FORMAT,
-			usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-			view_formats: &[],
-		})
-		.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
 impl<G: Game> App<G> {
 	fn init_gpu(
 		window: Arc<Window>,
@@ -224,7 +202,6 @@ impl<G: Game> App<G> {
 			Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap())
 		});
 		let (surface, config) = create_surface(&s.gpu, window.clone(), self.options.no_vsync);
-		let depth = create_depth(&s.gpu.device, config.width, config.height);
 		// Engine pipelines/buffers are untouched — the Device survived.
 		// Only notify about a possible size change while backgrounded.
 		self.game.resize(&s.gpu, (config.width, config.height));
@@ -234,7 +211,6 @@ impl<G: Game> App<G> {
 			window,
 			surface,
 			config,
-			depth,
 		});
 		if let AppState::Running(r) = &self.state {
 			r.window.request_redraw();
@@ -249,7 +225,6 @@ impl<G: Game> App<G> {
 			r.config.width = width;
 			r.config.height = height;
 			r.surface.configure(&r.gpu.device, &r.config);
-			r.depth = create_depth(&r.gpu.device, width, height);
 			self.game.resize(&r.gpu, (width, height));
 		}
 	}
@@ -287,7 +262,7 @@ impl<G: Game> App<G> {
 			.texture
 			.create_view(&wgpu::TextureViewDescriptor::default());
 		self.game
-			.render(&r.gpu, &view, &r.depth, (r.config.width, r.config.height));
+			.render(&r.gpu, &view, (r.config.width, r.config.height));
 
 		self.frames_rendered += 1;
 		let want_shot = self.screenshot_pending
@@ -385,7 +360,6 @@ impl<G: Game> ApplicationHandler for App<G> {
 				log::info!("lifecycle: initial launch");
 				let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
 				let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
-				let depth = create_depth(&gpu.device, config.width, config.height);
 				self.game
 					.init(&gpu, config.format, (config.width, config.height));
 				self.state = AppState::Running(Running {
@@ -393,7 +367,6 @@ impl<G: Game> ApplicationHandler for App<G> {
 					window,
 					surface,
 					config,
-					depth,
 				});
 				if let AppState::Running(r) = &self.state {
 					r.window.request_redraw();

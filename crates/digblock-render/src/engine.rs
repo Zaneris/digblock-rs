@@ -595,16 +595,7 @@ impl Game for Engine {
 		self.pending.update_ms = ms_since(t_update);
 	}
 
-	fn render(
-		&mut self,
-		gpu: &Gpu,
-		target: &wgpu::TextureView,
-		// The renderer owns its own depth (FrameTargets); the platform
-		// depth attachment is unused and removed once the platform side
-		// drops it.
-		_depth: &wgpu::TextureView,
-		size: (u32, u32),
-	) {
+	fn render(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {
 		self.size = size;
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);

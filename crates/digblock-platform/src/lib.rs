@@ -33,13 +33,9 @@ pub trait Game: 'static {
 	fn frame_acquired(&mut self, _acquire_wait: std::time::Duration) {}
 	/// Never called while suspended.
 	fn update(&mut self, dt: std::time::Duration);
-	fn render(
-		&mut self,
-		gpu: &Gpu,
-		target: &wgpu::TextureView,
-		depth: &wgpu::TextureView,
-		size: (u32, u32),
-	);
+	/// The game renders into the borrowed swapchain view; every other
+	/// target (depth, offscreen scene) is game-owned.
+	fn render(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32));
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
