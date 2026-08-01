@@ -155,6 +155,10 @@ impl Renderer {
 			label: Some("chunk"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::CHUNK.into()),
 		});
+		let water_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("water"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::WATER.into()),
+		});
 
 		let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("frame"),
@@ -304,17 +308,27 @@ impl Renderer {
 			cache: None,
 		});
 
-		// Water: blended, double-sided (the 0.7 lip is visible from below),
-		// depth test on but depth WRITE off — fixes the Java artifact of
-		// water writing depth in the transparent pass.
+		// Water: blended, double-sided (the dropped surface is visible
+		// from below), depth test on but depth WRITE off — fixes the Java
+		// artifact of water writing depth in the transparent pass. Its
+		// vertices are two u32 words (see mesher MeshData).
+		let water_vertex_layout = wgpu::VertexBufferLayout {
+			array_stride: 8,
+			step_mode: wgpu::VertexStepMode::Vertex,
+			attributes: &[wgpu::VertexAttribute {
+				format: wgpu::VertexFormat::Uint32x2,
+				offset: 0,
+				shader_location: 0,
+			}],
+		};
 		let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("water"),
 			layout: Some(&layout),
 			vertex: wgpu::VertexState {
-				module: &shader,
+				module: &water_shader,
 				entry_point: Some("vs"),
 				compilation_options: Default::default(),
-				buffers: std::slice::from_ref(&vertex_layout),
+				buffers: std::slice::from_ref(&water_vertex_layout),
 			},
 			primitive: wgpu::PrimitiveState {
 				topology: wgpu::PrimitiveTopology::TriangleList,
@@ -330,7 +344,7 @@ impl Renderer {
 			}),
 			multisample: Default::default(),
 			fragment: Some(wgpu::FragmentState {
-				module: &shader,
+				module: &water_shader,
 				entry_point: Some("fs"),
 				compilation_options: Default::default(),
 				targets: &[Some(wgpu::ColorTargetState {
@@ -602,7 +616,8 @@ impl Renderer {
 			u64::from(slot) * CHUNK_STRIDE,
 			bytemuck::cast_slice(&[ox, oy, oz, 0.0]),
 		);
-		let mut make = |verts: &Vec<u32>| -> Option<(wgpu::Buffer, u32)> {
+		// Solid vertices are one u32 word; water vertices are two.
+		let mut make = |verts: &Vec<u32>, words_per_vert: usize| -> Option<(wgpu::Buffer, u32)> {
 			if verts.is_empty() {
 				return None;
 			}
@@ -614,11 +629,11 @@ impl Renderer {
 					usage: wgpu::BufferUsages::VERTEX,
 				});
 			self.gpu_buffer_bytes += buf.size();
-			let quads = (verts.len() / 4) as u32;
+			let quads = (verts.len() / (4 * words_per_vert)) as u32;
 			Some((buf, quads * 6))
 		};
-		let solid = make(&mesh.solid);
-		let water = make(&mesh.water);
+		let solid = make(&mesh.solid, 1);
+		let water = make(&mesh.water, 2);
 		self.chunks.insert(pos, ChunkGpu { solid, water, slot });
 	}
 

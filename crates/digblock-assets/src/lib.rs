@@ -24,12 +24,14 @@ pub mod tex {
 
 pub mod shader {
 	pub const CHUNK: &str = include_str!("../../../assets/shaders/chunk.wgsl");
+	pub const WATER: &str = include_str!("../../../assets/shaders/water.wgsl");
 	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
 	pub const SKY: &str = include_str!("../../../assets/shaders/sky.wgsl");
 	pub const OVERLAY: &str = include_str!("../../../assets/shaders/overlay.wgsl");
 
-	pub const ALL: [(&str, &str); 4] = [
+	pub const ALL: [(&str, &str); 5] = [
 		("chunk.wgsl", CHUNK),
+		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
 		("sky.wgsl", SKY),
 		("overlay.wgsl", OVERLAY),

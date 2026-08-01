@@ -188,6 +188,10 @@ impl MeshInput {
 pub struct MeshData {
 	/// Packed u32 vertices, 4 per face (TL,TR,BL,BR).
 	pub solid: Vec<u32>,
+	/// Water vertices are TWO u32 words each (8 per face): word 0 is the
+	/// solid packing; word 1 carries bits 0-3 surface drop code d (the
+	/// shader lowers the vertex by d/9 — 0 = full height), bit 4 falling,
+	/// bits 5-7 flow dir and bit 8 foam (reserved, zero for now).
 	pub water: Vec<u32>,
 }
 
@@ -212,8 +216,8 @@ fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
 }
 
 /// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 18-19 ao
-/// (0 darkest .. 3 open), 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22
-/// water-lip, 23-28 texture layer, 29-31 tint.
+/// (0 darkest .. 3 open), 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22 unused,
+/// 23-28 texture layer, 29-31 tint.
 #[inline]
 fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 	let (x, y, z) = v.pos;
@@ -224,7 +228,6 @@ fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 		| ((normal as u32) << 15)
 		| (v.ao << 18)
 		| (corner << 20)
-		| (u32::from(v.lip) << 22)
 		| (v.tex << 23)
 		| (v.tint << 29)
 }
@@ -234,7 +237,6 @@ fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 struct Vert {
 	pos: (u32, u32, u32),
 	tex: u32,
-	lip: bool,
 	ao: u32,
 	tint: u32,
 }
@@ -255,10 +257,6 @@ fn tint(wx: i64, wy: i64, wz: i64) -> u32 {
 	h ^= h >> 31;
 	(h & 7) as u32
 }
-
-/// The tint step water always carries (≈ +0.7%, visually neutral) so its
-/// surface stays uniform.
-const WATER_TINT: u32 = 4;
 
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block
 /// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
@@ -340,7 +338,6 @@ fn emit_face(
 	b: (usize, usize, usize),
 	dir: Dir,
 	tex: u32,
-	lip: bool,
 	ao: [u32; 4],
 	tint: u32,
 ) {
@@ -356,13 +353,72 @@ fn emit_face(
 			Vert {
 				pos: (cx as u32, cy as u32, cz as u32),
 				tex,
-				lip,
 				ao: ao[ci],
 				tint,
 			},
 			dir,
 			ci as u32,
 		));
+	}
+}
+
+/// Water surface drop code at horizontal lattice corner (lx, lz) for
+/// water cells at height y: the corner touches up to four cells; if any
+/// of them is water with water above it the surface is pinned full
+/// (d = 0), otherwise the drop is 9 − round(mean water amount), so
+/// adjacent cells sharing the corner agree and surfaces knit without
+/// cracks — including across chunk borders via the padded shell.
+fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
+	let (mut sum, mut count) = (0u32, 0u32);
+	for cz in lz - 1..=lz {
+		for cx in lx - 1..=lx {
+			let b = BlockType::from_u8(input.get(cx, y, cz));
+			let Some(a) = b.water_amount() else { continue };
+			// Cell y is 0..=15, so y+1 stays inside the padded range.
+			if BlockType::from_u8(input.get(cx, y + 1, cz)).is_water() {
+				return 0;
+			}
+			sum += u32::from(a);
+			count += 1;
+		}
+	}
+	debug_assert!(count > 0, "corner of a water face touches its own cell");
+	let a = (2 * sum + count) / (2 * count); // round half up
+	9 - a
+}
+
+/// Emit one water face quad: two words per vertex. `full` (falling
+/// water, or water directly above) renders the cell as a complete cube;
+/// otherwise vertices on the cell's top lattice plane drop to their
+/// corner's shared surface height.
+fn emit_water_face(
+	out: &mut Vec<u32>,
+	input: &MeshInput,
+	b: (usize, usize, usize),
+	dir: Dir,
+	tex: u32,
+	full: bool,
+	falling: bool,
+) {
+	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
+	let corners = face_corners(bx, by, bz, dir);
+	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
+		let d = if !full && cy == by + 1 {
+			corner_drop(input, cx, by, cz)
+		} else {
+			0
+		};
+		out.push(pack(
+			Vert {
+				pos: (cx as u32, cy as u32, cz as u32),
+				tex,
+				ao: 3,
+				tint: 0,
+			},
+			dir,
+			ci as u32,
+		));
+		out.push(d | (u32::from(falling) << 4));
 	}
 }
 
@@ -416,23 +472,30 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					}
 					let class = me.props().class;
 					let tex = me.texture(dir);
-					let lip = class == RenderClass::Translucent && dir == Dir::Top;
-					// No AO or jitter on water: corner darkening and patchy
-					// brightness on a translucent no-depth-write surface
-					// read as dirt.
-					let (out, ao, bt) = match class {
-						RenderClass::Translucent => (&mut mesh.water, [3u32; 4], WATER_TINT),
-						_ => (
-							&mut mesh.solid,
-							face_ao(input, x as i32, y as i32, z as i32, dir),
-							tint(
-								i64::from(base.0) + x as i64,
-								i64::from(base.1) + y as i64,
-								i64::from(base.2) + z as i64,
-							),
-						),
-					};
-					emit_face(out, (x, y, z), dir, tex, lip, ao, bt);
+					if class == RenderClass::Translucent {
+						// Falling water and submerged cells render as
+						// complete cubes; only surface cells drop their
+						// top-plane vertices to the shared corner heights.
+						let above = BlockType::from_u8(input.get(x as i32, y as i32 + 1, z as i32));
+						let full = me.is_falling() || above.is_water();
+						emit_water_face(
+							&mut mesh.water,
+							input,
+							(x, y, z),
+							dir,
+							tex,
+							full,
+							me.is_falling(),
+						);
+					} else {
+						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
+						let bt = tint(
+							i64::from(base.0) + x as i64,
+							i64::from(base.1) + y as i64,
+							i64::from(base.2) + z as i64,
+						);
+						emit_face(&mut mesh.solid, (x, y, z), dir, tex, ao, bt);
+					}
 				}
 			}
 		}
@@ -480,7 +543,6 @@ mod tests {
 
 	#[test]
 	fn water_only_faces_air() {
-		// Water block with air above → only the top face, with lip bit.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 7, 8, B::Dirt); // below
@@ -488,12 +550,8 @@ mod tests {
 		// Water: 5 air-adjacent sides + top = faces toward air on all open
 		// sides. Dirt below: 5 visible faces (top hidden? no — top borders
 		// water, water is not solid → dirt top IS visible through water).
-		let water_faces = m.water.len() / 4;
+		let water_faces = m.water.len() / 8; // two words per water vertex
 		assert_eq!(water_faces, 5, "water faces air on 4 sides + top");
-		assert!(
-			m.water.iter().any(|v| v & (1 << 22) != 0),
-			"top face has lip bit"
-		);
 		let solid_faces = m.solid.len() / 4;
 		assert_eq!(solid_faces, 6, "dirt visible through water above");
 	}
@@ -505,7 +563,7 @@ mod tests {
 		d.set(9, 8, 8, B::Water);
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		// Each water block: faces toward air except toward each other.
-		assert_eq!(m.water.len() / 4, 2 * 5);
+		assert_eq!(m.water.len() / 8, 2 * 5);
 	}
 
 	#[test]
@@ -597,7 +655,6 @@ mod tests {
 			Vert {
 				pos: (16, 7, 3),
 				tex: 37,
-				lip: true,
 				ao: 1,
 				tint: 5,
 			},
@@ -610,7 +667,6 @@ mod tests {
 		assert_eq!((v >> 15) & 0x7, Dir::East as u32);
 		assert_eq!((v >> 18) & 0x3, 1);
 		assert_eq!((v >> 20) & 0x3, 2);
-		assert_eq!((v >> 22) & 0x1, 1);
 		assert_eq!((v >> 23) & 0x3f, 37);
 		assert_eq!(v >> 29, 5);
 	}
@@ -652,10 +708,133 @@ mod tests {
 	}
 
 	#[test]
-	fn water_tint_is_constant() {
+	fn water_word_count_is_even() {
 		let m = mesh_chunk(&isolated(&solo(B::Water)), (48, 16, -32));
-		for v in &m.water {
-			assert_eq!(tint_of(*v), WATER_TINT, "water stays uniform");
+		assert_eq!(m.water.len() % 8, 0, "whole two-word quads only");
+		assert!(m.solid.is_empty());
+	}
+
+	/// The (word0, word1) vertex pairs of a water face, matched like
+	/// `quad_of` but over the interleaved two-word stream.
+	fn water_quad(m: &[u32], bx: i32, by: i32, bz: i32, dir: Dir) -> [(u32, u32); 4] {
+		let want: std::collections::HashSet<(u32, u32, u32)> = face_corners(bx, by, bz, dir)
+			.iter()
+			.map(|&(x, y, z)| (x as u32, y as u32, z as u32))
+			.collect();
+		for q in m.chunks(8) {
+			let got: std::collections::HashSet<(u32, u32, u32)> = q
+				.chunks(2)
+				.map(|p| (p[0] & 0x1f, (p[0] >> 5) & 0x1f, (p[0] >> 10) & 0x1f))
+				.collect();
+			if (q[0] >> 15) & 0x7 == dir as u32 && got == want {
+				return [(q[0], q[1]), (q[2], q[3]), (q[4], q[5]), (q[6], q[7])];
+			}
+		}
+		panic!("water face of ({bx},{by},{bz}) toward {dir:?} not found");
+	}
+
+	fn drop_of(w1: u32) -> u32 {
+		w1 & 0xf
+	}
+
+	fn falling_of(w1: u32) -> bool {
+		(w1 >> 4) & 1 == 1
+	}
+
+	#[test]
+	fn source_surface_drops_one_ninth() {
+		// Lone source with air above: top face all d = 9 − 8 = 1; side
+		// faces drop only their top-plane vertices; nothing is falling.
+		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		for (_, w1) in top {
+			assert_eq!(drop_of(w1), 1);
+			assert!(!falling_of(w1));
+		}
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (w0, w1) in side {
+			let y = (w0 >> 5) & 0x1f;
+			assert_eq!(
+				drop_of(w1),
+				u32::from(y == 9),
+				"top verts drop, bottom full"
+			);
+		}
+	}
+
+	#[test]
+	fn submerged_water_renders_full_cube() {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(8, 9, 8, B::Water);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		// Lower cell: water above → its side faces stay full height.
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(drop_of(w1), 0);
+		}
+		// Upper cell is the surface: top face drops.
+		let top = water_quad(&m.water, 8, 9, 8, Dir::Top);
+		for (_, w1) in top {
+			assert_eq!(drop_of(w1), 1);
+		}
+	}
+
+	#[test]
+	fn waterfall_is_full_height_and_flagged() {
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		// Floating fall: 4 sides + top + bottom toward air, all full.
+		assert_eq!(m.water.len() / 8, 6);
+		for pair in m.water.chunks(2) {
+			assert_eq!(drop_of(pair[1]), 0, "falls never drop their surface");
+			assert!(falling_of(pair[1]));
+		}
+	}
+
+	#[test]
+	fn adjacent_flows_share_corner_heights() {
+		// Flow3 | Flow5 side by side: no interface faces, and the two top
+		// faces agree on their shared corners (mean amount 4 → d = 5).
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFlow3);
+		d.set(9, 8, 8, B::WaterFlow5);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		assert_eq!(m.water.len() / 8, 2 * 5, "interface culled");
+		let top3 = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		let top5 = water_quad(&m.water, 9, 8, 8, Dir::Top);
+		let d_at = |quad: &[(u32, u32); 4], lx: u32| -> Vec<u32> {
+			quad.iter()
+				.filter(|(w0, _)| w0 & 0x1f == lx)
+				.map(|(_, w1)| drop_of(*w1))
+				.collect()
+		};
+		assert_eq!(d_at(&top3, 9), vec![5, 5], "shared corners from both");
+		assert_eq!(d_at(&top5, 9), vec![5, 5], "identical on the other face");
+		assert_eq!(d_at(&top3, 8), vec![6, 6], "flow3 alone: d = 9 − 3");
+		assert_eq!(d_at(&top5, 10), vec![4, 4], "flow5 alone: d = 9 − 5");
+	}
+
+	#[test]
+	fn corner_heights_knit_across_chunk_borders() {
+		// Source at the +x border; the neighbor chunk holds Flow4 across
+		// the seam. The border corners average both (mean 6 → d = 3),
+		// proving the padded shell feeds corner heights.
+		let mut d = ChunkData::default();
+		d.set(15, 8, 8, B::Water);
+		let mut other = ChunkData::default();
+		other.set(0, 8, 8, B::WaterFlow4);
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (1, 0, 0) {
+				Src::Chunk(&other)
+			} else {
+				Src::Air
+			}
+		});
+		let m = mesh_chunk(&input, ZERO);
+		let top = water_quad(&m.water, 15, 8, 8, Dir::Top);
+		for (w0, w1) in top {
+			let expect = if w0 & 0x1f == 16 { 3 } else { 1 };
+			assert_eq!(drop_of(w1), expect, "border corners mix in shell water");
 		}
 	}
 
@@ -772,17 +951,17 @@ mod tests {
 	}
 
 	#[test]
-	fn water_faces_carry_full_ao_and_default_order() {
+	fn water_never_reorders_and_skips_ao() {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
-		d.set(9, 9, 8, B::Stone); // would darken a solid face
+		d.set(9, 9, 8, B::Stone); // would darken and flip a solid face
 		let m = mesh_chunk(&isolated(&d), ZERO);
-		for v in &m.water {
-			assert_eq!(ao_of(*v), 3, "water skips AO");
+		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		let order: Vec<u32> = top.iter().map(|(w0, _)| corner_of(*w0)).collect();
+		assert_eq!(order, vec![0, 1, 2, 3], "water keeps the default order");
+		for (w0, _) in top {
+			assert_eq!(ao_of(w0), 3, "water skips AO");
 		}
-		let top = quad_of(&m.water, 8, 8, 8, Dir::Top);
-		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
-		assert_eq!(order, vec![0, 1, 2, 3], "water never reorders");
 	}
 
 	#[test]

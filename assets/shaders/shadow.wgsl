@@ -14,12 +14,10 @@ struct ChunkU {
 
 @vertex
 fn vs(@location(0) packed: u32) -> @builtin(position) vec4f {
+	// Solid meshes only — water never casts, so only bits 0-14 matter.
 	let x = f32(packed & 0x1fu);
-	var y = f32((packed >> 5u) & 0x1fu);
+	let y = f32((packed >> 5u) & 0x1fu);
 	let z = f32((packed >> 10u) & 0x1fu);
-	if ((packed >> 22u) & 1u) == 1u {
-		y -= 0.3;
-	}
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 	return light.view_proj * vec4f(world, 1.0);
 }

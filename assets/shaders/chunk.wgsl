@@ -1,4 +1,4 @@
-// Main chunk shader — solid and water pipelines share it.
+// Solid chunk shader (water has its own fork — water.wgsl).
 // Gamma-space lighting: sky-tinted ambient + tod-colored direct term,
 // shadows attenuate only the direct term (strength fades at twilight),
 // distance fog toward the sky horizon color.
@@ -84,16 +84,13 @@ struct VsOut {
 }
 
 // Packed vertex: bits 0-4 x, 5-9 y, 10-14 z (chunk-local 0..=16),
-// 15-17 normal index, 18-19 ao, 20-21 corner, 22 water-lip,
-// 23-28 texture layer.
+// 15-17 normal index, 18-19 ao, 20-21 corner, 23-28 texture layer,
+// 29-31 tint.
 @vertex
 fn vs(@location(0) packed: u32) -> VsOut {
 	let x = f32(packed & 0x1fu);
-	var y = f32((packed >> 5u) & 0x1fu);
+	let y = f32((packed >> 5u) & 0x1fu);
 	let z = f32((packed >> 10u) & 0x1fu);
-	if ((packed >> 22u) & 1u) == 1u {
-		y -= 0.3; // water surface sits at +0.7 (Java ChunkMeshGenerator)
-	}
 	let ni = (packed >> 15u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
