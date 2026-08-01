@@ -108,6 +108,18 @@ struct VsOut {
 	// Blocks fallen below the lip, continuous down a sheet (top-plane
 	// verts carry the cell's count, bottom-plane +1). Saturates at 15.
 	@location(12) fall_y: f32,
+	// Interpolated drop code (0 full .. 9 plunge) — the lip highlight
+	// keys on the plunging edge of a fall's crest.
+	@location(13) drop: f32,
+}
+
+// 1D value noise (smoothstep-interpolated hash) — waterfall streaks.
+fn vnoise1(x: f32) -> f32 {
+	let i = floor(x);
+	let f = x - i;
+	let a = sky_hash13(vec3f(i, 3.7, 9.1));
+	let b = sky_hash13(vec3f(i + 1.0, 3.7, 9.1));
+	return mix(a, b, f * f * (3.0 - 2.0 * f));
 }
 
 // Flow-dir codes (word 1 bits 5-7) as xz vectors.
@@ -201,6 +213,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	o.flow = (w1 >> 5u) & 7u;
 	o.falling = (w1 >> 4u) & 1u;
 	o.fall_y = f32((w1 >> 10u) & 0xfu);
+	o.drop = f32(min(w1 & 0xfu, 9u));
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
@@ -298,12 +311,27 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// mirror terms (fresnel, reflection, specular) damp out.
 	let aer = smoothstep(0.5, 6.0, y_fallen) * f32(i.falling);
 	let alb = mix(tex, vec3f(0.93, 0.96, 1.0), aer * 0.55);
+	// Falling-sheet structure: vertical streak noise tears the sheet
+	// into ropes with translucent gaps, and clump pulses ride the
+	// stretched v — two layers (front fast/bright, back slow/dim) give
+	// the sheet depth. s ~ 0.5 is neutral.
+	var s = 0.5;
+	if i.falling == 1u && !vertical {
+		let h = select(i.world.x, i.world.z, i.ni == 0u || i.ni == 5u);
+		let front = 0.6 * vnoise1(h * 3.0) + 0.4 * vnoise1(h * 7.0 + 13.7);
+		let back = 0.6 * vnoise1(h * 3.0 + 31.1) + 0.4 * vnoise1(h * 7.0 + 47.3);
+		let cf = smoothstep(0.6, 1.0, sin(base_uv.y * 2.5 - t * 5.0 + front * 6.28));
+		let cb = smoothstep(0.6, 1.0, sin(base_uv.y * 1.5 - t * 3.0 + back * 6.28));
+		s = mix((back + cb * 0.5) * 0.6, front + cf * 0.5, clamp(front, 0.0, 1.0));
+	}
 	var vis = 1.0;
 	if frame.misc.y > 0.5 {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
 	var col = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	// Streaks brighten (+-15%) as well as thin the sheet (alpha below).
+	col *= 1.0 + (s - 0.5) * 0.3;
 	// Rippled normal + Schlick fresnel: alpha rises from the base
 	// (misc.x) toward opaque at grazing angles, so distant/low-angle
 	// water reads as a surface instead of tinted glass.
@@ -333,9 +361,14 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	rr.y = max(rr.y, 0.02);
 	col = mix(col, reflection_color(normalize(rr)), fres);
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
+	// Glassy crest sheen where flow tips over a lip: strongest in the
+	// first fallen block, keyed to the plunging drop edge.
+	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
+	col += frame.light_color.rgb * lip * sh * 0.15;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
-	// Aerated water is nearly opaque regardless of angle.
+	// Aerated water is nearly opaque regardless of angle; streak gaps
+	// (s < 0.5) thin it back toward translucent.
 	let alpha = mix(mix(frame.misc.x, 1.0, fres), 0.92, aer);
-	return vec4f(col, alpha);
+	return vec4f(col, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
 }
