@@ -18,7 +18,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use rustc_hash::FxHashMap;
 
 use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
-use crate::mesher::{border_plane, mesh_chunk, MeshData, NeighborPlane, DIRS};
+use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src, DIRS};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
 
@@ -35,8 +35,9 @@ enum Job {
 	Mesh {
 		pos: ChunkPos,
 		gen: u64,
-		blocks: Arc<ChunkData>,
-		neighbors: Box<[NeighborPlane; 6]>,
+		/// Padded snapshot — the worker holds no Arc into the store, so
+		/// `set_block`'s copy-on-write almost never actually clones.
+		input: Box<MeshInput>,
 	},
 }
 
@@ -362,27 +363,20 @@ impl Pipeline {
 			return None; // an equal-or-newer job is already in flight
 		}
 		let gen = slot.mesh_gen;
-		let blocks = Arc::clone(data);
-		let neighbors = Box::new(self.neighbor_planes(pos));
+		let input = Box::new(self.build_mesh_input(pos, data));
 		let slot = self.store.get_mut(&pos).expect("slot exists");
 		slot.submitted_gen = gen;
-		Some(Job::Mesh {
-			pos,
-			gen,
-			blocks,
-			neighbors,
-		})
+		Some(Job::Mesh { pos, gen, input })
 	}
 
-	fn neighbor_planes(&self, pos: ChunkPos) -> [NeighborPlane; 6] {
-		DIRS.map(|dir| {
-			let (ox, oy, oz) = dir.offset();
-			let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
+		MeshInput::build(center, |dx, dy, dz| {
+			let np = ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz);
 			if np.y >= WORLD_VCHUNK {
-				return NeighborPlane::Air; // Java air sentinel above the world
+				return Src::Air; // Java air sentinel above the world
 			}
 			if np.y < 0 {
-				return NeighborPlane::Missing; // Java null below
+				return Src::Missing; // Java null below
 			}
 			match self.store.get(&np) {
 				Some(ChunkSlot {
@@ -390,12 +384,12 @@ impl Pipeline {
 					..
 				}) => {
 					if is_air_chunk(d) {
-						NeighborPlane::Air // skip the 256-byte border copy
+						Src::Air // skip the shell copy
 					} else {
-						NeighborPlane::Blocks(border_plane(d, dir.opposite()))
+						Src::Chunk(d)
 					}
 				}
-				_ => NeighborPlane::Missing,
+				_ => Src::Missing,
 			}
 		})
 	}
@@ -535,13 +529,8 @@ fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
 				}
 			}
-			Job::Mesh {
-				pos,
-				gen,
-				blocks,
-				neighbors,
-			} => {
-				let mesh = mesh_chunk(&blocks, &neighbors);
+			Job::Mesh { pos, gen, input } => {
+				let mesh = mesh_chunk(&input);
 				JobResult::Meshed {
 					out: MeshOutput { pos, gen, mesh },
 					dur_ms: start.elapsed().as_secs_f32() * 1000.0,

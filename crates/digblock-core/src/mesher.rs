@@ -1,7 +1,8 @@
 //! Chunk meshing from immutable snapshots. Replaces the Java pattern of
-//! writing face bits into neighbor chunks: face visibility depends only on
-//! the two adjacent block types, so a mesh job needs its own chunk plus six
-//! border planes copied from neighbors — no shared mutation, no locks.
+//! writing face bits into neighbor chunks: a mesh job gets a padded 18³
+//! copy of its chunk plus a one-block shell from all 26 neighbors — no
+//! shared mutation, no locks, and diagonal neighbors are available for
+//! per-vertex AO and water corner heights.
 //!
 //! Face rules (originally distilled from Chunk.setFlags in the Java, now
 //! driven by each block's RenderClass — see block.rs), verified by tests:
@@ -65,56 +66,123 @@ impl Dir {
 	}
 }
 
-/// A neighbor chunk's border plane facing us, or its absence.
-#[derive(Clone)]
-pub enum NeighborPlane {
-	/// 16×16 block types from the adjacent chunk's facing border.
-	/// Indexed [a * 16 + b]: for ±x planes (a,b) = (y,z); for ±z planes
-	/// (a,b) = (y,x); for ±y planes (a,b) = (z,x).
-	Blocks(Box<[u8; 256]>),
-	/// Neighbor not loaded: suppress border faces (Java null neighbor).
-	Missing,
-	/// Outside the vertical world: air above the top (Java airBlock
-	/// sentinel). Use `Missing` below the bottom.
+/// Padded snapshot edge: the chunk plus a one-block shell from its
+/// neighbors.
+pub const PADDED: usize = CHUNK_SIZE + 2;
+const PADDED_VOLUME: usize = PADDED * PADDED * PADDED;
+
+/// Where a neighbor chunk's blocks come from when building a `MeshInput`,
+/// keyed by chunk offset (dx, dy, dz) ∈ {-1,0,1}³.
+pub enum Src<'a> {
+	/// A generated, non-sentinel neighbor chunk.
+	Chunk(&'a ChunkData),
+	/// All air: the sky sentinel, or above the world top.
 	Air,
+	/// Not generated (or below the world bottom): shell cells read as air;
+	/// on a face offset it also suppresses that border's faces (Java null
+	/// neighbor — whichever chunk generates second re-dirties this one).
+	Missing,
 }
 
-/// Extract the border plane of `data` facing direction `dir`, for use as
-/// the opposite neighbor's `NeighborPlane::Blocks`.
-pub fn border_plane(data: &ChunkData, dir: Dir) -> Box<[u8; 256]> {
-	let mut plane = Box::new([0u8; 256]);
-	let n = CHUNK_SIZE;
-	let blocks = &data.blocks;
-	match dir {
-		// ±x borders, plane (a,b) = (y,z): gather with stride n.
-		Dir::West => {
-			for (i, p) in plane.iter_mut().enumerate() {
-				*p = blocks[i * n + (n - 1)];
-			}
-		}
-		Dir::East => {
-			for (i, p) in plane.iter_mut().enumerate() {
-				*p = blocks[i * n];
-			}
-		}
-		// ±z borders, plane (a,b) = (y,x): one contiguous n-byte row per y.
-		Dir::North => {
-			for y in 0..n {
-				let src = (y * n + (n - 1)) * n;
-				plane[y * n..][..n].copy_from_slice(&blocks[src..][..n]);
-			}
-		}
-		Dir::South => {
-			for y in 0..n {
-				let src = (y * n) * n;
-				plane[y * n..][..n].copy_from_slice(&blocks[src..][..n]);
-			}
-		}
-		// ±y borders, plane (a,b) = (z,x): one contiguous n*n-byte slab.
-		Dir::Top => plane.copy_from_slice(&blocks[(n - 1) * n * n..][..n * n]),
-		Dir::Bottom => plane.copy_from_slice(&blocks[..n * n]),
+/// A mesh job's complete input: 18³ block ids (the chunk plus a one-block
+/// shell copied from every existing neighbor — faces, edges, corners) and
+/// a missing flag per face.
+pub struct MeshInput {
+	/// Indexed by `pidx` over coords in -1..=16; shell cells with no
+	/// backing chunk are air (0).
+	pub blocks: Box<[u8; PADDED_VOLUME]>,
+	/// Face neighbor not loaded: suppress that border's faces.
+	pub missing: [bool; 6],
+}
+
+/// Padded flat index for coords in -1..=16 — same y,z,x nesting as
+/// `ChunkData::index`, x contiguous.
+#[inline]
+pub fn pidx(x: i32, y: i32, z: i32) -> usize {
+	debug_assert!((-1..=16).contains(&x) && (-1..=16).contains(&y) && (-1..=16).contains(&z));
+	let n = PADDED as i32;
+	(((y + 1) * n + (z + 1)) * n + (x + 1)) as usize
+}
+
+/// The face `Dir` for an axis-aligned unit chunk offset; None for
+/// edge/corner offsets.
+fn face_dir(dx: i32, dy: i32, dz: i32) -> Option<Dir> {
+	match (dx, dy, dz) {
+		(1, 0, 0) => Some(Dir::West),
+		(-1, 0, 0) => Some(Dir::East),
+		(0, 0, 1) => Some(Dir::North),
+		(0, 0, -1) => Some(Dir::South),
+		(0, 1, 0) => Some(Dir::Top),
+		(0, -1, 0) => Some(Dir::Bottom),
+		_ => None,
 	}
-	plane
+}
+
+impl MeshInput {
+	/// Assemble from the center chunk plus a lookup over the 26 neighbor
+	/// chunk offsets. Air and Missing regions stay zero-filled (air) —
+	/// only the face missing flags distinguish them.
+	pub fn build<'a>(
+		center: &ChunkData,
+		mut neighbor: impl FnMut(i32, i32, i32) -> Src<'a>,
+	) -> MeshInput {
+		let n = CHUNK_SIZE;
+		let mut input = MeshInput {
+			blocks: Box::new([0u8; PADDED_VOLUME]),
+			missing: [false; 6],
+		};
+		for y in 0..n {
+			for z in 0..n {
+				let src = (y * n + z) * n;
+				let dst = pidx(0, y as i32, z as i32);
+				input.blocks[dst..dst + n].copy_from_slice(&center.blocks[src..src + n]);
+			}
+		}
+		// The local index range a neighbor at axis offset d contributes:
+		// its far border row for -1, its near border row for +1.
+		let span = |d: i32| match d {
+			-1 => 15..16,
+			1 => 0..1,
+			_ => 0..16,
+		};
+		for dy in -1..=1 {
+			for dz in -1..=1 {
+				for dx in -1..=1 {
+					if (dx, dy, dz) == (0, 0, 0) {
+						continue;
+					}
+					let d = match neighbor(dx, dy, dz) {
+						Src::Chunk(d) => d,
+						Src::Air => continue,
+						Src::Missing => {
+							if let Some(dir) = face_dir(dx, dy, dz) {
+								input.missing[dir as usize] = true;
+							}
+							continue;
+						}
+					};
+					for ly in span(dy) {
+						for lz in span(dz) {
+							for lx in span(dx) {
+								input.blocks[pidx(
+									lx as i32 + 16 * dx,
+									ly as i32 + 16 * dy,
+									lz as i32 + 16 * dz,
+								)] = d.blocks[(ly * n + lz) * n + lx];
+							}
+						}
+					}
+				}
+			}
+		}
+		input
+	}
+
+	/// Block id at padded coords (each in -1..=16).
+	#[inline]
+	pub fn get(&self, x: i32, y: i32, z: i32) -> u8 {
+		self.blocks[pidx(x, y, z)]
+	}
 }
 
 pub struct MeshData {
@@ -187,53 +255,49 @@ fn emit_face(out: &mut Vec<u32>, bx: usize, by: usize, bz: usize, dir: Dir, tex:
 	}
 }
 
-/// Mesh a chunk from its snapshot + neighbor planes (indexed by `Dir`).
-pub fn mesh_chunk(data: &ChunkData, neighbors: &[NeighborPlane; 6]) -> MeshData {
+/// Flat-index delta to the padded neighbor cell, per `Dir`.
+const PDELTA: [isize; 6] = [
+	1,                             // West  (+x)
+	PADDED as isize,               // North (+z)
+	-(PADDED as isize),            // South (−z)
+	-((PADDED * PADDED) as isize), // Bottom (−y)
+	(PADDED * PADDED) as isize,    // Top   (+y)
+	-1,                            // East  (−x)
+];
+
+/// Mesh a chunk from its padded snapshot.
+pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 	let n = CHUNK_SIZE;
 	// Sized for a busy surface chunk; realloc past this is rare.
 	let mut mesh = MeshData {
 		solid: Vec::with_capacity(4096),
 		water: Vec::with_capacity(512),
 	};
-	// Flat-index delta to the in-chunk neighbor, per Dir (layout
-	// (y*n + z)*n + x).
-	let neighbor_off: [isize; 6] = [
-		1,                   // West  (+x)
-		n as isize,          // North (+z)
-		-(n as isize),       // South (−z)
-		-((n * n) as isize), // Bottom (−y)
-		(n * n) as isize,    // Top   (+y)
-		-1,                  // East  (−x)
-	];
 	for y in 0..n {
 		for z in 0..n {
-			let row = (y * n + z) * n;
 			for x in 0..n {
-				let idx = row + x;
-				let me = BlockType::from_u8(data.blocks[idx]);
+				let pi = pidx(x as i32, y as i32, z as i32);
+				let me = BlockType::from_u8(input.blocks[pi]);
 				if me.props().class == RenderClass::None {
 					continue;
 				}
 				for &dir in &DIRS {
-					let (ox, oy, oz) = dir.offset();
-					let (nx, ny, nz) = (x as i32 + ox, y as i32 + oy, z as i32 + oz);
-					let neighbor = if (0..n as i32).contains(&nx)
-						&& (0..n as i32).contains(&ny)
-						&& (0..n as i32).contains(&nz)
-					{
-						let ni = (idx as isize + neighbor_off[dir as usize]) as usize;
-						Some(BlockType::from_u8(data.blocks[ni]))
+					// A missing face neighbor suppresses this border's
+					// faces; the padded ring makes every other lookup a
+					// uniform flat index.
+					let on_border = match dir {
+						Dir::West => x == n - 1,
+						Dir::North => z == n - 1,
+						Dir::South => z == 0,
+						Dir::Bottom => y == 0,
+						Dir::Top => y == n - 1,
+						Dir::East => x == 0,
+					};
+					let neighbor = if on_border && input.missing[dir as usize] {
+						None
 					} else {
-						let (a, b) = match dir {
-							Dir::West | Dir::East => (y, z),
-							Dir::North | Dir::South => (y, x),
-							Dir::Top | Dir::Bottom => (z, x),
-						};
-						match &neighbors[dir as usize] {
-							NeighborPlane::Blocks(p) => Some(BlockType::from_u8(p[a * n + b])),
-							NeighborPlane::Missing => None,
-							NeighborPlane::Air => Some(BlockType::Air),
-						}
+						let ni = (pi as isize + PDELTA[dir as usize]) as usize;
+						Some(BlockType::from_u8(input.blocks[ni]))
 					};
 					if !face_visible(me, neighbor) {
 						continue;
@@ -276,18 +340,14 @@ mod tests {
 		d
 	}
 
-	const ALL_MISSING: [NeighborPlane; 6] = [
-		NeighborPlane::Missing,
-		NeighborPlane::Missing,
-		NeighborPlane::Missing,
-		NeighborPlane::Missing,
-		NeighborPlane::Missing,
-		NeighborPlane::Missing,
-	];
+	/// All 26 neighbors missing — the old ALL_MISSING fixture.
+	fn isolated(d: &ChunkData) -> MeshInput {
+		MeshInput::build(d, |_, _, _| Src::Missing)
+	}
 
 	#[test]
 	fn lone_dirt_has_six_faces() {
-		let m = mesh_chunk(&solo(B::Dirt), &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&solo(B::Dirt)));
 		assert_eq!(m.solid.len(), 6 * 4);
 		assert!(m.water.is_empty());
 	}
@@ -298,7 +358,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 7, 8, B::Dirt); // below
-		let m = mesh_chunk(&d, &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&d));
 		// Water: 5 air-adjacent sides + top = faces toward air on all open
 		// sides. Dirt below: 5 visible faces (top hidden? no — top borders
 		// water, water is not solid → dirt top IS visible through water).
@@ -317,7 +377,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(9, 8, 8, B::Water);
-		let m = mesh_chunk(&d, &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&d));
 		// Each water block: faces toward air except toward each other.
 		assert_eq!(m.water.len() / 4, 2 * 5);
 	}
@@ -326,7 +386,7 @@ mod tests {
 	fn missing_neighbor_suppresses_border_faces() {
 		let mut d = ChunkData::default();
 		d.set(0, 8, 8, B::Dirt); // on the −x border
-		let m = mesh_chunk(&d, &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&d));
 		assert_eq!(
 			m.solid.len() / 4,
 			5,
@@ -338,22 +398,71 @@ mod tests {
 	fn air_sentinel_above_world_top() {
 		let mut d = ChunkData::default();
 		d.set(8, 15, 8, B::Dirt);
-		let mut nb = ALL_MISSING;
-		nb[Dir::Top as usize] = NeighborPlane::Air;
-		let m = mesh_chunk(&d, &nb);
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (0, 1, 0) {
+				Src::Air
+			} else {
+				Src::Missing
+			}
+		});
+		let m = mesh_chunk(&input);
 		assert_eq!(m.solid.len() / 4, 6, "top face vs air sentinel");
 	}
 
 	#[test]
-	fn neighbor_plane_occludes() {
+	fn neighbor_chunk_occludes() {
 		let mut d = ChunkData::default();
 		d.set(15, 8, 8, B::Dirt); // on the +x border
 		let mut other = ChunkData::default();
 		other.set(0, 8, 8, B::Dirt); // the neighbor's facing block
-		let mut nb = ALL_MISSING;
-		nb[Dir::West as usize] = NeighborPlane::Blocks(border_plane(&other, Dir::East));
-		let m = mesh_chunk(&d, &nb);
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (1, 0, 0) {
+				Src::Chunk(&other)
+			} else {
+				Src::Missing
+			}
+		});
+		let m = mesh_chunk(&input);
 		assert_eq!(m.solid.len() / 4, 5, "+x face occluded by neighbor block");
+	}
+
+	#[test]
+	fn shell_regions_land_at_padded_coords() {
+		// One marked block per source kind: a face neighbor (below), an
+		// edge neighbor (+x+z), and a corner neighbor (+x+y+z).
+		let mut below = ChunkData::default();
+		below.set(5, 15, 7, B::Stone); // → padded (5, -1, 7)
+		let mut edge = ChunkData::default();
+		edge.set(0, 8, 0, B::Dirt); // offset (1,0,1) → padded (16, 8, 16)
+		let mut corner = ChunkData::default();
+		corner.set(0, 0, 0, B::Sand); // offset (1,1,1) → padded (16,16,16)
+		let input = MeshInput::build(&ChunkData::default(), |dx, dy, dz| match (dx, dy, dz) {
+			(0, -1, 0) => Src::Chunk(&below),
+			(1, 0, 1) => Src::Chunk(&edge),
+			(1, 1, 1) => Src::Chunk(&corner),
+			_ => Src::Air,
+		});
+		assert_eq!(input.get(5, -1, 7), B::Stone as u8);
+		assert_eq!(input.get(16, 8, 16), B::Dirt as u8);
+		assert_eq!(input.get(16, 16, 16), B::Sand as u8);
+		// Everything else in the shell is air.
+		assert_eq!(input.get(-1, -1, -1), 0);
+		assert_eq!(input.get(8, 8, 8), 0, "empty center");
+	}
+
+	#[test]
+	fn missing_face_sets_flag_missing_diagonal_does_not() {
+		let input = MeshInput::build(&ChunkData::default(), |dx, dy, dz| {
+			// Top face missing, all edges/corners missing, other faces Air.
+			if (dx, dy, dz) == (0, 1, 0) || dx.abs() + dy.abs() + dz.abs() > 1 {
+				Src::Missing
+			} else {
+				Src::Air
+			}
+		});
+		let mut expect = [false; 6];
+		expect[Dir::Top as usize] = true;
+		assert_eq!(input.missing, expect);
 	}
 
 	#[test]
@@ -377,7 +486,7 @@ mod tests {
 		d.set(8, 8, 8, B::Leaves);
 		d.set(9, 8, 8, B::Leaves);
 		d.set(8, 7, 8, B::Dirt);
-		let m = mesh_chunk(&d, &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&d));
 		assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
 		let layer_of = |v: u32| (v >> 23) & 0x3f;
 		let leaf_faces = m.solid.iter().filter(|v| layer_of(**v) == 8).count() / 4;
@@ -393,7 +502,7 @@ mod tests {
 		// Per-face table: grass top/side/bottom are three distinct layers.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Grass);
-		let m = mesh_chunk(&d, &ALL_MISSING);
+		let m = mesh_chunk(&isolated(&d));
 		let layer_of = |v: u32| (v >> 23) & 0x3f;
 		let normal_of = |v: u32| (v >> 15) & 0x7;
 		for v in &m.solid {
