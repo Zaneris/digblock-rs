@@ -3,6 +3,46 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-08-01 (seventh pass): water realism (lighting, falls, depth shading, spray, SSR)
+
+Water gained fresnel + distance-widened specular + procedural sky
+reflection on analytic ripple normals, two-phase texture advection,
+per-vertex fall distance driving gravity stretch / aeration / streaks,
+splash ring codes, and — via a render restructure — depth-based
+shading: solids + sky now render to an offscreen scene color, the
+solid depth is copied, and a separate water pass (blit composite +
+prepass + color, new `gpu_water_ms` CSV column) samples both for
+Beer-Lambert absorption, refraction, soft shores, and a desktop-gated
+SSR march. Stateless spray billboards ride `MeshData.impacts`. The
+platform-owned depth texture is gone (renderer-owned FrameTargets);
+net GPU memory ≈ +1 full-screen color target.
+
+Costs, ×3 runs at the shipping desktop config (SSR on):
+gpu p50 main 1.78–1.90ms + water 0.58–0.89ms vs 2.28ms pre-change
+single main pass — the split + blit + depth copy cost ≈ +0.1–0.4ms.
+Frame pacing unchanged: avg 8.33–8.35, p95 9.3–9.5, hitches 1,
+over-12.5ms 1–4 (sixth-pass profile). Mobile config (SSR off):
+main 0.41–0.56 + water 0.45–0.49ms. SSR worst case (grazing ocean,
+~60% water coverage): +0.80ms — bounded by an 80-block distance gate
+(reflected detail is sub-pixel past it); `--no-ssr` removes it.
+Uncapped (`--no-vsync`): avg 2.77ms, 342 fps. Shader ALU additions
+(ripples/fresnel/spec/reflection/advection, phases 1–2) measured
+inside run noise. One caught regression: SSR ungated cost 1.70ms on
+grazing ocean views — the distance gate more than halved it.
+
+Reference shots: `shots/water-realism-shore.png` (soft shoreline,
+absorption gradient), `shots/water-realism-sunset.png` (tod 75, yaw
+−90: glitter path + sky reflection), `shots/water-realism-falls.png`
+(coastal cascades: stretch, aeration, streaks, spray). Captures use
+the new `--yaw`/`--pitch` flags (the spawn camera faces +z,
+perpendicular to the sun's ±x azimuth plane). Note for future
+pixel-diff verification: water shading is clock-animated and the clock
+advances by real dt, so identical-flag runs differ on water pixels —
+compare against a same-binary run-to-run noise floor, not byte
+equality (this pass: ~37k px noise on water-heavy 1600×1200 views).
+CSV schema change: `gpu_water_ms` inserted after `gpu_main_ms` — don't
+naively diff old/new CSVs.
+
 ## 2026-07-31 (sixth pass): water system (levels, sloped surfaces, falls, sim, anim)
 
 Water moved to Minecraft-style level blocks with its own two-word
