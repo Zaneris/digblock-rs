@@ -101,6 +101,7 @@ struct VsOut {
 	@location(8) world: vec3f,
 	@location(9) @interpolate(flat) ni: u32,
 	@location(10) @interpolate(flat) flow: u32,
+	@location(11) @interpolate(flat) falling: u32,
 }
 
 // Flow-dir codes (word 1 bits 5-7) as xz vectors.
@@ -185,35 +186,14 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
-	var uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
-	// Scroll: falling side faces run downward (v grows toward the face
-	// bottom, so subtracting time moves features down-screen); flowing
-	// top faces run along the mesher's flow direction. The offset is
-	// linear in uv, so interpolation stays exact; fs wraps with fract.
-	let t = frame.light_color.w;
-	let falling = ((w1 >> 4u) & 1u) == 1u;
-	let flow = (w1 >> 5u) & 7u;
-	let vertical = ni == 3u || ni == 4u;
-	if falling && !vertical {
-		uv.y -= t * 1.5;
-	} else if ni == 4u && flow != 0u {
-		let s = t * 0.4;
-		if flow == 1u {
-			uv.x -= s;
-		} else if flow == 2u {
-			uv.x += s;
-		} else if flow == 3u {
-			uv.y -= s;
-		} else {
-			uv.y += s;
-		}
-	}
-	o.uv = uv;
+	// Raw corner uv — all scroll/advection happens in fs.
+	o.uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
 	o.foam = f32((w1 >> 8u) & 1u);
 	o.layer = (w0 >> 23u) & 63u;
 	o.world = world;
 	o.ni = ni;
-	o.flow = flow;
+	o.flow = (w1 >> 5u) & 7u;
+	o.falling = (w1 >> 4u) & 1u;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
@@ -266,8 +246,37 @@ fn fs_depth() -> @location(0) vec4f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let t = frame.light_color.w;
-	let uv = fract(i.uv);
-	let tex = textureSample(blocks_tex, blocks_smp, uv, i.layer).rgb;
+	// Motion per face: falling sides run downward at 1.5 uv/s, flowing
+	// tops at 0.4 along the flow dir (sample offset opposes feature
+	// motion). rate × len = speed; len bounds how far a layer slides.
+	let vertical = i.ni == 3u || i.ni == 4u;
+	var adv = vec2f(0.0);
+	var rate = 0.0;
+	var len = 0.0;
+	if i.falling == 1u && !vertical {
+		adv = vec2f(0.0, -1.0);
+		rate = 0.25;
+		len = 6.0;
+	} else if i.ni == 4u && i.flow != 0u {
+		adv = -FLOW_DIRS[min(i.flow, 4u)];
+		rate = 0.10;
+		len = 4.0;
+	}
+	// Two-phase advection (Max/Becker): two layers half a period
+	// apart, each visible only around the middle of its slide, so flow
+	// reads as endless motion without the conveyor-belt repeat of an
+	// unbounded scroll. Static faces collapse to layer A (wb = 0).
+	// Both samples stay outside control flow (derivative rules).
+	let pa = fract(t * rate);
+	let pb = fract(t * rate + 0.5);
+	let uv_a = fract(i.uv + adv * (pa * len));
+	let uv_b = fract(i.uv + adv * (pb * len) + vec2f(0.37, 0.61));
+	let wb = abs(2.0 * pa - 1.0) * min(len, 1.0);
+	let tex = mix(
+		textureSample(blocks_tex, blocks_smp, uv_a, i.layer).rgb,
+		textureSample(blocks_tex, blocks_smp, uv_b, i.layer).rgb,
+		wb,
+	);
 	var vis = 1.0;
 	if frame.misc.y > 0.5 {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
@@ -294,7 +303,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// strongest at the face top, with a slow pulse.
 	if i.foam > 0.0 {
 		let pulse = 0.20 + 0.06 * sin(t * 6.0);
-		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - uv.y));
+		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - i.uv.y));
 	}
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through from above.
