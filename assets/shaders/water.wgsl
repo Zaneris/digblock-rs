@@ -269,12 +269,22 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
 	let fres = 0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0);
+	// Glint from the active caster (sun by day, moon by night) on the
+	// rippled normal. The exponent widens with distance so the glitter
+	// path stays stable instead of aliasing into per-pixel shimmer;
+	// (e+2) keeps lobe energy roughly constant as it widens. Fresnel
+	// at the half vector: bright at low sun, subtle from above.
+	let e = mix(240.0, 24.0, smoothstep(8.0, 120.0, i.fog_dist));
+	let hs = normalize(vdir - frame.light_dir.xyz);
+	let fres_h = 0.02 + 0.98 * pow(1.0 - max(dot(vdir, hs), 0.0), 5.0);
+	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
 	// Splash foam where a fall strikes ground: brighten toward white,
 	// strongest at the face top, with a slow pulse.
 	if i.foam > 0.0 {
 		let pulse = 0.20 + 0.06 * sin(t * 6.0);
 		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - uv.y));
 	}
+	col += frame.light_color.rgb * spec * sh * 2.0;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
 	return vec4f(col, mix(frame.misc.x, 1.0, fres));

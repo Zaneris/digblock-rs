@@ -24,6 +24,10 @@ pub struct EngineConfig {
 	pub seed: Option<f64>,
 	/// Fixed sun angle in degrees for deterministic captures.
 	pub tod: Option<f32>,
+	/// Initial camera yaw/pitch in degrees for deterministic captures
+	/// (yaw 0 faces +z, 90 faces +x; pitch defaults to −20).
+	pub yaw: Option<f32>,
+	pub pitch: Option<f32>,
 	pub metrics_csv: Option<std::path::PathBuf>,
 	/// Start with the debug overlay visible (` toggles at runtime).
 	pub overlay: bool,
@@ -41,6 +45,8 @@ impl EngineConfig {
 			workers,
 			seed: None,
 			tod: None,
+			yaw: None,
+			pitch: None,
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
@@ -54,6 +60,8 @@ impl EngineConfig {
 			workers: 2,
 			seed: None,
 			tod: None,
+			yaw: None,
+			pitch: None,
 			metrics_csv: None,
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
@@ -149,12 +157,19 @@ impl Engine {
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
 		let spawn = digblock_core::player::spawn(seed);
+		let mut camera = FlyCamera::new(far, spawn);
+		if let Some(yaw) = config.yaw {
+			camera.yaw_deg = yaw;
+		}
+		if let Some(pitch) = config.pitch {
+			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
+		}
 		Self {
 			config,
 			seed,
 			renderer: None,
 			pipeline,
-			camera: FlyCamera::new(far, spawn),
+			camera,
 			player: Player::new(spawn),
 			touch: TouchDriver::new(),
 			walking: true,

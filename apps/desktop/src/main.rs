@@ -14,6 +14,8 @@ fn main() {
 	// Deterministic-capture flags:
 	//   --screenshot out.png [--exit] [--frames N]
 	//   --seed <f64 bits or decimal> --metrics-csv out.csv
+	//   --yaw <deg> --pitch <deg> (initial camera view; yaw 90 faces +x,
+	//            the sun azimuth plane)
 	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
 	//            tod 45, 1800 frames, bench.csv)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
@@ -41,6 +43,8 @@ fn main() {
 			}
 			"--seed" => config.seed = args.next().and_then(|v| v.parse().ok()),
 			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
+			"--yaw" => config.yaw = args.next().and_then(|v| v.parse().ok()),
+			"--pitch" => config.pitch = args.next().and_then(|v| v.parse().ok()),
 			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
 			other => {
 				eprintln!("unknown arg: {other}");
