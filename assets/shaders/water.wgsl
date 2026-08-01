@@ -64,6 +64,13 @@ struct ChunkU {
 
 @group(2) @binding(0) var<uniform> chunk: ChunkU;
 
+// Scene targets (renderer scene_bgl): the pre-water solid depth copy
+// and the offscreen scene color — water column thickness, absorption,
+// soft shores, refraction, and the SSR march read these.
+@group(3) @binding(0) var scene_depth: texture_depth_2d;
+@group(3) @binding(1) var scene_tex: texture_2d<f32>;
+@group(3) @binding(2) var scene_smp: sampler;
+
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(

@@ -271,9 +271,60 @@ impl Renderer {
 			}],
 		});
 
+		// Scene-target bindings for the water pass: the pre-water solid
+		// depth copy (textureLoad, no sampler), the offscreen scene color,
+		// and a linear sampler (refraction/SSR offsets). The blit uses
+		// only binding 1; water declares this as group 3.
+		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("scene targets"),
+			entries: &[
+				wgpu::BindGroupLayoutEntry {
+					binding: 0,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Depth,
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 1,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Float { filterable: true },
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 2,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+					count: None,
+				},
+			],
+		});
+		let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+			label: Some("scene linear"),
+			address_mode_u: wgpu::AddressMode::ClampToEdge,
+			address_mode_v: wgpu::AddressMode::ClampToEdge,
+			mag_filter: wgpu::FilterMode::Linear,
+			min_filter: wgpu::FilterMode::Linear,
+			..Default::default()
+		});
+
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
 			bind_group_layouts: &[&frame_bgl, &tex_bgl, &chunk_bgl],
+			push_constant_ranges: &[],
+		});
+		// Water pipelines carry a 4th group (the scene targets) so
+		// chunk.wgsl/sky.wgsl never have to declare bindings they don't use.
+		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("water"),
+			bind_group_layouts: &[&frame_bgl, &tex_bgl, &chunk_bgl, &scene_bgl],
 			push_constant_ranges: &[],
 		});
 
@@ -358,7 +409,7 @@ impl Renderer {
 		};
 		let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("water"),
-			layout: Some(&layout),
+			layout: Some(&water_layout),
 			vertex: wgpu::VertexState {
 				module: &water_shader,
 				entry_point: Some("vs"),
@@ -402,7 +453,7 @@ impl Renderer {
 		// water reads as one surface instead of accumulated alpha layers.
 		let water_depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("water depth"),
-			layout: Some(&layout),
+			layout: Some(&water_layout),
 			vertex: wgpu::VertexState {
 				module: &water_shader,
 				entry_point: Some("vs"),
@@ -484,49 +535,6 @@ impl Renderer {
 			cache: None,
 		});
 
-		// Scene-target bindings for the water pass: the pre-water solid
-		// depth copy (textureLoad, no sampler), the offscreen scene color,
-		// and a linear sampler (refraction/SSR offsets). The blit uses
-		// only binding 1; water declares this as group 3.
-		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("scene targets"),
-			entries: &[
-				wgpu::BindGroupLayoutEntry {
-					binding: 0,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 1,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Float { filterable: true },
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 2,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-					count: None,
-				},
-			],
-		});
-		let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-			label: Some("scene linear"),
-			address_mode_u: wgpu::AddressMode::ClampToEdge,
-			address_mode_v: wgpu::AddressMode::ClampToEdge,
-			mag_filter: wgpu::FilterMode::Linear,
-			min_filter: wgpu::FilterMode::Linear,
-			..Default::default()
-		});
 		// Fullscreen composite of the offscreen scene into the swapchain:
 		// first draw of the water pass. Depth Always/no-write — the pass
 		// keeps the scene depth for water to test against.
@@ -1145,6 +1153,7 @@ impl Renderer {
 
 				pass.set_bind_group(0, &self.frame_water_bg, &[]);
 				pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
+				pass.set_bind_group(3, &targets.scene_bg, &[]);
 				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 				for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
 					pass.set_pipeline(pipeline);
