@@ -13,6 +13,9 @@ use crate::mesher::Dir;
 pub enum BlockType {
 	#[default]
 	Air = 0,
+	/// A water source: infinite, amount 8. All generated water (oceans,
+	/// river pools) is sources — flowing/falling states describe water in
+	/// transit under the Minecraft-style flow rules.
 	Water = 1,
 	Dirt = 2,
 	Grass = 3,
@@ -21,6 +24,17 @@ pub enum BlockType {
 	Wood = 6,
 	Leaves = 7,
 	Snow = 8,
+	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
+	/// source or a landed fall, losing one amount per block.
+	WaterFlow1 = 9,
+	WaterFlow2 = 10,
+	WaterFlow3 = 11,
+	WaterFlow4 = 12,
+	WaterFlow5 = 13,
+	WaterFlow6 = 14,
+	WaterFlow7 = 15,
+	/// Water falling through air: renders full-height, lands at amount 8.
+	WaterFall = 16,
 }
 
 /// How a block participates in meshing and rendering.
@@ -86,11 +100,19 @@ pub const PROPS: [BlockProps; BlockType::COUNT] = {
 		props(R::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), // Wood
 		props(R::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), // Leaves
 		props(R::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW), // Snow
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow1
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow2
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow3
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow4
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow5
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow6
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow7
+		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFall
 	]
 };
 
 impl BlockType {
-	pub const COUNT: usize = 9;
+	pub const COUNT: usize = 17;
 	pub const ALL: [BlockType; Self::COUNT] = [
 		BlockType::Air,
 		BlockType::Water,
@@ -101,6 +123,14 @@ impl BlockType {
 		BlockType::Wood,
 		BlockType::Leaves,
 		BlockType::Snow,
+		BlockType::WaterFlow1,
+		BlockType::WaterFlow2,
+		BlockType::WaterFlow3,
+		BlockType::WaterFlow4,
+		BlockType::WaterFlow5,
+		BlockType::WaterFlow6,
+		BlockType::WaterFlow7,
+		BlockType::WaterFall,
 	];
 
 	#[inline]
@@ -126,6 +156,42 @@ impl BlockType {
 			Dir::Bottom => p.tex_bottom,
 			_ => p.tex_side,
 		})
+	}
+
+	/// How much water this block holds, 1..=8 — None for non-water.
+	/// Sources and falling water are full; flowing water carries its
+	/// spread level.
+	#[inline]
+	pub fn water_amount(self) -> Option<u8> {
+		match self {
+			BlockType::Water | BlockType::WaterFall => Some(8),
+			BlockType::WaterFlow1 => Some(1),
+			BlockType::WaterFlow2 => Some(2),
+			BlockType::WaterFlow3 => Some(3),
+			BlockType::WaterFlow4 => Some(4),
+			BlockType::WaterFlow5 => Some(5),
+			BlockType::WaterFlow6 => Some(6),
+			BlockType::WaterFlow7 => Some(7),
+			_ => None,
+		}
+	}
+
+	/// Any member of the water family (source, flowing, falling).
+	#[inline]
+	pub fn is_water(self) -> bool {
+		self.water_amount().is_some()
+	}
+
+	#[inline]
+	pub fn is_falling(self) -> bool {
+		self == BlockType::WaterFall
+	}
+
+	/// The flowing-water block for an amount 1..=7.
+	#[inline]
+	pub fn water_flow(amount: u8) -> BlockType {
+		debug_assert!((1..=7).contains(&amount));
+		Self::from_u8(BlockType::WaterFlow1 as u8 + amount - 1)
 	}
 }
 
@@ -155,6 +221,28 @@ mod tests {
 			if p.collides {
 				assert_ne!(p.class, RenderClass::None);
 			}
+		}
+	}
+
+	#[test]
+	fn water_family_props() {
+		for &b in &BlockType::ALL {
+			match b.water_amount() {
+				Some(a) => {
+					assert!((1..=8).contains(&a), "{b:?} amount {a}");
+					assert_eq!(b.props().class, RenderClass::Translucent, "{b:?}");
+					assert!(!b.props().collides, "{b:?} never collides");
+					assert!(b.is_water());
+				}
+				None => assert!(!b.is_water()),
+			}
+		}
+		assert_eq!(BlockType::Water.water_amount(), Some(8), "source is full");
+		assert_eq!(BlockType::WaterFall.water_amount(), Some(8), "fall is full");
+		assert!(BlockType::WaterFall.is_falling());
+		assert!(!BlockType::Water.is_falling());
+		for a in 1..=7u8 {
+			assert_eq!(BlockType::water_flow(a).water_amount(), Some(a));
 		}
 	}
 }
