@@ -371,6 +371,38 @@ fn emit_face(
 	}
 }
 
+/// The amount a water cell contributes to shared surface-corner
+/// heights. Falling cells don't surface at their nominal (full)
+/// amount: the sheet's lip continues the feeder's downward slope, one
+/// level below the highest adjacent resting water — a source (8) feeds
+/// a 7-high lip, a thin flow a thinner one — instead of popping back
+/// up to full height at the edge. No feeder in reach (e.g. a floating
+/// column) falls back to the nominal amount.
+fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Option<u8> {
+	let a = b.water_amount()?;
+	if !b.is_falling() {
+		return Some(a);
+	}
+	let mut feeder = 0u8;
+	for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+		let (nx, nz) = (x + dx, z + dz);
+		// Corner cells sit at -1..=16; their neighbors can leave the
+		// padded snapshot — skip those.
+		if !(-1..=16).contains(&nx) || !(-1..=16).contains(&nz) {
+			continue;
+		}
+		let nb = BlockType::from_u8(input.get(nx, y, nz));
+		if nb.is_water() && !nb.is_falling() {
+			feeder = feeder.max(nb.water_amount().unwrap_or(0));
+		}
+	}
+	if feeder > 0 {
+		Some((feeder - 1).max(1))
+	} else {
+		Some(a)
+	}
+}
+
 /// Water surface drop code at horizontal lattice corner (lx, lz) for
 /// water cells at height y: the corner touches up to four cells.
 /// Priority: if any touching column has water at y + 1 the surface is
@@ -392,7 +424,7 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 				return 0;
 			}
 			let b = BlockType::from_u8(input.get(cx, y, cz));
-			match b.water_amount() {
+			match surface_amount(input, cx, y, cz, b) {
 				Some(a) => {
 					sum += u32::from(a);
 					count += 1;
@@ -1010,15 +1042,37 @@ mod tests {
 		// Top fall block beside the upper pool's surface source — the
 		// worldgen lip arrangement. The interface face is culled, so the
 		// two top surfaces must agree on their shared corners or the rim
-		// is a see-through crack: both sit at d = 1 (mean amount 8).
+		// is a see-through crack. The fall surfaces one level below its
+		// feeder (amount 8 → 7), so the shared corners average to d = 1
+		// while the lip's outer edge dips to d = 2 — the surface tips
+		// over the edge instead of popping back up to full height.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(7, 8, 8, B::Water);
 		let m = mesh_chunk(&isolated(&d), ZERO);
-		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		let pool_top = water_quad(&m.water, 7, 8, 8, Dir::Top);
-		for (_, w1) in fall_top.iter().chain(&pool_top) {
-			assert_eq!(drop_of(*w1), 1, "lip and pool share the surface");
+		for (_, w1) in pool_top {
+			assert_eq!(drop_of(w1), 1, "pool surface undisturbed");
+		}
+		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		for (w0, w1) in fall_top {
+			let expect = if w0 & 0x1f == 9 { 2 } else { 1 };
+			assert_eq!(drop_of(w1), expect, "shared corners knit, outer dip");
+		}
+	}
+
+	#[test]
+	fn fall_lip_steps_below_its_feeder() {
+		// A thin flow feeding a fall: the lip continues the downhill
+		// slope one level below the feeder (amount 5 → lip 4).
+		let mut d = ChunkData::default();
+		d.set(7, 8, 8, B::WaterFlow5);
+		d.set(8, 8, 8, B::WaterFall);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		for (w0, w1) in fall_top {
+			let expect = if w0 & 0x1f == 9 { 5 } else { 4 };
+			assert_eq!(drop_of(w1), expect, "lip = feeder − 1");
 		}
 	}
 
