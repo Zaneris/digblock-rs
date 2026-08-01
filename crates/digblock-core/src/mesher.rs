@@ -197,6 +197,11 @@ pub struct MeshData {
 	/// falling water above; bottom-plane verts +1 so the interpolated
 	/// "blocks fallen" is continuous down a column; saturates at 15).
 	pub water: Vec<u32>,
+	/// Water-fall impact cells (the splash-code-3 predicate), packed
+	/// chunk-local `x | y<<4 | z<<8` — spray-emitter metadata. Rides the
+	/// mesh so every fall-changing path (worldgen stream-in, dig/place,
+	/// fluid sim, remesh-all) refreshes emitters with no extra scans.
+	pub impacts: Vec<u16>,
 }
 
 impl MeshData {
@@ -603,6 +608,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 	let mut mesh = MeshData {
 		solid: Vec::with_capacity(4096),
 		water: Vec::with_capacity(512),
+		impacts: Vec::new(),
 	};
 	for y in 0..n {
 		for z in 0..n {
@@ -638,9 +644,20 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					let class = me.props().class;
 					let tex = me.texture(dir);
 					if class == RenderClass::Translucent {
-						let state = *wstate.get_or_insert_with(|| {
-							WaterState::of(input, x as i32, y as i32, z as i32, me)
-						});
+						// Not get_or_insert_with: recording the impact cell
+						// must happen exactly once, and the closure can't
+						// reach mesh.impacts.
+						let state = match wstate {
+							Some(s) => s,
+							None => {
+								let s = WaterState::of(input, x as i32, y as i32, z as i32, me);
+								if s.splash == 3 {
+									mesh.impacts.push((x | y << 4 | z << 8) as u16);
+								}
+								wstate = Some(s);
+								s
+							}
+						};
 						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
 					} else {
 						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
@@ -1050,6 +1067,23 @@ mod tests {
 
 	fn splash_of(w1: u32) -> u32 {
 		(w1 >> 8) & 3
+	}
+
+	#[test]
+	fn impact_cells_ride_mesh_data() {
+		// A landed fall records its cell in MeshData.impacts once (not
+		// per face); mid-air falls record nothing.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 7, 8, B::Stone);
+		d.set(10, 8, 8, B::WaterFall);
+		d.set(10, 7, 8, B::Water);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let mut impacts = m.impacts.clone();
+		impacts.sort_unstable();
+		assert_eq!(impacts, vec![8 | 8 << 4 | 8 << 8, 10 | 8 << 4 | 8 << 8]);
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		assert!(m.impacts.is_empty(), "mid-air fall is not an emitter");
 	}
 
 	#[test]
