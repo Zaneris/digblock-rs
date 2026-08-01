@@ -387,23 +387,78 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	9 - a
 }
 
-/// Emit one water face quad: two words per vertex. `full` (falling
-/// water, or water directly above) renders the cell as a complete cube;
+/// Per-face water surface state, computed once per cell in `mesh_chunk`.
+#[derive(Clone, Copy)]
+struct WaterState {
+	/// Falling water or water directly above: render a complete cube.
+	full: bool,
+	falling: bool,
+	/// Horizontal flow direction code (0 still, 1 +x, 2 −x, 3 +z, 4 −z):
+	/// the side with the least water, where in-transit water is headed.
+	flow: u32,
+	/// Falling water striking a colliding block below — the splash cell.
+	foam: bool,
+}
+
+impl WaterState {
+	/// Outlined: inlining this (and emit_water_face) into mesh_chunk's
+	/// block loop measurably slowed the dominant solid path (~+0.03ms on
+	/// a 0.08ms avg mesh job) — water cells are the rare case.
+	#[inline(never)]
+	fn of(input: &MeshInput, x: i32, y: i32, z: i32, me: BlockType) -> WaterState {
+		let falling = me.is_falling();
+		let above = BlockType::from_u8(input.get(x, y + 1, z));
+		let full = falling || above.is_water();
+		let flow = if falling || me == BlockType::Water {
+			0 // sources rest, falls scroll vertically instead
+		} else {
+			let amount = |dx: i32, dz: i32| -> u8 {
+				BlockType::from_u8(input.get(x + dx, y, z + dz))
+					.water_amount()
+					.unwrap_or(0)
+			};
+			let sides = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+			let amounts = sides.map(|(dx, dz)| amount(dx, dz));
+			let min = *amounts.iter().min().expect("four sides");
+			if amounts.iter().all(|&a| a == min) {
+				0
+			} else {
+				1 + amounts.iter().position(|&a| a == min).expect("has min") as u32
+			}
+		};
+		let foam = falling && occludes(input.get(x, y - 1, z));
+		WaterState {
+			full,
+			falling,
+			flow,
+			foam,
+		}
+	}
+
+	/// Word-1 bits above the per-vertex drop code.
+	fn flags(self) -> u32 {
+		u32::from(self.falling) << 4 | self.flow << 5 | u32::from(self.foam) << 8
+	}
+}
+
+/// Emit one water face quad: two words per vertex. A `full` cell
+/// (falling water, or water directly above) renders as a complete cube;
 /// otherwise vertices on the cell's top lattice plane drop to their
-/// corner's shared surface height.
+/// corner's shared surface height. Outlined (like `WaterState::of`) so
+/// the rare water path doesn't bloat mesh_chunk's hot solid loop.
+#[inline(never)]
 fn emit_water_face(
 	out: &mut Vec<u32>,
 	input: &MeshInput,
 	b: (usize, usize, usize),
 	dir: Dir,
 	tex: u32,
-	full: bool,
-	falling: bool,
+	state: WaterState,
 ) {
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
 	let corners = face_corners(bx, by, bz, dir);
 	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
-		let d = if !full && cy == by + 1 {
+		let d = if !state.full && cy == by + 1 {
 			corner_drop(input, cx, by, cz)
 		} else {
 			0
@@ -418,7 +473,7 @@ fn emit_water_face(
 			dir,
 			ci as u32,
 		));
-		out.push(d | (u32::from(falling) << 4));
+		out.push(d | state.flags());
 	}
 }
 
@@ -449,6 +504,8 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 				if me.props().class == RenderClass::None {
 					continue;
 				}
+				// Cell-level water state, shared by all its faces.
+				let mut wstate: Option<WaterState> = None;
 				for &dir in &DIRS {
 					// A missing face neighbor suppresses this border's
 					// faces; the padded ring makes every other lookup a
@@ -473,20 +530,10 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					let class = me.props().class;
 					let tex = me.texture(dir);
 					if class == RenderClass::Translucent {
-						// Falling water and submerged cells render as
-						// complete cubes; only surface cells drop their
-						// top-plane vertices to the shared corner heights.
-						let above = BlockType::from_u8(input.get(x as i32, y as i32 + 1, z as i32));
-						let full = me.is_falling() || above.is_water();
-						emit_water_face(
-							&mut mesh.water,
-							input,
-							(x, y, z),
-							dir,
-							tex,
-							full,
-							me.is_falling(),
-						);
+						let state = *wstate.get_or_insert_with(|| {
+							WaterState::of(input, x as i32, y as i32, z as i32, me)
+						});
+						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
 					} else {
 						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
 						let bt = tint(
@@ -788,6 +835,45 @@ mod tests {
 		for pair in m.water.chunks(2) {
 			assert_eq!(drop_of(pair[1]), 0, "falls never drop their surface");
 			assert!(falling_of(pair[1]));
+		}
+	}
+
+	#[test]
+	fn flow_direction_points_at_the_emptiest_side() {
+		// Flow5 walled in by water except +x: flows toward +x (code 1).
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFlow5);
+		d.set(7, 8, 8, B::WaterFlow4);
+		d.set(8, 8, 9, B::WaterFlow4);
+		d.set(8, 8, 7, B::WaterFlow4);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		for (_, w1) in top {
+			assert_eq!((w1 >> 5) & 7, 1, "flows toward +x");
+		}
+		// Sources rest even with open sides.
+		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		for (_, w1) in top {
+			assert_eq!((w1 >> 5) & 7, 0, "sources are still");
+		}
+	}
+
+	#[test]
+	fn landed_fall_carries_the_foam_bit() {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 7, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!((w1 >> 8) & 1, 1, "splash cell foams");
+		}
+		// A fall still in the air doesn't.
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!((w1 >> 8) & 1, 0, "mid-air fall has no foam");
 		}
 	}
 

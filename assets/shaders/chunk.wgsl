@@ -16,6 +16,7 @@ struct Frame {
 	// w = shadow strength 0..1 (twilight fade)
 	light_dir: vec4f,
 	// rgb = direct light color (sun by day, moonlight by night)
+	// w = animation clock in seconds (wraps at 600; water scroll/foam)
 	light_color: vec4f,
 	// rgb = sky-tinted ambient floor
 	ambient: vec4f,

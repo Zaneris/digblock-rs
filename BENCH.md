@@ -3,6 +3,22 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-07-31 (sixth pass): water system (levels, sloped surfaces, falls, sim, anim)
+
+Water moved to Minecraft-style level blocks with its own two-word
+vertex format + water.wgsl (solid path untouched), worldgen emits
+WaterFall sheets at river pool steps (zero new noise — classify reuses
+the neighbor fields it already had), and an edit-time fluid sim drains
+128 queued cell updates per 0.25s world tick (idle = free). Terrain
+retunes in between (ocean shelf + tanh continentalness + seafloor
+detail, ridge^1.6 mountain profile) cost one tanh + one powf per
+column. Costs vs the fifth pass: gen 1.03-1.06ms (flat), mesh avg
+0.08 → 0.09ms, fill 4.66-4.81s (noise-level). One caught regression:
+letting WaterState/emit_water_face inline into mesh_chunk's block loop
+cost +0.03ms mesh avg on the dominant solid path — both are
+#[inline(never)] now. Reference shots: `shots/water-falls.png` (seed
+1234.5678 coastal cascade), `shots/sloped-water.png`.
+
 ## 2026-07-31 (fifth pass): visual depth pass (padded snapshot, AO, tint)
 
 Mesh jobs moved from six border planes to a padded 18³ snapshot

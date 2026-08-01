@@ -44,7 +44,8 @@ pub struct FrameUniforms {
 	/// xyz = active caster dir (sun or moon), toward the ground;
 	/// w = shadow strength 0..1 (twilight fade).
 	pub light_dir: [f32; 4],
-	/// rgb = direct light color (sun by day, moonlight by night).
+	/// rgb = direct light color (sun by day, moonlight by night);
+	/// w = the animation clock in seconds (wraps at 600).
 	pub light_color: [f32; 4],
 	/// rgb = sky-tinted ambient floor.
 	pub ambient: [f32; 4],

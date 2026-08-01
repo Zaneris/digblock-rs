@@ -4,9 +4,12 @@
 // are the drop code d: the vertex sinks d/9 below its lattice height, so
 // a source surface sits at 8/9 and thinner flowing water lower, with
 // corner heights shared between adjacent cells (no cracks). Bit 4 marks
-// falling water; bits 5-7 flow dir and bit 8 foam are reserved for the
-// animation pass. Lighting matches chunk.wgsl minus AO/tint; alpha
-// comes from misc.x (the water frame UBO copy).
+// falling water (side faces scroll downward), bits 5-7 the horizontal
+// flow dir (0 still, 1 +x, 2 −x, 3 +z, 4 −z; top faces scroll along
+// it), bit 8 foam (a fall striking ground: brightened splash pulse).
+// The animation clock rides in frame.light_color.w. Lighting matches
+// chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
+// UBO copy).
 
 // Must match FrameUniforms in renderer.rs and the Frame struct in
 // sky.wgsl — field order and packing are load-bearing.
@@ -19,6 +22,7 @@ struct Frame {
 	// w = shadow strength 0..1 (twilight fade)
 	light_dir: vec4f,
 	// rgb = direct light color (sun by day, moonlight by night)
+	// w = animation clock in seconds (wraps at 600; water scroll/foam)
 	light_color: vec4f,
 	// rgb = sky-tinted ambient floor
 	ambient: vec4f,
@@ -78,24 +82,51 @@ struct VsOut {
 	@location(4) sc_wide: vec3f,
 	@location(5) fog_dist: f32,
 	@location(6) @interpolate(flat) axis: f32,
+	// Foam strength (flat: whole splash cell brightens).
+	@location(7) @interpolate(flat) foam: f32,
 }
 
 @vertex
 fn vs(@location(0) packed: vec2u) -> VsOut {
 	let w0 = packed.x;
+	let w1 = packed.y;
 	let x = f32(w0 & 0x1fu);
 	var y = f32((w0 >> 5u) & 0x1fu);
 	let z = f32((w0 >> 10u) & 0x1fu);
 	// Surface drop: 0 = full block height (falling/submerged water and
 	// all bottom-plane vertices), else the shared corner surface.
-	y -= f32(packed.y & 0xfu) / 9.0;
+	y -= f32(w1 & 0xfu) / 9.0;
 	let ni = (w0 >> 15u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
-	o.uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
+	var uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
+	// Scroll: falling side faces run downward (v grows toward the face
+	// bottom, so subtracting time moves features down-screen); flowing
+	// top faces run along the mesher's flow direction. The offset is
+	// linear in uv, so interpolation stays exact; fs wraps with fract.
+	let t = frame.light_color.w;
+	let falling = ((w1 >> 4u) & 1u) == 1u;
+	let flow = (w1 >> 5u) & 7u;
+	let vertical = ni == 3u || ni == 4u;
+	if falling && !vertical {
+		uv.y -= t * 1.5;
+	} else if ni == 4u && flow != 0u {
+		let s = t * 0.4;
+		if flow == 1u {
+			uv.x -= s;
+		} else if flow == 2u {
+			uv.x += s;
+		} else if flow == 3u {
+			uv.y -= s;
+		} else {
+			uv.y += s;
+		}
+	}
+	o.uv = uv;
+	o.foam = f32((w1 >> 8u) & 1u);
 	o.layer = (w0 >> 23u) & 63u;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
@@ -140,13 +171,21 @@ fn shadow_vis(sc_near: vec3f, sc_wide: vec3f, direct: f32) -> f32 {
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
+	let uv = fract(i.uv);
+	let tex = textureSample(blocks_tex, blocks_smp, uv, i.layer).rgb;
 	var vis = 1.0;
 	if frame.misc.y > 0.5 {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
 	var col = tex * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	// Splash foam where a fall strikes ground: brighten toward white,
+	// strongest at the face top, with a slow pulse.
+	if i.foam > 0.0 {
+		let t = frame.light_color.w;
+		let pulse = 0.20 + 0.06 * sin(t * 6.0);
+		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - uv.y));
+	}
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
 	return vec4f(col, frame.misc.x);

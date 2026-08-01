@@ -112,6 +112,9 @@ pub struct Engine {
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
 	flow_accum: f32,
+	/// Shader animation clock, wrapped at 600s (carried in the otherwise
+	/// unused light_color.w — no uniform layout change).
+	time_secs: f32,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -167,6 +170,7 @@ impl Engine {
 			held_block: BlockType::Dirt,
 			fluid: digblock_core::fluid::FluidSim::new(),
 			flow_accum: 0.0,
+			time_secs: 0.0,
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -324,7 +328,8 @@ impl Engine {
 				atmos.light_color[0],
 				atmos.light_color[1],
 				atmos.light_color[2],
-				0.0,
+				// Animation clock (water scroll/foam) in the spare lane.
+				self.time_secs,
 			],
 			ambient: [atmos.ambient[0], atmos.ambient[1], atmos.ambient[2], 0.0],
 			fog_color: [
@@ -457,6 +462,7 @@ impl Game for Engine {
 	fn update(&mut self, dt: Duration) {
 		let t_update = std::time::Instant::now();
 		let dt = dt.as_secs_f32();
+		self.time_secs = (self.time_secs + dt) % 600.0;
 		// A fixed --tod freezes the sun angle but keeps the wide-cascade
 		// refresh cadence (the map must still track streamed-in chunks).
 		let fixed_tod = self.config.tod;
