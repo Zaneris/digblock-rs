@@ -6,9 +6,11 @@
 //! Staleness is handled by generation counters, not flags: every mesh job
 //! carries the `mesh_gen` it was built from, and results that don't match
 //! the slot's current counter (or whose slot was evicted) are dropped.
-//! When a chunk finishes generating, it bumps its own and all six Ready
-//! neighbors' counters — the safe equivalent of the Java writing face bits
-//! into neighbor chunks and re-dirtying them.
+//! When a chunk finishes generating, it bumps its own and its Ready
+//! neighbors' counters — face neighbors unconditionally (the safe
+//! equivalent of the Java writing face bits into neighbor chunks and
+//! re-dirtying them), edge/corner diagonals only where the shared padded
+//! shell cells could shade an existing face.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -18,7 +20,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use rustc_hash::FxHashMap;
 
 use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
-use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src, DIRS};
+use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
 
@@ -66,6 +68,11 @@ struct ChunkSlot {
 	mesh_gen: u64,
 	/// Highest gen handed to a worker.
 	submitted_gen: u64,
+	/// Generation of the last accepted mesh, if that mesh was empty.
+	/// Diagonal neighbors' shell cells only shade existing faces (they
+	/// never create or cull them), so a chunk whose current mesh is empty
+	/// — every buried chunk — can skip diagonal re-dirties entirely.
+	empty_mesh_gen: Option<u64>,
 }
 
 /// What the caller (renderer side) must do after a maintain() call, plus
@@ -108,6 +115,49 @@ pub struct Pipeline {
 fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 	let (dx, dy, dz) = ((a.x - b.x) as i64, (a.y - b.y) as i64, (a.z - b.z) as i64);
 	dx * dx + dy * dy + dz * dz
+}
+
+/// For each diagonal chunk offset, whether this chunk's cells visible in
+/// that neighbor's padded shell (a shared edge line or corner cell)
+/// contain anything non-air. All-air shared cells read identically to the
+/// zero-filled shell of a missing chunk, so such neighbors' existing
+/// meshes cannot be affected by this chunk's arrival. Face offsets are
+/// left false — face re-dirties are unconditional and never consult this.
+/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; ~200 byte reads total.
+fn shell_affects(data: &ChunkData) -> [bool; 27] {
+	// The local cell range this chunk contributes to a neighbor at axis
+	// offset o (the neighbor sees us at -o): our high border row for +1,
+	// our low row for -1.
+	let span = |o: i32| match o {
+		1 => 15..16usize,
+		-1 => 0..1,
+		_ => 0..16,
+	};
+	let mut out = [false; 27];
+	for oy in -1..=1i32 {
+		for oz in -1..=1i32 {
+			for ox in -1..=1i32 {
+				let diagonal = (ox != 0) as u8 + (oy != 0) as u8 + (oz != 0) as u8 >= 2;
+				if !diagonal {
+					continue;
+				}
+				let i = (((oy + 1) * 3 + (oz + 1)) * 3 + (ox + 1)) as usize;
+				out[i] = 'scan: {
+					for y in span(oy) {
+						for z in span(oz) {
+							for x in span(ox) {
+								if data.blocks[(y * 16 + z) * 16 + x] != 0 {
+									break 'scan true;
+								}
+							}
+						}
+					}
+					false
+				};
+			}
+		}
+	}
+	out
 }
 
 impl Pipeline {
@@ -210,6 +260,7 @@ impl Pipeline {
 							state: ChunkState::Generating,
 							mesh_gen: 0,
 							submitted_gen: 0,
+							empty_mesh_gen: None,
 						});
 						new_column = true;
 					}
@@ -260,10 +311,15 @@ impl Pipeline {
 					for (cy, data) in stack.into_iter().enumerate() {
 						let pos = ChunkPos::new(x, cy as i32, z);
 						out.generated += 1;
+						// Air chunks are stored (uniform lookups) but never
+						// meshed — they can't emit faces.
+						let air = is_air_chunk(&data);
+						let affects = if air {
+							[false; 27]
+						} else {
+							shell_affects(&data)
+						};
 						if let Some(slot) = self.store.get_mut(&pos) {
-							// Air chunks are stored (uniform lookups) but
-							// never meshed — they can't emit faces.
-							let air = is_air_chunk(&data);
 							slot.state = ChunkState::Ready(data);
 							if !air {
 								slot.mesh_gen += 1;
@@ -271,20 +327,60 @@ impl Pipeline {
 							}
 						}
 						// The Rust equivalent of Java's cross-border re-dirty:
-						// every Ready neighbor re-meshes from fresh snapshots
-						// (a new air chunk still un-suppresses its neighbors'
-						// border faces, so it bumps them too).
-						for dir in DIRS {
-							let (ox, oy, oz) = dir.offset();
-							let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-							if let Some(nslot) = self.store.get_mut(&np) {
-								if matches!(&nslot.state, ChunkState::Ready(d) if !is_air_chunk(d))
-								{
-									nslot.mesh_gen += 1;
-									self.mesh_heap.push((
-										Reverse(dist2(ChunkPos::new(np.x, 0, np.z), self.center)),
-										(np.x, np.y, np.z),
-									));
+						// every Ready neighbor re-meshes from fresh snapshots.
+						// Faces always (a new air chunk still un-suppresses
+						// its neighbors' border faces, and face cells create
+						// and cull faces). Diagonals only shade existing
+						// faces via the padded shell, so they're skipped for
+						// air chunks (no shell content) and for neighbors
+						// whose current mesh is empty (nothing to shade) —
+						// without this the buried bulk of the world remeshes
+						// 26-ways on every generation.
+						for oy in -1..=1 {
+							for oz in -1..=1i32 {
+								for ox in -1..=1i32 {
+									if (ox, oy, oz) == (0, 0, 0) {
+										continue;
+									}
+									let diagonal =
+										(ox != 0) as u8 + (oy != 0) as u8 + (oz != 0) as u8 >= 2;
+									// All-air shared cells (or an all-air
+									// chunk) can't affect a diagonal
+									// neighbor's mesh.
+									if diagonal
+										&& !affects
+											[(((oy + 1) * 3 + (oz + 1)) * 3 + (ox + 1)) as usize]
+									{
+										continue;
+									}
+									let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+									if let Some(nslot) = self.store.get_mut(&np) {
+										if !matches!(&nslot.state, ChunkState::Ready(d) if !is_air_chunk(d))
+										{
+											continue;
+										}
+										if diagonal && nslot.empty_mesh_gen == Some(nslot.mesh_gen)
+										{
+											continue;
+										}
+										// A queued-but-undispatched remesh
+										// snapshots at dispatch time, after
+										// this chunk landed in the store — it
+										// already sees the fresh shell, so a
+										// diagonal bump would only duplicate
+										// the job.
+										if diagonal && nslot.submitted_gen < nslot.mesh_gen {
+											continue;
+										}
+										nslot.mesh_gen += 1;
+										self.mesh_heap.push((
+											Reverse(dist2(
+												ChunkPos::new(np.x, 0, np.z),
+												self.center,
+											)),
+											(np.x, np.y, np.z),
+										));
+									}
 								}
 							}
 						}
@@ -292,9 +388,12 @@ impl Pipeline {
 				}
 				JobResult::Meshed { out: m, dur_ms } => {
 					out.mesh_jobs.record(dur_ms);
-					match self.store.get(&m.pos) {
+					match self.store.get_mut(&m.pos) {
 						// Only the newest generation may reach the GPU.
-						Some(slot) if slot.mesh_gen == m.gen => out.meshed.push(m),
+						Some(slot) if slot.mesh_gen == m.gen => {
+							slot.empty_mesh_gen = m.mesh.is_empty().then_some(m.gen);
+							out.meshed.push(m);
+						}
 						_ => out.stale_dropped += 1, // stale or evicted
 					}
 				}
@@ -431,11 +530,12 @@ impl Pipeline {
 		self.store.len()
 	}
 
-	/// Set one block, remeshing the chunk and any border-adjacent Ready
-	/// neighbors (only they can see the edited cell in their border plane).
-	/// Returns the previous block; None if outside the world, the chunk
-	/// isn't Ready, or the edit is a no-op. In-flight meshes of the old
-	/// data are dropped by the generation check in `drain_results`.
+	/// Set one block, remeshing the chunk and every Ready neighbor whose
+	/// padded shell can see the edited cell (faces, and the edge/corner
+	/// diagonals at touched borders). Returns the previous block; None if
+	/// outside the world, the chunk isn't Ready, or the edit is a no-op.
+	/// In-flight meshes of the old data are dropped by the generation
+	/// check in `drain_results`.
 	pub fn set_block(
 		&mut self,
 		x: i32,
@@ -468,27 +568,33 @@ impl Pipeline {
 			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
 			(pos.x, pos.y, pos.z),
 		));
-		for dir in DIRS {
-			let on_border = match dir {
-				crate::mesher::Dir::West => lx == 15,
-				crate::mesher::Dir::East => lx == 0,
-				crate::mesher::Dir::North => lz == 15,
-				crate::mesher::Dir::South => lz == 0,
-				crate::mesher::Dir::Top => ly == 15,
-				crate::mesher::Dir::Bottom => ly == 0,
-			};
-			if !on_border {
-				continue;
+		// Every neighbor whose padded shell can see the edited cell: the
+		// face across each touched border, plus the edge/corner diagonals
+		// where two or three borders meet (their AO / corner data reads
+		// this cell). Face edit → 1 neighbor, edge cell → 3, corner → 7.
+		let offsets = |l: usize| -> &'static [i32] {
+			match l {
+				0 => &[0, -1],
+				15 => &[0, 1],
+				_ => &[0],
 			}
-			let (ox, oy, oz) = dir.offset();
-			let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-			if let Some(nslot) = self.store.get_mut(&np) {
-				if matches!(nslot.state, ChunkState::Ready(_)) {
-					nslot.mesh_gen += 1;
-					self.mesh_heap.push((
-						Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
-						(np.x, np.y, np.z),
-					));
+		};
+		for &oy in offsets(ly) {
+			for &oz in offsets(lz) {
+				for &ox in offsets(lx) {
+					if (ox, oy, oz) == (0, 0, 0) {
+						continue;
+					}
+					let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+					if let Some(nslot) = self.store.get_mut(&np) {
+						if matches!(nslot.state, ChunkState::Ready(_)) {
+							nslot.mesh_gen += 1;
+							self.mesh_heap.push((
+								Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
+								(np.x, np.y, np.z),
+							));
+						}
+					}
 				}
 			}
 		}
@@ -601,16 +707,27 @@ mod tests {
 			assert_eq!(mesh_gen(&p, *pos), *gen);
 		}
 
-		// Corner-of-world edit at (0,0,0): local (0,0,0) borders East(−x),
-		// South(−z), Bottom(−y); bottom is outside the world, so exactly
-		// self + 2 neighbors bump.
+		// Face-cell edit at world (0,8,8): local (0,8,8) touches only the
+		// −x border — self + exactly 1 neighbor.
+		let before = snapshot(&p);
+		let new = other(p.block_at(0, 8, 8));
+		p.set_block(0, 8, 8, new).expect("face edit");
+		for (pos, gen) in &before {
+			let bumped = *pos == ChunkPos::new(0, 0, 0) || *pos == ChunkPos::new(-1, 0, 0);
+			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+		}
+
+		// Corner-of-world edit at (0,0,0): local (0,0,0) touches −x, −z,
+		// and −y borders; the y−1 chunks are outside the world, so the
+		// bumped set is self + the two faces + their shared diagonal.
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 0, 0));
 		p.set_block(0, 0, 0, new).expect("corner edit");
 		for (pos, gen) in &before {
 			let bumped = *pos == ChunkPos::new(0, 0, 0)
 				|| *pos == ChunkPos::new(-1, 0, 0)
-				|| *pos == ChunkPos::new(0, 0, -1);
+				|| *pos == ChunkPos::new(0, 0, -1)
+				|| *pos == ChunkPos::new(-1, 0, -1);
 			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
 		}
 
