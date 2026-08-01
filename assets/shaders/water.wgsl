@@ -146,6 +146,18 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 	return g;
 }
 
+// Reflected environment along `ray`: the same procedural sky the sky
+// pass draws (sky_base from the shared prelude), plus stars at night.
+// The sun/moon discs are deliberately absent — the analytic specular
+// lobe plays their role on the rippled surface. This function is the
+// SSR seam: a screen-space march can replace its body, sampling the
+// scene on hit and falling back to sky_base on miss.
+fn reflection_color(ray: vec3f) -> vec3f {
+	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	col += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	return col;
+}
+
 // Face normal perturbed by the ripple gradient: top faces get the
 // full height-field normal, side/bottom faces the gradient component
 // tangent to the face at half strength.
@@ -284,6 +296,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let pulse = 0.20 + 0.06 * sin(t * 6.0);
 		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - uv.y));
 	}
+	// Reflected sky, fresnel-blended: water mirrors the horizon at
+	// grazing angles and stays see-through from above.
+	var rr = reflect(-vdir, nrm);
+	rr.y = max(rr.y, 0.02);
+	col = mix(col, reflection_color(normalize(rr)), fres);
 	col += frame.light_color.rgb * spec * sh * 2.0;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
