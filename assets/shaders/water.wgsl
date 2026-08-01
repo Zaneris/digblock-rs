@@ -97,6 +97,65 @@ struct VsOut {
 	@location(6) @interpolate(flat) axis: f32,
 	// Foam strength (flat: whole splash cell brightens).
 	@location(7) @interpolate(flat) foam: f32,
+	// World position (ripple field domain + view vector).
+	@location(8) world: vec3f,
+	@location(9) @interpolate(flat) ni: u32,
+	@location(10) @interpolate(flat) flow: u32,
+}
+
+// Flow-dir codes (word 1 bits 5-7) as xz vectors.
+const FLOW_DIRS = array<vec2f, 5>(
+	vec2f(0.0, 0.0),
+	vec2f(1.0, 0.0),
+	vec2f(-1.0, 0.0),
+	vec2f(0.0, 1.0),
+	vec2f(0.0, -1.0),
+);
+
+// Analytic ripple slope field: three sine octaves summed as a height
+// gradient — pure ALU, no texture fetches. `boost` scales amplitude
+// (impact turbulence hook); octaves fade out with distance and the
+// whole field rolls off so far water can't alias into pixel shimmer.
+fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
+	// Wave directions: aligned to the current (±40° spread) when the
+	// cell flows, fixed spread directions on still water.
+	var d0 = vec2f(0.80, 0.60);
+	var d1 = vec2f(-0.71, 0.71);
+	var d2 = vec2f(0.97, -0.24);
+	if dot(flow, flow) > 0.5 {
+		d0 = flow;
+		d1 = vec2f(0.766 * flow.x - 0.643 * flow.y, 0.643 * flow.x + 0.766 * flow.y);
+		d2 = vec2f(0.766 * flow.x + 0.643 * flow.y, -0.643 * flow.x + 0.766 * flow.y);
+	}
+	// Slope amplitudes, frequencies (rad/block), phase speeds: a rough
+	// spectrum — long waves carry the most slope, short ones detail.
+	let s = vec3f(0.10, 0.06, 0.035) * boost;
+	let f = vec3f(0.9, 1.9, 4.1);
+	let spd = vec3f(1.2, 1.7, 2.6);
+	let fade = vec3f(
+		1.0,
+		1.0 - smoothstep(48.0, 120.0, dist),
+		1.0 - smoothstep(16.0, 48.0, dist),
+	) / (1.0 + dist * 0.015);
+	// Advect phase with the 0.4 blocks/s surface scroll so ripples
+	// ride the current instead of swimming against it.
+	let q = p - flow * (t * 0.4);
+	var g = d0 * (s.x * fade.x * cos(dot(d0, q) * f.x + t * spd.x));
+	g += d1 * (s.y * fade.y * cos(dot(d1, q) * f.y + t * spd.y));
+	g += d2 * (s.z * fade.z * cos(dot(d2, q) * f.z + t * spd.z));
+	return g;
+}
+
+// Face normal perturbed by the ripple gradient: top faces get the
+// full height-field normal, side/bottom faces the gradient component
+// tangent to the face at half strength.
+fn ripple_normal(ni: u32, g: vec2f) -> vec3f {
+	if ni == 4u {
+		return normalize(vec3f(-g.x, 1.0, -g.y));
+	}
+	let n = NORMALS[ni];
+	let perturb = vec3f(-g.x, 0.0, -g.y);
+	return normalize(n + (perturb - n * dot(perturb, n)) * 0.5);
 }
 
 @vertex
@@ -140,6 +199,9 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	o.uv = uv;
 	o.foam = f32((w1 >> 8u) & 1u);
 	o.layer = (w0 >> 23u) & 63u;
+	o.world = world;
+	o.ni = ni;
+	o.flow = flow;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
@@ -191,6 +253,7 @@ fn fs_depth() -> @location(0) vec4f {
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
+	let t = frame.light_color.w;
 	let uv = fract(i.uv);
 	let tex = textureSample(blocks_tex, blocks_smp, uv, i.layer).rgb;
 	var vis = 1.0;
@@ -199,14 +262,20 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
 	var col = tex * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	// Rippled normal + Schlick fresnel: alpha rises from the base
+	// (misc.x) toward opaque at grazing angles, so distant/low-angle
+	// water reads as a surface instead of tinted glass.
+	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], 1.0, i.fog_dist);
+	let nrm = ripple_normal(i.ni, g);
+	let vdir = normalize(frame.cam_pos.xyz - i.world);
+	let fres = 0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0);
 	// Splash foam where a fall strikes ground: brighten toward white,
 	// strongest at the face top, with a slow pulse.
 	if i.foam > 0.0 {
-		let t = frame.light_color.w;
 		let pulse = 0.20 + 0.06 * sin(t * 6.0);
 		col = mix(col, vec3f(1.0), i.foam * pulse * (1.0 - uv.y));
 	}
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
-	return vec4f(col, frame.misc.x);
+	return vec4f(col, mix(frame.misc.x, 1.0, fres));
 }
