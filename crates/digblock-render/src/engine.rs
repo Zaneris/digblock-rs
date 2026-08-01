@@ -105,8 +105,13 @@ pub struct Engine {
 	/// Click edges pending for the next update (left = dig, right = place).
 	click_dig: bool,
 	click_place: bool,
-	/// What right-click places: the last block dug (default dirt).
+	/// What right-click places: the last block dug (default dirt), or a
+	/// water source armed via the B debug key.
 	held_block: BlockType,
+	/// Edit-time water flow (digblock-core fluid rules); idle unless
+	/// edits schedule cells.
+	fluid: digblock_core::fluid::FluidSim,
+	flow_accum: f32,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -160,6 +165,8 @@ impl Engine {
 			click_dig: false,
 			click_place: false,
 			held_block: BlockType::Dirt,
+			fluid: digblock_core::fluid::FluidSim::new(),
+			flow_accum: 0.0,
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -270,6 +277,8 @@ impl Engine {
 					.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
 			{
 				self.held_block = prev;
+				self.fluid
+					.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
 			}
 		} else if hit.normal != (0, 0, 0) {
 			let target = (
@@ -282,9 +291,14 @@ impl Engine {
 			let cell = |v: Vec3| (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
 			let eye = cell(self.camera.pos);
 			let body = cell(self.camera.pos - Vec3::new(0.0, 1.25, 0.0));
-			if target != eye && target != body {
-				self.pipeline
-					.set_block(target.0, target.1, target.2, self.held_block);
+			if target != eye
+				&& target != body
+				&& self
+					.pipeline
+					.set_block(target.0, target.1, target.2, self.held_block)
+					.is_some()
+			{
+				self.fluid.schedule_around(target.0, target.1, target.2);
 			}
 		}
 	}
@@ -393,6 +407,12 @@ impl Game for Engine {
 					}
 					self.fly_key_down = pressed;
 				}
+				Key::B => {
+					if pressed {
+						self.held_block = BlockType::Water;
+						log::info!("held block: water source (debug)");
+					}
+				}
 				Key::Backquote => {
 					if pressed && !self.overlay_key_down {
 						self.overlay_visible = !self.overlay_visible;
@@ -468,6 +488,18 @@ impl Game for Engine {
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
 
 		self.apply_clicks();
+
+		// Water flow runs on its own world-tick cadence, independent of
+		// the walk/fly camera mode; idle (empty queue) it costs nothing.
+		{
+			use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
+			self.flow_accum = (self.flow_accum + dt).min(1.0);
+			while self.flow_accum >= FLOW_STEP_SECS {
+				self.flow_accum -= FLOW_STEP_SECS;
+				let mut world = PipelineWorld(&mut self.pipeline);
+				self.fluid.step(&mut world, FLOW_BUDGET);
+			}
+		}
 
 		if self.walking {
 			// Fixed 60 Hz player simulation (Java feel was tuned per-frame
@@ -593,5 +625,20 @@ impl Game for Engine {
 		));
 		self.pipeline.remesh_all();
 		log::info!("engine: renderer rebuilt (device-loss drill), re-mesh queued");
+	}
+}
+
+/// The fluid sim's view of the chunk pipeline: set_block already handles
+/// copy-on-write and remesh invalidation, and returns None for unloaded
+/// cells, which the sim treats as a dropped write.
+struct PipelineWorld<'a>(&'a mut Pipeline);
+
+impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
+	fn get(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
+		self.0.block_at(x, y, z)
+	}
+
+	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
+		self.0.set_block(x, y, z, b).is_some()
 	}
 }

@@ -13,6 +13,8 @@ pub enum Key {
 	Space,
 	Shift,
 	F,
+	/// Debug: arm water-source placement.
+	B,
 	/// Grave/backtick: debug overlay toggle.
 	Backquote,
 	Escape,
@@ -77,6 +79,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Space => Key::Space,
 		K::ShiftLeft | K::ShiftRight => Key::Shift,
 		K::KeyF => Key::F,
+		K::KeyB => Key::B,
 		K::Backquote => Key::Backquote,
 		K::Escape => Key::Escape,
 		_ => Key::Other,
