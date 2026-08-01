@@ -249,9 +249,11 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	let e = gained(fbm2(xf, zf, EROSION_FREQ, 2, seed + EROSION_SEED_OFF), 2.2);
 	let erosion = smoothstep((e + 0.3) / 0.9);
 	// Ridged (|m|): ranges crease into valleys at zero crossings and only
-	// ever rise above their base. The smoothstep flattens the derivative at
-	// both ends, so summits and valley floors round off instead of spiking.
-	let ridge = smoothstep(gained(m, 2.2).abs());
+	// ever rise above their base. The smoothstep flattens the derivative
+	// at the valley end; the concave power remap pushes mid-values down —
+	// mass settles into a broad base while the approach to a summit
+	// steepens, so peaks read pointed instead of domed.
+	let ridge = smoothstep(gained(m, 2.2).abs()).powf(1.6);
 	let h_ridge = base + ridge * MOUNTAIN_AMP * rough * (1.0 - 0.75 * erosion);
 	// Altitude-weighted detail (Musgrave-style heterogeneous fractal):
 	// lowlands read calm, high ridges craggy, eroded regions calmer still.
