@@ -8,6 +8,7 @@ mod font;
 mod gpu_timer;
 mod overlay;
 mod renderer;
+mod spray;
 mod texture;
 
 pub use engine::{Engine, EngineConfig};

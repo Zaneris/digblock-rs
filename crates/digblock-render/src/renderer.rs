@@ -155,6 +155,9 @@ pub struct Renderer {
 	/// each render — one path covers first frame, resize, resume, and
 	/// device loss (`Renderer::new` starts empty).
 	targets: Option<FrameTargets>,
+	/// Stateless waterfall spray/mist billboards (instance list fed by
+	/// MeshData.impacts through upload_chunk).
+	spray: crate::spray::Spray,
 	/// Layout of `FrameTargets::scene_bg` (depth copy + scene color +
 	/// linear sampler): blit group 0, water group 3.
 	scene_bgl: wgpu::BindGroupLayout,
@@ -771,6 +774,14 @@ impl Renderer {
 			water_scratch: Vec::new(),
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
+			// Draw dist 10 is the mobile config: fewer droplets there.
+			spray: crate::spray::Spray::new(
+				gpu,
+				surface_format,
+				DEPTH_FORMAT,
+				&frame_bgl,
+				if draw_dist <= 10 { 8 } else { 20 },
+			),
 			targets: None,
 			scene_bgl,
 			linear_sampler,
@@ -823,9 +834,11 @@ impl Renderer {
 		let solid = make(&mesh.solid, 1);
 		let water = make(&mesh.water, 2);
 		self.chunks.insert(pos, ChunkGpu { solid, water, slot });
+		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);
 	}
 
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+		self.spray.remove_chunk(pos);
 		if let Some(old) = self.chunks.remove(&pos) {
 			for (buf, _) in old.solid.iter().chain(old.water.iter()) {
 				self.gpu_buffer_bytes = self.gpu_buffer_bytes.saturating_sub(buf.size());
@@ -987,6 +1000,10 @@ impl Renderer {
 		water_frame.misc[0] = 0.7; // Java transparent-pass u_Alpha
 		gpu.queue
 			.write_buffer(&self.frame_water_buf, 0, bytemuck::bytes_of(&water_frame));
+		let spray_n = self.spray.prepare(
+			gpu,
+			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
+		);
 
 		let mut encoder = gpu
 			.device
@@ -1178,6 +1195,13 @@ impl Renderer {
 						}
 					}
 				}
+
+				// Spray billboards over the finished water (blends over
+				// sheet and pool alike). Water left frame_water_bg bound.
+				pass.set_bind_group(0, &self.frame_bg, &[]);
+				let spray_tris = self.spray.draw(&mut pass, spray_n);
+				stats.draw_calls += u32::from(spray_tris > 0);
+				stats.triangles += spray_tris;
 			}
 		}
 
