@@ -3,6 +3,9 @@
 // at NDC depth 1.0 after the solids (depth test kills occluded
 // fragments), before water. Everything is a pure function of the frame
 // uniforms — deterministic under a frozen --tod (stars don't twinkle).
+// The gradient/glow/star math lives in sky_common.wgsl (prepended by
+// digblock-assets, so line numbers here are offset), shared with the
+// water shader's reflections.
 
 // Must match FrameUniforms in renderer.rs and the Frame struct in
 // chunk.wgsl — field order and packing are load-bearing.
@@ -51,37 +54,10 @@ fn view_ray(ndc: vec2f) -> vec3f {
 	return normalize(w.xyz / w.w - frame.cam_pos.xyz);
 }
 
-fn hash13(p: vec3f) -> f32 {
-	return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
-}
-
-// Direction-space starfield: hash a cell grid over the ray, place one
-// potential star per cell, threshold most of them away.
-fn stars(ray: vec3f) -> f32 {
-	let scaled = ray * 64.0;
-	let cell = floor(scaled);
-	let h = hash13(cell);
-	if h < 0.92 {
-		return 0.0;
-	}
-	// Star point inside the cell, from further hashes.
-	let sp = cell + vec3f(hash13(cell + 17.0), hash13(cell + 31.0), hash13(cell + 47.0));
-	let d = length(scaled - sp);
-	let brightness = (h - 0.92) / 0.08;
-	return smoothstep(0.35, 0.0, d) * brightness;
-}
-
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
-	let up = max(ray.y, 0.0);
-	var col = mix(frame.horizon.rgb, frame.zenith.rgb, pow(up, 0.45));
-	// Sunset/sunrise glow: hugs the horizon, azimuthally centered on
-	// the sun (glow strength already fades on the night side).
-	let flat_ray = normalize(vec3f(ray.x, 0.0, ray.z));
-	let flat_sun = normalize(vec3f(frame.sun_dir.x, 0.0, frame.sun_dir.z));
-	let sa = max(dot(flat_ray, flat_sun), 0.0);
-	col += frame.moon_dir.w * frame.horizon.rgb * pow(sa, 6.0) * pow(1.0 - abs(ray.y), 3.0);
+	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	// Sun disc (~2° with a soft edge, oversized for game feel).
 	let ds = dot(ray, frame.sun_dir.xyz);
 	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, ds) * 4.0;
@@ -89,6 +65,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let dm = dot(ray, frame.moon_dir.xyz);
 	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dm);
 	// Stars fade in at night, suppressed in the horizon haze.
-	col += vec3f(stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	col += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
 	return vec4f(col, 1.0);
 }
