@@ -363,24 +363,40 @@ fn emit_face(
 }
 
 /// Water surface drop code at horizontal lattice corner (lx, lz) for
-/// water cells at height y: the corner touches up to four cells; if any
-/// of them is water with water above it the surface is pinned full
-/// (d = 0), otherwise the drop is 9 − round(mean water amount), so
-/// adjacent cells sharing the corner agree and surfaces knit without
-/// cracks — including across chunk borders via the padded shell.
+/// water cells at height y: the corner touches up to four cells.
+/// Priority: if any touching column has water at y + 1 the surface is
+/// pinned full (d = 0) — a submerged neighbor, or water hanging over a
+/// step this corner must rise to meet. Else, if any touching cell is
+/// open air with water directly below, the surface continues a step
+/// down and this corner plunges the whole block (d = 9), so cascades
+/// render as connected ramps instead of stacked cliff slivers. Else
+/// the drop is 9 − round(mean water amount). Adjacent cells sharing
+/// the corner agree, so surfaces knit without cracks — including
+/// across chunk borders via the padded shell.
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let (mut sum, mut count) = (0u32, 0u32);
+	let mut plunge = false;
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
-			let b = BlockType::from_u8(input.get(cx, y, cz));
-			let Some(a) = b.water_amount() else { continue };
-			// Cell y is 0..=15, so y+1 stays inside the padded range.
+			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
 			if BlockType::from_u8(input.get(cx, y + 1, cz)).is_water() {
 				return 0;
 			}
-			sum += u32::from(a);
-			count += 1;
+			let b = BlockType::from_u8(input.get(cx, y, cz));
+			match b.water_amount() {
+				Some(a) => {
+					sum += u32::from(a);
+					count += 1;
+				}
+				None if b.props().class == RenderClass::None => {
+					plunge |= BlockType::from_u8(input.get(cx, y - 1, cz)).is_water();
+				}
+				None => {}
+			}
 		}
+	}
+	if plunge {
+		return 9;
 	}
 	debug_assert!(count > 0, "corner of a water face touches its own cell");
 	let a = (2 * sum + count) / (2 * count); // round half up
@@ -390,7 +406,9 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 /// Per-face water surface state, computed once per cell in `mesh_chunk`.
 #[derive(Clone, Copy)]
 struct WaterState {
-	/// Falling water or water directly above: render a complete cube.
+	/// Water directly above: render a complete cube. The top block of a
+	/// fall column has air above and takes shared corner heights like
+	/// any surface cell, so the lip knits with the pool feeding it.
 	full: bool,
 	falling: bool,
 	/// Horizontal flow direction code (0 still, 1 +x, 2 −x, 3 +z, 4 −z):
@@ -408,7 +426,7 @@ impl WaterState {
 	fn of(input: &MeshInput, x: i32, y: i32, z: i32, me: BlockType) -> WaterState {
 		let falling = me.is_falling();
 		let above = BlockType::from_u8(input.get(x, y + 1, z));
-		let full = falling || above.is_water();
+		let full = above.is_water();
 		let flow = if falling || me == BlockType::Water {
 			0 // sources rest, falls scroll vertically instead
 		} else {
@@ -442,10 +460,10 @@ impl WaterState {
 }
 
 /// Emit one water face quad: two words per vertex. A `full` cell
-/// (falling water, or water directly above) renders as a complete cube;
-/// otherwise vertices on the cell's top lattice plane drop to their
-/// corner's shared surface height. Outlined (like `WaterState::of`) so
-/// the rare water path doesn't bloat mesh_chunk's hot solid loop.
+/// (water directly above) renders as a complete cube; otherwise
+/// vertices on the cell's top lattice plane drop to their corner's
+/// shared surface height. Outlined (like `WaterState::of`) so the
+/// rare water path doesn't bloat mesh_chunk's hot solid loop.
 #[inline(never)]
 fn emit_water_face(
 	out: &mut Vec<u32>,
@@ -457,12 +475,25 @@ fn emit_water_face(
 ) {
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
 	let corners = face_corners(bx, by, bz, dir);
+	let mut drops = [0u32; 4];
 	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
-		let d = if !state.full && cy == by + 1 {
-			corner_drop(input, cx, by, cz)
-		} else {
-			0
-		};
+		if !state.full && cy == by + 1 {
+			drops[ci] = corner_drop(input, cx, by, cz);
+		}
+	}
+	// A side face whose whole top edge plunged the full block (d = 9)
+	// collapsed onto its bottom edge — zero area, skip it.
+	if dir != Dir::Top && dir != Dir::Bottom {
+		let top_gone = corners
+			.iter()
+			.zip(&drops)
+			.all(|(&(_, cy, _), &d)| cy != by + 1 || d == 9);
+		if top_gone {
+			return;
+		}
+	}
+	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
+		let d = drops[ci];
 		out.push(pack(
 			Vert {
 				pos: (cx as u32, cy as u32, cz as u32),
@@ -828,13 +859,72 @@ mod tests {
 	}
 
 	#[test]
-	fn waterfall_is_full_height_and_flagged() {
+	fn waterfall_top_drops_like_a_surface_cell() {
 		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
-		// Floating fall: 4 sides + top + bottom toward air, all full.
+		// Floating fall: 4 sides + top + bottom toward air. Air above, so
+		// its top-plane vertices take the corner surface (amount 8 → d=1)
+		// like any surface water; everything is flagged falling.
 		assert_eq!(m.water.len() / 8, 6);
 		for pair in m.water.chunks(2) {
-			assert_eq!(drop_of(pair[1]), 0, "falls never drop their surface");
+			let y = (pair[0] >> 5) & 0x1f;
+			assert_eq!(drop_of(pair[1]), u32::from(y == 9));
 			assert!(falling_of(pair[1]));
+		}
+		// Mid-column (falling water above): a complete cube, no drop.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 9, 8, B::WaterFall);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(drop_of(w1), 0, "submerged fall stays full");
+		}
+	}
+
+	#[test]
+	fn cascade_steps_ramp_into_each_other() {
+		// The fluid sim's staircase shape: flow on the upper step, flow
+		// one down and one across on the lower step. The upper surface's
+		// downhill corners plunge the whole block (d = 9, air with water
+		// below) and the lower cell's uphill corners pin full (water
+		// hangs over the stone step), so the two surfaces meet exactly
+		// at the lattice — a connected ramp, no cliff sliver between.
+		let mut d = ChunkData::default();
+		d.set(8, 9, 8, B::WaterFlow7);
+		d.set(8, 8, 8, B::Stone);
+		d.set(9, 8, 8, B::WaterFlow7);
+		d.set(9, 7, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let upper = water_quad(&m.water, 8, 9, 8, Dir::Top);
+		for (w0, w1) in upper {
+			let expect = if w0 & 0x1f == 9 { 9 } else { 2 };
+			assert_eq!(drop_of(w1), expect, "downhill edge plunges");
+		}
+		let lower = water_quad(&m.water, 9, 8, 8, Dir::Top);
+		for (w0, w1) in lower {
+			let expect = if w0 & 0x1f == 9 { 0 } else { 2 };
+			assert_eq!(drop_of(w1), expect, "uphill edge pins full");
+		}
+		// The upper cell's downhill side face collapsed to zero area and
+		// is skipped: upper emits N/S/E/Top, lower W/N/S/Top (E faces
+		// the stone step, bottoms sit on stone).
+		assert_eq!(m.water.len() / 8, 4 + 4);
+	}
+
+	#[test]
+	fn waterfall_lip_knits_with_the_feeding_pool() {
+		// Top fall block beside the upper pool's surface source — the
+		// worldgen lip arrangement. The interface face is culled, so the
+		// two top surfaces must agree on their shared corners or the rim
+		// is a see-through crack: both sit at d = 1 (mean amount 8).
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(7, 8, 8, B::Water);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
+		let pool_top = water_quad(&m.water, 7, 8, 8, Dir::Top);
+		for (_, w1) in fall_top.iter().chain(&pool_top) {
+			assert_eq!(drop_of(*w1), 1, "lip and pool share the surface");
 		}
 	}
 

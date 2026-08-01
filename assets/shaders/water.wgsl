@@ -1,9 +1,10 @@
 // Water shader — fork of chunk.wgsl with a two-word vertex: word 0 is
 // the solid packing (position/normal/corner/texture; ao and tint bits
 // unused), word 1 carries per-vertex surface data. Bits 0-3 of word 1
-// are the drop code d: the vertex sinks d/9 below its lattice height, so
-// a source surface sits at 8/9 and thinner flowing water lower, with
-// corner heights shared between adjacent cells (no cracks). Bit 4 marks
+// are the drop code d (9 − mean corner amount): the vertex sinks
+// DROPS[d] below its lattice height, so a source surface sits at 8/9
+// and thinner flowing water lower along a concave curve, with corner
+// heights shared between adjacent cells (no cracks). Bit 4 marks
 // falling water (side faces scroll downward), bits 5-7 the horizontal
 // flow dir (0 still, 1 +x, 2 −x, 3 +z, 4 −z; top faces scroll along
 // it), bit 8 foam (a fall striking ground: brightened splash pulse).
@@ -73,6 +74,18 @@ const NORMALS = array<vec3f, 6>(
 // Face-axis ambient, matching chunk.wgsl.
 const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
 
+// Surface drop per code: 0 pins full height (submerged water and all
+// bottom-plane vertices); 1 is the resting source surface (8/9, kept
+// so pools and oceans sit where they always have); codes 2-8 fall
+// away on a concave curve — steep right below the source, easing off
+// as the water thins — so flowing runs read as a real gradient
+// instead of the old linear d/9 trickle. Code 9 is the cascade
+// plunge: the corner sinks the whole block to meet the surface of
+// the water one step down.
+const DROPS = array<f32, 10>(
+	0.0, 0.111, 0.32, 0.50, 0.63, 0.73, 0.81, 0.87, 0.92, 1.0,
+);
+
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
@@ -93,9 +106,8 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	let x = f32(w0 & 0x1fu);
 	var y = f32((w0 >> 5u) & 0x1fu);
 	let z = f32((w0 >> 10u) & 0x1fu);
-	// Surface drop: 0 = full block height (falling/submerged water and
-	// all bottom-plane vertices), else the shared corner surface.
-	y -= f32(w1 & 0xfu) / 9.0;
+	// Surface drop: shared corner codes through the concave curve.
+	y -= DROPS[min(w1 & 0xfu, 9u)];
 	let ni = (w0 >> 15u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;

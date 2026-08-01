@@ -1,16 +1,23 @@
-//! Player physics — a line-for-line port of the Java Player.move():
-//! point collider (no AABB), eye at the camera position, ground probe at
-//! −1.5, collision probe at −1.25 with 0.25 skin, per-axis slide, floor
-//! snap to +0.5, water fully non-solid, unloaded chunks non-solid (the
-//! Java null-block behavior). Run at a fixed 60 Hz tick: the ×0.5 ground
-//! friction and ÷100 air control are per-tick constants tuned at 60 fps.
+//! Player physics — ported from the Java Player.move(): point collider
+//! (no AABB), eye at the camera position, ground probe at −1.5,
+//! collision probe at −1.25 with 0.25 skin, per-axis slide, floor snap
+//! to +0.5, water fully non-solid, unloaded chunks non-solid (the Java
+//! null-block behavior). Run at a fixed 60 Hz tick: the ÷60 air control
+//! is a per-tick constant tuned at 60 fps.
+//! Diverges from the Java: ground movement accelerates toward the input
+//! target at WALK_ACCEL instead of snapping to full speed, and momentum
+//! carries over edges and landings.
 
 use crate::block::BlockType;
 use glam::{Vec2, Vec3};
 
 pub const GRAVITY: f32 = 9.8;
 pub const TERM_VELOCITY: f32 = -20.0;
-pub const WALK_SPEED: f32 = 3.0;
+/// Max ground speed, blocks/s.
+pub const WALK_SPEED: f32 = 4.0;
+/// Ground acceleration toward the input target, blocks/s²: reaches
+/// WALK_SPEED from a standstill in WALK_SPEED / WALK_ACCEL seconds.
+pub const WALK_ACCEL: f32 = 10.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
@@ -55,7 +62,6 @@ pub struct Player {
 	/// Eye position (the Java camera position).
 	pub pos: Vec3,
 	out: Vec3,
-	falling: bool,
 }
 
 fn cell(v: Vec3) -> (i32, i32, i32) {
@@ -73,7 +79,6 @@ impl Player {
 		Self {
 			pos: spawn,
 			out: Vec3::ZERO,
-			falling: true,
 		}
 	}
 
@@ -109,11 +114,6 @@ impl Player {
 		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
 	) {
 		let dt = dt.min(0.16);
-		if !self.falling {
-			self.out.x *= 0.5;
-			self.out.z *= 0.5;
-		}
-		self.falling = true;
 		self.out.y = (self.out.y - GRAVITY * dt).max(TERM_VELOCITY);
 
 		let mut mv = intent.move_axis;
@@ -125,15 +125,25 @@ impl Player {
 
 		if self.ground_check(dt, block_at) {
 			self.pos.y = self.pos.y.floor() + 0.5;
-			self.out = flat * (mv.y * WALK_SPEED) + right * (mv.x * WALK_SPEED);
+			// Ground movement is plain kinematics: accelerate toward the
+			// input target (direction × WALK_SPEED) at WALK_ACCEL, with
+			// velocity as the only state — landings, edge exits, turns
+			// and re-presses all fall out of momentum naturally (the
+			// Java snapped straight to full speed). Releasing input
+			// still stops instantly.
+			if mv == Vec2::ZERO {
+				self.out = Vec3::ZERO;
+			} else {
+				let target = (flat * mv.y + right * mv.x) * WALK_SPEED;
+				let cur = Vec3::new(self.out.x, 0.0, self.out.z);
+				self.out = cur + (target - cur).clamp_length_max(WALK_ACCEL * dt);
+			}
 			if intent.jump {
 				self.out *= 0.5;
 				self.out.y += JUMP_IMPULSE;
-			} else {
-				self.falling = false;
 			}
 		} else {
-			self.out += flat * (mv.y / 100.0) + right * (mv.x / 100.0);
+			self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);
 		}
 
 		let cur = cell(self.pos + Vec3::new(0.0, -1.25, 0.0));
@@ -195,20 +205,77 @@ mod tests {
 	}
 
 	#[test]
-	fn walks_at_java_speed() {
+	fn walks_at_max_speed_once_accelerated() {
 		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default()); // land
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		tick_n(&mut p, 60, forward); // accelerate to max
 		let z0 = p.pos.z;
-		tick_n(
-			&mut p,
-			60,
-			PlayerIntent {
-				move_axis: Vec2::new(0.0, 1.0),
-				jump: false,
-			},
-		);
+		tick_n(&mut p, 60, forward);
 		let walked = p.pos.z - z0;
 		assert!((walked - WALK_SPEED).abs() < 0.1, "walked {walked} in 1s");
+	}
+
+	#[test]
+	fn walk_accelerates_from_a_standstill() {
+		let mut p = new_player();
+		tick_n(&mut p, 600, PlayerIntent::default()); // land
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		// Over the spin-up window speed averages roughly half of max:
+		// well short of full-speed distance, well above zero.
+		let window = WALK_SPEED / WALK_ACCEL;
+		let ticks = (window / TICK) as usize;
+		let z0 = p.pos.z;
+		tick_n(&mut p, ticks, forward);
+		let walked = p.pos.z - z0;
+		let full = WALK_SPEED * window;
+		assert!(walked < 0.7 * full, "accelerating, not instant: {walked}");
+		assert!(walked > 0.3 * full, "but moving: {walked}");
+		// Releasing input stops instantly; the next first-tick step
+		// starts from zero again.
+		tick_n(&mut p, 10, PlayerIntent::default());
+		let z1 = p.pos.z;
+		tick_n(&mut p, 1, forward);
+		let step = p.pos.z - z1;
+		assert!(step < 0.5 * WALK_SPEED * TICK, "restarted slow: {step}");
+	}
+
+	#[test]
+	fn airtime_grants_only_air_control_speed() {
+		let mut p = new_player();
+		tick_n(&mut p, 600, PlayerIntent::default()); // land
+												// Jump from a standstill, holding forward for the whole flight.
+		p.tick(
+			TICK,
+			Vec3::Z,
+			PlayerIntent {
+				move_axis: Vec2::new(0.0, 1.0),
+				jump: true,
+			},
+			&flat_world,
+		);
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..200 {
+			p.tick(TICK, Vec3::Z, forward, &flat_world);
+			if (p.pos.y - 11.5).abs() < 0.001 {
+				break; // landed
+			}
+		}
+		// Landing speed is just the air-control drift accumulated over
+		// the ~1 s flight — well under max walk speed.
+		let z0 = p.pos.z;
+		tick_n(&mut p, 1, forward);
+		let step = p.pos.z - z0;
+		assert!(step < 0.5 * WALK_SPEED * TICK, "landed slow: {step}");
 	}
 
 	#[test]
@@ -232,6 +299,45 @@ mod tests {
 		}
 		assert!(peak > ground_y + 0.8, "peak {peak} vs ground {ground_y}");
 		assert!((p.pos.y - ground_y).abs() < 0.001, "returned to ground");
+	}
+
+	#[test]
+	fn walking_off_an_edge_keeps_momentum() {
+		// Cliff: ground only at z < 12; walk forward off the edge at
+		// full speed and check the first airborne step keeps it (the
+		// Java ×0.5 damping lost half).
+		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
+			Some(if y < 10 && z < 12 {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = new_player();
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		let mut prev_z = p.pos.z;
+		let mut exit_step = 0.0f32;
+		for _ in 0..600 {
+			let grounded_before = (p.pos.y - 11.5).abs() < 0.001;
+			p.tick(TICK, Vec3::Z, forward, &world);
+			let step = p.pos.z - prev_z;
+			prev_z = p.pos.z;
+			if grounded_before && p.pos.y < 11.5 - 0.001 {
+				exit_step = step;
+				break;
+			}
+		}
+		assert!(exit_step > 0.0, "walked off the edge");
+		assert!(
+			exit_step > 0.75 * WALK_SPEED * TICK,
+			"kept most speed: {exit_step}"
+		);
 	}
 
 	#[test]
