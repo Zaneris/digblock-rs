@@ -175,16 +175,58 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 	return g;
 }
 
-// Reflected environment along `ray`: the same procedural sky the sky
-// pass draws (sky_base from the shared prelude), plus stars at night.
-// The sun/moon discs are deliberately absent — the analytic specular
-// lobe plays their role on the rippled surface. This function is the
-// SSR seam: a screen-space march can replace its body, sampling the
-// scene on hit and falling back to sky_base on miss.
-fn reflection_color(ray: vec3f) -> vec3f {
-	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-	col += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
-	return col;
+// Reflected environment along `ray` from `origin`: a screen-space
+// march over the pre-water solid depth (desktop, water_misc.y), with
+// the procedural sky (sky_base + stars) as the always-available
+// fallback — so shoreline blocks, trees, and cliffs mirror where the
+// screen knows them, and open water still mirrors the actual sky. The
+// sun/moon discs are deliberately absent — the analytic specular lobe
+// plays their role on the rippled surface.
+fn reflection_color(origin: vec3f, ray: vec3f, dist: f32) -> vec3f {
+	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	// March only near water: past ~80 blocks the reflected detail is
+	// sub-pixel and the sky fallback is indistinguishable — this is
+	// what keeps grazing ocean views from marching every pixel.
+	if frame.water_misc.y < 0.5 || dist > 80.0 {
+		return sky;
+	}
+	// World-space steps with a growing stride (~76 blocks reach in 28
+	// taps), projected per step; a depth crossing within a thickness
+	// bound is a hit. Explicit-LOD fetches are legal in this varying
+	// branch; the march itself is gated by a uniform flag.
+	let dims = vec2f(textureDimensions(scene_depth));
+	var t_step = 0.4;
+	var t = t_step * 2.0; // skip immediate self-intersection
+	for (var i = 0; i < 28; i++) {
+		let p = origin + ray * t;
+		let clip = frame.view_proj * vec4f(p, 1.0);
+		if clip.w <= 0.0 {
+			break;
+		}
+		let ndc = clip.xyz / clip.w;
+		if abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 {
+			break;
+		}
+		let uv = vec2f(ndc.x, -ndc.y) * 0.5 + 0.5;
+		let d = textureLoad(scene_depth, vec2i(uv * (dims - 1.0)), 0);
+		if d < ndc.z {
+			// Solid in front of the ray point. Reject silhouette
+			// false-hits where the surface is far behind the ray.
+			let wp = frame.inv_view_proj * vec4f(ndc.xy, d, 1.0);
+			if distance(wp.xyz / wp.w, p) < t_step * 4.0 {
+				let hit = textureSampleLevel(scene_tex, scene_smp, uv, 0.0).rgb;
+				// Fade to sky at screen edges and toward the march's
+				// distance gate so neither boundary pops.
+				let edge = min(1.0 - abs(ndc.x), 1.0 - abs(ndc.y));
+				let w = smoothstep(0.0, 0.15, edge) * (1.0 - smoothstep(60.0, 80.0, dist));
+				return mix(sky, hit, w);
+			}
+		}
+		t += t_step;
+		t_step *= 1.12;
+	}
+	return sky;
 }
 
 // Face normal perturbed by the ripple gradient: top faces get the
@@ -393,7 +435,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// surface (camera underwater) the sky reflection is a lie — damp it.
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
-	col = mix(col, reflection_color(normalize(rr)), fres * (1.0 - 0.7 * frame.water_misc.x));
+	col = mix(
+		col,
+		reflection_color(i.world, normalize(rr), i.fog_dist),
+		fres * (1.0 - 0.7 * frame.water_misc.x),
+	);
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// the impact cell churns continuously; ring cells light up as an
 	// expanding front passes their distance code and fades outward.
