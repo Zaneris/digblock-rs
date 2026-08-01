@@ -16,6 +16,8 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 	let base = if wy > h {
 		if wy <= shape.water {
 			BlockType::Water
+		} else if shape.fall.is_some_and(|(b, t)| (b..=t).contains(&wy)) {
+			BlockType::WaterFall
 		} else {
 			BlockType::Air
 		}

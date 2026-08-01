@@ -193,9 +193,13 @@ pub struct ColumnShape {
 	/// World y of the surface block.
 	pub height: i32,
 	pub surface: SurfaceKind,
-	/// World y of the local water surface: SEA_LEVEL everywhere today,
-	/// above it inside future river channels. Water fills `height+1..=water`.
+	/// World y of the local water surface: SEA_LEVEL in the ocean, above
+	/// it inside river channels. Water fills `height+1..=water`.
 	pub water: i32,
+	/// Falling-water span `(bottom, top)` inclusive, filled with
+	/// `WaterFall` above this column's pool where a neighboring pool sits
+	/// higher — the sheet that visually connects stepped river pools.
+	pub fall: Option<(i32, i32)>,
 }
 
 /// fBm concentrates near zero (octave sums rarely approach ±1); gain +
@@ -299,30 +303,35 @@ fn fields(x: i32, z: i32, seed: f64) -> Fields {
 	}
 }
 
-/// The height a neighbor column contributes to slope classification —
-/// pre-river, so channels don't read as cliffs.
-fn raw_height(x: i32, z: i32, seed: f64) -> f64 {
-	fields(x, z, seed).h_pre
+/// Whether a column holds standing water (its water surface sits above
+/// its terrain surface).
+#[inline]
+fn holds_water(f: &Fields) -> bool {
+	f.water > f.h
 }
 
-/// Discretize fields + neighbor heights into a ColumnShape. Both call
+/// Discretize fields + neighbor fields into a ColumnShape. Both call
 /// paths (per-column and padded chunk grid) feed identical f64 inputs
 /// here, so their classifications are bit-identical.
 ///
 /// Order matters: ocean, then the (dithered) beach band, then steepness
 /// — so cliffs are bare rock at any altitude, and snowfields break into
 /// rock faces wherever the terrain stands too steep to hold snow.
-/// `nbrs` is the neighbor heights `[x-1, x+1, z-1, z+1]`.
-fn classify(f: &Fields, nbrs: [f64; 4], x: i32, z: i32, seed: f64) -> ColumnShape {
-	let [hxm, hxp, hzm, hzp] = nbrs;
+/// `nbrs` is the neighbor fields at `[x-1, x+1, z-1, z+1]`.
+fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64) -> ColumnShape {
+	let [nxm, nxp, nzm, nzp] = &nbrs;
 	let height = f.h.floor() as i32;
 	let o = seed + SURF_DITHER_OFF;
 	let dith = noise2(
 		o + f64::from(x) * SURF_DITHER_FREQ,
 		o + f64::from(z) * SURF_DITHER_FREQ,
 	);
-	// Central-difference rise per block, the max of both axes.
-	let slope = (hxp - hxm).abs().max((hzp - hzm).abs()) * 0.5;
+	// Central-difference rise per block, the max of both axes — from the
+	// pre-river surfaces, so channels don't read as cliffs.
+	let slope = (nxp.h_pre - nxm.h_pre)
+		.abs()
+		.max((nzp.h_pre - nzm.h_pre).abs())
+		* 0.5;
 	// Dithered altitude for the stone/snow lines (pre-river surface).
 	let hd = f.h_pre + dith * 6.0;
 	let water = f.water.floor() as i32;
@@ -341,10 +350,25 @@ fn classify(f: &Fields, nbrs: [f64; 4], x: i32, z: i32, seed: f64) -> ColumnShap
 	} else {
 		SurfaceKind::Plains
 	};
+	// Falling water above this column's pool wherever a neighboring pool
+	// sits higher — quantized river levels descend in steps, and the fall
+	// sheet is what connects them. Only in-channel columns fall (dry
+	// banks whose terrain happens to sit below a neighbor pool don't).
+	let fall = if holds_water(f) {
+		nbrs.iter()
+			.filter(|n| holds_water(n))
+			.map(|n| n.water.floor() as i32)
+			.max()
+			.filter(|&top| top > water)
+			.map(|top| (water + 1, top))
+	} else {
+		None
+	};
 	ColumnShape {
 		height,
 		surface,
 		water,
+		fall,
 	}
 }
 
@@ -354,10 +378,10 @@ pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	classify(
 		&fields(x, z, seed),
 		[
-			raw_height(x - 1, z, seed),
-			raw_height(x + 1, z, seed),
-			raw_height(x, z - 1, seed),
-			raw_height(x, z + 1, seed),
+			fields(x - 1, z, seed),
+			fields(x + 1, z, seed),
+			fields(x, z - 1, seed),
+			fields(x, z + 1, seed),
 		],
 		x,
 		z,
@@ -389,6 +413,7 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 		height: 0,
 		surface: SurfaceKind::Plains,
 		water: SEA_LEVEL,
+		fall: None,
 	}; CHUNK_SIZE]; CHUNK_SIZE];
 	for (z, row) in shapes.iter_mut().enumerate() {
 		for (x, s) in row.iter_mut().enumerate() {
@@ -396,10 +421,10 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 			*s = classify(
 				&grid[gz][gx],
 				[
-					grid[gz][gx - 1].h_pre,
-					grid[gz][gx + 1].h_pre,
-					grid[gz - 1][gx].h_pre,
-					grid[gz + 1][gx].h_pre,
+					grid[gz][gx - 1],
+					grid[gz][gx + 1],
+					grid[gz - 1][gx],
+					grid[gz + 1][gx],
 				],
 				x as i32 + px,
 				z as i32 + pz,
@@ -438,6 +463,8 @@ fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	if wy > h {
 		if wy <= shape.water {
 			BlockType::Water
+		} else if shape.fall.is_some_and(|(b, t)| (b..=t).contains(&wy)) {
+			BlockType::WaterFall
 		} else {
 			BlockType::Air
 		}
@@ -516,12 +543,17 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 	let n = CHUNK_SIZE as i32;
 	let shapes = column_shapes(cx, cz, seed);
-	// A column's solid+liquid content reaches to height *or* its local
-	// water surface (river water can sit above carved terrain).
+	// A column's solid+liquid content reaches to height, its local water
+	// surface (river water can sit above carved terrain), or the top of
+	// its falling-water sheet.
 	let max_h = shapes
 		.iter()
 		.flatten()
-		.map(|s| s.height.max(s.water))
+		.map(|s| {
+			s.height
+				.max(s.water)
+				.max(s.fall.map_or(i32::MIN, |(_, t)| t))
+		})
 		.max()
 		.expect("non-empty shape map");
 	let trees = trees_near(cx * n, cz * n, seed);
@@ -613,6 +645,46 @@ mod tests {
 			}
 		}
 		assert!(inland > 0, "sample contains inland river columns");
+	}
+
+	/// Wherever a river pool steps down (quantized levels), the lower
+	/// column carries a WaterFall span from just above its own pool up to
+	/// the highest adjacent pool — the sheet that connects the cascade.
+	#[test]
+	fn falls_connect_pool_steps() {
+		let seed = 1234.5678;
+		let mut found = 0u32;
+		'scan: for x in (-2048..2048).step_by(4) {
+			for z in (-2048..2048).step_by(4) {
+				let f = fields(x, z, seed);
+				if !holds_water(&f) {
+					continue;
+				}
+				let wl = f.water.floor() as i32;
+				let top = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
+					.iter()
+					.map(|&(nx, nz)| fields(nx, nz, seed))
+					.filter(holds_water)
+					.map(|n| n.water.floor() as i32)
+					.max()
+					.unwrap_or(i32::MIN);
+				let s = column_shape(x, z, seed);
+				if top > wl {
+					assert_eq!(s.fall, Some((wl + 1, top)), "at ({x},{z})");
+					// The blocks of the span really are falling water.
+					assert_eq!(column_block(wl + 1, s), BlockType::WaterFall);
+					assert_eq!(column_block(top, s), BlockType::WaterFall);
+					assert_eq!(column_block(wl, s), BlockType::Water);
+					found += 1;
+					if found >= 5 {
+						break 'scan;
+					}
+				} else {
+					assert_eq!(s.fall, None, "no step, no fall at ({x},{z})");
+				}
+			}
+		}
+		assert!(found > 0, "sample contains pool steps");
 	}
 
 	/// Snow only appears near the (dithered) snow line, never at low
