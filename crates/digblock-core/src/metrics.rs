@@ -120,6 +120,9 @@ pub struct RenderStats {
 pub struct GpuPassMs {
 	pub shadow_ms: f32,
 	pub main_ms: f32,
+	/// The split-off water pass (blit + prepass + color); 0.0 until the
+	/// renderer restructure lands.
+	pub water_ms: f32,
 	pub overlay_ms: f32,
 }
 
@@ -211,7 +214,7 @@ pub struct Metrics {
 }
 
 const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,\
-acq_ms,upd_ms,mnt_ms,upl_ms,enc_ms,gpu_shadow_ms,gpu_main_ms,gpu_overlay_ms,\
+acq_ms,upd_ms,mnt_ms,upl_ms,enc_ms,gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,\
 drawn,culled,water,casters,draws,tris,gpu_bytes";
@@ -297,7 +300,7 @@ impl Metrics {
 			// Per-spike phase attribution (see `spike_log`).
 			if self.spike_log && timings.total_ms > 8.4 {
 				log::info!(
-					"spike f{} total {:.2} | acq {:.2} upd {:.2} mnt {:.2} upl {:.2} enc {:.2} | gpu sh {:.2} main {:.2} | draws {} tris {}k wide {}",
+					"spike f{} total {:.2} | acq {:.2} upd {:.2} mnt {:.2} upl {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {}",
 					self.run_frames,
 					timings.total_ms,
 					timings.acquire_ms,
@@ -307,6 +310,7 @@ impl Metrics {
 					timings.encode_ms,
 					self.gpu.as_ref().map_or(0.0, |g| g.shadow_ms),
 					self.gpu.as_ref().map_or(0.0, |g| g.main_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.water_ms),
 					self.render.draw_calls,
 					self.render.triangles / 1000,
 					self.render.wide_refreshed as u32,
@@ -494,7 +498,7 @@ impl Metrics {
 			let _ = writeln!(
 				w,
 				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},\
-{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},\
 {},{},{},{},{},{},{}",
@@ -510,6 +514,7 @@ impl Metrics {
 				win.encode_ms,
 				gpu.shadow_ms,
 				gpu.main_ms,
+				gpu.water_ms,
 				gpu.overlay_ms,
 				self.gen_jobs.count,
 				self.gen_jobs.avg_ms(),

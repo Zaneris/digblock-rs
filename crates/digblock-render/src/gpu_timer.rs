@@ -13,7 +13,9 @@ pub const Q_SHADOW_WIDE: u32 = 0;
 pub const Q_SHADOW_NEAR: u32 = 2;
 pub const Q_MAIN: u32 = 4;
 pub const Q_OVERLAY: u32 = 6;
-const QUERY_COUNT: u32 = 8;
+/// Water pass (blit + prepass + water color), once the main pass splits.
+pub const Q_WATER: u32 = 8;
+const QUERY_COUNT: u32 = 10;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
 /// Readback ring depth; covers the 2-3 frame map latency.
 const SLOTS: usize = 3;
@@ -103,6 +105,7 @@ impl GpuTimer {
 			let reading = GpuPassMs {
 				shadow_ms: pass(Q_SHADOW_WIDE as usize) + pass(Q_SHADOW_NEAR as usize),
 				main_ms: pass(Q_MAIN as usize),
+				water_ms: pass(Q_WATER as usize),
 				overlay_ms: pass(Q_OVERLAY as usize),
 			};
 			drop(data);

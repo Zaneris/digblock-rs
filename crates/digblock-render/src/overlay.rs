@@ -315,8 +315,8 @@ impl Overlay {
 				2,
 				DIM,
 				format_args!(
-					"gpu  shadow {:5.2} main {:5.2} overlay {:5.2} ms",
-					g.shadow_ms, g.main_ms, g.overlay_ms
+					"gpu  shadow {:5.2} main {:5.2} water {:5.2} overlay {:5.2} ms",
+					g.shadow_ms, g.main_ms, g.water_ms, g.overlay_ms
 				),
 			),
 			None => line(2, DIM, format_args!("gpu  n/a")),
