@@ -7,7 +7,10 @@
 // heights shared between adjacent cells (no cracks). Bit 4 marks
 // falling water (side faces scroll downward), bits 5-7 the horizontal
 // flow dir (0 still, 1 +x, 2 −x, 3 +z, 4 −z; top faces scroll along
-// it), bit 8 foam (a fall striking ground: brightened splash pulse).
+// it), bit 8 foam (a fall striking ground: brightened splash pulse),
+// bits 10-13 the vertex fall distance (blocks below the lip, +1 on
+// bottom-plane verts so interpolation is continuous; drives gravity
+// stretch and aeration whitening).
 // The animation clock rides in frame.light_color.w. Lighting matches
 // chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
 // UBO copy).
@@ -102,6 +105,9 @@ struct VsOut {
 	@location(9) @interpolate(flat) ni: u32,
 	@location(10) @interpolate(flat) flow: u32,
 	@location(11) @interpolate(flat) falling: u32,
+	// Blocks fallen below the lip, continuous down a sheet (top-plane
+	// verts carry the cell's count, bottom-plane +1). Saturates at 15.
+	@location(12) fall_y: f32,
 }
 
 // Flow-dir codes (word 1 bits 5-7) as xz vectors.
@@ -194,6 +200,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	o.ni = ni;
 	o.flow = (w1 >> 5u) & 7u;
 	o.falling = (w1 >> 4u) & 1u;
+	o.fall_y = f32((w1 >> 10u) & 0xfu);
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
@@ -250,10 +257,18 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// tops at 0.4 along the flow dir (sample offset opposes feature
 	// motion). rate × len = speed; len bounds how far a layer slides.
 	let vertical = i.ni == 3u || i.ni == 4u;
+	// Blocks fallen at this pixel (+0.5 tames the lip singularity).
+	let y_fallen = i.fall_y + 0.5;
+	var base_uv = i.uv;
 	var adv = vec2f(0.0);
 	var rate = 0.0;
 	var len = 0.0;
 	if i.falling == 1u && !vertical {
+		// Gravity stretch: v follows free-fall time of flight (√y), so
+		// features elongate and their world speed grows ∝ √y down the
+		// sheet. Past the 15-block cap the texture smears, hidden under
+		// full aeration whitening by then.
+		base_uv = vec2f(i.uv.x, sqrt(y_fallen) * 2.2);
 		adv = vec2f(0.0, -1.0);
 		rate = 0.25;
 		len = 6.0;
@@ -269,27 +284,34 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Both samples stay outside control flow (derivative rules).
 	let pa = fract(t * rate);
 	let pb = fract(t * rate + 0.5);
-	let uv_a = fract(i.uv + adv * (pa * len));
-	let uv_b = fract(i.uv + adv * (pb * len) + vec2f(0.37, 0.61));
+	let uv_a = fract(base_uv + adv * (pa * len));
+	let uv_b = fract(base_uv + adv * (pb * len) + vec2f(0.37, 0.61));
 	let wb = abs(2.0 * pa - 1.0) * min(len, 1.0);
 	let tex = mix(
 		textureSample(blocks_tex, blocks_smp, uv_a, i.layer).rgb,
 		textureSample(blocks_tex, blocks_smp, uv_b, i.layer).rgb,
 		wb,
 	);
+	// Aeration: falling water entrains air and whitens with distance
+	// fallen — glassy at the lip, diffuse froth at the base. Whitening
+	// happens on the albedo (so froth still takes shadow), while the
+	// mirror terms (fresnel, reflection, specular) damp out.
+	let aer = smoothstep(0.5, 6.0, y_fallen) * f32(i.falling);
+	let alb = mix(tex, vec3f(0.93, 0.96, 1.0), aer * 0.55);
 	var vis = 1.0;
 	if frame.misc.y > 0.5 {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = tex * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	var col = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
 	// Rippled normal + Schlick fresnel: alpha rises from the base
 	// (misc.x) toward opaque at grazing angles, so distant/low-angle
 	// water reads as a surface instead of tinted glass.
 	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], 1.0, i.fog_dist);
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
-	let fres = 0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0);
+	let mirror = 1.0 - 0.7 * aer;
+	let fres = (0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0)) * mirror;
 	// Glint from the active caster (sun by day, moon by night) on the
 	// rippled normal. The exponent widens with distance so the glitter
 	// path stays stable instead of aliasing into per-pixel shimmer;
@@ -310,8 +332,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
 	col = mix(col, reflection_color(normalize(rr)), fres);
-	col += frame.light_color.rgb * spec * sh * 2.0;
+	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
-	return vec4f(col, mix(frame.misc.x, 1.0, fres));
+	// Aerated water is nearly opaque regardless of angle.
+	let alpha = mix(mix(frame.misc.x, 1.0, fres), 0.92, aer);
+	return vec4f(col, alpha);
 }

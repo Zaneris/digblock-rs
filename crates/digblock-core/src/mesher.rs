@@ -191,7 +191,10 @@ pub struct MeshData {
 	/// Water vertices are TWO u32 words each (8 per face): word 0 is the
 	/// solid packing; word 1 carries bits 0-3 surface drop code d (the
 	/// shader lowers the vertex by d/9 — 0 = full height), bit 4 falling,
-	/// bits 5-7 flow dir and bit 8 foam (reserved, zero for now).
+	/// bits 5-7 flow dir, bit 8 foam, and bits 10-13 the vertex fall
+	/// distance (blocks of falling water above; bottom-plane verts +1 so
+	/// the interpolated "blocks fallen" is continuous down a column;
+	/// saturates at 15).
 	pub water: Vec<u32>,
 }
 
@@ -416,6 +419,14 @@ struct WaterState {
 	flow: u32,
 	/// Falling water striking a colliding block below — the splash cell.
 	foam: bool,
+	/// Contiguous falling cells above this one (0 = sheet top), capped
+	/// at 15. When the walk hits the snapshot ceiling with the column
+	/// still falling, this saturates to 15 rather than reporting the
+	/// partial count: a fall crossing a vertical chunk seam whitens a
+	/// little early (masked by the splash below), where the partial
+	/// count would visibly reset the sheet to a glassy lip mid-fall.
+	/// Exact depth would need depth-encoded block variants.
+	fall_dist: u32,
 }
 
 impl WaterState {
@@ -445,11 +456,27 @@ impl WaterState {
 			}
 		};
 		let foam = falling && occludes(input.get(x, y - 1, z));
+		let fall_dist = if falling {
+			let mut d = 0u32;
+			let mut cy = y + 1;
+			while cy <= 16 && BlockType::from_u8(input.get(x, cy, z)).is_falling() {
+				d += 1;
+				cy += 1;
+			}
+			if cy > 16 {
+				15
+			} else {
+				d.min(15)
+			}
+		} else {
+			0
+		};
 		WaterState {
 			full,
 			falling,
 			flow,
 			foam,
+			fall_dist,
 		}
 	}
 
@@ -494,6 +521,14 @@ fn emit_water_face(
 	}
 	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
 		let d = drops[ci];
+		// Per-vertex fall distance: top-plane verts carry the cell's
+		// count, bottom-plane verts one more, so interpolation yields a
+		// continuous "blocks fallen" down stacked cells.
+		let vfall = if state.falling {
+			(state.fall_dist + u32::from(cy == by)).min(15)
+		} else {
+			0
+		};
 		out.push(pack(
 			Vert {
 				pos: (cx as u32, cy as u32, cz as u32),
@@ -504,7 +539,7 @@ fn emit_water_face(
 			dir,
 			ci as u32,
 		));
-		out.push(d | state.flags());
+		out.push(d | state.flags() | (vfall << 10));
 	}
 }
 
@@ -964,6 +999,69 @@ mod tests {
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!((w1 >> 8) & 1, 0, "mid-air fall has no foam");
+		}
+	}
+
+	fn fall_of(w1: u32) -> u32 {
+		(w1 >> 10) & 0xf
+	}
+
+	#[test]
+	fn fall_distance_counts_from_lip() {
+		// Fall column y 8..=12: each cell counts the falling cells above
+		// it; side-face top-plane verts carry that count, bottom-plane
+		// verts one more, so interpolation is continuous down the sheet.
+		let mut d = ChunkData::default();
+		for y in 8..=12 {
+			d.set(8, y, 8, B::WaterFall);
+		}
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		for (cell_y, expect) in [(12, 0), (8, 4)] {
+			let side = water_quad(&m.water, 8, cell_y, 8, Dir::West);
+			for (w0, w1) in side {
+				let vy = (w0 >> 5) & 0x1f;
+				let top_plane = vy == cell_y as u32 + 1;
+				assert_eq!(fall_of(w1), expect + u32::from(!top_plane));
+			}
+		}
+		// Non-falling water carries zero fall bits.
+		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		for pair in m.water.chunks(2) {
+			assert_eq!(fall_of(pair[1]), 0);
+		}
+	}
+
+	#[test]
+	fn fall_distance_saturates() {
+		// A full-height column: the deepest cells cap at 15 instead of
+		// wrapping the 4-bit field.
+		let mut d = ChunkData::default();
+		for y in 0..16 {
+			d.set(8, y, 8, B::WaterFall);
+		}
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let side = water_quad(&m.water, 8, 0, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(fall_of(w1), 15, "deep cells saturate");
+		}
+		// A fall entering through the top shell (still falling above the
+		// snapshot ceiling) saturates too — the partial count would reset
+		// the sheet to a glassy lip at every vertical chunk seam.
+		let mut d = ChunkData::default();
+		d.set(8, 15, 8, B::WaterFall);
+		let mut above = ChunkData::default();
+		above.set(8, 0, 8, B::WaterFall);
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (0, 1, 0) {
+				Src::Chunk(&above)
+			} else {
+				Src::Air
+			}
+		});
+		let m = mesh_chunk(&input, ZERO);
+		let side = water_quad(&m.water, 8, 15, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(fall_of(w1), 15, "unknown height above the seam");
 		}
 	}
 
