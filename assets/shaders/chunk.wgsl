@@ -71,10 +71,13 @@ struct VsOut {
 	@location(3) sc_near: vec3f,
 	@location(4) sc_wide: vec3f,
 	@location(5) fog_dist: f32,
+	// Per-vertex ambient occlusion factor, interpolated across the quad.
+	@location(6) ao: f32,
 }
 
 // Packed vertex: bits 0-4 x, 5-9 y, 10-14 z (chunk-local 0..=16),
-// 15-17 normal index, 20-21 corner, 22 water-lip, 23-28 texture layer.
+// 15-17 normal index, 18-19 ao, 20-21 corner, 22 water-lip,
+// 23-28 texture layer.
 @vertex
 fn vs(@location(0) packed: u32) -> VsOut {
 	let x = f32(packed & 0x1fu);
@@ -93,6 +96,8 @@ fn vs(@location(0) packed: u32) -> VsOut {
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
+	// 4-level voxel AO from the mesher: 0 → 0.6, 3 → 1.0.
+	o.ao = 0.6 + 0.4 * f32((packed >> 18u) & 3u) / 3.0;
 
 	let pn = frame.light_near * vec4f(world, 1.0);
 	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
@@ -148,9 +153,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	// Shadow attenuates only the direct term, scaled by twilight
-	// strength; ambient is the guaranteed floor.
+	// strength; ambient is the guaranteed floor. AO attenuates the whole
+	// color — contact darkening the shadow maps can't resolve.
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = tex * (frame.ambient.rgb + frame.light_color.rgb * i.direct * sh);
+	var col = tex * i.ao * (frame.ambient.rgb + frame.light_color.rgb * i.direct * sh);
 	// Distance fog toward the sky horizon, hiding chunk pop-in.
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));

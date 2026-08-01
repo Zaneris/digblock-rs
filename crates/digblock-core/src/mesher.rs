@@ -211,26 +211,25 @@ fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
 	}
 }
 
-/// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 20-21 corner
-/// (0=TL 1=TR 2=BL 3=BR), 22 water-lip, 23-28 texture layer (18-19 unused).
+/// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 18-19 ao
+/// (0 darkest .. 3 open), 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22
+/// water-lip, 23-28 texture layer.
 #[inline]
-fn pack(x: u32, y: u32, z: u32, normal: Dir, tex: u32, corner: u32, lip: bool) -> u32 {
-	debug_assert!(x <= 16 && y <= 16 && z <= 16 && tex < 64 && corner < 4);
+fn pack((x, y, z): (u32, u32, u32), normal: Dir, tex: u32, corner: u32, lip: bool, ao: u32) -> u32 {
+	debug_assert!(x <= 16 && y <= 16 && z <= 16 && tex < 64 && corner < 4 && ao < 4);
 	x | (y << 5)
 		| (z << 10)
 		| ((normal as u32) << 15)
+		| (ao << 18)
 		| (corner << 20)
 		| (u32::from(lip) << 22)
 		| (tex << 23)
 }
 
-/// Emit one face quad. Geometry is the Java ChunkMeshGenerator's, in
-/// chunk-local coordinates: per-face origin offset + diagonal vector `d`,
-/// corners TL/TR/BL/BR, triangles (BR,TR,TL)+(BR,TL,BL) via the shared
-/// index pattern [3,1,0, 3,0,2].
-fn emit_face(out: &mut Vec<u32>, bx: usize, by: usize, bz: usize, dir: Dir, tex: u32, lip: bool) {
-	let (x, y, z) = (bx as i32, by as i32, bz as i32);
-	// (origin offset, diagonal d) per face — Java addFaces.
+/// Corner lattice positions [TL, TR, BL, BR] of the face of block
+/// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
+/// offset + diagonal vector).
+fn face_corners(x: i32, y: i32, z: i32, dir: Dir) -> [(i32, i32, i32); 4] {
 	let ((ox, oy, oz), (dx, dy, dz)) = match dir {
 		Dir::South => ((0, 0, 0), (1, 1, 0)),
 		Dir::East => ((0, 0, 1), (0, 1, -1)),
@@ -241,16 +240,90 @@ fn emit_face(out: &mut Vec<u32>, bx: usize, by: usize, bz: usize, dir: Dir, tex:
 	};
 	let (x, y, z) = (x + ox, y + oy, z + oz);
 	let vertical = matches!(dir, Dir::Top | Dir::Bottom);
-	// TL, TR, BL, BR
-	let corners = [
+	[
 		(x + dx, y + dy, z + dz),
 		(x, y + dy, if vertical { z + dz } else { z }),
 		(x + dx, y, if vertical { z } else { z + dz }),
 		(x, y, z),
-	];
-	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
+	]
+}
+
+/// Whether a block id casts ambient occlusion. Opaque only — cutout and
+/// translucent neighbors don't occlude faces (`face_visible`), so they
+/// shouldn't darken corners you can see through them.
+#[inline]
+fn occludes(id: u8) -> bool {
+	BlockType::from_u8(id).props().class == RenderClass::Opaque
+}
+
+/// Classic 4-level voxel AO for the face of block b toward `dir`: each
+/// corner is darkened by its two edge neighbors and their shared diagonal
+/// in the face's neighbor layer — `3 − side1 − side2 − corner`, floored
+/// to 0 when both sides occlude (the diagonal is then invisible).
+fn face_ao(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
+	let (ox, oy, oz) = dir.offset();
+	let b = [bx, by, bz];
+	let c = [bx + ox, by + oy, bz + oz]; // face's neighbor-layer cell
+									  // The two tangent axes of the face plane.
+	let (u, v) = match dir {
+		Dir::West | Dir::East => (1, 2),
+		Dir::Top | Dir::Bottom => (0, 2),
+		Dir::North | Dir::South => (0, 1),
+	};
+	let corners = face_corners(bx, by, bz, dir);
+	let mut ao = [3u32; 4];
+	for (i, p) in corners.iter().enumerate() {
+		let p = [p.0, p.1, p.2];
+		// Corner at the block's low lattice plane on a tangent axis looks
+		// −1 along it, at the high plane +1.
+		let su = if p[u] == b[u] { -1 } else { 1 };
+		let sv = if p[v] == b[v] { -1 } else { 1 };
+		let cell = |du: i32, dv: i32| -> bool {
+			let mut q = c;
+			q[u] += du;
+			q[v] += dv;
+			occludes(input.get(q[0], q[1], q[2]))
+		};
+		let s1 = cell(su, 0);
+		let s2 = cell(0, sv);
+		ao[i] = if s1 && s2 {
+			0
+		} else {
+			3 - u32::from(s1) - u32::from(s2) - u32::from(cell(su, sv))
+		};
+	}
+	ao
+}
+
+/// Emit one face quad with per-corner AO. Triangulation runs the quad
+/// diagonal between emit slots 0 and 3 (shared index pattern
+/// [3,1,0, 3,0,2]); the emit order flips so the diagonal passes through
+/// the lower-AO-sum corner pair — a single dark corner then shades a
+/// radial gradient instead of a hard crease across the face. Corner
+/// codes travel with their vertices, so uv is order-independent.
+fn emit_face(
+	out: &mut Vec<u32>,
+	b: (usize, usize, usize),
+	dir: Dir,
+	tex: u32,
+	lip: bool,
+	ao: [u32; 4],
+) {
+	let corners = face_corners(b.0 as i32, b.1 as i32, b.2 as i32, dir);
+	let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
+		[1, 3, 0, 2] // TR, BR, TL, BL — diagonal TR–BL
+	} else {
+		[0, 1, 2, 3] // TL, TR, BL, BR — diagonal TL–BR
+	};
+	for &ci in &order {
+		let (cx, cy, cz) = corners[ci];
 		out.push(pack(
-			cx as u32, cy as u32, cz as u32, dir, tex, ci as u32, lip,
+			(cx as u32, cy as u32, cz as u32),
+			dir,
+			tex,
+			ci as u32,
+			lip,
+			ao[ci],
 		));
 	}
 }
@@ -305,11 +378,16 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 					let class = me.props().class;
 					let tex = me.texture(dir);
 					let lip = class == RenderClass::Translucent && dir == Dir::Top;
-					let out = match class {
-						RenderClass::Translucent => &mut mesh.water,
-						_ => &mut mesh.solid,
+					// No AO on water: corner darkening on a translucent
+					// no-depth-write surface reads as dirt rings.
+					let (out, ao) = match class {
+						RenderClass::Translucent => (&mut mesh.water, [3u32; 4]),
+						_ => (
+							&mut mesh.solid,
+							face_ao(input, x as i32, y as i32, z as i32, dir),
+						),
 					};
-					emit_face(out, x, y, z, dir, tex, lip);
+					emit_face(out, (x, y, z), dir, tex, lip, ao);
 				}
 			}
 		}
@@ -467,14 +545,141 @@ mod tests {
 
 	#[test]
 	fn packed_vertex_roundtrip() {
-		let v = pack(16, 7, 3, Dir::East, 37, 2, true);
+		let v = pack((16, 7, 3), Dir::East, 37, 2, true, 1);
 		assert_eq!(v & 0x1f, 16);
 		assert_eq!((v >> 5) & 0x1f, 7);
 		assert_eq!((v >> 10) & 0x1f, 3);
 		assert_eq!((v >> 15) & 0x7, Dir::East as u32);
+		assert_eq!((v >> 18) & 0x3, 1);
 		assert_eq!((v >> 20) & 0x3, 2);
 		assert_eq!((v >> 22) & 0x1, 1);
 		assert_eq!((v >> 23) & 0x3f, 37);
+	}
+
+	fn ao_of(v: u32) -> u32 {
+		(v >> 18) & 0x3
+	}
+
+	fn corner_of(v: u32) -> u32 {
+		(v >> 20) & 0x3
+	}
+
+	/// The emitted quad (4 consecutive vertices) for the given block's
+	/// face toward `dir`, matched by normal + corner lattice positions.
+	fn quad_of(m: &[u32], bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
+		let want: std::collections::HashSet<(u32, u32, u32)> = face_corners(bx, by, bz, dir)
+			.iter()
+			.map(|&(x, y, z)| (x as u32, y as u32, z as u32))
+			.collect();
+		for q in m.chunks(4) {
+			let got: std::collections::HashSet<(u32, u32, u32)> = q
+				.iter()
+				.map(|v| (v & 0x1f, (v >> 5) & 0x1f, (v >> 10) & 0x1f))
+				.collect();
+			if (q[0] >> 15) & 0x7 == dir as u32 && got == want {
+				return [q[0], q[1], q[2], q[3]];
+			}
+		}
+		panic!("face of ({bx},{by},{bz}) toward {dir:?} not found");
+	}
+
+	#[test]
+	fn open_field_face_has_full_ao() {
+		let m = mesh_chunk(&isolated(&solo(B::Dirt)));
+		for v in &m.solid {
+			assert_eq!(ao_of(*v), 3, "no occluders anywhere");
+		}
+	}
+
+	#[test]
+	fn side_occluder_darkens_touching_corners() {
+		// Dirt at (8,8,8); occluder diagonally above at (9,9,8) sits in
+		// the top face's neighbor layer, +x of the face cell — exactly
+		// the two corners on the x=9 lattice edge (TL, BL) drop to 2.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Dirt);
+		d.set(9, 9, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d));
+		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
+		assert_eq!(top.iter().filter(|v| ao_of(**v) == 2).count(), 2);
+		assert_eq!(top.iter().filter(|v| ao_of(**v) == 3).count(), 2);
+	}
+
+	#[test]
+	fn both_sides_floor_ao_to_zero() {
+		// Top-face corner at lattice (9,9,9): side1 (9,9,8) and side2
+		// (8,9,9) both occluded → that corner floors to 0 even though the
+		// diagonal cell (9,9,9) is empty.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Dirt);
+		d.set(9, 9, 8, B::Stone);
+		d.set(8, 9, 9, B::Stone);
+		let m = mesh_chunk(&isolated(&d));
+		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
+		assert_eq!(top.iter().filter(|v| ao_of(**v) == 0).count(), 1);
+	}
+
+	#[test]
+	fn cross_chunk_occluder_darkens_border_corners() {
+		// The seam regression: the occluder exists only in the +x
+		// neighbor chunk, above the face plane — the old border-plane
+		// snapshot couldn't see it.
+		let mut d = ChunkData::default();
+		d.set(15, 8, 8, B::Dirt);
+		let mut other = ChunkData::default();
+		other.set(0, 9, 8, B::Stone); // padded (16, 9, 8)
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (1, 0, 0) {
+				Src::Chunk(&other)
+			} else {
+				Src::Air
+			}
+		});
+		let m = mesh_chunk(&input);
+		let top = quad_of(&m.solid, 15, 8, 8, Dir::Top);
+		assert_eq!(
+			top.iter().filter(|v| ao_of(**v) == 2).count(),
+			2,
+			"the two x=16 corners see the neighbor-chunk occluder"
+		);
+		assert_eq!(top.iter().filter(|v| ao_of(**v) == 3).count(), 2);
+	}
+
+	#[test]
+	fn quad_flips_toward_dark_tr_bl_diagonal() {
+		// Top face of (8,8,8): TL=(9,9,9) TR=(8,9,9) BL=(9,9,8) BR=(8,9,8).
+		// An occluder at TR's diagonal cell (7,9,9) darkens only TR →
+		// TL+BR = 6 > TR+BL = 5 → emit order rotates to [TR,BR,TL,BL].
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Dirt);
+		d.set(7, 9, 9, B::Stone);
+		let m = mesh_chunk(&isolated(&d));
+		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
+		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
+		assert_eq!(order, vec![1, 3, 0, 2], "diagonal through TR–BL");
+		// The dark-at-TL mirror keeps the default diagonal (which already
+		// runs through the dark corner).
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Dirt);
+		d.set(9, 9, 9, B::Stone);
+		let m = mesh_chunk(&isolated(&d));
+		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
+		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
+		assert_eq!(order, vec![0, 1, 2, 3], "default diagonal TL–BR");
+	}
+
+	#[test]
+	fn water_faces_carry_full_ao_and_default_order() {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(9, 9, 8, B::Stone); // would darken a solid face
+		let m = mesh_chunk(&isolated(&d));
+		for v in &m.water {
+			assert_eq!(ao_of(*v), 3, "water skips AO");
+		}
+		let top = quad_of(&m.water, 8, 8, 8, Dir::Top);
+		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
+		assert_eq!(order, vec![0, 1, 2, 3], "water never reorders");
 	}
 
 	#[test]
