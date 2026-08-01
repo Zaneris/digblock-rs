@@ -7,9 +7,10 @@
 //! from its neighbors):
 //! - sources (`Water`) are terminal: infinite, never recomputed;
 //! - a cell with water above it becomes `WaterFall` (full strength);
-//! - otherwise it takes max(side-neighbor amounts) − 1 as `WaterFlowN`
-//!   (n ≥ 1), counting only *supported* neighbors — water resting on a
-//!   colliding block — because unsupported water is busy falling;
+//! - otherwise it takes half its strongest side-neighbor amount as
+//!   `WaterFlowN` (n ≥ 1), counting only *supported* neighbors — water
+//!   resting on a colliding block — because unsupported water is busy
+//!   falling;
 //! - anything else relaxes to `Air`, which is how removal drains: each
 //!   recompute lowers the region's total amount until it dries.
 //!
@@ -51,6 +52,14 @@ pub struct FluidSim {
 }
 
 const SIDES: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+
+/// Horizontal spread falloff: each step takes half the feeding amount
+/// (a source runs 8 → 4 → 2 → 1 → stop), much steeper than
+/// Minecraft's m − 1 — water reaches 3 blocks instead of 7 and pools
+/// hug their source. Strictly decreasing, so relaxation converges.
+fn falloff(m: u8) -> u8 {
+	m / 2
+}
 
 impl FluidSim {
 	pub fn new() -> Self {
@@ -116,8 +125,9 @@ impl FluidSim {
 					m = a;
 				}
 			}
-			if m >= 2 {
-				BlockType::water_flow(m - 1)
+			let next = falloff(m);
+			if next > 0 {
+				BlockType::water_flow(next)
 			} else {
 				BlockType::Air
 			}
@@ -199,23 +209,23 @@ mod tests {
 		w.set(0, 1, 0, BlockType::Water);
 		sim.schedule_around(0, 1, 0);
 		settle(&mut sim, &mut w);
-		// Amount falls off with Manhattan distance: 8 at the source,
-		// 8 − d out to d = 7, nothing beyond.
+		// Amount halves with each Manhattan step: 8 at the source, then
+		// 4 → 2 → 1, nothing beyond distance 3.
 		for (dx, dz, expect) in [
-			(1, 0, Some(7u8)),
-			(0, -3, Some(5)),
-			(4, 3, Some(1)),
-			(7, 0, Some(1)),
-			(8, 0, None),
-			(5, 4, None),
+			(1, 0, Some(4u8)),
+			(0, -2, Some(2)),
+			(3, 0, Some(1)),
+			(2, 1, Some(1)),
+			(4, 0, None),
+			(2, 2, None),
 		] {
 			let b = w.get(dx, 1, dz).unwrap();
 			assert_eq!(b.water_amount().filter(|_| b != BlockType::Water), expect);
 		}
-		// 1 source + the full Manhattan ball of radius 7.
+		// 1 source + the full Manhattan ball of radius 3.
 		assert_eq!(
 			w.water_cells().len(),
-			1 + (1..=7).map(|d| 4 * d).sum::<usize>()
+			1 + (1..=3).map(|d| 4 * d).sum::<usize>()
 		);
 	}
 
@@ -258,15 +268,17 @@ mod tests {
 		let mut w = MapWorld::new();
 		let mut sim = FluidSim::new();
 		// Floating source high up: falls straight down, lands on the
-		// floor, then spreads a full radius-7 pool at y = 1.
+		// floor, then spreads a full radius-3 pool at y = 1 (falls are
+		// full strength, so the landing restarts the halving ladder).
 		w.set(0, 6, 0, BlockType::Water);
 		sim.schedule_around(0, 6, 0);
 		settle(&mut sim, &mut w);
 		for y in 1..6 {
 			assert_eq!(w.get(0, y, 0).unwrap(), BlockType::WaterFall, "y={y}");
 		}
-		assert_eq!(w.get(1, 1, 0).unwrap().water_amount(), Some(7));
-		assert_eq!(w.get(7, 1, 0).unwrap().water_amount(), Some(1));
+		assert_eq!(w.get(1, 1, 0).unwrap().water_amount(), Some(4));
+		assert_eq!(w.get(3, 1, 0).unwrap().water_amount(), Some(1));
+		assert_eq!(w.get(4, 1, 0).unwrap().water_amount(), None);
 	}
 
 	#[test]
