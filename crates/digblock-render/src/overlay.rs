@@ -24,6 +24,12 @@ const GRAPH_H: f32 = 66.0;
 /// Vertical scale: 3 px per ms (16.7ms line lands at 50px).
 const MS_TO_PX: f32 = 3.0;
 
+/// Scale a color's alpha byte (0xAABBGGRR layout) by `a` in 0..=1.
+fn fade(color: u32, a: f32) -> u32 {
+	let alpha = ((color >> 24) as f32 * a) as u32;
+	(alpha << 24) | (color & 0x00FF_FFFF)
+}
+
 const WHITE: u32 = 0xFFFFFFFF;
 const DIM: u32 = 0xFFB0B0B0;
 const GREEN: u32 = 0xFF40E070;
@@ -265,12 +271,22 @@ impl Overlay {
 	}
 
 	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair),
-	/// plus the debug panel when `stats` is present.
-	pub fn prepare(&mut self, gpu: &Gpu, size: (u32, u32), stats: Option<(&OverlayStats, &[f32])>) {
+	/// plus the debug panel when `stats` is present, plus the server-message
+	/// feed when non-empty.
+	pub fn prepare(
+		&mut self,
+		gpu: &Gpu,
+		size: (u32, u32),
+		stats: Option<(&OverlayStats, &[f32])>,
+		feed: &[(String, f32)],
+	) {
 		self.verts.clear();
 		self.push_crosshair(size);
 		if let Some((stats, history)) = stats {
 			self.push_debug_panel(stats, history);
+		}
+		if !feed.is_empty() {
+			self.push_feed(size, feed);
 		}
 		self.vert_count = self.verts.len() as u32;
 		gpu.queue.write_buffer(
@@ -400,6 +416,24 @@ impl Overlay {
 			self.push_quad(x, gy - h, BAR_W - 0.5, h, color);
 		}
 		self.push_quad(tx, gy - 16.7 * MS_TO_PX, graph_w, 1.0, REF_LINE);
+	}
+
+	/// Server-message feed: bottom-left, newest at the bottom, each line
+	/// fading out over its final second (`ttl` clamps to alpha).
+	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32)]) {
+		let mut y = size.1 as f32 - MARGIN - feed.len() as f32 * LINE_PX;
+		for (text, ttl) in feed {
+			let a = ttl.clamp(0.0, 1.0);
+			let w = text.len() as f32 * GLYPH_PX + PAD * 2.0;
+			self.push_quad(MARGIN, y, w, LINE_PX, fade(BG, a));
+			self.push_text(
+				MARGIN + PAD,
+				y + (LINE_PX - GLYPH_PX) / 2.0,
+				fade(WHITE, a),
+				text,
+			);
+			y += LINE_PX;
+		}
 	}
 
 	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {

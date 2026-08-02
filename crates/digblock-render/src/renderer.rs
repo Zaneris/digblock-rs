@@ -958,6 +958,7 @@ impl Renderer {
 		wide_due: bool,
 		size: (u32, u32),
 		overlay: Option<(&OverlayStats, &[f32])>,
+		feed: &[(String, f32)],
 	) -> RenderStats {
 		self.ensure_targets(gpu, size);
 		let mut stats = RenderStats {
@@ -997,7 +998,7 @@ impl Renderer {
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
-		self.overlay.prepare(gpu, size, overlay);
+		self.overlay.prepare(gpu, size, overlay, feed);
 		gpu.queue.write_buffer(
 			&self.light_near_buf,
 			0,

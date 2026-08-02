@@ -140,7 +140,10 @@ fn run_bot(index: u32, url: &str, duration_secs: f32, edit_rate: f32) -> BotResu
 					result.disconnected = Some(reason.clone());
 					return result;
 				}
-				NetEvent::Edit { .. } | NetEvent::EditRejected(_) => {}
+				NetEvent::Edit { .. }
+				| NetEvent::EditRejected(_)
+				| NetEvent::PlayerJoined { .. }
+				| NetEvent::PlayerLeft { .. } => {}
 			}
 		}
 

@@ -44,6 +44,15 @@ pub enum NetEvent {
 	/// Our predicted edit was rejected and no authoritative write has
 	/// superseded it — revert the cell to `.prev`.
 	EditRejected(PendingEdit),
+	/// Another player joined. Also delivered as a roster right after
+	/// Welcome: one event per player already online.
+	PlayerJoined {
+		id: PlayerId,
+		name: String,
+	},
+	PlayerLeft {
+		id: PlayerId,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -197,8 +206,12 @@ impl NetClient {
 					out.push(NetEvent::EditRejected(e));
 				}
 			}
-			ServerMsg::PlayerJoined { .. } => {} // snapshots populate remotes
-			ServerMsg::PlayerLeft { id } => self.remotes.remove(id),
+			// Remote positions come from snapshots; these only carry names.
+			ServerMsg::PlayerJoined { id, name } => out.push(NetEvent::PlayerJoined { id, name }),
+			ServerMsg::PlayerLeft { id } => {
+				self.remotes.remove(id);
+				out.push(NetEvent::PlayerLeft { id });
+			}
 		}
 	}
 

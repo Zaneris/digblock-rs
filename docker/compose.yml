@@ -7,11 +7,13 @@
 #
 # The /udp on the port mapping is mandatory — QUIC never touches TCP.
 #
-# macOS caveat: Docker Desktop's host->container UDP proxy does not
-# reliably deliver QUIC handshakes, so a desktop client on the Mac host
-# cannot connect to the containerized server. Container->container
-# traffic (the bots profile) is unaffected — that's the netem rig. To
-# play against a local server, use `just server` instead.
+# macOS caveat: Docker Desktop's default user-space UDP proxy drops the
+# container->host half of the QUIC handshake. Enable "Use kernel
+# networking for UDP" (Settings > Resources > Network) and a desktop
+# client on the Mac host connects fine — `just play-docker [profile]`
+# is the one-command version (netem then shapes the real client, not
+# just bots). Container->container traffic (the bots profile) works
+# either way.
 services:
   server:
     build:

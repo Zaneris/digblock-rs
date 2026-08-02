@@ -25,7 +25,7 @@ just compose wifi         # dockerized server behind tc netem (clean | wifi | ce
 just compose-bots wifi    # same + 4-bot soak, exits non-zero on missed snapshots
 ```
 
-Multiplayer: `just server` then `just run -- --connect https://localhost:4433` (×N windows). macOS caveat: Docker Desktop's host→container UDP proxy drops QUIC handshakes, so a desktop client can't reach the *containerized* server — the compose netem rig is container↔container (bots profile); play against `just server` directly.
+Multiplayer: `just play` (server + connected client, one command; closing the window stops both) or `just server` then `just run -- --connect https://127.0.0.1:4433` (×N windows). Use `127.0.0.1`, not `localhost` — macOS resolves `localhost` to `::1` and the server binds IPv4 only, so `localhost` times out. A desktop client can also play against the *containerized* server — `just play-docker [clean|wifi|cellular]` runs the compose server (netem shapes the real client) — but this needs Docker Desktop's "Use kernel networking for UDP" enabled (Settings → Resources → Network); the default user-space UDP proxy drops QUIC handshake replies (host→container works, container→host is eaten).
 
 Run a single test: `cargo test -p digblock-core --test worldgen` (integration test file) or `cargo test -p digblock-core <test_name>`. CI (`.github/workflows/ci.yml`) runs the same steps as `just check` plus desktop and iOS builds; clippy warnings fail CI.
 

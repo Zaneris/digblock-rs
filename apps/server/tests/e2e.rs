@@ -65,6 +65,7 @@ impl TestClient {
 				NetEvent::Refused { reason } => panic!("refused: {reason}"),
 				NetEvent::Disconnected { reason } => panic!("disconnected: {reason}"),
 				NetEvent::EditRejected(e) => panic!("edit rejected: {e:?}"),
+				NetEvent::PlayerJoined { .. } | NetEvent::PlayerLeft { .. } => {}
 			}
 		}
 	}

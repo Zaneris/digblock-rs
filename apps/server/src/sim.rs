@@ -278,7 +278,16 @@ impl Sim {
 			},
 		);
 
+		// Roster for the joiner (who's already online), then the join
+		// announcement to everyone else — same message both directions.
 		for c in self.clients.values() {
+			send_frame(
+				&out,
+				&ServerMsg::PlayerJoined {
+					id: c.id,
+					name: c.name.clone(),
+				},
+			);
 			send_frame(
 				&c.out,
 				&ServerMsg::PlayerJoined {
@@ -836,6 +845,44 @@ mod tests {
 			conn_id,
 			batch: InputBatch { inputs },
 		}
+	}
+
+	#[test]
+	fn join_roster_and_announcements() {
+		let dir = temp_dir("roster");
+		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut a = connect(&mut sim, 1); // id 0
+		let b = connect(&mut sim, 2); // id 1
+
+		// The joiner gets a roster entry for the player already online,
+		// and never an announcement about itself.
+		assert!(
+			b.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::PlayerJoined { id: 0, name } if name.as_str() == "t1"
+			)),
+			"joiner missing roster entry: {:?}",
+			b.msgs
+		);
+		assert!(!b
+			.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::PlayerJoined { id: 1, .. })));
+
+		// The player already online hears the join...
+		a.drain();
+		assert!(a.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::PlayerJoined { id: 1, name } if name.as_str() == "t2"
+		)));
+
+		// ...and the leave.
+		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
+		a.drain();
+		assert!(a
+			.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 })));
 	}
 
 	#[test]

@@ -148,6 +148,12 @@ pub struct Engine {
 	net_corrections: u32,
 	net_error_accum: f32,
 	net_log_timer: f32,
+	/// Server-message feed (join/leave/disconnect), drawn by the overlay
+	/// above the HUD; (text, seconds left) — fades over the last second.
+	feed: Vec<(String, f32)>,
+	/// id → name, learned from PlayerJoined (roster + live joins), so
+	/// PlayerLeft (id-only on the wire) can be displayed by name.
+	player_names: rustc_hash::FxHashMap<u8, String>,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -238,6 +244,8 @@ impl Engine {
 			net_corrections: 0,
 			net_error_accum: 0.0,
 			net_log_timer: 0.0,
+			feed: Vec::new(),
+			player_names: rustc_hash::FxHashMap::default(),
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -268,6 +276,8 @@ impl Engine {
 	/// server's. Cheap at startup — nothing meaningful has streamed yet.
 	fn swap_world(&mut self, seed: f64, spawn: Vec3) {
 		log::info!("joining server world: seed {seed}");
+		self.player_names.clear();
+		self.push_feed("Connected to server.".into());
 		self.seed = seed;
 		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
 		self.player = Player::new(spawn);
@@ -302,6 +312,17 @@ impl Engine {
 		}
 	}
 
+	/// Newest-last message feed; oldest drops when full so a join wave
+	/// can't grow the overlay unboundedly.
+	fn push_feed(&mut self, text: String) {
+		const FEED_MAX: usize = 6;
+		const FEED_TTL_SECS: f32 = 8.0;
+		if self.feed.len() >= FEED_MAX {
+			self.feed.remove(0);
+		}
+		self.feed.push((text, FEED_TTL_SECS));
+	}
+
 	/// Drain the network: remote edits into the pipeline, acks stashed
 	/// for the walk branch, disconnects fall back to single-player.
 	fn pump_net(&mut self, dt: f32) {
@@ -327,11 +348,24 @@ impl Engine {
 					self.pipeline
 						.set_block(e.cell.0, e.cell.1, e.cell.2, e.prev);
 				}
+				NetEvent::PlayerJoined { id, name } => {
+					self.push_feed(format!("{name} joined the server."));
+					self.player_names.insert(id, name);
+				}
+				NetEvent::PlayerLeft { id } => {
+					let name = self
+						.player_names
+						.remove(&id)
+						.unwrap_or_else(|| format!("player {id}"));
+					self.push_feed(format!("{name} left the server."));
+				}
 				NetEvent::Refused { reason } => {
+					self.push_feed(format!("Server refused: {reason}."));
 					log::warn!("server refused: {reason}; continuing single-player");
 					drop_net = true;
 				}
 				NetEvent::Disconnected { reason } => {
+					self.push_feed(format!("Disconnected: {reason}."));
 					log::warn!("disconnected: {reason}; continuing single-player");
 					drop_net = true;
 				}
@@ -729,6 +763,10 @@ impl Game for Engine {
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
 
 		self.pump_net(dt);
+		for m in &mut self.feed {
+			m.1 -= dt;
+		}
+		self.feed.retain(|m| m.1 > 0.0);
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;
@@ -915,6 +953,7 @@ impl Game for Engine {
 				overlay_stats
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),
+				&self.feed,
 			);
 			self.pending.encode_ms = ms_since(t_encode);
 			self.metrics.render = stats;
