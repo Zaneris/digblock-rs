@@ -12,7 +12,7 @@ use digblock_platform::{Game, Gpu, InputEvent, Key, MouseButton, TouchPhase};
 use glam::{Vec2, Vec3};
 
 use crate::camera::FlyCamera;
-use crate::renderer::{FrameUniforms, Renderer};
+use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 
 pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
@@ -44,6 +44,15 @@ pub struct EngineConfig {
 	/// without a second client). Set by the desktop launcher from
 	/// DIG_PLAYERBOX.
 	pub debug_playerbox: bool,
+	/// Spray droplets per waterfall-impact instance: 64 desktop, 24
+	/// mobile (was inferred in the renderer from draw_dist <= 10).
+	pub spray_droplets: u32,
+	/// Per-frame wall-clock budget for main-thread streaming (see the
+	/// STREAM_BUDGET_MS doc below, which is the default).
+	pub stream_budget_ms: f32,
+	/// Distance fog band as fractions of the far plane.
+	pub fog_start_frac: f32,
+	pub fog_end_frac: f32,
 }
 
 impl EngineConfig {
@@ -63,6 +72,10 @@ impl EngineConfig {
 			ssr: true,
 			player_name: None,
 			debug_playerbox: false,
+			spray_droplets: 64,
+			stream_budget_ms: STREAM_BUDGET_MS,
+			fog_start_frac: 0.70,
+			fog_end_frac: 0.95,
 		}
 	}
 
@@ -82,6 +95,21 @@ impl EngineConfig {
 			ssr: false,
 			player_name: None,
 			debug_playerbox: false,
+			spray_droplets: 24,
+			stream_budget_ms: STREAM_BUDGET_MS,
+			fog_start_frac: 0.70,
+			fog_end_frac: 0.95,
+		}
+	}
+
+	/// The renderer's slice of the config. `wide_slice_draws` has no
+	/// per-platform knob yet; the renderer default is the tuned value.
+	pub(crate) fn render_config(&self) -> RenderConfig {
+		RenderConfig {
+			shadow_size: self.shadow_size,
+			draw_dist: self.draw_dist,
+			spray_droplets: self.spray_droplets,
+			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 		}
 	}
 }
@@ -96,9 +124,10 @@ struct HeldKeys {
 	down: bool,
 }
 
-/// Per-frame wall-clock budget for main-thread streaming — the modern form
-/// of the Java one-queue-item-per-frame rule. The first half bounds the
-/// result drain (chunk inserts + neighbor cascades); the rest bounds mesh
+/// Default per-frame wall-clock budget for main-thread streaming
+/// (`EngineConfig::stream_budget_ms`) — the modern form of the Java
+/// one-queue-item-per-frame rule. The first half bounds the result
+/// drain (chunk inserts + neighbor cascades); the rest bounds mesh
 /// uploads, with leftovers carried in `pending_uploads` to later frames.
 /// Workers keep producing at full speed — undrained results wait in the
 /// channel — so this trades a longer fill tail for even frame pacing:
@@ -382,6 +411,21 @@ impl Engine {
 		}
 	}
 
+	/// The ONLY way Engine builds a Renderer — anything uploaded to the
+	/// renderer outside `upload_chunk` must be re-sent here. Shared by
+	/// first init and device-loss rebuild so the two paths can't drift:
+	/// meshes stream back in via the pipeline re-mesh, and spray/player
+	/// state rides the same uploads (spray via mesh impacts, players
+	/// re-uploaded every frame).
+	fn build_renderer(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
+		self.renderer = Some(Renderer::new(
+			gpu,
+			surface_format,
+			&self.config.render_config(),
+		));
+		self.pipeline.remesh_all();
+	}
+
 	/// Camera far plane = light rig depth = draw_dist × 32 (Java World.updateDepth).
 	fn depth(&self) -> f32 {
 		(self.config.draw_dist * 32) as f32
@@ -401,8 +445,9 @@ impl Engine {
 			return;
 		};
 		let t_maintain = std::time::Instant::now();
-		let full_deadline = t_maintain + Duration::from_secs_f32(STREAM_BUDGET_MS / 1000.0);
-		let drain_deadline = t_maintain + Duration::from_secs_f32(STREAM_BUDGET_MS / 2000.0);
+		let budget_ms = self.config.stream_budget_ms;
+		let full_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
+		let drain_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 2000.0);
 		let m = self
 			.pipeline
 			.maintain(center, usize::MAX, Some(drain_deadline));
@@ -560,7 +605,10 @@ impl Engine {
 		let sun = -self.sun.sun_dir();
 		let moon = -self.sun.moon_dir();
 		let far = self.depth();
-		let (mut fog_start, mut fog_end) = (0.70 * far, 0.95 * far);
+		let (mut fog_start, mut fog_end) = (
+			self.config.fog_start_frac * far,
+			self.config.fog_end_frac * far,
+		);
 		let cam = self.camera.pos;
 		// Underwater: substitute the atmosphere the shaders read — short
 		// blue-green fog, water-colored sky gradient (the clear color and
@@ -621,12 +669,7 @@ impl Drop for Engine {
 impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
 		self.size = size;
-		self.renderer = Some(Renderer::new(
-			gpu,
-			surface_format,
-			self.config.shadow_size,
-			self.config.draw_dist,
-		));
+		self.build_renderer(gpu, surface_format);
 		log::info!(
 			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
 			self.config.draw_dist,
@@ -876,37 +919,24 @@ impl Game for Engine {
 		self.size = size;
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
-		// Remote players, sampled ~100 ms in the past between snapshots.
-		{
-			let before = self.remote_instances.len();
-			self.remote_instances.clear();
-			if let Some(net) = self.net.as_ref() {
-				net.remotes.sample(&mut self.remote_scratch);
-				for d in &self.remote_scratch {
-					let c = player_color(d.id);
-					self.remote_instances
-						.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
-				}
-			}
-			// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
-			// a GPU-path check that needs no second client.
-			if self.config.debug_playerbox {
-				let p = self.camera.pos + self.camera.dir() * 5.0;
-				let c = player_color(2);
+		// Remote players, sampled ~100 ms in the past between snapshots;
+		// the instance list rides FrameScene and re-uploads every frame.
+		self.remote_instances.clear();
+		if let Some(net) = self.net.as_ref() {
+			net.remotes.sample(&mut self.remote_scratch);
+			for d in &self.remote_scratch {
+				let c = player_color(d.id);
 				self.remote_instances
-					.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
+					.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
 			}
-			if self.remote_instances.len() != before {
-				log::info!(
-					"remote players in view data: {}",
-					self.remote_instances.len()
-				);
-			}
-			if self.remote_instances.len() != before || !self.remote_instances.is_empty() {
-				if let Some(r) = self.renderer.as_mut() {
-					r.set_remote_players(gpu, &self.remote_instances);
-				}
-			}
+		}
+		// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
+		// a GPU-path check that needs no second client.
+		if self.config.debug_playerbox {
+			let p = self.camera.pos + self.camera.dir() * 5.0;
+			let c = player_color(2);
+			self.remote_instances
+				.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
 		}
 		let d = self.depth();
 		let texels = self.config.shadow_size as f32;
@@ -927,20 +957,20 @@ impl Game for Engine {
 		};
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = std::time::Instant::now();
-			let stats = r.render(
-				gpu,
-				target,
-				&frame,
+			let scene = FrameScene {
+				uniforms: frame,
 				view_proj,
 				near_vp,
 				wide_vp,
 				wide_due,
 				size,
-				overlay_stats
+				players: &self.remote_instances,
+				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),
-				&self.feed,
-			);
+				feed: &self.feed,
+			};
+			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);
 			self.metrics.render = stats;
 			self.metrics.gpu = r.gpu_pass_ms();
@@ -960,16 +990,10 @@ impl Game for Engine {
 	}
 
 	fn rebuild_gpu_resources(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
-		// Device-loss drill: rebuild every device-lifetime object; meshes
+		// Device loss: rebuild every device-lifetime object; meshes
 		// stream back in from retained chunk data via the pipeline.
-		self.renderer = Some(Renderer::new(
-			gpu,
-			surface_format,
-			self.config.shadow_size,
-			self.config.draw_dist,
-		));
-		self.pipeline.remesh_all();
-		log::info!("engine: renderer rebuilt (device-loss drill), re-mesh queued");
+		self.build_renderer(gpu, surface_format);
+		log::info!("engine: renderer rebuilt (device loss), re-mesh queued");
 	}
 }
 

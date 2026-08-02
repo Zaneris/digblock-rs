@@ -31,6 +31,39 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Everything `Renderer::new` needs beyond the device and surface
+/// format — derived from `EngineConfig` (see `render_config`), so the
+/// renderer itself never infers platform tiers from other knobs.
+#[derive(Clone)]
+pub struct RenderConfig {
+	/// Shadow map resolution (both cascades).
+	pub shadow_size: u32,
+	/// Draw distance in chunks (sizes the chunk-origin UBO).
+	pub draw_dist: i32,
+	/// Spray droplets per waterfall-impact instance (on top of the mist
+	/// slabs): 64 desktop, 24 mobile.
+	pub spray_droplets: u32,
+	/// Per-frame wide-shadow-refresh encode cap (see WIDE_SLICE_DRAWS).
+	pub wide_slice_draws: u32,
+}
+
+/// Everything `Renderer::render` consumes for one frame, built by the
+/// engine — one argument instead of a parameter list that grew with
+/// every feature.
+pub struct FrameScene<'a> {
+	pub uniforms: FrameUniforms,
+	pub view_proj: glam::Mat4,
+	pub near_vp: glam::Mat4,
+	pub wide_vp: glam::Mat4,
+	pub wide_due: bool,
+	pub size: (u32, u32),
+	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
+	/// every frame (tiny — no change detection).
+	pub players: &'a [[f32; 8]],
+	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
+	pub feed: &'a [(String, f32)],
+}
+
 /// Field order/layout must match the `Frame` struct in
 /// `frame_common.wgsl` (the shared prelude every pass gets). The match
 /// is CI-enforced: `tests::frame_layout_matches_wgsl` below runs naga's
@@ -88,12 +121,13 @@ struct WideJob {
 	next: usize,
 }
 
-/// Per-frame wide-refresh encode cap. A full-set encode in one frame is a
-/// guaranteed missed vsync; sliced it stays ~1-2ms/frame. Sized so a
-/// 256-block-tall world's drawn set (surface shell, not the full resident
-/// count) still refreshes within a handful of frames — the sun moves
-/// imperceptibly in that window.
-const WIDE_SLICE_DRAWS: u32 = 1536;
+/// Default per-frame wide-refresh encode cap (RenderConfig can
+/// override). A full-set encode in one frame is a guaranteed missed
+/// vsync; sliced it stays ~1-2ms/frame. Sized so a 256-block-tall
+/// world's drawn set (surface shell, not the full resident count) still
+/// refreshes within a handful of frames — the sun moves imperceptibly
+/// in that window.
+pub(crate) const WIDE_SLICE_DRAWS: u32 = 1536;
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
@@ -174,6 +208,7 @@ pub struct Renderer {
 	/// the water pass.
 	blit_pipeline: wgpu::RenderPipeline,
 	surface_format: wgpu::TextureFormat,
+	config: RenderConfig,
 }
 
 /// Renderer-owned per-frame render targets. The platform hands over only
@@ -197,12 +232,7 @@ struct FrameTargets {
 }
 
 impl Renderer {
-	pub fn new(
-		gpu: &Gpu,
-		surface_format: wgpu::TextureFormat,
-		shadow_size: u32,
-		draw_dist: i32,
-	) -> Self {
+	pub fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat, config: &RenderConfig) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("chunk"),
@@ -424,41 +454,24 @@ impl Renderer {
 			}],
 		};
 
-		let solid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("solid"),
-			layout: Some(&layout),
-			vertex: wgpu::VertexState {
+		let solid_pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "solid",
+				layout: &layout,
 				module: &shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: std::slice::from_ref(&vertex_layout),
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: Some(wgpu::Face::Back),
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: true,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: std::slice::from_ref(&vertex_layout),
+				cull: Some(wgpu::Face::Back),
+				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: None,
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 
 		// Water: blended, double-sided (the dropped surface is visible
 		// from below), depth test on but depth WRITE off — fixes the Java
@@ -473,85 +486,51 @@ impl Renderer {
 				shader_location: 0,
 			}],
 		};
-		let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("water"),
-			layout: Some(&water_layout),
-			vertex: wgpu::VertexState {
+		let water_pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "water",
+				layout: &water_layout,
 				module: &water_shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: std::slice::from_ref(&water_vertex_layout),
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: false,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: std::slice::from_ref(&water_vertex_layout),
+				cull: None,
+				depth_write: false,
 				// LessEqual against the prepass depth: only the nearest
 				// water surface shades (Equal in effect, tolerant of
 				// cross-pipeline depth invariance).
 				depth_compare: wgpu::CompareFunction::LessEqual,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &water_shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 
 		// Depth-only prepass over the same water geometry: writes the
 		// nearest water depth, color masked off. Stacked water/air
 		// interfaces (fall-sheet backsides, pool surfaces behind them)
 		// then fail the color pass's depth test, so a connected body of
 		// water reads as one surface instead of accumulated alpha layers.
-		let water_depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("water depth"),
-			layout: Some(&water_layout),
-			vertex: wgpu::VertexState {
+		let water_depth_pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "water depth",
+				layout: &water_layout,
 				module: &water_shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: std::slice::from_ref(&water_vertex_layout),
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: true,
+				vs_entry: "vs",
+				fs_entry: Some("fs_depth"),
+				vertex_buffers: std::slice::from_ref(&water_vertex_layout),
+				cull: None,
+				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &water_shader,
-				entry_point: Some("fs_depth"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: None,
-					write_mask: wgpu::ColorWrites::empty(),
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::empty(),
+			},
+		);
 
 		// Sky: fullscreen triangle at NDC depth 1.0, depth-tested against
 		// the solids (LessEqual, no write) so occluded fragments are free;
@@ -565,41 +544,24 @@ impl Renderer {
 			bind_group_layouts: &[&frame_bgl],
 			push_constant_ranges: &[],
 		});
-		let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("sky"),
-			layout: Some(&sky_layout),
-			vertex: wgpu::VertexState {
+		let sky_pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "sky",
+				layout: &sky_layout,
 				module: &sky_shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: &[],
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: false,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[],
+				cull: None,
+				depth_write: false,
 				depth_compare: wgpu::CompareFunction::LessEqual,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &sky_shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: None,
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 
 		// Fullscreen composite of the offscreen scene into the swapchain:
 		// first draw of the water pass. Depth Always/no-write — the pass
@@ -613,86 +575,54 @@ impl Renderer {
 			bind_group_layouts: &[&blit_bgl],
 			push_constant_ranges: &[],
 		});
-		let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("blit"),
-			layout: Some(&blit_layout),
-			vertex: wgpu::VertexState {
+		let blit_pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "blit",
+				layout: &blit_layout,
 				module: &blit_shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: &[],
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: false,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[],
+				cull: None,
+				depth_write: false,
 				depth_compare: wgpu::CompareFunction::Always,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &blit_shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: None,
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 
 		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("shadow"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
 		});
-		let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("shadow"),
-			layout: Some(&shadow_layout),
-			vertex: wgpu::VertexState {
+		// Depth-only (color_format None, no fragment stage).
+		let shadow_pipeline = crate::pipeline_builder::build(
+			device,
+			None,
+			&crate::pipeline_builder::PipelineDesc {
+				label: "shadow",
+				layout: &shadow_layout,
 				module: &shadow_shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: &[wgpu::VertexBufferLayout {
-					array_stride: 8,
-					step_mode: wgpu::VertexStepMode::Vertex,
-					attributes: &[wgpu::VertexAttribute {
-						format: wgpu::VertexFormat::Uint32x2,
-						offset: 0,
-						shader_location: 0,
-					}],
-				}],
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: Some(wgpu::Face::Back),
-				..Default::default()
-			},
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: DEPTH_FORMAT,
-				depth_write_enabled: true,
+				vs_entry: "vs",
+				fs_entry: None,
+				vertex_buffers: std::slice::from_ref(&vertex_layout),
+				cull: Some(wgpu::Face::Back),
+				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
-				stencil: Default::default(),
 				// Replaces the Java heightmap biases (0.0005/0.0008) and
 				// the 3° tilt hack. Tunable during M6 A/B.
-				bias: wgpu::DepthBiasState {
+				depth_bias: wgpu::DepthBiasState {
 					constant: 2,
 					slope_scale: 2.0,
 					clamp: 0.0,
 				},
-			}),
-			multisample: Default::default(),
-			fragment: None,
-			multiview: None,
-			cache: None,
-		});
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 
 		let make_light = |label: &str| {
 			let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -737,7 +667,7 @@ impl Renderer {
 			mapped_at_creation: false,
 		});
 
-		let chunk_slots = chunk_slots(draw_dist);
+		let chunk_slots = chunk_slots(config.draw_dist);
 		let chunk_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
 			size: u64::from(chunk_slots) * CHUNK_STRIDE,
@@ -757,7 +687,7 @@ impl Renderer {
 			}],
 		});
 
-		let textures = BlockTextures::new(gpu, shadow_size);
+		let textures = BlockTextures::new(gpu, config.shadow_size);
 		let materials_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("materials"),
 			layout: &materials_bgl,
@@ -833,26 +763,15 @@ impl Renderer {
 			water_scratch: Vec::new(),
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
-			// Draw dist 10 is the mobile config: fewer droplets there.
-			spray: crate::spray::Spray::new(
-				gpu,
-				surface_format,
-				DEPTH_FORMAT,
-				&frame_bgl,
-				if draw_dist <= 10 { 24 } else { 64 },
-			),
-			players: crate::players::RemotePlayersDraw::new(
-				gpu,
-				surface_format,
-				DEPTH_FORMAT,
-				&frame_bgl,
-			),
+			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
+			players: crate::players::RemotePlayersDraw::new(gpu, surface_format, &frame_bgl),
 			targets: None,
 			water_frame_bgl,
 			blit_bgl,
 			linear_sampler,
 			blit_pipeline,
 			surface_format,
+			config: config.clone(),
 		}
 	}
 
@@ -920,11 +839,6 @@ impl Renderer {
 		for pos in all {
 			self.remove_chunk(pos);
 		}
-	}
-
-	/// This frame's remote-player instances: `[pos.xyz, yaw, rgb, spare]`.
-	pub fn set_remote_players(&mut self, gpu: &Gpu, instances: &[[f32; 8]]) {
-		self.players.set_instances(gpu, instances);
 	}
 
 	/// (Re)build the size-dependent frame targets when the size changes.
@@ -1026,21 +940,27 @@ impl Renderer {
 	/// Encode the frame in one command encoder, fixed order — wide shadow
 	/// (only when due) → near shadow → main pass. Shadow maps are written
 	/// and consumed in the same frame (fixes the Java one-frame lag).
-	#[allow(clippy::too_many_arguments)]
 	pub fn render(
 		&mut self,
 		gpu: &Gpu,
 		target: &wgpu::TextureView,
-		frame: &FrameUniforms,
-		view_proj: glam::Mat4,
-		near_vp: glam::Mat4,
-		wide_vp: glam::Mat4,
-		wide_due: bool,
-		size: (u32, u32),
-		overlay: Option<(&OverlayStats, &[f32])>,
-		feed: &[(String, f32)],
+		scene: &FrameScene<'_>,
 	) -> RenderStats {
+		let FrameScene {
+			uniforms: ref frame,
+			view_proj,
+			near_vp,
+			wide_vp,
+			wide_due,
+			size,
+			players,
+			overlay,
+			feed,
+		} = *scene;
 		self.ensure_targets(gpu, size);
+		// Remote players re-upload every frame (a handful of instances —
+		// cheaper than the change detection it replaces).
+		self.players.set_instances(gpu, players);
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
 			wide_refreshed: wide_due || self.wide_refresh_needed,
@@ -1424,7 +1344,7 @@ impl Renderer {
 		pass.set_bind_group(0, &self.light_wide_bg, &[]);
 		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 		let (mut draws, mut tris) = (0u32, 0u32);
-		while job.next < job.list.len() && draws < WIDE_SLICE_DRAWS {
+		while job.next < job.list.len() && draws < self.config.wide_slice_draws {
 			let pos = job.list[job.next];
 			job.next += 1;
 			// Evicted mid-job: skip.

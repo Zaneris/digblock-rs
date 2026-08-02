@@ -18,7 +18,6 @@ impl RemotePlayersDraw {
 	pub fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
-		depth_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
 	) -> Self {
 		let device = &gpu.device;
@@ -31,14 +30,17 @@ impl RemotePlayersDraw {
 			bind_group_layouts: &[frame_bgl],
 			push_constant_ranges: &[],
 		});
-		let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("players"),
-			layout: Some(&layout),
-			vertex: wgpu::VertexState {
+		// Opaque scene geometry: writes depth, occluded by terrain.
+		let pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "players",
+				layout: &layout,
 				module: &shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				buffers: &[wgpu::VertexBufferLayout {
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[wgpu::VertexBufferLayout {
 					array_stride: 32,
 					step_mode: wgpu::VertexStepMode::Instance,
 					attributes: &[
@@ -54,34 +56,14 @@ impl RemotePlayersDraw {
 						},
 					],
 				}],
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			// Opaque scene geometry: writes depth, occluded by terrain.
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: depth_format,
-				depth_write_enabled: true,
+				cull: None,
+				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: None,
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 		let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("player instances"),
 			size: (MAX_INSTANCES * 32) as u64,

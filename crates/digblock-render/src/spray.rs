@@ -32,7 +32,6 @@ impl Spray {
 	pub fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
-		depth_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
 		droplets: u32,
 	) -> Self {
@@ -46,16 +45,19 @@ impl Spray {
 			bind_group_layouts: &[frame_bgl],
 			push_constant_ranges: &[],
 		});
-		let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: Some("spray"),
-			layout: Some(&layout),
-			vertex: wgpu::VertexState {
+		// No geometry buffer: one instance-stepped attribute (impact
+		// center + spare w); vertex_index does the rest. Depth: occluded
+		// by terrain, never occludes anything itself.
+		let pipeline = crate::pipeline_builder::build(
+			device,
+			Some(surface_format),
+			&crate::pipeline_builder::PipelineDesc {
+				label: "spray",
+				layout: &layout,
 				module: &shader,
-				entry_point: Some("vs"),
-				compilation_options: Default::default(),
-				// No geometry buffer: one instance-stepped attribute
-				// (impact center + spare w); vertex_index does the rest.
-				buffers: &[wgpu::VertexBufferLayout {
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[wgpu::VertexBufferLayout {
 					array_stride: 16,
 					step_mode: wgpu::VertexStepMode::Instance,
 					attributes: &[wgpu::VertexAttribute {
@@ -64,34 +66,14 @@ impl Spray {
 						shader_location: 0,
 					}],
 				}],
-			},
-			primitive: wgpu::PrimitiveState {
-				topology: wgpu::PrimitiveTopology::TriangleList,
-				cull_mode: None,
-				..Default::default()
-			},
-			// Occluded by terrain, never occludes anything itself.
-			depth_stencil: Some(wgpu::DepthStencilState {
-				format: depth_format,
-				depth_write_enabled: false,
+				cull: None,
+				depth_write: false,
 				depth_compare: wgpu::CompareFunction::Less,
-				stencil: Default::default(),
-				bias: Default::default(),
-			}),
-			multisample: Default::default(),
-			fragment: Some(wgpu::FragmentState {
-				module: &shader,
-				entry_point: Some("fs"),
-				compilation_options: Default::default(),
-				targets: &[Some(wgpu::ColorTargetState {
-					format: surface_format,
-					blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-					write_mask: wgpu::ColorWrites::ALL,
-				})],
-			}),
-			multiview: None,
-			cache: None,
-		});
+				depth_bias: Default::default(),
+				blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
 		let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("spray instances"),
 			size: (MAX_INSTANCES * 16) as u64,

@@ -7,6 +7,7 @@ mod engine;
 mod font;
 mod gpu_timer;
 mod overlay;
+mod pipeline_builder;
 mod players;
 mod renderer;
 mod spray;
