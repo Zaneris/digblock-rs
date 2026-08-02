@@ -1,0 +1,353 @@
+//! Terrain generation. Two low-frequency control fields shape the world
+//! into coherent regions — a single fBm heightmap would scatter random
+//! peaks and pits everywhere instead:
+//!
+//! - **continentalness** picks the base elevation through a spline (deep
+//!   ocean → shelf → coast → plains → highlands) and gates mountains to
+//!   well inland;
+//! - **roughness** gates where mountain relief appears at all;
+//! - a low-frequency **ridge** field draws the mountain forms themselves
+//!   (its absolute value creases into valleys at zero crossings and rounds
+//!   off over maxima, so ranges rise from their base with walkable slopes);
+//! - a mid-frequency **detail** fBm supplies the local relief.
+//!
+//! Every function here is a pure function of `(x, z, seed)` — column
+//! content never depends on generation order. The tuning surface lives in
+//! [`TerrainParams`]; the public entry points use `TerrainParams::DEFAULT`
+//! (the future "world type" seam threads a custom one).
+
+mod caves;
+mod classify;
+mod rivers;
+mod terrain;
+
+pub use caves::carved;
+pub use classify::{ColumnShape, SurfaceKind, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE};
+pub use terrain::{TerrainParams, MAX_TERRAIN, SEA_LEVEL};
+
+use std::sync::Arc;
+
+use crate::block::BlockType;
+use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
+use crate::decoration::{decorate_chunk, trees_near};
+use classify::column_block;
+use terrain::fields;
+
+/// The per-column terrain function: control fields → base + modulated
+/// detail → height and surface kind.
+pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
+	let p = &TerrainParams::DEFAULT;
+	classify::classify(
+		&fields(p, x, z, seed),
+		[
+			fields(p, x - 1, z, seed),
+			fields(p, x + 1, z, seed),
+			fields(p, x, z - 1, seed),
+			fields(p, x, z + 1, seed),
+		],
+		x,
+		z,
+		seed,
+	)
+}
+
+pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
+	column_shape(x, z, seed).height
+}
+
+type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
+
+/// Column shapes for a chunk, indexed `[z][x]`. Evaluates the fields once
+/// per column of a one-column-padded grid (18×18 = 324 evals) so interior
+/// columns classify against their neighbors' heights without re-deriving
+/// them — 4× cheaper than the 5-evaluation `column_shape` path, and
+/// bit-identical to it (same f64 inputs to the same functions).
+fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
+	let p = &TerrainParams::DEFAULT;
+	const PAD: usize = CHUNK_SIZE + 2;
+	let (px, pz) = (cx * CHUNK_SIZE as i32, cz * CHUNK_SIZE as i32);
+	let mut grid = [[terrain::Fields::default(); PAD]; PAD];
+	for (gz, row) in grid.iter_mut().enumerate() {
+		for (gx, f) in row.iter_mut().enumerate() {
+			*f = fields(p, gx as i32 - 1 + px, gz as i32 - 1 + pz, seed);
+		}
+	}
+	let mut shapes = [[ColumnShape {
+		height: 0,
+		surface: SurfaceKind::Plains,
+		water: SEA_LEVEL,
+		fall: None,
+	}; CHUNK_SIZE]; CHUNK_SIZE];
+	for (z, row) in shapes.iter_mut().enumerate() {
+		for (x, s) in row.iter_mut().enumerate() {
+			let (gx, gz) = (x + 1, z + 1);
+			*s = classify::classify(
+				&grid[gz][gx],
+				[
+					grid[gz][gx - 1],
+					grid[gz][gx + 1],
+					grid[gz - 1][gx],
+					grid[gz + 1][gx],
+				],
+				x as i32 + px,
+				z as i32 + pz,
+				seed,
+			);
+		}
+	}
+	shapes
+}
+
+/// Column fill + cave carve, in storage order (x contiguous). Carving
+/// runs only on terrain cells of land columns, so ocean stacks and sky
+/// chunks never pay for the 3D noise.
+fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64) {
+	let (px, py, pz) = (
+		pos.x * CHUNK_SIZE as i32,
+		pos.y * CHUNK_SIZE as i32,
+		pos.z * CHUNK_SIZE as i32,
+	);
+	for y in 0..CHUNK_SIZE {
+		let wy = y as i32 + py;
+		for (z, srow) in shapes.iter().enumerate() {
+			let row = (y * CHUNK_SIZE + z) * CHUNK_SIZE;
+			let out = &mut data.blocks[row..row + CHUNK_SIZE];
+			for (x, (b, &shape)) in out.iter_mut().zip(srow).enumerate() {
+				let mut block = column_block(wy, shape);
+				// Snow is carveable like grass: a cave mouth opens through
+				// the surface block instead of leaving it floating.
+				let carveable = matches!(
+					block,
+					BlockType::Stone | BlockType::Dirt | BlockType::Grass | BlockType::Snow
+				);
+				if carveable
+					&& shape.height > shape.water
+					&& wy >= caves::CAVE_FLOOR
+					&& carved(x as i32 + px, wy, z as i32 + pz, seed)
+				{
+					block = BlockType::Air;
+				}
+				*b = block as u16;
+			}
+		}
+	}
+}
+
+/// Build one chunk: fill → carve (inside fill) → decorate.
+pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
+	let n = CHUNK_SIZE as i32;
+	let mut data = ChunkData::default();
+	fill_chunk(&mut data, pos, &column_shapes(pos.x, pos.z, seed), seed);
+	decorate_chunk(&mut data, pos, &trees_near(pos.x * n, pos.z * n, seed));
+	data
+}
+
+/// Generate the full vertical chunk stack of a column in one call,
+/// computing the 16×16 shape map once instead of once per chunk. Chunks
+/// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
+/// sentinel — no fill, no allocation, recognized by pointer downstream.
+pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
+	let n = CHUNK_SIZE as i32;
+	let shapes = column_shapes(cx, cz, seed);
+	// A column's solid+liquid content reaches to height, its local water
+	// surface (river water can sit above carved terrain), or the top of
+	// its falling-water sheet.
+	let max_h = shapes
+		.iter()
+		.flatten()
+		.map(|s| {
+			s.height
+				.max(s.water)
+				.max(s.fall.map_or(i32::MIN, |(_, t)| t))
+		})
+		.max()
+		.expect("non-empty shape map");
+	let trees = trees_near(cx * n, cz * n, seed);
+	// Sky starts above both the terrain and anything decoration can reach.
+	let solid_top = trees.iter().map(|t| t.top()).fold(max_h, i32::max);
+	(0..WORLD_VCHUNK)
+		.map(|cy| {
+			let bottom = cy * n;
+			if bottom > solid_top && bottom > SEA_LEVEL {
+				return AIR_CHUNK.clone();
+			}
+			let pos = ChunkPos::new(cx, cy, cz);
+			let mut data = ChunkData::default();
+			fill_chunk(&mut data, pos, &shapes, seed);
+			decorate_chunk(&mut data, pos, &trees);
+			Arc::new(data)
+		})
+		.collect()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::classify::{column_block, holds_water};
+	use super::terrain::{fields, spline, TerrainParams};
+	use super::*;
+	use crate::chunk::WORLD_VBLOCK;
+
+	const P: &TerrainParams = &TerrainParams::DEFAULT;
+
+	#[test]
+	fn spline_is_monotonic_and_anchored() {
+		let mut prev = f64::MIN;
+		let mut c = -1.2;
+		while c <= 1.2 {
+			let v = spline(P, c);
+			assert!(v >= prev, "monotonic at c={c}");
+			prev = v;
+			c += 0.01;
+		}
+		for (c, v) in P.base_spline {
+			assert_eq!(spline(P, c), v, "anchor at {c}");
+		}
+	}
+
+	#[test]
+	fn heights_stay_in_bounds() {
+		let seed = 77.7;
+		for x in (-2048..2048).step_by(61) {
+			for z in (-2048..2048).step_by(67) {
+				let h = terrain_height(x, z, seed);
+				assert!((1..=MAX_TERRAIN as i32).contains(&h), "h={h} at {x},{z}");
+				assert!(h < WORLD_VBLOCK, "terrain never reaches the ceiling");
+			}
+		}
+	}
+
+	/// The padded-grid path and the 5-evaluation per-column path must
+	/// classify identically — the invariant that keeps chunk fills and
+	/// per-column probes (trees, spawn) agreeing about the world.
+	#[test]
+	fn classification_paths_agree() {
+		let seed = 1234.5678;
+		for &(cx, cz) in &[(0, 0), (-3, 7), (40, 40), (-17, -29)] {
+			let shapes = column_shapes(cx, cz, seed);
+			for (z, row) in shapes.iter().enumerate() {
+				for (x, &s) in row.iter().enumerate() {
+					let (wx, wz) = (
+						x as i32 + cx * CHUNK_SIZE as i32,
+						z as i32 + cz * CHUNK_SIZE as i32,
+					);
+					assert_eq!(s, column_shape(wx, wz, seed), "at ({wx},{wz})");
+				}
+			}
+		}
+	}
+
+	/// Rivers exist inland (water level above the sea's), sit in carved
+	/// channels (water above bed), and never hold water below sea level.
+	#[test]
+	fn rivers_exist_inland() {
+		let seed = 1234.5678;
+		let mut inland = 0u32;
+		for x in (-4096..4096).step_by(13) {
+			for z in (-4096..4096).step_by(11) {
+				let s = column_shape(x, z, seed);
+				assert!(s.water >= SEA_LEVEL, "water never below sea at ({x},{z})");
+				if s.surface == SurfaceKind::River {
+					assert!(s.water > s.height, "river holds water at ({x},{z})");
+					if s.water > SEA_LEVEL {
+						inland += 1;
+					}
+				}
+			}
+		}
+		assert!(inland > 0, "sample contains inland river columns");
+	}
+
+	/// Wherever a river pool steps down (quantized levels), the lower
+	/// column carries a WaterFall span from just above its own pool up to
+	/// the highest adjacent pool — the sheet that connects the cascade.
+	#[test]
+	fn falls_connect_pool_steps() {
+		let seed = 1234.5678;
+		let mut found = 0u32;
+		'scan: for x in (-2048..2048).step_by(4) {
+			for z in (-2048..2048).step_by(4) {
+				let f = fields(P, x, z, seed);
+				if !holds_water(&f) {
+					continue;
+				}
+				let wl = f.water.floor() as i32;
+				let top = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
+					.iter()
+					.map(|&(nx, nz)| fields(P, nx, nz, seed))
+					.filter(holds_water)
+					.map(|n| n.water.floor() as i32)
+					.max()
+					.unwrap_or(i32::MIN);
+				let s = column_shape(x, z, seed);
+				if top > wl {
+					assert_eq!(s.fall, Some((wl + 1, top)), "at ({x},{z})");
+					// The blocks of the span really are falling water.
+					assert_eq!(column_block(wl + 1, s), BlockType::WaterFall);
+					assert_eq!(column_block(top, s), BlockType::WaterFall);
+					assert_eq!(column_block(wl, s), BlockType::Water);
+					found += 1;
+					if found >= 5 {
+						break 'scan;
+					}
+				} else {
+					assert_eq!(s.fall, None, "no step, no fall at ({x},{z})");
+				}
+			}
+		}
+		assert!(found > 0, "sample contains pool steps");
+	}
+
+	/// Snow only appears near the (dithered) snow line, never at low
+	/// altitude, and snow surfaces exist somewhere in a mountain sample.
+	#[test]
+	fn snow_implies_altitude() {
+		let seed = 1234.5678;
+		let mut seen = 0u32;
+		for x in (-4096..4096).step_by(17) {
+			for z in (-4096..4096).step_by(19) {
+				let shape = column_shape(x, z, seed);
+				if shape.surface == SurfaceKind::Snow {
+					seen += 1;
+					assert!(
+						f64::from(shape.height) >= SNOW_LINE - 7.0,
+						"snow at h={} ({x},{z})",
+						shape.height
+					);
+				}
+			}
+		}
+		assert!(seen > 0, "sample contains snow surfaces");
+	}
+
+	/// All four surface kinds occur in a large sample, with open terrain
+	/// (plains + ocean) dominating mountains.
+	#[test]
+	fn regions_are_present_and_balanced() {
+		let seed = 1234.5678;
+		let (mut ocean, mut beach, mut plains, mut mountain) = (0u32, 0u32, 0u32, 0u32);
+		let mut total = 0u32;
+		for x in (-4096..4096).step_by(32) {
+			for z in (-4096..4096).step_by(32) {
+				total += 1;
+				match column_shape(x, z, seed).surface {
+					// Rivers are open water for balance purposes.
+					SurfaceKind::Ocean | SurfaceKind::River => ocean += 1,
+					SurfaceKind::Beach => beach += 1,
+					SurfaceKind::Plains => plains += 1,
+					// Snow is high-mountain surface for balance purposes.
+					SurfaceKind::Mountain | SurfaceKind::Snow => mountain += 1,
+				}
+			}
+		}
+		let pct = |n: u32| f64::from(n) * 100.0 / f64::from(total);
+		assert!(pct(ocean) > 5.0, "ocean {:.1}%", pct(ocean));
+		assert!(beach > 0, "beaches exist");
+		assert!(pct(plains) > 25.0, "plains {:.1}%", pct(plains));
+		assert!(mountain > 0, "mountains exist");
+		assert!(
+			pct(mountain) < pct(plains) + pct(ocean),
+			"mountains {:.1}% don't dominate",
+			pct(mountain)
+		);
+	}
+}
