@@ -6,12 +6,12 @@
 //! to the last whole record.
 
 use digblock_net::messages::BlockEdit;
-use digblock_net::protocol::PlayerId;
-use rustc_hash::FxHashMap;
+use digblock_net::protocol::{PlayerId, SERVER_ID};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"DBJ1";
 /// v2: the block field widened to a u16 CELL (id + reserved state bits)
@@ -68,17 +68,69 @@ impl JournalIndex {
 
 /// Consecutive write failures before the journal reports unhealthy.
 const MAX_WRITE_FAILURES: u32 = 3;
-/// Compact on boot when the file holds this many times more records than
-/// live cells (and enough of them to matter).
+/// Compact (boot or runtime) when the file holds this many times more
+/// records than live cells (and enough of them to matter).
 const COMPACT_RATIO: u64 = 2;
 const COMPACT_MIN_RECORDS: u64 = 10_000;
+/// Runtime compaction: copy at least this many records per tick. A whole
+/// column always copies atomically (map iteration order is invalidated
+/// by mutation), so a single tick can overshoot by one column.
+const COMPACT_RECORDS_PER_TICK: u64 = 4096;
+/// Intermediate tmp fsync cadence (~2 MB) so the finishing tick never
+/// pays one huge fsync inside the 60Hz budget.
+const COMPACT_RECORDS_PER_SYNC: u64 = 131_072;
+/// Cooldown after a completed run (fluid churn re-bloats slowly).
+const COMPACT_COOLDOWN_SECS: u64 = 60;
+/// Backoff after a failed run.
+const COMPACT_RETRY_SECS: u64 = 300;
+/// Abort if mid-run appends outpace the copy this badly — impossible
+/// within the fluid/edit rate budgets, but fail safe.
+const COMPACT_DELTA_MAX: usize = 65_536;
+
+/// In-flight runtime compaction, stepped once per `maintain()` call.
+///
+/// Invariants the correctness rests on (see `append` for the capture
+/// rule): the in-memory `index` and `next_seq` are NEVER touched — only
+/// the file is rewritten, so join sync and seq monotonicity are safe by
+/// construction. All live appends keep going to the OLD file until the
+/// atomic rename, so a crash at any point leaves a complete old file
+/// plus a garbage tmp that the next boot truncates.
+struct CompactionRun {
+	tmp: BufWriter<File>,
+	tmp_path: PathBuf,
+	/// Snapshot of column keys at start; copied whole, one cursor step at
+	/// a time. Columns are never removed from the index, so every key
+	/// stays valid for the whole run.
+	cols: Vec<(i32, i32)>,
+	cursor: usize,
+	/// Columns not yet copied. A mid-run append goes to `delta` iff its
+	/// column is NOT here: a pending column's copy will read the current
+	/// (newer or equal) index value when its turn comes, and a delta
+	/// record — written after the base — would resurrect the OLDER value
+	/// on last-write-wins replay.
+	pending: FxHashSet<(i32, i32)>,
+	/// Raw records appended mid-run to already-copied or brand-new
+	/// columns; written after the base copy, so they win LWW replay.
+	delta: Vec<[u8; RECORD_LEN as usize]>,
+	written: u64,
+	since_sync: u64,
+}
 
 pub struct Journal {
 	file: BufWriter<File>,
+	path: PathBuf,
+	seed: f64,
 	pub index: JournalIndex,
 	dirty: bool,
 	wrote_since_sync: bool,
 	last_sync: Instant,
+	/// Records currently in the file (successful appends since open, on
+	/// top of the boot state) — the runtime-compaction trigger input.
+	records: u64,
+	run: Option<CompactionRun>,
+	/// Runtime compaction not eligible before this instant (cooldown
+	/// after success, backoff after failure). None = eligible now.
+	next_compact_at: Option<Instant>,
 	/// Consecutive append/flush/fsync failures; reset on success. Past
 	/// MAX_WRITE_FAILURES the sim stops accepting edits (rejecting with
 	/// ServerError) rather than diverging memory from disk silently.
@@ -86,6 +138,8 @@ pub struct Journal {
 	last_health_log: Option<Instant>,
 	#[cfg(test)]
 	pub force_write_failure: bool,
+	#[cfg(test)]
+	pub force_compact_failure: bool,
 }
 
 impl Journal {
@@ -95,6 +149,8 @@ impl Journal {
 	pub fn open(dir: &Path, seed: f64) -> std::io::Result<Self> {
 		std::fs::create_dir_all(dir)?;
 		let path = dir.join(format!("world-{:016x}.journal", seed.to_bits()));
+		// A crashed runtime compaction may leave a stale tmp behind.
+		let _ = std::fs::remove_file(path.with_extension("journal.tmp"));
 		let mut file = OpenOptions::new()
 			.read(true)
 			.write(true)
@@ -104,6 +160,7 @@ impl Journal {
 
 		let len = file.metadata()?.len();
 		let mut index = JournalIndex::default();
+		let mut record_count = 0u64;
 		if len == 0 {
 			let mut header = Vec::with_capacity(HEADER_LEN as usize);
 			header.extend_from_slice(MAGIC);
@@ -157,23 +214,32 @@ impl Journal {
 			// per-boot monotonic only, clients never persist them.
 			let records = (good_len - HEADER_LEN) / RECORD_LEN;
 			let live = index.live_cells();
+			record_count = records;
 			if records > COMPACT_RATIO * live && records > COMPACT_MIN_RECORDS {
 				log::info!("journal compaction: {records} records -> {live} live cells");
 				file = compact(&path, seed, &index)?;
 				index.next_seq = live;
+				record_count = live;
 			}
 		}
 		file.seek(SeekFrom::End(0))?;
 		Ok(Self {
 			file: BufWriter::new(file),
+			path,
+			seed,
 			index,
 			dirty: false,
 			wrote_since_sync: false,
 			last_sync: Instant::now(),
+			records: record_count,
+			run: None,
+			next_compact_at: None,
 			write_failures: 0,
 			last_health_log: None,
 			#[cfg(test)]
 			force_write_failure: false,
+			#[cfg(test)]
+			force_compact_failure: false,
 		})
 	}
 
@@ -187,16 +253,29 @@ impl Journal {
 	/// whether this created a freshly-edited column (see
 	/// [`JournalIndex::record`]).
 	pub fn append(&mut self, edit: BlockEdit, by: PlayerId) -> (u64, bool) {
-		let mut rec = [0u8; RECORD_LEN as usize];
-		rec[0..4].copy_from_slice(&edit.x.to_le_bytes());
-		rec[4..8].copy_from_slice(&edit.y.to_le_bytes());
-		rec[8..12].copy_from_slice(&edit.z.to_le_bytes());
-		rec[12..14].copy_from_slice(&edit.block.to_le_bytes());
-		rec[14] = by;
-		// rec[15] reserved, zero.
+		let rec = encode_record(edit.x, edit.y, edit.z, edit.block, by);
 		match self.write_record(&rec) {
-			Ok(()) => self.write_failures = 0,
+			Ok(()) => {
+				self.write_failures = 0;
+				self.records += 1;
+			}
 			Err(e) => self.note_write_failure("write", &e),
+		}
+		// Mid-compaction capture (see CompactionRun::pending for the
+		// rule). Tracked off the index like the base copy, so even an
+		// append the old file lost lands in the compacted file.
+		let mut delta_overflow = false;
+		if let Some(run) = &mut self.run {
+			let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
+			if !run.pending.contains(&col) {
+				run.delta.push(rec);
+				delta_overflow = run.delta.len() > COMPACT_DELTA_MAX;
+			}
+		}
+		if delta_overflow {
+			self.abort_compaction(&std::io::Error::other(
+				"delta overflow (churn outpaced the copy)",
+			));
 		}
 		self.dirty = true;
 		self.wrote_since_sync = true;
@@ -231,7 +310,8 @@ impl Journal {
 		}
 	}
 
-	/// Flush buffered writes; fsync at most once a second.
+	/// Flush buffered writes; fsync at most once a second; step (or
+	/// start) runtime compaction — exactly one bounded action per call.
 	pub fn maintain(&mut self) {
 		if self.dirty {
 			match self.file.flush() {
@@ -243,6 +323,133 @@ impl Journal {
 		if self.wrote_since_sync && self.last_sync.elapsed().as_secs_f32() >= SYNC_INTERVAL_SECS {
 			self.sync();
 		}
+		if self.run.is_some() {
+			self.step_compaction();
+		} else {
+			self.maybe_start_compaction();
+		}
+	}
+
+	fn maybe_start_compaction(&mut self) {
+		if !self.healthy() {
+			return;
+		}
+		if self.next_compact_at.is_some_and(|at| Instant::now() < at) {
+			return;
+		}
+		let live = self.index.live_cells();
+		if self.records <= COMPACT_RATIO * live || self.records <= COMPACT_MIN_RECORDS {
+			return;
+		}
+		match self.start_compaction() {
+			Ok(()) => log::info!(
+				"journal runtime compaction started: {} records, {live} live cells",
+				self.records
+			),
+			Err(e) => self.abort_compaction(&e),
+		}
+	}
+
+	fn start_compaction(&mut self) -> std::io::Result<()> {
+		let tmp_path = self.path.with_extension("journal.tmp");
+		let mut tmp = BufWriter::new(File::create(&tmp_path)?);
+		let mut header = Vec::with_capacity(HEADER_LEN as usize);
+		header.extend_from_slice(MAGIC);
+		header.extend_from_slice(&VERSION.to_le_bytes());
+		header.extend_from_slice(&0u16.to_le_bytes());
+		header.extend_from_slice(&self.seed.to_le_bytes());
+		tmp.write_all(&header)?;
+		let cols: Vec<(i32, i32)> = self.index.columns.keys().copied().collect();
+		let pending = cols.iter().copied().collect();
+		self.run = Some(CompactionRun {
+			tmp,
+			tmp_path,
+			cols,
+			cursor: 0,
+			pending,
+			delta: Vec::new(),
+			written: 0,
+			since_sync: 0,
+		});
+		Ok(())
+	}
+
+	/// One bounded copy step; finishes the run when the snapshot is
+	/// exhausted. Any I/O error aborts the run (the old file is still the
+	/// complete truth).
+	fn step_compaction(&mut self) {
+		#[cfg(test)]
+		if self.force_compact_failure {
+			self.abort_compaction(&std::io::Error::other("injected compaction failure"));
+			return;
+		}
+		let step = {
+			let run = self.run.as_mut().expect("active run");
+			copy_step(run, &self.index)
+		};
+		match step {
+			Ok(false) => {}
+			Ok(true) => {
+				if let Err(e) = self.finish_compaction() {
+					self.abort_compaction(&e);
+				}
+			}
+			Err(e) => self.abort_compaction(&e),
+		}
+	}
+
+	/// Append the delta, fsync, atomically swap the file, and continue
+	/// appending to the compacted journal. `index`/`next_seq` are never
+	/// touched — runtime compaction is invisible to join sync and seq
+	/// monotonicity.
+	fn finish_compaction(&mut self) -> std::io::Result<()> {
+		let mut run = self.run.take().expect("active run");
+		for rec in &run.delta {
+			run.tmp.write_all(rec)?;
+		}
+		run.tmp.flush()?;
+		run.tmp.get_ref().sync_data()?;
+		drop(run.tmp);
+		std::fs::rename(&run.tmp_path, &self.path)?;
+		let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+		file.seek(SeekFrom::End(0))?;
+		let old = self.records;
+		self.records = run.written + run.delta.len() as u64;
+		// The old writer was flushed at the top of this maintain() and
+		// every append since start is in the delta — nothing is lost.
+		self.file = BufWriter::new(file);
+		self.dirty = false;
+		self.wrote_since_sync = false;
+		self.last_sync = Instant::now();
+		self.next_compact_at = Some(Instant::now() + Duration::from_secs(COMPACT_COOLDOWN_SECS));
+		log::info!(
+			"journal runtime compaction: {old} -> {} records",
+			self.records
+		);
+		Ok(())
+	}
+
+	/// Best-effort cleanup + backoff. Deliberately does NOT touch
+	/// `write_failures`: that counter gates edit acceptance, and a failed
+	/// compaction leaves a correct (merely bloated) file — rejecting
+	/// edits over it would be worse than the disease.
+	fn abort_compaction(&mut self, e: &std::io::Error) {
+		if let Some(run) = self.run.take() {
+			drop(run.tmp);
+			let _ = std::fs::remove_file(&run.tmp_path);
+		}
+		self.next_compact_at = Some(Instant::now() + Duration::from_secs(COMPACT_RETRY_SECS));
+		log::warn!("journal runtime compaction aborted: {e} — retrying in {COMPACT_RETRY_SECS}s");
+	}
+
+	#[cfg(test)]
+	pub fn compaction_active(&self) -> bool {
+		self.run.is_some()
+	}
+
+	#[cfg(test)]
+	pub fn reset_compact_cooldown(&mut self) {
+		self.next_compact_at = None;
 	}
 
 	/// Flush + fsync now (graceful shutdown).
@@ -258,9 +465,51 @@ impl Journal {
 	}
 }
 
+/// One journal record. Authorship of compacted records is not tracked
+/// by the index, so both compaction paths pass SERVER_ID.
+fn encode_record(x: i32, y: i32, z: i32, block: u16, by: PlayerId) -> [u8; RECORD_LEN as usize] {
+	let mut rec = [0u8; RECORD_LEN as usize];
+	rec[0..4].copy_from_slice(&x.to_le_bytes());
+	rec[4..8].copy_from_slice(&y.to_le_bytes());
+	rec[8..12].copy_from_slice(&z.to_le_bytes());
+	rec[12..14].copy_from_slice(&block.to_le_bytes());
+	rec[14] = by;
+	// rec[15] reserved, zero.
+	rec
+}
+
+/// Copy whole columns into the tmp file until this tick's record budget
+/// is spent; returns true when the snapshot is exhausted. Free function
+/// so the caller can borrow `run` mutably alongside the shared index.
+fn copy_step(run: &mut CompactionRun, index: &JournalIndex) -> std::io::Result<bool> {
+	let mut wrote_this_tick = 0u64;
+	while run.cursor < run.cols.len() && wrote_this_tick < COMPACT_RECORDS_PER_TICK {
+		let col = run.cols[run.cursor];
+		run.cursor += 1;
+		if let Some(cells) = index.columns.get(&col) {
+			for (&(x, y, z), &block) in cells {
+				run.tmp
+					.write_all(&encode_record(x, y, z, block, SERVER_ID))?;
+			}
+			let n = cells.len() as u64;
+			wrote_this_tick += n;
+			run.written += n;
+			run.since_sync += n;
+		}
+		// Only now do mid-run appends to this column divert to the delta.
+		run.pending.remove(&col);
+		if run.since_sync >= COMPACT_RECORDS_PER_SYNC {
+			run.tmp.flush()?;
+			run.tmp.get_ref().sync_data()?;
+			run.since_sync = 0;
+		}
+	}
+	Ok(run.cursor >= run.cols.len())
+}
+
 /// Rewrite the journal as one record per live cell: tmp file, fsync,
-/// atomic rename, reopen. Authorship is not tracked by the index, so
-/// compacted records carry SERVER_ID.
+/// atomic rename, reopen. Boot-time (blocking) variant; the runtime
+/// equivalent is the incremental `CompactionRun`.
 fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File> {
 	let tmp = path.with_extension("journal.tmp");
 	{
@@ -273,13 +522,7 @@ fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File
 		out.write_all(&header)?;
 		for cells in index.columns.values() {
 			for (&(x, y, z), &block) in cells {
-				let mut rec = [0u8; RECORD_LEN as usize];
-				rec[0..4].copy_from_slice(&x.to_le_bytes());
-				rec[4..8].copy_from_slice(&y.to_le_bytes());
-				rec[8..12].copy_from_slice(&z.to_le_bytes());
-				rec[12..14].copy_from_slice(&block.to_le_bytes());
-				rec[14] = digblock_net::protocol::SERVER_ID;
-				out.write_all(&rec)?;
+				out.write_all(&encode_record(x, y, z, block, SERVER_ID))?;
 			}
 		}
 		out.flush()?;
@@ -411,6 +654,190 @@ mod tests {
 		j.force_write_failure = false;
 		j.append(edit(9, 100, 0, 1), 1);
 		assert!(j.healthy(), "successful write restores health");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// Drive `maintain()` until the active run completes (bounded).
+	fn drive(j: &mut Journal) {
+		for _ in 0..1000 {
+			j.maintain();
+			if !j.compaction_active() {
+				return;
+			}
+		}
+		panic!("compaction did not complete in 1000 steps");
+	}
+
+	/// Bloat a fresh journal: `n` appends over `cells` distinct cells.
+	fn bloat(j: &mut Journal, n: u32, cells: u32) {
+		for i in 0..n {
+			j.append(edit((i % cells) as i32, 120, 0, (i % 7) as u16), 1);
+		}
+	}
+
+	#[test]
+	fn runtime_compaction_triggers_and_shrinks_file() {
+		let dir = std::env::temp_dir().join(format!("dbj-rt-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 21.0).unwrap();
+		bloat(&mut j, 30_000, 100);
+		j.maintain(); // starts the run
+		assert!(j.compaction_active());
+		drive(&mut j);
+		let path = dir.join(format!("world-{:016x}.journal", 21.0f64.to_bits()));
+		assert_eq!(
+			std::fs::metadata(&path).unwrap().len(),
+			HEADER_LEN + 100 * RECORD_LEN
+		);
+		// The runtime contrast to boot compaction: seq is NOT reset.
+		assert_eq!(j.index.next_seq, 30_000, "next_seq untouched");
+		assert_eq!(j.index.live_cells(), 100);
+		drop(j);
+		// Reopen replays the compacted file (no further compaction).
+		let j = Journal::open(&dir, 21.0).unwrap();
+		assert_eq!(j.index.live_cells(), 100);
+		let col = j.index.column(0, 0).unwrap();
+		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u16)));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn appends_during_runtime_compaction_survive() {
+		let dir = std::env::temp_dir().join(format!("dbj-rtmid-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 22.0).unwrap();
+		// Three columns × 4000 distinct cells: one copy step covers
+		// exactly two columns (budget 4096), guaranteeing a mid-run
+		// window with one column still pending — whichever the hash
+		// order picks.
+		// Three writes per cell: 36k records over 12k live cells, safely
+		// past the >2× ratio trigger.
+		for round in 1..=3u16 {
+			for col in 0..3i32 {
+				for i in 0..4000i32 {
+					j.append(edit(col * 16, i % 256, i / 256, round), 1);
+				}
+			}
+		}
+		j.maintain(); // start
+		j.maintain(); // copy step: two of the three columns
+		assert!(j.compaction_active(), "one column must still be pending");
+		// Re-edit one cell in EVERY column (copied ones divert to the
+		// delta, the pending one lands in its base copy), plus a cell in
+		// a brand-new column.
+		for col in 0..3i32 {
+			j.append(edit(col * 16, 0, 0, 9), 2);
+		}
+		j.append(edit(300, 50, 7, 5), 2);
+		drive(&mut j);
+		// Base: two untouched columns (4000 each) + pending column with
+		// the re-edit already applied (4000). Delta: two re-edits + the
+		// new column's cell.
+		let live = j.index.live_cells();
+		assert_eq!(live, 12_001);
+		let path = dir.join(format!("world-{:016x}.journal", 22.0f64.to_bits()));
+		assert_eq!(
+			std::fs::metadata(&path).unwrap().len(),
+			HEADER_LEN + (12_000 + 3) * RECORD_LEN,
+			"base 12000 + 2 delta re-edits + 1 delta new-column cell"
+		);
+		drop(j);
+		// LWW replay: every re-edit and the new column survive.
+		let j = Journal::open(&dir, 22.0).unwrap();
+		assert_eq!(j.index.live_cells(), 12_001);
+		for col in 0..3i32 {
+			let c = j.index.column(col, 0).unwrap();
+			assert_eq!(c.get(&(col * 16, 0, 0)), Some(&9), "column {col} re-edit");
+		}
+		assert_eq!(j.index.column(18, 0).unwrap().get(&(300, 50, 7)), Some(&5));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn runtime_compaction_crash_midway_is_safe() {
+		let dir = std::env::temp_dir().join(format!("dbj-rtcrash-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		{
+			let mut j = Journal::open(&dir, 23.0).unwrap();
+			bloat(&mut j, 30_000, 100);
+			j.maintain(); // start: tmp created with header only
+			assert!(j.compaction_active());
+			j.sync();
+			// Simulated crash: Journal dropped mid-run, tmp left behind.
+		}
+		let tmp = dir.join(format!("world-{:016x}.journal.tmp", 23.0f64.to_bits()));
+		assert!(tmp.exists(), "stale tmp left by the crash");
+		// Reopen: the old file is the complete truth (boot compaction
+		// then shrinks it) and the stale tmp is removed.
+		let j = Journal::open(&dir, 23.0).unwrap();
+		assert!(!tmp.exists(), "stale tmp cleaned up on open");
+		assert_eq!(j.index.live_cells(), 100);
+		let col = j.index.column(0, 0).unwrap();
+		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u16)));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn runtime_compaction_seq_continuity() {
+		let dir = std::env::temp_dir().join(format!("dbj-rtseq-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 24.0).unwrap();
+		bloat(&mut j, 30_000, 100);
+		j.maintain(); // start
+		let (seq_mid, _) = j.append(edit(500, 60, 0, 3), 1);
+		assert_eq!(seq_mid, 30_000, "seq keeps counting during the run");
+		drive(&mut j);
+		let (seq_after, _) = j.append(edit(501, 60, 0, 3), 1);
+		assert_eq!(seq_after, 30_001, "seq keeps counting across the swap");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn runtime_compaction_failure_degrades_gracefully() {
+		let dir = std::env::temp_dir().join(format!("dbj-rtfail-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 25.0).unwrap();
+		bloat(&mut j, 30_000, 100);
+		j.maintain(); // start
+		j.force_compact_failure = true;
+		j.maintain(); // step: injected failure aborts the run
+		assert!(!j.compaction_active());
+		assert!(j.healthy(), "compaction failure must not gate edits");
+		let tmp = dir.join(format!("world-{:016x}.journal.tmp", 25.0f64.to_bits()));
+		assert!(!tmp.exists(), "aborted run removes its tmp");
+		j.append(edit(600, 70, 0, 2), 1);
+		// Backoff holds until reset; then a clean run completes.
+		j.maintain();
+		assert!(!j.compaction_active(), "retry backoff respected");
+		j.force_compact_failure = false;
+		j.reset_compact_cooldown();
+		j.maintain();
+		assert!(j.compaction_active());
+		drive(&mut j);
+		let path = dir.join(format!("world-{:016x}.journal", 25.0f64.to_bits()));
+		assert_eq!(
+			std::fs::metadata(&path).unwrap().len(),
+			HEADER_LEN + 101 * RECORD_LEN
+		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn runtime_compaction_respects_cooldown() {
+		let dir = std::env::temp_dir().join(format!("dbj-rtcool-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 26.0).unwrap();
+		bloat(&mut j, 30_000, 100);
+		j.maintain();
+		drive(&mut j);
+		// Re-bloat immediately: the cooldown must hold the next run.
+		bloat(&mut j, 30_000, 100);
+		j.maintain();
+		assert!(!j.compaction_active(), "cooldown holds");
+		j.reset_compact_cooldown();
+		j.maintain();
+		assert!(j.compaction_active(), "eligible again after cooldown");
+		drive(&mut j);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
