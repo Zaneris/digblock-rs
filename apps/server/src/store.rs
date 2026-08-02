@@ -148,10 +148,8 @@ impl ChunkStore {
 		self.columns.contains_key(&(cx, cz))
 	}
 
-	pub fn pending_columns(&self) -> usize {
-		self.pending.len()
-	}
-
+	/// Test seam: worker-drain loops spin on the resident count.
+	#[cfg(test)]
 	pub fn resident(&self) -> usize {
 		self.columns.len()
 	}

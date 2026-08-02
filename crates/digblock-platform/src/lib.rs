@@ -9,7 +9,9 @@
 mod app;
 mod clock;
 pub mod input;
-pub mod lifecycle;
+// Private: only app.rs consumes the decision core, and crate-private
+// visibility lets -D warnings give it real dead-code coverage.
+mod lifecycle;
 mod screenshot;
 
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};

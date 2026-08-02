@@ -661,7 +661,6 @@ dependencies = [
  "digblock-platform",
  "digblock-render",
  "env_logger",
- "log",
 ]
 
 [[package]]
@@ -703,7 +702,6 @@ name = "digblock-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "crossbeam-channel",
  "digblock-assets",
  "digblock-core",
  "digblock-net",

@@ -12,7 +12,6 @@ digblock-net.workspace = true
 wgpu.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
-crossbeam-channel.workspace = true
 rustc-hash.workspace = true
 image.workspace = true
 rand.workspace = true

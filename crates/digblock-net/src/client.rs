@@ -113,10 +113,6 @@ impl NetClient {
 		self.my_id.is_some()
 	}
 
-	pub fn my_id(&self) -> Option<PlayerId> {
-		self.my_id
-	}
-
 	/// Token issued by the server in `Welcome`, for a future resume.
 	pub fn session_token(&self) -> Option<[u8; 16]> {
 		self.session_token

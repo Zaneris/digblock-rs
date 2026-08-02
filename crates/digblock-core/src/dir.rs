@@ -27,18 +27,6 @@ pub const DIRS: [Dir; 6] = [
 
 impl Dir {
 	#[inline]
-	pub fn opposite(self) -> Dir {
-		match self {
-			Dir::West => Dir::East,
-			Dir::East => Dir::West,
-			Dir::North => Dir::South,
-			Dir::South => Dir::North,
-			Dir::Top => Dir::Bottom,
-			Dir::Bottom => Dir::Top,
-		}
-	}
-
-	#[inline]
 	pub fn offset(self) -> (i32, i32, i32) {
 		match self {
 			Dir::West => (1, 0, 0),

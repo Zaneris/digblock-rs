@@ -103,6 +103,9 @@ impl Lifecycle {
 		}
 	}
 
+	/// Test seam: the shell mirrors phase through its own AppState and
+	/// never asks.
+	#[cfg(test)]
 	pub fn phase(&self) -> Phase {
 		self.phase
 	}

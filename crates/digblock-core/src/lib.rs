@@ -17,7 +17,9 @@ pub mod sun;
 pub mod touch;
 pub mod worldgen;
 
-pub use block::{BlockProps, BlockType, RenderClass};
+// Root re-exports: only what consumers actually reach through the crate
+// root (everything stays reachable at its module path).
+pub use block::BlockType;
 pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 
 /// Version of the behavior client and server execute INDEPENDENTLY and

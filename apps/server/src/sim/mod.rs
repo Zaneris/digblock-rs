@@ -175,6 +175,9 @@ impl Sim {
 		self.tick
 	}
 
+	/// Test seam: production callers read nothing off Sim but
+	/// `server_tick` (lib.rs status line).
+	#[cfg(test)]
 	pub fn player_count(&self) -> usize {
 		self.clients.len()
 	}
