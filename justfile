@@ -76,3 +76,7 @@ ios-sim:
 ios-device:
 	xcodebuild -project apps/ios/xcode/DigBlock.xcodeproj -scheme DigBlock \
 		-destination 'generic/platform=iOS' -configuration Debug build -allowProvisioningUpdates
+
+# Release-speed build with debug symbols, for Instruments/profilers.
+profile *ARGS:
+	cargo run --profile profiling -p digblock-desktop -- {{ARGS}}

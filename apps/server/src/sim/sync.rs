@@ -367,12 +367,12 @@ mod tests {
 		};
 		let mut t = 100;
 		while sim.test_player(1).unwrap().pos.x < 24.0 {
-			let ev = if x_ahead_ready(&sim) {
-				vec![batch(vec![walk_x(t)], 1)]
-			} else {
-				vec![]
-			};
-			sim.tick_once(ev);
+			// Hold with a stop input when the next column isn't ready —
+			// coasting (no input) would walk off the generated edge.
+			let mv = if x_ahead_ready(&sim) { 1.0 } else { 0.0 };
+			let mut input = walk_x(t);
+			input.move_axis = [0.0, mv];
+			sim.tick_once(vec![batch(vec![input], 1)]);
 			a.drain();
 			t += 1;
 			assert!(t < 60_000, "never walked toward the boundary");
@@ -446,7 +446,9 @@ mod tests {
 		};
 		// Only step when the column ahead is generated: on a saturated
 		// test host the walk can outrun the workers, drop through
-		// ungenerated ground, and entomb the player.
+		// ungenerated ground, and entomb the player. The hold must be an
+		// explicit stop INPUT — with no input the sim coasts on the last
+		// intent and walks off the edge anyway.
 		let ahead_ready = |sim: &Sim, dz: i32| {
 			let p = sim.test_player(1).expect("client alive").pos;
 			let (cx, cz) = (
@@ -458,23 +460,15 @@ mod tests {
 		};
 		let mut t = 100;
 		while col_dist(&sim) < 10 {
-			let ev = if ahead_ready(&sim, 1) {
-				vec![batch(vec![walk(t, 1.0)], 1)]
-			} else {
-				vec![]
-			};
-			sim.tick_once(ev);
+			let dz = if ahead_ready(&sim, 1) { 1.0 } else { 0.0 };
+			sim.tick_once(vec![batch(vec![walk(t, dz)], 1)]);
 			a.drain();
 			t += 1;
 			assert!(t < 60_000, "never walked out");
 		}
 		while col_dist(&sim) > 1 {
-			let ev = if ahead_ready(&sim, -1) {
-				vec![batch(vec![walk(t, -1.0)], 1)]
-			} else {
-				vec![]
-			};
-			sim.tick_once(ev);
+			let dz = if ahead_ready(&sim, -1) { -1.0 } else { 0.0 };
+			sim.tick_once(vec![batch(vec![walk(t, dz)], 1)]);
 			a.drain();
 			t += 1;
 			assert!(t < 90_000, "never walked back");

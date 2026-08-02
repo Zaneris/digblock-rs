@@ -17,6 +17,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Mirrors the justfile/CI `-D warnings` policy in-source, so plain
+# `cargo build` and rust-analyzer surface it instead of `just check`
+# discovering it later. Each crate opts in via `[lints] workspace = true`.
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.dependencies]
 digblock-core = { path = "crates/digblock-core" }
 digblock-render = { path = "crates/digblock-render" }
@@ -51,3 +57,9 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# `just bench` numbers and release binaries stay untouched; Instruments
+# work uses this profile for symbols.
+[profile.profiling]
+inherits = "release"
+debug = true

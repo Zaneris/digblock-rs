@@ -8,3 +8,6 @@ license.workspace = true
 
 [dev-dependencies]
 naga = { version = "26", features = ["wgsl-in"] }
+
+[lints]
+workspace = true

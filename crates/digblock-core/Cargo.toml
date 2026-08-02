@@ -9,3 +9,6 @@ glam.workspace = true
 rustc-hash.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
+
+[lints]
+workspace = true

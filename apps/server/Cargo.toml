@@ -30,3 +30,5 @@ log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }
 
+[lints]
+workspace = true

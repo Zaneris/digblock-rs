@@ -17,3 +17,6 @@ rustc-hash.workspace = true
 image.workspace = true
 rand.workspace = true
 log.workspace = true
+
+[lints]
+workspace = true

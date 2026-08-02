@@ -13,3 +13,6 @@ digblock-render.workspace = true
 digblock-platform.workspace = true
 log.workspace = true
 env_logger.workspace = true
+
+[lints]
+workspace = true

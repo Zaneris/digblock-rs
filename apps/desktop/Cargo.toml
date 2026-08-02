@@ -14,3 +14,6 @@ digblock-platform.workspace = true
 digblock-net-native.workspace = true
 env_logger.workspace = true
 log.workspace = true
+
+[lints]
+workspace = true
