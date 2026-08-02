@@ -20,9 +20,11 @@ fn main() {
 	//            tod 45, 1800 frames, bench.csv)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
+	let mut connect: Option<String> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
+			"--connect" => connect = args.next(),
 			"--screenshot" => options.screenshot = args.next().map(Into::into),
 			"--exit" => options.exit_after_screenshot = true,
 			"--frames" => frames = args.next().and_then(|v| v.parse().ok()),
@@ -70,5 +72,10 @@ fn main() {
 		// cost; presentation judders inherently at >display rate).
 	}
 
-	digblock_platform::run(Engine::new(config), options);
+	let mut engine = Engine::new(config);
+	if let Some(url) = connect {
+		log::info!("connecting to {url}");
+		engine.set_transport(Box::new(digblock_net_native::connect(&url)));
+	}
+	digblock_platform::run(engine, options);
 }

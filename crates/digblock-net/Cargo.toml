@@ -1,0 +1,13 @@
+[package]
+name = "digblock-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+digblock-core = { workspace = true }
+glam = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+log = { workspace = true }

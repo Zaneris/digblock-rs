@@ -19,7 +19,13 @@ just check                # full gate: cargo fmt --all --check, clippy -D warnin
 just check-ios            # cargo check -p digblock-ios --target aarch64-apple-ios (no Xcode needed)
 just ios-sim              # simulator build+run (requires full Xcode)
 just ios-device           # device build (requires full Xcode)
+just server               # dedicated multiplayer server (headless; journal persists in ./data)
+just bot -- --bots 4      # headless bot clients against a running server
+just compose wifi         # dockerized server behind tc netem (clean | wifi | cellular)
+just compose-bots wifi    # same + 4-bot soak, exits non-zero on missed snapshots
 ```
+
+Multiplayer: `just server` then `just run -- --connect https://localhost:4433` (×N windows). macOS caveat: Docker Desktop's host→container UDP proxy drops QUIC handshakes, so a desktop client can't reach the *containerized* server — the compose netem rig is container↔container (bots profile); play against `just server` directly.
 
 Run a single test: `cargo test -p digblock-core --test worldgen` (integration test file) or `cargo test -p digblock-core <test_name>`. CI (`.github/workflows/ci.yml`) runs the same steps as `just check` plus desktop and iOS builds; clippy warnings fail CI.
 
@@ -31,13 +37,20 @@ Formatting uses hard tabs, max width 100 (`rustfmt.toml`).
 
 ## Architecture
 
-Workspace with four crates and two thin app launchers. The crate boundaries are load-bearing:
+Workspace with six crates, two thin app launchers, and a dedicated server. The crate boundaries are load-bearing:
 
 - **`crates/digblock-core`** — pure game logic (worldgen, chunks, meshing, player physics, touch/input driving, sun, metrics). No GPU or windowing deps; everything is testable headless.
 - **`crates/digblock-platform`** — winit shell, lifecycle state machine, input translation, screenshot capture. This is the **only** crate allowed to touch `winit` or `wgpu::Surface`. It defines the `Game` trait and the `Gpu` struct (process-lifetime device/queue).
 - **`crates/digblock-render`** — the engine: world state + wgpu renderer. Implements `Game`. It renders into `&TextureView`s borrowed for a single `render()` call and never sees the surface, so it cannot hold a stale swapchain texture across a suspend on any platform.
 - **`crates/digblock-assets`** — compile-time embedded textures and WGSL shaders (`include_bytes!`/`include_str!`), so every platform gets byte-identical assets. Shaders are naga-validated by a test, so CI catches WGSL errors without a GPU.
+- **`crates/digblock-net`** — multiplayer protocol + client netcode, **sans-IO** (no tokio/sockets — wasm-clean; a future browser client implements the same `NetTransport` trait over the WebTransport JS API). Wire format is postcard, append-only evolution, `PROTOCOL_VERSION` bumped on breaks. Holds the movement predictor (rewind/replay reconciliation), pending-edit tracking (authoritative-beats-pending precedence), remote-player interpolation, and an in-memory loopback transport that makes all of it plain-`cargo test`-able.
+- **`crates/digblock-net-native`** — the native transport driver: wtransport (WebTransport/QUIC) on a detached background thread, bridged over non-blocking channels. Only `apps/desktop` and the server's bot link it; iOS is untouched.
 - **`apps/desktop`**, **`apps/ios`** — thin launchers (arg parsing / staticlib entry).
+- **`apps/server`** — headless dedicated server (lib + `digblock-server`/`bot` bins). Authoritative sim on one 60Hz thread (`sim.rs`, socket-free and fully tested by injected events), wtransport net layer (`net.rs`), multi-center no-mesh chunk store (`store.rs`), append-only edit journal (`journal.rs` — terrain is never sent; join sync = seed + edits).
+
+### Multiplayer model
+
+Server-authoritative everything, but movement uses an **adoption envelope**: clients send per-tick inputs *plus* their claimed post-tick state; the server runs the same `Player::tick` and adopts the claim when it's within `POS_TOLERANCE`, sanely displaced, and not inside geometry — so honest clients never accumulate drift and never rubber-band. A second, time-integrated gate closes the edge-riding exploit: the server keeps an EWMA of each adopted claim's (claim − sim) delta *vector* (`DRIFT_ALPHA`, ~2 s window); honest deltas are zero-mean float noise and cancel, while sustained directional bias trips `DRIFT_TOLERANCE` within ~6 ticks and suspends adoption until the average decays — capping cheat gain at ~1.2 blocks/s sustained (vs 4 walking). Out-of-envelope claims keep the server's state and the next snapshot corrects the client (rewind/replay, surfaced as a ~200ms decaying camera offset, never a snap). Dig/place is predicted locally, validated server-side by re-raycasting from the claimed origin (`EDIT_POS_TOLERANCE` vs the server's player position), and confirmed or reverted. Fluid runs only on the server; results broadcast as ordinary edits. Protocol constants live in `digblock-net/src/protocol.rs`. `DIG_PLAYERBOX=1` renders a fake remote player 5 blocks ahead (GPU-path check without a second client).
 
 ### Java heritage
 

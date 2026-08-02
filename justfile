@@ -7,6 +7,24 @@ run *ARGS:
 bench *ARGS:
 	cargo run --release -p digblock-desktop -- --bench {{ARGS}}
 
+# Dedicated multiplayer server (headless). Journal persists in ./data.
+server *ARGS:
+	cargo run -p digblock-server --bin digblock-server -- {{ARGS}}
+
+# Headless bot client(s) against a running server.
+bot *ARGS:
+	cargo run -p digblock-server --bin bot -- {{ARGS}}
+
+# Dockerized server behind a tc netem profile: clean | wifi | cellular.
+compose PROFILE="clean":
+	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
+		docker compose -f docker/compose.yml up --build server
+
+# Same, plus a 4-bot soak that exits non-zero on missed snapshots.
+compose-bots PROFILE="clean":
+	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
+		docker compose -f docker/compose.yml --profile bots up --build --abort-on-container-exit
+
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings

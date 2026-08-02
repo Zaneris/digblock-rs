@@ -1,0 +1,102 @@
+// Remote players: one instanced box per player, generated entirely from
+// vertex_index (no geometry buffer — the spray.wgsl trick). Instance =
+// two vec4s: (eye position xyz, yaw) + (color rgb, spare). The box spans
+// 0.6 × 1.8 × 0.6 anchored to the eye (y −1.5 .. +0.3), matching the
+// point-collider probes, and is lit with a flat lambert + the standard
+// distance fog so it sits in the scene like terrain does.
+
+// Must match FrameUniforms in renderer.rs — field order and packing
+// are load-bearing (see water.wgsl).
+struct Frame {
+	view_proj: mat4x4f,
+	inv_view_proj: mat4x4f,
+	light_near: mat4x4f,
+	light_wide: mat4x4f,
+	light_dir: vec4f,
+	light_color: vec4f,
+	ambient: vec4f,
+	// rgb = fog color; w = fog start distance
+	fog_color: vec4f,
+	// xyz = camera position; w = 1 / (fog_end − fog_start)
+	cam_pos: vec4f,
+	sun_dir: vec4f,
+	moon_dir: vec4f,
+	zenith: vec4f,
+	horizon: vec4f,
+	misc: vec4f,
+	water_misc: vec4f,
+}
+
+@group(0) @binding(0) var<uniform> frame: Frame;
+
+const QUAD = array<vec2f, 6>(
+	vec2f(0.0, 0.0),
+	vec2f(1.0, 0.0),
+	vec2f(0.0, 1.0),
+	vec2f(0.0, 1.0),
+	vec2f(1.0, 0.0),
+	vec2f(1.0, 1.0),
+);
+
+// Face normals and tangents of a unit cube (bitangent = cross).
+const NORMALS = array<vec3f, 6>(
+	vec3f(1.0, 0.0, 0.0),
+	vec3f(-1.0, 0.0, 0.0),
+	vec3f(0.0, 1.0, 0.0),
+	vec3f(0.0, -1.0, 0.0),
+	vec3f(0.0, 0.0, 1.0),
+	vec3f(0.0, 0.0, -1.0),
+);
+const TANGENTS = array<vec3f, 6>(
+	vec3f(0.0, 0.0, 1.0),
+	vec3f(0.0, 0.0, -1.0),
+	vec3f(1.0, 0.0, 0.0),
+	vec3f(-1.0, 0.0, 0.0),
+	vec3f(-1.0, 0.0, 0.0),
+	vec3f(1.0, 0.0, 0.0),
+);
+
+struct VsOut {
+	@builtin(position) pos: vec4f,
+	@location(0) col: vec4f,
+}
+
+@vertex
+fn vs(
+	@builtin(vertex_index) vi: u32,
+	@location(0) i0: vec4f, // eye pos xyz, yaw
+	@location(1) i1: vec4f, // color rgb, spare
+) -> VsOut {
+	let face = vi / 6u;
+	let corner = vi % 6u;
+	let n = NORMALS[face];
+	let t = TANGENTS[face];
+	let b = cross(n, t);
+	let uv = QUAD[corner];
+	let local = n * 0.5 + (uv.x - 0.5) * t + (uv.y - 0.5) * b;
+	// Body proportions, eye-anchored: y −1.5 .. +0.3 around the eye.
+	let scaled = vec3f(local.x * 0.6, local.y * 1.8 - 0.6, local.z * 0.6);
+	let s = sin(i0.w);
+	let c = cos(i0.w);
+	let rot = vec3f(scaled.x * c + scaled.z * s, scaled.y, -scaled.x * s + scaled.z * c);
+	let world = i0.xyz + rot;
+	let wn = vec3f(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
+
+	// Flat lambert against the shared light rig + ambient.
+	let diffuse = max(dot(wn, -frame.light_dir.xyz), 0.0) * frame.light_dir.w;
+	var col = i1.rgb * (frame.ambient.rgb + frame.light_color.rgb * diffuse);
+	// Standard distance fog (matches the chunk shader's fade band).
+	let dist = distance(world, frame.cam_pos.xyz);
+	let fog = clamp((dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
+	col = mix(col, frame.fog_color.rgb, fog);
+
+	var out: VsOut;
+	out.pos = frame.view_proj * vec4f(world, 1.0);
+	out.col = vec4f(col, 1.0);
+	return out;
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4f {
+	return in.col;
+}

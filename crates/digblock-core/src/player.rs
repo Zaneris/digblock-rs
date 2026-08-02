@@ -58,6 +58,15 @@ pub struct PlayerIntent {
 	pub jump: bool,
 }
 
+/// Everything `Player::tick` reads and writes — the unit of state that
+/// snapshots, prediction, and reconciliation move around.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PlayerState {
+	pub pos: Vec3,
+	pub vel: Vec3,
+}
+
+#[derive(Clone)]
 pub struct Player {
 	/// Eye position (the Java camera position).
 	pub pos: Vec3,
@@ -80,6 +89,18 @@ impl Player {
 			pos: spawn,
 			out: Vec3::ZERO,
 		}
+	}
+
+	pub fn state(&self) -> PlayerState {
+		PlayerState {
+			pos: self.pos,
+			vel: self.out,
+		}
+	}
+
+	pub fn set_state(&mut self, s: PlayerState) {
+		self.pos = s.pos;
+		self.out = s.vel;
 	}
 
 	fn ground_check(&self, dt: f32, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
@@ -367,6 +388,37 @@ mod tests {
 			);
 		}
 		assert!(p.pos.z < 12.0, "stopped before wall, z = {}", p.pos.z);
+	}
+
+	#[test]
+	fn state_roundtrip_preserves_trajectory() {
+		// Two players, identical inputs; one has its state extracted and
+		// restored mid-air. Both must land bit-identically — reconciliation
+		// rewind/replay depends on state()/set_state() being lossless.
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.3, 1.0),
+			jump: false,
+		};
+		let mut a = new_player();
+		let mut b = new_player();
+		for i in 0..300 {
+			let intent = if i == 50 {
+				PlayerIntent {
+					move_axis: forward.move_axis,
+					jump: true,
+				}
+			} else {
+				forward
+			};
+			a.tick(TICK, Vec3::Z, intent, &flat_world);
+			b.tick(TICK, Vec3::Z, intent, &flat_world);
+			if i == 80 {
+				let s = b.state();
+				b = new_player();
+				b.set_state(s);
+			}
+		}
+		assert_eq!(a.state(), b.state());
 	}
 
 	#[test]

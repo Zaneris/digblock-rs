@@ -128,6 +128,26 @@ pub struct Engine {
 	/// Shader animation clock, wrapped at 600s (carried in the otherwise
 	/// unused light_color.w — no uniform layout change).
 	time_secs: f32,
+	/// Multiplayer client; None = single-player (every connected branch
+	/// below is dead in that case).
+	net: Option<digblock_net::NetClient>,
+	net_events: Vec<digblock_net::NetEvent>,
+	/// Snapshot ack carried from the net drain to the walk branch (the
+	/// reconcile needs the physics `block_at` borrow).
+	pending_ack: Option<(u32, digblock_core::player::PlayerState)>,
+	/// Visual-only reconciliation smoothing: camera = player + offset,
+	/// decaying ~200 ms so corrections nudge instead of teleport.
+	correction_offset: Vec3,
+	/// Authoritative edits for chunks not Ready yet; retried each frame
+	/// until they land (join sync races local chunk generation).
+	unapplied_edits: rustc_hash::FxHashMap<(i32, i32, i32), BlockType>,
+	/// Per-frame remote-player sampling scratch.
+	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
+	remote_instances: Vec<[f32; 8]>,
+	/// Reconciliation health, logged every ~5 s while connected.
+	net_corrections: u32,
+	net_error_accum: f32,
+	net_log_timer: f32,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -143,6 +163,23 @@ pub struct Engine {
 
 fn ms_since(t: std::time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
+}
+
+/// Stable, distinct color per player id: golden-ratio hue walk, flat
+/// saturation/value via a cheap HSV→RGB.
+fn player_color(id: u8) -> [f32; 3] {
+	let h = (id as f32 * 0.618_034) % 1.0 * 6.0;
+	let x = 1.0 - (h % 2.0 - 1.0).abs();
+	let (r, g, b) = match h as u32 {
+		0 => (1.0, x, 0.0),
+		1 => (x, 1.0, 0.0),
+		2 => (0.0, 1.0, x),
+		3 => (0.0, x, 1.0),
+		4 => (x, 0.0, 1.0),
+		_ => (1.0, 0.0, x),
+	};
+	// Lift toward pastel so the lambert shading stays readable.
+	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
 }
 
 impl Engine {
@@ -191,6 +228,16 @@ impl Engine {
 			fluid: digblock_core::fluid::FluidSim::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
+			net: None,
+			net_events: Vec::new(),
+			pending_ack: None,
+			correction_offset: Vec3::ZERO,
+			unapplied_edits: rustc_hash::FxHashMap::default(),
+			remote_scratch: Vec::new(),
+			remote_instances: Vec::new(),
+			net_corrections: 0,
+			net_error_accum: 0.0,
+			net_log_timer: 0.0,
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -198,6 +245,118 @@ impl Engine {
 			bench_t: 0.0,
 			pending_uploads: std::collections::VecDeque::new(),
 			size: (1, 1),
+		}
+	}
+
+	/// Attach a multiplayer transport (desktop `--connect`). The world is
+	/// swapped to the server's seed when the Welcome arrives; until then
+	/// the local world keeps running.
+	pub fn set_transport(&mut self, transport: Box<dyn digblock_net::transport::NetTransport>) {
+		let name = std::env::var("USER").unwrap_or_else(|_| "player".into());
+		self.net = Some(digblock_net::NetClient::new(
+			transport,
+			digblock_net::client::NetClientConfig {
+				name,
+				draw_dist: self.config.draw_dist,
+			},
+		));
+		// The server has no fly physics; walk is the only multiplayer mode.
+		self.walking = true;
+	}
+
+	/// Welcome handshake: replace the locally-seeded world with the
+	/// server's. Cheap at startup — nothing meaningful has streamed yet.
+	fn swap_world(&mut self, seed: f64, spawn: Vec3) {
+		log::info!("joining server world: seed {seed}");
+		self.seed = seed;
+		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
+		self.player = Player::new(spawn);
+		self.camera.pos = spawn;
+		self.fluid = digblock_core::fluid::FluidSim::new();
+		self.flow_accum = 0.0;
+		self.tick_accum = 0.0;
+		self.pending_ack = None;
+		self.correction_offset = Vec3::ZERO;
+		self.unapplied_edits.clear();
+		self.pending_uploads.clear();
+		if let Some(r) = self.renderer.as_mut() {
+			r.clear_chunks();
+		}
+	}
+
+	/// Apply an authoritative block value; chunks not Ready yet retry
+	/// each frame until generation catches up.
+	fn apply_remote_edit(&mut self, cell: (i32, i32, i32), block: BlockType) {
+		if !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&cell.1) {
+			return; // never retryable
+		}
+		if self
+			.pipeline
+			.set_block(cell.0, cell.1, cell.2, block)
+			.is_some()
+			|| self.pipeline.block_at(cell.0, cell.1, cell.2) == Some(block)
+		{
+			self.unapplied_edits.remove(&cell);
+		} else {
+			self.unapplied_edits.insert(cell, block);
+		}
+	}
+
+	/// Drain the network: remote edits into the pipeline, acks stashed
+	/// for the walk branch, disconnects fall back to single-player.
+	fn pump_net(&mut self, dt: f32) {
+		let Some(mut net) = self.net.take() else {
+			return;
+		};
+		net.remotes.advance(dt);
+		let mut events = std::mem::take(&mut self.net_events);
+		events.clear();
+		net.poll(&mut events);
+		let mut drop_net = false;
+		for ev in events.drain(..) {
+			use digblock_net::NetEvent;
+			match ev {
+				NetEvent::Welcome { seed, spawn, .. } => self.swap_world(seed, spawn),
+				NetEvent::Ack {
+					acked_input_tick,
+					me,
+				} => self.pending_ack = Some((acked_input_tick, me)),
+				NetEvent::Edit { cell, block } => self.apply_remote_edit(cell, block),
+				NetEvent::EditRejected(e) => {
+					// Revert the predicted edit; held_block stays (cosmetic).
+					self.pipeline
+						.set_block(e.cell.0, e.cell.1, e.cell.2, e.prev);
+				}
+				NetEvent::Refused { reason } => {
+					log::warn!("server refused: {reason}; continuing single-player");
+					drop_net = true;
+				}
+				NetEvent::Disconnected { reason } => {
+					log::warn!("disconnected: {reason}; continuing single-player");
+					drop_net = true;
+				}
+			}
+		}
+		self.net_events = events;
+
+		// Retry edits that raced chunk generation (bounded per frame).
+		if !self.unapplied_edits.is_empty() {
+			let batch: Vec<((i32, i32, i32), BlockType)> = self
+				.unapplied_edits
+				.iter()
+				.take(64)
+				.map(|(&c, &b)| (c, b))
+				.collect();
+			for (cell, block) in batch {
+				self.apply_remote_edit(cell, block);
+			}
+		}
+
+		if !drop_net {
+			self.net = Some(net);
+		} else {
+			self.pending_ack = None;
+			self.correction_offset = Vec3::ZERO;
 		}
 	}
 
@@ -301,8 +460,27 @@ impl Engine {
 					.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
 			{
 				self.held_block = prev;
-				self.fluid
-					.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
+				match self.net.as_mut() {
+					Some(net) if net.ready() => {
+						// Predicted: the server confirms (no-op re-apply) or
+						// rejects (revert to prev via EditRejected).
+						let tick = net.predictor.current_tick();
+						let seq = net.edits.begin(hit.cell, prev, BlockType::Air, tick);
+						net.send_edit(
+							seq,
+							tick,
+							origin,
+							dir,
+							digblock_net::messages::EditKind::Dig,
+							hit.cell,
+							(0, 0, 0),
+						);
+					}
+					_ => {
+						self.fluid
+							.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
+					}
+				}
 			}
 		} else if hit.normal != (0, 0, 0) {
 			let target = (
@@ -315,14 +493,32 @@ impl Engine {
 			let cell = |v: Vec3| (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
 			let eye = cell(self.camera.pos);
 			let body = cell(self.camera.pos - Vec3::new(0.0, 1.25, 0.0));
-			if target != eye
-				&& target != body
-				&& self
-					.pipeline
-					.set_block(target.0, target.1, target.2, self.held_block)
-					.is_some()
-			{
-				self.fluid.schedule_around(target.0, target.1, target.2);
+			if target != eye && target != body {
+				if let Some(prev) =
+					self.pipeline
+						.set_block(target.0, target.1, target.2, self.held_block)
+				{
+					match self.net.as_mut() {
+						Some(net) if net.ready() => {
+							let tick = net.predictor.current_tick();
+							let seq = net.edits.begin(target, prev, self.held_block, tick);
+							net.send_edit(
+								seq,
+								tick,
+								origin,
+								dir,
+								digblock_net::messages::EditKind::Place {
+									block: self.held_block as u8,
+								},
+								hit.cell,
+								hit.normal,
+							);
+						}
+						_ => {
+							self.fluid.schedule_around(target.0, target.1, target.2);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -436,7 +632,9 @@ impl Game for Engine {
 				Key::Space => self.keys.up = pressed,
 				Key::Shift => self.keys.down = pressed,
 				Key::F => {
-					if pressed && !self.fly_key_down {
+					// Fly is a single-player debug tool; the server only
+					// simulates walking.
+					if pressed && !self.fly_key_down && self.net.is_none() {
 						self.walking = !self.walking;
 						if !self.walking {
 							// Enter fly where the player stands.
@@ -530,11 +728,35 @@ impl Game for Engine {
 		self.camera
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
 
+		self.pump_net(dt);
+		if let Some(net) = self.net.as_ref() {
+			// Reconciliation health line, ~5 s cadence (matches metrics).
+			self.net_log_timer += dt;
+			if self.net_log_timer >= 5.0 && net.ready() {
+				let avg = if self.net_corrections > 0 {
+					self.net_error_accum / self.net_corrections as f32
+				} else {
+					0.0
+				};
+				log::info!(
+					"net: {} corrections (avg {:.3} blocks), {} pending edits, {} unapplied",
+					self.net_corrections,
+					avg,
+					net.edits.len(),
+					self.unapplied_edits.len(),
+				);
+				self.net_log_timer = 0.0;
+				self.net_corrections = 0;
+				self.net_error_accum = 0.0;
+			}
+		}
+
 		self.apply_clicks();
 
 		// Water flow runs on its own world-tick cadence, independent of
 		// the walk/fly camera mode; idle (empty queue) it costs nothing.
-		{
+		// Connected, the server owns fluid — its results arrive as edits.
+		if self.net.is_none() {
 			use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
 			self.flow_accum = (self.flow_accum + dt).min(1.0);
 			while self.flow_accum >= FLOW_STEP_SECS {
@@ -560,11 +782,42 @@ impl Game for Engine {
 			self.tick_accum = (self.tick_accum + dt).min(0.25);
 			let pipeline = &self.pipeline;
 			let block_at = |x: i32, y: i32, z: i32| pipeline.block_at(x, y, z);
-			while self.tick_accum >= TICK {
-				self.tick_accum -= TICK;
-				self.player.tick(TICK, dir, intent, &block_at);
+			match self.net.as_mut() {
+				Some(net) if net.ready() => {
+					// Reconcile against the latest snapshot before predicting
+					// this frame's ticks; corrections land as a decaying
+					// visual offset, not a camera snap.
+					if let Some((tick, state)) = self.pending_ack.take() {
+						use digblock_net::predict::Reconciled;
+						if let Reconciled::Replayed { error } =
+							net.predictor
+								.reconcile(&mut self.player, tick, state, &block_at)
+						{
+							self.correction_offset += error;
+							self.net_corrections += 1;
+							self.net_error_accum += error.length();
+						}
+					}
+					while self.tick_accum >= TICK {
+						self.tick_accum -= TICK;
+						net.predictor
+							.predict(&mut self.player, intent, dir, &block_at);
+					}
+					net.send_inputs();
+				}
+				_ => {
+					while self.tick_accum >= TICK {
+						self.tick_accum -= TICK;
+						self.player.tick(TICK, dir, intent, &block_at);
+					}
+				}
 			}
-			self.camera.pos = self.player.pos;
+			// ~200 ms exponential decay; snapped off below a millimeter.
+			self.correction_offset *= (-dt / 0.2).exp();
+			if self.correction_offset.length_squared() < 1e-6 {
+				self.correction_offset = Vec3::ZERO;
+			}
+			self.camera.pos = self.player.pos + self.correction_offset;
 		} else {
 			// Debug fly camera.
 			let speed = 24.0 * dt;
@@ -599,6 +852,38 @@ impl Game for Engine {
 		self.size = size;
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
+		// Remote players, sampled ~100 ms in the past between snapshots.
+		{
+			let before = self.remote_instances.len();
+			self.remote_instances.clear();
+			if let Some(net) = self.net.as_ref() {
+				net.remotes.sample(&mut self.remote_scratch);
+				for d in &self.remote_scratch {
+					let c = player_color(d.id);
+					self.remote_instances
+						.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
+				}
+			}
+			// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
+			// a GPU-path check that needs no second client.
+			if std::env::var_os("DIG_PLAYERBOX").is_some() {
+				let p = self.camera.pos + self.camera.dir() * 5.0;
+				let c = player_color(2);
+				self.remote_instances
+					.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
+			}
+			if self.remote_instances.len() != before {
+				log::info!(
+					"remote players in view data: {}",
+					self.remote_instances.len()
+				);
+			}
+			if self.remote_instances.len() != before || !self.remote_instances.is_empty() {
+				if let Some(r) = self.renderer.as_mut() {
+					r.set_remote_players(gpu, &self.remote_instances);
+				}
+			}
+		}
 		let d = self.depth();
 		let texels = self.config.shadow_size as f32;
 		let near_vp = self.sun.near_vp(self.camera.pos, d, texels);

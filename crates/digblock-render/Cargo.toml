@@ -8,6 +8,7 @@ license.workspace = true
 digblock-core.workspace = true
 digblock-assets.workspace = true
 digblock-platform.workspace = true
+digblock-net.workspace = true
 wgpu.workspace = true
 glam.workspace = true
 bytemuck.workspace = true

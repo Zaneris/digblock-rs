@@ -1,0 +1,32 @@
+[package]
+name = "digblock-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "digblock_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "digblock-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "bot"
+path = "src/bin/bot.rs"
+
+[dependencies]
+digblock-core = { workspace = true }
+digblock-net = { workspace = true }
+digblock-net-native = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+wtransport = { workspace = true }
+crossbeam-channel = { workspace = true }
+rustc-hash = { workspace = true }
+glam = { workspace = true }
+rand = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }
+

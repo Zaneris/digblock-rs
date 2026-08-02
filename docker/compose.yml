@@ -1,0 +1,41 @@
+# Local multiplayer test rig.
+#
+#   just compose clean      server, no impairment
+#   just compose wifi       30ms delay, 1% loss
+#   just compose cellular   80ms ±20ms jitter, 3% loss
+#   just compose-bots       adds a 4-bot soak (exits non-zero on failure)
+#
+# The /udp on the port mapping is mandatory — QUIC never touches TCP.
+#
+# macOS caveat: Docker Desktop's host->container UDP proxy does not
+# reliably deliver QUIC handshakes, so a desktop client on the Mac host
+# cannot connect to the containerized server. Container->container
+# traffic (the bots profile) is unaffected — that's the netem rig. To
+# play against a local server, use `just server` instead.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "4433:4433/udp"
+    volumes:
+      - ./data:/data
+    cap_add:
+      - NET_ADMIN
+    environment:
+      NETEM: "${NETEM:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+
+  bots:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command:
+      ["bot", "--url", "https://server:4433", "--bots", "4", "--duration", "60", "--edit-rate", "1"]
+    depends_on:
+      - server
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    profiles:
+      - bots

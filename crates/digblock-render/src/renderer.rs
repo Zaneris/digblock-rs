@@ -158,6 +158,8 @@ pub struct Renderer {
 	/// Stateless waterfall spray/mist billboards (instance list fed by
 	/// MeshData.impacts through upload_chunk).
 	spray: crate::spray::Spray,
+	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
+	players: crate::players::RemotePlayersDraw,
 	/// Layout of `FrameTargets::scene_bg` (depth copy + scene color +
 	/// linear sampler): blit group 0, water group 3.
 	scene_bgl: wgpu::BindGroupLayout,
@@ -782,6 +784,12 @@ impl Renderer {
 				&frame_bgl,
 				if draw_dist <= 10 { 24 } else { 64 },
 			),
+			players: crate::players::RemotePlayersDraw::new(
+				gpu,
+				surface_format,
+				DEPTH_FORMAT,
+				&frame_bgl,
+			),
 			targets: None,
 			scene_bgl,
 			linear_sampler,
@@ -845,6 +853,20 @@ impl Renderer {
 			}
 			self.free_slots.push(old.slot);
 		}
+	}
+
+	/// Drop every uploaded chunk mesh (world swap: the multiplayer
+	/// handshake replaces the locally-seeded world with the server's).
+	pub fn clear_chunks(&mut self) {
+		let all: Vec<ChunkPos> = self.chunks.keys().copied().collect();
+		for pos in all {
+			self.remove_chunk(pos);
+		}
+	}
+
+	/// This frame's remote-player instances: `[pos.xyz, yaw, rgb, spare]`.
+	pub fn set_remote_players(&mut self, gpu: &Gpu, instances: &[[f32; 8]]) {
+		self.players.set_instances(gpu, instances);
 	}
 
 	/// (Re)build the size-dependent frame targets when the size changes.
@@ -1112,6 +1134,14 @@ impl Renderer {
 						stats.chunks_drawn += 1;
 						stats.triangles += *index_count / 3;
 					}
+				}
+
+				// Remote players: opaque, depth-writing, before the sky so
+				// they occlude and fog like terrain (frame_bg is bound at 0).
+				let player_tris = self.players.draw(&mut pass);
+				if player_tris > 0 {
+					stats.draw_calls += 1;
+					stats.triangles += player_tris;
 				}
 
 				// Sky after solids (depth test discards occluded fragments —

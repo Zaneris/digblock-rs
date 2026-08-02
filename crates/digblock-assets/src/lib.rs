@@ -41,8 +41,9 @@ pub mod shader {
 	pub const OVERLAY: &str = include_str!("../../../assets/shaders/overlay.wgsl");
 	pub const BLIT: &str = include_str!("../../../assets/shaders/blit.wgsl");
 	pub const SPRAY: &str = include_str!("../../../assets/shaders/spray.wgsl");
+	pub const PLAYERS: &str = include_str!("../../../assets/shaders/players.wgsl");
 
-	pub const ALL: [(&str, &str); 7] = [
+	pub const ALL: [(&str, &str); 8] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -50,6 +51,7 @@ pub mod shader {
 		("overlay.wgsl", OVERLAY),
 		("blit.wgsl", BLIT),
 		("spray.wgsl", SPRAY),
+		("players.wgsl", PLAYERS),
 	];
 }
 

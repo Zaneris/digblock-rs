@@ -1,0 +1,12 @@
+[package]
+name = "digblock-net-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+digblock-net = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+wtransport = { workspace = true, features = ["dangerous-configuration"] }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }

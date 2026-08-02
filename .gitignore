@@ -5,3 +5,7 @@
 xcuserdata/
 build/
 .rust-lib/
+# Multiplayer server world journals + self-signed certs (just server /
+# docker compose volume).
+/data/
+docker/data/
