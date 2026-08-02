@@ -109,7 +109,7 @@ impl FluidSim {
 		};
 		// Only empty and in-transit water cells recompute; sources are
 		// infinite by definition and solids are not fluid business.
-		if cur == BlockType::Water || cur.props().collides {
+		if cur.is_fluid_source() || cur.props().collides {
 			return;
 		}
 		let wanted = if world.get(x, y + 1, z).is_some_and(|b| b.is_water()) {

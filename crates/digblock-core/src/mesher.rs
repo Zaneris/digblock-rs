@@ -380,9 +380,8 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					if !face_visible(me, neighbor) {
 						continue;
 					}
-					let class = me.props().class;
 					let tex = me.texture(dir);
-					if class == RenderClass::Translucent {
+					if me.props().bucket == crate::block::MeshBucket::Water {
 						// Not get_or_insert_with: recording the impact cell
 						// must happen exactly once, and the closure can't
 						// reach mesh.impacts.

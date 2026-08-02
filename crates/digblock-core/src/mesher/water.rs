@@ -114,7 +114,7 @@ impl WaterState {
 		let falling = me.is_falling();
 		let above = BlockType::from_u8(input.get(x, y + 1, z));
 		let full = above.is_water();
-		let flow = if falling || me == BlockType::Water {
+		let flow = if falling || me.is_fluid_source() {
 			0 // sources rest, falls scroll vertically instead
 		} else {
 			let amount = |dx: i32, dz: i32| -> u8 {

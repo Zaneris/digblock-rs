@@ -319,8 +319,20 @@ mod tests {
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
 		let mut a = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Let the loaded-side pool settle; col (2,0) is beyond sim_radius 1
-		// of the spawn center, so the +x half cannot form yet.
+		// Wait for column (1,0) — the walk's path — to be resident, so a
+		// loaded test host can't drop the player through ungenerated
+		// terrain mid-walk. Then let the loaded-side pool settle; col
+		// (2,0) is beyond sim_radius 1 of the spawn center, so the +x
+		// half cannot form yet.
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+		while sim.test_block_at(17, 0, 8).is_none() {
+			assert!(
+				std::time::Instant::now() < deadline,
+				"col (1,0) never generated"
+			);
+			sim.tick_once(vec![]);
+			a.drain();
+		}
 		for _ in 0..300 {
 			sim.tick_once(vec![]);
 			a.drain();

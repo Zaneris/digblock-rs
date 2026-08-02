@@ -52,10 +52,38 @@ pub enum RenderClass {
 	Translucent,
 }
 
+/// Which vertex stream a block's faces land in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MeshBucket {
+	/// The single-word solid stream (opaque and cutout geometry).
+	Solid,
+	/// The two-word water stream (surface lips, flow/splash payload,
+	/// alpha blend, no depth write).
+	Water,
+}
+
+/// Fluid behavior, when a block IS one. Data, not variant identity: a
+/// second fluid (lava) is new PROPS rows, not new match arms across the
+/// mesher and the fluid sim.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FluidProps {
+	/// Level 1..=8 this block holds (sources and falls are full).
+	pub amount: u8,
+	/// Infinite, never recomputed by the fluid sim.
+	pub source: bool,
+	/// Falling through air; renders full-height, lands at full amount.
+	pub falling: bool,
+}
+
 pub struct BlockProps {
+	/// Occlusion/face-culling rule ONLY — bucket and fluid behavior are
+	/// separate fields (a future glass is Translucent but Solid-bucket
+	/// and not a fluid).
 	pub class: RenderClass,
 	/// Blocks the player and stops the picking ray.
 	pub collides: bool,
+	pub bucket: MeshBucket,
+	pub fluid: Option<FluidProps>,
 	/// Texture-array layer indices (order fixed by digblock_assets::tex::LAYERS).
 	pub tex_side: u8,
 	pub tex_top: u8,
@@ -66,9 +94,28 @@ const fn props(class: RenderClass, collides: bool, side: u8, top: u8, bottom: u8
 	BlockProps {
 		class,
 		collides,
+		bucket: MeshBucket::Solid,
+		fluid: None,
 		tex_side: side,
 		tex_top: top,
 		tex_bottom: bottom,
+	}
+}
+
+/// A water-family row: water bucket + fluid behavior.
+const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
+	BlockProps {
+		class: RenderClass::Translucent,
+		collides: false,
+		bucket: MeshBucket::Water,
+		fluid: Some(FluidProps {
+			amount,
+			source,
+			falling,
+		}),
+		tex_side: tex::WATER,
+		tex_top: tex::WATER,
+		tex_bottom: tex::WATER,
 	}
 }
 
@@ -91,8 +138,8 @@ mod tex {
 pub const PROPS: [BlockProps; BlockType::COUNT] = {
 	use RenderClass as R;
 	[
-		props(R::None, false, 0, 0, 0), // Air
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // Water
+		props(R::None, false, 0, 0, 0),                          // Air
+		water_props(8, true, false),                             // Water (source)
 		props(R::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT), // Dirt
 		props(R::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT), // Grass
 		props(R::Opaque, true, tex::SAND, tex::SAND, tex::SAND), // Sand
@@ -100,14 +147,14 @@ pub const PROPS: [BlockProps; BlockType::COUNT] = {
 		props(R::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), // Wood
 		props(R::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), // Leaves
 		props(R::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW), // Snow
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow1
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow2
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow3
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow4
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow5
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow6
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFlow7
-		props(R::Translucent, false, tex::WATER, tex::WATER, tex::WATER), // WaterFall
+		water_props(1, false, false),                            // WaterFlow1
+		water_props(2, false, false),                            // WaterFlow2
+		water_props(3, false, false),                            // WaterFlow3
+		water_props(4, false, false),                            // WaterFlow4
+		water_props(5, false, false),                            // WaterFlow5
+		water_props(6, false, false),                            // WaterFlow6
+		water_props(7, false, false),                            // WaterFlow7
+		water_props(8, false, true),                             // WaterFall
 	]
 };
 
@@ -160,31 +207,27 @@ impl BlockType {
 
 	/// How much water this block holds, 1..=8 — None for non-water.
 	/// Sources and falling water are full; flowing water carries its
-	/// spread level.
+	/// spread level. Pure table lookup: variant identity plays no part.
 	#[inline]
 	pub fn water_amount(self) -> Option<u8> {
-		match self {
-			BlockType::Water | BlockType::WaterFall => Some(8),
-			BlockType::WaterFlow1 => Some(1),
-			BlockType::WaterFlow2 => Some(2),
-			BlockType::WaterFlow3 => Some(3),
-			BlockType::WaterFlow4 => Some(4),
-			BlockType::WaterFlow5 => Some(5),
-			BlockType::WaterFlow6 => Some(6),
-			BlockType::WaterFlow7 => Some(7),
-			_ => None,
-		}
+		self.props().fluid.map(|f| f.amount)
 	}
 
 	/// Any member of the water family (source, flowing, falling).
 	#[inline]
 	pub fn is_water(self) -> bool {
-		self.water_amount().is_some()
+		self.props().fluid.is_some()
 	}
 
 	#[inline]
 	pub fn is_falling(self) -> bool {
-		self == BlockType::WaterFall
+		matches!(self.props().fluid, Some(f) if f.falling)
+	}
+
+	/// Infinite fluid source, never recomputed by the fluid sim.
+	#[inline]
+	pub fn is_fluid_source(self) -> bool {
+		matches!(self.props().fluid, Some(f) if f.source)
 	}
 
 	/// The flowing-water block for an amount 1..=7.
@@ -243,6 +286,45 @@ mod tests {
 		assert!(!BlockType::Water.is_falling());
 		for a in 1..=7u8 {
 			assert_eq!(BlockType::water_flow(a).water_amount(), Some(a));
+		}
+	}
+
+	/// The table is now the source of truth; this pins it to the old
+	/// concrete-variant semantics for every block, so the generalization
+	/// cannot have changed behavior.
+	#[test]
+	fn fluid_table_matches_legacy_variant_semantics() {
+		for &b in &BlockType::ALL {
+			let legacy_amount = match b {
+				BlockType::Water | BlockType::WaterFall => Some(8u8),
+				BlockType::WaterFlow1 => Some(1),
+				BlockType::WaterFlow2 => Some(2),
+				BlockType::WaterFlow3 => Some(3),
+				BlockType::WaterFlow4 => Some(4),
+				BlockType::WaterFlow5 => Some(5),
+				BlockType::WaterFlow6 => Some(6),
+				BlockType::WaterFlow7 => Some(7),
+				_ => None,
+			};
+			assert_eq!(b.water_amount(), legacy_amount, "{b:?}");
+			assert_eq!(b.is_water(), legacy_amount.is_some(), "{b:?}");
+			assert_eq!(b.is_falling(), b == BlockType::WaterFall, "{b:?}");
+			assert_eq!(b.is_fluid_source(), b == BlockType::Water, "{b:?}");
+			// Today Translucent ⇔ Water bucket; the split exists so a
+			// future glass can break the equivalence deliberately.
+			assert_eq!(
+				b.props().bucket == MeshBucket::Water,
+				b.props().class == RenderClass::Translucent,
+				"{b:?}"
+			);
+			assert_eq!(b.props().fluid.is_some(), b.is_water(), "{b:?}");
+		}
+		for a in 1..=7u8 {
+			let f = BlockType::water_flow(a)
+				.props()
+				.fluid
+				.expect("flow is fluid");
+			assert_eq!((f.amount, f.source, f.falling), (a, false, false));
 		}
 	}
 }
