@@ -17,7 +17,7 @@ macro_rules! blocks {
 		$($(#[$meta:meta])* $name:ident = $id:literal => $props:expr,)+
 	) => {
 		#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-		#[repr(u8)]
+		#[repr(u16)]
 		pub enum BlockType {
 			$(#[$fmeta])*
 			#[default]
@@ -26,7 +26,7 @@ macro_rules! blocks {
 		}
 
 		impl BlockType {
-			pub const COUNT: usize = 1 + [$($id as u8),+].len();
+			pub const COUNT: usize = 1 + [$($id as u16),+].len();
 			pub const ALL: [BlockType; Self::COUNT] =
 				[BlockType::$first, $(BlockType::$name),+];
 		}
@@ -177,13 +177,23 @@ mod tex {
 }
 
 impl BlockType {
+	/// Forgiving decode for world data: out-of-range ids read as Air.
+	/// The id occupies the low [`crate::chunk::ID_BITS`] of a cell; any
+	/// state bits must be stripped by the caller (`ChunkData::get` does).
 	#[inline]
-	pub fn from_u8(v: u8) -> Self {
+	pub fn from_id(v: u16) -> Self {
 		if (v as usize) < Self::COUNT {
 			Self::ALL[v as usize]
 		} else {
 			BlockType::Air
 		}
+	}
+
+	/// Strict decode for VALIDATION paths (network input): `None` for
+	/// unknown ids or set state bits, instead of silently reading Air.
+	#[inline]
+	pub fn try_from_id(v: u16) -> Option<Self> {
+		((v as usize) < Self::COUNT).then(|| Self::ALL[v as usize])
 	}
 
 	#[inline]
@@ -231,7 +241,7 @@ impl BlockType {
 	#[inline]
 	pub fn water_flow(amount: u8) -> BlockType {
 		debug_assert!((1..=7).contains(&amount));
-		Self::from_u8(BlockType::WaterFlow1 as u8 + amount - 1)
+		Self::from_id(BlockType::WaterFlow1 as u16 + amount as u16 - 1)
 	}
 }
 
@@ -243,13 +253,15 @@ mod tests {
 	fn discriminants_index_props() {
 		for (i, &b) in BlockType::ALL.iter().enumerate() {
 			assert_eq!(b as usize, i, "{b:?} discriminant matches ALL order");
-			assert_eq!(BlockType::from_u8(b as u8), b, "from_u8 roundtrip");
+			assert_eq!(BlockType::from_id(b as u16), b, "from_id roundtrip");
+			assert_eq!(BlockType::try_from_id(b as u16), Some(b));
 		}
 		assert_eq!(
-			BlockType::from_u8(255),
+			BlockType::from_id(1000),
 			BlockType::Air,
 			"out of range → Air"
 		);
+		assert_eq!(BlockType::try_from_id(1000), None, "strict decode refuses");
 	}
 
 	#[test]

@@ -14,13 +14,16 @@ use std::path::Path;
 use std::time::Instant;
 
 const MAGIC: &[u8; 4] = b"DBJ1";
-const VERSION: u16 = 1;
+/// v2: the block field widened to a u16 CELL (id + reserved state bits)
+/// at record bytes 12..14; `by` moved to byte 14. v1 files are refused —
+/// pre-deployment data only, delete ./data.
+const VERSION: u16 = 2;
 const HEADER_LEN: u64 = 16;
 const RECORD_LEN: u64 = 16;
 const SYNC_INTERVAL_SECS: f32 = 1.0;
 
-/// Final block value per edited cell within one chunk column.
-pub type ColumnEdits = FxHashMap<(i32, i32, i32), u8>;
+/// Final block CELL value per edited cell within one chunk column.
+pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 
 /// Last-write-wins cell state, grouped by chunk column for join sync.
 #[derive(Default)]
@@ -142,7 +145,7 @@ impl Journal {
 					x: i32::from_le_bytes(rec[0..4].try_into().unwrap()),
 					y: i32::from_le_bytes(rec[4..8].try_into().unwrap()),
 					z: i32::from_le_bytes(rec[8..12].try_into().unwrap()),
-					block: rec[12],
+					block: u16::from_le_bytes([rec[12], rec[13]]),
 				};
 				index.record(edit);
 			}
@@ -188,9 +191,9 @@ impl Journal {
 		rec[0..4].copy_from_slice(&edit.x.to_le_bytes());
 		rec[4..8].copy_from_slice(&edit.y.to_le_bytes());
 		rec[8..12].copy_from_slice(&edit.z.to_le_bytes());
-		rec[12] = edit.block;
-		rec[13] = by;
-		// rec[14..16] reserved, zero.
+		rec[12..14].copy_from_slice(&edit.block.to_le_bytes());
+		rec[14] = by;
+		// rec[15] reserved, zero.
 		match self.write_record(&rec) {
 			Ok(()) => self.write_failures = 0,
 			Err(e) => self.note_write_failure("write", &e),
@@ -274,8 +277,8 @@ fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File
 				rec[0..4].copy_from_slice(&x.to_le_bytes());
 				rec[4..8].copy_from_slice(&y.to_le_bytes());
 				rec[8..12].copy_from_slice(&z.to_le_bytes());
-				rec[12] = block;
-				rec[13] = digblock_net::protocol::SERVER_ID;
+				rec[12..14].copy_from_slice(&block.to_le_bytes());
+				rec[14] = digblock_net::protocol::SERVER_ID;
 				out.write_all(&rec)?;
 			}
 		}
@@ -294,7 +297,7 @@ fn bad_data(msg: impl Into<String>) -> std::io::Error {
 mod tests {
 	use super::*;
 
-	fn edit(x: i32, y: i32, z: i32, block: u8) -> BlockEdit {
+	fn edit(x: i32, y: i32, z: i32, block: u16) -> BlockEdit {
 		BlockEdit { x, y, z, block }
 	}
 
@@ -354,7 +357,7 @@ mod tests {
 			let mut j = Journal::open(&dir, 9.0).unwrap();
 			for i in 0..30_000u32 {
 				let cell = (i % 100) as i32;
-				j.append(edit(cell, 120, 0, (i % 7) as u8), 1);
+				j.append(edit(cell, 120, 0, (i % 7) as u16), 1);
 			}
 			j.sync();
 		}
@@ -372,7 +375,7 @@ mod tests {
 		assert_eq!(j.index.live_cells(), 100);
 		// Last write for cell 5: i = 29905 -> block 29905 % 7.
 		let col = j.index.column(0, 0).unwrap();
-		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u8)));
+		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u16)));
 		drop(j);
 
 		// Reopen again: already compact, a no-op.
@@ -408,6 +411,28 @@ mod tests {
 		j.force_write_failure = false;
 		j.append(edit(9, 100, 0, 1), 1);
 		assert!(j.healthy(), "successful write restores health");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// v1 files (u8 block at byte 12) are refused by the version check —
+	/// silently misreading them as v2 would corrupt every cell.
+	#[test]
+	fn v1_journal_is_refused() {
+		let dir = std::env::temp_dir().join(format!("dbj-v1-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join(format!("world-{:016x}.journal", 3.0f64.to_bits()));
+		let mut header = Vec::new();
+		header.extend_from_slice(MAGIC);
+		header.extend_from_slice(&1u16.to_le_bytes()); // VERSION 1
+		header.extend_from_slice(&0u16.to_le_bytes());
+		header.extend_from_slice(&3.0f64.to_le_bytes());
+		std::fs::write(&path, header).unwrap();
+		let err = match Journal::open(&dir, 3.0) {
+			Err(e) => e,
+			Ok(_) => panic!("v1 journal must be refused"),
+		};
+		assert!(err.to_string().contains("version"), "{err}");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

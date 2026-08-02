@@ -129,7 +129,7 @@ impl ChunkStore {
 			if let Some(cells) = journal.column(cx, cz) {
 				for (&(x, y, z), &block) in cells {
 					overlay(&mut stack, x, y, z, block);
-					if BlockType::from_u8(block).is_water() {
+					if BlockType::from_id(block).is_water() {
 						overlaid_water.push((x, y, z));
 					}
 				}
@@ -185,12 +185,12 @@ impl BlockWorld for ChunkStore {
 	}
 }
 
-fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u8) {
+fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u16) {
 	let Some(((_, cy, _), (lx, ly, lz))) = split_world(x, y, z) else {
 		return;
 	};
 	debug_assert!((cy as usize) < WORLD_VCHUNK as usize && stack.len() == WORLD_VCHUNK as usize);
-	Arc::make_mut(&mut stack[cy as usize]).set(lx, ly, lz, BlockType::from_u8(block));
+	Arc::make_mut(&mut stack[cy as usize]).set(lx, ly, lz, BlockType::from_id(block));
 }
 
 /// `FluidWorld` over the store that records every landed write (with the
@@ -198,7 +198,7 @@ fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u8) {
 /// carrying an honest `prev`.
 pub struct StoreWorld<'a> {
 	pub store: &'a mut ChunkStore,
-	pub edits: &'a mut Vec<(BlockEdit, u8)>,
+	pub edits: &'a mut Vec<(BlockEdit, u16)>,
 }
 
 impl FluidWorld for StoreWorld<'_> {
@@ -213,9 +213,9 @@ impl FluidWorld for StoreWorld<'_> {
 					x,
 					y,
 					z,
-					block: b as u8,
+					block: b as u16,
 				},
-				prev as u8,
+				prev as u16,
 			));
 			true
 		} else {
@@ -281,7 +281,7 @@ mod tests {
 			x,
 			y,
 			z,
-			block: BlockType::Air as u8,
+			block: BlockType::Air as u16,
 		});
 
 		// Walk away (evict), come back (regen + overlay). Eviction zeroes
@@ -321,8 +321,8 @@ mod tests {
 		// Unloaded column: does not land.
 		assert!(!world.set(5000, 100, 5000, BlockType::Water));
 		assert_eq!(edits.len(), 1);
-		assert_eq!(edits[0].0.block, BlockType::Water as u8);
-		assert_eq!(edits[0].1, prev_block as u8, "real prev recorded");
+		assert_eq!(edits[0].0.block, BlockType::Water as u16);
+		assert_eq!(edits[0].1, prev_block as u16, "real prev recorded");
 	}
 
 	#[test]
@@ -333,13 +333,13 @@ mod tests {
 			x: 3,
 			y: 140,
 			z: 3,
-			block: BlockType::Water as u8,
+			block: BlockType::Water as u16,
 		});
 		journal.record(BlockEdit {
 			x: 4,
 			y: 140,
 			z: 4,
-			block: BlockType::Stone as u8,
+			block: BlockType::Stone as u16,
 		});
 		let mut store = ChunkStore::new(42.0, 2);
 		store.set_residency(&[(0, 0)], 1);

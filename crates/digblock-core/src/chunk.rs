@@ -35,9 +35,18 @@ impl ChunkPos {
 /// Block data, shared with mesh jobs via `Arc`; edits go through
 /// copy-on-write (`Arc::make_mut`), so a job's snapshot stays consistent.
 /// Indexed `(y*16 + z)*16 + x`.
+/// Bits of a cell that hold the block id (1024 ids). Bits 12..=15 are a
+/// reserved per-cell STATE nibble (future stairs facing×half etc.); bits
+/// 10..11 are spare. The whole u16 cell travels the wire and the journal,
+/// so the id/state split can be re-drawn without another format break.
+pub const ID_BITS: u32 = 10;
+pub const ID_MASK: u16 = (1 << ID_BITS) - 1;
+pub const STATE_SHIFT: u32 = 12;
+
 #[derive(Clone)]
 pub struct ChunkData {
-	pub blocks: [u8; CHUNK_VOLUME],
+	/// One cell per block: id in the low ID_BITS, state nibble on top.
+	pub blocks: [u16; CHUNK_VOLUME],
 }
 
 impl Default for ChunkData {
@@ -101,11 +110,25 @@ impl ChunkData {
 
 	#[inline]
 	pub fn get(&self, x: usize, y: usize, z: usize) -> BlockType {
-		BlockType::from_u8(self.blocks[Self::index(x, y, z)])
+		BlockType::from_id(self.blocks[Self::index(x, y, z)] & ID_MASK)
+	}
+
+	/// Set the block TYPE, clearing any state bits.
+	#[inline]
+	pub fn set(&mut self, x: usize, y: usize, z: usize, b: BlockType) {
+		self.blocks[Self::index(x, y, z)] = b as u16;
+	}
+
+	/// Raw cell access (id + state bits) for consumers that preserve or
+	/// interpret state. Nothing writes state bits yet; the accessors exist
+	/// so the convention has one home from day one.
+	#[inline]
+	pub fn get_cell(&self, x: usize, y: usize, z: usize) -> u16 {
+		self.blocks[Self::index(x, y, z)]
 	}
 
 	#[inline]
-	pub fn set(&mut self, x: usize, y: usize, z: usize, b: BlockType) {
-		self.blocks[Self::index(x, y, z)] = b as u8;
+	pub fn set_cell(&mut self, x: usize, y: usize, z: usize, cell: u16) {
+		self.blocks[Self::index(x, y, z)] = cell;
 	}
 }

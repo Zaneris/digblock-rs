@@ -521,7 +521,7 @@ fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64)
 				{
 					block = BlockType::Air;
 				}
-				*b = block as u8;
+				*b = block as u16;
 			}
 		}
 	}

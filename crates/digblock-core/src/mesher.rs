@@ -48,7 +48,7 @@ pub enum Src<'a> {
 pub struct MeshInput {
 	/// Indexed by `pidx` over coords in -1..=16; shell cells with no
 	/// backing chunk are air (0).
-	pub blocks: Box<[u8; PADDED_VOLUME]>,
+	pub blocks: Box<[u16; PADDED_VOLUME]>,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
 }
@@ -86,7 +86,7 @@ impl MeshInput {
 	) -> MeshInput {
 		let n = CHUNK_SIZE;
 		let mut input = MeshInput {
-			blocks: Box::new([0u8; PADDED_VOLUME]),
+			blocks: Box::new([0u16; PADDED_VOLUME]),
 			missing: [false; 6],
 		};
 		for y in 0..n {
@@ -138,7 +138,7 @@ impl MeshInput {
 
 	/// Block id at padded coords (each in -1..=16).
 	#[inline]
-	pub fn get(&self, x: i32, y: i32, z: i32) -> u8 {
+	pub fn get(&self, x: i32, y: i32, z: i32) -> u16 {
 		self.blocks[pidx(x, y, z)]
 	}
 }
@@ -251,8 +251,8 @@ fn face_corners(x: i32, y: i32, z: i32, dir: Dir) -> [(i32, i32, i32); 4] {
 /// translucent neighbors don't occlude faces (`face_visible`), so they
 /// shouldn't darken corners you can see through them.
 #[inline]
-fn occludes(id: u8) -> bool {
-	BlockType::from_u8(id).props().class == RenderClass::Opaque
+fn occludes(id: u16) -> bool {
+	BlockType::from_id(id).props().class == RenderClass::Opaque
 }
 
 /// Classic 4-level voxel AO for the face of block b toward `dir`: each
@@ -353,7 +353,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 		for z in 0..n {
 			for x in 0..n {
 				let pi = pidx(x as i32, y as i32, z as i32);
-				let me = BlockType::from_u8(input.blocks[pi]);
+				let me = BlockType::from_id(input.blocks[pi]);
 				if me.props().class == RenderClass::None {
 					continue;
 				}
@@ -375,7 +375,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						None
 					} else {
 						let ni = (pi as isize + PDELTA[dir as usize]) as usize;
-						Some(BlockType::from_u8(input.blocks[ni]))
+						Some(BlockType::from_id(input.blocks[ni]))
 					};
 					if !face_visible(me, neighbor) {
 						continue;
@@ -536,9 +536,9 @@ mod tests {
 			(1, 1, 1) => Src::Chunk(&corner),
 			_ => Src::Air,
 		});
-		assert_eq!(input.get(5, -1, 7), B::Stone as u8);
-		assert_eq!(input.get(16, 8, 16), B::Dirt as u8);
-		assert_eq!(input.get(16, 16, 16), B::Sand as u8);
+		assert_eq!(input.get(5, -1, 7), B::Stone as u16);
+		assert_eq!(input.get(16, 8, 16), B::Dirt as u16);
+		assert_eq!(input.get(16, 16, 16), B::Sand as u16);
 		// Everything else in the shell is air.
 		assert_eq!(input.get(-1, -1, -1), 0);
 		assert_eq!(input.get(8, 8, 8), 0, "empty center");

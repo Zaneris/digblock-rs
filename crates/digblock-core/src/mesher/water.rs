@@ -26,7 +26,7 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 		if !(-1..=16).contains(&nx) || !(-1..=16).contains(&nz) {
 			continue;
 		}
-		let nb = BlockType::from_u8(input.get(nx, y, nz));
+		let nb = BlockType::from_id(input.get(nx, y, nz));
 		if nb.is_water() && !nb.is_falling() {
 			feeder = feeder.max(nb.water_amount().unwrap_or(0));
 		}
@@ -55,17 +55,17 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
 			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
-			if BlockType::from_u8(input.get(cx, y + 1, cz)).is_water() {
+			if BlockType::from_id(input.get(cx, y + 1, cz)).is_water() {
 				return 0;
 			}
-			let b = BlockType::from_u8(input.get(cx, y, cz));
+			let b = BlockType::from_id(input.get(cx, y, cz));
 			match surface_amount(input, cx, y, cz, b) {
 				Some(a) => {
 					sum += u32::from(a);
 					count += 1;
 				}
 				None if b.props().class == RenderClass::None => {
-					plunge |= BlockType::from_u8(input.get(cx, y - 1, cz)).is_water();
+					plunge |= BlockType::from_id(input.get(cx, y - 1, cz)).is_water();
 				}
 				None => {}
 			}
@@ -112,13 +112,13 @@ impl WaterState {
 	#[inline(never)]
 	pub(super) fn of(input: &MeshInput, x: i32, y: i32, z: i32, me: BlockType) -> WaterState {
 		let falling = me.is_falling();
-		let above = BlockType::from_u8(input.get(x, y + 1, z));
+		let above = BlockType::from_id(input.get(x, y + 1, z));
 		let full = above.is_water();
 		let flow = if falling || me.is_fluid_source() {
 			0 // sources rest, falls scroll vertically instead
 		} else {
 			let amount = |dx: i32, dz: i32| -> u8 {
-				BlockType::from_u8(input.get(x + dx, y, z + dz))
+				BlockType::from_id(input.get(x + dx, y, z + dz))
 					.water_amount()
 					.unwrap_or(0)
 			};
@@ -135,11 +135,11 @@ impl WaterState {
 		// fall ends — resting water (worldgen falls land in pools) or
 		// solid ground (fluid-sim falls punching to a floor).
 		let is_impact = |nx: i32, ny: i32, nz: i32| -> bool {
-			if !BlockType::from_u8(input.get(nx, ny, nz)).is_falling() {
+			if !BlockType::from_id(input.get(nx, ny, nz)).is_falling() {
 				return false;
 			}
 			let below_raw = input.get(nx, ny - 1, nz);
-			let below = BlockType::from_u8(below_raw);
+			let below = BlockType::from_id(below_raw);
 			!below.is_falling() && (below.is_water() || occludes(below_raw))
 		};
 		let splash = if falling && is_impact(x, y, z) {
@@ -173,7 +173,7 @@ impl WaterState {
 		let fall_dist = if falling {
 			let mut d = 0u32;
 			let mut cy = y + 1;
-			while cy <= 16 && BlockType::from_u8(input.get(x, cy, z)).is_falling() {
+			while cy <= 16 && BlockType::from_id(input.get(x, cy, z)).is_falling() {
 				d += 1;
 				cy += 1;
 			}

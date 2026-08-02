@@ -528,7 +528,7 @@ impl Engine {
 								origin,
 								dir,
 								digblock_net::messages::EditKind::Place {
-									block: self.held_block as u8,
+									block: self.held_block as u16,
 								},
 								hit.cell,
 								hit.normal,

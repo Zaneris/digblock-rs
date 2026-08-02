@@ -57,7 +57,12 @@ pub struct Snapshot {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum EditKind {
 	Dig,
-	Place { block: u8 },
+	/// `block` is a full u16 CELL (id + reserved state bits) — postcard
+	/// varints keep small ids at one wire byte. The server rejects
+	/// nonzero state bits until something consumes them.
+	Place {
+		block: u16,
+	},
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -65,7 +70,8 @@ pub struct BlockEdit {
 	pub x: i32,
 	pub y: i32,
 	pub z: i32,
-	pub block: u8,
+	/// Full u16 cell (id + reserved state bits).
+	pub block: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -152,8 +158,8 @@ pub enum ServerMsg {
 		/// The author's request seq; meaningful only when `by` is you.
 		client_seq: u32,
 		edit: BlockEdit,
-		/// Block that was replaced (dig pickup).
-		prev: u8,
+		/// Block cell that was replaced (dig pickup).
+		prev: u16,
 	},
 	EditRejected {
 		client_seq: u32,

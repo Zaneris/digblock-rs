@@ -82,10 +82,16 @@ impl Sim {
 		let place_block = match req.kind {
 			EditKind::Dig => None,
 			EditKind::Place { block } => {
-				if block == BlockType::Air as u8 || block as usize >= BlockType::COUNT {
+				// Strict: unknown ids AND set state bits are refused until
+				// something consumes states (`try_from_id` covers both via
+				// the id range; the mask check names the intent).
+				if block == BlockType::Air as u16
+					|| block & !digblock_core::chunk::ID_MASK != 0
+					|| BlockType::try_from_id(block).is_none()
+				{
 					return reject(RejectReason::BadBlock);
 				}
-				Some(BlockType::from_u8(block))
+				Some(BlockType::from_id(block))
 			}
 		};
 		if !req.origin.is_finite() || !req.dir.is_finite() {
@@ -145,14 +151,14 @@ impl Sim {
 			x: target.0,
 			y: target.1,
 			z: target.2,
-			block: block as u8,
+			block: block as u16,
 		};
 		let (seq, new_column) = self.journal.append(edit, id);
 		if new_column {
 			self.enroll_new_column(edit);
 		}
 		self.fluid.schedule_around(target.0, target.1, target.2);
-		self.broadcast_edit(seq, id, req.seq, edit, prev as u8);
+		self.broadcast_edit(seq, id, req.seq, edit, prev as u16);
 	}
 
 	/// A column just gained its FIRST edit: enroll every in-radius client
@@ -174,7 +180,7 @@ impl Sim {
 		by: PlayerId,
 		client_seq: u32,
 		edit: BlockEdit,
-		prev: u8,
+		prev: u16,
 	) {
 		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
 		let msg = ServerMsg::EditApplied {
@@ -284,7 +290,7 @@ mod tests {
 		});
 		let edit = applied.expect("dig 3 applied");
 		assert_eq!((edit.x, edit.y, edit.z), hit.cell);
-		assert_eq!(edit.block, BlockType::Air as u8);
+		assert_eq!(edit.block, BlockType::Air as u16);
 		assert_eq!(
 			sim.test_block_at(edit.x, edit.y, edit.z),
 			Some(BlockType::Air)
@@ -293,7 +299,48 @@ mod tests {
 			.journal
 			.index
 			.column(edit.x.div_euclid(16), edit.z.div_euclid(16))
-			.is_some_and(|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u8))));
+			.is_some_and(
+				|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u16))
+			));
+	}
+
+	/// The reserved state nibble travels the wire but nothing consumes
+	/// it yet: placements carrying state bits are BadBlock, not silently
+	/// stripped — the rejection is the contract until states ship.
+	#[test]
+	fn place_with_state_bits_is_bad_block() {
+		let mut sim = flat_sim("statebits");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 1,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Place {
+					block: (BlockType::Dirt as u16) | (1 << digblock_core::chunk::STATE_SHIFT),
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: RejectReason::BadBlock,
+					..
+				}
+			)),
+			"{:?}",
+			c.msgs
+		);
 	}
 
 	#[test]
@@ -370,7 +417,7 @@ mod tests {
 				origin: pos.to_array(),
 				dir: down.to_array(),
 				kind: EditKind::Place {
-					block: BlockType::Dirt as u8,
+					block: BlockType::Dirt as u16,
 				},
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],

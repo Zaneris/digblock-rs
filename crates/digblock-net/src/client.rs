@@ -295,7 +295,7 @@ impl NetClient {
 			}
 			ServerMsg::JournalColumn { cells, .. } => {
 				for c in cells {
-					if let Some(block) = block_from_u8(c.block) {
+					if let Some(block) = block_from_id(c.block) {
 						out.push(NetEvent::Edit {
 							cell: (c.x, c.y, c.z),
 							block,
@@ -315,7 +315,7 @@ impl NetClient {
 				}
 				let cell = (edit.x, edit.y, edit.z);
 				self.edits.on_authoritative(cell);
-				if let Some(block) = block_from_u8(edit.block) {
+				if let Some(block) = block_from_id(edit.block) {
 					out.push(NetEvent::Edit { cell, block });
 				}
 			}
@@ -410,6 +410,6 @@ impl NetClient {
 	}
 }
 
-fn block_from_u8(v: u8) -> Option<BlockType> {
-	(v < BlockType::COUNT as u8).then(|| BlockType::from_u8(v))
+fn block_from_id(v: u16) -> Option<BlockType> {
+	BlockType::try_from_id(v)
 }

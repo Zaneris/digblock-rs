@@ -64,7 +64,7 @@ impl Sim {
 			}
 			if let Some(cells) = self.journal.index.column(neighbor.0, neighbor.1) {
 				for (&(x, y, z), &block) in cells {
-					if digblock_core::block::BlockType::from_u8(block).is_water() {
+					if digblock_core::block::BlockType::from_id(block).is_water() {
 						self.fluid.schedule_around(x, y, z);
 					}
 				}
@@ -275,7 +275,7 @@ mod tests {
 					x: 8,
 					y: 200,
 					z: 8,
-					block: digblock_core::block::BlockType::WaterFall as u8,
+					block: digblock_core::block::BlockType::WaterFall as u16,
 				},
 				0,
 			);
@@ -310,7 +310,7 @@ mod tests {
 					x: 31,
 					y: 127,
 					z: 2,
-					block: digblock_core::block::BlockType::Water as u8,
+					block: digblock_core::block::BlockType::Water as u16,
 				},
 				0,
 			);

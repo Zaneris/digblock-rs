@@ -181,9 +181,9 @@ fn full_frame_handshake_edits_snapshot() {
 			x: 3,
 			y: 9,
 			z: 4,
-			block: BlockType::Air as u8,
+			block: BlockType::Air as u16,
 		},
-		prev: BlockType::Dirt as u8,
+		prev: BlockType::Dirt as u16,
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -275,9 +275,9 @@ fn authoritative_broadcast_cancels_pending_revert() {
 			x: 7,
 			y: 9,
 			z: 7,
-			block: BlockType::Sand as u8,
+			block: BlockType::Sand as u16,
 		},
-		prev: BlockType::Stone as u8,
+		prev: BlockType::Stone as u16,
 	});
 	server.send(&ServerMsg::EditRejected {
 		client_seq: seq,
