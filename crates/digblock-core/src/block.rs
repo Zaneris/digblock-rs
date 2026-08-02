@@ -1,10 +1,10 @@
-//! Block types and their data-driven properties. Adding a block is: a new
-//! enum variant, a `PROPS` row, a texture PNG, and a `LAYERS` entry in
-//! digblock-assets — nothing else.
+//! Block types and their data-driven properties. Adding a block is: one
+//! `blocks!` row, a texture PNG, and a `LAYERS` entry in digblock-assets
+//! — nothing else.
 //!
 //! Values are contiguous so they index tables directly (the Java used
 //! AIR=-1, WATER=0, DIRT=1, GRASS=2; shifted by +1 here so a chunk is a
-//! flat `[u8; 4096]` with AIR=0 as the natural default).
+//! flat array of cells with AIR=0 as the natural default).
 
 use crate::dir::Dir;
 
