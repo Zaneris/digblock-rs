@@ -34,8 +34,9 @@ play *ARGS:
 
 # `just play` with the server containerized instead (compose), optionally
 # behind netem — `just play-docker wifi` plays under simulated wifi loss.
-# Needs Docker Desktop's "Use kernel networking for UDP" (Settings >
-# Resources > Network); the default user-space UDP proxy drops QUIC.
+# Host<->container UDP works fine; if the client times out, check
+# `docker logs docker-server-1` — a server that died at boot looks
+# identical to a network problem from the client side.
 play-docker PROFILE="clean" *ARGS:
 	#!/usr/bin/env bash
 	set -euo pipefail

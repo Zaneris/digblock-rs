@@ -7,13 +7,14 @@
 #
 # The /udp on the port mapping is mandatory — QUIC never touches TCP.
 #
-# macOS caveat: Docker Desktop's default user-space UDP proxy drops the
-# container->host half of the QUIC handshake. Enable "Use kernel
-# networking for UDP" (Settings > Resources > Network) and a desktop
-# client on the Mac host connects fine — `just play-docker [profile]`
-# is the one-command version (netem then shapes the real client, not
-# just bots). Container->container traffic (the bots profile) works
-# either way.
+# A desktop client on the Mac host connects to the containerized server
+# over the published UDP port — `just play-docker [profile]` is the
+# one-command version (netem then shapes the real client, not just
+# bots). Host<->container UDP including QUIC is verified working end to
+# end (Docker Desktop, "Use kernel networking for UDP" enabled). If a
+# client times out, suspect the server, not the network: `docker logs`
+# first — a server that crashed at boot produces the same client-side
+# timeout a dead network would.
 services:
   server:
     build:

@@ -9,3 +9,4 @@ build/
 # docker compose volume).
 /data/
 docker/data/
+*.journal

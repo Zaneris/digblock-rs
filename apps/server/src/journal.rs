@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"DBJ1";
 /// v2: the block field widened to a u16 CELL (id + reserved state bits)
-/// at record bytes 12..14; `by` moved to byte 14. v1 files are refused —
-/// pre-deployment data only, delete ./data.
+/// at record bytes 12..14; `by` moved to byte 14. Old-version files are
+/// archived to `.vN.bak` at open and the world starts fresh.
 const VERSION: u16 = 2;
 const HEADER_LEN: u64 = 16;
 const RECORD_LEN: u64 = 16;
@@ -151,6 +151,18 @@ impl Journal {
 		let path = dir.join(format!("world-{:016x}.journal", seed.to_bits()));
 		// A crashed runtime compaction may leave a stale tmp behind.
 		let _ = std::fs::remove_file(path.with_extension("journal.tmp"));
+		// Format break: a file from another version can't be read, but
+		// refusing to boot bricks persistent volumes (the compose rig's
+		// ./data) until someone intervenes. Archive it and start fresh —
+		// the old world stays next door as `.vN.bak`.
+		if let Some(version) = stale_version(&path)? {
+			let bak = archive_path(&path, version);
+			log::warn!(
+				"journal version {version} != {VERSION}: archiving to {}, starting fresh",
+				bak.display()
+			);
+			std::fs::rename(&path, &bak)?;
+		}
 		let mut file = OpenOptions::new()
 			.read(true)
 			.write(true)
@@ -162,12 +174,7 @@ impl Journal {
 		let mut index = JournalIndex::default();
 		let mut record_count = 0u64;
 		if len == 0 {
-			let mut header = Vec::with_capacity(HEADER_LEN as usize);
-			header.extend_from_slice(MAGIC);
-			header.extend_from_slice(&VERSION.to_le_bytes());
-			header.extend_from_slice(&0u16.to_le_bytes());
-			header.extend_from_slice(&seed.to_le_bytes());
-			file.write_all(&header)?;
+			file.write_all(&header_bytes(seed))?;
 			file.sync_data()?;
 		} else {
 			let mut header = [0u8; HEADER_LEN as usize];
@@ -353,12 +360,7 @@ impl Journal {
 	fn start_compaction(&mut self) -> std::io::Result<()> {
 		let tmp_path = self.path.with_extension("journal.tmp");
 		let mut tmp = BufWriter::new(File::create(&tmp_path)?);
-		let mut header = Vec::with_capacity(HEADER_LEN as usize);
-		header.extend_from_slice(MAGIC);
-		header.extend_from_slice(&VERSION.to_le_bytes());
-		header.extend_from_slice(&0u16.to_le_bytes());
-		header.extend_from_slice(&self.seed.to_le_bytes());
-		tmp.write_all(&header)?;
+		tmp.write_all(&header_bytes(self.seed))?;
 		let cols: Vec<(i32, i32)> = self.index.columns.keys().copied().collect();
 		let pending = cols.iter().copied().collect();
 		self.run = Some(CompactionRun {
@@ -514,12 +516,7 @@ fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File
 	let tmp = path.with_extension("journal.tmp");
 	{
 		let mut out = BufWriter::new(File::create(&tmp)?);
-		let mut header = Vec::with_capacity(HEADER_LEN as usize);
-		header.extend_from_slice(MAGIC);
-		header.extend_from_slice(&VERSION.to_le_bytes());
-		header.extend_from_slice(&0u16.to_le_bytes());
-		header.extend_from_slice(&seed.to_le_bytes());
-		out.write_all(&header)?;
+		out.write_all(&header_bytes(seed))?;
 		for cells in index.columns.values() {
 			for (&(x, y, z), &block) in cells {
 				out.write_all(&encode_record(x, y, z, block, SERVER_ID))?;
@@ -530,6 +527,50 @@ fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File
 	}
 	std::fs::rename(&tmp, path)?;
 	OpenOptions::new().read(true).write(true).open(path)
+}
+
+fn header_bytes(seed: f64) -> [u8; HEADER_LEN as usize] {
+	let mut h = [0u8; HEADER_LEN as usize];
+	h[0..4].copy_from_slice(MAGIC);
+	h[4..6].copy_from_slice(&VERSION.to_le_bytes());
+	h[8..16].copy_from_slice(&seed.to_le_bytes());
+	h
+}
+
+/// The header's version when `path` is a well-formed journal from another
+/// format version; None when the file is absent, current, or malformed
+/// (short file / bad magic is corruption — `open` reports it as an error
+/// rather than archiving data it might still want intact for forensics).
+fn stale_version(path: &Path) -> std::io::Result<Option<u16>> {
+	let mut file = match File::open(path) {
+		Ok(f) => f,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(e) => return Err(e),
+	};
+	let mut header = [0u8; HEADER_LEN as usize];
+	if file.read_exact(&mut header).is_err() || &header[0..4] != MAGIC {
+		return Ok(None);
+	}
+	let version = u16::from_le_bytes([header[4], header[5]]);
+	Ok((version != VERSION).then_some(version))
+}
+
+/// First free `<world>.journal.v{version}.bak[N]` slot next to `path` —
+/// repeated format breaks never overwrite an earlier archive.
+fn archive_path(path: &Path, version: u16) -> PathBuf {
+	let mut n = 0u32;
+	loop {
+		let ext = if n == 0 {
+			format!("journal.v{version}.bak")
+		} else {
+			format!("journal.v{version}.bak{n}")
+		};
+		let candidate = path.with_extension(ext);
+		if !candidate.exists() {
+			return candidate;
+		}
+		n += 1;
+	}
 }
 
 fn bad_data(msg: impl Into<String>) -> std::io::Error {
@@ -841,25 +882,37 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
-	/// v1 files (u8 block at byte 12) are refused by the version check —
-	/// silently misreading them as v2 would corrupt every cell.
+	/// A version-mismatched file (e.g. v1: u8 block at byte 12) can't be
+	/// read — misparsing it as v2 would corrupt every cell — but refusing
+	/// to boot bricks persistent volumes across format breaks. It is
+	/// archived byte-intact to `.v1.bak` and a fresh world starts.
 	#[test]
-	fn v1_journal_is_refused() {
+	fn incompatible_journal_is_archived() {
 		let dir = std::env::temp_dir().join(format!("dbj-v1-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir_all(&dir).unwrap();
 		let path = dir.join(format!("world-{:016x}.journal", 3.0f64.to_bits()));
-		let mut header = Vec::new();
-		header.extend_from_slice(MAGIC);
-		header.extend_from_slice(&1u16.to_le_bytes()); // VERSION 1
-		header.extend_from_slice(&0u16.to_le_bytes());
-		header.extend_from_slice(&3.0f64.to_le_bytes());
-		std::fs::write(&path, header).unwrap();
-		let err = match Journal::open(&dir, 3.0) {
-			Err(e) => e,
-			Ok(_) => panic!("v1 journal must be refused"),
-		};
-		assert!(err.to_string().contains("version"), "{err}");
+		let mut old = Vec::new();
+		old.extend_from_slice(MAGIC);
+		old.extend_from_slice(&1u16.to_le_bytes()); // VERSION 1
+		old.extend_from_slice(&0u16.to_le_bytes());
+		old.extend_from_slice(&3.0f64.to_le_bytes());
+		old.extend_from_slice(&[0xAB; 13]); // v1 record bytes, any shape
+		std::fs::write(&path, &old).unwrap();
+
+		let j = Journal::open(&dir, 3.0).unwrap();
+		assert_eq!(j.records, 0, "fresh world, no records");
+		drop(j);
+		let bak = path.with_extension("journal.v1.bak");
+		assert_eq!(std::fs::read(&bak).unwrap(), old, "archived byte-intact");
+
+		// A second break with a .bak already present takes the next slot.
+		std::fs::write(&path, &old).unwrap();
+		Journal::open(&dir, 3.0).unwrap();
+		assert!(path.with_extension("journal.v1.bak1").exists());
+
+		// The fresh file reopens as a normal current-version journal.
+		Journal::open(&dir, 3.0).unwrap();
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }
