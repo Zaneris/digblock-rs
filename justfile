@@ -28,14 +28,15 @@ bot *ARGS:
 	cargo run -p digblock-server --bin bot -- {{ARGS}}
 
 # One-command multiplayer test: containerized master (real QUIC probe, same
-# image as production and the e2e tests) + native server + a client that
-# auto-joins through the token flow; closing the window (or Ctrl-C) stops
-# all three. The server advertises 127.0.0.1 (what host clients dial) and
-# gives the master host.docker.internal as its probe address — the only
-# stable UDP path from the container to the host (the LAN-IP hairpin breaks
-# QUIC address validation under Docker's NAT).
-# Extra clients: `just run -- --master-url http://127.0.0.1:5200 --join`
-# (or without --join for the menu).
+# image as production and the e2e tests) + native server + a client opening
+# at the main menu (pick Multiplayer, join "Local World" through the token
+# flow); closing the window (or Ctrl-C) stops all three. The server
+# advertises 127.0.0.1 (what host clients dial) and gives the master
+# host.docker.internal as its probe address — the only stable UDP path from
+# the container to the host (the LAN-IP hairpin breaks QUIC address
+# validation under Docker's NAT).
+# Extra clients: `just run -- --master-url http://127.0.0.1:5200` (add
+# --join to skip the menu for scripted flows).
 play *ARGS:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -53,7 +54,7 @@ play *ARGS:
 		--server-name "Local World" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
-	./target/debug/digblock --master-url http://127.0.0.1:5200 --join {{ARGS}}
+	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
 
 # `just play` with the game server containerized too (compose), optionally
 # behind netem — `just play-docker wifi` plays under simulated wifi loss.
@@ -71,7 +72,7 @@ play-docker PROFILE="clean" *ARGS:
 	ADVERTISE_HOST=127.0.0.1 PROBE_HOST=host.docker.internal \
 		docker compose -f docker/compose.yml up --build -d master server
 	trap 'docker compose -f docker/compose.yml down' EXIT
-	./target/debug/digblock --master-url http://127.0.0.1:5200 --join {{ARGS}}
+	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
 
 # Dockerized server behind a tc netem profile: clean | wifi | cellular.
 compose PROFILE="clean":
