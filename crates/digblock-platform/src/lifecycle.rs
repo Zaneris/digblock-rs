@@ -65,14 +65,26 @@ pub enum Action {
 /// Ordered actions for one event (at most two today).
 pub type Actions = Vec<Action>;
 
+/// Frames a fatal acquire error is treated as loss-suspect (retried)
+/// before giving up. A dying device surfaces as a generic fatal error
+/// before wgpu's lost callback is pumped; each retry frame lets in-flight
+/// work drain so the shell's next poll can fire the closure.
+const MAX_FATAL_RETRIES: u8 = 2;
+
 pub struct Lifecycle {
 	phase: Phase,
 	/// The format the game's pipelines were built against (init or last
 	/// rebuild).
 	built_format: Option<wgpu::TextureFormat>,
-	/// Device loss reported while no recovery was possible (Suspended):
-	/// deferred to the next resume.
+	/// Device loss reported while Suspended (no recovery possible):
+	/// deferred to the next resume. This is exclusively the
+	/// Suspended-deferral latch — while Running, loss recovers
+	/// immediately and never sets it.
 	device_lost: bool,
+	/// Consecutive loss-suspect retries granted for fatal acquire errors
+	/// since the last successful frame boundary (recovery, rebuild, or
+	/// resume).
+	fatal_retries: u8,
 }
 
 impl Default for Lifecycle {
@@ -87,6 +99,7 @@ impl Lifecycle {
 			phase: Phase::Uninitialized,
 			built_format: None,
 			device_lost: false,
+			fatal_retries: 0,
 		}
 	}
 
@@ -106,6 +119,7 @@ impl Lifecycle {
 			}
 			(Phase::Suspended, Event::OsResumed | Event::ToggleDrillSuspend) => {
 				self.phase = Phase::Running;
+				self.fatal_retries = 0;
 				out.push(Action::RecreateSurface);
 				// Device loss reported while backgrounded: recover now
 				// that a surface exists again.
@@ -121,17 +135,23 @@ impl Lifecycle {
 			(Phase::Running, Event::SurfaceLost) => out.push(Action::ReconfigureSurface),
 			(Phase::Running, Event::SurfaceTimeout) => out.push(Action::RetryNextFrame),
 			(Phase::Running, Event::SurfaceFatal) => {
-				// A dead device commonly surfaces (sic) as an unexplained
-				// fatal acquire error — recover instead of quitting when
-				// the loss callback fired.
-				if std::mem::take(&mut self.device_lost) {
-					out.push(Action::ReinitDevice);
+				// A dying device surfaces (sic) as a generic fatal acquire
+				// error before wgpu's lost callback is pumped (the closure
+				// only fires from device maintenance once the queue drains
+				// — the shell polls, but in-flight work can delay it a
+				// frame). Treat fatal as loss-suspect: retry a bounded
+				// number of frames so a trailing DeviceLost can win; exit
+				// if it never arrives.
+				if self.fatal_retries < MAX_FATAL_RETRIES {
+					self.fatal_retries += 1;
+					out.push(Action::RetryNextFrame);
 				} else {
 					out.push(Action::Exit);
 				}
 			}
 			(Phase::Running, Event::DeviceLost) => {
 				self.device_lost = false;
+				self.fatal_retries = 0;
 				out.push(Action::ReinitDevice);
 			}
 			(Phase::Suspended, Event::DeviceLost) => self.device_lost = true,
@@ -156,6 +176,7 @@ impl Lifecycle {
 	/// A rebuild (drill or recovery) re-created pipelines for `format`.
 	pub fn note_rebuilt(&mut self, format: wgpu::TextureFormat) {
 		self.built_format = Some(format);
+		self.fatal_retries = 0;
 	}
 }
 
@@ -226,6 +247,15 @@ mod tests {
 			acts(&mut l, Event::SurfaceTimeout),
 			vec![Action::RetryNextFrame]
 		);
+		// Fatal is loss-suspect: bounded retries, then exit.
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
 		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
 	}
 
@@ -272,29 +302,63 @@ mod tests {
 	}
 
 	#[test]
-	fn fatal_surface_error_with_lost_device_recovers_instead_of_exiting() {
+	fn fatal_acquire_is_loss_suspect_then_exits() {
 		let mut l = Lifecycle::new();
 		l.on(Event::OsResumed);
-		// The loss callback fired off-thread; the shell polls it and the
-		// acquire failure arrives as SurfaceFatal in the same frame.
-		l.on(Event::OsSuspended);
-		l.on(Event::DeviceLost);
-		l.on(Event::ToggleDrillSuspend); // resume consumes the deferred flag
-		l.on(Event::OsSuspended);
-		l.on(Event::OsResumed);
+		// No DeviceLost ever arrives: two retry frames, then give up.
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
 		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
+		assert_eq!(l.phase(), Phase::Running);
+	}
 
+	#[test]
+	fn surface_fatal_then_late_device_lost_recovers() {
+		// The real destroy ordering: the acquire fails before the lost
+		// callback is pumped, then DeviceLost lands a frame later.
 		let mut l = Lifecycle::new();
 		l.on(Event::OsResumed);
-		l.on(Event::OsSuspended);
-		l.on(Event::DeviceLost);
-		// Resume executes surface + reinit...
-		l.on(Event::OsResumed);
-		// ...but if a fatal error still arrives with a fresh loss:
-		l.on(Event::OsSuspended);
-		l.on(Event::DeviceLost);
-		l.on(Event::OsResumed);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		assert_eq!(acts(&mut l, Event::DeviceLost), vec![Action::ReinitDevice]);
+		// The shell calls note_rebuilt after ReinitDevice completes; the
+		// retry budget is restored for any future incident.
+		l.note_rebuilt(Bgra8Unorm);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
 		assert_eq!(l.phase(), Phase::Running);
+	}
+
+	#[test]
+	fn fatal_retry_budget_resets_on_resume() {
+		let mut l = Lifecycle::new();
+		l.on(Event::OsResumed);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		l.on(Event::OsSuspended);
+		l.on(Event::OsResumed);
+		// Fresh budget after the resume: two retries again before exit.
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		assert_eq!(
+			acts(&mut l, Event::SurfaceFatal),
+			vec![Action::RetryNextFrame]
+		);
+		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
 	}
 
 	/// Exhaustive phase × event walk: no combination panics, and the

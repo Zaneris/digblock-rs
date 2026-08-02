@@ -111,6 +111,7 @@ fn main() {
 	// (std::env is a stub on the wasm target).
 	config.player_name = std::env::var("USER").ok();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
+	//__DIG_CHUNK_SLOTS_PLACEHOLDER__
 
 	let mut engine = Engine::new(config);
 	if let Some(url) = connect {
@@ -122,5 +123,8 @@ fn main() {
 		};
 		engine.set_transport(Box::new(digblock_net_native::connect_with(&url, policy)));
 	}
-	digblock_platform::run(engine, options);
+	if let Err(e) = digblock_platform::run(engine, options) {
+		log::error!("{e}");
+		std::process::exit(1);
+	}
 }

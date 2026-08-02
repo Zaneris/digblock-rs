@@ -10,5 +10,7 @@ pub extern "C" fn digblock_main() {
 		title: "DigBlock".into(),
 		..Default::default()
 	};
-	digblock_platform::run(Engine::new(EngineConfig::mobile()), options);
+	// run never returns on iOS (UIApplicationMain); the drill result is
+	// desktop-only.
+	let _ = digblock_platform::run(Engine::new(EngineConfig::mobile()), options);
 }

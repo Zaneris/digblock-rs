@@ -57,7 +57,9 @@ pub struct RunOptions {
 	pub exit_after_screenshot: bool,
 	/// Automated lifecycle drill: at frame 20 suspend+resume (surface
 	/// dropped and recreated through the production transitions), at frame
-	/// 40 simulate device loss (renderer rebuild), exit at frame 60.
+	/// 40 simulate device loss (renderer rebuild), at frame 60 destroy the
+	/// device for real (full ReinitDevice recovery), complete and exit at
+	/// frame 100. An incomplete drill makes `run` return an error.
 	/// Manual equivalents: F9 (hold suspended) and F10.
 	pub auto_drill: bool,
 	/// Exit after this many presented frames (benchmark runs).
@@ -67,7 +69,29 @@ pub struct RunOptions {
 	pub no_vsync: bool,
 }
 
+/// Why `run` came back with a failure the process should report.
+#[derive(Debug)]
+pub enum RunError {
+	/// `--drill` exited before completing every step (the destroy-step
+	/// recovery must render through frame 100).
+	DrillIncomplete { frames_rendered: u64 },
+}
+
+impl std::fmt::Display for RunError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			RunError::DrillIncomplete { frames_rendered } => write!(
+				f,
+				"lifecycle drill incomplete: exited at frame {frames_rendered} before the \
+				 frame-100 completion step"
+			),
+		}
+	}
+}
+
+impl std::error::Error for RunError {}
+
 /// Run the game. Never returns on iOS.
-pub fn run(game: impl Game, options: RunOptions) {
+pub fn run(game: impl Game, options: RunOptions) -> Result<(), RunError> {
 	app::run(game, options)
 }

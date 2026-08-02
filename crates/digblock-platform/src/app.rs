@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
@@ -57,11 +57,23 @@ struct App<G: Game> {
 	frames_rendered: u64,
 	screenshot_pending: bool,
 	launched_at: Instant,
+	/// Set only by the drill's final step: the app rendered on the
+	/// recovered device and exited cleanly. `run` turns its absence into
+	/// a hard error so `--drill` cannot green-light a broken recovery.
+	drill_ok: bool,
+	/// Next drill step to fire (see `auto_drill`).
+	drill_step: u8,
 }
 
-pub fn run(game: impl Game, options: RunOptions) {
+/// Watchdog for a stalled drill: without it a drill that stops
+/// requesting redraws sits in `ControlFlow::Wait` forever and would look
+/// hung instead of failed.
+const DRILL_WATCHDOG: Duration = Duration::from_secs(60);
+
+pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
 	let event_loop = EventLoop::new().expect("event loop");
 	event_loop.set_control_flow(ControlFlow::Wait);
+	let auto_drill = options.auto_drill;
 	let mut app = App {
 		state: AppState::Uninitialized,
 		lifecycle: Lifecycle::new(),
@@ -73,8 +85,16 @@ pub fn run(game: impl Game, options: RunOptions) {
 		frames_rendered: 0,
 		screenshot_pending: false,
 		launched_at: Instant::now(),
+		drill_ok: false,
+		drill_step: 0,
 	};
 	event_loop.run_app(&mut app).expect("event loop run");
+	if auto_drill && !app.drill_ok {
+		return Err(crate::RunError::DrillIncomplete {
+			frames_rendered: app.frames_rendered,
+		});
+	}
+	Ok(())
 }
 
 fn window_attrs(title: &str) -> winit::window::WindowAttributes {
@@ -219,10 +239,14 @@ impl<G: Game> App<G> {
 			Action::InitAll => self.init_all(el),
 			Action::SuspendGame => self.enter_suspend(),
 			Action::RecreateSurface => {
-				if let AppState::Suspended(s) =
-					std::mem::replace(&mut self.state, AppState::Uninitialized)
-				{
-					self.resume_from(s, el);
+				match std::mem::replace(&mut self.state, AppState::Uninitialized) {
+					AppState::Suspended(s) => self.resume_from(s, el),
+					other => {
+						// The FSM only emits this from Suspended; never
+						// drop live resources if that invariant breaks.
+						log::error!("RecreateSurface outside Suspended — ignoring");
+						self.state = other;
+					}
 				}
 			}
 			Action::RebuildRenderer => {
@@ -375,7 +399,30 @@ impl<G: Game> App<G> {
 					wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => LcEvent::SurfaceLost,
 					wgpu::SurfaceError::Timeout => LcEvent::SurfaceTimeout,
 					other => {
-						log::error!("unrecoverable surface error: {other}");
+						// wgpu never fires the lost callback from the loss
+						// itself: it fires from device maintenance once the
+						// queue is EMPTY. A dead device lands here as a
+						// generic acquire error first, usually with the last
+						// frame's work still in flight — pump maintenance,
+						// give the queue a bounded moment to drain (error
+						// path; a stall is already certain), and re-check
+						// the flag before declaring the error fatal.
+						// PollType::Wait is deliberately avoided: it can
+						// block 60s on a wedged queue.
+						let mut lost = false;
+						for _ in 0..5 {
+							let _ = r.gpu.device.poll(wgpu::PollType::Poll);
+							if self.device_lost.swap(false, Ordering::Acquire) {
+								lost = true;
+								break;
+							}
+							std::thread::sleep(Duration::from_millis(5));
+						}
+						if lost {
+							self.dispatch(LcEvent::DeviceLost, el);
+							return;
+						}
+						log::error!("surface acquire failed, no device loss reported: {other}");
 						LcEvent::SurfaceFatal
 					}
 				};
@@ -431,30 +478,39 @@ impl<G: Game> App<G> {
 	}
 
 	/// Automated lifecycle drill (`--drill`). Exercises byte-for-byte the
-	/// same transitions the OS lifecycle events use.
+	/// same transitions the OS lifecycle events use. Steps advance on a
+	/// counter, never on exact frame equality: failed frames don't
+	/// increment `frames_rendered`, so an `== 60` match would re-destroy
+	/// the freshly recovered device every retry frame.
 	fn auto_drill(&mut self, el: &ActiveEventLoop) {
-		match self.frames_rendered {
-			20 => {
+		match (self.drill_step, self.frames_rendered) {
+			(0, 20..) => {
 				log::info!("auto-drill: suspend + immediate resume");
+				self.drill_step = 1;
 				self.dispatch(LcEvent::ToggleDrillSuspend, el);
 				self.dispatch(LcEvent::ToggleDrillSuspend, el);
 			}
-			40 => {
+			(1, 40..) => {
 				log::info!("auto-drill: device-loss rebuild");
+				self.drill_step = 2;
 				self.dispatch(LcEvent::DrillDeviceRebuild, el);
 			}
-			60 => {
-				// REAL device loss: destroy() guarantees the lost callback
-				// fires; the poll at the top of render_frame then drives
-				// the full ReinitDevice recovery. Reaching frame 100 means
-				// the app rendered on the recovered device.
+			(2, 60..) => {
+				// REAL device loss. destroy() does NOT fire the lost
+				// callback — it only invalidates the device; the closure
+				// fires from device maintenance (the poll in the acquire-
+				// error arm pumps it) and ReinitDevice recovers. Reaching
+				// frame 100 means the app rendered on the recovered device.
 				log::info!("auto-drill: destroying the device (real loss)");
+				self.drill_step = 3;
 				if let AppState::Running(r) = &self.state {
 					r.gpu.device.destroy();
 				}
 			}
-			100 => {
+			(3, 100..) => {
 				log::info!("auto-drill: complete, exiting");
+				self.drill_step = 4;
+				self.drill_ok = true;
 				el.exit();
 			}
 			_ => {}
@@ -578,6 +634,26 @@ impl<G: Game> ApplicationHandler for App<G> {
 		if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
 			if self.cursor_grabbed && matches!(self.state, AppState::Running(_)) {
 				self.game.input(InputEvent::MouseDelta { dx, dy });
+			}
+		}
+	}
+
+	fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+		// Drill watchdog: a drill that stops requesting redraws would
+		// otherwise park in ControlFlow::Wait forever. Keep the loop
+		// waking; abort (drill_ok stays false ⇒ non-zero exit) on expiry.
+		if self.options.auto_drill && !self.drill_ok {
+			if self.launched_at.elapsed() > DRILL_WATCHDOG {
+				log::error!(
+					"auto-drill: watchdog expired after {}s at frame {} — aborting",
+					DRILL_WATCHDOG.as_secs(),
+					self.frames_rendered
+				);
+				el.exit();
+			} else {
+				el.set_control_flow(ControlFlow::WaitUntil(
+					Instant::now() + Duration::from_secs(1),
+				));
 			}
 		}
 	}
