@@ -30,15 +30,22 @@ pub struct JournalIndex {
 }
 
 impl JournalIndex {
-	pub fn record(&mut self, edit: BlockEdit) -> u64 {
+	/// Returns the edit's sequence number and whether this is the column's
+	/// FIRST edit ever — the signal residency sync uses to enroll nearby
+	/// clients without rescanning the whole edited-column set.
+	pub fn record(&mut self, edit: BlockEdit) -> (u64, bool) {
 		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
+		let mut new_column = false;
 		self.columns
 			.entry(col)
-			.or_default()
+			.or_insert_with(|| {
+				new_column = true;
+				ColumnEdits::default()
+			})
 			.insert((edit.x, edit.y, edit.z), edit.block);
 		let seq = self.next_seq;
 		self.next_seq += 1;
-		seq
+		(seq, new_column)
 	}
 
 	pub fn column(&self, cx: i32, cz: i32) -> Option<&ColumnEdits> {
@@ -131,8 +138,10 @@ impl Journal {
 		})
 	}
 
-	/// Append one accepted edit; returns its global sequence number.
-	pub fn append(&mut self, edit: BlockEdit, by: PlayerId) -> u64 {
+	/// Append one accepted edit; returns its global sequence number and
+	/// whether this created a freshly-edited column (see
+	/// [`JournalIndex::record`]).
+	pub fn append(&mut self, edit: BlockEdit, by: PlayerId) -> (u64, bool) {
 		let mut rec = [0u8; RECORD_LEN as usize];
 		rec[0..4].copy_from_slice(&edit.x.to_le_bytes());
 		rec[4..8].copy_from_slice(&edit.y.to_le_bytes());
@@ -192,10 +201,11 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 		{
 			let mut j = Journal::open(&dir, 42.0).unwrap();
-			assert_eq!(j.append(edit(5, 130, -2, 0), 1), 0);
-			assert_eq!(j.append(edit(20, 131, 5, 3), 1), 1);
-			// Same cell edited twice: last write wins in the index.
-			assert_eq!(j.append(edit(5, 130, -2, 4), 2), 2);
+			assert_eq!(j.append(edit(5, 130, -2, 0), 1), (0, true));
+			assert_eq!(j.append(edit(20, 131, 5, 3), 1), (1, true));
+			// Same cell edited twice: last write wins in the index, and
+			// the column is no longer new.
+			assert_eq!(j.append(edit(5, 130, -2, 4), 2), (2, false));
 			j.sync();
 		}
 		let j = Journal::open(&dir, 42.0).unwrap();

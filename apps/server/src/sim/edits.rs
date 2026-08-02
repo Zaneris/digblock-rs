@@ -1,7 +1,7 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{cell_of, client_send, send_frame, Sim};
+use super::{cell_of, client_send, in_radius, send_frame, Sim};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
@@ -143,9 +143,25 @@ impl Sim {
 			z: target.2,
 			block: block as u8,
 		};
-		let seq = self.journal.append(edit, id);
+		let (seq, new_column) = self.journal.append(edit, id);
+		if new_column {
+			self.enroll_new_column(edit);
+		}
 		self.fluid.schedule_around(target.0, target.1, target.2);
 		self.broadcast_edit(seq, id, req.seq, edit, prev as u8);
+	}
+
+	/// A column just gained its FIRST edit: enroll every in-radius client
+	/// BEFORE the broadcast, so the `EditApplied` itself carries the data
+	/// and no JournalColumn resend is ever needed for it. This is what
+	/// lets the steady-state residency sync skip journal scans entirely.
+	fn enroll_new_column(&mut self, edit: BlockEdit) {
+		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
+		for c in self.clients.values_mut() {
+			if in_radius(col, c.center, c.draw_dist) {
+				c.synced_columns.insert(col);
+			}
+		}
 	}
 
 	pub(super) fn broadcast_edit(
@@ -184,7 +200,10 @@ impl Sim {
 			self.fluid.step(&mut world, FLOW_BUDGET);
 			for edit in edits {
 				let prev = 0; // recorded value is what fluid overwrote; not tracked
-				let seq = self.journal.append(edit, SERVER_ID);
+				let (seq, new_column) = self.journal.append(edit, SERVER_ID);
+				if new_column {
+					self.enroll_new_column(edit);
+				}
 				self.broadcast_edit(seq, SERVER_ID, 0, edit, prev);
 			}
 		}

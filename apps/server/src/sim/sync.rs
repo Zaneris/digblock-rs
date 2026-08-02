@@ -17,6 +17,7 @@ impl Sim {
 			let center = column_of(client.player.pos);
 			if center != client.center {
 				client.center = center;
+				client.needs_sync_scan = true;
 				self.residency_dirty = true;
 			}
 		}
@@ -27,14 +28,25 @@ impl Sim {
 		}
 		self.store.drain(&self.journal.index);
 
-		// Late journal sync + liveness flips.
+		// Late journal sync + liveness flips. The full edited-column scan
+		// is EVENT-DRIVEN: only when this client's center moved or it just
+		// went live (invariant: `synced_columns` ⊇ its in-radius edited
+		// columns — first edits to fresh columns enroll nearby clients at
+		// broadcast time, so a stationary client never needs a rescan).
 		let journal = &self.journal;
 		let store = &self.store;
 		for client in self.clients.values_mut() {
 			if !client.live && store.column_ready(client.center.0, client.center.1) {
 				client.live = true;
+				client.needs_sync_scan = true;
 				log::debug!("player {} live", client.id);
 			}
+			if !client.needs_sync_scan {
+				continue;
+			}
+			client.needs_sync_scan = false;
+			// Columns only leave the slack radius when the center moves,
+			// so the prune rides the same trigger.
 			client
 				.synced_columns
 				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
@@ -168,7 +180,124 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 #[cfg(test)]
 mod tests {
 	use super::super::harness::*;
+	use super::super::{Sim, SimEvent};
+	use digblock_core::raycast::{raycast, REACH};
+	use digblock_net::messages::{ClientMsg, EditKind, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
+	use glam::Vec3;
+
+	fn dig_under(sim: &mut super::super::Sim, conn_id: u64, seq: u32) -> (i32, i32, i32) {
+		let pos = sim.test_player(conn_id).unwrap().pos;
+		// At an angle: the ground under the player's feet stays intact so
+		// it can still walk (a hole underfoot would trap it in the pit).
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z))
+			.expect("ground under player");
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Dig,
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [0, 0, 0],
+			},
+		}]);
+		hit.cell
+	}
+
+	fn walk(tick: u32, dz: f32) -> InputTick {
+		InputTick {
+			tick,
+			move_axis: [0.0, dz],
+			jump: false,
+			look: [0.0, 0.0, 1.0],
+			claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
+			claimed_vel: [0.0; 3],
+		}
+	}
+
+	/// Trigger B: a column's first edit enrolls nearby clients at
+	/// broadcast time — the EditApplied carries the data, no
+	/// JournalColumn resend, no per-tick journal scan.
+	#[test]
+	fn fresh_column_edit_reaches_stationary_peer_via_broadcast_only() {
+		let mut sim = flat_sim("fresh");
+		let mut a = connect(&mut sim, 1);
+		let _b_keepalive = connect(&mut sim, 2);
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		a.drain();
+		a.msgs.clear();
+
+		let cell = dig_under(&mut sim, 2, 1);
+		sim.tick_once(vec![]);
+		a.drain();
+		assert!(
+			a.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditApplied { edit, .. }
+					if (edit.x, edit.y, edit.z) == cell
+			)),
+			"stationary peer got the broadcast: {:?}",
+			a.msgs
+		);
+		assert!(
+			!a.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::JournalColumn { .. })),
+			"no redundant JournalColumn for a fresh column"
+		);
+	}
+
+	/// Trigger A: leaving prunes the synced set; re-entering re-syncs the
+	/// edited column exactly once via JournalColumn.
+	#[test]
+	fn evict_and_reenter_resyncs_column_exactly_once() {
+		// Residency radius 3: columns generate well ahead of a 4-block/s
+		// walk even when parallel tests starve the worker threads (radius
+		// 1 can lag and drop the player through ungenerated terrain).
+		let dir = temp_dir("reenter");
+		let mut sim = Sim::new_with_source(SEED, &dir, 3, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut a = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let cell = dig_under(&mut sim, 1, 1);
+		let col = (cell.0.div_euclid(16), cell.2.div_euclid(16));
+
+		// Walk out (+z) until well past draw_dist 4 + SYNC_SLACK 2, then
+		// back until near the edited column again — condition-driven, so
+		// scheduler hiccups can't underschoot the distances. Drain as we
+		// go: an undrained queue would (correctly) trip the stall-kill.
+		let col_dist = |sim: &Sim| {
+			let p = sim.test_player(1).expect("client alive").pos;
+			((p.z.floor() as i32).div_euclid(16) - col.1).abs()
+		};
+		let mut t = 100;
+		while col_dist(&sim) < 10 {
+			sim.tick_once(vec![batch(vec![walk(t, 1.0)], 1)]);
+			a.drain();
+			t += 1;
+			assert!(t < 20_000, "never walked out");
+		}
+		while col_dist(&sim) > 1 {
+			sim.tick_once(vec![batch(vec![walk(t, -1.0)], 1)]);
+			a.drain();
+			t += 1;
+			assert!(t < 40_000, "never walked back");
+		}
+		for _ in 0..30 {
+			sim.tick_once(vec![]);
+		}
+		a.drain();
+		let resyncs = a
+			.msgs
+			.iter()
+			.filter(|m| matches!(m, ServerMsg::JournalColumn { cx, cz, .. } if (*cx, *cz) == col))
+			.count();
+		assert_eq!(resyncs, 1, "column resynced exactly once on re-entry");
+	}
 
 	/// The regression test for the old cliff: every snapshot used to carry
 	/// every player and silently exceeded MAX_DATAGRAM at ~30 — now each

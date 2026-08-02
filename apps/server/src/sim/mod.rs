@@ -83,6 +83,10 @@ struct Client {
 	edit_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
+	/// Run the full edited-column sync scan for this client next tick.
+	/// Set on center change and on going live; steady state does ZERO
+	/// journal scans (fresh columns arrive via the first-edit broadcast).
+	needs_sync_scan: bool,
 	live: bool,
 	center: (i32, i32),
 }
@@ -384,6 +388,7 @@ impl Sim {
 				edit_tokens: EDIT_BURST,
 				draw_dist,
 				synced_columns: synced,
+				needs_sync_scan: false,
 				live: false,
 				center,
 			},
