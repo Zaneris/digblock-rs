@@ -138,3 +138,17 @@ pub const INTERP_DELAY_TICKS: f64 = 6.0;
 /// Max extrapolation past the newest snapshot before a remote player
 /// holds position (250 ms).
 pub const EXTRAP_CAP_TICKS: f64 = 15.0;
+
+/// Interest management: at most this many players per snapshot — self
+/// first (the reconciliation anchor), then nearest remotes by column
+/// distance. Sized so a full snapshot always fits one datagram.
+pub const MAX_SNAPSHOT_PLAYERS: usize = 24;
+// NetPlayerState is 37 wire bytes (id + 9×f32); ≤13 bytes of snapshot
+// overhead (variant, two varint ticks, vec length).
+const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 37 + 13 <= MAX_DATAGRAM);
+
+/// A remote whose newest snapshot lags the estimated clock by this many
+/// ticks (2 s) left our interest radius — drop it client-side so it
+/// vanishes instead of ghosting at the extrapolation cap. `PlayerLeft`
+/// still removes eagerly.
+pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;

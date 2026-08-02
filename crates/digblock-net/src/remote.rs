@@ -2,7 +2,9 @@
 //! past, lerping between 20 Hz snapshot states, with capped velocity
 //! extrapolation when snapshots stall.
 
-use crate::protocol::{PlayerId, EXTRAP_CAP_TICKS, INTERP_DELAY_TICKS, TICK_RATE};
+use crate::protocol::{
+	PlayerId, EXTRAP_CAP_TICKS, INTERP_DELAY_TICKS, REMOTE_EXPIRE_TICKS, TICK_RATE,
+};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
@@ -38,6 +40,12 @@ impl RemotePlayers {
 	pub fn advance(&mut self, dt: f32) {
 		if self.seen_any {
 			self.est_server_tick += dt as f64 * TICK_RATE as f64;
+			// Interest management stops snapshots for far-away players —
+			// expire them so they vanish instead of freezing in place.
+			let cutoff = self.est_server_tick - REMOTE_EXPIRE_TICKS;
+			self.players.retain(
+				|_, ring| matches!(ring.back(), Some(s) if (s.server_tick as f64) >= cutoff),
+			);
 		}
 	}
 
@@ -151,6 +159,22 @@ mod tests {
 		r.est_server_tick = 100.0 + INTERP_DELAY_TICKS;
 		r.sample(&mut out);
 		assert!((out[0].pos.x - 1.5).abs() < 1e-5, "x = {}", out[0].pos.x);
+	}
+
+	#[test]
+	fn stale_remote_expires_instead_of_ghosting() {
+		let mut r = RemotePlayers::default();
+		r.push(1, snap(0, 0.0, 0.0));
+		r.push(2, snap(0, 5.0, 0.0));
+		// Fresh snaps keep arriving for player 1 only.
+		for t in 1..10u32 {
+			r.push(1, snap(t * 20, t as f32, 0.0));
+			r.advance(20.0 / TICK_RATE as f32);
+		}
+		let mut out = Vec::new();
+		r.sample(&mut out);
+		assert_eq!(out.len(), 1, "stale player 2 expired: {out:?}");
+		assert_eq!(out[0].id, 1);
 	}
 
 	#[test]
