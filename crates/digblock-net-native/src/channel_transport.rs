@@ -13,15 +13,37 @@ enum Outgoing {
 	Reliable(Vec<u8>),
 }
 
+/// How the client validates the server's TLS certificate.
+#[derive(Clone, Copy, Debug)]
+pub enum CertPolicy {
+	/// Trust anything — dev/LAN posture for self-signed servers. Loudly
+	/// logged; pass `--cert-hash` for real deployments.
+	Insecure,
+	/// Trust exactly this SHA-256 certificate hash (the server logs its
+	/// own hash at startup).
+	PinnedSha256([u8; 32]),
+}
+
 pub struct ChannelTransport {
 	out_tx: UnboundedSender<Outgoing>,
 	in_rx: Receiver<TransportEvent>,
 	status: ConnStatus,
 }
 
-/// Connect in the background; returns immediately with `Connecting`.
-/// `url` is a WebTransport URL, e.g. `https://localhost:4433`.
+/// Connect in the background with the dev [`CertPolicy::Insecure`]
+/// posture; returns immediately with `Connecting`. `url` is a
+/// WebTransport URL, e.g. `https://localhost:4433`.
 pub fn connect(url: &str) -> ChannelTransport {
+	connect_with(url, CertPolicy::Insecure)
+}
+
+pub fn connect_with(url: &str, policy: CertPolicy) -> ChannelTransport {
+	if matches!(policy, CertPolicy::Insecure) {
+		log::warn!(
+			"TLS certificate validation is OFF (dev posture) — \
+			 pass --cert-hash <sha256-hex> to pin the server's certificate"
+		);
+	}
 	let (out_tx, out_rx) = unbounded_channel();
 	let (in_tx, in_rx) = unbounded();
 	let url = url.to_string();
@@ -32,7 +54,7 @@ pub fn connect(url: &str) -> ChannelTransport {
 				.enable_all()
 				.build()
 				.expect("tokio runtime");
-			rt.block_on(run(url, out_rx, in_tx));
+			rt.block_on(run(url, policy, out_rx, in_tx));
 		})
 		.expect("spawn net-client thread");
 	ChannelTransport {
@@ -67,18 +89,26 @@ impl NetTransport for ChannelTransport {
 	}
 }
 
-async fn run(url: String, mut out_rx: UnboundedReceiver<Outgoing>, in_tx: Sender<TransportEvent>) {
+async fn run(
+	url: String,
+	policy: CertPolicy,
+	mut out_rx: UnboundedReceiver<Outgoing>,
+	in_tx: Sender<TransportEvent>,
+) {
 	let disconnect = |reason: String| {
 		let _ = in_tx.send(TransportEvent::Disconnected { reason });
 	};
 
-	// Dev posture: the server self-signs its cert and logs the hash; the
-	// native client skips validation entirely. Tighten before any public
-	// deployment.
-	let config = ClientConfig::builder()
-		.with_bind_default()
-		.with_no_cert_validation()
-		.build();
+	let config = match policy {
+		CertPolicy::Insecure => ClientConfig::builder()
+			.with_bind_default()
+			.with_no_cert_validation()
+			.build(),
+		CertPolicy::PinnedSha256(hash) => ClientConfig::builder()
+			.with_bind_default()
+			.with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(hash)])
+			.build(),
+	};
 	let endpoint = match Endpoint::client(config) {
 		Ok(e) => e,
 		Err(e) => return disconnect(format!("endpoint: {e}")),

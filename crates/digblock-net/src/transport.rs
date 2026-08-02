@@ -24,13 +24,25 @@ pub enum TransportEvent {
 	},
 }
 
-pub trait NetTransport: Send {
-	/// Fire-and-forget; silently dropped when not connected (datagrams
-	/// are lossy by contract anyway).
-	fn send_datagram(&mut self, bytes: &[u8]);
-	/// Non-blocking enqueue onto the reliable ordered stream.
-	fn send_reliable(&mut self, bytes: &[u8]);
-	/// Drain everything received since the last call. Never blocks.
-	fn poll(&mut self, out: &mut Vec<TransportEvent>);
-	fn status(&self) -> ConnStatus;
+// `Send` is required off-wasm (the engine may hand the transport across
+// threads) but must NOT be required on wasm32: the browser WebTransport
+// handle a future shim wraps is a JS object and inherently !Send.
+macro_rules! transport_trait {
+	($($bound:tt)*) => {
+		pub trait NetTransport $($bound)* {
+			/// Fire-and-forget; silently dropped when not connected (datagrams
+			/// are lossy by contract anyway).
+			fn send_datagram(&mut self, bytes: &[u8]);
+			/// Non-blocking enqueue onto the reliable ordered stream.
+			fn send_reliable(&mut self, bytes: &[u8]);
+			/// Drain everything received since the last call. Never blocks.
+			fn poll(&mut self, out: &mut Vec<TransportEvent>);
+			fn status(&self) -> ConnStatus;
+		}
+	};
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+transport_trait!(: Send);
+#[cfg(target_arch = "wasm32")]
+transport_trait!();

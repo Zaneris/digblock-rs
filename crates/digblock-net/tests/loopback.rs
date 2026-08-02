@@ -42,6 +42,7 @@ struct Stub {
 	pub client_msgs: Vec<ClientMsg>,
 	pub client_protocol: Option<u16>,
 	pub input_ticks: std::collections::BTreeSet<u32>,
+	pub datagrams: u32,
 	scratch: Vec<TransportEvent>,
 	sent_preamble: bool,
 	/// Version the stub advertises in its own preamble.
@@ -56,6 +57,7 @@ impl Stub {
 			client_msgs: Vec::new(),
 			client_protocol: None,
 			input_ticks: std::collections::BTreeSet::new(),
+			datagrams: 0,
 			scratch: Vec::new(),
 			sent_preamble: false,
 			advertise: PROTOCOL_VERSION,
@@ -82,6 +84,7 @@ impl Stub {
 					}
 				}
 				TransportEvent::Datagram(bytes) => {
+					self.datagrams += 1;
 					if let Datagram::Input(batch) = codec::decode_datagram(&bytes).unwrap() {
 						for i in batch.inputs {
 							self.input_ticks.insert(i.tick);
@@ -323,9 +326,14 @@ fn input_redundancy_survives_datagram_loss() {
 			.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
 		client.send_inputs();
 	}
-	// The final tick only rode the last datagram; in live operation the
-	// next frame's datagram re-carries it. Model that follow-up send.
-	client.send_inputs();
+	// The final ticks only rode the last (possibly dropped) datagram; in
+	// live operation the next strides' sends re-carry them. Model that.
+	for _ in 0..2 {
+		client
+			.predictor
+			.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+		client.send_inputs();
+	}
 	server.pump();
 	// Half the datagrams were dropped, but the 4-deep redundancy window
 	// delivered every tick.
@@ -414,4 +422,59 @@ fn sim_version_mismatch_is_refused() {
 		"{events:?}"
 	);
 	assert!(!client.ready());
+}
+
+#[test]
+fn input_sends_are_throttled_to_the_stride() {
+	use digblock_net::protocol::INPUT_SEND_STRIDE;
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.pump();
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+	});
+	client.poll(&mut events, 0.016);
+	server.pump();
+	server.datagrams = 0;
+
+	// A 120 Hz display: send_inputs is called TWICE per predicted tick.
+	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
+	const TICKS: u32 = 20;
+	for _ in 0..TICKS {
+		client
+			.predictor
+			.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+		client.send_inputs();
+		client.send_inputs(); // same-tick duplicate frame
+	}
+	// The last tick rides the NEXT stride's send in live operation.
+	client
+		.predictor
+		.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+	client.send_inputs();
+	server.pump();
+	// At most one datagram per stride worth of ticks...
+	assert!(
+		server.datagrams <= TICKS / INPUT_SEND_STRIDE + 1,
+		"{} datagrams for {TICKS} ticks",
+		server.datagrams
+	);
+	assert!(server.datagrams >= TICKS / INPUT_SEND_STRIDE - 1);
+	// ...and every tick still arrived (the redundancy window covers the
+	// stride with margin).
+	let first = CLIENT_TICK_LEAD;
+	for t in first..first + TICKS {
+		assert!(server.input_ticks.contains(&t), "missing tick {t}");
+	}
 }

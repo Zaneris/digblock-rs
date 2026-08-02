@@ -8,7 +8,8 @@ use crate::messages::{ClientMsg, Datagram, EditKind, ServerMsg};
 use crate::predict::Predictor;
 use crate::protocol::{
 	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
-	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION,
+	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE, MIN_PROTOCOL, PREAMBLE_LEN,
+	PROTOCOL_VERSION,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
@@ -81,6 +82,8 @@ pub struct NetClient {
 	handshake_elapsed: f32,
 	/// Refused or timed out: stop emitting further failures.
 	failed: bool,
+	/// Predictor tick of the last input datagram (send-rate throttle).
+	last_input_send_tick: u32,
 }
 
 impl NetClient {
@@ -101,6 +104,7 @@ impl NetClient {
 			connect_elapsed: 0.0,
 			handshake_elapsed: 0.0,
 			failed: false,
+			last_input_send_tick: 0,
 		}
 	}
 
@@ -281,6 +285,7 @@ impl NetClient {
 				self.my_id = Some(player_id);
 				self.session_token = Some(session_token);
 				self.predictor = Predictor::new(server_tick + CLIENT_TICK_LEAD);
+				self.last_input_send_tick = 0;
 				out.push(NetEvent::Welcome {
 					seed,
 					player_id,
@@ -353,9 +358,16 @@ impl NetClient {
 		}
 	}
 
-	/// One datagram carrying the current input redundancy window.
+	/// One datagram carrying the current input redundancy window. Called
+	/// every frame; actually sends at most once per INPUT_SEND_STRIDE
+	/// predicted ticks — a 120 Hz display no longer transmits 120
+	/// datagrams/s, half of them carrying an unchanged window.
 	pub fn send_inputs(&mut self) {
 		if !self.ready() {
+			return;
+		}
+		let cur = self.predictor.current_tick();
+		if cur.wrapping_sub(self.last_input_send_tick) < INPUT_SEND_STRIDE {
 			return;
 		}
 		let batch = self.predictor.input_batch();
@@ -363,7 +375,10 @@ impl NetClient {
 			return;
 		}
 		match codec::encode_datagram(&Datagram::Input(batch)) {
-			Ok(bytes) => self.transport.send_datagram(&bytes),
+			Ok(bytes) => {
+				self.transport.send_datagram(&bytes);
+				self.last_input_send_tick = cur;
+			}
 			Err(e) => log::warn!("input datagram: {e}"),
 		}
 	}

@@ -4,4 +4,4 @@
 
 mod channel_transport;
 
-pub use channel_transport::{connect, ChannelTransport};
+pub use channel_transport::{connect, connect_with, CertPolicy, ChannelTransport};

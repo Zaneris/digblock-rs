@@ -89,6 +89,13 @@ pub const SNAPSHOT_DIVISOR: u32 = 3;
 /// datagram loss never costs the server an input.
 pub const INPUT_REDUNDANCY: usize = 4;
 
+/// Send an input datagram at most once per this many predicted ticks
+/// (30 Hz at stride 2). The redundancy window covers a lost datagram at
+/// this spacing with 2× margin; input→adoption latency grows with the
+/// stride, so don't raise it casually. High-refresh displays used to
+/// send per FRAME (120+/s, half of them duplicates).
+pub const INPUT_SEND_STRIDE: u32 = 2;
+
 /// Datagram payload budget, safely under the QUIC minimum MTU.
 pub const MAX_DATAGRAM: usize = 1150;
 

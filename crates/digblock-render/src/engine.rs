@@ -37,6 +37,13 @@ pub struct EngineConfig {
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
+	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
+	/// $USER) — the engine itself must stay env-free for wasm.
+	pub player_name: Option<String>,
+	/// Debug: park a fake remote player 5 blocks ahead (GPU-path check
+	/// without a second client). Set by the desktop launcher from
+	/// DIG_PLAYERBOX.
+	pub debug_playerbox: bool,
 }
 
 impl EngineConfig {
@@ -54,6 +61,8 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: true,
+			player_name: None,
+			debug_playerbox: false,
 		}
 	}
 
@@ -71,6 +80,8 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: false,
+			player_name: None,
+			debug_playerbox: false,
 		}
 	}
 }
@@ -258,7 +269,11 @@ impl Engine {
 	/// swapped to the server's seed when the Welcome arrives; until then
 	/// the local world keeps running.
 	pub fn set_transport(&mut self, transport: Box<dyn digblock_net::transport::NetTransport>) {
-		let name = std::env::var("USER").unwrap_or_else(|_| "player".into());
+		let name = self
+			.config
+			.player_name
+			.clone()
+			.unwrap_or_else(|| "player".into());
 		self.net = Some(digblock_net::NetClient::new(
 			transport,
 			digblock_net::client::NetClientConfig {
@@ -875,7 +890,7 @@ impl Game for Engine {
 			}
 			// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
 			// a GPU-path check that needs no second client.
-			if std::env::var_os("DIG_PLAYERBOX").is_some() {
+			if self.config.debug_playerbox {
 				let p = self.camera.pos + self.camera.dir() * 5.0;
 				let c = player_color(2);
 				self.remote_instances
