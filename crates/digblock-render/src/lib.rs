@@ -10,7 +10,10 @@ mod overlay;
 mod pipeline_builder;
 mod players;
 mod renderer;
+mod shadow;
+mod sky;
 mod spray;
 mod texture;
+mod water;
 
 pub use engine::{Engine, EngineConfig};

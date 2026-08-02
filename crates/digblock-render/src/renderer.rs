@@ -7,15 +7,18 @@ use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
-use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_SHADOW_NEAR, Q_SHADOW_WIDE, Q_WATER};
+use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_WATER};
 use crate::overlay::Overlay;
+use crate::shadow::ShadowCascades;
+use crate::sky::SkyDraw;
 use crate::texture::BlockTextures;
+use crate::water::WaterDraw;
 use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
 /// Worst-case faces per 16³ chunk mesh (checkerboard): 2048 blocks × 6.
 const MAX_QUADS: usize = 12288;
-const CHUNK_STRIDE: u64 = 256;
+pub(crate) const CHUNK_STRIDE: u64 = 256;
 
 /// Chunk-origin UBO slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
@@ -108,17 +111,7 @@ pub struct FrameUniforms {
 pub struct ChunkGpu {
 	pub solid: Option<(wgpu::Buffer, u32)>,
 	pub water: Option<(wgpu::Buffer, u32)>,
-	slot: u32,
-}
-
-/// Wide-cascade refresh in progress: the resident set snapshotted at start,
-/// re-rendered into the back map `WIDE_SLICE_DRAWS` chunks per frame.
-/// Chunks uploaded mid-job appear at the next refresh (same as before the
-/// split); evicted ones are skipped at encode time.
-struct WideJob {
-	vp: glam::Mat4,
-	list: Vec<ChunkPos>,
-	next: usize,
+	pub(crate) slot: u32,
 }
 
 /// Default per-frame wide-refresh encode cap (RenderConfig can
@@ -131,14 +124,13 @@ pub(crate) const WIDE_SLICE_DRAWS: u32 = 1536;
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
-	water_pipeline: wgpu::RenderPipeline,
-	/// Depth-only water prepass: records the nearest water surface so
-	/// `water_pipeline` (depth Equal) blends exactly one layer — interior
-	/// faces of cascades never reach the blender.
-	water_depth_pipeline: wgpu::RenderPipeline,
-	shadow_pipeline: wgpu::RenderPipeline,
+	/// The two-cascade shadow system (pipeline, maps, ping-pong,
+	/// sampling bind groups).
+	shadow: ShadowCascades,
+	/// The water depth-prepass + color subpass pair.
+	water: WaterDraw,
 	/// Fullscreen procedural sky, drawn after solids, before water.
-	sky_pipeline: wgpu::RenderPipeline,
+	sky: SkyDraw,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
 	/// Water copy of the frame UBO, alpha 0.7 (Java u_Alpha for the
@@ -146,33 +138,14 @@ pub struct Renderer {
 	frame_water_buf: wgpu::Buffer,
 	/// Group 1: block texture array + sampler — one static bind group.
 	materials_bg: wgpu::BindGroup,
-	/// Group 2: shadow maps + comparison sampler, one per wide map
-	/// (binding 1 differs); `wide_front` picks the one whose wide map is
-	/// complete and safe to sample.
-	shadow_bgs: [wgpu::BindGroup; 2],
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
-	light_near_buf: wgpu::Buffer,
-	light_near_bg: wgpu::BindGroup,
-	light_wide_buf: wgpu::Buffer,
-	light_wide_bg: wgpu::BindGroup,
-	/// Set at construction: the persistent wide cascade has no contents
-	/// yet (also the device-loss recovery path).
-	pub wide_refresh_needed: bool,
-	/// Index of the wide map currently sampled; 1-front is the render
-	/// target of the in-progress refresh.
-	wide_front: usize,
-	/// The view-proj the front wide map was rendered with — what the main
-	/// pass must project with until the next flip, regardless of how far
-	/// the sun has moved since.
-	wide_active_vp: glam::Mat4,
-	/// In-progress wide refresh, encoded a slice per frame.
-	wide_job: Option<WideJob>,
-	/// False until the first render() bootstraps a clear of the front map
-	/// (it is uninitialized at construction / device rebuild).
-	wide_front_valid: bool,
+	/// Kept for chunk-UBO growth (the bind group must be rebuilt from
+	/// it when `chunk_buf` is replaced).
+	#[allow(dead_code)]
+	chunk_bgl: wgpu::BindGroupLayout,
 	index_buf: wgpu::Buffer,
-	// Read from M6 on (shadow passes render into the shadow views).
+	// Kept alive alongside materials_bg (mip/sampler access for tooling).
 	#[allow(dead_code)]
 	pub textures: BlockTextures,
 	chunks: FxHashMap<ChunkPos, ChunkGpu>,
@@ -181,9 +154,6 @@ pub struct Renderer {
 	/// Capacity of `chunk_buf` in slots, derived from draw distance.
 	chunk_slots: u32,
 	pub gpu_buffer_bytes: u64,
-	/// Reused water chunk list (was a fresh alloc every frame). The
-	/// depth prepass makes draw order irrelevant, so no sort key.
-	water_scratch: Vec<ChunkPos>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// Debug overlay; always constructed (cheap) so the device-loss
@@ -208,7 +178,6 @@ pub struct Renderer {
 	/// the water pass.
 	blit_pipeline: wgpu::RenderPipeline,
 	surface_format: wgpu::TextureFormat,
-	config: RenderConfig,
 }
 
 /// Renderer-owned per-frame render targets. The platform hands over only
@@ -237,10 +206,6 @@ impl Renderer {
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("chunk"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::CHUNK.into()),
-		});
-		let water_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-			label: Some("water"),
-			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::WATER.into()),
 		});
 
 		let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -276,40 +241,6 @@ impl Renderer {
 					binding: 1,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-					count: None,
-				},
-			],
-		});
-
-		// Group 2: shadows — near map, wide map, comparison sampler. Two
-		// bind groups exist (one per wide map); the ping-pong picks one.
-		let shadows_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("shadows"),
-			entries: &[
-				wgpu::BindGroupLayoutEntry {
-					binding: 0,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 1,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 2,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
 					count: None,
 				},
 			],
@@ -410,37 +341,32 @@ impl Renderer {
 			..Default::default()
 		});
 
+		// The shadow system owns its pipeline, maps, and the sampling
+		// layout the main pipelines reference as group 2.
+		let shadow =
+			ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws, &chunk_bgl);
+
 		// Shared group scheme: 0 = frame, 1 = materials, 2 = shadows,
 		// 3 = chunk origins (dynamic offset). Water swaps group 0 for
 		// its frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[&frame_bgl, &materials_bgl, &shadows_bgl, &chunk_bgl],
+			bind_group_layouts: &[
+				&frame_bgl,
+				&materials_bgl,
+				shadow.bind_group_layout(),
+				&chunk_bgl,
+			],
 			push_constant_ranges: &[],
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, &shadows_bgl, &chunk_bgl],
-			push_constant_ranges: &[],
-		});
-
-		// Depth-only shadow pass: group0 = light VP, group1 = chunk origins.
-		let light_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("light"),
-			entries: &[wgpu::BindGroupLayoutEntry {
-				binding: 0,
-				visibility: wgpu::ShaderStages::VERTEX,
-				ty: wgpu::BindingType::Buffer {
-					ty: wgpu::BufferBindingType::Uniform,
-					has_dynamic_offset: false,
-					min_binding_size: None,
-				},
-				count: None,
-			}],
-		});
-		let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-			label: Some("shadow"),
-			bind_group_layouts: &[&light_bgl, &chunk_bgl],
+			bind_group_layouts: &[
+				&water_frame_bgl,
+				&materials_bgl,
+				shadow.bind_group_layout(),
+				&chunk_bgl,
+			],
 			push_constant_ranges: &[],
 		});
 
@@ -473,95 +399,8 @@ impl Renderer {
 			},
 		);
 
-		// Water: blended, double-sided (the dropped surface is visible
-		// from below), depth test on but depth WRITE off — fixes the Java
-		// artifact of water writing depth in the transparent pass. Its
-		// vertices are two u32 words (see mesher MeshData).
-		let water_vertex_layout = wgpu::VertexBufferLayout {
-			array_stride: 8,
-			step_mode: wgpu::VertexStepMode::Vertex,
-			attributes: &[wgpu::VertexAttribute {
-				format: wgpu::VertexFormat::Uint32x2,
-				offset: 0,
-				shader_location: 0,
-			}],
-		};
-		let water_pipeline = crate::pipeline_builder::build(
-			device,
-			Some(surface_format),
-			&crate::pipeline_builder::PipelineDesc {
-				label: "water",
-				layout: &water_layout,
-				module: &water_shader,
-				vs_entry: "vs",
-				fs_entry: Some("fs"),
-				vertex_buffers: std::slice::from_ref(&water_vertex_layout),
-				cull: None,
-				depth_write: false,
-				// LessEqual against the prepass depth: only the nearest
-				// water surface shades (Equal in effect, tolerant of
-				// cross-pipeline depth invariance).
-				depth_compare: wgpu::CompareFunction::LessEqual,
-				depth_bias: Default::default(),
-				blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-				write_mask: wgpu::ColorWrites::ALL,
-			},
-		);
-
-		// Depth-only prepass over the same water geometry: writes the
-		// nearest water depth, color masked off. Stacked water/air
-		// interfaces (fall-sheet backsides, pool surfaces behind them)
-		// then fail the color pass's depth test, so a connected body of
-		// water reads as one surface instead of accumulated alpha layers.
-		let water_depth_pipeline = crate::pipeline_builder::build(
-			device,
-			Some(surface_format),
-			&crate::pipeline_builder::PipelineDesc {
-				label: "water depth",
-				layout: &water_layout,
-				module: &water_shader,
-				vs_entry: "vs",
-				fs_entry: Some("fs_depth"),
-				vertex_buffers: std::slice::from_ref(&water_vertex_layout),
-				cull: None,
-				depth_write: true,
-				depth_compare: wgpu::CompareFunction::Less,
-				depth_bias: Default::default(),
-				blend: None,
-				write_mask: wgpu::ColorWrites::empty(),
-			},
-		);
-
-		// Sky: fullscreen triangle at NDC depth 1.0, depth-tested against
-		// the solids (LessEqual, no write) so occluded fragments are free;
-		// drawn before water so water blends over it.
-		let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-			label: Some("sky"),
-			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SKY.into()),
-		});
-		let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-			label: Some("sky"),
-			bind_group_layouts: &[&frame_bgl],
-			push_constant_ranges: &[],
-		});
-		let sky_pipeline = crate::pipeline_builder::build(
-			device,
-			Some(surface_format),
-			&crate::pipeline_builder::PipelineDesc {
-				label: "sky",
-				layout: &sky_layout,
-				module: &sky_shader,
-				vs_entry: "vs",
-				fs_entry: Some("fs"),
-				vertex_buffers: &[],
-				cull: None,
-				depth_write: false,
-				depth_compare: wgpu::CompareFunction::LessEqual,
-				depth_bias: Default::default(),
-				blend: None,
-				write_mask: wgpu::ColorWrites::ALL,
-			},
-		);
+		let water = WaterDraw::new(gpu, surface_format, &water_layout);
+		let sky = SkyDraw::new(gpu, surface_format, &frame_bgl);
 
 		// Fullscreen composite of the offscreen scene into the swapchain:
 		// first draw of the water pass. Depth Always/no-write — the pass
@@ -593,56 +432,6 @@ impl Renderer {
 				write_mask: wgpu::ColorWrites::ALL,
 			},
 		);
-
-		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-			label: Some("shadow"),
-			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
-		});
-		// Depth-only (color_format None, no fragment stage).
-		let shadow_pipeline = crate::pipeline_builder::build(
-			device,
-			None,
-			&crate::pipeline_builder::PipelineDesc {
-				label: "shadow",
-				layout: &shadow_layout,
-				module: &shadow_shader,
-				vs_entry: "vs",
-				fs_entry: None,
-				vertex_buffers: std::slice::from_ref(&vertex_layout),
-				cull: Some(wgpu::Face::Back),
-				depth_write: true,
-				depth_compare: wgpu::CompareFunction::Less,
-				// Replaces the Java heightmap biases (0.0005/0.0008) and
-				// the 3° tilt hack. Tunable during M6 A/B.
-				depth_bias: wgpu::DepthBiasState {
-					constant: 2,
-					slope_scale: 2.0,
-					clamp: 0.0,
-				},
-				blend: None,
-				write_mask: wgpu::ColorWrites::ALL,
-			},
-		);
-
-		let make_light = |label: &str| {
-			let buf = device.create_buffer(&wgpu::BufferDescriptor {
-				label: Some(label),
-				size: 64,
-				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-				mapped_at_creation: false,
-			});
-			let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some(label),
-				layout: &light_bgl,
-				entries: &[wgpu::BindGroupEntry {
-					binding: 0,
-					resource: buf.as_entire_binding(),
-				}],
-			});
-			(buf, bg)
-		};
-		let (light_near_buf, light_near_bg) = make_light("light near");
-		let (light_wide_buf, light_wide_bg) = make_light("light wide");
 
 		let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("frame ubo"),
@@ -687,7 +476,7 @@ impl Renderer {
 			}],
 		});
 
-		let textures = BlockTextures::new(gpu, config.shadow_size);
+		let textures = BlockTextures::new(gpu);
 		let materials_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("materials"),
 			layout: &materials_bgl,
@@ -702,28 +491,6 @@ impl Renderer {
 				},
 			],
 		});
-		let shadow_bgs = [0, 1].map(|i| {
-			device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some("shadows"),
-				layout: &shadows_bgl,
-				entries: &[
-					wgpu::BindGroupEntry {
-						binding: 0,
-						resource: wgpu::BindingResource::TextureView(&textures.shadow_near_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 1,
-						resource: wgpu::BindingResource::TextureView(
-							&textures.shadow_wide_views[i],
-						),
-					},
-					wgpu::BindGroupEntry {
-						binding: 2,
-						resource: wgpu::BindingResource::Sampler(&textures.shadow_sampler),
-					},
-				],
-			})
-		});
 
 		let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
 			label: Some("shared quad indices"),
@@ -733,26 +500,16 @@ impl Renderer {
 
 		Self {
 			solid_pipeline,
-			water_pipeline,
-			water_depth_pipeline,
-			shadow_pipeline,
-			sky_pipeline,
+			shadow,
+			water,
+			sky,
 			frame_buf,
 			frame_bg,
 			frame_water_buf,
 			materials_bg,
-			shadow_bgs,
 			chunk_buf,
 			chunk_bg,
-			light_near_buf,
-			light_near_bg,
-			light_wide_buf,
-			light_wide_bg,
-			wide_refresh_needed: true,
-			wide_front: 0,
-			wide_active_vp: glam::Mat4::IDENTITY,
-			wide_job: None,
-			wide_front_valid: false,
+			chunk_bgl,
 			index_buf,
 			textures,
 			chunks: FxHashMap::default(),
@@ -760,7 +517,6 @@ impl Renderer {
 			next_slot: 0,
 			chunk_slots,
 			gpu_buffer_bytes: 0,
-			water_scratch: Vec::new(),
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
@@ -771,7 +527,6 @@ impl Renderer {
 			linear_sampler,
 			blit_pipeline,
 			surface_format,
-			config: config.clone(),
 		}
 	}
 
@@ -963,47 +718,24 @@ impl Renderer {
 		self.players.set_instances(gpu, players);
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
-			wide_refreshed: wide_due || self.wide_refresh_needed,
+			wide_refreshed: self.shadow.refresh_pending(wide_due),
 			..Default::default()
 		};
-		let wide_due = wide_due || self.wide_refresh_needed;
-		self.wide_refresh_needed = false;
-		if wide_due {
-			// Kick off (or restart) the sliced re-render of the back map.
-			// light_wide_buf feeds only the shadow-pass encode, so it can
-			// take the new VP now; the main pass keeps projecting with
-			// wide_active_vp until the flip.
-			self.wide_job = Some(WideJob {
-				vp: wide_vp,
-				list: self.chunks.keys().copied().collect(),
-				next: 0,
-			});
-			gpu.queue.write_buffer(
-				&self.light_wide_buf,
-				0,
-				bytemuck::bytes_of(&wide_vp.to_cols_array_2d()),
-			);
-		}
+		// Light-VP uploads + wide-refresh kickoff; the returned sample is
+		// captured before the encode below can flip the ping-pong.
+		let wide_sample =
+			self.shadow
+				.begin_frame(&gpu.queue, near_vp, wide_vp, wide_due, &self.chunks);
 		// The front wide map lags the engine's wide_vp by up to one job
-		// (a few frames); sample it with the VP it was rendered with. The
-		// sampled index is captured HERE, before the slice encode below can
-		// flip `wide_front` — map and VP must change together on the same
-		// frame or far shadows mis-project for one frame (a visible dark
-		// flash at every refresh). A just-completed map is therefore first
-		// sampled on the next frame, paired with its VP.
-		let wide_sample = self.wide_front;
+		// (a few frames); the main pass must project with the VP that map
+		// was rendered with, not this frame's.
 		let mut frame = *frame;
-		frame.light_wide = self.wide_active_vp.to_cols_array_2d();
+		frame.light_wide = wide_sample.active_vp.to_cols_array_2d();
 		let frame = &frame;
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
 		self.overlay.prepare(gpu, size, overlay, feed);
-		gpu.queue.write_buffer(
-			&self.light_near_buf,
-			0,
-			bytemuck::bytes_of(&near_vp.to_cols_array_2d()),
-		);
 		// Chunk bounding-sphere frustum cull against the four side planes
 		// (near/far deliberately ignored, like the Java
 		// sphereInFrustumWithoutNearFar).
@@ -1034,51 +766,22 @@ impl Renderer {
 				label: Some("frame"),
 			});
 
-		if !self.wide_front_valid {
-			// Startup / device rebuild: the front map is uninitialized;
-			// clear it to depth 1.0 (fully lit) so sampling is sane until
-			// the first refresh completes and flips.
-			encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-				label: Some("shadow wide bootstrap clear"),
-				color_attachments: &[],
-				depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-					view: &self.textures.shadow_wide_views[self.wide_front],
-					depth_ops: Some(wgpu::Operations {
-						load: wgpu::LoadOp::Clear(1.0),
-						store: wgpu::StoreOp::Store,
-					}),
-					stencil_ops: None,
-				}),
-				timestamp_writes: None,
-				occlusion_query_set: None,
-			});
-			self.wide_front_valid = true;
-		}
-		if let Some(mut job) = self.wide_job.take() {
-			let (draws, tris, done) = self.encode_wide_slice(&mut encoder, &mut job);
-			stats.draw_calls += draws;
-			stats.triangles += tris;
-			if done {
-				self.wide_front = 1 - self.wide_front;
-				self.wide_active_vp = job.vp;
-			} else {
-				self.wide_job = Some(job);
-			}
-		}
-		let (casters, tris) = self.encode_shadow_pass(&mut encoder, near_vp, Q_SHADOW_NEAR);
-		stats.shadow_casters = casters;
-		stats.draw_calls += casters;
-		stats.triangles += tris;
-
-		// Water chunk list, shared by both water subpasses below. The
-		// depth prepass makes draw order irrelevant: no sorting.
-		self.water_scratch.clear();
-		self.water_scratch.extend(
-			self.chunks
-				.iter()
-				.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
-				.map(|(pos, _)| *pos),
+		// All shadow work (bootstrap clear → wide slice → near pass) in
+		// fixed order; a completed wide slice flips the ping-pong AFTER
+		// this frame's sample was captured above.
+		let shadow_stats = self.shadow.encode(
+			&mut encoder,
+			&self.chunks,
+			&self.chunk_bg,
+			&self.index_buf,
+			self.gpu_timer.as_ref(),
 		);
+		stats.shadow_casters = shadow_stats.casters;
+		stats.draw_calls += shadow_stats.draw_calls;
+		stats.triangles += shadow_stats.triangles;
+
+		// Water chunk list, shared by both water subpasses below.
+		self.water.build_list(&self.chunks, in_frustum);
 		{
 			let targets = self.targets.as_ref().expect("ensured above");
 			// Scene pass: solids + sky into the offscreen color target;
@@ -1118,7 +821,7 @@ impl Renderer {
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, &self.shadow_bgs[wide_sample], &[]);
+				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
 				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 				for (pos, chunk) in &self.chunks {
 					if !in_frustum(pos) {
@@ -1147,10 +850,8 @@ impl Renderer {
 				}
 
 				// Sky after solids (depth test discards occluded fragments —
-				// near-free on TBDR).
-				pass.set_pipeline(&self.sky_pipeline);
-				pass.set_bind_group(0, &self.frame_bg, &[]);
-				pass.draw(0..3, 0..1);
+				// near-free on TBDR); frame_bg is still bound at 0.
+				self.sky.draw(&mut pass);
 				stats.draw_calls += 1;
 			}
 
@@ -1206,27 +907,12 @@ impl Renderer {
 
 				pass.set_bind_group(0, &targets.water_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, &self.shadow_bgs[wide_sample], &[]);
+				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
 				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-				for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
-					pass.set_pipeline(pipeline);
-					for pos in &self.water_scratch {
-						let Some(chunk) = self.chunks.get(pos) else {
-							continue;
-						};
-						if let Some((buf, index_count)) = &chunk.water {
-							pass.set_bind_group(
-								3,
-								&self.chunk_bg,
-								&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-							);
-							pass.set_vertex_buffer(0, buf.slice(..));
-							pass.draw_indexed(0..*index_count, 0, 0..1);
-							stats.water_draws += 1;
-							stats.triangles += *index_count / 3;
-						}
-					}
-				}
+				let (water_draws, water_tris) =
+					self.water.draw(&mut pass, &self.chunks, &self.chunk_bg);
+				stats.water_draws += water_draws;
+				stats.triangles += water_tris;
 
 				// Spray billboards over the finished water (blends over
 				// sheet and pool alike). Water left its frame+scene group
@@ -1270,127 +956,10 @@ impl Renderer {
 		stats.draw_calls += stats.chunks_drawn + stats.water_draws;
 		stats
 	}
-
-	/// Depth-only cascade render. Solid meshes only — water never casts
-	/// shadows (Java depth passes drew solidMesh exclusively). Casters are
-	/// culled against the light's own frustum.
-	/// Near-cascade depth render (whole caster set, every frame).
-	/// Returns (draw calls, triangles) encoded.
-	fn encode_shadow_pass(
-		&self,
-		encoder: &mut wgpu::CommandEncoder,
-		light_vp: glam::Mat4,
-		ts_first: u32,
-	) -> (u32, u32) {
-		let planes = side_planes(light_vp);
-		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-			label: Some("shadow near"),
-			color_attachments: &[],
-			depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-				view: &self.textures.shadow_near_view,
-				depth_ops: Some(wgpu::Operations {
-					load: wgpu::LoadOp::Clear(1.0),
-					store: wgpu::StoreOp::Store,
-				}),
-				stencil_ops: None,
-			}),
-			timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(ts_first)),
-			occlusion_query_set: None,
-		});
-		pass.set_pipeline(&self.shadow_pipeline);
-		pass.set_bind_group(0, &self.light_near_bg, &[]);
-		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-		let (mut draws, mut tris) = (0u32, 0u32);
-		for (pos, chunk) in &self.chunks {
-			if let Some(d) = Self::shadow_draw(&mut pass, &self.chunk_bg, planes, pos, chunk) {
-				draws += 1;
-				tris += d / 3;
-			}
-		}
-		(draws, tris)
-	}
-
-	/// Encode the next slice of an in-progress wide refresh into the back
-	/// map (cleared on the first slice, appended thereafter). Returns
-	/// (draws, tris, done).
-	fn encode_wide_slice(
-		&self,
-		encoder: &mut wgpu::CommandEncoder,
-		job: &mut WideJob,
-	) -> (u32, u32, bool) {
-		let planes = side_planes(job.vp);
-		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-			label: Some("shadow wide slice"),
-			color_attachments: &[],
-			depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-				view: &self.textures.shadow_wide_views[1 - self.wide_front],
-				depth_ops: Some(wgpu::Operations {
-					load: if job.next == 0 {
-						wgpu::LoadOp::Clear(1.0)
-					} else {
-						wgpu::LoadOp::Load
-					},
-					store: wgpu::StoreOp::Store,
-				}),
-				stencil_ops: None,
-			}),
-			timestamp_writes: self
-				.gpu_timer
-				.as_ref()
-				.and_then(|t| t.writes(Q_SHADOW_WIDE)),
-			occlusion_query_set: None,
-		});
-		pass.set_pipeline(&self.shadow_pipeline);
-		pass.set_bind_group(0, &self.light_wide_bg, &[]);
-		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-		let (mut draws, mut tris) = (0u32, 0u32);
-		while job.next < job.list.len() && draws < self.config.wide_slice_draws {
-			let pos = job.list[job.next];
-			job.next += 1;
-			// Evicted mid-job: skip.
-			let Some(chunk) = self.chunks.get(&pos) else {
-				continue;
-			};
-			if let Some(d) = Self::shadow_draw(&mut pass, &self.chunk_bg, planes, &pos, chunk) {
-				draws += 1;
-				tris += d / 3;
-			}
-		}
-		(draws, tris, job.next >= job.list.len())
-	}
-
-	/// Cull-and-draw one chunk into a depth pass; returns the index count
-	/// if drawn. Solid meshes only — water never casts shadows.
-	fn shadow_draw(
-		pass: &mut wgpu::RenderPass<'_>,
-		chunk_bg: &wgpu::BindGroup,
-		planes: [glam::Vec4; 4],
-		pos: &ChunkPos,
-		chunk: &ChunkGpu,
-	) -> Option<u32> {
-		let c = glam::Vec3::new(
-			(pos.x * 16 + 8) as f32,
-			(pos.y * 16 + 8) as f32,
-			(pos.z * 16 + 8) as f32,
-		);
-		const RADIUS: f32 = 13.86;
-		if !planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS) {
-			return None;
-		}
-		let (buf, index_count) = chunk.solid.as_ref()?;
-		pass.set_bind_group(
-			1,
-			chunk_bg,
-			&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-		);
-		pass.set_vertex_buffer(0, buf.slice(..));
-		pass.draw_indexed(0..*index_count, 0, 0..1);
-		Some(*index_count)
-	}
 }
 
 /// Gribb–Hartmann frustum plane extraction: left/right/bottom/top only.
-fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
+pub(crate) fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
 	let r0 = m.row(0);
 	let r1 = m.row(1);
 	let r3 = m.row(3);

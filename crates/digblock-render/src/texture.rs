@@ -1,19 +1,13 @@
-//! Block texture array + samplers + placeholder shadow maps.
-//! 4 layers of 64² (Water/Dirt/GrassSide/GrassTop), full mip chain
-//! generated on CPU (box filter), sampled min=linear/mip=linear,
-//! mag=nearest — the Java MipMapLinearLinear/Nearest look.
+//! Block texture array + sampler (the materials bind group's contents;
+//! shadow maps live in shadow.rs). Full mip chain generated on CPU
+//! (box filter), sampled min=linear/mip=linear, mag=nearest — the Java
+//! MipMapLinearLinear/Nearest look.
 
 use digblock_platform::Gpu;
 
 pub struct BlockTextures {
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
-	pub shadow_near_view: wgpu::TextureView,
-	/// Two wide maps, ping-ponged: one is sampled while the other is
-	/// re-rendered a slice per frame (the refresh would otherwise encode
-	/// every resident chunk in one frame and blow the vsync budget).
-	pub shadow_wide_views: [wgpu::TextureView; 2],
-	pub shadow_sampler: wgpu::Sampler,
 }
 
 fn mip_levels(size: u32) -> u32 {
@@ -40,7 +34,7 @@ fn box_downsample(src: &[u8], w: usize, h: usize) -> Vec<u8> {
 }
 
 impl BlockTextures {
-	pub fn new(gpu: &Gpu, shadow_size: u32) -> Self {
+	pub fn new(gpu: &Gpu) -> Self {
 		const SIZE: u32 = 64;
 		let levels = mip_levels(SIZE);
 		let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -117,46 +111,9 @@ impl BlockTextures {
 			..Default::default()
 		});
 
-		// Shadow maps: real render targets from day one (M6 renders into
-		// them; until then they clear to depth 1.0 = fully lit).
-		let make_shadow = |label: &str| {
-			gpu.device
-				.create_texture(&wgpu::TextureDescriptor {
-					label: Some(label),
-					size: wgpu::Extent3d {
-						width: shadow_size,
-						height: shadow_size,
-						depth_or_array_layers: 1,
-					},
-					mip_level_count: 1,
-					sample_count: 1,
-					dimension: wgpu::TextureDimension::D2,
-					format: wgpu::TextureFormat::Depth32Float,
-					usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-						| wgpu::TextureUsages::TEXTURE_BINDING,
-					view_formats: &[],
-				})
-				.create_view(&wgpu::TextureViewDescriptor::default())
-		};
-		let shadow_near_view = make_shadow("shadow near");
-		let shadow_wide_views = [make_shadow("shadow wide A"), make_shadow("shadow wide B")];
-
-		let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-			label: Some("shadow comparison"),
-			address_mode_u: wgpu::AddressMode::ClampToEdge,
-			address_mode_v: wgpu::AddressMode::ClampToEdge,
-			mag_filter: wgpu::FilterMode::Linear,
-			min_filter: wgpu::FilterMode::Linear,
-			compare: Some(wgpu::CompareFunction::LessEqual),
-			..Default::default()
-		});
-
 		Self {
 			array_view,
 			sampler,
-			shadow_near_view,
-			shadow_wide_views,
-			shadow_sampler,
 		}
 	}
 }
