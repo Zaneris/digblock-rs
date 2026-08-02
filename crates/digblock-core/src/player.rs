@@ -77,6 +77,14 @@ fn cell(v: Vec3) -> (i32, i32, i32) {
 	(v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32)
 }
 
+/// The two cells a player at eye position `pos` occupies: the eye cell
+/// and the −1.25 body probe (the point collider's). Placement rejection
+/// (client), the server's InsidePlayer scan, and claim probing must all
+/// agree on exactly these — the constant lives here and nowhere else.
+pub fn occupied_cells(pos: Vec3) -> [(i32, i32, i32); 2] {
+	[cell(pos), cell(pos - Vec3::new(0.0, 1.25, 0.0))]
+}
+
 fn solid(b: Option<BlockType>) -> bool {
 	// Java: block != null && != AIR && != WATER. Unloaded (None) is not
 	// solid — the player falls through unloaded terrain, as in the Java.

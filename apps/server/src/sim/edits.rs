@@ -1,7 +1,7 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{cell_of, client_send, in_radius, send_frame, Sim};
+use super::{client_send, in_radius, send_frame, Sim};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
@@ -123,14 +123,13 @@ impl Sim {
 					req.cell.1 + hit.normal.1,
 					req.cell.2 + hit.normal.2,
 				);
-				// Mirrors the local-engine rejection (eye/body cell) but
-				// for every live player.
+				// Mirrors the local-engine rejection via the shared
+				// occupied-cells contract, but for every live player.
 				for c in self.clients.values() {
 					if !c.live {
 						continue;
 					}
-					let eye = cell_of(c.player.pos);
-					let body = cell_of(c.player.pos - Vec3::new(0.0, 1.25, 0.0));
+					let [eye, body] = digblock_core::player::occupied_cells(c.player.pos);
 					if target == eye || target == body {
 						return reject(RejectReason::InsidePlayer);
 					}

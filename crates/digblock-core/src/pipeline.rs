@@ -107,6 +107,9 @@ pub struct Pipeline {
 	gen_heap: BinaryHeap<(Reverse<i64>, (i32, i32))>,
 	mesh_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
 	center: ChunkPos,
+	/// Authoritative edits waiting for their chunk to generate — see
+	/// `apply_authoritative`.
+	deferred_edits: FxHashMap<(i32, i32, i32), crate::block::BlockType>,
 	scanned_once: bool,
 	in_flight: u32,
 	_workers: Vec<std::thread::JoinHandle<()>>,
@@ -187,6 +190,7 @@ impl Pipeline {
 			gen_heap: BinaryHeap::new(),
 			mesh_heap: BinaryHeap::new(),
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
+			deferred_edits: FxHashMap::default(),
 			scanned_once: false,
 			in_flight: 0,
 			_workers: workers,
@@ -287,6 +291,7 @@ impl Pipeline {
 		upload_budget: usize,
 		deadline: Option<std::time::Instant>,
 	) {
+		let mut landed: Vec<(i32, i32)> = Vec::new();
 		while out.meshed.len() < upload_budget {
 			// Generated results are the expensive drains (stack insert plus
 			// neighbor re-mesh cascade), so the deadline gates every pull,
@@ -306,6 +311,7 @@ impl Pipeline {
 					dur_ms,
 				} => {
 					out.gen_jobs.record(dur_ms);
+					landed.push((x, z));
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
@@ -399,6 +405,7 @@ impl Pipeline {
 				}
 			}
 		}
+		self.apply_deferred_for(&landed);
 	}
 
 	/// Returns the number of jobs bounced back because workers were
@@ -543,15 +550,8 @@ impl Pipeline {
 		z: i32,
 		b: crate::block::BlockType,
 	) -> Option<crate::block::BlockType> {
-		if !(0..=crate::chunk::WORLD_VBLOCK).contains(&y) {
-			return None;
-		}
-		let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
-		let (lx, ly, lz) = (
-			x.rem_euclid(16) as usize,
-			y.rem_euclid(16) as usize,
-			z.rem_euclid(16) as usize,
-		);
+		let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
+		let pos = ChunkPos::new(cx, cy, cz);
 		let slot = self.store.get_mut(&pos)?;
 		let ChunkState::Ready(data) = &mut slot.state else {
 			return None;
@@ -604,22 +604,89 @@ impl Pipeline {
 	/// Block lookup for physics. None = outside the vertical world or the
 	/// chunk isn't generated yet (the Java null-block: non-solid).
 	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
-		if !(0..=crate::chunk::WORLD_VBLOCK).contains(&y) {
-			return None;
-		}
-		let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
-		match self.store.get(&pos) {
+		let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
+		match self.store.get(&ChunkPos::new(cx, cy, cz)) {
 			Some(ChunkSlot {
 				state: ChunkState::Ready(d),
 				..
-			}) => Some(d.get(
-				x.rem_euclid(16) as usize,
-				y.rem_euclid(16) as usize,
-				z.rem_euclid(16) as usize,
-			)),
+			}) => Some(d.get(lx, ly, lz)),
 			_ => None,
 		}
 	}
+
+	/// Apply an AUTHORITATIVE block value (a server edit): unlike
+	/// [`set_block`], an edit into a not-yet-generated chunk is not
+	/// dropped — it is held and applied (pre-mesh) when the chunk lands,
+	/// so join-sync edits racing generation can never be lost. Every
+	/// world consumer gets this for free by owning a `Pipeline`, instead
+	/// of re-inventing the retry map the engine used to keep.
+	pub fn apply_authoritative(
+		&mut self,
+		x: i32,
+		y: i32,
+		z: i32,
+		b: crate::block::BlockType,
+	) -> ApplyEdit {
+		if crate::chunk::split_world(x, y, z).is_none() {
+			return ApplyEdit::Rejected;
+		}
+		if self.try_apply((x, y, z), b) {
+			self.deferred_edits.remove(&(x, y, z));
+			ApplyEdit::Applied
+		} else {
+			self.deferred_edits.insert((x, y, z), b);
+			ApplyEdit::Deferred
+		}
+	}
+
+	/// Authoritative edits still waiting for their chunk to generate.
+	pub fn deferred_edits(&self) -> usize {
+		self.deferred_edits.len()
+	}
+
+	/// True if the cell now holds `b` (freshly written or already there).
+	fn try_apply(&mut self, cell: (i32, i32, i32), b: crate::block::BlockType) -> bool {
+		self.set_block(cell.0, cell.1, cell.2, b).is_some()
+			|| self.block_at(cell.0, cell.1, cell.2) == Some(b)
+	}
+
+	/// Deferred authoritative edits whose column just generated: apply
+	/// through `set_block` (COW + remesh + border bumps) now that the
+	/// chunks are Ready. Queued-but-undispatched meshes snapshot at
+	/// dispatch time, so they see these writes.
+	fn apply_deferred_for(&mut self, landed: &[(i32, i32)]) {
+		if self.deferred_edits.is_empty() {
+			return;
+		}
+		let cells: Vec<((i32, i32, i32), crate::block::BlockType)> = self
+			.deferred_edits
+			.iter()
+			.filter(|(&(x, _, z), _)| landed.contains(&(x.div_euclid(16), z.div_euclid(16))))
+			.map(|(&c, &b)| (c, b))
+			.collect();
+		for (cell, b) in cells {
+			if self.try_apply(cell, b) {
+				self.deferred_edits.remove(&cell);
+			}
+		}
+	}
+}
+
+impl crate::chunk::BlockWorld for Pipeline {
+	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
+		Pipeline::block_at(self, x, y, z)
+	}
+}
+
+/// Outcome of [`Pipeline::apply_authoritative`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ApplyEdit {
+	/// The cell holds the value now.
+	Applied,
+	/// Chunk not generated yet: held, applied when it lands.
+	Deferred,
+	/// Outside the world; never applicable.
+	Rejected,
 }
 
 fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
@@ -885,5 +952,39 @@ mod tests {
 		assert!(mesh_jobs.count > 0, "mesh jobs recorded");
 		assert!(gen_jobs.max_ms >= gen_jobs.avg_ms());
 		assert!(mesh_jobs.max_ms >= mesh_jobs.avg_ms());
+	}
+
+	/// The join-sync race: an authoritative edit arrives before its chunk
+	/// has generated. It must be held and applied when the chunk lands —
+	/// the old engine-side retry map is gone, this is the Pipeline's job.
+	#[test]
+	fn authoritative_edit_races_generation() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		// Before any maintain(): every chunk is ungenerated.
+		assert_eq!(
+			p.apply_authoritative(8, 8, 8, BlockType::Sand),
+			ApplyEdit::Deferred
+		);
+		assert_eq!(p.deferred_edits(), 1);
+		// Out-of-world: rejected, never held.
+		assert_eq!(
+			p.apply_authoritative(8, -1, 8, BlockType::Sand),
+			ApplyEdit::Rejected
+		);
+		assert_eq!(p.deferred_edits(), 1);
+
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		assert_eq!(p.deferred_edits(), 0, "applied when the chunk landed");
+		assert_eq!(p.block_at(8, 8, 8), Some(BlockType::Sand));
+
+		// Once the chunk is Ready, application is immediate.
+		let other = if p.block_at(9, 8, 8) == Some(BlockType::Stone) {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		assert_eq!(p.apply_authoritative(9, 8, 8, other), ApplyEdit::Applied);
+		assert_eq!(p.block_at(9, 8, 8), Some(other));
 	}
 }

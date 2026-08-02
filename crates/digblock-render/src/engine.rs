@@ -140,7 +140,6 @@ pub struct Engine {
 	correction_offset: Vec3,
 	/// Authoritative edits for chunks not Ready yet; retried each frame
 	/// until they land (join sync races local chunk generation).
-	unapplied_edits: rustc_hash::FxHashMap<(i32, i32, i32), BlockType>,
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
@@ -238,7 +237,6 @@ impl Engine {
 			net_events: Vec::new(),
 			pending_ack: None,
 			correction_offset: Vec3::ZERO,
-			unapplied_edits: rustc_hash::FxHashMap::default(),
 			remote_scratch: Vec::new(),
 			remote_instances: Vec::new(),
 			net_corrections: 0,
@@ -287,29 +285,17 @@ impl Engine {
 		self.tick_accum = 0.0;
 		self.pending_ack = None;
 		self.correction_offset = Vec3::ZERO;
-		self.unapplied_edits.clear();
 		self.pending_uploads.clear();
 		if let Some(r) = self.renderer.as_mut() {
 			r.clear_chunks();
 		}
 	}
 
-	/// Apply an authoritative block value; chunks not Ready yet retry
-	/// each frame until generation catches up.
+	/// Apply an authoritative block value; the Pipeline holds edits whose
+	/// chunk hasn't generated yet and applies them pre-mesh when it lands.
 	fn apply_remote_edit(&mut self, cell: (i32, i32, i32), block: BlockType) {
-		if !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&cell.1) {
-			return; // never retryable
-		}
-		if self
-			.pipeline
-			.set_block(cell.0, cell.1, cell.2, block)
-			.is_some()
-			|| self.pipeline.block_at(cell.0, cell.1, cell.2) == Some(block)
-		{
-			self.unapplied_edits.remove(&cell);
-		} else {
-			self.unapplied_edits.insert(cell, block);
-		}
+		self.pipeline
+			.apply_authoritative(cell.0, cell.1, cell.2, block);
 	}
 
 	/// Newest-last message feed; oldest drops when full so a join wave
@@ -372,19 +358,6 @@ impl Engine {
 			}
 		}
 		self.net_events = events;
-
-		// Retry edits that raced chunk generation (bounded per frame).
-		if !self.unapplied_edits.is_empty() {
-			let batch: Vec<((i32, i32, i32), BlockType)> = self
-				.unapplied_edits
-				.iter()
-				.take(64)
-				.map(|(&c, &b)| (c, b))
-				.collect();
-			for (cell, block) in batch {
-				self.apply_remote_edit(cell, block);
-			}
-		}
 
 		if !drop_net {
 			self.net = Some(net);
@@ -522,11 +495,9 @@ impl Engine {
 				hit.cell.1 + hit.normal.1,
 				hit.cell.2 + hit.normal.2,
 			);
-			// Never place inside the player: the eye cell and the body cell
-			// (the −1.25 probe the point collider uses).
-			let cell = |v: Vec3| (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
-			let eye = cell(self.camera.pos);
-			let body = cell(self.camera.pos - Vec3::new(0.0, 1.25, 0.0));
+			// Never place inside the player — the shared occupied-cells
+			// contract (identical to the server's InsidePlayer scan).
+			let [eye, body] = digblock_core::player::occupied_cells(self.camera.pos);
 			if target != eye && target != body {
 				if let Some(prev) =
 					self.pipeline
@@ -777,11 +748,11 @@ impl Game for Engine {
 					0.0
 				};
 				log::info!(
-					"net: {} corrections (avg {:.3} blocks), {} pending edits, {} unapplied",
+					"net: {} corrections (avg {:.3} blocks), {} pending edits, {} deferred",
 					self.net_corrections,
 					avg,
 					net.edits.len(),
-					self.unapplied_edits.len(),
+					self.pipeline.deferred_edits(),
 				);
 				self.net_log_timer = 0.0;
 				self.net_corrections = 0;

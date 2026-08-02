@@ -439,14 +439,6 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 	)
 }
 
-fn cell_of(pos: Vec3) -> (i32, i32, i32) {
-	(
-		pos.x.floor() as i32,
-		pos.y.floor() as i32,
-		pos.z.floor() as i32,
-	)
-}
-
 fn in_radius(col: (i32, i32), center: (i32, i32), r: i32) -> bool {
 	let (dx, dz) = (col.0 - center.0, col.1 - center.1);
 	dx * dx + dz * dz <= r * r

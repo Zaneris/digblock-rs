@@ -10,7 +10,7 @@
 use crate::journal::JournalIndex;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use digblock_core::block::BlockType;
-use digblock_core::chunk::{ChunkData, CHUNK_SIZE, WORLD_VBLOCK, WORLD_VCHUNK};
+use digblock_core::chunk::{split_world, BlockWorld, ChunkData, CHUNK_SIZE, WORLD_VCHUNK};
 use digblock_core::fluid::FluidWorld;
 use digblock_core::worldgen::build_column;
 use digblock_net::messages::BlockEdit;
@@ -156,36 +156,20 @@ impl ChunkStore {
 		self.columns.len()
 	}
 
-	/// Same contract as `Pipeline::block_at`: None = unloaded or outside
-	/// the vertical world.
+	/// The `BlockWorld` contract: None = unloaded or outside the vertical
+	/// world (shared with `Pipeline::block_at` via `split_world`).
 	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
-		if !(0..=WORLD_VBLOCK).contains(&y) {
-			return None;
-		}
-		let stack = self.columns.get(&(x.div_euclid(16), z.div_euclid(16)))?;
-		let chunk = &stack[y.div_euclid(16) as usize];
-		Some(chunk.get(
-			x.rem_euclid(16) as usize,
-			y.rem_euclid(16) as usize,
-			z.rem_euclid(16) as usize,
-		))
+		let ((cx, cy, cz), (lx, ly, lz)) = split_world(x, y, z)?;
+		let stack = self.columns.get(&(cx, cz))?;
+		Some(stack[cy as usize].get(lx, ly, lz))
 	}
 
 	/// Same contract as `Pipeline::set_block`: `Some(prev)` if the edit
 	/// landed, `None` if out of bounds, unloaded, or a no-op.
 	pub fn set_block(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> Option<BlockType> {
-		if !(0..=WORLD_VBLOCK).contains(&y) {
-			return None;
-		}
-		let stack = self
-			.columns
-			.get_mut(&(x.div_euclid(16), z.div_euclid(16)))?;
-		let chunk = &mut stack[y.div_euclid(16) as usize];
-		let (lx, ly, lz) = (
-			x.rem_euclid(16) as usize,
-			y.rem_euclid(16) as usize,
-			z.rem_euclid(16) as usize,
-		);
+		let ((cx, cy, cz), (lx, ly, lz)) = split_world(x, y, z)?;
+		let stack = self.columns.get_mut(&(cx, cz))?;
+		let chunk = &mut stack[cy as usize];
 		let prev = chunk.get(lx, ly, lz);
 		if prev == b {
 			return None;
@@ -195,18 +179,18 @@ impl ChunkStore {
 	}
 }
 
-fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u8) {
-	if !(0..=WORLD_VBLOCK).contains(&y) {
-		return;
+impl BlockWorld for ChunkStore {
+	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
+		ChunkStore::block_at(self, x, y, z)
 	}
-	let cy = y.div_euclid(16) as usize;
-	debug_assert!(cy < WORLD_VCHUNK as usize && stack.len() == WORLD_VCHUNK as usize);
-	Arc::make_mut(&mut stack[cy]).set(
-		x.rem_euclid(16) as usize,
-		y.rem_euclid(16) as usize,
-		z.rem_euclid(16) as usize,
-		BlockType::from_u8(block),
-	);
+}
+
+fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u8) {
+	let Some(((_, cy, _), (lx, ly, lz))) = split_world(x, y, z) else {
+		return;
+	};
+	debug_assert!((cy as usize) < WORLD_VCHUNK as usize && stack.len() == WORLD_VCHUNK as usize);
+	Arc::make_mut(&mut stack[cy as usize]).set(lx, ly, lz, BlockType::from_u8(block));
 }
 
 /// `FluidWorld` over the store that records every landed write (with the
@@ -246,6 +230,7 @@ const _: () = assert!(CHUNK_SIZE == 16);
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use digblock_core::chunk::WORLD_VBLOCK;
 	use digblock_net::messages::BlockEdit;
 	use std::time::{Duration, Instant};
 

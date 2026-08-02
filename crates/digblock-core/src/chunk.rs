@@ -61,6 +61,38 @@ pub fn is_air_chunk(d: &std::sync::Arc<ChunkData>) -> bool {
 	std::sync::Arc::ptr_eq(d, &AIR_CHUNK)
 }
 
+/// `split_world` result: (chunk coordinate, in-chunk cell).
+pub type SplitWorld = ((i32, i32, i32), (usize, usize, usize));
+
+/// Split a world coordinate into its chunk coordinate `(cx, cy, cz)` and
+/// in-chunk cell. `None` = outside the vertical world. THE one place the
+/// div/rem-euclid split lives — the client `Pipeline`, the server
+/// `ChunkStore`, and every future world consumer share it, so their
+/// indexing can never drift apart.
+#[inline]
+pub fn split_world(x: i32, y: i32, z: i32) -> Option<SplitWorld> {
+	if !(0..=WORLD_VBLOCK).contains(&y) {
+		return None;
+	}
+	let s = CHUNK_SIZE as i32;
+	Some((
+		(x.div_euclid(s), y.div_euclid(s), z.div_euclid(s)),
+		(
+			x.rem_euclid(s) as usize,
+			y.rem_euclid(s) as usize,
+			z.rem_euclid(s) as usize,
+		),
+	))
+}
+
+/// Shared world-read contract (`None` = unloaded or outside the vertical
+/// world — never solid). Implemented by the client `Pipeline` and the
+/// server `ChunkStore`; a divergence between the two would be a silent
+/// desync, so consumers that can take either should take this.
+pub trait BlockWorld {
+	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType>;
+}
+
 impl ChunkData {
 	#[inline]
 	pub fn index(x: usize, y: usize, z: usize) -> usize {

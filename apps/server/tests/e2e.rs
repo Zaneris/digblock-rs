@@ -118,19 +118,12 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	let seed = a.seed;
 	let cache: ColumnCache = std::cell::RefCell::new(FxHashMap::default());
 	let world = move |x: i32, y: i32, z: i32| -> Option<BlockType> {
-		if !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&y) {
-			return None;
-		}
-		let key = (x.div_euclid(16), z.div_euclid(16));
+		let ((cx, cy, cz), (lx, ly, lz)) = digblock_core::chunk::split_world(x, y, z)?;
 		let mut cache = cache.borrow_mut();
 		let stack = cache
-			.entry(key)
-			.or_insert_with(|| digblock_core::worldgen::build_column(key.0, key.1, seed));
-		Some(stack[y.div_euclid(16) as usize].get(
-			x.rem_euclid(16) as usize,
-			y.rem_euclid(16) as usize,
-			z.rem_euclid(16) as usize,
-		))
+			.entry((cx, cz))
+			.or_insert_with(|| digblock_core::worldgen::build_column(cx, cz, seed));
+		Some(stack[cy as usize].get(lx, ly, lz))
 	};
 	let mut player = Player::new(a.spawn);
 	// Predicted idle ticks: inputs flow, and both the server player and

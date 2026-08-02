@@ -1,7 +1,7 @@
 //! Movement: input intake, per-tick server physics, and the adoption
 //! envelope + sustained-drift gate (model described in the `sim` docs).
 
-use super::{cell_of, Client, Sim};
+use super::{Client, Sim};
 use digblock_core::block::BlockType;
 use digblock_core::player::{PlayerIntent, PlayerState, TICK};
 use digblock_net::messages::{InputBatch, InputTick};
@@ -121,15 +121,12 @@ fn step_client(
 }
 
 /// True if the claimed position's collision probes sit inside solid
-/// blocks (a claim we never adopt).
+/// blocks (a claim we never adopt). Cells come from the shared
+/// `occupied_cells` contract, identical to the client's.
 fn probe_solid(pos: Vec3, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
-	for probe in [pos, pos - Vec3::new(0.0, 1.25, 0.0)] {
-		let c = cell_of(probe);
-		if matches!(block_at(c.0, c.1, c.2), Some(b) if b.props().collides) {
-			return true;
-		}
-	}
-	false
+	digblock_core::player::occupied_cells(pos)
+		.into_iter()
+		.any(|c| matches!(block_at(c.0, c.1, c.2), Some(b) if b.props().collides))
 }
 
 fn sanitize(mut input: InputTick) -> Option<InputTick> {
