@@ -5,6 +5,7 @@
 //! desktop drill. `Suspended` has no surface field, so rendering without a
 //! surface is unrepresentable.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -46,6 +47,9 @@ struct App<G: Game> {
 	/// The pure decision core (lifecycle.rs); `state` holds the resources
 	/// its Phase mirrors. All transitions route through `dispatch`.
 	lifecycle: Lifecycle,
+	/// Set by the wgpu device-lost callback (may fire off-thread — never
+	/// touch winit from it); polled at the top of each frame.
+	device_lost: Arc<AtomicBool>,
 	game: G,
 	clock: GameClock,
 	options: RunOptions,
@@ -61,6 +65,7 @@ pub fn run(game: impl Game, options: RunOptions) {
 	let mut app = App {
 		state: AppState::Uninitialized,
 		lifecycle: Lifecycle::new(),
+		device_lost: Arc::new(AtomicBool::new(false)),
 		game,
 		clock: GameClock::new(),
 		options,
@@ -139,6 +144,24 @@ fn surface_config(
 }
 
 impl<G: Game> App<G> {
+	/// Register the loss/error hooks on a fresh device. The callbacks may
+	/// fire on any thread: they only flip the shared flag and log.
+	fn register_device_callbacks(device: &wgpu::Device, lost: &Arc<AtomicBool>) {
+		let flag = lost.clone();
+		device.set_device_lost_callback(Box::new(move |reason, message| {
+			log::error!("device lost ({reason:?}): {message}");
+			flag.store(true, Ordering::Release);
+		}));
+		let flag = lost.clone();
+		device.on_uncaptured_error(Box::new(move |e| {
+			log::error!("uncaptured wgpu error: {e}");
+			if matches!(e, wgpu::Error::OutOfMemory { .. }) {
+				// OOM devices are lost in all but name.
+				flag.store(true, Ordering::Release);
+			}
+		}));
+	}
+
 	fn init_gpu(
 		window: Arc<Window>,
 		no_vsync: bool,
@@ -209,12 +232,7 @@ impl<G: Game> App<G> {
 					self.lifecycle.note_rebuilt(r.config.format);
 				}
 			}
-			Action::ReinitDevice => {
-				// Wired by the device-loss recovery step; until the shell
-				// emits DeviceLost events this arm is unreachable.
-				log::error!("device re-init requested but not wired — exiting");
-				el.exit();
-			}
+			Action::ReinitDevice => self.reinit_device(el),
 			Action::ReconfigureSurface => {
 				if let AppState::Running(r) = &mut self.state {
 					log::warn!("surface lost/outdated — reconfiguring");
@@ -231,10 +249,44 @@ impl<G: Game> App<G> {
 		}
 	}
 
+	/// Full device-loss recovery: a NEW adapter/device/surface on the
+	/// surviving window, then the existing rebuild path re-uploads
+	/// everything. Nothing else holds a Gpu clone (the engine borrows
+	/// per call, by design), so swapping the Arc is safe.
+	fn reinit_device(&mut self, el: &ActiveEventLoop) {
+		let window = match std::mem::replace(&mut self.state, AppState::Uninitialized) {
+			AppState::Running(r) => Some(r.window), // surface + old gpu drop
+			AppState::Suspended(s) => s.window,
+			AppState::Uninitialized => None,
+		};
+		let Some(window) = window else {
+			log::error!("device lost before initialization — exiting");
+			el.exit();
+			return;
+		};
+		log::warn!("lifecycle: device lost — recovering with a fresh adapter/device");
+		self.device_lost.store(false, Ordering::Release);
+		let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
+		Self::register_device_callbacks(&gpu.device, &self.device_lost);
+		self.game.rebuild_gpu_resources(&gpu, config.format);
+		self.game.resize(&gpu, (config.width, config.height));
+		self.lifecycle.note_rebuilt(config.format);
+		self.state = AppState::Running(Running {
+			gpu: Arc::new(gpu),
+			window,
+			surface,
+			config,
+		});
+		if let AppState::Running(r) = &self.state {
+			r.window.request_redraw();
+		}
+	}
+
 	fn init_all(&mut self, el: &ActiveEventLoop) {
 		log::info!("lifecycle: initial launch");
 		let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
 		let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
+		Self::register_device_callbacks(&gpu.device, &self.device_lost);
 		self.game
 			.init(&gpu, config.format, (config.width, config.height));
 		let format = config.format;
@@ -305,6 +357,12 @@ impl<G: Game> App<G> {
 	}
 
 	fn render_frame(&mut self, el: &ActiveEventLoop) {
+		// The loss callback fires off-thread; recover on the main thread
+		// before touching the (dead) surface.
+		if self.device_lost.swap(false, Ordering::Acquire) {
+			self.dispatch(LcEvent::DeviceLost, el);
+			return;
+		}
 		let AppState::Running(r) = &mut self.state else {
 			return;
 		};
@@ -386,6 +444,16 @@ impl<G: Game> App<G> {
 				self.dispatch(LcEvent::DrillDeviceRebuild, el);
 			}
 			60 => {
+				// REAL device loss: destroy() guarantees the lost callback
+				// fires; the poll at the top of render_frame then drives
+				// the full ReinitDevice recovery. Reaching frame 100 means
+				// the app rendered on the recovered device.
+				log::info!("auto-drill: destroying the device (real loss)");
+				if let AppState::Running(r) = &self.state {
+					r.gpu.device.destroy();
+				}
+			}
+			100 => {
 				log::info!("auto-drill: complete, exiting");
 				el.exit();
 			}
