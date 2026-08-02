@@ -38,9 +38,9 @@ pub fn spawn(seed: f64) -> Vec3 {
 				}
 				let s = column_shape(x, z, seed);
 				let h = s.height;
-				// Land (not a river channel), and the surface itself
-				// isn't a cave mouth.
-				if h > SEA_LEVEL + 1 && s.water <= h && !carved(x, h, z, seed) {
+				// A spawnable surface kind (excludes water columns), high
+				// enough to be dry land, and not a cave mouth.
+				if s.surface.props().spawnable && h > SEA_LEVEL + 1 && !carved(x, h, z, seed) {
 					return Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5);
 				}
 			}

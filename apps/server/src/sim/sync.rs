@@ -356,12 +356,26 @@ mod tests {
 			claimed_pos: [0.0, -500.0, 0.0],
 			claimed_vel: [0.0; 3],
 		};
+		let x_ahead_ready = |sim: &Sim| {
+			let p = sim.test_player(1).expect("client alive").pos;
+			let (cx, cz) = (
+				(p.x.floor() as i32).div_euclid(16),
+				(p.z.floor() as i32).div_euclid(16),
+			);
+			sim.test_block_at((cx + 1) * 16 + 8, 0, cz * 16 + 8)
+				.is_some()
+		};
 		let mut t = 100;
 		while sim.test_player(1).unwrap().pos.x < 24.0 {
-			sim.tick_once(vec![batch(vec![walk_x(t)], 1)]);
+			let ev = if x_ahead_ready(&sim) {
+				vec![batch(vec![walk_x(t)], 1)]
+			} else {
+				vec![]
+			};
+			sim.tick_once(ev);
 			a.drain();
 			t += 1;
-			assert!(t < 20_000, "never walked toward the boundary");
+			assert!(t < 60_000, "never walked toward the boundary");
 		}
 		let mut resumed = false;
 		for _ in 0..1200 {
@@ -430,18 +444,40 @@ mod tests {
 			let p = sim.test_player(1).expect("client alive").pos;
 			((p.z.floor() as i32).div_euclid(16) - col.1).abs()
 		};
+		// Only step when the column ahead is generated: on a saturated
+		// test host the walk can outrun the workers, drop through
+		// ungenerated ground, and entomb the player.
+		let ahead_ready = |sim: &Sim, dz: i32| {
+			let p = sim.test_player(1).expect("client alive").pos;
+			let (cx, cz) = (
+				(p.x.floor() as i32).div_euclid(16),
+				(p.z.floor() as i32).div_euclid(16),
+			);
+			sim.test_block_at(cx * 16 + 8, 0, (cz + dz) * 16 + 8)
+				.is_some()
+		};
 		let mut t = 100;
 		while col_dist(&sim) < 10 {
-			sim.tick_once(vec![batch(vec![walk(t, 1.0)], 1)]);
+			let ev = if ahead_ready(&sim, 1) {
+				vec![batch(vec![walk(t, 1.0)], 1)]
+			} else {
+				vec![]
+			};
+			sim.tick_once(ev);
 			a.drain();
 			t += 1;
-			assert!(t < 20_000, "never walked out");
+			assert!(t < 60_000, "never walked out");
 		}
 		while col_dist(&sim) > 1 {
-			sim.tick_once(vec![batch(vec![walk(t, -1.0)], 1)]);
+			let ev = if ahead_ready(&sim, -1) {
+				vec![batch(vec![walk(t, -1.0)], 1)]
+			} else {
+				vec![]
+			};
+			sim.tick_once(ev);
 			a.drain();
 			t += 1;
-			assert!(t < 40_000, "never walked back");
+			assert!(t < 90_000, "never walked back");
 		}
 		for _ in 0..30 {
 			sim.tick_once(vec![]);

@@ -22,7 +22,7 @@ mod rivers;
 mod terrain;
 
 pub use caves::carved;
-pub use classify::{ColumnShape, SurfaceKind, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE};
+pub use classify::{ColumnShape, SurfaceKind, SurfaceProps, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE};
 pub use terrain::{TerrainParams, MAX_TERRAIN, SEA_LEVEL};
 
 use std::sync::Arc;

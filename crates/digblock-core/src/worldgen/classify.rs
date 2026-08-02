@@ -40,6 +40,47 @@ pub enum SurfaceKind {
 	River,
 }
 
+/// What a SurfaceKind MEANS, as data: the block palette, decoration
+/// validity, and spawn acceptance, in one row per kind. A new biome is a
+/// classification arm plus a row here — not edits across worldgen,
+/// decoration, and spawn.
+pub struct SurfaceProps {
+	/// Block at the surface cell (`wy == height`).
+	pub top: BlockType,
+	/// Blocks between the surface and the stone below it.
+	pub subsoil: BlockType,
+	/// Trees may decorate this surface.
+	pub trees: bool,
+	/// The spawn walk accepts this surface (land altitude still applies).
+	pub spawnable: bool,
+}
+
+const fn sprops(top: BlockType, subsoil: BlockType, trees: bool, spawnable: bool) -> SurfaceProps {
+	SurfaceProps {
+		top,
+		subsoil,
+		trees,
+		spawnable,
+	}
+}
+
+/// Indexed by `SurfaceKind as usize` (declaration order).
+pub const SURFACE_PROPS: [SurfaceProps; 6] = [
+	sprops(BlockType::Sand, BlockType::Sand, false, false), // Ocean
+	sprops(BlockType::Sand, BlockType::Sand, false, true),  // Beach
+	sprops(BlockType::Grass, BlockType::Dirt, true, true),  // Plains
+	sprops(BlockType::Stone, BlockType::Stone, false, true), // Mountain
+	sprops(BlockType::Snow, BlockType::Stone, false, true), // Snow
+	sprops(BlockType::Sand, BlockType::Sand, false, false), // River
+];
+
+impl SurfaceKind {
+	#[inline]
+	pub fn props(self) -> &'static SurfaceProps {
+		&SURFACE_PROPS[self as usize]
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColumnShape {
 	/// World y of the surface block.
@@ -141,23 +182,35 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	} else if wy <= h - DIRT_DEPTH {
 		BlockType::Stone
 	} else {
-		match shape.surface {
-			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River => BlockType::Sand,
-			SurfaceKind::Mountain => BlockType::Stone,
-			SurfaceKind::Snow => {
-				if wy == h {
-					BlockType::Snow
-				} else {
-					BlockType::Stone
-				}
-			}
-			SurfaceKind::Plains => {
-				if wy == h {
-					BlockType::Grass
-				} else {
-					BlockType::Dirt
-				}
-			}
+		let p = shape.surface.props();
+		if wy == h {
+			p.top
+		} else {
+			p.subsoil
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Pins the table to the legacy hardcoded rules for every kind, so
+	/// the data-driven consumers cannot have changed behavior.
+	#[test]
+	fn surface_props_match_legacy_rules() {
+		use SurfaceKind::*;
+		for k in [Ocean, Beach, Plains, Mountain, Snow, River] {
+			let p = k.props();
+			let (top, subsoil) = match k {
+				Ocean | Beach | River => (BlockType::Sand, BlockType::Sand),
+				Mountain => (BlockType::Stone, BlockType::Stone),
+				Snow => (BlockType::Snow, BlockType::Stone),
+				Plains => (BlockType::Grass, BlockType::Dirt),
+			};
+			assert_eq!((p.top, p.subsoil), (top, subsoil), "{k:?} palette");
+			assert_eq!(p.trees, k == Plains, "{k:?} decoration");
+			assert_eq!(p.spawnable, !matches!(k, Ocean | River), "{k:?} spawn");
 		}
 	}
 }

@@ -9,7 +9,7 @@
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK};
-use crate::worldgen::{carved, column_shape, SurfaceKind};
+use crate::worldgen::{carved, column_shape};
 
 /// Horizontal reach guarantee: no structure block may sit further than
 /// this from its origin column. Chunks scan candidates this far outside
@@ -55,7 +55,7 @@ fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
 	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
 	let shape = column_shape(x, z, seed);
-	if shape.surface != SurfaceKind::Plains {
+	if !shape.surface.props().trees {
 		return None; // trees grow on grass only — never sand, rock, or sea
 	}
 	if carved(x, shape.height, z, seed) {
