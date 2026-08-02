@@ -14,23 +14,6 @@ fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
 	})
 }
 
-/// 64 hex chars -> 32 bytes (the server logs its cert hash at startup).
-fn parse_cert_hash(hex: &str) -> [u8; 32] {
-	let clean: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-	if clean.len() != 64 {
-		eprintln!(
-			"bad value for --cert-hash: want 64 hex chars, got {}",
-			clean.len()
-		);
-		std::process::exit(2);
-	}
-	let mut out = [0u8; 32];
-	for (i, byte) in out.iter_mut().enumerate() {
-		*byte = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16).expect("hex checked");
-	}
-	out
-}
-
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -51,7 +34,7 @@ fn main() {
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	let mut connect: Option<String> = None;
-	let mut cert_hash: Option<[u8; 32]> = None;
+	let mut pinned: Option<digblock_net_native::CertPolicy> = None;
 	let mut insecure = false;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -59,7 +42,12 @@ fn main() {
 			"--connect" => connect = Some(parse_or_die::<String>("--connect", args.next())),
 			"--cert-hash" => {
 				let hex = parse_or_die::<String>("--cert-hash", args.next());
-				cert_hash = Some(parse_cert_hash(&hex));
+				pinned = Some(
+					digblock_net_native::CertPolicy::pinned_from_hex(&hex).unwrap_or_else(|e| {
+						eprintln!("bad value for --cert-hash: {e}");
+						std::process::exit(2);
+					}),
+				);
 			}
 			"--insecure" => insecure = true,
 			"--screenshot" => {
@@ -121,8 +109,8 @@ fn main() {
 	let mut engine = Engine::new(config);
 	if let Some(url) = connect {
 		log::info!("connecting to {url}");
-		let policy = match (cert_hash, insecure) {
-			(Some(hash), _) => digblock_net_native::CertPolicy::PinnedSha256(hash),
+		let policy = match (pinned, insecure) {
+			(Some(p), _) => p,
 			// Explicit or implicit dev posture; connect_with logs loudly.
 			_ => digblock_net_native::CertPolicy::Insecure,
 		};

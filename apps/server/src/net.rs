@@ -28,9 +28,17 @@ const MSG_BUDGET: u32 = 32;
 /// Input datagrams decoded per window (2× the tick rate is generous).
 const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 
+/// Connections allowed to exist at once (counting pre-Hello lobby
+/// members). The 255-player cap applies only post-Hello, and every
+/// accepted connection costs a task + inbound budgets; past this, new
+/// sessions are dropped before the WebTransport accept.
+const MAX_CONNECTIONS: usize = 512;
+
 /// Build the endpoint with a fresh self-signed certificate. The SHA-256
-/// hash is logged for browser `serverCertificateHashes` dev flows; the
-/// native client skips validation entirely.
+/// hash is logged so clients can pin it: browsers via
+/// `serverCertificateHashes`, the native client via `--cert-hash`
+/// (`CertPolicy::PinnedSha256`; the default dev posture is Insecure
+/// with a loud warning).
 pub fn make_endpoint(port: u16) -> anyhow::Result<Endpoint<Server>> {
 	let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
 	let hash = identity.certificate_chain().as_slice()[0].hash();
@@ -50,22 +58,38 @@ pub fn make_endpoint(port: u16) -> anyhow::Result<Endpoint<Server>> {
 /// Accept loop: one task per connection, forever.
 pub async fn serve(endpoint: Endpoint<Server>, events: Sender<SimEvent>) {
 	let mut next_conn: u64 = 1;
+	let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 	loop {
 		let incoming = endpoint.accept().await;
+		if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
+			// Dropping the incoming session rejects it without spending a
+			// task on the handshake.
+			log::warn!("connection refused: at capacity ({MAX_CONNECTIONS})");
+			continue;
+		}
 		let conn_id = next_conn;
 		next_conn += 1;
 		let events = events.clone();
+		active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		let active = active.clone();
 		tokio::spawn(async move {
 			let conn = match incoming.await {
 				Ok(request) => match request.accept().await {
 					Ok(conn) => conn,
-					Err(e) => return log::warn!("conn {conn_id}: accept: {e}"),
+					Err(e) => {
+						active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+						return log::warn!("conn {conn_id}: accept: {e}");
+					}
 				},
-				Err(e) => return log::warn!("conn {conn_id}: session: {e}"),
+				Err(e) => {
+					active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+					return log::warn!("conn {conn_id}: session: {e}");
+				}
 			};
 			log::info!("conn {conn_id}: {}", conn.remote_address());
 			handle_connection(conn, conn_id, &events).await;
 			let _ = events.send(SimEvent::Disconnected { conn_id });
+			active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 			log::info!("conn {conn_id}: closed");
 		});
 	}

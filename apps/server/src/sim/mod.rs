@@ -25,7 +25,7 @@ use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
 	sanitize_name, PlayerId, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, SERVER_ID,
-	SNAPSHOT_DIVISOR,
+	SNAPSHOT_DIVISOR, TICK_RATE,
 };
 use edits::PendingEditReq;
 use glam::Vec3;
@@ -47,6 +47,13 @@ pub const OUT_CAP: usize = 512;
 /// A client whose datagram queue stays full this long is dead (reliable
 /// frames kill instantly; snapshots are lossy so brief stalls are fine).
 const DGRAM_STALL_SECS: u32 = 5;
+
+/// A connection that passes the preamble but never completes Hello is
+/// dropped after this many ticks (5s — mirrors the preamble deadline).
+/// Without it a stalled handshake camps in the lobby forever: the
+/// server's own keep-alives defeat QUIC's idle timeout, and the 255-
+/// player cap applies only post-Hello.
+const HELLO_TIMEOUT_TICKS: u32 = 5 * TICK_RATE;
 
 pub enum SimEvent {
 	Connected { conn_id: u64, out: OutTx },
@@ -100,8 +107,9 @@ pub struct Sim {
 	sim_radius: i32,
 	spawn: Vec3,
 	clients: FxHashMap<u64, Client>,
-	/// Connections that have not completed the Hello handshake.
-	lobby: FxHashMap<u64, OutTx>,
+	/// Connections that have not completed the Hello handshake, with the
+	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS).
+	lobby: FxHashMap<u64, (OutTx, u32)>,
 	edit_queue: Vec<PendingEditReq>,
 	residency_dirty: bool,
 	/// (newly-ready column, resident neighbor) pairs awaiting a budgeted
@@ -218,7 +226,7 @@ impl Sim {
 	fn handle_event(&mut self, ev: SimEvent) {
 		match ev {
 			SimEvent::Connected { conn_id, out } => {
-				self.lobby.insert(conn_id, out);
+				self.lobby.insert(conn_id, (out, self.tick));
 			}
 			SimEvent::Msg { conn_id, msg } => match msg {
 				ClientMsg::Hello {
@@ -279,7 +287,7 @@ impl Sim {
 		sim_version: u16,
 		build: String,
 	) {
-		let Some(out) = self.lobby.remove(&conn_id) else {
+		let Some((out, _)) = self.lobby.remove(&conn_id) else {
 			return;
 		};
 		let refuse = |out: &OutTx, reason: String| {
@@ -401,7 +409,8 @@ impl Sim {
 		self.residency_dirty = true;
 	}
 
-	/// Clients flagged dead by a refused queue push get a real disconnect.
+	/// Clients flagged dead by a refused queue push get a real disconnect;
+	/// lobby members that never completed Hello time out.
 	fn reap_dead(&mut self) {
 		let dead: Vec<u64> = self
 			.clients
@@ -414,6 +423,17 @@ impl Sim {
 			// recv ends and the connection closes.
 			self.drop_client(conn_id);
 		}
+		let tick = self.tick;
+		self.lobby.retain(|conn_id, (out, since)| {
+			let keep = tick.wrapping_sub(*since) < HELLO_TIMEOUT_TICKS;
+			if !keep {
+				log::info!("conn {conn_id}: no Hello within the deadline — dropping");
+				// Close ends the net task; dropping the Sender is the
+				// backstop if the queue is already full.
+				let _ = out.try_send(OutMsg::Close);
+			}
+			keep
+		});
 	}
 
 	fn drop_client(&mut self, conn_id: u64) {
@@ -539,6 +559,44 @@ mod tests {
 			"{msgs:?}"
 		);
 		assert!(closed);
+	}
+
+	#[test]
+	fn lobby_without_hello_times_out() {
+		let mut sim = flat_sim("lobby-timeout");
+		let (tx, mut rx) = channel(super::OUT_CAP);
+		sim.tick_once(vec![SimEvent::Connected {
+			conn_id: 7,
+			out: tx,
+		}]);
+		// One tick short of the deadline: still in the lobby, no Close.
+		for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
+			sim.tick_once(vec![]);
+		}
+		assert!(matches!(
+			rx.try_recv(),
+			Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+		));
+		// Crossing it: reaped with a Close so the net task ends.
+		sim.tick_once(vec![]);
+		let mut closed = false;
+		while let Ok(out) = rx.try_recv() {
+			closed |= matches!(out, OutMsg::Close);
+		}
+		assert!(closed, "lobby member closed after the Hello deadline");
+		// A late Hello on the reaped connection is simply ignored.
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 7,
+			msg: ClientMsg::Hello {
+				protocol: PROTOCOL_VERSION,
+				name: "late".into(),
+				draw_dist: 4,
+				token: [0; 16],
+				sim_version: digblock_core::SIM_VERSION,
+				build: "late-build".into(),
+			},
+		}]);
+		assert_eq!(sim.player_count(), 0);
 	}
 
 	#[test]

@@ -27,6 +27,7 @@ fn main() {
 	let mut bots: u32 = 1;
 	let mut duration_secs: f32 = 30.0;
 	let mut edit_rate: f32 = 0.5;
+	let mut policy = digblock_net_native::CertPolicy::Insecure;
 
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -36,10 +37,18 @@ fn main() {
 			"--bots" => bots = val().parse().unwrap_or(1),
 			"--duration" => duration_secs = val().parse().unwrap_or(30.0),
 			"--edit-rate" => edit_rate = val().parse().unwrap_or(0.5),
+			"--cert-hash" => {
+				policy =
+					digblock_net_native::CertPolicy::pinned_from_hex(&val()).unwrap_or_else(|e| {
+						eprintln!("bad value for --cert-hash: {e}");
+						std::process::exit(2);
+					});
+			}
 			other => {
 				eprintln!("unknown arg: {other}");
 				eprintln!(
-					"usage: bot [--url U] [--bots N] [--duration SECS] [--edit-rate PER_SEC]"
+					"usage: bot [--url U] [--bots N] [--duration SECS] [--edit-rate PER_SEC] \
+					 [--cert-hash SHA256_HEX]"
 				);
 				std::process::exit(2);
 			}
@@ -49,7 +58,7 @@ fn main() {
 	let handles: Vec<_> = (0..bots)
 		.map(|i| {
 			let url = url.clone();
-			std::thread::spawn(move || run_bot(i, &url, duration_secs, edit_rate))
+			std::thread::spawn(move || run_bot(i, &url, duration_secs, edit_rate, policy))
 		})
 		.collect();
 
@@ -75,8 +84,14 @@ fn main() {
 	std::process::exit(if failed { 1 } else { 0 });
 }
 
-fn run_bot(index: u32, url: &str, duration_secs: f32, edit_rate: f32) -> BotResult {
-	let transport = digblock_net_native::connect(url);
+fn run_bot(
+	index: u32,
+	url: &str,
+	duration_secs: f32,
+	edit_rate: f32,
+	policy: digblock_net_native::CertPolicy,
+) -> BotResult {
+	let transport = digblock_net_native::connect_with(url, policy);
 	let mut client = NetClient::new(
 		Box::new(transport),
 		NetClientConfig {

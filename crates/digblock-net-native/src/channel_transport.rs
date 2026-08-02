@@ -24,6 +24,23 @@ pub enum CertPolicy {
 	PinnedSha256([u8; 32]),
 }
 
+impl CertPolicy {
+	/// Parse a pinned policy from the 64-hex-char hash the server logs at
+	/// startup (separators like `:` or spaces are tolerated). Shared by
+	/// every `--cert-hash` flag so the launchers can't drift.
+	pub fn pinned_from_hex(hex: &str) -> Result<CertPolicy, String> {
+		let clean: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+		if clean.len() != 64 {
+			return Err(format!("want 64 hex chars, got {}", clean.len()));
+		}
+		let mut out = [0u8; 32];
+		for (i, byte) in out.iter_mut().enumerate() {
+			*byte = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16).expect("hex checked");
+		}
+		Ok(CertPolicy::PinnedSha256(out))
+	}
+}
+
 pub struct ChannelTransport {
 	out_tx: UnboundedSender<Outgoing>,
 	in_rx: Receiver<TransportEvent>,
@@ -39,10 +56,15 @@ pub fn connect(url: &str) -> ChannelTransport {
 
 pub fn connect_with(url: &str, policy: CertPolicy) -> ChannelTransport {
 	if matches!(policy, CertPolicy::Insecure) {
-		log::warn!(
-			"TLS certificate validation is OFF (dev posture) — \
-			 pass --cert-hash <sha256-hex> to pin the server's certificate"
-		);
+		// Once per process, not per connection — multi-bot runs would
+		// otherwise repeat it per thread.
+		static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+		WARN_ONCE.call_once(|| {
+			log::warn!(
+				"TLS certificate validation is OFF (dev posture) — \
+				 pass --cert-hash <sha256-hex> to pin the server's certificate"
+			);
+		});
 	}
 	let (out_tx, out_rx) = unbounded_channel();
 	let (in_tx, in_rx) = unbounded();
