@@ -1,6 +1,19 @@
 use digblock_platform::RunOptions;
 use digblock_render::{Engine, EngineConfig};
 
+/// Bad or missing flag values are fatal like unknown args — a silently
+/// defaulted `--seed`/`--draw-dist` makes captures non-deterministic.
+fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
+	let Some(val) = val else {
+		eprintln!("missing value for {flag}");
+		std::process::exit(2);
+	};
+	val.parse().unwrap_or_else(|_| {
+		eprintln!("bad value for {flag}: {val}");
+		std::process::exit(2);
+	})
+}
+
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -24,34 +37,32 @@ fn main() {
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
-			"--connect" => connect = args.next(),
-			"--screenshot" => options.screenshot = args.next().map(Into::into),
+			"--connect" => connect = Some(parse_or_die::<String>("--connect", args.next())),
+			"--screenshot" => {
+				options.screenshot =
+					Some(parse_or_die::<String>("--screenshot", args.next()).into());
+			}
 			"--exit" => options.exit_after_screenshot = true,
-			"--frames" => frames = args.next().and_then(|v| v.parse().ok()),
+			"--frames" => frames = Some(parse_or_die("--frames", args.next())),
 			"--drill" => options.auto_drill = true,
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
 			"--bench" => config.bench = true,
 			"--no-vsync" => options.no_vsync = true,
-			"--workers" => {
-				if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
-					config.workers = n;
-				}
-			}
-			"--draw-dist" => {
-				if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
-					config.draw_dist = n;
-				}
-			}
-			"--seed" => config.seed = args.next().and_then(|v| v.parse().ok()),
-			"--tod" => config.tod = args.next().and_then(|v| v.parse().ok()),
-			"--yaw" => config.yaw = args.next().and_then(|v| v.parse().ok()),
-			"--pitch" => config.pitch = args.next().and_then(|v| v.parse().ok()),
+			"--workers" => config.workers = parse_or_die("--workers", args.next()),
+			"--draw-dist" => config.draw_dist = parse_or_die("--draw-dist", args.next()),
+			"--seed" => config.seed = Some(parse_or_die("--seed", args.next())),
+			"--tod" => config.tod = Some(parse_or_die("--tod", args.next())),
+			"--yaw" => config.yaw = Some(parse_or_die("--yaw", args.next())),
+			"--pitch" => config.pitch = Some(parse_or_die("--pitch", args.next())),
 			// SSR override in either direction (--mobile --ssr is the
 			// device-profiling escape hatch).
 			"--ssr" => config.ssr = true,
 			"--no-ssr" => config.ssr = false,
-			"--metrics-csv" => config.metrics_csv = args.next().map(Into::into),
+			"--metrics-csv" => {
+				config.metrics_csv =
+					Some(parse_or_die::<String>("--metrics-csv", args.next()).into());
+			}
 			other => {
 				eprintln!("unknown arg: {other}");
 				std::process::exit(2);

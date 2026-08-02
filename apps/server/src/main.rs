@@ -7,6 +7,20 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// A silently-defaulted flag on a server with a persistent journal is a
+/// world-corruption hazard (`--seed banana` → default seed over existing
+/// data), so bad or missing values are fatal, like unknown args.
+fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
+	let Some(val) = val else {
+		eprintln!("missing value for {flag}");
+		std::process::exit(2);
+	};
+	val.parse().unwrap_or_else(|_| {
+		eprintln!("bad value for {flag}: {val}");
+		std::process::exit(2);
+	})
+}
+
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -21,13 +35,12 @@ fn main() {
 
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
-		let mut val = || args.next().unwrap_or_default();
 		match arg.as_str() {
-			"--port" => port = val().parse().unwrap_or(DEFAULT_PORT),
-			"--seed" => seed = val().parse().unwrap_or(DEFAULT_SEED),
-			"--data-dir" => data_dir = PathBuf::from(val()),
-			"--sim-radius" => sim_radius = val().parse().unwrap_or(6),
-			"--workers" => workers = val().parse().unwrap_or(workers),
+			"--port" => port = parse_or_die("--port", args.next()),
+			"--seed" => seed = parse_or_die("--seed", args.next()),
+			"--data-dir" => data_dir = parse_or_die("--data-dir", args.next()),
+			"--sim-radius" => sim_radius = parse_or_die("--sim-radius", args.next()),
+			"--workers" => workers = parse_or_die("--workers", args.next()),
 			other => {
 				eprintln!("unknown arg: {other}");
 				eprintln!(

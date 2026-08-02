@@ -15,6 +15,11 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// Simulation rate. Fixed: `Player::tick` air control hardcodes /60.
 pub const TICK_RATE: u32 = 60;
 
+// The adoption envelope replays the identical `Player::tick` on client and
+// server; that only holds if this rate and core's fixed tick describe the
+// same clock. Compile-time tripwire, not a convention.
+const _: () = assert!(digblock_core::player::TICK == 1.0 / TICK_RATE as f32);
+
 /// Snapshots go out every Nth sim tick (3 → 20 Hz).
 pub const SNAPSHOT_DIVISOR: u32 = 3;
 

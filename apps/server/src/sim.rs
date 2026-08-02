@@ -11,7 +11,7 @@
 //! client.
 
 use crate::journal::Journal;
-use crate::store::{ChunkStore, StoreWorld};
+use crate::store::{ChunkStore, ColumnSource, StoreWorld};
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FluidSim, FLOW_BUDGET, FLOW_STEP_SECS};
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState, TICK};
@@ -107,6 +107,8 @@ pub struct Sim {
 	lobby: FxHashMap<u64, UnboundedSender<OutMsg>>,
 	edit_queue: Vec<PendingEditReq>,
 	residency_dirty: bool,
+	/// Last tick a snapshot-encode failure was logged (rate limit).
+	last_oversize_log: Option<u32>,
 }
 
 impl Sim {
@@ -116,9 +118,33 @@ impl Sim {
 		sim_radius: i32,
 		workers: usize,
 	) -> std::io::Result<Self> {
-		let journal = Journal::open(data_dir, seed)?;
 		let store = ChunkStore::new(seed, workers);
-		let spawn = player::spawn(seed);
+		Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))
+	}
+
+	/// Test seam: inject a synthetic column source (and a spawn that fits
+	/// it) so sim tests never pay real worldgen.
+	#[doc(hidden)]
+	pub fn new_with_source(
+		seed: f64,
+		data_dir: &Path,
+		sim_radius: i32,
+		workers: usize,
+		source: ColumnSource,
+		spawn: Vec3,
+	) -> std::io::Result<Self> {
+		let store = ChunkStore::new_with_source(seed, workers, source);
+		Self::with_store(seed, data_dir, sim_radius, store, spawn)
+	}
+
+	fn with_store(
+		seed: f64,
+		data_dir: &Path,
+		sim_radius: i32,
+		store: ChunkStore,
+		spawn: Vec3,
+	) -> std::io::Result<Self> {
+		let journal = Journal::open(data_dir, seed)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -131,6 +157,7 @@ impl Sim {
 			lobby: FxHashMap::default(),
 			edit_queue: Vec::new(),
 			residency_dirty: true,
+			last_oversize_log: None,
 		})
 	}
 
@@ -605,8 +632,25 @@ impl Sim {
 				your_last_input_tick: client.last_input_tick,
 				players: players.clone(),
 			};
-			if let Ok(bytes) = codec::encode_datagram(&Datagram::Snapshot(snap)) {
-				let _ = client.out.send(OutMsg::Datagram(bytes));
+			match codec::encode_datagram(&Datagram::Snapshot(snap)) {
+				Ok(bytes) => {
+					let _ = client.out.send(OutMsg::Datagram(bytes));
+				}
+				Err(e) => {
+					// Losing snapshots is a game-breaking condition — never
+					// swallow it. Rate-limited to once a second.
+					let due = self
+						.last_oversize_log
+						.is_none_or(|at| self.tick.wrapping_sub(at) >= TICK_RATE);
+					if due {
+						log::warn!(
+							"snapshot encode failed for player {} ({} players in roster): {e}",
+							client.id,
+							players.len()
+						);
+						self.last_oversize_log = Some(self.tick);
+					}
+				}
 			}
 		}
 	}
@@ -740,8 +784,10 @@ fn send_journal_column_to(journal: &Journal, out: &UnboundedSender<OutMsg>, cx: 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
 	use digblock_net::codec::FrameReader;
 	use std::path::PathBuf;
+	use std::sync::Arc;
 	use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 	const SEED: f64 = 42.0;
@@ -750,6 +796,44 @@ mod tests {
 		let dir = std::env::temp_dir().join(format!("dbsim-{tag}-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		dir
+	}
+
+	/// Flat synthetic world: stone through y = 126, air above. Column
+	/// generation is microseconds, so tests that don't care about terrain
+	/// shape never pay real worldgen.
+	const FLAT_GROUND_TOP: usize = 126;
+	/// Standing eye height over the flat ground: `top + 2.5`, exactly what
+	/// `player::spawn` returns for a surface block — grounded from tick 1.
+	const FLAT_SPAWN: Vec3 = Vec3::new(8.5, FLAT_GROUND_TOP as f32 + 2.5, 8.5);
+
+	fn flat_source() -> ColumnSource {
+		Arc::new(|_cx, _cz| {
+			let mut full = ChunkData::default();
+			let mut top = ChunkData::default();
+			for y in 0..16 {
+				for z in 0..16 {
+					for x in 0..16 {
+						full.set(x, y, z, BlockType::Stone);
+						if y <= FLAT_GROUND_TOP % 16 {
+							top.set(x, y, z, BlockType::Stone);
+						}
+					}
+				}
+			}
+			let (full, top) = (Arc::new(full), Arc::new(top));
+			(0..WORLD_VCHUNK as usize)
+				.map(|cy| match cy.cmp(&(FLAT_GROUND_TOP / 16)) {
+					std::cmp::Ordering::Less => full.clone(),
+					std::cmp::Ordering::Equal => top.clone(),
+					std::cmp::Ordering::Greater => AIR_CHUNK.clone(),
+				})
+				.collect()
+		})
+	}
+
+	fn flat_sim(tag: &str) -> Sim {
+		let dir = temp_dir(tag);
+		Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap()
 	}
 
 	struct TestClient {
@@ -849,8 +933,7 @@ mod tests {
 
 	#[test]
 	fn join_roster_and_announcements() {
-		let dir = temp_dir("roster");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("roster");
 		let mut a = connect(&mut sim, 1); // id 0
 		let b = connect(&mut sim, 2); // id 1
 
@@ -887,6 +970,9 @@ mod tests {
 
 	#[test]
 	fn honest_claims_adopted_and_echoed() {
+		// Deliberately the one sim test on REAL worldgen: full movement +
+		// adoption over real terrain, so the injected-source shortcut can
+		// never hide a worldgen-facing regression.
 		let dir = temp_dir("honest");
 		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
 		let mut c = connect(&mut sim, 1);
@@ -923,8 +1009,7 @@ mod tests {
 
 	#[test]
 	fn off_envelope_claim_keeps_server_state() {
-		let dir = temp_dir("offclaim");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("offclaim");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let before = sim.test_player(1).unwrap();
@@ -949,8 +1034,7 @@ mod tests {
 
 	#[test]
 	fn speed_hack_claims_rejected() {
-		let dir = temp_dir("speed");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("speed");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
@@ -977,8 +1061,7 @@ mod tests {
 
 	#[test]
 	fn inside_solid_claim_rejected() {
-		let dir = temp_dir("solid");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("solid");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
@@ -1007,8 +1090,7 @@ mod tests {
 
 	#[test]
 	fn sustained_edge_riding_locked_out_then_recovers() {
-		let dir = temp_dir("drift");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("drift");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
@@ -1054,8 +1136,7 @@ mod tests {
 
 	#[test]
 	fn zero_mean_jitter_stays_adopted() {
-		let dir = temp_dir("jitter");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("jitter");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 
@@ -1087,8 +1168,7 @@ mod tests {
 
 	#[test]
 	fn edits_validate_apply_and_journal() {
-		let dir = temp_dir("edits");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("edits");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
@@ -1157,8 +1237,7 @@ mod tests {
 
 	#[test]
 	fn place_into_player_and_rate_limit() {
-		let dir = temp_dir("place");
-		let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+		let mut sim = flat_sim("place");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
@@ -1225,8 +1304,7 @@ mod tests {
 	#[test]
 	fn determinism_under_datagram_loss() {
 		let run = |tag: &str, lossy: bool| -> Vec3 {
-			let dir = temp_dir(tag);
-			let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+			let mut sim = flat_sim(tag);
 			let _c = connect(&mut sim, 1);
 			wait_live(&mut sim, 1);
 

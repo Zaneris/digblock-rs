@@ -20,6 +20,10 @@ use std::sync::Arc;
 /// Hysteresis: evict only beyond `radius + EVICT_SLACK` of every center.
 const EVICT_SLACK: i32 = 2;
 
+/// Pluggable column generator. Production uses [`build_column`]; tests
+/// inject synthetic worlds so store/sim tests never pay real worldgen.
+pub type ColumnSource = Arc<dyn Fn(i32, i32) -> Vec<Arc<ChunkData>> + Send + Sync>;
+
 type ColumnResult = (i32, i32, Vec<Arc<ChunkData>>);
 
 pub struct ChunkStore {
@@ -33,17 +37,26 @@ pub struct ChunkStore {
 
 impl ChunkStore {
 	pub fn new(seed: f64, workers: usize) -> Self {
+		Self::new_with_source(
+			seed,
+			workers,
+			Arc::new(move |cx, cz| build_column(cx, cz, seed)),
+		)
+	}
+
+	pub fn new_with_source(seed: f64, workers: usize, source: ColumnSource) -> Self {
 		let (job_tx, job_rx) = unbounded::<(i32, i32)>();
 		let (result_tx, result_rx) = unbounded::<ColumnResult>();
 		let workers = (0..workers.max(1))
 			.map(|i| {
 				let rx = job_rx.clone();
 				let tx = result_tx.clone();
+				let source = source.clone();
 				std::thread::Builder::new()
 					.name(format!("store-worker-{i}"))
 					.spawn(move || {
 						while let Ok((cx, cz)) = rx.recv() {
-							let stack = build_column(cx, cz, seed);
+							let stack = source(cx, cz);
 							if tx.send((cx, cz, stack)).is_err() {
 								return;
 							}
