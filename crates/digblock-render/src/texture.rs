@@ -160,3 +160,23 @@ impl BlockTextures {
 		}
 	}
 }
+
+// The texture array must fit the packed vertex format's layer field —
+// caught here at compile time, not as GPU corruption at 65 layers.
+const _: () = assert!(digblock_assets::tex::LAYERS.len() <= digblock_core::block::MAX_TEX_LAYERS);
+
+#[cfg(test)]
+mod layer_tests {
+	/// Every PROPS texture index must name an existing LAYERS entry —
+	/// the cross-crate half of the add-a-block skew check.
+	#[test]
+	fn props_reference_existing_layers() {
+		let layers = digblock_assets::tex::LAYERS.len() as u8;
+		for &b in &digblock_core::block::BlockType::ALL {
+			let p = b.props();
+			for t in [p.tex_side, p.tex_top, p.tex_bottom] {
+				assert!(t < layers, "{b:?} references missing layer {t}");
+			}
+		}
+	}
+}

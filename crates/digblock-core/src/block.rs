@@ -8,34 +8,77 @@
 
 use crate::dir::Dir;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(u8)]
-pub enum BlockType {
-	#[default]
-	Air = 0,
+/// One table generates the enum, `COUNT`, `ALL`, and `PROPS` together —
+/// adding a block is ONE row here (plus a PNG + `LAYERS` entry in
+/// digblock-assets); the old hand-synced quadruple cannot skew.
+macro_rules! blocks {
+	(
+		$(#[$fmeta:meta])* $first:ident = $fid:literal => $fprops:expr,
+		$($(#[$meta:meta])* $name:ident = $id:literal => $props:expr,)+
+	) => {
+		#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+		#[repr(u8)]
+		pub enum BlockType {
+			$(#[$fmeta])*
+			#[default]
+			$first = $fid,
+			$($(#[$meta])* $name = $id,)+
+		}
+
+		impl BlockType {
+			pub const COUNT: usize = 1 + [$($id as u8),+].len();
+			pub const ALL: [BlockType; Self::COUNT] =
+				[BlockType::$first, $(BlockType::$name),+];
+		}
+
+		/// Indexed by `BlockType as usize` — discriminant contiguity is
+		/// pinned by `discriminants_index_props`.
+		pub const PROPS: [BlockProps; BlockType::COUNT] = [$fprops, $($props),+];
+	};
+}
+
+blocks! {
+	Air = 0 => props(RenderClass::None, false, 0, 0, 0),
 	/// A water source: infinite, amount 8. All generated water (oceans,
 	/// river pools) is sources — flowing/falling states describe water in
 	/// transit under the Minecraft-style flow rules.
-	Water = 1,
-	Dirt = 2,
-	Grass = 3,
-	Sand = 4,
-	Stone = 5,
-	Wood = 6,
-	Leaves = 7,
-	Snow = 8,
+	Water = 1 => water_props(8, true, false),
+	Dirt = 2 => props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT),
+	Grass = 3 => props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT),
+	Sand = 4 => props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND),
+	Stone = 5 => props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE),
+	Wood = 6 => props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP),
+	Leaves = 7 => props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES),
+	Snow = 8 => props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
 	/// source or a landed fall, losing one amount per block.
-	WaterFlow1 = 9,
-	WaterFlow2 = 10,
-	WaterFlow3 = 11,
-	WaterFlow4 = 12,
-	WaterFlow5 = 13,
-	WaterFlow6 = 14,
-	WaterFlow7 = 15,
+	WaterFlow1 = 9 => water_props(1, false, false),
+	WaterFlow2 = 10 => water_props(2, false, false),
+	WaterFlow3 = 11 => water_props(3, false, false),
+	WaterFlow4 = 12 => water_props(4, false, false),
+	WaterFlow5 = 13 => water_props(5, false, false),
+	WaterFlow6 = 14 => water_props(6, false, false),
+	WaterFlow7 = 15 => water_props(7, false, false),
 	/// Water falling through air: renders full-height, lands at amount 8.
-	WaterFall = 16,
+	WaterFall = 16 => water_props(8, false, true),
 }
+
+/// Ceiling on texture-array layers, tied to the packed vertex format's
+/// layer field width. Every PROPS row is const-checked against it.
+pub const MAX_TEX_LAYERS: usize = 64;
+const _: () = {
+	let mut i = 0;
+	while i < BlockType::COUNT {
+		let p = &PROPS[i];
+		assert!(
+			(p.tex_side as usize) < MAX_TEX_LAYERS
+				&& (p.tex_top as usize) < MAX_TEX_LAYERS
+				&& (p.tex_bottom as usize) < MAX_TEX_LAYERS,
+			"texture layer exceeds the vertex format's layer field"
+		);
+		i += 1;
+	}
+};
 
 /// How a block participates in meshing and rendering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,53 +176,7 @@ mod tex {
 	pub const SNOW: u8 = 9;
 }
 
-/// Indexed by `BlockType as usize` — the repr(u8) discriminants are
-/// contiguous by design.
-pub const PROPS: [BlockProps; BlockType::COUNT] = {
-	use RenderClass as R;
-	[
-		props(R::None, false, 0, 0, 0),                          // Air
-		water_props(8, true, false),                             // Water (source)
-		props(R::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT), // Dirt
-		props(R::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT), // Grass
-		props(R::Opaque, true, tex::SAND, tex::SAND, tex::SAND), // Sand
-		props(R::Opaque, true, tex::STONE, tex::STONE, tex::STONE), // Stone
-		props(R::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), // Wood
-		props(R::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), // Leaves
-		props(R::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW), // Snow
-		water_props(1, false, false),                            // WaterFlow1
-		water_props(2, false, false),                            // WaterFlow2
-		water_props(3, false, false),                            // WaterFlow3
-		water_props(4, false, false),                            // WaterFlow4
-		water_props(5, false, false),                            // WaterFlow5
-		water_props(6, false, false),                            // WaterFlow6
-		water_props(7, false, false),                            // WaterFlow7
-		water_props(8, false, true),                             // WaterFall
-	]
-};
-
 impl BlockType {
-	pub const COUNT: usize = 17;
-	pub const ALL: [BlockType; Self::COUNT] = [
-		BlockType::Air,
-		BlockType::Water,
-		BlockType::Dirt,
-		BlockType::Grass,
-		BlockType::Sand,
-		BlockType::Stone,
-		BlockType::Wood,
-		BlockType::Leaves,
-		BlockType::Snow,
-		BlockType::WaterFlow1,
-		BlockType::WaterFlow2,
-		BlockType::WaterFlow3,
-		BlockType::WaterFlow4,
-		BlockType::WaterFlow5,
-		BlockType::WaterFlow6,
-		BlockType::WaterFlow7,
-		BlockType::WaterFall,
-	];
-
 	#[inline]
 	pub fn from_u8(v: u8) -> Self {
 		if (v as usize) < Self::COUNT {
