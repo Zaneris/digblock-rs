@@ -7,34 +7,8 @@
 // digblock-assets, so line numbers here are offset), shared with the
 // water shader's reflections.
 
-// Must match FrameUniforms in renderer.rs and the Frame struct in
-// chunk.wgsl — field order and packing are load-bearing.
-struct Frame {
-	view_proj: mat4x4f,
-	inv_view_proj: mat4x4f,
-	light_near: mat4x4f,
-	light_wide: mat4x4f,
-	light_dir: vec4f,
-	light_color: vec4f,
-	ambient: vec4f,
-	// rgb = fog color (sky horizon); w = fog start distance
-	fog_color: vec4f,
-	// xyz = camera position; w = 1 / (fog_end − fog_start)
-	cam_pos: vec4f,
-	// xyz = direction toward the sun in the sky; w = star intensity
-	sun_dir: vec4f,
-	// xyz = direction toward the moon; w = sunset glow strength
-	moon_dir: vec4f,
-	// rgb = sky zenith color
-	zenith: vec4f,
-	// rgb = sky horizon color
-	horizon: vec4f,
-	misc: vec4f,
-	// x = camera underwater, y = SSR enabled (unused here)
-	water_misc: vec4f,
-}
-
-@group(0) @binding(0) var<uniform> frame: Frame;
+// The Frame struct + group(0) binding come from frame_common.wgsl
+// (prepended by digblock-assets, before sky_common).
 
 struct VsOut {
 	@builtin(position) pos: vec4f,

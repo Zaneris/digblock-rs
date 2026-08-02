@@ -8,30 +8,8 @@
 // ballistic droplets on a 0.75s loop (800 cycles per 600s clock wrap
 // — seamless).
 
-// Must match FrameUniforms in renderer.rs — field order and packing
-// are load-bearing (see water.wgsl).
-struct Frame {
-	view_proj: mat4x4f,
-	inv_view_proj: mat4x4f,
-	light_near: mat4x4f,
-	light_wide: mat4x4f,
-	light_dir: vec4f,
-	// rgb = direct light color; w = animation clock in seconds
-	light_color: vec4f,
-	ambient: vec4f,
-	// rgb = fog color; w = fog start distance
-	fog_color: vec4f,
-	// xyz = camera position; w = 1 / (fog_end − fog_start)
-	cam_pos: vec4f,
-	sun_dir: vec4f,
-	moon_dir: vec4f,
-	zenith: vec4f,
-	horizon: vec4f,
-	misc: vec4f,
-	water_misc: vec4f,
-}
-
-@group(0) @binding(0) var<uniform> frame: Frame;
+// The Frame struct + group(0) binding come from frame_common.wgsl
+// (prepended by digblock-assets).
 
 const LIFE: f32 = 0.75;
 // Mist slabs per instance — keep in sync with spray.rs MIST_N.

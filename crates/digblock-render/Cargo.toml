@@ -18,5 +18,10 @@ image.workspace = true
 rand.workspace = true
 log.workspace = true
 
+[dev-dependencies]
+# Layout tripwire only (frame_layout_matches_wgsl); same spec as
+# digblock-assets' shader-validation dev-dependency.
+naga = { version = "26", features = ["wgsl-in"] }
+
 [lints]
 workspace = true

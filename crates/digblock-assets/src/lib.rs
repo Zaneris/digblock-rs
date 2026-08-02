@@ -23,25 +23,39 @@ pub mod tex {
 }
 
 pub mod shader {
-	pub const CHUNK: &str = include_str!("../../../assets/shaders/chunk.wgsl");
-	// Sky and water share the procedural-sky core (gradient, glow,
-	// stars) by prepending sky_common.wgsl — WGSL has no include
-	// mechanism, and a shared prelude means the sky pass and water
-	// reflections can never silently drift apart. naga error line
-	// numbers in the body files are offset by the prelude length.
+	// WGSL has no include mechanism, so shared preludes are prepended
+	// with concat! at include time: frame_common.wgsl (the Frame uniform
+	// block + its group(0) binding, one definition for every pass that
+	// reads it) and sky_common.wgsl (the procedural-sky core — gradient,
+	// glow, stars — shared so the sky pass and water reflections can
+	// never silently drift apart). Prelude order is frame_common first,
+	// then sky_common, then the body file; naga error line numbers in
+	// the body files are offset by the total prelude length.
+	pub const CHUNK: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/chunk.wgsl"),
+	);
 	pub const WATER: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
 	);
 	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
 	pub const SKY: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/sky.wgsl"),
 	);
 	pub const OVERLAY: &str = include_str!("../../../assets/shaders/overlay.wgsl");
 	pub const BLIT: &str = include_str!("../../../assets/shaders/blit.wgsl");
-	pub const SPRAY: &str = include_str!("../../../assets/shaders/spray.wgsl");
-	pub const PLAYERS: &str = include_str!("../../../assets/shaders/players.wgsl");
+	pub const SPRAY: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/spray.wgsl"),
+	);
+	pub const PLAYERS: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/players.wgsl"),
+	);
 
 	pub const ALL: [(&str, &str); 8] = [
 		("chunk.wgsl", CHUNK),

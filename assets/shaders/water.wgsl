@@ -16,62 +16,27 @@
 // chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
 // UBO copy).
 
-// Must match FrameUniforms in renderer.rs and the Frame struct in
-// sky.wgsl — field order and packing are load-bearing.
-struct Frame {
-	view_proj: mat4x4f,
-	inv_view_proj: mat4x4f,
-	light_near: mat4x4f,
-	light_wide: mat4x4f,
-	// xyz = active caster dir (sun or moon), toward the ground
-	// w = shadow strength 0..1 (twilight fade)
-	light_dir: vec4f,
-	// rgb = direct light color (sun by day, moonlight by night)
-	// w = animation clock in seconds (wraps at 600; water scroll/foam)
-	light_color: vec4f,
-	// rgb = sky-tinted ambient floor
-	ambient: vec4f,
-	// rgb = fog color (sky horizon); w = fog start distance (units)
-	fog_color: vec4f,
-	// xyz = camera position; w = 1 / (fog_end − fog_start)
-	cam_pos: vec4f,
-	// xyz = direction toward the sun in the sky; w = star intensity
-	sun_dir: vec4f,
-	// xyz = direction toward the moon; w = sunset glow strength
-	moon_dir: vec4f,
-	// rgb = sky zenith color
-	zenith: vec4f,
-	// rgb = sky horizon color
-	horizon: vec4f,
-	// x = alpha (0.7 for water)
-	// y = shadows enabled (0.0 until the shadow passes exist)
-	// z = shadow map texel size (1.0 / resolution, both cascades)
-	// w = wide-cascade texel size in world units (normal-offset bias)
-	misc: vec4f,
-	// x = camera underwater (0/1), y = SSR enabled (0/1), z/w reserved
-	water_misc: vec4f,
-}
-
-@group(0) @binding(0) var<uniform> frame: Frame;
+// The Frame struct + group(0) binding(0) come from frame_common.wgsl
+// (prepended by digblock-assets, before sky_common). The water pipelines
+// extend group 0 with the scene targets: the pre-water solid depth copy
+// and the offscreen scene color — water column thickness, absorption,
+// soft shores, refraction, and the SSR march read these.
+@group(0) @binding(1) var scene_depth: texture_depth_2d;
+@group(0) @binding(2) var scene_tex: texture_2d<f32>;
+@group(0) @binding(3) var scene_smp: sampler;
 
 @group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var blocks_smp: sampler;
-@group(1) @binding(2) var shadow_near: texture_depth_2d;
-@group(1) @binding(3) var shadow_wide: texture_depth_2d;
-@group(1) @binding(4) var shadow_smp: sampler_comparison;
+
+@group(2) @binding(0) var shadow_near: texture_depth_2d;
+@group(2) @binding(1) var shadow_wide: texture_depth_2d;
+@group(2) @binding(2) var shadow_smp: sampler_comparison;
 
 struct ChunkU {
 	origin: vec4f,
 }
 
-@group(2) @binding(0) var<uniform> chunk: ChunkU;
-
-// Scene targets (renderer scene_bgl): the pre-water solid depth copy
-// and the offscreen scene color — water column thickness, absorption,
-// soft shores, refraction, and the SSR march read these.
-@group(3) @binding(0) var scene_depth: texture_depth_2d;
-@group(3) @binding(1) var scene_tex: texture_2d<f32>;
-@group(3) @binding(2) var scene_smp: sampler;
+@group(3) @binding(0) var<uniform> chunk: ChunkU;
 
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)

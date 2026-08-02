@@ -5,55 +5,21 @@
 // Shadows: 5-tap cross PCF on the near cascade, 1 hard tap on the wide
 // cascade, blended over the outer 15% of near coverage (no hard seam).
 
-// Must match FrameUniforms in renderer.rs and the Frame struct in
-// sky.wgsl — field order and packing are load-bearing.
-struct Frame {
-	view_proj: mat4x4f,
-	inv_view_proj: mat4x4f,
-	light_near: mat4x4f,
-	light_wide: mat4x4f,
-	// xyz = active caster dir (sun or moon), toward the ground
-	// w = shadow strength 0..1 (twilight fade)
-	light_dir: vec4f,
-	// rgb = direct light color (sun by day, moonlight by night)
-	// w = animation clock in seconds (wraps at 600; water scroll/foam)
-	light_color: vec4f,
-	// rgb = sky-tinted ambient floor
-	ambient: vec4f,
-	// rgb = fog color (sky horizon); w = fog start distance (units)
-	fog_color: vec4f,
-	// xyz = camera position; w = 1 / (fog_end − fog_start)
-	cam_pos: vec4f,
-	// xyz = direction toward the sun in the sky; w = star intensity
-	sun_dir: vec4f,
-	// xyz = direction toward the moon; w = sunset glow strength
-	moon_dir: vec4f,
-	// rgb = sky zenith color
-	zenith: vec4f,
-	// rgb = sky horizon color
-	horizon: vec4f,
-	// x = alpha (1.0 solid / 0.7 water)
-	// y = shadows enabled (0.0 until the shadow passes exist)
-	// z = shadow map texel size (1.0 / resolution, both cascades)
-	// w = wide-cascade texel size in world units (normal-offset bias)
-	misc: vec4f,
-	// x = camera underwater, y = SSR enabled (unused here)
-	water_misc: vec4f,
-}
-
-@group(0) @binding(0) var<uniform> frame: Frame;
+// The Frame struct + group(0) binding come from frame_common.wgsl
+// (prepended by digblock-assets).
 
 @group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var blocks_smp: sampler;
-@group(1) @binding(2) var shadow_near: texture_depth_2d;
-@group(1) @binding(3) var shadow_wide: texture_depth_2d;
-@group(1) @binding(4) var shadow_smp: sampler_comparison;
+
+@group(2) @binding(0) var shadow_near: texture_depth_2d;
+@group(2) @binding(1) var shadow_wide: texture_depth_2d;
+@group(2) @binding(2) var shadow_smp: sampler_comparison;
 
 struct ChunkU {
 	origin: vec4f,
 }
 
-@group(2) @binding(0) var<uniform> chunk: ChunkU;
+@group(3) @binding(0) var<uniform> chunk: ChunkU;
 
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)

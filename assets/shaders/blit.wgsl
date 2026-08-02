@@ -5,10 +5,10 @@
 // compare Always with writes off so water then tests against the
 // preserved scene depth.
 
-// Must match scene_bgl in renderer.rs: binding 0 is the solid-depth
-// copy, 2 the linear sampler — both unused here (water's group 3
-// consumers), only the scene color is fetched.
-@group(0) @binding(1) var scene_tex: texture_2d<f32>;
+// Must match blit_bgl in renderer.rs: binding 0 is the scene color,
+// binding 1 the linear sampler (declared in the layout, unused here —
+// the composite is an exact textureLoad).
+@group(0) @binding(0) var scene_tex: texture_2d<f32>;
 
 struct VsOut {
 	@builtin(position) pos: vec4f,

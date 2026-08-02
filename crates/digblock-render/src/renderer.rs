@@ -31,8 +31,10 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Field order/layout must match the `Frame` struct in BOTH
-/// `chunk.wgsl` and `sky.wgsl` (naga can't check cross-file layout).
+/// Field order/layout must match the `Frame` struct in
+/// `frame_common.wgsl` (the shared prelude every pass gets). The match
+/// is CI-enforced: `tests::frame_layout_matches_wgsl` below runs naga's
+/// Layouter over the compiled shader and compares struct sizes.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrameUniforms {
@@ -66,8 +68,7 @@ pub struct FrameUniforms {
 	/// w = wide-cascade texel size in world units (normal-offset bias).
 	pub misc: [f32; 4],
 	/// x = camera underwater (0/1), y = SSR enabled (0/1), z/w reserved.
-	/// Appended last — mirror in the Frame structs of water.wgsl,
-	/// chunk.wgsl, and sky.wgsl (hand-synced, order load-bearing).
+	/// Appended last — mirror in frame_common.wgsl's Frame struct.
 	pub water_misc: [f32; 4],
 }
 
@@ -106,12 +107,15 @@ pub struct Renderer {
 	sky_pipeline: wgpu::RenderPipeline,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
-	/// Same layout, alpha 0.7 (Java u_Alpha for the transparent pass).
+	/// Water copy of the frame UBO, alpha 0.7 (Java u_Alpha for the
+	/// transparent pass); bound through `FrameTargets::water_bg`.
 	frame_water_buf: wgpu::Buffer,
-	frame_water_bg: wgpu::BindGroup,
-	/// One per wide map (binding 3 differs); `wide_front` picks the one
-	/// whose wide map is complete and safe to sample.
-	tex_bgs: [wgpu::BindGroup; 2],
+	/// Group 1: block texture array + sampler — one static bind group.
+	materials_bg: wgpu::BindGroup,
+	/// Group 2: shadow maps + comparison sampler, one per wide map
+	/// (binding 1 differs); `wide_front` picks the one whose wide map is
+	/// complete and safe to sample.
+	shadow_bgs: [wgpu::BindGroup; 2],
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
 	light_near_buf: wgpu::Buffer,
@@ -160,9 +164,11 @@ pub struct Renderer {
 	spray: crate::spray::Spray,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
-	/// Layout of `FrameTargets::scene_bg` (depth copy + scene color +
-	/// linear sampler): blit group 0, water group 3.
-	scene_bgl: wgpu::BindGroupLayout,
+	/// Layout of `FrameTargets::water_bg` (water frame UBO + depth copy
+	/// + scene color + linear sampler): the water pipelines' group 0.
+	water_frame_bgl: wgpu::BindGroupLayout,
+	/// Layout of `FrameTargets::blit_bg` (scene color + linear sampler).
+	blit_bgl: wgpu::BindGroupLayout,
 	linear_sampler: wgpu::Sampler,
 	/// Composites the offscreen scene into the swapchain at the start of
 	/// the water pass.
@@ -184,7 +190,10 @@ struct FrameTargets {
 	/// samples it (refraction/SSR) while blending into the swapchain.
 	/// (The view keeps the texture alive.)
 	scene_view: wgpu::TextureView,
-	scene_bg: wgpu::BindGroup,
+	/// Water group 0: the water frame UBO + scene targets.
+	water_bg: wgpu::BindGroup,
+	/// Blit group 0: scene color + linear sampler.
+	blit_bg: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -218,8 +227,10 @@ impl Renderer {
 			}],
 		});
 
-		let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("textures"),
+		// Group 1: block materials — texture array + sampler, one static
+		// bind group shared by the solid and water pipelines.
+		let materials_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("materials"),
 			entries: &[
 				wgpu::BindGroupLayoutEntry {
 					binding: 0,
@@ -237,28 +248,36 @@ impl Renderer {
 					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
 					count: None,
 				},
+			],
+		});
+
+		// Group 2: shadows — near map, wide map, comparison sampler. Two
+		// bind groups exist (one per wide map); the ping-pong picks one.
+		let shadows_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("shadows"),
+			entries: &[
+				wgpu::BindGroupLayoutEntry {
+					binding: 0,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Depth,
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 1,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Depth,
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
 				wgpu::BindGroupLayoutEntry {
 					binding: 2,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 3,
-					visibility: wgpu::ShaderStages::FRAGMENT,
-					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
-						view_dimension: wgpu::TextureViewDimension::D2,
-						multisampled: false,
-					},
-					count: None,
-				},
-				wgpu::BindGroupLayoutEntry {
-					binding: 4,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
 					count: None,
@@ -280,15 +299,27 @@ impl Renderer {
 			}],
 		});
 
-		// Scene-target bindings for the water pass: the pre-water solid
-		// depth copy (textureLoad, no sampler), the offscreen scene color,
-		// and a linear sampler (refraction/SSR offsets). The blit uses
-		// only binding 1; water declares this as group 3.
-		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("scene targets"),
+		// Water group 0: the frame UBO (water copy) plus the scene
+		// targets — the pre-water solid depth copy (textureLoad, no
+		// sampler), the offscreen scene color, and a linear sampler
+		// (refraction/SSR offsets). Folding the scene targets into
+		// group 0 keeps the water pipelines within the 4-bind-group
+		// default limit while freeing group 2 for the shadow split.
+		let water_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("water frame + scene targets"),
 			entries: &[
 				wgpu::BindGroupLayoutEntry {
 					binding: 0,
+					visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+					ty: wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Uniform,
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 1,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Texture {
 						sample_type: wgpu::TextureSampleType::Depth,
@@ -298,7 +329,7 @@ impl Renderer {
 					count: None,
 				},
 				wgpu::BindGroupLayoutEntry {
-					binding: 1,
+					binding: 2,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Texture {
 						sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -308,7 +339,32 @@ impl Renderer {
 					count: None,
 				},
 				wgpu::BindGroupLayoutEntry {
-					binding: 2,
+					binding: 3,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+					count: None,
+				},
+			],
+		});
+
+		// Blit group 0: scene color + linear sampler (the shader fetches
+		// with textureLoad; the sampler entry is there for a future
+		// filtered composite).
+		let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("blit"),
+			entries: &[
+				wgpu::BindGroupLayoutEntry {
+					binding: 0,
+					visibility: wgpu::ShaderStages::FRAGMENT,
+					ty: wgpu::BindingType::Texture {
+						sample_type: wgpu::TextureSampleType::Float { filterable: true },
+						view_dimension: wgpu::TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 1,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
 					count: None,
@@ -324,16 +380,17 @@ impl Renderer {
 			..Default::default()
 		});
 
+		// Shared group scheme: 0 = frame, 1 = materials, 2 = shadows,
+		// 3 = chunk origins (dynamic offset). Water swaps group 0 for
+		// its frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[&frame_bgl, &tex_bgl, &chunk_bgl],
+			bind_group_layouts: &[&frame_bgl, &materials_bgl, &shadows_bgl, &chunk_bgl],
 			push_constant_ranges: &[],
 		});
-		// Water pipelines carry a 4th group (the scene targets) so
-		// chunk.wgsl/sky.wgsl never have to declare bindings they don't use.
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[&frame_bgl, &tex_bgl, &chunk_bgl, &scene_bgl],
+			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, &shadows_bgl, &chunk_bgl],
 			push_constant_ranges: &[],
 		});
 
@@ -553,7 +610,7 @@ impl Renderer {
 		});
 		let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("blit"),
-			bind_group_layouts: &[&scene_bgl],
+			bind_group_layouts: &[&blit_bgl],
 			push_constant_ranges: &[],
 		});
 		let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -671,19 +728,13 @@ impl Renderer {
 				resource: frame_buf.as_entire_binding(),
 			}],
 		});
+		// Bound through FrameTargets::water_bg (the water group 0 also
+		// holds the resize-recreated scene targets).
 		let frame_water_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("frame ubo (water)"),
 			size: std::mem::size_of::<FrameUniforms>() as u64,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
-		});
-		let frame_water_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("frame (water)"),
-			layout: &frame_bgl,
-			entries: &[wgpu::BindGroupEntry {
-				binding: 0,
-				resource: frame_water_buf.as_entire_binding(),
-			}],
 		});
 
 		let chunk_slots = chunk_slots(draw_dist);
@@ -707,31 +758,37 @@ impl Renderer {
 		});
 
 		let textures = BlockTextures::new(gpu, shadow_size);
-		let tex_bgs = [0, 1].map(|i| {
+		let materials_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("materials"),
+			layout: &materials_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(&textures.array_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::Sampler(&textures.sampler),
+				},
+			],
+		});
+		let shadow_bgs = [0, 1].map(|i| {
 			device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some("textures"),
-				layout: &tex_bgl,
+				label: Some("shadows"),
+				layout: &shadows_bgl,
 				entries: &[
 					wgpu::BindGroupEntry {
 						binding: 0,
-						resource: wgpu::BindingResource::TextureView(&textures.array_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 1,
-						resource: wgpu::BindingResource::Sampler(&textures.sampler),
-					},
-					wgpu::BindGroupEntry {
-						binding: 2,
 						resource: wgpu::BindingResource::TextureView(&textures.shadow_near_view),
 					},
 					wgpu::BindGroupEntry {
-						binding: 3,
+						binding: 1,
 						resource: wgpu::BindingResource::TextureView(
 							&textures.shadow_wide_views[i],
 						),
 					},
 					wgpu::BindGroupEntry {
-						binding: 4,
+						binding: 2,
 						resource: wgpu::BindingResource::Sampler(&textures.shadow_sampler),
 					},
 				],
@@ -753,8 +810,8 @@ impl Renderer {
 			frame_buf,
 			frame_bg,
 			frame_water_buf,
-			frame_water_bg,
-			tex_bgs,
+			materials_bg,
+			shadow_bgs,
 			chunk_buf,
 			chunk_bg,
 			light_near_buf,
@@ -791,7 +848,8 @@ impl Renderer {
 				&frame_bgl,
 			),
 			targets: None,
-			scene_bgl,
+			water_frame_bgl,
+			blit_bgl,
 			linear_sampler,
 			blit_pipeline,
 			surface_format,
@@ -913,22 +971,43 @@ impl Renderer {
 			view_formats: &[],
 		});
 		let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
-		let scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("scene targets"),
-			layout: &self.scene_bgl,
+		// Both group-0 combos that depend on the resize-recreated
+		// textures are (re)built here: the water frame+scene group and
+		// the blit group.
+		let water_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("water frame + scene targets"),
+			layout: &self.water_frame_bgl,
 			entries: &[
 				wgpu::BindGroupEntry {
 					binding: 0,
+					resource: self.frame_water_buf.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
 					resource: wgpu::BindingResource::TextureView(
 						&depth_copy.create_view(&wgpu::TextureViewDescriptor::default()),
 					),
 				},
 				wgpu::BindGroupEntry {
-					binding: 1,
+					binding: 2,
 					resource: wgpu::BindingResource::TextureView(&scene_view),
 				},
 				wgpu::BindGroupEntry {
-					binding: 2,
+					binding: 3,
+					resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+				},
+			],
+		});
+		let blit_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("blit"),
+			layout: &self.blit_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(&scene_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
 					resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
 				},
 			],
@@ -939,7 +1018,8 @@ impl Renderer {
 			depth_view,
 			depth_copy,
 			scene_view,
-			scene_bg,
+			water_bg,
+			blit_bg,
 		});
 	}
 
@@ -1117,7 +1197,8 @@ impl Renderer {
 
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
-				pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
+				pass.set_bind_group(1, &self.materials_bg, &[]);
+				pass.set_bind_group(2, &self.shadow_bgs[wide_sample], &[]);
 				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 				for (pos, chunk) in &self.chunks {
 					if !in_frustum(pos) {
@@ -1126,7 +1207,7 @@ impl Renderer {
 					}
 					if let Some((buf, index_count)) = &chunk.solid {
 						pass.set_bind_group(
-							2,
+							3,
 							&self.chunk_bg,
 							&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
 						);
@@ -1199,13 +1280,13 @@ impl Renderer {
 				});
 
 				pass.set_pipeline(&self.blit_pipeline);
-				pass.set_bind_group(0, &targets.scene_bg, &[]);
+				pass.set_bind_group(0, &targets.blit_bg, &[]);
 				pass.draw(0..3, 0..1);
 				stats.draw_calls += 1;
 
-				pass.set_bind_group(0, &self.frame_water_bg, &[]);
-				pass.set_bind_group(1, &self.tex_bgs[wide_sample], &[]);
-				pass.set_bind_group(3, &targets.scene_bg, &[]);
+				pass.set_bind_group(0, &targets.water_bg, &[]);
+				pass.set_bind_group(1, &self.materials_bg, &[]);
+				pass.set_bind_group(2, &self.shadow_bgs[wide_sample], &[]);
 				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 				for pipeline in [&self.water_depth_pipeline, &self.water_pipeline] {
 					pass.set_pipeline(pipeline);
@@ -1215,7 +1296,7 @@ impl Renderer {
 						};
 						if let Some((buf, index_count)) = &chunk.water {
 							pass.set_bind_group(
-								2,
+								3,
 								&self.chunk_bg,
 								&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
 							);
@@ -1228,7 +1309,8 @@ impl Renderer {
 				}
 
 				// Spray billboards over the finished water (blends over
-				// sheet and pool alike). Water left frame_water_bg bound.
+				// sheet and pool alike). Water left its frame+scene group
+				// bound at 0; spray wants the plain frame group.
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				let spray_tris = self.spray.draw(&mut pass, spray_n);
 				stats.draw_calls += u32::from(spray_tris > 0);
@@ -1400,4 +1482,33 @@ fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
 			p
 		}
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	/// The WGSL `Frame` struct (frame_common.wgsl) and the Rust-side
+	/// `FrameUniforms` are hand-mirrored — field order and packing are
+	/// load-bearing. This turns that comment into CI enforcement: naga's
+	/// Layouter computes the shader-side uniform layout, and a size
+	/// mismatch (reordered/added/removed field, packing drift) fails the
+	/// test without needing a GPU.
+	#[test]
+	fn frame_layout_matches_wgsl() {
+		let module = naga::front::wgsl::parse_str(digblock_assets::shader::CHUNK)
+			.expect("chunk shader parses");
+		let mut layouter = naga::proc::Layouter::default();
+		layouter.update(module.to_ctx()).expect("layout");
+		let frame = module
+			.global_variables
+			.iter()
+			.find(|(_, v)| v.name.as_deref() == Some("frame"))
+			.expect("global `frame` exists")
+			.1;
+		let wgsl_size = layouter[frame.ty].size as usize;
+		assert_eq!(
+			wgsl_size,
+			std::mem::size_of::<super::FrameUniforms>(),
+			"frame_common.wgsl Frame layout diverged from renderer.rs FrameUniforms"
+		);
+	}
 }
