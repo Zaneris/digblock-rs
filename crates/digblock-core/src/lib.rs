@@ -4,6 +4,7 @@
 pub mod block;
 pub mod chunk;
 pub mod decoration;
+pub mod dir;
 pub mod fluid;
 pub mod mesher;
 pub mod metrics;

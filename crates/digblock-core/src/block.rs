@@ -6,7 +6,7 @@
 //! AIR=-1, WATER=0, DIRT=1, GRASS=2; shifted by +1 here so a chunk is a
 //! flat `[u8; 4096]` with AIR=0 as the natural default).
 
-use crate::mesher::Dir;
+use crate::dir::Dir;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
