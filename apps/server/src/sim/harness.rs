@@ -1,7 +1,7 @@
 //! Shared sim-test harness: an in-memory client over the `OutMsg`
 //! channel, and the flat synthetic world that makes tests instant.
 
-use super::{OutMsg, Sim, SimEvent};
+use super::{OutMsg, Sim, SimEvent, OUT_CAP};
 use crate::store::ColumnSource;
 use digblock_core::block::BlockType;
 use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
@@ -12,7 +12,7 @@ use digblock_net::protocol::PROTOCOL_VERSION;
 use glam::Vec3;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::mpsc::{channel, Receiver};
 
 pub(crate) const SEED: f64 = 42.0;
 
@@ -61,7 +61,7 @@ pub(crate) fn flat_sim(tag: &str) -> Sim {
 }
 
 pub(crate) struct TestClient {
-	pub(crate) rx: UnboundedReceiver<OutMsg>,
+	pub(crate) rx: Receiver<OutMsg>,
 	pub(crate) frames: FrameReader,
 	pub(crate) msgs: Vec<ServerMsg>,
 	pub(crate) snaps: Vec<Snapshot>,
@@ -89,7 +89,7 @@ impl TestClient {
 }
 
 pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
-	let (tx, rx) = unbounded_channel();
+	let (tx, rx) = channel(OUT_CAP);
 	sim.tick_once(vec![
 		SimEvent::Connected { conn_id, out: tx },
 		SimEvent::Msg {

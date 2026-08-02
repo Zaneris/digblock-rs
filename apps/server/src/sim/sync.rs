@@ -1,11 +1,11 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
-use super::{column_of, in_radius, send_frame, OutMsg, Sim};
+use super::{column_of, in_radius, send_frame, OutMsg, OutTx, Sim, DGRAM_STALL_SECS};
 use crate::journal::Journal;
 use digblock_net::codec;
 use digblock_net::messages::{BlockEdit, Datagram, NetPlayerState, ServerMsg, Snapshot};
 use digblock_net::protocol::TICK_RATE;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::error::TrySendError;
 
 /// Columns beyond `draw_dist + slack` fall out of a client's synced set,
 /// so re-entry re-syncs (clients evict remote chunks too).
@@ -39,18 +39,24 @@ impl Sim {
 				.synced_columns
 				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
 			for (cx, cz) in journal.index.edited_columns() {
+				if client.dead.get() {
+					break;
+				}
 				if in_radius((cx, cz), client.center, client.draw_dist)
 					&& !client.synced_columns.contains(&(cx, cz))
 				{
-					send_journal_column_to(journal, &client.out, cx, cz);
+					if !send_journal_column_to(journal, &client.out, cx, cz) {
+						client.dead.set(true);
+						break;
+					}
 					client.synced_columns.insert((cx, cz));
 				}
 			}
 		}
 	}
 
-	pub(super) fn send_journal_column(&self, out: &UnboundedSender<OutMsg>, cx: i32, cz: i32) {
-		send_journal_column_to(&self.journal, out, cx, cz);
+	pub(super) fn send_journal_column(&self, out: &OutTx, cx: i32, cz: i32) -> bool {
+		send_journal_column_to(&self.journal, out, cx, cz)
 	}
 
 	pub(super) fn send_snapshots(&mut self) {
@@ -78,9 +84,28 @@ impl Sim {
 				players: players.clone(),
 			};
 			match codec::encode_datagram(&Datagram::Snapshot(snap)) {
-				Ok(bytes) => {
-					let _ = client.out.send(OutMsg::Datagram(bytes));
-				}
+				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
+					Ok(()) => client.dgram_full_since.set(None),
+					Err(TrySendError::Full(_)) => {
+						// Lossy by contract: dropping snapshots is fine for
+						// a stall, but a queue full for seconds is a peer
+						// that stopped reading.
+						match client.dgram_full_since.get() {
+							None => client.dgram_full_since.set(Some(self.tick)),
+							Some(t0)
+								if self.tick.wrapping_sub(t0) > DGRAM_STALL_SECS * TICK_RATE =>
+							{
+								log::info!(
+									"player {}: datagram queue stalled {DGRAM_STALL_SECS}s — dropping",
+									client.id
+								);
+								client.dead.set(true);
+							}
+							Some(_) => {}
+						}
+					}
+					Err(TrySendError::Closed(_)) => client.dead.set(true),
+				},
 				Err(e) => {
 					// Losing snapshots is a game-breaking condition — never
 					// swallow it. Rate-limited to once a second.
@@ -101,13 +126,13 @@ impl Sim {
 	}
 }
 
-fn send_journal_column_to(journal: &Journal, out: &UnboundedSender<OutMsg>, cx: i32, cz: i32) {
+fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> bool {
 	let Some(cells) = journal.index.column(cx, cz) else {
-		return;
+		return true;
 	};
 	let cells = cells
 		.iter()
 		.map(|(&(x, y, z), &block)| BlockEdit { x, y, z, block })
 		.collect();
-	send_frame(out, &ServerMsg::JournalColumn { cx, cz, cells });
+	send_frame(out, &ServerMsg::JournalColumn { cx, cz, cells })
 }

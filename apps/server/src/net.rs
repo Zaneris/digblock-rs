@@ -2,21 +2,31 @@
 //! wire, and bridges to the sim thread. All game logic lives in sim.rs —
 //! this file only moves bytes.
 
-use crate::sim::{OutMsg, SimEvent};
+use crate::sim::{OutMsg, SimEvent, OUT_CAP};
 use crossbeam_channel::Sender;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION,
+	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE,
 };
 use std::time::Duration;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, RecvStream, ServerConfig};
 
 /// How long a fresh connection gets to produce its 8-byte preamble.
 const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Inbound throttling window. When a budget is exhausted the server stops
+/// reading (reliable) or drops without decoding (datagrams) until the
+/// window rolls; QUIC flow control backpressures the sender naturally.
+const THROTTLE_WINDOW: Duration = Duration::from_millis(100);
+/// Reliable frames decoded per window (edit floods can't amplify into
+/// unbounded SimEvents + rejection storms).
+const MSG_BUDGET: u32 = 32;
+/// Input datagrams decoded per window (2× the tick rate is generous).
+const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 
 /// Build the endpoint with a fresh self-signed certificate. The SHA-256
 /// hash is logged for browser `serverCertificateHashes` dev flows; the
@@ -105,7 +115,7 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 		return;
 	}
 
-	let (out_tx, mut out_rx) = unbounded_channel::<OutMsg>();
+	let (out_tx, mut out_rx) = channel::<OutMsg>(OUT_CAP);
 	if events
 		.send(SimEvent::Connected {
 			conn_id,
@@ -118,7 +128,30 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 
 	let mut frames = FrameReader::default();
 	let mut buf = vec![0u8; 64 * 1024];
+	let mut window = tokio::time::Instant::now();
+	let mut msg_budget = MSG_BUDGET;
+	let mut dgram_budget = DGRAM_BUDGET;
 	loop {
+		// Drain frames already buffered (possibly left over from a window
+		// where the budget ran out).
+		while msg_budget > 0 {
+			match frames.next_frame() {
+				Ok(Some(frame)) => {
+					msg_budget -= 1;
+					match codec::decode::<ClientMsg>(&frame) {
+						Ok(msg) => {
+							let _ = events.send(SimEvent::Msg { conn_id, msg });
+						}
+						Err(e) => log::warn!("conn {conn_id}: bad frame: {e}"),
+					}
+				}
+				Ok(None) => break,
+				Err(e) => {
+					log::warn!("conn {conn_id}: stream corrupt: {e}");
+					return;
+				}
+			}
+		}
 		tokio::select! {
 			out = out_rx.recv() => match out {
 				Some(OutMsg::Datagram(bytes)) => {
@@ -134,8 +167,12 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 			},
 			dgram = conn.receive_datagram() => match dgram {
 				Ok(d) => {
-					if let Ok(Datagram::Input(batch)) = codec::decode_datagram(d.payload().as_ref()) {
-						let _ = events.send(SimEvent::Inputs { conn_id, batch });
+					// Past the budget: drop without decoding.
+					if dgram_budget > 0 {
+						dgram_budget -= 1;
+						if let Ok(Datagram::Input(batch)) = codec::decode_datagram(d.payload().as_ref()) {
+							let _ = events.send(SimEvent::Inputs { conn_id, batch });
+						}
 					}
 				}
 				Err(e) => {
@@ -143,26 +180,16 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 					break;
 				}
 			},
-			read = recv.read(&mut buf) => match read {
-				Ok(Some(n)) => {
-					frames.extend(&buf[..n]);
-					loop {
-						match frames.next_frame() {
-							Ok(Some(frame)) => match codec::decode::<ClientMsg>(&frame) {
-								Ok(msg) => {
-									let _ = events.send(SimEvent::Msg { conn_id, msg });
-								}
-								Err(e) => log::warn!("conn {conn_id}: bad frame: {e}"),
-							},
-							Ok(None) => break,
-							Err(e) => {
-								log::warn!("conn {conn_id}: stream corrupt: {e}");
-								return;
-							}
-						}
-					}
-				}
+			// Reliable reads pause while the frame budget is exhausted —
+			// QUIC flow control then backpressures the sender.
+			read = recv.read(&mut buf), if msg_budget > 0 => match read {
+				Ok(Some(n)) => frames.extend(&buf[..n]),
 				Ok(None) | Err(_) => break,
+			},
+			_ = tokio::time::sleep_until(window + THROTTLE_WINDOW) => {
+				window = tokio::time::Instant::now();
+				msg_budget = MSG_BUDGET;
+				dgram_budget = DGRAM_BUDGET;
 			},
 		}
 	}

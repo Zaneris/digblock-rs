@@ -22,7 +22,7 @@ use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
 use digblock_core::player::{self, Player, PlayerIntent};
 use digblock_net::codec;
-use digblock_net::messages::{ClientMsg, InputBatch, InputTick, ServerMsg};
+use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
 	sanitize_name, PlayerId, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, SERVER_ID,
 	SNAPSHOT_DIVISOR,
@@ -30,26 +30,29 @@ use digblock_net::protocol::{
 use edits::PendingEditReq;
 use glam::Vec3;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
-use tokio::sync::mpsc::UnboundedSender;
+
+/// Outbound per-client queue. BOUNDED: a peer that stops draining is a
+/// dead peer, not an unbounded heap — `try_send` failure marks the client
+/// dead and the connection drops, instead of the sim buffering forever.
+pub type OutTx = tokio::sync::mpsc::Sender<OutMsg>;
+
+/// Outbound queue depth per client. Sized so a join sync of a large world
+/// fits (one frame per edited column) while a stalled reader still trips
+/// quickly.
+pub const OUT_CAP: usize = 512;
+
+/// A client whose datagram queue stays full this long is dead (reliable
+/// frames kill instantly; snapshots are lossy so brief stalls are fine).
+const DGRAM_STALL_SECS: u32 = 5;
 
 pub enum SimEvent {
-	Connected {
-		conn_id: u64,
-		out: UnboundedSender<OutMsg>,
-	},
-	Msg {
-		conn_id: u64,
-		msg: ClientMsg,
-	},
-	Inputs {
-		conn_id: u64,
-		batch: InputBatch,
-	},
-	Disconnected {
-		conn_id: u64,
-	},
+	Connected { conn_id: u64, out: OutTx },
+	Msg { conn_id: u64, msg: ClientMsg },
+	Inputs { conn_id: u64, batch: InputBatch },
+	Disconnected { conn_id: u64 },
 }
 
 #[derive(Debug)]
@@ -63,7 +66,13 @@ pub enum OutMsg {
 struct Client {
 	id: PlayerId,
 	name: String,
-	out: UnboundedSender<OutMsg>,
+	out: OutTx,
+	/// Set when the outbound queue rejects a reliable frame (or stays
+	/// full for datagrams) — reaped into `drop_client` next tick. `Cell`
+	/// so shared-borrow broadcast loops can flag it.
+	dead: Cell<bool>,
+	/// Tick the datagram queue first reported Full, cleared on success.
+	dgram_full_since: Cell<Option<u32>>,
 	player: Player,
 	look: Vec3,
 	last_intent: PlayerIntent,
@@ -88,7 +97,7 @@ pub struct Sim {
 	spawn: Vec3,
 	clients: FxHashMap<u64, Client>,
 	/// Connections that have not completed the Hello handshake.
-	lobby: FxHashMap<u64, UnboundedSender<OutMsg>>,
+	lobby: FxHashMap<u64, OutTx>,
 	edit_queue: Vec<PendingEditReq>,
 	residency_dirty: bool,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
@@ -155,6 +164,7 @@ impl Sim {
 
 	/// Run one 60 Hz tick with the events drained since the last one.
 	pub fn tick_once(&mut self, events: Vec<SimEvent>) {
+		self.reap_dead();
 		for ev in events {
 			self.handle_event(ev);
 		}
@@ -219,16 +229,29 @@ impl Sim {
 					cell,
 					normal,
 				} => {
-					if self.clients.contains_key(&conn_id) {
-						self.edit_queue.push(PendingEditReq {
-							conn_id,
-							seq,
-							origin: Vec3::from_array(origin),
-							dir: Vec3::from_array(dir),
-							kind,
-							cell: (cell[0], cell[1], cell[2]),
-							normal: (normal[0] as i32, normal[1] as i32, normal[2] as i32),
-						});
+					if let Some(client) = self.clients.get(&conn_id) {
+						// Bounded: a flood beyond every client's burst
+						// budget is rejected up front, not accumulated.
+						let cap = self.clients.len() * EDIT_BURST as usize + 64;
+						if self.edit_queue.len() >= cap {
+							client_send(
+								client,
+								&ServerMsg::EditRejected {
+									client_seq: seq,
+									reason: RejectReason::RateLimited,
+								},
+							);
+						} else {
+							self.edit_queue.push(PendingEditReq {
+								conn_id,
+								seq,
+								origin: Vec3::from_array(origin),
+								dir: Vec3::from_array(dir),
+								kind,
+								cell: (cell[0], cell[1], cell[2]),
+								normal: (normal[0] as i32, normal[1] as i32, normal[2] as i32),
+							});
+						}
 					}
 				}
 				ClientMsg::Bye => self.drop_client(conn_id),
@@ -250,46 +273,36 @@ impl Sim {
 		let Some(out) = self.lobby.remove(&conn_id) else {
 			return;
 		};
+		let refuse = |out: &OutTx, reason: String| {
+			send_frame(&out.clone(), &ServerMsg::Refused { reason });
+			let _ = out.try_send(OutMsg::Close);
+		};
 		// Redundant with the net-layer preamble gate, but the sim is also
 		// driven directly (tests, future transports) — keep it authoritative.
 		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol) {
-			send_frame(
+			refuse(
 				&out,
-				&ServerMsg::Refused {
-					reason: format!(
-						"protocol {protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"
-					),
-				},
+				format!("protocol {protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"),
 			);
-			let _ = out.send(OutMsg::Close);
 			return;
 		}
 		if sim_version != digblock_core::SIM_VERSION {
-			send_frame(
+			refuse(
 				&out,
-				&ServerMsg::Refused {
-					reason: format!(
-						"client sim {sim_version} (build {build}), server sim {} — update the older side",
-						digblock_core::SIM_VERSION
-					),
-				},
+				format!(
+					"client sim {sim_version} (build {build}), server sim {} — update the older side",
+					digblock_core::SIM_VERSION
+				),
 			);
-			let _ = out.send(OutMsg::Close);
 			return;
 		}
 		let Some(id) = self.free_id() else {
-			send_frame(
-				&out,
-				&ServerMsg::Refused {
-					reason: "server full".into(),
-				},
-			);
-			let _ = out.send(OutMsg::Close);
+			refuse(&out, "server full".into());
 			return;
 		};
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(2, 32);
-		send_frame(
+		let mut ok = send_frame(
 			&out,
 			&ServerMsg::Welcome {
 				protocol: PROTOCOL_VERSION,
@@ -310,18 +323,30 @@ impl Sim {
 		let center = column_of(self.spawn);
 		let mut synced = FxHashSet::default();
 		let columns: Vec<(i32, i32)> = self.journal.index.edited_columns().collect();
+		let mut synced_count = 0usize;
 		for (cx, cz) in columns {
-			if in_radius((cx, cz), center, draw_dist) {
-				self.send_journal_column(&out, cx, cz);
+			if ok && in_radius((cx, cz), center, draw_dist) {
+				ok &= self.send_journal_column(&out, cx, cz);
 				synced.insert((cx, cz));
+				synced_count += 1;
 			}
 		}
-		send_frame(
+		ok &= send_frame(
 			&out,
 			&ServerMsg::JournalDone {
 				through_seq: self.journal.index.next_seq,
 			},
 		);
+		if !ok {
+			// A joiner that can't even drain its join sync is not viable.
+			// OUT_CAP should comfortably fit any real world's column count
+			// (journal compaction keeps this rare) — log enough to tell.
+			log::warn!(
+				"conn {conn_id}: join sync overflowed the outbound queue \
+				 ({synced_count} columns, cap {OUT_CAP}) — dropping"
+			);
+			return;
+		}
 
 		// Roster for the joiner (who's already online), then the join
 		// announcement to everyone else — same message both directions.
@@ -333,8 +358,8 @@ impl Sim {
 					name: c.name.clone(),
 				},
 			);
-			send_frame(
-				&c.out,
+			client_send(
+				c,
 				&ServerMsg::PlayerJoined {
 					id,
 					name: name.clone(),
@@ -348,6 +373,8 @@ impl Sim {
 				id,
 				name,
 				out,
+				dead: Cell::new(false),
+				dgram_full_since: Cell::new(None),
 				player: Player::new(self.spawn),
 				look: Vec3::Z,
 				last_intent: PlayerIntent::default(),
@@ -364,11 +391,26 @@ impl Sim {
 		self.residency_dirty = true;
 	}
 
+	/// Clients flagged dead by a refused queue push get a real disconnect.
+	fn reap_dead(&mut self) {
+		let dead: Vec<u64> = self
+			.clients
+			.iter()
+			.filter(|(_, c)| c.dead.get())
+			.map(|(&id, _)| id)
+			.collect();
+		for conn_id in dead {
+			// Dropping the Client drops the last Sender: the net layer's
+			// recv ends and the connection closes.
+			self.drop_client(conn_id);
+		}
+	}
+
 	fn drop_client(&mut self, conn_id: u64) {
 		if let Some(client) = self.clients.remove(&conn_id) {
 			log::info!("player {} ({}) left", client.id, client.name);
 			for c in self.clients.values() {
-				send_frame(&c.out, &ServerMsg::PlayerLeft { id: client.id });
+				client_send(c, &ServerMsg::PlayerLeft { id: client.id });
 			}
 			self.residency_dirty = true;
 		}
@@ -400,25 +442,47 @@ fn in_radius(col: (i32, i32), center: (i32, i32), r: i32) -> bool {
 	dx * dx + dz * dz <= r * r
 }
 
-fn send_frame(out: &UnboundedSender<OutMsg>, msg: &ServerMsg) {
+/// Encode + queue one reliable frame. `false` = the bounded queue refused
+/// (full or closed): the peer is not draining and must be dropped.
+fn send_frame(out: &OutTx, msg: &ServerMsg) -> bool {
 	let mut buf = Vec::new();
-	if codec::write_frame(msg, &mut buf).is_ok() {
-		let _ = out.send(OutMsg::Frame(buf));
+	match codec::write_frame(msg, &mut buf) {
+		Ok(()) => out.try_send(OutMsg::Frame(buf)).is_ok(),
+		Err(e) => {
+			// Encode failure is a server bug, not a peer problem.
+			log::error!("frame encode: {e}");
+			true
+		}
+	}
+}
+
+/// Reliable send to a joined client; queue refusal marks it dead (reaped
+/// into `drop_client` at the next tick).
+fn client_send(client: &Client, msg: &ServerMsg) {
+	if !client.dead.get() && !send_frame(&client.out, msg) {
+		log::info!(
+			"player {} ({}): outbound queue refused a frame — dropping",
+			client.id,
+			client.name
+		);
+		client.dead.set(true);
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::harness::*;
-	use super::{ClientMsg, OutMsg, ServerMsg, SimEvent, MIN_PROTOCOL, PROTOCOL_VERSION};
+	use super::{
+		ClientMsg, OutMsg, RejectReason, ServerMsg, SimEvent, MIN_PROTOCOL, PROTOCOL_VERSION,
+	};
 	use digblock_net::codec::FrameReader;
-	use tokio::sync::mpsc::unbounded_channel;
+	use tokio::sync::mpsc::channel;
 
 	#[test]
 	fn version_mismatch_refused_and_closed() {
 		let refused_with = |protocol: u16, sim_version: u16| -> (Vec<ServerMsg>, bool) {
 			let mut sim = flat_sim("refuse");
-			let (tx, rx) = unbounded_channel();
+			let (tx, rx) = channel(super::OUT_CAP);
 			sim.tick_once(vec![
 				SimEvent::Connected {
 					conn_id: 9,
@@ -476,9 +540,99 @@ mod tests {
 	}
 
 	#[test]
+	fn closed_outbound_queue_reaps_client_and_frees_id() {
+		let mut sim = flat_sim("reap");
+		let a = connect(&mut sim, 1); // id 0
+		let mut b = connect(&mut sim, 2); // id 1
+		drop(a); // client 1's receiver gone: next push fails Closed
+
+		// Any broadcast to 1 flags it dead; the next tick reaps it.
+		let _c = connect(&mut sim, 3); // join announcement hits client 1
+		sim.tick_once(vec![]);
+		assert_eq!(sim.player_count(), 2, "dead client reaped");
+		b.drain();
+		assert!(
+			b.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 0 })),
+			"others heard the forced leave: {:?}",
+			b.msgs
+		);
+
+		// Its id is reusable by a fresh join.
+		let mut d = connect(&mut sim, 4);
+		d.drain();
+		let welcome_id = d.msgs.iter().find_map(|m| match m {
+			ServerMsg::Welcome { player_id, .. } => Some(*player_id),
+			_ => None,
+		});
+		assert_eq!(welcome_id, Some(0), "freed id reused");
+	}
+
+	#[test]
+	fn stalled_datagram_queue_escalates_to_drop() {
+		let mut sim = flat_sim("stall");
+		let c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		// Never drain: snapshots fill the bounded queue, then the stall
+		// clock runs. OUT_CAP fills after ~3*OUT_CAP ticks of snapshots,
+		// then DGRAM_STALL_SECS of Full escalates to dead.
+		let enough = 3 * super::OUT_CAP as u32 + (super::DGRAM_STALL_SECS + 2) * 60;
+		for _ in 0..enough {
+			sim.tick_once(vec![]);
+			if sim.player_count() == 0 {
+				break;
+			}
+		}
+		assert_eq!(sim.player_count(), 0, "stalled reader dropped");
+		drop(c);
+	}
+
+	#[test]
+	fn edit_request_flood_is_bounded_and_rejected() {
+		let mut sim = flat_sim("flood");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let flood: Vec<SimEvent> = (0..1000)
+			.map(|seq| SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::EditRequest {
+					seq,
+					tick: 0,
+					origin: [0.0; 3],
+					dir: [0.0, -1.0, 0.0],
+					kind: digblock_net::messages::EditKind::Dig,
+					cell: [0, 0, 0],
+					normal: [0, 0, 0],
+				},
+			})
+			.collect();
+		sim.tick_once(flood);
+		assert!(
+			sim.edit_queue.is_empty(),
+			"queue fully drained after the tick"
+		);
+		c.drain();
+		let rejected = c
+			.msgs
+			.iter()
+			.filter(|m| {
+				matches!(
+					m,
+					ServerMsg::EditRejected {
+						reason: RejectReason::RateLimited,
+						..
+					}
+				)
+			})
+			.count();
+		assert!(rejected > 0, "flood produced rate-limit rejections");
+	}
+
+	#[test]
 	fn hostile_names_are_sanitized() {
 		let mut sim = flat_sim("names");
-		let (tx, _rx) = unbounded_channel();
+		let (tx, _rx) = channel(super::OUT_CAP);
 		let long_name = "x".repeat(1000) + "\n\u{7}";
 		sim.tick_once(vec![
 			SimEvent::Connected {

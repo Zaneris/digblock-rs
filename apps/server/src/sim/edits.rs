@@ -1,7 +1,7 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{cell_of, send_frame, Sim};
+use super::{cell_of, client_send, send_frame, Sim};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
@@ -55,6 +55,8 @@ impl Sim {
 				has_token,
 			)
 		};
+		// A refused push here just drops the reply; a stalled peer is
+		// caught (and killed) by the snapshot/broadcast paths within ticks.
 		let reject = |reason: RejectReason| {
 			send_frame(
 				&out,
@@ -165,7 +167,7 @@ impl Sim {
 		};
 		for c in self.clients.values() {
 			if c.synced_columns.contains(&col) || c.id == by {
-				send_frame(&c.out, &msg);
+				client_send(c, &msg);
 			}
 		}
 	}

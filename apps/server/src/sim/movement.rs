@@ -6,7 +6,7 @@ use digblock_core::block::BlockType;
 use digblock_core::player::{PlayerIntent, PlayerState, TICK};
 use digblock_net::messages::{InputBatch, InputTick};
 use digblock_net::protocol::{
-	DRIFT_ALPHA, DRIFT_TOLERANCE, JITTER_BUFFER_TICKS, MAX_SPEED, POS_TOLERANCE,
+	DRIFT_ALPHA, DRIFT_TOLERANCE, INPUT_REDUNDANCY, JITTER_BUFFER_TICKS, MAX_SPEED, POS_TOLERANCE,
 };
 use glam::Vec3;
 
@@ -17,6 +17,11 @@ const DISPLACEMENT_MARGIN: f32 = 0.05;
 
 impl Sim {
 	pub(super) fn handle_inputs(&mut self, conn_id: u64, batch: InputBatch) {
+		// An honest client never sends more than the redundancy window;
+		// oversized batches are garbage, not backlog.
+		if batch.inputs.len() > INPUT_REDUNDANCY * 4 {
+			return;
+		}
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
