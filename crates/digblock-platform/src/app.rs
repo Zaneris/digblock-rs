@@ -15,6 +15,7 @@ use winit::window::{Window, WindowId};
 
 use crate::clock::GameClock;
 use crate::input::{map_button, map_key, map_touch_phase, InputEvent};
+use crate::lifecycle::{Action, Event as LcEvent, Lifecycle};
 use crate::{Game, Gpu, RunOptions};
 
 struct Running {
@@ -42,6 +43,9 @@ enum AppState {
 
 struct App<G: Game> {
 	state: AppState,
+	/// The pure decision core (lifecycle.rs); `state` holds the resources
+	/// its Phase mirrors. All transitions route through `dispatch`.
+	lifecycle: Lifecycle,
 	game: G,
 	clock: GameClock,
 	options: RunOptions,
@@ -56,6 +60,7 @@ pub fn run(game: impl Game, options: RunOptions) {
 	event_loop.set_control_flow(ControlFlow::Wait);
 	let mut app = App {
 		state: AppState::Uninitialized,
+		lifecycle: Lifecycle::new(),
 		game,
 		clock: GameClock::new(),
 		options,
@@ -179,6 +184,72 @@ impl<G: Game> App<G> {
 		(gpu, surface, config)
 	}
 
+	/// Route an event through the decision core and execute its actions.
+	fn dispatch(&mut self, ev: LcEvent, el: &ActiveEventLoop) {
+		for action in self.lifecycle.on(ev) {
+			self.perform(action, el);
+		}
+	}
+
+	fn perform(&mut self, action: Action, el: &ActiveEventLoop) {
+		match action {
+			Action::InitAll => self.init_all(el),
+			Action::SuspendGame => self.enter_suspend(),
+			Action::RecreateSurface => {
+				if let AppState::Suspended(s) =
+					std::mem::replace(&mut self.state, AppState::Uninitialized)
+				{
+					self.resume_from(s, el);
+				}
+			}
+			Action::RebuildRenderer => {
+				if let AppState::Running(r) = &self.state {
+					log::info!("lifecycle: renderer rebuild (format {:?})", r.config.format);
+					self.game.rebuild_gpu_resources(&r.gpu, r.config.format);
+					self.lifecycle.note_rebuilt(r.config.format);
+				}
+			}
+			Action::ReinitDevice => {
+				// Wired by the device-loss recovery step; until the shell
+				// emits DeviceLost events this arm is unreachable.
+				log::error!("device re-init requested but not wired — exiting");
+				el.exit();
+			}
+			Action::ReconfigureSurface => {
+				if let AppState::Running(r) = &mut self.state {
+					log::warn!("surface lost/outdated — reconfiguring");
+					r.surface.configure(&r.gpu.device, &r.config);
+					r.window.request_redraw();
+				}
+			}
+			Action::RetryNextFrame => {
+				if let AppState::Running(r) = &self.state {
+					r.window.request_redraw();
+				}
+			}
+			Action::Exit => el.exit(),
+		}
+	}
+
+	fn init_all(&mut self, el: &ActiveEventLoop) {
+		log::info!("lifecycle: initial launch");
+		let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
+		let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
+		self.game
+			.init(&gpu, config.format, (config.width, config.height));
+		let format = config.format;
+		self.state = AppState::Running(Running {
+			gpu: Arc::new(gpu),
+			window,
+			surface,
+			config,
+		});
+		self.dispatch(LcEvent::SurfaceFormatPicked(format), el);
+		if let AppState::Running(r) = &self.state {
+			r.window.request_redraw();
+		}
+	}
+
 	fn enter_suspend(&mut self) {
 		match std::mem::replace(&mut self.state, AppState::Uninitialized) {
 			AppState::Running(r) => {
@@ -206,12 +277,16 @@ impl<G: Game> App<G> {
 		// Only notify about a possible size change while backgrounded.
 		self.game.resize(&s.gpu, (config.width, config.height));
 		self.game.on_resume();
+		let format = config.format;
 		self.state = AppState::Running(Running {
 			gpu: s.gpu,
 			window,
 			surface,
 			config,
 		});
+		// A resume can pick a different surface format (monitor/GPU swap
+		// while backgrounded); the decision core orders a rebuild then.
+		self.dispatch(LcEvent::SurfaceFormatPicked(format), el);
 		if let AppState::Running(r) = &self.state {
 			r.window.request_redraw();
 		}
@@ -237,19 +312,16 @@ impl<G: Game> App<G> {
 		let t_acquire = std::time::Instant::now();
 		let frame = match r.surface.get_current_texture() {
 			Ok(f) => f,
-			Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-				log::warn!("surface lost/outdated — reconfiguring");
-				r.surface.configure(&r.gpu.device, &r.config);
-				r.window.request_redraw();
-				return;
-			}
-			Err(wgpu::SurfaceError::Timeout) => {
-				r.window.request_redraw();
-				return;
-			}
 			Err(e) => {
-				log::error!("unrecoverable surface error: {e}");
-				el.exit();
+				let ev = match e {
+					wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => LcEvent::SurfaceLost,
+					wgpu::SurfaceError::Timeout => LcEvent::SurfaceTimeout,
+					other => {
+						log::error!("unrecoverable surface error: {other}");
+						LcEvent::SurfaceFatal
+					}
+				};
+				self.dispatch(ev, el);
 				return;
 			}
 		};
@@ -306,18 +378,12 @@ impl<G: Game> App<G> {
 		match self.frames_rendered {
 			20 => {
 				log::info!("auto-drill: suspend + immediate resume");
-				self.enter_suspend();
-				if let AppState::Suspended(s) =
-					std::mem::replace(&mut self.state, AppState::Uninitialized)
-				{
-					self.resume_from(s, el);
-				}
+				self.dispatch(LcEvent::ToggleDrillSuspend, el);
+				self.dispatch(LcEvent::ToggleDrillSuspend, el);
 			}
 			40 => {
-				if let AppState::Running(r) = &self.state {
-					log::info!("auto-drill: device-loss rebuild");
-					self.game.rebuild_gpu_resources(&r.gpu, r.config.format);
-				}
+				log::info!("auto-drill: device-loss rebuild");
+				self.dispatch(LcEvent::DrillDeviceRebuild, el);
 			}
 			60 => {
 				log::info!("auto-drill: complete, exiting");
@@ -355,34 +421,13 @@ impl<G: Game> App<G> {
 
 impl<G: Game> ApplicationHandler for App<G> {
 	fn resumed(&mut self, el: &ActiveEventLoop) {
-		match std::mem::replace(&mut self.state, AppState::Uninitialized) {
-			AppState::Uninitialized => {
-				log::info!("lifecycle: initial launch");
-				let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
-				let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
-				self.game
-					.init(&gpu, config.format, (config.width, config.height));
-				self.state = AppState::Running(Running {
-					gpu: Arc::new(gpu),
-					window,
-					surface,
-					config,
-				});
-				if let AppState::Running(r) = &self.state {
-					r.window.request_redraw();
-				}
-			}
-			AppState::Suspended(s) => self.resume_from(s, el),
-			running => {
-				// e.g. macOS fires Resumed once at startup after we already
-				// initialized; idempotent by design.
-				self.state = running;
-			}
-		}
+		// The decision core owns idempotence (macOS fires Resumed once at
+		// startup after init) and the deferred device-loss recovery.
+		self.dispatch(LcEvent::OsResumed, el);
 	}
 
-	fn suspended(&mut self, _el: &ActiveEventLoop) {
-		self.enter_suspend();
+	fn suspended(&mut self, el: &ActiveEventLoop) {
+		self.dispatch(LcEvent::OsSuspended, el);
 	}
 
 	fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -433,27 +478,12 @@ impl<G: Game> ApplicationHandler for App<G> {
 						self.screenshot_pending = true;
 					}
 					PhysicalKey::Code(KeyCode::F9) if pressed && cfg!(not(target_os = "ios")) => {
-						match self.state {
-							AppState::Running(_) => {
-								log::info!("F9 drill: simulating OS suspend");
-								self.enter_suspend();
-							}
-							AppState::Suspended(_) => {
-								log::info!("F9 drill: simulating OS resume");
-								if let AppState::Suspended(s) =
-									std::mem::replace(&mut self.state, AppState::Uninitialized)
-								{
-									self.resume_from(s, el);
-								}
-							}
-							AppState::Uninitialized => {}
-						}
+						log::info!("F9 drill: toggling suspend/resume");
+						self.dispatch(LcEvent::ToggleDrillSuspend, el);
 					}
 					PhysicalKey::Code(KeyCode::F10) if pressed && cfg!(not(target_os = "ios")) => {
-						if let AppState::Running(r) = &self.state {
-							log::info!("F10 drill: simulating device loss (renderer rebuild)");
-							self.game.rebuild_gpu_resources(&r.gpu, r.config.format);
-						}
+						log::info!("F10 drill: simulating device loss (renderer rebuild)");
+						self.dispatch(LcEvent::DrillDeviceRebuild, el);
 					}
 					PhysicalKey::Code(KeyCode::Escape) if pressed => {
 						if self.cursor_grabbed {

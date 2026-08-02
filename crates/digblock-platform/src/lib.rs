@@ -9,6 +9,7 @@
 mod app;
 mod clock;
 pub mod input;
+pub mod lifecycle;
 mod screenshot;
 
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};
