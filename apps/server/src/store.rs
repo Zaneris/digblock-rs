@@ -26,6 +26,14 @@ pub type ColumnSource = Arc<dyn Fn(i32, i32) -> Vec<Arc<ChunkData>> + Send + Syn
 
 type ColumnResult = (i32, i32, Vec<Arc<ChunkData>>);
 
+/// One column that just finished generating (with journal overlay).
+pub struct ReadyColumn {
+	pub cx: i32,
+	pub cz: i32,
+	/// Journal-overlaid cells that came back as water.
+	pub overlaid_water: Vec<(i32, i32, i32)>,
+}
+
 pub struct ChunkStore {
 	seed: f64,
 	columns: FxHashMap<(i32, i32), Vec<Arc<ChunkData>>>,
@@ -107,21 +115,31 @@ impl ChunkStore {
 	}
 
 	/// Drain generated columns, overlaying journal edits as they arrive.
-	/// Returns how many columns became ready.
-	pub fn drain(&mut self, journal: &JournalIndex) -> u32 {
-		let mut ready = 0;
+	/// Returns the columns that became ready, with the water cells their
+	/// overlay restored — the sim re-schedules those so a region evicted
+	/// mid-flow resumes instead of staying frozen forever.
+	pub fn drain(&mut self, journal: &JournalIndex) -> Vec<ReadyColumn> {
+		let mut ready = Vec::new();
 		while let Ok((cx, cz, mut stack)) = self.result_rx.try_recv() {
 			// Evicted (or never re-requested) while in flight: drop.
 			if !self.pending.remove(&(cx, cz)) {
 				continue;
 			}
+			let mut overlaid_water = Vec::new();
 			if let Some(cells) = journal.column(cx, cz) {
 				for (&(x, y, z), &block) in cells {
 					overlay(&mut stack, x, y, z, block);
+					if BlockType::from_u8(block).is_water() {
+						overlaid_water.push((x, y, z));
+					}
 				}
 			}
 			self.columns.insert((cx, cz), stack);
-			ready += 1;
+			ready.push(ReadyColumn {
+				cx,
+				cz,
+				overlaid_water,
+			});
 		}
 		ready
 	}
@@ -191,11 +209,12 @@ fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u8) {
 	);
 }
 
-/// `FluidWorld` over the store that records every landed write, so fluid
-/// steps become journal appends + broadcasts.
+/// `FluidWorld` over the store that records every landed write (with the
+/// block it replaced), so fluid steps become journal appends + broadcasts
+/// carrying an honest `prev`.
 pub struct StoreWorld<'a> {
 	pub store: &'a mut ChunkStore,
-	pub edits: &'a mut Vec<BlockEdit>,
+	pub edits: &'a mut Vec<(BlockEdit, u8)>,
 }
 
 impl FluidWorld for StoreWorld<'_> {
@@ -204,13 +223,16 @@ impl FluidWorld for StoreWorld<'_> {
 	}
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
-		if self.store.set_block(x, y, z, b).is_some() {
-			self.edits.push(BlockEdit {
-				x,
-				y,
-				z,
-				block: b as u8,
-			});
+		if let Some(prev) = self.store.set_block(x, y, z, b) {
+			self.edits.push((
+				BlockEdit {
+					x,
+					y,
+					z,
+					block: b as u8,
+				},
+				prev as u8,
+			));
 			true
 		} else {
 			false
@@ -302,6 +324,7 @@ mod tests {
 			.rev()
 			.find(|&y| matches!(store.block_at(2, y, 2), Some(b) if b.props().collides))
 			.unwrap();
+		let prev_block = store.block_at(2, y, 2).unwrap();
 		let mut edits = Vec::new();
 		let mut world = StoreWorld {
 			store: &mut store,
@@ -313,6 +336,39 @@ mod tests {
 		// Unloaded column: does not land.
 		assert!(!world.set(5000, 100, 5000, BlockType::Water));
 		assert_eq!(edits.len(), 1);
-		assert_eq!(edits[0].block, BlockType::Water as u8);
+		assert_eq!(edits[0].0.block, BlockType::Water as u8);
+		assert_eq!(edits[0].1, prev_block as u8, "real prev recorded");
+	}
+
+	#[test]
+	fn drain_reports_overlaid_water_cells() {
+		let mut journal = JournalIndex::default();
+		// One water cell and one solid cell journaled into column (0,0).
+		journal.record(BlockEdit {
+			x: 3,
+			y: 140,
+			z: 3,
+			block: BlockType::Water as u8,
+		});
+		journal.record(BlockEdit {
+			x: 4,
+			y: 140,
+			z: 4,
+			block: BlockType::Stone as u8,
+		});
+		let mut store = ChunkStore::new(42.0, 2);
+		store.set_residency(&[(0, 0)], 1);
+		let deadline = Instant::now() + Duration::from_secs(30);
+		let mut water = Vec::new();
+		while store.resident() < 5 {
+			for rc in store.drain(&journal) {
+				if (rc.cx, rc.cz) == (0, 0) {
+					water = rc.overlaid_water.clone();
+				}
+			}
+			assert!(Instant::now() < deadline, "timed out generating");
+			std::thread::yield_now();
+		}
+		assert_eq!(water, vec![(3, 140, 3)], "water reported, solid not");
 	}
 }

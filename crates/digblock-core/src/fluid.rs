@@ -148,15 +148,18 @@ mod tests {
 	use rustc_hash::FxHashMap;
 
 	/// Flat stone floor at y = 0 inside |x|,|z| ≤ 24, air above up to
-	/// y = 24, overridable per cell; outside → None (unloaded).
+	/// y = 24, overridable per cell; outside → None (unloaded). `xmax`
+	/// shrinks the loaded region to model residency boundaries.
 	struct MapWorld {
 		cells: FxHashMap<(i32, i32, i32), BlockType>,
+		xmax: i32,
 	}
 
 	impl MapWorld {
 		fn new() -> Self {
 			Self {
 				cells: FxHashMap::default(),
+				xmax: 24,
 			}
 		}
 
@@ -174,7 +177,7 @@ mod tests {
 
 	impl FluidWorld for MapWorld {
 		fn get(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
-			if x.abs() > 24 || z.abs() > 24 || !(0..=24).contains(&y) {
+			if x.abs() > 24 || x > self.xmax || z.abs() > 24 || !(0..=24).contains(&y) {
 				return None;
 			}
 			Some(*self.cells.get(&(x, y, z)).unwrap_or(if y == 0 {
@@ -289,6 +292,42 @@ mod tests {
 		sim.schedule_around(0, 1, 0);
 		assert!(sim.step(&mut w, 3) <= 3);
 		assert!(sim.pending() > 0, "remaining work stays queued");
+	}
+
+	/// The load-boundary contract: a front stalls where the world ends
+	/// (unloaded cells drop), and rescheduling the surviving water — what
+	/// the server does when the region loads — resumes it to exactly the
+	/// state an always-loaded run reaches.
+	#[test]
+	fn stalled_front_resumes_on_load_and_matches_reference() {
+		let reference = {
+			let mut w = MapWorld::new();
+			let mut sim = FluidSim::new();
+			w.set(0, 1, 0, BlockType::Water);
+			sim.schedule_around(0, 1, 0);
+			settle(&mut sim, &mut w);
+			w.water_cells()
+		};
+
+		// World ends at x = 1: the +x half of the pool cannot form.
+		let mut w = MapWorld::new();
+		w.xmax = 1;
+		let mut sim = FluidSim::new();
+		w.set(0, 1, 0, BlockType::Water);
+		sim.schedule_around(0, 1, 0);
+		settle(&mut sim, &mut w);
+		assert!(
+			w.water_cells().len() < reference.len(),
+			"front stalled at the boundary"
+		);
+
+		// The region loads; the sim hook reschedules surviving water.
+		w.xmax = 24;
+		for ((x, y, z), _) in w.water_cells() {
+			sim.schedule_around(x, y, z);
+		}
+		settle(&mut sim, &mut w);
+		assert_eq!(w.water_cells(), reference, "front completed identically");
 	}
 
 	#[test]

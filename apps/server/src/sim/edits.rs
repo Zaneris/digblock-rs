@@ -198,8 +198,7 @@ impl Sim {
 				edits: &mut edits,
 			};
 			self.fluid.step(&mut world, FLOW_BUDGET);
-			for edit in edits {
-				let prev = 0; // recorded value is what fluid overwrote; not tracked
+			for (edit, prev) in edits {
 				let (seq, new_column) = self.journal.append(edit, SERVER_ID);
 				if new_column {
 					self.enroll_new_column(edit);

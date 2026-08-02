@@ -104,6 +104,10 @@ pub struct Sim {
 	lobby: FxHashMap<u64, OutTx>,
 	edit_queue: Vec<PendingEditReq>,
 	residency_dirty: bool,
+	/// (newly-ready column, resident neighbor) pairs awaiting a budgeted
+	/// journal-water rescan, so fluid fronts stalled at a load boundary
+	/// resume when the far side arrives.
+	face_scans: std::collections::VecDeque<((i32, i32), (i32, i32))>,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
 	last_oversize_log: Option<u32>,
 }
@@ -154,6 +158,7 @@ impl Sim {
 			lobby: FxHashMap::default(),
 			edit_queue: Vec::new(),
 			residency_dirty: true,
+			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
 		})
 	}

@@ -11,6 +11,13 @@ use tokio::sync::mpsc::error::TrySendError;
 /// so re-entry re-syncs (clients evict remote chunks too).
 const SYNC_SLACK: i32 = 2;
 
+/// Neighbor journal-water rescans processed per tick (each is O(that
+/// column's journaled cells)) — an initial radius-6 load can't hitch the
+/// sim thread.
+const FACE_SCANS_PER_TICK: usize = 4;
+/// Backstop on the rescan queue under eviction churn.
+const FACE_SCAN_QUEUE_CAP: usize = 4096;
+
 impl Sim {
 	pub(super) fn update_residency(&mut self) {
 		for client in self.clients.values_mut() {
@@ -26,7 +33,43 @@ impl Sim {
 			self.store.set_residency(&centers, self.sim_radius);
 			self.residency_dirty = false;
 		}
-		self.store.drain(&self.journal.index);
+		let ready = self.store.drain(&self.journal.index);
+		for rc in &ready {
+			// A region evicted mid-flow comes back with its journaled
+			// water re-overlaid but its work queue long gone: reschedule
+			// every restored water cell so the relaxation resumes (frozen
+			// mid-air falls drain, half-spread pools finish).
+			for &(x, y, z) in &rc.overlaid_water {
+				self.fluid.schedule_around(x, y, z);
+			}
+			// And queue budgeted rescans of resident neighbors' journaled
+			// water: a front that stalled at this column's boundary while
+			// it was unloaded lives on the OTHER side of the face.
+			for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+				if self.face_scans.len() < FACE_SCAN_QUEUE_CAP {
+					self.face_scans
+						.push_back(((rc.cx, rc.cz), (rc.cx + dx, rc.cz + dz)));
+				}
+			}
+		}
+		for _ in 0..FACE_SCANS_PER_TICK {
+			let Some((col, neighbor)) = self.face_scans.pop_front() else {
+				break;
+			};
+			// Either side may have been evicted since this was queued.
+			if !self.store.column_ready(col.0, col.1)
+				|| !self.store.column_ready(neighbor.0, neighbor.1)
+			{
+				continue;
+			}
+			if let Some(cells) = self.journal.index.column(neighbor.0, neighbor.1) {
+				for (&(x, y, z), &block) in cells {
+					if digblock_core::block::BlockType::from_u8(block).is_water() {
+						self.fluid.schedule_around(x, y, z);
+					}
+				}
+			}
+		}
 
 		// Late journal sync + liveness flips. The full edited-column scan
 		// is EVENT-DRIVEN: only when this client's center moved or it just
@@ -217,6 +260,107 @@ mod tests {
 			claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
 			claimed_vel: [0.0; 3],
 		}
+	}
+
+	/// A crash/evict left a WaterFall journaled mid-air with nothing
+	/// feeding it. Schedule-on-ready must drain it — before this fix it
+	/// stayed frozen in the sky forever.
+	#[test]
+	fn frozen_midair_water_drains_on_load() {
+		let dir = temp_dir("midair");
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			j.append(
+				digblock_net::messages::BlockEdit {
+					x: 8,
+					y: 200,
+					z: 8,
+					block: digblock_core::block::BlockType::WaterFall as u8,
+				},
+				0,
+			);
+			j.sync();
+		}
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut a = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let mut done = false;
+		for _ in 0..600 {
+			sim.tick_once(vec![]);
+			a.drain();
+			if sim.test_block_at(8, 200, 8) == Some(digblock_core::block::BlockType::Air) {
+				done = true;
+				break;
+			}
+		}
+		assert!(done, "mid-air fall drained instead of freezing");
+	}
+
+	/// A journaled source at a residency boundary: its pool can only half
+	/// form. When the far column loads (player approaches), the neighbor
+	/// face rescan resumes the front into the fresh column.
+	#[test]
+	fn stalled_front_resumes_when_neighbor_column_loads() {
+		let dir = temp_dir("front");
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			// Column (1, 0) edge cell, resting on the flat ground.
+			j.append(
+				digblock_net::messages::BlockEdit {
+					x: 31,
+					y: 127,
+					z: 2,
+					block: digblock_core::block::BlockType::Water as u8,
+				},
+				0,
+			);
+			j.sync();
+		}
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut a = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		// Let the loaded-side pool settle; col (2,0) is beyond sim_radius 1
+		// of the spawn center, so the +x half cannot form yet.
+		for _ in 0..300 {
+			sim.tick_once(vec![]);
+			a.drain();
+		}
+		assert!(
+			sim.test_block_at(30, 127, 2).is_some_and(|b| b.is_water()),
+			"loaded-side pool formed"
+		);
+		assert_eq!(
+			sim.test_block_at(32, 127, 2),
+			None,
+			"far column unloaded, front stalled"
+		);
+
+		// Walk +x until the far column becomes resident, then let fluid run.
+		let walk_x = |tick: u32| InputTick {
+			tick,
+			move_axis: [0.0, 1.0],
+			jump: false,
+			look: [1.0, 0.0, 0.0],
+			claimed_pos: [0.0, -500.0, 0.0],
+			claimed_vel: [0.0; 3],
+		};
+		let mut t = 100;
+		while sim.test_player(1).unwrap().pos.x < 24.0 {
+			sim.tick_once(vec![batch(vec![walk_x(t)], 1)]);
+			a.drain();
+			t += 1;
+			assert!(t < 20_000, "never walked toward the boundary");
+		}
+		let mut resumed = false;
+		for _ in 0..1200 {
+			sim.tick_once(vec![]);
+			a.drain();
+			if sim.test_block_at(32, 127, 2).is_some_and(|b| b.is_water()) {
+				resumed = true;
+				break;
+			}
+		}
+		assert!(resumed, "front resumed into the freshly loaded column");
 	}
 
 	/// Trigger B: a column's first edit enrolls nearby clients at
