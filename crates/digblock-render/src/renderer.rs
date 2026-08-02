@@ -23,13 +23,22 @@ pub(crate) const CHUNK_STRIDE: u64 = 256;
 /// Chunk-origin UBO slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
 /// full stack of every in-range column (256B a slot — a few MB total).
-/// The upload-time assert stays as the tripwire.
+/// A starting estimate, not a ceiling: overflow grows the buffer
+/// (`grow_chunk_buf`), which is what a future runtime draw-distance
+/// change will lean on.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
 	(columns * digblock_core::chunk::WORLD_VCHUNK as u32)
 		.next_multiple_of(256)
 		.max(4096)
+}
+
+/// New capacity when `needed` exceeds the current slot count: round up
+/// to the 256-slot granularity, but never less than double (amortized
+/// growth — a handful of reallocations over a whole session).
+fn grown_slots(current: u32, needed: u32) -> u32 {
+	needed.next_multiple_of(256).max(current.saturating_mul(2))
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -48,6 +57,10 @@ pub struct RenderConfig {
 	pub spray_droplets: u32,
 	/// Per-frame wide-shadow-refresh encode cap (see WIDE_SLICE_DRAWS).
 	pub wide_slice_draws: u32,
+	/// Force the initial chunk-origin UBO capacity in slots
+	/// (`DIG_CHUNK_SLOTS` via the launcher). Tiny values exercise
+	/// `grow_chunk_buf` in a normal run. None = sized from `draw_dist`.
+	pub chunk_slots_override: Option<u32>,
 }
 
 /// Everything `Renderer::render` consumes for one frame, built by the
@@ -140,9 +153,8 @@ pub struct Renderer {
 	materials_bg: wgpu::BindGroup,
 	chunk_buf: wgpu::Buffer,
 	chunk_bg: wgpu::BindGroup,
-	/// Kept for chunk-UBO growth (the bind group must be rebuilt from
-	/// it when `chunk_buf` is replaced).
-	#[allow(dead_code)]
+	/// Retained so `grow_chunk_buf` can rebuild `chunk_bg` when
+	/// `chunk_buf` is replaced.
 	chunk_bgl: wgpu::BindGroupLayout,
 	index_buf: wgpu::Buffer,
 	// Kept alive alongside materials_bg (mip/sampler access for tooling).
@@ -456,7 +468,10 @@ impl Renderer {
 			mapped_at_creation: false,
 		});
 
-		let chunk_slots = chunk_slots(config.draw_dist);
+		let chunk_slots = config
+			.chunk_slots_override
+			.map(|n| n.max(1))
+			.unwrap_or_else(|| chunk_slots(config.draw_dist));
 		let chunk_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
 			size: u64::from(chunk_slots) * CHUNK_STRIDE,
@@ -536,6 +551,54 @@ impl Renderer {
 		self.gpu_timer.as_ref().and_then(|t| t.latest)
 	}
 
+	/// Replace `chunk_buf` with a larger one, repopulate every live
+	/// slot's origin in one batched write (origins are pure functions of
+	/// ChunkPos; `self.chunks` is the authoritative slot map), and
+	/// rebuild `chunk_bg` from the retained layout. Slot numbers are
+	/// untouched, so the shadow wide-refresh job (which snapshots
+	/// ChunkPos, not slots) and the water list are unaffected; every
+	/// pass takes `chunk_bg` fresh each frame.
+	fn grow_chunk_buf(&mut self, gpu: &Gpu, needed_slots: u32) {
+		let old = self.chunk_slots;
+		let new_slots = grown_slots(old, needed_slots);
+		let chunk_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("chunk origins"),
+			size: u64::from(new_slots) * CHUNK_STRIDE,
+			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		if self.next_slot > 0 {
+			// One batched repopulate covering every allocated slot; free
+			// slots stay zeroed — no draw ever binds them.
+			let mut staging = vec![0u8; self.next_slot as usize * CHUNK_STRIDE as usize];
+			for (pos, chunk) in &self.chunks {
+				let (ox, oy, oz) = pos.origin();
+				let off = chunk.slot as usize * CHUNK_STRIDE as usize;
+				staging[off..off + 16].copy_from_slice(bytemuck::cast_slice(&[ox, oy, oz, 0.0f32]));
+			}
+			gpu.queue.write_buffer(&chunk_buf, 0, &staging);
+		}
+		self.chunk_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("chunk"),
+			layout: &self.chunk_bgl,
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+					buffer: &chunk_buf,
+					offset: 0,
+					size: wgpu::BufferSize::new(16),
+				}),
+			}],
+		});
+		self.chunk_buf = chunk_buf;
+		self.chunk_slots = new_slots;
+		log::info!(
+			"chunk UBO grown: {old} -> {new_slots} slots ({} KiB), {} chunks repopulated",
+			u64::from(new_slots) * CHUNK_STRIDE / 1024,
+			self.chunks.len()
+		);
+	}
+
 	/// Upload (or replace) a chunk's mesh. Empty meshes remove the entry —
 	/// unlike the Java, a re-mesh to zero faces cannot leave a stale VBO.
 	pub fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, mesh: &MeshData) {
@@ -548,7 +611,13 @@ impl Renderer {
 			self.next_slot += 1;
 			s
 		});
-		assert!(slot < self.chunk_slots, "chunk UBO slots exhausted");
+		if slot >= self.chunk_slots {
+			self.grow_chunk_buf(gpu, slot + 1);
+		}
+		debug_assert!(
+			slot < self.chunk_slots,
+			"grow_chunk_buf left slot out of range"
+		);
 		let (ox, oy, oz) = pos.origin();
 		gpu.queue.write_buffer(
 			&self.chunk_buf,
@@ -999,5 +1068,17 @@ mod tests {
 			std::mem::size_of::<super::FrameUniforms>(),
 			"frame_common.wgsl Frame layout diverged from renderer.rs FrameUniforms"
 		);
+	}
+
+	#[test]
+	fn grown_slots_sizing() {
+		// Min ×2 dominates just past the boundary.
+		assert_eq!(super::grown_slots(4096, 4097), 8192);
+		// 256-granularity dominates for tiny forced capacities.
+		assert_eq!(super::grown_slots(8, 9), 256);
+		// A large jump lands on the next multiple of 256 past `needed`.
+		assert_eq!(super::grown_slots(8192, 20000), 20224);
+		// An exact multiple stays put when it already covers ×2.
+		assert_eq!(super::grown_slots(100, 512), 512);
 	}
 }

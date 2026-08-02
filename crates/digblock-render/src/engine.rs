@@ -53,6 +53,10 @@ pub struct EngineConfig {
 	/// Distance fog band as fractions of the far plane.
 	pub fog_start_frac: f32,
 	pub fog_end_frac: f32,
+	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
+	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
+	/// tiny values exercise the growth path in a normal run.
+	pub chunk_slots_override: Option<u32>,
 }
 
 impl EngineConfig {
@@ -76,6 +80,7 @@ impl EngineConfig {
 			stream_budget_ms: STREAM_BUDGET_MS,
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
+			chunk_slots_override: None,
 		}
 	}
 
@@ -99,6 +104,7 @@ impl EngineConfig {
 			stream_budget_ms: STREAM_BUDGET_MS,
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
+			chunk_slots_override: None,
 		}
 	}
 
@@ -110,6 +116,7 @@ impl EngineConfig {
 			draw_dist: self.draw_dist,
 			spray_droplets: self.spray_droplets,
 			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
+			chunk_slots_override: self.chunk_slots_override,
 		}
 	}
 }

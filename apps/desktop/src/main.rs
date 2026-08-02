@@ -111,7 +111,12 @@ fn main() {
 	// (std::env is a stub on the wasm target).
 	config.player_name = std::env::var("USER").ok();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
-	//__DIG_CHUNK_SLOTS_PLACEHOLDER__
+	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
+		v.parse::<u32>().ok().filter(|&n| n > 0).unwrap_or_else(|| {
+			eprintln!("bad value for DIG_CHUNK_SLOTS: {v}");
+			std::process::exit(2);
+		})
+	});
 
 	let mut engine = Engine::new(config);
 	if let Some(url) = connect {
