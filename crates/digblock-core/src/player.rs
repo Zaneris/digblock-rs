@@ -431,3 +431,64 @@ mod tests {
 		assert!(p.pos.y < TEST_SPAWN.y - 10.0, "fell through unloaded world");
 	}
 }
+
+#[cfg(test)]
+mod golden {
+	use super::*;
+
+	/// Pins `Player::tick` behavior to the bit. If this fails, physics
+	/// changed: update the expected values AND bump `crate::SIM_VERSION` —
+	/// client prediction and server adoption replay this exact code, so a
+	/// behavior change without a version bump desyncs every session.
+	#[test]
+	fn golden_trajectory_pins_sim_version() {
+		let flat = |_x: i32, y: i32, _z: i32| {
+			Some(if y < 10 {
+				crate::block::BlockType::Stone
+			} else {
+				crate::block::BlockType::Air
+			})
+		};
+		let mut p = Player::new(Vec3::new(0.5, 12.5, 0.5));
+		let diag = Vec3::new(1.0, 0.0, 1.0).normalize();
+		for t in 0..180u32 {
+			let (intent, dir) = match t {
+				0..=59 => (
+					PlayerIntent {
+						move_axis: Vec2::new(0.0, 1.0),
+						jump: false,
+					},
+					Vec3::Z,
+				),
+				60 => (
+					PlayerIntent {
+						move_axis: Vec2::new(0.0, 1.0),
+						jump: true,
+					},
+					diag,
+				),
+				61..=119 => (
+					PlayerIntent {
+						move_axis: Vec2::new(1.0, 1.0),
+						jump: false,
+					},
+					diag,
+				),
+				_ => (
+					PlayerIntent {
+						move_axis: Vec2::new(0.0, 1.0),
+						jump: false,
+					},
+					Vec3::NEG_X,
+				),
+			};
+			p.tick(TICK, dir, intent, &flat);
+		}
+		let s = p.state();
+		assert_eq!(
+			(s.pos.to_array(), s.vel.to_array()),
+			([-2.3094306f32, 11.5, 5.529869], [-4.0f32, 0.0, 0.0]),
+			"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
+		);
+	}
+}

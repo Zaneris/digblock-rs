@@ -112,7 +112,7 @@ fn run_bot(index: u32, url: &str, duration_secs: f32, edit_rate: f32) -> BotResu
 	while Instant::now() < deadline {
 		client.remotes.advance(tick.as_secs_f32());
 		events.clear();
-		client.poll(&mut events);
+		client.poll(&mut events, tick.as_secs_f32());
 		for ev in &events {
 			match ev {
 				NetEvent::Welcome { seed: s, spawn, .. } => {

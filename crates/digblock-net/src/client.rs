@@ -6,7 +6,10 @@ use crate::codec::{self, FrameReader};
 use crate::edits::{PendingEdit, PendingEdits};
 use crate::messages::{ClientMsg, Datagram, EditKind, ServerMsg};
 use crate::predict::Predictor;
-use crate::protocol::{PlayerId, CLIENT_TICK_LEAD, PROTOCOL_VERSION};
+use crate::protocol::{
+	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
+	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION,
+};
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
 use digblock_core::block::BlockType;
@@ -67,10 +70,22 @@ pub struct NetClient {
 	frames: FrameReader,
 	config: NetClientConfig,
 	scratch: Vec<TransportEvent>,
+	/// Server preamble bytes collected so far (the first PREAMBLE_LEN
+	/// reliable bytes are the preamble, not frame data).
+	pre_buf: Vec<u8>,
+	server_protocol: Option<u16>,
+	session_token: Option<[u8; 16]>,
+	/// Time spent in `Connecting` / connected-but-no-Welcome, for the
+	/// handshake deadlines (sans-IO: time arrives via `poll(dt)`).
+	connect_elapsed: f32,
+	handshake_elapsed: f32,
+	/// Refused or timed out: stop emitting further failures.
+	failed: bool,
 }
 
 impl NetClient {
-	pub fn new(transport: Box<dyn NetTransport>, config: NetClientConfig) -> Self {
+	pub fn new(transport: Box<dyn NetTransport>, mut config: NetClientConfig) -> Self {
+		config.name = sanitize_name(&config.name);
 		Self {
 			transport,
 			predictor: Predictor::new(0),
@@ -80,6 +95,12 @@ impl NetClient {
 			frames: FrameReader::default(),
 			config,
 			scratch: Vec::new(),
+			pre_buf: Vec::with_capacity(PREAMBLE_LEN),
+			server_protocol: None,
+			session_token: None,
+			connect_elapsed: 0.0,
+			handshake_elapsed: 0.0,
+			failed: false,
 		}
 	}
 
@@ -92,12 +113,19 @@ impl NetClient {
 		self.my_id
 	}
 
+	/// Token issued by the server in `Welcome`, for a future resume.
+	pub fn session_token(&self) -> Option<[u8; 16]> {
+		self.session_token
+	}
+
 	pub fn status(&self) -> ConnStatus {
 		self.transport.status()
 	}
 
-	/// Drain the transport and demux into engine-shaped events.
-	pub fn poll(&mut self, out: &mut Vec<NetEvent>) {
+	/// Drain the transport and demux into engine-shaped events. `dt` is
+	/// the frame delta; it drives the connect/handshake deadlines.
+	pub fn poll(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
+		self.check_deadlines(out, dt);
 		let mut scratch = std::mem::take(&mut self.scratch);
 		scratch.clear();
 		self.transport.poll(&mut scratch);
@@ -105,6 +133,9 @@ impl NetClient {
 			match ev {
 				TransportEvent::Connected => self.send_hello(),
 				TransportEvent::Reliable(bytes) => {
+					let Some(bytes) = self.consume_preamble(bytes, out) else {
+						continue;
+					};
 					self.frames.extend(&bytes);
 					loop {
 						match self.frames.next_frame() {
@@ -136,12 +167,81 @@ impl NetClient {
 		self.scratch = scratch;
 	}
 
+	fn check_deadlines(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
+		if self.failed || self.ready() {
+			return;
+		}
+		match self.transport.status() {
+			ConnStatus::Connecting => {
+				self.connect_elapsed += dt;
+				if self.connect_elapsed > CONNECT_TIMEOUT_SECS {
+					self.failed = true;
+					out.push(NetEvent::Disconnected {
+						reason: "connect timeout".into(),
+					});
+				}
+			}
+			ConnStatus::Connected => {
+				self.handshake_elapsed += dt;
+				if self.handshake_elapsed > HANDSHAKE_TIMEOUT_SECS {
+					self.failed = true;
+					out.push(NetEvent::Disconnected {
+						reason: "handshake timeout (incompatible server?)".into(),
+					});
+				}
+			}
+			ConnStatus::Closed => {}
+		}
+	}
+
+	/// The first PREAMBLE_LEN reliable bytes are the server's preamble.
+	/// Returns the remaining frame bytes once it has been consumed and
+	/// validated, or None while still collecting / after failure.
+	fn consume_preamble(&mut self, bytes: Vec<u8>, out: &mut Vec<NetEvent>) -> Option<Vec<u8>> {
+		if self.failed {
+			return None;
+		}
+		if self.server_protocol.is_some() {
+			return Some(bytes);
+		}
+		let need = PREAMBLE_LEN - self.pre_buf.len();
+		let take = need.min(bytes.len());
+		self.pre_buf.extend_from_slice(&bytes[..take]);
+		if self.pre_buf.len() < PREAMBLE_LEN {
+			return None;
+		}
+		let pre: [u8; PREAMBLE_LEN] = self.pre_buf[..].try_into().expect("preamble len");
+		let Some(version) = decode_preamble(&pre) else {
+			self.failed = true;
+			out.push(NetEvent::Disconnected {
+				reason: "not a DigBlock server (bad preamble)".into(),
+			});
+			return None;
+		};
+		self.server_protocol = Some(version);
+		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&version) {
+			// Newer servers may still Refuse us politely after this; going
+			// through Refused locally keeps one code path either way.
+			self.failed = true;
+			out.push(NetEvent::Refused {
+				reason: format!(
+					"server protocol {version}, client supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"
+				),
+			});
+			return None;
+		}
+		Some(bytes[take..].to_vec())
+	}
+
 	fn send_hello(&mut self) {
-		let mut buf = Vec::new();
+		let mut buf = encode_preamble(PROTOCOL_VERSION).to_vec();
 		let hello = ClientMsg::Hello {
 			protocol: PROTOCOL_VERSION,
 			name: self.config.name.clone(),
 			draw_dist: self.config.draw_dist,
+			token: [0; 16],
+			sim_version: digblock_core::SIM_VERSION,
+			build: env!("CARGO_PKG_VERSION").into(),
 		};
 		if codec::write_frame(&hello, &mut buf).is_ok() {
 			self.transport.send_reliable(&buf);
@@ -149,23 +249,37 @@ impl NetClient {
 	}
 
 	fn on_server_msg(&mut self, msg: ServerMsg, out: &mut Vec<NetEvent>) {
+		if self.failed {
+			return; // refused/timed out: nothing after that counts
+		}
 		match msg {
-			ServerMsg::Refused { reason } => out.push(NetEvent::Refused { reason }),
+			ServerMsg::Refused { reason } => {
+				self.failed = true;
+				out.push(NetEvent::Refused { reason });
+			}
 			ServerMsg::Welcome {
-				protocol,
+				protocol: _, // gated by the preamble before any decode
 				seed,
 				player_id,
 				spawn,
 				server_tick,
 				snapshot_divisor: _,
+				session_token,
+				sim_version,
+				build,
 			} => {
-				if protocol != PROTOCOL_VERSION {
+				if sim_version != digblock_core::SIM_VERSION {
+					self.failed = true;
 					out.push(NetEvent::Refused {
-						reason: format!("protocol {protocol} != {PROTOCOL_VERSION}"),
+						reason: format!(
+							"server sim {sim_version} (build {build}), client sim {} — update the older side",
+							digblock_core::SIM_VERSION
+						),
 					});
 					return;
 				}
 				self.my_id = Some(player_id);
+				self.session_token = Some(session_token);
 				self.predictor = Predictor::new(server_tick + CLIENT_TICK_LEAD);
 				out.push(NetEvent::Welcome {
 					seed,

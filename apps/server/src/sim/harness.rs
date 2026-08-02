@@ -98,6 +98,9 @@ pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
 				protocol: PROTOCOL_VERSION,
 				name: format!("t{conn_id}"),
 				draw_dist: 4,
+				token: [0; 16],
+				sim_version: digblock_core::SIM_VERSION,
+				build: "test".into(),
 			},
 		},
 	]);

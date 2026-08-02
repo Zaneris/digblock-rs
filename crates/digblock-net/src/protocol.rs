@@ -10,7 +10,69 @@ pub type PlayerId = u8;
 /// Author id for server-originated edits (fluid simulation).
 pub const SERVER_ID: PlayerId = u8::MAX;
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
+/// Oldest protocol this build still speaks. The handshake refuses peers
+/// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
+/// `Welcome` are append-only across the supported range so a decoder for
+/// version N can read any peer ≥ N (postcard tolerates trailing bytes).
+pub const MIN_PROTOCOL: u16 = 2;
+
+// ---- handshake preamble ----------------------------------------------
+//
+// Both directions of the control stream start with this fixed 8-byte
+// preamble, sent before any length-prefixed postcard frame. FROZEN
+// FOREVER — never versioned, never extended — so any two builds can
+// always exchange versions and refuse each other cleanly instead of
+// hitting a postcard decode error on a differently-shaped Hello.
+
+/// Preamble bytes 0-3.
+pub const PREAMBLE_MAGIC: [u8; 4] = *b"DIGB";
+/// magic (4) + protocol u16 LE (2) + reserved zeros (2).
+pub const PREAMBLE_LEN: usize = 8;
+
+pub fn encode_preamble(protocol: u16) -> [u8; PREAMBLE_LEN] {
+	let v = protocol.to_le_bytes();
+	[
+		PREAMBLE_MAGIC[0],
+		PREAMBLE_MAGIC[1],
+		PREAMBLE_MAGIC[2],
+		PREAMBLE_MAGIC[3],
+		v[0],
+		v[1],
+		0,
+		0,
+	]
+}
+
+/// `None` = bad magic (not a DigBlock peer). Reserved bytes are ignored.
+pub fn decode_preamble(bytes: &[u8; PREAMBLE_LEN]) -> Option<u16> {
+	(bytes[..4] == PREAMBLE_MAGIC).then(|| u16::from_le_bytes([bytes[4], bytes[5]]))
+}
+
+/// Player-name cap, chars. Applied on both sides of the handshake.
+pub const MAX_NAME_LEN: usize = 24;
+
+/// Sanitize a player name: strip control characters, truncate to
+/// [`MAX_NAME_LEN`] chars, empty → "player".
+pub fn sanitize_name(name: &str) -> String {
+	let clean: String = name
+		.chars()
+		.filter(|c| !c.is_control())
+		.take(MAX_NAME_LEN)
+		.collect();
+	if clean.is_empty() {
+		"player".into()
+	} else {
+		clean
+	}
+}
+
+/// Give up on a transport stuck in `Connecting` after this long.
+pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
+/// Connected but neither `Welcome` nor `Refused` after this long →
+/// treat as dead (an old server that couldn't decode our Hello would
+/// otherwise leave the client in connecting-limbo forever).
+pub const HANDSHAKE_TIMEOUT_SECS: f32 = 5.0;
 
 /// Simulation rate. Fixed: `Player::tick` air control hardcodes /60.
 pub const TICK_RATE: u32 = 60;

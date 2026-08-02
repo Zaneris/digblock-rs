@@ -70,10 +70,21 @@ pub struct BlockEdit {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMsg {
+	/// Append-only across supported protocol versions from v2 on (the
+	/// version-first preamble tells the peer which shape to expect, and
+	/// postcard tolerates trailing bytes).
 	Hello {
 		protocol: u16,
 		name: String,
 		draw_dist: i32,
+		/// Session token from a previous `Welcome` for future
+		/// reconnect-with-state; all zeros = fresh join.
+		token: [u8; 16],
+		/// `digblock_core::SIM_VERSION` — behavior compatibility gate
+		/// (physics + worldgen). Exact match required.
+		sim_version: u16,
+		/// Informational build string (diagnostics only).
+		build: String,
 	},
 	EditRequest {
 		/// Per-connection sequence, echoed back for confirm/reject.
@@ -107,6 +118,7 @@ pub enum ServerMsg {
 	Refused {
 		reason: String,
 	},
+	/// Append-only across supported protocol versions from v2 on.
 	Welcome {
 		protocol: u16,
 		seed: f64,
@@ -114,6 +126,12 @@ pub enum ServerMsg {
 		spawn: [f32; 3],
 		server_tick: u32,
 		snapshot_divisor: u32,
+		/// Server-issued token the client presents on a future resume.
+		session_token: [u8; 16],
+		/// Server's `digblock_core::SIM_VERSION`.
+		sim_version: u16,
+		/// Informational build string (diagnostics only).
+		build: String,
 	},
 	/// Join/late sync: last-write-wins final cell states for one column.
 	JournalColumn {
@@ -157,9 +175,12 @@ mod tests {
 	fn round_trip_all_variants() {
 		let msgs = vec![
 			ClientMsg::Hello {
-				protocol: 1,
+				protocol: 2,
 				name: "ted".into(),
 				draw_dist: 16,
+				token: [7; 16],
+				sim_version: 1,
+				build: "0.1.0".into(),
 			},
 			ClientMsg::EditRequest {
 				seq: 7,
@@ -187,12 +208,15 @@ mod tests {
 				reason: "full".into(),
 			},
 			ServerMsg::Welcome {
-				protocol: 1,
+				protocol: 2,
 				seed: 42.125,
 				player_id: 3,
 				spawn: [0.5, 140.5, 0.5],
 				server_tick: 600,
 				snapshot_divisor: 3,
+				session_token: [9; 16],
+				sim_version: 1,
+				build: "0.1.0".into(),
 			},
 			ServerMsg::JournalColumn {
 				cx: -2,
@@ -277,6 +301,69 @@ mod tests {
 			// variant 4, seq 5, tick 300 (varint), by 2, client_seq 1,
 			// zigzag varints 10/130/-4, block 4, prev 2
 			vec![4, 5, 172, 2, 2, 1, 20, 132, 2, 7, 4, 2]
+		);
+	}
+
+	/// Golden bytes for the three messages protocol evolution actually
+	/// endangers: Hello, Welcome (the append-only handshake pair) and
+	/// Snapshot (the hot datagram). A failure means the wire encoding
+	/// moved — bump PROTOCOL_VERSION or restore append-only order.
+	#[test]
+	fn golden_handshake_and_snapshot_encoding() {
+		let hello = ClientMsg::Hello {
+			protocol: 2,
+			name: "ab".into(),
+			draw_dist: 4,
+			token: [1; 16],
+			sim_version: 1,
+			build: "b".into(),
+		};
+		assert_eq!(
+			postcard::to_stdvec(&hello).unwrap(),
+			// variant 0, protocol 2, name "ab", draw_dist zigzag 8,
+			// 16 raw token bytes, sim_version 1, build "b"
+			vec![0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98]
+		);
+
+		let welcome = ServerMsg::Welcome {
+			protocol: 2,
+			seed: 2.0,
+			player_id: 3,
+			spawn: [0.0, 0.0, 0.0],
+			server_tick: 9,
+			snapshot_divisor: 3,
+			session_token: [2; 16],
+			sim_version: 1,
+			build: "b".into(),
+		};
+		assert_eq!(
+			postcard::to_stdvec(&welcome).unwrap(),
+			// variant 1, protocol 2, seed 2.0 le f64, id 3, spawn zeros,
+			// tick 9, divisor 3, 16 raw token bytes, sim_version 1, "b"
+			vec![
+				1, 2, 0, 0, 0, 0, 0, 0, 0, 64, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 3, 2, 2,
+				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98
+			]
+		);
+
+		let snap = Datagram::Snapshot(Snapshot {
+			server_tick: 6,
+			your_last_input_tick: 5,
+			players: vec![NetPlayerState {
+				id: 1,
+				pos: [1.0, 0.0, 0.0],
+				vel: [0.0, 0.0, 0.0],
+				look: [0.0, 0.0, 1.0],
+			}],
+		});
+		assert_eq!(
+			postcard::to_stdvec(&snap).unwrap(),
+			// variant 1, tick 6, acked 5, 1 player: id 1, pos x 1.0 le f32,
+			// zeros, look z 1.0
+			vec![
+				1, 6, 5, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
+			]
 		);
 	}
 }

@@ -50,7 +50,7 @@ impl TestClient {
 
 	fn pump(&mut self) {
 		self.events.clear();
-		self.client.poll(&mut self.events);
+		self.client.poll(&mut self.events, 0.005);
 		for ev in self.events.drain(..) {
 			match ev {
 				NetEvent::Welcome { seed, spawn, .. } => {
@@ -198,6 +198,59 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	b.wait("live edit broadcast", |c| {
 		c.edits.get(&hit2.cell) == Some(&BlockType::Air)
 	});
+
+	running.store(false, Ordering::Relaxed);
+	let _ = sim_thread.join();
+	let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// A peer that opens the control stream but sends garbage instead of the
+/// preamble must be dropped cleanly — never parsed, never hung.
+#[test]
+fn garbage_preamble_is_dropped_not_hung() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let rt = tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.unwrap();
+	let _guard = rt.enter();
+	let endpoint = net::make_endpoint(0).expect("bind ephemeral udp");
+	let port = endpoint.local_addr().unwrap().port();
+	let data_dir = std::env::temp_dir().join(format!("dbe2e-garb-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&data_dir);
+	let sim = Sim::new(42.0, &data_dir, 2, 2).unwrap();
+	let (event_tx, event_rx) = unbounded();
+	let running = Arc::new(AtomicBool::new(true));
+	let sim_thread = {
+		let running = running.clone();
+		std::thread::spawn(move || run_sim_loop(sim, event_rx, running))
+	};
+	rt.spawn(net::serve(endpoint, event_tx));
+
+	// Raw wtransport client that speaks garbage on the control stream.
+	let closed = rt.block_on(async {
+		let config = wtransport::ClientConfig::builder()
+			.with_bind_default()
+			.with_no_cert_validation()
+			.build();
+		let conn = wtransport::Endpoint::client(config)
+			.unwrap()
+			.connect(format!("https://127.0.0.1:{port}"))
+			.await
+			.expect("connect");
+		let (mut send, mut recv) = conn.open_bi().await.unwrap().await.unwrap();
+		send.write_all(b"NOPE-not-a-preamble").await.unwrap();
+		// The server must drop us: the read side ends (None/err) instead
+		// of hanging forever on a half-open session.
+		let mut buf = [0u8; 64];
+		tokio::time::timeout(Duration::from_secs(10), async {
+			// Drain any bytes until the server drops the stream.
+			while let Ok(Some(_)) = recv.read(&mut buf).await {}
+		})
+		.await
+		.is_ok()
+	});
+	assert!(closed, "server hung instead of dropping a garbage preamble");
 
 	running.store(false, Ordering::Relaxed);
 	let _ = sim_thread.join();

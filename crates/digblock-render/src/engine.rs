@@ -332,7 +332,7 @@ impl Engine {
 		net.remotes.advance(dt);
 		let mut events = std::mem::take(&mut self.net_events);
 		events.clear();
-		net.poll(&mut events);
+		net.poll(&mut events, dt);
 		let mut drop_net = false;
 		for ev in events.drain(..) {
 			use digblock_net::NetEvent;

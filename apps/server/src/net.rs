@@ -5,12 +5,18 @@
 use crate::sim::{OutMsg, SimEvent};
 use crossbeam_channel::Sender;
 use digblock_net::codec::{self, FrameReader};
-use digblock_net::messages::{ClientMsg, Datagram};
+use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
+use digblock_net::protocol::{
+	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION,
+};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
-use wtransport::{Connection, Endpoint, Identity, ServerConfig};
+use wtransport::{Connection, Endpoint, Identity, RecvStream, ServerConfig};
+
+/// How long a fresh connection gets to produce its 8-byte preamble.
+const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build the endpoint with a fresh self-signed certificate. The SHA-256
 /// hash is logged for browser `serverCertificateHashes` dev flows; the
@@ -61,6 +67,44 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 		Ok(streams) => streams,
 		Err(e) => return log::warn!("conn {conn_id}: control stream: {e}"),
 	};
+
+	// Version gate BEFORE any postcard decode: the frozen preamble is the
+	// one thing every DigBlock build past and future can exchange, so a
+	// differently-shaped old Hello can never hit a decode error — it is
+	// refused (or dropped) here without ever reaching the frame parser.
+	let client_protocol =
+		match tokio::time::timeout(PREAMBLE_TIMEOUT, read_preamble(&mut recv)).await {
+			Ok(Some(pre)) => match decode_preamble(&pre) {
+				Some(v) => v,
+				None => return log::warn!("conn {conn_id}: bad preamble magic"),
+			},
+			Ok(None) => return log::warn!("conn {conn_id}: closed before preamble"),
+			Err(_) => return log::warn!("conn {conn_id}: preamble timeout"),
+		};
+	// Always answer with our own preamble so even a refused client can
+	// report the server's version.
+	if send
+		.write_all(&encode_preamble(PROTOCOL_VERSION))
+		.await
+		.is_err()
+	{
+		return;
+	}
+	if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&client_protocol) {
+		let refused = ServerMsg::Refused {
+			reason: format!(
+				"protocol {client_protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"
+			),
+		};
+		let mut buf = Vec::new();
+		if codec::write_frame(&refused, &mut buf).is_ok() {
+			let _ = send.write_all(&buf).await;
+			let _ = send.finish().await;
+		}
+		log::info!("conn {conn_id}: refused (protocol {client_protocol})");
+		return;
+	}
+
 	let (out_tx, mut out_rx) = unbounded_channel::<OutMsg>();
 	if events
 		.send(SimEvent::Connected {
@@ -122,4 +166,17 @@ async fn handle_connection(conn: Connection, conn_id: u64, events: &Sender<SimEv
 			},
 		}
 	}
+}
+
+/// Fill exactly one preamble from the stream; None = closed early.
+async fn read_preamble(recv: &mut RecvStream) -> Option<[u8; PREAMBLE_LEN]> {
+	let mut pre = [0u8; PREAMBLE_LEN];
+	let mut have = 0;
+	while have < PREAMBLE_LEN {
+		match recv.read(&mut pre[have..]).await {
+			Ok(Some(n)) if n > 0 => have += n,
+			_ => return None,
+		}
+	}
+	Some(pre)
 }

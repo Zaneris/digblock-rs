@@ -8,7 +8,10 @@ use digblock_net::loopback::{loopback_pair, LoopbackEnd};
 use digblock_net::messages::{
 	BlockEdit, ClientMsg, Datagram, NetPlayerState, RejectReason, ServerMsg, Snapshot,
 };
-use digblock_net::protocol::{CLIENT_TICK_LEAD, PROTOCOL_VERSION};
+use digblock_net::protocol::{
+	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
+	PROTOCOL_VERSION,
+};
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
 use glam::{Vec2, Vec3};
@@ -32,12 +35,17 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 }
 
 /// Minimal scripted server: drains its loopback end, decodes, remembers.
+/// Speaks the 8-byte preamble in both directions like the real server.
 struct Stub {
 	end: LoopbackEnd,
 	frames: FrameReader,
 	pub client_msgs: Vec<ClientMsg>,
+	pub client_protocol: Option<u16>,
 	pub input_ticks: std::collections::BTreeSet<u32>,
 	scratch: Vec<TransportEvent>,
+	sent_preamble: bool,
+	/// Version the stub advertises in its own preamble.
+	advertise: u16,
 }
 
 impl Stub {
@@ -46,8 +54,11 @@ impl Stub {
 			end,
 			frames: FrameReader::default(),
 			client_msgs: Vec::new(),
+			client_protocol: None,
 			input_ticks: std::collections::BTreeSet::new(),
 			scratch: Vec::new(),
+			sent_preamble: false,
+			advertise: PROTOCOL_VERSION,
 		}
 	}
 
@@ -57,7 +68,14 @@ impl Stub {
 		self.end.poll(&mut events);
 		for ev in events.drain(..) {
 			match ev {
-				TransportEvent::Reliable(bytes) => {
+				TransportEvent::Reliable(mut bytes) => {
+					if self.client_protocol.is_none() {
+						assert!(bytes.len() >= PREAMBLE_LEN, "preamble arrives whole");
+						let pre: [u8; PREAMBLE_LEN] = bytes[..PREAMBLE_LEN].try_into().unwrap();
+						self.client_protocol =
+							Some(decode_preamble(&pre).expect("client preamble magic"));
+						bytes.drain(..PREAMBLE_LEN);
+					}
 					self.frames.extend(&bytes);
 					while let Some(frame) = self.frames.next_frame().unwrap() {
 						self.client_msgs.push(codec::decode(&frame).unwrap());
@@ -76,7 +94,16 @@ impl Stub {
 		self.scratch = events;
 	}
 
+	fn send_preamble_if_needed(&mut self) {
+		if !self.sent_preamble {
+			self.sent_preamble = true;
+			let pre = encode_preamble(self.advertise);
+			self.end.send_reliable(&pre);
+		}
+	}
+
 	fn send(&mut self, msg: &ServerMsg) {
+		self.send_preamble_if_needed();
 		let mut buf = Vec::new();
 		codec::write_frame(msg, &mut buf).unwrap();
 		self.end.send_reliable(&buf);
@@ -96,7 +123,7 @@ fn full_frame_handshake_edits_snapshot() {
 	let mut events = Vec::new();
 
 	// Client connects and sends Hello.
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	server.pump();
 	assert!(matches!(
 		server.client_msgs.first(),
@@ -111,9 +138,12 @@ fn full_frame_handshake_edits_snapshot() {
 		spawn: [0.5, 11.5, 0.5],
 		server_tick: 600,
 		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
 	});
 	events.clear();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	assert!(matches!(
 		events.first(),
 		Some(NetEvent::Welcome { seed, player_id: 1, .. }) if *seed == 42.0
@@ -153,7 +183,7 @@ fn full_frame_handshake_edits_snapshot() {
 		prev: BlockType::Dirt as u8,
 	});
 	events.clear();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	assert!(matches!(
 		events.first(),
 		Some(NetEvent::Edit {
@@ -183,7 +213,7 @@ fn full_frame_handshake_edits_snapshot() {
 		],
 	});
 	events.clear();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	assert!(matches!(
 		events.first(),
 		Some(NetEvent::Ack { acked_input_tick, .. }) if *acked_input_tick == first
@@ -199,7 +229,7 @@ fn full_frame_handshake_edits_snapshot() {
 		reason: RejectReason::OutOfReach,
 	});
 	events.clear();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	match events.first() {
 		Some(NetEvent::EditRejected(e)) => {
 			assert_eq!(e.cell, (5, 9, 5));
@@ -215,7 +245,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	let mut client = new_client(a);
 	let mut server = Stub::new(b);
 	let mut events = Vec::new();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	server.send(&ServerMsg::Welcome {
 		protocol: PROTOCOL_VERSION,
 		seed: 1.0,
@@ -223,8 +253,11 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		spawn: [0.5, 11.5, 0.5],
 		server_tick: 0,
 		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
 	});
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 
 	// We predict a dig; another player's place lands on the cell first.
 	let seq = client
@@ -248,7 +281,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		reason: RejectReason::Occluded,
 	});
 	events.clear();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	// One Edit event (the authoritative sand), NO EditRejected revert.
 	assert!(matches!(
 		events.iter().find(|e| matches!(e, NetEvent::Edit { .. })),
@@ -269,7 +302,7 @@ fn input_redundancy_survives_datagram_loss() {
 	let mut client = new_client(a);
 	let mut server = Stub::new(b);
 	let mut events = Vec::new();
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 	server.send(&ServerMsg::Welcome {
 		protocol: PROTOCOL_VERSION,
 		seed: 1.0,
@@ -277,8 +310,11 @@ fn input_redundancy_survives_datagram_loss() {
 		spawn: [0.5, 11.5, 0.5],
 		server_tick: 0,
 		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
 	});
-	client.poll(&mut events);
+	client.poll(&mut events, 0.016);
 
 	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
 	for _ in 0..20 {
@@ -297,4 +333,85 @@ fn input_redundancy_survives_datagram_loss() {
 	for t in first..first + 20 {
 		assert!(server.input_ticks.contains(&t), "missing tick {t}");
 	}
+}
+
+#[test]
+fn handshake_timeout_disconnects() {
+	let (a, _b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut events = Vec::new();
+	// Connected transport, server never answers: the deadline fires.
+	for _ in 0..7 {
+		client.poll(&mut events, 1.0);
+	}
+	assert!(
+		events.iter().any(
+			|e| matches!(e, NetEvent::Disconnected { reason } if reason.contains("handshake timeout"))
+		),
+		"{events:?}"
+	);
+	// And only once.
+	events.clear();
+	client.poll(&mut events, HANDSHAKE_TIMEOUT_SECS + 1.0);
+	assert!(events.is_empty(), "{events:?}");
+}
+
+#[test]
+fn incompatible_server_version_is_refused_locally() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	server.advertise = 9999;
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert_eq!(server.client_protocol, Some(PROTOCOL_VERSION));
+	// The stub answers with an alien version; Welcome bytes after it must
+	// not be interpreted.
+	server.send(&ServerMsg::Welcome {
+		protocol: 9999,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(
+		matches!(events.first(), Some(NetEvent::Refused { reason }) if reason.contains("9999")),
+		"{events:?}"
+	);
+	assert!(!client.ready());
+}
+
+#[test]
+fn sim_version_mismatch_is_refused() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.pump();
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION + 1,
+		build: "newer".into(),
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(
+		matches!(events.first(), Some(NetEvent::Refused { reason }) if reason.contains("sim")),
+		"{events:?}"
+	);
+	assert!(!client.ready());
 }

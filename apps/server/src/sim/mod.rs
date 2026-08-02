@@ -23,7 +23,10 @@ use digblock_core::fluid::FluidSim;
 use digblock_core::player::{self, Player, PlayerIntent};
 use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, ServerMsg};
-use digblock_net::protocol::{PlayerId, EDIT_BURST, PROTOCOL_VERSION, SERVER_ID, SNAPSHOT_DIVISOR};
+use digblock_net::protocol::{
+	sanitize_name, PlayerId, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, SERVER_ID,
+	SNAPSHOT_DIVISOR,
+};
 use edits::PendingEditReq;
 use glam::Vec3;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -203,7 +206,10 @@ impl Sim {
 					protocol,
 					name,
 					draw_dist,
-				} => self.handle_hello(conn_id, protocol, name, draw_dist),
+					token: _, // future reconnect-with-state
+					sim_version,
+					build,
+				} => self.handle_hello(conn_id, protocol, name, draw_dist, sim_version, build),
 				ClientMsg::EditRequest {
 					seq,
 					tick: _,
@@ -232,15 +238,40 @@ impl Sim {
 		}
 	}
 
-	fn handle_hello(&mut self, conn_id: u64, protocol: u16, name: String, draw_dist: i32) {
+	fn handle_hello(
+		&mut self,
+		conn_id: u64,
+		protocol: u16,
+		name: String,
+		draw_dist: i32,
+		sim_version: u16,
+		build: String,
+	) {
 		let Some(out) = self.lobby.remove(&conn_id) else {
 			return;
 		};
-		if protocol != PROTOCOL_VERSION {
+		// Redundant with the net-layer preamble gate, but the sim is also
+		// driven directly (tests, future transports) — keep it authoritative.
+		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol) {
 			send_frame(
 				&out,
 				&ServerMsg::Refused {
-					reason: format!("protocol {protocol}, server wants {PROTOCOL_VERSION}"),
+					reason: format!(
+						"protocol {protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"
+					),
+				},
+			);
+			let _ = out.send(OutMsg::Close);
+			return;
+		}
+		if sim_version != digblock_core::SIM_VERSION {
+			send_frame(
+				&out,
+				&ServerMsg::Refused {
+					reason: format!(
+						"client sim {sim_version} (build {build}), server sim {} — update the older side",
+						digblock_core::SIM_VERSION
+					),
 				},
 			);
 			let _ = out.send(OutMsg::Close);
@@ -256,6 +287,7 @@ impl Sim {
 			let _ = out.send(OutMsg::Close);
 			return;
 		};
+		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(2, 32);
 		send_frame(
 			&out,
@@ -266,6 +298,11 @@ impl Sim {
 				spawn: self.spawn.to_array(),
 				server_tick: self.tick,
 				snapshot_divisor: SNAPSHOT_DIVISOR,
+				// Issued now so resume can be added without a wire change;
+				// server-side session storage arrives with that feature.
+				session_token: rand::random(),
+				sim_version: digblock_core::SIM_VERSION,
+				build: env!("CARGO_PKG_VERSION").into(),
 			},
 		);
 
@@ -373,7 +410,106 @@ fn send_frame(out: &UnboundedSender<OutMsg>, msg: &ServerMsg) {
 #[cfg(test)]
 mod tests {
 	use super::harness::*;
-	use super::{ServerMsg, SimEvent};
+	use super::{ClientMsg, OutMsg, ServerMsg, SimEvent, MIN_PROTOCOL, PROTOCOL_VERSION};
+	use digblock_net::codec::FrameReader;
+	use tokio::sync::mpsc::unbounded_channel;
+
+	#[test]
+	fn version_mismatch_refused_and_closed() {
+		let refused_with = |protocol: u16, sim_version: u16| -> (Vec<ServerMsg>, bool) {
+			let mut sim = flat_sim("refuse");
+			let (tx, rx) = unbounded_channel();
+			sim.tick_once(vec![
+				SimEvent::Connected {
+					conn_id: 9,
+					out: tx,
+				},
+				SimEvent::Msg {
+					conn_id: 9,
+					msg: ClientMsg::Hello {
+						protocol,
+						name: "old".into(),
+						draw_dist: 4,
+						token: [0; 16],
+						sim_version,
+						build: "old-build".into(),
+					},
+				},
+			]);
+			let mut c = TestClient {
+				rx,
+				frames: FrameReader::default(),
+				msgs: Vec::new(),
+				snaps: Vec::new(),
+			};
+			let mut closed = false;
+			while let Ok(out) = c.rx.try_recv() {
+				match out {
+					OutMsg::Frame(bytes) => {
+						c.frames.extend(&bytes);
+						while let Some(f) = c.frames.next_frame().unwrap() {
+							c.msgs.push(digblock_net::codec::decode(&f).unwrap());
+						}
+					}
+					OutMsg::Close => closed = true,
+					OutMsg::Datagram(_) => {}
+				}
+			}
+			(c.msgs, closed)
+		};
+
+		// Old protocol → Refused naming the supported range, then Close.
+		let (msgs, closed) = refused_with(MIN_PROTOCOL - 1, digblock_core::SIM_VERSION);
+		assert!(
+			matches!(&msgs[..], [ServerMsg::Refused { reason }] if reason.contains("protocol")),
+			"{msgs:?}"
+		);
+		assert!(closed);
+
+		// Same protocol, older sim behavior → Refused naming both sims.
+		let (msgs, closed) = refused_with(PROTOCOL_VERSION, digblock_core::SIM_VERSION + 1);
+		assert!(
+			matches!(&msgs[..], [ServerMsg::Refused { reason }] if reason.contains("sim")),
+			"{msgs:?}"
+		);
+		assert!(closed);
+	}
+
+	#[test]
+	fn hostile_names_are_sanitized() {
+		let mut sim = flat_sim("names");
+		let (tx, _rx) = unbounded_channel();
+		let long_name = "x".repeat(1000) + "\n\u{7}";
+		sim.tick_once(vec![
+			SimEvent::Connected {
+				conn_id: 5,
+				out: tx,
+			},
+			SimEvent::Msg {
+				conn_id: 5,
+				msg: ClientMsg::Hello {
+					protocol: PROTOCOL_VERSION,
+					name: long_name,
+					draw_dist: 4,
+					token: [0; 16],
+					sim_version: digblock_core::SIM_VERSION,
+					build: "t".into(),
+				},
+			},
+		]);
+		let mut b = connect(&mut sim, 6);
+		b.drain();
+		let roster_name = b
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::PlayerJoined { id: 0, name } => Some(name.clone()),
+				_ => None,
+			})
+			.expect("roster entry for the hostile name");
+		assert_eq!(roster_name.len(), digblock_net::protocol::MAX_NAME_LEN);
+		assert!(roster_name.chars().all(|c| !c.is_control()));
+	}
 
 	#[test]
 	fn join_roster_and_announcements() {

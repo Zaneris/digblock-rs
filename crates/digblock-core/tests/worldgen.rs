@@ -376,3 +376,26 @@ fn heightmap_dump() {
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
 }
+
+/// Pins worldgen output to the bit. If this fails, a given seed now
+/// produces different terrain: update the hash AND bump
+/// `digblock_core::SIM_VERSION` — terrain is never sent over the wire
+/// (join sync is seed + edits), so client and server worldgen must agree
+/// exactly or every multiplayer world silently diverges.
+#[test]
+fn worldgen_golden_hash_pins_sim_version() {
+	// FNV-1a over the raw block bytes of a spread of columns (spawn area,
+	// ocean, mountains — chosen to touch every generation path).
+	let mut hash: u64 = 0xcbf29ce484222325;
+	for &(cx, cz) in &[(0, 0), (1, -1), (7, 3), (-12, 5), (40, -33)] {
+		for chunk in digblock_core::worldgen::build_column(cx, cz, 42.0) {
+			for &b in chunk.blocks.iter() {
+				hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+			}
+		}
+	}
+	assert_eq!(
+		hash, 5533945404733498559,
+		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
+	);
+}
