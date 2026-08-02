@@ -38,9 +38,9 @@ const RED: u32 = 0xFF4040F0;
 const BG: u32 = 0x90000000;
 const REF_LINE: u32 = 0x80FFFFFF;
 
-/// Worst case ~40 chars × 7 lines + graph bars + background ≈ 500 quads;
-/// 4096 leaves lots of headroom.
-const MAX_VERTS: usize = 6 * 4096;
+/// Debug panel worst case ≈ 500 quads; a long menu server list adds ~60
+/// chars × ~20 rows ≈ 1300 more. 8192 leaves lots of headroom.
+const MAX_VERTS: usize = 6 * 8192;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -261,6 +261,29 @@ impl Overlay {
 		}
 	}
 
+	/// The menu layer: full-screen dim, panel backdrop, then rows exactly
+	/// as laid out by menu.rs (which also hit-tests the same rects).
+	fn push_menu(&mut self, size: (u32, u32), view: &crate::menu::MenuView) {
+		const MENU_DIM: u32 = 0xA0000000;
+		const ROW_HILIGHT: u32 = 0x60FFFFFF;
+		const TEXT_PAD_X: f32 = 8.0;
+		self.push_quad(0.0, 0.0, size.0 as f32, size.1 as f32, MENU_DIM);
+		let [px, py, pw, ph] = view.panel;
+		self.push_quad(px, py, pw, ph, BG);
+		for row in &view.rows {
+			let [x, y, w, h] = row.rect;
+			let text_y = y + (h - GLYPH_PX) / 2.0;
+			if row.highlight {
+				self.push_quad(x, y, w, h, ROW_HILIGHT);
+			}
+			self.push_text(x + TEXT_PAD_X, text_y, row.color, &row.text);
+			if let Some((right, color)) = &row.right {
+				let rx = x + w - TEXT_PAD_X - right.len() as f32 * GLYPH_PX;
+				self.push_text(rx, text_y, *color, right);
+			}
+		}
+	}
+
 	fn push_crosshair(&mut self, size: (u32, u32)) {
 		const ARM: f32 = 9.0; // half-length in px
 		const THICK: f32 = 2.0;
@@ -270,23 +293,30 @@ impl Overlay {
 		self.push_quad(cx - THICK / 2.0, cy - ARM, THICK, ARM * 2.0, COLOR);
 	}
 
-	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair),
-	/// plus the debug panel when `stats` is present, plus the server-message
-	/// feed when non-empty.
+	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair —
+	/// unless the menu is up and the cursor visible), plus the debug panel
+	/// when `stats` is present, plus the server-message feed when non-empty,
+	/// plus the menu when open.
 	pub fn prepare(
 		&mut self,
 		gpu: &Gpu,
 		size: (u32, u32),
 		stats: Option<(&OverlayStats, &[f32])>,
 		feed: &[(String, f32)],
+		menu: Option<&crate::menu::MenuView>,
 	) {
 		self.verts.clear();
-		self.push_crosshair(size);
+		if menu.is_none() {
+			self.push_crosshair(size);
+		}
 		if let Some((stats, history)) = stats {
 			self.push_debug_panel(stats, history);
 		}
 		if !feed.is_empty() {
 			self.push_feed(size, feed);
+		}
+		if let Some(view) = menu {
+			self.push_menu(size, view);
 		}
 		self.vert_count = self.verts.len() as u32;
 		gpu.queue.write_buffer(

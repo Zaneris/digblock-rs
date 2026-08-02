@@ -42,6 +42,13 @@ pub trait Game: 'static {
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
+	/// Polled once per frame. `false` (menu open) releases the cursor and
+	/// routes clicks/positions to the game as UI input; the shell re-grabs
+	/// on the rising edge. Defaults to the classic always-grabbed FPS
+	/// behavior (bench/screenshot/drill paths and iOS are unaffected).
+	fn wants_cursor_grab(&self) -> bool {
+		true
+	}
 	fn on_resume(&mut self) {}
 	/// F10 drill: rebuild all device-lifetime resources from scratch, as a
 	/// real device loss would require. The standing regression test for the

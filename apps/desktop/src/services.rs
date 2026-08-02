@@ -1,0 +1,204 @@
+//! Master-server client services for the menu: server-list fetch, per-server
+//! ping probes, and the join flow (mint a one-time token, connect with the
+//! listed cert pin). One background thread owns all HTTP; the engine sees
+//! only the `MenuServices` channels — it stays wasm-clean and never blocks.
+//!
+//! HTTP contract (mirrors apps/master/Contracts.cs):
+//!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
+//!   POST /api/join { serverId, displayName } → { token, expiresIn, url, certHash }
+
+use digblock_render::menu::{MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListResponse {
+	servers: Vec<ListServer>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListServer {
+	id: String,
+	name: String,
+	url: String,
+	cert_hash: String,
+	players: u32,
+	max_players: u32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinResponse {
+	token: String,
+	url: String,
+	cert_hash: String,
+}
+
+pub fn start(master_url: String) -> MenuServices {
+	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
+	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
+	std::thread::Builder::new()
+		.name("menu-services".into())
+		.spawn(move || run(master_url, cmd_rx, resp_tx))
+		.expect("spawn menu-services thread");
+	MenuServices { cmd_tx, resp_rx }
+}
+
+fn run(
+	master_url: String,
+	cmd_rx: mpsc::Receiver<MenuCommand>,
+	resp_tx: mpsc::Sender<MenuResponse>,
+) {
+	while let Ok(cmd) = cmd_rx.recv() {
+		match cmd {
+			MenuCommand::RefreshServers => {
+				let result = fetch_servers(&master_url);
+				let probes: Vec<(String, String, String)> = result
+					.as_ref()
+					.map(|servers| {
+						servers
+							.iter()
+							.map(|s| (s.id.clone(), s.url.clone(), s.cert_hash.clone()))
+							.collect()
+					})
+					.unwrap_or_default();
+				// List first (the menu creates its rows from it), then the
+				// pings stream in per server as their probes finish.
+				let _ = resp_tx.send(MenuResponse::ServerList(result));
+				for (id, url, cert_hash) in probes {
+					let resp_tx = resp_tx.clone();
+					let policy = pin_policy(&cert_hash);
+					digblock_net_native::probe(&url, policy, Duration::from_secs(3), move |ms| {
+						let _ = resp_tx.send(MenuResponse::Ping { server_id: id, ms });
+					});
+				}
+			}
+			MenuCommand::Join { server_id, name } => {
+				let resp = match join(&master_url, &server_id, &name) {
+					Ok((transport, token)) => MenuResponse::Connect {
+						transport: Box::new(transport),
+						token,
+					},
+					Err(reason) => MenuResponse::JoinFailed { reason },
+				};
+				let _ = resp_tx.send(resp);
+			}
+		}
+	}
+}
+
+fn pin_policy(cert_hash: &str) -> digblock_net_native::CertPolicy {
+	digblock_net_native::CertPolicy::pinned_from_hex(cert_hash).unwrap_or_else(|e| {
+		log::warn!("bad certHash from master ({e}); connecting insecurely");
+		digblock_net_native::CertPolicy::Insecure
+	})
+}
+
+fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
+	let mut res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.timeout_global(Some(Duration::from_secs(5)))
+			.build(),
+	)
+	.get(format!("{master_url}/api/servers"))
+	.call()
+	.map_err(|e| e.to_string())?;
+	let list: ListResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
+	Ok(list
+		.servers
+		.into_iter()
+		.map(|s| ServerEntry {
+			id: s.id,
+			name: s.name,
+			url: s.url,
+			cert_hash: s.cert_hash,
+			players: s.players,
+			max_players: s.max_players,
+		})
+		.collect())
+}
+
+fn join(
+	master_url: &str,
+	server_id: &str,
+	name: &str,
+) -> Result<(digblock_net_native::ChannelTransport, [u8; 16]), String> {
+	let mut res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.timeout_global(Some(Duration::from_secs(5)))
+			.build(),
+	)
+	.post(format!("{master_url}/api/join"))
+	.send_json(serde_json::json!({ "serverId": server_id, "displayName": name }))
+	.map_err(|e| format!("join request failed: {e}"))?;
+	let join: JoinResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
+	let token = parse_token(&join.token)?;
+	let transport = digblock_net_native::connect_with(&join.url, pin_policy(&join.cert_hash));
+	Ok((transport, token))
+}
+
+fn parse_token(hex: &str) -> Result<[u8; 16], String> {
+	if hex.len() != 32 {
+		return Err(format!("bad token length {}", hex.len()));
+	}
+	let mut token = [0u8; 16];
+	for (i, byte) in token.iter_mut().enumerate() {
+		*byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
+	}
+	Ok(token)
+}
+
+/// Non-interactive `--join`: list (retrying briefly — scripted flows start
+/// the server moments earlier), pick first or by name filter, mint, connect.
+pub fn auto_join(
+	master_url: &str,
+	filter: Option<&str>,
+	name: &str,
+) -> Result<(digblock_net_native::ChannelTransport, [u8; 16]), String> {
+	let deadline = Instant::now() + Duration::from_secs(30);
+	let picked = loop {
+		match fetch_servers(master_url) {
+			Ok(servers) => {
+				let found = servers.into_iter().find(|s| match filter {
+					Some(f) => s.name.contains(f),
+					None => true,
+				});
+				if let Some(s) = found {
+					break s;
+				}
+			}
+			Err(e) => log::debug!("server list not ready: {e}"),
+		}
+		if Instant::now() >= deadline {
+			return Err("no matching server in the master's list".into());
+		}
+		std::thread::sleep(Duration::from_millis(500));
+	};
+	log::info!("auto-join: \"{}\" at {}", picked.name, picked.url);
+	join(master_url, &picked.id, name)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn token_hex_round_trips() {
+		let token = parse_token("000102030405060708090a0b0c0d0e0f").unwrap();
+		assert_eq!(token[0], 0);
+		assert_eq!(token[15], 0x0f);
+		assert!(parse_token("zz0102030405060708090a0b0c0d0e0f").is_err());
+		assert!(parse_token("deadbeef").is_err());
+	}
+
+	#[test]
+	fn list_json_parses() {
+		let json = r#"{"servers":[{"id":"a1","name":"World","url":"https://h:4433",
+			"certHash":"ab","players":3,"maxPlayers":255}]}"#;
+		let list: ListResponse = serde_json::from_str(json).unwrap();
+		assert_eq!(list.servers[0].name, "World");
+		assert_eq!(list.servers[0].max_players, 255);
+	}
+}

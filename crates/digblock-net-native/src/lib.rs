@@ -3,5 +3,7 @@
 //! through non-blocking channels.
 
 mod channel_transport;
+mod probe;
 
 pub use channel_transport::{connect, connect_with, CertPolicy, ChannelTransport};
+pub use probe::probe;

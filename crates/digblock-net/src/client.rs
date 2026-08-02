@@ -19,6 +19,10 @@ use glam::Vec3;
 pub struct NetClientConfig {
 	pub name: String,
 	pub draw_dist: i32,
+	/// One-time join token minted by the master server; sent in `Hello`
+	/// and verified server-side before admission. All zeros = no token
+	/// (loopback tests only — real servers refuse it).
+	pub token: [u8; 16],
 }
 
 #[derive(Debug)]
@@ -239,7 +243,7 @@ impl NetClient {
 			protocol: PROTOCOL_VERSION,
 			name: self.config.name.clone(),
 			draw_dist: self.config.draw_dist,
-			token: [0; 16],
+			token: self.config.token,
 			sim_version: digblock_core::SIM_VERSION,
 			build: env!("CARGO_PKG_VERSION").into(),
 		};

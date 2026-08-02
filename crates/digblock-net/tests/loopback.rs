@@ -30,6 +30,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 		digblock_net::client::NetClientConfig {
 			name: "test".into(),
 			draw_dist: 8,
+			token: [0; 16],
 		},
 	)
 }
@@ -116,6 +117,29 @@ impl Stub {
 		let bytes = codec::encode_datagram(&Datagram::Snapshot(snap)).unwrap();
 		self.end.send_datagram(&bytes);
 	}
+}
+
+#[test]
+fn configured_token_reaches_the_wire() {
+	let (a, b) = loopback_pair();
+	let token: [u8; 16] = [7; 16];
+	let mut client = NetClient::new(
+		Box::new(a),
+		digblock_net::client::NetClientConfig {
+			name: "test".into(),
+			draw_dist: 8,
+			token,
+		},
+	);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert!(matches!(
+		server.client_msgs.first(),
+		Some(ClientMsg::Hello { token: t, .. }) if *t == token
+	));
 }
 
 #[test]

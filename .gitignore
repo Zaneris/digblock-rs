@@ -10,3 +10,6 @@ build/
 /data/
 docker/data/
 *.journal
+# .NET master server build output.
+apps/master/bin/
+apps/master/obj/

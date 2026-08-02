@@ -57,6 +57,10 @@ pub struct EngineConfig {
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
 	/// tiny values exercise the growth path in a normal run.
 	pub chunk_slots_override: Option<u32>,
+	/// Start with the menu open (desktop interactive runs). Bench,
+	/// screenshot, drill, and iOS keep this false — those paths must not
+	/// sit on a menu screen.
+	pub menu: bool,
 }
 
 impl EngineConfig {
@@ -81,6 +85,7 @@ impl EngineConfig {
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
+			menu: false,
 		}
 	}
 
@@ -105,6 +110,7 @@ impl EngineConfig {
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
+			menu: false,
 		}
 	}
 
@@ -209,6 +215,11 @@ pub struct Engine {
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	size: (u32, u32),
+	/// Startup/pause menu state (pure; overlay renders its view).
+	menu: crate::menu::Menu,
+	/// Launcher-owned HTTP/probe services the menu talks to; None = no
+	/// master URL configured (Multiplayer shows as disabled).
+	services: Option<crate::menu::MenuServices>,
 }
 
 fn ms_since(t: std::time::Instant) -> f32 {
@@ -256,7 +267,16 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
+		let menu = crate::menu::Menu::new(
+			config.menu,
+			config
+				.player_name
+				.clone()
+				.unwrap_or_else(|| "player".into()),
+		);
 		Self {
+			menu,
+			services: None,
 			config,
 			seed,
 			renderer: None,
@@ -299,10 +319,19 @@ impl Engine {
 		}
 	}
 
-	/// Attach a multiplayer transport (desktop `--connect`). The world is
-	/// swapped to the server's seed when the Welcome arrives; until then
-	/// the local world keeps running.
+	/// Attach a multiplayer transport (loopback tests / tokenless paths).
 	pub fn set_transport(&mut self, transport: Box<dyn digblock_net::transport::NetTransport>) {
+		self.set_transport_with_token(transport, [0; 16]);
+	}
+
+	/// Attach a multiplayer transport carrying a master-minted one-time
+	/// token. The world is swapped to the server's seed when the Welcome
+	/// arrives; until then the local world keeps running.
+	pub fn set_transport_with_token(
+		&mut self,
+		transport: Box<dyn digblock_net::transport::NetTransport>,
+		token: [u8; 16],
+	) {
 		let name = self
 			.config
 			.player_name
@@ -313,10 +342,18 @@ impl Engine {
 			digblock_net::client::NetClientConfig {
 				name,
 				draw_dist: self.config.draw_dist,
+				token,
 			},
 		));
 		// The server has no fly physics; walk is the only multiplayer mode.
 		self.walking = true;
+	}
+
+	/// Wire the launcher's master-server services (list fetch, pings, token
+	/// mint + connect). Enables the Multiplayer entry in the menu.
+	pub fn set_menu_services(&mut self, services: crate::menu::MenuServices) {
+		self.services = Some(services);
+		self.menu.set_services_available();
 	}
 
 	/// Welcome handshake: replace the locally-seeded world with the
@@ -372,7 +409,10 @@ impl Engine {
 		for ev in events.drain(..) {
 			use digblock_net::NetEvent;
 			match ev {
-				NetEvent::Welcome { seed, spawn, .. } => self.swap_world(seed, spawn),
+				NetEvent::Welcome { seed, spawn, .. } => {
+					self.menu.on_welcome();
+					self.swap_world(seed, spawn);
+				}
 				NetEvent::Ack {
 					acked_input_tick,
 					me,
@@ -397,11 +437,13 @@ impl Engine {
 				NetEvent::Refused { reason } => {
 					self.push_feed(format!("Server refused: {reason}."));
 					log::warn!("server refused: {reason}; continuing single-player");
+					self.menu.on_net_failed(&reason);
 					drop_net = true;
 				}
 				NetEvent::Disconnected { reason } => {
 					self.push_feed(format!("Disconnected: {reason}."));
 					log::warn!("disconnected: {reason}; continuing single-player");
+					self.menu.on_net_failed(&reason);
 					drop_net = true;
 				}
 			}
@@ -694,6 +736,18 @@ impl Game for Engine {
 		if self.config.bench {
 			return;
 		}
+		// Menu open: every input belongs to the menu — gameplay keys must
+		// not leak (typing a name would also walk). FocusLost still clears
+		// held state.
+		if self.menu.is_open() {
+			if matches!(event, InputEvent::FocusLost) {
+				self.keys = HeldKeys::default();
+				self.touch.clear();
+			} else {
+				self.menu.handle_input(&event, self.size);
+			}
+			return;
+		}
 		match event {
 			InputEvent::Key { key, pressed } => match key {
 				Key::W | Key::Up => self.keys.w = pressed,
@@ -730,6 +784,11 @@ impl Game for Engine {
 					}
 					self.overlay_key_down = pressed;
 				}
+				Key::Escape => {
+					if pressed {
+						self.menu.open();
+					}
+				}
 				_ => {}
 			},
 			InputEvent::MouseDelta { dx, dy } => {
@@ -749,6 +808,9 @@ impl Game for Engine {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 			}
+			// Only arrive ungrabbed (menu transitions); nothing in-game
+			// consumes them.
+			InputEvent::CursorMoved { .. } | InputEvent::Text { .. } => {}
 			InputEvent::Touch { id, phase, x, y } => {
 				let phase = match phase {
 					TouchPhase::Started => Phase::Started,
@@ -798,6 +860,31 @@ impl Game for Engine {
 		let touch_look = self.touch.take_look();
 		self.camera
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
+
+		// Menu plumbing: service responses in, commands out, disconnect
+		// intents applied. The world (and any live connection) keeps
+		// running underneath the open menu.
+		self.menu.set_connected(self.net.is_some());
+		let responses: Vec<crate::menu::MenuResponse> = self
+			.services
+			.as_ref()
+			.map(|s| s.resp_rx.try_iter().collect())
+			.unwrap_or_default();
+		for resp in responses {
+			if let Some((transport, token)) = self.menu.on_response(resp) {
+				self.set_transport_with_token(transport, token);
+			}
+		}
+		if self.menu.take_disconnect() && self.net.take().is_some() {
+			self.pending_ack = None;
+			self.correction_offset = Vec3::ZERO;
+			self.push_feed("Left the server.".into());
+		}
+		if let Some(services) = &self.services {
+			for cmd in self.menu.take_commands() {
+				let _ = services.cmd_tx.send(cmd);
+			}
+		}
 
 		self.pump_net(dt);
 		for m in &mut self.feed {
@@ -963,6 +1050,10 @@ impl Game for Engine {
 		} else {
 			None
 		};
+		let menu_view = self
+			.menu
+			.is_open()
+			.then(|| self.menu.view(size, (self.time_secs * 2.0) as u32 % 2 == 0));
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = std::time::Instant::now();
 			let scene = FrameScene {
@@ -977,6 +1068,7 @@ impl Game for Engine {
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),
 				feed: &self.feed,
+				menu: menu_view.as_ref(),
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);
@@ -986,6 +1078,10 @@ impl Game for Engine {
 		}
 		// total_ms is measured inside frame() from the frame-to-frame delta.
 		self.metrics.frame(std::mem::take(&mut self.pending));
+	}
+
+	fn wants_cursor_grab(&self) -> bool {
+		!self.menu.is_open()
 	}
 
 	fn on_suspend(&mut self) {

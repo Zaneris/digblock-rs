@@ -1,6 +1,8 @@
 use digblock_platform::RunOptions;
 use digblock_render::{Engine, EngineConfig};
 
+mod services;
+
 /// Bad or missing flag values are fatal like unknown args — a silently
 /// defaulted `--seed`/`--draw-dist` makes captures non-deterministic.
 fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
@@ -33,23 +35,22 @@ fn main() {
 	//            tod 45, 1800 frames, bench.csv)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
-	let mut connect: Option<String> = None;
-	let mut pinned: Option<digblock_net_native::CertPolicy> = None;
-	let mut insecure = false;
+	// Multiplayer goes through the master server exclusively: it lists
+	// servers, distributes cert pins, and mints the one-time join tokens
+	// game servers require. There is no direct-connect path.
+	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
+	let mut join = false;
+	let mut server_filter: Option<String> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
-			"--connect" => connect = Some(parse_or_die::<String>("--connect", args.next())),
-			"--cert-hash" => {
-				let hex = parse_or_die::<String>("--cert-hash", args.next());
-				pinned = Some(
-					digblock_net_native::CertPolicy::pinned_from_hex(&hex).unwrap_or_else(|e| {
-						eprintln!("bad value for --cert-hash: {e}");
-						std::process::exit(2);
-					}),
-				);
+			"--master-url" => {
+				master_url = Some(parse_or_die::<String>("--master-url", args.next()));
 			}
-			"--insecure" => insecure = true,
+			// Scripted flows (just play, soaks): skip the menu, join the
+			// first listed server (or the one matching --server).
+			"--join" => join = true,
+			"--server" => server_filter = Some(parse_or_die::<String>("--server", args.next())),
 			"--screenshot" => {
 				options.screenshot =
 					Some(parse_or_die::<String>("--screenshot", args.next()).into());
@@ -106,15 +107,29 @@ fn main() {
 		})
 	});
 
+	// The menu is for interactive runs only; every automated capture path
+	// (bench, screenshot, drill) and --join must not sit on a menu screen.
+	config.menu = !join && !config.bench && options.screenshot.is_none() && !options.auto_drill;
+
 	let mut engine = Engine::new(config);
-	if let Some(url) = connect {
-		log::info!("connecting to {url}");
-		let policy = match (pinned, insecure) {
-			(Some(p), _) => p,
-			// Explicit or implicit dev posture; connect_with logs loudly.
-			_ => digblock_net_native::CertPolicy::Insecure,
-		};
-		engine.set_transport(Box::new(digblock_net_native::connect_with(&url, policy)));
+	if let Some(master_url) = master_url.as_deref().map(|u| u.trim_end_matches('/')) {
+		if join {
+			let name = std::env::var("USER").unwrap_or_else(|_| "player".into());
+			match services::auto_join(master_url, server_filter.as_deref(), &name) {
+				Ok((transport, token)) => {
+					engine.set_transport_with_token(Box::new(transport), token);
+				}
+				Err(e) => {
+					log::error!("auto-join via {master_url} failed: {e}");
+					std::process::exit(1);
+				}
+			}
+		} else {
+			engine.set_menu_services(services::start(master_url.to_string()));
+		}
+	} else if join {
+		eprintln!("--join needs a master server: pass --master-url or set DIG_MASTER_URL");
+		std::process::exit(2);
 	}
 	if let Err(e) = digblock_platform::run(engine, options) {
 		log::error!("{e}");

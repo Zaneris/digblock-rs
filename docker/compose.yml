@@ -1,11 +1,20 @@
 # Local multiplayer test rig.
 #
-#   just compose clean      server, no impairment
+#   just compose clean      master + server, no impairment
 #   just compose wifi       30ms delay, 1% loss
 #   just compose cellular   80ms ±20ms jitter, 3% loss
 #   just compose-bots       adds a 4-bot soak (exits non-zero on failure)
 #
 # The /udp on the port mapping is mandatory — QUIC never touches TCP.
+#
+# Joining is token-only: everything flows through the master (server list,
+# cert pins, one-time join tokens), and the master's QUIC probe is always
+# real here (linux + libmsquic). In-network runs (compose/compose-bots) the
+# game server advertises its compose DNS name, which the master probes
+# directly. `just play-docker` sets ADVERTISE_HOST=127.0.0.1 (what the host
+# client dials) with PROBE_HOST=host.docker.internal (the container's
+# stable UDP path to the published port — a LAN-IP hairpin would break
+# QUIC address validation under Docker's NAT).
 #
 # A desktop client on the Mac host connects to the containerized server
 # over the published UDP port — `just play-docker [profile]` is the
@@ -16,6 +25,13 @@
 # first — a server that crashed at boot produces the same client-side
 # timeout a dead network would.
 services:
+  master:
+    build:
+      context: ../apps/master
+      dockerfile: Dockerfile
+    ports:
+      - "5200:5200"
+
   server:
     build:
       context: ..
@@ -26,17 +42,24 @@ services:
       - ./data:/data
     cap_add:
       - NET_ADMIN
+    depends_on:
+      - master
     environment:
       NETEM: "${NETEM:-}"
       RUST_LOG: "${RUST_LOG:-info}"
+      DIGBLOCK_MASTER_URL: "http://master:5200"
+      DIGBLOCK_ADVERTISE_HOST: "${ADVERTISE_HOST:-server}"
+      DIGBLOCK_PROBE_HOST: "${PROBE_HOST:-}"
+      DIGBLOCK_SERVER_NAME: "${SERVER_NAME:-Compose World}"
 
   bots:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     command:
-      ["bot", "--url", "https://server:4433", "--bots", "4", "--duration", "60", "--edit-rate", "1"]
+      ["bot", "--master-url", "http://master:5200", "--bots", "4", "--duration", "60", "--edit-rate", "1"]
     depends_on:
+      - master
       - server
     environment:
       RUST_LOG: "${RUST_LOG:-info}"

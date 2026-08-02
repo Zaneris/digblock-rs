@@ -6,6 +6,7 @@ mod camera;
 mod engine;
 mod font;
 mod gpu_timer;
+pub mod menu;
 mod overlay;
 mod pipeline_builder;
 mod players;

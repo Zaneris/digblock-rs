@@ -175,9 +175,8 @@ impl Sim {
 		self.tick
 	}
 
-	/// Test seam: production callers read nothing off Sim but
-	/// `server_tick` (lib.rs status line).
-	#[cfg(test)]
+	/// Read each tick by `run_sim_loop` into the shared gauge the master
+	/// heartbeat reports.
 	pub fn player_count(&self) -> usize {
 		self.clients.len()
 	}

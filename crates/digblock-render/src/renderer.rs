@@ -78,6 +78,7 @@ pub struct FrameScene<'a> {
 	pub players: &'a [[f32; 8]],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32)],
+	pub menu: Option<&'a crate::menu::MenuView>,
 }
 
 /// Field order/layout must match the `Frame` struct in
@@ -777,6 +778,7 @@ impl Renderer {
 			players,
 			overlay,
 			feed,
+			menu,
 		} = *scene;
 		self.ensure_targets(gpu, size);
 		// Remote players re-upload every frame (a handful of instances —
@@ -801,7 +803,7 @@ impl Renderer {
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
-		self.overlay.prepare(gpu, size, overlay, feed);
+		self.overlay.prepare(gpu, size, overlay, feed, menu);
 		// Chunk bounding-sphere frustum cull against the four side planes.
 		let planes = side_planes(view_proj);
 		let in_frustum = |pos: &ChunkPos| -> bool { chunk_in_frustum(pos, &planes) };

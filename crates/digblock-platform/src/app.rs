@@ -54,6 +54,10 @@ struct App<G: Game> {
 	clock: GameClock,
 	options: RunOptions,
 	cursor_grabbed: bool,
+	/// Last frame's `wants_cursor_grab`, for edge-triggered reconcile:
+	/// starting at `true` means a game that never opens a menu produces no
+	/// edge, keeping the classic click-to-grab behavior bit-identical.
+	prev_wants_grab: bool,
 	frames_rendered: u64,
 	screenshot_pending: bool,
 	launched_at: Instant,
@@ -82,6 +86,7 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 		clock: GameClock::new(),
 		options,
 		cursor_grabbed: false,
+		prev_wants_grab: true,
 		frames_rendered: 0,
 		screenshot_pending: false,
 		launched_at: Instant::now(),
@@ -387,6 +392,19 @@ impl<G: Game> App<G> {
 			self.dispatch(LcEvent::DeviceLost, el);
 			return;
 		}
+
+		// Cursor-grab reconcile (edge-triggered, one frame behind update —
+		// imperceptible): menu opening releases the cursor; menu closing
+		// re-grabs it. Level-holding at `true` never grabs on its own —
+		// that stays with the click-to-grab path.
+		let wants = self.game.wants_cursor_grab();
+		if self.cursor_grabbed && !wants {
+			self.grab_cursor(false);
+		} else if !self.cursor_grabbed && wants && !self.prev_wants_grab {
+			self.grab_cursor(true);
+		}
+		self.prev_wants_grab = wants;
+
 		let AppState::Running(r) = &mut self.state else {
 			return;
 		};
@@ -576,10 +594,28 @@ impl<G: Game> ApplicationHandler for App<G> {
 						button: map_button(button),
 						pressed: state.is_pressed(),
 					});
-				} else if state == ElementState::Pressed {
+				} else if self.game.wants_cursor_grab() {
 					// First click (re-)grabs the cursor and is swallowed so
 					// it doesn't also dig.
-					self.grab_cursor(true);
+					if state == ElementState::Pressed {
+						self.grab_cursor(true);
+					}
+				} else {
+					// Menu open: UI click, paired with the last CursorMoved.
+					self.game.input(InputEvent::MouseButton {
+						button: map_button(button),
+						pressed: state.is_pressed(),
+					});
+				}
+			}
+			WindowEvent::CursorMoved { position, .. } => {
+				// Only meaningful ungrabbed — while locked the position is
+				// frozen and gameplay look comes from MouseDelta.
+				if !self.cursor_grabbed {
+					self.game.input(InputEvent::CursorMoved {
+						x: position.x as f32,
+						y: position.y as f32,
+					});
 				}
 			}
 			WindowEvent::Touch(t) => {
@@ -609,19 +645,23 @@ impl<G: Game> ApplicationHandler for App<G> {
 						log::info!("F10 drill: simulating device loss (renderer rebuild)");
 						self.dispatch(LcEvent::DrillDeviceRebuild, el);
 					}
-					PhysicalKey::Code(KeyCode::Escape) if pressed => {
-						if self.cursor_grabbed {
-							self.grab_cursor(false);
-						} else {
-							self.game.on_suspend();
-							el.exit();
-						}
-					}
+					// Escape reaches the game like any key: the menu owns the
+					// policy (open/back out). Quitting is window close/Cmd-Q.
 					PhysicalKey::Code(code) => {
 						self.game.input(InputEvent::Key {
 							key: map_key(code),
 							pressed,
 						});
+						// Produced text for menu fields, only while the game
+						// has the cursor released (a menu is up) — gameplay
+						// keys must not double as text.
+						if pressed && !self.game.wants_cursor_grab() {
+							if let Some(text) = &k.text {
+								for ch in text.chars().filter(|c| !c.is_control()) {
+									self.game.input(InputEvent::Text { ch });
+								}
+							}
+						}
 					}
 					PhysicalKey::Unidentified(_) => {}
 				}

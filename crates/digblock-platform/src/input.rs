@@ -18,6 +18,8 @@ pub enum Key {
 	/// Grave/backtick: debug overlay toggle.
 	Backquote,
 	Escape,
+	Enter,
+	Backspace,
 	Other,
 }
 
@@ -48,11 +50,24 @@ pub enum InputEvent {
 		dx: f64,
 		dy: f64,
 	},
-	/// Mouse buttons, only while the cursor is captured (the click that
-	/// grabs the cursor is swallowed by the shell).
+	/// Mouse buttons. While the cursor is captured these are gameplay
+	/// clicks; while free (menu open, i.e. the game doesn't want the grab)
+	/// they are UI clicks paired with the last `CursorMoved`. The click
+	/// that re-grabs the cursor is swallowed by the shell.
 	MouseButton {
 		button: MouseButton,
 		pressed: bool,
+	},
+	/// Window-space cursor position in physical pixels (the overlay's
+	/// coordinate space); only while the cursor is NOT captured.
+	CursorMoved {
+		x: f32,
+		y: f32,
+	},
+	/// Produced text (layout- and shift-aware), for menu text fields.
+	/// Control characters never arrive here — Backspace/Enter are `Key`s.
+	Text {
+		ch: char,
 	},
 	/// Touch position normalized to 0..1 of the window.
 	Touch {
@@ -82,6 +97,8 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::KeyB => Key::B,
 		K::Backquote => Key::Backquote,
 		K::Escape => Key::Escape,
+		K::Enter | K::NumpadEnter => Key::Enter,
+		K::Backspace => Key::Backspace,
 		_ => Key::Other,
 	}
 }

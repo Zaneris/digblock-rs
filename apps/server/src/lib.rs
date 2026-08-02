@@ -3,13 +3,14 @@
 //! digblock-core + digblock-net only — no GPU, no windowing.
 
 pub mod journal;
+pub mod master;
 pub mod net;
 pub mod sim;
 pub mod store;
 
 use crossbeam_channel::Receiver;
 use sim::{Sim, SimEvent};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,11 +22,17 @@ pub const DEFAULT_SEED: f64 = 42.0;
 /// Run the 60 Hz sim loop until `running` goes false. Instant-anchored
 /// pacing; when the OS oversleeps more than 5 ticks (container jitter),
 /// the backlog is dropped rather than replayed.
-pub fn run_sim_loop(mut sim: Sim, events: Receiver<SimEvent>, running: Arc<AtomicBool>) {
+pub fn run_sim_loop(
+	mut sim: Sim,
+	events: Receiver<SimEvent>,
+	running: Arc<AtomicBool>,
+	players: Arc<AtomicUsize>,
+) {
 	let tick = Duration::from_secs_f64(1.0 / digblock_net::protocol::TICK_RATE as f64);
 	let mut next = Instant::now();
 	while running.load(Ordering::Relaxed) {
 		sim.tick_once(events.try_iter().collect());
+		players.store(sim.player_count(), Ordering::Relaxed);
 		next += tick;
 		let now = Instant::now();
 		if now < next {

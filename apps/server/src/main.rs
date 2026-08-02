@@ -1,11 +1,13 @@
 //! DigBlock dedicated server binary.
 
 use crossbeam_channel::unbounded;
+use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
 use digblock_server::{net, run_sim_loop, DEFAULT_PORT, DEFAULT_SEED};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A silently-defaulted flag on a server with a persistent journal is a
 /// world-corruption hazard (`--seed banana` → default seed over existing
@@ -21,6 +23,12 @@ fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
 	})
 }
 
+const USAGE: &str = "usage: digblock-server --master-url URL --advertise-host HOST \
+	 [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] [--seed F] \
+	 [--data-dir P] [--sim-radius N] [--workers N]\n\
+	 (env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, \
+	 DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME)";
+
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -32,6 +40,19 @@ fn main() {
 		.map(|n| n.get().saturating_sub(2))
 		.unwrap_or(2)
 		.clamp(2, 8);
+	// Master flags are mandatory (env fallbacks so Docker needs no wrapper):
+	// there is no tokenless way onto a server, and tokens come from the
+	// master, so an unregistered server could admit no one anyway.
+	let mut master_url = std::env::var("DIGBLOCK_MASTER_URL").ok();
+	let mut advertise_host = std::env::var("DIGBLOCK_ADVERTISE_HOST").ok();
+	let mut probe_host = std::env::var("DIGBLOCK_PROBE_HOST")
+		.ok()
+		.filter(|s| !s.is_empty());
+	let mut advertise_port: Option<u16> = std::env::var("DIGBLOCK_ADVERTISE_PORT")
+		.ok()
+		.map(|v| parse_or_die("DIGBLOCK_ADVERTISE_PORT", Some(v)));
+	let mut server_name =
+		std::env::var("DIGBLOCK_SERVER_NAME").unwrap_or_else(|_| "DigBlock Server".into());
 
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -41,16 +62,34 @@ fn main() {
 			"--data-dir" => data_dir = parse_or_die("--data-dir", args.next()),
 			"--sim-radius" => sim_radius = parse_or_die("--sim-radius", args.next()),
 			"--workers" => workers = parse_or_die("--workers", args.next()),
+			"--master-url" => master_url = Some(parse_or_die("--master-url", args.next())),
+			"--advertise-host" => {
+				advertise_host = Some(parse_or_die("--advertise-host", args.next()));
+			}
+			"--probe-host" => probe_host = Some(parse_or_die("--probe-host", args.next())),
+			"--advertise-port" => {
+				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
+			}
+			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
 			other => {
 				eprintln!("unknown arg: {other}");
-				eprintln!(
-					"usage: digblock-server [--port N] [--seed F] [--data-dir P] \
-					 [--sim-radius N] [--workers N]"
-				);
+				eprintln!("{USAGE}");
 				std::process::exit(2);
 			}
 		}
 	}
+	let (Some(master_url), Some(advertise_host)) = (master_url, advertise_host) else {
+		eprintln!("--master-url and --advertise-host are required");
+		eprintln!("{USAGE}");
+		std::process::exit(2);
+	};
+	let master_cfg = MasterConfig {
+		url: master_url.trim_end_matches('/').to_string(),
+		server_name,
+		advertise_host,
+		probe_host,
+		advertise_port: advertise_port.unwrap_or(port),
+	};
 
 	let sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
 		Ok(sim) => sim,
@@ -63,11 +102,13 @@ fn main() {
 
 	let (event_tx, event_rx) = unbounded();
 	let running = Arc::new(AtomicBool::new(true));
+	let players = Arc::new(AtomicUsize::new(0));
 	let sim_thread = {
 		let running = running.clone();
+		let players = players.clone();
 		std::thread::Builder::new()
 			.name("sim".into())
-			.spawn(move || run_sim_loop(sim, event_rx, running))
+			.spawn(move || run_sim_loop(sim, event_rx, running, players))
 			.expect("spawn sim thread")
 	};
 
@@ -76,7 +117,7 @@ fn main() {
 		.build()
 		.expect("tokio runtime");
 	rt.block_on(async {
-		let endpoint = match net::make_endpoint(port) {
+		let (endpoint, cert_hash) = match net::make_endpoint(port) {
 			Ok(e) => e,
 			Err(e) => {
 				eprintln!("failed to bind udp {port}: {e}");
@@ -84,12 +125,48 @@ fn main() {
 			}
 		};
 		log::info!("listening on udp {port}");
+		let master_state = Arc::new(MasterState::new(master_cfg.url.clone()));
+		// Registration must not delay serving — the master's probe-back
+		// needs the endpoint answering.
+		tokio::spawn(master::run(
+			master_state.clone(),
+			master_cfg,
+			cert_hash,
+			players,
+		));
 		tokio::select! {
-			_ = net::serve(endpoint, event_tx) => {}
-			_ = tokio::signal::ctrl_c() => log::info!("ctrl-c: shutting down"),
+			_ = net::serve(endpoint, event_tx, master_state.clone()) => {}
+			_ = shutdown_signal() => {}
+		}
+		if let Some(reg) = master_state.registration() {
+			let url = master_state.url.clone();
+			let _ = tokio::time::timeout(
+				Duration::from_secs(2),
+				tokio::task::spawn_blocking(move || master::notify_shutdown(&url, &reg)),
+			)
+			.await;
 		}
 	});
 
 	running.store(false, Ordering::Relaxed);
 	let _ = sim_thread.join();
+}
+
+/// Ctrl-c or, on unix, SIGTERM (what `docker stop` sends) — both exit
+/// gracefully: master notified, journal synced.
+async fn shutdown_signal() {
+	#[cfg(unix)]
+	{
+		let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+			.expect("install SIGTERM handler");
+		tokio::select! {
+			_ = tokio::signal::ctrl_c() => log::info!("ctrl-c: shutting down"),
+			_ = term.recv() => log::info!("SIGTERM: shutting down"),
+		}
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = tokio::signal::ctrl_c().await;
+		log::info!("ctrl-c: shutting down");
+	}
 }
