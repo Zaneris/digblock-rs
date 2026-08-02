@@ -133,6 +133,13 @@ impl MeshInput {
 				}
 			}
 		}
+		// Strip state bits once here so every consumer — direct indexing
+		// and get() alike — sees id-only cells. Without this, a future
+		// state-nibble write would make from_id read the cell as Air and
+		// silently mesh holes.
+		for b in input.blocks.iter_mut() {
+			*b &= crate::chunk::ID_MASK;
+		}
 		input
 	}
 
@@ -458,6 +465,34 @@ mod tests {
 		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
 		assert_eq!(m.solid.len(), 6 * 8);
 		assert!(m.water.is_empty());
+	}
+
+	/// State bits (the reserved nibble above the block id) must not
+	/// change meshing: MeshInput::build strips them, so a stateful cell
+	/// meshes exactly like its plain block.
+	#[test]
+	fn state_bits_do_not_change_meshing() {
+		let mut plain = ChunkData::default();
+		plain.set(8, 8, 8, B::Dirt);
+		plain.set(8, 9, 8, B::Water);
+		let mut stateful = ChunkData::default();
+		stateful.set_cell(
+			8,
+			8,
+			8,
+			B::Dirt as u16 | 0b0101 << crate::chunk::STATE_SHIFT,
+		);
+		stateful.set_cell(
+			8,
+			9,
+			8,
+			B::Water as u16 | 0b1111 << crate::chunk::STATE_SHIFT,
+		);
+		let a = mesh_chunk(&isolated(&plain), ZERO);
+		let b = mesh_chunk(&isolated(&stateful), ZERO);
+		assert_eq!(a.solid, b.solid, "solid stream byte-identical");
+		assert_eq!(a.water, b.water, "water stream byte-identical");
+		assert_eq!(a.impacts, b.impacts);
 	}
 
 	#[test]

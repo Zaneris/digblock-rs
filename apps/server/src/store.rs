@@ -190,7 +190,9 @@ fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u16) {
 		return;
 	};
 	debug_assert!((cy as usize) < WORLD_VCHUNK as usize && stack.len() == WORLD_VCHUNK as usize);
-	Arc::make_mut(&mut stack[cy as usize]).set(lx, ly, lz, BlockType::from_id(block));
+	// Full u16 cell, not id-only: the journal stores whole cells exactly
+	// so the id/state split stays revisable without a format break.
+	Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, block);
 }
 
 /// `FluidWorld` over the store that records every landed write (with the

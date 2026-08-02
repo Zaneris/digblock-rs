@@ -114,13 +114,11 @@ fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64)
 			let out = &mut data.blocks[row..row + CHUNK_SIZE];
 			for (x, (b, &shape)) in out.iter_mut().zip(srow).enumerate() {
 				let mut block = column_block(wy, shape);
-				// Snow is carveable like grass: a cave mouth opens through
-				// the surface block instead of leaving it floating.
-				let carveable = matches!(
-					block,
-					BlockType::Stone | BlockType::Dirt | BlockType::Grass | BlockType::Snow
-				);
-				if carveable
+				// Carveability is block data (blocks! rows), so a new
+				// surface or subsoil block opens cave mouths without an
+				// edit here. Surface blocks (grass, snow) are carveable so
+				// a mouth opens through them instead of leaving a floater.
+				if block.props().carveable
 					&& shape.height > shape.water
 					&& wy >= caves::CAVE_FLOOR
 					&& carved(x as i32 + px, wy, z as i32 + pz, seed)

@@ -128,7 +128,7 @@ mod layer_tests {
 	/// the cross-crate half of the add-a-block skew check.
 	#[test]
 	fn props_reference_existing_layers() {
-		let layers = digblock_assets::tex::LAYERS.len() as u8;
+		let layers = digblock_assets::tex::LAYERS.len() as u16;
 		for &b in &digblock_core::block::BlockType::ALL {
 			let p = b.props();
 			for t in [p.tex_side, p.tex_top, p.tex_bottom] {

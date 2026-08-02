@@ -43,13 +43,13 @@ blocks! {
 	/// river pools) is sources — flowing/falling states describe water in
 	/// transit under the Minecraft-style flow rules.
 	Water = 1 => water_props(8, true, false),
-	Dirt = 2 => props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT),
-	Grass = 3 => props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT),
+	Dirt = 2 => carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)),
+	Grass = 3 => carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)),
 	Sand = 4 => props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND),
-	Stone = 5 => props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE),
+	Stone = 5 => carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)),
 	Wood = 6 => props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP),
 	Leaves = 7 => props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES),
-	Snow = 8 => props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW),
+	Snow = 8 => carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
 	/// source or a landed fall, losing one amount per block.
 	WaterFlow1 = 9 => water_props(1, false, false),
@@ -127,22 +127,34 @@ pub struct BlockProps {
 	pub collides: bool,
 	pub bucket: MeshBucket,
 	pub fluid: Option<FluidProps>,
-	/// Texture-array layer indices (order fixed by digblock_assets::tex::LAYERS).
-	pub tex_side: u8,
-	pub tex_top: u8,
-	pub tex_bottom: u8,
+	/// Cave carving may replace this block (natural terrain, not
+	/// structures) — consumed by worldgen's cave pass.
+	pub carveable: bool,
+	/// Texture-array layer indices (order fixed by
+	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
+	/// range is reachable — the vertex format's layer field is 10 bits.
+	pub tex_side: u16,
+	pub tex_top: u16,
+	pub tex_bottom: u16,
 }
 
-const fn props(class: RenderClass, collides: bool, side: u8, top: u8, bottom: u8) -> BlockProps {
+const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
 	BlockProps {
 		class,
 		collides,
 		bucket: MeshBucket::Solid,
 		fluid: None,
+		carveable: false,
 		tex_side: side,
 		tex_top: top,
 		tex_bottom: bottom,
 	}
+}
+
+/// Natural terrain the cave pass may carve through.
+const fn carveable(mut p: BlockProps) -> BlockProps {
+	p.carveable = true;
+	p
 }
 
 /// A water-family row: water bucket + fluid behavior.
@@ -156,6 +168,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 			source,
 			falling,
 		}),
+		carveable: false,
 		tex_side: tex::WATER,
 		tex_top: tex::WATER,
 		tex_bottom: tex::WATER,
@@ -164,16 +177,16 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 
 /// Texture-array layers, matching digblock_assets::tex::LAYERS order.
 mod tex {
-	pub const WATER: u8 = 0;
-	pub const DIRT: u8 = 1;
-	pub const GRASS_SIDE: u8 = 2;
-	pub const GRASS_TOP: u8 = 3;
-	pub const SAND: u8 = 4;
-	pub const STONE: u8 = 5;
-	pub const WOOD: u8 = 6;
-	pub const WOOD_TOP: u8 = 7;
-	pub const LEAVES: u8 = 8;
-	pub const SNOW: u8 = 9;
+	pub const WATER: u16 = 0;
+	pub const DIRT: u16 = 1;
+	pub const GRASS_SIDE: u16 = 2;
+	pub const GRASS_TOP: u16 = 3;
+	pub const SAND: u16 = 4;
+	pub const STONE: u16 = 5;
+	pub const WOOD: u16 = 6;
+	pub const WOOD_TOP: u16 = 7;
+	pub const LEAVES: u16 = 8;
+	pub const SNOW: u16 = 9;
 }
 
 impl BlockType {
