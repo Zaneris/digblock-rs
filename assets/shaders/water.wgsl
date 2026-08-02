@@ -244,27 +244,29 @@ fn ripple_normal(ni: u32, g: vec2f) -> vec3f {
 fn vs(@location(0) packed: vec2u) -> VsOut {
 	let w0 = packed.x;
 	let w1 = packed.y;
-	let x = f32(w0 & 0x1fu);
-	var y = f32((w0 >> 5u) & 0x1fu);
-	let z = f32((w0 >> 10u) & 0x1fu);
-	// Surface drop: shared corner codes through the concave curve.
-	y -= DROPS[min(w1 & 0xfu, 9u)];
-	let ni = (w0 >> 15u) & 7u;
+	// Geometry decode identical to chunk.wgsl: half-block units.
+	let x = f32(w0 & 0x3fu) * 0.5;
+	var y = f32((w0 >> 6u) & 0x3fu) * 0.5;
+	let z = f32((w0 >> 12u) & 0x3fu) * 0.5;
+	// Surface drop: shared corner codes through the concave curve. The
+	// water payload sits above the 10-bit layer field in w1.
+	y -= DROPS[min((w1 >> 10u) & 0xfu, 9u)];
+	let ni = (w0 >> 18u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	// Raw corner uv — all scroll/advection happens in fs.
-	o.uv = vec2f(f32((w0 >> 20u) & 1u), f32((w0 >> 21u) & 1u));
-	o.splash = (w1 >> 8u) & 3u;
-	o.layer = (w0 >> 23u) & 63u;
+	o.uv = vec2f(f32((w0 >> 23u) & 1u), f32((w0 >> 24u) & 1u));
+	o.splash = (w1 >> 18u) & 3u;
+	o.layer = w1 & 0x3ffu;
 	o.world = world;
 	o.ni = ni;
-	o.flow = (w1 >> 5u) & 7u;
-	o.falling = (w1 >> 4u) & 1u;
-	o.fall_y = f32((w1 >> 10u) & 0xfu);
-	o.drop = f32(min(w1 & 0xfu, 9u));
+	o.flow = (w1 >> 15u) & 7u;
+	o.falling = (w1 >> 14u) & 1u;
+	o.fall_y = f32((w1 >> 20u) & 0xfu);
+	o.drop = f32(min((w1 >> 10u) & 0xfu, 9u));
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);

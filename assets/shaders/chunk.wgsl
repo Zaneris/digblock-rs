@@ -86,30 +86,31 @@ struct VsOut {
 	@location(7) @interpolate(flat) axis: f32,
 }
 
-// Packed vertex: bits 0-4 x, 5-9 y, 10-14 z (chunk-local 0..=16),
-// 15-17 normal index, 18-19 ao, 20-21 corner, 23-28 texture layer,
-// 29-31 tint.
+// Packed vertex, two words. w0 — geometry: bits 0-5 x, 6-11 y, 12-17 z
+// (HALF-block units 0..=32), 18-20 normal index, 21-22 ao, 23-24 corner,
+// 25-27 tint. w1 — material: bits 0-9 texture layer.
 @vertex
-fn vs(@location(0) packed: u32) -> VsOut {
-	let x = f32(packed & 0x1fu);
-	let y = f32((packed >> 5u) & 0x1fu);
-	let z = f32((packed >> 10u) & 0x1fu);
-	let ni = (packed >> 15u) & 7u;
+fn vs(@location(0) packed: vec2u) -> VsOut {
+	let w0 = packed.x;
+	let x = f32(w0 & 0x3fu) * 0.5;
+	let y = f32((w0 >> 6u) & 0x3fu) * 0.5;
+	let z = f32((w0 >> 12u) & 0x3fu) * 0.5;
+	let ni = (w0 >> 18u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
-	o.uv = vec2f(f32((packed >> 20u) & 1u), f32((packed >> 21u) & 1u));
-	o.layer = (packed >> 23u) & 63u;
+	o.uv = vec2f(f32((w0 >> 23u) & 1u), f32((w0 >> 24u) & 1u));
+	o.layer = packed.y & 0x3ffu;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
 	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
 	// per-block tint step (bits 29-31 → 0.95..1.05); tint is constant
 	// across the quad, so the product interpolates exactly.
-	let jitter = 1.0 + (f32((packed >> 29u) & 7u) - 3.5) * (0.10 / 7.0);
-	o.ao = (0.6 + 0.4 * f32((packed >> 18u) & 3u) / 3.0) * jitter;
+	let jitter = 1.0 + (f32((w0 >> 25u) & 7u) - 3.5) * (0.10 / 7.0);
+	o.ao = (0.6 + 0.4 * f32((w0 >> 21u) & 3u) / 3.0) * jitter;
 	o.axis = AXIS[ni];
 
 	let pn = frame.light_near * vec4f(world, 1.0);

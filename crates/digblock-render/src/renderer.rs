@@ -358,10 +358,10 @@ impl Renderer {
 		});
 
 		let vertex_layout = wgpu::VertexBufferLayout {
-			array_stride: 4,
+			array_stride: 8,
 			step_mode: wgpu::VertexStepMode::Vertex,
 			attributes: &[wgpu::VertexAttribute {
-				format: wgpu::VertexFormat::Uint32,
+				format: wgpu::VertexFormat::Uint32x2,
 				offset: 0,
 				shader_location: 0,
 			}],
@@ -604,10 +604,10 @@ impl Renderer {
 				entry_point: Some("vs"),
 				compilation_options: Default::default(),
 				buffers: &[wgpu::VertexBufferLayout {
-					array_stride: 4,
+					array_stride: 8,
 					step_mode: wgpu::VertexStepMode::Vertex,
 					attributes: &[wgpu::VertexAttribute {
-						format: wgpu::VertexFormat::Uint32,
+						format: wgpu::VertexFormat::Uint32x2,
 						offset: 0,
 						shader_location: 0,
 					}],
@@ -823,7 +823,7 @@ impl Renderer {
 			u64::from(slot) * CHUNK_STRIDE,
 			bytemuck::cast_slice(&[ox, oy, oz, 0.0]),
 		);
-		// Solid vertices are one u32 word; water vertices are two.
+		// All vertices are two u32 words (see mesher::pack).
 		let mut make = |verts: &Vec<u32>, words_per_vert: usize| -> Option<(wgpu::Buffer, u32)> {
 			if verts.is_empty() {
 				return None;
@@ -839,7 +839,7 @@ impl Renderer {
 			let quads = (verts.len() / (4 * words_per_vert)) as u32;
 			Some((buf, quads * 6))
 		};
-		let solid = make(&mesh.solid, 1);
+		let solid = make(&mesh.solid, 2);
 		let water = make(&mesh.water, 2);
 		self.chunks.insert(pos, ChunkGpu { solid, water, slot });
 		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);

@@ -13,11 +13,13 @@ struct ChunkU {
 @group(1) @binding(0) var<uniform> chunk: ChunkU;
 
 @vertex
-fn vs(@location(0) packed: u32) -> @builtin(position) vec4f {
-	// Solid meshes only — water never casts, so only bits 0-14 matter.
-	let x = f32(packed & 0x1fu);
-	let y = f32((packed >> 5u) & 0x1fu);
-	let z = f32((packed >> 10u) & 0x1fu);
+fn vs(@location(0) packed: vec2u) -> @builtin(position) vec4f {
+	// Solid meshes only — water never casts, so only w0 geometry matters
+	// (half-block units, see chunk.wgsl).
+	let w0 = packed.x;
+	let x = f32(w0 & 0x3fu) * 0.5;
+	let y = f32((w0 >> 6u) & 0x3fu) * 0.5;
+	let z = f32((w0 >> 12u) & 0x3fu) * 0.5;
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 	return light.view_proj * vec4f(world, 1.0);
 }

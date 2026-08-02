@@ -323,3 +323,13 @@ streaming frames, startup hitch eliminated; water-sort scratch reuse in
 the renderer (below noise but strictly less work). Skipped after
 measurement: gen-job caching, GPU buffer pooling, stale-drop reduction —
 all negligible at the time.
+
+## 2026-08-02 — two-word vertex format (Phase 2 format break)
+
+All geometry moved to two u32 words/vertex (half-block positions for
+future stairs, 10-bit texture layer): solid vertex bytes doubled. Bench
+(vsync, seed 42): fill 4.56s, avg 8.35ms p99 10.68ms, over-12.5ms 3,
+hitches 1, GPU buffers ~87-103MB during fill. Within noise of the prior
+baseline — the doubled solid upload bytes did not move fill time or
+frame pacing measurably. Deterministic capture is byte-identical to the
+single-word format.

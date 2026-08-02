@@ -144,16 +144,17 @@ impl MeshInput {
 }
 
 pub struct MeshData {
-	/// Packed u32 vertices, 4 per face (TL,TR,BL,BR).
+	/// Packed two-word vertices (see `pack`), 4 per face (TL,TR,BL,BR).
 	pub solid: Vec<u32>,
-	/// Water vertices are TWO u32 words each (8 per face): word 0 is the
-	/// solid packing; word 1 carries bits 0-3 surface drop code d (the
-	/// shader lowers the vertex by d/9 — 0 = full height), bit 4 falling,
-	/// bits 5-7 flow dir, bits 8-9 the splash code (3 = fall impact
-	/// cell, 2/1 = pool cells at Chebyshev distance 1/2 — expanding
-	/// foam rings), and bits 10-13 the vertex fall distance (blocks of
-	/// falling water above; bottom-plane verts +1 so the interpolated
-	/// "blocks fallen" is continuous down a column; saturates at 15).
+	/// Same two-word format; word 1 additionally carries the water
+	/// payload above the layer field, shifted by 10: bits 10-13 surface
+	/// drop code d (the shader lowers the vertex by d/9 — 0 = full
+	/// height), bit 14 falling, bits 15-17 flow dir, bits 18-19 the
+	/// splash code (3 = fall impact cell, 2/1 = pool cells at Chebyshev
+	/// distance 1/2 — expanding foam rings), bits 20-23 the vertex fall
+	/// distance (blocks of falling water above; bottom-plane verts +1 so
+	/// the interpolated "blocks fallen" is continuous down a column;
+	/// saturates at 15).
 	pub water: Vec<u32>,
 	/// Water-fall impact cells (the splash-code-3 predicate), packed
 	/// chunk-local `x | y<<4 | z<<8` — spray-emitter metadata. Rides the
@@ -182,21 +183,29 @@ fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
 	}
 }
 
-/// Pack a vertex: bits 0-4 x, 5-9 y, 10-14 z, 15-17 normal, 18-19 ao
-/// (0 darkest .. 3 open), 20-21 corner (0=TL 1=TR 2=BL 3=BR), 22 unused,
-/// 23-28 texture layer, 29-31 tint.
+/// Pack a vertex as TWO words (all geometry — solid and water share the
+/// format). Word 0, geometry: bits 0-5 x, 6-11 y, 12-17 z in HALF-block
+/// units 0..=32 (integer lattice today; odd values are reserved for
+/// future sub-cell shapes like stairs), 18-20 normal, 21-22 ao (0
+/// darkest .. 3 open), 23-24 corner (0=TL 1=TR 2=BL 3=BR), 25-27 tint,
+/// 28-31 reserved. Word 1, material: bits 0-9 texture layer (1024 cap =
+/// MAX_TEX_LAYERS), 10-23 water payload (see MeshData::water), 24-31
+/// reserved.
 #[inline]
-fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
+fn pack(v: Vert, normal: Dir, corner: u32) -> [u32; 2] {
 	let (x, y, z) = v.pos;
-	debug_assert!(x <= 16 && y <= 16 && z <= 16 && v.tex < 64 && corner < 4 && v.ao < 4);
-	debug_assert!(v.tint < 8);
-	x | (y << 5)
-		| (z << 10)
-		| ((normal as u32) << 15)
-		| (v.ao << 18)
-		| (corner << 20)
-		| (v.tex << 23)
-		| (v.tint << 29)
+	debug_assert!(x <= 16 && y <= 16 && z <= 16 && corner < 4 && v.ao < 4);
+	debug_assert!((v.tex as usize) < crate::block::MAX_TEX_LAYERS && v.tint < 8);
+	[
+		(x * 2)
+			| ((y * 2) << 6)
+			| ((z * 2) << 12)
+			| ((normal as u32) << 18)
+			| (v.ao << 21)
+			| (corner << 23)
+			| (v.tint << 25),
+		v.tex,
+	]
 }
 
 /// One vertex's non-positional attributes on their way into `pack`.
@@ -316,7 +325,7 @@ fn emit_face(
 	};
 	for &ci in &order {
 		let (cx, cy, cz) = corners[ci];
-		out.push(pack(
+		out.extend_from_slice(&pack(
 			Vert {
 				pos: (cx as u32, cy as u32, cz as u32),
 				tex,
@@ -447,7 +456,7 @@ mod tests {
 	#[test]
 	fn lone_dirt_has_six_faces() {
 		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
-		assert_eq!(m.solid.len(), 6 * 4);
+		assert_eq!(m.solid.len(), 6 * 8);
 		assert!(m.water.is_empty());
 	}
 
@@ -462,7 +471,7 @@ mod tests {
 		// water, water is not solid → dirt top IS visible through water).
 		let water_faces = m.water.len() / 8; // two words per water vertex
 		assert_eq!(water_faces, 5, "water faces air on 4 sides + top");
-		let solid_faces = m.solid.len() / 4;
+		let solid_faces = m.solid.len() / 8;
 		assert_eq!(solid_faces, 6, "dirt visible through water above");
 	}
 
@@ -482,7 +491,7 @@ mod tests {
 		d.set(0, 8, 8, B::Dirt); // on the −x border
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		assert_eq!(
-			m.solid.len() / 4,
+			m.solid.len() / 8,
 			5,
 			"border face toward missing neighbor suppressed"
 		);
@@ -500,7 +509,7 @@ mod tests {
 			}
 		});
 		let m = mesh_chunk(&input, ZERO);
-		assert_eq!(m.solid.len() / 4, 6, "top face vs air sentinel");
+		assert_eq!(m.solid.len() / 8, 6, "top face vs air sentinel");
 	}
 
 	#[test]
@@ -517,7 +526,7 @@ mod tests {
 			}
 		});
 		let m = mesh_chunk(&input, ZERO);
-		assert_eq!(m.solid.len() / 4, 5, "+x face occluded by neighbor block");
+		assert_eq!(m.solid.len() / 8, 5, "+x face occluded by neighbor block");
 	}
 
 	#[test]
@@ -561,28 +570,48 @@ mod tests {
 
 	#[test]
 	fn packed_vertex_roundtrip() {
-		let v = pack(
+		// Layer 700 proves the 10-bit field (the old format capped at 64).
+		let [w0, w1] = pack(
 			Vert {
 				pos: (16, 7, 3),
-				tex: 37,
+				tex: 700,
 				ao: 1,
 				tint: 5,
 			},
 			Dir::East,
 			2,
 		);
-		assert_eq!(v & 0x1f, 16);
-		assert_eq!((v >> 5) & 0x1f, 7);
-		assert_eq!((v >> 10) & 0x1f, 3);
-		assert_eq!((v >> 15) & 0x7, Dir::East as u32);
-		assert_eq!((v >> 18) & 0x3, 1);
-		assert_eq!((v >> 20) & 0x3, 2);
-		assert_eq!((v >> 23) & 0x3f, 37);
-		assert_eq!(v >> 29, 5);
+		assert_eq!(x_of(w0), 16);
+		assert_eq!(y_of(w0), 7);
+		assert_eq!(z_of(w0), 3);
+		assert_eq!(w0 & 0x3f, 32, "positions are stored in half-block units");
+		assert_eq!(dir_of(w0), Dir::East as u32);
+		assert_eq!(ao_of(w0), 1);
+		assert_eq!(corner_of(w0), 2);
+		assert_eq!(tint_of(w0), 5);
+		assert_eq!(w1 & 0x3ff, 700);
 	}
 
-	fn tint_of(v: u32) -> u32 {
-		v >> 29
+	// Two-word decode helpers — the mirror of `pack`. Positions come back
+	// in whole blocks (all emitted lattice points are even half-units).
+	fn x_of(w0: u32) -> u32 {
+		(w0 & 0x3f) / 2
+	}
+
+	fn y_of(w0: u32) -> u32 {
+		((w0 >> 6) & 0x3f) / 2
+	}
+
+	fn z_of(w0: u32) -> u32 {
+		((w0 >> 12) & 0x3f) / 2
+	}
+
+	fn dir_of(w0: u32) -> u32 {
+		(w0 >> 18) & 0x7
+	}
+
+	fn tint_of(w0: u32) -> u32 {
+		(w0 >> 25) & 0x7
 	}
 
 	#[test]
@@ -634,9 +663,9 @@ mod tests {
 		for q in m.chunks(8) {
 			let got: std::collections::HashSet<(u32, u32, u32)> = q
 				.chunks(2)
-				.map(|p| (p[0] & 0x1f, (p[0] >> 5) & 0x1f, (p[0] >> 10) & 0x1f))
+				.map(|p| (x_of(p[0]), y_of(p[0]), z_of(p[0])))
 				.collect();
-			if (q[0] >> 15) & 0x7 == dir as u32 && got == want {
+			if dir_of(q[0]) == dir as u32 && got == want {
 				return [(q[0], q[1]), (q[2], q[3]), (q[4], q[5]), (q[6], q[7])];
 			}
 		}
@@ -644,11 +673,11 @@ mod tests {
 	}
 
 	fn drop_of(w1: u32) -> u32 {
-		w1 & 0xf
+		(w1 >> 10) & 0xf
 	}
 
 	fn falling_of(w1: u32) -> bool {
-		(w1 >> 4) & 1 == 1
+		(w1 >> 14) & 1 == 1
 	}
 
 	#[test]
@@ -663,10 +692,9 @@ mod tests {
 		}
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (w0, w1) in side {
-			let y = (w0 >> 5) & 0x1f;
 			assert_eq!(
 				drop_of(w1),
-				u32::from(y == 9),
+				u32::from(y_of(w0) == 9),
 				"top verts drop, bottom full"
 			);
 		}
@@ -698,8 +726,7 @@ mod tests {
 		// like any surface water; everything is flagged falling.
 		assert_eq!(m.water.len() / 8, 6);
 		for pair in m.water.chunks(2) {
-			let y = (pair[0] >> 5) & 0x1f;
-			assert_eq!(drop_of(pair[1]), u32::from(y == 9));
+			assert_eq!(drop_of(pair[1]), u32::from(y_of(pair[0]) == 9));
 			assert!(falling_of(pair[1]));
 		}
 		// Mid-column (falling water above): a complete cube, no drop.
@@ -729,12 +756,12 @@ mod tests {
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		let upper = water_quad(&m.water, 8, 9, 8, Dir::Top);
 		for (w0, w1) in upper {
-			let expect = if w0 & 0x1f == 9 { 9 } else { 2 };
+			let expect = if x_of(w0) == 9 { 9 } else { 2 };
 			assert_eq!(drop_of(w1), expect, "downhill edge plunges");
 		}
 		let lower = water_quad(&m.water, 9, 8, 8, Dir::Top);
 		for (w0, w1) in lower {
-			let expect = if w0 & 0x1f == 9 { 0 } else { 2 };
+			let expect = if x_of(w0) == 9 { 0 } else { 2 };
 			assert_eq!(drop_of(w1), expect, "uphill edge pins full");
 		}
 		// The upper cell's downhill side face collapsed to zero area and
@@ -762,7 +789,7 @@ mod tests {
 		}
 		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (w0, w1) in fall_top {
-			let expect = if w0 & 0x1f == 9 { 2 } else { 1 };
+			let expect = if x_of(w0) == 9 { 2 } else { 1 };
 			assert_eq!(drop_of(w1), expect, "shared corners knit, outer dip");
 		}
 	}
@@ -777,7 +804,7 @@ mod tests {
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (w0, w1) in fall_top {
-			let expect = if w0 & 0x1f == 9 { 5 } else { 4 };
+			let expect = if x_of(w0) == 9 { 5 } else { 4 };
 			assert_eq!(drop_of(w1), expect, "lip = feeder − 1");
 		}
 	}
@@ -793,13 +820,13 @@ mod tests {
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
-			assert_eq!((w1 >> 5) & 7, 1, "flows toward +x");
+			assert_eq!((w1 >> 15) & 7, 1, "flows toward +x");
 		}
 		// Sources rest even with open sides.
 		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
-			assert_eq!((w1 >> 5) & 7, 0, "sources are still");
+			assert_eq!((w1 >> 15) & 7, 0, "sources are still");
 		}
 	}
 
@@ -811,22 +838,22 @@ mod tests {
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
-			assert_eq!((w1 >> 8) & 1, 1, "splash cell foams");
+			assert_eq!((w1 >> 18) & 1, 1, "splash cell foams");
 		}
 		// A fall still in the air doesn't.
 		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
-			assert_eq!((w1 >> 8) & 1, 0, "mid-air fall has no foam");
+			assert_eq!((w1 >> 18) & 1, 0, "mid-air fall has no foam");
 		}
 	}
 
 	fn fall_of(w1: u32) -> u32 {
-		(w1 >> 10) & 0xf
+		(w1 >> 20) & 0xf
 	}
 
 	fn splash_of(w1: u32) -> u32 {
-		(w1 >> 8) & 3
+		(w1 >> 18) & 3
 	}
 
 	#[test]
@@ -901,8 +928,7 @@ mod tests {
 		for (cell_y, expect) in [(12, 0), (8, 4)] {
 			let side = water_quad(&m.water, 8, cell_y, 8, Dir::West);
 			for (w0, w1) in side {
-				let vy = (w0 >> 5) & 0x1f;
-				let top_plane = vy == cell_y as u32 + 1;
+				let top_plane = y_of(w0) == cell_y as u32 + 1;
 				assert_eq!(fall_of(w1), expect + u32::from(!top_plane));
 			}
 		}
@@ -960,7 +986,7 @@ mod tests {
 		let top5 = water_quad(&m.water, 9, 8, 8, Dir::Top);
 		let d_at = |quad: &[(u32, u32); 4], lx: u32| -> Vec<u32> {
 			quad.iter()
-				.filter(|(w0, _)| w0 & 0x1f == lx)
+				.filter(|(w0, _)| x_of(*w0) == lx)
 				.map(|(_, w1)| drop_of(*w1))
 				.collect()
 		};
@@ -989,33 +1015,35 @@ mod tests {
 		let m = mesh_chunk(&input, ZERO);
 		let top = water_quad(&m.water, 15, 8, 8, Dir::Top);
 		for (w0, w1) in top {
-			let expect = if w0 & 0x1f == 16 { 3 } else { 1 };
+			let expect = if x_of(w0) == 16 { 3 } else { 1 };
 			assert_eq!(drop_of(w1), expect, "border corners mix in shell water");
 		}
 	}
 
-	fn ao_of(v: u32) -> u32 {
-		(v >> 18) & 0x3
+	fn ao_of(w0: u32) -> u32 {
+		(w0 >> 21) & 0x3
 	}
 
-	fn corner_of(v: u32) -> u32 {
-		(v >> 20) & 0x3
+	fn corner_of(w0: u32) -> u32 {
+		(w0 >> 23) & 0x3
 	}
 
-	/// The emitted quad (4 consecutive vertices) for the given block's
-	/// face toward `dir`, matched by normal + corner lattice positions.
+	/// The emitted quad (4 consecutive two-word vertices) for the given
+	/// block's face toward `dir`, matched by normal + corner lattice
+	/// positions. Returns the geometry words (w0) — solid tests never
+	/// inspect w1 beyond the layer, which has its own path.
 	fn quad_of(m: &[u32], bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
 		let want: std::collections::HashSet<(u32, u32, u32)> = face_corners(bx, by, bz, dir)
 			.iter()
 			.map(|&(x, y, z)| (x as u32, y as u32, z as u32))
 			.collect();
-		for q in m.chunks(4) {
+		for q in m.chunks(8) {
 			let got: std::collections::HashSet<(u32, u32, u32)> = q
-				.iter()
-				.map(|v| (v & 0x1f, (v >> 5) & 0x1f, (v >> 10) & 0x1f))
+				.chunks(2)
+				.map(|p| (x_of(p[0]), y_of(p[0]), z_of(p[0])))
 				.collect();
-			if (q[0] >> 15) & 0x7 == dir as u32 && got == want {
-				return [q[0], q[1], q[2], q[3]];
+			if dir_of(q[0]) == dir as u32 && got == want {
+				return [q[0], q[2], q[4], q[6]];
 			}
 		}
 		panic!("face of ({bx},{by},{bz}) toward {dir:?} not found");
@@ -1024,8 +1052,8 @@ mod tests {
 	#[test]
 	fn open_field_face_has_full_ao() {
 		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
-		for v in &m.solid {
-			assert_eq!(ao_of(*v), 3, "no occluders anywhere");
+		for pair in m.solid.chunks(2) {
+			assert_eq!(ao_of(pair[0]), 3, "no occluders anywhere");
 		}
 	}
 
@@ -1131,9 +1159,9 @@ mod tests {
 		d.set(8, 7, 8, B::Dirt);
 		let m = mesh_chunk(&isolated(&d), ZERO);
 		assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
-		let layer_of = |v: u32| (v >> 23) & 0x3f;
-		let leaf_faces = m.solid.iter().filter(|v| layer_of(**v) == 8).count() / 4;
-		let dirt_faces = m.solid.iter().filter(|v| layer_of(**v) == 1).count() / 4;
+		let layer_of = |p: &[u32]| p[1] & 0x3ff;
+		let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 8).count() / 4;
+		let dirt_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 1).count() / 4;
 		// Leaf A: 4 (leaf neighbor culled, dirt below occludes). Leaf B: 5.
 		assert_eq!(leaf_faces, 9);
 		// Dirt: 6 — its top face shows through the non-occluding leaf.
@@ -1146,15 +1174,13 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Grass);
 		let m = mesh_chunk(&isolated(&d), ZERO);
-		let layer_of = |v: u32| (v >> 23) & 0x3f;
-		let normal_of = |v: u32| (v >> 15) & 0x7;
-		for v in &m.solid {
-			let expect = match normal_of(*v) as usize {
+		for p in m.solid.chunks(2) {
+			let expect = match dir_of(p[0]) as usize {
 				n if n == Dir::Top as usize => 3,    // GrassTop
 				n if n == Dir::Bottom as usize => 1, // Dirt
 				_ => 2,                              // GrassSide
 			};
-			assert_eq!(layer_of(*v), expect);
+			assert_eq!(p[1] & 0x3ff, expect);
 		}
 	}
 }

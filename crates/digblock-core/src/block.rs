@@ -65,7 +65,7 @@ blocks! {
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
 /// layer field width. Every PROPS row is const-checked against it.
-pub const MAX_TEX_LAYERS: usize = 64;
+pub const MAX_TEX_LAYERS: usize = 1024;
 const _: () = {
 	let mut i = 0;
 	while i < BlockType::COUNT {
