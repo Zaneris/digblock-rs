@@ -22,12 +22,13 @@ just ios-device           # device build (requires full Xcode)
 just server               # dedicated multiplayer server (headless; journal persists in ./data)
 just bot -- --bots 4      # headless bot clients against a running server
 just compose wifi         # dockerized server behind tc netem (clean | wifi | cellular)
+just profile              # release-speed build with debug symbols (Instruments/profilers)
 just compose-bots wifi    # same + 4-bot soak, exits non-zero on missed snapshots
 ```
 
 Multiplayer: `just play` (server + connected client, one command; closing the window stops both) or `just server` then `just run -- --connect https://127.0.0.1:4433` (×N windows). Use `127.0.0.1`, not `localhost` — macOS resolves `localhost` to `::1` and the server binds IPv4 only, so `localhost` times out. A desktop client can also play against the *containerized* server — `just play-docker [clean|wifi|cellular]` runs the compose server (netem shapes the real client) — but this needs Docker Desktop's "Use kernel networking for UDP" enabled (Settings → Resources → Network); the default user-space UDP proxy drops QUIC handshake replies (host→container works, container→host is eaten).
 
-Run a single test: `cargo test -p digblock-core --test worldgen` (integration test file) or `cargo test -p digblock-core <test_name>`. CI (`.github/workflows/ci.yml`) runs the same steps as `just check` plus desktop and iOS builds; clippy warnings fail CI.
+Run a single test: `cargo test -p digblock-core --test worldgen` (integration test file) or `cargo test -p digblock-core <test_name>`. CI is **intentionally disabled** pre-deployment (`.github/workflows/ci.yml.disabled`); when re-enabled it runs the same steps as `just check` plus desktop and iOS builds, with clippy warnings failing the build. Until then, `just check` + `just check-ios` are the gate.
 
 Deterministic-capture / metrics flags for `just run`: `--seed <f64>`, `--tod <deg>` (freezes the sun), `--screenshot out.png`, `--frames N`, `--exit`, `--metrics-csv out.csv`, `--overlay` (start with the debug overlay on; backquote toggles it at runtime), `--no-vsync` (uncapped present), `--workers N`, `--draw-dist N`, `--mobile` (draw dist 10, 1024px shadows — the iOS config).
 
@@ -46,7 +47,7 @@ Workspace with six crates, two thin app launchers, and a dedicated server. The c
 - **`crates/digblock-net`** — multiplayer protocol + client netcode, **sans-IO** (no tokio/sockets — wasm-clean; a future browser client implements the same `NetTransport` trait over the WebTransport JS API). Wire format is postcard, append-only evolution, `PROTOCOL_VERSION` bumped on breaks. Holds the movement predictor (rewind/replay reconciliation), pending-edit tracking (authoritative-beats-pending precedence), remote-player interpolation, and an in-memory loopback transport that makes all of it plain-`cargo test`-able.
 - **`crates/digblock-net-native`** — the native transport driver: wtransport (WebTransport/QUIC) on a detached background thread, bridged over non-blocking channels. Only `apps/desktop` and the server's bot link it; iOS is untouched.
 - **`apps/desktop`**, **`apps/ios`** — thin launchers (arg parsing / staticlib entry).
-- **`apps/server`** — headless dedicated server (lib + `digblock-server`/`bot` bins). Authoritative sim on one 60Hz thread (`sim.rs`, socket-free and fully tested by injected events), wtransport net layer (`net.rs`), multi-center no-mesh chunk store (`store.rs`), append-only edit journal with boot compaction (`journal.rs` — terrain is never sent; join sync = seed + edits).
+- **`apps/server`** — headless dedicated server (lib + `digblock-server`/`bot` bins). Authoritative sim on one 60Hz thread (`sim/`, socket-free and fully tested by injected events), wtransport net layer (`net.rs`), multi-center no-mesh chunk store (`store.rs`), append-only edit journal with boot compaction (`journal.rs` — terrain is never sent; join sync = seed + edits).
 
 ### Multiplayer model
 

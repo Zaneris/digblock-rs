@@ -58,7 +58,7 @@ impl Default for ChunkData {
 }
 
 /// The shared all-air chunk. Worldgen returns clones of this Arc for every
-/// chunk above the terrain, so thousands of sky chunks share one 4KB body
+/// chunk above the terrain, so thousands of sky chunks share one 8KB body
 /// and are recognized by pointer to skip meshing and border-plane copies.
 /// `Arc::make_mut` in `set_block` copy-on-writes it, so editing an air
 /// chunk transparently turns it into a normal one.

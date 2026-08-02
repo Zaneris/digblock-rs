@@ -185,8 +185,6 @@ pub struct Engine {
 	/// Visual-only reconciliation smoothing: camera = player + offset,
 	/// decaying ~200 ms so corrections nudge instead of teleport.
 	correction_offset: Vec3,
-	/// Authoritative edits for chunks not Ready yet; retried each frame
-	/// until they land (join sync races local chunk generation).
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
@@ -603,7 +601,7 @@ impl Engine {
 			.is_some_and(|b| b.is_water())
 	}
 
-	fn frame_uniforms(&self, near_vp: glam::Mat4, wide_vp: glam::Mat4) -> FrameUniforms {
+	fn frame_uniforms(&self, near_vp: glam::Mat4) -> FrameUniforms {
 		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
 		let vp = self.camera.view_proj(aspect);
 		let caster = self.sun.caster();
@@ -634,7 +632,10 @@ impl Engine {
 			view_proj: vp.to_cols_array_2d(),
 			inv_view_proj: vp.inverse().to_cols_array_2d(),
 			light_near: near_vp.to_cols_array_2d(),
-			light_wide: wide_vp.to_cols_array_2d(),
+			// Placeholder: the renderer owns this slot — it overwrites it
+			// every frame with the ping-pong's active_vp (the map actually
+			// rendered, which may lag this frame's wide_vp by one job).
+			light_wide: glam::Mat4::IDENTITY.to_cols_array_2d(),
 			light_dir: [caster.dir.x, caster.dir.y, caster.dir.z, caster.strength],
 			light_color: [
 				atmos.light_color[0],
@@ -949,7 +950,7 @@ impl Game for Engine {
 		let texels = self.config.shadow_size as f32;
 		let near_vp = self.sun.near_vp(self.camera.pos, d, texels);
 		let wide_vp = self.sun.wide_vp(d, texels);
-		let frame = self.frame_uniforms(near_vp, wide_vp);
+		let frame = self.frame_uniforms(near_vp);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
 		let wide_due = std::mem::take(&mut self.wide_due);

@@ -56,6 +56,10 @@ impl WidePingPong {
 		}
 	}
 
+	/// Test-only: construction already starts with `refresh_needed`
+	/// (which is how device rebuild gets its refresh — a new Renderer
+	/// means a new WidePingPong); the tests use this to model that.
+	#[cfg(test)]
 	fn mark_refresh_needed(&mut self) {
 		self.refresh_needed = true;
 	}
@@ -359,13 +363,6 @@ impl ShadowCascades {
 		&self.bind_groups[sample.index]
 	}
 
-	/// Force a wide refresh next frame even if the sun hasn't moved
-	/// (device rebuild: the maps are new and empty).
-	#[allow(dead_code)]
-	pub fn mark_refresh_needed(&mut self) {
-		self.pingpong.mark_refresh_needed();
-	}
-
 	/// Whether this frame will run wide-refresh work (for stats; call
 	/// before `begin_frame`, which consumes the pending flag).
 	pub fn refresh_pending(&self, wide_due: bool) -> bool {
@@ -549,13 +546,7 @@ impl ShadowCascades {
 		pos: &ChunkPos,
 		chunk: &ChunkGpu,
 	) -> Option<u32> {
-		let c = glam::Vec3::new(
-			(pos.x * 16 + 8) as f32,
-			(pos.y * 16 + 8) as f32,
-			(pos.z * 16 + 8) as f32,
-		);
-		const RADIUS: f32 = 13.86;
-		if !planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS) {
+		if !crate::renderer::chunk_in_frustum(pos, &planes) {
 			return None;
 		}
 		let (buf, index_count) = chunk.solid.as_ref()?;

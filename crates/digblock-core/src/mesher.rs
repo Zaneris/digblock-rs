@@ -21,8 +21,7 @@ use crate::chunk::{ChunkData, CHUNK_SIZE};
 mod water;
 use water::{emit_water_face, WaterState};
 
-// Face directions moved to crate::dir; re-exported for existing users.
-pub use crate::dir::{Dir, DIRS};
+use crate::dir::{Dir, DIRS};
 
 /// Padded snapshot edge: the chunk plus a one-block shell from its
 /// neighbors.

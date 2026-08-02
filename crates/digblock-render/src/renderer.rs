@@ -157,9 +157,6 @@ pub struct Renderer {
 	/// `chunk_buf` is replaced.
 	chunk_bgl: wgpu::BindGroupLayout,
 	index_buf: wgpu::Buffer,
-	// Kept alive alongside materials_bg (mip/sampler access for tooling).
-	#[allow(dead_code)]
-	pub textures: BlockTextures,
 	chunks: FxHashMap<ChunkPos, ChunkGpu>,
 	free_slots: Vec<u32>,
 	next_slot: u32,
@@ -491,6 +488,7 @@ impl Renderer {
 			}],
 		});
 
+		// Consumed here: the bind group holds the texture/sampler refs.
 		let textures = BlockTextures::new(gpu);
 		let materials_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("materials"),
@@ -526,7 +524,6 @@ impl Renderer {
 			chunk_bg,
 			chunk_bgl,
 			index_buf,
-			textures,
 			chunks: FxHashMap::default(),
 			free_slots: Vec::new(),
 			next_slot: 0,
@@ -625,7 +622,7 @@ impl Renderer {
 			bytemuck::cast_slice(&[ox, oy, oz, 0.0]),
 		);
 		// All vertices are two u32 words (see mesher::pack).
-		let mut make = |verts: &Vec<u32>, words_per_vert: usize| -> Option<(wgpu::Buffer, u32)> {
+		let mut make = |verts: &Vec<u32>| -> Option<(wgpu::Buffer, u32)> {
 			if verts.is_empty() {
 				return None;
 			}
@@ -637,11 +634,11 @@ impl Renderer {
 					usage: wgpu::BufferUsages::VERTEX,
 				});
 			self.gpu_buffer_bytes += buf.size();
-			let quads = (verts.len() / (4 * words_per_vert)) as u32;
+			let quads = (verts.len() / (4 * 2)) as u32;
 			Some((buf, quads * 6))
 		};
-		let solid = make(&mesh.solid, 2);
-		let water = make(&mesh.water, 2);
+		let solid = make(&mesh.solid);
+		let water = make(&mesh.water);
 		self.chunks.insert(pos, ChunkGpu { solid, water, slot });
 		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);
 	}
@@ -805,19 +802,9 @@ impl Renderer {
 			t.begin_frame();
 		}
 		self.overlay.prepare(gpu, size, overlay, feed);
-		// Chunk bounding-sphere frustum cull against the four side planes
-		// (near/far deliberately ignored, like the Java
-		// sphereInFrustumWithoutNearFar).
+		// Chunk bounding-sphere frustum cull against the four side planes.
 		let planes = side_planes(view_proj);
-		let in_frustum = |pos: &ChunkPos| -> bool {
-			let c = glam::Vec3::new(
-				(pos.x * 16 + 8) as f32,
-				(pos.y * 16 + 8) as f32,
-				(pos.z * 16 + 8) as f32,
-			);
-			const RADIUS: f32 = 13.86; // 8·√3, chunk half-diagonal (Java)
-			planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS)
-		};
+		let in_frustum = |pos: &ChunkPos| -> bool { chunk_in_frustum(pos, &planes) };
 		gpu.queue
 			.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(frame));
 		let mut water_frame = *frame;
@@ -1025,6 +1012,20 @@ impl Renderer {
 		stats.draw_calls += stats.chunks_drawn + stats.water_draws;
 		stats
 	}
+}
+
+/// Chunk bounding-sphere test against extracted side planes. RADIUS is
+/// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
+/// near/far deliberately ignored). Shared by the main pass and the
+/// shadow passes so the magic constant lives once.
+pub(crate) fn chunk_in_frustum(pos: &ChunkPos, planes: &[glam::Vec4; 4]) -> bool {
+	let c = glam::Vec3::new(
+		(pos.x * 16 + 8) as f32,
+		(pos.y * 16 + 8) as f32,
+		(pos.z * 16 + 8) as f32,
+	);
+	const RADIUS: f32 = 13.86;
+	planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS)
 }
 
 /// Gribb–Hartmann frustum plane extraction: left/right/bottom/top only.

@@ -1,17 +1,18 @@
-// Water shader — fork of chunk.wgsl with a two-word vertex: word 0 is
-// the solid packing (position/normal/corner/texture; ao and tint bits
-// unused), word 1 carries per-vertex surface data. Bits 0-3 of word 1
-// are the drop code d (9 − mean corner amount): the vertex sinks
-// DROPS[d] below its lattice height, so a source surface sits at 8/9
-// and thinner flowing water lower along a concave curve, with corner
-// heights shared between adjacent cells (no cracks). Bit 4 marks
-// falling water (side faces scroll downward), bits 5-7 the horizontal
-// flow dir (0 still, 1 +x, 2 −x, 3 +z, 4 −z; top faces scroll along
-// it), bits 8-9 the splash code (3 = fall impact cell — continuous
-// churn; 2/1 = pool cells at Chebyshev 1/2 — expanding foam rings;
-// both boost ripple turbulence), bits 10-13 the vertex fall distance
-// (blocks below the lip, +1 on bottom-plane verts so interpolation is
-// continuous; drives gravity stretch and aeration whitening).
+// Water shader — fork of chunk.wgsl with the shared two-word vertex:
+// word 0 is the solid geometry packing (position/normal/corner; ao and
+// tint bits unused), word 1 holds the texture layer in bits 0-9 and the
+// per-vertex surface payload above it. Bits 10-13 are the drop code d
+// (9 − mean corner amount): the vertex sinks DROPS[d] below its lattice
+// height, so a source surface sits at 8/9 and thinner flowing water
+// lower along a concave curve, with corner heights shared between
+// adjacent cells (no cracks). Bit 14 marks falling water (side faces
+// scroll downward), bits 15-17 the horizontal flow dir (0 still, 1 +x,
+// 2 −x, 3 +z, 4 −z; top faces scroll along it), bits 18-19 the splash
+// code (3 = fall impact cell — continuous churn; 2/1 = pool cells at
+// Chebyshev 1/2 — expanding foam rings; both boost ripple turbulence),
+// bits 20-23 the vertex fall distance (blocks below the lip, +1 on
+// bottom-plane verts so interpolation is continuous; drives gravity
+// stretch and aeration whitening).
 // The animation clock rides in frame.light_color.w. Lighting matches
 // chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
 // UBO copy).

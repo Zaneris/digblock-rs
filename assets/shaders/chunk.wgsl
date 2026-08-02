@@ -73,7 +73,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
 	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
-	// per-block tint step (bits 29-31 → 0.95..1.05); tint is constant
+	// per-block tint step (bits 25-27 → 0.95..1.05); tint is constant
 	// across the quad, so the product interpolates exactly.
 	let jitter = 1.0 + (f32((w0 >> 25u) & 7u) - 3.5) * (0.10 / 7.0);
 	o.ao = (0.6 + 0.4 * f32((w0 >> 21u) & 3u) / 3.0) * jitter;
