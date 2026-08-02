@@ -111,6 +111,8 @@ pub enum RejectReason {
 	NotLoaded,
 	RateLimited,
 	BadBlock,
+	/// The server cannot persist edits right now (journal unhealthy).
+	ServerError,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

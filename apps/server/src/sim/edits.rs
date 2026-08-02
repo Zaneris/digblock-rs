@@ -73,6 +73,11 @@ impl Sim {
 		if !has_token {
 			return reject(RejectReason::RateLimited);
 		}
+		// A journal that can't write means edits would exist in memory
+		// only — refuse visibly rather than silently losing the world.
+		if !self.journal.healthy() {
+			return reject(RejectReason::ServerError);
+		}
 
 		let place_block = match req.kind {
 			EditKind::Dig => None,
@@ -189,6 +194,11 @@ impl Sim {
 	}
 
 	pub(super) fn step_fluid(&mut self) {
+		// Unhealthy journal: stop mutating the world durably — fluid
+		// writes are journaled edits like any other.
+		if !self.journal.healthy() {
+			return;
+		}
 		self.flow_accum = (self.flow_accum + TICK).min(1.0);
 		while self.flow_accum >= FLOW_STEP_SECS {
 			self.flow_accum -= FLOW_STEP_SECS;
@@ -285,6 +295,62 @@ mod tests {
 			.index
 			.column(edit.x.div_euclid(16), edit.z.div_euclid(16))
 			.is_some_and(|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u8))));
+	}
+
+	#[test]
+	fn unhealthy_journal_rejects_edits_with_server_error() {
+		let mut sim = flat_sim("jhealth");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+
+		sim.journal.force_write_failure = true;
+		// Each accepted dig hits one failing append; after three the
+		// journal flips unhealthy and the next request is refused.
+		for seq in 1..=4u32 {
+			let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z));
+			let Some(hit) = hit else { break };
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::EditRequest {
+					seq,
+					tick: 0,
+					origin: pos.to_array(),
+					dir: down.to_array(),
+					kind: EditKind::Dig,
+					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					normal: [0, 0, 0],
+				},
+			}]);
+		}
+		// The dig target changes as blocks vanish, so also fire a plain
+		// guaranteed-processed request once unhealthy.
+		assert!(!sim.journal.healthy(), "injected failures flipped health");
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 9,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Dig,
+				cell: [0, 0, 0],
+				normal: [0, 0, 0],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: RejectReason::ServerError,
+					..
+				}
+			)),
+			"unhealthy journal surfaces as ServerError: {:?}",
+			c.msgs
+		);
 	}
 
 	#[test]

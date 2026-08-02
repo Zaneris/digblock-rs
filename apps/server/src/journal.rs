@@ -52,11 +52,23 @@ impl JournalIndex {
 		self.columns.get(&(cx, cz))
 	}
 
+	/// Distinct cells with a final value — the compacted size.
+	pub fn live_cells(&self) -> u64 {
+		self.columns.values().map(|c| c.len() as u64).sum()
+	}
+
 	/// Columns that have at least one edit.
 	pub fn edited_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
 		self.columns.keys().copied()
 	}
 }
+
+/// Consecutive write failures before the journal reports unhealthy.
+const MAX_WRITE_FAILURES: u32 = 3;
+/// Compact on boot when the file holds this many times more records than
+/// live cells (and enough of them to matter).
+const COMPACT_RATIO: u64 = 2;
+const COMPACT_MIN_RECORDS: u64 = 10_000;
 
 pub struct Journal {
 	file: BufWriter<File>,
@@ -64,6 +76,13 @@ pub struct Journal {
 	dirty: bool,
 	wrote_since_sync: bool,
 	last_sync: Instant,
+	/// Consecutive append/flush/fsync failures; reset on success. Past
+	/// MAX_WRITE_FAILURES the sim stops accepting edits (rejecting with
+	/// ServerError) rather than diverging memory from disk silently.
+	write_failures: u32,
+	last_health_log: Option<Instant>,
+	#[cfg(test)]
+	pub force_write_failure: bool,
 }
 
 impl Journal {
@@ -127,6 +146,19 @@ impl Journal {
 				};
 				index.record(edit);
 			}
+
+			// Boot compaction: fluid appends every cell change, so the
+			// file grows without bound while the index stays last-write-
+			// wins small. Rewrite (tmp + atomic rename) when bloated.
+			// Seq numbers restart at the live-cell count — they are
+			// per-boot monotonic only, clients never persist them.
+			let records = (good_len - HEADER_LEN) / RECORD_LEN;
+			let live = index.live_cells();
+			if records > COMPACT_RATIO * live && records > COMPACT_MIN_RECORDS {
+				log::info!("journal compaction: {records} records -> {live} live cells");
+				file = compact(&path, seed, &index)?;
+				index.next_seq = live;
+			}
 		}
 		file.seek(SeekFrom::End(0))?;
 		Ok(Self {
@@ -135,7 +167,17 @@ impl Journal {
 			dirty: false,
 			wrote_since_sync: false,
 			last_sync: Instant::now(),
+			write_failures: 0,
+			last_health_log: None,
+			#[cfg(test)]
+			force_write_failure: false,
 		})
+	}
+
+	/// False once writes have failed repeatedly: the world can no longer
+	/// be persisted, so the sim must stop mutating it durably.
+	pub fn healthy(&self) -> bool {
+		self.write_failures < MAX_WRITE_FAILURES
 	}
 
 	/// Append one accepted edit; returns its global sequence number and
@@ -149,19 +191,49 @@ impl Journal {
 		rec[12] = edit.block;
 		rec[13] = by;
 		// rec[14..16] reserved, zero.
-		if let Err(e) = self.file.write_all(&rec) {
-			log::error!("journal write failed: {e}");
+		match self.write_record(&rec) {
+			Ok(()) => self.write_failures = 0,
+			Err(e) => self.note_write_failure("write", &e),
 		}
 		self.dirty = true;
 		self.wrote_since_sync = true;
 		self.index.record(edit)
 	}
 
+	fn write_record(&mut self, rec: &[u8]) -> std::io::Result<()> {
+		#[cfg(test)]
+		if self.force_write_failure {
+			return Err(std::io::Error::other("injected write failure"));
+		}
+		self.file.write_all(rec)
+	}
+
+	fn note_write_failure(&mut self, what: &str, e: &std::io::Error) {
+		self.write_failures = self.write_failures.saturating_add(1);
+		let announce = self.write_failures == MAX_WRITE_FAILURES
+			|| self
+				.last_health_log
+				.is_none_or(|at| at.elapsed().as_secs() >= 60);
+		if announce {
+			self.last_health_log = Some(Instant::now());
+			log::error!(
+				"journal {what} failed ({} consecutive): {e}{}",
+				self.write_failures,
+				if self.healthy() {
+					""
+				} else {
+					" — REJECTING further edits until writes recover"
+				}
+			);
+		}
+	}
+
 	/// Flush buffered writes; fsync at most once a second.
 	pub fn maintain(&mut self) {
 		if self.dirty {
-			if let Err(e) = self.file.flush() {
-				log::error!("journal flush failed: {e}");
+			match self.file.flush() {
+				Ok(()) => {}
+				Err(e) => self.note_write_failure("flush", &e),
 			}
 			self.dirty = false;
 		}
@@ -173,14 +245,45 @@ impl Journal {
 	/// Flush + fsync now (graceful shutdown).
 	pub fn sync(&mut self) {
 		if let Err(e) = self.file.flush() {
-			log::error!("journal flush failed: {e}");
+			self.note_write_failure("flush", &e);
 		}
 		if let Err(e) = self.file.get_ref().sync_data() {
-			log::error!("journal fsync failed: {e}");
+			self.note_write_failure("fsync", &e);
 		}
 		self.wrote_since_sync = false;
 		self.last_sync = Instant::now();
 	}
+}
+
+/// Rewrite the journal as one record per live cell: tmp file, fsync,
+/// atomic rename, reopen. Authorship is not tracked by the index, so
+/// compacted records carry SERVER_ID.
+fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File> {
+	let tmp = path.with_extension("journal.tmp");
+	{
+		let mut out = BufWriter::new(File::create(&tmp)?);
+		let mut header = Vec::with_capacity(HEADER_LEN as usize);
+		header.extend_from_slice(MAGIC);
+		header.extend_from_slice(&VERSION.to_le_bytes());
+		header.extend_from_slice(&0u16.to_le_bytes());
+		header.extend_from_slice(&seed.to_le_bytes());
+		out.write_all(&header)?;
+		for cells in index.columns.values() {
+			for (&(x, y, z), &block) in cells {
+				let mut rec = [0u8; RECORD_LEN as usize];
+				rec[0..4].copy_from_slice(&x.to_le_bytes());
+				rec[4..8].copy_from_slice(&y.to_le_bytes());
+				rec[8..12].copy_from_slice(&z.to_le_bytes());
+				rec[12] = block;
+				rec[13] = digblock_net::protocol::SERVER_ID;
+				out.write_all(&rec)?;
+			}
+		}
+		out.flush()?;
+		out.get_ref().sync_data()?;
+	}
+	std::fs::rename(&tmp, path)?;
+	OpenOptions::new().read(true).write(true).open(path)
 }
 
 fn bad_data(msg: impl Into<String>) -> std::io::Error {
@@ -239,6 +342,72 @@ mod tests {
 		let j = Journal::open(&dir, 7.0).unwrap();
 		assert_eq!(j.index.next_seq, 2, "partial record dropped");
 		assert!(j.index.column(0, 0).unwrap().contains_key(&(2, 100, 2)));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn boot_compaction_rewrites_bloated_files() {
+		let dir = std::env::temp_dir().join(format!("dbj-compact-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		// 30k records over 100 distinct cells (fluid-style churn).
+		{
+			let mut j = Journal::open(&dir, 9.0).unwrap();
+			for i in 0..30_000u32 {
+				let cell = (i % 100) as i32;
+				j.append(edit(cell, 120, 0, (i % 7) as u8), 1);
+			}
+			j.sync();
+		}
+		let path = dir.join(format!("world-{:016x}.journal", 9.0f64.to_bits()));
+		let bloated = std::fs::metadata(&path).unwrap().len();
+		assert_eq!(bloated, HEADER_LEN + 30_000 * RECORD_LEN);
+
+		// Reopen: compacts to 100 live cells, index identical.
+		let j = Journal::open(&dir, 9.0).unwrap();
+		assert_eq!(
+			std::fs::metadata(&path).unwrap().len(),
+			HEADER_LEN + 100 * RECORD_LEN
+		);
+		assert_eq!(j.index.next_seq, 100, "seq restarts at live count");
+		assert_eq!(j.index.live_cells(), 100);
+		// Last write for cell 5: i = 29905 -> block 29905 % 7.
+		let col = j.index.column(0, 0).unwrap();
+		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u8)));
+		drop(j);
+
+		// Reopen again: already compact, a no-op.
+		let j = Journal::open(&dir, 9.0).unwrap();
+		assert_eq!(
+			std::fs::metadata(&path).unwrap().len(),
+			HEADER_LEN + 100 * RECORD_LEN
+		);
+		assert_eq!(j.index.live_cells(), 100);
+
+		// And the compacted file still survives a torn tail.
+		drop(j);
+		let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+		f.write_all(&[0xCD; 5]).unwrap();
+		drop(f);
+		let j = Journal::open(&dir, 9.0).unwrap();
+		assert_eq!(j.index.live_cells(), 100, "torn tail after compaction ok");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn repeated_write_failures_flip_health() {
+		let dir = std::env::temp_dir().join(format!("dbj-health-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 11.0).unwrap();
+		assert!(j.healthy());
+		j.force_write_failure = true;
+		for i in 0..3 {
+			j.append(edit(i, 100, 0, 1), 1);
+		}
+		assert!(!j.healthy(), "three consecutive failures flip health");
+		// Recovery: a successful write resets the counter.
+		j.force_write_failure = false;
+		j.append(edit(9, 100, 0, 1), 1);
+		assert!(j.healthy(), "successful write restores health");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }
