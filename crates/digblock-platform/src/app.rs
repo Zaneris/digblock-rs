@@ -61,12 +61,22 @@ struct GpuReady {
 	reinit: bool,
 }
 
+/// Events posted back into the winit loop from async/browser contexts
+/// (wasm only; native never constructs one).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+enum UserEvent {
+	/// Async GPU init handing back its result.
+	GpuReady(GpuReady),
+	/// Browser pointer-lock truth from the pointerlockchange listener.
+	PointerLock { locked: bool },
+}
+
 struct App<G: Game> {
 	state: AppState,
 	/// Route back into the event loop from async contexts (wasm GPU init;
 	/// unused native — init is synchronous there).
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-	proxy: winit::event_loop::EventLoopProxy<GpuReady>,
+	proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 	/// The pure decision core (lifecycle.rs); `state` holds the resources
 	/// its Phase mirrors. All transitions route through `dispatch`.
 	lifecycle: Lifecycle,
@@ -102,7 +112,7 @@ struct App<G: Game> {
 const DRILL_WATCHDOG: Duration = Duration::from_secs(60);
 
 pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
-	let event_loop = EventLoop::<GpuReady>::with_user_event()
+	let event_loop = EventLoop::<UserEvent>::with_user_event()
 		.build()
 		.expect("event loop");
 	event_loop.set_control_flow(ControlFlow::Wait);
@@ -390,6 +400,9 @@ impl<G: Game> App<G> {
 		#[cfg(target_arch = "wasm32")]
 		{
 			let _ = el;
+			// Once per launch (reinit_device bypasses init_all, so no
+			// double install).
+			install_pointer_lock_listeners(&self.proxy);
 			self.spawn_gpu_init(window, false);
 		}
 	}
@@ -403,12 +416,12 @@ impl<G: Game> App<G> {
 		wasm_bindgen_futures::spawn_local(async move {
 			let (gpu, surface, config) = init_gpu(w, no_vsync).await;
 			// Send fails only if the loop is gone — nothing to do then.
-			let _ = proxy.send_event(GpuReady {
+			let _ = proxy.send_event(UserEvent::GpuReady(GpuReady {
 				gpu,
 				surface,
 				config,
 				reinit,
-			});
+			}));
 		});
 		self.state = AppState::WaitingForGpu { window };
 	}
@@ -528,11 +541,17 @@ impl<G: Game> App<G> {
 		// Cursor-grab reconcile (edge-triggered, one frame behind update —
 		// imperceptible): menu opening releases the cursor; menu closing
 		// re-grabs it. Level-holding at `true` never grabs on its own —
-		// that stays with the click-to-grab path.
+		// that stays with the click-to-grab path. On the web the rising
+		// edge is suppressed: a lock request from rAF context carries no
+		// user gesture and Chrome rejects it — re-grabs happen only from
+		// the gesture paths (clicks, keydowns).
 		let wants = self.game.wants_cursor_grab();
 		if self.cursor_grabbed && !wants {
 			self.grab_cursor(false);
-		} else if !self.cursor_grabbed && wants && !self.prev_wants_grab {
+		} else if !self.cursor_grabbed
+			&& wants && !self.prev_wants_grab
+			&& cfg!(not(target_arch = "wasm32"))
+		{
 			self.grab_cursor(true);
 		}
 		self.prev_wants_grab = wants;
@@ -686,51 +705,146 @@ impl<G: Game> App<G> {
 
 	fn grab_cursor(&mut self, grab: bool) {
 		if let AppState::Running(r) = &self.state {
-			let mode = if grab {
-				winit::window::CursorGrabMode::Locked
-			} else {
-				winit::window::CursorGrabMode::None
-			};
-			let mode_ok = r
-				.window
-				.set_cursor_grab(mode)
-				.or_else(|_| {
-					r.window.set_cursor_grab(if grab {
-						winit::window::CursorGrabMode::Confined
-					} else {
-						winit::window::CursorGrabMode::None
-					})
-				})
-				.is_ok();
-			if mode_ok {
-				r.window.set_cursor_visible(!grab);
-				self.cursor_grabbed = grab;
+			#[cfg(target_arch = "wasm32")]
+			{
+				if grab {
+					// Async request: winit's Ok does not mean the lock
+					// happened — only the pointerlockchange listener flips
+					// `cursor_grabbed` and hides the cursor.
+					let _ = r
+						.window
+						.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+				} else {
+					// exitPointerLock never fails: apply immediately; the
+					// echoing pointerlockchange dedupes in the handler.
+					let _ = r
+						.window
+						.set_cursor_grab(winit::window::CursorGrabMode::None);
+					r.window.set_cursor_visible(true);
+					self.cursor_grabbed = false;
+				}
 			}
+			#[cfg(not(target_arch = "wasm32"))]
+			{
+				let mode = if grab {
+					winit::window::CursorGrabMode::Locked
+				} else {
+					winit::window::CursorGrabMode::None
+				};
+				let mode_ok = r
+					.window
+					.set_cursor_grab(mode)
+					.or_else(|_| {
+						r.window.set_cursor_grab(if grab {
+							winit::window::CursorGrabMode::Confined
+						} else {
+							winit::window::CursorGrabMode::None
+						})
+					})
+					.is_ok();
+				if mode_ok {
+					r.window.set_cursor_visible(!grab);
+					self.cursor_grabbed = grab;
+				}
+			}
+		}
+	}
+
+	/// Apply browser pointer-lock truth (wasm pointerlockchange). Our own
+	/// exit calls flip `cursor_grabbed` synchronously, so the echoing event
+	/// arrives with `locked == cursor_grabbed` and is a no-op.
+	fn on_pointer_lock_change(&mut self, locked: bool) {
+		if locked == self.cursor_grabbed {
+			return;
+		}
+		self.cursor_grabbed = locked;
+		if let AppState::Running(r) = &self.state {
+			r.window.set_cursor_visible(!locked);
+			if !locked {
+				// Keep winit's internal grab intent in sync with the browser
+				// so it doesn't re-request a stale Locked mode on its own.
+				let _ = r
+					.window
+					.set_cursor_grab(winit::window::CursorGrabMode::None);
+			}
+		}
+		if !locked {
+			// Browser-initiated unlock (Escape, tab switch): clear held keys
+			// and let the engine pause into its menu.
+			self.game.input(InputEvent::PointerLockLost);
+		}
+	}
+
+	/// Re-grab from inside DOM event dispatch (a genuine user gesture, the
+	/// only context Chrome honors) when this input just closed the menu.
+	#[cfg(target_arch = "wasm32")]
+	fn gesture_regrab(&mut self, wants_before: bool) {
+		if !wants_before && self.game.wants_cursor_grab() {
+			self.grab_cursor(true);
 		}
 	}
 }
 
-impl<G: Game> ApplicationHandler<GpuReady> for App<G> {
+/// Browser truth for pointer lock, routed into the winit loop as user
+/// events. Page-lifetime listeners: leaking the closures is deliberate.
+#[cfg(target_arch = "wasm32")]
+fn install_pointer_lock_listeners(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
+	use wasm_bindgen::closure::Closure;
+	use wasm_bindgen::JsCast;
+	let document = web_sys::window()
+		.and_then(|w| w.document())
+		.expect("document");
+	let doc = document.clone();
+	let p = proxy.clone();
+	let on_change = Closure::<dyn FnMut()>::new(move || {
+		// Fixed id contract with the apps/web page (same as window_attrs).
+		let locked = doc
+			.pointer_lock_element()
+			.is_some_and(|e| e.id() == "digblock-canvas");
+		let _ = p.send_event(UserEvent::PointerLock { locked });
+	});
+	document
+		.add_event_listener_with_callback("pointerlockchange", on_change.as_ref().unchecked_ref())
+		.expect("pointerlockchange listener");
+	on_change.forget();
+	let on_error = Closure::<dyn FnMut()>::new(move || {
+		// Expected after Escape (Chrome's relock cooldown) or gesture-less
+		// requests; state stays truthful via pointerlockchange — log only.
+		log::warn!("pointer lock request rejected by the browser");
+	});
+	document
+		.add_event_listener_with_callback("pointerlockerror", on_error.as_ref().unchecked_ref())
+		.expect("pointerlockerror listener");
+	on_error.forget();
+}
+
+impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 	fn resumed(&mut self, el: &ActiveEventLoop) {
 		// The decision core owns idempotence (macOS fires Resumed once at
 		// startup after init) and the deferred device-loss recovery.
 		self.dispatch(LcEvent::OsResumed, el);
 	}
 
-	/// Async GPU init handing back its result (wasm; never fires native).
-	fn user_event(&mut self, el: &ActiveEventLoop, ev: GpuReady) {
-		match std::mem::replace(&mut self.state, AppState::Uninitialized) {
-			AppState::WaitingForGpu { window } => {
-				if ev.reinit {
-					self.finish_reinit(window, ev.gpu, ev.surface, ev.config);
-				} else {
-					self.finish_init(window, ev.gpu, ev.surface, ev.config, el);
+	/// Wasm-only arrivals: async GPU init results and pointer-lock truth
+	/// (never fires native).
+	fn user_event(&mut self, el: &ActiveEventLoop, ev: UserEvent) {
+		match ev {
+			UserEvent::GpuReady(ev) => {
+				match std::mem::replace(&mut self.state, AppState::Uninitialized) {
+					AppState::WaitingForGpu { window } => {
+						if ev.reinit {
+							self.finish_reinit(window, ev.gpu, ev.surface, ev.config);
+						} else {
+							self.finish_init(window, ev.gpu, ev.surface, ev.config, el);
+						}
+					}
+					other => {
+						log::error!("GpuReady outside WaitingForGpu — dropping");
+						self.state = other;
+					}
 				}
 			}
-			other => {
-				log::error!("GpuReady outside WaitingForGpu — dropping");
-				self.state = other;
-			}
+			UserEvent::PointerLock { locked } => self.on_pointer_lock_change(locked),
 		}
 	}
 
@@ -772,6 +886,10 @@ impl<G: Game> ApplicationHandler<GpuReady> for App<G> {
 						button: map_button(button),
 						pressed: state.is_pressed(),
 					});
+					// A click that just closed the menu (e.g. "Back to
+					// Game") re-locks from inside its own gesture.
+					#[cfg(target_arch = "wasm32")]
+					self.gesture_regrab(false);
 				}
 			}
 			WindowEvent::CursorMoved { position, .. } => {
@@ -820,6 +938,8 @@ impl<G: Game> ApplicationHandler<GpuReady> for App<G> {
 					// Escape reaches the game like any key: the menu owns the
 					// policy (open/back out). Quitting is window close/Cmd-Q.
 					PhysicalKey::Code(code) => {
+						#[cfg(target_arch = "wasm32")]
+						let wants_before = self.game.wants_cursor_grab();
 						self.game.input(InputEvent::Key {
 							key: map_key(code),
 							pressed,
@@ -834,6 +954,10 @@ impl<G: Game> ApplicationHandler<GpuReady> for App<G> {
 								}
 							}
 						}
+						// A key that just closed the menu (Escape, Enter)
+						// re-locks from inside its own gesture.
+						#[cfg(target_arch = "wasm32")]
+						self.gesture_regrab(wants_before);
 					}
 					PhysicalKey::Unidentified(_) => {}
 				}

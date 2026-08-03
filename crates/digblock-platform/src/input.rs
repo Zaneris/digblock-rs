@@ -78,6 +78,10 @@ pub enum InputEvent {
 	},
 	/// Engine must clear all held keys/touches.
 	FocusLost,
+	/// Web only: the browser revoked pointer lock (user pressed Escape,
+	/// switched tabs) while the game still wanted it. Engine must clear
+	/// held state and should surface its pause UI. Never sent natively.
+	PointerLockLost,
 }
 
 pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {

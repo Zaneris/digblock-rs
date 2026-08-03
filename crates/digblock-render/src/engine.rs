@@ -766,7 +766,7 @@ impl Game for Engine {
 		// not leak (typing a name would also walk). FocusLost still clears
 		// held state.
 		if self.menu.is_open() {
-			if matches!(event, InputEvent::FocusLost) {
+			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 			} else {
@@ -833,6 +833,14 @@ impl Game for Engine {
 			InputEvent::FocusLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
+			}
+			InputEvent::PointerLockLost => {
+				self.keys = HeldKeys::default();
+				self.touch.clear();
+				// Web parity with desktop Escape: a browser-initiated unlock
+				// pauses into the menu (no-op when the menu is disabled — the
+				// shell's click-to-recapture covers that case).
+				self.menu.open();
 			}
 			// Only arrive ungrabbed (menu transitions); nothing in-game
 			// consumes them.
