@@ -115,10 +115,15 @@ pub struct Menu {
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
 	cursor: (f32, f32),
+	/// One-shot scripted join (a name filter; empty = first server):
+	/// when services arrive, walk the exact user path — open the
+	/// browser, pick the matching row, join — so the Connect handoff
+	/// needs no special case. Web `?join` / scripted flows.
+	auto_join: Option<String>,
 }
 
 impl Menu {
-	pub fn new(enabled: bool, name: String) -> Self {
+	pub fn new(enabled: bool, name: String, auto_join: Option<String>) -> Self {
 		Self {
 			enabled,
 			services_available: false,
@@ -128,11 +133,15 @@ impl Menu {
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
 			cursor: (-1.0, -1.0),
+			auto_join,
 		}
 	}
 
 	pub fn set_services_available(&mut self) {
 		self.services_available = true;
+		if self.enabled && self.auto_join.is_some() {
+			self.activate(Act::OpenMultiplayer);
+		}
 	}
 
 	pub fn is_open(&self) -> bool {
@@ -200,6 +209,23 @@ impl Menu {
 					}
 					b.fetching = false;
 					b.sel = 0;
+				}
+				// Scripted join: pick the row a user would and go.
+				if let Some(filter) = self.auto_join.take() {
+					let row = match &self.screen {
+						Some(Screen::Browser(b)) => b.rows.iter().position(|r| {
+							r.entry.name.to_lowercase().contains(&filter.to_lowercase())
+						}),
+						_ => None,
+					};
+					match row {
+						Some(i) => self.activate(Act::JoinRow(i)),
+						None => {
+							if let Some(Screen::Browser(b)) = &mut self.screen {
+								b.status = Some("auto-join: no matching server".into());
+							}
+						}
+					}
 				}
 			}
 			MenuResponse::Ping { server_id, ms } => {
@@ -639,7 +665,7 @@ mod tests {
 
 	#[test]
 	fn disabled_menu_never_opens() {
-		let mut menu = Menu::new(false, "ted".into());
+		let mut menu = Menu::new(false, "ted".into(), None);
 		assert!(!menu.is_open());
 		menu.open();
 		assert!(!menu.is_open());
@@ -647,7 +673,7 @@ mod tests {
 
 	#[test]
 	fn root_play_local_closes_and_escape_reopens() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		assert!(menu.is_open());
 		menu.handle_key(Key::Enter); // Play Local
 		assert!(!menu.is_open());
@@ -657,7 +683,7 @@ mod tests {
 
 	#[test]
 	fn multiplayer_requires_services() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		// Without services the only act is Play Local; Down stays there.
 		assert_eq!(menu.acts().len(), 1);
 		menu.set_services_available();
@@ -666,7 +692,7 @@ mod tests {
 
 	#[test]
 	fn browser_flow_join_and_fail_returns_with_status() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
 		assert!(matches!(
@@ -710,7 +736,7 @@ mod tests {
 
 	#[test]
 	fn empty_name_blocks_join() {
-		let mut menu = Menu::new(true, String::new());
+		let mut menu = Menu::new(true, String::new(), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
 		let _ = menu.take_commands(); // drain the RefreshServers from opening
@@ -723,7 +749,7 @@ mod tests {
 
 	#[test]
 	fn text_edits_name_with_cap_and_backspace() {
-		let mut menu = Menu::new(true, String::new());
+		let mut menu = Menu::new(true, String::new(), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
 		for ch in "ted!".chars() {
@@ -749,7 +775,7 @@ mod tests {
 
 	#[test]
 	fn welcome_closes_menu_and_cancel_restores_browser() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
@@ -775,7 +801,7 @@ mod tests {
 
 	#[test]
 	fn click_hits_rows() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		menu.set_services_available();
 		// Click "Multiplayer" (second selectable row).
 		let view = menu.view(SIZE, false);
@@ -801,7 +827,7 @@ mod tests {
 
 	#[test]
 	fn leave_server_appears_when_connected() {
-		let mut menu = Menu::new(true, "ted".into());
+		let mut menu = Menu::new(true, "ted".into(), None);
 		menu.set_connected(true);
 		let acts = menu.acts();
 		assert_eq!(acts.len(), 2); // Back to Game + Leave Server (no services)

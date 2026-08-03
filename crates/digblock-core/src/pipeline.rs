@@ -13,7 +13,7 @@
 //! shell cells could shade an existing face.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
@@ -101,8 +101,7 @@ pub struct Pipeline {
 	seed: f64,
 	draw_dist: i32,
 	store: FxHashMap<ChunkPos, ChunkSlot>,
-	job_tx: Sender<Job>,
-	result_rx: Receiver<JobResult>,
+	exec: Executor,
 	/// Pending columns (x, z) — generation is per-column, not per-chunk.
 	gen_heap: BinaryHeap<(Reverse<i64>, (i32, i32))>,
 	mesh_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
@@ -112,8 +111,46 @@ pub struct Pipeline {
 	deferred_edits: FxHashMap<(i32, i32, i32), crate::block::BlockType>,
 	scanned_once: bool,
 	in_flight: u32,
-	_workers: Vec<std::thread::JoinHandle<()>>,
 }
+
+/// How jobs run: a worker-thread pool (native), or synchronously inside
+/// `maintain` (`workers == 0` — the wasm main thread, and a native debug
+/// mode via `--workers 0`). Selected at runtime so the inline path is
+/// testable and benchable everywhere.
+enum Executor {
+	Inline {
+		/// Results of inline-executed jobs waiting for `drain_results`
+		/// (the drain's `upload_budget`/deadline can leave leftovers).
+		results: VecDeque<JobResult>,
+	},
+	Workers {
+		job_tx: Sender<Job>,
+		result_rx: Receiver<JobResult>,
+		_handles: Vec<std::thread::JoinHandle<()>>,
+	},
+}
+
+impl Executor {
+	fn try_recv(&mut self) -> Option<JobResult> {
+		match self {
+			Executor::Inline { results } => results.pop_front(),
+			Executor::Workers { result_rx, .. } => result_rx.try_recv().ok(),
+		}
+	}
+
+	fn has_pending(&self) -> bool {
+		match self {
+			Executor::Inline { results } => !results.is_empty(),
+			Executor::Workers { result_rx, .. } => !result_rx.is_empty(),
+		}
+	}
+}
+
+/// Per-`maintain` cap for the inline executor: one `Generate` ends the
+/// batch immediately (a column is ~16 chunks of uninterruptible work);
+/// otherwise up to this many mesh jobs run. A count, not a wall-clock
+/// deadline, because job granularity is what actually bounds the stall.
+const INLINE_MESH_CAP: usize = 4;
 
 fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 	let (dx, dy, dz) = ((a.x - b.x) as i64, (a.y - b.y) as i64, (a.z - b.z) as i64);
@@ -165,35 +202,52 @@ fn shell_affects(data: &ChunkData) -> [bool; 27] {
 
 impl Pipeline {
 	pub fn new(seed: f64, draw_dist: i32, workers: usize) -> Self {
-		// Deep enough that workers never starve between once-per-frame
-		// top-ups (a shallow queue capped throughput at ~queue+workers jobs
-		// per frame); shallow enough that priority ordering stays relevant —
-		// queued jobs can't be re-prioritized, only staleness-dropped.
-		let (job_tx, job_rx) = bounded::<Job>(workers * 16);
-		let (result_tx, result_rx) = unbounded::<JobResult>();
-		let workers = (0..workers)
-			.map(|i| {
-				let rx = job_rx.clone();
-				let tx = result_tx.clone();
-				std::thread::Builder::new()
-					.name(format!("chunk-worker-{i}"))
-					.spawn(move || worker_loop(rx, tx))
-					.expect("spawn worker")
-			})
-			.collect();
+		// No std threads on the web — force the inline executor there no
+		// matter what the caller asked for.
+		let workers = if cfg!(target_arch = "wasm32") {
+			0
+		} else {
+			workers
+		};
+		let exec = if workers == 0 {
+			Executor::Inline {
+				results: VecDeque::new(),
+			}
+		} else {
+			// Deep enough that workers never starve between once-per-frame
+			// top-ups (a shallow queue capped throughput at ~queue+workers
+			// jobs per frame); shallow enough that priority ordering stays
+			// relevant — queued jobs can't be re-prioritized, only
+			// staleness-dropped.
+			let (job_tx, job_rx) = bounded::<Job>(workers * 16);
+			let (result_tx, result_rx) = unbounded::<JobResult>();
+			let handles = (0..workers)
+				.map(|i| {
+					let rx = job_rx.clone();
+					let tx = result_tx.clone();
+					std::thread::Builder::new()
+						.name(format!("chunk-worker-{i}"))
+						.spawn(move || worker_loop(rx, tx))
+						.expect("spawn worker")
+				})
+				.collect();
+			Executor::Workers {
+				job_tx,
+				result_rx,
+				_handles: handles,
+			}
+		};
 		Self {
 			seed,
 			draw_dist,
 			store: FxHashMap::default(),
-			job_tx,
-			result_rx,
+			exec,
 			gen_heap: BinaryHeap::new(),
 			mesh_heap: BinaryHeap::new(),
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			deferred_edits: FxHashMap::default(),
 			scanned_once: false,
 			in_flight: 0,
-			_workers: workers,
 		}
 	}
 
@@ -206,7 +260,7 @@ impl Pipeline {
 		&mut self,
 		center: ChunkPos,
 		upload_budget: usize,
-		deadline: Option<std::time::Instant>,
+		deadline: Option<web_time::Instant>,
 	) -> Maintenance {
 		let mut out = Maintenance {
 			evicted: Vec::new(),
@@ -227,8 +281,14 @@ impl Pipeline {
 			self.scanned_once = true;
 			self.visibility_scan(&mut out.evicted);
 		}
+		// Inline jobs run before the drain so their results land this
+		// frame; workers instead get topped up after (they produce across
+		// frames anyway).
+		if matches!(self.exec, Executor::Inline { .. }) {
+			self.run_inline_jobs();
+		}
 		self.drain_results(&mut out, upload_budget, deadline);
-		out.saturated = !self.result_rx.is_empty();
+		out.saturated = self.exec.has_pending();
 		out.requeued = self.top_up_workers();
 		out.gen_queue = self.gen_heap.len() as u32;
 		out.mesh_queue = self.mesh_heap.len() as u32;
@@ -289,17 +349,17 @@ impl Pipeline {
 		&mut self,
 		out: &mut Maintenance,
 		upload_budget: usize,
-		deadline: Option<std::time::Instant>,
+		deadline: Option<web_time::Instant>,
 	) {
 		let mut landed: Vec<(i32, i32)> = Vec::new();
 		while out.meshed.len() < upload_budget {
 			// Generated results are the expensive drains (stack insert plus
 			// neighbor re-mesh cascade), so the deadline gates every pull,
 			// not just meshed ones.
-			if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+			if deadline.is_some_and(|d| web_time::Instant::now() >= d) {
 				break;
 			}
-			let Ok(result) = self.result_rx.try_recv() else {
+			let Some(result) = self.exec.try_recv() else {
 				break;
 			};
 			self.in_flight = self.in_flight.saturating_sub(1);
@@ -408,16 +468,15 @@ impl Pipeline {
 		self.apply_deferred_for(&landed);
 	}
 
-	/// Returns the number of jobs bounced back because workers were
-	/// saturated (0 or 1 — a bounce ends the loop).
-	fn top_up_workers(&mut self) -> u32 {
+	/// Nearest-first across both heaps; generation wins ties so terrain
+	/// exists before meshes want it. Loops past stale heap entries; None
+	/// means both heaps are exhausted.
+	fn pop_next_job(&mut self) -> Option<Job> {
 		loop {
-			// Nearest-first across both heaps; generation wins ties so
-			// terrain exists before meshes want it.
 			let gen_d = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 			let mesh_d = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
 			let job = match (gen_d, mesh_d) {
-				(None, None) => break,
+				(None, None) => return None,
 				(Some(_), None) => self.next_gen_job(),
 				(None, Some(_)) => self.next_mesh_job(),
 				(Some(g), Some(m)) => {
@@ -428,8 +487,47 @@ impl Pipeline {
 					}
 				}
 			};
-			let Some(job) = job else { continue };
-			match self.job_tx.try_send(job) {
+			if let Some(job) = job {
+				return Some(job);
+			}
+		}
+	}
+
+	/// Inline executor: run a bounded batch of jobs synchronously (see
+	/// `INLINE_MESH_CAP`). Results queue for `drain_results`, which still
+	/// applies the caller's budget/deadline.
+	fn run_inline_jobs(&mut self) {
+		let mut meshes = 0;
+		while meshes < INLINE_MESH_CAP {
+			let Some(job) = self.pop_next_job() else {
+				break;
+			};
+			let ends_batch = matches!(job, Job::Generate { .. });
+			let result = run_job(job);
+			self.in_flight += 1;
+			let Executor::Inline { results } = &mut self.exec else {
+				unreachable!("run_inline_jobs is only called on Inline")
+			};
+			results.push_back(result);
+			if ends_batch {
+				break;
+			}
+			meshes += 1;
+		}
+	}
+
+	/// Returns the number of jobs bounced back because workers were
+	/// saturated (0 or 1 — a bounce ends the loop). No-op on the inline
+	/// executor (its jobs ran in `run_inline_jobs`).
+	fn top_up_workers(&mut self) -> u32 {
+		if matches!(self.exec, Executor::Inline { .. }) {
+			return 0;
+		}
+		while let Some(job) = self.pop_next_job() {
+			let Executor::Workers { job_tx, .. } = &self.exec else {
+				unreachable!("checked above")
+			};
+			match job_tx.try_send(job) {
 				Ok(()) => self.in_flight += 1,
 				Err(TrySendError::Full(job)) => {
 					// Put it back; workers are saturated.
@@ -689,28 +787,33 @@ pub enum ApplyEdit {
 	Rejected,
 }
 
+/// The job body — two pure functions over owned snapshots. Shared by the
+/// worker threads and the inline executor.
+fn run_job(job: Job) -> JobResult {
+	let start = web_time::Instant::now();
+	match job {
+		Job::Generate { x, z, seed } => {
+			let stack = build_column(x, z, seed);
+			JobResult::Generated {
+				x,
+				z,
+				stack,
+				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
+			}
+		}
+		Job::Mesh { pos, gen, input } => {
+			let mesh = mesh_chunk(&input, (pos.x * 16, pos.y * 16, pos.z * 16));
+			JobResult::Meshed {
+				out: MeshOutput { pos, gen, mesh },
+				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
+			}
+		}
+	}
+}
+
 fn worker_loop(rx: Receiver<Job>, tx: Sender<JobResult>) {
 	while let Ok(job) = rx.recv() {
-		let start = std::time::Instant::now();
-		let result = match job {
-			Job::Generate { x, z, seed } => {
-				let stack = build_column(x, z, seed);
-				JobResult::Generated {
-					x,
-					z,
-					stack,
-					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
-				}
-			}
-			Job::Mesh { pos, gen, input } => {
-				let mesh = mesh_chunk(&input, (pos.x * 16, pos.y * 16, pos.z * 16));
-				JobResult::Meshed {
-					out: MeshOutput { pos, gen, mesh },
-					dur_ms: start.elapsed().as_secs_f32() * 1000.0,
-				}
-			}
-		};
-		if tx.send(result).is_err() {
+		if tx.send(run_job(job)).is_err() {
 			break; // pipeline dropped
 		}
 	}
@@ -986,5 +1089,37 @@ mod tests {
 		};
 		assert_eq!(p.apply_authoritative(9, 8, 8, other), ApplyEdit::Applied);
 		assert_eq!(p.block_at(9, 8, 8), Some(other));
+	}
+
+	/// The inline executor (workers == 0, the wasm path) must land the
+	/// exact same world as the worker pool.
+	#[test]
+	fn inline_executor_matches_worker_pool() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut inline = Pipeline::new(7.5, 4, 0);
+		let mut pool = Pipeline::new(7.5, 4, 2);
+		quiesce(&mut inline, center);
+		quiesce(&mut pool, center);
+
+		assert_eq!(inline.resident(), pool.resident());
+		for (pos, slot) in &inline.store {
+			let other = &pool.store[pos];
+			match (&slot.state, &other.state) {
+				(ChunkState::Ready(a), ChunkState::Ready(b)) => {
+					assert!(a.blocks == b.blocks, "chunk data differs at {pos:?}");
+				}
+				_ => panic!("chunk not Ready at {pos:?}"),
+			}
+		}
+
+		// Edits work identically through the inline path.
+		let cur = inline.block_at(8, 8, 8);
+		let b = if cur == Some(BlockType::Stone) {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		assert_eq!(inline.set_block(8, 8, 8, b), cur);
+		assert_eq!(inline.block_at(8, 8, 8), Some(b));
 	}
 }

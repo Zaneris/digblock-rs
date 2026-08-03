@@ -8,6 +8,7 @@ license.workspace = true
 glam.workspace = true
 rustc-hash.workspace = true
 crossbeam-channel.workspace = true
+web-time.workspace = true
 log.workspace = true
 
 [lints]

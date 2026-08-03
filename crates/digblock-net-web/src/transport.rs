@@ -1,0 +1,347 @@
+//! `NetTransport` over the browser's WebTransport API. Contract mirror
+//! of digblock-net-native's ChannelTransport: exactly one `Connected`
+//! (after the bidi control stream and its writer exist), exactly one
+//! `Disconnected` (three async producers race for it), status
+//! bookkeeping in `poll`, sends fire-and-forget, reliable bytes in
+//! arbitrary chunks (the netcode's FrameReader reassembles).
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
+
+#[wasm_bindgen]
+extern "C" {
+	type WebTransport;
+	#[wasm_bindgen(constructor, catch)]
+	fn new(url: &str, options: &JsValue) -> Result<WebTransport, JsValue>;
+	#[wasm_bindgen(method, getter)]
+	fn ready(this: &WebTransport) -> js_sys::Promise;
+	#[wasm_bindgen(method, getter)]
+	fn closed(this: &WebTransport) -> js_sys::Promise;
+	#[wasm_bindgen(method, getter)]
+	fn datagrams(this: &WebTransport) -> WebTransportDatagramDuplexStream;
+	#[wasm_bindgen(method, js_name = createBidirectionalStream)]
+	fn create_bidirectional_stream(this: &WebTransport) -> js_sys::Promise;
+	#[wasm_bindgen(method, catch)]
+	fn close(this: &WebTransport) -> Result<(), JsValue>;
+
+	type WebTransportDatagramDuplexStream;
+	#[wasm_bindgen(method, getter)]
+	fn readable(this: &WebTransportDatagramDuplexStream) -> ReadableStream;
+	#[wasm_bindgen(method, getter)]
+	fn writable(this: &WebTransportDatagramDuplexStream) -> WritableStream;
+
+	type WebTransportBidirectionalStream;
+	#[wasm_bindgen(method, getter)]
+	fn readable(this: &WebTransportBidirectionalStream) -> ReadableStream;
+	#[wasm_bindgen(method, getter)]
+	fn writable(this: &WebTransportBidirectionalStream) -> WritableStream;
+
+	type ReadableStream;
+	#[wasm_bindgen(method, js_name = getReader)]
+	fn get_reader(this: &ReadableStream) -> ReadableStreamDefaultReader;
+
+	type ReadableStreamDefaultReader;
+	#[wasm_bindgen(method)]
+	fn read(this: &ReadableStreamDefaultReader) -> js_sys::Promise;
+
+	type WritableStream;
+	#[wasm_bindgen(method, js_name = getWriter)]
+	fn get_writer(this: &WritableStream) -> WritableStreamDefaultWriter;
+
+	type WritableStreamDefaultWriter;
+	#[wasm_bindgen(method)]
+	fn write(this: &WritableStreamDefaultWriter, chunk: &JsValue) -> js_sys::Promise;
+}
+
+struct Shared {
+	events: VecDeque<TransportEvent>,
+	connected_sent: bool,
+	disconnected_sent: bool,
+}
+
+impl Shared {
+	fn push_disconnected(&mut self, reason: String) {
+		if !self.disconnected_sent {
+			self.disconnected_sent = true;
+			self.events
+				.push_back(TransportEvent::Disconnected { reason });
+		}
+	}
+}
+
+type SharedRef = Rc<RefCell<Shared>>;
+type WriterSlot = Rc<RefCell<Option<WritableStreamDefaultWriter>>>;
+
+pub struct WebTransportClient {
+	shared: SharedRef,
+	status: ConnStatus,
+	/// The WebTransport object (as a plain handle — the typed wrapper
+	/// moved into the driver task). None only when the constructor threw.
+	transport: Option<JsValue>,
+	/// None until the bidi control stream opens.
+	reliable_writer: WriterSlot,
+	datagram_writer: WriterSlot,
+	/// Swallows write-promise rejections (lossy by contract; without a
+	/// catch every dropped datagram logs an unhandled-rejection warning).
+	noop_catch: Closure<dyn FnMut(JsValue)>,
+}
+
+fn js_reason(v: &JsValue) -> String {
+	if let Some(s) = v.as_string() {
+		return s;
+	}
+	js_sys::Object::try_from(v)
+		.map(|o| String::from(o.to_string()))
+		.unwrap_or_else(|| format!("{v:?}"))
+}
+
+fn options(cert_hash: [u8; 32]) -> JsValue {
+	let hash = js_sys::Object::new();
+	js_sys::Reflect::set(&hash, &"algorithm".into(), &"sha-256".into()).expect("set");
+	js_sys::Reflect::set(
+		&hash,
+		&"value".into(),
+		&js_sys::Uint8Array::from(&cert_hash[..]).into(),
+	)
+	.expect("set");
+	let opts = js_sys::Object::new();
+	js_sys::Reflect::set(
+		&opts,
+		&"serverCertificateHashes".into(),
+		&js_sys::Array::of1(&hash),
+	)
+	.expect("set");
+	opts.into()
+}
+
+/// One reader loop; `datagram` picks the event kind. A `done` result or
+/// a rejection ends the connection (guarded: only the first reporter's
+/// reason survives).
+async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datagram: bool) {
+	loop {
+		let res = match JsFuture::from(reader.read()).await {
+			Ok(v) => v,
+			Err(e) => {
+				shared
+					.borrow_mut()
+					.push_disconnected(format!("stream read: {}", js_reason(&e)));
+				return;
+			}
+		};
+		let done = js_sys::Reflect::get(&res, &"done".into())
+			.ok()
+			.and_then(|d| d.as_bool())
+			.unwrap_or(true);
+		if done {
+			shared
+				.borrow_mut()
+				.push_disconnected("stream closed by server".into());
+			return;
+		}
+		let Ok(value) = js_sys::Reflect::get(&res, &"value".into()) else {
+			continue;
+		};
+		let bytes = value.unchecked_into::<js_sys::Uint8Array>().to_vec();
+		shared.borrow_mut().events.push_back(if datagram {
+			TransportEvent::Datagram(bytes)
+		} else {
+			TransportEvent::Reliable(bytes)
+		});
+	}
+}
+
+/// Connect with the server's pinned certificate hash (the only trust
+/// mode a browser can express for self-signed servers). Returns
+/// immediately with `Connecting`; `url` is a WebTransport URL, e.g.
+/// `https://127.0.0.1:4433`.
+pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
+	let shared: SharedRef = Rc::new(RefCell::new(Shared {
+		events: VecDeque::new(),
+		connected_sent: false,
+		disconnected_sent: false,
+	}));
+	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
+	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
+	let noop_catch = Closure::new(|_: JsValue| {});
+
+	let transport = match WebTransport::new(url, &options(cert_hash)) {
+		Ok(t) => t,
+		Err(e) => {
+			shared
+				.borrow_mut()
+				.push_disconnected(format!("endpoint: {}", js_reason(&e)));
+			return WebTransportClient {
+				shared,
+				status: ConnStatus::Connecting,
+				transport: None,
+				reliable_writer,
+				datagram_writer,
+				noop_catch,
+			};
+		}
+	};
+
+	let transport_handle: JsValue = AsRef::<JsValue>::as_ref(&transport).clone();
+
+	// Driver: ready → control stream → writers → the single Connected,
+	// then park on `closed` while the two read loops run.
+	{
+		let shared = shared.clone();
+		let reliable_writer = reliable_writer.clone();
+		let datagram_writer = datagram_writer.clone();
+		spawn_local(async move {
+			if let Err(e) = JsFuture::from(transport.ready()).await {
+				shared
+					.borrow_mut()
+					.push_disconnected(format!("connect: {}", js_reason(&e)));
+				return;
+			}
+			let bi = match JsFuture::from(transport.create_bidirectional_stream()).await {
+				Ok(v) => v.unchecked_into::<WebTransportBidirectionalStream>(),
+				Err(e) => {
+					shared
+						.borrow_mut()
+						.push_disconnected(format!("open stream: {}", js_reason(&e)));
+					return;
+				}
+			};
+			// Writers first — the engine reacts to Connected by sending
+			// the preamble + Hello, which must not be dropped.
+			*reliable_writer.borrow_mut() = Some(bi.writable().get_writer());
+			*datagram_writer.borrow_mut() = Some(transport.datagrams().writable().get_writer());
+			{
+				let mut s = shared.borrow_mut();
+				if !s.connected_sent {
+					s.connected_sent = true;
+					s.events.push_back(TransportEvent::Connected);
+				}
+			}
+			spawn_local(read_loop(bi.readable().get_reader(), shared.clone(), false));
+			spawn_local(read_loop(
+				transport.datagrams().readable().get_reader(),
+				shared.clone(),
+				true,
+			));
+			match JsFuture::from(transport.closed()).await {
+				Ok(_) => shared
+					.borrow_mut()
+					.push_disconnected("closed by server".into()),
+				Err(e) => shared
+					.borrow_mut()
+					.push_disconnected(format!("connection: {}", js_reason(&e))),
+			}
+		});
+	}
+
+	WebTransportClient {
+		shared,
+		status: ConnStatus::Connecting,
+		transport: Some(transport_handle),
+		reliable_writer,
+		datagram_writer,
+		noop_catch,
+	}
+}
+
+impl WebTransportClient {
+	fn write_to(&self, slot: &WriterSlot, bytes: &[u8]) {
+		if let Some(w) = &*slot.borrow() {
+			let arr: JsValue = js_sys::Uint8Array::from(bytes).into();
+			let _ = w.write(&arr).catch(&self.noop_catch);
+		}
+	}
+}
+
+impl NetTransport for WebTransportClient {
+	fn send_datagram(&mut self, bytes: &[u8]) {
+		// Best-effort by contract; browser drops on overflow.
+		self.write_to(&self.datagram_writer.clone(), bytes);
+	}
+
+	fn send_reliable(&mut self, bytes: &[u8]) {
+		// The browser buffers internally — the trait has no backpressure
+		// signal, matching the native driver's unbounded channel.
+		self.write_to(&self.reliable_writer.clone(), bytes);
+	}
+
+	fn poll(&mut self, out: &mut Vec<TransportEvent>) {
+		let mut shared = self.shared.borrow_mut();
+		for ev in shared.events.drain(..) {
+			match &ev {
+				TransportEvent::Connected => self.status = ConnStatus::Connected,
+				TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
+				_ => {}
+			}
+			out.push(ev);
+		}
+	}
+
+	fn status(&self) -> ConnStatus {
+		self.status
+	}
+}
+
+/// Time a throwaway WebTransport connect (QUIC+TLS handshake ≈ 2×RTT)
+/// and close — the browser mirror of digblock-net-native's `probe`, same
+/// measurement, "honest and consistent for ranking". Calls `done` with
+/// `Some(ms)` on success, `None` on failure or timeout.
+pub fn probe(
+	url: &str,
+	cert_hash: [u8; 32],
+	timeout_ms: u32,
+	done: impl FnOnce(Option<u32>) + 'static,
+) {
+	let transport = match WebTransport::new(url, &options(cert_hash)) {
+		Ok(t) => t,
+		Err(_) => {
+			done(None);
+			return;
+		}
+	};
+	spawn_local(async move {
+		let start = web_time::Instant::now();
+		let raced = js_sys::Promise::race(&js_sys::Array::of2(
+			&transport.ready(),
+			&timeout_sentinel(timeout_ms),
+		));
+		let ms = match JsFuture::from(raced).await {
+			// The sentinel string means the timeout won the race.
+			Ok(v) if v.as_string().as_deref() == Some("timeout") => None,
+			Ok(_) => Some(start.elapsed().as_millis() as u32),
+			Err(_) => None,
+		};
+		let _ = transport.close();
+		done(ms);
+	});
+}
+
+/// A promise that resolves to the string "timeout" after `ms`.
+fn timeout_sentinel(ms: u32) -> js_sys::Promise {
+	js_sys::Promise::new(&mut |resolve, _| {
+		web_sys::window()
+			.expect("window")
+			.set_timeout_with_callback_and_timeout_and_arguments_1(
+				&resolve,
+				ms as i32,
+				&JsValue::from_str("timeout"),
+			)
+			.expect("setTimeout");
+	})
+}
+
+impl Drop for WebTransportClient {
+	fn drop(&mut self) {
+		// Menu-cancel / engine-disconnect path: closing rejects the
+		// pending read promises, which unwinds the loops. Ignore "already
+		// closed" errors.
+		if let Some(t) = &self.transport {
+			let _ = t.unchecked_ref::<WebTransport>().close();
+		}
+	}
+}

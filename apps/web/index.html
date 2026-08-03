@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>DigBlock</title>
+	<style>
+		html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+		/* winit tracks this canvas's CSS size; wgpu sets the backing size
+		   on surface configure. */
+		#digblock-canvas { width: 100%; height: 100%; display: block; outline: none; }
+	</style>
+</head>
+<body>
+	<canvas id="digblock-canvas"></canvas>
+	<script type="module">
+		import init from "./pkg/digblock_web.js";
+		init().catch((e) => {
+			document.body.innerHTML =
+				`<pre style="color:#f66;padding:1em;white-space:pre-wrap">DigBlock failed to start.\n` +
+				`Chrome 113+ with WebGPU is required.\n\n${e}</pre>`;
+			throw e;
+		});
+	</script>
+</body>
+</html>

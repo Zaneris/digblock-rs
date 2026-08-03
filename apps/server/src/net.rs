@@ -51,7 +51,15 @@ const MAX_CONNECTIONS: usize = 512;
 /// (`CertPolicy::PinnedSha256`; the default dev posture is Insecure
 /// with a loud warning).
 pub fn make_endpoint(port: u16) -> anyhow::Result<(Endpoint<Server>, [u8; 32])> {
-	let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
+	// 10-day validity, NOT the wtransport default of exactly 14: Chrome
+	// caps `serverCertificateHashes` certs at 14 days and rejects at the
+	// boundary with any clock skew. Long-running servers must restart
+	// (re-registering the fresh hash) within the window regardless.
+	let identity = Identity::self_signed_builder()
+		.subject_alt_names(["localhost", "127.0.0.1", "::1"])
+		.from_now_utc()
+		.validity_days(10)
+		.build()?;
 	let hash = identity.certificate_chain().as_slice()[0].hash();
 	log::info!("cert sha-256: {}", hash.fmt(Sha256DigestFmt::BytesArray));
 	let hash_bytes: [u8; 32] = *hash.as_ref();

@@ -14,7 +14,7 @@ glam.workspace = true
 bytemuck.workspace = true
 rustc-hash.workspace = true
 image.workspace = true
-rand.workspace = true
+web-time.workspace = true
 log.workspace = true
 
 [dev-dependencies]

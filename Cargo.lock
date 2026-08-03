@@ -443,6 +443,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "console_log"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86919cef3e37b9356ccf54d4421208c17ecfda01beae61393e7ffd72916c0ef1"
+dependencies = [
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -670,6 +690,7 @@ dependencies = [
  "glam",
  "log",
  "rustc-hash 2.1.3",
+ "web-time",
 ]
 
 [[package]]
@@ -719,12 +740,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "digblock-net-web"
+version = "0.1.0"
+dependencies = [
+ "digblock-net",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
 name = "digblock-platform"
 version = "0.1.0"
 dependencies = [
  "image",
  "log",
  "pollster",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "wgpu",
  "winit",
 ]
@@ -742,8 +780,8 @@ dependencies = [
  "image",
  "log",
  "naga",
- "rand 0.9.5",
  "rustc-hash 2.1.3",
+ "web-time",
  "wgpu",
 ]
 
@@ -766,6 +804,24 @@ dependencies = [
  "tokio",
  "ureq",
  "wtransport",
+]
+
+[[package]]
+name = "digblock-web"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "console_log",
+ "digblock-net-web",
+ "digblock-platform",
+ "digblock-render",
+ "js-sys",
+ "log",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

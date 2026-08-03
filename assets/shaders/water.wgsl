@@ -22,7 +22,10 @@
 // extend group 0 with the scene targets: the pre-water solid depth copy
 // and the offscreen scene color — water column thickness, absorption,
 // soft shores, refraction, and the SSR march read these.
-@group(0) @binding(1) var scene_depth: texture_depth_2d;
+// R32Float resolve of the pre-water solid depth (see depth_blit.wgsl —
+// WebGPU forbids copying into a depth texture, so it arrives as a
+// color format and loads return vec4).
+@group(0) @binding(1) var scene_depth: texture_2d<f32>;
 @group(0) @binding(2) var scene_tex: texture_2d<f32>;
 @group(0) @binding(3) var scene_smp: sampler;
 
@@ -176,7 +179,7 @@ fn reflection_color(origin: vec3f, ray: vec3f, dist: f32) -> vec3f {
 			break;
 		}
 		let uv = vec2f(ndc.x, -ndc.y) * 0.5 + 0.5;
-		let d = textureLoad(scene_depth, vec2i(uv * (dims - 1.0)), 0);
+		let d = textureLoad(scene_depth, vec2i(uv * (dims - 1.0)), 0).x;
 		if d < ndc.z {
 			// Solid in front of the ray point. Reject silhouette
 			// false-hits where the surface is far behind the ray.
@@ -249,11 +252,11 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 // 5-tap cross PCF, identical to chunk.wgsl.
 fn pcf5(tex: texture_depth_2d, sc: vec3f) -> f32 {
 	let px = frame.misc.z;
-	var v = textureSampleCompare(tex, shadow_smp, sc.xy, sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
+	var v = textureSampleCompareLevel(tex, shadow_smp, sc.xy, sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
 	return v / 5.0;
 }
 
@@ -372,7 +375,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// scene point behind this fragment from the pre-water depth copy
 	// (exact via inv_view_proj — no projection assumptions).
 	let dims = vec2f(textureDimensions(scene_depth));
-	let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0);
+	let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
 	let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 	let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
 	let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
@@ -384,7 +387,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var suv = i.pos.xy / dims;
 	let off = g * (0.10 * min(thick, 1.5));
 	let suv2 = clamp(suv + off, vec2f(0.0), vec2f(1.0));
-	let d_off = textureLoad(scene_depth, vec2i(suv2 * (dims - 1.0)), 0);
+	let d_off = textureLoad(scene_depth, vec2i(suv2 * (dims - 1.0)), 0).x;
 	if d_off >= i.pos.z {
 		suv = suv2;
 	}

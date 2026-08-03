@@ -32,6 +32,26 @@ pub fn build(
 	color_format: Option<wgpu::TextureFormat>,
 	desc: &PipelineDesc<'_>,
 ) -> wgpu::RenderPipeline {
+	build_inner(device, color_format, desc, true)
+}
+
+/// The one pass shape with no depth attachment at all: the depth-resolve
+/// blit, whose color target IS the depth copy. `desc.depth_*` are
+/// ignored.
+pub fn build_depthless(
+	device: &wgpu::Device,
+	color_format: wgpu::TextureFormat,
+	desc: &PipelineDesc<'_>,
+) -> wgpu::RenderPipeline {
+	build_inner(device, Some(color_format), desc, false)
+}
+
+fn build_inner(
+	device: &wgpu::Device,
+	color_format: Option<wgpu::TextureFormat>,
+	desc: &PipelineDesc<'_>,
+	depth: bool,
+) -> wgpu::RenderPipeline {
 	let targets = [color_format.map(|format| wgpu::ColorTargetState {
 		format,
 		blend: desc.blend,
@@ -51,7 +71,7 @@ pub fn build(
 			cull_mode: desc.cull,
 			..Default::default()
 		},
-		depth_stencil: Some(wgpu::DepthStencilState {
+		depth_stencil: depth.then(|| wgpu::DepthStencilState {
 			format: DEPTH_FORMAT,
 			depth_write_enabled: desc.depth_write,
 			depth_compare: desc.depth_compare,

@@ -7,7 +7,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
@@ -38,12 +39,34 @@ struct Suspended {
 #[allow(clippy::large_enum_variant)]
 enum AppState {
 	Uninitialized,
+	/// Window exists, async adapter/device request in flight (wasm only —
+	/// the browser main thread cannot block on GPU init). Completed by
+	/// `user_event`.
+	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+	WaitingForGpu {
+		window: Arc<Window>,
+	},
 	Running(Running),
 	Suspended(Suspended),
 }
 
+/// Posted back into the event loop by the async GPU init on wasm; native
+/// init is synchronous and never sends one.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+struct GpuReady {
+	gpu: Gpu,
+	surface: wgpu::Surface<'static>,
+	config: wgpu::SurfaceConfiguration,
+	/// Device-loss recovery (rebuild path) vs first init.
+	reinit: bool,
+}
+
 struct App<G: Game> {
 	state: AppState,
+	/// Route back into the event loop from async contexts (wasm GPU init;
+	/// unused native — init is synchronous there).
+	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+	proxy: winit::event_loop::EventLoopProxy<GpuReady>,
 	/// The pure decision core (lifecycle.rs); `state` holds the resources
 	/// its Phase mirrors. All transitions route through `dispatch`.
 	lifecycle: Lifecycle,
@@ -59,11 +82,15 @@ struct App<G: Game> {
 	/// edge, keeping the classic click-to-grab behavior bit-identical.
 	prev_wants_grab: bool,
 	frames_rendered: u64,
+	/// Read only by the native screenshot path.
+	#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 	screenshot_pending: bool,
 	launched_at: Instant,
 	/// Set only by the drill's final step: the app rendered on the
 	/// recovered device and exited cleanly. `run` turns its absence into
 	/// a hard error so `--drill` cannot green-light a broken recovery.
+	/// (Read post-loop — native only; the web loop never returns.)
+	#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 	drill_ok: bool,
 	/// Next drill step to fire (see `auto_drill`).
 	drill_step: u8,
@@ -75,11 +102,14 @@ struct App<G: Game> {
 const DRILL_WATCHDOG: Duration = Duration::from_secs(60);
 
 pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
-	let event_loop = EventLoop::new().expect("event loop");
+	let event_loop = EventLoop::<GpuReady>::with_user_event()
+		.build()
+		.expect("event loop");
 	event_loop.set_control_flow(ControlFlow::Wait);
 	let auto_drill = options.auto_drill;
-	let mut app = App {
+	let app = App {
 		state: AppState::Uninitialized,
+		proxy: event_loop.create_proxy(),
 		lifecycle: Lifecycle::new(),
 		device_lost: Arc::new(AtomicBool::new(false)),
 		game,
@@ -93,13 +123,27 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 		drill_ok: false,
 		drill_step: 0,
 	};
-	event_loop.run_app(&mut app).expect("event loop run");
-	if auto_drill && !app.drill_ok {
-		return Err(crate::RunError::DrillIncomplete {
-			frames_rendered: app.frames_rendered,
-		});
+	#[cfg(not(target_arch = "wasm32"))]
+	{
+		let mut app = app;
+		event_loop.run_app(&mut app).expect("event loop run");
+		if auto_drill && !app.drill_ok {
+			return Err(crate::RunError::DrillIncomplete {
+				frames_rendered: app.frames_rendered,
+			});
+		}
+		Ok(())
 	}
-	Ok(())
+	#[cfg(target_arch = "wasm32")]
+	{
+		// The browser event loop never returns to the caller: spawn_app
+		// hands control to the JS runtime and this Ok is immediate. The
+		// drill has no wasm mode, so the post-loop check has no analogue.
+		let _ = auto_drill;
+		use winit::platform::web::EventLoopExtWebSys;
+		event_loop.spawn_app(app);
+		Ok(())
+	}
 }
 
 fn window_attrs(title: &str) -> winit::window::WindowAttributes {
@@ -114,7 +158,72 @@ fn window_attrs(title: &str) -> winit::window::WindowAttributes {
 				winit::platform::ios::ScreenEdge::ALL,
 			)
 	};
+	#[cfg(target_arch = "wasm32")]
+	let attrs = {
+		use wasm_bindgen::JsCast;
+		use winit::platform::web::WindowAttributesExtWebSys;
+		// Fixed id contract with the apps/web page; a missing canvas is a
+		// packaging bug, not a runtime condition.
+		let canvas = web_sys::window()
+			.and_then(|w| w.document())
+			.and_then(|d| d.get_element_by_id("digblock-canvas"))
+			.and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+			.expect("canvas #digblock-canvas missing");
+		attrs.with_canvas(Some(canvas)).with_prevent_default(true)
+	};
 	attrs
+}
+
+/// Adapter + device + configured surface. Async because the browser main
+/// thread cannot block; native callers wrap it in `pollster::block_on`
+/// (macOS requires window/surface creation on the main thread anyway).
+async fn init_gpu(
+	window: Arc<Window>,
+	no_vsync: bool,
+) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
+	let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+	let surface = instance
+		.create_surface(window.clone())
+		.expect("create surface");
+	let adapter = instance
+		.request_adapter(&wgpu::RequestAdapterOptions {
+			power_preference: wgpu::PowerPreference::HighPerformance,
+			compatible_surface: Some(&surface),
+			force_fallback_adapter: false,
+		})
+		.await
+		.expect("no compatible GPU adapter");
+	log::info!("adapter: {:?}", adapter.get_info());
+	// GPU pass timing (debug/metrics facility) when the adapter has it.
+	let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+	log::info!(
+		"gpu timestamps: {}",
+		required_features.contains(wgpu::Features::TIMESTAMP_QUERY)
+	);
+	let (device, queue) = adapter
+		.request_device(&wgpu::DeviceDescriptor {
+			label: Some("digblock"),
+			required_features,
+			..Default::default()
+		})
+		.await
+		.expect("request device");
+	let gpu = Gpu {
+		instance,
+		adapter,
+		device,
+		queue,
+	};
+	let size = window.inner_size();
+	let config = surface_config(
+		&gpu,
+		&surface,
+		size.width.max(1),
+		size.height.max(1),
+		no_vsync,
+	);
+	surface.configure(&gpu.device, &config);
+	(gpu, surface, config)
 }
 
 fn create_surface(
@@ -152,7 +261,13 @@ fn surface_config(
 		.find(|f| !f.is_srgb())
 		.unwrap_or(caps.formats[0]);
 	wgpu::SurfaceConfiguration {
-		usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+		// COPY_SRC exists purely for native screenshots; browser canvas
+		// textures don't reliably support it.
+		usage: if cfg!(target_arch = "wasm32") {
+			wgpu::TextureUsages::RENDER_ATTACHMENT
+		} else {
+			wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+		},
 		format,
 		width,
 		height,
@@ -185,51 +300,6 @@ impl<G: Game> App<G> {
 				flag.store(true, Ordering::Release);
 			}
 		}));
-	}
-
-	fn init_gpu(
-		window: Arc<Window>,
-		no_vsync: bool,
-	) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
-		let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-		let surface = instance
-			.create_surface(window.clone())
-			.expect("create surface");
-		let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-			power_preference: wgpu::PowerPreference::HighPerformance,
-			compatible_surface: Some(&surface),
-			force_fallback_adapter: false,
-		}))
-		.expect("no compatible GPU adapter");
-		log::info!("adapter: {:?}", adapter.get_info());
-		// GPU pass timing (debug/metrics facility) when the adapter has it.
-		let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
-		log::info!(
-			"gpu timestamps: {}",
-			required_features.contains(wgpu::Features::TIMESTAMP_QUERY)
-		);
-		let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-			label: Some("digblock"),
-			required_features,
-			..Default::default()
-		}))
-		.expect("request device");
-		let gpu = Gpu {
-			instance,
-			adapter,
-			device,
-			queue,
-		};
-		let size = window.inner_size();
-		let config = surface_config(
-			&gpu,
-			&surface,
-			size.width.max(1),
-			size.height.max(1),
-			no_vsync,
-		);
-		surface.configure(&gpu.device, &config);
-		(gpu, surface, config)
 	}
 
 	/// Route an event through the decision core and execute its actions.
@@ -286,6 +356,9 @@ impl<G: Game> App<G> {
 		let window = match std::mem::replace(&mut self.state, AppState::Uninitialized) {
 			AppState::Running(r) => Some(r.window), // surface + old gpu drop
 			AppState::Suspended(s) => s.window,
+			// An in-flight init's result will be dropped by user_event
+			// (state is no longer WaitingForGpu); start recovery fresh.
+			AppState::WaitingForGpu { window } => Some(window),
 			AppState::Uninitialized => None,
 		};
 		let Some(window) = window else {
@@ -295,26 +368,61 @@ impl<G: Game> App<G> {
 		};
 		log::warn!("lifecycle: device lost — recovering with a fresh adapter/device");
 		self.device_lost.store(false, Ordering::Release);
-		let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
-		Self::register_device_callbacks(&gpu.device, &self.device_lost);
-		self.game.rebuild_gpu_resources(&gpu, config.format);
-		self.game.resize(&gpu, (config.width, config.height));
-		self.lifecycle.note_rebuilt(config.format);
-		self.state = AppState::Running(Running {
-			gpu: Arc::new(gpu),
-			window,
-			surface,
-			config,
-		});
-		if let AppState::Running(r) = &self.state {
-			r.window.request_redraw();
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			let (gpu, surface, config) =
+				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync));
+			self.finish_reinit(window, gpu, surface, config);
 		}
+		#[cfg(target_arch = "wasm32")]
+		self.spawn_gpu_init(window, true);
 	}
 
 	fn init_all(&mut self, el: &ActiveEventLoop) {
 		log::info!("lifecycle: initial launch");
 		let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
-		let (gpu, surface, config) = Self::init_gpu(window.clone(), self.options.no_vsync);
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			let (gpu, surface, config) =
+				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync));
+			self.finish_init(window, gpu, surface, config, el);
+		}
+		#[cfg(target_arch = "wasm32")]
+		{
+			let _ = el;
+			self.spawn_gpu_init(window, false);
+		}
+	}
+
+	/// Kick the async adapter/device request; `user_event` completes it.
+	#[cfg(target_arch = "wasm32")]
+	fn spawn_gpu_init(&mut self, window: Arc<Window>, reinit: bool) {
+		let proxy = self.proxy.clone();
+		let no_vsync = self.options.no_vsync;
+		let w = window.clone();
+		wasm_bindgen_futures::spawn_local(async move {
+			let (gpu, surface, config) = init_gpu(w, no_vsync).await;
+			// Send fails only if the loop is gone — nothing to do then.
+			let _ = proxy.send_event(GpuReady {
+				gpu,
+				surface,
+				config,
+				reinit,
+			});
+		});
+		self.state = AppState::WaitingForGpu { window };
+	}
+
+	/// Shared post-GPU tail of the first init: native `init_all` calls it
+	/// synchronously, the wasm path from `user_event`.
+	fn finish_init(
+		&mut self,
+		window: Arc<Window>,
+		gpu: Gpu,
+		surface: wgpu::Surface<'static>,
+		config: wgpu::SurfaceConfiguration,
+		el: &ActiveEventLoop,
+	) {
 		Self::register_device_callbacks(&gpu.device, &self.device_lost);
 		self.game
 			.init(&gpu, config.format, (config.width, config.height));
@@ -326,6 +434,30 @@ impl<G: Game> App<G> {
 			config,
 		});
 		self.dispatch(LcEvent::SurfaceFormatPicked(format), el);
+		if let AppState::Running(r) = &self.state {
+			r.window.request_redraw();
+		}
+	}
+
+	/// Shared post-GPU tail of device-loss recovery (rebuild, not init;
+	/// no SurfaceFormatPicked — the decision core already ordered this).
+	fn finish_reinit(
+		&mut self,
+		window: Arc<Window>,
+		gpu: Gpu,
+		surface: wgpu::Surface<'static>,
+		config: wgpu::SurfaceConfiguration,
+	) {
+		Self::register_device_callbacks(&gpu.device, &self.device_lost);
+		self.game.rebuild_gpu_resources(&gpu, config.format);
+		self.game.resize(&gpu, (config.width, config.height));
+		self.lifecycle.note_rebuilt(config.format);
+		self.state = AppState::Running(Running {
+			gpu: Arc::new(gpu),
+			window,
+			surface,
+			config,
+		});
 		if let AppState::Running(r) = &self.state {
 			r.window.request_redraw();
 		}
@@ -409,7 +541,7 @@ impl<G: Game> App<G> {
 			return;
 		};
 
-		let t_acquire = std::time::Instant::now();
+		let t_acquire = web_time::Instant::now();
 		let frame = match r.surface.get_current_texture() {
 			Ok(f) => f,
 			Err(e) => {
@@ -427,15 +559,26 @@ impl<G: Game> App<G> {
 						// the flag before declaring the error fatal.
 						// PollType::Wait is deliberately avoided: it can
 						// block 60s on a wedged queue.
-						let mut lost = false;
-						for _ in 0..5 {
-							let _ = r.gpu.device.poll(wgpu::PollType::Poll);
-							if self.device_lost.swap(false, Ordering::Acquire) {
-								lost = true;
-								break;
+						#[cfg(not(target_arch = "wasm32"))]
+						let lost = {
+							let mut lost = false;
+							for _ in 0..5 {
+								let _ = r.gpu.device.poll(wgpu::PollType::Poll);
+								if self.device_lost.swap(false, Ordering::Acquire) {
+									lost = true;
+									break;
+								}
+								std::thread::sleep(Duration::from_millis(5));
 							}
-							std::thread::sleep(Duration::from_millis(5));
-						}
+							lost
+						};
+						// No blocking waits on the web: one maintenance pump,
+						// one flag check.
+						#[cfg(target_arch = "wasm32")]
+						let lost = {
+							let _ = r.gpu.device.poll(wgpu::PollType::Poll);
+							self.device_lost.swap(false, Ordering::Acquire)
+						};
 						if lost {
 							self.dispatch(LcEvent::DeviceLost, el);
 							return;
@@ -460,23 +603,29 @@ impl<G: Game> App<G> {
 			.render(&r.gpu, &view, (r.config.width, r.config.height));
 
 		self.frames_rendered += 1;
-		let want_shot = self.screenshot_pending
-			|| (self.options.screenshot.is_some()
-				&& self.frames_rendered == u64::from(self.options.screenshot_after_frames.max(1)));
-		if want_shot {
-			if let Some(path) = self.options.screenshot.clone().or_else(|| {
-				Some(std::path::PathBuf::from(format!(
-					"shots/f8-{}.png",
-					self.launched_at.elapsed().as_secs()
-				)))
-			}) {
-				crate::screenshot::capture(&r.gpu, &frame.texture, r.config.format, &path);
-			}
-			self.screenshot_pending = false;
-			if self.options.exit_after_screenshot && self.options.screenshot.is_some() {
-				frame.present();
-				el.exit();
-				return;
+		// Screenshots are native-only: capture needs a blocking map wait
+		// and a filesystem, neither of which exists on the web.
+		#[cfg(not(target_arch = "wasm32"))]
+		{
+			let want_shot = self.screenshot_pending
+				|| (self.options.screenshot.is_some()
+					&& self.frames_rendered
+						== u64::from(self.options.screenshot_after_frames.max(1)));
+			if want_shot {
+				if let Some(path) = self.options.screenshot.clone().or_else(|| {
+					Some(std::path::PathBuf::from(format!(
+						"shots/f8-{}.png",
+						self.launched_at.elapsed().as_secs()
+					)))
+				}) {
+					crate::screenshot::capture(&r.gpu, &frame.texture, r.config.format, &path);
+				}
+				self.screenshot_pending = false;
+				if self.options.exit_after_screenshot && self.options.screenshot.is_some() {
+					frame.present();
+					el.exit();
+					return;
+				}
 			}
 		}
 
@@ -561,11 +710,28 @@ impl<G: Game> App<G> {
 	}
 }
 
-impl<G: Game> ApplicationHandler for App<G> {
+impl<G: Game> ApplicationHandler<GpuReady> for App<G> {
 	fn resumed(&mut self, el: &ActiveEventLoop) {
 		// The decision core owns idempotence (macOS fires Resumed once at
 		// startup after init) and the deferred device-loss recovery.
 		self.dispatch(LcEvent::OsResumed, el);
+	}
+
+	/// Async GPU init handing back its result (wasm; never fires native).
+	fn user_event(&mut self, el: &ActiveEventLoop, ev: GpuReady) {
+		match std::mem::replace(&mut self.state, AppState::Uninitialized) {
+			AppState::WaitingForGpu { window } => {
+				if ev.reinit {
+					self.finish_reinit(window, ev.gpu, ev.surface, ev.config);
+				} else {
+					self.finish_init(window, ev.gpu, ev.surface, ev.config, el);
+				}
+			}
+			other => {
+				log::error!("GpuReady outside WaitingForGpu — dropping");
+				self.state = other;
+			}
+		}
 	}
 
 	fn suspended(&mut self, el: &ActiveEventLoop) {
@@ -634,7 +800,13 @@ impl<G: Game> ApplicationHandler for App<G> {
 				let pressed = k.state.is_pressed();
 				match k.physical_key {
 					// Debug drills + screenshot — desktop only, press only.
-					PhysicalKey::Code(KeyCode::F8) if pressed && cfg!(not(target_os = "ios")) => {
+					// (F9/F10 stay live on the web — surface recreate and
+					// device rebuild are real paths there; F8 needs the
+					// native-only capture module.)
+					PhysicalKey::Code(KeyCode::F8)
+						if pressed
+							&& cfg!(all(not(target_os = "ios"), not(target_arch = "wasm32"))) =>
+					{
 						self.screenshot_pending = true;
 					}
 					PhysicalKey::Code(KeyCode::F9) if pressed && cfg!(not(target_os = "ios")) => {
@@ -691,6 +863,9 @@ impl<G: Game> ApplicationHandler for App<G> {
 				);
 				el.exit();
 			} else {
+				// WaitUntil takes a std Instant, which has no wasm clock —
+				// but the drill never runs on the web.
+				#[cfg(not(target_arch = "wasm32"))]
 				el.set_control_flow(ControlFlow::WaitUntil(
 					Instant::now() + Duration::from_secs(1),
 				));

@@ -15,6 +15,13 @@ builder.Services.AddSingleton<ServerRegistry>();
 builder.Services.AddSingleton<TokenStore>();
 builder.Services.AddHostedService<HealthChecker>();
 
+// Browser clients (the wasm build) call the two client endpoints cross-
+// origin; both are public and read-only-or-token-minting, so any origin
+// is fine. Server endpoints are bearer-authenticated server-to-server
+// calls and stay CORS-less (browsers never make them).
+builder.Services.AddCors(o => o.AddPolicy("client", p =>
+    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+
 // The QUIC reachability probe is mandatory — an unverified "reachable"
 // defeats the feature — so a host that can't probe fails loudly at boot.
 if (!QuicConnection.IsSupported)
@@ -34,6 +41,7 @@ builder.Services.AddSingleton<IReachabilityProbe>(sp =>
         sp.GetRequiredService<IOptions<MasterOptions>>().Value.Probe.TimeoutSeconds)));
 
 var app = builder.Build();
+app.UseCors();
 
 // ---- game server endpoints -------------------------------------------------
 
@@ -128,7 +136,8 @@ app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRe
 app.MapGet("/api/servers", (ServerRegistry registry) =>
     new ServerListResponse([.. registry.Snapshot()
         .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
-        .Select(e => new ServerSummary(e.Id, e.Name, e.Url, e.CertHashHex, e.Players, e.MaxPlayers))]));
+        .Select(e => new ServerSummary(e.Id, e.Name, e.Url, e.CertHashHex, e.Players, e.MaxPlayers))]))
+    .RequireCors("client");
 
 app.MapPost("/api/join", (JoinRequest req, ServerRegistry registry, TokenStore tokens, IOptions<MasterOptions> opts) =>
 {
@@ -140,7 +149,7 @@ app.MapPost("/api/join", (JoinRequest req, ServerRegistry registry, TokenStore t
     var ttl = TimeSpan.FromSeconds(opts.Value.Token.TtlSeconds);
     var token = tokens.Mint(entry.Id, displayName, ttl);
     return Results.Ok(new JoinResponse(token, (int)ttl.TotalSeconds, entry.Url, entry.CertHashHex));
-});
+}).RequireCors("client");
 
 app.Run();
 

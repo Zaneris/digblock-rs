@@ -12,6 +12,8 @@ pub mod input;
 // Private: only app.rs consumes the decision core, and crate-private
 // visibility lets -D warnings give it real dead-code coverage.
 mod lifecycle;
+// Blocking map wait + filesystem — no wasm analogue.
+#[cfg(not(target_arch = "wasm32"))]
 mod screenshot;
 
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};

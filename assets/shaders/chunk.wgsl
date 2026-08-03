@@ -96,11 +96,11 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 // texel size for either. Each tap is itself hardware-2×2 filtered.
 fn pcf5(tex: texture_depth_2d, sc: vec3f) -> f32 {
 	let px = frame.misc.z;
-	var v = textureSampleCompare(tex, shadow_smp, sc.xy, sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
-	v += textureSampleCompare(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
+	var v = textureSampleCompareLevel(tex, shadow_smp, sc.xy, sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
+	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
 	return v / 5.0;
 }
 

@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Game clock that pauses across suspend. First tick after unpause yields
 /// dt = 0; dt is clamped so debugger pauses or missed lifecycle events can

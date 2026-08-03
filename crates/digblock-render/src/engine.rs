@@ -61,6 +61,10 @@ pub struct EngineConfig {
 	/// screenshot, drill, and iOS keep this false — those paths must not
 	/// sit on a menu screen.
 	pub menu: bool,
+	/// Scripted join (a server-name filter; empty string = first listed):
+	/// once menu services arrive, the menu walks the exact user join path
+	/// unattended. Web `?join` and scripted flows.
+	pub auto_join: Option<String>,
 }
 
 impl EngineConfig {
@@ -86,6 +90,7 @@ impl EngineConfig {
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
+			auto_join: None,
 		}
 	}
 
@@ -111,6 +116,18 @@ impl EngineConfig {
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
+			auto_join: None,
+		}
+	}
+
+	/// Browser client: mobile's GPU budget, but jobs run inline on the
+	/// main thread (workers: 0 — wasm has no std threads) and the menu
+	/// opens by default like a desktop interactive run.
+	pub fn web() -> Self {
+		Self {
+			workers: 0,
+			menu: true,
+			..Self::mobile()
 		}
 	}
 
@@ -222,7 +239,7 @@ pub struct Engine {
 	services: Option<crate::menu::MenuServices>,
 }
 
-fn ms_since(t: std::time::Instant) -> f32 {
+fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
 
@@ -251,9 +268,15 @@ impl Engine {
 			metrics.record_run_history();
 		}
 		// Java: seed = Math.random() * 10000, a domain offset for the noise.
-		let seed = config
-			.seed
-			.unwrap_or_else(|| rand::random::<f64>() * 10000.0);
+		// Clock-derived instead of `rand`: good enough for a default world
+		// seed, and it keeps getrandom (and its wasm backend cfg) out of
+		// the dependency tree.
+		let seed = config.seed.unwrap_or_else(|| {
+			let nanos = web_time::SystemTime::now()
+				.duration_since(web_time::UNIX_EPOCH)
+				.map_or(0, |d| d.subsec_nanos());
+			nanos as f64 / u32::MAX as f64 * 10000.0
+		});
 		let far = (config.draw_dist * 32) as f32;
 		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		let pipeline = Pipeline::new(seed, config.draw_dist, config.workers);
@@ -273,6 +296,7 @@ impl Engine {
 				.player_name
 				.clone()
 				.unwrap_or_else(|| "player".into()),
+			config.auto_join.clone(),
 		);
 		Self {
 			menu,
@@ -491,7 +515,7 @@ impl Engine {
 		let Some(renderer) = self.renderer.as_mut() else {
 			return;
 		};
-		let t_maintain = std::time::Instant::now();
+		let t_maintain = web_time::Instant::now();
 		let budget_ms = self.config.stream_budget_ms;
 		let full_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
 		let drain_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 2000.0);
@@ -499,7 +523,7 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(drain_deadline));
 		self.pending.maintain_ms = ms_since(t_maintain);
-		let t_upload = std::time::Instant::now();
+		let t_upload = web_time::Instant::now();
 		self.metrics.evicted += m.evicted.len() as u32;
 		if !m.evicted.is_empty() {
 			self.pending_uploads
@@ -524,7 +548,7 @@ impl Engine {
 		while let Some(out) = self.pending_uploads.pop_front() {
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
 			uploads += 1;
-			if uploads as usize >= UPLOAD_MIN && std::time::Instant::now() >= full_deadline {
+			if uploads as usize >= UPLOAD_MIN && web_time::Instant::now() >= full_deadline {
 				break;
 			}
 		}
@@ -828,7 +852,7 @@ impl Game for Engine {
 	}
 
 	fn update(&mut self, dt: Duration) {
-		let t_update = std::time::Instant::now();
+		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
 		self.time_secs = (self.time_secs + dt) % 600.0;
 		// A fixed --tod freezes the sun angle but keeps the wide-cascade
@@ -1055,7 +1079,7 @@ impl Game for Engine {
 			.is_open()
 			.then(|| self.menu.view(size, (self.time_secs * 2.0) as u32 % 2 == 0));
 		if let Some(r) = self.renderer.as_mut() {
-			let t_encode = std::time::Instant::now();
+			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
 				view_proj,

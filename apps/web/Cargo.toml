@@ -1,0 +1,35 @@
+[package]
+name = "digblock-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Everything is wasm-gated: on native targets this crate is an empty rlib,
+# so `just check` builds it without pulling wasm-only deps.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+digblock-render.workspace = true
+digblock-platform.workspace = true
+digblock-net-web.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+console_error_panic_hook.workspace = true
+console_log.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+web-sys = { workspace = true, features = [
+	"Window",
+	"Location",
+	"UrlSearchParams",
+	"Request",
+	"RequestInit",
+	"Response",
+	"Headers",
+] }
+
+[lints]
+workspace = true

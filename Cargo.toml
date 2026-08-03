@@ -7,9 +7,11 @@ members = [
 	"crates/digblock-platform",
 	"crates/digblock-net",
 	"crates/digblock-net-native",
+	"crates/digblock-net-web",
 	"apps/desktop",
 	"apps/ios",
 	"apps/server",
+	"apps/web",
 ]
 
 [workspace.package]
@@ -30,6 +32,7 @@ digblock-assets = { path = "crates/digblock-assets" }
 digblock-platform = { path = "crates/digblock-platform" }
 digblock-net = { path = "crates/digblock-net" }
 digblock-net-native = { path = "crates/digblock-net-native" }
+digblock-net-web = { path = "crates/digblock-net-web" }
 
 wgpu = "26"
 winit = "0.30"
@@ -39,6 +42,15 @@ bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rustc-hash = "2"
 rand = "0.9"
+# std::time::Instant re-export on native, performance.now() on wasm32 —
+# the workspace-wide Instant so every crate stays wasm-clean.
+web-time = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+console_log = "1"
 log = "0.4"
 env_logger = "0.11"
 pollster = "0.4"

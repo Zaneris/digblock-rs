@@ -183,10 +183,15 @@ pub struct Renderer {
 	water_frame_bgl: wgpu::BindGroupLayout,
 	/// Layout of `FrameTargets::blit_bg` (scene color + linear sampler).
 	blit_bgl: wgpu::BindGroupLayout,
+	/// Layout of `FrameTargets::depth_blit_bg` (the live depth texture).
+	depth_blit_bgl: wgpu::BindGroupLayout,
 	linear_sampler: wgpu::Sampler,
 	/// Composites the offscreen scene into the swapchain at the start of
 	/// the water pass.
 	blit_pipeline: wgpu::RenderPipeline,
+	/// Resolves the live depth into the R32Float copy between the scene
+	/// and water passes (WebGPU forbids copying into a depth texture).
+	depth_blit_pipeline: wgpu::RenderPipeline,
 	surface_format: wgpu::TextureFormat,
 }
 
@@ -195,19 +200,22 @@ pub struct Renderer {
 /// the water pass can sample both.
 struct FrameTargets {
 	size: (u32, u32),
-	/// Scene-pass depth attachment; copied to `depth_copy` before water.
-	depth: wgpu::Texture,
+	/// Scene-pass depth attachment; resolved into `depth_copy_view` by
+	/// the depth-blit pass before water. (Views keep textures alive.)
 	depth_view: wgpu::TextureView,
-	/// Pre-water solid depth, sampleable (absorption / soft shores / SSR).
-	depth_copy: wgpu::Texture,
+	/// Pre-water solid depth as R32Float, sampleable (absorption / soft
+	/// shores / SSR) — a color format because WebGPU forbids copying
+	/// into a depth texture, so it's filled by a fullscreen draw.
+	depth_copy_view: wgpu::TextureView,
 	/// Offscreen scene color view: solids + sky render here; water
 	/// samples it (refraction/SSR) while blending into the swapchain.
-	/// (The view keeps the texture alive.)
 	scene_view: wgpu::TextureView,
 	/// Water group 0: the water frame UBO + scene targets.
 	water_bg: wgpu::BindGroup,
 	/// Blit group 0: scene color + linear sampler.
 	blit_bg: wgpu::BindGroup,
+	/// Depth-blit group 0: the live depth texture.
+	depth_blit_bg: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -293,7 +301,8 @@ impl Renderer {
 					binding: 1,
 					visibility: wgpu::ShaderStages::FRAGMENT,
 					ty: wgpu::BindingType::Texture {
-						sample_type: wgpu::TextureSampleType::Depth,
+						// R32Float depth resolve — textureLoad only.
+						sample_type: wgpu::TextureSampleType::Float { filterable: false },
 						view_dimension: wgpu::TextureViewDimension::D2,
 						multisampled: false,
 					},
@@ -443,6 +452,51 @@ impl Renderer {
 			},
 		);
 
+		// Depth resolve: one fullscreen draw filling the R32Float depth
+		// copy from the live attachment (WebGPU forbids
+		// copy_texture_to_texture into a depth32float destination).
+		let depth_blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("depth blit"),
+			entries: &[wgpu::BindGroupLayoutEntry {
+				binding: 0,
+				visibility: wgpu::ShaderStages::FRAGMENT,
+				ty: wgpu::BindingType::Texture {
+					sample_type: wgpu::TextureSampleType::Depth,
+					view_dimension: wgpu::TextureViewDimension::D2,
+					multisampled: false,
+				},
+				count: None,
+			}],
+		});
+		let depth_blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("depth blit"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::DEPTH_BLIT.into()),
+		});
+		let depth_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("depth blit"),
+			bind_group_layouts: &[&depth_blit_bgl],
+			push_constant_ranges: &[],
+		});
+		let depth_blit_pipeline = crate::pipeline_builder::build_depthless(
+			device,
+			wgpu::TextureFormat::R32Float,
+			&crate::pipeline_builder::PipelineDesc {
+				label: "depth blit",
+				layout: &depth_blit_layout,
+				module: &depth_blit_shader,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[],
+				cull: None,
+				// Ignored — the pass has no depth attachment.
+				depth_write: false,
+				depth_compare: wgpu::CompareFunction::Always,
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
+
 		let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("frame ubo"),
 			size: std::mem::size_of::<FrameUniforms>() as u64,
@@ -537,8 +591,10 @@ impl Renderer {
 			targets: None,
 			water_frame_bgl,
 			blit_bgl,
+			depth_blit_bgl,
 			linear_sampler,
 			blit_pipeline,
+			depth_blit_pipeline,
 			surface_format,
 		}
 	}
@@ -682,20 +738,21 @@ impl Renderer {
 			sample_count: 1,
 			dimension: wgpu::TextureDimension::D2,
 			format: DEPTH_FORMAT,
-			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
 			view_formats: &[],
 		});
 		let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 		let depth_copy = gpu.device.create_texture(&wgpu::TextureDescriptor {
-			label: Some("solid depth copy"),
+			label: Some("solid depth copy (r32f)"),
 			size: extent,
 			mip_level_count: 1,
 			sample_count: 1,
 			dimension: wgpu::TextureDimension::D2,
-			format: DEPTH_FORMAT,
-			usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+			format: wgpu::TextureFormat::R32Float,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
 			view_formats: &[],
 		});
+		let depth_copy_view = depth_copy.create_view(&wgpu::TextureViewDescriptor::default());
 		let scene = gpu.device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("scene color"),
 			size: extent,
@@ -720,9 +777,7 @@ impl Renderer {
 				},
 				wgpu::BindGroupEntry {
 					binding: 1,
-					resource: wgpu::BindingResource::TextureView(
-						&depth_copy.create_view(&wgpu::TextureViewDescriptor::default()),
-					),
+					resource: wgpu::BindingResource::TextureView(&depth_copy_view),
 				},
 				wgpu::BindGroupEntry {
 					binding: 2,
@@ -748,14 +803,22 @@ impl Renderer {
 				},
 			],
 		});
+		let depth_blit_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("depth blit"),
+			layout: &self.depth_blit_bgl,
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: wgpu::BindingResource::TextureView(&depth_view),
+			}],
+		});
 		self.targets = Some(FrameTargets {
 			size,
-			depth,
 			depth_view,
-			depth_copy,
+			depth_copy_view,
 			scene_view,
 			water_bg,
 			blit_bg,
+			depth_blit_bg,
 		});
 	}
 
@@ -915,16 +978,31 @@ impl Renderer {
 
 			// Pre-water solid depth becomes sampleable: water reads it for
 			// column thickness (absorption, soft shores) while the live
-			// attachment goes on to take the water prepass's writes.
-			encoder.copy_texture_to_texture(
-				targets.depth.as_image_copy(),
-				targets.depth_copy.as_image_copy(),
-				wgpu::Extent3d {
-					width: targets.size.0.max(1),
-					height: targets.size.1.max(1),
-					depth_or_array_layers: 1,
-				},
-			);
+			// attachment goes on to take the water prepass's writes. A
+			// fullscreen draw, not copy_texture_to_texture — WebGPU forbids
+			// depth32float as a copy destination.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("depth blit"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: &targets.depth_copy_view,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							// The blit overwrites every pixel.
+							load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: None,
+					timestamp_writes: None,
+					occlusion_query_set: None,
+				});
+				pass.set_pipeline(&self.depth_blit_pipeline);
+				pass.set_bind_group(0, &targets.depth_blit_bg, &[]);
+				pass.draw(0..3, 0..1);
+				stats.draw_calls += 1;
+			}
 
 			// Water pass into the swapchain: composite the scene (blit),
 			// then transparent water in two subpasses — a depth-only

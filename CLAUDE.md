@@ -19,6 +19,11 @@ just check                # full gate: cargo fmt --all --check, clippy -D warnin
                           # (needs Docker running: the server e2e tests boot the apps/master
                           # deployment container — alpine + libmsquic — with real QUIC probing)
 just check-ios            # cargo check -p digblock-ios --target aarch64-apple-ios (no Xcode needed)
+just web                  # browser client: wasm build + serve at http://localhost:8080 (Chrome/WebGPU;
+                          # needs `cargo install wasm-bindgen-cli` at Cargo.lock's exact version)
+just check-web            # clippy for wasm32-unknown-unknown (web, render, platform) — no CLI tools needed
+just play-web             # master container + native server + web bundle served; open the printed
+                          # URL, pick Multiplayer, join — or append &join for the scripted flow
 just ios-sim              # simulator build+run (requires full Xcode)
 just ios-device           # device build (requires full Xcode)
 just master               # .NET master server run natively (for iterating on its code); the
@@ -41,6 +46,10 @@ Deterministic-capture / metrics flags for `just run`: `--seed <f64>`, `--tod <de
 Metrics (`digblock-core/src/metrics.rs`) collect per-phase CPU frame timings, GPU pass ms via timestamp queries (feature-detected), chunk-pipeline job timings/queue gauges, and renderer draw stats; everything lands in the 5s log line, the CSV, and the toggleable on-screen overlay (`digblock-render/src/overlay.rs`, zero cost when hidden). Frame-pacing diagnostics: the bench is vsync-paced by default (`--no-vsync` for uncapped raw cost), and `DIG_SPIKELOG=1` logs per-phase breakdowns of frames over the 120Hz budget. Main-thread streaming work (result drain + mesh uploads) is time-budgeted per frame (`STREAM_BUDGET_MS` in engine.rs) and the wide shadow cascade re-renders sliced across frames into a ping-ponged back map, so streaming throughput cannot hitch the render loop.
 
 Formatting uses hard tabs, max width 100 (`rustfmt.toml`).
+
+### Browser client
+
+The client runs in Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`, query params mirror desktop flags: `?seed= ?tod= ?draw= ?overlay ?name= ?master= ?join&server=`). Key mechanics: chunk jobs run **inline on the main thread** (`Pipeline` `workers: 0` selects the inline executor at runtime — also reachable natively via `--workers 0`); `std::time::Instant` is `web_time::Instant` workspace-wide; GPU init is async on wasm (`WaitingForGpu` app state + winit user event); the depth "copy" is a fullscreen blit into an R32Float target because WebGPU forbids depth32float as a copy destination; shadow taps use `textureSampleCompareLevel` (Tint's derivative-uniformity rule). Multiplayer: `crates/digblock-net-web` implements `NetTransport` over hand-written WebTransport bindings (`serverCertificateHashes` = the master's cert pin; the server's self-signed cert is 10-day validity because Chrome caps pinned certs at 14); `apps/web/src/services.rs` is the fetch()-based `MenuServices` filler (no ping probes — rows stay pending); the master's two client endpoints allow any CORS origin. Scripted joins go through `EngineConfig::auto_join` — the menu walks the exact user path, so `MenuResponse::Connect` needs no special case. Screenshots, bench, drill, and metrics CSV are native-only (cfg'd out).
 
 ## Architecture
 

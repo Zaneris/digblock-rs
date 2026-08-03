@@ -3,7 +3,8 @@
 //! overlay. GPU-free: GPU-derived numbers are fed in as plain data.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 const WINDOW: usize = 600; // ~10s at 60fps
 /// A frame counts as a hitch above 2× a 60 Hz frame.

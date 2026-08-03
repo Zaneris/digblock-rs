@@ -84,6 +84,67 @@ compose-bots PROFILE="clean":
 	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
 		docker compose -f docker/compose.yml --profile bots up --build --abort-on-container-exit
 
+# Browser client: release wasm build + bindgen + static server at
+# http://localhost:8080 (localhost is a secure context — WebGPU and
+# WebTransport both work over plain http). Needs wasm-bindgen-cli at the
+# exact version in Cargo.lock: cargo install wasm-bindgen-cli.
+# Query params mirror desktop flags: ?seed= ?tod= ?draw= ?overlay ?name=.
+web:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	just build-web
+	echo "→ http://localhost:8080"
+	python3 -c 'import http.server, functools, mimetypes; \
+		mimetypes.add_type("application/wasm", ".wasm"); \
+		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+
+# Browser multiplayer test: containerized master + native server (same
+# topology as `just play`) + the web bundle served on :8080. Open the
+# printed URL in Chrome, pick Multiplayer, join "Local World"; append
+# `&join` to skip the menu (scripted flows), `&name=X` for a display name.
+play-web:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	just build-web
+	cargo build -p digblock-server --bin digblock-server
+	docker build -q -t digblock-master apps/master >/dev/null
+	server=""
+	docker rm -f digblock-play-master >/dev/null 2>&1 || true
+	docker run -d --rm --name digblock-play-master \
+		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
+	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
+	until curl -sf http://127.0.0.1:5200/api/servers >/dev/null 2>&1; do sleep 0.2; done
+	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
+		--advertise-host 127.0.0.1 --probe-host host.docker.internal \
+		--server-name "Local World" &
+	server=$!
+	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
+	echo "→ http://localhost:8080/?master=http://127.0.0.1:5200"
+	python3 -c 'import http.server, functools, mimetypes; \
+		mimetypes.add_type("application/wasm", ".wasm"); \
+		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+
+# Build + bindgen the web bundle into target/web (no server).
+build-web:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	want=$(grep -A2 'name = "wasm-bindgen"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+	have=$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)
+	if [ "$want" != "$have" ]; then
+		echo "wasm-bindgen-cli $want required (found: ${have:-none})."
+		echo "  cargo install wasm-bindgen-cli --version $want"
+		exit 1
+	fi
+	cargo build -p digblock-web --target wasm32-unknown-unknown --release
+	wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
+		target/wasm32-unknown-unknown/release/digblock_web.wasm
+	cp apps/web/index.html target/web/
+
+# Fast "is the web client still green" gate — no wasm-bindgen-cli needed.
+check-web:
+	cargo clippy -p digblock-web -p digblock-render -p digblock-platform \
+		--target wasm32-unknown-unknown -- -D warnings
+
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings

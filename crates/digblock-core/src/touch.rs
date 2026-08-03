@@ -10,7 +10,7 @@
 //! defers system edge gestures), so no inset logic is needed here.
 
 use glam::Vec2;
-use std::time::Instant;
+use web_time::Instant;
 
 const JOYSTICK_FULL_DEFLECTION: f32 = 0.1; // fraction of screen height
 const LOOK_DEGREES_PER_SCREEN: f32 = 300.0;
