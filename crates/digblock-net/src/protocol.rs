@@ -106,24 +106,33 @@ pub const MAX_DATAGRAM: usize = 1150;
 pub const MAX_FRAME: usize = 1 << 20;
 
 /// Dig/place: claimed eye origin may differ from the server's simulated
-/// position by at most this many blocks.
-pub const EDIT_POS_TOLERANCE: f32 = 1.0;
+/// position by at most this many blocks. Sized for honest divergence:
+/// the client predicts [`CLIENT_TICK_LEAD`] ticks ahead of the sim
+/// state it is compared against (~0.4 blocks at walk speed, more when
+/// falling) and aims from a camera still carrying the decaying
+/// reconciliation offset (up to [`POS_TOLERANCE`]) — at 1.0 the sum
+/// occasionally rejected legitimate digs made while moving.
+pub const EDIT_POS_TOLERANCE: f32 = 1.5;
 
 /// Timed digging: a completing Dig/Collect is accepted when the server
 /// has counted at least `hardness - dig_grace(hardness)` aim-verified
-/// ticks on the hold. The grace absorbs the honest shortfall — the
-/// first verify lands a tick after DigStart, and the server's look lags
-/// the client's by the input jitter buffer — and is what a cheat gains
-/// per dig, so it scales with the dig instead of being a flat cut:
-/// 20% of the hold, floored at the constant honest overhead and capped
-/// at 200 ms (a long dig doesn't need proportionally more slack).
-pub const DIG_GRACE_MIN: u32 = 4;
-/// Upper clamp of [`dig_grace`] (~200 ms).
-pub const DIG_GRACE_MAX: u32 = 12;
+/// ticks on the hold. The grace is what a cheat gains per dig, so it is
+/// kept small — but it must cover the honest shortfall, which has two
+/// parts: a CONSTANT pipeline lag every dig pays regardless of hardness
+/// (the first verify lands a tick after DigStart and the server's look
+/// trails the client's by the input jitter buffer — ~3 ticks even on
+/// localhost), plus transient aim misses that scale with how long the
+/// hold runs. The old `clamp(4, 12)` folded both into one floor, which
+/// left cheap blocks (leaves, water) a single tick of real slack — any
+/// one late input datagram bounced an honest dig.
+pub const DIG_GRACE_BASE: u32 = 4;
+/// Cap of the proportional (hardness/5) component of [`dig_grace`]
+/// (~200 ms) — a long dig doesn't hand a cheat proportionally more.
+pub const DIG_GRACE_PROP_MAX: u32 = 12;
 
 /// Completion grace in ticks for a block of the given hardness.
 pub fn dig_grace(hardness_ticks: u32) -> u32 {
-	(hardness_ticks / 5).clamp(DIG_GRACE_MIN, DIG_GRACE_MAX)
+	DIG_GRACE_BASE + (hardness_ticks / 5).min(DIG_GRACE_PROP_MAX)
 }
 
 /// The server re-raycasts each digging client's aim every tick from its
@@ -191,15 +200,14 @@ pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;
 mod tests {
 	use super::*;
 
-	/// The grace scales with the dig so a cheat's gain stays a small
-	/// fraction: cheap blocks get the honest-overhead floor, mid blocks
-	/// 20%, and long digs clamp at ~200 ms.
+	/// Constant pipeline-lag base plus a hardness-proportional slice for
+	/// transient misses, capped so long digs don't hand a cheat more.
 	#[test]
 	fn dig_grace_scales_with_hardness() {
-		assert_eq!(dig_grace(10), DIG_GRACE_MIN); // leaves: floor
-		assert_eq!(dig_grace(20), DIG_GRACE_MIN); // water: floor
-		assert_eq!(dig_grace(30), 6); // dirt (500 ms): 100 ms
-		assert_eq!(dig_grace(60), DIG_GRACE_MAX); // wood: cap
-		assert_eq!(dig_grace(90), DIG_GRACE_MAX); // stone: cap
+		assert_eq!(dig_grace(10), 6); // leaves: base + 2
+		assert_eq!(dig_grace(20), 8); // water: base + 4
+		assert_eq!(dig_grace(30), 10); // dirt: base + 6
+		assert_eq!(dig_grace(60), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // wood: cap
+		assert_eq!(dig_grace(90), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // stone: cap
 	}
 }

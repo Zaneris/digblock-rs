@@ -106,8 +106,6 @@ struct Client {
 	identity: Option<IdentityHash>,
 	/// In-progress hold-to-dig, if any (see `edits::DigState`).
 	digging: Option<edits::DigState>,
-	/// Per-tick DigStart spam cap; cleared at the top of `process_edits`.
-	dig_started_this_tick: bool,
 }
 
 pub struct Sim {
@@ -313,9 +311,8 @@ impl Sim {
 				ClientMsg::Bye => self.drop_client(conn_id),
 				// Queued, NOT applied here: a DigStart must not overtake a
 				// same-tick completing EditRequest already in the queue
-				// (see `ClientAction`). Beyond the cap it drops silently —
-				// the 1/tick cap in `handle_dig_start` would ignore the
-				// excess anyway.
+				// (see `ClientAction`). Beyond the queue cap it drops
+				// silently.
 				ClientMsg::DigStart { cell } => {
 					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
 						self.action_queue.push(ClientAction::DigStart {
@@ -337,16 +334,20 @@ impl Sim {
 
 	/// Record a hold-to-dig start (called from the ordered queue drain):
 	/// capture the cell's CURRENT block — the client never gets to claim
-	/// what it is digging. At most one start per client per tick —
-	/// floods can't spin the timer.
+	/// what it is digging. Within a tick the LAST start wins, exactly
+	/// like the client's retarget stream — an old first-wins per-tick cap
+	/// silently dropped the restart of a cancel+restart pair bunched into
+	/// one tick drain, leaving an honest hold with no server record
+	/// (DigIncomplete pop-back on completion). Floods can't spin the
+	/// timer — every start zeroes progress — and the action-queue cap
+	/// bounds the per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
-		if !client.live || client.dig_started_this_tick {
+		if !client.live {
 			return;
 		}
-		client.dig_started_this_tick = true;
 		let block = self.store.block_at(cell.0, cell.1, cell.2);
 		client.digging = match block {
 			Some(b) if b.hardness_ticks().is_some() => Some(edits::DigState {
@@ -513,7 +514,6 @@ impl Sim {
 				inventory,
 				identity,
 				digging: None,
-				dig_started_this_tick: false,
 			},
 		);
 		self.residency_dirty = true;

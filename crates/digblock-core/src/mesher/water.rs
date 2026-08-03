@@ -40,11 +40,14 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 
 /// Water surface drop code at horizontal lattice corner (lx, lz) for
 /// water cells at height y: the corner touches up to four cells.
-/// Priority: if any touching column has water at y + 1 the surface is
-/// pinned full (d = 0) — a submerged neighbor, or water hanging over a
-/// step this corner must rise to meet. Else, if any touching cell is
-/// open air with water directly below, the surface continues a step
-/// down and this corner plunges the whole block (d = 9), so cascades
+/// Priority: if any touching column has water at y + 1, or holds a
+/// covered water cell (water at y with a non-air block above — it
+/// renders as a full cube), the surface is pinned full (d = 0) — a
+/// submerged neighbor, water hanging over a step this corner must rise
+/// to meet, or a ceiling-pressed cell to knit against. Else, if any
+/// touching cell is open air with water directly below, the surface
+/// continues a step down and this corner plunges the whole block
+/// (d = 9), so cascades
 /// render as connected ramps instead of stacked cliff slivers. Else
 /// the drop is 9 − round(mean water amount). Adjacent cells sharing
 /// the corner agree, so surfaces knit without cracks — including
@@ -55,10 +58,18 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
 			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
-			if BlockType::from_id(input.get(cx, y + 1, cz)).is_water() {
+			let above = BlockType::from_id(input.get(cx, y + 1, cz));
+			if above.is_water() {
 				return 0;
 			}
 			let b = BlockType::from_id(input.get(cx, y, cz));
+			// A covered water cell (non-air above) renders as a full
+			// cube (`WaterState::full`); pin the shared corner so open
+			// surfaces rise to meet it instead of dipping into a
+			// see-through sliver at its edge.
+			if b.is_water() && above.props().class != RenderClass::None {
+				return 0;
+			}
 			match surface_amount(input, cx, y, cz, b) {
 				Some(a) => {
 					sum += u32::from(a);
@@ -82,9 +93,15 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 /// Per-face water surface state, computed once per cell in `mesh_chunk`.
 #[derive(Clone, Copy)]
 pub(super) struct WaterState {
-	/// Water directly above: render a complete cube. The top block of a
-	/// fall column has air above and takes shared corner heights like
-	/// any surface cell, so the lip knits with the pool feeding it.
+	/// Anything but open air directly above: render a complete cube. A
+	/// surface only exists under air — water above means submerged, and
+	/// an opaque or cutout block above (cave ceiling, the wall over a
+	/// dug hole) occludes the top face, so dropped side tops would open
+	/// a see-through gap with no ramp covering it (the flooded-cave
+	/// missing-face bug: a full corner plunge then skipped the sides as
+	/// zero-area and the whole cell vanished). The top block of a fall
+	/// column has air above and takes shared corner heights like any
+	/// surface cell, so the lip knits with the pool feeding it.
 	pub(super) full: bool,
 	pub(super) falling: bool,
 	/// Horizontal flow direction code (0 still, 1 +x, 2 −x, 3 +z, 4 −z):
@@ -113,7 +130,7 @@ impl WaterState {
 	pub(super) fn of(input: &MeshInput, x: i32, y: i32, z: i32, me: BlockType) -> WaterState {
 		let falling = me.is_falling();
 		let above = BlockType::from_id(input.get(x, y + 1, z));
-		let full = above.is_water();
+		let full = above.props().class != RenderClass::None;
 		let flow = if falling || me.is_fluid_source() {
 			0 // sources rest, falls scroll vertically instead
 		} else {

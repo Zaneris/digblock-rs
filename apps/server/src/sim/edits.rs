@@ -85,9 +85,18 @@ impl Sim {
 			} else {
 				raycast
 			};
-			let hit = cast(client.player.pos, client.look, REACH, &|x, y, z| {
-				store.block_at(x, y, z)
-			});
+			// Reach slack: this ray starts at the server's eye, which may
+			// trail the client's by up to the claimed-origin tolerance — a
+			// target the client legitimately picked at max reach would
+			// otherwise miss every verify tick and never bank progress.
+			// The completing edit still enforces exact REACH from its
+			// (tolerance-checked) claimed origin.
+			let hit = cast(
+				client.player.pos,
+				client.look,
+				REACH + EDIT_POS_TOLERANCE,
+				&|x, y, z| store.block_at(x, y, z),
+			);
 			let on_target = hit.is_some_and(|h| h.cell == state.cell && h.block == state.block);
 			if on_target {
 				state.progress += 1;
@@ -102,11 +111,10 @@ impl Sim {
 	}
 
 	pub(super) fn process_edits(&mut self) {
-		// Refill token buckets; open the next tick's DigStart window.
+		// Refill token buckets.
 		for client in self.clients.values_mut() {
 			client.edit_tokens =
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
-			client.dig_started_this_tick = false;
 		}
 		let queue = std::mem::take(&mut self.action_queue);
 		for action in queue {
@@ -574,7 +582,7 @@ mod tests {
 				normal: [0, 0, 0],
 			},
 		}]);
-		// Held for only 10 ticks (stone needs 90 − 6 grace).
+		// Held for only 10 ticks (stone needs 90 − 16 grace).
 		let mut t = 0;
 		dig_hold(&mut sim, 1, down, 10, 2, EditKind::Dig, &mut t);
 		sim.tick_once(vec![SimEvent::Msg {
@@ -731,7 +739,7 @@ mod tests {
 		sim.tick_once(vec![dig(1)]);
 		// Back on target: the banked 40 survive the miss stretch (which
 		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~50 more verified ticks complete the stone (needs ≥ 78).
+		// so ~50 more verified ticks complete the stone (needs ≥ 74).
 		for _ in 0..50 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
@@ -1116,10 +1124,13 @@ mod tests {
 		);
 	}
 
-	/// DigStart spam is capped at one per tick and can't retarget the
-	/// running hold within the same tick.
+	/// Same-tick DigStarts resolve in wire order — the LAST start wins,
+	/// exactly like the client's retarget stream. The old first-wins
+	/// per-tick cap silently dropped the restart half of a cancel +
+	/// restart pair bunched into one tick drain, leaving an honest hold
+	/// with no server record (guaranteed DigIncomplete on completion).
 	#[test]
-	fn dig_start_flood_capped_per_tick() {
+	fn same_tick_dig_starts_resolve_in_wire_order() {
 		let mut sim = flat_sim("digflood");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
@@ -1133,25 +1144,25 @@ mod tests {
 				cell: [cell.0, cell.1, cell.2],
 			},
 		};
-		sim.tick_once(vec![start(hit.cell), start(other), start(other)]);
-		let digging = sim
-			.clients
-			.get(&1)
-			.unwrap()
-			.digging
-			.as_ref()
-			.map(|d| d.cell);
-		assert_eq!(digging, Some(hit.cell), "first start wins the tick");
-		// Next tick the window reopens.
-		sim.tick_once(vec![start(other)]);
-		let digging = sim
-			.clients
-			.get(&1)
-			.unwrap()
-			.digging
-			.as_ref()
-			.map(|d| d.cell);
-		assert_eq!(digging, Some(other));
+		let cancel = || SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigCancel,
+		};
+		// A retarget flick bunched into one server tick: start A, then
+		// cancel + restart on B — B's hold must stand.
+		sim.tick_once(vec![start(hit.cell), cancel(), start(other)]);
+		let digging = |sim: &super::super::Sim| {
+			sim.clients
+				.get(&1)
+				.unwrap()
+				.digging
+				.as_ref()
+				.map(|d| d.cell)
+		};
+		assert_eq!(digging(&sim), Some(other), "last start wins the tick");
+		// And the next tick's start replaces it as usual.
+		sim.tick_once(vec![start(hit.cell)]);
+		assert_eq!(digging(&sim), Some(hit.cell));
 	}
 
 	#[test]

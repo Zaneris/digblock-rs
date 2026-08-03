@@ -753,6 +753,60 @@ mod tests {
 	}
 
 	#[test]
+	fn water_under_ceiling_renders_full_cube() {
+		// Water pressed against an opaque block above (cave ceiling, the
+		// wall over a dug hole): no open surface exists, so the sides
+		// stay full height. Dropping them opened a see-through gap under
+		// the ceiling that nothing else covered.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(8, 9, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		// 4 sides + bottom; the top face is occluded by the stone.
+		assert_eq!(m.water.len() / 8, 5);
+		for pair in m.water.chunks(2) {
+			assert_eq!(drop_of(pair[1]), 0, "covered cell stays full");
+		}
+	}
+
+	#[test]
+	fn covered_inflow_cell_never_vanishes() {
+		// The flooded-cave regression: water under an opaque ceiling
+		// beside an air column with water directly below it (water
+		// pouring through a dug hole into a cave). The corner plunge
+		// (d = 9) collapsed every side face to zero area while the
+		// ceiling occluded the top — the cell rendered NOTHING and you
+		// saw straight through it into the water behind.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 9, 8, B::Stone);
+		d.set(9, 7, 8, B::Water); // plunge trigger in the +x column
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
+		for (_, w1) in side {
+			assert_eq!(drop_of(w1), 0, "sealed at full height");
+		}
+	}
+
+	#[test]
+	fn open_surface_pins_full_against_covered_neighbor() {
+		// Open surface water beside a covered cell (water running out
+		// from under an overhang): the shared corners pin full so the
+		// surface rises to meet the covered cell's full-height cube
+		// instead of dipping into a see-through sliver at the lip.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(8, 9, 8, B::Stone);
+		d.set(7, 8, 8, B::Water); // open: air above
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let top = water_quad(&m.water, 7, 8, 8, Dir::Top);
+		for (w0, w1) in top {
+			let expect = u32::from(x_of(w0) != 8);
+			assert_eq!(drop_of(w1), expect, "shared corners pin, outer dip");
+		}
+	}
+
+	#[test]
 	fn waterfall_top_drops_like_a_surface_cell() {
 		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
 		// Floating fall: 4 sides + top + bottom toward air. Air above, so
