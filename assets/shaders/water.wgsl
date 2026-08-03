@@ -351,6 +351,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
+	// Froth light: the same ambient+direct mix the spray billboards use
+	// (spray.wgsl), shadowed like the surface it sits on — so foam dims
+	// with the night instead of glowing unlit white.
+	let froth_light = frame.ambient.rgb + frame.light_color.rgb * 0.8 * sh;
 	// In-scattered water color (the body's own diffuse), streak-bright.
 	var scatter = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
 	scatter *= 1.0 + (s - 0.5) * 0.3;
@@ -399,7 +403,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var col = mix(scatter, refracted, transmit);
 	// Contact foam line where the water meets ground.
 	let shore = 1.0 - smoothstep(0.05, 0.45, thick);
-	col = mix(col, vec3f(0.95, 0.97, 1.0), shore * 0.25 * (0.4 + 0.6 * sh));
+	col = mix(col, vec3f(0.95, 0.97, 1.0) * froth_light, shore * 0.25);
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through from above. From below the
 	// surface (camera underwater) the sky reflection is a lie — damp it.
@@ -422,7 +426,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let r = (3.0 - f32(i.splash)) / 3.0;
 		let ph = fract(t * 0.9);
 		let ring = (1.0 - impact) * smoothstep(0.22, 0.0, abs(r - ph * 0.8)) * (1.0 - ph) * 0.35;
-		col = mix(col, vec3f(1.0), min(churn + ring, 0.6));
+		col = mix(col, froth_light, min(churn + ring, 0.6));
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	// Glassy crest sheen where flow tips over a lip: strongest in the
