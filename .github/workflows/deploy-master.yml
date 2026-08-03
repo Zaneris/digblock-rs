@@ -1,9 +1,12 @@
 # Build the master image and roll it out to the Azure Container App.
 #
-# Runs on any push to main that touches apps/master (or manually via
-# workflow_dispatch). The image goes to GHCR — no ACR needed; the
-# Container App pulls ghcr.io as an "other registry" (package must be
-# public, or give the app registry credentials).
+# On-demand only (Actions → deploy-master → Run workflow): the master is
+# a live service with in-memory state — a restart drops server
+# registrations for up to one heartbeat and any in-flight join tokens —
+# so it redeploys when chosen, not on every touch of apps/master. The
+# image goes to GHCR — no ACR needed; the Container App pulls ghcr.io as
+# an "other registry" (package must be public, or give the app registry
+# credentials).
 #
 # One-time setup this workflow expects:
 #   - Entra app with a federated credential for this repo's main branch,
@@ -18,11 +21,6 @@
 name: deploy-master
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/master/**"
-      - ".github/workflows/deploy-master.yml"
   workflow_dispatch:
 
 permissions:
