@@ -89,11 +89,16 @@ fn column_rules() {
 			chunks[(wy / 16) as usize].get(x, (wy % 16) as usize, z)
 		};
 		// Mirror of the decoration pass: trees write into terrain-Air
-		// cells, in candidate order, first writer wins.
+		// cells — plus the trunk-base exception, where Wood replaces the
+		// Grass/Dirt surface cell — in candidate order, first writer wins.
 		let mut tree_cells: HashMap<(i32, i32, i32), BlockType> = HashMap::new();
 		for tree in trees_near(cx * 16, cz * 16, seed) {
+			let base = (tree.x, tree.y - 1, tree.z);
 			tree.for_each_block(|x, y, z, b| {
-				if expect_terrain(x, y, z, seed) == BlockType::Air {
+				let t = expect_terrain(x, y, z, seed);
+				let writable = t == BlockType::Air
+					|| ((x, y, z) == base && matches!(t, BlockType::Grass | BlockType::Dirt));
+				if writable {
 					tree_cells.entry((x, y, z)).or_insert(b);
 				}
 			});
@@ -108,12 +113,14 @@ fn column_rules() {
 					if terrain == BlockType::Air && wy <= h {
 						caves_seen = true;
 					}
+					// Writability was already enforced at insertion, so any
+					// mapped cell holds its tree block.
 					let expect = match tree_cells.get(&(wx, wy, wz)) {
-						Some(&t) if terrain == BlockType::Air => {
+						Some(&t) => {
 							trees_seen = true;
 							t
 						}
-						_ => terrain,
+						None => terrain,
 					};
 					assert_eq!(b, expect, "({x},{wy},{z}) h={h}");
 				}
@@ -136,8 +143,16 @@ fn trees_span_chunk_borders_seamlessly() {
 	for ccz in -24..24 {
 		for ccx in -24..24 {
 			for tree in trees_near(ccx * 16, ccz * 16, seed) {
-				let (lx, lz) = (tree.x.rem_euclid(16), tree.z.rem_euclid(16));
-				let crosses = !(2..=13).contains(&lx) || !(2..=13).contains(&lz);
+				// Actual span, not a radius heuristic — canopy width varies
+				// by kind and jitter.
+				let (mut min_x, mut max_x) = (i32::MAX, i32::MIN);
+				let (mut min_z, mut max_z) = (i32::MAX, i32::MIN);
+				tree.for_each_block(|x, _, z, _| {
+					(min_x, max_x) = (min_x.min(x), max_x.max(x));
+					(min_z, max_z) = (min_z.min(z), max_z.max(z));
+				});
+				let crosses = min_x.div_euclid(16) != max_x.div_euclid(16)
+					|| min_z.div_euclid(16) != max_z.div_euclid(16);
 				if !crosses {
 					continue;
 				}
@@ -397,7 +412,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 3873827593272335437,
+		hash, 1088649025654633947,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }
