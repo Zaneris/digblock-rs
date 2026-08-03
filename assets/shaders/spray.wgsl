@@ -81,8 +81,7 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	// White-ish froth in the ambient + direct light (no shadow taps),
 	// fogged like everything else.
 	var col = vec3f(0.9, 0.94, 1.0) * (frame.ambient.rgb + frame.light_color.rgb * 0.8);
-	let f = clamp((dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
-	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
+	col = apply_fog(col, dist, world);
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;

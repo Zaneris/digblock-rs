@@ -38,4 +38,7 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 ///
 /// v3: hold-to-dig hardness table, the water-regen fluid rule, and the
 /// fluid-aware picking ray — all behavior both sides run independently.
-pub const SIM_VERSION: u16 = 3;
+/// v4: swimming — buoyant water physics in `Player::tick` (slow sink,
+/// held-jump swim-up, entry damping, surface breach); pinned by the
+/// second golden, `golden_water_trajectory_pins_sim_version`.
+pub const SIM_VERSION: u16 = 4;

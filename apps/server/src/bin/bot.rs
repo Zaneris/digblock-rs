@@ -259,7 +259,8 @@ fn run_bot(
 				NetEvent::Edit { .. }
 				| NetEvent::Inventory { .. }
 				| NetEvent::PlayerJoined { .. }
-				| NetEvent::PlayerLeft { .. } => {}
+				| NetEvent::PlayerLeft { .. }
+				| NetEvent::Chat { .. } => {}
 			}
 		}
 

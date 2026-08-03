@@ -22,6 +22,45 @@ pub mod tex {
 	];
 }
 
+pub mod sfx {
+	//! Embedded sound effects: mono 44.1 kHz Ogg Vorbis (decoding
+	//! happens in the platform audio fillers — this crate stays
+	//! dependency-free). Provenance per file: assets/sfx/SOURCES.md.
+	//! Music is deliberately NOT here — tracks are fetched from the
+	//! master server at runtime so they never bloat the wasm bundle.
+	pub const DIG_STONE: &[u8] = include_bytes!("../../../assets/sfx/dig_stone.ogg");
+	pub const DIG_EARTH: &[u8] = include_bytes!("../../../assets/sfx/dig_earth.ogg");
+	pub const DIG_WOOD: &[u8] = include_bytes!("../../../assets/sfx/dig_wood.ogg");
+	pub const BREAK_STONE: &[u8] = include_bytes!("../../../assets/sfx/break_stone.ogg");
+	pub const BREAK_EARTH: &[u8] = include_bytes!("../../../assets/sfx/break_earth.ogg");
+	pub const BREAK_WOOD: &[u8] = include_bytes!("../../../assets/sfx/break_wood.ogg");
+	pub const PLACE: &[u8] = include_bytes!("../../../assets/sfx/place.ogg");
+	pub const STEP_STONE: &[u8] = include_bytes!("../../../assets/sfx/step_stone.ogg");
+	pub const STEP_EARTH: &[u8] = include_bytes!("../../../assets/sfx/step_earth.ogg");
+	pub const STEP_WOOD: &[u8] = include_bytes!("../../../assets/sfx/step_wood.ogg");
+	pub const WATERFALL: &[u8] = include_bytes!("../../../assets/sfx/waterfall.ogg");
+	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
+	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
+	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
+
+	pub const ALL: [(&str, &[u8]); 14] = [
+		("dig_stone.ogg", DIG_STONE),
+		("dig_earth.ogg", DIG_EARTH),
+		("dig_wood.ogg", DIG_WOOD),
+		("break_stone.ogg", BREAK_STONE),
+		("break_earth.ogg", BREAK_EARTH),
+		("break_wood.ogg", BREAK_WOOD),
+		("place.ogg", PLACE),
+		("step_stone.ogg", STEP_STONE),
+		("step_earth.ogg", STEP_EARTH),
+		("step_wood.ogg", STEP_WOOD),
+		("waterfall.ogg", WATERFALL),
+		("ambient_wind.ogg", AMBIENT_WIND),
+		("ambient_water.ogg", AMBIENT_WATER),
+		("ambient_cave.ogg", AMBIENT_CAVE),
+	];
+}
+
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
 	// with concat! at include time: frame_common.wgsl (the Frame uniform
@@ -101,6 +140,14 @@ mod tests {
 		for bytes in super::tex::LAYERS {
 			assert!(bytes.len() > 8);
 			assert_eq!(&bytes[1..4], b"PNG");
+		}
+	}
+
+	#[test]
+	fn sfx_are_nonempty_oggs() {
+		for (name, bytes) in super::sfx::ALL {
+			assert!(bytes.len() > 4, "{name}");
+			assert_eq!(&bytes[0..4], b"OggS", "{name}");
 		}
 	}
 }

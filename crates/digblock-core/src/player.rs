@@ -5,9 +5,11 @@
 //! descending) land flat on the block plane — the eye rests at exactly
 //! top + EYE_TO_FEET anywhere on a block top, no edge slide — while
 //! walls slide tangentially and ceilings stop the jump. Water and
-//! unloaded chunks are non-solid (the Java null-block behavior). Run at
-//! a fixed 60 Hz tick: the ÷60 air control is a per-tick constant tuned
-//! at 60 fps.
+//! unloaded chunks are non-solid to COLLISION (the Java null-block
+//! behavior); submersion instead switches the integration to the
+//! buoyant swim branch (slow sink, held-jump swim-up, surface breach).
+//! Run at a fixed 60 Hz tick: the ÷60 air control is a per-tick
+//! constant tuned at 60 fps.
 //! Diverges from the Java: the point probes grew into a real capsule,
 //! ground movement accelerates toward the input target at WALK_ACCEL
 //! instead of snapping to full speed, and momentum carries over edges
@@ -26,6 +28,36 @@ pub const WALK_ACCEL: f32 = 10.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
+
+// --- Swimming. Any change here is a sim-behavior change: re-pin BOTH
+// golden trajectories and bump SIM_VERSION. ---------------------------
+/// The rendered surface of a resting source sits this far below the
+/// cell top (water.wgsl DROPS); physics flips where water LOOKS like
+/// it ends. Mirrored by the engine's eye_in_water.
+pub const WATER_SURFACE_DROP: f32 = 0.111;
+/// Passive sink speed in water when idle, blocks/s (the velocity target
+/// with no input; vs TERM_VELOCITY in air).
+pub const WATER_SINK_SPEED: f32 = -1.5;
+/// Exponential entry drag, 1/s, applied only below WATER_SINK_SPEED:
+/// kills a terminal-velocity plunge within ~2 blocks of the surface.
+pub const WATER_DRAG: f32 = 10.0;
+/// Held-Space rise-speed target, blocks/s.
+pub const SWIM_UP_SPEED: f32 = 3.0;
+/// Swim speed along the pointed direction, blocks/s (vs WALK_SPEED).
+pub const SWIM_SPEED: f32 = 2.5;
+/// The one swim ramp: acceleration toward the current velocity target
+/// (swim direction, Space-up, or the idle sink), blocks/s².
+pub const SWIM_ACCEL: f32 = 8.0;
+/// Swimming physics engages above this submersion; below it is wading
+/// and the dry rules apply unchanged. One block of water on solid
+/// ground wets 0.89/1.8 ≈ 0.49 of the capsule — waist-deep wading (and
+/// ankle-deep flow edges, which count as full cells) stays walkable.
+const SWIM_THRESHOLD: f32 = 0.5;
+/// Jump held at or below this submersion (while moving) fires a full
+/// jump impulse — the way out of the pool. Must be ABOVE the swim
+/// threshold or the window is unreachable; the band [threshold, this]
+/// is what a surfacing swimmer rises through.
+const BREACH_SUBMERSION: f32 = 0.62;
 
 // Capsule collider. HEIGHT and RADIUS are the tunables; everything else
 // derives from them. Any change here is a sim-behavior change: re-pin
@@ -295,6 +327,34 @@ impl Player {
 		}
 	}
 
+	/// Fraction of the capsule (feet..crown) below the visible water
+	/// surface, 0..1. Single-column probe at the capsule axis; every
+	/// water-family cell counts as full height (flow amounts are
+	/// transient fluid-sim state that can differ across the wire — the
+	/// physics must not flip-flop with them); the topmost water cell
+	/// tops out at the rendered surface, WATER_SURFACE_DROP below the
+	/// lattice plane.
+	fn submersion(&self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> f32 {
+		let (x, z) = (self.pos.x.floor() as i32, self.pos.z.floor() as i32);
+		let feet = self.pos.y - EYE_TO_FEET;
+		let crown = self.pos.y + EYE_TO_CROWN;
+		let mut wet = 0.0f32;
+		for cy in (feet.floor() as i32)..=(crown.floor() as i32) {
+			if !block_at(x, cy, z).is_some_and(|b| b.is_water()) {
+				continue;
+			}
+			let capped = block_at(x, cy + 1, z).is_some_and(|b| b.is_water());
+			let top = cy as f32
+				+ if capped {
+					1.0
+				} else {
+					1.0 - WATER_SURFACE_DROP
+				};
+			wet += (crown.min(top) - feet.max(cy as f32)).max(0.0);
+		}
+		(wet / HEIGHT).min(1.0)
+	}
+
 	/// One fixed tick. `dir` is the current look direction (the Java
 	/// camera direction).
 	pub fn tick(
@@ -305,7 +365,6 @@ impl Player {
 		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
 	) {
 		let dt = dt.min(0.16);
-		self.out.y = (self.out.y - GRAVITY * dt).max(TERM_VELOCITY);
 
 		let mut mv = intent.move_axis;
 		if mv.length() > 1.0 {
@@ -314,26 +373,62 @@ impl Player {
 		let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
 		let right = dir.cross(Vec3::Y).normalize_or_zero(); // Java dir × up
 
-		if self.grounded(block_at) {
-			// Ground movement is plain kinematics: accelerate toward the
-			// input target (direction × WALK_SPEED) at WALK_ACCEL, with
-			// velocity as the only state — landings, edge exits, turns
-			// and re-presses all fall out of momentum naturally (the
-			// Java snapped straight to full speed). Releasing input
-			// still stops instantly.
-			if mv == Vec2::ZERO {
-				self.out = Vec3::ZERO;
+		let sub = self.submersion(block_at);
+		if sub < SWIM_THRESHOLD {
+			// ---- dry / wading: the classic rules, bit-identical ----
+			self.out.y = (self.out.y - GRAVITY * dt).max(TERM_VELOCITY);
+			if self.grounded(block_at) {
+				// Ground movement is plain kinematics: accelerate toward
+				// the input target (direction × WALK_SPEED) at
+				// WALK_ACCEL, with velocity as the only state —
+				// landings, edge exits, turns and re-presses all fall
+				// out of momentum naturally (the Java snapped straight
+				// to full speed). Releasing input still stops instantly.
+				if mv == Vec2::ZERO {
+					self.out = Vec3::ZERO;
+				} else {
+					let target = (flat * mv.y + right * mv.x) * WALK_SPEED;
+					let cur = Vec3::new(self.out.x, 0.0, self.out.z);
+					self.out = cur + (target - cur).clamp_length_max(WALK_ACCEL * dt);
+				}
+				if intent.jump {
+					self.out *= 0.5;
+					self.out.y += JUMP_IMPULSE;
+				}
 			} else {
-				let target = (flat * mv.y + right * mv.x) * WALK_SPEED;
-				let cur = Vec3::new(self.out.x, 0.0, self.out.z);
-				self.out = cur + (target - cur).clamp_length_max(WALK_ACCEL * dt);
-			}
-			if intent.jump {
-				self.out *= 0.5;
-				self.out.y += JUMP_IMPULSE;
+				self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);
 			}
 		} else {
-			self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);
+			// ---- swimming: you swim where you point ----
+			// Entry damping: exponential drag only below the fastest
+			// INTENTIONAL descent (a straight-down dive at SWIM_SPEED),
+			// so a terminal-velocity plunge dies within ~2 blocks while
+			// deliberate dives never fight the drag. The max(0.0) keeps
+			// the dt.min(0.16) guard from flipping signs.
+			if self.out.y < -SWIM_SPEED {
+				self.out.y *= (1.0 - WATER_DRAG * dt).max(0.0);
+			}
+			// One velocity target, one ramp (SWIM_ACCEL) — Mario water
+			// rules: forward input swims along the LOOK direction (look
+			// down to dive, up to climb), strafes stay level, releasing
+			// everything eases into the slow sink, and Space always
+			// targets straight up.
+			let mut target = (dir * mv.y + right * mv.x) * SWIM_SPEED;
+			if intent.jump {
+				target.y = SWIM_UP_SPEED;
+			} else if mv == Vec2::ZERO {
+				target.y = WATER_SINK_SPEED;
+			}
+			self.out += (target - self.out).clamp_length_max(SWIM_ACCEL * dt);
+			// Breach: jump held near the surface while moving fires a
+			// full jump — apex ≈ 1.27 blocks mounts an adjacent 1-high
+			// block through the ordinary landing resolution. Gated on
+			// movement so a stationary jump-hold treads instead of
+			// pogoing; horizontal carry is kept (no ground-jump damp) so
+			// the leap actually reaches the ledge.
+			if intent.jump && sub <= BREACH_SUBMERSION && mv != Vec2::ZERO {
+				self.out.y = JUMP_IMPULSE;
+			}
 		}
 
 		debug_assert!((self.out * dt).length() < 1.0, "tunneling guard");
@@ -732,6 +827,158 @@ mod tests {
 		}
 		assert!(p.pos.y < TEST_SPAWN.y - 10.0, "fell through unloaded world");
 	}
+
+	// ---- swimming --------------------------------------------------------
+
+	/// Solid below y=10, water sources 10..20 (visible surface at
+	/// 19.889), air above.
+	fn water_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
+		let _ = (x, z);
+		Some(if y < 10 {
+			BlockType::Dirt
+		} else if y < 20 {
+			BlockType::Water
+		} else {
+			BlockType::Air
+		})
+	}
+
+	/// `water_world` plus a solid shelf at z >= 12 whose top surface
+	/// (y = 20) sits level with the water cell tops.
+	fn shelf_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
+		if z >= 12 && y < 20 {
+			return Some(BlockType::Dirt);
+		}
+		water_world(x, y, z)
+	}
+
+	const SWIM: PlayerIntent = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: true,
+	};
+
+	#[test]
+	fn sinks_slowly_in_water() {
+		let mut p = Player::new(Vec3::new(0.5, 15.0, 0.5));
+		let mut min_vy = 0.0f32;
+		for _ in 0..60 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &water_world);
+			min_vy = min_vy.min(p.state().vel.y);
+		}
+		assert!(min_vy >= WATER_SINK_SPEED - 1e-3, "sink capped: {min_vy}");
+		let dropped = 15.0 - p.pos.y;
+		// Ramp to the sink target then coast: ~1.36 blocks in the first
+		// second — a gentle sink, nothing like dry gravity (~4.9).
+		assert!((1.1..=1.5).contains(&dropped), "dropped {dropped}");
+	}
+
+	#[test]
+	fn swim_up_rises() {
+		let mut p = Player::new(Vec3::new(0.5, 12.0, 0.5));
+		let hold = PlayerIntent {
+			move_axis: Vec2::ZERO,
+			jump: true,
+		};
+		for _ in 0..120 {
+			p.tick(TICK, Vec3::Z, hold, &water_world);
+			assert!(
+				p.state().vel.y <= SWIM_UP_SPEED + 1e-3,
+				"rise capped: {}",
+				p.state().vel.y
+			);
+		}
+		// ~2 s of swim-up from depth: most of 6 blocks, minus the ramp
+		// and the surface bob band.
+		assert!(p.pos.y > 16.0, "rose to {}", p.pos.y);
+	}
+
+	#[test]
+	fn swims_where_pointed() {
+		// Forward input follows the LOOK direction: pointing down dives,
+		// pointing up climbs — no Space involved.
+		let down = Vec3::new(0.0, -0.995, 0.1).normalize();
+		let up = Vec3::new(0.0, 0.995, 0.1).normalize();
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		let mut diver = Player::new(Vec3::new(0.5, 16.0, 0.5));
+		for _ in 0..60 {
+			diver.tick(TICK, down, forward, &water_world);
+		}
+		// A near-vertical dive approaches -SWIM_SPEED — clearly past the
+		// passive sink's ~1.36 blocks over the same second.
+		assert!(diver.pos.y < 16.0 - 1.8, "dove to {}", diver.pos.y);
+
+		let mut climber = Player::new(Vec3::new(0.5, 13.0, 0.5));
+		for _ in 0..60 {
+			climber.tick(TICK, up, forward, &water_world);
+		}
+		assert!(climber.pos.y > 14.6, "climbed to {}", climber.pos.y);
+	}
+
+	#[test]
+	fn jump_out_mounts_adjacent_block() {
+		// Swimming against the shelf wall, holding forward + jump: the
+		// breach fires in the near-surface band and the ordinary landing
+		// resolution puts the eye at shelf top + EYE_TO_FEET.
+		let mut p = Player::new(Vec3::new(0.5, 18.5, 11.4));
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, SWIM, &shelf_world);
+			if (p.pos.y - 21.5).abs() < 0.001 && p.pos.z > 12.0 {
+				return; // mounted the shelf
+			}
+		}
+		panic!("never mounted the shelf: pos {:?}", p.pos);
+	}
+
+	#[test]
+	fn terminal_fall_damped_on_entry() {
+		// Free-fall from high above the pool: enters near terminal
+		// velocity, and the water drag must kill the plunge within a
+		// few blocks (the gentle sink afterwards is allowed to continue
+		// to the floor — only the fast phase is bounded).
+		let mut p = Player::new(Vec3::new(0.5, 40.0, 0.5));
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &water_world);
+			if p.pos.y < 20.0 && p.state().vel.y >= WATER_SINK_SPEED - 1e-3 {
+				// Recovered to the sink band — the plunge is over.
+				assert!(p.pos.y > 16.0, "plunge ran too deep: {}", p.pos.y);
+				return;
+			}
+		}
+		panic!("entry plunge never damped");
+	}
+
+	#[test]
+	fn wading_stays_dry_physics() {
+		// One block of water on solid ground: sub ≈ 0.49 < threshold —
+		// walking speed must be full WALK_SPEED, not SWIM_SPEED.
+		let shallow = |x: i32, y: i32, z: i32| -> Option<BlockType> {
+			let _ = (x, z);
+			Some(if y < 10 {
+				BlockType::Dirt
+			} else if y < 11 {
+				BlockType::Water
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5)); // feet on ground
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..60 {
+			p.tick(TICK, Vec3::Z, forward, &shallow); // accelerate
+		}
+		let z0 = p.pos.z;
+		for _ in 0..60 {
+			p.tick(TICK, Vec3::Z, forward, &shallow);
+		}
+		let waded = p.pos.z - z0;
+		assert!((waded - WALK_SPEED).abs() < 0.1, "waded {waded} in 1s");
+	}
 }
 
 #[cfg(test)]
@@ -791,6 +1038,44 @@ mod golden {
 			(s.pos.to_array(), s.vel.to_array()),
 			([-2.2490497f32, 11.5, 5.5237446], [-4.0f32, 0.0, 0.0]),
 			"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
+		);
+	}
+
+	/// The water counterpart: pins the swim branch (entry damping, sink,
+	/// swim-up, breach onto a shelf) to the bit. Same contract as above.
+	#[test]
+	fn golden_water_trajectory_pins_sim_version() {
+		let shelf = |x: i32, y: i32, z: i32| -> Option<BlockType> {
+			let _ = x;
+			Some(if y < 10 || (z >= 12 && y < 20) {
+				crate::block::BlockType::Dirt
+			} else if y < 20 {
+				crate::block::BlockType::Water
+			} else {
+				crate::block::BlockType::Air
+			})
+		};
+		// Fall in from above, sink, then swim forward+up and breach out
+		// onto the shelf.
+		let mut p = Player::new(Vec3::new(0.5, 26.0, 10.5));
+		for t in 0..240u32 {
+			let intent = if t < 120 {
+				PlayerIntent::default()
+			} else {
+				PlayerIntent {
+					move_axis: Vec2::new(0.0, 1.0),
+					jump: true,
+				}
+			};
+			p.tick(TICK, Vec3::Z, intent, &shelf);
+		}
+		let s = p.state();
+		// Tick 240 catches the breach arc over the shelf lip — falling
+		// in, sinking, swim-up, and the breach all feed these bits.
+		assert_eq!(
+			(s.pos.to_array(), s.vel.to_array()),
+			([0.5f32, 22.090445, 11.94389], [0.0f32, 3.856666, 0.5000001]),
+			"swim behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 		);
 	}
 }

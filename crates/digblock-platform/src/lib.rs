@@ -51,6 +51,12 @@ pub trait Game: 'static {
 	fn wants_cursor_grab(&self) -> bool {
 		true
 	}
+	/// Polled on every keypress. `true` makes the shell deliver produced
+	/// `Text` events even while the cursor stays grabbed — an in-game
+	/// text field (chat) without releasing pointer lock.
+	fn wants_text_input(&self) -> bool {
+		false
+	}
 	fn on_resume(&mut self) {}
 	/// F10 drill: rebuild all device-lifetime resources from scratch, as a
 	/// real device loss would require. The standing regression test for the

@@ -383,7 +383,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 	let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
 	let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
-	let thick = max(scene_dist - i.fog_dist, 0.0);
+	// Underside view (submerged camera, back of the face): the "scene
+	// behind" is the sky above the surface, so the reconstructed
+	// thickness is bogus (~far plane). The water column is behind the
+	// camera, not behind the surface — treat the pane as thin.
+	let below = frame.water_misc.x > 0.5 && dot(vdir, NORMALS[i.ni]) < 0.0;
+	let thick = select(max(scene_dist - i.fog_dist, 0.0), 0.0, below);
 	// Refraction: sample the scene through a ripple-perturbed offset
 	// that grows with thickness (clamped so shores don't smear), and
 	// falls back to the straight sample when the offset ray would pull
@@ -396,23 +401,40 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		suv = suv2;
 	}
 	let refracted = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
-	// Beer-Lambert absorption, red dying first (Jerlov coastal-ish
-	// coefficients per block): shallow water stays clear, deep water
-	// swallows the bottom into the scatter color.
-	let transmit = exp(vec3f(-0.45, -0.16, -0.09) * thick);
+	// Beer-Lambert absorption, red dying first: shallow water stays
+	// clear, deep water swallows the bottom into the scatter color.
+	// WATER_EXTINCTION lives in frame_common.wgsl because the submerged
+	// scene fog (apply_fog) must stay visibly consistent with it.
+	let transmit = exp(-WATER_EXTINCTION * thick);
 	var col = mix(scatter, refracted, transmit);
-	// Contact foam line where the water meets ground.
-	let shore = 1.0 - smoothstep(0.05, 0.45, thick);
+	// Snell window: from underwater, rays steeper than the critical
+	// angle transmit the world above; shallower rays totally internally
+	// reflect. The rippled `nrm` wobbling the boundary IS the sparkle.
+	let window = smoothstep(TIR_COS_EDGE.x, TIR_COS_EDGE.y, abs(dot(vdir, nrm)));
+	if below {
+		// Through the window: the refracted above-surface render,
+		// brightened (open air is brighter than the murk-adapted eye).
+		// Outside it: a mirror of the water body itself — the underwater
+		// fog color, dimmed because the reflected rays head down into
+		// deeper murk. This is what makes the surface READ as a plane
+		// from below instead of recompositing its own background.
+		let thru = refracted * mix(1.0, SNELL_BRIGHT, window);
+		col = mix(frame.fog_color.rgb * TIR_MIRROR_DIM, thru, window);
+	}
+	// Contact foam line where the water meets ground (meaningless on the
+	// underside — thick is pinned to 0 there and would foam everything).
+	let shore = (1.0 - smoothstep(0.05, 0.45, thick)) * f32(!below);
 	col = mix(col, vec3f(0.95, 0.97, 1.0) * froth_light, shore * 0.25);
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
-	// grazing angles and stays see-through from above. From below the
-	// surface (camera underwater) the sky reflection is a lie — damp it.
+	// grazing angles and stays see-through from above. On the underside
+	// the TIR mirror above replaces it entirely; half-submerged front
+	// faces keep the damped version.
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
 	col = mix(
 		col,
 		reflection_color(i.world, normalize(rr), i.fog_dist),
-		fres * (1.0 - 0.7 * frame.water_misc.x),
+		fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below),
 	);
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// the impact cell holds a steady churn, spatially de-phased so
@@ -433,16 +455,23 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// first fallen block, keyed to the plunging drop edge.
 	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
 	col += frame.light_color.rgb * lip * sh * 0.15;
-	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
-	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
+	col = apply_fog(col, i.fog_dist, i.world);
 	// Alpha: the fresnel base, pushed toward opaque where absorption ate
 	// the background (col already composites the refracted scene there,
 	// and the dst pixel holds the untinted scene — letting much of it
-	// through would wash the depth tint out). Capped short of 1.0 so the
-	// deepest water keeps a faint hint of the bottom instead of going to
-	// a solid wall of tint. Aeration pins near-opaque; streak gaps
-	// (s < 0.5) thin falling sheets back toward translucent.
-	let opaque = min(1.0 - dot(transmit, vec3f(1.0 / 3.0)), 0.88);
-	let alpha = mix(max(mix(frame.misc.x, 1.0, fres), opaque), 0.92, aer);
+	// through would wash the depth tint out). The saturation runs at
+	// WATER_ALPHA_K x the color extinction — slower onset — but tops
+	// out at the higher WATER_ALPHA_CAP, so shallow ponds stay clear
+	// while deep water goes near-opaque with only a hint of bottom.
+	// Aeration pins near-opaque; streak gaps (s < 0.5) thin falling
+	// sheets back toward translucent. The underside pane gets its own
+	// alpha: near-opaque in the TIR mirror ring, translucent through
+	// the Snell window — a distinct plane, not a tinted nothing.
+	let opaque = min(
+		1.0 - dot(exp(-WATER_EXTINCTION * WATER_ALPHA_K * thick), vec3f(1.0 / 3.0)),
+		WATER_ALPHA_CAP,
+	);
+	let base = mix(max(mix(frame.misc.x, 1.0, fres), opaque), 0.92, aer);
+	let alpha = select(base, mix(BELOW_ALPHA.x, BELOW_ALPHA.y, window), below);
 	return vec4f(col, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
 }

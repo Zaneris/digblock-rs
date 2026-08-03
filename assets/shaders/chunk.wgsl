@@ -50,6 +50,8 @@ struct VsOut {
 	@location(6) ao: f32,
 	// Face-axis ambient factor (constant per face).
 	@location(7) @interpolate(flat) axis: f32,
+	// World position — the underwater fog needs the ray endpoint.
+	@location(8) world: vec3f,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-5 x, 6-11 y, 12-17 z
@@ -72,6 +74,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
+	o.world = world;
 	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
 	// per-block tint step (bits 25-27 → 0.95..1.05); tint is constant
 	// across the quad, so the product interpolates exactly.
@@ -138,7 +141,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let sh = mix(1.0, vis, frame.light_dir.w);
 	var col = tex * i.ao * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
 	// Distance fog toward the sky horizon, hiding chunk pop-in.
-	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
-	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
+	col = apply_fog(col, i.fog_dist, i.world);
 	return vec4f(col, frame.misc.x);
 }

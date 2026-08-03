@@ -1,6 +1,7 @@
 use digblock_platform::RunOptions;
 use digblock_render::{Engine, EngineConfig};
 
+mod audio;
 mod services;
 
 /// Bad or missing flag values are fatal like unknown args — a silently
@@ -41,6 +42,8 @@ fn main() {
 	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
 	let mut join = false;
 	let mut server_filter: Option<String> = None;
+	let mut name: Option<String> = None;
+	let mut mute = false;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -51,6 +54,11 @@ fn main() {
 			// first listed server (or the one matching --server).
 			"--join" => join = true,
 			"--server" => server_filter = Some(parse_or_die::<String>("--server", args.next())),
+			// Display name (3-10 chars: a-z A-Z 0-9 - _). Pre-fills the
+			// menu field; required for --join. Never defaulted — entering
+			// a name is mandatory.
+			"--name" => name = Some(parse_or_die::<String>("--name", args.next())),
+			"--mute" => mute = true,
 			"--screenshot" => {
 				options.screenshot =
 					Some(parse_or_die::<String>("--screenshot", args.next()).into());
@@ -96,9 +104,17 @@ fn main() {
 		// cost; presentation judders inherently at >display rate).
 	}
 
+	// An explicit --name must be valid; a bad one is fatal like any other
+	// bad flag value (silently dropping it would surprise scripted joins).
+	if let Some(n) = &name {
+		if let Err(e) = digblock_net::protocol::validate_name(n) {
+			eprintln!("bad value for --name: {e}");
+			std::process::exit(2);
+		}
+	}
 	// Env-derived knobs live in the launcher; the engine stays env-free
 	// (std::env is a stub on the wasm target).
-	config.player_name = std::env::var("USER").ok();
+	config.player_name = name.clone();
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
@@ -112,11 +128,25 @@ fn main() {
 	// (bench, screenshot, drill) and --join must not sit on a menu screen.
 	config.menu = !join && !config.bench && options.screenshot.is_none() && !options.auto_drill;
 
+	// Audio rides interactive runs only — every deterministic capture
+	// path stays deviceless and bit-identical (the engine's sink is None).
+	let audio_on = !mute && !config.bench && options.screenshot.is_none() && !options.auto_drill;
+
 	let mut engine = Engine::new(config);
+	if audio_on {
+		engine.set_audio(audio::start(
+			master_url
+				.as_deref()
+				.map(|u| u.trim_end_matches('/').to_string()),
+		));
+	}
 	if let Some(master_url) = master_url.as_deref().map(|u| u.trim_end_matches('/')) {
 		if join {
-			let name = std::env::var("USER").unwrap_or_else(|_| "player".into());
-			match services::auto_join(master_url, server_filter.as_deref(), &name) {
+			let Some(name) = name.as_deref() else {
+				eprintln!("--join needs --name <name> (3-10 chars: a-z A-Z 0-9 - _)");
+				std::process::exit(2);
+			};
+			match services::auto_join(master_url, server_filter.as_deref(), name) {
 				Ok((transport, token)) => {
 					engine.set_transport_with_token(Box::new(transport), token);
 				}

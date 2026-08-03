@@ -9,4 +9,11 @@
     <AssemblyName>DigBlock.Master</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- CC0 music tracks served at /music/* (see music/SOURCES.md);
+         copied beside the binary so native runs and the container
+         resolve the same relative directory. -->
+    <Content Include="music/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -142,13 +142,40 @@ app.MapGet("/api/servers", (ServerRegistry registry) =>
 app.MapPost("/api/join", (JoinRequest req, ServerRegistry registry, TokenStore tokens, IOptions<MasterOptions> opts) =>
 {
     var displayName = req.DisplayName?.Trim();
-    if (string.IsNullOrEmpty(displayName) || displayName.Length > 32)
-        return Results.BadRequest(new { error = "displayName must be 1-32 characters" });
+    // Mirrors validate_name in crates/digblock-net/src/protocol.rs — the
+    // authoritative backstop behind the client-side gate.
+    if (displayName is null || !System.Text.RegularExpressions.Regex.IsMatch(displayName, "^[A-Za-z0-9_-]{3,10}$"))
+        return Results.BadRequest(new { error = "displayName must be 3-10 characters: a-z A-Z 0-9 - _" });
     if (!registry.TryGet(req.ServerId, out var entry))
         return Results.NotFound();
     var ttl = TimeSpan.FromSeconds(opts.Value.Token.TtlSeconds);
     var token = tokens.Mint(entry.Id, displayName, ttl);
     return Results.Ok(new JoinResponse(token, (int)ttl.TotalSeconds, entry.Url, entry.CertHashHex));
+}).RequireCors("client");
+
+// ---- music (static CC0 tracks, see music/SOURCES.md) ------------------------
+// Clients (desktop AND web, single-player included) fetch tracks from the
+// master at runtime so game binaries never embed multi-MB audio.
+
+var musicDir = Path.Combine(AppContext.BaseDirectory, "music");
+
+app.MapGet("/api/music", () =>
+{
+    var files = Directory.Exists(musicDir)
+        ? Directory.GetFiles(musicDir, "*.ogg").OrderBy(f => f, StringComparer.Ordinal)
+        : Enumerable.Empty<string>();
+    return Results.Ok(files
+        .Select(f => new MusicTrack(Path.GetFileNameWithoutExtension(f), $"/music/{Path.GetFileName(f)}"))
+        .ToArray());
+}).RequireCors("client");
+
+app.MapGet("/music/{file}", (string file) =>
+{
+    // Names come from our own manifest; reject anything path-shaped.
+    if (file.Contains("..") || file.Contains('/') || file.Contains('\\') || !file.EndsWith(".ogg", StringComparison.Ordinal))
+        return Results.NotFound();
+    var path = Path.Combine(musicDir, file);
+    return File.Exists(path) ? Results.File(path, "audio/ogg") : Results.NotFound();
 }).RequireCors("client");
 
 app.Run();

@@ -36,7 +36,9 @@ bot *ARGS:
 # the container to the host (the LAN-IP hairpin breaks QUIC address
 # validation under Docker's NAT).
 # Extra clients: `just run -- --master-url http://127.0.0.1:5200` (add
-# --join to skip the menu for scripted flows).
+# --join --name <name> to skip the menu for scripted flows; display
+# names are mandatory, 3-10 chars of a-z A-Z 0-9 - _). In-game: T or
+# Enter opens chat; --mute silences the audio stack.
 play *ARGS:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -88,7 +90,8 @@ compose-bots PROFILE="clean":
 # http://localhost:8080 (localhost is a secure context — WebGPU and
 # WebTransport both work over plain http). Needs wasm-bindgen-cli at the
 # exact version in Cargo.lock: cargo install wasm-bindgen-cli.
-# Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr=0 ?shadow= ?overlay ?name=.
+# Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr=0 ?shadow=
+# ?overlay ?name= (validated: 3-10 chars of a-z A-Z 0-9 - _) ?mute.
 web:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -100,8 +103,9 @@ web:
 
 # Browser multiplayer test: containerized master + native server (same
 # topology as `just play`) + the web bundle served on :8080. Open the
-# printed URL in Chrome, pick Multiplayer, join "Local World"; append
-# `&join` to skip the menu (scripted flows), `&name=X` for a display name.
+# printed URL in Chrome, pick Multiplayer, type a name (3-10 chars),
+# join "Local World"; append `&join` to skip the menu (scripted flows),
+# `&name=X` for a display name.
 play-web:
 	#!/usr/bin/env bash
 	set -euo pipefail

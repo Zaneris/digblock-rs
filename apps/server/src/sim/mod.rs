@@ -26,8 +26,8 @@ use digblock_core::player::{self, Player, PlayerIntent};
 use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
-	sanitize_name, PlayerId, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, SERVER_ID,
-	SNAPSHOT_DIVISOR, TICK_RATE,
+	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
+	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -90,6 +90,7 @@ struct Client {
 	/// EWMA of adopted (claim − sim) deltas: the sustained-drift gate.
 	drift: Vec3,
 	edit_tokens: f32,
+	chat_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
 	/// Run the full edited-column sync scan for this client next tick.
@@ -326,6 +327,29 @@ impl Sim {
 						self.action_queue.push(ClientAction::DigCancel { conn_id });
 					}
 				}
+				// Inline, not queued: chat has no ordering relationship
+				// with the edit stream. Over-budget or empty-after-
+				// sanitize lines drop silently — a talkative client gets
+				// throttled, never disconnected.
+				ClientMsg::Chat { text } => {
+					let Some(client) = self.clients.get_mut(&conn_id) else {
+						return; // lobby connections don't get to talk
+					};
+					if client.chat_tokens < 1.0 {
+						return;
+					}
+					client.chat_tokens -= 1.0;
+					let from = client.id;
+					let Some(text) = sanitize_chat(&text) else {
+						return;
+					};
+					let msg = ServerMsg::Chat { from, text };
+					// Everyone, sender included: the echo is the client's
+					// delivery confirmation.
+					for c in self.clients.values() {
+						client_send(c, &msg);
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -506,6 +530,7 @@ impl Sim {
 				last_input_tick: 0,
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
+				chat_tokens: CHAT_BURST,
 				draw_dist,
 				synced_columns: synced,
 				needs_sync_scan: false,
@@ -967,5 +992,121 @@ mod tests {
 			.msgs
 			.iter()
 			.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 })));
+	}
+
+	#[test]
+	fn chat_broadcasts_to_all_including_sender() {
+		let mut sim = flat_sim("chat");
+		let mut a = connect(&mut sim, 1); // id 0
+		let mut b = connect(&mut sim, 2); // id 1
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Chat {
+				text: "hello world".into(),
+			},
+		}]);
+		for c in [&mut a, &mut b] {
+			c.drain();
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::Chat { from: 0, text } if text == "hello world"
+				)),
+				"chat missing (sender echo included): {:?}",
+				c.msgs
+			);
+		}
+	}
+
+	#[test]
+	fn chat_flood_is_bounded_by_the_token_bucket() {
+		let mut sim = flat_sim("chatflood");
+		let mut a = connect(&mut sim, 1);
+		let flood: Vec<SimEvent> = (0..20)
+			.map(|i| SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Chat {
+					text: format!("spam {i}"),
+				},
+			})
+			.collect();
+		sim.tick_once(flood);
+		a.drain();
+		let heard = a
+			.msgs
+			.iter()
+			.filter(|m| matches!(m, ServerMsg::Chat { .. }))
+			.count();
+		assert_eq!(
+			heard,
+			digblock_net::protocol::CHAT_BURST as usize,
+			"flood must be capped at the burst, silently: {:?}",
+			a.msgs
+		);
+	}
+
+	#[test]
+	fn hostile_chat_is_sanitized() {
+		let mut sim = flat_sim("chatsan");
+		let mut a = connect(&mut sim, 1);
+		let long = "y".repeat(1000);
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Chat {
+					text: "a\u{7}b\u{1F600}c".into(),
+				},
+			},
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Chat {
+					text: "   \t  ".into(),
+				},
+			},
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Chat { text: long },
+			},
+		]);
+		a.drain();
+		let texts: Vec<&str> = a
+			.msgs
+			.iter()
+			.filter_map(|m| match m {
+				ServerMsg::Chat { text, .. } => Some(text.as_str()),
+				_ => None,
+			})
+			.collect();
+		// The whitespace-only line vanished (though it cost a token);
+		// the others arrive cleaned and capped.
+		assert_eq!(texts.len(), 2, "{texts:?}");
+		assert_eq!(texts[0], "abc");
+		assert_eq!(texts[1].len(), digblock_net::protocol::MAX_CHAT_LEN);
+		assert!(texts.iter().all(|t| t.chars().all(|c| !c.is_control())));
+	}
+
+	#[test]
+	fn chat_before_hello_is_ignored() {
+		let mut sim = flat_sim("chatlobby");
+		let (tx, mut rx) = channel(super::OUT_CAP);
+		sim.tick_once(vec![
+			SimEvent::Connected {
+				conn_id: 9,
+				out: tx,
+			},
+			SimEvent::Msg {
+				conn_id: 9,
+				msg: ClientMsg::Chat {
+					text: "premature".into(),
+				},
+			},
+		]);
+		assert!(
+			matches!(
+				rx.try_recv(),
+				Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+			),
+			"lobby connection must hear nothing back"
+		);
 	}
 }

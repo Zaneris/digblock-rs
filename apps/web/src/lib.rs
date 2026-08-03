@@ -6,6 +6,7 @@
 use digblock_render::{Engine, EngineConfig};
 use wasm_bindgen::prelude::*;
 
+mod audio;
 mod services;
 
 fn param<T: std::str::FromStr>(p: &web_sys::UrlSearchParams, key: &str) -> Option<T> {
@@ -45,11 +46,15 @@ pub fn start() -> Result<(), JsValue> {
 		config.shadow_size = s.clamp(512, 4096);
 	}
 	config.overlay = flag(&params, "overlay");
-	config.player_name = params.get("name").filter(|n| !n.is_empty());
+	// ?name= is an explicit override, still held to the 3-10 char rule —
+	// an invalid one is treated as absent (the menu field starts empty).
+	config.player_name = params
+		.get("name")
+		.filter(|n| digblock_net::protocol::validate_name(n).is_ok());
 
 	if flag(&params, "join") {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
-		// The menu refuses to join with an empty name.
+		// The menu refuses to join without a valid name.
 		if config.player_name.is_none() {
 			config.player_name = Some("web".into());
 		}
@@ -59,6 +64,11 @@ pub fn start() -> Result<(), JsValue> {
 
 	let master_url = params.get("master").filter(|m| !m.is_empty());
 	let mut engine = Engine::new(config);
+	// ?mute kills the whole audio stack; otherwise sound starts on the
+	// first click/keydown (Chrome's autoplay gesture rule).
+	if !flag(&params, "mute") {
+		engine.set_audio(audio::start(master_url.clone()));
+	}
 	if let Some(master_url) = master_url {
 		engine.set_menu_services(services::start(master_url));
 	}

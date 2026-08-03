@@ -64,10 +64,9 @@ fn vs(
 	// Flat lambert against the shared light rig + ambient.
 	let diffuse = max(dot(wn, -frame.light_dir.xyz), 0.0) * frame.light_dir.w;
 	var col = i1.rgb * (frame.ambient.rgb + frame.light_color.rgb * diffuse);
-	// Standard distance fog (matches the chunk shader's fade band).
+	// Standard distance fog (shared helper — matches every other pass).
 	let dist = distance(world, frame.cam_pos.xyz);
-	let fog = clamp((dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
-	col = mix(col, frame.fog_color.rgb, fog);
+	col = apply_fog(col, dist, world);
 
 	var out: VsOut;
 	out.pos = frame.view_proj * vec4f(world, 1.0);

@@ -236,12 +236,16 @@ pub struct Engine {
 	net_corrections: u32,
 	net_error_accum: f32,
 	net_log_timer: f32,
-	/// Server-message feed (join/leave/disconnect), drawn by the overlay
+	/// Server-message feed (join/leave/disconnect/chat) as
+	/// (text, ttl, 0xAABBGGRR color), drawn by the overlay
 	/// above the HUD; (text, seconds left) — fades over the last second.
-	feed: Vec<(String, f32)>,
+	feed: Vec<(String, f32, u32)>,
 	/// id → name, learned from PlayerJoined (roster + live joins), so
 	/// PlayerLeft (id-only on the wire) can be displayed by name.
 	player_names: rustc_hash::FxHashMap<u8, String>,
+	/// Our own id from Welcome. The roster never includes ourselves, so
+	/// our chat echo resolves through this + config.player_name.
+	my_player_id: Option<u8>,
 	metrics: Metrics,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
@@ -255,6 +259,21 @@ pub struct Engine {
 	size: (u32, u32),
 	/// Startup/pause menu state (pure; overlay renders its view).
 	menu: crate::menu::Menu,
+	/// Chat input line (pure; overlay renders its view).
+	chat: crate::chat::Chat,
+	/// Injected audio backend; None (bench, iOS) makes every emit free.
+	audio: Option<Box<dyn crate::audio::AudioSink>>,
+	/// Waterfall loop-voice reconciler (fed by mesh impacts).
+	water_audio: crate::water_audio::WaterAudio,
+	/// Footstep cadence + ambient-bed state (pure helpers).
+	footsteps: crate::audio::Footsteps,
+	ambient: crate::audio::Ambient,
+	/// Scratch for batched audio commands (water voices).
+	audio_scratch: Vec<crate::audio::AudioCmd>,
+	/// Player eye position last frame (footstep distance).
+	prev_player_pos: Vec3,
+	/// Per-frame name-tag scratch (reused allocation).
+	nametag_scratch: Vec<crate::renderer::NameTag>,
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
@@ -290,6 +309,21 @@ fn player_color(id: u8) -> [f32; 3] {
 	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
 }
 
+/// Pack linear RGB into the overlay's 0xAABBGGRR vertex color (opaque).
+fn pack_rgb(rgb: [f32; 3]) -> u32 {
+	let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u32;
+	0xFF00_0000 | (c(rgb[2]) << 16) | (c(rgb[1]) << 8) | c(rgb[0])
+}
+
+/// World-space center of a block cell (positional-audio anchor).
+fn cell_center(cell: (i32, i32, i32)) -> [f32; 3] {
+	[
+		cell.0 as f32 + 0.5,
+		cell.1 as f32 + 0.5,
+		cell.2 as f32 + 0.5,
+	]
+}
+
 impl Engine {
 	pub fn new(config: EngineConfig) -> Self {
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref());
@@ -320,16 +354,27 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
+		// The name field starts empty unless an explicit, valid override
+		// (`?name=`, `--name`) was supplied — entering one is mandatory.
 		let menu = crate::menu::Menu::new(
 			config.menu,
 			config
 				.player_name
 				.clone()
-				.unwrap_or_else(|| "player".into()),
+				.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
+				.unwrap_or_default(),
 			config.auto_join.clone(),
 		);
 		Self {
 			menu,
+			chat: crate::chat::Chat::default(),
+			audio: None,
+			water_audio: crate::water_audio::WaterAudio::default(),
+			footsteps: crate::audio::Footsteps::default(),
+			ambient: crate::audio::Ambient::default(),
+			audio_scratch: Vec::new(),
+			prev_player_pos: spawn,
+			nametag_scratch: Vec::new(),
 			services: None,
 			config,
 			seed,
@@ -367,6 +412,7 @@ impl Engine {
 			net_log_timer: 0.0,
 			feed: Vec::new(),
 			player_names: rustc_hash::FxHashMap::default(),
+			my_player_id: None,
 			metrics,
 			pending: FrameTimings::default(),
 			overlay_visible,
@@ -415,6 +461,98 @@ impl Engine {
 		self.menu.set_services_available();
 	}
 
+	/// Inject the platform audio backend (launcher-owned, like
+	/// `MenuServices`). Never called by bench/screenshot/drill runs.
+	pub fn set_audio(&mut self, sink: Box<dyn crate::audio::AudioSink>) {
+		self.audio = Some(sink);
+		self.ambient.reset();
+	}
+
+	/// Per-frame audio upkeep, after the camera settles: listener pose,
+	/// footsteps, waterfall voices, ambient bed. One early-out branch
+	/// when no sink is attached.
+	fn step_audio(&mut self, dt: f32) {
+		use crate::audio::{ambient_sfx, step_sfx, AmbientZone, AudioCmd, LOOP_AMBIENT};
+		if self.audio.is_none() {
+			return;
+		}
+		let cam = self.camera.pos;
+		self.emit(AudioCmd::Listener {
+			pos: cam.to_array(),
+			forward: self.camera.dir().to_array(),
+		});
+
+		// Footsteps: walk mode only, driven by actual horizontal motion.
+		let submerged = self.eye_in_water();
+		if self.walking {
+			let d = self.player.pos - self.prev_player_pos;
+			let moved = Vec3::new(d.x, 0.0, d.z).length();
+			let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
+			let (bx, bz) = (
+				self.player.pos.x.floor() as i32,
+				self.player.pos.z.floor() as i32,
+			);
+			let below = self.pipeline.block_at(bx, (feet - 0.05).floor() as i32, bz);
+			let grounded = below.is_some_and(|b| b.props().collides);
+			let feet_wet = self
+				.pipeline
+				.block_at(bx, feet.floor() as i32, bz)
+				.is_some_and(|b| b.is_water());
+			if let Some((m, gain)) =
+				self.footsteps
+					.advance(moved, grounded, below, submerged || feet_wet)
+			{
+				self.emit(AudioCmd::Sfx {
+					sound: step_sfx(m),
+					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
+					gain,
+				});
+			}
+		}
+		self.prev_player_pos = self.player.pos;
+
+		// Waterfall voices.
+		let mut cmds = std::mem::take(&mut self.audio_scratch);
+		self.water_audio.update(dt, cam, &mut cmds);
+		for cmd in cmds.drain(..) {
+			self.emit(cmd);
+		}
+		self.audio_scratch = cmds;
+
+		// Ambient bed: underwater beats cave beats surface. Cave = well
+		// below the pure worldgen surface (dug pits near grade don't
+		// count — that's fine, they're open to the sky anyway).
+		let zone = if submerged {
+			AmbientZone::Underwater
+		} else {
+			let h = digblock_core::worldgen::terrain_height(
+				cam.x.floor() as i32,
+				cam.z.floor() as i32,
+				self.seed,
+			);
+			if cam.y < h as f32 - 6.0 {
+				AmbientZone::Cave
+			} else {
+				AmbientZone::Surface
+			}
+		};
+		if let Some(zone) = self.ambient.advance(zone, dt) {
+			self.emit(AudioCmd::LoopStart {
+				id: LOOP_AMBIENT,
+				sound: ambient_sfx(zone),
+				pos: None,
+				gain: crate::audio::AMBIENT_GAIN,
+			});
+		}
+	}
+
+	/// Send one audio command if a sink is attached (free otherwise).
+	fn emit(&mut self, cmd: crate::audio::AudioCmd) {
+		if let Some(a) = self.audio.as_mut() {
+			a.send(cmd);
+		}
+	}
+
 	/// Welcome handshake: replace the locally-seeded world with the
 	/// server's. Cheap at startup — nothing meaningful has streamed yet.
 	fn swap_world(&mut self, seed: f64, spawn: Vec3) {
@@ -439,6 +577,18 @@ impl Engine {
 		if let Some(r) = self.renderer.as_mut() {
 			r.clear_chunks();
 		}
+		// Old-world sounds don't survive the swap.
+		self.emit(crate::audio::AudioCmd::LoopStop {
+			id: crate::audio::LOOP_DIG,
+		});
+		let mut cmds = std::mem::take(&mut self.audio_scratch);
+		self.water_audio.clear(&mut cmds);
+		for cmd in cmds.drain(..) {
+			self.emit(cmd);
+		}
+		self.audio_scratch = cmds;
+		self.ambient.reset();
+		self.prev_player_pos = spawn;
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -451,12 +601,18 @@ impl Engine {
 	/// Newest-last message feed; oldest drops when full so a join wave
 	/// can't grow the overlay unboundedly.
 	fn push_feed(&mut self, text: String) {
-		const FEED_MAX: usize = 6;
+		self.push_feed_colored(text, 0xFFFF_FFFF);
+	}
+
+	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
+	/// player, matching the sender's body color).
+	fn push_feed_colored(&mut self, text: String, color: u32) {
+		const FEED_MAX: usize = 8;
 		const FEED_TTL_SECS: f32 = 8.0;
 		if self.feed.len() >= FEED_MAX {
 			self.feed.remove(0);
 		}
-		self.feed.push((text, FEED_TTL_SECS));
+		self.feed.push((text, FEED_TTL_SECS, color));
 	}
 
 	/// Drain the network: remote edits into the pipeline, acks stashed
@@ -473,7 +629,13 @@ impl Engine {
 		for ev in events.drain(..) {
 			use digblock_net::NetEvent;
 			match ev {
-				NetEvent::Welcome { seed, spawn, .. } => {
+				NetEvent::Welcome {
+					seed,
+					spawn,
+					player_id,
+					..
+				} => {
+					self.my_player_id = Some(player_id);
 					self.menu.on_welcome();
 					self.swap_world(seed, spawn);
 				}
@@ -485,7 +647,30 @@ impl Engine {
 					cell,
 					block,
 					superseded,
+					remote_author,
 				} => {
+					// Another PLAYER's dig/place gets a quiet cue; fluid
+					// results (SERVER_ID) and join sync stay silent.
+					if let Some(author) = remote_author {
+						if author != digblock_net::protocol::SERVER_ID {
+							let prev = self.pipeline.block_at(cell.0, cell.1, cell.2);
+							let sound = if block == BlockType::Air {
+								prev.filter(|p| !p.is_water() && *p != BlockType::Air)
+									.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
+							} else if !block.is_water() {
+								Some(crate::audio::Sfx::Place)
+							} else {
+								None
+							};
+							if let Some(sound) = sound {
+								self.emit(crate::audio::AudioCmd::Sfx {
+									sound,
+									pos: Some(cell_center(cell)),
+									gain: 0.5,
+								});
+							}
+						}
+					}
 					self.apply_remote_edit(cell, block);
 					// Our predictions on this cell lost to authority: the
 					// cell is owned by the broadcast value, but the server
@@ -532,6 +717,23 @@ impl Engine {
 						.unwrap_or_else(|| format!("player {id}"));
 					self.push_feed(format!("{name} left the server."));
 				}
+				NetEvent::Chat { from, text } => {
+					// Our own echo: the roster never carries ourselves, so
+					// resolve through the session name instead.
+					let name = if Some(from) == self.my_player_id {
+						self.config
+							.player_name
+							.clone()
+							.unwrap_or_else(|| "me".into())
+					} else {
+						self.player_names
+							.get(&from)
+							.cloned()
+							.unwrap_or_else(|| format!("player {from}"))
+					};
+					let c = player_color(from);
+					self.push_feed_colored(format!("{name}: {text}"), pack_rgb(c));
+				}
 				NetEvent::Refused { reason } => {
 					self.push_feed(format!("Server refused: {reason}."));
 					log::warn!("server refused: {reason}; continuing single-player");
@@ -553,6 +755,14 @@ impl Engine {
 		} else {
 			self.pending_ack = None;
 			self.correction_offset = Vec3::ZERO;
+			self.my_player_id = None;
+			// No one left to talk to: discard any half-typed chat line.
+			if self.chat.is_open() {
+				self.chat.handle_input(&InputEvent::Key {
+					key: Key::Escape,
+					pressed: true,
+				});
+			}
 		}
 	}
 
@@ -604,6 +814,7 @@ impl Engine {
 				.retain(|out| !m.evicted.contains(&out.pos));
 			for pos in m.evicted {
 				renderer.remove_chunk(pos);
+				self.water_audio.remove_chunk(pos);
 			}
 		}
 		self.pending_uploads.extend(m.meshed);
@@ -621,6 +832,9 @@ impl Engine {
 		let mut uploads = 0u32;
 		while let Some(out) = self.pending_uploads.pop_front() {
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
+			// Waterfall audio follows the same impacts spray renders.
+			self.water_audio
+				.set_chunk(out.pos, out.pos.origin(), &out.mesh.impacts);
 			uploads += 1;
 			if uploads as usize >= UPLOAD_MIN && web_time::Instant::now() >= full_deadline {
 				break;
@@ -709,13 +923,28 @@ impl Engine {
 					net.send_dig_start(hit.cell);
 				}
 			}
+			self.emit(crate::audio::AudioCmd::LoopStart {
+				id: crate::audio::LOOP_DIG,
+				sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
+				pos: Some(cell_center(hit.cell)),
+				gain: 1.0,
+			});
 			return;
 		}
-		let done = {
+		let (done, pitch) = {
 			let d = self.dig.as_mut().expect("on_same checked");
 			d.ticks += 1;
-			d.ticks >= d.required
+			// Pitch ramp at 10 Hz: the loop climbs toward completion.
+			let pitch = (d.ticks % 6 == 0 && d.required > 0)
+				.then(|| 1.0 + 0.5 * d.ticks as f32 / d.required as f32);
+			(d.ticks >= d.required, pitch)
 		};
+		if let Some(rate) = pitch {
+			self.emit(crate::audio::AudioCmd::LoopPitch {
+				id: crate::audio::LOOP_DIG,
+				rate,
+			});
+		}
 		if done {
 			self.dig = None;
 			self.complete_dig(hit);
@@ -730,6 +959,9 @@ impl Engine {
 					net.send_dig_cancel();
 				}
 			}
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_DIG,
+			});
 		}
 	}
 
@@ -742,6 +974,14 @@ impl Engine {
 		else {
 			return;
 		};
+		self.emit(crate::audio::AudioCmd::LoopStop {
+			id: crate::audio::LOOP_DIG,
+		});
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::break_sfx(crate::audio::material_of(prev)),
+			pos: Some(cell_center(hit.cell)),
+			gain: 1.0,
+		});
 		let drop = prev.dig_drop();
 		if let Some(d) = drop {
 			self.inventory.add(d, 1);
@@ -802,6 +1042,11 @@ impl Engine {
 			self.inventory.add(block, 1); // refund: nothing happened
 			return;
 		};
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::Place,
+			pos: Some(cell_center(target)),
+			gain: 0.9,
+		});
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
@@ -866,12 +1111,52 @@ impl Engine {
 		&self.hotbar
 	}
 
-	/// Camera eye inside a water block? (None = unloaded = dry.)
+	/// Camera eye below the VISIBLE water surface? (None = unloaded =
+	/// dry.) The cell test alone flips at the lattice boundary, but the
+	/// rendered surface of a resting source sits ~0.111 below the cell
+	/// top (water.wgsl `DROPS`) — without the offset the underwater
+	/// atmosphere pops in while the camera is still visibly above water.
+	/// The flip happens FLIP_EARLY above the visible surface: the near
+	/// plane clips the surface pane before the eye reaches it, and
+	/// without the margin there are a few frames of neither-above-nor-
+	/// below shading while crossing.
 	fn eye_in_water(&self) -> bool {
+		const SURFACE_DROP: f32 = digblock_core::player::WATER_SURFACE_DROP;
+		const FLIP_EARLY: f32 = 0.1;
 		let c = self.camera.pos;
-		self.pipeline
-			.block_at(c.x.floor() as i32, c.y.floor() as i32, c.z.floor() as i32)
+		let (x, y, z) = (c.x.floor() as i32, c.y.floor() as i32, c.z.floor() as i32);
+		if !self
+			.pipeline
+			.block_at(x, y, z)
 			.is_some_and(|b| b.is_water())
+		{
+			return false;
+		}
+		// Water above too → fully submerged; otherwise this is the
+		// surface cell and the drop (minus the crossing margin) applies.
+		self.pipeline
+			.block_at(x, y + 1, z)
+			.is_some_and(|b| b.is_water())
+			|| c.y - y as f32 <= 1.0 - SURFACE_DROP + FLIP_EARLY
+	}
+
+	/// Visible height of the water surface directly above the camera
+	/// (top of the contiguous water column, minus the rendered drop) —
+	/// the shaders' path-length clamp. Only meaningful while submerged.
+	fn water_surface_above(&self) -> f32 {
+		let c = self.camera.pos;
+		let (x, z) = (c.x.floor() as i32, c.z.floor() as i32);
+		let mut y = c.y.floor() as i32;
+		let top = y + 256;
+		while y < top
+			&& self
+				.pipeline
+				.block_at(x, y + 1, z)
+				.is_some_and(|b| b.is_water())
+		{
+			y += 1;
+		}
+		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP
 	}
 
 	fn frame_uniforms(&self, near_vp: glam::Mat4) -> FrameUniforms {
@@ -888,18 +1173,49 @@ impl Engine {
 			self.config.fog_end_frac * far,
 		);
 		let cam = self.camera.pos;
-		// Underwater: substitute the atmosphere the shaders read — short
-		// blue-green fog, water-colored sky gradient (the clear color and
-		// sky pass follow automatically) — no shader branches needed.
-		// Daylight still scales everything so night dives stay dark.
+		// Underwater: substitute the atmosphere the shaders read (the
+		// clear color and sky pass follow automatically) — no shader
+		// branches needed. The palette is DERIVED from the atmosphere
+		// sample, not hardcoded, so day/night falls out naturally.
+		// Tunables (shader partners: the WATER_* block in
+		// frame_common.wgsl):
+		// Mean albedo of the water tile texture — the biggest hue lever
+		// for matching submerged fog to the from-above deep-water look.
+		const UW_ALBEDO: [f32; 3] = [0.12, 0.27, 0.35];
+		// Day-arc-average direct-light factor folded into the deep color.
+		const UW_DIRECT: f32 = 0.6;
+		// Light funnels down through the surface: the submerged sky
+		// gradient brightens overhead (complements the Snell window).
+		const UW_ZENITH_BOOST: f32 = 1.8;
+		// Per-channel ambient survival underwater (red dies first, like
+		// WATER_EXTINCTION) — submerged terrain isn't lit by open air.
+		const UW_AMBIENT: [f32; 3] = [0.45, 0.75, 0.92];
 		let submerged = self.eye_in_water();
 		let (mut horizon, mut zenith) = (atmos.horizon, atmos.zenith);
+		let mut ambient = atmos.ambient;
 		if submerged {
-			let day = (atmos.light_color[1]).clamp(0.08, 1.0);
-			horizon = [0.05 * day, 0.22 * day, 0.30 * day];
-			zenith = [0.02 * day, 0.10 * day, 0.16 * day];
+			// Lit deep-water color: what water.wgsl's `scatter` converges
+			// to from above (albedo x (ambient + direct)). The submerged
+			// fog and the below-horizon sky both converge HERE, which is
+			// what makes above/below views of the same water agree.
+			let uw =
+				|i: usize| UW_ALBEDO[i] * (atmos.ambient[i] + atmos.light_color[i] * UW_DIRECT);
+			horizon = [uw(0), uw(1), uw(2)];
+			zenith = [
+				horizon[0] * UW_ZENITH_BOOST,
+				horizon[1] * UW_ZENITH_BOOST,
+				horizon[2] * UW_ZENITH_BOOST,
+			];
+			// The band parameters are ignored by the submerged exp fog
+			// (apply_fog keys off water_misc.x) but stay sane for
+			// anything else reading them.
 			fog_start = 2.0;
 			fog_end = 28.0;
+			ambient = [
+				ambient[0] * UW_AMBIENT[0],
+				ambient[1] * UW_AMBIENT[1],
+				ambient[2] * UW_AMBIENT[2],
+			];
 		}
 		FrameUniforms {
 			view_proj: vp.to_cols_array_2d(),
@@ -917,7 +1233,7 @@ impl Engine {
 				// Animation clock (water scroll/foam) in the spare lane.
 				self.time_secs,
 			],
-			ambient: [atmos.ambient[0], atmos.ambient[1], atmos.ambient[2], 0.0],
+			ambient: [ambient[0], ambient[1], ambient[2], 0.0],
 			fog_color: [horizon[0], horizon[1], horizon[2], fog_start],
 			cam_pos: [cam.x, cam.y, cam.z, 1.0 / (fog_end - fog_start)],
 			sun_dir: [sun.x, sun.y, sun.z, atmos.star_intensity],
@@ -932,7 +1248,18 @@ impl Engine {
 				// the chunk shader's normal-offset distance.
 				far / self.config.shadow_size as f32,
 			],
-			water_misc: [f32::from(submerged), f32::from(self.config.ssr), 0.0, 0.0],
+			water_misc: [
+				f32::from(submerged),
+				f32::from(self.config.ssr),
+				// Water-surface height above the camera: the shaders'
+				// underwater path-length clamp (unused while dry).
+				if submerged {
+					self.water_surface_above()
+				} else {
+					0.0
+				},
+				0.0,
+			],
 		}
 	}
 }
@@ -979,6 +1306,29 @@ impl Game for Engine {
 			}
 			return;
 		}
+		// Chat open: same containment as the menu, but the pointer stays
+		// grabbed (the shell delivers Text via wants_text_input).
+		if self.chat.is_open() {
+			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
+				self.keys = HeldKeys::default();
+				self.touch.clear();
+				// Losing the lock also surfaces the pause menu; a chat
+				// draft doesn't survive that.
+				self.chat.handle_input(&InputEvent::Key {
+					key: Key::Escape,
+					pressed: true,
+				});
+				if matches!(event, InputEvent::PointerLockLost) {
+					self.menu.open();
+				}
+			} else if let Some(crate::chat::ChatAction::Send(text)) = self.chat.handle_input(&event)
+			{
+				if let Some(net) = self.net.as_mut() {
+					net.send_chat(&text);
+				}
+			}
+			return;
+		}
 		match event {
 			InputEvent::Key { key, pressed } => match key {
 				Key::W | Key::Up => self.keys.w = pressed,
@@ -1018,6 +1368,15 @@ impl Game for Engine {
 					if pressed {
 						self.dig_held = false;
 						self.menu.open();
+					}
+				}
+				// Chat is multiplayer-only — there is no one to hear a
+				// single-player message.
+				Key::T | Key::Enter => {
+					if pressed && self.net.is_some() {
+						self.keys = HeldKeys::default();
+						self.dig_held = false;
+						self.chat.open();
 					}
 				}
 				_ => {}
@@ -1120,10 +1479,17 @@ impl Game for Engine {
 		if self.menu.take_disconnect() && self.net.take().is_some() {
 			self.pending_ack = None;
 			self.correction_offset = Vec3::ZERO;
+			self.my_player_id = None;
 			self.push_feed("Left the server.".into());
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.menu.take_commands() {
+				// The menu-typed name becomes the session name, so the
+				// Hello introduces us consistently (the master's verified
+				// name still wins server-side).
+				if let crate::menu::MenuCommand::Join { name, .. } = &cmd {
+					self.config.player_name = Some(name.clone());
+				}
 				let _ = services.cmd_tx.send(cmd);
 			}
 		}
@@ -1260,6 +1626,7 @@ impl Game for Engine {
 			}
 			self.camera.pos += mv.normalize_or_zero() * speed;
 		}
+		self.step_audio(dt);
 		self.pending.update_ms = ms_since(t_update);
 	}
 
@@ -1293,6 +1660,34 @@ impl Game for Engine {
 		let frame = self.frame_uniforms(near_vp);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
+		// Name tags: project each nearby remote's head-top to screen px.
+		// No depth (overlay) — tags read through walls within range.
+		const NAMETAG_RANGE: f32 = 32.0;
+		self.nametag_scratch.clear();
+		for d in &self.remote_scratch {
+			if self.net.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
+				continue;
+			}
+			// Remote pos is the eye; the box top is +0.3, tag floats above.
+			let clip = view_proj * (d.pos + Vec3::Y * 0.55).extend(1.0);
+			if clip.w <= 0.0 {
+				continue;
+			}
+			let ndc = clip.truncate() / clip.w;
+			if ndc.x.abs() > 1.2 || ndc.y.abs() > 1.2 {
+				continue;
+			}
+			let text = match self.player_names.get(&d.id) {
+				Some(n) => n.clone(),
+				None => format!("player {}", d.id),
+			};
+			self.nametag_scratch.push(crate::renderer::NameTag {
+				x: (ndc.x * 0.5 + 0.5) * size.0 as f32,
+				y: (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32,
+				color: pack_rgb(player_color(d.id)),
+				text,
+			});
+		}
 		let wide_due = std::mem::take(&mut self.wide_due);
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
@@ -1331,6 +1726,9 @@ impl Game for Engine {
 				menu: menu_view.as_ref(),
 				target: highlight_target,
 				hotbar: hotbar_view.as_ref(),
+				chat: (in_game && self.chat.is_open())
+					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),
+				nametags: &self.nametag_scratch,
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);
@@ -1346,13 +1744,20 @@ impl Game for Engine {
 		!self.menu.is_open()
 	}
 
+	fn wants_text_input(&self) -> bool {
+		self.chat.is_open()
+	}
+
 	fn on_suspend(&mut self) {
 		log::info!("engine: on_suspend (state save point)");
 		self.metrics.pause();
+		// One cheap synchronous send — honors the on_suspend contract.
+		self.emit(crate::audio::AudioCmd::Pause);
 	}
 
 	fn on_resume(&mut self) {
 		log::info!("engine: on_resume");
+		self.emit(crate::audio::AudioCmd::Resume);
 	}
 
 	fn rebuild_gpu_resources(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {

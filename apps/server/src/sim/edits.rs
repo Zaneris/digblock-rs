@@ -9,8 +9,8 @@ use digblock_core::player::TICK;
 use digblock_core::raycast::{raycast, raycast_fluid, REACH};
 use digblock_net::messages::{BlockEdit, EditKind, RejectReason, ServerMsg};
 use digblock_net::protocol::{
-	dig_grace, PlayerId, DIG_OFF_TARGET_RESET, EDIT_BURST, EDIT_POS_TOLERANCE, EDIT_RATE_PER_SEC,
-	SERVER_ID, TICK_RATE,
+	dig_grace, PlayerId, CHAT_BURST, CHAT_RATE_PER_SEC, DIG_OFF_TARGET_RESET, EDIT_BURST,
+	EDIT_POS_TOLERANCE, EDIT_RATE_PER_SEC, SERVER_ID, TICK_RATE,
 };
 use glam::Vec3;
 
@@ -115,6 +115,8 @@ impl Sim {
 		for client in self.clients.values_mut() {
 			client.edit_tokens =
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
+			client.chat_tokens =
+				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
 		}
 		let queue = std::mem::take(&mut self.action_queue);
 		for action in queue {

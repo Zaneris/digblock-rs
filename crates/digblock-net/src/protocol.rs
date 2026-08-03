@@ -10,15 +10,14 @@ pub type PlayerId = u8;
 /// Author id for server-originated edits (fluid simulation).
 pub const SERVER_ID: PlayerId = u8::MAX;
 
-/// v4: timed digging (DigStart/DigCancel, Collect, DigIncomplete),
-/// server-authoritative inventory (NoStock, InventoryFull), and the
-/// persistent identity field appended to Hello.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// v5: player chat (ClientMsg::Chat / ServerMsg::Chat) and the 3-10 char
+/// display-name rule enforced at join.
+pub const PROTOCOL_VERSION: u16 = 5;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 4;
+pub const MIN_PROTOCOL: u16 = 5;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -68,6 +67,50 @@ pub fn sanitize_name(name: &str) -> String {
 	} else {
 		clean
 	}
+}
+
+/// Display-name rule: 3-10 chars of `a-z A-Z 0-9 - _`. One source of
+/// truth for the menu's typing filter and join gate, the launchers'
+/// name arguments, and (mirrored as a regex) the master's /api/join
+/// backstop. Distinct from [`MAX_NAME_LEN`], which stays the wire-level
+/// sanitization cap.
+pub const MIN_DISPLAY_NAME: usize = 3;
+pub const MAX_DISPLAY_NAME: usize = 10;
+
+/// The display-name alphabet. ASCII-only on purpose: the client font
+/// renders 95 printable-ASCII glyphs.
+pub fn is_name_char(c: char) -> bool {
+	c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+/// Validate a display name against the 3-10 char rule. The `Err` string
+/// is shown verbatim as the menu's status-line alert.
+pub fn validate_name(name: &str) -> Result<(), &'static str> {
+	let n = name.chars().count();
+	if !(MIN_DISPLAY_NAME..=MAX_DISPLAY_NAME).contains(&n) || !name.chars().all(is_name_char) {
+		return Err("name must be 3-10 chars: a-z 0-9 - _");
+	}
+	Ok(())
+}
+
+/// Chat message cap, chars (also bytes — the text is ASCII-only).
+pub const MAX_CHAT_LEN: usize = 120;
+
+/// Chat token bucket: sustained rate (burst [`CHAT_BURST`]).
+pub const CHAT_RATE_PER_SEC: u32 = 1;
+pub const CHAT_BURST: f32 = 3.0;
+
+/// Sanitize a chat line: keep printable ASCII only (the font has no
+/// other glyphs), truncate to [`MAX_CHAT_LEN`], trim; `None` when
+/// nothing survives (the server drops the message silently).
+pub fn sanitize_chat(text: &str) -> Option<String> {
+	let clean: String = text
+		.chars()
+		.filter(|c| matches!(c, ' '..='~'))
+		.take(MAX_CHAT_LEN)
+		.collect();
+	let trimmed = clean.trim();
+	(!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Give up on a transport stuck in `Connecting` after this long.
@@ -209,5 +252,31 @@ mod tests {
 		assert_eq!(dig_grace(30), 10); // dirt: base + 6
 		assert_eq!(dig_grace(60), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // wood: cap
 		assert_eq!(dig_grace(90), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // stone: cap
+	}
+
+	#[test]
+	fn name_rule_is_3_to_10_of_the_alphabet() {
+		assert!(validate_name("ted").is_ok());
+		assert!(validate_name("Ted_L-99").is_ok());
+		assert!(validate_name("abcdefghij").is_ok()); // 10: at the cap
+		assert!(validate_name("").is_err());
+		assert!(validate_name("ab").is_err()); // too short
+		assert!(validate_name("abcdefghijk").is_err()); // 11: too long
+		assert!(validate_name("has space").is_err());
+		assert!(validate_name("bang!").is_err());
+		assert!(validate_name("émile").is_err()); // non-ASCII
+	}
+
+	#[test]
+	fn chat_sanitizer_keeps_printable_ascii_only() {
+		assert_eq!(sanitize_chat("hi there").as_deref(), Some("hi there"));
+		// Control chars and non-ASCII are stripped, not replaced.
+		assert_eq!(sanitize_chat("a\u{7}b\u{1F600}c").as_deref(), Some("abc"));
+		// Whitespace-only collapses to nothing.
+		assert_eq!(sanitize_chat("   \t  "), None);
+		assert_eq!(sanitize_chat(""), None);
+		// Overlong input truncates to the cap (then trims).
+		let long = "x".repeat(500);
+		assert_eq!(sanitize_chat(&long).unwrap().len(), MAX_CHAT_LEN);
 	}
 }

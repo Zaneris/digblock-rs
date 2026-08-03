@@ -319,9 +319,12 @@ impl Menu {
 	}
 
 	fn handle_text(&mut self, ch: char) {
+		use digblock_net::protocol::{is_name_char, MAX_DISPLAY_NAME};
 		if let Some(Screen::Browser(b)) = &mut self.screen {
 			b.status = None;
-			if self.name.len() < digblock_net::protocol::MAX_NAME_LEN && !ch.is_control() {
+			// Invalid characters (spaces, punctuation, non-ASCII) are
+			// untypeable rather than rejected later.
+			if self.name.chars().count() < MAX_DISPLAY_NAME && is_name_char(ch) {
 				self.name.push(ch);
 			}
 		}
@@ -363,9 +366,9 @@ impl Menu {
 			}
 			Act::JoinRow(i) => {
 				let name = self.name.trim().to_string();
-				if name.is_empty() {
+				if let Err(e) = digblock_net::protocol::validate_name(&name) {
 					if let Some(Screen::Browser(b)) = &mut self.screen {
-						b.status = Some("type a name first".into());
+						b.status = Some(e.into());
 					}
 					return;
 				}
@@ -735,32 +738,55 @@ mod tests {
 	}
 
 	#[test]
-	fn empty_name_blocks_join() {
-		let mut menu = Menu::new(true, String::new(), None);
-		menu.set_services_available();
-		open_browser(&mut menu);
-		let _ = menu.take_commands(); // drain the RefreshServers from opening
-		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
-		menu.handle_key(Key::Enter);
-		assert!(menu.take_commands().is_empty());
-		let view = menu.view(SIZE, false);
-		assert!(view.rows.iter().any(|r| r.text.contains("type a name")));
+	fn invalid_name_blocks_join_with_alert() {
+		for bad in ["", "ab"] {
+			let mut menu = Menu::new(true, bad.into(), None);
+			menu.set_services_available();
+			open_browser(&mut menu);
+			let _ = menu.take_commands(); // drain the RefreshServers from opening
+			menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+			menu.handle_key(Key::Enter);
+			assert!(
+				menu.take_commands().is_empty(),
+				"join with {bad:?} not blocked"
+			);
+			let view = menu.view(SIZE, false);
+			assert!(view.rows.iter().any(|r| r.text.contains("3-10 chars")));
+		}
 	}
 
 	#[test]
-	fn text_edits_name_with_cap_and_backspace() {
+	fn valid_name_joins() {
 		let mut menu = Menu::new(true, String::new(), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
-		for ch in "ted!".chars() {
+		let _ = menu.take_commands();
+		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+		for ch in "Ted_99".chars() {
 			menu.handle_text(ch);
 		}
-		menu.handle_key(Key::Backspace);
+		menu.handle_key(Key::Enter);
+		match menu.take_commands().as_slice() {
+			[MenuCommand::Join { name, .. }] => assert_eq!(name, "Ted_99"),
+			other => panic!("expected Join, got {} commands", other.len()),
+		}
+	}
+
+	#[test]
+	fn text_edits_name_with_charset_cap_and_backspace() {
+		let mut menu = Menu::new(true, String::new(), None);
+		menu.set_services_available();
+		open_browser(&mut menu);
+		// Punctuation, spaces, and non-ASCII never enter the buffer.
+		for ch in "te d!é_x".chars() {
+			menu.handle_text(ch);
+		}
+		menu.handle_key(Key::Backspace); // drop the trailing x
 		assert!(menu
 			.view(SIZE, false)
 			.rows
 			.iter()
-			.any(|r| r.text.contains("name: ted")));
+			.any(|r| r.text.contains("name: ted_")));
 		for _ in 0..100 {
 			menu.handle_text('x');
 		}
@@ -770,7 +796,9 @@ mod tests {
 			.iter()
 			.find(|r| r.text.starts_with("name:"))
 			.unwrap();
-		assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_NAME_LEN + 1);
+		assert!(
+			name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME + 1
+		);
 	}
 
 	#[test]

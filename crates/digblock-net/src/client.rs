@@ -54,6 +54,11 @@ pub enum NetEvent {
 		cell: (i32, i32, i32),
 		block: BlockType,
 		superseded: Vec<PendingEdit>,
+		/// `Some(author)` only for a live broadcast authored by someone
+		/// other than us (SERVER_ID = the fluid sim). `None` for join
+		/// sync and for the echo of our own edits — the audio layer keys
+		/// off this so a join replay never plays a thud storm.
+		remote_author: Option<PlayerId>,
 	},
 	/// Our predicted edit was rejected and no authoritative write has
 	/// superseded it — revert the cell to `.prev` AND the predicted
@@ -73,6 +78,12 @@ pub enum NetEvent {
 	},
 	PlayerLeft {
 		id: PlayerId,
+	},
+	/// A chat line, already server-sanitized. `from` may be our own id
+	/// (the echo confirms delivery).
+	Chat {
+		from: PlayerId,
+		text: String,
 	},
 	Disconnected {
 		reason: String,
@@ -314,6 +325,7 @@ impl NetClient {
 							cell: (c.x, c.y, c.z),
 							block,
 							superseded: Vec::new(),
+							remote_author: None,
 						});
 					}
 				}
@@ -335,6 +347,7 @@ impl NetClient {
 						cell,
 						block,
 						superseded,
+						remote_author: (Some(by) != self.my_id).then_some(by),
 					});
 				} else {
 					// Unknown block id from a newer server: the cell can't
@@ -356,6 +369,7 @@ impl NetClient {
 				self.remotes.remove(id);
 				out.push(NetEvent::PlayerLeft { id });
 			}
+			ServerMsg::Chat { from, text } => out.push(NetEvent::Chat { from, text }),
 			ServerMsg::InventoryFull { counts } => {
 				// Strict decode; unknown ids can't occur with a matching
 				// sim_version but must not panic either.
@@ -454,6 +468,15 @@ impl NetClient {
 	/// The hold was released or retargeted before completing.
 	pub fn send_dig_cancel(&mut self) {
 		self.send_msg(&ClientMsg::DigCancel);
+	}
+
+	/// Send a chat line. The server sanitizes and rate-limits; the local
+	/// truncation only keeps a pathological buffer off the wire.
+	pub fn send_chat(&mut self, text: &str) {
+		let text: String = text.chars().take(crate::protocol::MAX_CHAT_LEN).collect();
+		if !text.trim().is_empty() {
+			self.send_msg(&ClientMsg::Chat { text });
+		}
 	}
 
 	fn send_msg(&mut self, msg: &ClientMsg) {

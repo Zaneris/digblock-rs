@@ -249,6 +249,8 @@ struct TestClient {
 	/// Authoritative inventory snapshots received (join sends one right
 	/// after JournalDone — the reliable-ordering proof over real QUIC).
 	inventories: Vec<Vec<(BlockType, u32)>>,
+	/// (from, text) chat lines, sender echoes included.
+	chats: Vec<(u8, String)>,
 }
 
 impl TestClient {
@@ -272,6 +274,7 @@ impl TestClient {
 			acks: 0,
 			joined_names: Vec::new(),
 			inventories: Vec::new(),
+			chats: Vec::new(),
 		}
 	}
 
@@ -295,6 +298,7 @@ impl TestClient {
 				NetEvent::PlayerJoined { name, .. } => self.joined_names.push(name),
 				NetEvent::PlayerLeft { .. } => {}
 				NetEvent::Inventory { counts } => self.inventories.push(counts),
+				NetEvent::Chat { from, text } => self.chats.push((from, text)),
 			}
 		}
 	}
@@ -399,12 +403,12 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	let server = TestServer::start("edits", &master.url, true);
 
 	// Client A joins through the master and waits for its first snapshot.
-	let (token_a, url_a) = mint_token(&master.url, "a");
+	let (token_a, url_a) = mint_token(&master.url, "adam");
 	assert_eq!(
 		url_a, server.url,
 		"master lists the advertise host, not the probe host"
 	);
-	let mut a = TestClient::connect(&server.url, "a", token_a);
+	let mut a = TestClient::connect(&server.url, "adam", token_a);
 	a.wait("welcome", |c| c.welcomed);
 	// InventoryFull follows JournalDone on the reliable stream — its
 	// arrival proves the v4 join-sync ordering over real QUIC.
@@ -450,8 +454,8 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	});
 
 	// B joins late (own token): the edit must arrive in its join sync.
-	let (token_b, _) = mint_token(&master.url, "b");
-	let mut b = TestClient::connect(&server.url, "b", token_b);
+	let (token_b, _) = mint_token(&master.url, "beth");
+	let mut b = TestClient::connect(&server.url, "beth", token_b);
 	b.wait("welcome", |c| c.welcomed);
 	assert_eq!(b.seed, a.seed, "same world");
 	b.wait("join-sync edit", |c| {
@@ -484,17 +488,17 @@ fn verified_join_uses_master_display_name() {
 	let master = MasterProc::spawn();
 	let server = TestServer::start("names", &master.url, true);
 
-	let (token_a, _) = mint_token(&master.url, "Verified Ada");
+	let (token_a, _) = mint_token(&master.url, "Real_Ada");
 	let mut a = TestClient::connect(&server.url, "Impostor", token_a);
 	a.wait("welcome", |c| c.welcomed);
 
 	// B observes A through the join roster.
-	let (token_b, _) = mint_token(&master.url, "b");
-	let mut b = TestClient::connect(&server.url, "b", token_b);
+	let (token_b, _) = mint_token(&master.url, "beth");
+	let mut b = TestClient::connect(&server.url, "beth", token_b);
 	b.wait("welcome", |c| c.welcomed);
 	b.wait("roster names", |c| !c.joined_names.is_empty());
 	assert!(
-		b.joined_names.iter().any(|n| n == "Verified Ada"),
+		b.joined_names.iter().any(|n| n == "Real_Ada"),
 		"roster {:?} should carry the master's name, not the claimed one",
 		b.joined_names
 	);
@@ -502,6 +506,29 @@ fn verified_join_uses_master_display_name() {
 		!b.joined_names.iter().any(|n| n == "Impostor"),
 		"claimed Hello name must not survive"
 	);
+}
+
+/// Chat crosses the real QUIC stack: A talks, both A (echo) and B hear
+/// it attributed to A's player id.
+#[test]
+fn chat_round_trips_between_clients() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("chat", &master.url, true);
+
+	let (token_a, _) = mint_token(&master.url, "adam");
+	let mut a = TestClient::connect(&server.url, "adam", token_a);
+	a.wait("welcome", |c| c.welcomed);
+	let (token_b, _) = mint_token(&master.url, "beth");
+	let mut b = TestClient::connect(&server.url, "beth", token_b);
+	b.wait("welcome", |c| c.welcomed);
+
+	a.client.send_chat("hello over QUIC");
+	a.wait("chat echo", |c| !c.chats.is_empty());
+	b.wait("chat broadcast", |c| !c.chats.is_empty());
+	let a_id = a.chats[0].0;
+	assert_eq!(a.chats[0].1, "hello over QUIC");
+	assert_eq!(b.chats[0], (a_id, "hello over QUIC".to_string()));
 }
 
 #[test]
@@ -542,11 +569,11 @@ fn master_down_fails_closed() {
 	let mut master = MasterProc::spawn();
 	let server = TestServer::start("mdown", &master.url, true);
 
-	let (token_a, _) = mint_token(&master.url, "early bird");
-	let mut a = TestClient::connect(&server.url, "early bird", token_a);
+	let (token_a, _) = mint_token(&master.url, "earlybird");
+	let mut a = TestClient::connect(&server.url, "earlybird", token_a);
 	a.wait("welcome", |c| c.welcomed);
 
-	let (token_b, _) = mint_token(&master.url, "too late");
+	let (token_b, _) = mint_token(&master.url, "toolate");
 	master.kill();
 	expect_refused(&server.url, token_b, "authentication service unavailable");
 

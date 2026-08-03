@@ -958,10 +958,13 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 							key: map_key(code),
 							pressed,
 						});
-						// Produced text for menu fields, only while the game
-						// has the cursor released (a menu is up) — gameplay
-						// keys must not double as text.
-						if pressed && !self.game.wants_cursor_grab() {
+						// Produced text for menu fields while the cursor is
+						// released (a menu is up), or for an in-game text
+						// field (chat) that keeps the grab — otherwise
+						// gameplay keys must not double as text.
+						if pressed
+							&& (!self.game.wants_cursor_grab() || self.game.wants_text_input())
+						{
 							if let Some(text) = &k.text {
 								for ch in text.chars().filter(|c| !c.is_control()) {
 									self.game.input(InputEvent::Text { ch });

@@ -331,6 +331,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 			cell: (7, 9, 7),
 			block: BlockType::Sand,
 			superseded,
+			..
 		}) => {
 			assert_eq!(superseded.len(), 1);
 			assert_eq!(superseded[0].inv_delta, Some((BlockType::Stone, 1)));

@@ -2,7 +2,9 @@
 //! trait. Never touches winit or the surface — it renders into borrowed
 //! `TextureView`s.
 
+pub mod audio;
 mod camera;
+mod chat;
 mod engine;
 mod font;
 mod gpu_timer;
@@ -18,5 +20,6 @@ mod sky;
 mod spray;
 mod texture;
 mod water;
+mod water_audio;
 
 pub use engine::{Engine, EngineConfig};

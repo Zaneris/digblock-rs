@@ -37,3 +37,7 @@ public sealed record JoinResponse(string Token, int ExpiresIn, string Url, strin
 public sealed record VerifyRequest(string? Token);
 
 public sealed record VerifyResponse(string DisplayName);
+
+// Music manifest entry (GET /api/music). Url is master-relative; the
+// clients' audio fillers resolve it against the master base URL.
+public sealed record MusicTrack(string Name, string Url);

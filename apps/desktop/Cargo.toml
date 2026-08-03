@@ -14,9 +14,12 @@ serde_json = { workspace = true }
 ureq = { workspace = true }
 digblock-render.workspace = true
 digblock-platform.workspace = true
+digblock-net.workspace = true
 digblock-net-native.workspace = true
 env_logger.workspace = true
 log.workspace = true
+rodio.workspace = true
+glam.workspace = true
 rand.workspace = true
 dirs.workspace = true
 

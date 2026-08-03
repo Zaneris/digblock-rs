@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 digblock-render.workspace = true
 digblock-platform.workspace = true
+digblock-net.workspace = true
 digblock-net-web.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
@@ -31,6 +32,20 @@ web-sys = { workspace = true, features = [
 	"Headers",
 	"Storage",
 	"Crypto",
+	"EventTarget",
+	"AudioContext",
+	"AudioContextState",
+	"BaseAudioContext",
+	"AudioBuffer",
+	"AudioBufferSourceNode",
+	"AudioNode",
+	"AudioParam",
+	"AudioDestinationNode",
+	"AudioListener",
+	"GainNode",
+	"PannerNode",
+	"PanningModelType",
+	"DistanceModelType",
 ] }
 
 [lints]

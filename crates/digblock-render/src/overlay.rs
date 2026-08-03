@@ -344,14 +344,17 @@ impl Overlay {
 	/// feed when non-empty, plus the menu when open. Everything before
 	/// the split renders below the hotbar's block icons; everything
 	/// after, above them.
+	#[allow(clippy::too_many_arguments)]
 	pub fn prepare(
 		&mut self,
 		gpu: &Gpu,
 		size: (u32, u32),
 		stats: Option<(&OverlayStats, &[f32])>,
-		feed: &[(String, f32)],
+		feed: &[(String, f32, u32)],
 		menu: Option<&crate::menu::MenuView>,
 		hotbar: Option<&[crate::hotbar::PlacedSlot]>,
+		chat: Option<&crate::chat::ChatView<'_>>,
+		nametags: &[crate::renderer::NameTag],
 	) {
 		self.verts.clear();
 		if menu.is_none() {
@@ -361,14 +364,20 @@ impl Overlay {
 			self.push_hotbar_slots(slots);
 		}
 		self.split_vert = self.verts.len() as u32;
+		self.push_nametags(size, nametags);
 		if let Some(slots) = hotbar {
 			self.push_hotbar_counts(slots);
 		}
 		if let Some((stats, history)) = stats {
 			self.push_debug_panel(stats, history);
 		}
+		// The open input line takes the bottom row; the feed rides above it.
+		let feed_raise = if chat.is_some() { LINE_PX + 4.0 } else { 0.0 };
 		if !feed.is_empty() {
-			self.push_feed(size, feed);
+			self.push_feed(size, feed, feed_raise);
+		}
+		if let Some(view) = chat {
+			self.push_chat_input(size, view);
 		}
 		if let Some(view) = menu {
 			self.push_menu(size, view);
@@ -504,20 +513,50 @@ impl Overlay {
 	}
 
 	/// Server-message feed: bottom-left, newest at the bottom, each line
-	/// fading out over its final second (`ttl` clamps to alpha).
-	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32)]) {
-		let mut y = size.1 as f32 - MARGIN - feed.len() as f32 * LINE_PX;
-		for (text, ttl) in feed {
+	/// fading out over its final second (`ttl` clamps to alpha) in its
+	/// own color (chat lines are tinted per sender). `raise` lifts the
+	/// whole block (the chat input line owns the bottom row while open).
+	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], raise: f32) {
+		let mut y = size.1 as f32 - MARGIN - raise - feed.len() as f32 * LINE_PX;
+		for (text, ttl, color) in feed {
 			let a = ttl.clamp(0.0, 1.0);
 			let w = text.len() as f32 * GLYPH_PX + PAD * 2.0;
 			self.push_quad(MARGIN, y, w, LINE_PX, fade(BG, a));
 			self.push_text(
 				MARGIN + PAD,
 				y + (LINE_PX - GLYPH_PX) / 2.0,
-				fade(WHITE, a),
+				fade(*color, a),
 				text,
 			);
 			y += LINE_PX;
+		}
+	}
+
+	/// Chat input: a full-height bottom-left strip with a blinking block
+	/// caret (same blink clock as the menu's name field).
+	fn push_chat_input(&mut self, size: (u32, u32), view: &crate::chat::ChatView<'_>) {
+		let y = size.1 as f32 - MARGIN - LINE_PX;
+		let w = (view.line.len() as f32 + 3.0) * GLYPH_PX + PAD * 2.0;
+		self.push_quad(MARGIN, y, w.max(240.0), LINE_PX, 0xC0000000);
+		let ty = y + (LINE_PX - GLYPH_PX) / 2.0;
+		self.push_text(MARGIN + PAD, ty, WHITE, "> ");
+		self.push_text(MARGIN + PAD + GLYPH_PX * 2.0, ty, WHITE, view.line);
+		if view.caret {
+			let cx = MARGIN + PAD + GLYPH_PX * (view.line.len() as f32 + 2.0);
+			self.push_quad(cx, ty, GLYPH_PX * 0.6, GLYPH_PX, WHITE);
+		}
+	}
+
+	/// Name tags: centered text with a dim backdrop at pre-projected
+	/// screen positions. No depth — tags read through walls, which keeps
+	/// them useful as a "someone is over there" cue.
+	fn push_nametags(&mut self, size: (u32, u32), tags: &[crate::renderer::NameTag]) {
+		for tag in tags {
+			let w = tag.text.len() as f32 * GLYPH_PX;
+			let x = (tag.x - w / 2.0).clamp(0.0, (size.0 as f32 - w).max(0.0));
+			let y = tag.y.clamp(0.0, size.1 as f32 - GLYPH_PX);
+			self.push_quad(x - PAD / 2.0, y - 2.0, w + PAD, GLYPH_PX + 4.0, 0x60000000);
+			self.push_text(x, y, tag.color, &tag.text);
 		}
 	}
 

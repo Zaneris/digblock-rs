@@ -124,6 +124,12 @@ pub enum ClientMsg {
 	/// Hold released or retargeted before completing. Hygiene only — the
 	/// server also self-resets via its per-tick aim check.
 	DigCancel,
+	/// Chat line. Server-side: token-bucket limited, sanitized to
+	/// printable ASCII, broadcast back to everyone (sender included —
+	/// the echo is the delivery confirmation).
+	Chat {
+		text: String,
+	},
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -202,6 +208,12 @@ pub enum ServerMsg {
 	InventoryFull {
 		counts: Vec<(u16, u32)>,
 	},
+	/// A player's chat line, already sanitized. `from` resolves to a
+	/// display name via the client's PlayerJoined roster.
+	Chat {
+		from: PlayerId,
+		text: String,
+	},
 }
 
 #[cfg(test)]
@@ -242,6 +254,7 @@ mod tests {
 			ClientMsg::Bye,
 			ClientMsg::DigStart { cell: [1, 138, -3] },
 			ClientMsg::DigCancel,
+			ClientMsg::Chat { text: "hi".into() },
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -311,6 +324,10 @@ mod tests {
 			ServerMsg::PlayerLeft { id: 4 },
 			ServerMsg::InventoryFull {
 				counts: vec![(2, 3), (5, 1)],
+			},
+			ServerMsg::Chat {
+				from: 4,
+				text: "hi".into(),
 			},
 		];
 		for m in msgs {
@@ -452,6 +469,28 @@ mod tests {
 			postcard::to_stdvec(&inv).unwrap(),
 			// variant 8, seq len 2, pairs (2,3) (5,1) as varints
 			vec![8, 2, 2, 3, 5, 1]
+		);
+	}
+
+	/// Golden bytes for the v5 chat pair. Same contract as the goldens
+	/// above: a failure means the wire encoding moved.
+	#[test]
+	fn golden_chat_encoding() {
+		let c = ClientMsg::Chat { text: "hi".into() };
+		assert_eq!(
+			postcard::to_stdvec(&c).unwrap(),
+			// variant 5, len 2, "hi"
+			vec![5, 2, 104, 105]
+		);
+
+		let s = ServerMsg::Chat {
+			from: 4,
+			text: "hi".into(),
+		};
+		assert_eq!(
+			postcard::to_stdvec(&s).unwrap(),
+			// variant 9, from 4, len 2, "hi"
+			vec![9, 4, 2, 104, 105]
 		);
 	}
 }

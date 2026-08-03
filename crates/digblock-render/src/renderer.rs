@@ -100,13 +100,26 @@ pub struct FrameScene<'a> {
 	/// every frame (tiny — no change detection).
 	pub players: &'a [[f32; 8]],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
-	pub feed: &'a [(String, f32)],
+	pub feed: &'a [(String, f32, u32)],
 	pub menu: Option<&'a crate::menu::MenuView>,
 	/// Crosshair target for the highlight decal: (cell, dig progress);
 	/// `None` progress = idle outline.
 	pub target: Option<((i32, i32, i32), Option<f32>)>,
 	/// Hotbar HUD view; None hides the bar (menu open, bench).
 	pub hotbar: Option<&'a crate::hotbar::HotbarView>,
+	/// Chat input line while typing (multiplayer only).
+	pub chat: Option<crate::chat::ChatView<'a>>,
+	/// Remote-player name tags, already projected to screen pixels.
+	pub nametags: &'a [NameTag],
+}
+
+/// One name tag: screen-space anchor (pixels, tag centered on `x`),
+/// overlay 0xAABBGGRR color, and the display name.
+pub struct NameTag {
+	pub x: f32,
+	pub y: f32,
+	pub color: u32,
+	pub text: String,
 }
 
 /// Field order/layout must match the `Frame` struct in
@@ -145,7 +158,9 @@ pub struct FrameUniforms {
 	/// x = alpha, y = shadows enabled, z = shadow map texel size (UV),
 	/// w = wide-cascade texel size in world units (normal-offset bias).
 	pub misc: [f32; 4],
-	/// x = camera underwater (0/1), y = SSR enabled (0/1), z/w reserved.
+	/// x = camera underwater (0/1), y = SSR enabled (0/1), z = water-
+	/// surface height above the camera (the shaders' underwater
+	/// path-length clamp; meaningful only while x = 1), w reserved.
 	/// Appended last — mirror in frame_common.wgsl's Frame struct.
 	pub water_misc: [f32; 4],
 }
@@ -878,6 +893,8 @@ impl Renderer {
 			menu,
 			target: highlight_target,
 			hotbar,
+			chat,
+			nametags,
 		} = *scene;
 		self.ensure_targets(gpu, size);
 		// Remote players re-upload every frame (a handful of instances —
@@ -911,6 +928,8 @@ impl Renderer {
 			feed,
 			menu,
 			placed_slots.as_ref().map(|s| s.as_slice()),
+			chat.as_ref(),
+			nametags,
 		);
 		self.hotbar_icons
 			.prepare(gpu, size, placed_slots.as_ref().map(|s| s.as_slice()));
