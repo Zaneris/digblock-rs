@@ -120,14 +120,16 @@ impl EngineConfig {
 		}
 	}
 
-	/// Browser client: mobile's GPU budget, but jobs run inline on the
-	/// main thread (workers: 0 — wasm has no std threads) and the menu
-	/// opens by default like a desktop interactive run.
+	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
+	/// handles it — verified 120fps at draw 20 + SSR), but jobs run
+	/// inline on the main thread (workers: 0 — wasm has no std threads)
+	/// and the menu opens by default like a desktop interactive run.
+	/// URL params (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
 	pub fn web() -> Self {
 		Self {
 			workers: 0,
 			menu: true,
-			..Self::mobile()
+			..Self::desktop()
 		}
 	}
 

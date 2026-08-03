@@ -28,18 +28,18 @@ pub fn start() -> Result<(), JsValue> {
 		.expect("window.location");
 
 	// Query params mirror the desktop flags: ?seed=, ?tod=, ?draw=,
-	// ?ssr, ?shadow=, ?overlay, ?name=, ?master= (menu multiplayer),
+	// ?ssr=0, ?shadow=, ?overlay, ?name=, ?master= (menu multiplayer),
 	// ?join / ?server= (non-interactive join for scripted flows). The
-	// defaults are the conservative mobile-ish profile — these exist so
-	// capable hardware can opt up to desktop quality.
+	// defaults are full desktop quality — these exist to opt weaker
+	// hardware down.
 	let mut config = EngineConfig::web();
 	config.seed = param(&params, "seed");
 	config.tod = param(&params, "tod");
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(4, 20);
 	}
-	if flag(&params, "ssr") {
-		config.ssr = true;
+	if params.get("ssr").is_some() {
+		config.ssr = flag(&params, "ssr");
 	}
 	if let Some(s) = param::<u32>(&params, "shadow") {
 		config.shadow_size = s.clamp(512, 4096);
