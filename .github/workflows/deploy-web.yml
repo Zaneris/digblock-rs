@@ -53,4 +53,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy target/web --project-name=digblock --branch=main
+          wranglerVersion: "4.118.0"
+          # --commit-dirty silences the "uncommitted changes" warning: the
+          # freshly built target/web is untracked by design.
+          command: pages deploy target/web --project-name=digblock --branch=main --commit-dirty=true
