@@ -62,7 +62,14 @@ pub fn start() -> Result<(), JsValue> {
 
 	config.identity = load_identity();
 
-	let master_url = params.get("master").filter(|m| !m.is_empty());
+	// The production master is the default; ?master= overrides for dev
+	// stacks, and an explicitly empty ?master= disables multiplayer + music
+	// entirely (no master, no server list, no token mint).
+	let master_url = match params.get("master") {
+		Some(m) if m.is_empty() => None,
+		Some(m) => Some(m),
+		None => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
+	};
 	let mut engine = Engine::new(config);
 	// ?mute kills the whole audio stack; otherwise sound starts on the
 	// first click/keydown (Chrome's autoplay gesture rule).

@@ -10,6 +10,12 @@ pub type PlayerId = u8;
 /// Author id for server-originated edits (fluid simulation).
 pub const SERVER_ID: PlayerId = u8::MAX;
 
+/// The production master server. Launchers and the dedicated server fall
+/// back to this when no master is specified; an explicitly empty override
+/// (`--master-url ""`, `?master=`) disables master-backed features (menu
+/// multiplayer, music) instead.
+pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
+
 /// v5: player chat (ClientMsg::Chat / ServerMsg::Chat) and the 3-10 char
 /// display-name rule enforced at join.
 pub const PROTOCOL_VERSION: u16 = 5;

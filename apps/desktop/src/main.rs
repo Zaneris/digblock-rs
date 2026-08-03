@@ -38,7 +38,10 @@ fn main() {
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
 	// servers, distributes cert pins, and mints the one-time join tokens
-	// game servers require. There is no direct-connect path.
+	// game servers require. There is no direct-connect path. The
+	// production master is the default; --master-url / DIG_MASTER_URL
+	// point dev stacks elsewhere, and an explicitly empty value opts out
+	// of master-backed features (menu multiplayer, music) entirely.
 	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
 	let mut join = false;
 	let mut server_filter: Option<String> = None;
@@ -124,13 +127,26 @@ fn main() {
 		})
 	});
 
-	// The menu is for interactive runs only; every automated capture path
-	// (bench, screenshot, drill) and --join must not sit on a menu screen.
-	config.menu = !join && !config.bench && options.screenshot.is_none() && !options.auto_drill;
+	// Deterministic capture paths (bench, screenshot, drill) get no menu,
+	// no audio, and no master traffic — hermetic and bit-identical.
+	let interactive = !config.bench && options.screenshot.is_none() && !options.auto_drill;
 
-	// Audio rides interactive runs only — every deterministic capture
-	// path stays deviceless and bit-identical (the engine's sink is None).
-	let audio_on = !mute && !config.bench && options.screenshot.is_none() && !options.auto_drill;
+	// The menu is for interactive runs only; --join must not sit on a
+	// menu screen either.
+	config.menu = !join && interactive;
+
+	// Audio rides interactive runs only (the engine's sink stays None
+	// elsewhere).
+	let audio_on = !mute && interactive;
+
+	let master_url = match master_url {
+		Some(u) if u.is_empty() => None,
+		Some(u) => Some(u),
+		// The production default applies to interactive runs and joins
+		// only — hermetic capture paths must not ping the master.
+		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.into()),
+		None => None,
+	};
 
 	let mut engine = Engine::new(config);
 	if audio_on {
@@ -159,7 +175,7 @@ fn main() {
 			engine.set_menu_services(services::start(master_url.to_string()));
 		}
 	} else if join {
-		eprintln!("--join needs a master server: pass --master-url or set DIG_MASTER_URL");
+		eprintln!("--join needs a master server: don't combine it with an empty --master-url");
 		std::process::exit(2);
 	}
 	if let Err(e) = digblock_platform::run(engine, options) {

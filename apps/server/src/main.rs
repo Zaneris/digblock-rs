@@ -23,11 +23,13 @@ fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
 	})
 }
 
-const USAGE: &str = "usage: digblock-server --master-url URL --advertise-host HOST \
-	 [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] [--seed F] \
-	 [--data-dir P] [--sim-radius N] [--workers N]\n\
-	 (env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, \
-	 DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME)";
+use digblock_net::protocol::DEFAULT_MASTER_URL;
+
+const USAGE: &str = "usage: digblock-server --advertise-host HOST \
+	 [--master-url URL] [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] \
+	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N]\n\
+	 (--master-url defaults to https://master.digblock.net; env fallbacks: DIGBLOCK_MASTER_URL, \
+	 DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -40,9 +42,10 @@ fn main() {
 		.map(|n| n.get().saturating_sub(2))
 		.unwrap_or(2)
 		.clamp(2, 8);
-	// Master flags are mandatory (env fallbacks so Docker needs no wrapper):
-	// there is no tokenless way onto a server, and tokens come from the
-	// master, so an unregistered server could admit no one anyway.
+	// A master is mandatory (there is no tokenless way onto a server, and
+	// tokens come from the master, so an unregistered server could admit
+	// no one anyway) — the URL just defaults to production. The advertise
+	// host stays required: the server can never guess its public address.
 	let mut master_url = std::env::var("DIGBLOCK_MASTER_URL").ok();
 	let mut advertise_host = std::env::var("DIGBLOCK_ADVERTISE_HOST").ok();
 	let mut probe_host = std::env::var("DIGBLOCK_PROBE_HOST")
@@ -78,8 +81,9 @@ fn main() {
 			}
 		}
 	}
-	let (Some(master_url), Some(advertise_host)) = (master_url, advertise_host) else {
-		eprintln!("--master-url and --advertise-host are required");
+	let master_url = master_url.unwrap_or_else(|| DEFAULT_MASTER_URL.into());
+	let Some(advertise_host) = advertise_host else {
+		eprintln!("--advertise-host is required");
 		eprintln!("{USAGE}");
 		std::process::exit(2);
 	};
