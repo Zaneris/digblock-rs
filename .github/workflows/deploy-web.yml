@@ -13,15 +13,9 @@
 
 name: deploy-web
 
+# On-demand only, like deploy-master: releases are chosen, not implied
+# by every push that touches the crates.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/web/**"
-      - "crates/**"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - ".github/workflows/deploy-web.yml"
   workflow_dispatch:
 
 permissions:
