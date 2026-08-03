@@ -20,6 +20,21 @@ docker compose logs -f  # "registered with master" = you're listed
 the logs say the master reports you UNREACHABLE, UDP 4433 isn't open —
 check the port-forward/firewall.
 
+## Without Docker
+
+Each release also ships standalone binaries (Linux x86_64 fully static,
+Windows x86_64). Same config via flags or `DIGBLOCK_*` env vars:
+
+```sh
+./digblock-server-linux-x86_64 --advertise-host play.example.com \
+  --server-name "My World"    # world data lands in ./data
+```
+
+On Windows: `digblock-server-windows-x86_64.exe` with the same flags
+(allow it through Windows Firewall when prompted, and forward UDP 4433
+on your router). You're responsible for restarts/autostart — on Linux a
+minimal systemd unit with `Restart=always` is the usual answer.
+
 ## Operating
 
 - **Upgrade:** `docker compose pull && docker compose up -d`

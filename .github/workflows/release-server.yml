@@ -1,8 +1,10 @@
-# Cut a shareable dedicated-server release: build the public server image
-# (docker/Dockerfile.release — server binary only, env-driven config),
-# push it to GHCR as :<version> and :latest, and publish a GitHub Release
-# carrying the deploy kit (compose.yml + .env.example + README) that
-# self-hosters download.
+# Cut a shareable dedicated-server release:
+#   - public Docker image (docker/Dockerfile.release — server binary only,
+#     env-driven config) pushed to GHCR as :<version> and :latest
+#   - standalone binaries for Linux (x86_64, fully static musl) and
+#     Windows (x86_64) for hosts without Docker
+#   - a GitHub Release carrying the deploy kit (compose.yml +
+#     .env.example + README) plus those binaries
 #
 # On-demand only: Actions → release-server → Run workflow, enter a
 # version like 0.1.0. One-time: after the first run, make the
@@ -30,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,18 +57,71 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Publish GitHub Release with the deploy kit
+  binaries:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: digblock-server-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: digblock-server-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release -p digblock-server --bin digblock-server --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir dist
+          src=target/${{ matrix.target }}/release/digblock-server
+          [ -f "$src.exe" ] && src="$src.exe"
+          cp "$src" "dist/${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    needs: [image, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "server-v${{ inputs.version }}" \
             deploy/compose.yml deploy/.env.example deploy/README.md \
+            dist/* \
             --target "${{ github.sha }}" \
             --title "Dedicated server v${{ inputs.version }}" \
             --notes "$(cat <<'EOF'
           Run your own public DigBlock server — it lists itself automatically in the in-game server browser.
 
-          Needs Docker and UDP 4433 open to the internet:
+          **With Docker** (recommended; needs UDP 4433 open to the internet):
 
           ```sh
           mkdir digblock-server && cd digblock-server
@@ -74,6 +129,12 @@ jobs:
           curl -LO ${{ github.server_url }}/${{ github.repository }}/releases/download/server-v${{ inputs.version }}/.env.example
           cp .env.example .env    # set SERVER_NAME and ADVERTISE_HOST
           docker compose up -d
+          ```
+
+          **Without Docker**: grab the standalone binary for your platform below and run it directly, e.g.
+
+          ```sh
+          ./digblock-server-linux-x86_64 --advertise-host play.example.com --server-name "My World"
           ```
 
           Image: `ghcr.io/zaneris/digblock-server:${{ inputs.version }}`. See the attached README.md for operating notes (upgrades, backups, seeds).
