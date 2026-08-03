@@ -309,7 +309,12 @@ impl Landmark {
 		}
 		// 2×2 cap over the trunk.
 		for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-			f(self.x + dx, self.y + self.trunk_h + 1, self.z + dz, BlockType::Leaves);
+			f(
+				self.x + dx,
+				self.y + self.trunk_h + 1,
+				self.z + dz,
+				BlockType::Leaves,
+			);
 		}
 	}
 }
@@ -696,7 +701,9 @@ mod tests {
 	/// Per-kind trunk range and leaf-count bounds: the maximum is the full
 	/// layer list; the minimum drops every jitterable rim cell of the wide
 	/// (r >= 2) layers.
-	fn expect_shape(kind: TreeKind) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
+	fn expect_shape(
+		kind: TreeKind,
+	) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
 		match kind {
 			TreeKind::Blob => (4..=6, 25..=49),
 			TreeKind::TallNarrow => (6..=7, 33..=33),
@@ -708,7 +715,12 @@ mod tests {
 
 	fn assert_sane(t: &Tree) {
 		let (trunk, leaves_bounds) = expect_shape(t.kind);
-		assert!(trunk.contains(&t.trunk_h), "{:?} trunk {}", t.kind, t.trunk_h);
+		assert!(
+			trunk.contains(&t.trunk_h),
+			"{:?} trunk {}",
+			t.kind,
+			t.trunk_h
+		);
 		assert!(t.top() < WORLD_VBLOCK);
 		let expect_leaf = match t.kind {
 			TreeKind::Pine => BlockType::PineLeaves,
@@ -727,7 +739,11 @@ mod tests {
 			}
 		});
 		assert_eq!(wood, t.trunk_h + 1, "{:?} wood incl. root", t.kind);
-		assert!(leaves_bounds.contains(&leaves), "{:?} leaves {leaves}", t.kind);
+		assert!(
+			leaves_bounds.contains(&leaves),
+			"{:?} leaves {leaves}",
+			t.kind
+		);
 	}
 
 	/// Terrain-placed candidates are sane, and the broadleaf sample shows

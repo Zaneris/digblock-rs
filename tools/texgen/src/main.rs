@@ -23,7 +23,13 @@ fn main() {
 	save("DryGrassTop.png", map(&grass_top, dry));
 	save(
 		"DryGrassSide.png",
-		map(&grass_side, |p| if p[1] > p[0] && p[1] > p[2] { dry(p) } else { p }),
+		map(&grass_side, |p| {
+			if p[1] > p[0] && p[1] > p[2] {
+				dry(p)
+			} else {
+				p
+			}
+		}),
 	);
 
 	// Wet dark brown with a low-amplitude sheen.
@@ -45,7 +51,11 @@ fn load(name: &str) -> RgbImage {
 	let img = image::open(format!("{DIR}/{name}"))
 		.unwrap_or_else(|e| panic!("open {name}: {e}"))
 		.to_rgb8();
-	assert_eq!((img.width(), img.height()), (SIZE, SIZE), "{name} must be 64x64");
+	assert_eq!(
+		(img.width(), img.height()),
+		(SIZE, SIZE),
+		"{name} must be 64x64"
+	);
 	img
 }
 
@@ -95,7 +105,11 @@ fn add8(v: u8, d: i32) -> u8 {
 }
 
 fn rgb_to_hsv([r, g, b]: [u8; 3]) -> (f32, f32, f32) {
-	let (r, g, b) = (f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0);
+	let (r, g, b) = (
+		f32::from(r) / 255.0,
+		f32::from(g) / 255.0,
+		f32::from(b) / 255.0,
+	);
 	let max = r.max(g).max(b);
 	let min = r.min(g).min(b);
 	let d = max - min;
@@ -210,7 +224,11 @@ fn gravel(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 					(cz + dy).rem_euclid(s) as u32,
 				);
 				if d2 <= r * r {
-					p.0 = [add8(p.0[0], delta), add8(p.0[1], delta), add8(p.0[2], delta)];
+					p.0 = [
+						add8(p.0[0], delta),
+						add8(p.0[1], delta),
+						add8(p.0[2], delta),
+					];
 				} else if d2 <= (r + 1) * (r + 1) {
 					p.0 = [add8(p.0[0], -18), add8(p.0[1], -18), add8(p.0[2], -18)];
 				}

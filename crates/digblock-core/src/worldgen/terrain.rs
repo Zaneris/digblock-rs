@@ -275,7 +275,8 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	let mut tw = 0.0;
 	let mut h_t = h_ridge;
 	if tz > 0.0 {
-		let tm = smoothstep((fbm2(xf, zf, p.terrace_freq, 2, seed + p.terrace_seed_off) - 0.1) / 0.3);
+		let tm =
+			smoothstep((fbm2(xf, zf, p.terrace_freq, 2, seed + p.terrace_seed_off) - 0.1) / 0.3);
 		tw = tz * tm;
 		if tw > 0.0 {
 			let edge = fbm2(xf, zf, p.terrace_edge_freq, 2, seed + p.terrace_edge_off);

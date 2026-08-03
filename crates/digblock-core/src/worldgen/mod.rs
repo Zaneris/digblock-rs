@@ -387,8 +387,9 @@ mod tests {
 					let n = column_shape(nx, nz, seed);
 					for wy in (s.height + 1)..=s.water {
 						let covered = wy <= n.water
-							|| wy <= n.height + 2
-							|| n.fall.is_some_and(|(b, t)| (b..=t).contains(&wy));
+							|| wy <= n.height + 2 || n
+							.fall
+							.is_some_and(|(b, t)| (b..=t).contains(&wy));
 						assert!(covered, "water wall at ({x},{z}) wy={wy} vs ({nx},{nz})");
 					}
 				}
@@ -489,9 +490,7 @@ mod tests {
 					}
 					SurfaceKind::Plains => plains += 1,
 					// Snow and scree are high-mountain surface for balance.
-					SurfaceKind::Mountain | SurfaceKind::Snow | SurfaceKind::Scree => {
-						mountain += 1
-					}
+					SurfaceKind::Mountain | SurfaceKind::Snow | SurfaceKind::Scree => mountain += 1,
 					SurfaceKind::Forest => forest += 1,
 					SurfaceKind::Savanna => savanna += 1,
 					SurfaceKind::Taiga => taiga += 1,

@@ -184,31 +184,109 @@ const fn bouldery(mut p: SurfaceProps) -> SurfaceProps {
 /// Indexed by `SurfaceKind as usize` (declaration order).
 pub const SURFACE_PROPS: [SurfaceProps; 13] = [
 	// Ocean
-	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
+	banded(sprops(
+		BlockType::Sand,
+		BlockType::Sand,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		false,
+	)),
 	// Beach
-	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, true)),
+	banded(sprops(
+		BlockType::Sand,
+		BlockType::Sand,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		true,
+	)),
 	// Plains: scattered trees — forests now carry the woods.
-	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::Broadleaf, true),
+	sprops(
+		BlockType::Grass,
+		BlockType::Dirt,
+		TreeDensity::Sparse,
+		TreeSpecies::Broadleaf,
+		true,
+	),
 	// Mountain
-	bouldery(sprops(BlockType::Stone, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true)),
+	bouldery(sprops(
+		BlockType::Stone,
+		BlockType::Stone,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		true,
+	)),
 	// Snow
-	sprops(BlockType::Snow, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	sprops(
+		BlockType::Snow,
+		BlockType::Stone,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		true,
+	),
 	// River
-	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
+	banded(sprops(
+		BlockType::Sand,
+		BlockType::Sand,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		false,
+	)),
 	// Forest
-	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Dense, TreeSpecies::Broadleaf, true),
+	sprops(
+		BlockType::Grass,
+		BlockType::Dirt,
+		TreeDensity::Dense,
+		TreeSpecies::Broadleaf,
+		true,
+	),
 	// Taiga
-	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Normal, TreeSpecies::Pine, true),
+	sprops(
+		BlockType::Grass,
+		BlockType::Dirt,
+		TreeDensity::Normal,
+		TreeSpecies::Pine,
+		true,
+	),
 	// Savanna
-	sprops(BlockType::DryGrass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::FlatTop, true),
+	sprops(
+		BlockType::DryGrass,
+		BlockType::Dirt,
+		TreeDensity::Sparse,
+		TreeSpecies::FlatTop,
+		true,
+	),
 	// Marsh: soggy ground, puddles — keep spawns off it.
-	sprops(BlockType::Mud, BlockType::Mud, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	sprops(
+		BlockType::Mud,
+		BlockType::Mud,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		false,
+	),
 	// GravelShore
-	sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	sprops(
+		BlockType::Gravel,
+		BlockType::Gravel,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		true,
+	),
 	// Lake
-	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
+	banded(sprops(
+		BlockType::Sand,
+		BlockType::Sand,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		false,
+	)),
 	// Scree
-	bouldery(sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true)),
+	bouldery(sprops(
+		BlockType::Gravel,
+		BlockType::Gravel,
+		TreeDensity::None,
+		TreeSpecies::Broadleaf,
+		true,
+	)),
 ];
 
 impl SurfaceKind {
@@ -406,19 +484,85 @@ mod tests {
 			assert_eq!(k as usize, i, "ALL follows declaration order");
 			let p = k.props();
 			let (top, subsoil, density, species, spawnable) = match k {
-				Ocean => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
-				Beach => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, true),
-				Plains => (BlockType::Grass, BlockType::Dirt, D::Sparse, S::Broadleaf, true),
-				Mountain => (BlockType::Stone, BlockType::Stone, D::None, S::Broadleaf, true),
-				Snow => (BlockType::Snow, BlockType::Stone, D::None, S::Broadleaf, true),
-				River => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
-				Forest => (BlockType::Grass, BlockType::Dirt, D::Dense, S::Broadleaf, true),
+				Ocean => (
+					BlockType::Sand,
+					BlockType::Sand,
+					D::None,
+					S::Broadleaf,
+					false,
+				),
+				Beach => (
+					BlockType::Sand,
+					BlockType::Sand,
+					D::None,
+					S::Broadleaf,
+					true,
+				),
+				Plains => (
+					BlockType::Grass,
+					BlockType::Dirt,
+					D::Sparse,
+					S::Broadleaf,
+					true,
+				),
+				Mountain => (
+					BlockType::Stone,
+					BlockType::Stone,
+					D::None,
+					S::Broadleaf,
+					true,
+				),
+				Snow => (
+					BlockType::Snow,
+					BlockType::Stone,
+					D::None,
+					S::Broadleaf,
+					true,
+				),
+				River => (
+					BlockType::Sand,
+					BlockType::Sand,
+					D::None,
+					S::Broadleaf,
+					false,
+				),
+				Forest => (
+					BlockType::Grass,
+					BlockType::Dirt,
+					D::Dense,
+					S::Broadleaf,
+					true,
+				),
 				Taiga => (BlockType::Grass, BlockType::Dirt, D::Normal, S::Pine, true),
-				Savanna => (BlockType::DryGrass, BlockType::Dirt, D::Sparse, S::FlatTop, true),
+				Savanna => (
+					BlockType::DryGrass,
+					BlockType::Dirt,
+					D::Sparse,
+					S::FlatTop,
+					true,
+				),
 				Marsh => (BlockType::Mud, BlockType::Mud, D::None, S::Broadleaf, false),
-				GravelShore => (BlockType::Gravel, BlockType::Gravel, D::None, S::Broadleaf, true),
-				Lake => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
-				Scree => (BlockType::Gravel, BlockType::Gravel, D::None, S::Broadleaf, true),
+				GravelShore => (
+					BlockType::Gravel,
+					BlockType::Gravel,
+					D::None,
+					S::Broadleaf,
+					true,
+				),
+				Lake => (
+					BlockType::Sand,
+					BlockType::Sand,
+					D::None,
+					S::Broadleaf,
+					false,
+				),
+				Scree => (
+					BlockType::Gravel,
+					BlockType::Gravel,
+					D::None,
+					S::Broadleaf,
+					true,
+				),
 			};
 			assert_eq!((p.top, p.subsoil), (top, subsoil), "{k:?} palette");
 			assert_eq!(p.tree_density, density, "{k:?} density");
