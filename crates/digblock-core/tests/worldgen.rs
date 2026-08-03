@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
-use digblock_core::decoration::{trees_near, STRUCTURE_APRON};
+use digblock_core::decoration::{structures_near, Structure, STRUCTURE_APRON};
 use digblock_core::worldgen::{
 	build_chunk, carved, column_shape, terrain_height, SurfaceKind, DIRT_DEPTH, SEA_LEVEL,
 };
@@ -88,10 +88,12 @@ fn column_rules() {
 	'scan: for cx in -24..24 {
 		for cz in -24..24 {
 			let (bx, bz) = (cx * 16, cz * 16);
-			if trees_near(bx, bz, seed)
-				.iter()
-				.any(|t| (bx..bx + 16).contains(&t.x) && (bz..bz + 16).contains(&t.z))
-			{
+			if structures_near(bx, bz, seed).iter().any(|s| {
+				matches!(s, Structure::Tree(_)) && {
+					let (x, z) = s.origin();
+					(bx..bx + 16).contains(&x) && (bz..bz + 16).contains(&z)
+				}
+			}) {
 				samples.push((cx, cz));
 				break 'scan;
 			}
@@ -104,16 +106,16 @@ fn column_rules() {
 		let block_at = |x: usize, wy: i32, z: usize| -> BlockType {
 			chunks[(wy / 16) as usize].get(x, (wy % 16) as usize, z)
 		};
-		// Mirror of the decoration pass: trees write into terrain-Air
-		// cells — plus the trunk-base exception, where Wood replaces the
-		// Grass/Dirt surface cell — in candidate order, first writer wins.
+		// Mirror of the decoration pass: structures write into terrain-Air
+		// cells — plus the trunk-root exception, where Wood replaces the
+		// Grass/Dirt/DryGrass surface cell — in candidate order, first
+		// writer wins.
 		let mut tree_cells: HashMap<(i32, i32, i32), BlockType> = HashMap::new();
-		for tree in trees_near(cx * 16, cz * 16, seed) {
-			let base = (tree.x, tree.y - 1, tree.z);
-			tree.for_each_block(|x, y, z, b| {
+		for st in structures_near(cx * 16, cz * 16, seed) {
+			st.for_each_block(|x, y, z, b| {
 				let t = expect_terrain(x, y, z, seed);
 				let writable = t == BlockType::Air
-					|| ((x, y, z) == base
+					|| (st.is_root(x, y, z)
 						&& matches!(t, BlockType::Grass | BlockType::Dirt | BlockType::DryGrass));
 				if writable {
 					tree_cells.entry((x, y, z)).or_insert(b);
@@ -148,23 +150,23 @@ fn column_rules() {
 	assert!(trees_seen, "the sampled chunks contain some tree blocks");
 }
 
-/// A tree whose canopy crosses a chunk border must appear identically in
-/// every chunk it spills into — the core correctness property of pure
+/// A structure whose blocks cross a chunk border must appear identically
+/// in every chunk it spills into — the core correctness property of pure
 /// apron evaluation.
 #[test]
-fn trees_span_chunk_borders_seamlessly() {
+fn structures_span_chunk_borders_seamlessly() {
 	let seed = 1234.5678;
 	let mut cache: HashMap<ChunkPos, ChunkData> = HashMap::new();
 	// Wide scan: regions are province-sized, so a small patch near the
 	// origin can be all ocean or all mountain at a given seed.
 	for ccz in -24..24 {
 		for ccx in -24..24 {
-			for tree in trees_near(ccx * 16, ccz * 16, seed) {
-				// Actual span, not a radius heuristic — canopy width varies
-				// by kind and jitter.
+			for st in structures_near(ccx * 16, ccz * 16, seed) {
+				// Actual span, not a radius heuristic — footprints vary by
+				// structure kind and jitter.
 				let (mut min_x, mut max_x) = (i32::MAX, i32::MIN);
 				let (mut min_z, mut max_z) = (i32::MAX, i32::MIN);
-				tree.for_each_block(|x, _, z, _| {
+				st.for_each_block(|x, _, z, _| {
 					(min_x, max_x) = (min_x.min(x), max_x.max(x));
 					(min_z, max_z) = (min_z.min(z), max_z.max(z));
 				});
@@ -174,7 +176,7 @@ fn trees_span_chunk_borders_seamlessly() {
 					continue;
 				}
 				let mut chunks_touched = std::collections::HashSet::new();
-				tree.for_each_block(|x, y, z, b| {
+				st.for_each_block(|x, y, z, b| {
 					let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
 					chunks_touched.insert((pos.x, pos.z));
 					let chunk = cache.entry(pos).or_insert_with(|| build_chunk(pos, seed));
@@ -183,8 +185,8 @@ fn trees_span_chunk_borders_seamlessly() {
 						y.rem_euclid(16) as usize,
 						z.rem_euclid(16) as usize,
 					);
-					// The cell holds this tree's block unless terrain or an
-					// earlier tree already occupied it — never bare air.
+					// The cell holds this structure's block unless terrain or
+					// an earlier structure already occupied it — never air.
 					assert!(
 						got == b || got != BlockType::Air,
 						"({x},{y},{z}) empty in {pos:?}"
@@ -192,26 +194,26 @@ fn trees_span_chunk_borders_seamlessly() {
 				});
 				assert!(
 					chunks_touched.len() > 1,
-					"tree at ({},{}) spans chunks",
-					tree.x,
-					tree.z
+					"structure at {:?} spans chunks",
+					st.origin()
 				);
-				return; // one verified border tree is the property
+				return; // one verified border structure is the property
 			}
 		}
 	}
-	panic!("no border-crossing tree found in the sample area");
+	panic!("no border-crossing structure found in the sample area");
 }
 
-/// Trees never grow below the apron contract: every block a tree emits
-/// stays within STRUCTURE_APRON of its origin column.
+/// Structures never grow beyond the apron contract: every block stays
+/// within STRUCTURE_APRON of the origin column.
 #[test]
-fn trees_respect_the_apron() {
+fn structures_respect_the_apron() {
 	let seed = 42.0;
-	for tree in trees_near(0, 0, seed) {
-		tree.for_each_block(|x, _y, z, _b| {
-			assert!((x - tree.x).abs() <= STRUCTURE_APRON);
-			assert!((z - tree.z).abs() <= STRUCTURE_APRON);
+	for st in structures_near(0, 0, seed) {
+		let (ox, oz) = st.origin();
+		st.for_each_block(|x, _y, z, _b| {
+			assert!((x - ox).abs() <= STRUCTURE_APRON);
+			assert!((z - oz).abs() <= STRUCTURE_APRON);
 		});
 	}
 }
@@ -453,7 +455,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 14094484970615366175,
+		hash, 2091408729156646669,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }

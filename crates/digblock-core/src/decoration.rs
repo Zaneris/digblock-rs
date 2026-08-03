@@ -3,9 +3,11 @@
 //! by pure per-column functions (`column_shape`, `carved`) — so the chunk
 //! that owns a structure and every neighbor it spills into compute the
 //! *identical* structure independently, with no pipeline state and no
-//! generation-order dependence. Trees are the first client; any future
-//! structure (boulders, ruins, cacti) is a new candidate rule + block
-//! list that respects `STRUCTURE_APRON`.
+//! generation-order dependence. Each structure family draws from its own
+//! salted hash stream: ordinary trees on the fine candidate grid, rare
+//! landmark trees on a coarse grid, boulders on rock, bushes on grass.
+//! Any future structure is a new candidate rule + block list that
+//! respects `STRUCTURE_APRON`.
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK};
@@ -23,6 +25,23 @@ const CELL: i32 = 8;
 /// their hash roll before paying for a `column_shape` evaluation.
 const MAX_TREE_DENSITY_PCT: u64 = 55;
 pub const MAX_STRUCTURE_HEIGHT: i32 = 10; // trunk (≤7) + canopy cap (+1) + headroom
+
+/// Landmark trees: one candidate per 64×64 cell at 2.5% — mean spacing
+/// ~400 blocks, so meeting one feels like an event. Max horizontal reach
+/// is 5 (canopy −4..=5 around a 2×2 trunk) ≤ STRUCTURE_APRON.
+const LANDMARK_CELL: i32 = 64;
+const LANDMARK_PCT: u64 = 25; // of 1000
+pub const MAX_LANDMARK_HEIGHT: i32 = 13; // 2×2 trunk (≤10) + cap (+1) + headroom
+/// Boulder / bush per-cell candidate percentages.
+const BOULDER_PCT: u64 = 10;
+const BUSH_PCT: u64 = 15;
+
+/// Per-family hash salts: full independent 64-bit streams, no bit-window
+/// bookkeeping. TREE = 0 bit-preserves the original tree stream.
+const TREE_SALT: u64 = 0;
+const LANDMARK_SALT: u64 = 0x9e37_79b9_97f4_2c15;
+const BOULDER_SALT: u64 = 0xc2b2_ae3d_27d4_eb4f;
+const BUSH_SALT: u64 = 0x1656_67b1_9e37_79f9;
 
 /// Tree silhouette family: broadleaf surfaces pick one of the first
 /// three per candidate from hash bits; conifer and acacia surfaces grow
@@ -55,9 +74,10 @@ pub struct Tree {
 	salt: u16,
 }
 
-/// Deterministic position hash (splitmix64 over cell coords + seed bits).
-fn hash(cx: i32, cz: i32, seed: f64) -> u64 {
-	let mut h = (u64::from(cx as u32) << 32 | u64::from(cz as u32)) ^ seed.to_bits();
+/// Deterministic position hash (splitmix64 over cell coords + seed bits),
+/// salted per structure family so streams stay independent.
+fn hash(cx: i32, cz: i32, seed: f64, salt: u64) -> u64 {
+	let mut h = (u64::from(cx as u32) << 32 | u64::from(cz as u32)) ^ seed.to_bits() ^ salt;
 	h ^= h >> 30;
 	h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
 	h ^= h >> 27;
@@ -83,7 +103,7 @@ fn jroll(salt: u16, dx: i32, dz: i32, dy: i32) -> bool {
 /// species; the candidate must not be a cave mouth and needs headroom
 /// below the world ceiling.
 fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
-	let h = hash(cell_x, cell_z, seed);
+	let h = hash(cell_x, cell_z, seed, TREE_SALT);
 	if h % 100 >= MAX_TREE_DENSITY_PCT {
 		return None; // no surface is denser — skip the column_shape cost
 	}
@@ -130,21 +150,293 @@ fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	})
 }
 
-/// All valid trees whose blocks could reach a chunk with x/z origin
-/// `(px, pz)` — i.e. candidates within the apron of its footprint.
-pub fn trees_near(px: i32, pz: i32, seed: f64) -> Vec<Tree> {
+/// A rare 2×2-trunk giant with a wide umbrella canopy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Landmark {
+	/// North-west trunk column; the trunk occupies (x..=x+1, z..=z+1).
+	pub x: i32,
+	pub y: i32,
+	pub z: i32,
+	pub trunk_h: i32,
+	salt: u16,
+}
+
+/// A small stone clump on rock surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Boulder {
+	pub x: i32,
+	pub y: i32,
+	pub z: i32,
+	pattern: u8,
+}
+
+/// One or two leaf blocks on grassy ground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bush {
+	pub x: i32,
+	pub y: i32,
+	pub z: i32,
+	leaf: BlockType,
+	second: Option<(i32, i32)>,
+}
+
+/// Every decoration structure, dispatched by variant. Deterministic
+/// generation order (landmarks first, then per fine cell tree → boulder
+/// → bush) plus first-writer-wins in `decorate_chunk` keeps every chunk
+/// agreeing about overlaps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Structure {
+	Tree(Tree),
+	Landmark(Landmark),
+	Boulder(Boulder),
+	Bush(Bush),
+}
+
+impl Structure {
+	/// Exclusive upper bound on the world y this structure occupies —
+	/// `build_column`'s sky-chunk skipping relies on exactness.
+	pub fn top(&self) -> i32 {
+		match self {
+			Structure::Tree(t) => t.top(),
+			Structure::Landmark(l) => l.y + l.trunk_h + 2,
+			Structure::Boulder(b) => b.y + if b.pattern == 3 { 2 } else { 1 },
+			Structure::Bush(b) => b.y + 1,
+		}
+	}
+
+	pub fn for_each_block(&self, f: impl FnMut(i32, i32, i32, BlockType)) {
+		match self {
+			Structure::Tree(t) => t.for_each_block(f),
+			Structure::Landmark(l) => l.for_each_block(f),
+			Structure::Boulder(b) => b.for_each_block(f),
+			Structure::Bush(b) => b.for_each_block(f),
+		}
+	}
+
+	/// The origin column (its candidate position) — every emitted block
+	/// stays within `STRUCTURE_APRON` of it.
+	pub fn origin(&self) -> (i32, i32) {
+		match self {
+			Structure::Tree(t) => (t.x, t.z),
+			Structure::Landmark(l) => (l.x, l.z),
+			Structure::Boulder(b) => (b.x, b.z),
+			Structure::Bush(b) => (b.x, b.z),
+		}
+	}
+
+	/// Whether (x, y, z) is a trunk root cell — the one place a structure
+	/// may replace the topsoil surface block instead of writing into Air.
+	pub fn is_root(&self, x: i32, y: i32, z: i32) -> bool {
+		match self {
+			Structure::Tree(t) => (x, y, z) == (t.x, t.y - 1, t.z),
+			Structure::Landmark(l) => {
+				y == l.y - 1 && (0..=1).contains(&(x - l.x)) && (0..=1).contains(&(z - l.z))
+			}
+			_ => false,
+		}
+	}
+}
+
+/// The landmark candidate (if any) of one coarse-grid cell: all four
+/// trunk columns must be tree-valid grass within one block of height,
+/// uncarved, with headroom.
+fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
+	let h = hash(cell_x, cell_z, seed, LANDMARK_SALT);
+	if h % 1000 >= LANDMARK_PCT {
+		return None;
+	}
+	let x = cell_x * LANDMARK_CELL + ((h >> 8) % LANDMARK_CELL as u64) as i32;
+	let z = cell_z * LANDMARK_CELL + ((h >> 16) % LANDMARK_CELL as u64) as i32;
+	let mut hmin = i32::MAX;
+	let mut hmax = i32::MIN;
+	for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+		let shape = column_shape(x + dx, z + dz, seed);
+		if shape.surface.props().tree_density == TreeDensity::None {
+			return None;
+		}
+		if carved(x + dx, shape.height, z + dz, seed) {
+			return None;
+		}
+		hmin = hmin.min(shape.height);
+		hmax = hmax.max(shape.height);
+	}
+	if hmax - hmin > 1 || hmax + MAX_LANDMARK_HEIGHT >= WORLD_VBLOCK {
+		return None;
+	}
+	Some(Landmark {
+		x,
+		y: hmax + 1,
+		z,
+		trunk_h: 8 + ((h >> 24) % 3) as i32,
+		salt: ((h >> 40) & 0xffff) as u16,
+	})
+}
+
+impl Landmark {
+	/// Trunk roots one block into each of the four surface cells; the
+	/// canopy is two wide 10×10-minus-corners layers under a radius-2
+	/// layer and a 2×2 cap. Rim leaves of the wide layers jitter away
+	/// 50/50 like ordinary trees.
+	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
+		for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+			for dy in -1..self.trunk_h {
+				f(self.x + dx, self.y + dy, self.z + dz, BlockType::Wood);
+			}
+		}
+		// (dy relative to y, x/z span around the 2×2 footprint, jitter).
+		let layers: [(i32, i32, bool); 3] = [
+			(self.trunk_h - 2, 4, true),
+			(self.trunk_h - 1, 4, true),
+			(self.trunk_h, 2, false),
+		];
+		for (dy, r, jitter) in layers {
+			for dz in -r..=r + 1 {
+				for dx in -r..=r + 1 {
+					let corner = (dx == -r || dx == r + 1) && (dz == -r || dz == r + 1);
+					if corner {
+						continue;
+					}
+					if (0..=1).contains(&dx) && (0..=1).contains(&dz) && dy < self.trunk_h {
+						continue; // trunk occupies the center 2×2
+					}
+					let rim = dx == -r || dx == r + 1 || dz == -r || dz == r + 1;
+					if jitter && rim && jroll(self.salt, dx, dz, dy - self.trunk_h) {
+						continue;
+					}
+					f(self.x + dx, self.y + dy, self.z + dz, BlockType::Leaves);
+				}
+			}
+		}
+		// 2×2 cap over the trunk.
+		for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+			f(self.x + dx, self.y + self.trunk_h + 1, self.z + dz, BlockType::Leaves);
+		}
+	}
+}
+
+/// The boulder candidate (if any) of one fine-grid cell: rock surfaces
+/// only (`props().boulders`), dry, uncarved.
+fn cell_boulder(cell_x: i32, cell_z: i32, seed: f64) -> Option<Boulder> {
+	let h = hash(cell_x, cell_z, seed, BOULDER_SALT);
+	if h % 100 >= BOULDER_PCT {
+		return None;
+	}
+	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
+	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
+	let shape = column_shape(x, z, seed);
+	if !shape.surface.props().boulders || shape.water > shape.height {
+		return None;
+	}
+	if carved(x, shape.height, z, seed) {
+		return None;
+	}
+	if shape.height + 4 >= WORLD_VBLOCK {
+		return None;
+	}
+	Some(Boulder {
+		x,
+		y: shape.height + 1,
+		z,
+		pattern: ((h >> 24) % 4) as u8,
+	})
+}
+
+impl Boulder {
+	/// 2–3 stone cells; partial burial falls out of the Air-only write
+	/// rule on slopes (cells inside higher neighbor terrain don't write).
+	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
+		const PATTERNS: [&[(i32, i32, i32)]; 4] = [
+			&[(0, 0, 0), (1, 0, 0)],
+			&[(0, 0, 0), (0, 0, 1)],
+			&[(0, 0, 0), (1, 0, 0), (0, 0, 1)],
+			&[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+		];
+		for &(dx, dy, dz) in PATTERNS[self.pattern as usize] {
+			f(self.x + dx, self.y + dy, self.z + dz, BlockType::Stone);
+		}
+	}
+}
+
+/// The bush candidate (if any) of one fine-grid cell: grassy tree-valid
+/// ground, uncarved. The caller skips bushes in cells that already grew
+/// a tree.
+fn cell_bush(cell_x: i32, cell_z: i32, seed: f64) -> Option<Bush> {
+	let h = hash(cell_x, cell_z, seed, BUSH_SALT);
+	if h % 100 >= BUSH_PCT {
+		return None;
+	}
+	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
+	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
+	let shape = column_shape(x, z, seed);
+	let props = shape.surface.props();
+	if props.tree_density == TreeDensity::None {
+		return None;
+	}
+	if carved(x, shape.height, z, seed) {
+		return None;
+	}
+	if shape.height + 3 >= WORLD_VBLOCK {
+		return None;
+	}
+	let leaf = match props.tree_species {
+		TreeSpecies::Pine => BlockType::PineLeaves,
+		_ => BlockType::Leaves,
+	};
+	const OFFSETS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+	let second = ((h >> 24) % 5).checked_sub(1).map(|i| OFFSETS[i as usize]);
+	Some(Bush {
+		x,
+		y: shape.height + 1,
+		z,
+		leaf,
+		second,
+	})
+}
+
+impl Bush {
+	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
+		f(self.x, self.y, self.z, self.leaf);
+		if let Some((dx, dz)) = self.second {
+			f(self.x + dx, self.y, self.z + dz, self.leaf);
+		}
+	}
+}
+
+/// All valid structures whose blocks could reach a chunk with x/z origin
+/// `(px, pz)` — candidates within the apron of its footprint. Landmarks
+/// first (coarse grid, row-major), then per fine cell: tree → boulder →
+/// bush (bushes skip cells that grew a tree). This order is part of the
+/// determinism contract — `decorate_chunk` is first-writer-wins.
+pub fn structures_near(px: i32, pz: i32, seed: f64) -> Vec<Structure> {
 	let n = CHUNK_SIZE as i32;
 	let (x0, x1) = (px - STRUCTURE_APRON, px + n - 1 + STRUCTURE_APRON);
 	let (z0, z1) = (pz - STRUCTURE_APRON, pz + n - 1 + STRUCTURE_APRON);
-	let mut trees = Vec::new();
-	for cell_z in z0.div_euclid(CELL)..=z1.div_euclid(CELL) {
-		for cell_x in x0.div_euclid(CELL)..=x1.div_euclid(CELL) {
-			if let Some(t) = cell_tree(cell_x, cell_z, seed) {
-				trees.push(t);
+	let mut out = Vec::new();
+	for cell_z in z0.div_euclid(LANDMARK_CELL)..=z1.div_euclid(LANDMARK_CELL) {
+		for cell_x in x0.div_euclid(LANDMARK_CELL)..=x1.div_euclid(LANDMARK_CELL) {
+			if let Some(l) = cell_landmark(cell_x, cell_z, seed) {
+				out.push(Structure::Landmark(l));
 			}
 		}
 	}
-	trees
+	for cell_z in z0.div_euclid(CELL)..=z1.div_euclid(CELL) {
+		for cell_x in x0.div_euclid(CELL)..=x1.div_euclid(CELL) {
+			let tree = cell_tree(cell_x, cell_z, seed);
+			let grew_tree = tree.is_some();
+			if let Some(t) = tree {
+				out.push(Structure::Tree(t));
+			}
+			if let Some(b) = cell_boulder(cell_x, cell_z, seed) {
+				out.push(Structure::Boulder(b));
+			}
+			if !grew_tree {
+				if let Some(b) = cell_bush(cell_x, cell_z, seed) {
+					out.push(Structure::Bush(b));
+				}
+			}
+		}
+	}
+	out
 }
 
 impl Tree {
@@ -212,24 +504,24 @@ impl Tree {
 	}
 }
 
-/// Apply every reachable tree to one chunk's freshly filled data.
+/// Apply every reachable structure to one chunk's freshly filled data.
 /// Structures never erase terrain — only Air cells are written — with one
-/// exception: the trunk's base block replaces the Grass/Dirt surface cell
-/// of its own column, rooting the tree into the ground. Base cells are
-/// unique per tree (one candidate per grid cell), and leaves still never
-/// overwrite solids, so trees cannot clobber each other.
-pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, trees: &[Tree]) {
+/// exception: trunk root cells replace the Grass/Dirt/DryGrass surface
+/// block of their own columns, rooting trees into the ground. Root cells
+/// are unique per structure (one candidate per grid cell), and every
+/// other block still never overwrites solids, so structures cannot
+/// clobber each other beyond first-writer-wins in Air.
+pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structure]) {
 	let n = CHUNK_SIZE as i32;
 	let (px, py, pz) = (pos.x * n, pos.y * n, pos.z * n);
-	for tree in trees {
-		let base = (tree.x, tree.y - 1, tree.z);
-		tree.for_each_block(|x, y, z, block| {
+	for st in structures {
+		st.for_each_block(|x, y, z, block| {
 			let (lx, ly, lz) = (x - px, y - py, z - pz);
 			if (0..n).contains(&lx) && (0..n).contains(&ly) && (0..n).contains(&lz) {
 				let (lx, ly, lz) = (lx as usize, ly as usize, lz as usize);
 				let cur = data.get(lx, ly, lz);
 				let writable = cur == BlockType::Air
-					|| ((x, y, z) == base
+					|| (st.is_root(x, y, z)
 						&& matches!(
 							cur,
 							BlockType::Grass | BlockType::Dirt | BlockType::DryGrass
@@ -249,16 +541,156 @@ mod tests {
 	#[test]
 	fn candidates_are_deterministic_and_spaced() {
 		let seed = 1234.5678;
-		let a = trees_near(0, 0, seed);
-		let b = trees_near(0, 0, seed);
+		let a = structures_near(0, 0, seed);
+		let b = structures_near(0, 0, seed);
 		assert_eq!(a, b, "deterministic");
 		// Neighboring chunks agree about shared-apron candidates.
-		let right = trees_near(16, 0, seed);
-		for t in &a {
-			if t.x >= 16 - STRUCTURE_APRON {
-				assert!(right.contains(t), "border tree {t:?} seen by both");
+		let right = structures_near(16, 0, seed);
+		for s in &a {
+			if s.origin().0 >= 16 - STRUCTURE_APRON {
+				assert!(right.contains(s), "border structure {s:?} seen by both");
 			}
 		}
+	}
+
+	/// Every structure keeps the apron contract and reports an EXACT
+	/// top(): build_column's sky-chunk skipping truncates canopies at
+	/// chunk-stack seams if top() ever under-reports.
+	#[test]
+	fn structures_respect_apron_and_exact_tops() {
+		let seed = 1234.5678;
+		let mut seen = 0u32;
+		for ccz in -16..16 {
+			for ccx in -16..16 {
+				for s in structures_near(ccx * 16, ccz * 16, seed) {
+					seen += 1;
+					let (ox, oz) = s.origin();
+					let mut max_y = i32::MIN;
+					s.for_each_block(|x, y, z, _| {
+						assert!((x - ox).abs() <= STRUCTURE_APRON, "apron x {s:?}");
+						assert!((z - oz).abs() <= STRUCTURE_APRON, "apron z {s:?}");
+						max_y = max_y.max(y);
+					});
+					assert_eq!(max_y, s.top() - 1, "exact top for {s:?}");
+				}
+			}
+		}
+		assert!(seen > 0, "sample contains structures");
+	}
+
+	#[test]
+	fn landmark_shape_sane() {
+		for trunk_h in 8..=10 {
+			for salt in [0u16, 0xbeef, 0xffff] {
+				let l = Landmark {
+					x: 0,
+					y: 60,
+					z: 0,
+					trunk_h,
+					salt,
+				};
+				let (mut wood, mut leaves) = (0, 0);
+				l.for_each_block(|x, y, z, b| {
+					assert!((-4..=5).contains(&x) && (-4..=5).contains(&z));
+					assert!(y >= l.y - 1 && y <= l.y + trunk_h + 1);
+					match b {
+						BlockType::Wood => wood += 1,
+						BlockType::Leaves => leaves += 1,
+						other => panic!("unexpected {other:?}"),
+					}
+				});
+				// 4 trunk columns, each rooted one block down.
+				assert_eq!(wood, 4 * (trunk_h + 1));
+				// Two 10×10-minus-corners-minus-trunk layers (92 max, 60
+				// after full rim jitter), a 6×6-minus-corners layer (32),
+				// and the 2×2 cap.
+				assert!((156..=220).contains(&leaves), "leaves {leaves}");
+			}
+		}
+	}
+
+	#[test]
+	fn boulder_and_bush_shapes() {
+		for pattern in 0..4u8 {
+			let b = Boulder {
+				x: 0,
+				y: 10,
+				z: 0,
+				pattern,
+			};
+			let mut count = 0;
+			let mut max_y = i32::MIN;
+			b.for_each_block(|x, y, z, block| {
+				assert_eq!(block, BlockType::Stone);
+				assert!((0..=1).contains(&x) && (0..=1).contains(&z));
+				max_y = max_y.max(y);
+				count += 1;
+			});
+			assert!((2..=3).contains(&count));
+			assert_eq!(max_y, Structure::Boulder(b).top() - 1);
+		}
+		for (leaf, second) in [
+			(BlockType::Leaves, None),
+			(BlockType::PineLeaves, Some((1, 0))),
+			(BlockType::Leaves, Some((0, -1))),
+		] {
+			let b = Bush {
+				x: 0,
+				y: 10,
+				z: 0,
+				leaf,
+				second,
+			};
+			let mut count = 0;
+			b.for_each_block(|_, y, _, block| {
+				assert_eq!(block, leaf);
+				assert_eq!(y, 10);
+				count += 1;
+			});
+			assert_eq!(count, 1 + second.is_some() as i32);
+		}
+	}
+
+	/// Terrain-placed candidates land where their rules say: boulders on
+	/// rock surfaces, bushes on tree-valid ground, landmarks on flat
+	/// tree-valid 2×2 footprints.
+	#[test]
+	fn placements_match_surface_rules() {
+		let seed = 42.0;
+		let (mut boulders, mut bushes) = (0u32, 0u32);
+		for cz in -128..128 {
+			for cx in -128..128 {
+				if let Some(b) = cell_boulder(cx, cz, seed) {
+					let s = column_shape(b.x, b.z, seed);
+					assert!(s.surface.props().boulders, "boulder on {:?}", s.surface);
+					assert_eq!(b.y, s.height + 1);
+					boulders += 1;
+				}
+				if let Some(b) = cell_bush(cx, cz, seed) {
+					let s = column_shape(b.x, b.z, seed);
+					assert!(s.surface.props().tree_density != TreeDensity::None);
+					bushes += 1;
+				}
+			}
+		}
+		assert!(boulders > 0, "sample contains boulders");
+		assert!(bushes > 0, "sample contains bushes");
+	}
+
+	#[test]
+	fn landmarks_exist() {
+		let seed = 1234.5678;
+		let mut found = 0u32;
+		for cz in -96..96 {
+			for cx in -96..96 {
+				if let Some(l) = cell_landmark(cx, cz, seed) {
+					assert!((8..=10).contains(&l.trunk_h));
+					assert!(Structure::Landmark(l).top() < WORLD_VBLOCK);
+					found += 1;
+				}
+			}
+		}
+		assert!(found > 0, "coarse sample contains landmarks");
 	}
 
 	/// Per-kind trunk range and leaf-count bounds: the maximum is the full

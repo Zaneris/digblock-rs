@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
-use crate::decoration::{decorate_chunk, trees_near};
+use crate::decoration::{decorate_chunk, structures_near};
 use classify::column_block;
 use terrain::fields;
 
@@ -140,7 +140,7 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 	let n = CHUNK_SIZE as i32;
 	let mut data = ChunkData::default();
 	fill_chunk(&mut data, pos, &column_shapes(pos.x, pos.z, seed), seed);
-	decorate_chunk(&mut data, pos, &trees_near(pos.x * n, pos.z * n, seed));
+	decorate_chunk(&mut data, pos, &structures_near(pos.x * n, pos.z * n, seed));
 	data
 }
 
@@ -164,9 +164,9 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 		})
 		.max()
 		.expect("non-empty shape map");
-	let trees = trees_near(cx * n, cz * n, seed);
+	let structures = structures_near(cx * n, cz * n, seed);
 	// Sky starts above both the terrain and anything decoration can reach.
-	let solid_top = trees.iter().map(|t| t.top()).fold(max_h, i32::max);
+	let solid_top = structures.iter().map(|s| s.top()).fold(max_h, i32::max);
 	(0..WORLD_VCHUNK)
 		.map(|cy| {
 			let bottom = cy * n;
@@ -176,7 +176,7 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 			let pos = ChunkPos::new(cx, cy, cz);
 			let mut data = ChunkData::default();
 			fill_chunk(&mut data, pos, &shapes, seed);
-			decorate_chunk(&mut data, pos, &trees);
+			decorate_chunk(&mut data, pos, &structures);
 			Arc::new(data)
 		})
 		.collect()

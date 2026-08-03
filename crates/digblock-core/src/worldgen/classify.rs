@@ -145,6 +145,8 @@ pub struct SurfaceProps {
 	pub band: BlockType,
 	/// …this many blocks of it (0 = straight to stone).
 	pub band_depth: i32,
+	/// Boulders may decorate this surface.
+	pub boulders: bool,
 }
 
 const fn sprops(
@@ -162,6 +164,7 @@ const fn sprops(
 		spawnable,
 		band: BlockType::Stone,
 		band_depth: 0,
+		boulders: false,
 	}
 }
 
@@ -169,6 +172,12 @@ const fn sprops(
 const fn banded(mut p: SurfaceProps) -> SurfaceProps {
 	p.band = BlockType::Sandstone;
 	p.band_depth = 4;
+	p
+}
+
+/// Rock surfaces that host boulder clumps.
+const fn bouldery(mut p: SurfaceProps) -> SurfaceProps {
+	p.boulders = true;
 	p
 }
 
@@ -181,7 +190,7 @@ pub const SURFACE_PROPS: [SurfaceProps; 13] = [
 	// Plains: scattered trees — forests now carry the woods.
 	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::Broadleaf, true),
 	// Mountain
-	sprops(BlockType::Stone, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	bouldery(sprops(BlockType::Stone, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true)),
 	// Snow
 	sprops(BlockType::Snow, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
 	// River
@@ -199,7 +208,7 @@ pub const SURFACE_PROPS: [SurfaceProps; 13] = [
 	// Lake
 	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
 	// Scree
-	sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	bouldery(sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true)),
 ];
 
 impl SurfaceKind {
@@ -420,6 +429,7 @@ mod tests {
 				_ => (BlockType::Stone, 0),
 			};
 			assert_eq!((p.band, p.band_depth), (band, band_depth), "{k:?} band");
+			assert_eq!(p.boulders, matches!(k, Mountain | Scree), "{k:?} boulders");
 		}
 	}
 }
