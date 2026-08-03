@@ -88,7 +88,7 @@ compose-bots PROFILE="clean":
 # http://localhost:8080 (localhost is a secure context — WebGPU and
 # WebTransport both work over plain http). Needs wasm-bindgen-cli at the
 # exact version in Cargo.lock: cargo install wasm-bindgen-cli.
-# Query params mirror desktop flags: ?seed= ?tod= ?draw= ?overlay ?name=.
+# Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr ?shadow= ?overlay ?name=.
 web:
 	#!/usr/bin/env bash
 	set -euo pipefail
