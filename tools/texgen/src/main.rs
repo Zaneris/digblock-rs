@@ -35,6 +35,10 @@ fn main() {
 
 	// Darker blue-green conifer foliage with a touch more contrast.
 	save("PineLeaves.png", map(&leaves, pine));
+
+	// Compacted sand with horizontal strata banding.
+	let sand = load("Sand.png");
+	save("Sandstone.png", sandstone(&sand, &mut rng));
 }
 
 fn load(name: &str) -> RgbImage {
@@ -154,6 +158,32 @@ fn mud(dirt: &RgbImage, rng: &mut Rng) -> RgbImage {
 			add8(clamp8(f32::from(p.0[1]) * 0.55), n),
 			add8(clamp8(f32::from(p.0[2]) * 0.52), n),
 		];
+	}
+	out
+}
+
+fn sandstone(sand: &RgbImage, rng: &mut Rng) -> RgbImage {
+	let mut out = sand.clone();
+	// Horizontal strata: darken bands of 3–6 rows by a per-band amount,
+	// wrapped per-pixel noise keeping the grain. Row phases come from the
+	// seeded stream, so regeneration is byte-identical.
+	let mut y = 0u32;
+	while y < SIZE {
+		let band_h = 3 + rng.range(4) as u32;
+		let shade = -(4 + rng.range(12) as i32);
+		for by in y..(y + band_h).min(SIZE) {
+			for x in 0..SIZE {
+				let n = rng.signed(5);
+				let p = out.get_pixel_mut(x, by);
+				// Slight desaturation toward a rockier tan.
+				let avg = (i32::from(p.0[0]) + i32::from(p.0[1]) + i32::from(p.0[2])) / 3;
+				for c in p.0.iter_mut() {
+					let mixed = (i32::from(*c) * 3 + avg) / 4;
+					*c = (mixed + shade + n).clamp(0, 255) as u8;
+				}
+			}
+		}
+		y += band_h;
 	}
 	out
 }

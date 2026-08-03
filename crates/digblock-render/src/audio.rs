@@ -85,7 +85,7 @@ pub enum Material {
 /// blocks fall back to Earth rather than panicking.
 pub fn material_of(b: BlockType) -> Material {
 	match b {
-		BlockType::Stone | BlockType::Gravel => Material::Stone,
+		BlockType::Stone | BlockType::Gravel | BlockType::Sandstone => Material::Stone,
 		BlockType::Wood | BlockType::Leaves | BlockType::PineLeaves => Material::Wood,
 		_ => Material::Earth,
 	}
@@ -310,6 +310,7 @@ mod tests {
 		assert_eq!(material_of(BlockType::Grass), Material::Earth);
 		assert_eq!(material_of(BlockType::Wood), Material::Wood);
 		assert_eq!(material_of(BlockType::Gravel), Material::Stone);
+		assert_eq!(material_of(BlockType::Sandstone), Material::Stone);
 		assert_eq!(material_of(BlockType::Mud), Material::Earth);
 		assert_eq!(material_of(BlockType::PineLeaves), Material::Wood);
 	}

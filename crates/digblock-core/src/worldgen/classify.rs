@@ -43,6 +43,11 @@ const MARSH_VEG: f64 = 0.1;
 /// one block for standing pools.
 const PUDDLE_FREQ: f64 = 0.31;
 const PUDDLE_OFF: f64 = 71501.0;
+/// Scree patches: ~30-block noise turns rock surfaces below the snow
+/// line into gravel where it exceeds the threshold.
+const SCREE_FREQ: f64 = 0.035;
+const SCREE_OFF: f64 = 108631.0;
+const SCREE_THRESH: f64 = 0.45;
 
 /// What grows (or doesn't) on a column's surface — the seam where the
 /// biome system attaches.
@@ -72,12 +77,16 @@ pub enum SurfaceKind {
 	Marsh,
 	/// The waterline band where the land behind climbs steeply: gravel.
 	GravelShore,
+	/// Inside a closed inland basin: sand bed under lake water.
+	Lake,
+	/// Gravel patches breaking up rock faces below the snow line.
+	Scree,
 }
 
 impl SurfaceKind {
 	/// Declaration order — the `SURFACE_PROPS` index. Tests iterate this
 	/// so a new kind cannot silently go unasserted.
-	pub const ALL: [SurfaceKind; 11] = [
+	pub const ALL: [SurfaceKind; 13] = [
 		SurfaceKind::Ocean,
 		SurfaceKind::Beach,
 		SurfaceKind::Plains,
@@ -89,6 +98,8 @@ impl SurfaceKind {
 		SurfaceKind::Savanna,
 		SurfaceKind::Marsh,
 		SurfaceKind::GravelShore,
+		SurfaceKind::Lake,
+		SurfaceKind::Scree,
 	];
 }
 
@@ -130,6 +141,10 @@ pub struct SurfaceProps {
 	pub tree_species: TreeSpecies,
 	/// The spawn walk accepts this surface (land altitude still applies).
 	pub spawnable: bool,
+	/// Stratum block between the subsoil and deep stone…
+	pub band: BlockType,
+	/// …this many blocks of it (0 = straight to stone).
+	pub band_depth: i32,
 }
 
 const fn sprops(
@@ -145,15 +160,24 @@ const fn sprops(
 		tree_density,
 		tree_species,
 		spawnable,
+		band: BlockType::Stone,
+		band_depth: 0,
 	}
 }
 
+/// Sandy floors sit on a sandstone stratum before deep stone.
+const fn banded(mut p: SurfaceProps) -> SurfaceProps {
+	p.band = BlockType::Sandstone;
+	p.band_depth = 4;
+	p
+}
+
 /// Indexed by `SurfaceKind as usize` (declaration order).
-pub const SURFACE_PROPS: [SurfaceProps; 11] = [
+pub const SURFACE_PROPS: [SurfaceProps; 13] = [
 	// Ocean
-	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
 	// Beach
-	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, true)),
 	// Plains: scattered trees — forests now carry the woods.
 	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::Broadleaf, true),
 	// Mountain
@@ -161,7 +185,7 @@ pub const SURFACE_PROPS: [SurfaceProps; 11] = [
 	// Snow
 	sprops(BlockType::Snow, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
 	// River
-	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
 	// Forest
 	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Dense, TreeSpecies::Broadleaf, true),
 	// Taiga
@@ -171,6 +195,10 @@ pub const SURFACE_PROPS: [SurfaceProps; 11] = [
 	// Marsh: soggy ground, puddles — keep spawns off it.
 	sprops(BlockType::Mud, BlockType::Mud, TreeDensity::None, TreeSpecies::Broadleaf, false),
 	// GravelShore
+	sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	// Lake
+	banded(sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false)),
+	// Scree
 	sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true),
 ];
 
@@ -230,10 +258,28 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 	let hd = f.h_pre + dith * 6.0;
 	let shift = f.temp * TEMP_ALT_SHIFT;
 	let water = f.water.floor() as i32;
+	// Rock faces below the snow line break into gravel scree patches.
+	let rocky = |below_snow: bool| {
+		if below_snow {
+			let o2 = seed + SCREE_OFF;
+			let gv = noise2(
+				o2 + f64::from(x) * SCREE_FREQ,
+				o2 + f64::from(z) * SCREE_FREQ,
+			);
+			if gv > SCREE_THRESH {
+				return SurfaceKind::Scree;
+			}
+		}
+		SurfaceKind::Mountain
+	};
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
 	} else if water > height {
-		SurfaceKind::River
+		if f.lake {
+			SurfaceKind::Lake
+		} else {
+			SurfaceKind::River
+		}
 	} else if f64::from(height) <= f64::from(SEA_LEVEL) + 1.0 + (dith + 1.0) * 1.2 {
 		// The waterline band: gravel where the land behind it climbs
 		// steeply, sand elsewhere — dithered so the two interleave.
@@ -248,11 +294,11 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 	{
 		SurfaceKind::Marsh // flat, lush, barely above the waterline
 	} else if slope > STEEP_SLOPE + 0.3 * dith {
-		SurfaceKind::Mountain // cliffs bare at any altitude
+		rocky(hd < SNOW_LINE + shift) // cliffs bare at any altitude
 	} else if hd >= SNOW_LINE + shift {
 		SurfaceKind::Snow
 	} else if hd >= f64::from(STONE_SURFACE) + shift {
-		SurfaceKind::Mountain
+		rocky(true)
 	} else if f.temp > WARM_T + 0.1 * dith {
 		SurfaceKind::Savanna
 	} else if f.temp < COLD_T + 0.1 * dith {
@@ -306,10 +352,9 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 	}
 }
 
-/// One cell of the column rules: stone below DIRT_DEPTH of topsoil;
-/// topsoil is sand on ocean floors and beaches, bare stone on mountain
-/// tops, grass-over-dirt otherwise; water up to the column's water
-/// level, air above.
+/// One cell of the column rules: the surface block, DIRT_DEPTH of
+/// subsoil, the kind's stratum band (if any), then stone; water up to
+/// the column's water level, air above.
 #[inline]
 pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	let h = shape.height;
@@ -321,14 +366,16 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 		} else {
 			BlockType::Air
 		}
-	} else if wy <= h - DIRT_DEPTH {
-		BlockType::Stone
 	} else {
 		let p = shape.surface.props();
 		if wy == h {
 			p.top
-		} else {
+		} else if wy > h - DIRT_DEPTH {
 			p.subsoil
+		} else if wy > h - DIRT_DEPTH - p.band_depth {
+			p.band
+		} else {
+			BlockType::Stone
 		}
 	}
 }
@@ -361,11 +408,18 @@ mod tests {
 				Savanna => (BlockType::DryGrass, BlockType::Dirt, D::Sparse, S::FlatTop, true),
 				Marsh => (BlockType::Mud, BlockType::Mud, D::None, S::Broadleaf, false),
 				GravelShore => (BlockType::Gravel, BlockType::Gravel, D::None, S::Broadleaf, true),
+				Lake => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
+				Scree => (BlockType::Gravel, BlockType::Gravel, D::None, S::Broadleaf, true),
 			};
 			assert_eq!((p.top, p.subsoil), (top, subsoil), "{k:?} palette");
 			assert_eq!(p.tree_density, density, "{k:?} density");
 			assert_eq!(p.tree_species, species, "{k:?} species");
 			assert_eq!(p.spawnable, spawnable, "{k:?} spawn");
+			let (band, band_depth) = match k {
+				Ocean | Beach | River | Lake => (BlockType::Sandstone, 4),
+				_ => (BlockType::Stone, 0),
+			};
+			assert_eq!((p.band, p.band_depth), (band, band_depth), "{k:?} band");
 		}
 	}
 }

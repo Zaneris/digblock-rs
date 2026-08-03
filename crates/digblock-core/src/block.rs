@@ -70,6 +70,8 @@ blocks! {
 	Gravel = 19 => dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
 	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10),
+	/// The stratum under sandy floors (ocean, beach, river, lake beds).
+	Sandstone = 21 => dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70),
 }
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
@@ -218,6 +220,7 @@ mod tex {
 	pub const MUD: u16 = 12;
 	pub const GRAVEL: u16 = 13;
 	pub const PINE_LEAVES: u16 = 14;
+	pub const SANDSTONE: u16 = 15;
 }
 
 impl BlockType {

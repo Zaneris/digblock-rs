@@ -18,6 +18,7 @@
 
 mod caves;
 mod classify;
+mod lakes;
 mod rivers;
 mod terrain;
 
@@ -343,6 +344,97 @@ mod tests {
 		panic!("cold_snow={cold_snow} warm_bare={warm_bare}");
 	}
 
+	/// The terrace tread transform holds its contract: continuous,
+	/// monotone non-decreasing, and never further than one step (plus the
+	/// edge dither) from its input.
+	#[test]
+	fn terrace_tread_is_continuous_and_bounded() {
+		let step = 6.0;
+		for &edge in &[0.0, -2.0, 1.3] {
+			let mut prev = terrain::tread(step, 100.0, edge);
+			let mut h = 100.0;
+			while h < 200.0 {
+				h += 0.01;
+				let t = terrain::tread(step, h, edge);
+				assert!(t + 1e-9 >= prev, "monotone at h={h}");
+				assert!(t - prev < 0.5, "continuous at h={h}");
+				assert!((t - h).abs() <= step + edge.abs(), "bounded at h={h}");
+				prev = t;
+			}
+		}
+	}
+
+	/// Lakes exist, hold their water above the terrain, keep bounded
+	/// beds, and every water cell is laterally contained: each of the 4
+	/// neighbor columns covers it with water, solid ground within a
+	/// bank's height (2 blocks — the fill rule's bound), or a connecting
+	/// fall sheet (quantized level steps, exactly like river pools).
+	#[test]
+	fn lakes_exist_and_are_contained() {
+		let seed = 1234.5678;
+		let mut found = 0u32;
+		for x in (-8192..8192).step_by(32) {
+			for z in (-8192..8192).step_by(32) {
+				let s = column_shape(x, z, seed);
+				if s.surface != SurfaceKind::Lake {
+					continue;
+				}
+				found += 1;
+				assert!(s.water > s.height, "lake holds water at ({x},{z})");
+				assert!(s.water >= SEA_LEVEL, "lake level above sea at ({x},{z})");
+				assert!(s.height >= s.water - 7, "bounded bed at ({x},{z})");
+				for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
+					let n = column_shape(nx, nz, seed);
+					for wy in (s.height + 1)..=s.water {
+						let covered = wy <= n.water
+							|| wy <= n.height + 2
+							|| n.fall.is_some_and(|(b, t)| (b..=t).contains(&wy));
+						assert!(covered, "water wall at ({x},{z}) wy={wy} vs ({nx},{nz})");
+					}
+				}
+				if found >= 200 {
+					return;
+				}
+			}
+		}
+		assert!(found > 0, "sample contains lakes");
+	}
+
+	/// The sandstone stratum sits under sandy floors, and scree patches
+	/// break up rock faces.
+	#[test]
+	fn strata_and_scree_exist() {
+		let seed = 1234.5678;
+		let (mut sandy, mut scree) = (false, false);
+		for x in (-8192..8192).step_by(37) {
+			for z in (-8192..8192).step_by(41) {
+				let s = column_shape(x, z, seed);
+				match s.surface {
+					SurfaceKind::Beach | SurfaceKind::Ocean if !sandy => {
+						assert_eq!(
+							classify::column_block(s.height - DIRT_DEPTH, s),
+							BlockType::Sandstone
+						);
+						assert_eq!(
+							classify::column_block(s.height - DIRT_DEPTH - 4, s),
+							BlockType::Stone
+						);
+						sandy = true;
+					}
+					SurfaceKind::Scree if !scree => {
+						assert_eq!(classify::column_block(s.height, s), BlockType::Gravel);
+						scree = true;
+					}
+					_ => {}
+				}
+				if sandy && scree {
+					return;
+				}
+			}
+		}
+		panic!("sandy={sandy} scree={scree}");
+	}
+
 	/// The coastal band kinds exist. They live in a few-block height band
 	/// along shorelines, so a blind dense scan would be enormous: instead
 	/// scan coarsely for waterline-adjacent patches and only dense-scan
@@ -389,15 +481,17 @@ mod tests {
 			for z in (-8192..8192).step_by(64) {
 				total += 1;
 				match column_shape(x, z, seed).surface {
-					// Rivers are open water for balance purposes.
-					SurfaceKind::Ocean | SurfaceKind::River => ocean += 1,
+					// Rivers and lakes are open water for balance purposes.
+					SurfaceKind::Ocean | SurfaceKind::River | SurfaceKind::Lake => ocean += 1,
 					// The narrow coastal bands bucket with beaches.
 					SurfaceKind::Beach | SurfaceKind::Marsh | SurfaceKind::GravelShore => {
 						beach += 1
 					}
 					SurfaceKind::Plains => plains += 1,
-					// Snow is high-mountain surface for balance purposes.
-					SurfaceKind::Mountain | SurfaceKind::Snow => mountain += 1,
+					// Snow and scree are high-mountain surface for balance.
+					SurfaceKind::Mountain | SurfaceKind::Snow | SurfaceKind::Scree => {
+						mountain += 1
+					}
 					SurfaceKind::Forest => forest += 1,
 					SurfaceKind::Savanna => savanna += 1,
 					SurfaceKind::Taiga => taiga += 1,

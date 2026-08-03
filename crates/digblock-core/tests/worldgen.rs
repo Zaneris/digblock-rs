@@ -21,35 +21,35 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 		} else {
 			BlockType::Air
 		}
-	} else if wy <= h - DIRT_DEPTH {
-		BlockType::Stone
 	} else {
-		match shape.surface {
-			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River => BlockType::Sand,
-			SurfaceKind::Mountain => BlockType::Stone,
-			SurfaceKind::Snow => {
-				if wy == h {
-					BlockType::Snow
-				} else {
-					BlockType::Stone
-				}
+		// Independent re-statement of the column rules: top block, then
+		// DIRT_DEPTH of subsoil, then (for sandy floors) a 4-block
+		// sandstone stratum, then stone.
+		let (top, subsoil) = match shape.surface {
+			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River | SurfaceKind::Lake => {
+				(BlockType::Sand, BlockType::Sand)
 			}
+			SurfaceKind::Mountain => (BlockType::Stone, BlockType::Stone),
+			SurfaceKind::Snow => (BlockType::Snow, BlockType::Stone),
 			SurfaceKind::Plains | SurfaceKind::Forest | SurfaceKind::Taiga => {
-				if wy == h {
-					BlockType::Grass
-				} else {
-					BlockType::Dirt
-				}
+				(BlockType::Grass, BlockType::Dirt)
 			}
-			SurfaceKind::Savanna => {
-				if wy == h {
-					BlockType::DryGrass
-				} else {
-					BlockType::Dirt
-				}
-			}
-			SurfaceKind::Marsh => BlockType::Mud,
-			SurfaceKind::GravelShore => BlockType::Gravel,
+			SurfaceKind::Savanna => (BlockType::DryGrass, BlockType::Dirt),
+			SurfaceKind::Marsh => (BlockType::Mud, BlockType::Mud),
+			SurfaceKind::GravelShore | SurfaceKind::Scree => (BlockType::Gravel, BlockType::Gravel),
+		};
+		let sandy = matches!(
+			shape.surface,
+			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River | SurfaceKind::Lake
+		);
+		if wy == h {
+			top
+		} else if wy > h - DIRT_DEPTH {
+			subsoil
+		} else if sandy && wy > h - DIRT_DEPTH - 4 {
+			BlockType::Sandstone
+		} else {
+			BlockType::Stone
 		}
 	};
 	let carveable = matches!(
@@ -61,6 +61,7 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 			| BlockType::DryGrass
 			| BlockType::Mud
 			| BlockType::Gravel
+			| BlockType::Sandstone
 	);
 	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
 		BlockType::Air
@@ -422,11 +423,13 @@ fn heightmap_dump() {
 				SurfaceKind::Savanna => 's',
 				SurfaceKind::Marsh => 'm',
 				SurfaceKind::GravelShore => 'g',
+				SurfaceKind::Lake => 'o',
+				SurfaceKind::Scree => '%',
 			});
 		}
 		biomes.push('\n');
 	}
-	println!("biomes (~ ocean, ≈ river, _ beach, . plains, ^ rock, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}");
+	println!("biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}");
 	// Sanity: the window contains both ocean and land at seed 0.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
@@ -450,7 +453,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 8682152231313955063,
+		hash, 14094484970615366175,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }

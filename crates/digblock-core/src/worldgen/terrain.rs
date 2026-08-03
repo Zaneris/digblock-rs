@@ -4,6 +4,7 @@
 //! the [`TerrainParams`] knob surface, so a future "world type" can vary
 //! the tuning without touching the math.
 
+use super::lakes::{self, LakeParams};
 use super::rivers::{self, RiverParams};
 use crate::simplex::fbm2;
 
@@ -62,7 +63,17 @@ pub struct TerrainParams {
 	pub temp_seed_off: f64,
 	pub veg_freq: f64,
 	pub veg_seed_off: f64,
+	/// Terracing: in strongly eroded mid-altitude regions gated by a
+	/// sparse regional mask, the pre-detail height quantizes into treads
+	/// and risers — stepped mesa country.
+	pub terrace_freq: f64,
+	pub terrace_seed_off: f64,
+	/// Small-scale edge dither so tread edges wander (±2 blocks).
+	pub terrace_edge_freq: f64,
+	pub terrace_edge_off: f64,
+	pub terrace_step: f64,
 	pub river: RiverParams,
+	pub lake: LakeParams,
 	/// Base elevation by continentalness: piecewise-linear anchors from
 	/// deep ocean floor through a continental slope and a shallow coastal
 	/// shelf to highland base. Monotonic in `c`.
@@ -99,6 +110,11 @@ impl TerrainParams {
 		temp_seed_off: 97001.0,
 		veg_freq: 0.0025,
 		veg_seed_off: 99991.0,
+		terrace_freq: 0.0007,
+		terrace_seed_off: 97501.0,
+		terrace_edge_freq: 0.03,
+		terrace_edge_off: 103913.0,
+		terrace_step: 6.0,
 		river: RiverParams {
 			freq: 0.0006,
 			seed_off: 83777.0,
@@ -107,6 +123,15 @@ impl TerrainParams {
 			w: 0.030,
 			depth: 5.0,
 			pool_step: 4.0,
+		},
+		lake: LakeParams {
+			freq: 0.0011,
+			seed_off: 92173.0,
+			thresh: 0.42,
+			shore: 0.10,
+			depth: 4.5,
+			step: 8.0,
+			margin: 3.0,
 		},
 		base_spline: [
 			(-1.0, 60.0),
@@ -185,6 +210,18 @@ pub(super) struct Fields {
 	pub(super) temp: f64,
 	/// Vegetation/lushness, [-1, 1]: where forests (and marshes) gather.
 	pub(super) veg: f64,
+	/// This column's standing water (if any) is a lake, not a river —
+	/// classification tells the two beds apart by this flag.
+	pub(super) lake: bool,
+}
+
+/// The terrace tread transform: heights snap toward flat treads of
+/// `step` blocks joined by short risers (70% tread, 30% riser).
+/// Continuous and non-decreasing in `h`; output stays within
+/// `step + |edge|` of the input.
+pub(super) fn tread(step: f64, h: f64, edge: f64) -> f64 {
+	let k = (h + edge) / step;
+	(k.floor() + smoothstep((k.fract() - 0.7) / 0.3)) * step
 }
 
 pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
@@ -229,13 +266,29 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	// steepens, so peaks read pointed instead of domed.
 	let ridge = smoothstep(gained(m, 2.2).abs()).powf(1.6);
 	let h_ridge = base + ridge * p.mountain_amp * rough * (1.0 - 0.75 * erosion);
+	// Terracing: strongly eroded mid-altitude country, gated by a sparse
+	// regional mask, quantizes toward treads. `tw` blends smoothly to 0
+	// at every gate edge, so terraced country never pops in.
+	let tz = smoothstep((erosion - 0.45) / 0.3)
+		* smoothstep((h_ridge - 138.0) / 8.0)
+		* (1.0 - smoothstep((h_ridge - 195.0) / 12.0));
+	let mut tw = 0.0;
+	let mut h_t = h_ridge;
+	if tz > 0.0 {
+		let tm = smoothstep((fbm2(xf, zf, p.terrace_freq, 2, seed + p.terrace_seed_off) - 0.1) / 0.3);
+		tw = tz * tm;
+		if tw > 0.0 {
+			let edge = fbm2(xf, zf, p.terrace_edge_freq, 2, seed + p.terrace_edge_off);
+			h_t += tw * (tread(p.terrace_step, h_ridge, edge * 2.0) - h_ridge);
+		}
+	}
 	// Altitude-weighted detail (Musgrave-style heterogeneous fractal):
 	// lowlands read calm, high ridges craggy, eroded regions calmer still.
 	// The weighting is V-shaped around sea level — relief also returns
 	// with depth, so the seafloor rolls instead of planing flat.
 	let alt =
-		((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
-	let depth = ((f64::from(SEA_LEVEL) - h_ridge) / 40.0).clamp(0.0, 1.0);
+		((h_t - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
+	let depth = ((f64::from(SEA_LEVEL) - h_t) / 40.0).clamp(0.0, 1.0);
 	let v = alt.max(0.6 * depth);
 	let base_amp = p.plains_amp * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * v);
 	// Steppe gate: strongly eroded, non-mountainous, near-base-altitude
@@ -246,18 +299,29 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	let flat = smoothstep((erosion - 0.55) / 0.35)
 		* (1.0 - smoothstep(rough / 0.20))
 		* (1.0 - smoothstep((v - 0.08) / 0.22));
-	let detail_amp = base_amp + (0.25 - base_amp) * flat;
-	let h_pre = soft_ceiling(h_ridge + gained(d, 2.0) * detail_amp).max(1.0);
+	// Treads also damp detail, so mesa tops read planed.
+	let detail_amp = (base_amp + (0.25 - base_amp) * flat) * (1.0 - 0.7 * tw);
+	let h_pre = soft_ceiling(h_t + gained(d, 2.0) * detail_amp).max(1.0);
 
 	let temp = gained(fbm2(xf, zf, p.temp_freq, 2, seed + p.temp_seed_off), 2.2);
 	let veg = gained(fbm2(xf, zf, p.veg_freq, 2, seed + p.veg_seed_off), 2.0);
 
-	let (h, water) = rivers::carve(p, wx, wz, seed, base, rough, erosion, h_ridge, h_pre);
+	// Lake beats river: where the lake footprint is active, the river
+	// carve is suppressed entirely so the two never fight over a column.
+	let (h, water, lake) = match lakes::carve(p, wx, wz, seed, base, rough, erosion, tw, h_t, h_pre)
+	{
+		Some((h, w)) => (h, w, w > h),
+		None => {
+			let (h, w) = rivers::carve(p, wx, wz, seed, base, rough, erosion, h_t, h_pre);
+			(h, w, false)
+		}
+	};
 	Fields {
 		h,
 		h_pre,
 		water,
 		temp,
 		veg,
+		lake,
 	}
 }
