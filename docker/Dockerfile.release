@@ -1,0 +1,30 @@
+# Public dedicated-server image (ghcr.io/zaneris/digblock-server), built
+# by .github/workflows/release-server.yml. Unlike docker/Dockerfile (the
+# local test rig) this ships only the server binary — no bot, no tc/netem
+# tooling. Configuration is env-driven; see deploy/compose.yml and
+# deploy/.env.example for the shareable quickstart.
+FROM rust:1-slim AS chef
+RUN cargo install cargo-chef
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json .
+RUN cargo chef cook --release --recipe-path recipe.json -p digblock-server
+COPY . .
+RUN cargo build --release -p digblock-server --bin digblock-server
+
+FROM debian:bookworm-slim
+# ca-certificates: the server speaks HTTPS to the master (register,
+# heartbeats, token verify).
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/digblock-server /usr/local/bin/
+VOLUME /data
+EXPOSE 4433/udp
+ENTRYPOINT ["digblock-server"]
+CMD ["--port", "4433", "--data-dir", "/data"]

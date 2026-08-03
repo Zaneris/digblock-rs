@@ -1,0 +1,24 @@
+# Run your own public DigBlock server.
+#
+#   cp .env.example .env    # set SERVER_NAME and ADVERTISE_HOST
+#   docker compose up -d
+#
+# Requirements: UDP 4433 reachable from the internet (router port-forward
+# and/or firewall rule), and ADVERTISE_HOST pointing at this machine (a
+# public DNS name or IP). On registration the master server probes that
+# address for real — if it can't reach you, you won't be listed.
+#
+# World data (an append-only edit journal, one file per seed) lives in
+# ./data — that directory is the complete backup.
+services:
+  digblock:
+    image: ghcr.io/zaneris/digblock-server:${VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "4433:4433/udp"
+    volumes:
+      - ./data:/data
+    environment:
+      DIGBLOCK_SERVER_NAME: "${SERVER_NAME:?set SERVER_NAME in .env}"
+      DIGBLOCK_ADVERTISE_HOST: "${ADVERTISE_HOST:?set ADVERTISE_HOST in .env}"
+      DIGBLOCK_SEED: "${SEED:-}"

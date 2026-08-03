@@ -29,13 +29,20 @@ const USAGE: &str = "usage: digblock-server --advertise-host HOST \
 	 [--master-url URL] [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N]\n\
 	 (--master-url defaults to https://master.digblock.net; env fallbacks: DIGBLOCK_MASTER_URL, \
-	 DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME)";
+	 DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, \
+	 DIGBLOCK_SEED)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
 	let mut port = DEFAULT_PORT;
-	let mut seed = DEFAULT_SEED;
+	// Empty env values count as unset — compose files pass "${SEED:-}"
+	// through, and an empty string must not be a parse error.
+	let mut seed = std::env::var("DIGBLOCK_SEED")
+		.ok()
+		.filter(|s| !s.is_empty())
+		.map(|v| parse_or_die("DIGBLOCK_SEED", Some(v)))
+		.unwrap_or(DEFAULT_SEED);
 	let mut data_dir = PathBuf::from("./data");
 	let mut sim_radius = 6;
 	let mut workers = std::thread::available_parallelism()
