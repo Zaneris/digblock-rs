@@ -1,0 +1,74 @@
+# Build the master image and roll it out to the Azure Container App.
+#
+# Runs on any push to main that touches apps/master (or manually via
+# workflow_dispatch). The image goes to GHCR — no ACR needed; the
+# Container App pulls ghcr.io as an "other registry" (package must be
+# public, or give the app registry credentials).
+#
+# One-time setup this workflow expects:
+#   - Entra app with a federated credential for this repo's main branch,
+#     Contributor on the resource group (OIDC — no stored password).
+#   - Repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
+#   - Repo variable: AZURE_RG (the resource group name).
+#   - The container app itself created once (name: digblock-master).
+#
+# Note: this is intentionally separate from ci.yml.disabled — CI stays
+# off pre-deployment; this only ships the master.
+
+name: deploy-master
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/master/**"
+      - ".github/workflows/deploy-master.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  IMAGE: ghcr.io/zaneris/digblock-master
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/master
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Deploy by immutable sha tag, not :latest — the revision records
+      # exactly what's running and rollback is a revision activate away.
+      - name: Roll out to Container App
+        run: |
+          az containerapp update \
+            --name digblock-master \
+            --resource-group "${{ vars.AZURE_RG }}" \
+            --image "${{ env.IMAGE }}:${{ github.sha }}"
