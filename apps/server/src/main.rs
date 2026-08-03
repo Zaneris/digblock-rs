@@ -124,16 +124,23 @@ fn main() {
 				std::process::exit(1);
 			}
 		};
+		let endpoint = Arc::new(endpoint);
 		log::info!("listening on udp {port}");
 		let master_state = Arc::new(MasterState::new(master_cfg.url.clone()));
+		let cert_hash = Arc::new(std::sync::RwLock::new(cert_hash));
+		let reregister = Arc::new(tokio::sync::Notify::new());
 		// Registration must not delay serving — the master's probe-back
 		// needs the endpoint answering.
 		tokio::spawn(master::run(
 			master_state.clone(),
 			master_cfg,
-			cert_hash,
+			cert_hash.clone(),
+			reregister.clone(),
 			players,
 		));
+		// The pinned cert is 10-day validity; rotate it in-process so a
+		// long-running server never becomes unjoinable.
+		tokio::spawn(net::rotate_certs(endpoint.clone(), cert_hash, reregister));
 		tokio::select! {
 			_ = net::serve(endpoint, event_tx, master_state.clone()) => {}
 			_ = shutdown_signal() => {}

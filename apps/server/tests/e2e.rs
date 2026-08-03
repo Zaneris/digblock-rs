@@ -159,6 +159,10 @@ struct TestServer {
 	url: String,
 	port: u16,
 	cert_hash: [u8; 32],
+	/// Shared with the accept loop — lets tests rotate the cert live.
+	endpoint: Arc<wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>>,
+	/// Lets tests install a fresh registration (the rotation path).
+	master_state: Arc<MasterState>,
 }
 
 impl TestServer {
@@ -174,6 +178,7 @@ impl TestServer {
 			.unwrap();
 		let _guard = rt.enter();
 		let (endpoint, cert_hash) = net::make_endpoint(0).expect("bind ephemeral udp");
+		let endpoint = Arc::new(endpoint);
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&data_dir);
@@ -186,7 +191,7 @@ impl TestServer {
 			std::thread::spawn(move || run_sim_loop(sim, event_rx, running, players))
 		};
 		let state = Arc::new(MasterState::new(master_url.to_string()));
-		rt.spawn(net::serve(endpoint, event_tx, state.clone()));
+		rt.spawn(net::serve(endpoint.clone(), event_tx, state.clone()));
 		let server = Self {
 			rt,
 			running,
@@ -195,6 +200,8 @@ impl TestServer {
 			url: format!("https://127.0.0.1:{port}"),
 			port,
 			cert_hash,
+			endpoint,
+			master_state: state.clone(),
 		};
 		if registered {
 			let cfg = server.master_config(master_url, &format!("e2e-{tag}"));
@@ -667,4 +674,55 @@ fn garbage_preamble_is_dropped_not_hung() {
 		.is_ok()
 	});
 	assert!(closed, "server hung instead of dropping a garbage preamble");
+}
+
+/// In-process cert rotation, end to end: after `rotate_cert` the live
+/// endpoint must serve the new certificate — proven by the master's real
+/// QUIC probe, which re-registration pins to the freshly minted hash — the
+/// master must replace (not duplicate) the listing, a client connected
+/// before the swap must ride through it undisturbed, and a join minted
+/// after the swap must complete.
+#[test]
+fn cert_rotation_reregisters_and_serves_new_cert() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("rotate", &master.url, true);
+
+	let (token, _) = mint_token(&master.url, "OldTimer");
+	let mut before = TestClient::connect(&server.url, "OldTimer", token);
+	before.wait("welcome before rotation", |c| c.welcomed);
+
+	let new_hash = net::rotate_cert(&server.endpoint).expect("live cert swap");
+	assert_ne!(new_hash, server.cert_hash, "rotation must mint a new cert");
+	let cfg = server.master_config(&master.url, "e2e-rotate");
+	let reg = match master::register(&cfg, &new_hash) {
+		Ok(reg) => reg,
+		Err(
+			master::RegisterError::Unreachable(e)
+			| master::RegisterError::Transport(e)
+			| master::RegisterError::Rejected(e),
+		) => panic!("re-register after rotation (probe must see the new cert): {e}"),
+	};
+	server.master_state.set_registration(Some(reg));
+
+	// Replaced at the same host:port, not listed twice.
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	assert_eq!(
+		list["servers"].as_array().map(|s| s.len()),
+		Some(1),
+		"re-registration must replace the old entry: {list}"
+	);
+
+	let (token, _) = mint_token(&master.url, "Newcomer");
+	let mut after = TestClient::connect(&server.url, "Newcomer", token);
+	after.wait("welcome after rotation", |c| c.welcomed);
+
+	// The pre-rotation connection is still alive: it sees the newcomer
+	// join, and pump() panics on Disconnected.
+	before.wait("pre-rotation client observes post-rotation join", |c| {
+		c.joined_names.iter().any(|n| n == "Newcomer")
+	});
 }

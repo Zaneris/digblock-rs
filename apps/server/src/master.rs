@@ -260,19 +260,31 @@ pub fn notify_shutdown(url: &str, reg: &Registration) {
 
 /// Register (retrying forever with capped backoff — joins are refused until
 /// it lands), then heartbeat every 30 s; a heartbeat 404 means the master
-/// restarted, so drop the registration and re-register.
+/// restarted, so drop the registration and re-register. `cert_hash` is
+/// shared with the cert-rotation task, which updates it and signals
+/// `reregister` so the master hands out the new pin; the hash is re-read on
+/// every registration attempt, so a rotation landing mid-retry still
+/// registers the current cert.
 pub async fn run(
 	state: Arc<MasterState>,
 	cfg: MasterConfig,
-	cert_hash: [u8; 32],
+	cert_hash: Arc<RwLock<[u8; 32]>>,
+	reregister: Arc<tokio::sync::Notify>,
 	players: Arc<AtomicUsize>,
 ) {
-	register_with_retry(&state, &cfg, cert_hash).await;
+	register_with_retry(&state, &cfg, &cert_hash).await;
 	let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 	interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	interval.tick().await; // first tick fires immediately; skip it
 	loop {
-		interval.tick().await;
+		tokio::select! {
+			_ = reregister.notified() => {
+				state.set_registration(None);
+				register_with_retry(&state, &cfg, &cert_hash).await;
+				continue;
+			}
+			_ = interval.tick() => {}
+		}
 		let Some(reg) = state.registration() else {
 			continue;
 		};
@@ -287,7 +299,7 @@ pub async fn run(
 			Ok(Ok(false)) => {
 				log::warn!("master lost our registration (restart?); re-registering");
 				state.set_registration(None);
-				register_with_retry(&state, &cfg, cert_hash).await;
+				register_with_retry(&state, &cfg, &cert_hash).await;
 			}
 			Ok(Err(e)) => log::warn!("heartbeat failed: {e}"),
 			Err(e) => log::warn!("heartbeat task failed: {e}"),
@@ -295,11 +307,16 @@ pub async fn run(
 	}
 }
 
-async fn register_with_retry(state: &MasterState, cfg: &MasterConfig, cert_hash: [u8; 32]) {
+async fn register_with_retry(
+	state: &MasterState,
+	cfg: &MasterConfig,
+	cert_hash: &RwLock<[u8; 32]>,
+) {
 	let mut delay = RETRY_MIN;
 	loop {
 		let cfg_c = cfg.clone();
-		let attempt = tokio::task::spawn_blocking(move || register(&cfg_c, &cert_hash)).await;
+		let hash = *cert_hash.read().unwrap();
+		let attempt = tokio::task::spawn_blocking(move || register(&cfg_c, &hash)).await;
 		match attempt {
 			Ok(Ok(reg)) => {
 				log::info!(

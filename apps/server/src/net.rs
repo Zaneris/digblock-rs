@@ -10,9 +10,10 @@ use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
 	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE,
 };
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc::channel;
+use tokio::sync::Notify;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerConfig};
@@ -45,16 +46,23 @@ const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 /// sessions are dropped before the WebTransport accept.
 const MAX_CONNECTIONS: usize = 512;
 
-/// Build the endpoint with a fresh self-signed certificate. The SHA-256
-/// hash is logged so clients can pin it: browsers via
+/// Rotate the endpoint's certificate this often — well inside the 10-day
+/// validity so a few failed attempts (master down, clock trouble) still
+/// leave days of margin before the pinned cert expires.
+const CERT_ROTATE_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Retry cadence after a failed rotation (~3 days of budget remain).
+const CERT_ROTATE_RETRY: Duration = Duration::from_secs(60 * 60);
+
+/// Fresh self-signed identity + the SHA-256 pin clients use: browsers via
 /// `serverCertificateHashes`, the native client via `--cert-hash`
 /// (`CertPolicy::PinnedSha256`; the default dev posture is Insecure
 /// with a loud warning).
-pub fn make_endpoint(port: u16) -> anyhow::Result<(Endpoint<Server>, [u8; 32])> {
+fn fresh_identity() -> anyhow::Result<(Identity, [u8; 32])> {
 	// 10-day validity, NOT the wtransport default of exactly 14: Chrome
 	// caps `serverCertificateHashes` certs at 14 days and rejects at the
-	// boundary with any clock skew. Long-running servers must restart
-	// (re-registering the fresh hash) within the window regardless.
+	// boundary with any clock skew. `rotate_certs` swaps in a fresh cert
+	// every CERT_ROTATE_INTERVAL, so long-running servers never reach the
+	// window's edge.
 	let identity = Identity::self_signed_builder()
 		.subject_alt_names(["localhost", "127.0.0.1", "::1"])
 		.from_now_utc()
@@ -62,21 +70,75 @@ pub fn make_endpoint(port: u16) -> anyhow::Result<(Endpoint<Server>, [u8; 32])> 
 		.build()?;
 	let hash = identity.certificate_chain().as_slice()[0].hash();
 	log::info!("cert sha-256: {}", hash.fmt(Sha256DigestFmt::BytesArray));
-	let hash_bytes: [u8; 32] = *hash.as_ref();
+	Ok((identity, *hash.as_ref()))
+}
+
+fn server_config(identity: Identity, port: u16) -> anyhow::Result<ServerConfig> {
 	// IPv4-any rather than the dual-stack default: Docker Desktop's UDP
 	// port proxy fails to deliver to a dual-stack [::] bind in-container,
 	// and v4-only costs nothing for a game server.
-	let config = ServerConfig::builder()
+	Ok(ServerConfig::builder()
 		.with_bind_config(wtransport::config::IpBindConfig::InAddrAnyV4, port)
 		.with_identity(identity)
 		.max_idle_timeout(Some(Duration::from_secs(15)))?
 		.keep_alive_interval(Some(Duration::from_secs(3)))
-		.build();
-	Ok((Endpoint::server(config)?, hash_bytes))
+		.build())
 }
 
-/// Accept loop: one task per connection, forever.
-pub async fn serve(endpoint: Endpoint<Server>, events: Sender<SimEvent>, master: Arc<MasterState>) {
+/// Build the endpoint with a fresh self-signed certificate.
+pub fn make_endpoint(port: u16) -> anyhow::Result<(Endpoint<Server>, [u8; 32])> {
+	let (identity, hash) = fresh_identity()?;
+	Ok((Endpoint::server(server_config(identity, port)?)?, hash))
+}
+
+/// Swap a fresh certificate into the live endpoint. Existing connections
+/// are untouched (`reload_config` with `rebind: false` keeps the socket and
+/// only replaces the TLS config for future handshakes); the bind port in
+/// the rebuilt config is ignored.
+pub fn rotate_cert(endpoint: &Endpoint<Server>) -> anyhow::Result<[u8; 32]> {
+	let (identity, hash) = fresh_identity()?;
+	endpoint.reload_config(server_config(identity, 0)?, false)?;
+	Ok(hash)
+}
+
+/// Periodic in-process cert rotation: every `CERT_ROTATE_INTERVAL`, swap in
+/// a fresh cert and nudge the master loop (via `reregister`) to re-register
+/// so the master hands out the new pin. Joins racing the swap can see a
+/// stale pin for one HTTP round trip and simply retry.
+pub async fn rotate_certs(
+	endpoint: Arc<Endpoint<Server>>,
+	cert_hash: Arc<RwLock<[u8; 32]>>,
+	reregister: Arc<Notify>,
+) {
+	loop {
+		tokio::time::sleep(CERT_ROTATE_INTERVAL).await;
+		loop {
+			match rotate_cert(&endpoint) {
+				Ok(hash) => {
+					*cert_hash.write().unwrap() = hash;
+					reregister.notify_one();
+					log::info!("rotated certificate; re-registering new pin");
+					break;
+				}
+				Err(e) => {
+					log::error!(
+						"cert rotation failed ({e}); retrying in {}s",
+						CERT_ROTATE_RETRY.as_secs()
+					);
+					tokio::time::sleep(CERT_ROTATE_RETRY).await;
+				}
+			}
+		}
+	}
+}
+
+/// Accept loop: one task per connection, forever. The endpoint is shared
+/// (`Arc`) with the cert-rotation task.
+pub async fn serve(
+	endpoint: Arc<Endpoint<Server>>,
+	events: Sender<SimEvent>,
+	master: Arc<MasterState>,
+) {
 	let mut next_conn: u64 = 1;
 	let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 	loop {
@@ -363,4 +425,27 @@ async fn read_preamble(recv: &mut RecvStream) -> Option<[u8; PREAMBLE_LEN]> {
 		}
 	}
 	Some(pre)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn rotate_cert_swaps_hash_without_rebinding() {
+		let rt = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+		let _guard = rt.enter();
+		let (endpoint, boot_hash) = make_endpoint(0).expect("bind ephemeral udp");
+		let addr = endpoint.local_addr().unwrap();
+		let new_hash = rotate_cert(&endpoint).expect("live cert swap");
+		assert_ne!(boot_hash, new_hash, "rotation must mint a new certificate");
+		assert_eq!(
+			addr,
+			endpoint.local_addr().unwrap(),
+			"socket must survive rotation"
+		);
+	}
 }
