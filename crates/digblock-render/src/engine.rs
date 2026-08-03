@@ -630,8 +630,8 @@ impl Engine {
 			);
 			// Never place inside the player — the shared occupied-cells
 			// contract (identical to the server's InsidePlayer scan).
-			let [eye, body] = digblock_core::player::occupied_cells(self.camera.pos);
-			if target != eye && target != body {
+			let mut occupied = digblock_core::player::occupied_cells(self.camera.pos);
+			if occupied.all(|c| c != target) {
 				if let Some(prev) =
 					self.pipeline
 						.set_block(target.0, target.1, target.2, self.held_block)

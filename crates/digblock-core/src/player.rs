@@ -1,12 +1,17 @@
-//! Player physics — ported from the Java Player.move(): point collider
-//! (no AABB), eye at the camera position, ground probe at −1.5,
-//! collision probe at −1.25 with 0.25 skin, per-axis slide, floor snap
-//! to +0.5, water fully non-solid, unloaded chunks non-solid (the Java
-//! null-block behavior). Run at a fixed 60 Hz tick: the ÷60 air control
-//! is a per-tick constant tuned at 60 fps.
-//! Diverges from the Java: ground movement accelerates toward the input
-//! target at WALK_ACCEL instead of snapping to full speed, and momentum
-//! carries over edges and landings.
+//! Player physics: a vertical capsule collider (RADIUS wide, HEIGHT
+//! tall, eye EYE_TO_CROWN below the crown top) against the voxel grid.
+//! Each tick integrates velocity, then resolves penetration iteratively,
+//! deepest contact first. Ground contacts (steep upward normal while
+//! descending) land flat on the block plane — the eye rests at exactly
+//! top + EYE_TO_FEET anywhere on a block top, no edge slide — while
+//! walls slide tangentially and ceilings stop the jump. Water and
+//! unloaded chunks are non-solid (the Java null-block behavior). Run at
+//! a fixed 60 Hz tick: the ÷60 air control is a per-tick constant tuned
+//! at 60 fps.
+//! Diverges from the Java: the point probes grew into a real capsule,
+//! ground movement accelerates toward the input target at WALK_ACCEL
+//! instead of snapping to full speed, and momentum carries over edges
+//! and landings.
 
 use crate::block::BlockType;
 use glam::{Vec2, Vec3};
@@ -21,6 +26,36 @@ pub const WALK_ACCEL: f32 = 10.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
+
+// Capsule collider. HEIGHT and RADIUS are the tunables; everything else
+// derives from them. Any change here is a sim-behavior change: re-pin
+// the golden trajectory, bump SIM_VERSION, and resize the rendered body
+// in players.wgsl to match.
+/// Total capsule height, feet bottom to crown top.
+pub const HEIGHT: f32 = 1.8;
+/// Capsule radius.
+pub const RADIUS: f32 = 0.3;
+/// The eye sits this far below the crown top.
+pub const EYE_TO_CROWN: f32 = 0.3;
+/// Feet bottom below the eye.
+pub const EYE_TO_FEET: f32 = HEIGHT - EYE_TO_CROWN;
+/// Axis segment of the two sphere centers, relative to the eye.
+const AXIS_LO: f32 = -(EYE_TO_FEET - RADIUS);
+const AXIS_HI: f32 = EYE_TO_CROWN - RADIUS;
+const _: () = assert!(2.0 * RADIUS <= HEIGHT);
+
+/// Shrink for cell mapping and occupancy: resolution leaves exact
+/// contact (distance == RADIUS), which must not read back as overlap.
+const CELL_EPS: f32 = 1e-4;
+/// Ground-probe depth below the feet.
+const GROUND_EPS: f32 = 1e-3;
+/// Contacts steeper than this (while descending) count as ground and
+/// resolve flat onto the block plane. Radius-independent: an edge
+/// support contact has n.y = r/√(o²+r²) > 1/√2 for any overhang o < r.
+const GROUND_NORMAL_Y: f32 = 0.7;
+const RESOLVE_ITERS: usize = 4;
+/// Penetrations shallower than this wait for the next tick.
+const SKIN: f32 = 1e-4;
 
 /// Eye spawn position: the nearest land to the origin. Walks expanding
 /// square rings (8-block stride) until a column clears the beach line, so
@@ -73,16 +108,96 @@ pub struct Player {
 	out: Vec3,
 }
 
-fn cell(v: Vec3) -> (i32, i32, i32) {
-	(v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32)
+/// Cells covered by the closed interval [lo, hi], shrunk by CELL_EPS so
+/// a bound resting exactly on a block plane stays out of the far cell.
+fn span(lo: f32, hi: f32) -> std::ops::RangeInclusive<i32> {
+	((lo + CELL_EPS).floor() as i32)..=((hi - CELL_EPS).floor() as i32)
 }
 
-/// The two cells a player at eye position `pos` occupies: the eye cell
-/// and the −1.25 body probe (the point collider's). Placement rejection
-/// (client), the server's InsidePlayer scan, and claim probing must all
-/// agree on exactly these — the constant lives here and nowhere else.
-pub fn occupied_cells(pos: Vec3) -> [(i32, i32, i32); 2] {
-	[cell(pos), cell(pos - Vec3::new(0.0, 1.25, 0.0))]
+/// Closest points between the (vertical) capsule axis at eye `pos` and
+/// cell `c`'s unit box: (point on axis, point on box). Closed form —
+/// the box clamps the axis xz horizontally; vertically, overlapping
+/// intervals meet at the overlap (the normal comes out horizontal),
+/// otherwise the nearer segment end pairs with the nearer face.
+fn closest_axis_box(pos: Vec3, c: (i32, i32, i32)) -> (Vec3, Vec3) {
+	let qx = pos.x.clamp(c.0 as f32, c.0 as f32 + 1.0);
+	let qz = pos.z.clamp(c.2 as f32, c.2 as f32 + 1.0);
+	let (a_lo, a_hi) = (pos.y + AXIS_LO, pos.y + AXIS_HI);
+	let (b_lo, b_hi) = (c.1 as f32, c.1 as f32 + 1.0);
+	let (py, qy) = if a_lo > b_hi {
+		(a_lo, b_hi)
+	} else if a_hi < b_lo {
+		(a_hi, b_lo)
+	} else {
+		let y = a_lo.max(b_lo);
+		(y, y)
+	};
+	(Vec3::new(pos.x, py, pos.z), Vec3::new(qx, qy, qz))
+}
+
+struct Contact {
+	/// Unit push direction, box toward capsule.
+	n: Vec3,
+	depth: f32,
+	cell_y: i32,
+}
+
+/// Penetration contact of the capsule at eye `pos` with cell `c`, if any.
+fn cell_contact(pos: Vec3, c: (i32, i32, i32)) -> Option<Contact> {
+	let (p, q) = closest_axis_box(pos, c);
+	let d2 = p.distance_squared(q);
+	if d2 >= RADIUS * RADIUS {
+		return None;
+	}
+	let d = d2.sqrt();
+	if d > 1e-6 {
+		return Some(Contact {
+			n: (p - q) / d,
+			depth: RADIUS - d,
+			cell_y: c.1,
+		});
+	}
+	// Degenerate: the axis runs inside the box (a terminal-velocity
+	// landing can bury it ~0.03). Push out through the nearest face, in
+	// a fixed order so ties resolve identically everywhere.
+	let faces = [
+		(Vec3::Y, c.1 as f32 + 1.0 - p.y),
+		(Vec3::NEG_Y, p.y - c.1 as f32),
+		(Vec3::X, c.0 as f32 + 1.0 - p.x),
+		(Vec3::NEG_X, p.x - c.0 as f32),
+		(Vec3::Z, c.2 as f32 + 1.0 - p.z),
+		(Vec3::NEG_Z, p.z - c.2 as f32),
+	];
+	let mut best = faces[0];
+	for f in &faces[1..] {
+		if f.1 < best.1 {
+			best = *f;
+		}
+	}
+	Some(Contact {
+		n: best.0,
+		depth: best.1 + RADIUS,
+		cell_y: c.1,
+	})
+}
+
+/// Every cell the player capsule at eye `pos` overlaps (exact
+/// capsule-vs-box test over the bounding cells, 2–12 results).
+/// Placement rejection (client), the server's InsidePlayer scan, and
+/// claim probing must all agree on exactly these — the geometry lives
+/// here and nowhere else. The CELL_EPS shrink means resting contact
+/// (feet on a floor, shoulder flush to a wall) does not occupy the
+/// touching cell.
+pub fn occupied_cells(pos: Vec3) -> impl Iterator<Item = (i32, i32, i32)> {
+	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
+	span(pos.x - RADIUS, pos.x + RADIUS).flat_map(move |x| {
+		span(pos.y - EYE_TO_FEET, pos.y + EYE_TO_CROWN).flat_map(move |y| {
+			span(pos.z - RADIUS, pos.z + RADIUS).filter_map(move |z| {
+				let (p, q) = closest_axis_box(pos, (x, y, z));
+				(p.distance_squared(q) < r2).then_some((x, y, z))
+			})
+		})
+	})
 }
 
 fn solid(b: Option<BlockType>) -> bool {
@@ -111,26 +226,73 @@ impl Player {
 		self.out = s.vel;
 	}
 
-	fn ground_check(&self, dt: f32, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
-		if self.out.y >= 0.0 {
+	/// Standing support probe: any solid cell in the layer just below the
+	/// feet whose top rect is within RADIUS of the axis in xz. The disk
+	/// matches the resolver's GROUND_NORMAL_Y cutoff, so probe and
+	/// resolver agree on where standing ends and falling begins.
+	fn grounded(&self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
+		if self.out.y > 0.0 {
 			return false;
 		}
-		let probe = self.pos + self.out * dt + Vec3::new(0.0, -1.5, 0.0);
-		let (x, y, z) = cell(probe);
-		solid(block_at(x, y, z))
+		let y = (self.pos.y - EYE_TO_FEET - GROUND_EPS).floor() as i32;
+		let r2 = RADIUS * RADIUS;
+		for x in span(self.pos.x - RADIUS, self.pos.x + RADIUS) {
+			for z in span(self.pos.z - RADIUS, self.pos.z + RADIUS) {
+				if !solid(block_at(x, y, z)) {
+					continue;
+				}
+				let dx = (x as f32 - self.pos.x)
+					.max(self.pos.x - (x as f32 + 1.0))
+					.max(0.0);
+				let dz = (z as f32 - self.pos.z)
+					.max(self.pos.z - (z as f32 + 1.0))
+					.max(0.0);
+				if dx * dx + dz * dz < r2 {
+					return true;
+				}
+			}
+		}
+		false
 	}
 
-	fn collision(
-		&self,
-		dt: f32,
-		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
-	) -> Option<(i32, i32, i32)> {
-		let probe = self.pos
-			+ self.out * dt
-			+ self.out.normalize_or_zero() * 0.25
-			+ Vec3::new(0.0, -1.25, 0.0);
-		let c = cell(probe);
-		solid(block_at(c.0, c.1, c.2)).then_some(c)
+	/// Iterative capsule-vs-grid penetration resolution: fix the deepest
+	/// contact each pass. Ground contacts (steep upward normal while
+	/// descending) resolve vertically onto the block plane — a
+	/// flat-bottomed stance, so block edges don't shed the player.
+	/// Everything else pushes along the contact normal with the
+	/// into-contact velocity removed: walls slide, ceilings stop the jump.
+	fn resolve(&mut self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) {
+		for _ in 0..RESOLVE_ITERS {
+			let mut best: Option<Contact> = None;
+			for y in span(self.pos.y - EYE_TO_FEET, self.pos.y + EYE_TO_CROWN) {
+				for x in span(self.pos.x - RADIUS, self.pos.x + RADIUS) {
+					for z in span(self.pos.z - RADIUS, self.pos.z + RADIUS) {
+						if !solid(block_at(x, y, z)) {
+							continue;
+						}
+						if let Some(c) = cell_contact(self.pos, (x, y, z)) {
+							if best.as_ref().is_none_or(|b| c.depth > b.depth) {
+								best = Some(c);
+							}
+						}
+					}
+				}
+			}
+			let Some(c) = best else { break };
+			if c.depth < SKIN {
+				break;
+			}
+			if c.n.y > GROUND_NORMAL_Y && self.out.y <= 0.0 {
+				self.pos.y = (c.cell_y + 1) as f32 + EYE_TO_FEET;
+				self.out.y = 0.0;
+			} else {
+				self.pos += c.n * c.depth;
+				let vn = self.out.dot(c.n);
+				if vn < 0.0 {
+					self.out -= c.n * vn;
+				}
+			}
+		}
 	}
 
 	/// One fixed tick. `dir` is the current look direction (the Java
@@ -152,8 +314,7 @@ impl Player {
 		let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
 		let right = dir.cross(Vec3::Y).normalize_or_zero(); // Java dir × up
 
-		if self.ground_check(dt, block_at) {
-			self.pos.y = self.pos.y.floor() + 0.5;
+		if self.grounded(block_at) {
 			// Ground movement is plain kinematics: accelerate toward the
 			// input target (direction × WALK_SPEED) at WALK_ACCEL, with
 			// velocity as the only state — landings, edge exits, turns
@@ -175,26 +336,9 @@ impl Player {
 			self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);
 		}
 
-		let cur = cell(self.pos + Vec3::new(0.0, -1.25, 0.0));
-		if let Some(hit) = self.collision(dt, block_at) {
-			if cur.0 != hit.0 && cur.2 != hit.2 {
-				// Diagonal: try zeroing x, then z, then both (Java order).
-				let x = self.out.x;
-				self.out.x = 0.0;
-				if self.collision(dt, block_at).is_some() {
-					self.out.x = x;
-					self.out.z = 0.0;
-					if self.collision(dt, block_at).is_some() {
-						self.out.x = 0.0;
-					}
-				}
-			} else if cur.0 != hit.0 {
-				self.out.x = 0.0;
-			} else if cur.2 != hit.2 {
-				self.out.z = 0.0;
-			}
-		}
+		debug_assert!((self.out * dt).length() < 1.0, "tunneling guard");
 		self.pos += self.out * dt;
+		self.resolve(block_at);
 	}
 }
 
@@ -430,6 +574,156 @@ mod tests {
 	}
 
 	#[test]
+	fn ceiling_stops_jump() {
+		// Flat ceiling at y=12 over the y<10 floor: a 2-block room. The
+		// crown must stop at the ceiling plane (the point collider sailed
+		// straight through).
+		let world = |_x: i32, y: i32, _z: i32| -> Option<BlockType> {
+			Some(if y < 10 || y == 12 {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5));
+		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world); // settle
+		p.tick(
+			TICK,
+			Vec3::Z,
+			PlayerIntent {
+				move_axis: Vec2::ZERO,
+				jump: true,
+			},
+			&world,
+		);
+		let mut peak = p.pos.y;
+		for _ in 0..120 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+			peak = peak.max(p.pos.y);
+		}
+		assert!(peak <= 12.0 - EYE_TO_CROWN + 1e-3, "head stopped: {peak}");
+		assert!(peak > 11.5, "still jumped: {peak}");
+		assert!((p.pos.y - 11.5).abs() < 0.001, "returned: {}", p.pos.y);
+	}
+
+	#[test]
+	fn one_block_hole_blocked() {
+		// Wall at z >= 12 with only cell y=10 open: a 1-block hole the
+		// 1.8-tall capsule cannot fit through (the point collider walked
+		// straight in).
+		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
+			Some(if y < 10 || (z >= 12 && (11..14).contains(&y)) {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = new_player();
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..180 {
+			p.tick(TICK, Vec3::Z, forward, &world);
+		}
+		assert!(p.pos.z < 11.75, "blocked at the hole, z = {}", p.pos.z);
+	}
+
+	#[test]
+	fn two_block_corridor_passes() {
+		// Wall at z >= 12 with cells y=10..12 open: a 2-block corridor
+		// the 1.8-tall capsule walks through.
+		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
+			Some(if y < 10 || (z >= 12 && y >= 12) {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = new_player();
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::Z, forward, &world);
+		}
+		assert!(p.pos.z > 13.0, "walked through, z = {}", p.pos.z);
+	}
+
+	#[test]
+	fn jump_mounts_one_block_step() {
+		// One-block step at z >= 12, open sky: hold forward + jump and
+		// end up standing on it.
+		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
+			Some(if y < 10 || (z >= 12 && y == 10) {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = new_player();
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		let hold = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: true,
+		};
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, hold, &world);
+		}
+		// Release jump and settle: hopping stops, feet find the step top.
+		for _ in 0..120 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
+		assert!(
+			(p.pos.y - 12.5).abs() < 0.001,
+			"standing on it, y = {}",
+			p.pos.y
+		);
+	}
+
+	#[test]
+	fn jump_clears_step_under_three_high_ceiling() {
+		// Same step, but with a flat ceiling at y=13 (a 3-block room over
+		// the floor). Head clearance while mounting is 1.2 blocks — the
+		// marginal case the capsule must still clear.
+		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
+			Some(if y < 10 || (z >= 12 && y == 10) || y == 13 {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5));
+		let hold = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: true,
+		};
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, hold, &world);
+		}
+		// Release jump and settle: hopping stops, feet find the step top.
+		for _ in 0..120 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
+		assert!(
+			(p.pos.y - 12.5).abs() < 0.001,
+			"standing on it, y = {}",
+			p.pos.y
+		);
+	}
+
+	#[test]
 	fn falls_through_unloaded_chunks() {
 		let none = |_: i32, _: i32, _: i32| -> Option<BlockType> { None };
 		let mut p = new_player();
@@ -495,7 +789,7 @@ mod golden {
 		let s = p.state();
 		assert_eq!(
 			(s.pos.to_array(), s.vel.to_array()),
-			([-2.3094306f32, 11.5, 5.529869], [-4.0f32, 0.0, 0.0]),
+			([-2.2490497f32, 11.5, 5.5237446], [-4.0f32, 0.0, 0.0]),
 			"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 		);
 	}

@@ -120,12 +120,11 @@ fn step_client(
 	}
 }
 
-/// True if the claimed position's collision probes sit inside solid
-/// blocks (a claim we never adopt). Cells come from the shared
-/// `occupied_cells` contract, identical to the client's.
+/// True if the claimed position's capsule overlaps solid blocks (a
+/// claim we never adopt). Cells come from the shared `occupied_cells`
+/// contract, identical to the client's.
 fn probe_solid(pos: Vec3, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
 	digblock_core::player::occupied_cells(pos)
-		.into_iter()
 		.any(|c| matches!(block_at(c.0, c.1, c.2), Some(b) if b.props().collides))
 }
 
@@ -249,12 +248,12 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
 
-		// Claim eye 2 blocks under the surface (inside stone/dirt), but
-		// within... no — that's > POS_TOLERANCE. Claim just below the
-		// feet instead: within tolerance, but the body probe lands in
-		// the ground block.
+		// Claim the feet dipped 0.2 into the surface block: well within
+		// POS_TOLERANCE and the per-tick displacement clamp, but the
+		// capsule's bottom sphere overlaps the floor cell — only a real
+		// body collider catches this (the old point probes sat above it).
 		let claim = PlayerState {
-			pos: start.pos - Vec3::new(0.0, 0.7, 0.0),
+			pos: start.pos - Vec3::new(0.0, 0.2, 0.0),
 			vel: Vec3::ZERO,
 		};
 		let mut t = 100;

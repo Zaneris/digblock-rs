@@ -135,8 +135,8 @@ impl Sim {
 					if !c.live {
 						continue;
 					}
-					let [eye, body] = digblock_core::player::occupied_cells(c.player.pos);
-					if target == eye || target == body {
+					let mut occupied = digblock_core::player::occupied_cells(c.player.pos);
+					if occupied.any(|c| c == target) {
 						return reject(RejectReason::InsidePlayer);
 					}
 				}

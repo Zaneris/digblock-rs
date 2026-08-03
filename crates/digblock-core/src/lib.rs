@@ -33,4 +33,4 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// golden tests (`player::tests::golden_trajectory_pins_sim_version`,
 /// `worldgen_golden_hash_pins_sim_version` in tests/worldgen.rs) fail
 /// when behavior drifts and name this constant in their message.
-pub const SIM_VERSION: u16 = 1;
+pub const SIM_VERSION: u16 = 2;

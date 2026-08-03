@@ -2,7 +2,7 @@
 // vertex_index (no geometry buffer — the spray.wgsl trick). Instance =
 // two vec4s: (eye position xyz, yaw) + (color rgb, spare). The box spans
 // 0.6 × 1.8 × 0.6 anchored to the eye (y −1.5 .. +0.3), matching the
-// point-collider probes, and is lit with a flat lambert + the standard
+// capsule collider bounds, and is lit with a flat lambert + the standard
 // distance fog so it sits in the scene like terrain does.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
