@@ -22,7 +22,10 @@ mod rivers;
 mod terrain;
 
 pub use caves::carved;
-pub use classify::{ColumnShape, SurfaceKind, SurfaceProps, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE};
+pub use classify::{
+	ColumnShape, SurfaceKind, SurfaceProps, TreeDensity, TreeSpecies, DIRT_DEPTH, SNOW_LINE,
+	STONE_SURFACE, TEMP_ALT_SHIFT,
+};
 pub use terrain::{TerrainParams, MAX_TERRAIN, SEA_LEVEL};
 
 use std::sync::Arc;
@@ -295,8 +298,9 @@ mod tests {
 		assert!(found > 0, "sample contains pool steps");
 	}
 
-	/// Snow only appears near the (dithered) snow line, never at low
-	/// altitude, and snow surfaces exist somewhere in a mountain sample.
+	/// Snow only appears near the (dithered, temperature-shifted) snow
+	/// line — cold regions legitimately snow TEMP_ALT_SHIFT lower — and
+	/// snow surfaces exist somewhere in a mountain sample.
 	#[test]
 	fn snow_implies_altitude() {
 		let seed = 1234.5678;
@@ -307,7 +311,7 @@ mod tests {
 				if shape.surface == SurfaceKind::Snow {
 					seen += 1;
 					assert!(
-						f64::from(shape.height) >= SNOW_LINE - 7.0,
+						f64::from(shape.height) >= SNOW_LINE - TEMP_ALT_SHIFT - 7.0,
 						"snow at h={} ({x},{z})",
 						shape.height
 					);
@@ -317,12 +321,67 @@ mod tests {
 		assert!(seen > 0, "sample contains snow surfaces");
 	}
 
-	/// All four surface kinds occur in a large sample, with open terrain
-	/// (plains + ocean) dominating mountains.
+	/// Temperature moves the snow line both ways: somewhere in a wide
+	/// sample a cold region snows below the neutral line, and some warm
+	/// high column stands above it bare. Snow/mountain belts are hundreds
+	/// of blocks wide, so a coarse scan suffices.
+	#[test]
+	fn climate_varies_snow_line() {
+		let seed = 1234.5678;
+		let (mut cold_snow, mut warm_bare) = (false, false);
+		for x in (-16384..16384).step_by(128) {
+			for z in (-16384..16384).step_by(128) {
+				let shape = column_shape(x, z, seed);
+				let h = f64::from(shape.height);
+				cold_snow |= shape.surface == SurfaceKind::Snow && h < SNOW_LINE - 10.0;
+				warm_bare |= shape.surface == SurfaceKind::Mountain && h > SNOW_LINE + 10.0;
+				if cold_snow && warm_bare {
+					return;
+				}
+			}
+		}
+		panic!("cold_snow={cold_snow} warm_bare={warm_bare}");
+	}
+
+	/// The coastal band kinds exist. They live in a few-block height band
+	/// along shorelines, so a blind dense scan would be enormous: instead
+	/// scan coarsely for waterline-adjacent patches and only dense-scan
+	/// those until both kinds turn up.
+	#[test]
+	fn coastal_and_wet_kinds_exist() {
+		let seed = 1234.5678;
+		let (mut marsh, mut gravel) = (false, false);
+		'outer: for x in (-8192..8192).step_by(64) {
+			for z in (-8192..8192).step_by(64) {
+				let s = column_shape(x, z, seed);
+				if !(SEA_LEVEL..SEA_LEVEL + 8).contains(&s.height) {
+					continue;
+				}
+				for dx in (0..64).step_by(4) {
+					for dz in (0..64).step_by(4) {
+						match column_shape(x + dx, z + dz, seed).surface {
+							SurfaceKind::Marsh => marsh = true,
+							SurfaceKind::GravelShore => gravel = true,
+							_ => {}
+						}
+						if marsh && gravel {
+							break 'outer;
+						}
+					}
+				}
+			}
+		}
+		assert!(marsh && gravel, "marsh={marsh} gravel={gravel}");
+	}
+
+	/// The major surface kinds occur in a large sample, with open terrain
+	/// (walkable lowland + ocean) dominating mountains, and every climate
+	/// biome present.
 	#[test]
 	fn regions_are_present_and_balanced() {
 		let seed = 1234.5678;
 		let (mut ocean, mut beach, mut plains, mut mountain) = (0u32, 0u32, 0u32, 0u32);
+		let (mut forest, mut savanna, mut taiga) = (0u32, 0u32, 0u32);
 		let mut total = 0u32;
 		// ±8192 spans ~6.5 erosion / ~12 continent wavelengths — enough
 		// regions that single-seed variance can't starve a bucket.
@@ -332,20 +391,32 @@ mod tests {
 				match column_shape(x, z, seed).surface {
 					// Rivers are open water for balance purposes.
 					SurfaceKind::Ocean | SurfaceKind::River => ocean += 1,
-					SurfaceKind::Beach => beach += 1,
+					// The narrow coastal bands bucket with beaches.
+					SurfaceKind::Beach | SurfaceKind::Marsh | SurfaceKind::GravelShore => {
+						beach += 1
+					}
 					SurfaceKind::Plains => plains += 1,
 					// Snow is high-mountain surface for balance purposes.
 					SurfaceKind::Mountain | SurfaceKind::Snow => mountain += 1,
+					SurfaceKind::Forest => forest += 1,
+					SurfaceKind::Savanna => savanna += 1,
+					SurfaceKind::Taiga => taiga += 1,
 				}
 			}
 		}
 		let pct = |n: u32| f64::from(n) * 100.0 / f64::from(total);
+		// Walkable grassy lowland, whatever its biome dressing.
+		let open = plains + forest + savanna + taiga;
 		assert!(pct(ocean) > 5.0, "ocean {:.1}%", pct(ocean));
 		assert!(beach > 0, "beaches exist");
-		assert!(pct(plains) > 25.0, "plains {:.1}%", pct(plains));
+		assert!(pct(open) > 25.0, "open lowland {:.1}%", pct(open));
+		assert!(pct(plains) > 5.0, "plains {:.1}%", pct(plains));
+		assert!(forest > 0, "forests exist");
+		assert!(savanna > 0, "savannas exist");
+		assert!(taiga > 0, "taigas exist");
 		assert!(mountain > 0, "mountains exist");
 		assert!(
-			pct(mountain) < pct(plains) + pct(ocean),
+			pct(mountain) < pct(open) + pct(ocean),
 			"mountains {:.1}% don't dominate",
 			pct(mountain)
 		);

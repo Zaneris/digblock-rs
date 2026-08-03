@@ -21,27 +21,102 @@ const SURF_DITHER_OFF: f64 = 70999.0;
 /// Rise (blocks per block) beyond which a face is bare rock at any
 /// altitude — grass doesn't hold on ~54°+ slopes.
 const STEEP_SLOPE: f64 = 1.4;
+/// Blocks the stone and snow lines move per unit of regional temperature
+/// (in lockstep, preserving the rock band between them): cold regions
+/// snow from ~168, warm ones never (the line exceeds MAX_TERRAIN).
+pub const TEMP_ALT_SHIFT: f64 = 40.0;
+/// Temperature above which lowland turns to savanna.
+const WARM_T: f64 = 0.35;
+/// Temperature below which lush lowland turns to taiga.
+const COLD_T: f64 = -0.35;
+/// Vegetation above which temperate lowland is forest.
+const FOREST_VEG: f64 = 0.15;
+/// Vegetation above which cold lowland is taiga (conifers take less).
+const TAIGA_VEG: f64 = 0.05;
+/// Rise/block within the waterline band beyond which the shore is gravel.
+const GRAVEL_SLOPE: f64 = 0.7;
+/// Marshes need near-flat land…
+const MARSH_SLOPE: f64 = 0.25;
+/// …in lush regions.
+const MARSH_VEG: f64 = 0.1;
+/// Marsh puddle roll: ~20-block-wavelength noise dips scattered columns
+/// one block for standing pools.
+const PUDDLE_FREQ: f64 = 0.31;
+const PUDDLE_OFF: f64 = 71501.0;
 
-/// What grows (or doesn't) on a column's surface — the seam where a
-/// future biome system attaches.
+/// What grows (or doesn't) on a column's surface — the seam where the
+/// biome system attaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SurfaceKind {
 	/// Below sea level: sand floor under water.
 	Ocean,
 	/// At the water line: sand above water.
 	Beach,
-	/// Grass over dirt.
+	/// Grass over dirt, scattered trees.
 	Plains,
-	/// Bare rock above STONE_SURFACE — or any steep face.
+	/// Bare rock above the (temperature-shifted) stone line — or any
+	/// steep face.
 	Mountain,
-	/// Snow-capped rock above the (dithered) snow line.
+	/// Snow-capped rock above the (dithered, temperature-shifted) snow
+	/// line.
 	Snow,
 	/// Inside a river channel: sand bed under river water.
 	River,
+	/// Lush temperate lowland: grass with dense broadleaf woods.
+	Forest,
+	/// Cold lush lowland: grass under conifers.
+	Taiga,
+	/// Hot lowland: dry grass, sparse flat-topped trees.
+	Savanna,
+	/// Flat lush land barely above the waterline: mud, puddles, no trees.
+	Marsh,
+	/// The waterline band where the land behind climbs steeply: gravel.
+	GravelShore,
+}
+
+impl SurfaceKind {
+	/// Declaration order — the `SURFACE_PROPS` index. Tests iterate this
+	/// so a new kind cannot silently go unasserted.
+	pub const ALL: [SurfaceKind; 11] = [
+		SurfaceKind::Ocean,
+		SurfaceKind::Beach,
+		SurfaceKind::Plains,
+		SurfaceKind::Mountain,
+		SurfaceKind::Snow,
+		SurfaceKind::River,
+		SurfaceKind::Forest,
+		SurfaceKind::Taiga,
+		SurfaceKind::Savanna,
+		SurfaceKind::Marsh,
+		SurfaceKind::GravelShore,
+	];
+}
+
+/// How many tree candidates a surface hosts, as decoration table data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TreeDensity {
+	None,
+	/// Scattered singles (plains, savanna).
+	Sparse,
+	/// Open woodland (taiga).
+	Normal,
+	/// Closed grove (forest).
+	Dense,
+}
+
+/// Which silhouette family decoration grows on a surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TreeSpecies {
+	/// Round/tall/squat leafy trees.
+	Broadleaf,
+	/// Conical conifers with dark foliage.
+	Pine,
+	/// Umbrella acacias.
+	FlatTop,
 }
 
 /// What a SurfaceKind MEANS, as data: the block palette, decoration
-/// validity, and spawn acceptance, in one row per kind. A new biome is a
+/// rules, and spawn acceptance, in one row per kind. A new biome is a
 /// classification arm plus a row here — not edits across worldgen,
 /// decoration, and spawn.
 pub struct SurfaceProps {
@@ -49,29 +124,54 @@ pub struct SurfaceProps {
 	pub top: BlockType,
 	/// Blocks between the surface and the stone below it.
 	pub subsoil: BlockType,
-	/// Trees may decorate this surface.
-	pub trees: bool,
+	/// Tree-candidate density class for this surface.
+	pub tree_density: TreeDensity,
+	/// Species grown when the density is not None.
+	pub tree_species: TreeSpecies,
 	/// The spawn walk accepts this surface (land altitude still applies).
 	pub spawnable: bool,
 }
 
-const fn sprops(top: BlockType, subsoil: BlockType, trees: bool, spawnable: bool) -> SurfaceProps {
+const fn sprops(
+	top: BlockType,
+	subsoil: BlockType,
+	tree_density: TreeDensity,
+	tree_species: TreeSpecies,
+	spawnable: bool,
+) -> SurfaceProps {
 	SurfaceProps {
 		top,
 		subsoil,
-		trees,
+		tree_density,
+		tree_species,
 		spawnable,
 	}
 }
 
 /// Indexed by `SurfaceKind as usize` (declaration order).
-pub const SURFACE_PROPS: [SurfaceProps; 6] = [
-	sprops(BlockType::Sand, BlockType::Sand, false, false), // Ocean
-	sprops(BlockType::Sand, BlockType::Sand, false, true),  // Beach
-	sprops(BlockType::Grass, BlockType::Dirt, true, true),  // Plains
-	sprops(BlockType::Stone, BlockType::Stone, false, true), // Mountain
-	sprops(BlockType::Snow, BlockType::Stone, false, true), // Snow
-	sprops(BlockType::Sand, BlockType::Sand, false, false), // River
+pub const SURFACE_PROPS: [SurfaceProps; 11] = [
+	// Ocean
+	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	// Beach
+	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	// Plains: scattered trees — forests now carry the woods.
+	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::Broadleaf, true),
+	// Mountain
+	sprops(BlockType::Stone, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	// Snow
+	sprops(BlockType::Snow, BlockType::Stone, TreeDensity::None, TreeSpecies::Broadleaf, true),
+	// River
+	sprops(BlockType::Sand, BlockType::Sand, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	// Forest
+	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Dense, TreeSpecies::Broadleaf, true),
+	// Taiga
+	sprops(BlockType::Grass, BlockType::Dirt, TreeDensity::Normal, TreeSpecies::Pine, true),
+	// Savanna
+	sprops(BlockType::DryGrass, BlockType::Dirt, TreeDensity::Sparse, TreeSpecies::FlatTop, true),
+	// Marsh: soggy ground, puddles — keep spawns off it.
+	sprops(BlockType::Mud, BlockType::Mud, TreeDensity::None, TreeSpecies::Broadleaf, false),
+	// GravelShore
+	sprops(BlockType::Gravel, BlockType::Gravel, TreeDensity::None, TreeSpecies::Broadleaf, true),
 ];
 
 impl SurfaceKind {
@@ -124,23 +224,65 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 		.abs()
 		.max((nzp.h_pre - nzm.h_pre).abs())
 		* 0.5;
-	// Dithered altitude for the stone/snow lines (pre-river surface).
+	// Dithered altitude for the stone/snow lines (pre-river surface),
+	// both shifted in lockstep by regional temperature so the rock band
+	// between them survives at every latitude-equivalent.
 	let hd = f.h_pre + dith * 6.0;
+	let shift = f.temp * TEMP_ALT_SHIFT;
 	let water = f.water.floor() as i32;
 	let surface = if height < SEA_LEVEL {
 		SurfaceKind::Ocean
 	} else if water > height {
 		SurfaceKind::River
 	} else if f64::from(height) <= f64::from(SEA_LEVEL) + 1.0 + (dith + 1.0) * 1.2 {
-		SurfaceKind::Beach
+		// The waterline band: gravel where the land behind it climbs
+		// steeply, sand elsewhere — dithered so the two interleave.
+		if slope > GRAVEL_SLOPE + 0.2 * dith {
+			SurfaceKind::GravelShore
+		} else {
+			SurfaceKind::Beach
+		}
+	} else if f64::from(height) <= f64::from(SEA_LEVEL) + 3.0 + (dith + 1.0) * 1.5
+		&& slope < MARSH_SLOPE
+		&& f.veg > MARSH_VEG
+	{
+		SurfaceKind::Marsh // flat, lush, barely above the waterline
 	} else if slope > STEEP_SLOPE + 0.3 * dith {
-		SurfaceKind::Mountain
-	} else if hd >= SNOW_LINE {
+		SurfaceKind::Mountain // cliffs bare at any altitude
+	} else if hd >= SNOW_LINE + shift {
 		SurfaceKind::Snow
-	} else if hd >= f64::from(STONE_SURFACE) {
+	} else if hd >= f64::from(STONE_SURFACE) + shift {
 		SurfaceKind::Mountain
+	} else if f.temp > WARM_T + 0.1 * dith {
+		SurfaceKind::Savanna
+	} else if f.temp < COLD_T + 0.1 * dith {
+		if f.veg > TAIGA_VEG {
+			SurfaceKind::Taiga
+		} else {
+			SurfaceKind::Plains
+		}
+	} else if f.veg > FOREST_VEG + 0.1 * dith {
+		SurfaceKind::Forest
 	} else {
 		SurfaceKind::Plains
+	};
+	// Marsh puddles: scattered columns dip one block and fill with water
+	// flush to the marsh grade. The carve gate (height > water) goes
+	// false under pools, and `fall` below reads raw Fields, so pools
+	// never cascade.
+	let (height, water) = if surface == SurfaceKind::Marsh {
+		let po = seed + PUDDLE_OFF;
+		if noise2(
+			po + f64::from(x) * PUDDLE_FREQ,
+			po + f64::from(z) * PUDDLE_FREQ,
+		) > 0.55
+		{
+			(height - 1, height)
+		} else {
+			(height, water)
+		}
+	} else {
+		(height, water)
 	};
 	// Falling water above this column's pool wherever a neighboring pool
 	// sits higher — quantized river levels descend in steps, and the fall
@@ -195,22 +337,35 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 mod tests {
 	use super::*;
 
-	/// Pins the table to the legacy hardcoded rules for every kind, so
-	/// the data-driven consumers cannot have changed behavior.
+	/// Pins every kind's table row. Iterating `ALL` with an exhaustive
+	/// match makes a new kind a compile error here instead of a silently
+	/// untested row.
 	#[test]
-	fn surface_props_match_legacy_rules() {
+	fn surface_props_are_pinned() {
 		use SurfaceKind::*;
-		for k in [Ocean, Beach, Plains, Mountain, Snow, River] {
+		use TreeDensity as D;
+		use TreeSpecies as S;
+		assert_eq!(SurfaceKind::ALL.len(), SURFACE_PROPS.len());
+		for (i, k) in SurfaceKind::ALL.into_iter().enumerate() {
+			assert_eq!(k as usize, i, "ALL follows declaration order");
 			let p = k.props();
-			let (top, subsoil) = match k {
-				Ocean | Beach | River => (BlockType::Sand, BlockType::Sand),
-				Mountain => (BlockType::Stone, BlockType::Stone),
-				Snow => (BlockType::Snow, BlockType::Stone),
-				Plains => (BlockType::Grass, BlockType::Dirt),
+			let (top, subsoil, density, species, spawnable) = match k {
+				Ocean => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
+				Beach => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, true),
+				Plains => (BlockType::Grass, BlockType::Dirt, D::Sparse, S::Broadleaf, true),
+				Mountain => (BlockType::Stone, BlockType::Stone, D::None, S::Broadleaf, true),
+				Snow => (BlockType::Snow, BlockType::Stone, D::None, S::Broadleaf, true),
+				River => (BlockType::Sand, BlockType::Sand, D::None, S::Broadleaf, false),
+				Forest => (BlockType::Grass, BlockType::Dirt, D::Dense, S::Broadleaf, true),
+				Taiga => (BlockType::Grass, BlockType::Dirt, D::Normal, S::Pine, true),
+				Savanna => (BlockType::DryGrass, BlockType::Dirt, D::Sparse, S::FlatTop, true),
+				Marsh => (BlockType::Mud, BlockType::Mud, D::None, S::Broadleaf, false),
+				GravelShore => (BlockType::Gravel, BlockType::Gravel, D::None, S::Broadleaf, true),
 			};
 			assert_eq!((p.top, p.subsoil), (top, subsoil), "{k:?} palette");
-			assert_eq!(p.trees, k == Plains, "{k:?} decoration");
-			assert_eq!(p.spawnable, !matches!(k, Ocean | River), "{k:?} spawn");
+			assert_eq!(p.tree_density, density, "{k:?} density");
+			assert_eq!(p.tree_species, species, "{k:?} species");
+			assert_eq!(p.spawnable, spawnable, "{k:?} spawn");
 		}
 	}
 }

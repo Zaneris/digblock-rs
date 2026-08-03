@@ -12,6 +12,7 @@ members = [
 	"apps/ios",
 	"apps/server",
 	"apps/web",
+	"tools/texgen",
 ]
 
 [workspace.package]

@@ -62,6 +62,14 @@ blocks! {
 	WaterFlow7 = 15 => water_props(7, false, false),
 	/// Water falling through air: renders full-height, lands at amount 8.
 	WaterFall = 16 => water_props(8, false, true),
+	/// Savanna surface: sun-dried grass over dirt.
+	DryGrass = 17 => dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30),
+	/// Marsh surface and subsoil: wet dark earth.
+	Mud = 18 => dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25),
+	/// Steep-shore and scree surface: loose pebbled rock.
+	Gravel = 19 => dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45),
+	/// Conifer foliage; a structure block like Leaves, so not carveable.
+	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10),
 }
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
@@ -205,6 +213,11 @@ mod tex {
 	pub const WOOD_TOP: u16 = 7;
 	pub const LEAVES: u16 = 8;
 	pub const SNOW: u16 = 9;
+	pub const DRY_GRASS_SIDE: u16 = 10;
+	pub const DRY_GRASS_TOP: u16 = 11;
+	pub const MUD: u16 = 12;
+	pub const GRAVEL: u16 = 13;
+	pub const PINE_LEAVES: u16 = 14;
 }
 
 impl BlockType {

@@ -9,8 +9,7 @@
 
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK};
-use crate::simplex::fbm2;
-use crate::worldgen::{carved, column_shape};
+use crate::worldgen::{carved, column_shape, TreeDensity, TreeSpecies};
 
 /// Horizontal reach guarantee: no structure block may sit further than
 /// this from its origin column. Chunks scan candidates this far outside
@@ -19,14 +18,15 @@ pub const STRUCTURE_APRON: i32 = 8;
 
 /// Candidate grid pitch: at most one tree candidate per CELL×CELL area.
 const CELL: i32 = 8;
-/// Forest-cluster field: candidate density swings from open meadow (5%)
-/// to dense grove (80%) over ~170-block patches, so woods read as places
-/// instead of a uniform sprinkle.
-const FOREST_FREQ: f64 = 0.006;
-const FOREST_SEED_OFF: f64 = 92401.0;
+/// The densest per-cell candidate percentage any surface reaches
+/// (`TreeDensity::Dense`) — a cheap pre-gate, so most cells reject on
+/// their hash roll before paying for a `column_shape` evaluation.
+const MAX_TREE_DENSITY_PCT: u64 = 55;
 pub const MAX_STRUCTURE_HEIGHT: i32 = 10; // trunk (≤7) + canopy cap (+1) + headroom
 
-/// Tree silhouette family, chosen per candidate from its hash bits.
+/// Tree silhouette family: broadleaf surfaces pick one of the first
+/// three per candidate from hash bits; conifer and acacia surfaces grow
+/// their dedicated forms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeKind {
 	/// The classic round broadleaf: two wide rings and a cap.
@@ -37,6 +37,8 @@ pub enum TreeKind {
 	Pine,
 	/// Low spreading oak: radius-3 rings under a wide cap.
 	SquatWide,
+	/// Savanna acacia: a bare trunk under an umbrella disc.
+	FlatTop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,22 +66,6 @@ fn hash(cx: i32, cz: i32, seed: f64) -> u64 {
 	h
 }
 
-fn smoothstep(t: f64) -> f64 {
-	let t = t.clamp(0.0, 1.0);
-	t * t * (3.0 - 2.0 * t)
-}
-
-/// Per-cell candidate density in percent, sampled at the cell center — a
-/// pure function of (cell, seed), identical from every chunk that scans
-/// this cell.
-fn cell_density_pct(cell_x: i32, cell_z: i32, seed: f64) -> u64 {
-	let x = f64::from(cell_x * CELL + CELL / 2);
-	let z = f64::from(cell_z * CELL + CELL / 2);
-	let f = (fbm2(x, z, FOREST_FREQ, 2, seed + FOREST_SEED_OFF) * 2.2).clamp(-1.0, 1.0);
-	let t = smoothstep(((f + 1.0) * 0.5 - 0.40) / 0.35);
-	5 + (t * 75.0) as u64
-}
-
 /// Deterministic per-cell canopy roll: a pure function of the tree's salt
 /// and the block's tree-relative offset, so every chunk that renders this
 /// tree drops the identical rim leaves (apron determinism).
@@ -93,18 +79,26 @@ fn jroll(salt: u16, dx: i32, dz: i32, dy: i32) -> bool {
 }
 
 /// The candidate (if any) of one candidate-grid cell, validated against
-/// the terrain: plains grass surface, not a cave mouth, headroom below
-/// the world ceiling.
+/// the terrain: the surface's `SurfaceProps` row decides density and
+/// species; the candidate must not be a cave mouth and needs headroom
+/// below the world ceiling.
 fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	let h = hash(cell_x, cell_z, seed);
-	if h % 100 >= cell_density_pct(cell_x, cell_z, seed) {
-		return None;
+	if h % 100 >= MAX_TREE_DENSITY_PCT {
+		return None; // no surface is denser — skip the column_shape cost
 	}
 	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
 	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
 	let shape = column_shape(x, z, seed);
-	if !shape.surface.props().trees {
-		return None; // trees grow on grass only — never sand, rock, or sea
+	let props = shape.surface.props();
+	let pct: u64 = match props.tree_density {
+		TreeDensity::None => return None,
+		TreeDensity::Sparse => 6,
+		TreeDensity::Normal => 30,
+		TreeDensity::Dense => MAX_TREE_DENSITY_PCT,
+	};
+	if h % 100 >= pct {
+		return None;
 	}
 	if carved(x, shape.height, z, seed) {
 		return None; // surface swallowed by a cave mouth
@@ -112,14 +106,17 @@ fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	if shape.height + MAX_STRUCTURE_HEIGHT >= WORLD_VBLOCK {
 		return None;
 	}
-	let kind = match (h >> 32) % 4 {
-		0 => TreeKind::Blob,
-		1 => TreeKind::TallNarrow,
-		2 => TreeKind::Pine,
-		_ => TreeKind::SquatWide,
+	let kind = match props.tree_species {
+		TreeSpecies::Broadleaf => match (h >> 32) % 3 {
+			0 => TreeKind::Blob,
+			1 => TreeKind::TallNarrow,
+			_ => TreeKind::SquatWide,
+		},
+		TreeSpecies::Pine => TreeKind::Pine,
+		TreeSpecies::FlatTop => TreeKind::FlatTop,
 	};
 	let trunk_h = match kind {
-		TreeKind::Blob => 4 + ((h >> 24) % 3) as i32,
+		TreeKind::Blob | TreeKind::FlatTop => 4 + ((h >> 24) % 3) as i32,
 		TreeKind::TallNarrow | TreeKind::Pine => 6 + ((h >> 24) % 2) as i32,
 		TreeKind::SquatWide => 4 + ((h >> 24) % 2) as i32,
 	};
@@ -161,13 +158,18 @@ impl Tree {
 	/// Every block of the tree in world coordinates. The trunk roots one
 	/// block into the surface cell and wins over leaves; canopy layers are
 	/// listed per kind relative to the trunk top, with rim leaves of wide
-	/// (r ≥ 2) layers dropped 50/50 by the per-tree jitter roll.
+	/// (r ≥ 2) layers dropped 50/50 by the per-tree jitter roll. Conifers
+	/// carry PineLeaves; every other kind carries Leaves.
 	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
 		f(self.x, self.y - 1, self.z, BlockType::Wood);
 		for dy in 0..self.trunk_h {
 			f(self.x, self.y + dy, self.z, BlockType::Wood);
 		}
 		let t = self.y + self.trunk_h - 1;
+		let leaf = match self.kind {
+			TreeKind::Pine => BlockType::PineLeaves,
+			_ => BlockType::Leaves,
+		};
 		// (dy relative to the trunk top, radius, clip corners). The trunk
 		// center is skipped automatically for dy <= 0; r = 0 is a single
 		// leaf above the trunk (tip/cap center).
@@ -189,6 +191,7 @@ impl Tree {
 				(1, 0, false),
 			],
 			TreeKind::SquatWide => &[(-1, 3, true), (0, 3, true), (1, 2, true)],
+			TreeKind::FlatTop => &[(0, 2, true), (1, 1, false)],
 		};
 		for &(dy, r, clip) in layers {
 			for dz in -r..=r {
@@ -202,7 +205,7 @@ impl Tree {
 					if r >= 2 && dx.abs().max(dz.abs()) == r && jroll(self.salt, dx, dz, dy) {
 						continue; // jittered rim leaf
 					}
-					f(self.x + dx, t + dy, self.z + dz, BlockType::Leaves);
+					f(self.x + dx, t + dy, self.z + dz, leaf);
 				}
 			}
 		}
@@ -227,7 +230,10 @@ pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, trees: &[Tree]) {
 				let cur = data.get(lx, ly, lz);
 				let writable = cur == BlockType::Air
 					|| ((x, y, z) == base
-						&& matches!(cur, BlockType::Grass | BlockType::Dirt));
+						&& matches!(
+							cur,
+							BlockType::Grass | BlockType::Dirt | BlockType::DryGrass
+						));
 				if writable {
 					data.set(lx, ly, lz, block);
 				}
@@ -255,43 +261,86 @@ mod tests {
 		}
 	}
 
+	/// Per-kind trunk range and leaf-count bounds: the maximum is the full
+	/// layer list; the minimum drops every jitterable rim cell of the wide
+	/// (r >= 2) layers.
+	fn expect_shape(kind: TreeKind) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
+		match kind {
+			TreeKind::Blob => (4..=6, 25..=49),
+			TreeKind::TallNarrow => (6..=7, 33..=33),
+			TreeKind::Pine => (6..=7, 41..=65),
+			TreeKind::SquatWide => (4..=5, 57..=109),
+			TreeKind::FlatTop => (4..=6, 17..=29),
+		}
+	}
+
+	fn assert_sane(t: &Tree) {
+		let (trunk, leaves_bounds) = expect_shape(t.kind);
+		assert!(trunk.contains(&t.trunk_h), "{:?} trunk {}", t.kind, t.trunk_h);
+		assert!(t.top() < WORLD_VBLOCK);
+		let expect_leaf = match t.kind {
+			TreeKind::Pine => BlockType::PineLeaves,
+			_ => BlockType::Leaves,
+		};
+		let mut wood = 0;
+		let mut leaves = 0;
+		t.for_each_block(|x, y, z, b| {
+			assert!((x - t.x).abs() <= STRUCTURE_APRON, "apron x");
+			assert!((z - t.z).abs() <= STRUCTURE_APRON, "apron z");
+			assert!(y >= t.y - 1 && y < t.top(), "vertical bounds");
+			match b {
+				BlockType::Wood => wood += 1,
+				b if b == expect_leaf => leaves += 1,
+				other => panic!("unexpected {other:?}"),
+			}
+		});
+		assert_eq!(wood, t.trunk_h + 1, "{:?} wood incl. root", t.kind);
+		assert!(leaves_bounds.contains(&leaves), "{:?} leaves {leaves}", t.kind);
+	}
+
+	/// Terrain-placed candidates are sane, and the broadleaf sample shows
+	/// all three of its silhouettes. Pine/FlatTop placement depends on
+	/// which climates the sample area holds, so their shapes are pinned
+	/// by `conifer_and_acacia_shapes` on synthetic trees instead.
 	#[test]
 	fn trees_have_sane_shape() {
 		let seed = 42.0;
-		let mut found = [false; 4];
-		for cz in -64..64 {
-			for cx in -64..64 {
+		let mut broadleaf = [false; 3];
+		for cz in -128..128 {
+			for cx in -128..128 {
 				let Some(t) = cell_tree(cx, cz, seed) else {
 					continue;
 				};
-				found[t.kind as usize] = true;
-				// Per-kind trunk range and leaf-count bounds: the maximum
-				// is the full layer list; the minimum drops every
-				// jitterable rim cell of the wide (r >= 2) layers.
-				let (trunk, leaves_bounds) = match t.kind {
-					TreeKind::Blob => (4..=6, 25..=49),
-					TreeKind::TallNarrow => (6..=7, 33..=33),
-					TreeKind::Pine => (6..=7, 41..=65),
-					TreeKind::SquatWide => (4..=5, 57..=109),
-				};
-				assert!(trunk.contains(&t.trunk_h), "{:?} trunk {}", t.kind, t.trunk_h);
-				assert!(t.top() < WORLD_VBLOCK);
-				let mut wood = 0;
-				let mut leaves = 0;
-				t.for_each_block(|x, y, z, b| {
-					assert!((x - t.x).abs() <= STRUCTURE_APRON, "apron x");
-					assert!((z - t.z).abs() <= STRUCTURE_APRON, "apron z");
-					assert!(y >= t.y - 1 && y < t.top(), "vertical bounds");
-					match b {
-						BlockType::Wood => wood += 1,
-						BlockType::Leaves => leaves += 1,
-						other => panic!("unexpected {other:?}"),
-					}
-				});
-				assert_eq!(wood, t.trunk_h + 1, "{:?} wood incl. root", t.kind);
-				assert!(leaves_bounds.contains(&leaves), "{:?} leaves {leaves}", t.kind);
+				match t.kind {
+					TreeKind::Blob => broadleaf[0] = true,
+					TreeKind::TallNarrow => broadleaf[1] = true,
+					TreeKind::SquatWide => broadleaf[2] = true,
+					_ => {}
+				}
+				assert_sane(&t);
 			}
 		}
-		assert!(found.iter().all(|&k| k), "all four kinds in sample: {found:?}");
+		assert!(
+			broadleaf.iter().all(|&k| k),
+			"all broadleaf kinds in sample: {broadleaf:?}"
+		);
+	}
+
+	#[test]
+	fn conifer_and_acacia_shapes() {
+		for (kind, trunks) in [(TreeKind::Pine, 6..=7), (TreeKind::FlatTop, 4..=6)] {
+			for trunk_h in trunks {
+				for salt in [0u16, 0xbeef, 0xffff] {
+					assert_sane(&Tree {
+						x: 0,
+						y: 60,
+						z: 0,
+						trunk_h,
+						kind,
+						salt,
+					});
+				}
+			}
+		}
 	}
 }

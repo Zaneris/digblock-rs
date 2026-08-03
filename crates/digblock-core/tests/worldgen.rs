@@ -34,18 +34,33 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 					BlockType::Stone
 				}
 			}
-			SurfaceKind::Plains => {
+			SurfaceKind::Plains | SurfaceKind::Forest | SurfaceKind::Taiga => {
 				if wy == h {
 					BlockType::Grass
 				} else {
 					BlockType::Dirt
 				}
 			}
+			SurfaceKind::Savanna => {
+				if wy == h {
+					BlockType::DryGrass
+				} else {
+					BlockType::Dirt
+				}
+			}
+			SurfaceKind::Marsh => BlockType::Mud,
+			SurfaceKind::GravelShore => BlockType::Gravel,
 		}
 	};
 	let carveable = matches!(
 		base,
-		BlockType::Stone | BlockType::Dirt | BlockType::Grass | BlockType::Snow
+		BlockType::Stone
+			| BlockType::Dirt
+			| BlockType::Grass
+			| BlockType::Snow
+			| BlockType::DryGrass
+			| BlockType::Mud
+			| BlockType::Gravel
 	);
 	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
 		BlockType::Air
@@ -97,7 +112,8 @@ fn column_rules() {
 			tree.for_each_block(|x, y, z, b| {
 				let t = expect_terrain(x, y, z, seed);
 				let writable = t == BlockType::Air
-					|| ((x, y, z) == base && matches!(t, BlockType::Grass | BlockType::Dirt));
+					|| ((x, y, z) == base
+						&& matches!(t, BlockType::Grass | BlockType::Dirt | BlockType::DryGrass));
 				if writable {
 					tree_cells.entry((x, y, z)).or_insert(b);
 				}
@@ -389,6 +405,28 @@ fn heightmap_dump() {
 		out.push('\n');
 	}
 	println!("{out}\npeak in window: {hmax}");
+	// Biome map over a wider window: one glyph per surface kind, for
+	// eyeballing climate-belt and forest-patch scale.
+	let mut biomes = String::new();
+	for z in (-4096..4096).rev().step_by(64) {
+		for x in (-8192..8192).step_by(64) {
+			biomes.push(match column_shape(x, z, seed).surface {
+				SurfaceKind::Ocean => '~',
+				SurfaceKind::River => '≈',
+				SurfaceKind::Beach => '_',
+				SurfaceKind::Plains => '.',
+				SurfaceKind::Mountain => '^',
+				SurfaceKind::Snow => '*',
+				SurfaceKind::Forest => 'F',
+				SurfaceKind::Taiga => 'T',
+				SurfaceKind::Savanna => 's',
+				SurfaceKind::Marsh => 'm',
+				SurfaceKind::GravelShore => 'g',
+			});
+		}
+		biomes.push('\n');
+	}
+	println!("biomes (~ ocean, ≈ river, _ beach, . plains, ^ rock, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}");
 	// Sanity: the window contains both ocean and land at seed 0.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
@@ -412,7 +450,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 1088649025654633947,
+		hash, 8682152231313955063,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }

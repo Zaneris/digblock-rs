@@ -54,6 +54,14 @@ pub struct TerrainParams {
 	pub orient_seed_off: f64,
 	/// Along-range frequency multiplier: ~3x longer than wide.
 	pub ridge_stretch: f64,
+	/// Climate: a broad temperature field shifts the stone/snow lines and
+	/// picks warm/cold surface kinds; a mid-scale vegetation field decides
+	/// where forests concentrate. Both are classification inputs only —
+	/// they never move terrain.
+	pub temp_freq: f64,
+	pub temp_seed_off: f64,
+	pub veg_freq: f64,
+	pub veg_seed_off: f64,
 	pub river: RiverParams,
 	/// Base elevation by continentalness: piecewise-linear anchors from
 	/// deep ocean floor through a continental slope and a shallow coastal
@@ -87,6 +95,10 @@ impl TerrainParams {
 		orient_freq: 0.0002,
 		orient_seed_off: 61553.0,
 		ridge_stretch: 0.35,
+		temp_freq: 0.0005,
+		temp_seed_off: 97001.0,
+		veg_freq: 0.0025,
+		veg_seed_off: 99991.0,
 		river: RiverParams {
 			freq: 0.0006,
 			seed_off: 83777.0,
@@ -168,6 +180,11 @@ pub(super) struct Fields {
 	pub(super) h_pre: f64,
 	/// Local water surface (f64): SEA_LEVEL, or the river level above it.
 	pub(super) water: f64,
+	/// Regional temperature, [-1, 1]: shifts the stone/snow lines and
+	/// selects warm/cold surface kinds in classification.
+	pub(super) temp: f64,
+	/// Vegetation/lushness, [-1, 1]: where forests (and marshes) gather.
+	pub(super) veg: f64,
 }
 
 pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
@@ -232,6 +249,15 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	let detail_amp = base_amp + (0.25 - base_amp) * flat;
 	let h_pre = soft_ceiling(h_ridge + gained(d, 2.0) * detail_amp).max(1.0);
 
+	let temp = gained(fbm2(xf, zf, p.temp_freq, 2, seed + p.temp_seed_off), 2.2);
+	let veg = gained(fbm2(xf, zf, p.veg_freq, 2, seed + p.veg_seed_off), 2.0);
+
 	let (h, water) = rivers::carve(p, wx, wz, seed, base, rough, erosion, h_ridge, h_pre);
-	Fields { h, h_pre, water }
+	Fields {
+		h,
+		h_pre,
+		water,
+		temp,
+		veg,
+	}
 }
