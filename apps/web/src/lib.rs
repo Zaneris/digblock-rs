@@ -55,6 +55,8 @@ pub fn start() -> Result<(), JsValue> {
 		}
 	}
 
+	config.identity = load_identity();
+
 	let master_url = params.get("master").filter(|m| !m.is_empty());
 	let mut engine = Engine::new(config);
 	if let Some(master_url) = master_url {
@@ -68,4 +70,48 @@ pub fn start() -> Result<(), JsValue> {
 		},
 	)
 	.map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Load-or-create the persistent identity secret (32 hex chars in
+/// localStorage). Private-mode/blocked storage degrades to a random
+/// per-session identity — the game still runs, persistence doesn't.
+fn load_identity() -> [u8; 16] {
+	let fresh = |storage: Option<&web_sys::Storage>| -> [u8; 16] {
+		let mut id = [0u8; 16];
+		let filled = web_sys::window()
+			.and_then(|w| w.crypto().ok())
+			.and_then(|c| c.get_random_values_with_u8_array(&mut id).ok())
+			.is_some();
+		if !filled {
+			// No crypto object (ancient browser): weak fallback, still
+			// unique enough for a per-session identity.
+			for (i, b) in id.iter_mut().enumerate() {
+				*b = (js_sys::Math::random() * 256.0) as u8 ^ (i as u8);
+			}
+		}
+		if let Some(s) = storage {
+			let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+			let _ = s.set_item("digblock.identity", &hex);
+		}
+		id
+	};
+	let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+		return fresh(None);
+	};
+	match storage.get_item("digblock.identity") {
+		Ok(Some(hex)) if hex.len() == 32 => {
+			let mut id = [0u8; 16];
+			let ok = (0..16).all(|i| {
+				u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+					.map(|b| id[i] = b)
+					.is_ok()
+			});
+			if ok && id != [0; 16] {
+				id
+			} else {
+				fresh(Some(&storage))
+			}
+		}
+		_ => fresh(Some(&storage)),
+	}
 }

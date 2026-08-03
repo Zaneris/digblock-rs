@@ -1,10 +1,12 @@
 use std::time::Duration;
 
 use digblock_core::chunk::ChunkPos;
+use digblock_core::hotbar::{Hotbar, HotbarItem};
+use digblock_core::inventory::Inventory;
 use digblock_core::metrics::{FrameTimings, Metrics, PipelineGauges};
 use digblock_core::pipeline::Pipeline;
 use digblock_core::player::{Player, PlayerIntent, TICK};
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{raycast, raycast_fluid, RayHit, REACH};
 use digblock_core::sun::Sun;
 use digblock_core::touch::{Phase, TouchDriver};
 use digblock_core::BlockType;
@@ -65,6 +67,10 @@ pub struct EngineConfig {
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
 	pub auto_join: Option<String>,
+	/// Persistent 16-byte identity secret keying the server-side persisted
+	/// inventory; all zeros = anonymous. The LAUNCHER fills this (desktop:
+	/// data-dir file; web: localStorage) — the engine stays env-free.
+	pub identity: [u8; 16],
 }
 
 impl EngineConfig {
@@ -91,6 +97,7 @@ impl EngineConfig {
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
+			identity: [0; 16],
 		}
 	}
 
@@ -117,6 +124,7 @@ impl EngineConfig {
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
+			identity: [0; 16],
 		}
 	}
 
@@ -187,12 +195,23 @@ pub struct Engine {
 	wide_due: bool,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
-	/// Click edges pending for the next update (left = dig, right = place).
-	click_dig: bool,
+	/// Left mouse button currently held (hold-to-dig); right stays an edge.
+	dig_held: bool,
 	click_place: bool,
-	/// What right-click places: the last block dug (default dirt), or a
-	/// water source armed via the B debug key.
-	held_block: BlockType,
+	/// In-progress hold-to-dig, advanced at 60 Hz while `dig_held` stays
+	/// on a valid, unchanged target.
+	dig: Option<DigProgress>,
+	/// Fixed-rate accumulator for the dig state machine — independent of
+	/// the walk/fly tick loops so digging works in both modes.
+	dig_accum: f32,
+	/// The block the crosshair rests on, recomputed every update (drives
+	/// the highlight overlay and the click/dig paths). Fluid-aware when
+	/// the water tool is selected.
+	target: Option<RayHit>,
+	/// Predicted block counts; the server's InventoryFull + per-edit
+	/// confirms/rejects keep it honest. Offline it is simply the truth.
+	inventory: Inventory,
+	hotbar: Hotbar,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -239,6 +258,15 @@ pub struct Engine {
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
+}
+
+/// Client-side hold-to-dig progress (mirrors the server's `DigState`;
+/// purely predictive — the server re-times the interval itself).
+struct DigProgress {
+	cell: (i32, i32, i32),
+	block: BlockType,
+	ticks: u16,
+	required: u16,
 }
 
 fn ms_since(t: web_time::Instant) -> f32 {
@@ -318,9 +346,13 @@ impl Engine {
 			wide_due: false,
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
-			click_dig: false,
+			dig_held: false,
 			click_place: false,
-			held_block: BlockType::Dirt,
+			dig: None,
+			dig_accum: 0.0,
+			target: None,
+			inventory: Inventory::default(),
+			hotbar: Hotbar::new(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
@@ -369,6 +401,7 @@ impl Engine {
 				name,
 				draw_dist: self.config.draw_dist,
 				token,
+				identity: self.config.identity,
 			},
 		));
 		// The server has no fly physics; walk is the only multiplayer mode.
@@ -392,6 +425,11 @@ impl Engine {
 		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
+		// The server's InventoryFull (right behind JournalDone) is the
+		// authoritative base; local single-player stock must not leak in.
+		self.inventory = Inventory::default();
+		self.dig = None;
+		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
 		self.flow_accum = 0.0;
 		self.tick_accum = 0.0;
@@ -443,11 +481,45 @@ impl Engine {
 					acked_input_tick,
 					me,
 				} => self.pending_ack = Some((acked_input_tick, me)),
-				NetEvent::Edit { cell, block } => self.apply_remote_edit(cell, block),
+				NetEvent::Edit {
+					cell,
+					block,
+					superseded,
+				} => {
+					self.apply_remote_edit(cell, block);
+					// Our predictions on this cell lost to authority: the
+					// cell is owned by the broadcast value, but the server
+					// never applied our inventory deltas — take them back.
+					for e in superseded {
+						self.revert_inv_delta(e.inv_delta);
+					}
+				}
 				NetEvent::EditRejected(e) => {
-					// Revert the predicted edit; held_block stays (cosmetic).
+					// Revert the predicted edit: the cell AND the
+					// inventory delta (dig credit / place debit).
 					self.pipeline
 						.set_block(e.cell.0, e.cell.1, e.cell.2, e.prev);
+					self.revert_inv_delta(e.inv_delta);
+				}
+				NetEvent::Inventory { counts } => {
+					// Authoritative base + our still-pending predictions.
+					let mut inv = Inventory::default();
+					for (b, n) in counts {
+						inv.add(b, n);
+					}
+					for e in net.edits.iter() {
+						match e.inv_delta {
+							Some((b, n)) if n > 0 => inv.add(b, n as u32),
+							Some((b, n)) if n < 0 => {
+								let _ = inv.try_take(b, (-n) as u32);
+							}
+							_ => {}
+						}
+					}
+					for (b, _) in inv.iter_nonzero() {
+						self.hotbar.auto_assign(b);
+					}
+					self.inventory = inv;
 				}
 				NetEvent::PlayerJoined { id, name } => {
 					self.push_feed(format!("{name} joined the server."));
@@ -579,86 +651,219 @@ impl Engine {
 		}
 	}
 
-	/// Resolve pending dig/place clicks against the world. Runs in update,
-	/// outside the physics `block_at` borrow: raycast (immutable) →
-	/// set_block (mutable) → player tick (immutable), strictly sequential.
-	fn apply_clicks(&mut self) {
-		let dig = std::mem::take(&mut self.click_dig);
-		let place = std::mem::take(&mut self.click_place);
-		if !dig && !place {
+	/// True while the water tool is the selected hotbar item — it changes
+	/// both the picking ray (fluid-aware) and what a dig/place means.
+	fn water_tool_selected(&self) -> bool {
+		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
+	}
+
+	/// Recompute the crosshair target (every update — it drives the
+	/// highlight overlay, the dig state machine, and placement).
+	fn update_target(&mut self) {
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		let pipeline = &self.pipeline;
+		let block_at = |x: i32, y: i32, z: i32| pipeline.block_at(x, y, z);
+		self.target = if self.water_tool_selected() {
+			raycast_fluid(origin, dir, REACH, &block_at)
+		} else {
+			raycast(origin, dir, REACH, &block_at)
+		};
+	}
+
+	/// Is `hit` something the current tool can dig?
+	fn diggable(&self, hit: &RayHit) -> bool {
+		if self.water_tool_selected() {
+			hit.block.is_fluid_source()
+		} else {
+			hit.block.props().collides && hit.block.hardness_ticks().is_some()
+		}
+	}
+
+	/// One 60 Hz step of the hold-to-dig state machine. Purely
+	/// predictive online — the server runs its own timer and aim checks.
+	fn step_dig(&mut self) {
+		if !self.dig_held {
+			self.cancel_dig();
 			return;
 		}
-		let (origin, dir) = (self.camera.pos, self.camera.dir());
-		let hit = {
-			let pipeline = &self.pipeline;
-			raycast(origin, dir, REACH, &|x, y, z| pipeline.block_at(x, y, z))
+		let valid = self.target.filter(|h| self.diggable(h));
+		let Some(hit) = valid else {
+			self.cancel_dig();
+			return;
 		};
-		let Some(hit) = hit else { return };
-		if dig {
-			if let Some(prev) =
-				self.pipeline
-					.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
-			{
-				self.held_block = prev;
-				match self.net.as_mut() {
-					Some(net) if net.ready() => {
-						// Predicted: the server confirms (no-op re-apply) or
-						// rejects (revert to prev via EditRejected).
-						let tick = net.predictor.current_tick();
-						let seq = net.edits.begin(hit.cell, prev, BlockType::Air, tick);
-						net.send_edit(
-							seq,
-							tick,
-							origin,
-							dir,
-							digblock_net::messages::EditKind::Dig,
-							hit.cell,
-							(0, 0, 0),
-						);
-					}
-					_ => {
-						self.fluid
-							.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
-					}
+		let on_same = self
+			.dig
+			.as_ref()
+			.is_some_and(|d| d.cell == hit.cell && d.block == hit.block);
+		if !on_same {
+			self.cancel_dig();
+			let required = hit.block.hardness_ticks().unwrap_or(u16::MAX);
+			self.dig = Some(DigProgress {
+				cell: hit.cell,
+				block: hit.block,
+				ticks: 0,
+				required,
+			});
+			if let Some(net) = self.net.as_mut() {
+				if net.ready() {
+					net.send_dig_start(hit.cell);
 				}
 			}
-		} else if hit.normal != (0, 0, 0) {
-			let target = (
-				hit.cell.0 + hit.normal.0,
-				hit.cell.1 + hit.normal.1,
-				hit.cell.2 + hit.normal.2,
-			);
-			// Never place inside the player — the shared occupied-cells
-			// contract (identical to the server's InsidePlayer scan).
-			let mut occupied = digblock_core::player::occupied_cells(self.camera.pos);
-			if occupied.all(|c| c != target) {
-				if let Some(prev) =
-					self.pipeline
-						.set_block(target.0, target.1, target.2, self.held_block)
-				{
-					match self.net.as_mut() {
-						Some(net) if net.ready() => {
-							let tick = net.predictor.current_tick();
-							let seq = net.edits.begin(target, prev, self.held_block, tick);
-							net.send_edit(
-								seq,
-								tick,
-								origin,
-								dir,
-								digblock_net::messages::EditKind::Place {
-									block: self.held_block as u16,
-								},
-								hit.cell,
-								hit.normal,
-							);
-						}
-						_ => {
-							self.fluid.schedule_around(target.0, target.1, target.2);
-						}
-					}
+			return;
+		}
+		let done = {
+			let d = self.dig.as_mut().expect("on_same checked");
+			d.ticks += 1;
+			d.ticks >= d.required
+		};
+		if done {
+			self.dig = None;
+			self.complete_dig(hit);
+		}
+	}
+
+	/// Abandon any in-progress hold (release, retarget, invalid target).
+	fn cancel_dig(&mut self) {
+		if self.dig.take().is_some() {
+			if let Some(net) = self.net.as_mut() {
+				if net.ready() {
+					net.send_dig_cancel();
 				}
 			}
 		}
+	}
+
+	/// The hold finished: apply the predicted dig/collect and credit the
+	/// drop. The server confirms (no-op) or rejects (cell + credit revert).
+	fn complete_dig(&mut self, hit: RayHit) {
+		let Some(prev) =
+			self.pipeline
+				.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
+		else {
+			return;
+		};
+		let drop = prev.dig_drop();
+		if let Some(d) = drop {
+			self.inventory.add(d, 1);
+			self.hotbar.auto_assign(d);
+		}
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		match self.net.as_mut() {
+			Some(net) if net.ready() => {
+				let kind = if self.hotbar.selected_item() == Some(HotbarItem::WaterTool) {
+					digblock_net::messages::EditKind::Collect
+				} else {
+					digblock_net::messages::EditKind::Dig
+				};
+				let tick = net.predictor.current_tick();
+				let seq =
+					net.edits
+						.begin(hit.cell, prev, BlockType::Air, tick, drop.map(|d| (d, 1)));
+				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0));
+			}
+			_ => {
+				self.fluid
+					.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
+			}
+		}
+	}
+
+	/// Resolve a pending right-click against the current target. Placement
+	/// is gated on stock — "you can only place what you gathered".
+	fn apply_place(&mut self) {
+		if !std::mem::take(&mut self.click_place) {
+			return;
+		}
+		let Some(hit) = self.target else { return };
+		if hit.normal == (0, 0, 0) {
+			return;
+		}
+		let block = match self.hotbar.selected_item() {
+			Some(HotbarItem::Block(b)) => b,
+			Some(HotbarItem::WaterTool) => BlockType::Water,
+			None => return,
+		};
+		let target = (
+			hit.cell.0 + hit.normal.0,
+			hit.cell.1 + hit.normal.1,
+			hit.cell.2 + hit.normal.2,
+		);
+		// Never place inside the player — the shared occupied-cells
+		// contract (identical to the server's InsidePlayer scan).
+		let mut occupied = digblock_core::player::occupied_cells(self.camera.pos);
+		if occupied.any(|c| c == target) {
+			return;
+		}
+		// Stock gate BEFORE the world mutation: no stock, no prediction.
+		if !self.inventory.try_take(block, 1) {
+			return;
+		}
+		let Some(prev) = self.pipeline.set_block(target.0, target.1, target.2, block) else {
+			self.inventory.add(block, 1); // refund: nothing happened
+			return;
+		};
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		match self.net.as_mut() {
+			Some(net) if net.ready() => {
+				let tick = net.predictor.current_tick();
+				let seq = net
+					.edits
+					.begin(target, prev, block, tick, Some((block, -1)));
+				net.send_edit(
+					seq,
+					tick,
+					origin,
+					dir,
+					digblock_net::messages::EditKind::Place {
+						block: block as u16,
+					},
+					hit.cell,
+					hit.normal,
+				);
+			}
+			_ => {
+				self.fluid.schedule_around(target.0, target.1, target.2);
+			}
+		}
+	}
+
+	/// Undo one pending edit's predicted inventory delta (rejection or
+	/// authoritative supersede).
+	fn revert_inv_delta(&mut self, delta: Option<(BlockType, i32)>) {
+		match delta {
+			Some((b, n)) if n > 0 => {
+				// A credited dig didn't happen: take the credit back.
+				let _ = self.inventory.try_take(b, n as u32);
+			}
+			Some((b, n)) if n < 0 => {
+				// A debited place didn't happen: refund.
+				self.inventory.add(b, (-n) as u32);
+			}
+			_ => {}
+		}
+	}
+
+	/// Crosshair cell + dig progress for the highlight overlay: `None`
+	/// progress = idle outline.
+	pub fn dig_progress(&self) -> Option<((i32, i32, i32), Option<f32>)> {
+		let hit = self.target.as_ref()?;
+		if !self.diggable(hit) {
+			return None;
+		}
+		let progress = self
+			.dig
+			.as_ref()
+			.filter(|d| d.cell == hit.cell)
+			.map(|d| (d.ticks as f32 / d.required.max(1) as f32).min(1.0));
+		Some((hit.cell, progress))
+	}
+
+	pub fn inventory(&self) -> &Inventory {
+		&self.inventory
+	}
+
+	pub fn hotbar(&self) -> &Hotbar {
+		&self.hotbar
 	}
 
 	/// Camera eye inside a water block? (None = unloaded = dry.)
@@ -798,10 +1003,9 @@ impl Game for Engine {
 					}
 					self.fly_key_down = pressed;
 				}
-				Key::B => {
+				Key::Digit(n) => {
 					if pressed {
-						self.held_block = BlockType::Water;
-						log::info!("held block: water source (debug)");
+						self.hotbar.select_digit(n);
 					}
 				}
 				Key::Backquote => {
@@ -812,6 +1016,7 @@ impl Game for Engine {
 				}
 				Key::Escape => {
 					if pressed {
+						self.dig_held = false;
 						self.menu.open();
 					}
 				}
@@ -821,22 +1026,25 @@ impl Game for Engine {
 				self.look_accum.0 += dx as f32;
 				self.look_accum.1 += dy as f32;
 			}
-			InputEvent::MouseButton { button, pressed } => {
-				if pressed {
-					match button {
-						MouseButton::Left => self.click_dig = true,
-						MouseButton::Right => self.click_place = true,
-						MouseButton::Other => {}
+			InputEvent::Scroll { dy } => self.hotbar.scroll(dy),
+			InputEvent::MouseButton { button, pressed } => match button {
+				MouseButton::Left => self.dig_held = pressed,
+				MouseButton::Right => {
+					if pressed {
+						self.click_place = true;
 					}
 				}
-			}
+				MouseButton::Other => {}
+			},
 			InputEvent::FocusLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
+				self.dig_held = false;
 			}
 			InputEvent::PointerLockLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
+				self.dig_held = false;
 				// Web parity with desktop Escape: a browser-initiated unlock
 				// pauses into the menu (no-op when the menu is disabled — the
 				// shell's click-to-recapture covers that case).
@@ -947,7 +1155,18 @@ impl Game for Engine {
 			}
 		}
 
-		self.apply_clicks();
+		// Crosshair target → placement edge → hold-to-dig stepping (fixed
+		// 60 Hz so offline and online dig timing share the server's tick
+		// domain, in walk AND fly mode). All outside the physics
+		// `block_at` borrow: raycast (immutable) → set_block (mutable) →
+		// player tick (immutable), strictly sequential.
+		self.update_target();
+		self.apply_place();
+		self.dig_accum = (self.dig_accum + dt).min(0.25);
+		while self.dig_accum >= TICK {
+			self.dig_accum -= TICK;
+			self.step_dig();
+		}
 
 		// Water flow runs on its own world-tick cadence, independent of
 		// the walk/fly camera mode; idle (empty queue) it costs nothing.
@@ -1088,6 +1307,13 @@ impl Game for Engine {
 			.menu
 			.is_open()
 			.then(|| self.menu.view(size, (self.time_secs * 2.0) as u32 % 2 == 0));
+		// HUD state gates with the crosshair: hidden under the menu and in
+		// bench captures' default state comparability is preserved (bench
+		// never digs, hotbar renders its fixed default row).
+		let in_game = menu_view.is_none();
+		let hotbar_view =
+			in_game.then(|| crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory));
+		let highlight_target = if in_game { self.dig_progress() } else { None };
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
@@ -1103,6 +1329,8 @@ impl Game for Engine {
 					.map(|s| (s, self.history_scratch.as_slice())),
 				feed: &self.feed,
 				menu: menu_view.as_ref(),
+				target: highlight_target,
+				hotbar: hotbar_view.as_ref(),
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);

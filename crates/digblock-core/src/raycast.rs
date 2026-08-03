@@ -8,30 +8,53 @@ use glam::Vec3;
 /// The player's reach for digging and placing, in blocks.
 pub const REACH: f32 = 5.0;
 
+#[derive(Clone, Copy, Debug)]
 pub struct RayHit {
-	/// The colliding cell the ray stopped in.
+	/// The stopping cell (colliding, or matching the caller's `stops`
+	/// predicate in `raycast_with`).
 	pub cell: (i32, i32, i32),
 	/// Unit normal of the face entered through; the placement cell is
-	/// `cell + normal`. All zero when the origin was inside a colliding
+	/// `cell + normal`. All zero when the origin was inside a stopping
 	/// block (dig is fine, placement must be rejected).
 	pub normal: (i32, i32, i32),
 	pub block: BlockType,
 }
 
-fn hits(b: Option<BlockType>) -> Option<BlockType> {
-	// Unloaded (None) passes through, matching physics; water and air
-	// don't collide and are transparent to the ray.
-	b.filter(|bt| bt.props().collides)
-}
-
 /// Walk the grid from `origin` along `dir` up to `max_dist`, returning the
-/// first colliding block.
+/// first colliding block. Unloaded (None) cells pass through, matching
+/// physics; water and air don't collide and are transparent to the ray.
 pub fn raycast(
 	origin: Vec3,
 	dir: Vec3,
 	max_dist: f32,
 	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
 ) -> Option<RayHit> {
+	raycast_with(origin, dir, max_dist, block_at, &|b| b.props().collides)
+}
+
+/// Water-tool picking: stops at colliding blocks AND fluid sources, so a
+/// source is targetable while flow/fall sheets stay transparent. Used
+/// identically by the client pick and the server's re-validation.
+pub fn raycast_fluid(
+	origin: Vec3,
+	dir: Vec3,
+	max_dist: f32,
+	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+) -> Option<RayHit> {
+	raycast_with(origin, dir, max_dist, block_at, &|b| {
+		b.props().collides || b.is_fluid_source()
+	})
+}
+
+/// The general walk: `stops` decides which loaded blocks end the ray.
+pub fn raycast_with(
+	origin: Vec3,
+	dir: Vec3,
+	max_dist: f32,
+	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+	stops: &dyn Fn(BlockType) -> bool,
+) -> Option<RayHit> {
+	let hits = |b: Option<BlockType>| b.filter(|&bt| stops(bt));
 	let dir = dir.normalize_or_zero();
 	if dir == Vec3::ZERO {
 		return None;
@@ -149,5 +172,27 @@ mod tests {
 	#[test]
 	fn zero_direction_is_none() {
 		assert!(raycast(Vec3::new(0.5, 20.0, 0.5), Vec3::ZERO, REACH, &flat).is_none());
+	}
+
+	#[test]
+	fn fluid_ray_stops_at_sources_only() {
+		// Falling sheet over a flow layer over a source over dirt.
+		let world = |_x: i32, y: i32, _z: i32| {
+			Some(match y {
+				..=4 => B::Dirt,
+				5 => B::Water,
+				6 => B::WaterFlow3,
+				7..=9 => B::WaterFall,
+				_ => B::Air,
+			})
+		};
+		let hit = raycast_fluid(Vec3::new(0.5, 11.5, 0.5), Vec3::NEG_Y, 20.0, &world).unwrap();
+		assert_eq!(hit.cell, (0, 5, 0), "fall and flow are transparent");
+		assert_eq!(hit.block, B::Water);
+		assert_eq!(hit.normal, (0, 1, 0));
+
+		// The plain ray still passes the whole water column.
+		let hit = raycast(Vec3::new(0.5, 11.5, 0.5), Vec3::NEG_Y, 20.0, &world).unwrap();
+		assert_eq!(hit.cell, (0, 4, 0));
 	}
 }

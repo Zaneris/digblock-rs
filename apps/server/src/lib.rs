@@ -2,6 +2,7 @@
 //! the `bot` bin, and the e2e tests share one implementation. Headless:
 //! digblock-core + digblock-net only — no GPU, no windowing.
 
+pub mod inventory_store;
 pub mod journal;
 pub mod master;
 pub mod net;

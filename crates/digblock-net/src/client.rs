@@ -23,6 +23,9 @@ pub struct NetClientConfig {
 	/// and verified server-side before admission. All zeros = no token
 	/// (loopback tests only — real servers refuse it).
 	pub token: [u8; 16],
+	/// Persistent client identity secret; keys the server-side persisted
+	/// inventory. All zeros = anonymous (session-only inventory).
+	pub identity: [u8; 16],
 }
 
 #[derive(Debug)]
@@ -44,14 +47,24 @@ pub enum NetEvent {
 		me: digblock_core::player::PlayerState,
 	},
 	/// Authoritative block value for a cell — apply directly (no-op if
-	/// already predicted).
+	/// already predicted). `superseded` carries any of our own pending
+	/// predictions this write cancelled: revert their `inv_delta`s only,
+	/// never their cells (the authoritative value owns the cell).
 	Edit {
 		cell: (i32, i32, i32),
 		block: BlockType,
+		superseded: Vec<PendingEdit>,
 	},
 	/// Our predicted edit was rejected and no authoritative write has
-	/// superseded it — revert the cell to `.prev`.
+	/// superseded it — revert the cell to `.prev` AND the predicted
+	/// `.inv_delta`.
 	EditRejected(PendingEdit),
+	/// Authoritative inventory snapshot: re-base the local counts as
+	/// `snapshot + Σ pending inv_deltas` (order-independent with the
+	/// per-edit reverts).
+	Inventory {
+		counts: Vec<(BlockType, u32)>,
+	},
 	/// Another player joined. Also delivered as a roster right after
 	/// Welcome: one event per player already online.
 	PlayerJoined {
@@ -246,6 +259,7 @@ impl NetClient {
 			token: self.config.token,
 			sim_version: digblock_core::SIM_VERSION,
 			build: env!("CARGO_PKG_VERSION").into(),
+			identity: self.config.identity,
 		};
 		if codec::write_frame(&hello, &mut buf).is_ok() {
 			self.transport.send_reliable(&buf);
@@ -299,6 +313,7 @@ impl NetClient {
 						out.push(NetEvent::Edit {
 							cell: (c.x, c.y, c.z),
 							block,
+							superseded: Vec::new(),
 						});
 					}
 				}
@@ -314,9 +329,19 @@ impl NetClient {
 					self.edits.confirm(client_seq);
 				}
 				let cell = (edit.x, edit.y, edit.z);
-				self.edits.on_authoritative(cell);
+				let superseded = self.edits.on_authoritative(cell);
 				if let Some(block) = block_from_id(edit.block) {
-					out.push(NetEvent::Edit { cell, block });
+					out.push(NetEvent::Edit {
+						cell,
+						block,
+						superseded,
+					});
+				} else {
+					// Unknown block id from a newer server: the cell can't
+					// be applied, but the inventory reverts still must be.
+					for e in superseded {
+						out.push(NetEvent::EditRejected(e));
+					}
 				}
 			}
 			ServerMsg::EditRejected { client_seq, reason } => {
@@ -330,6 +355,15 @@ impl NetClient {
 			ServerMsg::PlayerLeft { id } => {
 				self.remotes.remove(id);
 				out.push(NetEvent::PlayerLeft { id });
+			}
+			ServerMsg::InventoryFull { counts } => {
+				// Strict decode; unknown ids can't occur with a matching
+				// sim_version but must not panic either.
+				let counts = counts
+					.into_iter()
+					.filter_map(|(id, n)| block_from_id(id).map(|b| (b, n)))
+					.collect();
+				out.push(NetEvent::Inventory { counts });
 			}
 		}
 	}
@@ -405,6 +439,26 @@ impl NetClient {
 		};
 		let mut buf = Vec::new();
 		if codec::write_frame(&msg, &mut buf).is_ok() {
+			self.transport.send_reliable(&buf);
+		}
+	}
+
+	/// Announce a hold-to-dig beginning on `cell` (reliable, in-order
+	/// with the completing `send_edit` — the server times the interval).
+	pub fn send_dig_start(&mut self, cell: (i32, i32, i32)) {
+		self.send_msg(&ClientMsg::DigStart {
+			cell: [cell.0, cell.1, cell.2],
+		});
+	}
+
+	/// The hold was released or retargeted before completing.
+	pub fn send_dig_cancel(&mut self) {
+		self.send_msg(&ClientMsg::DigCancel);
+	}
+
+	fn send_msg(&mut self, msg: &ClientMsg) {
+		let mut buf = Vec::new();
+		if codec::write_frame(msg, &mut buf).is_ok() {
 			self.transport.send_reliable(&buf);
 		}
 	}

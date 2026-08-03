@@ -10,12 +10,15 @@ pub type PlayerId = u8;
 /// Author id for server-originated edits (fluid simulation).
 pub const SERVER_ID: PlayerId = u8::MAX;
 
-pub const PROTOCOL_VERSION: u16 = 3;
+/// v4: timed digging (DigStart/DigCancel, Collect, DigIncomplete),
+/// server-authoritative inventory (NoStock, InventoryFull), and the
+/// persistent identity field appended to Hello.
+pub const PROTOCOL_VERSION: u16 = 4;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 3;
+pub const MIN_PROTOCOL: u16 = 4;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -106,6 +109,30 @@ pub const MAX_FRAME: usize = 1 << 20;
 /// position by at most this many blocks.
 pub const EDIT_POS_TOLERANCE: f32 = 1.0;
 
+/// Timed digging: a completing Dig/Collect is accepted when the server
+/// has counted at least `hardness - dig_grace(hardness)` aim-verified
+/// ticks on the hold. The grace absorbs the honest shortfall — the
+/// first verify lands a tick after DigStart, and the server's look lags
+/// the client's by the input jitter buffer — and is what a cheat gains
+/// per dig, so it scales with the dig instead of being a flat cut:
+/// 20% of the hold, floored at the constant honest overhead and capped
+/// at 200 ms (a long dig doesn't need proportionally more slack).
+pub const DIG_GRACE_MIN: u32 = 4;
+/// Upper clamp of [`dig_grace`] (~200 ms).
+pub const DIG_GRACE_MAX: u32 = 12;
+
+/// Completion grace in ticks for a block of the given hardness.
+pub fn dig_grace(hardness_ticks: u32) -> u32 {
+	(hardness_ticks / 5).clamp(DIG_GRACE_MIN, DIG_GRACE_MAX)
+}
+
+/// The server re-raycasts each digging client's aim every tick from its
+/// own simulated state. A missed tick just doesn't count toward the
+/// hold (a pause, not a reset — transient misses are expected from
+/// honest clients: look lag, reconciliation camera offsets); only this
+/// many CONSECUTIVE misses abandons the hold outright (~500 ms).
+pub const DIG_OFF_TARGET_RESET: u32 = 30;
+
 /// Movement adoption envelope: a claimed post-tick position within this
 /// distance of the server's own simulation is adopted as authoritative,
 /// re-zeroing drift so honest clients never rubber-band.
@@ -159,3 +186,20 @@ const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 37 + 13 <= MAX_DATAGRAM);
 /// vanishes instead of ghosting at the extrapolation cap. `PlayerLeft`
 /// still removes eagerly.
 pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The grace scales with the dig so a cheat's gain stays a small
+	/// fraction: cheap blocks get the honest-overhead floor, mid blocks
+	/// 20%, and long digs clamp at ~200 ms.
+	#[test]
+	fn dig_grace_scales_with_hardness() {
+		assert_eq!(dig_grace(10), DIG_GRACE_MIN); // leaves: floor
+		assert_eq!(dig_grace(20), DIG_GRACE_MIN); // water: floor
+		assert_eq!(dig_grace(30), 6); // dirt (500 ms): 100 ms
+		assert_eq!(dig_grace(60), DIG_GRACE_MAX); // wood: cap
+		assert_eq!(dig_grace(90), DIG_GRACE_MAX); // stone: cap
+	}
+}

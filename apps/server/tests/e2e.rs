@@ -246,6 +246,9 @@ struct TestClient {
 	edits: FxHashMap<(i32, i32, i32), BlockType>,
 	acks: u32,
 	joined_names: Vec<String>,
+	/// Authoritative inventory snapshots received (join sends one right
+	/// after JournalDone — the reliable-ordering proof over real QUIC).
+	inventories: Vec<Vec<(BlockType, u32)>>,
 }
 
 impl TestClient {
@@ -258,6 +261,7 @@ impl TestClient {
 					name: name.into(),
 					draw_dist: 4,
 					token,
+					identity: [0; 16],
 				},
 			),
 			events: Vec::new(),
@@ -267,6 +271,7 @@ impl TestClient {
 			edits: FxHashMap::default(),
 			acks: 0,
 			joined_names: Vec::new(),
+			inventories: Vec::new(),
 		}
 	}
 
@@ -280,7 +285,7 @@ impl TestClient {
 					self.spawn = spawn;
 					self.welcomed = true;
 				}
-				NetEvent::Edit { cell, block } => {
+				NetEvent::Edit { cell, block, .. } => {
 					self.edits.insert(cell, block);
 				}
 				NetEvent::Ack { .. } => self.acks += 1,
@@ -289,8 +294,57 @@ impl TestClient {
 				NetEvent::EditRejected(e) => panic!("edit rejected: {e:?}"),
 				NetEvent::PlayerJoined { name, .. } => self.joined_names.push(name),
 				NetEvent::PlayerLeft { .. } => {}
+				NetEvent::Inventory { counts } => self.inventories.push(counts),
 			}
 		}
+	}
+
+	/// The real timed-dig flow: aim, DigStart, hold for the block's
+	/// hardness (plus margin), then the completing Dig request. Paced at
+	/// real 60 Hz — the server's aim verification tracks wall clock.
+	fn timed_dig(
+		&mut self,
+		player: &mut Player,
+		world: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+		dir: Vec3,
+		hit: &digblock_core::raycast::RayHit,
+	) {
+		// Prime the aim so the server's look already points at the cell
+		// when the hold starts (and any input backlog drains).
+		for _ in 0..12 {
+			self.client
+				.predictor
+				.predict(player, Default::default(), dir, world);
+			self.client.send_inputs();
+			self.pump();
+			std::thread::sleep(Duration::from_millis(16));
+		}
+		self.client.send_dig_start(hit.cell);
+		let hold = hit.block.hardness_ticks().expect("diggable target") as u32 + 6;
+		for _ in 0..hold {
+			self.client
+				.predictor
+				.predict(player, Default::default(), dir, world);
+			self.client.send_inputs();
+			self.pump();
+			std::thread::sleep(Duration::from_millis(16));
+		}
+		let seq = self.client.edits.begin(
+			hit.cell,
+			hit.block,
+			BlockType::Air,
+			0,
+			hit.block.dig_drop().map(|d| (d, 1)),
+		);
+		self.client.send_edit(
+			seq,
+			self.client.predictor.current_tick(),
+			player.pos,
+			dir,
+			EditKind::Dig,
+			hit.cell,
+			(0, 0, 0),
+		);
 	}
 
 	fn wait(&mut self, what: &str, mut done: impl FnMut(&Self) -> bool) {
@@ -311,6 +365,7 @@ fn expect_refused(url: &str, token: [u8; 16], substr: &str) {
 			name: "x".into(),
 			draw_dist: 4,
 			token,
+			identity: [0; 16],
 		},
 	);
 	let deadline = Instant::now() + Duration::from_secs(30);
@@ -351,6 +406,9 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	);
 	let mut a = TestClient::connect(&server.url, "a", token_a);
 	a.wait("welcome", |c| c.welcomed);
+	// InventoryFull follows JournalDone on the reliable stream — its
+	// arrival proves the v4 join-sync ordering over real QUIC.
+	a.wait("inventory base", |c| !c.inventories.is_empty());
 	a.wait("first snapshot", |c| c.acks > 0);
 
 	// A's local world: cached build_column — bit-identical to the
@@ -370,29 +428,22 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	};
 	let mut player = Player::new(a.spawn);
 	// Predicted idle ticks: inputs flow, and both the server player and
-	// this local twin settle onto the same ground fixed point.
+	// this local twin settle onto the same ground fixed point. Real-time
+	// paced — racing ahead of the 60 Hz server builds an input backlog
+	// that leaves its look direction stale through the dig's aim checks.
 	for _ in 0..60 {
 		a.client
 			.predictor
 			.predict(&mut player, Default::default(), Vec3::Z, &world);
 		a.client.send_inputs();
 		a.pump();
-		std::thread::sleep(Duration::from_millis(2));
+		std::thread::sleep(Duration::from_millis(16));
 	}
 	// Dig at an angle so the ground under the player stays intact (a
 	// hole underfoot would drop the server player away from our claims).
 	let dig_dir = Vec3::new(0.45, -1.0, 0.0).normalize();
 	let hit = raycast(player.pos, dig_dir, REACH, &world).expect("ground beside spawn");
-	let seq = a.client.edits.begin(hit.cell, hit.block, BlockType::Air, 0);
-	a.client.send_edit(
-		seq,
-		a.client.predictor.current_tick(),
-		player.pos,
-		dig_dir,
-		EditKind::Dig,
-		hit.cell,
-		(0, 0, 0),
-	);
+	a.timed_dig(&mut player, &world, dig_dir, &hit);
 	// A receives its own confirm as an authoritative Edit.
 	a.wait("dig confirm", |c| {
 		c.edits.get(&hit.cell) == Some(&BlockType::Air)
@@ -410,28 +461,16 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	// Live path: A digs a second block (mirrored angle, ground intact
 	// underfoot); B (already connected) sees the broadcast.
 	let dig_dir2 = Vec3::new(-0.45, -1.0, 0.0).normalize();
-	let hit2 = raycast(player.pos, dig_dir2, REACH, &|x, y, z| {
+	let patched = |x: i32, y: i32, z: i32| {
 		if (x, y, z) == hit.cell {
 			Some(BlockType::Air)
 		} else {
 			world(x, y, z)
 		}
-	})
-	.expect("second target");
+	};
+	let hit2 = raycast(player.pos, dig_dir2, REACH, &patched).expect("second target");
 	assert_ne!(hit2.cell, hit.cell);
-	let seq = a
-		.client
-		.edits
-		.begin(hit2.cell, hit2.block, BlockType::Air, 0);
-	a.client.send_edit(
-		seq,
-		a.client.predictor.current_tick(),
-		player.pos,
-		dig_dir2,
-		EditKind::Dig,
-		hit2.cell,
-		(0, 0, 0),
-	);
+	a.timed_dig(&mut player, &patched, dig_dir2, &hit2);
 	b.wait("live edit broadcast", |c| {
 		c.edits.get(&hit2.cell) == Some(&BlockType::Air)
 	});

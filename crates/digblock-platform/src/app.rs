@@ -902,6 +902,20 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 					});
 				}
 			}
+			WindowEvent::MouseWheel { delta, .. } => {
+				// Gameplay-only (hotbar selection), gated like MouseInput; the
+				// menu has no scroll region today.
+				if self.cursor_grabbed {
+					use winit::event::MouseScrollDelta;
+					let dy = match delta {
+						MouseScrollDelta::LineDelta(_, y) => y,
+						MouseScrollDelta::PixelDelta(p) => (p.y / 50.0) as f32,
+					};
+					if dy != 0.0 {
+						self.game.input(InputEvent::Scroll { dy });
+					}
+				}
+			}
 			WindowEvent::Touch(t) => {
 				if let AppState::Running(r) = &self.state {
 					let size = r.window.inner_size();

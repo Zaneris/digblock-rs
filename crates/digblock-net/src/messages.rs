@@ -63,6 +63,10 @@ pub enum EditKind {
 	Place {
 		block: u16,
 	},
+	/// Water-tool collect: validated with the fluid-aware raycast; the
+	/// hit must be a fluid source. Applies Air, credits Water. Subject to
+	/// the same hold-to-dig timing gate as `Dig`.
+	Collect,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -91,6 +95,10 @@ pub enum ClientMsg {
 		sim_version: u16,
 		/// Informational build string (diagnostics only).
 		build: String,
+		/// Persistent 16-byte client identity secret; all zeros =
+		/// anonymous (no persistent inventory, no duplicate check). The
+		/// server stores only a hash of it.
+		identity: [u8; 16],
 	},
 	EditRequest {
 		/// Per-connection sequence, echoed back for confirm/reject.
@@ -107,6 +115,15 @@ pub enum ClientMsg {
 		normal: [i8; 3],
 	},
 	Bye,
+	/// Hold-to-dig began on `cell` (dig or water-collect — the server
+	/// captures the cell's current block itself; a content change resets
+	/// the hold). Replaces any prior hold for this client.
+	DigStart {
+		cell: [i32; 3],
+	},
+	/// Hold released or retargeted before completing. Hygiene only — the
+	/// server also self-resets via its per-tick aim check.
+	DigCancel,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -119,6 +136,12 @@ pub enum RejectReason {
 	BadBlock,
 	/// The server cannot persist edits right now (journal unhealthy).
 	ServerError,
+	/// Timed dig not satisfied: no hold on record for this cell, or not
+	/// enough elapsed ticks (hardness minus the grace).
+	DigIncomplete,
+	/// Place refused: no stock of that block (an `InventoryFull` snapshot
+	/// follows so the client can re-base).
+	NoStock,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -172,6 +195,13 @@ pub enum ServerMsg {
 	PlayerLeft {
 		id: PlayerId,
 	},
+	/// Authoritative inventory snapshot: (block id, count) pairs, absent
+	/// = zero. Sent after `JournalDone` on join and alongside every
+	/// `NoStock` rejection (drift-repair backstop); every other
+	/// transition is implicit in the predict/confirm/reject flow.
+	InventoryFull {
+		counts: Vec<(u16, u32)>,
+	},
 }
 
 #[cfg(test)]
@@ -189,6 +219,7 @@ mod tests {
 				token: [7; 16],
 				sim_version: 1,
 				build: "0.1.0".into(),
+				identity: [3; 16],
 			},
 			ClientMsg::EditRequest {
 				seq: 7,
@@ -199,7 +230,18 @@ mod tests {
 				cell: [1, 138, -3],
 				normal: [0, 1, 0],
 			},
+			ClientMsg::EditRequest {
+				seq: 8,
+				tick: 1240,
+				origin: [1.0, 140.0, -3.0],
+				dir: [0.0, -1.0, 0.0],
+				kind: EditKind::Collect,
+				cell: [1, 138, -3],
+				normal: [0, 0, 0],
+			},
 			ClientMsg::Bye,
+			ClientMsg::DigStart { cell: [1, 138, -3] },
+			ClientMsg::DigCancel,
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -254,11 +296,22 @@ mod tests {
 				client_seq: 9,
 				reason: RejectReason::OutOfReach,
 			},
+			ServerMsg::EditRejected {
+				client_seq: 10,
+				reason: RejectReason::DigIncomplete,
+			},
+			ServerMsg::EditRejected {
+				client_seq: 11,
+				reason: RejectReason::NoStock,
+			},
 			ServerMsg::PlayerJoined {
 				id: 4,
 				name: "bot".into(),
 			},
 			ServerMsg::PlayerLeft { id: 4 },
+			ServerMsg::InventoryFull {
+				counts: vec![(2, 3), (5, 1)],
+			},
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -325,12 +378,17 @@ mod tests {
 			token: [1; 16],
 			sim_version: 1,
 			build: "b".into(),
+			identity: [3; 16],
 		};
 		assert_eq!(
 			postcard::to_stdvec(&hello).unwrap(),
 			// variant 0, protocol 2, name "ab", draw_dist zigzag 8,
-			// 16 raw token bytes, sim_version 1, build "b"
-			vec![0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98]
+			// 16 raw token bytes, sim_version 1, build "b",
+			// 16 raw identity bytes (appended in v4)
+			vec![
+				0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98, 3, 3,
+				3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+			]
 		);
 
 		let welcome = ServerMsg::Welcome {
@@ -372,6 +430,28 @@ mod tests {
 				1, 6, 5, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
 			]
+		);
+	}
+
+	/// Golden bytes for the v4 additions: the dig-hold announcement and
+	/// the inventory snapshot. Same contract as the goldens above.
+	#[test]
+	fn golden_dig_and_inventory_encoding() {
+		let dig = ClientMsg::DigStart { cell: [1, 138, -3] };
+		assert_eq!(
+			postcard::to_stdvec(&dig).unwrap(),
+			// variant 3, zigzag varints 1/138/-3
+			vec![3, 2, 148, 2, 5]
+		);
+		assert_eq!(postcard::to_stdvec(&ClientMsg::DigCancel).unwrap(), vec![4]);
+
+		let inv = ServerMsg::InventoryFull {
+			counts: vec![(2, 3), (5, 1)],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&inv).unwrap(),
+			// variant 8, seq len 2, pairs (2,3) (5,1) as varints
+			vec![8, 2, 2, 3, 5, 1]
 		);
 	}
 }

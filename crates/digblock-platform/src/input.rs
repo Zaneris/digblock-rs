@@ -13,8 +13,9 @@ pub enum Key {
 	Space,
 	Shift,
 	F,
-	/// Debug: arm water-source placement.
-	B,
+	/// Number row digit 0..=9 (hotbar slot selection; numpad excluded —
+	/// NumLock ambiguity isn't worth it).
+	Digit(u8),
 	/// Grave/backtick: debug overlay toggle.
 	Backquote,
 	Escape,
@@ -49,6 +50,12 @@ pub enum InputEvent {
 	MouseDelta {
 		dx: f64,
 		dy: f64,
+	},
+	/// Vertical scroll in "wheel notches" (+1 = one notch away from the
+	/// user). Line deltas pass through; pixel deltas (trackpads, web) are
+	/// scaled down. Only sent while the cursor is captured.
+	Scroll {
+		dy: f32,
 	},
 	/// Mouse buttons. While the cursor is captured these are gameplay
 	/// clicks; while free (menu open, i.e. the game doesn't want the grab)
@@ -98,7 +105,16 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Space => Key::Space,
 		K::ShiftLeft | K::ShiftRight => Key::Shift,
 		K::KeyF => Key::F,
-		K::KeyB => Key::B,
+		K::Digit0 => Key::Digit(0),
+		K::Digit1 => Key::Digit(1),
+		K::Digit2 => Key::Digit(2),
+		K::Digit3 => Key::Digit(3),
+		K::Digit4 => Key::Digit(4),
+		K::Digit5 => Key::Digit(5),
+		K::Digit6 => Key::Digit(6),
+		K::Digit7 => Key::Digit(7),
+		K::Digit8 => Key::Digit(8),
+		K::Digit9 => Key::Digit(9),
 		K::Backquote => Key::Backquote,
 		K::Escape => Key::Escape,
 		K::Enter | K::NumpadEnter => Key::Enter,

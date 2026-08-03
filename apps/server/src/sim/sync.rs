@@ -223,32 +223,18 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 #[cfg(test)]
 mod tests {
 	use super::super::harness::*;
-	use super::super::{Sim, SimEvent};
-	use digblock_core::raycast::{raycast, REACH};
-	use digblock_net::messages::{ClientMsg, EditKind, InputTick, ServerMsg};
+	use super::super::Sim;
+	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
 	use glam::Vec3;
 
 	fn dig_under(sim: &mut super::super::Sim, conn_id: u64, seq: u32) -> (i32, i32, i32) {
-		let pos = sim.test_player(conn_id).unwrap().pos;
 		// At an angle: the ground under the player's feet stays intact so
 		// it can still walk (a hole underfoot would trap it in the pit).
+		// Full timed flow: the flat world is stone (90-tick hardness).
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z))
-			.expect("ground under player");
-		sim.tick_once(vec![SimEvent::Msg {
-			conn_id,
-			msg: ClientMsg::EditRequest {
-				seq,
-				tick: 0,
-				origin: pos.to_array(),
-				dir: down.to_array(),
-				kind: EditKind::Dig,
-				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
-				normal: [0, 0, 0],
-			},
-		}]);
-		hit.cell
+		let mut t = 0;
+		dig_hold(sim, conn_id, down, 90, seq, EditKind::Dig, &mut t)
 	}
 
 	fn walk(tick: u32, dz: f32) -> InputTick {

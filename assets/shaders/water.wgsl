@@ -435,12 +435,14 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	col += frame.light_color.rgb * lip * sh * 0.15;
 	let f = clamp((i.fog_dist - frame.fog_color.w) * frame.cam_pos.w, 0.0, 1.0);
 	col = mix(col, frame.fog_color.rgb, f * f * (3.0 - 2.0 * f));
-	// Alpha: the fresnel base, forced opaque where absorption ate the
-	// background (col already composites the refracted scene there, and
-	// the dst pixel holds the untinted scene — letting it through would
-	// wash the depth tint out). Aeration pins near-opaque; streak gaps
+	// Alpha: the fresnel base, pushed toward opaque where absorption ate
+	// the background (col already composites the refracted scene there,
+	// and the dst pixel holds the untinted scene — letting much of it
+	// through would wash the depth tint out). Capped short of 1.0 so the
+	// deepest water keeps a faint hint of the bottom instead of going to
+	// a solid wall of tint. Aeration pins near-opaque; streak gaps
 	// (s < 0.5) thin falling sheets back toward translucent.
-	let opaque = 1.0 - dot(transmit, vec3f(1.0 / 3.0));
+	let opaque = min(1.0 - dot(transmit, vec3f(1.0 / 3.0)), 0.88);
 	let alpha = mix(max(mix(frame.misc.x, 1.0, fres), opaque), 0.92, aer);
 	return vec4f(col, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
 }

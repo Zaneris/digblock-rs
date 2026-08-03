@@ -31,6 +31,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
+			identity: [0; 16],
 		},
 	)
 }
@@ -120,15 +121,17 @@ impl Stub {
 }
 
 #[test]
-fn configured_token_reaches_the_wire() {
+fn configured_token_and_identity_reach_the_wire() {
 	let (a, b) = loopback_pair();
 	let token: [u8; 16] = [7; 16];
+	let identity: [u8; 16] = [9; 16];
 	let mut client = NetClient::new(
 		Box::new(a),
 		digblock_net::client::NetClientConfig {
 			name: "test".into(),
 			draw_dist: 8,
 			token,
+			identity,
 		},
 	);
 	let mut server = Stub::new(b);
@@ -138,7 +141,7 @@ fn configured_token_reaches_the_wire() {
 	server.pump();
 	assert!(matches!(
 		server.client_msgs.first(),
-		Some(ClientMsg::Hello { token: t, .. }) if *t == token
+		Some(ClientMsg::Hello { token: t, identity: i, .. }) if *t == token && *i == identity
 	));
 }
 
@@ -215,7 +218,8 @@ fn full_frame_handshake_edits_snapshot() {
 		events.first(),
 		Some(NetEvent::Edit {
 			cell: (3, 9, 4),
-			block: BlockType::Air
+			block: BlockType::Air,
+			..
 		})
 	));
 
@@ -247,10 +251,15 @@ fn full_frame_handshake_edits_snapshot() {
 	));
 	assert!(!client.remotes.is_empty());
 
-	// Predicted dig, then rejection → revert event with the right prev.
-	let seq = client
-		.edits
-		.begin((5, 9, 5), BlockType::Dirt, BlockType::Air, first + 3);
+	// Predicted dig, then rejection → revert event with the right prev
+	// and the predicted inventory credit to unwind.
+	let seq = client.edits.begin(
+		(5, 9, 5),
+		BlockType::Dirt,
+		BlockType::Air,
+		first + 3,
+		Some((BlockType::Dirt, 1)),
+	);
 	server.send(&ServerMsg::EditRejected {
 		client_seq: seq,
 		reason: RejectReason::OutOfReach,
@@ -261,6 +270,7 @@ fn full_frame_handshake_edits_snapshot() {
 		Some(NetEvent::EditRejected(e)) => {
 			assert_eq!(e.cell, (5, 9, 5));
 			assert_eq!(e.prev, BlockType::Dirt);
+			assert_eq!(e.inv_delta, Some((BlockType::Dirt, 1)));
 		}
 		other => panic!("expected EditRejected, got {other:?}"),
 	}
@@ -287,9 +297,13 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	client.poll(&mut events, 0.016);
 
 	// We predict a dig; another player's place lands on the cell first.
-	let seq = client
-		.edits
-		.begin((7, 9, 7), BlockType::Stone, BlockType::Air, 10);
+	let seq = client.edits.begin(
+		(7, 9, 7),
+		BlockType::Stone,
+		BlockType::Air,
+		10,
+		Some((BlockType::Stone, 1)),
+	);
 	server.send(&ServerMsg::EditApplied {
 		seq: 2,
 		tick: 11,
@@ -309,17 +323,77 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	// One Edit event (the authoritative sand), NO EditRejected revert.
-	assert!(matches!(
-		events.iter().find(|e| matches!(e, NetEvent::Edit { .. })),
+	// One Edit event (the authoritative sand) carrying our superseded
+	// prediction so its inventory credit can be unwound; NO EditRejected
+	// cell revert.
+	match events.iter().find(|e| matches!(e, NetEvent::Edit { .. })) {
 		Some(NetEvent::Edit {
 			cell: (7, 9, 7),
-			block: BlockType::Sand
-		})
-	));
+			block: BlockType::Sand,
+			superseded,
+		}) => {
+			assert_eq!(superseded.len(), 1);
+			assert_eq!(superseded[0].inv_delta, Some((BlockType::Stone, 1)));
+		}
+		other => panic!("expected the authoritative Edit, got {other:?}"),
+	}
 	assert!(!events
 		.iter()
 		.any(|e| matches!(e, NetEvent::EditRejected(_))));
+}
+
+#[test]
+fn inventory_full_maps_to_event() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+	});
+	server.send(&ServerMsg::InventoryFull {
+		counts: vec![(BlockType::Dirt as u16, 5), (9999, 3)],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	match events
+		.iter()
+		.find(|e| matches!(e, NetEvent::Inventory { .. }))
+	{
+		Some(NetEvent::Inventory { counts }) => {
+			assert_eq!(counts, &vec![(BlockType::Dirt, 5)], "unknown id dropped");
+		}
+		other => panic!("expected Inventory, got {other:?}"),
+	}
+}
+
+#[test]
+fn dig_start_and_cancel_reach_the_wire() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	client.send_dig_start((3, 9, -4));
+	client.send_dig_cancel();
+	server.pump();
+	assert!(matches!(
+		server.client_msgs.get(1),
+		Some(ClientMsg::DigStart { cell: [3, 9, -4] })
+	));
+	assert!(matches!(
+		server.client_msgs.get(2),
+		Some(ClientMsg::DigCancel)
+	));
 }
 
 #[test]

@@ -89,6 +89,23 @@ impl TestClient {
 }
 
 pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
+	connect_with_identity(sim, conn_id, [0; 16])
+}
+
+pub(crate) fn connect_with_identity(sim: &mut Sim, conn_id: u64, identity: [u8; 16]) -> TestClient {
+	let mut c = try_connect(sim, conn_id, identity);
+	assert!(
+		matches!(c.msgs.first(), Some(ServerMsg::Welcome { .. })),
+		"expected Welcome, got {:?}",
+		c.msgs.first()
+	);
+	c.drain();
+	c
+}
+
+/// Like `connect` but without asserting the handshake succeeded — for
+/// tests exercising refusals.
+pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, identity: [u8; 16]) -> TestClient {
 	let (tx, rx) = channel(OUT_CAP);
 	sim.tick_once(vec![
 		SimEvent::Connected { conn_id, out: tx },
@@ -101,6 +118,7 @@ pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "test".into(),
+				identity,
 			},
 		},
 	]);
@@ -111,11 +129,6 @@ pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
 		snaps: Vec::new(),
 	};
 	c.drain();
-	assert!(
-		matches!(c.msgs.first(), Some(ServerMsg::Welcome { .. })),
-		"expected Welcome, got {:?}",
-		c.msgs.first()
-	);
 	c
 }
 
@@ -129,6 +142,68 @@ pub(crate) fn wait_live(sim: &mut Sim, conn_id: u64) {
 		sim.tick_once(vec![]);
 		std::thread::sleep(std::time::Duration::from_millis(1));
 	}
+}
+
+/// One aim-holding input: stand still, look along `dir`, claim nothing.
+pub(crate) fn aim(tick: u32, dir: Vec3) -> InputTick {
+	InputTick {
+		tick,
+		move_axis: [0.0, 0.0],
+		jump: false,
+		look: dir.to_array(),
+		claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
+		claimed_vel: [0.0; 3],
+	}
+}
+
+/// Drive the full timed-dig flow: DigStart on the cell `dir` hits from
+/// the player's position, `hold_ticks` sim ticks of aim-holding inputs,
+/// then the completing EditRequest. `t` is the caller's monotonically
+/// increasing input-tick counter. Returns the dug cell.
+pub(crate) fn dig_hold(
+	sim: &mut Sim,
+	conn_id: u64,
+	dir: Vec3,
+	hold_ticks: u32,
+	seq: u32,
+	kind: digblock_net::messages::EditKind,
+	t: &mut u32,
+) -> (i32, i32, i32) {
+	use digblock_core::raycast::{raycast, raycast_fluid, REACH};
+	let pos = sim.test_player(conn_id).unwrap().pos;
+	let cast = if kind == digblock_net::messages::EditKind::Collect {
+		raycast_fluid
+	} else {
+		raycast
+	};
+	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_block_at(x, y, z)).expect("dig target");
+	*t += 1;
+	sim.tick_once(vec![
+		SimEvent::Msg {
+			conn_id,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		},
+		batch(vec![aim(*t, dir)], conn_id),
+	]);
+	for _ in 0..hold_ticks {
+		*t += 1;
+		sim.tick_once(vec![batch(vec![aim(*t, dir)], conn_id)]);
+	}
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id,
+		msg: ClientMsg::EditRequest {
+			seq,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: dir.to_array(),
+			kind,
+			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			normal: [0, 0, 0],
+		},
+	}]);
+	hit.cell
 }
 
 pub(crate) fn input(tick: u32, forward: bool, claimed: PlayerState) -> InputTick {

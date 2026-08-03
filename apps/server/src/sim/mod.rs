@@ -17,9 +17,11 @@ mod sync;
 #[cfg(test)]
 pub(crate) mod harness;
 
+use crate::inventory_store::{hash_identity, IdentityHash, InventoryStore};
 use crate::journal::Journal;
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
+use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent};
 use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
@@ -27,7 +29,7 @@ use digblock_net::protocol::{
 	sanitize_name, PlayerId, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, SERVER_ID,
 	SNAPSHOT_DIVISOR, TICK_RATE,
 };
-use edits::PendingEditReq;
+use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::Cell;
@@ -96,6 +98,16 @@ struct Client {
 	needs_sync_scan: bool,
 	live: bool,
 	center: (i32, i32),
+	/// Authoritative per-player block counts (the client predicts against
+	/// its own copy and reconciles).
+	inventory: Inventory,
+	/// `Some` = persistent identity (the stored hash, never the secret);
+	/// `None` = anonymous, session-only inventory.
+	identity: Option<IdentityHash>,
+	/// In-progress hold-to-dig, if any (see `edits::DigState`).
+	digging: Option<edits::DigState>,
+	/// Per-tick DigStart spam cap; cleared at the top of `process_edits`.
+	dig_started_this_tick: bool,
 }
 
 pub struct Sim {
@@ -110,7 +122,9 @@ pub struct Sim {
 	/// Connections that have not completed the Hello handshake, with the
 	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS).
 	lobby: FxHashMap<u64, (OutTx, u32)>,
-	edit_queue: Vec<PendingEditReq>,
+	/// Client actions (edits + dig starts/cancels) queued this tick,
+	/// processed in wire order by `process_edits`.
+	action_queue: Vec<edits::ClientAction>,
 	residency_dirty: bool,
 	/// (newly-ready column, resident neighbor) pairs awaiting a budgeted
 	/// journal-water rescan, so fluid fronts stalled at a load boundary
@@ -118,6 +132,8 @@ pub struct Sim {
 	face_scans: std::collections::VecDeque<((i32, i32), (i32, i32))>,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
 	last_oversize_log: Option<u32>,
+	/// Persistent per-identity inventories (separate from the journal).
+	inv_store: InventoryStore,
 }
 
 impl Sim {
@@ -154,6 +170,7 @@ impl Sim {
 		spawn: Vec3,
 	) -> std::io::Result<Self> {
 		let journal = Journal::open(data_dir, seed)?;
+		let inv_store = InventoryStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -164,10 +181,11 @@ impl Sim {
 			spawn,
 			clients: FxHashMap::default(),
 			lobby: FxHashMap::default(),
-			edit_queue: Vec::new(),
+			action_queue: Vec::new(),
 			residency_dirty: true,
 			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
+			inv_store,
 		})
 	}
 
@@ -189,6 +207,7 @@ impl Sim {
 		}
 		self.update_residency();
 		self.step_physics();
+		self.verify_digs();
 		self.process_edits();
 		self.step_fluid();
 		self.tick += 1;
@@ -196,11 +215,13 @@ impl Sim {
 			self.send_snapshots();
 		}
 		self.journal.maintain();
+		self.inv_store.maintain();
 	}
 
-	/// Flush and fsync the journal (graceful shutdown).
+	/// Flush and fsync the journal + inventory store (graceful shutdown).
 	pub fn shutdown(&mut self) {
 		self.journal.sync();
+		self.inv_store.sync();
 	}
 
 	#[cfg(test)]
@@ -223,6 +244,13 @@ impl Sim {
 		self.clients.get(&conn_id).map_or(0, |c| c.last_input_tick)
 	}
 
+	#[cfg(test)]
+	fn test_inventory_count(&self, conn_id: u64, b: digblock_core::block::BlockType) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(0, |c| c.inventory.count(b))
+	}
+
 	// ---- events -------------------------------------------------------
 
 	fn handle_event(&mut self, ev: SimEvent) {
@@ -238,7 +266,16 @@ impl Sim {
 					token: _, // future reconnect-with-state
 					sim_version,
 					build,
-				} => self.handle_hello(conn_id, protocol, name, draw_dist, sim_version, build),
+					identity,
+				} => self.handle_hello(
+					conn_id,
+					protocol,
+					name,
+					draw_dist,
+					sim_version,
+					build,
+					identity,
+				),
 				ClientMsg::EditRequest {
 					seq,
 					tick: _,
@@ -252,7 +289,7 @@ impl Sim {
 						// Bounded: a flood beyond every client's burst
 						// budget is rejected up front, not accumulated.
 						let cap = self.clients.len() * EDIT_BURST as usize + 64;
-						if self.edit_queue.len() >= cap {
+						if self.action_queue.len() >= cap {
 							client_send(
 								client,
 								&ServerMsg::EditRejected {
@@ -261,7 +298,7 @@ impl Sim {
 								},
 							);
 						} else {
-							self.edit_queue.push(PendingEditReq {
+							self.action_queue.push(ClientAction::Edit(PendingEditReq {
 								conn_id,
 								seq,
 								origin: Vec3::from_array(origin),
@@ -269,17 +306,62 @@ impl Sim {
 								kind,
 								cell: (cell[0], cell[1], cell[2]),
 								normal: (normal[0] as i32, normal[1] as i32, normal[2] as i32),
-							});
+							}));
 						}
 					}
 				}
 				ClientMsg::Bye => self.drop_client(conn_id),
+				// Queued, NOT applied here: a DigStart must not overtake a
+				// same-tick completing EditRequest already in the queue
+				// (see `ClientAction`). Beyond the cap it drops silently —
+				// the 1/tick cap in `handle_dig_start` would ignore the
+				// excess anyway.
+				ClientMsg::DigStart { cell } => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue.push(ClientAction::DigStart {
+							conn_id,
+							cell: (cell[0], cell[1], cell[2]),
+						});
+					}
+				}
+				ClientMsg::DigCancel => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue.push(ClientAction::DigCancel { conn_id });
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
 		}
 	}
 
+	/// Record a hold-to-dig start (called from the ordered queue drain):
+	/// capture the cell's CURRENT block — the client never gets to claim
+	/// what it is digging. At most one start per client per tick —
+	/// floods can't spin the timer.
+	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if !client.live || client.dig_started_this_tick {
+			return;
+		}
+		client.dig_started_this_tick = true;
+		let block = self.store.block_at(cell.0, cell.1, cell.2);
+		client.digging = match block {
+			Some(b) if b.hardness_ticks().is_some() => Some(edits::DigState {
+				cell,
+				block: b,
+				progress: 0,
+				off_target: 0,
+			}),
+			// Undiggable/unloaded target: no hold. The completing edit
+			// will fail its DigIncomplete check.
+			_ => None,
+		};
+	}
+
+	#[allow(clippy::too_many_arguments)]
 	fn handle_hello(
 		&mut self,
 		conn_id: u64,
@@ -288,6 +370,7 @@ impl Sim {
 		draw_dist: i32,
 		sim_version: u16,
 		build: String,
+		identity: [u8; 16],
 	) {
 		let Some((out, _)) = self.lobby.remove(&conn_id) else {
 			return;
@@ -319,6 +402,19 @@ impl Sim {
 			refuse(&out, "server full".into());
 			return;
 		};
+		// All-zeros = anonymous (session-only inventory, no dup check).
+		// Two live connections sharing one persisted inventory would stomp
+		// each other's copy — refuse the second.
+		let identity = (identity != [0; 16]).then(|| hash_identity(&identity));
+		if let Some(hash) = identity {
+			if self.clients.values().any(|c| c.identity == Some(hash)) {
+				refuse(&out, "this identity is already connected".into());
+				return;
+			}
+		}
+		let inventory = identity
+			.map(|hash| self.inv_store.get(&hash))
+			.unwrap_or_default();
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(2, 32);
 		let mut ok = send_frame(
@@ -354,6 +450,14 @@ impl Sim {
 			&out,
 			&ServerMsg::JournalDone {
 				through_seq: self.journal.index.next_seq,
+			},
+		);
+		// The authoritative inventory base — explicit even when empty
+		// (anonymous joins), so the client never guesses.
+		ok &= send_frame(
+			&out,
+			&ServerMsg::InventoryFull {
+				counts: inventory.to_wire(),
 			},
 		);
 		if !ok {
@@ -406,6 +510,10 @@ impl Sim {
 				needs_sync_scan: false,
 				live: false,
 				center,
+				inventory,
+				identity,
+				digging: None,
+				dig_started_this_tick: false,
 			},
 		);
 		self.residency_dirty = true;
@@ -441,6 +549,11 @@ impl Sim {
 	fn drop_client(&mut self, conn_id: u64) {
 		if let Some(client) = self.clients.remove(&conn_id) {
 			log::info!("player {} ({}) left", client.id, client.name);
+			if let Some(hash) = client.identity {
+				// Durable before the identity can reconnect and re-load.
+				self.inv_store.put(hash, &client.inventory);
+				self.inv_store.sync();
+			}
 			for c in self.clients.values() {
 				client_send(c, &ServerMsg::PlayerLeft { id: client.id });
 			}
@@ -521,6 +634,7 @@ mod tests {
 						token: [0; 16],
 						sim_version,
 						build: "old-build".into(),
+						identity: [0; 16],
 					},
 				},
 			]);
@@ -596,6 +710,7 @@ mod tests {
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "late-build".into(),
+				identity: [0; 16],
 			},
 		}]);
 		assert_eq!(sim.player_count(), 0);
@@ -671,7 +786,7 @@ mod tests {
 			.collect();
 		sim.tick_once(flood);
 		assert!(
-			sim.edit_queue.is_empty(),
+			sim.action_queue.is_empty(),
 			"queue fully drained after the tick"
 		);
 		c.drain();
@@ -710,6 +825,7 @@ mod tests {
 					token: [0; 16],
 					sim_version: digblock_core::SIM_VERSION,
 					build: "t".into(),
+					identity: [0; 16],
 				},
 			},
 		]);
@@ -725,6 +841,95 @@ mod tests {
 			.expect("roster entry for the hostile name");
 		assert_eq!(roster_name.len(), digblock_net::protocol::MAX_NAME_LEN);
 		assert!(roster_name.chars().all(|c| !c.is_control()));
+	}
+
+	/// Inventory persists across reconnect AND across a full server
+	/// rebuild on the same data dir, keyed by the hashed identity.
+	#[test]
+	fn identity_inventory_persists_across_reconnect_and_reboot() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+
+		let dir = temp_dir("persist");
+		let identity = [7u8; 16];
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		{
+			let mut sim =
+				super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+			let _c = connect_with_identity(&mut sim, 1, identity);
+			wait_live(&mut sim, 1);
+			let mut t = 0;
+			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 1);
+
+			// Reconnect within the same server run.
+			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+			let mut c2 = connect_with_identity(&mut sim, 2, identity);
+			c2.drain();
+			assert!(
+				c2.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::InventoryFull { counts }
+						if counts == &vec![(BlockType::Stone as u16, 1)]
+				)),
+				"reconnect carries the credit: {:?}",
+				c2.msgs
+			);
+			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
+			sim.shutdown();
+		}
+		// Full reboot on the same data dir.
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c3 = connect_with_identity(&mut sim, 3, identity);
+		c3.drain();
+		assert!(
+			c3.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::InventoryFull { counts }
+					if counts == &vec![(BlockType::Stone as u16, 1)]
+			)),
+			"reboot carries the credit: {:?}",
+			c3.msgs
+		);
+		// A different identity starts empty.
+		let mut c4 = connect_with_identity(&mut sim, 4, [9u8; 16]);
+		c4.drain();
+		assert!(
+			c4.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::InventoryFull { counts } if counts.is_empty()
+			)),
+			"{:?}",
+			c4.msgs
+		);
+	}
+
+	/// A live identity refuses a second connection; anonymous (all-zero)
+	/// identities coexist freely.
+	#[test]
+	fn duplicate_identity_refused_anonymous_pairs_ok() {
+		let mut sim = flat_sim("dupid");
+		let _a = connect_with_identity(&mut sim, 1, [5u8; 16]);
+		let dup = try_connect(&mut sim, 2, [5u8; 16]);
+		assert!(
+			matches!(
+				dup.msgs.first(),
+				Some(ServerMsg::Refused { reason }) if reason.contains("identity")
+			),
+			"{:?}",
+			dup.msgs
+		);
+		// Anonymous pair: both welcomed (connect asserts Welcome).
+		let _b = connect(&mut sim, 3);
+		let _c = connect(&mut sim, 4);
+		assert_eq!(sim.player_count(), 3);
+
+		// The refused identity can join once the holder leaves.
+		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+		let _d = connect_with_identity(&mut sim, 5, [5u8; 16]);
+		assert_eq!(sim.player_count(), 3);
 	}
 
 	#[test]

@@ -6,6 +6,8 @@ pub mod chunk;
 pub mod decoration;
 pub mod dir;
 pub mod fluid;
+pub mod hotbar;
+pub mod inventory;
 pub mod mesher;
 pub mod metrics;
 pub mod pipeline;
@@ -33,4 +35,7 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// golden tests (`player::tests::golden_trajectory_pins_sim_version`,
 /// `worldgen_golden_hash_pins_sim_version` in tests/worldgen.rs) fail
 /// when behavior drifts and name this constant in their message.
-pub const SIM_VERSION: u16 = 2;
+///
+/// v3: hold-to-dig hardness table, the water-regen fluid rule, and the
+/// fluid-aware picking ray — all behavior both sides run independently.
+pub const SIM_VERSION: u16 = 3;

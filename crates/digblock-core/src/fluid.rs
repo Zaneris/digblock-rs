@@ -6,6 +6,14 @@
 //! Rules, target-centric (each queued cell computes what it *should* be
 //! from its neighbors):
 //! - sources (`Water`) are terminal: infinite, never recomputed;
+//! - regen: an empty or flowing cell resting on a whole block (solid or
+//!   a full source) with ≥2 side-neighbor sources becomes a source itself —
+//!   pools and oceans heal after the water tool scoops from them, and a
+//!   2-source pool is renewable. Air must be eligible or deep-water
+//!   holes never heal (their side sources rest on water, so the flow
+//!   rule leaves the hole as air, never flow). Growth is bounded: the
+//!   level above two sources has no side sources, so regen can never
+//!   stack upward, and a lone source's spread never qualifies (needs 2);
 //! - a cell with water above it becomes `WaterFall` (full strength);
 //! - otherwise it takes half its strongest side-neighbor amount as
 //!   `WaterFlowN` (n ≥ 1), counting only *supported* neighbors — water
@@ -61,6 +69,28 @@ fn falloff(m: u8) -> u8 {
 	m / 2
 }
 
+/// The regen rule (see the module doc). Checked before the fall rule:
+/// a qualifying cell becomes a terminal source even with water above,
+/// which keeps the relaxation monotone — a cell never oscillates
+/// source → fall. The floor check stops sources materializing in
+/// mid-air over a fall's edge.
+fn regenerates(world: &impl FluidWorld, x: i32, y: i32, z: i32, cur: BlockType) -> bool {
+	let eligible =
+		cur == BlockType::Air || matches!(cur.props().fluid, Some(f) if !f.source && !f.falling);
+	if !eligible || !world.get(x, y - 1, z).is_some_and(BlockType::is_whole) {
+		return false;
+	}
+	SIDES
+		.iter()
+		.filter(|&&(dx, dz)| {
+			world
+				.get(x + dx, y, z + dz)
+				.is_some_and(BlockType::is_fluid_source)
+		})
+		.count()
+		>= 2
+}
+
 impl FluidSim {
 	pub fn new() -> Self {
 		Self::default()
@@ -112,7 +142,9 @@ impl FluidSim {
 		if cur.is_fluid_source() || cur.props().collides {
 			return;
 		}
-		let wanted = if world.get(x, y + 1, z).is_some_and(|b| b.is_water()) {
+		let wanted = if regenerates(world, x, y, z, cur) {
+			BlockType::Water
+		} else if world.get(x, y + 1, z).is_some_and(|b| b.is_water()) {
 			BlockType::WaterFall
 		} else {
 			let mut m = 0u8;
@@ -328,6 +360,84 @@ mod tests {
 		}
 		settle(&mut sim, &mut w);
 		assert_eq!(w.water_cells(), reference, "front completed identically");
+	}
+
+	#[test]
+	fn two_sources_one_apart_regenerate_the_middle() {
+		let mut w = MapWorld::new();
+		let mut sim = FluidSim::new();
+		w.set(0, 1, 0, BlockType::Water);
+		w.set(2, 1, 0, BlockType::Water);
+		sim.schedule_around(0, 1, 0);
+		sim.schedule_around(2, 1, 0);
+		settle(&mut sim, &mut w);
+		assert_eq!(
+			w.get(1, 1, 0).unwrap(),
+			BlockType::Water,
+			"the flanked middle becomes a source"
+		);
+	}
+
+	#[test]
+	fn diagonal_pair_chain_fills_the_pool_and_is_renewable() {
+		let mut w = MapWorld::new();
+		let mut sim = FluidSim::new();
+		// A 2×2 pool seeded with two diagonal sources: each empty corner
+		// touches both, so the whole pool converts (the pinned chain
+		// reaction).
+		w.set(0, 1, 0, BlockType::Water);
+		w.set(1, 1, 1, BlockType::Water);
+		sim.schedule_around(0, 1, 0);
+		sim.schedule_around(1, 1, 1);
+		settle(&mut sim, &mut w);
+		assert_eq!(w.get(1, 1, 0).unwrap(), BlockType::Water);
+		assert_eq!(w.get(0, 1, 1).unwrap(), BlockType::Water);
+
+		// Scooping any cell of the converted pool refills it: renewable.
+		w.set(1, 1, 0, BlockType::Air);
+		sim.schedule_around(1, 1, 0);
+		settle(&mut sim, &mut w);
+		assert_eq!(w.get(1, 1, 0).unwrap(), BlockType::Water, "pool refilled");
+	}
+
+	#[test]
+	fn deep_water_scoop_hole_heals() {
+		let mut w = MapWorld::new();
+		let mut sim = FluidSim::new();
+		// A 3×3 two-deep pond of sources: the flow rule alone cannot fill
+		// a surface hole here (its side sources rest on water, so they
+		// don't count as supported feeders) — regen must do it, via the
+		// source-below floor.
+		for x in 0..3 {
+			for z in 0..3 {
+				for y in 1..=2 {
+					w.set(x, y, z, BlockType::Water);
+				}
+			}
+		}
+		w.set(1, 2, 1, BlockType::Air); // scoop the surface center
+		sim.schedule_around(1, 2, 1);
+		settle(&mut sim, &mut w);
+		assert_eq!(w.get(1, 2, 1).unwrap(), BlockType::Water, "hole healed");
+	}
+
+	#[test]
+	fn floating_source_pair_grows_no_hanging_shelf() {
+		let mut w = MapWorld::new();
+		let mut sim = FluidSim::new();
+		// Two sources in mid-air, one apart: falls pour beneath them and
+		// flow pools on the floor below the gap — which must NOT count as
+		// a whole floor, or the pair would grow a hanging source shelf.
+		w.set(0, 2, 0, BlockType::Water);
+		w.set(2, 2, 0, BlockType::Water);
+		sim.schedule_around(0, 2, 0);
+		sim.schedule_around(2, 2, 0);
+		settle(&mut sim, &mut w);
+		assert_ne!(
+			w.get(1, 2, 0).unwrap(),
+			BlockType::Water,
+			"no source materializes over a non-whole floor"
+		);
 	}
 
 	#[test]

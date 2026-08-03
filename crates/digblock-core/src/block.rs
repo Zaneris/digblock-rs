@@ -41,15 +41,16 @@ blocks! {
 	Air = 0 => props(RenderClass::None, false, 0, 0, 0),
 	/// A water source: infinite, amount 8. All generated water (oceans,
 	/// river pools) is sources — flowing/falling states describe water in
-	/// transit under the Minecraft-style flow rules.
-	Water = 1 => water_props(8, true, false),
-	Dirt = 2 => carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)),
-	Grass = 3 => carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)),
-	Sand = 4 => props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND),
-	Stone = 5 => carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)),
-	Wood = 6 => props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP),
-	Leaves = 7 => props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES),
-	Snow = 8 => carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)),
+	/// transit under the Minecraft-style flow rules. Diggable only via the
+	/// water tool (the fluid-aware ray); the hardness is the scoop time.
+	Water = 1 => dig(water_props(8, true, false), 20),
+	Dirt = 2 => dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30),
+	Grass = 3 => dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30),
+	Sand = 4 => dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25),
+	Stone = 5 => dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90),
+	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), 60),
+	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10),
+	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
 	/// source or a landed fall, losing one amount per block.
 	WaterFlow1 = 9 => water_props(1, false, false),
@@ -136,6 +137,13 @@ pub struct BlockProps {
 	pub tex_side: u16,
 	pub tex_top: u16,
 	pub tex_bottom: u16,
+	/// Hold-to-dig duration in 60 Hz sim ticks; 0 = cannot be dug or
+	/// collected. Shared client/server behavior — retuning is a
+	/// SIM_VERSION bump.
+	pub hardness_ticks: u16,
+	/// Inventory credit override for a completed dig; `dig_drop()` falls
+	/// back to the block itself when diggable.
+	pub drops: Option<BlockType>,
 }
 
 const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
@@ -148,12 +156,20 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		tex_side: side,
 		tex_top: top,
 		tex_bottom: bottom,
+		hardness_ticks: 0,
+		drops: None,
 	}
 }
 
 /// Natural terrain the cave pass may carve through.
 const fn carveable(mut p: BlockProps) -> BlockProps {
 	p.carveable = true;
+	p
+}
+
+/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks.
+const fn dig(mut p: BlockProps, ticks: u16) -> BlockProps {
+	p.hardness_ticks = ticks;
 	p
 }
 
@@ -172,6 +188,8 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		tex_side: tex::WATER,
 		tex_top: tex::WATER,
 		tex_bottom: tex::WATER,
+		hardness_ticks: 0,
+		drops: None,
 	}
 }
 
@@ -256,6 +274,30 @@ impl BlockType {
 		debug_assert!((1..=7).contains(&amount));
 		Self::from_id(BlockType::WaterFlow1 as u16 + amount as u16 - 1)
 	}
+
+	/// Hold-to-dig duration in sim ticks; None = not diggable/collectible.
+	#[inline]
+	pub fn hardness_ticks(self) -> Option<u16> {
+		let h = self.props().hardness_ticks;
+		(h > 0).then_some(h)
+	}
+
+	/// What a completed dig credits to the inventory: the `drops`
+	/// override, else the block itself. None for undiggable blocks.
+	#[inline]
+	pub fn dig_drop(self) -> Option<BlockType> {
+		self.hardness_ticks()?;
+		Some(self.props().drops.unwrap_or(self))
+	}
+
+	/// A "whole block" for the water-regen rule's floor check: solid
+	/// ground or a full water source. Flow/fall water deliberately does
+	/// NOT count — otherwise the flow pooling under a pair of floating
+	/// sources would let them grow a hanging source shelf.
+	#[inline]
+	pub fn is_whole(self) -> bool {
+		self.props().collides || self.is_fluid_source()
+	}
 }
 
 #[cfg(test)]
@@ -285,6 +327,39 @@ mod tests {
 			assert_eq!(p.class == RenderClass::None, b == BlockType::Air);
 			if p.collides {
 				assert_ne!(p.class, RenderClass::None);
+			}
+		}
+	}
+
+	#[test]
+	fn dig_table_sanity() {
+		for &b in &BlockType::ALL {
+			let p = b.props();
+			// Every solid block can be dug; only the source in the water
+			// family can (the water tool's scoop) — flows/falls cannot.
+			if p.collides {
+				assert!(b.hardness_ticks().is_some(), "{b:?} is diggable");
+			}
+			if b.is_water() {
+				assert_eq!(
+					b.hardness_ticks().is_some(),
+					b.is_fluid_source(),
+					"{b:?} collectible iff source"
+				);
+			}
+			assert!(BlockType::Air.hardness_ticks().is_none());
+			// Every diggable block credits something valid and diggable
+			// itself (so the credit is placeable and re-collectible).
+			match b.dig_drop() {
+				Some(d) => {
+					assert!(b.hardness_ticks().is_some(), "{b:?}");
+					assert!(
+						d.hardness_ticks().is_some(),
+						"{b:?} drops re-diggable {d:?}"
+					);
+					assert_ne!(d, BlockType::Air, "{b:?} never drops Air");
+				}
+				None => assert!(b.hardness_ticks().is_none(), "{b:?}"),
 			}
 		}
 	}

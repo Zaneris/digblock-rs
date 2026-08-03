@@ -57,8 +57,13 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
+	pub const HIGHLIGHT: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/highlight.wgsl"),
+	);
+	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
 
-	pub const ALL: [(&str, &str); 9] = [
+	pub const ALL: [(&str, &str); 11] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -68,6 +73,8 @@ pub mod shader {
 		("depth_blit.wgsl", DEPTH_BLIT),
 		("spray.wgsl", SPRAY),
 		("players.wgsl", PLAYERS),
+		("highlight.wgsl", HIGHLIGHT),
+		("hotbar_icons.wgsl", HOTBAR_ICONS),
 	];
 }
 

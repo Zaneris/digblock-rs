@@ -29,6 +29,8 @@ web-sys = { workspace = true, features = [
 	"RequestInit",
 	"Response",
 	"Headers",
+	"Storage",
+	"Crypto",
 ] }
 
 [lints]

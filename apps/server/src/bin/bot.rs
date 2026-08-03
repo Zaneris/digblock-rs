@@ -1,8 +1,9 @@
 //! Headless bot client: drives the real digblock-net NetClient over the
 //! real wtransport transport — no GPU. Walks a seeded wandering heading,
-//! jumps occasionally, digs straight down at a configurable rate. Exits
-//! non-zero if the connection drops early or snapshots go missing, so
-//! compose soaks can assert on it.
+//! jumps occasionally, and runs the real timed-dig flow (DigStart, hold
+//! aim down for the block's hardness, then the completing Dig) at a
+//! configurable rate. Exits non-zero if the connection drops early or
+//! snapshots go missing, so compose soaks can assert on it.
 
 use digblock_core::block::BlockType;
 use digblock_core::player::{Player, PlayerIntent};
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 struct BotResult {
 	snapshots: u32,
 	disconnected: Option<String>,
+	edits_rejected: u32,
 }
 
 fn main() {
@@ -85,7 +87,11 @@ fn main() {
 					log::error!("bot {i}: {} snapshots < {min_snapshots}", r.snapshots);
 					failed = true;
 				} else {
-					log::info!("bot {i}: ok, {} snapshots", r.snapshots);
+					log::info!(
+						"bot {i}: ok, {} snapshots, {} edit rejections",
+						r.snapshots,
+						r.edits_rejected
+					);
 				}
 			}
 			Err(_) => failed = true,
@@ -168,6 +174,7 @@ fn run_bot(
 			return BotResult {
 				snapshots: 0,
 				disconnected: Some(format!("token mint failed: {e}")),
+				edits_rejected: 0,
 			};
 		}
 	};
@@ -180,6 +187,9 @@ fn run_bot(
 			name,
 			draw_dist: 4,
 			token,
+			// Random per run: exercises the persistence path in soaks
+			// without cross-bot identity collisions.
+			identity: rand::random(),
 		},
 	);
 
@@ -188,9 +198,13 @@ fn run_bot(
 	let mut result = BotResult {
 		snapshots: 0,
 		disconnected: None,
+		edits_rejected: 0,
 	};
 	let mut events = Vec::new();
 	let mut next_edit_in = if edit_rate > 0.0 { 2.0 } else { f32::INFINITY };
+	// In-progress timed dig: target cell, its block, and the predicted
+	// tick the hold satisfies the server's hardness gate.
+	let mut digging: Option<((i32, i32, i32), BlockType, u32)> = None;
 
 	// Terrain-only world model: enough for plausible claims and digs.
 	// (No caves/trees/edits — off claims are simply not adopted.)
@@ -238,33 +252,75 @@ fn run_bot(
 					result.disconnected = Some(reason.clone());
 					return result;
 				}
+				NetEvent::EditRejected(e) => {
+					result.edits_rejected += 1;
+					log::debug!("bot {index}: edit rejected at {:?}", e.cell);
+				}
 				NetEvent::Edit { .. }
-				| NetEvent::EditRejected(_)
+				| NetEvent::Inventory { .. }
 				| NetEvent::PlayerJoined { .. }
 				| NetEvent::PlayerLeft { .. } => {}
 			}
 		}
 
 		if let Some(p) = player.as_mut() {
-			// Wander: slow seeded heading drift, hop every ~4 s.
 			let t = client.predictor.current_tick();
-			let yaw = index as f32 * 1.7 + t as f32 * 0.004;
-			let dir = Vec3::new(yaw.sin(), -0.1, yaw.cos()).normalize();
-			let intent = PlayerIntent {
-				move_axis: Vec2::new(0.0, 1.0),
-				jump: t % (TICK_RATE * 4) == index % 60,
-			};
 			let world = block_at(seed);
+			let down = Vec3::NEG_Y;
+
+			// Digging holds still and aims straight down; wandering
+			// otherwise (slow seeded heading drift, hop every ~4 s).
+			let (dir, intent) = if digging.is_some() {
+				(down, PlayerIntent::default())
+			} else {
+				let yaw = index as f32 * 1.7 + t as f32 * 0.004;
+				(
+					Vec3::new(yaw.sin(), -0.1, yaw.cos()).normalize(),
+					PlayerIntent {
+						move_axis: Vec2::new(0.0, 1.0),
+						jump: t % (TICK_RATE * 4) == index % 60,
+					},
+				)
+			};
 			client.predictor.predict(p, intent, dir, &world);
 			client.send_inputs();
 
-			next_edit_in -= tick.as_secs_f32();
-			if next_edit_in <= 0.0 {
-				next_edit_in = 1.0 / edit_rate;
-				let down = Vec3::NEG_Y;
-				if let Some(hit) = raycast(p.pos, down, REACH, &world) {
-					let seq = client.edits.begin(hit.cell, hit.block, BlockType::Air, t);
-					client.send_edit(seq, t, p.pos, down, EditKind::Dig, hit.cell, (0, 0, 0));
+			match digging {
+				Some((cell, block, complete_at)) if t >= complete_at => {
+					digging = None;
+					next_edit_in = 1.0 / edit_rate;
+					// Confirm the hold survived (we stood still, but the
+					// landing after a hop can shift the hit cell).
+					if raycast(p.pos, down, REACH, &world).is_some_and(|h| h.cell == cell) {
+						let seq = client.edits.begin(
+							cell,
+							block,
+							BlockType::Air,
+							t,
+							block.dig_drop().map(|d| (d, 1)),
+						);
+						client.send_edit(seq, t, p.pos, down, EditKind::Dig, cell, (0, 0, 0));
+					} else {
+						client.send_dig_cancel();
+					}
+				}
+				Some(_) => {}
+				None => {
+					next_edit_in -= tick.as_secs_f32();
+					if next_edit_in <= 0.0 {
+						next_edit_in = f32::INFINITY; // rearmed on completion
+						if let Some(hit) = raycast(p.pos, down, REACH, &world) {
+							if let Some(hardness) = hit.block.hardness_ticks() {
+								client.send_dig_start(hit.cell);
+								// +2 ticks margin over the server's grace.
+								digging = Some((hit.cell, hit.block, t + hardness as u32 + 2));
+							} else {
+								next_edit_in = 1.0 / edit_rate;
+							}
+						} else {
+							next_edit_in = 1.0 / edit_rate;
+						}
+					}
 				}
 			}
 		}

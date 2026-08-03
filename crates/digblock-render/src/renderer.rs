@@ -5,7 +5,6 @@ use digblock_core::chunk::ChunkPos;
 use digblock_core::mesher::{quad_indices, MeshData};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
-use wgpu::util::DeviceExt;
 
 use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_WATER};
 use crate::overlay::Overlay;
@@ -19,6 +18,30 @@ use digblock_platform::Gpu;
 /// Worst-case faces per 16³ chunk mesh (checkerboard): 2048 blocks × 6.
 const MAX_QUADS: usize = 12288;
 pub(crate) const CHUNK_STRIDE: u64 = 256;
+
+/// `DeviceExt::create_buffer_init` replacement, mandatory on wasm and
+/// used everywhere for uniformity. The util helper copies through a JS
+/// `Uint8Array` view of wasm linear memory with wgpu-internal
+/// allocations between creating the view and consuming it; if one of
+/// them grows wasm memory, every live view detaches and the copy throws
+/// "Cannot perform %TypedArray%.prototype.set on a detached
+/// ArrayBuffer" (seen in the field from `upload_chunk` while streaming
+/// grew the heap). `Queue::write_buffer` is immune: its FFI glue builds
+/// the view and hands it to the synchronous GPU copy in one step, with
+/// no wasm allocation in between.
+fn buffer_init(gpu: &Gpu, label: &str, usage: wgpu::BufferUsages, contents: &[u8]) -> wgpu::Buffer {
+	// write_buffer requires 4-byte-aligned sizes; all callers upload
+	// u32-packed data.
+	debug_assert_eq!(contents.len() % 4, 0, "buffer_init needs u32-aligned data");
+	let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+		label: Some(label),
+		size: contents.len() as u64,
+		usage: usage | wgpu::BufferUsages::COPY_DST,
+		mapped_at_creation: false,
+	});
+	gpu.queue.write_buffer(&buf, 0, contents);
+	buf
+}
 
 /// Chunk-origin UBO slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
@@ -79,6 +102,11 @@ pub struct FrameScene<'a> {
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32)],
 	pub menu: Option<&'a crate::menu::MenuView>,
+	/// Crosshair target for the highlight decal: (cell, dig progress);
+	/// `None` progress = idle outline.
+	pub target: Option<((i32, i32, i32), Option<f32>)>,
+	/// Hotbar HUD view; None hides the bar (menu open, bench).
+	pub hotbar: Option<&'a crate::hotbar::HotbarView>,
 }
 
 /// Field order/layout must match the `Frame` struct in
@@ -178,6 +206,10 @@ pub struct Renderer {
 	spray: crate::spray::Spray,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
+	/// Target-block outline + dig-crack decal (scene pass).
+	highlight: crate::highlight::HighlightDraw,
+	/// Hotbar block icons (overlay pass, between the overlay's splits).
+	hotbar_icons: crate::hotbar::HotbarIcons,
 	/// Layout of `FrameTargets::water_bg` (water frame UBO + depth copy
 	/// + scene color + linear sampler): the water pipelines' group 0.
 	water_frame_bgl: wgpu::BindGroupLayout,
@@ -560,11 +592,12 @@ impl Renderer {
 			],
 		});
 
-		let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-			label: Some("shared quad indices"),
-			contents: bytemuck::cast_slice(&quad_indices(MAX_QUADS)),
-			usage: wgpu::BufferUsages::INDEX,
-		});
+		let index_buf = buffer_init(
+			gpu,
+			"shared quad indices",
+			wgpu::BufferUsages::INDEX,
+			bytemuck::cast_slice(&quad_indices(MAX_QUADS)),
+		);
 
 		Self {
 			solid_pipeline,
@@ -588,6 +621,8 @@ impl Renderer {
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
 			players: crate::players::RemotePlayersDraw::new(gpu, surface_format, &frame_bgl),
+			highlight: crate::highlight::HighlightDraw::new(gpu, surface_format, &water_frame_bgl),
+			hotbar_icons: crate::hotbar::HotbarIcons::new(gpu, surface_format, &materials_bgl),
 			targets: None,
 			water_frame_bgl,
 			blit_bgl,
@@ -683,13 +718,12 @@ impl Renderer {
 			if verts.is_empty() {
 				return None;
 			}
-			let buf = gpu
-				.device
-				.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-					label: Some("chunk verts"),
-					contents: bytemuck::cast_slice(verts),
-					usage: wgpu::BufferUsages::VERTEX,
-				});
+			let buf = buffer_init(
+				gpu,
+				"chunk verts",
+				wgpu::BufferUsages::VERTEX,
+				bytemuck::cast_slice(verts),
+			);
 			self.gpu_buffer_bytes += buf.size();
 			let quads = (verts.len() / (4 * 2)) as u32;
 			Some((buf, quads * 6))
@@ -842,11 +876,15 @@ impl Renderer {
 			overlay,
 			feed,
 			menu,
+			target: highlight_target,
+			hotbar,
 		} = *scene;
 		self.ensure_targets(gpu, size);
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
+		self.highlight.set_target(gpu, highlight_target);
+		let placed_slots = hotbar.map(|view| crate::hotbar::layout(size, view));
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
 			wide_refreshed: self.shadow.refresh_pending(wide_due),
@@ -866,7 +904,16 @@ impl Renderer {
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
 		}
-		self.overlay.prepare(gpu, size, overlay, feed, menu);
+		self.overlay.prepare(
+			gpu,
+			size,
+			overlay,
+			feed,
+			menu,
+			placed_slots.as_ref().map(|s| s.as_slice()),
+		);
+		self.hotbar_icons
+			.prepare(gpu, size, placed_slots.as_ref().map(|s| s.as_slice()));
 		// Chunk bounding-sphere frustum cull against the four side planes.
 		let planes = side_planes(view_proj);
 		let in_frustum = |pos: &ChunkPos| -> bool { chunk_in_frustum(pos, &planes) };
@@ -1050,6 +1097,16 @@ impl Renderer {
 				stats.water_draws += water_draws;
 				stats.triangles += water_tris;
 
+				// Target highlight/crack decal, over the finished water so
+				// a box on a source (or a submerged block) survives the
+				// water's depth tint; it occludes itself against the solid
+				// depth copy in-shader (water_bg is still bound at 0).
+				let highlight_tris = self.highlight.draw(&mut pass);
+				if highlight_tris > 0 {
+					stats.draw_calls += 1;
+					stats.triangles += highlight_tris;
+				}
+
 				// Spray billboards over the finished water (blends over
 				// sheet and pool alike). Water left its frame+scene group
 				// bound at 0; spray wants the plain frame group.
@@ -1079,7 +1136,12 @@ impl Renderer {
 				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_OVERLAY)),
 				occlusion_query_set: None,
 			});
-			self.overlay.draw(&mut pass);
+			// Sandwich: overlay-below (slot backdrops) → block icons →
+			// overlay-above (counts, panel, feed, menu). One pass, one
+			// timer bracket.
+			self.overlay.draw_below(&mut pass);
+			self.hotbar_icons.draw(&mut pass, &self.materials_bg);
+			self.overlay.draw_above(&mut pass);
 		}
 
 		if let Some(t) = self.gpu_timer.as_mut() {

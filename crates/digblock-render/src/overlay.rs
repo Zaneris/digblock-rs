@@ -57,6 +57,12 @@ pub struct Overlay {
 	vertex_buf: wgpu::Buffer,
 	verts: Vec<OverlayVertex>,
 	vert_count: u32,
+	/// Vertex index splitting the buffer into below-icons (crosshair,
+	/// hotbar slot backgrounds) and above-icons (text, panel, feed,
+	/// menu) ranges — the hotbar icon pipeline draws between the two.
+	/// Equal to `vert_count` when there is no hotbar, so frames without
+	/// one behave exactly as before the split existed.
+	split_vert: u32,
 	line_scratch: String,
 }
 
@@ -218,6 +224,7 @@ impl Overlay {
 			vertex_buf,
 			verts: Vec::with_capacity(MAX_VERTS),
 			vert_count: 0,
+			split_vert: 0,
 			line_scratch: String::with_capacity(96),
 		}
 	}
@@ -284,6 +291,44 @@ impl Overlay {
 		}
 	}
 
+	/// Hotbar layer under the icons: slot backdrops + selection border.
+	fn push_hotbar_slots(&mut self, slots: &[crate::hotbar::PlacedSlot]) {
+		const SEL: u32 = 0xE0FFFFFF;
+		const T: f32 = 2.0; // border thickness
+		for s in slots {
+			let [x, y, w, h] = s.rect;
+			self.push_quad(x, y, w, h, BG);
+			if s.selected {
+				self.push_quad(x - T, y - T, w + 2.0 * T, T, SEL);
+				self.push_quad(x - T, y + h, w + 2.0 * T, T, SEL);
+				self.push_quad(x - T, y, T, h, SEL);
+				self.push_quad(x + w, y, T, h, SEL);
+			}
+		}
+	}
+
+	/// Hotbar layer over the icons: stack counts, bottom-right corner.
+	/// Three glyphs fill a 48 px slot, so 100+ displays as "99+".
+	fn push_hotbar_counts(&mut self, slots: &[crate::hotbar::PlacedSlot]) {
+		for s in slots {
+			let Some(n) = s.count else {
+				continue;
+			};
+			self.line_scratch.clear();
+			if n > 99 {
+				self.line_scratch.push_str("99+");
+			} else {
+				let _ = write!(self.line_scratch, "{n}");
+			}
+			let [x, y, w, h] = s.rect;
+			let text = std::mem::take(&mut self.line_scratch);
+			let tx = x + w - 2.0 - text.len() as f32 * GLYPH_PX;
+			let color = if n == 0 { DIM } else { WHITE };
+			self.push_text(tx, y + h - GLYPH_PX - 2.0, color, &text);
+			self.line_scratch = text;
+		}
+	}
+
 	fn push_crosshair(&mut self, size: (u32, u32)) {
 		const ARM: f32 = 9.0; // half-length in px
 		const THICK: f32 = 2.0;
@@ -293,10 +338,12 @@ impl Overlay {
 		self.push_quad(cx - THICK / 2.0, cy - ARM, THICK, ARM * 2.0, COLOR);
 	}
 
-	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair —
-	/// unless the menu is up and the cursor visible), plus the debug panel
-	/// when `stats` is present, plus the server-message feed when non-empty,
-	/// plus the menu when open.
+	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair
+	/// and hotbar — unless the menu is up and the cursor visible), plus
+	/// the debug panel when `stats` is present, plus the server-message
+	/// feed when non-empty, plus the menu when open. Everything before
+	/// the split renders below the hotbar's block icons; everything
+	/// after, above them.
 	pub fn prepare(
 		&mut self,
 		gpu: &Gpu,
@@ -304,10 +351,18 @@ impl Overlay {
 		stats: Option<(&OverlayStats, &[f32])>,
 		feed: &[(String, f32)],
 		menu: Option<&crate::menu::MenuView>,
+		hotbar: Option<&[crate::hotbar::PlacedSlot]>,
 	) {
 		self.verts.clear();
 		if menu.is_none() {
 			self.push_crosshair(size);
+		}
+		if let Some(slots) = hotbar {
+			self.push_hotbar_slots(slots);
+		}
+		self.split_vert = self.verts.len() as u32;
+		if let Some(slots) = hotbar {
+			self.push_hotbar_counts(slots);
 		}
 		if let Some((stats, history)) = stats {
 			self.push_debug_panel(stats, history);
@@ -466,13 +521,23 @@ impl Overlay {
 		}
 	}
 
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-		if self.vert_count == 0 {
+	/// The range under the hotbar icons (crosshair, slot backdrops).
+	pub fn draw_below(&self, pass: &mut wgpu::RenderPass<'_>) {
+		self.draw_range(pass, 0, self.split_vert);
+	}
+
+	/// The range over the icons (counts, panel, feed, menu).
+	pub fn draw_above(&self, pass: &mut wgpu::RenderPass<'_>) {
+		self.draw_range(pass, self.split_vert, self.vert_count);
+	}
+
+	fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, from: u32, to: u32) {
+		if from >= to {
 			return;
 		}
 		pass.set_pipeline(&self.pipeline);
 		pass.set_bind_group(0, &self.bind_group, &[]);
 		pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-		pass.draw(0..self.vert_count, 0..1);
+		pass.draw(from..to, 0..1);
 	}
 }

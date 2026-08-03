@@ -99,6 +99,7 @@ fn main() {
 	// Env-derived knobs live in the launcher; the engine stays env-free
 	// (std::env is a stub on the wasm target).
 	config.player_name = std::env::var("USER").ok();
+	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
 		v.parse::<u32>().ok().filter(|&n| n > 0).unwrap_or_else(|| {
@@ -135,4 +136,38 @@ fn main() {
 		log::error!("{e}");
 		std::process::exit(1);
 	}
+}
+
+/// Load-or-create the persistent 16-byte identity secret keying the
+/// server-side persisted inventory. A bearer secret by design (there are
+/// no accounts): whoever holds the bytes owns the inventory, so the file
+/// lives in the user's data dir. DIG_IDENTITY_FILE overrides the path —
+/// how a second local client gets its own identity for testing.
+fn load_identity() -> [u8; 16] {
+	let path = std::env::var("DIG_IDENTITY_FILE")
+		.map(std::path::PathBuf::from)
+		.unwrap_or_else(|_| {
+			dirs::data_dir()
+				.map(|d| d.join("digblock").join("identity"))
+				.unwrap_or_else(|| std::path::PathBuf::from("./digblock-identity"))
+		});
+	if let Ok(bytes) = std::fs::read(&path) {
+		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice()) {
+			if id != [0; 16] {
+				return id;
+			}
+		}
+		log::warn!("identity file {} malformed — regenerating", path.display());
+	}
+	let id: [u8; 16] = rand::random();
+	if let Some(parent) = path.parent() {
+		let _ = std::fs::create_dir_all(parent);
+	}
+	if let Err(e) = std::fs::write(&path, id) {
+		log::warn!(
+			"could not persist identity to {} ({e}) — inventory is per-run",
+			path.display()
+		);
+	}
+	id
 }
