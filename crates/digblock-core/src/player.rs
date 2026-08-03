@@ -96,7 +96,9 @@ const SKIN: f32 = 1e-4;
 pub fn spawn(seed: f64) -> Vec3 {
 	use crate::worldgen::{carved, column_shape, SEA_LEVEL};
 	const STEP: i32 = 8;
-	for ring in 0..=64 {
+	// 192 rings × 8 = 1536 blocks — at least one full continent wavelength,
+	// so the walk crosses any ocean the warped continent field can produce.
+	for ring in 0..=192 {
 		let d = ring * STEP;
 		for z in (-d..=d).step_by(STEP as usize) {
 			for x in (-d..=d).step_by(STEP as usize) {
@@ -113,7 +115,7 @@ pub fn spawn(seed: f64) -> Vec3 {
 			}
 		}
 	}
-	// Pathological seed: no land within 512 blocks — tread water.
+	// Pathological seed: no land within 1536 blocks — tread water.
 	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
 }
 

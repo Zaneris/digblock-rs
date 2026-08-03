@@ -62,9 +62,15 @@ pub struct TerrainParams {
 }
 
 impl TerrainParams {
+	// Region wavelengths are tuned so distinct terrain archetypes sit
+	// farther apart than one draw distance (~640 blocks across): mountains
+	// belong to ~740-block belts, eroded flats to ~2500-block provinces,
+	// continents to ~1333-block masses — you walk between regions instead
+	// of seeing them all in one frame. Local character (detail, ridge
+	// forms, channel width) keeps its original scale.
 	pub const DEFAULT: TerrainParams = TerrainParams {
-		continent_freq: 0.0015,
-		rough_freq: 0.004,
+		continent_freq: 0.00075,
+		rough_freq: 0.00135,
 		detail_freq: 0.015,
 		ridge_freq: 0.004,
 		plains_amp: 6.0,
@@ -72,19 +78,21 @@ impl TerrainParams {
 		rough_seed_off: 4079.0,
 		detail_seed_off: 8161.0,
 		ridge_seed_off: 12281.0,
-		warp_freq: 0.0008,
-		warp_amp: 160.0,
+		warp_freq: 0.0004,
+		warp_amp: 320.0,
 		warp_x_off: 31337.0,
 		warp_z_off: 44777.0,
-		erosion_freq: 0.0012,
+		erosion_freq: 0.0004,
 		erosion_seed_off: 52561.0,
-		orient_freq: 0.0004,
+		orient_freq: 0.0002,
 		orient_seed_off: 61553.0,
 		ridge_stretch: 0.35,
 		river: RiverParams {
-			freq: 0.0009,
+			freq: 0.0006,
 			seed_off: 83777.0,
-			w: 0.045,
+			// Physical channel width scales with w/freq: w shrinks with
+			// freq so wider spacing doesn't also widen every river.
+			w: 0.030,
 			depth: 5.0,
 			pool_step: 4.0,
 		},
@@ -211,7 +219,17 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	let alt =
 		((h_ridge - f64::from(SEA_LEVEL)) / (CEILING_KNEE - f64::from(SEA_LEVEL))).clamp(0.0, 1.0);
 	let depth = ((f64::from(SEA_LEVEL) - h_ridge) / 40.0).clamp(0.0, 1.0);
-	let detail_amp = p.plains_amp * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * alt.max(0.6 * depth));
+	let v = alt.max(0.6 * depth);
+	let base_amp = p.plains_amp * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * v);
+	// Steppe gate: strongly eroded, non-mountainous, near-base-altitude
+	// columns collapse toward a 0.25-block detail floor — genuinely flat
+	// plains instead of the ~1.2-block minimum the product above allows.
+	// Any factor at 0 leaves base_amp untouched, so mountains, plateaus,
+	// and the seafloor keep their relief.
+	let flat = smoothstep((erosion - 0.55) / 0.35)
+		* (1.0 - smoothstep(rough / 0.20))
+		* (1.0 - smoothstep((v - 0.08) / 0.22));
+	let detail_amp = base_amp + (0.25 - base_amp) * flat;
 	let h_pre = soft_ceiling(h_ridge + gained(d, 2.0) * detail_amp).max(1.0);
 
 	let (h, water) = rivers::carve(p, wx, wz, seed, base, rough, erosion, h_ridge, h_pre);

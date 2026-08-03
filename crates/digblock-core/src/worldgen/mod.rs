@@ -324,8 +324,10 @@ mod tests {
 		let seed = 1234.5678;
 		let (mut ocean, mut beach, mut plains, mut mountain) = (0u32, 0u32, 0u32, 0u32);
 		let mut total = 0u32;
-		for x in (-4096..4096).step_by(32) {
-			for z in (-4096..4096).step_by(32) {
+		// ±8192 spans ~6.5 erosion / ~12 continent wavelengths — enough
+		// regions that single-seed variance can't starve a bucket.
+		for x in (-8192..8192).step_by(64) {
+			for z in (-8192..8192).step_by(64) {
 				total += 1;
 				match column_shape(x, z, seed).surface {
 					// Rivers are open water for balance purposes.

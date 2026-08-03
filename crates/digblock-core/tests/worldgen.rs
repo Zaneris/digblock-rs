@@ -131,8 +131,10 @@ fn column_rules() {
 fn trees_span_chunk_borders_seamlessly() {
 	let seed = 1234.5678;
 	let mut cache: HashMap<ChunkPos, ChunkData> = HashMap::new();
-	for ccz in -6..6 {
-		for ccx in -6..6 {
+	// Wide scan: regions are province-sized, so a small patch near the
+	// origin can be all ocean or all mountain at a given seed.
+	for ccz in -24..24 {
+		for ccx in -24..24 {
 			for tree in trees_near(ccx * 16, ccz * 16, seed) {
 				let (lx, lz) = (tree.x.rem_euclid(16), tree.z.rem_euclid(16));
 				let crosses = !(2..=13).contains(&lx) || !(2..=13).contains(&lz);
@@ -395,7 +397,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 5533945404733498559,
+		hash, 3873827593272335437,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }

@@ -17,7 +17,10 @@ const MAGIC: &[u8; 4] = b"DBJ1";
 /// v2: the block field widened to a u16 CELL (id + reserved state bits)
 /// at record bytes 12..14; `by` moved to byte 14. Old-version files are
 /// archived to `.vN.bak` at open and the world starts fresh.
-const VERSION: u16 = 2;
+/// v3: worldgen retune (SIM v5) — the record format is unchanged, but the
+/// same seed now yields different terrain, so stored edits are stale;
+/// archive and start fresh.
+const VERSION: u16 = 3;
 const HEADER_LEN: u64 = 16;
 const RECORD_LEN: u64 = 16;
 const SYNC_INTERVAL_SECS: f32 = 1.0;

@@ -333,3 +333,10 @@ hitches 1, GPU buffers ~87-103MB during fill. Within noise of the prior
 baseline — the doubled solid upload bytes did not move fill time or
 frame pacing measurably. Deterministic capture is byte-identical to the
 single-word format.
+
+## 2026-08-03 — worldgen v5 retune (baseline drift note)
+
+Fill-time baselines above predate the v5 terrain retune (region
+wavelengths 2–3× longer, flat steppes): the same seed now generates
+different terrain, so fill numbers will drift. Re-baseline on the next
+bench pass; frame-pacing methodology is unchanged.

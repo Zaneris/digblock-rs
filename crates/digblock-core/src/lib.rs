@@ -41,4 +41,6 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// v4: swimming — buoyant water physics in `Player::tick` (slow sink,
 /// held-jump swim-up, entry damping, surface breach); pinned by the
 /// second golden, `golden_water_trajectory_pins_sim_version`.
-pub const SIM_VERSION: u16 = 4;
+/// v5: worldgen variety — region spread (2–3× control-field wavelengths),
+/// flat steppes, tree variants + forest clustering.
+pub const SIM_VERSION: u16 = 5;
