@@ -889,7 +889,7 @@ impl Engine {
 		if self.water_tool_selected() {
 			hit.block.is_fluid_source()
 		} else {
-			hit.block.props().collides && hit.block.hardness_ticks().is_some()
+			hit.block.props().collides && hit.block.dig_hardness(hit.cell.1).is_some()
 		}
 	}
 
@@ -911,7 +911,7 @@ impl Engine {
 			.is_some_and(|d| d.cell == hit.cell && d.block == hit.block);
 		if !on_same {
 			self.cancel_dig();
-			let required = hit.block.hardness_ticks().unwrap_or(u16::MAX);
+			let required = hit.block.dig_hardness(hit.cell.1).unwrap_or(u16::MAX);
 			self.dig = Some(DigProgress {
 				cell: hit.cell,
 				block: hit.block,

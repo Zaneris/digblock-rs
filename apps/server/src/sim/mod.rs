@@ -374,7 +374,7 @@ impl Sim {
 		}
 		let block = self.store.block_at(cell.0, cell.1, cell.2);
 		client.digging = match block {
-			Some(b) if b.hardness_ticks().is_some() => Some(edits::DigState {
+			Some(b) if b.dig_hardness(cell.1).is_some() => Some(edits::DigState {
 				cell,
 				block: b,
 				progress: 0,

@@ -43,4 +43,7 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// second golden, `golden_water_trajectory_pins_sim_version`.
 /// v5: worldgen variety — region spread (2–3× control-field wavelengths),
 /// flat steppes, tree variants + forest clustering.
-pub const SIM_VERSION: u16 = 5;
+/// v6: bedrock floor — cells at y = `block::BEDROCK_Y` are undiggable
+/// (`BlockType::dig_hardness`); shared dig behavior, so prediction on an
+/// old client would silently open holes a new server refuses.
+pub const SIM_VERSION: u16 = 6;

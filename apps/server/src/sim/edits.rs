@@ -237,7 +237,7 @@ impl Sim {
 					&& block == hit.block
 					&& hit
 						.block
-						.hardness_ticks()
+						.dig_hardness(req.cell.1)
 						.is_some_and(|h| progress + dig_grace(h as u32) >= h as u32)
 			});
 			if !satisfied {
@@ -475,6 +475,58 @@ mod tests {
 			.is_some_and(
 				|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u16))
 			));
+	}
+
+	/// The world floor (y = BEDROCK_Y) is indestructible: DigStart
+	/// records no hold there, so even a full-length honest hold ends in
+	/// DigIncomplete and the block survives. World: a single stone layer
+	/// at y = 0 with the player standing on it, so the floor is the ray
+	/// target — no digging down through 126 blocks first.
+	#[test]
+	fn bedrock_floor_refuses_digs() {
+		use digblock_core::block::BEDROCK_Y;
+		use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use std::sync::Arc;
+
+		let source: crate::store::ColumnSource = Arc::new(|_cx, _cz| {
+			let mut floor = ChunkData::default();
+			for z in 0..16 {
+				for x in 0..16 {
+					floor.set(x, 0, z, BlockType::Stone);
+				}
+			}
+			let floor = Arc::new(floor);
+			(0..WORLD_VCHUNK as usize)
+				.map(|cy| if cy == 0 { floor.clone() } else { AIR_CHUNK.clone() })
+				.collect()
+		});
+		let spawn = Vec3::new(8.5, BEDROCK_Y as f32 + 2.5, 8.5);
+		let dir = temp_dir("bedrock");
+		let mut sim = super::super::Sim::new_with_source(SEED, &dir, 1, 2, source, spawn).unwrap();
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let mut t = 0;
+		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+		assert_eq!(cell.1, BEDROCK_Y, "the ray targeted the floor layer");
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 1,
+					reason: RejectReason::DigIncomplete,
+				}
+			)),
+			"{:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_block_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Stone),
+			"floor block survived"
+		);
 	}
 
 	/// The reserved state nibble travels the wire but nothing consumes

@@ -311,7 +311,9 @@ fn run_bot(
 					if next_edit_in <= 0.0 {
 						next_edit_in = f32::INFINITY; // rearmed on completion
 						if let Some(hit) = raycast(p.pos, down, REACH, &world) {
-							if let Some(hardness) = hit.block.hardness_ticks() {
+							// Same gate as the server — a bot that has dug
+							// down to bedrock must skip it, not retry forever.
+							if let Some(hardness) = hit.block.dig_hardness(hit.cell.1) {
 								client.send_dig_start(hit.cell);
 								// +2 ticks margin over the server's grace.
 								digging = Some((hit.cell, hit.block, t + hardness as u32 + 2));

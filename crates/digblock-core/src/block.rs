@@ -74,6 +74,11 @@ blocks! {
 	Sandstone = 21 => dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70),
 }
 
+/// The indestructible world floor: cells at this height can never be
+/// dug (`BlockType::dig_hardness`), and worldgen's cave pass never
+/// carves them — so no path exists to a hole in the bottom of the world.
+pub const BEDROCK_Y: i32 = 0;
+
 /// Ceiling on texture-array layers, tied to the packed vertex format's
 /// layer field width. Every PROPS row is const-checked against it.
 pub const MAX_TEX_LAYERS: usize = 1024;
@@ -298,6 +303,22 @@ impl BlockType {
 		(h > 0).then_some(h)
 	}
 
+	/// THE dig-permission gate — hold length for digging this block at
+	/// world height `y`, or None when it can't be dug at all. Combines
+	/// the per-block hardness with the bedrock rule: the world floor
+	/// (y = `BEDROCK_Y`) is indestructible, so the bottom of the world
+	/// can never be opened. Client prediction, the server's hold + edit
+	/// validation, and the bot all route through this one predicate;
+	/// worldgen upholds the same floor by never carving y = 0 (see
+	/// worldgen/caves.rs).
+	#[inline]
+	pub fn dig_hardness(self, y: i32) -> Option<u16> {
+		if y <= BEDROCK_Y {
+			return None;
+		}
+		self.hardness_ticks()
+	}
+
 	/// What a completed dig credits to the inventory: the `drops`
 	/// override, else the block itself. None for undiggable blocks.
 	#[inline]
@@ -377,6 +398,18 @@ mod tests {
 				}
 				None => assert!(b.hardness_ticks().is_none(), "{b:?}"),
 			}
+		}
+	}
+
+	#[test]
+	fn bedrock_floor_is_undiggable() {
+		for &b in &BlockType::ALL {
+			assert_eq!(b.dig_hardness(BEDROCK_Y), None, "{b:?} undiggable at floor");
+			assert_eq!(
+				b.dig_hardness(BEDROCK_Y + 1),
+				b.hardness_ticks(),
+				"{b:?} normal hardness above the floor"
+			);
 		}
 	}
 
