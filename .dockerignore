@@ -1,5 +1,13 @@
 target/
 apps/ios/xcode/
+# The docker images' pinned rust:1-slim-* toolchain is authoritative in
+# containers. If this file reaches the build context, rustup sees
+# channel = "stable" as a *different* toolchain than the image's
+# version-named one and freshly installs it mid-build — after the
+# builder stage already added the cross target to the image toolchain,
+# breaking aarch64 (E0463: can't find crate for `std`) and silently
+# discarding the cargo-chef dependency cache.
+rust-toolchain.toml
 data/
 bench*.csv
 *.png
