@@ -176,6 +176,10 @@ pub enum ServerMsg {
 		sim_version: u16,
 		/// Informational build string (diagnostics only).
 		build: String,
+		/// The server's current time-of-day angle (see
+		/// `digblock_core::sun`) — anchors the joiner's clock; the
+		/// `TimeOfDay` heartbeat keeps it anchored. Appended in v7.
+		tod: f32,
 	},
 	/// Join/late sync: last-write-wins final cell states for one column.
 	JournalColumn {
@@ -227,6 +231,13 @@ pub enum ServerMsg {
 	/// snapshots.
 	Teleported {
 		pos: [f32; 3],
+	},
+	/// Authoritative world-clock heartbeat, broadcast every
+	/// [`TOD_SYNC_TICKS`](crate::protocol::TOD_SYNC_TICKS): the client
+	/// hard-sets its sun to this angle (the drift since the last beat is
+	/// far below visible). Added in v7.
+	TimeOfDay {
+		tod: f32,
 	},
 }
 
@@ -295,7 +306,9 @@ mod tests {
 				session_token: [9; 16],
 				sim_version: 1,
 				build: "0.1.0".into(),
+				tod: 45.0,
 			},
+			ServerMsg::TimeOfDay { tod: -12.5 },
 			ServerMsg::JournalColumn {
 				cx: -2,
 				cz: 9,
@@ -436,14 +449,16 @@ mod tests {
 			session_token: [2; 16],
 			sim_version: 1,
 			build: "b".into(),
+			tod: 80.0,
 		};
 		assert_eq!(
 			postcard::to_stdvec(&welcome).unwrap(),
 			// variant 1, protocol 2, seed 2.0 le f64, id 3, spawn zeros,
-			// tick 9, divisor 3, 16 raw token bytes, sim_version 1, "b"
+			// tick 9, divisor 3, 16 raw token bytes, sim_version 1, "b",
+			// tod 80.0 le f32 (appended in v7)
 			vec![
 				1, 2, 0, 0, 0, 0, 0, 0, 0, 64, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 3, 2, 2,
-				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98
+				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98, 0, 0, 160, 66
 			]
 		);
 

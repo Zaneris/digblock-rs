@@ -35,7 +35,12 @@ pub fn start() -> Result<(), JsValue> {
 	// hardware down.
 	let mut config = EngineConfig::web();
 	config.seed = param(&params, "seed");
-	config.tod = param(&params, "tod");
+	// Dev builds only (like desktop --tod): in multiplayer the server
+	// dictates the world clock. `just web` builds release, so the served
+	// bundle ignores ?tod=.
+	if cfg!(debug_assertions) {
+		config.tod = param(&params, "tod");
+	}
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(4, 20);
 	}

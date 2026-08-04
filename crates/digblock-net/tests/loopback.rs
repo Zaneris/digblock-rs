@@ -171,15 +171,26 @@ fn full_frame_handshake_edits_snapshot() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 45.0,
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
 	assert!(matches!(
 		events.first(),
-		Some(NetEvent::Welcome { seed, player_id: 1, .. }) if *seed == 42.0
+		Some(NetEvent::Welcome { seed, player_id: 1, tod, .. })
+			if *seed == 42.0 && *tod == 45.0
 	));
 	assert!(client.ready());
 	assert_eq!(client.predictor.current_tick(), 600 + CLIENT_TICK_LEAD);
+
+	// The world-clock heartbeat passes through as an event.
+	server.send(&ServerMsg::TimeOfDay { tod: 44.5 });
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(matches!(
+		events.first(),
+		Some(NetEvent::TimeOfDay { tod }) if *tod == 44.5
+	));
 
 	// Predict a few ticks and send inputs.
 	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
@@ -293,6 +304,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 80.0,
 	});
 	client.poll(&mut events, 0.016);
 
@@ -360,6 +372,7 @@ fn inventory_full_maps_to_event() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 80.0,
 	});
 	server.send(&ServerMsg::InventoryFull {
 		counts: vec![(BlockType::Dirt as u16, 5), (9999, 3)],
@@ -415,6 +428,7 @@ fn input_redundancy_survives_datagram_loss() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 80.0,
 	});
 	client.poll(&mut events, 0.016);
 
@@ -485,6 +499,7 @@ fn incompatible_server_version_is_refused_locally() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 80.0,
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -513,6 +528,7 @@ fn sim_version_mismatch_is_refused() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION + 1,
 		build: "newer".into(),
+		tod: 80.0,
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -542,6 +558,7 @@ fn input_sends_are_throttled_to_the_stride() {
 		session_token: [0; 16],
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
+		tod: 80.0,
 	});
 	client.poll(&mut events, 0.016);
 	server.pump();

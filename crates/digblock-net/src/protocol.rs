@@ -16,13 +16,14 @@ pub const SERVER_ID: PlayerId = u8::MAX;
 /// multiplayer, music) instead.
 pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 
-/// v6: return-to-spawn (ClientMsg::ReturnToSpawn / ServerMsg::Teleported).
-pub const PROTOCOL_VERSION: u16 = 6;
+/// v7: server-dictated time of day (`Welcome.tod` + the periodic
+/// `ServerMsg::TimeOfDay` heartbeat).
+pub const PROTOCOL_VERSION: u16 = 7;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 6;
+pub const MIN_PROTOCOL: u16 = 7;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -141,6 +142,12 @@ const _: () = assert!(digblock_core::player::TICK == 1.0 / TICK_RATE as f32);
 
 /// Snapshots go out every Nth sim tick (3 → 20 Hz).
 pub const SNAPSHOT_DIVISOR: u32 = 3;
+
+/// Time-of-day heartbeat cadence in sim ticks (10 s). The clients'
+/// frame-integrated suns drift microscopically between beats; each
+/// `ServerMsg::TimeOfDay` re-anchors them, and it also catches clients
+/// whose clock paused entirely (backgrounded tab, suspended laptop).
+pub const TOD_SYNC_TICKS: u32 = 10 * TICK_RATE;
 
 /// Each input datagram repeats the last N unacked ticks so isolated
 /// datagram loss never costs the server an input.

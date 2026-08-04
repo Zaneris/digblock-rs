@@ -21,7 +21,11 @@ use glam::{Mat4, Vec3};
 
 /// Full 360° day length in seconds (20 min real time).
 pub const DAY_SECS: f32 = 1200.0;
-const TOD_RATE_DEG_PER_SEC: f32 = 360.0 / DAY_SECS;
+pub const TOD_RATE_DEG_PER_SEC: f32 = 360.0 / DAY_SECS;
+/// Where a fresh world's clock starts: mid-morning (the Java start was
+/// tod = 80, sunrise). Shared with the server, whose authoritative clock
+/// is `tod_of_secs` over its tick counter.
+pub const TOD_START: f32 = 80.0;
 const WIDE_PERIOD_SECS: f32 = 3.33;
 const REANCHOR_DIST: f32 = 32.0;
 pub const NEAR_EXTENT: f32 = 24.0;
@@ -51,10 +55,9 @@ impl Default for Sun {
 
 impl Sun {
 	pub fn new() -> Self {
-		// Start mid-morning (the Java start was tod = 80, sunrise).
 		Self {
-			tod: 80.0,
-			tod2: 80.0,
+			tod: TOD_START,
+			tod2: TOD_START,
 			anchor: Vec3::ZERO,
 			wide_timer: f32::MAX, // wide refresh due immediately
 		}
@@ -66,6 +69,15 @@ impl Sun {
 		s.tod = Self::normalize(tod);
 		s.tod2 = s.tod;
 		s
+	}
+
+	/// The world clock as a pure function of elapsed seconds — the
+	/// server's authoritative time of day (`secs` = tick / TICK_RATE).
+	/// f64 math so precision holds over months of uptime; per-frame f32
+	/// integration is fine client-side because heartbeats re-anchor it.
+	pub fn tod_of_secs(secs: f64) -> f32 {
+		let deg = (f64::from(TOD_START) - f64::from(TOD_RATE_DEG_PER_SEC) * secs).rem_euclid(360.0);
+		Self::normalize(deg as f32)
 	}
 
 	/// Wrap an angle into (−180, 180].
@@ -249,6 +261,22 @@ mod tests {
 		assert_eq!(refreshes, 2, "two full periods fit in 10s of 0.1s steps");
 		// Player only 5 units away — anchor must not have moved.
 		assert_eq!(sun.anchor, Vec3::new(100.0, 35.0, 0.0));
+	}
+
+	#[test]
+	fn tod_of_secs_matches_integration() {
+		assert_eq!(Sun::tod_of_secs(0.0), TOD_START);
+		// A whole day wraps back to the start.
+		assert!((Sun::tod_of_secs(f64::from(DAY_SECS)) - TOD_START).abs() < 1e-4);
+		// Stays normalized and precise after ~a year of uptime.
+		let t = Sun::tod_of_secs(3.0e7);
+		assert!(t > -180.0 && t <= 180.0);
+		// Matches frame integration over a short horizon.
+		let mut sun = Sun::new();
+		for _ in 0..600 {
+			sun.update(0.1, Vec3::ZERO);
+		}
+		assert!((Sun::tod_of_secs(60.0) - sun.tod).abs() < 1e-3);
 	}
 
 	#[test]

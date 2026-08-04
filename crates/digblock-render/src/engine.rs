@@ -24,7 +24,9 @@ pub struct EngineConfig {
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
-	/// Fixed sun angle in degrees for deterministic captures.
+	/// Fixed sun angle in degrees for deterministic captures. Filled by
+	/// dev-build flags (or bench internally); wins over the server's
+	/// world clock because `update()` re-asserts it every frame.
 	pub tod: Option<f32>,
 	/// Initial camera yaw/pitch in degrees for deterministic captures
 	/// (yaw 0 faces +z, 90 faces +x; pitch defaults to −20).
@@ -661,11 +663,16 @@ impl Engine {
 					seed,
 					spawn,
 					player_id,
+					tod,
 					..
 				} => {
 					self.my_player_id = Some(player_id);
 					self.menu.on_welcome();
 					self.swap_world(seed, spawn);
+					// The server owns the world clock. A dev-build --tod
+					// freeze still wins: update() re-asserts config.tod
+					// every frame.
+					self.sun = Sun::with_tod(tod);
 				}
 				NetEvent::Ack {
 					acked_input_tick,
@@ -746,6 +753,9 @@ impl Engine {
 					self.push_feed(format!("{name} left the server."));
 				}
 				NetEvent::Teleported { pos } => self.apply_teleport(pos),
+				// Hard-set: inter-beat drift is microscopic, and after a
+				// paused clock (backgrounded tab) a snap is what we want.
+				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
 				NetEvent::Chat { from, text } => {
 					// Our own echo: the roster never carries ourselves, so
 					// resolve through the session name instead.

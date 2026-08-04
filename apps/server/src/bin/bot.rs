@@ -270,7 +270,8 @@ fn run_bot(
 				| NetEvent::Inventory { .. }
 				| NetEvent::PlayerJoined { .. }
 				| NetEvent::PlayerLeft { .. }
-				| NetEvent::Chat { .. } => {}
+				| NetEvent::Chat { .. }
+				| NetEvent::TimeOfDay { .. } => {}
 			}
 		}
 

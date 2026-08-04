@@ -76,7 +76,17 @@ fn main() {
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => config.draw_dist = parse_or_die("--draw-dist", args.next()),
 			"--seed" => config.seed = Some(parse_or_die("--seed", args.next())),
-			"--tod" => config.tod = Some(parse_or_die("--tod", args.next())),
+			// Dev builds only: in multiplayer the server dictates the
+			// world clock, so a shipped binary must not carry a local
+			// override (--bench still freezes tod internally — that's a
+			// programmatic single-player capture, not this flag).
+			"--tod" if cfg!(debug_assertions) => {
+				config.tod = Some(parse_or_die("--tod", args.next()));
+			}
+			"--tod" => {
+				eprintln!("--tod is available in dev builds only");
+				std::process::exit(2);
+			}
 			"--yaw" => config.yaw = Some(parse_or_die("--yaw", args.next())),
 			"--pitch" => config.pitch = Some(parse_or_die("--pitch", args.next())),
 			// SSR override in either direction (--mobile --ssr is the

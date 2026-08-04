@@ -28,7 +28,7 @@ use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
 	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
-	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE,
+	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -196,6 +196,13 @@ impl Sim {
 		self.tick
 	}
 
+	/// The authoritative world clock: a pure function of the tick
+	/// counter, so it needs no state and no persistence (a restart
+	/// restarts the day — accepted).
+	fn current_tod(&self) -> f32 {
+		digblock_core::sun::Sun::tod_of_secs(f64::from(self.tick) / f64::from(TICK_RATE))
+	}
+
 	/// Read each tick by `run_sim_loop` into the shared gauge the master
 	/// heartbeat reports.
 	pub fn player_count(&self) -> usize {
@@ -216,6 +223,14 @@ impl Sim {
 		self.tick += 1;
 		if self.tick % SNAPSHOT_DIVISOR == 0 {
 			self.send_snapshots();
+		}
+		if self.tick % TOD_SYNC_TICKS == 0 {
+			let msg = ServerMsg::TimeOfDay {
+				tod: self.current_tod(),
+			};
+			for c in self.clients.values() {
+				client_send(c, &msg);
+			}
 		}
 		self.journal.maintain();
 		self.inv_store.maintain();
@@ -525,6 +540,7 @@ impl Sim {
 				session_token: rand::random(),
 				sim_version: digblock_core::SIM_VERSION,
 				build: env!("CARGO_PKG_VERSION").into(),
+				tod: self.current_tod(),
 			},
 		);
 
@@ -709,6 +725,42 @@ mod tests {
 	};
 	use digblock_net::codec::FrameReader;
 	use tokio::sync::mpsc::channel;
+
+	#[test]
+	fn welcome_anchors_tod_and_heartbeat_advances_it() {
+		let mut sim = flat_sim("tod");
+		let mut c = connect(&mut sim, 1);
+		let welcome_tod = c
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { tod, .. } => Some(*tod),
+				_ => None,
+			})
+			.expect("Welcome");
+		// Joined near tick 0: the clock sits at the fresh-world start.
+		assert!(
+			(welcome_tod - digblock_core::sun::TOD_START).abs() < 0.1,
+			"welcome tod {welcome_tod}"
+		);
+		for _ in 0..super::TOD_SYNC_TICKS {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		let beat = c
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::TimeOfDay { tod } => Some(*tod),
+				_ => None,
+			})
+			.expect("heartbeat within one sync period");
+		// 10 s at 0.3°/s — the sun moved ~3° toward noon (tod falls).
+		assert!(
+			(welcome_tod - beat - 3.0).abs() < 0.1,
+			"welcome {welcome_tod} → beat {beat}"
+		);
+	}
 
 	#[test]
 	fn version_mismatch_refused_and_closed() {

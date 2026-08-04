@@ -36,6 +36,8 @@ pub enum NetEvent {
 		player_id: PlayerId,
 		spawn: Vec3,
 		server_tick: u32,
+		/// The server's world clock — anchor the sun here.
+		tod: f32,
 	},
 	Refused {
 		reason: String,
@@ -90,6 +92,11 @@ pub enum NetEvent {
 	/// and in-flight acks.
 	Teleported {
 		pos: Vec3,
+	},
+	/// World-clock heartbeat: hard-set the sun's angle (inter-beat drift
+	/// is far below visible, so no smoothing is needed).
+	TimeOfDay {
+		tod: f32,
 	},
 	Disconnected {
 		reason: String,
@@ -302,6 +309,7 @@ impl NetClient {
 				session_token,
 				sim_version,
 				build,
+				tod,
 			} => {
 				if sim_version != digblock_core::SIM_VERSION {
 					self.failed = true;
@@ -322,6 +330,7 @@ impl NetClient {
 					player_id,
 					spawn: Vec3::from_array(spawn),
 					server_tick,
+					tod,
 				});
 			}
 			ServerMsg::JournalColumn { cells, .. } => {
@@ -382,6 +391,7 @@ impl NetClient {
 					pos: Vec3::from_array(pos),
 				});
 			}
+			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
 			ServerMsg::InventoryFull { counts } => {
 				// Strict decode; unknown ids can't occur with a matching
 				// sim_version but must not panic either.
