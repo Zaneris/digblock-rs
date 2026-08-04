@@ -9,18 +9,109 @@
 		/* winit tracks this canvas's CSS size; wgpu sets the backing size
 		   on surface configure. */
 		#digblock-canvas { width: 100%; height: 100%; display: block; outline: none; }
+		#loading {
+			position: fixed; inset: 0; z-index: 1; background: #000;
+			display: flex; flex-direction: column; align-items: center;
+			justify-content: center; gap: 18px;
+			color: #ddd; font: 14px system-ui, sans-serif;
+			transition: opacity .4s ease;
+		}
+		#loading.done { opacity: 0; pointer-events: none; }
+		#loading h1 {
+			margin: 0; font-size: 28px; font-weight: 600;
+			letter-spacing: .35em; text-indent: .35em; color: #fff;
+		}
+		#bar {
+			width: min(320px, 70vw); height: 6px;
+			background: #222; border-radius: 3px; overflow: hidden;
+		}
+		#bar > div {
+			height: 100%; width: 0%; background: #7ec850;
+			border-radius: 3px; transition: width .15s linear;
+		}
+		/* No Content-Length (or none yet): a sweeping segment instead of a fill. */
+		#bar.indeterminate > div {
+			width: 30%; animation: sweep 1.2s ease-in-out infinite alternate;
+		}
+		@keyframes sweep { from { margin-left: 0 } to { margin-left: 70% } }
+		#status { color: #888; min-height: 1.2em; }
+		#loading pre {
+			color: #f66; white-space: pre-wrap; text-align: left;
+			max-width: 80vw; overflow: auto;
+		}
 	</style>
 </head>
 <body>
 	<canvas id="digblock-canvas"></canvas>
+	<div id="loading">
+		<h1>DIGBLOCK</h1>
+		<div id="bar"><div></div></div>
+		<div id="status">Downloading…</div>
+	</div>
 	<script type="module">
 		import init from "./pkg/digblock_web.js";
-		init().catch((e) => {
-			document.body.innerHTML =
-				`<pre style="color:#f66;padding:1em;white-space:pre-wrap">DigBlock failed to start.\n` +
-				`Chrome 113+ with WebGPU is required.\n\n${e}</pre>`;
+
+		const overlay = document.getElementById("loading");
+		const bar = document.getElementById("bar");
+		const fill = bar.firstElementChild;
+		const status = document.getElementById("status");
+
+		const fail = (e) => {
+			if (!overlay.isConnected) return;
+			bar.remove();
+			status.remove();
+			const pre = document.createElement("pre");
+			pre.textContent = "DigBlock failed to start.\n"
+				+ "Chrome 113+ with WebGPU is required.\n\n" + e;
+			overlay.appendChild(pre);
+		};
+		// init() resolves as soon as the event loop is spawned — GPU init is
+		// still in flight and can fail (or panic) afterwards, which surfaces
+		// here rather than as a rejection of init().
+		addEventListener("error", (e) => fail(e.error ?? e.message));
+		addEventListener("unhandledrejection", (e) => fail(e.reason));
+
+		// The platform layer fires this after presenting the first frame
+		// (a fixed contract with this page, like the canvas id) — only then
+		// is there actually something behind the overlay.
+		addEventListener("digblock-first-frame", () => {
+			overlay.classList.add("done");
+			// Not transitionend: early inline chunk streaming can starve the
+			// animation timeline for seconds, freezing the fade mid-flight.
+			// A timer still fires between jobs and guarantees removal.
+			setTimeout(() => overlay.remove(), 600);
+		}, { once: true });
+
+		// Fetch the wasm by hand so the bar tracks download progress; the
+		// re-wrapped Response keeps the original headers, so wasm-bindgen
+		// still takes its instantiateStreaming path.
+		async function fetchWasm() {
+			const resp = await fetch("./pkg/digblock_web_bg.wasm");
+			if (!resp.ok) throw new Error(`wasm fetch failed: HTTP ${resp.status}`);
+			const total = Number(resp.headers.get("Content-Length")) || 0;
+			if (!total || !resp.body) {
+				bar.classList.add("indeterminate");
+				return resp;
+			}
+			let got = 0;
+			const counted = new TransformStream({
+				transform(chunk, controller) {
+					got += chunk.byteLength;
+					fill.style.width = `${Math.min(100, (got / total) * 100)}%`;
+					controller.enqueue(chunk);
+				},
+			});
+			return new Response(resp.body.pipeThrough(counted), { headers: resp.headers });
+		}
+
+		try {
+			await init({ module_or_path: fetchWasm() });
+			fill.style.width = "100%";
+			status.textContent = "Starting engine…";
+		} catch (e) {
+			fail(e);
 			throw e;
-		});
+		}
 	</script>
 </body>
 </html>

@@ -649,6 +649,18 @@ impl<G: Game> App<G> {
 		}
 
 		frame.present();
+		// First frame is on screen: tell the page to drop its loading
+		// overlay (fixed contract with apps/web's index.html, like the
+		// canvas id).
+		#[cfg(target_arch = "wasm32")]
+		if self.frames_rendered == 1 {
+			if let (Some(w), Ok(ev)) = (
+				web_sys::window(),
+				web_sys::Event::new("digblock-first-frame"),
+			) {
+				let _ = w.dispatch_event(&ev);
+			}
+		}
 		if self
 			.options
 			.exit_after_frames
