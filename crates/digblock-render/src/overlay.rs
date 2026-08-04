@@ -14,7 +14,12 @@ use crate::font;
 pub const GRAPH_FRAMES: usize = 120;
 
 const TEXT_SCALE: f32 = 2.0; // 8px glyphs → 16px on screen
-const GLYPH_PX: f32 = font::GLYPH_W as f32 * TEXT_SCALE;
+/// On-screen glyph advance — menu.rs measures row text with it so the
+/// panel can size itself to content.
+pub(crate) const GLYPH_PX: f32 = font::GLYPH_W as f32 * TEXT_SCALE;
+/// Horizontal inset between a menu row's edge and its text; shared with
+/// menu.rs for the same reason.
+pub(crate) const TEXT_PAD_X: f32 = 8.0;
 const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
@@ -273,7 +278,6 @@ impl Overlay {
 	fn push_menu(&mut self, size: (u32, u32), view: &crate::menu::MenuView) {
 		const MENU_DIM: u32 = 0xA0000000;
 		const ROW_HILIGHT: u32 = 0x60FFFFFF;
-		const TEXT_PAD_X: f32 = 8.0;
 		self.push_quad(0.0, 0.0, size.0 as f32, size.1 as f32, MENU_DIM);
 		let [px, py, pw, ph] = view.panel;
 		self.push_quad(px, py, pw, ph, BG);

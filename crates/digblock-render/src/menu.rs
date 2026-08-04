@@ -436,34 +436,29 @@ impl Menu {
 	/// Build the frame's view. `blink` drives the name-field caret.
 	pub fn view(&self, size: (u32, u32), blink: bool) -> MenuView {
 		const ROW_H: f32 = 28.0;
-		const PANEL_W: f32 = 560.0;
+		/// The panel never shrinks below this (short screens would jitter
+		/// as rows change) and grows to fit its widest row's text.
+		const MIN_PANEL_W: f32 = 560.0;
+		/// Minimum gap between a row's text and its right-aligned column.
+		const COL_GAP: f32 = 2.0 * crate::overlay::GLYPH_PX;
 		let (w, h) = (size.0 as f32, size.1 as f32);
-		let pw = PANEL_W.min(w - 16.0);
-		let px = ((w - pw) / 2.0).max(8.0);
 		let y0 = (h * 0.18).max(8.0);
 		let mut y = y0;
-		let mut rows: Vec<PlacedRow> = Vec::new();
-		let selected_id = self.acts().get(self.current_sel()).map(|a| a.0);
-		let push = |rows: &mut Vec<PlacedRow>, y: &mut f32, spec: RowSpec| {
-			let rect = [px, *y, pw, ROW_H];
+		// Two passes: rows are collected with their y first, then placed
+		// once the widest row has set the panel width.
+		let mut specs: Vec<(RowSpec, f32)> = Vec::new();
+		let push = |specs: &mut Vec<(RowSpec, f32)>, y: &mut f32, spec: RowSpec| {
+			specs.push((spec, *y));
 			*y += ROW_H;
-			rows.push(PlacedRow {
-				rect,
-				id: spec.id,
-				text: spec.text,
-				right: spec.right,
-				color: spec.color,
-				highlight: spec.id.is_some() && spec.id == selected_id,
-			});
 		};
 
 		match &self.screen {
 			None => {}
 			Some(Screen::Root { .. }) => {
-				push(&mut rows, &mut y, RowSpec::title("DIGBLOCK"));
+				push(&mut specs, &mut y, RowSpec::title("DIGBLOCK"));
 				y += ROW_H * 0.5;
 				push(
-					&mut rows,
+					&mut specs,
 					&mut y,
 					RowSpec::item(
 						RowId::RootItem(0),
@@ -476,44 +471,44 @@ impl Menu {
 				);
 				if self.services_available {
 					push(
-						&mut rows,
+						&mut specs,
 						&mut y,
 						RowSpec::item(RowId::RootItem(1), "Multiplayer"),
 					);
 				} else {
 					push(
-						&mut rows,
+						&mut specs,
 						&mut y,
 						RowSpec::dim("Multiplayer (no master server; run with --master-url)"),
 					);
 				}
 				if self.connected {
 					push(
-						&mut rows,
+						&mut specs,
 						&mut y,
 						RowSpec::item(RowId::RootItem(2), "Leave Server"),
 					);
 				}
 				y += ROW_H * 0.5;
 				push(
-					&mut rows,
+					&mut specs,
 					&mut y,
 					RowSpec::dim("arrows + enter, esc: back to game"),
 				);
 			}
 			Some(Screen::Browser(b)) => {
-				push(&mut rows, &mut y, RowSpec::title("MULTIPLAYER"));
+				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
 				let caret = if blink { "_" } else { " " };
 				push(
-					&mut rows,
+					&mut specs,
 					&mut y,
 					RowSpec::field(format!("name: {}{caret}", self.name)),
 				);
 				y += ROW_H * 0.25;
 				if b.fetching && b.rows.is_empty() {
-					push(&mut rows, &mut y, RowSpec::dim("fetching server list..."));
+					push(&mut specs, &mut y, RowSpec::dim("fetching server list..."));
 				} else if b.rows.is_empty() {
-					push(&mut rows, &mut y, RowSpec::dim("no servers online"));
+					push(&mut specs, &mut y, RowSpec::dim("no servers online"));
 				}
 				for (i, row) in b.rows.iter().enumerate() {
 					let (ping, color) = match row.ping {
@@ -531,7 +526,7 @@ impl Menu {
 						),
 					};
 					push(
-						&mut rows,
+						&mut specs,
 						&mut y,
 						RowSpec {
 							id: Some(RowId::Server(i)),
@@ -544,24 +539,54 @@ impl Menu {
 						},
 					);
 				}
-				push(&mut rows, &mut y, RowSpec::item(RowId::Refresh, "Refresh"));
+				push(&mut specs, &mut y, RowSpec::item(RowId::Refresh, "Refresh"));
 				if let Some(status) = &b.status {
-					push(&mut rows, &mut y, RowSpec::status(status.clone()));
+					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
 				y += ROW_H * 0.25;
 				push(
-					&mut rows,
+					&mut specs,
 					&mut y,
 					RowSpec::dim("type your name, enter joins, esc: back"),
 				);
 			}
 			Some(Screen::Connecting { label, .. }) => {
-				push(&mut rows, &mut y, RowSpec::title("MULTIPLAYER"));
+				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
 				y += ROW_H * 0.5;
-				push(&mut rows, &mut y, RowSpec::dim(label.clone()));
-				push(&mut rows, &mut y, RowSpec::dim("esc: cancel"));
+				push(&mut specs, &mut y, RowSpec::dim(label.clone()));
+				push(&mut specs, &mut y, RowSpec::dim("esc: cancel"));
 			}
 		}
+
+		// Width to content: the widest row (text plus any right-aligned
+		// column) fits with the overlay's own padding, clamped to the
+		// window; MIN_PANEL_W keeps short screens from looking cramped.
+		let text_w = |s: &str| s.len() as f32 * crate::overlay::GLYPH_PX;
+		let content_w = specs
+			.iter()
+			.map(|(spec, _)| {
+				crate::overlay::TEXT_PAD_X * 2.0
+					+ text_w(&spec.text)
+					+ spec
+						.right
+						.as_ref()
+						.map_or(0.0, |(right, _)| COL_GAP + text_w(right))
+			})
+			.fold(MIN_PANEL_W, f32::max);
+		let pw = content_w.min(w - 16.0);
+		let px = ((w - pw) / 2.0).max(8.0);
+		let selected_id = self.acts().get(self.current_sel()).map(|a| a.0);
+		let rows = specs
+			.into_iter()
+			.map(|(spec, ry)| PlacedRow {
+				rect: [px, ry, pw, ROW_H],
+				highlight: spec.id.is_some() && spec.id == selected_id,
+				id: spec.id,
+				text: spec.text,
+				right: spec.right,
+				color: spec.color,
+			})
+			.collect();
 
 		MenuView {
 			panel: [px - 12.0, y0 - 12.0, pw + 24.0, (y - y0) + 24.0],
@@ -664,6 +689,44 @@ mod tests {
 	fn open_browser(menu: &mut Menu) {
 		menu.handle_key(Key::Down); // Multiplayer
 		menu.handle_key(Key::Enter);
+	}
+
+	/// The panel sizes itself to its widest row: no screen may lay out
+	/// text (plus any right-aligned column) past the row edge — the
+	/// browser's hint line used to overflow the old fixed 560px width.
+	#[test]
+	fn panel_fits_every_row() {
+		let check = |menu: &Menu| {
+			let view = menu.view(SIZE, false);
+			let [px, _, pw, _] = view.panel;
+			for row in &view.rows {
+				let [rx, _, rw, _] = row.rect;
+				let mut need = crate::overlay::TEXT_PAD_X * 2.0
+					+ row.text.len() as f32 * crate::overlay::GLYPH_PX;
+				if let Some((right, _)) = &row.right {
+					need += right.len() as f32 * crate::overlay::GLYPH_PX;
+				}
+				assert!(need <= rw, "{:?} overflows its row ({need} > {rw})", row.text);
+				assert!(rx >= px && rx + rw <= px + pw, "row outside panel");
+			}
+		};
+
+		// Root, with the long no-master hint.
+		let menu = Menu::new(true, "ted".into(), None);
+		check(&menu);
+		// Browser: name field, server rows with ping column, hint line.
+		let mut menu = Menu::new(true, "ted".into(), None);
+		menu.set_services_available();
+		open_browser(&mut menu);
+		menu.on_response(MenuResponse::ServerList(Ok(vec![entry(
+			"s1",
+			"Alpha-Beta_0",
+		)])));
+		menu.on_response(MenuResponse::Ping {
+			server_id: "s1".into(),
+			ms: Some(1234),
+		});
+		check(&menu);
 	}
 
 	#[test]
