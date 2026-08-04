@@ -46,6 +46,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
+        env:
+          # Don't upload the .dockerbuild build-record artifact — the
+          # release job downloads artifacts and must only see binaries.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: docker/Dockerfile.release
@@ -107,6 +111,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: digblock-server-*
           merge-multiple: true
 
       - name: Publish GitHub Release
