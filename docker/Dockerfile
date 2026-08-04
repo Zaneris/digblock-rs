@@ -1,7 +1,10 @@
 # Headless DigBlock server + bot, for local multiplayer testing (compose
 # + tc netem network profiles). cargo-chef caches the dependency layer so
 # code-only changes rebuild in seconds.
-FROM rust:1-slim AS chef
+# Suite-pinned like docker/Dockerfile.release — build and runtime stages
+# must ride the same Debian suite (glibc symbol versioning); bump both
+# deliberately, never via `1-slim` drift.
+FROM rust:1-slim-trixie AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
@@ -15,7 +18,7 @@ RUN cargo chef cook --release --recipe-path recipe.json -p digblock-server
 COPY . .
 RUN cargo build --release -p digblock-server --bin digblock-server --bin bot
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 # iproute2 provides `tc` for the netem impairment profiles.
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends iproute2 ca-certificates \

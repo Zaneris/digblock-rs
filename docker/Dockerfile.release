@@ -8,7 +8,11 @@
 # OS). Build stages are pinned to $BUILDPLATFORM and cross-compile for
 # $TARGETARCH, so rustc never runs under QEMU emulation — only the final
 # runtime stage's apt-get does (seconds, not hours).
-FROM --platform=$BUILDPLATFORM rust:1-slim AS chef
+# Suite-pinned: the bare `1-slim` tag rides Debian's current stable, and
+# the bookworm→trixie migration silently changed the cross-toolchain
+# packaging (see the libc6-dev-arm64-cross note below). Bump the suite
+# here deliberately, with a test release, not via upstream drift.
+FROM --platform=$BUILDPLATFORM rust:1-slim-trixie AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
@@ -20,7 +24,11 @@ FROM chef AS builder
 ARG TARGETARCH
 # The cross gcc is only installed when actually cross-compiling — Debian
 # ships gcc-aarch64-linux-gnu solely for foreign arches, so a native
-# arm64 build (local testing on an ARM Mac / a Pi) must skip it. The
+# arm64 build (local testing on an ARM Mac / a Pi) must skip it.
+# libc6-dev-arm64-cross must be named explicitly: on trixie it is only a
+# Recommends of the cross gcc, and --no-install-recommends drops it,
+# leaving the compiler without arm64 libc headers (ring's C build dies
+# on bits/libc-header-start.h). The
 # reverse direction (linux/amd64 from an arm64 host) isn't wired up; CI
 # builds on amd64. The linker/CC env is safe either way: Debian's native
 # gcc also provides the triplet-prefixed name.
@@ -32,7 +40,7 @@ RUN case "$TARGETARCH" in \
 	&& rustup target add "$(cat /triple)" \
 	&& if [ "$TARGETARCH" = arm64 ] && [ "$(uname -m)" = x86_64 ]; then \
 		apt-get update \
-		&& apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu \
+		&& apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
 		&& rm -rf /var/lib/apt/lists/*; \
 	fi
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
@@ -43,7 +51,10 @@ COPY . .
 RUN cargo build --release -p digblock-server --bin digblock-server --target "$(cat /triple)" \
 	&& cp "target/$(cat /triple)/release/digblock-server" /digblock-server
 
-FROM debian:bookworm-slim
+# Same suite as the build stage: a binary linked against a newer glibc
+# can demand symbol versions an older runtime image lacks, failing only
+# at container start. Bump this together with the chef pin above.
+FROM debian:trixie-slim
 # ca-certificates: the server speaks HTTPS to the master (register,
 # heartbeats, token verify).
 RUN apt-get update \
