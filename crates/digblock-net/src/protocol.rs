@@ -16,14 +16,13 @@ pub const SERVER_ID: PlayerId = u8::MAX;
 /// multiplayer, music) instead.
 pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 
-/// v5: player chat (ClientMsg::Chat / ServerMsg::Chat) and the 3-10 char
-/// display-name rule enforced at join.
-pub const PROTOCOL_VERSION: u16 = 5;
+/// v6: return-to-spawn (ClientMsg::ReturnToSpawn / ServerMsg::Teleported).
+pub const PROTOCOL_VERSION: u16 = 6;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 5;
+pub const MIN_PROTOCOL: u16 = 6;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -118,6 +117,12 @@ pub fn sanitize_chat(text: &str) -> Option<String> {
 	let trimmed = clean.trim();
 	(!trimmed.is_empty()).then(|| trimmed.to_string())
 }
+
+/// Return-to-spawn cooldown, seconds. The menu greys the row with a
+/// countdown; the server enforces it authoritatively per client (a
+/// request inside the window is silently ignored — honest clients gate
+/// locally, so only a tampered client ever sends one).
+pub const RETURN_SPAWN_COOLDOWN_SECS: u32 = 60;
 
 /// Give up on a transport stuck in `Connecting` after this long.
 pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;

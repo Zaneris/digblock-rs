@@ -256,6 +256,16 @@ fn run_bot(
 					result.edits_rejected += 1;
 					log::debug!("bot {index}: edit rejected at {:?}", e.cell);
 				}
+				NetEvent::Teleported { pos } => {
+					// Server-side return to spawn (bots never request one,
+					// but the client contract is to hard-adopt it).
+					if let Some(p) = player.as_mut() {
+						p.set_state(digblock_core::player::PlayerState {
+							pos: *pos,
+							vel: Vec3::ZERO,
+						});
+					}
+				}
 				NetEvent::Edit { .. }
 				| NetEvent::Inventory { .. }
 				| NetEvent::PlayerJoined { .. }

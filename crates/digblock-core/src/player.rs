@@ -240,6 +240,24 @@ fn solid(b: Option<BlockType>) -> bool {
 	matches!(b, Some(bt) if bt.props().collides)
 }
 
+/// Raise `pos` one block at a time until the capsule overlaps no
+/// colliding cell — the landing for spawn teleports and joins when
+/// players have built at the spawn point (worldgen keeps the base spawn
+/// above pristine terrain, so only placed blocks can occupy it).
+/// Unloaded (None) cells count as clear, matching the physics. A column
+/// solid to the world ceiling (not honestly buildable) returns `pos`
+/// unchanged.
+pub fn ascend_clear(pos: Vec3, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> Vec3 {
+	let mut p = pos;
+	while p.y < crate::chunk::WORLD_VBLOCK as f32 {
+		if !occupied_cells(p).any(|c| solid(block_at(c.0, c.1, c.2))) {
+			return p;
+		}
+		p.y += 1.0;
+	}
+	pos
+}
+
 impl Player {
 	pub fn new(spawn: Vec3) -> Self {
 		Self {
@@ -458,6 +476,34 @@ mod tests {
 		} else {
 			BlockType::Air
 		})
+	}
+
+	/// `ascend_clear` steps over blocks built into the spawn capsule,
+	/// leaves a clear spawn alone, treats unloaded as clear, and gives up
+	/// (returns the input) on a column solid to the ceiling.
+	#[test]
+	fn ascend_clear_steps_over_built_obstructions() {
+		let eye = Vec3::new(0.5, 11.5, 0.5); // standing on flat_world ground
+		assert_eq!(ascend_clear(eye, &flat_world), eye);
+		assert_eq!(ascend_clear(eye, &|_, _, _| None), eye);
+
+		// Two blocks stacked through the body: the landing clears them.
+		let tower = |x: i32, y: i32, z: i32| {
+			if (x, z) == (0, 0) && (11..=12).contains(&y) {
+				Some(BlockType::Stone)
+			} else {
+				flat_world(x, y, z)
+			}
+		};
+		let up = ascend_clear(eye, &tower);
+		assert!(up.y > eye.y, "raised above the tower");
+		assert!(
+			!occupied_cells(up).any(|c| solid(tower(c.0, c.1, c.2))),
+			"landing is clear"
+		);
+
+		let solid_world = |_: i32, _: i32, _: i32| Some(BlockType::Stone);
+		assert_eq!(ascend_clear(eye, &solid_world), eye, "ceiling gives up");
 	}
 
 	fn tick_n(p: &mut Player, n: usize, intent: PlayerIntent) {

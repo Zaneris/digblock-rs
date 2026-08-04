@@ -344,7 +344,9 @@ async fn register_with_retry(
 			}
 			Ok(Err(RegisterError::Unreachable(detail))) => {
 				let host_hint = match &cfg.advertise_host {
-					Some(host) => format!("--advertise-host {host} is the address the internet sees"),
+					Some(host) => {
+						format!("--advertise-host {host} is the address the internet sees")
+					}
 					None => "this machine's public IP (auto-detected from the registration) \
 						 accepts inbound traffic"
 						.to_string(),

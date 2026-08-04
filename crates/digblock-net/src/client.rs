@@ -85,6 +85,12 @@ pub enum NetEvent {
 		from: PlayerId,
 		text: String,
 	},
+	/// The server teleported us (return to spawn). Hard-set the player
+	/// there — the predictor has already dropped its pre-teleport buffer
+	/// and in-flight acks.
+	Teleported {
+		pos: Vec3,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -370,6 +376,12 @@ impl NetClient {
 				out.push(NetEvent::PlayerLeft { id });
 			}
 			ServerMsg::Chat { from, text } => out.push(NetEvent::Chat { from, text }),
+			ServerMsg::Teleported { pos } => {
+				self.predictor.on_teleport();
+				out.push(NetEvent::Teleported {
+					pos: Vec3::from_array(pos),
+				});
+			}
 			ServerMsg::InventoryFull { counts } => {
 				// Strict decode; unknown ids can't occur with a matching
 				// sim_version but must not panic either.
@@ -468,6 +480,12 @@ impl NetClient {
 	/// The hold was released or retargeted before completing.
 	pub fn send_dig_cancel(&mut self) {
 		self.send_msg(&ClientMsg::DigCancel);
+	}
+
+	/// Ask the server to teleport us back to spawn. The engine gates on
+	/// the shared cooldown; the server enforces it authoritatively.
+	pub fn send_return_to_spawn(&mut self) {
+		self.send_msg(&ClientMsg::ReturnToSpawn);
 	}
 
 	/// Send a chat line. The server sanitizes and rate-limits; the local

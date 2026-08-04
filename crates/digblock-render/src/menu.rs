@@ -89,6 +89,7 @@ enum Act {
 	CloseMenu,
 	OpenMultiplayer,
 	LeaveServer,
+	ReturnSpawn,
 	JoinRow(usize),
 	Refresh,
 }
@@ -112,8 +113,12 @@ pub struct Menu {
 	name: String,
 	/// Engine-maintained: currently connected to a server?
 	connected: bool,
+	/// Engine-maintained: seconds left on the return-to-spawn cooldown
+	/// (0 = ready). On cooldown the row renders dim with the countdown.
+	spawn_cooldown_secs: u32,
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
+	wants_return_spawn: bool,
 	cursor: (f32, f32),
 	/// One-shot scripted join (a name filter; empty = first server):
 	/// when services arrive, walk the exact user path — open the
@@ -130,8 +135,10 @@ impl Menu {
 			screen: enabled.then_some(Screen::Root { sel: 0 }),
 			name,
 			connected: false,
+			spawn_cooldown_secs: 0,
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
+			wants_return_spawn: false,
 			cursor: (-1.0, -1.0),
 			auto_join,
 		}
@@ -159,12 +166,21 @@ impl Menu {
 		self.connected = connected;
 	}
 
+	/// Seconds left on the return-to-spawn cooldown (0 = ready).
+	pub fn set_spawn_cooldown(&mut self, secs: u32) {
+		self.spawn_cooldown_secs = secs;
+	}
+
 	pub fn take_commands(&mut self) -> Vec<MenuCommand> {
 		std::mem::take(&mut self.pending_cmds)
 	}
 
 	pub fn take_disconnect(&mut self) -> bool {
 		std::mem::take(&mut self.wants_disconnect)
+	}
+
+	pub fn take_return_spawn(&mut self) -> bool {
+		std::mem::take(&mut self.wants_return_spawn)
 	}
 
 	// ---- engine hooks -----------------------------------------------------
@@ -355,6 +371,10 @@ impl Menu {
 				self.wants_disconnect = true;
 				self.screen = None;
 			}
+			Act::ReturnSpawn => {
+				self.wants_return_spawn = true;
+				self.screen = None;
+			}
 			Act::Refresh => {
 				if let Some(Screen::Browser(b)) = &mut self.screen {
 					if !b.fetching {
@@ -407,6 +427,10 @@ impl Menu {
 				}
 				if self.connected {
 					acts.push((RowId::RootItem(2), Act::LeaveServer));
+				}
+				// On cooldown the row renders dim and is not an act.
+				if self.spawn_cooldown_secs == 0 {
+					acts.push((RowId::RootItem(3), Act::ReturnSpawn));
 				}
 			}
 			Some(Screen::Browser(b)) => {
@@ -487,6 +511,19 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec::item(RowId::RootItem(2), "Leave Server"),
+					);
+				}
+				if self.spawn_cooldown_secs == 0 {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(RowId::RootItem(3), "Return to Spawn"),
+					);
+				} else {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::dim(format!("Return to Spawn ({}s)", self.spawn_cooldown_secs)),
 					);
 				}
 				y += ROW_H * 0.5;
@@ -706,7 +743,11 @@ mod tests {
 				if let Some((right, _)) = &row.right {
 					need += right.len() as f32 * crate::overlay::GLYPH_PX;
 				}
-				assert!(need <= rw, "{:?} overflows its row ({need} > {rw})", row.text);
+				assert!(
+					need <= rw,
+					"{:?} overflows its row ({need} > {rw})",
+					row.text
+				);
 				assert!(rx >= px && rx + rw <= px + pw, "row outside panel");
 			}
 		};
@@ -750,10 +791,10 @@ mod tests {
 	#[test]
 	fn multiplayer_requires_services() {
 		let mut menu = Menu::new(true, "ted".into(), None);
-		// Without services the only act is Play Local; Down stays there.
-		assert_eq!(menu.acts().len(), 1);
-		menu.set_services_available();
+		// Without services: Play Local + Return to Spawn only.
 		assert_eq!(menu.acts().len(), 2);
+		menu.set_services_available();
+		assert_eq!(menu.acts().len(), 3);
 	}
 
 	#[test]
@@ -921,10 +962,43 @@ mod tests {
 		let mut menu = Menu::new(true, "ted".into(), None);
 		menu.set_connected(true);
 		let acts = menu.acts();
-		assert_eq!(acts.len(), 2); // Back to Game + Leave Server (no services)
+		// Back to Game + Leave Server + Return to Spawn (no services).
+		assert_eq!(acts.len(), 3);
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_disconnect());
 		assert!(!menu.is_open());
+	}
+
+	#[test]
+	fn return_to_spawn_ready_activates_and_cooldown_greys() {
+		let mut menu = Menu::new(true, "ted".into(), None);
+		// Ready: the row after Play Local (no services); activating raises
+		// the intent and closes the menu.
+		menu.handle_key(Key::Down);
+		menu.handle_key(Key::Enter);
+		assert!(menu.take_return_spawn());
+		assert!(!menu.is_open());
+
+		// On cooldown: dim countdown row, not selectable, no intent.
+		menu.open();
+		menu.set_spawn_cooldown(42);
+		assert_eq!(menu.acts().len(), 1, "only Play Local remains selectable");
+		let view = menu.view(SIZE, false);
+		assert!(view
+			.rows
+			.iter()
+			.any(|r| r.text.contains("Return to Spawn (42s)")));
+		// Down can't reach it: Enter lands on Play Local (closes the
+		// menu), never on the greyed row.
+		menu.handle_key(Key::Down);
+		menu.handle_key(Key::Enter);
+		assert!(!menu.take_return_spawn());
+		assert!(!menu.is_open());
+
+		// Cooldown over: selectable again.
+		menu.open();
+		menu.set_spawn_cooldown(0);
+		assert_eq!(menu.acts().len(), 2);
 	}
 }

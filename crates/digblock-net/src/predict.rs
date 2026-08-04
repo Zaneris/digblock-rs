@@ -108,6 +108,17 @@ impl Predictor {
 		InputBatch { inputs }
 	}
 
+	/// The server teleported us (return to spawn): every buffered
+	/// prediction and any in-flight ack describes the pre-teleport
+	/// position — replaying them from the target would yank the player
+	/// back. Drop the buffer and refuse acks for ticks predicted before
+	/// now; the next predicted inputs (sent from the teleport target)
+	/// re-anchor reconciliation within one snapshot interval.
+	pub fn on_teleport(&mut self) {
+		self.buf.clear();
+		self.last_acked = self.next_tick.saturating_sub(1);
+	}
+
 	/// Apply a snapshot's view of the local player.
 	pub fn reconcile(
 		&mut self,
@@ -260,6 +271,31 @@ mod tests {
 		let state = player.state();
 		let r = pred.reconcile(&mut player, 10, state, &flat_world);
 		assert!(matches!(r, Reconciled::Replayed { .. }));
+	}
+
+	#[test]
+	fn teleport_drops_buffer_and_stale_acks() {
+		let mut player = landed_player();
+		let mut pred = Predictor::new(100);
+		for _ in 0..10 {
+			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
+		}
+		let stale = player.state();
+		pred.on_teleport();
+		assert!(pred.input_batch().inputs.is_empty(), "buffer dropped");
+		// An in-flight ack for a pre-teleport tick must be ignored — it
+		// would rewind the player back across the map.
+		assert_eq!(
+			pred.reconcile(&mut player, 105, stale, &flat_world),
+			Reconciled::StaleAck
+		);
+		// Post-teleport predictions reconcile normally again.
+		pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
+		let post = player.state();
+		assert_eq!(
+			pred.reconcile(&mut player, 110, post, &flat_world),
+			Reconciled::InSync
+		);
 	}
 
 	#[test]

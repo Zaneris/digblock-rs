@@ -277,6 +277,13 @@ pub struct Engine {
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
+	/// The world's spawn point (the server's after a Welcome swap):
+	/// the return-to-spawn target.
+	spawn_pos: Vec3,
+	/// Seconds left on the return-to-spawn cooldown (0 = ready). One
+	/// gate for local and connected play; connected, the server also
+	/// enforces its own copy.
+	spawn_cooldown: f32,
 }
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
@@ -376,6 +383,8 @@ impl Engine {
 			prev_player_pos: spawn,
 			nametag_scratch: Vec::new(),
 			services: None,
+			spawn_pos: spawn,
+			spawn_cooldown: 0.0,
 			config,
 			seed,
 			renderer: None,
@@ -560,6 +569,7 @@ impl Engine {
 		self.player_names.clear();
 		self.push_feed("Connected to server.".into());
 		self.seed = seed;
+		self.spawn_pos = spawn;
 		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
@@ -589,6 +599,24 @@ impl Engine {
 		self.audio_scratch = cmds;
 		self.ambient.reset();
 		self.prev_player_pos = spawn;
+	}
+
+	/// Land a spawn teleport: hard-set the player and camera — a 200 ms
+	/// smoothed slide across half the map would fight streaming — and
+	/// drop everything that describes the pre-teleport position (the
+	/// decaying correction offset, a stashed ack, any dig in progress,
+	/// the footstep odometer).
+	fn apply_teleport(&mut self, pos: Vec3) {
+		self.player.set_state(digblock_core::player::PlayerState {
+			pos,
+			vel: Vec3::ZERO,
+		});
+		self.camera.pos = pos;
+		self.correction_offset = Vec3::ZERO;
+		self.pending_ack = None;
+		self.prev_player_pos = pos;
+		self.dig = None;
+		self.push_feed("Returned to spawn.".into());
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -717,6 +745,7 @@ impl Engine {
 						.unwrap_or_else(|| format!("player {id}"));
 					self.push_feed(format!("{name} left the server."));
 				}
+				NetEvent::Teleported { pos } => self.apply_teleport(pos),
 				NetEvent::Chat { from, text } => {
 					// Our own echo: the roster never carries ourselves, so
 					// resolve through the session name instead.
@@ -1481,6 +1510,26 @@ impl Game for Engine {
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
 			self.push_feed("Left the server.".into());
+		}
+		// Return to spawn: one shared 60s cooldown gates the menu row.
+		// Connected, the server teleports us (Teleported lands in
+		// pump_net); local play lands immediately, stepping up past any
+		// blocks built at the spawn point.
+		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
+		self.menu
+			.set_spawn_cooldown(self.spawn_cooldown.ceil() as u32);
+		if self.menu.take_return_spawn() && self.spawn_cooldown == 0.0 {
+			self.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
+			match self.net.as_mut() {
+				Some(net) if net.ready() => net.send_return_to_spawn(),
+				_ => {
+					let pipeline = &self.pipeline;
+					let pos = digblock_core::player::ascend_clear(self.spawn_pos, &|x, y, z| {
+						pipeline.block_at(x, y, z)
+					});
+					self.apply_teleport(pos);
+				}
+			}
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.menu.take_commands() {

@@ -497,7 +497,13 @@ mod tests {
 			}
 			let floor = Arc::new(floor);
 			(0..WORLD_VCHUNK as usize)
-				.map(|cy| if cy == 0 { floor.clone() } else { AIR_CHUNK.clone() })
+				.map(|cy| {
+					if cy == 0 {
+						floor.clone()
+					} else {
+						AIR_CHUNK.clone()
+					}
+				})
 				.collect()
 		});
 		let spawn = Vec3::new(8.5, BEDROCK_Y as f32 + 2.5, 8.5);

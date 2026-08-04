@@ -130,6 +130,13 @@ pub enum ClientMsg {
 	Chat {
 		text: String,
 	},
+	/// Teleport me back to the spawn point. Server-side: subject to the
+	/// per-client [`RETURN_SPAWN_COOLDOWN_SECS`] window (violations are
+	/// ignored — the menu enforces it honestly); answered with
+	/// `ServerMsg::Teleported`.
+	///
+	/// [`RETURN_SPAWN_COOLDOWN_SECS`]: crate::protocol::RETURN_SPAWN_COOLDOWN_SECS
+	ReturnToSpawn,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -214,6 +221,13 @@ pub enum ServerMsg {
 		from: PlayerId,
 		text: String,
 	},
+	/// The server moved YOUR player (return to spawn). Hard-set — the
+	/// client drops its prediction buffer and in-flight acks instead of
+	/// smoothing across the map. Remote players just see the jump in
+	/// snapshots.
+	Teleported {
+		pos: [f32; 3],
+	},
 }
 
 #[cfg(test)]
@@ -255,6 +269,7 @@ mod tests {
 			ClientMsg::DigStart { cell: [1, 138, -3] },
 			ClientMsg::DigCancel,
 			ClientMsg::Chat { text: "hi".into() },
+			ClientMsg::ReturnToSpawn,
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -328,6 +343,9 @@ mod tests {
 			ServerMsg::Chat {
 				from: 4,
 				text: "hi".into(),
+			},
+			ServerMsg::Teleported {
+				pos: [0.5, 140.5, 0.5],
 			},
 		];
 		for m in msgs {
@@ -491,6 +509,26 @@ mod tests {
 			postcard::to_stdvec(&s).unwrap(),
 			// variant 9, from 4, len 2, "hi"
 			vec![9, 4, 2, 104, 105]
+		);
+	}
+
+	/// Golden bytes for the v6 return-to-spawn pair. Same contract as the
+	/// goldens above: a failure means the wire encoding moved.
+	#[test]
+	fn golden_return_spawn_encoding() {
+		assert_eq!(
+			postcard::to_stdvec(&ClientMsg::ReturnToSpawn).unwrap(),
+			// variant 6, no fields
+			vec![6]
+		);
+
+		let t = ServerMsg::Teleported {
+			pos: [1.0, 0.0, 0.0],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&t).unwrap(),
+			// variant 10, pos x 1.0 le f32, zeros
+			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0]
 		);
 	}
 }

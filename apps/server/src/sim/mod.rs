@@ -20,14 +20,15 @@ pub(crate) mod harness;
 use crate::inventory_store::{hash_identity, IdentityHash, InventoryStore};
 use crate::journal::Journal;
 use crate::store::{ChunkStore, ColumnSource};
+use digblock_core::block::BlockType;
 use digblock_core::fluid::FluidSim;
 use digblock_core::inventory::Inventory;
-use digblock_core::player::{self, Player, PlayerIntent};
+use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
 	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
-	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE,
+	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -107,6 +108,9 @@ struct Client {
 	identity: Option<IdentityHash>,
 	/// In-progress hold-to-dig, if any (see `edits::DigState`).
 	digging: Option<edits::DigState>,
+	/// Tick of the last granted return-to-spawn; `None` = never used
+	/// (the first request after joining is always allowed).
+	last_return_tick: Option<u32>,
 }
 
 pub struct Sim {
@@ -350,6 +354,10 @@ impl Sim {
 						client_send(c, &msg);
 					}
 				}
+				// Inline like chat: no ordering relationship with the edit
+				// stream (edit raycasts re-validate against the player's
+				// position when they run anyway).
+				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -384,6 +392,65 @@ impl Sim {
 			// will fail its DigIncomplete check.
 			_ => None,
 		};
+	}
+
+	/// The spawn point with any player-built obstruction cleared. The base
+	/// spawn sits above pristine terrain, so only journaled (placed) cells
+	/// can occupy it: resident chunks answer from the store (journal
+	/// already replayed); non-resident cells fall back to the journal's
+	/// in-memory final values — nobody needs to be near spawn for the
+	/// scan to see a tower built there.
+	fn safe_spawn(&self) -> Vec3 {
+		let block_at = |x: i32, y: i32, z: i32| {
+			if let Some(b) = self.store.block_at(x, y, z) {
+				return Some(b);
+			}
+			self.journal
+				.index
+				.column(x.div_euclid(16), z.div_euclid(16))
+				.and_then(|cells| cells.get(&(x, y, z)))
+				.and_then(|&cell| BlockType::try_from_id(cell))
+		};
+		player::ascend_clear(self.spawn, &block_at)
+	}
+
+	/// Teleport a live client back to spawn, subject to the cooldown.
+	/// Violations are silently ignored — honest clients gate locally.
+	fn handle_return_to_spawn(&mut self, conn_id: u64) {
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		if let Some(t) = client.last_return_tick {
+			if self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE {
+				return;
+			}
+		}
+		let pos = self.safe_spawn();
+		let tick = self.tick;
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		client.player.set_state(PlayerState {
+			pos,
+			vel: Vec3::ZERO,
+		});
+		// Pre-teleport residue must not follow the player: the drift EWMA
+		// and any dig hold describe the old position, and coasting on the
+		// old intent would walk the player straight off spawn.
+		client.drift = Vec3::ZERO;
+		client.digging = None;
+		client.last_intent = PlayerIntent::default();
+		client.last_return_tick = Some(tick);
+		log::info!("player {} ({}) returned to spawn", client.id, client.name);
+		client_send(
+			client,
+			&ServerMsg::Teleported {
+				pos: pos.to_array(),
+			},
+		);
+		// The interest center jumped; re-derive residency + sync scope.
+		self.residency_dirty = true;
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -442,13 +509,15 @@ impl Sim {
 			.unwrap_or_default();
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(2, 32);
+		// Blocks built at the spawn point since worldgen raise the landing.
+		let spawn = self.safe_spawn();
 		let mut ok = send_frame(
 			&out,
 			&ServerMsg::Welcome {
 				protocol: PROTOCOL_VERSION,
 				seed: self.store.seed(),
 				player_id: id,
-				spawn: self.spawn.to_array(),
+				spawn: spawn.to_array(),
 				server_tick: self.tick,
 				snapshot_divisor: SNAPSHOT_DIVISOR,
 				// Issued now so resume can be added without a wire change;
@@ -460,7 +529,7 @@ impl Sim {
 		);
 
 		// Join sync: final cell state for every edited column in range.
-		let center = column_of(self.spawn);
+		let center = column_of(spawn);
 		let mut synced = FxHashSet::default();
 		let columns: Vec<(i32, i32)> = self.journal.index.edited_columns().collect();
 		let mut synced_count = 0usize;
@@ -523,7 +592,7 @@ impl Sim {
 				out,
 				dead: Cell::new(false),
 				dgram_full_since: Cell::new(None),
-				player: Player::new(self.spawn),
+				player: Player::new(spawn),
 				look: Vec3::Z,
 				last_intent: PlayerIntent::default(),
 				inputs: BTreeMap::new(),
@@ -539,6 +608,7 @@ impl Sim {
 				inventory,
 				identity,
 				digging: None,
+				last_return_tick: None,
 			},
 		);
 		self.residency_dirty = true;
@@ -955,6 +1025,104 @@ mod tests {
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
 		let _d = connect_with_identity(&mut sim, 5, [5u8; 16]);
 		assert_eq!(sim.player_count(), 3);
+	}
+
+	#[test]
+	fn return_to_spawn_teleports_with_cooldown() {
+		use digblock_net::protocol::{RETURN_SPAWN_COOLDOWN_SECS, TICK_RATE};
+		let request = |sim: &mut super::Sim| {
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::ReturnToSpawn,
+			}]);
+		};
+		let mut sim = flat_sim("rts");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Walk away, then return: teleported to spawn (one settle tick of
+		// slack — the teleport lands before the tick's physics).
+		let mut t = 100;
+		for _ in 0..240 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) > 5.0);
+		request(&mut sim);
+		assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+		c.drain();
+		assert!(
+			c.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Teleported { .. })),
+			"client told about the teleport: {:?}",
+			c.msgs
+		);
+
+		// Inside the cooldown the request is silently ignored.
+		for _ in 0..120 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		let away = sim.test_player(1).unwrap().pos;
+		assert!(away.distance(FLAT_SPAWN) > 5.0);
+		request(&mut sim);
+		assert!(
+			sim.test_player(1).unwrap().pos.distance(away) < 1.0,
+			"cooldown violation ignored"
+		);
+
+		// After the window it works again. (Drain as we go — an undrained
+		// outbound queue trips the snapshot-stall reaper over 60s.)
+		for _ in 0..(RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE) {
+			sim.tick_once(vec![]);
+			c.drain();
+		}
+		request(&mut sim);
+		assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+	}
+
+	/// Blocks built at the spawn point raise the landing — for a joiner
+	/// AND a returning player — even when nobody is near spawn (the scan
+	/// reads the journal's in-memory cells, not resident chunks).
+	#[test]
+	fn blocked_spawn_raises_the_landing() {
+		use digblock_net::messages::BlockEdit;
+		let dir = temp_dir("blockedspawn");
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			// Two stone blocks stacked through the spawn capsule.
+			for y in [FLAT_GROUND_TOP as i32 + 1, FLAT_GROUND_TOP as i32 + 2] {
+				j.append(
+					BlockEdit {
+						x: 8,
+						y,
+						z: 8,
+						block: digblock_core::block::BlockType::Stone as u16,
+					},
+					0,
+				);
+			}
+			j.sync();
+		}
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let c = connect(&mut sim, 1);
+		let spawn = c
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { spawn, .. } => Some(*spawn),
+				_ => None,
+			})
+			.expect("Welcome");
+		assert!(
+			spawn[1] >= FLAT_SPAWN.y + 2.0,
+			"join landed on top of the tower: y {} vs base {}",
+			spawn[1],
+			FLAT_SPAWN.y
+		);
+		assert_eq!(sim.test_player(1).unwrap().pos.to_array(), spawn);
 	}
 
 	#[test]
