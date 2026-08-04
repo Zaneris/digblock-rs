@@ -1,14 +1,13 @@
 # Run your own public DigBlock server: edit the environment values
-# below, then `docker compose up -d`. (Nothing here is secret, so
-# there's no .env indirection — this file IS the config.)
+# below, then `docker compose up -d`.
 #
 # The only requirement is UDP 4433 reachable from the internet (router
 # port-forward and/or firewall rule). You're listed at the public IP
 # this machine registers from, and on registration the master probes
-# that address for real — if it can't reach you, you won't be listed.
+# that address for real - if it can't reach you, you won't be listed.
 #
 # World data (an append-only edit journal, one file per seed) lives in
-# ./data — that directory is the complete backup.
+# ./data - that directory is the complete backup.
 services:
   digblock:
     # Pin a release by replacing "latest" with a version like "0.1.0".
@@ -22,11 +21,7 @@ services:
       # Shown in the public server list. Letters, digits, spaces, - and
       # _; up to 24 characters (the master strips anything else).
       DIGBLOCK_SERVER_NAME: "My DigBlock World"
-      # Optional: the address players connect to. Defaults to the
-      # public IP this machine registers from — right for a typical
-      # port-forwarded home connection. Set it to be listed under a DNS
-      # name, or when the auto-detected address isn't where UDP 4433
-      # actually lands (multi-homed / split routing).
+      # Optional override for IP/host players connect to.
       #DIGBLOCK_ADVERTISE_HOST: "play.example.com"
       # Optional world seed (any number). Changing it later starts a
       # fresh world; the old world's journal stays in ./data and comes
