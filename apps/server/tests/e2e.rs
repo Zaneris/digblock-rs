@@ -225,7 +225,7 @@ impl TestServer {
 		MasterConfig {
 			url: master_url.to_string(),
 			server_name: name.to_string(),
-			advertise_host: "127.0.0.1".into(),
+			advertise_host: Some("127.0.0.1".into()),
 			probe_host: Some(HOST_FROM_CONTAINER.into()),
 			advertise_port: self.port,
 		}
@@ -513,6 +513,57 @@ fn verified_join_uses_master_display_name() {
 		!b.joined_names.iter().any(|n| n == "Impostor"),
 		"claimed Hello name must not survive"
 	);
+
+	// Server names are display-only and sanitized, never rejected: the
+	// master keeps letters/digits/space/-/_, collapses space runs, and
+	// caps at 24 chars. Re-register (same host:port replaces the entry)
+	// with a dirty name and read the listing back.
+	let cfg = server.master_config(
+		&master.url,
+		"  ¡Léo's  <World>!  this-runs-way-past-the-cap  ",
+	);
+	master::register(&cfg, &server.cert_hash).expect("dirty name still registers");
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	let names: Vec<&str> = list["servers"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter_map(|s| s["name"].as_str())
+		.collect();
+	assert_eq!(
+		names,
+		["Los World this-runs-way-"],
+		"sanitized name listed, nothing rejected"
+	);
+}
+
+/// Omitting the advertise host lists the server at the address the
+/// master OBSERVED making the registration — the port-forwarded-home
+/// default. The probe still dials the dev-split probe host; the listing
+/// must carry the observed address, echoed back as observedHost. (No
+/// assumption about WHICH address Docker's NAT shows the container —
+/// only that the listing and the echo agree.)
+#[test]
+fn omitted_advertise_host_lists_observed_address() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("observed", &master.url, false);
+	let mut cfg = server.master_config(&master.url, "e2e-observed");
+	cfg.advertise_host = None;
+	let reg = master::register(&cfg, &server.cert_hash).expect("register without advertise host");
+	assert!(!reg.observed_host.is_empty(), "master echoes observed host");
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	assert_eq!(
+		list["servers"][0]["url"].as_str().unwrap(),
+		format!("https://{}:{}", reg.observed_host, server.port),
+		"listed at the observed registration address"
+	);
 }
 
 /// Chat crosses the real QUIC stack: A talks, both A (echo) and B hear
@@ -619,7 +670,7 @@ fn probe_rejects_unreachable_server() {
 		server_name: "nowhere".into(),
 		// No probe-host split: the master probes the advertised address —
 		// its own container loopback, where nothing listens.
-		advertise_host: "127.0.0.1".into(),
+		advertise_host: Some("127.0.0.1".into()),
 		probe_host: None,
 		advertise_port: 4,
 	};

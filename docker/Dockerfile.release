@@ -1,9 +1,14 @@
 # Public dedicated-server image (ghcr.io/zaneris/digblock-server), built
 # by .github/workflows/release-server.yml. Unlike docker/Dockerfile (the
 # local test rig) this ships only the server binary — no bot, no tc/netem
-# tooling. Configuration is env-driven; see deploy/compose.yml and
-# deploy/.env.example for the shareable quickstart.
-FROM rust:1-slim AS chef
+# tooling. Configuration is env-driven; see deploy/compose.yml for the
+# shareable quickstart (config lives inline there — no .env).
+#
+# Multi-arch: linux/amd64 + linux/arm64 (Raspberry Pi 4/5 on a 64-bit
+# OS). Build stages are pinned to $BUILDPLATFORM and cross-compile for
+# $TARGETARCH, so rustc never runs under QEMU emulation — only the final
+# runtime stage's apt-get does (seconds, not hours).
+FROM --platform=$BUILDPLATFORM rust:1-slim AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
@@ -12,10 +17,31 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+ARG TARGETARCH
+# The cross gcc is only installed when actually cross-compiling — Debian
+# ships gcc-aarch64-linux-gnu solely for foreign arches, so a native
+# arm64 build (local testing on an ARM Mac / a Pi) must skip it. The
+# reverse direction (linux/amd64 from an arm64 host) isn't wired up; CI
+# builds on amd64. The linker/CC env is safe either way: Debian's native
+# gcc also provides the triplet-prefixed name.
+RUN case "$TARGETARCH" in \
+		amd64) echo x86_64-unknown-linux-gnu ;; \
+		arm64) echo aarch64-unknown-linux-gnu ;; \
+		*) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+	esac > /triple \
+	&& rustup target add "$(cat /triple)" \
+	&& if [ "$TARGETARCH" = arm64 ] && [ "$(uname -m)" = x86_64 ]; then \
+		apt-get update \
+		&& apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu \
+		&& rm -rf /var/lib/apt/lists/*; \
+	fi
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+	CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 COPY --from=planner /app/recipe.json .
-RUN cargo chef cook --release --recipe-path recipe.json -p digblock-server
+RUN cargo chef cook --release --target "$(cat /triple)" --recipe-path recipe.json -p digblock-server
 COPY . .
-RUN cargo build --release -p digblock-server --bin digblock-server
+RUN cargo build --release -p digblock-server --bin digblock-server --target "$(cat /triple)" \
+	&& cp "target/$(cat /triple)/release/digblock-server" /digblock-server
 
 FROM debian:bookworm-slim
 # ca-certificates: the server speaks HTTPS to the master (register,
@@ -23,7 +49,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/digblock-server /usr/local/bin/
+COPY --from=builder /digblock-server /usr/local/bin/digblock-server
 VOLUME /data
 EXPOSE 4433/udp
 ENTRYPOINT ["digblock-server"]

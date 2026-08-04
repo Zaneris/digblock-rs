@@ -30,8 +30,10 @@ just master               # .NET master server run natively (for iterating on it
                           # mandatory QUIC probe needs `brew install libmsquic` — otherwise
                           # use the container (just play builds + runs it automatically)
 just server               # dedicated multiplayer server (headless; journal persists in ./data);
-                          # REQUIRES --advertise-host; --master-url defaults to the production
-                          # master (https://master.digblock.net) — joining is token-only
+                          # --advertise-host optional (defaults to the address the master
+                          # observes registering; dev flows still pass 127.0.0.1 explicitly);
+                          # --master-url defaults to the production master
+                          # (https://master.digblock.net) — joining is token-only
 just bot -- --bots 4      # headless bots: pick a server from the master's list, mint tokens, join
 just compose wifi         # dockerized master + server behind tc netem (clean | wifi | cellular)
 just profile              # release-speed build with debug symbols (Instruments/profilers)

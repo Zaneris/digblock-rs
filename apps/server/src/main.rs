@@ -25,12 +25,13 @@ fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
 
 use digblock_net::protocol::DEFAULT_MASTER_URL;
 
-const USAGE: &str = "usage: digblock-server --advertise-host HOST \
+const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N]\n\
-	 (--master-url defaults to https://master.digblock.net; env fallbacks: DIGBLOCK_MASTER_URL, \
-	 DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, \
-	 DIGBLOCK_SEED)";
+	 (--advertise-host defaults to the address the master observes registering — your public \
+	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
+	 https://master.digblock.net; env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, \
+	 DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -89,11 +90,9 @@ fn main() {
 		}
 	}
 	let master_url = master_url.unwrap_or_else(|| DEFAULT_MASTER_URL.into());
-	let Some(advertise_host) = advertise_host else {
-		eprintln!("--advertise-host is required");
-		eprintln!("{USAGE}");
-		std::process::exit(2);
-	};
+	// Empty counts as unset, like DIGBLOCK_SEED: compose files pass
+	// blanks through.
+	let advertise_host = advertise_host.filter(|h| !h.is_empty());
 	let master_cfg = MasterConfig {
 		url: master_url.trim_end_matches('/').to_string(),
 		server_name,

@@ -32,7 +32,8 @@ public sealed class ServerEntry
     /// <summary>Consecutive failed health probes.</summary>
     public int Strikes;
 
-    public string Url => $"https://{Host}:{Port}";
+    // Observed-address hosts can be IPv6 literals, which URLs bracket.
+    public string Url => Host.Contains(':') ? $"https://[{Host}]:{Port}" : $"https://{Host}:{Port}";
     public string CertHashHex => Convert.ToHexStringLower(CertHash);
 }
 
@@ -50,12 +51,39 @@ public sealed class ServerRegistry
 
     public bool TryGet(Guid id, out ServerEntry entry) => _servers.TryGetValue(id, out entry!);
 
+    /// <summary>Listed server names never exceed this many characters.</summary>
+    public const int MaxNameLength = 24;
+
+    /// <summary>Server names are display-only, so a bad one is repaired, never
+    /// rejected: keep letters/digits/space/-/_, collapse space runs, trim, cap
+    /// at <see cref="MaxNameLength"/>; an empty result falls back to the game
+    /// server's own default name. Registration must not fail over cosmetics —
+    /// self-hosters would see UNREACHABLE-style mystery, not a validation hint.</summary>
+    public static string SanitizeName(string? raw)
+    {
+        var sb = new StringBuilder(MaxNameLength);
+        foreach (var c in raw ?? "")
+        {
+            var keep = char.IsAsciiLetterOrDigit(c) || c is ' ' or '-' or '_';
+            if (!keep)
+                continue;
+            if (c == ' ' && (sb.Length == 0 || sb[^1] == ' '))
+                continue;
+            sb.Append(c);
+            if (sb.Length == MaxNameLength)
+                break;
+        }
+        var name = sb.ToString().TrimEnd();
+        return name.Length == 0 ? "DigBlock Server" : name;
+    }
+
     /// <summary>Register a server, replacing any existing entry at the same
     /// host:port (the restart-with-new-cert path). The replaced entry's id and
-    /// key die with it.</summary>
+    /// key die with it. The name is sanitized, not validated.</summary>
     public ServerEntry Register(
         string name, string host, string probeHost, int port, byte[] certHash, int players, int maxPlayers)
     {
+        name = SanitizeName(name);
         lock (_mutate)
         {
             foreach (var existing in _servers.Values)

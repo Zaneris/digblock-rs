@@ -6,28 +6,33 @@ it can reach; joining is token-based and names are enforced there).
 
 ## Quickstart
 
-Needs Docker and UDP port 4433 open to the internet.
+Needs Docker and UDP port 4433 open to the internet. The image is
+multi-arch (x86_64 + arm64), so a Raspberry Pi 4/5 running a 64-bit OS
+works too.
 
 ```sh
 mkdir digblock-server && cd digblock-server
-# download compose.yml and .env.example from the release, then:
-cp .env.example .env    # set SERVER_NAME and ADVERTISE_HOST
+# download compose.yml from the release, then edit it:
+# set DIGBLOCK_SERVER_NAME (the rest is optional)
 docker compose up -d
 docker compose logs -f  # "registered with master" = you're listed
 ```
 
-`ADVERTISE_HOST` is the public DNS name or IP players reach you at. If
-the logs say the master reports you UNREACHABLE, UDP 4433 isn't open —
-check the port-forward/firewall.
+You're listed at the public IP this machine registers from; set
+`DIGBLOCK_ADVERTISE_HOST` in compose.yml to override it with a DNS name.
+If the logs say the master reports you UNREACHABLE, UDP 4433 isn't
+open — check the port-forward/firewall.
 
 ## Without Docker
 
-Each release also ships standalone binaries (Linux x86_64 fully static,
-Windows x86_64). Same config via flags or `DIGBLOCK_*` env vars:
+Each release also ships standalone binaries (Linux x86_64 and aarch64,
+both fully static — the latter covers Raspberry Pi 4/5 on a 64-bit OS —
+plus Windows x86_64). Same config via flags or `DIGBLOCK_*` env vars:
 
 ```sh
-./digblock-server-linux-x86_64 --advertise-host play.example.com \
-  --server-name "My World"    # world data lands in ./data
+./digblock-server-linux-x86_64 --server-name "My World"
+# world data lands in ./data; add --advertise-host play.example.com
+# to be listed under a DNS name instead of your public IP
 ```
 
 On Windows: `digblock-server-windows-x86_64.exe` with the same flags
@@ -39,7 +44,7 @@ minimal systemd unit with `Restart=always` is the usual answer.
 
 - **Upgrade:** `docker compose pull && docker compose up -d`
 - **Backup:** the `./data` directory (one journal file per world seed)
-- **New world:** set `SEED` in `.env` and restart; each seed keeps its
-  own journal, so switching back restores the old world
+- **New world:** set `DIGBLOCK_SEED` in `compose.yml` and restart; each
+  seed keeps its own journal, so switching back restores the old world
 - Certificates and master registration are fully automatic (the server
   mints and rotates its own cert and re-registers as needed)

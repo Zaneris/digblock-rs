@@ -5,6 +5,9 @@ namespace DigBlock.Master;
 // apps/desktop/src/services.rs — keep them in lockstep.
 
 public sealed record RegisterRequest(
+    // Display-only, sanitized rather than validated: the master keeps
+    // letters/digits/space/-/_, caps at ServerRegistry.MaxNameLength, and
+    // falls back to a default — registration never fails over the name.
     string? Name,
     string? Host, // optional; defaults to the observed remote IP
     int Port,

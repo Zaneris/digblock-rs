@@ -24,9 +24,13 @@ pub struct MasterConfig {
 	/// Base URL, e.g. `http://127.0.0.1:5200`.
 	pub url: String,
 	pub server_name: String,
-	/// Public host clients connect to. The server never learns its own
-	/// routable address, so this must be explicit.
-	pub advertise_host: String,
+	/// Public host clients connect to. None (the default) advertises the
+	/// address the master observes making the registration — right for
+	/// the common port-forwarded home host, since players must reach the
+	/// same public IP the registration left from. Set to override with a
+	/// DNS name, or when the observed egress is not the game traffic's
+	/// ingress (multi-homed hosts, split routing).
+	pub advertise_host: Option<String>,
 	/// Alternate address for the master's reachability probes when its
 	/// network view differs from clients' (NAT-split dev topologies, e.g.
 	/// a containerized master probing host.docker.internal while clients
@@ -40,6 +44,10 @@ pub struct MasterConfig {
 pub struct Registration {
 	pub server_id: String,
 	pub server_key: String,
+	/// The host the master actually listed us under — the configured
+	/// advertise host, or the observed registration address when none
+	/// was given.
+	pub observed_host: String,
 }
 
 /// Shared with every connection task plus the heartbeat and shutdown paths.
@@ -79,6 +87,7 @@ impl MasterState {
 	}
 }
 
+#[derive(Debug)]
 pub enum RegisterError {
 	/// The master's probe-back failed: a configuration problem (wrong
 	/// `--advertise-host`, UDP not forwarded), not a transient.
@@ -102,7 +111,9 @@ pub enum VerifyError {
 #[serde(rename_all = "camelCase")]
 struct RegisterBody<'a> {
 	name: &'a str,
-	host: &'a str,
+	/// None → the master fills in the observed remote address.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	host: Option<&'a str>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	probe_host: Option<&'a str>,
 	port: u16,
@@ -118,6 +129,7 @@ struct RegisterBody<'a> {
 struct RegisterOkBody {
 	server_id: String,
 	server_key: String,
+	observed_host: String,
 }
 
 #[derive(Deserialize)]
@@ -159,7 +171,7 @@ fn agent(timeout: Duration) -> ureq::Agent {
 pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration, RegisterError> {
 	let body = RegisterBody {
 		name: &cfg.server_name,
-		host: &cfg.advertise_host,
+		host: cfg.advertise_host.as_deref(),
 		probe_host: cfg.probe_host.as_deref(),
 		port: cfg.advertise_port,
 		cert_hash: hex(cert_hash),
@@ -181,6 +193,7 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 			Ok(Registration {
 				server_id: ok.server_id,
 				server_key: ok.server_key,
+				observed_host: ok.observed_host,
 			})
 		}
 		422 => {
@@ -320,21 +333,26 @@ async fn register_with_retry(
 		match attempt {
 			Ok(Ok(reg)) => {
 				log::info!(
-					"registered with master {} as {} ({}:{})",
+					"registered with master {} as {} (listed at {}:{})",
 					cfg.url,
 					reg.server_id,
-					cfg.advertise_host,
+					reg.observed_host,
 					cfg.advertise_port
 				);
 				state.set_registration(Some(reg));
 				return;
 			}
 			Ok(Err(RegisterError::Unreachable(detail))) => {
+				let host_hint = match &cfg.advertise_host {
+					Some(host) => format!("--advertise-host {host} is the address the internet sees"),
+					None => "this machine's public IP (auto-detected from the registration) \
+						 accepts inbound traffic"
+						.to_string(),
+				};
 				log::error!(
 					"master says we are UNREACHABLE ({detail}) — clients cannot join.\n\
-					 Check that --advertise-host {} is the address the internet sees\n\
+					 Check that {host_hint}\n\
 					 and that udp {} is forwarded to this machine. Retrying in {}s.",
-					cfg.advertise_host,
 					cfg.advertise_port,
 					delay.as_secs()
 				);

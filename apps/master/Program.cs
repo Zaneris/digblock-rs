@@ -41,6 +41,22 @@ builder.Services.AddSingleton<IReachabilityProbe>(sp =>
         sp.GetRequiredService<IOptions<MasterOptions>>().Value.Probe.TimeoutSeconds)));
 
 var app = builder.Build();
+
+// Registration's observed-address default (a server that omits Host is
+// listed at whatever address registered) needs the REAL client address,
+// and in production this app sits behind Azure Container Apps ingress —
+// RemoteIpAddress there is the envoy proxy. Trusting X-Forwarded-For
+// from any proxy is fine HERE because the observed address is never a
+// security input: spoofing it is exactly equivalent to self-providing a
+// Host, and either way the QUIC probe must reach that address for the
+// registration to count.
+var forwarded = new ForwardedHeadersOptions
+{
+    ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor,
+};
+forwarded.KnownProxies.Clear();
+forwarded.KnownIPNetworks.Clear();
+app.UseForwardedHeaders(forwarded);
 app.UseCors();
 
 // ---- game server endpoints -------------------------------------------------
@@ -49,9 +65,6 @@ app.MapPost("/api/servers/register", async (
     RegisterRequest req, HttpContext http, ServerRegistry registry,
     IReachabilityProbe probe, IOptions<MasterOptions> opts, CancellationToken ct) =>
 {
-    var name = req.Name?.Trim();
-    if (string.IsNullOrEmpty(name) || name.Length > 64)
-        return Results.BadRequest(new { error = "name must be 1-64 characters" });
     if (req.Port is < 1 or > 65535)
         return Results.BadRequest(new { error = "port out of range" });
     byte[] certHash;
@@ -85,8 +98,8 @@ app.MapPost("/api/servers/register", async (
     if (!result.Reachable)
         return Results.UnprocessableEntity(new RegisterFailed(false, result.ReasonString, result.Detail ?? ""));
 
-    var entry = registry.Register(name, host, probeHost, req.Port, certHash, req.Players, req.MaxPlayers);
-    app.Logger.LogInformation("registered {Name} at {Host}:{Port} as {Id}", name, host, req.Port, entry.Id);
+    var entry = registry.Register(req.Name ?? "", host, probeHost, req.Port, certHash, req.Players, req.MaxPlayers);
+    app.Logger.LogInformation("registered {Name} at {Host}:{Port} as {Id}", entry.Name, host, req.Port, entry.Id);
     return Results.Ok(new RegisterOk(true, entry.Id, entry.Key, host));
 });
 
