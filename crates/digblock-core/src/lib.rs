@@ -14,6 +14,7 @@ pub mod overlay;
 pub mod pipeline;
 pub mod player;
 pub mod raycast;
+pub mod shapes;
 pub mod simplex;
 pub mod sky;
 pub mod sun;
@@ -47,4 +48,15 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// v6: bedrock floor — cells at y = `block::BEDROCK_Y` are undiggable
 /// (`BlockType::dig_hardness`); shared dig behavior, so prediction on an
 /// old client would silently open holes a new server refuses.
-pub const SIM_VERSION: u16 = 6;
+/// v7: sub-block shapes — stair ramp collision (diagonal support +
+/// downhill glue), door leaf boxes with the open/closed state bit, and
+/// the shape-aware occupancy probes; pinned by the third golden,
+/// `golden_stair_trajectory_pins_sim_version`. Cube-only worlds are
+/// bit-identical to v6 (the older goldens did not move), but shaped
+/// cells exist only from v7 on.
+/// v8: ramp run-out — a cube the supporting stair's diagonal tops out
+/// against no longer presents its side face (mounting a flush landing
+/// was a seconds-long corner grind); the exemption is mirrored in
+/// `overlaps_solid` so mid-mount claims stay adoptable. Worlds where no
+/// capsule is ever ramp-supported are bit-identical to v7.
+pub const SIM_VERSION: u16 = 8;

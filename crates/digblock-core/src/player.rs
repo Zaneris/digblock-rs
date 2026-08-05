@@ -84,10 +84,28 @@ const GROUND_EPS: f32 = 1e-3;
 /// Contacts steeper than this (while descending) count as ground and
 /// resolve flat onto the block plane. Radius-independent: an edge
 /// support contact has n.y = r/√(o²+r²) > 1/√2 for any overhang o < r.
+/// Stairs deliberately bypass it (the explicit ramp branch) — a 45° ramp
+/// normal is 0.7071, a float knife-edge away.
 const GROUND_NORMAL_Y: f32 = 0.7;
 const RESOLVE_ITERS: usize = 4;
 /// Penetrations shallower than this wait for the next tick.
 const SKIN: f32 = 1e-4;
+
+// --- Stairs. Any change here is a sim-behavior change: re-pin the stair
+// golden and bump SIM_VERSION. ----------------------------------------
+/// Max upward snap onto a stair's diagonal ramp per tick. Larger lifts
+/// mean the tall/back side — those resolve against the stair's sub-boxes
+/// like ordinary walls.
+const RAMP_SNAP_MAX: f32 = 0.5;
+/// Downhill glue: feet this far ABOVE the ramp still snap down, so
+/// descending a flight never oscillates into free-fall (walking descent
+/// covers 4 b/s · TICK · 45° ≈ 0.067 per tick). Ramp-only — cube edges
+/// keep the walk-off-cliff momentum behavior bit-exact.
+const RAMP_SNAP_DOWN: f32 = 0.1;
+/// Probe skin for the shape-aware occupancy tests: covers resolver skin
+/// plus claim float noise, so an adopted claim resting exactly on a
+/// tread never reads as "inside geometry".
+const SKIN_PROBE: f32 = 2e-3;
 
 /// Eye spawn position: the nearest land to the origin. Walks expanding
 /// square rings (8-block stride) until a column clears the beach line, so
@@ -149,15 +167,17 @@ fn span(lo: f32, hi: f32) -> std::ops::RangeInclusive<i32> {
 }
 
 /// Closest points between the (vertical) capsule axis at eye `pos` and
-/// cell `c`'s unit box: (point on axis, point on box). Closed form —
-/// the box clamps the axis xz horizontally; vertically, overlapping
+/// the AABB [lo, hi]: (point on axis, point on box). Closed form — the
+/// box clamps the axis xz horizontally; vertically, overlapping
 /// intervals meet at the overlap (the normal comes out horizontal),
-/// otherwise the nearer segment end pairs with the nearer face.
-fn closest_axis_box(pos: Vec3, c: (i32, i32, i32)) -> (Vec3, Vec3) {
-	let qx = pos.x.clamp(c.0 as f32, c.0 as f32 + 1.0);
-	let qz = pos.z.clamp(c.2 as f32, c.2 as f32 + 1.0);
+/// otherwise the nearer segment end pairs with the nearer face. Unit
+/// cells pass `lo = c as f32, hi = lo + 1.0` — bit-identical to the old
+/// cell-only form.
+fn closest_axis_box(pos: Vec3, lo: Vec3, hi: Vec3) -> (Vec3, Vec3) {
+	let qx = pos.x.clamp(lo.x, hi.x);
+	let qz = pos.z.clamp(lo.z, hi.z);
 	let (a_lo, a_hi) = (pos.y + AXIS_LO, pos.y + AXIS_HI);
-	let (b_lo, b_hi) = (c.1 as f32, c.1 as f32 + 1.0);
+	let (b_lo, b_hi) = (lo.y, hi.y);
 	let (py, qy) = if a_lo > b_hi {
 		(a_lo, b_hi)
 	} else if a_hi < b_lo {
@@ -169,16 +189,26 @@ fn closest_axis_box(pos: Vec3, c: (i32, i32, i32)) -> (Vec3, Vec3) {
 	(Vec3::new(pos.x, py, pos.z), Vec3::new(qx, qy, qz))
 }
 
+/// The unit box of cell `c`.
+#[inline]
+fn cell_box(c: (i32, i32, i32)) -> (Vec3, Vec3) {
+	let lo = Vec3::new(c.0 as f32, c.1 as f32, c.2 as f32);
+	(lo, Vec3::new(lo.x + 1.0, lo.y + 1.0, lo.z + 1.0))
+}
+
 struct Contact {
 	/// Unit push direction, box toward capsule.
 	n: Vec3,
 	depth: f32,
-	cell_y: i32,
+	/// Supporting surface height for the ground branch (a box's top
+	/// plane, or the exact ramp height under the axis for stairs).
+	top: f32,
 }
 
-/// Penetration contact of the capsule at eye `pos` with cell `c`, if any.
-fn cell_contact(pos: Vec3, c: (i32, i32, i32)) -> Option<Contact> {
-	let (p, q) = closest_axis_box(pos, c);
+/// Penetration contact of the capsule at eye `pos` with the AABB
+/// [lo, hi], if any.
+fn box_contact(pos: Vec3, lo: Vec3, hi: Vec3) -> Option<Contact> {
+	let (p, q) = closest_axis_box(pos, lo, hi);
 	let d2 = p.distance_squared(q);
 	if d2 >= RADIUS * RADIUS {
 		return None;
@@ -188,19 +218,19 @@ fn cell_contact(pos: Vec3, c: (i32, i32, i32)) -> Option<Contact> {
 		return Some(Contact {
 			n: (p - q) / d,
 			depth: RADIUS - d,
-			cell_y: c.1,
+			top: hi.y,
 		});
 	}
 	// Degenerate: the axis runs inside the box (a terminal-velocity
 	// landing can bury it ~0.03). Push out through the nearest face, in
 	// a fixed order so ties resolve identically everywhere.
 	let faces = [
-		(Vec3::Y, c.1 as f32 + 1.0 - p.y),
-		(Vec3::NEG_Y, p.y - c.1 as f32),
-		(Vec3::X, c.0 as f32 + 1.0 - p.x),
-		(Vec3::NEG_X, p.x - c.0 as f32),
-		(Vec3::Z, c.2 as f32 + 1.0 - p.z),
-		(Vec3::NEG_Z, p.z - c.2 as f32),
+		(Vec3::Y, hi.y - p.y),
+		(Vec3::NEG_Y, p.y - lo.y),
+		(Vec3::X, hi.x - p.x),
+		(Vec3::NEG_X, p.x - lo.x),
+		(Vec3::Z, hi.z - p.z),
+		(Vec3::NEG_Z, p.z - lo.z),
 	];
 	let mut best = faces[0];
 	for f in &faces[1..] {
@@ -211,8 +241,141 @@ fn cell_contact(pos: Vec3, c: (i32, i32, i32)) -> Option<Contact> {
 	Some(Contact {
 		n: best.0,
 		depth: best.1 + RADIUS,
-		cell_y: c.1,
+		top: hi.y,
 	})
+}
+
+/// What a cell presents to COLLISION: nothing, the unit cube, a list of
+/// sub-boxes (door leaves), or a stair ramp with its fallback boxes.
+enum CellShape {
+	Empty,
+	Cube,
+	Boxes(&'static [crate::shapes::SubBox]),
+	Ramp {
+		facing: crate::shapes::Facing,
+		boxes: &'static [crate::shapes::SubBox],
+	},
+}
+
+fn cell_shape(cell: Option<u16>) -> CellShape {
+	let Some(c) = cell else {
+		return CellShape::Empty;
+	};
+	let b = block_of(c);
+	if !b.props().collides {
+		return CellShape::Empty;
+	}
+	if b.props().shape.is_none() {
+		return CellShape::Cube;
+	}
+	let v = crate::shapes::shape_of_cell(c).expect("shape tag ⇒ registered shape");
+	match v.ramp {
+		Some(facing) => CellShape::Ramp {
+			facing,
+			boxes: &v.collision,
+		},
+		// An open door has no collision boxes at all.
+		None if v.collision.is_empty() => CellShape::Empty,
+		None => CellShape::Boxes(&v.collision),
+	}
+}
+
+/// The stair ramp's support height under the capsule AXIS: the diagonal
+/// h(u) = u from the low front edge to the high back edge of cell `c`
+/// ascending toward `f` — the one C0-continuous surface joining both
+/// neighbors, so walking a flight never steps or pops.
+fn ramp_top(pos: Vec3, c: (i32, i32, i32), f: crate::shapes::Facing) -> f32 {
+	use crate::shapes::Facing;
+	let u = match f {
+		Facing::PosX => pos.x - c.0 as f32,
+		Facing::NegX => (c.0 + 1) as f32 - pos.x,
+		Facing::PosZ => pos.z - c.2 as f32,
+		Facing::NegZ => (c.2 + 1) as f32 - pos.z,
+	}
+	.clamp(0.0, 1.0);
+	c.1 as f32 + u
+}
+
+/// The facing of a ramp currently supporting the capsule — a stair
+/// under the footprint whose diagonal is within the snap band of the
+/// feet (max top wins when several qualify). Position-only, like the
+/// occupancy probes that share it.
+fn ramp_support(
+	pos: Vec3,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> Option<crate::shapes::Facing> {
+	let feet = pos.y - EYE_TO_FEET;
+	let y0 = (feet - GROUND_EPS).floor() as i32;
+	let r2 = RADIUS * RADIUS;
+	let mut best: Option<(f32, crate::shapes::Facing)> = None;
+	for x in span(pos.x - RADIUS, pos.x + RADIUS) {
+		for z in span(pos.z - RADIUS, pos.z + RADIUS) {
+			if xz_rect_dist2(pos, x, z) >= r2 {
+				continue;
+			}
+			for y in [y0, y0 + 1] {
+				if let CellShape::Ramp { facing, .. } = cell_shape(cell_at(x, y, z)) {
+					let top = ramp_top(pos, (x, y, z), facing);
+					let lift = top - feet;
+					if (-RAMP_SNAP_DOWN..=RAMP_SNAP_MAX).contains(&lift)
+						&& best.is_none_or(|(t, _)| top > t)
+					{
+						best = Some((top, facing));
+					}
+				}
+			}
+		}
+	}
+	best.map(|(_, f)| f)
+}
+
+/// Ramp run-out: while a stair's diagonal supports the capsule
+/// (`support`), the cube the ramp tops out against must not block —
+/// without this the cube's top corner catches the capsule's bottom
+/// sphere and mounting a flush landing degrades into a seconds-long
+/// grind. Exempt when the cube's top is within the snap band above the
+/// feet (the ramp is carrying the feet there), the cube sits ahead
+/// along the ascent (side walls still block), and there's capsule
+/// headroom above its top (a taller wall still blocks). Cubes only —
+/// shaped neighbors negotiate through their own branches. Shared by
+/// the resolver and `overlaps_solid`, so mid-mount claims stay
+/// adoptable.
+fn runout_exempt(
+	pos: Vec3,
+	support: Option<crate::shapes::Facing>,
+	cell: (i32, i32, i32),
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> bool {
+	use crate::shapes::Facing;
+	let Some(f) = support else {
+		return false;
+	};
+	let (x, y, z) = cell;
+	let top = (y + 1) as f32;
+	let lift = top - (pos.y - EYE_TO_FEET);
+	if lift <= SKIN || lift > RAMP_SNAP_MAX {
+		return false;
+	}
+	let ahead = match f {
+		Facing::PosX => x as f32 + 0.5 > pos.x,
+		Facing::NegX => x as f32 + 0.5 < pos.x,
+		Facing::PosZ => z as f32 + 0.5 > pos.z,
+		Facing::NegZ => z as f32 + 0.5 < pos.z,
+	};
+	ahead
+		&& !(1..=2).any(|k| {
+			!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
+				&& ((y + k) as f32 - top) < HEIGHT
+		})
+}
+
+/// Squared xz distance from the axis at `pos` to cell (x, z)'s unit
+/// rect (0 inside).
+#[inline]
+fn xz_rect_dist2(pos: Vec3, x: i32, z: i32) -> f32 {
+	let dx = (x as f32 - pos.x).max(pos.x - (x as f32 + 1.0)).max(0.0);
+	let dz = (z as f32 - pos.z).max(pos.z - (z as f32 + 1.0)).max(0.0);
+	dx * dx + dz * dz
 }
 
 /// Every cell the player capsule at eye `pos` overlaps (exact
@@ -227,17 +390,26 @@ pub fn occupied_cells(pos: Vec3) -> impl Iterator<Item = (i32, i32, i32)> {
 	span(pos.x - RADIUS, pos.x + RADIUS).flat_map(move |x| {
 		span(pos.y - EYE_TO_FEET, pos.y + EYE_TO_CROWN).flat_map(move |y| {
 			span(pos.z - RADIUS, pos.z + RADIUS).filter_map(move |z| {
-				let (p, q) = closest_axis_box(pos, (x, y, z));
+				let (lo, hi) = cell_box((x, y, z));
+				let (p, q) = closest_axis_box(pos, lo, hi);
 				(p.distance_squared(q) < r2).then_some((x, y, z))
 			})
 		})
 	})
 }
 
-fn solid(b: Option<BlockType>) -> bool {
-	// Java: block != null && != AIR && != WATER. Unloaded (None) is not
-	// solid — the player falls through unloaded terrain, as in the Java.
-	matches!(b, Some(bt) if bt.props().collides)
+/// Block type half of a cell (state nibble ignored).
+#[inline]
+fn block_of(cell: u16) -> BlockType {
+	BlockType::from_id(crate::chunk::cell_id(cell))
+}
+
+/// Cell-granular solidity (unloaded None = non-solid, the Java
+/// null-block). Production paths moved to the shape-aware `cell_shape`/
+/// `overlaps_solid`; tests keep this for cube-world assertions.
+#[cfg(test)]
+fn solid(cell: Option<u16>) -> bool {
+	matches!(cell, Some(c) if block_of(c).props().collides)
 }
 
 /// Raise `pos` one block at a time until the capsule overlaps no
@@ -247,10 +419,10 @@ fn solid(b: Option<BlockType>) -> bool {
 /// Unloaded (None) cells count as clear, matching the physics. A column
 /// solid to the world ceiling (not honestly buildable) returns `pos`
 /// unchanged.
-pub fn ascend_clear(pos: Vec3, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> Vec3 {
+pub fn ascend_clear(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> Vec3 {
 	let mut p = pos;
 	while p.y < crate::chunk::WORLD_VBLOCK as f32 {
-		if !occupied_cells(p).any(|c| solid(block_at(c.0, c.1, c.2))) {
+		if !overlaps_solid(p, cell_at) {
 			return p;
 		}
 		p.y += 1.0;
@@ -278,29 +450,54 @@ impl Player {
 		self.out = s.vel;
 	}
 
-	/// Standing support probe: any solid cell in the layer just below the
-	/// feet whose top rect is within RADIUS of the axis in xz. The disk
-	/// matches the resolver's GROUND_NORMAL_Y cutoff, so probe and
-	/// resolver agree on where standing ends and falling begins.
-	fn grounded(&self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
+	/// Standing support probe: any supporting surface within reach of the
+	/// feet whose xz footprint is within RADIUS of the axis. Cubes scan
+	/// the single layer just below the feet (the classic rule, bit-
+	/// identical); shaped cells also scan one layer up — a stair's own
+	/// cell contains the feet mid-ramp, and its bottom edge sits exactly
+	/// at the layer boundary.
+	fn grounded(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 		if self.out.y > 0.0 {
 			return false;
 		}
-		let y = (self.pos.y - EYE_TO_FEET - GROUND_EPS).floor() as i32;
+		let feet = self.pos.y - EYE_TO_FEET;
+		let y0 = (feet - GROUND_EPS).floor() as i32;
 		let r2 = RADIUS * RADIUS;
 		for x in span(self.pos.x - RADIUS, self.pos.x + RADIUS) {
 			for z in span(self.pos.z - RADIUS, self.pos.z + RADIUS) {
-				if !solid(block_at(x, y, z)) {
+				if xz_rect_dist2(self.pos, x, z) >= r2 {
 					continue;
 				}
-				let dx = (x as f32 - self.pos.x)
-					.max(self.pos.x - (x as f32 + 1.0))
-					.max(0.0);
-				let dz = (z as f32 - self.pos.z)
-					.max(self.pos.z - (z as f32 + 1.0))
-					.max(0.0);
-				if dx * dx + dz * dz < r2 {
-					return true;
+				for y in [y0, y0 + 1] {
+					match cell_shape(cell_at(x, y, z)) {
+						CellShape::Empty => {}
+						CellShape::Cube => {
+							// Layer y0 only — the classic rule.
+							if y == y0 {
+								return true;
+							}
+						}
+						CellShape::Boxes(bs) => {
+							for b in bs {
+								let (lo, hi) = b.aabb((x, y, z));
+								// The box top must sit at the feet, and its
+								// own footprint must reach the axis.
+								if (hi.y - feet).abs() <= GROUND_EPS {
+									let dx = (lo.x - self.pos.x).max(self.pos.x - hi.x).max(0.0);
+									let dz = (lo.z - self.pos.z).max(self.pos.z - hi.z).max(0.0);
+									if dx * dx + dz * dz < r2 {
+										return true;
+									}
+								}
+							}
+						}
+						CellShape::Ramp { facing, .. } => {
+							let top = ramp_top(self.pos, (x, y, z), facing);
+							if (top - feet).abs() <= RAMP_SNAP_DOWN {
+								return true;
+							}
+						}
+					}
 				}
 			}
 		}
@@ -309,22 +506,83 @@ impl Player {
 
 	/// Iterative capsule-vs-grid penetration resolution: fix the deepest
 	/// contact each pass. Ground contacts (steep upward normal while
-	/// descending) resolve vertically onto the block plane — a
+	/// descending) resolve vertically onto the supporting plane — a
 	/// flat-bottomed stance, so block edges don't shed the player.
 	/// Everything else pushes along the contact normal with the
 	/// into-contact velocity removed: walls slide, ceilings stop the jump.
-	fn resolve(&mut self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) {
+	///
+	/// Stairs are the exception to box collision: within RAMP_SNAP_MAX of
+	/// the diagonal ramp they emit a pure GROUND contact at the ramp
+	/// height — never a horizontal push, so walking a flight is smooth in
+	/// both directions ("a slope that doesn't impede movement"). Deeper
+	/// than the snap band (the tall/back side) they fall back to their
+	/// sub-boxes and block like walls. `dry` gates the downhill glue so
+	/// swimming over submerged stairs doesn't stick.
+	fn resolve(&mut self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>, dry: bool) {
+		let feet = |pos: Vec3| pos.y - EYE_TO_FEET;
 		for _ in 0..RESOLVE_ITERS {
+			let support = ramp_support(self.pos, cell_at);
 			let mut best: Option<Contact> = None;
+			let push = |best: &mut Option<Contact>, c: Contact| {
+				if best.as_ref().is_none_or(|b| c.depth > b.depth) {
+					*best = Some(c);
+				}
+			};
 			for y in span(self.pos.y - EYE_TO_FEET, self.pos.y + EYE_TO_CROWN) {
 				for x in span(self.pos.x - RADIUS, self.pos.x + RADIUS) {
 					for z in span(self.pos.z - RADIUS, self.pos.z + RADIUS) {
-						if !solid(block_at(x, y, z)) {
-							continue;
-						}
-						if let Some(c) = cell_contact(self.pos, (x, y, z)) {
-							if best.as_ref().is_none_or(|b| c.depth > b.depth) {
-								best = Some(c);
+						match cell_shape(cell_at(x, y, z)) {
+							CellShape::Empty => {}
+							CellShape::Cube => {
+								if runout_exempt(self.pos, support, (x, y, z), cell_at) {
+									continue;
+								}
+								let (lo, hi) = cell_box((x, y, z));
+								if let Some(c) = box_contact(self.pos, lo, hi) {
+									push(&mut best, c);
+								}
+							}
+							CellShape::Boxes(bs) => {
+								for b in bs {
+									let (lo, hi) = b.aabb((x, y, z));
+									if let Some(c) = box_contact(self.pos, lo, hi) {
+										push(&mut best, c);
+									}
+								}
+							}
+							CellShape::Ramp { facing, boxes } => {
+								let top = ramp_top(self.pos, (x, y, z), facing);
+								let lift = top - feet(self.pos);
+								// Pinched: solid cells above leave less
+								// than capsule height over the ramp here —
+								// the snap would jam the crown into the
+								// ceiling, so the stair reverts to its
+								// boxes and blocks like a wall (no
+								// squeezing through sub-capsule gaps).
+								let pinched = (1..=2).any(|k| {
+									!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
+										&& (y + k) as f32 - top < HEIGHT
+								});
+								if lift > RAMP_SNAP_MAX || (pinched && lift > SKIN) {
+									for b in boxes {
+										let (lo, hi) = b.aabb((x, y, z));
+										if let Some(c) = box_contact(self.pos, lo, hi) {
+											push(&mut best, c);
+										}
+									}
+								} else if self.out.y <= 0.0
+									&& lift > SKIN && xz_rect_dist2(self.pos, x, z)
+									< RADIUS * RADIUS
+								{
+									push(
+										&mut best,
+										Contact {
+											n: Vec3::Y,
+											depth: lift,
+											top,
+										},
+									);
+								}
 							}
 						}
 					}
@@ -335,7 +593,7 @@ impl Player {
 				break;
 			}
 			if c.n.y > GROUND_NORMAL_Y && self.out.y <= 0.0 {
-				self.pos.y = (c.cell_y + 1) as f32 + EYE_TO_FEET;
+				self.pos.y = c.top + EYE_TO_FEET;
 				self.out.y = 0.0;
 			} else {
 				self.pos += c.n * c.depth;
@@ -343,6 +601,38 @@ impl Player {
 				if vn < 0.0 {
 					self.out -= c.n * vn;
 				}
+			}
+		}
+		// Downhill glue: descending a ramp, the feet drift a few
+		// centimeters above it each tick (no penetration → no contact).
+		// Snap back down within RAMP_SNAP_DOWN so descent hugs the
+		// surface instead of stuttering into micro-falls.
+		if dry && self.out.y <= 0.0 {
+			let f = feet(self.pos);
+			let fy = f.floor() as i32;
+			let mut best_top: Option<f32> = None;
+			for y in [fy, fy - 1] {
+				for x in span(self.pos.x - RADIUS, self.pos.x + RADIUS) {
+					for z in span(self.pos.z - RADIUS, self.pos.z + RADIUS) {
+						let CellShape::Ramp { facing, .. } = cell_shape(cell_at(x, y, z)) else {
+							continue;
+						};
+						if xz_rect_dist2(self.pos, x, z) >= RADIUS * RADIUS {
+							continue;
+						}
+						let top = ramp_top(self.pos, (x, y, z), facing);
+						let lift = top - f;
+						if (-RAMP_SNAP_DOWN..0.0).contains(&lift)
+							&& best_top.is_none_or(|b| top > b)
+						{
+							best_top = Some(top);
+						}
+					}
+				}
+			}
+			if let Some(top) = best_top {
+				self.pos.y = top + EYE_TO_FEET;
+				self.out.y = 0.0;
 			}
 		}
 	}
@@ -354,16 +644,16 @@ impl Player {
 	/// physics must not flip-flop with them); the topmost water cell
 	/// tops out at the rendered surface, WATER_SURFACE_DROP below the
 	/// lattice plane.
-	fn submersion(&self, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> f32 {
+	fn submersion(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> f32 {
 		let (x, z) = (self.pos.x.floor() as i32, self.pos.z.floor() as i32);
 		let feet = self.pos.y - EYE_TO_FEET;
 		let crown = self.pos.y + EYE_TO_CROWN;
 		let mut wet = 0.0f32;
 		for cy in (feet.floor() as i32)..=(crown.floor() as i32) {
-			if !block_at(x, cy, z).is_some_and(|b| b.is_water()) {
+			if !cell_at(x, cy, z).is_some_and(|c| block_of(c).is_water()) {
 				continue;
 			}
-			let capped = block_at(x, cy + 1, z).is_some_and(|b| b.is_water());
+			let capped = cell_at(x, cy + 1, z).is_some_and(|c| block_of(c).is_water());
 			let top = cy as f32
 				+ if capped {
 					1.0
@@ -382,7 +672,7 @@ impl Player {
 		dt: f32,
 		dir: Vec3,
 		intent: PlayerIntent,
-		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+		cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 	) {
 		let dt = dt.min(0.16);
 
@@ -393,11 +683,11 @@ impl Player {
 		let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
 		let right = dir.cross(Vec3::Y).normalize_or_zero(); // Java dir × up
 
-		let sub = self.submersion(block_at);
+		let sub = self.submersion(cell_at);
 		if sub < SWIM_THRESHOLD {
 			// ---- dry / wading: the classic rules, bit-identical ----
 			self.out.y = (self.out.y - GRAVITY * dt).max(TERM_VELOCITY);
-			if self.grounded(block_at) {
+			if self.grounded(cell_at) {
 				// Ground movement is plain kinematics: accelerate toward
 				// the input target (direction × WALK_SPEED) at
 				// WALK_ACCEL, with velocity as the only state —
@@ -453,8 +743,102 @@ impl Player {
 
 		debug_assert!((self.out * dt).length() < 1.0, "tunneling guard");
 		self.pos += self.out * dt;
-		self.resolve(block_at);
+		self.resolve(cell_at, sub < SWIM_THRESHOLD);
 	}
+}
+
+/// Shape-aware "is this position inside solid geometry" — the claim
+/// probe (server adoption envelope), spawn ascent, and any future
+/// teleport check. Mirrors the resolver's classification so a player the
+/// resolver is happy with is NEVER "inside solid": standing on a stair
+/// tread puts the feet inside the stair's unit CELL, but not inside its
+/// geometry.
+pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
+	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
+	let feet = pos.y - EYE_TO_FEET;
+	let support = ramp_support(pos, cell_at);
+	for y in span(pos.y - EYE_TO_FEET, pos.y + EYE_TO_CROWN) {
+		for x in span(pos.x - RADIUS, pos.x + RADIUS) {
+			for z in span(pos.z - RADIUS, pos.z + RADIUS) {
+				let overlap_box = |lo: Vec3, hi: Vec3| -> bool {
+					let (p, q) = closest_axis_box(pos, lo, hi);
+					p.distance_squared(q) < r2
+				};
+				match cell_shape(cell_at(x, y, z)) {
+					CellShape::Empty => {}
+					CellShape::Cube => {
+						// Ramp run-out: mid-mount the bottom sphere grazes
+						// the landing cube's corner — the resolver exempts
+						// it, so the probe must too.
+						if runout_exempt(pos, support, (x, y, z), cell_at) {
+							continue;
+						}
+						let (lo, hi) = cell_box((x, y, z));
+						if overlap_box(lo, hi) {
+							return true;
+						}
+					}
+					CellShape::Boxes(bs) => {
+						for b in bs {
+							let (lo, hi) = b.aabb((x, y, z));
+							if overlap_box(lo, hi) {
+								return true;
+							}
+						}
+					}
+					CellShape::Ramp { facing, boxes } => {
+						let top = ramp_top(pos, (x, y, z), facing);
+						let lift = top - feet;
+						if lift > RAMP_SNAP_MAX {
+							for b in boxes {
+								let (lo, hi) = b.aabb((x, y, z));
+								if overlap_box(lo, hi) {
+									return true;
+								}
+							}
+						} else if lift > SKIN_PROBE && xz_rect_dist2(pos, x, z) < r2 {
+							// Feet below the ramp band (beyond probe skin):
+							// buried in the ramp, not resting on it.
+							return true;
+						}
+					}
+				}
+			}
+		}
+	}
+	false
+}
+
+/// Strict capsule-vs-candidate test for PLACEMENT rejection: would the
+/// cell value `placed` at `cell` intersect the player at `pos`? No ramp
+/// leniency — placing a stair under your own feet is refused exactly
+/// like a full block. The client's local gate and the server's
+/// InsidePlayer scan share this, so they can never disagree.
+pub fn placement_blocked(pos: Vec3, cell: (i32, i32, i32), placed: u16) -> bool {
+	let b = block_of(placed);
+	if !b.props().collides {
+		return false;
+	}
+	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
+	let overlap_box = |lo: Vec3, hi: Vec3| -> bool {
+		let (p, q) = closest_axis_box(pos, lo, hi);
+		p.distance_squared(q) < r2
+	};
+	if b.props().shape.is_none() {
+		let (lo, hi) = cell_box(cell);
+		return overlap_box(lo, hi);
+	}
+	let v = crate::shapes::shape_of_cell(placed).expect("shape tag ⇒ registered shape");
+	v.collision.iter().any(|sb| {
+		let (lo, hi) = sb.aabb(cell);
+		overlap_box(lo, hi)
+	})
+}
+
+/// Test worlds speak `BlockType`; the seam speaks cells.
+#[cfg(test)]
+fn some_cell(b: BlockType) -> Option<u16> {
+	Some(b as u16)
 }
 
 #[cfg(test)]
@@ -469,9 +853,9 @@ mod tests {
 	}
 
 	/// Flat ground at y < 10: solid below, air above.
-	fn flat_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
+	fn flat_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = (x, z);
-		Some(if y < 10 {
+		some_cell(if y < 10 {
 			BlockType::Dirt
 		} else {
 			BlockType::Air
@@ -490,7 +874,7 @@ mod tests {
 		// Two blocks stacked through the body: the landing clears them.
 		let tower = |x: i32, y: i32, z: i32| {
 			if (x, z) == (0, 0) && (11..=12).contains(&y) {
-				Some(BlockType::Stone)
+				some_cell(BlockType::Stone)
 			} else {
 				flat_world(x, y, z)
 			}
@@ -502,7 +886,7 @@ mod tests {
 			"landing is clear"
 		);
 
-		let solid_world = |_: i32, _: i32, _: i32| Some(BlockType::Stone);
+		let solid_world = |_: i32, _: i32, _: i32| some_cell(BlockType::Stone);
 		assert_eq!(ascend_clear(eye, &solid_world), eye, "ceiling gives up");
 	}
 
@@ -622,8 +1006,8 @@ mod tests {
 		// Cliff: ground only at z < 12; walk forward off the edge at
 		// full speed and check the first airborne step keeps it (the
 		// Java ×0.5 damping lost half).
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 && z < 12 {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 && z < 12 {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -659,8 +1043,8 @@ mod tests {
 	#[test]
 	fn wall_blocks_and_slides() {
 		// Wall of solid at z >= 12 for y in 9..13; ground below y=10.
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 || (z >= 12 && y < 13) {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && y < 13) {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -721,8 +1105,8 @@ mod tests {
 		// Flat ceiling at y=12 over the y<10 floor: a 2-block room. The
 		// crown must stop at the ceiling plane (the point collider sailed
 		// straight through).
-		let world = |_x: i32, y: i32, _z: i32| -> Option<BlockType> {
-			Some(if y < 10 || y == 12 {
+		let world = |_x: i32, y: i32, _z: i32| -> Option<u16> {
+			some_cell(if y < 10 || y == 12 {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -754,8 +1138,8 @@ mod tests {
 		// Wall at z >= 12 with only cell y=10 open: a 1-block hole the
 		// 1.8-tall capsule cannot fit through (the point collider walked
 		// straight in).
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 || (z >= 12 && (11..14).contains(&y)) {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && (11..14).contains(&y)) {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -779,8 +1163,8 @@ mod tests {
 	fn two_block_corridor_passes() {
 		// Wall at z >= 12 with cells y=10..12 open: a 2-block corridor
 		// the 1.8-tall capsule walks through.
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 || (z >= 12 && y >= 12) {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && y >= 12) {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -804,8 +1188,8 @@ mod tests {
 	fn jump_mounts_one_block_step() {
 		// One-block step at z >= 12, open sky: hold forward + jump and
 		// end up standing on it.
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 || (z >= 12 && y == 10) {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && y == 10) {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -839,8 +1223,8 @@ mod tests {
 		// Same step, but with a flat ceiling at y=13 (a 3-block room over
 		// the floor). Head clearance while mounting is 1.2 blocks — the
 		// marginal case the capsule must still clear.
-		let world = |_x: i32, y: i32, z: i32| -> Option<BlockType> {
-			Some(if y < 10 || (z >= 12 && y == 10) || y == 13 {
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && y == 10) || y == 13 {
 				BlockType::Dirt
 			} else {
 				BlockType::Air
@@ -868,7 +1252,7 @@ mod tests {
 
 	#[test]
 	fn falls_through_unloaded_chunks() {
-		let none = |_: i32, _: i32, _: i32| -> Option<BlockType> { None };
+		let none = |_: i32, _: i32, _: i32| -> Option<u16> { None };
 		let mut p = new_player();
 		for _ in 0..120 {
 			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &none);
@@ -880,9 +1264,9 @@ mod tests {
 
 	/// Solid below y=10, water sources 10..20 (visible surface at
 	/// 19.889), air above.
-	fn water_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
+	fn water_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = (x, z);
-		Some(if y < 10 {
+		some_cell(if y < 10 {
 			BlockType::Dirt
 		} else if y < 20 {
 			BlockType::Water
@@ -893,9 +1277,9 @@ mod tests {
 
 	/// `water_world` plus a solid shelf at z >= 12 whose top surface
 	/// (y = 20) sits level with the water cell tops.
-	fn shelf_world(x: i32, y: i32, z: i32) -> Option<BlockType> {
+	fn shelf_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		if z >= 12 && y < 20 {
-			return Some(BlockType::Dirt);
+			return some_cell(BlockType::Dirt);
 		}
 		water_world(x, y, z)
 	}
@@ -998,13 +1382,373 @@ mod tests {
 		panic!("entry plunge never damped");
 	}
 
+	// ---- sub-block shapes ------------------------------------------------
+
+	use crate::chunk::make_cell;
+	use crate::shapes::{door_state, stair_state, Facing};
+
+	/// Flat ground (top at y=10 surface) with a 3-stair flight ascending
+	/// +z at z=12..14 and a solid platform (top at y=13) beyond.
+	fn flight_world(_x: i32, y: i32, z: i32) -> Option<u16> {
+		if y < 10 {
+			return some_cell(BlockType::Dirt);
+		}
+		match (y, z) {
+			(10, 12) | (11, 13) | (12, 14) => {
+				Some(make_cell(BlockType::WoodStairs, stair_state(Facing::PosZ)))
+			}
+			(10..=12, 15..) => some_cell(BlockType::Stone),
+			_ => some_cell(BlockType::Air),
+		}
+	}
+
+	/// One +x stair at (12, 10) with a flush stone landing behind it at
+	/// x >= 13 (landing top = stair top) — the ramp run-out scenario.
+	fn landing_world(x: i32, y: i32, z: i32) -> Option<u16> {
+		let _ = z;
+		if y < 10 {
+			some_cell(BlockType::Dirt)
+		} else if (x, y) == (12, 10) {
+			Some(make_cell(BlockType::WoodStairs, stair_state(Facing::PosX)))
+		} else if x >= 13 && y == 10 {
+			some_cell(BlockType::Stone)
+		} else {
+			some_cell(BlockType::Air)
+		}
+	}
+
+	#[test]
+	fn stair_mounts_flush_landing_smoothly() {
+		// Without the run-out rule this walk ground against the landing's
+		// top corner for ~150 ticks (the wall push cancels the walk while
+		// the corner catches the bottom sphere). With it, the mount costs
+		// no meaningful time and the climb never dips.
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..90 {
+			let prev = p.pos.y;
+			p.tick(TICK, Vec3::X, forward, &landing_world);
+			assert!(p.pos.y >= prev - 1e-3, "no dip mounting: {:?}", p.pos);
+		}
+		assert!(p.pos.x > 14.0, "mounted and moved on, x = {}", p.pos.x);
+		assert!(
+			(p.pos.y - 12.5).abs() < 0.001,
+			"standing on the landing, y = {}",
+			p.pos.y
+		);
+	}
+
+	#[test]
+	fn stair_runout_blocked_by_taller_wall() {
+		// A 2-high wall behind the stair: no capsule headroom over the
+		// first cube's top, so the run-out exemption must not apply — the
+		// wall blocks at the top of the ramp like any wall.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			if x >= 13 && y == 11 {
+				return some_cell(BlockType::Stone);
+			}
+			landing_world(x, y, z)
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &world);
+			assert!(p.pos.y < 12.6, "never climbed the wall: {:?}", p.pos);
+		}
+		assert!(p.pos.x < 12.75, "blocked at the wall face, x = {}", p.pos.x);
+	}
+
+	#[test]
+	fn stair_side_wall_never_hoists() {
+		// A raised strip BESIDE the ramp (top flush with the stair's top,
+		// everywhere z >= 1): pressing into it diagonally while climbing
+		// slides along it, never hoists onto it — the run-out exemption is
+		// ahead-of-ascent only, so side faces keep blocking.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if y == 10 && z >= 1 {
+				some_cell(BlockType::Stone)
+			} else if (x, y, z) == (12, 10, 0) {
+				Some(make_cell(BlockType::WoodStairs, stair_state(Facing::PosX)))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let press = PlayerIntent {
+			move_axis: Vec2::new(0.5, 1.0).normalize(),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, press, &world);
+			let feet = p.pos.y - EYE_TO_FEET;
+			// While the cylinder section overlaps the strip, its face
+			// blocks flush at 0.7; above that only the bottom sphere can
+			// legitimately round over the corner, by a bounded amount.
+			if feet < 10.69 {
+				assert!(p.pos.z < 0.71, "face kept blocking: {:?}", p.pos);
+			}
+			assert!(p.pos.z < 0.78, "never hoisted over the edge: {:?}", p.pos);
+			assert!(
+				!overlaps_solid(p.pos, &world),
+				"never inside the strip: {:?}",
+				p.pos
+			);
+			// Past the ramp top the strip is the same height as the feet —
+			// walking onto it is legal, so the property ends here.
+			if p.pos.x > 12.9 {
+				break;
+			}
+		}
+		assert!(p.pos.x > 12.9, "climbed the ramp while sliding");
+	}
+
+	#[test]
+	fn overlaps_solid_runout_matches_resolver() {
+		// Mid-mount: feet on the ramp at u = 0.8, the bottom sphere
+		// grazing the landing's top corner. The resolver exempts the
+		// landing cube, so the probe must not call this solid — else the
+		// adoption envelope rejects every honest mount claim.
+		let mid_mount = Vec3::new(12.8, 10.8 + EYE_TO_FEET, 0.5);
+		assert!(!overlaps_solid(mid_mount, &landing_world));
+		// The same position against the 2-high wall is a state the
+		// resolver never produces — solid.
+		let walled = |x: i32, y: i32, z: i32| -> Option<u16> {
+			if x >= 13 && y == 11 {
+				return some_cell(BlockType::Stone);
+			}
+			landing_world(x, y, z)
+		};
+		assert!(overlaps_solid(mid_mount, &walled));
+	}
+
+	/// Flat ground with one +x-ascending stair at (12, 10, all z).
+	fn one_stair_world(x: i32, y: i32, z: i32) -> Option<u16> {
+		let _ = z;
+		if y < 10 {
+			some_cell(BlockType::Dirt)
+		} else if (x, y) == (12, 10) {
+			Some(make_cell(BlockType::WoodStairs, stair_state(Facing::PosX)))
+		} else {
+			some_cell(BlockType::Air)
+		}
+	}
+
+	#[test]
+	fn walks_up_a_stair_flight_without_jumping() {
+		let mut p = Player::new(Vec3::new(0.5, 11.5, 8.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..360 {
+			p.tick(TICK, Vec3::Z, forward, &flight_world);
+		}
+		assert!(p.pos.z > 16.0, "crossed the flight, z = {}", p.pos.z);
+		assert!(
+			(p.pos.y - 14.5).abs() < 0.001,
+			"standing on the platform, y = {}",
+			p.pos.y
+		);
+	}
+
+	#[test]
+	fn descends_a_stair_flight_smoothly() {
+		// Start on the platform, walk −z down the flight: never a free
+		// fall — each tick's descent stays inside the downhill-glue band
+		// while over the stairs, and the run ends back on the ground.
+		let mut p = Player::new(Vec3::new(0.5, 14.5, 17.5));
+		let back = PlayerIntent {
+			move_axis: Vec2::new(0.0, -1.0),
+			jump: false,
+		};
+		let mut prev_y = p.pos.y;
+		for _ in 0..420 {
+			p.tick(TICK, Vec3::Z, back, &flight_world);
+			let dy = p.pos.y - prev_y;
+			prev_y = p.pos.y;
+			if (11.5..14.5).contains(&p.pos.y) && p.pos.z > 11.5 {
+				assert!(dy > -0.15, "smooth descent, dy = {dy} at {:?}", p.pos);
+			}
+		}
+		assert!(p.pos.z < 11.0, "left the flight, z = {}", p.pos.z);
+		assert!((p.pos.y - 11.5).abs() < 0.001, "on the ground: {}", p.pos.y);
+	}
+
+	#[test]
+	fn stair_back_face_blocks_like_a_wall() {
+		// Walking −x into the stair's tall back (+x side): a wall.
+		let mut p = Player::new(Vec3::new(14.5, 11.5, 0.5));
+		let toward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..180 {
+			p.tick(TICK, Vec3::NEG_X, toward, &one_stair_world);
+		}
+		assert!(p.pos.x > 13.25, "blocked at the back face, x = {}", p.pos.x);
+		assert!((p.pos.y - 11.5).abs() < 0.001, "never climbed: {}", p.pos.y);
+	}
+
+	#[test]
+	fn stair_low_side_ramps_up() {
+		// Walking +x from the low side: the ramp lifts the player over
+		// the cell with no jump, then they drop off the far side.
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		let mut peak = 0.0f32;
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &one_stair_world);
+			peak = peak.max(p.pos.y);
+		}
+		assert!(peak > 12.3, "ramped up, peak eye {peak}");
+		assert!(p.pos.x > 13.5, "carried on past the stair, x = {}", p.pos.x);
+	}
+
+	#[test]
+	fn stair_under_low_ceiling_wedges() {
+		// Stair with a flat ceiling two blocks over its base: the gap
+		// pinches below capsule height partway up — the player wedges
+		// (bounded, no jitter escape, never through).
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			if y == 12 && x >= 12 {
+				return some_cell(BlockType::Stone);
+			}
+			one_stair_world(x, y, z)
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &world);
+			assert!(p.pos.y < 12.75, "never squeezed past the gap: {}", p.pos.y);
+		}
+		assert!(
+			p.pos.x < 13.0,
+			"wedged before the far side, x = {}",
+			p.pos.x
+		);
+	}
+
+	/// Ground plus a door pair (lower y=10, upper y=11) at x=12, hinged
+	/// geometry irrelevant to the test — `open` toggles collision.
+	fn door_world(open: bool) -> impl Fn(i32, i32, i32) -> Option<u16> {
+		move |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if x == 12 && (y == 10 || y == 11) {
+				Some(make_cell(
+					BlockType::WoodDoor,
+					door_state(Facing::PosX, open, y == 11),
+				))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		}
+	}
+
+	#[test]
+	fn closed_door_blocks_open_door_passes() {
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		let mut blocked = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let closed = door_world(false);
+		for _ in 0..240 {
+			blocked.tick(TICK, Vec3::X, forward, &closed);
+		}
+		assert!(
+			blocked.pos.x < 12.0,
+			"closed leaf is a wall, x = {}",
+			blocked.pos.x
+		);
+
+		let mut walker = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let opened = door_world(true);
+		for _ in 0..240 {
+			walker.tick(TICK, Vec3::X, forward, &opened);
+		}
+		assert!(
+			walker.pos.x > 13.5,
+			"open door is a doorway, x = {}",
+			walker.pos.x
+		);
+	}
+
+	#[test]
+	fn overlaps_solid_is_shape_aware() {
+		// Standing ON a tread: feet inside the stair CELL but not its
+		// geometry — never "inside solid" (the anti-rubber-band rule).
+		let mid = Vec3::new(12.5, 10.5 + EYE_TO_FEET, 0.5); // ramp mid: u=0.5
+		assert!(!overlaps_solid(mid, &one_stair_world));
+		// Buried 0.2 below the ramp: solid.
+		let buried = mid - Vec3::Y * 0.2;
+		assert!(overlaps_solid(buried, &one_stair_world));
+		// Cube world sanity: resting on ground clear, dipped solid.
+		assert!(!overlaps_solid(Vec3::new(0.5, 11.5, 0.5), &flight_world));
+		assert!(overlaps_solid(Vec3::new(0.5, 11.3, 0.5), &flight_world));
+		// Door: the closed leaf is set back a twelfth (slab spans
+		// 0.083..0.25 of the cell), so the cell CENTER's capsule now
+		// grazes its front face (12.5 − 0.25 < RADIUS); clear needs
+		// front + RADIUS; open = no collision geometry at all (the
+		// handle knob is interaction-only and never counts).
+		let center = Vec3::new(12.5, 11.5, 0.5);
+		let clear = Vec3::new(12.6, 11.5, 0.5);
+		let against = Vec3::new(12.25, 11.5, 0.5);
+		assert!(overlaps_solid(center, &door_world(false)));
+		assert!(!overlaps_solid(clear, &door_world(false)));
+		assert!(overlaps_solid(against, &door_world(false)));
+		assert!(!overlaps_solid(against, &door_world(true)));
+	}
+
+	#[test]
+	fn placement_blocked_is_strict() {
+		let eye = Vec3::new(0.5, 11.5, 0.5);
+		let feet_cell = (0, 10, 0);
+		// A stair INTO the player's feet cell is refused — no ramp
+		// leniency for placement.
+		let stair = make_cell(BlockType::WoodStairs, stair_state(Facing::PosX));
+		assert!(placement_blocked(eye, feet_cell, stair));
+		assert!(!placement_blocked(eye, (3, 10, 0), stair), "3 blocks away");
+		// A closed door leaf blocks only where its thin slab actually
+		// reaches the capsule (set back a twelfth, its front face at
+		// 0.25 of the cell — the cell center's capsule grazes it); the
+		// open state never blocks anywhere.
+		let closed = make_cell(BlockType::WoodDoor, door_state(Facing::PosX, false, false));
+		let open = make_cell(BlockType::WoodDoor, door_state(Facing::PosX, true, false));
+		let near_leaf = Vec3::new(0.25, 11.5, 0.5);
+		assert!(placement_blocked(near_leaf, feet_cell, closed));
+		assert!(placement_blocked(eye, feet_cell, closed), "center grazes");
+		assert!(
+			!placement_blocked(Vec3::new(0.6, 11.5, 0.5), feet_cell, closed),
+			"front face + RADIUS clears the leaf"
+		);
+		assert!(!placement_blocked(near_leaf, feet_cell, open));
+		// Non-colliding cells never block.
+		assert!(!placement_blocked(eye, feet_cell, BlockType::Water as u16));
+	}
+
 	#[test]
 	fn wading_stays_dry_physics() {
 		// One block of water on solid ground: sub ≈ 0.49 < threshold —
 		// walking speed must be full WALK_SPEED, not SWIM_SPEED.
-		let shallow = |x: i32, y: i32, z: i32| -> Option<BlockType> {
+		let shallow = |x: i32, y: i32, z: i32| -> Option<u16> {
 			let _ = (x, z);
-			Some(if y < 10 {
+			some_cell(if y < 10 {
 				BlockType::Dirt
 			} else if y < 11 {
 				BlockType::Water
@@ -1040,7 +1784,7 @@ mod golden {
 	#[test]
 	fn golden_trajectory_pins_sim_version() {
 		let flat = |_x: i32, y: i32, _z: i32| {
-			Some(if y < 10 {
+			some_cell(if y < 10 {
 				crate::block::BlockType::Stone
 			} else {
 				crate::block::BlockType::Air
@@ -1089,13 +1833,64 @@ mod golden {
 		);
 	}
 
+	/// The stairs counterpart: pins the ramp branch (ascending support,
+	/// downhill glue, back-face boxes) to the bit. Same contract as
+	/// above; added with SIM v7.
+	#[test]
+	fn golden_stair_trajectory_pins_sim_version() {
+		use crate::chunk::make_cell;
+		use crate::shapes::{stair_state, Facing};
+		// Ground at y<10, a 3-stair flight ascending +z at z=12..14, a
+		// platform beyond; walk up, jump at the top, walk back down.
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			if y < 10 {
+				return Some(crate::block::BlockType::Dirt as u16);
+			}
+			Some(match (y, z) {
+				(10, 12) | (11, 13) | (12, 14) => make_cell(
+					crate::block::BlockType::WoodStairs,
+					stair_state(Facing::PosZ),
+				),
+				(10..=12, 15..) => crate::block::BlockType::Stone as u16,
+				_ => crate::block::BlockType::Air as u16,
+			})
+		};
+		let mut p = Player::new(Vec3::new(0.5, 11.5, 8.5));
+		for t in 0..420u32 {
+			let (mv, jump) = match t {
+				0..=149 => (Vec2::new(0.0, 1.0), false),
+				150 => (Vec2::new(0.0, 1.0), true),
+				151..=179 => (Vec2::new(0.0, 1.0), false),
+				_ => (Vec2::new(0.0, -1.0), false),
+			};
+			p.tick(
+				TICK,
+				Vec3::Z,
+				PlayerIntent {
+					move_axis: mv,
+					jump,
+				},
+				&world,
+			);
+		}
+		let s = p.state();
+		// Tick 420 lands back on the ground after the full round trip —
+		// ascent support, the landing-mount run-out, platform jump, and
+		// glued descent all feed these bits.
+		assert_eq!(
+			(s.pos.to_array(), s.vel.to_array()),
+			([0.5f32, 11.5, 7.7544203], [0.0f32, 0.0, -4.0]),
+			"stair behavior changed — update these values AND bump digblock_core::SIM_VERSION"
+		);
+	}
+
 	/// The water counterpart: pins the swim branch (entry damping, sink,
 	/// swim-up, breach onto a shelf) to the bit. Same contract as above.
 	#[test]
 	fn golden_water_trajectory_pins_sim_version() {
-		let shelf = |x: i32, y: i32, z: i32| -> Option<BlockType> {
+		let shelf = |x: i32, y: i32, z: i32| -> Option<u16> {
 			let _ = x;
-			Some(if y < 10 || (z >= 12 && y < 20) {
+			some_cell(if y < 10 || (z >= 12 && y < 20) {
 				crate::block::BlockType::Dirt
 			} else if y < 20 {
 				crate::block::BlockType::Water

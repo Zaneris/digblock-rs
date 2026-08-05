@@ -340,3 +340,18 @@ Fill-time baselines above predate the v5 terrain retune (region
 wavelengths 2–3× longer, flat steppes): the same seed now generates
 different terrain, so fill numbers will drift. Re-baseline on the next
 bench pass; frame-pacing methodology is unchanged.
+
+## 2026-08-05 — twelfths vertex repack (sub-block shapes)
+
+Positions moved to 8-bit twelfth-block units (word0) with explicit
+sub-rect UVs + tint in word1; shaders decode via an integer whole/
+remainder split so full-block geometry is exact under GPU fast-math
+(pixel-compared against the pre-repack build: differences at the same-
+build run-to-run noise floor, ~30 bytes of 7.7M). Bench (vsync, seed
+42): fill 4.51s, avg 8.39ms p95 9.48 p99 10.46, over-12.5ms 6, hitches
+0 — within noise of the two-word baseline. Mesh jobs read 0.10ms avg
+vs the ancient 0.04ms table entry; that row predates several format
+changes and per-call state masking in `MeshInput::get` — throughput is
+still ~5400 jobs/s, far above streaming demand. Shaped blocks mesh via
+baked quad templates (`emit_shaped`, outlined like the water path), so
+the hot full-block loop is unchanged.

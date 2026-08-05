@@ -32,8 +32,19 @@ pub(super) struct PendingEditReq {
 /// bounce with DigIncomplete).
 pub(super) enum ClientAction {
 	Edit(PendingEditReq),
-	DigStart { conn_id: u64, cell: (i32, i32, i32) },
-	DigCancel { conn_id: u64 },
+	DigStart {
+		conn_id: u64,
+		cell: (i32, i32, i32),
+	},
+	DigCancel {
+		conn_id: u64,
+	},
+	/// Alchemy rides the same queue: a craft-then-place in one tick must
+	/// debit before the place's stock gate runs (wire order).
+	Alchemy {
+		conn_id: u64,
+		op: digblock_net::messages::AlchemyOp,
+	},
 }
 
 /// Server-side hold-to-dig record. The block is captured at DigStart from
@@ -95,7 +106,7 @@ impl Sim {
 				client.player.pos,
 				client.look,
 				REACH + EDIT_POS_TOLERANCE,
-				&|x, y, z| store.block_at(x, y, z),
+				&|x, y, z| store.cell_at(x, y, z),
 			);
 			let on_target = hit.is_some_and(|h| h.cell == state.cell && h.block == state.block);
 			if on_target {
@@ -121,6 +132,9 @@ impl Sim {
 		let queue = std::mem::take(&mut self.action_queue);
 		for action in queue {
 			match action {
+				ClientAction::Edit(req) if req.kind == EditKind::Interact => {
+					self.process_interact(req)
+				}
 				ClientAction::Edit(req) => self.process_one_edit(req),
 				ClientAction::DigStart { conn_id, cell } => self.handle_dig_start(conn_id, cell),
 				ClientAction::DigCancel { conn_id } => {
@@ -128,6 +142,7 @@ impl Sim {
 						client.digging = None;
 					}
 				}
+				ClientAction::Alchemy { conn_id, op } => self.process_alchemy(conn_id, op),
 			}
 		}
 	}
@@ -179,19 +194,26 @@ impl Sim {
 			return reject(RejectReason::ServerError);
 		}
 
-		let place_block = match req.kind {
+		let place_cell = match req.kind {
 			EditKind::Dig | EditKind::Collect => None,
+			EditKind::Interact => unreachable!("routed to process_interact"),
 			EditKind::Place { block } => {
-				// Strict: unknown ids AND set state bits are refused until
-				// something consumes states (`try_from_id` covers both via
-				// the id range; the mask check names the intent).
-				if block == BlockType::Air as u16
-					|| block & !digblock_core::chunk::ID_MASK != 0
-					|| BlockType::try_from_id(block).is_none()
-				{
+				// Strict: unknown ids, spare bits, and states the id's
+				// shape doesn't define are refused (`state_valid` is the
+				// one gate). Door requests must be the LOWER+CLOSED cell —
+				// the server derives the upper half itself.
+				if block == BlockType::Air as u16 || !digblock_core::shapes::state_valid(block) {
 					return reject(RejectReason::BadBlock);
 				}
-				Some(BlockType::from_id(block))
+				let b = BlockType::from_id(digblock_core::chunk::cell_id(block));
+				if b.is_door() {
+					let (_, open, upper) =
+						digblock_core::shapes::door_parts(digblock_core::chunk::cell_state(block));
+					if open || upper {
+						return reject(RejectReason::BadBlock);
+					}
+				}
+				Some(block)
 			}
 		};
 		if !req.origin.is_finite() || !req.dir.is_finite() {
@@ -208,10 +230,10 @@ impl Sim {
 		// Re-cast the client's ray against the server world with the
 		// kind's filter: an honest client computed the identical result.
 		let store = &self.store;
-		let block_at = |x: i32, y: i32, z: i32| store.block_at(x, y, z);
+		let cell_at = |x: i32, y: i32, z: i32| store.cell_at(x, y, z);
 		let hit = match req.kind {
-			EditKind::Collect => raycast_fluid(req.origin, dir, REACH, &block_at),
-			_ => raycast(req.origin, dir, REACH, &block_at),
+			EditKind::Collect => raycast_fluid(req.origin, dir, REACH, &cell_at),
+			_ => raycast(req.origin, dir, REACH, &cell_at),
 		};
 		let Some(hit) = hit else {
 			return reject(RejectReason::OutOfReach);
@@ -231,7 +253,7 @@ impl Sim {
 		// The hardness-scaled grace absorbs honest shortfall: the hold's
 		// first verify lands a tick after DigStart, and the server's look
 		// lags the client's by the input jitter buffer.
-		if place_block.is_none() {
+		if place_cell.is_none() {
 			let satisfied = dig_state.is_some_and(|(cell, block, progress)| {
 				cell == req.cell
 					&& block == hit.block
@@ -245,9 +267,31 @@ impl Sim {
 			}
 		}
 
-		let (target, block) = match place_block {
-			None => (req.cell, BlockType::Air),
-			Some(b) => {
+		// The full (cell, value) list this action writes: one for a plain
+		// dig/place, two for a door (place derives the upper half; digging
+		// either half clears both).
+		let air = BlockType::Air as u16;
+		let mut writes: Vec<((i32, i32, i32), u16)> = Vec::with_capacity(2);
+		let place_b = place_cell.map(|v| BlockType::from_id(digblock_core::chunk::cell_id(v)));
+		match place_cell {
+			None => {
+				writes.push((req.cell, air));
+				if hit.block.is_door() {
+					let partner = digblock_core::shapes::door_partner(
+						req.cell,
+						digblock_core::chunk::cell_state(hit.cell_value),
+					);
+					if self
+						.store
+						.cell_at(partner.0, partner.1, partner.2)
+						.is_some_and(|c| {
+							BlockType::from_id(digblock_core::chunk::cell_id(c)).is_door()
+						}) {
+						writes.push((partner, air));
+					}
+				}
+			}
+			Some(v) => {
 				if hit.normal == (0, 0, 0) {
 					return reject(RejectReason::Occluded);
 				}
@@ -259,29 +303,48 @@ impl Sim {
 					req.cell.1 + hit.normal.1,
 					req.cell.2 + hit.normal.2,
 				);
+				writes.push((target, v));
+				if place_b.is_some_and(|b| b.is_door()) {
+					// The derived upper half must be loaded and free.
+					let upper = (target.0, target.1 + 1, target.2);
+					let free = self
+						.store
+						.cell_at(upper.0, upper.1, upper.2)
+						.is_some_and(|c| {
+							!BlockType::from_id(digblock_core::chunk::cell_id(c))
+								.props()
+								.collides
+						});
+					if !free {
+						return reject(RejectReason::Occluded);
+					}
+					let upper_cell = v | (0b1000 << digblock_core::chunk::STATE_SHIFT);
+					writes.push((upper, upper_cell));
+				}
 				// Mirrors the local-engine rejection via the shared
-				// occupied-cells contract, but for every live player.
+				// shape-aware contract, but for every live player.
 				for c in self.clients.values() {
 					if !c.live {
 						continue;
 					}
-					let mut occupied = digblock_core::player::occupied_cells(c.player.pos);
-					if occupied.any(|c| c == target) {
-						return reject(RejectReason::InsidePlayer);
+					for &(cell, val) in &writes {
+						if digblock_core::player::placement_blocked(c.player.pos, cell, val) {
+							return reject(RejectReason::InsidePlayer);
+						}
 					}
 				}
-				(target, b)
 			}
 		};
 
 		// Stock gate: the LAST check before mutating the world, so a
 		// refused take never needs unwinding of anything else. The
 		// InsidePlayer scan's shared borrow has ended — re-fetch mutably.
+		// One debit covers a door's two cells.
 		let client = self
 			.clients
 			.get_mut(&req.conn_id)
 			.expect("checked live above");
-		if let Some(b) = place_block {
+		if let Some(b) = place_b {
 			if !client.inventory.try_take(b, 1) {
 				let inv = client.inventory.to_wire();
 				reject(RejectReason::NoStock);
@@ -292,23 +355,28 @@ impl Sim {
 			}
 		}
 
-		let Some(prev) = self.store.set_block(target.0, target.1, target.2, block) else {
+		let (first_cell, first_val) = writes[0];
+		let Some(prev_cell) =
+			self.store
+				.set_cell(first_cell.0, first_cell.1, first_cell.2, first_val)
+		else {
 			// Refund the debit — the world never changed.
-			if let Some(b) = place_block {
+			if let Some(b) = place_b {
 				if let Some(client) = self.clients.get_mut(&req.conn_id) {
 					client.inventory.add(b, 1);
 				}
 			}
 			return reject(RejectReason::NotLoaded);
 		};
+		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
 
 		// Dig/collect credit comes from the journaled truth (the actual
-		// replaced cell), not the raycast hit.
+		// replaced cell), not the raycast hit. One credit per door pair.
 		let client = self
 			.clients
 			.get_mut(&req.conn_id)
 			.expect("checked live above");
-		if place_block.is_none() {
+		if place_cell.is_none() {
 			if let Some(drop) = prev.dig_drop() {
 				client.inventory.add(drop, 1);
 			}
@@ -318,18 +386,174 @@ impl Sim {
 			self.inv_store.put(hash, &client.inventory);
 		}
 
+		// Journal + broadcast the first write under the client's seq, the
+		// companion (a door's other half) under seq 0 — the in-order
+		// stream confirms the pair before the companion applies
+		// idempotently over the client's identical prediction.
+		self.apply_write(first_cell, first_val, prev_cell, id, req.seq, false);
+		for &(cell, val) in &writes[1..] {
+			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+				self.apply_write(cell, val, prev, id, 0, false);
+			}
+		}
+	}
+
+	/// Journal, fluid-schedule, and broadcast one landed world write (the
+	/// store mutation already happened). `already_set` is a lie-guard for
+	/// the doc only — callers pass the actual prev they observed.
+	fn apply_write(
+		&mut self,
+		cell: (i32, i32, i32),
+		val: u16,
+		prev_cell: u16,
+		by: PlayerId,
+		client_seq: u32,
+		_already_set: bool,
+	) {
 		let edit = BlockEdit {
-			x: target.0,
-			y: target.1,
-			z: target.2,
-			block: block as u16,
+			x: cell.0,
+			y: cell.1,
+			z: cell.2,
+			block: val,
 		};
-		let (seq, new_column) = self.journal.append(edit, id);
+		let (seq, new_column) = self.journal.append(edit, by);
 		if new_column {
 			self.enroll_new_column(edit);
 		}
-		self.fluid.schedule_around(target.0, target.1, target.2);
-		self.broadcast_edit(seq, id, req.seq, edit, prev as u16);
+		self.fluid.schedule_around(cell.0, cell.1, cell.2);
+		self.broadcast_edit(seq, by, client_seq, edit, prev_cell);
+	}
+
+	/// A use/interact click: re-raycast with the interact-aware ray and
+	/// toggle the hit door pair. Same preamble gates as edits; `normal`
+	/// is not required to match (a swung open leaf has no meaningful
+	/// entry face).
+	fn process_interact(&mut self, req: PendingEditReq) {
+		let (id, out, live, player_pos, has_token) = {
+			let Some(client) = self.clients.get_mut(&req.conn_id) else {
+				return;
+			};
+			let has_token = client.edit_tokens >= 1.0;
+			if client.live && has_token {
+				client.edit_tokens -= 1.0;
+			}
+			(
+				client.id,
+				client.out.clone(),
+				client.live,
+				client.player.pos,
+				has_token,
+			)
+		};
+		let reject = |reason: RejectReason| {
+			send_frame(
+				&out,
+				&ServerMsg::EditRejected {
+					client_seq: req.seq,
+					reason,
+				},
+			);
+		};
+		if !live {
+			return reject(RejectReason::NotLoaded);
+		}
+		if !has_token {
+			return reject(RejectReason::RateLimited);
+		}
+		if !self.journal.healthy() {
+			return reject(RejectReason::ServerError);
+		}
+		if !req.origin.is_finite() || !req.dir.is_finite() {
+			return reject(RejectReason::OutOfReach);
+		}
+		let dir = req.dir.normalize_or_zero();
+		if dir == Vec3::ZERO {
+			return reject(RejectReason::OutOfReach);
+		}
+		if req.origin.distance(player_pos) > EDIT_POS_TOLERANCE {
+			return reject(RejectReason::OutOfReach);
+		}
+		let store = &self.store;
+		let hit = digblock_core::raycast::raycast_interact(req.origin, dir, REACH, &|x, y, z| {
+			store.cell_at(x, y, z)
+		});
+		let Some(hit) = hit else {
+			return reject(RejectReason::OutOfReach);
+		};
+		if (hit.cell.0, hit.cell.1, hit.cell.2) != req.cell {
+			return reject(RejectReason::Occluded);
+		}
+		if !hit.block.is_door() {
+			return reject(RejectReason::Occluded);
+		}
+		use digblock_core::chunk::{cell_id, cell_state};
+		use digblock_core::shapes::{door_partner, door_toggled};
+		let cur = hit.cell_value;
+		let partner = door_partner(hit.cell, cell_state(cur));
+		let mut writes = vec![(hit.cell, cur, door_toggled(cur))];
+		if let Some(pc) = self.store.cell_at(partner.0, partner.1, partner.2) {
+			if BlockType::from_id(cell_id(pc)).is_door() {
+				writes.push((partner, pc, door_toggled(pc)));
+			}
+		}
+		// Closing must not trap any live player in the leaf.
+		let closing = cell_state(cur) & 0b0100 != 0;
+		if closing {
+			for c in self.clients.values() {
+				if !c.live {
+					continue;
+				}
+				for &(cell, _, val) in &writes {
+					if digblock_core::player::placement_blocked(c.player.pos, cell, val) {
+						return reject(RejectReason::InsidePlayer);
+					}
+				}
+			}
+		}
+		let mut first = true;
+		for &(cell, _, val) in &writes {
+			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+				let seq = if first { req.seq } else { 0 };
+				self.apply_write(cell, val, prev, id, seq, false);
+			}
+			first = false;
+		}
+	}
+
+	/// Alchemy convert/craft: validate against the core tables, apply the
+	/// shared `apply_alchemy` rule, persist, and answer — success or
+	/// failure — with the authoritative `InventoryFull` rebase.
+	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
+		use digblock_core::inventory::{apply_alchemy, AlchemyOp as CoreOp};
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		// Shares the edit token bucket; over-budget ops drop silently
+		// (the client locally gates affordability, so honest clients
+		// never burst here).
+		if client.edit_tokens < 1.0 {
+			return;
+		}
+		client.edit_tokens -= 1.0;
+		let core_op = match op {
+			digblock_net::messages::AlchemyOp::Convert { block, count } => {
+				BlockType::try_from_id(block).map(|b| CoreOp::Convert { block: b, count })
+			}
+			digblock_net::messages::AlchemyOp::Craft { item, count } => {
+				BlockType::try_from_id(item).map(|b| CoreOp::Craft { item: b, count })
+			}
+		};
+		if let Some(core_op) = core_op {
+			let _ = apply_alchemy(&mut client.inventory, core_op);
+		}
+		if let Some(hash) = client.identity {
+			self.inv_store.put(hash, &client.inventory);
+		}
+		let counts = client.inventory.to_wire();
+		send_frame(&client.out, &ServerMsg::InventoryFull { counts });
 	}
 
 	/// A column just gained its FIRST edit: enroll every in-radius client
@@ -398,7 +622,7 @@ impl Sim {
 #[cfg(test)]
 mod tests {
 	use super::super::harness::*;
-	use super::super::SimEvent;
+	use super::super::{Sim, SimEvent};
 	use digblock_core::block::BlockType;
 	use digblock_core::raycast::{raycast, REACH};
 	use digblock_net::messages::{ClientMsg, EditKind, RejectReason, ServerMsg};
@@ -413,7 +637,7 @@ mod tests {
 
 		// The ground block straight down is in reach.
 		let down = Vec3::NEG_Y;
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z))
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
 			.expect("ground under spawn");
 
 		let dig = |seq: u32, origin: Vec3, cell: (i32, i32, i32)| SimEvent::Msg {
@@ -545,7 +769,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::EditRequest {
@@ -627,7 +851,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		// No DigStart at all.
 		sim.tick_once(vec![SimEvent::Msg {
@@ -691,7 +915,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		let mut t = 0;
 		t += 1;
@@ -760,7 +984,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		let mut t = 0;
 		t += 1;
@@ -839,7 +1063,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		let mut t = 0;
 		t += 1;
@@ -913,7 +1137,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		let mut t = 0;
 		t += 1;
@@ -986,8 +1210,8 @@ mod tests {
 		let pos = sim.test_player(1).unwrap().pos;
 		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
 		let place = |sim: &mut super::super::Sim, seq: u32| {
-			let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_block_at(x, y, z))
-				.expect("ground out");
+			let hit =
+				raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground out");
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::EditRequest {
@@ -1054,7 +1278,7 @@ mod tests {
 		// Place the source on the ground a few blocks out.
 		let pos = sim.test_player(1).unwrap().pos;
 		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
-		let ground = raycast(pos, out, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let ground = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::EditRequest {
@@ -1196,7 +1420,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		let other = (hit.cell.0, hit.cell.1 - 1, hit.cell.2);
 		let start = |cell: (i32, i32, i32)| SimEvent::Msg {
 			conn_id: 1,
@@ -1232,7 +1456,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::NEG_Y;
-		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_block_at(x, y, z)).unwrap();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 
 		// Placing on the ground's top face targets our own body cell.
 		sim.tick_once(vec![SimEvent::Msg {
@@ -1288,6 +1512,313 @@ mod tests {
 				}
 			)),
 			"rate limiter engaged"
+		);
+	}
+
+	// ---- sub-block shapes (v8) ------------------------------------------
+
+	use digblock_core::chunk::{cell_state, make_cell, STATE_SHIFT};
+	use digblock_core::shapes::{door_state, stair_state, Facing};
+
+	/// Aim at the ground and place `cell_value`; returns (support cell,
+	/// target cell). The caller grants stock first.
+	fn place_cell(sim: &mut Sim, c: &mut TestClient, seq: u32, cell_value: u16) -> (i32, i32, i32) {
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Place { block: cell_value },
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+			},
+		}]);
+		c.drain();
+		(
+			hit.cell.0 + hit.normal.0,
+			hit.cell.1 + hit.normal.1,
+			hit.cell.2 + hit.normal.2,
+		)
+	}
+
+	#[test]
+	fn place_stair_with_facing_applies_full_cell() {
+		let mut sim = flat_sim("stairplace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::StoneStairs, 1);
+		let want = make_cell(BlockType::StoneStairs, stair_state(Facing::NegZ));
+		let target = place_cell(&mut sim, &mut c, 1, want);
+		assert_eq!(
+			sim.test_cell_at(target.0, target.1, target.2),
+			Some(want),
+			"state nibble survives to the store"
+		);
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditApplied { edit, .. } if edit.block == want
+			)),
+			"broadcast carries the full cell: {:?}",
+			c.msgs
+		);
+	}
+
+	#[test]
+	fn stateful_place_gates() {
+		let mut sim = flat_sim("stategates");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodStairs, 5);
+		sim.test_grant(1, BlockType::WoodDoor, 5);
+		let bad = [
+			// Stateless block with state bits: still BadBlock.
+			(BlockType::Dirt as u16) | (1 << STATE_SHIFT),
+			// Stair with the non-facing state bits set.
+			make_cell(BlockType::WoodStairs, 0b0100),
+			// Door requests must be lower+closed — server derives upper.
+			make_cell(BlockType::WoodDoor, door_state(Facing::PosX, true, false)),
+			make_cell(BlockType::WoodDoor, door_state(Facing::PosX, false, true)),
+			// Spare bits 10-11.
+			(BlockType::WoodStairs as u16) | (1 << 10),
+		];
+		for (i, cell) in bad.into_iter().enumerate() {
+			place_cell(&mut sim, &mut c, 10 + i as u32, cell);
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::EditRejected {
+						client_seq,
+						reason: RejectReason::BadBlock,
+					} if *client_seq == 10 + i as u32
+				)),
+				"cell {cell:#06x} refused: {:?}",
+				c.msgs
+			);
+		}
+	}
+
+	#[test]
+	fn door_place_writes_both_halves_one_debit() {
+		let mut sim = flat_sim("doorplace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodDoor, 1);
+		let lower_cell = make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, false, false));
+		let target = place_cell(&mut sim, &mut c, 1, lower_cell);
+		let upper = (target.0, target.1 + 1, target.2);
+		assert_eq!(
+			sim.test_cell_at(target.0, target.1, target.2),
+			Some(lower_cell)
+		);
+		assert_eq!(
+			sim.test_cell_at(upper.0, upper.1, upper.2),
+			Some(make_cell(
+				BlockType::WoodDoor,
+				door_state(Facing::PosZ, false, true)
+			)),
+			"server derived the upper half"
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::WoodDoor),
+			0,
+			"one debit"
+		);
+		// Two broadcasts: the lower carries our seq, the upper seq 0.
+		let applied: Vec<_> = c
+			.msgs
+			.iter()
+			.filter_map(|m| match m {
+				ServerMsg::EditApplied {
+					client_seq, edit, ..
+				} => Some((*client_seq, (edit.x, edit.y, edit.z))),
+				_ => None,
+			})
+			.collect();
+		assert!(applied.contains(&(1, target)), "{applied:?}");
+		assert!(applied.contains(&(0, upper)), "{applied:?}");
+	}
+
+	#[test]
+	fn door_toggle_flips_both_halves_and_dig_clears_both() {
+		let mut sim = flat_sim("doortoggle");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodDoor, 1);
+		let lower_cell = make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, false, false));
+		let target = place_cell(&mut sim, &mut c, 1, lower_cell);
+		let upper = (target.0, target.1 + 1, target.2);
+
+		// Toggle open: aim at the lower half.
+		let pos = sim.test_player(1).unwrap().pos;
+		let dir = (Vec3::new(
+			target.0 as f32 + 0.5,
+			target.1 as f32 + 0.5,
+			target.2 as f32 + 0.05,
+		) - pos)
+			.normalize();
+		let hit = digblock_core::raycast::raycast_interact(pos, dir, REACH, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		})
+		.expect("door under the interact ray");
+		assert_eq!(hit.cell, target);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 2,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: dir.to_array(),
+				kind: EditKind::Interact,
+				cell: [target.0, target.1, target.2],
+				normal: [0, 0, 0],
+			},
+		}]);
+		c.drain();
+		let lower_now = sim.test_cell_at(target.0, target.1, target.2).unwrap();
+		let upper_now = sim.test_cell_at(upper.0, upper.1, upper.2).unwrap();
+		assert!(cell_state(lower_now) & 0b0100 != 0, "lower open");
+		assert!(cell_state(upper_now) & 0b0100 != 0, "upper open");
+
+		// An OPEN door is transparent to the dig ray, so close it first —
+		// clicking the SWUNG leaf, which now hugs a different cell face —
+		// then hold-dig the lower half: both cells clear, one credit.
+		let leaf_box = digblock_core::shapes::interaction_boxes(lower_now)[0];
+		let (leaf_lo, leaf_hi) = leaf_box.aabb(target);
+		let dir2 = ((leaf_lo + leaf_hi) * 0.5 - pos).normalize();
+		let hit2 = digblock_core::raycast::raycast_interact(pos, dir2, REACH, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		})
+		.expect("open leaf under the interact ray");
+		assert_eq!(hit2.cell, target, "swung leaf still clickable");
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 3,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: dir2.to_array(),
+				kind: EditKind::Interact,
+				cell: [target.0, target.1, target.2],
+				normal: [0, 0, 0],
+			},
+		}]);
+		c.drain();
+		assert!(
+			cell_state(sim.test_cell_at(target.0, target.1, target.2).unwrap()) & 0b0100 == 0,
+			"closed again"
+		);
+		let mut t = 100;
+		let hold = BlockType::WoodDoor.hardness_ticks().unwrap() as u32 + 6;
+		let dug = dig_hold(&mut sim, 1, dir, hold, 4, EditKind::Dig, &mut t);
+		assert_eq!(dug, target);
+		c.drain();
+		assert_eq!(sim.test_cell_at(target.0, target.1, target.2), Some(0));
+		assert_eq!(
+			sim.test_cell_at(upper.0, upper.1, upper.2),
+			Some(0),
+			"partner cleared too"
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::WoodDoor),
+			1,
+			"one credit for the pair"
+		);
+	}
+
+	#[test]
+	fn alchemy_convert_craft_and_same_tick_place() {
+		use digblock_net::messages::AlchemyOp;
+		let mut sim = flat_sim("alchemy");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::Stone, 1);
+
+		// Convert + craft + place, all queued in ONE tick: wire order
+		// must debit before the place's stock gate runs.
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		let stair = make_cell(BlockType::StoneStairs, stair_state(Facing::PosX));
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Alchemy {
+					op: AlchemyOp::Convert {
+						block: BlockType::Stone as u16,
+						count: 1,
+					},
+				},
+			},
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Alchemy {
+					op: AlchemyOp::Craft {
+						item: BlockType::StoneStairs as u16,
+						count: 1,
+					},
+				},
+			},
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::EditRequest {
+					seq: 1,
+					tick: 0,
+					origin: pos.to_array(),
+					dir: down.to_array(),
+					kind: EditKind::Place { block: stair },
+					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				},
+			},
+		]);
+		c.drain();
+		let target = (
+			hit.cell.0 + hit.normal.0,
+			hit.cell.1 + hit.normal.1,
+			hit.cell.2 + hit.normal.2,
+		);
+		assert_eq!(
+			sim.test_cell_at(target.0, target.1, target.2),
+			Some(stair),
+			"craft-then-place landed in one tick: {:?}",
+			c.msgs
+		);
+		// 27 sub-stone minted, 18 spent.
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::InventoryFull { counts }
+					if counts.contains(&(0x8001, 9))
+			)),
+			"sub-stone remainder in the rebase: {:?}",
+			c.msgs
+		);
+
+		// Invalid ops still answer with the authoritative rebase.
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Alchemy {
+				op: AlchemyOp::Craft {
+					item: BlockType::StoneStairs as u16,
+					count: 999,
+				},
+			},
+		}]);
+		let before = sim.test_inventory_count(1, BlockType::StoneStairs);
+		c.drain();
+		assert_eq!(sim.test_inventory_count(1, BlockType::StoneStairs), before);
+		assert!(
+			c.msgs
+				.iter()
+				.rev()
+				.any(|m| matches!(m, ServerMsg::InventoryFull { .. })),
+			"failed op still rebases"
 		);
 	}
 }

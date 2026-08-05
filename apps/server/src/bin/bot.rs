@@ -209,11 +209,11 @@ fn run_bot(
 	// Terrain-only world model: enough for plausible claims and digs.
 	// (No caves/trees/edits — off claims are simply not adopted.)
 	let block_at = move |seed: f64| {
-		move |x: i32, y: i32, z: i32| -> Option<BlockType> {
+		move |x: i32, y: i32, z: i32| -> Option<u16> {
 			Some(if y <= terrain_height(x, z, seed) {
-				BlockType::Stone
+				BlockType::Stone as u16
 			} else {
-				BlockType::Air
+				BlockType::Air as u16
 			})
 		}
 	};
@@ -306,8 +306,8 @@ fn run_bot(
 					if raycast(p.pos, down, REACH, &world).is_some_and(|h| h.cell == cell) {
 						let seq = client.edits.begin(
 							cell,
-							block,
-							BlockType::Air,
+							block as u16,
+							BlockType::Air as u16,
 							t,
 							block.dig_drop().map(|d| (d, 1)),
 						);

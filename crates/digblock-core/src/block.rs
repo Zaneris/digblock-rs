@@ -72,6 +72,13 @@ blocks! {
 	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
 	Sandstone = 21 => dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70),
+	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
+	/// Crafted via alchemy from sub-wood, never generated.
+	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Stairs), 60),
+	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90),
+	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
+	/// divided-lite window in the upper half. Crafted via alchemy.
+	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::DOOR_WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Door), 45),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -109,6 +116,39 @@ pub enum RenderClass {
 	/// Water mesh (alpha-blended, no depth write); emits faces only toward
 	/// `None` neighbors; culls same-type; top faces get the surface lip.
 	Translucent,
+	/// Sub-block geometry from the `shapes` registry (12ths grid). Solid
+	/// stream; occlusion is per-face via the shape's coverage masks, and
+	/// shaped blocks never cast AO (like Cutout).
+	Shaped,
+}
+
+/// Which shape family a `RenderClass::Shaped` block renders/collides as.
+/// The geometry itself (boxes, quads, masks) lives in `crate::shapes` —
+/// this stays a plain tag so block.rs keeps sitting below the mesher.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShapeKind {
+	/// 3 steps at 4/12 risers; state nibble bits 0-1 = facing.
+	Stairs,
+	/// Thin two-cell leaf; state nibble = facing | open<<2 | upper<<3.
+	Door,
+}
+
+/// Alchemy sub-material families (the "12ths dust" blocks convert into).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Material {
+	Wood = 0,
+	Stone = 1,
+}
+
+impl Material {
+	pub const COUNT: usize = 2;
+	pub const ALL: [Material; Self::COUNT] = [Material::Wood, Material::Stone];
+
+	/// Strict decode of a wire family index.
+	#[inline]
+	pub fn try_from_index(v: u16) -> Option<Self> {
+		Self::ALL.get(v as usize).copied()
+	}
 }
 
 /// Which vertex stream a block's faces land in.
@@ -159,6 +199,9 @@ pub struct BlockProps {
 	/// Inventory credit override for a completed dig; `dig_drop()` falls
 	/// back to the block itself when diggable.
 	pub drops: Option<BlockType>,
+	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
+	/// (pinned by `table_sanity`).
+	pub shape: Option<ShapeKind>,
 }
 
 const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
@@ -173,7 +216,15 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		tex_bottom: bottom,
 		hardness_ticks: 0,
 		drops: None,
+		shape: None,
 	}
+}
+
+/// A sub-block shaped row: tags the shape family the `shapes` registry
+/// resolves geometry from.
+const fn shaped(mut p: BlockProps, kind: ShapeKind) -> BlockProps {
+	p.shape = Some(kind);
+	p
 }
 
 /// Natural terrain the cave pass may carve through.
@@ -205,6 +256,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		tex_bottom: tex::WATER,
 		hardness_ticks: 0,
 		drops: None,
+		shape: None,
 	}
 }
 
@@ -226,6 +278,7 @@ mod tex {
 	pub const GRAVEL: u16 = 13;
 	pub const PINE_LEAVES: u16 = 14;
 	pub const SANDSTONE: u16 = 15;
+	pub const DOOR_WOOD: u16 = 16;
 }
 
 impl BlockType {
@@ -335,6 +388,27 @@ impl BlockType {
 	pub fn is_whole(self) -> bool {
 		self.props().collides || self.is_fluid_source()
 	}
+
+	#[inline]
+	pub fn is_stair(self) -> bool {
+		matches!(self.props().shape, Some(ShapeKind::Stairs))
+	}
+
+	#[inline]
+	pub fn is_door(self) -> bool {
+		matches!(self.props().shape, Some(ShapeKind::Door))
+	}
+
+	/// The alchemy family this block converts INTO (one block = 27
+	/// sub-units). v1 table: only the pure materials convert.
+	#[inline]
+	pub fn sub_material(self) -> Option<Material> {
+		match self {
+			BlockType::Wood => Some(Material::Wood),
+			BlockType::Stone => Some(Material::Stone),
+			_ => None,
+		}
+	}
 }
 
 #[cfg(test)]
@@ -364,6 +438,12 @@ mod tests {
 			assert_eq!(p.class == RenderClass::None, b == BlockType::Air);
 			if p.collides {
 				assert_ne!(p.class, RenderClass::None);
+			}
+			// Shape tag and render class travel together, and every shaped
+			// block collides (physics resolves its sub-boxes/ramp).
+			assert_eq!(p.shape.is_some(), p.class == RenderClass::Shaped, "{b:?}");
+			if p.shape.is_some() {
+				assert!(p.collides, "{b:?} shaped blocks collide");
 			}
 		}
 	}

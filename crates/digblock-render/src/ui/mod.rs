@@ -23,13 +23,19 @@ impl From<[f32; 4]> for Rect {
 }
 
 /// Slot identity shared by the in-game HUD (whose hotbar rects double
-/// as drop targets) and the inventory screen.
+/// as drop targets), the inventory screen, and the alchemy screen —
+/// one id space so the frame keeps a single hit map.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InvId {
 	/// One cell of the inventory grid (index into the built grid list).
 	Grid(u16),
 	/// One hotbar slot.
 	Bar(u8),
+	/// Alchemy: a convertible holding's "break down" button (index into
+	/// the built convertibles list).
+	Convert(u8),
+	/// Alchemy: a craft row's button (index into `shapes::CRAFTABLE`).
+	Craft(u8),
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

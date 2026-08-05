@@ -327,19 +327,17 @@ impl Overlay {
 		self.splits[0] = self.verts.len() as u32;
 		self.push_nametags(size, nametags);
 		if let Some((stats, history)) = stats {
-			self.push_debug_panel(stats, history);
+			self.push_debug_panel(size, stats, history);
 		}
-		// The open input line takes the bottom row; the feed rides above it.
-		let feed_raise = if chat.is_some() {
-			(LINE_PX + 4.0) * ui_scale
-		} else {
-			0.0
-		};
-		if !feed.is_empty() {
-			self.push_feed(size, feed, feed_raise);
-		}
+		// Chat column: the input line is pinned to the top-left corner and
+		// the feed stacks directly beneath it (newest at the top, so the
+		// latest line always sits next to where the player types).
+		let mut feed_top = MARGIN * ui_scale;
 		if let Some(view) = chat {
-			self.push_chat_input(size, view);
+			feed_top = self.push_chat_input(size, view);
+		}
+		if !feed.is_empty() {
+			self.push_feed(size, feed, feed_top);
 		}
 		self.run_cmds(ui, crate::ui::Layer::Content);
 		self.splits[1] = self.verts.len() as u32;
@@ -356,7 +354,7 @@ impl Overlay {
 		}
 	}
 
-	fn push_debug_panel(&mut self, stats: &OverlayStats, history: &[f32]) {
+	fn push_debug_panel(&mut self, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
 		let mut lines: [(u32, String); 6] = Default::default();
 		let s = stats;
@@ -446,9 +444,11 @@ impl Overlay {
 		let graph_w = GRAPH_FRAMES as f32 * BAR_W;
 		let panel_w = text_w.max(graph_w) + PAD * 2.0;
 		let panel_h = lines.len() as f32 * LINE_PX + GRAPH_H + PAD * 3.0;
-		self.push_quad(MARGIN, MARGIN, panel_w, panel_h, BG);
+		// Right-anchored: the top-left corner belongs to the chat column.
+		let panel_x = (size.0 as f32 - MARGIN - panel_w).max(MARGIN);
+		self.push_quad(panel_x, MARGIN, panel_w, panel_h, BG);
 
-		let (tx, mut ty) = (MARGIN + PAD, MARGIN + PAD);
+		let (tx, mut ty) = (panel_x + PAD, MARGIN + PAD);
 		for entry in &mut lines {
 			let (color, text) = std::mem::take(entry);
 			self.push_text(tx, ty, FIXED_GLYPH_PX, color, &text);
@@ -474,44 +474,78 @@ impl Overlay {
 		self.push_quad(tx, gy - 16.7 * MS_TO_PX, graph_w, 1.0, REF_LINE);
 	}
 
-	/// Server-message feed: bottom-left, newest at the bottom, each line
-	/// fading out over its final second (`ttl` clamps to alpha) in its
-	/// own color (chat lines are tinted per sender). `raise` lifts the
-	/// whole block (the chat input line owns the bottom row while open).
-	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], raise: f32) {
+	/// Characters per wrapped chat-column line: the column starts at the
+	/// left margin and wraps when it reaches the midpoint of the screen.
+	fn wrap_chars(&self, size: (u32, u32)) -> usize {
+		let usable = size.0 as f32 / 2.0 - (MARGIN + PAD * 2.0) * self.scale;
+		((usable / self.glyph) as usize).max(8)
+	}
+
+	/// Server-message feed (system notifications + chat): top-left under
+	/// the input line, NEWEST at the top so the latest message sits next
+	/// to where the player types; long lines wrap at the screen midpoint;
+	/// each entry fades out over its final second (`ttl` clamps to alpha)
+	/// in its own color (chat lines are tinted per sender). `top` is
+	/// where the block starts (below the open input line).
+	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], top: f32) {
 		let s = self.scale;
 		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
-		let mut y = size.1 as f32 - margin - raise - feed.len() as f32 * line;
-		for (text, ttl, color) in feed {
+		let wrap = self.wrap_chars(size);
+		let mut y = top;
+		for (text, ttl, color) in feed.iter().rev() {
 			let a = ttl.clamp(0.0, 1.0);
-			let w = text.len() as f32 * glyph + pad * 2.0;
-			self.push_quad(margin, y, w, line, fade(BG, a));
-			self.push_text(
-				margin + pad,
-				y + (line - glyph) / 2.0,
-				glyph,
-				fade(*color, a),
-				text,
-			);
-			y += line;
+			// Feed text is printable ASCII end-to-end (the server
+			// sanitizes chat; system lines are ours), so byte chunks
+			// are char chunks.
+			for chunk in text.as_bytes().chunks(wrap) {
+				let chunk = std::str::from_utf8(chunk).unwrap_or_default();
+				let w = chunk.len() as f32 * glyph + pad * 2.0;
+				self.push_quad(margin, y, w, line, fade(BG, a));
+				self.push_text(
+					margin + pad,
+					y + (line - glyph) / 2.0,
+					glyph,
+					fade(*color, a),
+					chunk,
+				);
+				y += line;
+			}
 		}
 	}
 
-	/// Chat input: a full-height bottom-left strip with a blinking block
-	/// caret (same blink clock as the menu's name field).
-	fn push_chat_input(&mut self, size: (u32, u32), view: &crate::chat::ChatView<'_>) {
+	/// Chat input: pinned to the top-left corner, wrapping at the screen
+	/// midpoint, with a blinking block caret riding the end of the text
+	/// (same blink clock as the menu's name field). Returns the y where
+	/// the feed continues below.
+	fn push_chat_input(&mut self, size: (u32, u32), view: &crate::chat::ChatView<'_>) -> f32 {
 		let s = self.scale;
 		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
-		let y = size.1 as f32 - margin - line;
-		let w = (view.line.len() as f32 + 3.0) * glyph + pad * 2.0;
-		self.push_quad(margin, y, w.max(240.0 * s), line, 0xC0000000);
-		let ty = y + (line - glyph) / 2.0;
-		self.push_text(margin + pad, ty, glyph, WHITE, "> ");
-		self.push_text(margin + pad + glyph * 2.0, ty, glyph, WHITE, view.line);
-		if view.caret {
-			let cx = margin + pad + glyph * (view.line.len() as f32 + 2.0);
-			self.push_quad(cx, ty, glyph * 0.6, glyph, WHITE);
+		let wrap = self.wrap_chars(size);
+		// "> " prefix + text + one caret cell, wrapped as a single run
+		// (chat input is ASCII-only, byte chunks are char chunks). The
+		// +1 caret cell can spill onto a row of its own when the text
+		// exactly fills the last row.
+		let content = format!("> {}", view.line);
+		let rows = (content.len() + 1).div_ceil(wrap);
+		let mut y = margin;
+		for r in 0..rows {
+			let chunk = &content.as_bytes()
+				[(r * wrap).min(content.len())..((r + 1) * wrap).min(content.len())];
+			let chunk = std::str::from_utf8(chunk).unwrap_or_default();
+			let last = r == rows - 1;
+			let cells = chunk.len() + usize::from(last);
+			let min_w = if r == 0 { 240.0 * s } else { 0.0 };
+			let w = (cells as f32 * glyph + pad * 2.0).max(min_w);
+			self.push_quad(margin, y, w, line, 0xC0000000);
+			let ty = y + (line - glyph) / 2.0;
+			self.push_text(margin + pad, ty, glyph, WHITE, chunk);
+			if last && view.caret {
+				let cx = margin + pad + glyph * chunk.len() as f32;
+				self.push_quad(cx, ty, glyph * 0.6, glyph, WHITE);
+			}
+			y += line;
 		}
+		y
 	}
 
 	/// Name tags: centered text with a dim backdrop at pre-projected

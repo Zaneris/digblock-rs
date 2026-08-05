@@ -135,6 +135,7 @@ fn main() {
 	config.player_name = name.clone();
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
+	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
 	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
 		v.parse::<u32>().ok().filter(|&n| n > 0).unwrap_or_else(|| {
 			eprintln!("bad value for DIG_CHUNK_SLOTS: {v}");

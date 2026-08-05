@@ -20,7 +20,6 @@ pub(crate) mod harness;
 use crate::inventory_store::{hash_identity, IdentityHash, InventoryStore};
 use crate::journal::Journal;
 use crate::store::{ChunkStore, ColumnSource};
-use digblock_core::block::BlockType;
 use digblock_core::fluid::FluidSim;
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
@@ -253,6 +252,16 @@ impl Sim {
 	}
 
 	#[cfg(test)]
+	fn test_cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.store.cell_at(x, y, z)
+	}
+
+	#[cfg(test)]
+	fn test_grant(&mut self, conn_id: u64, b: digblock_core::block::BlockType, n: u32) {
+		self.clients.get_mut(&conn_id).unwrap().inventory.add(b, n);
+	}
+
+	#[cfg(test)]
 	fn test_player(&self, conn_id: u64) -> Option<digblock_core::player::PlayerState> {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
@@ -390,6 +399,15 @@ impl Sim {
 						client.draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
 					}
 				}
+				// Queued: a craft-then-place in one tick must debit the
+				// sub-materials before the place's stock gate runs (wire
+				// order). Over-budget requests drop silently.
+				ClientMsg::Alchemy { op } => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue
+							.push(ClientAction::Alchemy { conn_id, op });
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -433,17 +451,19 @@ impl Sim {
 	/// in-memory final values — nobody needs to be near spawn for the
 	/// scan to see a tower built there.
 	fn safe_spawn(&self) -> Vec3 {
-		let block_at = |x: i32, y: i32, z: i32| {
-			if let Some(b) = self.store.block_at(x, y, z) {
-				return Some(b);
+		let cell_at = |x: i32, y: i32, z: i32| {
+			if let Some(c) = self.store.cell_at(x, y, z) {
+				return Some(c);
 			}
+			// Raw cells, not `try_from_id`: a state-carrying cell (e.g. a
+			// stair) must read as its real, solid block here — decoding to
+			// None would let a joiner spawn inside it.
 			self.journal
 				.index
 				.column(x.div_euclid(16), z.div_euclid(16))
-				.and_then(|cells| cells.get(&(x, y, z)))
-				.and_then(|&cell| BlockType::try_from_id(cell))
+				.and_then(|cells| cells.get(&(x, y, z)).copied())
 		};
-		player::ascend_clear(self.spawn, &block_at)
+		player::ascend_clear(self.spawn, &cell_at)
 	}
 
 	/// Teleport a live client back to spawn, subject to the cooldown.

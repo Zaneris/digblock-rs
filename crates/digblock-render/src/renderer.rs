@@ -15,8 +15,12 @@ use crate::water::WaterDraw;
 use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
-/// Worst-case faces per 16³ chunk mesh (checkerboard): 2048 blocks × 6.
-const MAX_QUADS: usize = 12288;
+/// Worst-case quads per 16³ chunk mesh: a solid chunk of the busiest
+/// shaped variant (every template quad emits when neighbors don't cover
+/// them). Dwarfs the old full-block checkerboard bound (2048 × 6). The
+/// shared index buffer this sizes is ~3.75 MiB — one-time, fine on
+/// mobile; `upload_chunk` guards the cap instead of trusting it.
+const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
 pub(crate) const CHUNK_STRIDE: u64 = 256;
 
 /// `DeviceExt::create_buffer_init` replacement, mandatory on wasm and
@@ -734,6 +738,16 @@ impl Renderer {
 			if verts.is_empty() {
 				return None;
 			}
+			// The shared index buffer covers MAX_QUADS; a mesh past it
+			// would make draw_indexed over-read (a wgpu validation
+			// error). Truncate loudly — visible dropped faces beat a
+			// device loss, and the cap is sized to be unreachable.
+			let mut verts = &verts[..];
+			let quads = verts.len() / (4 * 2);
+			if quads > MAX_QUADS {
+				log::error!("chunk mesh exceeds MAX_QUADS ({quads} > {MAX_QUADS}); truncating");
+				verts = &verts[..MAX_QUADS * 8];
+			}
 			let buf = buffer_init(
 				gpu,
 				"chunk verts",
@@ -741,7 +755,7 @@ impl Renderer {
 				bytemuck::cast_slice(verts),
 			);
 			self.gpu_buffer_bytes += buf.size();
-			let quads = (verts.len() / (4 * 2)) as u32;
+			let quads = quads.min(MAX_QUADS) as u32;
 			Some((buf, quads * 6))
 		};
 		let solid = make(&mesh.solid);

@@ -15,7 +15,6 @@
 
 use crate::messages::{InputBatch, InputTick};
 use crate::protocol::INPUT_REDUNDANCY;
-use digblock_core::block::BlockType;
 use digblock_core::player::{Player, PlayerIntent, PlayerState, TICK};
 use glam::Vec3;
 use std::collections::VecDeque;
@@ -71,11 +70,11 @@ impl Predictor {
 		player: &mut Player,
 		intent: PlayerIntent,
 		dir: Vec3,
-		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+		cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 	) -> u32 {
 		let tick = self.next_tick;
 		self.next_tick += 1;
-		player.tick(TICK, dir, intent, block_at);
+		player.tick(TICK, dir, intent, cell_at);
 		if self.buf.len() == BUF_CAP {
 			self.buf.pop_front();
 		}
@@ -125,7 +124,7 @@ impl Predictor {
 		player: &mut Player,
 		acked_tick: u32,
 		server: PlayerState,
-		block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+		cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 	) -> Reconciled {
 		if acked_tick <= self.last_acked {
 			return Reconciled::StaleAck;
@@ -154,7 +153,7 @@ impl Predictor {
 		let before = player.pos;
 		player.set_state(server);
 		for e in self.buf.iter_mut() {
-			player.tick(TICK, e.dir, e.intent, block_at);
+			player.tick(TICK, e.dir, e.intent, cell_at);
 			e.post = player.state();
 		}
 		Reconciled::Replayed {
@@ -166,13 +165,14 @@ impl Predictor {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use digblock_core::block::BlockType;
 	use glam::Vec2;
 
-	fn flat_world(_x: i32, y: i32, _z: i32) -> Option<BlockType> {
+	fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 		Some(if y < 10 {
-			BlockType::Dirt
+			BlockType::Dirt as u16
 		} else {
-			BlockType::Air
+			BlockType::Air as u16
 		})
 	}
 

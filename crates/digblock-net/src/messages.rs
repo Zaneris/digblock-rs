@@ -67,6 +67,21 @@ pub enum EditKind {
 	/// hit must be a fluid source. Applies Air, credits Water. Subject to
 	/// the same hold-to-dig timing gate as `Dig`.
 	Collect,
+	/// Use/interact click (door open-close toggle): validated with the
+	/// interact-aware raycast (`raycast_interact` — an open door's swung
+	/// leaf still stops it); the hit must be interactive. `normal` may
+	/// be zero. Appended in v8.
+	Interact,
+}
+
+/// One alchemy request (wire form; ids are validated server-side against
+/// the core tables). Appended in v8.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum AlchemyOp {
+	/// Break `count` whole blocks of `block` into sub-material units.
+	Convert { block: u16, count: u32 },
+	/// Craft `count` batches of the shaped item `item` from sub-material.
+	Craft { item: u16, count: u32 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -142,6 +157,13 @@ pub enum ClientMsg {
 	/// next tick.
 	SetDrawDist {
 		draw_dist: i32,
+	},
+	/// Alchemy convert/craft. NOT client-predicted — the server answers
+	/// every op (success or failure) with an `InventoryFull` rebase.
+	/// Rides the edit action queue in wire order, so craft-then-place in
+	/// one tick debits before the place's stock gate. Appended in v8.
+	Alchemy {
+		op: AlchemyOp,
 	},
 }
 
@@ -287,6 +309,24 @@ mod tests {
 			ClientMsg::DigCancel,
 			ClientMsg::Chat { text: "hi".into() },
 			ClientMsg::ReturnToSpawn,
+			ClientMsg::EditRequest {
+				seq: 9,
+				tick: 1250,
+				origin: [1.0, 140.0, -3.0],
+				dir: [1.0, 0.0, 0.0],
+				kind: EditKind::Interact,
+				cell: [2, 138, -3],
+				normal: [0, 0, 0],
+			},
+			ClientMsg::Alchemy {
+				op: AlchemyOp::Convert {
+					block: 6,
+					count: 10,
+				},
+			},
+			ClientMsg::Alchemy {
+				op: AlchemyOp::Craft { item: 24, count: 2 },
+			},
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -357,7 +397,7 @@ mod tests {
 			},
 			ServerMsg::PlayerLeft { id: 4 },
 			ServerMsg::InventoryFull {
-				counts: vec![(2, 3), (5, 1)],
+				counts: vec![(2, 3), (5, 1), (0x8000, 54), (0x8001, 27)],
 			},
 			ServerMsg::Chat {
 				from: 4,
@@ -550,6 +590,64 @@ mod tests {
 			postcard::to_stdvec(&t).unwrap(),
 			// variant 10, pos x 1.0 le f32, zeros
 			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0]
+		);
+	}
+
+	/// Golden bytes for the v8 additions: `EditKind::Interact` (kind
+	/// discriminant 3) and `ClientMsg::Alchemy` (variant 8). Existing
+	/// goldens above prove the append changed nothing before it.
+	#[test]
+	fn golden_interact_and_alchemy_encoding() {
+		let m = ClientMsg::EditRequest {
+			seq: 1,
+			tick: 2,
+			origin: [0.0, 0.0, 0.0],
+			dir: [0.0, 0.0, 0.0],
+			kind: EditKind::Interact,
+			cell: [0, 0, 0],
+			normal: [0, 0, 0],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&m).unwrap(),
+			// variant 1, seq 1, tick 2, six zero f32s, KIND 3, zero cell
+			// zigzags, zero normals
+			vec![
+				1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+				0, 0, 0, 0, 0, 0
+			]
+		);
+
+		let c = ClientMsg::Alchemy {
+			op: AlchemyOp::Convert {
+				block: 6,
+				count: 10,
+			},
+		};
+		assert_eq!(
+			postcard::to_stdvec(&c).unwrap(),
+			// variant 8, op variant 0, block 6, count 10
+			vec![8, 0, 6, 10]
+		);
+		let k = ClientMsg::Alchemy {
+			op: AlchemyOp::Craft {
+				item: 24,
+				count: 999,
+			},
+		};
+		assert_eq!(
+			postcard::to_stdvec(&k).unwrap(),
+			// variant 8, op variant 1, item 24, count 999 (varint e7 07)
+			vec![8, 1, 24, 231, 7]
+		);
+
+		// Flagged sub-material ids ride InventoryFull as plain varints.
+		let inv = ServerMsg::InventoryFull {
+			counts: vec![(0x8000, 1)],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&inv).unwrap(),
+			// variant 8, len 1, id 0x8000 (varint 80 80 02), count 1
+			vec![8, 1, 128, 128, 2, 1]
 		);
 	}
 }

@@ -1,8 +1,9 @@
 //! Voxel picking: Amanatides–Woo DDA over the block grid. Pure — takes the
-//! same `block_at` closure as player physics, so it is headless-testable
+//! same `cell_at` closure as player physics, so it is headless-testable
 //! and reusable for any future entity targeting.
 
 use crate::block::BlockType;
+use crate::chunk::cell_id;
 use glam::Vec3;
 
 /// The player's reach for digging and placing, in blocks.
@@ -18,18 +19,24 @@ pub struct RayHit {
 	/// block (dig is fine, placement must be rejected).
 	pub normal: (i32, i32, i32),
 	pub block: BlockType,
+	/// The stopping cell's full value (id + state nibble).
+	pub cell_value: u16,
 }
 
 /// Walk the grid from `origin` along `dir` up to `max_dist`, returning the
 /// first colliding block. Unloaded (None) cells pass through, matching
 /// physics; water and air don't collide and are transparent to the ray.
+/// Shaped cells narrow-phase against their COLLISION boxes — an open
+/// door is transparent, a miss past a stair's open region continues.
 pub fn raycast(
 	origin: Vec3,
 	dir: Vec3,
 	max_dist: f32,
-	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 ) -> Option<RayHit> {
-	raycast_with(origin, dir, max_dist, block_at, &|b| b.props().collides)
+	raycast_with(origin, dir, max_dist, cell_at, &|c| {
+		BlockType::from_id(cell_id(c)).props().collides
+	})
 }
 
 /// Water-tool picking: stops at colliding blocks AND fluid sources, so a
@@ -39,22 +46,134 @@ pub fn raycast_fluid(
 	origin: Vec3,
 	dir: Vec3,
 	max_dist: f32,
-	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 ) -> Option<RayHit> {
-	raycast_with(origin, dir, max_dist, block_at, &|b| {
+	raycast_with(origin, dir, max_dist, cell_at, &|c| {
+		let b = BlockType::from_id(cell_id(c));
 		b.props().collides || b.is_fluid_source()
 	})
 }
 
-/// The general walk: `stops` decides which loaded blocks end the ray.
+/// Interact/use picking (door toggles): the standard colliding walk, but
+/// shaped cells narrow-phase against their INTERACTION boxes — an open
+/// door stays clickable on its swung leaf while the plain ray passes
+/// through the doorway. Client click and server re-validation share it.
+pub fn raycast_interact(
+	origin: Vec3,
+	dir: Vec3,
+	max_dist: f32,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> Option<RayHit> {
+	walk(
+		origin,
+		dir,
+		max_dist,
+		cell_at,
+		&|c| BlockType::from_id(cell_id(c)).props().collides,
+		&crate::shapes::interaction_boxes,
+	)
+}
+
+/// The general walk: `stops` decides which loaded cells end the ray
+/// (shaped cells then narrow-phase against their collision boxes).
 pub fn raycast_with(
 	origin: Vec3,
 	dir: Vec3,
 	max_dist: f32,
-	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
-	stops: &dyn Fn(BlockType) -> bool,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+	stops: &dyn Fn(u16) -> bool,
 ) -> Option<RayHit> {
-	let hits = |b: Option<BlockType>| b.filter(|&bt| stops(bt));
+	walk(
+		origin,
+		dir,
+		max_dist,
+		cell_at,
+		stops,
+		&crate::shapes::collision_boxes,
+	)
+}
+
+/// Deterministic ray-vs-AABB slab test: `Some((t, normal))` for the
+/// nearest crossing at t ≥ 0 (normal all-zero when the origin is inside
+/// the box). Pure IEEE f32 — both sides of the wire run these exact ops.
+fn ray_box(origin: Vec3, dir: Vec3, lo: Vec3, hi: Vec3) -> Option<(f32, (i32, i32, i32))> {
+	let (o, d) = (origin.to_array(), dir.to_array());
+	let (l, h) = (lo.to_array(), hi.to_array());
+	let mut t_near = f32::NEG_INFINITY;
+	let mut t_far = f32::INFINITY;
+	let mut axis = 3usize; // 3 = no bounding slab (ray starts inside all)
+	for a in 0..3 {
+		if d[a] == 0.0 {
+			if o[a] < l[a] || o[a] > h[a] {
+				return None;
+			}
+			continue;
+		}
+		let inv = 1.0 / d[a];
+		let (t0, t1) = ((l[a] - o[a]) * inv, (h[a] - o[a]) * inv);
+		let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+		if t0 > t_near {
+			t_near = t0;
+			axis = a;
+		}
+		t_far = t_far.min(t1);
+		if t_near > t_far {
+			return None;
+		}
+	}
+	if t_far < 0.0 {
+		return None;
+	}
+	if t_near < 0.0 || axis == 3 {
+		return Some((0.0, (0, 0, 0))); // origin inside the box
+	}
+	let mut n = [0i32; 3];
+	n[axis] = if d[axis] > 0.0 { -1 } else { 1 };
+	Some((t_near, (n[0], n[1], n[2])))
+}
+
+/// Narrow phase for a stopping cell: full cubes hit at the DDA's entry
+/// face; shaped cells test the ray against `boxes` and MISS (None) when
+/// it threads the open region.
+fn cell_hit(
+	origin: Vec3,
+	dir: Vec3,
+	max_dist: f32,
+	cell: (i32, i32, i32),
+	v: u16,
+	entry_normal: (i32, i32, i32),
+	boxes_of: &dyn Fn(u16) -> &'static [crate::shapes::SubBox],
+) -> Option<RayHit> {
+	let hit = |normal: (i32, i32, i32)| RayHit {
+		cell,
+		normal,
+		block: BlockType::from_id(cell_id(v)),
+		cell_value: v,
+	};
+	if crate::shapes::is_full_cube(v) {
+		return Some(hit(entry_normal));
+	}
+	let mut best: Option<(f32, (i32, i32, i32))> = None;
+	for b in boxes_of(v) {
+		let (lo, hi) = b.aabb(cell);
+		if let Some((t, n)) = ray_box(origin, dir, lo, hi) {
+			if t <= max_dist && best.is_none_or(|(bt, _)| t < bt) {
+				best = Some((t, n));
+			}
+		}
+	}
+	best.map(|(_, n)| hit(n))
+}
+
+fn walk(
+	origin: Vec3,
+	dir: Vec3,
+	max_dist: f32,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+	stops: &dyn Fn(u16) -> bool,
+	boxes_of: &dyn Fn(u16) -> &'static [crate::shapes::SubBox],
+) -> Option<RayHit> {
+	let hits = |c: Option<u16>| c.filter(|&cell| stops(cell));
 	let dir = dir.normalize_or_zero();
 	if dir == Vec3::ZERO {
 		return None;
@@ -64,12 +183,13 @@ pub fn raycast_with(
 		origin.y.floor() as i32,
 		origin.z.floor() as i32,
 	);
-	if let Some(block) = hits(block_at(cell.0, cell.1, cell.2)) {
-		return Some(RayHit {
-			cell,
-			normal: (0, 0, 0),
-			block,
-		});
+	if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2)) {
+		// Origin-cell stop: a full cube reports the zero normal (dig ok,
+		// placement rejected); a shaped cell may still miss and let the
+		// walk continue.
+		if let Some(h) = cell_hit(origin, dir, max_dist, cell, v, (0, 0, 0), boxes_of) {
+			return Some(h);
+		}
 	}
 	// Per axis: cell step, t to the first boundary crossing, t per cell.
 	let axis = |o: f32, d: f32| -> (i32, f32, f32) {
@@ -101,12 +221,10 @@ pub fn raycast_with(
 		if t > max_dist {
 			return None;
 		}
-		if let Some(block) = hits(block_at(cell.0, cell.1, cell.2)) {
-			return Some(RayHit {
-				cell,
-				normal,
-				block,
-			});
+		if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2)) {
+			if let Some(h) = cell_hit(origin, dir, max_dist, cell, v, normal, boxes_of) {
+				return Some(h);
+			}
 		}
 	}
 }
@@ -116,9 +234,13 @@ mod tests {
 	use super::*;
 	use crate::block::BlockType as B;
 
+	fn some_cell(b: B) -> Option<u16> {
+		Some(b as u16)
+	}
+
 	/// Flat ground: solid dirt below y=10, air above.
-	fn flat(_x: i32, y: i32, _z: i32) -> Option<BlockType> {
-		Some(if y < 10 { B::Dirt } else { B::Air })
+	fn flat(_x: i32, y: i32, _z: i32) -> Option<u16> {
+		some_cell(if y < 10 { B::Dirt } else { B::Air })
 	}
 
 	#[test]
@@ -127,11 +249,12 @@ mod tests {
 		assert_eq!(hit.cell, (3, 9, 3));
 		assert_eq!(hit.normal, (0, 1, 0), "entered through the top face");
 		assert_eq!(hit.block, B::Dirt);
+		assert_eq!(hit.cell_value, B::Dirt as u16);
 	}
 
 	#[test]
 	fn axis_aligned_hits_wall_face() {
-		let wall = |x: i32, _y: i32, _z: i32| Some(if x >= 5 { B::Dirt } else { B::Air });
+		let wall = |x: i32, _y: i32, _z: i32| some_cell(if x >= 5 { B::Dirt } else { B::Air });
 		let hit = raycast(Vec3::new(2.5, 0.5, 0.5), Vec3::X, REACH, &wall).unwrap();
 		assert_eq!(hit.cell, (5, 0, 0));
 		assert_eq!(hit.normal, (-1, 0, 0));
@@ -154,9 +277,9 @@ mod tests {
 	fn water_and_unloaded_pass_through() {
 		// Water column over dirt, with an unloaded gap in between.
 		let world = |_x: i32, y: i32, _z: i32| match y {
-			..=4 => Some(B::Dirt),
+			..=4 => some_cell(B::Dirt),
 			5..=7 => None,
-			_ => Some(B::Water),
+			_ => some_cell(B::Water),
 		};
 		let hit = raycast(Vec3::new(0.5, 12.5, 0.5), Vec3::NEG_Y, 20.0, &world).unwrap();
 		assert_eq!(hit.cell, (0, 4, 0), "passed water and unloaded cells");
@@ -174,11 +297,98 @@ mod tests {
 		assert!(raycast(Vec3::new(0.5, 20.0, 0.5), Vec3::ZERO, REACH, &flat).is_none());
 	}
 
+	// ---- shaped narrow phase --------------------------------------------
+
+	use crate::chunk::make_cell;
+	use crate::shapes::{door_state, stair_state, Facing};
+
+	/// A +x-ascending stair at (5, 0, 0) with a stone wall at x=8, over
+	/// air (no floor — rays only).
+	fn stair_wall(x: i32, y: i32, z: i32) -> Option<u16> {
+		if (x, y, z) == (5, 0, 0) {
+			Some(make_cell(B::WoodStairs, stair_state(Facing::PosX)))
+		} else if x == 8 {
+			some_cell(B::Dirt)
+		} else {
+			some_cell(B::Air)
+		}
+	}
+
+	#[test]
+	fn stair_narrow_phase_hits_and_misses() {
+		// Straight +x at tread height (y=0.5): the mid step's riser front
+		// is at x = 5 + 4/12 — hit with a −x normal.
+		let hit = raycast(Vec3::new(3.5, 0.5, 0.5), Vec3::X, REACH, &stair_wall).unwrap();
+		assert_eq!(hit.cell, (5, 0, 0));
+		assert_eq!(hit.normal, (-1, 0, 0), "riser face");
+		assert_eq!(hit.block, B::WoodStairs);
+		// Above the top step (y=0.95 enters over the 8/12-high mid step
+		// but under nothing): still inside the cell's air region until
+		// the top step at x = 5 + 8/12.
+		let hit2 = raycast(Vec3::new(3.5, 0.95, 0.5), Vec3::X, REACH, &stair_wall).unwrap();
+		assert_eq!(hit2.cell, (5, 0, 0));
+		assert_eq!(hit2.normal, (-1, 0, 0));
+		// Threading the open region ABOVE the whole stair (y > 1): the
+		// ray misses the stair and lands on the wall behind.
+		let past = raycast(Vec3::new(3.5, 1.5, 0.5), Vec3::X, 10.0, &stair_wall).unwrap();
+		assert_eq!(past.cell, (8, 1, 0), "grazed past the stair");
+		// From above onto a tread: +y normal on the stair cell.
+		let down = raycast(Vec3::new(5.2, 3.0, 0.5), Vec3::NEG_Y, 10.0, &stair_wall).unwrap();
+		assert_eq!(down.cell, (5, 0, 0));
+		assert_eq!(down.normal, (0, 1, 0), "tread top");
+	}
+
+	#[test]
+	fn origin_inside_stair_mass_is_zero_normal() {
+		let hit = raycast(Vec3::new(5.9, 0.2, 0.5), Vec3::X, REACH, &stair_wall).unwrap();
+		assert_eq!(hit.cell, (5, 0, 0));
+		assert_eq!(hit.normal, (0, 0, 0), "started inside the base slab");
+	}
+
+	/// Door pair at x=6 (leaf flush to the −x face when closed), wall
+	/// behind at x=9.
+	fn door_world(open: bool) -> impl Fn(i32, i32, i32) -> Option<u16> {
+		move |x: i32, y: i32, z: i32| {
+			if x == 6 && (y == 0 || y == 1) && z == 0 {
+				Some(make_cell(
+					B::WoodDoor,
+					door_state(Facing::PosX, open, y == 1),
+				))
+			} else if x == 9 {
+				some_cell(B::Dirt)
+			} else {
+				some_cell(B::Air)
+			}
+		}
+	}
+
+	#[test]
+	fn open_door_passes_plain_ray_but_stops_interact_ray() {
+		let origin = Vec3::new(4.5, 0.5, 0.5);
+		// Closed: both rays stop at the leaf.
+		let closed = door_world(false);
+		let hit = raycast(origin, Vec3::X, 10.0, &closed).unwrap();
+		assert_eq!((hit.cell, hit.normal), ((6, 0, 0), (-1, 0, 0)));
+		let ihit = raycast_interact(origin, Vec3::X, 10.0, &closed).unwrap();
+		assert_eq!(ihit.cell, (6, 0, 0));
+		// Open: the plain ray threads the doorway to the wall; the
+		// interact ray still finds the swung leaf (against the −z face,
+		// so aim off-center toward it).
+		let open = door_world(true);
+		let through = raycast(origin, Vec3::X, 10.0, &open).unwrap();
+		assert_eq!(through.cell, (9, 0, 0), "doorway is transparent to digs");
+		// The swung leaf is set back a twelfth (z 0.083..0.25).
+		let toward_leaf = Vec3::new(4.5, 0.5, 0.15);
+		let leaf = raycast_interact(toward_leaf, Vec3::X, 10.0, &open).unwrap();
+		assert_eq!(leaf.cell, (6, 0, 0), "open leaf still clickable");
+		assert_eq!(leaf.block, B::WoodDoor);
+	}
+
 	#[test]
 	fn fluid_ray_stops_at_sources_only() {
 		// Falling sheet over a flow layer over a source over dirt.
 		let world = |_x: i32, y: i32, _z: i32| {
-			Some(match y {
+			some_cell(match y {
 				..=4 => B::Dirt,
 				5 => B::Water,
 				6 => B::WaterFlow3,

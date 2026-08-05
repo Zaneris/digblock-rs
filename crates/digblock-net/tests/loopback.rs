@@ -16,11 +16,11 @@ use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
 use glam::{Vec2, Vec3};
 
-fn flat_world(_x: i32, y: i32, _z: i32) -> Option<BlockType> {
+fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 	Some(if y < 10 {
-		BlockType::Dirt
+		BlockType::Dirt as u16
 	} else {
-		BlockType::Air
+		BlockType::Air as u16
 	})
 }
 
@@ -229,7 +229,7 @@ fn full_frame_handshake_edits_snapshot() {
 		events.first(),
 		Some(NetEvent::Edit {
 			cell: (3, 9, 4),
-			block: BlockType::Air,
+			cell_value: 0, // Air
 			..
 		})
 	));
@@ -266,8 +266,8 @@ fn full_frame_handshake_edits_snapshot() {
 	// and the predicted inventory credit to unwind.
 	let seq = client.edits.begin(
 		(5, 9, 5),
-		BlockType::Dirt,
-		BlockType::Air,
+		BlockType::Dirt as u16,
+		BlockType::Air as u16,
 		first + 3,
 		Some((BlockType::Dirt, 1)),
 	);
@@ -280,7 +280,7 @@ fn full_frame_handshake_edits_snapshot() {
 	match events.first() {
 		Some(NetEvent::EditRejected(e)) => {
 			assert_eq!(e.cell, (5, 9, 5));
-			assert_eq!(e.prev, BlockType::Dirt);
+			assert_eq!(e.prev, BlockType::Dirt as u16);
 			assert_eq!(e.inv_delta, Some((BlockType::Dirt, 1)));
 		}
 		other => panic!("expected EditRejected, got {other:?}"),
@@ -311,8 +311,8 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	// We predict a dig; another player's place lands on the cell first.
 	let seq = client.edits.begin(
 		(7, 9, 7),
-		BlockType::Stone,
-		BlockType::Air,
+		BlockType::Stone as u16,
+		BlockType::Air as u16,
 		10,
 		Some((BlockType::Stone, 1)),
 	);
@@ -341,10 +341,11 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	match events.iter().find(|e| matches!(e, NetEvent::Edit { .. })) {
 		Some(NetEvent::Edit {
 			cell: (7, 9, 7),
-			block: BlockType::Sand,
+			cell_value,
 			superseded,
 			..
 		}) => {
+			assert_eq!(*cell_value, BlockType::Sand as u16);
 			assert_eq!(superseded.len(), 1);
 			assert_eq!(superseded[0].inv_delta, Some((BlockType::Stone, 1)));
 		}
@@ -384,7 +385,9 @@ fn inventory_full_maps_to_event() {
 		.find(|e| matches!(e, NetEvent::Inventory { .. }))
 	{
 		Some(NetEvent::Inventory { counts }) => {
-			assert_eq!(counts, &vec![(BlockType::Dirt, 5)], "unknown id dropped");
+			// Raw pairs pass through; the engine's Inventory::from_wire
+			// does the strict decode.
+			assert_eq!(counts, &vec![(BlockType::Dirt as u16, 5), (9999, 3)]);
 		}
 		other => panic!("expected Inventory, got {other:?}"),
 	}

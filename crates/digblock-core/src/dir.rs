@@ -37,4 +37,30 @@ impl Dir {
 			Dir::East => (-1, 0, 0),
 		}
 	}
+
+	#[inline]
+	pub fn opposite(self) -> Dir {
+		match self {
+			Dir::West => Dir::East,
+			Dir::North => Dir::South,
+			Dir::South => Dir::North,
+			Dir::Bottom => Dir::Top,
+			Dir::Top => Dir::Bottom,
+			Dir::East => Dir::West,
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn opposite_negates_offset_and_involutes() {
+		for d in DIRS {
+			let (x, y, z) = d.offset();
+			assert_eq!(d.opposite().offset(), (-x, -y, -z));
+			assert_eq!(d.opposite().opposite(), d);
+		}
+	}
 }

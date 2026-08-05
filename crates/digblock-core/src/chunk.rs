@@ -42,6 +42,25 @@ impl ChunkPos {
 pub const ID_BITS: u32 = 10;
 pub const ID_MASK: u16 = (1 << ID_BITS) - 1;
 pub const STATE_SHIFT: u32 = 12;
+pub const STATE_MASK: u16 = 0xF000;
+
+/// The block id half of a cell.
+#[inline]
+pub fn cell_id(cell: u16) -> u16 {
+	cell & ID_MASK
+}
+
+/// The state nibble of a cell (0 for every stateless block).
+#[inline]
+pub fn cell_state(cell: u16) -> u8 {
+	((cell & STATE_MASK) >> STATE_SHIFT) as u8
+}
+
+/// Compose a cell from a block type and a state nibble.
+#[inline]
+pub fn make_cell(b: BlockType, state: u8) -> u16 {
+	b as u16 | (((state as u16) << STATE_SHIFT) & STATE_MASK)
+}
 
 #[derive(Clone)]
 pub struct ChunkData {
@@ -100,6 +119,12 @@ pub fn split_world(x: i32, y: i32, z: i32) -> Option<SplitWorld> {
 /// desync, so consumers that can take either should take this.
 pub trait BlockWorld {
 	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType>;
+
+	/// Full cell (id + state nibble). The default maps `block_at` for
+	/// impls that can't produce state; real world stores override it.
+	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.block_at(x, y, z).map(|b| b as u16)
+	}
 }
 
 impl ChunkData {

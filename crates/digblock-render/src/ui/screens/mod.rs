@@ -2,4 +2,5 @@
 //! input resolution, all pure). The engine owns when they open and
 //! applies the actions they return.
 
+pub mod alchemy;
 pub mod inventory;

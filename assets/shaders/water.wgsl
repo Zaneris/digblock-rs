@@ -209,25 +209,31 @@ fn ripple_normal(ni: u32, g: vec2f) -> vec3f {
 	return normalize(n + (perturb - n * dot(perturb, n)) * 0.5);
 }
 
+// See chunk.wgsl: exact twelfths → blocks decode.
+fn twelfths(v: u32) -> f32 {
+	return f32(v / 12u) + f32(v % 12u) / 12.0;
+}
+
 @vertex
 fn vs(@location(0) packed: vec2u) -> VsOut {
 	let w0 = packed.x;
 	let w1 = packed.y;
-	// Geometry decode identical to chunk.wgsl: half-block units.
-	let x = f32(w0 & 0x3fu) * 0.5;
-	var y = f32((w0 >> 6u) & 0x3fu) * 0.5;
-	let z = f32((w0 >> 12u) & 0x3fu) * 0.5;
+	// Geometry decode identical to chunk.wgsl: twelfth-block units, with
+	// the whole-block part split off in integer space for exactness.
+	let x = twelfths(w0 & 0xffu);
+	var y = twelfths((w0 >> 8u) & 0xffu);
+	let z = twelfths((w0 >> 16u) & 0xffu);
 	// Surface drop: shared corner codes through the concave curve. The
 	// water payload sits above the 10-bit layer field in w1.
 	y -= DROPS[min((w1 >> 10u) & 0xfu, 9u)];
-	let ni = (w0 >> 18u) & 7u;
+	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
-	// Raw corner uv — all scroll/advection happens in fs.
-	o.uv = vec2f(f32((w0 >> 23u) & 1u), f32((w0 >> 24u) & 1u));
+	// Raw corner uv (w0 corner code) — all scroll/advection happens in fs.
+	o.uv = vec2f(f32((w0 >> 29u) & 1u), f32((w0 >> 30u) & 1u));
 	o.splash = (w1 >> 18u) & 3u;
 	o.layer = w1 & 0x3ffu;
 	o.world = world;

@@ -157,22 +157,35 @@ impl ChunkStore {
 	/// The `BlockWorld` contract: None = unloaded or outside the vertical
 	/// world (shared with `Pipeline::block_at` via `split_world`).
 	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
+		self.cell_at(x, y, z)
+			.map(|cell| BlockType::from_id(digblock_core::chunk::cell_id(cell)))
+	}
+
+	/// Full-cell lookup (id + state nibble); same loading semantics.
+	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = split_world(x, y, z)?;
 		let stack = self.columns.get(&(cx, cz))?;
-		Some(stack[cy as usize].get(lx, ly, lz))
+		Some(stack[cy as usize].get_cell(lx, ly, lz))
 	}
 
 	/// Same contract as `Pipeline::set_block`: `Some(prev)` if the edit
 	/// landed, `None` if out of bounds, unloaded, or a no-op.
 	pub fn set_block(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> Option<BlockType> {
+		self.set_cell(x, y, z, b as u16)
+			.map(|prev| BlockType::from_id(digblock_core::chunk::cell_id(prev)))
+	}
+
+	/// Cell-level twin of [`Self::set_block`]: full u16 in, previous full
+	/// u16 out.
+	pub fn set_cell(&mut self, x: i32, y: i32, z: i32, cell: u16) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = split_world(x, y, z)?;
 		let stack = self.columns.get_mut(&(cx, cz))?;
 		let chunk = &mut stack[cy as usize];
-		let prev = chunk.get(lx, ly, lz);
-		if prev == b {
+		let prev = chunk.get_cell(lx, ly, lz);
+		if prev == cell {
 			return None;
 		}
-		Arc::make_mut(chunk).set(lx, ly, lz, b);
+		Arc::make_mut(chunk).set_cell(lx, ly, lz, cell);
 		Some(prev)
 	}
 }
@@ -180,6 +193,10 @@ impl ChunkStore {
 impl BlockWorld for ChunkStore {
 	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
 		ChunkStore::block_at(self, x, y, z)
+	}
+
+	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		ChunkStore::cell_at(self, x, y, z)
 	}
 }
 

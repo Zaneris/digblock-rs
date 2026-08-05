@@ -13,7 +13,6 @@ use crate::protocol::{
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
-use digblock_core::block::BlockType;
 use glam::Vec3;
 
 pub struct NetClientConfig {
@@ -48,13 +47,14 @@ pub enum NetEvent {
 		acked_input_tick: u32,
 		me: digblock_core::player::PlayerState,
 	},
-	/// Authoritative block value for a cell — apply directly (no-op if
-	/// already predicted). `superseded` carries any of our own pending
-	/// predictions this write cancelled: revert their `inv_delta`s only,
-	/// never their cells (the authoritative value owns the cell).
+	/// Authoritative cell value (id + state nibble) — apply directly
+	/// (no-op if already predicted). `superseded` carries any of our own
+	/// pending predictions this write cancelled: revert their
+	/// `inv_delta`s only, never their cells (the authoritative value owns
+	/// the cell).
 	Edit {
 		cell: (i32, i32, i32),
-		block: BlockType,
+		cell_value: u16,
 		superseded: Vec<PendingEdit>,
 		/// `Some(author)` only for a live broadcast authored by someone
 		/// other than us (SERVER_ID = the fluid sim). `None` for join
@@ -62,15 +62,17 @@ pub enum NetEvent {
 		/// off this so a join replay never plays a thud storm.
 		remote_author: Option<PlayerId>,
 	},
-	/// Our predicted edit was rejected and no authoritative write has
-	/// superseded it — revert the cell to `.prev` AND the predicted
-	/// `.inv_delta`.
+	/// One cell of a rejected prediction that no authoritative write has
+	/// superseded — revert the cell to `.prev` AND the predicted
+	/// `.inv_delta`. Multi-cell actions emit one event per surviving
+	/// entry.
 	EditRejected(PendingEdit),
-	/// Authoritative inventory snapshot: re-base the local counts as
-	/// `snapshot + Σ pending inv_deltas` (order-independent with the
-	/// per-edit reverts).
+	/// Authoritative inventory snapshot as raw wire pairs (block ids plus
+	/// flagged sub-material families): re-base the local counts as
+	/// `Inventory::from_wire + Σ pending inv_deltas` (order-independent
+	/// with the per-edit reverts).
 	Inventory {
-		counts: Vec<(BlockType, u32)>,
+		counts: Vec<(u16, u32)>,
 	},
 	/// Another player joined. Also delivered as a roster right after
 	/// Welcome: one event per player already online.
@@ -335,10 +337,10 @@ impl NetClient {
 			}
 			ServerMsg::JournalColumn { cells, .. } => {
 				for c in cells {
-					if let Some(block) = block_from_id(c.block) {
+					if let Some(cell_value) = valid_cell(c.block) {
 						out.push(NetEvent::Edit {
 							cell: (c.x, c.y, c.z),
-							block,
+							cell_value,
 							superseded: Vec::new(),
 							remote_author: None,
 						});
@@ -357,15 +359,15 @@ impl NetClient {
 				}
 				let cell = (edit.x, edit.y, edit.z);
 				let superseded = self.edits.on_authoritative(cell);
-				if let Some(block) = block_from_id(edit.block) {
+				if let Some(cell_value) = valid_cell(edit.block) {
 					out.push(NetEvent::Edit {
 						cell,
-						block,
+						cell_value,
 						superseded,
 						remote_author: (Some(by) != self.my_id).then_some(by),
 					});
 				} else {
-					// Unknown block id from a newer server: the cell can't
+					// Unknown/hostile cell from a newer server: it can't
 					// be applied, but the inventory reverts still must be.
 					for e in superseded {
 						out.push(NetEvent::EditRejected(e));
@@ -374,7 +376,7 @@ impl NetClient {
 			}
 			ServerMsg::EditRejected { client_seq, reason } => {
 				log::info!("edit {client_seq} rejected: {reason:?}");
-				if let Some(e) = self.edits.reject(client_seq) {
+				for e in self.edits.reject(client_seq) {
 					out.push(NetEvent::EditRejected(e));
 				}
 			}
@@ -393,12 +395,9 @@ impl NetClient {
 			}
 			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
 			ServerMsg::InventoryFull { counts } => {
-				// Strict decode; unknown ids can't occur with a matching
-				// sim_version but must not panic either.
-				let counts = counts
-					.into_iter()
-					.filter_map(|(id, n)| block_from_id(id).map(|b| (b, n)))
-					.collect();
+				// Raw pairs through to the engine — `Inventory::from_wire`
+				// does the strict decode (unknown ids dropped, flagged
+				// sub-material families handled).
 				out.push(NetEvent::Inventory { counts });
 			}
 		}
@@ -514,6 +513,12 @@ impl NetClient {
 		}
 	}
 
+	/// Send an alchemy op (convert/craft). Not client-predicted: the
+	/// server answers success or failure with an `InventoryFull` rebase.
+	pub fn send_alchemy(&mut self, op: crate::messages::AlchemyOp) {
+		self.send_msg(&ClientMsg::Alchemy { op });
+	}
+
 	fn send_msg(&mut self, msg: &ClientMsg) {
 		let mut buf = Vec::new();
 		if codec::write_frame(msg, &mut buf).is_ok() {
@@ -522,6 +527,9 @@ impl NetClient {
 	}
 }
 
-fn block_from_id(v: u16) -> Option<BlockType> {
-	BlockType::try_from_id(v)
+/// Strict wire-cell validation: known id, spare bits clear, and a state
+/// the id's shape defines. Hostile or newer-server cells decode to None
+/// and degrade to inventory-revert-only handling.
+fn valid_cell(v: u16) -> Option<u16> {
+	digblock_core::shapes::state_valid(v).then_some(v)
 }

@@ -85,6 +85,33 @@ pub fn slot<Id: Copy + PartialEq>(
 	ui.hits.push(rect, id);
 }
 
+/// A clickable text button: backdrop, centered label, hit rect under
+/// `id`. `enabled: false` dims the label and still registers no hit —
+/// disabled buttons are honest pixels, not traps.
+pub fn button<Id: Copy + PartialEq>(
+	ui: &mut Ui<'_, Id>,
+	id: Id,
+	rect: Rect,
+	text: &str,
+	enabled: bool,
+) {
+	ui.dl.quad(Layer::Backdrop, rect, SLOT_BG);
+	let px = ui.style.glyph;
+	let w = text.chars().count() as f32 * px;
+	let color = if enabled { WHITE } else { DIM };
+	ui.dl.text(
+		Layer::Content,
+		rect.x + (rect.w - w) / 2.0,
+		rect.y + (rect.h - px) / 2.0,
+		px,
+		color,
+		text,
+	);
+	if enabled {
+		ui.hits.push(rect, id);
+	}
+}
+
 /// Stack-count badge in a slot's bottom-right corner: pinned at
 /// [`scale::FIXED_GLYPH_PX`] (small by design), "99+" past two digits,
 /// with a one-font-pixel drop shadow so digits stay readable on light

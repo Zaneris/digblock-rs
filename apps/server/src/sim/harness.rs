@@ -176,7 +176,7 @@ pub(crate) fn dig_hold(
 	} else {
 		raycast
 	};
-	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_block_at(x, y, z)).expect("dig target");
+	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("dig target");
 	*t += 1;
 	sim.tick_once(vec![
 		SimEvent::Msg {

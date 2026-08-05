@@ -261,17 +261,14 @@ pub(super) fn emit_water_face(
 		} else {
 			0
 		};
-		let [w0, w1] = pack(
+		out.push(pack(
 			Vert {
-				pos: (cx as u32, cy as u32, cz as u32),
-				tex,
+				pos: (cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
 				ao: 3,
-				tint: 0,
 			},
 			dir,
 			ci as u32,
-		);
-		out.push(w0);
-		out.push(w1 | ((d | state.flags() | (vfall << 10)) << 10));
+		));
+		out.push(tex | ((d | state.flags() | (vfall << 10)) << 10));
 	}
 }

@@ -2,7 +2,6 @@
 //! envelope + sustained-drift gate (model described in the `sim` docs).
 
 use super::{Client, Sim};
-use digblock_core::block::BlockType;
 use digblock_core::player::{PlayerIntent, PlayerState, TICK};
 use digblock_net::messages::{InputBatch, InputTick};
 use digblock_net::protocol::{
@@ -54,7 +53,7 @@ impl Sim {
 			};
 			for _ in 0..consume {
 				let input = client.inputs.pop_first().map(|(_, i)| i);
-				step_client(client, input, &|x, y, z| store.block_at(x, y, z));
+				step_client(client, input, &|x, y, z| store.cell_at(x, y, z));
 			}
 		}
 	}
@@ -65,7 +64,7 @@ impl Sim {
 fn step_client(
 	client: &mut Client,
 	input: Option<InputTick>,
-	block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 ) {
 	let before = client.player.pos;
 	match input {
@@ -79,7 +78,7 @@ fn step_client(
 				jump: false,
 				..intent
 			};
-			client.player.tick(TICK, client.look, intent, block_at);
+			client.player.tick(TICK, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
 
 			// Adoption envelope.
@@ -92,7 +91,7 @@ fn step_client(
 				&& claimed.vel.is_finite()
 				&& claimed.pos.distance(client.player.pos) <= POS_TOLERANCE
 				&& claimed.pos.distance(before) <= max_step
-				&& !probe_solid(claimed.pos, block_at);
+				&& !probe_solid(claimed.pos, cell_at);
 			if sane {
 				// Second gate: sustained drift. The per-tick envelope
 				// bounds instantaneous divergence; the delta-vector EWMA
@@ -114,18 +113,19 @@ fn step_client(
 		None => {
 			// Underrun: coast on the last intent, never adopt.
 			let intent = client.last_intent;
-			client.player.tick(TICK, client.look, intent, block_at);
+			client.player.tick(TICK, client.look, intent, cell_at);
 			client.drift *= 1.0 - DRIFT_ALPHA;
 		}
 	}
 }
 
-/// True if the claimed position's capsule overlaps solid blocks (a
-/// claim we never adopt). Cells come from the shared `occupied_cells`
-/// contract, identical to the client's.
-fn probe_solid(pos: Vec3, block_at: &dyn Fn(i32, i32, i32) -> Option<BlockType>) -> bool {
-	digblock_core::player::occupied_cells(pos)
-		.any(|c| matches!(block_at(c.0, c.1, c.2), Some(b) if b.props().collides))
+/// True if the claimed position's capsule overlaps solid GEOMETRY (a
+/// claim we never adopt). The shape-aware core probe, shared with the
+/// client's placement/spawn checks: standing on a stair tread (feet
+/// inside the stair's unit cell) or mid-mount onto a landing is never
+/// "inside solid", so honest walks over shaped blocks stay adopted.
+fn probe_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
+	digblock_core::player::overlaps_solid(pos, cell_at)
 }
 
 fn sanitize(mut input: InputTick) -> Option<InputTick> {
@@ -172,7 +172,7 @@ mod tests {
 				move_axis: glam::Vec2::new(0.0, 1.0),
 				jump: false,
 			};
-			local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_block_at(x, y, z));
+			local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
 			let claim = local.state();
 			history.push(claim.pos);
 			sim.tick_once(vec![batch(vec![input(t, true, claim)], 1)]);
@@ -268,6 +268,109 @@ mod tests {
 			server.pos.y,
 			start.pos.y
 		);
+	}
+
+	/// The anti-rubber-band regression: a player standing ON a stair
+	/// tread has feet inside the stair's unit CELL — the old
+	/// cell-granular probe called that "inside solid" and rejected every
+	/// claim, rubber-banding forever. The shape-aware probe adopts the
+	/// whole honest walk up the flight verbatim.
+	#[test]
+	fn standing_on_stair_claim_adopted() {
+		use digblock_core::block::BlockType;
+		use digblock_core::chunk::{make_cell, ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use digblock_core::player::{Player, PlayerIntent, TICK};
+		use digblock_core::shapes::{stair_state, Facing};
+		use std::sync::Arc;
+
+		// Flat ground (top at 126) with a 3-stair flight ascending +z at
+		// z = 12..14 and a platform beyond, in chunk (0, 0).
+		let source: crate::store::ColumnSource = Arc::new(|cx, cz| {
+			let mut full = ChunkData::default();
+			let mut top = ChunkData::default();
+			for y in 0..16 {
+				for z in 0..16 {
+					for x in 0..16 {
+						full.set(x, y, z, BlockType::Stone);
+						if y <= 126 % 16 {
+							top.set(x, y, z, BlockType::Stone);
+						}
+					}
+				}
+			}
+			if (cx, cz) == (0, 0) {
+				// Surface is y=127 (local 15 in chunk 7); the flight
+				// rises 127→129, crossing into the next vchunk.
+				top.set_cell(
+					8,
+					15,
+					12,
+					make_cell(BlockType::WoodStairs, stair_state(Facing::PosZ)),
+				);
+			}
+			let (full, top) = (Arc::new(full), Arc::new(top));
+			(0..WORLD_VCHUNK as usize)
+				.map(|cy| {
+					use std::cmp::Ordering::*;
+					match cy.cmp(&(126 / 16)) {
+						Less => full.clone(),
+						Equal => top.clone(),
+						Greater if cy == 126 / 16 + 1 && (cx, cz) == (0, 0) => {
+							let mut d = ChunkData::default();
+							d.set_cell(
+								8,
+								0,
+								13,
+								make_cell(BlockType::WoodStairs, stair_state(Facing::PosZ)),
+							);
+							for z in 14..16 {
+								for x in 0..16 {
+									d.set(x, 0, z, BlockType::Stone);
+								}
+							}
+							Arc::new(d)
+						}
+						Greater => AIR_CHUNK.clone(),
+					}
+				})
+				.collect()
+		});
+		let spawn = Vec3::new(8.5, 129.5, 8.5);
+		let dir = temp_dir("stairadopt");
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, source, spawn).unwrap();
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Honest local twin over the same world, one tick ahead. Claims
+		// carry a float-noise x offset so adoption is DETECTABLE: the
+		// server's own sim never produces the offset, so equality below
+		// holds only if every claim was adopted verbatim (the old
+		// cell-granular probe passed the un-offset version of this test
+		// vacuously — server sim and twin were bit-identical anyway).
+		const EPS: f32 = 1e-4;
+		let mut local = Player::new(spawn);
+		let mut t = 100;
+		let mut climbed = false;
+		for _ in 0..120 {
+			let intent = PlayerIntent {
+				move_axis: glam::Vec2::new(0.0, 1.0),
+				jump: false,
+			};
+			local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
+			let mut claim = local.state();
+			claim.pos.x += EPS;
+			// The walk spends real time standing ON the stair cells.
+			climbed |= local.pos.y > 130.0 && local.pos.z > 12.0 && local.pos.z < 15.0;
+			sim.tick_once(vec![batch(vec![input(t, true, claim)], 1)]);
+			t += 1;
+			let server = sim.test_player(1).unwrap();
+			assert_eq!(
+				server.pos, claim.pos,
+				"claim adopted verbatim at t={t} (no rubber-band), twin at {:?}",
+				local.pos
+			);
+		}
+		assert!(climbed, "the twin actually walked the flight");
 	}
 
 	#[test]

@@ -113,7 +113,7 @@ pub struct Pipeline {
 	center: ChunkPos,
 	/// Authoritative edits waiting for their chunk to generate — see
 	/// `apply_authoritative`.
-	deferred_edits: FxHashMap<(i32, i32, i32), crate::block::BlockType>,
+	deferred_edits: FxHashMap<(i32, i32, i32), u16>,
 	/// Persistent local-edit overlay (single-player worlds): every
 	/// `set_block` records here and every generated column re-applies its
 	/// cells, so hard eviction can't lose edits. None in multiplayer —
@@ -728,23 +728,30 @@ impl Pipeline {
 		z: i32,
 		b: crate::block::BlockType,
 	) -> Option<crate::block::BlockType> {
+		self.set_cell(x, y, z, b as u16)
+			.map(|prev| crate::block::BlockType::from_id(crate::chunk::cell_id(prev)))
+	}
+
+	/// Cell-level twin of [`set_block`]: writes the full u16 (id + state
+	/// nibble) and returns the previous cell. The single local-write
+	/// funnel — dig, place, fluid, and shaped-block placement all land
+	/// here, so the overlay (and its persistence drain) sees them all.
+	pub fn set_cell(&mut self, x: i32, y: i32, z: i32, cell: u16) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
 		let pos = ChunkPos::new(cx, cy, cz);
 		let slot = self.store.get_mut(&pos)?;
 		let ChunkState::Ready(data) = &mut slot.state else {
 			return None;
 		};
-		let prev = data.get(lx, ly, lz);
-		if prev == b {
+		let prev = data.get_cell(lx, ly, lz);
+		if prev == cell {
 			return None;
 		}
 		// COW: clones the 4KB array only if a worker still holds a snapshot.
-		Arc::make_mut(data).set(lx, ly, lz, b);
-		// The single local-write funnel: dig, place, AND fluid all land
-		// here, so the overlay (and its persistence drain) sees them all.
+		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
 		if let Some(overlay) = &mut self.overlay {
-			overlay.record(x, y, z, b as u16);
-			self.recorded.push((x, y, z, b as u16));
+			overlay.record(x, y, z, cell);
+			self.recorded.push((x, y, z, cell));
 		}
 		slot.mesh_gen += 1;
 		let center = self.center;
@@ -788,12 +795,19 @@ impl Pipeline {
 	/// Block lookup for physics. None = outside the vertical world or the
 	/// chunk isn't generated yet (the Java null-block: non-solid).
 	pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
+		self.cell_at(x, y, z)
+			.map(|cell| crate::block::BlockType::from_id(crate::chunk::cell_id(cell)))
+	}
+
+	/// Full-cell lookup (id + state nibble); same loading semantics as
+	/// [`Self::block_at`].
+	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
 		match self.store.get(&ChunkPos::new(cx, cy, cz)) {
 			Some(ChunkSlot {
 				state: ChunkState::Ready(d),
 				..
-			}) => Some(d.get(lx, ly, lz)),
+			}) => Some(d.get_cell(lx, ly, lz)),
 			_ => None,
 		}
 	}
@@ -804,21 +818,15 @@ impl Pipeline {
 	/// so join-sync edits racing generation can never be lost. Every
 	/// world consumer gets this for free by owning a `Pipeline`, instead
 	/// of re-inventing the retry map the engine used to keep.
-	pub fn apply_authoritative(
-		&mut self,
-		x: i32,
-		y: i32,
-		z: i32,
-		b: crate::block::BlockType,
-	) -> ApplyEdit {
+	pub fn apply_authoritative(&mut self, x: i32, y: i32, z: i32, cell: u16) -> ApplyEdit {
 		if crate::chunk::split_world(x, y, z).is_none() {
 			return ApplyEdit::Rejected;
 		}
-		if self.try_apply((x, y, z), b) {
+		if self.try_apply((x, y, z), cell) {
 			self.deferred_edits.remove(&(x, y, z));
 			ApplyEdit::Applied
 		} else {
-			self.deferred_edits.insert((x, y, z), b);
+			self.deferred_edits.insert((x, y, z), cell);
 			ApplyEdit::Deferred
 		}
 	}
@@ -828,10 +836,10 @@ impl Pipeline {
 		self.deferred_edits.len()
 	}
 
-	/// True if the cell now holds `b` (freshly written or already there).
-	fn try_apply(&mut self, cell: (i32, i32, i32), b: crate::block::BlockType) -> bool {
-		self.set_block(cell.0, cell.1, cell.2, b).is_some()
-			|| self.block_at(cell.0, cell.1, cell.2) == Some(b)
+	/// True if the cell now holds `v` (freshly written or already there).
+	fn try_apply(&mut self, cell: (i32, i32, i32), v: u16) -> bool {
+		self.set_cell(cell.0, cell.1, cell.2, v).is_some()
+			|| self.cell_at(cell.0, cell.1, cell.2) == Some(v)
 	}
 
 	/// Deferred authoritative edits whose column just generated: apply
@@ -842,14 +850,14 @@ impl Pipeline {
 		if self.deferred_edits.is_empty() {
 			return;
 		}
-		let cells: Vec<((i32, i32, i32), crate::block::BlockType)> = self
+		let cells: Vec<((i32, i32, i32), u16)> = self
 			.deferred_edits
 			.iter()
 			.filter(|(&(x, _, z), _)| landed.contains(&(x.div_euclid(16), z.div_euclid(16))))
-			.map(|(&c, &b)| (c, b))
+			.map(|(&c, &v)| (c, v))
 			.collect();
-		for (cell, b) in cells {
-			if self.try_apply(cell, b) {
+		for (cell, v) in cells {
+			if self.try_apply(cell, v) {
 				self.deferred_edits.remove(&cell);
 			}
 		}
@@ -859,6 +867,10 @@ impl Pipeline {
 impl crate::chunk::BlockWorld for Pipeline {
 	fn block_at(&self, x: i32, y: i32, z: i32) -> Option<crate::block::BlockType> {
 		Pipeline::block_at(self, x, y, z)
+	}
+
+	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		Pipeline::cell_at(self, x, y, z)
 	}
 }
 
@@ -1305,13 +1317,13 @@ mod tests {
 		let mut p = Pipeline::new(0.0, 4, 2);
 		// Before any maintain(): every chunk is ungenerated.
 		assert_eq!(
-			p.apply_authoritative(8, 8, 8, BlockType::Sand),
+			p.apply_authoritative(8, 8, 8, BlockType::Sand as u16),
 			ApplyEdit::Deferred
 		);
 		assert_eq!(p.deferred_edits(), 1);
 		// Out-of-world: rejected, never held.
 		assert_eq!(
-			p.apply_authoritative(8, -1, 8, BlockType::Sand),
+			p.apply_authoritative(8, -1, 8, BlockType::Sand as u16),
 			ApplyEdit::Rejected
 		);
 		assert_eq!(p.deferred_edits(), 1);
@@ -1327,7 +1339,10 @@ mod tests {
 		} else {
 			BlockType::Stone
 		};
-		assert_eq!(p.apply_authoritative(9, 8, 8, other), ApplyEdit::Applied);
+		assert_eq!(
+			p.apply_authoritative(9, 8, 8, other as u16),
+			ApplyEdit::Applied
+		);
 		assert_eq!(p.block_at(9, 8, 8), Some(other));
 	}
 

@@ -132,19 +132,21 @@ impl MeshInput {
 				}
 			}
 		}
-		// Strip state bits once here so every consumer — direct indexing
-		// and get() alike — sees id-only cells. Without this, a future
-		// state-nibble write would make from_id read the cell as Air and
-		// silently mesh holes.
-		for b in input.blocks.iter_mut() {
-			*b &= crate::chunk::ID_MASK;
-		}
 		input
 	}
 
-	/// Block id at padded coords (each in -1..=16).
+	/// Block id at padded coords (each in -1..=16) — the state nibble is
+	/// masked HERE, so every id-oriented consumer (AO, the whole water
+	/// surface system) is state-blind by construction. The shaped path
+	/// reads raw cells via [`Self::get_cell`].
 	#[inline]
 	pub fn get(&self, x: i32, y: i32, z: i32) -> u16 {
+		self.blocks[pidx(x, y, z)] & crate::chunk::ID_MASK
+	}
+
+	/// Raw cell (id + state) at padded coords.
+	#[inline]
+	pub fn get_cell(&self, x: i32, y: i32, z: i32) -> u16 {
 		self.blocks[pidx(x, y, z)]
 	}
 }
@@ -175,52 +177,87 @@ impl MeshData {
 	}
 }
 
+/// What a neighbor cell presents against a face looking toward `dir` —
+/// i.e. its coverage of the shared boundary plane (its face toward
+/// `dir.opposite()`).
+enum Cover {
+	None,
+	Full,
+	Partial(&'static crate::shapes::FaceMask),
+}
+
+fn neighbor_cover(cell: u16, dir: Dir) -> Cover {
+	let b = BlockType::from_id(crate::chunk::cell_id(cell));
+	match b.props().class {
+		RenderClass::Opaque => Cover::Full,
+		RenderClass::Shaped => {
+			let v = crate::shapes::shape_of(b, crate::chunk::cell_state(cell))
+				.expect("Shaped class ⇒ registered shape");
+			let opp = dir.opposite() as usize;
+			if v.occludes_full[opp] {
+				Cover::Full
+			} else {
+				Cover::Partial(&v.face_masks[opp])
+			}
+		}
+		_ => Cover::None,
+	}
+}
+
 #[inline]
-fn face_visible(me: BlockType, neighbor: Option<BlockType>) -> bool {
-	let Some(nb) = neighbor else { return false }; // Missing neighbor
-	if nb.props().class == RenderClass::Opaque {
+fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
+	let Some(nc) = neighbor else { return false }; // Missing neighbor
+	if matches!(neighbor_cover(nc, dir), Cover::Full) {
 		return false;
 	}
+	let nb = BlockType::from_id(crate::chunk::cell_id(nc));
 	match me.props().class {
 		RenderClass::None => false,
 		RenderClass::Opaque => true,
 		RenderClass::Cutout => nb != me,
+		// Water toward a Shaped neighbor emits nothing (class != None) —
+		// the known v1 artifact, pinned by test: you can see through a
+		// stair's open region into the water void behind it.
 		RenderClass::Translucent => nb.props().class == RenderClass::None,
+		// Shaped cells never route here — mesh_chunk branches to the
+		// shaped emitter first.
+		RenderClass::Shaped => unreachable!("shaped cells use emit_shaped"),
 	}
 }
 
-/// Pack a vertex as TWO words (all geometry — solid and water share the
-/// format). Word 0, geometry: bits 0-5 x, 6-11 y, 12-17 z in HALF-block
-/// units 0..=32 (integer lattice today; odd values are reserved for
-/// future sub-cell shapes like stairs), 18-20 normal, 21-22 ao (0
-/// darkest .. 3 open), 23-24 corner (0=TL 1=TR 2=BL 3=BR), 25-27 tint,
-/// 28-31 reserved. Word 1, material: bits 0-9 texture layer (1024 cap =
-/// MAX_TEX_LAYERS), 10-23 water payload (see MeshData::water), 24-31
-/// reserved.
+/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it).
+/// Bits 0-7 x, 8-15 y, 16-23 z in TWELFTH-block units 0..=192 (the
+/// sub-block shape grid; full-block geometry lands on multiples of 12),
+/// 24-26 normal, 27-28 ao (0 darkest .. 3 open), 29-30 corner
+/// (0=TL 1=TR 2=BL 3=BR), 31 reserved.
+///
+/// Word 1 is per-stream material, assembled by the caller:
+/// solid — [`solid_word1`]: bits 0-9 texture layer (1024 cap =
+/// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
+/// 18-20 tint, 21-31 reserved. water — bits 0-9 texture layer, 10-23
+/// payload (see MeshData::water), 24-31 reserved (water reads its uv
+/// from the corner code and has no tint).
 #[inline]
-fn pack(v: Vert, normal: Dir, corner: u32) -> [u32; 2] {
+fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 	let (x, y, z) = v.pos;
-	debug_assert!(x <= 16 && y <= 16 && z <= 16 && corner < 4 && v.ao < 4);
-	debug_assert!((v.tex as usize) < crate::block::MAX_TEX_LAYERS && v.tint < 8);
-	[
-		(x * 2)
-			| ((y * 2) << 6)
-			| ((z * 2) << 12)
-			| ((normal as u32) << 18)
-			| (v.ao << 21)
-			| (corner << 23)
-			| (v.tint << 25),
-		v.tex,
-	]
+	debug_assert!(x <= 192 && y <= 192 && z <= 192 && corner < 4 && v.ao < 4);
+	x | (y << 8) | (z << 16) | ((normal as u32) << 24) | (v.ao << 27) | (corner << 29)
 }
 
-/// One vertex's non-positional attributes on their way into `pack`.
+/// The solid stream's material word (see [`pack`] for the layout).
+#[inline]
+fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32) -> u32 {
+	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
+	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8);
+	tex | (uv_u << 10) | (uv_v << 14) | (tint << 18)
+}
+
+/// One vertex's geometry attributes on their way into `pack`. Positions
+/// are in twelfths of a block (0..=192 across the chunk).
 #[derive(Clone, Copy)]
 struct Vert {
 	pos: (u32, u32, u32),
-	tex: u32,
 	ao: u32,
-	tint: u32,
 }
 
 /// Per-block brightness jitter: a 3-bit step from a splitmix64 hash of
@@ -331,16 +368,90 @@ fn emit_face(
 	};
 	for &ci in &order {
 		let (cx, cy, cz) = corners[ci];
-		out.extend_from_slice(&pack(
+		out.push(pack(
 			Vert {
-				pos: (cx as u32, cy as u32, cz as u32),
-				tex,
+				pos: (cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
 				ao: ao[ci],
-				tint,
 			},
 			dir,
 			ci as u32,
 		));
+		// Full-rect uv straight from the corner code, exactly the mapping
+		// the shader used to derive itself.
+		out.push(solid_word1(
+			tex,
+			(ci as u32 & 1) * 12,
+			(ci as u32 >> 1) * 12,
+			tint,
+		));
+	}
+}
+
+/// Stamp a shaped block's baked quad template. Outlined like the water
+/// path — shaped cells are rare and the solid loop is hot. Interior quads
+/// always emit; boundary quads cull against the neighbor's coverage of
+/// the shared plane (mask-driven, so stacked mirrored stairs and
+/// stair-against-wall cull correctly, cross-chunk included — the padded
+/// shell carries state). Shaped faces are flat ao = 3 and never occlude
+/// AO themselves (`occludes` keys on Opaque) — the Cutout precedent; a
+/// parent-corner AO upgrade needs no format change.
+#[inline(never)]
+fn emit_shaped(
+	out: &mut Vec<u32>,
+	input: &MeshInput,
+	b: (usize, usize, usize),
+	me: BlockType,
+	cell: u16,
+	tint: u32,
+) {
+	let variant = crate::shapes::shape_of(me, crate::chunk::cell_state(cell))
+		.expect("Shaped class ⇒ registered shape");
+	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
+	let n = CHUNK_SIZE;
+	for q in &variant.quads {
+		if q.boundary {
+			let dir = q.dir;
+			let on_border = match dir {
+				Dir::West => b.0 == n - 1,
+				Dir::North => b.2 == n - 1,
+				Dir::South => b.2 == 0,
+				Dir::Bottom => b.1 == 0,
+				Dir::Top => b.1 == n - 1,
+				Dir::East => b.0 == 0,
+			};
+			if on_border && input.missing[dir as usize] {
+				continue;
+			}
+			let (ox, oy, oz) = dir.offset();
+			match neighbor_cover(input.get_cell(bx + ox, by + oy, bz + oz), dir) {
+				Cover::Full => continue,
+				Cover::Partial(m) if m.covers(q.rect[0], q.rect[1], q.rect[2], q.rect[3]) => {
+					continue
+				}
+				_ => {}
+			}
+		}
+		let tex = me.texture(q.dir);
+		for (ci, corner) in q.corners.iter().enumerate() {
+			out.push(pack(
+				Vert {
+					pos: (
+						bx as u32 * 12 + u32::from(corner[0]),
+						by as u32 * 12 + u32::from(corner[1]),
+						bz as u32 * 12 + u32::from(corner[2]),
+					),
+					ao: 3,
+				},
+				q.dir,
+				ci as u32,
+			));
+			out.push(solid_word1(
+				tex,
+				u32::from(q.uv[ci][0]),
+				u32::from(q.uv[ci][1]),
+				tint,
+			));
+		}
 	}
 }
 
@@ -368,8 +479,18 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 		for z in 0..n {
 			for x in 0..n {
 				let pi = pidx(x as i32, y as i32, z as i32);
-				let me = BlockType::from_id(input.blocks[pi]);
+				let cell = input.blocks[pi];
+				let me = BlockType::from_id(crate::chunk::cell_id(cell));
 				if me.props().class == RenderClass::None {
+					continue;
+				}
+				if me.props().class == RenderClass::Shaped {
+					let bt = tint(
+						i64::from(base.0) + x as i64,
+						i64::from(base.1) + y as i64,
+						i64::from(base.2) + z as i64,
+					);
+					emit_shaped(&mut mesh.solid, input, (x, y, z), me, cell, bt);
 					continue;
 				}
 				// Cell-level water state, shared by all its faces.
@@ -390,9 +511,9 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						None
 					} else {
 						let ni = (pi as isize + PDELTA[dir as usize]) as usize;
-						Some(BlockType::from_id(input.blocks[ni]))
+						Some(input.blocks[ni])
 					};
-					if !face_visible(me, neighbor) {
+					if !face_visible(me, neighbor, dir) {
 						continue;
 					}
 					let tex = me.texture(dir);
@@ -470,7 +591,9 @@ mod tests {
 	/// change meshing: MeshInput::build strips them, so a stateful cell
 	/// meshes exactly like its plain block.
 	#[test]
-	fn state_bits_do_not_change_meshing() {
+	fn state_bits_on_unshaped_blocks_do_not_change_meshing() {
+		// The masking discipline: for blocks WITHOUT a shape, a state
+		// nibble must be invisible to the mesher (get() masks it).
 		let mut plain = ChunkData::default();
 		plain.set(8, 8, 8, B::Dirt);
 		plain.set(8, 9, 8, B::Water);
@@ -492,6 +615,168 @@ mod tests {
 		assert_eq!(a.solid, b.solid, "solid stream byte-identical");
 		assert_eq!(a.water, b.water, "water stream byte-identical");
 		assert_eq!(a.impacts, b.impacts);
+	}
+
+	/// A stair at each state, meshed solo (chunk-local (8,8,8), world
+	/// origin ZERO).
+	fn stair_mesh(facing: crate::shapes::Facing) -> MeshData {
+		let mut d = ChunkData::default();
+		d.set_cell(
+			8,
+			8,
+			8,
+			crate::chunk::make_cell(B::WoodStairs, crate::shapes::stair_state(facing)),
+		);
+		mesh_chunk(&isolated(&d), ZERO)
+	}
+
+	#[test]
+	fn shaped_state_changes_geometry_and_rotations_are_permutations() {
+		use crate::shapes::Facing;
+		let a = stair_mesh(Facing::PosX);
+		let b = stair_mesh(Facing::NegX);
+		assert_ne!(a.solid, b.solid, "facing changes the mesh");
+		// Same quad count and the same multiset of texture layers — a
+		// rotation permutes geometry, never invents or drops faces. (UV
+		// positions are NOT rotation-invariant: anisotropic faces like
+		// the nosing undersides land at mirrored texture offsets.)
+		assert_eq!(a.solid.len(), b.solid.len());
+		let key = |m: &MeshData| {
+			let mut texes: Vec<u32> = m.solid.chunks(2).map(|p| p[1] & 0x3ff).collect();
+			texes.sort_unstable();
+			texes
+		};
+		assert_eq!(key(&a), key(&b), "texture layers are a permutation");
+	}
+
+	#[test]
+	fn shaped_faces_are_flat_ao_and_match_full_block_conventions() {
+		let m = stair_mesh(crate::shapes::Facing::PosX);
+		assert!(!m.solid.is_empty());
+		for p in m.solid.chunks(2) {
+			assert_eq!(ao_of(p[0]), 3, "shaped faces are flat-lit");
+		}
+		// The stair's full back boundary face (+x = Dir::West) must be
+		// bit-compatible with a full block's face geometry: same corner
+		// lattice positions (×12) in the same TL/TR/BL/BR slots — the
+		// shapes baker mirrors face_corners by construction. (Bottom and
+		// back are both full planes; the back is the pin.)
+		let want: Vec<(u32, u32, u32)> = face_corners(8, 8, 8, Dir::West)
+			.iter()
+			.map(|&(x, y, z)| (x as u32 * 12, y as u32 * 12, z as u32 * 12))
+			.collect();
+		let found = m.solid.chunks(8).any(|q| {
+			(0..4).all(|i| {
+				let w0 = q[i * 2];
+				dir_of(w0) == Dir::West as u32
+					&& corner_of(w0) == i as u32
+					&& (w0 & 0xff, (w0 >> 8) & 0xff, (w0 >> 16) & 0xff) == want[i]
+			})
+		});
+		assert!(found, "stair back face matches full-block conventions");
+	}
+
+	#[test]
+	fn shaped_boundary_culling() {
+		use crate::chunk::make_cell;
+		use crate::shapes::{stair_state, Facing};
+		// Stair ascending +x with an opaque block at +x: the stair's full
+		// back face is culled, and the wall's −x face is culled too (the
+		// stair's back fully covers the shared plane).
+		let mut d = ChunkData::default();
+		d.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
+		d.set(9, 8, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let stair_back = m.solid.chunks(8).any(|q| {
+			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 9 * 12)
+		});
+		assert!(!stair_back, "stair back culled against the wall");
+		let wall_west_face = m.solid.chunks(8).any(|q| {
+			dir_of(q[0]) == Dir::East as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 9 * 12)
+		});
+		assert!(!wall_west_face, "wall face culled behind the stair back");
+
+		// A block ABOVE the stair keeps its bottom face (the stair's top
+		// is partial), and the stair keeps its treads.
+		let mut d2 = ChunkData::default();
+		d2.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
+		d2.set(8, 9, 8, B::Stone);
+		let m2 = mesh_chunk(&isolated(&d2), ZERO);
+		let above_bottom = m2.solid.chunks(8).any(|q| {
+			dir_of(q[0]) == Dir::Bottom as u32 && q.chunks(2).all(|p| ((p[0] >> 8) & 0xff) == 108)
+		});
+		assert!(above_bottom, "block above a stair keeps its bottom face");
+
+		// Two stairs stacked mouth-to-mouth (lower ascends +x, upper is
+		// the same shape upside-down is impossible — instead: two stairs
+		// side by side facing each other cull their touching full backs).
+		let mut d3 = ChunkData::default();
+		d3.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
+		d3.set_cell(9, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::NegX)));
+		let m3 = mesh_chunk(&isolated(&d3), ZERO);
+		let touching_backs = m3.solid.chunks(8).any(|q| {
+			let plane = q.chunks(2).all(|p| (p[0] & 0xff) == 9 * 12);
+			plane && (dir_of(q[0]) == Dir::West as u32 || dir_of(q[0]) == Dir::East as u32)
+		});
+		assert!(!touching_backs, "mirrored stairs cull their shared plane");
+	}
+
+	#[test]
+	fn shaped_culling_works_across_chunk_borders() {
+		use crate::chunk::make_cell;
+		use crate::shapes::{stair_state, Facing};
+		// Stair at the chunk's +x border, opaque neighbor chunk beyond:
+		// the padded shell carries the neighbor, and the stair's full
+		// back face is culled through it.
+		let mut d = ChunkData::default();
+		d.set_cell(
+			15,
+			8,
+			8,
+			make_cell(B::WoodStairs, stair_state(Facing::PosX)),
+		);
+		let mut wall = ChunkData::default();
+		for y in 0..16 {
+			for z in 0..16 {
+				wall.set(0, y, z, B::Stone);
+			}
+		}
+		let input = MeshInput::build(
+			&d,
+			|dx, _, _| {
+				if dx == 1 {
+					Src::Chunk(&wall)
+				} else {
+					Src::Air
+				}
+			},
+		);
+		let m = mesh_chunk(&input, ZERO);
+		let back = m.solid.chunks(8).any(|q| {
+			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 16 * 12)
+		});
+		assert!(!back, "cross-chunk cull via the state-carrying shell");
+	}
+
+	#[test]
+	fn water_beside_shaped_emits_no_interface_face() {
+		// The pinned v1 artifact: water's Translucent rule emits only
+		// toward class-None, so no face appears against a stair — you
+		// can see through the stair's open region into the water void.
+		let mut d = ChunkData::default();
+		d.set_cell(
+			8,
+			8,
+			8,
+			crate::chunk::make_cell(B::WoodStairs, crate::shapes::stair_state(Facing::PosX)),
+		);
+		d.set(7, 8, 8, B::Water);
+		use crate::shapes::Facing;
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		let interface = m.water.chunks(8).any(|q| {
+			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 8 * 12)
+		});
+		assert!(!interface, "no water face against the shaped cell");
 	}
 
 	#[test]
@@ -605,12 +890,10 @@ mod tests {
 	#[test]
 	fn packed_vertex_roundtrip() {
 		// Layer 700 proves the 10-bit field (the old format capped at 64).
-		let [w0, w1] = pack(
+		let w0 = pack(
 			Vert {
-				pos: (16, 7, 3),
-				tex: 700,
+				pos: (16 * 12, 7 * 12, 3 * 12),
 				ao: 1,
-				tint: 5,
 			},
 			Dir::East,
 			2,
@@ -618,34 +901,43 @@ mod tests {
 		assert_eq!(x_of(w0), 16);
 		assert_eq!(y_of(w0), 7);
 		assert_eq!(z_of(w0), 3);
-		assert_eq!(w0 & 0x3f, 32, "positions are stored in half-block units");
+		assert_eq!(
+			w0 & 0xff,
+			192,
+			"positions are stored in twelfth-block units"
+		);
 		assert_eq!(dir_of(w0), Dir::East as u32);
 		assert_eq!(ao_of(w0), 1);
 		assert_eq!(corner_of(w0), 2);
-		assert_eq!(tint_of(w0), 5);
+		let w1 = solid_word1(700, 12, 0, 5);
 		assert_eq!(w1 & 0x3ff, 700);
+		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
+		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
+		assert_eq!(tint_of(w1), 5);
 	}
 
-	// Two-word decode helpers — the mirror of `pack`. Positions come back
-	// in whole blocks (all emitted lattice points are even half-units).
+	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come
+	// back in whole blocks (every full-block lattice point is a multiple
+	// of 12 twelfths).
 	fn x_of(w0: u32) -> u32 {
-		(w0 & 0x3f) / 2
+		(w0 & 0xff) / 12
 	}
 
 	fn y_of(w0: u32) -> u32 {
-		((w0 >> 6) & 0x3f) / 2
+		((w0 >> 8) & 0xff) / 12
 	}
 
 	fn z_of(w0: u32) -> u32 {
-		((w0 >> 12) & 0x3f) / 2
+		((w0 >> 16) & 0xff) / 12
 	}
 
 	fn dir_of(w0: u32) -> u32 {
-		(w0 >> 18) & 0x7
+		(w0 >> 24) & 0x7
 	}
 
-	fn tint_of(w0: u32) -> u32 {
-		(w0 >> 25) & 0x7
+	/// Tint lives in the solid stream's WORD 1 now.
+	fn tint_of(w1: u32) -> u32 {
+		(w1 >> 18) & 0x7
 	}
 
 	#[test]
@@ -659,8 +951,8 @@ mod tests {
 		let c = mesh_chunk(&isolated(&d), ZERO);
 		assert_eq!(a.solid, c.solid, "meshing is deterministic");
 		assert_ne!(
-			tint_of(a.solid[0]),
-			tint_of(b.solid[0]),
+			tint_of(a.solid[1]),
+			tint_of(b.solid[1]),
 			"world offset changes the tint"
 		);
 		// Across a full chunk of stone, tints are non-constant.
@@ -673,9 +965,9 @@ mod tests {
 			}
 		}
 		let m = mesh_chunk(&isolated(&full), ZERO);
-		let first = tint_of(m.solid[0]);
+		let first = tint_of(m.solid[1]);
 		assert!(
-			m.solid.iter().any(|v| tint_of(*v) != first),
+			m.solid.chunks(2).any(|p| tint_of(p[1]) != first),
 			"tint varies across the chunk"
 		);
 	}
@@ -1109,11 +1401,11 @@ mod tests {
 	}
 
 	fn ao_of(w0: u32) -> u32 {
-		(w0 >> 21) & 0x3
+		(w0 >> 27) & 0x3
 	}
 
 	fn corner_of(w0: u32) -> u32 {
-		(w0 >> 23) & 0x3
+		(w0 >> 29) & 0x3
 	}
 
 	/// The emitted quad (4 consecutive two-word vertices) for the given

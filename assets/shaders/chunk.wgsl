@@ -54,32 +54,42 @@ struct VsOut {
 	@location(8) world: vec3f,
 }
 
-// Packed vertex, two words. w0 — geometry: bits 0-5 x, 6-11 y, 12-17 z
-// (HALF-block units 0..=32), 18-20 normal index, 21-22 ao, 23-24 corner,
-// 25-27 tint. w1 — material: bits 0-9 texture layer.
+// Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
+// (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
+// index, 27-28 ao, 29-30 corner. w1 — solid material: bits 0-9 texture
+// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint.
+// Twelfths → blocks with the whole-block part split off in INTEGER
+// space: full-block lattice vertices (multiples of 12) decode exactly
+// even under fast-math (a plain /12.0 becomes an inexact reciprocal
+// multiply on some backends and shifts triangle edges by an ulp).
+fn twelfths(v: u32) -> f32 {
+	return f32(v / 12u) + f32(v % 12u) / 12.0;
+}
+
 @vertex
 fn vs(@location(0) packed: vec2u) -> VsOut {
 	let w0 = packed.x;
-	let x = f32(w0 & 0x3fu) * 0.5;
-	let y = f32((w0 >> 6u) & 0x3fu) * 0.5;
-	let z = f32((w0 >> 12u) & 0x3fu) * 0.5;
-	let ni = (w0 >> 18u) & 7u;
+	let w1 = packed.y;
+	let x = twelfths(w0 & 0xffu);
+	let y = twelfths((w0 >> 8u) & 0xffu);
+	let z = twelfths((w0 >> 16u) & 0xffu);
+	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + chunk.origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
-	o.uv = vec2f(f32((w0 >> 23u) & 1u), f32((w0 >> 24u) & 1u));
-	o.layer = packed.y & 0x3ffu;
+	o.uv = vec2f(twelfths((w1 >> 10u) & 0xfu), twelfths((w1 >> 14u) & 0xfu));
+	o.layer = w1 & 0x3ffu;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
 	o.world = world;
 	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
-	// per-block tint step (bits 25-27 → 0.95..1.05); tint is constant
+	// per-block tint step (w1 bits 18-20 → 0.95..1.05); tint is constant
 	// across the quad, so the product interpolates exactly.
-	let jitter = 1.0 + (f32((w0 >> 25u) & 7u) - 3.5) * (0.10 / 7.0);
-	o.ao = (0.6 + 0.4 * f32((w0 >> 21u) & 3u) / 3.0) * jitter;
+	let jitter = 1.0 + (f32((w1 >> 18u) & 7u) - 3.5) * (0.10 / 7.0);
+	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
 	o.axis = AXIS[ni];
 
 	let pn = frame.light_near * vec4f(world, 1.0);

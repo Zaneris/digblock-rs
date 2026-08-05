@@ -45,6 +45,31 @@ fn main() {
 	// Compacted sand with horizontal strata banding.
 	let sand = load("Sand.png");
 	save("Sandstone.png", sandstone(&sand, &mut rng));
+
+	// Door leaf: wood with vertical plank seams and a slight overall
+	// darkening (the window lites are geometry, not texture).
+	let wood = load("Wood.png");
+	save("DoorWood.png", door(&wood, &mut rng));
+}
+
+/// Vertical plank seams every 16px (dark 2px groove with a light catch
+/// edge), a gentle overall darken, and per-pixel grain jitter.
+fn door(src: &RgbImage, rng: &mut Rng) -> RgbImage {
+	let mut out = src.clone();
+	for (x, _y, p) in out.enumerate_pixels_mut() {
+		let seam = x % 16;
+		let d = match seam {
+			0 => -38,
+			1 => -22,
+			2 => 14, // light catch on the plank edge
+			_ => 0,
+		};
+		let grain = rng.signed(6);
+		for c in p.0.iter_mut() {
+			*c = add8(*c, d - 10 + grain);
+		}
+	}
+	out
 }
 
 fn load(name: &str) -> RgbImage {

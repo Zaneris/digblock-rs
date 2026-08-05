@@ -18,12 +18,16 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 
 /// v7: server-dictated time of day (`Welcome.tod` + the periodic
 /// `ServerMsg::TimeOfDay` heartbeat).
-pub const PROTOCOL_VERSION: u16 = 7;
+/// v8: sub-block shapes — `EditKind::Interact` (door toggles),
+/// `ClientMsg::Alchemy`, placements may carry valid state nibbles
+/// (`shapes::state_valid` replaces the all-state-bits-refused rule), and
+/// `InventoryFull` may carry flagged sub-material ids.
+pub const PROTOCOL_VERSION: u16 = 8;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 7;
+pub const MIN_PROTOCOL: u16 = 8;
 
 // ---- handshake preamble ----------------------------------------------
 //

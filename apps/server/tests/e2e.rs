@@ -255,7 +255,7 @@ struct TestClient {
 	joined_names: Vec<String>,
 	/// Authoritative inventory snapshots received (join sends one right
 	/// after JournalDone — the reliable-ordering proof over real QUIC).
-	inventories: Vec<Vec<(BlockType, u32)>>,
+	inventories: Vec<Vec<(u16, u32)>>,
 	/// (from, text) chat lines, sender echoes included.
 	chats: Vec<(u8, String)>,
 }
@@ -295,8 +295,13 @@ impl TestClient {
 					self.spawn = spawn;
 					self.welcomed = true;
 				}
-				NetEvent::Edit { cell, block, .. } => {
-					self.edits.insert(cell, block);
+				NetEvent::Edit {
+					cell, cell_value, ..
+				} => {
+					self.edits.insert(
+						cell,
+						BlockType::from_id(digblock_core::chunk::cell_id(cell_value)),
+					);
 				}
 				NetEvent::Ack { .. } => self.acks += 1,
 				NetEvent::Refused { reason } => panic!("refused: {reason}"),
@@ -319,7 +324,7 @@ impl TestClient {
 	fn timed_dig(
 		&mut self,
 		player: &mut Player,
-		world: &dyn Fn(i32, i32, i32) -> Option<BlockType>,
+		world: &dyn Fn(i32, i32, i32) -> Option<u16>,
 		dir: Vec3,
 		hit: &digblock_core::raycast::RayHit,
 	) {
@@ -345,8 +350,8 @@ impl TestClient {
 		}
 		let seq = self.client.edits.begin(
 			hit.cell,
-			hit.block,
-			BlockType::Air,
+			hit.cell_value,
+			BlockType::Air as u16,
 			0,
 			hit.block.dig_drop().map(|d| (d, 1)),
 		);
@@ -432,13 +437,13 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	>;
 	let seed = a.seed;
 	let cache: ColumnCache = std::cell::RefCell::new(FxHashMap::default());
-	let world = move |x: i32, y: i32, z: i32| -> Option<BlockType> {
+	let world = move |x: i32, y: i32, z: i32| -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = digblock_core::chunk::split_world(x, y, z)?;
 		let mut cache = cache.borrow_mut();
 		let stack = cache
 			.entry((cx, cz))
 			.or_insert_with(|| digblock_core::worldgen::build_column(cx, cz, seed));
-		Some(stack[cy as usize].get(lx, ly, lz))
+		Some(stack[cy as usize].get_cell(lx, ly, lz))
 	};
 	let mut player = Player::new(a.spawn);
 	// Predicted idle ticks: inputs flow, and both the server player and
@@ -477,7 +482,7 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	let dig_dir2 = Vec3::new(-0.45, -1.0, 0.0).normalize();
 	let patched = |x: i32, y: i32, z: i32| {
 		if (x, y, z) == hit.cell {
-			Some(BlockType::Air)
+			Some(BlockType::Air as u16)
 		} else {
 			world(x, y, z)
 		}

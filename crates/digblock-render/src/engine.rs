@@ -52,6 +52,11 @@ pub struct EngineConfig {
 	/// without a second client). Set by the desktop launcher from
 	/// DIG_PLAYERBOX.
 	pub debug_playerbox: bool,
+	/// Debug: place a showcase of every shaped-block variant near spawn
+	/// (both stair materials × 4 facings, doors × facings × open/closed)
+	/// once chunks are Ready. Set by the desktop launcher from
+	/// DIG_SHAPES — visual verification without gameplay wiring.
+	pub debug_shapes: bool,
 	/// Spray droplets per waterfall-impact instance: 64 desktop, 24
 	/// mobile (was inferred in the renderer from draw_dist <= 10).
 	pub spray_droplets: u32,
@@ -98,6 +103,7 @@ impl EngineConfig {
 			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
+			debug_shapes: false,
 			spray_droplets: 64,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			fog_start_frac: 0.70,
@@ -127,6 +133,7 @@ impl EngineConfig {
 			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
+			debug_shapes: false,
 			spray_droplets: 24,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			fog_start_frac: 0.70,
@@ -279,6 +286,9 @@ pub struct Engine {
 	ui_hits: crate::ui::HitMap<crate::ui::InvId>,
 	/// The drag-and-drop overflow inventory screen (I toggles).
 	inv_screen: crate::ui::screens::inventory::InvScreen,
+	/// The alchemy screen (K toggles): block → sub-material conversion
+	/// and shaped-item crafting.
+	alch_screen: crate::ui::screens::alchemy::AlchScreen,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
 	/// Scratch for the grid snapshot (`iter_nonzero`), reused per frame.
@@ -323,6 +333,10 @@ pub struct Engine {
 	/// gate for local and connected play; connected, the server also
 	/// enforces its own copy.
 	spawn_cooldown: f32,
+	/// DIG_SHAPES=1 showcase cells not yet placed (chunks stream in
+	/// asynchronously; each update retries what's left). Empty = done
+	/// or disabled.
+	debug_shapes_pending: Vec<(i32, i32, i32, u16)>,
 }
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
@@ -332,6 +346,60 @@ struct DigProgress {
 	block: BlockType,
 	ticks: u16,
 	required: u16,
+}
+
+/// Stair/door placement facing from the look direction: the dominant
+/// horizontal axis, ascending/facing AWAY from the placer. The server
+/// accepts the client-chosen facing (validated by `state_valid`), so no
+/// re-derivation can disagree.
+fn quantized_facing(dir: Vec3) -> digblock_core::shapes::Facing {
+	use digblock_core::shapes::Facing;
+	if dir.x.abs() >= dir.z.abs() {
+		if dir.x >= 0.0 {
+			Facing::PosX
+		} else {
+			Facing::NegX
+		}
+	} else if dir.z >= 0.0 {
+		Facing::PosZ
+	} else {
+		Facing::NegZ
+	}
+}
+
+/// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye
+/// height near spawn (render verification needs no ground) — both stair
+/// materials × 4 facings, then closed and open doors.
+fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{door_state, stair_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for (i, f) in Facing::ALL.into_iter().enumerate() {
+		let x = bx + 2 * i as i32 - 3;
+		out.push((x, by, bz + 4, make_cell(B::WoodStairs, stair_state(f))));
+		out.push((x, by, bz + 6, make_cell(B::StoneStairs, stair_state(f))));
+		for (dz, open) in [(8, false), (10, true)] {
+			out.push((
+				x,
+				by,
+				bz + dz,
+				make_cell(B::WoodDoor, door_state(f, open, false)),
+			));
+			out.push((
+				x,
+				by + 1,
+				bz + dz,
+				make_cell(B::WoodDoor, door_state(f, open, true)),
+			));
+		}
+	}
+	out
 }
 
 fn ms_since(t: web_time::Instant) -> f32 {
@@ -453,6 +521,11 @@ impl Engine {
 			player_save_accum: 0.0,
 			spawn_pos: spawn,
 			spawn_cooldown: 0.0,
+			debug_shapes_pending: if config.debug_shapes {
+				debug_shapes_plan(spawn)
+			} else {
+				Vec::new()
+			},
 			config,
 			seed,
 			renderer: None,
@@ -502,6 +575,7 @@ impl Engine {
 			ui_dl: crate::ui::DrawList::default(),
 			ui_hits: crate::ui::HitMap::default(),
 			inv_screen: Default::default(),
+			alch_screen: Default::default(),
 			return_spawn_requested: false,
 			grid_scratch: Vec::new(),
 		}
@@ -899,9 +973,9 @@ impl Engine {
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
 	/// chunk hasn't generated yet and applies them pre-mesh when it lands.
-	fn apply_remote_edit(&mut self, cell: (i32, i32, i32), block: BlockType) {
+	fn apply_remote_edit(&mut self, cell: (i32, i32, i32), cell_value: u16) {
 		self.pipeline
-			.apply_authoritative(cell.0, cell.1, cell.2, block);
+			.apply_authoritative(cell.0, cell.1, cell.2, cell_value);
 	}
 
 	/// Newest-last message feed; oldest drops when full so a join wave
@@ -956,10 +1030,11 @@ impl Engine {
 				} => self.pending_ack = Some((acked_input_tick, me)),
 				NetEvent::Edit {
 					cell,
-					block,
+					cell_value,
 					superseded,
 					remote_author,
 				} => {
+					let block = BlockType::from_id(digblock_core::chunk::cell_id(cell_value));
 					// Another PLAYER's dig/place gets a quiet cue; fluid
 					// results (SERVER_ID) and join sync stay silent.
 					if let Some(author) = remote_author {
@@ -982,7 +1057,7 @@ impl Engine {
 							}
 						}
 					}
-					self.apply_remote_edit(cell, block);
+					self.apply_remote_edit(cell, cell_value);
 					// Our predictions on this cell lost to authority: the
 					// cell is owned by the broadcast value, but the server
 					// never applied our inventory deltas — take them back.
@@ -993,16 +1068,13 @@ impl Engine {
 				NetEvent::EditRejected(e) => {
 					// Revert the predicted edit: the cell AND the
 					// inventory delta (dig credit / place debit).
-					self.pipeline
-						.set_block(e.cell.0, e.cell.1, e.cell.2, e.prev);
+					self.pipeline.set_cell(e.cell.0, e.cell.1, e.cell.2, e.prev);
 					self.revert_inv_delta(e.inv_delta);
 				}
 				NetEvent::Inventory { counts } => {
-					// Authoritative base + our still-pending predictions.
-					let mut inv = Inventory::default();
-					for (b, n) in counts {
-						inv.add(b, n);
-					}
+					// Authoritative base (strict wire decode, sub-material
+					// families included) + our still-pending predictions.
+					let mut inv = Inventory::from_wire(&counts);
 					for e in net.edits.iter() {
 						match e.inv_delta {
 							Some((b, n)) if n > 0 => inv.add(b, n as u32),
@@ -1198,11 +1270,11 @@ impl Engine {
 	fn update_target(&mut self) {
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		let pipeline = &self.pipeline;
-		let block_at = |x: i32, y: i32, z: i32| pipeline.block_at(x, y, z);
+		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
 		self.target = if self.water_tool_selected() {
-			raycast_fluid(origin, dir, REACH, &block_at)
+			raycast_fluid(origin, dir, REACH, &cell_at)
 		} else {
-			raycast(origin, dir, REACH, &block_at)
+			raycast(origin, dir, REACH, &cell_at)
 		};
 	}
 
@@ -1289,13 +1361,36 @@ impl Engine {
 
 	/// The hold finished: apply the predicted dig/collect and credit the
 	/// drop. The server confirms (no-op) or rejects (cell + credit revert).
+	/// Digging either half of a door clears BOTH cells under one seq.
 	fn complete_dig(&mut self, hit: RayHit) {
-		let Some(prev) =
-			self.pipeline
-				.set_block(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Air)
-		else {
+		let air = BlockType::Air as u16;
+		let Some(prev_cell) = self.pipeline.cell_at(hit.cell.0, hit.cell.1, hit.cell.2) else {
 			return;
 		};
+		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
+		// (cell, prev) list this dig clears — a door adds its partner.
+		let mut cleared = vec![(hit.cell, prev_cell)];
+		if prev.is_door() {
+			let partner = digblock_core::shapes::door_partner(
+				hit.cell,
+				digblock_core::chunk::cell_state(prev_cell),
+			);
+			if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2) {
+				if BlockType::from_id(digblock_core::chunk::cell_id(pc)).is_door() {
+					cleared.push((partner, pc));
+				}
+			}
+		}
+		if self
+			.pipeline
+			.set_cell(hit.cell.0, hit.cell.1, hit.cell.2, air)
+			.is_none()
+		{
+			return;
+		}
+		for &(c, _) in &cleared[1..] {
+			self.pipeline.set_cell(c.0, c.1, c.2, air);
+		}
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
@@ -1304,6 +1399,7 @@ impl Engine {
 			pos: Some(cell_center(hit.cell)),
 			gain: 1.0,
 		});
+		// One credit even for the two-cell door.
 		let drop = prev.dig_drop();
 		if let Some(d) = drop {
 			self.inventory.add(d, 1);
@@ -1318,23 +1414,37 @@ impl Engine {
 					digblock_net::messages::EditKind::Dig
 				};
 				let tick = net.predictor.current_tick();
-				let seq =
-					net.edits
-						.begin(hit.cell, prev, BlockType::Air, tick, drop.map(|d| (d, 1)));
+				let entries: Vec<_> = cleared.iter().map(|&(c, p)| (c, p, air)).collect();
+				let seq = net.edits.begin_multi(&entries, tick, drop.map(|d| (d, 1)));
 				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0));
 			}
 			_ => {
-				self.fluid
-					.schedule_around(hit.cell.0, hit.cell.1, hit.cell.2);
+				for &(c, _) in &cleared {
+					self.fluid.schedule_around(c.0, c.1, c.2);
+				}
 			}
 		}
 	}
 
-	/// Resolve a pending right-click against the current target. Placement
-	/// is gated on stock — "you can only place what you gathered".
+	/// Resolve a pending right-click: USE beats PLACE — a door under the
+	/// interact ray toggles; otherwise placement against the plain
+	/// target, gated on stock ("you can only place what you gathered").
 	fn apply_place(&mut self) {
 		if !std::mem::take(&mut self.click_place) {
 			return;
+		}
+		// Use: the interact ray also finds an OPEN door's swung leaf,
+		// which the plain target ray passes through.
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		let pipeline = &self.pipeline;
+		let interact = digblock_core::raycast::raycast_interact(origin, dir, REACH, &|x, y, z| {
+			pipeline.cell_at(x, y, z)
+		});
+		if let Some(h) = interact {
+			if h.block.is_door() {
+				self.toggle_door(h);
+				return;
+			}
 		}
 		let Some(hit) = self.target else { return };
 		if hit.normal == (0, 0, 0) {
@@ -1350,46 +1460,173 @@ impl Engine {
 			hit.cell.1 + hit.normal.1,
 			hit.cell.2 + hit.normal.2,
 		);
-		// Never place inside the player — the shared occupied-cells
-		// contract (identical to the server's InsidePlayer scan).
-		let mut occupied = digblock_core::player::occupied_cells(self.camera.pos);
-		if occupied.any(|c| c == target) {
+		// Stairs carry the placer-derived facing (ascending away along
+		// the look); doors place as a lower+upper pair.
+		use digblock_core::chunk::make_cell;
+		use digblock_core::shapes::{door_state, stair_state};
+		let placed_cell = if block.is_stair() {
+			make_cell(block, stair_state(quantized_facing(dir)))
+		} else if block.is_door() {
+			make_cell(block, door_state(quantized_facing(dir), false, false))
+		} else {
+			block as u16
+		};
+		// Never place into the player — the shared shape-aware contract
+		// (identical to the server's InsidePlayer scan). Doors check
+		// both halves.
+		let mut placements = vec![(target, placed_cell)];
+		if block.is_door() {
+			let upper = (target.0, target.1 + 1, target.2);
+			// The upper cell must be free (mirrors the server's gate).
+			match self.pipeline.cell_at(upper.0, upper.1, upper.2) {
+				Some(c)
+					if !BlockType::from_id(digblock_core::chunk::cell_id(c))
+						.props()
+						.collides => {}
+				_ => return,
+			}
+			placements.push((
+				upper,
+				make_cell(block, door_state(quantized_facing(dir), false, true)),
+			));
+		}
+		if placements
+			.iter()
+			.any(|&(c, v)| digblock_core::player::placement_blocked(self.camera.pos, c, v))
+		{
 			return;
 		}
 		// Stock gate BEFORE the world mutation: no stock, no prediction.
+		// One debit covers a door's two cells.
 		if !self.inventory.try_take(block, 1) {
 			return;
 		}
-		let Some(prev) = self.pipeline.set_block(target.0, target.1, target.2, block) else {
-			self.inventory.add(block, 1); // refund: nothing happened
-			return;
-		};
+		let mut entries = Vec::new();
+		for &(c, v) in &placements {
+			match self.pipeline.set_cell(c.0, c.1, c.2, v) {
+				Some(prev) => entries.push((c, prev, v)),
+				None if entries.is_empty() => {
+					self.inventory.add(block, 1); // refund: nothing happened
+					return;
+				}
+				None => {}
+			}
+		}
 		self.emit(crate::audio::AudioCmd::Sfx {
 			sound: crate::audio::Sfx::Place,
 			pos: Some(cell_center(target)),
 			gain: 0.9,
 		});
-		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
-				let seq = net
-					.edits
-					.begin(target, prev, block, tick, Some((block, -1)));
+				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
 				net.send_edit(
 					seq,
 					tick,
 					origin,
 					dir,
-					digblock_net::messages::EditKind::Place {
-						block: block as u16,
-					},
+					digblock_net::messages::EditKind::Place { block: placed_cell },
 					hit.cell,
 					hit.normal,
 				);
 			}
 			_ => {
-				self.fluid.schedule_around(target.0, target.1, target.2);
+				for &(c, _, _) in &entries {
+					self.fluid.schedule_around(c.0, c.1, c.2);
+				}
+			}
+		}
+	}
+
+	/// Predict a door toggle on both halves and send the Interact (the
+	/// server re-raycasts and flips authoritatively). Offline it IS the
+	/// authority. Never consumes stock.
+	fn toggle_door(&mut self, hit: RayHit) {
+		use digblock_core::chunk::{cell_id, cell_state};
+		use digblock_core::shapes::{door_partner, door_toggled};
+		let cell = hit.cell;
+		let Some(cur) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
+			return;
+		};
+		if !BlockType::from_id(cell_id(cur)).is_door() {
+			return;
+		}
+		let partner = door_partner(cell, cell_state(cur));
+		let mut entries = vec![(cell, cur, door_toggled(cur))];
+		if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2) {
+			if BlockType::from_id(cell_id(pc)).is_door() {
+				entries.push((partner, pc, door_toggled(pc)));
+			}
+		}
+		// Closing must not trap anyone — locally gate on ourselves; the
+		// server gates on every player.
+		let closing = digblock_core::chunk::cell_state(cur) & 0b0100 != 0;
+		if closing
+			&& entries
+				.iter()
+				.any(|&(c, _, v)| digblock_core::player::placement_blocked(self.camera.pos, c, v))
+		{
+			return;
+		}
+		for &(c, _, v) in &entries {
+			self.pipeline.set_cell(c.0, c.1, c.2, v);
+		}
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::Place,
+			pos: Some(cell_center(cell)),
+			gain: 0.6,
+		});
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
+		if let Some(net) = self.net.as_mut() {
+			if net.ready() {
+				let tick = net.predictor.current_tick();
+				let seq = net.edits.begin_multi(&entries, tick, None);
+				net.send_edit(
+					seq,
+					tick,
+					origin,
+					dir,
+					digblock_net::messages::EditKind::Interact,
+					hit.cell,
+					hit.normal,
+				);
+			}
+		}
+	}
+
+	/// Apply an alchemy action: offline it IS the authority (the same
+	/// `apply_alchemy` rule the server runs); online it goes to the
+	/// server un-predicted — the `InventoryFull` echo is the rebase. The
+	/// screen already clamped to affordable counts, so online sends are
+	/// never no-ops.
+	fn apply_alchemy_action(&mut self, act: crate::ui::screens::alchemy::AlchAction) {
+		use crate::ui::screens::alchemy::AlchAction;
+		use digblock_core::inventory::{apply_alchemy, AlchemyOp};
+		let (core_op, wire_op) = match act {
+			AlchAction::Convert { block, count } => (
+				AlchemyOp::Convert { block, count },
+				digblock_net::messages::AlchemyOp::Convert {
+					block: block as u16,
+					count,
+				},
+			),
+			AlchAction::Craft { item, count } => (
+				AlchemyOp::Craft { item, count },
+				digblock_net::messages::AlchemyOp::Craft {
+					item: item as u16,
+					count,
+				},
+			),
+		};
+		match self.net.as_mut() {
+			Some(net) if net.ready() => net.send_alchemy(wire_op),
+			_ => {
+				if apply_alchemy(&mut self.inventory, core_op) {
+					if let AlchAction::Craft { item, .. } = act {
+						self.hotbar.auto_assign(item);
+					}
+				}
 			}
 		}
 	}
@@ -1628,8 +1865,9 @@ impl Game for Engine {
 		// held state.
 		if self.menu.is_open() {
 			// The menu can surface underneath the inventory (disconnect,
-			// leave-server) — the screen yields rather than stacking.
+			// leave-server) — the screens yield rather than stacking.
 			self.inv_screen.close();
+			self.alch_screen.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
@@ -1676,6 +1914,39 @@ impl Game for Engine {
 							let _ = self.hotbar.clear_slot(slot);
 						}
 						None => {}
+					}
+				}
+			}
+			return;
+		}
+		// Alchemy open: cursor is free; clicks resolve to convert/craft
+		// actions applied below. K/Escape close (Escape consumed like the
+		// inventory's).
+		if self.alch_screen.is_open() {
+			match event {
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.keys = HeldKeys::default();
+					self.touch.clear();
+					self.dig_held = false;
+					self.alch_screen.handle_input(
+						&InputEvent::FocusLost,
+						&self.ui_hits,
+						&crate::ui::Style::new(self.ui_scale),
+						&crate::ui::screens::alchemy::AlchView::build(&self.inventory),
+					);
+				}
+				InputEvent::Key {
+					key: Key::K | Key::Escape,
+					pressed: true,
+				} => self.alch_screen.close(),
+				_ => {
+					let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
+					let style = crate::ui::Style::new(self.ui_scale);
+					let act = self
+						.alch_screen
+						.handle_input(&event, &self.ui_hits, &style, &view);
+					if let Some(act) = act {
+						self.apply_alchemy_action(act);
 					}
 				}
 			}
@@ -1752,6 +2023,13 @@ impl Game for Engine {
 						self.inv_screen.open();
 					}
 				}
+				Key::K => {
+					if pressed {
+						self.keys = HeldKeys::default();
+						self.dig_held = false;
+						self.alch_screen.open();
+					}
+				}
 				// Home: same request the menu row raises; update() gates
 				// it on the shared cooldown.
 				Key::H => {
@@ -1821,6 +2099,16 @@ impl Game for Engine {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
 		self.time_secs = (self.time_secs + dt) % 600.0;
+		// DIG_SHAPES showcase: chunks stream in asynchronously, so retry
+		// the leftovers each frame until every cell has landed.
+		if !self.debug_shapes_pending.is_empty() {
+			let mut pending = std::mem::take(&mut self.debug_shapes_pending);
+			pending.retain(|&(x, y, z, cell)| {
+				self.pipeline.cell_at(x, y, z) != Some(cell)
+					&& self.pipeline.set_cell(x, y, z, cell).is_none()
+			});
+			self.debug_shapes_pending = pending;
+		}
 		// A fixed --tod freezes the sun angle but keeps the wide-cascade
 		// refresh cadence (the map must still track streamed-in chunks).
 		let fixed_tod = self.config.tod;
@@ -1920,7 +2208,7 @@ impl Game for Engine {
 				_ => {
 					let pipeline = &self.pipeline;
 					let pos = digblock_core::player::ascend_clear(self.spawn_pos, &|x, y, z| {
-						pipeline.block_at(x, y, z)
+						pipeline.cell_at(x, y, z)
 					});
 					self.apply_teleport(pos);
 				}
@@ -2036,7 +2324,7 @@ impl Game for Engine {
 			let dir = self.camera.dir();
 			self.tick_accum = (self.tick_accum + dt).min(0.25);
 			let pipeline = &self.pipeline;
-			let block_at = |x: i32, y: i32, z: i32| pipeline.block_at(x, y, z);
+			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
 			match self.net.as_mut() {
 				Some(net) if net.ready() => {
 					// Reconcile against the latest snapshot before predicting
@@ -2046,7 +2334,7 @@ impl Game for Engine {
 						use digblock_net::predict::Reconciled;
 						if let Reconciled::Replayed { error } =
 							net.predictor
-								.reconcile(&mut self.player, tick, state, &block_at)
+								.reconcile(&mut self.player, tick, state, &cell_at)
 						{
 							self.correction_offset += error;
 							self.net_corrections += 1;
@@ -2056,14 +2344,14 @@ impl Game for Engine {
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
 						net.predictor
-							.predict(&mut self.player, intent, dir, &block_at);
+							.predict(&mut self.player, intent, dir, &cell_at);
 					}
 					net.send_inputs();
 				}
 				_ => {
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
-						self.player.tick(TICK, dir, intent, &block_at);
+						self.player.tick(TICK, dir, intent, &cell_at);
 					}
 				}
 			}
@@ -2198,6 +2486,9 @@ impl Game for Engine {
 			if self.inv_screen.is_open() {
 				// Screen first: its dim/panel sit under the bar's quads.
 				self.inv_screen.build(&mut ui, size, &self.grid_scratch);
+			} else if self.alch_screen.is_open() {
+				let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
+				self.alch_screen.build(&mut ui, size, &view);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -2238,7 +2529,7 @@ impl Game for Engine {
 	}
 
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open() && !self.inv_screen.is_open()
+		!self.menu.is_open() && !self.inv_screen.is_open() && !self.alch_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
