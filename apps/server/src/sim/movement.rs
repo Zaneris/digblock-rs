@@ -31,6 +31,11 @@ impl Sim {
 			let Some(clean) = sanitize(input) else {
 				continue;
 			};
+			// First-wins is load-bearing: the client freezes each tick's
+			// claim at first send and reconciles acks against that frozen
+			// value. Last-wins here would adopt replay-rewritten re-sends
+			// the client no longer judges by, reintroducing the
+			// standing-still reconcile ping-pong at high ping.
 			client.inputs.entry(clean.tick).or_insert(clean);
 		}
 		while client.inputs.len() > INPUT_BUF_CAP {

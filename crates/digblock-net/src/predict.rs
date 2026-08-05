@@ -2,10 +2,17 @@
 //!
 //! Each predicted tick runs the real `Player::tick` and records
 //! (input, post-state); the post-state rides the wire as the adoption
-//! envelope claim. On a snapshot ack, the buffered post-state at the
-//! acked tick is compared against the server's — a match (the common
-//! case: the server adopted our claims) costs nothing, a mismatch rewinds
-//! to the server state and replays the still-unacked inputs.
+//! envelope claim, frozen at first send. On a snapshot ack, the claim we
+//! actually SENT for the acked tick is compared against the server's
+//! state — a match (the common case: the server adopted our claims)
+//! costs nothing, a mismatch rewinds to the server state and replays the
+//! still-unacked inputs. Comparing against the sent claim rather than
+//! the live post-state matters at high ping: a replay rewrites the
+//! buffered post-states, but the server (first-wins input dedup) adopted
+//! the ORIGINAL in-flight claims — judging its echo of those against the
+//! rewritten values re-replays every snapshot, and at rest (an exact
+//! fixed point on both sides) that ping-pong never decays, vibrating the
+//! camera at RTT period.
 //!
 //! Chosen simplification: replay runs against the LIVE world (which
 //! already contains predicted-but-unconfirmed block edits), not the world
@@ -31,6 +38,12 @@ struct BufEntry {
 	intent: PlayerIntent,
 	dir: Vec3,
 	post: PlayerState,
+	/// Claim actually put on the wire, frozen at first batching. Re-sends
+	/// repeat it verbatim (one claim per tick even under datagram loss),
+	/// and reconcile compares acks against it: the server's first-wins
+	/// input dedup means THIS — not a replay-rewritten `post` — is what
+	/// the server adopted.
+	sent: Option<PlayerState>,
 }
 
 pub struct Predictor {
@@ -88,26 +101,31 @@ impl Predictor {
 			intent,
 			dir,
 			post: player.state(),
+			sent: None,
 		});
 		tick
 	}
 
 	/// The last ≤ `INPUT_REDUNDANCY` unacked inputs as a wire batch,
 	/// oldest-first.
-	pub fn input_batch(&self) -> InputBatch {
+	pub fn input_batch(&mut self) -> InputBatch {
 		let start = self.buf.len().saturating_sub(INPUT_REDUNDANCY);
+		let active_slot = self.active_slot;
 		let inputs = self
 			.buf
-			.iter()
+			.iter_mut()
 			.skip(start)
-			.map(|e| InputTick {
-				tick: e.tick,
-				move_axis: e.intent.move_axis.to_array(),
-				jump: e.intent.jump,
-				look: e.dir.to_array(),
-				claimed_pos: e.post.pos.to_array(),
-				claimed_vel: e.post.vel.to_array(),
-				active_slot: self.active_slot,
+			.map(|e| {
+				let claim = *e.sent.get_or_insert(e.post);
+				InputTick {
+					tick: e.tick,
+					move_axis: e.intent.move_axis.to_array(),
+					jump: e.intent.jump,
+					look: e.dir.to_array(),
+					claimed_pos: claim.pos.to_array(),
+					claimed_vel: claim.vel.to_array(),
+					active_slot,
+				}
 			})
 			.collect();
 		InputBatch { inputs }
@@ -137,11 +155,17 @@ impl Predictor {
 		}
 		self.last_acked = acked_tick;
 
+		// Judge the server against the claim we SENT for that tick (falling
+		// back to `post` if it never hit the wire): a server state matching
+		// what we told it means it adopted our view, and any difference from
+		// our current state is our own later replay — which the server
+		// converges to by adopting the newer in-flight claims. Re-replaying
+		// here instead is the standing-still RTT-period vibration.
 		let predicted = self
 			.buf
 			.iter()
 			.find(|e| e.tick == acked_tick)
-			.map(|e| e.post);
+			.map(|e| e.sent.unwrap_or(e.post));
 		// Drop everything the server has consumed.
 		while matches!(self.buf.front(), Some(e) if e.tick <= acked_tick) {
 			self.buf.pop_front();
@@ -302,6 +326,86 @@ mod tests {
 			pred.reconcile(&mut player, 110, post, &flat_world),
 			Reconciled::InSync
 		);
+	}
+
+	/// The high-ping standing-still bug: after a replay, snapshots echoing
+	/// the ORIGINAL in-flight claims (which the server adopted, first-wins)
+	/// must read as InSync against the frozen sent claims — re-replaying
+	/// them ping-pongs both endpoints at RTT period forever, because rest
+	/// is an exact fixed point on both sides.
+	#[test]
+	fn crossed_adoption_converges_without_ping_pong() {
+		let mut player = landed_player();
+		let rest = player.state();
+		let mut pred = Predictor::new(100);
+		// Idle at rest, batching each tick like the per-frame send loop —
+		// every claim freezes at `rest`.
+		for _ in 0..20 {
+			pred.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+			pred.input_batch();
+		}
+		// Server disagrees by 5 mm (an underrun/coast seed): replay to S.
+		let mut s = rest;
+		s.pos.x += 0.005;
+		let r = pred.reconcile(&mut player, 109, s, &flat_world);
+		assert!(matches!(r, Reconciled::Replayed { .. }));
+		let replayed = player.state();
+		// One RTT later the server has adopted our in-flight `rest` claims
+		// and echoes them. That matches what we sent for tick 115 — stay
+		// put; the server converges to us via the newer claims.
+		let r = pred.reconcile(&mut player, 115, rest, &flat_world);
+		assert_eq!(r, Reconciled::InSync);
+		assert_eq!(player.state(), replayed, "no snap back");
+	}
+
+	#[test]
+	fn genuine_rejection_still_replays() {
+		let mut player = landed_player();
+		let rest = player.state();
+		let mut pred = Predictor::new(100);
+		for _ in 0..20 {
+			pred.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+			pred.input_batch();
+		}
+		// Server state matching neither the sent claims nor any post —
+		// e.g. the envelope rejected us. Every ack must keep correcting.
+		let mut s = rest;
+		s.pos.x += 2.0;
+		let r = pred.reconcile(&mut player, 109, s, &flat_world);
+		assert!(matches!(r, Reconciled::Replayed { .. }));
+		let mut s2 = rest;
+		s2.pos.x += 2.5;
+		let r = pred.reconcile(&mut player, 115, s2, &flat_world);
+		assert!(matches!(r, Reconciled::Replayed { .. }));
+	}
+
+	/// Every wire copy of a tick must carry the identical claim: under
+	/// datagram loss the server may first receive a late redundancy copy,
+	/// and a replay-rewritten claim there would dodge the frozen record.
+	#[test]
+	fn resend_after_replay_repeats_frozen_claim() {
+		let mut player = landed_player();
+		let rest = player.state();
+		let mut pred = Predictor::new(100);
+		for _ in 0..10 {
+			pred.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+		}
+		pred.input_batch(); // freeze ticks 106..=109 at `rest`
+		let mut s = rest;
+		s.pos.x += 0.5;
+		let r = pred.reconcile(&mut player, 105, s, &flat_world);
+		assert!(matches!(r, Reconciled::Replayed { .. }));
+		// Re-sent ticks repeat the frozen claim, not the rewritten post.
+		for i in pred.input_batch().inputs {
+			assert_eq!(i.claimed_pos, rest.pos.to_array());
+		}
+		// Ticks predicted after the replay claim the new trajectory.
+		pred.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
+		let post = player.state();
+		let batch = pred.input_batch();
+		let last = batch.inputs.last().unwrap();
+		assert_eq!(last.tick, 110);
+		assert_eq!(last.claimed_pos, post.pos.to_array());
 	}
 
 	#[test]
