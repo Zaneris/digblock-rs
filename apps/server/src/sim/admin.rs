@@ -17,6 +17,8 @@ const COMMANDS: &[(&str, &str)] = &[
 		"/tp <x> <z> [n|s|e|w]",
 		"teleport to the column top; ~ or ~<d> = relative, facing optional",
 	),
+	("/goto <name>", "teleport to an online player"),
+	("/bring <name>", "teleport an online player to you"),
 	("/ban <name>", "ban an online player by IP and kick them"),
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
@@ -89,6 +91,8 @@ impl Sim {
 				self.reply(conn_id, "compass: e = sunrise (-x), n = -z");
 			}
 			"/tp" => self.cmd_tp(conn_id, &args),
+			"/goto" => self.cmd_goto(conn_id, &args),
+			"/bring" => self.cmd_bring(conn_id, &args),
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
 			"/unban" => self.cmd_unban(conn_id, &args),
@@ -137,6 +141,75 @@ impl Sim {
 			log::info!("admin {} teleported to {x} {z}", client.name);
 		}
 		self.reply(conn_id, &format!("teleported to {x} {z}"));
+	}
+
+	/// Resolve a display name to exactly one live connection, or a
+	/// reply-ready error line. Case-insensitive, same as `/ban`.
+	fn find_live_player(&self, name: &str) -> Result<u64, String> {
+		if validate_name(name).is_err() {
+			return Err(format!("{name} is not a player display name"));
+		}
+		let matches: Vec<u64> = self
+			.clients
+			.iter()
+			.filter(|(_, c)| c.name.eq_ignore_ascii_case(name))
+			.map(|(&id, _)| id)
+			.collect();
+		match matches[..] {
+			[id] if self.clients[&id].live => Ok(id),
+			[_] => Err(format!("{name} is still joining")),
+			[] => Err(format!("{name} is not online")),
+			_ => Err(format!("{} players named {name}", matches.len())),
+		}
+	}
+
+	fn cmd_goto(&mut self, conn_id: u64, args: &[&str]) {
+		let [name] = args else {
+			return self.reply(conn_id, "usage: /goto <name>");
+		};
+		let target = match self.find_live_player(name) {
+			Ok(id) => id,
+			Err(msg) => return self.reply(conn_id, &msg),
+		};
+		if target == conn_id {
+			return self.reply(conn_id, "that's you");
+		}
+		// The target's position already holds a player capsule, so it
+		// lands clear — no ascent needed.
+		let (pos, target_name) = {
+			let c = &self.clients[&target];
+			(c.player.pos, c.name.clone())
+		};
+		self.teleport_client(conn_id, pos, Vec3::ZERO);
+		if let Some(client) = self.clients.get(&conn_id) {
+			log::info!("admin {} teleported to {target_name}", client.name);
+		}
+		self.reply(conn_id, &format!("teleported to {target_name}"));
+	}
+
+	fn cmd_bring(&mut self, conn_id: u64, args: &[&str]) {
+		let [name] = args else {
+			return self.reply(conn_id, "usage: /bring <name>");
+		};
+		let target = match self.find_live_player(name) {
+			Ok(id) => id,
+			Err(msg) => return self.reply(conn_id, &msg),
+		};
+		if target == conn_id {
+			return self.reply(conn_id, "that's you");
+		}
+		let Some((pos, admin_name)) = self
+			.clients
+			.get(&conn_id)
+			.map(|c| (c.player.pos, c.name.clone()))
+		else {
+			return;
+		};
+		let target_name = self.clients[&target].name.clone();
+		self.teleport_client(target, pos, Vec3::ZERO);
+		self.reply(target, &format!("{admin_name} teleported you"));
+		log::info!("admin {admin_name} brought {target_name}");
+		self.reply(conn_id, &format!("brought {target_name}"));
 	}
 
 	fn cmd_ban(&mut self, conn_id: u64, args: &[&str]) {
@@ -442,6 +515,57 @@ mod tests {
 			.filter(|m| matches!(m, ServerMsg::Teleported { .. }))
 			.count();
 		assert_eq!(teleports_after, teleports, "no new Teleported");
+	}
+
+	#[test]
+	fn goto_and_bring_move_the_right_player() {
+		let mut sim = admin_sim("gotobring");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut guest = connect_named(&mut sim, 2, "guest");
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		// Separate them, then jump to the guest (case-insensitive).
+		sim.tick_once(vec![chat(1, "/tp 40 -20")]);
+		let gpos = sim.test_player(2).unwrap().pos;
+		sim.tick_once(vec![chat(1, "/goto GUEST")]);
+		admin.drain();
+		let apos = sim.test_player(1).unwrap().pos;
+		assert_eq!((apos.x, apos.z), (gpos.x, gpos.z));
+		assert!(server_lines(&admin)
+			.iter()
+			.any(|t| t.contains("teleported to guest")));
+
+		// Separate again, then bring the guest to the admin.
+		sim.tick_once(vec![chat(1, "/tp 40 -20")]);
+		let apos = sim.test_player(1).unwrap().pos;
+		sim.tick_once(vec![chat(1, "/bring guest")]);
+		admin.drain();
+		guest.drain();
+		let gpos = sim.test_player(2).unwrap().pos;
+		assert_eq!((gpos.x, gpos.z), (apos.x, apos.z));
+		assert!(guest
+			.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::Teleported { .. })));
+		assert!(server_lines(&guest)
+			.iter()
+			.any(|t| t.contains("boss teleported you")));
+		assert!(server_lines(&admin)
+			.iter()
+			.any(|t| t.contains("brought guest")));
+
+		// Edge cases: unknown player, self, missing arg — reply, no move.
+		let before = sim.test_player(1).unwrap().pos;
+		sim.tick_once(vec![chat(1, "/goto nosuch")]);
+		sim.tick_once(vec![chat(1, "/goto boss")]);
+		sim.tick_once(vec![chat(1, "/bring")]);
+		admin.drain();
+		let lines = server_lines(&admin);
+		assert!(lines.iter().any(|t| t.contains("not online")));
+		assert!(lines.iter().any(|t| t.contains("that's you")));
+		assert!(lines.iter().any(|t| t.contains("usage: /bring")));
+		let after = sim.test_player(1).unwrap().pos;
+		assert_eq!((after.x, after.z), (before.x, before.z));
 	}
 
 	#[test]
