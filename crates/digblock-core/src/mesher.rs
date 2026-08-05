@@ -392,9 +392,16 @@ fn emit_face(
 /// always emit; boundary quads cull against the neighbor's coverage of
 /// the shared plane (mask-driven, so stacked mirrored stairs and
 /// stair-against-wall cull correctly, cross-chunk included — the padded
-/// shell carries state). Shaped faces are flat ao = 3 and never occlude
-/// AO themselves (`occludes` keys on Opaque) — the Cutout precedent; a
-/// parent-corner AO upgrade needs no format change.
+/// shell carries state). Shaped faces RECEIVE parent-corner AO: the
+/// parent cell's full-cube `face_ao` toward the quad's direction,
+/// bilinearly sampled at each vertex's face-frame uv ([`lerp_ao`]) — the
+/// baker's uv mirrors `face_corners`, so uv (0,0)..(12,12) spans exactly
+/// the TL..BR corners `face_ao` scores, and a full boundary face shades
+/// bit-identically to the cube face it replaces. Interior quads project
+/// along the normal onto the same parent face (a recessed tread under a
+/// diagonal occluder darkens like the cube top would). Shaped cells
+/// still never CAST AO (`occludes` keys on Opaque) — the Cutout
+/// precedent; correct partial casting needs coverage-aware occlusion.
 #[inline(never)]
 fn emit_shaped(
 	out: &mut Vec<u32>,
@@ -408,6 +415,9 @@ fn emit_shaped(
 		.expect("Shaped class ⇒ registered shape");
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
 	let n = CHUNK_SIZE;
+	// Parent-cube face AO, computed once per direction that survives
+	// culling; every quad toward that direction interpolates from it.
+	let mut pao: [Option<[u32; 4]>; 6] = [None; 6];
 	for q in &variant.quads {
 		if q.boundary {
 			let dir = q.dir;
@@ -431,8 +441,19 @@ fn emit_shaped(
 				_ => {}
 			}
 		}
+		let fa = *pao[q.dir as usize].get_or_insert_with(|| face_ao(input, bx, by, bz, q.dir));
+		let ao: [u32; 4] =
+			std::array::from_fn(|ci| lerp_ao(fa, u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1])));
+		// Same diagonal-flip rule as emit_face: corner codes travel with
+		// their vertices, so emit order only steers the triangulation.
+		let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
+			[1, 3, 0, 2]
+		} else {
+			[0, 1, 2, 3]
+		};
 		let tex = me.texture(q.dir);
-		for (ci, corner) in q.corners.iter().enumerate() {
+		for &ci in &order {
+			let corner = q.corners[ci];
 			out.push(pack(
 				Vert {
 					pos: (
@@ -440,7 +461,7 @@ fn emit_shaped(
 						by as u32 * 12 + u32::from(corner[1]),
 						bz as u32 * 12 + u32::from(corner[2]),
 					),
-					ao: 3,
+					ao: ao[ci],
 				},
 				q.dir,
 				ci as u32,
@@ -453,6 +474,16 @@ fn emit_shaped(
 			));
 		}
 	}
+}
+
+/// Bilinear sample of a face's four corner AO levels ([TL, TR, BL, BR]
+/// at uv (0,0) (12,0) (0,12) (12,12)) at a lattice uv (0..=12), rounded
+/// to the nearest 2-bit level. At the corners it reproduces `face_ao`'s
+/// values exactly, so full shaped boundary faces match cube faces.
+#[inline]
+fn lerp_ao(c: [u32; 4], u: u32, v: u32) -> u32 {
+	let n = c[0] * (12 - u) * (12 - v) + c[1] * u * (12 - v) + c[2] * (12 - u) * v + c[3] * u * v;
+	(n + 72) / 144
 }
 
 /// Flat-index delta to the padded neighbor cell, per `Dir`.
@@ -648,11 +679,11 @@ mod tests {
 	}
 
 	#[test]
-	fn shaped_faces_are_flat_ao_and_match_full_block_conventions() {
+	fn shaped_faces_are_open_field_ao_and_match_full_block_conventions() {
 		let m = stair_mesh(crate::shapes::Facing::PosX);
 		assert!(!m.solid.is_empty());
 		for p in m.solid.chunks(2) {
-			assert_eq!(ao_of(p[0]), 3, "shaped faces are flat-lit");
+			assert_eq!(ao_of(p[0]), 3, "no occluders anywhere → full ao");
 		}
 		// The stair's full back boundary face (+x = Dir::West) must be
 		// bit-compatible with a full block's face geometry: same corner
@@ -672,6 +703,68 @@ mod tests {
 			})
 		});
 		assert!(found, "stair back face matches full-block conventions");
+	}
+
+	/// A shaped block's FULL boundary face shades exactly like the cube
+	/// face it replaces: same occluder, same per-corner-code AO as a
+	/// Dirt cube in the same cell — `lerp_ao` at uv (0,0)..(12,12) is
+	/// the identity on `face_ao`'s corner values.
+	#[test]
+	fn shaped_full_boundary_face_matches_cube_ao() {
+		use crate::chunk::make_cell;
+		use crate::shapes::{stair_state, Facing};
+		let ao_by_corner = |m: &MeshData| {
+			let q = quad_of(&m.solid, 8, 8, 8, Dir::West);
+			let mut by = [u32::MAX; 4];
+			for w0 in q {
+				by[corner_of(w0) as usize] = ao_of(w0);
+			}
+			by
+		};
+		// Occluder in the back face's neighbor layer (x = 9), +y side.
+		let mut stair = ChunkData::default();
+		stair.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
+		stair.set(9, 9, 8, B::Stone);
+		let mut cube = ChunkData::default();
+		cube.set(8, 8, 8, B::Dirt);
+		cube.set(9, 9, 8, B::Stone);
+		let a = ao_by_corner(&mesh_chunk(&isolated(&stair), ZERO));
+		let b = ao_by_corner(&mesh_chunk(&isolated(&cube), ZERO));
+		assert_eq!(a, b, "stair back == cube back, per corner code");
+		assert!(a.iter().any(|&v| v < 3), "the occluder actually darkens");
+	}
+
+	/// Parent-corner AO: with the parent top face's TL corner floored to
+	/// 0 (the both-sides rule; corner field [TL, TR, BL, BR] =
+	/// [0, 2, 2, 3]), tread vertices sample the cube's top-face field —
+	/// exact at parent corners, interpolated mid-face, and recessed
+	/// interior treads project onto the same parent face.
+	#[test]
+	fn shaped_vertices_interpolate_parent_face_ao() {
+		use crate::chunk::make_cell;
+		use crate::shapes::{stair_state, Facing};
+		let mut d = ChunkData::default();
+		d.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
+		d.set(9, 9, 8, B::Stone);
+		d.set(8, 9, 9, B::Stone);
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		// Top-facing vertex AO by raw twelfth position.
+		let ao_at = |x: u32, y: u32, z: u32| -> u32 {
+			m.solid
+				.chunks(2)
+				.find(|p| {
+					dir_of(p[0]) == Dir::Top as u32
+						&& (p[0] & 0xff, (p[0] >> 8) & 0xff, (p[0] >> 16) & 0xff) == (x, y, z)
+				})
+				.map(|p| ao_of(p[0]))
+				.expect("vertex present")
+		};
+		// Top tread (y = 108, ON the boundary plane).
+		assert_eq!(ao_at(108, 108, 108), 0, "TL parent corner exact");
+		assert_eq!(ao_at(108, 108, 96), 2, "BL parent corner exact");
+		assert_eq!(ao_at(104, 108, 108), 1, "mid-face: between TL 0 and TR 2");
+		// Recessed middle tread (y = 104, an interior plane).
+		assert_eq!(ao_at(104, 104, 108), 1, "interior tread inherits the field");
 	}
 
 	#[test]
