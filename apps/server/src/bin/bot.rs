@@ -256,7 +256,7 @@ fn run_bot(
 					result.edits_rejected += 1;
 					log::debug!("bot {index}: edit rejected at {:?}", e.cell);
 				}
-				NetEvent::Teleported { pos } => {
+				NetEvent::Teleported { pos, look: _ } => {
 					// Server-side return to spawn (bots never request one,
 					// but the client contract is to hard-adopt it).
 					if let Some(p) = player.as_mut() {
@@ -271,7 +271,8 @@ fn run_bot(
 				| NetEvent::PlayerJoined { .. }
 				| NetEvent::PlayerLeft { .. }
 				| NetEvent::Chat { .. }
-				| NetEvent::TimeOfDay { .. } => {}
+				| NetEvent::TimeOfDay { .. }
+				| NetEvent::AdminCommands { .. } => {}
 			}
 		}
 

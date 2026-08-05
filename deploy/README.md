@@ -40,6 +40,22 @@ On Windows: `digblock-server-windows-x86_64.exe` with the same flags
 on your router). You're responsible for restarts/autostart — on Linux a
 minimal systemd unit with `Restart=always` is the usual answer.
 
+## Admin commands
+
+Set `DIGBLOCK_ADMIN_NAME` (or `--admin-name`) to a player display name;
+whoever joins under that name gets chat commands (open chat with T):
+
+- `/help` — list commands
+- `/tp <x> <z> [n|s|e|w]` — teleport to the topmost block at that
+  column, optionally facing a compass direction (east = sunrise);
+  `~` or `~<d>` teleports relative to where you stand
+- `/ban <name>` — ban an online player by IP and kick them
+- `/ban-list`, `/unban <name-or-ip>` — inspect and undo bans
+
+Bans persist in `./data/bans.json` (hand-editable; the server rereads
+it only at startup). The name check is exact (case-insensitive), so
+pick a name you actually join with.
+
 ## Operating
 
 - **Upgrade:** `docker compose pull && docker compose up -d`

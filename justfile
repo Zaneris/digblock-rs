@@ -17,7 +17,8 @@ master *ARGS:
 
 # Dedicated multiplayer server (headless). Journal persists in ./data.
 # Requires a running master: joining is token-only, so a server without a
-# master registration can admit no one.
+# master registration can admit no one. --admin-name <player> grants that
+# player /help /tp /ban /ban-list /unban in chat.
 # e.g. just server -- --master-url http://127.0.0.1:5200 --advertise-host 127.0.0.1
 server *ARGS:
 	cargo run -p digblock-server --bin digblock-server -- {{ARGS}}
@@ -53,7 +54,7 @@ play *ARGS:
 	until curl -sf http://127.0.0.1:5200/api/servers >/dev/null 2>&1; do sleep 0.2; done
 	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
 		--advertise-host 127.0.0.1 --probe-host host.docker.internal \
-		--server-name "Local World" &
+		--server-name "Local World" --admin-name "${DIGBLOCK_ADMIN_NAME:-admin}" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
 	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
@@ -120,7 +121,7 @@ play-web:
 	until curl -sf http://127.0.0.1:5200/api/servers >/dev/null 2>&1; do sleep 0.2; done
 	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
 		--advertise-host 127.0.0.1 --probe-host host.docker.internal \
-		--server-name "Local World" &
+		--server-name "Local World" --admin-name "${DIGBLOCK_ADMIN_NAME:-admin}" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
 	echo "→ http://localhost:8080/?master=http://127.0.0.1:5200"

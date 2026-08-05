@@ -29,6 +29,8 @@ pub enum Key {
 	Escape,
 	Enter,
 	Backspace,
+	/// Chat command autocomplete.
+	Tab,
 	Other,
 }
 
@@ -131,6 +133,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Escape => Key::Escape,
 		K::Enter | K::NumpadEnter => Key::Enter,
 		K::Backspace => Key::Backspace,
+		K::Tab => Key::Tab,
 		_ => Key::Other,
 	}
 }

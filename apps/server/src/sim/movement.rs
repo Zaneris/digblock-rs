@@ -44,6 +44,19 @@ impl Sim {
 			if !client.live {
 				continue;
 			}
+			// Hold on unloaded ground: right after an admin /tp the
+			// target column may still be generating, and unloaded cells
+			// read as air — stepping physics would free-fall the player
+			// through the world. Freeze (position kept, velocity shed)
+			// until the store answers for the column under their feet.
+			let (cx, cz) = super::column_of(client.player.pos);
+			if !store.column_ready(cx, cz) {
+				client.player.set_state(PlayerState {
+					pos: client.player.pos,
+					vel: Vec3::ZERO,
+				});
+				continue;
+			}
 			// Drain toward the target jitter-buffer depth: normally one
 			// input per tick; two when the buffer has backed up.
 			let consume = if client.inputs.len() > (JITTER_BUFFER_TICKS + 2) as usize {

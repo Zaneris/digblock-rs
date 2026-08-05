@@ -268,6 +268,7 @@ async fn handle_connection(
 		.send(SimEvent::Connected {
 			conn_id,
 			out: out_tx,
+			addr: conn.remote_address(),
 		})
 		.is_err()
 	{

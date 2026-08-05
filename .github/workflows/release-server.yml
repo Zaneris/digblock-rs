@@ -161,7 +161,7 @@ jobs:
           ./digblock-server-linux-x86_64 --server-name "My World"
           ```
 
-          You're listed at the public IP you register from; `--advertise-host` overrides it with a DNS name.
+          You're listed at the public IP you register from; `--advertise-host` overrides it with a DNS name. Set `DIGBLOCK_ADMIN_NAME` (or `--admin-name`) to your display name for in-game admin chat commands: `/tp`, `/ban`, `/ban-list`, `/unban`.
 
           Image: `ghcr.io/zaneris/digblock-server:${{ inputs.version }}`. See the attached README.md for operating notes (upgrades, backups, seeds).
           EOF

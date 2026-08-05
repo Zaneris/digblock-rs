@@ -253,12 +253,15 @@ pub enum ServerMsg {
 		from: PlayerId,
 		text: String,
 	},
-	/// The server moved YOUR player (return to spawn). Hard-set — the
-	/// client drops its prediction buffer and in-flight acks instead of
-	/// smoothing across the map. Remote players just see the jump in
-	/// snapshots.
+	/// The server moved YOUR player (return to spawn, admin /tp).
+	/// Hard-set — the client drops its prediction buffer and in-flight
+	/// acks instead of smoothing across the map. Remote players just see
+	/// the jump in snapshots.
 	Teleported {
 		pos: [f32; 3],
+		/// Facing to adopt on arrival; all-zeros = keep the current
+		/// view (return-to-spawn). Appended in v9.
+		look: [f32; 3],
 	},
 	/// Authoritative world-clock heartbeat, broadcast every
 	/// [`TOD_SYNC_TICKS`](crate::protocol::TOD_SYNC_TICKS): the client
@@ -266,6 +269,14 @@ pub enum ServerMsg {
 	/// far below visible). Added in v7.
 	TimeOfDay {
 		tod: f32,
+	},
+	/// The server's chat-command set, sent only to clients that may use
+	/// it (the configured admin) after join sync. `(usage, description)`
+	/// pairs, e.g. `("/tp <x> <z> [n|s|e|w]", "teleport to column
+	/// top")`. Drives the client's chat Tab-autocomplete; the client
+	/// bakes in no command knowledge. Added in v9.
+	AdminCommands {
+		commands: Vec<(String, String)>,
 	},
 }
 
@@ -405,6 +416,10 @@ mod tests {
 			},
 			ServerMsg::Teleported {
 				pos: [0.5, 140.5, 0.5],
+				look: [0.0, 0.0, -1.0],
+			},
+			ServerMsg::AdminCommands {
+				commands: vec![("/ban <name>".into(), "ban by IP".into())],
 			},
 		];
 		for m in msgs {
@@ -585,11 +600,27 @@ mod tests {
 
 		let t = ServerMsg::Teleported {
 			pos: [1.0, 0.0, 0.0],
+			look: [0.0, 0.0, 1.0],
 		};
 		assert_eq!(
 			postcard::to_stdvec(&t).unwrap(),
-			// variant 10, pos x 1.0 le f32, zeros
-			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0]
+			// variant 10, pos x 1.0 le f32, zeros, look z 1.0 le f32
+			// (look appended in v9)
+			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63]
+		);
+	}
+
+	/// Golden bytes for the v9 admin-command advertisement. Same contract
+	/// as the goldens above.
+	#[test]
+	fn golden_admin_commands_encoding() {
+		let m = ServerMsg::AdminCommands {
+			commands: vec![("/x".into(), "y".into())],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&m).unwrap(),
+			// variant 12, len 1, "/x", "y"
+			vec![12, 1, 2, 47, 120, 1, 121]
 		);
 	}
 

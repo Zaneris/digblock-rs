@@ -89,11 +89,18 @@ pub enum NetEvent {
 		from: PlayerId,
 		text: String,
 	},
-	/// The server teleported us (return to spawn). Hard-set the player
-	/// there — the predictor has already dropped its pre-teleport buffer
-	/// and in-flight acks.
+	/// The server teleported us (return to spawn, admin /tp). Hard-set
+	/// the player there — the predictor has already dropped its
+	/// pre-teleport buffer and in-flight acks. `look` zero = keep the
+	/// current view; non-zero = adopt this facing.
 	Teleported {
 		pos: Vec3,
+		look: Vec3,
+	},
+	/// The server's chat-command set (admin only): `(usage, description)`
+	/// pairs for the chat box's Tab-autocomplete.
+	AdminCommands {
+		commands: Vec<(String, String)>,
 	},
 	/// World-clock heartbeat: hard-set the sun's angle (inter-beat drift
 	/// is far below visible, so no smoothing is needed).
@@ -387,13 +394,17 @@ impl NetClient {
 				out.push(NetEvent::PlayerLeft { id });
 			}
 			ServerMsg::Chat { from, text } => out.push(NetEvent::Chat { from, text }),
-			ServerMsg::Teleported { pos } => {
+			ServerMsg::Teleported { pos, look } => {
 				self.predictor.on_teleport();
 				out.push(NetEvent::Teleported {
 					pos: Vec3::from_array(pos),
+					look: Vec3::from_array(look),
 				});
 			}
 			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
+			ServerMsg::AdminCommands { commands } => {
+				out.push(NetEvent::AdminCommands { commands });
+			}
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged

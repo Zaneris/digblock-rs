@@ -14,6 +14,8 @@ pub enum ChatAction {
 	Send(String),
 	/// The box closed without sending (Escape, or Enter on empty).
 	Closed,
+	/// Tab completed a command: show this usage line as a feed hint.
+	Hint(String),
 }
 
 /// Immutable per-frame view for the overlay.
@@ -32,11 +34,23 @@ pub struct Chat {
 	/// `Text` event a moment later — swallow exactly that one so the
 	/// buffer doesn't start with a stray "t".
 	suppress_text: bool,
+	/// Server-advertised `(usage, description)` command pairs (admin
+	/// only; empty otherwise). The client bakes in no command knowledge —
+	/// Tab completes against usage's first token.
+	commands: Vec<(String, String)>,
+	/// Tab-cycle state: the stem being completed and the next match
+	/// index. Cleared by any other edit.
+	cycle: Option<(String, usize)>,
 }
 
 impl Chat {
 	pub fn is_open(&self) -> bool {
 		self.open
+	}
+
+	/// Install the server's command set (`ServerMsg::AdminCommands`).
+	pub fn set_commands(&mut self, commands: Vec<(String, String)>) {
+		self.commands = commands;
 	}
 
 	pub fn open(&mut self) {
@@ -65,6 +79,7 @@ impl Chat {
 				}
 				if self.buffer.chars().count() < MAX_CHAT_LEN && matches!(ch, ' '..='~') {
 					self.buffer.push(*ch);
+					self.cycle = None;
 				}
 				None
 			}
@@ -72,7 +87,12 @@ impl Chat {
 				Key::Backspace => {
 					self.suppress_text = false;
 					self.buffer.pop();
+					self.cycle = None;
 					None
+				}
+				Key::Tab => {
+					self.suppress_text = false;
+					self.complete()
 				}
 				Key::Enter => {
 					self.open = false;
@@ -98,6 +118,37 @@ impl Chat {
 			},
 			_ => None,
 		}
+	}
+
+	/// Tab: prefix-complete the command token against the advertised
+	/// set, cycling through matches on repeated presses. Only while the
+	/// buffer is a bare `/stem` (no arguments yet); no-op when nothing
+	/// was advertised (non-admin, or an older server).
+	fn complete(&mut self) -> Option<ChatAction> {
+		if !self.buffer.starts_with('/') || self.buffer.contains(' ') {
+			return None;
+		}
+		// Repeated Tab keeps completing the ORIGINAL stem; any edit
+		// cleared `cycle`, so a stale stem can't resurrect.
+		let (stem, idx) = match self.cycle.take() {
+			Some(state) => state,
+			None => (self.buffer.clone(), 0),
+		};
+		let matches: Vec<&(String, String)> = self
+			.commands
+			.iter()
+			.filter(|(usage, _)| {
+				usage
+					.split_ascii_whitespace()
+					.next()
+					.is_some_and(|name| name.starts_with(&stem))
+			})
+			.collect();
+		let (usage, desc) = matches.get(idx % matches.len().max(1))?;
+		let name = usage.split_ascii_whitespace().next().unwrap_or(usage);
+		self.buffer = name.to_string();
+		self.cycle = Some((stem, idx + 1));
+		Some(ChatAction::Hint(format!("{usage} - {desc}")))
 	}
 }
 
@@ -179,6 +230,59 @@ mod tests {
 			text(&mut c, "x");
 		}
 		assert_eq!(c.view(false).line.len(), MAX_CHAT_LEN);
+	}
+
+	fn with_commands() -> Chat {
+		let mut c = Chat::default();
+		c.set_commands(vec![
+			("/help".into(), "list admin commands".into()),
+			("/ban <name>".into(), "ban by IP".into()),
+			("/ban-list".into(), "list bans".into()),
+			("/tp <x> <z>".into(), "teleport".into()),
+		]);
+		c.open();
+		c.suppress_text = false;
+		c
+	}
+
+	#[test]
+	fn tab_completes_and_cycles_matches() {
+		let mut c = with_commands();
+		text(&mut c, "/b");
+		let hint = key(&mut c, Key::Tab);
+		assert_eq!(c.view(false).line, "/ban");
+		assert_eq!(
+			hint,
+			Some(ChatAction::Hint("/ban <name> - ban by IP".into()))
+		);
+		// Repeated Tab cycles the ORIGINAL stem's matches.
+		key(&mut c, Key::Tab);
+		assert_eq!(c.view(false).line, "/ban-list");
+		key(&mut c, Key::Tab);
+		assert_eq!(c.view(false).line, "/ban");
+		// Typing resumes normal editing after a completion.
+		text(&mut c, " ted");
+		assert_eq!(c.view(false).line, "/ban ted");
+	}
+
+	#[test]
+	fn tab_is_a_no_op_without_commands_or_slash_or_with_args() {
+		let mut c = Chat::default();
+		c.open();
+		c.suppress_text = false;
+		text(&mut c, "/b");
+		assert_eq!(key(&mut c, Key::Tab), None); // nothing advertised
+		assert_eq!(c.view(false).line, "/b");
+
+		let mut c = with_commands();
+		text(&mut c, "hello");
+		assert_eq!(key(&mut c, Key::Tab), None); // not a command
+		assert_eq!(c.view(false).line, "hello");
+
+		let mut c = with_commands();
+		text(&mut c, "/tp 1");
+		assert_eq!(key(&mut c, Key::Tab), None); // already past the stem
+		assert_eq!(c.view(false).line, "/tp 1");
 	}
 
 	#[test]

@@ -953,12 +953,14 @@ impl Engine {
 		self.menu.set_world_list(rows);
 	}
 
-	/// Land a spawn teleport: hard-set the player and camera — a 200 ms
-	/// smoothed slide across half the map would fight streaming — and
-	/// drop everything that describes the pre-teleport position (the
-	/// decaying correction offset, a stashed ack, any dig in progress,
-	/// the footstep odometer).
-	fn apply_teleport(&mut self, pos: Vec3) {
+	/// Land a teleport (return to spawn, admin /tp): hard-set the player
+	/// and camera — a 200 ms smoothed slide across half the map would
+	/// fight streaming — and drop everything that describes the
+	/// pre-teleport position (the decaying correction offset, a stashed
+	/// ack, any dig in progress, the footstep odometer). A non-zero
+	/// `look` adopts that facing (level pitch); zero keeps the view — the
+	/// spawn path, which also keeps its historical feed line.
+	fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
 		self.player.set_state(digblock_core::player::PlayerState {
 			pos,
 			vel: Vec3::ZERO,
@@ -968,7 +970,13 @@ impl Engine {
 		self.pending_ack = None;
 		self.prev_player_pos = pos;
 		self.dig = None;
-		self.push_feed("Returned to spawn.".into());
+		if look != Vec3::ZERO {
+			self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
+			self.camera.pitch_deg = 0.0;
+			self.push_feed("Teleported.".into());
+		} else {
+			self.push_feed("Returned to spawn.".into());
+		}
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -1100,11 +1108,18 @@ impl Engine {
 						.unwrap_or_else(|| format!("player {id}"));
 					self.push_feed(format!("{name} left the server."));
 				}
-				NetEvent::Teleported { pos } => self.apply_teleport(pos),
+				NetEvent::Teleported { pos, look } => self.apply_teleport(pos, look),
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
+				NetEvent::AdminCommands { commands } => self.chat.set_commands(commands),
 				NetEvent::Chat { from, text } => {
+					if from == digblock_net::protocol::SERVER_ID {
+						// Server-authored line (admin command replies):
+						// bracketed, neutral white — not a player voice.
+						self.push_feed(format!("[server] {text}"));
+						continue;
+					}
 					// Our own echo: the roster never carries ourselves, so
 					// resolve through the session name instead.
 					let name = if Some(from) == self.my_player_id {
@@ -1967,10 +1982,15 @@ impl Game for Engine {
 				if matches!(event, InputEvent::PointerLockLost) {
 					self.menu.open();
 				}
-			} else if let Some(crate::chat::ChatAction::Send(text)) = self.chat.handle_input(&event)
-			{
-				if let Some(net) = self.net.as_mut() {
-					net.send_chat(&text);
+			} else {
+				match self.chat.handle_input(&event) {
+					Some(crate::chat::ChatAction::Send(text)) => {
+						if let Some(net) = self.net.as_mut() {
+							net.send_chat(&text);
+						}
+					}
+					Some(crate::chat::ChatAction::Hint(usage)) => self.push_feed(usage),
+					Some(crate::chat::ChatAction::Closed) | None => {}
 				}
 			}
 			return;
@@ -2210,7 +2230,7 @@ impl Game for Engine {
 					let pos = digblock_core::player::ascend_clear(self.spawn_pos, &|x, y, z| {
 						pipeline.cell_at(x, y, z)
 					});
-					self.apply_teleport(pos);
+					self.apply_teleport(pos, Vec3::ZERO);
 				}
 			}
 		}

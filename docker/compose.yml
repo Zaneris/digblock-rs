@@ -51,6 +51,7 @@ services:
       DIGBLOCK_ADVERTISE_HOST: "${ADVERTISE_HOST:-server}"
       DIGBLOCK_PROBE_HOST: "${PROBE_HOST:-}"
       DIGBLOCK_SERVER_NAME: "${SERVER_NAME:-Compose World}"
+      DIGBLOCK_ADMIN_NAME: "${ADMIN_NAME:-}"
 
   bots:
     build:

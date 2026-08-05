@@ -394,6 +394,55 @@ fn inventory_full_maps_to_event() {
 }
 
 #[test]
+fn teleport_and_admin_commands_map_to_events() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+	});
+	server.send(&ServerMsg::Teleported {
+		pos: [100.5, 60.5, -40.5],
+		look: [0.0, 0.0, -1.0],
+	});
+	server.send(&ServerMsg::AdminCommands {
+		commands: vec![("/tp <x> <z>".into(), "teleport".into())],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	match events
+		.iter()
+		.find(|e| matches!(e, NetEvent::Teleported { .. }))
+	{
+		Some(NetEvent::Teleported { pos, look }) => {
+			assert_eq!(pos.to_array(), [100.5, 60.5, -40.5]);
+			assert_eq!(look.to_array(), [0.0, 0.0, -1.0]);
+		}
+		other => panic!("expected Teleported, got {other:?}"),
+	}
+	match events
+		.iter()
+		.find(|e| matches!(e, NetEvent::AdminCommands { .. }))
+	{
+		Some(NetEvent::AdminCommands { commands }) => {
+			assert_eq!(commands[0].0, "/tp <x> <z>");
+		}
+		other => panic!("expected AdminCommands, got {other:?}"),
+	}
+}
+
+#[test]
 fn dig_start_and_cancel_reach_the_wire() {
 	let (a, b) = loopback_pair();
 	let mut client = new_client(a);

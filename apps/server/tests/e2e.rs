@@ -312,8 +312,8 @@ impl TestClient {
 				NetEvent::Inventory { counts } => self.inventories.push(counts),
 				NetEvent::Chat { from, text } => self.chats.push((from, text)),
 				// No e2e case requests a teleport; unexpected = loud.
-				NetEvent::Teleported { pos } => panic!("unrequested teleport to {pos}"),
-				NetEvent::TimeOfDay { .. } => {}
+				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
+				NetEvent::TimeOfDay { .. } | NetEvent::AdminCommands { .. } => {}
 			}
 		}
 	}

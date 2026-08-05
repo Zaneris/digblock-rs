@@ -27,3 +27,7 @@ services:
       # fresh world; the old world's journal stays in ./data and comes
       # back if you switch the seed back.
       #DIGBLOCK_SEED: "42"
+      # Optional admin: the player joining under this display name gets
+      # chat commands — /help /tp /ban /ban-list /unban (bans are by IP,
+      # stored in ./data/bans.json).
+      #DIGBLOCK_ADMIN_NAME: "YourName"

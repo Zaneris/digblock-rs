@@ -88,6 +88,13 @@ impl TestClient {
 	}
 }
 
+/// Per-conn dummy peer address: distinct IPs (10.0.x.y) so ban tests
+/// never cross-ban unrelated test clients.
+pub(crate) fn test_addr(conn_id: u64) -> std::net::SocketAddr {
+	let (hi, lo) = ((conn_id >> 8) as u8, conn_id as u8);
+	std::net::SocketAddr::from(([10, 0, hi, lo], 40000))
+}
+
 pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
 	connect_with_identity(sim, conn_id, [0; 16])
 }
@@ -103,17 +110,44 @@ pub(crate) fn connect_with_identity(sim: &mut Sim, conn_id: u64, identity: [u8; 
 	c
 }
 
+/// Like `connect` but joining under an explicit display name (admin
+/// tests key on names).
+pub(crate) fn connect_named(sim: &mut Sim, conn_id: u64, name: &str) -> TestClient {
+	let mut c = try_connect_as(sim, conn_id, [0; 16], name);
+	assert!(
+		matches!(c.msgs.first(), Some(ServerMsg::Welcome { .. })),
+		"expected Welcome, got {:?}",
+		c.msgs.first()
+	);
+	c.drain();
+	c
+}
+
 /// Like `connect` but without asserting the handshake succeeded — for
 /// tests exercising refusals.
 pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, identity: [u8; 16]) -> TestClient {
+	let name = format!("t{conn_id}");
+	try_connect_as(sim, conn_id, identity, &name)
+}
+
+pub(crate) fn try_connect_as(
+	sim: &mut Sim,
+	conn_id: u64,
+	identity: [u8; 16],
+	name: &str,
+) -> TestClient {
 	let (tx, rx) = channel(OUT_CAP);
 	sim.tick_once(vec![
-		SimEvent::Connected { conn_id, out: tx },
+		SimEvent::Connected {
+			conn_id,
+			out: tx,
+			addr: test_addr(conn_id),
+		},
 		SimEvent::Msg {
 			conn_id,
 			msg: ClientMsg::Hello {
 				protocol: PROTOCOL_VERSION,
-				name: format!("t{conn_id}"),
+				name: name.into(),
 				draw_dist: 4,
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,

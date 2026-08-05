@@ -10,6 +10,7 @@
 //! claims keep the server's own state and the next snapshot corrects the
 //! client.
 
+mod admin;
 mod edits;
 mod movement;
 mod sync;
@@ -17,6 +18,7 @@ mod sync;
 #[cfg(test)]
 pub(crate) mod harness;
 
+use crate::ban_store::BanStore;
 use crate::inventory_store::{hash_identity, IdentityHash, InventoryStore};
 use crate::journal::Journal;
 use crate::store::{ChunkStore, ColumnSource};
@@ -63,10 +65,23 @@ const DRAW_DIST_MAX: i32 = 32;
 const HELLO_TIMEOUT_TICKS: u32 = 5 * TICK_RATE;
 
 pub enum SimEvent {
-	Connected { conn_id: u64, out: OutTx },
-	Msg { conn_id: u64, msg: ClientMsg },
-	Inputs { conn_id: u64, batch: InputBatch },
-	Disconnected { conn_id: u64 },
+	Connected {
+		conn_id: u64,
+		out: OutTx,
+		/// Peer address — the ban key (`addr.ip()`).
+		addr: std::net::SocketAddr,
+	},
+	Msg {
+		conn_id: u64,
+		msg: ClientMsg,
+	},
+	Inputs {
+		conn_id: u64,
+		batch: InputBatch,
+	},
+	Disconnected {
+		conn_id: u64,
+	},
 }
 
 #[derive(Debug)]
@@ -81,6 +96,8 @@ struct Client {
 	id: PlayerId,
 	name: String,
 	out: OutTx,
+	/// Peer address from the net layer — the `/ban` key.
+	addr: std::net::SocketAddr,
 	/// Set when the outbound queue rejects a reliable frame (or stays
 	/// full for datagrams) — reaped into `drop_client` next tick. `Cell`
 	/// so shared-borrow broadcast loops can flag it.
@@ -128,7 +145,7 @@ pub struct Sim {
 	clients: FxHashMap<u64, Client>,
 	/// Connections that have not completed the Hello handshake, with the
 	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS).
-	lobby: FxHashMap<u64, (OutTx, u32)>,
+	lobby: FxHashMap<u64, (OutTx, u32, std::net::SocketAddr)>,
 	/// Client actions (edits + dig starts/cancels) queued this tick,
 	/// processed in wire order by `process_edits`.
 	action_queue: Vec<edits::ClientAction>,
@@ -141,6 +158,10 @@ pub struct Sim {
 	last_oversize_log: Option<u32>,
 	/// Persistent per-identity inventories (separate from the journal).
 	inv_store: InventoryStore,
+	/// Persistent IP bans, enforced at Hello and driven by `/ban`.
+	ban_store: BanStore,
+	/// The player name (case-insensitive) granted admin chat commands.
+	admin_name: Option<String>,
 }
 
 impl Sim {
@@ -178,6 +199,7 @@ impl Sim {
 	) -> std::io::Result<Self> {
 		let journal = Journal::open(data_dir, seed)?;
 		let inv_store = InventoryStore::open(data_dir)?;
+		let ban_store = BanStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -193,7 +215,15 @@ impl Sim {
 			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
 			inv_store,
+			ban_store,
+			admin_name: None,
 		})
+	}
+
+	/// Grant a player name (case-insensitive) the admin chat commands.
+	/// Empty counts as unset, like the env fallbacks.
+	pub fn set_admin_name(&mut self, name: Option<String>) {
+		self.admin_name = name.filter(|n| !n.is_empty());
 	}
 
 	pub fn server_tick(&self) -> u32 {
@@ -272,6 +302,11 @@ impl Sim {
 	}
 
 	#[cfg(test)]
+	fn test_look(&self, conn_id: u64) -> Option<Vec3> {
+		self.clients.get(&conn_id).map(|c| c.look)
+	}
+
+	#[cfg(test)]
 	fn test_last_input_tick(&self, conn_id: u64) -> u32 {
 		self.clients.get(&conn_id).map_or(0, |c| c.last_input_tick)
 	}
@@ -292,8 +327,8 @@ impl Sim {
 
 	fn handle_event(&mut self, ev: SimEvent) {
 		match ev {
-			SimEvent::Connected { conn_id, out } => {
-				self.lobby.insert(conn_id, (out, self.tick));
+			SimEvent::Connected { conn_id, out, addr } => {
+				self.lobby.insert(conn_id, (out, self.tick, addr));
 			}
 			SimEvent::Msg { conn_id, msg } => match msg {
 				ClientMsg::Hello {
@@ -373,14 +408,34 @@ impl Sim {
 					let Some(client) = self.clients.get_mut(&conn_id) else {
 						return; // lobby connections don't get to talk
 					};
-					if client.chat_tokens < 1.0 {
-						return;
+					let is_command = text.trim_start().starts_with('/');
+					let is_admin = self
+						.admin_name
+						.as_deref()
+						.is_some_and(|a| client.name.eq_ignore_ascii_case(a));
+					// Admin command lines bypass the token bucket (several
+					// commands back-to-back is normal use, and replies are
+					// private — no broadcast to flood).
+					if !(is_command && is_admin) {
+						if client.chat_tokens < 1.0 {
+							return;
+						}
+						client.chat_tokens -= 1.0;
 					}
-					client.chat_tokens -= 1.0;
 					let from = client.id;
 					let Some(text) = sanitize_chat(&text) else {
 						return;
 					};
+					if is_command {
+						// Slash lines are never broadcast — commands are a
+						// private conversation with the server.
+						if is_admin {
+							self.handle_admin_command(conn_id, &text);
+						} else if let Some(c) = self.clients.get(&conn_id) {
+							client_send(c, &admin::server_reply("commands are admin-only"));
+						}
+						return;
+					}
 					let msg = ServerMsg::Chat { from, text };
 					// Everyone, sender included: the echo is the client's
 					// delivery confirmation.
@@ -451,6 +506,12 @@ impl Sim {
 	/// in-memory final values — nobody needs to be near spawn for the
 	/// scan to see a tower built there.
 	fn safe_spawn(&self) -> Vec3 {
+		self.clear_landing(self.spawn)
+	}
+
+	/// Raise `eye` until the capsule clears both live terrain and
+	/// journaled edits — the shared landing rule for spawn and `/tp`.
+	fn clear_landing(&self, eye: Vec3) -> Vec3 {
 		let cell_at = |x: i32, y: i32, z: i32| {
 			if let Some(c) = self.store.cell_at(x, y, z) {
 				return Some(c);
@@ -463,7 +524,39 @@ impl Sim {
 				.column(x.div_euclid(16), z.div_euclid(16))
 				.and_then(|cells| cells.get(&(x, y, z)).copied())
 		};
-		player::ascend_clear(self.spawn, &cell_at)
+		player::ascend_clear(eye, &cell_at)
+	}
+
+	/// Hard-move a client: set state, shed pre-teleport residue (the
+	/// drift EWMA and any dig hold describe the old position, and
+	/// coasting on the old intent would walk the player off the target),
+	/// tell the client, and re-derive residency. `look` zero = keep the
+	/// current view.
+	fn teleport_client(&mut self, conn_id: u64, pos: Vec3, look: Vec3) {
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		client.player.set_state(PlayerState {
+			pos,
+			vel: Vec3::ZERO,
+		});
+		client.drift = Vec3::ZERO;
+		client.digging = None;
+		client.last_intent = PlayerIntent::default();
+		if look != Vec3::ZERO {
+			// The client adopts this facing; mirror it so the server's
+			// aim raycasts agree until the next input overwrites it.
+			client.look = look;
+		}
+		client_send(
+			client,
+			&ServerMsg::Teleported {
+				pos: pos.to_array(),
+				look: look.to_array(),
+			},
+		);
+		// The interest center jumped; re-derive residency + sync scope.
+		self.residency_dirty = true;
 	}
 
 	/// Teleport a live client back to spawn, subject to the cooldown.
@@ -483,26 +576,9 @@ impl Sim {
 		let pos = self.safe_spawn();
 		let tick = self.tick;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
-		client.player.set_state(PlayerState {
-			pos,
-			vel: Vec3::ZERO,
-		});
-		// Pre-teleport residue must not follow the player: the drift EWMA
-		// and any dig hold describe the old position, and coasting on the
-		// old intent would walk the player straight off spawn.
-		client.drift = Vec3::ZERO;
-		client.digging = None;
-		client.last_intent = PlayerIntent::default();
 		client.last_return_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
-		client_send(
-			client,
-			&ServerMsg::Teleported {
-				pos: pos.to_array(),
-			},
-		);
-		// The interest center jumped; re-derive residency + sync scope.
-		self.residency_dirty = true;
+		self.teleport_client(conn_id, pos, Vec3::ZERO);
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -516,13 +592,18 @@ impl Sim {
 		build: String,
 		identity: [u8; 16],
 	) {
-		let Some((out, _)) = self.lobby.remove(&conn_id) else {
+		let Some((out, _, addr)) = self.lobby.remove(&conn_id) else {
 			return;
 		};
 		let refuse = |out: &OutTx, reason: String| {
 			send_frame(&out.clone(), &ServerMsg::Refused { reason });
 			let _ = out.try_send(OutMsg::Close);
 		};
+		// Ban gate first — a banned peer learns nothing else.
+		if self.ban_store.is_banned(addr.ip()) {
+			refuse(&out, "banned".into());
+			return;
+		}
 		// Redundant with the net-layer preamble gate, but the sim is also
 		// driven directly (tests, future transports) — keep it authoritative.
 		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol) {
@@ -637,12 +718,22 @@ impl Sim {
 			);
 		}
 		log::info!("player {id} ({name}) joined at tick {}", self.tick);
+		// The server's command set, so the chat box can autocomplete —
+		// admin only (nobody else can use them, or needs to see them).
+		let is_admin = self
+			.admin_name
+			.as_deref()
+			.is_some_and(|a| name.eq_ignore_ascii_case(a));
+		if is_admin {
+			send_frame(&out, &admin::commands_msg());
+		}
 		self.clients.insert(
 			conn_id,
 			Client {
 				id,
 				name,
 				out,
+				addr,
 				dead: Cell::new(false),
 				dgram_full_since: Cell::new(None),
 				player: Player::new(spawn),
@@ -682,7 +773,7 @@ impl Sim {
 			self.drop_client(conn_id);
 		}
 		let tick = self.tick;
-		self.lobby.retain(|conn_id, (out, since)| {
+		self.lobby.retain(|conn_id, (out, since, _addr)| {
 			let keep = tick.wrapping_sub(*since) < HELLO_TIMEOUT_TICKS;
 			if !keep {
 				log::info!("conn {conn_id}: no Hello within the deadline — dropping");
@@ -833,6 +924,7 @@ mod tests {
 				SimEvent::Connected {
 					conn_id: 9,
 					out: tx,
+					addr: test_addr(9),
 				},
 				SimEvent::Msg {
 					conn_id: 9,
@@ -893,6 +985,7 @@ mod tests {
 		sim.tick_once(vec![SimEvent::Connected {
 			conn_id: 7,
 			out: tx,
+			addr: test_addr(7),
 		}]);
 		// One tick short of the deadline: still in the lobby, no Close.
 		for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
@@ -1024,6 +1117,7 @@ mod tests {
 			SimEvent::Connected {
 				conn_id: 5,
 				out: tx,
+				addr: test_addr(5),
 			},
 			SimEvent::Msg {
 				conn_id: 5,
@@ -1375,6 +1469,7 @@ mod tests {
 			SimEvent::Connected {
 				conn_id: 9,
 				out: tx,
+				addr: test_addr(9),
 			},
 			SimEvent::Msg {
 				conn_id: 9,

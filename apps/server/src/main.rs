@@ -27,11 +27,13 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] \
-	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N]\n\
+	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin-name NAME]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
-	 https://master.digblock.net; env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, \
-	 DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED)";
+	 https://master.digblock.net. --admin-name grants that player chat commands (/help /ban \
+	 /ban-list /unban /tp); env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, \
+	 DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, \
+	 DIGBLOCK_ADMIN_NAME)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -64,6 +66,9 @@ fn main() {
 		.map(|v| parse_or_die("DIGBLOCK_ADVERTISE_PORT", Some(v)));
 	let mut server_name =
 		std::env::var("DIGBLOCK_SERVER_NAME").unwrap_or_else(|_| "DigBlock Server".into());
+	let mut admin_name = std::env::var("DIGBLOCK_ADMIN_NAME")
+		.ok()
+		.filter(|s| !s.is_empty());
 
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -82,6 +87,7 @@ fn main() {
 				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
 			}
 			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
+			"--admin-name" => admin_name = Some(parse_or_die("--admin-name", args.next())),
 			other => {
 				eprintln!("unknown arg: {other}");
 				eprintln!("{USAGE}");
@@ -101,13 +107,17 @@ fn main() {
 		advertise_port: advertise_port.unwrap_or(port),
 	};
 
-	let sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
+	let mut sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
 		Ok(sim) => sim,
 		Err(e) => {
 			eprintln!("failed to open world: {e}");
 			std::process::exit(1);
 		}
 	};
+	if let Some(name) = &admin_name {
+		log::info!("admin: {name}");
+	}
+	sim.set_admin_name(admin_name);
 	log::info!("world seed {seed}, data dir {}", data_dir.display());
 
 	let (event_tx, event_rx) = unbounded();
