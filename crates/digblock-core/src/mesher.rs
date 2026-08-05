@@ -636,17 +636,15 @@ mod tests {
 		let a = stair_mesh(Facing::PosX);
 		let b = stair_mesh(Facing::NegX);
 		assert_ne!(a.solid, b.solid, "facing changes the mesh");
-		// Same quad count and the same multiset of texture layers — a
-		// rotation permutes geometry, never invents or drops faces. (UV
-		// positions are NOT rotation-invariant: anisotropic faces like
-		// the nosing undersides land at mirrored texture offsets.)
+		// Same quad count and the same multiset of (texture, uv) payloads
+		// — a rotation permutes geometry, never invents or drops faces.
 		assert_eq!(a.solid.len(), b.solid.len());
 		let key = |m: &MeshData| {
-			let mut texes: Vec<u32> = m.solid.chunks(2).map(|p| p[1] & 0x3ff).collect();
+			let mut texes: Vec<u32> = m.solid.chunks(2).map(|p| p[1] & 0x3ffff).collect();
 			texes.sort_unstable();
 			texes
 		};
-		assert_eq!(key(&a), key(&b), "texture layers are a permutation");
+		assert_eq!(key(&a), key(&b), "tex/uv payloads are a permutation");
 	}
 
 	#[test]

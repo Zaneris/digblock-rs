@@ -290,9 +290,9 @@ pub struct CraftRecipe {
 
 /// The craft table. Costs are the shape's filled 12ths volume rounded up
 /// to whole sub-units (pinned against the rasterized volumes by a test):
-/// stairs 1116/64 → 18 (the tread reveals discount a hair, not a whole
-/// unit), door 588/64 → 10 (uncut leaves — the window lites don't
-/// discount — plus the handle and the two hinges).
+/// stairs 1152/64 → 18 (exactly 2/3 block), door 588/64 → 10 (uncut
+/// leaves — the window lites don't discount — plus the handle and the
+/// two hinges).
 pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
 	let (material, count, cost) = match b {
 		BlockType::WoodStairs => (Material::Wood, 1, 18),
@@ -316,18 +316,15 @@ pub const CRAFTABLE: [BlockType; 3] = [
 
 // --- authored geometry ------------------------------------------------
 
-/// Canonical stairs, ascending toward +x: three steps, each a proud
-/// full-reach riser with the tread (top twelfth) inset one twelfth —
-/// a shadow reveal under every tread edge. The reveal sits on the
-/// step's OWN riser, so all three steps read identically (an overhang
-/// design can't: the top step has nothing overhanging it).
-const STAIR_BOXES: [SubBox; 6] = [
-	SubBox::new([0, 0, 0], [12, 3, 12]),   // riser 1 (full reach)
-	SubBox::new([1, 3, 0], [12, 4, 12]),   // tread 1 (inset reveal)
-	SubBox::new([4, 4, 0], [12, 7, 12]),   // riser 2
-	SubBox::new([5, 7, 0], [12, 8, 12]),   // tread 2
-	SubBox::new([8, 8, 0], [12, 11, 12]),  // riser 3
-	SubBox::new([9, 11, 0], [12, 12, 12]), // tread 3
+/// Canonical stairs, ascending toward +x: three plain steps, risers at
+/// 4/8/12 twelfths. (Two nosing/reveal detail passes were tried and
+/// reverted: an overhanging tread lip reads asymmetric — the top step
+/// has nothing overhanging it — and an inset-tread reveal didn't look
+/// right either. Plain steps it is.)
+const STAIR_BOXES: [SubBox; 3] = [
+	SubBox::new([0, 0, 0], [12, 4, 12]),
+	SubBox::new([4, 4, 0], [12, 8, 12]),
+	SubBox::new([8, 8, 0], [12, 12, 12]),
 ];
 
 /// Canonical closed leaf (facing +x): 2-twelfths slab set back one
@@ -666,22 +663,19 @@ mod tests {
 	#[test]
 	fn stair_masks_and_boxes() {
 		// Canonical stairs ascend +x: the +x back face (Dir::West!) and
-		// the bottom are full — the risers reach every boundary; only the
-		// treads are inset (the reveal never touches the bottom plane).
+		// the bottom are full boundary planes; everything else is partial.
 		let v = shape_of(BlockType::WoodStairs, stair_state(Facing::PosX)).unwrap();
 		assert!(v.occludes_full[Dir::West as usize], "+x back face full");
-		assert!(v.occludes_full[Dir::Bottom as usize], "base riser is full");
+		assert!(v.occludes_full[Dir::Bottom as usize], "bottom is full");
 		assert!(!v.occludes_full[Dir::East as usize]);
 		assert!(!v.occludes_full[Dir::Top as usize]);
 		assert!(!v.occludes_full[Dir::North as usize]);
 		assert!(!v.occludes_full[Dir::South as usize]);
-		assert_eq!(v.collision.len(), 6);
+		assert_eq!(v.collision.len(), 3);
 		assert_eq!(v.ramp, Some(Facing::PosX));
-		// The −x boundary is the base riser's proud face (y 0..3); the
-		// inset tread opens the reveal at y 3..4.
+		// The −x boundary is the first riser's face (y 0..4, all z).
 		let m = &v.face_masks[Dir::East as usize];
-		assert!(m.covers(0, 0, 3, 12), "riser face covers y 0..3 (all z)");
-		assert!(!m.covers(3, 0, 4, 1), "tread reveal opens y 3..4 on −x");
+		assert!(m.covers(0, 0, 4, 12), "riser face covers y 0..4 (all z)");
 		assert!(!m.covers(4, 0, 5, 1), "nothing above y=4 on −x");
 	}
 
