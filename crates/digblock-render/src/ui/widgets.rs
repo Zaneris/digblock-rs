@@ -10,7 +10,19 @@ use super::{scale, Rect};
 pub const WHITE: u32 = 0xFFFFFFFF;
 pub const DIM: u32 = 0xFFB0B0B0;
 pub const SLOT_BG: u32 = 0x90000000;
+/// Keyboard/hover highlight fill, shared by menu rows and buttons.
+pub const ROW_HILIGHT: u32 = 0x60FFFFFF;
 const SEL_BORDER: u32 = 0xE0FFFFFF;
+
+/// Fade a full-screen dim with the world's own darkness so night menus
+/// aren't double-darkened: scales the alpha byte by `daylight` (1 noon →
+/// 0 deep night) with a floor so panels still separate from the sky.
+/// Panel backdrops keep their fixed color — only the dim scales.
+pub fn scaled_dim(base: u32, daylight: f32) -> u32 {
+	let f = 0.25 + 0.75 * daylight.clamp(0.0, 1.0);
+	let a = ((base >> 24) as f32 * f) as u32;
+	a << 24 | (base & 0x00FF_FFFF)
+}
 
 /// Per-frame style: the UI scale and its derived (integer-snapped)
 /// glyph size.
@@ -52,7 +64,7 @@ pub fn slot<Id: Copy + PartialEq>(
 	ui: &mut Ui<'_, Id>,
 	id: Id,
 	rect: Rect,
-	icon: Option<(u16, u32)>,
+	icon: Option<(super::hud::IconKind, u32)>,
 	icon_px: f32,
 	selected: bool,
 ) {
@@ -74,11 +86,12 @@ pub fn slot<Id: Copy + PartialEq>(
 		dl.quad(Layer::Backdrop, Rect::new(x - t, y, t, h), SEL_BORDER);
 		dl.quad(Layer::Backdrop, Rect::new(x + w, y, t, h), SEL_BORDER);
 	}
-	if let Some((tex_layer, tint)) = icon {
-		ui.dl.icon(
+	if let Some((kind, tint)) = icon {
+		super::hud::draw_icon(
+			ui.dl,
 			Layer::Icons,
 			rect.centered(icon_px, icon_px),
-			tex_layer,
+			kind,
 			tint,
 		);
 	}
@@ -87,15 +100,20 @@ pub fn slot<Id: Copy + PartialEq>(
 
 /// A clickable text button: backdrop, centered label, hit rect under
 /// `id`. `enabled: false` dims the label and still registers no hit —
-/// disabled buttons are honest pixels, not traps.
+/// disabled buttons are honest pixels, not traps. `hovered` paints the
+/// shared highlight (only meaningful for enabled buttons).
 pub fn button<Id: Copy + PartialEq>(
 	ui: &mut Ui<'_, Id>,
 	id: Id,
 	rect: Rect,
 	text: &str,
 	enabled: bool,
+	hovered: bool,
 ) {
 	ui.dl.quad(Layer::Backdrop, rect, SLOT_BG);
+	if enabled && hovered {
+		ui.dl.quad(Layer::Backdrop, rect, ROW_HILIGHT);
+	}
 	let px = ui.style.glyph;
 	let w = text.chars().count() as f32 * px;
 	let color = if enabled { WHITE } else { DIM };
@@ -153,7 +171,6 @@ pub struct RowContent<'a> {
 /// so hit-testing shares it). No hit region — menu-style screens hit
 /// their rows by id through their own maps.
 pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowContent<'_>) {
-	const ROW_HILIGHT: u32 = 0x60FFFFFF;
 	const BAR_TRACK: u32 = 0x40FFFFFF;
 	let glyph = style.glyph;
 	let pad_x = scale::text_pad_x(style.scale);
@@ -243,21 +260,48 @@ mod tests {
 			style: Style::new(1.0),
 		};
 		let rect = Rect::new(100.0, 200.0, 56.0, 56.0);
-		slot(&mut ui, 3u8, rect, Some((5, WHITE)), 48.0, true);
+		let kind = super::super::hud::IconKind::Cube(digblock_core::block::BlockType::Dirt);
+		slot(&mut ui, 3u8, rect, Some((kind, WHITE)), 48.0, true);
 		// Backdrop: slot bg + 4 border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), 5);
-		// Icon centered in the slot.
-		match dl.cmds(Layer::Icons).0 {
-			[Cmd::Icon {
-				rect: r,
-				tex_layer: 5,
-				..
-			}] => {
-				assert_eq!((r.x, r.y, r.w, r.h), (104.0, 204.0, 48.0, 48.0));
+		// A cube icon: three projected faces, all inside the icon rect.
+		let icons = dl.cmds(Layer::Icons).0;
+		assert_eq!(icons.len(), 3);
+		for c in icons {
+			match c {
+				Cmd::IconQuad { corners, .. } => {
+					for p in corners {
+						assert!(p[0] >= 104.0 - 0.01 && p[0] <= 152.0 + 0.01);
+						assert!(p[1] >= 204.0 - 0.01 && p[1] <= 252.0 + 0.01);
+					}
+				}
+				_ => panic!("expected projected icon quads"),
 			}
-			_ => panic!("expected one icon"),
 		}
 		assert_eq!(hits.hit(120.0, 220.0), Some(3));
+	}
+
+	#[test]
+	fn button_hover_highlights_only_when_enabled() {
+		let count_quads = |enabled: bool, hovered: bool| {
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<u8> = HitMap::default();
+			let mut ui = Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: Style::new(1.0),
+			};
+			let rect = Rect::new(10.0, 10.0, 120.0, 32.0);
+			button(&mut ui, 1u8, rect, "GO", enabled, hovered);
+			(dl.cmds(Layer::Backdrop).0.len(), hits.hit(20.0, 20.0))
+		};
+		assert_eq!(count_quads(true, false), (1, Some(1)));
+		assert_eq!(count_quads(true, true), (2, Some(1)), "highlight quad");
+		assert_eq!(
+			count_quads(false, true),
+			(1, None),
+			"disabled: no highlight, no hit"
+		);
 	}
 
 	#[test]

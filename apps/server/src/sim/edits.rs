@@ -22,6 +22,8 @@ pub(super) struct PendingEditReq {
 	pub(super) kind: EditKind,
 	pub(super) cell: (i32, i32, i32),
 	pub(super) normal: (i32, i32, i32),
+	/// The hotbar slot the edit used — Place/Collect must match its item.
+	pub(super) slot: u8,
 }
 
 /// One queued client action, processed in WIRE ORDER within the tick.
@@ -44,6 +46,13 @@ pub(super) enum ClientAction {
 	Alchemy {
 		conn_id: u64,
 		op: digblock_net::messages::AlchemyOp,
+	},
+	/// Layout updates ride the same queue: an assign-to-bar-then-place in
+	/// one tick must land the arrangement before the place's slot gate.
+	Layout {
+		conn_id: u64,
+		hotbar: Vec<u16>,
+		grid: Vec<u16>,
 	},
 }
 
@@ -143,14 +152,45 @@ impl Sim {
 					}
 				}
 				ClientAction::Alchemy { conn_id, op } => self.process_alchemy(conn_id, op),
+				ClientAction::Layout {
+					conn_id,
+					hotbar,
+					grid,
+				} => self.process_layout(conn_id, &hotbar, &grid),
 			}
 		}
 	}
 
+	/// Adopt a client's item arrangement: sanitizing decode (hostile input
+	/// yields a valid bar/grid), reconcile against the authoritative
+	/// counts, write through to the store. The client owns arrangement;
+	/// the server owns what it can afford to use.
+	fn process_layout(&mut self, conn_id: u64, hotbar: &[u16], grid: &[u16]) {
+		use digblock_core::hotbar::{Hotbar, HOTBAR_SLOTS, WIRE_EMPTY};
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		let mut bar_wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		for (d, s) in bar_wire.iter_mut().zip(hotbar.iter()) {
+			*d = *s;
+		}
+		client.hotbar = Hotbar::from_wire(&bar_wire);
+		client.grid = digblock_core::inv_grid::InvGrid::from_wire(grid);
+		digblock_core::inv_grid::reconcile_layout(
+			&client.inventory,
+			&mut client.hotbar,
+			&mut client.grid,
+		);
+		if let Some(hash) = client.identity {
+			self.player_store.put(hash, client.record());
+		}
+	}
+
 	fn process_one_edit(&mut self, req: PendingEditReq) {
+		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
 		// Copy what we need out of the client entry so the &mut borrow
 		// ends before the all-players InsidePlayer scan below.
-		let (id, out, live, player_pos, has_token, dig_state) = {
+		let (id, out, live, player_pos, has_token, dig_state, slot_item) = {
 			let Some(client) = self.clients.get_mut(&req.conn_id) else {
 				return;
 			};
@@ -158,6 +198,14 @@ impl Sim {
 			if client.live && has_token {
 				client.edit_tokens -= 1.0;
 			}
+			// The declared slot's item (None for an out-of-range slot).
+			// An edit is also evidence of selection — mirror it so the
+			// held-item broadcast tracks a click that outran the
+			// jitter-buffered input path.
+			let slot_item = ((req.slot as usize) < HOTBAR_SLOTS).then(|| {
+				client.active_slot = req.slot;
+				client.hotbar.slots()[req.slot as usize]
+			});
 			(
 				client.id,
 				client.out.clone(),
@@ -168,6 +216,7 @@ impl Sim {
 					.digging
 					.as_ref()
 					.map(|d| (d.cell, d.block, d.progress)),
+				slot_item,
 			)
 		};
 		// A refused push here just drops the reply; a stalled peer is
@@ -336,6 +385,27 @@ impl Sim {
 			}
 		};
 
+		// Slot enforcement: the edit must use the item actually in its
+		// declared hotbar slot (the arrangement arrived in-order on the
+		// same stream, so honest clients can never trip this). Digs are
+		// tool-free and exempt. Sits with the stock gate, after every
+		// world-shaped rejection, so rejection precedence is unchanged
+		// for pre-v10-shaped mistakes.
+		let slot_ok = match req.kind {
+			EditKind::Dig => true,
+			EditKind::Collect => slot_item == Some(Some(HotbarItem::WaterTool)),
+			EditKind::Place { .. } => match slot_item {
+				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
+				// The water tool places water sources.
+				Some(Some(HotbarItem::WaterTool)) => place_b == Some(BlockType::Water),
+				_ => false,
+			},
+			EditKind::Interact => unreachable!("routed to process_interact"),
+		};
+		if !slot_ok {
+			return reject(RejectReason::WrongSlot);
+		}
+
 		// Stock gate: the LAST check before mutating the world, so a
 		// refused take never needs unwinding of anything else. The
 		// InsidePlayer scan's shared borrow has ended — re-fetch mutably.
@@ -379,11 +449,20 @@ impl Sim {
 		if place_cell.is_none() {
 			if let Some(drop) = prev.dig_drop() {
 				client.inventory.add(drop, 1);
+				// Mirror the client's auto-assign of a newly acquired type
+				// (same deterministic derivation), so the very next place
+				// from that slot validates even before the client's Layout
+				// echo lands.
+				digblock_core::inv_grid::reconcile_layout(
+					&client.inventory,
+					&mut client.hotbar,
+					&mut client.grid,
+				);
 			}
 			client.digging = None;
 		}
 		if let Some(hash) = client.identity {
-			self.inv_store.put(hash, &client.inventory);
+			self.player_store.put(hash, client.record());
 		}
 
 		// Journal + broadcast the first write under the client's seq, the
@@ -547,10 +626,18 @@ impl Sim {
 			}
 		};
 		if let Some(core_op) = core_op {
-			let _ = apply_alchemy(&mut client.inventory, core_op);
+			if apply_alchemy(&mut client.inventory, core_op) {
+				// Mirror the client's auto-assign of freshly crafted items
+				// (it reconciles on the InventoryFull rebase below).
+				digblock_core::inv_grid::reconcile_layout(
+					&client.inventory,
+					&mut client.hotbar,
+					&mut client.grid,
+				);
+			}
 		}
 		if let Some(hash) = client.identity {
-			self.inv_store.put(hash, &client.inventory);
+			self.player_store.put(hash, client.record());
 		}
 		let counts = client.inventory.to_wire();
 		send_frame(&client.out, &ServerMsg::InventoryFull { counts });
@@ -650,6 +737,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [cell.0, cell.1, cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		};
 
@@ -782,6 +870,7 @@ mod tests {
 				},
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -826,6 +915,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [0, 0, 0],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -864,6 +954,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		// Held for only 10 ticks (stone needs 90 − 16 grace).
@@ -957,6 +1048,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1018,6 +1110,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		};
 		sim.tick_once(vec![dig(1)]);
@@ -1095,6 +1188,7 @@ mod tests {
 					kind: EditKind::Dig,
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [0, 0, 0],
+					slot: 0,
 				},
 			},
 			SimEvent::Msg {
@@ -1178,6 +1272,7 @@ mod tests {
 				kind: EditKind::Dig,
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1224,6 +1319,7 @@ mod tests {
 					},
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+					slot: 0,
 				},
 			}]);
 		};
@@ -1295,6 +1391,8 @@ mod tests {
 					ground.normal.1 as i8,
 					ground.normal.2 as i8,
 				],
+				// Water places through the tool's slot (pinned last).
+				slot: digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1,
 			},
 		}]);
 		assert_eq!(sim.test_inventory_count(1, BlockType::Water), 0);
@@ -1327,6 +1425,7 @@ mod tests {
 				kind: EditKind::Collect,
 				cell: [flow_cell.0, flow_cell.1, flow_cell.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 
@@ -1471,6 +1570,7 @@ mod tests {
 				},
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1498,6 +1598,7 @@ mod tests {
 					kind: EditKind::Dig,
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [0, 0, 0],
+					slot: 0,
 				},
 			})
 			.collect();
@@ -1536,6 +1637,7 @@ mod tests {
 				kind: EditKind::Place { block: cell_value },
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1677,6 +1779,7 @@ mod tests {
 				kind: EditKind::Interact,
 				cell: [target.0, target.1, target.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1706,6 +1809,7 @@ mod tests {
 				kind: EditKind::Interact,
 				cell: [target.0, target.1, target.2],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -1774,6 +1878,10 @@ mod tests {
 					kind: EditKind::Place { block: stair },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+					// Stone kept slot 0 (sticky at zero count); the crafted
+					// stairs auto-filed to the next free slot — the same
+					// derivation an honest client runs.
+					slot: 1,
 				},
 			},
 		]);
@@ -1820,5 +1928,149 @@ mod tests {
 				.any(|m| matches!(m, ServerMsg::InventoryFull { .. })),
 			"failed op still rebases"
 		);
+	}
+
+	/// Slot enforcement: a place must use the item in its declared slot.
+	/// Declaring another slot rejects with WrongSlot and mutates nothing;
+	/// the honest slot lands. A Layout update in the same tick applies in
+	/// wire order, so assign-then-place works.
+	#[test]
+	fn wrong_slot_place_rejected_and_layout_applies_in_order() {
+		let mut sim = flat_sim("wrongslot");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		// Dirt → bar slot 0, Stone → bar slot 1 (grant reconciles).
+		sim.test_grant(1, BlockType::Dirt, 5);
+		sim.test_grant(1, BlockType::Stone, 5);
+		let pos = sim.test_player(1).unwrap().pos;
+		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+		let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		let place = |seq: u32, block: BlockType, slot: u8| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::Place {
+					block: block as u16,
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot,
+			},
+		};
+		let target = (
+			hit.cell.0 + hit.normal.0,
+			hit.cell.1 + hit.normal.1,
+			hit.cell.2 + hit.normal.2,
+		);
+
+		// Dirt declared from Stone's slot: rejected, nothing changes.
+		sim.tick_once(vec![place(1, BlockType::Dirt, 1)]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 1,
+					reason: RejectReason::WrongSlot
+				}
+			)),
+			"{:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_block_at(target.0, target.1, target.2),
+			Some(BlockType::Air),
+			"rejected place never lands"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Dirt), 5, "no debit");
+		// An out-of-range slot is a wrong slot too.
+		sim.tick_once(vec![place(2, BlockType::Dirt, 200)]);
+		c.drain();
+		assert!(c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				client_seq: 2,
+				reason: RejectReason::WrongSlot
+			}
+		)));
+
+		// Same tick: move Dirt to slot 4 via Layout, then place from 4 —
+		// wire order means the arrangement lands first.
+		use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
+		let mut hotbar = vec![WIRE_EMPTY; digblock_core::hotbar::HOTBAR_SLOTS];
+		hotbar[4] = BlockType::Dirt as u16;
+		hotbar[1] = BlockType::Stone as u16;
+		hotbar[8] = WIRE_TOOL;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Layout {
+					hotbar,
+					grid: vec![WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS],
+				},
+			},
+			place(3, BlockType::Dirt, 4),
+		]);
+		c.drain();
+		assert_eq!(
+			sim.test_block_at(target.0, target.1, target.2),
+			Some(BlockType::Dirt),
+			"assign-then-place in one tick lands: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Dirt), 4);
+	}
+
+	/// The held item rides snapshots: the selected slot's item (hotbar
+	/// wire encoding) appears on the player's snapshot entry and tracks
+	/// slot switches.
+	#[test]
+	fn held_item_rides_snapshots() {
+		use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_TOOL};
+		let mut sim = flat_sim("held");
+		let mut c1 = connect(&mut sim, 1);
+		let mut c2 = connect(&mut sim, 2);
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		sim.test_grant(1, BlockType::Dirt, 1); // → bar slot 0
+
+		// Player 1 selects slot 0 (Dirt).
+		let mut input0 = aim(1, Vec3::NEG_Y);
+		input0.active_slot = 0;
+		sim.tick_once(vec![batch(vec![input0], 1)]);
+		for _ in 0..6 {
+			sim.tick_once(vec![]);
+		}
+		c2.drain();
+		let held_of = |snaps: &[digblock_net::messages::Snapshot], id: u8| {
+			snaps
+				.iter()
+				.rev()
+				.find_map(|s| s.players.iter().find(|p| p.id == id).map(|p| p.held))
+		};
+		assert_eq!(
+			held_of(&c2.snaps, 0),
+			Some(BlockType::Dirt as u16),
+			"player 1 shows the dirt in hand"
+		);
+
+		// Switch to the tool slot: the broadcast follows.
+		let mut input1 = aim(2, Vec3::NEG_Y);
+		input1.active_slot = HOTBAR_SLOTS as u8 - 1;
+		sim.tick_once(vec![batch(vec![input1], 1)]);
+		for _ in 0..6 {
+			sim.tick_once(vec![]);
+		}
+		c2.snaps.clear();
+		c2.drain();
+		assert_eq!(
+			held_of(&c2.snaps, 0),
+			Some(WIRE_TOOL),
+			"slot switch reaches remotes"
+		);
+		let _ = &mut c1;
 	}
 }

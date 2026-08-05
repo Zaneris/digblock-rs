@@ -33,6 +33,8 @@ struct StateFile {
 	/// Hotbar slots, core wire encoding; empty in pre-arrangement saves
 	/// (`serde(default)` keeps them parsing).
 	hotbar: Vec<u16>,
+	/// Inventory-grid slots, same encoding; empty in older saves.
+	grid: Vec<u16>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -220,6 +222,7 @@ impl WorldStore for FsWorldStore {
 			edits,
 			inventory: state.inventory.clone(),
 			hotbar: state.hotbar.clone(),
+			grid: state.grid.clone(),
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -248,11 +251,18 @@ impl WorldStore for FsWorldStore {
 		}
 	}
 
-	fn save_player(&mut self, inventory: &[(u16, u32)], hotbar: &[u16], player: &PlayerPersist) {
+	fn save_player(
+		&mut self,
+		inventory: &[(u16, u32)],
+		hotbar: &[u16],
+		grid: &[u16],
+		player: &PlayerPersist,
+	) {
 		if let Some(active) = &mut self.active {
 			active.pending_state = Some(StateFile {
 				inventory: inventory.to_vec(),
 				hotbar: hotbar.to_vec(),
+				grid: grid.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}
@@ -323,6 +333,7 @@ mod tests {
 				u16::MAX,
 				u16::MAX,
 			],
+			&[u16::MAX, 7, u16::MAX],
 			&PlayerPersist {
 				pos: [1.0, 140.0, 2.0],
 				yaw: 90.0,
@@ -340,6 +351,7 @@ mod tests {
 		assert_eq!(save.inventory, vec![(3, 12)]);
 		assert_eq!(save.hotbar[0], 3);
 		assert_eq!(save.hotbar[2], u16::MAX - 1, "custom tool slot kept");
+		assert_eq!(save.grid[1], 7, "grid arrangement kept");
 		let p = save.player.unwrap();
 		assert_eq!(p.pos, [1.0, 140.0, 2.0]);
 		assert_eq!((p.yaw, p.pitch), (90.0, -10.0));

@@ -19,15 +19,18 @@ impl RemotePlayersDraw {
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
+		materials_bgl: &wgpu::BindGroupLayout,
 	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("players"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::PLAYERS.into()),
 		});
+		// Group 1 (block materials) textures the held-item companion
+		// cubes; the scene pass has it bound already when we draw.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("players"),
-			bind_group_layouts: &[frame_bgl],
+			bind_group_layouts: &[frame_bgl, materials_bgl],
 			push_constant_ranges: &[],
 		});
 		// Opaque scene geometry: writes depth, occluded by terrain.
@@ -77,7 +80,8 @@ impl RemotePlayersDraw {
 		}
 	}
 
-	/// Upload this frame's instances: `[pos.xyz, yaw, rgb, spare]` each.
+	/// Upload this frame's instances: `[pos.xyz, yaw, rgb, mode]` each
+	/// (mode 0 = body box, layer+1 = held-item cube).
 	pub fn set_instances(&mut self, gpu: &Gpu, instances: &[[f32; 8]]) {
 		let n = instances.len().min(MAX_INSTANCES);
 		self.count = n as u32;

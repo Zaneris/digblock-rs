@@ -34,6 +34,15 @@ pub enum Cmd {
 		tex_layer: u16,
 		tint: u32,
 	},
+	/// One projected face of a 3D item icon: four screen-px corners
+	/// (TL,TR,BL,BR — `ShapeQuad` slot order) with per-corner UVs into
+	/// the texture layer. Emitted far-to-near by `ui::shaped_icon`.
+	IconQuad {
+		corners: [[f32; 2]; 4],
+		uvs: [[f32; 2]; 4],
+		tex_layer: u16,
+		tint: u32,
+	},
 }
 
 #[derive(Default)]
@@ -109,6 +118,26 @@ impl DrawList {
 		);
 		self.cmds[layer as usize].push(Cmd::Icon {
 			rect,
+			tex_layer,
+			tint,
+		});
+	}
+
+	pub fn icon_quad(
+		&mut self,
+		layer: Layer,
+		corners: [[f32; 2]; 4],
+		uvs: [[f32; 2]; 4],
+		tex_layer: u16,
+		tint: u32,
+	) {
+		debug_assert!(
+			matches!(layer, Layer::Icons | Layer::Ghost),
+			"icons draw in the Icons or Ghost layer"
+		);
+		self.cmds[layer as usize].push(Cmd::IconQuad {
+			corners,
+			uvs,
 			tex_layer,
 			tint,
 		});

@@ -130,6 +130,7 @@ impl Sim {
 						pos: s.pos.to_array(),
 						vel: s.vel.to_array(),
 						look: c.look.to_array(),
+						held: c.held_wire(),
 					},
 					c.center,
 				)
@@ -245,6 +246,7 @@ mod tests {
 			look: [0.0, 0.0, 1.0],
 			claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
 			claimed_vel: [0.0; 3],
+			active_slot: 0,
 		}
 	}
 
@@ -341,6 +343,7 @@ mod tests {
 			look: [1.0, 0.0, 0.0],
 			claimed_pos: [0.0, -500.0, 0.0],
 			claimed_vel: [0.0; 3],
+			active_slot: 0,
 		};
 		let x_ahead_ready = |sim: &Sim| {
 			let p = sim.test_player(1).expect("client alive").pos;

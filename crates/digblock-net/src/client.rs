@@ -102,6 +102,13 @@ pub enum NetEvent {
 	AdminCommands {
 		commands: Vec<(String, String)>,
 	},
+	/// The identity's persisted item layout (hotbar wire encoding), sent
+	/// in join sync after the inventory. Sanitize + reconcile against the
+	/// counts; absent for anonymous/first-join identities.
+	Layout {
+		hotbar: Vec<u16>,
+		grid: Vec<u16>,
+	},
 	/// World-clock heartbeat: hard-set the sun's angle (inter-beat drift
 	/// is far below visible, so no smoothing is needed).
 	TimeOfDay {
@@ -411,6 +418,9 @@ impl NetClient {
 				// sub-material families handled).
 				out.push(NetEvent::Inventory { counts });
 			}
+			ServerMsg::Layout { hotbar, grid } => {
+				out.push(NetEvent::Layout { hotbar, grid });
+			}
 		}
 	}
 
@@ -432,6 +442,7 @@ impl NetClient {
 						pos: Vec3::from_array(p.pos),
 						vel: Vec3::from_array(p.vel),
 						look: Vec3::from_array(p.look),
+						held: p.held,
 					},
 				);
 			}
@@ -473,6 +484,7 @@ impl NetClient {
 		kind: EditKind,
 		cell: (i32, i32, i32),
 		normal: (i32, i32, i32),
+		slot: u8,
 	) {
 		let msg = ClientMsg::EditRequest {
 			seq,
@@ -482,6 +494,7 @@ impl NetClient {
 			kind,
 			cell: [cell.0, cell.1, cell.2],
 			normal: [normal.0 as i8, normal.1 as i8, normal.2 as i8],
+			slot,
 		};
 		let mut buf = Vec::new();
 		if codec::write_frame(&msg, &mut buf).is_ok() {
@@ -528,6 +541,16 @@ impl NetClient {
 	/// server answers success or failure with an `InventoryFull` rebase.
 	pub fn send_alchemy(&mut self, op: crate::messages::AlchemyOp) {
 		self.send_msg(&ClientMsg::Alchemy { op });
+	}
+
+	/// Send the item layout (hotbar + grid wire arrangements) after any
+	/// change — reliable and in-order with edits, so a bar assignment is
+	/// on the server before the next place validates against it.
+	pub fn send_layout(&mut self, hotbar: &[u16], grid: &[u16]) {
+		self.send_msg(&ClientMsg::Layout {
+			hotbar: hotbar.to_vec(),
+			grid: grid.to_vec(),
+		});
 	}
 
 	fn send_msg(&mut self, msg: &ClientMsg) {

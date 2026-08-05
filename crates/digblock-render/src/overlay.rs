@@ -297,7 +297,7 @@ impl Overlay {
 					let text = &arena[range.0 as usize..range.1 as usize];
 					self.push_text(x, y, px, color, text);
 				}
-				crate::ui::draw::Cmd::Icon { .. } => {}
+				crate::ui::draw::Cmd::Icon { .. } | crate::ui::draw::Cmd::IconQuad { .. } => {}
 			}
 		}
 	}

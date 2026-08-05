@@ -25,12 +25,18 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// v9: server admin — `Teleported.look` (facing on teleport, zero =
 /// keep current view) and `ServerMsg::AdminCommands` (the server
 /// advertises its command set to the admin for chat autocomplete).
-pub const PROTOCOL_VERSION: u16 = 9;
+/// v10: item layout — `ClientMsg::Layout`/`ServerMsg::Layout` (hotbar
+/// and grid arrangements, server-persisted per identity); also
+/// `EditRequest.slot` with `RejectReason::WrongSlot` (place/collect must
+/// use the declared slot's item), `InputTick.active_slot`, and
+/// `NetPlayerState.held` (the held item rides snapshots for remote
+/// rendering).
+pub const PROTOCOL_VERSION: u16 = 10;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 9;
+pub const MIN_PROTOCOL: u16 = 10;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -254,9 +260,9 @@ pub const EXTRAP_CAP_TICKS: f64 = 15.0;
 /// first (the reconciliation anchor), then nearest remotes by column
 /// distance. Sized so a full snapshot always fits one datagram.
 pub const MAX_SNAPSHOT_PLAYERS: usize = 24;
-// NetPlayerState is 37 wire bytes (id + 9×f32); ≤13 bytes of snapshot
-// overhead (variant, two varint ticks, vec length).
-const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 37 + 13 <= MAX_DATAGRAM);
+// NetPlayerState is ≤40 wire bytes (id + 9×f32 + held varint ≤3); ≤13
+// bytes of snapshot overhead (variant, two varint ticks, vec length).
+const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 40 + 13 <= MAX_DATAGRAM);
 
 /// A remote whose newest snapshot lags the estimated clock by this many
 /// ticks (2 s) left our interest radius — drop it client-side so it

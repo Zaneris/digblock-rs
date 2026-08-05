@@ -37,6 +37,10 @@ pub struct Predictor {
 	next_tick: u32,
 	buf: VecDeque<BufEntry>,
 	last_acked: u32,
+	/// Current hotbar selection, stamped into every outgoing `InputTick`
+	/// (feeds the server's held-item broadcast). Not per-tick history —
+	/// reconciliation never replays it.
+	pub active_slot: u8,
 }
 
 #[derive(Debug, PartialEq)]
@@ -57,6 +61,7 @@ impl Predictor {
 			next_tick: start_tick,
 			buf: VecDeque::new(),
 			last_acked: start_tick.saturating_sub(1),
+			active_slot: 0,
 		}
 	}
 
@@ -102,6 +107,7 @@ impl Predictor {
 				look: e.dir.to_array(),
 				claimed_pos: e.post.pos.to_array(),
 				claimed_vel: e.post.vel.to_array(),
+				active_slot: self.active_slot,
 			})
 			.collect();
 		InputBatch { inputs }

@@ -10,6 +10,7 @@ pub mod hud;
 pub mod icons;
 pub mod scale;
 pub mod screens;
+pub mod shaped_icon;
 pub mod widgets;
 
 pub use draw::{DrawList, Layer};

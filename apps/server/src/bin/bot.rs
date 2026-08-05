@@ -272,7 +272,8 @@ fn run_bot(
 				| NetEvent::PlayerLeft { .. }
 				| NetEvent::Chat { .. }
 				| NetEvent::TimeOfDay { .. }
-				| NetEvent::AdminCommands { .. } => {}
+				| NetEvent::AdminCommands { .. }
+				| NetEvent::Layout { .. } => {}
 			}
 		}
 
@@ -312,7 +313,7 @@ fn run_bot(
 							t,
 							block.dig_drop().map(|d| (d, 1)),
 						);
-						client.send_edit(seq, t, p.pos, down, EditKind::Dig, cell, (0, 0, 0));
+						client.send_edit(seq, t, p.pos, down, EditKind::Dig, cell, (0, 0, 0), 0);
 					} else {
 						client.send_dig_cancel();
 					}

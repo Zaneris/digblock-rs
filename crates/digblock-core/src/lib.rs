@@ -7,6 +7,7 @@ pub mod decoration;
 pub mod dir;
 pub mod fluid;
 pub mod hotbar;
+pub mod inv_grid;
 pub mod inventory;
 pub mod mesher;
 pub mod metrics;

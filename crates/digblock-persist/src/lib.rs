@@ -49,6 +49,9 @@ pub struct WorldSave {
 	/// Hotbar slot assignments in `digblock_core::hotbar` wire encoding
 	/// (one id per slot). Empty = legacy save with no arrangement.
 	pub hotbar: Vec<u16>,
+	/// Inventory-grid slot assignments, same wire encoding. Empty =
+	/// legacy save (the engine derives the arrangement).
+	pub grid: Vec<u16>,
 	pub player: Option<PlayerPersist>,
 }
 
@@ -69,9 +72,15 @@ pub trait WorldStore {
 	fn open_world(&mut self, id: &str) -> Result<WorldSave, String>;
 	/// One accepted local edit (dig/place/fluid), full cell value.
 	fn append_edit(&mut self, x: i32, y: i32, z: i32, cell: u16);
-	/// Latest inventory + hotbar arrangement (wire-encoded slots) +
-	/// player state (throttled to disk internally).
-	fn save_player(&mut self, inventory: &[(u16, u32)], hotbar: &[u16], player: &PlayerPersist);
+	/// Latest inventory + hotbar/grid arrangements (wire-encoded slots)
+	/// + player state (throttled to disk internally).
+	fn save_player(
+		&mut self,
+		inventory: &[(u16, u32)],
+		hotbar: &[u16],
+		grid: &[u16],
+		player: &PlayerPersist,
+	);
 	/// Per-frame upkeep: bounded flush/compaction work.
 	fn maintain(&mut self, live_edits: Option<&EditOverlay>);
 	/// Synchronous full flush (suspend, leaving the world).

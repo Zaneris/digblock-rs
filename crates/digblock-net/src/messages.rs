@@ -27,6 +27,10 @@ pub struct InputTick {
 	/// Predicted post-tick state: the adoption-envelope claim.
 	pub claimed_pos: [f32; 3],
 	pub claimed_vel: [f32; 3],
+	/// The hotbar slot selected when this input was sampled — feeds the
+	/// held-item broadcast in snapshots (enforcement reads the slot the
+	/// edit itself declares, not this lagged copy). Appended in v10.
+	pub active_slot: u8,
 }
 
 /// Newest-last, at most `INPUT_REDUNDANCY` entries.
@@ -41,6 +45,10 @@ pub struct NetPlayerState {
 	pub pos: [f32; 3],
 	pub vel: [f32; 3],
 	pub look: [f32; 3],
+	/// What the player is holding, in hotbar wire encoding
+	/// (`WIRE_EMPTY`/`WIRE_TOOL`/block id) — remote clients render it in
+	/// hand. Appended in v10.
+	pub held: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -128,6 +136,12 @@ pub enum ClientMsg {
 		cell: [i32; 3],
 		/// Place face normal; (0,0,0) is invalid for placement.
 		normal: [i8; 3],
+		/// The hotbar slot this edit used. Place/Collect must match the
+		/// server's copy of that slot (`WrongSlot` otherwise) — declared
+		/// here, on the same reliable stream as `Layout`, so a quick
+		/// slot-switch-then-click can never race the jitter-buffered
+		/// datagram path. Ignored for Dig/Interact. Appended in v10.
+		slot: u8,
 	},
 	Bye,
 	/// Hold-to-dig began on `cell` (dig or water-collect — the server
@@ -165,6 +179,17 @@ pub enum ClientMsg {
 	Alchemy {
 		op: AlchemyOp,
 	},
+	/// The player's item layout (hotbar wire encoding: `WIRE_EMPTY`/
+	/// `WIRE_TOOL`/block id), sent on any arrangement change. Rides the
+	/// edit action queue in wire order, so assign-to-bar-then-place in
+	/// one tick validates against the new bar. The server sanitizes,
+	/// enforces Place/Collect slots against it, echoes it in snapshots'
+	/// held item, and persists it with the identity's inventory.
+	/// Appended in v10.
+	Layout {
+		hotbar: Vec<u16>,
+		grid: Vec<u16>,
+	},
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -183,6 +208,10 @@ pub enum RejectReason {
 	/// Place refused: no stock of that block (an `InventoryFull` snapshot
 	/// follows so the client can re-base).
 	NoStock,
+	/// Place/Collect refused: the declared hotbar slot doesn't hold the
+	/// item the edit claims to use. Honest clients never see this — the
+	/// slot rides the same reliable stream as `Layout`. Appended in v10.
+	WrongSlot,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -278,6 +307,13 @@ pub enum ServerMsg {
 	AdminCommands {
 		commands: Vec<(String, String)>,
 	},
+	/// The identity's persisted item layout, sent in join sync right
+	/// after `InventoryFull` (only when one is stored). The client
+	/// sanitizes and reconciles it against the counts. Appended in v10.
+	Layout {
+		hotbar: Vec<u16>,
+		grid: Vec<u16>,
+	},
 }
 
 #[cfg(test)]
@@ -305,6 +341,7 @@ mod tests {
 				kind: EditKind::Place { block: 5 },
 				cell: [1, 138, -3],
 				normal: [0, 1, 0],
+				slot: 2,
 			},
 			ClientMsg::EditRequest {
 				seq: 8,
@@ -314,6 +351,7 @@ mod tests {
 				kind: EditKind::Collect,
 				cell: [1, 138, -3],
 				normal: [0, 0, 0],
+				slot: 8,
 			},
 			ClientMsg::Bye,
 			ClientMsg::DigStart { cell: [1, 138, -3] },
@@ -328,6 +366,7 @@ mod tests {
 				kind: EditKind::Interact,
 				cell: [2, 138, -3],
 				normal: [0, 0, 0],
+				slot: 0,
 			},
 			ClientMsg::Alchemy {
 				op: AlchemyOp::Convert {
@@ -337,6 +376,10 @@ mod tests {
 			},
 			ClientMsg::Alchemy {
 				op: AlchemyOp::Craft { item: 24, count: 2 },
+			},
+			ClientMsg::Layout {
+				hotbar: vec![2, 5, u16::MAX, u16::MAX - 1],
+				grid: vec![7, u16::MAX],
 			},
 		];
 		for m in msgs {
@@ -421,6 +464,10 @@ mod tests {
 			ServerMsg::AdminCommands {
 				commands: vec![("/ban <name>".into(), "ban by IP".into())],
 			},
+			ServerMsg::Layout {
+				hotbar: vec![2, 5, u16::MAX - 1],
+				grid: vec![u16::MAX, 7],
+			},
 		];
 		for m in msgs {
 			let mut buf = Vec::new();
@@ -440,6 +487,7 @@ mod tests {
 				pos: [1.0, 2.0, 3.0],
 				vel: [0.0, -1.0, 0.0],
 				look: [0.0, 0.0, 1.0],
+				held: 5,
 			}],
 		});
 		let bytes = codec::encode_datagram(&d).unwrap();
@@ -531,15 +579,16 @@ mod tests {
 				pos: [1.0, 0.0, 0.0],
 				vel: [0.0, 0.0, 0.0],
 				look: [0.0, 0.0, 1.0],
+				held: 4,
 			}],
 		});
 		assert_eq!(
 			postcard::to_stdvec(&snap).unwrap(),
 			// variant 1, tick 6, acked 5, 1 player: id 1, pos x 1.0 le f32,
-			// zeros, look z 1.0
+			// zeros, look z 1.0, held 4 (appended in v10)
 			vec![
 				1, 6, 5, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 4
 			]
 		);
 	}
@@ -610,6 +659,40 @@ mod tests {
 		);
 	}
 
+	/// Golden bytes for the v10 additions: the Layout pair, the WrongSlot
+	/// rejection, and the appended `EditRequest.slot`/`held`/`active_slot`
+	/// fields (the latter two pinned by the handshake/snapshot goldens).
+	#[test]
+	fn golden_layout_and_wrong_slot_encoding() {
+		let c = ClientMsg::Layout {
+			hotbar: vec![2],
+			grid: vec![7],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&c).unwrap(),
+			// variant 9, hotbar len 1 id 2, grid len 1 id 7
+			vec![9, 1, 2, 1, 7]
+		);
+		let s = ServerMsg::Layout {
+			hotbar: vec![2],
+			grid: vec![7],
+		};
+		assert_eq!(
+			postcard::to_stdvec(&s).unwrap(),
+			// variant 13, hotbar len 1 id 2, grid len 1 id 7
+			vec![13, 1, 2, 1, 7]
+		);
+		let r = ServerMsg::EditRejected {
+			client_seq: 1,
+			reason: RejectReason::WrongSlot,
+		};
+		assert_eq!(
+			postcard::to_stdvec(&r).unwrap(),
+			// variant 5, seq 1, reason 9
+			vec![5, 1, 9]
+		);
+	}
+
 	/// Golden bytes for the v9 admin-command advertisement. Same contract
 	/// as the goldens above.
 	#[test]
@@ -637,14 +720,15 @@ mod tests {
 			kind: EditKind::Interact,
 			cell: [0, 0, 0],
 			normal: [0, 0, 0],
+			slot: 0,
 		};
 		assert_eq!(
 			postcard::to_stdvec(&m).unwrap(),
 			// variant 1, seq 1, tick 2, six zero f32s, KIND 3, zero cell
-			// zigzags, zero normals
+			// zigzags, zero normals, slot 0 (appended in v10)
 			vec![
 				1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
-				0, 0, 0, 0, 0, 0
+				0, 0, 0, 0, 0, 0, 0
 			]
 		);
 

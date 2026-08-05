@@ -991,10 +991,18 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 								}
 							}
 						}
-						// A key that just closed the menu (Escape, Enter)
-						// re-locks from inside its own gesture.
+						// A key that just closed the menu (Enter, hotkeys)
+						// re-locks from inside its own gesture — except
+						// Escape: Chrome excludes it from user activation,
+						// so the lock request fails (or is granted and
+						// instantly revoked), and the resulting unlock
+						// event would bounce the player straight into the
+						// pause menu. Leave the cursor free instead; the
+						// first click re-grabs and is swallowed.
 						#[cfg(target_arch = "wasm32")]
-						self.gesture_regrab(wants_before);
+						if code != KeyCode::Escape {
+							self.gesture_regrab(wants_before);
+						}
 					}
 					PhysicalKey::Unidentified(_) => {}
 				}

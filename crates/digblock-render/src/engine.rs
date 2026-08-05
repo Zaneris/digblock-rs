@@ -291,8 +291,14 @@ pub struct Engine {
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
-	/// Scratch for the grid snapshot (`iter_nonzero`), reused per frame.
-	grid_scratch: Vec<(digblock_core::block::BlockType, u32)>,
+	/// The inventory-grid arrangement behind the hotbar (slot
+	/// assignments; counts stay in `inventory`). Kept consistent by
+	/// `reconcile_layout` every frame.
+	inv_grid: digblock_core::inv_grid::InvGrid,
+	/// The last layout wire pair sent to the server — any difference
+	/// triggers a `ClientMsg::Layout` (before this frame's edits, so the
+	/// server's slot enforcement always sees the current arrangement).
+	last_layout_sent: Option<(Vec<u16>, Vec<u16>)>,
 	/// Startup/pause menu state (pure; overlay renders its view).
 	menu: crate::menu::Menu,
 	/// Chat input line (pure; overlay renders its view).
@@ -432,6 +438,18 @@ fn player_color(id: u8) -> [f32; 3] {
 	};
 	// Lift toward pastel so the lambert shading stays readable.
 	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
+}
+
+/// Texture-array layer for a snapshot's held-item wire id (`None` =
+/// empty hand, unknown id from a newer server, or nothing to draw).
+fn held_tex_layer(held: u16) -> Option<u16> {
+	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
+	match held {
+		WIRE_EMPTY => None,
+		// The tool reads as the water it collects/places.
+		WIRE_TOOL => Some(BlockType::Water.props().tex_side),
+		id => BlockType::try_from_id(id).map(|b| b.props().tex_side),
+	}
 }
 
 /// Pack linear RGB into the overlay's 0xAABBGGRR vertex color (opaque).
@@ -577,7 +595,8 @@ impl Engine {
 			inv_screen: Default::default(),
 			alch_screen: Default::default(),
 			return_spawn_requested: false,
-			grid_scratch: Vec::new(),
+			inv_grid: Default::default(),
+			last_layout_sent: None,
 		}
 	}
 
@@ -608,6 +627,9 @@ impl Engine {
 				identity: self.config.identity,
 			},
 		));
+		// Fresh connection: the layout dedup re-primes from the server's
+		// join-sync Layout.
+		self.last_layout_sent = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
 		self.walking = true;
 	}
@@ -861,17 +883,20 @@ impl Engine {
 			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
-		// Saved arrangement first (sanitizing decode), then auto-assign
-		// as the backstop: legacy saves get the old first-seen layout,
-		// and types the arrangement doesn't cover still land on the bar.
+		// Saved arrangement first (sanitizing decode), then reconcile as
+		// the backstop: legacy saves get the derived layout, and types
+		// the arrangement doesn't cover still land on the bar or grid.
 		if let Ok(wire) =
 			<[u16; digblock_core::hotbar::HOTBAR_SLOTS]>::try_from(save.hotbar.as_slice())
 		{
 			self.hotbar = Hotbar::from_wire(&wire);
 		}
-		for (b, _) in self.inventory.iter_nonzero() {
-			self.hotbar.auto_assign(b);
-		}
+		self.inv_grid = digblock_core::inv_grid::InvGrid::from_wire(&save.grid);
+		digblock_core::inv_grid::reconcile_layout(
+			&self.inventory,
+			&mut self.hotbar,
+			&mut self.inv_grid,
+		);
 		self.reset_world_transients(start);
 		self.in_local_save = true;
 		self.player_save_accum = 0.0;
@@ -1092,10 +1117,41 @@ impl Engine {
 							_ => {}
 						}
 					}
-					for (b, _) in inv.iter_nonzero() {
-						self.hotbar.auto_assign(b);
-					}
 					self.inventory = inv;
+					// New types file bar-first then grid; stale grid slots
+					// clear — same derivation the server runs.
+					digblock_core::inv_grid::reconcile_layout(
+						&self.inventory,
+						&mut self.hotbar,
+						&mut self.inv_grid,
+					);
+				}
+				NetEvent::Layout { hotbar, grid } => {
+					// The identity's stored arrangement (join sync).
+					// Sanitizing decode, keep the live selection, then
+					// reconcile against the counts.
+					use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
+					let mut bar_wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+					for (d, s) in bar_wire.iter_mut().zip(hotbar.iter()) {
+						*d = *s;
+					}
+					let selected = self.hotbar.selected_index();
+					self.hotbar = Hotbar::from_wire(&bar_wire);
+					self.hotbar.select_digit(selected as u8 + 1);
+					self.inv_grid = digblock_core::inv_grid::InvGrid::from_wire(&grid);
+					// Prime the dedup with what the server holds (its
+					// sanitized copy); the reconcile below normally lands on
+					// exactly this, and any divergence gets reported by the
+					// per-frame layout sync.
+					self.last_layout_sent = Some((
+						self.hotbar.to_wire().to_vec(),
+						self.inv_grid.to_wire().to_vec(),
+					));
+					digblock_core::inv_grid::reconcile_layout(
+						&self.inventory,
+						&mut self.hotbar,
+						&mut self.inv_grid,
+					);
 				}
 				NetEvent::PlayerJoined { id, name } => {
 					self.push_feed(format!("{name} joined the server."));
@@ -1158,6 +1214,7 @@ impl Engine {
 			self.pending_ack = None;
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
+			self.last_layout_sent = None;
 			// No one left to talk to: discard any half-typed chat line.
 			if self.chat.is_open() {
 				self.chat.handle_input(&InputEvent::Key {
@@ -1431,7 +1488,8 @@ impl Engine {
 				let tick = net.predictor.current_tick();
 				let entries: Vec<_> = cleared.iter().map(|&(c, p)| (c, p, air)).collect();
 				let seq = net.edits.begin_multi(&entries, tick, drop.map(|d| (d, 1)));
-				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0));
+				let slot = self.hotbar.selected_index() as u8;
+				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0), slot);
 			}
 			_ => {
 				for &(c, _) in &cleared {
@@ -1544,6 +1602,7 @@ impl Engine {
 					digblock_net::messages::EditKind::Place { block: placed_cell },
 					hit.cell,
 					hit.normal,
+					self.hotbar.selected_index() as u8,
 				);
 			}
 			_ => {
@@ -1605,9 +1664,52 @@ impl Engine {
 					digblock_net::messages::EditKind::Interact,
 					hit.cell,
 					hit.normal,
+					self.hotbar.selected_index() as u8,
 				);
 			}
 		}
+	}
+
+	/// Apply one inventory-screen drop to the hotbar/grid pair, then
+	/// reconcile so a moved type never shows in two places. The per-frame
+	/// layout sync mirrors the result to the server before the next edit.
+	fn apply_inv_action(&mut self, act: InvAction) {
+		use digblock_core::hotbar::HotbarItem;
+		match act {
+			InvAction::Assign { slot, block } => {
+				let _ = self.hotbar.assign(slot, block);
+			}
+			InvAction::SwapBar { a, b } => self.hotbar.swap(a, b),
+			InvAction::PlaceGrid {
+				bar_slot,
+				grid_slot,
+			} => {
+				if let Some(Some(HotbarItem::Block(b))) = self.hotbar.slots().get(bar_slot).copied()
+				{
+					let occupant = self.inv_grid.get(grid_slot);
+					if self.hotbar.clear_slot(bar_slot) {
+						self.inv_grid.place(grid_slot, b);
+						// The displaced occupant takes the vacated bar slot.
+						if let Some(x) = occupant {
+							let _ = self.hotbar.assign(bar_slot, x);
+						}
+					}
+				}
+			}
+			InvAction::MoveGrid { from, to } => self.inv_grid.swap(from, to),
+			InvAction::ClearBar { slot } => {
+				if let Some(Some(HotbarItem::Block(b))) = self.hotbar.slots().get(slot).copied() {
+					if self.hotbar.clear_slot(slot) {
+						self.inv_grid.file(b);
+					}
+				}
+			}
+		}
+		digblock_core::inv_grid::reconcile_layout(
+			&self.inventory,
+			&mut self.hotbar,
+			&mut self.inv_grid,
+		);
 	}
 
 	/// Apply an alchemy action: offline it IS the authority (the same
@@ -1909,26 +2011,17 @@ impl Game for Engine {
 					pressed: true,
 				} => self.inv_screen.close(),
 				_ => {
-					self.grid_scratch.clear();
-					self.grid_scratch.extend(self.inventory.iter_nonzero());
 					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
 					let style = crate::ui::Style::new(self.ui_scale);
 					let act = self.inv_screen.handle_input(
 						&event,
 						&self.ui_hits,
 						&style,
-						&self.grid_scratch,
+						&self.inv_grid,
 						&bar,
 					);
-					match act {
-						Some(InvAction::Assign { slot, block }) => {
-							let _ = self.hotbar.assign(slot, block);
-						}
-						Some(InvAction::SwapBar { a, b }) => self.hotbar.swap(a, b),
-						Some(InvAction::ClearBar { slot }) => {
-							let _ = self.hotbar.clear_slot(slot);
-						}
-						None => {}
+					if let Some(act) = act {
+						self.apply_inv_action(act);
 					}
 				}
 			}
@@ -2214,10 +2307,13 @@ impl Game for Engine {
 		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
 		self.menu
 			.set_spawn_cooldown(self.spawn_cooldown.ceil() as u32);
-		// The menu's Inventory row: the menu closed itself; the screen
-		// takes over the free cursor seamlessly.
+		// The menu's Inventory/Alchemy rows: the menu closed itself; the
+		// screen takes over the free cursor seamlessly.
 		if self.menu.take_inventory() {
 			self.inv_screen.open();
+		}
+		if self.menu.take_alchemy() {
+			self.alch_screen.open();
 		}
 		let spawn_requested =
 			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
@@ -2250,6 +2346,34 @@ impl Game for Engine {
 		}
 
 		self.pump_net(dt);
+		// Keep the arrangement invariants (a type lives on the bar or in
+		// the grid, never both; nothing owned is unplaced) and mirror any
+		// change to the server BEFORE this frame's clicks send edits —
+		// the server's slot enforcement validates against the copy that
+		// arrives, in order, on the same reliable stream.
+		digblock_core::inv_grid::reconcile_layout(
+			&self.inventory,
+			&mut self.hotbar,
+			&mut self.inv_grid,
+		);
+		if let Some(net) = self.net.as_mut() {
+			if net.ready() {
+				net.predictor.active_slot = self.hotbar.selected_index() as u8;
+				// First send only after the join-sync `ServerMsg::Layout`
+				// primed the dedup — reporting a pre-sync default would
+				// overwrite the identity's stored arrangement.
+				if self.last_layout_sent.is_some() {
+					let wire = (
+						self.hotbar.to_wire().to_vec(),
+						self.inv_grid.to_wire().to_vec(),
+					);
+					if self.last_layout_sent.as_ref() != Some(&wire) {
+						net.send_layout(&wire.0, &wire.1);
+						self.last_layout_sent = Some(wire);
+					}
+				}
+			}
+		}
 		for m in &mut self.feed {
 			m.1 -= dt;
 		}
@@ -2318,6 +2442,7 @@ impl Game for Engine {
 					store.save_player(
 						&self.inventory.to_wire(),
 						&self.hotbar.to_wire(),
+						&self.inv_grid.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
 							yaw: self.camera.yaw_deg,
@@ -2426,15 +2551,32 @@ impl Game for Engine {
 				let c = player_color(d.id);
 				self.remote_instances
 					.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
+				// Held-item companion: a small textured cube in hand
+				// (instance mode = texture layer + 1; empty hand = none).
+				if let Some(layer) = held_tex_layer(d.held) {
+					self.remote_instances.push([
+						d.pos.x,
+						d.pos.y,
+						d.pos.z,
+						d.yaw,
+						1.0,
+						1.0,
+						1.0,
+						layer as f32 + 1.0,
+					]);
+				}
 			}
 		}
 		// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
-		// a GPU-path check that needs no second client.
+		// a GPU-path check that needs no second client (held cube: dirt).
 		if self.config.debug_playerbox {
 			let p = self.camera.pos + self.camera.dir() * 5.0;
 			let c = player_color(2);
 			self.remote_instances
 				.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
+			let layer = BlockType::Dirt.props().tex_side as f32;
+			self.remote_instances
+				.push([p.x, p.y, p.z, 0.8, 1.0, 1.0, 1.0, layer + 1.0]);
 		}
 		let d = self.depth();
 		let texels = self.config.shadow_size as f32;
@@ -2491,13 +2633,22 @@ impl Game for Engine {
 		let in_game = menu_view.is_none();
 		self.ui_dl.clear();
 		self.ui_hits.clear();
+		// The menus' full-screen dim fades with the world's own darkness
+		// (night scenes shouldn't be double-darkened); the sample is pure
+		// and cheap, so re-deriving it here beats plumbing it out of
+		// frame_uniforms.
+		let daylight =
+			1.0 - digblock_core::sky::Atmosphere::sample(self.sun.elevation()).star_intensity;
 		if let Some(view) = &menu_view {
-			view.emit(&mut self.ui_dl, &crate::ui::Style::new(self.ui_scale), size);
+			view.emit(
+				&mut self.ui_dl,
+				&crate::ui::Style::new(self.ui_scale),
+				size,
+				daylight,
+			);
 		}
 		if in_game {
 			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
-			self.grid_scratch.clear();
-			self.grid_scratch.extend(self.inventory.iter_nonzero());
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui_dl,
 				hits: &mut self.ui_hits,
@@ -2505,10 +2656,11 @@ impl Game for Engine {
 			};
 			if self.inv_screen.is_open() {
 				// Screen first: its dim/panel sit under the bar's quads.
-				self.inv_screen.build(&mut ui, size, &self.grid_scratch);
+				self.inv_screen
+					.build(&mut ui, size, &self.inv_grid, &self.inventory, daylight);
 			} else if self.alch_screen.is_open() {
 				let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
-				self.alch_screen.build(&mut ui, size, &view);
+				self.alch_screen.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -2573,6 +2725,7 @@ impl Game for Engine {
 				store.save_player(
 					&self.inventory.to_wire(),
 					&self.hotbar.to_wire(),
+					&self.inv_grid.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
 						yaw: self.camera.yaw_deg,
@@ -2666,6 +2819,7 @@ mod store_tests {
 				edits: vec![((1, 100, 1), 0)],
 				inventory: vec![(3, 5)],
 				hotbar: self.0.borrow().open_hotbar.clone(),
+				grid: Vec::new(),
 				player: Some(digblock_persist::PlayerPersist {
 					pos: [1.5, 140.0, 2.5],
 					yaw: 90.0,
@@ -2680,6 +2834,7 @@ mod store_tests {
 			&mut self,
 			_inventory: &[(u16, u32)],
 			hotbar: &[u16],
+			_grid: &[u16],
 			_player: &digblock_persist::PlayerPersist,
 		) {
 			let mut state = self.0.borrow_mut();

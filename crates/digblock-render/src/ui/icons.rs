@@ -3,17 +3,27 @@
 //! texture array (bind group 1 = the renderer's materials bind group).
 //! Draws in the overlay pass, sandwiched by the overlay's own splits.
 
-use digblock_core::block::BlockType;
+use digblock_core::block::{BlockType, SHAPED_COUNT};
 use digblock_core::hotbar::HOTBAR_SLOTS;
+use digblock_core::inv_grid::GRID_SLOTS;
 use digblock_platform::Gpu;
 
 use super::draw::{Cmd, DrawList, Layer};
 
-/// Worst case: every block type in the inventory grid plus a full
-/// hotbar plus one ghost. Derived from `BlockType::COUNT` so a new
-/// `blocks!` row can never overflow it.
-const MAX_ICON_QUADS: usize = BlockType::COUNT + HOTBAR_SLOTS + 1;
+/// Worst case: every visible slot (grid + bar + ghost) carries a 3D
+/// icon. Plain cubes and the bucket project a handful of quads; shaped
+/// items project up to two variants' templates (a door's two halves) —
+/// and a shaped type can sit in the grid AND on the bar only once each
+/// (assignments are unique per type). Derived from the core counts so a
+/// new `blocks!` row can never overflow it.
+const BUCKET_QUADS: usize = 7;
+const SHAPED_SITES: usize = 2 * SHAPED_COUNT + 1;
+const MAX_ICON_QUADS: usize = (GRID_SLOTS + HOTBAR_SLOTS + 1) * BUCKET_QUADS
+	+ SHAPED_SITES * 2 * digblock_core::shapes::MAX_SHAPE_QUADS;
 const MAX_ICON_VERTS: usize = MAX_ICON_QUADS * 6;
+// The budget must dominate the naive one-flat-quad-per-site bound too
+// (alchemy rows reuse the same sites).
+const _: () = assert!(MAX_ICON_QUADS > BlockType::COUNT + HOTBAR_SLOTS);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -121,32 +131,51 @@ impl UiIcons {
 
 	fn push_layer(&mut self, dl: &DrawList, layer: Layer) {
 		for cmd in dl.cmds(layer).0 {
-			let Cmd::Icon {
-				rect,
-				tex_layer,
-				tint,
-			} = *cmd
-			else {
-				continue;
-			};
 			if self.verts.len() + 6 > MAX_ICON_VERTS {
+				debug_assert!(false, "icon vertex budget overflow");
 				return;
 			}
-			let v = |px, py, u, w| IconVertex {
-				pos: [px, py],
-				uv: [u, w],
-				layer: u32::from(tex_layer),
-				tint,
-			};
-			let (x, y, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
-			self.verts.extend_from_slice(&[
-				v(x, y, 0.0, 0.0),
-				v(x1, y, 1.0, 0.0),
-				v(x, y1, 0.0, 1.0),
-				v(x1, y, 1.0, 0.0),
-				v(x1, y1, 1.0, 1.0),
-				v(x, y1, 0.0, 1.0),
-			]);
+			match *cmd {
+				Cmd::Icon {
+					rect,
+					tex_layer,
+					tint,
+				} => {
+					let v = |px, py, u, w| IconVertex {
+						pos: [px, py],
+						uv: [u, w],
+						layer: u32::from(tex_layer),
+						tint,
+					};
+					let (x, y, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+					self.verts.extend_from_slice(&[
+						v(x, y, 0.0, 0.0),
+						v(x1, y, 1.0, 0.0),
+						v(x, y1, 0.0, 1.0),
+						v(x1, y, 1.0, 0.0),
+						v(x1, y1, 1.0, 1.0),
+						v(x, y1, 0.0, 1.0),
+					]);
+				}
+				// Projected 3D-icon face: [TL, TR, BL, BR] corners with
+				// per-corner UVs — same vertex format, two triangles.
+				Cmd::IconQuad {
+					corners,
+					uvs,
+					tex_layer,
+					tint,
+				} => {
+					let v = |i: usize| IconVertex {
+						pos: corners[i],
+						uv: uvs[i],
+						layer: u32::from(tex_layer),
+						tint,
+					};
+					self.verts
+						.extend_from_slice(&[v(0), v(1), v(2), v(1), v(3), v(2)]);
+				}
+				_ => {}
+			}
 		}
 	}
 

@@ -19,10 +19,12 @@ mod sync;
 pub(crate) mod harness;
 
 use crate::ban_store::BanStore;
-use crate::inventory_store::{hash_identity, IdentityHash, InventoryStore};
 use crate::journal::Journal;
+use crate::player_store::{hash_identity, IdentityHash, PlayerLayout, PlayerRecord, PlayerStore};
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
+use digblock_core::hotbar::Hotbar;
+use digblock_core::inv_grid::{reconcile_layout, InvGrid};
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_net::codec;
@@ -124,6 +126,15 @@ struct Client {
 	/// Authoritative per-player block counts (the client predicts against
 	/// its own copy and reconciles).
 	inventory: Inventory,
+	/// The client's item arrangement (sanitized from `ClientMsg::Layout`,
+	/// kept current on the reliable stream) — the enforcement source for
+	/// "a place must use the item in its declared slot".
+	hotbar: Hotbar,
+	grid: InvGrid,
+	/// Selected hotbar slot from the newest consumed input — feeds the
+	/// held-item field in snapshots (display only; enforcement reads the
+	/// edit's own declared slot).
+	active_slot: u8,
 	/// `Some` = persistent identity (the stored hash, never the secret);
 	/// `None` = anonymous, session-only inventory.
 	identity: Option<IdentityHash>,
@@ -132,6 +143,30 @@ struct Client {
 	/// Tick of the last granted return-to-spawn; `None` = never used
 	/// (the first request after joining is always allowed).
 	last_return_tick: Option<u32>,
+}
+
+impl Client {
+	/// The held item for snapshots, in hotbar wire encoding.
+	fn held_wire(&self) -> u16 {
+		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
+		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
+		match self.hotbar.slots()[slot] {
+			None => WIRE_EMPTY,
+			Some(HotbarItem::WaterTool) => WIRE_TOOL,
+			Some(HotbarItem::Block(b)) => b as u16,
+		}
+	}
+
+	/// The persistence snapshot (written through on edits + disconnect).
+	fn record(&self) -> PlayerRecord {
+		PlayerRecord {
+			inventory: self.inventory.clone(),
+			layout: Some(PlayerLayout {
+				hotbar: self.hotbar.to_wire(),
+				grid: self.grid.to_wire(),
+			}),
+		}
+	}
 }
 
 pub struct Sim {
@@ -156,8 +191,9 @@ pub struct Sim {
 	face_scans: std::collections::VecDeque<((i32, i32), (i32, i32))>,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
 	last_oversize_log: Option<u32>,
-	/// Persistent per-identity inventories (separate from the journal).
-	inv_store: InventoryStore,
+	/// Persistent per-identity player records — inventory + item layout
+	/// (separate from the journal).
+	player_store: PlayerStore,
 	/// Persistent IP bans, enforced at Hello and driven by `/ban`.
 	ban_store: BanStore,
 	/// The player name (case-insensitive) granted admin chat commands.
@@ -198,7 +234,7 @@ impl Sim {
 		spawn: Vec3,
 	) -> std::io::Result<Self> {
 		let journal = Journal::open(data_dir, seed)?;
-		let inv_store = InventoryStore::open(data_dir)?;
+		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
@@ -214,7 +250,7 @@ impl Sim {
 			residency_dirty: true,
 			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
-			inv_store,
+			player_store,
 			ban_store,
 			admin_name: None,
 		})
@@ -267,13 +303,13 @@ impl Sim {
 			}
 		}
 		self.journal.maintain();
-		self.inv_store.maintain();
+		self.player_store.maintain();
 	}
 
 	/// Flush and fsync the journal + inventory store (graceful shutdown).
 	pub fn shutdown(&mut self) {
 		self.journal.sync();
-		self.inv_store.sync();
+		self.player_store.sync();
 	}
 
 	#[cfg(test)]
@@ -288,7 +324,12 @@ impl Sim {
 
 	#[cfg(test)]
 	fn test_grant(&mut self, conn_id: u64, b: digblock_core::block::BlockType, n: u32) {
-		self.clients.get_mut(&conn_id).unwrap().inventory.add(b, n);
+		let client = self.clients.get_mut(&conn_id).unwrap();
+		client.inventory.add(b, n);
+		// Like a real acquisition: the granted type lands on the bar, so
+		// places (now slot-enforced) validate the way an honest client's
+		// would.
+		reconcile_layout(&client.inventory, &mut client.hotbar, &mut client.grid);
 	}
 
 	#[cfg(test)]
@@ -356,6 +397,7 @@ impl Sim {
 					kind,
 					cell,
 					normal,
+					slot,
 				} => {
 					if let Some(client) = self.clients.get(&conn_id) {
 						// Bounded: a flood beyond every client's burst
@@ -378,6 +420,7 @@ impl Sim {
 								kind,
 								cell: (cell[0], cell[1], cell[2]),
 								normal: (normal[0] as i32, normal[1] as i32, normal[2] as i32),
+								slot,
 							}));
 						}
 					}
@@ -461,6 +504,18 @@ impl Sim {
 					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
 						self.action_queue
 							.push(ClientAction::Alchemy { conn_id, op });
+					}
+				}
+				// Queued: an assign-to-bar-then-place in one tick must
+				// update the arrangement before the place's slot gate runs
+				// (wire order). Over-budget requests drop silently.
+				ClientMsg::Layout { hotbar, grid } => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue.push(ClientAction::Layout {
+							conn_id,
+							hotbar,
+							grid,
+						});
 					}
 				}
 			},
@@ -637,9 +692,19 @@ impl Sim {
 				return;
 			}
 		}
-		let inventory = identity
-			.map(|hash| self.inv_store.get(&hash))
+		let record = identity
+			.map(|hash| self.player_store.get(&hash))
 			.unwrap_or_default();
+		let inventory = record.inventory;
+		// The item arrangement: the stored layout when one exists, else
+		// the deterministic default — the SAME derivation the client runs
+		// from the `Layout` echo / its `InventoryFull`, so both sides
+		// agree without a round-trip.
+		let (mut hotbar, mut grid) = match &record.layout {
+			Some(l) => (Hotbar::from_wire(&l.hotbar), InvGrid::from_wire(&l.grid)),
+			None => (Hotbar::new(), InvGrid::default()),
+		};
+		reconcile_layout(&inventory, &mut hotbar, &mut grid);
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
 		// Blocks built at the spawn point since worldgen raise the landing.
@@ -686,6 +751,15 @@ impl Sim {
 			&out,
 			&ServerMsg::InventoryFull {
 				counts: inventory.to_wire(),
+			},
+		);
+		// The item arrangement (stored or derived — always sent, so the
+		// client adopts exactly what enforcement will validate against).
+		ok &= send_frame(
+			&out,
+			&ServerMsg::Layout {
+				hotbar: hotbar.to_wire().to_vec(),
+				grid: grid.to_wire().to_vec(),
 			},
 		);
 		if !ok {
@@ -750,6 +824,9 @@ impl Sim {
 				live: false,
 				center,
 				inventory,
+				hotbar,
+				grid,
+				active_slot: 0,
 				identity,
 				digging: None,
 				last_return_tick: None,
@@ -790,8 +867,8 @@ impl Sim {
 			log::info!("player {} ({}) left", client.id, client.name);
 			if let Some(hash) = client.identity {
 				// Durable before the identity can reconnect and re-load.
-				self.inv_store.put(hash, &client.inventory);
-				self.inv_store.sync();
+				self.player_store.put(hash, client.record());
+				self.player_store.sync();
 			}
 			for c in self.clients.values() {
 				client_send(c, &ServerMsg::PlayerLeft { id: client.id });
@@ -1083,6 +1160,7 @@ mod tests {
 					kind: digblock_net::messages::EditKind::Dig,
 					cell: [0, 0, 0],
 					normal: [0, 0, 0],
+					slot: 0,
 				},
 			})
 			.collect();
@@ -1166,6 +1244,22 @@ mod tests {
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
 			assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 1);
 
+			// Park the Stone in grid slot 17 (a deliberate arrangement —
+			// it must survive reconnect and reboot verbatim).
+			let mut grid =
+				vec![digblock_core::hotbar::WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS];
+			grid[17] = BlockType::Stone as u16;
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Layout {
+					hotbar: vec![digblock_core::hotbar::WIRE_EMPTY; 8]
+						.into_iter()
+						.chain([digblock_core::hotbar::WIRE_TOOL])
+						.collect(),
+					grid: grid.clone(),
+				},
+			}]);
+
 			// Reconnect within the same server run.
 			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
 			let mut c2 = connect_with_identity(&mut sim, 2, identity);
@@ -1177,6 +1271,14 @@ mod tests {
 						if counts == &vec![(BlockType::Stone as u16, 1)]
 				)),
 				"reconnect carries the credit: {:?}",
+				c2.msgs
+			);
+			assert!(
+				c2.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::Layout { grid: g, .. } if g == &grid
+				)),
+				"reconnect carries the arrangement: {:?}",
 				c2.msgs
 			);
 			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
@@ -1194,6 +1296,15 @@ mod tests {
 					if counts == &vec![(BlockType::Stone as u16, 1)]
 			)),
 			"reboot carries the credit: {:?}",
+			c3.msgs
+		);
+		assert!(
+			c3.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Layout { grid, .. }
+					if grid.get(17) == Some(&(BlockType::Stone as u16))
+			)),
+			"reboot carries the arrangement: {:?}",
 			c3.msgs
 		);
 		// A different identity starts empty.

@@ -19,8 +19,17 @@ pub const BOTTOM_MARGIN: f32 = 12.0;
 /// Zero-count slots stay visible but greyed (sticky slots never shift).
 const GREY_TINT: u32 = 0xFF60_6060;
 const FULL_TINT: u32 = 0xFFFF_FFFF;
-/// The water tool: the water texture pushed hard toward blue.
-const TOOL_TINT: u32 = 0xFFFF_9060;
+
+/// What a 3D item icon renders as (see [`super::shaped_icon`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IconKind {
+	/// Plain block: a three-face dimetric cube.
+	Cube(BlockType),
+	/// Stairs/doors: the baked shape template, projected.
+	Shaped(BlockType),
+	/// The water tool: a little bucket with water inside.
+	WaterTool,
+}
 
 /// The aim crosshair (hidden while any screen owns the cursor).
 pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
@@ -40,13 +49,26 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 	);
 }
 
-/// Icon (texture layer, tint) for a hotbar item — the ghost drawn under
-/// the cursor mid-drag uses the same visuals as the slots.
-pub fn item_icon(item: HotbarItem) -> (u16, u32) {
+/// Icon (kind, tint) for a hotbar item — the ghost drawn under the
+/// cursor mid-drag uses the same visuals as the slots.
+pub fn item_icon(item: HotbarItem) -> (IconKind, u32) {
 	match item {
-		HotbarItem::WaterTool => (BlockType::Water.props().tex_side, TOOL_TINT),
-		HotbarItem::Block(b) => (b.props().tex_side, FULL_TINT),
+		HotbarItem::WaterTool => (IconKind::WaterTool, FULL_TINT),
+		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
+		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
 	}
+}
+
+/// Draw one 3D item icon into `rect` (every icon path goes through the
+/// dimetric projector — one consistent visual language).
+pub fn draw_icon(
+	dl: &mut super::DrawList,
+	layer: Layer,
+	rect: super::Rect,
+	kind: IconKind,
+	tint: u32,
+) {
+	super::shaped_icon::emit(dl, layer, rect, kind, tint);
 }
 
 /// The hotbar row's grid: bottom-centered. Shared with the inventory
@@ -82,10 +104,10 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
 			SlotView::Tool => Some(item_icon(HotbarItem::WaterTool)),
-			SlotView::Block { block, count } => Some((
-				block.props().tex_side,
-				if count == 0 { GREY_TINT } else { FULL_TINT },
-			)),
+			SlotView::Block { block, count } => {
+				let (kind, _) = item_icon(HotbarItem::Block(block));
+				Some((kind, if count == 0 { GREY_TINT } else { FULL_TINT }))
+			}
 		};
 		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
 		if let SlotView::Block { count, .. } = view.slots[i] {
@@ -175,16 +197,22 @@ mod tests {
 	#[test]
 	fn icons_and_selection_ride_the_right_layers() {
 		let (dl, _) = emit(1.0);
-		// Dirt, Stone (greyed), Tool = 3 icons.
+		// Dirt cube (3 faces), Stone cube greyed (3), tool bucket (7).
 		let icons = dl.cmds(Layer::Icons).0;
-		assert_eq!(icons.len(), 3);
-		assert!(icons.iter().all(|c| matches!(c, Cmd::Icon { .. })));
+		assert_eq!(icons.len(), 13);
+		assert!(icons.iter().all(|c| matches!(c, Cmd::IconQuad { .. })));
 		// Backdrop: 9 slot bgs + 4 selection border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), HOTBAR_SLOTS + 4);
-		// Greyed stone tint in slot 1's icon.
-		match &icons[1] {
-			Cmd::Icon { tint, .. } => assert_eq!(*tint, GREY_TINT),
-			_ => unreachable!(),
-		}
+		// The greyed stone cube: its top face carries GREY_TINT verbatim
+		// (top shade factor is 1.0), and no full-tint face.
+		let stone: Vec<u32> = icons[3..6]
+			.iter()
+			.map(|c| match c {
+				Cmd::IconQuad { tint, .. } => *tint,
+				_ => unreachable!(),
+			})
+			.collect();
+		assert!(stone.contains(&GREY_TINT), "greyed top face: {stone:?}");
+		assert!(!stone.contains(&FULL_TINT));
 	}
 }

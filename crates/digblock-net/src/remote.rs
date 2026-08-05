@@ -17,6 +17,9 @@ pub struct RemoteSnap {
 	pub pos: Vec3,
 	pub vel: Vec3,
 	pub look: Vec3,
+	/// Held item in hotbar wire encoding (`WIRE_EMPTY`/`WIRE_TOOL`/block
+	/// id). Discrete — never interpolated; the newest bracket wins.
+	pub held: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +28,8 @@ pub struct RemoteDraw {
 	pub pos: Vec3,
 	/// Radians around +Y, from the look direction.
 	pub yaw: f32,
+	/// Held item in hotbar wire encoding, from the newest snapshot.
+	pub held: u16,
 }
 
 #[derive(Default)]
@@ -78,10 +83,14 @@ impl RemotePlayers {
 		for (&id, ring) in &self.players {
 			if let Some(pos_look) = sample_ring(ring, target) {
 				let (pos, look) = pos_look;
+				// The held item is discrete state: always render the
+				// newest known value rather than a time-shifted one.
+				let held = ring.back().map_or(u16::MAX, |s| s.held);
 				out.push(RemoteDraw {
 					id,
 					pos,
 					yaw: look.x.atan2(look.z),
+					held,
 				});
 			}
 		}
@@ -126,6 +135,7 @@ mod tests {
 			pos: Vec3::new(x, 0.0, 0.0),
 			vel: Vec3::new(vx, 0.0, 0.0),
 			look: Vec3::Z,
+			held: u16::MAX,
 		}
 	}
 

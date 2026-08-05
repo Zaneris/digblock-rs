@@ -187,6 +187,7 @@ pub(crate) fn aim(tick: u32, dir: Vec3) -> InputTick {
 		look: dir.to_array(),
 		claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
 		claimed_vel: [0.0; 3],
+		active_slot: 0,
 	}
 }
 
@@ -235,6 +236,12 @@ pub(crate) fn dig_hold(
 			kind,
 			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 			normal: [0, 0, 0],
+			// Collect needs the WaterTool's slot (fresh bars pin it last).
+			slot: if kind == digblock_net::messages::EditKind::Collect {
+				digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1
+			} else {
+				0
+			},
 		},
 	}]);
 	hit.cell
@@ -248,6 +255,7 @@ pub(crate) fn input(tick: u32, forward: bool, claimed: PlayerState) -> InputTick
 		look: [0.0, 0.0, 1.0],
 		claimed_pos: claimed.pos.to_array(),
 		claimed_vel: claimed.vel.to_array(),
+		active_slot: 0,
 	}
 }
 

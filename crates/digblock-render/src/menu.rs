@@ -157,6 +157,9 @@ enum Act {
 	/// Close the menu and open the inventory screen (engine drains
 	/// [`Menu::take_inventory`]).
 	OpenInventory,
+	/// Close the menu and open the alchemy screen (engine drains
+	/// [`Menu::take_alchemy`]).
+	OpenAlchemy,
 	JoinRow(usize),
 	Refresh,
 	OpenSettings,
@@ -214,6 +217,7 @@ pub struct Menu {
 	wants_disconnect: bool,
 	wants_return_spawn: bool,
 	wants_inventory: bool,
+	wants_alchemy: bool,
 	/// Live settings, edited on the Settings screen. `settings.name`
 	/// tracks the last *joined-with* name; the `name` field above is the
 	/// live edit buffer.
@@ -244,6 +248,7 @@ impl Menu {
 			wants_disconnect: false,
 			wants_return_spawn: false,
 			wants_inventory: false,
+			wants_alchemy: false,
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -295,6 +300,11 @@ impl Menu {
 	/// The Inventory row was picked: the engine opens the screen.
 	pub fn take_inventory(&mut self) -> bool {
 		std::mem::take(&mut self.wants_inventory)
+	}
+
+	/// The Alchemy row was picked: the engine opens the screen.
+	pub fn take_alchemy(&mut self) -> bool {
+		std::mem::take(&mut self.wants_alchemy)
 	}
 
 	/// The full settings snapshot, once per change batch. The engine
@@ -671,6 +681,10 @@ impl Menu {
 				self.wants_inventory = true;
 				self.screen = None;
 			}
+			Act::OpenAlchemy => {
+				self.wants_alchemy = true;
+				self.screen = None;
+			}
 			Act::Refresh => {
 				if let Some(Screen::Browser(b)) = &mut self.screen {
 					if !b.fetching {
@@ -805,9 +819,17 @@ impl Menu {
 				// With a world store, pre-entry play goes through the named
 				// save list; the ephemeral "Play Local" survives only for
 				// store-less runs (scripted flows, no-injection paths).
+				// In-game order: Back to Game, then the hotkey screens
+				// (Return to Spawn, Inventory, Alchemy), then navigation,
+				// with Leave Server and Settings last.
 				if self.entered_world {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
+					// On cooldown the row renders dim and is not an act.
+					if self.spawn_cooldown_secs == 0 {
+						acts.push((RowId::RootItem(3), Act::ReturnSpawn));
+					}
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
+					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
 					if self.store_available && !self.connected {
 						acts.push((RowId::RootItem(5), Act::OpenWorlds));
 					}
@@ -816,16 +838,12 @@ impl Menu {
 				} else {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
 				}
-				if self.services_available {
+				// Already on a server: joining another goes through Leave.
+				if self.services_available && !self.connected {
 					acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
 				}
 				if self.connected {
 					acts.push((RowId::RootItem(2), Act::LeaveServer));
-				}
-				// Hidden until a world is entered; on cooldown the row
-				// renders dim and is not an act.
-				if self.entered_world && self.spawn_cooldown_secs == 0 {
-					acts.push((RowId::RootItem(3), Act::ReturnSpawn));
 				}
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
 			}
@@ -904,10 +922,31 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(0), "Back to Game"),
 					);
+					if self.spawn_cooldown_secs == 0 {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item_hint(RowId::RootItem(3), "Return to Spawn", "H"),
+						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::dim(format!(
+								"Return to Spawn ({}s)",
+								self.spawn_cooldown_secs
+							)),
+						);
+					}
 					push(
 						&mut specs,
 						&mut y,
 						RowSpec::item_hint(RowId::RootItem(6), "Inventory", "I"),
+					);
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", "K"),
 					);
 					if self.store_available && !self.connected {
 						push(
@@ -929,18 +968,20 @@ impl Menu {
 						RowSpec::item(RowId::RootItem(0), "Play Local"),
 					);
 				}
-				if self.services_available {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(1), "Multiplayer"),
-					);
-				} else {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::dim("Multiplayer (no master server; run with --master-url)"),
-					);
+				if !self.connected {
+					if self.services_available {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(1), "Multiplayer"),
+						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::dim("Multiplayer (no master server; run with --master-url)"),
+						);
+					}
 				}
 				if self.connected {
 					push(
@@ -948,24 +989,6 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(2), "Leave Server"),
 					);
-				}
-				if self.entered_world {
-					if self.spawn_cooldown_secs == 0 {
-						push(
-							&mut specs,
-							&mut y,
-							RowSpec::item_hint(RowId::RootItem(3), "Return to Spawn", "H"),
-						);
-					} else {
-						push(
-							&mut specs,
-							&mut y,
-							RowSpec::dim(format!(
-								"Return to Spawn ({}s)",
-								self.spawn_cooldown_secs
-							)),
-						);
-					}
 				}
 				push(
 					&mut specs,
@@ -1381,16 +1404,23 @@ pub struct MenuView {
 }
 
 impl MenuView {
-	/// Emit the menu into the frame's draw list: full-screen dim, panel
-	/// backdrop, then rows through the framework's row widget.
-	pub fn emit(&self, dl: &mut crate::ui::DrawList, style: &crate::ui::Style, size: (u32, u32)) {
+	/// Emit the menu into the frame's draw list: full-screen dim (faded
+	/// with the world's darkness — the panel keeps its fixed backdrop),
+	/// panel backdrop, then rows through the framework's row widget.
+	pub fn emit(
+		&self,
+		dl: &mut crate::ui::DrawList,
+		style: &crate::ui::Style,
+		size: (u32, u32),
+		daylight: f32,
+	) {
 		use crate::ui::{widgets, Layer, Rect};
 		const MENU_DIM: u32 = 0xA0000000;
 		const BG: u32 = 0x90000000;
 		dl.quad(
 			Layer::Content,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			MENU_DIM,
+			widgets::scaled_dim(MENU_DIM, daylight),
 		);
 		widgets::panel(dl, Layer::Content, self.panel.into(), BG);
 		for row in &self.rows {
@@ -1465,13 +1495,54 @@ mod tests {
 				.map(|(s, _)| s.as_str())
 		};
 		assert_eq!(hint("Inventory"), Some("I"));
+		assert_eq!(hint("Alchemy"), Some("K"));
 		assert_eq!(hint("Return to Spawn"), Some("H"));
 
+		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Down); // Inventory
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_inventory());
 		assert!(!menu.take_inventory(), "intent is one-shot");
 		assert!(!menu.is_open(), "menu closed for the screen");
+	}
+
+	/// The Alchemy row mirrors Inventory: raises its intent and closes.
+	#[test]
+	fn alchemy_row_raises_intent() {
+		let mut menu = Menu::new(true, named("ted"), None);
+		menu.handle_key(Key::Enter); // Play Local
+		menu.open();
+		menu.handle_key(Key::Down); // Return to Spawn
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Enter);
+		assert!(menu.take_alchemy());
+		assert!(!menu.take_alchemy(), "intent is one-shot");
+		assert!(!menu.is_open(), "menu closed for the screen");
+	}
+
+	/// Connected to a server, the Multiplayer row disappears entirely —
+	/// joining another server goes through Leave Server first.
+	#[test]
+	fn multiplayer_hidden_while_connected() {
+		let mut menu = Menu::new(true, named("ted"), None);
+		menu.set_services_available();
+		menu.set_connected(true);
+		assert!(!menu
+			.acts()
+			.iter()
+			.any(|(_, act)| matches!(act, Act::OpenMultiplayer)));
+		assert!(!menu
+			.view(SIZE, 1.0, false)
+			.rows
+			.iter()
+			.any(|r| r.text.starts_with("Multiplayer")));
+		// Leaving brings it back (fresh backdrop world, startup menu).
+		menu.on_left_server();
+		assert!(menu
+			.acts()
+			.iter()
+			.any(|(_, act)| matches!(act, Act::OpenMultiplayer)));
 	}
 
 	/// The view emits through the framework: dim + panel + one text
@@ -1483,7 +1554,7 @@ mod tests {
 		let menu = Menu::new(true, named("ted"), None);
 		let view = menu.view(SIZE, 1.0, false);
 		let mut dl = crate::ui::DrawList::default();
-		view.emit(&mut dl, &crate::ui::Style::new(1.0), SIZE);
+		view.emit(&mut dl, &crate::ui::Style::new(1.0), SIZE, 1.0);
 		let (cmds, arena) = dl.cmds(Layer::Content);
 		let texts: Vec<&str> = cmds
 			.iter()
@@ -1740,7 +1811,9 @@ mod tests {
 
 		// Second run: cancel instead.
 		menu.open();
+		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Alchemy
 		menu.handle_key(Key::Down); // Multiplayer
 		menu.handle_key(Key::Enter);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
@@ -1787,10 +1860,12 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_connected(true);
 		let acts = menu.acts();
-		// Back to Game + Inventory + Leave Server + Return to Spawn +
-		// Settings (no services).
-		assert_eq!(acts.len(), 5);
+		// Back to Game + Return to Spawn + Inventory + Alchemy + Leave
+		// Server + Settings (no services).
+		assert_eq!(acts.len(), 6);
+		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Alchemy
 		menu.handle_key(Key::Down); // Leave Server
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_disconnect());
@@ -1802,9 +1877,8 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.handle_key(Key::Enter); // Play Local: the row now exists
 		menu.open();
-		// Ready: after Back to Game and Inventory (no services);
-		// activating raises the intent and closes the menu.
-		menu.handle_key(Key::Down); // Inventory
+		// Ready: directly after Back to Game (no services); activating
+		// raises the intent and closes the menu.
 		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_return_spawn());
@@ -1818,16 +1892,21 @@ mod tests {
 			!acts.iter().any(|(id, _)| *id == RowId::RootItem(3)),
 			"greyed spawn row is not an act"
 		);
-		assert_eq!(acts.len(), 3, "Back to Game + Inventory + Settings");
+		assert_eq!(
+			acts.len(),
+			4,
+			"Back to Game + Inventory + Alchemy + Settings"
+		);
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
 			.rows
 			.iter()
 			.any(|r| r.text.contains("Return to Spawn (42s)")));
-		// Down past Inventory skips the greyed row entirely (lands on
-		// Settings): no spawn intent is ever raised.
-		menu.handle_key(Key::Down); // Inventory
-		menu.handle_key(Key::Down); // Settings (greyed spawn skipped)
+		// Down skips the greyed row entirely: no spawn intent is ever
+		// raised on the way to Settings.
+		menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
+		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Down); // Settings
 		menu.handle_key(Key::Enter);
 		assert!(!menu.take_return_spawn());
 		menu.handle_key(Key::Escape); // out of Settings
@@ -1838,7 +1917,7 @@ mod tests {
 		// Cooldown over: selectable again.
 		menu.open();
 		menu.set_spawn_cooldown(0);
-		assert_eq!(menu.acts().len(), 4, "spawn row is back");
+		assert_eq!(menu.acts().len(), 5, "spawn row is back");
 	}
 
 	fn open_settings(menu: &mut Menu) {

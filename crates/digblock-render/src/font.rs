@@ -8,8 +8,16 @@ pub const GLYPH_H: u32 = 8;
 /// 16 glyphs per atlas row.
 const ATLAS_COLS: u32 = 16;
 const ATLAS_ROWS: u32 = 7; // 97 glyphs (95 ASCII + DEL blank + solid)
-pub const ATLAS_W: u32 = ATLAS_COLS * GLYPH_W; // 128
-pub const ATLAS_H: u32 = ATLAS_ROWS * GLYPH_H; // 56
+/// Cell stride: 8px glyph + 1px transparent gutter. Quads sample the full
+/// 8-texel glyph, but a fragment whose center lands exactly on a cell
+/// boundary (fractional text Y at odd quarter UI scales, nametags) can
+/// round into the adjacent texel row/column — the gutter makes that texel
+/// transparent instead of the bottom row of the glyph above (the white
+/// line over 'o'/'w'). Gutterless cells can't fix this by insetting UVs:
+/// that resamples 8 pixels from 7 texels and distorts integer scales.
+const CELL: u32 = GLYPH_W + 1;
+pub const ATLAS_W: u32 = ATLAS_COLS * CELL; // 144
+pub const ATLAS_H: u32 = ATLAS_ROWS * CELL; // 63
 
 /// ASCII 0x20..=0x7F (0x7F left blank), row bytes LSB-left.
 #[rustfmt::skip]
@@ -131,8 +139,8 @@ pub fn build_atlas() -> Vec<u8> {
 		for (y, row) in rows.iter().enumerate() {
 			for x in 0..8u32 {
 				if row >> x & 1 == 1 {
-					let px_x = cx * GLYPH_W + x;
-					let px_y = cy * GLYPH_H + y as u32;
+					let px_x = cx * CELL + x;
+					let px_y = cy * CELL + y as u32;
 					px[(px_y * ATLAS_W + px_x) as usize] = 255;
 				}
 			}
@@ -157,12 +165,15 @@ pub fn solid_uv() -> [f32; 2] {
 }
 
 fn cell_uv(index: u32) -> ([f32; 2], [f32; 2]) {
-	let (cx, cy) = ((index % ATLAS_COLS) as f32, (index / ATLAS_COLS) as f32);
-	let (gw, gh) = (
-		GLYPH_W as f32 / ATLAS_W as f32,
-		GLYPH_H as f32 / ATLAS_H as f32,
-	);
-	([cx * gw, cy * gh], [(cx + 1.0) * gw, (cy + 1.0) * gh])
+	let (cx, cy) = (index % ATLAS_COLS, index / ATLAS_COLS);
+	let (x0, y0) = ((cx * CELL) as f32, (cy * CELL) as f32);
+	(
+		[x0 / ATLAS_W as f32, y0 / ATLAS_H as f32],
+		[
+			(x0 + GLYPH_W as f32) / ATLAS_W as f32,
+			(y0 + GLYPH_H as f32) / ATLAS_H as f32,
+		],
+	)
 }
 
 #[cfg(test)]
@@ -176,6 +187,28 @@ mod tests {
 			assert!(g.iter().any(|&r| r != 0), "glyph {:?} empty", c as char);
 		}
 		assert_ne!(FONT[(b'A' - 0x20) as usize], FONT[(b'B' - 0x20) as usize]);
+	}
+
+	// The white-line-above-'o' regression: every cell must be ringed by
+	// transparent texels so boundary-exact sampling can never read the
+	// neighboring glyph ('_' sits directly above 'o' in the atlas).
+	#[test]
+	fn cells_are_ringed_by_transparent_gutter() {
+		let px = build_atlas();
+		let at = |x: u32, y: u32| px[(y * ATLAS_W + x) as usize];
+		for cy in 0..ATLAS_ROWS {
+			for cx in 0..ATLAS_COLS {
+				for i in 0..CELL {
+					assert_eq!(at(cx * CELL + GLYPH_W, (cy * CELL + i).min(ATLAS_H - 1)), 0);
+					assert_eq!(at((cx * CELL + i).min(ATLAS_W - 1), cy * CELL + GLYPH_H), 0);
+				}
+			}
+		}
+		// And the UV span still covers exactly the 8-texel glyph (1:1 at
+		// integer scales — no resampling).
+		let (min, max) = cell_uv(glyph_index(b'o'));
+		assert!(((max[0] - min[0]) * ATLAS_W as f32 - GLYPH_W as f32).abs() < 1e-3);
+		assert!(((max[1] - min[1]) * ATLAS_H as f32 - GLYPH_H as f32).abs() < 1e-3);
 	}
 
 	#[test]

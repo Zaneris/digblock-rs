@@ -29,6 +29,18 @@ const BULK: u32 = 10;
 const PANEL_BG: u32 = 0xC0101010;
 const SCREEN_DIM: u32 = 0x70000000;
 
+// Layout bases (logical px × ui scale). ROW_H fits ROW_ICON with room;
+// the button sits inside the row.
+const ROW_H: f32 = 40.0;
+const ROW_ICON: f32 = 32.0;
+const BTN_W: f32 = 120.0;
+const BTN_H: f32 = 32.0;
+const PAD: f32 = 12.0;
+const GAP_ABOVE_BAR: f32 = 24.0;
+const HDR_GAP: f32 = 8.0;
+const ICON_TEXT_GAP: f32 = 8.0;
+const TEXT_BTN_GAP: f32 = 16.0;
+
 /// The screen's per-frame view of the inventory, built by the engine
 /// from the same `Inventory` the actions will be validated against.
 pub struct AlchView {
@@ -59,6 +71,25 @@ impl AlchView {
 	}
 }
 
+/// One row of the screen, shared by the measure and emit passes.
+enum Row {
+	Title,
+	/// Section headers, readouts, and hints — one dim text line.
+	Header(String),
+	Convert {
+		i: usize,
+		block: BlockType,
+		count: u32,
+	},
+	Craft {
+		i: usize,
+		item: BlockType,
+		cost: u32,
+		mat: &'static str,
+		ok: bool,
+	},
+}
+
 #[derive(Default)]
 pub struct AlchScreen {
 	open: bool,
@@ -80,143 +111,152 @@ impl AlchScreen {
 		self.open = false;
 	}
 
-	/// Emit the screen: dim, panel, the three sections (holdings with
-	/// convert buttons, sub-material readouts, craft rows).
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView) {
-		let scale = ui.style.scale;
+	/// The screen's row stream, built once per frame — the measure pass
+	/// and the emit pass walk the SAME rows, so the panel can never
+	/// disagree with its content.
+	fn rows(view: &AlchView) -> Vec<Row> {
+		let mut rows = vec![Row::Title, Row::Header("BREAK DOWN (1 BLOCK = 27)".into())];
+		if view.convertibles.is_empty() {
+			rows.push(Row::Header("no raw materials".into()));
+		}
+		for (i, &(block, count)) in view.convertibles.iter().enumerate() {
+			rows.push(Row::Convert { i, block, count });
+		}
+		rows.push(Row::Header(format!(
+			"WOOD {}   STONE {}",
+			view.subs[0], view.subs[1]
+		)));
+		rows.push(Row::Header("CRAFT".into()));
+		for (i, &item) in CRAFTABLE.iter().enumerate() {
+			let r = craft_recipe(item).expect("CRAFTABLE rows have recipes");
+			rows.push(Row::Craft {
+				i,
+				item,
+				cost: r.cost,
+				mat: match r.material {
+					Material::Wood => "WOOD",
+					Material::Stone => "STONE",
+				},
+				ok: view.affordable(i),
+			});
+		}
+		rows.push(Row::Header("CLICK = 1   SHIFT-CLICK = 10".into()));
+		rows
+	}
+
+	/// Emit the screen: dim, panel, the sections (holdings with convert
+	/// buttons, sub-material readouts, craft rows). Two passes over one
+	/// row stream — measure (panel sizes to its widest row and summed
+	/// heights, scale applied exactly once), then emit. The panel
+	/// bottom-anchors above the hotbar so the bar never overlaps it.
+	/// `daylight` fades the full-screen dim only — the panel keeps its
+	/// backdrop.
+	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
+		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			SCREEN_DIM,
+			widgets::scaled_dim(SCREEN_DIM, daylight),
 		);
-		let pad = 12.0 * scale;
-		let row_h = 26.0 * scale;
-		let btn_w = 120.0 * scale;
-		let icon_px = hud::ICON_PX * scale;
-		let panel_w = 420.0_f32.min(size.0 as f32 - 2.0 * pad) * scale.max(1.0);
-		let rows = view.convertibles.len().max(1) + CRAFTABLE.len();
-		// Title + section headers (3) + rows + the sub-material line.
-		let panel_h = (rows as f32 + 1.0) * row_h + 4.0 * (glyph + 6.0 * scale) + pad * 3.0;
+		let rows = Self::rows(view);
+		let pad = PAD * s;
+		let text_of = |row: &Row| -> String {
+			match row {
+				Row::Title => "ALCHEMY".into(),
+				Row::Header(t) => t.clone(),
+				Row::Convert { count, .. } => format!("{count}"),
+				Row::Craft { cost, mat, .. } => format!("{cost} {mat}"),
+			}
+		};
+		// Measure: widest row and summed advances.
+		let (mut width, mut height) = (0.0f32, 0.0f32);
+		for row in &rows {
+			let text_w = text_of(row).chars().count() as f32 * glyph;
+			let (w, h) = match row {
+				Row::Title | Row::Header(_) => (text_w, glyph + HDR_GAP * s),
+				Row::Convert { .. } | Row::Craft { .. } => (
+					(ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s + text_w,
+					ROW_H * s,
+				),
+			};
+			width = width.max(w);
+			height += h;
+		}
+		let panel_w = (width + 2.0 * pad).min(size.0 as f32 - 2.0 * pad);
+		let panel_h = height + 2.0 * pad;
+		let bar_top = hud::row_grid(size, s).origin.1;
 		let panel = Rect::new(
 			(size.0 as f32 - panel_w) / 2.0,
-			((size.1 as f32 - panel_h) / 2.0).max(pad),
+			(bar_top - GAP_ABOVE_BAR * s - panel_h).max(pad),
 			panel_w,
 			panel_h,
 		);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, PANEL_BG);
-		let mut y = panel.y + pad / 2.0;
+
+		// Emit.
 		let x = panel.x + pad;
-		widgets::label(ui.dl, Layer::Content, x, y, glyph, WHITE, "ALCHEMY");
-		y += glyph + 6.0 * scale;
-
-		// Section: convertible holdings.
-		widgets::label(
-			ui.dl,
-			Layer::Content,
-			x,
-			y,
-			glyph,
-			DIM,
-			"BREAK DOWN (27/BLOCK)",
-		);
-		y += glyph + 6.0 * scale;
-		if view.convertibles.is_empty() {
-			widgets::label(ui.dl, Layer::Content, x, y, glyph, DIM, "no raw materials");
-			y += row_h;
+		let mut y = panel.y + pad;
+		let (cx, cy) = self.cursor;
+		for row in &rows {
+			let text = text_of(row);
+			match *row {
+				Row::Title => {
+					widgets::label(ui.dl, Layer::Content, x, y, glyph, WHITE, &text);
+					y += glyph + HDR_GAP * s;
+				}
+				Row::Header(_) => {
+					widgets::label(ui.dl, Layer::Content, x, y, glyph, DIM, &text);
+					y += glyph + HDR_GAP * s;
+				}
+				Row::Convert { .. } | Row::Craft { .. } => {
+					let (block, actionable, id, btn_text, text_color) = match *row {
+						Row::Convert { i, block, count } => {
+							(block, count > 0, InvId::Convert(i as u8), "CONVERT", WHITE)
+						}
+						Row::Craft { i, item, ok, .. } => (
+							item,
+							ok,
+							InvId::Craft(i as u8),
+							"CRAFT",
+							if ok { WHITE } else { DIM },
+						),
+						_ => unreachable!(),
+					};
+					let row_rect = Rect::new(x, y, panel.w - 2.0 * pad, ROW_H * s);
+					if actionable && row_rect.contains(cx, cy) {
+						ui.dl.quad(Layer::Backdrop, row_rect, widgets::ROW_HILIGHT);
+					}
+					let icon = ROW_ICON * s;
+					let (kind, tint) =
+						hud::item_icon(digblock_core::hotbar::HotbarItem::Block(block));
+					hud::draw_icon(
+						ui.dl,
+						Layer::Icons,
+						Rect::new(x, y + (ROW_H * s - icon) / 2.0, icon, icon),
+						kind,
+						tint,
+					);
+					widgets::label(
+						ui.dl,
+						Layer::Content,
+						x + icon + ICON_TEXT_GAP * s,
+						y + (ROW_H * s - glyph) / 2.0,
+						glyph,
+						text_color,
+						&text,
+					);
+					let btn = Rect::new(
+						row_rect.x + row_rect.w - BTN_W * s,
+						y + (ROW_H - BTN_H) / 2.0 * s,
+						BTN_W * s,
+						BTN_H * s,
+					);
+					widgets::button(ui, id, btn, btn_text, actionable, btn.contains(cx, cy));
+					y += ROW_H * s;
+				}
+			}
 		}
-		for (i, &(block, count)) in view.convertibles.iter().enumerate() {
-			let (tex, tint) = hud::item_icon(digblock_core::hotbar::HotbarItem::Block(block));
-			ui.dl.icon(
-				Layer::Icons,
-				Rect::new(x, y + (row_h - icon_px) / 2.0, icon_px, icon_px),
-				tex,
-				tint,
-			);
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				x + icon_px + 8.0 * scale,
-				y + (row_h - glyph) / 2.0,
-				glyph,
-				WHITE,
-				&format!("{count}"),
-			);
-			widgets::button(
-				ui,
-				InvId::Convert(i as u8),
-				Rect::new(
-					panel.x + panel.w - pad - btn_w,
-					y + 2.0 * scale,
-					btn_w,
-					row_h - 4.0 * scale,
-				),
-				"CONVERT",
-				count > 0,
-			);
-			y += row_h;
-		}
-
-		// Section: sub-material readouts.
-		widgets::label(
-			ui.dl,
-			Layer::Content,
-			x,
-			y,
-			glyph,
-			DIM,
-			&format!("SUB-WOOD {}  SUB-STONE {}", view.subs[0], view.subs[1]),
-		);
-		y += glyph + 6.0 * scale;
-
-		// Section: craft rows.
-		widgets::label(ui.dl, Layer::Content, x, y, glyph, DIM, "CRAFT");
-		y += glyph + 6.0 * scale;
-		for (i, &item) in CRAFTABLE.iter().enumerate() {
-			let r = craft_recipe(item).expect("CRAFTABLE rows have recipes");
-			let (tex, tint) = hud::item_icon(digblock_core::hotbar::HotbarItem::Block(item));
-			ui.dl.icon(
-				Layer::Icons,
-				Rect::new(x, y + (row_h - icon_px) / 2.0, icon_px, icon_px),
-				tex,
-				tint,
-			);
-			let mat = match r.material {
-				Material::Wood => "WOOD",
-				Material::Stone => "STONE",
-			};
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				x + icon_px + 8.0 * scale,
-				y + (row_h - glyph) / 2.0,
-				glyph,
-				if view.affordable(i) { WHITE } else { DIM },
-				&format!("{} {mat}", r.cost),
-			);
-			widgets::button(
-				ui,
-				InvId::Craft(i as u8),
-				Rect::new(
-					panel.x + panel.w - pad - btn_w,
-					y + 2.0 * scale,
-					btn_w,
-					row_h - 4.0 * scale,
-				),
-				"CRAFT",
-				view.affordable(i),
-			);
-			y += row_h;
-		}
-		widgets::label(
-			ui.dl,
-			Layer::Content,
-			x,
-			y + 4.0 * scale,
-			glyph,
-			DIM,
-			"CLICK = 1   SHIFT-CLICK = 10",
-		);
 	}
 
 	/// Feed one input event; returns the action the engine should apply
@@ -296,7 +336,7 @@ mod tests {
 			hits: &mut hits,
 			style,
 		};
-		screen.build(&mut ui, SIZE, &view);
+		screen.build(&mut ui, SIZE, &view, 1.0);
 		(screen, hits, view, style)
 	}
 
@@ -388,5 +428,136 @@ mod tests {
 		assert!(hits.rect_of(InvId::Convert(0)).is_none());
 		assert!(hits.rect_of(InvId::Craft(0)).is_none());
 		assert!(hits.rect_of(InvId::Craft(2)).is_none());
+	}
+
+	fn full_inv() -> Inventory {
+		let mut inv = Inventory::default();
+		inv.add(B::Wood, 5);
+		inv.add(B::Stone, 11);
+		inv.add_sub(digblock_core::block::Material::Wood, 54);
+		inv
+	}
+
+	/// The panel's PANEL_BG quad at a given scale/window.
+	fn panel_rect(inv: &Inventory, size: (u32, u32), scale: f32) -> Rect {
+		let view = AlchView::build(inv);
+		let mut screen = AlchScreen::default();
+		screen.open();
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: Style::new(scale),
+		};
+		screen.build(&mut ui, size, &view, 1.0);
+		let (cmds, _) = dl.cmds(Layer::Backdrop);
+		cmds.iter()
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::Quad { rect, color } if *color == PANEL_BG => Some(*rect),
+				_ => None,
+			})
+			.next()
+			.expect("panel quad")
+	}
+
+	/// The old screen centered vertically and ran under the hotbar; the
+	/// redesign bottom-anchors above it.
+	#[test]
+	fn panel_sits_above_the_hotbar() {
+		let panel = panel_rect(&full_inv(), SIZE, 1.0);
+		let bar_top = hud::row_grid(SIZE, 1.0).origin.1;
+		assert!(
+			panel.y + panel.h <= bar_top - GAP_ABOVE_BAR + 0.5,
+			"panel bottom {} vs bar top {bar_top}",
+			panel.y + panel.h
+		);
+	}
+
+	/// The old panel width multiplied an already-clamped pixel width by
+	/// the scale; the redesign applies scale exactly once.
+	#[test]
+	fn panel_scales_once() {
+		let one = panel_rect(&full_inv(), SIZE, 1.0);
+		let two = panel_rect(&full_inv(), (2560, 1600), 2.0);
+		let ratio = two.w / one.w;
+		assert!(
+			(1.8..=2.2).contains(&ratio),
+			"2x window/scale ≈ 2x panel width, got {ratio} ({} vs {})",
+			one.w,
+			two.w
+		);
+	}
+
+	/// Rows were 26px tall with 48px icons stamped into them; now every
+	/// button row is disjoint from its neighbors.
+	#[test]
+	fn rows_do_not_overlap() {
+		let inv = full_inv();
+		let (_s, hits, _view, _style) = rig(&inv);
+		let mut rects: Vec<Rect> = [
+			hits.rect_of(InvId::Convert(0)),
+			hits.rect_of(InvId::Convert(1)),
+			hits.rect_of(InvId::Craft(0)),
+		]
+		.into_iter()
+		.flatten()
+		.collect();
+		assert!(rects.len() >= 3, "expected actionable rows");
+		rects.sort_by(|a, b| a.y.total_cmp(&b.y));
+		for pair in rects.windows(2) {
+			assert!(
+				pair[0].y + pair[0].h <= pair[1].y + 0.5,
+				"buttons overlap: {pair:?}"
+			);
+		}
+	}
+
+	/// Hovering an affordable row paints the shared highlight; moving
+	/// the cursor away removes it.
+	#[test]
+	fn hover_highlights_only_under_the_cursor() {
+		let inv = full_inv();
+		let (mut screen, hits, view, style) = rig(&inv);
+		let target = hits.rect_of(InvId::Craft(0)).expect("affordable craft");
+		let hilight_count = |screen: &AlchScreen| {
+			let mut dl = DrawList::default();
+			let mut h2 = HitMap::default();
+			let mut ui = Ui {
+				dl: &mut dl,
+				hits: &mut h2,
+				style,
+			};
+			screen.build(&mut ui, SIZE, &view, 1.0);
+			dl.cmds(Layer::Backdrop)
+				.0
+				.iter()
+				.filter(|c| {
+					matches!(
+						c,
+						crate::ui::draw::Cmd::Quad { color, .. }
+							if *color == widgets::ROW_HILIGHT
+					)
+				})
+				.count()
+		};
+		screen.handle_input(
+			&InputEvent::CursorMoved {
+				x: target.x + target.w / 2.0,
+				y: target.y + target.h / 2.0,
+			},
+			&hits,
+			&style,
+			&view,
+		);
+		// Row highlight + button highlight under the cursor.
+		assert_eq!(hilight_count(&screen), 2, "hovered row + button");
+		screen.handle_input(
+			&InputEvent::CursorMoved { x: 1.0, y: 1.0 },
+			&hits,
+			&style,
+			&view,
+		);
+		assert_eq!(hilight_count(&screen), 0, "nothing hovered");
 	}
 }

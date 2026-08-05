@@ -245,12 +245,14 @@ fn full_frame_handshake_edits_snapshot() {
 				pos: me.pos.to_array(),
 				vel: me.vel.to_array(),
 				look: [0.0, 0.0, 1.0],
+				held: u16::MAX,
 			},
 			NetPlayerState {
 				id: 2,
 				pos: [10.0, 12.0, 10.0],
 				vel: [0.0, 0.0, 0.0],
 				look: [1.0, 0.0, 0.0],
+				held: BlockType::Dirt as u16,
 			},
 		],
 	});

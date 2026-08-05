@@ -640,7 +640,12 @@ impl Renderer {
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
-			players: crate::players::RemotePlayersDraw::new(gpu, surface_format, &frame_bgl),
+			players: crate::players::RemotePlayersDraw::new(
+				gpu,
+				surface_format,
+				&frame_bgl,
+				&materials_bgl,
+			),
 			highlight: crate::highlight::HighlightDraw::new(gpu, surface_format, &water_frame_bgl),
 			ui_icons: crate::ui::icons::UiIcons::new(gpu, surface_format, &materials_bgl),
 			targets: None,

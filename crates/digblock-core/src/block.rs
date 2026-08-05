@@ -103,6 +103,19 @@ const _: () = {
 	}
 };
 
+/// Number of shaped block types — sizes the UI's 3D-icon vertex budget.
+pub const SHAPED_COUNT: usize = {
+	let mut n = 0;
+	let mut i = 0;
+	while i < BlockType::COUNT {
+		if PROPS[i].shape.is_some() {
+			n += 1;
+		}
+		i += 1;
+	}
+	n
+};
+
 /// How a block participates in meshing and rendering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RenderClass {

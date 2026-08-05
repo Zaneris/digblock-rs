@@ -131,6 +131,7 @@ mod tests {
 					look: [1.0; 3],
 					claimed_pos: [1.0; 3],
 					claimed_vel: [1.0; 3],
+					active_slot: 0,
 				};
 				64
 			],

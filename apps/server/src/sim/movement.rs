@@ -93,6 +93,7 @@ fn step_client(
 			};
 			client.player.tick(TICK, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
+			client.active_slot = input.active_slot;
 
 			// Adoption envelope.
 			let claimed = PlayerState {
@@ -153,6 +154,9 @@ fn sanitize(mut input: InputTick) -> Option<InputTick> {
 	if axis.length_squared() > 1.0 {
 		input.move_axis = axis.normalize().to_array();
 	}
+	input.active_slot = input
+		.active_slot
+		.min(digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1);
 	Some(input)
 }
 
