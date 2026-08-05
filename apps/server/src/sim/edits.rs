@@ -56,13 +56,14 @@ pub(super) enum ClientAction {
 	},
 }
 
-/// Server-side hold-to-dig record. The block is captured at DigStart from
-/// the server's own world — the client never claims it, so a mid-hold
-/// content swap (say leaves → stone) resets rather than inheriting the
-/// cheaper block's timer.
+/// Server-side hold-to-dig record. The cell value is captured at DigStart
+/// from the server's own world — the client never claims it, so a
+/// mid-hold content change (a swap like leaves → stone, or a slab grown
+/// under the hold) resets rather than inheriting the cheaper timer.
 pub(super) struct DigState {
 	pub(super) cell: (i32, i32, i32),
-	pub(super) block: BlockType,
+	/// Full cell value (id + state) — state changes reset too.
+	pub(super) cell_value: u16,
 	/// Ticks the server's own aim ray has confirmed on this cell. Only
 	/// these count toward completion — wall ticks with a missed aim are
 	/// a pause, not progress and not a reset.
@@ -92,15 +93,17 @@ impl Sim {
 			let Some(state) = &mut client.digging else {
 				continue;
 			};
-			// Content swap: reset immediately (never pause-and-resume) —
-			// a collaborator can't cycle a cell under a banked timer.
-			if store.block_at(state.cell.0, state.cell.1, state.cell.2) != Some(state.block) {
+			// Content change: reset immediately (never pause-and-resume) —
+			// a collaborator can't cycle a cell under a banked timer, nor
+			// grow a slab under a 1/3-priced hold.
+			if store.cell_at(state.cell.0, state.cell.1, state.cell.2) != Some(state.cell_value) {
 				client.digging = None;
 				continue;
 			}
+			let block = BlockType::from_id(digblock_core::chunk::cell_id(state.cell_value));
 			// Water sources are picked with the fluid-aware ray; solid
 			// digs with the plain one — same filters the client used.
-			let cast = if state.block.is_fluid_source() {
+			let cast = if block.is_fluid_source() {
 				raycast_fluid
 			} else {
 				raycast
@@ -117,7 +120,8 @@ impl Sim {
 				REACH + EDIT_POS_TOLERANCE,
 				&|x, y, z| store.cell_at(x, y, z),
 			);
-			let on_target = hit.is_some_and(|h| h.cell == state.cell && h.block == state.block);
+			let on_target =
+				hit.is_some_and(|h| h.cell == state.cell && h.cell_value == state.cell_value);
 			if on_target {
 				state.progress += 1;
 				state.off_target = 0;
@@ -215,7 +219,7 @@ impl Sim {
 				client
 					.digging
 					.as_ref()
-					.map(|d| (d.cell, d.block, d.progress)),
+					.map(|d| (d.cell, d.cell_value, d.progress)),
 				slot_item,
 			)
 		};
@@ -262,6 +266,12 @@ impl Sim {
 						return reject(RejectReason::BadBlock);
 					}
 				}
+				// Slab requests must be the canonical 1/3 (state 0) — the
+				// server derives grown values itself, so a client can never
+				// conjure a 2/3 fill (two thirds of material) from one item.
+				if b.is_slab() && digblock_core::chunk::cell_state(block) != 0 {
+					return reject(RejectReason::BadBlock);
+				}
 				Some(block)
 			}
 		};
@@ -303,9 +313,9 @@ impl Sim {
 		// first verify lands a tick after DigStart, and the server's look
 		// lags the client's by the input jitter buffer.
 		if place_cell.is_none() {
-			let satisfied = dig_state.is_some_and(|(cell, block, progress)| {
+			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
 				cell == req.cell
-					&& block == hit.block
+					&& cell_value == hit.cell_value
 					&& hit
 						.block
 						.dig_hardness(req.cell.1)
@@ -324,7 +334,14 @@ impl Sim {
 		let place_b = place_cell.map(|v| BlockType::from_id(digblock_core::chunk::cell_id(v)));
 		match place_cell {
 			None => {
-				writes.push((req.cell, air));
+				// Slabs shrink one third per completed dig; everything
+				// else clears. Collect never stops in a slab (fluid ray).
+				let new_val = if hit.block.is_slab() {
+					digblock_core::shapes::slab_shrunk(hit.cell_value)
+				} else {
+					air
+				};
+				writes.push((req.cell, new_val));
 				if hit.block.is_door() {
 					let partner = digblock_core::shapes::door_partner(
 						req.cell,
@@ -347,28 +364,39 @@ impl Sim {
 				if (hit.normal.0, hit.normal.1, hit.normal.2) != req.normal {
 					return reject(RejectReason::Occluded);
 				}
-				let target = (
-					req.cell.0 + hit.normal.0,
-					req.cell.1 + hit.normal.1,
-					req.cell.2 + hit.normal.2,
-				);
-				writes.push((target, v));
-				if place_b.is_some_and(|b| b.is_door()) {
-					// The derived upper half must be loaded and free.
-					let upper = (target.0, target.1 + 1, target.2);
-					let free = self
-						.store
-						.cell_at(upper.0, upper.1, upper.2)
-						.is_some_and(|c| {
-							!BlockType::from_id(digblock_core::chunk::cell_id(c))
-								.props()
-								.collides
-						});
-					if !free {
-						return reject(RejectReason::Occluded);
+				// A slab onto a same-material slab's TOP face grows the hit
+				// cell in place — the server derives the grown value from
+				// its own world, mirroring the client's prediction exactly.
+				let grow = place_b.is_some_and(|b| b.is_slab())
+					&& hit.normal == (0, 1, 0)
+					&& digblock_core::chunk::cell_id(hit.cell_value)
+						== digblock_core::chunk::cell_id(v);
+				if grow {
+					writes.push((req.cell, digblock_core::shapes::slab_grown(hit.cell_value)));
+				} else {
+					let target = (
+						req.cell.0 + hit.normal.0,
+						req.cell.1 + hit.normal.1,
+						req.cell.2 + hit.normal.2,
+					);
+					writes.push((target, v));
+					if place_b.is_some_and(|b| b.is_door()) {
+						// The derived upper half must be loaded and free.
+						let upper = (target.0, target.1 + 1, target.2);
+						let free = self
+							.store
+							.cell_at(upper.0, upper.1, upper.2)
+							.is_some_and(|c| {
+								!BlockType::from_id(digblock_core::chunk::cell_id(c))
+									.props()
+									.collides
+							});
+						if !free {
+							return reject(RejectReason::Occluded);
+						}
+						let upper_cell = v | (0b1000 << digblock_core::chunk::STATE_SHIFT);
+						writes.push((upper, upper_cell));
 					}
-					let upper_cell = v | (0b1000 << digblock_core::chunk::STATE_SHIFT);
-					writes.push((upper, upper_cell));
 				}
 				// Mirrors the local-engine rejection via the shared
 				// shape-aware contract, but for every live player.
@@ -1214,10 +1242,10 @@ mod tests {
 			.unwrap()
 			.digging
 			.as_ref()
-			.map(|d| (d.cell, d.block));
+			.map(|d| (d.cell, d.cell_value));
 		assert_eq!(
 			digging,
-			Some((below, BlockType::Stone)),
+			Some((below, BlockType::Stone as u16)),
 			"the new hold took over after the completion"
 		);
 	}
@@ -1703,6 +1731,251 @@ mod tests {
 				c.msgs
 			);
 		}
+	}
+
+	// ---- stackable slabs ------------------------------------------------
+
+	/// Aim from the eye at `point` and place `cell_value`, declaring
+	/// `slot`. The shared angled-down ray enters a grown slab through its
+	/// SIDE face (no grow), so slab tests aim at the top face directly.
+	fn place_aimed(
+		sim: &mut Sim,
+		c: &mut TestClient,
+		seq: u32,
+		cell_value: u16,
+		point: Vec3,
+		slot: u8,
+	) {
+		let pos = sim.test_player(1).unwrap().pos;
+		let dir = (point - pos).normalize();
+		let hit = raycast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: dir.to_array(),
+				kind: EditKind::Place { block: cell_value },
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot,
+			},
+		}]);
+		c.drain();
+	}
+
+	/// Center of a cell's top surface at `height` twelfths, a hair inside
+	/// the box so the aimed ray enters through the TOP face.
+	fn top_point(cell: (i32, i32, i32), height_twelfths: u8) -> Vec3 {
+		Vec3::new(
+			cell.0 as f32 + 0.5,
+			cell.1 as f32 + height_twelfths as f32 / 12.0 - 0.03,
+			cell.2 as f32 + 0.5,
+		)
+	}
+
+	/// Three top-face places: fresh 1/3, grow to 2/3 IN PLACE, grow to
+	/// the plain base block — one slab debit each, nothing written above.
+	#[test]
+	fn slab_top_place_grows_to_base_block_with_per_step_debits() {
+		let mut sim = flat_sim("slabgrow");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 3);
+		let slab0 = BlockType::WoodSlab as u16;
+
+		let cell = place_cell(&mut sim, &mut c, 1, slab0);
+		assert_eq!(sim.test_cell_at(cell.0, cell.1, cell.2), Some(slab0));
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 2);
+
+		// The ray now stops in the slab itself; place_cell returns
+		// hit.cell + normal (the cell above) — the write must land in
+		// the slab cell, not there.
+		let above = place_cell(&mut sim, &mut c, 2, slab0);
+		assert_eq!(above, (cell.0, cell.1 + 1, cell.2), "ray hit the slab top");
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, 1)),
+			"grew in place to 2/3"
+		);
+		assert_eq!(
+			sim.test_block_at(above.0, above.1, above.2),
+			Some(BlockType::Air),
+			"nothing written above"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 1);
+
+		place_aimed(&mut sim, &mut c, 3, slab0, top_point(cell, 8), 0);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Wood as u16),
+			"third grow completes into the plain base block"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 0);
+		// The full cube is ordinary Wood now: no fourth grow — placing
+		// on its top writes a fresh 1/3 in the cell above.
+		sim.test_grant(1, BlockType::WoodSlab, 1);
+		place_aimed(&mut sim, &mut c, 4, slab0, top_point(cell, 12), 0);
+		assert_eq!(sim.test_cell_at(above.0, above.1, above.2), Some(slab0));
+	}
+
+	/// A pre-grown 2/3 request is BadBlock (one item can't buy two
+	/// thirds), and a cross-material slab on a slab top does NOT grow.
+	#[test]
+	fn slab_grow_gates() {
+		let mut sim = flat_sim("slabgates");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 1);
+		sim.test_grant(1, BlockType::StoneSlab, 1);
+
+		place_cell(&mut sim, &mut c, 1, make_cell(BlockType::WoodSlab, 1));
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 1,
+					reason: RejectReason::BadBlock,
+				}
+			)),
+			"pre-grown state refused: {:?}",
+			c.msgs
+		);
+
+		let cell = place_cell(&mut sim, &mut c, 2, BlockType::WoodSlab as u16);
+		// Stone slab aimed at the wood slab's top: fresh 1/3 above, no
+		// grow. Declare the slot the stone slab actually landed in.
+		let stone_slot = sim.clients[&1]
+			.hotbar
+			.slots()
+			.iter()
+			.position(|s| {
+				*s == Some(digblock_core::hotbar::HotbarItem::Block(
+					BlockType::StoneSlab,
+				))
+			})
+			.expect("stone slab on the bar") as u8;
+		let above = (cell.0, cell.1 + 1, cell.2);
+		place_aimed(
+			&mut sim,
+			&mut c,
+			3,
+			BlockType::StoneSlab as u16,
+			top_point(cell, 4),
+			stone_slot,
+		);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::WoodSlab as u16),
+			"wood slab untouched"
+		);
+		assert_eq!(
+			sim.test_cell_at(above.0, above.1, above.2),
+			Some(BlockType::StoneSlab as u16),
+			"stone slab placed fresh above"
+		);
+	}
+
+	/// Digging shrinks one third per completed hold (2/3 → 1/3 → Air),
+	/// crediting one slab item each time.
+	#[test]
+	fn slab_dig_shrinks_by_thirds() {
+		let mut sim = flat_sim("slabshrink");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 2);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+
+		let cell = place_cell(&mut sim, &mut c, 1, BlockType::WoodSlab as u16);
+		place_cell(&mut sim, &mut c, 2, BlockType::WoodSlab as u16);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, 1))
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 0);
+
+		// WoodSlab hardness is 20 ticks per third.
+		let mut t = 0;
+		let dug = dig_hold(&mut sim, 1, down, 25, 3, EditKind::Dig, &mut t);
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::WoodSlab as u16),
+			"2/3 shrank to 1/3, not Air"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 1);
+
+		let dug = dig_hold(&mut sim, 1, down, 25, 4, EditKind::Dig, &mut t);
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_block_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Air),
+			"1/3 dug away"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 2);
+	}
+
+	/// A grow landing mid-hold changes the cell's content, which resets
+	/// the hold (verify_digs compares FULL cells) — a banked 1/3-priced
+	/// timer can't complete against the taller fill.
+	#[test]
+	fn slab_grow_mid_hold_resets_dig_timer() {
+		let mut sim = flat_sim("slabmidhold");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 2);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+
+		let cell = place_cell(&mut sim, &mut c, 1, BlockType::WoodSlab as u16);
+		// Bank a complete hold on the 1/3 slab, but DON'T send the edit yet.
+		let pos = sim.test_player(1).unwrap().pos;
+		let mut t = 1;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigStart {
+					cell: [cell.0, cell.1, cell.2],
+				},
+			},
+			batch(vec![aim(t, down)], 1),
+		]);
+		for _ in 0..25 {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		// Grow the cell under the hold, then try to complete the dig.
+		place_cell(&mut sim, &mut c, 2, BlockType::WoodSlab as u16);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 3,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Dig,
+				cell: [cell.0, cell.1, cell.2],
+				normal: [0, 0, 0],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 3,
+					reason: RejectReason::DigIncomplete,
+				}
+			)),
+			"banked hold reset by the grow: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, 1)),
+			"cell still the grown 2/3"
+		);
 	}
 
 	#[test]

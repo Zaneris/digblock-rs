@@ -395,6 +395,85 @@ mod tests {
 		assert!(climbed, "the twin actually walked the flight");
 	}
 
+	/// Honest auto-step claims adopt verbatim (SIM v9): a twin walks a
+	/// slab staircase (1/3 → 2/3 → full stone, each riser exactly one
+	/// AUTO_STEP), and every post-step claim must pass the probe and the
+	/// per-tick displacement clamp — no rubber-band on the way up.
+	#[test]
+	fn slab_stack_claim_adopted() {
+		use digblock_core::block::BlockType;
+		use digblock_core::chunk::{make_cell, ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use digblock_core::player::{Player, PlayerIntent, TICK};
+		use digblock_core::shapes::slab_state;
+		use std::sync::Arc;
+
+		// Flat ground (top plane 127) with slab risers ascending +z at
+		// y = 127: 1/3 at z=12, 2/3 at z=13, full stone at z=14..16.
+		let source: crate::store::ColumnSource = Arc::new(|cx, cz| {
+			let mut full = ChunkData::default();
+			let mut top = ChunkData::default();
+			for y in 0..16 {
+				for z in 0..16 {
+					for x in 0..16 {
+						full.set(x, y, z, BlockType::Stone);
+						if y <= 126 % 16 {
+							top.set(x, y, z, BlockType::Stone);
+						}
+					}
+				}
+			}
+			if (cx, cz) == (0, 0) {
+				top.set_cell(8, 15, 12, make_cell(BlockType::WoodSlab, slab_state(false)));
+				top.set_cell(8, 15, 13, make_cell(BlockType::WoodSlab, slab_state(true)));
+				top.set(8, 15, 14, BlockType::Stone);
+				top.set(8, 15, 15, BlockType::Stone);
+			}
+			let (full, top) = (Arc::new(full), Arc::new(top));
+			(0..WORLD_VCHUNK as usize)
+				.map(|cy| {
+					use std::cmp::Ordering::*;
+					match cy.cmp(&(126 / 16)) {
+						Less => full.clone(),
+						Equal => top.clone(),
+						Greater => AIR_CHUNK.clone(),
+					}
+				})
+				.collect()
+		});
+		let spawn = Vec3::new(8.5, 128.5, 8.5);
+		let dir = temp_dir("slabadopt");
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, source, spawn).unwrap();
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Honest local twin, claims offset by float noise so adoption is
+		// detectable (same construction as the stair adoption test).
+		const EPS: f32 = 1e-4;
+		let mut local = Player::new(spawn);
+		let mut t = 100;
+		let mut climbed = false;
+		for _ in 0..120 {
+			let intent = PlayerIntent {
+				move_axis: glam::Vec2::new(0.0, 1.0),
+				jump: false,
+			};
+			local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
+			let mut claim = local.state();
+			claim.pos.x += EPS;
+			// The walk spends real time on top of the full stack.
+			climbed |= local.pos.y > 129.4 && local.pos.z > 14.0 && local.pos.z < 16.0;
+			sim.tick_once(vec![batch(vec![input(t, true, claim)], 1)]);
+			t += 1;
+			let server = sim.test_player(1).unwrap();
+			assert_eq!(
+				server.pos, claim.pos,
+				"claim adopted verbatim at t={t} (no rubber-band), twin at {:?}",
+				local.pos
+			);
+		}
+		assert!(climbed, "the twin actually stepped the whole stack");
+	}
+
 	#[test]
 	fn sustained_edge_riding_locked_out_then_recovers() {
 		let mut sim = flat_sim("drift");

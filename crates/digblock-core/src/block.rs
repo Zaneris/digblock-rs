@@ -79,6 +79,12 @@ blocks! {
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy.
 	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::DOOR_WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Door), 45),
+	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
+	/// Placing onto a slab's top face grows it; the third grow converts
+	/// the cell to the plain base block. Hardness is a third of the base
+	/// block's, since each dig removes one third. Crafted via alchemy.
+	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Slab), 20),
+	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -144,6 +150,8 @@ pub enum ShapeKind {
 	Stairs,
 	/// Thin two-cell leaf; state nibble = facing | open<<2 | upper<<3.
 	Door,
+	/// Bottom-anchored 12×12×4 (state 0) or 12×12×8 (state 1) fill.
+	Slab,
 }
 
 /// Alchemy sub-material families (the "12ths dust" blocks convert into).
@@ -410,6 +418,21 @@ impl BlockType {
 	#[inline]
 	pub fn is_door(self) -> bool {
 		matches!(self.props().shape, Some(ShapeKind::Door))
+	}
+
+	#[inline]
+	pub fn is_slab(self) -> bool {
+		matches!(self.props().shape, Some(ShapeKind::Slab))
+	}
+
+	/// The full block a slab stack completes into on its third grow.
+	#[inline]
+	pub fn slab_base(self) -> Option<BlockType> {
+		match self {
+			BlockType::WoodSlab => Some(BlockType::Wood),
+			BlockType::StoneSlab => Some(BlockType::Stone),
+			_ => None,
+		}
 	}
 
 	/// The alchemy family this block converts INTO (one block = 27

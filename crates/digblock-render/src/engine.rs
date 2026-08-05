@@ -349,7 +349,9 @@ pub struct Engine {
 /// purely predictive — the server re-times the interval itself).
 struct DigProgress {
 	cell: (i32, i32, i32),
-	block: BlockType,
+	/// Full cell value at hold start: any content change (id OR state —
+	/// e.g. another player growing a slab mid-hold) restarts the hold.
+	cell_value: u16,
 	ticks: u16,
 	required: u16,
 }
@@ -379,7 +381,7 @@ fn quantized_facing(dir: Vec3) -> digblock_core::shapes::Facing {
 fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{door_state, stair_state, Facing};
+	use digblock_core::shapes::{door_state, slab_state, stair_state, Facing};
 	let (bx, by, bz) = (
 		spawn.x.floor() as i32,
 		spawn.y.floor() as i32,
@@ -405,6 +407,29 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 			));
 		}
 	}
+	// Slabs: both materials × both states, then a walkable seam row —
+	// 1/3 | 2/3 | full block | full + raised 1/3, every riser one
+	// auto-step (also eyeballs boundary culling on the shared planes).
+	for (i, b) in [B::WoodSlab, B::StoneSlab].into_iter().enumerate() {
+		let x = bx + 2 * i as i32 - 3;
+		out.push((x, by, bz + 12, make_cell(b, slab_state(false))));
+		out.push((x, by, bz + 14, make_cell(b, slab_state(true))));
+	}
+	let base = [
+		make_cell(B::WoodSlab, slab_state(false)),
+		make_cell(B::WoodSlab, slab_state(true)),
+		B::Wood as u16,
+		B::Wood as u16,
+	];
+	for (dx, cell) in base.into_iter().enumerate() {
+		out.push((bx + 1 + dx as i32, by, bz + 16, cell));
+	}
+	out.push((
+		bx + 4,
+		by + 1,
+		bz + 16,
+		make_cell(B::WoodSlab, slab_state(false)),
+	));
 	out
 }
 
@@ -1374,13 +1399,13 @@ impl Engine {
 		let on_same = self
 			.dig
 			.as_ref()
-			.is_some_and(|d| d.cell == hit.cell && d.block == hit.block);
+			.is_some_and(|d| d.cell == hit.cell && d.cell_value == hit.cell_value);
 		if !on_same {
 			self.cancel_dig();
 			let required = hit.block.dig_hardness(hit.cell.1).unwrap_or(u16::MAX);
 			self.dig = Some(DigProgress {
 				cell: hit.cell,
-				block: hit.block,
+				cell_value: hit.cell_value,
 				ticks: 0,
 				required,
 			});
@@ -1453,9 +1478,16 @@ impl Engine {
 				}
 			}
 		}
+		// Slabs shrink one third per completed dig (2/3 → 1/3 → Air);
+		// everything else clears. Door partners always clear.
+		let new_val = if prev.is_slab() {
+			digblock_core::shapes::slab_shrunk(prev_cell)
+		} else {
+			air
+		};
 		if self
 			.pipeline
-			.set_cell(hit.cell.0, hit.cell.1, hit.cell.2, air)
+			.set_cell(hit.cell.0, hit.cell.1, hit.cell.2, new_val)
 			.is_none()
 		{
 			return;
@@ -1486,7 +1518,11 @@ impl Engine {
 					digblock_net::messages::EditKind::Dig
 				};
 				let tick = net.predictor.current_tick();
-				let entries: Vec<_> = cleared.iter().map(|&(c, p)| (c, p, air)).collect();
+				let entries: Vec<_> = cleared
+					.iter()
+					.enumerate()
+					.map(|(i, &(c, p))| (c, p, if i == 0 { new_val } else { air }))
+					.collect();
 				let seq = net.edits.begin_multi(&entries, tick, drop.map(|d| (d, 1)));
 				let slot = self.hotbar.selected_index() as u8;
 				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0), slot);
@@ -1528,21 +1564,32 @@ impl Engine {
 			Some(HotbarItem::WaterTool) => BlockType::Water,
 			None => return,
 		};
-		let target = (
-			hit.cell.0 + hit.normal.0,
-			hit.cell.1 + hit.normal.1,
-			hit.cell.2 + hit.normal.2,
-		);
 		// Stairs carry the placer-derived facing (ascending away along
 		// the look); doors place as a lower+upper pair.
-		use digblock_core::chunk::make_cell;
-		use digblock_core::shapes::{door_state, stair_state};
-		let placed_cell = if block.is_stair() {
-			make_cell(block, stair_state(quantized_facing(dir)))
-		} else if block.is_door() {
-			make_cell(block, door_state(quantized_facing(dir), false, false))
+		use digblock_core::chunk::{cell_id, make_cell};
+		use digblock_core::shapes::{door_state, slab_grown, stair_state};
+		// A slab onto a same-material slab's TOP face grows the hit cell
+		// in place (1/3 → 2/3 → base block) instead of writing the
+		// neighbor. The wire still carries the canonical state-0 slab —
+		// the server re-derives the grow from its own raycast.
+		let grow =
+			block.is_slab() && hit.normal == (0, 1, 0) && cell_id(hit.cell_value) == block as u16;
+		let (target, placed_cell) = if grow {
+			(hit.cell, slab_grown(hit.cell_value))
 		} else {
-			block as u16
+			let target = (
+				hit.cell.0 + hit.normal.0,
+				hit.cell.1 + hit.normal.1,
+				hit.cell.2 + hit.normal.2,
+			);
+			let placed = if block.is_stair() {
+				make_cell(block, stair_state(quantized_facing(dir)))
+			} else if block.is_door() {
+				make_cell(block, door_state(quantized_facing(dir), false, false))
+			} else {
+				block as u16 // slabs land here too: fresh 1/3, state 0
+			};
+			(target, placed)
 		};
 		// Never place into the player — the shared shape-aware contract
 		// (identical to the server's InsidePlayer scan). Doors check
@@ -1594,12 +1641,13 @@ impl Engine {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
 				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
+				let wire_cell = if grow { block as u16 } else { placed_cell };
 				net.send_edit(
 					seq,
 					tick,
 					origin,
 					dir,
-					digblock_net::messages::EditKind::Place { block: placed_cell },
+					digblock_net::messages::EditKind::Place { block: wire_cell },
 					hit.cell,
 					hit.normal,
 					self.hotbar.selected_index() as u8,

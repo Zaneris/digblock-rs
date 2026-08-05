@@ -11,7 +11,7 @@
 
 use digblock_core::block::BlockType;
 use digblock_core::dir::Dir;
-use digblock_core::shapes::{self, door_state, stair_state, Facing};
+use digblock_core::shapes::{self, door_state, slab_state, stair_state, Facing};
 
 use super::draw::{DrawList, Layer};
 use super::hud::IconKind;
@@ -176,6 +176,10 @@ pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u
 				height = 24;
 				shape_quads(b, door_state(Facing::NegX, false, false), 0, &mut quads);
 				shape_quads(b, door_state(Facing::NegX, false, true), 12, &mut quads);
+			} else if b.is_slab() {
+				// The 2/3 variant reads as "slab"; 1/3 is a sliver at
+				// icon size.
+				shape_quads(b, slab_state(true), 0, &mut quads);
 			} else {
 				shape_quads(b, stair_state(Facing::NegX), 0, &mut quads);
 			}
@@ -284,6 +288,22 @@ mod tests {
 		assert!(
 			max - min > RECT.h * 0.7,
 			"door fills most of the rect vertically ({min}..{max})"
+		);
+	}
+
+	#[test]
+	fn slab_renders_the_two_thirds_variant_low() {
+		let quads = emitted(IconKind::Shaped(BlockType::WoodSlab), 0xFFFF_FFFF);
+		assert_eq!(quads.len(), 3, "a slab is a plain box: three faces");
+		// A 2/3-height box leaves the rect's upper band empty — the icon
+		// must read as a partial fill, not a full cube.
+		let min_y = quads
+			.iter()
+			.flat_map(|(c, _, _)| c.iter().map(|p| p[1]))
+			.fold(f32::MAX, f32::min);
+		assert!(
+			min_y > RECT.y + RECT.h * 0.1,
+			"top of the slab sits below the rect top ({min_y})"
 		);
 	}
 

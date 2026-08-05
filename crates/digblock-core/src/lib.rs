@@ -60,4 +60,10 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// was a seconds-long corner grind); the exemption is mirrored in
 /// `overlaps_solid` so mid-mount claims stay adoptable. Worlds where no
 /// capsule is ever ramp-supported are bit-identical to v7.
-pub const SIM_VERSION: u16 = 8;
+/// v9: auto-step — a descending walk mounts any cube/box top within
+/// 4/12 of the feet (`AUTO_STEP_MAX`; the slab family's stacking rise)
+/// when there's capsule headroom; ramps are excluded (their own branch
+/// lifts). Also shifts apex-phase jumps against a one-block step: a
+/// mount whose apex brings the feet within 4/12 of the top now steps
+/// instead of scraping the wall for the last centimeters.
+pub const SIM_VERSION: u16 = 9;

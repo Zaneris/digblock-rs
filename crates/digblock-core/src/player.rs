@@ -107,6 +107,17 @@ const RAMP_SNAP_DOWN: f32 = 0.1;
 /// tread never reads as "inside geometry".
 const SKIN_PROBE: f32 = 2e-3;
 
+// --- Auto-step. Any change here is a sim-behavior change: bump
+// SIM_VERSION. ---------------------------------------------------------
+/// Max rise a walking player mounts automatically (SIM v9): one slab
+/// third. The ε absorbs 12ths-lattice float skew; the next real rise is
+/// 8/12, comfortably outside. Deliberately equal to one stair tread —
+/// stairs are excluded structurally (only the Ramp branch lifts on a
+/// stair; its box-fallback still walls), so the tread coincidence can't
+/// climb a stair's back face. Must stay under the adoption envelope's
+/// per-tick displacement clamp (~0.47) or honest step claims reject.
+const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
+
 /// Eye spawn position: the nearest land to the origin. Walks expanding
 /// square rings (8-block stride) until a column clears the beach line, so
 /// spawning tracks the terrain instead of hardcoding a height — and never
@@ -369,6 +380,46 @@ fn runout_exempt(
 		})
 }
 
+/// Auto-step: convert a would-be wall contact into a ramp-style ground
+/// contact onto the box top, when the rise from the feet is within
+/// [`AUTO_STEP_MAX`] and there's capsule headroom above the landing
+/// (the ramp `pinched` probe). Cube/Boxes cells only — the Ramp arm
+/// negotiates its own lift. Doors stay step-proof through the headroom
+/// probe alone: a lower leaf's box tops out at the cell boundary and
+/// the mandatory upper half sits directly above it — if a future
+/// single-cell shape carries a cell-top box, reconsider deliberately.
+/// Never fires while rising (`out_y > 0`, the ramp-gate precedent) and
+/// never rewrites a contact that is already ground.
+fn step_contact(
+	pos: Vec3,
+	out_y: f32,
+	c: Contact,
+	cell: (i32, i32, i32),
+	top: f32,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> Contact {
+	if out_y > 0.0 || c.n.y > GROUND_NORMAL_Y {
+		return c;
+	}
+	let lift = top - (pos.y - EYE_TO_FEET);
+	if lift <= SKIN || lift > AUTO_STEP_MAX {
+		return c;
+	}
+	let (x, y, z) = cell;
+	let pinched = (1..=2).any(|k| {
+		!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
+			&& (y + k) as f32 - top < HEIGHT
+	});
+	if pinched {
+		return c;
+	}
+	Contact {
+		n: Vec3::Y,
+		depth: lift,
+		top,
+	}
+}
+
 /// Squared xz distance from the axis at `pos` to cell (x, z)'s unit
 /// rect (0 inside).
 #[inline]
@@ -539,6 +590,14 @@ impl Player {
 								}
 								let (lo, hi) = cell_box((x, y, z));
 								if let Some(c) = box_contact(self.pos, lo, hi) {
+									let c = step_contact(
+										self.pos,
+										self.out.y,
+										c,
+										(x, y, z),
+										hi.y,
+										cell_at,
+									);
 									push(&mut best, c);
 								}
 							}
@@ -546,6 +605,14 @@ impl Player {
 								for b in bs {
 									let (lo, hi) = b.aabb((x, y, z));
 									if let Some(c) = box_contact(self.pos, lo, hi) {
+										let c = step_contact(
+											self.pos,
+											self.out.y,
+											c,
+											(x, y, z),
+											hi.y,
+											cell_at,
+										);
 										push(&mut best, c);
 									}
 								}
@@ -1385,7 +1452,7 @@ mod tests {
 	// ---- sub-block shapes ------------------------------------------------
 
 	use crate::chunk::make_cell;
-	use crate::shapes::{door_state, stair_state, Facing};
+	use crate::shapes::{door_state, slab_state, stair_state, Facing};
 
 	/// Flat ground (top at y=10 surface) with a 3-stair flight ascending
 	/// +z at z=12..14 and a solid platform (top at y=13) beyond.
@@ -1642,6 +1709,219 @@ mod tests {
 		);
 	}
 
+	// ---- auto-step (v9) --------------------------------------------------
+
+	/// Flat ground (top y=10) with a slab staircase ascending +x, every
+	/// riser exactly AUTO_STEP-sized: 1/3 slab at x=12, 2/3 at x=13,
+	/// full stone at x=14-15, and a 1/3 slab on top at x=15.
+	fn slab_stack_world(x: i32, y: i32, z: i32) -> Option<u16> {
+		let _ = z;
+		if y < 10 {
+			return some_cell(BlockType::Dirt);
+		}
+		match (x, y) {
+			(12, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(false))),
+			(13, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(true))),
+			(14, 10) | (15, 10) => some_cell(BlockType::Stone),
+			(15, 11) => Some(make_cell(BlockType::WoodSlab, slab_state(false))),
+			_ => some_cell(BlockType::Air),
+		}
+	}
+
+	#[test]
+	fn walks_onto_third_slab_without_jumping() {
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			if (x, y) == (13, 10) {
+				return some_cell(BlockType::Air);
+			}
+			slab_stack_world(x, y, z)
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..90 {
+			let prev = p.pos.y;
+			p.tick(TICK, Vec3::X, forward, &world);
+			assert!(p.pos.y >= prev - 1e-3, "no dip stepping up: {:?}", p.pos);
+			if p.pos.x > 12.5 {
+				break;
+			}
+		}
+		assert!(p.pos.x > 12.5, "walked onto the slab, x = {}", p.pos.x);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!(
+			(feet - (10.0 + 1.0 / 3.0)).abs() < 0.001,
+			"standing on the 1/3 top, feet = {feet}"
+		);
+	}
+
+	#[test]
+	fn steps_up_slab_stack_and_probe_agrees() {
+		// 1/3 → 2/3 → full cube → cube + 1/3: four AUTO_STEP rises in one
+		// contiguous walk. Every post-tick position must read as
+		// not-solid — the adoption envelope's probe runs on exactly these.
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..300 {
+			let prev = p.pos.y;
+			p.tick(TICK, Vec3::X, forward, &slab_stack_world);
+			assert!(p.pos.y >= prev - 1e-3, "no dip on the stack: {:?}", p.pos);
+			assert!(
+				!overlaps_solid(p.pos, &slab_stack_world),
+				"probe agrees with the resolver: {:?}",
+				p.pos
+			);
+			if p.pos.x > 15.4 {
+				break;
+			}
+		}
+		assert!(p.pos.x > 15.4, "climbed the whole stack, x = {}", p.pos.x);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!(
+			(feet - (11.0 + 1.0 / 3.0)).abs() < 0.001,
+			"topped out on the raised 1/3, feet = {feet}"
+		);
+	}
+
+	#[test]
+	fn two_thirds_rise_walls() {
+		// Ground straight into a 2/3 slab: an 8/12 rise must block like
+		// any wall — no step, no creep.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if (x, y) == (12, 10) {
+				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &world);
+		}
+		assert!(p.pos.x < 11.75, "blocked at the face, x = {}", p.pos.x);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!((feet - 10.0).abs() < 0.001, "never lifted, feet = {feet}");
+	}
+
+	#[test]
+	fn step_blocked_under_low_ceiling() {
+		// A 1/3 slab under a ceiling leaving less than capsule height
+		// over its top (12.0 − 10.333 = 1.67 < 1.8): the step must not
+		// jam the crown — the slab blocks like a wall.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if (x, y) == (12, 10) {
+				Some(make_cell(BlockType::WoodSlab, slab_state(false)))
+			} else if (x, y) == (12, 12) {
+				some_cell(BlockType::Stone)
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &world);
+		}
+		assert!(
+			p.pos.x < 11.75,
+			"blocked under the ceiling, x = {}",
+			p.pos.x
+		);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!((feet - 10.0).abs() < 0.001, "never stepped, feet = {feet}");
+	}
+
+	#[test]
+	fn step_never_mounts_a_door_leaf() {
+		// Standing on a 2/3 slab beside a closed door: the leaf's top is
+		// exactly one step above the feet, but the mandatory upper half
+		// sits directly on it — the headroom probe is the ONLY thing
+		// keeping door tops unwalkable from slab height. If this fails
+		// after a shape change, revisit `step_contact`'s doc.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if (x, y) == (11, 10) {
+				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+			} else if x == 12 && (y == 10 || y == 11) {
+				Some(make_cell(
+					BlockType::WoodDoor,
+					door_state(Facing::PosX, false, y == 11),
+				))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		// Start standing on the 2/3 slab (feet 10.667), walking +x.
+		let mut p = Player::new(Vec3::new(11.5, 10.0 + 2.0 / 3.0 + EYE_TO_FEET, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		for _ in 0..240 {
+			p.tick(TICK, Vec3::X, forward, &world);
+		}
+		assert!(p.pos.x < 12.0, "blocked at the leaf, x = {}", p.pos.x);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!(
+			(feet - (10.0 + 2.0 / 3.0)).abs() < 0.001,
+			"never mounted the door, feet = {feet}"
+		);
+	}
+
+	#[test]
+	fn jump_mounts_two_thirds_slab() {
+		// An 8/12 rise needs a jump — and the descent phase of the jump
+		// (out.y ≤ 0 with the feet inside the step window) completes the
+		// mount via the step rule.
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if x >= 12 && y == 10 {
+				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let hold = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: true,
+		};
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::X, hold, &world);
+		}
+		for _ in 0..120 {
+			p.tick(TICK, Vec3::X, PlayerIntent::default(), &world);
+		}
+		assert!(p.pos.x > 12.0, "advanced onto the slab, x = {}", p.pos.x);
+		let feet = p.pos.y - EYE_TO_FEET;
+		assert!(
+			(feet - (10.0 + 2.0 / 3.0)).abs() < 0.001,
+			"standing on it, feet = {feet}"
+		);
+	}
+
 	/// Ground plus a door pair (lower y=10, upper y=11) at x=12, hinged
 	/// geometry irrelevant to the test — `open` toggles collision.
 	fn door_world(open: bool) -> impl Fn(i32, i32, i32) -> Option<u16> {
@@ -1740,6 +2020,25 @@ mod tests {
 		assert!(!placement_blocked(near_leaf, feet_cell, open));
 		// Non-colliding cells never block.
 		assert!(!placement_blocked(eye, feet_cell, BlockType::Water as u16));
+		// Slab grows under a standing player must reject at EVERY height:
+		// a box whose top is above the feet overlaps the capsule (the
+		// closest approach is vertical), so growing the cell someone
+		// stands in is InsidePlayer — step off first.
+		let slab13 = make_cell(BlockType::WoodSlab, slab_state(false));
+		let slab23 = make_cell(BlockType::WoodSlab, slab_state(true));
+		assert!(placement_blocked(eye, feet_cell, slab13), "fresh 1/3");
+		assert!(placement_blocked(eye, feet_cell, slab23), "grow to 2/3");
+		assert!(
+			placement_blocked(eye, feet_cell, BlockType::Wood as u16),
+			"grow to full base block"
+		);
+		// Feet exactly ON the grown top clears — the standing-on-top
+		// contract (exact contact never reads as overlap).
+		assert!(!placement_blocked(
+			eye + Vec3::new(0.0, 1.0 / 3.0, 0.0),
+			feet_cell,
+			slab13
+		));
 	}
 
 	#[test]

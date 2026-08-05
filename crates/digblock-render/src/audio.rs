@@ -85,8 +85,17 @@ pub enum Material {
 /// blocks fall back to Earth rather than panicking.
 pub fn material_of(b: BlockType) -> Material {
 	match b {
-		BlockType::Stone | BlockType::Gravel | BlockType::Sandstone => Material::Stone,
-		BlockType::Wood | BlockType::Leaves | BlockType::PineLeaves => Material::Wood,
+		BlockType::Stone
+		| BlockType::Gravel
+		| BlockType::Sandstone
+		| BlockType::StoneStairs
+		| BlockType::StoneSlab => Material::Stone,
+		BlockType::Wood
+		| BlockType::Leaves
+		| BlockType::PineLeaves
+		| BlockType::WoodStairs
+		| BlockType::WoodDoor
+		| BlockType::WoodSlab => Material::Wood,
 		_ => Material::Earth,
 	}
 }

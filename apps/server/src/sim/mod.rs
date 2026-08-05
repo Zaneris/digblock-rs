@@ -540,14 +540,20 @@ impl Sim {
 		if !client.live {
 			return;
 		}
-		let block = self.store.block_at(cell.0, cell.1, cell.2);
-		client.digging = match block {
-			Some(b) if b.dig_hardness(cell.1).is_some() => Some(edits::DigState {
-				cell,
-				block: b,
-				progress: 0,
-				off_target: 0,
-			}),
+		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
+		client.digging = match cell_value {
+			Some(v)
+				if digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
+					.dig_hardness(cell.1)
+					.is_some() =>
+			{
+				Some(edits::DigState {
+					cell,
+					cell_value: v,
+					progress: 0,
+					off_target: 0,
+				})
+			}
 			// Undiggable/unloaded target: no hold. The completing edit
 			// will fail its DigIncomplete check.
 			_ => None,
