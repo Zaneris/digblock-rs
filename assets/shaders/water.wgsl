@@ -69,7 +69,14 @@ const DROPS = array<f32, 10>(
 );
 
 struct VsOut {
-	@builtin(position) pos: vec4f,
+	// Invariant: the depth prepass and color pass run this vs in two
+	// different pipelines, and the color pass depth-tests LessEqual
+	// against the prepass result. Without @invariant the compiler may
+	// contract the position math differently per pipeline (the depth
+	// pipeline strips every varying, changing the optimization context),
+	// and an ulp of divergence fails the depth test — water full of
+	// view-dependent holes.
+	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) @interpolate(flat) direct: f32,
