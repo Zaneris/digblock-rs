@@ -96,6 +96,7 @@ compose-bots PROFILE="clean":
 web:
 	#!/usr/bin/env bash
 	set -euo pipefail
+	just check-port-8080
 	just build-web
 	echo "→ http://localhost:8080"
 	python3 -c 'import http.server, functools, mimetypes; \
@@ -110,6 +111,7 @@ web:
 play-web:
 	#!/usr/bin/env bash
 	set -euo pipefail
+	just check-port-8080
 	just build-web
 	cargo build -p digblock-server --bin digblock-server
 	docker build -q -t digblock-master apps/master >/dev/null
@@ -128,6 +130,20 @@ play-web:
 	python3 -c 'import http.server, functools, mimetypes; \
 		mimetypes.add_type("application/wasm", ".wasm"); \
 		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+
+# Fail fast (before the wasm build) if a previous web/play-web is still
+# holding :8080 — the python bind error at the end is much less friendly.
+[private]
+check-port-8080:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	pids=$(lsof -ti tcp:8080 -sTCP:LISTEN || true)
+	if [ -n "$pids" ]; then
+		echo "error: port 8080 is already in use:" >&2
+		ps -o pid=,command= -p $pids >&2
+		echo "kill it first: kill $pids" >&2
+		exit 1
+	fi
 
 # Build + bindgen the web bundle into target/web (no server).
 build-web:
