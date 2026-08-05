@@ -32,7 +32,7 @@ pub enum InvId {
 	Grid(u16),
 	/// One hotbar slot.
 	Bar(u8),
-	/// Alchemy: a convertible holding's "break down" button (index into
+	/// Alchemy: a convertible holding's "extract" button (index into
 	/// the built convertibles list).
 	Convert(u8),
 	/// Alchemy: a craft row's button (index into `shapes::CRAFTABLE`).

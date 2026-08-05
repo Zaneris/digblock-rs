@@ -33,7 +33,7 @@ const SCREEN_DIM: u32 = 0x70000000;
 // the button sits inside the row.
 const ROW_H: f32 = 40.0;
 const ROW_ICON: f32 = 32.0;
-const BTN_W: f32 = 120.0;
+const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 32.0;
 const PAD: f32 = 12.0;
 const GAP_ABOVE_BAR: f32 = 24.0;
@@ -115,7 +115,7 @@ impl AlchScreen {
 	/// and the emit pass walk the SAME rows, so the panel can never
 	/// disagree with its content.
 	fn rows(view: &AlchView) -> Vec<Row> {
-		let mut rows = vec![Row::Title, Row::Header("BREAK DOWN (1 BLOCK = 27)".into())];
+		let mut rows = vec![Row::Title, Row::Header("EXTRACTION (1 BLOCK = 27)".into())];
 		if view.convertibles.is_empty() {
 			rows.push(Row::Header("no raw materials".into()));
 		}
@@ -126,7 +126,7 @@ impl AlchScreen {
 			"WOOD {}   STONE {}",
 			view.subs[0], view.subs[1]
 		)));
-		rows.push(Row::Header("CRAFT".into()));
+		rows.push(Row::Header("TRANSMUTATION".into()));
 		for (i, &item) in CRAFTABLE.iter().enumerate() {
 			let r = craft_recipe(item).expect("CRAFTABLE rows have recipes");
 			rows.push(Row::Craft {
@@ -212,13 +212,13 @@ impl AlchScreen {
 				Row::Convert { .. } | Row::Craft { .. } => {
 					let (block, actionable, id, btn_text, text_color) = match *row {
 						Row::Convert { i, block, count } => {
-							(block, count > 0, InvId::Convert(i as u8), "CONVERT", WHITE)
+							(block, count > 0, InvId::Convert(i as u8), "EXTRACT", WHITE)
 						}
 						Row::Craft { i, item, ok, .. } => (
 							item,
 							ok,
 							InvId::Craft(i as u8),
-							"CRAFT",
+							"TRANSMUTE",
 							if ok { WHITE } else { DIM },
 						),
 						_ => unreachable!(),
