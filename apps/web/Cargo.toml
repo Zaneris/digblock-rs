@@ -14,6 +14,7 @@ digblock-render.workspace = true
 digblock-platform.workspace = true
 digblock-net.workspace = true
 digblock-net-web.workspace = true
+digblock-persist.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true

@@ -3,7 +3,10 @@
 //! digblock-core + digblock-net only — no GPU, no windowing.
 
 pub mod inventory_store;
-pub mod journal;
+/// The journal moved to `digblock-persist` (shared with client local
+/// saves — one format, one VERSION); re-exported so `crate::journal::`
+/// paths stay put.
+pub use digblock_persist::journal;
 pub mod master;
 pub mod net;
 pub mod sim;

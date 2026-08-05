@@ -137,6 +137,12 @@ pub enum ClientMsg {
 	///
 	/// [`RETURN_SPAWN_COOLDOWN_SECS`]: crate::protocol::RETURN_SPAWN_COOLDOWN_SECS
 	ReturnToSpawn,
+	/// Runtime draw-distance change (settings slider). Server re-clamps
+	/// exactly like Hello's value and adjusts the sync radius from the
+	/// next tick.
+	SetDrawDist {
+		draw_dist: i32,
+	},
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]

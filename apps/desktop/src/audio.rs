@@ -102,34 +102,47 @@ fn fetch_music(master_url: &str, out: &mpsc::Sender<Vec<u8>>) {
 
 type Cached = Buffered<Decoder<Cursor<&'static [u8]>>>;
 
-enum Voice {
+enum VoiceSink {
 	Spatial(SpatialSink),
 	Flat(Sink),
 }
 
+/// A live voice plus its authored gain, kept so a later user-volume
+/// change can recompute `base_gain * sfx_vol` without a LoopMove.
+struct Voice {
+	sink: VoiceSink,
+	base_gain: f32,
+}
+
 impl Voice {
 	fn set_speed(&self, v: f32) {
-		match self {
-			Voice::Spatial(s) => s.set_speed(v),
-			Voice::Flat(s) => s.set_speed(v),
+		match &self.sink {
+			VoiceSink::Spatial(s) => s.set_speed(v),
+			VoiceSink::Flat(s) => s.set_speed(v),
 		}
 	}
 	fn pause(&self) {
-		match self {
-			Voice::Spatial(s) => s.pause(),
-			Voice::Flat(s) => s.pause(),
+		match &self.sink {
+			VoiceSink::Spatial(s) => s.pause(),
+			VoiceSink::Flat(s) => s.pause(),
 		}
 	}
 	fn play(&self) {
-		match self {
-			Voice::Spatial(s) => s.play(),
-			Voice::Flat(s) => s.play(),
+		match &self.sink {
+			VoiceSink::Spatial(s) => s.play(),
+			VoiceSink::Flat(s) => s.play(),
 		}
 	}
 	fn stop(&self) {
-		match self {
-			Voice::Spatial(s) => s.stop(),
-			Voice::Flat(s) => s.stop(),
+		match &self.sink {
+			VoiceSink::Spatial(s) => s.stop(),
+			VoiceSink::Flat(s) => s.stop(),
+		}
+	}
+	fn apply_volume(&self, sfx_vol: f32) {
+		match &self.sink {
+			VoiceSink::Spatial(s) => s.set_volume(self.base_gain * sfx_vol),
+			VoiceSink::Flat(s) => s.set_volume(self.base_gain * sfx_vol),
 		}
 	}
 }
@@ -160,6 +173,10 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 	let mut loops: HashMap<LoopId, Voice> = HashMap::new();
 	let mut oneshots: Vec<Voice> = Vec::new();
 	let mut paused = false;
+	// User SFX multiplier (settings slider), applied on top of the
+	// engine's authored per-voice gains. Music needs no mirror — the
+	// music sink itself holds its volume across tracks.
+	let mut sfx_vol = 1.0f32;
 	// Ears in rodio space, updated by Listener.
 	let (mut left_ear, mut right_ear) = ([-EAR_HALF * ATT, 0.0, 0.0], [EAR_HALF * ATT, 0.0, 0.0]);
 	// Music playlist: raw ogg bytes, looped round-robin on a flat sink.
@@ -182,7 +199,7 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 				left_ear = ((p - right) * ATT).to_array();
 				right_ear = ((p + right) * ATT).to_array();
 				for v in loops.values().chain(oneshots.iter()) {
-					if let Voice::Spatial(s) = v {
+					if let VoiceSink::Spatial(s) = &v.sink {
 						s.set_left_ear_position(left_ear);
 						s.set_right_ear_position(right_ear);
 					}
@@ -192,7 +209,16 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 				let Some(src) = cache.get(&sound) else {
 					continue;
 				};
-				let v = play_voice(mixer, src.clone(), pos, gain, false, left_ear, right_ear);
+				let v = play_voice(
+					mixer,
+					src.clone(),
+					pos,
+					gain,
+					sfx_vol,
+					false,
+					left_ear,
+					right_ear,
+				);
 				if paused {
 					v.pause();
 				}
@@ -210,21 +236,28 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 				let Some(src) = cache.get(&sound) else {
 					continue;
 				};
-				let v = play_voice(mixer, src.clone(), pos, gain, true, left_ear, right_ear);
+				let v = play_voice(
+					mixer,
+					src.clone(),
+					pos,
+					gain,
+					sfx_vol,
+					true,
+					left_ear,
+					right_ear,
+				);
 				if paused {
 					v.pause();
 				}
 				loops.insert(id, v);
 			}
 			Some(AudioCmd::LoopMove { id, pos, gain }) => {
-				if let Some(v) = loops.get(&id) {
-					match v {
-						Voice::Spatial(s) => {
-							s.set_emitter_position((glam::Vec3::from_array(pos) * ATT).to_array());
-							s.set_volume(gain);
-						}
-						Voice::Flat(s) => s.set_volume(gain),
+				if let Some(v) = loops.get_mut(&id) {
+					v.base_gain = gain;
+					if let VoiceSink::Spatial(s) = &v.sink {
+						s.set_emitter_position((glam::Vec3::from_array(pos) * ATT).to_array());
 					}
+					v.apply_volume(sfx_vol);
 				}
 			}
 			Some(AudioCmd::LoopPitch { id, rate }) => {
@@ -251,13 +284,22 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 				}
 				music.play();
 			}
+			Some(AudioCmd::Volume { music: m, sfx }) => {
+				sfx_vol = sfx;
+				music.set_volume(MUSIC_GAIN * m);
+				// Sweep every live voice: stationary loops (waterfalls,
+				// ambient bed) get no LoopMove to piggyback on.
+				for v in loops.values().chain(oneshots.iter()) {
+					v.apply_volume(sfx_vol);
+				}
+			}
 			None => {}
 		}
 		// Housekeeping on every wakeup: GC finished one-shots, collect
 		// fetched tracks, feed the playlist.
-		oneshots.retain(|v| match v {
-			Voice::Spatial(s) => !s.empty(),
-			Voice::Flat(s) => !s.empty(),
+		oneshots.retain(|v| match &v.sink {
+			VoiceSink::Spatial(s) => !s.empty(),
+			VoiceSink::Flat(s) => !s.empty(),
 		});
 		while let Ok(bytes) = music_rx.try_recv() {
 			playlist.push(bytes);
@@ -273,16 +315,18 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 	}
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play_voice(
 	mixer: &rodio::mixer::Mixer,
 	src: Cached,
 	pos: Option<[f32; 3]>,
 	gain: f32,
+	sfx_vol: f32,
 	repeat: bool,
 	left_ear: [f32; 3],
 	right_ear: [f32; 3],
 ) -> Voice {
-	match pos {
+	let sink = match pos {
 		Some(p) => {
 			let s = SpatialSink::connect_new(
 				mixer,
@@ -290,23 +334,27 @@ fn play_voice(
 				left_ear,
 				right_ear,
 			);
-			s.set_volume(gain);
 			if repeat {
 				s.append(src.repeat_infinite());
 			} else {
 				s.append(src);
 			}
-			Voice::Spatial(s)
+			VoiceSink::Spatial(s)
 		}
 		None => {
 			let s = Sink::connect_new(mixer);
-			s.set_volume(gain);
 			if repeat {
 				s.append(src.repeat_infinite());
 			} else {
 				s.append(src);
 			}
-			Voice::Flat(s)
+			VoiceSink::Flat(s)
 		}
-	}
+	};
+	let v = Voice {
+		sink,
+		base_gain: gain,
+	};
+	v.apply_volume(sfx_vol);
+	v
 }

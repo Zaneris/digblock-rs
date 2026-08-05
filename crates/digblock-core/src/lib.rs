@@ -10,6 +10,7 @@ pub mod hotbar;
 pub mod inventory;
 pub mod mesher;
 pub mod metrics;
+pub mod overlay;
 pub mod pipeline;
 pub mod player;
 pub mod raycast;

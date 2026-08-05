@@ -3,6 +3,7 @@ use digblock_render::{Engine, EngineConfig};
 
 mod audio;
 mod services;
+mod settings;
 
 /// Bad or missing flag values are fatal like unknown args — a silently
 /// defaulted `--seed`/`--draw-dist` makes captures non-deterministic.
@@ -47,6 +48,10 @@ fn main() {
 	let mut server_filter: Option<String> = None;
 	let mut name: Option<String> = None;
 	let mut mute = false;
+	// Recorded, not applied: CLI overrides beat the saved settings, which
+	// beat the platform defaults — resolved after the parse loop.
+	let mut cli_draw: Option<i32> = None;
+	let mut cli_ssr: Option<bool> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -74,7 +79,7 @@ fn main() {
 			"--bench" => config.bench = true,
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
-			"--draw-dist" => config.draw_dist = parse_or_die("--draw-dist", args.next()),
+			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),
 			"--seed" => config.seed = Some(parse_or_die("--seed", args.next())),
 			// Dev builds only: in multiplayer the server dictates the
 			// world clock, so a shipped binary must not carry a local
@@ -91,8 +96,8 @@ fn main() {
 			"--pitch" => config.pitch = Some(parse_or_die("--pitch", args.next())),
 			// SSR override in either direction (--mobile --ssr is the
 			// device-profiling escape hatch).
-			"--ssr" => config.ssr = true,
-			"--no-ssr" => config.ssr = false,
+			"--ssr" => cli_ssr = Some(true),
+			"--no-ssr" => cli_ssr = Some(false),
 			"--metrics-csv" => {
 				config.metrics_csv =
 					Some(parse_or_die::<String>("--metrics-csv", args.next()).into());
@@ -141,6 +146,33 @@ fn main() {
 	// no audio, and no master traffic — hermetic and bit-identical.
 	let interactive = !config.bench && options.screenshot.is_none() && !options.auto_drill;
 
+	// Saved settings apply to interactive runs only (captures must not be
+	// perturbed by user preferences), then explicit CLI flags win.
+	if interactive {
+		let saved = settings::load(digblock_render::settings::Settings {
+			draw_dist: config.draw_dist,
+			music_vol: config.music_vol,
+			sfx_vol: config.sfx_vol,
+			ssr: config.ssr,
+			name: String::new(),
+		});
+		config.draw_dist = saved.draw_dist;
+		config.music_vol = saved.music_vol;
+		config.sfx_vol = saved.sfx_vol;
+		config.ssr = saved.ssr;
+		// --name beats the remembered name (validated above vs at load).
+		if name.is_none() && !saved.name.is_empty() {
+			name = Some(saved.name);
+			config.player_name = name.clone();
+		}
+	}
+	if let Some(d) = cli_draw {
+		config.draw_dist = d;
+	}
+	if let Some(ssr) = cli_ssr {
+		config.ssr = ssr;
+	}
+
 	// The menu is for interactive runs only; --join must not sit on a
 	// menu screen either.
 	config.menu = !join && interactive;
@@ -159,6 +191,17 @@ fn main() {
 	};
 
 	let mut engine = Engine::new(config);
+	if interactive {
+		engine.set_settings_store(Box::new(settings::save));
+	}
+	// Named local saves ride the menu; scripted joins and capture paths
+	// stay store-less (they keep the ephemeral world + hermetic runs).
+	if !join && interactive {
+		let worlds = dirs::data_dir()
+			.map(|d| d.join("digblock").join("worlds"))
+			.unwrap_or_else(|| std::path::PathBuf::from("./digblock-worlds"));
+		engine.set_world_store(Box::new(digblock_persist::FsWorldStore::new(worlds)));
+	}
 	if audio_on {
 		engine.set_audio(audio::start(
 			master_url

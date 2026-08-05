@@ -8,6 +8,7 @@ members = [
 	"crates/digblock-net",
 	"crates/digblock-net-native",
 	"crates/digblock-net-web",
+	"crates/digblock-persist",
 	"apps/desktop",
 	"apps/ios",
 	"apps/server",
@@ -34,6 +35,7 @@ digblock-platform = { path = "crates/digblock-platform" }
 digblock-net = { path = "crates/digblock-net" }
 digblock-net-native = { path = "crates/digblock-net-native" }
 digblock-net-web = { path = "crates/digblock-net-web" }
+digblock-persist = { path = "crates/digblock-persist" }
 
 wgpu = "26"
 winit = "0.30"

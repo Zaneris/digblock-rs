@@ -20,6 +20,7 @@ path = "src/bin/bot.rs"
 digblock-core = { workspace = true }
 digblock-net = { workspace = true }
 digblock-net-native = { workspace = true }
+digblock-persist = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 wtransport = { workspace = true }
 crossbeam-channel = { workspace = true }
@@ -33,6 +34,10 @@ sha2 = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+# The sim tests inject journal write/compaction failures.
+digblock-persist = { workspace = true, features = ["test-hooks"] }
 
 [lints]
 workspace = true

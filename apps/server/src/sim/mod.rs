@@ -51,6 +51,11 @@ pub const OUT_CAP: usize = 512;
 /// frames kill instantly; snapshots are lossy so brief stalls are fine).
 const DGRAM_STALL_SECS: u32 = 5;
 
+/// Server-side clamp on any client-supplied draw distance (Hello and
+/// runtime `SetDrawDist` alike) — bounds the sync radius, not rendering.
+const DRAW_DIST_MIN: i32 = 2;
+const DRAW_DIST_MAX: i32 = 32;
+
 /// A connection that passes the preamble but never completes Hello is
 /// dropped after this many ticks (5s — mirrors the preamble deadline).
 /// Without it a stalled handshake camps in the lobby forever: the
@@ -263,6 +268,11 @@ impl Sim {
 	}
 
 	#[cfg(test)]
+	fn test_draw_dist(&self, conn_id: u64) -> Option<i32> {
+		self.clients.get(&conn_id).map(|c| c.draw_dist)
+	}
+
+	#[cfg(test)]
 	fn test_inventory_count(&self, conn_id: u64, b: digblock_core::block::BlockType) -> u32 {
 		self.clients
 			.get(&conn_id)
@@ -373,6 +383,13 @@ impl Sim {
 				// stream (edit raycasts re-validate against the player's
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
+				// Inline like chat: sync radius is read fresh each tick, so
+				// the change simply applies from the next sync pass.
+				ClientMsg::SetDrawDist { draw_dist } => {
+					if let Some(client) = self.clients.get_mut(&conn_id) {
+						client.draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -523,7 +540,7 @@ impl Sim {
 			.map(|hash| self.inv_store.get(&hash))
 			.unwrap_or_default();
 		let name = sanitize_name(&name);
-		let draw_dist = draw_dist.clamp(2, 32);
+		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
 		// Blocks built at the spawn point since worldgen raise the landing.
 		let spawn = self.safe_spawn();
 		let mut ok = send_frame(
@@ -760,6 +777,31 @@ mod tests {
 			(welcome_tod - beat - 3.0).abs() < 0.1,
 			"welcome {welcome_tod} → beat {beat}"
 		);
+	}
+
+	#[test]
+	fn set_draw_dist_updates_and_clamps() {
+		let mut sim = flat_sim("setdraw");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		assert_eq!(sim.test_draw_dist(1), Some(4), "harness Hello value");
+
+		let msg = |draw_dist| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::SetDrawDist { draw_dist },
+		};
+		sim.tick_once(vec![msg(12)]);
+		assert_eq!(sim.test_draw_dist(1), Some(12));
+		sim.tick_once(vec![msg(1000)]);
+		assert_eq!(sim.test_draw_dist(1), Some(super::DRAW_DIST_MAX));
+		sim.tick_once(vec![msg(-3)]);
+		assert_eq!(sim.test_draw_dist(1), Some(super::DRAW_DIST_MIN));
+
+		// Unknown connection: silently ignored.
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 99,
+			msg: ClientMsg::SetDrawDist { draw_dist: 8 },
+		}]);
 	}
 
 	#[test]

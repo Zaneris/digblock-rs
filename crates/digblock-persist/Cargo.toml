@@ -1,0 +1,25 @@
+[package]
+name = "digblock-persist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+digblock-core.workspace = true
+digblock-net.workspace = true
+rustc-hash.workspace = true
+log.workspace = true
+
+# The file store (journal file + meta/state JSON) is native-only; the
+# wasm build keeps just the pure format halves (index, codec, snapshot).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+## Failure-injection hooks on `Journal` for downstream crates' tests
+## (the server's sim tests); never enabled in release builds.
+test-hooks = []
+
+[lints]
+workspace = true

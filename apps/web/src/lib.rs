@@ -8,6 +8,8 @@ use wasm_bindgen::prelude::*;
 
 mod audio;
 mod services;
+mod settings;
+mod store;
 
 fn param<T: std::str::FromStr>(p: &web_sys::UrlSearchParams, key: &str) -> Option<T> {
 	p.get(key).and_then(|v| v.parse().ok())
@@ -41,8 +43,21 @@ pub fn start() -> Result<(), JsValue> {
 	if cfg!(debug_assertions) {
 		config.tod = param(&params, "tod");
 	}
+	// Saved settings first, explicit query params on top (URL > saved >
+	// default — the desktop CLI precedence).
+	let saved = settings::load(digblock_render::settings::Settings {
+		draw_dist: config.draw_dist,
+		music_vol: config.music_vol,
+		sfx_vol: config.sfx_vol,
+		ssr: config.ssr,
+		name: String::new(),
+	});
+	config.draw_dist = saved.draw_dist;
+	config.music_vol = saved.music_vol;
+	config.sfx_vol = saved.sfx_vol;
+	config.ssr = saved.ssr;
 	if let Some(d) = param::<i32>(&params, "draw") {
-		config.draw_dist = d.clamp(4, 20);
+		config.draw_dist = d.clamp(10, 32);
 	}
 	if params.get("ssr").is_some() {
 		config.ssr = flag(&params, "ssr");
@@ -52,10 +67,12 @@ pub fn start() -> Result<(), JsValue> {
 	}
 	config.overlay = flag(&params, "overlay");
 	// ?name= is an explicit override, still held to the 3-10 char rule —
-	// an invalid one is treated as absent (the menu field starts empty).
+	// an invalid one is treated as absent; otherwise the remembered
+	// last-used name pre-fills the menu field.
 	config.player_name = params
 		.get("name")
-		.filter(|n| digblock_net::protocol::validate_name(n).is_ok());
+		.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
+		.or_else(|| (!saved.name.is_empty()).then(|| saved.name.clone()));
 
 	if flag(&params, "join") {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
@@ -76,6 +93,8 @@ pub fn start() -> Result<(), JsValue> {
 		None => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
 	};
 	let mut engine = Engine::new(config);
+	engine.set_settings_store(Box::new(settings::save));
+	engine.set_world_store(Box::new(store::LocalStorageWorldStore::new()));
 	// ?mute kills the whole audio stack; otherwise sound starts on the
 	// first click/keydown (Chrome's autoplay gesture rule).
 	if !flag(&params, "mute") {

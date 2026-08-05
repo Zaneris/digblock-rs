@@ -95,6 +95,11 @@ pub struct Maintenance {
 	pub mesh_queue: u32,
 	/// Jobs handed to workers whose results haven't been drained yet.
 	pub in_flight: u32,
+	/// Water cells restored by the edit overlay in columns that became
+	/// Ready this call — the caller re-schedules fluid there so a region
+	/// evicted mid-flow resumes (the client twin of the server's
+	/// `ReadyColumn::overlaid_water`).
+	pub overlaid_water: Vec<(i32, i32, i32)>,
 }
 
 pub struct Pipeline {
@@ -109,6 +114,14 @@ pub struct Pipeline {
 	/// Authoritative edits waiting for their chunk to generate — see
 	/// `apply_authoritative`.
 	deferred_edits: FxHashMap<(i32, i32, i32), crate::block::BlockType>,
+	/// Persistent local-edit overlay (single-player worlds): every
+	/// `set_block` records here and every generated column re-applies its
+	/// cells, so hard eviction can't lose edits. None in multiplayer —
+	/// the server's journal owns that world.
+	overlay: Option<crate::overlay::EditOverlay>,
+	/// Edits recorded since the last `take_recorded_edits` drain (the
+	/// engine forwards them to the world store).
+	recorded: Vec<(i32, i32, i32, u16)>,
 	scanned_once: bool,
 	in_flight: u32,
 }
@@ -202,6 +215,27 @@ fn shell_affects(data: &ChunkData) -> [bool; 27] {
 
 impl Pipeline {
 	pub fn new(seed: f64, draw_dist: i32, workers: usize) -> Self {
+		Self::build(seed, draw_dist, workers, None)
+	}
+
+	/// A pipeline with a persistent edit overlay (single-player worlds):
+	/// pass the saved world's edits (empty for a fresh world) so even the
+	/// spawn columns generate already-overlaid. Multiplayer keeps `new`.
+	pub fn with_overlay(
+		seed: f64,
+		draw_dist: i32,
+		workers: usize,
+		overlay: crate::overlay::EditOverlay,
+	) -> Self {
+		Self::build(seed, draw_dist, workers, Some(overlay))
+	}
+
+	fn build(
+		seed: f64,
+		draw_dist: i32,
+		workers: usize,
+		overlay: Option<crate::overlay::EditOverlay>,
+	) -> Self {
 		// No std threads on the web — force the inline executor there no
 		// matter what the caller asked for.
 		let workers = if cfg!(target_arch = "wasm32") {
@@ -246,9 +280,22 @@ impl Pipeline {
 			mesh_heap: BinaryHeap::new(),
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			deferred_edits: FxHashMap::default(),
+			overlay,
+			recorded: Vec::new(),
 			scanned_once: false,
 			in_flight: 0,
 		}
+	}
+
+	/// Edits recorded since the last drain (single-player persistence);
+	/// empty when no overlay is installed.
+	pub fn take_recorded_edits(&mut self) -> Vec<(i32, i32, i32, u16)> {
+		std::mem::take(&mut self.recorded)
+	}
+
+	/// The persistent edit overlay, when one is installed.
+	pub fn overlay(&self) -> Option<&crate::overlay::EditOverlay> {
+		self.overlay.as_ref()
 	}
 
 	/// Call every frame with the player's chunk position. Performs the
@@ -274,6 +321,7 @@ impl Pipeline {
 			gen_queue: 0,
 			mesh_queue: 0,
 			in_flight: 0,
+			overlaid_water: Vec::new(),
 		};
 		let center = ChunkPos::new(center.x, 0, center.z);
 		if center != self.center || !self.scanned_once {
@@ -367,10 +415,31 @@ impl Pipeline {
 				JobResult::Generated {
 					x,
 					z,
-					stack,
+					mut stack,
 					dur_ms,
 				} => {
 					out.gen_jobs.record(dur_ms);
+					// Re-apply persistent edits BEFORE the per-chunk air
+					// classification below: a block placed in a sky chunk
+					// must defeat `is_air_chunk` or it would never mesh.
+					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
+					// rather than mutating it (refcount > 1), mirroring the
+					// server's `ChunkStore::drain` overlay.
+					if let Some(overlay) = &self.overlay {
+						if let Some(cells) = overlay.column(x, z) {
+							for (&(wx, wy, wz), &cell) in cells {
+								let Some(((_, cy, _), (lx, ly, lz))) =
+									crate::chunk::split_world(wx, wy, wz)
+								else {
+									continue;
+								};
+								Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, cell);
+								if crate::block::BlockType::from_id(cell).is_water() {
+									out.overlaid_water.push((wx, wy, wz));
+								}
+							}
+						}
+					}
 					landed.push((x, z));
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
@@ -617,6 +686,17 @@ impl Pipeline {
 		}
 	}
 
+	/// Change the streaming radius at runtime (settings slider). Clearing
+	/// `scanned_once` forces the next `maintain` to rescan: a shrink
+	/// evicts out-of-range columns, a grow enqueues the new ring
+	/// nearest-first under the usual stream budget.
+	pub fn set_draw_dist(&mut self, draw_dist: i32) {
+		if draw_dist != self.draw_dist {
+			self.draw_dist = draw_dist;
+			self.scanned_once = false;
+		}
+	}
+
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
@@ -660,6 +740,12 @@ impl Pipeline {
 		}
 		// COW: clones the 4KB array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set(lx, ly, lz, b);
+		// The single local-write funnel: dig, place, AND fluid all land
+		// here, so the overlay (and its persistence drain) sees them all.
+		if let Some(overlay) = &mut self.overlay {
+			overlay.record(x, y, z, b as u16);
+			self.recorded.push((x, y, z, b as u16));
+		}
 		slot.mesh_gen += 1;
 		let center = self.center;
 		self.mesh_heap.push((
@@ -904,6 +990,160 @@ mod tests {
 		// Out-of-world y is rejected.
 		assert!(p.set_block(0, -1, 0, BlockType::Stone).is_none());
 		assert!(p.set_block(0, 1000, 0, BlockType::Stone).is_none());
+	}
+
+	/// The client twin of the server's
+	/// `journal_overlay_survives_evict_and_regen`: with an overlay
+	/// installed, a local edit survives hard eviction because the column
+	/// re-applies it when it regenerates.
+	#[test]
+	fn overlay_survives_evict_and_regen() {
+		let mut p = Pipeline::with_overlay(0.0, 4, 2, crate::overlay::EditOverlay::default());
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		let old = p.block_at(8, 8, 8).expect("chunk ready");
+		let new = if old == BlockType::Stone {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		p.set_block(8, 8, 8, new).expect("edit lands");
+		let recorded = p.take_recorded_edits();
+		assert_eq!(recorded, vec![(8, 8, 8, new as u16)], "edit recorded");
+
+		// Walk far away: the column at (0,0) hard-evicts...
+		let far = ChunkPos::new(40, 0, 0);
+		quiesce(&mut p, far);
+		assert!(p.block_at(8, 8, 8).is_none(), "column evicted");
+		// ...and coming back regenerates it WITH the edit.
+		quiesce(&mut p, center);
+		assert_eq!(p.block_at(8, 8, 8), Some(new), "edit survived eviction");
+		// Regeneration re-applies the overlay but records nothing new.
+		assert!(p.take_recorded_edits().is_empty());
+	}
+
+	/// An overlay passed at construction lands in the very first
+	/// generation of its columns (a loaded save's spawn area).
+	#[test]
+	fn overlay_at_construction_applies_to_first_generation() {
+		let mut probe = Pipeline::new(0.0, 4, 2);
+		quiesce(&mut probe, ChunkPos::new(0, 0, 0));
+		let old = probe.block_at(8, 8, 8).expect("ready");
+		let new = if old == BlockType::Stone {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+
+		let mut overlay = crate::overlay::EditOverlay::default();
+		overlay.record(8, 8, 8, new as u16);
+		let mut p = Pipeline::with_overlay(0.0, 4, 2, overlay);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		assert_eq!(p.block_at(8, 8, 8), Some(new));
+	}
+
+	/// A block placed in an all-air sky chunk must defeat the air
+	/// classification on regen — the overlay applies BEFORE
+	/// `is_air_chunk`, so the chunk stores, meshes, and renders it.
+	#[test]
+	fn overlay_into_sky_chunk_defeats_air_classification() {
+		let mut p = Pipeline::with_overlay(0.0, 4, 2, crate::overlay::EditOverlay::default());
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		// y=250 is far above any terrain: chunk (0, 15, 0) is a shared
+		// AIR_CHUNK sentinel.
+		let sky = ChunkPos::new(0, 15, 0);
+		assert!(
+			matches!(&p.store[&sky].state, ChunkState::Ready(d) if is_air_chunk(d)),
+			"precondition: sky chunk is air"
+		);
+		p.set_block(8, 250, 8, BlockType::Stone)
+			.expect("place in sky");
+		assert!(
+			!crate::chunk::is_air_chunk(match &p.store[&sky].state {
+				ChunkState::Ready(d) => d,
+				_ => panic!("ready"),
+			}),
+			"sentinel was COWed, not mutated"
+		);
+
+		quiesce(&mut p, ChunkPos::new(40, 0, 0));
+		quiesce(&mut p, center);
+		assert_eq!(p.block_at(8, 250, 8), Some(BlockType::Stone));
+		assert!(
+			p.store[&sky].mesh_gen > 0,
+			"regenerated sky chunk with content must mesh"
+		);
+	}
+
+	/// Overlaid water cells are reported for fluid rescheduling; solid
+	/// cells are not.
+	#[test]
+	fn overlay_reports_restored_water_only() {
+		let mut overlay = crate::overlay::EditOverlay::default();
+		overlay.record(8, 200, 8, BlockType::Water as u16);
+		overlay.record(9, 200, 8, BlockType::Stone as u16);
+		let mut p = Pipeline::with_overlay(0.0, 4, 2, overlay);
+		let mut water = Vec::new();
+		for _ in 0..2000 {
+			let m = p.maintain(ChunkPos::new(0, 0, 0), usize::MAX, None);
+			water.extend(m.overlaid_water);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(1));
+		}
+		assert_eq!(water, vec![(8, 200, 8)]);
+	}
+
+	/// Without an overlay (multiplayer), nothing records.
+	#[test]
+	fn no_overlay_records_nothing() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		let old = p.block_at(8, 8, 8).unwrap();
+		let new = if old == BlockType::Stone {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		p.set_block(8, 8, 8, new).unwrap();
+		assert!(p.take_recorded_edits().is_empty());
+		assert!(p.overlay().is_none());
+	}
+
+	#[test]
+	fn set_draw_dist_rescans_both_ways() {
+		let mut p = Pipeline::new(0.0, 6, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		let full = p.resident();
+
+		// Shrink: same center, but the cleared scan flag forces a rescan
+		// that evicts everything beyond the new radius.
+		p.set_draw_dist(4);
+		let m = p.maintain(center, usize::MAX, None);
+		assert!(!m.evicted.is_empty(), "shrink evicts out-of-range chunks");
+		let small = p.resident();
+		assert!(small < full);
+		for pos in p.store.keys() {
+			assert!(
+				dist2(ChunkPos::new(pos.x, 0, pos.z), center) < 16,
+				"{pos:?}"
+			);
+		}
+
+		// No-op set doesn't trigger a rescan.
+		p.set_draw_dist(4);
+		let m = p.maintain(center, usize::MAX, None);
+		assert!(m.evicted.is_empty());
+
+		// Grow back: the ring regenerates to the original census.
+		p.set_draw_dist(6);
+		quiesce(&mut p, center);
+		assert_eq!(p.resident(), full, "grow restores the full radius");
 	}
 
 	#[test]

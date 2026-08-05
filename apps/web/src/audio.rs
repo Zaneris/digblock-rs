@@ -4,8 +4,10 @@
 //! async up front and commands arriving before it finishes are queued.
 //!
 //! Graph per positional voice: source → panner (equalpower, inverse
-//! distance tuned to match the desktop rolloff) → voice gain → master
-//! gain → destination. Non-positional voices skip the panner.
+//! distance tuned to match the desktop rolloff) → voice gain → SFX
+//! bus → destination. Non-positional voices skip the panner. Music
+//! tracks route through their own bus; the two bus gains are the user
+//! volume sliders.
 //!
 //! Chrome refuses audio before a user gesture: one-time pointerdown +
 //! keydown listeners call `ctx.resume()` — self-contained here, the
@@ -39,7 +41,11 @@ struct Voice {
 
 struct State {
 	ctx: AudioContext,
-	master: GainNode,
+	/// User-volume buses (settings sliders): every SFX voice hangs off
+	/// `sfx_bus`, every music track off `music_bus`, both → destination.
+	/// One `set_value` retunes all running voices — no per-voice sweep.
+	sfx_bus: GainNode,
+	music_bus: GainNode,
 	buffers: HashMap<Sfx, AudioBuffer>,
 	ready: bool,
 	/// Loop commands that arrived before decoding finished (stale
@@ -63,29 +69,26 @@ impl AudioSink for WebSink {
 /// Build the graph, kick off async decode + music fetch, hook the
 /// autoplay-resume gestures. Any failure degrades to silence.
 pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
-	let ctx = AudioContext::new().ok();
-	let state = match ctx {
-		Some(ctx) => {
-			let master = ctx.create_gain().ok();
-			if let Some(m) = &master {
-				let _ = m.connect_with_audio_node(&ctx.destination());
-			}
-			master.map(|master| {
-				Rc::new(RefCell::new(State {
-					ctx,
-					master,
-					buffers: HashMap::new(),
-					ready: false,
-					pending: Vec::new(),
-					loops: HashMap::new(),
-					playlist: Vec::new(),
-					next_track: 0,
-					music_playing: false,
-				}))
-			})
-		}
-		None => None,
+	let build = || -> Option<Rc<RefCell<State>>> {
+		let ctx = AudioContext::new().ok()?;
+		let sfx_bus = ctx.create_gain().ok()?;
+		let music_bus = ctx.create_gain().ok()?;
+		sfx_bus.connect_with_audio_node(&ctx.destination()).ok()?;
+		music_bus.connect_with_audio_node(&ctx.destination()).ok()?;
+		Some(Rc::new(RefCell::new(State {
+			ctx,
+			sfx_bus,
+			music_bus,
+			buffers: HashMap::new(),
+			ready: false,
+			pending: Vec::new(),
+			loops: HashMap::new(),
+			playlist: Vec::new(),
+			next_track: 0,
+			music_playing: false,
+		})))
 	};
+	let state = build();
 	let Some(state) = state else {
 		log::warn!("WebAudio unavailable — running silent");
 		struct Null;
@@ -217,7 +220,7 @@ fn play_next_track(state: &Rc<RefCell<State>>) {
 	src.set_buffer(Some(&buf));
 	gain.gain().set_value(MUSIC_GAIN);
 	if src.connect_with_audio_node(&gain).is_err()
-		|| gain.connect_with_audio_node(&st.master).is_err()
+		|| gain.connect_with_audio_node(&st.music_bus).is_err()
 		|| src.start().is_err()
 	{
 		return;
@@ -264,7 +267,7 @@ fn make_voice(
 			None
 		}
 	};
-	g.connect_with_audio_node(&st.master).ok()?;
+	g.connect_with_audio_node(&st.sfx_bus).ok()?;
 	src.start().ok()?;
 	Some(Voice {
 		src,
@@ -285,6 +288,13 @@ fn stop_voice(v: &Voice) {
 
 fn apply(state: &Rc<RefCell<State>>, cmd: AudioCmd) {
 	let mut st = state.borrow_mut();
+	// Volume needs no decoded buffers — apply even before `ready`, so a
+	// saved setting takes effect from the very first sound.
+	if let AudioCmd::Volume { music, sfx } = cmd {
+		st.music_bus.gain().set_value(music);
+		st.sfx_bus.gain().set_value(sfx);
+		return;
+	}
 	if !st.ready {
 		// Queue everything that matters long-term; drop stale one-shots.
 		if !matches!(cmd, AudioCmd::Sfx { .. }) {
@@ -346,5 +356,7 @@ fn apply(state: &Rc<RefCell<State>>, cmd: AudioCmd) {
 		AudioCmd::Resume => {
 			let _ = st.ctx.resume();
 		}
+		// Handled before the ready gate above.
+		AudioCmd::Volume { .. } => {}
 	}
 }

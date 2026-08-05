@@ -292,6 +292,12 @@ impl Overlay {
 				let rx = x + w - TEXT_PAD_X - right.len() as f32 * GLYPH_PX;
 				self.push_text(rx, text_y, *color, right);
 			}
+			if let Some(frac) = row.bar {
+				const BAR_TRACK: u32 = 0x40FFFFFF;
+				let [bx, by, bw, bh] = crate::menu::bar_rect(row.rect);
+				self.push_quad(bx, by, bw, bh, BAR_TRACK);
+				self.push_quad(bx, by, bw * frac, bh, row.color);
+			}
 		}
 	}
 

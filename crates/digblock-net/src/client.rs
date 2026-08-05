@@ -498,6 +498,13 @@ impl NetClient {
 		self.send_msg(&ClientMsg::ReturnToSpawn);
 	}
 
+	/// Tell the server the draw distance changed (settings slider), so
+	/// the edit/player sync radius follows without a reconnect.
+	pub fn send_set_draw_dist(&mut self, draw_dist: i32) {
+		self.config.draw_dist = draw_dist;
+		self.send_msg(&ClientMsg::SetDrawDist { draw_dist });
+	}
+
 	/// Send a chat line. The server sanitizes and rate-limits; the local
 	/// truncation only keeps a pathological buffer off the wire.
 	pub fn send_chat(&mut self, text: &str) {

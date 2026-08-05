@@ -15,6 +15,7 @@ mod overlay;
 mod pipeline_builder;
 mod players;
 mod renderer;
+pub mod settings;
 mod shadow;
 mod sky;
 mod spray;

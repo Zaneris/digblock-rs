@@ -4,13 +4,29 @@
 //! cells when that column generates), so replay never waits on chunk
 //! loading. Fixed-size records give trivial torn-tail recovery: truncate
 //! to the last whole record.
+//!
+//! One format, two homes: the dedicated server's world journal AND the
+//! client's local saves share this file (and its `VERSION`) — a worldgen
+//! retune stales both at once, by construction. The `Journal` writer and
+//! its compaction machinery are fs-bound (native only); the index, the
+//! record codec, and the snapshot parse/serialize halves are pure and
+//! compile on wasm, where localStorage holds the byte blob instead of a
+//! file.
 
 use digblock_net::messages::BlockEdit;
-use digblock_net::protocol::{PlayerId, SERVER_ID};
-use rustc_hash::{FxHashMap, FxHashSet};
+use digblock_net::protocol::PlayerId;
+#[cfg(not(target_arch = "wasm32"))]
+use digblock_net::protocol::SERVER_ID;
+use rustc_hash::FxHashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use rustc_hash::FxHashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"DBJ1";
@@ -20,16 +36,21 @@ const MAGIC: &[u8; 4] = b"DBJ1";
 /// v3: worldgen retune (SIM v5) — the record format is unchanged, but the
 /// same seed now yields different terrain, so stored edits are stale;
 /// archive and start fresh.
-const VERSION: u16 = 3;
+///
+/// Client saves share this constant: bump it here and every local world
+/// goes incompatible together with the server's (the world list REFUSES
+/// rather than archives — see the store impls).
+pub const VERSION: u16 = 3;
 const HEADER_LEN: u64 = 16;
 const RECORD_LEN: u64 = 16;
+#[cfg(not(target_arch = "wasm32"))]
 const SYNC_INTERVAL_SECS: f32 = 1.0;
 
 /// Final block CELL value per edited cell within one chunk column.
 pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 
 /// Last-write-wins cell state, grouped by chunk column for join sync.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct JournalIndex {
 	columns: FxHashMap<(i32, i32), ColumnEdits>,
 	pub next_seq: u64,
@@ -67,27 +88,127 @@ impl JournalIndex {
 	pub fn edited_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
 		self.columns.keys().copied()
 	}
+
+	/// Every edit as `((x, y, z), cell)`, in arbitrary order.
+	pub fn iter_edits(&self) -> impl Iterator<Item = ((i32, i32, i32), u16)> + '_ {
+		self.columns
+			.values()
+			.flat_map(|c| c.iter().map(|(&p, &b)| (p, b)))
+	}
+}
+
+// ---- pure snapshot codec (shared by the file journal and the web
+// byte-blob store) --------------------------------------------------------
+
+/// Why a snapshot (or file header) can't be used.
+#[derive(Debug, PartialEq)]
+pub enum JournalError {
+	/// Well-formed header from another format/worldgen version — the
+	/// save is real but stale; surface it, don't destroy it.
+	WrongVersion(u16),
+	SeedMismatch {
+		file: f64,
+		requested: f64,
+	},
+	Corrupt(&'static str),
+}
+
+impl std::fmt::Display for JournalError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			JournalError::WrongVersion(v) => write!(f, "journal version {v} != {VERSION}"),
+			JournalError::SeedMismatch { file, requested } => {
+				write!(f, "journal seed {file} != requested {requested}")
+			}
+			JournalError::Corrupt(what) => write!(f, "journal corrupt: {what}"),
+		}
+	}
+}
+
+/// Serialize `index` as a complete journal byte blob: header + one
+/// record per live cell (the boot-compaction body as a pure function).
+pub fn snapshot_bytes(seed: f64, index: &JournalIndex) -> Vec<u8> {
+	let mut out = Vec::with_capacity((HEADER_LEN + index.live_cells() * RECORD_LEN) as usize);
+	out.extend_from_slice(&header_bytes(seed));
+	for ((x, y, z), block) in index.iter_edits() {
+		out.extend_from_slice(&encode_record(
+			x,
+			y,
+			z,
+			block,
+			digblock_net::protocol::SERVER_ID,
+		));
+	}
+	out
+}
+
+/// Parse a journal byte blob (header checks + LWW replay). A torn tail
+/// is truncated, matching the file path's recovery.
+pub fn parse_snapshot(bytes: &[u8], expected_seed: f64) -> Result<JournalIndex, JournalError> {
+	if bytes.len() < HEADER_LEN as usize {
+		return Err(JournalError::Corrupt("shorter than the header"));
+	}
+	let header = &bytes[..HEADER_LEN as usize];
+	if &header[0..4] != MAGIC {
+		return Err(JournalError::Corrupt("magic mismatch"));
+	}
+	let version = u16::from_le_bytes([header[4], header[5]]);
+	if version != VERSION {
+		return Err(JournalError::WrongVersion(version));
+	}
+	let file_seed = f64::from_le_bytes(header[8..16].try_into().unwrap());
+	if file_seed.to_bits() != expected_seed.to_bits() {
+		return Err(JournalError::SeedMismatch {
+			file: file_seed,
+			requested: expected_seed,
+		});
+	}
+	let mut index = JournalIndex::default();
+	replay_records(&bytes[HEADER_LEN as usize..], &mut index);
+	Ok(index)
+}
+
+/// LWW-replay whole records into `index`; a torn tail (trailing partial
+/// record) is ignored.
+fn replay_records(body: &[u8], index: &mut JournalIndex) {
+	for rec in body.chunks_exact(RECORD_LEN as usize) {
+		let edit = BlockEdit {
+			x: i32::from_le_bytes(rec[0..4].try_into().unwrap()),
+			y: i32::from_le_bytes(rec[4..8].try_into().unwrap()),
+			z: i32::from_le_bytes(rec[8..12].try_into().unwrap()),
+			block: u16::from_le_bytes([rec[12], rec[13]]),
+		};
+		index.record(edit);
+	}
 }
 
 /// Consecutive write failures before the journal reports unhealthy.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_WRITE_FAILURES: u32 = 3;
 /// Compact (boot or runtime) when the file holds this many times more
 /// records than live cells (and enough of them to matter).
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RATIO: u64 = 2;
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_MIN_RECORDS: u64 = 10_000;
 /// Runtime compaction: copy at least this many records per tick. A whole
 /// column always copies atomically (map iteration order is invalidated
 /// by mutation), so a single tick can overshoot by one column.
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RECORDS_PER_TICK: u64 = 4096;
 /// Intermediate tmp fsync cadence (~2 MB) so the finishing tick never
 /// pays one huge fsync inside the 60Hz budget.
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RECORDS_PER_SYNC: u64 = 131_072;
 /// Cooldown after a completed run (fluid churn re-bloats slowly).
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_COOLDOWN_SECS: u64 = 60;
 /// Backoff after a failed run.
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RETRY_SECS: u64 = 300;
 /// Abort if mid-run appends outpace the copy this badly — impossible
 /// within the fluid/edit rate budgets, but fail safe.
+#[cfg(not(target_arch = "wasm32"))]
 const COMPACT_DELTA_MAX: usize = 65_536;
 
 /// In-flight runtime compaction, stepped once per `maintain()` call.
@@ -98,6 +219,7 @@ const COMPACT_DELTA_MAX: usize = 65_536;
 /// construction. All live appends keep going to the OLD file until the
 /// atomic rename, so a crash at any point leaves a complete old file
 /// plus a garbage tmp that the next boot truncates.
+#[cfg(not(target_arch = "wasm32"))]
 struct CompactionRun {
 	tmp: BufWriter<File>,
 	tmp_path: PathBuf,
@@ -119,6 +241,7 @@ struct CompactionRun {
 	since_sync: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Journal {
 	file: BufWriter<File>,
 	path: PathBuf,
@@ -139,12 +262,13 @@ pub struct Journal {
 	/// ServerError) rather than diverging memory from disk silently.
 	write_failures: u32,
 	last_health_log: Option<Instant>,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-hooks"))]
 	pub force_write_failure: bool,
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-hooks"))]
 	pub force_compact_failure: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Journal {
 	/// Open (or create) the journal for `seed` under `dir`. A seed
 	/// mismatch with an existing file is a hard error — the terrain the
@@ -157,8 +281,10 @@ impl Journal {
 		// Format break: a file from another version can't be read, but
 		// refusing to boot bricks persistent volumes (the compose rig's
 		// ./data) until someone intervenes. Archive it and start fresh —
-		// the old world stays next door as `.vN.bak`.
-		if let Some(version) = stale_version(&path)? {
+		// the old world stays next door as `.vN.bak`. (Client save
+		// stores check `file_version` themselves and REFUSE instead, so
+		// this destructive path never sees a named user save.)
+		if let Some(version) = file_version(&path)? {
 			let bak = archive_path(&path, version);
 			log::warn!(
 				"journal version {version} != {VERSION}: archiving to {}, starting fresh",
@@ -207,15 +333,7 @@ impl Journal {
 			(&mut file)
 				.take(good_len - HEADER_LEN)
 				.read_to_end(&mut body)?;
-			for rec in body.chunks_exact(RECORD_LEN as usize) {
-				let edit = BlockEdit {
-					x: i32::from_le_bytes(rec[0..4].try_into().unwrap()),
-					y: i32::from_le_bytes(rec[4..8].try_into().unwrap()),
-					z: i32::from_le_bytes(rec[8..12].try_into().unwrap()),
-					block: u16::from_le_bytes([rec[12], rec[13]]),
-				};
-				index.record(edit);
-			}
+			replay_records(&body, &mut index);
 
 			// Boot compaction: fluid appends every cell change, so the
 			// file grows without bound while the index stays last-write-
@@ -246,9 +364,9 @@ impl Journal {
 			next_compact_at: None,
 			write_failures: 0,
 			last_health_log: None,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "test-hooks"))]
 			force_write_failure: false,
-			#[cfg(test)]
+			#[cfg(any(test, feature = "test-hooks"))]
 			force_compact_failure: false,
 		})
 	}
@@ -293,7 +411,7 @@ impl Journal {
 	}
 
 	fn write_record(&mut self, rec: &[u8]) -> std::io::Result<()> {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "test-hooks"))]
 		if self.force_write_failure {
 			return Err(std::io::Error::other("injected write failure"));
 		}
@@ -383,7 +501,7 @@ impl Journal {
 	/// exhausted. Any I/O error aborts the run (the old file is still the
 	/// complete truth).
 	fn step_compaction(&mut self) {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "test-hooks"))]
 		if self.force_compact_failure {
 			self.abort_compaction(&std::io::Error::other("injected compaction failure"));
 			return;
@@ -447,12 +565,12 @@ impl Journal {
 		log::warn!("journal runtime compaction aborted: {e} — retrying in {COMPACT_RETRY_SECS}s");
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-hooks"))]
 	pub fn compaction_active(&self) -> bool {
 		self.run.is_some()
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-hooks"))]
 	pub fn reset_compact_cooldown(&mut self) {
 		self.next_compact_at = None;
 	}
@@ -486,6 +604,7 @@ fn encode_record(x: i32, y: i32, z: i32, block: u16, by: PlayerId) -> [u8; RECOR
 /// Copy whole columns into the tmp file until this tick's record budget
 /// is spent; returns true when the snapshot is exhausted. Free function
 /// so the caller can borrow `run` mutably alongside the shared index.
+#[cfg(not(target_arch = "wasm32"))]
 fn copy_step(run: &mut CompactionRun, index: &JournalIndex) -> std::io::Result<bool> {
 	let mut wrote_this_tick = 0u64;
 	while run.cursor < run.cols.len() && wrote_this_tick < COMPACT_RECORDS_PER_TICK {
@@ -515,6 +634,7 @@ fn copy_step(run: &mut CompactionRun, index: &JournalIndex) -> std::io::Result<b
 /// Rewrite the journal as one record per live cell: tmp file, fsync,
 /// atomic rename, reopen. Boot-time (blocking) variant; the runtime
 /// equivalent is the incremental `CompactionRun`.
+#[cfg(not(target_arch = "wasm32"))]
 fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File> {
 	let tmp = path.with_extension("journal.tmp");
 	{
@@ -544,7 +664,10 @@ fn header_bytes(seed: f64) -> [u8; HEADER_LEN as usize] {
 /// format version; None when the file is absent, current, or malformed
 /// (short file / bad magic is corruption — `open` reports it as an error
 /// rather than archiving data it might still want intact for forensics).
-fn stale_version(path: &Path) -> std::io::Result<Option<u16>> {
+/// Pub so a save store can flag an incompatible world in its list (a
+/// 16-byte read) without triggering `open`'s archive-and-start-fresh.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn file_version(path: &Path) -> std::io::Result<Option<u16>> {
 	let mut file = match File::open(path) {
 		Ok(f) => f,
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -560,6 +683,7 @@ fn stale_version(path: &Path) -> std::io::Result<Option<u16>> {
 
 /// First free `<world>.journal.v{version}.bak[N]` slot next to `path` —
 /// repeated format breaks never overwrite an earlier archive.
+#[cfg(not(target_arch = "wasm32"))]
 fn archive_path(path: &Path, version: u16) -> PathBuf {
 	let mut n = 0u32;
 	loop {
@@ -576,16 +700,58 @@ fn archive_path(path: &Path, version: u16) -> PathBuf {
 	}
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bad_data(msg: impl Into<String>) -> std::io::Error {
 	std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use super::*;
 
 	fn edit(x: i32, y: i32, z: i32, block: u16) -> BlockEdit {
 		BlockEdit { x, y, z, block }
+	}
+
+	#[test]
+	fn snapshot_roundtrip_and_refusals() {
+		let mut index = JournalIndex::default();
+		index.record(edit(5, 130, -2, 0));
+		index.record(edit(20, 131, 5, 3));
+		index.record(edit(5, 130, -2, 4)); // LWW
+
+		let bytes = snapshot_bytes(42.0, &index);
+		assert_eq!(
+			bytes.len() as u64,
+			HEADER_LEN + 2 * RECORD_LEN,
+			"one record per live cell"
+		);
+		let parsed = parse_snapshot(&bytes, 42.0).unwrap();
+		assert_eq!(parsed.live_cells(), 2);
+		assert_eq!(parsed.column(0, -1).unwrap().get(&(5, 130, -2)), Some(&4));
+		assert_eq!(parsed.column(1, 0).unwrap().get(&(20, 131, 5)), Some(&3));
+
+		// Torn tail: trailing partial record ignored, like the file path.
+		let mut torn = bytes.clone();
+		torn.extend_from_slice(&[0xAB; 7]);
+		assert_eq!(parse_snapshot(&torn, 42.0).unwrap().live_cells(), 2);
+
+		// Wrong version is a distinct, non-destructive refusal.
+		let mut old = bytes.clone();
+		old[4..6].copy_from_slice(&1u16.to_le_bytes());
+		assert_eq!(
+			parse_snapshot(&old, 42.0).unwrap_err(),
+			JournalError::WrongVersion(1)
+		);
+		// Seed mismatch and corruption are refused too.
+		assert!(matches!(
+			parse_snapshot(&bytes, 43.0).unwrap_err(),
+			JournalError::SeedMismatch { .. }
+		));
+		assert!(matches!(
+			parse_snapshot(b"nope", 42.0).unwrap_err(),
+			JournalError::Corrupt(_)
+		));
 	}
 
 	#[test]

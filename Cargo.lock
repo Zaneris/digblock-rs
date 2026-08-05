@@ -801,6 +801,7 @@ version = "0.1.0"
 dependencies = [
  "digblock-net",
  "digblock-net-native",
+ "digblock-persist",
  "digblock-platform",
  "digblock-render",
  "dirs",
@@ -860,6 +861,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "digblock-persist"
+version = "0.1.0"
+dependencies = [
+ "digblock-core",
+ "digblock-net",
+ "log",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "digblock-platform"
 version = "0.1.0"
 dependencies = [
@@ -882,6 +895,7 @@ dependencies = [
  "digblock-assets",
  "digblock-core",
  "digblock-net",
+ "digblock-persist",
  "digblock-platform",
  "glam",
  "image",
@@ -901,6 +915,7 @@ dependencies = [
  "digblock-core",
  "digblock-net",
  "digblock-net-native",
+ "digblock-persist",
  "env_logger",
  "glam",
  "log",
@@ -922,6 +937,7 @@ dependencies = [
  "console_log",
  "digblock-net",
  "digblock-net-web",
+ "digblock-persist",
  "digblock-platform",
  "digblock-render",
  "js-sys",

@@ -16,6 +16,7 @@ digblock-render.workspace = true
 digblock-platform.workspace = true
 digblock-net.workspace = true
 digblock-net-native.workspace = true
+digblock-persist.workspace = true
 env_logger.workspace = true
 log.workspace = true
 rodio.workspace = true

@@ -163,6 +163,13 @@ pub enum AudioCmd {
 	/// App suspended / tab hidden: silence everything, keep state.
 	Pause,
 	Resume,
+	/// User volume settings, multipliers on the authored gains (1.0 =
+	/// as-authored, range 0..=2). Applies to running voices too — a
+	/// stationary loop must not wait for its next `LoopMove`.
+	Volume {
+		music: f32,
+		sfx: f32,
+	},
 }
 
 /// The injected backend. Deliberately not `Send` — the web filler holds

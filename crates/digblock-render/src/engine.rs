@@ -41,6 +41,9 @@ pub struct EngineConfig {
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
+	/// User volume multipliers (settings sliders): 1.0 = authored gains.
+	pub music_vol: f32,
+	pub sfx_vol: f32,
 	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
 	/// $USER) — the engine itself must stay env-free for wasm.
 	pub player_name: Option<String>,
@@ -90,6 +93,8 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: true,
+			music_vol: 1.0,
+			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
 			spray_droplets: 64,
@@ -117,6 +122,8 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: false,
+			music_vol: 1.0,
+			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
 			spray_droplets: 24,
@@ -279,6 +286,19 @@ pub struct Engine {
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
+	/// Launcher-injected settings persistence hook, called with each
+	/// change batch; None (bench, drill, iOS) = settings don't persist.
+	settings_store: Option<crate::settings::SettingsStore>,
+	/// Launcher-injected named-save backend; None (bench, drill,
+	/// scripted joins, iOS) keeps the ephemeral "Play Local" flow.
+	world_store: Option<Box<dyn digblock_persist::WorldStore>>,
+	/// True while playing an opened named save: recorded edits stream to
+	/// the store and player state snapshots on a timer. False for the
+	/// startup backdrop world (which still has an overlay, so eviction
+	/// is safe, but nothing persists).
+	in_local_save: bool,
+	/// Seconds since the last player/inventory snapshot handoff.
+	player_save_accum: f32,
 	/// The world's spawn point (the server's after a Welcome swap):
 	/// the return-to-spawn target.
 	spawn_pos: Vec3,
@@ -299,6 +319,17 @@ struct DigProgress {
 
 fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
+}
+
+/// Coarse "last played" age for the world list.
+fn age_label(now_ms: u64, then_ms: u64) -> String {
+	let secs = now_ms.saturating_sub(then_ms) / 1000;
+	match secs {
+		0..=59 => "just now".into(),
+		60..=3599 => format!("{}m ago", secs / 60),
+		3600..=86_399 => format!("{}h ago", secs / 3600),
+		_ => format!("{}d ago", secs / 86_400),
+	}
 }
 
 /// Stable, distinct color per player id: golden-ratio hue walk, flat
@@ -352,7 +383,14 @@ impl Engine {
 		});
 		let far = (config.draw_dist * 32) as f32;
 		log::info!("world seed: {seed} | {} chunk workers", config.workers);
-		let pipeline = Pipeline::new(seed, config.draw_dist, config.workers);
+		// Even the ephemeral backdrop world gets an overlay: local edits
+		// must survive chunk eviction within a session, saved or not.
+		let pipeline = Pipeline::with_overlay(
+			seed,
+			config.draw_dist,
+			config.workers,
+			digblock_core::overlay::EditOverlay::default(),
+		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
 		let spawn = digblock_core::player::spawn(seed);
@@ -363,15 +401,22 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
-		// The name field starts empty unless an explicit, valid override
-		// (`?name=`, `--name`) was supplied — entering one is mandatory.
+		// The name field starts empty unless a valid override was supplied
+		// (`?name=`/`--name`, or the persisted last-used name the launcher
+		// loaded into the config).
 		let menu = crate::menu::Menu::new(
 			config.menu,
-			config
-				.player_name
-				.clone()
-				.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
-				.unwrap_or_default(),
+			crate::settings::Settings {
+				draw_dist: config.draw_dist,
+				music_vol: config.music_vol,
+				sfx_vol: config.sfx_vol,
+				ssr: config.ssr,
+				name: config
+					.player_name
+					.clone()
+					.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
+					.unwrap_or_default(),
+			},
 			config.auto_join.clone(),
 		);
 		Self {
@@ -385,6 +430,10 @@ impl Engine {
 			prev_player_pos: spawn,
 			nametag_scratch: Vec::new(),
 			services: None,
+			settings_store: None,
+			world_store: None,
+			in_local_save: false,
+			player_save_accum: 0.0,
 			spawn_pos: spawn,
 			spawn_cooldown: 0.0,
 			config,
@@ -477,6 +526,58 @@ impl Engine {
 	pub fn set_audio(&mut self, sink: Box<dyn crate::audio::AudioSink>) {
 		self.audio = Some(sink);
 		self.ambient.reset();
+		// Persisted volumes apply from the very first sound.
+		self.emit(crate::audio::AudioCmd::Volume {
+			music: self.config.music_vol,
+			sfx: self.config.sfx_vol,
+		});
+	}
+
+	/// Inject the settings persistence hook (launcher-owned; desktop
+	/// writes a data-dir file, web localStorage). Called with each change
+	/// batch from the Settings screen.
+	pub fn set_settings_store(&mut self, store: crate::settings::SettingsStore) {
+		self.settings_store = Some(store);
+	}
+
+	/// Inject the named-save backend (launcher-owned: desktop files, web
+	/// localStorage). Root's "Play Local" becomes "Singleplayer".
+	pub fn set_world_store(&mut self, store: Box<dyn digblock_persist::WorldStore>) {
+		self.world_store = Some(store);
+		self.menu.set_store_available();
+	}
+
+	/// Apply a settings change batch at runtime, then persist it. SSR is
+	/// a per-frame uniform bit; volumes ride the audio command stream;
+	/// draw distance retunes the camera far plane, the streaming radius
+	/// (rescan on next maintain), and — connected — the server's sync
+	/// radius. The store sees every batch, including name-only changes
+	/// from the join path.
+	fn apply_settings(&mut self, s: crate::settings::Settings) {
+		self.config.ssr = s.ssr;
+		if (s.music_vol - self.config.music_vol).abs() > f32::EPSILON
+			|| (s.sfx_vol - self.config.sfx_vol).abs() > f32::EPSILON
+		{
+			self.config.music_vol = s.music_vol;
+			self.config.sfx_vol = s.sfx_vol;
+			self.emit(crate::audio::AudioCmd::Volume {
+				music: s.music_vol,
+				sfx: s.sfx_vol,
+			});
+		}
+		if s.draw_dist != self.config.draw_dist {
+			self.config.draw_dist = s.draw_dist;
+			self.camera.far = (s.draw_dist * 32) as f32;
+			self.pipeline.set_draw_dist(s.draw_dist);
+			if let Some(net) = self.net.as_mut() {
+				if net.ready() {
+					net.send_set_draw_dist(s.draw_dist);
+				}
+			}
+		}
+		if let Some(store) = &mut self.settings_store {
+			store(&s);
+		}
 	}
 
 	/// Per-frame audio upkeep, after the camera settles: listener pose,
@@ -568,16 +669,25 @@ impl Engine {
 	/// server's. Cheap at startup — nothing meaningful has streamed yet.
 	fn swap_world(&mut self, seed: f64, spawn: Vec3) {
 		log::info!("joining server world: seed {seed}");
+		self.close_local_save();
 		self.player_names.clear();
 		self.push_feed("Connected to server.".into());
 		self.seed = seed;
 		self.spawn_pos = spawn;
+		// No overlay: the server's journal owns this world's edits.
 		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		// The server's InventoryFull (right behind JournalDone) is the
 		// authoritative base; local single-player stock must not leak in.
 		self.inventory = Inventory::default();
+		self.reset_world_transients(spawn);
+	}
+
+	/// The world-swap tail shared by server joins, save entry, and the
+	/// leave-server backdrop: kill in-flight interaction and streaming
+	/// state, and silence the old world.
+	fn reset_world_transients(&mut self, pos: Vec3) {
 		self.dig = None;
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
@@ -600,7 +710,141 @@ impl Engine {
 		}
 		self.audio_scratch = cmds;
 		self.ambient.reset();
-		self.prev_player_pos = spawn;
+		self.prev_player_pos = pos;
+	}
+
+	/// Flush and detach the active named save (leaving for a server,
+	/// another save, or a backdrop world). Drains this frame's recorded
+	/// edits and flushes WITH the live overlay before closing — a
+	/// snapshot-based store (web) serializes from that overlay, and this
+	/// is its last chance to see it before the pipeline is replaced.
+	fn close_local_save(&mut self) {
+		let recorded = self.pipeline.take_recorded_edits();
+		if let Some(store) = self.world_store.as_mut() {
+			if self.in_local_save {
+				for (x, y, z, cell) in recorded {
+					store.append_edit(x, y, z, cell);
+				}
+				store.flush(self.pipeline.overlay());
+				store.close_world();
+			}
+		}
+		self.in_local_save = false;
+	}
+
+	/// Enter an opened named save: rebuild the world around its seed +
+	/// edit overlay, restore inventory and (when present) the player's
+	/// last position and view.
+	fn enter_local_world(&mut self, save: digblock_persist::WorldSave) {
+		log::info!(
+			"entering local world '{}' (seed {})",
+			save.meta.name,
+			save.meta.seed
+		);
+		self.player_names.clear();
+		self.seed = save.meta.seed;
+		let spawn = digblock_core::player::spawn(save.meta.seed);
+		self.spawn_pos = spawn;
+		let overlay: digblock_core::overlay::EditOverlay = save.edits.into_iter().collect();
+		self.pipeline = Pipeline::with_overlay(
+			save.meta.seed,
+			self.config.draw_dist,
+			self.config.workers,
+			overlay,
+		);
+		// Resume in place when the save carries a position (edits restore
+		// identically, so the spot the player stood on regenerates under
+		// them); a fresh save starts at the world spawn.
+		let start = save.player.map_or(spawn, |p| Vec3::from_array(p.pos));
+		self.player = Player::new(start);
+		self.camera.pos = start;
+		if let Some(p) = save.player {
+			self.camera.yaw_deg = p.yaw;
+			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
+		}
+		self.inventory = Inventory::from_wire(&save.inventory);
+		for (b, _) in self.inventory.iter_nonzero() {
+			self.hotbar.auto_assign(b);
+		}
+		self.reset_world_transients(start);
+		self.in_local_save = true;
+		self.player_save_accum = 0.0;
+		self.menu.on_world_entered();
+	}
+
+	/// Handle one menu world intent against the injected store.
+	fn handle_world_intent(&mut self, intent: crate::menu::WorldIntent) {
+		use crate::menu::WorldIntent;
+		match intent {
+			WorldIntent::Refresh => self.push_world_list(),
+			WorldIntent::Create { name } => {
+				// Same clock-derived seed as the startup backdrop (no
+				// `rand` — wasm cleanliness).
+				let nanos = web_time::SystemTime::now()
+					.duration_since(web_time::UNIX_EPOCH)
+					.map_or(0, |d| d.subsec_nanos());
+				let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+				let opened = self.world_store.as_mut().map(|store| {
+					store
+						.create_world(&name, seed)
+						.and_then(|meta| store.open_world(&meta.id))
+				});
+				match opened {
+					Some(Ok(save)) => {
+						self.close_local_save();
+						self.enter_local_world(save);
+					}
+					Some(Err(e)) => {
+						self.menu.set_worlds_status(e);
+						self.push_world_list();
+					}
+					None => {}
+				}
+			}
+			WorldIntent::Enter { id } => {
+				// Close the current save BEFORE opening the next (single
+				// active world per store).
+				self.close_local_save();
+				let opened = self.world_store.as_mut().map(|s| s.open_world(&id));
+				match opened {
+					Some(Ok(save)) => self.enter_local_world(save),
+					Some(Err(e)) => self.menu.set_worlds_status(e),
+					None => {}
+				}
+			}
+			WorldIntent::Delete { id } => {
+				if let Some(store) = self.world_store.as_mut() {
+					// The store drops the active world itself if this is it.
+					store.delete_world(&id);
+				}
+				self.push_world_list();
+			}
+		}
+	}
+
+	/// Send the store's world list to the menu, ages formatted.
+	fn push_world_list(&mut self) {
+		let Some(store) = self.world_store.as_mut() else {
+			return;
+		};
+		let now = web_time::SystemTime::now()
+			.duration_since(web_time::UNIX_EPOCH)
+			.map_or(0, |d| d.as_millis() as u64);
+		let rows = store
+			.list_worlds()
+			.into_iter()
+			.map(|w| crate::menu::WorldRow {
+				detail: if w.compatible {
+					age_label(now, w.last_played_ms)
+				} else {
+					"old version".into()
+				},
+				id: w.id,
+				name: w.name,
+				compatible: w.compatible,
+			})
+			.collect();
+		self.menu.set_world_list(rows);
 	}
 
 	/// Land a spawn teleport: hard-set the player and camera — a 200 ms
@@ -846,6 +1090,13 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(drain_deadline));
 		self.pending.maintain_ms = ms_since(t_maintain);
+		// Overlay-restored water resumes flowing (the client twin of the
+		// sim's ReadyColumn handling); server worlds have no overlay.
+		if self.net.is_none() {
+			for &(x, y, z) in &m.overlaid_water {
+				self.fluid.schedule_around(x, y, z);
+			}
+		}
 		let t_upload = web_time::Instant::now();
 		self.metrics.evicted += m.evicted.len() as u32;
 		if !m.evicted.is_empty() {
@@ -1515,11 +1766,39 @@ impl Game for Engine {
 				self.set_transport_with_token(transport, token);
 			}
 		}
+		for intent in self.menu.take_world_intents() {
+			self.handle_world_intent(intent);
+		}
 		if self.menu.take_disconnect() && self.net.take().is_some() {
 			self.pending_ack = None;
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
 			self.push_feed("Left the server.".into());
+			// With a world store, don't keep phantom-playing the server's
+			// seed: swap to a fresh backdrop and relock the startup menu so
+			// the player picks a save or a server.
+			if self.world_store.is_some() {
+				let nanos = web_time::SystemTime::now()
+					.duration_since(web_time::UNIX_EPOCH)
+					.map_or(0, |d| d.subsec_nanos());
+				let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+				self.seed = seed;
+				let spawn = digblock_core::player::spawn(seed);
+				self.spawn_pos = spawn;
+				self.pipeline = Pipeline::with_overlay(
+					seed,
+					self.config.draw_dist,
+					self.config.workers,
+					digblock_core::overlay::EditOverlay::default(),
+				);
+				self.player = Player::new(spawn);
+				self.camera.pos = spawn;
+				self.inventory = Inventory::default();
+				self.player_names.clear();
+				self.reset_world_transients(spawn);
+				self.in_local_save = false;
+				self.menu.on_left_server();
+			}
 		}
 		// Return to spawn: one shared 60s cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
@@ -1551,6 +1830,9 @@ impl Game for Engine {
 				}
 				let _ = services.cmd_tx.send(cmd);
 			}
+		}
+		if let Some(s) = self.menu.take_settings_change() {
+			self.apply_settings(s);
 		}
 
 		self.pump_net(dt);
@@ -1604,6 +1886,32 @@ impl Game for Engine {
 				let mut world = PipelineWorld(&mut self.pipeline);
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
+		}
+
+		// Named-save persistence, after every world mutation this frame
+		// (dig, place, fluid): forward recorded edits, throttle player
+		// snapshots, and give the store its bounded upkeep step. The
+		// backdrop world's recordings are drained and dropped.
+		let recorded = self.pipeline.take_recorded_edits();
+		if let Some(store) = self.world_store.as_mut() {
+			if self.in_local_save && self.net.is_none() {
+				for (x, y, z, cell) in recorded {
+					store.append_edit(x, y, z, cell);
+				}
+				self.player_save_accum += dt;
+				if self.player_save_accum >= 5.0 {
+					self.player_save_accum = 0.0;
+					store.save_player(
+						&self.inventory.to_wire(),
+						&digblock_persist::PlayerPersist {
+							pos: self.player.pos.to_array(),
+							yaw: self.camera.yaw_deg,
+							pitch: self.camera.pitch_deg,
+						},
+					);
+				}
+			}
+			store.maintain(self.pipeline.overlay());
 		}
 
 		if self.walking {
@@ -1812,6 +2120,26 @@ impl Game for Engine {
 		self.metrics.pause();
 		// One cheap synchronous send — honors the on_suspend contract.
 		self.emit(crate::audio::AudioCmd::Pause);
+		// Named-save save-point: drain any same-frame edits, snapshot the
+		// player, and flush — all synchronous by design (file fsync /
+		// localStorage put), honoring the cheap-and-synchronous contract.
+		let recorded = self.pipeline.take_recorded_edits();
+		if let Some(store) = self.world_store.as_mut() {
+			if self.in_local_save {
+				for (x, y, z, cell) in recorded {
+					store.append_edit(x, y, z, cell);
+				}
+				store.save_player(
+					&self.inventory.to_wire(),
+					&digblock_persist::PlayerPersist {
+						pos: self.player.pos.to_array(),
+						yaw: self.camera.yaw_deg,
+						pitch: self.camera.pitch_deg,
+					},
+				);
+			}
+			store.flush(self.pipeline.overlay());
+		}
 	}
 
 	fn on_resume(&mut self) {
@@ -1839,5 +2167,145 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
 		self.0.set_block(x, y, z, b).is_some()
+	}
+}
+
+#[cfg(test)]
+mod store_tests {
+	use super::*;
+	use std::cell::RefCell;
+	use std::rc::Rc;
+
+	/// Records WorldStore calls; open returns a save with one edit and a
+	/// player position.
+	#[derive(Default)]
+	struct Calls {
+		appended: Vec<(i32, i32, i32, u16)>,
+		saved_player: u32,
+		maintained: u32,
+		flushed: u32,
+		closed: u32,
+	}
+
+	struct MockStore(Rc<RefCell<Calls>>);
+
+	impl digblock_persist::WorldStore for MockStore {
+		fn list_worlds(&mut self) -> Vec<digblock_persist::WorldMeta> {
+			Vec::new()
+		}
+		fn create_world(
+			&mut self,
+			name: &str,
+			seed: f64,
+		) -> Result<digblock_persist::WorldMeta, String> {
+			Ok(digblock_persist::WorldMeta {
+				id: "w1".into(),
+				name: name.into(),
+				seed,
+				created_ms: 0,
+				last_played_ms: 0,
+				compatible: true,
+			})
+		}
+		fn delete_world(&mut self, _id: &str) {}
+		fn open_world(&mut self, id: &str) -> Result<digblock_persist::WorldSave, String> {
+			Ok(digblock_persist::WorldSave {
+				meta: digblock_persist::WorldMeta {
+					id: id.into(),
+					name: "W".into(),
+					seed: 7.0,
+					created_ms: 0,
+					last_played_ms: 0,
+					compatible: true,
+				},
+				edits: vec![((1, 100, 1), 0)],
+				inventory: vec![(3, 5)],
+				player: Some(digblock_persist::PlayerPersist {
+					pos: [1.5, 140.0, 2.5],
+					yaw: 90.0,
+					pitch: -10.0,
+				}),
+			})
+		}
+		fn append_edit(&mut self, x: i32, y: i32, z: i32, cell: u16) {
+			self.0.borrow_mut().appended.push((x, y, z, cell));
+		}
+		fn save_player(
+			&mut self,
+			_inventory: &[(u16, u32)],
+			_player: &digblock_persist::PlayerPersist,
+		) {
+			self.0.borrow_mut().saved_player += 1;
+		}
+		fn maintain(&mut self, _live: Option<&digblock_core::overlay::EditOverlay>) {
+			self.0.borrow_mut().maintained += 1;
+		}
+		fn flush(&mut self, _live: Option<&digblock_core::overlay::EditOverlay>) {
+			self.0.borrow_mut().flushed += 1;
+		}
+		fn close_world(&mut self) {
+			self.0.borrow_mut().closed += 1;
+		}
+	}
+
+	#[test]
+	fn create_enter_edits_and_snapshots_flow_to_store() {
+		let calls = Rc::new(RefCell::new(Calls::default()));
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0; // deterministic inline executor
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(MockStore(calls.clone())));
+
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+		assert!(engine.in_local_save, "entered the created world");
+		assert_eq!(engine.seed, 7.0, "world seed from the save");
+		assert_eq!(
+			engine.player.pos.to_array(),
+			[1.5, 140.0, 2.5],
+			"restored position"
+		);
+		assert!(engine.pipeline.overlay().is_some(), "overlay installed");
+
+		// Headless: pump_pipeline (render path) never runs, so generate
+		// the world directly until the edit's chunk is Ready.
+		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+		for _ in 0..10_000 {
+			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+
+		// A local edit + >5s of updates: the edit reaches the store and a
+		// player snapshot fires; maintain runs every frame.
+		let new = if engine.pipeline.block_at(1, 101, 1) == Some(BlockType::Stone) {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		engine
+			.pipeline
+			.set_block(1, 101, 1, new)
+			.expect("chunk ready for the test edit");
+		for _ in 0..400 {
+			engine.update(Duration::from_millis(16));
+		}
+		let c = calls.borrow();
+		assert!(c.maintained > 300, "store maintained per frame");
+		assert!(c.saved_player >= 1, "player snapshot fired after 5s");
+		assert!(
+			c.appended.contains(&(1, 101, 1, new as u16)),
+			"edit forwarded: {:?}",
+			c.appended
+		);
+		drop(c);
+
+		// Suspend: final snapshot + flush, synchronously.
+		engine.on_suspend();
+		let c = calls.borrow();
+		assert!(c.flushed >= 1, "suspend flushes");
+		assert!(c.saved_player >= 2, "suspend snapshots the player");
 	}
 }
