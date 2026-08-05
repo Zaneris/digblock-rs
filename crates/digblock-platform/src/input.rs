@@ -13,6 +13,10 @@ pub enum Key {
 	Space,
 	Shift,
 	F,
+	/// Inventory screen toggle.
+	I,
+	/// Return to spawn ("home").
+	H,
 	/// Chat open (multiplayer).
 	T,
 	/// Number row digit 0..=9 (hotbar slot selection; numpad excluded —
@@ -107,6 +111,8 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Space => Key::Space,
 		K::ShiftLeft | K::ShiftRight => Key::Shift,
 		K::KeyF => Key::F,
+		K::KeyI => Key::I,
+		K::KeyH => Key::H,
 		K::KeyT => Key::T,
 		K::Digit0 => Key::Digit(0),
 		K::Digit1 => Key::Digit(1),

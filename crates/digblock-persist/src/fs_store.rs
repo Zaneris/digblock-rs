@@ -30,6 +30,9 @@ struct MetaFile {
 #[serde(default)]
 struct StateFile {
 	inventory: Vec<(u16, u32)>,
+	/// Hotbar slots, core wire encoding; empty in pre-arrangement saves
+	/// (`serde(default)` keeps them parsing).
+	hotbar: Vec<u16>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -216,6 +219,7 @@ impl WorldStore for FsWorldStore {
 			},
 			edits,
 			inventory: state.inventory.clone(),
+			hotbar: state.hotbar.clone(),
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -244,10 +248,11 @@ impl WorldStore for FsWorldStore {
 		}
 	}
 
-	fn save_player(&mut self, inventory: &[(u16, u32)], player: &PlayerPersist) {
+	fn save_player(&mut self, inventory: &[(u16, u32)], hotbar: &[u16], player: &PlayerPersist) {
 		if let Some(active) = &mut self.active {
 			active.pending_state = Some(StateFile {
 				inventory: inventory.to_vec(),
+				hotbar: hotbar.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}
@@ -307,6 +312,17 @@ mod tests {
 		s.append_edit(20, 131, 5, 3);
 		s.save_player(
 			&[(3, 12)],
+			&[
+				3,
+				u16::MAX,
+				u16::MAX - 1,
+				u16::MAX,
+				u16::MAX,
+				u16::MAX,
+				u16::MAX,
+				u16::MAX,
+				u16::MAX,
+			],
 			&PlayerPersist {
 				pos: [1.0, 140.0, 2.0],
 				yaw: 90.0,
@@ -315,12 +331,15 @@ mod tests {
 		);
 		s.close_world();
 
-		// Reopen: edits (LWW), inventory, and player state all restore.
+		// Reopen: edits (LWW), inventory, hotbar arrangement, and player
+		// state all restore.
 		let save = s.open_world(&meta.id).unwrap();
 		let mut edits = save.edits.clone();
 		edits.sort();
 		assert_eq!(edits, vec![((5, 130, -2), 4), ((20, 131, 5), 3)]);
 		assert_eq!(save.inventory, vec![(3, 12)]);
+		assert_eq!(save.hotbar[0], 3);
+		assert_eq!(save.hotbar[2], u16::MAX - 1, "custom tool slot kept");
 		let p = save.player.unwrap();
 		assert_eq!(p.pos, [1.0, 140.0, 2.0]);
 		assert_eq!((p.yaw, p.pitch), (90.0, -10.0));
@@ -385,6 +404,27 @@ mod tests {
 		assert_eq!(save.edits.len(), 1, "journal intact");
 		assert!(save.inventory.is_empty());
 		assert!(save.player.is_none());
+		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	/// A pre-arrangement state.json (no `hotbar` field) parses and
+	/// surfaces an empty arrangement — the engine's auto-assign fallback.
+	#[test]
+	fn legacy_state_json_without_hotbar_parses() {
+		let (mut s, root) = store("legacy");
+		let meta = s.create_world("W", 6.0).unwrap();
+		s.open_world(&meta.id).unwrap();
+		s.append_edit(0, 100, 0, 1);
+		s.close_world();
+		std::fs::write(
+			root.join(&meta.id).join("state.json"),
+			br#"{"inventory":[[3,7]],"player":[[1.0,140.0,2.0],0.0,0.0]}"#,
+		)
+		.unwrap();
+		let save = s.open_world(&meta.id).unwrap();
+		assert_eq!(save.inventory, vec![(3, 7)]);
+		assert!(save.hotbar.is_empty(), "legacy save: no arrangement");
+		assert!(save.player.is_some());
 		let _ = std::fs::remove_dir_all(&root);
 	}
 }

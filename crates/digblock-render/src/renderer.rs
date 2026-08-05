@@ -96,17 +96,18 @@ pub struct FrameScene<'a> {
 	pub wide_vp: glam::Mat4,
 	pub wide_due: bool,
 	pub size: (u32, u32),
+	/// Whole-UI scale for this frame (device scale factor × window size).
+	pub ui_scale: f32,
 	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
 	/// every frame (tiny — no change detection).
 	pub players: &'a [[f32; 8]],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32, u32)],
-	pub menu: Option<&'a crate::menu::MenuView>,
 	/// Crosshair target for the highlight decal: (cell, dig progress);
 	/// `None` progress = idle outline.
 	pub target: Option<((i32, i32, i32), Option<f32>)>,
-	/// Hotbar HUD view; None hides the bar (menu open, bench).
-	pub hotbar: Option<&'a crate::hotbar::HotbarView>,
+	/// This frame's UI draw commands (HUD, screens), engine-built.
+	pub ui: &'a crate::ui::DrawList,
 	/// Chat input line while typing (multiplayer only).
 	pub chat: Option<crate::chat::ChatView<'a>>,
 	/// Remote-player name tags, already projected to screen pixels.
@@ -224,7 +225,7 @@ pub struct Renderer {
 	/// Target-block outline + dig-crack decal (scene pass).
 	highlight: crate::highlight::HighlightDraw,
 	/// Hotbar block icons (overlay pass, between the overlay's splits).
-	hotbar_icons: crate::hotbar::HotbarIcons,
+	ui_icons: crate::ui::icons::UiIcons,
 	/// Layout of `FrameTargets::water_bg` (water frame UBO + depth copy
 	/// + scene color + linear sampler): the water pipelines' group 0.
 	water_frame_bgl: wgpu::BindGroupLayout,
@@ -637,7 +638,7 @@ impl Renderer {
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
 			players: crate::players::RemotePlayersDraw::new(gpu, surface_format, &frame_bgl),
 			highlight: crate::highlight::HighlightDraw::new(gpu, surface_format, &water_frame_bgl),
-			hotbar_icons: crate::hotbar::HotbarIcons::new(gpu, surface_format, &materials_bgl),
+			ui_icons: crate::ui::icons::UiIcons::new(gpu, surface_format, &materials_bgl),
 			targets: None,
 			water_frame_bgl,
 			blit_bgl,
@@ -887,12 +888,12 @@ impl Renderer {
 			wide_vp,
 			wide_due,
 			size,
+			ui_scale,
 			players,
 			overlay,
 			feed,
-			menu,
 			target: highlight_target,
-			hotbar,
+			ui,
 			chat,
 			nametags,
 		} = *scene;
@@ -901,7 +902,6 @@ impl Renderer {
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
 		self.highlight.set_target(gpu, highlight_target);
-		let placed_slots = hotbar.map(|view| crate::hotbar::layout(size, view));
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
 			wide_refreshed: self.shadow.refresh_pending(wide_due),
@@ -924,15 +924,14 @@ impl Renderer {
 		self.overlay.prepare(
 			gpu,
 			size,
+			ui_scale,
+			ui,
 			overlay,
 			feed,
-			menu,
-			placed_slots.as_ref().map(|s| s.as_slice()),
 			chat.as_ref(),
 			nametags,
 		);
-		self.hotbar_icons
-			.prepare(gpu, size, placed_slots.as_ref().map(|s| s.as_slice()));
+		self.ui_icons.prepare(gpu, size, ui);
 		// Chunk bounding-sphere frustum cull against the four side planes.
 		let planes = side_planes(view_proj);
 		let in_frustum = |pos: &ChunkPos| -> bool { chunk_in_frustum(pos, &planes) };
@@ -1155,11 +1154,13 @@ impl Renderer {
 				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_OVERLAY)),
 				occlusion_query_set: None,
 			});
-			// Sandwich: overlay-below (slot backdrops) → block icons →
-			// overlay-above (counts, panel, feed, menu). One pass, one
-			// timer bracket.
+			// Sandwich: backdrops → main icons → content (counts, panel,
+			// feed, menu) → ghost icon → topmost ghost quads/text. One
+			// pass, one timer bracket; empty stages cost nothing.
 			self.overlay.draw_below(&mut pass);
-			self.hotbar_icons.draw(&mut pass, &self.materials_bg);
+			self.ui_icons.draw_main(&mut pass, &self.materials_bg);
+			self.overlay.draw_mid(&mut pass);
+			self.ui_icons.draw_ghost(&mut pass, &self.materials_bg);
 			self.overlay.draw_above(&mut pass);
 		}
 

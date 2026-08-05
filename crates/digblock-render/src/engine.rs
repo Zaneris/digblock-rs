@@ -15,6 +15,7 @@ use glam::{Vec2, Vec3};
 
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
+use crate::ui::screens::inventory::InvAction;
 
 pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
@@ -266,6 +267,22 @@ pub struct Engine {
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	size: (u32, u32),
+	/// Device pixels per logical pixel (shell-reported; 1.0 until told).
+	scale_factor: f32,
+	/// Whole-UI scale derived from `size` + `scale_factor` each time
+	/// either changes.
+	ui_scale: f32,
+	/// Per-frame UI draw commands (HUD, screens), rebuilt in `render`.
+	ui_dl: crate::ui::DrawList,
+	/// Hit regions from the same emission pass (hotbar slots double as
+	/// the inventory screen's drop targets).
+	ui_hits: crate::ui::HitMap<crate::ui::InvId>,
+	/// The drag-and-drop overflow inventory screen (I toggles).
+	inv_screen: crate::ui::screens::inventory::InvScreen,
+	/// H pressed in-game: merged with the menu's return-spawn request.
+	return_spawn_requested: bool,
+	/// Scratch for the grid snapshot (`iter_nonzero`), reused per frame.
+	grid_scratch: Vec<(digblock_core::block::BlockType, u32)>,
 	/// Startup/pause menu state (pure; overlay renders its view).
 	menu: crate::menu::Menu,
 	/// Chat input line (pure; overlay renders its view).
@@ -480,6 +497,13 @@ impl Engine {
 			bench_t: 0.0,
 			pending_uploads: std::collections::VecDeque::new(),
 			size: (1, 1),
+			scale_factor: 1.0,
+			ui_scale: 1.0,
+			ui_dl: crate::ui::DrawList::default(),
+			ui_hits: crate::ui::HitMap::default(),
+			inv_screen: Default::default(),
+			return_spawn_requested: false,
+			grid_scratch: Vec::new(),
 		}
 	}
 
@@ -763,6 +787,14 @@ impl Engine {
 			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
+		// Saved arrangement first (sanitizing decode), then auto-assign
+		// as the backstop: legacy saves get the old first-seen layout,
+		// and types the arrangement doesn't cover still land on the bar.
+		if let Ok(wire) =
+			<[u16; digblock_core::hotbar::HOTBAR_SLOTS]>::try_from(save.hotbar.as_slice())
+		{
+			self.hotbar = Hotbar::from_wire(&wire);
+		}
 		for (b, _) in self.inventory.iter_nonzero() {
 			self.hotbar.auto_assign(b);
 		}
@@ -1567,6 +1599,7 @@ impl Drop for Engine {
 impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
 		self.size = size;
+		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
 		self.build_renderer(gpu, surface_format);
 		log::info!(
 			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
@@ -1577,6 +1610,12 @@ impl Game for Engine {
 
 	fn resize(&mut self, _gpu: &Gpu, size: (u32, u32)) {
 		self.size = size;
+		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
+	}
+
+	fn set_scale_factor(&mut self, scale_factor: f32) {
+		self.scale_factor = scale_factor;
+		self.ui_scale = crate::ui::scale::ui_scale(self.size, scale_factor);
 	}
 
 	fn input(&mut self, event: InputEvent) {
@@ -1588,11 +1627,57 @@ impl Game for Engine {
 		// not leak (typing a name would also walk). FocusLost still clears
 		// held state.
 		if self.menu.is_open() {
+			// The menu can surface underneath the inventory (disconnect,
+			// leave-server) — the screen yields rather than stacking.
+			self.inv_screen.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 			} else {
-				self.menu.handle_input(&event, self.size);
+				self.menu.handle_input(&event, self.size, self.ui_scale);
+			}
+			return;
+		}
+		// Inventory open: cursor is free; drags go to the screen and the
+		// returned actions mutate the core hotbar here. I/Escape close
+		// (Escape is consumed — it must not also open the pause menu).
+		if self.inv_screen.is_open() {
+			match event {
+				// Focus loss abandons the drag but keeps the screen open
+				// (a cmd-tab shouldn't slam it shut — menu parity).
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.keys = HeldKeys::default();
+					self.touch.clear();
+					self.dig_held = false;
+					self.inv_screen.cancel_drag();
+				}
+				InputEvent::Key {
+					key: Key::I | Key::Escape,
+					pressed: true,
+				} => self.inv_screen.close(),
+				_ => {
+					self.grid_scratch.clear();
+					self.grid_scratch.extend(self.inventory.iter_nonzero());
+					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let style = crate::ui::Style::new(self.ui_scale);
+					let act = self.inv_screen.handle_input(
+						&event,
+						&self.ui_hits,
+						&style,
+						&self.grid_scratch,
+						&bar,
+					);
+					match act {
+						Some(InvAction::Assign { slot, block }) => {
+							let _ = self.hotbar.assign(slot, block);
+						}
+						Some(InvAction::SwapBar { a, b }) => self.hotbar.swap(a, b),
+						Some(InvAction::ClearBar { slot }) => {
+							let _ = self.hotbar.clear_slot(slot);
+						}
+						None => {}
+					}
+				}
 			}
 			return;
 		}
@@ -1658,6 +1743,20 @@ impl Game for Engine {
 					if pressed {
 						self.dig_held = false;
 						self.menu.open();
+					}
+				}
+				Key::I => {
+					if pressed {
+						self.keys = HeldKeys::default();
+						self.dig_held = false;
+						self.inv_screen.open();
+					}
+				}
+				// Home: same request the menu row raises; update() gates
+				// it on the shared cooldown.
+				Key::H => {
+					if pressed {
+						self.return_spawn_requested = true;
 					}
 				}
 				// Chat is multiplayer-only — there is no one to hear a
@@ -1807,7 +1906,14 @@ impl Game for Engine {
 		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
 		self.menu
 			.set_spawn_cooldown(self.spawn_cooldown.ceil() as u32);
-		if self.menu.take_return_spawn() && self.spawn_cooldown == 0.0 {
+		// The menu's Inventory row: the menu closed itself; the screen
+		// takes over the free cursor seamlessly.
+		if self.menu.take_inventory() {
+			self.inv_screen.open();
+		}
+		let spawn_requested =
+			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
+		if spawn_requested && self.spawn_cooldown == 0.0 {
 			self.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
 			match self.net.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
@@ -1903,6 +2009,7 @@ impl Game for Engine {
 					self.player_save_accum = 0.0;
 					store.save_player(
 						&self.inventory.to_wire(),
+						&self.hotbar.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
 							yaw: self.camera.yaw_deg,
@@ -1999,6 +2106,7 @@ impl Game for Engine {
 
 	fn render(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {
 		self.size = size;
+		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
 		// Remote players, sampled ~100 ms in the past between snapshots;
@@ -2065,16 +2173,38 @@ impl Game for Engine {
 		} else {
 			None
 		};
-		let menu_view = self
-			.menu
-			.is_open()
-			.then(|| self.menu.view(size, (self.time_secs * 2.0) as u32 % 2 == 0));
+		let menu_view = self.menu.is_open().then(|| {
+			self.menu
+				.view(size, self.ui_scale, (self.time_secs * 2.0) as u32 % 2 == 0)
+		});
 		// HUD state gates with the crosshair: hidden under the menu and in
 		// bench captures' default state comparability is preserved (bench
 		// never digs, hotbar renders its fixed default row).
 		let in_game = menu_view.is_none();
-		let hotbar_view =
-			in_game.then(|| crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory));
+		self.ui_dl.clear();
+		self.ui_hits.clear();
+		if let Some(view) = &menu_view {
+			view.emit(&mut self.ui_dl, &crate::ui::Style::new(self.ui_scale), size);
+		}
+		if in_game {
+			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+			self.grid_scratch.clear();
+			self.grid_scratch.extend(self.inventory.iter_nonzero());
+			let mut ui = crate::ui::Ui {
+				dl: &mut self.ui_dl,
+				hits: &mut self.ui_hits,
+				style: crate::ui::Style::new(self.ui_scale),
+			};
+			if self.inv_screen.is_open() {
+				// Screen first: its dim/panel sit under the bar's quads.
+				self.inv_screen.build(&mut ui, size, &self.grid_scratch);
+			} else {
+				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
+			}
+			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
+				crate::ui::InvId::Bar(i as u8)
+			});
+		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
@@ -2085,14 +2215,14 @@ impl Game for Engine {
 				wide_vp,
 				wide_due,
 				size,
+				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
 				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),
 				feed: &self.feed,
-				menu: menu_view.as_ref(),
 				target: highlight_target,
-				hotbar: hotbar_view.as_ref(),
+				ui: &self.ui_dl,
 				chat: (in_game && self.chat.is_open())
 					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),
 				nametags: &self.nametag_scratch,
@@ -2108,7 +2238,7 @@ impl Game for Engine {
 	}
 
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open()
+		!self.menu.is_open() && !self.inv_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
@@ -2131,6 +2261,7 @@ impl Game for Engine {
 				}
 				store.save_player(
 					&self.inventory.to_wire(),
+					&self.hotbar.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
 						yaw: self.camera.yaw_deg,
@@ -2182,6 +2313,9 @@ mod store_tests {
 	struct Calls {
 		appended: Vec<(i32, i32, i32, u16)>,
 		saved_player: u32,
+		saved_hotbar: Vec<u16>,
+		/// Arrangement `open_world` hands back (empty = legacy save).
+		open_hotbar: Vec<u16>,
 		maintained: u32,
 		flushed: u32,
 		closed: u32,
@@ -2220,6 +2354,7 @@ mod store_tests {
 				},
 				edits: vec![((1, 100, 1), 0)],
 				inventory: vec![(3, 5)],
+				hotbar: self.0.borrow().open_hotbar.clone(),
 				player: Some(digblock_persist::PlayerPersist {
 					pos: [1.5, 140.0, 2.5],
 					yaw: 90.0,
@@ -2233,9 +2368,12 @@ mod store_tests {
 		fn save_player(
 			&mut self,
 			_inventory: &[(u16, u32)],
+			hotbar: &[u16],
 			_player: &digblock_persist::PlayerPersist,
 		) {
-			self.0.borrow_mut().saved_player += 1;
+			let mut state = self.0.borrow_mut();
+			state.saved_player += 1;
+			state.saved_hotbar = hotbar.to_vec();
 		}
 		fn maintain(&mut self, _live: Option<&digblock_core::overlay::EditOverlay>) {
 			self.0.borrow_mut().maintained += 1;
@@ -2307,5 +2445,39 @@ mod store_tests {
 		let c = calls.borrow();
 		assert!(c.flushed >= 1, "suspend flushes");
 		assert!(c.saved_player >= 2, "suspend snapshots the player");
+	}
+
+	#[test]
+	fn saved_hotbar_arrangement_restores_and_round_trips() {
+		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
+
+		let calls = Rc::new(RefCell::new(Calls::default()));
+		// Custom arrangement: tool moved to slot 0, the inventory's block
+		// (id 3) parked in slot 4.
+		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		wire[0] = WIRE_TOOL;
+		wire[4] = 3;
+		calls.borrow_mut().open_hotbar = wire.to_vec();
+
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(MockStore(calls.clone())));
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+
+		let b3 = BlockType::try_from_id(3).unwrap();
+		assert_eq!(engine.hotbar.slots()[0], Some(HotbarItem::WaterTool));
+		assert_eq!(engine.hotbar.slots()[4], Some(HotbarItem::Block(b3)));
+		assert_eq!(
+			engine.hotbar.slots()[HOTBAR_SLOTS - 1],
+			None,
+			"auto-assign respects the saved layout (id 3 already placed)"
+		);
+
+		// Suspend hands the same arrangement back to the store.
+		engine.on_suspend();
+		assert_eq!(calls.borrow().saved_hotbar, wire.to_vec());
 	}
 }

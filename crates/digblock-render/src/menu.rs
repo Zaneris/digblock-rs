@@ -154,6 +154,9 @@ enum Act {
 	OpenMultiplayer,
 	LeaveServer,
 	ReturnSpawn,
+	/// Close the menu and open the inventory screen (engine drains
+	/// [`Menu::take_inventory`]).
+	OpenInventory,
 	JoinRow(usize),
 	Refresh,
 	OpenSettings,
@@ -210,6 +213,7 @@ pub struct Menu {
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
 	wants_return_spawn: bool,
+	wants_inventory: bool,
 	/// Live settings, edited on the Settings screen. `settings.name`
 	/// tracks the last *joined-with* name; the `name` field above is the
 	/// live edit buffer.
@@ -239,6 +243,7 @@ impl Menu {
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
 			wants_return_spawn: false,
+			wants_inventory: false,
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -285,6 +290,11 @@ impl Menu {
 
 	pub fn take_return_spawn(&mut self) -> bool {
 		std::mem::take(&mut self.wants_return_spawn)
+	}
+
+	/// The Inventory row was picked: the engine opens the screen.
+	pub fn take_inventory(&mut self) -> bool {
+		std::mem::take(&mut self.wants_inventory)
 	}
 
 	/// The full settings snapshot, once per change batch. The engine
@@ -432,14 +442,14 @@ impl Menu {
 
 	// ---- input ------------------------------------------------------------
 
-	pub fn handle_input(&mut self, event: &InputEvent, size: (u32, u32)) {
+	pub fn handle_input(&mut self, event: &InputEvent, size: (u32, u32), scale: f32) {
 		match *event {
 			InputEvent::Key { key, pressed } if pressed => self.handle_key(key),
 			InputEvent::Text { ch } => self.handle_text(ch),
 			InputEvent::CursorMoved { x, y } => {
 				self.cursor = (x, y);
 				// Hover moves the keyboard selection (single highlight).
-				if let Some(i) = self.act_index_at(x, y, size) {
+				if let Some(i) = self.act_index_at(x, y, size, scale) {
 					self.set_sel(i);
 				}
 			}
@@ -447,12 +457,14 @@ impl Menu {
 				button: MouseButton::Left,
 				pressed: true,
 			} => {
-				if let Some(i) = self.act_index_at(self.cursor.0, self.cursor.1, size) {
+				if let Some(i) = self.act_index_at(self.cursor.0, self.cursor.1, size, scale) {
 					let act = self.acts()[i].1;
 					// A click inside a slider's bar sets the value from the
 					// click fraction instead of "activating" the row.
 					if let Act::SettingRow(s) = act {
-						if let Some(frac) = self.bar_frac_at(self.cursor.0, self.cursor.1, size) {
+						if let Some(frac) =
+							self.bar_frac_at(self.cursor.0, self.cursor.1, size, scale)
+						{
 							self.set_setting_frac(s, frac);
 							return;
 						}
@@ -466,13 +478,13 @@ impl Menu {
 
 	/// If (x, y) lands inside a slider row's bar, the 0..=1 fraction along
 	/// it. Uses the same placed rects as rendering, so it can't drift.
-	fn bar_frac_at(&self, x: f32, y: f32, size: (u32, u32)) -> Option<f32> {
-		let view = self.view(size, false);
+	fn bar_frac_at(&self, x: f32, y: f32, size: (u32, u32), scale: f32) -> Option<f32> {
+		let view = self.view(size, scale, false);
 		let row = view.rows.iter().find(|r| {
 			let [rx, ry, rw, rh] = r.rect;
 			r.bar.is_some() && x >= rx && x < rx + rw && y >= ry && y < ry + rh
 		})?;
-		let [bx, _, bw, _] = bar_rect(row.rect);
+		let [bx, _, bw, _] = bar_rect(row.rect, scale);
 		(x >= bx && x < bx + bw).then(|| (x - bx) / bw)
 	}
 
@@ -655,6 +667,10 @@ impl Menu {
 				self.wants_return_spawn = true;
 				self.screen = None;
 			}
+			Act::OpenInventory => {
+				self.wants_inventory = true;
+				self.screen = None;
+			}
 			Act::Refresh => {
 				if let Some(Screen::Browser(b)) = &mut self.screen {
 					if !b.fetching {
@@ -791,6 +807,7 @@ impl Menu {
 				// store-less runs (scripted flows, no-injection paths).
 				if self.entered_world {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
+					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					if self.store_available && !self.connected {
 						acts.push((RowId::RootItem(5), Act::OpenWorlds));
 					}
@@ -850,27 +867,21 @@ impl Menu {
 		acts
 	}
 
-	fn act_index_at(&self, x: f32, y: f32, size: (u32, u32)) -> Option<usize> {
-		let view = self.view(size, false);
-		self.acts().iter().position(|(row_id, _)| {
-			view.rows
-				.iter()
-				.find(|r| r.id == Some(*row_id))
-				.is_some_and(|row| {
-					let [rx, ry, rw, rh] = row.rect;
-					x >= rx && x < rx + rw && y >= ry && y < ry + rh
-				})
-		})
+	fn act_index_at(&self, x: f32, y: f32, size: (u32, u32), scale: f32) -> Option<usize> {
+		let hit = self.view(size, scale, false).hits.hit(x, y)?;
+		self.acts().iter().position(|(row_id, _)| *row_id == hit)
 	}
 
 	/// Build the frame's view. `blink` drives the name-field caret.
-	pub fn view(&self, size: (u32, u32), blink: bool) -> MenuView {
-		const ROW_H: f32 = 28.0;
-		/// The panel never shrinks below this (short screens would jitter
-		/// as rows change) and grows to fit its widest row's text.
-		const MIN_PANEL_W: f32 = 560.0;
-		/// Minimum gap between a row's text and its right-aligned column.
-		const COL_GAP: f32 = 2.0 * crate::overlay::GLYPH_PX;
+	pub fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
+		let row_h = 28.0 * scale;
+		// The panel never shrinks below this (short screens would jitter
+		// as rows change) and grows to fit its widest row's text.
+		let min_panel_w = 560.0 * scale;
+		let glyph = crate::ui::scale::glyph_px(scale);
+		let pad_x = crate::ui::scale::text_pad_x(scale);
+		// Minimum gap between a row's text and its right-aligned column.
+		let col_gap = 2.0 * glyph;
 		let (w, h) = (size.0 as f32, size.1 as f32);
 		let y0 = (h * 0.18).max(8.0);
 		let mut y = y0;
@@ -879,19 +890,24 @@ impl Menu {
 		let mut specs: Vec<(RowSpec, f32)> = Vec::new();
 		let push = |specs: &mut Vec<(RowSpec, f32)>, y: &mut f32, spec: RowSpec| {
 			specs.push((spec, *y));
-			*y += ROW_H;
+			*y += row_h;
 		};
 
 		match &self.screen {
 			None => {}
 			Some(Screen::Root { .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("DIGBLOCK"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				if self.entered_world {
 					push(
 						&mut specs,
 						&mut y,
 						RowSpec::item(RowId::RootItem(0), "Back to Game"),
+					);
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::RootItem(6), "Inventory", "I"),
 					);
 					if self.store_available && !self.connected {
 						push(
@@ -938,7 +954,7 @@ impl Menu {
 						push(
 							&mut specs,
 							&mut y,
-							RowSpec::item(RowId::RootItem(3), "Return to Spawn"),
+							RowSpec::item_hint(RowId::RootItem(3), "Return to Spawn", "H"),
 						);
 					} else {
 						push(
@@ -956,7 +972,7 @@ impl Menu {
 					&mut y,
 					RowSpec::item(RowId::RootItem(4), "Settings"),
 				);
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
@@ -969,7 +985,7 @@ impl Menu {
 			}
 			Some(Screen::Settings { .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("SETTINGS"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				let st = &self.settings;
 				push(
 					&mut specs,
@@ -1010,7 +1026,7 @@ impl Menu {
 						},
 					),
 				);
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
@@ -1030,7 +1046,7 @@ impl Menu {
 					&mut y,
 					RowSpec::field(format!("name: {}{caret}", self.name)),
 				);
-				y += ROW_H * 0.25;
+				y += row_h * 0.25;
 				if b.fetching && b.rows.is_empty() {
 					push(&mut specs, &mut y, RowSpec::dim("fetching server list..."));
 				} else if b.rows.is_empty() {
@@ -1070,7 +1086,7 @@ impl Menu {
 				if let Some(status) = &b.status {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
-				y += ROW_H * 0.25;
+				y += row_h * 0.25;
 				push(
 					&mut specs,
 					&mut y,
@@ -1079,13 +1095,13 @@ impl Menu {
 			}
 			Some(Screen::Connecting { label, .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				push(&mut specs, &mut y, RowSpec::dim(label.clone()));
 				push(&mut specs, &mut y, RowSpec::dim("esc: cancel"));
 			}
 			Some(Screen::Worlds(w)) => {
 				push(&mut specs, &mut y, RowSpec::title("SINGLEPLAYER"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				if w.rows.is_empty() {
 					push(&mut specs, &mut y, RowSpec::dim("no worlds yet"));
 				}
@@ -1113,12 +1129,12 @@ impl Menu {
 				if let Some(status) = &w.status {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
-				y += ROW_H * 0.25;
+				y += row_h * 0.25;
 				push(&mut specs, &mut y, RowSpec::dim("enter opens, esc: back"));
 			}
 			Some(Screen::CreateWorld { name, .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("NEW WORLD"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				let caret = if blink { "_" } else { " " };
 				push(
 					&mut specs,
@@ -1131,7 +1147,7 @@ impl Menu {
 						color: C_WHITE,
 					},
 				);
-				y += ROW_H * 0.25;
+				y += row_h * 0.25;
 				push(
 					&mut specs,
 					&mut y,
@@ -1144,7 +1160,7 @@ impl Menu {
 					.get(*idx)
 					.map_or(("?".to_string(), true), |r| (r.name.clone(), r.compatible));
 				push(&mut specs, &mut y, RowSpec::title(&name));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				if compatible {
 					push(
 						&mut specs,
@@ -1172,7 +1188,7 @@ impl Menu {
 			Some(Screen::ConfirmDelete { prev, idx, .. }) => {
 				let name = prev.rows.get(*idx).map_or("?", |r| r.name.as_str());
 				push(&mut specs, &mut y, RowSpec::title("DELETE WORLD"));
-				y += ROW_H * 0.5;
+				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
@@ -1188,28 +1204,30 @@ impl Menu {
 
 		// Width to content: the widest row (text plus any right-aligned
 		// column or slider bar) fits with the overlay's own padding,
-		// clamped to the window; MIN_PANEL_W keeps short screens from
+		// clamped to the window; min_panel_w keeps short screens from
 		// looking cramped.
-		let text_w = |s: &str| s.len() as f32 * crate::overlay::GLYPH_PX;
+		let text_w = |s: &str| s.len() as f32 * glyph;
 		let content_w = specs
 			.iter()
 			.map(|(spec, _)| {
-				crate::overlay::TEXT_PAD_X * 2.0
+				pad_x * 2.0
 					+ text_w(&spec.text)
 					+ spec
 						.right
 						.as_ref()
-						.map_or(0.0, |(right, _)| COL_GAP + text_w(right))
-					+ spec.bar.map_or(0.0, |_| COL_GAP + BAR_W)
+						.map_or(0.0, |(right, _)| col_gap + text_w(right))
+					+ spec
+						.bar
+						.map_or(0.0, |_| col_gap + crate::ui::widgets::SLIDER_BAR_W * scale)
 			})
-			.fold(MIN_PANEL_W, f32::max);
-		let pw = content_w.min(w - 16.0);
-		let px = ((w - pw) / 2.0).max(8.0);
+			.fold(min_panel_w, f32::max);
+		let pw = content_w.min(w - 16.0 * scale);
+		let px = ((w - pw) / 2.0).max(8.0 * scale);
 		let selected_id = self.acts().get(self.current_sel()).map(|a| a.0);
 		let rows = specs
 			.into_iter()
 			.map(|(spec, ry)| PlacedRow {
-				rect: [px, ry, pw, ROW_H],
+				rect: [px, ry, pw, row_h],
 				highlight: spec.id.is_some() && spec.id == selected_id,
 				id: spec.id,
 				text: spec.text,
@@ -1219,9 +1237,18 @@ impl Menu {
 			})
 			.collect();
 
+		let pad = 12.0 * scale;
+		let rows: Vec<PlacedRow> = rows;
+		let mut hits = crate::ui::HitMap::default();
+		for row in &rows {
+			if let Some(id) = row.id {
+				hits.push(row.rect.into(), id);
+			}
+		}
 		MenuView {
-			panel: [px - 12.0, y0 - 12.0, pw + 24.0, (y - y0) + 24.0],
+			panel: [px - pad, y0 - pad, pw + pad * 2.0, (y - y0) + pad * 2.0],
 			rows,
+			hits,
 		}
 	}
 }
@@ -1241,21 +1268,11 @@ const SETTINGS_ROWS: [Setting; 4] = [
 	Setting::Ssr,
 ];
 
-/// Slider-bar geometry, shared by hit-testing (`bar_frac_at`) and the
-/// overlay's quads so they cannot drift.
-pub(crate) const BAR_W: f32 = 200.0;
-pub(crate) const BAR_H: f32 = 12.0;
-
-/// The bar's rect within a placed slider row (right-aligned, centered
-/// vertically).
-pub(crate) fn bar_rect(row: [f32; 4]) -> [f32; 4] {
-	let [x, y, w, h] = row;
-	[
-		x + w - crate::overlay::TEXT_PAD_X - BAR_W,
-		y + (h - BAR_H) / 2.0,
-		BAR_W,
-		BAR_H,
-	]
+/// The slider bar's rect within a placed row — the framework's
+/// [`crate::ui::widgets::slider_rect`], in this module's `[f32; 4]`
+/// vocabulary (shared by `bar_frac_at` and rendering, so no drift).
+pub(crate) fn bar_rect(row: [f32; 4], scale: f32) -> [f32; 4] {
+	crate::ui::widgets::slider_rect(row.into(), scale).arr()
 }
 
 fn snap_vol(v: f32, dir: i32) -> f32 {
@@ -1288,6 +1305,16 @@ impl RowSpec {
 			id: Some(id),
 			text: t.into(),
 			right: None,
+			bar: None,
+			color: C_WHITE,
+		}
+	}
+	/// An item with a right-aligned dim keyboard hint ("I", "H", ...).
+	fn item_hint(id: RowId, t: &str, hint: &str) -> Self {
+		Self {
+			id: Some(id),
+			text: t.into(),
+			right: Some((hint.into(), C_DIM)),
 			bar: None,
 			color: C_WHITE,
 		}
@@ -1348,6 +1375,40 @@ pub struct MenuView {
 	/// Backdrop rect enclosing all rows.
 	pub panel: [f32; 4],
 	pub rows: Vec<PlacedRow>,
+	/// Selectable rows' rects by id, filled by the same layout pass —
+	/// hit-testing and rendering share one geometry source.
+	pub hits: crate::ui::HitMap<RowId>,
+}
+
+impl MenuView {
+	/// Emit the menu into the frame's draw list: full-screen dim, panel
+	/// backdrop, then rows through the framework's row widget.
+	pub fn emit(&self, dl: &mut crate::ui::DrawList, style: &crate::ui::Style, size: (u32, u32)) {
+		use crate::ui::{widgets, Layer, Rect};
+		const MENU_DIM: u32 = 0xA0000000;
+		const BG: u32 = 0x90000000;
+		dl.quad(
+			Layer::Content,
+			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
+			MENU_DIM,
+		);
+		widgets::panel(dl, Layer::Content, self.panel.into(), BG);
+		for row in &self.rows {
+			widgets::row(
+				dl,
+				style,
+				Layer::Content,
+				row.rect.into(),
+				widgets::RowContent {
+					text: &row.text,
+					right: row.right.as_ref().map(|(s, c)| (s.as_str(), *c)),
+					bar: row.bar,
+					color: row.color,
+					highlight: row.highlight,
+				},
+			);
+		}
+	}
 }
 
 #[cfg(test)]
@@ -1380,23 +1441,86 @@ mod tests {
 		menu.handle_key(Key::Enter);
 	}
 
+	/// The in-game root offers Inventory (hint "I") and Return to Spawn
+	/// (hint "H"); picking Inventory raises the intent and closes.
+	#[test]
+	fn inventory_row_raises_intent_and_hotkey_hints_show() {
+		let mut menu = Menu::new(true, named("ted"), None);
+		assert!(
+			!menu
+				.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.any(|r| r.text == "Inventory"),
+			"no inventory row before entering a world"
+		);
+		menu.handle_key(Key::Enter); // Play Local
+		menu.open();
+		let view = menu.view(SIZE, 1.0, false);
+		let hint = |name: &str| {
+			view.rows
+				.iter()
+				.find(|r| r.text == name)
+				.and_then(|r| r.right.as_ref())
+				.map(|(s, _)| s.as_str())
+		};
+		assert_eq!(hint("Inventory"), Some("I"));
+		assert_eq!(hint("Return to Spawn"), Some("H"));
+
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Enter);
+		assert!(menu.take_inventory());
+		assert!(!menu.take_inventory(), "intent is one-shot");
+		assert!(!menu.is_open(), "menu closed for the screen");
+	}
+
+	/// The view emits through the framework: dim + panel + one text
+	/// command per row (all Content layer), and the hit map built by the
+	/// same pass resolves a row's center to its id.
+	#[test]
+	fn view_emits_draw_commands_and_hit_map_agrees() {
+		use crate::ui::draw::{Cmd, Layer};
+		let menu = Menu::new(true, named("ted"), None);
+		let view = menu.view(SIZE, 1.0, false);
+		let mut dl = crate::ui::DrawList::default();
+		view.emit(&mut dl, &crate::ui::Style::new(1.0), SIZE);
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		let texts: Vec<&str> = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Text { range, .. } => Some(&arena[range.0 as usize..range.1 as usize]),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(texts.len(), view.rows.len(), "one text per row");
+		assert!(texts.contains(&"DIGBLOCK"));
+		// Dim + panel quads lead the layer.
+		assert!(matches!(cmds[0], Cmd::Quad { .. }) && matches!(cmds[1], Cmd::Quad { .. }));
+
+		// Hit map: a selectable row's center resolves to its id.
+		let row = view.rows.iter().find(|r| r.id.is_some()).unwrap();
+		let [x, y, w, h] = row.rect;
+		assert_eq!(view.hits.hit(x + w / 2.0, y + h / 2.0), row.id);
+		assert_eq!(view.hits.hit(1.0, 1.0), None, "outside the panel");
+	}
+
 	/// The panel sizes itself to its widest row: no screen may lay out
 	/// text (plus any right-aligned column) past the row edge — the
 	/// browser's hint line used to overflow the old fixed 560px width.
 	#[test]
 	fn panel_fits_every_row() {
 		let check = |menu: &Menu| {
-			let view = menu.view(SIZE, false);
+			let view = menu.view(SIZE, 1.0, false);
 			let [px, _, pw, _] = view.panel;
 			for row in &view.rows {
 				let [rx, _, rw, _] = row.rect;
-				let mut need = crate::overlay::TEXT_PAD_X * 2.0
-					+ row.text.len() as f32 * crate::overlay::GLYPH_PX;
+				let mut need = crate::ui::scale::text_pad_x(1.0) * 2.0
+					+ row.text.len() as f32 * crate::ui::scale::glyph_px(1.0);
 				if let Some((right, _)) = &row.right {
-					need += right.len() as f32 * crate::overlay::GLYPH_PX;
+					need += right.len() as f32 * crate::ui::scale::glyph_px(1.0);
 				}
 				if row.bar.is_some() {
-					need += BAR_W;
+					need += crate::ui::widgets::SLIDER_BAR_W;
 				}
 				assert!(
 					need <= rw,
@@ -1480,7 +1604,7 @@ mod tests {
 	fn startup_menu_locks_until_first_world() {
 		let mut menu = Menu::new(true, named("ted"), None);
 		// No Return to Spawn row (not even dim), and Escape is a no-op.
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(!view.rows.iter().any(|r| r.text.contains("Return to Spawn")));
 		menu.handle_key(Key::Escape);
 		assert!(menu.is_open(), "Escape must not dismiss the startup menu");
@@ -1489,7 +1613,7 @@ mod tests {
 		menu.handle_key(Key::Enter);
 		assert!(!menu.take_return_spawn(), "Enter was Play Local, not spawn");
 		menu.open();
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text.contains("Return to Spawn")));
 		assert!(view.rows.iter().any(|r| r.text.contains("Back to Game")));
 		menu.handle_key(Key::Escape);
@@ -1513,7 +1637,7 @@ mod tests {
 			server_id: "s2".into(),
 			ms: Some(34),
 		});
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text.contains("Alpha")));
 		assert!(view
 			.rows
@@ -1532,7 +1656,7 @@ mod tests {
 		}
 		// Failure lands back in the browser with the reason shown.
 		menu.on_net_failed("token rejected");
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text.contains("token rejected")));
 		assert!(
 			view.rows.iter().any(|r| r.text.contains("Beta")),
@@ -1553,7 +1677,7 @@ mod tests {
 				menu.take_commands().is_empty(),
 				"join with {bad:?} not blocked"
 			);
-			let view = menu.view(SIZE, false);
+			let view = menu.view(SIZE, 1.0, false);
 			assert!(view.rows.iter().any(|r| r.text.contains("3-10 chars")));
 		}
 	}
@@ -1586,14 +1710,14 @@ mod tests {
 		}
 		menu.handle_key(Key::Backspace); // drop the trailing x
 		assert!(menu
-			.view(SIZE, false)
+			.view(SIZE, 1.0, false)
 			.rows
 			.iter()
 			.any(|r| r.text.contains("name: ted_")));
 		for _ in 0..100 {
 			menu.handle_text('x');
 		}
-		let long = menu.view(SIZE, true);
+		let long = menu.view(SIZE, 1.0, true);
 		let name_row = long
 			.rows
 			.iter()
@@ -1616,7 +1740,8 @@ mod tests {
 
 		// Second run: cancel instead.
 		menu.open();
-		menu.handle_key(Key::Down); // Multiplayer now that connected=false... still item 1
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Multiplayer
 		menu.handle_key(Key::Enter);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
 		menu.handle_key(Key::Enter);
@@ -1624,7 +1749,7 @@ mod tests {
 		menu.handle_key(Key::Escape); // cancel connect
 		assert!(menu.take_disconnect());
 		assert!(menu
-			.view(SIZE, false)
+			.view(SIZE, 1.0, false)
 			.rows
 			.iter()
 			.any(|r| r.text.contains("cancelled")));
@@ -1635,20 +1760,21 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_services_available();
 		// Click "Multiplayer" (second selectable row).
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		let mp_row = view
 			.rows
 			.iter()
 			.find(|r| r.id == Some(RowId::RootItem(1)))
 			.unwrap();
 		let (cx, cy) = (mp_row.rect[0] + 5.0, mp_row.rect[1] + 5.0);
-		menu.handle_input(&InputEvent::CursorMoved { x: cx, y: cy }, SIZE);
+		menu.handle_input(&InputEvent::CursorMoved { x: cx, y: cy }, SIZE, 1.0);
 		menu.handle_input(
 			&InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
 			},
 			SIZE,
+			1.0,
 		);
 		assert!(matches!(
 			menu.take_commands().as_slice(),
@@ -1661,10 +1787,11 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_connected(true);
 		let acts = menu.acts();
-		// Back to Game + Leave Server + Return to Spawn + Settings (no
-		// services).
-		assert_eq!(acts.len(), 4);
-		menu.handle_key(Key::Down);
+		// Back to Game + Inventory + Leave Server + Return to Spawn +
+		// Settings (no services).
+		assert_eq!(acts.len(), 5);
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Leave Server
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_disconnect());
 		assert!(!menu.is_open());
@@ -1675,9 +1802,10 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.handle_key(Key::Enter); // Play Local: the row now exists
 		menu.open();
-		// Ready: the row after Back to Game (no services); activating raises
-		// the intent and closes the menu.
-		menu.handle_key(Key::Down);
+		// Ready: after Back to Game and Inventory (no services);
+		// activating raises the intent and closes the menu.
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_return_spawn());
 		assert!(!menu.is_open());
@@ -1690,15 +1818,16 @@ mod tests {
 			!acts.iter().any(|(id, _)| *id == RowId::RootItem(3)),
 			"greyed spawn row is not an act"
 		);
-		assert_eq!(acts.len(), 2, "Back to Game + Settings");
-		let view = menu.view(SIZE, false);
+		assert_eq!(acts.len(), 3, "Back to Game + Inventory + Settings");
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
 			.rows
 			.iter()
 			.any(|r| r.text.contains("Return to Spawn (42s)")));
-		// Down skips the greyed row entirely (lands on Settings): no
-		// spawn intent is ever raised.
-		menu.handle_key(Key::Down);
+		// Down past Inventory skips the greyed row entirely (lands on
+		// Settings): no spawn intent is ever raised.
+		menu.handle_key(Key::Down); // Inventory
+		menu.handle_key(Key::Down); // Settings (greyed spawn skipped)
 		menu.handle_key(Key::Enter);
 		assert!(!menu.take_return_spawn());
 		menu.handle_key(Key::Escape); // out of Settings
@@ -1709,7 +1838,7 @@ mod tests {
 		// Cooldown over: selectable again.
 		menu.open();
 		menu.set_spawn_cooldown(0);
-		assert_eq!(menu.acts().len(), 3);
+		assert_eq!(menu.acts().len(), 4, "spawn row is back");
 	}
 
 	fn open_settings(menu: &mut Menu) {
@@ -1762,7 +1891,7 @@ mod tests {
 		// Escape returns to Root; the values held.
 		menu.handle_key(Key::Escape);
 		open_settings(&mut menu);
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
 			.rows
 			.iter()
@@ -1777,24 +1906,25 @@ mod tests {
 	fn settings_bar_click_sets_snapped_value() {
 		let mut menu = Menu::new(true, Settings::default(), None);
 		open_settings(&mut menu);
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		let row = view
 			.rows
 			.iter()
 			.find(|r| r.id == Some(RowId::SettingsRow(0)))
 			.expect("draw slider row");
-		let [bx, by, bw, bh] = bar_rect(row.rect);
+		let [bx, by, bw, bh] = bar_rect(row.rect, 1.0);
 
 		// Click at 50% of the bar: snapped to the step grid around the
 		// range midpoint (10..=32 -> 21 -> snaps to 20 or 22).
 		let (cx, cy) = (bx + bw * 0.5, by + bh * 0.5);
-		menu.handle_input(&InputEvent::CursorMoved { x: cx, y: cy }, SIZE);
+		menu.handle_input(&InputEvent::CursorMoved { x: cx, y: cy }, SIZE, 1.0);
 		menu.handle_input(
 			&InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
 			},
 			SIZE,
+			1.0,
 		);
 		let s = menu
 			.take_settings_change()
@@ -1803,26 +1933,28 @@ mod tests {
 		assert_eq!((s.draw_dist - DRAW_MIN) % DRAW_STEP, 0);
 
 		// Click at the far left end: the minimum.
-		menu.handle_input(&InputEvent::CursorMoved { x: bx, y: cy }, SIZE);
+		menu.handle_input(&InputEvent::CursorMoved { x: bx, y: cy }, SIZE, 1.0);
 		menu.handle_input(
 			&InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
 			},
 			SIZE,
+			1.0,
 		);
 		assert_eq!(menu.take_settings_change().unwrap().draw_dist, DRAW_MIN);
 
 		// A click on the row but OUTSIDE the bar leaves the value alone
 		// (sliders don't "activate").
 		let (lx, ly) = (row.rect[0] + 5.0, row.rect[1] + 5.0);
-		menu.handle_input(&InputEvent::CursorMoved { x: lx, y: ly }, SIZE);
+		menu.handle_input(&InputEvent::CursorMoved { x: lx, y: ly }, SIZE, 1.0);
 		menu.handle_input(
 			&InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
 			},
 			SIZE,
+			1.0,
 		);
 		assert!(menu.take_settings_change().is_none());
 	}
@@ -1886,7 +2018,7 @@ mod tests {
 	fn store_replaces_play_local_until_entered() {
 		let mut menu = Menu::new(true, Settings::default(), None);
 		menu.set_store_available();
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
 		assert!(!view.rows.iter().any(|r| r.text == "Play Local"));
 		// Enter opens the world list, not the game.
@@ -1901,7 +2033,7 @@ mod tests {
 		menu.on_world_entered();
 		assert!(!menu.is_open());
 		menu.open();
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text == "Back to Game"));
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
 	}
@@ -2004,7 +2136,7 @@ mod tests {
 		// Locked again: Escape can't dismiss, no Back to Game.
 		menu.handle_key(Key::Escape);
 		assert!(menu.is_open());
-		let view = menu.view(SIZE, false);
+		let view = menu.view(SIZE, 1.0, false);
 		assert!(!view.rows.iter().any(|r| r.text == "Back to Game"));
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
 	}

@@ -20,6 +20,7 @@ mod shadow;
 mod sky;
 mod spray;
 mod texture;
+pub mod ui;
 mod water;
 mod water_audio;
 

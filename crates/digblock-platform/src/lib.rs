@@ -32,6 +32,11 @@ pub struct Gpu {
 pub trait Game: 'static {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32));
 	fn resize(&mut self, gpu: &Gpu, size: (u32, u32));
+	/// Device pixels per logical pixel, for UI scaling. Reported once
+	/// after window creation and again on every OS change (monitor hop,
+	/// browser zoom). Sizes stay physical everywhere; default ignores it
+	/// (bench/screenshot/drill paths are unaffected).
+	fn set_scale_factor(&mut self, _scale_factor: f32) {}
 	fn input(&mut self, event: InputEvent);
 	/// Reports how long the swapchain acquire (vsync wait) took, just
 	/// before `update()`. Metrics facility; default ignores it.

@@ -437,6 +437,7 @@ impl<G: Game> App<G> {
 		el: &ActiveEventLoop,
 	) {
 		Self::register_device_callbacks(&gpu.device, &self.device_lost);
+		self.game.set_scale_factor(window.scale_factor() as f32);
 		self.game
 			.init(&gpu, config.format, (config.width, config.height));
 		let format = config.format;
@@ -500,7 +501,8 @@ impl<G: Game> App<G> {
 		});
 		let (surface, config) = create_surface(&s.gpu, window.clone(), self.options.no_vsync);
 		// Engine pipelines/buffers are untouched — the Device survived.
-		// Only notify about a possible size change while backgrounded.
+		// Only notify about a possible size/scale change while backgrounded.
+		self.game.set_scale_factor(window.scale_factor() as f32);
 		self.game.resize(&s.gpu, (config.width, config.height));
 		self.game.on_resume();
 		let format = config.format;
@@ -873,6 +875,12 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				}
 			}
 			WindowEvent::Resized(size) => self.reconfigure(size.width, size.height),
+			// A Resized with the new physical size follows when the size
+			// actually changed; UI scale is recomputed per frame, so no
+			// reconfigure is needed here.
+			WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+				self.game.set_scale_factor(scale_factor as f32);
+			}
 			WindowEvent::CloseRequested => {
 				self.game.on_suspend();
 				el.exit();

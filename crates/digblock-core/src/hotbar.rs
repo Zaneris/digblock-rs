@@ -9,6 +9,11 @@ use crate::block::BlockType;
 
 pub const HOTBAR_SLOTS: usize = 9;
 
+/// Wire/persist encoding of a slot: block ids are themselves, plus two
+/// sentinels well above any real id (ids are 10-bit).
+pub const WIRE_EMPTY: u16 = u16::MAX;
+pub const WIRE_TOOL: u16 = u16::MAX - 1;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
@@ -72,6 +77,81 @@ impl Hotbar {
 		}
 	}
 
+	/// Put `b` in `slot` (an inventory-screen drop). Move-not-duplicate:
+	/// if `b` already sits elsewhere on the bar the two slots swap, so a
+	/// type never appears twice. Refused (false) when the target holds
+	/// the WaterTool — the tool can only be displaced by a bar-to-bar
+	/// swap, never replaced from the grid.
+	pub fn assign(&mut self, slot: usize, b: BlockType) -> bool {
+		if slot >= HOTBAR_SLOTS || self.slots[slot] == Some(HotbarItem::WaterTool) {
+			return false;
+		}
+		let item = Some(HotbarItem::Block(b));
+		if let Some(prev) = self.slots.iter().position(|s| *s == item) {
+			self.slots.swap(prev, slot);
+		} else {
+			self.slots[slot] = item;
+		}
+		true
+	}
+
+	/// Swap two slots (a bar-to-bar drag; the WaterTool participates).
+	pub fn swap(&mut self, a: usize, b: usize) {
+		if a < HOTBAR_SLOTS && b < HOTBAR_SLOTS {
+			self.slots.swap(a, b);
+		}
+	}
+
+	/// Unassign a slot (counts are untouched — they live in the
+	/// inventory). Refused (false) for the WaterTool: it stays on the bar.
+	pub fn clear_slot(&mut self, slot: usize) -> bool {
+		if slot >= HOTBAR_SLOTS || self.slots[slot] == Some(HotbarItem::WaterTool) {
+			return false;
+		}
+		self.slots[slot] = None;
+		true
+	}
+
+	pub fn to_wire(&self) -> [u16; HOTBAR_SLOTS] {
+		self.slots.map(|s| match s {
+			None => WIRE_EMPTY,
+			Some(HotbarItem::WaterTool) => WIRE_TOOL,
+			Some(HotbarItem::Block(b)) => b as u16,
+		})
+	}
+
+	/// Sanitizing decode of a persisted arrangement: unknown ids turn
+	/// into empty slots, a duplicated block keeps its first slot, and
+	/// exactly one WaterTool is enforced (a missing tool is restored to
+	/// the last empty slot, else the last slot). Hostile or stale input
+	/// always yields a valid bar.
+	pub fn from_wire(wire: &[u16; HOTBAR_SLOTS]) -> Self {
+		let mut hb = Self::new();
+		hb.slots = [None; HOTBAR_SLOTS];
+		for (i, &w) in wire.iter().enumerate() {
+			let item = match w {
+				WIRE_EMPTY => continue,
+				WIRE_TOOL => HotbarItem::WaterTool,
+				id => match BlockType::try_from_id(id) {
+					Some(b) => HotbarItem::Block(b),
+					None => continue,
+				},
+			};
+			if !hb.slots.contains(&Some(item)) {
+				hb.slots[i] = Some(item);
+			}
+		}
+		if !hb.slots.contains(&Some(HotbarItem::WaterTool)) {
+			let last_free = hb
+				.slots
+				.iter()
+				.rposition(|s| s.is_none())
+				.unwrap_or(HOTBAR_SLOTS - 1);
+			hb.slots[last_free] = Some(HotbarItem::WaterTool);
+		}
+		hb
+	}
+
 	/// Number-key selection: digits 1..=9 map to slots 0..=8.
 	pub fn select_digit(&mut self, digit: u8) {
 		if (1..=HOTBAR_SLOTS as u8).contains(&digit) {
@@ -131,6 +211,81 @@ mod tests {
 			Some(HotbarItem::WaterTool),
 			"tool survives"
 		);
+	}
+
+	#[test]
+	fn assign_moves_instead_of_duplicating() {
+		let mut h = Hotbar::new();
+		h.auto_assign(B::Dirt); // slot 0
+		h.auto_assign(B::Stone); // slot 1
+
+		// Fresh type lands where dropped, replacing what was there.
+		assert!(h.assign(1, B::Sand));
+		assert_eq!(h.slots()[1], Some(HotbarItem::Block(B::Sand)));
+
+		// Already-assigned type MOVES: slots swap, no duplicate.
+		assert!(h.assign(1, B::Dirt));
+		assert_eq!(h.slots()[1], Some(HotbarItem::Block(B::Dirt)));
+		assert_eq!(h.slots()[0], Some(HotbarItem::Block(B::Sand)));
+		let dirt_count = h
+			.slots()
+			.iter()
+			.filter(|s| **s == Some(HotbarItem::Block(B::Dirt)))
+			.count();
+		assert_eq!(dirt_count, 1);
+
+		// Dropping a type onto its own slot is a no-op success.
+		assert!(h.assign(1, B::Dirt));
+		assert_eq!(h.slots()[1], Some(HotbarItem::Block(B::Dirt)));
+	}
+
+	#[test]
+	fn water_tool_is_immovable_except_by_swap() {
+		let mut h = Hotbar::new();
+		let tool = HOTBAR_SLOTS - 1;
+		assert!(!h.assign(tool, B::Dirt), "grid drop onto the tool refused");
+		assert!(!h.clear_slot(tool), "tool cannot be unassigned");
+		assert_eq!(h.slots()[tool], Some(HotbarItem::WaterTool));
+
+		h.swap(tool, 0); // bar-to-bar drag carries the tool
+		assert_eq!(h.slots()[0], Some(HotbarItem::WaterTool));
+		assert!(!h.clear_slot(0), "still protected at its new home");
+		assert!(h.clear_slot(tool), "the vacated slot clears fine");
+	}
+
+	#[test]
+	fn wire_round_trip_and_hostile_decode() {
+		let mut h = Hotbar::new();
+		h.auto_assign(B::Dirt);
+		h.auto_assign(B::Stone);
+		h.swap(HOTBAR_SLOTS - 1, 4); // custom tool position survives
+		let wire = h.to_wire();
+		let back = Hotbar::from_wire(&wire);
+		assert_eq!(back.slots(), h.slots());
+
+		// Hostile input: unknown id, duplicate block, duplicate tool.
+		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		wire[0] = 9999; // unknown → empty
+		wire[1] = B::Dirt as u16;
+		wire[2] = B::Dirt as u16; // dupe → first wins
+		wire[3] = WIRE_TOOL;
+		wire[4] = WIRE_TOOL; // dupe tool → dropped
+		let hb = Hotbar::from_wire(&wire);
+		assert_eq!(hb.slots()[0], None);
+		assert_eq!(hb.slots()[1], Some(HotbarItem::Block(B::Dirt)));
+		assert_eq!(hb.slots()[2], None);
+		assert_eq!(hb.slots()[3], Some(HotbarItem::WaterTool));
+		assert_eq!(hb.slots()[4], None);
+
+		// Missing tool is restored to the last empty slot.
+		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		wire[0] = B::Stone as u16;
+		let hb = Hotbar::from_wire(&wire);
+		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
+
+		// Tool restoration with a full-of-blocks tail still lands somewhere.
+		let all = Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS]);
+		assert!(all.slots().contains(&Some(HotbarItem::WaterTool)));
 	}
 
 	#[test]

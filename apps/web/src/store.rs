@@ -32,6 +32,8 @@ struct MetaEntry {
 #[serde(default)]
 struct StateFile {
 	inventory: Vec<(u16, u32)>,
+	/// Hotbar slots, core wire encoding; empty in pre-arrangement saves.
+	hotbar: Vec<u16>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -273,6 +275,7 @@ impl WorldStore for LocalStorageWorldStore {
 			},
 			edits,
 			inventory: state.inventory,
+			hotbar: state.hotbar,
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -286,10 +289,11 @@ impl WorldStore for LocalStorageWorldStore {
 		}
 	}
 
-	fn save_player(&mut self, inventory: &[(u16, u32)], player: &PlayerPersist) {
+	fn save_player(&mut self, inventory: &[(u16, u32)], hotbar: &[u16], player: &PlayerPersist) {
 		if let Some(active) = &mut self.active {
 			active.pending_state = Some(StateFile {
 				inventory: inventory.to_vec(),
+				hotbar: hotbar.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}

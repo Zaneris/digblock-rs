@@ -13,13 +13,11 @@ use crate::font;
 /// Frames shown in the frame-time graph.
 pub const GRAPH_FRAMES: usize = 120;
 
-const TEXT_SCALE: f32 = 2.0; // 8px glyphs → 16px on screen
-/// On-screen glyph advance — menu.rs measures row text with it so the
-/// panel can size itself to content.
-pub(crate) const GLYPH_PX: f32 = font::GLYPH_W as f32 * TEXT_SCALE;
-/// Horizontal inset between a menu row's edge and its text; shared with
-/// menu.rs for the same reason.
-pub(crate) const TEXT_PAD_X: f32 = 8.0;
+use crate::ui::scale::{glyph_px, FIXED_GLYPH_PX};
+
+// Logical bases, multiplied by the frame's ui_scale where a surface
+// scales. The debug panel deliberately uses them raw (a diagnostic, not
+// UI — small and dense is a feature).
 const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
@@ -62,13 +60,16 @@ pub struct Overlay {
 	vertex_buf: wgpu::Buffer,
 	verts: Vec<OverlayVertex>,
 	vert_count: u32,
-	/// Vertex index splitting the buffer into below-icons (crosshair,
-	/// hotbar slot backgrounds) and above-icons (text, panel, feed,
-	/// menu) ranges — the hotbar icon pipeline draws between the two.
-	/// Equal to `vert_count` when there is no hotbar, so frames without
-	/// one behave exactly as before the split existed.
-	split_vert: u32,
+	/// Vertex indices splitting the buffer into three ranges: below the
+	/// main icons (crosshair + draw-list Backdrop), the content band
+	/// (draw-list Content + legacy text surfaces), and above the ghost
+	/// icon (draw-list Ghost). The icon pipeline's main and ghost
+	/// stages draw between them. Empty ranges cost nothing.
+	splits: [u32; 2],
 	line_scratch: String,
+	/// This frame's UI scale and derived glyph size, set by `prepare`.
+	scale: f32,
+	glyph: f32,
 }
 
 impl Overlay {
@@ -229,8 +230,10 @@ impl Overlay {
 			vertex_buf,
 			verts: Vec::with_capacity(MAX_VERTS),
 			vert_count: 0,
-			split_vert: 0,
+			splits: [0; 2],
 			line_scratch: String::with_capacity(96),
+			scale: 1.0,
+			glyph: FIXED_GLYPH_PX,
 		}
 	}
 
@@ -249,7 +252,9 @@ impl Overlay {
 			.extend_from_slice(&[v(x, y), v(x1, y), v(x, y1), v(x1, y), v(x1, y1), v(x, y1)]);
 	}
 
-	fn push_text(&mut self, x: f32, y: f32, color: u32, text: &str) {
+	/// Draw `text` with `px`-sized square glyphs (`self.glyph` for scaled
+	/// surfaces, [`FIXED_GLYPH_PX`] for pinned ones).
+	fn push_text(&mut self, x: f32, y: f32, px: f32, color: u32, text: &str) {
 		let mut cx = x;
 		for c in text.bytes() {
 			if c != b' ' && self.verts.len() + 6 <= MAX_VERTS {
@@ -259,7 +264,7 @@ impl Overlay {
 					uv: [u, w],
 					color,
 				};
-				let (x1, y1) = (cx + GLYPH_PX, y + GLYPH_PX);
+				let (x1, y1) = (cx + px, y + px);
 				self.verts.extend_from_slice(&[
 					v(cx, y, uv0[0], uv0[1]),
 					v(x1, y, uv1[0], uv0[1]),
@@ -269,129 +274,76 @@ impl Overlay {
 					v(cx, y1, uv0[0], uv1[1]),
 				]);
 			}
-			cx += GLYPH_PX;
+			cx += px;
 		}
 	}
 
-	/// The menu layer: full-screen dim, panel backdrop, then rows exactly
-	/// as laid out by menu.rs (which also hit-tests the same rects).
-	fn push_menu(&mut self, size: (u32, u32), view: &crate::menu::MenuView) {
-		const MENU_DIM: u32 = 0xA0000000;
-		const ROW_HILIGHT: u32 = 0x60FFFFFF;
-		self.push_quad(0.0, 0.0, size.0 as f32, size.1 as f32, MENU_DIM);
-		let [px, py, pw, ph] = view.panel;
-		self.push_quad(px, py, pw, ph, BG);
-		for row in &view.rows {
-			let [x, y, w, h] = row.rect;
-			let text_y = y + (h - GLYPH_PX) / 2.0;
-			if row.highlight {
-				self.push_quad(x, y, w, h, ROW_HILIGHT);
-			}
-			self.push_text(x + TEXT_PAD_X, text_y, row.color, &row.text);
-			if let Some((right, color)) = &row.right {
-				let rx = x + w - TEXT_PAD_X - right.len() as f32 * GLYPH_PX;
-				self.push_text(rx, text_y, *color, right);
-			}
-			if let Some(frac) = row.bar {
-				const BAR_TRACK: u32 = 0x40FFFFFF;
-				let [bx, by, bw, bh] = crate::menu::bar_rect(row.rect);
-				self.push_quad(bx, by, bw, bh, BAR_TRACK);
-				self.push_quad(bx, by, bw * frac, bh, row.color);
+	/// Execute one draw-list layer's quad/text commands into the vertex
+	/// buffer (icon commands belong to `ui::icons::UiIcons`).
+	fn run_cmds(&mut self, dl: &crate::ui::DrawList, layer: crate::ui::Layer) {
+		let (cmds, arena) = dl.cmds(layer);
+		for cmd in cmds {
+			match *cmd {
+				crate::ui::draw::Cmd::Quad { rect, color } => {
+					self.push_quad(rect.x, rect.y, rect.w, rect.h, color);
+				}
+				crate::ui::draw::Cmd::Text {
+					x,
+					y,
+					px,
+					color,
+					range,
+				} => {
+					let text = &arena[range.0 as usize..range.1 as usize];
+					self.push_text(x, y, px, color, text);
+				}
+				crate::ui::draw::Cmd::Icon { .. } => {}
 			}
 		}
 	}
 
-	/// Hotbar layer under the icons: slot backdrops + selection border.
-	fn push_hotbar_slots(&mut self, slots: &[crate::hotbar::PlacedSlot]) {
-		const SEL: u32 = 0xE0FFFFFF;
-		const T: f32 = 2.0; // border thickness
-		for s in slots {
-			let [x, y, w, h] = s.rect;
-			self.push_quad(x, y, w, h, BG);
-			if s.selected {
-				self.push_quad(x - T, y - T, w + 2.0 * T, T, SEL);
-				self.push_quad(x - T, y + h, w + 2.0 * T, T, SEL);
-				self.push_quad(x - T, y, T, h, SEL);
-				self.push_quad(x + w, y, T, h, SEL);
-			}
-		}
-	}
-
-	/// Hotbar layer over the icons: stack counts, bottom-right corner.
-	/// Three glyphs fill a 48 px slot, so 100+ displays as "99+".
-	fn push_hotbar_counts(&mut self, slots: &[crate::hotbar::PlacedSlot]) {
-		for s in slots {
-			let Some(n) = s.count else {
-				continue;
-			};
-			self.line_scratch.clear();
-			if n > 99 {
-				self.line_scratch.push_str("99+");
-			} else {
-				let _ = write!(self.line_scratch, "{n}");
-			}
-			let [x, y, w, h] = s.rect;
-			let text = std::mem::take(&mut self.line_scratch);
-			let tx = x + w - 2.0 - text.len() as f32 * GLYPH_PX;
-			let color = if n == 0 { DIM } else { WHITE };
-			self.push_text(tx, y + h - GLYPH_PX - 2.0, color, &text);
-			self.line_scratch = text;
-		}
-	}
-
-	fn push_crosshair(&mut self, size: (u32, u32)) {
-		const ARM: f32 = 9.0; // half-length in px
-		const THICK: f32 = 2.0;
-		const COLOR: u32 = 0xC0FFFFFF;
-		let (cx, cy) = (size.0 as f32 / 2.0, size.1 as f32 / 2.0);
-		self.push_quad(cx - ARM, cy - THICK / 2.0, ARM * 2.0, THICK, COLOR);
-		self.push_quad(cx - THICK / 2.0, cy - ARM, THICK, ARM * 2.0, COLOR);
-	}
-
-	/// Rebuild the vertex buffer for this frame: always the HUD (crosshair
-	/// and hotbar — unless the menu is up and the cursor visible), plus
-	/// the debug panel when `stats` is present, plus the server-message
-	/// feed when non-empty, plus the menu when open. Everything before
-	/// the split renders below the hotbar's block icons; everything
-	/// after, above them.
+	/// Rebuild the vertex buffer for this frame: the draw list's
+	/// Backdrop/Content/Ghost layers (crosshair, HUD, screens, menu —
+	/// all engine-emitted), plus the legacy direct-push surfaces (debug
+	/// panel, feed, chat, nametags), which draw UNDER the Content layer
+	/// so screens can dim them. The two derived splits bracket the icon
+	/// pipeline's main and ghost stages.
 	#[allow(clippy::too_many_arguments)]
 	pub fn prepare(
 		&mut self,
 		gpu: &Gpu,
 		size: (u32, u32),
+		ui_scale: f32,
+		ui: &crate::ui::DrawList,
 		stats: Option<(&OverlayStats, &[f32])>,
 		feed: &[(String, f32, u32)],
-		menu: Option<&crate::menu::MenuView>,
-		hotbar: Option<&[crate::hotbar::PlacedSlot]>,
 		chat: Option<&crate::chat::ChatView<'_>>,
 		nametags: &[crate::renderer::NameTag],
 	) {
+		self.scale = ui_scale;
+		self.glyph = glyph_px(ui_scale);
 		self.verts.clear();
-		if menu.is_none() {
-			self.push_crosshair(size);
-		}
-		if let Some(slots) = hotbar {
-			self.push_hotbar_slots(slots);
-		}
-		self.split_vert = self.verts.len() as u32;
+		self.run_cmds(ui, crate::ui::Layer::Backdrop);
+		self.splits[0] = self.verts.len() as u32;
 		self.push_nametags(size, nametags);
-		if let Some(slots) = hotbar {
-			self.push_hotbar_counts(slots);
-		}
 		if let Some((stats, history)) = stats {
 			self.push_debug_panel(stats, history);
 		}
 		// The open input line takes the bottom row; the feed rides above it.
-		let feed_raise = if chat.is_some() { LINE_PX + 4.0 } else { 0.0 };
+		let feed_raise = if chat.is_some() {
+			(LINE_PX + 4.0) * ui_scale
+		} else {
+			0.0
+		};
 		if !feed.is_empty() {
 			self.push_feed(size, feed, feed_raise);
 		}
 		if let Some(view) = chat {
 			self.push_chat_input(size, view);
 		}
-		if let Some(view) = menu {
-			self.push_menu(size, view);
-		}
+		self.run_cmds(ui, crate::ui::Layer::Content);
+		self.splits[1] = self.verts.len() as u32;
+		self.run_cmds(ui, crate::ui::Layer::Ghost);
 		self.vert_count = self.verts.len() as u32;
 		gpu.queue.write_buffer(
 			&self.uniform_buf,
@@ -490,7 +442,7 @@ impl Overlay {
 		);
 
 		let max_chars = lines.iter().map(|(_, l)| l.len()).max().unwrap_or(0);
-		let text_w = max_chars as f32 * GLYPH_PX;
+		let text_w = max_chars as f32 * FIXED_GLYPH_PX;
 		let graph_w = GRAPH_FRAMES as f32 * BAR_W;
 		let panel_w = text_w.max(graph_w) + PAD * 2.0;
 		let panel_h = lines.len() as f32 * LINE_PX + GRAPH_H + PAD * 3.0;
@@ -499,7 +451,7 @@ impl Overlay {
 		let (tx, mut ty) = (MARGIN + PAD, MARGIN + PAD);
 		for entry in &mut lines {
 			let (color, text) = std::mem::take(entry);
-			self.push_text(tx, ty, color, &text);
+			self.push_text(tx, ty, FIXED_GLYPH_PX, color, &text);
 			ty += LINE_PX;
 		}
 
@@ -527,33 +479,38 @@ impl Overlay {
 	/// own color (chat lines are tinted per sender). `raise` lifts the
 	/// whole block (the chat input line owns the bottom row while open).
 	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], raise: f32) {
-		let mut y = size.1 as f32 - MARGIN - raise - feed.len() as f32 * LINE_PX;
+		let s = self.scale;
+		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
+		let mut y = size.1 as f32 - margin - raise - feed.len() as f32 * line;
 		for (text, ttl, color) in feed {
 			let a = ttl.clamp(0.0, 1.0);
-			let w = text.len() as f32 * GLYPH_PX + PAD * 2.0;
-			self.push_quad(MARGIN, y, w, LINE_PX, fade(BG, a));
+			let w = text.len() as f32 * glyph + pad * 2.0;
+			self.push_quad(margin, y, w, line, fade(BG, a));
 			self.push_text(
-				MARGIN + PAD,
-				y + (LINE_PX - GLYPH_PX) / 2.0,
+				margin + pad,
+				y + (line - glyph) / 2.0,
+				glyph,
 				fade(*color, a),
 				text,
 			);
-			y += LINE_PX;
+			y += line;
 		}
 	}
 
 	/// Chat input: a full-height bottom-left strip with a blinking block
 	/// caret (same blink clock as the menu's name field).
 	fn push_chat_input(&mut self, size: (u32, u32), view: &crate::chat::ChatView<'_>) {
-		let y = size.1 as f32 - MARGIN - LINE_PX;
-		let w = (view.line.len() as f32 + 3.0) * GLYPH_PX + PAD * 2.0;
-		self.push_quad(MARGIN, y, w.max(240.0), LINE_PX, 0xC0000000);
-		let ty = y + (LINE_PX - GLYPH_PX) / 2.0;
-		self.push_text(MARGIN + PAD, ty, WHITE, "> ");
-		self.push_text(MARGIN + PAD + GLYPH_PX * 2.0, ty, WHITE, view.line);
+		let s = self.scale;
+		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
+		let y = size.1 as f32 - margin - line;
+		let w = (view.line.len() as f32 + 3.0) * glyph + pad * 2.0;
+		self.push_quad(margin, y, w.max(240.0 * s), line, 0xC0000000);
+		let ty = y + (line - glyph) / 2.0;
+		self.push_text(margin + pad, ty, glyph, WHITE, "> ");
+		self.push_text(margin + pad + glyph * 2.0, ty, glyph, WHITE, view.line);
 		if view.caret {
-			let cx = MARGIN + PAD + GLYPH_PX * (view.line.len() as f32 + 2.0);
-			self.push_quad(cx, ty, GLYPH_PX * 0.6, GLYPH_PX, WHITE);
+			let cx = margin + pad + glyph * (view.line.len() as f32 + 2.0);
+			self.push_quad(cx, ty, glyph * 0.6, glyph, WHITE);
 		}
 	}
 
@@ -561,23 +518,30 @@ impl Overlay {
 	/// screen positions. No depth — tags read through walls, which keeps
 	/// them useful as a "someone is over there" cue.
 	fn push_nametags(&mut self, size: (u32, u32), tags: &[crate::renderer::NameTag]) {
+		let (pad, glyph) = (PAD * self.scale, self.glyph);
 		for tag in tags {
-			let w = tag.text.len() as f32 * GLYPH_PX;
+			let w = tag.text.len() as f32 * glyph;
 			let x = (tag.x - w / 2.0).clamp(0.0, (size.0 as f32 - w).max(0.0));
-			let y = tag.y.clamp(0.0, size.1 as f32 - GLYPH_PX);
-			self.push_quad(x - PAD / 2.0, y - 2.0, w + PAD, GLYPH_PX + 4.0, 0x60000000);
-			self.push_text(x, y, tag.color, &tag.text);
+			let y = tag.y.clamp(0.0, size.1 as f32 - glyph);
+			self.push_quad(x - pad / 2.0, y - 2.0, w + pad, glyph + 4.0, 0x60000000);
+			self.push_text(x, y, glyph, tag.color, &tag.text);
 		}
 	}
 
-	/// The range under the hotbar icons (crosshair, slot backdrops).
+	/// The range under the main icons (crosshair, slot/panel backdrops).
 	pub fn draw_below(&self, pass: &mut wgpu::RenderPass<'_>) {
-		self.draw_range(pass, 0, self.split_vert);
+		self.draw_range(pass, 0, self.splits[0]);
 	}
 
-	/// The range over the icons (counts, panel, feed, menu).
+	/// The content band over the main icons (counts, labels, panel,
+	/// feed, menu) but under the ghost icon.
+	pub fn draw_mid(&self, pass: &mut wgpu::RenderPass<'_>) {
+		self.draw_range(pass, self.splits[0], self.splits[1]);
+	}
+
+	/// The topmost range (ghost-layer quads/text, over the ghost icon).
 	pub fn draw_above(&self, pass: &mut wgpu::RenderPass<'_>) {
-		self.draw_range(pass, self.split_vert, self.vert_count);
+		self.draw_range(pass, self.splits[1], self.vert_count);
 	}
 
 	fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, from: u32, to: u32) {
