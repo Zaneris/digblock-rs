@@ -1060,6 +1060,12 @@ impl Menu {
 					&mut y,
 					RowSpec::dim("left/right or click adjusts, esc: back"),
 				);
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::dim("Created by @Zaneris (GitHub/X/Twitter)"),
+				);
 			}
 			Some(Screen::Browser(b)) => {
 				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
