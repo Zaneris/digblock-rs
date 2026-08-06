@@ -321,7 +321,9 @@ fn river_water_never_floats() {
 	}
 }
 
-/// Spawn always lands above the beach line, for a spread of seeds.
+/// Spawn always lands above the beach line, in the open — no decoration
+/// block in or near the capsule, no surrounding terrain at eye level —
+/// for a spread of seeds.
 #[test]
 fn spawn_finds_land() {
 	for seed in [0.0, 1.0, 1234.5678, 4242.0, 9999.9] {
@@ -333,6 +335,31 @@ fn spawn_finds_land() {
 		assert!(shape.water <= h, "seed {seed}: spawn not in a river");
 		assert!((s.y - (h as f32 + 2.5)).abs() < 0.001, "eye above surface");
 		assert!(!carved(x, h, z, seed), "spawn surface is not a cave mouth");
+		for dz in -2..=2 {
+			for dx in -2..=2 {
+				let n = column_shape(x + dx, z + dz, seed);
+				let top = n
+					.height
+					.max(n.water)
+					.max(n.fall.map_or(i32::MIN, |(_, t)| t));
+				assert!(
+					top <= h + 1 || (dx, dz) == (0, 0),
+					"seed {seed}: wall at eye level ({dx},{dz})"
+				);
+			}
+		}
+		assert!(
+			!digblock_core::decoration::box_obstructed(
+				x - 2,
+				x + 2,
+				h + 1,
+				h + 3,
+				z - 2,
+				z + 2,
+				seed
+			),
+			"seed {seed}: decoration block in the spawn clearing"
+		);
 	}
 }
 

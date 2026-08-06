@@ -414,8 +414,15 @@ impl Bush {
 /// determinism contract — `decorate_chunk` is first-writer-wins.
 pub fn structures_near(px: i32, pz: i32, seed: f64) -> Vec<Structure> {
 	let n = CHUNK_SIZE as i32;
-	let (x0, x1) = (px - STRUCTURE_APRON, px + n - 1 + STRUCTURE_APRON);
-	let (z0, z1) = (pz - STRUCTURE_APRON, pz + n - 1 + STRUCTURE_APRON);
+	structures_in(px, px + n - 1, pz, pz + n - 1, seed)
+}
+
+/// All valid structures whose candidate cell is within `STRUCTURE_APRON`
+/// of the inclusive column footprint [x0, x1] × [z0, z1]. Same
+/// candidate-order contract as `structures_near`.
+fn structures_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<Structure> {
+	let (x0, x1) = (x0 - STRUCTURE_APRON, x1 + STRUCTURE_APRON);
+	let (z0, z1) = (z0 - STRUCTURE_APRON, z1 + STRUCTURE_APRON);
 	let mut out = Vec::new();
 	for cell_z in z0.div_euclid(LANDMARK_CELL)..=z1.div_euclid(LANDMARK_CELL) {
 		for cell_x in x0.div_euclid(LANDMARK_CELL)..=x1.div_euclid(LANDMARK_CELL) {
@@ -442,6 +449,21 @@ pub fn structures_near(px: i32, pz: i32, seed: f64) -> Vec<Structure> {
 		}
 	}
 	out
+}
+
+/// Whether any decoration block lands in the inclusive box
+/// [x0, x1] × [y0, y1] × [z0, z1] — the spawn walk's clearance probe.
+/// Pristine terrain never reaches a spawn candidate's capsule cells;
+/// decoration (trees, boulders, bushes, landmarks) can, and this is how
+/// the walk avoids it.
+pub fn box_obstructed(x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, seed: f64) -> bool {
+	structures_in(x0, x1, z0, z1, seed).iter().any(|s| {
+		let mut hit = false;
+		s.for_each_block(|bx, by, bz, _| {
+			hit |= (x0..=x1).contains(&bx) && (y0..=y1).contains(&by) && (z0..=z1).contains(&bz);
+		});
+		hit
+	})
 }
 
 impl Tree {

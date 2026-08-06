@@ -121,10 +121,16 @@ const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
 /// Eye spawn position: the nearest land to the origin. Walks expanding
 /// square rings (8-block stride) until a column clears the beach line, so
 /// spawning tracks the terrain instead of hardcoding a height — and never
-/// drops the player into the ocean.
+/// drops the player into the ocean. A candidate must also be in the open:
+/// no surrounding terrain reaching eye level and no decoration blocks
+/// nearby, so the camera neither starts inside a tree nor face-planted
+/// into a hillside (both read as "spawned inside a block").
 pub fn spawn(seed: f64) -> Vec3 {
+	use crate::decoration::box_obstructed;
 	use crate::worldgen::{carved, column_shape, SEA_LEVEL};
 	const STEP: i32 = 8;
+	// Clearance radius around the candidate column, in columns.
+	const CLEAR: i32 = 2;
 	// 192 rings × 8 = 1536 blocks — at least one full continent wavelength,
 	// so the walk crosses any ocean the warped continent field can produce.
 	for ring in 0..=192 {
@@ -138,13 +144,44 @@ pub fn spawn(seed: f64) -> Vec3 {
 				let h = s.height;
 				// A spawnable surface kind (excludes water columns), high
 				// enough to be dry land, and not a cave mouth.
-				if s.surface.props().spawnable && h > SEA_LEVEL + 1 && !carved(x, h, z, seed) {
+				if !(s.surface.props().spawnable && h > SEA_LEVEL + 1 && !carved(x, h, z, seed)) {
+					continue;
+				}
+				// Everything a column fills — terrain, river water, a
+				// cascade's WaterFall sheet — stays below eye level
+				// (h + 2) within CLEAR columns: a spawn at the foot of a
+				// slope (or against a waterfall) fills the whole view.
+				let walled = (-CLEAR..=CLEAR).any(|dz| {
+					(-CLEAR..=CLEAR).any(|dx| {
+						if dx == 0 && dz == 0 {
+							return false;
+						}
+						let n = column_shape(x + dx, z + dz, seed);
+						let top = n
+							.height
+							.max(n.water)
+							.max(n.fall.map_or(i32::MIN, |(_, t)| t));
+						top > h + 1
+					})
+				});
+				// Decoration (trees, boulders, bushes) writes into the
+				// capsule cells h+1.. that pristine terrain never touches.
+				if !walled
+					&& !box_obstructed(
+						x - CLEAR,
+						x + CLEAR,
+						h + 1,
+						h + 3,
+						z - CLEAR,
+						z + CLEAR,
+						seed,
+					) {
 					return Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5);
 				}
 			}
 		}
 	}
-	// Pathological seed: no land within 1536 blocks — tread water.
+	// Pathological seed: no clear land within 1536 blocks — tread water.
 	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
 }
 
@@ -465,8 +502,9 @@ fn solid(cell: Option<u16>) -> bool {
 
 /// Raise `pos` one block at a time until the capsule overlaps no
 /// colliding cell — the landing for spawn teleports and joins when
-/// players have built at the spawn point (worldgen keeps the base spawn
-/// above pristine terrain, so only placed blocks can occupy it).
+/// players have built at the spawn point (the spawn walk rejects columns
+/// whose capsule cells hold terrain or decoration, so only placed blocks
+/// can occupy it).
 /// Unloaded (None) cells count as clear, matching the physics. A column
 /// solid to the world ceiling (not honestly buildable) returns `pos`
 /// unchanged.
