@@ -198,6 +198,9 @@ pub struct Sim {
 	ban_store: BanStore,
 	/// The player name (case-insensitive) granted admin chat commands.
 	admin_name: Option<String>,
+	/// Seconds added to the tick clock by `/time` — same lifetime and
+	/// persistence policy as the tick counter it offsets (none).
+	tod_offset_secs: f64,
 }
 
 impl Sim {
@@ -253,6 +256,7 @@ impl Sim {
 			player_store,
 			ban_store,
 			admin_name: None,
+			tod_offset_secs: 0.0,
 		})
 	}
 
@@ -267,10 +271,12 @@ impl Sim {
 	}
 
 	/// The authoritative world clock: a pure function of the tick
-	/// counter, so it needs no state and no persistence (a restart
-	/// restarts the day — accepted).
+	/// counter plus the `/time` offset, so it needs no persistence (a
+	/// restart restarts the day — accepted).
 	fn current_tod(&self) -> f32 {
-		digblock_core::sun::Sun::tod_of_secs(f64::from(self.tick) / f64::from(TICK_RATE))
+		digblock_core::sun::Sun::tod_of_secs(
+			f64::from(self.tick) / f64::from(TICK_RATE) + self.tod_offset_secs,
+		)
 	}
 
 	/// Read each tick by `run_sim_loop` into the shared gauge the master

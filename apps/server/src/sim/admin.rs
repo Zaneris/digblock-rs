@@ -18,6 +18,10 @@ const COMMANDS: &[(&str, &str)] = &[
 		"teleport to the column top; ~ or ~<d> = relative, facing optional",
 	),
 	("/goto <name>", "teleport to an online player"),
+	(
+		"/time [hh:mm]",
+		"show or set the time of day (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)",
+	),
 	("/bring <name>", "teleport an online player to you"),
 	("/ban <name>", "ban an online player by IP and kick them"),
 	("/ban-list", "list bans"),
@@ -61,6 +65,28 @@ pub(super) fn commands_msg() -> ServerMsg {
 	}
 }
 
+/// 24h clock → sun angle: one hour = 15°, anchored to the tod
+/// convention in `sun.rs` — 0:00 midnight (180), 6:00 sunrise (90),
+/// 12:00 noon (0), 18:00 sunset (−90).
+fn tod_of_clock(h: u32, m: u32) -> f32 {
+	180.0 - (h as f32 + m as f32 / 60.0) * 15.0
+}
+
+/// `hh:mm` or a bare hour, 24-hour.
+fn parse_clock(arg: &str) -> Option<(u32, u32)> {
+	let (h, m) = match arg.split_once(':') {
+		Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
+		None => (arg.parse().ok()?, 0),
+	};
+	(h < 24 && m < 60).then_some((h, m))
+}
+
+/// The inverse of `tod_of_clock`, for the no-argument query.
+fn clock_of_tod(tod: f32) -> String {
+	let mins = (((180.0 - tod) / 15.0 * 60.0).round() as i64).rem_euclid(24 * 60);
+	format!("{:02}:{:02}", mins / 60, mins % 60)
+}
+
 /// Absolute integer, or `~`/`~±d` relative to `cur`. Clamped.
 fn parse_coord(arg: &str, cur: f32) -> Option<i64> {
 	let v = if let Some(rest) = arg.strip_prefix('~') {
@@ -92,6 +118,7 @@ impl Sim {
 			}
 			"/tp" => self.cmd_tp(conn_id, &args),
 			"/goto" => self.cmd_goto(conn_id, &args),
+			"/time" => self.cmd_time(conn_id, &args),
 			"/bring" => self.cmd_bring(conn_id, &args),
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
@@ -210,6 +237,37 @@ impl Sim {
 		self.reply(target, &format!("{admin_name} teleported you"));
 		log::info!("admin {admin_name} brought {target_name}");
 		self.reply(conn_id, &format!("brought {target_name}"));
+	}
+
+	fn cmd_time(&mut self, conn_id: u64, args: &[&str]) {
+		let usage = "usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)";
+		let (h, m) = match args {
+			[] => {
+				let clock = clock_of_tod(self.current_tod());
+				return self.reply(conn_id, &format!("time is {clock}"));
+			}
+			[arg] => match parse_clock(arg) {
+				Some(t) => t,
+				None => return self.reply(conn_id, usage),
+			},
+			_ => return self.reply(conn_id, usage),
+		};
+		// tod falls as time advances, so shifting the clock forward by
+		// (current − target) degrees lands on the target; the offset
+		// rides the tick clock, so time keeps flowing from the new
+		// anchor.
+		let delta =
+			(f64::from(self.current_tod()) - f64::from(tod_of_clock(h, m))).rem_euclid(360.0);
+		self.tod_offset_secs += delta / f64::from(digblock_core::sun::TOD_RATE_DEG_PER_SEC);
+		// Re-anchor everyone now instead of waiting out the heartbeat.
+		let msg = ServerMsg::TimeOfDay {
+			tod: self.current_tod(),
+		};
+		for c in self.clients.values() {
+			client_send(c, &msg);
+		}
+		log::info!("admin set time to {h:02}:{m:02}");
+		self.reply(conn_id, &format!("time set to {h:02}:{m:02}"));
 	}
 
 	fn cmd_ban(&mut self, conn_id: u64, args: &[&str]) {
@@ -566,6 +624,70 @@ mod tests {
 		assert!(lines.iter().any(|t| t.contains("usage: /bring")));
 		let after = sim.test_player(1).unwrap().pos;
 		assert_eq!((after.x, after.z), (before.x, before.z));
+	}
+
+	#[test]
+	fn time_sets_the_clock_and_reanchors_everyone() {
+		let mut sim = admin_sim("time");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut guest = connect_named(&mut sim, 2, "guest");
+		sim.tick_once(vec![chat(1, "/time 18:30")]);
+		admin.drain();
+		guest.drain();
+		// 18:30 → tod 180 − 18.5·15 = −97.5, pushed to both immediately.
+		for c in [&admin, &guest] {
+			let tod = c
+				.msgs
+				.iter()
+				.find_map(|m| match m {
+					ServerMsg::TimeOfDay { tod } => Some(*tod),
+					_ => None,
+				})
+				.expect("immediate TimeOfDay");
+			assert!((tod + 97.5).abs() < 0.01, "tod {tod}");
+		}
+		assert!(server_lines(&admin)
+			.iter()
+			.any(|t| t.contains("time set to 18:30")));
+
+		// Time keeps flowing from the new anchor: the next heartbeat has
+		// fallen by the elapsed ticks (≤10 s at 0.3°/s), not reverted to
+		// the tick clock.
+		for _ in 0..digblock_net::protocol::TOD_SYNC_TICKS {
+			sim.tick_once(vec![]);
+		}
+		guest.drain();
+		let beat = guest
+			.msgs
+			.iter()
+			.rev()
+			.find_map(|m| match m {
+				ServerMsg::TimeOfDay { tod } => Some(*tod),
+				_ => None,
+			})
+			.expect("heartbeat");
+		assert!((-100.6..=-97.5).contains(&beat), "beat {beat}");
+	}
+
+	#[test]
+	fn time_query_bare_hour_and_bad_input() {
+		let mut sim = admin_sim("timeedge");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		sim.tick_once(vec![chat(1, "/time 12:00")]);
+		sim.tick_once(vec![chat(1, "/time")]);
+		sim.tick_once(vec![chat(1, "/time 6")]);
+		sim.tick_once(vec![chat(1, "/time 24:00")]);
+		sim.tick_once(vec![chat(1, "/time noon")]);
+		admin.drain();
+		let lines = server_lines(&admin);
+		// The query lands one tick after the set — still rounds to noon.
+		assert!(lines.iter().any(|t| t == "time is 12:00"), "{lines:?}");
+		assert!(lines.iter().any(|t| t.contains("time set to 06:00")));
+		assert_eq!(
+			lines.iter().filter(|t| t.contains("usage: /time")).count(),
+			2,
+			"{lines:?}"
+		);
 	}
 
 	#[test]
