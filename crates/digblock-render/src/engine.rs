@@ -826,13 +826,13 @@ impl Engine {
 		// The server's InventoryFull (right behind JournalDone) is the
 		// authoritative base; local single-player stock must not leak in.
 		self.inventory = Inventory::default();
-		self.reset_world_transients(spawn);
+		self.reset_world_transients(spawn, true);
 	}
 
 	/// The world-swap tail shared by server joins, save entry, and the
 	/// leave-server backdrop: kill in-flight interaction and streaming
 	/// state, and silence the old world.
-	fn reset_world_transients(&mut self, pos: Vec3) {
+	fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
@@ -840,20 +840,25 @@ impl Engine {
 		self.tick_accum = 0.0;
 		self.pending_ack = None;
 		self.correction_offset = Vec3::ZERO;
-		self.pending_uploads.clear();
-		if let Some(r) = self.renderer.as_mut() {
-			r.clear_chunks();
+		// A reused pipeline (entering the world already streamed behind
+		// the menu) keeps its meshes and waterfall voices — the world is
+		// identical, clearing would only force a full re-upload.
+		if world_replaced {
+			self.pending_uploads.clear();
+			if let Some(r) = self.renderer.as_mut() {
+				r.clear_chunks();
+			}
+			let mut cmds = std::mem::take(&mut self.audio_scratch);
+			self.water_audio.clear(&mut cmds);
+			for cmd in cmds.drain(..) {
+				self.emit(cmd);
+			}
+			self.audio_scratch = cmds;
 		}
 		// Old-world sounds don't survive the swap.
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
-		let mut cmds = std::mem::take(&mut self.audio_scratch);
-		self.water_audio.clear(&mut cmds);
-		for cmd in cmds.drain(..) {
-			self.emit(cmd);
-		}
-		self.audio_scratch = cmds;
 		self.ambient.reset();
 		self.prev_player_pos = pos;
 	}
@@ -887,16 +892,29 @@ impl Engine {
 			save.meta.seed
 		);
 		self.player_names.clear();
-		self.seed = save.meta.seed;
 		let spawn = digblock_core::player::spawn(save.meta.seed);
 		self.spawn_pos = spawn;
 		let overlay: digblock_core::overlay::EditOverlay = save.edits.into_iter().collect();
-		self.pipeline = Pipeline::with_overlay(
-			save.meta.seed,
-			self.config.draw_dist,
-			self.config.workers,
-			overlay,
-		);
+		// Same world already streamed in behind the menu (Create adopts
+		// the backdrop's seed to hit this deliberately), no edits on
+		// either side: keep the pipeline — and its generated chunks and
+		// uploaded meshes — instead of regenerating from scratch. That
+		// window is when the player would otherwise stand over an empty
+		// world (held by the walk gate, seconds long on web's inline
+		// executor).
+		let reuse = self.net.is_none()
+			&& save.meta.seed == self.seed
+			&& overlay.is_empty()
+			&& self.pipeline.overlay().is_some_and(|o| o.is_empty());
+		self.seed = save.meta.seed;
+		if !reuse {
+			self.pipeline = Pipeline::with_overlay(
+				save.meta.seed,
+				self.config.draw_dist,
+				self.config.workers,
+				overlay,
+			);
+		}
 		// Resume in place when the save carries a position (edits restore
 		// identically, so the spot the player stood on regenerates under
 		// them); a fresh save starts at the world spawn.
@@ -922,7 +940,7 @@ impl Engine {
 			&mut self.hotbar,
 			&mut self.inv_grid,
 		);
-		self.reset_world_transients(start);
+		self.reset_world_transients(start, !reuse);
 		self.in_local_save = true;
 		self.player_save_accum = 0.0;
 		self.menu.on_world_entered();
@@ -934,12 +952,20 @@ impl Engine {
 		match intent {
 			WorldIntent::Refresh => self.push_world_list(),
 			WorldIntent::Create { name } => {
-				// Same clock-derived seed as the startup backdrop (no
-				// `rand` — wasm cleanliness).
-				let nanos = web_time::SystemTime::now()
-					.duration_since(web_time::UNIX_EPOCH)
-					.map_or(0, |d| d.subsec_nanos());
-				let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+				// On a backdrop world (not in a save, not on a server),
+				// adopt the backdrop's seed: the world behind the menu is
+				// exactly the one being created, so `enter_local_world`
+				// keeps the already-streamed pipeline instead of
+				// regenerating it from scratch. Otherwise a fresh
+				// clock-derived seed (no `rand` — wasm cleanliness).
+				let seed = if self.net.is_none() && !self.in_local_save {
+					self.seed
+				} else {
+					let nanos = web_time::SystemTime::now()
+						.duration_since(web_time::UNIX_EPOCH)
+						.map_or(0, |d| d.subsec_nanos());
+					nanos as f64 / u32::MAX as f64 * 10000.0
+				};
 				let opened = self.world_store.as_mut().map(|store| {
 					store
 						.create_world(&name, seed)
@@ -2343,7 +2369,7 @@ impl Game for Engine {
 				self.camera.pos = spawn;
 				self.inventory = Inventory::default();
 				self.player_names.clear();
-				self.reset_world_transients(spawn);
+				self.reset_world_transients(spawn, true);
 				self.in_local_save = false;
 				self.menu.on_left_server();
 			}
@@ -2518,7 +2544,28 @@ impl Game for Engine {
 			self.tick_accum = (self.tick_accum + dt).min(0.25);
 			let pipeline = &self.pipeline;
 			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+			// Never simulate through ungenerated terrain: unloaded cells
+			// are non-solid (the Java null-block), so ticking before the
+			// player's column has generated free-falls through the world
+			// — seconds of fall on web, where a fresh world streams in
+			// on the inline executor. Hold the sim, dropping the
+			// accumulated time, until the column lands (gen jobs land
+			// whole column stacks, so one feet-cell probe is enough).
+			// Outside the world's vertical range no chunk ever loads;
+			// let the void keep its historical fall.
+			let feet_y = (self.player.pos.y - digblock_core::player::EYE_TO_FEET).floor() as i32;
+			let column_loaded = !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&feet_y)
+				|| cell_at(
+					self.player.pos.x.floor() as i32,
+					feet_y,
+					self.player.pos.z.floor() as i32,
+				)
+				.is_some();
+			if !column_loaded {
+				self.tick_accum = 0.0;
+			}
 			match self.net.as_mut() {
+				_ if !column_loaded => {}
 				Some(net) if net.ready() => {
 					// Reconcile against the latest snapshot before predicting
 					// this frame's ticks; corrections land as a decaying
@@ -2993,5 +3040,154 @@ mod store_tests {
 		// Suspend hands the same arrangement back to the store.
 		engine.on_suspend();
 		assert_eq!(calls.borrow().saved_hotbar, wire.to_vec());
+	}
+
+	/// The walk sim holds while the player's column is ungenerated —
+	/// unloaded cells are non-solid, so ticking would free-fall the
+	/// player through the world (the web underground-spawn bug).
+	#[test]
+	fn walk_sim_holds_until_player_column_generates() {
+		let calls = Rc::new(RefCell::new(Calls::default()));
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(MockStore(calls)));
+		// MockStore's save has seed 7.0 ≠ backdrop 3.0: the pipeline is
+		// rebuilt from scratch, so nothing is generated at entry.
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+		let start = engine.player.pos;
+
+		// Headless (no render pump): the world never generates — the
+		// player must hold at the restored position instead of falling.
+		for _ in 0..60 {
+			engine.update(Duration::from_millis(16));
+		}
+		assert_eq!(engine.player.pos, start, "held over ungenerated world");
+
+		// Once the world lands, the sim resumes (gravity takes over).
+		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+		for _ in 0..10_000 {
+			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		for _ in 0..60 {
+			engine.update(Duration::from_millis(16));
+		}
+		assert!(engine.player.pos.y < start.y, "sim resumed after gen");
+	}
+
+	/// Echoes `create_world`'s seed back through `open_world` with a
+	/// pristine save, the way real stores do — Create must then keep the
+	/// backdrop pipeline (same seed, no edits) instead of regenerating.
+	struct EchoStore(f64);
+
+	impl digblock_persist::WorldStore for EchoStore {
+		fn list_worlds(&mut self) -> Vec<digblock_persist::WorldMeta> {
+			Vec::new()
+		}
+		fn create_world(
+			&mut self,
+			name: &str,
+			seed: f64,
+		) -> Result<digblock_persist::WorldMeta, String> {
+			self.0 = seed;
+			Ok(digblock_persist::WorldMeta {
+				id: "w1".into(),
+				name: name.into(),
+				seed,
+				created_ms: 0,
+				last_played_ms: 0,
+				compatible: true,
+			})
+		}
+		fn delete_world(&mut self, _id: &str) {}
+		fn open_world(&mut self, id: &str) -> Result<digblock_persist::WorldSave, String> {
+			Ok(digblock_persist::WorldSave {
+				meta: digblock_persist::WorldMeta {
+					id: id.into(),
+					name: "W".into(),
+					seed: self.0,
+					created_ms: 0,
+					last_played_ms: 0,
+					compatible: true,
+				},
+				edits: Vec::new(),
+				inventory: Vec::new(),
+				hotbar: Vec::new(),
+				grid: Vec::new(),
+				player: None,
+			})
+		}
+		fn append_edit(&mut self, _x: i32, _y: i32, _z: i32, _cell: u16) {}
+		fn save_player(
+			&mut self,
+			_inventory: &[(u16, u32)],
+			_hotbar: &[u16],
+			_grid: &[u16],
+			_player: &digblock_persist::PlayerPersist,
+		) {
+		}
+		fn maintain(&mut self, _live: Option<&digblock_core::overlay::EditOverlay>) {}
+		fn flush(&mut self, _live: Option<&digblock_core::overlay::EditOverlay>) {}
+		fn close_world(&mut self) {}
+	}
+
+	#[test]
+	fn create_reuses_streamed_backdrop_world() {
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(EchoStore(0.0)));
+
+		// Stream the backdrop in around its spawn, like the menu does.
+		let spawn = digblock_core::player::spawn(3.0);
+		let center = digblock_core::chunk::ChunkPos::new(
+			spawn.x.floor() as i32 / 16,
+			0,
+			spawn.z.floor() as i32 / 16,
+		);
+		for _ in 0..10_000 {
+			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		let ground = (
+			spawn.x.floor() as i32,
+			(spawn.y - digblock_core::player::EYE_TO_FEET - 0.5).floor() as i32,
+			spawn.z.floor() as i32,
+		);
+		assert!(engine
+			.pipeline
+			.cell_at(ground.0, ground.1, ground.2)
+			.is_some());
+
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+		assert!(engine.in_local_save);
+		assert_eq!(engine.seed, 3.0, "create adopted the backdrop seed");
+		// Retained pipeline: the spawn column is queryable with no
+		// further maintain — the player stands instead of waiting.
+		assert!(
+			engine
+				.pipeline
+				.cell_at(ground.0, ground.1, ground.2)
+				.is_some(),
+			"backdrop chunks survived world entry"
+		);
+		for _ in 0..60 {
+			engine.update(Duration::from_millis(16));
+		}
+		assert!(
+			(engine.player.pos.y - spawn.y).abs() < 2.0,
+			"player settled at spawn, not underground (y {} vs spawn {})",
+			engine.player.pos.y,
+			spawn.y
+		);
 	}
 }

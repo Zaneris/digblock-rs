@@ -331,10 +331,18 @@ impl Pipeline {
 		}
 		// Inline jobs run before the drain so their results land this
 		// frame; workers instead get topped up after (they produce across
-		// frames anyway).
-		if matches!(self.exec, Executor::Inline { .. }) {
+		// frames anyway). The job itself routinely overruns the caller's
+		// drain deadline (a column-gen job costs more than the whole
+		// stream budget on wasm), so shift the deadline by the time the
+		// job took: the drain always gets its full budget, or results
+		// pile up undrained while a fresh job runs every frame.
+		let deadline = if matches!(self.exec, Executor::Inline { .. }) {
+			let t = web_time::Instant::now();
 			self.run_inline_jobs();
-		}
+			deadline.map(|d| d + t.elapsed())
+		} else {
+			deadline
+		};
 		self.drain_results(&mut out, upload_budget, deadline);
 		out.saturated = self.exec.has_pending();
 		out.requeued = self.top_up_workers();
@@ -400,16 +408,21 @@ impl Pipeline {
 		deadline: Option<web_time::Instant>,
 	) {
 		let mut landed: Vec<(i32, i32)> = Vec::new();
+		let mut pulled = 0usize;
 		while out.meshed.len() < upload_budget {
 			// Generated results are the expensive drains (stack insert plus
 			// neighbor re-mesh cascade), so the deadline gates every pull,
-			// not just meshed ones.
-			if deadline.is_some_and(|d| web_time::Instant::now() >= d) {
+			// not just meshed ones — but never the first: at least one
+			// result must land per frame or an over-budget frame starves
+			// the drain while jobs keep producing (the player would fall
+			// through a world that exists but never reaches the store).
+			if pulled > 0 && deadline.is_some_and(|d| web_time::Instant::now() >= d) {
 				break;
 			}
 			let Some(result) = self.exec.try_recv() else {
 				break;
 			};
+			pulled += 1;
 			self.in_flight = self.in_flight.saturating_sub(1);
 			match result {
 				JobResult::Generated {
@@ -1376,5 +1389,27 @@ mod tests {
 		};
 		assert_eq!(inline.set_block(8, 8, 8, b), cur);
 		assert_eq!(inline.block_at(8, 8, 8), Some(b));
+	}
+
+	/// Inline drains make progress even when every frame is over budget:
+	/// with an already-expired deadline each maintain, the center column
+	/// (nearest-first, the first job popped) still reaches the store
+	/// within the first frames. Regression for the web spawn fall-through:
+	/// the inline gen job overran the drain deadline every frame, so
+	/// generated columns piled up undrained while the player fell through
+	/// a world that existed but never landed.
+	#[test]
+	fn inline_drain_progresses_past_expired_deadline() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 12, 0);
+		for frame in 0..3 {
+			let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
+			p.maintain(center, usize::MAX, Some(expired));
+			let _ = frame;
+		}
+		assert!(
+			p.cell_at(8, 100, 8).is_some(),
+			"center column must land within the first frames"
+		);
 	}
 }
