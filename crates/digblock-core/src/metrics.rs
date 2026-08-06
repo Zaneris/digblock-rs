@@ -11,53 +11,90 @@ const WINDOW: usize = 600; // ~10s at 60fps
 const HITCH_MS: f32 = 33.4;
 /// EMA weight for the smoothed per-phase timings shown on the overlay.
 const SMOOTH_ALPHA: f32 = 0.05;
+/// A frame past this multiple of the estimated display interval missed its
+/// slot outright. 1.5 (not 2.0) so a single dropped frame counts.
+const DROP_FACTOR: f32 = 1.5;
+/// Percentile of the frame window taken as the display interval: fast
+/// frames are the ones that hit their slot, so the low end of the
+/// distribution tracks the refresh period when vsync-bound (and merely
+/// "a typical fast frame" when uncapped, which is still the right
+/// reference for calling a frame anomalously slow).
+const REFRESH_PCTL: f32 = 0.10;
+/// Sane bounds for the estimate — guards startup, background tabs, and
+/// resume gaps from poisoning it.
+const REFRESH_MIN_MS: f32 = 2.0;
+const REFRESH_MAX_MS: f32 = 40.0;
 
 /// CPU cost of one frame, split by phase. `total_ms` is filled by
 /// [`Metrics::frame`] from the frame-to-frame delta; the rest are timed at
 /// their call sites and handed in.
+///
+/// Phases partition the frame, summing to roughly `busy_ms`: acquire,
+/// update, maintain, upload, prep, encode. Note that `sim`, `net` and
+/// `persist` are a BREAKDOWN of `update_ms` rather than phases of their
+/// own — don't sum them alongside it.
 #[derive(Clone, Copy, Default)]
 pub struct FrameTimings {
-	/// Swapchain acquire (vsync) wait.
+	/// Swapchain acquire wait. On native FIFO this is where vsync blocks;
+	/// on the web it is ~0 because `getCurrentTexture` cannot block (see
+	/// `busy_ms`).
 	pub acquire_ms: f32,
 	pub update_ms: f32,
+	/// `pump_net`: decode + apply inbound server events (⊂ `update_ms`).
+	pub net_ms: f32,
+	/// World/player/fluid stepping (⊂ `update_ms`).
+	pub sim_ms: f32,
+	/// World-save maintenance — fs or localStorage writes (⊂ `update_ms`).
+	pub persist_ms: f32,
 	/// `Pipeline::maintain`.
 	pub maintain_ms: f32,
 	/// Evict + mesh-upload loop.
 	pub upload_ms: f32,
+	/// Post-pipeline, pre-encode frame prep: remote-player sampling, name
+	/// tags, UI rebuild, frame uniforms. Was previously untimed — a spike
+	/// here showed in `total_ms` and in no phase at all.
+	pub prep_ms: f32,
 	/// Renderer encode + submit.
 	pub encode_ms: f32,
+	/// Main-thread occupancy: redraw-handler entry through submit, minus
+	/// the acquire wait. THE signal the adaptive stream budget feeds on.
+	///
+	/// It must be measured, not derived from `total_ms`: the frame-to-frame
+	/// delta includes whatever the platform spends idle between frames, and
+	/// on the web (rAF-paced, non-blocking acquire) that idle is the whole
+	/// margin the controller is trying to detect.
+	pub busy_ms: f32,
 	pub total_ms: f32,
 }
 
 impl FrameTimings {
+	/// Apply `f` to every field pairwise — one place to add a phase.
+	fn zip_mut(&mut self, x: &FrameTimings, mut f: impl FnMut(&mut f32, f32)) {
+		f(&mut self.acquire_ms, x.acquire_ms);
+		f(&mut self.update_ms, x.update_ms);
+		f(&mut self.net_ms, x.net_ms);
+		f(&mut self.sim_ms, x.sim_ms);
+		f(&mut self.persist_ms, x.persist_ms);
+		f(&mut self.maintain_ms, x.maintain_ms);
+		f(&mut self.upload_ms, x.upload_ms);
+		f(&mut self.prep_ms, x.prep_ms);
+		f(&mut self.encode_ms, x.encode_ms);
+		f(&mut self.busy_ms, x.busy_ms);
+		f(&mut self.total_ms, x.total_ms);
+	}
+
 	fn ema(&mut self, x: &FrameTimings) {
-		let mix = |s: &mut f32, v: f32| *s = *s * (1.0 - SMOOTH_ALPHA) + v * SMOOTH_ALPHA;
-		mix(&mut self.acquire_ms, x.acquire_ms);
-		mix(&mut self.update_ms, x.update_ms);
-		mix(&mut self.maintain_ms, x.maintain_ms);
-		mix(&mut self.upload_ms, x.upload_ms);
-		mix(&mut self.encode_ms, x.encode_ms);
-		mix(&mut self.total_ms, x.total_ms);
+		self.zip_mut(x, |s, v| *s = *s * (1.0 - SMOOTH_ALPHA) + v * SMOOTH_ALPHA);
 	}
 
 	fn add(&mut self, x: &FrameTimings) {
-		self.acquire_ms += x.acquire_ms;
-		self.update_ms += x.update_ms;
-		self.maintain_ms += x.maintain_ms;
-		self.upload_ms += x.upload_ms;
-		self.encode_ms += x.encode_ms;
-		self.total_ms += x.total_ms;
+		self.zip_mut(x, |s, v| *s += v);
 	}
 
 	fn scaled(&self, k: f32) -> FrameTimings {
-		FrameTimings {
-			acquire_ms: self.acquire_ms * k,
-			update_ms: self.update_ms * k,
-			maintain_ms: self.maintain_ms * k,
-			upload_ms: self.upload_ms * k,
-			encode_ms: self.encode_ms * k,
-			total_ms: self.total_ms * k,
-		}
+		let mut out = *self;
+		out.zip_mut(self, |s, v| *s = v * k);
+		out
 	}
 }
 
@@ -99,6 +136,14 @@ pub struct PipelineGauges {
 	pub in_flight: u32,
 	/// Generated chunks resident in the pipeline store.
 	pub resident: u32,
+	/// Meshes drained but not yet uploaded. Engine-side backlog: the
+	/// channel-side `saturated` flag cannot see it, so a starved upload
+	/// loop used to be invisible.
+	pub upload_backlog: u32,
+	/// Chunks evicted but whose GPU buffers are still queued for release.
+	pub evict_backlog: u32,
+	/// Inbound net events queued past this frame's edit budget.
+	pub net_backlog: u32,
 }
 
 /// What the renderer did last frame.
@@ -138,6 +183,12 @@ pub struct OverlayStats {
 	/// Hitches in the current report window / since start.
 	pub hitches_window: u32,
 	pub hitches_total: u64,
+	/// Frames that missed their display slot (see `DROP_FACTOR`) — catches
+	/// the single dropped frames `hitches` is too coarse to see.
+	pub dropped_window: u32,
+	pub dropped_total: u64,
+	/// Estimated display interval backing `dropped_*`; 0.0 until known.
+	pub refresh_ms: f32,
 	pub last: FrameTimings,
 	pub smooth: FrameTimings,
 	/// None until the first timestamp readback (or unsupported).
@@ -214,20 +265,36 @@ pub struct Metrics {
 	/// Streaming budget in effect (last-write gauge; see the engine's
 	/// adaptive controller).
 	pub stream_budget_ms: f32,
-	/// DIG_SPIKELOG=1: log a per-phase breakdown of every frame over the
-	/// 120Hz budget — attributes pacing spikes without wading through CSVs.
+	/// Log a per-phase breakdown of every frame over the 120Hz budget —
+	/// attributes pacing spikes without wading through CSVs. Set by the
+	/// launcher (desktop: `DIG_SPIKELOG`; web: `?spikelog`) rather than
+	/// read from the environment here, which wasm has none of.
 	spike_log: bool,
+	/// Estimated display interval, tracked from the fastest frames in the
+	/// window (see [`Metrics::refresh_ms`]).
+	refresh_ms: f32,
+	/// Frames past `DROP_FACTOR` × the estimated display interval — i.e.
+	/// visibly dropped ones. `hitches` only catches ≥2× a 60Hz frame, so a
+	/// single dropped frame at 60Hz never registered at runtime.
+	dropped: u32,
+	dropped_total: u64,
 	csv: Option<std::io::BufWriter<std::fs::File>>,
 }
 
-const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,\
-acq_ms,upd_ms,mnt_ms,upl_ms,enc_ms,gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
+/// Schema note: columns are only ever APPENDED to a group, never
+/// reordered, but old CSVs still can't be diffed naively against new ones
+/// (`BENCH.md` carries the same warning for the `gpu_water_ms` insertion).
+const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,dropped,refresh_ms,\
+busy_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,upl_ms,prep_ms,enc_ms,\
+gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
-uploads,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,\
+uploads,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
 drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms";
 
 impl Metrics {
-	pub fn new(csv_path: Option<&std::path::Path>) -> Self {
+	/// `spike_log` comes from the launcher: core is env-free by convention,
+	/// and `std::env` on wasm would silently answer None forever.
+	pub fn new(csv_path: Option<&std::path::Path>, spike_log: bool) -> Self {
 		let csv = csv_path.and_then(|p| {
 			use std::io::Write;
 			let open = std::fs::File::create(p).and_then(|f| {
@@ -278,9 +345,33 @@ impl Metrics {
 			gpu_buffer_bytes: 0,
 			workers: 0,
 			stream_budget_ms: 0.0,
-			spike_log: std::env::var_os("DIG_SPIKELOG").is_some(),
+			spike_log,
+			refresh_ms: 0.0,
+			dropped: 0,
+			dropped_total: 0,
 			csv,
 		}
+	}
+
+	/// Estimated display interval; 0.0 until the window has enough frames.
+	pub fn refresh_ms(&self) -> f32 {
+		self.refresh_ms
+	}
+
+	/// Re-estimate the display interval from the low end of the window.
+	/// Cheap enough per frame only because `sort_scratch` is reused and the
+	/// window is bounded; called from the report path instead.
+	fn update_refresh(&mut self) {
+		if self.frame_ms.len() < 30 {
+			return;
+		}
+		self.sort_scratch.clear();
+		self.sort_scratch.extend(self.frame_ms.iter().copied());
+		self.sort_scratch
+			.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+		let i = ((self.sort_scratch.len() as f32 * REFRESH_PCTL) as usize)
+			.min(self.sort_scratch.len() - 1);
+		self.refresh_ms = self.sort_scratch[i].clamp(REFRESH_MIN_MS, REFRESH_MAX_MS);
 	}
 
 	/// Call once per presented frame with that frame's phase timings.
@@ -305,16 +396,31 @@ impl Metrics {
 				self.hitches += 1;
 				self.hitches_total += 1;
 			}
-			// Per-spike phase attribution (see `spike_log`).
-			if self.spike_log && timings.total_ms > 8.4 {
+			if self.refresh_ms > 0.0 && timings.total_ms > self.refresh_ms * DROP_FACTOR {
+				self.dropped += 1;
+				self.dropped_total += 1;
+			}
+			// Per-spike phase attribution (see `spike_log`). Threshold rides
+			// the measured display interval so it stays meaningful at 60Hz.
+			let spike_over = if self.refresh_ms > 0.0 {
+				self.refresh_ms * 1.01
+			} else {
+				8.4
+			};
+			if self.spike_log && timings.total_ms > spike_over {
 				log::info!(
-					"spike f{} total {:.2} | acq {:.2} upd {:.2} mnt {:.2} upl {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {}",
+					"spike f{} total {:.2} busy {:.2} | acq {:.2} upd {:.2} (net {:.2} sim {:.2} sav {:.2}) mnt {:.2} upl {:.2} prep {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {} | upl_q {} evict_q {} budget {:.1}",
 					self.run_frames,
 					timings.total_ms,
+					timings.busy_ms,
 					timings.acquire_ms,
 					timings.update_ms,
+					timings.net_ms,
+					timings.sim_ms,
+					timings.persist_ms,
 					timings.maintain_ms,
 					timings.upload_ms,
+					timings.prep_ms,
 					timings.encode_ms,
 					self.gpu.as_ref().map_or(0.0, |g| g.shadow_ms),
 					self.gpu.as_ref().map_or(0.0, |g| g.main_ms),
@@ -322,6 +428,9 @@ impl Metrics {
 					self.render.draw_calls,
 					self.render.triangles / 1000,
 					self.render.wide_refreshed as u32,
+					self.gauges.upload_backlog,
+					self.gauges.evict_backlog,
+					self.stream_budget_ms,
 				);
 			}
 			self.last = timings;
@@ -334,6 +443,7 @@ impl Metrics {
 		self.last_frame = Some(now);
 
 		if now - self.last_report >= self.report_every {
+			self.update_refresh();
 			self.report();
 			self.last_report = now;
 		}
@@ -396,6 +506,9 @@ impl Metrics {
 			worst_ms,
 			hitches_window: self.hitches,
 			hitches_total: self.hitches_total,
+			dropped_window: self.dropped,
+			dropped_total: self.dropped_total,
+			refresh_ms: self.refresh_ms,
 			last: self.last,
 			smooth: self.smooth,
 			gpu: self.gpu,
@@ -487,10 +600,13 @@ impl Metrics {
 			return;
 		};
 		log::info!(
-			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | hitch {} | gen {} up {} | gen q {} mesh q {} fly {} | resident {} | gpu {:.1} MB",
-			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms, self.hitches,
+			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} | hitch {} drop {} | gen {} up {} | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
+			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
+			if self.win_frames > 0 { self.win_sum.busy_ms / self.win_frames as f32 } else { 0.0 },
+			self.hitches, self.dropped,
 			self.chunks_generated, self.meshes_uploaded,
 			self.gauges.gen_queue, self.gauges.mesh_queue, self.gauges.in_flight,
+			self.gauges.upload_backlog,
 			self.gauges.resident,
 			self.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
 		);
@@ -506,20 +622,28 @@ impl Metrics {
 			let r = &self.render;
 			let _ = writeln!(
 				w,
-				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},\
-{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},{},{:.2},\
+{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
-{},{},{},{},{},{},{},{},{},\
+{},{},{},{},{},{},{},{},{},{},{},\
 {},{},{},{},{},{},{},{:.2}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
 				s.worst_ms,
 				self.hitches,
+				self.dropped,
+				self.refresh_ms,
+				win.busy_ms,
 				win.acquire_ms,
 				win.update_ms,
+				win.net_ms,
+				win.sim_ms,
+				win.persist_ms,
 				win.maintain_ms,
 				win.upload_ms,
+				win.prep_ms,
 				win.encode_ms,
 				gpu.shadow_ms,
 				gpu.main_ms,
@@ -540,6 +664,8 @@ impl Metrics {
 				self.gauges.gen_queue,
 				self.gauges.mesh_queue,
 				self.gauges.in_flight,
+				self.gauges.upload_backlog,
+				self.gauges.evict_backlog,
 				r.chunks_drawn,
 				r.chunks_culled,
 				r.water_draws,
@@ -555,6 +681,7 @@ impl Metrics {
 		self.win_sum = FrameTimings::default();
 		self.win_frames = 0;
 		self.hitches = 0;
+		self.dropped = 0;
 		self.run_gen_jobs.merge(self.gen_jobs);
 		self.run_mesh_jobs.merge(self.mesh_jobs);
 		self.gen_jobs = JobTiming::default();
@@ -584,7 +711,7 @@ mod tests {
 
 	#[test]
 	fn ring_caps_at_window() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		// First call only arms last_frame; every later call pushes one.
 		for _ in 0..WINDOW + 10 {
 			m.frame(FrameTimings::default());
@@ -611,7 +738,7 @@ mod tests {
 
 	#[test]
 	fn hitch_counting() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		// First call sets last_frame; deltas are measured wall-clock, so
 		// synthesize hitches by injecting directly.
 		m.frame(FrameTimings::default());
@@ -626,7 +753,7 @@ mod tests {
 
 	#[test]
 	fn overlay_stats_safe_before_first_frame() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		let s = m.overlay_stats();
 		assert_eq!(s.fps, 0.0);
 		assert_eq!(s.gen_jobs.count, 0);
@@ -635,7 +762,7 @@ mod tests {
 
 	#[test]
 	fn streamed_marks_only_once() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		assert!(m.streamed_at.is_none());
 		m.mark_streamed();
 		let first = m.streamed_at;
@@ -647,7 +774,7 @@ mod tests {
 
 	#[test]
 	fn bench_summary_falls_back_below_warmup() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		m.record_run_history();
 		// Two frames is under the warmup threshold — must fall back to the
 		// window summary instead of returning None.
@@ -659,7 +786,7 @@ mod tests {
 
 	#[test]
 	fn history_tail_returns_recent() {
-		let mut m = Metrics::new(None);
+		let mut m = Metrics::new(None, false);
 		for i in 0..10 {
 			m.frame_ms.push_back(i as f32);
 		}

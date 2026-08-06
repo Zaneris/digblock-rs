@@ -59,7 +59,8 @@ pick a name you actually join with.
 ## Operating
 
 - **Upgrade:** `docker compose pull && docker compose up -d`
-- **Backup:** the `./data` directory (one journal file per world seed)
+- **Backup:** the `./data` directory (one journal directory per world
+  seed, holding a shard per 256×256-block region)
 - **New world:** set `DIGBLOCK_SEED` in `compose.yml` and restart; each
   seed keeps its own journal, so switching back restores the old world
 - Certificates and master registration are fully automatic (the server

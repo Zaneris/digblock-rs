@@ -29,6 +29,22 @@ pub const TOD_START: f32 = 80.0;
 const WIDE_PERIOD_SECS: f32 = 3.33;
 const REANCHOR_DIST: f32 = 32.0;
 pub const NEAR_EXTENT: f32 = 24.0;
+/// Quantization step for the NEAR cascade's caster angle, in degrees.
+///
+/// The renderer re-rasterizes the near map whenever its VP changes, and
+/// an unquantized `tod` changes it every single frame — so a stationary
+/// camera redrew a visually identical map at full frame rate forever.
+/// The texel snap already makes translation change in whole texels; this
+/// does the same for rotation.
+///
+/// Sizing: the sun sweeps `TOD_RATE_DEG_PER_SEC` (0.3°/s at the shipping
+/// `DAY_SECS`), which drifts the near-map edge about one texel per
+/// second, so 0.25° is at most ~1 texel of step and re-rasterizes roughly
+/// once a second instead of ~120 times. Diffuse lighting keeps the smooth
+/// angle — only the shadow caster direction is stepped, and the renderer
+/// patches `light_near` to whatever VP it actually rasterized, so
+/// sampling can't disagree with the map.
+pub const NEAR_TOD_STEP_DEG: f32 = 0.25;
 
 /// The active shadow caster (sun by day, moon by night).
 pub struct CasterState {
@@ -157,11 +173,9 @@ impl Sun {
 	}
 
 	/// `texels` = shadow map resolution. The snap makes edges stable
-	/// under a moving `target`; a changing `tod` still re-rasterizes
-	/// (~1 texel/s of drift at the near-map edge at the current day
-	/// rate — coherent creep, not per-frame boiling). If that ever
-	/// bothers, quantize the tod fed to the cascades while keeping the
-	/// smooth angle for diffuse lighting.
+	/// under a moving `target`. The near cascade additionally quantizes
+	/// its tod (see [`NEAR_TOD_STEP_DEG`]) so a still camera holds one
+	/// exact VP and the renderer can reuse the map it already drew.
 	fn cascade_vp(extent: f32, tod: f32, target: Vec3, depth: f32, texels: f32) -> Mat4 {
 		let dir = Self::dir_of(tod);
 		let eye = target - dir * depth;
@@ -183,11 +197,13 @@ impl Sun {
 		vp
 	}
 
-	/// Near cascade: 24×24 units, follows the player, current caster angle.
+	/// Near cascade: 24×24 units, follows the player, quantized caster
+	/// angle (see [`NEAR_TOD_STEP_DEG`]).
 	pub fn near_vp(&self, player: Vec3, depth: f32, texels: f32) -> Mat4 {
+		let tod = Self::caster_tod(self.tod);
 		Self::cascade_vp(
 			NEAR_EXTENT,
-			Self::caster_tod(self.tod),
+			(tod / NEAR_TOD_STEP_DEG).round() * NEAR_TOD_STEP_DEG,
 			player,
 			depth,
 			texels,
@@ -213,6 +229,35 @@ impl Sun {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The near map is only reusable if its VP is EXACTLY stable frame to
+	/// frame for a still camera — the renderer compares matrices exactly,
+	/// because a tolerance would let shadow edges shift without a redraw.
+	#[test]
+	fn near_vp_is_stable_between_tod_steps() {
+		let mut sun = Sun::new();
+		sun.tod = 40.0;
+		let at = Vec3::new(10.0, 70.0, -3.0);
+		let vp = sun.near_vp(at, 120.0, 2048.0);
+		// A tenth of the quantization step, many frames' worth of sun
+		// movement, must not disturb the matrix at all.
+		let mut held = 0;
+		for i in 1..=10 {
+			sun.tod = 40.0 + NEAR_TOD_STEP_DEG * 0.01 * i as f32;
+			if sun.near_vp(at, 120.0, 2048.0) == vp {
+				held += 1;
+			}
+		}
+		assert_eq!(held, 10, "near VP must not move inside one tod step");
+		// And a full step does move it, or the cascade would never track
+		// the sun at all.
+		sun.tod = 40.0 + NEAR_TOD_STEP_DEG;
+		assert_ne!(
+			sun.near_vp(at, 120.0, 2048.0),
+			vp,
+			"a whole step must re-aim the cascade"
+		);
+	}
 
 	#[test]
 	fn tod_wraps_through_a_full_cycle() {

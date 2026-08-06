@@ -136,6 +136,9 @@ fn main() {
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	// Read at the launcher edge: the engine stays env-free so wasm, which
+	// has no environment at all, can set the same flag from a query param.
+	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();
 	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
 		v.parse::<u32>().ok().filter(|&n| n > 0).unwrap_or_else(|| {
 			eprintln!("bad value for DIG_CHUNK_SLOTS: {v}");

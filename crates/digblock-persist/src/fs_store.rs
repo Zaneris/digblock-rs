@@ -1,11 +1,12 @@
 //! Desktop `WorldStore`: one directory per save under an injected root
 //! (`<data-dir>/digblock/worlds/<id>/`) holding `meta.json`, the world
-//! journal (the exact server format — `Journal` does boot compaction and
-//! torn-tail recovery for free), and `state.json` (inventory + player),
-//! written atomically on a 5s-if-dirty throttle (the server's
-//! InventoryStore cadence).
+//! journal (the exact server layout — a `world-<seedbits>/` directory of
+//! per-region shards; `Journal` does the legacy-file migration, boot
+//! compaction and torn-tail recovery for free), and `state.json`
+//! (inventory + player), written atomically on a 5s-if-dirty throttle
+//! (the server's InventoryStore cadence).
 
-use crate::journal::{file_version, Journal};
+use crate::journal::{world_version, Journal};
 use crate::{PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use digblock_core::overlay::EditOverlay;
 use digblock_net::messages::BlockEdit;
@@ -106,10 +107,6 @@ impl FsWorldStore {
 		Some((meta, f64::from_bits(bits)))
 	}
 
-	fn journal_path(dir: &Path, seed: f64) -> PathBuf {
-		dir.join(format!("world-{:016x}.journal", seed.to_bits()))
-	}
-
 	fn write_meta(dir: &Path, meta: &MetaFile) -> std::io::Result<()> {
 		let json =
 			serde_json::to_string_pretty(meta).map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -139,7 +136,7 @@ impl WorldStore for FsWorldStore {
 			};
 			// A missing journal (created, never entered) is compatible;
 			// a version-mismatched one is listed but refused for play.
-			let compatible = matches!(file_version(&Self::journal_path(&dir, seed)), Ok(None));
+			let compatible = matches!(world_version(&dir, seed), Ok(None));
 			out.push(WorldMeta {
 				id: entry.file_name().to_string_lossy().into_owned(),
 				name: meta.name,
@@ -194,8 +191,9 @@ impl WorldStore for FsWorldStore {
 		};
 		// Refuse incompatible saves BEFORE Journal::open, whose archive-
 		// and-start-fresh policy is right for a server volume and wrong
-		// for a named user save.
-		match file_version(&Self::journal_path(&dir, seed)) {
+		// for a named user save. (A pre-shard save is NOT incompatible —
+		// `Journal::open` migrates it in place.)
+		match world_version(&dir, seed) {
 			Ok(None) => {}
 			Ok(Some(v)) => return Err(format!("save is from an old version (v{v})")),
 			Err(e) => return Err(format!("save unreadable: {e}")),
@@ -382,14 +380,15 @@ mod tests {
 	fn incompatible_save_listed_but_refused() {
 		let (mut s, root) = store("oldver");
 		let meta = s.create_world("Old", 3.0).unwrap();
-		// Enter once so the journal exists, then rewrite its header
-		// version to v1.
+		// Enter once so the journal exists, then rewrite the header
+		// version of the region shard the edit landed in.
 		s.open_world(&meta.id).unwrap();
 		s.append_edit(0, 100, 0, 1);
 		s.close_world();
 		let path = root
 			.join(&meta.id)
-			.join(format!("world-{:016x}.journal", 3.0f64.to_bits()));
+			.join(format!("world-{:016x}", 3.0f64.to_bits()))
+			.join("r.0.0.journal");
 		let mut bytes = std::fs::read(&path).unwrap();
 		bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
 		std::fs::write(&path, &bytes).unwrap();
@@ -401,6 +400,44 @@ mod tests {
 		assert!(err.contains("old version"), "{err}");
 		// Crucially: the journal was NOT archived/wiped by the refusal.
 		assert_eq!(std::fs::read(&path).unwrap(), bytes, "save untouched");
+		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	/// A pre-shard save is a CONTAINER mismatch, not a version one: it
+	/// must list as compatible and open (migrating), never be refused
+	/// alongside the genuinely stale ones.
+	#[test]
+	fn legacy_single_file_save_migrates_on_open() {
+		let (mut s, root) = store("legacyshard");
+		let meta = s.create_world("Old", 3.0).unwrap();
+		let dir = root.join(&meta.id);
+		// Hand-write the pre-shard layout: one whole-world journal file.
+		let mut index = crate::journal::JournalIndex::default();
+		for cell in [(1, 100, 1, 7u16), (900, 101, 900, 8)] {
+			index.record(BlockEdit {
+				x: cell.0,
+				y: cell.1,
+				z: cell.2,
+				block: cell.3,
+			});
+		}
+		let legacy = dir.join(format!("world-{:016x}.journal", 3.0f64.to_bits()));
+		std::fs::write(&legacy, crate::journal::snapshot_bytes(3.0, &index)).unwrap();
+
+		assert!(
+			s.list_worlds()[0].compatible,
+			"old container, not old format"
+		);
+		let save = s.open_world(&meta.id).unwrap();
+		let mut edits = save.edits.clone();
+		edits.sort();
+		assert_eq!(edits, vec![((1, 100, 1), 7), ((900, 101, 900), 8)]);
+		s.close_world();
+		assert!(!legacy.exists(), "migrated, not left behind");
+		assert!(dir
+			.join(format!("world-{:016x}", 3.0f64.to_bits()))
+			.join("r.0.0.journal")
+			.exists());
 		let _ = std::fs::remove_dir_all(&root);
 	}
 

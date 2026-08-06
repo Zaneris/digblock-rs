@@ -56,7 +56,7 @@ pub fn urgency(nearest_dist: f32, draw_dist: f32) -> f32 {
 pub struct StreamBudget {
 	floor_ms: f32,
 	budget_ms: f32,
-	/// Busy-time ring (total − acquire), newest last.
+	/// Measured busy-time ring, newest last.
 	busy: [f32; WINDOW_N],
 	len: usize,
 	head: usize,
@@ -86,24 +86,32 @@ impl StreamBudget {
 		self.head = 0;
 	}
 
-	/// Feed the previous frame's wall delta and vsync wait; returns the
-	/// budget for this frame. Growth requires a full window of valid
-	/// samples, so cold starts and throttled tabs sit at the floor.
-	/// `urgency` (see [`urgency`]) scales the ceiling between the floor
-	/// and `CEIL_MS`; a drop clamps the stored budget immediately, and
-	/// recovery re-grows additively — near work appearing never slams
-	/// the full ceiling onto an unproven frame.
-	pub fn on_frame(&mut self, total_ms: f32, acquire_ms: f32, urgency: f32) -> f32 {
-		if total_ms <= 0.0 || total_ms >= STALE_MS {
+	/// Feed the previous frame's wall delta and its MEASURED main-thread
+	/// occupancy; returns the budget for this frame. Growth requires a full
+	/// window of valid samples, so cold starts and throttled tabs sit at
+	/// the floor. `urgency` (see [`urgency`]) scales the ceiling between
+	/// the floor and `CEIL_MS`; a drop clamps the stored budget
+	/// immediately, and recovery re-grows additively — near work appearing
+	/// never slams the full ceiling onto an unproven frame.
+	///
+	/// `busy_ms` must be measured (platform `frame_busy` minus the acquire
+	/// wait), NEVER derived as `frame_ms − acquire_ms`. That subtraction is
+	/// right only where vsync blocks inside the swapchain acquire: on the
+	/// web `getCurrentTexture` cannot block, pacing lives in rAF between
+	/// frames, and the derived value reads as a full interval every frame —
+	/// headroom is then permanently negative and this controller pins to
+	/// its floor forever. See `web_signal_shape_still_grows`.
+	pub fn on_frame(&mut self, frame_ms: f32, busy_ms: f32, urgency: f32) -> f32 {
+		if frame_ms <= 0.0 || frame_ms >= STALE_MS {
 			self.reset();
 			return self.floor_ms;
 		}
-		if total_ms > INTERVAL_MS * MISS_FACTOR {
+		if frame_ms > INTERVAL_MS * MISS_FACTOR {
 			self.reset();
 			self.cooldown = COOLDOWN;
 			return self.floor_ms;
 		}
-		self.push((total_ms - acquire_ms).max(0.0));
+		self.push(busy_ms.max(0.0));
 		let ceil = self.floor_ms + (CEIL_MS - self.floor_ms).max(0.0) * urgency.clamp(0.0, 1.0);
 		self.budget_ms = self.budget_ms.min(ceil);
 		let headroom = INTERVAL_MS - MARGIN_MS - self.worst();
@@ -136,10 +144,10 @@ mod tests {
 
 	const FLOOR: f32 = 3.0;
 
-	fn feed(b: &mut StreamBudget, n: usize, total: f32, acquire: f32) -> f32 {
+	fn feed(b: &mut StreamBudget, n: usize, frame: f32, busy: f32) -> f32 {
 		let mut out = b.budget_ms();
 		for _ in 0..n {
-			out = b.on_frame(total, acquire, 1.0);
+			out = b.on_frame(frame, busy, 1.0);
 		}
 		out
 	}
@@ -147,10 +155,10 @@ mod tests {
 	#[test]
 	fn holds_floor_until_window_fills() {
 		let mut b = StreamBudget::new(FLOOR);
-		let out = feed(&mut b, WINDOW_N - 1, 16.0, 11.0);
+		let out = feed(&mut b, WINDOW_N - 1, 16.0, 5.0);
 		assert_eq!(out, FLOOR, "no growth before a full window");
 		assert!(
-			b.on_frame(16.0, 11.0, 1.0) > FLOOR,
+			b.on_frame(16.0, 5.0, 1.0) > FLOOR,
 			"grows once the window fills"
 		);
 	}
@@ -158,11 +166,11 @@ mod tests {
 	#[test]
 	fn grows_additively_then_caps() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, WINDOW_N, 16.0, 11.0); // busy 5.0, headroom 9.7
+		feed(&mut b, WINDOW_N, 16.0, 5.0); // busy 5.0, headroom 9.7
 		let before = b.budget_ms();
-		let after = b.on_frame(16.0, 11.0, 1.0);
+		let after = b.on_frame(16.0, 5.0, 1.0);
 		assert!((after - before - GROW_MS).abs() < 1e-4, "additive step");
-		let capped = feed(&mut b, 200, 16.0, 11.0);
+		let capped = feed(&mut b, 200, 16.0, 5.0);
 		assert_eq!(capped, CEIL_MS, "stops at the ceiling");
 	}
 
@@ -170,7 +178,7 @@ mod tests {
 	fn growth_clamped_by_headroom() {
 		let mut b = StreamBudget::new(FLOOR);
 		// busy 14.5 → headroom 0.2 < GROW_MS: steps shrink to the slack.
-		let out = feed(&mut b, 400, 16.0, 1.5);
+		let out = feed(&mut b, 400, 16.0, 14.5);
 		assert!(
 			out <= INTERVAL_MS - MARGIN_MS,
 			"never past interval − margin"
@@ -181,20 +189,20 @@ mod tests {
 	#[test]
 	fn near_miss_collapses_to_floor() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, 200, 16.0, 11.0);
+		feed(&mut b, 200, 16.0, 5.0);
 		assert_eq!(b.budget_ms(), CEIL_MS);
 		// One busy = 16.0 sample: headroom −1.3 every frame it lingers.
-		b.on_frame(16.4, 0.4, 1.0);
+		b.on_frame(16.4, 16.0, 1.0);
 		let mut prev = b.budget_ms();
 		assert!(prev < CEIL_MS, "backoff starts immediately");
 		for _ in 0..WINDOW_N - 1 {
-			let cur = b.on_frame(16.0, 11.0, 1.0);
+			let cur = b.on_frame(16.0, 5.0, 1.0);
 			assert!(cur <= prev, "monotone while the sample lingers");
 			prev = cur;
 		}
 		assert_eq!(prev, FLOOR, "collapsed to floor within the window");
 		assert!(
-			b.on_frame(16.0, 11.0, 1.0) > FLOOR,
+			b.on_frame(16.0, 5.0, 1.0) > FLOOR,
 			"re-grows once it ages out"
 		);
 	}
@@ -202,26 +210,66 @@ mod tests {
 	#[test]
 	fn hard_miss_resets_with_cooldown() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, 200, 16.0, 11.0);
+		feed(&mut b, 200, 16.0, 5.0);
 		assert_eq!(
-			b.on_frame(30.0, 0.0, 1.0),
+			b.on_frame(30.0, 30.0, 1.0),
 			FLOOR,
 			"hard miss resets instantly"
 		);
 		// Cooldown + window refill must both elapse before growth.
-		let held = feed(&mut b, (COOLDOWN as usize).max(WINDOW_N), 16.0, 11.0);
+		let held = feed(&mut b, (COOLDOWN as usize).max(WINDOW_N), 16.0, 5.0);
 		assert_eq!(held, FLOOR, "no growth during cooldown/refill");
-		assert!(b.on_frame(16.0, 11.0, 1.0) > FLOOR, "then growth resumes");
+		assert!(b.on_frame(16.0, 5.0, 1.0) > FLOOR, "then growth resumes");
 	}
 
 	#[test]
 	fn background_tab_pins_floor() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, 200, 16.0, 11.0);
-		let out = feed(&mut b, 20, 1000.0, 990.0);
+		feed(&mut b, 200, 16.0, 5.0);
+		let out = feed(&mut b, 20, 1000.0, 10.0);
 		assert_eq!(out, FLOOR, "throttled frames reset and pin the floor");
-		let out = feed(&mut b, WINDOW_N + 1, 16.0, 11.0);
+		let out = feed(&mut b, WINDOW_N + 1, 16.0, 5.0);
 		assert!(out > FLOOR, "recovers after real frames resume");
+	}
+
+	/// REGRESSION: the web frame shape must still prove headroom.
+	///
+	/// On the web the swapchain acquire never blocks and rAF paces the loop
+	/// between frames, so every frame's wall delta is a full display
+	/// interval no matter how little work it did. The controller previously
+	/// derived busy as `frame − acquire`, which on this shape reads as
+	/// "always full" and pinned the budget to its floor forever — the
+	/// adaptive path was inert on the one platform it exists for.
+	#[test]
+	fn web_signal_shape_still_grows() {
+		for &busy in &[1.0f32, 2.0, 5.0, 8.0] {
+			let mut b = StreamBudget::new(FLOOR);
+			// 60Hz rAF: delta is a full interval, acquire is ~0, and the
+			// real work is `busy`.
+			let out = feed(&mut b, 200, 16.7, busy);
+			assert_eq!(
+				out, CEIL_MS,
+				"web frame with {busy}ms of work must reach the ceiling"
+			);
+		}
+		// And a genuinely busy web frame still refuses to grow.
+		let mut b = StreamBudget::new(FLOOR);
+		assert_eq!(
+			feed(&mut b, 200, 16.7, 15.5),
+			FLOOR,
+			"no headroom left means no growth"
+		);
+	}
+
+	/// A 120Hz web display quantizes the wall delta to 8.3 or 16.7 while
+	/// the work itself varies continuously; the budget must track the work,
+	/// not the quantized delta (which used to bistably slam floor/ceiling).
+	#[test]
+	fn high_refresh_web_tracks_work_not_quantized_delta() {
+		let mut b = StreamBudget::new(FLOOR);
+		// Work spilled past one 8.3ms slot, so the delta doubled — but 9ms
+		// of work still leaves real headroom against the 60fps target.
+		assert_eq!(feed(&mut b, 200, 16.7, 9.0), CEIL_MS);
 	}
 
 	#[test]
@@ -233,10 +281,10 @@ mod tests {
 			x ^= x << 13;
 			x ^= x >> 7;
 			x ^= x << 17;
-			let total = (x % 4000) as f32 / 100.0; // 0..40ms
-			let acquire = ((x >> 16) % 1000) as f32 / 100.0; // 0..10ms
+			let frame = (x % 4000) as f32 / 100.0; // 0..40ms
+			let busy = ((x >> 16) % 4000) as f32 / 100.0; // 0..40ms
 			let urgency = ((x >> 32) % 100) as f32 / 100.0; // 0..1
-			let out = b.on_frame(total, acquire, urgency);
+			let out = b.on_frame(frame, busy, urgency);
 			assert!(
 				(FLOOR..=CEIL_MS).contains(&out),
 				"budget {out} out of bounds"
@@ -249,7 +297,7 @@ mod tests {
 		let mut b = StreamBudget::new(FLOOR);
 		for _ in 0..200 {
 			assert_eq!(
-				b.on_frame(16.0, 11.0, 0.0),
+				b.on_frame(16.0, 5.0, 0.0),
 				FLOOR,
 				"rim-only work never grows past the floor"
 			);
@@ -261,7 +309,7 @@ mod tests {
 		let mut b = StreamBudget::new(FLOOR);
 		let mut out = FLOOR;
 		for _ in 0..400 {
-			out = b.on_frame(16.0, 11.0, 0.5);
+			out = b.on_frame(16.0, 5.0, 0.5);
 		}
 		let want = FLOOR + (CEIL_MS - FLOOR) * 0.5;
 		assert!((out - want).abs() < 1e-4, "caps at the scaled ceiling");
@@ -270,16 +318,16 @@ mod tests {
 	#[test]
 	fn urgency_drop_clamps_then_regrows_additively() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, 200, 16.0, 11.0);
+		feed(&mut b, 200, 16.0, 5.0);
 		assert_eq!(b.budget_ms(), CEIL_MS);
 		assert_eq!(
-			b.on_frame(16.0, 11.0, 0.0),
+			b.on_frame(16.0, 5.0, 0.0),
 			FLOOR,
 			"urgency drop clamps immediately"
 		);
 		// Near work reappears: no jump back to the ceiling — one
 		// additive step from the floor.
-		let out = b.on_frame(16.0, 11.0, 1.0);
+		let out = b.on_frame(16.0, 5.0, 1.0);
 		assert!(
 			(out - FLOOR - GROW_MS).abs() < 1e-4,
 			"regrowth is additive, got {out}"

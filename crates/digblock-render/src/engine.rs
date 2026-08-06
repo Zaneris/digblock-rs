@@ -89,6 +89,21 @@ pub struct EngineConfig {
 	/// inventory; all zeros = anonymous. The LAUNCHER fills this (desktop:
 	/// data-dir file; web: localStorage) — the engine stays env-free.
 	pub identity: [u8; 16],
+	/// Log a per-phase breakdown of every over-budget frame. The LAUNCHER
+	/// fills this (desktop: `DIG_SPIKELOG`; web: `?spikelog`) — reading the
+	/// environment inside core answers None forever on wasm, which is
+	/// exactly the platform whose spikes most need attributing.
+	pub spike_log: bool,
+	/// Chunk draws encoded per wide-shadow refresh slice. Lower on the web,
+	/// where the same slice costs more to encode and the refresh sawtooth
+	/// is a bigger share of the frame; the refresh just spans more frames,
+	/// and the sun moves imperceptibly over the difference.
+	pub wide_slice_draws: u32,
+	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot
+	/// bound this on the web: `write_buffer` merely RECORDS the copy and
+	/// Chrome's GPU process performs the staging transfer at submit, so the
+	/// cost lands after everything this engine can measure.
+	pub upload_bytes_max: usize,
 }
 
 impl EngineConfig {
@@ -120,6 +135,9 @@ impl EngineConfig {
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
+			spike_log: false,
+			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
+			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 		}
 	}
 
@@ -151,6 +169,9 @@ impl EngineConfig {
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
+			spike_log: false,
+			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
+			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 		}
 	}
 
@@ -164,6 +185,11 @@ impl EngineConfig {
 			workers: 0,
 			menu: true,
 			adaptive_stream: true,
+			// Everything the main thread does is serialized with the render
+			// loop here, so the per-frame ceilings that desktop can afford
+			// to leave generous have to be real.
+			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
+			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			..Self::desktop()
 		}
 	}
@@ -173,14 +199,12 @@ impl EngineConfig {
 		self.adaptive_stream && self.workers == 0 && !self.bench
 	}
 
-	/// The renderer's slice of the config. `wide_slice_draws` has no
-	/// per-platform knob yet; the renderer default is the tuned value.
 	pub(crate) fn render_config(&self) -> RenderConfig {
 		RenderConfig {
 			shadow_size: self.shadow_size,
 			draw_dist: self.draw_dist,
 			spray_droplets: self.spray_droplets,
-			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
+			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
 		}
 	}
@@ -207,7 +231,27 @@ struct HeldKeys {
 const STREAM_BUDGET_MS: f32 = 3.0;
 /// Uploads always make this much progress per frame even with the budget
 /// exhausted, so a saturated drain can never starve the upload queue.
-const UPLOAD_MIN: usize = 4;
+/// Sized to a chunk stack's worth of the player's own column: the
+/// guarantee only has to cover where the player IS, and the queue is
+/// nearest-first, so anything beyond that is the far ring choosing to wait
+/// rather than to hitch. The byte ceiling below still applies.
+const UPLOAD_MIN: usize = 2;
+/// Mesh bytes per frame on desktop — high enough to be a backstop against
+/// pathological frames rather than a throttle on normal streaming.
+const UPLOAD_BYTES_MAX_NATIVE: usize = 8 << 20;
+/// …and on the web/mobile, where the staging copy lands in another
+/// process at submit time and is invisible to `upload_ms`.
+const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
+/// Wide-cascade slice size where encode is expensive (web, mobile).
+const WIDE_SLICE_DRAWS_CONSTRAINED: u32 = 448;
+/// Evicted chunks released per frame even with the budget spent, so a
+/// player who keeps walking can't outrun the release queue.
+const EVICT_MIN: usize = 8;
+/// Authoritative edits applied per frame. Each costs a copy-on-write cell
+/// write plus up to eight mesh-heap pushes, so a join sync's worth of them
+/// in one frame is a visible stall; spread over frames it is invisible,
+/// and the world simply fills in as fast as meshing can keep up anyway.
+const NET_EDIT_BUDGET: usize = 256;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -255,6 +299,9 @@ pub struct Engine {
 	/// below is dead in that case).
 	net: Option<digblock_net::NetClient>,
 	net_events: Vec<digblock_net::NetEvent>,
+	/// Inbound events past this frame's edit budget, applied in order on
+	/// later frames (see `NET_EDIT_BUDGET`).
+	net_backlog: std::collections::VecDeque<digblock_net::NetEvent>,
 	/// Snapshot ack carried from the net drain to the walk branch (the
 	/// reconcile needs the physics `block_at` borrow).
 	pending_ack: Option<(u32, digblock_core::player::PlayerState)>,
@@ -285,12 +332,29 @@ pub struct Engine {
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
 	pending: FrameTimings,
+	/// Redraw-handler entry, opened by `frame_started` and closed in
+	/// `render` to yield `busy_ms`.
+	frame_start: Option<web_time::Instant>,
+	/// Start of the post-streaming, pre-encode span (see `prep_ms`).
+	prep_start: Option<web_time::Instant>,
+	/// Memoized worldgen surface height for the ambient-zone test, keyed by
+	/// the camera's block column.
+	ambient_height: Option<((i32, i32), i32)>,
 	overlay_visible: bool,
 	history_scratch: Vec<f32>,
 	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
 	bench_t: f32,
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
+	/// Evicted chunks whose GPU buffers are still to be released, drained
+	/// under the frame's streaming budget.
+	pending_evicts: std::collections::VecDeque<ChunkPos>,
+	/// Positions with a release still outstanding. Doubles as the cancel
+	/// set: an upload for a queued position clears it, so a chunk that
+	/// comes back before its release is reached keeps its new mesh.
+	pending_evict_set: rustc_hash::FxHashSet<ChunkPos>,
+	/// Camera chunk the upload queue was last ordered for.
+	upload_sort_center: ChunkPos,
 	size: (u32, u32),
 	/// Device pixels per logical pixel (shell-reported; 1.0 until told).
 	scale_factor: f32,
@@ -333,7 +397,10 @@ pub struct Engine {
 	/// Player eye position last frame (footstep distance).
 	prev_player_pos: Vec3,
 	/// Per-frame name-tag scratch (reused allocation).
+	/// Name tags, kept beyond `nametag_count` so their String buffers
+	/// survive between frames instead of being reallocated every frame.
 	nametag_scratch: Vec<crate::renderer::NameTag>,
+	nametag_count: usize,
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
@@ -512,7 +579,10 @@ fn cell_center(cell: (i32, i32, i32)) -> [f32; 3] {
 
 impl Engine {
 	pub fn new(config: EngineConfig) -> Self {
-		let mut metrics = Metrics::new(config.metrics_csv.as_deref());
+		// Pay the sub-block variant bakes here rather than in whichever
+		// frame first meshes a door (see `shapes::prewarm`).
+		digblock_core::shapes::prewarm();
+		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
 		metrics.workers = config.workers as u32;
 		if config.bench {
 			metrics.record_run_history();
@@ -576,6 +646,7 @@ impl Engine {
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
 			nametag_scratch: Vec::new(),
+			nametag_count: 0,
 			services: None,
 			settings_store: None,
 			world_store: None,
@@ -615,6 +686,7 @@ impl Engine {
 			time_secs: 0.0,
 			net: None,
 			net_events: Vec::new(),
+			net_backlog: std::collections::VecDeque::new(),
 			pending_ack: None,
 			correction_offset: Vec3::ZERO,
 			remote_scratch: Vec::new(),
@@ -628,10 +700,16 @@ impl Engine {
 			metrics,
 			stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
 			pending: FrameTimings::default(),
+			frame_start: None,
+			prep_start: None,
+			ambient_height: None,
 			overlay_visible,
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
 			pending_uploads: std::collections::VecDeque::new(),
+			pending_evicts: std::collections::VecDeque::new(),
+			pending_evict_set: rustc_hash::FxHashSet::default(),
+			upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			size: (1, 1),
 			scale_factor: 1.0,
 			ui_scale: 1.0,
@@ -802,11 +880,20 @@ impl Engine {
 		let zone = if submerged {
 			AmbientZone::Underwater
 		} else {
-			let h = digblock_core::worldgen::terrain_height(
-				cam.x.floor() as i32,
-				cam.z.floor() as i32,
-				self.seed,
-			);
+			// `terrain_height` runs the whole continentalness/roughness/
+			// ridge/detail stack, which is far too much to spend every
+			// frame on a question whose answer is a pure function of the
+			// column — and the camera changes column a few times a second
+			// at a walk.
+			let col = (cam.x.floor() as i32, cam.z.floor() as i32);
+			let h = match self.ambient_height {
+				Some((c, h)) if c == col => h,
+				_ => {
+					let h = digblock_core::worldgen::terrain_height(col.0, col.1, self.seed);
+					self.ambient_height = Some((col, h));
+					h
+				}
+			};
 			if cam.y < h as f32 - 6.0 {
 				AmbientZone::Cave
 			} else {
@@ -865,6 +952,13 @@ impl Engine {
 		// identical, clearing would only force a full re-upload.
 		if world_replaced {
 			self.pending_uploads.clear();
+			// `clear_chunks` already dropped every GPU mesh, so queued
+			// releases are not just redundant but dangerous: those
+			// positions exist in the NEW world too, and releasing one later
+			// would delete a chunk that legitimately belongs there.
+			self.pending_evicts.clear();
+			self.pending_evict_set.clear();
+			self.upload_sort_center = ChunkPos::new(i32::MAX, 0, i32::MAX);
 			if let Some(r) = self.renderer.as_mut() {
 				r.clear_chunks();
 			}
@@ -1109,9 +1203,30 @@ impl Engine {
 		let mut events = std::mem::take(&mut self.net_events);
 		events.clear();
 		net.poll(&mut events, dt);
+		use digblock_net::NetEvent;
+		// Carry-over first, then this frame's fresh events. Applying edits
+		// is bounded per frame, but the ORDER of the whole stream is not
+		// negotiable — an Edit followed by a Layout must stay that way — so
+		// hitting the cap parks the entire remaining queue rather than
+		// letting cheap events overtake the expensive ones.
+		//
+		// Join sync is what forces this: the server streams its whole
+		// journal as one Edit per cell, and applying thousands of them in
+		// the frame they arrive is a multi-hundred-millisecond stall right
+		// at the moment the world appears. Fluid broadcasts are the same
+		// shape, smaller and recurring.
+		let mut queue = std::mem::take(&mut self.net_backlog);
+		queue.extend(events.drain(..));
+		let mut edit_budget = NET_EDIT_BUDGET;
 		let mut drop_net = false;
-		for ev in events.drain(..) {
-			use digblock_net::NetEvent;
+		while let Some(next) = queue.front() {
+			if matches!(next, NetEvent::Edit { .. }) {
+				if edit_budget == 0 {
+					break;
+				}
+				edit_budget -= 1;
+			}
+			let ev = queue.pop_front().expect("front() just succeeded");
 			match ev {
 				NetEvent::Welcome {
 					seed,
@@ -1278,6 +1393,13 @@ impl Engine {
 			}
 		}
 		self.net_events = events;
+		// A disconnect voids everything still queued; keeping it would
+		// apply a dead session's edits to whatever world comes next.
+		if drop_net {
+			queue.clear();
+		}
+		self.metrics.gauges.net_backlog = queue.len() as u32;
+		self.net_backlog = queue;
 
 		if !drop_net {
 			self.net = Some(net);
@@ -1331,8 +1453,9 @@ impl Engine {
 		};
 		let t_maintain = web_time::Instant::now();
 		// The adaptive controller feeds on the PREVIOUS frame's wall delta
-		// and vsync wait — both complete by now; this frame's own timings
-		// aren't. At the floor every value below matches the fixed path.
+		// and MEASURED occupancy — both complete by now; this frame's own
+		// timings aren't. At the floor every value below matches the fixed
+		// path.
 		let adaptive = self.config.adaptive_effective();
 		let budget_ms = if adaptive {
 			// Urgency reads last frame's heaps (this frame's scan hasn't
@@ -1340,19 +1463,23 @@ impl Engine {
 			// regardless.
 			self.stream_budget.on_frame(
 				self.metrics.last.total_ms,
-				self.metrics.last.acquire_ms,
+				self.metrics.last.busy_ms,
 				self.pipeline.stream_urgency(),
 			)
 		} else {
 			self.config.stream_budget_ms
 		};
 		self.metrics.stream_budget_ms = budget_ms;
-		let full_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
-		let drain_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 2000.0);
+		// ONE deadline for jobs, drain, evictions and uploads together.
+		// Previously each stage got its own slice of the budget and they
+		// summed to ~1.5× it; now they consume from the same clock, and the
+		// per-stage minimum-progress floors keep any single stage from
+		// being starved by an earlier one that overran.
+		let deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
 		let allowance = adaptive.then(|| Duration::from_secs_f32(budget_ms / 1000.0));
 		let m = self
 			.pipeline
-			.maintain(center, usize::MAX, Some(drain_deadline), allowance);
+			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.
@@ -1364,33 +1491,74 @@ impl Engine {
 		let t_upload = web_time::Instant::now();
 		self.metrics.evicted += m.evicted.len() as u32;
 		if !m.evicted.is_empty() {
-			self.pending_uploads
-				.retain(|out| !m.evicted.contains(&out.pos));
+			// A boundary crossing evicts a whole rim arc at once (600+
+			// chunks at draw 20). Membership has to be a hash lookup, not a
+			// linear scan of the evicted Vec per pending element, and the
+			// GPU-side release is spread over frames below: buffers merely
+			// idle until dropped, so nothing is gained by freeing them all
+			// inside one frame.
 			for pos in m.evicted {
-				renderer.remove_chunk(pos);
-				self.water_audio.remove_chunk(pos);
+				if self.pending_evict_set.insert(pos) {
+					self.pending_evicts.push_back(pos);
+				}
 			}
+			let gone = &self.pending_evict_set;
+			self.pending_uploads.retain(|out| !gone.contains(&out.pos));
 		}
+		let appended = !m.meshed.is_empty();
 		self.pending_uploads.extend(m.meshed);
 		// Nearest-first: on fast travel the queue backs up, and the chunks
-		// that matter are the ones at and around the player. UPLOAD_MIN ≥
-		// stack height, so the column the player is in/above always lands
-		// the frame it drains — only the far ring is allowed to lag.
-		if self.pending_uploads.len() > 1 {
+		// that matter are the ones at and around the player. The queue is
+		// already ordered, so re-sort only when new work arrived or the
+		// player changed column — not every frame it happens to be
+		// non-empty, which is exactly when frames are tightest.
+		if self.pending_uploads.len() > 1 && (appended || center != self.upload_sort_center) {
+			self.upload_sort_center = center;
 			self.pending_uploads.make_contiguous().sort_by_key(|out| {
 				let dx = out.pos.x - center.x;
 				let dz = out.pos.z - center.z;
 				dx * dx + dz * dz
 			});
 		}
+		// Release evicted GPU buffers under the same clock as everything
+		// else, always making some progress so the queue can't grow without
+		// bound while the player keeps moving.
+		let mut released = 0usize;
+		while let Some(pos) = self.pending_evicts.pop_front() {
+			// Cancelled: the chunk came back (walked around the rim, or a
+			// teleport) and re-uploaded before its removal was reached.
+			// Releasing it now would delete the FRESH mesh and leave a hole
+			// until something happened to re-dirty the chunk.
+			if !self.pending_evict_set.remove(&pos) {
+				continue;
+			}
+			renderer.remove_chunk(pos);
+			self.water_audio.remove_chunk(pos);
+			released += 1;
+			if released >= EVICT_MIN && web_time::Instant::now() >= deadline {
+				break;
+			}
+		}
+		// Uploads are bounded by BYTES as well as by the clock: on the web
+		// `write_buffer` only records the copy and Chrome's GPU process
+		// performs the staging transfer at submit, so a frame that hands
+		// over several megabytes looks free to `upload_ms` and hitches
+		// anyway.
 		let mut uploads = 0u32;
+		let mut bytes = 0usize;
 		while let Some(out) = self.pending_uploads.pop_front() {
+			// Cancels any queued release for this position (see above).
+			self.pending_evict_set.remove(&out.pos);
+			// Both vertex streams are u32 words (see `mesher::pack`).
+			bytes += (out.mesh.solid.len() + out.mesh.water.len()) * 4;
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
 			// Waterfall audio follows the same impacts spray renders.
 			self.water_audio
 				.set_chunk(out.pos, out.pos.origin(), &out.mesh.impacts);
 			uploads += 1;
-			if uploads as usize >= UPLOAD_MIN && web_time::Instant::now() >= full_deadline {
+			if uploads as usize >= UPLOAD_MIN
+				&& (bytes >= self.config.upload_bytes_max || web_time::Instant::now() >= deadline)
+			{
 				break;
 			}
 		}
@@ -1407,6 +1575,11 @@ impl Engine {
 			mesh_queue: m.mesh_queue,
 			in_flight: m.in_flight,
 			resident: self.pipeline.resident() as u32,
+			upload_backlog: self.pending_uploads.len() as u32,
+			evict_backlog: self.pending_evicts.len() as u32,
+			// Written by pump_net earlier this frame; preserved here
+			// because the gauges are replaced wholesale.
+			net_backlog: self.net_backlog.len() as u32,
 		};
 		// First full quiesce = initial world fill complete (the bench's
 		// primary streaming-throughput metric).
@@ -2315,6 +2488,10 @@ impl Game for Engine {
 		}
 	}
 
+	fn frame_started(&mut self) {
+		self.frame_start = Some(web_time::Instant::now());
+	}
+
 	fn frame_acquired(&mut self, acquire_wait: Duration) {
 		self.pending.acquire_ms = acquire_wait.as_secs_f32() * 1000.0;
 	}
@@ -2456,7 +2633,9 @@ impl Game for Engine {
 			self.apply_settings(s);
 		}
 
+		let t_net = web_time::Instant::now();
 		self.pump_net(dt);
+		self.pending.net_ms = ms_since(t_net);
 		// Keep the arrangement invariants (a type lives on the bar or in
 		// the grid, never both; nothing owned is unplaced) and mirror any
 		// change to the server BEFORE this frame's clicks send edits —
@@ -2473,14 +2652,16 @@ impl Game for Engine {
 				// First send only after the join-sync `ServerMsg::Layout`
 				// primed the dedup — reporting a pre-sync default would
 				// overwrite the identity's stored arrangement.
-				if self.last_layout_sent.is_some() {
-					let wire = (
-						self.hotbar.to_wire().to_vec(),
-						self.inv_grid.to_wire().to_vec(),
-					);
-					if self.last_layout_sent.as_ref() != Some(&wire) {
-						net.send_layout(&wire.0, &wire.1);
-						self.last_layout_sent = Some(wire);
+				if let Some((last_bar, last_grid)) = self.last_layout_sent.as_ref() {
+					// `to_wire` returns arrays, so the comparison is free;
+					// only an actual change pays for the Vecs.
+					let bar = self.hotbar.to_wire();
+					let grid = self.inv_grid.to_wire();
+					if last_bar.as_slice() != bar.as_slice()
+						|| last_grid.as_slice() != grid.as_slice()
+					{
+						net.send_layout(&bar, &grid);
+						self.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
 					}
 				}
 			}
@@ -2527,6 +2708,7 @@ impl Game for Engine {
 		// Water flow runs on its own world-tick cadence, independent of
 		// the walk/fly camera mode; idle (empty queue) it costs nothing.
 		// Connected, the server owns fluid — its results arrive as edits.
+		let t_sim = web_time::Instant::now();
 		if self.net.is_none() {
 			use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
 			self.flow_accum = (self.flow_accum + dt).min(1.0);
@@ -2536,11 +2718,13 @@ impl Game for Engine {
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
 		}
+		self.pending.sim_ms = ms_since(t_sim);
 
 		// Named-save persistence, after every world mutation this frame
 		// (dig, place, fluid): forward recorded edits, throttle player
 		// snapshots, and give the store its bounded upkeep step. The
 		// backdrop world's recordings are drained and dropped.
+		let t_persist = web_time::Instant::now();
 		let recorded = self.pipeline.take_recorded_edits();
 		if let Some(store) = self.world_store.as_mut() {
 			if self.in_local_save && self.net.is_none() {
@@ -2564,6 +2748,7 @@ impl Game for Engine {
 			}
 			store.maintain(self.pipeline.overlay());
 		}
+		self.pending.persist_ms = ms_since(t_persist);
 
 		if self.walking {
 			// Fixed 60 Hz player simulation (Java feel was tuned per-frame
@@ -2674,6 +2859,10 @@ impl Game for Engine {
 		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
+		// Everything from here to the encode — remote sampling, name tags,
+		// menu/UI rebuild, frame uniforms — used to be untimed, so a spike
+		// in any of it showed up in `total_ms` and in no phase at all.
+		self.prep_start = Some(web_time::Instant::now());
 		// Remote players, sampled ~100 ms in the past between snapshots;
 		// the instance list rides FrameScene and re-uploads every frame.
 		self.remote_instances.clear();
@@ -2720,7 +2909,9 @@ impl Game for Engine {
 		// Name tags: project each nearby remote's head-top to screen px.
 		// No depth (overlay) — tags read through walls within range.
 		const NAMETAG_RANGE: f32 = 32.0;
-		self.nametag_scratch.clear();
+		// Entries past `tags` keep their String buffers for next frame; the
+		// live slice is `[..tags]`.
+		let mut tags = 0usize;
 		for d in &self.remote_scratch {
 			if self.net.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
 				continue;
@@ -2734,17 +2925,31 @@ impl Game for Engine {
 			if ndc.x.abs() > 1.2 || ndc.y.abs() > 1.2 {
 				continue;
 			}
-			let text = match self.player_names.get(&d.id) {
-				Some(n) => n.clone(),
-				None => format!("player {}", d.id),
-			};
-			self.nametag_scratch.push(crate::renderer::NameTag {
-				x: (ndc.x * 0.5 + 0.5) * size.0 as f32,
-				y: (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32,
-				color: pack_rgb(player_color(d.id)),
-				text,
-			});
+			// Reuse the slot's String rather than allocating a fresh one
+			// per visible player per frame.
+			if tags == self.nametag_scratch.len() {
+				self.nametag_scratch.push(crate::renderer::NameTag {
+					x: 0.0,
+					y: 0.0,
+					color: 0,
+					text: String::new(),
+				});
+			}
+			let tag = &mut self.nametag_scratch[tags];
+			tag.x = (ndc.x * 0.5 + 0.5) * size.0 as f32;
+			tag.y = (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32;
+			tag.color = pack_rgb(player_color(d.id));
+			tag.text.clear();
+			match self.player_names.get(&d.id) {
+				Some(n) => tag.text.push_str(n),
+				None => {
+					use std::fmt::Write;
+					let _ = write!(tag.text, "player {}", d.id);
+				}
+			}
+			tags += 1;
 		}
+		self.nametag_count = tags;
 		let wide_due = std::mem::take(&mut self.wide_due);
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
@@ -2801,6 +3006,7 @@ impl Game for Engine {
 			});
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
+		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
@@ -2820,7 +3026,7 @@ impl Game for Engine {
 				ui: &self.ui_dl,
 				chat: (in_game && self.chat.is_open())
 					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),
-				nametags: &self.nametag_scratch,
+				nametags: &self.nametag_scratch[..self.nametag_count],
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);
@@ -2828,6 +3034,15 @@ impl Game for Engine {
 			self.metrics.gpu = r.gpu_pass_ms();
 			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
 		}
+		// Occupancy: the whole handler span minus the vsync wait that blocks
+		// inside it on native (and is ~0 on the web). Closed here rather
+		// than by the platform after `render` so it reaches this frame's
+		// record instead of the next one's.
+		self.pending.busy_ms = self
+			.frame_start
+			.take()
+			.map(|t| (ms_since(t) - self.pending.acquire_ms).max(0.0))
+			.unwrap_or_default();
 		// total_ms is measured inside frame() from the frame-to-frame delta.
 		self.metrics.frame(std::mem::take(&mut self.pending));
 	}

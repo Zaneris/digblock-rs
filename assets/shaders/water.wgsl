@@ -36,12 +36,6 @@
 @group(2) @binding(1) var shadow_wide: texture_depth_2d;
 @group(2) @binding(2) var shadow_smp: sampler_comparison;
 
-struct ChunkU {
-	origin: vec4f,
-}
-
-@group(3) @binding(0) var<uniform> chunk: ChunkU;
-
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(
@@ -221,8 +215,9 @@ fn twelfths(v: u32) -> f32 {
 	return f32(v / 12u) + f32(v % 12u) / 12.0;
 }
 
+// Location 1 is the instance-step chunk origin — see chunk.wgsl.
 @vertex
-fn vs(@location(0) packed: vec2u) -> VsOut {
+fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let w0 = packed.x;
 	let w1 = packed.y;
 	// Geometry decode identical to chunk.wgsl: twelfth-block units, with
@@ -235,7 +230,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	y -= DROPS[min((w1 >> 10u) & 0xfu, 9u)];
 	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
-	let world = vec3f(x, y, z) + chunk.origin.xyz;
+	let world = vec3f(x, y, z) + origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);

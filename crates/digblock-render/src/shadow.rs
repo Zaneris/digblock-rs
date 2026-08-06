@@ -7,10 +7,9 @@
 
 use digblock_core::chunk::ChunkPos;
 use digblock_platform::Gpu;
-use rustc_hash::FxHashMap;
 
 use crate::gpu_timer::{GpuTimer, Q_SHADOW_NEAR, Q_SHADOW_WIDE};
-use crate::renderer::{side_planes, ChunkGpu, CHUNK_STRIDE};
+use crate::renderer::{draw_chunk, side_planes, sphere_in_frustum, ChunkDraw, ChunkGpu};
 
 /// Wide-cascade refresh in progress: the resident set snapshotted at start,
 /// re-rendered into the back map `wide_slice_draws` chunks per frame.
@@ -155,20 +154,16 @@ pub(crate) struct ShadowCascades {
 	light_wide_buf: wgpu::Buffer,
 	light_wide_bg: wgpu::BindGroup,
 	pingpong: WidePingPong,
-	/// This frame's near-cascade VP (set by `begin_frame`, culled
-	/// against in `encode`).
+	/// The VP the near map currently HOLDS — not necessarily this frame's
+	/// (the renderer skips the pass while it and the caster set are
+	/// unchanged). The frame UBO's light_near must carry this one.
 	near_vp: glam::Mat4,
 	/// Per-frame wide-refresh encode cap (RenderConfig).
 	wide_slice_draws: u32,
 }
 
 impl ShadowCascades {
-	pub fn new(
-		gpu: &Gpu,
-		shadow_size: u32,
-		wide_slice_draws: u32,
-		chunk_bgl: &wgpu::BindGroupLayout,
-	) -> Self {
+	pub fn new(gpu: &Gpu, shadow_size: u32, wide_slice_draws: u32) -> Self {
 		let device = &gpu.device;
 
 		// Shadow maps: real render targets, cleared to depth 1.0 (fully
@@ -260,7 +255,8 @@ impl ShadowCascades {
 			})
 		});
 
-		// Depth-only shadow pass: group0 = light VP, group1 = chunk origins.
+		// Depth-only shadow pass: group0 = light VP. Chunk origins ride the
+		// instance-step vertex stream (see renderer::origin_vertex_layout).
 		let light_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("light"),
 			entries: &[wgpu::BindGroupLayoutEntry {
@@ -276,7 +272,7 @@ impl ShadowCascades {
 		});
 		let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("shadow"),
-			bind_group_layouts: &[&light_bgl, chunk_bgl],
+			bind_group_layouts: &[&light_bgl],
 			push_constant_ranges: &[],
 		});
 		let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -284,6 +280,10 @@ impl ShadowCascades {
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SHADOW.into()),
 		});
 		// Depth-only (color_format None, no fragment stage).
+		let vertex_layouts = [
+			crate::renderer::geometry_vertex_layout(),
+			crate::renderer::origin_vertex_layout(),
+		];
 		let pipeline = crate::pipeline_builder::build(
 			device,
 			None,
@@ -293,15 +293,7 @@ impl ShadowCascades {
 				module: &shadow_shader,
 				vs_entry: "vs",
 				fs_entry: None,
-				vertex_buffers: &[wgpu::VertexBufferLayout {
-					array_stride: 8,
-					step_mode: wgpu::VertexStepMode::Vertex,
-					attributes: &[wgpu::VertexAttribute {
-						format: wgpu::VertexFormat::Uint32x2,
-						offset: 0,
-						shader_location: 0,
-					}],
-				}],
+				vertex_buffers: &vertex_layouts,
 				cull: Some(wgpu::Face::Back),
 				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
@@ -369,28 +361,39 @@ impl ShadowCascades {
 		self.pingpong.refresh_pending(wide_due)
 	}
 
+	/// The VP the near map holds (see the field) — what the main pass must
+	/// project with, and what the renderer compares this frame's near VP
+	/// against to decide whether the map can stand.
+	pub fn near_vp(&self) -> glam::Mat4 {
+		self.near_vp
+	}
+
 	/// Per-frame kickoff: uploads the light VPs and captures the sample
 	/// pair BEFORE any flip the encode below may perform. When a
 	/// refresh is due, light_wide_buf takes the new VP immediately — it
 	/// feeds only the shadow-pass encode — while the main pass keeps
 	/// projecting with the returned `active_vp` until the flip.
+	/// `near_due` false keeps the previous near VP and map untouched.
 	pub fn begin_frame(
 		&mut self,
 		queue: &wgpu::Queue,
 		near_vp: glam::Mat4,
+		near_due: bool,
 		wide_vp: glam::Mat4,
 		wide_due: bool,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
+		chunks: &[ChunkGpu],
 	) -> WideSample {
-		self.near_vp = near_vp;
-		queue.write_buffer(
-			&self.light_near_buf,
-			0,
-			bytemuck::bytes_of(&near_vp.to_cols_array_2d()),
-		);
+		if near_due {
+			self.near_vp = near_vp;
+			queue.write_buffer(
+				&self.light_near_buf,
+				0,
+				bytemuck::bytes_of(&near_vp.to_cols_array_2d()),
+			);
+		}
 		if self
 			.pingpong
-			.begin_frame(wide_vp, wide_due, || chunks.keys().copied().collect())
+			.begin_frame(wide_vp, wide_due, || chunks.iter().map(|c| c.pos).collect())
 		{
 			queue.write_buffer(
 				&self.light_wide_buf,
@@ -404,13 +407,14 @@ impl ShadowCascades {
 
 	/// Encode this frame's shadow work, fixed order: bootstrap clear
 	/// (first frame only) → wide slice (when a job is running; flips on
-	/// completion) → near pass (whole caster set, every frame).
+	/// completion) → near pass. `near` is the pre-culled caster list, or
+	/// None when the cached near map stands — skipping the pass keeps
+	/// exactly what the texture already holds.
 	pub fn encode(
 		&mut self,
 		encoder: &mut wgpu::CommandEncoder,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
-		chunk_bg: &wgpu::BindGroup,
-		index_buf: &wgpu::Buffer,
+		draw: &ChunkDraw<'_>,
+		near: Option<&[u32]>,
 		timer: Option<&GpuTimer>,
 	) -> ShadowPassStats {
 		let mut stats = ShadowPassStats::default();
@@ -434,32 +438,31 @@ impl ShadowCascades {
 			});
 		}
 		if let Some(mut job) = self.pingpong.take_job() {
-			let (draws, tris, done) =
-				self.encode_wide_slice(encoder, &mut job, chunks, chunk_bg, index_buf, timer);
+			let (draws, tris, done) = self.encode_wide_slice(encoder, &mut job, draw, timer);
 			stats.draw_calls += draws;
 			stats.triangles += tris;
 			self.pingpong.finish_slice(job, done);
 		}
-		let (casters, tris) = self.encode_near(encoder, chunks, chunk_bg, index_buf, timer);
-		stats.casters = casters;
-		stats.draw_calls += casters;
-		stats.triangles += tris;
+		if let Some(near) = near {
+			let (casters, tris) = self.encode_near(encoder, draw, near, timer);
+			stats.casters = casters;
+			stats.draw_calls += casters;
+			stats.triangles += tris;
+		}
 		stats
 	}
 
-	/// Near-cascade depth render (whole caster set, every frame).
-	/// Solid meshes only — water never casts shadows (Java depth passes
-	/// drew solidMesh exclusively). Casters are culled against the
-	/// light's own frustum. Returns (draw calls, triangles) encoded.
+	/// Near-cascade depth render over the renderer's pre-culled caster
+	/// list (already tested against `near_vp`'s own frustum). Solid meshes
+	/// only — water never casts shadows (Java depth passes drew solidMesh
+	/// exclusively). Returns (draw calls, triangles) encoded.
 	fn encode_near(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
-		chunk_bg: &wgpu::BindGroup,
-		index_buf: &wgpu::Buffer,
+		draw: &ChunkDraw<'_>,
+		near: &[u32],
 		timer: Option<&GpuTimer>,
 	) -> (u32, u32) {
-		let planes = side_planes(self.near_vp);
 		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 			label: Some("shadow near"),
 			color_attachments: &[],
@@ -476,13 +479,15 @@ impl ShadowCascades {
 		});
 		pass.set_pipeline(&self.pipeline);
 		pass.set_bind_group(0, &self.light_near_bg, &[]);
-		pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		draw.bind(&mut pass);
 		let (mut draws, mut tris) = (0u32, 0u32);
-		for (pos, chunk) in chunks {
-			if let Some(d) = Self::shadow_draw(&mut pass, chunk_bg, planes, pos, chunk) {
-				draws += 1;
-				tris += d / 3;
-			}
+		for &i in near {
+			let chunk = &draw.chunks[i as usize];
+			let Some(mesh) = chunk.solid.as_ref() else {
+				continue;
+			};
+			draws += 1;
+			tris += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
 		}
 		(draws, tris)
 	}
@@ -494,9 +499,7 @@ impl ShadowCascades {
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
 		job: &mut WideJob,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
-		chunk_bg: &wgpu::BindGroup,
-		index_buf: &wgpu::Buffer,
+		draw: &ChunkDraw<'_>,
 		timer: Option<&GpuTimer>,
 	) -> (u32, u32, bool) {
 		let planes = side_planes(job.vp);
@@ -520,44 +523,28 @@ impl ShadowCascades {
 		});
 		pass.set_pipeline(&self.pipeline);
 		pass.set_bind_group(0, &self.light_wide_bg, &[]);
-		pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		draw.bind(&mut pass);
 		let (mut draws, mut tris) = (0u32, 0u32);
+		// The job's own frustum, so it can't reuse the frame's cull lists;
+		// its list is a ChunkPos snapshot because slots are recycled while
+		// a refresh spans frames.
 		while job.next < job.list.len() && draws < self.wide_slice_draws {
 			let pos = job.list[job.next];
 			job.next += 1;
 			// Evicted mid-job: skip.
-			let Some(chunk) = chunks.get(&pos) else {
+			let Some(chunk) = draw.by_pos.get(&pos).map(|&i| &draw.chunks[i as usize]) else {
 				continue;
 			};
-			if let Some(d) = Self::shadow_draw(&mut pass, chunk_bg, planes, &pos, chunk) {
-				draws += 1;
-				tris += d / 3;
+			if !sphere_in_frustum(chunk.center, &planes) {
+				continue;
 			}
+			let Some(mesh) = chunk.solid.as_ref() else {
+				continue;
+			};
+			draws += 1;
+			tris += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
 		}
 		(draws, tris, job.next >= job.list.len())
-	}
-
-	/// Cull-and-draw one chunk into a depth pass; returns the index count
-	/// if drawn. Solid meshes only — water never casts shadows.
-	fn shadow_draw(
-		pass: &mut wgpu::RenderPass<'_>,
-		chunk_bg: &wgpu::BindGroup,
-		planes: [glam::Vec4; 4],
-		pos: &ChunkPos,
-		chunk: &ChunkGpu,
-	) -> Option<u32> {
-		if !crate::renderer::chunk_in_frustum(pos, &planes) {
-			return None;
-		}
-		let (buf, index_count) = chunk.solid.as_ref()?;
-		pass.set_bind_group(
-			1,
-			chunk_bg,
-			&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-		);
-		pass.set_vertex_buffer(0, buf.slice(..));
-		pass.draw_indexed(0..*index_count, 0, 0..1);
-		Some(*index_count)
 	}
 }
 

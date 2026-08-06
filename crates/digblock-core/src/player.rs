@@ -127,7 +127,7 @@ const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
 /// into a hillside (both read as "spawned inside a block").
 pub fn spawn(seed: f64) -> Vec3 {
 	use crate::decoration::box_obstructed;
-	use crate::worldgen::{carved, column_shape, SEA_LEVEL};
+	use crate::worldgen::{carved, column_shape_above, column_shapes_in, SEA_LEVEL};
 	const STEP: i32 = 8;
 	// Clearance radius around the candidate column, in columns.
 	const CLEAR: i32 = 2;
@@ -140,29 +140,30 @@ pub fn spawn(seed: f64) -> Vec3 {
 				if x.abs().max(z.abs()) != d {
 					continue; // interior already visited on earlier rings
 				}
-				let s = column_shape(x, z, seed);
+				// The dry-land gate goes first, as the presieve it can be:
+				// an ocean-heavy seed walks thousands of candidates and
+				// essentially all of them are sea.
+				let Some(s) = column_shape_above(x, z, seed, SEA_LEVEL + 1) else {
+					continue;
+				};
 				let h = s.height;
-				// A spawnable surface kind (excludes water columns), high
-				// enough to be dry land, and not a cave mouth.
-				if !(s.surface.props().spawnable && h > SEA_LEVEL + 1 && !carved(x, h, z, seed)) {
+				// A spawnable surface kind (excludes water columns) that
+				// isn't a cave mouth.
+				if !s.surface.props().spawnable || carved(x, h, z, seed) {
 					continue;
 				}
 				// Everything a column fills — terrain, river water, a
 				// cascade's WaterFall sheet — stays below eye level
 				// (h + 2) within CLEAR columns: a spawn at the foot of a
 				// slope (or against a waterfall) fills the whole view.
-				let walled = (-CLEAR..=CLEAR).any(|dz| {
-					(-CLEAR..=CLEAR).any(|dx| {
-						if dx == 0 && dz == 0 {
-							return false;
-						}
-						let n = column_shape(x + dx, z + dz, seed);
-						let top = n
-							.height
+				let near = column_shapes_in(x - CLEAR, x + CLEAR, z - CLEAR, z + CLEAR, seed);
+				let side = (2 * CLEAR + 1) as usize;
+				let walled = near.iter().enumerate().any(|(i, n)| {
+					i != side * CLEAR as usize + CLEAR as usize
+						&& n.height
 							.max(n.water)
-							.max(n.fall.map_or(i32::MIN, |(_, t)| t));
-						top > h + 1
-					})
+							.max(n.fall.map_or(i32::MIN, |(_, t)| t))
+							> h + 1
 				});
 				// Decoration (trees, boulders, bushes) writes into the
 				// capsule cells h+1.. that pristine terrain never touches.
@@ -965,6 +966,29 @@ mod tests {
 		} else {
 			BlockType::Air
 		})
+	}
+
+	/// Where each of these seeds spawned before the walk grew its altitude
+	/// presieve. The presieve only skips columns the full classification
+	/// would have rejected on the same height gate, so not one of these
+	/// may move — a drift here means players of an existing world wake up
+	/// somewhere else.
+	#[test]
+	fn spawn_positions_are_pinned() {
+		for (seed, want) in [
+			(42.0f64, Vec3::new(0.5, 158.5, 0.5)),
+			(1234.5678, Vec3::new(88.5, 132.5, -95.5)),
+			(7.0, Vec3::new(0.5, 135.5, 0.5)),
+			(99.0, Vec3::new(200.5, 132.5, -143.5)),
+			(2024.0, Vec3::new(96.5, 132.5, -199.5)),
+			(0.0, Vec3::new(0.5, 132.5, 8.5)),
+			(-3.5, Vec3::new(-71.5, 134.5, -79.5)),
+			(555.0, Vec3::new(0.5, 154.5, 0.5)),
+			(31337.0, Vec3::new(40.5, 132.5, -63.5)),
+			(8675309.0, Vec3::new(96.5, 132.5, -95.5)),
+		] {
+			assert_eq!(spawn(seed), want, "seed {seed}");
+		}
 	}
 
 	/// `ascend_clear` steps over blocks built into the spawn capsule,

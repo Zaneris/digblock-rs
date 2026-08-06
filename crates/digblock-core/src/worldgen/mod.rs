@@ -59,6 +59,63 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 	column_shape(x, z, seed).height
 }
 
+/// [`column_shape`], but rejecting on altitude from the centre field
+/// alone — one evaluation instead of five. Classification only ever
+/// LOWERS the discretized height (marsh puddles dip a block), so a centre
+/// height at or below `min_height` proves the column's is too. Every
+/// caller that scans candidate columns rejects the overwhelming majority
+/// on altitude, and the survivors pay nothing extra: the centre field is
+/// evaluated once either way. `Some` is bit-identical to `column_shape`.
+pub fn column_shape_above(x: i32, z: i32, seed: f64, min_height: i32) -> Option<ColumnShape> {
+	let p = &TerrainParams::DEFAULT;
+	let f = fields(p, x, z, seed);
+	if (f.h.floor() as i32) <= min_height {
+		return None;
+	}
+	Some(classify::classify(
+		&f,
+		[
+			fields(p, x - 1, z, seed),
+			fields(p, x + 1, z, seed),
+			fields(p, x, z - 1, seed),
+			fields(p, x, z + 1, seed),
+		],
+		x,
+		z,
+		seed,
+	))
+}
+
+/// Column shapes over the inclusive rectangle `[x0, x1] × [z0, z1]`,
+/// row-major. Shares one padded field grid over the whole block the way
+/// [`column_shapes`] does for a chunk — from 3×3 up that beats calling
+/// `column_shape` per column, and it is bit-identical to doing so.
+pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<ColumnShape> {
+	let p = &TerrainParams::DEFAULT;
+	let (w, d) = ((x1 - x0 + 1) as usize, (z1 - z0 + 1) as usize);
+	let stride = w + 2;
+	let mut grid = Vec::with_capacity(stride * (d + 2));
+	for gz in 0..d + 2 {
+		for gx in 0..stride {
+			grid.push(fields(p, x0 + gx as i32 - 1, z0 + gz as i32 - 1, seed));
+		}
+	}
+	let mut out = Vec::with_capacity(w * d);
+	for z in 0..d {
+		for x in 0..w {
+			let g = (z + 1) * stride + x + 1;
+			out.push(classify::classify(
+				&grid[g],
+				[grid[g - 1], grid[g + 1], grid[g - stride], grid[g + stride]],
+				x0 + x as i32,
+				z0 + z as i32,
+				seed,
+			));
+		}
+	}
+	out
+}
+
 type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
 
 /// Column shapes for a chunk, indexed `[z][x]`. Evaluates the fields once
@@ -102,50 +159,78 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 	shapes
 }
 
-/// Column fill + cave carve, in storage order (x contiguous). Carving
-/// runs only on terrain cells of land columns, so ocean stacks and sky
-/// chunks never pay for the 3D noise.
-fn fill_chunk(data: &mut ChunkData, pos: ChunkPos, shapes: &ShapeMap, seed: f64) {
-	let (px, py, pz) = (
-		pos.x * CHUNK_SIZE as i32,
-		pos.y * CHUNK_SIZE as i32,
-		pos.z * CHUNK_SIZE as i32,
-	);
+/// Terrain fill in storage order (x contiguous), no carving. Kept apart
+/// from the carve so the fill's writes stay sequential while the carve
+/// walks columns.
+fn fill_terrain(data: &mut ChunkData, py: i32, shapes: &ShapeMap) {
 	for y in 0..CHUNK_SIZE {
 		let wy = y as i32 + py;
 		for (z, srow) in shapes.iter().enumerate() {
 			let row = (y * CHUNK_SIZE + z) * CHUNK_SIZE;
 			let out = &mut data.blocks[row..row + CHUNK_SIZE];
-			for (x, (b, &shape)) in out.iter_mut().zip(srow).enumerate() {
-				let mut block = column_block(wy, shape);
-				// Carveability is block data (blocks! rows), so a new
-				// surface or subsoil block opens cave mouths without an
-				// edit here. Surface blocks (grass, snow) are carveable so
-				// a mouth opens through them instead of leaving a floater.
-				if block.props().carveable
-					&& shape.height > shape.water
-					&& wy >= caves::CAVE_FLOOR
-					&& carved(x as i32 + px, wy, z as i32 + pz, seed)
-				{
-					block = BlockType::Air;
-				}
-				*b = block as u16;
+			for (b, &shape) in out.iter_mut().zip(srow) {
+				*b = column_block(wy, shape) as u16;
 			}
 		}
 	}
 }
 
-/// Build one chunk: fill → carve (inside fill) → decorate.
+/// Carve one column's share of one chunk from a cave walk the caller
+/// keeps across the whole vertical stack — the walk's lattice cache spans
+/// many more cells than one chunk's 16.
+fn carve_column(
+	data: &mut ChunkData,
+	py: i32,
+	x: usize,
+	z: usize,
+	shape: ColumnShape,
+	cave: &mut caves::CaveColumn,
+) {
+	// The carveable band of this column inside this chunk: below the
+	// surface, above bedrock, and dry — standing water at a cave mouth
+	// would leave a wall.
+	let lo = caves::CAVE_FLOOR.max(py);
+	let hi = shape.height.min(py + CHUNK_SIZE as i32 - 1);
+	if lo > hi {
+		return;
+	}
+	let mut carved = cave.carve_run(lo, hi);
+	while carved != 0 {
+		let wy = lo + carved.trailing_zeros() as i32;
+		carved &= carved - 1;
+		// Carveability is block data (blocks! rows), so a new surface or
+		// subsoil block opens cave mouths without an edit here. Surface
+		// blocks (grass, snow) are carveable so a mouth opens through them
+		// instead of leaving a floater.
+		if column_block(wy, shape).props().carveable {
+			let y = (wy - py) as usize;
+			data.blocks[(y * CHUNK_SIZE + z) * CHUNK_SIZE + x] = BlockType::Air as u16;
+		}
+	}
+}
+
+/// Build one chunk: fill → carve → decorate.
 pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 	let n = CHUNK_SIZE as i32;
+	let shapes = column_shapes(pos.x, pos.z, seed);
 	let mut data = ChunkData::default();
-	fill_chunk(&mut data, pos, &column_shapes(pos.x, pos.z, seed), seed);
+	fill_terrain(&mut data, pos.y * n, &shapes);
+	for (z, srow) in shapes.iter().enumerate() {
+		for (x, &shape) in srow.iter().enumerate() {
+			if shape.height <= shape.water {
+				continue;
+			}
+			let mut cave = caves::CaveColumn::new(x as i32 + pos.x * n, z as i32 + pos.z * n, seed);
+			carve_column(&mut data, pos.y * n, x, z, shape, &mut cave);
+		}
+	}
 	decorate_chunk(&mut data, pos, &structures_near(pos.x * n, pos.z * n, seed));
 	data
 }
 
 /// Generate the full vertical chunk stack of a column in one call,
-/// computing the 16×16 shape map once instead of once per chunk. Chunks
+/// computing the 16×16 shape map once instead of once per chunk and
+/// carving each column in a single walk across the whole stack. Chunks
 /// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
 /// sentinel — no fill, no allocation, recognized by pointer downstream.
 pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
@@ -166,20 +251,36 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 		.expect("non-empty shape map");
 	let structures = structures_near(cx * n, cz * n, seed);
 	// Sky starts above both the terrain and anything decoration can reach.
+	// Both bounds grow with cy, so the solid chunks are a prefix.
 	let solid_top = structures.iter().map(|s| s.top()).fold(max_h, i32::max);
-	(0..WORLD_VCHUNK)
-		.map(|cy| {
-			let bottom = cy * n;
-			if bottom > solid_top && bottom > SEA_LEVEL {
-				return AIR_CHUNK.clone();
+	let solid = (0..WORLD_VCHUNK)
+		.take_while(|&cy| cy * n <= solid_top || cy * n <= SEA_LEVEL)
+		.count();
+	let mut stack = vec![ChunkData::default(); solid];
+	for (cy, data) in stack.iter_mut().enumerate() {
+		fill_terrain(data, cy as i32 * n, &shapes);
+	}
+	for (z, srow) in shapes.iter().enumerate() {
+		for (x, &shape) in srow.iter().enumerate() {
+			if shape.height <= shape.water {
+				continue;
 			}
-			let pos = ChunkPos::new(cx, cy, cz);
-			let mut data = ChunkData::default();
-			fill_chunk(&mut data, pos, &shapes, seed);
-			decorate_chunk(&mut data, pos, &structures);
+			let mut cave = caves::CaveColumn::new(x as i32 + cx * n, z as i32 + cz * n, seed);
+			for (cy, data) in stack.iter_mut().enumerate() {
+				carve_column(data, cy as i32 * n, x, z, shape, &mut cave);
+			}
+		}
+	}
+	let mut out: Vec<Arc<ChunkData>> = stack
+		.into_iter()
+		.enumerate()
+		.map(|(cy, mut data)| {
+			decorate_chunk(&mut data, ChunkPos::new(cx, cy as i32, cz), &structures);
 			Arc::new(data)
 		})
-		.collect()
+		.collect();
+	out.resize(WORLD_VCHUNK as usize, AIR_CHUNK.clone());
+	out
 }
 
 #[cfg(test)]

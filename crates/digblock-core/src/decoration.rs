@@ -9,9 +9,14 @@
 //! Any future structure is a new candidate rule + block list that
 //! respects `STRUCTURE_APRON`.
 
+use std::cell::RefCell;
+use std::thread::LocalKey;
+
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK};
-use crate::worldgen::{carved, column_shape, TreeDensity, TreeSpecies};
+use crate::worldgen::{
+	carved, column_shape_above, ColumnShape, TreeDensity, TreeSpecies, SEA_LEVEL,
+};
 
 /// Horizontal reach guarantee: no structure block may sit further than
 /// this from its origin column. Chunks scan candidates this far outside
@@ -98,6 +103,17 @@ fn jroll(salt: u16, dx: i32, dz: i32, dy: i32) -> bool {
 	v & 1 == 0
 }
 
+/// The candidate column of a decoration cell, or `None` when it sits at
+/// or below the waterline band. Nothing grows or piles there: every
+/// surface a structure family accepts (any tree density, boulders)
+/// classifies strictly above `SEA_LEVEL + 1`, since at or below it a
+/// column is ocean, river, lake, or shore. Rejecting on altitude costs
+/// one field evaluation where a classification costs five, and columns
+/// that survive pay nothing extra.
+fn candidate_column(x: i32, z: i32, seed: f64) -> Option<ColumnShape> {
+	column_shape_above(x, z, seed, SEA_LEVEL + 1)
+}
+
 /// The candidate (if any) of one candidate-grid cell, validated against
 /// the terrain: the surface's `SurfaceProps` row decides density and
 /// species; the candidate must not be a cave mouth and needs headroom
@@ -109,7 +125,7 @@ fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	}
 	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
 	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
-	let shape = column_shape(x, z, seed);
+	let shape = candidate_column(x, z, seed)?;
 	let props = shape.surface.props();
 	let pct: u64 = match props.tree_density {
 		TreeDensity::None => return None,
@@ -250,7 +266,7 @@ fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
 	let mut hmin = i32::MAX;
 	let mut hmax = i32::MIN;
 	for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-		let shape = column_shape(x + dx, z + dz, seed);
+		let shape = candidate_column(x + dx, z + dz, seed)?;
 		if shape.surface.props().tree_density == TreeDensity::None {
 			return None;
 		}
@@ -328,7 +344,7 @@ fn cell_boulder(cell_x: i32, cell_z: i32, seed: f64) -> Option<Boulder> {
 	}
 	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
 	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
-	let shape = column_shape(x, z, seed);
+	let shape = candidate_column(x, z, seed)?;
 	if !shape.surface.props().boulders || shape.water > shape.height {
 		return None;
 	}
@@ -372,7 +388,7 @@ fn cell_bush(cell_x: i32, cell_z: i32, seed: f64) -> Option<Bush> {
 	}
 	let x = cell_x * CELL + ((h >> 8) % CELL as u64) as i32;
 	let z = cell_z * CELL + ((h >> 16) % CELL as u64) as i32;
-	let shape = column_shape(x, z, seed);
+	let shape = candidate_column(x, z, seed)?;
 	let props = shape.surface.props();
 	if props.tree_density == TreeDensity::None {
 		return None;
@@ -407,6 +423,85 @@ impl Bush {
 	}
 }
 
+/// Every family's validated candidate for one fine grid cell — bushes
+/// already yield to a tree in the same cell, as the candidate order says.
+#[derive(Clone, Copy, Default)]
+struct CellCandidates {
+	tree: Option<Tree>,
+	boulder: Option<Boulder>,
+	bush: Option<Bush>,
+}
+
+fn cell_candidates(cell_x: i32, cell_z: i32, seed: f64) -> CellCandidates {
+	let tree = cell_tree(cell_x, cell_z, seed);
+	let boulder = cell_boulder(cell_x, cell_z, seed);
+	let bush = match tree {
+		Some(_) => None,
+		None => cell_bush(cell_x, cell_z, seed),
+	};
+	CellCandidates {
+		tree,
+		boulder,
+		bush,
+	}
+}
+
+/// Slots of the candidate memos below. A power of two, indexed by the low
+/// bits of the cell coordinates rather than a hash, so a 16×16 window of
+/// cells — wider than any single job's apron and its neighbours' — never
+/// self-evicts.
+const MEMO_SLOTS: usize = 256;
+
+/// A bounded, direct-mapped memo of validated candidate cells. Aprons of
+/// neighbouring chunks overlap two cells on each axis, so the same fine
+/// cell is validated by four column jobs (and the same landmark cell by
+/// sixteen) while validation — a terrain probe per candidate — is the
+/// expensive part. The key carries the entire input, so a hit is by
+/// construction what a miss would have computed and worldgen stays a pure
+/// function of `(x, z, seed)`. Thread-local, so worker threads never
+/// share one, and fixed-size, so it can't grow with the explored world.
+struct CellMemo<T> {
+	keys: [Option<(i32, i32, u64)>; MEMO_SLOTS],
+	vals: [T; MEMO_SLOTS],
+}
+
+impl<T: Copy + Default> CellMemo<T> {
+	fn new() -> Self {
+		Self {
+			keys: [None; MEMO_SLOTS],
+			vals: [T::default(); MEMO_SLOTS],
+		}
+	}
+}
+
+fn memoized<T: Copy + Default>(
+	memo: &'static LocalKey<RefCell<CellMemo<T>>>,
+	cell_x: i32,
+	cell_z: i32,
+	seed: f64,
+	miss: impl FnOnce() -> T,
+) -> T {
+	let key = (cell_x, cell_z, seed.to_bits());
+	let slot = (cell_x as usize & 15) | (cell_z as usize & 15) << 4;
+	let hit = memo.with_borrow(|m| (m.keys[slot] == Some(key)).then(|| m.vals[slot]));
+	if let Some(v) = hit {
+		return v;
+	}
+	// Computed outside the borrow: validation reaches back into worldgen,
+	// which must stay free to use these memos itself.
+	let v = miss();
+	memo.with_borrow_mut(|m| {
+		m.keys[slot] = Some(key);
+		m.vals[slot] = v;
+	});
+	v
+}
+
+thread_local! {
+	static FINE_MEMO: RefCell<CellMemo<CellCandidates>> = RefCell::new(CellMemo::new());
+	static LANDMARK_MEMO: RefCell<CellMemo<Option<Landmark>>> = RefCell::new(CellMemo::new());
+}
+
 /// All valid structures whose blocks could reach a chunk with x/z origin
 /// `(px, pz)` — candidates within the apron of its footprint. Landmarks
 /// first (coarse grid, row-major), then per fine cell: tree → boulder →
@@ -426,25 +521,27 @@ fn structures_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<Structure
 	let mut out = Vec::new();
 	for cell_z in z0.div_euclid(LANDMARK_CELL)..=z1.div_euclid(LANDMARK_CELL) {
 		for cell_x in x0.div_euclid(LANDMARK_CELL)..=x1.div_euclid(LANDMARK_CELL) {
-			if let Some(l) = cell_landmark(cell_x, cell_z, seed) {
+			let landmark = memoized(&LANDMARK_MEMO, cell_x, cell_z, seed, || {
+				cell_landmark(cell_x, cell_z, seed)
+			});
+			if let Some(l) = landmark {
 				out.push(Structure::Landmark(l));
 			}
 		}
 	}
 	for cell_z in z0.div_euclid(CELL)..=z1.div_euclid(CELL) {
 		for cell_x in x0.div_euclid(CELL)..=x1.div_euclid(CELL) {
-			let tree = cell_tree(cell_x, cell_z, seed);
-			let grew_tree = tree.is_some();
-			if let Some(t) = tree {
+			let c = memoized(&FINE_MEMO, cell_x, cell_z, seed, || {
+				cell_candidates(cell_x, cell_z, seed)
+			});
+			if let Some(t) = c.tree {
 				out.push(Structure::Tree(t));
 			}
-			if let Some(b) = cell_boulder(cell_x, cell_z, seed) {
+			if let Some(b) = c.boulder {
 				out.push(Structure::Boulder(b));
 			}
-			if !grew_tree {
-				if let Some(b) = cell_bush(cell_x, cell_z, seed) {
-					out.push(Structure::Bush(b));
-				}
+			if let Some(b) = c.bush {
+				out.push(Structure::Bush(b));
 			}
 		}
 	}
@@ -564,6 +661,67 @@ pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structu
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::worldgen::column_shape;
+
+	/// The altitude presieve may only reject columns no family would have
+	/// accepted anyway — nothing grows and nothing piles at or below the
+	/// waterline band — and a survivor must classify exactly as the full
+	/// five-evaluation path does.
+	#[test]
+	fn presieve_only_rejects_barren_columns() {
+		let seed = 1234.5678;
+		let mut rejected = 0u32;
+		for x in (-8192..8192).step_by(37) {
+			for z in (-8192..8192).step_by(41) {
+				let full = column_shape(x, z, seed);
+				match candidate_column(x, z, seed) {
+					Some(s) => assert_eq!(s, full, "presieved column at ({x},{z})"),
+					None => {
+						let p = full.surface.props();
+						assert_eq!(p.tree_density, TreeDensity::None, "at ({x},{z})");
+						assert!(!p.boulders, "boulders at ({x},{z})");
+						rejected += 1;
+					}
+				}
+			}
+		}
+		assert!(rejected > 0, "sample contains rejected columns");
+	}
+
+	/// Memo hits must be bit-identical to misses. Revisiting cells across
+	/// interleaved seeds exercises both the reuse the aprons rely on and
+	/// the key's seed component, which is what keeps two worlds from
+	/// leaking candidates into each other.
+	#[test]
+	fn memo_hits_match_misses() {
+		let seeds = [42.0f64, 1234.5678, -7.0];
+		for _ in 0..3 {
+			for seed in seeds {
+				for cell_z in -24..24 {
+					for cell_x in -24..24 {
+						let c = memoized(&FINE_MEMO, cell_x, cell_z, seed, || {
+							cell_candidates(cell_x, cell_z, seed)
+						});
+						assert_eq!(
+							c.tree,
+							cell_tree(cell_x, cell_z, seed),
+							"tree {cell_x},{cell_z}"
+						);
+						assert_eq!(c.boulder, cell_boulder(cell_x, cell_z, seed), "boulder");
+						let bush = match c.tree {
+							Some(_) => None,
+							None => cell_bush(cell_x, cell_z, seed),
+						};
+						assert_eq!(c.bush, bush, "bush {cell_x},{cell_z}");
+						let l = memoized(&LANDMARK_MEMO, cell_x, cell_z, seed, || {
+							cell_landmark(cell_x, cell_z, seed)
+						});
+						assert_eq!(l, cell_landmark(cell_x, cell_z, seed), "landmark");
+					}
+				}
+			}
+		}
+	}
 
 	#[test]
 	fn candidates_are_deterministic_and_spaced() {

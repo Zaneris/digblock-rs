@@ -19,7 +19,7 @@ use crate::block::{BlockType, RenderClass};
 use crate::chunk::{ChunkData, CHUNK_SIZE};
 
 mod water;
-use water::{emit_water_face, WaterState};
+use water::{emit_water_face, FallLayers, WaterState};
 
 use crate::dir::{Dir, DIRS};
 
@@ -506,6 +506,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 		water: Vec::with_capacity(512),
 		impacts: Vec::new(),
 	};
+	let mut falls = FallLayers::default();
 	for y in 0..n {
 		for z in 0..n {
 			for x in 0..n {
@@ -526,6 +527,11 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 				}
 				// Cell-level water state, shared by all its faces.
 				let mut wstate: Option<WaterState> = None;
+				// Per-cell brightness jitter, hashed at most once for all
+				// six faces (the shaped path hoists it the same way).
+				// Lazy, not eager: a buried cell emits nothing and must
+				// not pay for a hash nobody reads.
+				let mut cell_tint: Option<u32> = None;
 				for &dir in &DIRS {
 					// A missing face neighbor suppresses this border's
 					// faces; the padded ring makes every other lookup a
@@ -555,7 +561,9 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						let state = match wstate {
 							Some(s) => s,
 							None => {
-								let s = WaterState::of(input, x as i32, y as i32, z as i32, me);
+								let s = WaterState::of(
+									input, &mut falls, x as i32, y as i32, z as i32, me,
+								);
 								if s.splash == 3 {
 									mesh.impacts.push((x | y << 4 | z << 8) as u16);
 								}
@@ -566,11 +574,13 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
 					} else {
 						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
-						let bt = tint(
-							i64::from(base.0) + x as i64,
-							i64::from(base.1) + y as i64,
-							i64::from(base.2) + z as i64,
-						);
+						let bt = *cell_tint.get_or_insert_with(|| {
+							tint(
+								i64::from(base.0) + x as i64,
+								i64::from(base.1) + y as i64,
+								i64::from(base.2) + z as i64,
+							)
+						});
 						emit_face(&mut mesh.solid, (x, y, z), dir, tex, ao, bt);
 					}
 				}
@@ -1384,6 +1394,83 @@ mod tests {
 		for (_, w1) in mid_fall {
 			assert_eq!(splash_of(w1), 0, "mid-air sheet cell has no splash");
 		}
+	}
+
+	/// A coastal/ocean-shaped chunk: a full 16×16 two-deep pool on a
+	/// stone floor, two waterfalls landing in it, a flowing rim, pillars
+	/// breaking the surface, and water continuing across the +x seam.
+	/// Every open surface cell here reaches the splash ring scan.
+	fn water_heavy() -> MeshData {
+		let mut d = ChunkData::default();
+		for z in 0..16 {
+			for x in 0..16 {
+				d.set(x, 5, z, B::Stone);
+				d.set(x, 6, z, B::Water);
+				d.set(x, 7, z, B::Water);
+			}
+		}
+		for y in 8..=13 {
+			d.set(4, y, 4, B::WaterFall);
+		}
+		for y in 8..=10 {
+			d.set(11, y, 11, B::WaterFall);
+		}
+		// Flowing rim on the −z edge, thinning across x.
+		for x in 0..16 {
+			d.set(x, 8, 0, B::water_flow(1 + (x % 7) as u8));
+		}
+		d.set(2, 8, 9, B::Stone);
+		d.set(9, 8, 2, B::Stone);
+		let mut east = ChunkData::default();
+		for z in 0..16 {
+			for y in 6..=7 {
+				east.set(0, y, z, B::Water);
+			}
+		}
+		let input = MeshInput::build(&d, |dx, dy, dz| {
+			if (dx, dy, dz) == (1, 0, 0) {
+				Src::Chunk(&east)
+			} else {
+				Src::Air
+			}
+		});
+		mesh_chunk(&input, (128, 0, -64))
+	}
+
+	/// FNV-1a over every emitted word — a whole-mesh byte pin.
+	fn digest(m: &MeshData) -> (usize, usize, usize, u64) {
+		let mut h = 0xcbf2_9ce4_8422_2325u64;
+		for w in m
+			.solid
+			.iter()
+			.chain(&m.water)
+			.copied()
+			.chain(m.impacts.iter().map(|&i| u32::from(i)))
+		{
+			h ^= u64::from(w);
+			h = h.wrapping_mul(0x0000_0100_0000_01b3);
+		}
+		(m.solid.len(), m.water.len(), m.impacts.len(), h)
+	}
+
+	/// The splash ring scan's fast path (skipping the 5×5×2 neighborhood
+	/// walk when no layer in reach holds falling water) must leave every
+	/// stream byte-identical — the impacts list drives spray emitters AND
+	/// waterfall audio, so a miss is silent in the mesh and audible in
+	/// the world. Golden captured before the skip existed.
+	#[test]
+	fn water_heavy_chunk_mesh_is_pinned() {
+		let m = water_heavy();
+		assert!(!m.impacts.is_empty(), "fixture has landing falls");
+		assert!(
+			m.water.chunks(2).any(|p| splash_of(p[1]) == 2),
+			"fixture has ring cells the scan must still find"
+		);
+		assert_eq!(
+			digest(&m),
+			(4704, 3224, 2, 0x9791_6b3f_68db_3028),
+			"water-heavy mesh + impacts byte-identical"
+		);
 	}
 
 	#[test]

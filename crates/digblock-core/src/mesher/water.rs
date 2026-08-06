@@ -3,8 +3,50 @@
 //! of the solid mesher so the hot solid loop and the (deliberately
 //! outlined) water path evolve independently.
 
-use super::{face_corners, occludes, pack, Dir, MeshInput, Vert};
+use super::{face_corners, occludes, pack, Dir, MeshInput, Vert, PADDED};
 use crate::block::{BlockType, RenderClass};
+use crate::chunk::ID_MASK;
+
+/// Which padded y layers hold falling water, swept lazily one layer at a
+/// time. The splash ring scan below walks 5×5 cells across two layers per
+/// open surface cell — ~50 padded reads each, and a full ocean surface
+/// chunk pays that 256 times — yet it can only ever score off a FALLING
+/// cell, and almost no chunk has one. A layer sweep is 324 contiguous
+/// reads, at most once per layer per mesh job, and an ocean surface
+/// touches two layers.
+#[derive(Default)]
+pub(super) struct FallLayers {
+	/// Bit (y + 1) per padded layer y ∈ -1..=16.
+	swept: u32,
+	any: u32,
+}
+
+impl FallLayers {
+	/// Can the ring scan at cell layer `y` find anything? It reads layers
+	/// y and y + 1 only, so falling water outside that pair is invisible
+	/// to it — skipping on false is exact, never a heuristic.
+	fn reachable(&mut self, input: &MeshInput, y: i32) -> bool {
+		// Bitwise, not short-circuiting: both layers get swept either way
+		// and the neighbouring cell asks again immediately.
+		self.layer(input, y) | self.layer(input, y + 1)
+	}
+
+	fn layer(&mut self, input: &MeshInput, y: i32) -> bool {
+		let bit = 1u32 << (y + 1) as u32;
+		if self.swept & bit == 0 {
+			self.swept |= bit;
+			let base = (y + 1) as usize * PADDED * PADDED;
+			let plane = &input.blocks[base..base + PADDED * PADDED];
+			if plane
+				.iter()
+				.any(|&c| BlockType::from_id(c & ID_MASK).is_falling())
+			{
+				self.any |= bit;
+			}
+		}
+		self.any & bit != 0
+	}
+}
 
 /// The amount a water cell contributes to shared surface-corner
 /// heights. Falling cells don't surface at their nominal (full)
@@ -127,7 +169,14 @@ impl WaterState {
 	/// block loop measurably slowed the dominant solid path (~+0.03ms on
 	/// a 0.08ms avg mesh job) — water cells are the rare case.
 	#[inline(never)]
-	pub(super) fn of(input: &MeshInput, x: i32, y: i32, z: i32, me: BlockType) -> WaterState {
+	pub(super) fn of(
+		input: &MeshInput,
+		falls: &mut FallLayers,
+		x: i32,
+		y: i32,
+		z: i32,
+		me: BlockType,
+	) -> WaterState {
 		let falling = me.is_falling();
 		let above = BlockType::from_id(input.get(x, y + 1, z));
 		let full = above.props().class != RenderClass::None;
@@ -161,7 +210,7 @@ impl WaterState {
 		};
 		let splash = if falling && is_impact(x, y, z) {
 			3
-		} else if !falling && !full {
+		} else if !falling && !full && falls.reachable(input, y) {
 			// Ring scan: nearest impact in the 5×5 neighborhood at this
 			// level or one above (worldgen falls land one cell above
 			// the pool surface). Chebyshev 1 → 2, 2 → 1. An impact two
