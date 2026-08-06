@@ -308,6 +308,12 @@ pub struct Engine {
 	/// Visual-only reconciliation smoothing: camera = player + offset,
 	/// decaying ~200 ms so corrections nudge instead of teleport.
 	correction_offset: Vec3,
+	/// Visual-only sampling of the fixed 60 Hz player sim: the camera
+	/// draws between the last two tick states instead of snapping to the
+	/// newest one. Without it frame-pacing jitter IS position jitter —
+	/// measurably the dominant stutter source, well ahead of anything the
+	/// network does (see NET-AUDIT.md).
+	tick_lerp: crate::smoothing::TickLerp,
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
@@ -689,6 +695,7 @@ impl Engine {
 			net_backlog: std::collections::VecDeque::new(),
 			pending_ack: None,
 			correction_offset: Vec3::ZERO,
+			tick_lerp: crate::smoothing::TickLerp::new(spawn),
 			remote_scratch: Vec::new(),
 			remote_instances: Vec::new(),
 			net_corrections: 0,
@@ -947,6 +954,7 @@ impl Engine {
 		self.tick_accum = 0.0;
 		self.pending_ack = None;
 		self.correction_offset = Vec3::ZERO;
+		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
 		// identical, clearing would only force a full re-upload.
@@ -1159,6 +1167,7 @@ impl Engine {
 		self.correction_offset = Vec3::ZERO;
 		self.pending_ack = None;
 		self.prev_player_pos = pos;
+		self.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
 			self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
@@ -1216,7 +1225,25 @@ impl Engine {
 		// at the moment the world appears. Fluid broadcasts are the same
 		// shape, smaller and recurring.
 		let mut queue = std::mem::take(&mut self.net_backlog);
-		queue.extend(events.drain(..));
+		for ev in events.drain(..) {
+			match ev {
+				// Acks are the one event with NO ordering dependency on
+				// edits (they ride datagrams, edits ride the reliable
+				// stream — already unordered relative to each other), and
+				// they must never wait behind a parked backlog. The
+				// predictor's buffer only reaches back `BUF_CAP` ticks
+				// (2.1 s): an ack delayed past that falls out of the
+				// buffer, so EVERY later snapshot takes the forced-replay
+				// path — measured at 18 replays/s with 1.6-block
+				// corrections. Join sync on a heavily edited world is
+				// enough to get there at NET_EDIT_BUDGET per frame.
+				NetEvent::Ack {
+					acked_input_tick,
+					me,
+				} => self.pending_ack = Some((acked_input_tick, me)),
+				other => queue.push_back(other),
+			}
+		}
 		let mut edit_budget = NET_EDIT_BUDGET;
 		let mut drop_net = false;
 		while let Some(next) = queue.front() {
@@ -1243,6 +1270,9 @@ impl Engine {
 					// every frame.
 					self.sun = Sun::with_tod(tod);
 				}
+				// Unreachable: acks are dispatched above, ahead of the
+				// queue. Kept as a backstop so a future event that does
+				// get queued still lands rather than being dropped.
 				NetEvent::Ack {
 					acked_input_tick,
 					me,
@@ -1598,6 +1628,21 @@ impl Engine {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
 	}
 
+	/// Where the collidable body actually is, for occupancy questions
+	/// ("would this placement trap me?"). Deliberately NOT `camera.pos`:
+	/// the camera carries the tick interpolation and the decaying
+	/// reconciliation offset, so it can sit up to `POS_TOLERANCE` from the
+	/// body — and the server answers the same question from its own
+	/// simulated position, so a camera-based answer mispredicts. Aim rays
+	/// still come from the camera: you hit what you see.
+	fn body_pos(&self) -> Vec3 {
+		if self.walking {
+			self.player.pos
+		} else {
+			self.camera.pos // fly leaves player.pos stale
+		}
+	}
+
 	/// Recompute the crosshair target (every update — it drives the
 	/// highlight overlay, the dig state machine, and placement).
 	fn update_target(&mut self) {
@@ -1848,7 +1893,7 @@ impl Engine {
 		}
 		if placements
 			.iter()
-			.any(|&(c, v)| digblock_core::player::placement_blocked(self.camera.pos, c, v))
+			.any(|&(c, v)| digblock_core::player::placement_blocked(self.body_pos(), c, v))
 		{
 			return;
 		}
@@ -1923,7 +1968,7 @@ impl Engine {
 		if closing
 			&& entries
 				.iter()
-				.any(|&(c, _, v)| digblock_core::player::placement_blocked(self.camera.pos, c, v))
+				.any(|&(c, _, v)| digblock_core::player::placement_blocked(self.body_pos(), c, v))
 		{
 			return;
 		}
@@ -2391,6 +2436,7 @@ impl Game for Engine {
 						} else {
 							// Re-enter walk at the camera position.
 							self.player.pos = self.camera.pos;
+							self.tick_lerp.reset(self.player.pos);
 						}
 						log::info!("mode: {}", if self.walking { "walk" } else { "fly" });
 					}
@@ -2785,6 +2831,9 @@ impl Game for Engine {
 				.is_some();
 			if !column_loaded {
 				self.tick_accum = 0.0;
+				// Zeroing the accumulator parks the lerp at alpha = 0, which
+				// would draw a whole tick BACKWARDS; hold in place instead.
+				self.tick_lerp.reset(self.player.pos);
 			}
 			match self.net.as_mut() {
 				_ if !column_loaded => {}
@@ -2799,12 +2848,18 @@ impl Game for Engine {
 								.reconcile(&mut self.player, tick, state, &cell_at)
 						{
 							self.correction_offset += error;
+							// The rewind moved the player by -error; the lerp
+							// anchor has to travel with it or the next frame
+							// interpolates from the pre-rewind position and
+							// re-injects the jump the offset exists to hide.
+							self.tick_lerp.rewind(error);
 							self.net_corrections += 1;
 							self.net_error_accum += error.length();
 						}
 					}
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
+						self.tick_lerp.before_tick(self.player.pos);
 						net.predictor
 							.predict(&mut self.player, intent, dir, &cell_at);
 					}
@@ -2813,6 +2868,7 @@ impl Game for Engine {
 				_ => {
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
+						self.tick_lerp.before_tick(self.player.pos);
 						self.player.tick(TICK, dir, intent, &cell_at);
 					}
 				}
@@ -2822,7 +2878,10 @@ impl Game for Engine {
 			if self.correction_offset.length_squared() < 1e-6 {
 				self.correction_offset = Vec3::ZERO;
 			}
-			self.camera.pos = self.player.pos + self.correction_offset;
+			// Presentation only: `player.pos` stays the authority for
+			// occupancy, the wire, and the save.
+			self.camera.pos = self.tick_lerp.render_pos(self.player.pos, self.tick_accum)
+				+ self.correction_offset;
 		} else {
 			// Debug fly camera.
 			let speed = 24.0 * dt;
