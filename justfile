@@ -103,6 +103,25 @@ web:
 		mimetypes.add_type("application/wasm", ".wasm"); \
 		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
 
+# `just web` already defaults to the production master; this differs only
+# by probing it FIRST, so a deploy outage fails loudly here instead of
+# looking like a broken menu three clicks in. QUERY replaces the default
+# params (`just web-live '?draw=32&overlay'`), which are the frame-pacing
+# diagnostic pair: `overlay` for the live busy/out split, `spikelog` for
+# per-frame attribution in the console.
+# Browser client against the live master.digblock.net, diagnostics on.
+web-live QUERY="?overlay&spikelog":
+	#!/usr/bin/env bash
+	set -euo pipefail
+	just check-port-8080
+	curl -sf --max-time 10 https://master.digblock.net/api/servers >/dev/null \
+		|| { echo "master.digblock.net unreachable — not starting" >&2; exit 1; }
+	just build-web
+	echo "→ http://localhost:8080/{{QUERY}}   (master: https://master.digblock.net)"
+	python3 -c 'import http.server, functools, mimetypes; \
+		mimetypes.add_type("application/wasm", ".wasm"); \
+		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+
 # Browser multiplayer test: containerized master + native server (same
 # topology as `just play`) + the web bundle served on :8080. Open the
 # printed URL in Chrome, pick Multiplayer, type a name (3-10 chars),

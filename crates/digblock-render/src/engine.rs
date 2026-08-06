@@ -1595,6 +1595,7 @@ impl Engine {
 		self.pending.upload_ms = ms_since(t_upload);
 		self.metrics.chunks_generated += m.generated;
 		self.metrics.meshes_uploaded += uploads;
+		self.metrics.upload_kb += (bytes / 1024) as u32;
 		self.metrics.gen_jobs.merge(m.gen_jobs);
 		self.metrics.mesh_jobs.merge(m.mesh_jobs);
 		self.metrics.stale_dropped += m.stale_dropped;
@@ -1610,6 +1611,11 @@ impl Engine {
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
 			net_backlog: self.net_backlog.len() as u32,
+			// The bytes the loop above just handed over — the number the
+			// byte cap actually governs, and the only per-frame signal for
+			// a staging transfer `upload_ms` structurally cannot time.
+			uploaded: uploads,
+			upload_bytes: bytes as u32,
 		};
 		// First full quiesce = initial world fill complete (the bench's
 		// primary streaming-throughput metric).

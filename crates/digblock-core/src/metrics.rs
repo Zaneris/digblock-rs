@@ -12,8 +12,17 @@ const HITCH_MS: f32 = 33.4;
 /// EMA weight for the smoothed per-phase timings shown on the overlay.
 const SMOOTH_ALPHA: f32 = 0.05;
 /// A frame past this multiple of the estimated display interval missed its
-/// slot outright. 1.5 (not 2.0) so a single dropped frame counts.
-const DROP_FACTOR: f32 = 1.5;
+/// slot outright. Below 2.0 so a SINGLE dropped frame counts, but not at
+/// 1.5: `refresh_ms` is a 10th percentile of noise that's symmetric about
+/// the true period, so it reads low (7.50 measured against a true 8.33 at
+/// 120 Hz) and 1.5× it lands at 11.25 — under the honest 12.5 bar, where
+/// ordinary jitter gets counted as a drop. 1.75 covers that bias and still
+/// sits well below a genuinely doubled frame (16.67 at 120 Hz, 33.3 at 60).
+///
+/// Correcting the percentile instead would be worse: p10 is deliberate, so
+/// that an app dropping every OTHER frame can't have its own half-rate
+/// cadence adopted as the display period and report zero drops.
+const DROP_FACTOR: f32 = 1.75;
 /// Percentile of the frame window taken as the display interval: fast
 /// frames are the ones that hit their slot, so the low end of the
 /// distribution tracks the refresh period when vsync-bound (and merely
@@ -33,6 +42,9 @@ const REFRESH_MAX_MS: f32 = 40.0;
 /// update, maintain, upload, prep, encode. Note that `sim`, `net` and
 /// `persist` are a BREAKDOWN of `update_ms` rather than phases of their
 /// own — don't sum them alongside it.
+///
+/// `busy_ms + acquire_ms + outside_ms` then partitions `total_ms`, so
+/// every millisecond of the frame lands in exactly one bucket.
 #[derive(Clone, Copy, Default)]
 pub struct FrameTimings {
 	/// Swapchain acquire wait. On native FIFO this is where vsync blocks;
@@ -64,6 +76,19 @@ pub struct FrameTimings {
 	/// on the web (rAF-paced, non-blocking acquire) that idle is the whole
 	/// margin the controller is trying to detect.
 	pub busy_ms: f32,
+	/// The complement of `busy_ms` + `acquire_ms`: everything the frame
+	/// spent with the main thread NOT running. Present, the compositor,
+	/// the browser's rAF dispatch — and, on the web, Chrome's GPU-process
+	/// staging transfer, which `write_buffer` defers to submit (see the
+	/// upload loop's byte cap). That transfer is charged to no phase at
+	/// all: `upload_ms` times the record, never the copy.
+	///
+	/// Derived, not measured, so it absorbs every accounting error too.
+	/// On a healthy vsync-paced frame it IS the idle margin and should be
+	/// most of the period. A frame that grows HERE while `busy_ms` holds
+	/// flat spent its time somewhere the main thread never ran, which is
+	/// the one conclusion no other phase can support.
+	pub outside_ms: f32,
 	pub total_ms: f32,
 }
 
@@ -80,6 +105,7 @@ impl FrameTimings {
 		f(&mut self.prep_ms, x.prep_ms);
 		f(&mut self.encode_ms, x.encode_ms);
 		f(&mut self.busy_ms, x.busy_ms);
+		f(&mut self.outside_ms, x.outside_ms);
 		f(&mut self.total_ms, x.total_ms);
 	}
 
@@ -144,6 +170,13 @@ pub struct PipelineGauges {
 	pub evict_backlog: u32,
 	/// Inbound net events queued past this frame's edit budget.
 	pub net_backlog: u32,
+	/// Meshes handed to the GPU THIS frame, and their vertex bytes — the
+	/// per-frame view the run-window `meshes_uploaded` counter can't give.
+	/// Paired with `outside_ms` these are the whole point: on the web the
+	/// staging copy lands in another process at submit, so bytes are the
+	/// only leading indicator of a hitch that no phase timing records.
+	pub uploaded: u32,
+	pub upload_bytes: u32,
 }
 
 /// What the renderer did last frame.
@@ -198,6 +231,7 @@ pub struct OverlayStats {
 	pub mesh_jobs: JobTiming,
 	pub generated: u32,
 	pub uploaded: u32,
+	pub upload_kb: u32,
 	pub stale_dropped: u32,
 	pub requeued: u32,
 	pub evicted: u32,
@@ -252,6 +286,10 @@ pub struct Metrics {
 	pub mesh_jobs: JobTiming,
 	pub chunks_generated: u32,
 	pub meshes_uploaded: u32,
+	/// Mesh KiB handed over this window. Pairs with `meshes_uploaded`:
+	/// count alone can't distinguish a cheap frame from an expensive one,
+	/// and bytes are what the web's upload cap is actually denominated in.
+	pub upload_kb: u32,
 	pub stale_dropped: u32,
 	pub requeued: u32,
 	pub evicted: u32,
@@ -285,10 +323,10 @@ pub struct Metrics {
 /// reordered, but old CSVs still can't be diffed naively against new ones
 /// (`BENCH.md` carries the same warning for the `gpu_water_ms` insertion).
 const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,dropped,refresh_ms,\
-busy_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,upl_ms,prep_ms,enc_ms,\
+busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,upl_ms,prep_ms,enc_ms,\
 gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
-uploads,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
+uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
 drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms";
 
 impl Metrics {
@@ -335,6 +373,7 @@ impl Metrics {
 			mesh_jobs: JobTiming::default(),
 			chunks_generated: 0,
 			meshes_uploaded: 0,
+			upload_kb: 0,
 			stale_dropped: 0,
 			requeued: 0,
 			evicted: 0,
@@ -385,6 +424,10 @@ impl Metrics {
 		}
 		if let Some(last) = self.last_frame {
 			timings.total_ms = (now - last).as_secs_f32() * 1000.0;
+			// Only derivable here: `total_ms` isn't known until now. Clamped
+			// because the two measured terms are sampled at slightly
+			// different points and a fast frame can round them past it.
+			timings.outside_ms = (timings.total_ms - timings.busy_ms - timings.acquire_ms).max(0.0);
 			if self.frame_ms.len() == WINDOW {
 				self.frame_ms.pop_front();
 			}
@@ -400,19 +443,24 @@ impl Metrics {
 				self.dropped += 1;
 				self.dropped_total += 1;
 			}
-			// Per-spike phase attribution (see `spike_log`). Threshold rides
-			// the measured display interval so it stays meaningful at 60Hz.
+			// Per-spike phase attribution (see `spike_log`), on the SAME bar
+			// as `dropped` — so every counted drop gets exactly one logged
+			// breakdown and the counter leads straight to a cause. It was a
+			// separate `* 1.01`, which under vsync sat below the AVERAGE
+			// frame (see `DROP_FACTOR` for why the estimate reads low) and
+			// logged every frame instead of the anomalies.
 			let spike_over = if self.refresh_ms > 0.0 {
-				self.refresh_ms * 1.01
+				self.refresh_ms * DROP_FACTOR
 			} else {
 				8.4
 			};
 			if self.spike_log && timings.total_ms > spike_over {
 				log::info!(
-					"spike f{} total {:.2} busy {:.2} | acq {:.2} upd {:.2} (net {:.2} sim {:.2} sav {:.2}) mnt {:.2} upl {:.2} prep {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {} | upl_q {} evict_q {} budget {:.1}",
+					"spike f{} total {:.2} busy {:.2} out {:.2} | acq {:.2} upd {:.2} (net {:.2} sim {:.2} sav {:.2}) mnt {:.2} upl {:.2} prep {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {} | up {} ({}k) upl_q {} evict_q {} budget {:.1}",
 					self.run_frames,
 					timings.total_ms,
 					timings.busy_ms,
+					timings.outside_ms,
 					timings.acquire_ms,
 					timings.update_ms,
 					timings.net_ms,
@@ -428,6 +476,8 @@ impl Metrics {
 					self.render.draw_calls,
 					self.render.triangles / 1000,
 					self.render.wide_refreshed as u32,
+					self.gauges.uploaded,
+					self.gauges.upload_bytes / 1024,
 					self.gauges.upload_backlog,
 					self.gauges.evict_backlog,
 					self.stream_budget_ms,
@@ -516,6 +566,7 @@ impl Metrics {
 			mesh_jobs: self.mesh_jobs,
 			generated: self.chunks_generated,
 			uploaded: self.meshes_uploaded,
+			upload_kb: self.upload_kb,
 			stale_dropped: self.stale_dropped,
 			requeued: self.requeued,
 			evicted: self.evicted,
@@ -600,11 +651,12 @@ impl Metrics {
 			return;
 		};
 		log::info!(
-			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} | hitch {} drop {} | gen {} up {} | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
+			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
 			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
 			if self.win_frames > 0 { self.win_sum.busy_ms / self.win_frames as f32 } else { 0.0 },
+			if self.win_frames > 0 { self.win_sum.outside_ms / self.win_frames as f32 } else { 0.0 },
 			self.hitches, self.dropped,
-			self.chunks_generated, self.meshes_uploaded,
+			self.chunks_generated, self.meshes_uploaded, self.upload_kb,
 			self.gauges.gen_queue, self.gauges.mesh_queue, self.gauges.in_flight,
 			self.gauges.upload_backlog,
 			self.gauges.resident,
@@ -623,10 +675,10 @@ impl Metrics {
 			let _ = writeln!(
 				w,
 				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},{},{:.2},\
-{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
-{},{},{},{},{},{},{},{},{},{},{},\
+{},{},{},{},{},{},{},{},{},{},{},{},\
 {},{},{},{},{},{},{},{:.2}",
 				s.avg_ms,
 				s.p95_ms,
@@ -636,6 +688,7 @@ impl Metrics {
 				self.dropped,
 				self.refresh_ms,
 				win.busy_ms,
+				win.outside_ms,
 				win.acquire_ms,
 				win.update_ms,
 				win.net_ms,
@@ -656,6 +709,7 @@ impl Metrics {
 				self.mesh_jobs.avg_ms(),
 				self.mesh_jobs.max_ms,
 				self.meshes_uploaded,
+				self.upload_kb,
 				self.stale_dropped,
 				self.requeued,
 				self.evicted,
@@ -688,6 +742,7 @@ impl Metrics {
 		self.mesh_jobs = JobTiming::default();
 		self.chunks_generated = 0;
 		self.meshes_uploaded = 0;
+		self.upload_kb = 0;
 		self.stale_dropped = 0;
 		self.requeued = 0;
 		self.evicted = 0;
@@ -717,6 +772,33 @@ mod tests {
 			m.frame(FrameTimings::default());
 		}
 		assert_eq!(m.frame_ms.len(), WINDOW);
+	}
+
+	/// `CSV_HEADER` and the row's format string are two hand-written lists
+	/// with nothing tying them together — arity is checked by the compiler
+	/// only WITHIN the format string. A skew shifts every later column by
+	/// one, and the failure mode is a plausible number read from the wrong
+	/// field rather than an error (it cost a whole analysis pass once).
+	#[test]
+	fn csv_row_matches_header_width() {
+		let path = std::env::temp_dir().join("digblock-metrics-csv-width.csv");
+		let _ = std::fs::remove_file(&path);
+		let mut m = Metrics::new(Some(&path), false);
+		// Report on the next frame instead of waiting out the 5s window.
+		m.report_every = Duration::ZERO;
+		m.frame(FrameTimings::default());
+		m.frame(FrameTimings::default());
+		drop(m);
+		let text = std::fs::read_to_string(&path).unwrap();
+		let mut lines = text.lines();
+		let header = lines.next().expect("header written");
+		let row = lines.next().expect("at least one data row");
+		assert_eq!(
+			header.split(',').count(),
+			row.split(',').count(),
+			"CSV header/row skew\nheader: {header}\nrow:    {row}"
+		);
+		let _ = std::fs::remove_file(&path);
 	}
 
 	#[test]

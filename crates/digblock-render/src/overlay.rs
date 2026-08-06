@@ -363,21 +363,54 @@ impl Overlay {
 			let _ = self.line_scratch.write_fmt(args);
 			lines[i] = (color, self.line_scratch.clone());
 		};
+		// `drop` is the one that answers "did we miss a vsync slot": frames
+		// past 1.5× the MEASURED display period, so it works at any refresh
+		// rate. `hitch` is a fixed >33.4ms and cannot see a single dropped
+		// frame at 120Hz at all. `ref` is the estimated period backing drop —
+		// n/a until the first report window, during which drops aren't
+		// counted either, and ~10s stale after a refresh-rate change.
+		// Without these, a p95 of 17.6 on a 60Hz panel is unfalsifiable by
+		// eye: vsync can only present 16.67 or 33.3, so the tail is sampling
+		// noise, but nothing on the overlay said so.
+		let refresh = match s.refresh_ms {
+			r if r > 0.0 => format!("{r:5.2}"),
+			_ => "  n/a".to_owned(),
+		};
 		line(
 			0,
 			WHITE,
 			format_args!(
-				"fps {:5.1} | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} | hitch {} ({})",
-				s.fps, s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms, s.hitches_window, s.hitches_total
+				"fps {:5.1} | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} | hitch {} ({}) drop {} ({}) ref {}",
+				s.fps,
+				s.avg_ms,
+				s.p95_ms,
+				s.p99_ms,
+				s.worst_ms,
+				s.hitches_window,
+				s.hitches_total,
+				s.dropped_window,
+				s.dropped_total,
+				refresh
 			),
 		);
 		let c = &s.smooth;
+		// `busy`/`out` are the frame-level partition the phases to their
+		// left sum into; `out` is everything with the main thread stopped
+		// (present, compositor, and on the web the GPU-process staging
+		// copy). Read them together: `out` climbing while `busy` holds is
+		// the signature of a cost no phase on this line can charge.
 		line(
 			1,
 			DIM,
 			format_args!(
-				"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} upl {:5.2} enc {:5.2} ms",
-				c.acquire_ms, c.update_ms, c.maintain_ms, c.upload_ms, c.encode_ms
+				"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} upl {:5.2} enc {:5.2} | busy {:5.2} out {:5.2} ms",
+				c.acquire_ms,
+				c.update_ms,
+				c.maintain_ms,
+				c.upload_ms,
+				c.encode_ms,
+				c.busy_ms,
+				c.outside_ms
 			),
 		);
 		match s.gpu {
@@ -412,8 +445,13 @@ impl Overlay {
 			4,
 			DIM,
 			format_args!(
-				"work up {} stale {} req {} evict {} sat {} | res {} ({} gpu) | wrk {}",
+				"work up {} ({}K) now {}K stale {} req {} evict {} sat {} | res {} ({} gpu) | wrk {}",
 				s.uploaded,
+				s.upload_kb,
+				// THIS frame's bytes, not the window's — the quantity the
+				// web upload cap governs and the one that lines up with a
+				// single spike in `out`.
+				s.gauges.upload_bytes / 1024,
 				s.stale_dropped,
 				s.requeued,
 				s.evicted,

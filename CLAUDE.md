@@ -18,6 +18,8 @@ just check                # full gate: fmt --check, clippy -D warnings, cargo te
 just check-ios            # cargo check for aarch64-apple-ios (no Xcode needed)
 just web                  # wasm build + serve at http://localhost:8080 (Chrome/WebGPU; needs
                           # wasm-bindgen-cli at Cargo.lock's exact version)
+just web-live             # same, but probes the production master first and defaults the URL
+                          # to ?overlay&spikelog (frame-pacing diagnostics)
 just check-web            # clippy for wasm32-unknown-unknown — no CLI tools needed
 just play                 # master container + native server + client at the menu
 just play-web             # same but serving the web bundle; open the printed URL
