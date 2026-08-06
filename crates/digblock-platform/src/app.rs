@@ -539,6 +539,10 @@ impl<G: Game> App<G> {
 			self.dispatch(LcEvent::DeviceLost, el);
 			return;
 		}
+		// Opens the occupancy span; the game closes it inside `render`, so
+		// every scrap of main-thread work lands inside it — not just the
+		// phases that happen to be timed individually.
+		self.game.frame_started();
 
 		// Cursor-grab reconcile (edge-triggered, one frame behind update —
 		// imperceptible): menu opening releases the cursor; menu closing

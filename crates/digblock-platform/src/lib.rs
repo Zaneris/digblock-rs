@@ -41,6 +41,17 @@ pub trait Game: 'static {
 	/// Reports how long the swapchain acquire (vsync wait) took, just
 	/// before `update()`. Metrics facility; default ignores it.
 	fn frame_acquired(&mut self, _acquire_wait: std::time::Duration) {}
+	/// Called at redraw-handler entry, before the swapchain acquire, so the
+	/// game can time its own main-thread occupancy for this frame: the span
+	/// from here to the end of `render()`, minus the acquire wait.
+	///
+	/// That span is the only honest occupancy signal across both platforms.
+	/// Natively the vsync wait blocks inside the acquire, so subtracting it
+	/// yields real work; on the web the acquire cannot block at all and the
+	/// idle sits BETWEEN frames, outside the span entirely. Deriving busy
+	/// time from the frame-to-frame delta instead reads as "always full" on
+	/// the web and silently disables anything that feeds on it.
+	fn frame_started(&mut self) {}
 	/// Never called while suspended.
 	fn update(&mut self, dt: std::time::Duration);
 	/// The game renders into the borrowed swapchain view; every other

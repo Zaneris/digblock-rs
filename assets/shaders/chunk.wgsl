@@ -15,12 +15,6 @@
 @group(2) @binding(1) var shadow_wide: texture_depth_2d;
 @group(2) @binding(2) var shadow_smp: sampler_comparison;
 
-struct ChunkU {
-	origin: vec4f,
-}
-
-@group(3) @binding(0) var<uniform> chunk: ChunkU;
-
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(
@@ -66,8 +60,14 @@ fn twelfths(v: u32) -> f32 {
 	return f32(v / 12u) + f32(v % 12u) / 12.0;
 }
 
+// `origin` is location 1: the chunk's world origin, arriving from the
+// instance-step origin buffer the renderer binds once per pass, selected
+// by the draw's first_instance (= the chunk's slot). It replaced a
+// dynamic-offset UBO on group 3, so nothing here binds per chunk any
+// more — water.wgsl and shadow.wgsl carry the identical attribute and
+// must be changed with this one.
 @vertex
-fn vs(@location(0) packed: vec2u) -> VsOut {
+fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let w0 = packed.x;
 	let w1 = packed.y;
 	let x = twelfths(w0 & 0xffu);
@@ -75,7 +75,7 @@ fn vs(@location(0) packed: vec2u) -> VsOut {
 	let z = twelfths((w0 >> 16u) & 0xffu);
 	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
-	let world = vec3f(x, y, z) + chunk.origin.xyz;
+	let world = vec3f(x, y, z) + origin.xyz;
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);

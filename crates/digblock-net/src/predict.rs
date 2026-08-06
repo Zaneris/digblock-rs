@@ -54,6 +54,10 @@ pub struct Predictor {
 	/// (feeds the server's held-item broadcast). Not per-tick history —
 	/// reconciliation never replays it.
 	pub active_slot: u8,
+	/// Staging allocation lent out by [`Self::input_batch`] and taken
+	/// back by [`Self::recycle_batch`], so the per-frame send path
+	/// allocates nothing steady-state.
+	spare: Vec<InputTick>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -75,6 +79,7 @@ impl Predictor {
 			buf: VecDeque::new(),
 			last_acked: start_tick.saturating_sub(1),
 			active_slot: 0,
+			spare: Vec::new(),
 		}
 	}
 
@@ -107,28 +112,32 @@ impl Predictor {
 	}
 
 	/// The last ≤ `INPUT_REDUNDANCY` unacked inputs as a wire batch,
-	/// oldest-first.
+	/// oldest-first. The Vec is the predictor's staging allocation on
+	/// loan; hand it back with [`Self::recycle_batch`] after sending.
 	pub fn input_batch(&mut self) -> InputBatch {
 		let start = self.buf.len().saturating_sub(INPUT_REDUNDANCY);
 		let active_slot = self.active_slot;
-		let inputs = self
-			.buf
-			.iter_mut()
-			.skip(start)
-			.map(|e| {
-				let claim = *e.sent.get_or_insert(e.post);
-				InputTick {
-					tick: e.tick,
-					move_axis: e.intent.move_axis.to_array(),
-					jump: e.intent.jump,
-					look: e.dir.to_array(),
-					claimed_pos: claim.pos.to_array(),
-					claimed_vel: claim.vel.to_array(),
-					active_slot,
-				}
-			})
-			.collect();
+		let mut inputs = std::mem::take(&mut self.spare);
+		inputs.clear();
+		inputs.extend(self.buf.iter_mut().skip(start).map(|e| {
+			let claim = *e.sent.get_or_insert(e.post);
+			InputTick {
+				tick: e.tick,
+				move_axis: e.intent.move_axis.to_array(),
+				jump: e.intent.jump,
+				look: e.dir.to_array(),
+				claimed_pos: claim.pos.to_array(),
+				claimed_vel: claim.vel.to_array(),
+				active_slot,
+			}
+		}));
 		InputBatch { inputs }
+	}
+
+	/// Take a sent batch's allocation back for the next one. Dropping the
+	/// batch instead is correct, just one allocation more.
+	pub fn recycle_batch(&mut self, batch: InputBatch) {
+		self.spare = batch.inputs;
 	}
 
 	/// The server teleported us (return to spawn): every buffered
@@ -406,6 +415,30 @@ mod tests {
 		let last = batch.inputs.last().unwrap();
 		assert_eq!(last.tick, 110);
 		assert_eq!(last.claimed_pos, post.pos.to_array());
+	}
+
+	/// The recycled Vec must be cleared, not appended to: a leaked
+	/// previous window would resend acked ticks (and blow MAX_DATAGRAM).
+	#[test]
+	fn recycled_batch_carries_only_the_current_window() {
+		let mut player = landed_player();
+		let mut pred = Predictor::new(100);
+		for _ in 0..10 {
+			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
+		}
+		let first = pred.input_batch();
+		assert_eq!(
+			first.inputs.iter().map(|i| i.tick).collect::<Vec<_>>(),
+			vec![106, 107, 108, 109]
+		);
+		pred.recycle_batch(first);
+		let server = player.state();
+		pred.reconcile(&mut player, 107, server, &flat_world);
+		let second = pred.input_batch();
+		assert_eq!(
+			second.inputs.iter().map(|i| i.tick).collect::<Vec<_>>(),
+			vec![108, 109]
+		);
 	}
 
 	#[test]

@@ -50,6 +50,17 @@ extern "C" {
 	#[wasm_bindgen(method)]
 	fn read(this: &ReadableStreamDefaultReader) -> js_sys::Promise;
 
+	/// A stream read's `{ done, value }`. Typed getters compile to direct
+	/// property access; `Reflect::get(&res, &"done".into())` interned a
+	/// FRESH JS string on every read instead — 40-300 of them a second
+	/// under snapshot plus reliable traffic, all of it GC pressure that
+	/// surfaces as render-thread pauses.
+	type ReadResult;
+	#[wasm_bindgen(method, getter)]
+	fn done(this: &ReadResult) -> JsValue;
+	#[wasm_bindgen(method, getter)]
+	fn value(this: &ReadResult) -> JsValue;
+
 	type WritableStream;
 	#[wasm_bindgen(method, js_name = getWriter)]
 	fn get_writer(this: &WritableStream) -> WritableStreamDefaultWriter;
@@ -57,6 +68,11 @@ extern "C" {
 	type WritableStreamDefaultWriter;
 	#[wasm_bindgen(method)]
 	fn write(this: &WritableStreamDefaultWriter, chunk: &JsValue) -> js_sys::Promise;
+	/// Room left before the stream's high-water mark; negative means the
+	/// browser is queueing faster than the connection drains. `null` once
+	/// the stream errors, and the getter throws on a released writer.
+	#[wasm_bindgen(method, getter, js_name = desiredSize, catch)]
+	fn desired_size(this: &WritableStreamDefaultWriter) -> Result<JsValue, JsValue>;
 }
 
 struct Shared {
@@ -90,6 +106,9 @@ pub struct WebTransportClient {
 	/// Swallows write-promise rejections (lossy by contract; without a
 	/// catch every dropped datagram logs an unhandled-rejection warning).
 	noop_catch: Closure<dyn FnMut(JsValue)>,
+	/// Datagrams dropped at the writer's high-water mark; the first one
+	/// logs, the rest are silent.
+	dropped_datagrams: u32,
 }
 
 fn js_reason(v: &JsValue) -> String {
@@ -126,7 +145,7 @@ fn options(cert_hash: [u8; 32]) -> JsValue {
 async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datagram: bool) {
 	loop {
 		let res = match JsFuture::from(reader.read()).await {
-			Ok(v) => v,
+			Ok(v) => v.unchecked_into::<ReadResult>(),
 			Err(e) => {
 				shared
 					.borrow_mut()
@@ -134,19 +153,18 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 				return;
 			}
 		};
-		let done = js_sys::Reflect::get(&res, &"done".into())
-			.ok()
-			.and_then(|d| d.as_bool())
-			.unwrap_or(true);
-		if done {
+		// Anything but an explicit `false` ends the connection — a result
+		// without a usable `done` is not a result we can keep reading.
+		if !matches!(res.done().as_bool(), Some(false)) {
 			shared
 				.borrow_mut()
 				.push_disconnected("stream closed by server".into());
 			return;
 		}
-		let Ok(value) = js_sys::Reflect::get(&res, &"value".into()) else {
+		let value = res.value();
+		if value.is_undefined() || value.is_null() {
 			continue;
-		};
+		}
 		let bytes = value.unchecked_into::<js_sys::Uint8Array>().to_vec();
 		shared.borrow_mut().events.push_back(if datagram {
 			TransportEvent::Datagram(bytes)
@@ -183,6 +201,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				reliable_writer,
 				datagram_writer,
 				noop_catch,
+				dropped_datagrams: 0,
 			};
 		}
 	};
@@ -246,6 +265,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		reliable_writer,
 		datagram_writer,
 		noop_catch,
+		dropped_datagrams: 0,
 	}
 }
 
@@ -256,18 +276,40 @@ impl WebTransportClient {
 			let _ = w.write(&arr).catch(&self.noop_catch);
 		}
 	}
+
+	/// Is the datagram writer's queue past its high-water mark? No signal
+	/// (no writer yet, an errored stream, a released writer) reads as
+	/// "send it" — this gate only ever suppresses a measured backlog.
+	fn datagram_backed_up(&self) -> bool {
+		let slot = self.datagram_writer.borrow();
+		let Some(w) = &*slot else { return false };
+		matches!(w.desired_size(), Ok(v) if v.as_f64().is_some_and(|d| d < 0.0))
+	}
 }
 
 impl NetTransport for WebTransportClient {
 	fn send_datagram(&mut self, bytes: &[u8]) {
-		// Best-effort by contract; browser drops on overflow.
-		self.write_to(&self.datagram_writer.clone(), bytes);
+		// Best-effort by contract. A stalled connection otherwise piles
+		// up JS-side writes invisibly — nothing above this layer can see
+		// the browser's queue — so drop at the writer's own high-water
+		// mark instead. Input datagrams carry a redundancy window, so a
+		// dropped one costs nothing a lost packet wouldn't.
+		if self.datagram_backed_up() {
+			self.dropped_datagrams += 1;
+			if self.dropped_datagrams == 1 {
+				log::warn!("datagram writer past its high-water mark: dropping sends");
+			}
+			return;
+		}
+		self.write_to(&self.datagram_writer, bytes);
 	}
 
 	fn send_reliable(&mut self, bytes: &[u8]) {
-		// The browser buffers internally — the trait has no backpressure
-		// signal, matching the native driver's unbounded channel.
-		self.write_to(&self.reliable_writer.clone(), bytes);
+		// Never dropped, backed up or not: the reliable stream is the
+		// edit/handshake channel and has no redundancy to fall back on.
+		// The browser buffers internally, matching the native driver's
+		// unbounded channel.
+		self.write_to(&self.reliable_writer, bytes);
 	}
 
 	fn poll(&mut self, out: &mut Vec<TransportEvent>) {

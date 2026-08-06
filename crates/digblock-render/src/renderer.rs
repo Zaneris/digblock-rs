@@ -21,7 +21,32 @@ use digblock_platform::Gpu;
 /// shared index buffer this sizes is ~3.75 MiB — one-time, fine on
 /// mobile; `upload_chunk` guards the cap instead of trusting it.
 const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
-pub(crate) const CHUNK_STRIDE: u64 = 256;
+
+/// Chunk-origin stride: one `vec4f` per slot in the instance-step origin
+/// stream. Was 256 bytes — the uniform dynamic-offset alignment, not the
+/// data — back when each draw rebound a slice of a UBO.
+pub(crate) const ORIGIN_STRIDE: u64 = 16;
+
+/// Chunk vertex-buffer size class. A remesh (an edit dirties up to 27
+/// neighbours; walking churns the rim continuously) nearly always lands
+/// inside the class of the mesh it replaces, so it is written over the
+/// live allocation; what does change class is recycled through the free
+/// list below. Both matter most on Chrome, where every buffer create and
+/// destroy is a GPU-process allocation plus a deferred free that wgpu
+/// batches into periodic cleanup spikes.
+const SIZE_CLASS: u64 = 16 * 1024;
+/// Ceiling on retired bytes held for reuse. Rim churn at walking speed is
+/// well under a MiB a frame, so this covers seconds of travel; past it
+/// buffers are dropped for real, because a world swap or a draw-distance
+/// cut has to give the memory back.
+const POOL_BYTES_MAX: u64 = 16 * 1024 * 1024;
+
+/// Coarse front-to-back ordering for the scene pass: one bucket per chunk
+/// of column distance from the camera. Immediate-mode GPUs (what Chrome
+/// usually runs on) get their early-Z rejection from draw order alone,
+/// and the hash-map iteration this replaced was effectively random — pure
+/// overdraw. Anything past the last bucket still draws, just unordered.
+const DIST_BUCKETS: usize = 48;
 
 /// `DeviceExt::create_buffer_init` replacement, mandatory on wasm and
 /// used everywhere for uniformity. The util helper copies through a JS
@@ -47,12 +72,17 @@ fn buffer_init(gpu: &Gpu, label: &str, usage: wgpu::BufferUsages, contents: &[u8
 	buf
 }
 
-/// Chunk-origin UBO slot capacity for a draw distance. Sky chunks never
+/// Allocation size for a mesh of `bytes`: the next whole size class.
+fn size_class(bytes: u64) -> u64 {
+	bytes.next_multiple_of(SIZE_CLASS).max(SIZE_CLASS)
+}
+
+/// Chunk-origin slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
-/// full stack of every in-range column (256B a slot — a few MB total).
-/// A starting estimate, not a ceiling: overflow grows the buffer
-/// (`grow_chunk_buf`), which is what a future runtime draw-distance
-/// change will lean on.
+/// full stack of every in-range column (16B a slot — a few hundred KB).
+/// A starting estimate, not a ceiling: `grow_chunk_buf` takes over at 85%
+/// occupancy, which is what a future runtime draw-distance change will
+/// lean on.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
@@ -70,6 +100,42 @@ fn grown_slots(current: u32, needed: u32) -> u32 {
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// The packed two-word chunk vertex (see `mesher::pack`), shared by the
+/// solid, water, and shadow pipelines.
+const GEOMETRY_ATTRS: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+	format: wgpu::VertexFormat::Uint32x2,
+	offset: 0,
+	shader_location: 0,
+}];
+/// The chunk-origin instance stream (see `origin_vertex_layout`).
+const ORIGIN_ATTRS: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+	format: wgpu::VertexFormat::Float32x4,
+	offset: 0,
+	shader_location: 1,
+}];
+
+pub(crate) fn geometry_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+	wgpu::VertexBufferLayout {
+		array_stride: 8,
+		step_mode: wgpu::VertexStepMode::Vertex,
+		attributes: &GEOMETRY_ATTRS,
+	}
+}
+
+/// Slot-indexed chunk origins as an instance-step vertex stream, bound
+/// once per pass. Every chunk draws one instance at `first_instance =
+/// slot`, so the vertex stage picks its own origin out and the per-chunk
+/// loop is `set_vertex_buffer` + `draw_indexed` — no bind group, no
+/// dynamic offset. chunk.wgsl / water.wgsl / shadow.wgsl all read it at
+/// `@location(1)` and must be changed together.
+pub(crate) fn origin_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+	wgpu::VertexBufferLayout {
+		array_stride: ORIGIN_STRIDE,
+		step_mode: wgpu::VertexStepMode::Instance,
+		attributes: &ORIGIN_ATTRS,
+	}
+}
+
 /// Everything `Renderer::new` needs beyond the device and surface
 /// format — derived from `EngineConfig` (see `render_config`), so the
 /// renderer itself never infers platform tiers from other knobs.
@@ -77,16 +143,16 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub struct RenderConfig {
 	/// Shadow map resolution (both cascades).
 	pub shadow_size: u32,
-	/// Draw distance in chunks (sizes the chunk-origin UBO).
+	/// Draw distance in chunks (sizes the chunk-origin buffer).
 	pub draw_dist: i32,
 	/// Spray droplets per waterfall-impact instance (on top of the mist
 	/// slabs): 64 desktop, 24 mobile.
 	pub spray_droplets: u32,
 	/// Per-frame wide-shadow-refresh encode cap (see WIDE_SLICE_DRAWS).
 	pub wide_slice_draws: u32,
-	/// Force the initial chunk-origin UBO capacity in slots
-	/// (`DIG_CHUNK_SLOTS` via the launcher). Tiny values exercise
-	/// `grow_chunk_buf` in a normal run. None = sized from `draw_dist`.
+	/// Force the initial chunk-origin capacity in slots (`DIG_CHUNK_SLOTS`
+	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
+	/// normal run. None = sized from `draw_dist`.
 	pub chunk_slots_override: Option<u32>,
 }
 
@@ -170,10 +236,81 @@ pub struct FrameUniforms {
 	pub water_misc: [f32; 4],
 }
 
+/// One uploaded mesh: the pooled buffer, the size class it was allocated
+/// at, and the index count in use. `cap` is ≥ the live bytes — the tail
+/// past them is stale and unreachable (`draw_indexed` is bounded by
+/// `index_count`), which is exactly what lets a remesh write over the
+/// existing allocation instead of trading it for a new one.
+pub(crate) struct ChunkMesh {
+	buf: wgpu::Buffer,
+	cap: u64,
+	index_count: u32,
+}
+
+/// A resident chunk's GPU state, owned by the renderer's flat `chunks`
+/// Vec (`by_pos` maps ChunkPos back to its index). Flat because the cull
+/// walks the whole set every frame: a hash map costs more in layout and
+/// iteration order than the frustum test itself does.
 pub struct ChunkGpu {
-	pub solid: Option<(wgpu::Buffer, u32)>,
-	pub water: Option<(wgpu::Buffer, u32)>,
+	pub(crate) pos: ChunkPos,
+	pub(crate) solid: Option<ChunkMesh>,
+	pub(crate) water: Option<ChunkMesh>,
+	/// Origin-stream index; rides each draw as `first_instance`.
 	pub(crate) slot: u32,
+	/// Bounding-sphere center, precomputed — the cull is the hottest
+	/// per-frame CPU loop in the renderer.
+	pub(crate) center: glam::Vec3,
+}
+
+/// This frame's culled draw lists. The resident set used to be walked —
+/// and frustum-tested — three separate times per frame (scene, near
+/// shadow, water); all three come out of one linear pass now, and the
+/// scene list carries the only draw ordering the pass gets.
+struct CullLists {
+	/// Camera-visible solid chunks, coarsely front-to-back.
+	scene: Vec<u32>,
+	/// Camera-visible chunks carrying water geometry. Unordered: the
+	/// water depth prepass is what decides which surface shades.
+	water: Vec<u32>,
+	/// Solid casters inside the near cascade's light frustum.
+	near: Vec<u32>,
+	/// Counting-sort input: (distance bucket, chunk index).
+	keyed: Vec<(u8, u32)>,
+	counts: [u32; DIST_BUCKETS],
+}
+
+impl Default for CullLists {
+	// Hand-written: DIST_BUCKETS is past the array sizes Default covers.
+	fn default() -> Self {
+		Self {
+			scene: Vec::new(),
+			water: Vec::new(),
+			near: Vec::new(),
+			keyed: Vec::new(),
+			counts: [0; DIST_BUCKETS],
+		}
+	}
+}
+
+/// Stable counting sort of `keyed` into `out` by bucket — O(n), no
+/// comparisons, no allocation after the first frame. Cheap enough to run
+/// every frame, which is the point: re-sorting the resident set only when
+/// the camera chunk changes would trade a flat cost for a spike at every
+/// chunk boundary, and spikes are what this whole pass exists to remove.
+fn scatter_by_bucket(keyed: &[(u8, u32)], counts: &[u32; DIST_BUCKETS], out: &mut Vec<u32>) {
+	let mut off = [0u32; DIST_BUCKETS];
+	let mut acc = 0u32;
+	for (o, n) in off.iter_mut().zip(counts.iter()) {
+		*o = acc;
+		acc += n;
+	}
+	out.clear();
+	out.resize(acc as usize, 0);
+	for &(b, i) in keyed {
+		let cursor = &mut off[b as usize];
+		out[*cursor as usize] = i;
+		*cursor += 1;
+	}
 }
 
 /// Default per-frame wide-refresh encode cap (RenderConfig can
@@ -200,18 +337,37 @@ pub struct Renderer {
 	frame_water_buf: wgpu::Buffer,
 	/// Group 1: block texture array + sampler — one static bind group.
 	materials_bg: wgpu::BindGroup,
-	chunk_buf: wgpu::Buffer,
-	chunk_bg: wgpu::BindGroup,
-	/// Retained so `grow_chunk_buf` can rebuild `chunk_bg` when
-	/// `chunk_buf` is replaced.
-	chunk_bgl: wgpu::BindGroupLayout,
+	/// Slot-indexed chunk origins, bound as an instance-step vertex
+	/// stream once per pass.
+	origin_buf: wgpu::Buffer,
+	/// CPU mirror of `origin_buf`, indexed by slot. Keeps `grow_chunk_buf`
+	/// to a single write of exactly the allocated slots (no multi-MB
+	/// zero-filled staging block) and lets a remesh skip the origin write
+	/// entirely — it keeps its slot, so the origin cannot have changed.
+	origins: Vec<[f32; 4]>,
 	index_buf: wgpu::Buffer,
-	chunks: FxHashMap<ChunkPos, ChunkGpu>,
+	/// Resident chunks, flat (see `ChunkGpu`); `by_pos` is the index.
+	chunks: Vec<ChunkGpu>,
+	by_pos: FxHashMap<ChunkPos, u32>,
+	/// Retired vertex buffers by size class (`cap / SIZE_CLASS - 1`), so
+	/// an evict/stream cycle recycles instead of reallocating.
+	pool: Vec<Vec<wgpu::Buffer>>,
+	pool_bytes: u64,
+	lists: CullLists,
 	free_slots: Vec<u32>,
 	next_slot: u32,
-	/// Capacity of `chunk_buf` in slots, derived from draw distance.
+	/// Capacity of `origin_buf` in slots.
 	chunk_slots: u32,
+	/// Total vertex-buffer bytes ALLOCATED (live meshes plus everything
+	/// parked in `pool`) — the honest GPU footprint, not the subset a
+	/// mesh currently fills.
 	pub gpu_buffer_bytes: u64,
+	/// The near cascade must be redrawn this frame: its VP changed, or a
+	/// chunk inside the frustum it was drawn with was uploaded/removed.
+	near_dirty: bool,
+	/// Side planes of the VP the near map currently holds — the dirty
+	/// test above. None until the first draw.
+	near_planes: Option<[glam::Vec4; 4]>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// Debug overlay; always constructed (cheap) so the device-loss
@@ -316,20 +472,6 @@ impl Renderer {
 			],
 		});
 
-		let chunk_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-			label: Some("chunk"),
-			entries: &[wgpu::BindGroupLayoutEntry {
-				binding: 0,
-				visibility: wgpu::ShaderStages::VERTEX,
-				ty: wgpu::BindingType::Buffer {
-					ty: wgpu::BufferBindingType::Uniform,
-					has_dynamic_offset: true,
-					min_binding_size: wgpu::BufferSize::new(16),
-				},
-				count: None,
-			}],
-		});
-
 		// Water group 0: the frame UBO (water copy) plus the scene
 		// targets — the pre-water solid depth copy (textureLoad, no
 		// sampler), the offscreen scene color, and a linear sampler
@@ -414,42 +556,25 @@ impl Renderer {
 
 		// The shadow system owns its pipeline, maps, and the sampling
 		// layout the main pipelines reference as group 2.
-		let shadow =
-			ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws, &chunk_bgl);
+		let shadow = ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws);
 
-		// Shared group scheme: 0 = frame, 1 = materials, 2 = shadows,
-		// 3 = chunk origins (dynamic offset). Water swaps group 0 for
-		// its frame+scene combo layout.
+		// Shared group scheme: 0 = frame, 1 = materials, 2 = shadows.
+		// Chunk origins are NOT a bind group — they arrive as the
+		// instance-step vertex stream at slot 1 (see
+		// `origin_vertex_layout`). Water swaps group 0 for its
+		// frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[
-				&frame_bgl,
-				&materials_bgl,
-				shadow.bind_group_layout(),
-				&chunk_bgl,
-			],
+			bind_group_layouts: &[&frame_bgl, &materials_bgl, shadow.bind_group_layout()],
 			push_constant_ranges: &[],
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[
-				&water_frame_bgl,
-				&materials_bgl,
-				shadow.bind_group_layout(),
-				&chunk_bgl,
-			],
+			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, shadow.bind_group_layout()],
 			push_constant_ranges: &[],
 		});
 
-		let vertex_layout = wgpu::VertexBufferLayout {
-			array_stride: 8,
-			step_mode: wgpu::VertexStepMode::Vertex,
-			attributes: &[wgpu::VertexAttribute {
-				format: wgpu::VertexFormat::Uint32x2,
-				offset: 0,
-				shader_location: 0,
-			}],
-		};
+		let chunk_vertex_layouts = [geometry_vertex_layout(), origin_vertex_layout()];
 
 		let solid_pipeline = crate::pipeline_builder::build(
 			device,
@@ -460,7 +585,7 @@ impl Renderer {
 				module: &shader,
 				vs_entry: "vs",
 				fs_entry: Some("fs"),
-				vertex_buffers: std::slice::from_ref(&vertex_layout),
+				vertex_buffers: &chunk_vertex_layouts,
 				cull: Some(wgpu::Face::Back),
 				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
@@ -576,23 +701,11 @@ impl Renderer {
 			.chunk_slots_override
 			.map(|n| n.max(1))
 			.unwrap_or_else(|| chunk_slots(config.draw_dist));
-		let chunk_buf = device.create_buffer(&wgpu::BufferDescriptor {
+		let origin_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
-			size: u64::from(chunk_slots) * CHUNK_STRIDE,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			size: u64::from(chunk_slots) * ORIGIN_STRIDE,
+			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
-		});
-		let chunk_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("chunk"),
-			layout: &chunk_bgl,
-			entries: &[wgpu::BindGroupEntry {
-				binding: 0,
-				resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-					buffer: &chunk_buf,
-					offset: 0,
-					size: wgpu::BufferSize::new(16),
-				}),
-			}],
 		});
 
 		// Consumed here: the bind group holds the texture/sampler refs.
@@ -628,15 +741,21 @@ impl Renderer {
 			frame_bg,
 			frame_water_buf,
 			materials_bg,
-			chunk_buf,
-			chunk_bg,
-			chunk_bgl,
+			origin_buf,
+			origins: Vec::new(),
 			index_buf,
-			chunks: FxHashMap::default(),
+			chunks: Vec::new(),
+			by_pos: FxHashMap::default(),
+			pool: Vec::new(),
+			pool_bytes: 0,
+			lists: CullLists::default(),
 			free_slots: Vec::new(),
 			next_slot: 0,
 			chunk_slots,
 			gpu_buffer_bytes: 0,
+			// Nothing has been drawn into the near map yet.
+			near_dirty: true,
+			near_planes: None,
 			gpu_timer: GpuTimer::new(gpu),
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
@@ -665,127 +784,276 @@ impl Renderer {
 		self.gpu_timer.as_ref().and_then(|t| t.latest)
 	}
 
-	/// Replace `chunk_buf` with a larger one, repopulate every live
-	/// slot's origin in one batched write (origins are pure functions of
-	/// ChunkPos; `self.chunks` is the authoritative slot map), and
-	/// rebuild `chunk_bg` from the retained layout. Slot numbers are
-	/// untouched, so the shadow wide-refresh job (which snapshots
-	/// ChunkPos, not slots) and the water list are unaffected; every
-	/// pass takes `chunk_bg` fresh each frame.
+	/// Replace `origin_buf` with a larger one and repopulate it from the
+	/// CPU mirror in a single write of exactly the allocated slots — free
+	/// slots keep whatever they held, since no draw ever names them. Slot
+	/// numbers are untouched, so the shadow wide-refresh job (which
+	/// snapshots ChunkPos, not slots) is unaffected; every pass binds the
+	/// origin stream fresh each frame.
 	fn grow_chunk_buf(&mut self, gpu: &Gpu, needed_slots: u32) {
 		let old = self.chunk_slots;
 		let new_slots = grown_slots(old, needed_slots);
-		let chunk_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+		let origin_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("chunk origins"),
-			size: u64::from(new_slots) * CHUNK_STRIDE,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			size: u64::from(new_slots) * ORIGIN_STRIDE,
+			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
-		if self.next_slot > 0 {
-			// One batched repopulate covering every allocated slot; free
-			// slots stay zeroed — no draw ever binds them.
-			let mut staging = vec![0u8; self.next_slot as usize * CHUNK_STRIDE as usize];
-			for (pos, chunk) in &self.chunks {
-				let (ox, oy, oz) = pos.origin();
-				let off = chunk.slot as usize * CHUNK_STRIDE as usize;
-				staging[off..off + 16].copy_from_slice(bytemuck::cast_slice(&[ox, oy, oz, 0.0f32]));
-			}
-			gpu.queue.write_buffer(&chunk_buf, 0, &staging);
+		if !self.origins.is_empty() {
+			gpu.queue
+				.write_buffer(&origin_buf, 0, bytemuck::cast_slice(&self.origins));
 		}
-		self.chunk_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("chunk"),
-			layout: &self.chunk_bgl,
-			entries: &[wgpu::BindGroupEntry {
-				binding: 0,
-				resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-					buffer: &chunk_buf,
-					offset: 0,
-					size: wgpu::BufferSize::new(16),
-				}),
-			}],
-		});
-		self.chunk_buf = chunk_buf;
+		self.origin_buf = origin_buf;
 		self.chunk_slots = new_slots;
 		log::info!(
-			"chunk UBO grown: {old} -> {new_slots} slots ({} KiB), {} chunks repopulated",
-			u64::from(new_slots) * CHUNK_STRIDE / 1024,
-			self.chunks.len()
+			"chunk origin buffer grown: {old} -> {new_slots} slots ({} KiB), {} slots live",
+			u64::from(new_slots) * ORIGIN_STRIDE / 1024,
+			self.origins.len()
 		);
+	}
+
+	/// Claim an origin slot for a newly resident chunk and publish its
+	/// origin. Growth fires at 85% occupancy rather than at overflow: the
+	/// reallocate-and-repopulate lands in one frame, and the path that
+	/// reaches it — a runtime draw-distance increase — is already the
+	/// frame doing the most other work.
+	fn alloc_slot(&mut self, gpu: &Gpu, pos: ChunkPos) -> u32 {
+		let slot = match self.free_slots.pop() {
+			Some(s) => s,
+			None => {
+				let s = self.next_slot;
+				self.next_slot += 1;
+				self.origins.push([0.0; 4]);
+				if u64::from(self.next_slot) * 20 >= u64::from(self.chunk_slots) * 17 {
+					self.grow_chunk_buf(gpu, self.next_slot + 1);
+				}
+				s
+			}
+		};
+		debug_assert!(slot < self.chunk_slots, "origin slot out of range");
+		let (ox, oy, oz) = pos.origin();
+		let i = slot as usize;
+		self.origins[i] = [ox, oy, oz, 0.0];
+		gpu.queue.write_buffer(
+			&self.origin_buf,
+			u64::from(slot) * ORIGIN_STRIDE,
+			bytemuck::cast_slice(&self.origins[i..=i]),
+		);
+		slot
+	}
+
+	/// Take a buffer of at least `bytes` from the free list, or make one.
+	fn acquire(&mut self, gpu: &Gpu, bytes: u64) -> ChunkMesh {
+		let cap = size_class(bytes);
+		let class = (cap / SIZE_CLASS - 1) as usize;
+		if let Some(buf) = self.pool.get_mut(class).and_then(Vec::pop) {
+			self.pool_bytes -= cap;
+			return ChunkMesh {
+				buf,
+				cap,
+				index_count: 0,
+			};
+		}
+		let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("chunk verts"),
+			size: cap,
+			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		self.gpu_buffer_bytes += cap;
+		ChunkMesh {
+			buf,
+			cap,
+			index_count: 0,
+		}
+	}
+
+	/// Park a retired buffer for reuse, or free it once the pool is at its
+	/// ceiling. Safe to reuse immediately: the next write goes through the
+	/// queue, which orders it behind any in-flight frame still reading it.
+	fn recycle(&mut self, mesh: ChunkMesh) {
+		if self.pool_bytes + mesh.cap > POOL_BYTES_MAX {
+			self.gpu_buffer_bytes = self.gpu_buffer_bytes.saturating_sub(mesh.cap);
+			return;
+		}
+		let class = (mesh.cap / SIZE_CLASS - 1) as usize;
+		if self.pool.len() <= class {
+			self.pool.resize_with(class + 1, Vec::new);
+		}
+		self.pool_bytes += mesh.cap;
+		self.pool[class].push(mesh.buf);
+	}
+
+	/// Write `verts` over `prev`'s buffer when they fit its size class —
+	/// the common case for a remesh of the same chunk, and the whole point
+	/// of the classes. Anything else takes a pooled buffer of the right
+	/// class and retires the old one. Empty verts release it outright.
+	fn store_mesh(
+		&mut self,
+		gpu: &Gpu,
+		prev: Option<ChunkMesh>,
+		verts: &[u32],
+	) -> Option<ChunkMesh> {
+		// All vertices are two u32 words (see mesher::pack). The shared
+		// index buffer covers MAX_QUADS; a mesh past it would make
+		// draw_indexed over-read (a wgpu validation error). Truncate
+		// loudly — visible dropped faces beat a device loss, and the cap
+		// is sized to be unreachable.
+		let mut verts = verts;
+		let quads = (verts.len() / (4 * 2)).min(MAX_QUADS);
+		if verts.len() / (4 * 2) > MAX_QUADS {
+			log::error!(
+				"chunk mesh exceeds MAX_QUADS ({} > {MAX_QUADS}); truncating",
+				verts.len() / (4 * 2)
+			);
+			verts = &verts[..MAX_QUADS * 8];
+		}
+		if verts.is_empty() {
+			if let Some(old) = prev {
+				self.recycle(old);
+			}
+			return None;
+		}
+		let bytes = std::mem::size_of_val(verts) as u64;
+		let mut mesh = match prev {
+			Some(m) if m.cap >= bytes => m,
+			other => {
+				if let Some(old) = other {
+					self.recycle(old);
+				}
+				self.acquire(gpu, bytes)
+			}
+		};
+		gpu.queue
+			.write_buffer(&mesh.buf, 0, bytemuck::cast_slice(verts));
+		mesh.index_count = quads as u32 * 6;
+		Some(mesh)
+	}
+
+	/// A caster changed: the cached near map survives only if the chunk
+	/// sits outside the frustum that map was drawn with. An unchanged near
+	/// VP means this frame's pass would cull it by the identical test, so
+	/// the two can never disagree about what the map should contain.
+	fn mark_near_dirty(&mut self, center: glam::Vec3) {
+		self.near_dirty |= self
+			.near_planes
+			.is_none_or(|p| sphere_in_frustum(center, &p));
 	}
 
 	/// Upload (or replace) a chunk's mesh. Empty meshes remove the entry —
 	/// unlike the Java, a re-mesh to zero faces cannot leave a stale VBO.
 	pub fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, mesh: &MeshData) {
-		self.remove_chunk(pos);
 		if mesh.is_empty() {
+			self.remove_chunk(pos);
 			return;
 		}
-		let slot = self.free_slots.pop().unwrap_or_else(|| {
-			let s = self.next_slot;
-			self.next_slot += 1;
-			s
-		});
-		if slot >= self.chunk_slots {
-			self.grow_chunk_buf(gpu, slot + 1);
-		}
-		debug_assert!(
-			slot < self.chunk_slots,
-			"grow_chunk_buf left slot out of range"
-		);
-		let (ox, oy, oz) = pos.origin();
-		gpu.queue.write_buffer(
-			&self.chunk_buf,
-			u64::from(slot) * CHUNK_STRIDE,
-			bytemuck::cast_slice(&[ox, oy, oz, 0.0]),
-		);
-		// All vertices are two u32 words (see mesher::pack).
-		let mut make = |verts: &Vec<u32>| -> Option<(wgpu::Buffer, u32)> {
-			if verts.is_empty() {
-				return None;
-			}
-			// The shared index buffer covers MAX_QUADS; a mesh past it
-			// would make draw_indexed over-read (a wgpu validation
-			// error). Truncate loudly — visible dropped faces beat a
-			// device loss, and the cap is sized to be unreachable.
-			let mut verts = &verts[..];
-			let quads = verts.len() / (4 * 2);
-			if quads > MAX_QUADS {
-				log::error!("chunk mesh exceeds MAX_QUADS ({quads} > {MAX_QUADS}); truncating");
-				verts = &verts[..MAX_QUADS * 8];
-			}
-			let buf = buffer_init(
-				gpu,
-				"chunk verts",
-				wgpu::BufferUsages::VERTEX,
-				bytemuck::cast_slice(verts),
-			);
-			self.gpu_buffer_bytes += buf.size();
-			let quads = quads.min(MAX_QUADS) as u32;
-			Some((buf, quads * 6))
-		};
-		let solid = make(&mesh.solid);
-		let water = make(&mesh.water);
-		self.chunks.insert(pos, ChunkGpu { solid, water, slot });
 		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);
+		// A remesh keeps its entry, its slot (so the origin needs no
+		// rewrite) and, whenever the new mesh fits, its buffers.
+		let idx = match self.by_pos.get(&pos) {
+			Some(&i) => i as usize,
+			None => {
+				let slot = self.alloc_slot(gpu, pos);
+				let idx = self.chunks.len();
+				self.chunks.push(ChunkGpu {
+					pos,
+					solid: None,
+					water: None,
+					slot,
+					center: chunk_center(pos),
+				});
+				self.by_pos.insert(pos, idx as u32);
+				idx
+			}
+		};
+		let prev = self.chunks[idx].solid.take();
+		self.chunks[idx].solid = self.store_mesh(gpu, prev, &mesh.solid);
+		let prev = self.chunks[idx].water.take();
+		self.chunks[idx].water = self.store_mesh(gpu, prev, &mesh.water);
+		let center = self.chunks[idx].center;
+		self.mark_near_dirty(center);
 	}
 
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.spray.remove_chunk(pos);
-		if let Some(old) = self.chunks.remove(&pos) {
-			for (buf, _) in old.solid.iter().chain(old.water.iter()) {
-				self.gpu_buffer_bytes = self.gpu_buffer_bytes.saturating_sub(buf.size());
-			}
-			self.free_slots.push(old.slot);
+		let Some(idx) = self.by_pos.remove(&pos) else {
+			return;
+		};
+		let old = self.chunks.swap_remove(idx as usize);
+		// swap_remove filled the hole with the last entry (unless the hole
+		// WAS the last) — retarget its index.
+		if let Some(moved) = self.chunks.get(idx as usize) {
+			self.by_pos.insert(moved.pos, idx);
+		}
+		self.free_slots.push(old.slot);
+		self.mark_near_dirty(old.center);
+		for mesh in [old.solid, old.water].into_iter().flatten() {
+			self.recycle(mesh);
 		}
 	}
 
 	/// Drop every uploaded chunk mesh (world swap: the multiplayer
 	/// handshake replaces the locally-seeded world with the server's).
 	pub fn clear_chunks(&mut self) {
-		let all: Vec<ChunkPos> = self.chunks.keys().copied().collect();
-		for pos in all {
-			self.remove_chunk(pos);
+		for chunk in std::mem::take(&mut self.chunks) {
+			self.spray.remove_chunk(chunk.pos);
+			self.free_slots.push(chunk.slot);
+			for mesh in [chunk.solid, chunk.water].into_iter().flatten() {
+				self.recycle(mesh);
+			}
 		}
+		self.by_pos.clear();
+		self.near_dirty = true;
+	}
+
+	/// One linear pass over the resident set producing every list this
+	/// frame draws from. `near` is None when the cached near map stands,
+	/// which also skips its plane test. Returns the count culled against
+	/// the camera frustum.
+	fn cull(
+		chunks: &[ChunkGpu],
+		lists: &mut CullLists,
+		cam: &[glam::Vec4; 4],
+		near: Option<&[glam::Vec4; 4]>,
+		cam_chunk: (i32, i32),
+	) -> u32 {
+		lists.water.clear();
+		lists.near.clear();
+		lists.keyed.clear();
+		lists.counts = [0; DIST_BUCKETS];
+		let mut culled = 0;
+		for (i, c) in chunks.iter().enumerate() {
+			let i = i as u32;
+			let solid = c.solid.is_some();
+			if let Some(planes) = near {
+				if solid && sphere_in_frustum(c.center, planes) {
+					lists.near.push(i);
+				}
+			}
+			if !sphere_in_frustum(c.center, cam) {
+				culled += 1;
+				continue;
+			}
+			if solid {
+				let dx = i64::from(c.pos.x - cam_chunk.0);
+				let dz = i64::from(c.pos.z - cam_chunk.1);
+				let b = ((dx * dx + dz * dz) as f64).sqrt() as usize;
+				let b = b.min(DIST_BUCKETS - 1);
+				lists.counts[b] += 1;
+				lists.keyed.push((b as u8, i));
+			}
+			if c.water.is_some() {
+				lists.water.push(i);
+			}
+		}
+		let CullLists {
+			scene,
+			keyed,
+			counts,
+			..
+		} = lists;
+		scatter_by_bucket(keyed, counts, scene);
+		culled
 	}
 
 	/// (Re)build the size-dependent frame targets when the size changes.
@@ -795,6 +1063,10 @@ impl Renderer {
 		if self.targets.as_ref().map(|t| t.size) == Some(size) {
 			return;
 		}
+		// The shadow maps survive a resize, but a rebuild is the one moment
+		// nothing about the previous frame can be assumed — re-render the
+		// near cascade rather than reason about it.
+		self.near_dirty = true;
 		let extent = wgpu::Extent3d {
 			width: size.0.max(1),
 			height: size.1.max(1),
@@ -926,16 +1198,28 @@ impl Renderer {
 			wide_refreshed: self.shadow.refresh_pending(wide_due),
 			..Default::default()
 		};
+		// Near cascade: the VP is texel-snapped, so an unchanged VP over an
+		// unchanged caster set reproduces the map bit for bit — skip the
+		// pass and keep what the texture already holds. (A live day cycle
+		// rotates the VP every frame, so in normal play this is due every
+		// frame; it pays off whenever the sun is frozen or the scene is.)
+		let near_due = self.near_dirty || self.shadow.near_vp() != near_vp;
 		// Light-VP uploads + wide-refresh kickoff; the returned sample is
 		// captured before the encode below can flip the ping-pong.
-		let wide_sample =
-			self.shadow
-				.begin_frame(&gpu.queue, near_vp, wide_vp, wide_due, &self.chunks);
-		// The front wide map lags the engine's wide_vp by up to one job
-		// (a few frames); the main pass must project with the VP that map
-		// was rendered with, not this frame's.
+		let wide_sample = self.shadow.begin_frame(
+			&gpu.queue,
+			near_vp,
+			near_due,
+			wide_vp,
+			wide_due,
+			&self.chunks,
+		);
+		// Both cascades project with the VP their map was actually rendered
+		// with, not this frame's: the front wide map lags by up to one job,
+		// and the near map may be a cached earlier frame's.
 		let mut frame = *frame;
 		frame.light_wide = wide_sample.active_vp.to_cols_array_2d();
+		frame.light_near = self.shadow.near_vp().to_cols_array_2d();
 		let frame = &frame;
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
@@ -951,15 +1235,27 @@ impl Renderer {
 			nametags,
 		);
 		self.ui_icons.prepare(gpu, size, ui);
-		// Chunk bounding-sphere frustum cull against the four side planes.
-		let planes = side_planes(view_proj);
-		let in_frustum = |pos: &ChunkPos| -> bool { chunk_in_frustum(pos, &planes) };
 		gpu.queue
 			.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(frame));
 		let mut water_frame = *frame;
 		water_frame.misc[0] = 0.7; // Java transparent-pass u_Alpha
 		gpu.queue
 			.write_buffer(&self.frame_water_buf, 0, bytemuck::bytes_of(&water_frame));
+		// One cull for the whole frame: scene, water, and near-shadow lists
+		// out of a single walk of the flat resident set.
+		let cam_planes = side_planes(view_proj);
+		let near_planes = near_due.then(|| side_planes(self.shadow.near_vp()));
+		let cam_chunk = (
+			(frame.cam_pos[0] / 16.0).floor() as i32,
+			(frame.cam_pos[2] / 16.0).floor() as i32,
+		);
+		stats.chunks_culled = Self::cull(
+			&self.chunks,
+			&mut self.lists,
+			&cam_planes,
+			near_planes.as_ref(),
+			cam_chunk,
+		);
 		let spray_n = self.spray.prepare(
 			gpu,
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
@@ -971,22 +1267,29 @@ impl Renderer {
 				label: Some("frame"),
 			});
 
+		let draw = ChunkDraw {
+			chunks: &self.chunks,
+			by_pos: &self.by_pos,
+			origin_buf: &self.origin_buf,
+			index_buf: &self.index_buf,
+		};
 		// All shadow work (bootstrap clear → wide slice → near pass) in
 		// fixed order; a completed wide slice flips the ping-pong AFTER
 		// this frame's sample was captured above.
 		let shadow_stats = self.shadow.encode(
 			&mut encoder,
-			&self.chunks,
-			&self.chunk_bg,
-			&self.index_buf,
+			&draw,
+			near_due.then_some(self.lists.near.as_slice()),
 			self.gpu_timer.as_ref(),
 		);
+		if near_due {
+			self.near_dirty = false;
+			self.near_planes = near_planes;
+		}
 		stats.shadow_casters = shadow_stats.casters;
 		stats.draw_calls += shadow_stats.draw_calls;
 		stats.triangles += shadow_stats.triangles;
 
-		// Water chunk list, shared by both water subpasses below.
-		self.water.build_list(&self.chunks, in_frustum);
 		{
 			let targets = self.targets.as_ref().expect("ensured above");
 			// Scene pass: solids + sky into the offscreen color target;
@@ -1027,23 +1330,16 @@ impl Renderer {
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
 				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
-				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-				for (pos, chunk) in &self.chunks {
-					if !in_frustum(pos) {
-						stats.chunks_culled += 1;
+				// Origins for every chunk, bound once — each draw selects
+				// its own with first_instance.
+				draw.bind(&mut pass);
+				for &i in &self.lists.scene {
+					let chunk = &draw.chunks[i as usize];
+					let Some(mesh) = chunk.solid.as_ref() else {
 						continue;
-					}
-					if let Some((buf, index_count)) = &chunk.solid {
-						pass.set_bind_group(
-							3,
-							&self.chunk_bg,
-							&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-						);
-						pass.set_vertex_buffer(0, buf.slice(..));
-						pass.draw_indexed(0..*index_count, 0, 0..1);
-						stats.chunks_drawn += 1;
-						stats.triangles += *index_count / 3;
-					}
+					};
+					stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
+					stats.chunks_drawn += 1;
 				}
 
 				// Remote players: opaque, depth-writing, before the sky so
@@ -1065,7 +1361,14 @@ impl Renderer {
 			// attachment goes on to take the water prepass's writes. A
 			// fullscreen draw, not copy_texture_to_texture — WebGPU forbids
 			// depth32float as a copy destination.
-			{
+			//
+			// Its only two consumers are the water shaders and the highlight
+			// decal's manual occlusion, so with no water in frustum and no
+			// crosshair target — caves, deserts, a dry menu backdrop — the
+			// full-res resolve is skipped outright. Nothing downstream can
+			// then read the stale copy it leaves behind.
+			let needs_depth_copy = !self.lists.water.is_empty() || highlight_target.is_some();
+			if needs_depth_copy {
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("depth blit"),
 					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1128,9 +1431,9 @@ impl Renderer {
 				pass.set_bind_group(0, &targets.water_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
 				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
-				pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+				draw.bind(&mut pass);
 				let (water_draws, water_tris) =
-					self.water.draw(&mut pass, &self.chunks, &self.chunk_bg);
+					self.water.draw(&mut pass, draw.chunks, &self.lists.water);
 				stats.water_draws += water_draws;
 				stats.triangles += water_tris;
 
@@ -1195,18 +1498,59 @@ impl Renderer {
 	}
 }
 
-/// Chunk bounding-sphere test against extracted side planes. RADIUS is
-/// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
-/// near/far deliberately ignored). Shared by the main pass and the
-/// shadow passes so the magic constant lives once.
-pub(crate) fn chunk_in_frustum(pos: &ChunkPos, planes: &[glam::Vec4; 4]) -> bool {
-	let c = glam::Vec3::new(
+/// Everything a pass needs to draw chunks: the resident set, its index
+/// (for the wide-refresh job, which snapshots ChunkPos), and the two
+/// buffers bound once per pass. One borrow instead of four in the pass
+/// signatures, which otherwise grow an argument per feature.
+pub(crate) struct ChunkDraw<'a> {
+	pub chunks: &'a [ChunkGpu],
+	pub by_pos: &'a FxHashMap<ChunkPos, u32>,
+	pub origin_buf: &'a wgpu::Buffer,
+	pub index_buf: &'a wgpu::Buffer,
+}
+
+impl ChunkDraw<'_> {
+	/// Bind what every chunk draw in a pass shares: the quad index buffer
+	/// and the slot-indexed origin stream.
+	pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
+		pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+		pass.set_vertex_buffer(1, self.origin_buf.slice(..));
+	}
+}
+
+/// One chunk draw: bind its vertex stream, then one instance at
+/// `first_instance = slot` — which is how the vertex stage picks its
+/// origin out of the instance-step origin buffer bound once per pass.
+/// Two encoder calls where the dynamic-offset bind group cost three; on
+/// wasm each is a JS hop with validation, and the scene, both shadow
+/// passes, and both water subpasses each walk thousands of chunks.
+/// Returns the index count drawn.
+pub(crate) fn draw_chunk(pass: &mut wgpu::RenderPass<'_>, mesh: &ChunkMesh, slot: u32) -> u32 {
+	pass.set_vertex_buffer(0, mesh.buf.slice(..));
+	pass.draw_indexed(0..mesh.index_count, 0, slot..slot + 1);
+	mesh.index_count
+}
+
+/// Chunk center in world units — the bounding sphere's origin, cached on
+/// `ChunkGpu` because the cull recomputes nothing per frame.
+pub(crate) fn chunk_center(pos: ChunkPos) -> glam::Vec3 {
+	glam::Vec3::new(
 		(pos.x * 16 + 8) as f32,
 		(pos.y * 16 + 8) as f32,
 		(pos.z * 16 + 8) as f32,
-	);
+	)
+}
+
+/// Chunk bounding-sphere test against extracted side planes. RADIUS is
+/// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
+/// near/far deliberately ignored). Shared by the camera cull, both shadow
+/// frusta, and the near-map dirty test, so the magic constant lives once
+/// and the dirty test can't disagree with the pass it guards.
+pub(crate) fn sphere_in_frustum(center: glam::Vec3, planes: &[glam::Vec4; 4]) -> bool {
 	const RADIUS: f32 = 13.86;
-	planes.iter().all(|p| p.truncate().dot(c) + p.w > -RADIUS)
+	planes
+		.iter()
+		.all(|p| p.truncate().dot(center) + p.w > -RADIUS)
 }
 
 /// Gribb–Hartmann frustum plane extraction: left/right/bottom/top only.
@@ -1262,5 +1606,33 @@ mod tests {
 		assert_eq!(super::grown_slots(8192, 20000), 20224);
 		// An exact multiple stays put when it already covers ×2.
 		assert_eq!(super::grown_slots(100, 512), 512);
+	}
+
+	#[test]
+	fn size_classes_round_up_and_never_shrink() {
+		let c = super::SIZE_CLASS;
+		// Anything non-empty gets at least one class...
+		assert_eq!(super::size_class(1), c);
+		assert_eq!(super::size_class(c), c);
+		// ...and a byte past a class boundary takes the next whole one, so
+		// a remesh within the class writes in place.
+		assert_eq!(super::size_class(c + 1), 2 * c);
+		assert_eq!(super::size_class(3 * c), 3 * c);
+		// The class index the pool is keyed by stays in range.
+		assert_eq!(super::size_class(0), c);
+	}
+
+	#[test]
+	fn scatter_orders_by_bucket_and_is_stable() {
+		let keyed = [(2u8, 10u32), (0, 20), (2, 30), (1, 40), (0, 50)];
+		let mut counts = [0u32; super::DIST_BUCKETS];
+		for &(b, _) in &keyed {
+			counts[b as usize] += 1;
+		}
+		let mut out = vec![9999u32; 3]; // reused scratch, stale contents
+		super::scatter_by_bucket(&keyed, &counts, &mut out);
+		// Near buckets first; ties keep their input order (the resident
+		// set's own order), so the result is deterministic frame to frame.
+		assert_eq!(out, vec![20, 50, 40, 10, 30]);
 	}
 }

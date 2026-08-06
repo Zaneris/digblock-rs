@@ -18,6 +18,7 @@ mod renderer;
 pub mod settings;
 mod shadow;
 mod sky;
+mod smoothing;
 mod spray;
 mod texture;
 pub mod ui;

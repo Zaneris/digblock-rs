@@ -263,6 +263,21 @@ pub fn shape_of_cell(cell: u16) -> Option<&'static ShapeVariant> {
 	shape_of(BlockType::from_id(cell_id(cell)), cell_state(cell))
 }
 
+/// Force every variant table to bake NOW, during load.
+///
+/// Baking is lazy per family, and each family bakes ALL its variants at
+/// once: the first door to reach a mesher, a `neighbor_cover` probe, a
+/// physics test or the alchemy screen pays for all 16 (measured 720µs
+/// natively, several ms on wasm) in whatever frame happens to touch it
+/// first. That is a guaranteed one-frame hitch at an arbitrary moment of
+/// gameplay, so spend it where a pause is already expected instead. Warm
+/// calls are single-digit nanoseconds, so this is purely about WHEN.
+pub fn prewarm() {
+	let _ = LazyLock::force(&STAIRS);
+	let _ = LazyLock::force(&DOORS);
+	let _ = LazyLock::force(&SLABS);
+}
+
 /// No sub-block geometry — physics/raycast take the unit-cube fast path.
 #[inline]
 pub fn is_full_cube(cell: u16) -> bool {

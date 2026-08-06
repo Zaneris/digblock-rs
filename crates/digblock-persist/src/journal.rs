@@ -10,16 +10,20 @@
 //! retune stales both at once, by construction. The `Journal` writer and
 //! its compaction machinery are fs-bound (native only); the index, the
 //! record codec, and the snapshot parse/serialize halves are pure and
-//! compile on wasm, where localStorage holds the byte blob instead of a
-//! file.
+//! compile on wasm, where localStorage holds the byte blobs instead of
+//! files.
+//!
+//! Both homes shard by REGION (see `REGION_COLS`), so persistence work
+//! tracks what changed rather than a world's lifetime edit count. A shard
+//! is an ordinary journal blob that happens to hold one region's cells,
+//! which is why sharding needed no format bump: pre-shard single-file
+//! worlds MIGRATE at open instead of staling.
 
 use digblock_net::messages::BlockEdit;
 use digblock_net::protocol::PlayerId;
 #[cfg(not(target_arch = "wasm32"))]
 use digblock_net::protocol::SERVER_ID;
-use rustc_hash::FxHashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,10 +53,42 @@ const SYNC_INTERVAL_SECS: f32 = 1.0;
 /// Final block CELL value per edited cell within one chunk column.
 pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 
-/// Last-write-wins cell state, grouped by chunk column for join sync.
+/// Chunk columns per region axis — 16, so a region spans 256×256 blocks.
+///
+/// Regions are the PERSISTENCE granularity, and exist because both homes
+/// of this format used to do work proportional to a world's total edit
+/// count on every save: the web store re-serialized the entire overlay
+/// every five seconds, and the server rewrote the whole file to compact
+/// it. Sharding by region makes both costs track what actually changed,
+/// so a mature world stops paying for its own history.
+///
+/// The size is a balance: bigger regions mean fewer, larger rewrites (and
+/// fewer localStorage keys); smaller ones mean more bookkeeping per edit.
+/// 256 blocks is a few minutes of building in one place.
+pub const REGION_COLS: i32 = 16;
+
+/// Region owning a chunk column.
+pub fn region_of_column(cx: i32, cz: i32) -> (i32, i32) {
+	(cx.div_euclid(REGION_COLS), cz.div_euclid(REGION_COLS))
+}
+
+/// Region owning a world block position.
+pub fn region_of_block(x: i32, z: i32) -> (i32, i32) {
+	region_of_column(x.div_euclid(16), z.div_euclid(16))
+}
+
+/// Last-write-wins cell state, grouped by chunk column for join sync and
+/// by region for persistence.
 #[derive(Default, Debug)]
 pub struct JournalIndex {
 	columns: FxHashMap<(i32, i32), ColumnEdits>,
+	/// Region → its edited columns. Lets a region be serialized without
+	/// scanning every column in the world, which is the whole point of
+	/// sharding.
+	regions: FxHashMap<(i32, i32), FxHashSet<(i32, i32)>>,
+	/// Regions edited since the last persist. Never cleared implicitly —
+	/// a store clears a region only once its bytes are safely written.
+	dirty: FxHashSet<(i32, i32)>,
 	pub next_seq: u64,
 }
 
@@ -70,6 +106,11 @@ impl JournalIndex {
 				ColumnEdits::default()
 			})
 			.insert((edit.x, edit.y, edit.z), edit.block);
+		let region = region_of_column(col.0, col.1);
+		if new_column {
+			self.regions.entry(region).or_default().insert(col);
+		}
+		self.dirty.insert(region);
 		let seq = self.next_seq;
 		self.next_seq += 1;
 		(seq, new_column)
@@ -94,6 +135,56 @@ impl JournalIndex {
 		self.columns
 			.values()
 			.flat_map(|c| c.iter().map(|(&p, &b)| (p, b)))
+	}
+
+	/// Regions holding at least one edit.
+	pub fn regions(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+		self.regions.keys().copied()
+	}
+
+	/// Every edit in one region — O(that region), not O(the world).
+	pub fn region_edits(
+		&self,
+		region: (i32, i32),
+	) -> impl Iterator<Item = ((i32, i32, i32), u16)> + '_ {
+		self.regions
+			.get(&region)
+			.into_iter()
+			.flat_map(move |cols| cols.iter())
+			.filter_map(move |col| self.columns.get(col))
+			.flat_map(|cells| cells.iter().map(|(&p, &b)| (p, b)))
+	}
+
+	pub fn region_live_cells(&self, region: (i32, i32)) -> u64 {
+		self.regions.get(&region).map_or(0, |cols| {
+			cols.iter()
+				.filter_map(|c| self.columns.get(c))
+				.map(|c| c.len() as u64)
+				.sum()
+		})
+	}
+
+	/// Regions changed since they were last persisted.
+	pub fn dirty_regions(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+		self.dirty.iter().copied()
+	}
+
+	pub fn dirty_count(&self) -> usize {
+		self.dirty.len()
+	}
+
+	/// Mark a region persisted. Call only AFTER its bytes are committed:
+	/// clearing early turns a failed write into silent data loss.
+	pub fn clear_dirty(&mut self, region: (i32, i32)) {
+		self.dirty.remove(&region);
+	}
+
+	pub fn mark_all_dirty(&mut self) {
+		self.dirty = self.regions.keys().copied().collect();
+	}
+
+	pub fn clear_all_dirty(&mut self) {
+		self.dirty.clear();
 	}
 }
 
@@ -142,9 +233,43 @@ pub fn snapshot_bytes(seed: f64, index: &JournalIndex) -> Vec<u8> {
 	out
 }
 
-/// Parse a journal byte blob (header checks + LWW replay). A torn tail
-/// is truncated, matching the file path's recovery.
-pub fn parse_snapshot(bytes: &[u8], expected_seed: f64) -> Result<JournalIndex, JournalError> {
+/// Serialize ONE region as a standalone journal blob.
+///
+/// The bytes are an ordinary journal — same magic, version and record
+/// layout — that happens to contain only this region's cells. That is what
+/// makes the sharded layout a pure container change: every reader,
+/// including [`parse_snapshot`], is unchanged, and a shard can be merged
+/// back into a full index just by replaying it.
+pub fn region_snapshot_bytes(seed: f64, index: &JournalIndex, region: (i32, i32)) -> Vec<u8> {
+	let live = index.region_live_cells(region);
+	let mut out = Vec::with_capacity((HEADER_LEN + live * RECORD_LEN) as usize);
+	out.extend_from_slice(&header_bytes(seed));
+	for ((x, y, z), block) in index.region_edits(region) {
+		out.extend_from_slice(&encode_record(
+			x,
+			y,
+			z,
+			block,
+			digblock_net::protocol::SERVER_ID,
+		));
+	}
+	out
+}
+
+/// Replay a blob's records INTO an existing index (shard merge). Header
+/// checks match [`parse_snapshot`]; a torn tail is ignored.
+pub fn merge_snapshot(
+	bytes: &[u8],
+	expected_seed: f64,
+	index: &mut JournalIndex,
+) -> Result<(), JournalError> {
+	check_header(bytes, expected_seed)?;
+	replay_records(&bytes[HEADER_LEN as usize..], index);
+	Ok(())
+}
+
+/// Header validation shared by the whole-blob and shard-merge paths.
+fn check_header(bytes: &[u8], expected_seed: f64) -> Result<(), JournalError> {
 	if bytes.len() < HEADER_LEN as usize {
 		return Err(JournalError::Corrupt("shorter than the header"));
 	}
@@ -163,8 +288,14 @@ pub fn parse_snapshot(bytes: &[u8], expected_seed: f64) -> Result<JournalIndex, 
 			requested: expected_seed,
 		});
 	}
+	Ok(())
+}
+
+/// Parse a journal byte blob (header checks + LWW replay). A torn tail
+/// is truncated, matching the file path's recovery.
+pub fn parse_snapshot(bytes: &[u8], expected_seed: f64) -> Result<JournalIndex, JournalError> {
 	let mut index = JournalIndex::default();
-	replay_records(&bytes[HEADER_LEN as usize..], &mut index);
+	merge_snapshot(bytes, expected_seed, &mut index)?;
 	Ok(index)
 }
 
@@ -185,8 +316,8 @@ fn replay_records(body: &[u8], index: &mut JournalIndex) {
 /// Consecutive write failures before the journal reports unhealthy.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_WRITE_FAILURES: u32 = 3;
-/// Compact (boot or runtime) when the file holds this many times more
-/// records than live cells (and enough of them to matter).
+/// Compact (boot or runtime) when a SHARD holds this many times more
+/// records than its region's live cells (and enough of them to matter).
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RATIO: u64 = 2;
 #[cfg(not(target_arch = "wasm32"))]
@@ -210,22 +341,52 @@ const COMPACT_RETRY_SECS: u64 = 300;
 /// within the fluid/edit rate budgets, but fail safe.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_DELTA_MAX: usize = 65_536;
+/// Regions examined per `maintain()` when looking for something to
+/// compact. The scan is round-robin over the shard set rather than a
+/// full pass, so its cost is fixed no matter how many regions a mature
+/// world holds — the pre-shard code summed every column's live cells on
+/// every tick instead. A sweep of even a few thousand regions completes
+/// in seconds, which is nothing against the 60s cooldown between runs.
+#[cfg(not(target_arch = "wasm32"))]
+const COMPACT_SCAN_PER_TICK: usize = 8;
+/// Shard writers kept open at once. Regions are visited without bound —
+/// a player walks, a fluid front crosses a border — so this cap is what
+/// stops a long session from exhausting file descriptors; the least
+/// recently written shard is flushed, fsynced and closed to make room.
+/// Sized well past what a full server's players and fluid fronts touch
+/// simultaneously, so eviction stays a rare event rather than a
+/// per-append fsync treadmill.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_OPEN_REGIONS: usize = 64;
 
-/// In-flight runtime compaction, stepped once per `maintain()` call.
+/// One open shard file. `dirty` = bytes still in the BufWriter; `used` is
+/// the LRU stamp (see [`Journal::open_writer`]).
+#[cfg(not(target_arch = "wasm32"))]
+struct RegionWriter {
+	file: BufWriter<File>,
+	dirty: bool,
+	used: u64,
+}
+
+/// In-flight runtime compaction of ONE region, stepped once per
+/// `maintain()` call.
 ///
 /// Invariants the correctness rests on (see `append` for the capture
 /// rule): the in-memory `index` and `next_seq` are NEVER touched — only
-/// the file is rewritten, so join sync and seq monotonicity are safe by
-/// construction. All live appends keep going to the OLD file until the
-/// atomic rename, so a crash at any point leaves a complete old file
-/// plus a garbage tmp that the next boot truncates.
+/// the shard is rewritten, so join sync and seq monotonicity are safe by
+/// construction. All live appends keep going to the OLD shard until the
+/// atomic rename, so a crash at any point leaves a complete old shard
+/// plus a garbage tmp that the next boot removes. Other regions are
+/// untouched: their appends land in files this run never replaces, so
+/// they must stay OUT of the delta.
 #[cfg(not(target_arch = "wasm32"))]
 struct CompactionRun {
+	region: (i32, i32),
 	tmp: BufWriter<File>,
 	tmp_path: PathBuf,
-	/// Snapshot of column keys at start; copied whole, one cursor step at
-	/// a time. Columns are never removed from the index, so every key
-	/// stays valid for the whole run.
+	/// Snapshot of the region's column keys at start; copied whole, one
+	/// cursor step at a time. Columns are never removed from the index, so
+	/// every key stays valid for the whole run.
 	cols: Vec<(i32, i32)>,
 	cursor: usize,
 	/// Columns not yet copied. A mid-run append goes to `delta` iff its
@@ -235,24 +396,41 @@ struct CompactionRun {
 	/// on last-write-wins replay.
 	pending: FxHashSet<(i32, i32)>,
 	/// Raw records appended mid-run to already-copied or brand-new
-	/// columns; written after the base copy, so they win LWW replay.
+	/// columns of THIS region; written after the base copy, so they win
+	/// LWW replay.
 	delta: Vec<[u8; RECORD_LEN as usize]>,
 	written: u64,
 	since_sync: u64,
 }
 
+/// The world journal as a DIRECTORY of per-region shards:
+/// `<dir>/world-{seedbits:016x}/r.{rx}.{rz}.journal`, each one a complete
+/// ordinary journal blob (same magic/version/records) holding a single
+/// region's cells.
+///
+/// Sharding is what keeps persistence work proportional to what changed
+/// instead of to the world's lifetime edit count: an append touches one
+/// shard, and compaction rewrites one region's bounded live set rather
+/// than every cell in the world. Pre-shard single-file worlds MIGRATE at
+/// open — the layout changed, the format did not.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Journal {
-	file: BufWriter<File>,
-	path: PathBuf,
+	/// The shard directory, not the data root the caller passed.
+	dir: PathBuf,
 	seed: f64,
 	pub index: JournalIndex,
-	dirty: bool,
+	/// Open shard writers, capped at MAX_OPEN_REGIONS.
+	writers: FxHashMap<(i32, i32), RegionWriter>,
+	/// Monotonic stamp source for the writer LRU.
+	clock: u64,
+	/// Records currently in each region's shard — the compaction trigger
+	/// input. Every region that has ever been written this boot has an
+	/// entry, so this doubles as the compaction scan's key set.
+	records: FxHashMap<(i32, i32), u64>,
+	/// Remaining regions in the current round-robin compaction sweep.
+	scan: Vec<(i32, i32)>,
 	wrote_since_sync: bool,
 	last_sync: Instant,
-	/// Records currently in the file (successful appends since open, on
-	/// top of the boot state) — the runtime-compaction trigger input.
-	records: u64,
 	run: Option<CompactionRun>,
 	/// Runtime compaction not eligible before this instant (cooldown
 	/// after success, backoff after failure). None = eligible now.
@@ -271,95 +449,72 @@ pub struct Journal {
 #[cfg(not(target_arch = "wasm32"))]
 impl Journal {
 	/// Open (or create) the journal for `seed` under `dir`. A seed
-	/// mismatch with an existing file is a hard error — the terrain the
+	/// mismatch with an existing shard is a hard error — the terrain the
 	/// edits apply to would not exist.
 	pub fn open(dir: &Path, seed: f64) -> std::io::Result<Self> {
 		std::fs::create_dir_all(dir)?;
-		let path = dir.join(format!("world-{:016x}.journal", seed.to_bits()));
-		// A crashed runtime compaction may leave a stale tmp behind.
-		let _ = std::fs::remove_file(path.with_extension("journal.tmp"));
-		// Format break: a file from another version can't be read, but
+		let legacy = legacy_path(dir, seed);
+		let shards = shard_dir(dir, seed);
+		// Pre-shard world. A version break is archived like any other
+		// (below); a CURRENT-version file is migrated, because sharding
+		// changed the container and not the format — staling those worlds
+		// would throw away every edit over a directory layout.
+		if legacy.exists() {
+			match file_version(&legacy)? {
+				Some(version) => archive(&legacy, version)?,
+				None => migrate_legacy(&legacy, &shards, seed)?,
+			}
+		}
+		// Format break: shards from another version can't be read, but
 		// refusing to boot bricks persistent volumes (the compose rig's
-		// ./data) until someone intervenes. Archive it and start fresh —
-		// the old world stays next door as `.vN.bak`. (Client save
-		// stores check `file_version` themselves and REFUSE instead, so
-		// this destructive path never sees a named user save.)
-		if let Some(version) = file_version(&path)? {
-			let bak = archive_path(&path, version);
-			log::warn!(
-				"journal version {version} != {VERSION}: archiving to {}, starting fresh",
-				bak.display()
-			);
-			std::fs::rename(&path, &bak)?;
+		// ./data) until someone intervenes. Archive the whole directory
+		// and start fresh — the old world stays next door as `.vN.bak`.
+		// (Client save stores check `world_version` themselves and REFUSE
+		// instead, so this destructive path never sees a named user save.)
+		if let Some(version) = shard_version(&shards)? {
+			archive(&shards, version)?;
 		}
-		let mut file = OpenOptions::new()
-			.read(true)
-			.write(true)
-			.create(true)
-			.truncate(false)
-			.open(&path)?;
+		std::fs::create_dir_all(&shards)?;
+		// A crashed compaction or migration may leave stale tmps behind.
+		remove_stale_tmps(&shards);
 
-		let len = file.metadata()?.len();
 		let mut index = JournalIndex::default();
-		let mut record_count = 0u64;
-		if len == 0 {
-			file.write_all(&header_bytes(seed))?;
-			file.sync_data()?;
-		} else {
-			let mut header = [0u8; HEADER_LEN as usize];
-			file.read_exact(&mut header)?;
-			if &header[0..4] != MAGIC {
-				return Err(bad_data("journal magic mismatch"));
-			}
-			let version = u16::from_le_bytes([header[4], header[5]]);
-			if version != VERSION {
-				return Err(bad_data(format!("journal version {version} != {VERSION}")));
-			}
-			let file_seed = f64::from_le_bytes(header[8..16].try_into().unwrap());
-			if file_seed.to_bits() != seed.to_bits() {
-				return Err(bad_data(format!(
-					"journal seed {file_seed} != requested {seed}"
-				)));
-			}
-			// Torn tail: keep only whole records.
-			let records = (len - HEADER_LEN) / RECORD_LEN;
-			let good_len = HEADER_LEN + records * RECORD_LEN;
-			if good_len != len {
-				log::warn!("journal torn tail: truncating {len} -> {good_len}");
-				file.set_len(good_len)?;
-			}
-			let mut body = Vec::with_capacity((good_len - HEADER_LEN) as usize);
-			file.seek(SeekFrom::Start(HEADER_LEN))?;
-			(&mut file)
-				.take(good_len - HEADER_LEN)
-				.read_to_end(&mut body)?;
-			replay_records(&body, &mut index);
-
-			// Boot compaction: fluid appends every cell change, so the
-			// file grows without bound while the index stays last-write-
-			// wins small. Rewrite (tmp + atomic rename) when bloated.
-			// Seq numbers restart at the live-cell count — they are
-			// per-boot monotonic only, clients never persist them.
-			let records = (good_len - HEADER_LEN) / RECORD_LEN;
-			let live = index.live_cells();
-			record_count = records;
-			if records > COMPACT_RATIO * live && records > COMPACT_MIN_RECORDS {
-				log::info!("journal compaction: {records} records -> {live} live cells");
-				file = compact(&path, seed, &index)?;
-				index.next_seq = live;
-				record_count = live;
+		let mut records: FxHashMap<(i32, i32), u64> = FxHashMap::default();
+		for region in list_shards(&shards)? {
+			let n = load_shard(&shard_path(&shards, region), seed, &mut index)?;
+			records.insert(region, n);
+		}
+		// Boot compaction, per region: fluid appends every cell change, so
+		// a shard grows without bound while its live set stays last-write-
+		// wins small. Only bloated regions are rewritten (tmp + fsync +
+		// atomic rename), so boot cost tracks the churn that actually
+		// happened instead of the world's whole history.
+		for (&region, count) in records.iter_mut() {
+			let live = index.region_live_cells(region);
+			if *count > COMPACT_RATIO * live && *count > COMPACT_MIN_RECORDS {
+				log::info!(
+					"journal boot compaction r.{}.{}: {count} records -> {live} live cells",
+					region.0,
+					region.1
+				);
+				*count = write_shard(&shards, seed, &index, region)?;
 			}
 		}
-		file.seek(SeekFrom::End(0))?;
+		// Seq numbers are per-boot monotonic only (clients never persist
+		// them), so they simply restart at the record count on disk —
+		// replay already left next_seq there unless boot compaction just
+		// shrank a shard.
+		index.next_seq = records.values().sum();
 		Ok(Self {
-			file: BufWriter::new(file),
-			path,
+			dir: shards,
 			seed,
 			index,
-			dirty: false,
+			writers: FxHashMap::default(),
+			clock: 0,
+			records,
+			scan: Vec::new(),
 			wrote_since_sync: false,
 			last_sync: Instant::now(),
-			records: record_count,
 			run: None,
 			next_compact_at: None,
 			write_failures: 0,
@@ -382,20 +537,23 @@ impl Journal {
 	/// [`JournalIndex::record`]).
 	pub fn append(&mut self, edit: BlockEdit, by: PlayerId) -> (u64, bool) {
 		let rec = encode_record(edit.x, edit.y, edit.z, edit.block, by);
-		match self.write_record(&rec) {
+		let region = region_of_block(edit.x, edit.z);
+		match self.write_record(region, &rec) {
 			Ok(()) => {
 				self.write_failures = 0;
-				self.records += 1;
+				*self.records.entry(region).or_insert(0) += 1;
 			}
 			Err(e) => self.note_write_failure("write", &e),
 		}
 		// Mid-compaction capture (see CompactionRun::pending for the
 		// rule). Tracked off the index like the base copy, so even an
-		// append the old file lost lands in the compacted file.
+		// append the old shard lost lands in the compacted one. Appends to
+		// OTHER regions are already durable in their own shards, which
+		// this run does not replace.
 		let mut delta_overflow = false;
 		if let Some(run) = &mut self.run {
 			let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
-			if !run.pending.contains(&col) {
+			if region == run.region && !run.pending.contains(&col) {
 				run.delta.push(rec);
 				delta_overflow = run.delta.len() > COMPACT_DELTA_MAX;
 			}
@@ -405,17 +563,77 @@ impl Journal {
 				"delta overflow (churn outpaced the copy)",
 			));
 		}
-		self.dirty = true;
 		self.wrote_since_sync = true;
 		self.index.record(edit)
 	}
 
-	fn write_record(&mut self, rec: &[u8]) -> std::io::Result<()> {
+	fn write_record(&mut self, region: (i32, i32), rec: &[u8]) -> std::io::Result<()> {
 		#[cfg(any(test, feature = "test-hooks"))]
 		if self.force_write_failure {
 			return Err(std::io::Error::other("injected write failure"));
 		}
-		self.file.write_all(rec)
+		let w = self.open_writer(region)?;
+		w.file.write_all(rec)?;
+		w.dirty = true;
+		Ok(())
+	}
+
+	/// The region's writer, opening the shard (and creating it, header
+	/// first) on demand and evicting the least-recently-written one when
+	/// the descriptor budget is full.
+	fn open_writer(&mut self, region: (i32, i32)) -> std::io::Result<&mut RegionWriter> {
+		if !self.writers.contains_key(&region) {
+			if self.writers.len() >= MAX_OPEN_REGIONS {
+				self.evict_lru();
+			}
+			let path = shard_path(&self.dir, region);
+			let mut file = OpenOptions::new()
+				.read(true)
+				.write(true)
+				.create(true)
+				.truncate(false)
+				.open(&path)?;
+			if file.metadata()?.len() == 0 {
+				file.write_all(&header_bytes(self.seed))?;
+				file.sync_data()?;
+			}
+			file.seek(SeekFrom::End(0))?;
+			self.writers.insert(
+				region,
+				RegionWriter {
+					file: BufWriter::new(file),
+					dirty: false,
+					used: 0,
+				},
+			);
+			self.records.entry(region).or_insert(0);
+		}
+		self.clock += 1;
+		let used = self.clock;
+		let w = self.writers.get_mut(&region).expect("inserted above");
+		w.used = used;
+		Ok(w)
+	}
+
+	fn evict_lru(&mut self) {
+		let Some(region) = self
+			.writers
+			.iter()
+			.min_by_key(|(_, w)| w.used)
+			.map(|(&r, _)| r)
+		else {
+			return;
+		};
+		let Some(mut w) = self.writers.remove(&region) else {
+			return;
+		};
+		// fsync on the way out: a shard closed between two periodic syncs
+		// would otherwise never get one, quietly breaking the promise that
+		// an accepted edit is durable within SYNC_INTERVAL_SECS.
+		let closed = w.file.flush().and_then(|()| w.file.get_ref().sync_data());
+		if let Err(e) = closed {
+			self.note_write_failure("close", &e);
+		}
 	}
 
 	fn note_write_failure(&mut self, what: &str, e: &std::io::Error) {
@@ -441,13 +659,7 @@ impl Journal {
 	/// Flush buffered writes; fsync at most once a second; step (or
 	/// start) runtime compaction — exactly one bounded action per call.
 	pub fn maintain(&mut self) {
-		if self.dirty {
-			match self.file.flush() {
-				Ok(()) => {}
-				Err(e) => self.note_write_failure("flush", &e),
-			}
-			self.dirty = false;
-		}
+		self.flush_writers();
 		if self.wrote_since_sync && self.last_sync.elapsed().as_secs_f32() >= SYNC_INTERVAL_SECS {
 			self.sync();
 		}
@@ -458,6 +670,23 @@ impl Journal {
 		}
 	}
 
+	/// Bounded by the open-writer cap, and each flush is a memcpy of a
+	/// partial 8 KB buffer into the kernel.
+	fn flush_writers(&mut self) {
+		let mut errs = Vec::new();
+		for w in self.writers.values_mut() {
+			if w.dirty {
+				if let Err(e) = w.file.flush() {
+					errs.push(e);
+				}
+				w.dirty = false;
+			}
+		}
+		for e in errs {
+			self.note_write_failure("flush", &e);
+		}
+	}
+
 	fn maybe_start_compaction(&mut self) {
 		if !self.healthy() {
 			return;
@@ -465,26 +694,54 @@ impl Journal {
 		if self.next_compact_at.is_some_and(|at| Instant::now() < at) {
 			return;
 		}
-		let live = self.index.live_cells();
-		if self.records <= COMPACT_RATIO * live || self.records <= COMPACT_MIN_RECORDS {
+		let Some((region, records, live)) = self.next_bloated_region() else {
 			return;
-		}
-		match self.start_compaction() {
+		};
+		match self.start_compaction(region) {
 			Ok(()) => log::info!(
-				"journal runtime compaction started: {} records, {live} live cells",
-				self.records
+				"journal runtime compaction started r.{}.{}: {records} records, {live} live cells",
+				region.0,
+				region.1
 			),
 			Err(e) => self.abort_compaction(&e),
 		}
 	}
 
-	fn start_compaction(&mut self) -> std::io::Result<()> {
-		let tmp_path = self.path.with_extension("journal.tmp");
+	/// Advance the round-robin sweep by at most COMPACT_SCAN_PER_TICK
+	/// regions, returning the first bloated one. `region_live_cells` is
+	/// O(the region's edited columns), so the whole check stays a fixed
+	/// handful of map lookups per tick.
+	fn next_bloated_region(&mut self) -> Option<((i32, i32), u64, u64)> {
+		for _ in 0..COMPACT_SCAN_PER_TICK {
+			if self.scan.is_empty() {
+				self.scan = self.records.keys().copied().collect();
+				if self.scan.is_empty() {
+					return None;
+				}
+			}
+			let region = self.scan.pop()?;
+			let records = self.records.get(&region).copied().unwrap_or(0);
+			let live = self.index.region_live_cells(region);
+			if records > COMPACT_RATIO * live && records > COMPACT_MIN_RECORDS {
+				return Some((region, records, live));
+			}
+		}
+		None
+	}
+
+	fn start_compaction(&mut self, region: (i32, i32)) -> std::io::Result<()> {
+		let tmp_path = tmp_path(&shard_path(&self.dir, region));
 		let mut tmp = BufWriter::new(File::create(&tmp_path)?);
 		tmp.write_all(&header_bytes(self.seed))?;
-		let cols: Vec<(i32, i32)> = self.index.columns.keys().copied().collect();
+		let cols: Vec<(i32, i32)> = self
+			.index
+			.regions
+			.get(&region)
+			.map(|cols| cols.iter().copied().collect())
+			.unwrap_or_default();
 		let pending = cols.iter().copied().collect();
 		self.run = Some(CompactionRun {
+			region,
 			tmp,
 			tmp_path,
 			cols,
@@ -498,7 +755,7 @@ impl Journal {
 	}
 
 	/// One bounded copy step; finishes the run when the snapshot is
-	/// exhausted. Any I/O error aborts the run (the old file is still the
+	/// exhausted. Any I/O error aborts the run (the old shard is still the
 	/// complete truth).
 	fn step_compaction(&mut self) {
 		#[cfg(any(test, feature = "test-hooks"))]
@@ -521,10 +778,9 @@ impl Journal {
 		}
 	}
 
-	/// Append the delta, fsync, atomically swap the file, and continue
-	/// appending to the compacted journal. `index`/`next_seq` are never
-	/// touched — runtime compaction is invisible to join sync and seq
-	/// monotonicity.
+	/// Append the delta, fsync, atomically swap the shard in.
+	/// `index`/`next_seq` are never touched — runtime compaction is
+	/// invisible to join sync and seq monotonicity.
 	fn finish_compaction(&mut self) -> std::io::Result<()> {
 		let mut run = self.run.take().expect("active run");
 		for rec in &run.delta {
@@ -533,28 +789,28 @@ impl Journal {
 		run.tmp.flush()?;
 		run.tmp.get_ref().sync_data()?;
 		drop(run.tmp);
-		std::fs::rename(&run.tmp_path, &self.path)?;
-		let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-		file.seek(SeekFrom::End(0))?;
-		let old = self.records;
-		self.records = run.written + run.delta.len() as u64;
-		// The old writer was flushed at the top of this maintain() and
-		// every append since start is in the delta — nothing is lost.
-		self.file = BufWriter::new(file);
-		self.dirty = false;
-		self.wrote_since_sync = false;
-		self.last_sync = Instant::now();
+		// Close the live writer BEFORE the swap: its descriptor points at
+		// the inode the rename unlinks, so anything still buffered there
+		// would be written into the void. maintain() flushed it at the top
+		// of this very call and every append since the run started is in
+		// the delta, so dropping it loses nothing — the next append to
+		// this region reopens the compacted shard.
+		self.writers.remove(&run.region);
+		std::fs::rename(&run.tmp_path, shard_path(&self.dir, run.region))?;
+		let now = run.written + run.delta.len() as u64;
+		let old = self.records.insert(run.region, now).unwrap_or(0);
 		self.next_compact_at = Some(Instant::now() + Duration::from_secs(COMPACT_COOLDOWN_SECS));
 		log::info!(
-			"journal runtime compaction: {old} -> {} records",
-			self.records
+			"journal runtime compaction r.{}.{}: {old} -> {now} records",
+			run.region.0,
+			run.region.1
 		);
 		Ok(())
 	}
 
 	/// Best-effort cleanup + backoff. Deliberately does NOT touch
 	/// `write_failures`: that counter gates edit acceptance, and a failed
-	/// compaction leaves a correct (merely bloated) file — rejecting
+	/// compaction leaves a correct (merely bloated) shard — rejecting
 	/// edits over it would be worse than the disease.
 	fn abort_compaction(&mut self, e: &std::io::Error) {
 		if let Some(run) = self.run.take() {
@@ -575,13 +831,21 @@ impl Journal {
 		self.next_compact_at = None;
 	}
 
-	/// Flush + fsync now (graceful shutdown).
+	/// Flush + fsync every open shard now (graceful shutdown).
 	pub fn sync(&mut self) {
-		if let Err(e) = self.file.flush() {
-			self.note_write_failure("flush", &e);
+		let mut errs = Vec::new();
+		for w in self.writers.values_mut() {
+			if let Err(e) = w.file.flush() {
+				errs.push(("flush", e));
+				continue;
+			}
+			w.dirty = false;
+			if let Err(e) = w.file.get_ref().sync_data() {
+				errs.push(("fsync", e));
+			}
 		}
-		if let Err(e) = self.file.get_ref().sync_data() {
-			self.note_write_failure("fsync", &e);
+		for (what, e) in errs {
+			self.note_write_failure(what, &e);
 		}
 		self.wrote_since_sync = false;
 		self.last_sync = Instant::now();
@@ -601,9 +865,10 @@ fn encode_record(x: i32, y: i32, z: i32, block: u16, by: PlayerId) -> [u8; RECOR
 	rec
 }
 
-/// Copy whole columns into the tmp file until this tick's record budget
-/// is spent; returns true when the snapshot is exhausted. Free function
-/// so the caller can borrow `run` mutably alongside the shared index.
+/// Copy whole columns of the run's region into the tmp file until this
+/// tick's record budget is spent; returns true when the snapshot is
+/// exhausted. Free function so the caller can borrow `run` mutably
+/// alongside the shared index.
 #[cfg(not(target_arch = "wasm32"))]
 fn copy_step(run: &mut CompactionRun, index: &JournalIndex) -> std::io::Result<bool> {
 	let mut wrote_this_tick = 0u64;
@@ -631,25 +896,178 @@ fn copy_step(run: &mut CompactionRun, index: &JournalIndex) -> std::io::Result<b
 	Ok(run.cursor >= run.cols.len())
 }
 
-/// Rewrite the journal as one record per live cell: tmp file, fsync,
-/// atomic rename, reopen. Boot-time (blocking) variant; the runtime
-/// equivalent is the incremental `CompactionRun`.
+/// Rewrite one region's shard as one record per live cell: tmp, fsync,
+/// atomic rename. Returns the record count now in the file. Shared by
+/// migration and boot compaction; it holds the whole region in memory and
+/// blocks, which is why the runtime equivalent is the incremental
+/// `CompactionRun` instead.
 #[cfg(not(target_arch = "wasm32"))]
-fn compact(path: &Path, seed: f64, index: &JournalIndex) -> std::io::Result<File> {
-	let tmp = path.with_extension("journal.tmp");
+fn write_shard(
+	shards: &Path,
+	seed: f64,
+	index: &JournalIndex,
+	region: (i32, i32),
+) -> std::io::Result<u64> {
+	let path = shard_path(shards, region);
+	let tmp = tmp_path(&path);
+	let bytes = region_snapshot_bytes(seed, index, region);
 	{
-		let mut out = BufWriter::new(File::create(&tmp)?);
-		out.write_all(&header_bytes(seed))?;
-		for cells in index.columns.values() {
-			for (&(x, y, z), &block) in cells {
-				out.write_all(&encode_record(x, y, z, block, SERVER_ID))?;
-			}
-		}
-		out.flush()?;
-		out.get_ref().sync_data()?;
+		let mut out = File::create(&tmp)?;
+		out.write_all(&bytes)?;
+		out.sync_data()?;
 	}
-	std::fs::rename(&tmp, path)?;
-	OpenOptions::new().read(true).write(true).open(path)
+	std::fs::rename(&tmp, &path)?;
+	Ok((bytes.len() as u64 - HEADER_LEN) / RECORD_LEN)
+}
+
+/// Replay one shard into `index`, truncating a torn tail; returns its
+/// whole-record count.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_shard(path: &Path, seed: f64, index: &mut JournalIndex) -> std::io::Result<u64> {
+	let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+	let len = file.metadata()?.len();
+	if len < HEADER_LEN {
+		return Err(bad_data(format!(
+			"{}: shorter than the journal header",
+			path.display()
+		)));
+	}
+	let mut header = [0u8; HEADER_LEN as usize];
+	file.read_exact(&mut header)?;
+	check_header(&header, seed).map_err(|e| bad_data(format!("{}: {e}", path.display())))?;
+	// Torn tail: keep only whole records.
+	let records = (len - HEADER_LEN) / RECORD_LEN;
+	let good_len = HEADER_LEN + records * RECORD_LEN;
+	if good_len != len {
+		log::warn!(
+			"journal torn tail in {}: truncating {len} -> {good_len}",
+			path.display()
+		);
+		file.set_len(good_len)?;
+	}
+	let mut body = vec![0u8; (good_len - HEADER_LEN) as usize];
+	file.seek(SeekFrom::Start(HEADER_LEN))?;
+	file.read_exact(&mut body)?;
+	replay_records(&body, index);
+	Ok(records)
+}
+
+/// Split a pre-shard whole-world journal into region shards.
+///
+/// Crash safety rests entirely on the ordering: every shard is written to
+/// a tmp, fsynced and atomically renamed, the shard directory is fsynced,
+/// and only THEN is the legacy file removed. A crash before that removal
+/// leaves the legacy file intact and the next boot redoes the whole split
+/// from the same source — a half-written shard set is simply overwritten,
+/// and shards for regions the legacy file doesn't mention can only have
+/// come from an interrupted split of that same file. A crash after the
+/// removal leaves a complete shard set. There is no window in which both
+/// are incomplete.
+///
+/// The shards come out compacted (`region_snapshot_bytes` is one record
+/// per live cell), so a bloated legacy file pays its rewrite once, here.
+#[cfg(not(target_arch = "wasm32"))]
+fn migrate_legacy(legacy: &Path, shards: &Path, seed: f64) -> std::io::Result<()> {
+	let bytes = std::fs::read(legacy)?;
+	let index =
+		parse_snapshot(&bytes, seed).map_err(|e| bad_data(format!("{}: {e}", legacy.display())))?;
+	std::fs::create_dir_all(shards)?;
+	let regions: Vec<(i32, i32)> = index.regions().collect();
+	for &region in &regions {
+		write_shard(shards, seed, &index, region)?;
+	}
+	sync_dir(shards);
+	std::fs::remove_file(legacy)?;
+	if let Some(parent) = legacy.parent() {
+		sync_dir(parent);
+	}
+	log::info!(
+		"journal migrated to region shards: {} records -> {} live cells across {} regions",
+		(bytes.len() as u64).saturating_sub(HEADER_LEN) / RECORD_LEN,
+		index.live_cells(),
+		regions.len()
+	);
+	Ok(())
+}
+
+/// Best-effort directory fsync — what actually makes a rename durable on
+/// Unix. Windows can't open a directory as a file and orders the rename
+/// itself, so a failure here is ignored rather than propagated.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_dir(dir: &Path) {
+	if let Ok(f) = File::open(dir) {
+		let _ = f.sync_all();
+	}
+}
+
+/// The pre-shard single-file journal. Differs from [`shard_dir`] only by
+/// the `.journal` suffix, so both can sit side by side mid-migration.
+#[cfg(not(target_arch = "wasm32"))]
+fn legacy_path(dir: &Path, seed: f64) -> PathBuf {
+	dir.join(format!("world-{:016x}.journal", seed.to_bits()))
+}
+
+/// The world's shard directory under the caller's data root.
+#[cfg(not(target_arch = "wasm32"))]
+fn shard_dir(dir: &Path, seed: f64) -> PathBuf {
+	dir.join(format!("world-{:016x}", seed.to_bits()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn shard_path(shards: &Path, region: (i32, i32)) -> PathBuf {
+	shards.join(format!("r.{}.{}.journal", region.0, region.1))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tmp_path(shard: &Path) -> PathBuf {
+	shard.with_extension("journal.tmp")
+}
+
+/// `r.{rx}.{rz}.journal` → its region. Anything else in the directory (a
+/// tmp, an archive, an operator's notes) is ignored.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_shard_name(name: &str) -> Option<(i32, i32)> {
+	let (rx, rz) = name
+		.strip_prefix("r.")?
+		.strip_suffix(".journal")?
+		.split_once('.')?;
+	Some((rx.parse().ok()?, rz.parse().ok()?))
+}
+
+/// Regions with a shard on disk; an absent directory is an empty world,
+/// not an error (a fresh save, or one created but never entered).
+#[cfg(not(target_arch = "wasm32"))]
+fn list_shards(shards: &Path) -> std::io::Result<Vec<(i32, i32)>> {
+	let entries = match std::fs::read_dir(shards) {
+		Ok(e) => e,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		Err(e) => return Err(e),
+	};
+	let mut out = Vec::new();
+	for entry in entries.flatten() {
+		if let Some(region) = entry.file_name().to_str().and_then(parse_shard_name) {
+			out.push(region);
+		}
+	}
+	Ok(out)
+}
+
+/// A crashed compaction or migration leaves a `.journal.tmp` behind; it
+/// is always garbage — the shard it was replacing is still the truth.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_stale_tmps(shards: &Path) {
+	let Ok(entries) = std::fs::read_dir(shards) else {
+		return;
+	};
+	for entry in entries.flatten() {
+		if entry
+			.file_name()
+			.to_str()
+			.is_some_and(|n| n.ends_with(".journal.tmp"))
+		{
+			let _ = std::fs::remove_file(entry.path());
+		}
+	}
 }
 
 fn header_bytes(seed: f64) -> [u8; HEADER_LEN as usize] {
@@ -660,12 +1078,38 @@ fn header_bytes(seed: f64) -> [u8; HEADER_LEN as usize] {
 	h
 }
 
-/// The header's version when `path` is a well-formed journal from another
-/// format version; None when the file is absent, current, or malformed
-/// (short file / bad magic is corruption — `open` reports it as an error
-/// rather than archiving data it might still want intact for forensics).
-/// Pub so a save store can flag an incompatible world in its list (a
-/// 16-byte read) without triggering `open`'s archive-and-start-fresh.
+/// The version of the journal for `seed` under `dir` when it is NOT the
+/// current one; None when there is none, it is current, or it is
+/// malformed. Pub so a save store can flag an incompatible world in its
+/// list (a 16-byte read per shard) without triggering `open`'s
+/// archive-and-start-fresh.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn world_version(dir: &Path, seed: f64) -> std::io::Result<Option<u16>> {
+	let legacy = legacy_path(dir, seed);
+	if legacy.exists() {
+		return file_version(&legacy);
+	}
+	shard_version(&shard_dir(dir, seed))
+}
+
+/// The first shard reporting a foreign version. One build writes every
+/// shard, so the first answer is the world's answer; the scan runs to the
+/// end only while everything is current.
+#[cfg(not(target_arch = "wasm32"))]
+fn shard_version(shards: &Path) -> std::io::Result<Option<u16>> {
+	for region in list_shards(shards)? {
+		if let Some(v) = file_version(&shard_path(shards, region))? {
+			return Ok(Some(v));
+		}
+	}
+	Ok(None)
+}
+
+/// The header's version when `path` is a well-formed journal blob from
+/// another format version; None when the file is absent, current, or
+/// malformed (short file / bad magic is corruption — `open` reports it as
+/// an error rather than archiving data it might still want intact for
+/// forensics). [`world_version`] is the layout-aware entry point.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn file_version(path: &Path) -> std::io::Result<Option<u16>> {
 	let mut file = match File::open(path) {
@@ -681,18 +1125,36 @@ pub fn file_version(path: &Path) -> std::io::Result<Option<u16>> {
 	Ok((version != VERSION).then_some(version))
 }
 
-/// First free `<world>.journal.v{version}.bak[N]` slot next to `path` —
-/// repeated format breaks never overwrite an earlier archive.
+/// Move a stale-format world out of the way and start fresh (server-only
+/// policy; see `Journal::open`). `path` is the legacy file or the shard
+/// directory — either way the whole name is kept and suffixed.
+#[cfg(not(target_arch = "wasm32"))]
+fn archive(path: &Path, version: u16) -> std::io::Result<()> {
+	let bak = archive_path(path, version);
+	log::warn!(
+		"journal version {version} != {VERSION}: archiving {} to {}, starting fresh",
+		path.display(),
+		bak.display()
+	);
+	std::fs::rename(path, &bak)
+}
+
+/// First free `<name>.v{version}.bak[N]` slot next to `path` — repeated
+/// format breaks never overwrite an earlier archive.
 #[cfg(not(target_arch = "wasm32"))]
 fn archive_path(path: &Path, version: u16) -> PathBuf {
+	let name = path
+		.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_default();
 	let mut n = 0u32;
 	loop {
-		let ext = if n == 0 {
-			format!("journal.v{version}.bak")
+		let suffix = if n == 0 {
+			format!("v{version}.bak")
 		} else {
-			format!("journal.v{version}.bak{n}")
+			format!("v{version}.bak{n}")
 		};
-		let candidate = path.with_extension(ext);
+		let candidate = path.with_file_name(format!("{name}.{suffix}"));
 		if !candidate.exists() {
 			return candidate;
 		}
@@ -711,6 +1173,34 @@ mod tests {
 
 	fn edit(x: i32, y: i32, z: i32, block: u16) -> BlockEdit {
 		BlockEdit { x, y, z, block }
+	}
+
+	/// A world's shard directory, and one shard inside it. Tests that
+	/// assert on-disk sizes go through these so the layout lives in one
+	/// place.
+	fn shards_of(dir: &std::path::Path, seed: f64) -> PathBuf {
+		shard_dir(dir, seed)
+	}
+
+	fn shard_of(dir: &std::path::Path, seed: f64, region: (i32, i32)) -> PathBuf {
+		shard_path(&shard_dir(dir, seed), region)
+	}
+
+	fn shard_len(dir: &std::path::Path, seed: f64, region: (i32, i32)) -> u64 {
+		std::fs::metadata(shard_of(dir, seed, region))
+			.unwrap_or_else(|e| panic!("shard r.{}.{}: {e}", region.0, region.1))
+			.len()
+	}
+
+	/// Shard file names in a world directory, sorted.
+	fn shard_names(dir: &std::path::Path, seed: f64) -> Vec<String> {
+		let mut names: Vec<String> = std::fs::read_dir(shards_of(dir, seed))
+			.unwrap()
+			.flatten()
+			.map(|e| e.file_name().to_string_lossy().into_owned())
+			.collect();
+		names.sort();
+		names
 	}
 
 	#[test]
@@ -773,9 +1263,94 @@ mod tests {
 		assert_eq!(col.get(&(5, 130, -2)), Some(&4));
 		let col = j.index.column(1, 0).expect("column (1,0)");
 		assert_eq!(col.get(&(20, 131, 5)), Some(&3));
-		// Another seed is another file — a fresh, empty world.
+		// The two cells sit in different regions, so they landed in
+		// different shards: (5,·,-2) is column (0,-1) -> region (0,-1),
+		// (20,·,5) is column (1,0) -> region (0,0).
+		assert_eq!(
+			shard_names(&dir, 42.0),
+			vec!["r.0.-1.journal", "r.0.0.journal"]
+		);
+		assert_eq!(shard_len(&dir, 42.0, (0, -1)), HEADER_LEN + 2 * RECORD_LEN);
+		assert_eq!(shard_len(&dir, 42.0, (0, 0)), HEADER_LEN + RECORD_LEN);
+		// Another seed is another directory — a fresh, empty world.
 		let other = Journal::open(&dir, 43.0).unwrap();
 		assert_eq!(other.index.next_seq, 0);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// A pre-shard single-file world MIGRATES rather than staling: the
+	/// container changed, the record format did not.
+	#[test]
+	fn legacy_single_file_migrates_to_region_shards() {
+		let dir = std::env::temp_dir().join(format!("dbj-migrate-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let seed = 77.0;
+		// Edits spread over four regions, with an LWW overwrite and a
+		// second cell sharing the first's column.
+		let cells: [(i32, i32, i32, u16); 6] = [
+			(5, 130, -2, 1),      // column (0,-1) -> region (0,-1)
+			(300, 131, 20, 2),    // column (18,1) -> region (1,0)
+			(-40, 120, -300, 3),  // column (-3,-19) -> region (-1,-2)
+			(5000, 100, 5000, 4), // column (312,312) -> region (19,19)
+			(5, 130, -2, 9),      // LWW over the first record
+			(6, 130, -2, 5),      // same column as the first
+		];
+		let mut bytes = header_bytes(seed).to_vec();
+		for &(x, y, z, block) in &cells {
+			bytes.extend_from_slice(&encode_record(x, y, z, block, 1));
+		}
+		let legacy = dir.join(format!("world-{:016x}.journal", seed.to_bits()));
+		std::fs::write(&legacy, &bytes).unwrap();
+		// A half-written shard set from an interrupted migration must be
+		// overwritten wholesale, not merged into.
+		std::fs::create_dir_all(shards_of(&dir, seed)).unwrap();
+		let mut stale = header_bytes(seed).to_vec();
+		stale.extend_from_slice(&encode_record(5, 130, -2, 200, 1));
+		std::fs::write(shard_of(&dir, seed, (0, -1)), &stale).unwrap();
+
+		let j = Journal::open(&dir, seed).unwrap();
+		assert!(
+			!legacy.exists(),
+			"legacy file dropped once shards are durable"
+		);
+		assert_eq!(j.index.live_cells(), 5, "every cell preserved (LWW)");
+		assert_eq!(j.index.column(0, -1).unwrap().get(&(5, 130, -2)), Some(&9));
+		assert_eq!(j.index.column(0, -1).unwrap().get(&(6, 130, -2)), Some(&5));
+		assert_eq!(
+			j.index.column(18, 1).unwrap().get(&(300, 131, 20)),
+			Some(&2)
+		);
+		assert_eq!(
+			j.index.column(-3, -19).unwrap().get(&(-40, 120, -300)),
+			Some(&3)
+		);
+		assert_eq!(
+			j.index.column(312, 312).unwrap().get(&(5000, 100, 5000)),
+			Some(&4)
+		);
+		assert_eq!(
+			shard_names(&dir, seed),
+			vec![
+				"r.-1.-2.journal",
+				"r.0.-1.journal",
+				"r.1.0.journal",
+				"r.19.19.journal",
+			],
+			"one shard per edited region, negative coordinates included"
+		);
+		// Shards are compacted on the way out, and hold ONLY their region.
+		assert_eq!(shard_len(&dir, seed, (0, -1)), HEADER_LEN + 2 * RECORD_LEN);
+		assert_eq!(shard_len(&dir, seed, (19, 19)), HEADER_LEN + RECORD_LEN);
+		drop(j);
+
+		// Reopening is a plain load: nothing to migrate, nothing to
+		// rewrite, and seq restarts at the record count on disk.
+		let before = shard_names(&dir, seed);
+		let j = Journal::open(&dir, seed).unwrap();
+		assert_eq!(shard_names(&dir, seed), before, "reopen is a no-op");
+		assert_eq!(j.index.live_cells(), 5);
+		assert_eq!(j.index.next_seq, 5);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
@@ -789,8 +1364,8 @@ mod tests {
 			j.append(edit(2, 100, 2, 3), 1);
 			j.sync();
 		}
-		// Simulate a crash mid-record: append 7 stray bytes.
-		let path = dir.join(format!("world-{:016x}.journal", 7.0f64.to_bits()));
+		// Simulate a crash mid-record: append 7 stray bytes to the shard.
+		let path = shard_of(&dir, 7.0, (0, 0));
 		let mut f = OpenOptions::new().append(true).open(&path).unwrap();
 		f.write_all(&[0xAB; 7]).unwrap();
 		drop(f);
@@ -802,30 +1377,33 @@ mod tests {
 	}
 
 	#[test]
-	fn boot_compaction_rewrites_bloated_files() {
+	fn boot_compaction_rewrites_bloated_shards() {
 		let dir = std::env::temp_dir().join(format!("dbj-compact-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
-		// 30k records over 100 distinct cells (fluid-style churn).
+		// 30k records over 100 distinct cells (fluid-style churn), all in
+		// region (0,0), plus one lone cell far away in region (11,11).
 		{
 			let mut j = Journal::open(&dir, 9.0).unwrap();
 			for i in 0..30_000u32 {
 				let cell = (i % 100) as i32;
 				j.append(edit(cell, 120, 0, (i % 7) as u16), 1);
 			}
+			j.append(edit(3000, 120, 3000, 2), 1);
 			j.sync();
 		}
-		let path = dir.join(format!("world-{:016x}.journal", 9.0f64.to_bits()));
-		let bloated = std::fs::metadata(&path).unwrap().len();
-		assert_eq!(bloated, HEADER_LEN + 30_000 * RECORD_LEN);
-
-		// Reopen: compacts to 100 live cells, index identical.
-		let j = Journal::open(&dir, 9.0).unwrap();
 		assert_eq!(
-			std::fs::metadata(&path).unwrap().len(),
-			HEADER_LEN + 100 * RECORD_LEN
+			shard_len(&dir, 9.0, (0, 0)),
+			HEADER_LEN + 30_000 * RECORD_LEN
 		);
-		assert_eq!(j.index.next_seq, 100, "seq restarts at live count");
-		assert_eq!(j.index.live_cells(), 100);
+		assert_eq!(shard_len(&dir, 9.0, (11, 11)), HEADER_LEN + RECORD_LEN);
+
+		// Reopen: the bloated shard compacts to 100 live cells, index
+		// identical; the quiet shard is not rewritten at all.
+		let j = Journal::open(&dir, 9.0).unwrap();
+		assert_eq!(shard_len(&dir, 9.0, (0, 0)), HEADER_LEN + 100 * RECORD_LEN);
+		assert_eq!(shard_len(&dir, 9.0, (11, 11)), HEADER_LEN + RECORD_LEN);
+		assert_eq!(j.index.next_seq, 101, "seq restarts at the on-disk count");
+		assert_eq!(j.index.live_cells(), 101);
 		// Last write for cell 5: i = 29905 -> block 29905 % 7.
 		let col = j.index.column(0, 0).unwrap();
 		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u16)));
@@ -833,19 +1411,19 @@ mod tests {
 
 		// Reopen again: already compact, a no-op.
 		let j = Journal::open(&dir, 9.0).unwrap();
-		assert_eq!(
-			std::fs::metadata(&path).unwrap().len(),
-			HEADER_LEN + 100 * RECORD_LEN
-		);
-		assert_eq!(j.index.live_cells(), 100);
+		assert_eq!(shard_len(&dir, 9.0, (0, 0)), HEADER_LEN + 100 * RECORD_LEN);
+		assert_eq!(j.index.live_cells(), 101);
 
-		// And the compacted file still survives a torn tail.
+		// And the compacted shard still survives a torn tail.
 		drop(j);
-		let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+		let mut f = OpenOptions::new()
+			.append(true)
+			.open(shard_of(&dir, 9.0, (0, 0)))
+			.unwrap();
 		f.write_all(&[0xCD; 5]).unwrap();
 		drop(f);
 		let j = Journal::open(&dir, 9.0).unwrap();
-		assert_eq!(j.index.live_cells(), 100, "torn tail after compaction ok");
+		assert_eq!(j.index.live_cells(), 101, "torn tail after compaction ok");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
@@ -886,7 +1464,7 @@ mod tests {
 	}
 
 	#[test]
-	fn runtime_compaction_triggers_and_shrinks_file() {
+	fn runtime_compaction_triggers_and_shrinks_shard() {
 		let dir = std::env::temp_dir().join(format!("dbj-rt-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		let mut j = Journal::open(&dir, 21.0).unwrap();
@@ -894,16 +1472,12 @@ mod tests {
 		j.maintain(); // starts the run
 		assert!(j.compaction_active());
 		drive(&mut j);
-		let path = dir.join(format!("world-{:016x}.journal", 21.0f64.to_bits()));
-		assert_eq!(
-			std::fs::metadata(&path).unwrap().len(),
-			HEADER_LEN + 100 * RECORD_LEN
-		);
+		assert_eq!(shard_len(&dir, 21.0, (0, 0)), HEADER_LEN + 100 * RECORD_LEN);
 		// The runtime contrast to boot compaction: seq is NOT reset.
 		assert_eq!(j.index.next_seq, 30_000, "next_seq untouched");
 		assert_eq!(j.index.live_cells(), 100);
 		drop(j);
-		// Reopen replays the compacted file (no further compaction).
+		// Reopen replays the compacted shard (no further compaction).
 		let j = Journal::open(&dir, 21.0).unwrap();
 		assert_eq!(j.index.live_cells(), 100);
 		let col = j.index.column(0, 0).unwrap();
@@ -934,22 +1508,26 @@ mod tests {
 		assert!(j.compaction_active(), "one column must still be pending");
 		// Re-edit one cell in EVERY column (copied ones divert to the
 		// delta, the pending one lands in its base copy), plus a cell in
-		// a brand-new column.
+		// a brand-new column of ANOTHER region — which must NOT enter the
+		// delta, since this run doesn't replace that region's shard.
 		for col in 0..3i32 {
 			j.append(edit(col * 16, 0, 0, 9), 2);
 		}
 		j.append(edit(300, 50, 7, 5), 2);
 		drive(&mut j);
 		// Base: two untouched columns (4000 each) + pending column with
-		// the re-edit already applied (4000). Delta: two re-edits + the
-		// new column's cell.
+		// the re-edit already applied (4000). Delta: two re-edits.
 		let live = j.index.live_cells();
 		assert_eq!(live, 12_001);
-		let path = dir.join(format!("world-{:016x}.journal", 22.0f64.to_bits()));
 		assert_eq!(
-			std::fs::metadata(&path).unwrap().len(),
-			HEADER_LEN + (12_000 + 3) * RECORD_LEN,
-			"base 12000 + 2 delta re-edits + 1 delta new-column cell"
+			shard_len(&dir, 22.0, (0, 0)),
+			HEADER_LEN + (12_000 + 2) * RECORD_LEN,
+			"base 12000 + 2 delta re-edits"
+		);
+		assert_eq!(
+			shard_len(&dir, 22.0, (1, 0)),
+			HEADER_LEN + RECORD_LEN,
+			"the far column went to its own shard, untouched by the run"
 		);
 		drop(j);
 		// LWW replay: every re-edit and the new column survive.
@@ -975,9 +1553,9 @@ mod tests {
 			j.sync();
 			// Simulated crash: Journal dropped mid-run, tmp left behind.
 		}
-		let tmp = dir.join(format!("world-{:016x}.journal.tmp", 23.0f64.to_bits()));
+		let tmp = tmp_path(&shard_of(&dir, 23.0, (0, 0)));
 		assert!(tmp.exists(), "stale tmp left by the crash");
-		// Reopen: the old file is the complete truth (boot compaction
+		// Reopen: the old shard is the complete truth (boot compaction
 		// then shrinks it) and the stale tmp is removed.
 		let j = Journal::open(&dir, 23.0).unwrap();
 		assert!(!tmp.exists(), "stale tmp cleaned up on open");
@@ -1013,8 +1591,10 @@ mod tests {
 		j.maintain(); // step: injected failure aborts the run
 		assert!(!j.compaction_active());
 		assert!(j.healthy(), "compaction failure must not gate edits");
-		let tmp = dir.join(format!("world-{:016x}.journal.tmp", 25.0f64.to_bits()));
+		let tmp = tmp_path(&shard_of(&dir, 25.0, (0, 0)));
 		assert!(!tmp.exists(), "aborted run removes its tmp");
+		// A cell in a second region: the eligibility sweep must still find
+		// the bloated one, and the quiet shard must be left alone.
 		j.append(edit(600, 70, 0, 2), 1);
 		// Backoff holds until reset; then a clean run completes.
 		j.maintain();
@@ -1024,11 +1604,8 @@ mod tests {
 		j.maintain();
 		assert!(j.compaction_active());
 		drive(&mut j);
-		let path = dir.join(format!("world-{:016x}.journal", 25.0f64.to_bits()));
-		assert_eq!(
-			std::fs::metadata(&path).unwrap().len(),
-			HEADER_LEN + 101 * RECORD_LEN
-		);
+		assert_eq!(shard_len(&dir, 25.0, (0, 0)), HEADER_LEN + 100 * RECORD_LEN);
+		assert_eq!(shard_len(&dir, 25.0, (2, 0)), HEADER_LEN + RECORD_LEN);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
@@ -1070,7 +1647,7 @@ mod tests {
 		std::fs::write(&path, &old).unwrap();
 
 		let j = Journal::open(&dir, 3.0).unwrap();
-		assert_eq!(j.records, 0, "fresh world, no records");
+		assert!(j.records.is_empty(), "fresh world, no records");
 		drop(j);
 		let bak = path.with_extension("journal.v1.bak");
 		assert_eq!(std::fs::read(&bak).unwrap(), old, "archived byte-intact");
@@ -1080,8 +1657,68 @@ mod tests {
 		Journal::open(&dir, 3.0).unwrap();
 		assert!(path.with_extension("journal.v1.bak1").exists());
 
-		// The fresh file reopens as a normal current-version journal.
+		// The fresh world reopens as a normal current-version journal.
 		Journal::open(&dir, 3.0).unwrap();
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// Same policy one layout up: a whole shard DIRECTORY from another
+	/// version is archived intact and the world starts fresh.
+	#[test]
+	fn incompatible_shard_dir_is_archived() {
+		let dir = std::env::temp_dir().join(format!("dbj-vdir-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let seed = 4.0;
+		{
+			let mut j = Journal::open(&dir, seed).unwrap();
+			j.append(edit(1, 100, 1, 2), 1);
+			j.sync();
+		}
+		// Rewrite the shard's header version, as a format break would.
+		let shard = shard_of(&dir, seed, (0, 0));
+		let mut bytes = std::fs::read(&shard).unwrap();
+		bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+		std::fs::write(&shard, &bytes).unwrap();
+		assert_eq!(world_version(&dir, seed).unwrap(), Some(1));
+
+		let j = Journal::open(&dir, seed).unwrap();
+		assert!(j.records.is_empty(), "fresh world, no records");
+		assert_eq!(j.index.live_cells(), 0);
+		drop(j);
+		let bak =
+			shards_of(&dir, seed).with_file_name(format!("world-{:016x}.v1.bak", seed.to_bits()));
+		assert_eq!(
+			std::fs::read(bak.join("r.0.0.journal")).unwrap(),
+			bytes,
+			"archived byte-intact"
+		);
+		assert_eq!(world_version(&dir, seed).unwrap(), None, "fresh is current");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// The writer LRU keeps the descriptor count bounded no matter how far
+	/// a player wanders, and every closed shard is still complete.
+	#[test]
+	fn open_writers_are_capped() {
+		let dir = std::env::temp_dir().join(format!("dbj-lru-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let mut j = Journal::open(&dir, 31.0).unwrap();
+		let regions = MAX_OPEN_REGIONS + 8;
+		for r in 0..regions as i32 {
+			// One cell per region: 256 blocks apart on x.
+			j.append(edit(r * 256, 100, 0, (r % 7) as u16), 1);
+			assert!(j.writers.len() <= MAX_OPEN_REGIONS, "descriptor cap held");
+		}
+		j.sync();
+		assert_eq!(j.writers.len(), MAX_OPEN_REGIONS);
+		drop(j);
+		// Every region — including the ones evicted mid-session — reloads.
+		let j = Journal::open(&dir, 31.0).unwrap();
+		assert_eq!(j.index.live_cells(), regions as u64);
+		for r in 0..regions as i32 {
+			let col = j.index.column(r * 16, 0).expect("column");
+			assert_eq!(col.get(&(r * 256, 100, 0)), Some(&((r % 7) as u16)));
+		}
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

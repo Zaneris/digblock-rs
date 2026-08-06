@@ -151,26 +151,43 @@ pub fn noise3(xin: f64, yin: f64, zin: f64) -> f64 {
 	let x0 = xin - (f64::from(i) - t);
 	let y0 = yin - (f64::from(j) - t);
 	let z0 = zin - (f64::from(k) - t);
+	let (ii, jj, kk) = ((i & 255) as usize, (j & 255) as usize, (k & 255) as usize);
+	corner_sum(x0, y0, z0, |c| grad_at(ii, jj, kk, c))
+}
 
+/// Gradient of lattice corner `c` (`di<<2 | dj<<1 | dk`) of the cell whose
+/// wrapped lattice coordinates are `ii/jj/kk`.
+#[inline]
+fn grad_at(ii: usize, jj: usize, kk: usize, c: usize) -> (f64, f64, f64) {
+	let (di, dj, dk) = (c >> 2, (c >> 1) & 1, c & 1);
+	let gi = PERM_MOD12[ii + di + PERM[jj + dj + PERM[kk + dk] as usize] as usize];
+	GRAD3D[gi as usize]
+}
+
+/// The four-corner simplex sum for a displacement inside one lattice
+/// cell. `grad` resolves a corner index — a permutation walk for the
+/// one-shot path, a cached array read for [`Noise3Column`] — so both
+/// paths run identical float arithmetic in identical order.
+#[inline]
+fn corner_sum(x0: f64, y0: f64, z0: f64, grad: impl Fn(usize) -> (f64, f64, f64)) -> f64 {
 	// Rank the coordinates to pick the simplex corner traversal order.
-	#[allow(clippy::collapsible_else_if)]
-	let ((i1, j1, k1), (i2, j2, k2)) = if x0 >= y0 {
-		if y0 >= z0 {
-			((1, 0, 0), (1, 1, 0)) // X Y Z
-		} else if x0 >= z0 {
-			((1, 0, 0), (1, 0, 1)) // X Z Y
-		} else {
-			((0, 0, 1), (1, 0, 1)) // Z X Y
-		}
-	} else {
-		if y0 < z0 {
-			((0, 0, 1), (0, 1, 1)) // Z Y X
-		} else if x0 < z0 {
-			((0, 1, 0), (0, 1, 1)) // Y Z X
-		} else {
-			((0, 1, 0), (1, 1, 0)) // Y X Z
-		}
-	};
+	// Each axis scores how many of the other two it dominates (ties broken
+	// exactly as Gustavson's if/else ladder does): rank 2 steps at the
+	// first corner, rank ≥ 1 at the second. Branchless because the six
+	// orderings are equiprobable — the ladder mispredicts on most cells.
+	let rx = usize::from(x0 >= y0) + usize::from(x0 >= z0);
+	let ry = usize::from(y0 > x0) + usize::from(y0 >= z0);
+	let rz = usize::from(z0 > x0) + usize::from(z0 > y0);
+	let (i1, j1, k1) = (
+		usize::from(rx == 2),
+		usize::from(ry == 2),
+		usize::from(rz == 2),
+	);
+	let (i2, j2, k2) = (
+		usize::from(rx >= 1),
+		usize::from(ry >= 1),
+		usize::from(rz >= 1),
+	);
 
 	let x1 = x0 - i1 as f64 + G3;
 	let y1 = y0 - j1 as f64 + G3;
@@ -182,29 +199,215 @@ pub fn noise3(xin: f64, yin: f64, zin: f64) -> f64 {
 	let y3 = y0 - 1.0 + 3.0 * G3;
 	let z3 = z0 - 1.0 + 3.0 * G3;
 
-	let ii = (i & 255) as usize;
-	let jj = (j & 255) as usize;
-	let kk = (k & 255) as usize;
-	let gi = |di: usize, dj: usize, dk: usize| -> usize {
-		PERM_MOD12[ii + di + PERM[jj + dj + PERM[kk + dk] as usize] as usize] as usize
-	};
 	let corners = [
-		(x0, y0, z0, gi(0, 0, 0)),
-		(x1, y1, z1, gi(i1, j1, k1)),
-		(x2, y2, z2, gi(i2, j2, k2)),
-		(x3, y3, z3, gi(1, 1, 1)),
+		(x0, y0, z0, 0),
+		(x1, y1, z1, i1 << 2 | j1 << 1 | k1),
+		(x2, y2, z2, i2 << 2 | j2 << 1 | k2),
+		(x3, y3, z3, 7),
 	];
 
 	let mut n = 0.0;
-	for (x, y, z, g) in corners {
+	for (x, y, z, c) in corners {
+		// Clamping the falloff instead of branching on it: a clamped corner
+		// contributes ±0.0, and `n` can never be -0.0 (it starts at +0.0),
+		// so the sum is bit-identical to skipping the corner.
 		let t = 0.6 - x * x - y * y - z * z;
-		if t >= 0.0 {
-			let t = t * t;
-			let (gx, gy, gz) = GRAD3D[g];
-			n += t * t * (gx * x + gy * y + gz * z);
-		}
+		let t = if t > 0.0 { t * t } else { 0.0 };
+		let (gx, gy, gz) = grad(c);
+		n += t * t * (gx * x + gy * y + gz * z);
 	}
 	32.0 * n
+}
+
+/// Everything in one lattice corner's contribution that doesn't depend on
+/// the y input. Each field is a single operation of the reference
+/// expression, so folding them in keeps the arithmetic bit-identical.
+#[derive(Clone, Copy)]
+struct Corner {
+	/// `0.6 - x²`, the falloff with its x term already subtracted.
+	a: f64,
+	/// `z²`, the falloff's last term.
+	zq: f64,
+	/// The gradient dotted with the fixed displacements, and its y
+	/// component (the only one the y input still needs).
+	gxx: f64,
+	gy: f64,
+	gzz: f64,
+}
+
+/// A vertical walk of [`noise3`] at fixed x/z. The simplex skew is
+/// `(x+y+z)/3`, so stepping y by a small increment leaves the lattice
+/// cell unchanged for a long run — and inside one cell the corner
+/// gradients and every x/z term of the corner sum are constant. `at(y)`
+/// hoists exactly those, one operation at a time, so it is bit-identical
+/// to `noise3(x, y, z)` (`column_walk_matches_noise3` pins that).
+pub struct Noise3Column {
+	x: f64,
+	z: f64,
+	/// Lattice cell the cached state below belongs to. No finite noise
+	/// input floors to `i32::MIN`, so the initial value can never hit.
+	cell: [i32; 3],
+	x0: f64,
+	z0: f64,
+	/// `j - t`: the y input minus this is the corner displacement.
+	j_off: f64,
+	/// The cell's 8 corners, indexed `di<<2 | dj<<1 | dk`.
+	corners: [Corner; 8],
+}
+
+impl Noise3Column {
+	pub fn new(x: f64, z: f64) -> Self {
+		Self {
+			x,
+			z,
+			cell: [i32::MIN; 3],
+			x0: 0.0,
+			z0: 0.0,
+			j_off: 0.0,
+			corners: [Corner {
+				a: 0.0,
+				zq: 0.0,
+				gxx: 0.0,
+				gy: 0.0,
+				gzz: 0.0,
+			}; 8],
+		}
+	}
+
+	fn enter(&mut self, i: i32, j: i32, k: i32) {
+		let t = f64::from(i + j + k) * G3;
+		let x0 = self.x - (f64::from(i) - t);
+		let z0 = self.z - (f64::from(k) - t);
+		self.x0 = x0;
+		self.z0 = z0;
+		self.j_off = f64::from(j) - t;
+		let (ii, jj, kk) = ((i & 255) as usize, (j & 255) as usize, (k & 255) as usize);
+		for (c, e) in self.corners.iter_mut().enumerate() {
+			let (di, dj, dk) = (c >> 2, (c >> 1) & 1, c & 1);
+			// Corner 0 is the displacement itself; every other corner steps
+			// by its offsets and unskews by one G3 per step.
+			let g3 = (di + dj + dk) as f64 * G3;
+			let (cx, cz) = if c == 0 {
+				(x0, z0)
+			} else {
+				(x0 - di as f64 + g3, z0 - dk as f64 + g3)
+			};
+			let (gx, gy, gz) = grad_at(ii, jj, kk, c);
+			*e = Corner {
+				a: 0.6 - cx * cx,
+				zq: cz * cz,
+				gxx: gx * cx,
+				gy,
+				gzz: gz * cz,
+			};
+		}
+		self.cell = [i, j, k];
+	}
+
+	pub fn at(&mut self, y: f64) -> f64 {
+		let s = (self.x + y + self.z) * F3;
+		let i = fastfloor(self.x + s);
+		let j = fastfloor(y + s);
+		let k = fastfloor(self.z + s);
+		if [i, j, k] != self.cell {
+			self.enter(i, j, k);
+		}
+		let (x0, z0) = (self.x0, self.z0);
+		let y0 = y - self.j_off;
+
+		let rx = usize::from(x0 >= y0) + usize::from(x0 >= z0);
+		let ry = usize::from(y0 > x0) + usize::from(y0 >= z0);
+		let rz = usize::from(z0 > x0) + usize::from(z0 > y0);
+		let c1 = usize::from(rx == 2) << 2 | usize::from(ry == 2) << 1 | usize::from(rz == 2);
+		let c2 = usize::from(rx >= 1) << 2 | usize::from(ry >= 1) << 1 | usize::from(rz >= 1);
+
+		// Subtracting the j offset is either `y0 - 1.0` or a no-op —
+		// `y0 - 0.0` is y0 down to the bit, so the second case needs no
+		// subtraction and neither needs an int-to-float conversion.
+		let ym = y0 - 1.0;
+		let y1 = (if c1 & 2 != 0 { ym } else { y0 }) + G3;
+		let y2 = (if c2 & 2 != 0 { ym } else { y0 }) + 2.0 * G3;
+		let y3 = ym + 3.0 * G3;
+
+		let mut n = 0.0;
+		for (cy, c) in [(y0, 0), (y1, c1), (y2, c2), (y3, 7)] {
+			let e = &self.corners[c];
+			let t = (e.a - cy * cy) - e.zq;
+			let t = if t > 0.0 { t * t } else { 0.0 };
+			n += t * t * ((e.gxx + e.gy * cy) + e.gzz);
+		}
+		32.0 * n
+	}
+}
+
+/// Gustavson's 3D path transcribed verbatim: permutation walk per call,
+/// if/else corner ladder, branch on the falloff. Every shipped path here
+/// only hoists and reassociates nothing, so all of them must agree with
+/// this bit for bit — it is the independent witness the cave tests
+/// compare against, and a mismatch is a worldgen output change.
+#[cfg(test)]
+pub(crate) mod reference {
+	use super::{fastfloor, F3, G3, GRAD3D, PERM, PERM_MOD12};
+
+	#[allow(clippy::collapsible_else_if)]
+	pub(crate) fn noise3(xin: f64, yin: f64, zin: f64) -> f64 {
+		let s = (xin + yin + zin) * F3;
+		let i = fastfloor(xin + s);
+		let j = fastfloor(yin + s);
+		let k = fastfloor(zin + s);
+		let t = f64::from(i + j + k) * G3;
+		let x0 = xin - (f64::from(i) - t);
+		let y0 = yin - (f64::from(j) - t);
+		let z0 = zin - (f64::from(k) - t);
+		let ((i1, j1, k1), (i2, j2, k2)) = if x0 >= y0 {
+			if y0 >= z0 {
+				((1, 0, 0), (1, 1, 0))
+			} else if x0 >= z0 {
+				((1, 0, 0), (1, 0, 1))
+			} else {
+				((0, 0, 1), (1, 0, 1))
+			}
+		} else {
+			if y0 < z0 {
+				((0, 0, 1), (0, 1, 1))
+			} else if x0 < z0 {
+				((0, 1, 0), (0, 1, 1))
+			} else {
+				((0, 1, 0), (1, 1, 0))
+			}
+		};
+		let x1 = x0 - i1 as f64 + G3;
+		let y1 = y0 - j1 as f64 + G3;
+		let z1 = z0 - k1 as f64 + G3;
+		let x2 = x0 - i2 as f64 + 2.0 * G3;
+		let y2 = y0 - j2 as f64 + 2.0 * G3;
+		let z2 = z0 - k2 as f64 + 2.0 * G3;
+		let x3 = x0 - 1.0 + 3.0 * G3;
+		let y3 = y0 - 1.0 + 3.0 * G3;
+		let z3 = z0 - 1.0 + 3.0 * G3;
+		let ii = (i & 255) as usize;
+		let jj = (j & 255) as usize;
+		let kk = (k & 255) as usize;
+		let gi = |di: usize, dj: usize, dk: usize| -> usize {
+			PERM_MOD12[ii + di + PERM[jj + dj + PERM[kk + dk] as usize] as usize] as usize
+		};
+		let corners = [
+			(x0, y0, z0, gi(0, 0, 0)),
+			(x1, y1, z1, gi(i1, j1, k1)),
+			(x2, y2, z2, gi(i2, j2, k2)),
+			(x3, y3, z3, gi(1, 1, 1)),
+		];
+		let mut n = 0.0;
+		for (x, y, z, g) in corners {
+			let t = 0.6 - x * x - y * y - z * z;
+			if t >= 0.0 {
+				let t = t * t;
+				let (gx, gy, gz) = GRAD3D[g];
+				n += t * t * (gx * x + gy * y + gz * z);
+			}
+		}
+		32.0 * n
+	}
 }
 
 /// Fractal (fBm) sum of `octaves` of `noise2`: frequency doubles and
@@ -234,6 +437,36 @@ mod tests {
 	fn skew_constants_match() {
 		assert_eq!(super::F2.to_bits(), (0.5 * (3.0f64.sqrt() - 1.0)).to_bits());
 		assert_eq!(super::G2.to_bits(), ((3.0 - 3.0f64.sqrt()) / 6.0).to_bits());
+	}
+
+	/// `Noise3Column` hoists per-lattice-cell work out of a vertical walk;
+	/// it must be bit-identical to the one-shot path at every step, in any
+	/// order, including the steps that cross a cell boundary. Sampled at
+	/// the two cave frequencies (the walk's real callers) and at a coarse
+	/// step that crosses a cell on every call.
+	#[test]
+	fn column_walk_matches_noise3() {
+		for &step in &[0.045, 0.02, 0.37] {
+			for xi in -20..20 {
+				for zi in -13..13 {
+					let (x, z) = (f64::from(xi) * 0.02 + 1619.3, f64::from(zi) * 0.02 - 274.9);
+					let mut col = super::Noise3Column::new(x, z);
+					for yi in 0..240 {
+						let y = f64::from(yi) * step - 3.0;
+						assert_eq!(
+							col.at(y).to_bits(),
+							super::noise3(x, y, z).to_bits(),
+							"walk at ({x}, {y}, {z})"
+						);
+					}
+					// Out-of-order probes still hit the same values.
+					for yi in [200, 3, 199, 4, 3] {
+						let y = f64::from(yi) * step - 3.0;
+						assert_eq!(col.at(y).to_bits(), super::noise3(x, y, z).to_bits());
+					}
+				}
+			}
+		}
 	}
 
 	#[test]

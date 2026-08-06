@@ -141,6 +141,12 @@ pub struct NetClient {
 	failed: bool,
 	/// Predictor tick of the last input datagram (send-rate throttle).
 	last_input_send_tick: u32,
+	/// Staging buffers reused by every send, so steady-state traffic
+	/// (~30 reliable frames + 30 input datagrams a second) allocates
+	/// nothing — allocator churn on the web build's single thread lands
+	/// as frame spikes.
+	send_buf: Vec<u8>,
+	dgram_buf: Vec<u8>,
 }
 
 impl NetClient {
@@ -162,6 +168,8 @@ impl NetClient {
 			handshake_elapsed: 0.0,
 			failed: false,
 			last_input_send_tick: 0,
+			send_buf: Vec::new(),
+			dgram_buf: Vec::new(),
 		}
 	}
 
@@ -195,10 +203,17 @@ impl NetClient {
 					};
 					self.frames.extend(&bytes);
 					loop {
-						match self.frames.next_frame() {
-							Ok(Some(frame)) => match codec::decode::<ServerMsg>(&frame) {
-								Ok(msg) => self.on_server_msg(msg, out),
-								Err(e) => log::warn!("bad server frame: {e}"),
+						// Decode out of the borrowed frame and release it
+						// before dispatch: `on_server_msg` needs &mut self,
+						// and a join sync's thousands of frames must not
+						// each cost a Vec.
+						let msg = match self.frames.next_frame_ref() {
+							Ok(Some(frame)) => match codec::decode::<ServerMsg>(frame) {
+								Ok(msg) => msg,
+								Err(e) => {
+									log::warn!("bad server frame: {e}");
+									continue;
+								}
 							},
 							Ok(None) => break,
 							Err(e) => {
@@ -208,7 +223,8 @@ impl NetClient {
 								});
 								break;
 							}
-						}
+						};
+						self.on_server_msg(msg, out);
 					}
 				}
 				TransportEvent::Datagram(bytes) => match codec::decode_datagram(&bytes) {
@@ -291,7 +307,9 @@ impl NetClient {
 	}
 
 	fn send_hello(&mut self) {
-		let mut buf = encode_preamble(PROTOCOL_VERSION).to_vec();
+		self.send_buf.clear();
+		self.send_buf
+			.extend_from_slice(&encode_preamble(PROTOCOL_VERSION));
 		let hello = ClientMsg::Hello {
 			protocol: PROTOCOL_VERSION,
 			name: self.config.name.clone(),
@@ -301,8 +319,8 @@ impl NetClient {
 			build: env!("CARGO_PKG_VERSION").into(),
 			identity: self.config.identity,
 		};
-		if codec::write_frame(&hello, &mut buf).is_ok() {
-			self.transport.send_reliable(&buf);
+		if codec::write_frame(&hello, &mut self.send_buf).is_ok() {
+			self.transport.send_reliable(&self.send_buf);
 		}
 	}
 
@@ -463,14 +481,21 @@ impl NetClient {
 		}
 		let batch = self.predictor.input_batch();
 		if batch.inputs.is_empty() {
+			self.predictor.recycle_batch(batch);
 			return;
 		}
-		match codec::encode_datagram(&Datagram::Input(batch)) {
+		let dg = Datagram::Input(batch);
+		match codec::encode_datagram_into(&dg, &mut self.dgram_buf) {
 			Ok(bytes) => {
-				self.transport.send_datagram(&bytes);
+				self.transport.send_datagram(bytes);
 				self.last_input_send_tick = cur;
 			}
 			Err(e) => log::warn!("input datagram: {e}"),
+		}
+		// Unwrap the batch back out and return its Vec to the predictor —
+		// serializing needed the owned `Datagram`, not a copy.
+		if let Datagram::Input(batch) = dg {
+			self.predictor.recycle_batch(batch);
 		}
 	}
 
@@ -486,7 +511,7 @@ impl NetClient {
 		normal: (i32, i32, i32),
 		slot: u8,
 	) {
-		let msg = ClientMsg::EditRequest {
+		self.send_msg(&ClientMsg::EditRequest {
 			seq,
 			tick,
 			origin: origin.to_array(),
@@ -495,11 +520,7 @@ impl NetClient {
 			cell: [cell.0, cell.1, cell.2],
 			normal: [normal.0 as i8, normal.1 as i8, normal.2 as i8],
 			slot,
-		};
-		let mut buf = Vec::new();
-		if codec::write_frame(&msg, &mut buf).is_ok() {
-			self.transport.send_reliable(&buf);
-		}
+		});
 	}
 
 	/// Announce a hold-to-dig beginning on `cell` (reliable, in-order
@@ -554,9 +575,9 @@ impl NetClient {
 	}
 
 	fn send_msg(&mut self, msg: &ClientMsg) {
-		let mut buf = Vec::new();
-		if codec::write_frame(msg, &mut buf).is_ok() {
-			self.transport.send_reliable(&buf);
+		self.send_buf.clear();
+		if codec::write_frame(msg, &mut self.send_buf).is_ok() {
+			self.transport.send_reliable(&self.send_buf);
 		}
 	}
 }

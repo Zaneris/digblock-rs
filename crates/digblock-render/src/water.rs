@@ -1,13 +1,12 @@
 //! Transparent-water draw: the depth-prepass + color two-subpass pair
 //! over the per-chunk water meshes. The pass structure around it (the
 //! scene blit first, spray after) stays in the Renderer — this owns
-//! only the two pipelines and the reused chunk list.
+//! only the two pipelines; the chunk list comes from the renderer's
+//! one-per-frame cull, shared with the scene pass.
 
-use digblock_core::chunk::ChunkPos;
 use digblock_platform::Gpu;
-use rustc_hash::FxHashMap;
 
-use crate::renderer::{ChunkGpu, CHUNK_STRIDE};
+use crate::renderer::{draw_chunk, ChunkGpu};
 
 pub(crate) struct WaterDraw {
 	/// Depth-only prepass over the water geometry: writes the nearest
@@ -21,9 +20,6 @@ pub(crate) struct WaterDraw {
 	/// the Java artifact of water writing depth in the transparent
 	/// pass.
 	color_pipeline: wgpu::RenderPipeline,
-	/// Reused water chunk list (was a fresh alloc every frame). The
-	/// depth prepass makes draw order irrelevant, so no sort key.
-	scratch: Vec<ChunkPos>,
 }
 
 impl WaterDraw {
@@ -37,16 +33,12 @@ impl WaterDraw {
 			label: Some("water"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::WATER.into()),
 		});
-		// Water vertices are two u32 words (see mesher MeshData).
-		let vertex_layout = wgpu::VertexBufferLayout {
-			array_stride: 8,
-			step_mode: wgpu::VertexStepMode::Vertex,
-			attributes: &[wgpu::VertexAttribute {
-				format: wgpu::VertexFormat::Uint32x2,
-				offset: 0,
-				shader_location: 0,
-			}],
-		};
+		// Water vertices are two u32 words (see mesher MeshData); slot 1 is
+		// the shared instance-step chunk-origin stream.
+		let vertex_layouts = [
+			crate::renderer::geometry_vertex_layout(),
+			crate::renderer::origin_vertex_layout(),
+		];
 		let color_pipeline = crate::pipeline_builder::build(
 			device,
 			Some(surface_format),
@@ -56,7 +48,7 @@ impl WaterDraw {
 				module: &shader,
 				vs_entry: "vs",
 				fs_entry: Some("fs"),
-				vertex_buffers: std::slice::from_ref(&vertex_layout),
+				vertex_buffers: &vertex_layouts,
 				cull: None,
 				depth_write: false,
 				// LessEqual against the prepass depth: only the nearest
@@ -77,7 +69,7 @@ impl WaterDraw {
 				module: &shader,
 				vs_entry: "vs",
 				fs_entry: Some("fs_depth"),
-				vertex_buffers: std::slice::from_ref(&vertex_layout),
+				vertex_buffers: &vertex_layouts,
 				cull: None,
 				depth_write: true,
 				depth_compare: wgpu::CompareFunction::Less,
@@ -89,54 +81,29 @@ impl WaterDraw {
 		Self {
 			depth_pipeline,
 			color_pipeline,
-			scratch: Vec::new(),
 		}
 	}
 
-	/// Rebuild the water chunk list, shared by both subpasses of
-	/// `draw`. The depth prepass makes draw order irrelevant: no
-	/// sorting.
-	pub fn build_list(
-		&mut self,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
-		in_frustum: impl Fn(&ChunkPos) -> bool,
-	) {
-		self.scratch.clear();
-		self.scratch.extend(
-			chunks
-				.iter()
-				.filter(|(pos, c)| c.water.is_some() && in_frustum(pos))
-				.map(|(pos, _)| *pos),
-		);
-	}
-
-	/// The two-subpass draw loop (prepass then color) over the built
-	/// list. The caller has bound groups 0-2 and the index buffer.
-	/// Returns (water draws, triangles).
+	/// The two-subpass draw loop (prepass then color) over the renderer's
+	/// culled water list (indices into `chunks`). The caller has bound
+	/// groups 0-2, the index buffer, and the origin stream at vertex slot
+	/// 1. Returns (water draws, triangles).
 	pub fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,
-		chunks: &FxHashMap<ChunkPos, ChunkGpu>,
-		chunk_bg: &wgpu::BindGroup,
+		chunks: &[ChunkGpu],
+		list: &[u32],
 	) -> (u32, u32) {
 		let (mut draws, mut tris) = (0u32, 0u32);
 		for pipeline in [&self.depth_pipeline, &self.color_pipeline] {
 			pass.set_pipeline(pipeline);
-			for pos in &self.scratch {
-				let Some(chunk) = chunks.get(pos) else {
+			for &i in list {
+				let chunk = &chunks[i as usize];
+				let Some(mesh) = chunk.water.as_ref() else {
 					continue;
 				};
-				if let Some((buf, index_count)) = &chunk.water {
-					pass.set_bind_group(
-						3,
-						chunk_bg,
-						&[(u64::from(chunk.slot) * CHUNK_STRIDE) as u32],
-					);
-					pass.set_vertex_buffer(0, buf.slice(..));
-					pass.draw_indexed(0..*index_count, 0, 0..1);
-					draws += 1;
-					tris += *index_count / 3;
-				}
+				draws += 1;
+				tris += draw_chunk(pass, mesh, chunk.slot) / 3;
 			}
 		}
 		(draws, tris)

@@ -3,6 +3,164 @@
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 
+## 2026-08-06 — frame-consistency pass (audit in `PERF-AUDIT.md`)
+
+A full hot-path audit aimed at spike elimination, weighted to the web
+build. Findings and the reasoning behind each fix live in
+`PERF-AUDIT.md`; this entry records what changed and what was measured.
+
+### Desktop A/B (vsync, seed 42, ×3 each, same machine and session)
+
+Baseline is a `git worktree` at the pre-pass commit, benched interleaved
+with the new build so machine state is shared.
+
+| metric | before (×3) | after (×3) | |
+|---|---|---|---|
+| fill | 4.77 / 4.56 / 4.73 s | 4.02 / 4.20 / 4.23 s | **−11%** |
+| avg | 8.34 / 8.35 / 8.35 | 8.36 / 8.36 / 8.36 | flat (vsync-bound) |
+| p95 | 9.22 / 9.25 / 9.15 | 8.79 / 8.80 / 8.79 | **−4.7%** |
+| p99 | 9.89 / 9.97 / 9.96 | 9.33 / 9.17 / 9.35 | **−6.3%** |
+| worst | 17.0 / 17.0 / 16.7 | 24.7 / 17.2 / 17.3 | comparable |
+| over-12.5ms | 2 / 3 / 3 | 4 / 5 / 5 | see below |
+| gen job avg | 1.37 ms | 1.04 ms | **−24%** |
+| mesh jobs | 81992 | 75676 | **−7.7%** |
+| resident | 19920 | 20704 | +3.9% (hysteresis band) |
+
+**p95 and p99 are the real signal**: they moved by more than their
+run-to-run spread (p95 varies by 0.01 ms across the three new runs versus
+a 0.43 ms gap to baseline), and fill improved consistently.
+
+**`over-12.5ms` went slightly UP (2–3 → 4–5) and is reported as-is.** Two
+extra frames out of 1799 is not a defensible regression signal at this
+sample size, and the third-pass work above already established that these
+counts match a static-scene control — they are compositor noise on this
+machine, not app-caused. `over-8.3ms` (568 → 648) is likewise not
+meaningful: avg sits at 8.36 against an 8.33 threshold, so a 0.02 ms shift
+in the mean moves hundreds of frames across the line. Neither number
+should be read as a tail regression, and neither should be read as a win.
+If the tail matters, judge it on p99.
+
+The web build is where this pass was aimed, and it has no scripted bench;
+overlay readings are below.
+
+### The headline: the adaptive stream budget was inert on web
+
+`StreamBudget` derived busy time as `total_ms − acquire_ms`. That is
+correct only where vsync blocks inside the swapchain acquire. On the web
+`GPUCanvasContext.getCurrentTexture()` cannot block (it would deadlock the
+JS main thread) and rAF paces the loop BETWEEN frames, so acquire read ~0
+while `total_ms` was always a full display interval — headroom was
+permanently negative and the budget pinned to its 3 ms floor forever, on
+the one platform the feature exists for. At 120 Hz it was bistable
+instead: full ceiling while work fit one 8.3 ms slot, hard collapse the
+moment it spilled into two, i.e. a ~0.5–1 s sawtooth.
+
+Verified by running the shipped controller directly (floor 3, ceiling 10,
+600 frames, urgency 1.0):
+
+| signal shape | frame ms | busy/acq | budget reached |
+|---|---|---|---|
+| native FIFO, 5 ms work | 16.7 | acq 11.7 | 10.00 (ceiling) |
+| web rAF, 2 ms work | 16.7 | acq 0 | **3.00 (floor)** |
+| web rAF, 8 ms work | 16.7 | acq 0 | **3.00 (floor)** |
+| web rAF, true busy fed | 16.7 | busy 8 | 10.00 (ceiling) |
+
+The existing test `near_miss_collapses_to_floor` had been asserting
+exactly this shape (`on_frame(16.4, 0.4, …)` → floor) without anyone
+noticing it *was* the web steady state.
+
+Fix: occupancy is now MEASURED — `Game::frame_started` opens a span at
+redraw-handler entry that `render` closes, minus the acquire wait, which
+is right on both platforms. `web_signal_shape_still_grows` and
+`high_refresh_web_tracks_work_not_quantized_delta` pin it.
+
+### First web measurements (Chrome/WebGPU, Apple Silicon, 120Hz)
+
+`?overlay&spikelog&seed=42`, backdrop world at the menu, draw 20. There is
+still no scripted web bench — these are read off the runtime overlay — but
+they are the first web frame numbers recorded here at all.
+
+| state | fps | avg | p95 | p99 | worst | hitch | budget |
+|---|---|---|---|---|---|---|---|
+| streaming in | 119.9 | 8.34 | 12.30 | 12.80 | 13.30 | 0 | **5.6** |
+| quiesced | 120.0 | 8.33 | 9.40 | 9.60 | 9.70 | 0 | 3.0 |
+
+Two things to read off that table:
+
+- **`acq 0.02 ms`** — the acquire wait really is ~0 on the web, which is
+  the whole premise of the bug above. The old `total − acquire` derivation
+  therefore reported ~16.7 ms of "busy" on a frame doing 3 ms of work.
+- **`budget 5.6`** while streaming — the controller now grows past its
+  3.0 floor, which it was structurally incapable of doing before. It
+  returns to 3.0 once the world quiesces because urgency drops to zero
+  with nothing pending; that part is by design (rim-only churn streams at
+  the floor).
+
+Per-job costs on this machine under wasm: gen 1.17 ms avg / 1.70 ms max,
+mesh 0.11 ms avg / 0.40 ms max. The gen figure is far below the 12 ms
+`CostRing` seed that the audit's worst-case reasoning was built on — the
+bit-exact cave-noise work moved it — so job slicing (the one deferred
+milestone) is now a smaller win than the audit projected.
+
+### Measured wins
+
+**Face re-dirty skips on the arrival path** (`pipeline.rs`). The
+empty-mesh and queued-remesh skips applied only to diagonal neighbours;
+they are equally sound for faces *on arrival*, because a chunk landing
+turns all-air shell into real cells, so coverage only increases and a
+neighbour that already meshed to nothing stays nothing. (Not true for
+edits — digging removes coverage — so `set_cell` keeps its unconditional
+bump.) Fill census, workers 4:
+
+| seed / draw | mesh jobs before | after | mesh ms before | after |
+|---|---|---|---|---|
+| 42 / 8 | 3567 | 3328 (−6.7%) | 486 | 369 (−24%) |
+| 42 / 12 | 10212 | 9181 (−10.1%) | 997 | 915 (−8.2%) |
+| 1234.5678 / 12 | 7493 | 6456 (−13.8%) | 646 | 576 (−11%) |
+
+**Mesher splash-ring skip**: full ocean-surface chunk 79.7 → 65.6 µs
+(−18%), waterfall chunks unchanged, pinned byte-identical by
+`water_heavy_chunk_mesh_is_pinned`. The per-cell tint hoist in the same
+pass measured as **no change** (LLVM was already hoisting it) — kept for
+explicitness, not for speed.
+
+**Reliable frame encoding** 110 → 27 ns (4×) via in-place `postcard::to_io`
+instead of an intermediate Vec; benefits the server equally.
+
+### Structural changes without a single-number result
+
+- `visibility_scan` was a full-world rescan on every chunk crossing —
+  ~20k retain slots + ~27k hash probes + a full mesh-heap rebuild at draw
+  20, running OUTSIDE the streaming deadline, i.e. an unbudgeted burst at
+  walking cadence. Now a scanline interval diff of the entering/leaving
+  crescents: O(r) instead of O(r²). Eviction gained one chunk of
+  hysteresis (`KEEP_MARGIN`) so pacing across a single boundary stops
+  regenerating the same crescent — costs ~10% more resident columns at
+  draw 20. Pinned by `incremental_scan_holds_the_residency_invariant` and
+  `boundary_pacing_does_not_regenerate`.
+- The three streaming budgets (jobs / drain / uploads) summed to ~1.5×
+  the nominal budget; they now consume one shared deadline, each keeping
+  a minimum-progress floor.
+- Uploads are bounded by BYTES as well as time (768 KiB on web) —
+  `write_buffer` only records the copy, and Chrome's GPU process performs
+  the staging transfer at submit, so the real cost landed after everything
+  `upload_ms` could see.
+- Eviction and the inbound net-event stream are both spread across frames
+  now (join sync used to apply a server's whole journal in one frame).
+- Persistence is sharded by 256×256-block region, so a save rewrites what
+  changed rather than the world's entire edit history — see below.
+
+### CSV schema changed
+
+New columns: `dropped`, `refresh_ms`, `busy_ms`, `net_ms`, `sim_ms`,
+`sav_ms`, `prep_ms`, `upl_q`, `evict_q`. As with the `gpu_water_ms`
+insertion, **don't naively diff old and new CSVs**. `prep_ms` closes a
+real attribution hole: remote sampling, name tags, UI rebuild and frame
+uniforms were previously untimed, so a spike there appeared in
+`total_ms` and in no phase at all. `DIG_SPIKELOG` is now an engine config
+flag (`?spikelog` on web) rather than an env read that wasm always
+answered None to.
+
 ## 2026-08-01 (seventh pass): water realism (lighting, falls, depth shading, spray, SSR)
 
 Water gained fresnel + distance-widened specular + procedural sky

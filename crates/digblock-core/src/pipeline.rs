@@ -113,7 +113,15 @@ pub struct Pipeline {
 	center: ChunkPos,
 	/// Authoritative edits waiting for their chunk to generate — see
 	/// `apply_authoritative`.
-	deferred_edits: FxHashMap<(i32, i32, i32), u16>,
+	///
+	/// Grouped by chunk COLUMN, because that is the granularity they are
+	/// released at. Joining a heavily-edited server defers most of the
+	/// journal (everything outside the generated radius) and holds it for
+	/// the whole session; a flat map meant every column that landed
+	/// rescanned all of it, on every streaming frame.
+	deferred_edits: FxHashMap<(i32, i32), DeferredCells>,
+	/// Running total across the grouped map, so reporting it stays O(1).
+	deferred_count: usize,
 	/// Persistent local-edit overlay (single-player worlds): every
 	/// `set_block` records here and every generated column re-applies its
 	/// cells, so hard eviction can't lose edits. None in multiplayer —
@@ -122,7 +130,10 @@ pub struct Pipeline {
 	/// Edits recorded since the last `take_recorded_edits` drain (the
 	/// engine forwards them to the world store).
 	recorded: Vec<(i32, i32, i32, u16)>,
-	scanned_once: bool,
+	/// Centre and radius the resident set was last built for; None forces a
+	/// full rebuild. Both are compared, so a draw-distance change rescans
+	/// even when the player hasn't moved.
+	scanned: Option<(ChunkPos, i32)>,
 	in_flight: u32,
 	/// Inline job-cost predictor (unused with a worker pool).
 	job_cost: JobCost,
@@ -172,16 +183,28 @@ const INLINE_MESH_CAP: usize = 4;
 /// Worst-of-recent window for inline job-cost prediction.
 const COST_N: usize = 8;
 
+/// Fraction of the lifetime worst that survives as a floor under the
+/// recent window. Admission control needs a PESSIMISTIC bound, not a
+/// recent average: gen cost is bimodal (a flat ocean column is ~10× cheaper
+/// than a mountain one), so `COST_N` cheap samples in a row would otherwise
+/// collapse the prediction and admit a job an order of magnitude bigger
+/// than the remaining budget. Half, not all, so a genuinely one-off
+/// outlier (a scheduler preemption, a resize stall) decays out instead of
+/// suppressing streaming for the rest of the run.
+const LIFETIME_FLOOR_FRAC: f32 = 0.5;
+
 /// Predicts an inline job's cost as the worst of its kind's last
-/// `COST_N` measured durations. The pessimistic seed participates until
-/// the ring fills, so extra jobs never start on optimistic early
-/// samples — gen cost is bimodal (ocean vs mountain columns), which is
-/// why worst-of-recent and not an average.
+/// `COST_N` measured durations, floored by a share of its lifetime worst.
+/// The pessimistic seed participates until the ring fills, so extra jobs
+/// never start on optimistic early samples.
 struct CostRing {
 	recent: [f32; COST_N],
 	len: usize,
 	head: usize,
 	seed_ms: f32,
+	/// Worst ever observed — the bimodality guard (see
+	/// `LIFETIME_FLOOR_FRAC`).
+	lifetime_max_ms: f32,
 }
 
 impl CostRing {
@@ -191,6 +214,7 @@ impl CostRing {
 			len: 0,
 			head: 0,
 			seed_ms,
+			lifetime_max_ms: 0.0,
 		}
 	}
 
@@ -198,12 +222,14 @@ impl CostRing {
 		self.recent[self.head] = ms;
 		self.head = (self.head + 1) % COST_N;
 		self.len = (self.len + 1).min(COST_N);
+		self.lifetime_max_ms = self.lifetime_max_ms.max(ms);
 	}
 
 	fn predicted_ms(&self) -> f32 {
 		let worst = self.recent[..self.len]
 			.iter()
-			.fold(0.0f32, |a, &b| a.max(b));
+			.fold(0.0f32, |a, &b| a.max(b))
+			.max(self.lifetime_max_ms * LIFETIME_FLOOR_FRAC);
 		if self.len < COST_N {
 			worst.max(self.seed_ms)
 		} else {
@@ -243,6 +269,52 @@ impl JobCost {
 fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 	let (dx, dy, dz) = ((a.x - b.x) as i64, (a.y - b.y) as i64, (a.z - b.z) as i64);
 	dx * dx + dy * dy + dz * dz
+}
+
+/// Authoritative edits held for one chunk column until it generates.
+type DeferredCells = FxHashMap<(i32, i32, i32), u16>;
+
+/// Chunks stay resident this far past the draw distance before eviction.
+///
+/// Crossing one chunk boundary shifts the whole disc by one, so without a
+/// margin a player pacing back and forth over a single line evicts a
+/// crescent and immediately regenerates it, forever. One chunk of slack
+/// removes that churn for the price of the rim band's memory (~10% more
+/// resident columns at draw 20). Adds still use the exact draw distance —
+/// only eviction is lazy.
+const KEEP_MARGIN: i32 = 1;
+
+/// Greatest |dx| with `dx² + dz² < r²`, or None if the row misses the disc.
+fn row_half_width(dz: i32, r: i32) -> Option<i32> {
+	let lim = i64::from(r) * i64::from(r) - i64::from(dz) * i64::from(dz);
+	if lim <= 0 {
+		return None;
+	}
+	// Largest s with s² < lim (the disc predicate is a strict `<`). The
+	// float sqrt is only a seed — the two correction loops make the result
+	// exact, so a rounding error near a perfect square can't widen or
+	// narrow a row by one column.
+	let mut s = ((lim - 1) as f64).sqrt() as i64;
+	while s > 0 && s * s >= lim {
+		s -= 1;
+	}
+	while (s + 1) * (s + 1) < lim {
+		s += 1;
+	}
+	Some(s as i32)
+}
+
+fn row_span(cx: i32, half: Option<i32>) -> Option<(i32, i32)> {
+	half.map(|w| (cx - w, cx + w))
+}
+
+/// The at-most-two stretches of `[a, b]` that `other` does not cover.
+/// Empty stretches come back as `a > b`, so `for x in a..=b` skips them.
+fn interval_diff(a: i32, b: i32, other: Option<(i32, i32)>) -> [(i32, i32); 2] {
+	match other {
+		None => [(a, b), (1, 0)],
+		Some((oa, ob)) => [(a, b.min(oa - 1)), (a.max(ob + 1), b)],
+	}
 }
 
 /// For each diagonal chunk offset, whether this chunk's cells visible in
@@ -355,9 +427,10 @@ impl Pipeline {
 			mesh_heap: BinaryHeap::new(),
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			deferred_edits: FxHashMap::default(),
+			deferred_count: 0,
 			overlay,
 			recorded: Vec::new(),
-			scanned_once: false,
+			scanned: None,
 			in_flight: 0,
 			job_cost: JobCost::new(),
 		}
@@ -404,24 +477,27 @@ impl Pipeline {
 			overlaid_water: Vec::new(),
 		};
 		let center = ChunkPos::new(center.x, 0, center.z);
-		if center != self.center || !self.scanned_once {
+		if self.scanned != Some((center, self.draw_dist)) {
 			self.center = center;
-			self.scanned_once = true;
 			self.visibility_scan(&mut out.evicted);
 		}
 		// Inline jobs run before the drain so their results land this
 		// frame; workers instead get topped up after (they produce across
-		// frames anyway). The job itself routinely overruns the caller's
-		// drain deadline (a column-gen job costs more than the whole
-		// stream budget on wasm), so shift the deadline by the time the
-		// job took: the drain always gets its full budget, or results
-		// pile up undrained while a fresh job runs every frame.
-		let deadline = if matches!(self.exec, Executor::Inline { .. }) {
-			let spent = self.run_inline_jobs(inline_allowance);
-			deadline.map(|d| d + spent)
-		} else {
-			deadline
-		};
+		// frames anyway).
+		//
+		// The deadline is deliberately NOT extended by what the jobs spent.
+		// It used to be, because a column-gen job could outlast the whole
+		// stream budget on its own and leave the drain nothing — but paying
+		// for that by handing the drain a fresh full budget made the stages
+		// ADD UP (jobs + drain + uploads ≈ 1.5× budget plus overshoot),
+		// which is the miss the budget exists to avoid. Job slicing bounds
+		// the overrun at the source now, and each stage keeps a
+		// minimum-progress floor (the drain always pulls one result, the
+		// upload loop always does `UPLOAD_MIN`), so a blown deadline delays
+		// work without ever starving it.
+		if matches!(self.exec, Executor::Inline { .. }) {
+			self.run_inline_jobs(inline_allowance);
+		}
 		self.drain_results(&mut out, upload_budget, deadline);
 		out.saturated = self.exec.has_pending();
 		out.requeued = self.top_up_workers();
@@ -434,49 +510,110 @@ impl Pipeline {
 	/// Desired set: y ∈ 0..WORLD_VCHUNK, Euclidean distance < draw_dist in
 	/// chunk units — the Java updateVisible cull. Chunks leaving the set
 	/// are dropped (results in flight are rejected by the slot check).
+	///
+	/// Ordinary movement takes the incremental path: crossing one chunk
+	/// boundary shifts the disc by one, which changes O(r) columns out of
+	/// O(r²), and this runs OUTSIDE the streaming deadline — a full rescan
+	/// here was an unbudgeted multi-millisecond burst arriving at walking
+	/// cadence, every 16 blocks.
 	fn visibility_scan(&mut self, evicted: &mut Vec<ChunkPos>) {
 		let r = self.draw_dist;
 		let c = self.center;
+		match self.scanned {
+			Some((pc, pr)) if pr == r => self.visibility_diff(pc, c, r, evicted),
+			// First scan, or the draw distance itself changed. Rebuild
+			// exactly — and with no hysteresis band, because draw distance
+			// is a memory/perf setting the user just chose and must be
+			// honoured to the chunk.
+			_ => self.visibility_rebuild(c, r, evicted),
+		}
+		self.scanned = Some((c, r));
+		// Pending meshes are deliberately NOT re-prioritized for the new
+		// centre: heap keys are priorities, not correctness, they drift by
+		// at most one chunk per crossing, and `next_mesh_job` already drops
+		// entries whose chunk left the store. Draining and rebuilding the
+		// whole heap to reorder it cost more than the misordering ever did.
+	}
+
+	/// Full rebuild: exact membership, no hysteresis.
+	fn visibility_rebuild(&mut self, c: ChunkPos, r: i32, evicted: &mut Vec<ChunkPos>) {
+		let r2 = i64::from(r) * i64::from(r);
 		self.store.retain(|pos, _| {
-			let keep = dist2(ChunkPos::new(pos.x, 0, pos.z), c) < i64::from(r) * i64::from(r);
+			let keep = dist2(ChunkPos::new(pos.x, 0, pos.z), c) < r2;
 			if !keep {
 				evicted.push(*pos);
 			}
 			keep
 		});
-		for x in (c.x - r)..=(c.x + r) {
-			for z in (c.z - r)..=(c.z + r) {
-				let flat = ChunkPos::new(x, 0, z);
-				let d2 = dist2(flat, c);
-				if d2 >= i64::from(r) * i64::from(r) {
-					continue;
-				}
-				let mut new_column = false;
-				for y in 0..WORLD_VCHUNK {
-					let pos = ChunkPos::new(x, y, z);
-					if let std::collections::hash_map::Entry::Vacant(e) = self.store.entry(pos) {
-						e.insert(ChunkSlot {
-							state: ChunkState::Generating,
-							mesh_gen: 0,
-							submitted_gen: 0,
-							empty_mesh_gen: None,
-						});
-						new_column = true;
+		for z in (c.z - r)..=(c.z + r) {
+			let Some(w) = row_half_width(z - c.z, r) else {
+				continue;
+			};
+			for x in (c.x - w)..=(c.x + w) {
+				self.add_column(x, z);
+			}
+		}
+	}
+
+	/// Incremental update between two centres at the same radius: only the
+	/// entering and leaving crescents are touched.
+	fn visibility_diff(&mut self, pc: ChunkPos, c: ChunkPos, r: i32, evicted: &mut Vec<ChunkPos>) {
+		if pc == c {
+			return;
+		}
+		// Leaving: in the old KEEP disc, out of the new one.
+		let keep = r + KEEP_MARGIN;
+		for z in (pc.z - keep)..=(pc.z + keep) {
+			let Some(w) = row_half_width(z - pc.z, keep) else {
+				continue;
+			};
+			let now = row_span(c.x, row_half_width(z - c.z, keep));
+			for (a, b) in interval_diff(pc.x - w, pc.x + w, now) {
+				for x in a..=b {
+					for y in 0..WORLD_VCHUNK {
+						let pos = ChunkPos::new(x, y, z);
+						if self.store.remove(&pos).is_some() {
+							evicted.push(pos);
+						}
 					}
-				}
-				if new_column {
-					self.gen_heap.push((Reverse(d2), (x, z)));
 				}
 			}
 		}
-		// Re-prioritize pending meshes for the new center.
-		let pending: Vec<(i32, i32, i32)> = self.mesh_heap.drain().map(|(_, p)| p).collect();
-		for p in pending {
-			let pos = ChunkPos::new(p.0, p.1, p.2);
-			if self.store.contains_key(&pos) {
-				self.mesh_heap
-					.push((Reverse(dist2(ChunkPos::new(p.0, 0, p.2), c)), p));
+		// Entering: in the new desired disc, out of the old one. Columns
+		// still resident from the hysteresis band land here too and are
+		// no-ops — which is the entire point of keeping them.
+		for z in (c.z - r)..=(c.z + r) {
+			let Some(w) = row_half_width(z - c.z, r) else {
+				continue;
+			};
+			let before = row_span(pc.x, row_half_width(z - pc.z, r));
+			for (a, b) in interval_diff(c.x - w, c.x + w, before) {
+				for x in a..=b {
+					self.add_column(x, z);
+				}
 			}
+		}
+	}
+
+	/// Ensure a column's chunk slots exist; queues generation if any were
+	/// missing. Idempotent, so re-entering a column that never left is free.
+	fn add_column(&mut self, x: i32, z: i32) {
+		let mut fresh = false;
+		for y in 0..WORLD_VCHUNK {
+			let pos = ChunkPos::new(x, y, z);
+			if let std::collections::hash_map::Entry::Vacant(e) = self.store.entry(pos) {
+				e.insert(ChunkSlot {
+					state: ChunkState::Generating,
+					mesh_gen: 0,
+					submitted_gen: 0,
+					empty_mesh_gen: None,
+				});
+				fresh = true;
+			}
+		}
+		if fresh {
+			let d2 = dist2(ChunkPos::new(x, 0, z), self.center);
+			self.gen_heap.push((Reverse(d2), (x, z)));
 		}
 	}
 
@@ -555,14 +692,23 @@ impl Pipeline {
 						}
 						// The Rust equivalent of Java's cross-border re-dirty:
 						// every Ready neighbor re-meshes from fresh snapshots.
-						// Faces always (a new air chunk still un-suppresses
-						// its neighbors' border faces, and face cells create
-						// and cull faces). Diagonals only shade existing
-						// faces via the padded shell, so they're skipped for
-						// air chunks (no shell content) and for neighbors
-						// whose current mesh is empty (nothing to shade) —
-						// without this the buried bulk of the world remeshes
-						// 26-ways on every generation.
+						// Diagonals only shade existing faces via the padded
+						// shell, so they're skipped for air chunks (no shell
+						// content) — without this the buried bulk of the
+						// world remeshes 26-ways on every generation.
+						//
+						// The empty-mesh and queued-remesh skips below apply
+						// to FACES too, not just diagonals. Both are sound
+						// specifically because this is the ARRIVAL path: the
+						// shell here goes from all-air (a missing neighbour
+						// reads as zero) to this chunk's real cells, so
+						// coverage only ever INCREASES. A face is emitted
+						// where a solid cell meets a non-covering neighbour,
+						// so more coverage can only cull faces, never create
+						// them — a neighbour that already meshed to nothing
+						// stays nothing. (This does NOT hold for edits, where
+						// digging removes coverage; `set_cell` has its own
+						// unconditional bump.)
 						for oy in -1..=1 {
 							for oz in -1..=1i32 {
 								for ox in -1..=1i32 {
@@ -586,17 +732,16 @@ impl Pipeline {
 										{
 											continue;
 										}
-										if diagonal && nslot.empty_mesh_gen == Some(nslot.mesh_gen)
-										{
+										if nslot.empty_mesh_gen == Some(nslot.mesh_gen) {
 											continue;
 										}
 										// A queued-but-undispatched remesh
 										// snapshots at dispatch time, after
 										// this chunk landed in the store — it
-										// already sees the fresh shell, so a
-										// diagonal bump would only duplicate
+										// already sees the fresh shell, so
+										// bumping again would only duplicate
 										// the job.
-										if diagonal && nslot.submitted_gen < nslot.mesh_gen {
+										if nslot.submitted_gen < nslot.mesh_gen {
 											continue;
 										}
 										nslot.mesh_gen += 1;
@@ -659,10 +804,9 @@ impl Pipeline {
 	/// keep starting jobs while their predicted cost still fits. Jobs are
 	/// uninterruptible, so prediction is the only overshoot control; a
 	/// popped job that doesn't fit is requeued (one wasted `MeshInput`
-	/// build at most). Returns elapsed so `maintain` can shift the drain
-	/// deadline. Results queue for `drain_results`, which still applies
-	/// the caller's budget/deadline.
-	fn run_inline_jobs(&mut self, allowance: Option<std::time::Duration>) -> std::time::Duration {
+	/// build at most). Results queue for `drain_results`, which applies the
+	/// caller's shared deadline.
+	fn run_inline_jobs(&mut self, allowance: Option<std::time::Duration>) {
 		let start = web_time::Instant::now();
 		let mut meshes = 0usize;
 		let mut floor_done = false;
@@ -699,7 +843,6 @@ impl Pipeline {
 				floor_done |= meshes >= INLINE_MESH_CAP;
 			}
 		}
-		start.elapsed()
 	}
 
 	/// Returns the number of jobs bounced back because workers were
@@ -803,15 +946,13 @@ impl Pipeline {
 		}
 	}
 
-	/// Change the streaming radius at runtime (settings slider). Clearing
-	/// `scanned_once` forces the next `maintain` to rescan: a shrink
-	/// evicts out-of-range columns, a grow enqueues the new ring
+	/// Change the streaming radius at runtime (settings slider). The next
+	/// `maintain` sees a radius that doesn't match `scanned` and rebuilds
+	/// exactly: a shrink evicts out-of-range columns (with no hysteresis
+	/// band — the user asked for this radius), a grow enqueues the new ring
 	/// nearest-first under the usual stream budget.
 	pub fn set_draw_dist(&mut self, draw_dist: i32) {
-		if draw_dist != self.draw_dist {
-			self.draw_dist = draw_dist;
-			self.scanned_once = false;
-		}
+		self.draw_dist = draw_dist;
 	}
 
 	/// Ceiling scale for the adaptive stream budget
@@ -954,18 +1095,34 @@ impl Pipeline {
 		if crate::chunk::split_world(x, y, z).is_none() {
 			return ApplyEdit::Rejected;
 		}
+		let col = (x.div_euclid(16), z.div_euclid(16));
 		if self.try_apply((x, y, z), cell) {
-			self.deferred_edits.remove(&(x, y, z));
+			if let Some(cells) = self.deferred_edits.get_mut(&col) {
+				if cells.remove(&(x, y, z)).is_some() {
+					self.deferred_count -= 1;
+				}
+				if cells.is_empty() {
+					self.deferred_edits.remove(&col);
+				}
+			}
 			ApplyEdit::Applied
 		} else {
-			self.deferred_edits.insert((x, y, z), cell);
+			if self
+				.deferred_edits
+				.entry(col)
+				.or_default()
+				.insert((x, y, z), cell)
+				.is_none()
+			{
+				self.deferred_count += 1;
+			}
 			ApplyEdit::Deferred
 		}
 	}
 
 	/// Authoritative edits still waiting for their chunk to generate.
 	pub fn deferred_edits(&self) -> usize {
-		self.deferred_edits.len()
+		self.deferred_count
 	}
 
 	/// True if the cell now holds `v` (freshly written or already there).
@@ -982,15 +1139,23 @@ impl Pipeline {
 		if self.deferred_edits.is_empty() {
 			return;
 		}
-		let cells: Vec<((i32, i32, i32), u16)> = self
-			.deferred_edits
-			.iter()
-			.filter(|(&(x, _, z), _)| landed.contains(&(x.div_euclid(16), z.div_euclid(16))))
-			.map(|(&c, &v)| (c, v))
-			.collect();
-		for (cell, v) in cells {
-			if self.try_apply(cell, v) {
-				self.deferred_edits.remove(&cell);
+		// O(edits in the landed columns), not O(everything still deferred).
+		for col in landed {
+			let Some(cells) = self.deferred_edits.remove(col) else {
+				continue;
+			};
+			self.deferred_count -= cells.len();
+			let mut unapplied = DeferredCells::default();
+			for (cell, v) in cells {
+				if !self.try_apply(cell, v) {
+					unapplied.insert(cell, v);
+				}
+			}
+			// A column can land with some chunks still absent (sky chunks
+			// resolve to the shared air sentinel); those edits keep waiting.
+			if !unapplied.is_empty() {
+				self.deferred_count += unapplied.len();
+				self.deferred_edits.insert(*col, unapplied);
 			}
 		}
 	}
@@ -1256,6 +1421,104 @@ mod tests {
 		p.set_block(8, 8, 8, new).unwrap();
 		assert!(p.take_recorded_edits().is_empty());
 		assert!(p.overlay().is_none());
+	}
+
+	/// The incremental crescent diff must maintain exactly the invariant a
+	/// full rebuild would: everything inside the draw distance is resident,
+	/// and nothing beyond the hysteresis band is.
+	#[test]
+	fn incremental_scan_holds_the_residency_invariant() {
+		const R: i32 = 5;
+		let mut p = Pipeline::new(0.0, R, 2);
+		// A path that moves on both axes, diagonally, and doubles back.
+		let path = [
+			(0, 0),
+			(1, 0),
+			(2, 0),
+			(2, 1),
+			(1, 1),
+			(1, 2),
+			(0, 2),
+			(-1, 1),
+			(-1, 0),
+			(0, 0),
+			(0, -1),
+			(-2, -2),
+			(3, 3),
+		];
+		for (cx, cz) in path {
+			let c = ChunkPos::new(cx, 0, cz);
+			quiesce(&mut p, c);
+			for z in (cz - R - 2)..=(cz + R + 2) {
+				for x in (cx - R - 2)..=(cx + R + 2) {
+					let d2 = dist2(ChunkPos::new(x, 0, z), c);
+					let here = p.store.contains_key(&ChunkPos::new(x, 0, z));
+					if d2 < i64::from(R) * i64::from(R) {
+						assert!(here, "inside draw dist but missing: ({x},{z}) at {c:?}");
+					}
+					let keep = i64::from(R + KEEP_MARGIN) * i64::from(R + KEEP_MARGIN);
+					if d2 >= keep {
+						assert!(!here, "past the keep band but resident: ({x},{z}) at {c:?}");
+					}
+				}
+			}
+		}
+	}
+
+	/// The churn this exists to kill: pacing back and forth over one chunk
+	/// boundary used to evict a crescent and immediately regenerate it.
+	#[test]
+	fn boundary_pacing_does_not_regenerate() {
+		let mut p = Pipeline::new(0.0, 5, 2);
+		let a = ChunkPos::new(0, 0, 0);
+		let b = ChunkPos::new(1, 0, 0);
+		quiesce(&mut p, a);
+		quiesce(&mut p, b);
+		// Both discs are now covered by the resident set plus its margin,
+		// so neither step may queue any generation at all.
+		for i in 0..8 {
+			for c in [a, b] {
+				let m = p.maintain(c, usize::MAX, None, None);
+				assert_eq!(
+					m.gen_queue, 0,
+					"pacing one boundary re-queued generation (step {i}, centre {c:?})"
+				);
+				assert!(
+					m.evicted.is_empty(),
+					"step {i} evicted a column it needs back"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn interval_diff_cases() {
+		let all = |r: [(i32, i32); 2]| -> Vec<i32> { r.iter().flat_map(|&(a, b)| a..=b).collect() };
+		assert_eq!(all(interval_diff(0, 4, None)), vec![0, 1, 2, 3, 4]);
+		// Overlap on the left, on the right, contained, and disjoint.
+		assert_eq!(all(interval_diff(0, 4, Some((-2, 1)))), vec![2, 3, 4]);
+		assert_eq!(all(interval_diff(0, 4, Some((3, 9)))), vec![0, 1, 2]);
+		assert_eq!(all(interval_diff(0, 4, Some((1, 3)))), vec![0, 4]);
+		assert_eq!(all(interval_diff(0, 4, Some((7, 9)))), vec![0, 1, 2, 3, 4]);
+		assert!(all(interval_diff(0, 4, Some((-1, 5)))).is_empty());
+	}
+
+	#[test]
+	fn row_half_width_matches_the_disc_predicate() {
+		for r in 1..12i32 {
+			for dz in -13..=13i32 {
+				let w = row_half_width(dz, r);
+				for dx in -14..=14i32 {
+					let inside = i64::from(dx) * i64::from(dx) + i64::from(dz) * i64::from(dz)
+						< i64::from(r) * i64::from(r);
+					assert_eq!(
+						inside,
+						w.is_some_and(|w| dx.abs() <= w),
+						"r={r} dz={dz} dx={dx}"
+					);
+				}
+			}
+		}
 	}
 
 	#[test]
@@ -1631,6 +1894,36 @@ mod tests {
 		for _ in 0..COST_N {
 			c.observe(1.0);
 		}
-		assert_eq!(c.predicted_ms(), 1.0, "old worst ages out");
+		// The recent window has fully turned over, but admission control
+		// keeps a share of the lifetime worst underneath it: gen cost is
+		// bimodal, and a run of cheap ocean columns must not license
+		// starting a mountain column that costs 10× the remaining budget.
+		assert_eq!(
+			c.predicted_ms(),
+			5.0 * LIFETIME_FLOOR_FRAC,
+			"lifetime floor survives the window turning over"
+		);
+		// It is a floor, not a memory: a recent sample above it still wins.
+		c.observe(4.0);
+		assert_eq!(c.predicted_ms(), 4.0, "recent worst beats the floor");
+	}
+
+	/// The bimodality this guards against, at the granularity it happens:
+	/// `COST_N` cheap columns in a row used to collapse the prediction far
+	/// enough to admit a job an order of magnitude larger.
+	#[test]
+	fn cheap_run_cannot_collapse_the_prediction() {
+		let mut c = CostRing::new(12.0);
+		for _ in 0..COST_N {
+			c.observe(12.0); // a mountain column
+		}
+		for _ in 0..COST_N * 4 {
+			c.observe(0.9); // a long run of ocean columns
+		}
+		assert!(
+			c.predicted_ms() >= 6.0,
+			"prediction {} collapsed below the lifetime floor",
+			c.predicted_ms()
+		);
 	}
 }

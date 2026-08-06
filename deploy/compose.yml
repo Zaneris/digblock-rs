@@ -6,8 +6,10 @@
 # this machine registers from, and on registration the master probes
 # that address for real - if it can't reach you, you won't be listed.
 #
-# World data (an append-only edit journal, one file per seed) lives in
-# ./data - that directory is the complete backup.
+# World data (append-only edit journals, one directory per seed holding
+# a shard per 256x256-block region) lives in ./data - that directory is
+# the complete backup. A pre-sharding single-file journal migrates in
+# place on first boot; nothing needs doing by hand.
 services:
   digblock:
     # Pin a release by replacing "latest" with a version like "0.1.0".
