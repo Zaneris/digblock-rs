@@ -18,6 +18,7 @@ pub mod raycast;
 pub mod shapes;
 pub mod simplex;
 pub mod sky;
+pub mod stream_budget;
 pub mod sun;
 pub mod touch;
 pub mod worldgen;

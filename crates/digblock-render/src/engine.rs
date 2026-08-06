@@ -63,6 +63,11 @@ pub struct EngineConfig {
 	/// Per-frame wall-clock budget for main-thread streaming (see the
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
+	/// Grow the streaming budget from measured frame headroom (the
+	/// inline-executor web build; see `stream_budget`). Only effective
+	/// with `workers == 0` and outside bench — captures must stay
+	/// deterministic, and worker pools already produce across frames.
+	pub adaptive_stream: bool,
 	/// Distance fog band as fractions of the far plane.
 	pub fog_start_frac: f32,
 	pub fog_end_frac: f32,
@@ -106,6 +111,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			spray_droplets: 64,
 			stream_budget_ms: STREAM_BUDGET_MS,
+			adaptive_stream: false,
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
@@ -136,6 +142,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			spray_droplets: 24,
 			stream_budget_ms: STREAM_BUDGET_MS,
+			adaptive_stream: false,
 			fog_start_frac: 0.70,
 			fog_end_frac: 0.95,
 			chunk_slots_override: None,
@@ -154,8 +161,14 @@ impl EngineConfig {
 		Self {
 			workers: 0,
 			menu: true,
+			adaptive_stream: true,
 			..Self::desktop()
 		}
+	}
+
+	/// The adaptive budget's effective enable (see `adaptive_stream`).
+	fn adaptive_effective(&self) -> bool {
+		self.adaptive_stream && self.workers == 0 && !self.bench
 	}
 
 	/// The renderer's slice of the config. `wide_slice_draws` has no
@@ -264,6 +277,9 @@ pub struct Engine {
 	/// our chat echo resolves through this + config.player_name.
 	my_player_id: Option<u8>,
 	metrics: Metrics,
+	/// Adaptive streaming-budget controller (web/inline builds; the fixed
+	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
+	stream_budget: digblock_core::stream_budget::StreamBudget,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
 	pending: FrameTimings,
@@ -521,6 +537,7 @@ impl Engine {
 		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
+		let stream_floor = config.stream_budget_ms;
 		let spawn = digblock_core::player::spawn(seed);
 		let mut camera = FlyCamera::new(far, spawn);
 		if let Some(yaw) = config.yaw {
@@ -607,6 +624,7 @@ impl Engine {
 			player_names: rustc_hash::FxHashMap::default(),
 			my_player_id: None,
 			metrics,
+			stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
 			pending: FrameTimings::default(),
 			overlay_visible,
 			history_scratch: Vec::new(),
@@ -1310,12 +1328,23 @@ impl Engine {
 			return;
 		};
 		let t_maintain = web_time::Instant::now();
-		let budget_ms = self.config.stream_budget_ms;
+		// The adaptive controller feeds on the PREVIOUS frame's wall delta
+		// and vsync wait — both complete by now; this frame's own timings
+		// aren't. At the floor every value below matches the fixed path.
+		let adaptive = self.config.adaptive_effective();
+		let budget_ms = if adaptive {
+			self.stream_budget
+				.on_frame(self.metrics.last.total_ms, self.metrics.last.acquire_ms)
+		} else {
+			self.config.stream_budget_ms
+		};
+		self.metrics.stream_budget_ms = budget_ms;
 		let full_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
 		let drain_deadline = t_maintain + Duration::from_secs_f32(budget_ms / 2000.0);
+		let allowance = adaptive.then(|| Duration::from_secs_f32(budget_ms / 1000.0));
 		let m = self
 			.pipeline
-			.maintain(center, usize::MAX, Some(drain_deadline));
+			.maintain(center, usize::MAX, Some(drain_deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.
@@ -2806,6 +2835,7 @@ impl Game for Engine {
 	fn on_suspend(&mut self) {
 		log::info!("engine: on_suspend (state save point)");
 		self.metrics.pause();
+		self.stream_budget.reset();
 		// One cheap synchronous send — honors the on_suspend contract.
 		self.emit(crate::audio::AudioCmd::Pause);
 		// Named-save save-point: drain any same-frame edits, snapshot the
@@ -2971,7 +3001,7 @@ mod store_tests {
 		// the world directly until the edit's chunk is Ready.
 		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
 		for _ in 0..10_000 {
-			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			let m = engine.pipeline.maintain(center, usize::MAX, None, None);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
 				break;
 			}
@@ -3069,7 +3099,7 @@ mod store_tests {
 		// Once the world lands, the sim resumes (gravity takes over).
 		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
 		for _ in 0..10_000 {
-			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			let m = engine.pipeline.maintain(center, usize::MAX, None, None);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
 				break;
 			}
@@ -3153,7 +3183,7 @@ mod store_tests {
 			spawn.z.floor() as i32 / 16,
 		);
 		for _ in 0..10_000 {
-			let m = engine.pipeline.maintain(center, usize::MAX, None);
+			let m = engine.pipeline.maintain(center, usize::MAX, None, None);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
 				break;
 			}

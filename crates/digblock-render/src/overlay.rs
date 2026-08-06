@@ -395,7 +395,7 @@ impl Overlay {
 			3,
 			DIM,
 			format_args!(
-				"jobs gen q {} n {} avg {:4.2} max {:4.2} | mesh q {} n {} avg {:4.2} max {:4.2} | fly {}",
+				"jobs gen q {} n {} avg {:4.2} max {:4.2} | mesh q {} n {} avg {:4.2} max {:4.2} | fly {} | bud {:4.1}",
 				s.gauges.gen_queue,
 				s.gen_jobs.count,
 				s.gen_jobs.avg_ms(),
@@ -404,7 +404,8 @@ impl Overlay {
 				s.mesh_jobs.count,
 				s.mesh_jobs.avg_ms(),
 				s.mesh_jobs.max_ms,
-				s.gauges.in_flight
+				s.gauges.in_flight,
+				s.stream_budget_ms
 			),
 		);
 		line(

@@ -124,6 +124,8 @@ pub struct Pipeline {
 	recorded: Vec<(i32, i32, i32, u16)>,
 	scanned_once: bool,
 	in_flight: u32,
+	/// Inline job-cost predictor (unused with a worker pool).
+	job_cost: JobCost,
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -159,11 +161,84 @@ impl Executor {
 	}
 }
 
-/// Per-`maintain` cap for the inline executor: one `Generate` ends the
+/// Per-`maintain` floor for the inline executor: one `Generate` ends the
 /// batch immediately (a column is ~16 chunks of uninterruptible work);
 /// otherwise up to this many mesh jobs run. A count, not a wall-clock
 /// deadline, because job granularity is what actually bounds the stall.
+/// With an `inline_allowance`, more jobs may follow (see
+/// `run_inline_jobs`); this floor always runs regardless.
 const INLINE_MESH_CAP: usize = 4;
+
+/// Worst-of-recent window for inline job-cost prediction.
+const COST_N: usize = 8;
+
+/// Predicts an inline job's cost as the worst of its kind's last
+/// `COST_N` measured durations. The pessimistic seed participates until
+/// the ring fills, so extra jobs never start on optimistic early
+/// samples — gen cost is bimodal (ocean vs mountain columns), which is
+/// why worst-of-recent and not an average.
+struct CostRing {
+	recent: [f32; COST_N],
+	len: usize,
+	head: usize,
+	seed_ms: f32,
+}
+
+impl CostRing {
+	fn new(seed_ms: f32) -> Self {
+		Self {
+			recent: [0.0; COST_N],
+			len: 0,
+			head: 0,
+			seed_ms,
+		}
+	}
+
+	fn observe(&mut self, ms: f32) {
+		self.recent[self.head] = ms;
+		self.head = (self.head + 1) % COST_N;
+		self.len = (self.len + 1).min(COST_N);
+	}
+
+	fn predicted_ms(&self) -> f32 {
+		let worst = self.recent[..self.len]
+			.iter()
+			.fold(0.0f32, |a, &b| a.max(b));
+		if self.len < COST_N {
+			worst.max(self.seed_ms)
+		} else {
+			worst
+		}
+	}
+}
+
+struct JobCost {
+	gen: CostRing,
+	mesh: CostRing,
+}
+
+impl JobCost {
+	fn new() -> Self {
+		Self {
+			gen: CostRing::new(12.0),
+			mesh: CostRing::new(3.0),
+		}
+	}
+
+	fn observe(&mut self, is_gen: bool, ms: f32) {
+		let ring = if is_gen {
+			&mut self.gen
+		} else {
+			&mut self.mesh
+		};
+		ring.observe(ms);
+	}
+
+	fn predicted(&self, is_gen: bool) -> std::time::Duration {
+		let ring = if is_gen { &self.gen } else { &self.mesh };
+		std::time::Duration::from_secs_f32(ring.predicted_ms() / 1000.0)
+	}
+}
 
 fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 	let (dx, dy, dz) = ((a.x - b.x) as i64, (a.y - b.y) as i64, (a.z - b.z) as i64);
@@ -284,6 +359,7 @@ impl Pipeline {
 			recorded: Vec::new(),
 			scanned_once: false,
 			in_flight: 0,
+			job_cost: JobCost::new(),
 		}
 	}
 
@@ -303,11 +379,15 @@ impl Pipeline {
 	/// drains results (mesh outputs capped at `upload_budget`; the whole
 	/// drain stops at `deadline` — undrained results wait in the channel,
 	/// so worker throughput is unaffected, only main-thread pacing).
+	/// `inline_allowance` lets the inline executor run extra jobs beyond
+	/// its fixed floor while their predicted cost fits (the adaptive web
+	/// budget); `None` keeps the floor-only batch. Ignored with workers.
 	pub fn maintain(
 		&mut self,
 		center: ChunkPos,
 		upload_budget: usize,
 		deadline: Option<web_time::Instant>,
+		inline_allowance: Option<std::time::Duration>,
 	) -> Maintenance {
 		let mut out = Maintenance {
 			evicted: Vec::new(),
@@ -337,9 +417,8 @@ impl Pipeline {
 		// job took: the drain always gets its full budget, or results
 		// pile up undrained while a fresh job runs every frame.
 		let deadline = if matches!(self.exec, Executor::Inline { .. }) {
-			let t = web_time::Instant::now();
-			self.run_inline_jobs();
-			deadline.map(|d| d + t.elapsed())
+			let spent = self.run_inline_jobs(inline_allowance);
+			deadline.map(|d| d + spent)
 		} else {
 			deadline
 		};
@@ -575,27 +654,52 @@ impl Pipeline {
 		}
 	}
 
-	/// Inline executor: run a bounded batch of jobs synchronously (see
-	/// `INLINE_MESH_CAP`). Results queue for `drain_results`, which still
-	/// applies the caller's budget/deadline.
-	fn run_inline_jobs(&mut self) {
-		let mut meshes = 0;
-		while meshes < INLINE_MESH_CAP {
+	/// Inline executor: run the unconditional floor batch (one `Generate`
+	/// or up to `INLINE_MESH_CAP` meshes), then — with an allowance —
+	/// keep starting jobs while their predicted cost still fits. Jobs are
+	/// uninterruptible, so prediction is the only overshoot control; a
+	/// popped job that doesn't fit is requeued (one wasted `MeshInput`
+	/// build at most). Returns elapsed so `maintain` can shift the drain
+	/// deadline. Results queue for `drain_results`, which still applies
+	/// the caller's budget/deadline.
+	fn run_inline_jobs(&mut self, allowance: Option<std::time::Duration>) -> std::time::Duration {
+		let start = web_time::Instant::now();
+		let mut meshes = 0usize;
+		let mut floor_done = false;
+		loop {
+			if floor_done && allowance.is_none() {
+				break;
+			}
 			let Some(job) = self.pop_next_job() else {
 				break;
 			};
-			let ends_batch = matches!(job, Job::Generate { .. });
+			let is_gen = matches!(job, Job::Generate { .. });
+			if floor_done {
+				let fits = allowance
+					.is_some_and(|a| start.elapsed() + self.job_cost.predicted(is_gen) <= a);
+				if !fits {
+					self.requeue(job);
+					break;
+				}
+			}
 			let result = run_job(job);
+			let dur_ms = match &result {
+				JobResult::Generated { dur_ms, .. } | JobResult::Meshed { dur_ms, .. } => *dur_ms,
+			};
+			self.job_cost.observe(is_gen, dur_ms);
 			self.in_flight += 1;
 			let Executor::Inline { results } = &mut self.exec else {
 				unreachable!("run_inline_jobs is only called on Inline")
 			};
 			results.push_back(result);
-			if ends_batch {
-				break;
+			if is_gen {
+				floor_done = true;
+			} else {
+				meshes += 1;
+				floor_done |= meshes >= INLINE_MESH_CAP;
 			}
-			meshes += 1;
 		}
+		start.elapsed()
 	}
 
 	/// Returns the number of jobs bounced back because workers were
@@ -938,7 +1042,7 @@ mod tests {
 	/// Run maintain until all queues and workers are idle.
 	fn quiesce(p: &mut Pipeline, center: ChunkPos) {
 		for _ in 0..2000 {
-			let m = p.maintain(center, usize::MAX, None);
+			let m = p.maintain(center, usize::MAX, None, None);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
 				return;
 			}
@@ -1113,7 +1217,7 @@ mod tests {
 		let mut p = Pipeline::with_overlay(0.0, 4, 2, overlay);
 		let mut water = Vec::new();
 		for _ in 0..2000 {
-			let m = p.maintain(ChunkPos::new(0, 0, 0), usize::MAX, None);
+			let m = p.maintain(ChunkPos::new(0, 0, 0), usize::MAX, None, None);
 			water.extend(m.overlaid_water);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
 				break;
@@ -1149,7 +1253,7 @@ mod tests {
 		// Shrink: same center, but the cleared scan flag forces a rescan
 		// that evicts everything beyond the new radius.
 		p.set_draw_dist(4);
-		let m = p.maintain(center, usize::MAX, None);
+		let m = p.maintain(center, usize::MAX, None, None);
 		assert!(!m.evicted.is_empty(), "shrink evicts out-of-range chunks");
 		let small = p.resident();
 		assert!(small < full);
@@ -1162,7 +1266,7 @@ mod tests {
 
 		// No-op set doesn't trigger a rescan.
 		p.set_draw_dist(4);
-		let m = p.maintain(center, usize::MAX, None);
+		let m = p.maintain(center, usize::MAX, None, None);
 		assert!(m.evicted.is_empty());
 
 		// Grow back: the ring regenerates to the original census.
@@ -1236,7 +1340,7 @@ mod tests {
 		// The next maintain cycle must deliver a mesh at the bumped gen.
 		let mut got = None;
 		for _ in 0..2000 {
-			let m = p.maintain(center, usize::MAX, None);
+			let m = p.maintain(center, usize::MAX, None, None);
 			if let Some(out) = m
 				.meshed
 				.into_iter()
@@ -1263,7 +1367,7 @@ mod tests {
 		for step in 0..6 {
 			let center = ChunkPos::new(step * 2, 0, step);
 			for _ in 0..300 {
-				let m = p.maintain(center, 64, None);
+				let m = p.maintain(center, 64, None, None);
 				gen_jobs.merge(m.gen_jobs);
 				mesh_jobs.merge(m.mesh_jobs);
 				for pos in m.evicted {
@@ -1283,7 +1387,7 @@ mod tests {
 		let final_center = ChunkPos::new(10, 0, 5);
 		let mut quiet = 0;
 		for _ in 0..5000 {
-			let m = p.maintain(final_center, 64, None);
+			let m = p.maintain(final_center, 64, None, None);
 			gen_jobs.merge(m.gen_jobs);
 			mesh_jobs.merge(m.mesh_jobs);
 			for pos in m.evicted {
@@ -1404,12 +1508,96 @@ mod tests {
 		let mut p = Pipeline::new(7.5, 12, 0);
 		for frame in 0..3 {
 			let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
-			p.maintain(center, usize::MAX, Some(expired));
+			p.maintain(center, usize::MAX, Some(expired), None);
 			let _ = frame;
 		}
 		assert!(
 			p.cell_at(8, 100, 8).is_some(),
 			"center column must land within the first frames"
 		);
+	}
+
+	/// Without an allowance the inline executor keeps today's exact batch
+	/// shape: at most one `Generate` (which ends the batch) and at most
+	/// `INLINE_MESH_CAP` meshes per maintain.
+	#[test]
+	fn inline_allowance_none_matches_legacy() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 4, 0);
+		let mut meshed_batches = 0;
+		for _ in 0..2000 {
+			let m = p.maintain(center, usize::MAX, None, None);
+			assert!(m.gen_jobs.count <= 1, "one Generate ends the batch");
+			assert!(
+				m.mesh_jobs.count as usize <= INLINE_MESH_CAP,
+				"mesh floor respected"
+			);
+			meshed_batches += u32::from(m.mesh_jobs.count > 0);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		assert!(meshed_batches > 0, "the world actually meshed");
+	}
+
+	/// A large allowance lands strictly more jobs per maintain than the
+	/// floor-only batch (contrast against `None`, not tight timing — the
+	/// first maintain's gen heap holds every visible column, so the
+	/// extension phase runs several where the floor runs one).
+	#[test]
+	fn inline_allowance_extends_batch() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut floor = Pipeline::new(7.5, 4, 0);
+		let m = floor.maintain(center, usize::MAX, None, None);
+		assert_eq!(m.gen_jobs.count, 1, "floor batch: exactly one Generate");
+
+		let mut wide = Pipeline::new(7.5, 4, 0);
+		let allowance = std::time::Duration::from_secs(60);
+		let m = wide.maintain(center, usize::MAX, None, Some(allowance));
+		assert!(
+			m.gen_jobs.count > 1,
+			"allowance extends past the floor (ran {})",
+			m.gen_jobs.count
+		);
+	}
+
+	/// A zero allowance is the floor, not a stall: the unconditional
+	/// first batch still runs and the center column still lands (the
+	/// spawn fall-through guarantee, now under the adaptive path).
+	#[test]
+	fn inline_allowance_zero_keeps_floor_guarantee() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 12, 0);
+		for _ in 0..3 {
+			let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
+			p.maintain(
+				center,
+				usize::MAX,
+				Some(expired),
+				Some(std::time::Duration::ZERO),
+			);
+		}
+		assert!(
+			p.cell_at(8, 100, 8).is_some(),
+			"center column must land within the first frames"
+		);
+	}
+
+	#[test]
+	fn job_cost_prediction() {
+		let mut c = CostRing::new(12.0);
+		assert_eq!(c.predicted_ms(), 12.0, "seed stands in before samples");
+		c.observe(2.0);
+		assert_eq!(c.predicted_ms(), 12.0, "seed holds until the ring fills");
+		for _ in 0..COST_N {
+			c.observe(2.0);
+		}
+		assert_eq!(c.predicted_ms(), 2.0, "full ring drops the seed");
+		c.observe(5.0);
+		assert_eq!(c.predicted_ms(), 5.0, "tracks the recent worst");
+		for _ in 0..COST_N {
+			c.observe(1.0);
+		}
+		assert_eq!(c.predicted_ms(), 1.0, "old worst ages out");
 	}
 }

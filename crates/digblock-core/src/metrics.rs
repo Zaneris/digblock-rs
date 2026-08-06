@@ -155,6 +155,9 @@ pub struct OverlayStats {
 	pub render: RenderStats,
 	pub gpu_buffer_bytes: u64,
 	pub workers: u32,
+	/// Streaming budget in effect this frame (adaptive on web; the fixed
+	/// config value elsewhere).
+	pub stream_budget_ms: f32,
 }
 
 pub struct Summary {
@@ -208,6 +211,9 @@ pub struct Metrics {
 	pub gpu: Option<GpuPassMs>,
 	pub gpu_buffer_bytes: u64,
 	pub workers: u32,
+	/// Streaming budget in effect (last-write gauge; see the engine's
+	/// adaptive controller).
+	pub stream_budget_ms: f32,
 	/// DIG_SPIKELOG=1: log a per-phase breakdown of every frame over the
 	/// 120Hz budget — attributes pacing spikes without wading through CSVs.
 	spike_log: bool,
@@ -218,7 +224,7 @@ const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,\
 acq_ms,upd_ms,mnt_ms,upl_ms,enc_ms,gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,\
-drawn,culled,water,casters,draws,tris,gpu_bytes";
+drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms";
 
 impl Metrics {
 	pub fn new(csv_path: Option<&std::path::Path>) -> Self {
@@ -271,6 +277,7 @@ impl Metrics {
 			gpu: None,
 			gpu_buffer_bytes: 0,
 			workers: 0,
+			stream_budget_ms: 0.0,
 			spike_log: std::env::var_os("DIG_SPIKELOG").is_some(),
 			csv,
 		}
@@ -404,6 +411,7 @@ impl Metrics {
 			render: self.render,
 			gpu_buffer_bytes: self.gpu_buffer_bytes,
 			workers: self.workers,
+			stream_budget_ms: self.stream_budget_ms,
 		}
 	}
 
@@ -502,7 +510,7 @@ impl Metrics {
 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{}",
+{},{},{},{},{},{},{},{:.2}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -539,6 +547,7 @@ impl Metrics {
 				r.draw_calls,
 				r.triangles,
 				self.gpu_buffer_bytes,
+				self.stream_budget_ms,
 			);
 			let _ = w.flush();
 		}
