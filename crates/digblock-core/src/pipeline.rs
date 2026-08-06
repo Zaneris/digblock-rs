@@ -814,6 +814,21 @@ impl Pipeline {
 		}
 	}
 
+	/// Ceiling scale for the adaptive stream budget
+	/// (`stream_budget::urgency` of the nearest pending job): 1 = work
+	/// at the player, 0 = draw-distance rim churn or nothing pending.
+	/// Both heaps are keyed by flat d² from center so this is a peek; a
+	/// stale entry (column evicted or completed since queueing) can only
+	/// overestimate urgency, and only until a pop consumes it.
+	pub fn stream_urgency(&self) -> f32 {
+		let gen = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
+		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
+		let Some(d2) = gen.into_iter().chain(mesh).min() else {
+			return 0.0;
+		};
+		crate::stream_budget::urgency((d2 as f32).sqrt(), self.draw_dist as f32)
+	}
+
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
@@ -1581,6 +1596,24 @@ mod tests {
 			p.cell_at(8, 100, 8).is_some(),
 			"center column must land within the first frames"
 		);
+	}
+
+	/// The urgency signal the adaptive budget's ceiling scales by: full
+	/// while near-field work is pending, zero once only the rim (or
+	/// nothing) remains.
+	#[test]
+	fn stream_urgency_tracks_nearest_pending() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 8, 0);
+		assert_eq!(p.stream_urgency(), 0.0, "no pending work before the scan");
+		p.maintain(center, usize::MAX, None, None);
+		assert_eq!(
+			p.stream_urgency(),
+			1.0,
+			"near-field columns pending after the first scan"
+		);
+		quiesce(&mut p, center);
+		assert_eq!(p.stream_urgency(), 0.0, "quiescent again once filled");
 	}
 
 	#[test]

@@ -63,10 +63,12 @@ pub struct EngineConfig {
 	/// Per-frame wall-clock budget for main-thread streaming (see the
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
-	/// Grow the streaming budget from measured frame headroom (the
-	/// inline-executor web build; see `stream_budget`). Only effective
-	/// with `workers == 0` and outside bench — captures must stay
-	/// deterministic, and worker pools already produce across frames.
+	/// Grow the streaming budget from measured frame headroom, scaled
+	/// by how near the closest pending job is (the inline-executor web
+	/// build; see `stream_budget`) — rim-only churn while walking stays
+	/// at the fixed floor. Only effective with `workers == 0` and
+	/// outside bench — captures must stay deterministic, and worker
+	/// pools already produce across frames.
 	pub adaptive_stream: bool,
 	/// Distance fog band as fractions of the far plane.
 	pub fog_start_frac: f32,
@@ -1333,8 +1335,14 @@ impl Engine {
 		// aren't. At the floor every value below matches the fixed path.
 		let adaptive = self.config.adaptive_effective();
 		let budget_ms = if adaptive {
-			self.stream_budget
-				.on_frame(self.metrics.last.total_ms, self.metrics.last.acquire_ms)
+			// Urgency reads last frame's heaps (this frame's scan hasn't
+			// run) — one frame of lag, and the floor batch still runs
+			// regardless.
+			self.stream_budget.on_frame(
+				self.metrics.last.total_ms,
+				self.metrics.last.acquire_ms,
+				self.pipeline.stream_urgency(),
+			)
 		} else {
 			self.config.stream_budget_ms
 		};
