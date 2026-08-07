@@ -117,6 +117,18 @@ const SKIN_PROBE: f32 = 2e-3;
 /// climb a stair's back face. Must stay under the adoption envelope's
 /// per-tick displacement clamp (~0.47) or honest step claims reject.
 const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
+/// How fast a mount may carry the feet upward, blocks/s. This is exactly
+/// the rate a stair's 45° diagonal lifts a walk (rise = run, so the ramp
+/// climbs at `WALK_SPEED`), which is the point: a step and a flight of
+/// stairs are the same motion, and a step of one slab third now takes
+/// the ~5 ticks the equivalent ramp would. A ramp needs no clamp — its
+/// geometry never asks for more — so this only ever binds on the step,
+/// whose surface is a cliff rather than a slope.
+///
+/// The sim doing this is what makes the camera smooth: `TickLerp` draws
+/// between tick states, so a mount spread over ticks needs no
+/// presentation special case, exactly like stairs.
+const MOUNT_RATE: f32 = WALK_SPEED;
 
 /// Eye spawn position: the nearest land to the origin. Walks expanding
 /// square rings (8-block stride) until a column clears the beach line, so
@@ -252,6 +264,9 @@ struct Contact {
 	/// Supporting surface height for the ground branch (a box's top
 	/// plane, or the exact ramp height under the axis for stairs).
 	top: f32,
+	/// Written by [`step_contact`]: this is a mount in progress, so the
+	/// lift it applies draws down the tick's mount budget.
+	step: bool,
 }
 
 /// Penetration contact of the capsule at eye `pos` with the AABB
@@ -268,6 +283,7 @@ fn box_contact(pos: Vec3, lo: Vec3, hi: Vec3) -> Option<Contact> {
 			n: (p - q) / d,
 			depth: RADIUS - d,
 			top: hi.y,
+			step: false,
 		});
 	}
 	// Degenerate: the axis runs inside the box (a terminal-velocity
@@ -291,6 +307,7 @@ fn box_contact(pos: Vec3, lo: Vec3, hi: Vec3) -> Option<Contact> {
 		n: best.0,
 		depth: best.1 + RADIUS,
 		top: hi.y,
+		step: false,
 	})
 }
 
@@ -333,16 +350,28 @@ fn cell_shape(cell: Option<u16>) -> CellShape {
 /// h(u) = u from the low front edge to the high back edge of cell `c`
 /// ascending toward `f` — the one C0-continuous surface joining both
 /// neighbors, so walking a flight never steps or pops.
-fn ramp_top(pos: Vec3, c: (i32, i32, i32), f: crate::shapes::Facing) -> f32 {
+///
+/// `None` BELOW the low front edge (u < 0): the diagonal hasn't begun, so
+/// the cell supports nothing there. The axis alone decides. Clamping u up
+/// to 0 instead (as this did through SIM v9) reported the cell FLOOR as
+/// support the moment the footprint merely brushed the cell — on a
+/// contiguous flight that is the next step's floor, a full RADIUS of
+/// climb above the surface actually underfoot, so the feet popped up a
+/// step early and the downhill glue then yanked them back down.
+///
+/// ABOVE the high back edge u stays clamped: the ramp's top back edge is
+/// a real horizontal surface flush with the next cell's floor, and
+/// holding it is what carries a mount onto a flush landing (and a
+/// footprint overhanging the top of the last stair) without a step.
+fn ramp_top(pos: Vec3, c: (i32, i32, i32), f: crate::shapes::Facing) -> Option<f32> {
 	use crate::shapes::Facing;
 	let u = match f {
 		Facing::PosX => pos.x - c.0 as f32,
 		Facing::NegX => (c.0 + 1) as f32 - pos.x,
 		Facing::PosZ => pos.z - c.2 as f32,
 		Facing::NegZ => (c.2 + 1) as f32 - pos.z,
-	}
-	.clamp(0.0, 1.0);
-	c.1 as f32 + u
+	};
+	(u >= 0.0).then(|| c.1 as f32 + u.min(1.0))
 }
 
 /// The facing of a ramp currently supporting the capsule — a stair
@@ -364,12 +393,13 @@ fn ramp_support(
 			}
 			for y in [y0, y0 + 1] {
 				if let CellShape::Ramp { facing, .. } = cell_shape(cell_at(x, y, z)) {
-					let top = ramp_top(pos, (x, y, z), facing);
-					let lift = top - feet;
-					if (-RAMP_SNAP_DOWN..=RAMP_SNAP_MAX).contains(&lift)
-						&& best.is_none_or(|(t, _)| top > t)
-					{
-						best = Some((top, facing));
+					if let Some(top) = ramp_top(pos, (x, y, z), facing) {
+						let lift = top - feet;
+						if (-RAMP_SNAP_DOWN..=RAMP_SNAP_MAX).contains(&lift)
+							&& best.is_none_or(|(t, _)| top > t)
+						{
+							best = Some((top, facing));
+						}
 					}
 				}
 			}
@@ -389,6 +419,13 @@ fn ramp_support(
 /// shaped neighbors negotiate through their own branches. Shared by
 /// the resolver and `overlaps_solid`, so mid-mount claims stay
 /// adoptable.
+///
+/// The next step of the same flight resting ON the cube is not a
+/// ceiling: on a built (filled-in) staircase every step's riser is a
+/// cube carrying the next stair, and reading that stair as headroom
+/// blocked the run-out at every single step. Only a same-facing ramp
+/// seated directly on the cube's top qualifies — a stair facing back
+/// down the flight really is a wall in the way.
 fn runout_exempt(
 	pos: Vec3,
 	support: Option<crate::shapes::Facing>,
@@ -413,48 +450,102 @@ fn runout_exempt(
 	};
 	ahead
 		&& !(1..=2).any(|k| {
-			!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
-				&& ((y + k) as f32 - top) < HEIGHT
+			let over = cell_shape(cell_at(x, y + k, z));
+			// The flight continuing over the riser, not a ceiling.
+			let next_tread =
+				k == 1 && matches!(over, CellShape::Ramp { facing, .. } if facing == f);
+			!matches!(over, CellShape::Empty) && !next_tread && ((y + k) as f32 - top) < HEIGHT
 		})
 }
 
-/// Auto-step: convert a would-be wall contact into a ramp-style ground
-/// contact onto the box top, when the rise from the feet is within
-/// [`AUTO_STEP_MAX`] and there's capsule headroom above the landing
-/// (the ramp `pinched` probe). Cube/Boxes cells only — the Ramp arm
-/// negotiates its own lift. Doors stay step-proof through the headroom
-/// probe alone: a lower leaf's box tops out at the cell boundary and
-/// the mandatory upper half sits directly above it — if a future
-/// single-cell shape carries a cell-top box, reconsider deliberately.
-/// Never fires while rising (`out_y > 0`, the ramp-gate precedent) and
-/// never rewrites a contact that is already ground.
+/// Is the capsule mid-mount onto the box [lo, hi] in `cell` — a rise the
+/// auto-step carries rather than a wall it blocks against? Position-only,
+/// so the resolver, `grounded` and `overlaps_solid` all read the same
+/// answer and cannot skew.
+///
+/// Three gates. The rise must be within [`AUTO_STEP_MAX`]. There must be
+/// capsule headroom above the landing (the ramp `pinched` probe) — doors
+/// stay step-proof through this alone: a lower leaf's box tops out at the
+/// cell boundary and the mandatory upper half sits directly above it, so
+/// if a future single-cell shape carries a cell-top box, reconsider
+/// deliberately. And the capsule AXIS must still be outside the box's
+/// footprint: a mount is an approach from the side. Once the axis is over
+/// the box, feet below its top is being buried in it, not climbing it —
+/// which is both the honest reading and what keeps a claim sunk into the
+/// floor it stands on from passing `overlaps_solid`. The crossover needs
+/// no special case: with the axis over the box its ordinary contact is
+/// already a ground contact, which lands the feet on top.
+fn step_mount(
+	pos: Vec3,
+	cell: (i32, i32, i32),
+	(lo, hi): (Vec3, Vec3),
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> bool {
+	let lift = hi.y - (pos.y - EYE_TO_FEET);
+	if lift <= SKIN || lift > AUTO_STEP_MAX || !xz_outside(pos, lo, hi) {
+		return false;
+	}
+	let (x, y, z) = cell;
+	!(1..=2).any(|k| {
+		!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
+			&& (y + k) as f32 - hi.y < HEIGHT
+	})
+}
+
+/// Does the capsule axis lie outside the box's xz footprint?
+fn xz_outside(pos: Vec3, lo: Vec3, hi: Vec3) -> bool {
+	pos.x < lo.x || pos.x > hi.x || pos.z < lo.z || pos.z > hi.z
+}
+
+/// Auto-step: convert a would-be wall contact into a mount — the same
+/// pure-vertical ground contact the stair ramp emits, so the walk keeps
+/// its full horizontal speed and the feet ride up.
+///
+/// The lift is capped at the tick's remaining `budget` ([`MOUNT_RATE`]),
+/// which is what turns a step from a one-tick teleport into the same
+/// glide a stair gives: the mount takes several ticks, the capsule is
+/// briefly inside the box's side (`step_mount` is mirrored in
+/// `overlaps_solid` for exactly this window, as the ramp run-out is),
+/// and it always terminates — the feet only ever rise. A spent budget
+/// yields a zero-depth contact rather than the wall, so the box still
+/// doesn't push back mid-mount.
+///
+/// Cube/Boxes cells only — the Ramp arm negotiates its own lift, and its
+/// slope never asks for more than the budget anyway.
+///
+/// The vertical-velocity window is what separates a step from a landing.
+/// Rising is never a mount (`out_y > 0`, the ramp-gate precedent).
+/// Neither is arriving downward faster than a mount climbs: that is a
+/// fall onto the box's edge, and it keeps the flat-bottomed snap so a
+/// landing never sinks into what it lands on. A walk carries at most one
+/// tick of gravity, far inside the window, and a mount in progress is
+/// re-zeroed by its own ground contact every tick.
+///
+/// This has to claim CORNER contacts that already read as ground, not
+/// just wall-normal ones: partway up, the contact normal on the box's top
+/// edge rounds past `GROUND_NORMAL_Y`, and letting the generic ground
+/// branch have it would snap the rest of the rise in one tick — the very
+/// pop the budget exists to spread. Genuine top-of-box contacts can't be
+/// caught by mistake: `step_mount` requires the axis to be off the box.
 fn step_contact(
 	pos: Vec3,
 	out_y: f32,
 	c: Contact,
 	cell: (i32, i32, i32),
-	top: f32,
+	bx: (Vec3, Vec3),
+	budget: f32,
 	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 ) -> Contact {
-	if out_y > 0.0 || c.n.y > GROUND_NORMAL_Y {
+	if !(-MOUNT_RATE..=0.0).contains(&out_y) || !step_mount(pos, cell, bx, cell_at) {
 		return c;
 	}
-	let lift = top - (pos.y - EYE_TO_FEET);
-	if lift <= SKIN || lift > AUTO_STEP_MAX {
-		return c;
-	}
-	let (x, y, z) = cell;
-	let pinched = (1..=2).any(|k| {
-		!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
-			&& (y + k) as f32 - top < HEIGHT
-	});
-	if pinched {
-		return c;
-	}
+	let feet = pos.y - EYE_TO_FEET;
+	let top = bx.1.y.min(feet + budget.max(0.0));
 	Contact {
 		n: Vec3::Y,
-		depth: lift,
+		depth: top - feet,
 		top,
+		step: true,
 	}
 }
 
@@ -563,13 +654,20 @@ impl Player {
 						CellShape::Empty => {}
 						CellShape::Cube => {
 							// Layer y0 only — the classic rule.
-							if y == y0 {
+							let (lo, hi) = cell_box((x, y, z));
+							if y == y0 || step_mount(self.pos, (x, y, z), (lo, hi), cell_at) {
 								return true;
 							}
 						}
 						CellShape::Boxes(bs) => {
 							for b in bs {
 								let (lo, hi) = b.aabb((x, y, z));
+								// Mid-mount the foot is already on the step,
+								// so ground rules apply — otherwise a mount
+								// spends its ticks under air control.
+								if step_mount(self.pos, (x, y, z), (lo, hi), cell_at) {
+									return true;
+								}
 								// The box top must sit at the feet, and its
 								// own footprint must reach the axis.
 								if (hi.y - feet).abs() <= GROUND_EPS {
@@ -582,9 +680,10 @@ impl Player {
 							}
 						}
 						CellShape::Ramp { facing, .. } => {
-							let top = ramp_top(self.pos, (x, y, z), facing);
-							if (top - feet).abs() <= RAMP_SNAP_DOWN {
-								return true;
+							if let Some(top) = ramp_top(self.pos, (x, y, z), facing) {
+								if (top - feet).abs() <= RAMP_SNAP_DOWN {
+									return true;
+								}
 							}
 						}
 					}
@@ -608,8 +707,14 @@ impl Player {
 	/// than the snap band (the tall/back side) they fall back to their
 	/// sub-boxes and block like walls. `dry` gates the downhill glue so
 	/// swimming over submerged stairs doesn't stick.
-	fn resolve(&mut self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>, dry: bool) {
+	///
+	/// An auto-step is the same kind of contact, so it gets the same kind
+	/// of motion: the tick's mount budget ([`MOUNT_RATE`]) is spent across
+	/// iterations, capping how far a step may lift in one tick to what a
+	/// stair's slope would have given.
+	fn resolve(&mut self, dt: f32, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>, dry: bool) {
 		let feet = |pos: Vec3| pos.y - EYE_TO_FEET;
+		let mut step_budget = MOUNT_RATE * dt;
 		for _ in 0..RESOLVE_ITERS {
 			let support = ramp_support(self.pos, cell_at);
 			let mut best: Option<Contact> = None;
@@ -634,7 +739,8 @@ impl Player {
 										self.out.y,
 										c,
 										(x, y, z),
-										hi.y,
+										(lo, hi),
+										step_budget,
 										cell_at,
 									);
 									push(&mut best, c);
@@ -649,7 +755,8 @@ impl Player {
 											self.out.y,
 											c,
 											(x, y, z),
-											hi.y,
+											(lo, hi),
+											step_budget,
 											cell_at,
 										);
 										push(&mut best, c);
@@ -657,7 +764,13 @@ impl Player {
 								}
 							}
 							CellShape::Ramp { facing, boxes } => {
-								let top = ramp_top(self.pos, (x, y, z), facing);
+								let support = ramp_top(self.pos, (x, y, z), facing);
+								// Below the ramp's low edge nothing is
+								// underfoot, but the cell's geometry must
+								// still block from below — gate on the
+								// cell floor, which is where the diagonal
+								// starts.
+								let top = support.unwrap_or(y as f32);
 								let lift = top - feet(self.pos);
 								// Pinched: solid cells above leave less
 								// than capsule height over the ramp here —
@@ -676,9 +789,9 @@ impl Player {
 											push(&mut best, c);
 										}
 									}
-								} else if self.out.y <= 0.0
-									&& lift > SKIN && xz_rect_dist2(self.pos, x, z)
-									< RADIUS * RADIUS
+								} else if support.is_some()
+									&& self.out.y <= 0.0 && lift > SKIN
+									&& xz_rect_dist2(self.pos, x, z) < RADIUS * RADIUS
 								{
 									push(
 										&mut best,
@@ -686,6 +799,10 @@ impl Player {
 											n: Vec3::Y,
 											depth: lift,
 											top,
+											// The ramp's own slope never
+											// asks for more than the mount
+											// budget, so it never spends it.
+											step: false,
 										},
 									);
 								}
@@ -699,6 +816,9 @@ impl Player {
 				break;
 			}
 			if c.n.y > GROUND_NORMAL_Y && self.out.y <= 0.0 {
+				if c.step {
+					step_budget -= c.top - feet(self.pos);
+				}
 				self.pos.y = c.top + EYE_TO_FEET;
 				self.out.y = 0.0;
 			} else {
@@ -713,6 +833,13 @@ impl Player {
 		// centimeters above it each tick (no penetration → no contact).
 		// Snap back down within RAMP_SNAP_DOWN so descent hugs the
 		// surface instead of stuttering into micro-falls.
+		//
+		// It glues to the HIGHEST ramp surface under the footprint, and
+		// only when that is genuinely below the feet. Taking the highest
+		// merely within the band instead let the step just walked off —
+		// whose surface clamps to its own top back edge, the FLOOR of the
+		// step now underfoot — drag the feet back down for a tick every
+		// time an ascent crossed a step boundary.
 		if dry && self.out.y <= 0.0 {
 			let f = feet(self.pos);
 			let fy = f.floor() as i32;
@@ -726,17 +853,16 @@ impl Player {
 						if xz_rect_dist2(self.pos, x, z) >= RADIUS * RADIUS {
 							continue;
 						}
-						let top = ramp_top(self.pos, (x, y, z), facing);
-						let lift = top - f;
-						if (-RAMP_SNAP_DOWN..0.0).contains(&lift)
-							&& best_top.is_none_or(|b| top > b)
-						{
+						let Some(top) = ramp_top(self.pos, (x, y, z), facing) else {
+							continue;
+						};
+						if top - f >= -RAMP_SNAP_DOWN && best_top.is_none_or(|b| top > b) {
 							best_top = Some(top);
 						}
 					}
 				}
 			}
-			if let Some(top) = best_top {
+			if let Some(top) = best_top.filter(|t| *t < f) {
 				self.pos.y = top + EYE_TO_FEET;
 				self.out.y = 0.0;
 			}
@@ -849,7 +975,7 @@ impl Player {
 
 		debug_assert!((self.out * dt).length() < 1.0, "tunneling guard");
 		self.pos += self.out * dt;
-		self.resolve(cell_at, sub < SWIM_THRESHOLD);
+		self.resolve(dt, cell_at, sub < SWIM_THRESHOLD);
 	}
 }
 
@@ -859,6 +985,15 @@ impl Player {
 /// resolver is happy with is NEVER "inside solid": standing on a stair
 /// tread puts the feet inside the stair's unit CELL, but not inside its
 /// geometry.
+///
+/// Two mount windows are deliberately not solid, both mirrored from the
+/// resolver: the ramp run-out, and an auto-step in progress
+/// ([`step_mount`]) — a rate-limited step spends a few ticks with the
+/// capsule inside the side of the box it is climbing. Both are bounded
+/// by the same gates the resolver uses (a rise within [`AUTO_STEP_MAX`],
+/// headroom above), so the allowance a dishonest claim buys is clipping
+/// into the top third of something it could legally be standing on a few
+/// ticks later.
 pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
 	let feet = pos.y - EYE_TO_FEET;
@@ -876,10 +1011,12 @@ pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>)
 						// Ramp run-out: mid-mount the bottom sphere grazes
 						// the landing cube's corner — the resolver exempts
 						// it, so the probe must too.
-						if runout_exempt(pos, support, (x, y, z), cell_at) {
+						let (lo, hi) = cell_box((x, y, z));
+						if runout_exempt(pos, support, (x, y, z), cell_at)
+							|| step_mount(pos, (x, y, z), (lo, hi), cell_at)
+						{
 							continue;
 						}
-						let (lo, hi) = cell_box((x, y, z));
 						if overlap_box(lo, hi) {
 							return true;
 						}
@@ -887,14 +1024,21 @@ pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>)
 					CellShape::Boxes(bs) => {
 						for b in bs {
 							let (lo, hi) = b.aabb((x, y, z));
+							if step_mount(pos, (x, y, z), (lo, hi), cell_at) {
+								continue;
+							}
 							if overlap_box(lo, hi) {
 								return true;
 							}
 						}
 					}
 					CellShape::Ramp { facing, boxes } => {
-						let top = ramp_top(pos, (x, y, z), facing);
-						let lift = top - feet;
+						// Mirrors the resolver's gate exactly, `None` and
+						// all: below the low front edge the cell carries
+						// nothing, so feet under its floor are on the step
+						// behind — not buried in this one.
+						let support = ramp_top(pos, (x, y, z), facing);
+						let lift = support.unwrap_or(y as f32) - feet;
 						if lift > RAMP_SNAP_MAX {
 							for b in boxes {
 								let (lo, hi) = b.aabb((x, y, z));
@@ -902,7 +1046,9 @@ pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>)
 									return true;
 								}
 							}
-						} else if lift > SKIN_PROBE && xz_rect_dist2(pos, x, z) < r2 {
+						} else if support.is_some()
+							&& lift > SKIN_PROBE && xz_rect_dist2(pos, x, z) < r2
+						{
 							// Feet below the ramp band (beyond probe skin):
 							// buried in the ramp, not resting on it.
 							return true;
@@ -1516,6 +1662,101 @@ mod tests {
 	use crate::chunk::make_cell;
 	use crate::shapes::{door_state, slab_state, stair_state, Facing};
 
+	/// A built four-step +x flight: each stair rests on a stone riser, a
+	/// flush platform (top y=14) beyond. This is what a staircase a player
+	/// actually builds looks like; `flight_world` is the floating variant.
+	fn built_flight(x: i32, y: i32, z: i32) -> Option<u16> {
+		let _ = z;
+		if y < 10 {
+			return some_cell(BlockType::Dirt);
+		}
+		let step = x - 12; // stair at y = 10 + step, riser fill below it
+		if (0..=3).contains(&step) {
+			if y == 10 + step {
+				return Some(make_cell(BlockType::WoodStairs, stair_state(Facing::PosX)));
+			}
+			if y < 10 + step {
+				return some_cell(BlockType::Stone);
+			}
+		}
+		if x >= 16 && y <= 13 {
+			return some_cell(BlockType::Stone);
+		}
+		some_cell(BlockType::Air)
+	}
+
+	/// The per-tick rise a 4 b/s walk covers on a 45° ramp.
+	const RAMP_DY: f32 = 4.0 * TICK;
+
+	/// Walking a flight is ONE continuous climb, not a series of hops: the
+	/// feet move at the rate the ramp under them carries the walk, every
+	/// tick, in both directions — never faster, and never backwards.
+	/// Ascent failed both halves before SIM v10: merely brushing the next
+	/// step's cell popped the feet a third of a block early (5× the
+	/// honest per-tick rise), then the downhill glue clawed them back onto
+	/// the step below. Held for both flight styles — risers under the
+	/// treads, and the floating diagonal.
+	#[test]
+	fn stair_flight_climbs_at_a_constant_rate() {
+		for (name, world) in [
+			(
+				"built",
+				&built_flight as &dyn Fn(i32, i32, i32) -> Option<u16>,
+			),
+			("floating", &flight_world),
+		] {
+			// flight_world ascends +z from z=12 to a platform at y=13;
+			// built_flight ascends +x from x=12 to one at y=14. Same walk
+			// in each one's own axis: up the flight, then back down it.
+			let along_x = name == "built";
+			let dir = if along_x { Vec3::X } else { Vec3::Z };
+			let (start, top) = if along_x {
+				(Vec3::new(10.5, 11.5, 0.5), 14.0)
+			} else {
+				(Vec3::new(0.5, 11.5, 8.5), 13.0)
+			};
+			let mut p = Player::new(start);
+			let mut prev = p.pos.y - EYE_TO_FEET;
+			// Enough ticks to cross the flight and settle, each way.
+			for (leg, axis, ticks) in [("up", 1.0f32, 150), ("down", -1.0, 260)] {
+				let walk = PlayerIntent {
+					move_axis: Vec2::new(0.0, axis),
+					jump: false,
+				};
+				for t in 0..ticks {
+					p.tick(TICK, dir, walk, world);
+					let feet = p.pos.y - EYE_TO_FEET;
+					let dy = feet - prev;
+					prev = feet;
+					assert!(
+						dy.abs() <= RAMP_DY + 1e-4,
+						"{name} {leg}: jumped {dy} at tick {t}, pos {:?}",
+						p.pos
+					);
+					let monotone = if axis > 0.0 { dy >= -1e-4 } else { dy <= 1e-4 };
+					assert!(
+						monotone,
+						"{name} {leg}: reversed {dy} at tick {t}, {:?}",
+						p.pos
+					);
+					// Every state the resolver produces on the flight must
+					// read as clear, or the server's adoption envelope
+					// rejects the honest claim and the walk rubber-bands.
+					assert!(
+						!overlaps_solid(p.pos, world),
+						"{name} {leg}: inside geometry at tick {t}, pos {:?}",
+						p.pos
+					);
+				}
+				let want = if axis > 0.0 { top } else { 10.0 };
+				assert!(
+					(prev - want).abs() < 1e-3,
+					"{name} {leg}: ended at feet {prev}, wanted {want}"
+				);
+			}
+		}
+	}
+
 	/// Flat ground (top at y=10 surface) with a 3-stair flight ascending
 	/// +z at z=12..14 and a solid platform (top at y=13) beyond.
 	fn flight_world(_x: i32, y: i32, z: i32) -> Option<u16> {
@@ -1787,6 +2028,112 @@ mod tests {
 			(14, 10) | (15, 10) => some_cell(BlockType::Stone),
 			(15, 11) => Some(make_cell(BlockType::WoodSlab, slab_state(false))),
 			_ => some_cell(BlockType::Air),
+		}
+	}
+
+	/// A step up is the same motion as a stair: the feet rise at the
+	/// ramp rate, no faster, and the mount lands exactly as the axis
+	/// crosses onto the block. Before SIM v10 each rise was a one-tick
+	/// teleport of up to a third of a block — the jarring pop this pins
+	/// against. Every intermediate state must also pass `overlaps_solid`:
+	/// a rate-limited mount spends its ticks with the capsule inside the
+	/// side of the box it climbs, and the server's envelope probes
+	/// exactly these.
+	#[test]
+	fn slab_steps_mount_at_the_ramp_rate() {
+		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+		let forward = PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: false,
+		};
+		let mut prev = p.pos.y - EYE_TO_FEET;
+		let mut rises = 0;
+		for t in 0..300 {
+			p.tick(TICK, Vec3::X, forward, &slab_stack_world);
+			let feet = p.pos.y - EYE_TO_FEET;
+			let dy = feet - prev;
+			prev = feet;
+			if dy > 1e-4 {
+				rises += 1;
+			}
+			assert!(
+				dy <= MOUNT_RATE * TICK + 1e-4,
+				"popped {dy} at tick {t}, pos {:?}",
+				p.pos
+			);
+			assert!(dy >= -1e-3, "dipped {dy} at tick {t}, pos {:?}", p.pos);
+			assert!(
+				!overlaps_solid(p.pos, &slab_stack_world),
+				"probe agrees with the resolver at tick {t}: {:?}",
+				p.pos
+			);
+			if p.pos.x > 15.4 {
+				break;
+			}
+		}
+		assert!(p.pos.x > 15.4, "climbed the whole stack, x = {}", p.pos.x);
+		assert!(
+			(prev - (11.0 + 1.0 / 3.0)).abs() < 0.001,
+			"topped out on the raised 1/3, feet = {prev}"
+		);
+		// 1/3 + 1/3 + 1/3 + 1/3 of rise, none of it in one tick.
+		assert!(
+			rises >= 16,
+			"spread across ticks, only {rises} rising ticks"
+		);
+	}
+
+	/// The mount budget must not turn a LANDING into a slow sink: arriving
+	/// downward faster than a mount climbs keeps the flat-bottomed snap.
+	/// Dropped onto the very edge of a slab, the feet land on top of it
+	/// and never end a tick below its surface.
+	/// The mount budget must not turn a LANDING into a slow sink: arriving
+	/// downward faster than a mount climbs keeps the flat-bottomed snap.
+	/// Dropped onto the very edge of a slab — axis off the box, so the
+	/// mount gates would otherwise all pass — the feet must never end a
+	/// tick below its surface, at any drop height. The sweep matters: how
+	/// far the first contacting tick overshoots the top depends on the
+	/// phase of the fall, and only the deep overshoots exceed one tick of
+	/// mount budget.
+	#[test]
+	fn fast_fall_onto_a_slab_edge_lands_flat() {
+		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
+			let _ = z;
+			if y < 10 {
+				some_cell(BlockType::Dirt)
+			} else if (x, y) == (12, 10) {
+				Some(make_cell(BlockType::WoodSlab, slab_state(false)))
+			} else {
+				some_cell(BlockType::Air)
+			}
+		};
+		const TOP: f32 = 10.0 + 1.0 / 3.0;
+		// Resting with the axis off the edge, the bottom sphere sits on
+		// the top CORNER, so the feet settle a few mm under the surface —
+		// RADIUS − √(RADIUS² − 0.05²) ≈ 0.004. That is the honest rest
+		// height; a mount-capped landing sinks ~0.03, an order out.
+		const CORNER_REST: f32 = 0.01;
+		for i in 0..40 {
+			// Axis just off the slab's -x edge; vary the drop phase.
+			let h = 14.5 + i as f32 * 0.05;
+			let mut p = Player::new(Vec3::new(11.95, h, 0.5));
+			let mut landed = false;
+			for t in 0..200 {
+				p.tick(TICK, Vec3::X, PlayerIntent::default(), &world);
+				let feet = p.pos.y - EYE_TO_FEET;
+				landed |= p.state().vel.y == 0.0;
+				if landed {
+					assert!(
+						feet >= TOP - CORNER_REST,
+						"drop {h}: sank to {feet} at tick {t} instead of landing on {TOP}"
+					);
+				}
+				assert!(
+					!overlaps_solid(p.pos, &world),
+					"drop {h}: solid at tick {t}"
+				);
+			}
+			assert!(landed, "drop {h}: never landed");
 		}
 	}
 
@@ -2240,7 +2587,7 @@ mod golden {
 		// glued descent all feed these bits.
 		assert_eq!(
 			(s.pos.to_array(), s.vel.to_array()),
-			([0.5f32, 11.5, 7.7544203], [0.0f32, 0.0, -4.0]),
+			([0.5f32, 11.5, 7.969425], [0.0f32, 0.0, -4.0]),
 			"stair behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 		);
 	}
