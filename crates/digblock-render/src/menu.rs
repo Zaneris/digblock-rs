@@ -1452,9 +1452,9 @@ impl MenuView {
 		dl.quad(
 			Layer::Content,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			widgets::scaled_dim(theme::MENU_DIM, daylight),
+			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		widgets::panel(dl, Layer::Content, self.panel.into(), theme::MENU_PANEL_BG);
+		widgets::panel(dl, Layer::Content, self.panel.into(), theme::PANEL_BG);
 		for row in &self.rows {
 			widgets::row(
 				dl,

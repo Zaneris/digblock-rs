@@ -194,6 +194,9 @@ fn main() {
 	// The menu is for interactive runs only; --join must not sit on a
 	// menu screen either.
 	config.menu = !join && interactive;
+	// ...except for a DIG_SCREEN=menu capture, whose whole point is to
+	// photograph the menu a screenshot run would otherwise suppress.
+	config.menu |= config.debug_screen == Some(digblock_render::DebugScreen::Menu);
 
 	// Audio rides interactive runs only (the engine's sink stays None
 	// elsewhere).

@@ -9,7 +9,9 @@ use super::{scale, Rect};
 // Shared palette (0xAABBGGRR, matching overlay.rs).
 pub const WHITE: u32 = 0xFFFFFFFF;
 pub const DIM: u32 = 0xFFB0B0B0;
-pub const SLOT_BG: u32 = 0x90000000;
+/// Slot/button fill — [`super::theme::FILL_BG`], named for its most
+/// common use.
+pub const SLOT_BG: u32 = super::theme::FILL_BG;
 /// Keyboard/hover highlight fill, shared by menu rows and buttons.
 pub const ROW_HILIGHT: u32 = 0x60FFFFFF;
 const SEL_BORDER: u32 = 0xE0FFFFFF;

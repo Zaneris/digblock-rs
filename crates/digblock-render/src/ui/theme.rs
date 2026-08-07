@@ -18,16 +18,27 @@
 
 use super::scale;
 
-/// Panel backdrop for the in-game screens (inventory, alchemy), which
-/// sit over a still-visible world.
+/// Panel backdrop. Every screen's panel, menu included: the two used to
+/// differ (`0xC0101010` on the in-game screens, `0x90000000` on the
+/// menu) under separate `PANEL_BG` constants, and the mismatch showed as
+/// a visibly different transparency when you tabbed between them. The
+/// alpha is the one that reads better under text, and the 6%-grey lift
+/// is what keeps [`FILL_BG`] slots and buttons distinguishable from the
+/// panel they sit on.
 pub const PANEL_BG: u32 = 0xC0101010;
-/// Full-screen dim those screens lay under their panel. Faded by the
-/// world's own darkness through [`super::widgets::scaled_dim`].
-pub const SCREEN_DIM: u32 = 0x70000000;
-/// The startup/pause menu owns the screen rather than overlaying play,
-/// so it dims harder — and its panel is correspondingly lighter.
-pub const MENU_DIM: u32 = 0xA0000000;
-pub const MENU_PANEL_BG: u32 = 0x90000000;
+
+/// Full-screen dim laid under a panel, so the screen behind it recedes.
+/// Faded by the world's own darkness through
+/// [`super::widgets::scaled_dim`], and — like [`PANEL_BG`] — the same on
+/// every screen; the menu used to dim to `0xA0` and the in-game screens
+/// to `0x70`.
+pub const SCREEN_DIM: u32 = 0xA0000000;
+
+/// The standard translucent fill: item slots, buttons, and the HUD's
+/// backdrops behind loose text (chat lines, the debug panel). Lighter
+/// than [`PANEL_BG`] on purpose — it is meant to sit *on* a panel and
+/// still be visible.
+pub const FILL_BG: u32 = 0x90000000;
 
 /// Inset between a panel's backdrop edge and its content box.
 pub const PAD: f32 = 12.0;

@@ -20,6 +20,9 @@ use crate::ui::screens::inventory::InvAction;
 /// A UI screen [`EngineConfig::debug_screen`] can open at startup.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DebugScreen {
+	/// The startup menu. Needs `menu: true` as well, which the launcher
+	/// forces — captures otherwise run menu-less on purpose.
+	Menu,
 	Inventory,
 	Alchemy,
 }
@@ -29,6 +32,7 @@ impl DebugScreen {
 	/// rather than an error: this is a dev knob, not a wire format.
 	pub fn parse(s: &str) -> Option<Self> {
 		match s.trim().to_ascii_lowercase().as_str() {
+			"menu" => Some(Self::Menu),
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
 			_ => None,
@@ -814,6 +818,8 @@ impl Engine {
 				&mut engine.inv_grid,
 			);
 			match screen {
+				// The menu opens itself when `config.menu` is set.
+				DebugScreen::Menu => {}
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy => engine.alch_screen.open(),
 			}

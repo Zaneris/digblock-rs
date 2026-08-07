@@ -99,7 +99,9 @@ const DIM: u32 = 0xFFB0B0B0;
 const GREEN: u32 = 0xFF40E070;
 const YELLOW: u32 = 0xFF30D0F0;
 const RED: u32 = 0xFF4040F0;
-const BG: u32 = 0x90000000;
+/// Backdrop behind loose HUD text (chat lines, the debug panel) — the
+/// same fill the UI framework puts behind slots and buttons.
+const BG: u32 = crate::ui::theme::FILL_BG;
 const REF_LINE: u32 = 0x80FFFFFF;
 
 /// Debug panel worst case ≈ 500 quads; a long menu server list adds ~60
