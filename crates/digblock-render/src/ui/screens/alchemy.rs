@@ -31,15 +31,31 @@ const SCREEN_DIM: u32 = 0x70000000;
 
 // Layout bases (logical px × ui scale). ROW_H fits ROW_ICON with room;
 // the button sits inside the row.
-const ROW_H: f32 = 40.0;
-const ROW_ICON: f32 = 32.0;
+const ROW_H: f32 = 46.0;
+/// Vertical breathing room between adjacent action rows.
+const ROW_GAP: f32 = 6.0;
+const ROW_ICON: f32 = 36.0;
 const BTN_W: f32 = 152.0;
-const BTN_H: f32 = 32.0;
-const PAD: f32 = 12.0;
+const BTN_H: f32 = 34.0;
+const PAD: f32 = 20.0;
 const GAP_ABOVE_BAR: f32 = 24.0;
-const HDR_GAP: f32 = 8.0;
-const ICON_TEXT_GAP: f32 = 8.0;
-const TEXT_BTN_GAP: f32 = 16.0;
+const HDR_GAP: f32 = 14.0;
+/// Leading under the title, which is drawn at [`TITLE_SCALE`] × body.
+const TITLE_GAP: f32 = 20.0;
+const TITLE_SCALE: f32 = 1.35;
+/// A [`Row::Space`]'s height — separates the screen's sections.
+const SECTION_GAP: f32 = 18.0;
+const ICON_TEXT_GAP: f32 = 12.0;
+const TEXT_BTN_GAP: f32 = 28.0;
+/// The panel never shrinks below this, so the short-inventory case reads
+/// as a panel instead of a narrow column (the menu does the same with
+/// its `min_panel_w`).
+const MIN_PANEL_W: f32 = 460.0;
+/// Clearance kept above the panel when the fit pass has to shrink it.
+const TOP_MARGIN: f32 = 12.0;
+/// The fit pass will not shrink text below this; past here the window is
+/// simply too short and the panel is allowed to be tight.
+const MIN_GLYPH_PX: f32 = 10.0;
 
 /// The screen's per-frame view of the inventory, built by the engine
 /// from the same `Inventory` the actions will be validated against.
@@ -74,6 +90,9 @@ impl AlchView {
 /// One row of the screen, shared by the measure and emit passes.
 enum Row {
 	Title,
+	/// A blank [`SECTION_GAP`] between sections. A row rather than an ad
+	/// hoc `y +=` so the measure pass can't forget it.
+	Space,
 	/// Section headers, readouts, and hints — one dim text line.
 	Header(String),
 	Convert {
@@ -88,6 +107,51 @@ enum Row {
 		mat: &'static str,
 		ok: bool,
 	},
+}
+
+/// The text a row draws — the one place the measure and emit passes
+/// agree on what a row says.
+fn row_text(row: &Row) -> String {
+	match row {
+		Row::Space => String::new(),
+		Row::Title => "ALCHEMY".into(),
+		Row::Header(t) => t.clone(),
+		Row::Convert { count, .. } => format!("{count}"),
+		Row::Craft { cost, mat, .. } => format!("{cost} {mat}"),
+	}
+}
+
+fn title_px(glyph: f32) -> f32 {
+	(glyph * TITLE_SCALE).round()
+}
+
+/// Extent of the row stream at `style`: widest row, summed heights. Run
+/// twice — once to decide whether the panel fits, once at the fitted
+/// scale — so it stays a pure function of (rows, style).
+fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
+	let (s, glyph) = (style.scale, style.glyph);
+	let (mut width, mut height) = (0.0f32, 0.0f32);
+	for row in rows {
+		let (w, h) = match row {
+			Row::Space => (0.0, SECTION_GAP * s),
+			Row::Title => {
+				let px = title_px(glyph);
+				(
+					crate::font::ui().measure(&row_text(row), px),
+					px + TITLE_GAP * s,
+				)
+			}
+			Row::Header(_) => (style.measure(&row_text(row)), glyph + HDR_GAP * s),
+			Row::Convert { .. } | Row::Craft { .. } => (
+				(ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
+					+ style.measure(&row_text(row)),
+				(ROW_H + ROW_GAP) * s,
+			),
+		};
+		width = width.max(w);
+		height += h;
+	}
+	(width, height)
 }
 
 #[derive(Default)]
@@ -126,6 +190,7 @@ impl AlchScreen {
 			"WOOD {}   STONE {}",
 			view.subs[0], view.subs[1]
 		)));
+		rows.push(Row::Space);
 		rows.push(Row::Header("TRANSMUTATION".into()));
 		for (i, &item) in CRAFTABLE.iter().enumerate() {
 			let r = craft_recipe(item).expect("CRAFTABLE rows have recipes");
@@ -140,6 +205,7 @@ impl AlchScreen {
 				ok: view.affordable(i),
 			});
 		}
+		rows.push(Row::Space);
 		rows.push(Row::Header("CLICK = 1   SHIFT-CLICK = 10".into()));
 		rows
 	}
@@ -153,42 +219,44 @@ impl AlchScreen {
 	/// backdrop.
 	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
 		let s = ui.style.scale;
-		let glyph = ui.style.glyph;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(SCREEN_DIM, daylight),
 		);
 		let rows = Self::rows(view);
-		let pad = PAD * s;
-		let text_of = |row: &Row| -> String {
-			match row {
-				Row::Title => "ALCHEMY".into(),
-				Row::Header(t) => t.clone(),
-				Row::Convert { count, .. } => format!("{count}"),
-				Row::Craft { cost, mat, .. } => format!("{cost} {mat}"),
-			}
-		};
-		// Measure: widest row and summed advances.
-		let (mut width, mut height) = (0.0f32, 0.0f32);
-		for row in &rows {
-			let text_w = ui.style.measure(&text_of(row));
-			let (w, h) = match row {
-				Row::Title | Row::Header(_) => (text_w, glyph + HDR_GAP * s),
-				Row::Convert { .. } | Row::Craft { .. } => (
-					(ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s + text_w,
-					ROW_H * s,
-				),
-			};
-			width = width.max(w);
-			height += h;
-		}
-		let panel_w = (width + 2.0 * pad).min(size.0 as f32 - 2.0 * pad);
-		let panel_h = height + 2.0 * pad;
+		// The hotbar keeps the window's own scale — only the panel shrinks
+		// — so its top is measured before any fit adjustment.
 		let bar_top = hud::row_grid(size, s).origin.1;
+
+		// Fit pass: measure at the requested scale, and if the panel would
+		// run past the hotbar (a short window, or a large interface scale),
+		// shrink the whole layout until it fits. Without this the panel
+		// silently slides under the bar and off the bottom of the screen —
+		// it is only the panel's TOP that was ever clamped.
+		let budget = bar_top - (GAP_ABOVE_BAR + TOP_MARGIN) * s;
+		let needed = measure_rows(&rows, &ui.style).1 + 2.0 * PAD * s;
+		let restore = ui.style;
+		if needed > budget && budget > 0.0 {
+			let fit = budget / needed;
+			ui.style = Style {
+				scale: ui.style.scale * fit,
+				glyph: (ui.style.glyph * fit).max(MIN_GLYPH_PX),
+				..ui.style
+			};
+		}
+		let (s, glyph) = (ui.style.scale, ui.style.glyph);
+		let title_px = title_px(glyph);
+		let pad = PAD * s;
+
+		let (width, height) = measure_rows(&rows, &ui.style);
+		let panel_w = (width + 2.0 * pad)
+			.max(MIN_PANEL_W * s)
+			.min(size.0 as f32 - 2.0 * pad);
+		let panel_h = height + 2.0 * pad;
 		let panel = Rect::new(
 			(size.0 as f32 - panel_w) / 2.0,
-			(bar_top - GAP_ABOVE_BAR * s - panel_h).max(pad),
+			(bar_top - GAP_ABOVE_BAR * restore.scale - panel_h).max(TOP_MARGIN * restore.scale),
 			panel_w,
 			panel_h,
 		);
@@ -199,11 +267,12 @@ impl AlchScreen {
 		let mut y = panel.y + pad;
 		let (cx, cy) = self.cursor;
 		for row in &rows {
-			let text = text_of(row);
+			let text = row_text(row);
 			match *row {
+				Row::Space => y += SECTION_GAP * s,
 				Row::Title => {
-					widgets::label(ui.dl, Layer::Content, x, y, glyph, WHITE, &text);
-					y += glyph + HDR_GAP * s;
+					widgets::label(ui.dl, Layer::Content, x, y, title_px, WHITE, &text);
+					y += title_px + TITLE_GAP * s;
 				}
 				Row::Header(_) => {
 					widgets::label(ui.dl, Layer::Content, x, y, glyph, DIM, &text);
@@ -253,10 +322,11 @@ impl AlchScreen {
 						BTN_H * s,
 					);
 					widgets::button(ui, id, btn, btn_text, actionable, btn.contains(cx, cy));
-					y += ROW_H * s;
+					y += (ROW_H + ROW_GAP) * s;
 				}
 			}
 		}
+		ui.style = restore;
 	}
 
 	/// Feed one input event; returns the action the engine should apply
@@ -469,6 +539,25 @@ mod tests {
 		let bar_top = hud::row_grid(SIZE, 1.0).origin.1;
 		assert!(
 			panel.y + panel.h <= bar_top - GAP_ABOVE_BAR + 0.5,
+			"panel bottom {} vs bar top {bar_top}",
+			panel.y + panel.h
+		);
+	}
+
+	/// A short window at a large interface scale used to push the panel
+	/// straight off the bottom of the screen: only its TOP was clamped, so
+	/// tall content grew downward under the hotbar and out of the window
+	/// with no visible symptom. The fit pass shrinks the layout instead.
+	#[test]
+	fn panel_fits_a_short_window_at_a_large_interface_scale() {
+		// 1280x720 with interface scale 2.0 resolves to ~1.75 — the case
+		// that overflowed by ~200px before the fit pass existed.
+		let size = (1280, 720);
+		let panel = panel_rect(&full_inv(), size, 1.75);
+		let bar_top = hud::row_grid(size, 1.75).origin.1;
+		assert!(panel.y >= 0.0, "panel top off screen: {}", panel.y);
+		assert!(
+			panel.y + panel.h <= bar_top - GAP_ABOVE_BAR * 1.75 + 0.5,
 			"panel bottom {} vs bar top {bar_top}",
 			panel.y + panel.h
 		);
