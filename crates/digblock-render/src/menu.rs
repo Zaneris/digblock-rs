@@ -4,7 +4,10 @@
 //! routes input here while the menu is open and renders the `MenuView`
 //! through the overlay. The world keeps running (and rendering) behind it.
 
-use crate::settings::{Settings, DRAW_MAX, DRAW_MIN, DRAW_STEP, VOL_MAX, VOL_STEP};
+use crate::settings::{
+	Settings, DRAW_MAX, DRAW_MIN, DRAW_STEP, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX,
+	VOL_STEP,
+};
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
@@ -143,6 +146,7 @@ enum Screen {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Setting {
 	DrawDist,
+	UiScale,
 	MusicVol,
 	SfxVol,
 	Ssr,
@@ -182,7 +186,8 @@ pub enum RowId {
 	RootItem(u8),
 	Server(usize),
 	Refresh,
-	/// 0..=3 the settings in screen order, 4 = Back.
+	/// `0..SETTINGS_ROWS.len()` are the settings in screen order;
+	/// [`SETTINGS_BACK`] is the Back row.
 	SettingsRow(u8),
 	/// One saved world in the Singleplayer list.
 	World(usize),
@@ -582,6 +587,11 @@ impl Menu {
 				let v = (st.draw_dist + dir * DRAW_STEP).clamp(DRAW_MIN, DRAW_MAX);
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
+			Setting::UiScale => {
+				let v =
+					(st.ui_scale + dir as f32 * UI_SCALE_STEP).clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+				(std::mem::replace(&mut st.ui_scale, v) - v).abs() > f32::EPSILON
+			}
 			Setting::MusicVol => {
 				let v = snap_vol(st.music_vol, dir);
 				(std::mem::replace(&mut st.music_vol, v) - v).abs() > f32::EPSILON
@@ -610,6 +620,12 @@ impl Menu {
 						.clamp(0, DRAW_MAX - DRAW_MIN);
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
+			Setting::UiScale => {
+				let span = UI_SCALE_MAX - UI_SCALE_MIN;
+				let v = UI_SCALE_MIN + (frac * span / UI_SCALE_STEP).round() * UI_SCALE_STEP;
+				let v = v.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+				(std::mem::replace(&mut st.ui_scale, v) - v).abs() > f32::EPSILON
+			}
 			Setting::MusicVol => {
 				let v = (frac * VOL_MAX / VOL_STEP).round() * VOL_STEP;
 				(std::mem::replace(&mut st.music_vol, v) - v).abs() > f32::EPSILON
@@ -625,19 +641,21 @@ impl Menu {
 	}
 
 	fn handle_text(&mut self, ch: char) {
-		use digblock_net::protocol::{is_name_char, MAX_DISPLAY_NAME};
+		use digblock_net::protocol::{is_name_char, is_text_char, MAX_DISPLAY_NAME};
 		match &mut self.screen {
 			Some(Screen::Browser(b)) => {
 				b.status = None;
 				// Invalid characters (spaces, punctuation, non-ASCII) are
-				// untypeable rather than rejected later.
+				// untypeable rather than rejected later. Display names are
+				// deliberately narrower than chat — see is_name_char.
 				if self.name.chars().count() < MAX_DISPLAY_NAME && is_name_char(ch) {
 					self.name.push(ch);
 				}
 			}
-			// World names: same untypeable-invalid-chars property, own cap.
+			// World names never leave this machine, so they get the full
+			// text alphabet; same untypeable-invalid-chars property, own cap.
 			Some(Screen::CreateWorld { name, .. }) => {
-				if name.chars().count() < WORLD_NAME_MAX && is_name_char(ch) {
+				if name.chars().count() < WORLD_NAME_MAX && is_text_char(ch) {
 					name.push(ch);
 				}
 			}
@@ -857,7 +875,7 @@ impl Menu {
 				for (i, s) in SETTINGS_ROWS.iter().enumerate() {
 					acts.push((RowId::SettingsRow(i as u8), Act::SettingRow(*s)));
 				}
-				acts.push((RowId::SettingsRow(4), Act::CloseSettings));
+				acts.push((RowId::SettingsRow(SETTINGS_BACK), Act::CloseSettings));
 			}
 			Some(Screen::Worlds(w)) => {
 				for i in 0..w.rows.len() {
@@ -1024,6 +1042,15 @@ impl Menu {
 					&mut y,
 					RowSpec::slider(
 						RowId::SettingsRow(1),
+						format!("Interface Scale: {:.0}%", st.ui_scale * 100.0),
+						(st.ui_scale - UI_SCALE_MIN) / (UI_SCALE_MAX - UI_SCALE_MIN),
+					),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::slider(
+						RowId::SettingsRow(2),
 						format!("Music Volume: {:.0}%", st.music_vol * 100.0),
 						st.music_vol / VOL_MAX,
 					),
@@ -1032,7 +1059,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(2),
+						RowId::SettingsRow(3),
 						format!("SFX Volume: {:.0}%", st.sfx_vol * 100.0),
 						st.sfx_vol / VOL_MAX,
 					),
@@ -1041,7 +1068,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::item(
-						RowId::SettingsRow(3),
+						RowId::SettingsRow(4),
 						if st.ssr {
 							"Water Reflections: On"
 						} else {
@@ -1053,7 +1080,7 @@ impl Menu {
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::item(RowId::SettingsRow(4), "Back"),
+					RowSpec::item(RowId::SettingsRow(SETTINGS_BACK), "Back"),
 				);
 				push(
 					&mut specs,
@@ -1069,11 +1096,10 @@ impl Menu {
 			}
 			Some(Screen::Browser(b)) => {
 				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
-				let caret = if blink { "_" } else { " " };
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::field(format!("name: {}{caret}", self.name)),
+					RowSpec::field(None, format!("name: {}", self.name), blink),
 				);
 				y += row_h * 0.25;
 				if b.fetching && b.rows.is_empty() {
@@ -1100,14 +1126,15 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec {
-							id: Some(RowId::Server(i)),
-							text: format!(
-								"{}  {}/{}",
-								row.entry.name, row.entry.players, row.entry.max_players
-							),
 							right: Some((ping, color)),
-							bar: None,
-							color: C_WHITE,
+							..RowSpec::new(
+								Some(RowId::Server(i)),
+								format!(
+									"{}  {}/{}",
+									row.entry.name, row.entry.players, row.entry.max_players
+								),
+								C_WHITE,
+							)
 						},
 					);
 				}
@@ -1139,14 +1166,15 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec {
-							id: Some(RowId::World(i)),
-							text: row.name.clone(),
 							right: Some((
 								row.detail.clone(),
 								if row.compatible { C_DIM } else { C_RED },
 							)),
-							bar: None,
-							color: if row.compatible { C_WHITE } else { C_DIM },
+							..RowSpec::new(
+								Some(RowId::World(i)),
+								row.name.clone(),
+								if row.compatible { C_WHITE } else { C_DIM },
+							)
 						},
 					);
 				}
@@ -1164,17 +1192,10 @@ impl Menu {
 			Some(Screen::CreateWorld { name, .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("NEW WORLD"));
 				y += row_h * 0.5;
-				let caret = if blink { "_" } else { " " };
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec {
-						id: Some(RowId::CreateWorld),
-						text: format!("name: {name}{caret}"),
-						right: None,
-						bar: None,
-						color: C_WHITE,
-					},
+					RowSpec::field(Some(RowId::CreateWorld), format!("name: {name}"), blink),
 				);
 				y += row_h * 0.25;
 				push(
@@ -1235,16 +1256,24 @@ impl Menu {
 		// column or slider bar) fits with the overlay's own padding,
 		// clamped to the window; min_panel_w keeps short screens from
 		// looking cramped.
-		let text_w = |s: &str| s.len() as f32 * glyph;
+		// Must match what widgets::row actually draws — see
+		// `panel_fits_every_row`, which re-derives this independently.
+		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let content_w = specs
 			.iter()
 			.map(|(spec, _)| {
 				pad_x * 2.0
 					+ text_w(&spec.text)
-					+ spec
-						.right
-						.as_ref()
-						.map_or(0.0, |(right, _)| col_gap + text_w(right))
+					// Reserved whether or not the caret is lit this frame,
+					// so the panel doesn't breathe with the blink.
+					+ if spec.caret {
+						crate::ui::widgets::caret_w(glyph)
+					} else {
+						0.0
+					} + spec
+					.right
+					.as_ref()
+					.map_or(0.0, |(right, _)| col_gap + text_w(right))
 					+ spec
 						.bar
 						.map_or(0.0, |_| col_gap + crate::ui::widgets::SLIDER_BAR_W * scale)
@@ -1263,6 +1292,7 @@ impl Menu {
 				right: spec.right,
 				bar: spec.bar,
 				color: spec.color,
+				caret: spec.caret,
 			})
 			.collect();
 
@@ -1290,8 +1320,14 @@ const C_YELLOW: u32 = 0xFF30D0F0;
 const C_RED: u32 = 0xFF4040F0;
 
 /// Settings-screen row order (indices match `RowId::SettingsRow`).
-const SETTINGS_ROWS: [Setting; 4] = [
+/// Row index of the Settings screen's Back row: always one past the
+/// adjustable rows. Derived, never a literal — adding a setting used to
+/// mean remembering to bump it in two places or Back stopped clicking.
+const SETTINGS_BACK: u8 = SETTINGS_ROWS.len() as u8;
+
+const SETTINGS_ROWS: [Setting; 5] = [
 	Setting::DrawDist,
+	Setting::UiScale,
 	Setting::MusicVol,
 	Setting::SfxVol,
 	Setting::Ssr,
@@ -1317,72 +1353,55 @@ struct RowSpec {
 	/// Slider fill fraction 0..=1; Some = render a bar on this row.
 	bar: Option<f32>,
 	color: u32,
+	/// Text-entry caret at the end of `text`, drawn as a quad. NOT a
+	/// character in the string: `_` and ` ` have different widths in a
+	/// proportional font, so blinking one in and out would resize the
+	/// panel (sized to its widest row) twice a second.
+	caret: bool,
 }
 
 impl RowSpec {
-	fn title(t: &str) -> Self {
+	fn new(id: Option<RowId>, text: String, color: u32) -> Self {
 		Self {
-			id: None,
-			text: t.into(),
+			id,
+			text,
 			right: None,
 			bar: None,
-			color: C_WHITE,
+			color,
+			caret: false,
 		}
 	}
+	fn title(t: &str) -> Self {
+		Self::new(None, t.into(), C_WHITE)
+	}
 	fn item(id: RowId, t: &str) -> Self {
-		Self {
-			id: Some(id),
-			text: t.into(),
-			right: None,
-			bar: None,
-			color: C_WHITE,
-		}
+		Self::new(Some(id), t.into(), C_WHITE)
 	}
 	/// An item with a right-aligned dim keyboard hint ("I", "H", ...).
 	fn item_hint(id: RowId, t: &str, hint: &str) -> Self {
 		Self {
-			id: Some(id),
-			text: t.into(),
 			right: Some((hint.into(), C_DIM)),
-			bar: None,
-			color: C_WHITE,
+			..Self::new(Some(id), t.into(), C_WHITE)
 		}
 	}
 	fn slider(id: RowId, t: String, frac: f32) -> Self {
 		Self {
-			id: Some(id),
-			text: t,
-			right: None,
 			bar: Some(frac.clamp(0.0, 1.0)),
-			color: C_WHITE,
+			..Self::new(Some(id), t, C_WHITE)
 		}
 	}
-	fn field(t: String) -> Self {
+	/// A text-entry row. `caret` is the blink phase.
+	fn field(id: Option<RowId>, t: String, caret: bool) -> Self {
 		Self {
-			id: None,
-			text: t,
-			right: None,
-			bar: None,
-			color: C_WHITE,
+			caret,
+			..Self::new(id, t, C_WHITE)
 		}
 	}
 	fn status(t: String) -> Self {
-		Self {
-			id: None,
-			text: t,
-			right: None,
-			bar: None,
-			color: C_RED,
-		}
+		Self::new(None, t, C_RED)
 	}
 	fn dim(t: impl Into<String>) -> Self {
-		Self {
-			id: None,
-			text: t.into(),
-			right: None,
-			bar: None,
-			color: C_DIM,
-		}
+		Self::new(None, t.into(), C_DIM)
 	}
 }
 
@@ -1398,6 +1417,8 @@ pub struct PlacedRow {
 	pub bar: Option<f32>,
 	pub color: u32,
 	pub highlight: bool,
+	/// Text-entry caret at the end of `text` (blink phase already applied).
+	pub caret: bool,
 }
 
 pub struct MenuView {
@@ -1441,6 +1462,7 @@ impl MenuView {
 					bar: row.bar,
 					color: row.color,
 					highlight: row.highlight,
+					caret: row.caret,
 				},
 			);
 		}
@@ -1591,10 +1613,14 @@ mod tests {
 			let [px, _, pw, _] = view.panel;
 			for row in &view.rows {
 				let [rx, _, rw, _] = row.rect;
-				let mut need = crate::ui::scale::text_pad_x(1.0) * 2.0
-					+ row.text.len() as f32 * crate::ui::scale::glyph_px(1.0);
+				let glyph = crate::ui::scale::glyph_px(1.0);
+				let w = |s: &str| crate::font::ui().measure(s, glyph);
+				let mut need = crate::ui::scale::text_pad_x(1.0) * 2.0 + w(&row.text);
+				if row.caret {
+					need += crate::ui::widgets::caret_w(glyph);
+				}
 				if let Some((right, _)) = &row.right {
-					need += right.len() as f32 * crate::ui::scale::glyph_px(1.0);
+					need += w(right);
 				}
 				if row.bar.is_some() {
 					need += crate::ui::widgets::SLIDER_BAR_W;
@@ -1955,7 +1981,15 @@ mod tests {
 		menu.handle_key(Key::Right);
 		assert!(menu.take_settings_change().is_none());
 
-		// Music volume: sel 1, 100% -> 90%, floor at 0.
+		// Interface scale: sel 1, 100% -> 75%, floored at the min.
+		menu.handle_key(Key::Down);
+		menu.handle_key(Key::Left);
+		let s = menu.take_settings_change().unwrap();
+		assert!((s.ui_scale - 0.75).abs() < 1e-4);
+		menu.handle_key(Key::Left);
+		assert!(menu.take_settings_change().is_none(), "already at the min");
+
+		// Music volume: sel 2, 100% -> 90%, floor at 0.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
@@ -1965,7 +1999,7 @@ mod tests {
 		}
 		assert_eq!(menu.take_settings_change().unwrap().music_vol, 0.0);
 
-		// SSR: sel 3, Enter toggles, Left also toggles.
+		// SSR: sel 4, Enter toggles, Left also toggles.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Enter);
@@ -1985,6 +2019,10 @@ mod tests {
 			.rows
 			.iter()
 			.any(|r| r.text.contains("Music Volume: 0%")));
+		assert!(view
+			.rows
+			.iter()
+			.any(|r| r.text.contains("Interface Scale: 75%")));
 	}
 
 	#[test]
@@ -2157,13 +2195,14 @@ mod tests {
 		let Some(Screen::CreateWorld { name, .. }) = &menu.screen else {
 			panic!("on create screen");
 		};
-		// "MyWorld" (invalid chars untypeable) + fill to the 16 cap, minus
-		// the backspace.
-		assert_eq!(name, "MyWorldabcdefgh");
+		// World names take the full text alphabet (space and punctuation
+		// included — they never leave this machine), filled to the 16 cap,
+		// minus the backspace.
+		assert_eq!(name, "My World!abcdef");
 		menu.handle_key(Key::Enter);
 		assert!(matches!(
 			menu.take_world_intents().as_slice(),
-			[WorldIntent::Create { name }] if name == "MyWorldabcdefgh"
+			[WorldIntent::Create { name }] if name == "My World!abcdef"
 		));
 		assert!(
 			matches!(&menu.screen, Some(Screen::Worlds(w)) if w.status.is_some()),

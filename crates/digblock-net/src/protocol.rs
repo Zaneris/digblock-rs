@@ -96,10 +96,52 @@ pub fn sanitize_name(name: &str) -> String {
 pub const MIN_DISPLAY_NAME: usize = 3;
 pub const MAX_DISPLAY_NAME: usize = 10;
 
-/// The display-name alphabet. ASCII-only on purpose: the client font
-/// renders 95 printable-ASCII glyphs.
+/// The display-name alphabet. ASCII-only on purpose, and NOT for want of
+/// glyphs — the client draws the whole Latin repertoire (see
+/// [`is_text_char`]). Names are mirrored as a regex in the master's
+/// /api/join backstop, so widening this means changing the validator,
+/// the master, and the desktop services filler in lockstep, then
+/// redeploying the master ahead of any server release.
 pub fn is_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+/// The free-text alphabet, shared by chat and local world names:
+/// printable ASCII, Latin-1 Supplement, Latin Extended-A, and the
+/// punctuation people paste. Covers the Western European, Nordic, Baltic
+/// and Central European languages.
+///
+/// This is the wire authority — the server sanitizes to it. The client's
+/// embedded face is required to draw every character in it
+/// (`font::ui_face_covers_the_whole_repertoire` pins that), so a
+/// player's accents can never arrive as `?`.
+const TEXT_RANGES: &[(u32, u32)] = &[
+	(0x0020, 0x007E),
+	(0x00A0, 0x00FF),
+	(0x0100, 0x017F),
+	(0x2013, 0x2014),
+	(0x2018, 0x201D),
+	(0x20AC, 0x20AC),
+];
+
+/// Holes in [`TEXT_RANGES`]. `U+00AD` is an invisible formatting
+/// character — accepting it would let someone "say" nothing at all —
+/// and `U+0149` is a deprecated letter our face doesn't carry.
+const TEXT_EXCLUDED: &[u32] = &[0x00AD, 0x0149];
+
+pub fn is_text_char(c: char) -> bool {
+	let u = c as u32;
+	!TEXT_EXCLUDED.contains(&u) && TEXT_RANGES.iter().any(|&(lo, hi)| (lo..=hi).contains(&u))
+}
+
+/// Every character in the free-text alphabet, in code point order.
+/// Client-side font coverage tests walk this.
+pub fn text_charset() -> impl Iterator<Item = char> {
+	TEXT_RANGES
+		.iter()
+		.flat_map(|&(lo, hi)| lo..=hi)
+		.filter_map(char::from_u32)
+		.filter(|&c| is_text_char(c))
 }
 
 /// Validate a display name against the 3-10 char rule. The `Err` string
@@ -112,20 +154,23 @@ pub fn validate_name(name: &str) -> Result<(), &'static str> {
 	Ok(())
 }
 
-/// Chat message cap, chars (also bytes — the text is ASCII-only).
+/// Chat message cap, in CHARS. Not bytes: accented characters are two
+/// bytes each in UTF-8, so a full line can reach ~240 bytes — still
+/// nowhere near [`MAX_FRAME`].
 pub const MAX_CHAT_LEN: usize = 120;
 
 /// Chat token bucket: sustained rate (burst [`CHAT_BURST`]).
 pub const CHAT_RATE_PER_SEC: u32 = 1;
 pub const CHAT_BURST: f32 = 3.0;
 
-/// Sanitize a chat line: keep printable ASCII only (the font has no
-/// other glyphs), truncate to [`MAX_CHAT_LEN`], trim; `None` when
-/// nothing survives (the server drops the message silently).
+/// Sanitize a chat line: keep [`is_text_char`] only (which strips every
+/// control and formatting character), truncate to [`MAX_CHAT_LEN`],
+/// trim; `None` when nothing survives (the server drops the message
+/// silently).
 pub fn sanitize_chat(text: &str) -> Option<String> {
 	let clean: String = text
 		.chars()
-		.filter(|c| matches!(c, ' '..='~'))
+		.filter(|&c| is_text_char(c))
 		.take(MAX_CHAT_LEN)
 		.collect();
 	let trimmed = clean.trim();
@@ -299,15 +344,43 @@ mod tests {
 	}
 
 	#[test]
-	fn chat_sanitizer_keeps_printable_ascii_only() {
+	fn chat_sanitizer_keeps_the_latin_repertoire() {
 		assert_eq!(sanitize_chat("hi there").as_deref(), Some("hi there"));
-		// Control chars and non-ASCII are stripped, not replaced.
-		assert_eq!(sanitize_chat("a\u{7}b\u{1F600}c").as_deref(), Some("abc"));
+		// European text survives intact — the whole point of the wider
+		// alphabet.
+		assert_eq!(
+			sanitize_chat("Grüße aus Łódź — čau!").as_deref(),
+			Some("Grüße aus Łódź — čau!")
+		);
+		// Control chars, emoji and other scripts are stripped, not
+		// replaced. So is the soft hyphen, which is invisible.
+		assert_eq!(
+			sanitize_chat("a\u{7}b\u{1F600}c\u{00AD}d").as_deref(),
+			Some("abcd")
+		);
+		assert_eq!(sanitize_chat("Ω あ").as_deref(), None);
 		// Whitespace-only collapses to nothing.
 		assert_eq!(sanitize_chat("   \t  "), None);
 		assert_eq!(sanitize_chat(""), None);
-		// Overlong input truncates to the cap (then trims).
+		// Overlong input truncates to the cap in CHARS, not bytes — an
+		// accented line is two bytes per char.
 		let long = "x".repeat(500);
-		assert_eq!(sanitize_chat(&long).unwrap().len(), MAX_CHAT_LEN);
+		assert_eq!(sanitize_chat(&long).unwrap().chars().count(), MAX_CHAT_LEN);
+		let accented = "é".repeat(500);
+		let out = sanitize_chat(&accented).unwrap();
+		assert_eq!(out.chars().count(), MAX_CHAT_LEN);
+		assert_eq!(out.len(), MAX_CHAT_LEN * 2);
+	}
+
+	#[test]
+	fn text_charset_agrees_with_its_predicate() {
+		assert!(text_charset().all(is_text_char));
+		assert!(text_charset().count() > 300);
+		// Names stay a strict subset — widening them is a cross-service
+		// change (see is_name_char).
+		assert!("abcABC019-_"
+			.chars()
+			.all(|c| is_name_char(c) && is_text_char(c)));
+		assert!(!is_name_char('é') && is_text_char('é'));
 	}
 }

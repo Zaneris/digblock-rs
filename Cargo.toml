@@ -44,6 +44,11 @@ crossbeam-channel = "0.5"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rustc-hash = "2"
+# Glyph rasterization. Default features on purpose: `simd` is cfg'd to
+# x86/x86_64 inside the crate (a no-op on wasm/aarch64), and `hashbrown`
+# is what keeps fontdue no_std. Never enable `parallel` — it pulls rayon
+# and breaks the wasm build.
+fontdue = "0.9"
 rand = "0.9"
 # std::time::Instant re-export on native, performance.now() on wasm32 —
 # the workspace-wide Instant so every crate stays wasm-clean.

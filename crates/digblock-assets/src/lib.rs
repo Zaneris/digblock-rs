@@ -87,6 +87,26 @@ pub mod sfx {
 	];
 }
 
+pub mod font {
+	//! Embedded UI typefaces: static, Latin-subset TTFs. Rasterization
+	//! happens in digblock-render (this crate stays dependency-free).
+	//! Provenance, repertoire, and the subsetting recipe are in
+	//! assets/fonts/SOURCES.md.
+	//!
+	//! Both are subset on purpose: fontdue outlines every glyph reachable
+	//! from cmap when the face is loaded, so an unsubset face would cost
+	//! tens of milliseconds and megabytes of heap at startup — on the wasm
+	//! main thread. `faces_are_small_subset_ttfs` is the guard.
+
+	/// Proportional face; draws every player-facing surface.
+	pub const UI: &[u8] = include_bytes!("../../../assets/fonts/ui.ttf");
+	/// Monospace face; draws only the debug overlay and spike log, which
+	/// align columns with printf padding and need a fixed advance.
+	pub const MONO: &[u8] = include_bytes!("../../../assets/fonts/mono.ttf");
+
+	pub const ALL: [(&str, &[u8]); 2] = [("ui.ttf", UI), ("mono.ttf", MONO)];
+}
+
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
 	// with concat! at include time: frame_common.wgsl (the Frame uniform
@@ -174,6 +194,28 @@ mod tests {
 		for (name, bytes) in super::sfx::ALL {
 			assert!(bytes.len() > 4, "{name}");
 			assert_eq!(&bytes[0..4], b"OggS", "{name}");
+		}
+	}
+
+	// The size bound is the real assertion: a stock Google face is
+	// 200 KB-900 KB and fontdue eagerly outlines all of it at load, so
+	// committing an unsubset TTF is a startup regression that nothing
+	// else would catch. Subset to the Latin repertoire, each face is
+	// ~23 KB — see assets/fonts/SOURCES.md for the exact recipe.
+	#[test]
+	fn faces_are_small_subset_ttfs() {
+		for (name, bytes) in super::font::ALL {
+			assert!(bytes.len() > 4, "{name}");
+			let magic = &bytes[0..4];
+			assert!(
+				magic == b"\x00\x01\x00\x00" || magic == b"OTTO" || magic == b"true",
+				"{name}: not a TTF/OTF (magic {magic:02x?})"
+			);
+			assert!(
+				bytes.len() < 64_000,
+				"{name}: {} bytes — did this get committed unsubset?",
+				bytes.len()
+			);
 		}
 	}
 }

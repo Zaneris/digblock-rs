@@ -1,4 +1,5 @@
 use digblock_platform::RunOptions;
+use digblock_render::settings::{UI_SCALE_MAX, UI_SCALE_MIN};
 use digblock_render::{Engine, EngineConfig};
 
 mod audio;
@@ -52,6 +53,7 @@ fn main() {
 	// beat the platform defaults — resolved after the parse loop.
 	let mut cli_draw: Option<i32> = None;
 	let mut cli_ssr: Option<bool> = None;
+	let mut cli_ui_scale: Option<f32> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -96,6 +98,7 @@ fn main() {
 			"--pitch" => config.pitch = Some(parse_or_die("--pitch", args.next())),
 			// SSR override in either direction (--mobile --ssr is the
 			// device-profiling escape hatch).
+			"--ui-scale" => cli_ui_scale = Some(parse_or_die("--ui-scale", args.next())),
 			"--ssr" => cli_ssr = Some(true),
 			"--no-ssr" => cli_ssr = Some(false),
 			"--metrics-csv" => {
@@ -158,12 +161,14 @@ fn main() {
 			music_vol: config.music_vol,
 			sfx_vol: config.sfx_vol,
 			ssr: config.ssr,
+			ui_scale: config.ui_scale,
 			name: String::new(),
 		});
 		config.draw_dist = saved.draw_dist;
 		config.music_vol = saved.music_vol;
 		config.sfx_vol = saved.sfx_vol;
 		config.ssr = saved.ssr;
+		config.ui_scale = saved.ui_scale;
 		// --name beats the remembered name (validated above vs at load).
 		if name.is_none() && !saved.name.is_empty() {
 			name = Some(saved.name);
@@ -175,6 +180,9 @@ fn main() {
 	}
 	if let Some(ssr) = cli_ssr {
 		config.ssr = ssr;
+	}
+	if let Some(u) = cli_ui_scale {
+		config.ui_scale = u.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
 	}
 
 	// The menu is for interactive runs only; --join must not sit on a

@@ -128,7 +128,7 @@ impl InvScreen {
 			widgets::label(
 				ui.dl,
 				Layer::Content,
-				panel.x + pad + 10.0 * ui.style.glyph,
+				panel.x + pad + ui.style.measure("INVENTORY "),
 				panel.y + pad / 2.0 + 2.0 * scale,
 				ui.style.glyph,
 				DIM,

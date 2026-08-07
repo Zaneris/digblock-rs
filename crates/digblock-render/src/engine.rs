@@ -42,6 +42,8 @@ pub struct EngineConfig {
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
+	/// User multiplier on the derived UI scale (settings slider).
+	pub ui_scale: f32,
 	/// User volume multipliers (settings sliders): 1.0 = authored gains.
 	pub music_vol: f32,
 	pub sfx_vol: f32,
@@ -121,6 +123,7 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: true,
+			ui_scale: 1.0,
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
@@ -155,6 +158,7 @@ impl EngineConfig {
 			overlay: false,
 			bench: false,
 			ssr: false,
+			ui_scale: 1.0,
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
@@ -634,6 +638,7 @@ impl Engine {
 				music_vol: config.music_vol,
 				sfx_vol: config.sfx_vol,
 				ssr: config.ssr,
+				ui_scale: config.ui_scale,
 				name: config
 					.player_name
 					.clone()
@@ -797,6 +802,15 @@ impl Engine {
 		self.menu.set_store_available();
 	}
 
+	/// Window size, display density and the user's preference all feed
+	/// the one UI scale. Every place any of the three can change routes
+	/// through here — miss one and the settings slider appears to do
+	/// nothing until the window is resized.
+	fn recompute_ui_scale(&mut self) {
+		self.ui_scale =
+			crate::ui::scale::ui_scale(self.size, self.scale_factor, self.config.ui_scale);
+	}
+
 	/// Apply a settings change batch at runtime, then persist it. SSR is
 	/// a per-frame uniform bit; volumes ride the audio command stream;
 	/// draw distance retunes the camera far plane, the streaming radius
@@ -805,6 +819,10 @@ impl Engine {
 	/// from the join path.
 	fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
+		if (s.ui_scale - self.config.ui_scale).abs() > f32::EPSILON {
+			self.config.ui_scale = s.ui_scale;
+			self.recompute_ui_scale();
+		}
 		if (s.music_vol - self.config.music_vol).abs() > f32::EPSILON
 			|| (s.sfx_vol - self.config.sfx_vol).abs() > f32::EPSILON
 		{
@@ -2288,7 +2306,7 @@ impl Drop for Engine {
 impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
 		self.size = size;
-		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
+		self.recompute_ui_scale();
 		self.build_renderer(gpu, surface_format);
 		log::info!(
 			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
@@ -2299,12 +2317,12 @@ impl Game for Engine {
 
 	fn resize(&mut self, _gpu: &Gpu, size: (u32, u32)) {
 		self.size = size;
-		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
+		self.recompute_ui_scale();
 	}
 
 	fn set_scale_factor(&mut self, scale_factor: f32) {
 		self.scale_factor = scale_factor;
-		self.ui_scale = crate::ui::scale::ui_scale(self.size, scale_factor);
+		self.recompute_ui_scale();
 	}
 
 	fn input(&mut self, event: InputEvent) {
@@ -2921,7 +2939,7 @@ impl Game for Engine {
 
 	fn render(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {
 		self.size = size;
-		self.ui_scale = crate::ui::scale::ui_scale(size, self.scale_factor);
+		self.recompute_ui_scale();
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
 		// Everything from here to the encode — remote sampling, name tags,
