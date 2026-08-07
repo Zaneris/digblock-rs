@@ -53,9 +53,38 @@ struct State {
 	/// than skipping it).
 	pending: Vec<AudioCmd>,
 	loops: HashMap<LoopId, Voice>,
-	playlist: Vec<AudioBuffer>,
-	next_track: usize,
+	/// Music pools, [day, night], each shuffled independently.
+	pools: [Pool; 2],
+	/// Which pool the world clock currently wants (`AudioCmd::MusicSet`).
+	/// Only consulted when a track ends, so dusk never cuts one short.
+	night: bool,
 	music_playing: bool,
+}
+
+/// A shuffled music pool. Tracks decode one at a time, so the order is
+/// re-rolled on each arrival rather than once at the end — there is no
+/// "playlist complete" moment to hook.
+#[derive(Default)]
+struct Pool {
+	tracks: Vec<AudioBuffer>,
+	order: Vec<usize>,
+	next: usize,
+	seed: u64,
+}
+
+impl Pool {
+	fn push(&mut self, buf: AudioBuffer) {
+		self.tracks.push(buf);
+		self.order = digblock_render::audio::shuffle_order(self.seed, self.tracks.len());
+		self.next = 0;
+	}
+
+	/// The next track, wrapping forever; `None` only when empty.
+	fn take_next(&mut self) -> Option<AudioBuffer> {
+		let i = *self.order.get(self.next % self.order.len().max(1))?;
+		self.next = self.next.wrapping_add(1);
+		self.tracks.get(i).cloned()
+	}
 }
 
 pub struct WebSink(Rc<RefCell<State>>);
@@ -83,8 +112,20 @@ pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 			ready: false,
 			pending: Vec::new(),
 			loops: HashMap::new(),
-			playlist: Vec::new(),
-			next_track: 0,
+			// Separate seeds so day and night don't march in lockstep.
+			// js_sys::Math::random is the only entropy source here that
+			// doesn't pull in a wasm RNG dependency.
+			pools: [
+				Pool {
+					seed: (js_sys::Math::random() * u64::MAX as f64) as u64,
+					..Pool::default()
+				},
+				Pool {
+					seed: (js_sys::Math::random() * u64::MAX as f64) as u64,
+					..Pool::default()
+				},
+			],
+			night: false,
 			music_playing: false,
 		})))
 	};
@@ -170,6 +211,9 @@ async fn fetch_music(state: Rc<RefCell<State>>, master_url: String) {
 		let Some(url) = t.get("url").and_then(|u| u.as_str()) else {
 			continue;
 		};
+		// A master predating the day/night split sends no "set"; treat
+		// everything it offers as day music rather than dropping it.
+		let night = t.get("set").and_then(|s| s.as_str()) == Some("night");
 		let url = if url.starts_with("http") {
 			url.to_string()
 		} else {
@@ -177,12 +221,14 @@ async fn fetch_music(state: Rc<RefCell<State>>, master_url: String) {
 		};
 		if let Some(raw) = fetch_bytes(&url).await {
 			if let Some(buf) = decode(&ctx, &raw).await {
-				let mut st = state.borrow_mut();
-				st.playlist.push(buf);
+				state.borrow_mut().pools[usize::from(night)].push(buf);
+				// Start on the first track that lands, not once the whole
+				// playlist has downloaded — several MB of music would
+				// otherwise mean minutes of silence. A no-op once playing.
+				play_next_track(&state);
 			}
 		}
 	}
-	play_next_track(&state);
 }
 
 async fn fetch_response(url: &str) -> Option<web_sys::Response> {
@@ -209,11 +255,19 @@ async fn fetch_bytes(url: &str) -> Option<Vec<u8>> {
 /// play, negligible).
 fn play_next_track(state: &Rc<RefCell<State>>) {
 	let mut st = state.borrow_mut();
-	if st.playlist.is_empty() || st.music_playing {
+	if st.music_playing {
 		return;
 	}
-	let buf = st.playlist[st.next_track % st.playlist.len()].clone();
-	st.next_track = st.next_track.wrapping_add(1);
+	// Pool choice happens here, at the track boundary — never mid-track.
+	// Falls back to the other pool when the active one is empty, so a
+	// master with no night tracks still plays music at night.
+	let active = usize::from(st.night);
+	let Some(buf) = st.pools[active]
+		.take_next()
+		.or_else(|| st.pools[1 - active].take_next())
+	else {
+		return;
+	};
 	let (Ok(src), Ok(gain)) = (st.ctx.create_buffer_source(), st.ctx.create_gain()) else {
 		return;
 	};
@@ -295,6 +349,12 @@ fn apply(state: &Rc<RefCell<State>>, cmd: AudioCmd) {
 		st.sfx_bus.gain().set_value(sfx);
 		return;
 	}
+	// Likewise a flag, not a sound: the engine sends the first one during
+	// startup, long before any buffer has decoded.
+	if let AudioCmd::MusicSet { night } = cmd {
+		st.night = night;
+		return;
+	}
 	if !st.ready {
 		// Queue everything that matters long-term; drop stale one-shots.
 		if !matches!(cmd, AudioCmd::Sfx { .. }) {
@@ -357,6 +417,6 @@ fn apply(state: &Rc<RefCell<State>>, cmd: AudioCmd) {
 			let _ = st.ctx.resume();
 		}
 		// Handled before the ready gate above.
-		AudioCmd::Volume { .. } => {}
+		AudioCmd::Volume { .. } | AudioCmd::MusicSet { .. } => {}
 	}
 }

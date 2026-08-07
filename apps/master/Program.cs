@@ -172,13 +172,22 @@ app.MapPost("/api/join", (JoinRequest req, ServerRegistry registry, TokenStore t
 
 var musicDir = Path.Combine(AppContext.BaseDirectory, "music");
 
+// A track's pool comes from a "night_" filename prefix, NOT a
+// subdirectory: /music/{file} rejects anything path-shaped, so
+// subdirectories would change every URL and break already-deployed
+// clients' music until they are redeployed. Flat names keep the old
+// contract and simply add a field older clients ignore.
 app.MapGet("/api/music", () =>
 {
     var files = Directory.Exists(musicDir)
         ? Directory.GetFiles(musicDir, "*.ogg").OrderBy(f => f, StringComparer.Ordinal)
         : Enumerable.Empty<string>();
     return Results.Ok(files
-        .Select(f => new MusicTrack(Path.GetFileNameWithoutExtension(f), $"/music/{Path.GetFileName(f)}"))
+        .Select(f => Path.GetFileName(f))
+        .Select(name => new MusicTrack(
+            Path.GetFileNameWithoutExtension(name),
+            $"/music/{name}",
+            name.StartsWith("night_", StringComparison.Ordinal) ? "night" : "day"))
         .ToArray());
 }).RequireCors("client");
 
