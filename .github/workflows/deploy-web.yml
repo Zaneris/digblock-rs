@@ -2,9 +2,10 @@
 #
 # Mirrors `just build-web` exactly: cargo build for wasm32, wasm-bindgen
 # at the version pinned in Cargo.lock (0.2.126 — installed prebuilt, keep
-# in sync when the lockfile bumps), then index.html + pkg/ becomes the
-# site. The bundle is pure static files; Pages serves .wasm with the
-# right MIME type out of the box.
+# in sync when the lockfile bumps), then index.html + _headers + pkg/
+# becomes the site. The bundle is pure static files; Pages serves .wasm
+# with the right MIME type out of the box. `_headers` is load-bearing —
+# see the file for why the glue JS must not outlive its wasm.
 #
 # One-time setup this workflow expects:
 #   - Cloudflare Pages project `digblock` (wrangler pages project create
@@ -46,7 +47,7 @@ jobs:
           cargo build -p digblock-web --target wasm32-unknown-unknown --release
           wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
             target/wasm32-unknown-unknown/release/digblock_web.wasm
-          cp apps/web/index.html target/web/
+          cp apps/web/index.html apps/web/_headers target/web/
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

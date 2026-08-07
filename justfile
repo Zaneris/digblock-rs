@@ -178,7 +178,7 @@ build-web:
 	cargo build -p digblock-web --target wasm32-unknown-unknown --release
 	wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
 		target/wasm32-unknown-unknown/release/digblock_web.wasm
-	cp apps/web/index.html target/web/
+	cp apps/web/index.html apps/web/_headers target/web/
 
 # Fast "is the web client still green" gate — no wasm-bindgen-cli needed.
 check-web:
