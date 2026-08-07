@@ -22,6 +22,35 @@ const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
 
+/// Column budget for the debug panel. The panel's width is derived from
+/// this rather than from the current frame's longest line, so it never
+/// resizes or slides while numbers stream through it. Every field in the
+/// six lines is printf-padded to a fixed width, so this only has to cover
+/// the widest of them.
+const DEBUG_COLS: usize = 108;
+
+/// Baseline-to-baseline spacing in the debug panel. Never tighter than
+/// the mono face's own line box, so swapping in a taller face can't make
+/// rows overlap.
+fn debug_line_px() -> f32 {
+	LINE_PX.max(font::mono().line_h(FIXED_GLYPH_PX).ceil())
+}
+
+/// First `cols` characters — the debug panel's backdrop is a fixed width,
+/// so an unexpectedly long line is clipped rather than allowed to spill
+/// out of it.
+fn truncate_cols(s: &str, cols: usize) -> &str {
+	match s.char_indices().nth(cols) {
+		Some((i, _)) => &s[..i],
+		None => s,
+	}
+}
+
+/// Caret width as a fraction of the text box height. A block caret, as
+/// before — but now it can't be one glyph cell wide, because glyph cells
+/// aren't a thing any more.
+const CARET_W: f32 = 0.5;
+
 const BAR_W: f32 = 2.0;
 const GRAPH_H: f32 = 66.0;
 /// Vertical scale: 3 px per ms (16.7ms line lands at 50px).
@@ -67,15 +96,148 @@ pub struct Overlay {
 	/// stages draw between them. Empty ranges cost nothing.
 	splits: [u32; 2],
 	line_scratch: String,
+	/// Reused across frames by the wrapped text surfaces (feed, chat).
+	wrap_scratch: Vec<std::ops::Range<usize>>,
+	atlas: font::GlyphAtlas,
+	atlas_tex: wgpu::Texture,
+	/// Cached from the atlas — every untextured quad samples it.
+	solid_uv: [f32; 2],
 	/// This frame's UI scale and derived glyph size, set by `prepare`.
 	scale: f32,
 	glyph: f32,
 }
 
+/// Compose the debug panel's six lines. Split out from the drawing so
+/// the column budget can be pinned headless — see
+/// `debug_lines_fit_the_column_budget`.
+fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 6]) {
+	let s = stats;
+	let mut line = |i: usize, color: u32, args: std::fmt::Arguments<'_>| {
+		scratch.clear();
+		let _ = scratch.write_fmt(args);
+		lines[i] = (color, scratch.clone());
+	};
+	// `drop` is the one that answers "did we miss a vsync slot": frames
+	// past 1.5× the MEASURED display period, so it works at any refresh
+	// rate. `hitch` is a fixed >33.4ms and cannot see a single dropped
+	// frame at 120Hz at all. `ref` is the estimated period backing drop —
+	// n/a until the first report window, during which drops aren't
+	// counted either, and ~10s stale after a refresh-rate change.
+	// Without these, a p95 of 17.6 on a 60Hz panel is unfalsifiable by
+	// eye: vsync can only present 16.67 or 33.3, so the tail is sampling
+	// noise, but nothing on the overlay said so.
+	let refresh = match s.refresh_ms {
+		r if r > 0.0 => format!("{r:5.2}"),
+		_ => "  n/a".to_owned(),
+	};
+	line(
+		0,
+		WHITE,
+		format_args!(
+			"fps {:5.1} | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} | hitch {:>3} ({:>5}) drop {:>3} ({:>5}) ref {}",
+			s.fps,
+			s.avg_ms,
+			s.p95_ms,
+			s.p99_ms,
+			s.worst_ms,
+			s.hitches_window,
+			s.hitches_total,
+			s.dropped_window,
+			s.dropped_total,
+			refresh
+		),
+	);
+	let c = &s.smooth;
+	// `busy`/`out` are the frame-level partition the phases to their
+	// left sum into; `out` is everything with the main thread stopped
+	// (present, compositor, and on the web the GPU-process staging
+	// copy). Read them together: `out` climbing while `busy` holds is
+	// the signature of a cost no phase on this line can charge.
+	line(
+		1,
+		DIM,
+		format_args!(
+			"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} upl {:5.2} enc {:5.2} | busy {:5.2} out {:5.2} ms",
+			c.acquire_ms,
+			c.update_ms,
+			c.maintain_ms,
+			c.upload_ms,
+			c.encode_ms,
+			c.busy_ms,
+			c.outside_ms
+		),
+	);
+	match s.gpu {
+		Some(g) => line(
+			2,
+			DIM,
+			format_args!(
+				"gpu  shadow {:5.2} main {:5.2} water {:5.2} overlay {:5.2} ms",
+				g.shadow_ms, g.main_ms, g.water_ms, g.overlay_ms
+			),
+		),
+		None => line(2, DIM, format_args!("gpu  n/a")),
+	}
+	line(
+		3,
+		DIM,
+		format_args!(
+			"jobs gen q {:>4} n {:>4} avg {:4.2} max {:4.2} | mesh q {:>4} n {:>4} avg {:4.2} max {:4.2} | fly {:>3} | bud {:4.1}",
+			s.gauges.gen_queue,
+			s.gen_jobs.count,
+			s.gen_jobs.avg_ms(),
+			s.gen_jobs.max_ms,
+			s.gauges.mesh_queue,
+			s.mesh_jobs.count,
+			s.mesh_jobs.avg_ms(),
+			s.mesh_jobs.max_ms,
+			s.gauges.in_flight,
+			s.stream_budget_ms
+		),
+	);
+	line(
+		4,
+		DIM,
+		format_args!(
+			"work up {:>4} ({:>6}K) now {:>5}K stale {:>4} req {:>4} evict {:>4} sat {:>4} | res {:>5} ({:>5} gpu) | wrk {:>2}",
+			s.uploaded,
+			s.upload_kb,
+			// THIS frame's bytes, not the window's — the quantity the
+			// web upload cap governs and the one that lines up with a
+			// single spike in `out`.
+			s.gauges.upload_bytes / 1024,
+			s.stale_dropped,
+			s.requeued,
+			s.evicted,
+			s.upload_saturated,
+			s.gauges.resident,
+			s.render.chunks_resident,
+			s.workers
+		),
+	);
+	let r = &s.render;
+	line(
+		5,
+		DIM,
+		format_args!(
+			"draw {:>5} drawn {:>5} culled | water {:>4} cast {:>5} calls {:>5} tri {:6.2}M vram {:6.1}M{}",
+			r.chunks_drawn,
+			r.chunks_culled,
+			r.water_draws,
+			r.shadow_casters,
+			r.draw_calls,
+			f64::from(r.triangles) / 1.0e6,
+			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
+			if r.wide_refreshed { " | wide" } else { "" }
+		),
+	);
+}
+
 impl Overlay {
 	pub fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat) -> Self {
 		let device = &gpu.device;
-		let atlas = font::build_atlas();
+		// Starts empty; glyphs are rasterized and uploaded as they are
+		// first drawn (see `prepare`).
 		let tex = device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("overlay font"),
 			size: wgpu::Extent3d {
@@ -90,31 +252,18 @@ impl Overlay {
 			usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
 			view_formats: &[],
 		});
-		gpu.queue.write_texture(
-			wgpu::TexelCopyTextureInfo {
-				texture: &tex,
-				mip_level: 0,
-				origin: wgpu::Origin3d::ZERO,
-				aspect: wgpu::TextureAspect::All,
-			},
-			&atlas,
-			wgpu::TexelCopyBufferLayout {
-				offset: 0,
-				bytes_per_row: Some(font::ATLAS_W),
-				rows_per_image: None,
-			},
-			wgpu::Extent3d {
-				width: font::ATLAS_W,
-				height: font::ATLAS_H,
-				depth_or_array_layers: 1,
-			},
-		);
 		let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-		// Nearest everywhere: crisp pixel font at integer scales.
+		// Linear, not Nearest. Glyphs are rasterized at the exact pixel
+		// size they're drawn at and land on whole-pixel origins, so the
+		// common case is a 1:1 blit where the two filters are identical.
+		// The case that isn't 1:1 is name tags, which follow a 3D
+		// projection at arbitrary subpixel positions: Nearest would drop
+		// and duplicate whole texel columns there, popping stems between
+		// one and two pixels wide as the player walks. Linear just blurs.
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("overlay font"),
-			mag_filter: wgpu::FilterMode::Nearest,
-			min_filter: wgpu::FilterMode::Nearest,
+			mag_filter: wgpu::FilterMode::Linear,
+			min_filter: wgpu::FilterMode::Linear,
 			mipmap_filter: wgpu::FilterMode::Nearest,
 			..Default::default()
 		});
@@ -223,6 +372,7 @@ impl Overlay {
 			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
+		let atlas = font::GlyphAtlas::new();
 		Self {
 			pipeline,
 			bind_group,
@@ -232,6 +382,10 @@ impl Overlay {
 			vert_count: 0,
 			splits: [0; 2],
 			line_scratch: String::with_capacity(96),
+			wrap_scratch: Vec::new(),
+			solid_uv: atlas.solid_uv(),
+			atlas,
+			atlas_tex: tex,
 			scale: 1.0,
 			glyph: FIXED_GLYPH_PX,
 		}
@@ -241,7 +395,7 @@ impl Overlay {
 		if self.verts.len() + 6 > MAX_VERTS {
 			return;
 		}
-		let uv = font::solid_uv();
+		let uv = self.solid_uv;
 		let v = |px, py| OverlayVertex {
 			pos: [px, py],
 			uv,
@@ -252,30 +406,53 @@ impl Overlay {
 			.extend_from_slice(&[v(x, y), v(x1, y), v(x, y1), v(x1, y), v(x1, y1), v(x, y1)]);
 	}
 
-	/// Draw `text` with `px`-sized square glyphs (`self.glyph` for scaled
-	/// surfaces, [`FIXED_GLYPH_PX`] for pinned ones).
-	fn push_text(&mut self, x: f32, y: f32, px: f32, color: u32, text: &str) {
-		let mut cx = x;
-		for c in text.bytes() {
-			if c != b' ' && self.verts.len() + 6 <= MAX_VERTS {
-				let (uv0, uv1) = font::glyph_uv(c);
-				let v = |px, py, u, w| OverlayVertex {
-					pos: [px, py],
-					uv: [u, w],
-					color,
-				};
-				let (x1, y1) = (cx + px, y + px);
-				self.verts.extend_from_slice(&[
-					v(cx, y, uv0[0], uv0[1]),
-					v(x1, y, uv1[0], uv0[1]),
-					v(cx, y1, uv0[0], uv1[1]),
-					v(x1, y, uv1[0], uv0[1]),
-					v(x1, y1, uv1[0], uv1[1]),
-					v(cx, y1, uv0[0], uv1[1]),
-				]);
+	/// Draw `text` in a `px`-tall layout box whose TOP edge is at `y`
+	/// (`self.glyph` for scaled surfaces, [`FIXED_GLYPH_PX`] for pinned
+	/// ones). Returns the advance, so callers that need the width don't
+	/// measure the same string twice.
+	///
+	/// The origin and every glyph's pen are rounded to whole pixels: the
+	/// glyph was rasterized at exactly `px`, so landing it on the pixel
+	/// grid makes the blit 1:1. Each pen is rounded independently rather
+	/// than accumulating rounded advances, which keeps spacing within half
+	/// a pixel of ideal with no drift down a long line.
+	fn push_text(
+		&mut self,
+		id: font::FaceId,
+		x: f32,
+		y: f32,
+		px: f32,
+		color: u32,
+		text: &str,
+	) -> f32 {
+		let face = font::face(id);
+		let ox = x.round();
+		let oy = (y + face.baseline(px)).round();
+		let mut run = face.run(text, px);
+		for (c, pen) in run.by_ref() {
+			let Some(g) = self.atlas.glyph(id, face, c, px) else {
+				continue; // blank (space), or the page is full
+			};
+			if self.verts.len() + 6 > MAX_VERTS {
+				break;
 			}
-			cx += px;
+			let v = |px, py, u, w| OverlayVertex {
+				pos: [px, py],
+				uv: [u, w],
+				color,
+			};
+			let (x0, y0) = (ox + pen.round() + g.left, oy + g.top);
+			let (x1, y1) = (x0 + g.w, y0 + g.h);
+			self.verts.extend_from_slice(&[
+				v(x0, y0, g.uv0[0], g.uv0[1]),
+				v(x1, y0, g.uv1[0], g.uv0[1]),
+				v(x0, y1, g.uv0[0], g.uv1[1]),
+				v(x1, y0, g.uv1[0], g.uv0[1]),
+				v(x1, y1, g.uv1[0], g.uv1[1]),
+				v(x0, y1, g.uv0[0], g.uv1[1]),
+			]);
 		}
+		run.pen()
 	}
 
 	/// Execute one draw-list layer's quad/text commands into the vertex
@@ -288,6 +465,7 @@ impl Overlay {
 					self.push_quad(rect.x, rect.y, rect.w, rect.h, color);
 				}
 				crate::ui::draw::Cmd::Text {
+					face,
 					x,
 					y,
 					px,
@@ -295,7 +473,7 @@ impl Overlay {
 					range,
 				} => {
 					let text = &arena[range.0 as usize..range.1 as usize];
-					self.push_text(x, y, px, color, text);
+					self.push_text(face, x, y, px, color, text);
 				}
 				crate::ui::draw::Cmd::Icon { .. } | crate::ui::draw::Cmd::IconQuad { .. } => {}
 			}
@@ -322,6 +500,14 @@ impl Overlay {
 	) {
 		self.scale = ui_scale;
 		self.glyph = glyph_px(ui_scale);
+		// Declare the sizes this frame will ask for BEFORE anything emits:
+		// the atlas wipes and repacks when the set changes, and doing that
+		// mid-frame would invalidate UVs already in the vertex buffer.
+		self.atlas.begin_frame(&[
+			(font::FaceId::Ui, font::ui().size_key(self.glyph)),
+			(font::FaceId::Ui, font::ui().size_key(FIXED_GLYPH_PX)),
+			(font::FaceId::Mono, font::mono().size_key(FIXED_GLYPH_PX)),
+		]);
 		self.verts.clear();
 		self.run_cmds(ui, crate::ui::Layer::Backdrop);
 		self.splits[0] = self.verts.len() as u32;
@@ -343,6 +529,30 @@ impl Overlay {
 		self.splits[1] = self.verts.len() as u32;
 		self.run_cmds(ui, crate::ui::Layer::Ghost);
 		self.vert_count = self.verts.len() as u32;
+		// After every emitter has interned its glyphs, before the pass
+		// runs. write_texture is queue-ordered against the submit, so the
+		// rows are in place by the time anything samples them.
+		if let Some((y0, y1, rows)) = self.atlas.take_dirty() {
+			gpu.queue.write_texture(
+				wgpu::TexelCopyTextureInfo {
+					texture: &self.atlas_tex,
+					mip_level: 0,
+					origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
+					aspect: wgpu::TextureAspect::All,
+				},
+				rows,
+				wgpu::TexelCopyBufferLayout {
+					offset: 0,
+					bytes_per_row: Some(font::ATLAS_W),
+					rows_per_image: None,
+				},
+				wgpu::Extent3d {
+					width: font::ATLAS_W,
+					height: y1 - y0,
+					depth_or_array_layers: 1,
+				},
+			);
+		}
 		gpu.queue.write_buffer(
 			&self.uniform_buf,
 			0,
@@ -357,132 +567,22 @@ impl Overlay {
 	fn push_debug_panel(&mut self, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
 		let mut lines: [(u32, String); 6] = Default::default();
-		let s = stats;
-		let mut line = |i: usize, color: u32, args: std::fmt::Arguments<'_>| {
-			self.line_scratch.clear();
-			let _ = self.line_scratch.write_fmt(args);
-			lines[i] = (color, self.line_scratch.clone());
-		};
-		// `drop` is the one that answers "did we miss a vsync slot": frames
-		// past 1.5× the MEASURED display period, so it works at any refresh
-		// rate. `hitch` is a fixed >33.4ms and cannot see a single dropped
-		// frame at 120Hz at all. `ref` is the estimated period backing drop —
-		// n/a until the first report window, during which drops aren't
-		// counted either, and ~10s stale after a refresh-rate change.
-		// Without these, a p95 of 17.6 on a 60Hz panel is unfalsifiable by
-		// eye: vsync can only present 16.67 or 33.3, so the tail is sampling
-		// noise, but nothing on the overlay said so.
-		let refresh = match s.refresh_ms {
-			r if r > 0.0 => format!("{r:5.2}"),
-			_ => "  n/a".to_owned(),
-		};
-		line(
-			0,
-			WHITE,
-			format_args!(
-				"fps {:5.1} | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} | hitch {} ({}) drop {} ({}) ref {}",
-				s.fps,
-				s.avg_ms,
-				s.p95_ms,
-				s.p99_ms,
-				s.worst_ms,
-				s.hitches_window,
-				s.hitches_total,
-				s.dropped_window,
-				s.dropped_total,
-				refresh
-			),
-		);
-		let c = &s.smooth;
-		// `busy`/`out` are the frame-level partition the phases to their
-		// left sum into; `out` is everything with the main thread stopped
-		// (present, compositor, and on the web the GPU-process staging
-		// copy). Read them together: `out` climbing while `busy` holds is
-		// the signature of a cost no phase on this line can charge.
-		line(
-			1,
-			DIM,
-			format_args!(
-				"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} upl {:5.2} enc {:5.2} | busy {:5.2} out {:5.2} ms",
-				c.acquire_ms,
-				c.update_ms,
-				c.maintain_ms,
-				c.upload_ms,
-				c.encode_ms,
-				c.busy_ms,
-				c.outside_ms
-			),
-		);
-		match s.gpu {
-			Some(g) => line(
-				2,
-				DIM,
-				format_args!(
-					"gpu  shadow {:5.2} main {:5.2} water {:5.2} overlay {:5.2} ms",
-					g.shadow_ms, g.main_ms, g.water_ms, g.overlay_ms
-				),
-			),
-			None => line(2, DIM, format_args!("gpu  n/a")),
-		}
-		line(
-			3,
-			DIM,
-			format_args!(
-				"jobs gen q {} n {} avg {:4.2} max {:4.2} | mesh q {} n {} avg {:4.2} max {:4.2} | fly {} | bud {:4.1}",
-				s.gauges.gen_queue,
-				s.gen_jobs.count,
-				s.gen_jobs.avg_ms(),
-				s.gen_jobs.max_ms,
-				s.gauges.mesh_queue,
-				s.mesh_jobs.count,
-				s.mesh_jobs.avg_ms(),
-				s.mesh_jobs.max_ms,
-				s.gauges.in_flight,
-				s.stream_budget_ms
-			),
-		);
-		line(
-			4,
-			DIM,
-			format_args!(
-				"work up {} ({}K) now {}K stale {} req {} evict {} sat {} | res {} ({} gpu) | wrk {}",
-				s.uploaded,
-				s.upload_kb,
-				// THIS frame's bytes, not the window's — the quantity the
-				// web upload cap governs and the one that lines up with a
-				// single spike in `out`.
-				s.gauges.upload_bytes / 1024,
-				s.stale_dropped,
-				s.requeued,
-				s.evicted,
-				s.upload_saturated,
-				s.gauges.resident,
-				s.render.chunks_resident,
-				s.workers
-			),
-		);
-		let r = &s.render;
-		line(
-			5,
-			DIM,
-			format_args!(
-				"draw {} drawn {} culled | water {} cast {} calls {} tri {:.2}M vram {:.1}M{}",
-				r.chunks_drawn,
-				r.chunks_culled,
-				r.water_draws,
-				r.shadow_casters,
-				r.draw_calls,
-				f64::from(r.triangles) / 1.0e6,
-				s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
-				if r.wide_refreshed { " | wide" } else { "" }
-			),
-		);
+		let mut scratch = std::mem::take(&mut self.line_scratch);
+		debug_lines(stats, &mut scratch, &mut lines);
+		self.line_scratch = scratch;
 
-		let max_chars = lines.iter().map(|(_, l)| l.len()).max().unwrap_or(0);
-		let text_w = max_chars as f32 * FIXED_GLYPH_PX;
+		// Width comes from the fixed column budget, NOT from this frame's
+		// longest line. The panel is right-anchored, so sizing it to live
+		// content made it resize and slide on every frame that changed a
+		// digit count — unreadable while streaming. Every field above is
+		// padded to a fixed width so the lines don't actually vary;
+		// DEBUG_COLS is the belt to that's braces, and
+		// `debug_lines_fit_the_column_budget` pins both.
+		let text_w = DEBUG_COLS as f32 * font::mono().advance(' ', FIXED_GLYPH_PX);
 		let graph_w = GRAPH_FRAMES as f32 * BAR_W;
 		let panel_w = text_w.max(graph_w) + PAD * 2.0;
-		let panel_h = lines.len() as f32 * LINE_PX + GRAPH_H + PAD * 3.0;
+		let line_px = debug_line_px();
+		let panel_h = lines.len() as f32 * line_px + GRAPH_H + PAD * 3.0;
 		// Right-anchored: the top-left corner belongs to the chat column.
 		let panel_x = (size.0 as f32 - MARGIN - panel_w).max(MARGIN);
 		self.push_quad(panel_x, MARGIN, panel_w, panel_h, BG);
@@ -490,8 +590,15 @@ impl Overlay {
 		let (tx, mut ty) = (panel_x + PAD, MARGIN + PAD);
 		for entry in &mut lines {
 			let (color, text) = std::mem::take(entry);
-			self.push_text(tx, ty, FIXED_GLYPH_PX, color, &text);
-			ty += LINE_PX;
+			self.push_text(
+				font::FaceId::Mono,
+				tx,
+				ty,
+				FIXED_GLYPH_PX,
+				color,
+				truncate_cols(&text, DEBUG_COLS),
+			);
+			ty += line_px;
 		}
 
 		// Frame-time graph: newest bar on the right, green under 16.7ms,
@@ -513,11 +620,13 @@ impl Overlay {
 		self.push_quad(tx, gy - 16.7 * MS_TO_PX, graph_w, 1.0, REF_LINE);
 	}
 
-	/// Characters per wrapped chat-column line: the column starts at the
-	/// left margin and wraps when it reaches the midpoint of the screen.
-	fn wrap_chars(&self, size: (u32, u32)) -> usize {
+	/// Width available to a wrapped chat-column line: the column starts at
+	/// the left margin and wraps when it reaches the midpoint of the
+	/// screen. Floored so a very narrow window still gets a usable column
+	/// instead of one character per row.
+	fn wrap_w(&self, size: (u32, u32)) -> f32 {
 		let usable = size.0 as f32 / 2.0 - (MARGIN + PAD * 2.0) * self.scale;
-		((usable / self.glyph) as usize).max(8)
+		usable.max(self.glyph * 4.0)
 	}
 
 	/// Server-message feed (system notifications + chat): top-left under
@@ -529,18 +638,18 @@ impl Overlay {
 	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], top: f32) {
 		let s = self.scale;
 		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
-		let wrap = self.wrap_chars(size);
+		let wrap_w = self.wrap_w(size);
 		let mut y = top;
+		let mut scratch = std::mem::take(&mut self.wrap_scratch);
 		for (text, ttl, color) in feed.iter().rev() {
 			let a = ttl.clamp(0.0, 1.0);
-			// Feed text is printable ASCII end-to-end (the server
-			// sanitizes chat; system lines are ours), so byte chunks
-			// are char chunks.
-			for chunk in text.as_bytes().chunks(wrap) {
-				let chunk = std::str::from_utf8(chunk).unwrap_or_default();
-				let w = chunk.len() as f32 * glyph + pad * 2.0;
+			font::wrap(font::ui(), text, glyph, wrap_w, &mut scratch);
+			for r in &scratch {
+				let chunk = &text[r.clone()];
+				let w = font::ui().measure(chunk, glyph) + pad * 2.0;
 				self.push_quad(margin, y, w, line, fade(BG, a));
 				self.push_text(
+					font::FaceId::Ui,
 					margin + pad,
 					y + (line - glyph) / 2.0,
 					glyph,
@@ -550,6 +659,7 @@ impl Overlay {
 				y += line;
 			}
 		}
+		self.wrap_scratch = scratch;
 	}
 
 	/// Chat input: pinned to the top-left corner, wrapping at the screen
@@ -559,31 +669,37 @@ impl Overlay {
 	fn push_chat_input(&mut self, size: (u32, u32), view: &crate::chat::ChatView<'_>) -> f32 {
 		let s = self.scale;
 		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
-		let wrap = self.wrap_chars(size);
-		// "> " prefix + text + one caret cell, wrapped as a single run
-		// (chat input is ASCII-only, byte chunks are char chunks). The
-		// +1 caret cell can spill onto a row of its own when the text
-		// exactly fills the last row.
+		let wrap_w = self.wrap_w(size);
+		let caret_w = glyph * CARET_W;
+		// "> " prefix + text, wrapped as a single run. The caret rides the
+		// end and can spill onto a row of its own when the text fills the
+		// last row exactly — wrap against a width that reserves room for
+		// it so it never hangs outside the backdrop.
 		let content = format!("> {}", view.line);
-		let rows = (content.len() + 1).div_ceil(wrap);
+		let mut scratch = std::mem::take(&mut self.wrap_scratch);
+		font::wrap(
+			font::ui(),
+			&content,
+			glyph,
+			(wrap_w - caret_w).max(glyph),
+			&mut scratch,
+		);
 		let mut y = margin;
-		for r in 0..rows {
-			let chunk = &content.as_bytes()
-				[(r * wrap).min(content.len())..((r + 1) * wrap).min(content.len())];
-			let chunk = std::str::from_utf8(chunk).unwrap_or_default();
-			let last = r == rows - 1;
-			let cells = chunk.len() + usize::from(last);
-			let min_w = if r == 0 { 240.0 * s } else { 0.0 };
-			let w = (cells as f32 * glyph + pad * 2.0).max(min_w);
+		for (i, r) in scratch.iter().enumerate() {
+			let chunk = &content[r.clone()];
+			let last = i == scratch.len() - 1;
+			let text_w = font::ui().measure(chunk, glyph);
+			let min_w = if i == 0 { 240.0 * s } else { 0.0 };
+			let w = (text_w + if last { caret_w } else { 0.0 } + pad * 2.0).max(min_w);
 			self.push_quad(margin, y, w, line, 0xC0000000);
 			let ty = y + (line - glyph) / 2.0;
-			self.push_text(margin + pad, ty, glyph, WHITE, chunk);
+			self.push_text(font::FaceId::Ui, margin + pad, ty, glyph, WHITE, chunk);
 			if last && view.caret {
-				let cx = margin + pad + glyph * chunk.len() as f32;
-				self.push_quad(cx, ty, glyph * 0.6, glyph, WHITE);
+				self.push_quad(margin + pad + text_w, ty, caret_w, glyph, WHITE);
 			}
 			y += line;
 		}
+		self.wrap_scratch = scratch;
 		y
 	}
 
@@ -592,12 +708,17 @@ impl Overlay {
 	/// them useful as a "someone is over there" cue.
 	fn push_nametags(&mut self, size: (u32, u32), tags: &[crate::renderer::NameTag]) {
 		let (pad, glyph) = (PAD * self.scale, self.glyph);
+		// Sized to the LINE box, not the nominal one: accents reach above
+		// the box and descenders below it, so a backdrop the height of the
+		// box would clip the `g` in someone's name.
+		let back_h = font::ui().line_h(glyph).max(glyph);
+		let back_dy = (back_h - glyph) / 2.0;
 		for tag in tags {
-			let w = tag.text.len() as f32 * glyph;
+			let w = font::ui().measure(&tag.text, glyph);
 			let x = (tag.x - w / 2.0).clamp(0.0, (size.0 as f32 - w).max(0.0));
 			let y = tag.y.clamp(0.0, size.1 as f32 - glyph);
-			self.push_quad(x - pad / 2.0, y - 2.0, w + pad, glyph + 4.0, 0x60000000);
-			self.push_text(x, y, glyph, tag.color, &tag.text);
+			self.push_quad(x - pad / 2.0, y - back_dy, w + pad, back_h, 0x60000000);
+			self.push_text(font::FaceId::Ui, x, y, glyph, tag.color, &tag.text);
 		}
 	}
 
@@ -625,5 +746,107 @@ impl Overlay {
 		pass.set_bind_group(0, &self.bind_group, &[]);
 		pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
 		pass.draw(from..to, 0..1);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	// The panel is right-anchored and sized from DEBUG_COLS, so a line
+	// that outgrows the budget would be clipped rather than push the
+	// panel around. Saturate every field and confirm none of them do —
+	// this is what keeps the padding above honest.
+	#[test]
+	fn debug_lines_fit_the_column_budget() {
+		let mut stats = OverlayStats {
+			fps: 9999.9,
+			avg_ms: 999.99,
+			p95_ms: 999.99,
+			p99_ms: 999.99,
+			worst_ms: 9999.99,
+			hitches_window: 999,
+			hitches_total: 99999,
+			dropped_window: 999,
+			dropped_total: 99999,
+			refresh_ms: 999.99,
+			uploaded: 9999,
+			upload_kb: 999_999,
+			stale_dropped: 9999,
+			requeued: 9999,
+			evicted: 9999,
+			upload_saturated: 9999,
+			workers: 99,
+			gpu_buffer_bytes: 999 * 1024 * 1024,
+			stream_budget_ms: 999.9,
+			..Default::default()
+		};
+		stats.gpu = Some(digblock_core::metrics::GpuPassMs {
+			shadow_ms: 999.99,
+			main_ms: 999.99,
+			water_ms: 999.99,
+			overlay_ms: 999.99,
+		});
+		stats.gauges.gen_queue = 9999;
+		stats.gauges.mesh_queue = 9999;
+		stats.gauges.in_flight = 999;
+		stats.gauges.resident = 99999;
+		stats.gauges.upload_bytes = 99999 * 1024;
+		stats.gen_jobs.count = 9999;
+		stats.mesh_jobs.count = 9999;
+		stats.render.chunks_drawn = 99999;
+		stats.render.chunks_culled = 99999;
+		stats.render.water_draws = 9999;
+		stats.render.shadow_casters = 99999;
+		stats.render.draw_calls = 99999;
+		stats.render.chunks_resident = 99999;
+		stats.render.wide_refreshed = true;
+
+		let mut scratch = String::new();
+		let mut lines: [(u32, String); 6] = Default::default();
+		debug_lines(&stats, &mut scratch, &mut lines);
+		for (i, (_, l)) in lines.iter().enumerate() {
+			let n = l.chars().count();
+			assert!(
+				n <= DEBUG_COLS,
+				"line {i} needs {n} cols (budget {DEBUG_COLS}):\n{l}"
+			);
+			assert!(l.is_ascii(), "line {i} must be mono-face ASCII");
+		}
+		// And the budget isn't wildly generous — a budget far past the
+		// longest line just wastes screen.
+		let widest = lines.iter().map(|(_, l)| l.chars().count()).max().unwrap();
+		assert!(
+			DEBUG_COLS - widest <= 8,
+			"DEBUG_COLS {DEBUG_COLS} is {} past the widest line",
+			DEBUG_COLS - widest
+		);
+	}
+
+	// The whole point of the fixed budget: streaming numbers must not
+	// move the panel. Two very different stat snapshots have to produce
+	// identical line widths.
+	#[test]
+	fn panel_width_is_independent_of_the_numbers() {
+		let mut scratch = String::new();
+		let widths = |s: &OverlayStats, scratch: &mut String| {
+			let mut lines: [(u32, String); 6] = Default::default();
+			debug_lines(s, scratch, &mut lines);
+			lines.map(|(_, l)| l.chars().count())
+		};
+		let quiet = OverlayStats {
+			gpu: Some(Default::default()),
+			..Default::default()
+		};
+		let mut busy = quiet.clone();
+		busy.uploaded = 4321;
+		busy.upload_kb = 98765;
+		busy.gauges.gen_queue = 812;
+		busy.gauges.mesh_queue = 1904;
+		busy.gauges.resident = 40321;
+		busy.render.chunks_drawn = 8123;
+		busy.render.draw_calls = 12345;
+		busy.hitches_total = 61234;
+		assert_eq!(widths(&quiet, &mut scratch), widths(&busy, &mut scratch));
 	}
 }

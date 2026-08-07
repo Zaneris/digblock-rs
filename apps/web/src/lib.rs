@@ -50,17 +50,25 @@ pub fn start() -> Result<(), JsValue> {
 		music_vol: config.music_vol,
 		sfx_vol: config.sfx_vol,
 		ssr: config.ssr,
+		ui_scale: config.ui_scale,
 		name: String::new(),
 	});
 	config.draw_dist = saved.draw_dist;
 	config.music_vol = saved.music_vol;
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
+	config.ui_scale = saved.ui_scale;
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(10, 32);
 	}
 	if params.get("ssr").is_some() {
 		config.ssr = flag(&params, "ssr");
+	}
+	if let Some(u) = param::<f32>(&params, "uiscale") {
+		config.ui_scale = u.clamp(
+			digblock_render::settings::UI_SCALE_MIN,
+			digblock_render::settings::UI_SCALE_MAX,
+		);
 	}
 	if let Some(s) = param::<u32>(&params, "shadow") {
 		config.shadow_size = s.clamp(512, 4096);

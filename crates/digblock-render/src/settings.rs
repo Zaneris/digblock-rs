@@ -15,6 +15,14 @@ pub const DRAW_STEP: i32 = 2;
 pub const VOL_MAX: f32 = 2.0;
 pub const VOL_STEP: f32 = 0.1;
 
+/// Interface-scale slider: a multiplier on the scale the engine derives
+/// from window size and display density. The step matches the quarter
+/// quantization in `ui::scale::ui_scale` — a finer one would be a dead
+/// slider for several notches.
+pub const UI_SCALE_MIN: f32 = 0.75;
+pub const UI_SCALE_MAX: f32 = 2.0;
+pub const UI_SCALE_STEP: f32 = 0.25;
+
 /// The launcher-injected persistence hook (desktop: data-dir JSON;
 /// web: localStorage). Called with each change batch.
 pub type SettingsStore = Box<dyn FnMut(&Settings)>;
@@ -26,6 +34,9 @@ pub struct Settings {
 	pub sfx_vol: f32,
 	/// Screen-space water reflections (a per-frame uniform bit).
 	pub ssr: bool,
+	/// Multiplier on the derived UI scale, so players can size the
+	/// interface to taste (and to their eyesight).
+	pub ui_scale: f32,
 	/// Last-used multiplayer display name; pre-fills the browser's name
 	/// field. Empty = never joined. Canonical validation still runs at
 	/// join time.
@@ -41,6 +52,7 @@ impl Default for Settings {
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			ssr: true,
+			ui_scale: 1.0,
 			name: String::new(),
 		}
 	}
@@ -59,6 +71,11 @@ impl Settings {
 		if !self.sfx_vol.is_finite() {
 			self.sfx_vol = 1.0;
 		}
+		self.ui_scale = if self.ui_scale.is_finite() {
+			self.ui_scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+		} else {
+			1.0
+		};
 		if digblock_net::protocol::validate_name(&self.name).is_err() {
 			self.name.clear();
 		}
@@ -77,19 +94,32 @@ mod tests {
 			music_vol: -3.0,
 			sfx_vol: f32::NAN,
 			ssr: true,
+			ui_scale: 9.0,
 			name: "bad name!".into(),
 		}
 		.clamped();
 		assert_eq!(s.draw_dist, DRAW_MAX);
 		assert_eq!(s.music_vol, 0.0);
 		assert_eq!(s.sfx_vol, 1.0);
+		assert_eq!(s.ui_scale, UI_SCALE_MAX);
 		assert!(s.name.is_empty());
+
+		assert_eq!(
+			Settings {
+				ui_scale: f32::NAN,
+				..Default::default()
+			}
+			.clamped()
+			.ui_scale,
+			1.0
+		);
 
 		let ok = Settings {
 			draw_dist: 12,
 			music_vol: 1.5,
 			sfx_vol: 0.2,
 			ssr: false,
+			ui_scale: 1.25,
 			name: "Miner42".into(),
 		};
 		assert_eq!(ok.clone().clamped(), ok);

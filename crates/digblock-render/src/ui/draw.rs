@@ -20,8 +20,11 @@ pub enum Layer {
 pub enum Cmd {
 	/// Solid quad, 0xAABBGGRR.
 	Quad { rect: Rect, color: u32 },
-	/// Square glyphs of side `px`; `range` indexes the shared text arena.
+	/// Text in a `px`-tall layout box whose top edge is at `y` (the
+	/// renderer derives the baseline); `range` indexes the shared text
+	/// arena.
 	Text {
+		face: crate::font::FaceId,
 		x: f32,
 		y: f32,
 		px: f32,
@@ -68,7 +71,22 @@ impl DrawList {
 		self.cmds[layer as usize].push(Cmd::Quad { rect, color });
 	}
 
+	/// Text in the UI face — everything the player reads.
 	pub fn text(&mut self, layer: Layer, x: f32, y: f32, px: f32, color: u32, s: &str) {
+		self.text_with(crate::font::FaceId::Ui, layer, x, y, px, color, s);
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	pub fn text_with(
+		&mut self,
+		face: crate::font::FaceId,
+		layer: Layer,
+		x: f32,
+		y: f32,
+		px: f32,
+		color: u32,
+		s: &str,
+	) {
 		debug_assert!(
 			layer != Layer::Icons,
 			"text doesn't belong in the icon layer"
@@ -76,6 +94,7 @@ impl DrawList {
 		let start = self.text.len() as u32;
 		self.text.push_str(s);
 		self.cmds[layer as usize].push(Cmd::Text {
+			face,
 			x,
 			y,
 			px,
@@ -103,6 +122,7 @@ impl DrawList {
 		let start = self.text.len() as u32;
 		let _ = self.text.write_fmt(args);
 		self.cmds[layer as usize].push(Cmd::Text {
+			face: crate::font::FaceId::Ui,
 			x,
 			y,
 			px,

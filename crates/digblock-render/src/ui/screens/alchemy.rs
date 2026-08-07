@@ -172,7 +172,7 @@ impl AlchScreen {
 		// Measure: widest row and summed advances.
 		let (mut width, mut height) = (0.0f32, 0.0f32);
 		for row in &rows {
-			let text_w = text_of(row).chars().count() as f32 * glyph;
+			let text_w = ui.style.measure(&text_of(row));
 			let (w, h) = match row {
 				Row::Title | Row::Header(_) => (text_w, glyph + HDR_GAP * s),
 				Row::Convert { .. } | Row::Craft { .. } => (

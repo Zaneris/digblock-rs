@@ -24,12 +24,13 @@ pub fn scaled_dim(base: u32, daylight: f32) -> u32 {
 	a << 24 | (base & 0x00FF_FFFF)
 }
 
-/// Per-frame style: the UI scale and its derived (integer-snapped)
-/// glyph size.
+/// Per-frame style: the UI scale, its derived text box height, and which
+/// face to measure and draw with.
 #[derive(Clone, Copy)]
 pub struct Style {
 	pub scale: f32,
 	pub glyph: f32,
+	pub face: crate::font::FaceId,
 }
 
 impl Style {
@@ -37,7 +38,15 @@ impl Style {
 		Self {
 			scale: ui_scale,
 			glyph: scale::glyph_px(ui_scale),
+			face: crate::font::FaceId::Ui,
 		}
+	}
+
+	/// Width of `text` as this style would draw it. The one way screens
+	/// size themselves to their content — text is proportional, so a
+	/// character count tells you nothing.
+	pub fn measure(&self, text: &str) -> f32 {
+		crate::font::face(self.face).measure(text, self.glyph)
 	}
 }
 
@@ -115,7 +124,7 @@ pub fn button<Id: Copy + PartialEq>(
 		ui.dl.quad(Layer::Backdrop, rect, ROW_HILIGHT);
 	}
 	let px = ui.style.glyph;
-	let w = text.chars().count() as f32 * px;
+	let w = ui.style.measure(text);
 	let color = if enabled { WHITE } else { DIM };
 	ui.dl.text(
 		Layer::Content,
@@ -132,26 +141,33 @@ pub fn button<Id: Copy + PartialEq>(
 
 /// Stack-count badge in a slot's bottom-right corner: pinned at
 /// [`scale::FIXED_GLYPH_PX`] (small by design), "99+" past two digits,
-/// with a one-font-pixel drop shadow so digits stay readable on light
-/// icons (snow, sand).
+/// with a one-pixel drop shadow so digits stay readable on light icons
+/// (snow, sand).
 pub fn count_badge(dl: &mut DrawList, layer: Layer, slot: Rect, count: u32, color: u32) {
 	const SHADOW: u32 = 0xE0000000;
 	let px = scale::FIXED_GLYPH_PX;
-	let chars = if count > 99 {
-		3.0
+	let mut buf = [0u8; 3];
+	let text: &str = if count > 99 {
+		"99+"
 	} else {
-		(count.max(1)).ilog10() as f32 + 1.0
+		// Right-aligning off a digit count would assume tabular figures;
+		// measure what we're actually about to draw instead.
+		let n = count.min(99);
+		let len = if n >= 10 {
+			buf[0] = b'0' + (n / 10) as u8;
+			buf[1] = b'0' + (n % 10) as u8;
+			2
+		} else {
+			buf[0] = b'0' + n as u8;
+			1
+		};
+		std::str::from_utf8(&buf[..len]).unwrap_or("?")
 	};
-	let x = slot.x + slot.w - 2.0 - chars * px;
+	let x = slot.x + slot.w - 2.0 - crate::font::ui().measure(text, px);
 	let y = slot.y + slot.h - px - 2.0;
-	let off = px / 8.0; // one pixel of the 8px font
-	if count > 99 {
-		dl.text(layer, x + off, y + off, px, SHADOW, "99+");
-		dl.text(layer, x, y, px, color, "99+");
-	} else {
-		dl.text_fmt(layer, x + off, y + off, px, SHADOW, format_args!("{count}"));
-		dl.text_fmt(layer, x, y, px, color, format_args!("{count}"));
-	}
+	let off = (px / 16.0).round().max(1.0);
+	dl.text(layer, x + off, y + off, px, SHADOW, text);
+	dl.text(layer, x, y, px, color, text);
 }
 
 /// One menu-style row's content, rendered by [`row`].
@@ -164,6 +180,14 @@ pub struct RowContent<'a> {
 	pub color: u32,
 	/// Keyboard/hover selection — computed by the screen, drawn here.
 	pub highlight: bool,
+	/// Draw a text caret at the end of `text` (blink is the caller's).
+	pub caret: bool,
+}
+
+/// Width of a text caret in a `px`-tall text box. Matches the chat
+/// input's block caret.
+pub fn caret_w(px: f32) -> f32 {
+	px * 0.5
 }
 
 /// A selectable text row: optional highlight backdrop, left text,
@@ -179,8 +203,15 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 		dl.quad(layer, rect, ROW_HILIGHT);
 	}
 	dl.text(layer, rect.x + pad_x, text_y, glyph, c.color, c.text);
+	if c.caret {
+		// A blinking caret has to be its own quad: swapping a '_' in and
+		// out of the row string would change the string's width every
+		// blink, and the menu sizes its panel to its widest row.
+		let cx = rect.x + pad_x + style.measure(c.text);
+		dl.quad(layer, Rect::new(cx, text_y, caret_w(glyph), glyph), c.color);
+	}
 	if let Some((right, color)) = c.right {
-		let rx = rect.x + rect.w - pad_x - right.len() as f32 * glyph;
+		let rx = rect.x + rect.w - pad_x - style.measure(right);
 		dl.text(layer, rx, text_y, glyph, color, right);
 	}
 	if let Some(frac) = c.bar {

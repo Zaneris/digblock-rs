@@ -77,7 +77,11 @@ impl Chat {
 				if std::mem::take(&mut self.suppress_text) {
 					return None;
 				}
-				if self.buffer.chars().count() < MAX_CHAT_LEN && matches!(ch, ' '..='~') {
+				// Same alphabet the server sanitizes to, so nothing a
+				// player can type gets silently eaten on the way out.
+				if self.buffer.chars().count() < MAX_CHAT_LEN
+					&& digblock_net::protocol::is_text_char(*ch)
+				{
 					self.buffer.push(*ch);
 					self.cycle = None;
 				}
@@ -220,16 +224,19 @@ mod tests {
 	}
 
 	#[test]
-	fn caps_length_and_drops_non_ascii() {
+	fn caps_length_and_drops_untypeable_chars() {
 		let mut c = Chat::default();
 		c.open();
 		c.suppress_text = false;
-		text(&mut c, "héllo\u{7}");
-		assert_eq!(c.view(false).line, "hllo");
+		// Accented Latin is typeable now; controls and other scripts
+		// still are not.
+		text(&mut c, "héllo\u{7}Ω");
+		assert_eq!(c.view(false).line, "héllo");
 		for _ in 0..300 {
 			text(&mut c, "x");
 		}
-		assert_eq!(c.view(false).line.len(), MAX_CHAT_LEN);
+		// The cap counts characters, not bytes — the "é" above is two.
+		assert_eq!(c.view(false).line.chars().count(), MAX_CHAT_LEN);
 	}
 
 	fn with_commands() -> Chat {

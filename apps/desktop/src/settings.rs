@@ -13,6 +13,7 @@ struct SettingsFile {
 	music_vol: Option<f32>,
 	sfx_vol: Option<f32>,
 	ssr: Option<bool>,
+	ui_scale: Option<f32>,
 	/// Last-used multiplayer display name.
 	name: Option<String>,
 }
@@ -44,6 +45,7 @@ pub fn load(base: Settings) -> Settings {
 		music_vol: file.music_vol.unwrap_or(base.music_vol),
 		sfx_vol: file.sfx_vol.unwrap_or(base.sfx_vol),
 		ssr: file.ssr.unwrap_or(base.ssr),
+		ui_scale: file.ui_scale.unwrap_or(base.ui_scale),
 		name: file.name.unwrap_or(base.name),
 	}
 	.clamped()
@@ -57,6 +59,7 @@ pub fn save(s: &Settings) {
 		music_vol: Some(s.music_vol),
 		sfx_vol: Some(s.sfx_vol),
 		ssr: Some(s.ssr),
+		ui_scale: Some(s.ui_scale),
 		name: (!s.name.is_empty()).then(|| s.name.clone()),
 	};
 	let path = path();
