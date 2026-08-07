@@ -31,12 +31,17 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// use the declared slot's item), `InputTick.active_slot`, and
 /// `NetPlayerState.held` (the held item rides snapshots for remote
 /// rendering).
-pub const PROTOCOL_VERSION: u16 = 10;
+/// v11: protected cells — `RejectReason::Protected` (the world floor, and
+/// the spawn lock's region when an admin has enabled it), plus
+/// `ServerMsg::DigRefused` so a hold on a protected cell is refused when
+/// it STARTS rather than silently running the full timer and failing at
+/// the completing edit.
+pub const PROTOCOL_VERSION: u16 = 11;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 10;
+pub const MIN_PROTOCOL: u16 = 11;
 
 // ---- handshake preamble ----------------------------------------------
 //

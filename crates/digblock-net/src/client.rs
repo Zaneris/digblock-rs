@@ -4,7 +4,7 @@
 
 use crate::codec::{self, FrameReader};
 use crate::edits::{PendingEdit, PendingEdits};
-use crate::messages::{ClientMsg, Datagram, EditKind, ServerMsg};
+use crate::messages::{ClientMsg, Datagram, EditKind, RejectReason, ServerMsg};
 use crate::predict::Predictor;
 use crate::protocol::{
 	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
@@ -66,7 +66,20 @@ pub enum NetEvent {
 	/// superseded — revert the cell to `.prev` AND the predicted
 	/// `.inv_delta`. Multi-cell actions emit one event per surviving
 	/// entry.
-	EditRejected(PendingEdit),
+	EditRejected {
+		edit: PendingEdit,
+		/// The server's verdict, for rejections worth explaining to the
+		/// player. `None` on the local unknown-cell path, which reverts
+		/// without any server verdict to report.
+		reason: Option<RejectReason>,
+	},
+	/// The server refused a hold-to-dig as it started (a protected cell).
+	/// Abandon the local hold now rather than running the timer out
+	/// against a block that was never going to break.
+	DigRefused {
+		cell: (i32, i32, i32),
+		reason: RejectReason,
+	},
 	/// Authoritative inventory snapshot as raw wire pairs (block ids plus
 	/// flagged sub-material families): re-base the local counts as
 	/// `Inventory::from_wire + Σ pending inv_deltas` (order-independent
@@ -402,14 +415,26 @@ impl NetClient {
 					// Unknown/hostile cell from a newer server: it can't
 					// be applied, but the inventory reverts still must be.
 					for e in superseded {
-						out.push(NetEvent::EditRejected(e));
+						out.push(NetEvent::EditRejected {
+							edit: e,
+							reason: None,
+						});
 					}
 				}
+			}
+			ServerMsg::DigRefused { cell, reason } => {
+				out.push(NetEvent::DigRefused {
+					cell: (cell[0], cell[1], cell[2]),
+					reason,
+				});
 			}
 			ServerMsg::EditRejected { client_seq, reason } => {
 				log::info!("edit {client_seq} rejected: {reason:?}");
 				for e in self.edits.reject(client_seq) {
-					out.push(NetEvent::EditRejected(e));
+					out.push(NetEvent::EditRejected {
+						edit: e,
+						reason: Some(reason),
+					});
 				}
 			}
 			// Remote positions come from snapshots; these only carry names.

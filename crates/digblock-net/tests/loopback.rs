@@ -280,7 +280,7 @@ fn full_frame_handshake_edits_snapshot() {
 	events.clear();
 	client.poll(&mut events, 0.016);
 	match events.first() {
-		Some(NetEvent::EditRejected(e)) => {
+		Some(NetEvent::EditRejected { edit: e, .. }) => {
 			assert_eq!(e.cell, (5, 9, 5));
 			assert_eq!(e.prev, BlockType::Dirt as u16);
 			assert_eq!(e.inv_delta, Some((BlockType::Dirt, 1)));
@@ -355,7 +355,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	}
 	assert!(!events
 		.iter()
-		.any(|e| matches!(e, NetEvent::EditRejected(_))));
+		.any(|e| matches!(e, NetEvent::EditRejected { .. })));
 }
 
 #[test]

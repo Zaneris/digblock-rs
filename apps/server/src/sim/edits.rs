@@ -413,6 +413,19 @@ impl Sim {
 			}
 		};
 
+		// Protected cells: the world floor, and the spawn lock's region
+		// when one is active. Checked against the assembled `writes` so
+		// every path is covered at once — a plain dig, a place landing on
+		// the neighbour cell, a door's derived upper half, a slab grow.
+		// Honest clients predict this and never send the edit.
+		let lock = self.spawn_lock();
+		if writes
+			.iter()
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+		{
+			return reject(RejectReason::Protected);
+		}
+
 		// Slot enforcement: the edit must use the item actually in its
 		// declared hotbar slot (the arrangement arrived in-order on the
 		// same stream, so honest clients can never trip this). Digs are
@@ -603,6 +616,14 @@ impl Sim {
 				writes.push((partner, pc, door_toggled(pc)));
 			}
 		}
+		// A door inside a protected region is furniture, not a mechanism.
+		let lock = self.spawn_lock();
+		if writes
+			.iter()
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+		{
+			return reject(RejectReason::Protected);
+		}
 		// Closing must not trap any live player in the leaf.
 		let closing = cell_state(cur) & 0b0100 != 0;
 		if closing {
@@ -715,12 +736,14 @@ impl Sim {
 			return;
 		}
 		self.flow_accum = (self.flow_accum + TICK).min(1.0);
+		let lock = self.spawn_lock();
 		while self.flow_accum >= FLOW_STEP_SECS {
 			self.flow_accum -= FLOW_STEP_SECS;
 			let mut edits = Vec::new();
 			let mut world = StoreWorld {
 				store: &mut self.store,
 				edits: &mut edits,
+				lock,
 			};
 			self.fluid.step(&mut world, FLOW_BUDGET);
 			for (edit, prev) in edits {
@@ -2345,5 +2368,260 @@ mod tests {
 			"slot switch reaches remotes"
 		);
 		let _ = &mut c1;
+	}
+
+	/// A locked spawn refuses digs inside its region and the cell is
+	/// never modified. The refusal itself arrives at DigStart (see
+	/// `a_protected_dig_is_refused_at_dig_start`); a client that skips
+	/// DigStart and sends the completing edit straight off has no hold on
+	/// record, so it fails the timing gate instead — refused either way.
+	#[test]
+	fn locked_spawn_refuses_a_dig() {
+		let mut sim = flat_sim("lockdig");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
+			eye: FLAT_SPAWN.to_array(),
+		}));
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let mut t = 0;
+		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: RejectReason::Protected,
+					..
+				}
+			)),
+			"protected dig should be refused: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Stone as u16),
+			"the protected cell was modified anyway"
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			0,
+			"no credit"
+		);
+	}
+
+	/// Placing into a locked region is refused too, and reports
+	/// `Protected` rather than some incidental reason — the client picks
+	/// its wording ("can't build" vs "won't break") from this.
+	#[test]
+	fn locked_spawn_refuses_a_place() {
+		let mut sim = flat_sim("lockplace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::Stone, 4);
+		// Lock a region offset from the player so the target is inside it
+		// but the player is not standing in the way of their own place.
+		let eye = FLAT_SPAWN + Vec3::new(4.0, 0.0, 0.0);
+		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
+			eye: eye.to_array(),
+		}));
+		let region = sim.spawn_lock().expect("locked");
+
+		let pos = sim.test_player(1).unwrap().pos;
+		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+		let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
+		let target = (
+			hit.cell.0 + hit.normal.0,
+			hit.cell.1 + hit.normal.1,
+			hit.cell.2 + hit.normal.2,
+		);
+		assert!(
+			region.contains(target.0, target.1, target.2),
+			"test aims outside the locked region: {target:?}"
+		);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 1,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::Place {
+					block: BlockType::Stone as u16,
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: RejectReason::Protected,
+					..
+				}
+			)),
+			"protected place should be refused as Protected: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			4,
+			"a refused place must not debit stock"
+		);
+	}
+
+	/// Unlocking gives the cells back — the lock is a toggle, not a
+	/// permanent property of the terrain.
+	#[test]
+	fn unlocking_restores_digging() {
+		let mut sim = flat_sim("lockundig");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
+			eye: FLAT_SPAWN.to_array(),
+		}));
+		sim.spawn_store.set(None);
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let mut t = 0;
+		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert!(
+			!c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: RejectReason::Protected,
+					..
+				}
+			)),
+			"dig still refused after unlocking: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Air as u16),
+			"the dig did not land after unlocking"
+		);
+	}
+
+	/// Water placed OUTSIDE a locked region must not flow into it. This is
+	/// the case the write-refusal covers that a schedule filter would not:
+	/// the source is legal, only its destination is protected.
+	#[test]
+	fn water_cannot_flow_into_a_locked_region() {
+		let mut sim = flat_sim("lockflow");
+		// Held, not dropped: dropping the client closes its channel, the
+		// server drops the player, and residency evicts the whole world.
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let spawn = FLAT_SPAWN;
+		let sz = spawn.z.floor() as i32;
+		let h = spawn.y.floor() as i32 - 2;
+		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
+			eye: spawn.to_array(),
+		}));
+		let region = sim.spawn_lock().expect("locked");
+
+		// A source one column outside the region, level with the capsule,
+		// with a clear run straight at it.
+		let (wx, wy, wz) = (region.x1 + 1, h + 1, sz);
+		assert!(!region.contains(wx, wy, wz), "source must start outside");
+		assert!(sim.store.set_block(wx, wy, wz, BlockType::Water).is_some());
+		sim.fluid.schedule_around(wx, wy, wz);
+		// Plenty of flow steps for water to spread its full 3-block reach.
+		for _ in 0..240 {
+			sim.tick_once(vec![]);
+		}
+
+		for (x, y, z) in region.cells() {
+			let cell = sim.test_cell_at(x, y, z);
+			assert!(
+				!cell.is_some_and(
+					|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_water()
+				),
+				"water reached protected cell ({x},{y},{z})"
+			);
+		}
+		// And the source itself did flow somewhere — otherwise this test
+		// would pass on a fluid sim that simply never ran.
+		assert!(
+			sim.test_cell_at(region.x1 + 2, h + 1, sz)
+				.is_some_and(|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_water()),
+			"fluid never spread at all; the test proves nothing"
+		);
+	}
+
+	/// The refusal lands when the hold STARTS, not when it completes.
+	/// Before this, a player held the button through a stone block's full
+	/// dig time and only then learned it was never going to break.
+	#[test]
+	fn a_protected_dig_is_refused_at_dig_start() {
+		let mut sim = flat_sim("lockdigstart");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
+			eye: FLAT_SPAWN.to_array(),
+		}));
+		// The block underfoot: inside the locked region and in reach.
+		let cell = (
+			FLAT_SPAWN.x.floor() as i32,
+			FLAT_SPAWN.y.floor() as i32 - 2,
+			FLAT_SPAWN.z.floor() as i32,
+		);
+		assert!(sim
+			.spawn_lock()
+			.expect("locked")
+			.contains(cell.0, cell.1, cell.2));
+
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [cell.0, cell.1, cell.2],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: RejectReason::Protected,
+					..
+				}
+			)),
+			"DigStart on a protected cell should be refused immediately: {:?}",
+			c.msgs
+		);
+		// And no hold was recorded, so the timer never runs.
+		assert!(
+			sim.test_digging(1).is_none(),
+			"a refused DigStart still opened a hold"
+		);
+	}
+
+	/// An ordinary undiggable target stays silent — the client's own
+	/// `diggable` check already agrees, so answering would be chatter on
+	/// every mistimed swing.
+	#[test]
+	fn an_ordinary_dig_start_is_not_answered() {
+		let mut sim = flat_sim("digstartquiet");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		// Air well above the ground: undiggable, but not protected.
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [8, FLAT_GROUND_TOP as i32 + 40, 8],
+			},
+		}]);
+		c.drain();
+		assert!(
+			!c.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::DigRefused { .. })),
+			"undiggable-but-unprotected should stay silent: {:?}",
+			c.msgs
+		);
 	}
 }

@@ -12,6 +12,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use digblock_core::block::BlockType;
 use digblock_core::chunk::{split_world, BlockWorld, ChunkData, CHUNK_SIZE, WORLD_VCHUNK};
 use digblock_core::fluid::FluidWorld;
+use digblock_core::protect::Region;
 use digblock_core::worldgen::build_column;
 use digblock_net::messages::BlockEdit;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -216,6 +217,12 @@ fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u16) {
 pub struct StoreWorld<'a> {
 	pub store: &'a mut ChunkStore,
 	pub edits: &'a mut Vec<(BlockEdit, u16)>,
+	/// Protected region, if any. Refusing the write here — rather than
+	/// filtering the schedule — is what stops water *sourced outside* a
+	/// locked region flowing into it: the fluid sim treats a false return
+	/// as "didn't land" and declines to propagate onward, so one check
+	/// covers every direction of approach.
+	pub lock: Option<Region>,
 }
 
 impl FluidWorld for StoreWorld<'_> {
@@ -224,6 +231,9 @@ impl FluidWorld for StoreWorld<'_> {
 	}
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
+		if digblock_core::protect::immutable(x, y, z, self.lock.as_ref()) {
+			return false;
+		}
 		if let Some(prev) = self.store.set_block(x, y, z, b) {
 			self.edits.push((
 				BlockEdit {
@@ -331,6 +341,7 @@ mod tests {
 		let mut world = StoreWorld {
 			store: &mut store,
 			edits: &mut edits,
+			lock: None,
 		};
 		assert!(world.set(2, y, 2, BlockType::Water));
 		// No-op write (same value) does not land or record.

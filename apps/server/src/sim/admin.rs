@@ -4,7 +4,7 @@
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
 
-use super::{client_send, OutMsg, Sim};
+use super::{client_send, OutMsg, Sim, SpawnLock};
 use digblock_net::messages::ServerMsg;
 use digblock_net::protocol::{validate_name, MAX_CHAT_LEN, SERVER_ID};
 use glam::Vec3;
@@ -26,6 +26,10 @@ const COMMANDS: &[(&str, &str)] = &[
 	("/ban <name>", "ban an online player by IP and kick them"),
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
+	(
+		"/lock-spawn [on|off]",
+		"show or set spawn protection (freezes spawn and makes its cells unbreakable)",
+	),
 ];
 
 /// `/tp` coordinate clamp: far past any playable range, comfortably
@@ -123,6 +127,7 @@ impl Sim {
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
 			"/unban" => self.cmd_unban(conn_id, &args),
+			"/lock-spawn" => self.cmd_lock_spawn(conn_id, &args),
 			other => self.reply(conn_id, &format!("unknown command {other} - try /help")),
 		}
 	}
@@ -168,6 +173,75 @@ impl Sim {
 			log::info!("admin {} teleported to {x} {z}", client.name);
 		}
 		self.reply(conn_id, &format!("teleported to {x} {z}"));
+	}
+
+	/// Show or toggle spawn protection.
+	///
+	/// Turning it on resolves the spawn FIRST and locks around the
+	/// *result*, never around the raw anchor: locking a spawn someone has
+	/// already dug out would freeze a broken one forever, and the "locked
+	/// ⇒ skip the search" fast path would then hand that broken spawn to
+	/// every joiner. If even the search can't find somewhere intact, the
+	/// command refuses rather than pinning a bad answer.
+	fn cmd_lock_spawn(&mut self, conn_id: u64, args: &[&str]) {
+		let usage = "usage: /lock-spawn [on|off]";
+		let arg = args.first().map(|s| s.to_ascii_lowercase());
+		if args.len() > 1 {
+			return self.reply(conn_id, usage);
+		}
+		let describe = |eye: Vec3| {
+			let r = digblock_core::spawn::lock_region(eye);
+			format!(
+				"spawn locked at {} {} {} (protecting x {}..{}, y {}..{}, z {}..{})",
+				eye.x.floor(),
+				eye.y.floor(),
+				eye.z.floor(),
+				r.x0,
+				r.x1,
+				r.y0,
+				r.y1,
+				r.z0,
+				r.z1,
+			)
+		};
+		match arg.as_deref() {
+			None => {
+				let line = match self.spawn_store.lock() {
+					Some(l) => describe(Vec3::from_array(l.eye)),
+					None => "spawn is unlocked (it moves aside if players dig it out)".into(),
+				};
+				self.reply(conn_id, &line);
+			}
+			Some("on") => {
+				if let Some(l) = self.spawn_store.lock() {
+					let line = describe(Vec3::from_array(l.eye));
+					return self.reply(conn_id, &format!("already {line}"));
+				}
+				let eye = self.spawn_point();
+				if !self.spawn_valid(eye) {
+					return self.reply(
+						conn_id,
+						"no clear spawn to lock — nowhere within range is intact; \
+						 fill in the excavation and try again",
+					);
+				}
+				self.spawn_store.set(Some(SpawnLock {
+					eye: eye.to_array(),
+				}));
+				log::info!("admin locked spawn at {eye}");
+				let line = describe(eye);
+				self.reply(conn_id, &line);
+			}
+			Some("off") => {
+				if self.spawn_store.lock().is_none() {
+					return self.reply(conn_id, "spawn is already unlocked");
+				}
+				self.spawn_store.set(None);
+				log::info!("admin unlocked spawn");
+				self.reply(conn_id, "spawn unlocked - its cells are editable again");
+			}
+			Some(_) => self.reply(conn_id, usage),
+		}
 	}
 
 	/// Resolve a display name to exactly one live connection, or a
@@ -730,5 +804,64 @@ mod tests {
 			pos[1],
 			h + 4
 		);
+	}
+
+	/// The lock reports, toggles, and persists — and it pins the region
+	/// around the *resolved* spawn, so the fast path ("locked means the
+	/// region can't have been broken, so skip the search") stays sound.
+	#[test]
+	fn lock_spawn_toggles_and_reports() {
+		let mut sim = admin_sim("lockspawn");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+
+		sim.tick_once(vec![chat(1, "/lock-spawn")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin).iter().any(|l| l.contains("unlocked")),
+			"expected an unlocked report: {:?}",
+			server_lines(&admin)
+		);
+		assert!(sim.spawn_lock().is_none());
+
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/lock-spawn on")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin).iter().any(|l| l.contains("locked at")),
+			"expected a locked report: {:?}",
+			server_lines(&admin)
+		);
+		let region = sim.spawn_lock().expect("locked");
+		// One block down, two out, three high, around the spawn floor.
+		let spawn = FLAT_SPAWN;
+		let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+		let h = spawn.y.floor() as i32 - 2;
+		assert_eq!(
+			(region.x0, region.x1, region.y0, region.y1, region.z0, region.z1),
+			(sx - 2, sx + 2, h, h + 3, sz - 2, sz + 2)
+		);
+
+		// Idempotent: locking again reports rather than re-pinning.
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/lock-spawn on")]);
+		admin.drain();
+		assert!(server_lines(&admin).iter().any(|l| l.contains("already")));
+
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/lock-spawn off")]);
+		admin.drain();
+		assert!(server_lines(&admin).iter().any(|l| l.contains("unlocked")));
+		assert!(sim.spawn_lock().is_none());
+	}
+
+	/// A bad argument explains itself instead of silently toggling.
+	#[test]
+	fn lock_spawn_rejects_a_bad_argument() {
+		let mut sim = admin_sim("lockspawnbad");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		sim.tick_once(vec![chat(1, "/lock-spawn maybe")]);
+		admin.drain();
+		assert!(server_lines(&admin).iter().any(|l| l.contains("usage:")));
+		assert!(sim.spawn_lock().is_none(), "bad argument changed the lock");
 	}
 }
