@@ -51,6 +51,38 @@ fn truncate_cols(s: &str, cols: usize) -> &str {
 /// aren't a thing any more.
 const CARET_W: f32 = 0.5;
 
+/// Already-faded messages the chat column brings back while the input
+/// box is open, so you can see what you are replying to.
+const CHAT_HISTORY_LINES: usize = 6;
+/// Alpha for those recalled lines: legible, but plainly in the past.
+const HISTORY_ALPHA: f32 = 0.45;
+
+/// The feed entries to draw, newest first, each with the alpha to draw
+/// it at. Live messages fade over their final second; once the ttl goes
+/// non-positive an entry is normally invisible, but with the chat box
+/// open the most recent [`CHAT_HISTORY_LINES`] of them come back dim.
+///
+/// The engine pushes oldest-first and never reorders, so walking in
+/// reverse visits strictly decreasing ttls — every live entry precedes
+/// every expired one and `map_while` can stop at the first entry that
+/// isn't being shown.
+fn visible_feed(
+	feed: &[(String, f32, u32)],
+	chat_open: bool,
+) -> impl Iterator<Item = (&str, f32, u32)> {
+	let mut history = 0usize;
+	feed.iter().rev().map_while(move |(text, ttl, color)| {
+		if *ttl > 0.0 {
+			Some((text.as_str(), ttl.clamp(0.0, 1.0), *color))
+		} else if chat_open && history < CHAT_HISTORY_LINES {
+			history += 1;
+			Some((text.as_str(), HISTORY_ALPHA, *color))
+		} else {
+			None
+		}
+	})
+}
+
 const BAR_W: f32 = 2.0;
 const GRAPH_H: f32 = 66.0;
 /// Vertical scale: 3 px per ms (16.7ms line lands at 50px).
@@ -523,7 +555,7 @@ impl Overlay {
 			feed_top = self.push_chat_input(size, view);
 		}
 		if !feed.is_empty() {
-			self.push_feed(size, feed, feed_top);
+			self.push_feed(size, feed, feed_top, chat.is_some());
 		}
 		self.run_cmds(ui, crate::ui::Layer::Content);
 		self.splits[1] = self.verts.len() as u32;
@@ -634,15 +666,21 @@ impl Overlay {
 	/// to where the player types; long lines wrap at the screen midpoint;
 	/// each entry fades out over its final second (`ttl` clamps to alpha)
 	/// in its own color (chat lines are tinted per sender). `top` is
-	/// where the block starts (below the open input line).
-	fn push_feed(&mut self, size: (u32, u32), feed: &[(String, f32, u32)], top: f32) {
+	/// where the block starts (below the open input line). With the box
+	/// open, faded-out messages come back dimly — see [`visible_feed`].
+	fn push_feed(
+		&mut self,
+		size: (u32, u32),
+		feed: &[(String, f32, u32)],
+		top: f32,
+		chat_open: bool,
+	) {
 		let s = self.scale;
 		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
 		let wrap_w = self.wrap_w(size);
 		let mut y = top;
 		let mut scratch = std::mem::take(&mut self.wrap_scratch);
-		for (text, ttl, color) in feed.iter().rev() {
-			let a = ttl.clamp(0.0, 1.0);
+		for (text, a, color) in visible_feed(feed, chat_open) {
 			font::wrap(font::ui(), text, glyph, wrap_w, &mut scratch);
 			for r in &scratch {
 				let chunk = &text[r.clone()];
@@ -653,7 +691,7 @@ impl Overlay {
 					margin + pad,
 					y + (line - glyph) / 2.0,
 					glyph,
-					fade(*color, a),
+					fade(color, a),
 					chunk,
 				);
 				y += line;
@@ -752,6 +790,48 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn feed(ttls: &[f32]) -> Vec<(String, f32, u32)> {
+		ttls.iter()
+			.enumerate()
+			.map(|(i, t)| (format!("m{i}"), *t, 0xFFFF_FFFF))
+			.collect()
+	}
+
+	fn texts(feed: &[(String, f32, u32)], open: bool) -> Vec<&str> {
+		visible_feed(feed, open).map(|(t, _, _)| t).collect()
+	}
+
+	/// With the box shut the feed looks exactly as it always did: live
+	/// messages only, newest first. Expired entries linger in the vec now
+	/// (they are the scrollback) and must stay invisible.
+	#[test]
+	fn a_closed_chat_box_shows_only_live_messages() {
+		let f = feed(&[-1.0, -1.0, 3.0, 8.0]);
+		assert_eq!(texts(&f, false), vec!["m3", "m2"]);
+	}
+
+	/// Typing brings back what just scrolled off — the point of keeping
+	/// expired entries at all — but only a bounded number of them.
+	#[test]
+	fn an_open_chat_box_recalls_bounded_history() {
+		let f = feed(&[-1.0, -1.0, 4.0]);
+		assert_eq!(texts(&f, true), vec!["m2", "m1", "m0"]);
+
+		let mut ttls = vec![-1.0; CHAT_HISTORY_LINES + 4];
+		*ttls.last_mut().unwrap() = 5.0;
+		let f = feed(&ttls);
+		assert_eq!(texts(&f, true).len(), CHAT_HISTORY_LINES + 1);
+	}
+
+	/// A message's final second fades it out; recalled history is drawn
+	/// at a flat, clearly-past alpha instead.
+	#[test]
+	fn alpha_fades_live_messages_and_flattens_history() {
+		let f = feed(&[-1.0, 0.25, 9.0]);
+		let alphas: Vec<f32> = visible_feed(&f, true).map(|(_, a, _)| a).collect();
+		assert_eq!(alphas, vec![1.0, 0.25, HISTORY_ALPHA]);
+	}
 
 	// The panel is right-anchored and sized from DEBUG_COLS, so a line
 	// that outgrows the budget would be clipped rather than push the

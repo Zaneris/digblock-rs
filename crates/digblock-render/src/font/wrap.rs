@@ -10,12 +10,14 @@ use super::Face;
 use std::ops::Range;
 
 /// Greedy word wrap. Appends byte ranges of `text` into `out` (cleared
-/// first). Breaks at spaces where possible; a word wider than `max_w`
-/// hard-breaks at the last char that fits; a single char wider than
-/// `max_w` still gets its own line, so this never emits an empty range
-/// and never loops.
+/// first). Breaks at spaces where possible, or after a `-` or `/`; a
+/// word wider than `max_w` hard-breaks at the last char that fits; a
+/// single char wider than `max_w` still gets its own line, so this never
+/// emits an empty range and never loops.
 ///
-/// The space at a soft break belongs to neither line.
+/// The space at a soft break belongs to neither line. A `-` or `/`
+/// belongs to the line above it, which is why it is only recorded as a
+/// break opportunity once it is known to fit.
 pub fn wrap(face: &Face, text: &str, px: f32, max_w: f32, out: &mut Vec<Range<usize>>) {
 	out.clear();
 	if text.is_empty() {
@@ -49,6 +51,14 @@ pub fn wrap(face: &Face, text: &str, px: f32, max_w: f32, out: &mut Vec<Range<us
 			};
 		} else {
 			w += a;
+			// Break-after opportunity. Recorded here, in the branch that
+			// knows the character fits, because unlike a space it stays on
+			// the line above — offering it before the fit test could push
+			// it past `max_w`.
+			if c == '-' || c == '/' {
+				let after = i + c.len_utf8();
+				brk = Some((after, after));
+			}
 		}
 	}
 	if start < text.len() || out.is_empty() {
@@ -102,8 +112,65 @@ mod tests {
 		assert_eq!(got, vec!["W", "W", "W"]);
 	}
 
+	/// A long hyphenated or slashed run is still made of words; breaking
+	/// it at the punctuation beats hard-breaking it mid-word. The
+	/// separator stays on the line above, so nothing is lost and no line
+	/// starts with one.
+	#[test]
+	fn breaks_after_hyphens_and_slashes() {
+		let px = 16.0;
+		let text = "north-east-of-spawn";
+		let max = font::ui().measure("north-east", px);
+		let got = lines(text, px, max);
+		assert!(got.len() >= 2, "{got:?}");
+		assert_eq!(got.concat(), text, "no characters lost");
+		for line in &got {
+			assert!(font::ui().measure(line, px) <= max + 1e-3, "{line:?}");
+			assert!(
+				!line.starts_with(['-', '/']),
+				"separator led a line: {got:?}"
+			);
+		}
+		// The hard-break fallback still covers a run with no separator.
+		let plain = lines("northeastofspawnnn", px, max);
+		assert_eq!(plain.concat(), "northeastofspawnnn");
+	}
+
 	#[test]
 	fn empty_text_is_one_empty_line() {
 		assert_eq!(lines("", 16.0, 100.0), vec![""]);
+	}
+
+	/// The property the chat column actually depends on, stated directly:
+	/// a break may only land where a space was, unless the word itself is
+	/// too wide for a whole line. Checked at the real chat geometry (a
+	/// 1280px window wraps at the midpoint, 16px UI face) over a message
+	/// at the wire's length limit, because a rule that holds for
+	/// "the quick brown fox" can still fail on a realistic sentence.
+	#[test]
+	fn a_full_length_chat_line_only_breaks_between_words() {
+		let px = 16.0;
+		// overlay.rs: half the window, less MARGIN + 2*PAD at scale 1.
+		let max_w = 1280.0 / 2.0 - (8.0 + 6.0 * 2.0);
+		let text = "hey has anyone seen the waterfall east of spawn? \
+		            i built a staircase down to the lake and there is a \
+		            cave behind it with iron";
+		let got = lines(text, px, max_w);
+		assert!(got.len() >= 2, "expected a wrap, got {got:?}");
+		let mut at = 0usize;
+		for line in &got {
+			assert!(font::ui().measure(line, px) <= max_w + 1e-3, "{line:?}");
+			// Every line boundary must sit on a space in the original.
+			at += line.len();
+			if at < text.len() {
+				assert_eq!(
+					&text[at..at + 1],
+					" ",
+					"break inside a word at byte {at}: {got:?}"
+				);
+				at += 1;
+			}
+		}
+		assert_eq!(got.join(" "), text);
 	}
 }
