@@ -588,8 +588,7 @@ impl Menu {
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
 			Setting::UiScale => {
-				let v =
-					(st.ui_scale + dir as f32 * UI_SCALE_STEP).clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+				let v = snap_range(st.ui_scale, dir, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
 				(std::mem::replace(&mut st.ui_scale, v) - v).abs() > f32::EPSILON
 			}
 			Setting::MusicVol => {
@@ -1347,10 +1346,17 @@ pub(crate) fn bar_rect(row: [f32; 4], scale: f32) -> [f32; 4] {
 	crate::ui::widgets::slider_rect(row.into(), scale).arr()
 }
 
+/// Step a slider by `dir`, re-derived from its step grid rather than
+/// added to the live value: repeated float addition drifts, and the
+/// interface scale's 5% step drifts faster than the volume's 10% one.
+fn snap_range(v: f32, dir: i32, min: f32, max: f32, step: f32) -> f32 {
+	let steps = ((v - min) / step).round() as i32 + dir;
+	let last = ((max - min) / step).round() as i32;
+	min + steps.clamp(0, last) as f32 * step
+}
+
 fn snap_vol(v: f32, dir: i32) -> f32 {
-	let steps = (v / VOL_STEP).round() as i32 + dir;
-	let max = (VOL_MAX / VOL_STEP).round() as i32;
-	steps.clamp(0, max) as f32 * VOL_STEP
+	snap_range(v, dir, 0.0, VOL_MAX, VOL_STEP)
 }
 
 struct RowSpec {
@@ -1986,11 +1992,19 @@ mod tests {
 		menu.handle_key(Key::Right);
 		assert!(menu.take_settings_change().is_none());
 
-		// Interface scale: sel 1, 100% -> 75%, floored at the min.
+		// Interface scale: sel 1, 100% -> 95%, then down to the min.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
-		assert!((s.ui_scale - 0.75).abs() < 1e-4);
+		assert!(
+			(s.ui_scale - (1.0 - UI_SCALE_STEP)).abs() < 1e-4,
+			"{}",
+			s.ui_scale
+		);
+		for _ in 0..40 {
+			menu.handle_key(Key::Left);
+		}
+		assert!((menu.take_settings_change().unwrap().ui_scale - UI_SCALE_MIN).abs() < 1e-4);
 		menu.handle_key(Key::Left);
 		assert!(menu.take_settings_change().is_none(), "already at the min");
 
@@ -2024,10 +2038,41 @@ mod tests {
 			.rows
 			.iter()
 			.any(|r| r.text.contains("Music Volume: 0%")));
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Interface Scale: 75%")));
+		assert!(view.rows.iter().any(|r| r
+			.text
+			.contains(&format!("Interface Scale: {:.0}%", UI_SCALE_MIN * 100.0))));
+	}
+
+	/// Every notch of the interface-scale slider is reachable and lands on
+	/// its exact grid value. With a 5% step the old add-to-the-live-value
+	/// path drifts, and the label rounds to whole percent — so a run to
+	/// one end and back is the test that would catch it.
+	#[test]
+	fn ui_scale_slider_walks_its_whole_range_without_drift() {
+		let notches = ((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP).round() as i32;
+		let mut v = 1.0f32;
+		let mut seen = Vec::new();
+		for _ in 0..notches * 2 {
+			v = snap_range(v, -1, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
+		}
+		assert_eq!(v, UI_SCALE_MIN, "bottoms out exactly");
+		for _ in 0..notches {
+			seen.push(v);
+			v = snap_range(v, 1, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
+		}
+		assert_eq!(v, UI_SCALE_MAX, "tops out exactly");
+		seen.push(v);
+		assert_eq!(seen.len() as i32, notches + 1);
+		for (i, got) in seen.iter().enumerate() {
+			let want = UI_SCALE_MIN + i as f32 * UI_SCALE_STEP;
+			assert!((got - want).abs() < 1e-6, "notch {i}: {got} vs {want}");
+			// The label rounds to whole percent; no two notches may print
+			// the same number.
+			assert_eq!(
+				format!("{:.0}", got * 100.0).parse::<i32>().unwrap(),
+				70 + 5 * i as i32
+			);
+		}
 	}
 
 	#[test]

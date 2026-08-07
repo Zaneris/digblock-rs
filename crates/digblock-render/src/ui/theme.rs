@@ -10,9 +10,9 @@
 //! 1. **There is one text size per frame**, [`super::Style::glyph`],
 //!    derived from the UI scale by [`super::scale::glyph_px`]. Nothing
 //!    here scales text. The only deliberate exceptions in the whole UI
-//!    are [`super::scale::FIXED_GLYPH_PX`] (hotbar stack counts and the
-//!    debug panel), and `screens::every_screen_draws_text_at_one_size`
-//!    pins that.
+//!    is [`super::scale::FIXED_GLYPH_PX`] (the debug overlay, which is a
+//!    diagnostic rather than UI), and
+//!    `screens::every_screen_draws_text_at_one_size` pins that.
 //! 2. **Every constant here is a logical size** — multiply by
 //!    `Style::scale` exactly once, at the point of use.
 
@@ -98,14 +98,15 @@ pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
 /// rounds to whole pixels and the layout's text is not a linear
 /// function of the scale.
 ///
-/// The ladder is the point. The obvious implementation — multiply the
+/// Stepping is the point. The obvious implementation — multiply the
 /// style by `budget / needed` — produces text at 14.3px next to a menu
 /// drawn at 28px, which is exactly the mismatch this module exists to
-/// prevent. Every rung here is a scale the UI legitimately runs at, so
-/// a shrunken panel is a *smaller* panel, not a differently-designed
-/// one. Returns [`scale::UI_SCALE_FLOOR`] if even that overflows: at
-/// that point the window is simply too short, and a tight panel beats a
-/// panel sliding off the bottom of the screen.
+/// prevent. A quarter step is the same increment the derived half of
+/// [`scale::ui_scale`] moves in, so a shrunken panel is the page one
+/// smaller window would have drawn, not a differently-designed one.
+/// Bottoms out at [`scale::UI_SCALE_FLOOR`]: past there the window is
+/// simply too short, and a tight panel beats a panel sliding off the
+/// bottom of the screen.
 pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 	const STEP: f32 = 0.25;
 	let mut s = scale;

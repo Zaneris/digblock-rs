@@ -88,9 +88,8 @@ pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 }
 
 /// Emit the hotbar: slot widgets (backdrops, icons, selection border,
-/// hit rects under `id_of(i)`) plus stack counts. Counts stay at
-/// [`super::scale::FIXED_GLYPH_PX`] regardless of scale — small by
-/// design — with the count badge's drop shadow.
+/// hit rects under `id_of(i)`) plus stack counts, drawn at the frame's
+/// text size like the rest of the UI.
 pub fn hotbar<Id: Copy + PartialEq>(
 	ui: &mut Ui<'_, Id>,
 	size: (u32, u32),
@@ -112,7 +111,7 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
 		if let SlotView::Block { count, .. } = view.slots[i] {
 			let color = if count == 0 { DIM } else { WHITE };
-			widgets::count_badge(ui.dl, Layer::Content, rect, count, color);
+			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, color);
 		}
 	}
 }
@@ -122,7 +121,6 @@ mod tests {
 	use super::*;
 	use crate::ui::draw::{Cmd, DrawList};
 	use crate::ui::hit::HitMap;
-	use crate::ui::scale::FIXED_GLYPH_PX;
 	use crate::ui::widgets::Style;
 	use digblock_core::hotbar::Hotbar;
 	use digblock_core::inventory::Inventory;
@@ -168,8 +166,11 @@ mod tests {
 		}
 	}
 
+	/// Counts used to be pinned at `scale::FIXED_GLYPH_PX` while the slots
+	/// around them scaled, so on a dense display a 32px UI carried 16px
+	/// stack numbers. They ride the frame's text size now.
 	#[test]
-	fn counts_stay_fixed_size_while_slots_scale() {
+	fn counts_scale_with_the_slots() {
 		const SHADOW: u32 = 0xE0000000;
 		let (dl, _) = emit(2.0);
 		let (cmds, arena) = dl.cmds(Layer::Content);
@@ -187,8 +188,9 @@ mod tests {
 		let (shadows, counts): (Vec<_>, Vec<_>) = texts.iter().partition(|(_, _, c)| *c == SHADOW);
 		assert_eq!(counts.len(), 2);
 		assert_eq!(shadows.len(), 2, "every count carries a drop shadow");
+		let want = Style::new(2.0).glyph;
 		for (text, px, _) in &texts {
-			assert_eq!(*px, FIXED_GLYPH_PX, "count {text} must not scale");
+			assert_eq!(*px, want, "count {text} should ride the frame's size");
 		}
 		assert!(counts.iter().any(|(t, _, _)| *t == "3"));
 		assert!(counts.iter().any(|(t, _, _)| *t == "0"));

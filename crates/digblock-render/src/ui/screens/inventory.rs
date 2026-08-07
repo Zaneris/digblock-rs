@@ -144,9 +144,9 @@ impl InvScreen {
 			let icon = grid.get(i).map(|b| hud::item_icon(HotbarItem::Block(b)));
 			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
 			if let Some(b) = grid.get(i) {
-				// Same pinned-size badge as the hotbar — the rows sit
-				// stacked, so a size mismatch would read as a glitch.
-				widgets::count_badge(ui.dl, Layer::Content, rect, inv.count(b), WHITE);
+				// Same badge as the hotbar — the rows sit stacked, so a
+				// size mismatch would read as a glitch.
+				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, inv.count(b), WHITE);
 			}
 		}
 		// The held item rides the cursor, above everything.

@@ -63,6 +63,11 @@ mod tests {
 		let mut hits: HitMap<InvId> = HitMap::default();
 		let mut screen = super::inventory::InvScreen::default();
 		screen.open();
+		// Filled, not default: an empty grid draws no stack counts, and
+		// those are exactly the text this screen once got wrong.
+		let mut grid = InvGrid::default();
+		grid.file(B::Wood);
+		grid.file(B::Stone);
 		screen.build(
 			&mut Ui {
 				dl: &mut dl,
@@ -70,7 +75,7 @@ mod tests {
 				style,
 			},
 			size,
-			&InvGrid::default(),
+			&grid,
 			&inv,
 			1.0,
 		);
@@ -127,12 +132,15 @@ mod tests {
 	/// immediately visible as "the alchemy page uses different fonts".
 	///
 	/// The only sanctioned exception in the entire UI is
-	/// [`scale::FIXED_GLYPH_PX`] (hotbar stack counts and the debug
-	/// overlay), which no screen here draws.
+	/// [`scale::FIXED_GLYPH_PX`], the debug overlay's pinned diagnostic
+	/// size, which no screen here draws.
 	#[test]
 	fn every_screen_draws_text_at_one_size() {
 		for size in [(1280u32, 800u32), (1280, 720), (2560, 1600), (960, 600)] {
-			for &s in &[0.75f32, 1.0, 1.75, 2.5] {
+			// Includes the off-quarter scales a 5%-step interface-scale
+			// preference now produces (1.0 × 0.7, 2.0 × 0.85): the frame's
+			// size is whatever `glyph_px` gives, not a value off a grid.
+			for &s in &[0.7f32, 0.75, 1.0, 1.7, 1.75, 2.5] {
 				let want = Style::new(s).glyph;
 				for (name, dl) in each_screen(size, s) {
 					let sizes = text_sizes(&dl);
@@ -142,19 +150,24 @@ mod tests {
 						sizes.iter().all(|p| *p == px),
 						"{name} mixed sizes {sizes:?}"
 					);
-					// Alchemy is the one screen that can outgrow its window,
-					// so its fit pass may step the whole page down a rung.
-					// What no screen may do is draw two sizes in one frame,
-					// grow past the frame's size, or land off the ladder.
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
-					assert!(
-						name == "alchemy" || px == want,
-						"{name} shrank to {px}, want {want}"
-					);
-					assert!(
-						(3..=12).any(|q| scale::glyph_px(q as f32 / 4.0) == px),
-						"{name} drew {px}px, off the glyph_px ladder"
-					);
+					if name == "alchemy" {
+						// The one screen that can outgrow its window, so its
+						// fit pass may step the whole page down. What it may
+						// not do is invent a size: every step is a quarter
+						// off the frame's own scale, not a fraction of it,
+						// and the last one is the floor it bottoms out on.
+						let mut rungs: Vec<f32> = (0..16)
+							.map(|k| scale::glyph_px(s - k as f32 * 0.25))
+							.collect();
+						rungs.push(scale::glyph_px(scale::UI_SCALE_FLOOR));
+						assert!(
+							rungs.contains(&px),
+							"alchemy drew {px}px, not a rung down from {s}: {rungs:?}"
+						);
+					} else {
+						assert_eq!(px, want, "{name} shrank to {px}");
+					}
 				}
 			}
 		}
