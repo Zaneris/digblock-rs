@@ -257,6 +257,18 @@ const EVICT_MIN: usize = 8;
 /// and the world simply fills in as fast as meshing can keep up anyway.
 const NET_EDIT_BUDGET: usize = 256;
 
+/// Messages the feed keeps. Also the scrollback: entries are no longer
+/// dropped when they expire, so this is how far back the chat box can
+/// show while you type.
+const FEED_MAX: usize = 12;
+/// How long a message stays lit before it fades out of the HUD. It stays
+/// in `feed` afterwards with a non-positive ttl — see [`FEED_TTL_FLOOR`].
+const FEED_TTL_SECS: f32 = 15.0;
+/// Expired entries stop counting down here. Without a floor the ttl of a
+/// long-lived message would run away into large negatives; nothing reads
+/// the magnitude, only the sign, so it just needs to stay finite.
+const FEED_TTL_FLOOR: f32 = -1.0;
+
 pub struct Engine {
 	config: EngineConfig,
 	/// Resolved world seed (config.seed or a random one).
@@ -413,6 +425,15 @@ pub struct Engine {
 	audio_scratch: Vec<crate::audio::AudioCmd>,
 	/// Player eye position last frame (footstep distance).
 	prev_player_pos: Vec3,
+	/// Last music pool announced to the filler; `None` until the first
+	/// frame, so startup always sends one.
+	music_night: Option<bool>,
+	/// Were the feet in water last frame? Rising edge = one splash.
+	prev_wet: bool,
+	/// Highest foot height since the feet were last supported — the fall
+	/// height a splash is scaled by. Reset on ground and in water, so
+	/// walking down a hillside into a lake isn't a plunge.
+	fall_from_y: f32,
 	/// Per-frame name-tag scratch (reused allocation).
 	/// Name tags, kept beyond `nametag_count` so their String buffers
 	/// survive between frames instead of being reallocated every frame.
@@ -663,6 +684,11 @@ impl Engine {
 			ambient: crate::audio::Ambient::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
+			music_night: None,
+			// Assume wet: whatever the spawn turns out to be, arriving
+			// there is not "entering the water".
+			prev_wet: true,
+			fall_from_y: spawn.y,
 			nametag_scratch: Vec::new(),
 			nametag_count: 0,
 			services: None,
@@ -861,6 +887,11 @@ impl Engine {
 	/// when no sink is attached.
 	fn step_audio(&mut self, dt: f32) {
 		use crate::audio::{ambient_sfx, step_sfx, AmbientZone, AudioCmd, LOOP_AMBIENT};
+		/// Splash gain: a step into the shallows, plus this much per block
+		/// of the fall that preceded it, capped.
+		const SPLASH_GAIN_MIN: f32 = 0.3;
+		const SPLASH_GAIN_PER_BLOCK: f32 = 0.06;
+		const SPLASH_GAIN_MAX: f32 = 0.9;
 		if self.audio.is_none() {
 			return;
 		}
@@ -870,33 +901,51 @@ impl Engine {
 			forward: self.camera.dir().to_array(),
 		});
 
-		// Footsteps: walk mode only, driven by actual horizontal motion.
+		// Footsteps and the water-entry splash, both driven by the feet.
 		let submerged = self.eye_in_water();
+		let d = self.player.pos - self.prev_player_pos;
+		let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
+		let (bx, bz) = (
+			self.player.pos.x.floor() as i32,
+			self.player.pos.z.floor() as i32,
+		);
+		let below = self.pipeline.block_at(bx, (feet - 0.05).floor() as i32, bz);
+		let grounded = below.is_some_and(|b| b.props().collides);
+		let feet_wet = self
+			.pipeline
+			.block_at(bx, feet.floor() as i32, bz)
+			.is_some_and(|b| b.is_water());
+		let wet = submerged || feet_wet;
 		if self.walking {
-			let d = self.player.pos - self.prev_player_pos;
 			let moved = Vec3::new(d.x, 0.0, d.z).length();
-			let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
-			let (bx, bz) = (
-				self.player.pos.x.floor() as i32,
-				self.player.pos.z.floor() as i32,
-			);
-			let below = self.pipeline.block_at(bx, (feet - 0.05).floor() as i32, bz);
-			let grounded = below.is_some_and(|b| b.props().collides);
-			let feet_wet = self
-				.pipeline
-				.block_at(bx, feet.floor() as i32, bz)
-				.is_some_and(|b| b.is_water());
-			if let Some((m, gain)) =
-				self.footsteps
-					.advance(moved, grounded, below, submerged || feet_wet)
-			{
+			if let Some((m, gain)) = self.footsteps.advance(moved, grounded, below, wet) {
 				self.emit(AudioCmd::Sfx {
 					sound: step_sfx(m),
 					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
 					gain,
 				});
 			}
+			// One splash on the rising edge, scaled by the fall that got
+			// you there — a step off a bank barely registers, a plunge
+			// from a cliff does. Fly mode is excluded: the body isn't
+			// being simulated, so drifting through a surface isn't an
+			// entry.
+			if wet && !self.prev_wet {
+				let drop = (self.fall_from_y - feet).max(0.0);
+				let gain = (SPLASH_GAIN_MIN + drop * SPLASH_GAIN_PER_BLOCK).min(SPLASH_GAIN_MAX);
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Splash,
+					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
+					gain,
+				});
+			}
 		}
+		self.prev_wet = wet;
+		self.fall_from_y = if grounded || wet || !self.walking {
+			feet
+		} else {
+			self.fall_from_y.max(feet)
+		};
 		self.prev_player_pos = self.player.pos;
 
 		// Waterfall voices.
@@ -940,6 +989,18 @@ impl Engine {
 				pos: None,
 				gain: crate::audio::AMBIENT_GAIN,
 			});
+		}
+
+		// Music pool follows the world clock. `tod` is the sun's angle
+		// from straight down (0 = noon, ±90 = the horizons, 180 =
+		// midnight), so hour = 12 - tod/15 and the 18:00-06:00 night
+		// window is exactly "sun below the horizon". No hysteresis
+		// needed: tod is monotonic, and the filler only acts on this at
+		// the next track boundary anyway.
+		let night = self.sun.tod.abs() >= 90.0;
+		if self.music_night != Some(night) {
+			self.music_night = Some(night);
+			self.emit(AudioCmd::MusicSet { night });
 		}
 	}
 
@@ -1009,6 +1070,8 @@ impl Engine {
 		});
 		self.ambient.reset();
 		self.prev_player_pos = pos;
+		self.prev_wet = true;
+		self.fall_from_y = pos.y;
 	}
 
 	/// Flush and detach the active named save (leaving for a server,
@@ -1193,6 +1256,8 @@ impl Engine {
 		self.correction_offset = Vec3::ZERO;
 		self.pending_ack = None;
 		self.prev_player_pos = pos;
+		self.prev_wet = true;
+		self.fall_from_y = pos.y;
 		self.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
@@ -1220,8 +1285,6 @@ impl Engine {
 	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
 	/// player, matching the sender's body color).
 	fn push_feed_colored(&mut self, text: String, color: u32) {
-		const FEED_MAX: usize = 8;
-		const FEED_TTL_SECS: f32 = 8.0;
 		if self.feed.len() >= FEED_MAX {
 			self.feed.remove(0);
 		}
@@ -2825,10 +2888,13 @@ impl Game for Engine {
 				}
 			}
 		}
+		// Expired messages are kept, not dropped: the chat box shows recent
+		// history while you type, and there is nothing to show if the only
+		// copy was thrown away the moment it faded. `feed` is capped at
+		// FEED_MAX either way, so this is a fixed-size ring.
 		for m in &mut self.feed {
-			m.1 -= dt;
+			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
-		self.feed.retain(|m| m.1 > 0.0);
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;

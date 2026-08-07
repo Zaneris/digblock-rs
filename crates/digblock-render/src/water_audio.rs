@@ -8,11 +8,13 @@ use digblock_core::chunk::ChunkPos;
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 
-/// Hearing radius; a bit inside spray's 64 so voices never outlive the
-/// visual.
-const RADIUS: f32 = 48.0;
-/// Max concurrent waterfall voices.
-const MAX_VOICES: usize = 4;
+/// Hearing radius. Deliberately much tighter than spray's visual 64: you
+/// can see a cascade across a valley without standing in its noise.
+const RADIUS: f32 = 32.0;
+/// Max concurrent waterfall voices. Kept low because voices sum — four
+/// mid-gain loops around the camera read as "water everywhere" even when
+/// each one is individually reasonable.
+const MAX_VOICES: usize = 3;
 /// Greedy clustering: a new emitter target must be at least this far
 /// from every already-accepted target.
 const MIN_SEP: f32 = 8.0;
@@ -24,6 +26,23 @@ const MATCH_DIST: f32 = 6.0;
 const GRACE_SECS: f32 = 1.0;
 /// Reconcile at 10 Hz — voices don't need frame-rate updates.
 const STEP_SECS: f32 = 0.1;
+
+/// Authored gain for a cluster of `n` impact cells at `dist` blocks.
+///
+/// Bigger clusters are louder, capped well under the mix ceiling. The
+/// distance taper is the load-bearing half: without it every voice
+/// inside [`RADIUS`] was authored at 0.3-0.6 regardless of range, and
+/// the *only* falloff came from the platform panner — which on desktop
+/// clamps to unity for everything close by, so a trickle across the
+/// valley and the cascade at your feet arrived at the same loudness.
+/// Squared so distant water sits well back in the mix, and reaching
+/// exactly 0 at `RADIUS` also removes the pop when a voice ages in or
+/// out at the range edge.
+fn gain_of(n: u32, dist: f32) -> f32 {
+	let cluster = (0.3 + 0.1 * (1.0 + n as f32).ln()).min(0.6);
+	let taper = (1.0 - dist / RADIUS).clamp(0.0, 1.0);
+	cluster * taper * taper
+}
 
 struct Voice {
 	id: LoopId,
@@ -114,14 +133,11 @@ impl WaterAudio {
 		self.scratch = near;
 		self.scratch.clear();
 
-		// Bigger clusters are louder, capped well under the mix ceiling.
-		let gain_of = |n: u32| (0.3 + 0.1 * (1.0 + n as f32).ln()).min(0.6);
-
 		// Match targets to live voices (move), start the unmatched,
 		// stop voices whose targets stayed gone past the grace.
 		let mut claimed = vec![false; self.voices.len()];
 		for (pos, n) in targets {
-			let gain = gain_of(n);
+			let gain = gain_of(n, cam.distance(pos));
 			let best = self
 				.voices
 				.iter()
@@ -259,6 +275,27 @@ mod tests {
 		// Well past it: the voice stops.
 		w.update(1.5, Vec3::ZERO, &mut out);
 		assert_eq!(stops(&out), 1, "{out:?}");
+	}
+
+	/// The bug this pins: `gain_of` used to ignore distance entirely, so
+	/// every audible waterfall was authored at 0.3-0.6 whatever its range
+	/// and the whole falloff was left to the platform panner (which on
+	/// desktop is flat inside 5.6 blocks). Water was audible everywhere.
+	#[test]
+	fn gain_falls_off_with_distance_and_reaches_zero_at_the_radius() {
+		let near = gain_of(1, 0.0);
+		assert!(near > 0.0);
+		let mut prev = f32::INFINITY;
+		for step in 0..=32 {
+			let g = gain_of(1, step as f32);
+			assert!(g <= prev + 1e-6, "gain rose at {step} blocks: {g} > {prev}");
+			prev = g;
+		}
+		assert!(gain_of(1, RADIUS) <= 1e-6, "audible at the range edge");
+		// Half way out, a lone cell is well back in the mix.
+		assert!(gain_of(1, RADIUS / 2.0) < near * 0.3);
+		// A bigger cluster is still louder than a lone cell at the same range.
+		assert!(gain_of(8, 10.0) > gain_of(1, 10.0));
 	}
 
 	#[test]

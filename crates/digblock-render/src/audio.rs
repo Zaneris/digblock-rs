@@ -27,6 +27,7 @@ pub enum Sfx {
 	StepEarth,
 	StepWood,
 	Waterfall,
+	Splash,
 	AmbientWind,
 	AmbientWater,
 	AmbientCave,
@@ -49,6 +50,7 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::StepEarth => a::STEP_EARTH,
 		Sfx::StepWood => a::STEP_WOOD,
 		Sfx::Waterfall => a::WATERFALL,
+		Sfx::Splash => a::SPLASH,
 		Sfx::AmbientWind => a::AMBIENT_WIND,
 		Sfx::AmbientWater => a::AMBIENT_WATER,
 		Sfx::AmbientCave => a::AMBIENT_CAVE,
@@ -56,7 +58,7 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 14] = [
+pub const ALL_SFX: [Sfx; 15] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -68,6 +70,7 @@ pub const ALL_SFX: [Sfx; 14] = [
 	Sfx::StepEarth,
 	Sfx::StepWood,
 	Sfx::Waterfall,
+	Sfx::Splash,
 	Sfx::AmbientWind,
 	Sfx::AmbientWater,
 	Sfx::AmbientCave,
@@ -179,6 +182,36 @@ pub enum AudioCmd {
 		music: f32,
 		sfx: f32,
 	},
+	/// Which music pool to draw from. Sent when the world clock crosses
+	/// a horizon, and once at startup. Deliberately advisory: fillers
+	/// switch at the next track boundary rather than cutting the one
+	/// that's playing, so dusk doesn't chop a track in half.
+	MusicSet {
+		night: bool,
+	},
+}
+
+/// A shuffled permutation of `0..n`, from `seed`. Both fillers use this
+/// so neither needs an RNG dependency of its own, and the shuffle is
+/// testable without an audio device.
+///
+/// Fisher-Yates over a SplitMix64 stream: the playlist is a handful of
+/// tracks, so all this has to be is unbiased and cheap.
+pub fn shuffle_order(seed: u64, n: usize) -> Vec<usize> {
+	let mut order: Vec<usize> = (0..n).collect();
+	let mut state = seed;
+	let mut next = move || {
+		state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+		let mut z = state;
+		z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+		z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+		z ^ (z >> 31)
+	};
+	for i in (1..n).rev() {
+		let j = (next() % (i as u64 + 1)) as usize;
+		order.swap(i, j);
+	}
+	order
 }
 
 /// The injected backend. Deliberately not `Send` — the web filler holds
@@ -197,8 +230,14 @@ pub struct Footsteps {
 	was_airborne: bool,
 }
 
-/// Horizontal distance between steps, blocks (walk speed 4 → ~2 steps/s).
-const STRIDE: f32 = 2.2;
+/// Horizontal distance between steps, blocks (walk speed 4 → ~3.6
+/// steps/s). Cadence, not playback rate: the samples are untouched, so
+/// stepping faster costs no pitch. Because this is a distance
+/// accumulator, a slower walk still paces itself correctly.
+const STRIDE: f32 = 1.1;
+/// Gain of an ordinary step, and of the heavier one on landing.
+const STEP_GAIN: f32 = 0.6;
+const LAND_GAIN: f32 = 0.8;
 
 impl Footsteps {
 	/// Advance by one frame. `moved` = horizontal distance this frame;
@@ -221,12 +260,12 @@ impl Footsteps {
 		// Landing: one immediate, slightly heavier step.
 		if std::mem::take(&mut self.was_airborne) {
 			self.accum = 0.0;
-			return Some((material_of(ground), 0.5));
+			return Some((material_of(ground), LAND_GAIN));
 		}
 		self.accum += moved;
 		if self.accum >= STRIDE {
 			self.accum -= STRIDE;
-			Some((material_of(ground), 0.35))
+			Some((material_of(ground), STEP_GAIN))
 		} else {
 			None
 		}
@@ -343,21 +382,35 @@ mod tests {
 		let mut f = Footsteps::default();
 		let ground = Some(BlockType::Grass);
 		let mut steps = 0;
-		// 60 frames of walking at 4 blocks/s: ~4 blocks → 1-2 steps.
+		// 60 frames of walking at 4 blocks/s: ~4 blocks → 3-4 steps.
 		for _ in 0..60 {
 			if f.advance(4.0 / 60.0, true, ground, false).is_some() {
 				steps += 1;
 			}
 		}
-		assert!((1..=2).contains(&steps), "{steps}");
+		assert!((3..=4).contains(&steps), "{steps}");
 		// Airborne: accumulator resets, no steps.
 		assert!(f.advance(1.0, false, None, false).is_none());
 		assert!(f.advance(1.0, false, None, false).is_none());
 		// Landing emits one heavier step immediately.
 		let landed = f.advance(0.0, true, ground, false);
-		assert_eq!(landed, Some((Material::Earth, 0.5)));
+		assert_eq!(landed, Some((Material::Earth, LAND_GAIN)));
 		// Swimming: silent even while "grounded".
 		assert!(f.advance(1.0, true, ground, true).is_none());
+	}
+
+	#[test]
+	fn shuffle_is_a_permutation_and_varies_with_the_seed() {
+		for n in [0usize, 1, 2, 3, 8] {
+			let mut sorted = shuffle_order(0xDEAD_BEEF, n);
+			assert_eq!(sorted.len(), n);
+			sorted.sort_unstable();
+			assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "n={n}");
+		}
+		// The whole point: two launches don't open with the same track.
+		let orders: std::collections::HashSet<Vec<usize>> =
+			(0..16).map(|s| shuffle_order(s, 6)).collect();
+		assert!(orders.len() > 8, "seeds barely move the order");
 	}
 
 	#[test]

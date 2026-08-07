@@ -65,11 +65,12 @@ pub mod sfx {
 	pub const STEP_EARTH: &[u8] = include_bytes!("../../../assets/sfx/step_earth.ogg");
 	pub const STEP_WOOD: &[u8] = include_bytes!("../../../assets/sfx/step_wood.ogg");
 	pub const WATERFALL: &[u8] = include_bytes!("../../../assets/sfx/waterfall.ogg");
+	pub const SPLASH: &[u8] = include_bytes!("../../../assets/sfx/splash.ogg");
 	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
 	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
 	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
 
-	pub const ALL: [(&str, &[u8]); 14] = [
+	pub const ALL: [(&str, &[u8]); 15] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -81,6 +82,7 @@ pub mod sfx {
 		("step_earth.ogg", STEP_EARTH),
 		("step_wood.ogg", STEP_WOOD),
 		("waterfall.ogg", WATERFALL),
+		("splash.ogg", SPLASH),
 		("ambient_wind.ogg", AMBIENT_WIND),
 		("ambient_water.ogg", AMBIENT_WATER),
 		("ambient_cave.ogg", AMBIENT_CAVE),
