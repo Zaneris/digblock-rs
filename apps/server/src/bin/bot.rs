@@ -252,9 +252,12 @@ fn run_bot(
 					result.disconnected = Some(reason.clone());
 					return result;
 				}
-				NetEvent::EditRejected(e) => {
+				NetEvent::DigRefused { cell, reason } => {
+					log::debug!("bot {index}: dig refused at {cell:?} ({reason:?})");
+				}
+				NetEvent::EditRejected { edit, reason } => {
 					result.edits_rejected += 1;
-					log::debug!("bot {index}: edit rejected at {:?}", e.cell);
+					log::debug!("bot {index}: edit rejected at {:?} ({reason:?})", edit.cell);
 				}
 				NetEvent::Teleported { pos, look: _ } => {
 					// Server-side return to spawn (bots never request one,

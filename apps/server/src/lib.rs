@@ -11,6 +11,7 @@ pub use digblock_persist::journal;
 pub mod master;
 pub mod net;
 pub mod sim;
+pub mod spawn_store;
 pub mod store;
 
 use crossbeam_channel::Receiver;

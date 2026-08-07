@@ -186,7 +186,7 @@ mod tests {
 		// one tick ahead of the server consuming it. Delivered one input
 		// per tick, the buffer never backs up, so consumed inputs and
 		// server ticks stay 1:1.
-		let mut local = Player::new(sim.spawn);
+		let mut local = Player::new(sim.spawn_anchor);
 		let mut history = Vec::new(); // local post-state per input tick
 		let mut t = 100;
 		for _ in 0..60 {

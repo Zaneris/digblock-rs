@@ -306,7 +306,12 @@ impl TestClient {
 				NetEvent::Ack { .. } => self.acks += 1,
 				NetEvent::Refused { reason } => panic!("refused: {reason}"),
 				NetEvent::Disconnected { reason } => panic!("disconnected: {reason}"),
-				NetEvent::EditRejected(e) => panic!("edit rejected: {e:?}"),
+				NetEvent::DigRefused { cell, reason } => {
+					panic!("dig refused at {cell:?} ({reason:?})")
+				}
+				NetEvent::EditRejected { edit, reason } => {
+					panic!("edit rejected: {edit:?} ({reason:?})")
+				}
 				NetEvent::PlayerJoined { name, .. } => self.joined_names.push(name),
 				NetEvent::PlayerLeft { .. } => {}
 				NetEvent::Inventory { counts } => self.inventories.push(counts),

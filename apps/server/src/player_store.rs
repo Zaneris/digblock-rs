@@ -15,9 +15,12 @@
 //! logs loudly and keeps serving from memory.
 //!
 //! Format v2 appends an optional item layout (hotbar + grid wire
-//! arrangements) per record; v1 files (inventory only) are still read —
-//! the archive-and-start-fresh path is reserved for actual corruption,
-//! never a routine upgrade (it would wipe every player's inventory).
+//! arrangements) per record; v3 appends the player's last position and
+//! return-to-spawn cooldown. v1 and v2 files are still read — the
+//! archive-and-start-fresh path is reserved for actual corruption, never
+//! a routine upgrade (it would wipe every player's inventory). An older
+//! file simply has no stored position, so those players resume at spawn
+//! once and are stored in v3 from their next disconnect on.
 
 use digblock_core::hotbar::HOTBAR_SLOTS;
 use digblock_core::inv_grid::GRID_SLOTS;
@@ -28,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 2 + 4; // magic | version | pad | count
 
 /// Dirty-state flush cadence.
@@ -64,6 +67,22 @@ pub struct PlayerRecord {
 	/// `None` = never stored (v1 data, or a pre-layout disconnect); the
 	/// sim derives the deterministic default instead.
 	pub layout: Option<PlayerLayout>,
+	/// Eye position at last disconnect. `None` = pre-v3 data or a first
+	/// join; the sim starts those players at the resolved spawn.
+	///
+	/// Resuming here is what closes the rejoin exploit: without it,
+	/// reconnecting was a free trip to spawn that ignored the
+	/// return-to-spawn cooldown entirely.
+	pub pos: Option<[f32; 3]>,
+	/// Server tick of the player's last return-to-spawn, so the cooldown
+	/// survives a reconnect too — resuming in place would otherwise still
+	/// leave "rejoin to reset the timer" open.
+	///
+	/// Ticks are per-run and reset to 0 on restart, so a stored tick from
+	/// a previous run reads as long expired (`wrapping_sub` yields a huge
+	/// interval). That fails open across restarts, which is the safe
+	/// direction for a convenience cooldown.
+	pub last_return_tick: Option<u32>,
 }
 
 pub struct PlayerStore {
@@ -194,6 +213,23 @@ impl PlayerStore {
 					}
 				}
 			}
+			// v3: last position and return-to-spawn tick, each flagged.
+			match &rec.pos {
+				None => buf.push(0),
+				Some(pos) => {
+					buf.push(1);
+					for c in pos {
+						buf.extend_from_slice(&c.to_le_bytes());
+					}
+				}
+			}
+			match &rec.last_return_tick {
+				None => buf.push(0),
+				Some(t) => {
+					buf.push(1);
+					buf.extend_from_slice(&t.to_le_bytes());
+				}
+			}
 		}
 		let tmp = self.path.with_extension("bin.tmp");
 		{
@@ -254,11 +290,41 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 		} else {
 			None
 		};
+		// v1/v2 records end before these: the player resumes at spawn once,
+		// then stores a position from their next disconnect on.
+		let (pos, last_return_tick) = if version >= 3 {
+			let mut flag = [0u8; 1];
+			r.read_exact(&mut flag).map_err(|_| bad("short record"))?;
+			let pos = if flag[0] == 1 {
+				let mut c = [0f32; 3];
+				for v in c.iter_mut() {
+					let mut b = [0u8; 4];
+					r.read_exact(&mut b).map_err(|_| bad("short record"))?;
+					*v = f32::from_le_bytes(b);
+				}
+				Some(c)
+			} else {
+				None
+			};
+			r.read_exact(&mut flag).map_err(|_| bad("short record"))?;
+			let tick = if flag[0] == 1 {
+				let mut b = [0u8; 4];
+				r.read_exact(&mut b).map_err(|_| bad("short record"))?;
+				Some(u32::from_le_bytes(b))
+			} else {
+				None
+			};
+			(pos, tick)
+		} else {
+			(None, None)
+		};
 		out.push((
 			hash,
 			PlayerRecord {
 				inventory: Inventory::from_wire(&pairs),
 				layout,
+				pos,
+				last_return_tick,
 			},
 		));
 	}
@@ -317,6 +383,8 @@ mod tests {
 				PlayerRecord {
 					inventory: inv,
 					layout: Some(layout()),
+					pos: None,
+					last_return_tick: None,
 				},
 			);
 			s.put(id_b, PlayerRecord::default());
@@ -394,5 +462,101 @@ mod tests {
 		assert_eq!(h, hash_identity(&secret), "deterministic");
 		assert_ne!(h, secret, "never the raw bearer secret");
 		assert_ne!(h, hash_identity(&[8; 16]));
+	}
+
+	/// An existing v2 file (inventory + layout, no position) keeps every
+	/// player's items and arrangement and simply reports no stored
+	/// position — those players resume at spawn once, then store one.
+	/// This must NOT trip the archive-and-start-fresh path.
+	#[test]
+	fn v2_file_reads_with_no_position() {
+		let dir = temp_dir("v2compat");
+		std::fs::create_dir_all(&dir).unwrap();
+		let id = hash_identity(&[6; 16]);
+		// Hand-built v2 snapshot: one record, one (Dirt, 3) pair, layout.
+		let mut buf = Vec::new();
+		buf.extend_from_slice(&MAGIC);
+		buf.extend_from_slice(&2u16.to_le_bytes());
+		buf.extend_from_slice(&[0, 0]);
+		buf.extend_from_slice(&1u32.to_le_bytes());
+		buf.extend_from_slice(&id);
+		buf.push(1);
+		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
+		buf.extend_from_slice(&3u32.to_le_bytes());
+		buf.push(1);
+		let l = layout();
+		for w in l.hotbar.iter().chain(l.grid.iter()) {
+			buf.extend_from_slice(&w.to_le_bytes());
+		}
+		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
+
+		let mut s = PlayerStore::open(&dir).unwrap();
+		let rec = s.get(&id);
+		assert_eq!(rec.inventory.count(BlockType::Dirt), 3, "v2 data survives");
+		assert_eq!(rec.layout, Some(layout()), "v2 layout survives");
+		assert_eq!(rec.pos, None, "v2 records carry no position");
+		assert_eq!(rec.last_return_tick, None);
+
+		// The next write upgrades the file to v3 losslessly.
+		s.put(
+			id,
+			PlayerRecord {
+				pos: Some([1.5, 2.5, 3.5]),
+				..rec
+			},
+		);
+		s.sync();
+		let s = PlayerStore::open(&dir).unwrap();
+		assert_eq!(s.get(&id).pos, Some([1.5, 2.5, 3.5]));
+		assert_eq!(s.get(&id).layout, Some(layout()));
+		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 3);
+	}
+
+	/// v3 round-trips the position and cooldown tick.
+	#[test]
+	fn position_and_cooldown_round_trip() {
+		let dir = temp_dir("v3pos");
+		let id = hash_identity(&[9; 16]);
+		{
+			let mut s = PlayerStore::open(&dir).unwrap();
+			s.put(
+				id,
+				PlayerRecord {
+					inventory: Inventory::default(),
+					layout: Some(layout()),
+					pos: Some([12.5, 130.5, -7.5]),
+					last_return_tick: Some(4242),
+				},
+			);
+			s.sync();
+		}
+		let s = PlayerStore::open(&dir).unwrap();
+		let rec = s.get(&id);
+		assert_eq!(rec.pos, Some([12.5, 130.5, -7.5]));
+		assert_eq!(rec.last_return_tick, Some(4242));
+	}
+
+	/// A record with no position stored (a player who never disconnected
+	/// under v3) reads back absent rather than as some default coordinate.
+	#[test]
+	fn absent_position_stays_absent() {
+		let dir = temp_dir("v3nopos");
+		let id = hash_identity(&[10; 16]);
+		{
+			let mut s = PlayerStore::open(&dir).unwrap();
+			s.put(
+				id,
+				PlayerRecord {
+					inventory: Inventory::default(),
+					layout: None,
+					pos: None,
+					last_return_tick: None,
+				},
+			);
+			s.sync();
+		}
+		let s = PlayerStore::open(&dir).unwrap();
+		assert_eq!(s.get(&id).pos, None);
+		assert_eq!(s.get(&id).last_return_tick, None);
 	}
 }

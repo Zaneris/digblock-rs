@@ -212,6 +212,10 @@ pub enum RejectReason {
 	/// item the edit claims to use. Honest clients never see this — the
 	/// slot rides the same reliable stream as `Layout`. Appended in v10.
 	WrongSlot,
+	/// The cell may never be modified: the world floor, or a region an
+	/// admin has locked. Honest clients predict this locally and never
+	/// send the edit; the server rejects it regardless. Appended in v11.
+	Protected,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -313,6 +317,20 @@ pub enum ServerMsg {
 	Layout {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
+	},
+	/// A hold-to-dig was refused at `DigStart`, before any timer ran.
+	/// `DigStart` carries no seq, so this answers by cell instead.
+	///
+	/// Only sent for refusals the client cannot predict — a protected
+	/// region it has no knowledge of. Ordinary undiggable targets stay
+	/// silent (the client's own `diggable` check already agrees), so this
+	/// never becomes chatter on a mistimed swing.
+	///
+	/// LAST on purpose: postcard encodes the variant index, so this must
+	/// be appended, never inserted. Appended in v11.
+	DigRefused {
+		cell: [i32; 3],
+		reason: RejectReason,
 	},
 }
 

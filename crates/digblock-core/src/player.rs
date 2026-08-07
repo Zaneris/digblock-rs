@@ -130,72 +130,11 @@ const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
 /// presentation special case, exactly like stairs.
 const MOUNT_RATE: f32 = WALK_SPEED;
 
-/// Eye spawn position: the nearest land to the origin. Walks expanding
-/// square rings (8-block stride) until a column clears the beach line, so
-/// spawning tracks the terrain instead of hardcoding a height — and never
-/// drops the player into the ocean. A candidate must also be in the open:
-/// no surrounding terrain reaching eye level and no decoration blocks
-/// nearby, so the camera neither starts inside a tree nor face-planted
-/// into a hillside (both read as "spawned inside a block").
+/// Eye spawn position from the seed alone — see [`crate::spawn::anchor`],
+/// which owns the walk. Kept here as the name the rest of the engine has
+/// always called; use [`crate::spawn::resolve`] when player edits matter.
 pub fn spawn(seed: f64) -> Vec3 {
-	use crate::decoration::box_obstructed;
-	use crate::worldgen::{carved, column_shape_above, column_shapes_in, SEA_LEVEL};
-	const STEP: i32 = 8;
-	// Clearance radius around the candidate column, in columns.
-	const CLEAR: i32 = 2;
-	// 192 rings × 8 = 1536 blocks — at least one full continent wavelength,
-	// so the walk crosses any ocean the warped continent field can produce.
-	for ring in 0..=192 {
-		let d = ring * STEP;
-		for z in (-d..=d).step_by(STEP as usize) {
-			for x in (-d..=d).step_by(STEP as usize) {
-				if x.abs().max(z.abs()) != d {
-					continue; // interior already visited on earlier rings
-				}
-				// The dry-land gate goes first, as the presieve it can be:
-				// an ocean-heavy seed walks thousands of candidates and
-				// essentially all of them are sea.
-				let Some(s) = column_shape_above(x, z, seed, SEA_LEVEL + 1) else {
-					continue;
-				};
-				let h = s.height;
-				// A spawnable surface kind (excludes water columns) that
-				// isn't a cave mouth.
-				if !s.surface.props().spawnable || carved(x, h, z, seed) {
-					continue;
-				}
-				// Everything a column fills — terrain, river water, a
-				// cascade's WaterFall sheet — stays below eye level
-				// (h + 2) within CLEAR columns: a spawn at the foot of a
-				// slope (or against a waterfall) fills the whole view.
-				let near = column_shapes_in(x - CLEAR, x + CLEAR, z - CLEAR, z + CLEAR, seed);
-				let side = (2 * CLEAR + 1) as usize;
-				let walled = near.iter().enumerate().any(|(i, n)| {
-					i != side * CLEAR as usize + CLEAR as usize
-						&& n.height
-							.max(n.water)
-							.max(n.fall.map_or(i32::MIN, |(_, t)| t))
-							> h + 1
-				});
-				// Decoration (trees, boulders, bushes) writes into the
-				// capsule cells h+1.. that pristine terrain never touches.
-				if !walled
-					&& !box_obstructed(
-						x - CLEAR,
-						x + CLEAR,
-						h + 1,
-						h + 3,
-						z - CLEAR,
-						z + CLEAR,
-						seed,
-					) {
-					return Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5);
-				}
-			}
-		}
-	}
-	// Pathological seed: no clear land within 1536 blocks — tread water.
-	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
+	crate::spawn::anchor(seed)
 }
 
 /// One tick's worth of input.
@@ -1114,23 +1053,27 @@ mod tests {
 		})
 	}
 
-	/// Where each of these seeds spawned before the walk grew its altitude
-	/// presieve. The presieve only skips columns the full classification
-	/// would have rejected on the same height gate, so not one of these
-	/// may move — a drift here means players of an existing world wake up
-	/// somewhere else.
+	/// The anchor each seed resolves to. A drift here means players of an
+	/// existing world wake up somewhere else, so these move only for a
+	/// deliberate rule change — never as a side effect.
+	///
+	/// Last moved when the disc test became a real levelness check: the
+	/// old rule permitted neighbours at `h + 1` and said nothing about
+	/// neighbours below `h`, so spawns could sit boxed in by rock at head
+	/// height or on the lip of a drop. Requiring a level disc relocated
+	/// most seeds (`8675309` happened to already satisfy it).
 	#[test]
 	fn spawn_positions_are_pinned() {
 		for (seed, want) in [
-			(42.0f64, Vec3::new(0.5, 158.5, 0.5)),
-			(1234.5678, Vec3::new(88.5, 132.5, -95.5)),
-			(7.0, Vec3::new(0.5, 135.5, 0.5)),
-			(99.0, Vec3::new(200.5, 132.5, -143.5)),
-			(2024.0, Vec3::new(96.5, 132.5, -199.5)),
-			(0.0, Vec3::new(0.5, 132.5, 8.5)),
-			(-3.5, Vec3::new(-71.5, 134.5, -79.5)),
-			(555.0, Vec3::new(0.5, 154.5, 0.5)),
-			(31337.0, Vec3::new(40.5, 132.5, -63.5)),
+			(42.0f64, Vec3::new(0.5, 159.5, -7.5)),
+			(1234.5678, Vec3::new(120.5, 137.5, 32.5)),
+			(7.0, Vec3::new(-15.5, 136.5, 24.5)),
+			(99.0, Vec3::new(200.5, 132.5, -135.5)),
+			(2024.0, Vec3::new(72.5, 133.5, -215.5)),
+			(0.0, Vec3::new(-39.5, 153.5, 72.5)),
+			(-3.5, Vec3::new(-71.5, 136.5, -87.5)),
+			(555.0, Vec3::new(-15.5, 155.5, -15.5)),
+			(31337.0, Vec3::new(112.5, 146.5, -47.5)),
 			(8675309.0, Vec3::new(96.5, 132.5, -95.5)),
 		] {
 			assert_eq!(spawn(seed), want, "seed {seed}");

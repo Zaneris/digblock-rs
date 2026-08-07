@@ -21,12 +21,14 @@ pub(crate) mod harness;
 use crate::ban_store::BanStore;
 use crate::journal::Journal;
 use crate::player_store::{hash_identity, IdentityHash, PlayerLayout, PlayerRecord, PlayerStore};
+use crate::spawn_store::{SpawnLock, SpawnStore};
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
 use digblock_core::hotbar::Hotbar;
 use digblock_core::inv_grid::{reconcile_layout, InvGrid};
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
+use digblock_core::protect::Region;
 use digblock_net::codec;
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
 use digblock_net::protocol::{
@@ -158,6 +160,10 @@ impl Client {
 	}
 
 	/// The persistence snapshot (written through on edits + disconnect).
+	///
+	/// Position rides along so a reconnect resumes in place rather than
+	/// handing out a free trip to spawn, and the return-to-spawn tick with
+	/// it so the cooldown can't be reset by rejoining either.
 	fn record(&self) -> PlayerRecord {
 		PlayerRecord {
 			inventory: self.inventory.clone(),
@@ -165,6 +171,8 @@ impl Client {
 				hotbar: self.hotbar.to_wire(),
 				grid: self.grid.to_wire(),
 			}),
+			pos: Some(self.player.pos.to_array()),
+			last_return_tick: self.last_return_tick,
 		}
 	}
 }
@@ -176,7 +184,16 @@ pub struct Sim {
 	fluid: FluidSim,
 	flow_accum: f32,
 	sim_radius: i32,
-	spawn: Vec3,
+	/// The seed-derived spawn, fixed for the life of the world. Every
+	/// resolve measures from here, never from the last answer, so a
+	/// griefer can push spawn aside but never walk it across the map.
+	spawn_anchor: Vec3,
+	/// False for the synthetic-column test seam: the edit-aware search
+	/// reads real worldgen, which a flat test world does not agree with,
+	/// so those sims keep their injected spawn verbatim.
+	spawn_search: bool,
+	/// Persistent spawn lock (`/lock-spawn`).
+	spawn_store: SpawnStore,
 	clients: FxHashMap<u64, Client>,
 	/// Connections that have not completed the Hello handshake, with the
 	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS).
@@ -211,7 +228,9 @@ impl Sim {
 		workers: usize,
 	) -> std::io::Result<Self> {
 		let store = ChunkStore::new(seed, workers);
-		Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))
+		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;
+		sim.spawn_search = true;
+		Ok(sim)
 	}
 
 	/// Test seam: inject a synthetic column source (and a spawn that fits
@@ -239,6 +258,7 @@ impl Sim {
 		let journal = Journal::open(data_dir, seed)?;
 		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
+		let spawn_store = SpawnStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -246,7 +266,9 @@ impl Sim {
 			fluid: FluidSim::default(),
 			flow_accum: 0.0,
 			sim_radius,
-			spawn,
+			spawn_anchor: spawn,
+			spawn_search: false,
+			spawn_store,
 			clients: FxHashMap::default(),
 			lobby: FxHashMap::default(),
 			action_queue: Vec::new(),
@@ -341,6 +363,15 @@ impl Sim {
 	#[cfg(test)]
 	fn test_player(&self, conn_id: u64) -> Option<digblock_core::player::PlayerState> {
 		self.clients.get(&conn_id).map(|c| c.player.state())
+	}
+
+	/// The cell a client currently holds a dig on, if any.
+	#[cfg(test)]
+	fn test_digging(&self, conn_id: u64) -> Option<(i32, i32, i32)> {
+		self.clients
+			.get(&conn_id)
+			.and_then(|c| c.digging.as_ref())
+			.map(|d| d.cell)
 	}
 
 	#[cfg(test)]
@@ -540,10 +571,27 @@ impl Sim {
 	/// timer — every start zeroes progress — and the action-queue cap
 	/// bounds the per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
+		// Before the client borrow: `spawn_lock` reads all of `self`.
+		let lock = self.spawn_lock();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
 		if !client.live {
+			return;
+		}
+		// Refuse a protected cell up front. The completing edit would
+		// reject it anyway, but only after the player held the button
+		// through the block's full dig time for nothing — the refusal is
+		// only useful if it arrives when the hold starts.
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, lock.as_ref()) {
+			client.digging = None;
+			client_send(
+				client,
+				&ServerMsg::DigRefused {
+					cell: [cell.0, cell.1, cell.2],
+					reason: RejectReason::Protected,
+				},
+			);
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
@@ -566,14 +614,64 @@ impl Sim {
 		};
 	}
 
-	/// The spawn point with any player-built obstruction cleared. The base
-	/// spawn sits above pristine terrain, so only journaled (placed) cells
-	/// can occupy it: resident chunks answer from the store (journal
-	/// already replayed); non-resident cells fall back to the journal's
-	/// in-memory final values — nobody needs to be near spawn for the
-	/// scan to see a tower built there.
+	/// The active spawn lock's protected region, if any.
+	pub(super) fn spawn_lock(&self) -> Option<Region> {
+		self.spawn_store
+			.lock()
+			.map(|l| digblock_core::spawn::lock_region(Vec3::from_array(l.eye)))
+	}
+
+	/// The spawn point to use right now.
+	///
+	/// Locked spawns short-circuit: the region is unmodifiable, so it
+	/// cannot have stopped being valid and there is nothing to search for.
+	/// Otherwise the anchor is re-validated against the journal and the
+	/// search relocates sideways if players have dug it out. Stateless on
+	/// purpose — a transient hole that happens to be open when someone
+	/// joins costs that one player an offset, and the next join snaps back
+	/// to the anchor rather than inheriting a stored detour.
+	fn spawn_point(&self) -> Vec3 {
+		if let Some(lock) = self.spawn_store.lock() {
+			return Vec3::from_array(lock.eye);
+		}
+		if !self.spawn_search {
+			return self.spawn_anchor;
+		}
+		digblock_core::spawn::resolve(self.spawn_anchor, self.store.seed(), &|x, y, z| {
+			self.journal_cell(x, y, z)
+		})
+	}
+
+	/// Whether `eye` passes every spawn rule as the world stands.
+	///
+	/// Vacuously true for the synthetic-column test seam: those worlds are
+	/// not described by real worldgen, so the pristine half of the test
+	/// would reject a spawn that is perfectly good in the world the sim
+	/// actually has.
+	fn spawn_valid(&self, eye: Vec3) -> bool {
+		!self.spawn_search
+			|| digblock_core::spawn::valid(eye, self.store.seed(), &|x, y, z| {
+				self.journal_cell(x, y, z)
+			})
+	}
+
+	/// The journal's final value for a cell, or `None` if no player has
+	/// ever edited it. Journal ONLY — never the chunk store, which answers
+	/// `None` for anything non-resident and would make unloaded columns
+	/// read as void. The journal is the complete record: every landed
+	/// write, fluid included, is appended to it.
+	fn journal_cell(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.journal
+			.index
+			.column(x.div_euclid(16), z.div_euclid(16))
+			.and_then(|cells| cells.get(&(x, y, z)).copied())
+	}
+
+	/// The resolved spawn with any residual obstruction stepped over.
+	/// The search already guarantees a clear capsule, so this only bites
+	/// on the give-up path where nowhere within range was intact.
 	fn safe_spawn(&self) -> Vec3 {
-		self.clear_landing(self.spawn)
+		self.clear_landing(self.spawn_point())
 	}
 
 	/// Raise `eye` until the capsule clears both live terrain and
@@ -586,10 +684,7 @@ impl Sim {
 			// Raw cells, not `try_from_id`: a state-carrying cell (e.g. a
 			// stair) must read as its real, solid block here — decoding to
 			// None would let a joiner spawn inside it.
-			self.journal
-				.index
-				.column(x.div_euclid(16), z.div_euclid(16))
-				.and_then(|cells| cells.get(&(x, y, z)).copied())
+			self.journal_cell(x, y, z)
 		};
 		player::ascend_clear(eye, &cell_at)
 	}
@@ -719,8 +814,20 @@ impl Sim {
 		reconcile_layout(&inventory, &mut hotbar, &mut grid);
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
-		// Blocks built at the spawn point since worldgen raise the landing.
-		let spawn = self.safe_spawn();
+		// Resume where they left off. Rejoining used to be a free trip to
+		// spawn that sidestepped the return-to-spawn cooldown entirely;
+		// stored positions close that, and `last_return_tick` (restored
+		// below) stops a rejoin resetting the timer as well.
+		//
+		// The landing rule still applies: the world may have changed while
+		// they were away — someone built on the spot, or an admin locked a
+		// region around it — so a resumed position is stepped clear the
+		// same way a spawn is. Anonymous joins and pre-v3 records have no
+		// stored position and start at spawn.
+		let spawn = match record.pos {
+			Some(p) => self.clear_landing(Vec3::from_array(p)),
+			None => self.safe_spawn(),
+		};
 		let mut ok = send_frame(
 			&out,
 			&ServerMsg::Welcome {
@@ -841,7 +948,9 @@ impl Sim {
 				active_slot: 0,
 				identity,
 				digging: None,
-				last_return_tick: None,
+				// Restored, not reset: otherwise reconnecting clears the
+				// cooldown and the timer is bypassed by rejoining.
+				last_return_tick: record.last_return_tick,
 			},
 		);
 		self.residency_dirty = true;
@@ -1607,6 +1716,87 @@ mod tests {
 				Err(tokio::sync::mpsc::error::TryRecvError::Empty)
 			),
 			"lobby connection must hear nothing back"
+		);
+	}
+
+	/// Reconnecting resumes where the player left off. Before this, a
+	/// rejoin was a free trip to spawn — the whole point of the
+	/// return-to-spawn cooldown, sidestepped by a disconnect.
+	#[test]
+	fn reconnect_resumes_at_the_last_position() {
+		let dir = temp_dir("resume");
+		let identity = [11u8; 16];
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let _c = connect_with_identity(&mut sim, 1, identity);
+		wait_live(&mut sim, 1);
+
+		// Walk well away from spawn.
+		let mut t = 100;
+		for _ in 0..240 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		let away = sim.test_player(1).unwrap().pos;
+		assert!(away.distance(FLAT_SPAWN) > 5.0, "test needs to be away");
+
+		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+		let c2 = connect_with_identity(&mut sim, 2, identity);
+		let spawn = c2
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { spawn, .. } => Some(glam::Vec3::from_array(*spawn)),
+				_ => None,
+			})
+			.expect("Welcome");
+		assert!(
+			spawn.distance(away) < 1.0,
+			"resumed at {spawn} instead of {away}"
+		);
+		assert_eq!(sim.test_player(2).unwrap().pos, spawn);
+	}
+
+	/// ...and the cooldown itself survives the reconnect, so rejoining
+	/// can't reset the timer either.
+	#[test]
+	fn reconnect_does_not_reset_the_spawn_cooldown() {
+		let dir = temp_dir("resumecd");
+		let identity = [12u8; 16];
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let _c = connect_with_identity(&mut sim, 1, identity);
+		wait_live(&mut sim, 1);
+
+		// Walk away and use the return, consuming the cooldown.
+		let mut t = 100;
+		for _ in 0..240 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::ReturnToSpawn,
+		}]);
+		assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+
+		// Walk away again, then reconnect and immediately re-request.
+		for _ in 0..240 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+		let _c2 = connect_with_identity(&mut sim, 2, identity);
+		wait_live(&mut sim, 2);
+		let away = sim.test_player(2).unwrap().pos;
+		assert!(away.distance(FLAT_SPAWN) > 5.0, "resumed away from spawn");
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 2,
+			msg: ClientMsg::ReturnToSpawn,
+		}]);
+		assert!(
+			sim.test_player(2).unwrap().pos.distance(away) < 1.0,
+			"rejoining reset the return-to-spawn cooldown"
 		);
 	}
 }

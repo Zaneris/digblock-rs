@@ -277,6 +277,13 @@ pub struct Engine {
 	look_accum: (f32, f32),
 	/// Left mouse button currently held (hold-to-dig); right stays an edge.
 	dig_held: bool,
+	/// Cell whose dig was refused — locally (world floor) or by the
+	/// server (a spawn lock it never told us about). Held until the aim
+	/// moves elsewhere, and load-bearing in two ways: it explains itself
+	/// once instead of every frame, and it stops `step_dig` immediately
+	/// re-opening a hold the server just refused, which would re-send
+	/// `DigStart` every frame for as long as the button was down.
+	refused_cell: Option<(i32, i32, i32)>,
 	click_place: bool,
 	/// In-progress hold-to-dig, advanced at 60 Hz while `dig_held` stays
 	/// on a valid, unchanged target.
@@ -686,6 +693,7 @@ impl Engine {
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			dig_held: false,
+			refused_cell: None,
 			click_place: false,
 			dig: None,
 			dig_accum: 0.0,
@@ -1332,11 +1340,49 @@ impl Engine {
 						self.revert_inv_delta(e.inv_delta);
 					}
 				}
-				NetEvent::EditRejected(e) => {
+				NetEvent::EditRejected { edit: e, reason } => {
 					// Revert the predicted edit: the cell AND the
 					// inventory delta (dig credit / place debit).
 					self.pipeline.set_cell(e.cell.0, e.cell.1, e.cell.2, e.prev);
 					self.revert_inv_delta(e.inv_delta);
+					// A protected cell is the one rejection a player can
+					// act on, and the only one they can't see coming: the
+					// world floor is predicted locally, but a spawn lock
+					// is server-side knowledge.
+					//
+					// `inv_delta` is the dig/place discriminator (+1 = dig
+					// credit, -1 = place debit) — NOT `placed == Air`,
+					// which a slab dig breaks by writing its shrunk value.
+					// A multi-cell action carries the delta on its first
+					// entry only, so this speaks once per action rather
+					// than once per cell.
+					if reason == Some(digblock_net::messages::RejectReason::Protected) {
+						match e.inv_delta {
+							Some((_, n)) if n > 0 => {
+								self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into())
+							}
+							Some((_, n)) if n < 0 => {
+								self.push_feed(digblock_core::protect::REFUSE_PLACE_MSG.into())
+							}
+							_ => {}
+						}
+					}
+				}
+				NetEvent::DigRefused { cell, reason } => {
+					// Abandon the hold the moment the server says no, so
+					// the progress bar stops instead of running the full
+					// dig time out against a block that can't break.
+					// Recording the cell is what stops `step_dig` opening
+					// a fresh hold on it next frame.
+					if self.dig.as_ref().is_some_and(|d| d.cell == cell) {
+						self.cancel_dig();
+					}
+					if reason == digblock_net::messages::RejectReason::Protected
+						&& self.refused_cell != Some(cell)
+					{
+						self.refused_cell = Some(cell);
+						self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+					}
 				}
 				NetEvent::Inventory { counts } => {
 					// Authoritative base (strict wire decode, sub-material
@@ -1681,7 +1727,33 @@ impl Engine {
 	}
 
 	/// Is `hit` something the current tool can dig?
+	/// The local world's spawn: the same edit-aware resolve the server
+	/// runs, against this client's own edit overlay.
+	///
+	/// A world with no overlay (an unsaved session) has no recorded edits
+	/// to reason about, so the anchor stands; `ascend_clear` still steps
+	/// over anything built there this session.
+	fn local_spawn(&self) -> Vec3 {
+		let resolved = match self.pipeline.overlay() {
+			Some(o) => digblock_core::spawn::resolve(self.spawn_pos, self.seed, &|x, y, z| {
+				o.column(x.div_euclid(16), z.div_euclid(16))
+					.and_then(|cells| cells.get(&(x, y, z)).copied())
+			}),
+			None => self.spawn_pos,
+		};
+		let pipeline = &self.pipeline;
+		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
+	}
+
 	fn diggable(&self, hit: &RayHit) -> bool {
+		// Permanently protected cells never start a hold. Only the world
+		// floor is knowable client-side — a server's spawn lock is its own
+		// secret, so a cell it has already refused is remembered instead.
+		if digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, None)
+			|| self.refused_cell == Some(hit.cell)
+		{
+			return false;
+		}
 		if self.water_tool_selected() {
 			hit.block.is_fluid_source()
 		} else {
@@ -1695,6 +1767,22 @@ impl Engine {
 		if !self.dig_held {
 			self.cancel_dig();
 			return;
+		}
+		// Aiming somewhere new clears the refusal, so a fresh attempt on
+		// a different block speaks again.
+		if self.refused_cell.is_some() && self.refused_cell != self.target.map(|h| h.cell) {
+			self.refused_cell = None;
+		}
+		// The locally-knowable refusal (the world floor). A server-side
+		// lock can't be predicted and arrives as `DigRefused` instead.
+		if let Some(h) = self
+			.target
+			.filter(|h| digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None))
+		{
+			if self.refused_cell != Some(h.cell) {
+				self.refused_cell = Some(h.cell);
+				self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+			}
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
 		let Some(hit) = valid else {
@@ -2660,8 +2748,7 @@ impl Game for Engine {
 		}
 		// Return to spawn: one shared 60s cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
-		// pump_net); local play lands immediately, stepping up past any
-		// blocks built at the spawn point.
+		// pump_net); local play resolves and lands immediately.
 		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
 		self.menu
 			.set_spawn_cooldown(self.spawn_cooldown.ceil() as u32);
@@ -2680,10 +2767,12 @@ impl Game for Engine {
 			match self.net.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
 				_ => {
-					let pipeline = &self.pipeline;
-					let pos = digblock_core::player::ascend_clear(self.spawn_pos, &|x, y, z| {
-						pipeline.cell_at(x, y, z)
-					});
+					// Same rule the server runs: relocate sideways out of
+					// anything dug into the spawn, never descend into it.
+					// The overlay — not `pipeline.cell_at` — is the edit
+					// view: the pipeline answers None for unloaded columns,
+					// which the support test would read as void.
+					let pos = self.local_spawn();
 					self.apply_teleport(pos, Vec3::ZERO);
 				}
 			}
