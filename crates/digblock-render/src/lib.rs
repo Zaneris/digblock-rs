@@ -25,4 +25,4 @@ pub mod ui;
 mod water;
 mod water_audio;
 
-pub use engine::{Engine, EngineConfig};
+pub use engine::{DebugScreen, Engine, EngineConfig};

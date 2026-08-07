@@ -1,0 +1,132 @@
+//! The shared look: every spacing token and panel color the screens
+//! draw with. One module, because a screen that invents its own padding
+//! — or worse, its own text size — reads as a different program bolted
+//! onto the same window. The alchemy screen did exactly that (a 1.35×
+//! title and a continuous shrink-to-fit of its own glyph size) and the
+//! mismatch was visible at a glance next to the menu.
+//!
+//! Two rules hold everything together:
+//!
+//! 1. **There is one text size per frame**, [`super::Style::glyph`],
+//!    derived from the UI scale by [`super::scale::glyph_px`]. Nothing
+//!    here scales text. The only deliberate exceptions in the whole UI
+//!    are [`super::scale::FIXED_GLYPH_PX`] (hotbar stack counts and the
+//!    debug panel), and `screens::every_screen_draws_text_at_one_size`
+//!    pins that.
+//! 2. **Every constant here is a logical size** — multiply by
+//!    `Style::scale` exactly once, at the point of use.
+
+use super::scale;
+
+/// Panel backdrop for the in-game screens (inventory, alchemy), which
+/// sit over a still-visible world.
+pub const PANEL_BG: u32 = 0xC0101010;
+/// Full-screen dim those screens lay under their panel. Faded by the
+/// world's own darkness through [`super::widgets::scaled_dim`].
+pub const SCREEN_DIM: u32 = 0x70000000;
+/// The startup/pause menu owns the screen rather than overlaying play,
+/// so it dims harder — and its panel is correspondingly lighter.
+pub const MENU_DIM: u32 = 0xA0000000;
+pub const MENU_PANEL_BG: u32 = 0x90000000;
+
+/// Inset between a panel's backdrop edge and its content box.
+pub const PAD: f32 = 12.0;
+
+/// A plain text row: menu rows, section headers, titles. Text centers
+/// in it, so this is leading as much as it is height.
+pub const ROW_H: f32 = 28.0;
+
+/// A row carrying an item icon and an action button — taller than a
+/// text row because the icon and button set the floor, not the text.
+pub const ACTION_ROW_H: f32 = 46.0;
+
+/// Breathing room between adjacent action rows. Text rows don't take
+/// one: [`ROW_H`] already carries their leading.
+pub const ROW_GAP: f32 = 6.0;
+
+/// A blank band separating two sections of one panel.
+pub const SECTION_GAP: f32 = 18.0;
+
+/// Clearance a bottom-anchored panel keeps above the hotbar.
+pub const GAP_ABOVE_BAR: f32 = 24.0;
+
+/// Clearance a bottom-anchored panel keeps below the top of the window
+/// when [`fit_scale`] has run out of room.
+pub const TOP_MARGIN: f32 = 12.0;
+
+/// Panels never shrink below this row width — a short screen would
+/// otherwise read as a narrow column, and would resize as its rows
+/// changed.
+pub const MIN_PANEL_W: f32 = 560.0;
+
+/// Panel geometry from a content row's extent: a row `w` wide and `h`
+/// tall, padded. The one place `PAD` becomes pixels.
+pub fn panel_of(row_x: f32, row_y: f32, row_w: f32, row_h: f32, scale: f32) -> super::Rect {
+	let pad = PAD * scale;
+	super::Rect::new(
+		row_x - pad,
+		row_y - pad,
+		row_w + 2.0 * pad,
+		row_h + 2.0 * pad,
+	)
+}
+
+/// Width a text row needs: the text plus the row widget's own inset on
+/// both sides. Screens size their panels by folding this over their
+/// rows — never by counting characters, which a proportional face makes
+/// meaningless.
+pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
+	2.0 * scale::text_pad_x(style.scale) + style.measure(text)
+}
+
+/// Step `scale` down the quarter-step ladder until the layout fits
+/// `budget`, and return the scale to draw at.
+///
+/// `needed(scale)` re-measures the whole layout at a candidate scale —
+/// it has to be re-measured rather than divided, because `glyph_px`
+/// rounds to whole pixels and the layout's text is not a linear
+/// function of the scale.
+///
+/// The ladder is the point. The obvious implementation — multiply the
+/// style by `budget / needed` — produces text at 14.3px next to a menu
+/// drawn at 28px, which is exactly the mismatch this module exists to
+/// prevent. Every rung here is a scale the UI legitimately runs at, so
+/// a shrunken panel is a *smaller* panel, not a differently-designed
+/// one. Returns [`scale::UI_SCALE_FLOOR`] if even that overflows: at
+/// that point the window is simply too short, and a tight panel beats a
+/// panel sliding off the bottom of the screen.
+pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
+	const STEP: f32 = 0.25;
+	let mut s = scale;
+	while needed(s) > budget && s > scale::UI_SCALE_FLOOR {
+		s = (s - STEP).max(scale::UI_SCALE_FLOOR);
+	}
+	s
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn fit_walks_down_to_the_first_rung_that_fits() {
+		// A layout costing 400 logical px: 1.75 needs 700, 1.5 needs 600,
+		// 1.25 needs 500, 1.0 needs 400.
+		let needed = |s: f32| 400.0 * s;
+		assert_eq!(fit_scale(1.75, 1000.0, needed), 1.75, "already fits");
+		assert_eq!(fit_scale(1.75, 620.0, needed), 1.5);
+		assert_eq!(fit_scale(1.75, 450.0, needed), 1.0);
+		// Every rung is a scale `ui_scale` itself can produce.
+		for budget in [300.0f32, 450.0, 620.0, 800.0] {
+			let s = fit_scale(1.75, budget, needed);
+			assert!((s * 4.0).fract().abs() < 1e-4, "{s} is off the ladder");
+			assert!(s >= scale::UI_SCALE_FLOOR);
+		}
+	}
+
+	#[test]
+	fn an_impossible_budget_bottoms_out_instead_of_looping() {
+		assert_eq!(fit_scale(3.0, 0.0, |s| 400.0 * s), scale::UI_SCALE_FLOOR);
+		assert_eq!(fit_scale(0.75, -1.0, |s| 400.0 * s), scale::UI_SCALE_FLOOR);
+	}
+}

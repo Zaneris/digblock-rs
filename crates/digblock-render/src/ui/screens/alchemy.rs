@@ -12,9 +12,8 @@ use digblock_core::shapes::{craft_recipe, CRAFTABLE, SUBS_PER_BLOCK};
 use digblock_platform::{InputEvent, Key, MouseButton};
 
 use crate::ui::draw::Layer;
-use crate::ui::hud;
 use crate::ui::widgets::{self, Style, Ui, DIM, WHITE};
-use crate::ui::{HitMap, InvId, Rect};
+use crate::ui::{hud, scale, theme, HitMap, InvId, Rect};
 
 /// One requested alchemy operation, in core vocabulary.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -26,36 +25,19 @@ pub enum AlchAction {
 /// Shift-click batch size (plain click = 1).
 const BULK: u32 = 10;
 
-const PANEL_BG: u32 = 0xC0101010;
-const SCREEN_DIM: u32 = 0x70000000;
-
-// Layout bases (logical px × ui scale). ROW_H fits ROW_ICON with room;
-// the button sits inside the row.
-const ROW_H: f32 = 46.0;
-/// Vertical breathing room between adjacent action rows.
-const ROW_GAP: f32 = 6.0;
+// Layout bases (logical px × ui scale). Everything shared with the rest
+// of the UI — padding, row heights, section gaps, the panel's minimum
+// width, its colors — comes from `ui::theme`, so this screen's text and
+// columns land exactly where the menu's do. Only the three sizes below
+// are this screen's own, and they are all *icon and button* geometry:
+// there is no text size here at all.
 const ROW_ICON: f32 = 36.0;
 const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
-const PAD: f32 = 20.0;
-const GAP_ABOVE_BAR: f32 = 24.0;
-const HDR_GAP: f32 = 14.0;
-/// Leading under the title, which is drawn at [`TITLE_SCALE`] × body.
-const TITLE_GAP: f32 = 20.0;
-const TITLE_SCALE: f32 = 1.35;
-/// A [`Row::Space`]'s height — separates the screen's sections.
-const SECTION_GAP: f32 = 18.0;
 const ICON_TEXT_GAP: f32 = 12.0;
+/// Minimum gap between a row's text and its button, so the two never
+/// touch on a narrow panel.
 const TEXT_BTN_GAP: f32 = 28.0;
-/// The panel never shrinks below this, so the short-inventory case reads
-/// as a panel instead of a narrow column (the menu does the same with
-/// its `min_panel_w`).
-const MIN_PANEL_W: f32 = 460.0;
-/// Clearance kept above the panel when the fit pass has to shrink it.
-const TOP_MARGIN: f32 = 12.0;
-/// The fit pass will not shrink text below this; past here the window is
-/// simply too short and the panel is allowed to be tight.
-const MIN_GLYPH_PX: f32 = 10.0;
 
 /// The screen's per-frame view of the inventory, built by the engine
 /// from the same `Inventory` the actions will be validated against.
@@ -90,8 +72,8 @@ impl AlchView {
 /// One row of the screen, shared by the measure and emit passes.
 enum Row {
 	Title,
-	/// A blank [`SECTION_GAP`] between sections. A row rather than an ad
-	/// hoc `y +=` so the measure pass can't forget it.
+	/// A blank [`theme::SECTION_GAP`] between sections. A row rather than
+	/// an ad hoc `y +=` so the measure pass can't forget it.
 	Space,
 	/// Section headers, readouts, and hints — one dim text line.
 	Header(String),
@@ -121,35 +103,49 @@ fn row_text(row: &Row) -> String {
 	}
 }
 
-fn title_px(glyph: f32) -> f32 {
-	(glyph * TITLE_SCALE).round()
+/// Height of the box a row *draws* in. Titles and headers are plain text
+/// rows — the same box the menu draws its rows in, which is what keeps
+/// this screen's leading, and its text, identical to every other page.
+fn box_h(row: &Row, scale: f32) -> f32 {
+	match row {
+		Row::Space => 0.0,
+		Row::Title | Row::Header(_) => theme::ROW_H * scale,
+		Row::Convert { .. } | Row::Craft { .. } => theme::ACTION_ROW_H * scale,
+	}
+}
+
+/// Height a row *advances*: its box plus whatever separates it from the
+/// next one. [`theme::ROW_H`] already carries a text row's leading, so
+/// only the taller action rows take a gap.
+fn row_h(row: &Row, scale: f32) -> f32 {
+	box_h(row, scale)
+		+ match row {
+			Row::Space => theme::SECTION_GAP * scale,
+			Row::Title | Row::Header(_) => 0.0,
+			Row::Convert { .. } | Row::Craft { .. } => theme::ROW_GAP * scale,
+		}
 }
 
 /// Extent of the row stream at `style`: widest row, summed heights. Run
-/// twice — once to decide whether the panel fits, once at the fitted
-/// scale — so it stays a pure function of (rows, style).
+/// once per candidate scale by the fit pass and once more to place, so
+/// it stays a pure function of (rows, style).
 fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
-	let (s, glyph) = (style.scale, style.glyph);
+	let s = style.scale;
 	let (mut width, mut height) = (0.0f32, 0.0f32);
 	for row in rows {
-		let (w, h) = match row {
-			Row::Space => (0.0, SECTION_GAP * s),
-			Row::Title => {
-				let px = title_px(glyph);
-				(
-					crate::font::ui().measure(&row_text(row), px),
-					px + TITLE_GAP * s,
-				)
+		let w = match row {
+			Row::Space => 0.0,
+			Row::Title | Row::Header(_) => theme::text_row_w(style, &row_text(row)),
+			// Icon, gap, text, gap, button — all inside the same text
+			// inset the header rows use, so one left edge serves the
+			// whole panel.
+			Row::Convert { .. } | Row::Craft { .. } => {
+				theme::text_row_w(style, &row_text(row))
+					+ (ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
 			}
-			Row::Header(_) => (style.measure(&row_text(row)), glyph + HDR_GAP * s),
-			Row::Convert { .. } | Row::Craft { .. } => (
-				(ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
-					+ style.measure(&row_text(row)),
-				(ROW_H + ROW_GAP) * s,
-			),
 		};
 		width = width.max(w);
-		height += h;
+		height += row_h(row, s);
 	}
 	(width, height)
 }
@@ -179,7 +175,11 @@ impl AlchScreen {
 	/// and the emit pass walk the SAME rows, so the panel can never
 	/// disagree with its content.
 	fn rows(view: &AlchView) -> Vec<Row> {
-		let mut rows = vec![Row::Title, Row::Header("EXTRACTION (1 BLOCK = 27)".into())];
+		let mut rows = vec![
+			Row::Title,
+			Row::Space,
+			Row::Header("EXTRACTION (1 BLOCK = 27)".into()),
+		];
 		if view.convertibles.is_empty() {
 			rows.push(Row::Header("no raw materials".into()));
 		}
@@ -218,65 +218,85 @@ impl AlchScreen {
 	/// `daylight` fades the full-screen dim only — the panel keeps its
 	/// backdrop.
 	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
-		let s = ui.style.scale;
+		let window_scale = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			widgets::scaled_dim(SCREEN_DIM, daylight),
+			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
 		let rows = Self::rows(view);
 		// The hotbar keeps the window's own scale — only the panel shrinks
 		// — so its top is measured before any fit adjustment.
-		let bar_top = hud::row_grid(size, s).origin.1;
+		let bar_top = hud::row_grid(size, window_scale).origin.1;
 
-		// Fit pass: measure at the requested scale, and if the panel would
-		// run past the hotbar (a short window, or a large interface scale),
-		// shrink the whole layout until it fits. Without this the panel
-		// silently slides under the bar and off the bottom of the screen —
-		// it is only the panel's TOP that was ever clamped.
-		let budget = bar_top - (GAP_ABOVE_BAR + TOP_MARGIN) * s;
-		let needed = measure_rows(&rows, &ui.style).1 + 2.0 * PAD * s;
+		// Fit pass. This screen is the tallest in the game and can outgrow
+		// a short window, in which case the panel used to slide under the
+		// hotbar and off the bottom of the screen with no symptom — only
+		// its TOP was ever clamped. `theme::fit_scale` steps the whole
+		// style down the quarter-step ladder until it fits, so a shrunken
+		// panel is drawn at a scale the UI legitimately runs at rather than
+		// at some fraction of one, and its text stays a standard size.
+		let budget = bar_top - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
+		let needed = |scale: f32| {
+			let style = Style::new(scale);
+			measure_rows(&rows, &style).1 + 2.0 * theme::PAD * scale
+		};
 		let restore = ui.style;
-		if needed > budget && budget > 0.0 {
-			let fit = budget / needed;
-			ui.style = Style {
-				scale: ui.style.scale * fit,
-				glyph: (ui.style.glyph * fit).max(MIN_GLYPH_PX),
-				..ui.style
-			};
+		let fitted = theme::fit_scale(window_scale, budget, needed);
+		if fitted != window_scale {
+			ui.style = Style::new(fitted);
 		}
 		let (s, glyph) = (ui.style.scale, ui.style.glyph);
-		let title_px = title_px(glyph);
-		let pad = PAD * s;
+		let pad = theme::PAD * s;
 
 		let (width, height) = measure_rows(&rows, &ui.style);
-		let panel_w = (width + 2.0 * pad)
-			.max(MIN_PANEL_W * s)
-			.min(size.0 as f32 - 2.0 * pad);
-		let panel_h = height + 2.0 * pad;
-		let panel = Rect::new(
-			(size.0 as f32 - panel_w) / 2.0,
-			(bar_top - GAP_ABOVE_BAR * restore.scale - panel_h).max(TOP_MARGIN * restore.scale),
-			panel_w,
-			panel_h,
-		);
-		widgets::panel(ui.dl, Layer::Backdrop, panel, PANEL_BG);
+		// Row width first (this is what `theme::MIN_PANEL_W` bounds and
+		// what the menu's `content_w` computes), then the panel around it —
+		// so the two screens' panels are the same width for the same text.
+		let row_w = width
+			.max(theme::MIN_PANEL_W * s)
+			.min(size.0 as f32 - 4.0 * pad);
+		let row_x = (size.0 as f32 - row_w) / 2.0;
+		let row_y = (bar_top - theme::GAP_ABOVE_BAR * window_scale - (height + 2.0 * pad))
+			.max(theme::TOP_MARGIN * window_scale)
+			+ pad;
+		let panel = theme::panel_of(row_x, row_y, row_w, height, s);
+		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
-		// Emit.
-		let x = panel.x + pad;
-		let mut y = panel.y + pad;
+		// Emit. Every row is laid out in the same full-width box, and text
+		// sits at the row widget's own inset inside it — icons included, so
+		// one left edge serves the whole panel.
+		let text_pad = scale::text_pad_x(s);
+		let mut y = row_y;
 		let (cx, cy) = self.cursor;
 		for row in &rows {
 			let text = row_text(row);
+			let rect = Rect::new(row_x, y, row_w, box_h(row, s));
+			y += row_h(row, s);
 			match *row {
-				Row::Space => y += SECTION_GAP * s,
-				Row::Title => {
-					widgets::label(ui.dl, Layer::Content, x, y, title_px, WHITE, &text);
-					y += title_px + TITLE_GAP * s;
-				}
-				Row::Header(_) => {
-					widgets::label(ui.dl, Layer::Content, x, y, glyph, DIM, &text);
-					y += glyph + HDR_GAP * s;
+				Row::Space => {}
+				Row::Title | Row::Header(_) => {
+					// The menu's row widget, drawing the menu's row: same
+					// box, same inset, same text size.
+					let color = if matches!(row, Row::Title) {
+						WHITE
+					} else {
+						DIM
+					};
+					widgets::row(
+						ui.dl,
+						&ui.style,
+						Layer::Content,
+						rect,
+						widgets::RowContent {
+							text: &text,
+							right: None,
+							bar: None,
+							color,
+							highlight: false,
+							caret: false,
+						},
+					);
 				}
 				Row::Convert { .. } | Row::Craft { .. } => {
 					let (block, actionable, id, btn_text, text_color) = match *row {
@@ -292,9 +312,8 @@ impl AlchScreen {
 						),
 						_ => unreachable!(),
 					};
-					let row_rect = Rect::new(x, y, panel.w - 2.0 * pad, ROW_H * s);
-					if actionable && row_rect.contains(cx, cy) {
-						ui.dl.quad(Layer::Backdrop, row_rect, widgets::ROW_HILIGHT);
+					if actionable && rect.contains(cx, cy) {
+						ui.dl.quad(Layer::Backdrop, rect, widgets::ROW_HILIGHT);
 					}
 					let icon = ROW_ICON * s;
 					let (kind, tint) =
@@ -302,27 +321,31 @@ impl AlchScreen {
 					hud::draw_icon(
 						ui.dl,
 						Layer::Icons,
-						Rect::new(x, y + (ROW_H * s - icon) / 2.0, icon, icon),
+						Rect::new(
+							rect.x + text_pad,
+							rect.y + (rect.h - icon) / 2.0,
+							icon,
+							icon,
+						),
 						kind,
 						tint,
 					);
 					widgets::label(
 						ui.dl,
 						Layer::Content,
-						x + icon + ICON_TEXT_GAP * s,
-						y + (ROW_H * s - glyph) / 2.0,
+						rect.x + text_pad + icon + ICON_TEXT_GAP * s,
+						rect.y + (rect.h - glyph) / 2.0,
 						glyph,
 						text_color,
 						&text,
 					);
 					let btn = Rect::new(
-						row_rect.x + row_rect.w - BTN_W * s,
-						y + (ROW_H - BTN_H) / 2.0 * s,
+						rect.x + rect.w - text_pad - BTN_W * s,
+						rect.y + (rect.h - BTN_H * s) / 2.0,
 						BTN_W * s,
 						BTN_H * s,
 					);
 					widgets::button(ui, id, btn, btn_text, actionable, btn.contains(cx, cy));
-					y += (ROW_H + ROW_GAP) * s;
 				}
 			}
 		}
@@ -508,7 +531,7 @@ mod tests {
 		inv
 	}
 
-	/// The panel's PANEL_BG quad at a given scale/window.
+	/// The panel's backdrop quad at a given scale/window.
 	fn panel_rect(inv: &Inventory, size: (u32, u32), scale: f32) -> Rect {
 		let view = AlchView::build(inv);
 		let mut screen = AlchScreen::default();
@@ -524,11 +547,91 @@ mod tests {
 		let (cmds, _) = dl.cmds(Layer::Backdrop);
 		cmds.iter()
 			.filter_map(|c| match c {
-				crate::ui::draw::Cmd::Quad { rect, color } if *color == PANEL_BG => Some(*rect),
+				crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
+					Some(*rect)
+				}
 				_ => None,
 			})
 			.next()
 			.expect("panel quad")
+	}
+
+	/// The complaint this screen's theming answers was that it "uses
+	/// different font sizes from every other menu page". Sizes alone are
+	/// pinned by `screens::every_screen_draws_text_at_one_size`; what
+	/// this pins is the other half of looking like the same program —
+	/// text starts at the same inset from the panel edge as a menu row's
+	/// does, and the icons on the action rows share that edge instead of
+	/// hanging 8px to the left of it.
+	#[test]
+	fn text_and_icons_share_the_menus_left_column() {
+		let scale = 1.0;
+		let inset = theme::PAD * scale + scale::text_pad_x(scale);
+
+		let menu = crate::menu::Menu::new(true, Default::default(), None);
+		let view = menu.view(SIZE, scale, false);
+		let row = view.rows.first().expect("the menu has rows");
+		assert!(
+			(row.rect[0] + scale::text_pad_x(scale) - (view.panel[0] + inset)).abs() < 0.5,
+			"the menu itself moved: row text at {} vs panel {} + {inset}",
+			row.rect[0] + scale::text_pad_x(scale),
+			view.panel[0],
+		);
+
+		let view = AlchView::build(&full_inv());
+		let mut screen = AlchScreen::default();
+		screen.open();
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: Style::new(scale),
+			},
+			SIZE,
+			&view,
+			1.0,
+		);
+		let panel = panel_rect(&full_inv(), SIZE, scale);
+		let want = panel.x + inset;
+		// Every text command on the panel starts on the column, except the
+		// right-anchored button labels (centered in their own rect).
+		let lefts: Vec<f32> = dl
+			.cmds(Layer::Content)
+			.0
+			.iter()
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::Text { x, .. } if *x < panel.x + panel.w / 2.0 => Some(*x),
+				_ => None,
+			})
+			.collect();
+		assert!(lefts.len() >= 4, "expected the header rows: {lefts:?}");
+		for x in &lefts {
+			// Header/title text sits on the column; a row's count text sits
+			// one icon further in, never left of it.
+			assert!(*x >= want - 0.5, "text at {x} is left of the column {want}");
+		}
+		assert!(
+			lefts.iter().any(|x| (x - want).abs() < 0.5),
+			"nothing sat on the column {want}: {lefts:?}"
+		);
+		// The icons open the row, on the same edge.
+		let icon_left = dl
+			.cmds(Layer::Icons)
+			.0
+			.iter()
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::IconQuad { corners, .. } => {
+					Some(corners.iter().fold(f32::MAX, |m, p| m.min(p[0])))
+				}
+				_ => None,
+			})
+			.fold(f32::MAX, f32::min);
+		assert!(
+			(icon_left - want).abs() < 1.5,
+			"icons at {icon_left}, column {want}"
+		);
 	}
 
 	/// The old screen centered vertically and ran under the hotbar; the
@@ -538,7 +641,7 @@ mod tests {
 		let panel = panel_rect(&full_inv(), SIZE, 1.0);
 		let bar_top = hud::row_grid(SIZE, 1.0).origin.1;
 		assert!(
-			panel.y + panel.h <= bar_top - GAP_ABOVE_BAR + 0.5,
+			panel.y + panel.h <= bar_top - theme::GAP_ABOVE_BAR + 0.5,
 			"panel bottom {} vs bar top {bar_top}",
 			panel.y + panel.h
 		);
@@ -557,7 +660,7 @@ mod tests {
 		let bar_top = hud::row_grid(size, 1.75).origin.1;
 		assert!(panel.y >= 0.0, "panel top off screen: {}", panel.y);
 		assert!(
-			panel.y + panel.h <= bar_top - GAP_ABOVE_BAR * 1.75 + 0.5,
+			panel.y + panel.h <= bar_top - theme::GAP_ABOVE_BAR * 1.75 + 0.5,
 			"panel bottom {} vs bar top {bar_top}",
 			panel.y + panel.h
 		);

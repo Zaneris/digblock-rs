@@ -910,10 +910,11 @@ impl Menu {
 
 	/// Build the frame's view. `blink` drives the name-field caret.
 	pub fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
-		let row_h = 28.0 * scale;
+		use crate::ui::theme;
+		let row_h = theme::ROW_H * scale;
 		// The panel never shrinks below this (short screens would jitter
 		// as rows change) and grows to fit its widest row's text.
-		let min_panel_w = 560.0 * scale;
+		let min_panel_w = theme::MIN_PANEL_W * scale;
 		let glyph = crate::ui::scale::glyph_px(scale);
 		let pad_x = crate::ui::scale::text_pad_x(scale);
 		// Minimum gap between a row's text and its right-aligned column.
@@ -1302,7 +1303,7 @@ impl Menu {
 			})
 			.collect();
 
-		let pad = 12.0 * scale;
+		let pad = theme::PAD * scale;
 		let rows: Vec<PlacedRow> = rows;
 		let mut hits = crate::ui::HitMap::default();
 		for row in &rows {
@@ -1447,15 +1448,13 @@ impl MenuView {
 		size: (u32, u32),
 		daylight: f32,
 	) {
-		use crate::ui::{widgets, Layer, Rect};
-		const MENU_DIM: u32 = 0xA0000000;
-		const BG: u32 = 0x90000000;
+		use crate::ui::{theme, widgets, Layer, Rect};
 		dl.quad(
 			Layer::Content,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			widgets::scaled_dim(MENU_DIM, daylight),
+			widgets::scaled_dim(theme::MENU_DIM, daylight),
 		);
-		widgets::panel(dl, Layer::Content, self.panel.into(), BG);
+		widgets::panel(dl, Layer::Content, self.panel.into(), theme::MENU_PANEL_BG);
 		for row in &self.rows {
 			widgets::row(
 				dl,

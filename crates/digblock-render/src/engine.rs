@@ -17,6 +17,25 @@ use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 
+/// A UI screen [`EngineConfig::debug_screen`] can open at startup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DebugScreen {
+	Inventory,
+	Alchemy,
+}
+
+impl DebugScreen {
+	/// Parse the launcher's DIG_SCREEN value. Unknown names are `None`
+	/// rather than an error: this is a dev knob, not a wire format.
+	pub fn parse(s: &str) -> Option<Self> {
+		match s.trim().to_ascii_lowercase().as_str() {
+			"inventory" | "inv" => Some(Self::Inventory),
+			"alchemy" | "alch" => Some(Self::Alchemy),
+			_ => None,
+		}
+	}
+}
+
 pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
 	pub draw_dist: i32,
@@ -54,6 +73,10 @@ pub struct EngineConfig {
 	/// without a second client). Set by the desktop launcher from
 	/// DIG_PLAYERBOX.
 	pub debug_playerbox: bool,
+	/// Debug: open a UI screen at startup with a stocked inventory, so a
+	/// headless `--screenshot` run can capture it. Set by the desktop
+	/// launcher from DIG_SCREEN.
+	pub debug_screen: Option<DebugScreen>,
 	/// Debug: place a showcase of every shaped-block variant near spawn
 	/// (both stair materials × 4 facings, doors × facings × open/closed)
 	/// once chunks are Ready. Set by the desktop launcher from
@@ -129,6 +152,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_screen: None,
 			spray_droplets: 64,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
@@ -164,6 +188,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_screen: None,
 			spray_droplets: 24,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
@@ -675,7 +700,7 @@ impl Engine {
 			},
 			config.auto_join.clone(),
 		);
-		Self {
+		let mut engine = Self {
 			menu,
 			chat: crate::chat::Chat::default(),
 			audio: None,
@@ -766,7 +791,34 @@ impl Engine {
 			return_spawn_requested: false,
 			inv_grid: Default::default(),
 			last_layout_sent: None,
+		};
+		// DIG_SCREEN: open a UI screen at startup, stocked, so
+		// `--screenshot` can capture it. Screens are input-driven, which
+		// left them the one part of the UI a headless capture could not
+		// see — and a layout regression on the alchemy page shipped
+		// because of exactly that.
+		if let Some(screen) = engine.config.debug_screen {
+			for (block, n) in [
+				(BlockType::Wood, 5u32),
+				(BlockType::Stone, 11),
+				(BlockType::Dirt, 64),
+			] {
+				engine.inventory.add(block, n);
+			}
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Material::Wood, 54);
+			digblock_core::inv_grid::reconcile_layout(
+				&engine.inventory,
+				&mut engine.hotbar,
+				&mut engine.inv_grid,
+			);
+			match screen {
+				DebugScreen::Inventory => engine.inv_screen.open(),
+				DebugScreen::Alchemy => engine.alch_screen.open(),
+			}
 		}
+		engine
 	}
 
 	/// Attach a multiplayer transport (loopback tests / tokenless paths).

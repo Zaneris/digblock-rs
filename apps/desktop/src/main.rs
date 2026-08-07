@@ -139,6 +139,12 @@ fn main() {
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
+	// stocked inventory, so `--screenshot` can capture a UI screen (they
+	// are otherwise reachable only through live input).
+	config.debug_screen = std::env::var("DIG_SCREEN")
+		.ok()
+		.and_then(|v| digblock_render::DebugScreen::parse(&v));
 	// Read at the launcher edge: the engine stays env-free so wasm, which
 	// has no environment at all, can set the same flag from a query param.
 	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();

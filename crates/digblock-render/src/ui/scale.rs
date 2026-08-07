@@ -13,6 +13,11 @@ const BASE_TEXT_PX: f32 = 16.0;
 /// the page.
 pub const UI_SCALE_CAP: f32 = 3.0;
 
+/// Floor on the whole UI scale: three quarter-steps, below which text
+/// stops being comfortably readable. Also the bottom rung of
+/// [`super::theme::fit_scale`]'s ladder.
+pub const UI_SCALE_FLOOR: f32 = 0.75;
+
 /// Whole-UI scale, quantized to quarter steps so live-resize walks
 /// stable increments instead of shimmering. Reference: a 1280×800
 /// logical window at 1× with the user preference at 1.0 is exactly the
@@ -21,9 +26,9 @@ pub const UI_SCALE_CAP: f32 = 3.0;
 pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 	let sf = scale_factor.max(0.5);
 	let (lw, lh) = (size.0 as f32 / sf, size.1 as f32 / sf);
-	let win = (lw / 1280.0).min(lh / 800.0).clamp(0.75, 1.5);
+	let win = (lw / 1280.0).min(lh / 800.0).clamp(UI_SCALE_FLOOR, 1.5);
 	let user = if user.is_finite() { user.max(0.1) } else { 1.0 };
-	(((sf * win * user) * 4.0).round().max(3.0) / 4.0).min(UI_SCALE_CAP)
+	(((sf * win * user) * 4.0).round().max(UI_SCALE_FLOOR * 4.0) / 4.0).min(UI_SCALE_CAP)
 }
 
 /// On-screen text box height at `scale`. Whole pixels: glyphs are
@@ -67,7 +72,10 @@ mod tests {
 				for &u in &[0.75f32, 1.0, 1.5, 2.0] {
 					let s = ui_scale((w, w * 5 / 8), sf, u);
 					assert!((s * 4.0).fract().abs() < 1e-4, "{s} not a quarter step");
-					assert!((0.75..=UI_SCALE_CAP).contains(&s), "{s} out of range");
+					assert!(
+						(UI_SCALE_FLOOR..=UI_SCALE_CAP).contains(&s),
+						"{s} out of range"
+					);
 				}
 			}
 		}
