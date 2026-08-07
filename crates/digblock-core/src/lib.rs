@@ -67,4 +67,20 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// lifts). Also shifts apex-phase jumps against a one-block step: a
 /// mount whose apex brings the feet within 4/12 of the top now steps
 /// instead of scraping the wall for the last centimeters.
-pub const SIM_VERSION: u16 = 9;
+/// v10: climbing is one continuous motion, stairs and steps alike.
+/// Stairs: a ramp cell no longer reports its floor as support when the
+/// axis is still short of its low front edge (that floor is the NEXT
+/// step's, a third of a block up, so every step popped early and the
+/// downhill glue then yanked the feet back); the glue now takes the
+/// highest ramp surface underfoot and only when it is below the feet;
+/// and the run-out no longer counts the next tread of the same flight as
+/// blocked headroom, so a filled-in staircase stops grinding against
+/// each riser. Steps: an auto-step is now the same mount a ramp gives,
+/// rising at the rate a 45° diagonal would carry the walk
+/// (`MOUNT_RATE`) instead of teleporting the whole rise in one tick —
+/// so the camera smoothing that already covers stairs covers steps too,
+/// with no presentation special case. The mount window (`step_mount`) is
+/// mirrored in `overlaps_solid`, replacing v9's "the step needs no probe
+/// mirror" property: a rate-limited mount spends a few ticks with the
+/// capsule inside the side of the box it climbs.
+pub const SIM_VERSION: u16 = 10;
