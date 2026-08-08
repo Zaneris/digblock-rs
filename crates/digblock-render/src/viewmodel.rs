@@ -41,8 +41,8 @@ const SIZE: f32 = 0.18;
 /// its place in the corner on any window shape, and the item's own size
 /// stays fixed so it doesn't grow on a wide monitor. The vertical rest
 /// clears the hotbar, which is anchored to the bottom edge.
-const REST_X_FRAC: f32 = 0.58;
-const REST_Y_FRAC: f32 = -0.48;
+const REST_X_FRAC: f32 = 0.48;
+const REST_Y_FRAC: f32 = -0.58;
 
 /// Resting orientation. Yawing −45° then tipping 20° toward the viewer
 /// puts the item's +x, +y and +z faces on screen — deliberately the
@@ -67,6 +67,24 @@ const BOB_FULL_SPEED: f32 = 4.0;
 /// enough that a single dropped frame can't snap the item.
 const BOB_ATTACK: f32 = 6.0;
 
+/// Idle breathing. A hand that is perfectly still reads as a decal
+/// stuck to the screen, so at rest the item keeps a slow drift — but
+/// this is a CLOCK, not a distance, because standing still is exactly
+/// where the distance accumulator has nothing to say. It fades out as
+/// the walk bob fades in, so the two never fight over the same axis.
+const BREATH_SECS: f32 = 4.5;
+/// Travel, as fractions of [`SIZE`]. A quarter of the bob's: this
+/// should be noticed only when it stops.
+const BREATH_Y: f32 = 0.055;
+const BREATH_X: f32 = 0.022;
+/// Peak breathing pitch, radians.
+const BREATH_PITCH: f32 = 0.035;
+/// The breath is a drift, not a second bob. Checked at compile time
+/// because it is a relationship between two tunables, and the day
+/// someone raises it past the walk's travel is the day the hand starts
+/// twitching while you stand still.
+const _: () = assert!(BREATH_Y * 3.0 < BOB_Y);
+
 /// Swing travel: down-and-forward, plus a wrist rotation.
 const SWING_Y: f32 = 0.42;
 const SWING_Z: f32 = 0.30;
@@ -87,25 +105,33 @@ pub struct Pose {
 	pub roll: f32,
 }
 
-/// Walk bob: a distance-driven phase with a speed-driven amplitude, so
-/// the hand keeps time with the feet rather than with the clock — the
-/// same reason [`crate::audio::Footsteps`] paces by distance.
+/// Idle breathing crossfaded with the walk bob. The bob is a
+/// distance-driven phase with a speed-driven amplitude, so the hand
+/// keeps time with the feet rather than with the clock — the same
+/// reason [`crate::audio::Footsteps`] paces by distance. The breath is
+/// the opposite by necessity, and takes over whatever amplitude the bob
+/// gives up.
 #[derive(Default)]
 pub struct Bob {
 	phase: f32,
 	amp: f32,
+	/// Seconds into the breathing cycle, wrapped — a free-running clock,
+	/// never reset by starting or stopping, so easing back to rest lands
+	/// mid-breath instead of restarting one.
+	breath: f32,
 }
 
 impl Bob {
 	/// Advance by one frame. `moved` = horizontal distance travelled,
 	/// `dt` = its duration. Airborne or standing still, the amplitude
-	/// eases back to zero and the item settles; the phase keeps its
-	/// place so resuming a walk doesn't jump.
+	/// eases back to zero and the item settles into its breathing; the
+	/// phase keeps its place so resuming a walk doesn't jump.
 	pub fn advance(&mut self, moved: f32, dt: f32) {
 		if dt <= 0.0 {
 			return;
 		}
 		self.phase = (self.phase + moved / BOB_STRIDE).fract();
+		self.breath = (self.breath + dt / BREATH_SECS).fract();
 		let target = (moved / dt / BOB_FULL_SPEED).clamp(0.0, 1.0);
 		let k = (BOB_ATTACK * dt).min(1.0);
 		self.amp += (target - self.amp) * k;
@@ -114,13 +140,26 @@ impl Bob {
 	/// This frame's contribution to the pose.
 	pub fn pose(&self) -> Pose {
 		let t = self.phase * std::f32::consts::TAU;
-		Pose {
+		let walk = Pose {
 			// Lateral at the stride rate, vertical at twice it: one dip
 			// per footfall, one sway per pair.
 			offset: Vec3::new(BOB_X * t.sin(), -BOB_Y * (2.0 * t).cos().abs(), 0.0) * self.amp,
 			pitch: 0.0,
 			roll: BOB_ROLL * t.sin() * self.amp,
-		}
+		};
+		// The breath rides the amplitude the bob isn't using, so the sum
+		// of the two envelopes is always one and neither can stack on top
+		// of the other at a jog.
+		let rest = 1.0 - self.amp;
+		let b = self.breath * std::f32::consts::TAU;
+		// A quarter-cycle apart: the drift traces a slow ellipse rather
+		// than sliding up and down one line.
+		let breath = Pose {
+			offset: Vec3::new(BREATH_X * b.cos(), BREATH_Y * b.sin(), 0.0) * rest,
+			pitch: BREATH_PITCH * b.sin() * rest,
+			roll: 0.0,
+		};
+		combine(walk, breath)
 	}
 
 	/// World swap.
@@ -549,22 +588,55 @@ mod tests {
 		let walking = bob.pose();
 		assert!(bob.amp > 0.9, "full travel at walk speed: {}", bob.amp);
 		// Bounded travel, always — a bob that can grow is a bob that
-		// eventually posts the item off-screen.
+		// eventually posts the item off-screen. The envelopes sum to
+		// one, so the walk-plus-breath total can never exceed either
+		// budget added together, whatever the crossfade is doing.
 		for _ in 0..600 {
 			bob.advance(4.0 * dt, dt);
 			let p = bob.pose();
-			assert!(p.offset.x.abs() <= BOB_X + 1e-5);
-			assert!(p.offset.y.abs() <= BOB_Y + 1e-5);
+			assert!(p.offset.x.abs() <= BOB_X + BREATH_X + 1e-5);
+			assert!(p.offset.y.abs() <= BOB_Y + BREATH_Y + 1e-5);
 			assert!(p.roll.abs() <= BOB_ROLL + 1e-5);
 		}
-		// Standing still: it eases back to rest, and stays there.
+		// At full walk the breath is squeezed out entirely, so the bob's
+		// own bound still holds on its own.
+		assert!(bob.pose().offset.x.abs() <= BOB_X + 1e-3);
+		// Standing still: the stride settles out and the breath takes
+		// over the amplitude it gives up.
 		for _ in 0..180 {
 			bob.advance(0.0, dt);
 		}
-		let still = bob.pose();
-		assert!(bob.amp < 0.01, "settled: {}", bob.amp);
-		assert!(still.offset.length() < 0.01);
+		assert!(bob.amp < 0.01, "stride settled: {}", bob.amp);
 		assert!(walking.offset.length() > 0.05, "it did move while walking");
+	}
+
+	/// A perfectly still hand reads as a decal stuck to the screen. The
+	/// point of the breath is that it keeps moving with no input at all
+	/// — which is exactly what a distance-driven bob cannot do.
+	#[test]
+	fn the_hand_keeps_breathing_when_nothing_moves() {
+		let mut bob = Bob::default();
+		let dt = 1.0 / 60.0;
+		let mut lo = f32::MAX;
+		let mut hi = f32::MIN;
+		// Two full cycles of standing perfectly still.
+		for _ in 0..(2.0 * BREATH_SECS / dt) as usize {
+			bob.advance(0.0, dt);
+			let y = bob.pose().offset.y;
+			lo = lo.min(y);
+			hi = hi.max(y);
+		}
+		assert!(
+			hi - lo > BREATH_Y,
+			"the idle hand should drift a full breath ({lo}..{hi})"
+		);
+		assert!(
+			hi <= BREATH_Y + 1e-5 && lo >= -BREATH_Y - 1e-5,
+			"and no more"
+		);
+		// That it stays a drift rather than a second bob is a relation
+		// between two constants, so it is asserted at compile time up
+		// where they are declared.
 	}
 
 	#[test]
