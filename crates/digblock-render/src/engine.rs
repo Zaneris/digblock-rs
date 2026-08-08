@@ -469,6 +469,9 @@ pub struct Engine {
 	/// configurations that photograph it.
 	view_bob: crate::viewmodel::Bob,
 	view_swing: crate::viewmodel::Swing,
+	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
+	/// by half a swap, so the exchange happens below the frame.
+	view_swap: crate::viewmodel::Swap,
 	ambient: crate::audio::Ambient,
 	/// Scratch for batched audio commands (water voices).
 	audio_scratch: Vec<crate::audio::AudioCmd>,
@@ -733,6 +736,7 @@ impl Engine {
 			swim_strokes: crate::audio::SwimStrokes::default(),
 			view_bob: crate::viewmodel::Bob::default(),
 			view_swing: crate::viewmodel::Swing::default(),
+			view_swap: crate::viewmodel::Swap::default(),
 			ambient: crate::audio::Ambient::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
@@ -1168,6 +1172,7 @@ impl Engine {
 		self.swim_strokes.reset();
 		self.view_bob.reset();
 		self.view_swing.reset();
+		self.view_swap.reset();
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -2460,7 +2465,9 @@ impl Engine {
 	/// is authored in view space by `viewmodel.rs`, so all this does is
 	/// pick the item and hand over the frame's light rig.
 	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
-		let (kind, _) = crate::ui::hud::item_icon(self.hotbar.selected_item()?);
+		// The SWAP's item, not the hotbar's: mid-swap the hand is still
+		// holding the one it hasn't put away yet.
+		let kind = self.view_swap.shown()?;
 		// The light rig is world-space; the item lives in view space, so
 		// rotate the direction through the same view matrix the scene
 		// used. Translation is irrelevant for a direction.
@@ -2469,7 +2476,13 @@ impl Engine {
 		let light_dir_view = view.transform_vector3(Vec3::new(d[0], d[1], d[2]));
 		Some(crate::viewmodel::ViewmodelFrame {
 			kind,
-			pose: crate::viewmodel::combine(self.view_bob.pose(), self.view_swing.pose()),
+			pose: [
+				self.view_bob.pose(),
+				self.view_swing.pose(),
+				self.view_swap.pose(),
+			]
+			.into_iter()
+			.fold(Default::default(), crate::viewmodel::combine),
 			light_dir_view,
 			light_strength: d[3],
 			ambient: [frame.ambient[0], frame.ambient[1], frame.ambient[2]],
@@ -3297,6 +3310,11 @@ impl Game for Engine {
 		// actually open on a source (aiming at nothing doesn't swing).
 		let scooping = self.water_tool_selected() && self.hold_active() && self.dig.is_some();
 		self.view_swing.advance(dt, scooping);
+		let selected = self
+			.hotbar
+			.selected_item()
+			.map(|i| crate::ui::hud::item_icon(i).0);
+		self.view_swap.advance(dt, selected);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);

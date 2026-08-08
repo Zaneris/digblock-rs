@@ -92,6 +92,16 @@ const SWING_PITCH: f32 = 0.9;
 /// Seconds per swing arc.
 const SWING_SECS: f32 = 0.30;
 
+/// Seconds for a whole slot swap, down and back up. Short: this sits
+/// between the player and the block they meant to place.
+const SWAP_SECS: f32 = 0.22;
+/// How far the item drops, in units of [`SIZE`]. Enough to leave the
+/// frame entirely at the rest position — the item CHANGES down there,
+/// and a swap you can watch happen is worse than no animation at all.
+const SWAP_DROP: f32 = 2.0;
+/// Forward tip on the way down, radians.
+const SWAP_PITCH: f32 = 0.5;
+
 /// The item's placement this frame, in view space, relative to rest.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pose {
@@ -207,6 +217,78 @@ impl Swing {
 		Pose {
 			offset: Vec3::new(0.0, -SWING_Y * a, SWING_Z * a),
 			pitch: SWING_PITCH * a,
+			roll: 0.0,
+		}
+	}
+
+	pub fn reset(&mut self) {
+		*self = Self::default();
+	}
+}
+
+/// The slot swap: the item drops out of frame, CHANGES at the bottom,
+/// and the new one rises in its place. Owning `shown` is the whole
+/// point — the drawn item lags the selection by half a swap, which is
+/// what makes it a swap rather than a dip with a jump-cut in the middle.
+pub struct Swap {
+	/// Seconds into the current swap; at or past [`SWAP_SECS`] = at rest.
+	t: f32,
+	shown: Option<IconKind>,
+}
+
+impl Default for Swap {
+	fn default() -> Self {
+		Self {
+			t: SWAP_SECS,
+			shown: None,
+		}
+	}
+}
+
+impl Swap {
+	/// Feed this frame's selection. Read the item to draw back out of
+	/// [`Self::shown`].
+	pub fn advance(&mut self, dt: f32, selected: Option<IconKind>) {
+		let half = SWAP_SECS / 2.0;
+		if self.t >= SWAP_SECS {
+			// At rest. An empty hand has nothing to put away, so it
+			// starts at the bottom and only rises — no pause staring at
+			// nothing before your first block appears.
+			if selected != self.shown {
+				self.t = if self.shown.is_none() { half } else { 0.0 };
+			}
+		} else if self.t >= half && selected != self.shown {
+			// Changed again while the new item was rising. Mirror back
+			// onto the way down at the SAME height, so scrolling through
+			// the bar reads as one continuous dip per slot instead of
+			// snapping to the top between each.
+			self.t = SWAP_SECS - self.t;
+		}
+		if self.t < SWAP_SECS {
+			self.t = (self.t + dt).min(SWAP_SECS);
+			// The exchange happens out of sight, at the bottom.
+			if self.t >= half {
+				self.shown = selected;
+			}
+		}
+	}
+
+	/// The item to draw — not necessarily the one that's selected.
+	pub fn shown(&self) -> Option<IconKind> {
+		self.shown
+	}
+
+	pub fn pose(&self) -> Pose {
+		if self.t >= SWAP_SECS {
+			return Pose::default();
+		}
+		// Down and back on a raised cosine: zero velocity at both ends
+		// AND at the bottom, so the item eases out, hangs for the
+		// exchange, and eases back rather than pinging.
+		let a = (1.0 - (self.t / SWAP_SECS * std::f32::consts::TAU).cos()) / 2.0;
+		Pose {
+			offset: Vec3::new(0.0, -SWAP_DROP * a, 0.0),
+			pitch: SWAP_PITCH * a,
 			roll: 0.0,
 		}
 	}
@@ -637,6 +719,84 @@ mod tests {
 		// That it stays a drift rather than a second bob is a relation
 		// between two constants, so it is asserted at compile time up
 		// where they are declared.
+	}
+
+	/// The exchange must happen where you can't see it. If `shown`
+	/// flipped at the top of the arc it would be a jump-cut with a dip
+	/// bolted on, which is the thing this replaces.
+	#[test]
+	fn a_swap_changes_the_item_at_the_bottom_of_the_drop() {
+		let dt = 1.0 / 240.0;
+		let (dirt, stone) = (
+			IconKind::Cube(BlockType::Dirt),
+			IconKind::Cube(BlockType::Stone),
+		);
+		let mut s = Swap::default();
+		// First item: nothing to put away, so it only rises.
+		s.advance(dt, Some(dirt));
+		assert_eq!(s.shown(), Some(dirt), "an empty hand skips the drop");
+		for _ in 0..60 {
+			s.advance(dt, Some(dirt));
+		}
+		assert_eq!(s.pose(), Pose::default(), "and settles at rest");
+
+		// Now a real swap. The old item is held until the item is off
+		// screen, and the drop is deep enough to have taken it there.
+		let mut deepest: f32 = 0.0;
+		let mut swapped_at: f32 = -1.0;
+		for i in 0..60 {
+			s.advance(dt, Some(stone));
+			let y = s.pose().offset.y;
+			deepest = deepest.min(y);
+			if swapped_at < 0.0 && s.shown() == Some(stone) {
+				swapped_at = -y;
+			}
+			assert!(i > 0 || s.shown() == Some(dirt), "not on the first frame");
+		}
+		assert_eq!(s.shown(), Some(stone));
+		assert!(
+			(deepest + SWAP_DROP).abs() < 0.01,
+			"the arc reaches full depth: {deepest}"
+		);
+		assert!(
+			swapped_at > SWAP_DROP * 0.9,
+			"the exchange happened near the bottom, not on the way ({swapped_at})"
+		);
+		// Back at rest afterwards.
+		for _ in 0..60 {
+			s.advance(dt, Some(stone));
+		}
+		assert_eq!(s.pose(), Pose::default());
+	}
+
+	/// Scrolling the bar shouldn't teleport the item back to the top
+	/// between slots — each change continues from where the hand is.
+	#[test]
+	fn scrolling_through_slots_never_snaps_the_item_upward() {
+		let dt = 1.0 / 240.0;
+		let mut s = Swap::default();
+		s.advance(dt, Some(IconKind::Cube(BlockType::Dirt)));
+		for _ in 0..60 {
+			s.advance(dt, Some(IconKind::Cube(BlockType::Dirt)));
+		}
+		// A new slot every ~6 frames: fast, but slower than the swap, so
+		// each lands mid-rise — the case that used to snap.
+		let items = [BlockType::Stone, BlockType::Wood, BlockType::Gravel];
+		let mut prev = s.pose().offset.y;
+		for (n, b) in (0..180).zip(items.iter().cycle()) {
+			let want = IconKind::Cube(*b);
+			s.advance(dt, Some(if n % 6 == 0 { want } else { s.shown().unwrap() }));
+			let y = s.pose().offset.y;
+			// Per-frame travel can never exceed the arc's own peak rate;
+			// a snap back to rest would blow straight past it.
+			let peak_rate = SWAP_DROP * std::f32::consts::PI / SWAP_SECS * dt;
+			assert!(
+				(y - prev).abs() <= peak_rate + 1e-4,
+				"frame {n}: jumped {} (peak {peak_rate})",
+				y - prev
+			);
+			prev = y;
+		}
 	}
 
 	#[test]
