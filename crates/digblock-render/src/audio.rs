@@ -28,6 +28,7 @@ pub enum Sfx {
 	StepWood,
 	Waterfall,
 	Splash,
+	Swim,
 	AmbientWind,
 	AmbientWater,
 	AmbientCave,
@@ -51,6 +52,7 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::StepWood => a::STEP_WOOD,
 		Sfx::Waterfall => a::WATERFALL,
 		Sfx::Splash => a::SPLASH,
+		Sfx::Swim => a::SWIM,
 		Sfx::AmbientWind => a::AMBIENT_WIND,
 		Sfx::AmbientWater => a::AMBIENT_WATER,
 		Sfx::AmbientCave => a::AMBIENT_CAVE,
@@ -58,7 +60,7 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 15] = [
+pub const ALL_SFX: [Sfx; 16] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -71,6 +73,7 @@ pub const ALL_SFX: [Sfx; 15] = [
 	Sfx::StepWood,
 	Sfx::Waterfall,
 	Sfx::Splash,
+	Sfx::Swim,
 	Sfx::AmbientWind,
 	Sfx::AmbientWater,
 	Sfx::AmbientCave,
@@ -272,6 +275,61 @@ impl Footsteps {
 	}
 }
 
+// ---- swim strokes -----------------------------------------------------
+
+/// Distance-driven swim-stroke emitter, the water counterpart of
+/// [`Footsteps`] — a swimmer moving through water should sound like it,
+/// and the underwater ambient bed alone is the same whether you drift or
+/// sprint.
+pub struct SwimStrokes {
+	accum: f32,
+}
+
+impl Default for SwimStrokes {
+	fn default() -> Self {
+		Self {
+			accum: STROKE * STROKE_HEAD_START,
+		}
+	}
+}
+
+/// Distance between strokes, blocks. Longer than [`STRIDE`]: a stroke
+/// covers more ground than a footfall, and swim speed is slower, so this
+/// paces roughly one every 1.5 s of steady swimming.
+const STROKE: f32 = 1.5;
+/// Quieter than a footstep — the ear is already inside the water bed.
+const STROKE_GAIN: f32 = 0.45;
+/// Fraction of a stroke banked on entering the water, so the first one
+/// lands promptly instead of a full stroke's silence after the splash.
+const STROKE_HEAD_START: f32 = 0.6;
+
+impl SwimStrokes {
+	/// Advance by one frame. `moved` = horizontal distance this frame;
+	/// `swimming` = in water and off the ground (wading keeps its
+	/// footsteps, which are grounded-gated). Returns a gain when a
+	/// stroke lands this frame.
+	pub fn advance(&mut self, moved: f32, swimming: bool) -> Option<f32> {
+		if !swimming {
+			// Head start, not zero: leaving and re-entering shouldn't
+			// have to re-earn the first stroke.
+			self.accum = STROKE * STROKE_HEAD_START;
+			return None;
+		}
+		self.accum += moved;
+		if self.accum >= STROKE {
+			self.accum -= STROKE;
+			Some(STROKE_GAIN)
+		} else {
+			None
+		}
+	}
+
+	/// World swap: forget the banked distance.
+	pub fn reset(&mut self) {
+		*self = Self::default();
+	}
+}
+
 // ---- ambient bed ------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -397,6 +455,30 @@ mod tests {
 		assert_eq!(landed, Some((Material::Earth, LAND_GAIN)));
 		// Swimming: silent even while "grounded".
 		assert!(f.advance(1.0, true, ground, true).is_none());
+	}
+
+	#[test]
+	fn swim_strokes_pace_by_distance_and_stop_when_still() {
+		let mut s = SwimStrokes::default();
+		// Entering the water banks a head start, so the first stroke
+		// lands well inside the first stroke's worth of travel.
+		assert!(s.advance(0.0, false).is_none(), "not swimming yet");
+		assert_eq!(s.advance(STROKE * 0.5, true), Some(STROKE_GAIN));
+		// 4 s of swimming at 3 blocks/s: 12 blocks → 8 strokes.
+		let mut strokes = 0;
+		for _ in 0..240 {
+			if s.advance(3.0 / 60.0, true).is_some() {
+				strokes += 1;
+			}
+		}
+		assert!((7..=9).contains(&strokes), "{strokes}");
+		// Floating still is silent, however long you float.
+		for _ in 0..600 {
+			assert!(s.advance(0.0, true).is_none());
+		}
+		// And so is standing on the bottom — wading is the footsteps'
+		// job, and both firing would double up.
+		assert!(s.advance(1.0, false).is_none());
 	}
 
 	#[test]

@@ -7,7 +7,7 @@ use digblock_core::block::BlockType;
 use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
 
 use super::draw::Layer;
-use super::widgets::{self, GridSpec, Ui, DIM, WHITE};
+use super::widgets::{self, GridSpec, Ui, WHITE};
 use crate::hotbar::{HotbarView, SlotView};
 
 // Logical bases, × ui_scale.
@@ -16,8 +16,6 @@ pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
 
-/// Zero-count slots stay visible but greyed (sticky slots never shift).
-const GREY_TINT: u32 = 0xFF60_6060;
 const FULL_TINT: u32 = 0xFFFF_FFFF;
 
 /// What a 3D item icon renders as (see [`super::shaped_icon`]).
@@ -103,15 +101,11 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
 			SlotView::Tool => Some(item_icon(HotbarItem::WaterTool)),
-			SlotView::Block { block, count } => {
-				let (kind, _) = item_icon(HotbarItem::Block(block));
-				Some((kind, if count == 0 { GREY_TINT } else { FULL_TINT }))
-			}
+			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block))),
 		};
 		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
 		if let SlotView::Block { count, .. } = view.slots[i] {
-			let color = if count == 0 { DIM } else { WHITE };
-			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, color);
+			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, WHITE);
 		}
 	}
 }
@@ -133,6 +127,7 @@ mod tests {
 		hotbar.auto_assign(BlockType::Stone);
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 3);
+		inv.add(BlockType::Stone, 12);
 		HotbarView::build(&hotbar, &inv)
 	}
 
@@ -183,7 +178,7 @@ mod tests {
 				_ => None,
 			})
 			.collect();
-		// Dirt count 3 and Stone count 0 print (tool and empties don't),
+		// Dirt count 3 and Stone count 12 print (tool and empties don't),
 		// each as a shadow + digit pair.
 		let (shadows, counts): (Vec<_>, Vec<_>) = texts.iter().partition(|(_, _, c)| *c == SHADOW);
 		assert_eq!(counts.len(), 2);
@@ -193,28 +188,27 @@ mod tests {
 			assert_eq!(*px, want, "count {text} should ride the frame's size");
 		}
 		assert!(counts.iter().any(|(t, _, _)| *t == "3"));
-		assert!(counts.iter().any(|(t, _, _)| *t == "0"));
+		assert!(counts.iter().any(|(t, _, _)| *t == "12"));
 	}
 
 	#[test]
 	fn icons_and_selection_ride_the_right_layers() {
 		let (dl, _) = emit(1.0);
-		// Dirt cube (3 faces), Stone cube greyed (3), tool bucket (7).
+		// Two cubes at three visible faces each, then the tool bucket.
 		let icons = dl.cmds(Layer::Icons).0;
-		assert_eq!(icons.len(), 13);
 		assert!(icons.iter().all(|c| matches!(c, Cmd::IconQuad { .. })));
+		assert!(icons.len() > 6, "two cubes plus a bucket");
 		// Backdrop: 9 slot bgs + 4 selection border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), HOTBAR_SLOTS + 4);
-		// The greyed stone cube: its top face carries GREY_TINT verbatim
-		// (top shade factor is 1.0), and no full-tint face.
-		let stone: Vec<u32> = icons[3..6]
+		// Every stocked slot draws at full tint — the grey zero-count
+		// state is gone; an exhausted type leaves the bar entirely.
+		let dirt: Vec<u32> = icons[..3]
 			.iter()
 			.map(|c| match c {
 				Cmd::IconQuad { tint, .. } => *tint,
 				_ => unreachable!(),
 			})
 			.collect();
-		assert!(stone.contains(&GREY_TINT), "greyed top face: {stone:?}");
-		assert!(!stone.contains(&FULL_TINT));
+		assert!(dirt.contains(&FULL_TINT), "top face is untinted: {dirt:?}");
 	}
 }

@@ -10,6 +10,7 @@ mod font;
 mod gpu_timer;
 mod highlight;
 pub mod hotbar;
+mod item_geom;
 pub mod menu;
 mod overlay;
 mod pipeline_builder;
@@ -22,6 +23,7 @@ mod smoothing;
 mod spray;
 mod texture;
 pub mod ui;
+mod viewmodel;
 mod water;
 mod water_audio;
 

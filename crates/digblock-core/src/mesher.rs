@@ -280,7 +280,12 @@ fn tint(wx: i64, wy: i64, wz: i64) -> u32 {
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block
 /// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
 /// offset + diagonal vector).
-fn face_corners(x: i32, y: i32, z: i32, dir: Dir) -> [(i32, i32, i32); 4] {
+///
+/// Public because this order and [`quad_indices`] are one contract: any
+/// quad drawn through that index buffer must come out of this table, or
+/// it winds inward and `cull: Back` deletes it. The render crate's item
+/// geometry builds its boxes against this.
+pub fn face_corners(x: i32, y: i32, z: i32, dir: Dir) -> [(i32, i32, i32); 4] {
 	let ((ox, oy, oz), (dx, dy, dz)) = match dir {
 		Dir::South => ((0, 0, 0), (1, 1, 0)),
 		Dir::East => ((0, 0, 1), (0, 1, -1)),
@@ -1557,8 +1562,9 @@ mod tests {
 	#[test]
 	fn corner_heights_knit_across_chunk_borders() {
 		// Source at the +x border; the neighbor chunk holds Flow4 across
-		// the seam. The border corners average both (mean 6 → d = 3),
-		// proving the padded shell feeds corner heights.
+		// the seam. The shell water IS seen — the flow's own outer face
+		// drops to d = 5 below — but the border corners it shares with
+		// the source pin full, and the seam agrees from both sides.
 		let mut d = ChunkData::default();
 		d.set(15, 8, 8, B::Water);
 		let mut other = ChunkData::default();
@@ -1572,9 +1578,49 @@ mod tests {
 		});
 		let m = mesh_chunk(&input, ZERO);
 		let top = water_quad(&m.water, 15, 8, 8, Dir::Top);
-		for (w0, w1) in top {
-			let expect = if x_of(w0) == 16 { 3 } else { 1 };
-			assert_eq!(drop_of(w1), expect, "border corners mix in shell water");
+		for (_, w1) in top {
+			assert_eq!(drop_of(w1), 1, "a source's top face stays full");
+		}
+		// The mirror job: the neighbor chunk meshed with our source in
+		// ITS shell must see the same seam corners, or the two surfaces
+		// crack apart.
+		let mirror = MeshInput::build(&other, |dx, dy, dz| {
+			if (dx, dy, dz) == (-1, 0, 0) {
+				Src::Chunk(&d)
+			} else {
+				Src::Air
+			}
+		});
+		let flow_top = water_quad(&mesh_chunk(&mirror, ZERO).water, 0, 8, 8, Dir::Top);
+		for (w0, w1) in flow_top {
+			let expect = if x_of(w0) == 0 { 1 } else { 5 };
+			assert_eq!(drop_of(w1), expect, "seam pins, outer edge slopes away");
+		}
+	}
+
+	#[test]
+	fn a_source_beside_flowing_water_stays_full() {
+		// The reported bug: the fluid sim halves on spread, so a source
+		// sits next to 4s and 2s. Averaging sank its whole top face to
+		// d = 4 (0.63 of a block) — a full block has to keep looking
+		// full, and the flow still slopes away from it.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		for (x, z) in [(7, 8), (9, 8), (8, 7), (8, 9)] {
+			d.set(x, 8, z, B::WaterFlow4);
+		}
+		for (x, z) in [(7, 7), (9, 7), (7, 9), (9, 9)] {
+			d.set(x, 8, z, B::WaterFlow2);
+		}
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
+			assert_eq!(drop_of(w1), 1, "the source keeps its 8/9 surface");
+		}
+		// The Flow4 at +x: its inner corners touch the source and pin,
+		// its outer ones average the thinner water beyond.
+		for (w0, w1) in water_quad(&m.water, 9, 8, 8, Dir::Top) {
+			let expect = if x_of(w0) == 9 { 1 } else { 6 };
+			assert_eq!(drop_of(w1), expect, "the flow ramps down and away");
 		}
 	}
 

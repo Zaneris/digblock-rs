@@ -1,9 +1,10 @@
 //! The hotbar: a fixed row of slots the player selects from. Pure state —
 //! counts live in [`crate::inventory::Inventory`]; a slot only names
-//! *what* it holds. Slots are sticky: a block type keeps its slot at zero
-//! count (rendered greyed) so the bar never shifts underfoot, matching a
-//! future overflow inventory where slots are assignments, not a view of
-//! counts.
+//! *what* it holds. Slots are assignments, not a view of counts, and
+//! nothing here consults the inventory: a type that runs out is dropped
+//! by [`crate::inv_grid::reconcile_layout`], the one place that sees
+//! both, so the bar and the grid free an exhausted type by the same
+//! rule.
 
 use crate::block::BlockType;
 
@@ -19,8 +20,9 @@ pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
 	/// The permanent water-collection tool (pinned to the last slot):
-	/// dig-hold on a water source collects it; placing with it selected
-	/// places a `Water` source (requires Water stock).
+	/// holding either mouse button on a water source collects it. It
+	/// only collects — water is placed from a block slot like anything
+	/// else.
 	WaterTool,
 }
 

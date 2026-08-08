@@ -437,7 +437,9 @@ impl Sim {
 			EditKind::Collect => slot_item == Some(Some(HotbarItem::WaterTool)),
 			EditKind::Place { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
-				// The water tool places water sources.
+				// The tool is collect-only now; the current client places
+				// water from an ordinary Water slot. Kept permissive for
+				// older clients — the stock gate below still applies.
 				Some(Some(HotbarItem::WaterTool)) => place_b == Some(BlockType::Water),
 				_ => false,
 			},
@@ -2174,10 +2176,11 @@ mod tests {
 					kind: EditKind::Place { block: stair },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-					// Stone kept slot 0 (sticky at zero count); the crafted
-					// stairs auto-filed to the next free slot — the same
+					// Converting spent every Stone, so its slot was
+					// released in the same reconcile that filed the
+					// crafted stairs — they land in slot 0. The same
 					// derivation an honest client runs.
-					slot: 1,
+					slot: 0,
 				},
 			},
 		]);

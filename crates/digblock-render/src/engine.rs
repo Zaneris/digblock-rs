@@ -25,6 +25,12 @@ pub enum DebugScreen {
 	Menu,
 	Inventory,
 	Alchemy,
+	/// Not a screen: stock the inventory and open NOTHING, so the
+	/// first-person viewmodel is on screen for `--screenshot`. It is
+	/// here for the same reason the screens are — an empty starting
+	/// inventory means an empty hand, which made the held item just as
+	/// invisible to a headless capture as the pages were.
+	Hand,
 }
 
 impl DebugScreen {
@@ -35,6 +41,7 @@ impl DebugScreen {
 			"menu" => Some(Self::Menu),
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
+			"hand" => Some(Self::Hand),
 			_ => None,
 		}
 	}
@@ -318,6 +325,12 @@ pub struct Engine {
 	look_accum: (f32, f32),
 	/// Left mouse button currently held (hold-to-dig); right stays an edge.
 	dig_held: bool,
+	/// Right mouse button currently held. Only the water tool reads it —
+	/// with the bucket selected both buttons drive the same collect hold
+	/// (a tool has one action, and right-clicking a source used to
+	/// silently no-op: the fluid ray stops INSIDE the source, so the
+	/// place path found no face normal to build against).
+	right_held: bool,
 	/// Cell whose dig was refused — locally (world floor) or by the
 	/// server (a spawn lock it never told us about). Held until the aim
 	/// moves elsewhere, and load-bearing in two ways: it explains itself
@@ -449,6 +462,13 @@ pub struct Engine {
 	water_audio: crate::water_audio::WaterAudio,
 	/// Footstep cadence + ambient-bed state (pure helpers).
 	footsteps: crate::audio::Footsteps,
+	swim_strokes: crate::audio::SwimStrokes,
+	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
+	/// that returns early with no audio sink attached (bench, screenshot,
+	/// iOS), which would silently freeze the hand in exactly the
+	/// configurations that photograph it.
+	view_bob: crate::viewmodel::Bob,
+	view_swing: crate::viewmodel::Swing,
 	ambient: crate::audio::Ambient,
 	/// Scratch for batched audio commands (water voices).
 	audio_scratch: Vec<crate::audio::AudioCmd>,
@@ -710,6 +730,9 @@ impl Engine {
 			audio: None,
 			water_audio: crate::water_audio::WaterAudio::default(),
 			footsteps: crate::audio::Footsteps::default(),
+			swim_strokes: crate::audio::SwimStrokes::default(),
+			view_bob: crate::viewmodel::Bob::default(),
+			view_swing: crate::viewmodel::Swing::default(),
 			ambient: crate::audio::Ambient::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
@@ -748,6 +771,7 @@ impl Engine {
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			dig_held: false,
+			right_held: false,
 			refused_cell: None,
 			click_place: false,
 			dig: None,
@@ -818,8 +842,9 @@ impl Engine {
 				&mut engine.inv_grid,
 			);
 			match screen {
-				// The menu opens itself when `config.menu` is set.
-				DebugScreen::Menu => {}
+				// The menu opens itself when `config.menu` is set; the
+				// hand wants a stocked bar and nothing over it.
+				DebugScreen::Menu | DebugScreen::Hand => {}
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy => engine.alch_screen.open(),
 			}
@@ -943,6 +968,10 @@ impl Engine {
 	/// Per-frame audio upkeep, after the camera settles: listener pose,
 	/// footsteps, waterfall voices, ambient bed. One early-out branch
 	/// when no sink is attached.
+	///
+	/// `prev_player_pos` is deliberately NOT advanced here — `update`
+	/// owns it, because the viewmodel's bob reads the same delta and
+	/// this function returns early on a silent run.
 	fn step_audio(&mut self, dt: f32) {
 		use crate::audio::{ambient_sfx, step_sfx, AmbientZone, AudioCmd, LOOP_AMBIENT};
 		/// Splash gain: a step into the shallows, plus this much per block
@@ -997,6 +1026,16 @@ impl Engine {
 					gain,
 				});
 			}
+			// Strokes while actually swimming — in the water and off the
+			// bottom. Wading is grounded, so it keeps its footsteps and
+			// the two can never double up.
+			if let Some(gain) = self.swim_strokes.advance(moved, wet && !grounded) {
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Swim,
+					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
+					gain,
+				});
+			}
 		}
 		self.prev_wet = wet;
 		self.fall_from_y = if grounded || wet || !self.walking {
@@ -1004,7 +1043,6 @@ impl Engine {
 		} else {
 			self.fall_from_y.max(feet)
 		};
-		self.prev_player_pos = self.player.pos;
 
 		// Waterfall voices.
 		let mut cmds = std::mem::take(&mut self.audio_scratch);
@@ -1127,6 +1165,9 @@ impl Engine {
 			id: crate::audio::LOOP_DIG,
 		});
 		self.ambient.reset();
+		self.swim_strokes.reset();
+		self.view_bob.reset();
+		self.view_swing.reset();
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -1149,6 +1190,35 @@ impl Engine {
 			}
 		}
 		self.in_local_save = false;
+	}
+
+	/// Swap to a fresh backdrop world and relock the startup menu — the
+	/// shared tail of leaving a server and leaving a local world. Don't
+	/// keep phantom-playing the world we just left: a new clock-derived
+	/// seed means the menu's backdrop is visibly not the save behind it.
+	/// The caller detaches whatever it was attached to first
+	/// ([`Self::close_local_save`] / dropping the transport).
+	fn return_to_title(&mut self) {
+		let nanos = web_time::SystemTime::now()
+			.duration_since(web_time::UNIX_EPOCH)
+			.map_or(0, |d| d.subsec_nanos());
+		let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+		self.seed = seed;
+		let spawn = digblock_core::player::spawn(seed);
+		self.spawn_pos = spawn;
+		self.pipeline = Pipeline::with_overlay(
+			seed,
+			self.config.draw_dist,
+			self.config.workers,
+			digblock_core::overlay::EditOverlay::default(),
+		);
+		self.player = Player::new(spawn);
+		self.camera.pos = spawn;
+		self.inventory = Inventory::default();
+		self.player_names.clear();
+		self.reset_world_transients(spawn, true);
+		self.in_local_save = false;
+		self.menu.on_returned_to_title();
 	}
 
 	/// Enter an opened named save: rebuild the world around its seed +
@@ -1882,10 +1952,17 @@ impl Engine {
 		}
 	}
 
+	/// Is a button holding the dig/collect timer open? The bucket has one
+	/// action, so either button works it; every other item keeps the
+	/// left-digs / right-places split.
+	fn hold_active(&self) -> bool {
+		self.dig_held || (self.right_held && self.water_tool_selected())
+	}
+
 	/// One 60 Hz step of the hold-to-dig state machine. Purely
 	/// predictive online — the server runs its own timer and aim checks.
 	fn step_dig(&mut self) {
-		if !self.dig_held {
+		if !self.hold_active() {
 			self.cancel_dig();
 			return;
 		}
@@ -1928,12 +2005,24 @@ impl Engine {
 					net.send_dig_start(hit.cell);
 				}
 			}
-			self.emit(crate::audio::AudioCmd::LoopStart {
-				id: crate::audio::LOOP_DIG,
-				sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
-				pos: Some(cell_center(hit.cell)),
-				gain: 1.0,
-			});
+			// A scoop is a swing, not a mining hold: one stroke, no
+			// grinding loop. (Water has no sound material of its own, so
+			// the loop resolved to `Material::Earth` and collecting a
+			// spring played the dirt-digging sample.)
+			if self.water_tool_selected() {
+				self.emit(crate::audio::AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Swim,
+					pos: Some(cell_center(hit.cell)),
+					gain: 0.7,
+				});
+			} else {
+				self.emit(crate::audio::AudioCmd::LoopStart {
+					id: crate::audio::LOOP_DIG,
+					sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
+					pos: Some(cell_center(hit.cell)),
+					gain: 1.0,
+				});
+			}
 			return;
 		}
 		let (done, pitch) = {
@@ -2012,11 +2101,23 @@ impl Engine {
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
+		// A filled bucket splashes; a broken block breaks. Water's
+		// material class is Earth (the table's total fallback), which is
+		// right for nothing it does.
+		let tool = self.water_tool_selected();
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::break_sfx(crate::audio::material_of(prev)),
+			sound: if tool {
+				crate::audio::Sfx::Splash
+			} else {
+				crate::audio::break_sfx(crate::audio::material_of(prev))
+			},
 			pos: Some(cell_center(hit.cell)),
-			gain: 1.0,
+			gain: if tool { 0.5 } else { 1.0 },
 		});
+		// The last scoop lands even if the button came up on this frame.
+		if tool {
+			self.view_swing.strike();
+		}
 		// One credit even for the two-cell door.
 		let drop = prev.dig_drop();
 		if let Some(d) = drop {
@@ -2075,8 +2176,14 @@ impl Engine {
 		}
 		let block = match self.hotbar.selected_item() {
 			Some(HotbarItem::Block(b)) => b,
-			Some(HotbarItem::WaterTool) => BlockType::Water,
-			None => return,
+			// The bucket is a collector, not a placer: this click already
+			// drove the collect hold in `step_dig`. Doubling as "pour a
+			// source" made one button mean two things depending on what
+			// the fluid ray happened to land on — and it landed INSIDE
+			// the source, leaving no face normal, so aiming at water and
+			// right-clicking silently did nothing at all. Doors above
+			// still toggle.
+			Some(HotbarItem::WaterTool) | None => return,
 		};
 		// Stairs carry the placer-derived facing (ascending away along
 		// the look); doors place as a lower+upper pair.
@@ -2328,10 +2435,18 @@ impl Engine {
 
 	/// Crosshair cell + dig progress for the highlight overlay: `None`
 	/// progress = idle outline.
+	///
+	/// Collecting water reports no progress even mid-hold, so the
+	/// outline stays but the crack web never appears: scooping a source
+	/// into a bucket is not chipping a block apart, and the swinging
+	/// hand is the feedback that something is happening.
 	pub fn dig_progress(&self) -> Option<((i32, i32, i32), Option<f32>)> {
 		let hit = self.target.as_ref()?;
 		if !self.diggable(hit) {
 			return None;
+		}
+		if self.water_tool_selected() {
+			return Some((hit.cell, None));
 		}
 		let progress = self
 			.dig
@@ -2339,6 +2454,31 @@ impl Engine {
 			.filter(|d| d.cell == hit.cell)
 			.map(|d| (d.ticks as f32 / d.required.max(1) as f32).min(1.0));
 		Some((hit.cell, progress))
+	}
+
+	/// This frame's held item, if the hand has anything in it. The pose
+	/// is authored in view space by `viewmodel.rs`, so all this does is
+	/// pick the item and hand over the frame's light rig.
+	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
+		let (kind, _) = crate::ui::hud::item_icon(self.hotbar.selected_item()?);
+		// The light rig is world-space; the item lives in view space, so
+		// rotate the direction through the same view matrix the scene
+		// used. Translation is irrelevant for a direction.
+		let view = self.camera.view();
+		let d = frame.light_dir;
+		let light_dir_view = view.transform_vector3(Vec3::new(d[0], d[1], d[2]));
+		Some(crate::viewmodel::ViewmodelFrame {
+			kind,
+			pose: crate::viewmodel::combine(self.view_bob.pose(), self.view_swing.pose()),
+			light_dir_view,
+			light_strength: d[3],
+			ambient: [frame.ambient[0], frame.ambient[1], frame.ambient[2]],
+			light_color: [
+				frame.light_color[0],
+				frame.light_color[1],
+				frame.light_color[2],
+			],
+		})
 	}
 
 	pub fn inventory(&self) -> &Inventory {
@@ -2566,6 +2706,7 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
+					self.right_held = false;
 					self.inv_screen.cancel_drag();
 				}
 				InputEvent::Key {
@@ -2598,6 +2739,7 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
+					self.right_held = false;
 					self.alch_screen.handle_input(
 						&InputEvent::FocusLost,
 						&self.ui_hits,
@@ -2689,6 +2831,7 @@ impl Game for Engine {
 				Key::Escape => {
 					if pressed {
 						self.dig_held = false;
+						self.right_held = false;
 						self.menu.open();
 					}
 				}
@@ -2696,6 +2839,7 @@ impl Game for Engine {
 					if pressed {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
+						self.right_held = false;
 						self.inv_screen.open();
 					}
 				}
@@ -2703,6 +2847,7 @@ impl Game for Engine {
 					if pressed {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
+						self.right_held = false;
 						self.alch_screen.open();
 					}
 				}
@@ -2719,6 +2864,7 @@ impl Game for Engine {
 					if pressed && self.net.is_some() {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
+						self.right_held = false;
 						self.chat.open();
 					}
 				}
@@ -2732,6 +2878,9 @@ impl Game for Engine {
 			InputEvent::MouseButton { button, pressed } => match button {
 				MouseButton::Left => self.dig_held = pressed,
 				MouseButton::Right => {
+					self.right_held = pressed;
+					// Still an edge for the interact/place path — with the
+					// bucket selected `apply_place` stops after doors.
 					if pressed {
 						self.click_place = true;
 					}
@@ -2742,11 +2891,13 @@ impl Game for Engine {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 				self.dig_held = false;
+				self.right_held = false;
 			}
 			InputEvent::PointerLockLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 				self.dig_held = false;
+				self.right_held = false;
 				// Web parity with desktop Escape: a browser-initiated unlock
 				// pauses into the menu (no-op when the menu is disabled — the
 				// shell's click-to-recapture covers that case).
@@ -2841,31 +2992,20 @@ impl Game for Engine {
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
 			self.push_feed("Left the server.".into());
-			// With a world store, don't keep phantom-playing the server's
-			// seed: swap to a fresh backdrop and relock the startup menu so
-			// the player picks a save or a server.
+			// Without a store there is no save list to return to, so a
+			// store-less run keeps playing the server's seed offline
+			// rather than dropping into a menu it can't leave.
 			if self.world_store.is_some() {
-				let nanos = web_time::SystemTime::now()
-					.duration_since(web_time::UNIX_EPOCH)
-					.map_or(0, |d| d.subsec_nanos());
-				let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
-				self.seed = seed;
-				let spawn = digblock_core::player::spawn(seed);
-				self.spawn_pos = spawn;
-				self.pipeline = Pipeline::with_overlay(
-					seed,
-					self.config.draw_dist,
-					self.config.workers,
-					digblock_core::overlay::EditOverlay::default(),
-				);
-				self.player = Player::new(spawn);
-				self.camera.pos = spawn;
-				self.inventory = Inventory::default();
-				self.player_names.clear();
-				self.reset_world_transients(spawn, true);
-				self.in_local_save = false;
-				self.menu.on_left_server();
+				self.return_to_title();
 			}
+		}
+		// The local-world counterpart: flush the save first, then take the
+		// same road back to the title. Unconditional — a store-less
+		// ephemeral "Play Local" world has a title menu to go back to.
+		if self.menu.take_leave_world() {
+			self.close_local_save();
+			self.push_feed("Left the world.".into());
+			self.return_to_title();
 		}
 		// Return to spawn: one shared 60s cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
@@ -3146,7 +3286,19 @@ impl Game for Engine {
 			}
 			self.camera.pos += mv.normalize_or_zero() * speed;
 		}
+		// Held-item animation and the audio both read this frame's
+		// movement, so they sit together and `prev_player_pos` advances
+		// once, after both — `step_audio` returns early on a silent run
+		// and would otherwise starve the bob of every frame's delta.
+		let moved = self.player.pos - self.prev_player_pos;
+		self.view_bob
+			.advance(Vec3::new(moved.x, 0.0, moved.z).length(), dt);
+		// A scoop in progress: the tool out, a button down, and a hold
+		// actually open on a source (aiming at nothing doesn't swing).
+		let scooping = self.water_tool_selected() && self.hold_active() && self.dig.is_some();
+		self.view_swing.advance(dt, scooping);
 		self.step_audio(dt);
+		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
 	}
 
@@ -3302,6 +3454,11 @@ impl Game for Engine {
 			});
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
+		// The hand is part of playing, not part of reading a screen: a
+		// menu, the inventory or the alchemy page all put it away.
+		let viewmodel = (in_game && !self.inv_screen.is_open() && !self.alch_screen.is_open())
+			.then(|| self.viewmodel_frame(&frame))
+			.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
@@ -3319,6 +3476,7 @@ impl Game for Engine {
 					.map(|s| (s, self.history_scratch.as_slice())),
 				feed: &self.feed,
 				target: highlight_target,
+				viewmodel,
 				ui: &self.ui_dl,
 				chat: (in_game && self.chat.is_open())
 					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),

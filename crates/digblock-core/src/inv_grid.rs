@@ -10,7 +10,7 @@
 //! slots hold plain [`BlockType`]s — the invariant is in the type.
 
 use crate::block::BlockType;
-use crate::hotbar::{Hotbar, HotbarItem, WIRE_EMPTY};
+use crate::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
 /// 4 rows of 9 (matching the hotbar's width) — comfortably above the
@@ -107,12 +107,31 @@ impl InvGrid {
 	}
 }
 
-/// Repair the layout against the authoritative counts: grid slots whose
-/// type hit zero or moved to the bar clear; owned types placed nowhere
-/// go to a free bar slot first (the classic dig-credit auto-assign),
-/// overflowing into the first empty grid slot. Deliberate arrangements
-/// survive — a type the player parked in the grid stays in the grid.
+/// Repair the layout against the authoritative counts: slots whose type
+/// hit zero clear — on the BAR as well as in the grid — as do grid slots
+/// whose type moved to the bar; owned types placed nowhere go to a free
+/// bar slot first (the classic dig-credit auto-assign), overflowing into
+/// the first empty grid slot. Deliberate arrangements survive — a type
+/// the player parked in the grid stays in the grid.
+///
+/// The bar sweep runs first so the slot an exhausted type gives up is
+/// free for the same pass to fill. It cannot touch the WaterTool: the
+/// tool is not a `Block`, and `clear_slot` refuses it anyway.
+///
+/// An emptied slot is released rather than kept greyed at zero because
+/// the count IS the item — a bar advertising nine types you don't have
+/// is nine slots you can't use. The engine reconciles and mirrors the
+/// layout BEFORE the frame's clicks send edits (`engine.rs` update),
+/// so the edit that empties a stack is still validated against the
+/// layout that holds it; the slot clears on the next frame.
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
+	for slot in 0..HOTBAR_SLOTS {
+		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
+			if inv.count(b) == 0 {
+				bar.clear_slot(slot);
+			}
+		}
+	}
 	for slot in 0..GRID_SLOTS {
 		if let Some(b) = grid.get(slot) {
 			if inv.count(b) == 0 || bar.slots().contains(&Some(HotbarItem::Block(b))) {
@@ -186,6 +205,31 @@ mod tests {
 		reconcile_layout(&inv, &mut bar, &mut grid);
 		assert!(!grid.contains(B::Dirt), "bar-assigned type left the grid");
 		assert!(!grid.contains(B::Stone), "zero-count type left the grid");
+	}
+
+	/// The bar used to keep an exhausted type greyed at zero. Spending a
+	/// stack now releases its slot, and the same pass can hand that slot
+	/// to something you actually own.
+	#[test]
+	fn spending_a_stack_frees_its_bar_slot() {
+		let mut inv = inv_of(&[(B::Dirt, 1)]);
+		let mut bar = Hotbar::new();
+		let mut grid = InvGrid::default();
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.slots()[0], Some(HotbarItem::Block(B::Dirt)));
+
+		assert!(inv.try_take(B::Dirt, 1));
+		inv.add(B::Stone, 3);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.slots()[0], Some(HotbarItem::Block(B::Stone)));
+		assert!(!bar.slots().contains(&Some(HotbarItem::Block(B::Dirt))));
+		assert!(!grid.contains(B::Dirt), "and it isn't filed away either");
+		// The tool is not a Block, so no sweep can dislodge it.
+		assert_eq!(
+			bar.slots()[HOTBAR_SLOTS - 1],
+			Some(HotbarItem::WaterTool),
+			"the tool survives an empty inventory"
+		);
 	}
 
 	#[test]

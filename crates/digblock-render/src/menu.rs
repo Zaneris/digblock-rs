@@ -157,6 +157,10 @@ enum Act {
 	CloseMenu,
 	OpenMultiplayer,
 	LeaveServer,
+	/// The local-world counterpart of [`Act::LeaveServer`]: flush the
+	/// save and go back to the locked title menu (engine drains
+	/// [`Menu::take_leave_world`]).
+	LeaveWorld,
 	ReturnSpawn,
 	/// Close the menu and open the inventory screen (engine drains
 	/// [`Menu::take_inventory`]).
@@ -220,6 +224,7 @@ pub struct Menu {
 	spawn_cooldown_secs: u32,
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
+	wants_leave_world: bool,
 	wants_return_spawn: bool,
 	wants_inventory: bool,
 	wants_alchemy: bool,
@@ -251,6 +256,7 @@ impl Menu {
 			spawn_cooldown_secs: 0,
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
+			wants_leave_world: false,
 			wants_return_spawn: false,
 			wants_inventory: false,
 			wants_alchemy: false,
@@ -296,6 +302,12 @@ impl Menu {
 
 	pub fn take_disconnect(&mut self) -> bool {
 		std::mem::take(&mut self.wants_disconnect)
+	}
+
+	/// The Leave World row was picked: the engine closes the local save
+	/// and returns to the title.
+	pub fn take_leave_world(&mut self) -> bool {
+		std::mem::take(&mut self.wants_leave_world)
 	}
 
 	pub fn take_return_spawn(&mut self) -> bool {
@@ -360,10 +372,10 @@ impl Menu {
 		self.screen = None;
 	}
 
-	/// Left a server for a fresh backdrop world: back to the locked
-	/// startup menu — there is no game to "go back" to until the player
-	/// picks a save or a server again.
-	pub fn on_left_server(&mut self) {
+	/// Left a server or a local world for a fresh backdrop: back to the
+	/// locked startup menu — there is no game to "go back" to until the
+	/// player picks a save or a server again.
+	pub fn on_returned_to_title(&mut self) {
 		self.connected = false;
 		self.entered_world = false;
 		if self.enabled {
@@ -690,6 +702,10 @@ impl Menu {
 				self.wants_disconnect = true;
 				self.screen = None;
 			}
+			Act::LeaveWorld => {
+				self.wants_leave_world = true;
+				self.screen = None;
+			}
 			Act::ReturnSpawn => {
 				self.wants_return_spawn = true;
 				self.screen = None;
@@ -837,8 +853,11 @@ impl Menu {
 				// save list; the ephemeral "Play Local" survives only for
 				// store-less runs (scripted flows, no-injection paths).
 				// In-game order: Back to Game, then the hotkey screens
-				// (Return to Spawn, Inventory, Alchemy), then navigation,
-				// with Leave Server and Settings last.
+				// (Return to Spawn, Inventory, Alchemy), then the one exit
+				// row, with Settings last. Local and multiplayer read the
+				// same in game — Singleplayer and Multiplayer belong to
+				// the title menu, and reaching either from inside a world
+				// now goes through Leave.
 				if self.entered_world {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
 					// On cooldown the row renders dim and is not an act.
@@ -847,20 +866,20 @@ impl Menu {
 					}
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
-					if self.store_available && !self.connected {
-						acts.push((RowId::RootItem(5), Act::OpenWorlds));
+					if self.connected {
+						acts.push((RowId::RootItem(2), Act::LeaveServer));
+					} else {
+						acts.push((RowId::RootItem(8), Act::LeaveWorld));
 					}
-				} else if self.store_available {
-					acts.push((RowId::RootItem(5), Act::OpenWorlds));
 				} else {
-					acts.push((RowId::RootItem(0), Act::CloseMenu));
-				}
-				// Already on a server: joining another goes through Leave.
-				if self.services_available && !self.connected {
-					acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
-				}
-				if self.connected {
-					acts.push((RowId::RootItem(2), Act::LeaveServer));
+					if self.store_available {
+						acts.push((RowId::RootItem(5), Act::OpenWorlds));
+					} else {
+						acts.push((RowId::RootItem(0), Act::CloseMenu));
+					}
+					if self.services_available {
+						acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
+					}
 				}
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
 			}
@@ -966,27 +985,33 @@ impl Menu {
 						&mut y,
 						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", "K"),
 					);
-					if self.store_available && !self.connected {
+					if self.connected {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(2), "Leave Server"),
+						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(8), "Leave World"),
+						);
+					}
+				} else {
+					if self.store_available {
 						push(
 							&mut specs,
 							&mut y,
 							RowSpec::item(RowId::RootItem(5), "Singleplayer"),
 						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(0), "Play Local"),
+						);
 					}
-				} else if self.store_available {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(5), "Singleplayer"),
-					);
-				} else {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(0), "Play Local"),
-					);
-				}
-				if !self.connected {
 					if self.services_available {
 						push(
 							&mut specs,
@@ -1000,13 +1025,6 @@ impl Menu {
 							RowSpec::dim("Multiplayer (no master server; run with --master-url)"),
 						);
 					}
-				}
-				if self.connected {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(2), "Leave Server"),
-					);
 				}
 				push(
 					&mut specs,
@@ -1577,7 +1595,7 @@ mod tests {
 			.iter()
 			.any(|r| r.text.starts_with("Multiplayer")));
 		// Leaving brings it back (fresh backdrop world, startup menu).
-		menu.on_left_server();
+		menu.on_returned_to_title();
 		assert!(menu
 			.acts()
 			.iter()
@@ -1852,12 +1870,11 @@ mod tests {
 		menu.on_welcome();
 		assert!(!menu.is_open());
 
-		// Second run: cancel instead.
-		menu.open();
-		menu.handle_key(Key::Down); // Return to Spawn
-		menu.handle_key(Key::Down); // Inventory
-		menu.handle_key(Key::Down); // Alchemy
-		menu.handle_key(Key::Down); // Multiplayer
+		// Second run: cancel instead. From a fresh (pre-entry) menu —
+		// Multiplayer lives on the title menu, not the in-game one.
+		let mut menu = Menu::new(true, named("ted"), None);
+		menu.set_services_available();
+		menu.handle_key(Key::Down); // Multiplayer (after Play Local)
 		menu.handle_key(Key::Enter);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
 		menu.handle_key(Key::Enter);
@@ -1915,6 +1932,58 @@ mod tests {
 		assert!(!menu.is_open());
 	}
 
+	/// The two in-game menus used to diverge: a local world offered
+	/// Singleplayer and Multiplayer where a server offered Leave Server,
+	/// so the same Escape key produced a different page depending on
+	/// where you were. Both now end in exactly one exit row.
+	#[test]
+	fn leave_world_is_the_local_counterpart_of_leave_server() {
+		let rows_of = |menu: &Menu| -> Vec<String> {
+			menu.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.map(|r| r.text.to_string())
+				.collect()
+		};
+		let mut local = Menu::new(true, named("ted"), None);
+		local.set_services_available();
+		local.set_store_available();
+		local.on_world_entered();
+		local.open();
+		let mut server = Menu::new(true, named("ted"), None);
+		server.set_services_available();
+		server.set_store_available();
+		server.set_connected(true);
+
+		let (a, b) = (rows_of(&local), rows_of(&server));
+		assert_eq!(
+			a.iter().position(|r| r == "Leave World"),
+			b.iter().position(|r| r == "Leave Server"),
+			"the exit row sits in the same place: {a:?} vs {b:?}"
+		);
+		for rows in [&a, &b] {
+			assert!(!rows.iter().any(|r| r == "Singleplayer"), "{rows:?}");
+			assert!(
+				!rows.iter().any(|r| r.starts_with("Multiplayer")),
+				"{rows:?}"
+			);
+		}
+		assert_eq!(a.len(), b.len(), "same page either side: {a:?} vs {b:?}");
+
+		// Activating it raises the intent and closes the menu, exactly
+		// as Leave Server does.
+		let leave = local
+			.acts()
+			.iter()
+			.position(|(id, _)| *id == RowId::RootItem(8))
+			.expect("the Leave World row is an act");
+		local.set_sel(leave);
+		local.handle_key(Key::Enter);
+		assert!(local.take_leave_world());
+		assert!(!local.take_disconnect(), "a local world has no transport");
+		assert!(!local.is_open());
+	}
+
 	#[test]
 	fn return_to_spawn_ready_activates_and_cooldown_greys() {
 		let mut menu = Menu::new(true, named("ted"), None);
@@ -1937,8 +2006,8 @@ mod tests {
 		);
 		assert_eq!(
 			acts.len(),
-			4,
-			"Back to Game + Inventory + Alchemy + Settings"
+			5,
+			"Back to Game + Inventory + Alchemy + Leave World + Settings"
 		);
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
@@ -1949,6 +2018,7 @@ mod tests {
 		// raised on the way to Settings.
 		menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
 		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Down); // Leave World
 		menu.handle_key(Key::Down); // Settings
 		menu.handle_key(Key::Enter);
 		assert!(!menu.take_return_spawn());
@@ -1960,7 +2030,7 @@ mod tests {
 		// Cooldown over: selectable again.
 		menu.open();
 		menu.set_spawn_cooldown(0);
-		assert_eq!(menu.acts().len(), 5, "spawn row is back");
+		assert_eq!(menu.acts().len(), 6, "spawn row is back");
 	}
 
 	fn open_settings(menu: &mut Menu) {
@@ -2201,14 +2271,15 @@ mod tests {
 			menu.take_world_intents().as_slice(),
 			[WorldIntent::Refresh]
 		));
-		// Entering a world unlocks Back to Game; Singleplayer stays for
-		// switching.
+		// Entering a world unlocks Back to Game and swaps Singleplayer
+		// for Leave World: switching saves goes back through the title.
 		menu.on_world_entered();
 		assert!(!menu.is_open());
 		menu.open();
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text == "Back to Game"));
-		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
+		assert!(view.rows.iter().any(|r| r.text == "Leave World"));
+		assert!(!view.rows.iter().any(|r| r.text == "Singleplayer"));
 	}
 
 	#[test]
@@ -2305,7 +2376,7 @@ mod tests {
 		menu.set_store_available();
 		menu.set_connected(true);
 		assert!(menu.entered_world);
-		menu.on_left_server();
+		menu.on_returned_to_title();
 		assert!(menu.is_open());
 		// Locked again: Escape can't dismiss, no Back to Game.
 		menu.handle_key(Key::Escape);

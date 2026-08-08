@@ -66,11 +66,12 @@ pub mod sfx {
 	pub const STEP_WOOD: &[u8] = include_bytes!("../../../assets/sfx/step_wood.ogg");
 	pub const WATERFALL: &[u8] = include_bytes!("../../../assets/sfx/waterfall.ogg");
 	pub const SPLASH: &[u8] = include_bytes!("../../../assets/sfx/splash.ogg");
+	pub const SWIM: &[u8] = include_bytes!("../../../assets/sfx/swim.ogg");
 	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
 	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
 	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
 
-	pub const ALL: [(&str, &[u8]); 15] = [
+	pub const ALL: [(&str, &[u8]); 16] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -83,6 +84,7 @@ pub mod sfx {
 		("step_wood.ogg", STEP_WOOD),
 		("waterfall.ogg", WATERFALL),
 		("splash.ogg", SPLASH),
+		("swim.ogg", SWIM),
 		("ambient_wind.ogg", AMBIENT_WIND),
 		("ambient_water.ogg", AMBIENT_WATER),
 		("ambient_cave.ogg", AMBIENT_CAVE),
@@ -149,8 +151,13 @@ pub mod shader {
 		include_str!("../../../assets/shaders/highlight.wgsl"),
 	);
 	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
+	/// The first-person viewmodel. Deliberately WITHOUT the frame
+	/// prelude: it is authored in view space and carries its own
+	/// projection and light rig, so the shared Frame block would only be
+	/// an unused binding it must not declare.
+	pub const VIEWMODEL: &str = include_str!("../../../assets/shaders/viewmodel.wgsl");
 
-	pub const ALL: [(&str, &str); 11] = [
+	pub const ALL: [(&str, &str); 12] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -162,6 +169,7 @@ pub mod shader {
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
+		("viewmodel.wgsl", VIEWMODEL),
 	];
 }
 

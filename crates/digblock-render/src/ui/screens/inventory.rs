@@ -16,7 +16,7 @@ use crate::hotbar::{HotbarView, SlotView};
 use crate::ui::drag::{DragEvent, DragState, DRAG_THRESHOLD_PX};
 use crate::ui::draw::Layer;
 use crate::ui::hud;
-use crate::ui::widgets::{self, GridSpec, Style, Ui, DIM, WHITE};
+use crate::ui::widgets::{self, GridSpec, Style, Ui, WHITE};
 use crate::ui::{theme, HitMap, InvId, Rect};
 
 /// Grid/bar mutations the engine applies to its core `Hotbar`/`InvGrid`
@@ -127,17 +127,6 @@ impl InvScreen {
 			WHITE,
 			"INVENTORY",
 		);
-		if inv.iter_nonzero().next().is_none() {
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				panel.x + pad + ui.style.measure("INVENTORY "),
-				title_y,
-				ui.style.glyph,
-				DIM,
-				"nothing collected yet",
-			);
-		}
 		let icon_px = hud::ICON_PX * scale;
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
