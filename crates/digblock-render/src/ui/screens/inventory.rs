@@ -130,7 +130,9 @@ impl InvScreen {
 		let icon_px = hud::ICON_PX * scale;
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
-			let icon = grid.get(i).map(|b| hud::item_icon(HotbarItem::Block(b)));
+			let icon = grid
+				.get(i)
+				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
 			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
 			if let Some(b) = grid.get(i) {
 				// Same badge as the hotbar — the rows sit stacked, so a
@@ -140,7 +142,9 @@ impl InvScreen {
 		}
 		// The held item rides the cursor, above everything.
 		if let Some(&item) = self.drag.ghost() {
-			let (kind, tint) = hud::item_icon(item);
+			// Dragging the tool carries its charge: the ghost is the same
+			// item, so it has to be the same picture.
+			let (kind, tint) = hud::item_icon(item, inv.bucket_full());
 			let (cx, cy) = self.drag.cursor;
 			hud::draw_icon(
 				ui.dl,
@@ -178,7 +182,7 @@ impl InvScreen {
 					InvId::Grid(i) => HotbarItem::Block(grid.get(i as usize)?),
 					InvId::Bar(i) => match bar.slots.get(i as usize)? {
 						SlotView::Empty => return None,
-						SlotView::Tool => HotbarItem::WaterTool,
+						SlotView::Tool { .. } => HotbarItem::WaterTool,
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Alchemy ids never appear while this screen is open.

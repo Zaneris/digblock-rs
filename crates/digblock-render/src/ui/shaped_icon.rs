@@ -189,13 +189,18 @@ mod tests {
 		);
 	}
 
+	/// The bar has to answer "have I got water?" at a glance, so the two
+	/// bucket states must not project to the same picture.
 	#[test]
-	fn bucket_mixes_wood_and_water() {
-		let quads = emitted(IconKind::WaterTool, 0xFFFF_FFFF);
+	fn bucket_mixes_wood_and_water_only_when_charged() {
 		let wood = BlockType::Wood.props().tex_side;
 		let water = BlockType::Water.props().tex_side;
-		assert!(quads.iter().any(|(_, l, _)| *l == wood));
-		assert!(quads.iter().any(|(_, l, _)| *l == water));
+		let full = emitted(IconKind::WaterTool { full: true }, 0xFFFF_FFFF);
+		assert!(full.iter().any(|(_, l, _)| *l == wood));
+		assert!(full.iter().any(|(_, l, _)| *l == water));
+		let empty = emitted(IconKind::WaterTool { full: false }, 0xFFFF_FFFF);
+		assert!(empty.iter().any(|(_, l, _)| *l == wood));
+		assert!(!empty.iter().any(|(_, l, _)| *l == water));
 	}
 
 	#[test]

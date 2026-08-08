@@ -25,8 +25,10 @@ pub enum IconKind {
 	Cube(BlockType),
 	/// Stairs/doors: the baked shape template, projected.
 	Shaped(BlockType),
-	/// The water tool: a little bucket with water inside.
-	WaterTool,
+	/// The water tool: a little wooden bucket, with a source in it or
+	/// not. The charge is drawn, not tinted — "have I got water?" is the
+	/// question the bar has to answer at a glance.
+	WaterTool { full: bool },
 }
 
 /// The aim crosshair (hidden while any screen owns the cursor).
@@ -49,9 +51,13 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 
 /// Icon (kind, tint) for a hotbar item — the ghost drawn under the
 /// cursor mid-drag uses the same visuals as the slots.
-pub fn item_icon(item: HotbarItem) -> (IconKind, u32) {
+///
+/// `tool_full` is the water tool's charge, which is player state rather
+/// than part of the slot assignment, so it has to arrive alongside the
+/// item; every other item ignores it.
+pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	match item {
-		HotbarItem::WaterTool => (IconKind::WaterTool, FULL_TINT),
+		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
 		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
 		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
 	}
@@ -100,8 +106,8 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		let rect = grid.rect(i);
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
-			SlotView::Tool => Some(item_icon(HotbarItem::WaterTool)),
-			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block))),
+			SlotView::Tool { full } => Some(item_icon(HotbarItem::WaterTool, full)),
+			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
 		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
 		if let SlotView::Block { count, .. } = view.slots[i] {

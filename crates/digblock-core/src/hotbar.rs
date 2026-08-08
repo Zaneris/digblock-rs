@@ -19,10 +19,13 @@ pub const WIRE_TOOL: u16 = u16::MAX - 1;
 pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
-	/// The permanent water-collection tool (pinned to the last slot):
-	/// holding either mouse button on a water source collects it. It
-	/// only collects — water is placed from a block slot like anything
-	/// else.
+	/// The permanent water tool (pinned to the last slot). It has two
+	/// states, and its charge — one unit of water in the inventory, see
+	/// [`crate::inventory::Inventory::bucket_full`] — decides which:
+	/// empty, left-click holds on a source to scoop it and right-click
+	/// does nothing; charged, right-click pours the source back out and
+	/// left-click does nothing. Water is never an item in a slot, so the
+	/// bucket is the only thing that carries it.
 	WaterTool,
 }
 
@@ -68,8 +71,14 @@ impl Hotbar {
 	/// tool holds the last one, so blocks fill 1..8; called on every dig
 	/// credit — later credits find it already assigned). A full bar
 	/// leaves the type unassigned — it still counts in the inventory,
-	/// just isn't reachable from the bar yet.
+	/// just isn't reachable from the bar yet. A type that isn't
+	/// [`BlockType::is_slottable`] is never assigned at all: the dig
+	/// credit for a scooped source must not flash a water slot onto the
+	/// bar for the frame before `reconcile_layout` sweeps it off again.
 	pub fn auto_assign(&mut self, b: BlockType) {
+		if !b.is_slottable() {
+			return;
+		}
 		let item = Some(HotbarItem::Block(b));
 		if self.slots.contains(&item) {
 			return;

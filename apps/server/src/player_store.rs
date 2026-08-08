@@ -377,7 +377,7 @@ mod tests {
 			let mut s = PlayerStore::open(&dir).unwrap();
 			let mut inv = Inventory::default();
 			inv.add(BlockType::Dirt, 7);
-			inv.add(BlockType::Water, 2);
+			inv.add(BlockType::Water, 2); // the bucket's charge: caps at one
 			s.put(
 				id_a,
 				PlayerRecord {
@@ -393,7 +393,8 @@ mod tests {
 		let s = PlayerStore::open(&dir).unwrap();
 		let a = s.get(&id_a);
 		assert_eq!(a.inventory.count(BlockType::Dirt), 7);
-		assert_eq!(a.inventory.count(BlockType::Water), 2);
+		assert!(a.inventory.bucket_full());
+		assert_eq!(a.inventory.count(BlockType::Water), 1);
 		assert_eq!(a.layout, Some(layout()));
 		let b = s.get(&id_b);
 		assert_eq!(b.inventory, Inventory::default());

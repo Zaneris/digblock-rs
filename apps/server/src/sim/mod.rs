@@ -148,12 +148,17 @@ struct Client {
 }
 
 impl Client {
-	/// The held item for snapshots, in hotbar wire encoding.
+	/// The held item for snapshots, in hotbar wire encoding. The tool
+	/// reports its charge too — a bucket is a different thing full than
+	/// empty, and the difference is the whole point of holding one.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
 		match self.hotbar.slots()[slot] {
 			None => WIRE_EMPTY,
+			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => {
+				digblock_net::messages::HELD_TOOL_FULL
+			}
 			Some(HotbarItem::WaterTool) => WIRE_TOOL,
 			Some(HotbarItem::Block(b)) => b as u16,
 		}

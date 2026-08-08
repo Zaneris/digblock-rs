@@ -8,7 +8,9 @@
 //! tool has no block behind it, so its bucket is authored here as a
 //! sub-box list in the same twelfths — and authored as boxes rather
 //! than as loose faces precisely so it is solid from every angle: the
-//! hand turns it, the icon never did.
+//! hand turns it, the icon never did. It is the one item with a STATE:
+//! charged or empty, which is geometry (a source in the pail) rather
+//! than a tint, because it decides what both mouse buttons do.
 //!
 //! Everything is pure integer twelfths; f32 appears only in UVs.
 
@@ -126,22 +128,34 @@ fn shape_faces(b: BlockType, state: u8, y_off: i32, out: &mut Vec<ItemFace>) {
 	}
 }
 
-/// The water tool: a little bucket — four wood walls around an opening,
-/// water sitting inside them.
-fn bucket_faces(out: &mut Vec<ItemFace>) {
+/// The water tool: a little bucket — a wooden base plate, four walls
+/// standing on it, and (only when charged) a source sitting inside.
+///
+/// The base is what makes the empty state readable: with walls alone you
+/// looked straight through the opening and out the bottom, and an empty
+/// bucket has nothing else to fill the hole. It also means the charge is
+/// a real difference in the silhouette's interior rather than a tint.
+fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	let wood = BlockType::Wood.props().tex_side;
 	let water = BlockType::Water.props().tex_side;
+	// Base plate, then walls one twelfth thick. The walls were two, and
+	// the 4×4 opening that left made the charge a speck at hotbar-icon
+	// size — the wider mouth more than doubles the water you can see, for
+	// one twelfth of pail.
+	box_faces([2, 1, 2], [10, 2, 10], |_| wood, out);
 	for (min, max) in [
-		([2, 1, 2], [4, 9, 10]),  // -x wall
-		([8, 1, 2], [10, 9, 10]), // +x wall
-		([4, 1, 2], [8, 9, 4]),   // -z wall
-		([4, 1, 8], [8, 9, 10]),  // +z wall
+		([2, 2, 2], [3, 9, 10]),  // -x wall
+		([9, 2, 2], [10, 9, 10]), // +x wall
+		([3, 2, 2], [9, 9, 3]),   // -z wall
+		([3, 2, 9], [9, 9, 10]),  // +z wall
 	] {
 		box_faces(min, max, |_| wood, out);
 	}
-	// The water inside, a little below the rim; its own box, so the
-	// bucket reads as a bucket from underneath too.
-	box_faces([4, 1, 4], [8, 8, 8], |_| water, out);
+	// The source, one twelfth below the rim; its own box, so the bucket
+	// reads as a bucket from underneath too.
+	if full {
+		box_faces([3, 2, 3], [9, 8, 9], |_| water, out);
+	}
 }
 
 /// Total geometry height in twelfths — doors stack two cells, and the
@@ -173,7 +187,7 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 				shape_faces(b, stair_state(Facing::NegX), 0, &mut out);
 			}
 		}
-		IconKind::WaterTool => bucket_faces(&mut out),
+		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
 	}
 	out
 }
@@ -241,7 +255,8 @@ mod tests {
 			IconKind::Shaped(BlockType::WoodStairs),
 			IconKind::Shaped(BlockType::WoodSlab),
 			IconKind::Shaped(BlockType::WoodDoor),
-			IconKind::WaterTool,
+			IconKind::WaterTool { full: true },
+			IconKind::WaterTool { full: false },
 		];
 		for kind in kinds {
 			let f = faces(kind);
@@ -265,9 +280,33 @@ mod tests {
 		}
 	}
 
+	/// An empty bucket is wood and nothing else — the charge is the only
+	/// difference between the two states, and it has to be visible.
+	#[test]
+	fn an_empty_bucket_holds_no_water() {
+		let water = BlockType::Water.props().tex_side;
+		let f = faces(IconKind::WaterTool { full: false });
+		assert!(
+			!f.iter().any(|q| q.tex_layer == water),
+			"an empty bucket drew water"
+		);
+		// The base plate is what stops you seeing through the opening
+		// once the water that used to fill it is gone.
+		let floor = f
+			.iter()
+			.filter(|q| q.dir == Dir::Top)
+			.flat_map(|q| q.corners.iter().map(|c| c[1]))
+			.min()
+			.unwrap();
+		assert!(
+			floor <= 2,
+			"no floor under the opening (lowest top {floor})"
+		);
+	}
+
 	#[test]
 	fn the_bucket_is_wood_around_water() {
-		let f = faces(IconKind::WaterTool);
+		let f = faces(IconKind::WaterTool { full: true });
 		let wood = BlockType::Wood.props().tex_side;
 		let water = BlockType::Water.props().tex_side;
 		assert!(f.iter().any(|q| q.tex_layer == wood));

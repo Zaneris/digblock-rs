@@ -317,7 +317,7 @@ impl AlchScreen {
 					}
 					let icon = ROW_ICON * s;
 					let (kind, tint) =
-						hud::item_icon(digblock_core::hotbar::HotbarItem::Block(block));
+						hud::item_icon(digblock_core::hotbar::HotbarItem::Block(block), false);
 					hud::draw_icon(
 						ui.dl,
 						Layer::Icons,

@@ -118,6 +118,13 @@ impl InvGrid {
 /// free for the same pass to fill. It cannot touch the WaterTool: the
 /// tool is not a `Block`, and `clear_slot` refuses it anyway.
 ///
+/// A type that isn't [`BlockType::is_slottable`] is swept out of both
+/// bar and grid whatever its count says, and never filed back in. That
+/// is the ONE rule keeping water out of the item screens now that its
+/// count means "the bucket is charged" — and it doubles as the migration
+/// for saves and identity records written when water was an ordinary
+/// stack, whose slots clear on the first reconcile after loading.
+///
 /// An emptied slot is released rather than kept greyed at zero because
 /// the count IS the item — a bar advertising nine types you don't have
 /// is nine slots you can't use. The engine reconciles and mirrors the
@@ -127,19 +134,25 @@ impl InvGrid {
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
 	for slot in 0..HOTBAR_SLOTS {
 		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
-			if inv.count(b) == 0 {
+			if inv.count(b) == 0 || !b.is_slottable() {
 				bar.clear_slot(slot);
 			}
 		}
 	}
 	for slot in 0..GRID_SLOTS {
 		if let Some(b) = grid.get(slot) {
-			if inv.count(b) == 0 || bar.slots().contains(&Some(HotbarItem::Block(b))) {
+			if inv.count(b) == 0
+				|| !b.is_slottable()
+				|| bar.slots().contains(&Some(HotbarItem::Block(b)))
+			{
 				grid.clear(slot);
 			}
 		}
 	}
 	for (b, _) in inv.iter_nonzero() {
+		if !b.is_slottable() {
+			continue;
+		}
 		let on_bar = bar.slots().contains(&Some(HotbarItem::Block(b)));
 		if on_bar || grid.contains(b) {
 			continue;
@@ -189,7 +202,42 @@ mod tests {
 		let on_bar = bar.slots().iter().flatten().count();
 		let on_grid = grid.slots().iter().flatten().count();
 		assert_eq!(on_bar, HOTBAR_SLOTS, "bar filled (incl. tool)");
-		assert_eq!(on_grid + on_bar - 1, types.len(), "everything placed once");
+		// Water is diggable — that IS the scoop — but it is never an item,
+		// so it is the one credit that claims no slot anywhere.
+		let slottable = types.iter().filter(|(b, _)| b.is_slottable()).count();
+		assert!(slottable < types.len(), "the set must include water");
+		assert_eq!(on_grid + on_bar - 1, slottable, "everything placed once");
+	}
+
+	/// Water's count is the bucket's charge, not a stack, so it claims no
+	/// slot — including in layouts saved back when it did. That sweep is
+	/// the whole migration for existing players.
+	#[test]
+	fn water_never_holds_a_slot_and_legacy_layouts_give_theirs_up() {
+		let inv = inv_of(&[(B::Water, 1), (B::Dirt, 1)]);
+		let mut bar = Hotbar::new();
+		let mut grid = InvGrid::default();
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert!(
+			!bar.slots().contains(&Some(HotbarItem::Block(B::Water))),
+			"a charged bucket must not also fill a bar slot"
+		);
+		assert!(!grid.contains(B::Water));
+		assert_eq!(bar.slots()[0], Some(HotbarItem::Block(B::Dirt)));
+
+		// A layout from before the bucket had a state: water sits on the
+		// bar and in the grid, with a stack behind it.
+		let mut bar = Hotbar::new();
+		assert!(bar.assign(0, B::Water));
+		let mut grid = InvGrid::default();
+		grid.place(3, B::Water);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(
+			bar.slots()[0],
+			Some(HotbarItem::Block(B::Dirt)),
+			"reclaimed"
+		);
+		assert_eq!(grid.get(3), None);
 	}
 
 	#[test]

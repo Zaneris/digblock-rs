@@ -36,12 +36,18 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// `ServerMsg::DigRefused` so a hold on a protected cell is refused when
 /// it STARTS rather than silently running the full timer and failing at
 /// the completing edit.
-pub const PROTOCOL_VERSION: u16 = 11;
+/// v12: the water tool became stateful — water is no longer an item in
+/// any slot, its inventory count is the tool's one charge, and the
+/// wire gains `messages::HELD_TOOL_FULL` (so a remote player's bucket
+/// renders charged or empty) plus `RejectReason::BucketFull`. A v11
+/// client would place water from a water slot the server no longer lets
+/// it keep, so this one is a break, not an append.
+pub const PROTOCOL_VERSION: u16 = 12;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 11;
+pub const MIN_PROTOCOL: u16 = 12;
 
 // ---- handshake preamble ----------------------------------------------
 //

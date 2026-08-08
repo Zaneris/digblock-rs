@@ -245,10 +245,27 @@ impl Default for Swap {
 	}
 }
 
+/// Are these the same ITEM, ignoring any state it carries? Only the
+/// water tool has state, and filling it is not a slot change: the hand
+/// must not put the bucket away and bring the same bucket back out
+/// because a scoop landed in it.
+fn same_item(a: Option<IconKind>, b: Option<IconKind>) -> bool {
+	match (a, b) {
+		(Some(IconKind::WaterTool { .. }), Some(IconKind::WaterTool { .. })) => true,
+		_ => a == b,
+	}
+}
+
 impl Swap {
 	/// Feed this frame's selection. Read the item to draw back out of
 	/// [`Self::shown`].
 	pub fn advance(&mut self, dt: f32, selected: Option<IconKind>) {
+		// A state change on the item already in hand is adopted in place
+		// — no dip — and adopting it first is what keeps the comparisons
+		// below reading as "a different item".
+		if same_item(selected, self.shown) {
+			self.shown = selected;
+		}
 		let half = SWAP_SECS / 2.0;
 		if self.t >= SWAP_SECS {
 			// At rest. An empty hand has nothing to put away, so it
@@ -769,6 +786,30 @@ mod tests {
 		assert_eq!(s.pose(), Pose::default());
 	}
 
+	/// Filling the bucket changes the item DRAWN but not the item HELD.
+	/// A dip there would read as "you swapped slots" every time a scoop
+	/// landed, which is the opposite of what just happened.
+	#[test]
+	fn charging_the_bucket_shows_the_water_without_a_dip() {
+		let dt = 1.0 / 60.0;
+		let (empty, full) = (
+			IconKind::WaterTool { full: false },
+			IconKind::WaterTool { full: true },
+		);
+		let mut s = Swap::default();
+		for _ in 0..60 {
+			s.advance(dt, Some(empty));
+		}
+		assert_eq!(s.shown(), Some(empty));
+		assert_eq!(s.pose(), Pose::default(), "at rest before the scoop");
+		s.advance(dt, Some(full));
+		assert_eq!(s.shown(), Some(full), "the water appears immediately");
+		assert_eq!(s.pose(), Pose::default(), "and the hand never moved");
+		// A real slot change from the charged bucket still dips.
+		s.advance(dt, Some(IconKind::Cube(BlockType::Dirt)));
+		assert_ne!(s.pose(), Pose::default());
+	}
+
 	/// Scrolling the bar shouldn't teleport the item back to the top
 	/// between slots — each change continues from where the hand is.
 	#[test]
@@ -831,7 +872,8 @@ mod tests {
 			IconKind::Shaped(BlockType::WoodStairs),
 			IconKind::Shaped(BlockType::WoodSlab),
 			IconKind::Shaped(BlockType::WoodDoor),
-			IconKind::WaterTool,
+			IconKind::WaterTool { full: true },
+			IconKind::WaterTool { full: false },
 		] {
 			build(kind, &mut v);
 			assert_eq!(v.len() % 4, 0, "{kind:?} emits whole quads");

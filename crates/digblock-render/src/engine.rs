@@ -31,6 +31,13 @@ pub enum DebugScreen {
 	/// inventory means an empty hand, which made the held item just as
 	/// invisible to a headless capture as the pages were.
 	Hand,
+	/// Also not a screen: select the water tool, empty (`bucket`) or
+	/// charged (`bucket-full`). The charge is the one item state in the
+	/// game, it decides what both mouse buttons do, and it shows in two
+	/// places at once — so both states need to be photographable.
+	Bucket {
+		full: bool,
+	},
 }
 
 impl DebugScreen {
@@ -42,6 +49,8 @@ impl DebugScreen {
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
 			"hand" => Some(Self::Hand),
+			"bucket" => Some(Self::Bucket { full: false }),
+			"bucket-full" => Some(Self::Bucket { full: true }),
 			_ => None,
 		}
 	}
@@ -325,12 +334,6 @@ pub struct Engine {
 	look_accum: (f32, f32),
 	/// Left mouse button currently held (hold-to-dig); right stays an edge.
 	dig_held: bool,
-	/// Right mouse button currently held. Only the water tool reads it —
-	/// with the bucket selected both buttons drive the same collect hold
-	/// (a tool has one action, and right-clicking a source used to
-	/// silently no-op: the fluid ray stops INSIDE the source, so the
-	/// place path found no face normal to build against).
-	right_held: bool,
 	/// Cell whose dig was refused — locally (world floor) or by the
 	/// server (a spawn lock it never told us about). Held until the aim
 	/// moves elsewhere, and load-bearing in two ways: it explains itself
@@ -646,8 +649,10 @@ fn held_tex_layer(held: u16) -> Option<u16> {
 	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
 	match held {
 		WIRE_EMPTY => None,
-		// The tool reads as the water it collects/places.
-		WIRE_TOOL => Some(BlockType::Water.props().tex_side),
+		// The remote hand is one small cube, so the bucket's charge is
+		// all it can say: wood for an empty pail, water for a full one.
+		WIRE_TOOL => Some(BlockType::Wood.props().tex_side),
+		digblock_net::messages::HELD_TOOL_FULL => Some(BlockType::Water.props().tex_side),
 		id => BlockType::try_from_id(id).map(|b| b.props().tex_side),
 	}
 }
@@ -775,7 +780,6 @@ impl Engine {
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			dig_held: false,
-			right_held: false,
 			refused_cell: None,
 			click_place: false,
 			dig: None,
@@ -840,6 +844,9 @@ impl Engine {
 			engine
 				.inventory
 				.add_sub(digblock_core::block::Material::Wood, 54);
+			if let DebugScreen::Bucket { full: true } = screen {
+				engine.inventory.add(BlockType::Water, 1);
+			}
 			digblock_core::inv_grid::reconcile_layout(
 				&engine.inventory,
 				&mut engine.hotbar,
@@ -849,6 +856,9 @@ impl Engine {
 				// The menu opens itself when `config.menu` is set; the
 				// hand wants a stocked bar and nothing over it.
 				DebugScreen::Menu | DebugScreen::Hand => {}
+				DebugScreen::Bucket { .. } => engine
+					.hotbar
+					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy => engine.alch_screen.open(),
 			}
@@ -1888,10 +1898,19 @@ impl Engine {
 		}
 	}
 
-	/// True while the water tool is the selected hotbar item — it changes
-	/// both the picking ray (fluid-aware) and what a dig/place means.
+	/// True while the water tool is the selected hotbar item.
 	fn water_tool_selected(&self) -> bool {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
+	}
+
+	/// True while the tool is out AND empty — the scooping state. This is
+	/// the one that changes the picking ray, because it is the only state
+	/// in which the thing you want to hit is a fluid source. Charged, the
+	/// bucket aims at ordinary blocks like every other item, so it picks
+	/// with the ordinary ray and the outline lands on the face you're
+	/// about to pour against.
+	fn scoop_ready(&self) -> bool {
+		self.water_tool_selected() && !self.inventory.bucket_full()
 	}
 
 	/// Where the collidable body actually is, for occupancy questions
@@ -1915,7 +1934,7 @@ impl Engine {
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		let pipeline = &self.pipeline;
 		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
-		self.target = if self.water_tool_selected() {
+		self.target = if self.scoop_ready() {
 			raycast_fluid(origin, dir, REACH, &cell_at)
 		} else {
 			raycast(origin, dir, REACH, &cell_at)
@@ -1951,23 +1970,20 @@ impl Engine {
 			return false;
 		}
 		if self.water_tool_selected() {
-			hit.block.is_fluid_source()
+			// A charged bucket digs nothing at all: it has one action
+			// left, and that action is on the other button.
+			self.scoop_ready() && hit.block.is_fluid_source()
 		} else {
 			hit.block.props().collides && hit.block.dig_hardness(hit.cell.1).is_some()
 		}
 	}
 
-	/// Is a button holding the dig/collect timer open? The bucket has one
-	/// action, so either button works it; every other item keeps the
-	/// left-digs / right-places split.
-	fn hold_active(&self) -> bool {
-		self.dig_held || (self.right_held && self.water_tool_selected())
-	}
-
 	/// One 60 Hz step of the hold-to-dig state machine. Purely
 	/// predictive online — the server runs its own timer and aim checks.
 	fn step_dig(&mut self) {
-		if !self.hold_active() {
+		// A charged bucket has no left-click action at all — not even the
+		// "you can't dig that" complaint below, which belongs to a dig.
+		if !self.dig_held || (self.water_tool_selected() && !self.scoop_ready()) {
 			self.cancel_dig();
 			return;
 		}
@@ -2181,13 +2197,13 @@ impl Engine {
 		}
 		let block = match self.hotbar.selected_item() {
 			Some(HotbarItem::Block(b)) => b,
-			// The bucket is a collector, not a placer: this click already
-			// drove the collect hold in `step_dig`. Doubling as "pour a
-			// source" made one button mean two things depending on what
-			// the fluid ray happened to land on — and it landed INSIDE
-			// the source, leaving no face normal, so aiming at water and
-			// right-clicking silently did nothing at all. Doors above
-			// still toggle.
+			// The charged bucket pours its one source. It works here, and
+			// only here, because a charged bucket picks with the ORDINARY
+			// ray: the fluid ray stops INSIDE a source, leaving no face
+			// normal to build against, which is why right-clicking water
+			// with the old collect-only tool did nothing at all.
+			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => BlockType::Water,
+			// An empty bucket has nothing to give. Doors above still toggle.
 			Some(HotbarItem::WaterTool) | None => return,
 		};
 		// Stairs carry the placer-derived facing (ascending away along
@@ -2258,10 +2274,16 @@ impl Engine {
 				None => {}
 			}
 		}
+		// A poured source splashes; everything else lands with a thunk.
+		let poured = block == BlockType::Water;
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::Place,
+			sound: if poured {
+				crate::audio::Sfx::Splash
+			} else {
+				crate::audio::Sfx::Place
+			},
 			pos: Some(cell_center(target)),
-			gain: 0.9,
+			gain: if poured { 0.6 } else { 0.9 },
 		});
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
@@ -2441,17 +2463,20 @@ impl Engine {
 	/// Crosshair cell + dig progress for the highlight overlay: `None`
 	/// progress = idle outline.
 	///
-	/// Collecting water reports no progress even mid-hold, so the
-	/// outline stays but the crack web never appears: scooping a source
-	/// into a bucket is not chipping a block apart, and the swinging
-	/// hand is the feedback that something is happening.
+	/// The water tool never reports progress, in either state, so the
+	/// outline stays but the crack web never appears. Empty, it marks the
+	/// source the scoop will take — chipping a block apart is not what is
+	/// happening, and the swinging hand is the feedback instead. Charged,
+	/// it marks the ordinary block the pour will land against, which is
+	/// why the outline survives `diggable` saying no.
 	pub fn dig_progress(&self) -> Option<((i32, i32, i32), Option<f32>)> {
 		let hit = self.target.as_ref()?;
+		if self.water_tool_selected() {
+			return (self.inventory.bucket_full() || self.diggable(hit))
+				.then_some((hit.cell, None));
+		}
 		if !self.diggable(hit) {
 			return None;
-		}
-		if self.water_tool_selected() {
-			return Some((hit.cell, None));
 		}
 		let progress = self
 			.dig
@@ -2719,7 +2744,6 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
-					self.right_held = false;
 					self.inv_screen.cancel_drag();
 				}
 				InputEvent::Key {
@@ -2752,7 +2776,6 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
-					self.right_held = false;
 					self.alch_screen.handle_input(
 						&InputEvent::FocusLost,
 						&self.ui_hits,
@@ -2844,7 +2867,6 @@ impl Game for Engine {
 				Key::Escape => {
 					if pressed {
 						self.dig_held = false;
-						self.right_held = false;
 						self.menu.open();
 					}
 				}
@@ -2852,7 +2874,6 @@ impl Game for Engine {
 					if pressed {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
-						self.right_held = false;
 						self.inv_screen.open();
 					}
 				}
@@ -2860,7 +2881,6 @@ impl Game for Engine {
 					if pressed {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
-						self.right_held = false;
 						self.alch_screen.open();
 					}
 				}
@@ -2877,7 +2897,6 @@ impl Game for Engine {
 					if pressed && self.net.is_some() {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
-						self.right_held = false;
 						self.chat.open();
 					}
 				}
@@ -2891,9 +2910,8 @@ impl Game for Engine {
 			InputEvent::MouseButton { button, pressed } => match button {
 				MouseButton::Left => self.dig_held = pressed,
 				MouseButton::Right => {
-					self.right_held = pressed;
-					// Still an edge for the interact/place path — with the
-					// bucket selected `apply_place` stops after doors.
+					// An edge, always: right-click interacts or places, and
+					// a charged bucket pours through exactly that path.
 					if pressed {
 						self.click_place = true;
 					}
@@ -2904,13 +2922,11 @@ impl Game for Engine {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 				self.dig_held = false;
-				self.right_held = false;
 			}
 			InputEvent::PointerLockLost => {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
 				self.dig_held = false;
-				self.right_held = false;
 				// Web parity with desktop Escape: a browser-initiated unlock
 				// pauses into the menu (no-op when the menu is disabled — the
 				// shell's click-to-recapture covers that case).
@@ -3308,12 +3324,12 @@ impl Game for Engine {
 			.advance(Vec3::new(moved.x, 0.0, moved.z).length(), dt);
 		// A scoop in progress: the tool out, a button down, and a hold
 		// actually open on a source (aiming at nothing doesn't swing).
-		let scooping = self.water_tool_selected() && self.hold_active() && self.dig.is_some();
+		let scooping = self.scoop_ready() && self.dig_held && self.dig.is_some();
 		self.view_swing.advance(dt, scooping);
 		let selected = self
 			.hotbar
 			.selected_item()
-			.map(|i| crate::ui::hud::item_icon(i).0);
+			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
 		self.view_swap.advance(dt, selected);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
@@ -3914,5 +3930,130 @@ mod store_tests {
 			engine.player.pos.y,
 			spawn.y
 		);
+	}
+}
+
+#[cfg(test)]
+mod water_tool_tests {
+	use super::*;
+
+	/// A generated world with the camera parked in a corridor: a water
+	/// source two blocks ahead, then a gap, then a stone wall. Aiming at
+	/// the source and at the wall is the same look — which ray is cast
+	/// decides which one the crosshair finds.
+	fn corridor() -> (Engine, (i32, i32, i32), (i32, i32, i32)) {
+		let mut config = EngineConfig::desktop();
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+		for _ in 0..10_000 {
+			let m = engine.pipeline.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		// Open sky well above spawn: nothing here depends on terrain, so a
+		// worldgen retune can't quietly move the corridor into rock.
+		let p = engine.player.pos;
+		let (x, y, z) = (
+			p.x.floor() as i32,
+			p.y.floor() as i32 + 20,
+			p.z.floor() as i32,
+		);
+		let (source, wall) = ((x, y, z), (x, y, z + 2));
+		for c in [source, wall, (x, y, z + 1)] {
+			assert_eq!(
+				engine.pipeline.block_at(c.0, c.1, c.2),
+				Some(BlockType::Air),
+				"the corridor must start empty at {c:?}"
+			);
+		}
+		engine
+			.pipeline
+			.set_block(source.0, source.1, source.2, BlockType::Water)
+			.expect("chunk ready");
+		engine
+			.pipeline
+			.set_block(wall.0, wall.1, wall.2, BlockType::Stone)
+			.expect("chunk ready");
+		engine.camera.pos = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 - 2.5);
+		engine.camera.yaw_deg = 0.0; // +z
+		engine.camera.pitch_deg = 0.0;
+		engine
+			.hotbar
+			.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8);
+		assert!(engine.water_tool_selected());
+		(engine, source, wall)
+	}
+
+	/// The charge decides which ray is cast, and so what the crosshair
+	/// is even pointing at: an empty bucket sees the source it can scoop,
+	/// a charged one sees straight through it to the block it can pour
+	/// against. Both outline; neither ever draws the dig crack web.
+	#[test]
+	fn the_charge_switches_the_ray_and_the_outline() {
+		let (mut engine, source, wall) = corridor();
+
+		engine.update_target();
+		assert!(engine.scoop_ready());
+		assert_eq!(engine.target.map(|h| h.cell), Some(source));
+		assert!(
+			engine.diggable(&engine.target.unwrap()),
+			"a scoopable source"
+		);
+		assert_eq!(
+			engine.dig_progress(),
+			Some((source, None)),
+			"outline, no cracks"
+		);
+
+		engine.inventory.add(BlockType::Water, 1);
+		engine.update_target();
+		assert!(!engine.scoop_ready());
+		assert_eq!(
+			engine.target.map(|h| h.cell),
+			Some(wall),
+			"a charged bucket picks with the ordinary ray"
+		);
+		assert!(
+			!engine.diggable(&engine.target.unwrap()),
+			"and left-click has nothing to do"
+		);
+		assert_eq!(
+			engine.dig_progress(),
+			Some((wall, None)),
+			"the wall still outlines — that is where the water goes"
+		);
+	}
+
+	/// Right-click pours, and only when there is something to pour. The
+	/// charge is spent by the ordinary stock debit, which is what makes
+	/// the pour roll back with the edit if a server refuses it.
+	#[test]
+	fn right_click_pours_the_charge_and_only_the_charge() {
+		let (mut engine, _source, wall) = corridor();
+		let target = (wall.0, wall.1, wall.2 - 1);
+
+		// Empty: the click is consumed and nothing happens.
+		engine.update_target();
+		engine.click_place = true;
+		engine.apply_place();
+		assert_eq!(
+			engine.pipeline.block_at(target.0, target.1, target.2),
+			Some(BlockType::Air),
+			"an empty bucket poured"
+		);
+
+		engine.inventory.add(BlockType::Water, 1);
+		engine.update_target();
+		engine.click_place = true;
+		engine.apply_place();
+		assert_eq!(
+			engine.pipeline.block_at(target.0, target.1, target.2),
+			Some(BlockType::Water),
+			"the charged bucket poured against the wall"
+		);
+		assert!(!engine.inventory.bucket_full(), "and emptied itself");
 	}
 }
