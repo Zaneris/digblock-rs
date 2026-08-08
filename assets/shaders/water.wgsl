@@ -2,10 +2,11 @@
 // word 0 is the solid geometry packing (position/normal/corner; ao and
 // tint bits unused), word 1 holds the texture layer in bits 0-9 and the
 // per-vertex surface payload above it. Bits 10-13 are the drop code d
-// (9 − mean corner amount): the vertex sinks DROPS[d] below its lattice
-// height, so a source surface sits at 8/9 and thinner flowing water
-// lower along a concave curve, with corner heights shared between
-// adjacent cells (no cracks). Bit 14 marks falling water (side faces
+// (9 − strongest corner amount): the vertex sinks d/9 below its lattice
+// height, so a surface corner sits at exactly the water level the sim
+// computed there — a source at 8/9, its spread at 4/9, then 2/9 and
+// 1/9 — with corner heights shared between adjacent cells (no cracks).
+// Bit 14 marks falling water (side faces
 // scroll downward), bits 15-17 the horizontal flow dir (0 still, 1 +x,
 // 2 −x, 3 +z, 4 −z; top faces scroll along it), bits 18-19 the splash
 // code (3 = fall impact cell — continuous churn; 2/1 = pool cells at
@@ -50,17 +51,19 @@ const NORMALS = array<vec3f, 6>(
 // Face-axis ambient, matching chunk.wgsl.
 const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
 
-// Surface drop per code: 0 pins full height (submerged water and all
-// bottom-plane vertices); 1 is the resting source surface (8/9, kept
-// so pools and oceans sit where they always have); codes 2-8 fall
-// away on a concave curve — steep right below the source, easing off
-// as the water thins — so flowing runs read as a real gradient
-// instead of the old linear d/9 trickle. Code 9 is the cascade
-// plunge: the corner sinks the whole block to meet the surface of
-// the water one step down.
-const DROPS = array<f32, 10>(
-	0.0, 0.111, 0.32, 0.50, 0.63, 0.73, 0.81, 0.87, 0.92, 1.0,
-);
+// Surface drop per code, in ninths — LINEAR, and that is load-bearing:
+// d is 9 − the strongest water amount at the corner, so d/9 puts the
+// vertex at exactly the level the sim computed and nothing else. This
+// was a hand-tuned concave curve (0.32/0.50/0.63/0.73/…) from back when
+// corners took the MEAN amount and every code bunched up near the top;
+// once corners take the max, the codes land straight on the sim's
+// ladder and the curve just falsified them — a Flow4's lip is d = 5,
+// which the curve sank to 0.27 of a block instead of its own 4/9.
+// 0 pins full height (submerged water and all bottom-plane vertices);
+// 9 is the cascade plunge, sinking the corner a whole block to meet
+// the water one step down. Divided, not tabulated, so the mapping
+// cannot drift from the ninths the mesher packs.
+const DROP_LEVELS = 9.0;
 
 struct VsOut {
 	// Invariant: the depth prepass and color pass run this vs in two
@@ -225,9 +228,9 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let x = twelfths(w0 & 0xffu);
 	var y = twelfths((w0 >> 8u) & 0xffu);
 	let z = twelfths((w0 >> 16u) & 0xffu);
-	// Surface drop: shared corner codes through the concave curve. The
+	// Surface drop: the shared corner code, straight into ninths. The
 	// water payload sits above the 10-bit layer field in w1.
-	y -= DROPS[min((w1 >> 10u) & 0xfu, 9u)];
+	y -= f32(min((w1 >> 10u) & 0xfu, 9u)) / DROP_LEVELS;
 	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
 	let world = vec3f(x, y, z) + origin.xyz;

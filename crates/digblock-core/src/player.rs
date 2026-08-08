@@ -32,8 +32,8 @@ pub const TICK: f32 = 1.0 / 60.0;
 // --- Swimming. Any change here is a sim-behavior change: re-pin BOTH
 // golden trajectories and bump SIM_VERSION. ---------------------------
 /// The rendered surface of a resting source sits this far below the
-/// cell top (water.wgsl DROPS); physics flips where water LOOKS like
-/// it ends. Mirrored by the engine's eye_in_water.
+/// cell top (water.wgsl sinks a corner d/9 of a block); physics flips
+/// where water LOOKS like it ends. Mirrored by the engine's eye_in_water.
 pub const WATER_SURFACE_DROP: f32 = 0.111;
 /// Passive sink speed in water when idle, blocks/s (the velocity target
 /// with no input; vs TERM_VELOCITY in air).

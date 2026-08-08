@@ -17,8 +17,11 @@
 //! - a cell with water above it becomes `WaterFall` (full strength);
 //! - otherwise it takes half its strongest side-neighbor amount as
 //!   `WaterFlowN` (n ≥ 1), counting only *supported* neighbors — water
-//!   resting on a colliding block — because unsupported water is busy
-//!   falling;
+//!   resting on a colliding block. Nothing standing over air or water
+//!   spreads outward, sources included: with no floor to run along, it
+//!   goes straight down. That is a deliberate rule, not an oversight of
+//!   the source case — a bucket emptied against a wall face pours down
+//!   the wall, and only the landing spreads;
 //! - anything else relaxes to `Air`, which is how removal drains: each
 //!   recompute lowers the region's total amount until it dries.
 //!
@@ -438,6 +441,35 @@ mod tests {
 			BlockType::Water,
 			"no source materializes over a non-whole floor"
 		);
+	}
+
+	/// Nothing standing over air spreads outward — a SOURCE included.
+	/// Poured against a wall face, the block runs straight down the wall
+	/// and only its landing spreads; the placed cell's own level stays
+	/// dry on every side. Its own top face still renders 8/9 all round
+	/// (`mesher::tests::a_spilling_source_keeps_its_full_height`), which
+	/// is the half of this arrangement that WAS broken.
+	#[test]
+	fn an_unsupported_source_pours_straight_down() {
+		let mut w = MapWorld::new();
+		let mut sim = FluidSim::new();
+		w.set(0, 2, 0, BlockType::Water); // placed in mid-air over the floor
+		sim.schedule_around(0, 2, 0);
+		settle(&mut sim, &mut w);
+		for (dx, dz) in SIDES {
+			assert_eq!(
+				w.get(dx, 2, dz).unwrap(),
+				BlockType::Air,
+				"side ({dx}, {dz}) at the source's own level stays dry"
+			);
+		}
+		assert_eq!(
+			w.get(0, 1, 0).unwrap(),
+			BlockType::WaterFall,
+			"straight down"
+		);
+		// The landing is on the stone floor, so THAT spreads.
+		assert_eq!(w.get(1, 1, 0).unwrap().water_amount(), Some(4));
 	}
 
 	#[test]

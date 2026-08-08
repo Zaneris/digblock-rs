@@ -1280,6 +1280,45 @@ mod tests {
 		}
 	}
 
+	/// A source poured against a wall face, with nothing solid under it:
+	/// the sim sends it straight down and only the landing spreads, so
+	/// the placed cell is ringed by air at its own level with the pool
+	/// it just poured one below — the plunge trigger, on all four
+	/// corners at once. The source must still render as a full block. It
+	/// didn't: the plunge outranked the source pin, so the top face went
+	/// to zero height and every side face was then skipped as zero-area,
+	/// and the block you had just placed rendered nothing at all.
+	#[test]
+	fn a_spilling_source_keeps_its_full_height() {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(8, 7, 8, B::WaterFall); // pouring straight down...
+		for (x, z) in [
+			(9, 7),
+			(7, 7),
+			(9, 8),
+			(7, 8),
+			(9, 9),
+			(7, 9),
+			(8, 7),
+			(8, 9),
+		] {
+			d.set(x, 7, z, B::WaterFlow4); // ...and spreading below
+		}
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
+			assert_eq!(drop_of(w1), 1, "the source stays 8/9 tall");
+		}
+		// Every side survives too — `water_quad` panics on a missing
+		// face, and a collapsed top edge is exactly what used to make
+		// `emit_water_face` skip these as zero-area.
+		for dir in [Dir::West, Dir::East, Dir::North, Dir::South] {
+			for (w0, w1) in water_quad(&m.water, 8, 8, 8, dir) {
+				assert_eq!(drop_of(w1), u32::from(y_of(w0) == 9), "{dir:?} side full");
+			}
+		}
+	}
+
 	#[test]
 	fn fall_lip_steps_below_its_feeder() {
 		// A thin flow feeding a fall: the lip continues the downhill
@@ -1473,7 +1512,7 @@ mod tests {
 		);
 		assert_eq!(
 			digest(&m),
-			(4704, 3224, 2, 0x9791_6b3f_68db_3028),
+			(4704, 3224, 2, 0xad1b_636f_3a49_3828),
 			"water-heavy mesh + impacts byte-identical"
 		);
 	}
@@ -1539,7 +1578,9 @@ mod tests {
 	#[test]
 	fn adjacent_flows_share_corner_heights() {
 		// Flow3 | Flow5 side by side: no interface faces, and the two top
-		// faces agree on their shared corners (mean amount 4 → d = 5).
+		// faces agree on their shared corners (strongest amount 5 →
+		// d = 4, so the thicker cell holds its own level right up to the
+		// seam and the thinner one ramps up to meet it).
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFlow3);
 		d.set(9, 8, 8, B::WaterFlow5);
@@ -1553,8 +1594,8 @@ mod tests {
 				.map(|(_, w1)| drop_of(*w1))
 				.collect()
 		};
-		assert_eq!(d_at(&top3, 9), vec![5, 5], "shared corners from both");
-		assert_eq!(d_at(&top5, 9), vec![5, 5], "identical on the other face");
+		assert_eq!(d_at(&top3, 9), vec![4, 4], "shared corners from both");
+		assert_eq!(d_at(&top5, 9), vec![4, 4], "identical on the other face");
 		assert_eq!(d_at(&top3, 8), vec![6, 6], "flow3 alone: d = 9 − 3");
 		assert_eq!(d_at(&top5, 10), vec![4, 4], "flow5 alone: d = 9 − 5");
 	}
@@ -1616,12 +1657,21 @@ mod tests {
 		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
 			assert_eq!(drop_of(w1), 1, "the source keeps its 8/9 surface");
 		}
-		// The Flow4 at +x: its inner corners touch the source and pin,
-		// its outer ones average the thinner water beyond.
+		// The Flow4 at +x: its uphill corners take the source's 8/9, its
+		// downhill ones its OWN 4/9 — one clean step of the sim's
+		// ladder. Averaging with the Flow2 beyond used to carry them on
+		// down to 3/9, so the surface undershot the level it was meant
+		// to be showing.
 		for (w0, w1) in water_quad(&m.water, 9, 8, 8, Dir::Top) {
-			let expect = if x_of(w0) == 9 { 1 } else { 6 };
+			let expect = if x_of(w0) == 9 { 1 } else { 5 };
 			assert_eq!(drop_of(w1), expect, "the flow ramps down and away");
 		}
+		// ...and the Flow2 on the diagonal picks up exactly where the
+		// Flow4 left off: the ladder's 8/9, 4/9, 4/9 and 2/9 rungs, one
+		// per corner, with nothing undershooting between them.
+		let mut corners = water_quad(&m.water, 9, 8, 7, Dir::Top).map(|(_, w1)| drop_of(w1));
+		corners.sort_unstable();
+		assert_eq!(corners, [1, 5, 5, 7], "4/9 down to 2/9, no undershoot");
 	}
 
 	fn ao_of(w0: u32) -> u32 {

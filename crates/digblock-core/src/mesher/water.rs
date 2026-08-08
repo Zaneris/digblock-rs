@@ -89,21 +89,29 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 /// to meet, or a ceiling-pressed cell to knit against. Else, if any
 /// touching cell is open air with water directly below, the surface
 /// continues a step down and this corner plunges the whole block
-/// (d = 9), so cascades
-/// render as connected ramps instead of stacked cliff slivers. Else,
-/// if a resting SOURCE touches the corner, it pins at the source's own
-/// height (d = 1): a full block has to keep looking full where it
-/// spills outward. Without this the mean below sank it — the fluid sim
-/// halves on spread, so a source's neighbours are 4s and 2s, and
-/// mean(8, 4, 4, 2) = 5 dropped the source's whole top face to 0.37 of
-/// a block. Else the drop is 9 − round(mean water amount). Adjacent
-/// cells sharing the corner agree, so surfaces knit without cracks —
-/// including across chunk borders via the padded shell.
+/// (d = 9), so cascades render as connected ramps instead of stacked
+/// cliff slivers — but a resting SOURCE touching the corner outranks
+/// that, because a full block has to keep looking full exactly where it
+/// spills outward (see `a_spilling_source_keeps_its_full_height`). Else
+/// the drop is 9 − the STRONGEST touching amount.
+///
+/// Strongest, not the mean: the sim halves on spread (8 → 4 → 2 → 1), so
+/// averaging pulled every corner down toward the thinner water beyond
+/// it — a source flanked by 4s and 2s averaged to 5 and sank its own top
+/// face to 0.37 of a block, and the Flow4 beside it then ran 8/9 → 3/9
+/// instead of stopping at its own 4/9. Taking the max makes each cell's
+/// top face span exactly from its uphill neighbour's level down to its
+/// own, so the rendered surface reproduces the level ladder the sim
+/// actually computed. It also subsumes what used to be a separate
+/// source pin: a source contributes 8, which is already the highest
+/// amount there is.
+///
+/// Adjacent cells sharing the corner agree, so surfaces knit without
+/// cracks — including across chunk borders via the padded shell.
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
-	let (mut sum, mut count) = (0u32, 0u32);
+	let mut best = 0u8;
 	let mut plunge = false;
 	let mut source = false;
-	let mut falling = false;
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
 			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
@@ -120,12 +128,8 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 				return 0;
 			}
 			source |= b.is_fluid_source();
-			falling |= b.is_falling();
 			match surface_amount(input, cx, y, cz, b) {
-				Some(a) => {
-					sum += u32::from(a);
-					count += 1;
-				}
+				Some(a) => best = best.max(a),
 				None if b.props().class == RenderClass::None => {
 					plunge |= BlockType::from_id(input.get(cx, y - 1, cz)).is_water();
 				}
@@ -133,18 +137,16 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 			}
 		}
 	}
-	if plunge {
+	// A source outranks the plunge: spilling is *exactly* when a diagonal
+	// neighbour is air over the water just poured, and a source ringed by
+	// that (a bucket emptied against a wall face) plunged all four
+	// corners, lost its top face, and had every side skipped as
+	// zero-area — the block you just placed rendered nothing at all.
+	if plunge && !source {
 		return 9;
 	}
-	// A fall touching the corner keeps the mean: `surface_amount`'s lip
-	// rule deliberately steps the sheet below its feeder, and pinning
-	// here would flatten the pour-over back into a cliff.
-	if source && !falling {
-		return 1;
-	}
-	debug_assert!(count > 0, "corner of a water face touches its own cell");
-	let a = (2 * sum + count) / (2 * count); // round half up
-	9 - a
+	debug_assert!(best > 0, "corner of a water face touches its own cell");
+	9 - u32::from(best)
 }
 
 /// Per-face water surface state, computed once per cell in `mesh_chunk`.

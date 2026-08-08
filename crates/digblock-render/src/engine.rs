@@ -2572,7 +2572,7 @@ impl Engine {
 	/// Camera eye below the VISIBLE water surface? (None = unloaded =
 	/// dry.) The cell test alone flips at the lattice boundary, but the
 	/// rendered surface of a resting source sits ~0.111 below the cell
-	/// top (water.wgsl `DROPS`) — without the offset the underwater
+	/// top (water.wgsl sinks a corner d/9) — without the offset the underwater
 	/// atmosphere pops in while the camera is still visibly above water.
 	/// The flip happens FLIP_EARLY above the visible surface: the near
 	/// plane clips the surface pane before the eye reaches it, and
