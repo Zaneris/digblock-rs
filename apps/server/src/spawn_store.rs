@@ -1,17 +1,29 @@
-//! Persistent spawn lock (`spawn.json` in the data dir).
+//! Persistent spawn overrides (`spawn.json` in the data dir): the
+//! hand-picked spawn point (`/set-spawn`), the facing that comes with it
+//! (`/set-spawn-dir`), and the spawn lock (`/lock-spawn`).
 //!
 //! JSON for the same reason as the ban list: tiny, operator-facing, and
 //! worth being able to read or clear by hand. Same durability policy —
 //! whole-file snapshot via tmp + fsync + rename, an unparseable file is
 //! archived rather than crashing the server, and mutations write through
-//! immediately (a lock is an operator decision that must survive a crash;
+//! immediately (both are operator decisions that must survive a crash;
 //! there is no dirty/flush cadence).
 //!
-//! The locked eye position is stored, not just the flag. Spawn is
-//! otherwise a pure function of `(seed, edits)` and recomputed on demand,
-//! but a *lock* must pin one specific region for enforcement: the whole
-//! point is that the region cannot change, so re-deriving it every boot
-//! would defeat it if worldgen or the search rule ever shifted.
+//! The point and the lock both store an eye position, not a flag. Spawn
+//! is otherwise a pure function of `(seed, edits)` and recomputed on
+//! demand, but each override must pin one specific spot: a lock's whole
+//! purpose is that its region cannot change, so re-deriving it every boot
+//! would defeat it if worldgen or the search rule ever shifted, and a
+//! hand-picked point is by definition not something the search could
+//! rediscover.
+//!
+//! Point and lock are separate fields because they unset separately:
+//! `/lock-spawn off` releases the cells and hands spawn back to the
+//! automatic search, but only if no point was ever set by hand. When both
+//! are present they hold the SAME eye — `/set-spawn` under an active lock
+//! moves the lock with it, releasing the old cells and protecting the new
+//! ones. The facing is orthogonal to both: it describes which way you
+//! look on arrival, wherever arrival turns out to be.
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -23,46 +35,120 @@ pub struct SpawnLock {
 	pub eye: [f32; 3],
 }
 
+/// The persisted file body.
+///
+/// Every field defaults, so a build that predates one can still read the
+/// file; `deny_unknown_fields` is what keeps that from swallowing a
+/// legacy body (or an operator's typo) as an empty config.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpawnConfig {
+	/// Hand-picked spawn eye (`/set-spawn`), overriding the search.
+	pub point: Option<[f32; 3]>,
+	/// The lock's pinned eye, when spawn protection is on.
+	pub lock: Option<SpawnLock>,
+	/// Facing players adopt when they spawn (`/set-spawn-dir`), a
+	/// horizontal unit vector. Independent of the point: a world can pin
+	/// one, the other, or both.
+	pub dir: Option<[f32; 3]>,
+}
+
+/// Read shim for files written before `/set-spawn` existed, when the body
+/// was the lock alone. Legacy first: it requires an `eye` key that the
+/// current shape never has, while [`SpawnConfig`]'s fields are both
+/// optional and would happily match a legacy body and drop the lock.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Stored {
+	Legacy(SpawnLock),
+	Current(SpawnConfig),
+}
+
 pub struct SpawnStore {
 	path: PathBuf,
-	lock: Option<SpawnLock>,
+	cfg: SpawnConfig,
 }
 
 impl SpawnStore {
 	pub fn open(dir: &Path) -> io::Result<Self> {
 		std::fs::create_dir_all(dir)?;
 		let path = dir.join("spawn.json");
-		let lock = match std::fs::read(&path) {
-			Ok(bytes) => match serde_json::from_slice::<Option<SpawnLock>>(&bytes) {
-				Ok(lock) => lock,
+		let cfg = match std::fs::read(&path) {
+			Ok(bytes) => match serde_json::from_slice::<Option<Stored>>(&bytes) {
+				Ok(None) => SpawnConfig::default(),
+				Ok(Some(Stored::Legacy(lock))) => SpawnConfig {
+					lock: Some(lock),
+					..SpawnConfig::default()
+				},
+				Ok(Some(Stored::Current(cfg))) => cfg,
 				Err(e) => {
 					log::warn!("spawn.json unreadable ({e}) — archiving and starting unlocked");
 					let _ = std::fs::rename(&path, bak_path(&path));
-					None
+					SpawnConfig::default()
 				}
 			},
-			Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+			Err(e) if e.kind() == io::ErrorKind::NotFound => SpawnConfig::default(),
 			Err(e) => return Err(e),
 		};
-		Ok(Self { path, lock })
+		Ok(Self { path, cfg })
 	}
 
 	pub fn lock(&self) -> Option<SpawnLock> {
-		self.lock
+		self.cfg.lock
 	}
 
-	pub fn set(&mut self, lock: Option<SpawnLock>) {
-		if self.lock != lock {
-			self.lock = lock;
+	/// The hand-picked spawn eye, if an admin has set one.
+	pub fn point(&self) -> Option<[f32; 3]> {
+		self.cfg.point
+	}
+
+	/// The spawn eye the overrides pin, if either does. A hand-picked
+	/// point wins: when both are set they agree, and after `/lock-spawn
+	/// off` only the point remains.
+	pub fn pinned(&self) -> Option<[f32; 3]> {
+		self.cfg.point.or(self.cfg.lock.map(|l| l.eye))
+	}
+
+	/// The facing to hand a spawning player, if an admin has set one.
+	pub fn dir(&self) -> Option<[f32; 3]> {
+		self.cfg.dir
+	}
+
+	pub fn set_dir(&mut self, dir: [f32; 3]) {
+		self.write_if_changed(SpawnConfig {
+			dir: Some(dir),
+			..self.cfg
+		});
+	}
+
+	pub fn set_lock(&mut self, lock: Option<SpawnLock>) {
+		self.write_if_changed(SpawnConfig { lock, ..self.cfg });
+	}
+
+	/// Hand-pick the spawn. An active lock follows the point — the old
+	/// cells become editable again and the new ones are protected — which
+	/// is what keeps the lock region and the spawn it guards from ever
+	/// describing two different places.
+	pub fn set_point(&mut self, eye: [f32; 3]) {
+		self.write_if_changed(SpawnConfig {
+			point: Some(eye),
+			lock: self.cfg.lock.map(|_| SpawnLock { eye }),
+			..self.cfg
+		});
+	}
+
+	fn write_if_changed(&mut self, cfg: SpawnConfig) {
+		if self.cfg != cfg {
+			self.cfg = cfg;
 			self.write();
 		}
 	}
 
-	/// Atomic write-through. Failure degrades (the in-memory lock still
-	/// enforces this run) and logs — never refuses service.
+	/// Atomic write-through. Failure degrades (the in-memory state still
+	/// applies this run) and logs — never refuses service.
 	fn write(&self) {
 		let result = (|| -> io::Result<()> {
-			let bytes = serde_json::to_vec_pretty(&self.lock)?;
+			let bytes = serde_json::to_vec_pretty(&self.cfg)?;
 			let tmp = self.path.with_extension("json.tmp");
 			let mut f = std::fs::File::create(&tmp)?;
 			io::Write::write_all(&mut f, &bytes)?;
@@ -70,7 +156,7 @@ impl SpawnStore {
 			std::fs::rename(&tmp, &self.path)
 		})();
 		if let Err(e) = result {
-			log::error!("spawn.json write failed: {e} (lock still enforced in memory)");
+			log::error!("spawn.json write failed: {e} (still applied in memory)");
 		}
 	}
 }
@@ -117,7 +203,7 @@ mod tests {
 			eye: [8.5, 130.5, -3.5],
 		};
 		let mut s = SpawnStore::open(&d).unwrap();
-		s.set(Some(want));
+		s.set_lock(Some(want));
 		drop(s);
 		assert_eq!(SpawnStore::open(&d).unwrap().lock(), Some(want));
 		let _ = std::fs::remove_dir_all(&d);
@@ -127,12 +213,66 @@ mod tests {
 	fn unlocking_survives_reopen() {
 		let d = tmpdir("unlock");
 		let mut s = SpawnStore::open(&d).unwrap();
-		s.set(Some(SpawnLock {
+		s.set_lock(Some(SpawnLock {
 			eye: [0.5, 130.5, 0.5],
 		}));
-		s.set(None);
+		s.set_lock(None);
 		drop(s);
 		assert_eq!(SpawnStore::open(&d).unwrap().lock(), None);
+		let _ = std::fs::remove_dir_all(&d);
+	}
+
+	/// A hand-picked point outlives the lock: `/lock-spawn off` releases
+	/// the cells, it does not un-set the spawn.
+	#[test]
+	fn point_survives_reopen_and_unlocking() {
+		let d = tmpdir("point");
+		let eye = [40.5, 200.5, -8.5];
+		let mut s = SpawnStore::open(&d).unwrap();
+		s.set_point(eye);
+		s.set_lock(Some(SpawnLock { eye }));
+		s.set_lock(None);
+		drop(s);
+		let s = SpawnStore::open(&d).unwrap();
+		assert_eq!(s.point(), Some(eye));
+		assert_eq!(s.lock(), None);
+		assert_eq!(s.pinned(), Some(eye));
+		let _ = std::fs::remove_dir_all(&d);
+	}
+
+	/// Setting the spawn under an active lock moves the lock with it —
+	/// the old cells are released, the new ones protected.
+	#[test]
+	fn setting_the_point_moves_an_active_lock() {
+		let d = tmpdir("movelock");
+		let old = [0.5, 130.5, 0.5];
+		let new = [64.5, 140.5, 64.5];
+		let mut s = SpawnStore::open(&d).unwrap();
+		s.set_lock(Some(SpawnLock { eye: old }));
+		s.set_point(new);
+		assert_eq!(s.lock(), Some(SpawnLock { eye: new }));
+		// ...and an inactive lock stays inactive.
+		s.set_lock(None);
+		s.set_point(old);
+		assert_eq!(s.lock(), None);
+		let _ = std::fs::remove_dir_all(&d);
+	}
+
+	/// Files written before `/set-spawn` existed held the lock alone.
+	#[test]
+	fn a_legacy_lock_only_file_still_reads() {
+		let d = tmpdir("legacy");
+		std::fs::create_dir_all(&d).unwrap();
+		std::fs::write(d.join("spawn.json"), br#"{"eye":[1.5,130.5,2.5]}"#).unwrap();
+		let s = SpawnStore::open(&d).unwrap();
+		assert_eq!(
+			s.lock(),
+			Some(SpawnLock {
+				eye: [1.5, 130.5, 2.5]
+			}),
+			"legacy lock dropped"
+		);
+		assert_eq!(s.point(), None);
 		let _ = std::fs::remove_dir_all(&d);
 	}
 

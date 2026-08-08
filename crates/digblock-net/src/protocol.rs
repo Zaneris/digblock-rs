@@ -42,12 +42,18 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// renders charged or empty) plus `RejectReason::BucketFull`. A v11
 /// client would place water from a water slot the server no longer lets
 /// it keep, so this one is a break, not an append.
-pub const PROTOCOL_VERSION: u16 = 12;
+/// v13: spawn facing — `Welcome.spawn_look`, the direction an admin set
+/// with `/set-spawn-dir`, applied when a player actually spawns (never on
+/// a resume in place). Zero = keep the current view, the same convention
+/// as `Teleported.look`, which carries it on return-to-spawn. A pure
+/// append, but the version still moves: a v13 client's decoder needs the
+/// field, so it cannot read a v12 server's Welcome.
+pub const PROTOCOL_VERSION: u16 = 13;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 12;
+pub const MIN_PROTOCOL: u16 = 13;
 
 // ---- handshake preamble ----------------------------------------------
 //

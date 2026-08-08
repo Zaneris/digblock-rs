@@ -5,6 +5,7 @@
 //! the `AdminCommands` advertisement the client autocompletes from.
 
 use super::{client_send, OutMsg, Sim, SpawnLock};
+use digblock_core::raycast::{raycast, REACH};
 use digblock_net::messages::ServerMsg;
 use digblock_net::protocol::{validate_name, MAX_CHAT_LEN, SERVER_ID};
 use glam::Vec3;
@@ -27,6 +28,14 @@ const COMMANDS: &[(&str, &str)] = &[
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
 	(
+		"/set-spawn",
+		"move spawn to the top of the block you are looking at",
+	),
+	(
+		"/set-spawn-dir [n|s|e|w]",
+		"set which way players face when they spawn; no argument = your facing",
+	),
+	(
 		"/lock-spawn [on|off]",
 		"show or set spawn protection (freezes spawn and makes its cells unbreakable)",
 	),
@@ -48,6 +57,55 @@ fn cardinal(dir: &str) -> Option<Vec3> {
 		"w" | "west" => Vec3::new(1.0, 0.0, 0.0),
 		_ => return None,
 	})
+}
+
+/// The rough inverse of [`cardinal`]: the reply to "face this way" is
+/// only useful if it names the way. Eight points, because `/set-spawn-dir`
+/// with no argument stores whatever the admin was actually looking at and
+/// calling a diagonal "east" would be a plain lie.
+fn compass(dir: Vec3) -> String {
+	// east = −x (sunrise), north = −z — the engine's convention.
+	let (east, north) = (-dir.x, -dir.z);
+	// A component earns a name only when it carries real weight:
+	// tan(22.5°) splits the eight sectors evenly.
+	const T: f32 = 0.4142;
+	let mut s = String::new();
+	if north.abs() > T * east.abs() {
+		s.push_str(if north > 0.0 { "north" } else { "south" });
+	}
+	if east.abs() > T * north.abs() {
+		s.push_str(if east > 0.0 { "east" } else { "west" });
+	}
+	s
+}
+
+/// Where a spawn eye reads as coordinates: the FLOOR block, not the eye.
+/// An admin who aimed at a block and got told a number two higher would
+/// reasonably think the command missed, and it is the same y the lock
+/// region reports as `y0`.
+fn at(eye: Vec3) -> String {
+	format!(
+		"{} {} {}",
+		eye.x.floor(),
+		eye.y.floor() - 2.0,
+		eye.z.floor()
+	)
+}
+
+/// The one wording for "spawn is locked here", shared by `/lock-spawn`
+/// and by `/set-spawn` reporting the lock it dragged along.
+fn describe_lock(eye: Vec3) -> String {
+	let r = digblock_core::spawn::lock_region(eye);
+	format!(
+		"spawn locked at {} (protecting x {}..{}, y {}..{}, z {}..{})",
+		at(eye),
+		r.x0,
+		r.x1,
+		r.y0,
+		r.y1,
+		r.z0,
+		r.z1,
+	)
 }
 
 /// A private server→player chat line (the client renders SERVER_ID as
@@ -127,6 +185,8 @@ impl Sim {
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
 			"/unban" => self.cmd_unban(conn_id, &args),
+			"/set-spawn" => self.cmd_set_spawn(conn_id, &args),
+			"/set-spawn-dir" => self.cmd_set_spawn_dir(conn_id, &args),
 			"/lock-spawn" => self.cmd_lock_spawn(conn_id, &args),
 			other => self.reply(conn_id, &format!("unknown command {other} - try /help")),
 		}
@@ -175,6 +235,111 @@ impl Sim {
 		self.reply(conn_id, &format!("teleported to {x} {z}"));
 	}
 
+	/// Hand-pick the spawn: the block under the admin's crosshair becomes
+	/// the ground players stand on.
+	///
+	/// The TOP face specifically, not any face. The cell the ray hits is
+	/// the floor, so a side or bottom hit would quietly mean a spawn
+	/// hanging in the air beside a wall or buried in a ceiling — and the
+	/// admin who aimed at a wall meant the ground, not the cell behind it.
+	///
+	/// Validated by [`digblock_core::spawn::stands_clear`], which reads the
+	/// world as it actually is rather than pristine worldgen: the whole
+	/// point of setting spawn by hand is to put it somewhere terrain alone
+	/// would never have chosen — a levelled hillside, a built platform, a
+	/// hall cut into rock.
+	fn cmd_set_spawn(&mut self, conn_id: u64, args: &[&str]) {
+		if !args.is_empty() {
+			return self.reply(conn_id, "usage: /set-spawn (aim at the block to stand on)");
+		}
+		let Some((pos, look)) = self
+			.clients
+			.get(&conn_id)
+			.filter(|c| c.live)
+			.map(|c| (c.player.pos, c.look))
+		else {
+			return;
+		};
+		let Some(hit) = raycast(pos, look, REACH, &|x, y, z| self.world_cell(x, y, z)) else {
+			return self.reply(conn_id, "not looking at a block");
+		};
+		if hit.normal != (0, 1, 0) {
+			return self.reply(
+				conn_id,
+				"not looking at the top of a block - aim at the surface to stand on",
+			);
+		}
+		// The hit cell is the floor; the eye sits centred two above it,
+		// exactly as `spawn::anchor` places one over a surface block.
+		let eye = Vec3::new(
+			hit.cell.0 as f32 + 0.5,
+			hit.cell.1 as f32 + 2.5,
+			hit.cell.2 as f32 + 0.5,
+		);
+		if !digblock_core::spawn::stands_clear(eye, &|x, y, z| self.world_cell(x, y, z)) {
+			return self.reply(
+				conn_id,
+				&format!(
+					"not a valid spawn - needs solid ground {} blocks out, \
+					 with {} clear and dry above it",
+					digblock_core::spawn::CLEAR,
+					digblock_core::spawn::CAPSULE,
+				),
+			);
+		}
+		let relocked = self.spawn_store.lock().is_some();
+		self.spawn_store.set_point(eye.to_array());
+		log::info!("admin set spawn to {eye}");
+		self.reply(conn_id, &format!("spawn point set to {}", at(eye)));
+		if relocked {
+			// The lock came along: the old cells are editable again.
+			self.reply(conn_id, &describe_lock(eye));
+		}
+	}
+
+	/// Set which way players face when they spawn — the point stays
+	/// wherever it is. A cardinal argument, or by default the admin's own
+	/// facing, which is the point of doing this in-world: stand at spawn,
+	/// look at the view you want new players to open on, run the command.
+	///
+	/// Flattened to horizontal and re-normalized: a spawn facing is a yaw.
+	/// The client levels the pitch on arrival either way, so storing one
+	/// would only be a value that never comes back out.
+	fn cmd_set_spawn_dir(&mut self, conn_id: u64, args: &[&str]) {
+		let usage = "usage: /set-spawn-dir [n|s|e|w] (no argument = your facing)";
+		let dir = match args {
+			[] => {
+				let Some(look) = self
+					.clients
+					.get(&conn_id)
+					.filter(|c| c.live)
+					.map(|c| c.look)
+				else {
+					return;
+				};
+				Vec3::new(look.x, 0.0, look.z).normalize_or_zero()
+			}
+			[d] => match cardinal(&d.to_ascii_lowercase()) {
+				Some(v) => v,
+				None => return self.reply(conn_id, usage),
+			},
+			_ => return self.reply(conn_id, usage),
+		};
+		if dir == Vec3::ZERO {
+			// Straight up or straight down: there is no yaw to keep.
+			return self.reply(
+				conn_id,
+				"not facing anywhere - look along the ground, or name a direction",
+			);
+		}
+		self.spawn_store.set_dir(dir.to_array());
+		log::info!("admin set spawn facing to {dir}");
+		self.reply(
+			conn_id,
+			&format!("players will spawn facing {}", compass(dir)),
+		);
+	}
+
 	/// Show or toggle spawn protection.
 	///
 	/// Turning it on resolves the spawn FIRST and locks around the
@@ -182,39 +347,33 @@ impl Sim {
 	/// already dug out would freeze a broken one forever, and the "locked
 	/// ⇒ skip the search" fast path would then hand that broken spawn to
 	/// every joiner. If even the search can't find somewhere intact, the
-	/// command refuses rather than pinning a bad answer.
+	/// command refuses rather than pinning a bad answer. A hand-picked
+	/// spawn resolves to itself and locks as-is — see `spawn_valid`.
 	fn cmd_lock_spawn(&mut self, conn_id: u64, args: &[&str]) {
 		let usage = "usage: /lock-spawn [on|off]";
 		let arg = args.first().map(|s| s.to_ascii_lowercase());
 		if args.len() > 1 {
 			return self.reply(conn_id, usage);
 		}
-		let describe = |eye: Vec3| {
-			let r = digblock_core::spawn::lock_region(eye);
-			format!(
-				"spawn locked at {} {} {} (protecting x {}..{}, y {}..{}, z {}..{})",
-				eye.x.floor(),
-				eye.y.floor(),
-				eye.z.floor(),
-				r.x0,
-				r.x1,
-				r.y0,
-				r.y1,
-				r.z0,
-				r.z1,
-			)
-		};
 		match arg.as_deref() {
 			None => {
-				let line = match self.spawn_store.lock() {
-					Some(l) => describe(Vec3::from_array(l.eye)),
-					None => "spawn is unlocked (it moves aside if players dig it out)".into(),
+				let line = match (self.spawn_store.lock(), self.spawn_store.point()) {
+					(Some(l), _) => describe_lock(Vec3::from_array(l.eye)),
+					// Unlocked, but pinned by hand: it stays put, it just
+					// isn't protected from being dug out from under itself.
+					(None, Some(p)) => format!(
+						"spawn is set at {} but unlocked (its cells can be dug)",
+						at(Vec3::from_array(p))
+					),
+					(None, None) => {
+						"spawn is unlocked (it moves aside if players dig it out)".into()
+					}
 				};
 				self.reply(conn_id, &line);
 			}
 			Some("on") => {
 				if let Some(l) = self.spawn_store.lock() {
-					let line = describe(Vec3::from_array(l.eye));
+					let line = describe_lock(Vec3::from_array(l.eye));
 					return self.reply(conn_id, &format!("already {line}"));
 				}
 				let eye = self.spawn_point();
@@ -225,18 +384,18 @@ impl Sim {
 						 fill in the excavation and try again",
 					);
 				}
-				self.spawn_store.set(Some(SpawnLock {
+				self.spawn_store.set_lock(Some(SpawnLock {
 					eye: eye.to_array(),
 				}));
 				log::info!("admin locked spawn at {eye}");
-				let line = describe(eye);
+				let line = describe_lock(eye);
 				self.reply(conn_id, &line);
 			}
 			Some("off") => {
 				if self.spawn_store.lock().is_none() {
 					return self.reply(conn_id, "spawn is already unlocked");
 				}
-				self.spawn_store.set(None);
+				self.spawn_store.set_lock(None);
 				log::info!("admin unlocked spawn");
 				self.reply(conn_id, "spawn unlocked - its cells are editable again");
 			}
@@ -436,6 +595,7 @@ impl Sim {
 mod tests {
 	use crate::sim::harness::*;
 	use crate::sim::{Sim, SimEvent};
+	use digblock_core::block::BlockType;
 	use digblock_net::messages::{ClientMsg, ServerMsg};
 	use digblock_net::protocol::SERVER_ID;
 	use glam::Vec3;
@@ -852,6 +1012,304 @@ mod tests {
 		admin.drain();
 		assert!(server_lines(&admin).iter().any(|l| l.contains("unlocked")));
 		assert!(sim.spawn_lock().is_none());
+	}
+
+	/// Aim the client and wait for the server to have adopted it: inputs
+	/// are jitter-buffered, so a command issued in the same tick as the
+	/// look that motivates it reads the OLD facing.
+	fn face(sim: &mut Sim, conn_id: u64, dir: Vec3, t: &mut u32) {
+		for _ in 0..120 {
+			if sim
+				.test_look(conn_id)
+				.is_some_and(|l| (l - dir).length() < 1e-4)
+			{
+				return;
+			}
+			*t += 1;
+			sim.tick_once(vec![batch(vec![aim(*t, dir)], conn_id)]);
+		}
+		panic!("server never adopted the look {dir}");
+	}
+
+	/// The three outcomes, in order: aimed at nothing, aimed at a side,
+	/// aimed at the top of a good block.
+	#[test]
+	fn set_spawn_needs_the_top_face_of_a_block() {
+		let mut sim = admin_sim("setspawn");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		let mut t = 0;
+		let eye = sim.test_player(1).unwrap().pos;
+		let (ex, ey, ez) = (
+			eye.x.floor() as i32,
+			eye.y.floor() as i32,
+			eye.z.floor() as i32,
+		);
+
+		// Looking at the sky: nothing under the ray.
+		face(&mut sim, 1, Vec3::Y, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l == "not looking at a block"),
+			"{:?}",
+			server_lines(&admin)
+		);
+		assert!(sim.test_spawn_point().is_none(), "the sky set a spawn");
+
+		// A wall at eye height: a side face is a hit, but not a floor.
+		admin.msgs.clear();
+		sim.test_set_cell(ex + 1, ey, ez, BlockType::Stone as u16);
+		face(&mut sim, 1, Vec3::X, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.contains("not looking at the top")),
+			"{:?}",
+			server_lines(&admin)
+		);
+		assert!(sim.test_spawn_point().is_none(), "a wall set a spawn");
+
+		// Straight down at the block underfoot: the happy path. (The wall
+		// stood inside the spawn cylinder, so it has to come down first.)
+		admin.msgs.clear();
+		sim.test_set_cell(ex + 1, ey, ez, BlockType::Air as u16);
+		face(&mut sim, 1, -Vec3::Y, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.starts_with("spawn point set to")),
+			"{:?}",
+			server_lines(&admin)
+		);
+		// The eye sits two over the block the ray hit — the same offset
+		// `spawn::anchor` puts one at over a surface block.
+		assert_eq!(
+			sim.test_spawn_point(),
+			Some(Vec3::new(
+				ex as f32 + 0.5,
+				FLAT_GROUND_TOP as f32 + 2.5,
+				ez as f32 + 0.5
+			))
+		);
+	}
+
+	/// The block picked is fine; the ground around it is not. The reply
+	/// says so and nothing is stored.
+	#[test]
+	fn set_spawn_refuses_ground_a_player_cannot_stand_on() {
+		let mut sim = admin_sim("setspawnbad");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		let mut t = 0;
+		// Dig a hole at the rim of the disc the admin is standing in the
+		// middle of: the cell underfoot is solid, the footing is not.
+		let eye = sim.test_player(1).unwrap().pos;
+		sim.test_set_cell(
+			eye.x.floor() as i32 + digblock_core::spawn::CLEAR,
+			FLAT_GROUND_TOP as i32,
+			eye.z.floor() as i32,
+			BlockType::Air as u16,
+		);
+		face(&mut sim, 1, -Vec3::Y, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn")]);
+		admin.drain();
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.starts_with("not a valid spawn")),
+			"{:?}",
+			server_lines(&admin)
+		);
+		assert!(sim.test_spawn_point().is_none());
+	}
+
+	/// The point overrides the search for joins, and an active lock
+	/// travels with it: the old cells become editable, the new ones
+	/// protected.
+	#[test]
+	fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
+		let mut sim = admin_sim("setspawnlock");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		sim.tick_once(vec![chat(1, "/lock-spawn on")]);
+		let before = sim.spawn_lock().expect("locked");
+
+		// Aim down and out: within reach, but a different column's top.
+		let mut t = 0;
+		face(&mut sim, 1, Vec3::new(1.0, -0.8, 0.0).normalize(), &mut t);
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/set-spawn")]);
+		admin.drain();
+		let set = sim.test_spawn_point().expect("spawn set");
+		let eye = sim.test_player(1).unwrap().pos;
+		assert_ne!(set.x, eye.x, "picked the column it was standing in");
+
+		// The lock moved with it — reported, and enforced somewhere new.
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.contains("spawn locked at")),
+			"{:?}",
+			server_lines(&admin)
+		);
+		let after = sim.spawn_lock().expect("still locked");
+		assert_ne!(before.x0, after.x0, "lock stayed on the old cells");
+		assert_eq!(after, digblock_core::spawn::lock_region(set));
+
+		// And it is the spawn a joiner gets.
+		let guest = connect_named(&mut sim, 2, "guest");
+		let welcome = guest
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { spawn, .. } => Some(*spawn),
+				_ => None,
+			})
+			.expect("Welcome");
+		assert_eq!((welcome[0], welcome[2]), (set.x, set.z));
+
+		// Unlocking releases the cells but leaves the spawn where it was
+		// put — it is not the search's to move any more.
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/lock-spawn off")]);
+		sim.tick_once(vec![chat(1, "/lock-spawn")]);
+		admin.drain();
+		assert!(sim.spawn_lock().is_none());
+		assert_eq!(sim.test_spawn_point(), Some(set));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.contains("set at") && l.contains("unlocked")),
+			"{:?}",
+			server_lines(&admin)
+		);
+	}
+
+	/// The facing is the admin's own look by default, a cardinal when one
+	/// is named, and it reaches players through the two paths that are
+	/// actually spawns.
+	#[test]
+	fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
+		let mut sim = admin_sim("spawndir");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+
+		// No argument: the admin's own look, flattened to a yaw.
+		let mut t = 0;
+		let looking = Vec3::new(0.0, -0.5, -1.0).normalize();
+		face(&mut sim, 1, looking, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn-dir")]);
+		admin.drain();
+		let dir = sim.test_spawn_dir().expect("dir set");
+		assert_eq!(dir, Vec3::new(0.0, 0.0, -1.0), "pitch was not flattened");
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l == "players will spawn facing north"),
+			"{:?}",
+			server_lines(&admin)
+		);
+
+		// A named cardinal overrides where the admin happens to be looking.
+		admin.msgs.clear();
+		sim.tick_once(vec![chat(1, "/set-spawn-dir e")]);
+		admin.drain();
+		// East = sunrise = −x.
+		assert_eq!(sim.test_spawn_dir(), Some(Vec3::new(-1.0, 0.0, 0.0)));
+		assert!(server_lines(&admin)
+			.iter()
+			.any(|l| l.contains("facing east")));
+
+		// A joiner arrives facing it...
+		let guest = connect_named(&mut sim, 2, "guest");
+		let look = guest
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { spawn_look, .. } => Some(*spawn_look),
+				_ => None,
+			})
+			.expect("Welcome");
+		assert_eq!(look, [-1.0, 0.0, 0.0]);
+
+		// ...and so does a return to spawn.
+		wait_live(&mut sim, 2);
+		let mut guest = guest;
+		guest.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 2,
+			msg: ClientMsg::ReturnToSpawn,
+		}]);
+		guest.drain();
+		let look = guest
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Teleported { look, .. } => Some(*look),
+				_ => None,
+			})
+			.expect("Teleported");
+		assert_eq!(look, [-1.0, 0.0, 0.0]);
+		assert_eq!(sim.test_look(2), Some(Vec3::new(-1.0, 0.0, 0.0)));
+	}
+
+	/// Straight up has no yaw in it, and a garbled cardinal is not a
+	/// silent no-op.
+	#[test]
+	fn set_spawn_dir_rejects_a_facing_it_cannot_use() {
+		let mut sim = admin_sim("spawndirbad");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		let mut t = 0;
+		face(&mut sim, 1, Vec3::Y, &mut t);
+		sim.tick_once(vec![chat(1, "/set-spawn-dir")]);
+		sim.tick_once(vec![chat(1, "/set-spawn-dir sideways")]);
+		admin.drain();
+		let lines = server_lines(&admin);
+		assert!(lines.iter().any(|l| l.contains("not facing anywhere")));
+		assert!(lines.iter().any(|l| l.contains("usage: /set-spawn-dir")));
+		assert!(sim.test_spawn_dir().is_none(), "a bad facing was stored");
+	}
+
+	/// A player resuming in place keeps their own view: the spawn facing
+	/// describes spawn, not wherever they logged out.
+	#[test]
+	fn a_resumed_join_does_not_get_the_spawn_facing() {
+		let dir = temp_dir("spawndirresume");
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		sim.set_admin_name(Some("boss".into()));
+		let _admin = connect_named(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		sim.tick_once(vec![chat(1, "/set-spawn-dir n")]);
+
+		// A first join under a real identity banks a position...
+		let id = [7u8; 16];
+		let first = crate::sim::harness::try_connect_as(&mut sim, 2, id, "guest");
+		assert!(matches!(
+			first.msgs.first(),
+			Some(ServerMsg::Welcome { spawn_look, .. }) if *spawn_look == [0.0, 0.0, -1.0]
+		));
+		wait_live(&mut sim, 2);
+		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
+
+		// ...so the next one resumes it, with no facing attached.
+		let again = crate::sim::harness::try_connect_as(&mut sim, 3, id, "guest");
+		let look = again
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Welcome { spawn_look, .. } => Some(*spawn_look),
+				_ => None,
+			})
+			.expect("Welcome");
+		assert_eq!(look, [0.0; 3], "a resume adopted the spawn facing");
 	}
 
 	/// A bad argument explains itself instead of silently toggling.

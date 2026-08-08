@@ -447,6 +447,10 @@ pub struct Engine {
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
+	/// A return-to-spawn is outstanding, so the next teleport that lands
+	/// is ours and says so. Kept apart from the teleport's `look`, which
+	/// a server with `/set-spawn-dir` set fills in on this path too.
+	spawn_return_pending: bool,
 	/// The inventory-grid arrangement behind the hotbar (slot
 	/// assignments; counts stay in `inventory`). Kept consistent by
 	/// `reconcile_layout` every frame.
@@ -825,6 +829,7 @@ impl Engine {
 			inv_screen: Default::default(),
 			alch_screen: Default::default(),
 			return_spawn_requested: false,
+			spawn_return_pending: false,
 			inv_grid: Default::default(),
 			last_layout_sent: None,
 		};
@@ -1383,13 +1388,25 @@ impl Engine {
 		self.menu.set_world_list(rows);
 	}
 
+	/// Adopt an authoritative facing: yaw from the horizontal direction,
+	/// pitch levelled. Shared by teleports and the spawn facing an admin
+	/// set, so the two can never disagree about which way `look` points.
+	fn face(&mut self, look: Vec3) {
+		self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
+		self.camera.pitch_deg = 0.0;
+	}
+
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
 	/// and camera — a 200 ms smoothed slide across half the map would
 	/// fight streaming — and drop everything that describes the
 	/// pre-teleport position (the decaying correction offset, a stashed
 	/// ack, any dig in progress, the footstep odometer). A non-zero
-	/// `look` adopts that facing (level pitch); zero keeps the view — the
-	/// spawn path, which also keeps its historical feed line.
+	/// `look` adopts that facing (level pitch); zero keeps the view.
+	///
+	/// The feed line keys on `spawn_return_pending` — what WE asked for —
+	/// not on whether a facing came back: a server with `/set-spawn-dir`
+	/// set answers a return-to-spawn with a look, and reading that as
+	/// "an admin teleported me" got the wording backwards.
 	fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
 		self.player.set_state(digblock_core::player::PlayerState {
 			pos,
@@ -1404,12 +1421,14 @@ impl Engine {
 		self.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
-			self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
-			self.camera.pitch_deg = 0.0;
-			self.push_feed("Teleported.".into());
-		} else {
-			self.push_feed("Returned to spawn.".into());
+			self.face(look);
 		}
+		let line = if std::mem::take(&mut self.spawn_return_pending) {
+			"Returned to spawn."
+		} else {
+			"Teleported."
+		};
+		self.push_feed(line.into());
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -1492,11 +1511,18 @@ impl Engine {
 					spawn,
 					player_id,
 					tod,
+					spawn_look,
 					..
 				} => {
 					self.my_player_id = Some(player_id);
 					self.menu.on_welcome();
 					self.swap_world(seed, spawn);
+					// The admin's `/set-spawn-dir`, sent only when this
+					// join actually placed us at spawn — a resume in place
+					// sends zero and keeps the view we arrived with.
+					if spawn_look != Vec3::ZERO {
+						self.face(spawn_look);
+					}
 					// The server owns the world clock. A dev-build --tod
 					// freeze still wins: update() re-asserts config.tod
 					// every frame.
@@ -3054,6 +3080,9 @@ impl Game for Engine {
 			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
 		if spawn_requested && self.spawn_cooldown == 0.0 {
 			self.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
+			// Set before the arms: it is what the teleport that lands —
+			// this frame locally, or a round trip later — words itself by.
+			self.spawn_return_pending = true;
 			match self.net.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
 				_ => {

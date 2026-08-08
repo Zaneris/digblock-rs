@@ -2497,9 +2497,10 @@ mod tests {
 		let mut sim = flat_sim("lockdig");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
 		let down = Vec3::new(0.0, -1.0, 0.0);
 		let mut t = 0;
 		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
@@ -2539,9 +2540,10 @@ mod tests {
 		// Lock a region offset from the player so the target is inside it
 		// but the player is not standing in the way of their own place.
 		let eye = FLAT_SPAWN + Vec3::new(4.0, 0.0, 0.0);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: eye.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: eye.to_array(),
+			}));
 		let region = sim.spawn_lock().expect("locked");
 
 		let pos = sim.test_player(1).unwrap().pos;
@@ -2597,10 +2599,11 @@ mod tests {
 		let mut sim = flat_sim("lockundig");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
-		sim.spawn_store.set(None);
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
+		sim.spawn_store.set_lock(None);
 		let down = Vec3::new(0.0, -1.0, 0.0);
 		let mut t = 0;
 		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
@@ -2636,9 +2639,10 @@ mod tests {
 		let spawn = FLAT_SPAWN;
 		let sz = spawn.z.floor() as i32;
 		let h = spawn.y.floor() as i32 - 2;
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: spawn.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: spawn.to_array(),
+			}));
 		let region = sim.spawn_lock().expect("locked");
 
 		// A source one column outside the region, level with the capsule,
@@ -2678,9 +2682,10 @@ mod tests {
 		let mut sim = flat_sim("lockdigstart");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
 		// The block underfoot: inside the locked region and in reach.
 		let cell = (
 			FLAT_SPAWN.x.floor() as i32,
