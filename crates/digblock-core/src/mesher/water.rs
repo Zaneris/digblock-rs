@@ -149,6 +149,29 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	9 - u32::from(best)
 }
 
+/// A fall's landing: falling water whose below-cell is where the fall
+/// ends — resting water (worldgen falls land in pools) or solid ground
+/// (fluid-sim falls punching to a floor).
+///
+/// Called from `mesh_chunk`'s block loop as well as from the splash ring
+/// scan, because recording the impact is a property of the CELL and not
+/// of any face it happens to emit. It used to live inside
+/// `WaterState::of`, which only runs when a face survives culling — and
+/// an impact cell is the one water cell most likely to have every face
+/// culled: capped by the fall above it and ringed by the pool it just
+/// made. A player-built fall punching into its own pool therefore
+/// produced no impact at all, so no spray and no waterfall audio, while
+/// worldgen falls (which land in open air one cell above a pool, sides
+/// visible) worked and hid the bug.
+pub(super) fn is_impact(input: &MeshInput, x: i32, y: i32, z: i32) -> bool {
+	if !BlockType::from_id(input.get(x, y, z)).is_falling() {
+		return false;
+	}
+	let below_raw = input.get(x, y - 1, z);
+	let below = BlockType::from_id(below_raw);
+	!below.is_falling() && (below.is_water() || occludes(below_raw))
+}
+
 /// Per-face water surface state, computed once per cell in `mesh_chunk`.
 #[derive(Clone, Copy)]
 pub(super) struct WaterState {
@@ -168,8 +191,9 @@ pub(super) struct WaterState {
 	pub(super) flow: u32,
 	/// Splash code: 3 = a fall's impact cell (falling water striking
 	/// the pool surface or solid ground below), 2/1 = surface-water
-	/// cells at Chebyshev distance 1/2 from an impact — the shader's
-	/// expanding foam rings. 0 elsewhere.
+	/// cells at Chebyshev distance 1/2 from an impact. The shader reads
+	/// it as a static foam wash fading outward from the impact — it is
+	/// a DISTANCE, not a phase, so nothing here animates. 0 elsewhere.
 	pub(super) splash: u32,
 	/// Contiguous falling cells above this one (0 = sheet top), capped
 	/// at 15. When the walk hits the snapshot ceiling with the column
@@ -214,18 +238,7 @@ impl WaterState {
 				1 + amounts.iter().position(|&a| a == min).expect("has min") as u32
 			}
 		};
-		// A fall's landing: falling water whose below-cell is where the
-		// fall ends — resting water (worldgen falls land in pools) or
-		// solid ground (fluid-sim falls punching to a floor).
-		let is_impact = |nx: i32, ny: i32, nz: i32| -> bool {
-			if !BlockType::from_id(input.get(nx, ny, nz)).is_falling() {
-				return false;
-			}
-			let below_raw = input.get(nx, ny - 1, nz);
-			let below = BlockType::from_id(below_raw);
-			!below.is_falling() && (below.is_water() || occludes(below_raw))
-		};
-		let splash = if falling && is_impact(x, y, z) {
+		let splash = if falling && is_impact(input, x, y, z) {
 			3
 		} else if !falling && !full && falls.reachable(input, y) {
 			// Ring scan: nearest impact in the 5×5 neighborhood at this
@@ -244,7 +257,9 @@ impl WaterState {
 						continue;
 					}
 					let code = 3 - dx.abs().max(dz.abs()) as u32;
-					if code > best && (is_impact(nx, y, nz) || is_impact(nx, y + 1, nz)) {
+					if code > best
+						&& (is_impact(input, nx, y, nz) || is_impact(input, nx, y + 1, nz))
+					{
 						best = code;
 					}
 				}

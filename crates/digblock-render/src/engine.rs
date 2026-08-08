@@ -102,8 +102,10 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
-	/// Spray droplets per waterfall-impact instance: 64 desktop, 24
-	/// mobile (was inferred in the renderer from draw_dist <= 10).
+	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
+	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
+	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
+	/// a handful of culled emitters, not geometry.
 	pub spray_droplets: u32,
 	/// Per-frame wall-clock budget for main-thread streaming (see the
 	/// STREAM_BUDGET_MS doc below, which is the default).
@@ -173,7 +175,7 @@ impl EngineConfig {
 			debug_playerbox: false,
 			debug_shapes: false,
 			debug_screen: None,
-			spray_droplets: 64,
+			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
 			fog_start_frac: 0.70,
@@ -209,7 +211,7 @@ impl EngineConfig {
 			debug_playerbox: false,
 			debug_shapes: false,
 			debug_screen: None,
-			spray_droplets: 24,
+			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
 			fog_start_frac: 0.70,

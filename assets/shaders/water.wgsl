@@ -9,8 +9,8 @@
 // Bit 14 marks falling water (side faces
 // scroll downward), bits 15-17 the horizontal flow dir (0 still, 1 +x,
 // 2 −x, 3 +z, 4 −z; top faces scroll along it), bits 18-19 the splash
-// code (3 = fall impact cell — continuous churn; 2/1 = pool cells at
-// Chebyshev 1/2 — expanding foam rings; both boost ripple turbulence),
+// code (3 = fall impact cell; 2/1 = pool cells at Chebyshev 1/2 — a
+// static foam wash fading outward; all three boost ripple turbulence),
 // bits 20-23 the vertex fall distance (blocks below the lip, +1 on
 // bottom-plane verts so interpolation is continuous; drives gravity
 // stretch and aeration whitening).
@@ -81,7 +81,7 @@ struct VsOut {
 	@location(4) sc_wide: vec3f,
 	@location(5) fog_dist: f32,
 	@location(6) @interpolate(flat) axis: f32,
-	// Splash code: 3 impact cell, 2/1 ring cells, 0 none.
+	// Splash code: 3 impact cell, 2/1 surrounding cells, 0 none.
 	@location(7) @interpolate(flat) splash: u32,
 	// World position (ripple field domain + view vector).
 	@location(8) world: vec3f,
@@ -448,18 +448,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below),
 	);
 	// Splash foam (after the mirror mix — froth sits on the surface):
-	// the impact cell holds a steady churn, spatially de-phased so
-	// neighboring cells never pulse in lockstep; ring cells (codes
-	// 1-2 only — a ring starting at r = 0 made the whole impact row
-	// strobe) light up as an expanding front passes their distance.
+	// a STATIC wash, brightest on the impact cell and fading with the
+	// splash code out to Chebyshev 2. Deliberately timeless. This was an
+	// expanding ring keyed to fract(t * 0.9) plus a wobble on the impact
+	// churn, and the two together read as the impact strobing white
+	// once a second — the splash's motion belongs in the droplets
+	// (spray.wgsl), which throw upward, not in the pool surface
+	// brightening and dimming under them. The ripple normals still
+	// churn harder here (`boost` above), so the foam has movement in it
+	// without the whole cell pulsing.
 	if i.splash > 0u {
-		let impact = step(2.5, f32(i.splash));
-		let wob = sin(t * 6.0 + i.world.x * 2.1 + i.world.z * 1.7);
-		let churn = impact * (0.34 + 0.05 * wob) * (1.0 - 0.5 * i.uv.y);
-		let r = (3.0 - f32(i.splash)) / 3.0;
-		let ph = fract(t * 0.9);
-		let ring = (1.0 - impact) * smoothstep(0.22, 0.0, abs(r - ph * 0.8)) * (1.0 - ph) * 0.35;
-		col = mix(col, froth_light, min(churn + ring, 0.6));
+		col = mix(col, froth_light, 0.09 * f32(i.splash) * (1.0 - 0.5 * i.uv.y));
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	// Glassy crest sheen where flow tips over a lip: strongest in the

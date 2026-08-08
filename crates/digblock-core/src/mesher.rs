@@ -530,6 +530,14 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					emit_shaped(&mut mesh.solid, input, (x, y, z), me, cell, bt);
 					continue;
 				}
+				// A fall's landing cell drives the spray emitters and the
+				// waterfall audio, so it is recorded per CELL — never as a
+				// side effect of emitting a face, which is how it used to
+				// work and why a fall landing inside its own pool was
+				// silent and dry (see `water::is_impact`).
+				if me.is_falling() && water::is_impact(input, x as i32, y as i32, z as i32) {
+					mesh.impacts.push((x | y << 4 | z << 8) as u16);
+				}
 				// Cell-level water state, shared by all its faces.
 				let mut wstate: Option<WaterState> = None;
 				// Per-cell brightness jitter, hashed at most once for all
@@ -560,22 +568,9 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					}
 					let tex = me.texture(dir);
 					if me.props().bucket == crate::block::MeshBucket::Water {
-						// Not get_or_insert_with: recording the impact cell
-						// must happen exactly once, and the closure can't
-						// reach mesh.impacts.
-						let state = match wstate {
-							Some(s) => s,
-							None => {
-								let s = WaterState::of(
-									input, &mut falls, x as i32, y as i32, z as i32, me,
-								);
-								if s.splash == 3 {
-									mesh.impacts.push((x | y << 4 | z << 8) as u16);
-								}
-								wstate = Some(s);
-								s
-							}
-						};
+						let state = *wstate.get_or_insert_with(|| {
+							WaterState::of(input, &mut falls, x as i32, y as i32, z as i32, me)
+						});
 						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
 					} else {
 						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
@@ -1396,6 +1391,41 @@ mod tests {
 		assert_eq!(impacts, vec![8 | 8 << 4 | 8 << 8, 10 | 8 << 4 | 8 << 8]);
 		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
 		assert!(m.impacts.is_empty(), "mid-air fall is not an emitter");
+	}
+
+	#[test]
+	fn a_fall_landing_in_its_own_pool_is_still_an_emitter() {
+		// The shape a player-built waterfall actually makes: the fall
+		// punches to the floor and the pool it spreads closes around it,
+		// so the impact cell is capped by the fall above and ringed by
+		// water — EVERY face culled. Recording the impact used to hang
+		// off emitting a face, so this produced no spray and no
+		// waterfall audio, while worldgen falls (which land in open air
+		// one cell above a pool) worked and hid it.
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFall);
+		d.set(8, 9, 8, B::WaterFall);
+		d.set(8, 7, 8, B::Stone);
+		for (x, z) in [(7, 8), (9, 8), (8, 7), (8, 9)] {
+			d.set(x, 8, z, B::WaterFlow4); // the pool, sealing every side
+			d.set(x, 7, z, B::Stone);
+		}
+		let m = mesh_chunk(&isolated(&d), ZERO);
+		assert!(
+			!m.water.chunks(8).any(|q| {
+				let c = |i: usize| (x_of(q[i * 2]), y_of(q[i * 2]), z_of(q[i * 2]));
+				(0..4).all(|i| {
+					let (cx, cy, cz) = c(i);
+					(8..=9).contains(&cx) && (8..=9).contains(&cy) && (8..=9).contains(&cz)
+				})
+			}),
+			"the impact cell really is fully enclosed; the test proves nothing otherwise"
+		);
+		assert_eq!(
+			m.impacts,
+			vec![8 | 8 << 4 | 8 << 8],
+			"impact still recorded"
+		);
 	}
 
 	#[test]

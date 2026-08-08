@@ -11,7 +11,11 @@
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
-const LIFE: f32 = 0.75;
+// Droplet loop length. Must divide the 600s animation clock wrap
+// exactly or the whole bank jumps at the seam: 600 / 1.0 = 600 cycles.
+// Long enough that a droplet thrown at the new higher speeds completes
+// its arc — apex lands at 0.33..0.58s, touchdown by ~1.16s.
+const LIFE: f32 = 1.0;
 // Mist slabs per instance — keep in sync with spray.rs MIST_N.
 const MIST_N: u32 = 3u;
 
@@ -46,28 +50,37 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	var size = vec2f(0.0);
 	var alpha = 0.0;
 	if pi < MIST_N {
-		// Mist: soft slabs jittered around the splash, breathing on
-		// offset clocks so the bank never pulses as one.
+		// Mist: soft slabs jittered around the splash. Their alpha
+		// varies per slab but NOT over time — they used to breathe on
+		// offset clocks, which was part of the impact reading as a
+		// pulse. The droplets carry the motion now.
+		// Stacked to span the droplets' apex range (~0.5..1.5) rather
+		// than hugging the surface, so the mist reads as a plume rising
+		// out of the impact instead of a flat bank lying on the pool.
 		let stack = f32(pi);
 		center = inst.xyz
 			+ vec3f(
-				(hash1(seed + 11.0) - 0.5) * 1.8,
-				0.35 + 0.3 * stack,
-				(hash1(seed + 12.0) - 0.5) * 1.8,
+				(hash1(seed + 11.0) - 0.5) * 1.6,
+				0.4 + 0.55 * stack,
+				(hash1(seed + 12.0) - 0.5) * 1.6,
 			);
-		size = vec2f(2.6, 1.5);
-		alpha = 0.13 + 0.05 * sin(t * (1.3 + 0.3 * stack) + hash1(seed) * 6.28);
+		size = vec2f(2.2, 1.6);
+		alpha = 0.10 + 0.06 * hash1(seed + 13.0);
 	} else {
 		// Droplet: velocity cone out of the impact, ballistic arc,
-		// growing and fading over its looped lifetime.
+		// growing and fading over its looped lifetime. The cone is
+		// deliberately steep — horizontal speed stays under a block a
+		// second while the throw is 3.0..5.2, so the spray reads as
+		// going UP out of the impact rather than spreading sideways
+		// across the pool.
 		let az = hash1(seed) * 6.2832;
-		let v0 = vec3f(cos(az), 0.0, sin(az)) * (0.5 + 1.3 * hash1(seed + 1.0))
-			+ vec3f(0.0, 2.2 + 1.6 * hash1(seed + 2.0), 0.0);
+		let v0 = vec3f(cos(az), 0.0, sin(az)) * (0.3 + 0.9 * hash1(seed + 1.0))
+			+ vec3f(0.0, 3.0 + 2.2 * hash1(seed + 2.0), 0.0);
 		let t01 = fract(t / LIFE + hash1(seed + 3.0));
 		let tau = t01 * LIFE;
 		center = inst.xyz + v0 * tau + vec3f(0.0, -9.0, 0.0) * (0.5 * tau * tau);
-		size = vec2f(mix(0.07, 0.20, t01));
-		alpha = (1.0 - t01) * smoothstep(0.0, 0.15, t01) * 0.7;
+		size = vec2f(mix(0.06, 0.17, t01));
+		alpha = (1.0 - t01) * smoothstep(0.0, 0.12, t01) * 0.7;
 	}
 	// Camera-facing: rows 0/1 of P·V are the scaled view basis rows —
 	// safe to renormalize for a standard perspective projection.

@@ -39,7 +39,13 @@ const STEP_SECS: f32 = 0.1;
 /// exactly 0 at `RADIUS` also removes the pop when a voice ages in or
 /// out at the range edge.
 fn gain_of(n: u32, dist: f32) -> f32 {
-	let cluster = (0.3 + 0.1 * (1.0 + n as f32).ln()).min(0.6);
+	// Cluster gains are ~1.4x their original authoring (0.3/0.1/cap 0.6):
+	// a waterfall you are standing next to was too polite. Only this term
+	// moved — the taper's SHAPE is what the test below pins, and it is
+	// scale-invariant, so loudness and falloff stay independent knobs.
+	// Headroom check: MIN_SEP keeps the 2nd and 3rd voices at least 8
+	// blocks out, so the worst realistic sum is ~0.8 + 0.45 + 0.45.
+	let cluster = (0.45 + 0.13 * (1.0 + n as f32).ln()).min(0.8);
 	let taper = (1.0 - dist / RADIUS).clamp(0.0, 1.0);
 	cluster * taper * taper
 }

@@ -24,7 +24,7 @@ pub struct Spray {
 	impacts: FxHashMap<ChunkPos, Vec<[f32; 3]>>,
 	scratch: Vec<[f32; 4]>,
 	/// Droplets per instance (on top of the MIST_N mist slabs):
-	/// 64 desktop, 24 on the mobile config.
+	/// 128 desktop, 48 on the mobile config.
 	droplets: u32,
 }
 
