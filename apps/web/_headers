@@ -1,16 +1,24 @@
 # Cloudflare Pages header overrides (read from the deploy root).
 #
-# Why this file exists: Pages' defaults hand `.js` a 4-hour browser cache
-# (`max-age=14400`) but leave `.wasm` at `max-age=0, must-revalidate`. The
-# glue JS and the wasm are ONE artifact — wasm-bindgen mangles import names
-# with a per-build hash — so any skew between them is fatal:
+# The glue JS and the wasm are ONE artifact — wasm-bindgen mangles import
+# names with a per-build hash — so any skew between them is fatal:
 #
-#   LinkError: Import #17 "./digblock_web_bg.js" "__wbg_done_<hash>":
+#   LinkError: Import #5 "./digblock_web_bg.js" "__wbg_ready_<hash>":
 #   function import requires a callable
 #
-# That is exactly what a deploy produced: fresh wasm paired with up-to-4h-old
-# glue out of the browser's HTTP cache, for anyone who had loaded the site in
-# the preceding window. `no-cache` still stores the files, it just forces a
-# conditional request (cheap 304s), so the pair can never straddle a release.
+# This file used to be the whole defence, pinning /pkg/* to `no-cache` against
+# Pages' 4-hour default for `.js`. It is NOT sufficient: on a custom domain the
+# CDN in front of Pages caches `.js` (a default static extension) under the
+# zone's 4h browser TTL and rewrites Cache-Control on the way out, while `.wasm`
+# — not a default static extension — passes through with `no-cache` intact. Same
+# fatal pairing, one layer further out, and unreachable from here:
+#
+#   digblock.pages.dev/pkg/digblock_web.js  ->  no-cache       (this file)
+#   digblock.net/pkg/digblock_web.js        ->  max-age=14400  (zone override)
+#
+# So correctness now lives in `just build-web`: both files carry the same build
+# stamp in their name, and only index.html knows it. That makes the pair
+# immutable by construction, which is what these headers say — any cache, at any
+# layer, holding either file forever is now correct behaviour rather than a bug.
 /pkg/*
-  Cache-Control: no-cache
+  Cache-Control: public, max-age=31536000, immutable

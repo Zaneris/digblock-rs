@@ -165,6 +165,19 @@ check-port-8080:
 	fi
 
 # Build + bindgen the web bundle into target/web (no server).
+#
+# The glue JS and the wasm are ONE artifact — wasm-bindgen mangles import
+# names with a per-build hash — so a browser that pairs a fresh wasm with a
+# stale glue dies with `LinkError: ... requires a callable`. Cache headers
+# alone cannot prevent that: `_headers` reaches the Pages origin, but the
+# CDN in front of a custom domain rewrites Cache-Control for .js (a default
+# static extension) and not for .wasm, which re-opens the exact skew.
+#
+# So the pair is content-addressed instead. Both files carry the same build
+# stamp in their NAME, and only index.html — served must-revalidate, and not
+# a cacheable extension anywhere — knows what that stamp is. A stale index
+# can then only ask for a pair that no longer exists (a clean fetch error,
+# self-healing on reload), never for half of a live one.
 build-web:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -176,9 +189,20 @@ build-web:
 		exit 1
 	fi
 	cargo build -p digblock-web --target wasm32-unknown-unknown --release
+	wasm=target/wasm32-unknown-unknown/release/digblock_web.wasm
+	# The bindgen version is part of the stamp: it decides the mangled
+	# import names too, so the same wasm through a new CLI is a new pair.
+	if command -v sha256sum >/dev/null 2>&1; then sha=sha256sum; else sha="shasum -a 256"; fi
+	stamp=$( { cat "$wasm"; echo "$want"; } | $sha | cut -c1-12)
+	# Wipe the dir, or every local build leaves its predecessor behind and
+	# `pages deploy` uploads the lot.
+	rm -rf target/web/pkg
 	wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
-		target/wasm32-unknown-unknown/release/digblock_web.wasm
-	cp apps/web/index.html apps/web/_headers target/web/
+		--out-name "digblock_web_$stamp" "$wasm"
+	# Rewrites both references at once: `digblock_web.js` and
+	# `digblock_web_bg.wasm` are the same prefix wasm-bindgen just stamped.
+	sed "s|digblock_web|digblock_web_$stamp|g" apps/web/index.html > target/web/index.html
+	cp apps/web/_headers target/web/
 
 # Fast "is the web client still green" gate — no wasm-bindgen-cli needed.
 check-web:
