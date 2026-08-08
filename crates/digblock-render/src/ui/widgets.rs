@@ -9,7 +9,9 @@ use super::{scale, Rect};
 // Shared palette (0xAABBGGRR, matching overlay.rs).
 pub const WHITE: u32 = 0xFFFFFFFF;
 pub const DIM: u32 = 0xFFB0B0B0;
-pub const SLOT_BG: u32 = 0x90000000;
+/// Slot/button fill — [`super::theme::FILL_BG`], named for its most
+/// common use.
+pub const SLOT_BG: u32 = super::theme::FILL_BG;
 /// Keyboard/hover highlight fill, shared by menu rows and buttons.
 pub const ROW_HILIGHT: u32 = 0x60FFFFFF;
 const SEL_BORDER: u32 = 0xE0FFFFFF;
@@ -139,13 +141,20 @@ pub fn button<Id: Copy + PartialEq>(
 	}
 }
 
-/// Stack-count badge in a slot's bottom-right corner: pinned at
-/// [`scale::FIXED_GLYPH_PX`] (small by design), "99+" past two digits,
-/// with a one-pixel drop shadow so digits stay readable on light icons
-/// (snow, sand).
-pub fn count_badge(dl: &mut DrawList, layer: Layer, slot: Rect, count: u32, color: u32) {
+/// Stack-count badge in a slot's bottom-right corner: "99+" past two
+/// digits, with a one-pixel drop shadow so digits stay readable on light
+/// icons (snow, sand).
+///
+/// Drawn at the frame's text size like everything else. It used to be
+/// pinned at [`scale::FIXED_GLYPH_PX`] — a holdover from the bitmap font,
+/// whose sizes snapped to 8/16/24/32, so "one step down" was the only way
+/// to get a small badge. With a real face there is no ladder to step
+/// down, and a pinned 16px badge just read as half-size text next to a
+/// 32px UI on a dense display.
+pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, count: u32, c: u32) {
 	const SHADOW: u32 = 0xE0000000;
-	let px = scale::FIXED_GLYPH_PX;
+	let px = style.glyph;
+	let inset = 2.0 * style.scale;
 	let mut buf = [0u8; 3];
 	let text: &str = if count > 99 {
 		"99+"
@@ -163,11 +172,11 @@ pub fn count_badge(dl: &mut DrawList, layer: Layer, slot: Rect, count: u32, colo
 		};
 		std::str::from_utf8(&buf[..len]).unwrap_or("?")
 	};
-	let x = slot.x + slot.w - 2.0 - crate::font::ui().measure(text, px);
-	let y = slot.y + slot.h - px - 2.0;
+	let x = slot.x + slot.w - inset - crate::font::ui().measure(text, px);
+	let y = slot.y + slot.h - px - inset;
 	let off = (px / 16.0).round().max(1.0);
 	dl.text(layer, x + off, y + off, px, SHADOW, text);
-	dl.text(layer, x, y, px, color, text);
+	dl.text(layer, x, y, px, c, text);
 }
 
 /// One menu-style row's content, rendered by [`row`].

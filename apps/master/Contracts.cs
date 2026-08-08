@@ -42,5 +42,7 @@ public sealed record VerifyRequest(string? Token);
 public sealed record VerifyResponse(string DisplayName);
 
 // Music manifest entry (GET /api/music). Url is master-relative; the
-// clients' audio fillers resolve it against the master base URL.
-public sealed record MusicTrack(string Name, string Url);
+// clients' audio fillers resolve it against the master base URL. Set is
+// "day" or "night" — which pool the track belongs to; clients that
+// predate the field ignore it and play everything.
+public sealed record MusicTrack(string Name, string Url, string Set);

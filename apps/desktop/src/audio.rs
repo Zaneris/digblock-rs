@@ -5,10 +5,17 @@
 //! instead of failing it.
 //!
 //! Spatialization: one rodio `SpatialSink` per positional voice. Rodio's
-//! two-ear model has a fixed 1/d attenuation with no rolloff knob, so
-//! every world coordinate (emitters and ears) is scaled by [`ATT`],
-//! stretching the curve to near-silence around 50-60 blocks — matching
-//! the visual spray/water-audio radius.
+//! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so
+//! every world coordinate (emitters and ears) is scaled by [`ATT`] to
+//! place that curve over a useful range of world distances.
+//!
+//! The clamp is the part that matters: everything closer than `1/ATT`
+//! blocks comes back at unity, with NO falloff at all inside that ball.
+//! At the original 0.08 that plateau was 12.5 blocks wide, which is most
+//! of a scene — a waterfall one block away and one twelve blocks away
+//! were exactly as loud, and several could stack. Engine-side gains
+//! (see `water_audio::gain_of`) taper with distance for the same reason,
+//! because relying on the panner alone is what made water ubiquitous.
 //!
 //! Music: fetched from the master server (never embedded) by a helper
 //! thread; the audio thread decodes and loops the playlist at low gain.
@@ -21,8 +28,11 @@ use std::io::Cursor;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// World-to-rodio coordinate scale (see module docs).
-const ATT: f32 = 0.08;
+/// World-to-rodio coordinate scale (see module docs). 0.18 puts the
+/// unity plateau at ~5.6 blocks — close enough that a sound at your feet
+/// is still full-strength, tight enough that walking away from one is
+/// audible.
+const ATT: f32 = 0.18;
 /// Ear half-spacing in world blocks.
 const EAR_HALF: f32 = 0.2;
 const MUSIC_GAIN: f32 = 0.35;
@@ -40,7 +50,7 @@ impl AudioSink for ChannelSink {
 /// `master_url` enables the music playlist when present.
 pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 	let (tx, rx) = mpsc::channel::<AudioCmd>();
-	let (music_tx, music_rx) = mpsc::channel::<Vec<u8>>();
+	let (music_tx, music_rx) = mpsc::channel::<(bool, Vec<u8>)>();
 	if let Some(url) = master_url {
 		std::thread::Builder::new()
 			.name("music-fetch".into())
@@ -56,13 +66,17 @@ pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 
 /// Pull the manifest, then each track's bytes (decode happens on the
 /// audio thread). Any failure just means no music.
-fn fetch_music(master_url: &str, out: &mpsc::Sender<Vec<u8>>) {
+fn fetch_music(master_url: &str, out: &mpsc::Sender<(bool, Vec<u8>)>) {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Track {
 		#[allow(dead_code)]
 		name: String,
 		url: String,
+		/// "day" or "night". Absent on a master that predates the split —
+		/// serde defaults it, and everything lands in the day pool.
+		#[serde(default)]
+		set: String,
 	}
 	let manifest = format!("{}/api/music", master_url.trim_end_matches('/'));
 	let tracks: Vec<Track> = match ureq::get(&manifest)
@@ -76,6 +90,7 @@ fn fetch_music(master_url: &str, out: &mpsc::Sender<Vec<u8>>) {
 		}
 	};
 	for t in tracks {
+		let night = t.set == "night";
 		let url = if t.url.starts_with("http") {
 			t.url
 		} else {
@@ -91,12 +106,39 @@ fn fetch_music(master_url: &str, out: &mpsc::Sender<Vec<u8>>) {
 			.and_then(|mut r| r.body_mut().read_to_vec().map_err(|e| e.to_string()))
 		{
 			Ok(b) => {
-				if out.send(b).is_err() {
+				if out.send((night, b)).is_err() {
 					return;
 				}
 			}
 			Err(e) => log::warn!("music fetch {url}: {e}"),
 		}
+	}
+}
+
+/// A shuffled music pool. Tracks arrive one at a time from the fetch
+/// thread, so the order is re-rolled on each arrival rather than once at
+/// the end — there is no "playlist complete" moment to hook.
+#[derive(Default)]
+struct Pool {
+	tracks: Vec<Vec<u8>>,
+	order: Vec<usize>,
+	next: usize,
+	seed: u64,
+}
+
+impl Pool {
+	fn push(&mut self, bytes: Vec<u8>) {
+		self.tracks.push(bytes);
+		self.order = digblock_render::audio::shuffle_order(self.seed, self.tracks.len());
+		self.next = 0;
+	}
+
+	/// The next track's bytes, wrapping forever. `None` only if the pool
+	/// is empty (a master with no night tracks, or none fetched).
+	fn take_next(&mut self) -> Option<Vec<u8>> {
+		let i = *self.order.get(self.next % self.order.len().max(1))?;
+		self.next = self.next.wrapping_add(1);
+		self.tracks.get(i).cloned()
 	}
 }
 
@@ -147,7 +189,7 @@ impl Voice {
 	}
 }
 
-fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
+fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) {
 	let stream: OutputStream = match rodio::OutputStreamBuilder::open_default_stream() {
 		Ok(s) => s,
 		Err(e) => {
@@ -179,9 +221,17 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 	let mut sfx_vol = 1.0f32;
 	// Ears in rodio space, updated by Listener.
 	let (mut left_ear, mut right_ear) = ([-EAR_HALF * ATT, 0.0, 0.0], [EAR_HALF * ATT, 0.0, 0.0]);
-	// Music playlist: raw ogg bytes, looped round-robin on a flat sink.
-	let mut playlist: Vec<Vec<u8>> = Vec::new();
-	let mut next_track = 0usize;
+	// Music: two shuffled pools of raw ogg bytes on one flat sink. Each
+	// pool gets its own seed so day and night don't march in lockstep.
+	let mut day = Pool {
+		seed: rand::random(),
+		..Pool::default()
+	};
+	let mut night_pool = Pool {
+		seed: rand::random(),
+		..Pool::default()
+	};
+	let mut night = false;
 	let music = Sink::connect_new(mixer);
 	music.set_volume(MUSIC_GAIN);
 
@@ -293,6 +343,7 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 					v.apply_volume(sfx_vol);
 				}
 			}
+			Some(AudioCmd::MusicSet { night: n }) => night = n,
 			None => {}
 		}
 		// Housekeeping on every wakeup: GC finished one-shots, collect
@@ -301,15 +352,24 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<Vec<u8>>) {
 			VoiceSink::Spatial(s) => !s.empty(),
 			VoiceSink::Flat(s) => !s.empty(),
 		});
-		while let Ok(bytes) = music_rx.try_recv() {
-			playlist.push(bytes);
+		while let Ok((is_night, bytes)) = music_rx.try_recv() {
+			if is_night { &mut night_pool } else { &mut day }.push(bytes);
 		}
-		if !playlist.is_empty() && music.empty() && !paused {
-			let track = playlist[next_track % playlist.len()].clone();
-			next_track = next_track.wrapping_add(1);
-			match Decoder::new(Cursor::new(track)) {
-				Ok(d) => music.append(d),
-				Err(e) => log::warn!("music track failed to decode: {e}"),
+		if music.empty() && !paused {
+			// Pool choice happens here, at the track boundary, so a
+			// day/night flip never cuts a track short. Falls back to the
+			// other pool when the active one is empty — a master with no
+			// night tracks should still play music at night.
+			let track = if night {
+				night_pool.take_next().or_else(|| day.take_next())
+			} else {
+				day.take_next().or_else(|| night_pool.take_next())
+			};
+			if let Some(track) = track {
+				match Decoder::new(Cursor::new(track)) {
+					Ok(d) => music.append(d),
+					Err(e) => log::warn!("music track failed to decode: {e}"),
+				}
 			}
 		}
 	}

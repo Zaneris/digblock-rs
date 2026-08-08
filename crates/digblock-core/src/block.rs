@@ -401,6 +401,21 @@ impl BlockType {
 		Some(self.props().drops.unwrap_or(self))
 	}
 
+	/// Does holding this type claim a hotbar or inventory slot?
+	///
+	/// Everything does except water: the only water a player can carry is
+	/// the one charge in the water tool, and the tool has its own
+	/// permanent slot to show it in. Its count still lives in the
+	/// [`crate::inventory::Inventory`] — that is where the charge is
+	/// stored, synced and persisted — it simply never becomes an item you
+	/// arrange. [`crate::inv_grid::reconcile_layout`] is the enforcer, so
+	/// saves written while water WAS an item drop their water slots on
+	/// the first reconcile.
+	#[inline]
+	pub fn is_slottable(self) -> bool {
+		self != BlockType::Water
+	}
+
 	/// A "whole block" for the water-regen rule's floor check: solid
 	/// ground or a full water source. Flow/fall water deliberately does
 	/// NOT count — otherwise the flow pooling under a pair of floating

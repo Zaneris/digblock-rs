@@ -46,10 +46,18 @@ pub struct NetPlayerState {
 	pub vel: [f32; 3],
 	pub look: [f32; 3],
 	/// What the player is holding, in hotbar wire encoding
-	/// (`WIRE_EMPTY`/`WIRE_TOOL`/block id) — remote clients render it in
-	/// hand. Appended in v10.
+	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
+	/// clients render it in hand. Appended in v10.
 	pub held: u16,
 }
+
+/// `held` sentinel for a CHARGED water tool.
+///
+/// It lives here rather than in `digblock_core::hotbar` because the
+/// arrangement encoding has no business knowing about it: a slot holds
+/// the tool, never the tool's charge, and `Hotbar::from_wire` treats
+/// this value as the unknown id it is. Appended in v12.
+pub const HELD_TOOL_FULL: u16 = u16::MAX - 2;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
@@ -72,8 +80,10 @@ pub enum EditKind {
 		block: u16,
 	},
 	/// Water-tool collect: validated with the fluid-aware raycast; the
-	/// hit must be a fluid source. Applies Air, credits Water. Subject to
-	/// the same hold-to-dig timing gate as `Dig`.
+	/// hit must be a fluid source. Applies Air and charges the bucket
+	/// (one unit of Water). Subject to the same hold-to-dig timing gate
+	/// as `Dig`, and refused with `BucketFull` if the tool already holds
+	/// one — the bucket carries a charge, not a stack.
 	Collect,
 	/// Use/interact click (door open-close toggle): validated with the
 	/// interact-aware raycast (`raycast_interact` — an open door's swung
@@ -216,6 +226,10 @@ pub enum RejectReason {
 	/// admin has locked. Honest clients predict this locally and never
 	/// send the edit; the server rejects it regardless. Appended in v11.
 	Protected,
+	/// Collect refused: the water tool is already charged. An honest
+	/// client never aims the scoop with a full bucket — the fluid ray is
+	/// only picked while it's empty. Appended in v12.
+	BucketFull,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -241,6 +255,13 @@ pub enum ServerMsg {
 		/// `digblock_core::sun`) — anchors the joiner's clock; the
 		/// `TimeOfDay` heartbeat keeps it anchored. Appended in v7.
 		tod: f32,
+		/// The facing to adopt on arrival — the admin's `/set-spawn-dir`,
+		/// sent only when this join actually placed the player AT spawn.
+		/// Zero = keep the current view (the `Teleported.look`
+		/// convention); a resume in place always sends zero, since the
+		/// spawn facing describes spawn, not wherever you logged out.
+		/// Appended in v13.
+		spawn_look: [f32; 3],
 	},
 	/// Join/late sync: last-write-wins final cell states for one column.
 	JournalColumn {
@@ -425,6 +446,7 @@ mod tests {
 				sim_version: 1,
 				build: "0.1.0".into(),
 				tod: 45.0,
+				spawn_look: [1.0, 0.0, 0.0],
 			},
 			ServerMsg::TimeOfDay { tod: -12.5 },
 			ServerMsg::JournalColumn {
@@ -577,15 +599,18 @@ mod tests {
 			sim_version: 1,
 			build: "b".into(),
 			tod: 80.0,
+			spawn_look: [0.0, 0.0, 0.0],
 		};
 		assert_eq!(
 			postcard::to_stdvec(&welcome).unwrap(),
 			// variant 1, protocol 2, seed 2.0 le f64, id 3, spawn zeros,
 			// tick 9, divisor 3, 16 raw token bytes, sim_version 1, "b",
-			// tod 80.0 le f32 (appended in v7)
+			// tod 80.0 le f32 (appended in v7), spawn_look zeros
+			// (appended in v13)
 			vec![
 				1, 2, 0, 0, 0, 0, 0, 0, 0, 64, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 3, 2, 2,
-				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98, 0, 0, 160, 66
+				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98, 0, 0, 160, 66, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0
 			]
 		);
 

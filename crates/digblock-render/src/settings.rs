@@ -16,12 +16,10 @@ pub const VOL_MAX: f32 = 2.0;
 pub const VOL_STEP: f32 = 0.1;
 
 /// Interface-scale slider: a multiplier on the scale the engine derives
-/// from window size and display density. The step matches the quarter
-/// quantization in `ui::scale::ui_scale` — a finer one would be a dead
-/// slider for several notches.
-pub const UI_SCALE_MIN: f32 = 0.75;
-pub const UI_SCALE_MAX: f32 = 2.0;
-pub const UI_SCALE_STEP: f32 = 0.25;
+/// from window size and display density. Defined next to the function
+/// that gives the numbers meaning, and re-exported here because the
+/// launchers clamp CLI/query overrides against them.
+pub use crate::ui::scale::{UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP};
 
 /// The launcher-injected persistence hook (desktop: data-dir JSON;
 /// web: localStorage). Called with each change batch.

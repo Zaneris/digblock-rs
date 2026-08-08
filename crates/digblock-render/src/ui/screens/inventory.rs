@@ -16,8 +16,8 @@ use crate::hotbar::{HotbarView, SlotView};
 use crate::ui::drag::{DragEvent, DragState, DRAG_THRESHOLD_PX};
 use crate::ui::draw::Layer;
 use crate::ui::hud;
-use crate::ui::widgets::{self, GridSpec, Style, Ui, DIM, WHITE};
-use crate::ui::{HitMap, InvId, Rect};
+use crate::ui::widgets::{self, GridSpec, Style, Ui, WHITE};
+use crate::ui::{theme, HitMap, InvId, Rect};
 
 /// Grid/bar mutations the engine applies to its core `Hotbar`/`InvGrid`
 /// (the screen never mutates game state). Core owns the invariants
@@ -38,9 +38,6 @@ pub enum InvAction {
 	/// re-files into the first free grid slot.
 	ClearBar { slot: usize },
 }
-
-const PANEL_BG: u32 = 0xC0101010;
-const SCREEN_DIM: u32 = 0x70000000;
 
 #[derive(Default)]
 pub struct InvScreen {
@@ -95,60 +92,59 @@ impl InvScreen {
 	) {
 		let scale = ui.style.scale;
 		let mut spec = Self::grid_spec(size, scale);
-		let gap_above_bar = 24.0 * scale;
 		let (_, grid_h) = spec.extent(GRID_SLOTS);
-		spec.origin.1 -= gap_above_bar + grid_h;
+		spec.origin.1 -= theme::GAP_ABOVE_BAR * scale + grid_h;
 
 		// Full-screen dim under everything this screen adds.
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			widgets::scaled_dim(SCREEN_DIM, daylight),
+			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		let pad = 12.0 * scale;
-		let title_h = ui.style.glyph + 8.0 * scale;
+		let pad = theme::PAD * scale;
+		// One shared text row for the title band — the same box, and so
+		// the same leading, every other screen's rows sit in.
+		let title_h = theme::ROW_H * scale;
 		let bar_w = hud::row_grid(size, scale).extent(HOTBAR_SLOTS).0;
-		let panel = Rect::new(
-			spec.origin.0 - pad,
-			spec.origin.1 - title_h - pad,
-			bar_w + pad * 2.0,
-			title_h + grid_h + pad * 2.0,
+		let panel = theme::panel_of(
+			spec.origin.0,
+			spec.origin.1 - title_h,
+			bar_w,
+			title_h + grid_h,
+			scale,
 		);
-		widgets::panel(ui.dl, Layer::Backdrop, panel, PANEL_BG);
+		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
+		// Title text left-aligns with the first slot column, not at the
+		// row widget's inset: this panel's content is a grid, and a title
+		// that didn't sit over column one would read as a misalignment.
+		let title_y = panel.y + pad + (title_h - ui.style.glyph) / 2.0;
 		widgets::label(
 			ui.dl,
 			Layer::Content,
 			panel.x + pad,
-			panel.y + pad / 2.0 + 2.0 * scale,
+			title_y,
 			ui.style.glyph,
 			WHITE,
 			"INVENTORY",
 		);
-		if inv.iter_nonzero().next().is_none() {
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				panel.x + pad + ui.style.measure("INVENTORY "),
-				panel.y + pad / 2.0 + 2.0 * scale,
-				ui.style.glyph,
-				DIM,
-				"nothing collected yet",
-			);
-		}
 		let icon_px = hud::ICON_PX * scale;
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
-			let icon = grid.get(i).map(|b| hud::item_icon(HotbarItem::Block(b)));
+			let icon = grid
+				.get(i)
+				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
 			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
 			if let Some(b) = grid.get(i) {
-				// Same pinned-size badge as the hotbar — the rows sit
-				// stacked, so a size mismatch would read as a glitch.
-				widgets::count_badge(ui.dl, Layer::Content, rect, inv.count(b), WHITE);
+				// Same badge as the hotbar — the rows sit stacked, so a
+				// size mismatch would read as a glitch.
+				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, inv.count(b), WHITE);
 			}
 		}
 		// The held item rides the cursor, above everything.
 		if let Some(&item) = self.drag.ghost() {
-			let (kind, tint) = hud::item_icon(item);
+			// Dragging the tool carries its charge: the ghost is the same
+			// item, so it has to be the same picture.
+			let (kind, tint) = hud::item_icon(item, inv.bucket_full());
 			let (cx, cy) = self.drag.cursor;
 			hud::draw_icon(
 				ui.dl,
@@ -186,7 +182,7 @@ impl InvScreen {
 					InvId::Grid(i) => HotbarItem::Block(grid.get(i as usize)?),
 					InvId::Bar(i) => match bar.slots.get(i as usize)? {
 						SlotView::Empty => return None,
-						SlotView::Tool => HotbarItem::WaterTool,
+						SlotView::Tool { .. } => HotbarItem::WaterTool,
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Alchemy ids never appear while this screen is open.

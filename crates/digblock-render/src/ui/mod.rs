@@ -11,6 +11,7 @@ pub mod icons;
 pub mod scale;
 pub mod screens;
 pub mod shaped_icon;
+pub mod theme;
 pub mod widgets;
 
 pub use draw::{DrawList, Layer};

@@ -172,6 +172,7 @@ fn full_frame_handshake_edits_snapshot() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 45.0,
+		spawn_look: [0.0; 3],
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -307,6 +308,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	client.poll(&mut events, 0.016);
 
@@ -376,6 +378,7 @@ fn inventory_full_maps_to_event() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	server.send(&ServerMsg::InventoryFull {
 		counts: vec![(BlockType::Dirt as u16, 5), (9999, 3)],
@@ -413,6 +416,7 @@ fn teleport_and_admin_commands_map_to_events() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	server.send(&ServerMsg::Teleported {
 		pos: [100.5, 60.5, -40.5],
@@ -483,6 +487,7 @@ fn input_redundancy_survives_datagram_loss() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	client.poll(&mut events, 0.016);
 
@@ -554,6 +559,7 @@ fn incompatible_server_version_is_refused_locally() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -583,6 +589,7 @@ fn sim_version_mismatch_is_refused() {
 		sim_version: digblock_core::SIM_VERSION + 1,
 		build: "newer".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -613,6 +620,7 @@ fn input_sends_are_throttled_to_the_stride() {
 		sim_version: digblock_core::SIM_VERSION,
 		build: "test".into(),
 		tod: 80.0,
+		spawn_look: [0.0; 3],
 	});
 	client.poll(&mut events, 0.016);
 	server.pump();

@@ -7,7 +7,7 @@ use digblock_core::block::BlockType;
 use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
 
 use super::draw::Layer;
-use super::widgets::{self, GridSpec, Ui, DIM, WHITE};
+use super::widgets::{self, GridSpec, Ui, WHITE};
 use crate::hotbar::{HotbarView, SlotView};
 
 // Logical bases, × ui_scale.
@@ -16,8 +16,6 @@ pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
 
-/// Zero-count slots stay visible but greyed (sticky slots never shift).
-const GREY_TINT: u32 = 0xFF60_6060;
 const FULL_TINT: u32 = 0xFFFF_FFFF;
 
 /// What a 3D item icon renders as (see [`super::shaped_icon`]).
@@ -27,8 +25,10 @@ pub enum IconKind {
 	Cube(BlockType),
 	/// Stairs/doors: the baked shape template, projected.
 	Shaped(BlockType),
-	/// The water tool: a little bucket with water inside.
-	WaterTool,
+	/// The water tool: a little wooden bucket, with a source in it or
+	/// not. The charge is drawn, not tinted — "have I got water?" is the
+	/// question the bar has to answer at a glance.
+	WaterTool { full: bool },
 }
 
 /// The aim crosshair (hidden while any screen owns the cursor).
@@ -51,9 +51,13 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 
 /// Icon (kind, tint) for a hotbar item — the ghost drawn under the
 /// cursor mid-drag uses the same visuals as the slots.
-pub fn item_icon(item: HotbarItem) -> (IconKind, u32) {
+///
+/// `tool_full` is the water tool's charge, which is player state rather
+/// than part of the slot assignment, so it has to arrive alongside the
+/// item; every other item ignores it.
+pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	match item {
-		HotbarItem::WaterTool => (IconKind::WaterTool, FULL_TINT),
+		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
 		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
 		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
 	}
@@ -88,9 +92,8 @@ pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 }
 
 /// Emit the hotbar: slot widgets (backdrops, icons, selection border,
-/// hit rects under `id_of(i)`) plus stack counts. Counts stay at
-/// [`super::scale::FIXED_GLYPH_PX`] regardless of scale — small by
-/// design — with the count badge's drop shadow.
+/// hit rects under `id_of(i)`) plus stack counts, drawn at the frame's
+/// text size like the rest of the UI.
 pub fn hotbar<Id: Copy + PartialEq>(
 	ui: &mut Ui<'_, Id>,
 	size: (u32, u32),
@@ -103,16 +106,12 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		let rect = grid.rect(i);
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
-			SlotView::Tool => Some(item_icon(HotbarItem::WaterTool)),
-			SlotView::Block { block, count } => {
-				let (kind, _) = item_icon(HotbarItem::Block(block));
-				Some((kind, if count == 0 { GREY_TINT } else { FULL_TINT }))
-			}
+			SlotView::Tool { full } => Some(item_icon(HotbarItem::WaterTool, full)),
+			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
 		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
 		if let SlotView::Block { count, .. } = view.slots[i] {
-			let color = if count == 0 { DIM } else { WHITE };
-			widgets::count_badge(ui.dl, Layer::Content, rect, count, color);
+			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, WHITE);
 		}
 	}
 }
@@ -122,7 +121,6 @@ mod tests {
 	use super::*;
 	use crate::ui::draw::{Cmd, DrawList};
 	use crate::ui::hit::HitMap;
-	use crate::ui::scale::FIXED_GLYPH_PX;
 	use crate::ui::widgets::Style;
 	use digblock_core::hotbar::Hotbar;
 	use digblock_core::inventory::Inventory;
@@ -135,6 +133,7 @@ mod tests {
 		hotbar.auto_assign(BlockType::Stone);
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 3);
+		inv.add(BlockType::Stone, 12);
 		HotbarView::build(&hotbar, &inv)
 	}
 
@@ -168,8 +167,11 @@ mod tests {
 		}
 	}
 
+	/// Counts used to be pinned at `scale::FIXED_GLYPH_PX` while the slots
+	/// around them scaled, so on a dense display a 32px UI carried 16px
+	/// stack numbers. They ride the frame's text size now.
 	#[test]
-	fn counts_stay_fixed_size_while_slots_scale() {
+	fn counts_scale_with_the_slots() {
 		const SHADOW: u32 = 0xE0000000;
 		let (dl, _) = emit(2.0);
 		let (cmds, arena) = dl.cmds(Layer::Content);
@@ -182,37 +184,37 @@ mod tests {
 				_ => None,
 			})
 			.collect();
-		// Dirt count 3 and Stone count 0 print (tool and empties don't),
+		// Dirt count 3 and Stone count 12 print (tool and empties don't),
 		// each as a shadow + digit pair.
 		let (shadows, counts): (Vec<_>, Vec<_>) = texts.iter().partition(|(_, _, c)| *c == SHADOW);
 		assert_eq!(counts.len(), 2);
 		assert_eq!(shadows.len(), 2, "every count carries a drop shadow");
+		let want = Style::new(2.0).glyph;
 		for (text, px, _) in &texts {
-			assert_eq!(*px, FIXED_GLYPH_PX, "count {text} must not scale");
+			assert_eq!(*px, want, "count {text} should ride the frame's size");
 		}
 		assert!(counts.iter().any(|(t, _, _)| *t == "3"));
-		assert!(counts.iter().any(|(t, _, _)| *t == "0"));
+		assert!(counts.iter().any(|(t, _, _)| *t == "12"));
 	}
 
 	#[test]
 	fn icons_and_selection_ride_the_right_layers() {
 		let (dl, _) = emit(1.0);
-		// Dirt cube (3 faces), Stone cube greyed (3), tool bucket (7).
+		// Two cubes at three visible faces each, then the tool bucket.
 		let icons = dl.cmds(Layer::Icons).0;
-		assert_eq!(icons.len(), 13);
 		assert!(icons.iter().all(|c| matches!(c, Cmd::IconQuad { .. })));
+		assert!(icons.len() > 6, "two cubes plus a bucket");
 		// Backdrop: 9 slot bgs + 4 selection border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), HOTBAR_SLOTS + 4);
-		// The greyed stone cube: its top face carries GREY_TINT verbatim
-		// (top shade factor is 1.0), and no full-tint face.
-		let stone: Vec<u32> = icons[3..6]
+		// Every stocked slot draws at full tint — the grey zero-count
+		// state is gone; an exhausted type leaves the bar entirely.
+		let dirt: Vec<u32> = icons[..3]
 			.iter()
 			.map(|c| match c {
 				Cmd::IconQuad { tint, .. } => *tint,
 				_ => unreachable!(),
 			})
 			.collect();
-		assert!(stone.contains(&GREY_TINT), "greyed top face: {stone:?}");
-		assert!(!stone.contains(&FULL_TINT));
+		assert!(dirt.contains(&FULL_TINT), "top face is untinted: {dirt:?}");
 	}
 }

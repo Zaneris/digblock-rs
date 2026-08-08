@@ -12,6 +12,16 @@
 # version like 0.1.0. One-time: after the first run, make the
 # ghcr.io/zaneris/digblock-server package public (package settings →
 # Danger Zone) so self-hosters can pull it without credentials.
+#
+# The `bump` job writes that version into the tree and commits it to main
+# BEFORE anything is built, so the binaries actually report it (the
+# server logs it at boot, the client shows it on the settings screen) —
+# they bake `env!("CARGO_PKG_VERSION")` at compile time, so a release
+# built from an unbumped tree would say 0.1.0 forever. Every later job
+# checks out that commit, and the release tag targets it.
+#
+# This pushes to main: if branch protection ever requires a PR there, the
+# job needs an exemption for github-actions[bot] or a PAT that can bypass.
 
 name: release-server
 
@@ -34,10 +44,59 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Write the entered version into the tree and commit it to main. Every
+  # other job builds from the resulting commit, so what ships and what
+  # the repo says are the same thing.
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      # Checked before touching anything: this job commits to main, so a
+      # typo'd version must not become a commit.
+      - name: Validate version
+        run: |
+          case "${{ inputs.version }}" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "version must be MAJOR.MINOR.PATCH, got '${{ inputs.version }}'" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Anchored edits, not a global s/0.1.0/…/ — that string also
+      # appears in comments and docs. Cargo.lock records workspace
+      # members' versions, so it has to move with them.
+      - name: Set version
+        run: |
+          v='${{ inputs.version }}'
+          sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" Cargo.toml
+          sed -i "/^\[package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" tools/texgen/Cargo.toml
+          sed -i "\|<key>CFBundleShortVersionString</key>|{n;s|<string>.*</string>|<string>$v</string>|;}" apps/ios/xcode/Info.plist
+          cargo update --workspace
+          git diff --stat
+
+      - name: Commit and push
+        id: commit
+        run: |
+          if git diff --quiet; then
+            echo "already at ${{ inputs.version }}, nothing to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore: release v${{ inputs.version }}"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   image:
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
       # QEMU covers only the arm64 runtime stage's apt-get; the compile
       # stages cross-compile natively on the amd64 runner (see the
@@ -69,6 +128,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   binaries:
+    needs: bump
     strategy:
       matrix:
         include:
@@ -88,6 +148,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
@@ -123,10 +185,12 @@ jobs:
           path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [image, binaries]
+    needs: [bump, image, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -141,7 +205,7 @@ jobs:
           gh release create "server-v${{ inputs.version }}" \
             deploy/compose.yml deploy/README.md \
             dist/* \
-            --target "${{ github.sha }}" \
+            --target "${{ needs.bump.outputs.sha }}" \
             --title "Dedicated server v${{ inputs.version }}" \
             --notes "$(cat <<'EOF'
           Run your own public DigBlock server — it lists itself automatically in the in-game server browser.

@@ -37,6 +37,9 @@ pub enum NetEvent {
 		server_tick: u32,
 		/// The server's world clock — anchor the sun here.
 		tod: f32,
+		/// Facing to adopt on arrival (`/set-spawn-dir`), or `Vec3::ZERO`
+		/// to keep the current view — see `ServerMsg::Welcome`.
+		spawn_look: Vec3,
 	},
 	Refused {
 		reason: String,
@@ -357,6 +360,7 @@ impl NetClient {
 				sim_version,
 				build,
 				tod,
+				spawn_look,
 			} => {
 				if sim_version != digblock_core::SIM_VERSION {
 					self.failed = true;
@@ -378,6 +382,7 @@ impl NetClient {
 					spawn: Vec3::from_array(spawn),
 					server_tick,
 					tod,
+					spawn_look: Vec3::from_array(spawn_look).normalize_or_zero(),
 				});
 			}
 			ServerMsg::JournalColumn { cells, .. } => {

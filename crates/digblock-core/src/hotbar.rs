@@ -1,9 +1,10 @@
 //! The hotbar: a fixed row of slots the player selects from. Pure state —
 //! counts live in [`crate::inventory::Inventory`]; a slot only names
-//! *what* it holds. Slots are sticky: a block type keeps its slot at zero
-//! count (rendered greyed) so the bar never shifts underfoot, matching a
-//! future overflow inventory where slots are assignments, not a view of
-//! counts.
+//! *what* it holds. Slots are assignments, not a view of counts, and
+//! nothing here consults the inventory: a type that runs out is dropped
+//! by [`crate::inv_grid::reconcile_layout`], the one place that sees
+//! both, so the bar and the grid free an exhausted type by the same
+//! rule.
 
 use crate::block::BlockType;
 
@@ -18,9 +19,13 @@ pub const WIRE_TOOL: u16 = u16::MAX - 1;
 pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
-	/// The permanent water-collection tool (pinned to the last slot):
-	/// dig-hold on a water source collects it; placing with it selected
-	/// places a `Water` source (requires Water stock).
+	/// The permanent water tool (pinned to the last slot). It has two
+	/// states, and its charge — one unit of water in the inventory, see
+	/// [`crate::inventory::Inventory::bucket_full`] — decides which:
+	/// empty, left-click holds on a source to scoop it and right-click
+	/// does nothing; charged, right-click pours the source back out and
+	/// left-click does nothing. Water is never an item in a slot, so the
+	/// bucket is the only thing that carries it.
 	WaterTool,
 }
 
@@ -66,8 +71,14 @@ impl Hotbar {
 	/// tool holds the last one, so blocks fill 1..8; called on every dig
 	/// credit — later credits find it already assigned). A full bar
 	/// leaves the type unassigned — it still counts in the inventory,
-	/// just isn't reachable from the bar yet.
+	/// just isn't reachable from the bar yet. A type that isn't
+	/// [`BlockType::is_slottable`] is never assigned at all: the dig
+	/// credit for a scooped source must not flash a water slot onto the
+	/// bar for the frame before `reconcile_layout` sweeps it off again.
 	pub fn auto_assign(&mut self, b: BlockType) {
+		if !b.is_slottable() {
+			return;
+		}
 		let item = Some(HotbarItem::Block(b));
 		if self.slots.contains(&item) {
 			return;

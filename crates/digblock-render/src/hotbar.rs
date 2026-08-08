@@ -9,8 +9,15 @@ use digblock_core::inventory::Inventory;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SlotView {
 	Empty,
-	Tool,
-	Block { block: BlockType, count: u32 },
+	/// The water tool and whether it's charged — the bucket's own count,
+	/// so the bar shows the charge where a stack would show its number.
+	Tool {
+		full: bool,
+	},
+	Block {
+		block: BlockType,
+		count: u32,
+	},
 }
 
 pub struct HotbarView {
@@ -24,7 +31,9 @@ impl HotbarView {
 		for (i, s) in hotbar.slots().iter().enumerate() {
 			slots[i] = match s {
 				None => SlotView::Empty,
-				Some(HotbarItem::WaterTool) => SlotView::Tool,
+				Some(HotbarItem::WaterTool) => SlotView::Tool {
+					full: inventory.bucket_full(),
+				},
 				Some(HotbarItem::Block(b)) => SlotView::Block {
 					block: *b,
 					count: inventory.count(*b),
@@ -65,7 +74,22 @@ mod tests {
 			}
 		);
 		assert_eq!(v.slots[2], SlotView::Empty);
-		assert_eq!(v.slots[HOTBAR_SLOTS - 1], SlotView::Tool);
+		assert_eq!(
+			v.slots[HOTBAR_SLOTS - 1],
+			SlotView::Tool { full: false },
+			"an empty bucket"
+		);
 		assert_eq!(v.selected, 0);
+	}
+
+	/// The tool's charge is the water count, so a scoop shows up in the
+	/// bar without anything else being told about it.
+	#[test]
+	fn a_charged_bucket_shows_in_its_slot() {
+		let hotbar = Hotbar::new();
+		let mut inv = Inventory::default();
+		inv.add(BlockType::Water, 1);
+		let v = HotbarView::build(&hotbar, &inv);
+		assert_eq!(v.slots[HOTBAR_SLOTS - 1], SlotView::Tool { full: true });
 	}
 }

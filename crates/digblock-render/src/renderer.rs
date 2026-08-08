@@ -176,6 +176,9 @@ pub struct FrameScene<'a> {
 	/// Crosshair target for the highlight decal: (cell, dig progress);
 	/// `None` progress = idle outline.
 	pub target: Option<((i32, i32, i32), Option<f32>)>,
+	/// The item in the player's own hand, or `None` (empty slot, a
+	/// screen open, the menu up) to skip the viewmodel pass entirely.
+	pub viewmodel: Option<crate::viewmodel::ViewmodelFrame>,
 	/// This frame's UI draw commands (HUD, screens), engine-built.
 	pub ui: &'a crate::ui::DrawList,
 	/// Chat input line while typing (multiplayer only).
@@ -384,6 +387,9 @@ pub struct Renderer {
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).
 	highlight: crate::highlight::HighlightDraw,
+	/// The item in your own hand, in its own pass over the finished
+	/// frame.
+	viewmodel: crate::viewmodel::ViewmodelDraw,
 	/// Hotbar block icons (overlay pass, between the overlay's splits).
 	ui_icons: crate::ui::icons::UiIcons,
 	/// Layout of `FrameTargets::water_bg` (water frame UBO + depth copy
@@ -766,6 +772,7 @@ impl Renderer {
 				&materials_bgl,
 			),
 			highlight: crate::highlight::HighlightDraw::new(gpu, surface_format, &water_frame_bgl),
+			viewmodel: crate::viewmodel::ViewmodelDraw::new(gpu, surface_format, &materials_bgl),
 			ui_icons: crate::ui::icons::UiIcons::new(gpu, surface_format, &materials_bgl),
 			targets: None,
 			water_frame_bgl,
@@ -1184,6 +1191,7 @@ impl Renderer {
 			overlay,
 			feed,
 			target: highlight_target,
+			viewmodel,
 			ui,
 			chat,
 			nametags,
@@ -1193,6 +1201,8 @@ impl Renderer {
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
 		self.highlight.set_target(gpu, highlight_target);
+		let aspect = size.0 as f32 / size.1.max(1) as f32;
+		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
 			wide_refreshed: self.shadow.refresh_pending(wide_due),
@@ -1454,6 +1464,43 @@ impl Renderer {
 				let spray_tris = self.spray.draw(&mut pass, spray_n);
 				stats.draw_calls += u32::from(spray_tris > 0);
 				stats.triangles += spray_tris;
+			}
+
+			// The item in your own hand, over the finished world. Its own
+			// pass for one reason: it clears the depth buffer first. The
+			// item is a metre from the eye and would otherwise be sliced
+			// open by the wall you walk into — but it still needs depth
+			// among its OWN faces, because a staircase in hand is not
+			// convex and back-face culling alone can't sort it. The water
+			// pass discarded this attachment, so reusing it costs nothing.
+			if !self.viewmodel.is_empty() {
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("viewmodel"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: target,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							load: wgpu::LoadOp::Load,
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+						view: &targets.depth_view,
+						depth_ops: Some(wgpu::Operations {
+							load: wgpu::LoadOp::Clear(1.0),
+							store: wgpu::StoreOp::Discard,
+						}),
+						stencil_ops: None,
+					}),
+					timestamp_writes: None,
+					occlusion_query_set: None,
+				});
+				let tris = self
+					.viewmodel
+					.draw(&mut pass, &self.index_buf, &self.materials_bg);
+				stats.draw_calls += 1;
+				stats.triangles += tris;
 			}
 		}
 

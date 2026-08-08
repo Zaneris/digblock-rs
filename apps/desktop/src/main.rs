@@ -139,6 +139,12 @@ fn main() {
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
+	// stocked inventory, so `--screenshot` can capture a UI screen (they
+	// are otherwise reachable only through live input).
+	config.debug_screen = std::env::var("DIG_SCREEN")
+		.ok()
+		.and_then(|v| digblock_render::DebugScreen::parse(&v));
 	// Read at the launcher edge: the engine stays env-free so wasm, which
 	// has no environment at all, can set the same flag from a query param.
 	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();
@@ -188,6 +194,9 @@ fn main() {
 	// The menu is for interactive runs only; --join must not sit on a
 	// menu screen either.
 	config.menu = !join && interactive;
+	// ...except for a DIG_SCREEN=menu capture, whose whole point is to
+	// photograph the menu a screenshot run would otherwise suppress.
+	config.menu |= config.debug_screen == Some(digblock_render::DebugScreen::Menu);
 
 	// Audio rides interactive runs only (the engine's sink stays None
 	// elsewhere).

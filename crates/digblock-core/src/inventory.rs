@@ -4,6 +4,12 @@
 //! every block type — the hotbar is a *view* over this (a future
 //! overflow-inventory UI reads `iter_nonzero` directly).
 //!
+//! One count is not an item at all: water's, which is the water tool's
+//! charge (0 or 1 — see [`Inventory::bucket_full`]). Keeping it here
+//! rather than in a field of its own is deliberate; the bucket then
+//! predicts, rolls back on rejection, rebases and persists through the
+//! machinery that already does all four correctly for stacks.
+//!
 //! Alchemy sub-materials (sub-wood, sub-stone) live in a parallel array
 //! and ride the SAME wire pairs as flagged ids (`SUB_WIRE_FLAG | family`)
 //! — so `InventoryFull`, the server's identity store, and both client
@@ -14,6 +20,25 @@ use crate::block::{BlockType, Material};
 
 /// Per-type count ceiling; keeps wire varints and UI text bounded.
 pub const MAX_STACK: u32 = 1_000_000;
+
+/// Water's ceiling: the water tool holds exactly one source or none, and
+/// that count IS the tool's charge (see [`Inventory::bucket_full`]).
+/// Water is not a carried item — [`BlockType::is_slottable`] keeps it out
+/// of every slot — so there is nowhere for a second unit to live.
+pub const BUCKET_CHARGE: u32 = 1;
+
+/// The ceiling for one type. Applied at BOTH ends of every write —
+/// [`Inventory::add`] and [`Inventory::from_wire`] — so a save or a
+/// server record written back when water was an ordinary stack decodes
+/// as a full bucket rather than a windfall of free sources.
+#[inline]
+fn cap(b: BlockType) -> u32 {
+	if b == BlockType::Water {
+		BUCKET_CHARGE
+	} else {
+		MAX_STACK
+	}
+}
 
 /// High bit marks a wire pair as a sub-material family, not a block id.
 /// Safely disjoint from block ids (10-bit) and from the hotbar's
@@ -32,10 +57,19 @@ impl Inventory {
 		self.counts[b as usize]
 	}
 
-	/// Credit `n`, saturating at [`MAX_STACK`].
+	/// Credit `n`, saturating at the type's [`cap`].
 	pub fn add(&mut self, b: BlockType, n: u32) {
 		let c = &mut self.counts[b as usize];
-		*c = c.saturating_add(n).min(MAX_STACK);
+		*c = c.saturating_add(n).min(cap(b));
+	}
+
+	/// Is the water tool charged? The bucket's whole state is one unit of
+	/// water in the inventory, which is what makes it predict, roll back
+	/// on rejection, rebase from `InventoryFull` and persist by exactly
+	/// the same machinery every other item does.
+	#[inline]
+	pub fn bucket_full(&self) -> bool {
+		self.count(BlockType::Water) >= BUCKET_CHARGE
 	}
 
 	/// Debit `n` if the stock covers it; false (and no change) otherwise.
@@ -84,8 +118,8 @@ impl Inventory {
 
 	/// Strict decode of wire pairs: unknown block ids are dropped (an
 	/// older client talking to a newer server must not panic), counts
-	/// clamp to [`MAX_STACK`], duplicate ids last-write-win. Flagged ids
-	/// decode as sub-material families.
+	/// clamp to the type's [`cap`], duplicate ids last-write-win. Flagged
+	/// ids decode as sub-material families.
 	pub fn from_wire(pairs: &[(u16, u32)]) -> Self {
 		let mut inv = Self::default();
 		for &(id, n) in pairs {
@@ -94,7 +128,7 @@ impl Inventory {
 					inv.subs[m as usize] = n.min(MAX_STACK);
 				}
 			} else if let Some(b) = BlockType::try_from_id(id) {
-				inv.counts[b as usize] = n.min(MAX_STACK);
+				inv.counts[b as usize] = n.min(cap(b));
 			}
 		}
 		inv
@@ -183,6 +217,25 @@ mod tests {
 
 		inv.add(BlockType::Stone, u32::MAX);
 		assert_eq!(inv.count(BlockType::Stone), MAX_STACK, "saturates");
+	}
+
+	/// The bucket carries a charge, not a stack: one source or none, and
+	/// a stack recorded before that was true decodes as one full bucket
+	/// rather than a pile of free sources.
+	#[test]
+	fn water_is_a_charge_not_a_stack() {
+		let mut inv = Inventory::default();
+		assert!(!inv.bucket_full());
+		inv.add(BlockType::Water, 1);
+		assert!(inv.bucket_full());
+		inv.add(BlockType::Water, 40);
+		assert_eq!(inv.count(BlockType::Water), BUCKET_CHARGE, "no second unit");
+		assert!(inv.try_take(BlockType::Water, 1), "pouring empties it");
+		assert!(!inv.bucket_full());
+
+		// A save or identity record from when water WAS an item.
+		let legacy = Inventory::from_wire(&[(BlockType::Water as u16, 40)]);
+		assert_eq!(legacy.count(BlockType::Water), BUCKET_CHARGE);
 	}
 
 	#[test]

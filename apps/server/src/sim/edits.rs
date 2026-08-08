@@ -437,7 +437,12 @@ impl Sim {
 			EditKind::Collect => slot_item == Some(Some(HotbarItem::WaterTool)),
 			EditKind::Place { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
-				// The water tool places water sources.
+				// Pouring the bucket. Water is the ONLY thing the tool
+				// places, and the tool is the only thing that places water:
+				// `reconcile_layout` refuses to leave water in a block slot,
+				// so the arm above can no longer match it. The stock gate
+				// below enforces the charge — an empty bucket's pour bounces
+				// as NoStock.
 				Some(Some(HotbarItem::WaterTool)) => place_b == Some(BlockType::Water),
 				_ => false,
 			},
@@ -455,6 +460,13 @@ impl Sim {
 			.clients
 			.get_mut(&req.conn_id)
 			.expect("checked live above");
+		// The scoop's half of the same gate: a charged bucket has nowhere
+		// to put a second source. Refusing HERE rather than letting the
+		// credit silently saturate is what stops a full bucket deleting
+		// the spring it's aimed at for nothing.
+		if req.kind == EditKind::Collect && client.inventory.bucket_full() {
+			return reject(RejectReason::BucketFull);
+		}
 		if let Some(b) = place_b {
 			if !client.inventory.try_take(b, 1) {
 				let inv = client.inventory.to_wire();
@@ -1523,6 +1535,110 @@ mod tests {
 			.is_some_and(|b| !b.is_water()));
 	}
 
+	/// The bucket carries one charge, and the server owns it: an empty
+	/// one can't pour, a full one can't scoop. The second half matters
+	/// most — a refused scoop must leave the spring standing, not consume
+	/// it into a bucket that had no room.
+	#[test]
+	fn the_bucket_holds_exactly_one_charge() {
+		let mut sim = flat_sim("charge");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1;
+		let pos = sim.test_player(1).unwrap().pos;
+		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+		let ground = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		let pour = |seq: u32| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::Place {
+					block: BlockType::Water as u16,
+				},
+				cell: [ground.cell.0, ground.cell.1, ground.cell.2],
+				normal: [
+					ground.normal.0 as i8,
+					ground.normal.1 as i8,
+					ground.normal.2 as i8,
+				],
+				slot: tool_slot,
+			},
+		};
+
+		// An empty bucket pours nothing.
+		sim.tick_once(vec![pour(1)]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 1,
+					reason: RejectReason::NoStock
+				}
+			)),
+			"an empty bucket poured: {:?}",
+			c.msgs
+		);
+
+		// Charge it and pour for real.
+		sim.clients
+			.get_mut(&1)
+			.unwrap()
+			.inventory
+			.add(BlockType::Water, 1);
+		sim.tick_once(vec![pour(2)]);
+		let source = (
+			ground.cell.0 + ground.normal.0,
+			ground.cell.1 + ground.normal.1,
+			ground.cell.2 + ground.normal.2,
+		);
+		assert_eq!(
+			sim.test_block_at(source.0, source.1, source.2),
+			Some(BlockType::Water)
+		);
+		assert!(
+			!sim.clients[&1].inventory.bucket_full(),
+			"the pour emptied it"
+		);
+
+		// Charge it again by hand and aim the scoop at the source we just
+		// poured: a full bucket has nowhere to put it.
+		sim.clients
+			.get_mut(&1)
+			.unwrap()
+			.inventory
+			.add(BlockType::Water, 1);
+		let toward = (Vec3::new(
+			source.0 as f32 + 0.5,
+			source.1 as f32 + 0.5,
+			source.2 as f32 + 0.5,
+		) - pos)
+			.normalize();
+		let mut t = 100;
+		dig_hold(&mut sim, 1, toward, 20, 3, EditKind::Collect, &mut t);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 3,
+					reason: RejectReason::BucketFull
+				}
+			)),
+			"a charged bucket scooped again: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_block_at(source.0, source.1, source.2),
+			Some(BlockType::Water),
+			"the refused scoop must not have consumed the source"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Water), 1);
+	}
+
 	/// Two placed sources one apart: the middle regenerates into a source
 	/// server-side and broadcasts as an ordinary SERVER_ID edit.
 	#[test]
@@ -2174,10 +2290,11 @@ mod tests {
 					kind: EditKind::Place { block: stair },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-					// Stone kept slot 0 (sticky at zero count); the crafted
-					// stairs auto-filed to the next free slot — the same
+					// Converting spent every Stone, so its slot was
+					// released in the same reconcile that filed the
+					// crafted stairs — they land in slot 0. The same
 					// derivation an honest client runs.
-					slot: 1,
+					slot: 0,
 				},
 			},
 		]);
@@ -2380,9 +2497,10 @@ mod tests {
 		let mut sim = flat_sim("lockdig");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
 		let down = Vec3::new(0.0, -1.0, 0.0);
 		let mut t = 0;
 		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
@@ -2422,9 +2540,10 @@ mod tests {
 		// Lock a region offset from the player so the target is inside it
 		// but the player is not standing in the way of their own place.
 		let eye = FLAT_SPAWN + Vec3::new(4.0, 0.0, 0.0);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: eye.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: eye.to_array(),
+			}));
 		let region = sim.spawn_lock().expect("locked");
 
 		let pos = sim.test_player(1).unwrap().pos;
@@ -2480,10 +2599,11 @@ mod tests {
 		let mut sim = flat_sim("lockundig");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
-		sim.spawn_store.set(None);
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
+		sim.spawn_store.set_lock(None);
 		let down = Vec3::new(0.0, -1.0, 0.0);
 		let mut t = 0;
 		let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
@@ -2519,9 +2639,10 @@ mod tests {
 		let spawn = FLAT_SPAWN;
 		let sz = spawn.z.floor() as i32;
 		let h = spawn.y.floor() as i32 - 2;
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: spawn.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: spawn.to_array(),
+			}));
 		let region = sim.spawn_lock().expect("locked");
 
 		// A source one column outside the region, level with the capsule,
@@ -2561,9 +2682,10 @@ mod tests {
 		let mut sim = flat_sim("lockdigstart");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.spawn_store.set(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
+		sim.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: FLAT_SPAWN.to_array(),
+			}));
 		// The block underfoot: inside the locked region and in reach.
 		let cell = (
 			FLAT_SPAWN.x.floor() as i32,

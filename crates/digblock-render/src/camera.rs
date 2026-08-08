@@ -37,9 +37,15 @@ impl FlyCamera {
 		self.pitch_deg = (self.pitch_deg - dy).clamp(-89.0, 89.0);
 	}
 
+	/// World → view space (+x right, +y up, −z forward). Split out of
+	/// [`Self::view_proj`] for the viewmodel, which is authored in view
+	/// space and needs the world's light direction brought into it.
+	pub fn view(&self) -> Mat4 {
+		Mat4::look_to_rh(self.pos, self.dir(), Vec3::Y)
+	}
+
 	pub fn view_proj(&self, aspect: f32) -> Mat4 {
 		let proj = Mat4::perspective_rh(self.fov_y_deg.to_radians(), aspect, self.near, self.far);
-		let view = Mat4::look_to_rh(self.pos, self.dir(), Vec3::Y);
-		proj * view
+		proj * self.view()
 	}
 }

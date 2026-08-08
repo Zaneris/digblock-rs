@@ -157,6 +157,10 @@ enum Act {
 	CloseMenu,
 	OpenMultiplayer,
 	LeaveServer,
+	/// The local-world counterpart of [`Act::LeaveServer`]: flush the
+	/// save and go back to the locked title menu (engine drains
+	/// [`Menu::take_leave_world`]).
+	LeaveWorld,
 	ReturnSpawn,
 	/// Close the menu and open the inventory screen (engine drains
 	/// [`Menu::take_inventory`]).
@@ -220,6 +224,7 @@ pub struct Menu {
 	spawn_cooldown_secs: u32,
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
+	wants_leave_world: bool,
 	wants_return_spawn: bool,
 	wants_inventory: bool,
 	wants_alchemy: bool,
@@ -251,6 +256,7 @@ impl Menu {
 			spawn_cooldown_secs: 0,
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
+			wants_leave_world: false,
 			wants_return_spawn: false,
 			wants_inventory: false,
 			wants_alchemy: false,
@@ -296,6 +302,12 @@ impl Menu {
 
 	pub fn take_disconnect(&mut self) -> bool {
 		std::mem::take(&mut self.wants_disconnect)
+	}
+
+	/// The Leave World row was picked: the engine closes the local save
+	/// and returns to the title.
+	pub fn take_leave_world(&mut self) -> bool {
+		std::mem::take(&mut self.wants_leave_world)
 	}
 
 	pub fn take_return_spawn(&mut self) -> bool {
@@ -360,10 +372,10 @@ impl Menu {
 		self.screen = None;
 	}
 
-	/// Left a server for a fresh backdrop world: back to the locked
-	/// startup menu — there is no game to "go back" to until the player
-	/// picks a save or a server again.
-	pub fn on_left_server(&mut self) {
+	/// Left a server or a local world for a fresh backdrop: back to the
+	/// locked startup menu — there is no game to "go back" to until the
+	/// player picks a save or a server again.
+	pub fn on_returned_to_title(&mut self) {
 		self.connected = false;
 		self.entered_world = false;
 		if self.enabled {
@@ -588,8 +600,7 @@ impl Menu {
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
 			Setting::UiScale => {
-				let v =
-					(st.ui_scale + dir as f32 * UI_SCALE_STEP).clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+				let v = snap_range(st.ui_scale, dir, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
 				(std::mem::replace(&mut st.ui_scale, v) - v).abs() > f32::EPSILON
 			}
 			Setting::MusicVol => {
@@ -689,6 +700,10 @@ impl Menu {
 			}
 			Act::LeaveServer => {
 				self.wants_disconnect = true;
+				self.screen = None;
+			}
+			Act::LeaveWorld => {
+				self.wants_leave_world = true;
 				self.screen = None;
 			}
 			Act::ReturnSpawn => {
@@ -838,8 +853,11 @@ impl Menu {
 				// save list; the ephemeral "Play Local" survives only for
 				// store-less runs (scripted flows, no-injection paths).
 				// In-game order: Back to Game, then the hotkey screens
-				// (Return to Spawn, Inventory, Alchemy), then navigation,
-				// with Leave Server and Settings last.
+				// (Return to Spawn, Inventory, Alchemy), then the one exit
+				// row, with Settings last. Local and multiplayer read the
+				// same in game — Singleplayer and Multiplayer belong to
+				// the title menu, and reaching either from inside a world
+				// now goes through Leave.
 				if self.entered_world {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
 					// On cooldown the row renders dim and is not an act.
@@ -848,20 +866,20 @@ impl Menu {
 					}
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
-					if self.store_available && !self.connected {
-						acts.push((RowId::RootItem(5), Act::OpenWorlds));
+					if self.connected {
+						acts.push((RowId::RootItem(2), Act::LeaveServer));
+					} else {
+						acts.push((RowId::RootItem(8), Act::LeaveWorld));
 					}
-				} else if self.store_available {
-					acts.push((RowId::RootItem(5), Act::OpenWorlds));
 				} else {
-					acts.push((RowId::RootItem(0), Act::CloseMenu));
-				}
-				// Already on a server: joining another goes through Leave.
-				if self.services_available && !self.connected {
-					acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
-				}
-				if self.connected {
-					acts.push((RowId::RootItem(2), Act::LeaveServer));
+					if self.store_available {
+						acts.push((RowId::RootItem(5), Act::OpenWorlds));
+					} else {
+						acts.push((RowId::RootItem(0), Act::CloseMenu));
+					}
+					if self.services_available {
+						acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
+					}
 				}
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
 			}
@@ -910,10 +928,11 @@ impl Menu {
 
 	/// Build the frame's view. `blink` drives the name-field caret.
 	pub fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
-		let row_h = 28.0 * scale;
+		use crate::ui::theme;
+		let row_h = theme::ROW_H * scale;
 		// The panel never shrinks below this (short screens would jitter
 		// as rows change) and grows to fit its widest row's text.
-		let min_panel_w = 560.0 * scale;
+		let min_panel_w = theme::MIN_PANEL_W * scale;
 		let glyph = crate::ui::scale::glyph_px(scale);
 		let pad_x = crate::ui::scale::text_pad_x(scale);
 		// Minimum gap between a row's text and its right-aligned column.
@@ -966,27 +985,33 @@ impl Menu {
 						&mut y,
 						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", "K"),
 					);
-					if self.store_available && !self.connected {
+					if self.connected {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(2), "Leave Server"),
+						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(8), "Leave World"),
+						);
+					}
+				} else {
+					if self.store_available {
 						push(
 							&mut specs,
 							&mut y,
 							RowSpec::item(RowId::RootItem(5), "Singleplayer"),
 						);
+					} else {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec::item(RowId::RootItem(0), "Play Local"),
+						);
 					}
-				} else if self.store_available {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(5), "Singleplayer"),
-					);
-				} else {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(0), "Play Local"),
-					);
-				}
-				if !self.connected {
 					if self.services_available {
 						push(
 							&mut specs,
@@ -1000,13 +1025,6 @@ impl Menu {
 							RowSpec::dim("Multiplayer (no master server; run with --master-url)"),
 						);
 					}
-				}
-				if self.connected {
-					push(
-						&mut specs,
-						&mut y,
-						RowSpec::item(RowId::RootItem(2), "Leave Server"),
-					);
 				}
 				push(
 					&mut specs,
@@ -1091,7 +1109,13 @@ impl Menu {
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::dim("Created by @Zaneris (GitHub/X/Twitter)"),
+					RowSpec {
+						// The build's version, right-aligned on the credits
+						// row. `env!` here is digblock-render's version, which
+						// inherits [workspace.package] like every other crate.
+						right: Some((format!("v{}", env!("CARGO_PKG_VERSION")), C_DIM)),
+						..RowSpec::dim("Created by @Zaneris (GitHub/X)")
+					},
 				);
 			}
 			Some(Screen::Browser(b)) => {
@@ -1296,7 +1320,7 @@ impl Menu {
 			})
 			.collect();
 
-		let pad = 12.0 * scale;
+		let pad = theme::PAD * scale;
 		let rows: Vec<PlacedRow> = rows;
 		let mut hits = crate::ui::HitMap::default();
 		for row in &rows {
@@ -1340,10 +1364,17 @@ pub(crate) fn bar_rect(row: [f32; 4], scale: f32) -> [f32; 4] {
 	crate::ui::widgets::slider_rect(row.into(), scale).arr()
 }
 
+/// Step a slider by `dir`, re-derived from its step grid rather than
+/// added to the live value: repeated float addition drifts, and the
+/// interface scale's 5% step drifts faster than the volume's 10% one.
+fn snap_range(v: f32, dir: i32, min: f32, max: f32, step: f32) -> f32 {
+	let steps = ((v - min) / step).round() as i32 + dir;
+	let last = ((max - min) / step).round() as i32;
+	min + steps.clamp(0, last) as f32 * step
+}
+
 fn snap_vol(v: f32, dir: i32) -> f32 {
-	let steps = (v / VOL_STEP).round() as i32 + dir;
-	let max = (VOL_MAX / VOL_STEP).round() as i32;
-	steps.clamp(0, max) as f32 * VOL_STEP
+	snap_range(v, dir, 0.0, VOL_MAX, VOL_STEP)
 }
 
 struct RowSpec {
@@ -1441,15 +1472,13 @@ impl MenuView {
 		size: (u32, u32),
 		daylight: f32,
 	) {
-		use crate::ui::{widgets, Layer, Rect};
-		const MENU_DIM: u32 = 0xA0000000;
-		const BG: u32 = 0x90000000;
+		use crate::ui::{theme, widgets, Layer, Rect};
 		dl.quad(
 			Layer::Content,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
-			widgets::scaled_dim(MENU_DIM, daylight),
+			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		widgets::panel(dl, Layer::Content, self.panel.into(), BG);
+		widgets::panel(dl, Layer::Content, self.panel.into(), theme::PANEL_BG);
 		for row in &self.rows {
 			widgets::row(
 				dl,
@@ -1566,7 +1595,7 @@ mod tests {
 			.iter()
 			.any(|r| r.text.starts_with("Multiplayer")));
 		// Leaving brings it back (fresh backdrop world, startup menu).
-		menu.on_left_server();
+		menu.on_returned_to_title();
 		assert!(menu
 			.acts()
 			.iter()
@@ -1841,12 +1870,11 @@ mod tests {
 		menu.on_welcome();
 		assert!(!menu.is_open());
 
-		// Second run: cancel instead.
-		menu.open();
-		menu.handle_key(Key::Down); // Return to Spawn
-		menu.handle_key(Key::Down); // Inventory
-		menu.handle_key(Key::Down); // Alchemy
-		menu.handle_key(Key::Down); // Multiplayer
+		// Second run: cancel instead. From a fresh (pre-entry) menu —
+		// Multiplayer lives on the title menu, not the in-game one.
+		let mut menu = Menu::new(true, named("ted"), None);
+		menu.set_services_available();
+		menu.handle_key(Key::Down); // Multiplayer (after Play Local)
 		menu.handle_key(Key::Enter);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
 		menu.handle_key(Key::Enter);
@@ -1904,6 +1932,58 @@ mod tests {
 		assert!(!menu.is_open());
 	}
 
+	/// The two in-game menus used to diverge: a local world offered
+	/// Singleplayer and Multiplayer where a server offered Leave Server,
+	/// so the same Escape key produced a different page depending on
+	/// where you were. Both now end in exactly one exit row.
+	#[test]
+	fn leave_world_is_the_local_counterpart_of_leave_server() {
+		let rows_of = |menu: &Menu| -> Vec<String> {
+			menu.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.map(|r| r.text.to_string())
+				.collect()
+		};
+		let mut local = Menu::new(true, named("ted"), None);
+		local.set_services_available();
+		local.set_store_available();
+		local.on_world_entered();
+		local.open();
+		let mut server = Menu::new(true, named("ted"), None);
+		server.set_services_available();
+		server.set_store_available();
+		server.set_connected(true);
+
+		let (a, b) = (rows_of(&local), rows_of(&server));
+		assert_eq!(
+			a.iter().position(|r| r == "Leave World"),
+			b.iter().position(|r| r == "Leave Server"),
+			"the exit row sits in the same place: {a:?} vs {b:?}"
+		);
+		for rows in [&a, &b] {
+			assert!(!rows.iter().any(|r| r == "Singleplayer"), "{rows:?}");
+			assert!(
+				!rows.iter().any(|r| r.starts_with("Multiplayer")),
+				"{rows:?}"
+			);
+		}
+		assert_eq!(a.len(), b.len(), "same page either side: {a:?} vs {b:?}");
+
+		// Activating it raises the intent and closes the menu, exactly
+		// as Leave Server does.
+		let leave = local
+			.acts()
+			.iter()
+			.position(|(id, _)| *id == RowId::RootItem(8))
+			.expect("the Leave World row is an act");
+		local.set_sel(leave);
+		local.handle_key(Key::Enter);
+		assert!(local.take_leave_world());
+		assert!(!local.take_disconnect(), "a local world has no transport");
+		assert!(!local.is_open());
+	}
+
 	#[test]
 	fn return_to_spawn_ready_activates_and_cooldown_greys() {
 		let mut menu = Menu::new(true, named("ted"), None);
@@ -1926,8 +2006,8 @@ mod tests {
 		);
 		assert_eq!(
 			acts.len(),
-			4,
-			"Back to Game + Inventory + Alchemy + Settings"
+			5,
+			"Back to Game + Inventory + Alchemy + Leave World + Settings"
 		);
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
@@ -1938,6 +2018,7 @@ mod tests {
 		// raised on the way to Settings.
 		menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
 		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Down); // Leave World
 		menu.handle_key(Key::Down); // Settings
 		menu.handle_key(Key::Enter);
 		assert!(!menu.take_return_spawn());
@@ -1949,7 +2030,7 @@ mod tests {
 		// Cooldown over: selectable again.
 		menu.open();
 		menu.set_spawn_cooldown(0);
-		assert_eq!(menu.acts().len(), 5, "spawn row is back");
+		assert_eq!(menu.acts().len(), 6, "spawn row is back");
 	}
 
 	fn open_settings(menu: &mut Menu) {
@@ -1981,11 +2062,19 @@ mod tests {
 		menu.handle_key(Key::Right);
 		assert!(menu.take_settings_change().is_none());
 
-		// Interface scale: sel 1, 100% -> 75%, floored at the min.
+		// Interface scale: sel 1, 100% -> 95%, then down to the min.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
-		assert!((s.ui_scale - 0.75).abs() < 1e-4);
+		assert!(
+			(s.ui_scale - (1.0 - UI_SCALE_STEP)).abs() < 1e-4,
+			"{}",
+			s.ui_scale
+		);
+		for _ in 0..40 {
+			menu.handle_key(Key::Left);
+		}
+		assert!((menu.take_settings_change().unwrap().ui_scale - UI_SCALE_MIN).abs() < 1e-4);
 		menu.handle_key(Key::Left);
 		assert!(menu.take_settings_change().is_none(), "already at the min");
 
@@ -2019,10 +2108,41 @@ mod tests {
 			.rows
 			.iter()
 			.any(|r| r.text.contains("Music Volume: 0%")));
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Interface Scale: 75%")));
+		assert!(view.rows.iter().any(|r| r
+			.text
+			.contains(&format!("Interface Scale: {:.0}%", UI_SCALE_MIN * 100.0))));
+	}
+
+	/// Every notch of the interface-scale slider is reachable and lands on
+	/// its exact grid value. With a 5% step the old add-to-the-live-value
+	/// path drifts, and the label rounds to whole percent — so a run to
+	/// one end and back is the test that would catch it.
+	#[test]
+	fn ui_scale_slider_walks_its_whole_range_without_drift() {
+		let notches = ((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP).round() as i32;
+		let mut v = 1.0f32;
+		let mut seen = Vec::new();
+		for _ in 0..notches * 2 {
+			v = snap_range(v, -1, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
+		}
+		assert_eq!(v, UI_SCALE_MIN, "bottoms out exactly");
+		for _ in 0..notches {
+			seen.push(v);
+			v = snap_range(v, 1, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
+		}
+		assert_eq!(v, UI_SCALE_MAX, "tops out exactly");
+		seen.push(v);
+		assert_eq!(seen.len() as i32, notches + 1);
+		for (i, got) in seen.iter().enumerate() {
+			let want = UI_SCALE_MIN + i as f32 * UI_SCALE_STEP;
+			assert!((got - want).abs() < 1e-6, "notch {i}: {got} vs {want}");
+			// The label rounds to whole percent; no two notches may print
+			// the same number.
+			assert_eq!(
+				format!("{:.0}", got * 100.0).parse::<i32>().unwrap(),
+				70 + 5 * i as i32
+			);
+		}
 	}
 
 	#[test]
@@ -2151,14 +2271,15 @@ mod tests {
 			menu.take_world_intents().as_slice(),
 			[WorldIntent::Refresh]
 		));
-		// Entering a world unlocks Back to Game; Singleplayer stays for
-		// switching.
+		// Entering a world unlocks Back to Game and swaps Singleplayer
+		// for Leave World: switching saves goes back through the title.
 		menu.on_world_entered();
 		assert!(!menu.is_open());
 		menu.open();
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text == "Back to Game"));
-		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
+		assert!(view.rows.iter().any(|r| r.text == "Leave World"));
+		assert!(!view.rows.iter().any(|r| r.text == "Singleplayer"));
 	}
 
 	#[test]
@@ -2255,7 +2376,7 @@ mod tests {
 		menu.set_store_available();
 		menu.set_connected(true);
 		assert!(menu.entered_world);
-		menu.on_left_server();
+		menu.on_returned_to_title();
 		assert!(menu.is_open());
 		// Locked again: Escape can't dismiss, no Back to Game.
 		menu.handle_key(Key::Escape);

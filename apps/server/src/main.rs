@@ -37,6 +37,9 @@ const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+	// First line out, before anything that can fail: a bug report starts
+	// with knowing which build produced it.
+	log::info!("digblock-server {}", env!("CARGO_PKG_VERSION"));
 
 	let mut port = DEFAULT_PORT;
 	// Empty env values count as unset — compose files pass "${SEED:-}"

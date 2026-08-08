@@ -148,12 +148,17 @@ struct Client {
 }
 
 impl Client {
-	/// The held item for snapshots, in hotbar wire encoding.
+	/// The held item for snapshots, in hotbar wire encoding. The tool
+	/// reports its charge too — a bucket is a different thing full than
+	/// empty, and the difference is the whole point of holding one.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
 		match self.hotbar.slots()[slot] {
 			None => WIRE_EMPTY,
+			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => {
+				digblock_net::messages::HELD_TOOL_FULL
+			}
 			Some(HotbarItem::WaterTool) => WIRE_TOOL,
 			Some(HotbarItem::Block(b)) => b as u16,
 		}
@@ -348,6 +353,25 @@ impl Sim {
 	#[cfg(test)]
 	fn test_cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		self.store.cell_at(x, y, z)
+	}
+
+	/// Write a cell straight into the resident store, bypassing edit
+	/// validation — for staging terrain a test needs to exist.
+	#[cfg(test)]
+	fn test_set_cell(&mut self, x: i32, y: i32, z: i32, cell: u16) {
+		self.store.set_cell(x, y, z, cell);
+	}
+
+	/// The hand-picked spawn (`/set-spawn`), if one is stored.
+	#[cfg(test)]
+	fn test_spawn_point(&self) -> Option<Vec3> {
+		self.spawn_store.point().map(Vec3::from_array)
+	}
+
+	/// The stored spawn facing (`/set-spawn-dir`), if one is set.
+	#[cfg(test)]
+	fn test_spawn_dir(&self) -> Option<Vec3> {
+		self.spawn_store.dir().map(Vec3::from_array)
 	}
 
 	#[cfg(test)]
@@ -623,16 +647,18 @@ impl Sim {
 
 	/// The spawn point to use right now.
 	///
-	/// Locked spawns short-circuit: the region is unmodifiable, so it
-	/// cannot have stopped being valid and there is nothing to search for.
-	/// Otherwise the anchor is re-validated against the journal and the
-	/// search relocates sideways if players have dug it out. Stateless on
-	/// purpose — a transient hole that happens to be open when someone
-	/// joins costs that one player an offset, and the next join snaps back
-	/// to the anchor rather than inheriting a stored detour.
+	/// Either operator override short-circuits the search. A hand-picked
+	/// point (`/set-spawn`) is an explicit decision and stays exactly where
+	/// it was put; a locked region is unmodifiable, so it cannot have
+	/// stopped being valid and there is nothing to search for. Otherwise
+	/// the anchor is re-validated against the journal and the search
+	/// relocates sideways if players have dug it out. Stateless on purpose
+	/// — a transient hole that happens to be open when someone joins costs
+	/// that one player an offset, and the next join snaps back to the
+	/// anchor rather than inheriting a stored detour.
 	fn spawn_point(&self) -> Vec3 {
-		if let Some(lock) = self.spawn_store.lock() {
-			return Vec3::from_array(lock.eye);
+		if let Some(eye) = self.spawn_store.pinned() {
+			return Vec3::from_array(eye);
 		}
 		if !self.spawn_search {
 			return self.spawn_anchor;
@@ -648,11 +674,32 @@ impl Sim {
 	/// not described by real worldgen, so the pristine half of the test
 	/// would reject a spawn that is perfectly good in the world the sim
 	/// actually has.
+	///
+	/// Also vacuously true for a hand-picked spawn, which this predicate
+	/// cannot judge and does not need to. It guards `/lock-spawn` against
+	/// pinning a spawn the *search* only returned because it gave up; a
+	/// point an admin aimed at has no give-up case, was checked against the
+	/// real world by [`digblock_core::spawn::stands_clear`] when it was
+	/// set, and would be rejected out of hand here for sitting on ground
+	/// pristine worldgen never made level.
 	fn spawn_valid(&self, eye: Vec3) -> bool {
-		!self.spawn_search
+		self.spawn_store.point().is_some()
+			|| !self.spawn_search
 			|| digblock_core::spawn::valid(eye, self.store.seed(), &|x, y, z| {
 				self.journal_cell(x, y, z)
 			})
+	}
+
+	/// The world as it actually is at one cell: the resident chunk (which
+	/// already carries its journal overlay) falling back to the journal for
+	/// columns that are not loaded. `None` = neither can answer.
+	///
+	/// Raw cells, not `try_from_id`: a state-carrying cell (a stair, a
+	/// slab) must read as its real, solid block, not decode to nothing.
+	fn world_cell(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.store
+			.cell_at(x, y, z)
+			.or_else(|| self.journal_cell(x, y, z))
 	}
 
 	/// The journal's final value for a cell, or `None` if no player has
@@ -667,6 +714,16 @@ impl Sim {
 			.and_then(|cells| cells.get(&(x, y, z)).copied())
 	}
 
+	/// The facing a spawning player adopts (`/set-spawn-dir`), or
+	/// `Vec3::ZERO` for "keep whatever view you have" — the same
+	/// convention `Teleported.look` and `Welcome.spawn_look` carry.
+	fn spawn_look(&self) -> Vec3 {
+		self.spawn_store
+			.dir()
+			.map(Vec3::from_array)
+			.unwrap_or(Vec3::ZERO)
+	}
+
 	/// The resolved spawn with any residual obstruction stepped over.
 	/// The search already guarantees a clear capsule, so this only bites
 	/// on the give-up path where nowhere within range was intact.
@@ -677,16 +734,7 @@ impl Sim {
 	/// Raise `eye` until the capsule clears both live terrain and
 	/// journaled edits — the shared landing rule for spawn and `/tp`.
 	fn clear_landing(&self, eye: Vec3) -> Vec3 {
-		let cell_at = |x: i32, y: i32, z: i32| {
-			if let Some(c) = self.store.cell_at(x, y, z) {
-				return Some(c);
-			}
-			// Raw cells, not `try_from_id`: a state-carrying cell (e.g. a
-			// stair) must read as its real, solid block here — decoding to
-			// None would let a joiner spawn inside it.
-			self.journal_cell(x, y, z)
-		};
-		player::ascend_clear(eye, &cell_at)
+		player::ascend_clear(eye, &|x, y, z| self.world_cell(x, y, z))
 	}
 
 	/// Hard-move a client: set state, shed pre-teleport residue (the
@@ -736,11 +784,12 @@ impl Sim {
 			}
 		}
 		let pos = self.safe_spawn();
+		let look = self.spawn_look();
 		let tick = self.tick;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
 		client.last_return_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
-		self.teleport_client(conn_id, pos, Vec3::ZERO);
+		self.teleport_client(conn_id, pos, look);
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -824,9 +873,12 @@ impl Sim {
 		// region around it — so a resumed position is stepped clear the
 		// same way a spawn is. Anonymous joins and pre-v3 records have no
 		// stored position and start at spawn.
-		let spawn = match record.pos {
-			Some(p) => self.clear_landing(Vec3::from_array(p)),
-			None => self.safe_spawn(),
+		// The spawn facing rides along only when this join really is a
+		// spawn: it describes which way to look when you arrive THERE, and
+		// a player resuming in their own house has already chosen a view.
+		let (spawn, spawn_look) = match record.pos {
+			Some(p) => (self.clear_landing(Vec3::from_array(p)), Vec3::ZERO),
+			None => (self.safe_spawn(), self.spawn_look()),
 		};
 		let mut ok = send_frame(
 			&out,
@@ -843,6 +895,7 @@ impl Sim {
 				sim_version: digblock_core::SIM_VERSION,
 				build: env!("CARGO_PKG_VERSION").into(),
 				tod: self.current_tod(),
+				spawn_look: spawn_look.to_array(),
 			},
 		);
 

@@ -90,13 +90,20 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 /// touching cell is open air with water directly below, the surface
 /// continues a step down and this corner plunges the whole block
 /// (d = 9), so cascades
-/// render as connected ramps instead of stacked cliff slivers. Else
-/// the drop is 9 − round(mean water amount). Adjacent cells sharing
-/// the corner agree, so surfaces knit without cracks — including
-/// across chunk borders via the padded shell.
+/// render as connected ramps instead of stacked cliff slivers. Else,
+/// if a resting SOURCE touches the corner, it pins at the source's own
+/// height (d = 1): a full block has to keep looking full where it
+/// spills outward. Without this the mean below sank it — the fluid sim
+/// halves on spread, so a source's neighbours are 4s and 2s, and
+/// mean(8, 4, 4, 2) = 5 dropped the source's whole top face to 0.37 of
+/// a block. Else the drop is 9 − round(mean water amount). Adjacent
+/// cells sharing the corner agree, so surfaces knit without cracks —
+/// including across chunk borders via the padded shell.
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let (mut sum, mut count) = (0u32, 0u32);
 	let mut plunge = false;
+	let mut source = false;
+	let mut falling = false;
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
 			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
@@ -112,6 +119,8 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 			if b.is_water() && above.props().class != RenderClass::None {
 				return 0;
 			}
+			source |= b.is_fluid_source();
+			falling |= b.is_falling();
 			match surface_amount(input, cx, y, cz, b) {
 				Some(a) => {
 					sum += u32::from(a);
@@ -126,6 +135,12 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	}
 	if plunge {
 		return 9;
+	}
+	// A fall touching the corner keeps the mean: `surface_amount`'s lip
+	// rule deliberately steps the sheet below its feeder, and pinning
+	// here would flatten the pour-over back into a cliff.
+	if source && !falling {
+		return 1;
 	}
 	debug_assert!(count > 0, "corner of a water face touches its own cell");
 	let a = (2 * sum + count) / (2 * count); // round half up

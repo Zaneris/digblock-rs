@@ -17,6 +17,45 @@ use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 
+/// A UI screen [`EngineConfig::debug_screen`] can open at startup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DebugScreen {
+	/// The startup menu. Needs `menu: true` as well, which the launcher
+	/// forces — captures otherwise run menu-less on purpose.
+	Menu,
+	Inventory,
+	Alchemy,
+	/// Not a screen: stock the inventory and open NOTHING, so the
+	/// first-person viewmodel is on screen for `--screenshot`. It is
+	/// here for the same reason the screens are — an empty starting
+	/// inventory means an empty hand, which made the held item just as
+	/// invisible to a headless capture as the pages were.
+	Hand,
+	/// Also not a screen: select the water tool, empty (`bucket`) or
+	/// charged (`bucket-full`). The charge is the one item state in the
+	/// game, it decides what both mouse buttons do, and it shows in two
+	/// places at once — so both states need to be photographable.
+	Bucket {
+		full: bool,
+	},
+}
+
+impl DebugScreen {
+	/// Parse the launcher's DIG_SCREEN value. Unknown names are `None`
+	/// rather than an error: this is a dev knob, not a wire format.
+	pub fn parse(s: &str) -> Option<Self> {
+		match s.trim().to_ascii_lowercase().as_str() {
+			"menu" => Some(Self::Menu),
+			"inventory" | "inv" => Some(Self::Inventory),
+			"alchemy" | "alch" => Some(Self::Alchemy),
+			"hand" => Some(Self::Hand),
+			"bucket" => Some(Self::Bucket { full: false }),
+			"bucket-full" => Some(Self::Bucket { full: true }),
+			_ => None,
+		}
+	}
+}
+
 pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
 	pub draw_dist: i32,
@@ -54,6 +93,10 @@ pub struct EngineConfig {
 	/// without a second client). Set by the desktop launcher from
 	/// DIG_PLAYERBOX.
 	pub debug_playerbox: bool,
+	/// Debug: open a UI screen at startup with a stocked inventory, so a
+	/// headless `--screenshot` run can capture it. Set by the desktop
+	/// launcher from DIG_SCREEN.
+	pub debug_screen: Option<DebugScreen>,
 	/// Debug: place a showcase of every shaped-block variant near spawn
 	/// (both stair materials × 4 facings, doors × facings × open/closed)
 	/// once chunks are Ready. Set by the desktop launcher from
@@ -129,6 +172,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_screen: None,
 			spray_droplets: 64,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
@@ -164,6 +208,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_screen: None,
 			spray_droplets: 24,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
@@ -256,6 +301,18 @@ const EVICT_MIN: usize = 8;
 /// in one frame is a visible stall; spread over frames it is invisible,
 /// and the world simply fills in as fast as meshing can keep up anyway.
 const NET_EDIT_BUDGET: usize = 256;
+
+/// Messages the feed keeps. Also the scrollback: entries are no longer
+/// dropped when they expire, so this is how far back the chat box can
+/// show while you type.
+const FEED_MAX: usize = 12;
+/// How long a message stays lit before it fades out of the HUD. It stays
+/// in `feed` afterwards with a non-positive ttl — see [`FEED_TTL_FLOOR`].
+const FEED_TTL_SECS: f32 = 15.0;
+/// Expired entries stop counting down here. Without a floor the ttl of a
+/// long-lived message would run away into large negatives; nothing reads
+/// the magnitude, only the sign, so it just needs to stay finite.
+const FEED_TTL_FLOOR: f32 = -1.0;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -390,6 +447,10 @@ pub struct Engine {
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
+	/// A return-to-spawn is outstanding, so the next teleport that lands
+	/// is ours and says so. Kept apart from the teleport's `look`, which
+	/// a server with `/set-spawn-dir` set fills in on this path too.
+	spawn_return_pending: bool,
 	/// The inventory-grid arrangement behind the hotbar (slot
 	/// assignments; counts stay in `inventory`). Kept consistent by
 	/// `reconcile_layout` every frame.
@@ -408,11 +469,30 @@ pub struct Engine {
 	water_audio: crate::water_audio::WaterAudio,
 	/// Footstep cadence + ambient-bed state (pure helpers).
 	footsteps: crate::audio::Footsteps,
+	swim_strokes: crate::audio::SwimStrokes,
+	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
+	/// that returns early with no audio sink attached (bench, screenshot,
+	/// iOS), which would silently freeze the hand in exactly the
+	/// configurations that photograph it.
+	view_bob: crate::viewmodel::Bob,
+	view_swing: crate::viewmodel::Swing,
+	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
+	/// by half a swap, so the exchange happens below the frame.
+	view_swap: crate::viewmodel::Swap,
 	ambient: crate::audio::Ambient,
 	/// Scratch for batched audio commands (water voices).
 	audio_scratch: Vec<crate::audio::AudioCmd>,
 	/// Player eye position last frame (footstep distance).
 	prev_player_pos: Vec3,
+	/// Last music pool announced to the filler; `None` until the first
+	/// frame, so startup always sends one.
+	music_night: Option<bool>,
+	/// Were the feet in water last frame? Rising edge = one splash.
+	prev_wet: bool,
+	/// Highest foot height since the feet were last supported — the fall
+	/// height a splash is scaled by. Reset on ground and in water, so
+	/// walking down a hillside into a lake isn't a plunge.
+	fall_from_y: f32,
 	/// Per-frame name-tag scratch (reused allocation).
 	/// Name tags, kept beyond `nametag_count` so their String buffers
 	/// survive between frames instead of being reallocated every frame.
@@ -573,8 +653,10 @@ fn held_tex_layer(held: u16) -> Option<u16> {
 	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
 	match held {
 		WIRE_EMPTY => None,
-		// The tool reads as the water it collects/places.
-		WIRE_TOOL => Some(BlockType::Water.props().tex_side),
+		// The remote hand is one small cube, so the bucket's charge is
+		// all it can say: wood for an empty pail, water for a full one.
+		WIRE_TOOL => Some(BlockType::Wood.props().tex_side),
+		digblock_net::messages::HELD_TOOL_FULL => Some(BlockType::Water.props().tex_side),
 		id => BlockType::try_from_id(id).map(|b| b.props().tex_side),
 	}
 }
@@ -654,15 +736,24 @@ impl Engine {
 			},
 			config.auto_join.clone(),
 		);
-		Self {
+		let mut engine = Self {
 			menu,
 			chat: crate::chat::Chat::default(),
 			audio: None,
 			water_audio: crate::water_audio::WaterAudio::default(),
 			footsteps: crate::audio::Footsteps::default(),
+			swim_strokes: crate::audio::SwimStrokes::default(),
+			view_bob: crate::viewmodel::Bob::default(),
+			view_swing: crate::viewmodel::Swing::default(),
+			view_swap: crate::viewmodel::Swap::default(),
 			ambient: crate::audio::Ambient::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
+			music_night: None,
+			// Assume wet: whatever the spawn turns out to be, arriving
+			// there is not "entering the water".
+			prev_wet: true,
+			fall_from_y: spawn.y,
 			nametag_scratch: Vec::new(),
 			nametag_count: 0,
 			services: None,
@@ -738,9 +829,46 @@ impl Engine {
 			inv_screen: Default::default(),
 			alch_screen: Default::default(),
 			return_spawn_requested: false,
+			spawn_return_pending: false,
 			inv_grid: Default::default(),
 			last_layout_sent: None,
+		};
+		// DIG_SCREEN: open a UI screen at startup, stocked, so
+		// `--screenshot` can capture it. Screens are input-driven, which
+		// left them the one part of the UI a headless capture could not
+		// see — and a layout regression on the alchemy page shipped
+		// because of exactly that.
+		if let Some(screen) = engine.config.debug_screen {
+			for (block, n) in [
+				(BlockType::Wood, 5u32),
+				(BlockType::Stone, 11),
+				(BlockType::Dirt, 64),
+			] {
+				engine.inventory.add(block, n);
+			}
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Material::Wood, 54);
+			if let DebugScreen::Bucket { full: true } = screen {
+				engine.inventory.add(BlockType::Water, 1);
+			}
+			digblock_core::inv_grid::reconcile_layout(
+				&engine.inventory,
+				&mut engine.hotbar,
+				&mut engine.inv_grid,
+			);
+			match screen {
+				// The menu opens itself when `config.menu` is set; the
+				// hand wants a stocked bar and nothing over it.
+				DebugScreen::Menu | DebugScreen::Hand => {}
+				DebugScreen::Bucket { .. } => engine
+					.hotbar
+					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
+				DebugScreen::Inventory => engine.inv_screen.open(),
+				DebugScreen::Alchemy => engine.alch_screen.open(),
+			}
 		}
+		engine
 	}
 
 	/// Attach a multiplayer transport (loopback tests / tokenless paths).
@@ -856,11 +984,35 @@ impl Engine {
 		}
 	}
 
+	/// The block just under the feet and whether it holds the player up.
+	/// Shared by the footstep cadence and the held item's walk bob, which
+	/// have to agree: the hand keeps time with the feet, so anything that
+	/// stops the steps sounding stops the hand swinging. Cheap enough to
+	/// call twice a frame — it is one `block_at`.
+	fn ground_below(&self) -> (Option<BlockType>, bool) {
+		let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
+		let below = self.pipeline.block_at(
+			self.player.pos.x.floor() as i32,
+			(feet - 0.05).floor() as i32,
+			self.player.pos.z.floor() as i32,
+		);
+		(below, below.is_some_and(|b| b.props().collides))
+	}
+
 	/// Per-frame audio upkeep, after the camera settles: listener pose,
 	/// footsteps, waterfall voices, ambient bed. One early-out branch
 	/// when no sink is attached.
+	///
+	/// `prev_player_pos` is deliberately NOT advanced here — `update`
+	/// owns it, because the viewmodel's bob reads the same delta and
+	/// this function returns early on a silent run.
 	fn step_audio(&mut self, dt: f32) {
 		use crate::audio::{ambient_sfx, step_sfx, AmbientZone, AudioCmd, LOOP_AMBIENT};
+		/// Splash gain: a step into the shallows, plus this much per block
+		/// of the fall that preceded it, capped.
+		const SPLASH_GAIN_MIN: f32 = 0.3;
+		const SPLASH_GAIN_PER_BLOCK: f32 = 0.06;
+		const SPLASH_GAIN_MAX: f32 = 0.9;
 		if self.audio.is_none() {
 			return;
 		}
@@ -870,34 +1022,60 @@ impl Engine {
 			forward: self.camera.dir().to_array(),
 		});
 
-		// Footsteps: walk mode only, driven by actual horizontal motion.
+		// Footsteps and the water-entry splash, both driven by the feet.
 		let submerged = self.eye_in_water();
+		let d = self.player.pos - self.prev_player_pos;
+		let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
+		let (bx, bz) = (
+			self.player.pos.x.floor() as i32,
+			self.player.pos.z.floor() as i32,
+		);
+		let (below, grounded) = self.ground_below();
+		let feet_wet = self
+			.pipeline
+			.block_at(bx, feet.floor() as i32, bz)
+			.is_some_and(|b| b.is_water());
+		let wet = submerged || feet_wet;
 		if self.walking {
-			let d = self.player.pos - self.prev_player_pos;
 			let moved = Vec3::new(d.x, 0.0, d.z).length();
-			let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
-			let (bx, bz) = (
-				self.player.pos.x.floor() as i32,
-				self.player.pos.z.floor() as i32,
-			);
-			let below = self.pipeline.block_at(bx, (feet - 0.05).floor() as i32, bz);
-			let grounded = below.is_some_and(|b| b.props().collides);
-			let feet_wet = self
-				.pipeline
-				.block_at(bx, feet.floor() as i32, bz)
-				.is_some_and(|b| b.is_water());
-			if let Some((m, gain)) =
-				self.footsteps
-					.advance(moved, grounded, below, submerged || feet_wet)
-			{
+			if let Some((m, gain)) = self.footsteps.advance(moved, grounded, below, wet) {
 				self.emit(AudioCmd::Sfx {
 					sound: step_sfx(m),
 					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
 					gain,
 				});
 			}
+			// One splash on the rising edge, scaled by the fall that got
+			// you there — a step off a bank barely registers, a plunge
+			// from a cliff does. Fly mode is excluded: the body isn't
+			// being simulated, so drifting through a surface isn't an
+			// entry.
+			if wet && !self.prev_wet {
+				let drop = (self.fall_from_y - feet).max(0.0);
+				let gain = (SPLASH_GAIN_MIN + drop * SPLASH_GAIN_PER_BLOCK).min(SPLASH_GAIN_MAX);
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Splash,
+					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
+					gain,
+				});
+			}
+			// Strokes while actually swimming — in the water and off the
+			// bottom. Wading is grounded, so it keeps its footsteps and
+			// the two can never double up.
+			if let Some(gain) = self.swim_strokes.advance(moved, wet && !grounded) {
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Swim,
+					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
+					gain,
+				});
+			}
 		}
-		self.prev_player_pos = self.player.pos;
+		self.prev_wet = wet;
+		self.fall_from_y = if grounded || wet || !self.walking {
+			feet
+		} else {
+			self.fall_from_y.max(feet)
+		};
 
 		// Waterfall voices.
 		let mut cmds = std::mem::take(&mut self.audio_scratch);
@@ -940,6 +1118,18 @@ impl Engine {
 				pos: None,
 				gain: crate::audio::AMBIENT_GAIN,
 			});
+		}
+
+		// Music pool follows the world clock. `tod` is the sun's angle
+		// from straight down (0 = noon, ±90 = the horizons, 180 =
+		// midnight), so hour = 12 - tod/15 and the 18:00-06:00 night
+		// window is exactly "sun below the horizon". No hysteresis
+		// needed: tod is monotonic, and the filler only acts on this at
+		// the next track boundary anyway.
+		let night = self.sun.tod.abs() >= 90.0;
+		if self.music_night != Some(night) {
+			self.music_night = Some(night);
+			self.emit(AudioCmd::MusicSet { night });
 		}
 	}
 
@@ -1008,7 +1198,13 @@ impl Engine {
 			id: crate::audio::LOOP_DIG,
 		});
 		self.ambient.reset();
+		self.swim_strokes.reset();
+		self.view_bob.reset();
+		self.view_swing.reset();
+		self.view_swap.reset();
 		self.prev_player_pos = pos;
+		self.prev_wet = true;
+		self.fall_from_y = pos.y;
 	}
 
 	/// Flush and detach the active named save (leaving for a server,
@@ -1028,6 +1224,35 @@ impl Engine {
 			}
 		}
 		self.in_local_save = false;
+	}
+
+	/// Swap to a fresh backdrop world and relock the startup menu — the
+	/// shared tail of leaving a server and leaving a local world. Don't
+	/// keep phantom-playing the world we just left: a new clock-derived
+	/// seed means the menu's backdrop is visibly not the save behind it.
+	/// The caller detaches whatever it was attached to first
+	/// ([`Self::close_local_save`] / dropping the transport).
+	fn return_to_title(&mut self) {
+		let nanos = web_time::SystemTime::now()
+			.duration_since(web_time::UNIX_EPOCH)
+			.map_or(0, |d| d.subsec_nanos());
+		let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+		self.seed = seed;
+		let spawn = digblock_core::player::spawn(seed);
+		self.spawn_pos = spawn;
+		self.pipeline = Pipeline::with_overlay(
+			seed,
+			self.config.draw_dist,
+			self.config.workers,
+			digblock_core::overlay::EditOverlay::default(),
+		);
+		self.player = Player::new(spawn);
+		self.camera.pos = spawn;
+		self.inventory = Inventory::default();
+		self.player_names.clear();
+		self.reset_world_transients(spawn, true);
+		self.in_local_save = false;
+		self.menu.on_returned_to_title();
 	}
 
 	/// Enter an opened named save: rebuild the world around its seed +
@@ -1177,13 +1402,25 @@ impl Engine {
 		self.menu.set_world_list(rows);
 	}
 
+	/// Adopt an authoritative facing: yaw from the horizontal direction,
+	/// pitch levelled. Shared by teleports and the spawn facing an admin
+	/// set, so the two can never disagree about which way `look` points.
+	fn face(&mut self, look: Vec3) {
+		self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
+		self.camera.pitch_deg = 0.0;
+	}
+
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
 	/// and camera — a 200 ms smoothed slide across half the map would
 	/// fight streaming — and drop everything that describes the
 	/// pre-teleport position (the decaying correction offset, a stashed
 	/// ack, any dig in progress, the footstep odometer). A non-zero
-	/// `look` adopts that facing (level pitch); zero keeps the view — the
-	/// spawn path, which also keeps its historical feed line.
+	/// `look` adopts that facing (level pitch); zero keeps the view.
+	///
+	/// The feed line keys on `spawn_return_pending` — what WE asked for —
+	/// not on whether a facing came back: a server with `/set-spawn-dir`
+	/// set answers a return-to-spawn with a look, and reading that as
+	/// "an admin teleported me" got the wording backwards.
 	fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
 		self.player.set_state(digblock_core::player::PlayerState {
 			pos,
@@ -1193,15 +1430,19 @@ impl Engine {
 		self.correction_offset = Vec3::ZERO;
 		self.pending_ack = None;
 		self.prev_player_pos = pos;
+		self.prev_wet = true;
+		self.fall_from_y = pos.y;
 		self.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
-			self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
-			self.camera.pitch_deg = 0.0;
-			self.push_feed("Teleported.".into());
-		} else {
-			self.push_feed("Returned to spawn.".into());
+			self.face(look);
 		}
+		let line = if std::mem::take(&mut self.spawn_return_pending) {
+			"Returned to spawn."
+		} else {
+			"Teleported."
+		};
+		self.push_feed(line.into());
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -1220,8 +1461,6 @@ impl Engine {
 	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
 	/// player, matching the sender's body color).
 	fn push_feed_colored(&mut self, text: String, color: u32) {
-		const FEED_MAX: usize = 8;
-		const FEED_TTL_SECS: f32 = 8.0;
 		if self.feed.len() >= FEED_MAX {
 			self.feed.remove(0);
 		}
@@ -1286,11 +1525,18 @@ impl Engine {
 					spawn,
 					player_id,
 					tod,
+					spawn_look,
 					..
 				} => {
 					self.my_player_id = Some(player_id);
 					self.menu.on_welcome();
 					self.swap_world(seed, spawn);
+					// The admin's `/set-spawn-dir`, sent only when this
+					// join actually placed us at spawn — a resume in place
+					// sends zero and keeps the view we arrived with.
+					if spawn_look != Vec3::ZERO {
+						self.face(spawn_look);
+					}
 					// The server owns the world clock. A dev-build --tod
 					// freeze still wins: update() re-asserts config.tod
 					// every frame.
@@ -1692,10 +1938,19 @@ impl Engine {
 		}
 	}
 
-	/// True while the water tool is the selected hotbar item — it changes
-	/// both the picking ray (fluid-aware) and what a dig/place means.
+	/// True while the water tool is the selected hotbar item.
 	fn water_tool_selected(&self) -> bool {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
+	}
+
+	/// True while the tool is out AND empty — the scooping state. This is
+	/// the one that changes the picking ray, because it is the only state
+	/// in which the thing you want to hit is a fluid source. Charged, the
+	/// bucket aims at ordinary blocks like every other item, so it picks
+	/// with the ordinary ray and the outline lands on the face you're
+	/// about to pour against.
+	fn scoop_ready(&self) -> bool {
+		self.water_tool_selected() && !self.inventory.bucket_full()
 	}
 
 	/// Where the collidable body actually is, for occupancy questions
@@ -1719,7 +1974,7 @@ impl Engine {
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		let pipeline = &self.pipeline;
 		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
-		self.target = if self.water_tool_selected() {
+		self.target = if self.scoop_ready() {
 			raycast_fluid(origin, dir, REACH, &cell_at)
 		} else {
 			raycast(origin, dir, REACH, &cell_at)
@@ -1755,7 +2010,9 @@ impl Engine {
 			return false;
 		}
 		if self.water_tool_selected() {
-			hit.block.is_fluid_source()
+			// A charged bucket digs nothing at all: it has one action
+			// left, and that action is on the other button.
+			self.scoop_ready() && hit.block.is_fluid_source()
 		} else {
 			hit.block.props().collides && hit.block.dig_hardness(hit.cell.1).is_some()
 		}
@@ -1764,7 +2021,9 @@ impl Engine {
 	/// One 60 Hz step of the hold-to-dig state machine. Purely
 	/// predictive online — the server runs its own timer and aim checks.
 	fn step_dig(&mut self) {
-		if !self.dig_held {
+		// A charged bucket has no left-click action at all — not even the
+		// "you can't dig that" complaint below, which belongs to a dig.
+		if !self.dig_held || (self.water_tool_selected() && !self.scoop_ready()) {
 			self.cancel_dig();
 			return;
 		}
@@ -1807,12 +2066,27 @@ impl Engine {
 					net.send_dig_start(hit.cell);
 				}
 			}
-			self.emit(crate::audio::AudioCmd::LoopStart {
-				id: crate::audio::LOOP_DIG,
-				sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
-				pos: Some(cell_center(hit.cell)),
-				gain: 1.0,
-			});
+			// A scoop is a swing, not a mining hold: one stroke, no
+			// grinding loop. (Water has no sound material of its own, so
+			// the loop resolved to `Material::Earth` and collecting a
+			// spring played the dirt-digging sample.) The arc starts here,
+			// with the hold it measures — its length is the scoop's, so
+			// the hand comes back up exactly as the water lands in it.
+			if self.water_tool_selected() {
+				self.view_swing.strike();
+				self.emit(crate::audio::AudioCmd::Sfx {
+					sound: crate::audio::Sfx::Swim,
+					pos: Some(cell_center(hit.cell)),
+					gain: 0.7,
+				});
+			} else {
+				self.emit(crate::audio::AudioCmd::LoopStart {
+					id: crate::audio::LOOP_DIG,
+					sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
+					pos: Some(cell_center(hit.cell)),
+					gain: 1.0,
+				});
+			}
 			return;
 		}
 		let (done, pitch) = {
@@ -1891,11 +2165,22 @@ impl Engine {
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
+		// A filled bucket splashes; a broken block breaks. Water's
+		// material class is Earth (the table's total fallback), which is
+		// right for nothing it does.
+		let tool = self.water_tool_selected();
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::break_sfx(crate::audio::material_of(prev)),
+			sound: if tool {
+				crate::audio::Sfx::Splash
+			} else {
+				crate::audio::break_sfx(crate::audio::material_of(prev))
+			},
 			pos: Some(cell_center(hit.cell)),
-			gain: 1.0,
+			gain: if tool { 0.5 } else { 1.0 },
 		});
+		// No swing is started here: the arc that began with this hold is
+		// running out on this very frame, and re-striking it is what used
+		// to bolt a whole second stroke onto a finished scoop.
 		// One credit even for the two-cell door.
 		let drop = prev.dig_drop();
 		if let Some(d) = drop {
@@ -1954,8 +2239,14 @@ impl Engine {
 		}
 		let block = match self.hotbar.selected_item() {
 			Some(HotbarItem::Block(b)) => b,
-			Some(HotbarItem::WaterTool) => BlockType::Water,
-			None => return,
+			// The charged bucket pours its one source. It works here, and
+			// only here, because a charged bucket picks with the ORDINARY
+			// ray: the fluid ray stops INSIDE a source, leaving no face
+			// normal to build against, which is why right-clicking water
+			// with the old collect-only tool did nothing at all.
+			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => BlockType::Water,
+			// An empty bucket has nothing to give. Doors above still toggle.
+			Some(HotbarItem::WaterTool) | None => return,
 		};
 		// Stairs carry the placer-derived facing (ascending away along
 		// the look); doors place as a lower+upper pair.
@@ -2025,10 +2316,16 @@ impl Engine {
 				None => {}
 			}
 		}
+		// A poured source splashes; everything else lands with a thunk.
+		let poured = block == BlockType::Water;
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::Place,
+			sound: if poured {
+				crate::audio::Sfx::Splash
+			} else {
+				crate::audio::Sfx::Place
+			},
 			pos: Some(cell_center(target)),
-			gain: 0.9,
+			gain: if poured { 0.6 } else { 0.9 },
 		});
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
@@ -2207,8 +2504,19 @@ impl Engine {
 
 	/// Crosshair cell + dig progress for the highlight overlay: `None`
 	/// progress = idle outline.
+	///
+	/// The water tool never reports progress, in either state, so the
+	/// outline stays but the crack web never appears. Empty, it marks the
+	/// source the scoop will take — chipping a block apart is not what is
+	/// happening, and the swinging hand is the feedback instead. Charged,
+	/// it marks the ordinary block the pour will land against, which is
+	/// why the outline survives `diggable` saying no.
 	pub fn dig_progress(&self) -> Option<((i32, i32, i32), Option<f32>)> {
 		let hit = self.target.as_ref()?;
+		if self.water_tool_selected() {
+			return (self.inventory.bucket_full() || self.diggable(hit))
+				.then_some((hit.cell, None));
+		}
 		if !self.diggable(hit) {
 			return None;
 		}
@@ -2218,6 +2526,39 @@ impl Engine {
 			.filter(|d| d.cell == hit.cell)
 			.map(|d| (d.ticks as f32 / d.required.max(1) as f32).min(1.0));
 		Some((hit.cell, progress))
+	}
+
+	/// This frame's held item, if the hand has anything in it. The pose
+	/// is authored in view space by `viewmodel.rs`, so all this does is
+	/// pick the item and hand over the frame's light rig.
+	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
+		// The SWAP's item, not the hotbar's: mid-swap the hand is still
+		// holding the one it hasn't put away yet.
+		let kind = self.view_swap.shown()?;
+		// The light rig is world-space; the item lives in view space, so
+		// rotate the direction through the same view matrix the scene
+		// used. Translation is irrelevant for a direction.
+		let view = self.camera.view();
+		let d = frame.light_dir;
+		let light_dir_view = view.transform_vector3(Vec3::new(d[0], d[1], d[2]));
+		Some(crate::viewmodel::ViewmodelFrame {
+			kind,
+			pose: [
+				self.view_bob.pose(),
+				self.view_swing.pose(),
+				self.view_swap.pose(),
+			]
+			.into_iter()
+			.fold(Default::default(), crate::viewmodel::combine),
+			light_dir_view,
+			light_strength: d[3],
+			ambient: [frame.ambient[0], frame.ambient[1], frame.ambient[2]],
+			light_color: [
+				frame.light_color[0],
+				frame.light_color[1],
+				frame.light_color[2],
+			],
+		})
 	}
 
 	pub fn inventory(&self) -> &Inventory {
@@ -2611,6 +2952,8 @@ impl Game for Engine {
 			InputEvent::MouseButton { button, pressed } => match button {
 				MouseButton::Left => self.dig_held = pressed,
 				MouseButton::Right => {
+					// An edge, always: right-click interacts or places, and
+					// a charged bucket pours through exactly that path.
 					if pressed {
 						self.click_place = true;
 					}
@@ -2720,31 +3063,20 @@ impl Game for Engine {
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
 			self.push_feed("Left the server.".into());
-			// With a world store, don't keep phantom-playing the server's
-			// seed: swap to a fresh backdrop and relock the startup menu so
-			// the player picks a save or a server.
+			// Without a store there is no save list to return to, so a
+			// store-less run keeps playing the server's seed offline
+			// rather than dropping into a menu it can't leave.
 			if self.world_store.is_some() {
-				let nanos = web_time::SystemTime::now()
-					.duration_since(web_time::UNIX_EPOCH)
-					.map_or(0, |d| d.subsec_nanos());
-				let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
-				self.seed = seed;
-				let spawn = digblock_core::player::spawn(seed);
-				self.spawn_pos = spawn;
-				self.pipeline = Pipeline::with_overlay(
-					seed,
-					self.config.draw_dist,
-					self.config.workers,
-					digblock_core::overlay::EditOverlay::default(),
-				);
-				self.player = Player::new(spawn);
-				self.camera.pos = spawn;
-				self.inventory = Inventory::default();
-				self.player_names.clear();
-				self.reset_world_transients(spawn, true);
-				self.in_local_save = false;
-				self.menu.on_left_server();
+				self.return_to_title();
 			}
+		}
+		// The local-world counterpart: flush the save first, then take the
+		// same road back to the title. Unconditional — a store-less
+		// ephemeral "Play Local" world has a title menu to go back to.
+		if self.menu.take_leave_world() {
+			self.close_local_save();
+			self.push_feed("Left the world.".into());
+			self.return_to_title();
 		}
 		// Return to spawn: one shared 60s cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
@@ -2764,6 +3096,9 @@ impl Game for Engine {
 			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
 		if spawn_requested && self.spawn_cooldown == 0.0 {
 			self.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
+			// Set before the arms: it is what the teleport that lands —
+			// this frame locally, or a round trip later — words itself by.
+			self.spawn_return_pending = true;
 			match self.net.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
 				_ => {
@@ -2825,10 +3160,13 @@ impl Game for Engine {
 				}
 			}
 		}
+		// Expired messages are kept, not dropped: the chat box shows recent
+		// history while you type, and there is nothing to show if the only
+		// copy was thrown away the moment it faded. `feed` is capped at
+		// FEED_MAX either way, so this is a fixed-size ring.
 		for m in &mut self.feed {
-			m.1 -= dt;
+			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
-		self.feed.retain(|m| m.1 > 0.0);
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;
@@ -3022,7 +3360,27 @@ impl Game for Engine {
 			}
 			self.camera.pos += mv.normalize_or_zero() * speed;
 		}
+		// Held-item animation and the audio both read this frame's
+		// movement, so they sit together and `prev_player_pos` advances
+		// once, after both — `step_audio` returns early on a silent run
+		// and would otherwise starve the bob of every frame's delta.
+		let moved = self.player.pos - self.prev_player_pos;
+		self.view_bob.advance(
+			Vec3::new(moved.x, 0.0, moved.z).length(),
+			dt,
+			self.ground_below().1,
+		);
+		// The scoop's arc is started by the hold that opens it, in
+		// `step_dig` — one stroke per bucket, so there is nothing to
+		// re-arm here.
+		self.view_swing.advance(dt);
+		let selected = self
+			.hotbar
+			.selected_item()
+			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
+		self.view_swap.advance(dt, selected);
 		self.step_audio(dt);
+		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
 	}
 
@@ -3178,6 +3536,11 @@ impl Game for Engine {
 			});
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
+		// The hand is part of playing, not part of reading a screen: a
+		// menu, the inventory or the alchemy page all put it away.
+		let viewmodel = (in_game && !self.inv_screen.is_open() && !self.alch_screen.is_open())
+			.then(|| self.viewmodel_frame(&frame))
+			.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
@@ -3195,6 +3558,7 @@ impl Game for Engine {
 					.map(|s| (s, self.history_scratch.as_slice())),
 				feed: &self.feed,
 				target: highlight_target,
+				viewmodel,
 				ui: &self.ui_dl,
 				chat: (in_game && self.chat.is_open())
 					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),
@@ -3614,5 +3978,130 @@ mod store_tests {
 			engine.player.pos.y,
 			spawn.y
 		);
+	}
+}
+
+#[cfg(test)]
+mod water_tool_tests {
+	use super::*;
+
+	/// A generated world with the camera parked in a corridor: a water
+	/// source two blocks ahead, then a gap, then a stone wall. Aiming at
+	/// the source and at the wall is the same look — which ray is cast
+	/// decides which one the crosshair finds.
+	fn corridor() -> (Engine, (i32, i32, i32), (i32, i32, i32)) {
+		let mut config = EngineConfig::desktop();
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+		for _ in 0..10_000 {
+			let m = engine.pipeline.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		// Open sky well above spawn: nothing here depends on terrain, so a
+		// worldgen retune can't quietly move the corridor into rock.
+		let p = engine.player.pos;
+		let (x, y, z) = (
+			p.x.floor() as i32,
+			p.y.floor() as i32 + 20,
+			p.z.floor() as i32,
+		);
+		let (source, wall) = ((x, y, z), (x, y, z + 2));
+		for c in [source, wall, (x, y, z + 1)] {
+			assert_eq!(
+				engine.pipeline.block_at(c.0, c.1, c.2),
+				Some(BlockType::Air),
+				"the corridor must start empty at {c:?}"
+			);
+		}
+		engine
+			.pipeline
+			.set_block(source.0, source.1, source.2, BlockType::Water)
+			.expect("chunk ready");
+		engine
+			.pipeline
+			.set_block(wall.0, wall.1, wall.2, BlockType::Stone)
+			.expect("chunk ready");
+		engine.camera.pos = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 - 2.5);
+		engine.camera.yaw_deg = 0.0; // +z
+		engine.camera.pitch_deg = 0.0;
+		engine
+			.hotbar
+			.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8);
+		assert!(engine.water_tool_selected());
+		(engine, source, wall)
+	}
+
+	/// The charge decides which ray is cast, and so what the crosshair
+	/// is even pointing at: an empty bucket sees the source it can scoop,
+	/// a charged one sees straight through it to the block it can pour
+	/// against. Both outline; neither ever draws the dig crack web.
+	#[test]
+	fn the_charge_switches_the_ray_and_the_outline() {
+		let (mut engine, source, wall) = corridor();
+
+		engine.update_target();
+		assert!(engine.scoop_ready());
+		assert_eq!(engine.target.map(|h| h.cell), Some(source));
+		assert!(
+			engine.diggable(&engine.target.unwrap()),
+			"a scoopable source"
+		);
+		assert_eq!(
+			engine.dig_progress(),
+			Some((source, None)),
+			"outline, no cracks"
+		);
+
+		engine.inventory.add(BlockType::Water, 1);
+		engine.update_target();
+		assert!(!engine.scoop_ready());
+		assert_eq!(
+			engine.target.map(|h| h.cell),
+			Some(wall),
+			"a charged bucket picks with the ordinary ray"
+		);
+		assert!(
+			!engine.diggable(&engine.target.unwrap()),
+			"and left-click has nothing to do"
+		);
+		assert_eq!(
+			engine.dig_progress(),
+			Some((wall, None)),
+			"the wall still outlines — that is where the water goes"
+		);
+	}
+
+	/// Right-click pours, and only when there is something to pour. The
+	/// charge is spent by the ordinary stock debit, which is what makes
+	/// the pour roll back with the edit if a server refuses it.
+	#[test]
+	fn right_click_pours_the_charge_and_only_the_charge() {
+		let (mut engine, _source, wall) = corridor();
+		let target = (wall.0, wall.1, wall.2 - 1);
+
+		// Empty: the click is consumed and nothing happens.
+		engine.update_target();
+		engine.click_place = true;
+		engine.apply_place();
+		assert_eq!(
+			engine.pipeline.block_at(target.0, target.1, target.2),
+			Some(BlockType::Air),
+			"an empty bucket poured"
+		);
+
+		engine.inventory.add(BlockType::Water, 1);
+		engine.update_target();
+		engine.click_place = true;
+		engine.apply_place();
+		assert_eq!(
+			engine.pipeline.block_at(target.0, target.1, target.2),
+			Some(BlockType::Water),
+			"the charged bucket poured against the wall"
+		);
+		assert!(!engine.inventory.bucket_full(), "and emptied itself");
 	}
 }

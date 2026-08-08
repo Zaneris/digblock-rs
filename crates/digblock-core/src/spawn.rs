@@ -220,6 +220,59 @@ fn solid(cell: u16) -> bool {
 	}
 }
 
+/// Whether an edited cell holds water. Standing water in the capsule is
+/// disqualifying for the same reason [`pristine_floor`] rejects it: it is
+/// not somewhere to be dropped, even though water does not collide.
+fn watery(cell: u16) -> bool {
+	use crate::block::BlockType;
+	BlockType::try_from_id(crate::chunk::cell_id(cell)).is_some_and(|b| b.is_water())
+}
+
+/// Whether a player dropped at `eye` would stand on clear, level ground —
+/// judged from the world as it ACTUALLY is (terrain plus every landed
+/// edit), not from pristine worldgen.
+///
+/// This is the operator's half of the spawn rules, for a hand-picked
+/// spawn. [`accepts`] can only judge a column whose *pristine* terrain is
+/// already level, which is exactly right for an automatic search over
+/// untouched land and useless for an admin who levelled a hillside or
+/// built a platform. The cells read here are exactly [`lock_region`]'s, so
+/// "valid to set" and "protected by the lock" describe the same box —
+/// which is what makes locking a hand-picked spawn as permanent as
+/// locking a searched one.
+///
+/// Level ground falls out of the two rules rather than needing its own:
+/// a step up puts a solid cell in the capsule, a step down leaves a
+/// non-solid cell in the floor.
+///
+/// `cell` answers the world; `None` means the cell cannot be read (not
+/// resident) and is a rejection, not a pass. Callers pick a spot within
+/// a few blocks of a live player, where everything is loaded.
+///
+/// [`SPAWN_FLOOR`] is deliberately NOT applied. That rule exists to stop
+/// the *search* descending into a pit players excavated; an operator
+/// aiming at a specific block has made a choice, and a hall cut into a
+/// mountain is a perfectly good spawn. The water rule is what actually
+/// keeps a hand-picked spawn out of the sea.
+pub fn stands_clear(eye: Vec3, cell: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
+	let (x, h, z) = column(eye);
+	for cz in z - CLEAR..=z + CLEAR {
+		for cx in x - CLEAR..=x + CLEAR {
+			// The disc is ground.
+			if !matches!(cell(cx, h, cz), Some(c) if solid(c)) {
+				return false;
+			}
+			// The cylinder above it is air.
+			for cy in h + 1..=h + CAPSULE {
+				if !matches!(cell(cx, cy, cz), Some(c) if !solid(c) && !watery(c)) {
+					return false;
+				}
+			}
+		}
+	}
+	true
+}
+
 /// Whether column `(x, z)` is a valid spawn given the current edits.
 fn accepts(x: i32, z: i32, seed: f64, edits: Edits) -> Option<i32> {
 	let h = pristine_floor(x, z, seed)?;
@@ -550,6 +603,113 @@ mod tests {
 					 ({dx},{dz}) sits at {}, not {mh}",
 					n.height
 				);
+			}
+		}
+	}
+
+	/// A flat world reading from an explicit cell map, defaulting to stone
+	/// at or below `top` and air above — the shape `stands_clear` is meant
+	/// to accept.
+	fn world(
+		top: i32,
+		patch: HashMap<(i32, i32, i32), u16>,
+	) -> impl Fn(i32, i32, i32) -> Option<u16> {
+		move |x, y, z| {
+			Some(patch.get(&(x, y, z)).copied().unwrap_or({
+				if y <= top {
+					BlockType::Stone as u16
+				} else {
+					BlockType::Air as u16
+				}
+			}))
+		}
+	}
+
+	fn eye_over(top: i32) -> Vec3 {
+		eye(0, top, 0)
+	}
+
+	/// The happy path, and the two rules stated the way the doc comment
+	/// states them: the disc is ground, the cylinder above it is air.
+	#[test]
+	fn stands_clear_accepts_level_ground_and_rejects_a_step_or_a_hole() {
+		let top = 100; // deliberately below SPAWN_FLOOR: it does not apply here
+		assert!(stands_clear(eye_over(top), &world(top, HashMap::new())));
+
+		// A step up at the disc rim puts stone in the capsule.
+		let mut up = HashMap::new();
+		up.insert((CLEAR, top + 1, 0), BlockType::Stone as u16);
+		assert!(!stands_clear(eye_over(top), &world(top, up)));
+
+		// A hole at the rim leaves air in the floor.
+		let mut hole = HashMap::new();
+		hole.insert((0, top, CLEAR), BlockType::Air as u16);
+		assert!(!stands_clear(eye_over(top), &world(top, hole)));
+
+		// Just outside the disc is none of its business.
+		let mut outside = HashMap::new();
+		outside.insert((CLEAR + 1, top, 0), BlockType::Air as u16);
+		outside.insert((0, top + 1, CLEAR + 1), BlockType::Stone as u16);
+		assert!(stands_clear(eye_over(top), &world(top, outside)));
+	}
+
+	/// Water is not solid, so nothing else in the predicate would catch a
+	/// spawn set in the shallows — this rule is what keeps a hand-picked
+	/// spawn out of the sea now that [`SPAWN_FLOOR`] does not apply to it.
+	#[test]
+	fn stands_clear_rejects_standing_water_in_the_capsule() {
+		let top = 100;
+		let mut wet = HashMap::new();
+		wet.insert((0, top + 1, 0), BlockType::Water as u16);
+		assert!(!stands_clear(eye_over(top), &world(top, wet)));
+	}
+
+	/// An unreadable cell is a rejection, never a pass: refusing to set a
+	/// spawn we cannot see is the safe direction.
+	#[test]
+	fn stands_clear_rejects_an_unreadable_cell() {
+		let top = 100;
+		let cell = move |x: i32, y: i32, z: i32| {
+			// One corner column of the disc is not resident.
+			if (x, z) == (CLEAR, CLEAR) {
+				return None;
+			}
+			Some(if y <= top {
+				BlockType::Stone as u16
+			} else {
+				BlockType::Air as u16
+			})
+		};
+		assert!(!stands_clear(eye_over(top), &cell));
+	}
+
+	/// The load-bearing alignment: the cells `stands_clear` reads are
+	/// exactly the ones the lock protects, so locking a hand-picked spawn
+	/// makes it permanently valid the same way locking a searched one does.
+	#[test]
+	fn stands_clear_reads_exactly_the_locked_region() {
+		let top = 100;
+		let e = eye_over(top);
+		let region = lock_region(e);
+		for cz in -CLEAR - 1..=CLEAR + 1 {
+			for cx in -CLEAR - 1..=CLEAR + 1 {
+				for cy in top - 1..=top + CAPSULE + 1 {
+					let mut patch = HashMap::new();
+					// Break the cell whichever way applies at this height.
+					let cell = if cy <= top {
+						BlockType::Air as u16
+					} else {
+						BlockType::Stone as u16
+					};
+					patch.insert((cx, cy, cz), cell);
+					let broke = !stands_clear(e, &world(top, patch));
+					assert_eq!(
+						broke,
+						region.contains(cx, cy, cz),
+						"cell ({cx},{cy},{cz}): broke={broke}, protected={}",
+						region.contains(cx, cy, cz)
+					);
+				}
 			}
 		}
 	}
