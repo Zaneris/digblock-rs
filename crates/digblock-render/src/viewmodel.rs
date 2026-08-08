@@ -89,8 +89,14 @@ const _: () = assert!(BREATH_Y * 3.0 < BOB_Y);
 const SWING_Y: f32 = 0.42;
 const SWING_Z: f32 = 0.30;
 const SWING_PITCH: f32 = 0.9;
-/// Seconds per swing arc.
-const SWING_SECS: f32 = 0.30;
+/// Seconds per swing arc — deliberately the length of a scoop, so one
+/// bucketful is one stroke: the hand dips as the hold opens and the
+/// water appears in it as the hand comes back up. Any shorter and the
+/// arc ran out mid-hold and started a second one, which read as two
+/// grabs for a single bucket. Pinned against the block table by
+/// `the_swing_is_exactly_one_scoop_long` — it is a duration shared with
+/// core, not a free tunable.
+const SWING_SECS: f32 = 20.0 / 60.0;
 
 /// Seconds for a whole slot swap, down and back up. Short: this sits
 /// between the player and the block they meant to place.
@@ -133,13 +139,25 @@ pub struct Bob {
 
 impl Bob {
 	/// Advance by one frame. `moved` = horizontal distance travelled,
-	/// `dt` = its duration. Airborne or standing still, the amplitude
-	/// eases back to zero and the item settles into its breathing; the
-	/// phase keeps its place so resuming a walk doesn't jump.
-	pub fn advance(&mut self, moved: f32, dt: f32) {
+	/// `dt` = its duration, `grounded` = the feet are on something.
+	/// Airborne or standing still, the amplitude eases back to zero and
+	/// the item settles into its breathing; the phase keeps its place so
+	/// resuming a walk doesn't jump.
+	///
+	/// `grounded` is the same gate [`crate::audio::Footsteps`] uses, for
+	/// the same reason: the bob is the hand keeping time with the feet,
+	/// and feet that aren't touching anything take no steps. Sailing
+	/// through the air — or swimming, which is also off the ground — is
+	/// distance travelled that the walk did not do, and letting it feed
+	/// the stride swung the hand at a full walking pace through a jump.
+	pub fn advance(&mut self, moved: f32, dt: f32, grounded: bool) {
 		if dt <= 0.0 {
 			return;
 		}
+		// Off the ground there is no stride: the phase freezes where it
+		// is (so landing resumes the swing rather than restarting it) and
+		// the amplitude eases out through the same speed term as a stop.
+		let moved = if grounded { moved } else { 0.0 };
 		self.phase = (self.phase + moved / BOB_STRIDE).fract();
 		self.breath = (self.breath + dt / BREATH_SECS).fract();
 		let target = (moved / dt / BOB_FULL_SPEED).clamp(0.0, 1.0);
@@ -178,10 +196,16 @@ impl Bob {
 	}
 }
 
-/// The collect swing: one arc, restarted while the hold continues.
-/// Collecting water is a scoop, not a mining hold — it deliberately
-/// does NOT draw the block-breaking crack decal, so this is the only
-/// feedback that the tool is doing something.
+/// The collect swing: exactly one arc per scoop, started when the hold
+/// opens. Collecting water is a scoop, not a mining hold — it
+/// deliberately does NOT draw the block-breaking crack decal, so this is
+/// the only feedback that the tool is doing something.
+///
+/// Nothing here chains arcs off the button being down. It used to, and
+/// with an arc shorter than the hold that always produced a second
+/// stroke: the first ran out a few ticks before the scoop landed, a new
+/// one began, and the bucket filled during it. The arc IS the scoop
+/// ([`SWING_SECS`]), so the hold has room for one and only one.
 #[derive(Default)]
 pub struct Swing {
 	/// Seconds into the current arc; `None` between arcs.
@@ -189,20 +213,17 @@ pub struct Swing {
 }
 
 impl Swing {
-	/// Advance, restarting the arc while `active`. One arc always runs
-	/// to completion, so releasing the button mid-swing returns the
-	/// hand smoothly instead of snapping it back.
-	pub fn advance(&mut self, dt: f32, active: bool) {
-		self.t = match self.t {
-			// Mid-arc: run it out, whatever the button is doing.
-			Some(t) if t + dt < SWING_SECS => Some(t + dt),
-			// Between arcs: another one only while the hold continues.
-			_ => active.then_some(0.0),
-		};
+	/// Advance the arc in flight, if any. One arc always runs to
+	/// completion, so releasing the button mid-swing returns the hand
+	/// smoothly instead of snapping it back.
+	pub fn advance(&mut self, dt: f32) {
+		self.t = self.t.map(|t| t + dt).filter(|t| *t < SWING_SECS);
 	}
 
-	/// Kick off an arc now (a completed scoop, so the last one lands
-	/// even if the button came up on the same frame).
+	/// Kick off an arc now — a scoop hold just opened. Restarting an arc
+	/// already in flight is correct and intended: the only way to get
+	/// here mid-swing is a hold that retargeted, which restarted the
+	/// scoop timer this arc is measuring.
 	pub fn strike(&mut self) {
 		self.t = Some(0.0);
 	}
@@ -682,7 +703,7 @@ mod tests {
 		let dt = 1.0 / 60.0;
 		// Walk for a second: the amplitude comes up and the pose moves.
 		for _ in 0..60 {
-			bob.advance(4.0 * dt, dt);
+			bob.advance(4.0 * dt, dt, true);
 		}
 		let walking = bob.pose();
 		assert!(bob.amp > 0.9, "full travel at walk speed: {}", bob.amp);
@@ -691,7 +712,7 @@ mod tests {
 		// one, so the walk-plus-breath total can never exceed either
 		// budget added together, whatever the crossfade is doing.
 		for _ in 0..600 {
-			bob.advance(4.0 * dt, dt);
+			bob.advance(4.0 * dt, dt, true);
 			let p = bob.pose();
 			assert!(p.offset.x.abs() <= BOB_X + BREATH_X + 1e-5);
 			assert!(p.offset.y.abs() <= BOB_Y + BREATH_Y + 1e-5);
@@ -703,7 +724,7 @@ mod tests {
 		// Standing still: the stride settles out and the breath takes
 		// over the amplitude it gives up.
 		for _ in 0..180 {
-			bob.advance(0.0, dt);
+			bob.advance(0.0, dt, true);
 		}
 		assert!(bob.amp < 0.01, "stride settled: {}", bob.amp);
 		assert!(walking.offset.length() > 0.05, "it did move while walking");
@@ -720,7 +741,7 @@ mod tests {
 		let mut hi = f32::MIN;
 		// Two full cycles of standing perfectly still.
 		for _ in 0..(2.0 * BREATH_SECS / dt) as usize {
-			bob.advance(0.0, dt);
+			bob.advance(0.0, dt, true);
 			let y = bob.pose().offset.y;
 			lo = lo.min(y);
 			hi = hi.max(y);
@@ -840,26 +861,86 @@ mod tests {
 		}
 	}
 
+	/// One scoop, one stroke. The bug this pins: the arc was shorter
+	/// than the hold, so it ran out a few ticks early, a second arc
+	/// started, and one bucketful looked like two grabs at the water.
 	#[test]
-	fn a_swing_runs_to_completion_and_repeats_while_held() {
+	fn a_scoop_is_exactly_one_swing() {
 		let mut s = Swing::default();
 		let dt = 1.0 / 60.0;
 		assert_eq!(s.pose(), Pose::default(), "idle hands are still");
-		// Held: arcs chain, and the pose never rests mid-hold.
-		let mut peak: f32 = 0.0;
-		for _ in 0..120 {
-			s.advance(dt, true);
+		// The hold opens. Count the strokes over a whole scoop by
+		// watching the arc leave and return to rest.
+		s.strike();
+		let (mut strokes, mut peak, mut was_out) = (0, 0.0f32, false);
+		for _ in 0..(SWING_SECS / dt).ceil() as usize {
+			s.advance(dt);
+			let out = s.pose() != Pose::default();
+			strokes += usize::from(out && !was_out);
+			was_out = out;
 			peak = peak.max(s.pose().offset.y.abs());
 		}
+		assert_eq!(strokes, 1, "one stroke for one bucket");
 		assert!(peak > SWING_Y * 0.9, "the arc reaches its travel: {peak}");
-		// Released mid-arc: the current one still finishes, then stops.
+		// And the scoop lands with the hand back where it started.
+		assert_eq!(s.pose(), Pose::default(), "at rest as the water arrives");
+		// Nothing re-arms it: holding the button past the scoop is a
+		// bucket that is already full, not another swing.
+		for _ in 0..120 {
+			s.advance(dt);
+			assert_eq!(s.pose(), Pose::default(), "no arc without a strike");
+		}
+		// Releasing mid-arc still runs the current stroke out rather
+		// than snapping the hand back.
 		s.strike();
-		s.advance(dt, false);
+		s.advance(dt);
 		assert!(s.pose() != Pose::default(), "mid-arc, still swinging");
 		for _ in 0..60 {
-			s.advance(dt, false);
+			s.advance(dt);
 		}
 		assert_eq!(s.pose(), Pose::default(), "and then it rests");
+	}
+
+	/// The arc's length is a duration shared with core — the water
+	/// block's own hold time. Retuning the scoop without retuning this
+	/// brings the double-swipe straight back.
+	#[test]
+	fn the_swing_is_exactly_one_scoop_long() {
+		let ticks = BlockType::Water
+			.hardness_ticks()
+			.expect("water is scoopable");
+		let scoop = ticks as f32 * digblock_core::player::TICK;
+		assert!(
+			(SWING_SECS - scoop).abs() < 1e-6,
+			"the swing is {SWING_SECS}s but a scoop takes {scoop}s"
+		);
+	}
+
+	/// The hand keeps time with the feet, so a jump stills it — the
+	/// same rule the footstep cadence follows. Sailing through the air
+	/// at walking speed used to swing the item at a full walking pace.
+	#[test]
+	fn the_bob_stops_swinging_in_the_air() {
+		let mut bob = Bob::default();
+		let dt = 1.0 / 60.0;
+		for _ in 0..60 {
+			bob.advance(4.0 * dt, dt, true);
+		}
+		assert!(bob.amp > 0.9, "walking first: {}", bob.amp);
+		let (phase, mut peak) = (bob.phase, 0.0f32);
+		// Same speed, now airborne: the swing settles out inside a
+		// stride's worth of travel, and the phase waits where it was.
+		for _ in 0..60 {
+			bob.advance(4.0 * dt, dt, false);
+		}
+		assert!(bob.amp < 0.01, "the stride settled: {}", bob.amp);
+		assert_eq!(bob.phase, phase, "and kept its place for the landing");
+		// What's left is the breath, which is a quarter of the travel.
+		for _ in 0..60 {
+			bob.advance(4.0 * dt, dt, false);
+			peak = peak.max(bob.pose().offset.y.abs());
+		}
+		assert!(peak <= BREATH_Y + 1e-5, "only the breath is left: {peak}");
 	}
 
 	/// Every item must fit the buffer the pass allocates — a door is

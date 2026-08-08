@@ -984,6 +984,21 @@ impl Engine {
 		}
 	}
 
+	/// The block just under the feet and whether it holds the player up.
+	/// Shared by the footstep cadence and the held item's walk bob, which
+	/// have to agree: the hand keeps time with the feet, so anything that
+	/// stops the steps sounding stops the hand swinging. Cheap enough to
+	/// call twice a frame — it is one `block_at`.
+	fn ground_below(&self) -> (Option<BlockType>, bool) {
+		let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
+		let below = self.pipeline.block_at(
+			self.player.pos.x.floor() as i32,
+			(feet - 0.05).floor() as i32,
+			self.player.pos.z.floor() as i32,
+		);
+		(below, below.is_some_and(|b| b.props().collides))
+	}
+
 	/// Per-frame audio upkeep, after the camera settles: listener pose,
 	/// footsteps, waterfall voices, ambient bed. One early-out branch
 	/// when no sink is attached.
@@ -1015,8 +1030,7 @@ impl Engine {
 			self.player.pos.x.floor() as i32,
 			self.player.pos.z.floor() as i32,
 		);
-		let below = self.pipeline.block_at(bx, (feet - 0.05).floor() as i32, bz);
-		let grounded = below.is_some_and(|b| b.props().collides);
+		let (below, grounded) = self.ground_below();
 		let feet_wet = self
 			.pipeline
 			.block_at(bx, feet.floor() as i32, bz)
@@ -2055,8 +2069,11 @@ impl Engine {
 			// A scoop is a swing, not a mining hold: one stroke, no
 			// grinding loop. (Water has no sound material of its own, so
 			// the loop resolved to `Material::Earth` and collecting a
-			// spring played the dirt-digging sample.)
+			// spring played the dirt-digging sample.) The arc starts here,
+			// with the hold it measures — its length is the scoop's, so
+			// the hand comes back up exactly as the water lands in it.
 			if self.water_tool_selected() {
+				self.view_swing.strike();
 				self.emit(crate::audio::AudioCmd::Sfx {
 					sound: crate::audio::Sfx::Swim,
 					pos: Some(cell_center(hit.cell)),
@@ -2161,10 +2178,9 @@ impl Engine {
 			pos: Some(cell_center(hit.cell)),
 			gain: if tool { 0.5 } else { 1.0 },
 		});
-		// The last scoop lands even if the button came up on this frame.
-		if tool {
-			self.view_swing.strike();
-		}
+		// No swing is started here: the arc that began with this hold is
+		// running out on this very frame, and re-striking it is what used
+		// to bolt a whole second stroke onto a finished scoop.
 		// One credit even for the two-cell door.
 		let drop = prev.dig_drop();
 		if let Some(d) = drop {
@@ -3349,12 +3365,15 @@ impl Game for Engine {
 		// once, after both — `step_audio` returns early on a silent run
 		// and would otherwise starve the bob of every frame's delta.
 		let moved = self.player.pos - self.prev_player_pos;
-		self.view_bob
-			.advance(Vec3::new(moved.x, 0.0, moved.z).length(), dt);
-		// A scoop in progress: the tool out, a button down, and a hold
-		// actually open on a source (aiming at nothing doesn't swing).
-		let scooping = self.scoop_ready() && self.dig_held && self.dig.is_some();
-		self.view_swing.advance(dt, scooping);
+		self.view_bob.advance(
+			Vec3::new(moved.x, 0.0, moved.z).length(),
+			dt,
+			self.ground_below().1,
+		);
+		// The scoop's arc is started by the hold that opens it, in
+		// `step_dig` — one stroke per bucket, so there is nothing to
+		// re-arm here.
+		self.view_swing.advance(dt);
 		let selected = self
 			.hotbar
 			.selected_item()
