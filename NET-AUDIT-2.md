@@ -237,13 +237,31 @@ Measured against reconstructed v13 shapes, a realistic walking crowd
 
 `MAX_SNAPSHOT_PLAYERS` rose 24 → 40 inside the same datagram.
 
-**Still open, and the bigger lever:** the snapshot interest radius is
-`client.draw_dist` (`sync.rs`) = 20 columns = **320 blocks**, at which a
-player cube is sub-pixel. A dedicated, smaller player-interest radius — or
-a distance-tiered send rate — would cut typical P far more than any
-encoding change, and needs no protocol change at all. Left alone here
-because it changes what players can SEE, which is a design call rather than
-an optimization.
+**The follow-up lever, also now landed — as tiering, not a smaller
+radius.** The snapshot selection radius is `client.draw_dist` = 20 columns
+= 320 blocks, and the first version of this note claimed a player is
+"sub-pixel" out there. That was wrong, and worth recording because it very
+nearly justified the wrong fix: at 320 blocks a 1.8-block player subtends
+~5 px at 1080p and 70° vertical FOV (~12 px at 128 blocks). Small, but
+plainly visible — cutting the radius would have deleted people you can
+see, to save bytes.
+
+So distance tiers the RATE instead. Inside `PLAYER_NEAR_COLS` (8 columns,
+128 blocks) a remote rides every snapshot; beyond it, one in
+`FAR_PLAYER_STRIDE` (4) — 5 Hz. Which snapshot is phased by player id, so
+far players spread across the cycle rather than all landing in one
+datagram and then none.
+
+Cost: the client interpolates ~100 ms behind and extrapolates along
+velocity to a 250 ms cap, so far players run mostly on extrapolation —
+worth a few tenths of a block at walking speed, on a figure a handful of
+pixels tall. `REMOTE_EXPIRE_TICKS` (2 s) sits far outside the 200 ms send
+interval, which a `const_assert` now pins so the tiering can never expire
+the players it is merely sending slowly.
+
+Benefit, for uniform density in the disc: only 16% of players in range are
+inside the near radius, so a snapshot carries ~37% of the remote entries
+it used to — **~63% fewer**, on top of v14's ~41% fewer bytes each.
 
 ### 2.2 Join-sync pacing and the PlayerStore fsync — DONE
 

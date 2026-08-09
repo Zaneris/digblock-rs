@@ -350,7 +350,38 @@ const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 28 + 13 <= MAX_DATAGRAM)
 /// ticks (2 s) left our interest radius — drop it client-side so it
 /// vanishes instead of ghosting at the extrapolation cap. `PlayerLeft`
 /// still removes eagerly.
+///
+/// Must stay comfortably above `SNAPSHOT_DIVISOR * FAR_PLAYER_STRIDE`
+/// ticks, or the distance tiering below would expire the very players it
+/// is only sending slowly.
 pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;
+
+/// Column radius inside which a remote player rides EVERY snapshot.
+///
+/// Beyond it they ride one snapshot in [`FAR_PLAYER_STRIDE`] instead of
+/// being dropped, because "far" here is not "invisible": the selection
+/// radius is the client's own draw distance — 20 columns, 320 blocks, at
+/// which a 1.8-block player still subtends ~5 px at 1080p and 70° vertical
+/// FOV. Cutting the radius instead would delete people you can plainly
+/// see. At 128 blocks a player is ~12 px, which is where smooth motion
+/// starts to be worth full rate.
+pub const PLAYER_NEAR_COLS: i32 = 8;
+
+/// How often a remote beyond [`PLAYER_NEAR_COLS`] is included: every Nth
+/// snapshot, i.e. 5 Hz at `SNAPSHOT_DIVISOR` 3 and stride 4.
+///
+/// The client interpolates ~100 ms behind and extrapolates along velocity
+/// up to [`EXTRAP_CAP_TICKS`] (250 ms), so a 200 ms spacing degrades into
+/// mostly-extrapolation for these players — worth at most a few tenths of
+/// a block of positional error at a walk, on a figure a handful of pixels
+/// tall. Which player falls in which snapshot is phased by id, so far
+/// players spread across the cycle rather than all landing in one
+/// datagram.
+pub const FAR_PLAYER_STRIDE: u32 = 4;
+const _: () = assert!(
+	REMOTE_EXPIRE_TICKS as u32 > SNAPSHOT_DIVISOR * FAR_PLAYER_STRIDE * 4,
+	"a far player's send interval must sit far inside the client's expiry"
+);
 
 #[cfg(test)]
 mod tests {

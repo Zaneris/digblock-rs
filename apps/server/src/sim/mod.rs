@@ -390,6 +390,19 @@ impl Sim {
 		self.store.set_cell(x, y, z, cell);
 	}
 
+	/// Put a client somewhere, bypassing the admin command — for staging a
+	/// spatial arrangement a test needs, without walking there.
+	#[cfg(test)]
+	fn test_teleport(&mut self, conn_id: u64, pos: Vec3) {
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.player.set_state(digblock_core::player::PlayerState {
+				pos,
+				vel: Vec3::ZERO,
+			});
+			c.center = column_of(pos);
+		}
+	}
+
 	/// The hand-picked spawn (`/set-spawn`), if one is stored.
 	#[cfg(test)]
 	fn test_spawn_point(&self) -> Option<Vec3> {

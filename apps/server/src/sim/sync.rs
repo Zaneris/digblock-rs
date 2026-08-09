@@ -6,7 +6,9 @@ use digblock_net::codec;
 use digblock_net::messages::{
 	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
 };
-use digblock_net::protocol::{MAX_SNAPSHOT_PLAYERS, TICK_RATE};
+use digblock_net::protocol::{
+	FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR, TICK_RATE,
+};
 use tokio::sync::mpsc::error::TrySendError;
 
 /// Columns beyond `draw_dist + slack` fall out of a client's synced set,
@@ -202,6 +204,9 @@ impl Sim {
 				c.center,
 			)
 		}));
+		// Counts snapshots, not ticks — the tiering phase must advance once
+		// per snapshot or a far player would be skipped forever.
+		let snap_index = self.tick / SNAPSHOT_DIVISOR;
 		let mut nearby = std::mem::take(&mut self.snap_nearby);
 		let mut players = std::mem::take(&mut self.snap_players);
 		let mut dgram = std::mem::take(&mut self.snap_buf);
@@ -211,18 +216,32 @@ impl Sim {
 			}
 			// Self is its own field now (the reconciliation anchor, at full
 			// precision); the rest are nearest-first within draw distance.
+			//
+			// Distance TIERS the rate rather than gating membership: a
+			// remote inside PLAYER_NEAR_COLS rides every snapshot, one
+			// beyond it rides one in FAR_PLAYER_STRIDE. Which snapshot is
+			// phased by player id, so far players spread across the cycle
+			// instead of all arriving together and then not at all.
 			nearby.clear();
 			let mut me = None;
 			for (i, (p, own, col)) in roster.iter().enumerate() {
 				if p.id == client.id {
 					me = Some(*own);
-				} else if in_radius(*col, client.center, client.draw_dist) {
-					let (dx, dz) = (
-						col.0 as i64 - client.center.0 as i64,
-						col.1 as i64 - client.center.1 as i64,
-					);
-					nearby.push((dx * dx + dz * dz, i));
+					continue;
 				}
+				if !in_radius(*col, client.center, client.draw_dist) {
+					continue;
+				}
+				let (dx, dz) = (
+					col.0 as i64 - client.center.0 as i64,
+					col.1 as i64 - client.center.1 as i64,
+				);
+				let d2 = dx * dx + dz * dz;
+				let near = d2 <= (PLAYER_NEAR_COLS as i64).pow(2);
+				if !near && (snap_index + p.id as u32) % FAR_PLAYER_STRIDE != 0 {
+					continue;
+				}
+				nearby.push((d2, i));
 			}
 			let take = MAX_SNAPSHOT_PLAYERS - 1;
 			if nearby.len() > take {
@@ -587,6 +606,66 @@ mod tests {
 			assert!(snap.me.is_some(), "client {id} got no self state");
 			assert!(!snap.others.iter().any(|p| p.id == my_id));
 		}
+	}
+
+	/// Distance tiers the RATE, it does not gate membership. A player past
+	/// `PLAYER_NEAR_COLS` but still inside draw distance keeps arriving —
+	/// at 320 blocks they are ~5 px tall at 1080p, which is small but very
+	/// much visible, so dropping them outright would delete people you can
+	/// see. They simply arrive in one snapshot out of `FAR_PLAYER_STRIDE`.
+	#[test]
+	fn a_distant_player_is_sent_slower_not_dropped() {
+		use digblock_net::protocol::{FAR_PLAYER_STRIDE, PLAYER_NEAR_COLS};
+		let mut sim = flat_sim("tier");
+		let mut a = connect(&mut sim, 1);
+		let _b = connect(&mut sim, 2);
+		let _c = connect(&mut sim, 3);
+		for id in [1, 2, 3] {
+			wait_live(&mut sim, id);
+		}
+		// The harness joins at draw_dist 4, inside PLAYER_NEAR_COLS — give A
+		// a real client's radius so "far but visible" can exist at all.
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: digblock_net::messages::ClientMsg::SetDrawDist { draw_dist: 20 },
+		}]);
+		// B stays on top of A; C is moved well past the near radius but
+		// comfortably inside A's draw distance.
+		let near = sim.test_player(1).unwrap().pos;
+		sim.test_teleport(
+			3,
+			near + Vec3::new((PLAYER_NEAR_COLS as f32 + 2.0) * 16.0, 0.0, 0.0),
+		);
+		for _ in 0..3 {
+			sim.tick_once(vec![]);
+		}
+		a.drain();
+		a.snaps.clear();
+
+		// A couple of full stride cycles' worth of snapshots.
+		let want = (FAR_PLAYER_STRIDE * 4) as usize;
+		while a.snaps.len() < want {
+			sim.tick_once(vec![]);
+			a.drain();
+		}
+		let seen = |id: u8| {
+			a.snaps
+				.iter()
+				.filter(|s| s.others.iter().any(|p| p.id == id))
+				.count()
+		};
+		let (b_seen, c_seen) = (seen(1), seen(2));
+		assert_eq!(
+			b_seen,
+			a.snaps.len(),
+			"the near player rides every snapshot"
+		);
+		assert!(c_seen > 0, "the far player is still sent, just less often");
+		assert!(
+			c_seen < b_seen,
+			"far {c_seen} vs near {b_seen} of {} — the tiering did nothing",
+			a.snaps.len()
+		);
 	}
 
 	#[test]
