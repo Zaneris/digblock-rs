@@ -610,6 +610,76 @@ mod tests {
 		assert_eq!(format!("{d:?}"), format!("{back:?}"));
 	}
 
+	/// The client-direction frame cap has to clear every message a client
+	/// legitimately sends, at its widest — otherwise the server drops
+	/// honest players for "stream corrupt".
+	///
+	/// Each case below is built at its maximum: a name at `MAX_NAME_LEN`,
+	/// a chat line at `MAX_CHAT_LEN` in two-byte characters, a full
+	/// hotbar+grid layout of three-byte varint ids.
+	#[test]
+	fn max_client_frame_fits_every_client_message() {
+		use crate::protocol::{MAX_CHAT_LEN, MAX_CLIENT_FRAME, MAX_NAME_LEN};
+		let widest = [
+			(
+				"hello",
+				ClientMsg::Hello {
+					protocol: u16::MAX,
+					name: "é".repeat(MAX_NAME_LEN),
+					draw_dist: i32::MAX,
+					token: [0xff; 16],
+					sim_version: u16::MAX,
+					build: "0.0.0-somewhat-long-prerelease-tag".into(),
+					identity: [0xff; 16],
+				},
+			),
+			(
+				"chat",
+				ClientMsg::Chat {
+					text: "é".repeat(MAX_CHAT_LEN),
+				},
+			),
+			(
+				"layout",
+				ClientMsg::Layout {
+					hotbar: vec![u16::MAX; digblock_core::hotbar::HOTBAR_SLOTS],
+					grid: vec![u16::MAX; digblock_core::inv_grid::GRID_SLOTS],
+				},
+			),
+			(
+				"edit",
+				ClientMsg::EditRequest {
+					seq: u32::MAX,
+					tick: u32::MAX,
+					origin: [f32::MIN; 3],
+					dir: [f32::MIN; 3],
+					kind: EditKind::Place { block: u16::MAX },
+					cell: [i32::MIN; 3],
+					normal: [-1, -1, -1],
+					slot: u8::MAX,
+				},
+			),
+			(
+				"alchemy",
+				ClientMsg::Alchemy {
+					op: AlchemyOp::Craft {
+						item: u16::MAX,
+						count: u32::MAX,
+					},
+				},
+			),
+		];
+		for (name, msg) in widest {
+			let mut buf = Vec::new();
+			crate::codec::write_frame(&msg, &mut buf).expect("encodes");
+			assert!(
+				buf.len() <= MAX_CLIENT_FRAME,
+				"{name} is {} bytes, over the {MAX_CLIENT_FRAME}-byte client cap",
+				buf.len()
+			);
+		}
+	}
+
 	/// A full snapshot must fit one datagram at the raised
 	/// `MAX_SNAPSHOT_PLAYERS`, with every field at its worst-case width —
 	/// the `const_assert` in protocol.rs asserts the arithmetic, this

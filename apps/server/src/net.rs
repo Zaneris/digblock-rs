@@ -8,7 +8,8 @@ use crossbeam_channel::Sender;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE,
+	decode_preamble, encode_preamble, MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN,
+	PROTOCOL_VERSION, TICK_RATE,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -294,7 +295,10 @@ async fn lobby(
 	// the sim ever hears about this connection — there is no tokenless way
 	// onto a server. Leftover bytes buffered past the Hello frame carry
 	// into the main loop untouched.
-	let mut frames = FrameReader::default();
+	// The client direction's cap, not the server's: nothing a client sends
+	// is large, and the 1 MB default exists for journal batches going the
+	// other way.
+	let mut frames = FrameReader::with_limit(MAX_CLIENT_FRAME);
 	let mut buf = vec![0u8; 64 * 1024];
 	let hello = match tokio::time::timeout(
 		HELLO_TIMEOUT,

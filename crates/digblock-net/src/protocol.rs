@@ -266,8 +266,21 @@ pub const INPUT_SEND_STRIDE: u32 = 2;
 /// Datagram payload budget, safely under the QUIC minimum MTU.
 pub const MAX_DATAGRAM: usize = 1150;
 
-/// Reliable-stream frame cap (journal batches are the big ones).
+/// Reliable-stream frame cap for SERVER→client frames. Journal batches
+/// are the big ones: a densely edited column is thousands of cells.
 pub const MAX_FRAME: usize = 1 << 20;
+
+/// Reliable-stream frame cap for CLIENT→server frames.
+///
+/// Nothing a client legitimately sends is large — the widest is a `Layout`
+/// at a few hundred bytes, and `max_client_frame_fits_every_client_message`
+/// pins that. Sharing the server's 1 MB cap meant a client could push 1 MB
+/// `Layout` frames (a `Vec<u16>` truncated only later, during
+/// sanitization) straight into the sim's action queue: amplification, not
+/// a heap bomb, since `MSG_BUDGET` bounds the rate — but a cap three
+/// orders of magnitude past any real message is not a cap.
+pub const MAX_CLIENT_FRAME: usize = 4096;
+const _: () = assert!(MAX_CLIENT_FRAME < MAX_FRAME);
 
 /// Dig/place: claimed eye origin may differ from the server's simulated
 /// position by at most this many blocks. Sized for honest divergence:

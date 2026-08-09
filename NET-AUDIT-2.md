@@ -345,37 +345,58 @@ panicked or unwound past its `disconnect` call was indistinguishable from
 an idle one. It now distinguishes `TryRecvError::Disconnected` and
 synthesizes the disconnect the thread never sent.
 
-### 2.4 Client-direction `MAX_FRAME` is sized for the server's journal batches
+### 2.4 Client-direction frame cap — DONE
 
-`protocol.rs:242` — 1 MB in both directions. The largest legitimate
-`ClientMsg` is a few hundred bytes, but a client can send 1 MB `Layout` frames
-that are queued raw into `Sim::action_queue` before sanitization. `MSG_BUDGET`
-(32 per 100 ms) bounds this to amplification rather than a heap bomb, so it is
-low priority — but a separate, much smaller client-direction cap is the
-missing guard.
+`MAX_FRAME` was 1 MB in both directions, sized for the server's journal
+batches. The widest thing a client legitimately sends is a `Layout` at a
+few hundred bytes, but that shared cap let one push 1 MB `Layout` frames
+(a `Vec<u16>`, truncated only later during sanitization) straight into the
+sim's action queue. `MSG_BUDGET` bounded the rate, so this was
+amplification rather than a heap bomb — but a cap three orders of
+magnitude past any real message is not a cap.
 
-### 2.5 Contract drift in the three-way mirror
+`FrameReader` now carries its own limit (`Default` keeps `MAX_FRAME` for
+the client reading a server; the server uses
+`with_limit(MAX_CLIENT_FRAME)`, 4 KB). The refusal happens on the length
+PREFIX, before the body is buffered, which is the property that matters.
+`max_client_frame_fits_every_client_message` builds each client message at
+its widest — a name at `MAX_NAME_LEN`, a chat line at `MAX_CHAT_LEN` in
+two-byte characters, a full hotbar+grid of three-byte varint ids — so the
+cap cannot be tightened into dropping honest players.
 
-CLAUDE.md requires `Contracts.cs`, `master.rs` and `services.rs` to move
-together. Three disagreements, none urgent:
+### 2.5 Contract drift — the player-count half DONE
 
-- `Contracts.cs:32` types `Players`/`MaxPlayers` as `int` with no range
-  validation at `Program.cs:101`; both Rust fillers deserialize `u32`. One
-  entry registered with `players: -1` fails the whole `ListResponse` decode,
-  so **no client can see any server**. (Trivially reachable today via 1.2;
-  once registration is authenticated it needs only a buggy server.)
+`Contracts.cs` types `Players`/`MaxPlayers` as `int` and range-checked
+neither the register nor the heartbeat, while both Rust fillers decode
+them as `u32`. Since the fillers deserialize the whole `ListResponse` in
+one shot, ONE entry registered with `players: -1` failed the entire decode
+— and no client could see ANY server on that master.
+
+Fixed on both sides, because either alone leaves a gap: the master clamps
+(`ServerRegistry.SanitizeCount`, applied at register AND heartbeat) so the
+bad value never leaves, and the fillers clamp on the way in so a stale or
+hostile master cannot do it either. A count is display text beside a name;
+it was never worth the whole listing.
+
+Pinned by an e2e test that registers by hand with `players: -1` — a
+well-behaved client cannot send it, since `RegisterBody` is `u32` — and
+asserts the listing is still readable. Verified to fail against the
+unclamped master.
+
+**Still open in this section** (all cheapest to do alongside §1, since
+they are the same three-way mirror):
+
 - `ProtocolVersion`/`SimVersion` (`Contracts.cs:17-18`) are sent by
-  `master.rs:180-181` and never read by the master or surfaced in
+  `master.rs` and never read by the master or surfaced in
   `ServerSummary`. Incompatible servers are listed indistinguishably from
   compatible ones, and the client discovers the mismatch only after a full
   QUIC connect + Hello.
-- `JoinResponse.ExpiresIn` (`Contracts.cs:38`) is read by neither filler.
-
-Also: the server never re-validates the master's `displayName` with
-`validate_name` — only `sanitize_name` runs, which permits 24 chars including
-spaces. The 3-10 ASCII rule is enforced in exactly one place, with no defence
-in depth on the side that consumes it. That matters more than it looks,
-because 1.1 makes the name an authorization input.
+- `JoinResponse.ExpiresIn` is read by neither filler.
+- The server never re-validates the master's `displayName` with
+  `validate_name` — only `sanitize_name` runs, which permits 24 chars
+  including spaces. The 3-10 ASCII rule is enforced in exactly one place,
+  with no defence in depth on the side that consumes it. That matters more
+  than it looks, because §1.1 makes the name an authorization input.
 
 ### 2.6 Minor, noted but not scheduled
 

@@ -98,7 +98,9 @@ app.MapPost("/api/servers/register", async (
     if (!result.Reachable)
         return Results.UnprocessableEntity(new RegisterFailed(false, result.ReasonString, result.Detail ?? ""));
 
-    var entry = registry.Register(req.Name ?? "", host, probeHost, req.Port, certHash, req.Players, req.MaxPlayers);
+    var entry = registry.Register(
+        req.Name ?? "", host, probeHost, req.Port, certHash,
+        ServerRegistry.SanitizeCount(req.Players), ServerRegistry.SanitizeCount(req.MaxPlayers));
     app.Logger.LogInformation("registered {Name} at {Host}:{Port} as {Id}", entry.Name, host, req.Port, entry.Id);
     return Results.Ok(new RegisterOk(true, entry.Id, entry.Key, host));
 });
@@ -112,8 +114,8 @@ app.MapPost("/api/servers/{id:guid}/heartbeat", (
         return Results.NotFound();
     if (!ServerRegistry.KeyMatches(entry, BearerToken(http)))
         return Results.Unauthorized();
-    entry.Players = req.Players;
-    entry.MaxPlayers = req.MaxPlayers;
+    entry.Players = ServerRegistry.SanitizeCount(req.Players);
+    entry.MaxPlayers = ServerRegistry.SanitizeCount(req.MaxPlayers);
     entry.Strikes = 0;
     entry.LastSeenUtc = DateTimeOffset.UtcNow;
     return Results.NoContent();

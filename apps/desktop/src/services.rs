@@ -8,6 +8,7 @@
 //!   POST /api/join { serverId, displayName } → { token, expiresIn, url, certHash }
 
 use digblock_render::menu::{MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use serde::Deserialize as _;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -24,8 +25,22 @@ struct ListServer {
 	name: String,
 	url: String,
 	cert_hash: String,
+	#[serde(deserialize_with = "lenient_count")]
 	players: u32,
+	#[serde(deserialize_with = "lenient_count")]
 	max_players: u32,
+}
+
+/// A player count, clamped rather than rejected.
+///
+/// The master types these as `int` and (until recently) range-checked
+/// neither, so a server could register `players: -1`. Decoding straight
+/// into `u32` fails the WHOLE `ListResponse`, which means one bad row —
+/// hostile or merely buggy — hides every server on the master from every
+/// client. A count is display text next to a name; it is not worth that.
+fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+	let n = i64::deserialize(d)?;
+	Ok(n.clamp(0, u32::MAX as i64) as u32)
 }
 
 #[derive(serde::Deserialize)]
@@ -221,6 +236,37 @@ mod tests {
 		assert_eq!(token[15], 0x0f);
 		assert!(parse_token("zz0102030405060708090a0b0c0d0e0f").is_err());
 		assert!(parse_token("deadbeef").is_err());
+	}
+
+	/// A 32-BYTE token containing a multi-byte character used to panic the
+	/// slice below the length check. Reproduced before it was fixed.
+	#[test]
+	fn a_non_ascii_token_is_rejected_not_a_panic() {
+		let hex = format!("{}{}", "€", "a".repeat(29));
+		assert_eq!(hex.len(), 32, "32 bytes, 30 chars — passes a byte check");
+		assert!(parse_token(&hex).is_err());
+	}
+
+	/// One bad row must not hide every server on the master. The master
+	/// clamps these too; this is the half that protects against a master
+	/// that is older, or simply wrong.
+	#[test]
+	fn a_hostile_player_count_does_not_fail_the_whole_list() {
+		let json = r#"{"servers":[
+			{"id":"a1","name":"Bad","url":"https://h:4433","certHash":"ab",
+			 "players":-1,"maxPlayers":-5},
+			{"id":"a2","name":"Good","url":"https://h:4434","certHash":"cd",
+			 "players":3,"maxPlayers":8}]}"#;
+		let list: ListResponse = serde_json::from_str(json).expect("the list still decodes");
+		assert_eq!(list.servers.len(), 2, "and keeps BOTH rows");
+		assert_eq!(list.servers[0].players, 0, "the bad count clamps");
+		assert_eq!(list.servers[0].max_players, 0);
+		assert_eq!(list.servers[1].players, 3, "the good row is untouched");
+		// Absurdly large values clamp rather than wrap.
+		let big = r#"{"servers":[{"id":"a","name":"B","url":"u","certHash":"c",
+			"players":99999999999,"maxPlayers":8}]}"#;
+		let list: ListResponse = serde_json::from_str(big).unwrap();
+		assert_eq!(list.servers[0].players, u32::MAX);
 	}
 
 	#[test]

@@ -793,3 +793,54 @@ fn cert_rotation_reregisters_and_serves_new_cert() {
 		c.joined_names.iter().any(|n| n == "Newcomer")
 	});
 }
+
+/// A hostile or buggy registrant cannot hide every server on the master.
+///
+/// The master types player counts as `int` and range-checked neither the
+/// register nor the heartbeat, while both clients decode them as unsigned
+/// — so one entry with `players: -1` failed the WHOLE `/api/servers`
+/// decode client-side, and nobody could see any server at all. Fixed on
+/// both sides: the master clamps so the bad value never leaves, and the
+/// clients clamp so a stale master cannot do it either.
+#[test]
+fn a_negative_player_count_cannot_break_the_server_list() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("negcount", &master.url, false);
+	let cfg = server.master_config(&master.url, "e2e-negcount");
+
+	// Register by hand so the counts can be what a well-behaved client
+	// could never send. The QUIC probe still runs against the real server.
+	let res = ureq::post(format!("{}/api/servers/register", master.url))
+		.send_json(serde_json::json!({
+			"name": "e2e-negcount",
+			"host": cfg.advertise_host,
+			"probeHost": cfg.probe_host,
+			"port": cfg.advertise_port,
+			"certHash": server
+				.cert_hash
+				.iter()
+				.map(|b| format!("{b:02x}"))
+				.collect::<String>(),
+			"players": -1,
+			"maxPlayers": -5,
+			"protocolVersion": digblock_net::protocol::PROTOCOL_VERSION,
+			"simVersion": digblock_core::SIM_VERSION,
+		}))
+		.expect("register with hostile counts");
+	assert_eq!(res.status().as_u16(), 200, "registration itself succeeds");
+
+	// The listing must be readable, and the counts sane.
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let raw: String = res.body_mut().read_to_string().unwrap();
+	let list: serde_json::Value = serde_json::from_str(&raw).unwrap();
+	let entry = &list["servers"][0];
+	assert_eq!(
+		entry["players"].as_i64(),
+		Some(0),
+		"clamped at the master, not passed through: {raw}"
+	);
+	assert_eq!(entry["maxPlayers"].as_i64(), Some(0), "{raw}");
+}
