@@ -314,7 +314,7 @@ impl TestClient {
 				}
 				NetEvent::PlayerJoined { name, .. } => self.joined_names.push(name),
 				NetEvent::PlayerLeft { .. } => {}
-				NetEvent::Inventory { counts } => self.inventories.push(counts),
+				NetEvent::Inventory { counts, .. } => self.inventories.push(counts),
 				NetEvent::Chat { from, text } => self.chats.push((from, text)),
 				// No e2e case requests a teleport; unexpected = loud.
 				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
@@ -675,6 +675,76 @@ fn probe_rejects_wrong_cert_hash() {
 	}
 }
 
+/// The LIVE connection publishes a wire round trip too, not just the
+/// one-shot probe — that is what lets the overlay show the same quantity
+/// the server browser does.
+///
+/// Pins the two failure modes loopback can see: that the background thread
+/// publishes at all (the value starts as an "unknown" sentinel, so a
+/// transport that never stores would read as `None` forever), and that it
+/// is a measurement rather than quinn's 333 ms initial default. The value
+/// is deliberately NOT compared against `rtt_ms`: they are independent by
+/// construction, and the ack loop needs a joined, snapshotting session
+/// while this needs only a connection.
+#[test]
+fn a_live_connection_publishes_its_wire_rtt() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("livertt", &master.url, true);
+	let (token, _url) = mint_token(&master.url, "rttbot");
+	let mut c = TestClient::connect(&server.url, "rttbot", token);
+	c.wait("welcomed", |c| c.welcomed);
+	// The background thread republishes on each wake, so give the
+	// connection a few polls' worth of traffic to have woken at all.
+	c.wait("wire rtt published", |c| c.client.stats().wire_rtt_ms > 0.0);
+
+	let rtt = c.client.stats().wire_rtt_ms;
+	assert!(
+		rtt > 0.0 && rtt < 100.0,
+		"loopback wire rtt read as {rtt} ms — that is quinn's 333 ms initial \
+		 default, not a measurement"
+	);
+}
+
+/// The CLIENT-side probe — the one behind the server browser's ping column
+/// — reports the transport's own round-trip estimate, not the time the
+/// handshake took.
+///
+/// Loopback cannot tell a good latency figure from a bad one, so this pins
+/// the two failure modes it CAN see: that the probe still reaches a real
+/// server after the API change, and that the number is a measurement rather
+/// than a constant. The realistic regression is quinn's RFC 9002 initial
+/// RTT — 333 ms, reported identically for every server in the list — which
+/// is what `Connection::rtt` returns before it has a sample of its own.
+///
+/// No master here on purpose: an unregistered server still completes the
+/// WebTransport handshake, which is all a probe does. That keeps this test
+/// off Docker and fast.
+#[test]
+fn client_probe_reports_a_round_trip_not_a_handshake() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let server = TestServer::start("probertt", "http://127.0.0.1:1", false);
+	let policy = digblock_net_native::CertPolicy::PinnedSha256(server.cert_hash);
+	let (tx, rx) = std::sync::mpsc::channel();
+	digblock_net_native::probe(
+		&format!("https://127.0.0.1:{}", server.port),
+		policy,
+		Duration::from_secs(5),
+		move |ms| {
+			let _ = tx.send(ms);
+		},
+	);
+	let ms = rx
+		.recv_timeout(Duration::from_secs(10))
+		.expect("probe called back")
+		.expect("probe reached the server");
+	assert!(
+		ms < 100,
+		"loopback round trip read as {ms} ms — that is quinn's 333 ms initial \
+		 default or a handshake time, not a measurement"
+	);
+}
+
 /// A server nobody can reach (here: the master container's own loopback,
 /// where nothing listens) must be refused registration by the probe.
 #[test]
@@ -792,4 +862,55 @@ fn cert_rotation_reregisters_and_serves_new_cert() {
 	before.wait("pre-rotation client observes post-rotation join", |c| {
 		c.joined_names.iter().any(|n| n == "Newcomer")
 	});
+}
+
+/// A hostile or buggy registrant cannot hide every server on the master.
+///
+/// The master types player counts as `int` and range-checked neither the
+/// register nor the heartbeat, while both clients decode them as unsigned
+/// — so one entry with `players: -1` failed the WHOLE `/api/servers`
+/// decode client-side, and nobody could see any server at all. Fixed on
+/// both sides: the master clamps so the bad value never leaves, and the
+/// clients clamp so a stale master cannot do it either.
+#[test]
+fn a_negative_player_count_cannot_break_the_server_list() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("negcount", &master.url, false);
+	let cfg = server.master_config(&master.url, "e2e-negcount");
+
+	// Register by hand so the counts can be what a well-behaved client
+	// could never send. The QUIC probe still runs against the real server.
+	let res = ureq::post(format!("{}/api/servers/register", master.url))
+		.send_json(serde_json::json!({
+			"name": "e2e-negcount",
+			"host": cfg.advertise_host,
+			"probeHost": cfg.probe_host,
+			"port": cfg.advertise_port,
+			"certHash": server
+				.cert_hash
+				.iter()
+				.map(|b| format!("{b:02x}"))
+				.collect::<String>(),
+			"players": -1,
+			"maxPlayers": -5,
+			"protocolVersion": digblock_net::protocol::PROTOCOL_VERSION,
+			"simVersion": digblock_core::SIM_VERSION,
+		}))
+		.expect("register with hostile counts");
+	assert_eq!(res.status().as_u16(), 200, "registration itself succeeds");
+
+	// The listing must be readable, and the counts sane.
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let raw: String = res.body_mut().read_to_string().unwrap();
+	let list: serde_json::Value = serde_json::from_str(&raw).unwrap();
+	let entry = &list["servers"][0];
+	assert_eq!(
+		entry["players"].as_i64(),
+		Some(0),
+		"clamped at the master, not passed through: {raw}"
+	);
+	assert_eq!(entry["maxPlayers"].as_i64(), Some(0), "{raw}");
 }

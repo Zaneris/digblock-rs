@@ -79,13 +79,38 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, CodecError> {
 }
 
 /// Incremental reassembly of length-prefixed frames from a byte stream.
-#[derive(Default)]
+///
+/// `Default` accepts frames up to [`MAX_FRAME`] — the right cap for a
+/// client reading a server's journal batches. The server reads the other
+/// direction and should use [`FrameReader::with_limit`] with
+/// [`MAX_CLIENT_FRAME`], which is sized for what a client actually sends.
+///
+/// [`MAX_CLIENT_FRAME`]: crate::protocol::MAX_CLIENT_FRAME
 pub struct FrameReader {
 	buf: Vec<u8>,
 	cursor: usize,
+	limit: usize,
+}
+
+impl Default for FrameReader {
+	fn default() -> Self {
+		Self {
+			buf: Vec::new(),
+			cursor: 0,
+			limit: MAX_FRAME,
+		}
+	}
 }
 
 impl FrameReader {
+	/// A reader that refuses frames larger than `limit`.
+	pub fn with_limit(limit: usize) -> Self {
+		Self {
+			limit,
+			..Self::default()
+		}
+	}
+
 	pub fn extend(&mut self, bytes: &[u8]) {
 		// Drop consumed prefix before growing, so the buffer stays small.
 		if self.cursor > 0 {
@@ -104,7 +129,7 @@ impl FrameReader {
 			return Ok(None);
 		}
 		let len = u32::from_le_bytes([avail[0], avail[1], avail[2], avail[3]]) as usize;
-		if len > MAX_FRAME {
+		if len > self.limit {
 			return Err(CodecError::Oversize(len));
 		}
 		if avail.len() < 4 + len {
@@ -185,6 +210,33 @@ mod tests {
 		let mut r = FrameReader::default();
 		r.extend(&(u32::MAX).to_le_bytes());
 		assert!(r.next_frame().is_err());
+	}
+
+	/// The limit is per-reader, so the server can hold clients to a much
+	/// tighter cap than the one it sends journal batches under. A frame
+	/// that would sail past `MAX_FRAME` is refused at the client cap, and
+	/// the refusal happens on the HEADER — before the body is buffered,
+	/// which is the whole point.
+	#[test]
+	fn a_limited_reader_refuses_what_the_default_accepts() {
+		use crate::protocol::MAX_CLIENT_FRAME;
+		let mut wire = Vec::new();
+		write_frame(&vec![0u8; MAX_CLIENT_FRAME * 2], &mut wire).unwrap();
+
+		let mut lenient = FrameReader::default();
+		lenient.extend(&wire);
+		assert!(
+			lenient.next_frame().unwrap().is_some(),
+			"the server direction still accepts it"
+		);
+
+		let mut strict = FrameReader::with_limit(MAX_CLIENT_FRAME);
+		// Only the 4-byte header — the body has not even arrived yet.
+		strict.extend(&wire[..4]);
+		assert!(
+			matches!(strict.next_frame(), Err(CodecError::Oversize(_))),
+			"refused from the length prefix alone"
+		);
 	}
 
 	#[test]

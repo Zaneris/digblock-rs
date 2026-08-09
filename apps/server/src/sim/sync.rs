@@ -3,13 +3,26 @@
 use super::{column_of, in_radius, send_frame, OutMsg, OutTx, Sim, DGRAM_STALL_SECS};
 use crate::journal::Journal;
 use digblock_net::codec;
-use digblock_net::messages::{BlockEdit, Datagram, NetPlayerState, ServerMsg, Snapshot};
-use digblock_net::protocol::{MAX_SNAPSHOT_PLAYERS, TICK_RATE};
+use digblock_net::messages::{
+	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
+};
+use digblock_net::protocol::{
+	FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR, TICK_RATE,
+};
 use tokio::sync::mpsc::error::TrySendError;
 
 /// Columns beyond `draw_dist + slack` fall out of a client's synced set,
 /// so re-entry re-syncs (clients evict remote chunks too).
 const SYNC_SLACK: i32 = 2;
+
+/// Journal columns handed to one client per tick. At 60 Hz this drains a
+/// 1 000-column join in under a second while costing a fraction of a
+/// millisecond per tick.
+const JOIN_SYNC_PER_TICK: usize = 16;
+/// Outbound slots kept free for live traffic while a sync drains, so a
+/// joining client's backlog can never starve edits, chat or teleports —
+/// nor trip the queue-refused drop that `send_frame` reports.
+const JOIN_SYNC_RESERVE: usize = 64;
 
 /// Neighbor journal-water rescans processed per tick (each is O(that
 /// column's journaled cells)) — an initial radius-6 load can't hitch the
@@ -93,82 +106,166 @@ impl Sim {
 			client
 				.synced_columns
 				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
-			for (cx, cz) in journal.index.edited_columns() {
-				if client.dead.get() {
-					break;
-				}
-				if in_radius((cx, cz), client.center, client.draw_dist)
-					&& !client.synced_columns.contains(&(cx, cz))
+			// Region-indexed, not a walk of every edited column in the
+			// world: this fires per client every time their center moves —
+			// every 16 blocks walked — and `edited_columns` grows for the
+			// life of the world while everything around it stays O(active).
+			// The result is a superset (whole regions), so the radius test
+			// below still does the real filtering.
+			for col in journal.index.columns_near(client.center, client.draw_dist) {
+				if in_radius(col, client.center, client.draw_dist)
+					&& !client.synced_columns.contains(&col)
+					&& !client.sync_queue_set.contains(&col)
 				{
-					if !send_journal_column_to(journal, &client.out, cx, cz) {
-						client.dead.set(true);
-						break;
-					}
-					client.synced_columns.insert((cx, cz));
+					client.sync_queue.push_back(col);
+					client.sync_queue_set.insert(col);
 				}
 			}
 		}
+		self.pump_join_sync();
 	}
 
-	pub(super) fn send_journal_column(&self, out: &OutTx, cx: i32, cz: i32) -> bool {
-		send_journal_column_to(&self.journal, out, cx, cz)
+	/// Hand each client a few queued journal columns per tick, never more
+	/// than its outbound queue can take.
+	///
+	/// Join sync used to run entirely inside `handle_hello`: every in-range
+	/// edited column encoded and pushed in ONE tick. On a mature world that
+	/// is thousands of frames and megabytes inside a 16.7 ms budget — a
+	/// hitch for every other player on the server, on every join — and past
+	/// `OUT_CAP` it was a race the joiner lost outright, dropped for
+	/// "overflowing the outbound queue" through no fault of its own.
+	///
+	/// Reserving capacity is what makes the cliff structurally impossible:
+	/// sync only ever uses slots live traffic is not going to need.
+	fn pump_join_sync(&mut self) {
+		let journal = &self.journal;
+		for client in self.clients.values_mut() {
+			if client.sync_queue.is_empty() || client.dead.get() {
+				continue;
+			}
+			let room = client
+				.out
+				.capacity()
+				.saturating_sub(JOIN_SYNC_RESERVE)
+				.min(JOIN_SYNC_PER_TICK);
+			for _ in 0..room {
+				let Some(col) = client.sync_queue.pop_front() else {
+					break;
+				};
+				client.sync_queue_set.remove(&col);
+				// It may have left range while it sat in the queue.
+				if !in_radius(col, client.center, client.draw_dist) {
+					continue;
+				}
+				if !send_journal_column_to(journal, &client.out, col.0, col.1) {
+					client.dead.set(true);
+					break;
+				}
+				client.synced_columns.insert(col);
+			}
+		}
 	}
 
 	pub(super) fn send_snapshots(&mut self) {
 		// Shared roster built once; per client only nearby players are
 		// selected, so snapshots can never outgrow one datagram (the cliff
 		// that used to silently kill all snapshots at ~30 players).
-		let roster: Vec<(NetPlayerState, (i32, i32))> = self
-			.clients
-			.values()
-			.filter(|c| c.live)
-			.map(|c| {
-				let s = c.player.state();
-				(
-					NetPlayerState {
-						id: c.id,
-						pos: s.pos.to_array(),
-						vel: s.vel.to_array(),
-						look: c.look.to_array(),
-						held: c.held_wire(),
-					},
-					c.center,
-				)
-			})
-			.collect();
-		let mut nearby: Vec<(i32, usize)> = Vec::with_capacity(roster.len());
+		//
+		// Every buffer here is reused across ticks. This runs 20×/s and
+		// used to cost 9 allocations per client per snapshot — 46 k
+		// allocations and 15 MB/s of churn at 255 players, on the sim
+		// thread. The selection is also a `select_nth_unstable` rather than
+		// a full sort: only the nearest `MAX_SNAPSHOT_PLAYERS - 1` matter,
+		// and sorting the whole candidate list per client made the pass
+		// O(n² log n) — ~10 M comparisons/s at 255 players to choose 23.
+		// The roster carries each player BOTH ways: as the remote everyone
+		// else sees (quantized once here, not per recipient) and as the
+		// full-precision self state its owner needs back.
+		let mut roster = std::mem::take(&mut self.snap_roster);
+		roster.clear();
+		roster.extend(self.clients.values().filter(|c| c.live).map(|c| {
+			let s = c.player.state();
+			(
+				RemoteState {
+					id: c.id,
+					pos: s.pos.to_array(),
+					vel: [
+						vel_to_wire(s.vel.x),
+						vel_to_wire(s.vel.y),
+						vel_to_wire(s.vel.z),
+					],
+					yaw: yaw_to_wire(c.look.to_array()),
+					held: c.held_wire(),
+				},
+				SelfState {
+					pos: s.pos.to_array(),
+					vel: s.vel.to_array(),
+				},
+				c.center,
+			)
+		}));
+		// Counts snapshots, not ticks — the tiering phase must advance once
+		// per snapshot or a far player would be skipped forever.
+		let snap_index = self.tick / SNAPSHOT_DIVISOR;
+		let mut nearby = std::mem::take(&mut self.snap_nearby);
+		let mut players = std::mem::take(&mut self.snap_players);
+		let mut dgram = std::mem::take(&mut self.snap_buf);
 		for client in self.clients.values() {
 			if !client.live {
 				continue;
 			}
-			// Self first (the reconciliation anchor), then nearest remotes
-			// within the client's own draw distance.
+			// Self is its own field now (the reconciliation anchor, at full
+			// precision); the rest are nearest-first within draw distance.
+			//
+			// Distance TIERS the rate rather than gating membership: a
+			// remote inside PLAYER_NEAR_COLS rides every snapshot, one
+			// beyond it rides one in FAR_PLAYER_STRIDE. Which snapshot is
+			// phased by player id, so far players spread across the cycle
+			// instead of all arriving together and then not at all.
 			nearby.clear();
-			for (i, (p, col)) in roster.iter().enumerate() {
-				if p.id != client.id && in_radius(*col, client.center, client.draw_dist) {
-					let (dx, dz) = (col.0 - client.center.0, col.1 - client.center.1);
-					nearby.push((dx * dx + dz * dz, i));
+			let mut me = None;
+			for (i, (p, own, col)) in roster.iter().enumerate() {
+				if p.id == client.id {
+					me = Some(*own);
+					continue;
 				}
+				if !in_radius(*col, client.center, client.draw_dist) {
+					continue;
+				}
+				let (dx, dz) = (
+					col.0 as i64 - client.center.0 as i64,
+					col.1 as i64 - client.center.1 as i64,
+				);
+				let d2 = dx * dx + dz * dz;
+				let near = d2 <= (PLAYER_NEAR_COLS as i64).pow(2);
+				if !near && (snap_index + p.id as u32) % FAR_PLAYER_STRIDE != 0 {
+					continue;
+				}
+				nearby.push((d2, i));
 			}
-			nearby.sort_unstable();
-			let me = roster.iter().find(|(p, _)| p.id == client.id);
-			let players: Vec<NetPlayerState> = me
-				.map(|(p, _)| *p)
-				.into_iter()
-				.chain(
-					nearby
-						.iter()
-						.take(MAX_SNAPSHOT_PLAYERS - 1)
-						.map(|&(_, i)| roster[i].0),
-				)
-				.collect();
-			let selected = players.len();
-			let snap = Snapshot {
+			let take = MAX_SNAPSHOT_PLAYERS - 1;
+			if nearby.len() > take {
+				// Partition only — the client does not care what order the
+				// remotes arrive in, just that they are the nearest ones.
+				nearby.select_nth_unstable(take);
+				nearby.truncate(take);
+			}
+			players.clear();
+			players.extend(nearby.iter().map(|&(_, i)| roster[i].0));
+			let selected = players.len() + usize::from(me.is_some());
+			// Serializing needs the owned `Datagram`; unwrap it afterwards to
+			// take the Vec back, exactly as the client's `recycle_batch` does.
+			let dg = Datagram::Snapshot(Snapshot {
 				server_tick: self.tick,
 				your_last_input_tick: client.last_input_tick,
-				players,
-			};
-			match codec::encode_datagram(&Datagram::Snapshot(snap)) {
+				me,
+				others: std::mem::take(&mut players),
+			});
+			let encoded = codec::encode_datagram_into(&dg, &mut dgram).map(<[u8]>::to_vec);
+			if let Datagram::Snapshot(s) = dg {
+				players = s.others;
+			}
+			match encoded {
 				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
 					Ok(()) => client.dgram_full_since.set(None),
 					Err(TrySendError::Full(_)) => {
@@ -207,6 +304,10 @@ impl Sim {
 				}
 			}
 		}
+		self.snap_roster = roster;
+		self.snap_nearby = nearby;
+		self.snap_players = players;
+		self.snap_buf = dgram;
 	}
 }
 
@@ -495,14 +596,76 @@ mod tests {
 				.last()
 				.unwrap_or_else(|| panic!("client {id} got no snapshots"));
 			assert!(
-				snap.players.len() <= MAX_SNAPSHOT_PLAYERS,
-				"client {id}: {} players in snapshot",
-				snap.players.len()
+				snap.others.len() < MAX_SNAPSHOT_PLAYERS,
+				"client {id}: {} remotes in snapshot",
+				snap.others.len()
 			);
-			// Self is always present, first (the reconciliation anchor).
+			// Own state always rides its own field (the reconciliation
+			// anchor), and never duplicates into the remote list.
 			let my_id = (*id - 1) as u8;
-			assert_eq!(snap.players.first().map(|p| p.id), Some(my_id));
+			assert!(snap.me.is_some(), "client {id} got no self state");
+			assert!(!snap.others.iter().any(|p| p.id == my_id));
 		}
+	}
+
+	/// Distance tiers the RATE, it does not gate membership. A player past
+	/// `PLAYER_NEAR_COLS` but still inside draw distance keeps arriving —
+	/// at 320 blocks they are ~5 px tall at 1080p, which is small but very
+	/// much visible, so dropping them outright would delete people you can
+	/// see. They simply arrive in one snapshot out of `FAR_PLAYER_STRIDE`.
+	#[test]
+	fn a_distant_player_is_sent_slower_not_dropped() {
+		use digblock_net::protocol::{FAR_PLAYER_STRIDE, PLAYER_NEAR_COLS};
+		let mut sim = flat_sim("tier");
+		let mut a = connect(&mut sim, 1);
+		let _b = connect(&mut sim, 2);
+		let _c = connect(&mut sim, 3);
+		for id in [1, 2, 3] {
+			wait_live(&mut sim, id);
+		}
+		// The harness joins at draw_dist 4, inside PLAYER_NEAR_COLS — give A
+		// a real client's radius so "far but visible" can exist at all.
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: digblock_net::messages::ClientMsg::SetDrawDist { draw_dist: 20 },
+		}]);
+		// B stays on top of A; C is moved well past the near radius but
+		// comfortably inside A's draw distance.
+		let near = sim.test_player(1).unwrap().pos;
+		sim.test_teleport(
+			3,
+			near + Vec3::new((PLAYER_NEAR_COLS as f32 + 2.0) * 16.0, 0.0, 0.0),
+		);
+		for _ in 0..3 {
+			sim.tick_once(vec![]);
+		}
+		a.drain();
+		a.snaps.clear();
+
+		// A couple of full stride cycles' worth of snapshots.
+		let want = (FAR_PLAYER_STRIDE * 4) as usize;
+		while a.snaps.len() < want {
+			sim.tick_once(vec![]);
+			a.drain();
+		}
+		let seen = |id: u8| {
+			a.snaps
+				.iter()
+				.filter(|s| s.others.iter().any(|p| p.id == id))
+				.count()
+		};
+		let (b_seen, c_seen) = (seen(1), seen(2));
+		assert_eq!(
+			b_seen,
+			a.snaps.len(),
+			"the near player rides every snapshot"
+		);
+		assert!(c_seen > 0, "the far player is still sent, just less often");
+		assert!(
+			c_seen < b_seen,
+			"far {c_seen} vs near {b_seen} of {} — the tiering did nothing",
+			a.snaps.len()
+		);
 	}
 
 	#[test]
@@ -519,7 +682,7 @@ mod tests {
 		}
 		a.drain();
 		assert!(
-			a.snaps.last().unwrap().players.iter().any(|p| p.id == 1),
+			a.snaps.last().unwrap().others.iter().any(|p| p.id == 1),
 			"near remote present"
 		);
 
@@ -542,15 +705,14 @@ mod tests {
 		b.drain();
 		let a_last = a.snaps.last().expect("A still snapshotted");
 		assert!(
-			!a_last.players.iter().any(|p| p.id == 1),
+			!a_last.others.iter().any(|p| p.id == 1),
 			"far remote filtered: {:?}",
-			a_last.players
+			a_last.others
 		);
 		let b_last = b.snaps.last().expect("B still snapshotted");
-		assert_eq!(
-			b_last.players.first().map(|p| p.id),
-			Some(1),
-			"B keeps its own state"
+		assert!(
+			b_last.me.is_some(),
+			"B keeps its own state even with nobody nearby"
 		);
 	}
 }

@@ -125,9 +125,41 @@ impl JournalIndex {
 		self.columns.values().map(|c| c.len() as u64).sum()
 	}
 
-	/// Columns that have at least one edit.
+	/// Columns that have at least one edit. O(the whole world's edited
+	/// columns) — prefer [`Self::columns_near`] for anything that runs per
+	/// client or per tick.
 	pub fn edited_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
 		self.columns.keys().copied()
+	}
+
+	/// Edited columns in the REGIONS that a disc of `radius` columns about
+	/// `center` can touch. A superset of the columns actually in range —
+	/// the caller still tests each one — but it walks only the regions that
+	/// could matter rather than every edited column in the world.
+	///
+	/// This is what keeps residency sync O(active) instead of O(world age).
+	/// The late-sync scan runs per client every time their center column
+	/// moves, i.e. every 16 blocks walked; against `edited_columns` that
+	/// was a full hash-map walk each time — 50 k columns × 255 players ×
+	/// ~64 crossings/s is millions of key visits a second, and it grows for
+	/// the life of the world while everything around it is bounded.
+	pub fn columns_near(
+		&self,
+		center: (i32, i32),
+		radius: i32,
+	) -> impl Iterator<Item = (i32, i32)> + '_ {
+		let (r0x, r1x) = (
+			(center.0 - radius).div_euclid(REGION_COLS),
+			(center.0 + radius).div_euclid(REGION_COLS),
+		);
+		let (r0z, r1z) = (
+			(center.1 - radius).div_euclid(REGION_COLS),
+			(center.1 + radius).div_euclid(REGION_COLS),
+		);
+		(r0x..=r1x)
+			.flat_map(move |rx| (r0z..=r1z).map(move |rz| (rx, rz)))
+			.filter_map(|r| self.regions.get(&r))
+			.flat_map(|cols| cols.iter().copied())
 	}
 
 	/// Every edit as `((x, y, z), cell)`, in arbitrary order.
@@ -359,12 +391,22 @@ const COMPACT_SCAN_PER_TICK: usize = 8;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_OPEN_REGIONS: usize = 64;
 
-/// One open shard file. `dirty` = bytes still in the BufWriter; `used` is
-/// the LRU stamp (see [`Journal::open_writer`]).
+/// One open shard file. `dirty` = bytes still in the BufWriter;
+/// `unsynced` = bytes written since this shard's last fsync (which
+/// OUTLIVES `dirty`: `flush_writers` empties the buffer into the kernel
+/// without making anything durable); `used` is the LRU stamp (see
+/// [`Journal::open_writer`]).
+///
+/// The two flags are separate because [`Journal::sync`] fires on a global
+/// "something was written" trigger, once a second, while the writer set is
+/// up to `MAX_OPEN_REGIONS` wide. Without a per-writer flag it fsynced all
+/// 64 descriptors every time any one of them took an append — 64 fsyncs a
+/// second on the sim thread, most of them for shards with nothing new.
 #[cfg(not(target_arch = "wasm32"))]
 struct RegionWriter {
 	file: BufWriter<File>,
 	dirty: bool,
+	unsynced: bool,
 	used: u64,
 }
 
@@ -575,6 +617,7 @@ impl Journal {
 		let w = self.open_writer(region)?;
 		w.file.write_all(rec)?;
 		w.dirty = true;
+		w.unsynced = true;
 		Ok(())
 	}
 
@@ -603,6 +646,7 @@ impl Journal {
 				RegionWriter {
 					file: BufWriter::new(file),
 					dirty: false,
+					unsynced: false,
 					used: 0,
 				},
 			);
@@ -831,10 +875,20 @@ impl Journal {
 		self.next_compact_at = None;
 	}
 
-	/// Flush + fsync every open shard now (graceful shutdown).
+	/// Flush + fsync every shard with something new (the once-a-second
+	/// durability beat, and graceful shutdown).
+	///
+	/// Skipping already-synced writers is what keeps this O(shards written)
+	/// rather than O(shards open): the trigger in `maintain` is one global
+	/// `wrote_since_sync` flag, so a single append to one region used to
+	/// fsync all `MAX_OPEN_REGIONS` descriptors — and an fsync costs
+	/// milliseconds on a container volume, straight out of the sim tick.
 	pub fn sync(&mut self) {
 		let mut errs = Vec::new();
 		for w in self.writers.values_mut() {
+			if !w.dirty && !w.unsynced {
+				continue;
+			}
 			if let Err(e) = w.file.flush() {
 				errs.push(("flush", e));
 				continue;
@@ -842,7 +896,9 @@ impl Journal {
 			w.dirty = false;
 			if let Err(e) = w.file.get_ref().sync_data() {
 				errs.push(("fsync", e));
+				continue;
 			}
+			w.unsynced = false;
 		}
 		for (what, e) in errs {
 			self.note_write_failure(what, &e);
@@ -1201,6 +1257,50 @@ mod tests {
 			.collect();
 		names.sort();
 		names
+	}
+
+	/// `columns_near` is an optimization, so its only contract is that it
+	/// never MISSES a column a brute-force filter would find. It is allowed
+	/// to return extras (whole regions, not discs) — callers re-test.
+	///
+	/// Checked against `edited_columns` over a spread wide enough to cross
+	/// several regions in both directions, including negative coordinates,
+	/// where `div_euclid` and a plain `/` disagree.
+	#[test]
+	fn columns_near_never_misses_what_a_full_scan_finds() {
+		let mut index = JournalIndex::default();
+		// One edit per column over a 96×96-column span straddling 0, i.e.
+		// 36 regions at REGION_COLS = 16.
+		for cx in -48..48 {
+			for cz in -48..48 {
+				index.record(edit(cx * 16, 130, cz * 16, 1));
+			}
+		}
+		for center in [(0, 0), (-33, 17), (40, -40), (-1, -1), (7, 100)] {
+			for radius in [0, 1, 4, 20, 47] {
+				let want: FxHashSet<(i32, i32)> = index
+					.edited_columns()
+					.filter(|&c| {
+						let (dx, dz) = (c.0 - center.0, c.1 - center.1);
+						dx * dx + dz * dz <= radius * radius
+					})
+					.collect();
+				let got: FxHashSet<(i32, i32)> = index.columns_near(center, radius).collect();
+				assert!(
+					want.is_subset(&got),
+					"center {center:?} r{radius}: missed {:?}",
+					want.difference(&got).collect::<Vec<_>>()
+				);
+				// And it is a real narrowing, not just `edited_columns` in
+				// disguise — otherwise the whole point is lost.
+				if radius <= 4 {
+					assert!(
+						got.len() < index.edited_columns().count(),
+						"center {center:?} r{radius}: walked the whole world"
+					);
+				}
+			}
+		}
 	}
 
 	#[test]

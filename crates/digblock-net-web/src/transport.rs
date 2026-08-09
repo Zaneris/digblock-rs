@@ -5,7 +5,7 @@
 //! bookkeeping in `poll`, sends fire-and-forget, reliable bytes in
 //! arbitrary chunks (the netcode's FrameReader reassembles).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -29,6 +29,19 @@ extern "C" {
 	fn create_bidirectional_stream(this: &WebTransport) -> js_sys::Promise;
 	#[wasm_bindgen(method, catch)]
 	fn close(this: &WebTransport) -> Result<(), JsValue>;
+	#[wasm_bindgen(method, js_name = getStats)]
+	fn get_stats(this: &WebTransport) -> js_sys::Promise;
+
+	/// `WebTransportStats`. Only `smoothedRtt` is bound — the browser's own
+	/// QUIC round-trip estimate, in milliseconds. Declared here rather than
+	/// taken from web-sys because this crate binds the whole WebTransport
+	/// surface itself, and mixing the two would mean two `WebTransport`
+	/// types. The getter returns `JsValue`, not `f64`: the field is
+	/// optional in the spec, so an implementation that omits it must read
+	/// as absent rather than as zero.
+	type WebTransportStats;
+	#[wasm_bindgen(method, getter = smoothedRtt)]
+	fn smoothed_rtt(this: &WebTransportStats) -> JsValue;
 
 	type WebTransportDatagramDuplexStream;
 	#[wasm_bindgen(method, getter)]
@@ -103,12 +116,35 @@ pub struct WebTransportClient {
 	/// None until the bidi control stream opens.
 	reliable_writer: WriterSlot,
 	datagram_writer: WriterSlot,
-	/// Swallows write-promise rejections (lossy by contract; without a
-	/// catch every dropped datagram logs an unhandled-rejection warning).
-	noop_catch: Closure<dyn FnMut(JsValue)>,
 	/// Datagrams dropped at the writer's high-water mark; the first one
 	/// logs, the rest are silent.
 	dropped_datagrams: u32,
+	/// The browser's own QUIC round trip in ms, refreshed by `poll`.
+	/// `getStats()` returns a Promise, so it cannot be read where
+	/// `wire_rtt_ms` is called — the value is sampled asynchronously and
+	/// parked here.
+	wire_rtt: Rc<Cell<Option<f32>>>,
+	/// Polls since the last `getStats()` was kicked off.
+	rtt_age: u32,
+}
+
+/// Frames between `getStats()` samples (~0.5 s at 60 fps). A smoothed RTT
+/// does not move fast enough to be worth a promise every frame.
+const RTT_SAMPLE_FRAMES: u32 = 30;
+
+thread_local! {
+	/// Swallows write-promise rejections (lossy by contract; without a
+	/// catch every dropped datagram logs an unhandled-rejection warning).
+	///
+	/// Module-lifetime, deliberately NOT owned by the client. `close()`
+	/// rejects every in-flight write, and those rejections are microtasks
+	/// that fire AFTER the wasm call returns — by which point a
+	/// client-owned closure has already been dropped along with the
+	/// struct. wasm-bindgen's shim then throws "closure invoked
+	/// recursively or after being dropped" from inside a catch handler,
+	/// i.e. as an unhandled rejection, on every single disconnect. Exactly
+	/// the noise that makes a real disconnect bug unreadable.
+	static NOOP_CATCH: Closure<dyn FnMut(JsValue)> = Closure::new(|_: JsValue| {});
 }
 
 fn js_reason(v: &JsValue) -> String {
@@ -186,7 +222,6 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 	}));
 	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
 	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
-	let noop_catch = Closure::new(|_: JsValue| {});
 
 	let transport = match WebTransport::new(url, &options(cert_hash)) {
 		Ok(t) => t,
@@ -200,8 +235,9 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				transport: None,
 				reliable_writer,
 				datagram_writer,
-				noop_catch,
 				dropped_datagrams: 0,
+				wire_rtt: Rc::new(Cell::new(None)),
+				rtt_age: 0,
 			};
 		}
 	};
@@ -264,8 +300,9 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		transport: Some(transport_handle),
 		reliable_writer,
 		datagram_writer,
-		noop_catch,
 		dropped_datagrams: 0,
+		wire_rtt: Rc::new(Cell::new(None)),
+		rtt_age: 0,
 	}
 }
 
@@ -273,7 +310,9 @@ impl WebTransportClient {
 	fn write_to(&self, slot: &WriterSlot, bytes: &[u8]) {
 		if let Some(w) = &*slot.borrow() {
 			let arr: JsValue = js_sys::Uint8Array::from(bytes).into();
-			let _ = w.write(&arr).catch(&self.noop_catch);
+			NOOP_CATCH.with(|c| {
+				let _ = w.write(&arr).catch(c);
+			});
 		}
 	}
 
@@ -313,26 +352,70 @@ impl NetTransport for WebTransportClient {
 	}
 
 	fn poll(&mut self, out: &mut Vec<TransportEvent>) {
-		let mut shared = self.shared.borrow_mut();
-		for ev in shared.events.drain(..) {
-			match &ev {
-				TransportEvent::Connected => self.status = ConnStatus::Connected,
-				TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
-				_ => {}
+		{
+			let mut shared = self.shared.borrow_mut();
+			for ev in shared.events.drain(..) {
+				match &ev {
+					TransportEvent::Connected => self.status = ConnStatus::Connected,
+					TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
+					_ => {}
+				}
+				out.push(ev);
 			}
-			out.push(ev);
 		}
+		self.sample_rtt();
 	}
 
 	fn status(&self) -> ConnStatus {
 		self.status
 	}
+
+	fn wire_rtt_ms(&self) -> Option<f32> {
+		self.wire_rtt.get()
+	}
 }
 
-/// Time a throwaway WebTransport connect (QUIC+TLS handshake ≈ 2×RTT)
-/// and close — the browser mirror of digblock-net-native's `probe`, same
-/// measurement, "honest and consistent for ranking". Calls `done` with
-/// `Some(ms)` on success, `None` on failure or timeout.
+impl WebTransportClient {
+	/// Kick off a `getStats()` every `RTT_SAMPLE_FRAMES` polls and park
+	/// `smoothedRtt` in the cell. Fire-and-forget: the promise resolves on a
+	/// later microtask, so this frame reads the previous sample. That is
+	/// fine for a smoothed RTT and it is the only shape available — the
+	/// stats are async and `wire_rtt_ms` is not.
+	fn sample_rtt(&mut self) {
+		if self.status != ConnStatus::Connected {
+			self.wire_rtt.set(None);
+			return;
+		}
+		self.rtt_age += 1;
+		if self.rtt_age < RTT_SAMPLE_FRAMES {
+			return;
+		}
+		self.rtt_age = 0;
+		let Some(t) = &self.transport else { return };
+		let promise = t.unchecked_ref::<WebTransport>().get_stats();
+		let slot = self.wire_rtt.clone();
+		spawn_local(async move {
+			let rtt = JsFuture::from(promise)
+				.await
+				.ok()
+				.and_then(|s| s.dyn_into::<WebTransportStats>().ok())
+				.and_then(|s| s.smoothed_rtt().as_f64())
+				.filter(|v| v.is_finite() && *v >= 0.0);
+			slot.set(rtt.map(|v| v as f32));
+		});
+	}
+}
+
+/// Open a throwaway WebTransport session, read the browser's own QUIC
+/// round-trip estimate, close — the browser mirror of digblock-net-native's
+/// `probe`, and the same measurement it makes. Calls `done` with `Some(ms)`
+/// on success, `None` on failure or timeout.
+///
+/// This used to time the connect itself, which is a QUIC+TLS handshake plus
+/// an HTTP/3 extended CONNECT — two round trips at best, plus DNS, which
+/// does not scale with distance at all. `getStats().smoothedRtt` is a ping;
+/// the handshake time was roughly double one. See the native probe's module
+/// docs for the full reasoning, which both platforms share.
 pub fn probe(
 	url: &str,
 	cert_hash: [u8; 32],
@@ -355,7 +438,20 @@ pub fn probe(
 		let ms = match JsFuture::from(raced).await {
 			// The sentinel string means the timeout won the race.
 			Ok(v) if v.as_string().as_deref() == Some("timeout") => None,
-			Ok(_) => Some(start.elapsed().as_millis() as u32),
+			Ok(_) => {
+				// Handshake time is still the reachability answer; it is just
+				// not the latency one. Falls back to it when the browser omits
+				// `smoothedRtt`, which the spec permits.
+				let handshake = start.elapsed().as_millis() as u32;
+				let rtt = JsFuture::from(transport.get_stats())
+					.await
+					.ok()
+					.and_then(|s| s.dyn_into::<WebTransportStats>().ok())
+					.and_then(|s| s.smoothed_rtt().as_f64())
+					.filter(|v| v.is_finite() && *v > 0.0)
+					.map(|v| v as u32);
+				Some(rtt.filter(|r| *r <= handshake).unwrap_or(handshake))
+			}
 			Err(_) => None,
 		};
 		let _ = transport.close();

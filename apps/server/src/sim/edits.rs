@@ -1,7 +1,7 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{client_send, in_radius, send_frame, Sim};
+use super::{in_radius, send_frame, Sim};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
@@ -165,6 +165,17 @@ impl Sim {
 		}
 	}
 
+	/// May a placement write this cell? It must be RESIDENT (an absent
+	/// column answers `None`, and building into ungenerated world would let
+	/// the write be overwritten the moment the column loads) and hold a
+	/// block `is_replaceable` accepts. Shared authority with the client's
+	/// prediction, which asks the same core predicate.
+	fn cell_is_replaceable(&self, cell: (i32, i32, i32)) -> bool {
+		self.store
+			.cell_at(cell.0, cell.1, cell.2)
+			.is_some_and(|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_replaceable())
+	}
+
 	/// Adopt a client's item arrangement: sanitizing decode (hostile input
 	/// yields a valid bar/grid), reconcile against the authoritative
 	/// counts, write through to the store. The client owns arrangement;
@@ -282,7 +293,9 @@ impl Sim {
 		if dir == Vec3::ZERO {
 			return reject(RejectReason::OutOfReach);
 		}
-		if req.origin.distance(player_pos) > EDIT_POS_TOLERANCE {
+		let residual = req.origin.distance(player_pos);
+		self.note_origin_residual(req.conn_id, residual, residual > EDIT_POS_TOLERANCE);
+		if residual > EDIT_POS_TOLERANCE {
 			return reject(RejectReason::OutOfReach);
 		}
 
@@ -313,14 +326,26 @@ impl Sim {
 		// first verify lands a tick after DigStart, and the server's look
 		// lags the client's by the input jitter buffer.
 		if place_cell.is_none() {
+			// How many verified ticks the completion was missing, for the
+			// instrumentation: it prices how much of `dig_grace` an honest
+			// hold on this link still had left over. Only meaningful when
+			// the hold is on the right cell — a mismatch is a different
+			// failure, and reporting it as a shortfall would read as the
+			// grace being too small when nothing was banked at all.
+			let mut short = 0u32;
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
 				cell == req.cell
 					&& cell_value == hit.cell_value
-					&& hit
-						.block
-						.dig_hardness(req.cell.1)
-						.is_some_and(|h| progress + dig_grace(h as u32) >= h as u32)
+					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
+						let need = u32::from(h);
+						let have = progress + dig_grace(need);
+						short = need.saturating_sub(have);
+						have >= need
+					})
 			});
+			if satisfied || short > 0 {
+				self.note_dig_gate(req.conn_id, short);
+			}
 			if !satisfied {
 				return reject(RejectReason::DigIncomplete);
 			}
@@ -379,19 +404,21 @@ impl Sim {
 						req.cell.1 + hit.normal.1,
 						req.cell.2 + hit.normal.2,
 					);
+					// The target itself must be loaded and replaceable. This
+					// gate is newer than the door's below and was its missing
+					// twin: with only the derived upper half checked, a
+					// placement could overwrite an OPEN door outright (the
+					// plain ray passes through its empty collision boxes, so
+					// aiming at the floor inside a doorway targets the door
+					// cell) — no drop, no dig timer, orphaned upper half.
+					if !self.cell_is_replaceable(target) {
+						return reject(RejectReason::Occluded);
+					}
 					writes.push((target, v));
 					if place_b.is_some_and(|b| b.is_door()) {
-						// The derived upper half must be loaded and free.
+						// The derived upper half, same rule.
 						let upper = (target.0, target.1 + 1, target.2);
-						let free = self
-							.store
-							.cell_at(upper.0, upper.1, upper.2)
-							.is_some_and(|c| {
-								!BlockType::from_id(digblock_core::chunk::cell_id(c))
-									.props()
-									.collides
-							});
-						if !free {
+						if !self.cell_is_replaceable(upper) {
 							return reject(RejectReason::Occluded);
 						}
 						let upper_cell = v | (0b1000 << digblock_core::chunk::STATE_SHIFT);
@@ -602,7 +629,9 @@ impl Sim {
 		if dir == Vec3::ZERO {
 			return reject(RejectReason::OutOfReach);
 		}
-		if req.origin.distance(player_pos) > EDIT_POS_TOLERANCE {
+		let residual = req.origin.distance(player_pos);
+		self.note_origin_residual(req.conn_id, residual, residual > EDIT_POS_TOLERANCE);
+		if residual > EDIT_POS_TOLERANCE {
 			return reject(RejectReason::OutOfReach);
 		}
 		let store = &self.store;
@@ -734,11 +763,9 @@ impl Sim {
 			edit,
 			prev,
 		};
-		for c in self.clients.values() {
-			if c.synced_columns.contains(&col) || c.id == by {
-				client_send(c, &msg);
-			}
-		}
+		// Encoded once for the whole fan-out: fluid alone lands up to 512
+		// edits a second, each going to every client synced to the column.
+		self.broadcast_where(&msg, |c| c.synced_columns.contains(&col) || c.id == by);
 	}
 
 	pub(super) fn step_fluid(&mut self) {
@@ -2158,6 +2185,95 @@ mod tests {
 		assert!(applied.contains(&(0, upper)), "{applied:?}");
 	}
 
+	/// An OPEN door has empty collision boxes, so the plain place ray runs
+	/// straight through its leaf and stops on the floor beyond — making the
+	/// door's own cell the placement target. Nothing used to check that the
+	/// target was replaceable (only the door's derived UPPER half was
+	/// checked, and with `!collides`, which an open door passes), so one
+	/// right-click destroyed any player's door: no drop, no hold-to-dig
+	/// timer, and an orphaned upper half whose partner no longer resolved.
+	#[test]
+	fn placing_into_an_open_door_is_refused() {
+		let mut sim = flat_sim("doorover");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		// Stage the door directly and stock ONLY stone, so it lands in slot
+		// 0 and the slot gate cannot mask the result — without the
+		// replaceable check this request must actually land on the door.
+		let pos = sim.test_player(1).unwrap().pos;
+		let lower = (
+			pos.x.floor() as i32 + 1,
+			FLAT_GROUND_TOP as i32 + 1,
+			pos.z.floor() as i32,
+		);
+		let upper = (lower.0, lower.1 + 1, lower.2);
+		// Open: its collision boxes empty out, so the plain ray sees through.
+		sim.test_set_cell(
+			lower.0,
+			lower.1,
+			lower.2,
+			make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, true, false)),
+		);
+		sim.test_set_cell(
+			upper.0,
+			upper.1,
+			upper.2,
+			make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, true, true)),
+		);
+		sim.test_grant(1, BlockType::Stone, 1);
+
+		// Aim from inside the doorway down at the floor under the leaf: the
+		// ray passes through the open door and the support hit's +y normal
+		// puts the target squarely on the door's lower cell.
+		let origin = Vec3::new(
+			lower.0 as f32 + 0.5,
+			lower.1 as f32 + 1.6,
+			lower.2 as f32 + 0.5,
+		);
+		let floor = (lower.0, lower.1 - 1, lower.2);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 2,
+				tick: 0,
+				origin: origin.to_array(),
+				dir: [0.0, -1.0, 0.0],
+				kind: EditKind::Place {
+					block: BlockType::Stone as u16,
+				},
+				cell: [floor.0, floor.1, floor.2],
+				normal: [0, 1, 0],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+
+		assert_eq!(
+			sim.test_cell_at(lower.0, lower.1, lower.2),
+			Some(make_cell(
+				BlockType::WoodDoor,
+				door_state(Facing::PosZ, true, false)
+			)),
+			"the open door survived the placement"
+		);
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 2,
+					reason: RejectReason::Occluded
+				}
+			)),
+			"refused, and told the client why: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			1,
+			"no stock spent on the refused place"
+		);
+	}
+
 	#[test]
 	fn door_toggle_flips_both_halves_and_dig_clears_both() {
 		let mut sim = flat_sim("doortoggle");
@@ -2462,7 +2578,7 @@ mod tests {
 			snaps
 				.iter()
 				.rev()
-				.find_map(|s| s.players.iter().find(|p| p.id == id).map(|p| p.held))
+				.find_map(|s| s.others.iter().find(|p| p.id == id).map(|p| p.held))
 		};
 		assert_eq!(
 			held_of(&c2.snaps, 0),

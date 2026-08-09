@@ -135,15 +135,25 @@ impl Inventory {
 	}
 
 	pub fn to_wire(&self) -> Vec<(u16, u32)> {
-		self.iter_nonzero()
-			.map(|(b, n)| (b as u16, n))
-			.chain(
-				Material::ALL
-					.iter()
-					.map(|&m| (SUB_WIRE_FLAG | m as u16, self.sub_count(m)))
-					.filter(|&(_, n)| n > 0),
-			)
-			.collect()
+		let mut out = Vec::new();
+		self.write_wire(&mut out);
+		out
+	}
+
+	/// [`Self::to_wire`] into a caller-owned buffer (cleared first).
+	///
+	/// The server's player store serializes every stored record on each
+	/// flush, so a fresh `Vec` per record was thousands of allocations per
+	/// write; one reused buffer covers the whole file.
+	pub fn write_wire(&self, out: &mut Vec<(u16, u32)>) {
+		out.clear();
+		out.extend(self.iter_nonzero().map(|(b, n)| (b as u16, n)));
+		out.extend(
+			Material::ALL
+				.iter()
+				.map(|&m| (SUB_WIRE_FLAG | m as u16, self.sub_count(m)))
+				.filter(|&(_, n)| n > 0),
+		);
 	}
 }
 

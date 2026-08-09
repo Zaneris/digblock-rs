@@ -48,12 +48,20 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// as `Teleported.look`, which carries it on return-to-spawn. A pure
 /// append, but the version still moves: a v13 client's decoder needs the
 /// field, so it cannot read a v12 server's Welcome.
-pub const PROTOCOL_VERSION: u16 = 13;
+/// v14: the snapshot split. `NetPlayerState` — one shape for you and for
+/// everyone else — became `SelfState` (full-precision pos/vel, no look, no
+/// id) plus `RemoteState` (f32 pos, i16 velocity in thousandths, u16 yaw,
+/// held). The old struct spent 12 bytes on a look vector whose pitch
+/// nothing has ever read and 12 more on a velocity that only drives a
+/// 250 ms-capped extrapolation: 40 wire bytes per player where 24 carries
+/// everything a client consumes. A break, not an append — `Snapshot`'s
+/// fields changed shape.
+pub const PROTOCOL_VERSION: u16 = 14;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 13;
+pub const MIN_PROTOCOL: u16 = 14;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -207,6 +215,26 @@ pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
 /// otherwise leave the client in connecting-limbo forever).
 pub const HANDSHAKE_TIMEOUT_SECS: f32 = 5.0;
 
+/// Nothing at all received for this long AFTER the handshake → treat the
+/// session as dead.
+///
+/// A backstop, not the primary mechanism: normally the transport reports
+/// the disconnect and this never fires. It covers the case where the
+/// transport CANNOT report — a native background thread that died without
+/// reaching its `disconnect` call, a WebTransport session wedged rather
+/// than closed — which otherwise leaves the engine in a multiplayer
+/// session with no snapshots, no error and no way back, waiting on a QUIC
+/// idle timeout that a half-dead peer may never deliver.
+///
+/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day every
+/// 10 s to EVERY client, live or not, so even a player still waiting for
+/// their spawn column to generate has a heartbeat. More than three of
+/// those missed is unambiguous — and the margin past the third is the
+/// point, since firing exactly on it would make ordinary scheduling
+/// jitter enough to drop a healthy session.
+pub const RECV_TIMEOUT_SECS: f32 = 35.0;
+const _: () = assert!(RECV_TIMEOUT_SECS > 3.0 * (TOD_SYNC_TICKS / TICK_RATE) as f32);
+
 /// Simulation rate. Fixed: `Player::tick` air control hardcodes /60.
 pub const TICK_RATE: u32 = 60;
 
@@ -238,8 +266,21 @@ pub const INPUT_SEND_STRIDE: u32 = 2;
 /// Datagram payload budget, safely under the QUIC minimum MTU.
 pub const MAX_DATAGRAM: usize = 1150;
 
-/// Reliable-stream frame cap (journal batches are the big ones).
+/// Reliable-stream frame cap for SERVER→client frames. Journal batches
+/// are the big ones: a densely edited column is thousands of cells.
 pub const MAX_FRAME: usize = 1 << 20;
+
+/// Reliable-stream frame cap for CLIENT→server frames.
+///
+/// Nothing a client legitimately sends is large — the widest is a `Layout`
+/// at a few hundred bytes, and `max_client_frame_fits_every_client_message`
+/// pins that. Sharing the server's 1 MB cap meant a client could push 1 MB
+/// `Layout` frames (a `Vec<u16>` truncated only later, during
+/// sanitization) straight into the sim's action queue: amplification, not
+/// a heap bomb, since `MSG_BUDGET` bounds the rate — but a cap three
+/// orders of magnitude past any real message is not a cap.
+pub const MAX_CLIENT_FRAME: usize = 4096;
+const _: () = assert!(MAX_CLIENT_FRAME < MAX_FRAME);
 
 /// Dig/place: claimed eye origin may differ from the server's simulated
 /// position by at most this many blocks. Sized for honest divergence:
@@ -303,11 +344,74 @@ pub const DRIFT_TOLERANCE: f32 = 0.02;
 pub const EDIT_RATE_PER_SEC: u32 = 10;
 pub const EDIT_BURST: f32 = 5.0;
 
-/// Target depth of the server's per-client input jitter buffer, ticks.
+/// Catch-up threshold for the server's per-client input drain, ticks.
+///
+/// Despite the name this was never a buffer depth — it is only the point
+/// above which the drain takes TWO inputs in a tick, which is what pays back
+/// the delay a hold introduces. The depth itself is set by
+/// [`INPUT_HOLD_MAX`]; raising this number alone does nothing, as the
+/// netbench's `depth` column showed (~1.5 ticks even on a clean LAN, and
+/// that 1.5 was entirely [`INPUT_SEND_STRIDE`] burstiness).
 pub const JITTER_BUFFER_TICKS: u32 = 2;
 
-/// How far ahead of the server clock a fresh client starts predicting:
-/// jitter-buffer depth plus a little headroom for the first RTT estimate.
+/// How long the input drain will hold a HOLE in the tick sequence open,
+/// waiting for the missing tick to arrive, before giving up and skipping it.
+///
+/// This is the server's actual reorder tolerance, and the reason it exists:
+/// `handle_inputs` refuses anything at or below the consumed high-water
+/// mark, so an input that arrives after the drain has already stepped past
+/// its tick is lost for good. Heavy jitter reorders datagrams, which is
+/// exactly how a link loses 27% of its inputs at 500 ms while dropping only
+/// 12% of its packets — redundancy cannot help, because every copy of a tick
+/// is equally old.
+///
+/// A hold costs latency, but only ever converts DIVERGENCE into it: held
+/// inputs are applied in order, just later, so the server still lands on the
+/// claim the client sent, and client-side prediction hides the delay.
+/// Nothing happens at all on a link with no holes, which is why a clean
+/// connection pays literally zero for this.
+///
+/// The cap is set by measurement, not taste: `just bench-net` swept it over
+/// 0/2/4/6/8/12. Two results decided it.
+///
+/// A hold does NOT simply spend `EDIT_POS_TOLERANCE`, which is what the
+/// arithmetic predicts and what the sweep refuted. Up to 4 the claimed edit
+/// origin sits CLOSER to the server's own position than with no hold at all
+/// (0.87 vs 1.02 blocks at 500 ms, 0.40 vs 0.60 at 300 ms), because the
+/// alternative to holding is coasting on stale intent, and a coast diverges
+/// faster than a delay does. Past 6 it starts climbing, and by 12 it reaches
+/// 1.79 — over the tolerance, which is where honest edits begin bouncing
+/// (the sweep's only non-zero `tol-rej/s`).
+///
+/// Delivery is also flat past here. 4 recovers three quarters of the
+/// shortfall at 300 ms (91.8% → 98.0%); 6 and 8 add two tenths of a point
+/// between them. The worst link keeps improving to 8, but buys it with a
+/// replay rate that climbs back ABOVE the no-hold baseline, which is the
+/// symptom this was meant to remove.
+///
+/// What it costs: nothing measurable below 120 ms of ping (the lan, wifi and
+/// cellular rows are unchanged to the digit — no holes, no holds), +11 ms at
+/// 300 ms and +44 ms at 500 ms.
+///
+/// RULE: [`EDIT_POS_TOLERANCE`] and [`dig_grace`] must never be scaled by
+/// the observed depth. A deeper buffer SPENDS those fixed budgets; making
+/// them elastic instead would hand anyone sending deliberately gappy input
+/// ticks a proportionally wider envelope — `verify_digs` casts
+/// `REACH + EDIT_POS_TOLERANCE`, so that is extra reach, bought by
+/// pretending to have a bad connection. Their fixedness is what makes this
+/// mechanism free of cheat surface.
+pub const INPUT_HOLD_MAX: u32 = 4;
+
+/// How far ahead of the server clock a fresh client starts predicting.
+///
+/// This sets the client's starting tick LABEL and nothing else: the server
+/// never compares `input.tick` against its own clock, only against the
+/// per-client high-water mark, and `Predictor::tick_lead` has no consumer
+/// outside stats and the debug overlay. Buffer depth is set by arrival
+/// timing, which tick numbering cannot influence — so the arithmetic
+/// relationship to [`JITTER_BUFFER_TICKS`] below is a historical
+/// coincidence, not a coupling. Its only real dependants are the loopback
+/// tests that do this same arithmetic.
 pub const CLIENT_TICK_LEAD: u32 = JITTER_BUFFER_TICKS + 3;
 
 /// Remote players render this many ticks behind the estimated server
@@ -319,18 +423,61 @@ pub const INTERP_DELAY_TICKS: f64 = 6.0;
 pub const EXTRAP_CAP_TICKS: f64 = 15.0;
 
 /// Interest management: at most this many players per snapshot — self
-/// first (the reconciliation anchor), then nearest remotes by column
+/// (the reconciliation anchor) plus the nearest remotes by column
 /// distance. Sized so a full snapshot always fits one datagram.
-pub const MAX_SNAPSHOT_PLAYERS: usize = 24;
-// NetPlayerState is ≤40 wire bytes (id + 9×f32 + held varint ≤3); ≤13
-// bytes of snapshot overhead (variant, two varint ticks, vec length).
-const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 40 + 13 <= MAX_DATAGRAM);
+///
+/// v14's narrower `RemoteState` bought the rise from 24: the same datagram
+/// now carries two thirds again as many players.
+///
+/// This must hold for the WORST-CASE encoding, not the typical one — an
+/// oversize snapshot does not truncate, it fails to encode, and that
+/// client gets no snapshot at all. (Exactly the cliff interest management
+/// was added to close.)
+pub const MAX_SNAPSHOT_PLAYERS: usize = 40;
+// RemoteState is ≤28 wire bytes: id 1 + 3×f32 (fixed 12) + 3×i16 and yaw
+// and held, all postcard VARINTS — which cost 3 bytes each at their
+// extremes, not 2. A typical entry is far smaller (a walking velocity is
+// 2 bytes a component), but the cap has to survive the extremes.
+// SelfState is 24 + 1 for its Option tag; snapshot overhead is ≤13
+// (datagram variant, two varint ticks, vec length).
+const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 28 + 13 <= MAX_DATAGRAM);
 
 /// A remote whose newest snapshot lags the estimated clock by this many
 /// ticks (2 s) left our interest radius — drop it client-side so it
 /// vanishes instead of ghosting at the extrapolation cap. `PlayerLeft`
 /// still removes eagerly.
+///
+/// Must stay comfortably above `SNAPSHOT_DIVISOR * FAR_PLAYER_STRIDE`
+/// ticks, or the distance tiering below would expire the very players it
+/// is only sending slowly.
 pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;
+
+/// Column radius inside which a remote player rides EVERY snapshot.
+///
+/// Beyond it they ride one snapshot in [`FAR_PLAYER_STRIDE`] instead of
+/// being dropped, because "far" here is not "invisible": the selection
+/// radius is the client's own draw distance — 20 columns, 320 blocks, at
+/// which a 1.8-block player still subtends ~5 px at 1080p and 70° vertical
+/// FOV. Cutting the radius instead would delete people you can plainly
+/// see. At 128 blocks a player is ~12 px, which is where smooth motion
+/// starts to be worth full rate.
+pub const PLAYER_NEAR_COLS: i32 = 8;
+
+/// How often a remote beyond [`PLAYER_NEAR_COLS`] is included: every Nth
+/// snapshot, i.e. 5 Hz at `SNAPSHOT_DIVISOR` 3 and stride 4.
+///
+/// The client interpolates ~100 ms behind and extrapolates along velocity
+/// up to [`EXTRAP_CAP_TICKS`] (250 ms), so a 200 ms spacing degrades into
+/// mostly-extrapolation for these players — worth at most a few tenths of
+/// a block of positional error at a walk, on a figure a handful of pixels
+/// tall. Which player falls in which snapshot is phased by id, so far
+/// players spread across the cycle rather than all landing in one
+/// datagram.
+pub const FAR_PLAYER_STRIDE: u32 = 4;
+const _: () = assert!(
+	REMOTE_EXPIRE_TICKS as u32 > SNAPSHOT_DIVISOR * FAR_PLAYER_STRIDE * 4,
+	"a far player's send interval must sit far inside the client's expiry"
+);
 
 #[cfg(test)]
 mod tests {

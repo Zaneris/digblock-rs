@@ -30,7 +30,9 @@ use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::protect::Region;
 use digblock_net::codec;
-use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
+use digblock_net::messages::{
+	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
+};
 use digblock_net::protocol::{
 	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
 	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
@@ -91,9 +93,120 @@ pub enum SimEvent {
 #[derive(Debug)]
 pub enum OutMsg {
 	Datagram(Vec<u8>),
-	Frame(Vec<u8>),
+	/// A length-prefixed reliable frame, SHARED between recipients.
+	///
+	/// `Arc` rather than `Vec` because the interesting sends are
+	/// broadcasts: every landed edit goes to every client whose
+	/// `synced_columns` covers it, and fluid alone lands up to 512 edits a
+	/// second. Encoding per recipient meant 3 allocations and a fresh
+	/// postcard pass each — ~49 k allocations/s at 32 co-located players
+	/// during a waterfall, all producing byte-identical output. Now the
+	/// fan-out is a refcount bump.
+	Frame(std::sync::Arc<[u8]>),
 	/// Ask the net layer to close the connection (refused handshake).
 	Close,
+}
+
+/// Per-client input-path instrumentation. Purely diagnostic — no field
+/// here feeds a decision, so sampling or ignoring it changes nothing.
+///
+/// It exists because the intake path used to drop inputs three different
+/// ways in silence (below the high-water mark, evicted at `INPUT_BUF_CAP`,
+/// or never delivered at all), which made every claim about jitter
+/// unfalsifiable. `late_lost` is the one counter that means an input was
+/// lost for good.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct InputStats {
+	/// Inputs actually applied, ever. The netbench divides this by what the
+	/// client predicted, to measure how well `INPUT_REDUNDANCY` covers real
+	/// datagram loss.
+	pub consumed: u64,
+	/// Rejected below the high-water mark having already been held once: a
+	/// redundancy copy doing its job. Expected and free.
+	pub dup: u64,
+	/// Rejected below the high-water mark having NEVER been held — the
+	/// buffer drained past this tick before it arrived. Lost motion.
+	pub late_lost: u64,
+	/// The deepest any late-lost input would have needed the buffer to be
+	/// (`last_input_tick - input.tick + 1`), i.e. how much depth would have
+	/// been required to still be holding it. The tuning number, if the
+	/// buffer ever becomes adaptive.
+	pub late_want_max: u32,
+	/// Ticks the drain found the buffer empty and coasted on the last
+	/// intent instead of consuming an input.
+	pub underruns: u64,
+	/// Ticks the drain deliberately consumed nothing while holding a hole
+	/// in the tick sequence open (see `INPUT_HOLD_MAX`). Physically
+	/// identical to an underrun — the difference is that the buffer keeps
+	/// its contents and the high-water mark does not advance, which is what
+	/// lets the late input still be admitted.
+	pub held: u64,
+	/// Inputs discarded because the client was frozen on an unloaded
+	/// column. Deliberately NOT counted as `late_lost`: nothing about the
+	/// wire went wrong, the server simply had nowhere to put the player.
+	pub frozen_dropped: u64,
+	/// Inputs swept by the `INPUT_BUF_CAP` overflow trim.
+	pub evicted: u64,
+	/// Buffer depth sampled once per drain, as the tick SPAN
+	/// (`admit_hi - last_input_tick`) rather than `inputs.len()`: datagram
+	/// loss punches holes in the map, so the count under-reads the real
+	/// depth precisely when the link is worst.
+	pub depth_sum: u64,
+	pub depth_samples: u64,
+	pub depth_max: u32,
+}
+
+impl InputStats {
+	/// Mean buffer depth in ticks over the sampled drains.
+	pub fn depth_mean(&self) -> f64 {
+		if self.depth_samples == 0 {
+			0.0
+		} else {
+			self.depth_sum as f64 / self.depth_samples as f64
+		}
+	}
+}
+
+/// Per-client edit-path instrumentation. Purely diagnostic, like
+/// [`InputStats`], and deliberately a separate struct — this measures what
+/// a CLICK costs, not what the input buffer does.
+///
+/// It exists to price the two constants that are sized against how far the
+/// server's simulated player trails the client's: [`EDIT_POS_TOLERANCE`]
+/// and [`digblock_net::protocol::dig_grace`]. Both are fixed numbers whose
+/// remaining headroom has never been measured, and any change that makes
+/// the server consume inputs later spends that headroom.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct EditStats {
+	/// `req.origin.distance(player_pos)` at the tolerance check, in blocks
+	/// — sampled BEFORE the reject, so a rejected request is counted too.
+	/// This is the quantity [`EDIT_POS_TOLERANCE`] bounds.
+	pub origin_sum: f64,
+	pub origin_samples: u64,
+	pub origin_max: f32,
+	/// Requests refused by that check specifically, kept apart from the
+	/// other `RejectReason::OutOfReach` paths (a missed ray, a bad dir) so
+	/// "the tolerance is too tight" is distinguishable from "the client
+	/// aimed at nothing".
+	pub tol_rejects: u64,
+	/// Completing digs the timed-dig gate accepted.
+	pub dig_ok: u64,
+	/// Completing digs refused for insufficient banked progress, and the
+	/// worst shortfall in ticks — the direct read on whether `dig_grace`
+	/// still has room to give.
+	pub dig_short: u64,
+	pub dig_short_max: u32,
+}
+
+impl EditStats {
+	/// Mean claimed-origin residual in blocks over the sampled requests.
+	pub fn origin_mean(&self) -> f64 {
+		if self.origin_samples == 0 {
+			0.0
+		} else {
+			self.origin_sum / self.origin_samples as f64
+		}
+	}
 }
 
 struct Client {
@@ -113,12 +226,33 @@ struct Client {
 	last_intent: PlayerIntent,
 	inputs: BTreeMap<u32, InputTick>,
 	last_input_tick: u32,
+	/// Highest input tick ever ADMITTED to the buffer, and a bitmap of the
+	/// 64 ticks below it (bit n = `admit_hi - n`). Together they separate an
+	/// ordinary redundancy copy of a tick we already held — expected, free,
+	/// every tick rides two datagrams — from a tick the buffer had already
+	/// drained past when it arrived, which is the only rejection that means
+	/// an input was lost for good. Diagnostic only: nothing reads these
+	/// back into a decision.
+	admit_hi: u32,
+	admit_seen: u64,
+	/// Consecutive ticks the drain has been holding the current hole open.
+	/// Reset by any consume, so the `INPUT_HOLD_MAX` cap is per-hole rather
+	/// than cumulative — a bad link cannot ratchet into a standing stall.
+	hold_ticks: u32,
+	stats: InputStats,
+	edits: EditStats,
 	/// EWMA of adopted (claim − sim) deltas: the sustained-drift gate.
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
+	/// Journal columns owed to this client, drained a few per tick by
+	/// `pump_join_sync`. A join enqueues its whole in-range set here rather
+	/// than encoding it inline; `sync_queue_set` is the membership test that
+	/// keeps a re-scan from queueing the same column twice.
+	sync_queue: std::collections::VecDeque<(i32, i32)>,
+	sync_queue_set: FxHashSet<(i32, i32)>,
 	/// Run the full edited-column sync scan for this client next tick.
 	/// Set on center change and on going live; steady state does ZERO
 	/// journal scans (fresh columns arrive via the first-edit broadcast).
@@ -213,6 +347,15 @@ pub struct Sim {
 	face_scans: std::collections::VecDeque<((i32, i32), (i32, i32))>,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
 	last_oversize_log: Option<u32>,
+	/// Scratch for `send_snapshots`, reused across ticks: the shared
+	/// roster, the per-client candidate list, the selected-player Vec, and
+	/// the postcard encode buffer. The pass runs 20×/s over every client,
+	/// so building these fresh was the sim thread's largest steady-state
+	/// allocation source.
+	snap_roster: Vec<(RemoteState, SelfState, (i32, i32))>,
+	snap_nearby: Vec<(i64, usize)>,
+	snap_players: Vec<RemoteState>,
+	snap_buf: Vec<u8>,
 	/// Persistent per-identity player records — inventory + item layout
 	/// (separate from the journal).
 	player_store: PlayerStore,
@@ -280,6 +423,10 @@ impl Sim {
 			residency_dirty: true,
 			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
+			snap_roster: Vec::new(),
+			snap_nearby: Vec::new(),
+			snap_players: Vec::new(),
+			snap_buf: Vec::new(),
 			player_store,
 			ban_store,
 			admin_name: None,
@@ -289,8 +436,15 @@ impl Sim {
 
 	/// Grant a player name (case-insensitive) the admin chat commands.
 	/// Empty counts as unset, like the env fallbacks.
+	///
+	/// A name that could never be a real display name is REFUSED rather
+	/// than stored: it can only ever match nobody, so keeping it would
+	/// leave a server with admin silently disabled while its boot log said
+	/// otherwise. See [`admin_name_is_usable`].
 	pub fn set_admin_name(&mut self, name: Option<String>) {
-		self.admin_name = name.filter(|n| !n.is_empty());
+		self.admin_name = name
+			.filter(|n| !n.is_empty())
+			.filter(|n| admin_name_is_usable(n).is_ok());
 	}
 
 	pub fn server_tick(&self) -> u32 {
@@ -331,9 +485,7 @@ impl Sim {
 			let msg = ServerMsg::TimeOfDay {
 				tod: self.current_tod(),
 			};
-			for c in self.clients.values() {
-				client_send(c, &msg);
-			}
+			self.broadcast(&msg);
 		}
 		self.journal.maintain();
 		self.player_store.maintain();
@@ -355,11 +507,91 @@ impl Sim {
 		self.store.cell_at(x, y, z)
 	}
 
+	/// Read a resident cell. Public for the netbench, whose client has to
+	/// predict against the same world the server is simulating.
+	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.store.cell_at(x, y, z)
+	}
+
+	/// A client's authoritative position — the netbench compares its
+	/// predicted position against this to measure divergence.
+	pub fn player_pos(&self, conn_id: u64) -> Option<Vec3> {
+		self.clients.get(&conn_id).map(|c| c.player.pos)
+	}
+
+	/// A client's full authoritative state. The netbench re-seeds its local
+	/// prediction from this each tick, the way a real client rewinds to the
+	/// server on reconcile.
+	pub fn player_state(&self, conn_id: u64) -> Option<PlayerState> {
+		self.clients.get(&conn_id).map(|c| c.player.state())
+	}
+
+	/// Inputs this client has had applied, ever.
+	pub fn inputs_consumed(&self, conn_id: u64) -> u64 {
+		self.clients.get(&conn_id).map_or(0, |c| c.stats.consumed)
+	}
+
+	/// This client's input-path counters. See [`InputStats`].
+	pub fn input_stats(&self, conn_id: u64) -> InputStats {
+		self.clients
+			.get(&conn_id)
+			.map_or_else(Default::default, |c| c.stats)
+	}
+
+	/// This client's edit-path counters. See [`EditStats`].
+	pub fn edit_stats(&self, conn_id: u64) -> EditStats {
+		self.clients
+			.get(&conn_id)
+			.map_or_else(Default::default, |c| c.edits)
+	}
+
+	/// Record what the claimed edit origin cost against the server's own
+	/// position. Called at BOTH `EDIT_POS_TOLERANCE` sites (the edit path
+	/// and the interact path) before either rejects, so the sample is the
+	/// distribution the constant is actually bounding.
+	fn note_origin_residual(&mut self, conn_id: u64, residual: f32, rejected: bool) {
+		let Some(c) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		c.edits.origin_sum += f64::from(residual);
+		c.edits.origin_samples += 1;
+		c.edits.origin_max = c.edits.origin_max.max(residual);
+		c.edits.tol_rejects += u64::from(rejected);
+	}
+
+	/// Record the timed-dig gate's verdict. `short` is how many banked
+	/// aim-verified ticks the completion was missing after `dig_grace`;
+	/// zero means it was accepted.
+	fn note_dig_gate(&mut self, conn_id: u64, short: u32) {
+		let Some(c) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if short == 0 {
+			c.edits.dig_ok += 1;
+		} else {
+			c.edits.dig_short += 1;
+			c.edits.dig_short_max = c.edits.dig_short_max.max(short);
+		}
+	}
+
 	/// Write a cell straight into the resident store, bypassing edit
 	/// validation — for staging terrain a test needs to exist.
 	#[cfg(test)]
 	fn test_set_cell(&mut self, x: i32, y: i32, z: i32, cell: u16) {
 		self.store.set_cell(x, y, z, cell);
+	}
+
+	/// Put a client somewhere, bypassing the admin command — for staging a
+	/// spatial arrangement a test needs, without walking there.
+	#[cfg(test)]
+	fn test_teleport(&mut self, conn_id: u64, pos: Vec3) {
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.player.set_state(digblock_core::player::PlayerState {
+				pos,
+				vel: Vec3::ZERO,
+			});
+			c.center = column_of(pos);
+		}
 	}
 
 	/// The hand-picked spawn (`/set-spawn`), if one is stored.
@@ -411,6 +643,13 @@ impl Sim {
 	#[cfg(test)]
 	fn test_last_input_tick(&self, conn_id: u64) -> u32 {
 		self.clients.get(&conn_id).map_or(0, |c| c.last_input_tick)
+	}
+
+	/// Inputs sitting in the jitter buffer right now — how much the drain
+	/// has yet to work off.
+	#[cfg(test)]
+	fn test_input_backlog(&self, conn_id: u64) -> usize {
+		self.clients.get(&conn_id).map_or(0, |c| c.inputs.len())
 	}
 
 	#[cfg(test)]
@@ -509,10 +748,24 @@ impl Sim {
 				// sanitize lines drop silently — a talkative client gets
 				// throttled, never disconnected.
 				ClientMsg::Chat { text } => {
+					// Sanitize BEFORE deciding what the line IS. These used
+					// to read different strings — `is_command` looked at the
+					// raw text while everything downstream ran on the
+					// sanitized one — and they disagree for any character
+					// the sanitizer strips that `trim_start` does not count
+					// as whitespace. `U+200B` is exactly that: not
+					// `White_Space`, not inside `TEXT_RANGES`. So
+					// `"\u{200B}/ban griefer"` read as ordinary chat, then
+					// sanitized to `/ban griefer` and was BROADCAST to
+					// everyone instead of being privately refused.
+					let Some(text) = sanitize_chat(&text) else {
+						return;
+					};
+					// `sanitize_chat` already trimmed.
+					let is_command = text.starts_with('/');
 					let Some(client) = self.clients.get_mut(&conn_id) else {
 						return; // lobby connections don't get to talk
 					};
-					let is_command = text.trim_start().starts_with('/');
 					let is_admin = self
 						.admin_name
 						.as_deref()
@@ -527,9 +780,6 @@ impl Sim {
 						client.chat_tokens -= 1.0;
 					}
 					let from = client.id;
-					let Some(text) = sanitize_chat(&text) else {
-						return;
-					};
 					if is_command {
 						// Slash lines are never broadcast — commands are a
 						// private conversation with the server.
@@ -543,9 +793,7 @@ impl Sim {
 					let msg = ServerMsg::Chat { from, text };
 					// Everyone, sender included: the echo is the client's
 					// delivery confirmation.
-					for c in self.clients.values() {
-						client_send(c, &msg);
-					}
+					self.broadcast(&msg);
 				}
 				// Inline like chat: no ordering relationship with the edit
 				// stream (edit raycasts re-validate against the player's
@@ -553,9 +801,24 @@ impl Sim {
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so
 				// the change simply applies from the next sync pass.
+				//
+				// Growing the radius must also REQUEST a scan. The full
+				// edited-column walk is event-driven off `needs_sync_scan`,
+				// which otherwise only rises when the center column moves —
+				// so a player who widened their draw distance standing
+				// still got no `JournalColumn` for the newly visible ring,
+				// and no live edits there either (`broadcast_edit` gates on
+				// `synced_columns`). Other players' builds rendered as
+				// pristine terrain until they walked across a column
+				// border. Shrinking needs no scan: the prune rides the same
+				// flag and costs nothing to defer.
 				ClientMsg::SetDrawDist { draw_dist } => {
 					if let Some(client) = self.clients.get_mut(&conn_id) {
-						client.draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
+						let want = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
+						if want > client.draw_dist {
+							client.needs_sync_scan = true;
+						}
+						client.draw_dist = want;
 					}
 				}
 				// Queued: a craft-then-place in one tick must debit the
@@ -899,18 +1162,31 @@ impl Sim {
 			},
 		);
 
-		// Join sync: final cell state for every edited column in range.
+		// Join sync: final cell state for every edited column in range,
+		// QUEUED rather than sent. Encoding them all here meant thousands
+		// of frames and megabytes inside one 16.7 ms tick on a mature world
+		// — a hitch for everyone else on the server, every time anyone
+		// joined — and past OUT_CAP the joiner simply lost the race and got
+		// dropped. `pump_join_sync` drains the queue a few per tick against
+		// the room the outbound queue actually has.
+		//
+		// Region-indexed, so this is O(columns near the spawn) rather than
+		// O(every edited column in the world); the radius test still does
+		// the real filtering.
 		let center = column_of(spawn);
-		let mut synced = FxHashSet::default();
-		let columns: Vec<(i32, i32)> = self.journal.index.edited_columns().collect();
-		let mut synced_count = 0usize;
-		for (cx, cz) in columns {
-			if ok && in_radius((cx, cz), center, draw_dist) {
-				ok &= self.send_journal_column(&out, cx, cz);
-				synced.insert((cx, cz));
-				synced_count += 1;
+		let mut sync_queue: std::collections::VecDeque<(i32, i32)> =
+			std::collections::VecDeque::new();
+		for col in self.journal.index.columns_near(center, draw_dist) {
+			if in_radius(col, center, draw_dist) {
+				sync_queue.push_back(col);
 			}
 		}
+		let sync_queue_set: FxHashSet<(i32, i32)> = sync_queue.iter().copied().collect();
+		let queued = sync_queue.len();
+		// `JournalDone` carries no ordering obligation the client acts on
+		// (it ignores the message), and the inventory and layout below do
+		// not depend on the columns — so the handshake completes now and
+		// the terrain fills in over the next few ticks.
 		ok &= send_frame(
 			&out,
 			&ServerMsg::JournalDone {
@@ -935,14 +1211,17 @@ impl Sim {
 			},
 		);
 		if !ok {
-			// A joiner that can't even drain its join sync is not viable.
-			// OUT_CAP should comfortably fit any real world's column count
-			// (journal compaction keeps this rare) — log enough to tell.
+			// The handshake itself no longer competes with the column
+			// stream for queue space, so this is now a genuinely broken
+			// peer rather than a big world.
 			log::warn!(
-				"conn {conn_id}: join sync overflowed the outbound queue \
-				 ({synced_count} columns, cap {OUT_CAP}) — dropping"
+				"conn {conn_id}: handshake overflowed the outbound queue \
+				 (cap {OUT_CAP}) — dropping"
 			);
 			return;
+		}
+		if queued > 0 {
+			log::debug!("conn {conn_id}: {queued} journal columns queued for sync");
 		}
 
 		// Roster for the joiner (who's already online), then the join
@@ -987,11 +1266,18 @@ impl Sim {
 				last_intent: PlayerIntent::default(),
 				inputs: BTreeMap::new(),
 				last_input_tick: 0,
+				admit_hi: 0,
+				admit_seen: 0,
+				hold_ticks: 0,
+				stats: InputStats::default(),
+				edits: EditStats::default(),
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
 				draw_dist,
-				synced_columns: synced,
+				synced_columns: FxHashSet::default(),
+				sync_queue,
+				sync_queue_set,
 				needs_sync_scan: false,
 				live: false,
 				center,
@@ -1036,17 +1322,39 @@ impl Sim {
 		});
 	}
 
+	/// Encode once, fan out to every client. Use this for any message going
+	/// to more than one recipient — `client_send` re-encodes per call, and
+	/// the fan-out paths (edits, chat, time-of-day) are the hot ones.
+	fn broadcast(&self, msg: &ServerMsg) {
+		self.broadcast_where(msg, |_| true);
+	}
+
+	/// [`Self::broadcast`] restricted to clients matching `want`.
+	fn broadcast_where(&self, msg: &ServerMsg, want: impl Fn(&Client) -> bool) {
+		let Some(frame) = encode_frame(msg) else {
+			return;
+		};
+		for c in self.clients.values() {
+			if want(c) {
+				client_send_frame(c, &frame);
+			}
+		}
+	}
+
 	fn drop_client(&mut self, conn_id: u64) {
 		if let Some(client) = self.clients.remove(&conn_id) {
 			log::info!("player {} ({}) left", client.id, client.name);
 			if let Some(hash) = client.identity {
-				// Durable before the identity can reconnect and re-load.
+				// The record lands in memory immediately, which is what a
+				// reconnect reads — `get` never touches the file. Durability
+				// rides the ordinary coalesced flush: forcing one here meant
+				// a whole-file rebuild + fsync on the sim thread PER
+				// disconnect, so a server emptying out paid several inside
+				// one tick.
 				self.player_store.put(hash, client.record());
-				self.player_store.sync();
+				self.player_store.sync_soon();
 			}
-			for c in self.clients.values() {
-				client_send(c, &ServerMsg::PlayerLeft { id: client.id });
-			}
+			self.broadcast(&ServerMsg::PlayerLeft { id: client.id });
 			self.residency_dirty = true;
 		}
 		self.lobby.remove(&conn_id);
@@ -1057,6 +1365,24 @@ impl Sim {
 		(0..SERVER_ID).find(|id| !used.contains(id))
 	}
 }
+/// Can this string ever be a player's display name, and therefore ever
+/// match the admin check?
+///
+/// Admin is granted by comparing against `Client::name`, which the master
+/// mints and `validate_name` constrains to 3-10 chars of `a-z A-Z 0-9 -
+/// _`. `--admin-name "big boss"` or an 11-character name can therefore
+/// never match ANYONE — the server booted with admin quietly disabled
+/// while logging a reassuring `admin: big boss`. The launcher now refuses
+/// the argument outright, which is what an operator wants from a typo in a
+/// security-relevant flag.
+///
+/// (This validates the SHAPE of the name, nothing more. Names are still
+/// self-asserted at the master, so admin remains impersonable until the
+/// login flow lands — see NET-AUDIT-2.md §1.1.)
+pub fn admin_name_is_usable(name: &str) -> Result<(), &'static str> {
+	digblock_net::protocol::validate_name(name)
+}
+
 fn column_of(pos: Vec3) -> (i32, i32) {
 	(
 		(pos.x.floor() as i32).div_euclid(16),
@@ -1064,29 +1390,66 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 	)
 }
 
+/// Squared-distance test in i64: `col` is any edited column in the journal
+/// and `center` is any client's, so the separation is bounded only by
+/// `TP_LIMIT` (±62 500 columns). In i32 the product overflows from ~46 340
+/// columns apart — release wraps, and a wrapped negative sum passes the
+/// test, which syncs a client columns it is nowhere near and force-drops it
+/// when the queue refuses; debug panics. The subtraction is widened too:
+/// `col.0 - center.0` alone overflows at the i32 extremes.
 fn in_radius(col: (i32, i32), center: (i32, i32), r: i32) -> bool {
-	let (dx, dz) = (col.0 - center.0, col.1 - center.1);
+	let (dx, dz) = (
+		col.0 as i64 - center.0 as i64,
+		col.1 as i64 - center.1 as i64,
+	);
+	let r = r as i64;
 	dx * dx + dz * dz <= r * r
+}
+
+/// Encode one reliable frame into a shareable payload, or `None` if it
+/// could not be encoded (a server bug — logged, and treated as "sent" so a
+/// peer is never dropped for it).
+fn encode_frame(msg: &ServerMsg) -> Option<std::sync::Arc<[u8]>> {
+	let mut buf = Vec::new();
+	match codec::write_frame(msg, &mut buf) {
+		Ok(()) => Some(buf.into()),
+		Err(e) => {
+			log::error!("frame encode: {e}");
+			None
+		}
+	}
+}
+
+/// Queue an already-encoded frame. `false` = the bounded queue refused
+/// (full or closed): the peer is not draining and must be dropped.
+fn queue_frame(out: &OutTx, frame: &std::sync::Arc<[u8]>) -> bool {
+	out.try_send(OutMsg::Frame(frame.clone())).is_ok()
 }
 
 /// Encode + queue one reliable frame. `false` = the bounded queue refused
 /// (full or closed): the peer is not draining and must be dropped.
+///
+/// For a message going to more than one client, encode ONCE with
+/// [`encode_frame`] and fan out with [`queue_frame`] — see `broadcast`.
 fn send_frame(out: &OutTx, msg: &ServerMsg) -> bool {
-	let mut buf = Vec::new();
-	match codec::write_frame(msg, &mut buf) {
-		Ok(()) => out.try_send(OutMsg::Frame(buf)).is_ok(),
-		Err(e) => {
-			// Encode failure is a server bug, not a peer problem.
-			log::error!("frame encode: {e}");
-			true
-		}
+	match encode_frame(msg) {
+		Some(frame) => queue_frame(out, &frame),
+		None => true,
 	}
 }
 
 /// Reliable send to a joined client; queue refusal marks it dead (reaped
 /// into `drop_client` at the next tick).
 fn client_send(client: &Client, msg: &ServerMsg) {
-	if !client.dead.get() && !send_frame(&client.out, msg) {
+	if let Some(frame) = encode_frame(msg) {
+		client_send_frame(client, &frame);
+	}
+}
+
+/// The fan-out half of [`client_send`]: queue a payload encoded once for
+/// the whole broadcast.
+fn client_send_frame(client: &Client, frame: &std::sync::Arc<[u8]>) {
+	if !client.dead.get() && !queue_frame(&client.out, frame) {
 		log::info!(
 			"player {} ({}): outbound queue refused a frame — dropping",
 			client.id,
@@ -1164,6 +1527,68 @@ mod tests {
 			conn_id: 99,
 			msg: ClientMsg::SetDrawDist { draw_dist: 8 },
 		}]);
+	}
+
+	/// Growing the radius must request a sync scan. The edited-column walk
+	/// is event-driven off `needs_sync_scan`, which otherwise only rises
+	/// when the center column moves — so a player who widened their draw
+	/// distance standing still got no `JournalColumn` for the ring that
+	/// just became visible, and (because `broadcast_edit` gates on
+	/// `synced_columns`) no live edits there either.
+	#[test]
+	fn growing_draw_dist_syncs_the_newly_visible_ring() {
+		// A pre-journaled edit in column (6, 0): outside the harness Hello's
+		// draw_dist of 4, inside a widened 8. The client spawns in column
+		// (0, 0) and never moves, so `needs_sync_scan` can only come from
+		// the SetDrawDist itself.
+		let dir = temp_dir("drawgrow");
+		let col = (6, 0);
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			j.append(
+				digblock_net::messages::BlockEdit {
+					x: col.0 * 16 + 8,
+					y: 127,
+					z: 8,
+					block: digblock_core::block::BlockType::Stone as u16,
+				},
+				0,
+			);
+			j.sync();
+		}
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		for _ in 0..5 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		let synced = |c: &TestClient| {
+			c.msgs
+				.iter()
+				.filter(
+					|m| matches!(m, ServerMsg::JournalColumn { cx, cz, .. } if (*cx, *cz) == col),
+				)
+				.count()
+		};
+		assert_eq!(synced(&c), 0, "column sits outside draw_dist 4");
+
+		c.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::SetDrawDist { draw_dist: 8 },
+		}]);
+		for _ in 0..5 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		assert_eq!(
+			synced(&c),
+			1,
+			"widening the radius synced the column without moving: {:?}",
+			c.msgs
+		);
 	}
 
 	#[test]
@@ -1704,6 +2129,77 @@ mod tests {
 			"flood must be capped at the burst, silently: {:?}",
 			a.msgs
 		);
+	}
+
+	/// A slash line prefixed with an invisible character is a COMMAND, not
+	/// chat. `is_command` used to be decided on the raw text while the
+	/// handler ran on the sanitized one, and `U+200B` splits them: it is
+	/// not `White_Space` (so `trim_start` leaves it) and not inside
+	/// `TEXT_RANGES` (so the sanitizer removes it). The line therefore read
+	/// as ordinary chat and was BROADCAST to every player as
+	/// "/ban griefer" — a non-admin publishing a command, or an admin
+	/// leaking one they meant to run.
+	#[test]
+	fn an_invisibly_prefixed_command_is_not_broadcast_as_chat() {
+		let mut sim = flat_sim("zwsp");
+		let mut a = connect(&mut sim, 1);
+		let mut b = connect(&mut sim, 2);
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		a.drain();
+		b.drain();
+		a.msgs.clear();
+		b.msgs.clear();
+
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Chat {
+				text: "\u{200B}/ban griefer".into(),
+			},
+		}]);
+		a.drain();
+		b.drain();
+
+		// Nobody sees it as chat...
+		assert!(
+			!b.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Chat { from, text } if *from == 0 && text.contains("/ban")
+			)),
+			"the command leaked into the broadcast: {:?}",
+			b.msgs
+		);
+		// ...and the sender is privately told it is admin-only, which is
+		// what any non-admin slash line gets.
+		assert!(
+			a.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Chat { text, .. } if text.contains("admin-only")
+			)),
+			"treated as a command and refused: {:?}",
+			a.msgs
+		);
+	}
+
+	/// `--admin-name` is matched against display names, which the master
+	/// constrains to `validate_name`. A value that can never be one grants
+	/// admin to nobody, so it is refused rather than stored — a server
+	/// must not boot logging "admin: big boss" with admin disabled.
+	#[test]
+	fn an_unusable_admin_name_is_refused_not_stored() {
+		let mut sim = flat_sim("adminname");
+		for bad in ["big boss", "ab", "abcdefghijk", "hé", "bang!"] {
+			sim.set_admin_name(Some(bad.into()));
+			assert_eq!(sim.admin_name, None, "{bad:?} should not grant admin");
+			assert!(super::admin_name_is_usable(bad).is_err(), "{bad:?}");
+		}
+		for good in ["boss", "Ted_L-99", "abc"] {
+			sim.set_admin_name(Some(good.into()));
+			assert_eq!(sim.admin_name.as_deref(), Some(good));
+			assert!(super::admin_name_is_usable(good).is_ok(), "{good:?}");
+		}
+		sim.set_admin_name(None);
+		assert_eq!(sim.admin_name, None);
 	}
 
 	#[test]

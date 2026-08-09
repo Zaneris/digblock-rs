@@ -154,6 +154,59 @@ impl JobTiming {
 	}
 }
 
+/// Live connection health, filled by the net client each frame.
+///
+/// Lives here rather than in `digblock-net` so the overlay and the CSV can
+/// read it without core depending on net (net already depends on core, so
+/// the arrow only points one way).
+///
+/// `rtt_*` is measured on the INPUT→ACK loop, not a separate ping: the
+/// client stamps a tick when it first goes on the wire and stops the clock
+/// when a snapshot acknowledges that tick. That is the latency a player
+/// actually feels — it includes the server's jitter buffer and the
+/// snapshot cadence, which a ping/pong would quietly exclude — and it
+/// needs no protocol round trip of its own.
+#[derive(Clone, Copy, Default)]
+pub struct NetStats {
+	/// Smoothed input→ack round trip.
+	pub rtt_ms: f32,
+	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping
+	/// reports, and the same quantity the server browser's probe shows.
+	/// Zero when the transport has none (loopback, the benchmark wires).
+	///
+	/// Kept beside `rtt_ms` rather than replacing it because they answer
+	/// different questions: this one is "how far away is the server", and
+	/// `rtt_ms` is "how long until my action is authoritative", which
+	/// carries the tick boundary, the snapshot cadence and the input buffer
+	/// on top. Their DIFFERENCE is the server-side pipeline, which is the
+	/// part that responds to SNAPSHOT_DIVISOR and the send stride.
+	///
+	/// Deriving one from the other by subtracting a constant does not work
+	/// and was measured not to: on a LAN every `rtt_ms` sample is either one
+	/// tick or two (16.7 or 33.3 ms) against a 4 ms wire, so the wire is a
+	/// quarter of one quantum and simply is not present in the signal.
+	pub wire_rtt_ms: f32,
+	/// Mean absolute deviation of the same signal — the number that says
+	/// whether an average RTT is trustworthy.
+	pub jitter_ms: f32,
+	/// Most recent single measurement.
+	pub rtt_last_ms: f32,
+	pub down_kbps: f32,
+	pub up_kbps: f32,
+	/// Snapshots accepted per second (nominally `TICK_RATE /
+	/// SNAPSHOT_DIVISOR`; below that means loss or a struggling server).
+	pub snapshots_per_sec: f32,
+	/// Reconciles that had to rewind and replay. Steady-state this should
+	/// be ~0; sustained non-zero means the server is rejecting claims.
+	pub replays_per_sec: f32,
+	/// Predictions awaiting a verdict, and remotes being interpolated.
+	pub pending_edits: u32,
+	pub remotes: u32,
+	/// How far ahead of the last acked tick the client is predicting —
+	/// the client-side view of the jitter-buffer depth.
+	pub tick_lead: u32,
+}
+
 /// Instantaneous pipeline state (last-write gauges, not counters).
 #[derive(Clone, Copy, Default)]
 pub struct PipelineGauges {
@@ -237,6 +290,8 @@ pub struct OverlayStats {
 	pub evicted: u32,
 	pub upload_saturated: u32,
 	pub gauges: PipelineGauges,
+	/// `None` when not connected to a server.
+	pub net: Option<NetStats>,
 	pub render: RenderStats,
 	pub gpu_buffer_bytes: u64,
 	pub workers: u32,
@@ -296,6 +351,9 @@ pub struct Metrics {
 	pub upload_saturated: u32,
 	// Gauges (last-write-wins).
 	pub gauges: PipelineGauges,
+	/// Connection health, written each frame while connected and cleared
+	/// on disconnect. `None` = single player.
+	pub net: Option<NetStats>,
 	pub render: RenderStats,
 	pub gpu: Option<GpuPassMs>,
 	pub gpu_buffer_bytes: u64,
@@ -379,6 +437,7 @@ impl Metrics {
 			evicted: 0,
 			upload_saturated: 0,
 			gauges: PipelineGauges::default(),
+			net: None,
 			render: RenderStats::default(),
 			gpu: None,
 			gpu_buffer_bytes: 0,
@@ -572,6 +631,7 @@ impl Metrics {
 			evicted: self.evicted,
 			upload_saturated: self.upload_saturated,
 			gauges: self.gauges,
+			net: self.net,
 			render: self.render,
 			gpu_buffer_bytes: self.gpu_buffer_bytes,
 			workers: self.workers,

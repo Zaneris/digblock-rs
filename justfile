@@ -7,6 +7,15 @@ run *ARGS:
 bench *ARGS:
 	cargo run --release -p digblock-desktop -- --bench {{ARGS}}
 
+# Deterministic netcode benchmark: sim-tick cost, wire bytes and per-tick
+# allocations as a function of player count. Socket-free — it drives the
+# real Sim through the same SimEvent seam the wtransport layer uses, so it
+# is repeatable enough to compare two commits. Latency is NOT measured here
+# (there is no wire); live RTT is on the debug overlay's `net` line.
+# `--no-edits` isolates movement from broadcast fan-out.
+bench-net *ARGS:
+	cargo run --release -p digblock-server --bin netbench -- {{ARGS}}
+
 # The .NET master server (server list + one-time join tokens), run natively
 # for iterating on its code. The QUIC reachability probe is mandatory, so
 # this needs `brew install libmsquic`; without it, use the container

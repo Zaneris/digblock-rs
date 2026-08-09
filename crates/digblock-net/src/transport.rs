@@ -38,6 +38,25 @@ macro_rules! transport_trait {
 			/// Drain everything received since the last call. Never blocks.
 			fn poll(&mut self, out: &mut Vec<TransportEvent>);
 			fn status(&self) -> ConnStatus;
+
+			/// The TRANSPORT's own smoothed round trip, in milliseconds —
+			/// what a ping reports, and the same quantity the server
+			/// browser's probe shows.
+			///
+			/// This exists because the client cannot derive it. The RTT the
+			/// netcode measures itself is the input→ack loop, which carries
+			/// the 60 Hz tick boundary, the snapshot cadence and the input
+			/// buffer on top of the wire — about 25 ms of pipeline, and on a
+			/// LAN that is not an offset but QUANTIZATION: every sample is
+			/// either one tick or two (16.7 or 33.3 ms) against a 4 ms wire,
+			/// so no constant subtracted from it can recover a number the
+			/// sampling never contained.
+			///
+			/// `None` when the transport has no estimate — loopback and the
+			/// benchmark wires, which have no path to measure.
+			fn wire_rtt_ms(&self) -> Option<f32> {
+				None
+			}
 		}
 	};
 }

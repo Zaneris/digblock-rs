@@ -6,11 +6,11 @@ use digblock_core::player::{Player, PlayerIntent};
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::loopback::{loopback_pair, LoopbackEnd};
 use digblock_net::messages::{
-	BlockEdit, ClientMsg, Datagram, NetPlayerState, RejectReason, ServerMsg, Snapshot,
+	BlockEdit, ClientMsg, Datagram, RejectReason, RemoteState, SelfState, ServerMsg, Snapshot,
 };
 use digblock_net::protocol::{
 	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
-	PROTOCOL_VERSION,
+	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
 };
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
@@ -112,6 +112,11 @@ impl Stub {
 		let mut buf = Vec::new();
 		codec::write_frame(msg, &mut buf).unwrap();
 		self.end.send_reliable(&buf);
+	}
+
+	/// The underlying end, for transport-level faults (close, silence).
+	fn end_mut(&mut self) -> &mut LoopbackEnd {
+		&mut self.end
 	}
 
 	fn send_snapshot(&mut self, snap: Snapshot) {
@@ -240,22 +245,17 @@ fn full_frame_handshake_edits_snapshot() {
 	server.send_snapshot(Snapshot {
 		server_tick: 606,
 		your_last_input_tick: first,
-		players: vec![
-			NetPlayerState {
-				id: 1,
-				pos: me.pos.to_array(),
-				vel: me.vel.to_array(),
-				look: [0.0, 0.0, 1.0],
-				held: u16::MAX,
-			},
-			NetPlayerState {
-				id: 2,
-				pos: [10.0, 12.0, 10.0],
-				vel: [0.0, 0.0, 0.0],
-				look: [1.0, 0.0, 0.0],
-				held: BlockType::Dirt as u16,
-			},
-		],
+		me: Some(SelfState {
+			pos: me.pos.to_array(),
+			vel: me.vel.to_array(),
+		}),
+		others: vec![RemoteState {
+			id: 2,
+			pos: [10.0, 12.0, 10.0],
+			vel: [0, 0, 0],
+			yaw: digblock_net::messages::yaw_to_wire([1.0, 0.0, 0.0]),
+			held: BlockType::Dirt as u16,
+		}],
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -389,13 +389,94 @@ fn inventory_full_maps_to_event() {
 		.iter()
 		.find(|e| matches!(e, NetEvent::Inventory { .. }))
 	{
-		Some(NetEvent::Inventory { counts }) => {
+		Some(NetEvent::Inventory { counts, .. }) => {
 			// Raw pairs pass through; the engine's Inventory::from_wire
 			// does the strict decode.
 			assert_eq!(counts, &vec![(BlockType::Dirt as u16, 5), (9999, 3)]);
 		}
 		other => panic!("expected Inventory, got {other:?}"),
 	}
+}
+
+/// The rebase has to sum the deltas that were in flight when the COUNTS
+/// were decoded, not whatever is pending when the engine gets around to
+/// dispatching the event. Those are different moments: `confirm` runs
+/// inside the same `poll`, before any event is handed out, and the
+/// engine's backlog can park an `Inventory` behind hundreds of edits.
+///
+/// Here one `InventoryFull` and the confirmation of a pending place arrive
+/// in the SAME poll. Reading the live set afterwards would find the entry
+/// already dropped by `confirm` and rebase to a stale count.
+#[test]
+fn inventory_rebase_uses_the_deltas_in_flight_at_decode_time() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// Predict a place: one Dirt debited locally.
+	let cell = (1, 10, 1);
+	let seq = client.edits.begin(
+		cell,
+		BlockType::Air as u16,
+		BlockType::Dirt as u16,
+		0,
+		Some((BlockType::Dirt, -1)),
+	);
+
+	// Both land in one poll: the server's counts predate the place, and its
+	// confirmation follows immediately after.
+	server.send(&ServerMsg::InventoryFull {
+		counts: vec![(BlockType::Dirt as u16, 5)],
+	});
+	server.send(&ServerMsg::EditApplied {
+		seq: 1,
+		tick: 1,
+		by: 1,
+		client_seq: seq,
+		edit: BlockEdit {
+			x: cell.0,
+			y: cell.1,
+			z: cell.2,
+			block: BlockType::Dirt as u16,
+		},
+		prev: BlockType::Air as u16,
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	let pending = events
+		.iter()
+		.find_map(|e| match e {
+			NetEvent::Inventory { pending, .. } => Some(pending.clone()),
+			_ => None,
+		})
+		.expect("Inventory event");
+	assert_eq!(
+		pending,
+		vec![(BlockType::Dirt, -1)],
+		"the in-flight debit rode along with the counts it must be summed against"
+	);
+	assert!(
+		client.edits.is_empty(),
+		"and the confirm did land in this same poll — otherwise the test proves nothing"
+	);
 }
 
 #[test]
@@ -655,4 +736,446 @@ fn input_sends_are_throttled_to_the_stride() {
 	for t in first..first + TICKS {
 		assert!(server.input_ticks.contains(&t), "missing tick {t}");
 	}
+}
+
+/// A join sync must not land in one frame. `JournalColumn` expands to one
+/// event PER CELL, so a few hundred columns is six figures of events —
+/// materialised into `out`, then into the engine's backlog, inside a
+/// single rAF callback on wasm. `poll` decodes to a budget and leaves the
+/// rest in the frame reader.
+#[test]
+fn a_large_journal_sync_is_spread_across_polls() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+
+	// 40 columns × 100 cells = 4000 edits, all arriving at once.
+	const COLS: i32 = 40;
+	const CELLS: i32 = 100;
+	for cx in 0..COLS {
+		server.send(&ServerMsg::JournalColumn {
+			cx,
+			cz: 0,
+			cells: (0..CELLS)
+				.map(|y| BlockEdit {
+					x: cx * 16,
+					y: 64 + y,
+					z: 0,
+					block: BlockType::Dirt as u16,
+				})
+				.collect(),
+		});
+	}
+
+	let mut polls = 0;
+	let mut edits = 0;
+	loop {
+		events.clear();
+		client.poll(&mut events, 0.016);
+		let n = events
+			.iter()
+			.filter(|e| matches!(e, NetEvent::Edit { .. }))
+			.count();
+		// The budget is per poll, and one column is decoded atomically, so
+		// a poll can overshoot by at most one column's worth.
+		assert!(
+			events.len() <= 256 + CELLS as usize,
+			"poll {polls} produced {} events — the budget is not bounding anything",
+			events.len()
+		);
+		edits += n;
+		polls += 1;
+		if n == 0 {
+			break;
+		}
+		assert!(polls < 200, "sync never drained");
+	}
+	assert_eq!(
+		edits,
+		(COLS * CELLS) as usize,
+		"every edit still arrived, just spread out"
+	);
+	assert!(
+		polls > 4,
+		"a 4000-edit sync landed in {polls} polls — it was not actually paced"
+	);
+}
+
+/// Welcome, then the server drops the connection. Everything queued must
+/// still be delivered, and the disconnect must surface exactly once.
+///
+/// Until the loopback transport learned to close, NO in-process test could
+/// reach this path at all — `status` was hardcoded to `Connected` and
+/// `poll` never emitted `Disconnected`, so coverage stopped at the
+/// pre-Welcome handshake timeout.
+#[test]
+fn a_post_welcome_disconnect_surfaces_once_after_queued_bytes() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(client.ready());
+
+	// A chat line already on the wire when the connection dies.
+	server.send(&ServerMsg::Chat {
+		from: 2,
+		text: "bye".into(),
+	});
+	server.end_mut().close("server closed");
+
+	events.clear();
+	client.poll(&mut events, 0.016);
+	let chat_at = events
+		.iter()
+		.position(|e| matches!(e, NetEvent::Chat { .. }))
+		.expect("the queued chat line still arrived");
+	let disc_at = events
+		.iter()
+		.position(|e| matches!(e, NetEvent::Disconnected { .. }))
+		.expect("the disconnect surfaced");
+	assert!(chat_at < disc_at, "queued bytes come before the close");
+
+	// And it does not repeat on later polls.
+	for _ in 0..5 {
+		events.clear();
+		client.poll(&mut events, 0.016);
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"disconnect repeated: {events:?}"
+		);
+	}
+}
+
+/// A transport that goes quiet WITHOUT reporting anything — a hung peer,
+/// or a native background thread that died before it could say so. Nothing
+/// else can notice this, so the client's own liveness deadline must.
+#[test]
+fn a_silent_server_eventually_disconnects_the_client() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(client.ready());
+
+	// Silence: no bytes, no close, no status change.
+	server.end_mut().go_silent();
+
+	// Well inside the deadline, nothing happens — a quiet moment is not a
+	// dead server, and firing early would drop healthy sessions.
+	let mut elapsed = 0.0f32;
+	while elapsed < RECV_TIMEOUT_SECS - 1.0 {
+		events.clear();
+		client.poll(&mut events, 0.1);
+		elapsed += 0.1;
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"gave up after only {elapsed:.1}s"
+		);
+	}
+	// Past it, exactly one disconnect.
+	let mut disconnects = 0;
+	for _ in 0..40 {
+		events.clear();
+		client.poll(&mut events, 0.1);
+		disconnects += events
+			.iter()
+			.filter(|e| matches!(e, NetEvent::Disconnected { .. }))
+			.count();
+	}
+	assert_eq!(disconnects, 1, "one disconnect, and only one");
+}
+
+/// Traffic keeps the deadline at bay: a busy session must never trip it.
+#[test]
+fn ongoing_traffic_keeps_the_liveness_deadline_from_firing() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// Three times the deadline, with a heartbeat every simulated 5s.
+	let mut elapsed = 0.0f32;
+	let mut since_beat = 0.0f32;
+	while elapsed < RECV_TIMEOUT_SECS * 3.0 {
+		if since_beat >= 5.0 {
+			server.send(&ServerMsg::TimeOfDay { tod: 44.0 });
+			since_beat = 0.0;
+		}
+		events.clear();
+		client.poll(&mut events, 0.1);
+		elapsed += 0.1;
+		since_beat += 0.1;
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"a live session was dropped at {elapsed:.1}s"
+		);
+	}
+}
+
+/// The overlay's ping. RTT is measured on the input→ack loop rather than a
+/// separate ping message: a tick is stamped when it FIRST goes on the
+/// wire, and the clock stops when a snapshot acknowledges that tick. So it
+/// includes the server's jitter buffer and the snapshot cadence — the
+/// latency a player actually feels — which a ping/pong would exclude.
+#[test]
+fn rtt_is_measured_on_the_input_ack_loop() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert_eq!(client.stats().rtt_ms, 0.0, "no sample before any ack");
+
+	// Predict a tick and put it on the wire — this is what stamps it.
+	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
+	let intent = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	let tick = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	client.send_inputs();
+
+	// 80 ms of frames go by before the ack comes back.
+	for _ in 0..8 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick, state, &flat_world);
+	client.note_reconciled(outcome);
+
+	let rtt = client.stats().rtt_ms;
+	assert!(
+		(70.0..=90.0).contains(&rtt),
+		"expected ~80ms round trip, got {rtt}"
+	);
+	assert_eq!(client.stats().rtt_last_ms, rtt, "first sample seeds both");
+
+	// A tick answered without ever being SENT is not a round trip and must
+	// not be timed — otherwise an unsent tick reads as an instant reply.
+	let before = client.stats().rtt_ms;
+	let tick2 = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick2, state, &flat_world);
+	client.note_reconciled(outcome);
+	assert_eq!(
+		client.stats().rtt_ms,
+		before,
+		"an unsent tick's ack left the estimate alone"
+	);
+
+	// A STALE ack is not a round trip either, and this one is the subtle
+	// case: `reconcile` returns before it assigns `last_rtt`, so the value
+	// left over describes the ack BEFORE it. Sampling it re-blends a
+	// measurement already in the average — which barely moves `rtt_ms`, but
+	// collapses `jitter_ms`, because deviation is taken from the running
+	// mean and a duplicate deviates from it by nothing. On a 500 ms link
+	// half of all acks are stale, so this was most wrong exactly where the
+	// overlay is most read.
+	let tick3 = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	client.send_inputs();
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick3, state, &flat_world);
+	client.note_reconciled(outcome);
+	let (rtt_after, jitter_after) = (client.stats().rtt_ms, client.stats().jitter_ms);
+
+	// Re-deliver the SAME acked tick: stale by definition.
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick3, state, &flat_world);
+	assert_eq!(
+		outcome,
+		digblock_net::predict::Reconciled::StaleAck,
+		"the re-delivery really was stale"
+	);
+	client.note_reconciled(outcome);
+	assert_eq!(
+		client.stats().rtt_ms,
+		rtt_after,
+		"a stale ack is not a round trip"
+	);
+	assert_eq!(
+		client.stats().jitter_ms,
+		jitter_after,
+		"and above all does not deflate the jitter"
+	);
+
+	// The loopback transport measures no path, so it reports no wire RTT —
+	// and that must read as ABSENT, not as a zero-latency connection. The
+	// two figures are independent by construction: `rtt_ms` is the
+	// input→ack loop the netcode times itself, `wire_rtt_ms` is whatever
+	// the transport knows. Nothing derives one from the other.
+	assert_eq!(
+		client.stats().wire_rtt_ms,
+		0.0,
+		"loopback has no path to measure"
+	);
+	assert!(
+		client.stats().rtt_ms > 0.0,
+		"but the ack loop is still timed — the two are independent"
+	);
+}
+
+/// Traffic counters roll up into a per-second rate, and the connection
+/// gauges track the live state the overlay reports.
+#[test]
+fn traffic_counters_produce_a_per_second_rate() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// A second of snapshots at the real cadence.
+	for i in 0..20u32 {
+		server.send_snapshot(Snapshot {
+			server_tick: i * 3,
+			your_last_input_tick: 0,
+			me: Some(SelfState {
+				pos: [0.5, 11.5, 0.5],
+				vel: [0.0; 3],
+			}),
+			others: vec![RemoteState {
+				id: 2,
+				pos: [10.0, 12.0, 10.0],
+				vel: [0, 0, 0],
+				yaw: 0,
+				held: 5,
+			}],
+		});
+		events.clear();
+		client.poll(&mut events, 0.05);
+	}
+	let s = client.stats();
+	assert!(
+		(15.0..=25.0).contains(&s.snapshots_per_sec),
+		"~20 snapshots/s, got {}",
+		s.snapshots_per_sec
+	);
+	assert!(s.down_kbps > 0.0, "inbound bytes counted");
+	assert_eq!(s.remotes, 1, "the remote is being interpolated");
+	assert_eq!(s.replays_per_sec, 0.0, "a clean session never replays");
 }

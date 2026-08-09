@@ -1,8 +1,20 @@
-//! One-shot reachability/latency probe: time a bare WebTransport connect,
-//! then close immediately. The reported number includes the QUIC+TLS
-//! handshake (~2×RTT) — honest and consistent for ranking servers in the
-//! browser list. Runs on its own short-lived thread, mirroring
-//! channel_transport's pattern; the result arrives via `done`.
+//! One-shot reachability/latency probe: open a bare WebTransport session,
+//! read the connection's own round-trip estimate, close immediately. Runs on
+//! its own short-lived thread, mirroring channel_transport's pattern; the
+//! result arrives via `done`.
+//!
+//! The reported number is QUIC's smoothed RTT, NOT the time the connect
+//! took. Timing the connect was consistent enough to rank servers by, but it
+//! was not a ping and read about double one: establishing a WebTransport
+//! session is a QUIC+TLS 1.3 handshake and then an HTTP/3 extended CONNECT
+//! over it — two round trips at best, three if address validation issues a
+//! Retry — plus DNS resolution, which is not a round trip at all and does not
+//! scale with distance. So a 30 ms server listed at 70-90 ms, and the figure
+//! could not be compared with the in-game overlay's.
+//!
+//! `Connection::rtt` is the transport's own smoothed estimate, sampled from
+//! the acks the handshake already exchanged. It costs nothing extra and it is
+//! the same quantity a `ping` reports.
 
 use crate::CertPolicy;
 use std::time::{Duration, Instant};
@@ -39,11 +51,22 @@ pub fn probe(
 					.await
 					.ok()?
 					.ok()?;
-				let elapsed = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
+				// Handshake time is still the reachability answer; it is
+				// just not the latency one. Kept as the fallback for the
+				// case where the estimate has no sample of its own yet and
+				// quinn still reports its RFC 9002 initial default, which
+				// would read as a fixed 333 ms against every server listed.
+				let handshake = start.elapsed();
+				let rtt = conn.rtt();
+				let took = if rtt.is_zero() || rtt > handshake {
+					handshake
+				} else {
+					rtt
+				};
 				// Close politely (well inside the server's preamble
 				// deadline); the measurement is already taken.
 				conn.close(wtransport::VarInt::from_u32(0), b"probe");
-				Some(elapsed)
+				Some(took.as_millis().min(u128::from(u32::MAX)) as u32)
 			});
 			done(ms);
 		});

@@ -5,15 +5,27 @@
 use crate::codec::{self, FrameReader};
 use crate::edits::{PendingEdit, PendingEdits};
 use crate::messages::{ClientMsg, Datagram, EditKind, RejectReason, ServerMsg};
-use crate::predict::Predictor;
+use crate::predict::{Predictor, Reconciled};
 use crate::protocol::{
 	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
 	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE, MIN_PROTOCOL, PREAMBLE_LEN,
-	PROTOCOL_VERSION,
+	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
 use glam::Vec3;
+
+/// Engine events one `poll` will produce before stopping and leaving the
+/// rest buffered for the next call.
+///
+/// A `JournalColumn` frame expands to one event PER CELL, so a budget in
+/// frames would not bound anything: a few hundred columns of join sync is
+/// six figures of events, materialised into `out` and then into the
+/// engine's backlog inside a single rAF callback on wasm — tens of
+/// megabytes of transient allocation and a visible stall. Matched to the
+/// engine's own per-frame apply budget so the backlog cannot outrun its
+/// drain either.
+const POLL_EVENT_BUDGET: usize = 256;
 
 pub struct NetClientConfig {
 	pub name: String,
@@ -85,10 +97,22 @@ pub enum NetEvent {
 	},
 	/// Authoritative inventory snapshot as raw wire pairs (block ids plus
 	/// flagged sub-material families): re-base the local counts as
-	/// `Inventory::from_wire + Σ pending inv_deltas` (order-independent
-	/// with the per-edit reverts).
+	/// `Inventory::from_wire + Σ pending`.
 	Inventory {
 		counts: Vec<(u16, u32)>,
+		/// The predictions still in flight when `counts` was DECODED.
+		///
+		/// Snapshotted here rather than read from `PendingEdits` at
+		/// dispatch time, because those are not the same moment:
+		/// `confirm`/`reject`/`on_authoritative` all run inside `poll`,
+		/// before the engine dispatches anything from that same poll, and
+		/// the engine's queue can park this event behind hundreds of edits
+		/// besides. Reading the live set later drops a delta whose edit was
+		/// confirmed in between (the count never comes back) or
+		/// double-counts one whose edit was rejected (the rejection reverts
+		/// it a second time) — either way the client is permanently off by
+		/// one until the next snapshot.
+		pending: Vec<(digblock_core::block::BlockType, i32)>,
 	},
 	/// Another player joined. Also delivered as a roster right after
 	/// Welcome: one event per player already online.
@@ -153,6 +177,9 @@ pub struct NetClient {
 	/// handshake deadlines (sans-IO: time arrives via `poll(dt)`).
 	connect_elapsed: f32,
 	handshake_elapsed: f32,
+	/// Time since ANY inbound traffic, for the post-handshake liveness
+	/// backstop (see `RECV_TIMEOUT_SECS`).
+	quiet_elapsed: f32,
 	/// Refused or timed out: stop emitting further failures.
 	failed: bool,
 	/// Predictor tick of the last input datagram (send-rate throttle).
@@ -163,6 +190,62 @@ pub struct NetClient {
 	/// as frame spikes.
 	send_buf: Vec<u8>,
 	dgram_buf: Vec<u8>,
+	stats: StatsAcc,
+}
+
+/// Rolling traffic and health counters behind [`NetClient::stats`].
+///
+/// Rates come from a fixed one-second bucket rather than an EWMA: a
+/// bytes/second figure a player reads off an overlay should mean the last
+/// second, not an exponentially-weighted blend nobody can invert. RTT is
+/// smoothed, because a single sample is dominated by where in the snapshot
+/// cadence the ack happened to land.
+#[derive(Default)]
+struct StatsAcc {
+	window: f32,
+	in_bytes: u32,
+	out_bytes: u32,
+	snapshots: u32,
+	replays: u32,
+	/// Last completed second, held until the next one closes.
+	published: digblock_core::metrics::NetStats,
+}
+
+/// Weight for the smoothed RTT and its deviation. ~1 s of acks at the
+/// 20 Hz snapshot rate.
+const RTT_ALPHA: f32 = 0.05;
+
+impl StatsAcc {
+	fn on_rtt(&mut self, rtt_ms: f32) {
+		let p = &mut self.published;
+		p.rtt_last_ms = rtt_ms;
+		if p.rtt_ms == 0.0 {
+			p.rtt_ms = rtt_ms;
+		} else {
+			let dev = (rtt_ms - p.rtt_ms).abs();
+			p.jitter_ms = p.jitter_ms * (1.0 - RTT_ALPHA) + dev * RTT_ALPHA;
+			p.rtt_ms = p.rtt_ms * (1.0 - RTT_ALPHA) + rtt_ms * RTT_ALPHA;
+		}
+	}
+
+	/// Close the second if it has elapsed, converting counts to rates.
+	fn tick(&mut self, dt: f32) {
+		self.window += dt;
+		if self.window < 1.0 {
+			return;
+		}
+		let per_sec = 1.0 / self.window;
+		let p = &mut self.published;
+		p.down_kbps = self.in_bytes as f32 * per_sec / 1024.0;
+		p.up_kbps = self.out_bytes as f32 * per_sec / 1024.0;
+		p.snapshots_per_sec = self.snapshots as f32 * per_sec;
+		p.replays_per_sec = self.replays as f32 * per_sec;
+		self.window = 0.0;
+		self.in_bytes = 0;
+		self.out_bytes = 0;
+		self.snapshots = 0;
+		self.replays = 0;
+	}
 }
 
 impl NetClient {
@@ -182,10 +265,52 @@ impl NetClient {
 			session_token: None,
 			connect_elapsed: 0.0,
 			handshake_elapsed: 0.0,
+			quiet_elapsed: 0.0,
 			failed: false,
 			last_input_send_tick: 0,
 			send_buf: Vec::new(),
 			dgram_buf: Vec::new(),
+			stats: StatsAcc::default(),
+		}
+	}
+
+	/// Connection health for the debug overlay and the metrics CSV.
+	pub fn stats(&self) -> digblock_core::metrics::NetStats {
+		digblock_core::metrics::NetStats {
+			pending_edits: self.edits.len() as u32,
+			remotes: self.remotes.len() as u32,
+			tick_lead: self.predictor.tick_lead(),
+			// Read through, not accumulated: the transport already smooths
+			// it, and re-smoothing a smoothed value would only add lag.
+			wire_rtt_ms: self.transport.wire_rtt_ms().unwrap_or(0.0),
+			..self.stats.published
+		}
+	}
+
+	/// Report the outcome of a reconcile. The ENGINE owns that call — it
+	/// needs the world borrow for the replay — so the round trip and the
+	/// replay count come back here rather than being sampled from inside.
+	///
+	/// Takes the outcome rather than a `replayed` bool because a STALE ack
+	/// is not a round trip and must not be sampled as one.
+	/// [`Predictor::reconcile`] returns early on a stale ack, before it
+	/// assigns `last_rtt` — so the value still describes the PREVIOUS ack,
+	/// and feeding it again re-blends a measurement already in the average.
+	/// That halves the EWMA's effective response and, worse, deflates the
+	/// reported jitter: `on_rtt` derives deviation from the running mean, and
+	/// a duplicate deviates from it by nothing. Measured stale share of acks:
+	/// 0% on lan and wifi, 10% at 120 ms, 31% at 300 ms, **50% at 500 ms** —
+	/// so the overlay was least trustworthy on exactly the links a player
+	/// opens it to diagnose.
+	pub fn note_reconciled(&mut self, outcome: Reconciled) {
+		if matches!(outcome, Reconciled::Replayed { .. }) {
+			self.stats.replays += 1;
+		}
+		if outcome == Reconciled::StaleAck {
+			return;
+		}
+		if let Some(rtt) = self.predictor.last_rtt() {
+			self.stats.on_rtt(rtt * 1000.0);
 		}
 	}
 
@@ -205,59 +330,108 @@ impl NetClient {
 
 	/// Drain the transport and demux into engine-shaped events. `dt` is
 	/// the frame delta; it drives the connect/handshake deadlines.
+	///
+	/// Reliable bytes are always taken from the transport in full — leaving
+	/// them there just moves the queue — but DECODING them is budgeted (see
+	/// [`POLL_EVENT_BUDGET`]). Whatever does not fit stays in the frame
+	/// reader and is picked up next call.
 	pub fn poll(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
 		self.check_deadlines(out, dt);
+		self.predictor.advance(dt);
+		self.stats.tick(dt);
 		let mut scratch = std::mem::take(&mut self.scratch);
 		scratch.clear();
 		self.transport.poll(&mut scratch);
+		// Any byte from the peer is proof of life, whatever it decodes to.
+		let mut inbound = 0u32;
+		for e in scratch.iter() {
+			if let TransportEvent::Reliable(b) | TransportEvent::Datagram(b) = e {
+				inbound += b.len() as u32;
+			}
+		}
+		if inbound > 0 {
+			self.quiet_elapsed = 0.0;
+		}
+		self.stats.in_bytes += inbound;
+		// One budget for the whole call, however many events it spans.
+		let limit = out.len() + POLL_EVENT_BUDGET;
 		for ev in scratch.drain(..) {
 			match ev {
 				TransportEvent::Connected => self.send_hello(),
 				TransportEvent::Reliable(bytes) => {
-					let Some(bytes) = self.consume_preamble(bytes, out) else {
-						continue;
-					};
-					self.frames.extend(&bytes);
-					loop {
-						// Decode out of the borrowed frame and release it
-						// before dispatch: `on_server_msg` needs &mut self,
-						// and a join sync's thousands of frames must not
-						// each cost a Vec.
-						let msg = match self.frames.next_frame_ref() {
-							Ok(Some(frame)) => match codec::decode::<ServerMsg>(frame) {
-								Ok(msg) => msg,
-								Err(e) => {
-									log::warn!("bad server frame: {e}");
-									continue;
-								}
-							},
-							Ok(None) => break,
-							Err(e) => {
-								log::warn!("reliable stream corrupt: {e}");
-								out.push(NetEvent::Disconnected {
-									reason: format!("stream corrupt: {e}"),
-								});
-								break;
-							}
-						};
-						self.on_server_msg(msg, out);
+					if let Some(bytes) = self.consume_preamble(bytes, out) {
+						self.frames.extend(&bytes);
 					}
 				}
 				TransportEvent::Datagram(bytes) => match codec::decode_datagram(&bytes) {
-					Ok(Datagram::Snapshot(snap)) => self.on_snapshot(snap, out),
+					Ok(Datagram::Snapshot(snap)) => {
+						self.stats.snapshots += 1;
+						self.on_snapshot(snap, out)
+					}
 					Ok(Datagram::Input(_)) => {} // server-bound; ignore
 					Err(e) => log::debug!("bad datagram: {e}"),
 				},
 				TransportEvent::Disconnected { reason } => {
+					// Deliver what already arrived BEFORE reporting the end.
+					// Decoding moved after this loop when it gained a budget,
+					// which silently inverted the two: the engine clears its
+					// parked queue on a disconnect, so anything still
+					// undecoded was being thrown away rather than applied.
+					self.drain_frames(out, limit);
 					out.push(NetEvent::Disconnected { reason });
 				}
 			}
 		}
 		self.scratch = scratch;
+		// Then the leftovers, so a poll that brought no new bytes still
+		// drains what the last one could not fit.
+		self.drain_frames(out, limit);
+	}
+
+	/// Decode buffered reliable frames into events, until `out` reaches
+	/// `limit`.
+	fn drain_frames(&mut self, out: &mut Vec<NetEvent>, limit: usize) {
+		while out.len() < limit {
+			// Decode out of the borrowed frame and release it before
+			// dispatch: `on_server_msg` needs &mut self, and a join sync's
+			// thousands of frames must not each cost a Vec.
+			let msg = match self.frames.next_frame_ref() {
+				Ok(Some(frame)) => match codec::decode::<ServerMsg>(frame) {
+					Ok(msg) => msg,
+					Err(e) => {
+						log::warn!("bad server frame: {e}");
+						continue;
+					}
+				},
+				Ok(None) => break,
+				Err(e) => {
+					log::warn!("reliable stream corrupt: {e}");
+					self.failed = true;
+					out.push(NetEvent::Disconnected {
+						reason: format!("stream corrupt: {e}"),
+					});
+					break;
+				}
+			};
+			self.on_server_msg(msg, out);
+		}
 	}
 
 	fn check_deadlines(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
-		if self.failed || self.ready() {
+		if self.failed {
+			return;
+		}
+		if self.ready() {
+			// Past the handshake the only deadline is silence. The
+			// transport normally reports a death itself; this catches the
+			// ones it cannot see.
+			self.quiet_elapsed += dt;
+			if self.quiet_elapsed > RECV_TIMEOUT_SECS {
+				self.failed = true;
+				out.push(NetEvent::Disconnected {
+					reason: format!("no response from server for {RECV_TIMEOUT_SECS:.0}s"),
+				});
+			}
 			return;
 		}
 		match self.transport.status() {
@@ -372,6 +546,13 @@ impl NetClient {
 					});
 					return;
 				}
+				let Some(spawn) = finite_pos(spawn) else {
+					self.failed = true;
+					out.push(NetEvent::Refused {
+						reason: "server sent a non-finite spawn position".into(),
+					});
+					return;
+				};
 				self.my_id = Some(player_id);
 				self.session_token = Some(session_token);
 				self.predictor = Predictor::new(server_tick + CLIENT_TICK_LEAD);
@@ -379,9 +560,11 @@ impl NetClient {
 				out.push(NetEvent::Welcome {
 					seed,
 					player_id,
-					spawn: Vec3::from_array(spawn),
+					spawn,
 					server_tick,
 					tod,
+					// `normalize_or_zero` already maps a non-finite look to
+					// zero, which the engine reads as "keep the current view".
 					spawn_look: Vec3::from_array(spawn_look).normalize_or_zero(),
 				});
 			}
@@ -450,10 +633,17 @@ impl NetClient {
 			}
 			ServerMsg::Chat { from, text } => out.push(NetEvent::Chat { from, text }),
 			ServerMsg::Teleported { pos, look } => {
+				// Drop the whole teleport rather than the coordinate: hard-
+				// setting the player to a partly-garbage position is worse
+				// than ignoring a message an honest server never sends.
+				let Some(pos) = finite_pos(pos) else {
+					log::warn!("ignoring teleport to a non-finite position");
+					return;
+				};
 				self.predictor.on_teleport();
 				out.push(NetEvent::Teleported {
-					pos: Vec3::from_array(pos),
-					look: Vec3::from_array(look),
+					pos,
+					look: Vec3::from_array(look).normalize_or_zero(),
 				});
 			}
 			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
@@ -463,8 +653,11 @@ impl NetClient {
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
-				// sub-material families handled).
-				out.push(NetEvent::Inventory { counts });
+				// sub-material families handled). The pending deltas are
+				// captured HERE, with the counts they have to be summed
+				// against; see `NetEvent::Inventory`.
+				let pending = self.edits.iter().filter_map(|e| e.inv_delta).collect();
+				out.push(NetEvent::Inventory { counts, pending });
 			}
 			ServerMsg::Layout { hotbar, grid } => {
 				out.push(NetEvent::Layout { hotbar, grid });
@@ -473,27 +666,41 @@ impl NetClient {
 	}
 
 	fn on_snapshot(&mut self, snap: crate::messages::Snapshot, out: &mut Vec<NetEvent>) {
-		for p in &snap.players {
-			if Some(p.id) == self.my_id {
-				out.push(NetEvent::Ack {
+		// A non-finite entry is dropped, not clamped. Reconcile would take
+		// the replay path on it (NaN fails every comparison), set the
+		// player's state to NaN, and the next aim ray would spin in the DDA
+		// loop forever — `t > max_dist` is its only exit and NaN never
+		// satisfies it. Remote entries feed the interpolator, which would
+		// smear the NaN across every later sample. (Remote velocity is
+		// quantized and cannot be non-finite; position still can.)
+		if let Some(me) = snap.me {
+			match (finite_pos(me.pos), finite_pos(me.vel)) {
+				(Some(pos), Some(vel)) => out.push(NetEvent::Ack {
 					acked_input_tick: snap.your_last_input_tick,
-					me: digblock_core::player::PlayerState {
-						pos: Vec3::from_array(p.pos),
-						vel: Vec3::from_array(p.vel),
-					},
-				});
-			} else {
-				self.remotes.push(
-					p.id,
-					RemoteSnap {
-						server_tick: snap.server_tick,
-						pos: Vec3::from_array(p.pos),
-						vel: Vec3::from_array(p.vel),
-						look: Vec3::from_array(p.look),
-						held: p.held,
-					},
-				);
+					me: digblock_core::player::PlayerState { pos, vel },
+				}),
+				_ => log::debug!("dropping non-finite self state from snapshot"),
 			}
+		}
+		for p in &snap.others {
+			let Some(pos) = finite_pos(p.pos) else {
+				log::debug!("dropping non-finite snapshot entry for player {}", p.id);
+				continue;
+			};
+			self.remotes.push(
+				p.id,
+				RemoteSnap {
+					server_tick: snap.server_tick,
+					pos,
+					vel: Vec3::new(
+						crate::messages::vel_from_wire(p.vel[0]),
+						crate::messages::vel_from_wire(p.vel[1]),
+						crate::messages::vel_from_wire(p.vel[2]),
+					),
+					yaw: p.yaw,
+					held: p.held,
+				},
+			);
 		}
 	}
 
@@ -517,6 +724,7 @@ impl NetClient {
 		let dg = Datagram::Input(batch);
 		match codec::encode_datagram_into(&dg, &mut self.dgram_buf) {
 			Ok(bytes) => {
+				self.stats.out_bytes += bytes.len() as u32;
 				self.transport.send_datagram(bytes);
 				self.last_input_send_tick = cur;
 			}
@@ -607,6 +815,7 @@ impl NetClient {
 	fn send_msg(&mut self, msg: &ClientMsg) {
 		self.send_buf.clear();
 		if codec::write_frame(msg, &mut self.send_buf).is_ok() {
+			self.stats.out_bytes += self.send_buf.len() as u32;
 			self.transport.send_reliable(&self.send_buf);
 		}
 	}
@@ -617,4 +826,20 @@ impl NetClient {
 /// and degrade to inventory-revert-only handling.
 fn valid_cell(v: u16) -> Option<u16> {
 	digblock_core::shapes::state_valid(v).then_some(v)
+}
+
+/// The float half of the same contract: no NaN and no infinity crosses the
+/// wire boundary into the engine.
+///
+/// The server has always checked this on ITS inputs
+/// (`sim/edits.rs`'s `req.origin.is_finite()`); the client had no
+/// counterpart, and every consumer of a wire position — `swap_world`,
+/// `apply_teleport`, reconcile — fed it straight to `camera.pos`. One NaN
+/// there hangs the process: `raycast`'s DDA walk exits only on
+/// `t > max_dist`, and with NaN every comparison is false, so the loop
+/// steps a cell at a time forever. Since anyone can list a server with the
+/// master, that is reachable, not hypothetical.
+fn finite_pos(v: [f32; 3]) -> Option<Vec3> {
+	let v = Vec3::from_array(v);
+	v.is_finite().then_some(v)
 }

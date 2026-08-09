@@ -1,5 +1,265 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-09 — the server gets a jitter buffer (`INPUT_HOLD_MAX`)
+
+Acting on the measurement pass below. The drain now refuses to step past a
+**hole** in the input tick sequence for up to `INPUT_HOLD_MAX` ticks, so an
+input reordered by jitter is still admitted when it lands instead of arriving
+under the high-water mark and dying there. `EDIT_POS_TOLERANCE` and
+`dig_grace` are deliberately **not** made depth-aware — see the rule on
+`INPUT_HOLD_MAX` in `protocol.rs`.
+
+The bench grew a second link table for this, because the constants a hold
+spends are edit-path constants and the sweep only ever walked.
+
+### Before (`INPUT_HOLD_MAX = 0`) → after (`= 4`)
+
+| link | in-deliv | late/s | rtt mean | repl/s | corr mean | corr max | depth | orig max |
+|---|---|---|---|---|---|---|---|---|
+| lan | 100.0 → **100.0** | 0.0 → 0.0 | 26.0 → 26.0 | 0.00 → 0.00 | 0.000 → 0.000 | 0.00 → 0.00 | 1.5 → 1.5 | 0.000 → 0.000 |
+| wifi | 99.9 → **99.9** | 0.0 → 0.0 | 48.1 → 48.1 | 2.70 → 2.70 | 0.069 → 0.069 | 0.13 → 0.13 | 1.5 → 1.5 | 0.067 → 0.067 |
+| cellular | 98.9 → **99.8** | 0.6 → 0.0 | 142.1 → 142.8 | 3.85 → 3.85 | 0.078 → 0.078 | 0.20 → 0.20 | 1.7 → 1.8 | 0.266 → 0.267 |
+| bad-4g | 91.8 → **98.0** | 8.2 → 1.8 | 299.5 → 310.4 | 3.85 → 3.65 | 0.093 → 0.090 | 0.33 → 0.33 | 1.9 → 2.5 | 0.599 → **0.399** |
+| awful | 73.0 → **89.5** | 26.3 → 8.9 | 430.2 → 474.3 | 5.40 → 4.65 | 0.273 → 0.220 | 0.73 → **1.07** | 1.7 → 4.6 | 1.021 → **0.867** |
+
+**The lan and wifi rows are unchanged to the digit.** Not approximately —
+identically, every column. A link with no reordering has no holes, so the
+branch never fires. That is the whole cost argument: almost every player pays
+exactly nothing for this.
+
+**A hold does not spend `EDIT_POS_TOLERANCE` — it saves it.** This was the
+prediction the sweep refuted, and it is the most useful thing it found. The
+arithmetic said a deeper buffer must push the claimed edit origin further
+from the server's simulated position, at 0.067 blocks per tick of walk. The
+measurement says `orig max` *falls*: 0.60 → 0.40 at 300 ms, 1.02 → 0.87 at
+500 ms. The reason is that the alternative to holding is coasting on stale
+intent, and a coast diverges faster than a delay does. The tolerance headroom
+was never the binding constraint at this cap.
+
+**What it costs is latency, and only on links that already have some**:
++0.7 ms at 120 ms, +11 ms at 300 ms, +44 ms at 500 ms. Client prediction
+hides all of it for movement; it is visible only where the server's current
+position is compared against the client's, which is the `orig` column above —
+and that got better, not worse.
+
+### Honest debits
+
+`corr max` at 500 ms goes the wrong way: 0.73 → 1.07 blocks. It is one
+deterministic event (identical at caps 2, 4, 6 and 8), and it is the tail of
+the mechanism — when a hole never fills, the server coasts the full cap and
+then skips, which is a single larger divergence than skipping immediately.
+The body of the distribution improves: `corr mean` −19% and `repl/s` −14%, so
+total corrective motion falls from 1.47 to 1.02 blocks/s. Fewer, smaller
+corrections with one rarer, bigger one — worth it, but not the unambiguous
+win the acceptance criterion assumed.
+
+`dig ok/att` at 500 ms reads 7/8 → 6/8. **This column cannot rank the cap**:
+stone is 90 ticks, so a 20 s row gets 8 attempts and the sweep bounces around
+4–8 with no trend. `dig short` is zero on every row at every cap, so
+`dig_grace` is not what is failing — the abandonments are
+`DIG_OFF_TARGET_RESET`, the server's `look` lagging far enough at 500 ms that
+a hold exceeds 30 consecutive off-target ticks. That is the known
+aim-has-no-adoption-envelope problem, not a regression from this change, but
+a longer-window dig measurement would be needed to say whether a hold makes
+it meaningfully worse.
+
+### The sweep the cap was chosen from
+
+`in-deliv` by cap:
+
+| cap | 0 | 2 | 4 | 6 | 8 | 12 |
+|---|---|---|---|---|---|---|
+| cellular | 98.9 | 99.8 | 99.8 | 99.8 | 99.8 | 99.8 |
+| bad-4g | 91.8 | 96.5 | **98.0** | 98.2 | 98.2 | 98.2 |
+| awful | 73.0 | 82.5 | **89.5** | 93.0 | 94.3 | 93.7 |
+
+and what the higher caps cost, on the `awful` row:
+
+| cap | 0 | 2 | 4 | 6 | 8 | 12 |
+|---|---|---|---|---|---|---|
+| rtt mean | 430 | 455 | 474 | 484 | 487 | 488 |
+| repl/s | 5.40 | 4.45 | **4.65** | 5.10 | 5.95 | 6.25 |
+| orig max | 1.021 | 0.799 | **0.867** | 1.132 | 1.328 | 1.787 |
+| tol-rej/s | 0 | 0 | 0 | 0 | 0 | **0.05** |
+
+4 is the knee. bad-4g is done there — 6 and 8 add two tenths of a point
+between them. awful keeps improving to 8, but buys it with a replay rate that
+climbs back *above* the no-hold baseline, which is the symptom the change
+exists to remove. And 12 is where the arithmetic finally bites: `orig max`
+1.79 exceeds the 1.5 tolerance and honest edits start bouncing — the only
+non-zero `tol-rej/s` anywhere in the sweep. The bench catches the failure mode
+before a player would.
+
+Both halves stay deterministic: the link and edit tables are bit-identical
+run to run. The capacity table is wall-clock and is not — `tick us` swings
+~30% with machine load — but a held tick does strictly less work than a
+consumed one, so the capacity conclusion below is untouched.
+
+## 2026-08-09 — netcode measurement pass (`just bench-net`)
+
+**This supersedes the baseline below it**, which was partly measuring the
+benchmark. Nothing in the engine changed: the harness was fixed, the server
+input path was instrumented, and the numbers were re-taken. Recorded as a
+second entry rather than an edit because the corrections are the finding.
+
+### What was wrong with the first baseline
+
+| column | defect | effect |
+|---|---|---|
+| `seen rtt` | the wire delivered once per tick, checked against the same `now` the send used, so `at = now + one_way` was never `<= now` | every leg cost a whole 16.67 ms tick regardless of the configured link |
+| `snap/s`, `replay/s` | read from `StatsAcc`, which publishes a closed 1-second bucket | a phase of the run, not the run — wifi printed 20.7/s against a 20.0 nominal |
+| `seen rtt`, `+-jit` | EWMA seeded during warmup and never reset | the 4 s startup transient rode into the reported value |
+| `alloc/t` | counters bracketed the whole loop body while the timer bracketed only `tick_once` | the harness's own `Vec<SimEvent>` and per-client `vec![]` were being reported as the server's — ~74% of the number at n=64 |
+| `tick us` | claims were `[0, -500, 0]`, so the `sane` chain short-circuited on `POS_TOLERANCE` | `probe_solid` → `overlaps_solid`, the most expensive call in the input path, was never run |
+
+The link half now sub-steps the wire and the client 8× per server tick
+(2.08 ms). The server still ticks at 60 Hz — a packet arriving mid-tick
+genuinely waits for the next boundary, and that quantization is real. Every
+link column is measured over the window rather than sampled from a rate
+bucket, and clients claim a position predicted with the server's own physics
+and re-seeded from server state each tick, so adoption really happens (the
+harness asserts it rather than assuming it).
+
+### Server capacity — real worldgen, everyone walking, 600 ticks/row
+
+```
+  n |    tick us: p50    p95    p99    max | snap B | kB/s/c | alloc/t   alloc | snap
+  1 |    0.8    1.2    1.8   25.1 |   31.0 |    0.6 |     0.6      88K |  100%
+  8 |    4.7    7.9   20.2  132.8 |  194.1 |    3.8 |     3.3    1796K |  100%
+ 24 |   12.9   44.5   65.9   84.5 |  567.0 |   11.1 |     9.3    7402K |  100%
+ 40 |   18.2   72.2  114.9  120.6 |  939.0 |   18.4 |    14.9   13969K |  100%
+ 64 |   29.1  138.0  199.8  208.5 |  937.3 |   18.4 |    23.1   19118K |  100%
+```
+
+p99 at 64 players is 200 us against a 16 667 us budget — 1.2%. The
+conclusion from the first baseline survives: interest management, not tick
+cost, is what bounds player count.
+
+`alloc/t` at 64 players is **23.1, not the 88.6 first reported** — three
+quarters of that figure was the harness allocating its own input events.
+What remains is ~0.36 allocations per client per tick.
+
+Adding the adoption path did **not** move `tick us` measurably. That is
+itself a result: `overlaps_solid` is cheap next to residency and snapshot
+assembly, so the per-client cost is dominated by interest management rather
+than by validating movement.
+
+### Link quality — real NetClient vs real Sim over a seeded impairing wire
+
+Flat world on purpose: this half measures the protocol, and real worldgen
+would put worker-thread completion times into the loop. Rows are
+bit-identical run to run, so a difference is a difference in the netcode.
+
+```
+link     | cfg rtt  loss | drop | rtt mean  p95 | snap/s | repl/s | corr mean  max | max div | in-deliv | late/s want | depth
+lan      |     4ms    0% |   0% |    26.0   35.4 |   20.0 |   0.00 |     0.000 0.00 |    0.07 |   100.0% |   0.0    0 |  1.5
+wifi     |    30ms    1% |   1% |    48.1   70.8 |   19.8 |   2.70 |     0.069 0.13 |    0.33 |    99.9% |   0.0    0 |  1.5
+cellular |   120ms    3% |   4% |   142.1  193.7 |   19.4 |   3.85 |     0.078 0.20 |    0.67 |    98.9% |   0.6    5 |  1.7
+bad-4g   |   300ms    5% |   6% |   299.5  385.5 |   18.9 |   3.85 |     0.093 0.33 |    1.06 |    91.8% |   8.2   10 |  1.9
+awful    |   500ms   10% |  12% |   430.2  554.2 |   17.8 |   5.40 |     0.273 0.73 |    1.81 |    73.0% |  26.3   18 |  1.7
+```
+
+**The `lan` row's RTT is 26.0 ms, not 41.9.** The old figure was ~16 ms of
+harness quantization. 26.0 lands next to the 24.8 ms measured live against a
+real QUIC server, which is the independent check that the model is now
+honest. `seen rtt` still exceeds the wire on purpose — it is the input→ack
+loop, so it carries the server's jitter buffer, the 60 Hz tick boundary and
+the snapshot cadence, which is the latency a player feels. It does **not**
+carry the send stride: `sent_at` is stamped at transmission
+(`predict.rs:154`), so a tick waiting its turn on the wire is felt but never
+counted. The first baseline claimed otherwise.
+
+**`depth` is the finding.** The server's jitter buffer holds ~1.5 ticks on a
+clean LAN and never reaches 2 on any row — including the calm ones. The
+drain in `step_physics` takes at least one input whenever the buffer is
+non-empty and has no way to take zero, so depth is a one-way ratchet: an
+underrun destroys a tick of it permanently and nothing puts it back. The
+first baseline said `JITTER_BUFFER_TICKS = 2` was "too small to absorb
+±150 ms". That was the wrong diagnosis — the constant is not the mechanism,
+and raising it would change nothing. Being able to *hold* would.
+
+**`late/s` and `want` corroborate `in-deliv` from the server's own side.**
+Late-lost inputs — arrived below the high-water mark having never been held,
+so lost for good rather than being ordinary redundancy copies — are zero on
+lan and wifi and climb to 26/s at 500 ms/10%. `want` says how deep the buffer
+would have had to be to still be holding the worst of them: **10 ticks at
+bad-4g and 18 at awful**, i.e. 167–300 ms. Any fix aimed at those rows has to
+be willing to buy that much depth, and every tick of it is latency paid by
+that player on every input — plus grace handed to anyone who fakes jitter,
+since `dig_grace` and `EDIT_POS_TOLERANCE` are both sized against this lag.
+
+Corrections stay small throughout (max 0.73 blocks at 500 ms/10%) and are
+smoothed into the camera over ~200 ms, so the adoption envelope is holding
+well past any link this game will realistically see. That is the reason the
+delivery shortfall is a polish item rather than an emergency: a dropped input
+is mostly overwritten by the next adopted claim. What the envelope does *not*
+repair is `client.look`, which is written only from a consumed input and is
+what `verify_digs` re-raycasts from every tick — so lost inputs degrade the
+server's aim, not just its position.
+
+## 2026-08-09 — netcode baseline (SUPERSEDED, see above)
+
+First multiplayer numbers in this file; the netcode had none. Apple
+Silicon (8P+4E), release build. Two halves, because they answer different
+questions: server COST, and what a session FEELS like.
+
+### Server capacity — real worldgen, everyone walking, 600 ticks/row
+
+```
+  n |    tick us: p50    p95    p99    max | snap B | kB/s/c | alloc/t   alloc | snap
+  1 |    0.8    1.3    1.8   16.6 |   31.0 |    0.6 |     2.8     111K |  100%
+  8 |    5.6    9.9   23.8   53.3 |  192.5 |    3.8 |    12.5    2444K |  100%
+ 24 |   11.0   40.2   57.8   70.3 |  561.8 |   11.0 |    34.6   10469K |  100%
+ 40 |   19.9   92.4  149.6  192.8 |  930.2 |   18.2 |    56.4   19385K |  100%
+ 64 |   31.5  199.1  271.6  342.0 |  930.3 |   18.2 |    88.6   26669K |  100%
+```
+
+p99 at 64 players is 272 us against a 16 667 us tick budget — 1.6%. The
+sim thread is nowhere near its limit; interest management, not tick cost,
+is what bounds player count. `snap B` flattening at 40 IS
+`MAX_SNAPSHOT_PLAYERS` working. Per-client downstream tracks the v14
+measurements (24 players: 562 B/snapshot and 11.0 kB/s here against 539 B
+and 10.8 kB/s measured standalone) — an independent confirmation of that
+change rather than a restatement of it.
+
+### Link quality — real NetClient vs real Sim over a seeded impairing wire
+
+Flat world on purpose: this half measures the protocol, and real
+worldgen would put worker-thread completion times into the loop. Rows are
+bit-identical run to run, so a difference is a difference in the netcode.
+
+```
+link     | cfg rtt  loss | seen rtt  +-jit | snap/s | replay/s | corr mean  max | max div | in-deliv
+lan      |     4ms    0% |    41.9     8.5 |   19.7 |     0.00 |     0.000 0.00 |    0.13 |   100.0%
+wifi     |    30ms    1% |    56.7    11.1 |   20.7 |     3.93 |     0.067 0.07 |    0.33 |   100.0%
+cellular |   120ms    3% |   154.6    20.7 |   18.7 |     5.90 |     0.075 0.20 |    0.67 |    99.4%
+bad-4g   |   300ms    5% |   306.7    38.4 |   19.7 |     5.90 |     0.132 0.79 |    1.51 |    91.7%
+awful    |   500ms   10% |   415.0    65.0 |   17.7 |     4.92 |     0.243 0.80 |    1.78 |    74.4%
+```
+
+Two things worth reading carefully.
+
+**`seen rtt` exceeds the wire RTT by ~38 ms, and should.** It is the
+input→ack loop: send stride (0-33 ms) + the server's jitter buffer
+(33 ms) + snapshot cadence (0-50 ms). That is the latency a player feels,
+which is the number worth showing; a ping would report the 4 ms and
+explain nothing. Confirmed live against a real QUIC server on loopback at
+24.8 +- 8.5 ms.
+
+**`in-deliv` falls off on the last two rows, and JITTER causes it, not
+loss.** Heavy jitter reorders datagrams; `handle_inputs` skips anything at
+or below `last_input_tick`, a high-water mark, so a tick arriving after a
+newer one was consumed is discarded rather than applied out of order. At
+`JITTER_BUFFER_TICKS` = 2 (33 ms) the buffer cannot absorb +-150 ms of
+reordering. Deepening it would fix these rows and cost every other player
+latency — a tradeoff to make deliberately and adaptively, on measured
+jitter, not by raising a constant. Left as a finding.
+
+Corrections stay small throughout (max 0.80 blocks at 500 ms/10%), and
+they are smoothed into the camera over ~200 ms, so the adoption envelope
+is holding up well past any link this game will realistically see.
+
+
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 

@@ -16,10 +16,15 @@ use digblock_net::{NetClient, NetEvent};
 use glam::{Vec2, Vec3};
 use std::time::{Duration, Instant};
 
+#[derive(Default)]
 struct BotResult {
 	snapshots: u32,
 	disconnected: Option<String>,
 	edits_rejected: u32,
+	/// Connection health at the end of the run — the same numbers the
+	/// desktop overlay's `net` line shows, so a soak reports something you
+	/// can act on rather than only pass/fail.
+	net: digblock_core::metrics::NetStats,
 }
 
 fn main() {
@@ -88,7 +93,15 @@ fn main() {
 					failed = true;
 				} else {
 					log::info!(
-						"bot {i}: ok, {} snapshots, {} edit rejections",
+						"bot {i}: ok, ping {:.1}ms, rtt {:.1}+-{:.1}ms, dn {:.1} up {:.1} kB/s, \
+						 {:.1} snap/s, {:.2} replay/s, {} snapshots, {} edit rejections",
+						r.net.wire_rtt_ms,
+						r.net.rtt_ms,
+						r.net.jitter_ms,
+						r.net.down_kbps,
+						r.net.up_kbps,
+						r.net.snapshots_per_sec,
+						r.net.replays_per_sec,
 						r.snapshots,
 						r.edits_rejected
 					);
@@ -153,6 +166,11 @@ fn mint_token(master_url: &str, server_id: &str, name: &str) -> Result<[u8; 16],
 	if hex.len() != 32 {
 		return Err(format!("bad token length {}", hex.len()));
 	}
+	// Byte length is not char length: without this the slice below splits a
+	// multi-byte character and panics (same fix as the two service fillers).
+	if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+		return Err("join token is not hex".into());
+	}
 	let mut token = [0u8; 16];
 	for (i, byte) in token.iter_mut().enumerate() {
 		*byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
@@ -172,9 +190,8 @@ fn run_bot(
 		Ok(token) => token,
 		Err(e) => {
 			return BotResult {
-				snapshots: 0,
 				disconnected: Some(format!("token mint failed: {e}")),
-				edits_rejected: 0,
+				..Default::default()
 			};
 		}
 	};
@@ -195,11 +212,7 @@ fn run_bot(
 
 	let mut player: Option<Player> = None;
 	let mut seed = 0.0f64;
-	let mut result = BotResult {
-		snapshots: 0,
-		disconnected: None,
-		edits_rejected: 0,
-	};
+	let mut result = BotResult::default();
 	let mut events = Vec::new();
 	let mut next_edit_in = if edit_rate > 0.0 { 2.0 } else { f32::INFINITY };
 	// In-progress timed dig: target cell, its block, and the predicted
@@ -243,9 +256,11 @@ fn run_bot(
 					if let Some(p) = player.as_mut() {
 						result.snapshots += 1;
 						let world = block_at(seed);
-						client
+						let outcome = client
 							.predictor
 							.reconcile(p, *acked_input_tick, *me, &world);
+						// The ack IS the RTT sample.
+						client.note_reconciled(outcome);
 					}
 				}
 				NetEvent::Disconnected { reason } => {
@@ -352,5 +367,7 @@ fn run_bot(
 			next_tick = now;
 		}
 	}
+	// Snapshot the connection's health as it stood at the end of the run.
+	result.net = client.stats();
 	result
 }

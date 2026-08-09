@@ -8,7 +8,8 @@ use crossbeam_channel::Sender;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE,
+	decode_preamble, encode_preamble, MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN,
+	PROTOCOL_VERSION, TICK_RATE,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -20,6 +21,17 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 
 /// How long a fresh connection gets to produce its 8-byte preamble.
 const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Hard ceiling on everything before the sim hears about a connection:
+/// the QUIC/WebTransport handshake, the control stream, both timed reads,
+/// and the master round trip.
+///
+/// Without it a peer could hold a connection slot forever by simply never
+/// opening the control stream — `accept_bi()` had no deadline, and
+/// `keep_alive_interval` means the idle timeout never fires against a peer
+/// whose QUIC stack merely ACKs (which the spec requires). 512 frozen tabs
+/// would then wedge the server against `MAX_CONNECTIONS` permanently.
+const LOBBY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long past the preamble the Hello frame gets (mirrors the sim's old
 /// lobby deadline; net.rs owns it now that `Connected` is deferred until
@@ -132,6 +144,23 @@ pub async fn rotate_certs(
 	}
 }
 
+/// One occupied connection slot, released on drop — including on a panic
+/// inside the connection task, which a manual `fetch_sub` would skip.
+struct ConnSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl ConnSlot {
+	fn take(active: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+		active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		Self(active.clone())
+	}
+}
+
+impl Drop for ConnSlot {
+	fn drop(&mut self) {
+		self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+	}
+}
+
 /// Accept loop: one task per connection, forever. The endpoint is shared
 /// (`Arc`) with the cert-rotation task.
 pub async fn serve(
@@ -153,26 +182,24 @@ pub async fn serve(
 		next_conn += 1;
 		let events = events.clone();
 		let master = master.clone();
-		active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-		let active = active.clone();
+		// RAII, not paired calls: a panic anywhere in the task below would
+		// skip a manual `fetch_sub` and leak the slot forever.
+		let slot = ConnSlot::take(&active);
 		tokio::spawn(async move {
-			let conn = match incoming.await {
-				Ok(request) => match request.accept().await {
-					Ok(conn) => conn,
-					Err(e) => {
-						active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-						return log::warn!("conn {conn_id}: accept: {e}");
-					}
-				},
-				Err(e) => {
-					active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-					return log::warn!("conn {conn_id}: session: {e}");
-				}
+			let _slot = slot;
+			// The accept itself is bounded too — a peer that completes the
+			// UDP handshake and then stalls the WebTransport CONNECT must
+			// not own a slot indefinitely.
+			let accepted =
+				tokio::time::timeout(LOBBY_TIMEOUT, async { incoming.await?.accept().await }).await;
+			let conn = match accepted {
+				Ok(Ok(conn)) => conn,
+				Ok(Err(e)) => return log::warn!("conn {conn_id}: accept: {e}"),
+				Err(_) => return log::warn!("conn {conn_id}: accept timeout"),
 			};
 			log::info!("conn {conn_id}: {}", conn.remote_address());
 			handle_connection(conn, conn_id, &events, &master).await;
 			let _ = events.send(SimEvent::Disconnected { conn_id });
-			active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 			log::info!("conn {conn_id}: closed");
 		});
 	}
@@ -184,10 +211,41 @@ async fn handle_connection(
 	events: &Sender<SimEvent>,
 	master: &MasterState,
 ) {
+	// Everything up to the sim hearing about this connection runs under one
+	// deadline. The individual reads have their own, tighter ones; this
+	// covers the steps BETWEEN them — the control-stream accept, our own
+	// preamble write, and the master verify — none of which were bounded.
+	match tokio::time::timeout(LOBBY_TIMEOUT, lobby(&conn, conn_id, events, master)).await {
+		Ok(Some((send, recv, buf, frames, out_rx))) => {
+			serve_connection(conn, conn_id, events, send, recv, buf, frames, out_rx).await;
+		}
+		Ok(None) => {}
+		Err(_) => log::warn!("conn {conn_id}: lobby timeout"),
+	}
+}
+
+/// The pre-Hello handshake. `Some` = admitted (the sim has been told);
+/// `None` = refused or failed, with the reason already logged.
+#[allow(clippy::type_complexity)]
+async fn lobby(
+	conn: &Connection,
+	conn_id: u64,
+	events: &Sender<SimEvent>,
+	master: &MasterState,
+) -> Option<(
+	SendStream,
+	RecvStream,
+	Vec<u8>,
+	FrameReader,
+	tokio::sync::mpsc::Receiver<OutMsg>,
+)> {
 	// The client opens the control stream immediately after connecting.
 	let (mut send, mut recv) = match conn.accept_bi().await {
 		Ok(streams) => streams,
-		Err(e) => return log::warn!("conn {conn_id}: control stream: {e}"),
+		Err(e) => {
+			log::warn!("conn {conn_id}: control stream: {e}");
+			return None;
+		}
 	};
 
 	// Version gate BEFORE any postcard decode: the frozen preamble is the
@@ -198,10 +256,19 @@ async fn handle_connection(
 		match tokio::time::timeout(PREAMBLE_TIMEOUT, read_preamble(&mut recv)).await {
 			Ok(Some(pre)) => match decode_preamble(&pre) {
 				Some(v) => v,
-				None => return log::warn!("conn {conn_id}: bad preamble magic"),
+				None => {
+					log::warn!("conn {conn_id}: bad preamble magic");
+					return None;
+				}
 			},
-			Ok(None) => return log::warn!("conn {conn_id}: closed before preamble"),
-			Err(_) => return log::warn!("conn {conn_id}: preamble timeout"),
+			Ok(None) => {
+				log::warn!("conn {conn_id}: closed before preamble");
+				return None;
+			}
+			Err(_) => {
+				log::warn!("conn {conn_id}: preamble timeout");
+				return None;
+			}
 		};
 	// Always answer with our own preamble so even a refused client can
 	// report the server's version.
@@ -210,7 +277,7 @@ async fn handle_connection(
 		.await
 		.is_err()
 	{
-		return;
+		return None;
 	}
 	if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&client_protocol) {
 		send_refused(
@@ -221,14 +288,17 @@ async fn handle_connection(
 		)
 		.await;
 		log::info!("conn {conn_id}: refused (protocol {client_protocol})");
-		return;
+		return None;
 	}
 
 	// Await the Hello and verify its one-time token with the master BEFORE
 	// the sim ever hears about this connection — there is no tokenless way
 	// onto a server. Leftover bytes buffered past the Hello frame carry
 	// into the main loop untouched.
-	let mut frames = FrameReader::default();
+	// The client direction's cap, not the server's: nothing a client sends
+	// is large, and the 1 MB default exists for journal batches going the
+	// other way.
+	let mut frames = FrameReader::with_limit(MAX_CLIENT_FRAME);
 	let mut buf = vec![0u8; 64 * 1024];
 	let hello = match tokio::time::timeout(
 		HELLO_TIMEOUT,
@@ -238,14 +308,24 @@ async fn handle_connection(
 	{
 		Ok(Some(frame)) => match codec::decode::<ClientMsg>(&frame) {
 			Ok(msg) => msg,
-			Err(e) => return log::warn!("conn {conn_id}: bad hello frame: {e}"),
+			Err(e) => {
+				log::warn!("conn {conn_id}: bad hello frame: {e}");
+				return None;
+			}
 		},
-		Ok(None) => return log::warn!("conn {conn_id}: closed before hello"),
-		Err(_) => return log::warn!("conn {conn_id}: hello timeout"),
+		Ok(None) => {
+			log::warn!("conn {conn_id}: closed before hello");
+			return None;
+		}
+		Err(_) => {
+			log::warn!("conn {conn_id}: hello timeout");
+			return None;
+		}
 	};
 	let mut hello = hello;
 	let ClientMsg::Hello { token, .. } = &hello else {
-		return log::warn!("conn {conn_id}: first frame was not hello");
+		log::warn!("conn {conn_id}: first frame was not hello");
+		return None;
 	};
 	let token = *token;
 	match verify_join(master, &token).await {
@@ -259,11 +339,11 @@ async fn handle_connection(
 		Err(reason) => {
 			log::info!("conn {conn_id}: refused ({reason})");
 			send_refused(&mut send, reason).await;
-			return;
+			return None;
 		}
 	}
 
-	let (out_tx, mut out_rx) = channel::<OutMsg>(OUT_CAP);
+	let (out_tx, out_rx) = channel::<OutMsg>(OUT_CAP);
 	if events
 		.send(SimEvent::Connected {
 			conn_id,
@@ -272,7 +352,7 @@ async fn handle_connection(
 		})
 		.is_err()
 	{
-		return; // sim gone (shutdown)
+		return None; // sim gone (shutdown)
 	}
 	// Same channel as Connected, so ordering is guaranteed; the sim's
 	// lobby reaper remains a harmless backstop.
@@ -280,18 +360,37 @@ async fn handle_connection(
 		conn_id,
 		msg: hello,
 	});
+	Some((send, recv, buf, frames, out_rx))
+}
 
+/// The admitted connection's pump: inbound frames/datagrams to the sim,
+/// outbound messages to the peer. No overall deadline here — a joined
+/// player is expected to stay for hours; liveness is QUIC's idle timeout.
+#[allow(clippy::too_many_arguments)]
+async fn serve_connection(
+	conn: Connection,
+	conn_id: u64,
+	events: &Sender<SimEvent>,
+	mut send: SendStream,
+	mut recv: RecvStream,
+	mut buf: Vec<u8>,
+	mut frames: FrameReader,
+	mut out_rx: tokio::sync::mpsc::Receiver<OutMsg>,
+) {
 	let mut window = tokio::time::Instant::now();
 	let mut msg_budget = MSG_BUDGET;
 	let mut dgram_budget = DGRAM_BUDGET;
 	loop {
 		// Drain frames already buffered (possibly left over from a window
-		// where the budget ran out).
+		// where the budget ran out). Borrowed, not owned: the decode
+		// produces a fully owned `ClientMsg`, so copying the frame out of
+		// the reassembly buffer first was one Vec per inbound message per
+		// client for nothing (the client side already reads this way).
 		while msg_budget > 0 {
-			match frames.next_frame() {
+			match frames.next_frame_ref() {
 				Ok(Some(frame)) => {
 					msg_budget -= 1;
-					match codec::decode::<ClientMsg>(&frame) {
+					match codec::decode::<ClientMsg>(frame) {
 						Ok(msg) => {
 							let _ = events.send(SimEvent::Msg { conn_id, msg });
 						}

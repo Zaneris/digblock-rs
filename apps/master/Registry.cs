@@ -54,6 +54,18 @@ public sealed class ServerRegistry
     /// <summary>Listed server names never exceed this many characters.</summary>
     public const int MaxNameLength = 24;
 
+    /// <summary>Ceiling for a listed player count.</summary>
+    public const int MaxPlayerCount = 1000;
+
+    /// <summary>Player counts are display-only, so like names they are
+    /// repaired rather than rejected — but they MUST be repaired, because
+    /// the clients decode them as unsigned. A negative count fails the whole
+    /// server-list decode on the client side, so one server registering
+    /// <c>players: -1</c> hid every server on the master from everyone. The
+    /// clients now clamp too; this is the other half, so the bad value never
+    /// leaves here.</summary>
+    public static int SanitizeCount(int n) => Math.Clamp(n, 0, MaxPlayerCount);
+
     /// <summary>Server names are display-only, so a bad one is repaired, never
     /// rejected: keep letters/digits/space/-/_, collapse space runs, trim, cap
     /// at <see cref="MaxNameLength"/>; an empty result falls back to the game
