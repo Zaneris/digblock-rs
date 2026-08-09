@@ -29,8 +29,17 @@ extern "C" {
 	fn create_bidirectional_stream(this: &WebTransport) -> js_sys::Promise;
 	#[wasm_bindgen(method, catch)]
 	fn close(this: &WebTransport) -> Result<(), JsValue>;
-	#[wasm_bindgen(method, js_name = getStats)]
-	fn get_stats(this: &WebTransport) -> js_sys::Promise;
+	/// `catch`, because `getStats` is not merely allowed to fail — it is
+	/// allowed not to EXIST. It is in the spec but unimplemented in Chrome,
+	/// which is the only browser this client runs on, so calling it throws
+	/// `TypeError: getStats is not a function` rather than returning a
+	/// promise that rejects. Without the catch that throw unwinds out of
+	/// `poll`, out of `Engine::update`, and out of the rAF handler, which is
+	/// never re-armed: the whole game freezes on a black screen a few frames
+	/// after the join that started polling. A diagnostic the overlay renders
+	/// as dashes when absent must not be able to end the session.
+	#[wasm_bindgen(method, js_name = getStats, catch)]
+	fn get_stats(this: &WebTransport) -> Result<js_sys::Promise, JsValue>;
 
 	/// `WebTransportStats`. Only `smoothedRtt` is bound — the browser's own
 	/// QUIC round-trip estimate, in milliseconds. Declared here rather than
@@ -126,6 +135,12 @@ pub struct WebTransportClient {
 	wire_rtt: Rc<Cell<Option<f32>>>,
 	/// Polls since the last `getStats()` was kicked off.
 	rtt_age: u32,
+	/// Latched false the first time `getStats()` throws — i.e. on every
+	/// browser that does not implement it, which today is all of them. One
+	/// failed call is the feature detection; without the latch the same
+	/// TypeError would be caught, logged and discarded twice a second for
+	/// the life of the session.
+	stats_supported: bool,
 }
 
 /// Frames between `getStats()` samples (~0.5 s at 60 fps). A smoothed RTT
@@ -238,6 +253,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				dropped_datagrams: 0,
 				wire_rtt: Rc::new(Cell::new(None)),
 				rtt_age: 0,
+				stats_supported: true,
 			};
 		}
 	};
@@ -303,6 +319,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		dropped_datagrams: 0,
 		wire_rtt: Rc::new(Cell::new(None)),
 		rtt_age: 0,
+		stats_supported: true,
 	}
 }
 
@@ -386,13 +403,31 @@ impl WebTransportClient {
 			self.wire_rtt.set(None);
 			return;
 		}
+		if !self.stats_supported {
+			return;
+		}
 		self.rtt_age += 1;
 		if self.rtt_age < RTT_SAMPLE_FRAMES {
 			return;
 		}
 		self.rtt_age = 0;
 		let Some(t) = &self.transport else { return };
-		let promise = t.unchecked_ref::<WebTransport>().get_stats();
+		let promise = match t.unchecked_ref::<WebTransport>().get_stats() {
+			Ok(p) => p,
+			Err(e) => {
+				// Not an error condition: this browser has no `getStats`.
+				// `wire_rtt_ms` stays None for the session and the overlay
+				// shows dashes, which is exactly what it renders for a
+				// transport with no way to measure the wire.
+				self.stats_supported = false;
+				self.wire_rtt.set(None);
+				log::info!(
+					"WebTransport.getStats() unavailable ({}): ping reads as unknown",
+					js_reason(&e)
+				);
+				return;
+			}
+		};
 		let slot = self.wire_rtt.clone();
 		spawn_local(async move {
 			let rtt = JsFuture::from(promise)
@@ -416,6 +451,13 @@ impl WebTransportClient {
 /// does not scale with distance at all. `getStats().smoothedRtt` is a ping;
 /// the handshake time was roughly double one. See the native probe's module
 /// docs for the full reasoning, which both platforms share.
+///
+/// In practice Chrome does not implement `getStats`, so the browser build
+/// falls back to the handshake time here and reports no ping at all on the
+/// overlay. The stats path is kept because it is the correct measurement
+/// the moment a browser ships it, and because the fallback is honest:
+/// an over-estimated ping in a server list, versus dashes for a number
+/// nothing can currently produce.
 pub fn probe(
 	url: &str,
 	cert_hash: [u8; 32],
@@ -443,13 +485,21 @@ pub fn probe(
 				// not the latency one. Falls back to it when the browser omits
 				// `smoothedRtt`, which the spec permits.
 				let handshake = start.elapsed().as_millis() as u32;
-				let rtt = JsFuture::from(transport.get_stats())
-					.await
-					.ok()
-					.and_then(|s| s.dyn_into::<WebTransportStats>().ok())
-					.and_then(|s| s.smoothed_rtt().as_f64())
-					.filter(|v| v.is_finite() && *v > 0.0)
-					.map(|v| v as u32);
+				// `get_stats` is `catch`-bound because on Chrome the method
+				// does not exist and the call THROWS. Here that throw would
+				// only reject this task's promise, but the same absence has
+				// to read as "no measurement" on both paths, and the
+				// fallback below is already the answer for it.
+				let rtt = match transport.get_stats() {
+					Ok(p) => JsFuture::from(p)
+						.await
+						.ok()
+						.and_then(|s| s.dyn_into::<WebTransportStats>().ok())
+						.and_then(|s| s.smoothed_rtt().as_f64())
+						.filter(|v| v.is_finite() && *v > 0.0)
+						.map(|v| v as u32),
+					Err(_) => None,
+				};
 				Some(rtt.filter(|r| *r <= handshake).unwrap_or(handshake))
 			}
 			Err(_) => None,
