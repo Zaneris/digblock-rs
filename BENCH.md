@@ -1,5 +1,68 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-09 — netcode baseline (`just bench-net`)
+
+First multiplayer numbers in this file; the netcode had none. Apple
+Silicon (8P+4E), release build. Two halves, because they answer different
+questions: server COST, and what a session FEELS like.
+
+### Server capacity — real worldgen, everyone walking, 600 ticks/row
+
+```
+  n |    tick us: p50    p95    p99    max | snap B | kB/s/c | alloc/t   alloc | snap
+  1 |    0.8    1.3    1.8   16.6 |   31.0 |    0.6 |     2.8     111K |  100%
+  8 |    5.6    9.9   23.8   53.3 |  192.5 |    3.8 |    12.5    2444K |  100%
+ 24 |   11.0   40.2   57.8   70.3 |  561.8 |   11.0 |    34.6   10469K |  100%
+ 40 |   19.9   92.4  149.6  192.8 |  930.2 |   18.2 |    56.4   19385K |  100%
+ 64 |   31.5  199.1  271.6  342.0 |  930.3 |   18.2 |    88.6   26669K |  100%
+```
+
+p99 at 64 players is 272 us against a 16 667 us tick budget — 1.6%. The
+sim thread is nowhere near its limit; interest management, not tick cost,
+is what bounds player count. `snap B` flattening at 40 IS
+`MAX_SNAPSHOT_PLAYERS` working. Per-client downstream tracks the v14
+measurements (24 players: 562 B/snapshot and 11.0 kB/s here against 539 B
+and 10.8 kB/s measured standalone) — an independent confirmation of that
+change rather than a restatement of it.
+
+### Link quality — real NetClient vs real Sim over a seeded impairing wire
+
+Flat world on purpose: this half measures the protocol, and real
+worldgen would put worker-thread completion times into the loop. Rows are
+bit-identical run to run, so a difference is a difference in the netcode.
+
+```
+link     | cfg rtt  loss | seen rtt  +-jit | snap/s | replay/s | corr mean  max | max div | in-deliv
+lan      |     4ms    0% |    41.9     8.5 |   19.7 |     0.00 |     0.000 0.00 |    0.13 |   100.0%
+wifi     |    30ms    1% |    56.7    11.1 |   20.7 |     3.93 |     0.067 0.07 |    0.33 |   100.0%
+cellular |   120ms    3% |   154.6    20.7 |   18.7 |     5.90 |     0.075 0.20 |    0.67 |    99.4%
+bad-4g   |   300ms    5% |   306.7    38.4 |   19.7 |     5.90 |     0.132 0.79 |    1.51 |    91.7%
+awful    |   500ms   10% |   415.0    65.0 |   17.7 |     4.92 |     0.243 0.80 |    1.78 |    74.4%
+```
+
+Two things worth reading carefully.
+
+**`seen rtt` exceeds the wire RTT by ~38 ms, and should.** It is the
+input→ack loop: send stride (0-33 ms) + the server's jitter buffer
+(33 ms) + snapshot cadence (0-50 ms). That is the latency a player feels,
+which is the number worth showing; a ping would report the 4 ms and
+explain nothing. Confirmed live against a real QUIC server on loopback at
+24.8 +- 8.5 ms.
+
+**`in-deliv` falls off on the last two rows, and JITTER causes it, not
+loss.** Heavy jitter reorders datagrams; `handle_inputs` skips anything at
+or below `last_input_tick`, a high-water mark, so a tick arriving after a
+newer one was consumed is discarded rather than applied out of order. At
+`JITTER_BUFFER_TICKS` = 2 (33 ms) the buffer cannot absorb +-150 ms of
+reordering. Deepening it would fix these rows and cost every other player
+latency — a tradeoff to make deliberately and adaptively, on measured
+jitter, not by raising a constant. Left as a finding.
+
+Corrections stay small throughout (max 0.80 blocks at 500 ms/10%), and
+they are smoothed into the camera over ~200 ms, so the adoption envelope
+is holding up well past any link this game will realistically see.
+
+
 All numbers: Apple Silicon (12-core: 8P+4E), release build, `just bench`
 (seed 42, tod 45, 1800 frames, scripted flight, inputs off), ×3 runs.
 

@@ -1485,6 +1485,9 @@ impl Engine {
 	/// for the walk branch, disconnects fall back to single-player.
 	fn pump_net(&mut self, dt: f32) {
 		let Some(mut net) = self.net.take() else {
+			// Single player: no connection to report on. Without this the
+			// overlay would keep showing the last session's numbers.
+			self.metrics.net = None;
 			return;
 		};
 		net.remotes.advance(dt);
@@ -1758,6 +1761,9 @@ impl Engine {
 		self.metrics.gauges.net_backlog = queue.len() as u32;
 		self.net_backlog = queue;
 
+		// Cleared on the way out, so the overlay reads "offline" the moment
+		// a session ends rather than freezing on its last numbers.
+		self.metrics.net = (!drop_net).then(|| net.stats());
 		if !drop_net {
 			self.net = Some(net);
 		} else {
@@ -3324,10 +3330,10 @@ impl Game for Engine {
 					// visual offset, not a camera snap.
 					if let Some((tick, state)) = self.pending_ack.take() {
 						use digblock_net::predict::Reconciled;
-						if let Reconciled::Replayed { error } =
+						let outcome =
 							net.predictor
-								.reconcile(&mut self.player, tick, state, &cell_at)
-						{
+								.reconcile(&mut self.player, tick, state, &cell_at);
+						if let Reconciled::Replayed { error } = outcome {
 							self.correction_offset += error;
 							// The rewind moved the player by -error; the lerp
 							// anchor has to travel with it or the next frame
@@ -3337,6 +3343,9 @@ impl Game for Engine {
 							self.net_corrections += 1;
 							self.net_error_accum += error.length();
 						}
+						// The ack that drove this reconcile is also the RTT
+						// sample — the overlay's ping comes from here.
+						net.note_reconciled(matches!(outcome, Reconciled::Replayed { .. }));
 					}
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;

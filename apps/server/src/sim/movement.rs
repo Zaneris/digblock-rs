@@ -107,6 +107,7 @@ fn step_client(
 			};
 			client.player.tick(TICK, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
+			client.inputs_consumed += 1;
 			client.active_slot = input.active_slot;
 
 			// Adoption envelope.

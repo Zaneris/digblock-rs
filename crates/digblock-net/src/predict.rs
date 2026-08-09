@@ -44,6 +44,10 @@ struct BufEntry {
 	/// input dedup means THIS — not a replay-rewritten `post` — is what
 	/// the server adopted.
 	sent: Option<PlayerState>,
+	/// `clock` when this tick FIRST went on the wire, frozen with `sent`
+	/// for the same reason: the ack answers the original transmission, so
+	/// timing a re-send would under-report the round trip.
+	sent_at: f32,
 }
 
 pub struct Predictor {
@@ -58,6 +62,13 @@ pub struct Predictor {
 	/// back by [`Self::recycle_batch`], so the per-frame send path
 	/// allocates nothing steady-state.
 	spare: Vec<InputTick>,
+	/// Seconds since the predictor was created, advanced by
+	/// [`Self::advance`]. Sans-IO: time arrives as `dt`, never from a
+	/// clock this crate reads itself.
+	clock: f32,
+	/// Round trip of the most recent ack, in seconds. `None` until one
+	/// lands — and again after a teleport drops the buffer.
+	last_rtt: Option<f32>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -80,7 +91,25 @@ impl Predictor {
 			last_acked: start_tick.saturating_sub(1),
 			active_slot: 0,
 			spare: Vec::new(),
+			clock: 0.0,
+			last_rtt: None,
 		}
+	}
+
+	/// Advance the send-timestamp clock. Called once per `poll`.
+	pub fn advance(&mut self, dt: f32) {
+		self.clock += dt;
+	}
+
+	/// Input→ack round trip of the last reconcile, in seconds.
+	pub fn last_rtt(&self) -> Option<f32> {
+		self.last_rtt
+	}
+
+	/// Ticks predicted beyond the last one the server acknowledged — the
+	/// client's view of how deep the server's jitter buffer is running.
+	pub fn tick_lead(&self) -> u32 {
+		self.next_tick.saturating_sub(self.last_acked)
 	}
 
 	pub fn current_tick(&self) -> u32 {
@@ -107,6 +136,7 @@ impl Predictor {
 			dir,
 			post: player.state(),
 			sent: None,
+			sent_at: 0.0,
 		});
 		tick
 	}
@@ -119,7 +149,11 @@ impl Predictor {
 		let active_slot = self.active_slot;
 		let mut inputs = std::mem::take(&mut self.spare);
 		inputs.clear();
+		let now = self.clock;
 		inputs.extend(self.buf.iter_mut().skip(start).map(|e| {
+			if e.sent.is_none() {
+				e.sent_at = now;
+			}
 			let claim = *e.sent.get_or_insert(e.post);
 			InputTick {
 				tick: e.tick,
@@ -149,6 +183,10 @@ impl Predictor {
 	pub fn on_teleport(&mut self) {
 		self.buf.clear();
 		self.last_acked = self.next_tick.saturating_sub(1);
+		// Every in-flight tick is about to be refused as stale, so the next
+		// ack cannot be timed against one — measuring it would report the
+		// teleport's own latency as the connection's.
+		self.last_rtt = None;
 	}
 
 	/// Apply a snapshot's view of the local player.
@@ -170,11 +208,13 @@ impl Predictor {
 		// our current state is our own later replay — which the server
 		// converges to by adopting the newer in-flight claims. Re-replaying
 		// here instead is the standing-still RTT-period vibration.
-		let predicted = self
-			.buf
-			.iter()
-			.find(|e| e.tick == acked_tick)
-			.map(|e| e.sent.unwrap_or(e.post));
+		let acked = self.buf.iter().find(|e| e.tick == acked_tick);
+		let predicted = acked.map(|e| e.sent.unwrap_or(e.post));
+		// Only a tick that actually went on the wire has a send time; one
+		// answered without ever being sent is not a round trip.
+		self.last_rtt = acked
+			.filter(|e| e.sent.is_some())
+			.map(|e| (self.clock - e.sent_at).max(0.0));
 		// Drop everything the server has consumed.
 		while matches!(self.buf.front(), Some(e) if e.tick <= acked_tick) {
 			self.buf.pop_front();

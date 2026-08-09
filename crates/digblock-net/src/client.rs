@@ -190,6 +190,62 @@ pub struct NetClient {
 	/// as frame spikes.
 	send_buf: Vec<u8>,
 	dgram_buf: Vec<u8>,
+	stats: StatsAcc,
+}
+
+/// Rolling traffic and health counters behind [`NetClient::stats`].
+///
+/// Rates come from a fixed one-second bucket rather than an EWMA: a
+/// bytes/second figure a player reads off an overlay should mean the last
+/// second, not an exponentially-weighted blend nobody can invert. RTT is
+/// smoothed, because a single sample is dominated by where in the snapshot
+/// cadence the ack happened to land.
+#[derive(Default)]
+struct StatsAcc {
+	window: f32,
+	in_bytes: u32,
+	out_bytes: u32,
+	snapshots: u32,
+	replays: u32,
+	/// Last completed second, held until the next one closes.
+	published: digblock_core::metrics::NetStats,
+}
+
+/// Weight for the smoothed RTT and its deviation. ~1 s of acks at the
+/// 20 Hz snapshot rate.
+const RTT_ALPHA: f32 = 0.05;
+
+impl StatsAcc {
+	fn on_rtt(&mut self, rtt_ms: f32) {
+		let p = &mut self.published;
+		p.rtt_last_ms = rtt_ms;
+		if p.rtt_ms == 0.0 {
+			p.rtt_ms = rtt_ms;
+		} else {
+			let dev = (rtt_ms - p.rtt_ms).abs();
+			p.jitter_ms = p.jitter_ms * (1.0 - RTT_ALPHA) + dev * RTT_ALPHA;
+			p.rtt_ms = p.rtt_ms * (1.0 - RTT_ALPHA) + rtt_ms * RTT_ALPHA;
+		}
+	}
+
+	/// Close the second if it has elapsed, converting counts to rates.
+	fn tick(&mut self, dt: f32) {
+		self.window += dt;
+		if self.window < 1.0 {
+			return;
+		}
+		let per_sec = 1.0 / self.window;
+		let p = &mut self.published;
+		p.down_kbps = self.in_bytes as f32 * per_sec / 1024.0;
+		p.up_kbps = self.out_bytes as f32 * per_sec / 1024.0;
+		p.snapshots_per_sec = self.snapshots as f32 * per_sec;
+		p.replays_per_sec = self.replays as f32 * per_sec;
+		self.window = 0.0;
+		self.in_bytes = 0;
+		self.out_bytes = 0;
+		self.snapshots = 0;
+		self.replays = 0;
+	}
 }
 
 impl NetClient {
@@ -214,6 +270,29 @@ impl NetClient {
 			last_input_send_tick: 0,
 			send_buf: Vec::new(),
 			dgram_buf: Vec::new(),
+			stats: StatsAcc::default(),
+		}
+	}
+
+	/// Connection health for the debug overlay and the metrics CSV.
+	pub fn stats(&self) -> digblock_core::metrics::NetStats {
+		digblock_core::metrics::NetStats {
+			pending_edits: self.edits.len() as u32,
+			remotes: self.remotes.len() as u32,
+			tick_lead: self.predictor.tick_lead(),
+			..self.stats.published
+		}
+	}
+
+	/// Report the outcome of a reconcile. The ENGINE owns that call — it
+	/// needs the world borrow for the replay — so the round trip and the
+	/// replay count come back here rather than being sampled from inside.
+	pub fn note_reconciled(&mut self, replayed: bool) {
+		if replayed {
+			self.stats.replays += 1;
+		}
+		if let Some(rtt) = self.predictor.last_rtt() {
+			self.stats.on_rtt(rtt * 1000.0);
 		}
 	}
 
@@ -240,16 +319,22 @@ impl NetClient {
 	/// reader and is picked up next call.
 	pub fn poll(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
 		self.check_deadlines(out, dt);
+		self.predictor.advance(dt);
+		self.stats.tick(dt);
 		let mut scratch = std::mem::take(&mut self.scratch);
 		scratch.clear();
 		self.transport.poll(&mut scratch);
 		// Any byte from the peer is proof of life, whatever it decodes to.
-		if scratch
-			.iter()
-			.any(|e| matches!(e, TransportEvent::Reliable(_) | TransportEvent::Datagram(_)))
-		{
+		let mut inbound = 0u32;
+		for e in scratch.iter() {
+			if let TransportEvent::Reliable(b) | TransportEvent::Datagram(b) = e {
+				inbound += b.len() as u32;
+			}
+		}
+		if inbound > 0 {
 			self.quiet_elapsed = 0.0;
 		}
+		self.stats.in_bytes += inbound;
 		// One budget for the whole call, however many events it spans.
 		let limit = out.len() + POLL_EVENT_BUDGET;
 		for ev in scratch.drain(..) {
@@ -261,7 +346,10 @@ impl NetClient {
 					}
 				}
 				TransportEvent::Datagram(bytes) => match codec::decode_datagram(&bytes) {
-					Ok(Datagram::Snapshot(snap)) => self.on_snapshot(snap, out),
+					Ok(Datagram::Snapshot(snap)) => {
+						self.stats.snapshots += 1;
+						self.on_snapshot(snap, out)
+					}
 					Ok(Datagram::Input(_)) => {} // server-bound; ignore
 					Err(e) => log::debug!("bad datagram: {e}"),
 				},
@@ -618,6 +706,7 @@ impl NetClient {
 		let dg = Datagram::Input(batch);
 		match codec::encode_datagram_into(&dg, &mut self.dgram_buf) {
 			Ok(bytes) => {
+				self.stats.out_bytes += bytes.len() as u32;
 				self.transport.send_datagram(bytes);
 				self.last_input_send_tick = cur;
 			}
@@ -708,6 +797,7 @@ impl NetClient {
 	fn send_msg(&mut self, msg: &ClientMsg) {
 		self.send_buf.clear();
 		if codec::write_frame(msg, &mut self.send_buf).is_ok() {
+			self.stats.out_bytes += self.send_buf.len() as u32;
 			self.transport.send_reliable(&self.send_buf);
 		}
 	}

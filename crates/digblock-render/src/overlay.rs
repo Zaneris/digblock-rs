@@ -144,7 +144,7 @@ pub struct Overlay {
 /// Compose the debug panel's six lines. Split out from the drawing so
 /// the column budget can be pinned headless — see
 /// `debug_lines_fit_the_column_budget`.
-fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 6]) {
+fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 7]) {
 	let s = stats;
 	let mut line = |i: usize, color: u32, args: std::fmt::Arguments<'_>| {
 		scratch.clear();
@@ -265,6 +265,35 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			if r.wide_refreshed { " | wide" } else { "" }
 		),
 	);
+	// Connection health. `rtt` is the INPUT→ACK loop, not a ping: it
+	// includes the server's jitter buffer and the snapshot cadence, which
+	// is what the player actually feels when they turn or dig. `jit` is
+	// the mean deviation of that same signal (`+-`) — an rtt without it is
+	// not a number you can act on. `rtt_last_ms` is deliberately NOT here:
+	// the smoothed pair says everything a single sample would, in half the
+	// columns, and the raw value is still in `NetStats` for the CSV. `lead` is how far ahead of the last acked
+	// tick prediction is running (the client's view of the jitter-buffer
+	// depth), and `rep` is replays per second, which should sit at 0.0
+	// unless the server is rejecting claims.
+	match &s.net {
+		Some(n) => line(
+			6,
+			DIM,
+			format_args!(
+				"net  rtt {:5.1} +-{:5.1} ms | dn {:6.1} up {:6.1} kB/s | snap {:4.1}/s rep {:4.1}/s | lead {:>2} pend {:>3} rem {:>2}",
+				n.rtt_ms,
+				n.jitter_ms,
+				n.down_kbps,
+				n.up_kbps,
+				n.snapshots_per_sec,
+				n.replays_per_sec,
+				n.tick_lead.min(99),
+				n.pending_edits.min(999),
+				n.remotes.min(99),
+			),
+		),
+		None => line(6, DIM, format_args!("net  offline")),
+	}
 }
 
 impl Overlay {
@@ -600,7 +629,7 @@ impl Overlay {
 
 	fn push_debug_panel(&mut self, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
-		let mut lines: [(u32, String); 6] = Default::default();
+		let mut lines: [(u32, String); 7] = Default::default();
 		let mut scratch = std::mem::take(&mut self.line_scratch);
 		debug_lines(stats, &mut scratch, &mut lines);
 		self.line_scratch = scratch;
@@ -883,9 +912,24 @@ mod tests {
 		stats.render.draw_calls = 99999;
 		stats.render.chunks_resident = 99999;
 		stats.render.wide_refreshed = true;
+		// Connected, saturated. Without this the net line under test would
+		// be the short "offline" string and the budget would go unchecked
+		// on the one line that has the most fields.
+		stats.net = Some(digblock_core::metrics::NetStats {
+			rtt_ms: 999.9,
+			jitter_ms: 999.9,
+			rtt_last_ms: 999.9,
+			down_kbps: 9999.9,
+			up_kbps: 9999.9,
+			snapshots_per_sec: 99.9,
+			replays_per_sec: 99.9,
+			pending_edits: u32::MAX,
+			remotes: u32::MAX,
+			tick_lead: u32::MAX,
+		});
 
 		let mut scratch = String::new();
-		let mut lines: [(u32, String); 6] = Default::default();
+		let mut lines: [(u32, String); 7] = Default::default();
 		debug_lines(&stats, &mut scratch, &mut lines);
 		for (i, (_, l)) in lines.iter().enumerate() {
 			let n = l.chars().count();
@@ -912,15 +956,28 @@ mod tests {
 	fn panel_width_is_independent_of_the_numbers() {
 		let mut scratch = String::new();
 		let widths = |s: &OverlayStats, scratch: &mut String| {
-			let mut lines: [(u32, String); 6] = Default::default();
+			let mut lines: [(u32, String); 7] = Default::default();
 			debug_lines(s, scratch, &mut lines);
 			lines.map(|(_, l)| l.chars().count())
 		};
 		let quiet = OverlayStats {
 			gpu: Some(Default::default()),
+			net: Some(Default::default()),
 			..Default::default()
 		};
 		let mut busy = quiet.clone();
+		busy.net = Some(digblock_core::metrics::NetStats {
+			rtt_ms: 812.5,
+			jitter_ms: 91.25,
+			rtt_last_ms: 777.5,
+			down_kbps: 1234.5,
+			up_kbps: 987.5,
+			snapshots_per_sec: 20.0,
+			replays_per_sec: 12.5,
+			pending_edits: 999,
+			remotes: 42,
+			tick_lead: 37,
+		});
 		busy.uploaded = 4321;
 		busy.upload_kb = 98765;
 		busy.gauges.gen_queue = 812;

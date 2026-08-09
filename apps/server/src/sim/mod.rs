@@ -124,6 +124,10 @@ struct Client {
 	last_intent: PlayerIntent,
 	inputs: BTreeMap<u32, InputTick>,
 	last_input_tick: u32,
+	/// Inputs actually applied, ever. The netbench divides this by what
+	/// the client predicted, to measure how well `INPUT_REDUNDANCY` covers
+	/// real datagram loss.
+	inputs_consumed: u64,
 	/// EWMA of adopted (claim − sim) deltas: the sustained-drift gate.
 	drift: Vec3,
 	edit_tokens: f32,
@@ -388,6 +392,23 @@ impl Sim {
 	#[cfg(test)]
 	fn test_cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		self.store.cell_at(x, y, z)
+	}
+
+	/// Read a resident cell. Public for the netbench, whose client has to
+	/// predict against the same world the server is simulating.
+	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.store.cell_at(x, y, z)
+	}
+
+	/// A client's authoritative position — the netbench compares its
+	/// predicted position against this to measure divergence.
+	pub fn player_pos(&self, conn_id: u64) -> Option<Vec3> {
+		self.clients.get(&conn_id).map(|c| c.player.pos)
+	}
+
+	/// Inputs this client has had applied, ever.
+	pub fn inputs_consumed(&self, conn_id: u64) -> u64 {
+		self.clients.get(&conn_id).map_or(0, |c| c.inputs_consumed)
 	}
 
 	/// Write a cell straight into the resident store, bypassing edit
@@ -1075,6 +1096,7 @@ impl Sim {
 				last_intent: PlayerIntent::default(),
 				inputs: BTreeMap::new(),
 				last_input_tick: 0,
+				inputs_consumed: 0,
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,

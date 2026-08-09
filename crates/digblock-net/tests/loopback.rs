@@ -980,3 +980,139 @@ fn ongoing_traffic_keeps_the_liveness_deadline_from_firing() {
 		);
 	}
 }
+
+/// The overlay's ping. RTT is measured on the input→ack loop rather than a
+/// separate ping message: a tick is stamped when it FIRST goes on the
+/// wire, and the clock stops when a snapshot acknowledges that tick. So it
+/// includes the server's jitter buffer and the snapshot cadence — the
+/// latency a player actually feels — which a ping/pong would exclude.
+#[test]
+fn rtt_is_measured_on_the_input_ack_loop() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert_eq!(client.stats().rtt_ms, 0.0, "no sample before any ack");
+
+	// Predict a tick and put it on the wire — this is what stamps it.
+	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
+	let intent = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	let tick = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	client.send_inputs();
+
+	// 80 ms of frames go by before the ack comes back.
+	for _ in 0..8 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	client
+		.predictor
+		.reconcile(&mut player, tick, state, &flat_world);
+	client.note_reconciled(false);
+
+	let rtt = client.stats().rtt_ms;
+	assert!(
+		(70.0..=90.0).contains(&rtt),
+		"expected ~80ms round trip, got {rtt}"
+	);
+	assert_eq!(client.stats().rtt_last_ms, rtt, "first sample seeds both");
+
+	// A tick answered without ever being SENT is not a round trip and must
+	// not be timed — otherwise an unsent tick reads as an instant reply.
+	let before = client.stats().rtt_ms;
+	let tick2 = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	client
+		.predictor
+		.reconcile(&mut player, tick2, state, &flat_world);
+	client.note_reconciled(false);
+	assert_eq!(
+		client.stats().rtt_ms,
+		before,
+		"an unsent tick's ack left the estimate alone"
+	);
+}
+
+/// Traffic counters roll up into a per-second rate, and the connection
+/// gauges track the live state the overlay reports.
+#[test]
+fn traffic_counters_produce_a_per_second_rate() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// A second of snapshots at the real cadence.
+	for i in 0..20u32 {
+		server.send_snapshot(Snapshot {
+			server_tick: i * 3,
+			your_last_input_tick: 0,
+			me: Some(SelfState {
+				pos: [0.5, 11.5, 0.5],
+				vel: [0.0; 3],
+			}),
+			others: vec![RemoteState {
+				id: 2,
+				pos: [10.0, 12.0, 10.0],
+				vel: [0, 0, 0],
+				yaw: 0,
+				held: 5,
+			}],
+		});
+		events.clear();
+		client.poll(&mut events, 0.05);
+	}
+	let s = client.stats();
+	assert!(
+		(15.0..=25.0).contains(&s.snapshots_per_sec),
+		"~20 snapshots/s, got {}",
+		s.snapshots_per_sec
+	);
+	assert!(s.down_kbps > 0.0, "inbound bytes counted");
+	assert_eq!(s.remotes, 1, "the remote is being interpolated");
+	assert_eq!(s.replays_per_sec, 0.0, "a clean session never replays");
+}

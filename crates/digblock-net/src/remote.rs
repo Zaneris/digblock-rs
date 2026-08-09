@@ -79,6 +79,11 @@ impl RemotePlayers {
 		self.players.is_empty()
 	}
 
+	/// Remotes currently being interpolated (post-expiry).
+	pub fn len(&self) -> usize {
+		self.players.len()
+	}
+
 	/// Sample every remote player at `est_server_tick - INTERP_DELAY_TICKS`.
 	pub fn sample(&self, out: &mut Vec<RemoteDraw>) {
 		out.clear();
