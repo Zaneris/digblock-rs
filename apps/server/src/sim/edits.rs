@@ -277,9 +277,11 @@ impl Sim {
 						return reject(RejectReason::BadBlock);
 					}
 				}
-				// Slab requests must be the canonical 1/3 (state 0) — the
-				// server derives grown values itself, so a client can never
-				// conjure a 2/3 fill (two thirds of material) from one item.
+				// Slab requests must be the canonical floor 1/3 (state 0):
+				// the server derives grown values itself, so a client can
+				// never conjure a 2/3 fill (two thirds of material) from
+				// one item, and it derives the ceiling anchor from the
+				// normal it verified rather than taking the client's word.
 				if b.is_slab() && digblock_core::chunk::cell_state(block) != 0 {
 					return reject(RejectReason::BadBlock);
 				}
@@ -389,13 +391,14 @@ impl Sim {
 				if (hit.normal.0, hit.normal.1, hit.normal.2) != req.normal {
 					return reject(RejectReason::Occluded);
 				}
-				// A slab onto a same-material slab's TOP face grows the hit
-				// cell in place — the server derives the grown value from
-				// its own world, mirroring the client's prediction exactly.
+				// A slab onto a same-material slab's OPEN face (up for a
+				// floor slab, down for a ceiling one) grows the hit cell in
+				// place — the server derives the grown value from its own
+				// world, mirroring the client's prediction exactly.
 				let grow = place_b.is_some_and(|b| b.is_slab())
-					&& hit.normal == (0, 1, 0)
 					&& digblock_core::chunk::cell_id(hit.cell_value)
-						== digblock_core::chunk::cell_id(v);
+						== digblock_core::chunk::cell_id(v)
+					&& hit.normal == digblock_core::shapes::slab_grow_normal(hit.cell_value);
 				if grow {
 					writes.push((req.cell, digblock_core::shapes::slab_grown(hit.cell_value)));
 				} else {
@@ -414,7 +417,16 @@ impl Sim {
 					if !self.cell_is_replaceable(target) {
 						return reject(RejectReason::Occluded);
 					}
-					writes.push((target, v));
+					// A slab built against a ceiling hangs from it. Derived
+					// here from the verified normal, exactly as the client
+					// predicted it — the request itself is always state 0.
+					let placed = if place_b.is_some_and(|b| b.is_slab()) {
+						v | (u16::from(digblock_core::shapes::slab_place_state(hit.normal))
+							<< digblock_core::chunk::STATE_SHIFT)
+					} else {
+						v
+					};
+					writes.push((target, placed));
 					if place_b.is_some_and(|b| b.is_door()) {
 						// The derived upper half, same rule.
 						let upper = (target.0, target.1 + 1, target.2);
@@ -2041,6 +2053,131 @@ mod tests {
 			Some(BlockType::StoneSlab as u16),
 			"stone slab placed fresh above"
 		);
+	}
+
+	/// Flat ground with a stone roof at y = 130 — a reachable ceiling
+	/// over the spawn, which the flat world otherwise has nowhere.
+	fn roofed_sim(tag: &str) -> Sim {
+		use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use std::sync::Arc;
+		const ROOF_Y: usize = 130;
+		let source: crate::store::ColumnSource = Arc::new(|_cx, _cz| {
+			let mut full = ChunkData::default();
+			let mut top = ChunkData::default();
+			let mut roof = ChunkData::default();
+			for z in 0..16 {
+				for x in 0..16 {
+					roof.set(x, ROOF_Y % 16, z, BlockType::Stone);
+					for y in 0..16 {
+						full.set(x, y, z, BlockType::Stone);
+						if y <= FLAT_GROUND_TOP % 16 {
+							top.set(x, y, z, BlockType::Stone);
+						}
+					}
+				}
+			}
+			let (full, top, roof) = (Arc::new(full), Arc::new(top), Arc::new(roof));
+			(0..WORLD_VCHUNK as usize)
+				.map(|cy| match (cy.cmp(&(FLAT_GROUND_TOP / 16)), cy) {
+					(std::cmp::Ordering::Less, _) => full.clone(),
+					(std::cmp::Ordering::Equal, _) => top.clone(),
+					(_, cy) if cy == ROOF_Y / 16 => roof.clone(),
+					_ => AIR_CHUNK.clone(),
+				})
+				.collect()
+		});
+		Sim::new_with_source(SEED, &temp_dir(tag), 1, 2, source, FLAT_SPAWN).unwrap()
+	}
+
+	/// The mirror of `slab_top_place_grows_to_base_block_with_per_step_debits`,
+	/// against a ceiling: the first slab hangs from the roof instead of
+	/// falling to the floor of the cell, and each further place grows it
+	/// DOWNWARD from the same anchor — the grow face is the slab's open
+	/// side, which is now its underside.
+	#[test]
+	fn slab_placed_against_a_ceiling_hangs_and_grows_downward() {
+		use digblock_core::chunk::make_cell;
+		use digblock_core::shapes::slab_state;
+		let mut sim = roofed_sim("slabceiling");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 3);
+		let slab0 = BlockType::WoodSlab as u16;
+		let cell = (8, 129, 8); // under the roof block at y = 130
+		let up = Vec3::new(8.5, 129.97, 8.5);
+
+		place_aimed(&mut sim, &mut c, 1, slab0, up, 0);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, slab_state(false, true))),
+			"a slab built against the roof hangs from it"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 2);
+
+		// The ray now stops at the hanging slab's underside; the write
+		// must grow that cell, not land in the one below it.
+		place_aimed(&mut sim, &mut c, 2, slab0, up, 0);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, slab_state(true, true))),
+			"grew in place to a 2/3 still hanging"
+		);
+		assert_eq!(
+			sim.test_block_at(cell.0, cell.1 - 1, cell.2),
+			Some(BlockType::Air),
+			"nothing written below"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 1);
+
+		place_aimed(&mut sim, &mut c, 3, slab0, up, 0);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Wood as u16),
+			"third grow completes into the plain base block"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 0);
+	}
+
+	/// Digging a ceiling slab shrinks it toward its ceiling, one third
+	/// per hold — the anchor is the dig's too, so a hanging slab never
+	/// drops to the floor of its cell partway through being removed.
+	#[test]
+	fn ceiling_slab_dig_shrinks_upward() {
+		use digblock_core::chunk::make_cell;
+		use digblock_core::shapes::slab_state;
+		let mut sim = roofed_sim("slabceildig");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.test_grant(1, BlockType::WoodSlab, 2);
+		let slab0 = BlockType::WoodSlab as u16;
+		let cell = (8, 129, 8);
+		let up = Vec3::new(8.5, 129.97, 8.5);
+		place_aimed(&mut sim, &mut c, 1, slab0, up, 0);
+		place_aimed(&mut sim, &mut c, 2, slab0, up, 0);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, slab_state(true, true)))
+		);
+
+		// WoodSlab hardness is 20 ticks per third.
+		let mut t = 0;
+		let dug = dig_hold(&mut sim, 1, Vec3::Y, 25, 3, EditKind::Dig, &mut t);
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(make_cell(BlockType::WoodSlab, slab_state(false, true))),
+			"back to a 1/3 still hanging from the roof"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 1);
+
+		let dug = dig_hold(&mut sim, 1, Vec3::Y, 25, 4, EditKind::Dig, &mut t);
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_block_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Air),
+			"the last third clears"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 2);
 	}
 
 	/// Digging shrinks one third per completed hold (2/3 → 1/3 → Air),

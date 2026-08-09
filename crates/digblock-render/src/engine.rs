@@ -594,14 +594,18 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	// Slabs: both materials × both states, then a walkable seam row —
 	// 1/3 | 2/3 | full block | full + raised 1/3, every riser one
 	// auto-step (also eyeballs boundary culling on the shared planes).
+	// Ceiling slabs hang two cells up, where their underside is the
+	// thing to look at.
 	for (i, b) in [B::WoodSlab, B::StoneSlab].into_iter().enumerate() {
 		let x = bx + 2 * i as i32 - 3;
-		out.push((x, by, bz + 12, make_cell(b, slab_state(false))));
-		out.push((x, by, bz + 14, make_cell(b, slab_state(true))));
+		out.push((x, by, bz + 12, make_cell(b, slab_state(false, false))));
+		out.push((x, by, bz + 14, make_cell(b, slab_state(true, false))));
+		out.push((x, by + 2, bz + 12, make_cell(b, slab_state(false, true))));
+		out.push((x, by + 2, bz + 14, make_cell(b, slab_state(true, true))));
 	}
 	let base = [
-		make_cell(B::WoodSlab, slab_state(false)),
-		make_cell(B::WoodSlab, slab_state(true)),
+		make_cell(B::WoodSlab, slab_state(false, false)),
+		make_cell(B::WoodSlab, slab_state(true, false)),
 		B::Wood as u16,
 		B::Wood as u16,
 	];
@@ -612,7 +616,7 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		bx + 4,
 		by + 1,
 		bz + 16,
-		make_cell(B::WoodSlab, slab_state(false)),
+		make_cell(B::WoodSlab, slab_state(false, false)),
 	));
 	out
 }
@@ -2284,13 +2288,18 @@ impl Engine {
 		// Stairs carry the placer-derived facing (ascending away along
 		// the look); doors place as a lower+upper pair.
 		use digblock_core::chunk::{cell_id, make_cell};
-		use digblock_core::shapes::{door_state, slab_grown, stair_state};
-		// A slab onto a same-material slab's TOP face grows the hit cell
+		use digblock_core::shapes::{
+			door_state, slab_grow_normal, slab_grown, slab_place_state, stair_state,
+		};
+		// A slab onto a same-material slab's OPEN face — the top of a
+		// floor slab, the underside of a ceiling one — grows the hit cell
 		// in place (1/3 → 2/3 → base block) instead of writing the
 		// neighbor. The wire still carries the canonical state-0 slab —
-		// the server re-derives the grow from its own raycast.
-		let grow =
-			block.is_slab() && hit.normal == (0, 1, 0) && cell_id(hit.cell_value) == block as u16;
+		// the server re-derives both the grow and the anchor from its own
+		// raycast.
+		let grow = block.is_slab()
+			&& cell_id(hit.cell_value) == block as u16
+			&& hit.normal == slab_grow_normal(hit.cell_value);
 		let (target, placed_cell) = if grow {
 			(hit.cell, slab_grown(hit.cell_value))
 		} else {
@@ -2303,8 +2312,12 @@ impl Engine {
 				make_cell(block, stair_state(quantized_facing(dir)))
 			} else if block.is_door() {
 				make_cell(block, door_state(quantized_facing(dir), false, false))
+			} else if block.is_slab() {
+				// A fresh 1/3, hanging from the ceiling it was built
+				// against or sitting on anything else.
+				make_cell(block, slab_place_state(hit.normal))
 			} else {
-				block as u16 // slabs land here too: fresh 1/3, state 0
+				block as u16
 			};
 			(target, placed)
 		};
@@ -2367,7 +2380,14 @@ impl Engine {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
 				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
-				let wire_cell = if grow { block as u16 } else { placed_cell };
+				// Slabs always travel as the canonical state-0 cell: the
+				// server derives the grow AND the anchor from the normal
+				// it verified, so neither is a state a client can assert.
+				let wire_cell = if grow || block.is_slab() {
+					block as u16
+				} else {
+					placed_cell
+				};
 				net.send_edit(
 					seq,
 					tick,

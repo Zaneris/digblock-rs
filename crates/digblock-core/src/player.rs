@@ -1966,10 +1966,10 @@ mod tests {
 			return some_cell(BlockType::Dirt);
 		}
 		match (x, y) {
-			(12, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(false))),
-			(13, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(true))),
+			(12, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(false, false))),
+			(13, 10) => Some(make_cell(BlockType::WoodSlab, slab_state(true, false))),
 			(14, 10) | (15, 10) => some_cell(BlockType::Stone),
-			(15, 11) => Some(make_cell(BlockType::WoodSlab, slab_state(false))),
+			(15, 11) => Some(make_cell(BlockType::WoodSlab, slab_state(false, false))),
 			_ => some_cell(BlockType::Air),
 		}
 	}
@@ -2045,7 +2045,7 @@ mod tests {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
 			} else if (x, y) == (12, 10) {
-				Some(make_cell(BlockType::WoodSlab, slab_state(false)))
+				Some(make_cell(BlockType::WoodSlab, slab_state(false, false)))
 			} else {
 				some_cell(BlockType::Air)
 			}
@@ -2149,7 +2149,7 @@ mod tests {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
 			} else if (x, y) == (12, 10) {
-				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+				Some(make_cell(BlockType::WoodSlab, slab_state(true, false)))
 			} else {
 				some_cell(BlockType::Air)
 			}
@@ -2177,7 +2177,7 @@ mod tests {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
 			} else if (x, y) == (12, 10) {
-				Some(make_cell(BlockType::WoodSlab, slab_state(false)))
+				Some(make_cell(BlockType::WoodSlab, slab_state(false, false)))
 			} else if (x, y) == (12, 12) {
 				some_cell(BlockType::Stone)
 			} else {
@@ -2213,7 +2213,7 @@ mod tests {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
 			} else if (x, y) == (11, 10) {
-				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+				Some(make_cell(BlockType::WoodSlab, slab_state(true, false)))
 			} else if x == 12 && (y == 10 || y == 11) {
 				Some(make_cell(
 					BlockType::WoodDoor,
@@ -2250,7 +2250,7 @@ mod tests {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
 			} else if x >= 12 && y == 10 {
-				Some(make_cell(BlockType::WoodSlab, slab_state(true)))
+				Some(make_cell(BlockType::WoodSlab, slab_state(true, false)))
 			} else {
 				some_cell(BlockType::Air)
 			}
@@ -2376,8 +2376,8 @@ mod tests {
 		// a box whose top is above the feet overlaps the capsule (the
 		// closest approach is vertical), so growing the cell someone
 		// stands in is InsidePlayer — step off first.
-		let slab13 = make_cell(BlockType::WoodSlab, slab_state(false));
-		let slab23 = make_cell(BlockType::WoodSlab, slab_state(true));
+		let slab13 = make_cell(BlockType::WoodSlab, slab_state(false, false));
+		let slab23 = make_cell(BlockType::WoodSlab, slab_state(true, false));
 		assert!(placement_blocked(eye, feet_cell, slab13), "fresh 1/3");
 		assert!(placement_blocked(eye, feet_cell, slab23), "grow to 2/3");
 		assert!(

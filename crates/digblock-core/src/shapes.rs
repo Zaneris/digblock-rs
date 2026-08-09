@@ -111,21 +111,49 @@ pub fn door_toggled(cell: u16) -> u16 {
 	cell ^ (0b0100 << STATE_SHIFT)
 }
 
-/// Slab: state bit 0 set = two-thirds fill (clear = one-third). Bits
-/// 1-3 stay clear — `state_valid` enforces it.
+/// Slab: state bit 0 set = two-thirds fill (clear = one-third), bit 1
+/// set = anchored to the cell's ceiling instead of its floor. Bits 2-3
+/// stay clear — `state_valid` enforces it.
 #[inline]
-pub fn slab_state(two_thirds: bool) -> u8 {
-	u8::from(two_thirds)
+pub fn slab_state(two_thirds: bool, top: bool) -> u8 {
+	u8::from(two_thirds) | (u8::from(top) << 1)
+}
+
+/// Whether a slab cell hangs from its ceiling (state bit 1).
+#[inline]
+pub fn slab_is_top(cell: u16) -> bool {
+	cell_state(cell) & 0b10 != 0
+}
+
+/// The face normal a slab grows from: its OWN open side — up for a
+/// floor slab, down for a ceiling one. Clicking the other face is
+/// clicking the boundary it is already flush against, so that places
+/// into the neighbouring cell the way a full cube would. Client
+/// prediction and the server's grow derivation share this.
+#[inline]
+pub fn slab_grow_normal(cell: u16) -> (i32, i32, i32) {
+	(0, if slab_is_top(cell) { -1 } else { 1 }, 0)
+}
+
+/// The state a freshly placed slab lands in, from the face it was built
+/// against: a slab placed onto a ceiling hangs from it, everything else
+/// (floors and side faces alike) sits on the floor. Derived, never sent
+/// — the server re-derives it from its own verified normal, so the wire
+/// still carries the canonical state-0 slab.
+#[inline]
+pub fn slab_place_state(normal: (i32, i32, i32)) -> u8 {
+	slab_state(false, normal.1 < 0)
 }
 
 /// A slab cell one third taller: 1/3 → 2/3, 2/3 → the plain base block.
-/// Client prediction and the server's grow write share this so they can
-/// never disagree about the grown value.
+/// It grows into its cell from whichever end it is anchored to, so the
+/// anchor rides along. Client prediction and the server's grow write
+/// share this so they can never disagree about the grown value.
 #[inline]
 pub fn slab_grown(cell: u16) -> u16 {
 	let b = BlockType::from_id(cell_id(cell));
 	debug_assert!(b.is_slab());
-	if cell_state(cell) == 0 {
+	if cell_state(cell) & 1 == 0 {
 		cell | (1 << STATE_SHIFT)
 	} else {
 		b.slab_base().map_or(cell, |base| base as u16)
@@ -133,14 +161,16 @@ pub fn slab_grown(cell: u16) -> u16 {
 }
 
 /// A slab cell one third shorter: 2/3 → 1/3, 1/3 → Air. The dig-shrink
-/// counterpart of [`slab_grown`], shared the same way.
+/// counterpart of [`slab_grown`], shared the same way — and it keeps the
+/// anchor for the same reason, so a dug ceiling slab stays on its
+/// ceiling instead of dropping to the floor.
 #[inline]
 pub fn slab_shrunk(cell: u16) -> u16 {
 	debug_assert!(BlockType::from_id(cell_id(cell)).is_slab());
-	if cell_state(cell) == 0 {
+	if cell_state(cell) & 1 == 0 {
 		BlockType::Air as u16
 	} else {
-		cell & !STATE_MASK
+		cell & !(1 << STATE_SHIFT)
 	}
 }
 
@@ -263,7 +293,7 @@ pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
 	match b.props().shape? {
 		ShapeKind::Stairs => Some(&STAIRS[(state & 3) as usize]),
 		ShapeKind::Door => Some(&DOORS[(state & 0xF) as usize]),
-		ShapeKind::Slab => Some(&SLABS[(state & 1) as usize]),
+		ShapeKind::Slab => Some(&SLABS[(state & 3) as usize]),
 	}
 }
 
@@ -340,7 +370,7 @@ pub fn state_valid(cell: u16) -> bool {
 		None => state == 0,
 		Some(ShapeKind::Stairs) => state & !3 == 0,
 		Some(ShapeKind::Door) => true,
-		Some(ShapeKind::Slab) => state & !1 == 0,
+		Some(ShapeKind::Slab) => state & !3 == 0,
 	}
 }
 
@@ -429,15 +459,20 @@ const DOOR_UPPER_BOXES: [SubBox; 6] = [
 	SubBox::new([1, 5, 2], [3, 7, 10]),   // horizontal mullion
 ];
 
-/// Slab fills by state: one third (12×12×4) and two thirds (12×12×8),
-/// bottom-anchored. The 4/12 rise is deliberately one stair tread — the
-/// auto-step threshold serves both.
-const SLAB_BOXES: [SubBox; 2] = [
+/// Slab fills by state, indexed `two_thirds | top<<1`: one third
+/// (12×12×4) or two thirds (12×12×8), anchored to the cell's floor or to
+/// its ceiling. The 4/12 rise is deliberately one stair tread — the
+/// auto-step threshold serves both. A ceiling slab is the floor one
+/// mirrored about the cell's mid-plane, which is what keeps every pair
+/// the same volume (and so the same alchemy cost and the same dig).
+const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 0, 0], [12, 4, 12]),
 	SubBox::new([0, 0, 0], [12, 8, 12]),
+	SubBox::new([0, 8, 0], [12, 12, 12]),
+	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
 
-static SLABS: LazyLock<[ShapeVariant; 2]> = LazyLock::new(|| {
+static SLABS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 	SLAB_BOXES.map(|b| {
 		let boxes = vec![b];
 		let baked = bake(&boxes);
@@ -812,8 +847,8 @@ mod tests {
 			assert!(!v.quads.is_empty());
 			max = max.max(v.quads.len());
 		}
-		for two_thirds in [false, true] {
-			let v = shape_of(BlockType::WoodSlab, slab_state(two_thirds)).unwrap();
+		for state in 0..4u8 {
+			let v = shape_of(BlockType::WoodSlab, state).unwrap();
 			assert!(!v.quads.is_empty());
 			max = max.max(v.quads.len());
 		}
@@ -823,20 +858,51 @@ mod tests {
 		);
 	}
 
+	/// A slab is one box the height its size bit says, flush against the
+	/// end its anchor bit says — and the plane it is flush against is
+	/// exactly the one boundary it fully covers, which is what lets a
+	/// ceiling slab hide the face above it the way a floor slab hides
+	/// the one below.
 	#[test]
 	fn slab_variants() {
-		for (state, top) in [(0u8, 4u8), (1, 8)] {
-			let v = shape_of(BlockType::WoodSlab, state).unwrap();
-			assert_eq!(v.collision.len(), 1);
-			assert_eq!(v.collision[0], SubBox::new([0, 0, 0], [12, top, 12]));
-			assert_eq!(v.interaction, v.collision);
-			assert_eq!(v.ramp, None, "slabs are boxes, never ramps");
-			// A plain box: 6 quads, only the bottom plane fully covered.
-			assert_eq!(v.quads.len(), 6);
-			assert!(v.occludes_full[Dir::Bottom as usize]);
-			for d in [Dir::Top, Dir::West, Dir::East, Dir::North, Dir::South] {
-				assert!(!v.occludes_full[d as usize], "{d:?} partial or open");
+		for two_thirds in [false, true] {
+			for top in [false, true] {
+				let h = if two_thirds { 8 } else { 4 };
+				let v = shape_of(BlockType::WoodSlab, slab_state(two_thirds, top)).unwrap();
+				assert_eq!(v.collision.len(), 1);
+				let want = if top {
+					SubBox::new([0, 12 - h, 0], [12, 12, 12])
+				} else {
+					SubBox::new([0, 0, 0], [12, h, 12])
+				};
+				assert_eq!(v.collision[0], want, "two_thirds={two_thirds} top={top}");
+				assert_eq!(v.interaction, v.collision);
+				assert_eq!(v.ramp, None, "slabs are boxes, never ramps");
+				// A plain box: 6 quads, only the anchored plane fully covered.
+				assert_eq!(v.quads.len(), 6);
+				let (closed, open) = if top {
+					(Dir::Top, Dir::Bottom)
+				} else {
+					(Dir::Bottom, Dir::Top)
+				};
+				assert!(v.occludes_full[closed as usize]);
+				for d in [open, Dir::West, Dir::East, Dir::North, Dir::South] {
+					assert!(!v.occludes_full[d as usize], "{d:?} partial or open");
+				}
 			}
+		}
+	}
+
+	/// The two anchors are mirror images: same volume, same alchemy
+	/// cost, same dig — a ceiling slab is not a second, cheaper item.
+	#[test]
+	fn a_ceiling_slab_is_a_floor_slab_mirrored() {
+		for two_thirds in [false, true] {
+			let bottom = SLAB_BOXES[slab_state(two_thirds, false) as usize];
+			let top = SLAB_BOXES[slab_state(two_thirds, true) as usize];
+			assert_eq!(bottom.min[1], 12 - top.max[1]);
+			assert_eq!(bottom.max[1], 12 - top.min[1]);
+			assert_eq!(raster_volume(&[bottom]), raster_volume(&[top]));
 		}
 	}
 
@@ -861,11 +927,18 @@ mod tests {
 				"a stair fills its cell corner to corner"
 			);
 		}
-		// Slabs: bottom-anchored thirds, so only the top shrinks.
-		for (two_thirds, top) in [(false, 4u8), (true, 8)] {
+		// Slabs: thirds anchored to one end, so only the other shrinks.
+		for (two_thirds, h) in [(false, 4u8), (true, 8)] {
 			assert_eq!(
-				draw_bounds(make_cell(BlockType::WoodSlab, slab_state(two_thirds))),
-				Some(SubBox::new([0, 0, 0], [12, top, 12]))
+				draw_bounds(make_cell(
+					BlockType::WoodSlab,
+					slab_state(two_thirds, false)
+				)),
+				Some(SubBox::new([0, 0, 0], [12, h, 12]))
+			);
+			assert_eq!(
+				draw_bounds(make_cell(BlockType::WoodSlab, slab_state(two_thirds, true))),
+				Some(SubBox::new([0, 12 - h, 0], [12, 12, 12]))
 			);
 		}
 		// A closed door is a plate: 4 twelfths deep on its facing axis
@@ -889,7 +962,7 @@ mod tests {
 		for (b, states) in [
 			(BlockType::StoneStairs, 4u8),
 			(BlockType::WoodDoor, 16),
-			(BlockType::WoodSlab, 2),
+			(BlockType::WoodSlab, 4),
 		] {
 			for state in 0..states {
 				let v = shape_of(b, state).unwrap();
@@ -908,6 +981,9 @@ mod tests {
 		}
 	}
 
+	/// Growing and shrinking move the free end and never the anchor: a
+	/// ceiling slab stays on its ceiling all the way to the full block
+	/// and back down to air.
 	#[test]
 	fn slab_grow_shrink_roundtrip() {
 		use crate::chunk::make_cell;
@@ -915,13 +991,44 @@ mod tests {
 			(BlockType::WoodSlab, BlockType::Wood),
 			(BlockType::StoneSlab, BlockType::Stone),
 		] {
-			let third = make_cell(slab, slab_state(false));
-			let two = make_cell(slab, slab_state(true));
-			assert_eq!(slab_grown(third), two);
-			assert_eq!(slab_grown(two), base as u16, "third grow → base block");
-			assert_eq!(slab_shrunk(two), third);
-			assert_eq!(slab_shrunk(third), BlockType::Air as u16);
+			for top in [false, true] {
+				let third = make_cell(slab, slab_state(false, top));
+				let two = make_cell(slab, slab_state(true, top));
+				assert_eq!(slab_grown(third), two);
+				assert_eq!(slab_grown(two), base as u16, "third grow → base block");
+				assert_eq!(slab_shrunk(two), third);
+				assert_eq!(slab_shrunk(third), BlockType::Air as u16);
+				assert_eq!(slab_is_top(third), top);
+				assert_eq!(slab_is_top(two), top);
+			}
 			assert_eq!(slab.slab_base(), Some(base));
+		}
+	}
+
+	/// A slab grows from the face it does NOT sit flush against, and a
+	/// fresh one anchors to whatever it was built against. Together
+	/// those two make the ceiling case the exact mirror of the floor
+	/// case, which is why one grow rule serves both.
+	#[test]
+	fn slabs_grow_from_their_open_face_and_anchor_to_the_face_placed_against() {
+		use crate::chunk::make_cell;
+		let floor = make_cell(BlockType::WoodSlab, slab_state(false, false));
+		let ceiling = make_cell(BlockType::WoodSlab, slab_state(false, true));
+		assert_eq!(slab_grow_normal(floor), (0, 1, 0));
+		assert_eq!(slab_grow_normal(ceiling), (0, -1, 0));
+		// The anchor bit survives the grow, so a 2/3 grows the same way.
+		assert_eq!(slab_grow_normal(slab_grown(ceiling)), (0, -1, 0));
+		// Placed against a ceiling → hangs; against a floor or a wall →
+		// sits. A wall slab has no up/down cue, so it sits, as before.
+		assert!(slab_is_top(make_cell(
+			BlockType::WoodSlab,
+			slab_place_state((0, -1, 0))
+		)));
+		for n in [(0, 1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)] {
+			assert!(!slab_is_top(make_cell(
+				BlockType::WoodSlab,
+				slab_place_state(n)
+			)));
 		}
 	}
 
@@ -1031,12 +1138,13 @@ mod tests {
 		for s in 0..16u8 {
 			assert!(state_valid(make_cell(BlockType::WoodDoor, s)));
 		}
-		// Slabs: bit 0 only.
+		// Slabs: size bit 0 and anchor bit 1.
 		for b in [BlockType::WoodSlab, BlockType::StoneSlab] {
-			assert!(state_valid(make_cell(b, 0)));
-			assert!(state_valid(make_cell(b, 1)));
-			assert!(!state_valid(make_cell(b, 0b0010)));
+			for s in 0..4u8 {
+				assert!(state_valid(make_cell(b, s)));
+			}
 			assert!(!state_valid(make_cell(b, 0b0100)));
+			assert!(!state_valid(make_cell(b, 0b1000)));
 		}
 		// Unknown id, and spare bits 10-11, always refuse.
 		assert!(!state_valid(999));
