@@ -542,8 +542,18 @@ mod tests {
 				}
 			}
 			if (cx, cz) == (0, 0) {
-				top.set_cell(8, 15, 12, make_cell(BlockType::WoodSlab, slab_state(false)));
-				top.set_cell(8, 15, 13, make_cell(BlockType::WoodSlab, slab_state(true)));
+				top.set_cell(
+					8,
+					15,
+					12,
+					make_cell(BlockType::WoodSlab, slab_state(false, false)),
+				);
+				top.set_cell(
+					8,
+					15,
+					13,
+					make_cell(BlockType::WoodSlab, slab_state(true, false)),
+				);
 				top.set(8, 15, 14, BlockType::Stone);
 				top.set(8, 15, 15, BlockType::Stone);
 			}

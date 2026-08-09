@@ -194,12 +194,21 @@ mod tests {
 			"a stair's best fit already is the cell"
 		);
 		assert_eq!(
-			of(make_cell(B::WoodSlab, slab_state(false))),
+			of(make_cell(B::WoodSlab, slab_state(false, false))),
 			([0.0, 0.0, 0.0], [1.0, 1.0 / 3.0, 1.0])
 		);
 		assert_eq!(
-			of(make_cell(B::StoneSlab, slab_state(true))),
+			of(make_cell(B::StoneSlab, slab_state(true, false))),
 			([0.0, 0.0, 0.0], [1.0, 2.0 / 3.0, 1.0])
+		);
+		// A ceiling slab is boxed against the top of its cell.
+		assert_eq!(
+			of(make_cell(B::WoodSlab, slab_state(false, true))),
+			([0.0, 2.0 / 3.0, 0.0], [1.0, 1.0, 1.0])
+		);
+		assert_eq!(
+			of(make_cell(B::StoneSlab, slab_state(true, true))),
+			([0.0, 1.0 / 3.0, 0.0], [1.0, 1.0, 1.0])
 		);
 		// A closed +x door is a plate on x, full on y and z.
 		let (lo, hi) = of(make_cell(

@@ -182,7 +182,7 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 				// The 1/3 variant: that IS the item. A placed slab starts
 				// at a third and only grows by stacking more on top, so a
 				// 2/3 icon advertised a stack you don't have.
-				shape_faces(b, slab_state(false), 0, &mut out);
+				shape_faces(b, slab_state(false, false), 0, &mut out);
 			} else {
 				shape_faces(b, stair_state(Facing::NegX), 0, &mut out);
 			}
