@@ -173,9 +173,9 @@ pub struct FrameScene<'a> {
 	pub players: &'a [[f32; 8]],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32, u32)],
-	/// Crosshair target for the highlight decal: (cell, dig progress);
-	/// `None` progress = idle outline.
-	pub target: Option<((i32, i32, i32), Option<f32>)>,
+	/// Crosshair target for the highlight decal — cell, the shape's own
+	/// box within it, and dig progress (`None` = idle outline).
+	pub target: Option<crate::highlight::HighlightTarget>,
 	/// The item in the player's own hand, or `None` (empty slot, a
 	/// screen open, the menu up) to skip the viewmodel pass entirely.
 	pub viewmodel: Option<crate::viewmodel::ViewmodelFrame>,

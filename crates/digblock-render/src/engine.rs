@@ -2538,8 +2538,9 @@ impl Engine {
 		}
 	}
 
-	/// Crosshair cell + dig progress for the highlight overlay: `None`
-	/// progress = idle outline.
+	/// Crosshair target for the highlight overlay: the cell, the box the
+	/// outline wraps (the shape's own, so a slab or a door is boxed at
+	/// its own size), and dig progress — `None` = idle outline.
 	///
 	/// The water tool never reports progress, in either state, so the
 	/// outline stays but the crack web never appears. Empty, it marks the
@@ -2547,11 +2548,12 @@ impl Engine {
 	/// happening, and the swinging hand is the feedback instead. Charged,
 	/// it marks the ordinary block the pour will land against, which is
 	/// why the outline survives `diggable` saying no.
-	pub fn dig_progress(&self) -> Option<((i32, i32, i32), Option<f32>)> {
+	pub(crate) fn dig_progress(&self) -> Option<crate::highlight::HighlightTarget> {
 		let hit = self.target.as_ref()?;
+		let boxed =
+			|progress| crate::highlight::HighlightTarget::new(hit.cell, hit.cell_value, progress);
 		if self.water_tool_selected() {
-			return (self.inventory.bucket_full() || self.diggable(hit))
-				.then_some((hit.cell, None));
+			return (self.inventory.bucket_full() || self.diggable(hit)).then(|| boxed(None));
 		}
 		if !self.diggable(hit) {
 			return None;
@@ -2561,7 +2563,7 @@ impl Engine {
 			.as_ref()
 			.filter(|d| d.cell == hit.cell)
 			.map(|d| (d.ticks as f32 / d.required.max(1) as f32).min(1.0));
-		Some((hit.cell, progress))
+		Some(boxed(progress))
 	}
 
 	/// This frame's held item, if the hand has anything in it. The pose
@@ -4090,7 +4092,7 @@ mod water_tool_tests {
 			"a scoopable source"
 		);
 		assert_eq!(
-			engine.dig_progress(),
+			engine.dig_progress().map(|t| (t.cell, t.progress)),
 			Some((source, None)),
 			"outline, no cracks"
 		);
@@ -4108,7 +4110,7 @@ mod water_tool_tests {
 			"and left-click has nothing to do"
 		);
 		assert_eq!(
-			engine.dig_progress(),
+			engine.dig_progress().map(|t| (t.cell, t.progress)),
 			Some((wall, None)),
 			"the wall still outlines — that is where the water goes"
 		);
