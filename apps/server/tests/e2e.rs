@@ -675,6 +675,37 @@ fn probe_rejects_wrong_cert_hash() {
 	}
 }
 
+/// The LIVE connection publishes a wire round trip too, not just the
+/// one-shot probe — that is what lets the overlay show the same quantity
+/// the server browser does.
+///
+/// Pins the two failure modes loopback can see: that the background thread
+/// publishes at all (the value starts as an "unknown" sentinel, so a
+/// transport that never stores would read as `None` forever), and that it
+/// is a measurement rather than quinn's 333 ms initial default. The value
+/// is deliberately NOT compared against `rtt_ms`: they are independent by
+/// construction, and the ack loop needs a joined, snapshotting session
+/// while this needs only a connection.
+#[test]
+fn a_live_connection_publishes_its_wire_rtt() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("livertt", &master.url, true);
+	let (token, _url) = mint_token(&master.url, "rttbot");
+	let mut c = TestClient::connect(&server.url, "rttbot", token);
+	c.wait("welcomed", |c| c.welcomed);
+	// The background thread republishes on each wake, so give the
+	// connection a few polls' worth of traffic to have woken at all.
+	c.wait("wire rtt published", |c| c.client.stats().wire_rtt_ms > 0.0);
+
+	let rtt = c.client.stats().wire_rtt_ms;
+	assert!(
+		rtt > 0.0 && rtt < 100.0,
+		"loopback wire rtt read as {rtt} ms — that is quinn's 333 ms initial \
+		 default, not a measurement"
+	);
+}
+
 /// The CLIENT-side probe — the one behind the server browser's ping column
 /// — reports the transport's own round-trip estimate, not the time the
 /// handshake took.

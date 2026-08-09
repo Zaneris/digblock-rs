@@ -5,7 +5,7 @@
 //! bookkeeping in `poll`, sends fire-and-forget, reliable bytes in
 //! arbitrary chunks (the netcode's FrameReader reassembles).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -119,7 +119,18 @@ pub struct WebTransportClient {
 	/// Datagrams dropped at the writer's high-water mark; the first one
 	/// logs, the rest are silent.
 	dropped_datagrams: u32,
+	/// The browser's own QUIC round trip in ms, refreshed by `poll`.
+	/// `getStats()` returns a Promise, so it cannot be read where
+	/// `wire_rtt_ms` is called — the value is sampled asynchronously and
+	/// parked here.
+	wire_rtt: Rc<Cell<Option<f32>>>,
+	/// Polls since the last `getStats()` was kicked off.
+	rtt_age: u32,
 }
+
+/// Frames between `getStats()` samples (~0.5 s at 60 fps). A smoothed RTT
+/// does not move fast enough to be worth a promise every frame.
+const RTT_SAMPLE_FRAMES: u32 = 30;
 
 thread_local! {
 	/// Swallows write-promise rejections (lossy by contract; without a
@@ -225,6 +236,8 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				reliable_writer,
 				datagram_writer,
 				dropped_datagrams: 0,
+				wire_rtt: Rc::new(Cell::new(None)),
+				rtt_age: 0,
 			};
 		}
 	};
@@ -288,6 +301,8 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		reliable_writer,
 		datagram_writer,
 		dropped_datagrams: 0,
+		wire_rtt: Rc::new(Cell::new(None)),
+		rtt_age: 0,
 	}
 }
 
@@ -337,19 +352,57 @@ impl NetTransport for WebTransportClient {
 	}
 
 	fn poll(&mut self, out: &mut Vec<TransportEvent>) {
-		let mut shared = self.shared.borrow_mut();
-		for ev in shared.events.drain(..) {
-			match &ev {
-				TransportEvent::Connected => self.status = ConnStatus::Connected,
-				TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
-				_ => {}
+		{
+			let mut shared = self.shared.borrow_mut();
+			for ev in shared.events.drain(..) {
+				match &ev {
+					TransportEvent::Connected => self.status = ConnStatus::Connected,
+					TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
+					_ => {}
+				}
+				out.push(ev);
 			}
-			out.push(ev);
 		}
+		self.sample_rtt();
 	}
 
 	fn status(&self) -> ConnStatus {
 		self.status
+	}
+
+	fn wire_rtt_ms(&self) -> Option<f32> {
+		self.wire_rtt.get()
+	}
+}
+
+impl WebTransportClient {
+	/// Kick off a `getStats()` every `RTT_SAMPLE_FRAMES` polls and park
+	/// `smoothedRtt` in the cell. Fire-and-forget: the promise resolves on a
+	/// later microtask, so this frame reads the previous sample. That is
+	/// fine for a smoothed RTT and it is the only shape available — the
+	/// stats are async and `wire_rtt_ms` is not.
+	fn sample_rtt(&mut self) {
+		if self.status != ConnStatus::Connected {
+			self.wire_rtt.set(None);
+			return;
+		}
+		self.rtt_age += 1;
+		if self.rtt_age < RTT_SAMPLE_FRAMES {
+			return;
+		}
+		self.rtt_age = 0;
+		let Some(t) = &self.transport else { return };
+		let promise = t.unchecked_ref::<WebTransport>().get_stats();
+		let slot = self.wire_rtt.clone();
+		spawn_local(async move {
+			let rtt = JsFuture::from(promise)
+				.await
+				.ok()
+				.and_then(|s| s.dyn_into::<WebTransportStats>().ok())
+				.and_then(|s| s.smoothed_rtt().as_f64())
+				.filter(|v| v.is_finite() && *v >= 0.0);
+			slot.set(rtt.map(|v| v as f32));
+		});
 	}
 }
 

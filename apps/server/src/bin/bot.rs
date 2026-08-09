@@ -93,8 +93,9 @@ fn main() {
 					failed = true;
 				} else {
 					log::info!(
-						"bot {i}: ok, rtt {:.1}+-{:.1}ms, dn {:.1} up {:.1} kB/s, \
+						"bot {i}: ok, ping {:.1}ms, rtt {:.1}+-{:.1}ms, dn {:.1} up {:.1} kB/s, \
 						 {:.1} snap/s, {:.2} replay/s, {} snapshots, {} edit rejections",
+						r.net.wire_rtt_ms,
 						r.net.rtt_ms,
 						r.net.jitter_ms,
 						r.net.down_kbps,

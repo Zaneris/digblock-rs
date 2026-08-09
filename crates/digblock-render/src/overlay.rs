@@ -22,12 +22,35 @@ const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
 
+/// A millisecond figure that may be unknown, in a FIXED five columns
+/// either way — the debug panel's width is a budget, not a measurement, so
+/// a field that changed width would slide every column after it.
+///
+/// Unknown is dashes, never 0.0: a transport with no estimate (loopback,
+/// the benchmark wires) would otherwise read as a perfect zero-latency
+/// connection, which is the one wrong answer worse than no answer.
+struct MsOrDash(f32);
+
+impl std::fmt::Display for MsOrDash {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		if self.0 > 0.0 {
+			write!(f, "{:5.1}", self.0)
+		} else {
+			f.write_str("   --")
+		}
+	}
+}
+
 /// Column budget for the debug panel. The panel's width is derived from
 /// this rather than from the current frame's longest line, so it never
 /// resizes or slides while numbers stream through it. Every field in the
 /// six lines is printf-padded to a fixed width, so this only has to cover
-/// the widest of them.
-const DEBUG_COLS: usize = 108;
+/// the widest of them — currently the `net` line, at 114.
+///
+/// `debug_lines_fit_the_column_budget` pins it from both sides: every line
+/// must fit, and the budget must not sit more than 8 columns past the
+/// widest, so growing this to paper over a runaway line is not an option.
+const DEBUG_COLS: usize = 116;
 
 /// Baseline-to-baseline spacing in the debug panel. Never tighter than
 /// the mono face's own line box, so swapping in a taller face can't make
@@ -265,22 +288,36 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			if r.wide_refreshed { " | wide" } else { "" }
 		),
 	);
-	// Connection health. `rtt` is the INPUT→ACK loop, not a ping: it
-	// includes the server's jitter buffer and the snapshot cadence, which
-	// is what the player actually feels when they turn or dig. `jit` is
-	// the mean deviation of that same signal (`+-`) — an rtt without it is
-	// not a number you can act on. `rtt_last_ms` is deliberately NOT here:
-	// the smoothed pair says everything a single sample would, in half the
-	// columns, and the raw value is still in `NetStats` for the CSV. `lead` is how far ahead of the last acked
-	// tick prediction is running (the client's view of the jitter-buffer
-	// depth), and `rep` is replays per second, which should sit at 0.0
-	// unless the server is rejecting claims.
+	// Connection health. TWO round trips, deliberately, because they answer
+	// different questions and neither substitutes for the other.
+	//
+	// `ping` is the transport's own estimate — QUIC's, the same quantity the
+	// server browser shows, so the two finally agree. `rtt` is the INPUT→ACK
+	// loop: the wire PLUS the server's input buffer, the 60 Hz tick boundary
+	// and the snapshot cadence, which is what the player actually feels when
+	// they turn or dig. Their gap is the server-side pipeline, and it is the
+	// part that moves when SNAPSHOT_DIVISOR or the send stride change.
+	//
+	// Showing only `rtt` and subtracting a constant was considered and
+	// measured to be wrong: on a LAN every `rtt` sample is one tick or two
+	// (16.7 or 33.3 ms) against a 4 ms wire, so the wire is a quarter of one
+	// quantum and no subtraction can recover it. `ping` is measured, not
+	// derived.
+	//
+	// `+-` is the mean deviation of `rtt` — an rtt without it is not a
+	// number you can act on. `rtt_last_ms` is deliberately NOT here: the
+	// smoothed pair says everything a single sample would, in half the
+	// columns, and the raw value is still in `NetStats` for the CSV. `lead`
+	// is how far ahead of the last acked tick prediction is running (the
+	// client's view of the jitter-buffer depth), and `rep` is replays per
+	// second, which should sit at 0.0 unless the server is rejecting claims.
 	match &s.net {
 		Some(n) => line(
 			6,
 			DIM,
 			format_args!(
-				"net  rtt {:5.1} +-{:5.1} ms | dn {:6.1} up {:6.1} kB/s | snap {:4.1}/s rep {:4.1}/s | lead {:>2} pend {:>3} rem {:>2}",
+				"net  ping {} rtt {:5.1} +-{:4.1} ms | dn {:6.1} up {:6.1} kB/s | snap {:4.1}/s rep {:4.1}/s | lead {:>2} pend {:>3} rem {:>2}",
+				MsOrDash(n.wire_rtt_ms),
 				n.rtt_ms,
 				n.jitter_ms,
 				n.down_kbps,
@@ -917,6 +954,7 @@ mod tests {
 		// on the one line that has the most fields.
 		stats.net = Some(digblock_core::metrics::NetStats {
 			rtt_ms: 999.9,
+			wire_rtt_ms: 999.9,
 			jitter_ms: 999.9,
 			rtt_last_ms: 999.9,
 			down_kbps: 9999.9,
@@ -968,6 +1006,7 @@ mod tests {
 		let mut busy = quiet.clone();
 		busy.net = Some(digblock_core::metrics::NetStats {
 			rtt_ms: 812.5,
+			wire_rtt_ms: 780.0,
 			jitter_ms: 91.25,
 			rtt_last_ms: 777.5,
 			down_kbps: 1234.5,

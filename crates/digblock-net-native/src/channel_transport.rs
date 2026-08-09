@@ -5,6 +5,8 @@
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use wtransport::{ClientConfig, Endpoint};
 
@@ -45,7 +47,16 @@ pub struct ChannelTransport {
 	out_tx: UnboundedSender<Outgoing>,
 	in_rx: Receiver<TransportEvent>,
 	status: ConnStatus,
+	/// QUIC's own smoothed round trip in MICROseconds, published by the
+	/// background thread. Microseconds because a LAN round trip is well
+	/// under a millisecond and would otherwise floor to zero — the probe
+	/// measures 0.66 ms on loopback. `u32::MAX` means "no estimate yet",
+	/// which is distinct from a genuine zero.
+	wire_rtt_us: Arc<AtomicU32>,
 }
+
+/// Sentinel for "the background thread has not published one yet".
+const RTT_UNKNOWN: u32 = u32::MAX;
 
 /// Connect in the background with the dev [`CertPolicy::Insecure`]
 /// posture; returns immediately with `Connecting`. `url` is a
@@ -69,6 +80,8 @@ pub fn connect_with(url: &str, policy: CertPolicy) -> ChannelTransport {
 	let (out_tx, out_rx) = unbounded_channel();
 	let (in_tx, in_rx) = unbounded();
 	let url = url.to_string();
+	let wire_rtt_us = Arc::new(AtomicU32::new(RTT_UNKNOWN));
+	let rtt_slot = wire_rtt_us.clone();
 	std::thread::Builder::new()
 		.name("net-client".into())
 		.spawn(move || {
@@ -76,13 +89,14 @@ pub fn connect_with(url: &str, policy: CertPolicy) -> ChannelTransport {
 				.enable_all()
 				.build()
 				.expect("tokio runtime");
-			rt.block_on(run(url, policy, out_rx, in_tx));
+			rt.block_on(run(url, policy, out_rx, in_tx, rtt_slot));
 		})
 		.expect("spawn net-client thread");
 	ChannelTransport {
 		out_tx,
 		in_rx,
 		status: ConnStatus::Connecting,
+		wire_rtt_us,
 	}
 }
 
@@ -130,6 +144,13 @@ impl NetTransport for ChannelTransport {
 	fn status(&self) -> ConnStatus {
 		self.status
 	}
+
+	fn wire_rtt_ms(&self) -> Option<f32> {
+		match self.wire_rtt_us.load(Ordering::Relaxed) {
+			RTT_UNKNOWN => None,
+			us => Some(us as f32 / 1000.0),
+		}
+	}
 }
 
 async fn run(
@@ -137,6 +158,7 @@ async fn run(
 	policy: CertPolicy,
 	mut out_rx: UnboundedReceiver<Outgoing>,
 	in_tx: Sender<TransportEvent>,
+	wire_rtt_us: Arc<AtomicU32>,
 ) {
 	let disconnect = |reason: String| {
 		let _ = in_tx.send(TransportEvent::Disconnected { reason });
@@ -171,6 +193,14 @@ async fn run(
 
 	let mut buf = vec![0u8; 64 * 1024];
 	let reason = loop {
+		// Republish QUIC's estimate on every wake. No timer needed: the
+		// loop wakes on each datagram, and snapshots alone are 20/s, so a
+		// live connection refreshes this far faster than anyone reads it.
+		// A connection quiet enough to go stale here has nothing to report.
+		wire_rtt_us.store(
+			conn.rtt().as_micros().min(u128::from(RTT_UNKNOWN - 1)) as u32,
+			Ordering::Relaxed,
+		);
 		tokio::select! {
 			out = out_rx.recv() => match out {
 				Some(Outgoing::Datagram(b)) => {

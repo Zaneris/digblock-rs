@@ -1107,6 +1107,21 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		jitter_after,
 		"and above all does not deflate the jitter"
 	);
+
+	// The loopback transport measures no path, so it reports no wire RTT —
+	// and that must read as ABSENT, not as a zero-latency connection. The
+	// two figures are independent by construction: `rtt_ms` is the
+	// input→ack loop the netcode times itself, `wire_rtt_ms` is whatever
+	// the transport knows. Nothing derives one from the other.
+	assert_eq!(
+		client.stats().wire_rtt_ms,
+		0.0,
+		"loopback has no path to measure"
+	);
+	assert!(
+		client.stats().rtt_ms > 0.0,
+		"but the ack loop is still timed — the two are independent"
+	);
 }
 
 /// Traffic counters roll up into a per-second rate, and the connection

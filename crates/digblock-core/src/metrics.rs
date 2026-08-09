@@ -170,6 +170,22 @@ impl JobTiming {
 pub struct NetStats {
 	/// Smoothed input→ack round trip.
 	pub rtt_ms: f32,
+	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping
+	/// reports, and the same quantity the server browser's probe shows.
+	/// Zero when the transport has none (loopback, the benchmark wires).
+	///
+	/// Kept beside `rtt_ms` rather than replacing it because they answer
+	/// different questions: this one is "how far away is the server", and
+	/// `rtt_ms` is "how long until my action is authoritative", which
+	/// carries the tick boundary, the snapshot cadence and the input buffer
+	/// on top. Their DIFFERENCE is the server-side pipeline, which is the
+	/// part that responds to SNAPSHOT_DIVISOR and the send stride.
+	///
+	/// Deriving one from the other by subtracting a constant does not work
+	/// and was measured not to: on a LAN every `rtt_ms` sample is either one
+	/// tick or two (16.7 or 33.3 ms) against a 4 ms wire, so the wire is a
+	/// quarter of one quantum and simply is not present in the signal.
+	pub wire_rtt_ms: f32,
 	/// Mean absolute deviation of the same signal — the number that says
 	/// whether an average RTT is trustworthy.
 	pub jitter_ms: f32,

@@ -280,6 +280,9 @@ impl NetClient {
 			pending_edits: self.edits.len() as u32,
 			remotes: self.remotes.len() as u32,
 			tick_lead: self.predictor.tick_lead(),
+			// Read through, not accumulated: the transport already smooths
+			// it, and re-smoothing a smoothed value would only add lag.
+			wire_rtt_ms: self.transport.wire_rtt_ms().unwrap_or(0.0),
 			..self.stats.published
 		}
 	}
