@@ -103,12 +103,24 @@ pub struct WebTransportClient {
 	/// None until the bidi control stream opens.
 	reliable_writer: WriterSlot,
 	datagram_writer: WriterSlot,
-	/// Swallows write-promise rejections (lossy by contract; without a
-	/// catch every dropped datagram logs an unhandled-rejection warning).
-	noop_catch: Closure<dyn FnMut(JsValue)>,
 	/// Datagrams dropped at the writer's high-water mark; the first one
 	/// logs, the rest are silent.
 	dropped_datagrams: u32,
+}
+
+thread_local! {
+	/// Swallows write-promise rejections (lossy by contract; without a
+	/// catch every dropped datagram logs an unhandled-rejection warning).
+	///
+	/// Module-lifetime, deliberately NOT owned by the client. `close()`
+	/// rejects every in-flight write, and those rejections are microtasks
+	/// that fire AFTER the wasm call returns — by which point a
+	/// client-owned closure has already been dropped along with the
+	/// struct. wasm-bindgen's shim then throws "closure invoked
+	/// recursively or after being dropped" from inside a catch handler,
+	/// i.e. as an unhandled rejection, on every single disconnect. Exactly
+	/// the noise that makes a real disconnect bug unreadable.
+	static NOOP_CATCH: Closure<dyn FnMut(JsValue)> = Closure::new(|_: JsValue| {});
 }
 
 fn js_reason(v: &JsValue) -> String {
@@ -186,7 +198,6 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 	}));
 	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
 	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
-	let noop_catch = Closure::new(|_: JsValue| {});
 
 	let transport = match WebTransport::new(url, &options(cert_hash)) {
 		Ok(t) => t,
@@ -200,7 +211,6 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				transport: None,
 				reliable_writer,
 				datagram_writer,
-				noop_catch,
 				dropped_datagrams: 0,
 			};
 		}
@@ -264,7 +274,6 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		transport: Some(transport_handle),
 		reliable_writer,
 		datagram_writer,
-		noop_catch,
 		dropped_datagrams: 0,
 	}
 }
@@ -273,7 +282,9 @@ impl WebTransportClient {
 	fn write_to(&self, slot: &WriterSlot, bytes: &[u8]) {
 		if let Some(w) = &*slot.borrow() {
 			let arr: JsValue = js_sys::Uint8Array::from(bytes).into();
-			let _ = w.write(&arr).catch(&self.noop_catch);
+			NOOP_CATCH.with(|c| {
+				let _ = w.write(&arr).catch(c);
+			});
 		}
 	}
 

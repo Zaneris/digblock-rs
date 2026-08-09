@@ -118,6 +118,12 @@ fn main() {
 		}
 	};
 	if let Some(name) = &admin_name {
+		// Refuse a name no player could ever have, rather than booting with
+		// admin silently granted to nobody.
+		if let Err(e) = digblock_server::sim::admin_name_is_usable(name) {
+			eprintln!("--admin-name {name:?}: {e}");
+			std::process::exit(2);
+		}
 		log::info!("admin: {name}");
 	}
 	sim.set_admin_name(admin_name);

@@ -319,8 +319,15 @@ impl Sim {
 
 	/// Grant a player name (case-insensitive) the admin chat commands.
 	/// Empty counts as unset, like the env fallbacks.
+	///
+	/// A name that could never be a real display name is REFUSED rather
+	/// than stored: it can only ever match nobody, so keeping it would
+	/// leave a server with admin silently disabled while its boot log said
+	/// otherwise. See [`admin_name_is_usable`].
 	pub fn set_admin_name(&mut self, name: Option<String>) {
-		self.admin_name = name.filter(|n| !n.is_empty());
+		self.admin_name = name
+			.filter(|n| !n.is_empty())
+			.filter(|n| admin_name_is_usable(n).is_ok());
 	}
 
 	pub fn server_tick(&self) -> u32 {
@@ -550,10 +557,24 @@ impl Sim {
 				// sanitize lines drop silently — a talkative client gets
 				// throttled, never disconnected.
 				ClientMsg::Chat { text } => {
+					// Sanitize BEFORE deciding what the line IS. These used
+					// to read different strings — `is_command` looked at the
+					// raw text while everything downstream ran on the
+					// sanitized one — and they disagree for any character
+					// the sanitizer strips that `trim_start` does not count
+					// as whitespace. `U+200B` is exactly that: not
+					// `White_Space`, not inside `TEXT_RANGES`. So
+					// `"\u{200B}/ban griefer"` read as ordinary chat, then
+					// sanitized to `/ban griefer` and was BROADCAST to
+					// everyone instead of being privately refused.
+					let Some(text) = sanitize_chat(&text) else {
+						return;
+					};
+					// `sanitize_chat` already trimmed.
+					let is_command = text.starts_with('/');
 					let Some(client) = self.clients.get_mut(&conn_id) else {
 						return; // lobby connections don't get to talk
 					};
-					let is_command = text.trim_start().starts_with('/');
 					let is_admin = self
 						.admin_name
 						.as_deref()
@@ -568,9 +589,6 @@ impl Sim {
 						client.chat_tokens -= 1.0;
 					}
 					let from = client.id;
-					let Some(text) = sanitize_chat(&text) else {
-						return;
-					};
 					if is_command {
 						// Slash lines are never broadcast — commands are a
 						// private conversation with the server.
@@ -1151,6 +1169,24 @@ impl Sim {
 		(0..SERVER_ID).find(|id| !used.contains(id))
 	}
 }
+/// Can this string ever be a player's display name, and therefore ever
+/// match the admin check?
+///
+/// Admin is granted by comparing against `Client::name`, which the master
+/// mints and `validate_name` constrains to 3-10 chars of `a-z A-Z 0-9 -
+/// _`. `--admin-name "big boss"` or an 11-character name can therefore
+/// never match ANYONE — the server booted with admin quietly disabled
+/// while logging a reassuring `admin: big boss`. The launcher now refuses
+/// the argument outright, which is what an operator wants from a typo in a
+/// security-relevant flag.
+///
+/// (This validates the SHAPE of the name, nothing more. Names are still
+/// self-asserted at the master, so admin remains impersonable until the
+/// login flow lands — see NET-AUDIT-2.md §1.1.)
+pub fn admin_name_is_usable(name: &str) -> Result<(), &'static str> {
+	digblock_net::protocol::validate_name(name)
+}
+
 fn column_of(pos: Vec3) -> (i32, i32) {
 	(
 		(pos.x.floor() as i32).div_euclid(16),
@@ -1897,6 +1933,77 @@ mod tests {
 			"flood must be capped at the burst, silently: {:?}",
 			a.msgs
 		);
+	}
+
+	/// A slash line prefixed with an invisible character is a COMMAND, not
+	/// chat. `is_command` used to be decided on the raw text while the
+	/// handler ran on the sanitized one, and `U+200B` splits them: it is
+	/// not `White_Space` (so `trim_start` leaves it) and not inside
+	/// `TEXT_RANGES` (so the sanitizer removes it). The line therefore read
+	/// as ordinary chat and was BROADCAST to every player as
+	/// "/ban griefer" — a non-admin publishing a command, or an admin
+	/// leaking one they meant to run.
+	#[test]
+	fn an_invisibly_prefixed_command_is_not_broadcast_as_chat() {
+		let mut sim = flat_sim("zwsp");
+		let mut a = connect(&mut sim, 1);
+		let mut b = connect(&mut sim, 2);
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		a.drain();
+		b.drain();
+		a.msgs.clear();
+		b.msgs.clear();
+
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Chat {
+				text: "\u{200B}/ban griefer".into(),
+			},
+		}]);
+		a.drain();
+		b.drain();
+
+		// Nobody sees it as chat...
+		assert!(
+			!b.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Chat { from, text } if *from == 0 && text.contains("/ban")
+			)),
+			"the command leaked into the broadcast: {:?}",
+			b.msgs
+		);
+		// ...and the sender is privately told it is admin-only, which is
+		// what any non-admin slash line gets.
+		assert!(
+			a.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Chat { text, .. } if text.contains("admin-only")
+			)),
+			"treated as a command and refused: {:?}",
+			a.msgs
+		);
+	}
+
+	/// `--admin-name` is matched against display names, which the master
+	/// constrains to `validate_name`. A value that can never be one grants
+	/// admin to nobody, so it is refused rather than stored — a server
+	/// must not boot logging "admin: big boss" with admin disabled.
+	#[test]
+	fn an_unusable_admin_name_is_refused_not_stored() {
+		let mut sim = flat_sim("adminname");
+		for bad in ["big boss", "ab", "abcdefghijk", "hé", "bang!"] {
+			sim.set_admin_name(Some(bad.into()));
+			assert_eq!(sim.admin_name, None, "{bad:?} should not grant admin");
+			assert!(super::admin_name_is_usable(bad).is_err(), "{bad:?}");
+		}
+		for good in ["boss", "Ted_L-99", "abc"] {
+			sim.set_admin_name(Some(good.into()));
+			assert_eq!(sim.admin_name.as_deref(), Some(good));
+			assert!(super::admin_name_is_usable(good).is_ok(), "{good:?}");
+		}
+		sim.set_admin_name(None);
+		assert_eq!(sim.admin_name, None);
 	}
 
 	#[test]

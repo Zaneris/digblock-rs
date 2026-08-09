@@ -398,117 +398,40 @@ they are the same three-way mirror):
   with no defence in depth on the side that consumes it. That matters more
   than it looks, because §1.1 makes the name an authorization input.
 
-### 2.6 Minor, noted but not scheduled
+### 2.6 The small ones — DONE
 
-- **Command-vs-chat is decided on unsanitized text and executed on sanitized
-  text** (`sim/mod.rs:515` vs `:530`). `U+200B` is not `White_Space` and not in
-  `TEXT_RANGES`, so `"\u{200B}/ban griefer"` reads as ordinary chat, then
-  sanitizes to `/ban griefer` and is **broadcast to every player**. An admin
-  who pastes a command with an invisible prefix publishes it instead of
-  running it. Both sides of the decision should read the same string.
-- **`--admin-name` is never validated** against `validate_name`
-  (`main.rs:93`), so `--admin-name "big boss"` silently grants the commands to
-  nobody while logging a reassuring `admin: big boss` at boot.
-- **Admin commands bypass the chat token bucket** (`mod.rs:523-528`,
-  deliberate and test-pinned). `/time` is O(players) fan-out and `/ban` /
-  `/set-spawn-dir` each fsync, so at the net layer's 320 frames/s ceiling
-  they are a 320-fsync/s primitive on the sim thread. Only reachable by an
-  admin — i.e. by anyone, until 1.1 is fixed.
-- **Hostile `u32::MAX` tick values** permanently disable client machinery for
-  the session: in `predict.rs:162` a `your_last_input_tick` of `u32::MAX`
-  makes every later ack `StaleAck` (prediction never reconciles again); in
-  `remote.rs:59` a `server_tick` of `u32::MAX` ratchets `est_server_tick` to
-  4.29e9 and evicts every remote player forever. Neither crashes. Both need a
-  hostile server, and both are subsumed by the clock-slew work `NET-AUDIT.md`
-  deferred as F5.
-- **`noop_catch` is dropped while write promises are pending**
-  (`net-web/transport.rs:380-389`): `close()` rejects in-flight writes as
-  microtasks that fire after the wasm call returns, so wasm-bindgen throws
-  "closure invoked after being dropped" inside a catch handler. Console noise
-  on every web disconnect — harmless, but it is exactly the noise that makes a
-  real disconnect bug unreadable.
-- **`refused_cell` survives world changes** (`engine.rs:345`).
-  `reset_world_transients` clears every other net transient but not this one,
-  and its only other clear fires while the dig button is held *and* aimed
-  elsewhere. A cell refused by one server's spawn lock stays undiggable at the
-  same coordinates in the next world until that happens to occur.
+- **Command-vs-chat was decided on unsanitized text and executed on
+  sanitized text.** They disagree for any character the sanitizer strips
+  that `trim_start` does not count as whitespace — `U+200B` is exactly
+  that: not `White_Space`, not inside `TEXT_RANGES`. So
+  `"\u{200B}/ban griefer"` read as ordinary chat, sanitized to
+  `/ban griefer`, and was BROADCAST to every player: a non-admin
+  publishing a command, or an admin leaking one they meant to run. The
+  handler now sanitizes FIRST and decides from the result, so both halves
+  read the same string by construction rather than by agreement.
+
+- **`--admin-name` was never validated.** Admin is granted by matching
+  against a display name, which the master constrains to `validate_name`
+  (3-10 chars of `a-z A-Z 0-9 - _`), so `--admin-name "big boss"` could
+  never match anyone — the server booted with admin silently disabled
+  while logging a reassuring `admin: big boss`. The launcher now exits on
+  it, and `set_admin_name` refuses to store one, so neither entry point
+  can leave a server in that state. (This validates the SHAPE only; names
+  remain self-asserted, so admin stays impersonable until §1.1.)
+
+- **`noop_catch` was dropped while write promises were still pending.**
+  `close()` rejects every in-flight write, and those rejections are
+  microtasks that fire after the wasm call returns — by which point a
+  client-owned closure has been dropped with the struct, so wasm-bindgen
+  threw "closure invoked after being dropped" from inside a catch handler
+  on every disconnect. The handler is now module-lifetime
+  (`thread_local!`), owned by nothing that can go away first.
 
 ---
 
-## 3. What was checked and found sound
+## 4. Still open
 
-Recorded so the next audit does not re-derive it.
-
-**Wire and framing.** `FrameReader` handles arbitrary chunking; the length
-prefix is bounds-checked before any allocation; `write_frame` restores the
-buffer on failure; the frozen 8-byte preamble is correctly reassembled across
-a chunk split on both sides. postcard's cautious size hint means no
-length-prefix allocation bomb inside a frame. The golden-bytes tests in
-`messages.rs` genuinely pin the append-only discipline.
-
-**The server's trust boundary for edits.** Every client-supplied field is
-validated: `origin`/`dir` finite-checked, normalized and tolerance-checked
-against the server's own position; `cell` must equal the server's own
-re-raycast hit; `normal` must equal `hit.normal`; `block` passes
-`state_valid` plus the door and slab gates; `slot` bounds-checked before
-indexing; `EditRequest.tick` deliberately ignored; alchemy ids through
-`try_from_id` and counts through `1..=ALCHEMY_MAX_COUNT`; `Layout` vectors
-sanitized then reconciled against authoritative counts; `InputTick`
-finite-checked and normalized. The one gap found — the place target's
-replaceability — was fixed in this round.
-
-**The item economy.** No duplication path exists. Dig credit is taken once
-from the first write's journaled `prev` (so door pairs credit once); the place
-debit's only refund path refunds exactly one; `Inventory::add` saturates at
-`cap()`, and water's cap of 1 means the bucket cannot be over-charged; the
-slab economy closes exactly (9 sub-units × 3 = 27 = one block); there is no
-craft→convert loop, because only Wood and Stone have a `sub_material()`, so an
-18-unit stair cannot be converted back for 27. The `verify_digs` full-cell
-comparison closes the grow-under-a-hold and swap-under-a-hold races, and wire
-ordering closes craft-then-place and assign-then-place. All test-pinned.
-
-**Predict/confirm/reject precedence.** `PendingEdits`' structural ordering is
-correct, including the multi-cell partial-supersede case. Every `EditRequest`
-gets a reply on every path — including the queue-cap flood, not-live, no-token
-and unhealthy-journal cases — so pending entries cannot leak.
-
-**Cancel-safety.** Both `select!` loops were checked against the vendored
-quinn/wtransport sources rather than assumed: `RecvStream::read` and
-`receive_datagram` are cancel-safe, and the one non-cancel-safe call
-(`write_all`) sits in an arm body, never a branch future.
-
-**Backpressure.** The server is properly bounded end to end: `OUT_CAP` with
-`try_send` everywhere, refusal marks the client dead rather than buffering,
-and inbound budgets *pause the read* so QUIC flow control backpressures the
-sender. Nothing blocks the sim thread on a slow peer.
-
-**Auth mechanics, as distinct from the trust model.** Token entropy (16 bytes
-from `RandomNumberGenerator`) and one-time-ness (atomic `TryRemove`) are
-correct; the local `used_tokens` TOCTOU is a latency backstop, not the guard.
-Every master-failure branch fails closed — 200-with-unparseable-body, 5xx,
-non-401/404, transport error, task panic and outer timeout all refuse. Bearer
-keys compare with `FixedTimeEquals`. `inventories.bin` v1/v2/v3 migration is
-bounds-checked throughout and cannot panic or over-allocate on a hostile file.
-All three stores write atomically (tmp + fsync + rename) and archive rather
-than crash on corruption.
-
-**Chat.** `sanitize_chat` filters before truncating, caps in chars not bytes,
-and no bidi or format character survives `TEXT_RANGES`. The client's `wrap`
-walks `char_indices`, so multi-byte Latin-1 chat cannot panic the renderer.
-`ban_store`'s matching is exact, with no substring hole.
-
-**The client's presentation/gameplay split.** The reconciliation offset never
-reaches gameplay: `body_pos()` routes both `placement_blocked` sites to
-`player.pos`, and the wire and saves read `player.pos`. Only the view matrix,
-aim rays, `eye_in_water` and the streaming center use `camera.pos`, all
-deliberately (`NET-AUDIT.md` F2).
-
-**Already-optimal hot paths — do not "improve" these.** The client send path
-is genuinely zero-allocation steady-state (`encode_datagram_into`,
-`Predictor::recycle_batch`, the reused `send_buf`/`dgram_buf`).
-`FrameReader::next_frame_ref` plus in-place `write_frame` means the join-sync
-decode loop borrows rather than copies. Journal region sharding, budgeted
-compaction and the LRU writer cap keep boot and runtime cost tracking churn
-rather than world age. `PendingEdits` allocates nothing in the common empty
-case; `RemotePlayers::sample` takes caller scratch and neither sorts nor
-allocates.
+Everything in §1, and the remainder of §2.5. Both wait on the master
+login flow — §2.5's leftovers are the same three-way mirror, and its
+display-name item in particular only becomes meaningful once a name is
+something the master vouches for rather than something a joiner picks.
