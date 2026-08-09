@@ -10,7 +10,7 @@ use digblock_net::messages::{
 };
 use digblock_net::protocol::{
 	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
-	PROTOCOL_VERSION,
+	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
 };
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
@@ -112,6 +112,11 @@ impl Stub {
 		let mut buf = Vec::new();
 		codec::write_frame(msg, &mut buf).unwrap();
 		self.end.send_reliable(&buf);
+	}
+
+	/// The underlying end, for transport-level faults (close, silence).
+	fn end_mut(&mut self) -> &mut LoopbackEnd {
+		&mut self.end
 	}
 
 	fn send_snapshot(&mut self, snap: Snapshot) {
@@ -809,4 +814,169 @@ fn a_large_journal_sync_is_spread_across_polls() {
 		polls > 4,
 		"a 4000-edit sync landed in {polls} polls — it was not actually paced"
 	);
+}
+
+/// Welcome, then the server drops the connection. Everything queued must
+/// still be delivered, and the disconnect must surface exactly once.
+///
+/// Until the loopback transport learned to close, NO in-process test could
+/// reach this path at all — `status` was hardcoded to `Connected` and
+/// `poll` never emitted `Disconnected`, so coverage stopped at the
+/// pre-Welcome handshake timeout.
+#[test]
+fn a_post_welcome_disconnect_surfaces_once_after_queued_bytes() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(client.ready());
+
+	// A chat line already on the wire when the connection dies.
+	server.send(&ServerMsg::Chat {
+		from: 2,
+		text: "bye".into(),
+	});
+	server.end_mut().close("server closed");
+
+	events.clear();
+	client.poll(&mut events, 0.016);
+	let chat_at = events
+		.iter()
+		.position(|e| matches!(e, NetEvent::Chat { .. }))
+		.expect("the queued chat line still arrived");
+	let disc_at = events
+		.iter()
+		.position(|e| matches!(e, NetEvent::Disconnected { .. }))
+		.expect("the disconnect surfaced");
+	assert!(chat_at < disc_at, "queued bytes come before the close");
+
+	// And it does not repeat on later polls.
+	for _ in 0..5 {
+		events.clear();
+		client.poll(&mut events, 0.016);
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"disconnect repeated: {events:?}"
+		);
+	}
+}
+
+/// A transport that goes quiet WITHOUT reporting anything — a hung peer,
+/// or a native background thread that died before it could say so. Nothing
+/// else can notice this, so the client's own liveness deadline must.
+#[test]
+fn a_silent_server_eventually_disconnects_the_client() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(client.ready());
+
+	// Silence: no bytes, no close, no status change.
+	server.end_mut().go_silent();
+
+	// Well inside the deadline, nothing happens — a quiet moment is not a
+	// dead server, and firing early would drop healthy sessions.
+	let mut elapsed = 0.0f32;
+	while elapsed < RECV_TIMEOUT_SECS - 1.0 {
+		events.clear();
+		client.poll(&mut events, 0.1);
+		elapsed += 0.1;
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"gave up after only {elapsed:.1}s"
+		);
+	}
+	// Past it, exactly one disconnect.
+	let mut disconnects = 0;
+	for _ in 0..40 {
+		events.clear();
+		client.poll(&mut events, 0.1);
+		disconnects += events
+			.iter()
+			.filter(|e| matches!(e, NetEvent::Disconnected { .. }))
+			.count();
+	}
+	assert_eq!(disconnects, 1, "one disconnect, and only one");
+}
+
+/// Traffic keeps the deadline at bay: a busy session must never trip it.
+#[test]
+fn ongoing_traffic_keeps_the_liveness_deadline_from_firing() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// Three times the deadline, with a heartbeat every simulated 5s.
+	let mut elapsed = 0.0f32;
+	let mut since_beat = 0.0f32;
+	while elapsed < RECV_TIMEOUT_SECS * 3.0 {
+		if since_beat >= 5.0 {
+			server.send(&ServerMsg::TimeOfDay { tod: 44.0 });
+			since_beat = 0.0;
+		}
+		events.clear();
+		client.poll(&mut events, 0.1);
+		elapsed += 0.1;
+		since_beat += 0.1;
+		assert!(
+			!events
+				.iter()
+				.any(|e| matches!(e, NetEvent::Disconnected { .. })),
+			"a live session was dropped at {elapsed:.1}s"
+		);
+	}
 }

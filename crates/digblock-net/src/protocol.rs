@@ -215,6 +215,26 @@ pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
 /// otherwise leave the client in connecting-limbo forever).
 pub const HANDSHAKE_TIMEOUT_SECS: f32 = 5.0;
 
+/// Nothing at all received for this long AFTER the handshake → treat the
+/// session as dead.
+///
+/// A backstop, not the primary mechanism: normally the transport reports
+/// the disconnect and this never fires. It covers the case where the
+/// transport CANNOT report — a native background thread that died without
+/// reaching its `disconnect` call, a WebTransport session wedged rather
+/// than closed — which otherwise leaves the engine in a multiplayer
+/// session with no snapshots, no error and no way back, waiting on a QUIC
+/// idle timeout that a half-dead peer may never deliver.
+///
+/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day every
+/// 10 s to EVERY client, live or not, so even a player still waiting for
+/// their spawn column to generate has a heartbeat. More than three of
+/// those missed is unambiguous — and the margin past the third is the
+/// point, since firing exactly on it would make ordinary scheduling
+/// jitter enough to drop a healthy session.
+pub const RECV_TIMEOUT_SECS: f32 = 35.0;
+const _: () = assert!(RECV_TIMEOUT_SECS > 3.0 * (TOD_SYNC_TICKS / TICK_RATE) as f32);
+
 /// Simulation rate. Fixed: `Player::tick` air control hardcodes /60.
 pub const TICK_RATE: u32 = 60;
 

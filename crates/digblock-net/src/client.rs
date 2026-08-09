@@ -9,7 +9,7 @@ use crate::predict::Predictor;
 use crate::protocol::{
 	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
 	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE, MIN_PROTOCOL, PREAMBLE_LEN,
-	PROTOCOL_VERSION,
+	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
@@ -177,6 +177,9 @@ pub struct NetClient {
 	/// handshake deadlines (sans-IO: time arrives via `poll(dt)`).
 	connect_elapsed: f32,
 	handshake_elapsed: f32,
+	/// Time since ANY inbound traffic, for the post-handshake liveness
+	/// backstop (see `RECV_TIMEOUT_SECS`).
+	quiet_elapsed: f32,
 	/// Refused or timed out: stop emitting further failures.
 	failed: bool,
 	/// Predictor tick of the last input datagram (send-rate throttle).
@@ -206,6 +209,7 @@ impl NetClient {
 			session_token: None,
 			connect_elapsed: 0.0,
 			handshake_elapsed: 0.0,
+			quiet_elapsed: 0.0,
 			failed: false,
 			last_input_send_tick: 0,
 			send_buf: Vec::new(),
@@ -239,6 +243,15 @@ impl NetClient {
 		let mut scratch = std::mem::take(&mut self.scratch);
 		scratch.clear();
 		self.transport.poll(&mut scratch);
+		// Any byte from the peer is proof of life, whatever it decodes to.
+		if scratch
+			.iter()
+			.any(|e| matches!(e, TransportEvent::Reliable(_) | TransportEvent::Datagram(_)))
+		{
+			self.quiet_elapsed = 0.0;
+		}
+		// One budget for the whole call, however many events it spans.
+		let limit = out.len() + POLL_EVENT_BUDGET;
 		for ev in scratch.drain(..) {
 			match ev {
 				TransportEvent::Connected => self.send_hello(),
@@ -253,19 +266,25 @@ impl NetClient {
 					Err(e) => log::debug!("bad datagram: {e}"),
 				},
 				TransportEvent::Disconnected { reason } => {
+					// Deliver what already arrived BEFORE reporting the end.
+					// Decoding moved after this loop when it gained a budget,
+					// which silently inverted the two: the engine clears its
+					// parked queue on a disconnect, so anything still
+					// undecoded was being thrown away rather than applied.
+					self.drain_frames(out, limit);
 					out.push(NetEvent::Disconnected { reason });
 				}
 			}
 		}
 		self.scratch = scratch;
-		// Decode AFTER the event loop, once, so leftovers still drain on a
-		// poll that brought no new bytes.
-		self.drain_frames(out);
+		// Then the leftovers, so a poll that brought no new bytes still
+		// drains what the last one could not fit.
+		self.drain_frames(out, limit);
 	}
 
-	/// Decode buffered reliable frames into events, up to the budget.
-	fn drain_frames(&mut self, out: &mut Vec<NetEvent>) {
-		let limit = out.len() + POLL_EVENT_BUDGET;
+	/// Decode buffered reliable frames into events, until `out` reaches
+	/// `limit`.
+	fn drain_frames(&mut self, out: &mut Vec<NetEvent>, limit: usize) {
 		while out.len() < limit {
 			// Decode out of the borrowed frame and release it before
 			// dispatch: `on_server_msg` needs &mut self, and a join sync's
@@ -293,7 +312,20 @@ impl NetClient {
 	}
 
 	fn check_deadlines(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
-		if self.failed || self.ready() {
+		if self.failed {
+			return;
+		}
+		if self.ready() {
+			// Past the handshake the only deadline is silence. The
+			// transport normally reports a death itself; this catches the
+			// ones it cannot see.
+			self.quiet_elapsed += dt;
+			if self.quiet_elapsed > RECV_TIMEOUT_SECS {
+				self.failed = true;
+				out.push(NetEvent::Disconnected {
+					reason: format!("no response from server for {RECV_TIMEOUT_SECS:.0}s"),
+				});
+			}
 			return;
 		}
 		match self.transport.status() {

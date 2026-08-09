@@ -96,13 +96,34 @@ impl NetTransport for ChannelTransport {
 	}
 
 	fn poll(&mut self, out: &mut Vec<TransportEvent>) {
-		for ev in self.in_rx.try_iter() {
-			match &ev {
-				TransportEvent::Connected => self.status = ConnStatus::Connected,
-				TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
-				_ => {}
+		loop {
+			match self.in_rx.try_recv() {
+				Ok(ev) => {
+					match &ev {
+						TransportEvent::Connected => self.status = ConnStatus::Connected,
+						TransportEvent::Disconnected { .. } => self.status = ConnStatus::Closed,
+						_ => {}
+					}
+					out.push(ev);
+				}
+				Err(crossbeam_channel::TryRecvError::Empty) => break,
+				// The background thread is GONE without having said so —
+				// it panicked, or unwound past its `disconnect` call. This
+				// used to be indistinguishable from "idle": `try_iter`
+				// yields nothing either way and `status` is a cached field,
+				// so the engine sat in a session with no snapshots, no
+				// error and no way back. Synthesize the disconnect the
+				// thread never got to send.
+				Err(crossbeam_channel::TryRecvError::Disconnected) => {
+					if self.status != ConnStatus::Closed {
+						self.status = ConnStatus::Closed;
+						out.push(TransportEvent::Disconnected {
+							reason: "network thread stopped".into(),
+						});
+					}
+					break;
+				}
 			}
-			out.push(ev);
 		}
 	}
 

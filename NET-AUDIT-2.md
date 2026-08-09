@@ -306,25 +306,44 @@ newest state wins, which is the only thing a whole-file snapshot can
 express anyway. A failed write re-arms `dirty` through a shared flag so
 the next interval retries.
 
-### 2.3 No post-handshake liveness deadline on the client
+### 2.3 Liveness and the untestable disconnect path — DONE
 
-`crates/digblock-net/src/client.rs:259-262` — `check_deadlines` returns
-immediately once `ready()`. A server whose transport stays open but stops
-replying is never detected client-side; detection is left entirely to the
-QUIC/WebTransport idle timeout. Low severity (the idle timeout does fire), but
-it means `PendingEdits` and the parked backlog grow unbounded in the interim.
+Three related gaps, fixed together because the third is what tests the
+other two.
 
-Related: the native transport cannot *report* a dead background thread —
-`ChannelTransport::poll` uses `try_iter()`, which is silent on a dropped
-sender, and `status` is a cached field (`channel_transport.rs:98-107`). A
-panic in the net thread leaves the engine in a session with no snapshots, no
-error, and no way back. A `TryRecvError::Disconnected` check would close it.
+**The loopback transport could not express a disconnect.** `status` was
+hardcoded to `Connected` and `poll` never emitted `Disconnected`, so no
+in-process test could exercise ANYTHING the client does after `Welcome`
+when a connection dies — coverage stopped at the pre-Welcome handshake
+timeout. It now has `close` (drain what is queued, then report) and
+`go_silent` (deliver nothing, report nothing — a peer that hangs rather
+than hangs up).
 
-And `loopback.rs:105-107` returns `Connected` unconditionally and never emits
-`Disconnected`, so **no in-process test can exercise the post-Welcome
-disconnect path at all**. `tests/loopback.rs` covers only the pre-Welcome
-`handshake_timeout_disconnects`. Worth fixing before the two above, since it
-is what would test them.
+That paid for itself immediately: the first test written against it caught
+a live regression from the join-sync work in §2.2. Budgeting the decode
+had moved it AFTER the transport event loop, which silently inverted
+disconnect ordering — the close was reported before the bytes that
+preceded it, and since the engine clears its parked queue on a disconnect,
+those events were being thrown away instead of applied. `poll` now drains
+frames when it encounters the disconnect, before pushing it, under one
+budget shared across the whole call.
+
+**The client had no post-handshake deadline.** `check_deadlines` returned
+early once `ready()`, so a peer that stayed open but stopped answering was
+never noticed. `RECV_TIMEOUT_SECS` (35 s) is a backstop, not the primary
+mechanism — normally the transport reports the death itself. It is sized
+off `TOD_SYNC_TICKS`: the server broadcasts time-of-day every 10 s to
+every client, live or not, so even a player still waiting on their spawn
+column has a heartbeat. A `const_assert` pins the relationship, and caught
+the first value (30 s) sitting exactly ON the third heartbeat with no
+slack for scheduling jitter.
+
+**The native transport could not report a dead thread.**
+`ChannelTransport::poll` used `try_iter`, which is silent on a dropped
+sender, and `status` is a cached field — so a background thread that
+panicked or unwound past its `disconnect` call was indistinguishable from
+an idle one. It now distinguishes `TryRecvError::Disconnected` and
+synthesizes the disconnect the thread never sent.
 
 ### 2.4 Client-direction `MAX_FRAME` is sized for the server's journal batches
 

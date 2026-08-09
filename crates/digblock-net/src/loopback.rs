@@ -18,6 +18,12 @@ struct Direction {
 	drop_every: Option<u32>,
 	delay_pumps: u32,
 	sent: u32,
+	/// Set by the writer to tear this direction down: the reader reports
+	/// `Disconnected` once whatever is already queued has drained.
+	closed: Option<String>,
+	/// Nothing crosses this direction any more, in either sense — the
+	/// peer went away without saying so.
+	silent: bool,
 }
 
 pub struct LoopbackEnd {
@@ -26,6 +32,7 @@ pub struct LoopbackEnd {
 	/// Direction this end reads from.
 	rx: Arc<Mutex<Direction>>,
 	connected_reported: bool,
+	closed_reported: bool,
 }
 
 pub fn loopback_pair() -> (LoopbackEnd, LoopbackEnd) {
@@ -36,11 +43,13 @@ pub fn loopback_pair() -> (LoopbackEnd, LoopbackEnd) {
 			tx: a_to_b.clone(),
 			rx: b_to_a.clone(),
 			connected_reported: false,
+			closed_reported: false,
 		},
 		LoopbackEnd {
 			tx: b_to_a,
 			rx: a_to_b,
 			connected_reported: false,
+			closed_reported: false,
 		},
 	)
 }
@@ -52,6 +61,27 @@ impl LoopbackEnd {
 		let mut d = self.tx.lock().unwrap();
 		d.drop_every = drop_every;
 		d.delay_pumps = delay_pumps;
+	}
+
+	/// Close this end: the PEER's next `poll` drains whatever is already
+	/// queued and then reports `Disconnected`.
+	///
+	/// Without this the loopback transport could not express a disconnect
+	/// at all — `status` was hardcoded to `Connected` and `poll` never
+	/// emitted the event — so no in-process test could exercise anything
+	/// the client does after `Welcome` when a connection dies. That is
+	/// exactly the path the liveness deadline and the native transport's
+	/// dead-thread detection live on.
+	pub fn close(&mut self, reason: &str) {
+		self.tx.lock().unwrap().closed = Some(reason.to_string());
+	}
+
+	/// Go silent WITHOUT closing: nothing more is delivered in this
+	/// direction and no disconnect is ever reported. The peer is left to
+	/// notice on its own — a hung server, or a transport that lost its
+	/// background thread and cannot say so.
+	pub fn go_silent(&mut self) {
+		self.tx.lock().unwrap().silent = true;
 	}
 
 	/// Mature this end's incoming delayed datagrams by one step.
@@ -70,6 +100,9 @@ impl LoopbackEnd {
 impl NetTransport for LoopbackEnd {
 	fn send_datagram(&mut self, bytes: &[u8]) {
 		let mut d = self.tx.lock().unwrap();
+		if d.silent {
+			return;
+		}
 		d.sent += 1;
 		if let Some(n) = d.drop_every {
 			if d.sent % n == 0 {
@@ -85,7 +118,11 @@ impl NetTransport for LoopbackEnd {
 	}
 
 	fn send_reliable(&mut self, bytes: &[u8]) {
-		self.tx.lock().unwrap().stream.push_back(bytes.to_vec());
+		let mut d = self.tx.lock().unwrap();
+		if d.silent {
+			return;
+		}
+		d.stream.push_back(bytes.to_vec());
 	}
 
 	fn poll(&mut self, out: &mut Vec<TransportEvent>) {
@@ -94,15 +131,32 @@ impl NetTransport for LoopbackEnd {
 			out.push(TransportEvent::Connected);
 		}
 		let mut d = self.rx.lock().unwrap();
+		if d.silent {
+			return;
+		}
 		while let Some(bytes) = d.stream.pop_front() {
 			out.push(TransportEvent::Reliable(bytes));
 		}
 		while let Some(bytes) = d.ready.pop_front() {
 			out.push(TransportEvent::Datagram(bytes));
 		}
+		// Queued bytes first, then the close — a real transport delivers
+		// what already arrived before it notices the stream ended.
+		if let Some(reason) = &d.closed {
+			if !self.closed_reported {
+				self.closed_reported = true;
+				out.push(TransportEvent::Disconnected {
+					reason: reason.clone(),
+				});
+			}
+		}
 	}
 
 	fn status(&self) -> ConnStatus {
-		ConnStatus::Connected
+		if self.closed_reported {
+			ConnStatus::Closed
+		} else {
+			ConnStatus::Connected
+		}
 	}
 }
