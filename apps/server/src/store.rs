@@ -39,6 +39,9 @@ pub struct ChunkStore {
 	seed: f64,
 	columns: FxHashMap<(i32, i32), Vec<Arc<ChunkData>>>,
 	pending: FxHashSet<(i32, i32)>,
+	/// Scratch for [`ChunkStore::set_residency`]'s keep set, kept between
+	/// calls so a residency pass allocates nothing steady-state.
+	residency_keep: FxHashSet<(i32, i32)>,
 	job_tx: Sender<(i32, i32)>,
 	result_rx: Receiver<ColumnResult>,
 	_workers: Vec<std::thread::JoinHandle<()>>,
@@ -78,6 +81,7 @@ impl ChunkStore {
 			seed,
 			columns: FxHashMap::default(),
 			pending: FxHashSet::default(),
+			residency_keep: FxHashSet::default(),
 			job_tx,
 			result_rx,
 			_workers: workers,
@@ -91,28 +95,49 @@ impl ChunkStore {
 	/// Request residency for all columns within `radius` (in columns) of
 	/// any center; evict columns beyond `radius + EVICT_SLACK` of every
 	/// center.
+	///
+	/// Both halves are O(centers × r²) — the keep set is materialized ONCE
+	/// and then tested by lookup. The old shape asked a closure that
+	/// re-scanned every center, once per cell of every center's box and
+	/// again per resident column, making the whole call O(n²·r²): at 32
+	/// players and `--sim-radius 6` that was ~520 k comparisons, fired
+	/// whenever any player crossed a column boundary — i.e. on exactly the
+	/// ticks everyone is moving. It also computed `cx - px` in i32 against
+	/// an unbounded separation; deriving the cells from each center instead
+	/// keeps every delta inside the radius by construction.
 	pub fn set_residency(&mut self, centers: &[(i32, i32)], radius: i32) {
-		let want = |cx: i32, cz: i32, r: i32| {
-			centers.iter().any(|&(px, pz)| {
-				let (dx, dz) = (cx - px, cz - pz);
-				dx * dx + dz * dz <= r * r
-			})
-		};
+		let evict_r = radius + EVICT_SLACK;
+		// Union of the evict-radius discs: what survives this pass.
+		let mut keep = std::mem::take(&mut self.residency_keep);
+		keep.clear();
 		for &(px, pz) in centers {
-			for cz in (pz - radius)..=(pz + radius) {
-				for cx in (px - radius)..=(px + radius) {
-					if want(cx, cz, radius)
-						&& !self.columns.contains_key(&(cx, cz))
-						&& self.pending.insert((cx, cz))
-					{
-						let _ = self.job_tx.send((cx, cz));
+			for dz in -evict_r..=evict_r {
+				for dx in -evict_r..=evict_r {
+					if dx * dx + dz * dz <= evict_r * evict_r {
+						keep.insert((px + dx, pz + dz));
 					}
 				}
 			}
 		}
-		let evict_r = radius + EVICT_SLACK;
-		self.columns.retain(|&(cx, cz), _| want(cx, cz, evict_r));
-		self.pending.retain(|&(cx, cz)| want(cx, cz, evict_r));
+		// Request the inner disc. Testing against THIS center is enough:
+		// a cell inside another center's radius is reached when that
+		// center's own box is walked.
+		for &(px, pz) in centers {
+			for dz in -radius..=radius {
+				for dx in -radius..=radius {
+					if dx * dx + dz * dz > radius * radius {
+						continue;
+					}
+					let col = (px + dx, pz + dz);
+					if !self.columns.contains_key(&col) && self.pending.insert(col) {
+						let _ = self.job_tx.send(col);
+					}
+				}
+			}
+		}
+		self.columns.retain(|col, _| keep.contains(col));
+		self.pending.retain(|col| keep.contains(col));
+		self.residency_keep = keep;
 	}
 
 	/// Drain generated columns, overlaying journal edits as they arrive.

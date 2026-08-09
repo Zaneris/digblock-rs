@@ -118,25 +118,32 @@ impl Sim {
 		// Shared roster built once; per client only nearby players are
 		// selected, so snapshots can never outgrow one datagram (the cliff
 		// that used to silently kill all snapshots at ~30 players).
-		let roster: Vec<(NetPlayerState, (i32, i32))> = self
-			.clients
-			.values()
-			.filter(|c| c.live)
-			.map(|c| {
-				let s = c.player.state();
-				(
-					NetPlayerState {
-						id: c.id,
-						pos: s.pos.to_array(),
-						vel: s.vel.to_array(),
-						look: c.look.to_array(),
-						held: c.held_wire(),
-					},
-					c.center,
-				)
-			})
-			.collect();
-		let mut nearby: Vec<(i32, usize)> = Vec::with_capacity(roster.len());
+		//
+		// Every buffer here is reused across ticks. This runs 20×/s and
+		// used to cost 9 allocations per client per snapshot — 46 k
+		// allocations and 15 MB/s of churn at 255 players, on the sim
+		// thread. The selection is also a `select_nth_unstable` rather than
+		// a full sort: only the nearest `MAX_SNAPSHOT_PLAYERS - 1` matter,
+		// and sorting the whole candidate list per client made the pass
+		// O(n² log n) — ~10 M comparisons/s at 255 players to choose 23.
+		let mut roster = std::mem::take(&mut self.snap_roster);
+		roster.clear();
+		roster.extend(self.clients.values().filter(|c| c.live).map(|c| {
+			let s = c.player.state();
+			(
+				NetPlayerState {
+					id: c.id,
+					pos: s.pos.to_array(),
+					vel: s.vel.to_array(),
+					look: c.look.to_array(),
+					held: c.held_wire(),
+				},
+				c.center,
+			)
+		}));
+		let mut nearby = std::mem::take(&mut self.snap_nearby);
+		let mut players = std::mem::take(&mut self.snap_players);
+		let mut dgram = std::mem::take(&mut self.snap_buf);
 		for client in self.clients.values() {
 			if !client.live {
 				continue;
@@ -144,31 +151,41 @@ impl Sim {
 			// Self first (the reconciliation anchor), then nearest remotes
 			// within the client's own draw distance.
 			nearby.clear();
+			let mut me = None;
 			for (i, (p, col)) in roster.iter().enumerate() {
-				if p.id != client.id && in_radius(*col, client.center, client.draw_dist) {
-					let (dx, dz) = (col.0 - client.center.0, col.1 - client.center.1);
+				if p.id == client.id {
+					me = Some(i);
+				} else if in_radius(*col, client.center, client.draw_dist) {
+					let (dx, dz) = (
+						col.0 as i64 - client.center.0 as i64,
+						col.1 as i64 - client.center.1 as i64,
+					);
 					nearby.push((dx * dx + dz * dz, i));
 				}
 			}
-			nearby.sort_unstable();
-			let me = roster.iter().find(|(p, _)| p.id == client.id);
-			let players: Vec<NetPlayerState> = me
-				.map(|(p, _)| *p)
-				.into_iter()
-				.chain(
-					nearby
-						.iter()
-						.take(MAX_SNAPSHOT_PLAYERS - 1)
-						.map(|&(_, i)| roster[i].0),
-				)
-				.collect();
+			let take = MAX_SNAPSHOT_PLAYERS - 1;
+			if nearby.len() > take {
+				// Partition only — the client does not care what order the
+				// remotes arrive in, just that they are the nearest ones.
+				nearby.select_nth_unstable(take);
+				nearby.truncate(take);
+			}
+			players.clear();
+			players.extend(me.map(|i| roster[i].0));
+			players.extend(nearby.iter().map(|&(_, i)| roster[i].0));
 			let selected = players.len();
-			let snap = Snapshot {
+			// Serializing needs the owned `Datagram`; unwrap it afterwards to
+			// take the Vec back, exactly as the client's `recycle_batch` does.
+			let dg = Datagram::Snapshot(Snapshot {
 				server_tick: self.tick,
 				your_last_input_tick: client.last_input_tick,
-				players,
-			};
-			match codec::encode_datagram(&Datagram::Snapshot(snap)) {
+				players: std::mem::take(&mut players),
+			});
+			let encoded = codec::encode_datagram_into(&dg, &mut dgram).map(<[u8]>::to_vec);
+			if let Datagram::Snapshot(s) = dg {
+				players = s.players;
+			}
+			match encoded {
 				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
 					Ok(()) => client.dgram_full_since.set(None),
 					Err(TrySendError::Full(_)) => {
@@ -207,6 +224,10 @@ impl Sim {
 				}
 			}
 		}
+		self.snap_roster = roster;
+		self.snap_nearby = nearby;
+		self.snap_players = players;
+		self.snap_buf = dgram;
 	}
 }
 

@@ -141,9 +141,21 @@ async fn join(
 	Ok((digblock_net_web::connect(&join.url, hash), token))
 }
 
+/// Decode the master's 32-char hex join token.
+///
+/// The ASCII-hex check is load-bearing, not belt-and-braces: `hex.len()` is
+/// BYTES, so a 32-byte string carrying a multi-byte character (`"€" +
+/// 29×"a"`) passes the length gate and then panics on
+/// `&hex[i * 2..i * 2 + 2]`, which splits it mid-codepoint — aborting the
+/// wasm module. `?master=` is attacker-supplied in any shared link, so this
+/// needs no compromise to reach. `parse_sha256_hex` beside it has always
+/// filtered first; this now matches it.
 fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 	if hex.len() != 32 {
 		return Err(format!("bad token length {}", hex.len()));
+	}
+	if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+		return Err("join token is not hex".into());
 	}
 	let mut token = [0u8; 16];
 	for (i, byte) in token.iter_mut().enumerate() {

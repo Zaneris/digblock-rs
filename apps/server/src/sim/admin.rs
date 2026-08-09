@@ -150,6 +150,12 @@ fn clock_of_tod(tod: f32) -> String {
 }
 
 /// Absolute integer, or `~`/`~±d` relative to `cur`. Clamped.
+///
+/// The relative add SATURATES: `off` is an unbounded `i64` straight off the
+/// wire, so `cur + off` overflows for any offset near `i64::MAX`, and the
+/// clamp below runs too late to help. Debug builds — which is what `just
+/// server` and `just play` produce — take `overflow-checks` and panic the
+/// sim thread outright, stopping ticks while the process stays up.
 fn parse_coord(arg: &str, cur: f32) -> Option<i64> {
 	let v = if let Some(rest) = arg.strip_prefix('~') {
 		let off: i64 = if rest.is_empty() {
@@ -157,7 +163,7 @@ fn parse_coord(arg: &str, cur: f32) -> Option<i64> {
 		} else {
 			rest.parse().ok()?
 		};
-		cur.floor() as i64 + off
+		(cur.floor() as i64).saturating_add(off)
 	} else {
 		arg.parse().ok()?
 	};
@@ -496,9 +502,7 @@ impl Sim {
 		let msg = ServerMsg::TimeOfDay {
 			tod: self.current_tod(),
 		};
-		for c in self.clients.values() {
-			client_send(c, &msg);
-		}
+		self.broadcast(&msg);
 		log::info!("admin set time to {h:02}:{m:02}");
 		self.reply(conn_id, &format!("time set to {h:02}:{m:02}"));
 	}
@@ -741,6 +745,32 @@ mod tests {
 		assert!(lines.iter().any(|t| t.contains("not banning yourself")));
 		assert!(lines.iter().any(|t| t.contains("usage: /ban")));
 		assert!(sim.test_player(1).is_some(), "admin still connected");
+	}
+
+	/// `~<offset>` is an unbounded i64 off the wire added to the player's
+	/// own coordinate. The add has to saturate: overflow panics the sim
+	/// thread under `overflow-checks` (which is what `just server` and
+	/// `just play` build), stopping ticks while the process stays up — and
+	/// the clamp runs after the add, so it cannot rescue it.
+	#[test]
+	fn extreme_relative_tp_offsets_saturate_instead_of_overflowing() {
+		for arg in [
+			format!("~{}", i64::MAX),
+			format!("~{}", i64::MIN),
+			format!("~{}", i64::MAX - 1),
+		] {
+			let got = super::parse_coord(&arg, 1.0).expect("parses");
+			assert!(
+				(-super::TP_LIMIT..=super::TP_LIMIT).contains(&got),
+				"{arg} from x=1 landed at {got}, outside the clamp"
+			);
+		}
+		// Out-of-range absolutes still fail to parse rather than saturate.
+		assert_eq!(super::parse_coord("99999999999999999999", 1.0), None);
+		// And the ordinary cases are untouched.
+		assert_eq!(super::parse_coord("~10", 5.9), Some(15));
+		assert_eq!(super::parse_coord("~", 5.9), Some(5));
+		assert_eq!(super::parse_coord("-40", 5.9), Some(-40));
 	}
 
 	#[test]

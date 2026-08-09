@@ -389,13 +389,94 @@ fn inventory_full_maps_to_event() {
 		.iter()
 		.find(|e| matches!(e, NetEvent::Inventory { .. }))
 	{
-		Some(NetEvent::Inventory { counts }) => {
+		Some(NetEvent::Inventory { counts, .. }) => {
 			// Raw pairs pass through; the engine's Inventory::from_wire
 			// does the strict decode.
 			assert_eq!(counts, &vec![(BlockType::Dirt as u16, 5), (9999, 3)]);
 		}
 		other => panic!("expected Inventory, got {other:?}"),
 	}
+}
+
+/// The rebase has to sum the deltas that were in flight when the COUNTS
+/// were decoded, not whatever is pending when the engine gets around to
+/// dispatching the event. Those are different moments: `confirm` runs
+/// inside the same `poll`, before any event is handed out, and the
+/// engine's backlog can park an `Inventory` behind hundreds of edits.
+///
+/// Here one `InventoryFull` and the confirmation of a pending place arrive
+/// in the SAME poll. Reading the live set afterwards would find the entry
+/// already dropped by `confirm` and rebase to a stale count.
+#[test]
+fn inventory_rebase_uses_the_deltas_in_flight_at_decode_time() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	// Predict a place: one Dirt debited locally.
+	let cell = (1, 10, 1);
+	let seq = client.edits.begin(
+		cell,
+		BlockType::Air as u16,
+		BlockType::Dirt as u16,
+		0,
+		Some((BlockType::Dirt, -1)),
+	);
+
+	// Both land in one poll: the server's counts predate the place, and its
+	// confirmation follows immediately after.
+	server.send(&ServerMsg::InventoryFull {
+		counts: vec![(BlockType::Dirt as u16, 5)],
+	});
+	server.send(&ServerMsg::EditApplied {
+		seq: 1,
+		tick: 1,
+		by: 1,
+		client_seq: seq,
+		edit: BlockEdit {
+			x: cell.0,
+			y: cell.1,
+			z: cell.2,
+			block: BlockType::Dirt as u16,
+		},
+		prev: BlockType::Air as u16,
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+
+	let pending = events
+		.iter()
+		.find_map(|e| match e {
+			NetEvent::Inventory { pending, .. } => Some(pending.clone()),
+			_ => None,
+		})
+		.expect("Inventory event");
+	assert_eq!(
+		pending,
+		vec![(BlockType::Dirt, -1)],
+		"the in-flight debit rode along with the counts it must be summed against"
+	);
+	assert!(
+		client.edits.is_empty(),
+		"and the confirm did land in this same poll — otherwise the test proves nothing"
+	);
 }
 
 #[test]

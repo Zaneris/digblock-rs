@@ -283,11 +283,37 @@ fn load_identity() -> [u8; 16] {
 	if let Some(parent) = path.parent() {
 		let _ = std::fs::create_dir_all(parent);
 	}
-	if let Err(e) = std::fs::write(&path, id) {
+	if let Err(e) = write_secret(&path, &id) {
 		log::warn!(
 			"could not persist identity to {} ({e}) — inventory is per-run",
 			path.display()
 		);
 	}
 	id
+}
+
+/// Write the identity secret owner-readable only. It is a bearer
+/// credential — whoever holds it owns that player's inventory, layout and
+/// last position on every server — so the default 0644 of `fs::write` handed
+/// it to every other local user. (Scoping the secret per server, so a
+/// hostile server operator cannot replay it, needs the master's login flow;
+/// see NET-AUDIT-2.md §1.4.)
+fn write_secret(path: &std::path::Path, id: &[u8; 16]) -> std::io::Result<()> {
+	use std::io::Write;
+	let mut opts = std::fs::OpenOptions::new();
+	opts.write(true).create(true).truncate(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		opts.mode(0o600);
+	}
+	// `mode` only applies when the file is CREATED, so an existing 0644 file
+	// from an older build keeps its permissions — fix those up explicitly.
+	let mut f = opts.open(path)?;
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+	}
+	f.write_all(id)
 }

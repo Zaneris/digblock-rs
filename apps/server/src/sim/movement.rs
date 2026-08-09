@@ -64,7 +64,16 @@ impl Sim {
 			}
 			// Drain toward the target jitter-buffer depth: normally one
 			// input per tick; two when the buffer has backed up.
-			let consume = if client.inputs.len() > (JITTER_BUFFER_TICKS + 2) as usize {
+			//
+			// The threshold is the target ITSELF, not target + slack. It
+			// used to be `> JITTER_BUFFER_TICKS + 2`, which only trimmed
+			// above 4 and so could never converge on the depth it names:
+			// with `CLIENT_TICK_LEAD` starting the client 5 ticks ahead,
+			// equilibrium sat at 3-4 ticks (50-67 ms) against a nominal
+			// 33 ms, and every input paid the difference on its way to
+			// adoption. `DIG_GRACE_BASE` was sized around that lag
+			// ("~3 ticks even on localhost") — it was paying for this.
+			let consume = if client.inputs.len() > JITTER_BUFFER_TICKS as usize {
 				2
 			} else {
 				1

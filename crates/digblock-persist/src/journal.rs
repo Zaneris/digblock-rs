@@ -359,12 +359,22 @@ const COMPACT_SCAN_PER_TICK: usize = 8;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_OPEN_REGIONS: usize = 64;
 
-/// One open shard file. `dirty` = bytes still in the BufWriter; `used` is
-/// the LRU stamp (see [`Journal::open_writer`]).
+/// One open shard file. `dirty` = bytes still in the BufWriter;
+/// `unsynced` = bytes written since this shard's last fsync (which
+/// OUTLIVES `dirty`: `flush_writers` empties the buffer into the kernel
+/// without making anything durable); `used` is the LRU stamp (see
+/// [`Journal::open_writer`]).
+///
+/// The two flags are separate because [`Journal::sync`] fires on a global
+/// "something was written" trigger, once a second, while the writer set is
+/// up to `MAX_OPEN_REGIONS` wide. Without a per-writer flag it fsynced all
+/// 64 descriptors every time any one of them took an append — 64 fsyncs a
+/// second on the sim thread, most of them for shards with nothing new.
 #[cfg(not(target_arch = "wasm32"))]
 struct RegionWriter {
 	file: BufWriter<File>,
 	dirty: bool,
+	unsynced: bool,
 	used: u64,
 }
 
@@ -575,6 +585,7 @@ impl Journal {
 		let w = self.open_writer(region)?;
 		w.file.write_all(rec)?;
 		w.dirty = true;
+		w.unsynced = true;
 		Ok(())
 	}
 
@@ -603,6 +614,7 @@ impl Journal {
 				RegionWriter {
 					file: BufWriter::new(file),
 					dirty: false,
+					unsynced: false,
 					used: 0,
 				},
 			);
@@ -831,10 +843,20 @@ impl Journal {
 		self.next_compact_at = None;
 	}
 
-	/// Flush + fsync every open shard now (graceful shutdown).
+	/// Flush + fsync every shard with something new (the once-a-second
+	/// durability beat, and graceful shutdown).
+	///
+	/// Skipping already-synced writers is what keeps this O(shards written)
+	/// rather than O(shards open): the trigger in `maintain` is one global
+	/// `wrote_since_sync` flag, so a single append to one region used to
+	/// fsync all `MAX_OPEN_REGIONS` descriptors — and an fsync costs
+	/// milliseconds on a container volume, straight out of the sim tick.
 	pub fn sync(&mut self) {
 		let mut errs = Vec::new();
 		for w in self.writers.values_mut() {
+			if !w.dirty && !w.unsynced {
+				continue;
+			}
 			if let Err(e) = w.file.flush() {
 				errs.push(("flush", e));
 				continue;
@@ -842,7 +864,9 @@ impl Journal {
 			w.dirty = false;
 			if let Err(e) = w.file.get_ref().sync_data() {
 				errs.push(("fsync", e));
+				continue;
 			}
+			w.unsynced = false;
 		}
 		for (what, e) in errs {
 			self.note_write_failure(what, &e);

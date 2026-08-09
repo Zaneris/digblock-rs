@@ -1172,6 +1172,18 @@ impl Engine {
 		self.tick_accum = 0.0;
 		self.pending_ack = None;
 		self.correction_offset = Vec3::ZERO;
+		// Parked net events belong to the session that queued them. `pump_net`
+		// clears the backlog when IT observes a disconnect, but a menu-driven
+		// Leave Server drops `self.net` outright, so `pump_net` returns early
+		// and the queue simply freezes — thousands of a half-streamed join
+		// sync's edits waiting to be applied to whatever world comes next.
+		// (A stale `Welcome` in there re-swaps the world to the old seed; a
+		// stale `Disconnected` kills the fresh connection on arrival.)
+		self.net_backlog.clear();
+		// Likewise session state: a cell one server refused stays refused at
+		// the same coordinates in the next world otherwise, because the only
+		// other clear needs the dig button held AND aimed elsewhere.
+		self.refused_cell = None;
 		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
@@ -1632,14 +1644,17 @@ impl Engine {
 						self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
 					}
 				}
-				NetEvent::Inventory { counts } => {
+				NetEvent::Inventory { counts, pending } => {
 					// Authoritative base (strict wire decode, sub-material
-					// families included) + our still-pending predictions.
+					// families included) + the predictions that were still in
+					// flight WHEN THE SERVER'S COUNTS WERE DECODED. Reading
+					// the live pending set here instead would be a different
+					// moment — see `NetEvent::Inventory`.
 					let mut inv = Inventory::from_wire(&counts);
-					for e in net.edits.iter() {
-						match e.inv_delta {
-							Some((b, n)) if n > 0 => inv.add(b, n as u32),
-							Some((b, n)) if n < 0 => {
+					for (b, n) in pending {
+						match n {
+							n if n > 0 => inv.add(b, n as u32),
+							n if n < 0 => {
 								let _ = inv.try_take(b, (-n) as u32);
 							}
 							_ => {}
@@ -1970,6 +1985,16 @@ impl Engine {
 		}
 	}
 
+	/// May a placement write this cell? Resident, and holding a block the
+	/// shared core predicate calls replaceable. The server asks exactly
+	/// this (`Sim::cell_is_replaceable`), so a place predicted here is
+	/// never one the server turns around and rejects.
+	fn cell_is_replaceable(&self, cell: (i32, i32, i32)) -> bool {
+		self.pipeline
+			.cell_at(cell.0, cell.1, cell.2)
+			.is_some_and(|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_replaceable())
+	}
+
 	/// Recompute the crosshair target (every update — it drives the
 	/// highlight overlay, the dig state machine, and placement).
 	fn update_target(&mut self) {
@@ -2277,19 +2302,22 @@ impl Engine {
 			};
 			(target, placed)
 		};
+		// The target must be loaded and replaceable — same core predicate the
+		// server validates with, so a predicted place is never one the
+		// server then rejects. `grow` skips this: it rewrites the hit cell
+		// itself, which is a slab, not a free cell.
+		if !grow && !self.cell_is_replaceable(target) {
+			return;
+		}
 		// Never place into the player — the shared shape-aware contract
 		// (identical to the server's InsidePlayer scan). Doors check
 		// both halves.
 		let mut placements = vec![(target, placed_cell)];
 		if block.is_door() {
 			let upper = (target.0, target.1 + 1, target.2);
-			// The upper cell must be free (mirrors the server's gate).
-			match self.pipeline.cell_at(upper.0, upper.1, upper.2) {
-				Some(c)
-					if !BlockType::from_id(digblock_core::chunk::cell_id(c))
-						.props()
-						.collides => {}
-				_ => return,
+			// The upper cell, same rule (mirrors the server's gate).
+			if !self.cell_is_replaceable(upper) {
+				return;
 			}
 			placements.push((
 				upper,

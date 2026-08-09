@@ -85,10 +85,22 @@ pub enum NetEvent {
 	},
 	/// Authoritative inventory snapshot as raw wire pairs (block ids plus
 	/// flagged sub-material families): re-base the local counts as
-	/// `Inventory::from_wire + Σ pending inv_deltas` (order-independent
-	/// with the per-edit reverts).
+	/// `Inventory::from_wire + Σ pending`.
 	Inventory {
 		counts: Vec<(u16, u32)>,
+		/// The predictions still in flight when `counts` was DECODED.
+		///
+		/// Snapshotted here rather than read from `PendingEdits` at
+		/// dispatch time, because those are not the same moment:
+		/// `confirm`/`reject`/`on_authoritative` all run inside `poll`,
+		/// before the engine dispatches anything from that same poll, and
+		/// the engine's queue can park this event behind hundreds of edits
+		/// besides. Reading the live set later drops a delta whose edit was
+		/// confirmed in between (the count never comes back) or
+		/// double-counts one whose edit was rejected (the rejection reverts
+		/// it a second time) — either way the client is permanently off by
+		/// one until the next snapshot.
+		pending: Vec<(digblock_core::block::BlockType, i32)>,
 	},
 	/// Another player joined. Also delivered as a roster right after
 	/// Welcome: one event per player already online.
@@ -372,6 +384,13 @@ impl NetClient {
 					});
 					return;
 				}
+				let Some(spawn) = finite_pos(spawn) else {
+					self.failed = true;
+					out.push(NetEvent::Refused {
+						reason: "server sent a non-finite spawn position".into(),
+					});
+					return;
+				};
 				self.my_id = Some(player_id);
 				self.session_token = Some(session_token);
 				self.predictor = Predictor::new(server_tick + CLIENT_TICK_LEAD);
@@ -379,9 +398,11 @@ impl NetClient {
 				out.push(NetEvent::Welcome {
 					seed,
 					player_id,
-					spawn: Vec3::from_array(spawn),
+					spawn,
 					server_tick,
 					tod,
+					// `normalize_or_zero` already maps a non-finite look to
+					// zero, which the engine reads as "keep the current view".
 					spawn_look: Vec3::from_array(spawn_look).normalize_or_zero(),
 				});
 			}
@@ -450,10 +471,17 @@ impl NetClient {
 			}
 			ServerMsg::Chat { from, text } => out.push(NetEvent::Chat { from, text }),
 			ServerMsg::Teleported { pos, look } => {
+				// Drop the whole teleport rather than the coordinate: hard-
+				// setting the player to a partly-garbage position is worse
+				// than ignoring a message an honest server never sends.
+				let Some(pos) = finite_pos(pos) else {
+					log::warn!("ignoring teleport to a non-finite position");
+					return;
+				};
 				self.predictor.on_teleport();
 				out.push(NetEvent::Teleported {
-					pos: Vec3::from_array(pos),
-					look: Vec3::from_array(look),
+					pos,
+					look: Vec3::from_array(look).normalize_or_zero(),
 				});
 			}
 			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
@@ -463,8 +491,11 @@ impl NetClient {
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
-				// sub-material families handled).
-				out.push(NetEvent::Inventory { counts });
+				// sub-material families handled). The pending deltas are
+				// captured HERE, with the counts they have to be summed
+				// against; see `NetEvent::Inventory`.
+				let pending = self.edits.iter().filter_map(|e| e.inv_delta).collect();
+				out.push(NetEvent::Inventory { counts, pending });
 			}
 			ServerMsg::Layout { hotbar, grid } => {
 				out.push(NetEvent::Layout { hotbar, grid });
@@ -474,22 +505,29 @@ impl NetClient {
 
 	fn on_snapshot(&mut self, snap: crate::messages::Snapshot, out: &mut Vec<NetEvent>) {
 		for p in &snap.players {
+			// A non-finite entry is dropped, not clamped. Reconcile would
+			// take the replay path on it (NaN fails every comparison), set
+			// the player's state to NaN, and the next aim ray would spin in
+			// the DDA loop forever — `t > max_dist` is its only exit and NaN
+			// never satisfies it. Remote entries feed the interpolator, which
+			// would smear the NaN across every later sample.
+			let (Some(pos), Some(vel)) = (finite_pos(p.pos), finite_pos(p.vel)) else {
+				log::debug!("dropping non-finite snapshot entry for player {}", p.id);
+				continue;
+			};
 			if Some(p.id) == self.my_id {
 				out.push(NetEvent::Ack {
 					acked_input_tick: snap.your_last_input_tick,
-					me: digblock_core::player::PlayerState {
-						pos: Vec3::from_array(p.pos),
-						vel: Vec3::from_array(p.vel),
-					},
+					me: digblock_core::player::PlayerState { pos, vel },
 				});
 			} else {
 				self.remotes.push(
 					p.id,
 					RemoteSnap {
 						server_tick: snap.server_tick,
-						pos: Vec3::from_array(p.pos),
-						vel: Vec3::from_array(p.vel),
-						look: Vec3::from_array(p.look),
+						pos,
+						vel,
+						look: Vec3::from_array(p.look).normalize_or_zero(),
 						held: p.held,
 					},
 				);
@@ -617,4 +655,20 @@ impl NetClient {
 /// and degrade to inventory-revert-only handling.
 fn valid_cell(v: u16) -> Option<u16> {
 	digblock_core::shapes::state_valid(v).then_some(v)
+}
+
+/// The float half of the same contract: no NaN and no infinity crosses the
+/// wire boundary into the engine.
+///
+/// The server has always checked this on ITS inputs
+/// (`sim/edits.rs`'s `req.origin.is_finite()`); the client had no
+/// counterpart, and every consumer of a wire position — `swap_world`,
+/// `apply_teleport`, reconcile — fed it straight to `camera.pos`. One NaN
+/// there hangs the process: `raycast`'s DDA walk exits only on
+/// `t > max_dist`, and with NaN every comparison is false, so the loop
+/// steps a cell at a time forever. Since anyone can list a server with the
+/// master, that is reachable, not hypothetical.
+fn finite_pos(v: [f32; 3]) -> Option<Vec3> {
+	let v = Vec3::from_array(v);
+	v.is_finite().then_some(v)
 }

@@ -37,9 +37,17 @@ const HEADER_LEN: usize = 4 + 2 + 2 + 4; // magic | version | pad | count
 /// Dirty-state flush cadence.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Identity cap: beyond this, the oldest-inserted identity is evicted on
-/// insert. Bounds the file; an evicted (absent) player's state is lost —
+/// Identity cap: beyond this, the least-recently-USED identity is evicted
+/// on insert. Bounds the file; an evicted (absent) player's state is lost —
 /// acceptable pre-deployment, revisit with real populations.
+///
+/// Least-recently-used, not first-inserted. The old policy never refreshed
+/// a key's position, so eviction walked strictly in join order and threw
+/// out the longest-standing players first — including ones currently
+/// online and actively writing. Note this bounds the file, not the abuse:
+/// `identity` is client-chosen and join tokens are free, so a flood of
+/// fresh identities still evicts real records. That root cause needs the
+/// master's login flow (see NET-AUDIT-2.md §1.5).
 const MAX_IDENTITIES: usize = 10_000;
 
 /// The stored key: SHA-256 of the client's 16-byte identity secret,
@@ -87,9 +95,13 @@ pub struct PlayerRecord {
 
 pub struct PlayerStore {
 	path: PathBuf,
-	/// Insertion-ordered for the eviction policy.
 	map: FxHashMap<IdentityHash, PlayerRecord>,
-	order: Vec<IdentityHash>,
+	/// LRU stamp per key, from `clock`. Eviction scans for the minimum,
+	/// which is O(n) but only runs when the store is at `MAX_IDENTITIES` —
+	/// `put` itself stays O(1), and it is called on every inventory-changing
+	/// edit, so it has to be.
+	used: FxHashMap<IdentityHash, u64>,
+	clock: u64,
 	dirty: bool,
 	last_flush: Instant,
 	write_failed_logged: bool,
@@ -106,7 +118,8 @@ impl PlayerStore {
 		let mut store = Self {
 			path: path.clone(),
 			map: FxHashMap::default(),
-			order: Vec::new(),
+			used: FxHashMap::default(),
+			clock: 0,
 			dirty: false,
 			last_flush: Instant::now(),
 			write_failed_logged: false,
@@ -118,8 +131,12 @@ impl PlayerStore {
 		};
 		match parse(&bytes) {
 			Ok(entries) => {
+				// Stamp in file order, which `write_snapshot` wrote
+				// oldest-used first — so the LRU ranking survives a restart
+				// instead of resetting to whatever the hash map iterates.
 				for (hash, rec) in entries {
-					store.order.push(hash);
+					store.clock += 1;
+					store.used.insert(hash, store.clock);
 					store.map.insert(hash, rec);
 				}
 			}
@@ -141,16 +158,30 @@ impl PlayerStore {
 		self.map.get(id).cloned().unwrap_or_default()
 	}
 
-	/// Write-through to memory; durable at the next flush.
+	/// Write-through to memory; durable at the next flush. Touching a key
+	/// refreshes its LRU stamp, so an active player is never the eviction
+	/// candidate.
 	pub fn put(&mut self, id: IdentityHash, rec: PlayerRecord) {
-		if self.map.insert(id, rec).is_none() {
-			self.order.push(id);
-			if self.order.len() > MAX_IDENTITIES {
-				let evicted = self.order.remove(0);
-				self.map.remove(&evicted);
-			}
+		self.clock += 1;
+		self.used.insert(id, self.clock);
+		self.map.insert(id, rec);
+		if self.map.len() > MAX_IDENTITIES {
+			self.evict_lru();
 		}
 		self.dirty = true;
+	}
+
+	fn evict_lru(&mut self) {
+		let Some(&victim) = self
+			.used
+			.iter()
+			.min_by_key(|&(_, &stamp)| stamp)
+			.map(|(id, _)| id)
+		else {
+			return;
+		};
+		self.map.remove(&victim);
+		self.used.remove(&victim);
 	}
 
 	/// Called once per sim tick: flush if dirty and the interval passed.
@@ -160,7 +191,22 @@ impl PlayerStore {
 		}
 	}
 
-	/// Synchronous flush (disconnect of an identified player, shutdown).
+	/// Coalesced flush for a disconnect: writes only if the interval has
+	/// elapsed, exactly like `maintain`.
+	///
+	/// This used to force a flush unconditionally. Every write rebuilds and
+	/// fsyncs the WHOLE file (see `write_snapshot`), on the sim thread, so
+	/// a server emptying out — ten players dropping in one tick — paid ten
+	/// full-file rewrites and ten fsyncs inside a single 16.7 ms budget.
+	/// The module already accepts losing up to `FLUSH_INTERVAL` of changes
+	/// to a hard crash; there is no reason a disconnect should be stricter
+	/// than a crash.
+	pub fn sync_soon(&mut self) {
+		self.maintain();
+	}
+
+	/// Unconditional synchronous flush. Shutdown only — see `sync_soon` for
+	/// the per-disconnect path.
 	pub fn sync(&mut self) {
 		if self.dirty {
 			self.flush();
@@ -192,7 +238,11 @@ impl PlayerStore {
 		buf.extend_from_slice(&VERSION.to_le_bytes());
 		buf.extend_from_slice(&[0, 0]);
 		buf.extend_from_slice(&(self.map.len() as u32).to_le_bytes());
-		for hash in &self.order {
+		// Oldest-used first, so a reload can rebuild the LRU ranking from
+		// file order alone (see `open`).
+		let mut keys: Vec<&IdentityHash> = self.map.keys().collect();
+		keys.sort_unstable_by_key(|k| self.used.get(*k).copied().unwrap_or(0));
+		for hash in keys {
 			let Some(rec) = self.map.get(hash) else {
 				continue;
 			};
@@ -366,6 +416,66 @@ mod tests {
 		let mut grid = [WIRE_EMPTY; GRID_SLOTS];
 		grid[17] = BlockType::Stone as u16;
 		PlayerLayout { hotbar, grid }
+	}
+
+	/// Eviction is least-recently-USED, not first-inserted. The old policy
+	/// never refreshed a key on re-`put`, so it walked strictly in join
+	/// order and threw out the longest-standing players first — including
+	/// ones online and actively writing, which is exactly who `put` is
+	/// being called for.
+	#[test]
+	fn eviction_spares_the_recently_used() {
+		let dir = temp_dir("lru");
+		let mut s = PlayerStore::open(&dir).unwrap();
+		let veteran = hash_identity(&[1; 16]);
+		let mut inv = Inventory::default();
+		inv.add(BlockType::Dirt, 7);
+		s.put(
+			veteran,
+			PlayerRecord {
+				inventory: inv,
+				layout: None,
+				pos: None,
+				last_return_tick: None,
+			},
+		);
+		// Fill to the cap with strangers, touching the veteran throughout
+		// the way an online player's edits would.
+		for i in 0..MAX_IDENTITIES {
+			let mut secret = [0u8; 16];
+			secret[..8].copy_from_slice(&(i as u64).to_le_bytes());
+			secret[8] = 0xff; // never collides with the veteran's [1; 16]
+			s.put(hash_identity(&secret), PlayerRecord::default());
+			if i % 100 == 0 {
+				s.put(veteran, s.get(&veteran));
+			}
+		}
+		assert_eq!(s.map.len(), MAX_IDENTITIES, "cap still bounds the file");
+		assert_eq!(
+			s.get(&veteran).inventory.count(BlockType::Dirt),
+			7,
+			"the identity that kept being touched survived the churn"
+		);
+	}
+
+	/// File order is the LRU ranking, so a restart resumes it instead of
+	/// resetting to whatever the hash map happens to iterate.
+	#[test]
+	fn lru_order_survives_a_reopen() {
+		let dir = temp_dir("lruorder");
+		let old = hash_identity(&[1; 16]);
+		let new = hash_identity(&[2; 16]);
+		{
+			let mut s = PlayerStore::open(&dir).unwrap();
+			s.put(old, PlayerRecord::default());
+			s.put(new, PlayerRecord::default());
+			s.sync();
+		}
+		let s = PlayerStore::open(&dir).unwrap();
+		assert!(
+			s.used[&old] < s.used[&new],
+			"the earlier-used identity is still the older one after reload"
+		);
 	}
 
 	#[test]

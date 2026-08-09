@@ -30,7 +30,9 @@ use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::protect::Region;
 use digblock_net::codec;
-use digblock_net::messages::{ClientMsg, InputBatch, InputTick, RejectReason, ServerMsg};
+use digblock_net::messages::{
+	ClientMsg, InputBatch, InputTick, NetPlayerState, RejectReason, ServerMsg,
+};
 use digblock_net::protocol::{
 	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
 	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
@@ -91,7 +93,16 @@ pub enum SimEvent {
 #[derive(Debug)]
 pub enum OutMsg {
 	Datagram(Vec<u8>),
-	Frame(Vec<u8>),
+	/// A length-prefixed reliable frame, SHARED between recipients.
+	///
+	/// `Arc` rather than `Vec` because the interesting sends are
+	/// broadcasts: every landed edit goes to every client whose
+	/// `synced_columns` covers it, and fluid alone lands up to 512 edits a
+	/// second. Encoding per recipient meant 3 allocations and a fresh
+	/// postcard pass each — ~49 k allocations/s at 32 co-located players
+	/// during a waterfall, all producing byte-identical output. Now the
+	/// fan-out is a refcount bump.
+	Frame(std::sync::Arc<[u8]>),
 	/// Ask the net layer to close the connection (refused handshake).
 	Close,
 }
@@ -213,6 +224,15 @@ pub struct Sim {
 	face_scans: std::collections::VecDeque<((i32, i32), (i32, i32))>,
 	/// Last tick a snapshot-encode failure was logged (rate limit).
 	last_oversize_log: Option<u32>,
+	/// Scratch for `send_snapshots`, reused across ticks: the shared
+	/// roster, the per-client candidate list, the selected-player Vec, and
+	/// the postcard encode buffer. The pass runs 20×/s over every client,
+	/// so building these fresh was the sim thread's largest steady-state
+	/// allocation source.
+	snap_roster: Vec<(NetPlayerState, (i32, i32))>,
+	snap_nearby: Vec<(i64, usize)>,
+	snap_players: Vec<NetPlayerState>,
+	snap_buf: Vec<u8>,
 	/// Persistent per-identity player records — inventory + item layout
 	/// (separate from the journal).
 	player_store: PlayerStore,
@@ -280,6 +300,10 @@ impl Sim {
 			residency_dirty: true,
 			face_scans: std::collections::VecDeque::new(),
 			last_oversize_log: None,
+			snap_roster: Vec::new(),
+			snap_nearby: Vec::new(),
+			snap_players: Vec::new(),
+			snap_buf: Vec::new(),
 			player_store,
 			ban_store,
 			admin_name: None,
@@ -331,9 +355,7 @@ impl Sim {
 			let msg = ServerMsg::TimeOfDay {
 				tod: self.current_tod(),
 			};
-			for c in self.clients.values() {
-				client_send(c, &msg);
-			}
+			self.broadcast(&msg);
 		}
 		self.journal.maintain();
 		self.player_store.maintain();
@@ -543,9 +565,7 @@ impl Sim {
 					let msg = ServerMsg::Chat { from, text };
 					// Everyone, sender included: the echo is the client's
 					// delivery confirmation.
-					for c in self.clients.values() {
-						client_send(c, &msg);
-					}
+					self.broadcast(&msg);
 				}
 				// Inline like chat: no ordering relationship with the edit
 				// stream (edit raycasts re-validate against the player's
@@ -553,9 +573,24 @@ impl Sim {
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so
 				// the change simply applies from the next sync pass.
+				//
+				// Growing the radius must also REQUEST a scan. The full
+				// edited-column walk is event-driven off `needs_sync_scan`,
+				// which otherwise only rises when the center column moves —
+				// so a player who widened their draw distance standing
+				// still got no `JournalColumn` for the newly visible ring,
+				// and no live edits there either (`broadcast_edit` gates on
+				// `synced_columns`). Other players' builds rendered as
+				// pristine terrain until they walked across a column
+				// border. Shrinking needs no scan: the prune rides the same
+				// flag and costs nothing to defer.
 				ClientMsg::SetDrawDist { draw_dist } => {
 					if let Some(client) = self.clients.get_mut(&conn_id) {
-						client.draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
+						let want = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
+						if want > client.draw_dist {
+							client.needs_sync_scan = true;
+						}
+						client.draw_dist = want;
 					}
 				}
 				// Queued: a craft-then-place in one tick must debit the
@@ -1036,17 +1071,39 @@ impl Sim {
 		});
 	}
 
+	/// Encode once, fan out to every client. Use this for any message going
+	/// to more than one recipient — `client_send` re-encodes per call, and
+	/// the fan-out paths (edits, chat, time-of-day) are the hot ones.
+	fn broadcast(&self, msg: &ServerMsg) {
+		self.broadcast_where(msg, |_| true);
+	}
+
+	/// [`Self::broadcast`] restricted to clients matching `want`.
+	fn broadcast_where(&self, msg: &ServerMsg, want: impl Fn(&Client) -> bool) {
+		let Some(frame) = encode_frame(msg) else {
+			return;
+		};
+		for c in self.clients.values() {
+			if want(c) {
+				client_send_frame(c, &frame);
+			}
+		}
+	}
+
 	fn drop_client(&mut self, conn_id: u64) {
 		if let Some(client) = self.clients.remove(&conn_id) {
 			log::info!("player {} ({}) left", client.id, client.name);
 			if let Some(hash) = client.identity {
-				// Durable before the identity can reconnect and re-load.
+				// The record lands in memory immediately, which is what a
+				// reconnect reads — `get` never touches the file. Durability
+				// rides the ordinary coalesced flush: forcing one here meant
+				// a whole-file rebuild + fsync on the sim thread PER
+				// disconnect, so a server emptying out paid several inside
+				// one tick.
 				self.player_store.put(hash, client.record());
-				self.player_store.sync();
+				self.player_store.sync_soon();
 			}
-			for c in self.clients.values() {
-				client_send(c, &ServerMsg::PlayerLeft { id: client.id });
-			}
+			self.broadcast(&ServerMsg::PlayerLeft { id: client.id });
 			self.residency_dirty = true;
 		}
 		self.lobby.remove(&conn_id);
@@ -1064,29 +1121,66 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 	)
 }
 
+/// Squared-distance test in i64: `col` is any edited column in the journal
+/// and `center` is any client's, so the separation is bounded only by
+/// `TP_LIMIT` (±62 500 columns). In i32 the product overflows from ~46 340
+/// columns apart — release wraps, and a wrapped negative sum passes the
+/// test, which syncs a client columns it is nowhere near and force-drops it
+/// when the queue refuses; debug panics. The subtraction is widened too:
+/// `col.0 - center.0` alone overflows at the i32 extremes.
 fn in_radius(col: (i32, i32), center: (i32, i32), r: i32) -> bool {
-	let (dx, dz) = (col.0 - center.0, col.1 - center.1);
+	let (dx, dz) = (
+		col.0 as i64 - center.0 as i64,
+		col.1 as i64 - center.1 as i64,
+	);
+	let r = r as i64;
 	dx * dx + dz * dz <= r * r
+}
+
+/// Encode one reliable frame into a shareable payload, or `None` if it
+/// could not be encoded (a server bug — logged, and treated as "sent" so a
+/// peer is never dropped for it).
+fn encode_frame(msg: &ServerMsg) -> Option<std::sync::Arc<[u8]>> {
+	let mut buf = Vec::new();
+	match codec::write_frame(msg, &mut buf) {
+		Ok(()) => Some(buf.into()),
+		Err(e) => {
+			log::error!("frame encode: {e}");
+			None
+		}
+	}
+}
+
+/// Queue an already-encoded frame. `false` = the bounded queue refused
+/// (full or closed): the peer is not draining and must be dropped.
+fn queue_frame(out: &OutTx, frame: &std::sync::Arc<[u8]>) -> bool {
+	out.try_send(OutMsg::Frame(frame.clone())).is_ok()
 }
 
 /// Encode + queue one reliable frame. `false` = the bounded queue refused
 /// (full or closed): the peer is not draining and must be dropped.
+///
+/// For a message going to more than one client, encode ONCE with
+/// [`encode_frame`] and fan out with [`queue_frame`] — see `broadcast`.
 fn send_frame(out: &OutTx, msg: &ServerMsg) -> bool {
-	let mut buf = Vec::new();
-	match codec::write_frame(msg, &mut buf) {
-		Ok(()) => out.try_send(OutMsg::Frame(buf)).is_ok(),
-		Err(e) => {
-			// Encode failure is a server bug, not a peer problem.
-			log::error!("frame encode: {e}");
-			true
-		}
+	match encode_frame(msg) {
+		Some(frame) => queue_frame(out, &frame),
+		None => true,
 	}
 }
 
 /// Reliable send to a joined client; queue refusal marks it dead (reaped
 /// into `drop_client` at the next tick).
 fn client_send(client: &Client, msg: &ServerMsg) {
-	if !client.dead.get() && !send_frame(&client.out, msg) {
+	if let Some(frame) = encode_frame(msg) {
+		client_send_frame(client, &frame);
+	}
+}
+
+/// The fan-out half of [`client_send`]: queue a payload encoded once for
+/// the whole broadcast.
+fn client_send_frame(client: &Client, frame: &std::sync::Arc<[u8]>) {
+	if !client.dead.get() && !queue_frame(&client.out, frame) {
 		log::info!(
 			"player {} ({}): outbound queue refused a frame — dropping",
 			client.id,
@@ -1164,6 +1258,68 @@ mod tests {
 			conn_id: 99,
 			msg: ClientMsg::SetDrawDist { draw_dist: 8 },
 		}]);
+	}
+
+	/// Growing the radius must request a sync scan. The edited-column walk
+	/// is event-driven off `needs_sync_scan`, which otherwise only rises
+	/// when the center column moves — so a player who widened their draw
+	/// distance standing still got no `JournalColumn` for the ring that
+	/// just became visible, and (because `broadcast_edit` gates on
+	/// `synced_columns`) no live edits there either.
+	#[test]
+	fn growing_draw_dist_syncs_the_newly_visible_ring() {
+		// A pre-journaled edit in column (6, 0): outside the harness Hello's
+		// draw_dist of 4, inside a widened 8. The client spawns in column
+		// (0, 0) and never moves, so `needs_sync_scan` can only come from
+		// the SetDrawDist itself.
+		let dir = temp_dir("drawgrow");
+		let col = (6, 0);
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			j.append(
+				digblock_net::messages::BlockEdit {
+					x: col.0 * 16 + 8,
+					y: 127,
+					z: 8,
+					block: digblock_core::block::BlockType::Stone as u16,
+				},
+				0,
+			);
+			j.sync();
+		}
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		for _ in 0..5 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		let synced = |c: &TestClient| {
+			c.msgs
+				.iter()
+				.filter(
+					|m| matches!(m, ServerMsg::JournalColumn { cx, cz, .. } if (*cx, *cz) == col),
+				)
+				.count()
+		};
+		assert_eq!(synced(&c), 0, "column sits outside draw_dist 4");
+
+		c.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::SetDrawDist { draw_dist: 8 },
+		}]);
+		for _ in 0..5 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		assert_eq!(
+			synced(&c),
+			1,
+			"widening the radius synced the column without moving: {:?}",
+			c.msgs
+		);
 	}
 
 	#[test]

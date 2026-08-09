@@ -363,6 +363,24 @@ impl BlockType {
 		matches!(self.props().fluid, Some(f) if f.source)
 	}
 
+	/// May a placement overwrite a cell holding this block? Air and water
+	/// yield; every real block must be dug first.
+	///
+	/// THE one authority, shared by the client's prediction and the
+	/// server's validation — the two must agree exactly or a place either
+	/// desyncs or gets rejected after being predicted.
+	///
+	/// Deliberately not `!props().collides`, which is what the door's upper
+	/// half used to ask. An OPEN door has empty collision boxes, so that
+	/// test called it free: you could aim at the floor inside a doorway
+	/// (the plain ray passes through an open leaf), right-click, and
+	/// overwrite the door — no drop, no hold-to-dig timer, and its upper
+	/// half left behind as an orphan whose partner no longer resolves.
+	#[inline]
+	pub fn is_replaceable(self) -> bool {
+		matches!(self, BlockType::Air) || self.is_water()
+	}
+
 	/// The flowing-water block for an amount 1..=7.
 	#[inline]
 	pub fn water_flow(amount: u8) -> BlockType {

@@ -153,6 +153,11 @@ fn mint_token(master_url: &str, server_id: &str, name: &str) -> Result<[u8; 16],
 	if hex.len() != 32 {
 		return Err(format!("bad token length {}", hex.len()));
 	}
+	// Byte length is not char length: without this the slice below splits a
+	// multi-byte character and panics (same fix as the two service fillers).
+	if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+		return Err("join token is not hex".into());
+	}
 	let mut token = [0u8; 16];
 	for (i, byte) in token.iter_mut().enumerate() {
 		*byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
