@@ -344,11 +344,26 @@ pub const DRIFT_TOLERANCE: f32 = 0.02;
 pub const EDIT_RATE_PER_SEC: u32 = 10;
 pub const EDIT_BURST: f32 = 5.0;
 
-/// Target depth of the server's per-client input jitter buffer, ticks.
+/// Nominal depth of the server's per-client input jitter buffer, ticks.
+///
+/// Nominal, not achieved: it is only the threshold above which the drain
+/// takes two inputs in a tick. The drain always takes at least one when the
+/// buffer is non-empty and has no way to take zero, so depth is a one-way
+/// ratchet — an underrun destroys a tick of it permanently. The netbench's
+/// `depth` column measures the real thing and reads ~1.5 ticks even on a
+/// clean LAN. Raising this constant would not change that.
 pub const JITTER_BUFFER_TICKS: u32 = 2;
 
-/// How far ahead of the server clock a fresh client starts predicting:
-/// jitter-buffer depth plus a little headroom for the first RTT estimate.
+/// How far ahead of the server clock a fresh client starts predicting.
+///
+/// This sets the client's starting tick LABEL and nothing else: the server
+/// never compares `input.tick` against its own clock, only against the
+/// per-client high-water mark, and `Predictor::tick_lead` has no consumer
+/// outside stats and the debug overlay. Buffer depth is set by arrival
+/// timing, which tick numbering cannot influence — so the arithmetic
+/// relationship to [`JITTER_BUFFER_TICKS`] below is a historical
+/// coincidence, not a coupling. Its only real dependants are the loopback
+/// tests that do this same arithmetic.
 pub const CLIENT_TICK_LEAD: u32 = JITTER_BUFFER_TICKS + 3;
 
 /// Remote players render this many ticks behind the estimated server

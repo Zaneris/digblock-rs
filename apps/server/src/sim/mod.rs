@@ -107,6 +107,56 @@ pub enum OutMsg {
 	Close,
 }
 
+/// Per-client input-path instrumentation. Purely diagnostic — no field
+/// here feeds a decision, so sampling or ignoring it changes nothing.
+///
+/// It exists because the intake path used to drop inputs three different
+/// ways in silence (below the high-water mark, evicted at `INPUT_BUF_CAP`,
+/// or never delivered at all), which made every claim about jitter
+/// unfalsifiable. `late_lost` is the one counter that means an input was
+/// lost for good.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct InputStats {
+	/// Inputs actually applied, ever. The netbench divides this by what the
+	/// client predicted, to measure how well `INPUT_REDUNDANCY` covers real
+	/// datagram loss.
+	pub consumed: u64,
+	/// Rejected below the high-water mark having already been held once: a
+	/// redundancy copy doing its job. Expected and free.
+	pub dup: u64,
+	/// Rejected below the high-water mark having NEVER been held — the
+	/// buffer drained past this tick before it arrived. Lost motion.
+	pub late_lost: u64,
+	/// The deepest any late-lost input would have needed the buffer to be
+	/// (`last_input_tick - input.tick + 1`), i.e. how much depth would have
+	/// been required to still be holding it. The tuning number, if the
+	/// buffer ever becomes adaptive.
+	pub late_want_max: u32,
+	/// Ticks the drain found the buffer empty and coasted on the last
+	/// intent instead of consuming an input.
+	pub underruns: u64,
+	/// Inputs swept by the `INPUT_BUF_CAP` overflow trim.
+	pub evicted: u64,
+	/// Buffer depth sampled once per drain, as the tick SPAN
+	/// (`admit_hi - last_input_tick`) rather than `inputs.len()`: datagram
+	/// loss punches holes in the map, so the count under-reads the real
+	/// depth precisely when the link is worst.
+	pub depth_sum: u64,
+	pub depth_samples: u64,
+	pub depth_max: u32,
+}
+
+impl InputStats {
+	/// Mean buffer depth in ticks over the sampled drains.
+	pub fn depth_mean(&self) -> f64 {
+		if self.depth_samples == 0 {
+			0.0
+		} else {
+			self.depth_sum as f64 / self.depth_samples as f64
+		}
+	}
+}
+
 struct Client {
 	id: PlayerId,
 	name: String,
@@ -124,10 +174,16 @@ struct Client {
 	last_intent: PlayerIntent,
 	inputs: BTreeMap<u32, InputTick>,
 	last_input_tick: u32,
-	/// Inputs actually applied, ever. The netbench divides this by what
-	/// the client predicted, to measure how well `INPUT_REDUNDANCY` covers
-	/// real datagram loss.
-	inputs_consumed: u64,
+	/// Highest input tick ever ADMITTED to the buffer, and a bitmap of the
+	/// 64 ticks below it (bit n = `admit_hi - n`). Together they separate an
+	/// ordinary redundancy copy of a tick we already held — expected, free,
+	/// every tick rides two datagrams — from a tick the buffer had already
+	/// drained past when it arrived, which is the only rejection that means
+	/// an input was lost for good. Diagnostic only: nothing reads these
+	/// back into a decision.
+	admit_hi: u32,
+	admit_seen: u64,
+	stats: InputStats,
 	/// EWMA of adopted (claim − sim) deltas: the sustained-drift gate.
 	drift: Vec3,
 	edit_tokens: f32,
@@ -406,9 +462,23 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.pos)
 	}
 
+	/// A client's full authoritative state. The netbench re-seeds its local
+	/// prediction from this each tick, the way a real client rewinds to the
+	/// server on reconcile.
+	pub fn player_state(&self, conn_id: u64) -> Option<PlayerState> {
+		self.clients.get(&conn_id).map(|c| c.player.state())
+	}
+
 	/// Inputs this client has had applied, ever.
 	pub fn inputs_consumed(&self, conn_id: u64) -> u64 {
-		self.clients.get(&conn_id).map_or(0, |c| c.inputs_consumed)
+		self.clients.get(&conn_id).map_or(0, |c| c.stats.consumed)
+	}
+
+	/// This client's input-path counters. See [`InputStats`].
+	pub fn input_stats(&self, conn_id: u64) -> InputStats {
+		self.clients
+			.get(&conn_id)
+			.map_or_else(Default::default, |c| c.stats)
 	}
 
 	/// Write a cell straight into the resident store, bypassing edit
@@ -1096,7 +1166,9 @@ impl Sim {
 				last_intent: PlayerIntent::default(),
 				inputs: BTreeMap::new(),
 				last_input_tick: 0,
-				inputs_consumed: 0,
+				admit_hi: 0,
+				admit_seen: 0,
+				stats: InputStats::default(),
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,

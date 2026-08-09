@@ -64,6 +64,13 @@ struct Client {
 	dgram_bytes: u64,
 	frame_bytes: u64,
 	dgrams: u64,
+	/// The harness's own prediction, run with the same physics the server
+	/// runs, so the claim it sends is adoptable. Claims that miss short-
+	/// circuit the `sane` chain on POS_TOLERANCE and skip `probe_solid`
+	/// entirely — the shape-aware capsule test, and the most expensive call
+	/// in the input path. Measuring the server without it understates every
+	/// per-client number here.
+	predicted: Option<digblock_core::player::Player>,
 }
 
 fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
@@ -100,6 +107,7 @@ fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
 			dgram_bytes: 0,
 			frame_bytes: 0,
 			dgrams: 0,
+			predicted: None,
 		});
 	}
 	clients
@@ -108,10 +116,30 @@ fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
 /// Walk everyone in a slow circle, each on their own phase, so players
 /// spread out and cross column borders — the residency and interest paths
 /// only cost anything when people move.
-fn input_for(c: &Client, tick: u32, n: usize) -> SimEvent {
-	let phase = c.conn_id as f32 / n.max(1) as f32 * std::f32::consts::TAU;
+fn look_for(conn_id: u64, tick: u32, n: usize) -> glam::Vec3 {
+	let phase = conn_id as f32 / n.max(1) as f32 * std::f32::consts::TAU;
 	let t = tick as f32 / TICK_RATE as f32;
 	let (sx, sz) = (phase + t * 0.4).sin_cos();
+	glam::Vec3::new(sx, 0.0, sz)
+}
+
+const WALK_INTENT: digblock_core::player::PlayerIntent = digblock_core::player::PlayerIntent {
+	move_axis: glam::Vec2::new(0.0, 1.0),
+	jump: false,
+};
+
+fn input_for(c: &Client, tick: u32, n: usize) -> SimEvent {
+	let look = look_for(c.conn_id, tick, n);
+	// The claim is the harness's own prediction, run against the same world
+	// with the same physics — so it lands inside the adoption envelope and
+	// the server pays for `probe_solid` the way it does for a real player.
+	let (pos, vel) = c
+		.predicted
+		.as_ref()
+		.map_or(([0.0, -500.0, 0.0], [0.0; 3]), |p| {
+			let s = p.state();
+			(s.pos.to_array(), s.vel.to_array())
+		});
 	SimEvent::Inputs {
 		conn_id: c.conn_id,
 		batch: InputBatch {
@@ -119,14 +147,41 @@ fn input_for(c: &Client, tick: u32, n: usize) -> SimEvent {
 				tick,
 				move_axis: [0.0, 1.0],
 				jump: false,
-				look: [sx, 0.0, sz],
-				// Never adoptable, so the server's own physics carries
-				// everyone — the point is the server's cost, not adoption.
-				claimed_pos: [0.0, -500.0, 0.0],
-				claimed_vel: [0.0; 3],
+				look: look.to_array(),
+				claimed_pos: pos,
+				claimed_vel: vel,
 				active_slot: 0,
 			}],
 		},
+	}
+}
+
+/// Step every client's local prediction one tick, exactly as the server
+/// will.
+///
+/// Re-seeded from the server's authoritative state every tick, which is
+/// what a real client does on reconcile — without it the two diverge for
+/// good the first time streaming freezes the server's physics on an
+/// unloaded column (`step_physics` holds position and consumes nothing
+/// while the prediction walks on), and every later claim falls outside the
+/// envelope. The claim is then always "server state plus one tick", which
+/// is exactly what an honest client sends.
+fn predict_clients(clients: &mut [Client], sim: &Sim, tick: u32, n: usize) {
+	for c in clients.iter_mut() {
+		let Some(state) = sim.player_state(c.conn_id) else {
+			continue;
+		};
+		let p = c
+			.predicted
+			.get_or_insert_with(|| digblock_core::player::Player::new(state.pos));
+		p.set_state(state);
+		let look = look_for(c.conn_id, tick, n);
+		p.tick(
+			digblock_core::player::TICK,
+			look,
+			WALK_INTENT,
+			&|x, y, z| sim.cell_at(x, y, z),
+		);
 	}
 }
 
@@ -163,10 +218,9 @@ fn run(n: usize, edits: bool) -> String {
 
 	// Let everyone go live and their spawn columns generate before timing.
 	for t in 0..WARMUP {
-		let evs: Vec<SimEvent> = clients
-			.iter()
-			.map(|c| input_for(c, 100 + t as u32, n))
-			.collect();
+		let base = 100 + t as u32;
+		predict_clients(&mut clients, &sim, base, n);
+		let evs: Vec<SimEvent> = clients.iter().map(|c| input_for(c, base, n)).collect();
 		sim.tick_once(evs);
 		drain(&mut clients);
 		std::thread::sleep(std::time::Duration::from_millis(1));
@@ -178,10 +232,12 @@ fn run(n: usize, edits: bool) -> String {
 	}
 
 	let mut tick_us: Vec<f64> = Vec::with_capacity(TICKS);
-	let allocs0 = ALLOCS.load(Ordering::Relaxed);
-	let bytes0 = ALLOC_BYTES.load(Ordering::Relaxed);
+	let mut allocs = 0usize;
+	let mut alloc_bytes = 0usize;
+	let mut adopted = 0u64;
 	for t in 0..TICKS {
 		let base = 100 + (WARMUP + t) as u32;
+		predict_clients(&mut clients, &sim, base, n);
 		let mut evs: Vec<SimEvent> = clients.iter().map(|c| input_for(c, base, n)).collect();
 		// A steady trickle of edits, so broadcast fan-out is in the
 		// measurement rather than an idle world.
@@ -194,13 +250,39 @@ fn run(n: usize, edits: bool) -> String {
 				},
 			});
 		}
+		// Bracket allocations around `tick_once` ALONE, matching the timer.
+		// Spanning the whole loop body counted the harness's own per-client
+		// `vec![]` and the `Vec<SimEvent>` collect above — at n=64 that was
+		// ~65 of the 88.6 allocs/tick being reported as the server's.
+		let a0 = ALLOCS.load(Ordering::Relaxed);
+		let b0 = ALLOC_BYTES.load(Ordering::Relaxed);
 		let start = Instant::now();
 		sim.tick_once(evs);
-		tick_us.push(start.elapsed().as_secs_f64() * 1.0e6);
+		let el = start.elapsed().as_secs_f64() * 1.0e6;
+		allocs += ALLOCS.load(Ordering::Relaxed) - a0;
+		alloc_bytes += ALLOC_BYTES.load(Ordering::Relaxed) - b0;
+		tick_us.push(el);
+		// Confirm the claims really are being adopted. Without this check the
+		// sweep can silently revert to measuring the cheap path: the `sane`
+		// chain short-circuits on POS_TOLERANCE before `probe_solid`, so a
+		// claim that misses by too much skips the shape-aware capsule test
+		// entirely — the most expensive call in the input path.
+		for c in clients.iter() {
+			if let (Some(p), Some(pos)) = (c.predicted.as_ref(), sim.player_pos(c.conn_id)) {
+				if p.pos.distance(pos) < 1.0e-4 {
+					adopted += 1;
+				}
+			}
+		}
 		drain(&mut clients);
 	}
-	let allocs = ALLOCS.load(Ordering::Relaxed) - allocs0;
-	let alloc_kb = (ALLOC_BYTES.load(Ordering::Relaxed) - bytes0) / 1024;
+	let alloc_kb = alloc_bytes / 1024;
+	assert!(
+		adopted * 4 >= TICKS as u64 * n as u64,
+		"claims are being adopted, so overlaps_solid is in the measurement \
+		 ({adopted} of {} client-ticks)",
+		TICKS as u64 * n as u64
+	);
 
 	tick_us.sort_by(f64::total_cmp);
 	let secs = TICKS as f64 / TICK_RATE as f64;
@@ -270,6 +352,13 @@ fn main() {
 		 \x20       that matters, and max is where a stall would show.",
 		1.0e6 / TICK_RATE as f64,
 		TICK_RATE
+	);
+	println!(
+		"alloc/t allocations inside `tick_once` alone — the harness's own per-tick vecs\n\
+		 \x20       are outside the bracket. Chunk workers share the process-global counter,\n\
+		 \x20       so streaming allocation lands here too; it is server cost either way.\n\
+		 \x20       Every client claims an adoptable position, so `probe_solid` is in the\n\
+		 \x20       measurement (asserted, not assumed)."
 	);
 	if !std::env::args().any(|a| a == "--no-links") {
 		run_links(link_secs);
@@ -497,16 +586,28 @@ fn flat_source() -> digblock_server::store::ColumnSource {
 	})
 }
 
+/// Wire/client sub-steps per 60 Hz server tick (2.08 ms each). The server
+/// still ticks at 60 Hz; this is the resolution at which packets are
+/// delivered and the client polls.
+const SUBSTEPS: u32 = 8;
+
 struct LinkResult {
-	rtt_ms: f32,
-	jitter_ms: f32,
-	snaps_per_sec: f32,
-	replays_per_sec: f32,
+	rtt_ms: f64,
+	rtt_p95: f64,
+	snaps_per_sec: f64,
+	replays_per_sec: f64,
 	mean_corr: f32,
 	max_corr: f32,
 	max_divergence: f32,
 	input_delivery: f64,
 	dgram_loss: f64,
+	/// Server-side view of the same window: inputs lost for good because
+	/// they arrived below the high-water mark having never been held, the
+	/// depth that would have been needed to hold the worst of them, and
+	/// what the drain's buffer depth actually was.
+	late_per_sec: f64,
+	late_want_max: u32,
+	depth_mean: f64,
 }
 
 /// One client, one server, `secs` of walking over `link`.
@@ -578,6 +679,15 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 	let mut predicted_ticks = 0u64;
 	let mut consumed_base = 0u64;
 	let mut events = Vec::new();
+	// Measured harness-side over the whole window rather than read out of
+	// the client's `StatsAcc`, which publishes a closed 1-second bucket and
+	// an EWMA seeded during warmup — both of which report a phase of the run
+	// rather than the run. (The wifi row used to print 20.7 snap/s against a
+	// 20.0 nominal, which is the artifact admitting itself.)
+	let mut rtts: Vec<f32> = Vec::new();
+	let mut snaps = 0u64;
+	let mut replays = 0u64;
+	let mut stats_base = digblock_server::sim::InputStats::default();
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no
 	// snapshots at all — which would read as 100% loss rather than as the
@@ -586,102 +696,143 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 	let warmup = (4.0 * TICK_RATE as f64) as u32;
 	let steps = warmup + (secs * TICK_RATE as f64) as u32;
 	let dt = 1.0 / TICK_RATE as f32;
+	let sub_dt = dt / SUBSTEPS as f32;
 
 	for step in 0..steps {
+		let measuring = step >= warmup;
 		if step == warmup {
 			// Discard everything the startup transient produced.
 			corrections.clear();
 			max_div = 0.0;
 			predicted_ticks = 0;
 			consumed_base = sim.inputs_consumed(1);
+			rtts.clear();
+			snaps = 0;
+			replays = 0;
+			stats_base = sim.input_stats(1);
 		}
 		// Virtual time drives every measurement, but the chunk workers are
 		// real threads: without yielding, terrain never finishes generating
 		// and the player walks into a world that is not there yet.
 		std::thread::sleep(std::time::Duration::from_millis(1));
-		wire.lock().unwrap().now += dt as f64;
 
-		// ---- client half -------------------------------------------------
-		events.clear();
-		client.poll(&mut events, dt);
-		let mut ack: Option<(u32, digblock_core::player::PlayerState)> = None;
-		for ev in &events {
-			match ev {
-				NetEvent::Welcome { spawn, .. } => player = Some(Player::new(*spawn)),
-				NetEvent::Ack {
-					acked_input_tick,
-					me,
-				} => ack = Some((*acked_input_tick, *me)),
-				_ => {}
-			}
-		}
-		if let (Some(p), Some((t, me))) = (player.as_mut(), ack) {
-			let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
-			let outcome = client.predictor.reconcile(p, t, me, &world);
-			if let Reconciled::Replayed { error } = outcome {
-				corrections.push(error.length());
-			}
-			client.note_reconciled(matches!(outcome, Reconciled::Replayed { .. }));
-		}
-		if let Some(p) = player.as_mut() {
-			// Walk a slow circle so the world under the player changes.
-			let a = step as f32 / TICK_RATE as f32 * 0.5;
-			let dir = glam::Vec3::new(a.sin(), 0.0, a.cos());
-			let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
-			client.predictor.predict(
-				p,
-				PlayerIntent {
-					move_axis: glam::Vec2::new(0.0, 1.0),
-					jump: false,
-				},
-				dir,
-				&world,
-			);
-			predicted_ticks += 1;
-			client.send_inputs();
-		}
-
-		// ---- wire → server ------------------------------------------------
-		let now = wire.lock().unwrap().now;
-		let mut rel: Vec<Vec<u8>> = Vec::new();
-		let mut dgs: Vec<Vec<u8>> = Vec::new();
-		{
-			let mut w = wire.lock().unwrap();
-			w.to_server_rel.retain(|p| {
-				if p.at <= now {
-					rel.push(p.bytes.clone());
-					false
-				} else {
-					true
-				}
-			});
-			w.to_server_dgram.retain(|p| {
-				if p.at <= now {
-					dgs.push(p.bytes.clone());
-					false
-				} else {
-					true
-				}
-			});
-		}
 		let mut sim_events: Vec<SimEvent> = Vec::new();
-		for mut b in rel {
-			// Strip the client's one-time preamble, as net.rs does.
-			if client_preamble_seen < PREAMBLE_LEN {
-				let take = (PREAMBLE_LEN - client_preamble_seen).min(b.len());
-				client_preamble_seen += take;
-				b.drain(..take);
-			}
-			server_frames.extend(&b);
-			while let Ok(Some(f)) = server_frames.next_frame() {
-				if let Ok(msg) = codec::decode(&f) {
-					sim_events.push(SimEvent::Msg { conn_id: 1, msg });
+		// Sub-step the wire and the client within each server tick. The
+		// server still ticks at exactly 60 Hz — a packet arriving mid-tick
+		// really does wait for the next boundary, and that quantization is
+		// the real thing being modelled. What was NOT real was the delivery
+		// check running once per tick against the same `now` the send used
+		// (`at = now + one_way` is never `<= now`), so every leg cost a
+		// whole 16.67 ms tick no matter how short the configured wire.
+		// Below one sub-step (2.08 ms) delays still round up.
+		for sub in 0..SUBSTEPS {
+			wire.lock().unwrap().now += sub_dt as f64;
+
+			// ---- client half ---------------------------------------------
+			events.clear();
+			client.poll(&mut events, sub_dt);
+			let mut acks: Vec<(u32, digblock_core::player::PlayerState)> = Vec::new();
+			for ev in &events {
+				match ev {
+					NetEvent::Welcome { spawn, .. } => player = Some(Player::new(*spawn)),
+					NetEvent::Ack {
+						acked_input_tick,
+						me,
+					} => acks.push((*acked_input_tick, *me)),
+					_ => {}
 				}
 			}
-		}
-		for b in dgs {
-			if let Ok(Datagram::Input(batch)) = codec::decode_datagram(&b) {
-				sim_events.push(SimEvent::Inputs { conn_id: 1, batch });
+			for (t, me) in acks {
+				let Some(p) = player.as_mut() else { continue };
+				// One Ack per snapshot: `on_snapshot` emits it for every
+				// snapshot a live client receives.
+				if measuring {
+					snaps += 1;
+				}
+				let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
+				let outcome = client.predictor.reconcile(p, t, me, &world);
+				if let Reconciled::Replayed { error } = outcome {
+					if measuring {
+						corrections.push(error.length());
+						replays += 1;
+					}
+				}
+				// A stale ack returns early without touching `last_rtt`, so
+				// sampling it there would re-count the previous round trip.
+				if measuring && outcome != Reconciled::StaleAck {
+					if let Some(rtt) = client.predictor.last_rtt() {
+						rtts.push(rtt * 1000.0);
+					}
+				}
+				client.note_reconciled(matches!(outcome, Reconciled::Replayed { .. }));
+			}
+
+			// The client predicts on a 60 Hz accumulator and sends right
+			// after, exactly as `engine.rs` does — once per tick, not once
+			// per poll.
+			if sub == 0 {
+				if let Some(p) = player.as_mut() {
+					// Walk a slow circle so the world under the player changes.
+					let a = step as f32 / TICK_RATE as f32 * 0.5;
+					let dir = glam::Vec3::new(a.sin(), 0.0, a.cos());
+					let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
+					client.predictor.predict(
+						p,
+						PlayerIntent {
+							move_axis: glam::Vec2::new(0.0, 1.0),
+							jump: false,
+						},
+						dir,
+						&world,
+					);
+					predicted_ticks += 1;
+					client.send_inputs();
+				}
+			}
+
+			// ---- wire → server --------------------------------------------
+			// Delivered at sub-step resolution, but held for the server's own
+			// tick boundary below.
+			let now = wire.lock().unwrap().now;
+			let mut rel: Vec<Vec<u8>> = Vec::new();
+			let mut dgs: Vec<Vec<u8>> = Vec::new();
+			{
+				let mut w = wire.lock().unwrap();
+				w.to_server_rel.retain(|p| {
+					if p.at <= now {
+						rel.push(p.bytes.clone());
+						false
+					} else {
+						true
+					}
+				});
+				w.to_server_dgram.retain(|p| {
+					if p.at <= now {
+						dgs.push(p.bytes.clone());
+						false
+					} else {
+						true
+					}
+				});
+			}
+			for mut b in rel {
+				// Strip the client's one-time preamble, as net.rs does.
+				if client_preamble_seen < PREAMBLE_LEN {
+					let take = (PREAMBLE_LEN - client_preamble_seen).min(b.len());
+					client_preamble_seen += take;
+					b.drain(..take);
+				}
+				server_frames.extend(&b);
+				while let Ok(Some(f)) = server_frames.next_frame() {
+					if let Ok(msg) = codec::decode(&f) {
+						sim_events.push(SimEvent::Msg { conn_id: 1, msg });
+					}
+				}
+			}
+			for b in dgs {
+				if let Ok(Datagram::Input(batch)) = codec::decode_datagram(&b) {
+					sim_events.push(SimEvent::Inputs { conn_id: 1, batch });
+				}
 			}
 		}
 
@@ -720,12 +871,13 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 
 		// Divergence: what the player sees vs what the server holds. This
 		// is the number that becomes a rubber-band if it grows.
-		if let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
-			max_div = max_div.max((p.pos - sp).length());
+		if measuring {
+			if let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
+				max_div = max_div.max((p.pos - sp).length());
+			}
 		}
 	}
 
-	let s = client.stats();
 	// Inputs the server actually applied against the ticks the client
 	// produced: the direct measure of whether INPUT_REDUNDANCY is covering
 	// the loss. Below 1.0 means ticks vanished for good.
@@ -744,13 +896,29 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 	} else {
 		0.0
 	};
+	let is = sim.input_stats(1);
 	sim.shutdown();
 	let _ = std::fs::remove_dir_all(&dir);
+
+	rtts.sort_by(f32::total_cmp);
+	let rtt_mean = if rtts.is_empty() {
+		0.0
+	} else {
+		rtts.iter().map(|&v| v as f64).sum::<f64>() / rtts.len() as f64
+	};
+	// Depth over the measured window only: the counters are cumulative, so
+	// the warmup's samples have to be differenced out.
+	let d_samples = is.depth_samples - stats_base.depth_samples;
+	let depth_mean = if d_samples == 0 {
+		0.0
+	} else {
+		(is.depth_sum - stats_base.depth_sum) as f64 / d_samples as f64
+	};
 	LinkResult {
-		rtt_ms: s.rtt_ms,
-		jitter_ms: s.jitter_ms,
-		snaps_per_sec: s.snapshots_per_sec,
-		replays_per_sec: s.replays_per_sec,
+		rtt_ms: rtt_mean,
+		rtt_p95: pct(&rtts.iter().map(|&v| v as f64).collect::<Vec<_>>(), 0.95),
+		snaps_per_sec: snaps as f64 / secs,
+		replays_per_sec: replays as f64 / secs,
 		mean_corr: if corrections.is_empty() {
 			0.0
 		} else {
@@ -760,6 +928,9 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 		max_divergence: max_div,
 		input_delivery: delivery,
 		dgram_loss: loss,
+		late_per_sec: (is.late_lost - stats_base.late_lost) as f64 / secs,
+		late_want_max: is.late_want_max,
+		depth_mean,
 	}
 }
 
@@ -767,51 +938,84 @@ fn run_links(secs: f64) {
 	println!("\nlink quality — one client, one server, {secs:.0}s of walking each");
 	println!("real NetClient against the real Sim over a seeded impairing wire\n");
 	println!(
-		"link     | cfg rtt  loss | seen rtt  +-jit | snap/s | replay/s | corr mean  max | max div | in-deliv"
+		"link     | cfg rtt  loss | drop | rtt mean  p95 | snap/s | repl/s | corr mean  max | max div | in-deliv | late/s want | depth"
 	);
 	println!(
-		"---------+---------------+-----------------+--------+----------+----------------+---------+---------"
+		"---------+---------------+------+---------------+--------+--------+----------------+---------+----------+-------------+------"
 	);
 	for &l in LINKS {
 		let r = run_link(l, secs);
 		println!(
-			"{:<8} | {:>5.0}ms {:>4.0}% | {:>7.1} {:>7.1} | {:>6.1} | {:>8.2} | {:>9.3} {:>4.2} | {:>7.2} | {:>7.1}%",
+			"{:<8} | {:>5.0}ms {:>4.0}% | {:>3.0}% | {:>7.1} {:>6.1} | {:>6.1} | {:>6.2} | {:>9.3} {:>4.2} | {:>7.2} | {:>7.1}% | {:>5.1} {:>4} | {:>4.1}",
 			l.name,
 			l.rtt_ms,
 			l.loss * 100.0,
+			r.dgram_loss * 100.0,
 			r.rtt_ms,
-			r.jitter_ms,
+			r.rtt_p95,
 			r.snaps_per_sec,
 			r.replays_per_sec,
 			r.mean_corr,
 			r.max_corr,
 			r.max_divergence,
 			r.input_delivery * 100.0,
+			r.late_per_sec,
+			r.late_want_max,
+			r.depth_mean,
 		);
-		let _ = r.dgram_loss;
 	}
 	println!(
-		"\nseen rtt  what the CLIENT measures on its own input->ack loop — the overlay's\n\
-		 \x20         number. It sits ABOVE the configured wire rtt on purpose: it includes\n\
-		 \x20         the send stride, the server's jitter buffer and the snapshot cadence,\n\
-		 \x20         which is the latency a player feels rather than the one a ping shows."
+		"\nEvery column is measured over the window, not sampled from a rate bucket, and the\n\
+		 wire runs at {SUBSTEPS} sub-steps per server tick so a short link is not charged a whole\n\
+		 tick per leg. The server still ticks at 60 Hz: a packet arriving mid-tick waits for\n\
+		 the next boundary, which is real. Delays under one sub-step (2.08 ms) round up."
+	);
+	println!(
+		"\ndrop      datagrams the wire actually dropped, against the configured loss. It is\n\
+		 \x20         here to prove the impairment model is doing what the row claims."
+	);
+	println!(
+		"rtt       what the CLIENT measures on its own input->ack loop — the overlay's number.\n\
+		 \x20         It sits ABOVE the configured wire rtt on purpose: it includes the server's\n\
+		 \x20         jitter buffer, the 60 Hz tick boundary and the snapshot cadence, which is\n\
+		 \x20         the latency a player feels rather than the one a ping shows. It does NOT\n\
+		 \x20         include the send stride: `sent_at` is stamped at transmission, so a tick\n\
+		 \x20         waiting for its turn on the wire is felt but not counted."
 	);
 	println!(
 		"corr      reconciliation corrections in blocks. These are smoothed into the camera\n\
 		 \x20         over ~200ms, so small numbers are invisible; a growing max is a rubber-band."
 	);
 	println!(
+		"max div   client-predicted position against the server's. Includes the intended\n\
+		 \x20         CLIENT_TICK_LEAD, so it is a headroom reading, not pure error."
+	);
+	println!(
 		"in-deliv  inputs the server applied against the ticks the client produced. Near 100%\n\
 		 \x20         under loss is INPUT_REDUNDANCY doing its job; a shortfall is lost motion."
 	);
 	println!(
-		"\nKNOWN: in-deliv falls off on the last two rows, and it is JITTER, not loss, that\n\
-		 does it. Heavy jitter reorders datagrams, and `handle_inputs` skips anything at or\n\
-		 below `last_input_tick` — a high-water mark — so a tick that arrives after a newer\n\
-		 one has already been consumed is discarded rather than applied out of order. With\n\
-		 JITTER_BUFFER_TICKS at 2 (33 ms) the buffer cannot absorb +-150 ms of reordering.\n\
-		 Deepening it would fix these rows and cost every other player latency, so it is a\n\
-		 tradeoff to make deliberately (adaptively, on measured jitter) rather than by\n\
-		 raising a constant."
+		"late/s    the server's own view of that shortfall: inputs that arrived below the\n\
+		 \x20         high-water mark having NEVER been held, so they were lost for good rather\n\
+		 \x20         than being ordinary redundancy copies. `want` is the buffer depth that\n\
+		 \x20         would have been needed to still be holding the worst of them."
+	);
+	println!(
+		"depth     mean jitter-buffer depth at drain time, as a tick SPAN rather than a count\n\
+		 \x20         (loss punches holes in the map, so a count under-reads exactly when the\n\
+		 \x20         link is worst). This is the quantity a fix would control."
+	);
+	println!(
+		"\nKNOWN: in-deliv falls off on the worst rows, and it is JITTER, not loss, that does\n\
+		 it. Heavy jitter reorders datagrams, and `handle_inputs` skips anything at or below\n\
+		 `last_input_tick` — a high-water mark — so a tick arriving after a newer one has\n\
+		 been consumed is discarded rather than applied out of order.\n\
+		 \n\
+		 The mechanism is NOT that JITTER_BUFFER_TICKS is too small a number. The drain in\n\
+		 `step_physics` consumes at least one input whenever the buffer is non-empty and has\n\
+		 no way to consume zero, so depth is a one-way ratchet: an underrun destroys a tick\n\
+		 of depth permanently and nothing can put it back. Watch the `depth` column — it sits\n\
+		 near the floor on every row, including the calm ones. Raising the constant would not\n\
+		 change that; being able to HOLD is what would."
 	);
 }

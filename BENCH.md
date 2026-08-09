@@ -1,6 +1,108 @@
 # Bench baseline & hotspot analysis
 
-## 2026-08-09 — netcode baseline (`just bench-net`)
+## 2026-08-09 — netcode measurement pass (`just bench-net`)
+
+**This supersedes the baseline below it**, which was partly measuring the
+benchmark. Nothing in the engine changed: the harness was fixed, the server
+input path was instrumented, and the numbers were re-taken. Recorded as a
+second entry rather than an edit because the corrections are the finding.
+
+### What was wrong with the first baseline
+
+| column | defect | effect |
+|---|---|---|
+| `seen rtt` | the wire delivered once per tick, checked against the same `now` the send used, so `at = now + one_way` was never `<= now` | every leg cost a whole 16.67 ms tick regardless of the configured link |
+| `snap/s`, `replay/s` | read from `StatsAcc`, which publishes a closed 1-second bucket | a phase of the run, not the run — wifi printed 20.7/s against a 20.0 nominal |
+| `seen rtt`, `+-jit` | EWMA seeded during warmup and never reset | the 4 s startup transient rode into the reported value |
+| `alloc/t` | counters bracketed the whole loop body while the timer bracketed only `tick_once` | the harness's own `Vec<SimEvent>` and per-client `vec![]` were being reported as the server's — ~74% of the number at n=64 |
+| `tick us` | claims were `[0, -500, 0]`, so the `sane` chain short-circuited on `POS_TOLERANCE` | `probe_solid` → `overlaps_solid`, the most expensive call in the input path, was never run |
+
+The link half now sub-steps the wire and the client 8× per server tick
+(2.08 ms). The server still ticks at 60 Hz — a packet arriving mid-tick
+genuinely waits for the next boundary, and that quantization is real. Every
+link column is measured over the window rather than sampled from a rate
+bucket, and clients claim a position predicted with the server's own physics
+and re-seeded from server state each tick, so adoption really happens (the
+harness asserts it rather than assuming it).
+
+### Server capacity — real worldgen, everyone walking, 600 ticks/row
+
+```
+  n |    tick us: p50    p95    p99    max | snap B | kB/s/c | alloc/t   alloc | snap
+  1 |    0.8    1.2    1.8   25.1 |   31.0 |    0.6 |     0.6      88K |  100%
+  8 |    4.7    7.9   20.2  132.8 |  194.1 |    3.8 |     3.3    1796K |  100%
+ 24 |   12.9   44.5   65.9   84.5 |  567.0 |   11.1 |     9.3    7402K |  100%
+ 40 |   18.2   72.2  114.9  120.6 |  939.0 |   18.4 |    14.9   13969K |  100%
+ 64 |   29.1  138.0  199.8  208.5 |  937.3 |   18.4 |    23.1   19118K |  100%
+```
+
+p99 at 64 players is 200 us against a 16 667 us budget — 1.2%. The
+conclusion from the first baseline survives: interest management, not tick
+cost, is what bounds player count.
+
+`alloc/t` at 64 players is **23.1, not the 88.6 first reported** — three
+quarters of that figure was the harness allocating its own input events.
+What remains is ~0.36 allocations per client per tick.
+
+Adding the adoption path did **not** move `tick us` measurably. That is
+itself a result: `overlaps_solid` is cheap next to residency and snapshot
+assembly, so the per-client cost is dominated by interest management rather
+than by validating movement.
+
+### Link quality — real NetClient vs real Sim over a seeded impairing wire
+
+Flat world on purpose: this half measures the protocol, and real worldgen
+would put worker-thread completion times into the loop. Rows are
+bit-identical run to run, so a difference is a difference in the netcode.
+
+```
+link     | cfg rtt  loss | drop | rtt mean  p95 | snap/s | repl/s | corr mean  max | max div | in-deliv | late/s want | depth
+lan      |     4ms    0% |   0% |    26.0   35.4 |   20.0 |   0.00 |     0.000 0.00 |    0.07 |   100.0% |   0.0    0 |  1.5
+wifi     |    30ms    1% |   1% |    48.1   70.8 |   19.8 |   2.70 |     0.069 0.13 |    0.33 |    99.9% |   0.0    0 |  1.5
+cellular |   120ms    3% |   4% |   142.1  193.7 |   19.4 |   3.85 |     0.078 0.20 |    0.67 |    98.9% |   0.6    5 |  1.7
+bad-4g   |   300ms    5% |   6% |   299.5  385.5 |   18.9 |   3.85 |     0.093 0.33 |    1.06 |    91.8% |   8.2   10 |  1.9
+awful    |   500ms   10% |  12% |   430.2  554.2 |   17.8 |   5.40 |     0.273 0.73 |    1.81 |    73.0% |  26.3   18 |  1.7
+```
+
+**The `lan` row's RTT is 26.0 ms, not 41.9.** The old figure was ~16 ms of
+harness quantization. 26.0 lands next to the 24.8 ms measured live against a
+real QUIC server, which is the independent check that the model is now
+honest. `seen rtt` still exceeds the wire on purpose — it is the input→ack
+loop, so it carries the server's jitter buffer, the 60 Hz tick boundary and
+the snapshot cadence, which is the latency a player feels. It does **not**
+carry the send stride: `sent_at` is stamped at transmission
+(`predict.rs:154`), so a tick waiting its turn on the wire is felt but never
+counted. The first baseline claimed otherwise.
+
+**`depth` is the finding.** The server's jitter buffer holds ~1.5 ticks on a
+clean LAN and never reaches 2 on any row — including the calm ones. The
+drain in `step_physics` takes at least one input whenever the buffer is
+non-empty and has no way to take zero, so depth is a one-way ratchet: an
+underrun destroys a tick of it permanently and nothing puts it back. The
+first baseline said `JITTER_BUFFER_TICKS = 2` was "too small to absorb
+±150 ms". That was the wrong diagnosis — the constant is not the mechanism,
+and raising it would change nothing. Being able to *hold* would.
+
+**`late/s` and `want` corroborate `in-deliv` from the server's own side.**
+Late-lost inputs — arrived below the high-water mark having never been held,
+so lost for good rather than being ordinary redundancy copies — are zero on
+lan and wifi and climb to 26/s at 500 ms/10%. `want` says how deep the buffer
+would have had to be to still be holding the worst of them: **10 ticks at
+bad-4g and 18 at awful**, i.e. 167–300 ms. Any fix aimed at those rows has to
+be willing to buy that much depth, and every tick of it is latency paid by
+that player on every input — plus grace handed to anyone who fakes jitter,
+since `dig_grace` and `EDIT_POS_TOLERANCE` are both sized against this lag.
+
+Corrections stay small throughout (max 0.73 blocks at 500 ms/10%) and are
+smoothed into the camera over ~200 ms, so the adoption envelope is holding
+well past any link this game will realistically see. That is the reason the
+delivery shortfall is a polish item rather than an emergency: a dropped input
+is mostly overwritten by the next adopted claim. What the envelope does *not*
+repair is `client.look`, which is written only from a consumed input and is
+what `verify_digs` re-raycasts from every tick — so lost inputs degrade the
+server's aim, not just its position.
+
+## 2026-08-09 — netcode baseline (SUPERSEDED, see above)
 
 First multiplayer numbers in this file; the netcode had none. Apple
 Silicon (8P+4E), release build. Two halves, because they answer different

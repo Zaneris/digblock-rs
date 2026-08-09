@@ -26,11 +26,52 @@ impl Sim {
 		};
 		for input in batch.inputs {
 			if input.tick <= client.last_input_tick && client.last_input_tick != 0 {
+				// Classify before dropping. A redundancy copy of a tick we
+				// already held is the common case and costs nothing; a tick
+				// the buffer had drained past before it arrived is an input
+				// lost for good, and the only evidence the buffer was too
+				// shallow. `want` records exactly how much deeper it needed
+				// to be. Deliberately NOT derived from `input.tick` against
+				// `self.tick`: the client's counter free-runs and
+				// permanently loses ticks to its own frame hitches
+				// (`tick_accum` caps at 0.25 s and zeroes on an unloaded
+				// column), so that difference measures client frame pacing
+				// as much as the wire. This measures the wire alone — a
+				// stalled client still delivers in order, and an in-order
+				// stream produces no late-lost events at all.
+				let age = client.admit_hi.wrapping_sub(input.tick);
+				if age >= 64 || client.admit_seen & (1u64 << age) == 0 {
+					client.stats.late_lost += 1;
+					let want = client.last_input_tick.wrapping_sub(input.tick) + 1;
+					client.stats.late_want_max = client.stats.late_want_max.max(want);
+				} else {
+					client.stats.dup += 1;
+				}
 				continue;
 			}
 			let Some(clean) = sanitize(input) else {
 				continue;
 			};
+			// Record the admission before the map insert, so a tick evicted
+			// by the cap and later re-delivered still reads as a duplicate
+			// rather than as late-lost: this bitmap means "ever admitted",
+			// not "currently resident".
+			let hi = client.admit_hi;
+			if clean.tick > hi || hi == 0 {
+				let shift = clean.tick.wrapping_sub(hi);
+				client.admit_seen = if hi == 0 || shift >= 64 {
+					0
+				} else {
+					client.admit_seen << shift
+				};
+				client.admit_seen |= 1;
+				client.admit_hi = clean.tick;
+			} else {
+				let age = hi.wrapping_sub(clean.tick);
+				if age < 64 {
+					client.admit_seen |= 1u64 << age;
+				}
+			}
 			// First-wins is load-bearing: the client freezes each tick's
 			// claim at first send and reconciles acks against that frozen
 			// value. Last-wins here would adopt replay-rewritten re-sends
@@ -40,6 +81,7 @@ impl Sim {
 		}
 		while client.inputs.len() > INPUT_BUF_CAP {
 			client.inputs.pop_first();
+			client.stats.evicted += 1;
 		}
 	}
 
@@ -78,8 +120,23 @@ impl Sim {
 			} else {
 				1
 			};
+			// Sample the depth the drain is actually working against, as the
+			// tick SPAN rather than `inputs.len()`: loss punches holes in the
+			// map, so the count under-reads the real depth exactly when the
+			// link is worst. Diagnostic only — `consume` above is unchanged.
+			let depth = if client.last_input_tick == 0 {
+				0
+			} else {
+				client.admit_hi.saturating_sub(client.last_input_tick)
+			};
+			client.stats.depth_sum += depth as u64;
+			client.stats.depth_samples += 1;
+			client.stats.depth_max = client.stats.depth_max.max(depth);
 			for _ in 0..consume {
 				let input = client.inputs.pop_first().map(|(_, i)| i);
+				if input.is_none() {
+					client.stats.underruns += 1;
+				}
 				step_client(client, input, &|x, y, z| store.cell_at(x, y, z));
 			}
 		}
@@ -107,7 +164,7 @@ fn step_client(
 			};
 			client.player.tick(TICK, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
-			client.inputs_consumed += 1;
+			client.stats.consumed += 1;
 			client.active_slot = input.active_slot;
 
 			// Adoption envelope.
@@ -608,6 +665,96 @@ mod tests {
 		assert!(
 			clean.distance(lossy) < 1.0,
 			"paths stayed close: {clean:?} vs {lossy:?}"
+		);
+	}
+
+	/// The classifier must not cry wolf on ordinary traffic. Every tick
+	/// rides `INPUT_REDUNDANCY` datagrams, so re-sends of already-held
+	/// ticks are the common case and cost nothing — only a tick the buffer
+	/// had already drained past is a real loss.
+	#[test]
+	fn redundancy_duplicates_are_not_counted_as_late() {
+		let mut sim = flat_sim("dup-not-late");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// In-order delivery, every datagram carrying the last 4 ticks —
+		// exactly what the wire does at INPUT_REDUNDANCY 4.
+		let inputs: Vec<_> = (0..60).map(|i| input(100 + i, true, no_claim())).collect();
+		for i in 0..inputs.len() {
+			let lo = i.saturating_sub(3);
+			sim.tick_once(vec![batch(inputs[lo..=i].to_vec(), 1)]);
+		}
+		for _ in 0..40 {
+			sim.tick_once(vec![]);
+		}
+
+		let s = sim.input_stats(1);
+		assert_eq!(s.late_lost, 0, "in-order redundancy is never late: {s:?}");
+		assert_eq!(s.consumed, 60, "every tick applied exactly once: {s:?}");
+		// 3 re-sends for each tick past the first three.
+		assert_eq!(s.dup, 174, "re-sends were seen and classified: {s:?}");
+		assert_eq!(sim.test_last_input_tick(1), 159, "all inputs consumed");
+	}
+
+	/// Reordering, which nothing pinned before: `determinism_under_datagram_loss`
+	/// delivers in order, so it cannot see this. A datagram arriving after a
+	/// newer one has already been consumed lands wholly below the high-water
+	/// mark, and those ticks are gone for good.
+	#[test]
+	fn reordered_inputs_are_counted_as_late_lost() {
+		let mut sim = flat_sim("reorder-late");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Blocks of four delivered newest-first: 103,102,101,100 then
+		// 107,106,105,104, and so on. One tick per datagram, so the reorder
+		// is isolated from redundancy.
+		for block in 0..15u32 {
+			let base = 100 + block * 4;
+			for k in (0..4).rev() {
+				sim.tick_once(vec![batch(vec![input(base + k, true, no_claim())], 1)]);
+			}
+		}
+		for _ in 0..40 {
+			sim.tick_once(vec![]);
+		}
+
+		let s = sim.input_stats(1);
+		// The block's newest tick is consumed first and sets the high-water
+		// mark; the three older ones then arrive beneath it, having never
+		// been held. So exactly one tick per block survives and three are
+		// lost — and none of it is a re-send, since each tick is sent once.
+		assert_eq!(s.consumed, 15, "one tick per block survived: {s:?}");
+		assert_eq!(s.late_lost, 45, "the other three were lost: {s:?}");
+		assert_eq!(s.dup, 0, "nothing was a re-send: {s:?}");
+		// The oldest tick of a block arrives three behind the mark, so the
+		// buffer would have had to be four deep to still be holding it.
+		assert_eq!(s.late_want_max, 4, "depth that would have held it: {s:?}");
+	}
+
+	/// Depth is a tick SPAN, not `inputs.len()`. Loss punches holes in the
+	/// map, so a count under-reads the real depth exactly when the link is
+	/// worst — which is when a depth reading matters.
+	#[test]
+	fn buffer_depth_is_a_span_not_a_count() {
+		let mut sim = flat_sim("depth-span");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Deliver a sparse run in one batch — ticks 100 and 108, nothing
+		// between — then let the drain sample it. Two inputs are resident,
+		// but the buffer spans nine ticks.
+		sim.tick_once(vec![batch(
+			vec![input(100, true, no_claim()), input(108, true, no_claim())],
+			1,
+		)]);
+		sim.tick_once(vec![]);
+
+		let s = sim.input_stats(1);
+		assert!(
+			s.depth_max >= 8,
+			"span from admit_hi down to the consumed mark: {s:?}"
 		);
 	}
 }

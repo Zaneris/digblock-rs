@@ -435,3 +435,42 @@ Everything in §1, and the remainder of §2.5. Both wait on the master
 login flow — §2.5's leftovers are the same three-way mirror, and its
 display-name item in particular only becomes meaningful once a name is
 something the master vouches for rather than something a joiner picks.
+
+### 4.1 Input delivery under jitter — diagnosed, not fixed
+
+`just bench-net` reports input delivery falling to 91.8% at 300 ms/5% and
+73.0% at 500 ms/10%. Jitter causes it, not loss: heavy jitter reorders
+datagrams, and `handle_inputs` skips anything at or below
+`last_input_tick`, a high-water mark, so a tick arriving after a newer one
+has been consumed is discarded rather than applied out of order.
+
+An earlier draft of this file blamed `JITTER_BUFFER_TICKS = 2` for being
+"too small to absorb ±150 ms". **That was the wrong diagnosis.** The
+constant is only the threshold above which the drain takes two inputs in a
+tick; the drain always takes at least one when the buffer is non-empty and
+has no way to take zero. Depth is therefore a one-way ratchet — an underrun
+destroys a tick of it permanently and nothing puts it back — which the
+benchmark's `depth` column now shows directly: ~1.5 ticks on a clean LAN,
+never reaching 2 on any row. Raising the constant would not change that.
+Being able to *hold* would.
+
+Three things are worth knowing before anyone acts on this:
+
+- **The adoption envelope already absorbs most of the positional damage.**
+  A dropped input is largely overwritten by the next adopted claim, which is
+  why 73% delivery still yields only 0.73 blocks of maximum correction.
+- **What the envelope does not repair is `client.look`.** It is written only
+  from a consumed input (`movement.rs`), and `verify_digs` re-raycasts from
+  it every tick (`edits.rs`) — so lost inputs degrade the server's *aim*, and
+  aim has no adoption path. That, not position, is the felt symptom.
+- **The price is now measured.** The benchmark's `want` column is the depth
+  that would have been needed to hold the worst late input: 10 ticks at
+  bad-4g, 18 at awful (167–300 ms). Every tick of it is latency that player
+  pays on every input, and grace handed to anyone who fakes jitter, since
+  `dig_grace` and `EDIT_POS_TOLERANCE` are both sized against this lag.
+  A deeper buffer therefore cannot land without making both depth-aware.
+
+The server-side counters that make any of this falsifiable
+(`Sim::input_stats`: late-lost vs redundancy duplicates, underruns,
+evictions, and depth as a tick span rather than a count) are in place and
+purely diagnostic — nothing reads them back into a decision.
