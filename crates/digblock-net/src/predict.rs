@@ -71,7 +71,7 @@ pub struct Predictor {
 	last_rtt: Option<f32>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Reconciled {
 	/// Server agrees with our prediction at the acked tick.
 	InSync,

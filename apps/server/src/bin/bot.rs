@@ -259,10 +259,7 @@ fn run_bot(
 							.predictor
 							.reconcile(p, *acked_input_tick, *me, &world);
 						// The ack IS the RTT sample.
-						client.note_reconciled(matches!(
-							outcome,
-							digblock_net::predict::Reconciled::Replayed { .. }
-						));
+						client.note_reconciled(outcome);
 					}
 				}
 				NetEvent::Disconnected { reason } => {

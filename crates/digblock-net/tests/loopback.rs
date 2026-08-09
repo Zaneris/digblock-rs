@@ -1027,10 +1027,10 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		client.poll(&mut events, 0.01);
 	}
 	let state = player.state();
-	client
+	let outcome = client
 		.predictor
 		.reconcile(&mut player, tick, state, &flat_world);
-	client.note_reconciled(false);
+	client.note_reconciled(outcome);
 
 	let rtt = client.stats().rtt_ms;
 	assert!(
@@ -1050,14 +1050,62 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		client.poll(&mut events, 0.01);
 	}
 	let state = player.state();
-	client
+	let outcome = client
 		.predictor
 		.reconcile(&mut player, tick2, state, &flat_world);
-	client.note_reconciled(false);
+	client.note_reconciled(outcome);
 	assert_eq!(
 		client.stats().rtt_ms,
 		before,
 		"an unsent tick's ack left the estimate alone"
+	);
+
+	// A STALE ack is not a round trip either, and this one is the subtle
+	// case: `reconcile` returns before it assigns `last_rtt`, so the value
+	// left over describes the ack BEFORE it. Sampling it re-blends a
+	// measurement already in the average — which barely moves `rtt_ms`, but
+	// collapses `jitter_ms`, because deviation is taken from the running
+	// mean and a duplicate deviates from it by nothing. On a 500 ms link
+	// half of all acks are stale, so this was most wrong exactly where the
+	// overlay is most read.
+	let tick3 = client
+		.predictor
+		.predict(&mut player, intent, Vec3::Z, &flat_world);
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	client.send_inputs();
+	for _ in 0..20 {
+		events.clear();
+		client.poll(&mut events, 0.01);
+	}
+	let state = player.state();
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick3, state, &flat_world);
+	client.note_reconciled(outcome);
+	let (rtt_after, jitter_after) = (client.stats().rtt_ms, client.stats().jitter_ms);
+
+	// Re-deliver the SAME acked tick: stale by definition.
+	let outcome = client
+		.predictor
+		.reconcile(&mut player, tick3, state, &flat_world);
+	assert_eq!(
+		outcome,
+		digblock_net::predict::Reconciled::StaleAck,
+		"the re-delivery really was stale"
+	);
+	client.note_reconciled(outcome);
+	assert_eq!(
+		client.stats().rtt_ms,
+		rtt_after,
+		"a stale ack is not a round trip"
+	);
+	assert_eq!(
+		client.stats().jitter_ms,
+		jitter_after,
+		"and above all does not deflate the jitter"
 	);
 }
 

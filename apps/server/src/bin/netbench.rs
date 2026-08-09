@@ -903,7 +903,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 						rtts.push(rtt * 1000.0);
 					}
 				}
-				client.note_reconciled(matches!(outcome, Reconciled::Replayed { .. }));
+				client.note_reconciled(outcome);
 			}
 
 			// The client predicts on a 60 Hz accumulator and sends right

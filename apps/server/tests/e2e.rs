@@ -675,6 +675,45 @@ fn probe_rejects_wrong_cert_hash() {
 	}
 }
 
+/// The CLIENT-side probe — the one behind the server browser's ping column
+/// — reports the transport's own round-trip estimate, not the time the
+/// handshake took.
+///
+/// Loopback cannot tell a good latency figure from a bad one, so this pins
+/// the two failure modes it CAN see: that the probe still reaches a real
+/// server after the API change, and that the number is a measurement rather
+/// than a constant. The realistic regression is quinn's RFC 9002 initial
+/// RTT — 333 ms, reported identically for every server in the list — which
+/// is what `Connection::rtt` returns before it has a sample of its own.
+///
+/// No master here on purpose: an unregistered server still completes the
+/// WebTransport handshake, which is all a probe does. That keeps this test
+/// off Docker and fast.
+#[test]
+fn client_probe_reports_a_round_trip_not_a_handshake() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let server = TestServer::start("probertt", "http://127.0.0.1:1", false);
+	let policy = digblock_net_native::CertPolicy::PinnedSha256(server.cert_hash);
+	let (tx, rx) = std::sync::mpsc::channel();
+	digblock_net_native::probe(
+		&format!("https://127.0.0.1:{}", server.port),
+		policy,
+		Duration::from_secs(5),
+		move |ms| {
+			let _ = tx.send(ms);
+		},
+	);
+	let ms = rx
+		.recv_timeout(Duration::from_secs(10))
+		.expect("probe called back")
+		.expect("probe reached the server");
+	assert!(
+		ms < 100,
+		"loopback round trip read as {ms} ms — that is quinn's 333 ms initial \
+		 default or a handshake time, not a measurement"
+	);
+}
+
 /// A server nobody can reach (here: the master container's own loopback,
 /// where nothing listens) must be refused registration by the probe.
 #[test]

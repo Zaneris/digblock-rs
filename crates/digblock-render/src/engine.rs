@@ -3345,7 +3345,7 @@ impl Game for Engine {
 						}
 						// The ack that drove this reconcile is also the RTT
 						// sample — the overlay's ping comes from here.
-						net.note_reconciled(matches!(outcome, Reconciled::Replayed { .. }));
+						net.note_reconciled(outcome);
 					}
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;

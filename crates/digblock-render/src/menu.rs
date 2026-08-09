@@ -1135,6 +1135,18 @@ impl Menu {
 					let (ping, color) = match row.ping {
 						PingState::Pending => ("...".to_string(), C_DIM),
 						PingState::Failed => ("n/a".to_string(), C_RED),
+						// Bands are round-trip times, and they line up with the
+						// netbench's link profiles: under 60 is lan/wifi
+						// territory (4-30 ms, indistinguishable from local),
+						// under 150 covers cellular (120 ms, where delivery is
+						// still 99.8% and corrections are 0.08 blocks), and
+						// past that is bad-4g, where delivery falls off even
+						// with the input hold. They read as too lenient only
+						// if you remember them being fed handshake times,
+						// which were roughly double an RTT — the probe now
+						// reports the transport's own estimate, so these mean
+						// what they say. Don't "retune" them for the old
+						// input.
 						PingState::Ms(ms) => (
 							format!("{ms} ms"),
 							if ms < 60 {
