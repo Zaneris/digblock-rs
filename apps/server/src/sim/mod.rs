@@ -135,6 +135,16 @@ pub struct InputStats {
 	/// Ticks the drain found the buffer empty and coasted on the last
 	/// intent instead of consuming an input.
 	pub underruns: u64,
+	/// Ticks the drain deliberately consumed nothing while holding a hole
+	/// in the tick sequence open (see `INPUT_HOLD_MAX`). Physically
+	/// identical to an underrun — the difference is that the buffer keeps
+	/// its contents and the high-water mark does not advance, which is what
+	/// lets the late input still be admitted.
+	pub held: u64,
+	/// Inputs discarded because the client was frozen on an unloaded
+	/// column. Deliberately NOT counted as `late_lost`: nothing about the
+	/// wire went wrong, the server simply had nowhere to put the player.
+	pub frozen_dropped: u64,
 	/// Inputs swept by the `INPUT_BUF_CAP` overflow trim.
 	pub evicted: u64,
 	/// Buffer depth sampled once per drain, as the tick SPAN
@@ -153,6 +163,48 @@ impl InputStats {
 			0.0
 		} else {
 			self.depth_sum as f64 / self.depth_samples as f64
+		}
+	}
+}
+
+/// Per-client edit-path instrumentation. Purely diagnostic, like
+/// [`InputStats`], and deliberately a separate struct — this measures what
+/// a CLICK costs, not what the input buffer does.
+///
+/// It exists to price the two constants that are sized against how far the
+/// server's simulated player trails the client's: [`EDIT_POS_TOLERANCE`]
+/// and [`digblock_net::protocol::dig_grace`]. Both are fixed numbers whose
+/// remaining headroom has never been measured, and any change that makes
+/// the server consume inputs later spends that headroom.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct EditStats {
+	/// `req.origin.distance(player_pos)` at the tolerance check, in blocks
+	/// — sampled BEFORE the reject, so a rejected request is counted too.
+	/// This is the quantity [`EDIT_POS_TOLERANCE`] bounds.
+	pub origin_sum: f64,
+	pub origin_samples: u64,
+	pub origin_max: f32,
+	/// Requests refused by that check specifically, kept apart from the
+	/// other `RejectReason::OutOfReach` paths (a missed ray, a bad dir) so
+	/// "the tolerance is too tight" is distinguishable from "the client
+	/// aimed at nothing".
+	pub tol_rejects: u64,
+	/// Completing digs the timed-dig gate accepted.
+	pub dig_ok: u64,
+	/// Completing digs refused for insufficient banked progress, and the
+	/// worst shortfall in ticks — the direct read on whether `dig_grace`
+	/// still has room to give.
+	pub dig_short: u64,
+	pub dig_short_max: u32,
+}
+
+impl EditStats {
+	/// Mean claimed-origin residual in blocks over the sampled requests.
+	pub fn origin_mean(&self) -> f64 {
+		if self.origin_samples == 0 {
+			0.0
+		} else {
+			self.origin_sum / self.origin_samples as f64
 		}
 	}
 }
@@ -183,7 +235,12 @@ struct Client {
 	/// back into a decision.
 	admit_hi: u32,
 	admit_seen: u64,
+	/// Consecutive ticks the drain has been holding the current hole open.
+	/// Reset by any consume, so the `INPUT_HOLD_MAX` cap is per-hole rather
+	/// than cumulative — a bad link cannot ratchet into a standing stall.
+	hold_ticks: u32,
 	stats: InputStats,
+	edits: EditStats,
 	/// EWMA of adopted (claim − sim) deltas: the sustained-drift gate.
 	drift: Vec3,
 	edit_tokens: f32,
@@ -481,6 +538,42 @@ impl Sim {
 			.map_or_else(Default::default, |c| c.stats)
 	}
 
+	/// This client's edit-path counters. See [`EditStats`].
+	pub fn edit_stats(&self, conn_id: u64) -> EditStats {
+		self.clients
+			.get(&conn_id)
+			.map_or_else(Default::default, |c| c.edits)
+	}
+
+	/// Record what the claimed edit origin cost against the server's own
+	/// position. Called at BOTH `EDIT_POS_TOLERANCE` sites (the edit path
+	/// and the interact path) before either rejects, so the sample is the
+	/// distribution the constant is actually bounding.
+	fn note_origin_residual(&mut self, conn_id: u64, residual: f32, rejected: bool) {
+		let Some(c) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		c.edits.origin_sum += f64::from(residual);
+		c.edits.origin_samples += 1;
+		c.edits.origin_max = c.edits.origin_max.max(residual);
+		c.edits.tol_rejects += u64::from(rejected);
+	}
+
+	/// Record the timed-dig gate's verdict. `short` is how many banked
+	/// aim-verified ticks the completion was missing after `dig_grace`;
+	/// zero means it was accepted.
+	fn note_dig_gate(&mut self, conn_id: u64, short: u32) {
+		let Some(c) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if short == 0 {
+			c.edits.dig_ok += 1;
+		} else {
+			c.edits.dig_short += 1;
+			c.edits.dig_short_max = c.edits.dig_short_max.max(short);
+		}
+	}
+
 	/// Write a cell straight into the resident store, bypassing edit
 	/// validation — for staging terrain a test needs to exist.
 	#[cfg(test)]
@@ -550,6 +643,13 @@ impl Sim {
 	#[cfg(test)]
 	fn test_last_input_tick(&self, conn_id: u64) -> u32 {
 		self.clients.get(&conn_id).map_or(0, |c| c.last_input_tick)
+	}
+
+	/// Inputs sitting in the jitter buffer right now — how much the drain
+	/// has yet to work off.
+	#[cfg(test)]
+	fn test_input_backlog(&self, conn_id: u64) -> usize {
+		self.clients.get(&conn_id).map_or(0, |c| c.inputs.len())
 	}
 
 	#[cfg(test)]
@@ -1168,7 +1268,9 @@ impl Sim {
 				last_input_tick: 0,
 				admit_hi: 0,
 				admit_seen: 0,
+				hold_ticks: 0,
 				stats: InputStats::default(),
+				edits: EditStats::default(),
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,

@@ -293,7 +293,9 @@ impl Sim {
 		if dir == Vec3::ZERO {
 			return reject(RejectReason::OutOfReach);
 		}
-		if req.origin.distance(player_pos) > EDIT_POS_TOLERANCE {
+		let residual = req.origin.distance(player_pos);
+		self.note_origin_residual(req.conn_id, residual, residual > EDIT_POS_TOLERANCE);
+		if residual > EDIT_POS_TOLERANCE {
 			return reject(RejectReason::OutOfReach);
 		}
 
@@ -324,14 +326,26 @@ impl Sim {
 		// first verify lands a tick after DigStart, and the server's look
 		// lags the client's by the input jitter buffer.
 		if place_cell.is_none() {
+			// How many verified ticks the completion was missing, for the
+			// instrumentation: it prices how much of `dig_grace` an honest
+			// hold on this link still had left over. Only meaningful when
+			// the hold is on the right cell — a mismatch is a different
+			// failure, and reporting it as a shortfall would read as the
+			// grace being too small when nothing was banked at all.
+			let mut short = 0u32;
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
 				cell == req.cell
 					&& cell_value == hit.cell_value
-					&& hit
-						.block
-						.dig_hardness(req.cell.1)
-						.is_some_and(|h| progress + dig_grace(h as u32) >= h as u32)
+					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
+						let need = u32::from(h);
+						let have = progress + dig_grace(need);
+						short = need.saturating_sub(have);
+						have >= need
+					})
 			});
+			if satisfied || short > 0 {
+				self.note_dig_gate(req.conn_id, short);
+			}
 			if !satisfied {
 				return reject(RejectReason::DigIncomplete);
 			}
@@ -615,7 +629,9 @@ impl Sim {
 		if dir == Vec3::ZERO {
 			return reject(RejectReason::OutOfReach);
 		}
-		if req.origin.distance(player_pos) > EDIT_POS_TOLERANCE {
+		let residual = req.origin.distance(player_pos);
+		self.note_origin_residual(req.conn_id, residual, residual > EDIT_POS_TOLERANCE);
+		if residual > EDIT_POS_TOLERANCE {
 			return reject(RejectReason::OutOfReach);
 		}
 		let store = &self.store;

@@ -608,10 +608,140 @@ struct LinkResult {
 	late_per_sec: f64,
 	late_want_max: u32,
 	depth_mean: f64,
+	/// Edit-path view of the same window, populated only when the row ran
+	/// the click scenario. See [`EditDriver`].
+	orig_mean: f64,
+	orig_max: f32,
+	tol_rej_per_sec: f64,
+	dig_ok: u64,
+	dig_attempts: u64,
+	dig_short_max: u32,
 }
 
-/// One client, one server, `secs` of walking over `link`.
-fn run_link(link: Link, secs: f64) -> LinkResult {
+/// Idle ticks between dig attempts (1 s), so a row gets several complete
+/// holds rather than one long one.
+const DIG_IDLE_TICKS: u32 = 60;
+/// How often the walking client fires a residual probe (6/s, comfortably
+/// inside `EDIT_RATE_PER_SEC` 10 so it never starves the real digs).
+const PROBE_STRIDE: u32 = 10;
+/// How far to the side of the heading the client aims, in blocks.
+const TARGET_OFFSET: f32 = 3.0;
+
+/// Drives the click half of a link row: a residual probe while walking, and
+/// a stationary hold-to-dig on a cadence.
+///
+/// The two are deliberately different postures, because they measure
+/// different things. The probe runs while WALKING — the residual it samples
+/// is what `EDIT_POS_TOLERANCE` has to cover for a moving player, which is
+/// the budget any change to input scheduling spends. The dig is STATIONARY
+/// and looks at its target, because that is how a player actually mines,
+/// and because `verify_digs` re-raycasts from the server's own `look`: a
+/// client that kept walking would never have the server aiming at the cell
+/// and every hold would fail for a reason that has nothing to do with the
+/// link.
+#[derive(Default)]
+struct EditDriver {
+	seq: u32,
+	cell: (i32, i32, i32),
+	aim: glam::Vec3,
+	/// Ticks left in the current hold; non-zero means "standing still,
+	/// looking at `cell`".
+	holding: u32,
+	idle: u32,
+	attempts: u64,
+}
+
+/// Aim at the top face of a solid cell `TARGET_OFFSET` blocks to the right
+/// of the heading. Right of a circular walk is a different circle, so the
+/// holes never land on the path the player is walking.
+///
+/// Aiming at a point just INSIDE the top face is what makes the target
+/// unambiguous: the ground is one flat plane, so a descending ray crosses
+/// it exactly once, in the column of the point aimed at. A shallower ray at
+/// the cell's centre would hit whichever column it entered the ground at
+/// instead, which is not the cell being asked for.
+fn pick_target(
+	eye: glam::Vec3,
+	heading: glam::Vec3,
+	sim: &Sim,
+) -> Option<((i32, i32, i32), glam::Vec3)> {
+	let right = glam::Vec3::new(heading.z, 0.0, -heading.x);
+	let t = eye + right * TARGET_OFFSET;
+	let cell = (t.x.floor() as i32, FLAT_TOP as i32, t.z.floor() as i32);
+	let v = sim.cell_at(cell.0, cell.1, cell.2)?;
+	let block = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
+	if block != digblock_core::block::BlockType::Stone {
+		return None;
+	}
+	let aim_pt = glam::Vec3::new(
+		cell.0 as f32 + 0.5,
+		FLAT_TOP as f32 + 0.999,
+		cell.2 as f32 + 0.5,
+	);
+	Some((cell, (aim_pt - eye).normalize()))
+}
+
+/// Advance the click state machine one client tick. Runs BEFORE the
+/// prediction for this tick, so `holding` already describes the posture the
+/// input about to be sent will carry.
+fn drive_edits(
+	d: &mut EditDriver,
+	client: &mut digblock_net::client::NetClient,
+	sim: &Sim,
+	eye: glam::Vec3,
+	heading: glam::Vec3,
+	step: u32,
+	hardness: u32,
+) {
+	use digblock_net::messages::EditKind;
+	let tick = client.predictor.current_tick();
+	if d.holding > 0 {
+		d.holding -= 1;
+		if d.holding == 0 {
+			// The hold ran its full client-side timer; claim it. DigStart
+			// and this ride the same reliable stream in order, so the
+			// server measures the same interval the client held — latency
+			// cancels and only jitter is left, which is the point.
+			d.seq += 1;
+			client.send_edit(d.seq, tick, eye, d.aim, EditKind::Dig, d.cell, (0, 1, 0), 0);
+			d.idle = DIG_IDLE_TICKS;
+		}
+		return;
+	}
+	if d.idle > 0 {
+		d.idle -= 1;
+	} else if let Some((cell, aim)) = pick_target(eye, heading, sim) {
+		d.cell = cell;
+		d.aim = aim;
+		d.holding = hardness;
+		d.attempts += 1;
+		client.send_dig_start(cell);
+		return;
+	}
+	// Residual probe, only while walking. `Interact` deliberately, not a
+	// dig: it takes the OTHER tolerance site and is refused before any
+	// timed-dig gate, so probing cannot pollute the dig-shortfall counter
+	// with completions the client never intended to earn.
+	if step % PROBE_STRIDE == 0 {
+		if let Some((cell, aim)) = pick_target(eye, heading, sim) {
+			d.seq += 1;
+			client.send_edit(
+				d.seq,
+				tick,
+				eye,
+				aim,
+				EditKind::Interact,
+				cell,
+				(0, 1, 0),
+				0,
+			);
+		}
+	}
+}
+
+/// One client, one server, `secs` of walking over `link`. With `edits`, the
+/// client also probes and digs — see [`EditDriver`].
+fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	use digblock_core::player::{Player, PlayerIntent};
 	use digblock_net::client::{NetClient, NetClientConfig};
 	use digblock_net::codec::{self, FrameReader};
@@ -688,6 +818,13 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 	let mut snaps = 0u64;
 	let mut replays = 0u64;
 	let mut stats_base = digblock_server::sim::InputStats::default();
+	let mut edits_base = digblock_server::sim::EditStats::default();
+	let mut driver = EditDriver::default();
+	let stone_hardness = u32::from(
+		digblock_core::block::BlockType::Stone
+			.dig_hardness(FLAT_TOP as i32)
+			.expect("stone is diggable"),
+	);
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no
 	// snapshots at all — which would read as 100% loss rather than as the
@@ -710,6 +847,8 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 			snaps = 0;
 			replays = 0;
 			stats_base = sim.input_stats(1);
+			edits_base = sim.edit_stats(1);
+			driver.attempts = 0;
 		}
 		// Virtual time drives every measurement, but the chunk workers are
 		// real threads: without yielding, terrain never finishes generating
@@ -774,17 +913,45 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 				if let Some(p) = player.as_mut() {
 					// Walk a slow circle so the world under the player changes.
 					let a = step as f32 / TICK_RATE as f32 * 0.5;
-					let dir = glam::Vec3::new(a.sin(), 0.0, a.cos());
+					let heading = glam::Vec3::new(a.sin(), 0.0, a.cos());
+					// Only click inside the measured window. The `_max`
+					// counters are cumulative highs with no base to
+					// difference against, so a click during the settle
+					// would be indistinguishable from the run's own worst
+					// case — and the settle is a fall, which is exactly
+					// where the residual is largest.
+					if edits && measuring {
+						drive_edits(
+							&mut driver,
+							&mut client,
+							&sim,
+							p.pos,
+							heading,
+							step,
+							stone_hardness,
+						);
+					}
+					// Mining stands still and looks at the block; walking
+					// looks where it is going.
+					let (intent, dir) = if driver.holding > 0 {
+						(
+							PlayerIntent {
+								move_axis: glam::Vec2::ZERO,
+								jump: false,
+							},
+							driver.aim,
+						)
+					} else {
+						(
+							PlayerIntent {
+								move_axis: glam::Vec2::new(0.0, 1.0),
+								jump: false,
+							},
+							heading,
+						)
+					};
 					let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
-					client.predictor.predict(
-						p,
-						PlayerIntent {
-							move_axis: glam::Vec2::new(0.0, 1.0),
-							jump: false,
-						},
-						dir,
-						&world,
-					);
+					client.predictor.predict(p, intent, dir, &world);
 					predicted_ticks += 1;
 					client.send_inputs();
 				}
@@ -897,6 +1064,7 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 		0.0
 	};
 	let is = sim.input_stats(1);
+	let es = sim.edit_stats(1);
 	sim.shutdown();
 	let _ = std::fs::remove_dir_all(&dir);
 
@@ -931,6 +1099,21 @@ fn run_link(link: Link, secs: f64) -> LinkResult {
 		late_per_sec: (is.late_lost - stats_base.late_lost) as f64 / secs,
 		late_want_max: is.late_want_max,
 		depth_mean,
+		// Differenced out of the warmup the same way depth is: the counters
+		// are cumulative and the handshake's first clicks are not the run.
+		orig_mean: {
+			let n = es.origin_samples - edits_base.origin_samples;
+			if n == 0 {
+				0.0
+			} else {
+				(es.origin_sum - edits_base.origin_sum) / n as f64
+			}
+		},
+		orig_max: es.origin_max,
+		tol_rej_per_sec: (es.tol_rejects - edits_base.tol_rejects) as f64 / secs,
+		dig_ok: es.dig_ok - edits_base.dig_ok,
+		dig_attempts: driver.attempts,
+		dig_short_max: es.dig_short_max,
 	}
 }
 
@@ -944,7 +1127,7 @@ fn run_links(secs: f64) {
 		"---------+---------------+------+---------------+--------+--------+----------------+---------+----------+-------------+------"
 	);
 	for &l in LINKS {
-		let r = run_link(l, secs);
+		let r = run_link(l, secs, false);
 		println!(
 			"{:<8} | {:>5.0}ms {:>4.0}% | {:>3.0}% | {:>7.1} {:>6.1} | {:>6.1} | {:>6.2} | {:>9.3} {:>4.2} | {:>7.2} | {:>7.1}% | {:>5.1} {:>4} | {:>4.1}",
 			l.name,
@@ -1006,16 +1189,72 @@ fn run_links(secs: f64) {
 		 \x20         link is worst). This is the quantity a fix would control."
 	);
 	println!(
-		"\nKNOWN: in-deliv falls off on the worst rows, and it is JITTER, not loss, that does\n\
-		 it. Heavy jitter reorders datagrams, and `handle_inputs` skips anything at or below\n\
-		 `last_input_tick` — a high-water mark — so a tick arriving after a newer one has\n\
-		 been consumed is discarded rather than applied out of order.\n\
+		"\nWHY in-deliv falls off on the worst rows: JITTER, not loss. Heavy jitter reorders\n\
+		 datagrams, and `handle_inputs` skips anything at or below `last_input_tick` — a\n\
+		 high-water mark — so a tick arriving after a newer one has been consumed used to be\n\
+		 discarded rather than applied out of order. Redundancy cannot help, because every\n\
+		 copy of a tick is equally old.\n\
 		 \n\
-		 The mechanism is NOT that JITTER_BUFFER_TICKS is too small a number. The drain in\n\
-		 `step_physics` consumes at least one input whenever the buffer is non-empty and has\n\
-		 no way to consume zero, so depth is a one-way ratchet: an underrun destroys a tick\n\
-		 of depth permanently and nothing can put it back. Watch the `depth` column — it sits\n\
-		 near the floor on every row, including the calm ones. Raising the constant would not\n\
-		 change that; being able to HOLD is what would."
+		 `INPUT_HOLD_MAX` is what recovers them: the drain refuses to step past a HOLE in the\n\
+		 tick sequence for a few ticks, so the late input is still admitted when it lands.\n\
+		 It fires only when a hole actually exists, which is why the lan and wifi rows are\n\
+		 unchanged to the digit. Note that this is not the same knob as JITTER_BUFFER_TICKS,\n\
+		 which only ever set the CATCH-UP threshold — the drain has no way to consume zero\n\
+		 without the hold, so depth was a one-way ratchet that raising a constant could not\n\
+		 have fixed."
+	);
+	run_edit_links(secs);
+}
+
+/// The click half, as a SEPARATE table rather than extra columns on the one
+/// above. Two reasons, both load-bearing: the scenarios differ (probes walk,
+/// digs stand still), and the edits put reliable frames on the wire, which
+/// consumes draws from the shared `Rng` — folding them in would shift every
+/// number in the walk table and destroy its comparability with the recorded
+/// baseline.
+fn run_edit_links(secs: f64) {
+	use digblock_net::protocol::EDIT_POS_TOLERANCE;
+	println!("\nedit path — same links, same wire, but the client also clicks\n");
+	println!("link     | cfg rtt  loss | orig mean   max | tol-rej/s | dig ok/att | dig short");
+	println!("---------+---------------+-----------------+-----------+------------+----------");
+	for &l in LINKS {
+		let r = run_link(l, secs, true);
+		println!(
+			"{:<8} | {:>5.0}ms {:>4.0}% | {:>9.3} {:>5.3} | {:>9.2} | {:>5}/{:<5} | {:>9}",
+			l.name,
+			l.rtt_ms,
+			l.loss * 100.0,
+			r.orig_mean,
+			r.orig_max,
+			r.tol_rej_per_sec,
+			r.dig_ok,
+			r.dig_attempts,
+			r.dig_short_max,
+		);
+	}
+	println!(
+		"\norig      how far the claimed edit origin sat from the server's own simulated\n\
+		 \x20         position, in blocks — the quantity EDIT_POS_TOLERANCE ({EDIT_POS_TOLERANCE})\n\
+		 \x20         bounds, sampled at both tolerance sites BEFORE either rejects. Sampled\n\
+		 \x20         while WALKING, which is the expensive posture. Latency itself cancels\n\
+		 \x20         here: the request and the server's position are delayed by the same one\n\
+		 \x20         way, so what is left is buffer depth plus arrival jitter. That is why\n\
+		 \x20         this column, not `max div`, is what a change to input scheduling spends."
+	);
+	println!(
+		"tol-rej/s requests refused by that check specifically, kept apart from the other\n\
+		 \x20         OutOfReach paths (a ray that hit nothing, a degenerate direction)."
+	);
+	println!(
+		"dig       completing digs the timed-dig gate accepted, over attempts started. Digs\n\
+		 \x20         are STATIONARY and look at the target, because that is how mining works\n\
+		 \x20         and because `verify_digs` re-raycasts from the server's own look — a\n\
+		 \x20         client that kept walking would fail every hold for a reason that is not\n\
+		 \x20         the link. Stone is 90 ticks, so a row gets a handful of attempts: enough\n\
+		 \x20         to separate `all pass` from `all fail`, which is the question."
+	);
+	println!(
+		"dig short the worst shortfall in banked aim-verified ticks after dig_grace. Zero\n\
+		 \x20         means the grace still had room to give on that link."
 	);
 }

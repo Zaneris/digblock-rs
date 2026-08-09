@@ -344,15 +344,63 @@ pub const DRIFT_TOLERANCE: f32 = 0.02;
 pub const EDIT_RATE_PER_SEC: u32 = 10;
 pub const EDIT_BURST: f32 = 5.0;
 
-/// Nominal depth of the server's per-client input jitter buffer, ticks.
+/// Catch-up threshold for the server's per-client input drain, ticks.
 ///
-/// Nominal, not achieved: it is only the threshold above which the drain
-/// takes two inputs in a tick. The drain always takes at least one when the
-/// buffer is non-empty and has no way to take zero, so depth is a one-way
-/// ratchet — an underrun destroys a tick of it permanently. The netbench's
-/// `depth` column measures the real thing and reads ~1.5 ticks even on a
-/// clean LAN. Raising this constant would not change that.
+/// Despite the name this was never a buffer depth — it is only the point
+/// above which the drain takes TWO inputs in a tick, which is what pays back
+/// the delay a hold introduces. The depth itself is set by
+/// [`INPUT_HOLD_MAX`]; raising this number alone does nothing, as the
+/// netbench's `depth` column showed (~1.5 ticks even on a clean LAN, and
+/// that 1.5 was entirely [`INPUT_SEND_STRIDE`] burstiness).
 pub const JITTER_BUFFER_TICKS: u32 = 2;
+
+/// How long the input drain will hold a HOLE in the tick sequence open,
+/// waiting for the missing tick to arrive, before giving up and skipping it.
+///
+/// This is the server's actual reorder tolerance, and the reason it exists:
+/// `handle_inputs` refuses anything at or below the consumed high-water
+/// mark, so an input that arrives after the drain has already stepped past
+/// its tick is lost for good. Heavy jitter reorders datagrams, which is
+/// exactly how a link loses 27% of its inputs at 500 ms while dropping only
+/// 12% of its packets — redundancy cannot help, because every copy of a tick
+/// is equally old.
+///
+/// A hold costs latency, but only ever converts DIVERGENCE into it: held
+/// inputs are applied in order, just later, so the server still lands on the
+/// claim the client sent, and client-side prediction hides the delay.
+/// Nothing happens at all on a link with no holes, which is why a clean
+/// connection pays literally zero for this.
+///
+/// The cap is set by measurement, not taste: `just bench-net` swept it over
+/// 0/2/4/6/8/12. Two results decided it.
+///
+/// A hold does NOT simply spend `EDIT_POS_TOLERANCE`, which is what the
+/// arithmetic predicts and what the sweep refuted. Up to 4 the claimed edit
+/// origin sits CLOSER to the server's own position than with no hold at all
+/// (0.87 vs 1.02 blocks at 500 ms, 0.40 vs 0.60 at 300 ms), because the
+/// alternative to holding is coasting on stale intent, and a coast diverges
+/// faster than a delay does. Past 6 it starts climbing, and by 12 it reaches
+/// 1.79 — over the tolerance, which is where honest edits begin bouncing
+/// (the sweep's only non-zero `tol-rej/s`).
+///
+/// Delivery is also flat past here. 4 recovers three quarters of the
+/// shortfall at 300 ms (91.8% → 98.0%); 6 and 8 add two tenths of a point
+/// between them. The worst link keeps improving to 8, but buys it with a
+/// replay rate that climbs back ABOVE the no-hold baseline, which is the
+/// symptom this was meant to remove.
+///
+/// What it costs: nothing measurable below 120 ms of ping (the lan, wifi and
+/// cellular rows are unchanged to the digit — no holes, no holds), +11 ms at
+/// 300 ms and +44 ms at 500 ms.
+///
+/// RULE: [`EDIT_POS_TOLERANCE`] and [`dig_grace`] must never be scaled by
+/// the observed depth. A deeper buffer SPENDS those fixed budgets; making
+/// them elastic instead would hand anyone sending deliberately gappy input
+/// ticks a proportionally wider envelope — `verify_digs` casts
+/// `REACH + EDIT_POS_TOLERANCE`, so that is extra reach, bought by
+/// pretending to have a bad connection. Their fixedness is what makes this
+/// mechanism free of cheat surface.
+pub const INPUT_HOLD_MAX: u32 = 4;
 
 /// How far ahead of the server clock a fresh client starts predicting.
 ///

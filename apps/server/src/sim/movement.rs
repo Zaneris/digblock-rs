@@ -5,7 +5,8 @@ use super::{Client, Sim};
 use digblock_core::player::{PlayerIntent, PlayerState, TICK};
 use digblock_net::messages::{InputBatch, InputTick};
 use digblock_net::protocol::{
-	DRIFT_ALPHA, DRIFT_TOLERANCE, INPUT_REDUNDANCY, JITTER_BUFFER_TICKS, MAX_SPEED, POS_TOLERANCE,
+	DRIFT_ALPHA, DRIFT_TOLERANCE, INPUT_HOLD_MAX, INPUT_REDUNDANCY, JITTER_BUFFER_TICKS, MAX_SPEED,
+	POS_TOLERANCE,
 };
 use glam::Vec3;
 
@@ -102,6 +103,26 @@ impl Sim {
 					pos: client.player.pos,
 					vel: Vec3::ZERO,
 				});
+				// Discard what arrived while frozen instead of banking it.
+				// Skipping the drain entirely let the buffer fill to
+				// INPUT_BUF_CAP and then double-drain thirty stale ticks at
+				// 2x on unfreeze — a visible sprint after every /tp into
+				// ungenerated terrain, replaying intent from before the
+				// teleport. The newest input's aim and slot are still worth
+				// keeping: they describe the client NOW, and nothing about
+				// them depends on the physics that did not run.
+				if let Some((_, last)) = client.inputs.pop_last() {
+					client.stats.frozen_dropped += client.inputs.len() as u64 + 1;
+					client.inputs.clear();
+					client.look = Vec3::from_array(last.look).normalize_or_zero();
+					client.last_intent = PlayerIntent {
+						jump: false,
+						move_axis: glam::Vec2::from_array(last.move_axis),
+					};
+					client.active_slot = last.active_slot;
+					client.last_input_tick = client.admit_hi;
+				}
+				client.hold_ticks = 0;
 				continue;
 			}
 			// Drain toward the target jitter-buffer depth: normally one
@@ -132,6 +153,37 @@ impl Sim {
 			client.stats.depth_sum += depth as u64;
 			client.stats.depth_samples += 1;
 			client.stats.depth_max = client.stats.depth_max.max(depth);
+
+			// Hold a HOLE open. `pop_first` takes the lowest tick present,
+			// so a buffer holding {103, 104} with 100 consumed steps
+			// straight to 103 and kills 101 and 102 the moment they land —
+			// `handle_inputs` refuses anything at or below the mark. Waiting
+			// a few ticks for the hole to fill is the entire difference
+			// between a reordered input arriving late and one lost for good.
+			//
+			// This is a hole, not an underrun: the buffer is non-empty and
+			// the tick we want is simply not in it yet. An empty buffer
+			// falls through to the drain below and coasts, as it always has.
+			//
+			// `last_input_tick != 0` is load-bearing. A fresh client's first
+			// input is tick ~CLIENT_TICK_LEAD, so `next` would be 1 and
+			// every join would stall the full cap against a hundred-tick
+			// "hole" that was never a hole.
+			let next = client.last_input_tick.wrapping_add(1);
+			if client.last_input_tick != 0
+				&& !client.inputs.is_empty()
+				&& !client.inputs.contains_key(&next)
+				&& client.hold_ticks < INPUT_HOLD_MAX
+			{
+				client.hold_ticks += 1;
+				client.stats.held += 1;
+				// Coast through the underrun path verbatim: a hold and an
+				// underrun are physically the same tick. Only the buffer
+				// state differs, and that difference is the whole point.
+				step_client(client, None, &|x, y, z| store.cell_at(x, y, z));
+				continue;
+			}
+			client.hold_ticks = 0;
 			for _ in 0..consume {
 				let input = client.inputs.pop_first().map(|(_, i)| i);
 				if input.is_none() {
@@ -697,12 +749,13 @@ mod tests {
 		assert_eq!(sim.test_last_input_tick(1), 159, "all inputs consumed");
 	}
 
-	/// Reordering, which nothing pinned before: `determinism_under_datagram_loss`
-	/// delivers in order, so it cannot see this. A datagram arriving after a
-	/// newer one has already been consumed lands wholly below the high-water
-	/// mark, and those ticks are gone for good.
+	/// Reordering, which nothing pinned before `INPUT_HOLD_MAX` existed:
+	/// `determinism_under_datagram_loss` delivers in order, so it cannot see
+	/// this. Blocks arriving newest-first used to cost three ticks in four —
+	/// the newest set the high-water mark and the rest landed under it. The
+	/// hold now waits for the hole and recovers them.
 	#[test]
-	fn reordered_inputs_are_counted_as_late_lost() {
+	fn reordered_inputs_are_recovered_by_the_hold() {
 		let mut sim = flat_sim("reorder-late");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
@@ -721,16 +774,169 @@ mod tests {
 		}
 
 		let s = sim.input_stats(1);
-		// The block's newest tick is consumed first and sets the high-water
-		// mark; the three older ones then arrive beneath it, having never
-		// been held. So exactly one tick per block survives and three are
-		// lost — and none of it is a re-send, since each tick is sent once.
-		assert_eq!(s.consumed, 15, "one tick per block survived: {s:?}");
-		assert_eq!(s.late_lost, 45, "the other three were lost: {s:?}");
+		// 57 of 60, not 15. Every block after the first is fully recovered:
+		// its newest tick opens a hole the drain refuses to step past, and
+		// the three older ones fill it before the cap expires.
+		assert_eq!(s.consumed, 57, "the hold recovered the reorder: {s:?}");
+		assert!(s.held > 0, "it recovered them by holding: {s:?}");
 		assert_eq!(s.dup, 0, "nothing was a re-send: {s:?}");
-		// The oldest tick of a block arrives three behind the mark, so the
-		// buffer would have had to be four deep to still be holding it.
+		// The first block is the exception and must stay one: with nothing
+		// consumed yet there is no high-water mark to hold against, so its
+		// three older ticks land under the first and are lost. That is the
+		// `last_input_tick != 0` guard being visible, not a leak — without
+		// it a fresh join would stall against a hundred-tick phantom hole.
+		assert_eq!(s.late_lost, 3, "only the first block was lost: {s:?}");
 		assert_eq!(s.late_want_max, 4, "depth that would have held it: {s:?}");
+	}
+
+	/// The mechanism in isolation: one hole, filled one tick later. Without
+	/// the hold the drain steps to 103 immediately and 102 is dead on
+	/// arrival.
+	#[test]
+	fn a_hole_is_held_open_for_the_late_input() {
+		let mut sim = flat_sim("hole-filled");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		sim.tick_once(vec![batch(vec![input(101, true, no_claim())], 1)]);
+		sim.tick_once(vec![batch(vec![input(103, true, no_claim())], 1)]);
+		sim.tick_once(vec![batch(vec![input(102, true, no_claim())], 1)]);
+		for _ in 0..10 {
+			sim.tick_once(vec![]);
+		}
+
+		let s = sim.input_stats(1);
+		assert_eq!(s.late_lost, 0, "the late tick was still admitted: {s:?}");
+		assert_eq!(s.consumed, 3, "all three applied, in order: {s:?}");
+		assert_eq!(sim.test_last_input_tick(1), 103, "and up to date: {s:?}");
+	}
+
+	/// The cap is what stops a hole that will never fill (both redundancy
+	/// copies dropped) from stalling the player indefinitely. The drain
+	/// gives up after `INPUT_HOLD_MAX` and steps over it.
+	#[test]
+	fn an_unfilled_hole_is_skipped_after_the_bound() {
+		use digblock_net::protocol::INPUT_HOLD_MAX;
+		let mut sim = flat_sim("hole-abandoned");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		sim.tick_once(vec![batch(vec![input(101, true, no_claim())], 1)]);
+		// 102 never arrives.
+		sim.tick_once(vec![batch(vec![input(103, true, no_claim())], 1)]);
+		for _ in 0..(INPUT_HOLD_MAX + 4) {
+			sim.tick_once(vec![]);
+		}
+
+		let s = sim.input_stats(1);
+		assert_eq!(
+			s.held, INPUT_HOLD_MAX as u64,
+			"held exactly the bound, then gave up: {s:?}"
+		);
+		assert_eq!(s.consumed, 2, "101 and 103 both applied: {s:?}");
+		assert_eq!(sim.test_last_input_tick(1), 103, "drain resumed: {s:?}");
+	}
+
+	/// The `last_input_tick != 0` guard. A fresh client's first input is
+	/// tick ~CLIENT_TICK_LEAD, so a drain that treated "tick 1 is missing"
+	/// as a hole would stall the full cap on every single join.
+	#[test]
+	fn the_first_input_is_never_held() {
+		let mut sim = flat_sim("first-input");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		sim.tick_once(vec![batch(vec![input(105, true, no_claim())], 1)]);
+
+		let s = sim.input_stats(1);
+		assert_eq!(s.held, 0, "no phantom hole below the first input: {s:?}");
+		assert_eq!(s.consumed, 1, "applied on the very next drain: {s:?}");
+	}
+
+	/// A hold must be a DELAY, not a step: the catch-up drain
+	/// (`consume = 2` above `JITTER_BUFFER_TICKS`) has to give back the
+	/// ticks the hold borrowed, or every hole would permanently deepen the
+	/// buffer and every later input would pay for it.
+	#[test]
+	fn a_hold_is_paid_back_by_the_catch_up_drain() {
+		use digblock_net::protocol::JITTER_BUFFER_TICKS;
+		let mut sim = flat_sim("hold-repaid");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// A steady one-per-tick stream with a single hole in the middle,
+		// delivered two ticks late.
+		let mut t = 100u32;
+		for _ in 0..10 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		let hole = t;
+		t += 1;
+		for _ in 0..3 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+		sim.tick_once(vec![batch(vec![input(hole, true, no_claim())], 1)]);
+		// Resume the steady stream; the catch-up has to work it off while
+		// inputs keep arriving, which is the case that matters.
+		for _ in 0..10 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+
+		let s = sim.input_stats(1);
+		assert_eq!(s.late_lost, 0, "the hole was recovered: {s:?}");
+		assert!(s.held > 0, "and recovered by holding: {s:?}");
+		// The borrowed ticks were given back, not banked. Without the
+		// catch-up the backlog would still be sitting at the hold's full
+		// depth — one in, one out forever — and every later input would pay
+		// that as standing latency. `JITTER_BUFFER_TICKS` is the level the
+		// catch-up trims to, so being at or under it is "level with the
+		// wire"; it is not zero, because a stride-2 sender always has a
+		// tick or so in hand.
+		let backlog = sim.test_input_backlog(1);
+		assert!(
+			backlog <= JITTER_BUFFER_TICKS as usize,
+			"drained back to the steady level: {backlog} queued, {s:?}"
+		);
+		assert!(
+			t - 1 - sim.test_last_input_tick(1) <= JITTER_BUFFER_TICKS,
+			"and level with the wire: at {}, wire at {}, {s:?}",
+			sim.test_last_input_tick(1),
+			t - 1
+		);
+	}
+
+	/// Freezing on an unloaded column must not BANK a buffer. Skipping the
+	/// drain entirely let inputs pile to `INPUT_BUF_CAP` and then
+	/// double-drain thirty stale ticks at 2x on unfreeze — a sprint,
+	/// replaying intent from before the teleport that caused the freeze.
+	#[test]
+	fn a_frozen_client_does_not_bank_a_buffer() {
+		let mut sim = flat_sim("frozen-nobank");
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+
+		// Somewhere the flat source has not been asked for yet.
+		let far = Vec3::new(6000.5, 129.5, 6000.5);
+		sim.test_teleport(1, far);
+		let mut t = 200u32;
+		for _ in 0..60 {
+			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			t += 1;
+		}
+
+		let s = sim.input_stats(1);
+		assert!(
+			s.frozen_dropped > 0,
+			"the freeze was real and the inputs were dropped, not banked: {s:?}"
+		);
+		assert!(
+			sim.test_input_backlog(1) <= 1,
+			"nothing banked: {} queued, {s:?}",
+			sim.test_input_backlog(1)
+		);
 	}
 
 	/// Depth is a tick SPAN, not `inputs.len()`. Loss punches holes in the

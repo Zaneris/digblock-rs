@@ -1,5 +1,100 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-09 — the server gets a jitter buffer (`INPUT_HOLD_MAX`)
+
+Acting on the measurement pass below. The drain now refuses to step past a
+**hole** in the input tick sequence for up to `INPUT_HOLD_MAX` ticks, so an
+input reordered by jitter is still admitted when it lands instead of arriving
+under the high-water mark and dying there. `EDIT_POS_TOLERANCE` and
+`dig_grace` are deliberately **not** made depth-aware — see the rule on
+`INPUT_HOLD_MAX` in `protocol.rs`.
+
+The bench grew a second link table for this, because the constants a hold
+spends are edit-path constants and the sweep only ever walked.
+
+### Before (`INPUT_HOLD_MAX = 0`) → after (`= 4`)
+
+| link | in-deliv | late/s | rtt mean | repl/s | corr mean | corr max | depth | orig max |
+|---|---|---|---|---|---|---|---|---|
+| lan | 100.0 → **100.0** | 0.0 → 0.0 | 26.0 → 26.0 | 0.00 → 0.00 | 0.000 → 0.000 | 0.00 → 0.00 | 1.5 → 1.5 | 0.000 → 0.000 |
+| wifi | 99.9 → **99.9** | 0.0 → 0.0 | 48.1 → 48.1 | 2.70 → 2.70 | 0.069 → 0.069 | 0.13 → 0.13 | 1.5 → 1.5 | 0.067 → 0.067 |
+| cellular | 98.9 → **99.8** | 0.6 → 0.0 | 142.1 → 142.8 | 3.85 → 3.85 | 0.078 → 0.078 | 0.20 → 0.20 | 1.7 → 1.8 | 0.266 → 0.267 |
+| bad-4g | 91.8 → **98.0** | 8.2 → 1.8 | 299.5 → 310.4 | 3.85 → 3.65 | 0.093 → 0.090 | 0.33 → 0.33 | 1.9 → 2.5 | 0.599 → **0.399** |
+| awful | 73.0 → **89.5** | 26.3 → 8.9 | 430.2 → 474.3 | 5.40 → 4.65 | 0.273 → 0.220 | 0.73 → **1.07** | 1.7 → 4.6 | 1.021 → **0.867** |
+
+**The lan and wifi rows are unchanged to the digit.** Not approximately —
+identically, every column. A link with no reordering has no holes, so the
+branch never fires. That is the whole cost argument: almost every player pays
+exactly nothing for this.
+
+**A hold does not spend `EDIT_POS_TOLERANCE` — it saves it.** This was the
+prediction the sweep refuted, and it is the most useful thing it found. The
+arithmetic said a deeper buffer must push the claimed edit origin further
+from the server's simulated position, at 0.067 blocks per tick of walk. The
+measurement says `orig max` *falls*: 0.60 → 0.40 at 300 ms, 1.02 → 0.87 at
+500 ms. The reason is that the alternative to holding is coasting on stale
+intent, and a coast diverges faster than a delay does. The tolerance headroom
+was never the binding constraint at this cap.
+
+**What it costs is latency, and only on links that already have some**:
++0.7 ms at 120 ms, +11 ms at 300 ms, +44 ms at 500 ms. Client prediction
+hides all of it for movement; it is visible only where the server's current
+position is compared against the client's, which is the `orig` column above —
+and that got better, not worse.
+
+### Honest debits
+
+`corr max` at 500 ms goes the wrong way: 0.73 → 1.07 blocks. It is one
+deterministic event (identical at caps 2, 4, 6 and 8), and it is the tail of
+the mechanism — when a hole never fills, the server coasts the full cap and
+then skips, which is a single larger divergence than skipping immediately.
+The body of the distribution improves: `corr mean` −19% and `repl/s` −14%, so
+total corrective motion falls from 1.47 to 1.02 blocks/s. Fewer, smaller
+corrections with one rarer, bigger one — worth it, but not the unambiguous
+win the acceptance criterion assumed.
+
+`dig ok/att` at 500 ms reads 7/8 → 6/8. **This column cannot rank the cap**:
+stone is 90 ticks, so a 20 s row gets 8 attempts and the sweep bounces around
+4–8 with no trend. `dig short` is zero on every row at every cap, so
+`dig_grace` is not what is failing — the abandonments are
+`DIG_OFF_TARGET_RESET`, the server's `look` lagging far enough at 500 ms that
+a hold exceeds 30 consecutive off-target ticks. That is the known
+aim-has-no-adoption-envelope problem, not a regression from this change, but
+a longer-window dig measurement would be needed to say whether a hold makes
+it meaningfully worse.
+
+### The sweep the cap was chosen from
+
+`in-deliv` by cap:
+
+| cap | 0 | 2 | 4 | 6 | 8 | 12 |
+|---|---|---|---|---|---|---|
+| cellular | 98.9 | 99.8 | 99.8 | 99.8 | 99.8 | 99.8 |
+| bad-4g | 91.8 | 96.5 | **98.0** | 98.2 | 98.2 | 98.2 |
+| awful | 73.0 | 82.5 | **89.5** | 93.0 | 94.3 | 93.7 |
+
+and what the higher caps cost, on the `awful` row:
+
+| cap | 0 | 2 | 4 | 6 | 8 | 12 |
+|---|---|---|---|---|---|---|
+| rtt mean | 430 | 455 | 474 | 484 | 487 | 488 |
+| repl/s | 5.40 | 4.45 | **4.65** | 5.10 | 5.95 | 6.25 |
+| orig max | 1.021 | 0.799 | **0.867** | 1.132 | 1.328 | 1.787 |
+| tol-rej/s | 0 | 0 | 0 | 0 | 0 | **0.05** |
+
+4 is the knee. bad-4g is done there — 6 and 8 add two tenths of a point
+between them. awful keeps improving to 8, but buys it with a replay rate that
+climbs back *above* the no-hold baseline, which is the symptom the change
+exists to remove. And 12 is where the arithmetic finally bites: `orig max`
+1.79 exceeds the 1.5 tolerance and honest edits start bouncing — the only
+non-zero `tol-rej/s` anywhere in the sweep. The bench catches the failure mode
+before a player would.
+
+Both halves stay deterministic: the link and edit tables are bit-identical
+run to run. The capacity table is wall-clock and is not — `tick us` swings
+~30% with machine load — but a held tick does strictly less work than a
+consumed one, so the capacity conclusion below is untouched.
+
 ## 2026-08-09 — netcode measurement pass (`just bench-net`)
 
 **This supersedes the baseline below it**, which was partly measuring the
