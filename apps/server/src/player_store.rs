@@ -5,10 +5,18 @@
 //! smaller file.
 //!
 //! Records are tiny, so the format is a whole-file snapshot rewritten
-//! atomically (tmp + fsync + rename) at most once per [`FLUSH_INTERVAL`],
-//! plus a synchronous [`PlayerStore::sync`] on disconnect and shutdown. A
-//! hard crash loses at most the last interval of changes — deliberate:
+//! atomically (tmp + fsync + rename) at most once per [`FLUSH_INTERVAL`].
+//! A hard crash loses at most the last interval of changes — deliberate:
 //! blocks themselves are journaled, counts are low-stakes.
+//!
+//! The rewrite happens on a dedicated writer thread ([`StoreWriter`]).
+//! Encoding stays on the caller's thread — it needs the live map — but the
+//! fsync does not, and that is the expensive half: 1-10 ms on local SSD,
+//! 20-100 ms on a container or network volume, which on the sim thread is
+//! several dropped 60 Hz ticks every interval. Disconnects go through
+//! [`PlayerStore::sync_soon`], which coalesces onto the same cadence
+//! instead of forcing a write each; only shutdown
+//! ([`PlayerStore::sync`]) waits for the writer.
 //!
 //! Unlike the journal, a store that cannot write does NOT refuse edits:
 //! the world stays consistent either way, only persistence degrades. It
@@ -28,6 +36,8 @@ use digblock_core::inventory::Inventory;
 use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
@@ -94,7 +104,6 @@ pub struct PlayerRecord {
 }
 
 pub struct PlayerStore {
-	path: PathBuf,
 	map: FxHashMap<IdentityHash, PlayerRecord>,
 	/// LRU stamp per key, from `clock`. Eviction scans for the minimum,
 	/// which is O(n) but only runs when the store is at `MAX_IDENTITIES` —
@@ -104,7 +113,7 @@ pub struct PlayerStore {
 	clock: u64,
 	dirty: bool,
 	last_flush: Instant,
-	write_failed_logged: bool,
+	writer: StoreWriter,
 }
 
 impl PlayerStore {
@@ -116,13 +125,12 @@ impl PlayerStore {
 		std::fs::create_dir_all(dir)?;
 		let path = dir.join("inventories.bin");
 		let mut store = Self {
-			path: path.clone(),
 			map: FxHashMap::default(),
 			used: FxHashMap::default(),
 			clock: 0,
 			dirty: false,
 			last_flush: Instant::now(),
-			write_failed_logged: false,
+			writer: StoreWriter::new(path.clone()),
 		};
 		let bytes = match std::fs::read(&path) {
 			Ok(b) => b,
@@ -186,6 +194,11 @@ impl PlayerStore {
 
 	/// Called once per sim tick: flush if dirty and the interval passed.
 	pub fn maintain(&mut self) {
+		// A failed background write leaves the file behind the memory it
+		// was meant to capture, so re-arm and try again next interval.
+		if self.writer.write_failed() {
+			self.dirty = true;
+		}
 		if self.dirty && self.last_flush.elapsed() >= FLUSH_INTERVAL {
 			self.flush();
 		}
@@ -205,35 +218,30 @@ impl PlayerStore {
 		self.maintain();
 	}
 
-	/// Unconditional synchronous flush. Shutdown only — see `sync_soon` for
-	/// the per-disconnect path.
+	/// Unconditional flush, then WAIT for it to reach disk. Shutdown only —
+	/// see `sync_soon` for the per-disconnect path, which is the one that
+	/// must not block the sim thread.
 	pub fn sync(&mut self) {
 		if self.dirty {
 			self.flush();
 		}
+		self.writer.shutdown();
 	}
 
+	/// Hand a fresh snapshot to the writer thread. Returns immediately —
+	/// the sim thread never touches the filesystem.
 	fn flush(&mut self) {
 		self.last_flush = Instant::now();
-		match self.write_snapshot() {
-			Ok(()) => {
-				self.dirty = false;
-				self.write_failed_logged = false;
-			}
-			Err(e) => {
-				// Degrade, don't refuse: the world is journaled elsewhere;
-				// keep serving from memory and retry next interval. Log
-				// once per failure streak.
-				if !self.write_failed_logged {
-					log::error!("player store write failed (serving from memory): {e}");
-					self.write_failed_logged = true;
-				}
-			}
-		}
+		let buf = self.encode_snapshot();
+		self.writer.submit(buf);
+		self.dirty = false;
 	}
 
-	fn write_snapshot(&self) -> io::Result<()> {
-		let mut buf = Vec::with_capacity(HEADER_LEN + self.map.len() * 128);
+	/// Encode into a buffer borrowed from the writer's free list.
+	fn encode_snapshot(&mut self) -> Vec<u8> {
+		let mut buf = self.writer.take_buffer();
+		buf.clear();
+		buf.reserve(HEADER_LEN + self.map.len() * 128);
 		buf.extend_from_slice(&MAGIC);
 		buf.extend_from_slice(&VERSION.to_le_bytes());
 		buf.extend_from_slice(&[0, 0]);
@@ -242,11 +250,14 @@ impl PlayerStore {
 		// file order alone (see `open`).
 		let mut keys: Vec<&IdentityHash> = self.map.keys().collect();
 		keys.sort_unstable_by_key(|k| self.used.get(*k).copied().unwrap_or(0));
+		// One scratch buffer for every record, not one Vec each: this loop
+		// runs over the whole store on every flush.
+		let mut pairs: Vec<(u16, u32)> = Vec::new();
 		for hash in keys {
 			let Some(rec) = self.map.get(hash) else {
 				continue;
 			};
-			let pairs = rec.inventory.to_wire();
+			rec.inventory.write_wire(&mut pairs);
 			buf.extend_from_slice(hash);
 			buf.push(pairs.len().min(u8::MAX as usize) as u8);
 			for (block, count) in pairs.iter().take(u8::MAX as usize) {
@@ -281,13 +292,120 @@ impl PlayerStore {
 				}
 			}
 		}
-		let tmp = self.path.with_extension("bin.tmp");
-		{
-			let mut f = std::fs::File::create(&tmp)?;
-			f.write_all(&buf)?;
-			f.sync_all()?;
+		buf
+	}
+}
+
+/// Atomic whole-file replace: tmp + fsync + rename.
+fn write_atomic(path: &Path, buf: &[u8]) -> io::Result<()> {
+	let tmp = path.with_extension("bin.tmp");
+	{
+		let mut f = std::fs::File::create(&tmp)?;
+		f.write_all(buf)?;
+		f.sync_all()?;
+	}
+	std::fs::rename(&tmp, path)
+}
+
+/// The background writer: owns the fsync, so the sim thread does not.
+///
+/// A flush rebuilds the WHOLE file (records are tiny; the format is a
+/// snapshot) and fsyncs it. That is 1-10 ms on local SSD and 20-100 ms on
+/// a container or network volume — 1-6 dropped sim ticks every
+/// `FLUSH_INTERVAL`, taken straight out of the 60 Hz budget. Encoding
+/// stays on the sim thread (it needs the live map); only the I/O moves.
+///
+/// Submissions COALESCE: the channel holds one buffer, and a newer
+/// snapshot replaces an unstarted older one. Falling behind therefore
+/// costs staleness, never unbounded queueing — and the newest state always
+/// wins, which is the only thing the format can express anyway.
+struct StoreWriter {
+	tx: Option<crossbeam_channel::Sender<Vec<u8>>>,
+	/// Buffers handed back by the writer, to be filled again.
+	spare: crossbeam_channel::Receiver<Vec<u8>>,
+	/// Set by the writer when a write fails, cleared when one succeeds.
+	/// The sim thread reads it to know the snapshot on disk is stale and
+	/// re-arms `dirty` for another attempt.
+	failed: Arc<AtomicBool>,
+	handle: Option<std::thread::JoinHandle<()>>,
+	path: PathBuf,
+}
+
+impl StoreWriter {
+	fn new(path: PathBuf) -> Self {
+		// Depth 1: one write in flight, one queued behind it.
+		let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(1);
+		let (spare_tx, spare) = crossbeam_channel::bounded::<Vec<u8>>(2);
+		let failed = Arc::new(AtomicBool::new(false));
+		let (wpath, wfailed) = (path.clone(), failed.clone());
+		let handle = std::thread::Builder::new()
+			.name("player-store".into())
+			.spawn(move || {
+				let mut logged = false;
+				while let Ok(buf) = rx.recv() {
+					match write_atomic(&wpath, &buf) {
+						Ok(()) => {
+							wfailed.store(false, Ordering::Relaxed);
+							logged = false;
+						}
+						Err(e) => {
+							// Degrade, don't refuse: the world is journaled
+							// elsewhere, so keep serving from memory and let
+							// the sim re-arm a retry. Log once per streak.
+							wfailed.store(true, Ordering::Relaxed);
+							if !logged {
+								log::error!("player store write failed (serving from memory): {e}");
+								logged = true;
+							}
+						}
+					}
+					let _ = spare_tx.try_send(buf);
+				}
+			})
+			.expect("spawn player-store writer");
+		Self {
+			tx: Some(tx),
+			spare,
+			failed,
+			handle: Some(handle),
+			path,
 		}
-		std::fs::rename(&tmp, &self.path)
+	}
+
+	fn take_buffer(&self) -> Vec<u8> {
+		self.spare.try_recv().unwrap_or_default()
+	}
+
+	fn submit(&self, buf: Vec<u8>) {
+		let Some(tx) = &self.tx else {
+			// Shut down: write inline so a post-shutdown flush is not lost.
+			let _ = write_atomic(&self.path, &buf);
+			return;
+		};
+		if let Err(crossbeam_channel::TrySendError::Full(buf)) = tx.try_send(buf) {
+			// Replace the queued-but-unstarted snapshot with this newer one.
+			let _ = self.spare.try_recv();
+			let _ = tx.try_send(buf);
+		}
+	}
+
+	fn write_failed(&self) -> bool {
+		self.failed.load(Ordering::Relaxed)
+	}
+
+	/// Drop the sender and join, so a queued write finishes before the
+	/// process exits.
+	fn shutdown(&mut self) {
+		self.tx = None;
+		if let Some(h) = self.handle.take() {
+			let _ = h.join();
+		}
+	}
+}
+
+impl Drop for StoreWriter {
+	fn drop(&mut self) {
+		self.shutdown();
 	}
 }
 
@@ -456,6 +574,45 @@ mod tests {
 			7,
 			"the identity that kept being touched survived the churn"
 		);
+	}
+
+	/// The interval flush hands off to the writer thread and returns; the
+	/// bytes land on disk without the caller ever touching the filesystem.
+	/// That is the whole point — a whole-file fsync is milliseconds, and
+	/// this used to happen inside `tick_once`.
+	#[test]
+	fn the_interval_flush_persists_without_blocking_the_caller() {
+		let dir = temp_dir("asyncwrite");
+		let id = hash_identity(&[1; 16]);
+		let path = dir.join("inventories.bin");
+		{
+			let mut s = PlayerStore::open(&dir).unwrap();
+			let mut inv = Inventory::default();
+			inv.add(BlockType::Dirt, 7);
+			s.put(
+				id,
+				PlayerRecord {
+					inventory: inv,
+					layout: None,
+					pos: None,
+					last_return_tick: None,
+				},
+			);
+			// Age the flush clock so `maintain` fires this tick.
+			s.last_flush = Instant::now() - FLUSH_INTERVAL;
+			s.maintain();
+			assert!(!s.dirty, "the snapshot was handed to the writer");
+
+			// The write is on another thread — it appears shortly after.
+			let deadline = Instant::now() + Duration::from_secs(10);
+			while !path.exists() {
+				assert!(Instant::now() < deadline, "the writer never wrote");
+				std::thread::sleep(Duration::from_millis(5));
+			}
+		} // drop joins the writer
+
+		let reopened = PlayerStore::open(&dir).unwrap();
+		assert_eq!(reopened.get(&id).inventory.count(BlockType::Dirt), 7);
 	}
 
 	/// File order is the LRU ranking, so a restart resumes it instead of

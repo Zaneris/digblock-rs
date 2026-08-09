@@ -245,7 +245,50 @@ encoding change, and needs no protocol change at all. Left alone here
 because it changes what players can SEE, which is a design call rather than
 an optimization.
 
-### 2.2 No post-handshake liveness deadline on the client
+### 2.2 Join-sync pacing and the PlayerStore fsync — DONE
+
+Both landed after this document was written; recorded because the shapes
+are load-bearing.
+
+**Join sync is queued, not sent.** `handle_hello` used to encode every
+in-range edited column and push it in ONE tick — thousands of frames and
+megabytes inside a 16.7 ms budget on a mature world, a hitch for everyone
+else on the server every time anyone joined, and past `OUT_CAP` a race the
+joiner simply lost (it was dropped for "overflowing the outbound queue"
+through no fault of its own). Columns now go into a per-client queue that
+`pump_join_sync` drains a few per tick, and only into outbound slots that
+live traffic is not going to need. That reserve is what makes the cliff
+structurally impossible rather than merely unlikely. `JournalDone` moved
+ahead of the columns — the client ignores the message, and nothing after
+it depends on them — so the handshake completes immediately and terrain
+fills in over the next few ticks.
+
+**The scan is region-indexed.** `JournalIndex::columns_near` walks only the
+regions a disc can touch. The old `edited_columns` walk ran per client
+every time their center column moved — every 16 blocks — and grew for the
+life of the world while every other cost around it was O(active). It
+returns a superset (whole regions); callers still apply the radius test,
+and `columns_near_never_misses_what_a_full_scan_finds` pins that it can
+never return LESS than a brute-force filter.
+
+**Decoding is budgeted client-side too.** `NetClient::poll` used to decode
+the entire arrived backlog in one call. A `JournalColumn` expands to one
+event PER CELL, so a few hundred columns is six figures of events
+materialised in a single rAF callback on wasm — the reason the budget is
+in events, not frames, and why it matches the engine's own per-frame apply
+budget so the backlog cannot outrun its drain.
+
+**The PlayerStore fsync moved off the sim thread.** A flush rebuilds the
+whole file and fsyncs it: 1-10 ms local, 20-100 ms on a container volume,
+i.e. several dropped ticks every interval. Encoding stays on the sim
+thread (it needs the live map); the write does not. Submissions coalesce
+— one buffer in flight, a newer snapshot replaces an unstarted older one —
+so falling behind costs staleness, never unbounded queueing, and the
+newest state wins, which is the only thing a whole-file snapshot can
+express anyway. A failed write re-arms `dirty` through a shared flag so
+the next interval retries.
+
+### 2.3 No post-handshake liveness deadline on the client
 
 `crates/digblock-net/src/client.rs:259-262` — `check_deadlines` returns
 immediately once `ready()`. A server whose transport stays open but stops
@@ -265,7 +308,7 @@ disconnect path at all**. `tests/loopback.rs` covers only the pre-Welcome
 `handshake_timeout_disconnects`. Worth fixing before the two above, since it
 is what would test them.
 
-### 2.3 Client-direction `MAX_FRAME` is sized for the server's journal batches
+### 2.4 Client-direction `MAX_FRAME` is sized for the server's journal batches
 
 `protocol.rs:242` — 1 MB in both directions. The largest legitimate
 `ClientMsg` is a few hundred bytes, but a client can send 1 MB `Layout` frames
@@ -274,7 +317,7 @@ that are queued raw into `Sim::action_queue` before sanitization. `MSG_BUDGET`
 low priority — but a separate, much smaller client-direction cap is the
 missing guard.
 
-### 2.4 Contract drift in the three-way mirror
+### 2.5 Contract drift in the three-way mirror
 
 CLAUDE.md requires `Contracts.cs`, `master.rs` and `services.rs` to move
 together. Three disagreements, none urgent:
@@ -297,7 +340,7 @@ spaces. The 3-10 ASCII rule is enforced in exactly one place, with no defence
 in depth on the side that consumes it. That matters more than it looks,
 because 1.1 makes the name an authorization input.
 
-### 2.5 Minor, noted but not scheduled
+### 2.6 Minor, noted but not scheduled
 
 - **Command-vs-chat is decided on unsanitized text and executed on sanitized
   text** (`sim/mod.rs:515` vs `:530`). `U+200B` is not `White_Space` and not in

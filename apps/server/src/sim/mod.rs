@@ -130,6 +130,12 @@ struct Client {
 	chat_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
+	/// Journal columns owed to this client, drained a few per tick by
+	/// `pump_join_sync`. A join enqueues its whole in-range set here rather
+	/// than encoding it inline; `sync_queue_set` is the membership test that
+	/// keeps a re-scan from queueing the same column twice.
+	sync_queue: std::collections::VecDeque<(i32, i32)>,
+	sync_queue_set: FxHashSet<(i32, i32)>,
 	/// Run the full edited-column sync scan for this client next tick.
 	/// Set on center change and on going live; steady state does ZERO
 	/// journal scans (fresh columns arrive via the first-edit broadcast).
@@ -934,18 +940,31 @@ impl Sim {
 			},
 		);
 
-		// Join sync: final cell state for every edited column in range.
+		// Join sync: final cell state for every edited column in range,
+		// QUEUED rather than sent. Encoding them all here meant thousands
+		// of frames and megabytes inside one 16.7 ms tick on a mature world
+		// — a hitch for everyone else on the server, every time anyone
+		// joined — and past OUT_CAP the joiner simply lost the race and got
+		// dropped. `pump_join_sync` drains the queue a few per tick against
+		// the room the outbound queue actually has.
+		//
+		// Region-indexed, so this is O(columns near the spawn) rather than
+		// O(every edited column in the world); the radius test still does
+		// the real filtering.
 		let center = column_of(spawn);
-		let mut synced = FxHashSet::default();
-		let columns: Vec<(i32, i32)> = self.journal.index.edited_columns().collect();
-		let mut synced_count = 0usize;
-		for (cx, cz) in columns {
-			if ok && in_radius((cx, cz), center, draw_dist) {
-				ok &= self.send_journal_column(&out, cx, cz);
-				synced.insert((cx, cz));
-				synced_count += 1;
+		let mut sync_queue: std::collections::VecDeque<(i32, i32)> =
+			std::collections::VecDeque::new();
+		for col in self.journal.index.columns_near(center, draw_dist) {
+			if in_radius(col, center, draw_dist) {
+				sync_queue.push_back(col);
 			}
 		}
+		let sync_queue_set: FxHashSet<(i32, i32)> = sync_queue.iter().copied().collect();
+		let queued = sync_queue.len();
+		// `JournalDone` carries no ordering obligation the client acts on
+		// (it ignores the message), and the inventory and layout below do
+		// not depend on the columns — so the handshake completes now and
+		// the terrain fills in over the next few ticks.
 		ok &= send_frame(
 			&out,
 			&ServerMsg::JournalDone {
@@ -970,14 +989,17 @@ impl Sim {
 			},
 		);
 		if !ok {
-			// A joiner that can't even drain its join sync is not viable.
-			// OUT_CAP should comfortably fit any real world's column count
-			// (journal compaction keeps this rare) — log enough to tell.
+			// The handshake itself no longer competes with the column
+			// stream for queue space, so this is now a genuinely broken
+			// peer rather than a big world.
 			log::warn!(
-				"conn {conn_id}: join sync overflowed the outbound queue \
-				 ({synced_count} columns, cap {OUT_CAP}) — dropping"
+				"conn {conn_id}: handshake overflowed the outbound queue \
+				 (cap {OUT_CAP}) — dropping"
 			);
 			return;
+		}
+		if queued > 0 {
+			log::debug!("conn {conn_id}: {queued} journal columns queued for sync");
 		}
 
 		// Roster for the joiner (who's already online), then the join
@@ -1026,7 +1048,9 @@ impl Sim {
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
 				draw_dist,
-				synced_columns: synced,
+				synced_columns: FxHashSet::default(),
+				sync_queue,
+				sync_queue_set,
 				needs_sync_scan: false,
 				live: false,
 				center,

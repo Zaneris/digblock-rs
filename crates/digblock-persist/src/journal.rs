@@ -125,9 +125,41 @@ impl JournalIndex {
 		self.columns.values().map(|c| c.len() as u64).sum()
 	}
 
-	/// Columns that have at least one edit.
+	/// Columns that have at least one edit. O(the whole world's edited
+	/// columns) — prefer [`Self::columns_near`] for anything that runs per
+	/// client or per tick.
 	pub fn edited_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
 		self.columns.keys().copied()
+	}
+
+	/// Edited columns in the REGIONS that a disc of `radius` columns about
+	/// `center` can touch. A superset of the columns actually in range —
+	/// the caller still tests each one — but it walks only the regions that
+	/// could matter rather than every edited column in the world.
+	///
+	/// This is what keeps residency sync O(active) instead of O(world age).
+	/// The late-sync scan runs per client every time their center column
+	/// moves, i.e. every 16 blocks walked; against `edited_columns` that
+	/// was a full hash-map walk each time — 50 k columns × 255 players ×
+	/// ~64 crossings/s is millions of key visits a second, and it grows for
+	/// the life of the world while everything around it is bounded.
+	pub fn columns_near(
+		&self,
+		center: (i32, i32),
+		radius: i32,
+	) -> impl Iterator<Item = (i32, i32)> + '_ {
+		let (r0x, r1x) = (
+			(center.0 - radius).div_euclid(REGION_COLS),
+			(center.0 + radius).div_euclid(REGION_COLS),
+		);
+		let (r0z, r1z) = (
+			(center.1 - radius).div_euclid(REGION_COLS),
+			(center.1 + radius).div_euclid(REGION_COLS),
+		);
+		(r0x..=r1x)
+			.flat_map(move |rx| (r0z..=r1z).map(move |rz| (rx, rz)))
+			.filter_map(|r| self.regions.get(&r))
+			.flat_map(|cols| cols.iter().copied())
 	}
 
 	/// Every edit as `((x, y, z), cell)`, in arbitrary order.
@@ -1225,6 +1257,50 @@ mod tests {
 			.collect();
 		names.sort();
 		names
+	}
+
+	/// `columns_near` is an optimization, so its only contract is that it
+	/// never MISSES a column a brute-force filter would find. It is allowed
+	/// to return extras (whole regions, not discs) — callers re-test.
+	///
+	/// Checked against `edited_columns` over a spread wide enough to cross
+	/// several regions in both directions, including negative coordinates,
+	/// where `div_euclid` and a plain `/` disagree.
+	#[test]
+	fn columns_near_never_misses_what_a_full_scan_finds() {
+		let mut index = JournalIndex::default();
+		// One edit per column over a 96×96-column span straddling 0, i.e.
+		// 36 regions at REGION_COLS = 16.
+		for cx in -48..48 {
+			for cz in -48..48 {
+				index.record(edit(cx * 16, 130, cz * 16, 1));
+			}
+		}
+		for center in [(0, 0), (-33, 17), (40, -40), (-1, -1), (7, 100)] {
+			for radius in [0, 1, 4, 20, 47] {
+				let want: FxHashSet<(i32, i32)> = index
+					.edited_columns()
+					.filter(|&c| {
+						let (dx, dz) = (c.0 - center.0, c.1 - center.1);
+						dx * dx + dz * dz <= radius * radius
+					})
+					.collect();
+				let got: FxHashSet<(i32, i32)> = index.columns_near(center, radius).collect();
+				assert!(
+					want.is_subset(&got),
+					"center {center:?} r{radius}: missed {:?}",
+					want.difference(&got).collect::<Vec<_>>()
+				);
+				// And it is a real narrowing, not just `edited_columns` in
+				// disguise — otherwise the whole point is lost.
+				if radius <= 4 {
+					assert!(
+						got.len() < index.edited_columns().count(),
+						"center {center:?} r{radius}: walked the whole world"
+					);
+				}
+			}
+		}
 	}
 
 	#[test]

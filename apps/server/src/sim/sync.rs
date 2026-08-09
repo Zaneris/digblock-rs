@@ -13,6 +13,15 @@ use tokio::sync::mpsc::error::TrySendError;
 /// so re-entry re-syncs (clients evict remote chunks too).
 const SYNC_SLACK: i32 = 2;
 
+/// Journal columns handed to one client per tick. At 60 Hz this drains a
+/// 1 000-column join in under a second while costing a fraction of a
+/// millisecond per tick.
+const JOIN_SYNC_PER_TICK: usize = 16;
+/// Outbound slots kept free for live traffic while a sync drains, so a
+/// joining client's backlog can never starve edits, chat or teleports —
+/// nor trip the queue-refused drop that `send_frame` reports.
+const JOIN_SYNC_RESERVE: usize = 64;
+
 /// Neighbor journal-water rescans processed per tick (each is O(that
 /// column's journaled cells)) — an initial radius-6 load can't hitch the
 /// sim thread.
@@ -95,25 +104,64 @@ impl Sim {
 			client
 				.synced_columns
 				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
-			for (cx, cz) in journal.index.edited_columns() {
-				if client.dead.get() {
-					break;
-				}
-				if in_radius((cx, cz), client.center, client.draw_dist)
-					&& !client.synced_columns.contains(&(cx, cz))
+			// Region-indexed, not a walk of every edited column in the
+			// world: this fires per client every time their center moves —
+			// every 16 blocks walked — and `edited_columns` grows for the
+			// life of the world while everything around it stays O(active).
+			// The result is a superset (whole regions), so the radius test
+			// below still does the real filtering.
+			for col in journal.index.columns_near(client.center, client.draw_dist) {
+				if in_radius(col, client.center, client.draw_dist)
+					&& !client.synced_columns.contains(&col)
+					&& !client.sync_queue_set.contains(&col)
 				{
-					if !send_journal_column_to(journal, &client.out, cx, cz) {
-						client.dead.set(true);
-						break;
-					}
-					client.synced_columns.insert((cx, cz));
+					client.sync_queue.push_back(col);
+					client.sync_queue_set.insert(col);
 				}
 			}
 		}
+		self.pump_join_sync();
 	}
 
-	pub(super) fn send_journal_column(&self, out: &OutTx, cx: i32, cz: i32) -> bool {
-		send_journal_column_to(&self.journal, out, cx, cz)
+	/// Hand each client a few queued journal columns per tick, never more
+	/// than its outbound queue can take.
+	///
+	/// Join sync used to run entirely inside `handle_hello`: every in-range
+	/// edited column encoded and pushed in ONE tick. On a mature world that
+	/// is thousands of frames and megabytes inside a 16.7 ms budget — a
+	/// hitch for every other player on the server, on every join — and past
+	/// `OUT_CAP` it was a race the joiner lost outright, dropped for
+	/// "overflowing the outbound queue" through no fault of its own.
+	///
+	/// Reserving capacity is what makes the cliff structurally impossible:
+	/// sync only ever uses slots live traffic is not going to need.
+	fn pump_join_sync(&mut self) {
+		let journal = &self.journal;
+		for client in self.clients.values_mut() {
+			if client.sync_queue.is_empty() || client.dead.get() {
+				continue;
+			}
+			let room = client
+				.out
+				.capacity()
+				.saturating_sub(JOIN_SYNC_RESERVE)
+				.min(JOIN_SYNC_PER_TICK);
+			for _ in 0..room {
+				let Some(col) = client.sync_queue.pop_front() else {
+					break;
+				};
+				client.sync_queue_set.remove(&col);
+				// It may have left range while it sat in the queue.
+				if !in_radius(col, client.center, client.draw_dist) {
+					continue;
+				}
+				if !send_journal_column_to(journal, &client.out, col.0, col.1) {
+					client.dead.set(true);
+					break;
+				}
+				client.synced_columns.insert(col);
+			}
+		}
 	}
 
 	pub(super) fn send_snapshots(&mut self) {

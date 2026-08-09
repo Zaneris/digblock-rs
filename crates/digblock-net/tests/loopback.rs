@@ -732,3 +732,81 @@ fn input_sends_are_throttled_to_the_stride() {
 		assert!(server.input_ticks.contains(&t), "missing tick {t}");
 	}
 }
+
+/// A join sync must not land in one frame. `JournalColumn` expands to one
+/// event PER CELL, so a few hundred columns is six figures of events —
+/// materialised into `out`, then into the engine's backlog, inside a
+/// single rAF callback on wasm. `poll` decodes to a budget and leaves the
+/// rest in the frame reader.
+#[test]
+fn a_large_journal_sync_is_spread_across_polls() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+
+	// 40 columns × 100 cells = 4000 edits, all arriving at once.
+	const COLS: i32 = 40;
+	const CELLS: i32 = 100;
+	for cx in 0..COLS {
+		server.send(&ServerMsg::JournalColumn {
+			cx,
+			cz: 0,
+			cells: (0..CELLS)
+				.map(|y| BlockEdit {
+					x: cx * 16,
+					y: 64 + y,
+					z: 0,
+					block: BlockType::Dirt as u16,
+				})
+				.collect(),
+		});
+	}
+
+	let mut polls = 0;
+	let mut edits = 0;
+	loop {
+		events.clear();
+		client.poll(&mut events, 0.016);
+		let n = events
+			.iter()
+			.filter(|e| matches!(e, NetEvent::Edit { .. }))
+			.count();
+		// The budget is per poll, and one column is decoded atomically, so
+		// a poll can overshoot by at most one column's worth.
+		assert!(
+			events.len() <= 256 + CELLS as usize,
+			"poll {polls} produced {} events — the budget is not bounding anything",
+			events.len()
+		);
+		edits += n;
+		polls += 1;
+		if n == 0 {
+			break;
+		}
+		assert!(polls < 200, "sync never drained");
+	}
+	assert_eq!(
+		edits,
+		(COLS * CELLS) as usize,
+		"every edit still arrived, just spread out"
+	);
+	assert!(
+		polls > 4,
+		"a 4000-edit sync landed in {polls} polls — it was not actually paced"
+	);
+}

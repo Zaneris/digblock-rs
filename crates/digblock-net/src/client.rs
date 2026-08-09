@@ -15,6 +15,18 @@ use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
 use glam::Vec3;
 
+/// Engine events one `poll` will produce before stopping and leaving the
+/// rest buffered for the next call.
+///
+/// A `JournalColumn` frame expands to one event PER CELL, so a budget in
+/// frames would not bound anything: a few hundred columns of join sync is
+/// six figures of events, materialised into `out` and then into the
+/// engine's backlog inside a single rAF callback on wasm — tens of
+/// megabytes of transient allocation and a visible stall. Matched to the
+/// engine's own per-frame apply budget so the backlog cannot outrun its
+/// drain either.
+const POLL_EVENT_BUDGET: usize = 256;
+
 pub struct NetClientConfig {
 	pub name: String,
 	pub draw_dist: i32,
@@ -217,6 +229,11 @@ impl NetClient {
 
 	/// Drain the transport and demux into engine-shaped events. `dt` is
 	/// the frame delta; it drives the connect/handshake deadlines.
+	///
+	/// Reliable bytes are always taken from the transport in full — leaving
+	/// them there just moves the queue — but DECODING them is budgeted (see
+	/// [`POLL_EVENT_BUDGET`]). Whatever does not fit stays in the frame
+	/// reader and is picked up next call.
 	pub fn poll(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
 		self.check_deadlines(out, dt);
 		let mut scratch = std::mem::take(&mut self.scratch);
@@ -226,33 +243,8 @@ impl NetClient {
 			match ev {
 				TransportEvent::Connected => self.send_hello(),
 				TransportEvent::Reliable(bytes) => {
-					let Some(bytes) = self.consume_preamble(bytes, out) else {
-						continue;
-					};
-					self.frames.extend(&bytes);
-					loop {
-						// Decode out of the borrowed frame and release it
-						// before dispatch: `on_server_msg` needs &mut self,
-						// and a join sync's thousands of frames must not
-						// each cost a Vec.
-						let msg = match self.frames.next_frame_ref() {
-							Ok(Some(frame)) => match codec::decode::<ServerMsg>(frame) {
-								Ok(msg) => msg,
-								Err(e) => {
-									log::warn!("bad server frame: {e}");
-									continue;
-								}
-							},
-							Ok(None) => break,
-							Err(e) => {
-								log::warn!("reliable stream corrupt: {e}");
-								out.push(NetEvent::Disconnected {
-									reason: format!("stream corrupt: {e}"),
-								});
-								break;
-							}
-						};
-						self.on_server_msg(msg, out);
+					if let Some(bytes) = self.consume_preamble(bytes, out) {
+						self.frames.extend(&bytes);
 					}
 				}
 				TransportEvent::Datagram(bytes) => match codec::decode_datagram(&bytes) {
@@ -266,6 +258,38 @@ impl NetClient {
 			}
 		}
 		self.scratch = scratch;
+		// Decode AFTER the event loop, once, so leftovers still drain on a
+		// poll that brought no new bytes.
+		self.drain_frames(out);
+	}
+
+	/// Decode buffered reliable frames into events, up to the budget.
+	fn drain_frames(&mut self, out: &mut Vec<NetEvent>) {
+		let limit = out.len() + POLL_EVENT_BUDGET;
+		while out.len() < limit {
+			// Decode out of the borrowed frame and release it before
+			// dispatch: `on_server_msg` needs &mut self, and a join sync's
+			// thousands of frames must not each cost a Vec.
+			let msg = match self.frames.next_frame_ref() {
+				Ok(Some(frame)) => match codec::decode::<ServerMsg>(frame) {
+					Ok(msg) => msg,
+					Err(e) => {
+						log::warn!("bad server frame: {e}");
+						continue;
+					}
+				},
+				Ok(None) => break,
+				Err(e) => {
+					log::warn!("reliable stream corrupt: {e}");
+					self.failed = true;
+					out.push(NetEvent::Disconnected {
+						reason: format!("stream corrupt: {e}"),
+					});
+					break;
+				}
+			};
+			self.on_server_msg(msg, out);
+		}
 	}
 
 	fn check_deadlines(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
