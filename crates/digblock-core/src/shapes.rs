@@ -240,6 +240,16 @@ pub struct ShapeVariant {
 	pub face_masks: [FaceMask; 6],
 	/// `face_masks[d].is_full()`, precomputed.
 	pub occludes_full: [bool; 6],
+	/// Union AABB of the DRAWN geometry, in twelfths — the box of best
+	/// fit around the shape. The crosshair outline wraps this instead of
+	/// the cell, so a slab or a door leaf is boxed at its own size; a
+	/// stair's is the full cube, because that already IS its best fit.
+	/// Taken from the authored boxes (which is exactly what the raster
+	/// fills, so no drawn quad can fall outside it) rather than from
+	/// `collision` — a closed door's knob protrudes past the leaf
+	/// physics uses, and an outline that cut through it would read as a
+	/// bug.
+	pub bounds: SubBox,
 	/// Stairs: the ascending facing — physics resolves a diagonal ramp
 	/// instead of the sub-boxes when approaching from the low side.
 	pub ramp: Option<Facing>,
@@ -301,6 +311,14 @@ pub fn collision_boxes(cell: u16) -> &'static [SubBox] {
 #[inline]
 pub fn interaction_boxes(cell: u16) -> &'static [SubBox] {
 	shape_of_cell(cell).map_or(&[], |v| &v.interaction)
+}
+
+/// Box of best fit around a cell's drawn geometry, in twelfths — `None`
+/// for a full cube, which needs no box because it IS the cell. See
+/// [`ShapeVariant::bounds`].
+#[inline]
+pub fn draw_bounds(cell: u16) -> Option<SubBox> {
+	shape_of_cell(cell).map(|v| v.bounds)
 }
 
 /// THE wire gate for cell values (relaxes the server's old all-state-
@@ -429,6 +447,7 @@ static SLABS: LazyLock<[ShapeVariant; 2]> = LazyLock::new(|| {
 			quads: baked.quads,
 			face_masks: baked.face_masks,
 			occludes_full: baked.occludes_full,
+			bounds: baked.bounds,
 			ramp: None,
 		}
 	})
@@ -444,6 +463,7 @@ static STAIRS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 			quads: baked.quads,
 			face_masks: baked.face_masks,
 			occludes_full: baked.occludes_full,
+			bounds: baked.bounds,
 			ramp: Some(f),
 		}
 	})
@@ -490,6 +510,7 @@ static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
 			quads: baked.quads,
 			face_masks: baked.face_masks,
 			occludes_full: baked.occludes_full,
+			bounds: baked.bounds,
 			ramp: None,
 		}
 	})
@@ -530,6 +551,26 @@ struct Baked {
 	quads: Vec<ShapeQuad>,
 	face_masks: [FaceMask; 6],
 	occludes_full: [bool; 6],
+	bounds: SubBox,
+}
+
+/// Union AABB of an authored box list, in twelfths. An empty list has no
+/// geometry to bound, so it reports the whole cell — nothing draws there
+/// anyway, and a zero-size box would be a degenerate outline.
+fn union_bounds(boxes: &[SubBox]) -> SubBox {
+	let mut min = [GRID; 3];
+	let mut max = [0u8; 3];
+	for b in boxes {
+		for i in 0..3 {
+			min[i] = min[i].min(b.min[i]);
+			max[i] = max[i].max(b.max[i]);
+		}
+	}
+	if boxes.is_empty() {
+		SubBox::new([0; 3], [GRID; 3])
+	} else {
+		SubBox::new(min, max)
+	}
 }
 
 #[inline]
@@ -686,6 +727,7 @@ fn bake(boxes: &[SubBox]) -> Baked {
 		quads,
 		face_masks,
 		occludes_full,
+		bounds: union_bounds(boxes),
 	}
 }
 
@@ -794,6 +836,74 @@ mod tests {
 			assert!(v.occludes_full[Dir::Bottom as usize]);
 			for d in [Dir::Top, Dir::West, Dir::East, Dir::North, Dir::South] {
 				assert!(!v.occludes_full[d as usize], "{d:?} partial or open");
+			}
+		}
+	}
+
+	/// The crosshair outline's box. Two properties, both load-bearing:
+	/// it never clips the drawn geometry (every authored box is inside
+	/// it), and it is TIGHT, so a slab and a door read as their own size
+	/// instead of as the cell they sit in. A stair is the deliberate
+	/// no-op — the full cube already is its box of best fit.
+	#[test]
+	fn draw_bounds_are_the_tight_box_around_the_drawn_geometry() {
+		use crate::chunk::make_cell;
+		let full = SubBox::new([0, 0, 0], [12, 12, 12]);
+		assert_eq!(
+			draw_bounds(BlockType::Stone as u16),
+			None,
+			"a full cube has no box to shrink to"
+		);
+		for f in Facing::ALL {
+			assert_eq!(
+				draw_bounds(make_cell(BlockType::StoneStairs, stair_state(f))),
+				Some(full),
+				"a stair fills its cell corner to corner"
+			);
+		}
+		// Slabs: bottom-anchored thirds, so only the top shrinks.
+		for (two_thirds, top) in [(false, 4u8), (true, 8)] {
+			assert_eq!(
+				draw_bounds(make_cell(BlockType::WoodSlab, slab_state(two_thirds))),
+				Some(SubBox::new([0, 0, 0], [12, top, 12]))
+			);
+		}
+		// A closed door is a plate: 4 twelfths deep on its facing axis
+		// (the leaf plus the knob protruding either side), full in the
+		// other two. Depth lands on x for a ±x facing, z for ±z.
+		for f in Facing::ALL {
+			for upper in [false, true] {
+				let b = draw_bounds(make_cell(BlockType::WoodDoor, door_state(f, false, upper)))
+					.unwrap();
+				let span = |i: usize| b.max[i] - b.min[i];
+				let (thin, wide) = match f {
+					Facing::PosX | Facing::NegX => (0, 2),
+					Facing::PosZ | Facing::NegZ => (2, 0),
+				};
+				assert!(span(thin) <= 4, "{f:?} upper={upper}: {b:?} is a plate");
+				assert_eq!(span(1), 12, "{f:?} upper={upper}: full height");
+				assert_eq!(span(wide), 12, "{f:?} upper={upper}: full width");
+			}
+		}
+		// Nothing drawn may fall outside the box, in any variant.
+		for (b, states) in [
+			(BlockType::StoneStairs, 4u8),
+			(BlockType::WoodDoor, 16),
+			(BlockType::WoodSlab, 2),
+		] {
+			for state in 0..states {
+				let v = shape_of(b, state).unwrap();
+				for q in &v.quads {
+					for c in q.corners {
+						for i in 0..3 {
+							assert!(
+								c[i] >= v.bounds.min[i] && c[i] <= v.bounds.max[i],
+								"{b:?} state {state}: quad corner {c:?} outside {:?}",
+								v.bounds
+							);
+						}
+					}
+				}
 			}
 		}
 	}

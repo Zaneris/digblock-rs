@@ -4,6 +4,14 @@
 // players.wgsl trick) inflated a hair past the block so it never
 // z-fights the face it decorates. Alpha-blended darkening decal — no
 // textures, no lighting.
+//
+// The box is the TARGET'S OWN bounds, not the unit cell: a shaped block
+// hands over `shapes::draw_bounds`, so a slab or a door outlines at its
+// own size. That is why the two scalar look constants below (inflation
+// and border width) are absolute world distances rather than fractions
+// of a face — a third-slab scaled the same way would wear a border a
+// third as thick, and a door leaf's would all but vanish. Both still
+// evaluate to exactly their old values on a full cube.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -45,18 +53,29 @@ const TANGENTS = array<vec3f, 6>(
 
 const TAU = 6.2831853;
 
+// Clearance past the decorated surface, in blocks — deterministic across
+// backends, unlike depth-bias units. (0.002 per side is what the old
+// unit-cube-scaled-by-1.004 came to.)
+const INFLATE = 0.002;
+// Border half-width ramp, in blocks, for the outline's dark edge.
+const EDGE0 = 0.015;
+const EDGE1 = 0.035;
+
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	// x = dig progress (0 = idle outline only), y = per-cell seed.
 	@location(1) @interpolate(flat) data: vec2f,
+	// This face's size in blocks, for world-space border and crack aspect.
+	@location(2) @interpolate(flat) size: vec2f,
 }
 
 @vertex
 fn vs(
 	@builtin(vertex_index) vi: u32,
 	@location(0) i0: vec4f, // cell min xyz, progress
-	@location(1) i1: vec4f, // seed, spare
+	@location(1) i1: vec4f, // box lo (block-local), seed
+	@location(2) i2: vec4f, // box hi (block-local), spare
 ) -> VsOut {
 	let face = vi / 6u;
 	let corner = vi % 6u;
@@ -64,14 +83,20 @@ fn vs(
 	let t = TANGENTS[face];
 	let b = cross(n, t);
 	let uv = QUAD[corner];
-	// Unit box around the cell center, inflated 0.4% — deterministic
-	// across backends, unlike depth-bias units.
-	let local = (n * 0.5 + (uv.x - 0.5) * t + (uv.y - 0.5) * b) * 1.004 + vec3f(0.5);
+	// The target's own box, inflated by an absolute margin on every side.
+	// n/t/b are axis-aligned units, so the componentwise half-extent
+	// products below pick out one axis each.
+	let lo = i1.xyz - INFLATE;
+	let hi = i2.xyz + INFLATE;
+	let center = (lo + hi) * 0.5;
+	let half = (hi - lo) * 0.5;
+	let local = center + half * (n + t * ((uv.x - 0.5) * 2.0) + b * ((uv.y - 0.5) * 2.0));
 	let world = i0.xyz + local;
 	var out: VsOut;
 	out.pos = frame.view_proj * vec4f(world, 1.0);
 	out.uv = uv;
 	out.data = vec2f(i0.w, i1.x);
+	out.size = vec2f(dot(abs(t), hi - lo), dot(abs(b), hi - lo));
 	return out;
 }
 
@@ -98,15 +123,22 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	let progress = in.data.x;
 	let seed = u32(in.data.y);
 	// Thin dark border along every face edge (both modes — the outline
-	// stays visible while digging).
-	let e = min(min(in.uv.x, 1.0 - in.uv.x), min(in.uv.y, 1.0 - in.uv.y));
-	var alpha = (1.0 - smoothstep(0.015, 0.035, e)) * 0.45;
+	// stays visible while digging). Distance to the nearest edge is
+	// measured in BLOCKS, so a slab's border matches a cube's.
+	let e = min(
+		min(in.uv.x, 1.0 - in.uv.x) * in.size.x,
+		min(in.uv.y, 1.0 - in.uv.y) * in.size.y,
+	);
+	var alpha = (1.0 - smoothstep(EDGE0, EDGE1, e)) * 0.45;
 
 	if progress > 0.0 {
 		// Radial crack web from the face center: hash-jittered spokes
 		// whose count, reach, and width all grow with progress. Purely
 		// procedural — a few short hairlines early, a dense web near 1.
-		let p = in.uv - vec2f(0.5);
+		// Aspect-corrected about the face's long axis, so the web stays
+		// round on an oblong face instead of squashing into it. Exactly
+		// (1, 1) on a square face — a full cube is bit-identical.
+		let p = (in.uv - vec2f(0.5)) * (in.size / max(in.size.x, in.size.y));
 		let r = max(length(p), 1e-4);
 		let ang = atan2(p.y, p.x);
 		let spokes = 3u + u32(progress * 6.0);
