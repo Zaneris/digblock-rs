@@ -216,7 +216,7 @@ mod tests {
 		// The last snapshot echoes our own claim at its acked tick.
 		let last = c.snaps.last().expect("snapshots flowed");
 		assert!(last.your_last_input_tick >= 100);
-		let echoed = Vec3::from_array(last.players[0].pos);
+		let echoed = Vec3::from_array(last.me.expect("own state in snapshot").pos);
 		assert_eq!(echoed, history[(last.your_last_input_tick - 100) as usize]);
 	}
 

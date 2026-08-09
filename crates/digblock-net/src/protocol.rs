@@ -48,12 +48,20 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// as `Teleported.look`, which carries it on return-to-spawn. A pure
 /// append, but the version still moves: a v13 client's decoder needs the
 /// field, so it cannot read a v12 server's Welcome.
-pub const PROTOCOL_VERSION: u16 = 13;
+/// v14: the snapshot split. `NetPlayerState` — one shape for you and for
+/// everyone else — became `SelfState` (full-precision pos/vel, no look, no
+/// id) plus `RemoteState` (f32 pos, i16 velocity in thousandths, u16 yaw,
+/// held). The old struct spent 12 bytes on a look vector whose pitch
+/// nothing has ever read and 12 more on a velocity that only drives a
+/// 250 ms-capped extrapolation: 40 wire bytes per player where 24 carries
+/// everything a client consumes. A break, not an append — `Snapshot`'s
+/// fields changed shape.
+pub const PROTOCOL_VERSION: u16 = 14;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 13;
+pub const MIN_PROTOCOL: u16 = 14;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -319,12 +327,24 @@ pub const INTERP_DELAY_TICKS: f64 = 6.0;
 pub const EXTRAP_CAP_TICKS: f64 = 15.0;
 
 /// Interest management: at most this many players per snapshot — self
-/// first (the reconciliation anchor), then nearest remotes by column
+/// (the reconciliation anchor) plus the nearest remotes by column
 /// distance. Sized so a full snapshot always fits one datagram.
-pub const MAX_SNAPSHOT_PLAYERS: usize = 24;
-// NetPlayerState is ≤40 wire bytes (id + 9×f32 + held varint ≤3); ≤13
-// bytes of snapshot overhead (variant, two varint ticks, vec length).
-const _: () = assert!(MAX_SNAPSHOT_PLAYERS * 40 + 13 <= MAX_DATAGRAM);
+///
+/// v14's narrower `RemoteState` bought the rise from 24: the same datagram
+/// now carries two thirds again as many players.
+///
+/// This must hold for the WORST-CASE encoding, not the typical one — an
+/// oversize snapshot does not truncate, it fails to encode, and that
+/// client gets no snapshot at all. (Exactly the cliff interest management
+/// was added to close.)
+pub const MAX_SNAPSHOT_PLAYERS: usize = 40;
+// RemoteState is ≤28 wire bytes: id 1 + 3×f32 (fixed 12) + 3×i16 and yaw
+// and held, all postcard VARINTS — which cost 3 bytes each at their
+// extremes, not 2. A typical entry is far smaller (a walking velocity is
+// 2 bytes a component), but the cap has to survive the extremes.
+// SelfState is 24 + 1 for its Option tag; snapshot overhead is ≤13
+// (datagram variant, two varint ticks, vec length).
+const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 28 + 13 <= MAX_DATAGRAM);
 
 /// A remote whose newest snapshot lags the estimated clock by this many
 /// ticks (2 s) left our interest radius — drop it client-side so it

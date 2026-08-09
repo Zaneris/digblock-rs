@@ -2562,7 +2562,7 @@ mod tests {
 			snaps
 				.iter()
 				.rev()
-				.find_map(|s| s.players.iter().find(|p| p.id == id).map(|p| p.held))
+				.find_map(|s| s.others.iter().find(|p| p.id == id).map(|p| p.held))
 		};
 		assert_eq!(
 			held_of(&c2.snaps, 0),

@@ -31,7 +31,7 @@ use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::protect::Region;
 use digblock_net::codec;
 use digblock_net::messages::{
-	ClientMsg, InputBatch, InputTick, NetPlayerState, RejectReason, ServerMsg,
+	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
 	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
@@ -229,9 +229,9 @@ pub struct Sim {
 	/// the postcard encode buffer. The pass runs 20×/s over every client,
 	/// so building these fresh was the sim thread's largest steady-state
 	/// allocation source.
-	snap_roster: Vec<(NetPlayerState, (i32, i32))>,
+	snap_roster: Vec<(RemoteState, SelfState, (i32, i32))>,
 	snap_nearby: Vec<(i64, usize)>,
-	snap_players: Vec<NetPlayerState>,
+	snap_players: Vec<RemoteState>,
 	snap_buf: Vec<u8>,
 	/// Persistent per-identity player records — inventory + item layout
 	/// (separate from the journal).

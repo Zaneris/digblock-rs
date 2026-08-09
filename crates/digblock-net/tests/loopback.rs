@@ -6,7 +6,7 @@ use digblock_core::player::{Player, PlayerIntent};
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::loopback::{loopback_pair, LoopbackEnd};
 use digblock_net::messages::{
-	BlockEdit, ClientMsg, Datagram, NetPlayerState, RejectReason, ServerMsg, Snapshot,
+	BlockEdit, ClientMsg, Datagram, RejectReason, RemoteState, SelfState, ServerMsg, Snapshot,
 };
 use digblock_net::protocol::{
 	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
@@ -240,22 +240,17 @@ fn full_frame_handshake_edits_snapshot() {
 	server.send_snapshot(Snapshot {
 		server_tick: 606,
 		your_last_input_tick: first,
-		players: vec![
-			NetPlayerState {
-				id: 1,
-				pos: me.pos.to_array(),
-				vel: me.vel.to_array(),
-				look: [0.0, 0.0, 1.0],
-				held: u16::MAX,
-			},
-			NetPlayerState {
-				id: 2,
-				pos: [10.0, 12.0, 10.0],
-				vel: [0.0, 0.0, 0.0],
-				look: [1.0, 0.0, 0.0],
-				held: BlockType::Dirt as u16,
-			},
-		],
+		me: Some(SelfState {
+			pos: me.pos.to_array(),
+			vel: me.vel.to_array(),
+		}),
+		others: vec![RemoteState {
+			id: 2,
+			pos: [10.0, 12.0, 10.0],
+			vel: [0, 0, 0],
+			yaw: digblock_net::messages::yaw_to_wire([1.0, 0.0, 0.0]),
+			held: BlockType::Dirt as u16,
+		}],
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);

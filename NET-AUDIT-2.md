@@ -189,40 +189,61 @@ opaque reason.
 
 ## 2. Deferred for other reasons
 
-### 2.1 Snapshot bandwidth quantization — needs a protocol bump
+### 2.1 Snapshot bandwidth quantization — DONE (protocol v14)
 
-`crates/digblock-net/src/messages.rs:42-52`
+Landed after this document was first written; kept here because the
+reasoning is the record of why the wire looks the way it does.
 
-`NetPlayerState` is exactly 40 wire bytes per player, of which ~16 are
-provably discarded:
+`NetPlayerState` was one shape serving two jobs, at 40 wire bytes per
+player. Of those, ~16 were provably discarded:
 
-- `look: [f32;3]` (12 B). The only consumer is `remote.rs:92` —
-  `look.x.atan2(look.z)`. **The pitch component is never read anywhere**, and
-  the local player's own entry discards `look` entirely
-  (`client.rs:477-484`). A `u16` yaw is 2 B → **−10 B/player**.
+- `look: [f32;3]` (12 B). The only consumer was `remote.rs` —
+  `look.x.atan2(look.z)`. **The pitch component was never read anywhere**,
+  and the local player's own entry discarded `look` entirely.
 - `vel: [f32;3]` (12 B), used only for extrapolation capped at
-  `EXTRAP_CAP_TICKS` (250 ms). `i16` at 1/1000 blocks/s over ±25 is 6 B →
-  **−6 B/player**.
+  `EXTRAP_CAP_TICKS` (250 ms).
 
-`pos` must stay `f32`: `POS_EPS2 = 1e-6` (`predict.rs:33`) means the echoed
-self position has to round-trip bit-comparably or every single snapshot takes
-the replay path. So this is a *split*, not a shrink — full-precision self
-entry, quantized remote entries.
+`pos` had to stay `f32`: `POS_EPS2 = 1e-6` (`predict.rs`) means the echoed
+self position must round-trip bit-comparably or every single snapshot takes
+the replay path. So the fix was a **split**, not a shrink —
+`SelfState` (full-precision pos/vel, no look, no id) beside `RemoteState`
+(f32 pos, `i16` velocity in thousandths, `u16` yaw, held).
 
-Measured: a 24-player snapshot is 970 B, against the `MAX_DATAGRAM` ceiling of
-1150. Quantized it is ~610 B. Per client 19.4 → 12.2 kB/s down; aggregate
-server upstream at 255 players **5.24 → 3.3 MB/s (−37%)**; and it lifts
-`MAX_SNAPSHOT_PLAYERS` from 24 to ~45 within the same datagram, which the
-`const_assert` at `protocol.rs:327` currently pins.
+Two things worth remembering:
 
-Deferred only because it breaks the wire. It should land as its own release
-with `PROTOCOL_VERSION` bumped, not folded into a perf pass.
+- **Yaw is interpolated in `u16` turn space, not in radians.**
+  `b.wrapping_sub(a) as i16` IS the signed shortest arc, wrap included. The
+  old code only avoided the long-way-round spin at the discontinuity
+  because it lerped the look VECTOR and renormalized; lerping decoded
+  radians instead would have introduced the bug.
+- **`MAX_SNAPSHOT_PLAYERS` is sized for the WORST-CASE encoding, not the
+  typical one.** postcard varints an `i16`/`u16` to 3 bytes at its
+  extremes, not 2 — the first cut of this assumed 2, and the cap it
+  produced was one an all-extremes snapshot would have overflowed. An
+  oversize snapshot does not truncate; it fails to encode and that client
+  gets nothing, which is the exact cliff interest management exists to
+  close. `a_full_snapshot_fits_one_datagram` now pins the encoder against
+  the arithmetic.
 
-**Larger lever in the same place, and cheaper:** the snapshot interest radius
-is `client.draw_dist` (`sync.rs:148`) = 20 columns = **320 blocks**, at which
-a player cube is sub-pixel. A dedicated, smaller player-interest radius — or a
-distance-tiered send rate — cuts typical P far more than any encoding change,
-and needs no protocol change at all. Worth doing first.
+Measured against reconstructed v13 shapes, a realistic walking crowd
+(4 blocks/s, ordinary held ids):
+
+| players | v13 | v14 | | @20 Hz |
+|---|---|---|---|---|
+| 2 | 84 B | 55 B | −35% | 1.7 → 1.1 kB/s |
+| 8 | 312 B | 187 B | −40% | 6.2 → 3.7 kB/s |
+| 16 | 616 B | 363 B | −41% | 12.3 → 7.3 kB/s |
+| 24 | 920 B | 539 B | −41% | 18.4 → 10.8 kB/s |
+
+`MAX_SNAPSHOT_PLAYERS` rose 24 → 40 inside the same datagram.
+
+**Still open, and the bigger lever:** the snapshot interest radius is
+`client.draw_dist` (`sync.rs`) = 20 columns = **320 blocks**, at which a
+player cube is sub-pixel. A dedicated, smaller player-interest radius — or
+a distance-tiered send rate — would cut typical P far more than any
+encoding change, and needs no protocol change at all. Left alone here
+because it changes what players can SEE, which is a design call rather than
+an optimization.
 
 ### 2.2 No post-handshake liveness deadline on the client
 

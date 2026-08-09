@@ -3,7 +3,9 @@
 use super::{column_of, in_radius, send_frame, OutMsg, OutTx, Sim, DGRAM_STALL_SECS};
 use crate::journal::Journal;
 use digblock_net::codec;
-use digblock_net::messages::{BlockEdit, Datagram, NetPlayerState, ServerMsg, Snapshot};
+use digblock_net::messages::{
+	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
+};
 use digblock_net::protocol::{MAX_SNAPSHOT_PLAYERS, TICK_RATE};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -126,17 +128,28 @@ impl Sim {
 		// a full sort: only the nearest `MAX_SNAPSHOT_PLAYERS - 1` matter,
 		// and sorting the whole candidate list per client made the pass
 		// O(n² log n) — ~10 M comparisons/s at 255 players to choose 23.
+		// The roster carries each player BOTH ways: as the remote everyone
+		// else sees (quantized once here, not per recipient) and as the
+		// full-precision self state its owner needs back.
 		let mut roster = std::mem::take(&mut self.snap_roster);
 		roster.clear();
 		roster.extend(self.clients.values().filter(|c| c.live).map(|c| {
 			let s = c.player.state();
 			(
-				NetPlayerState {
+				RemoteState {
 					id: c.id,
 					pos: s.pos.to_array(),
-					vel: s.vel.to_array(),
-					look: c.look.to_array(),
+					vel: [
+						vel_to_wire(s.vel.x),
+						vel_to_wire(s.vel.y),
+						vel_to_wire(s.vel.z),
+					],
+					yaw: yaw_to_wire(c.look.to_array()),
 					held: c.held_wire(),
+				},
+				SelfState {
+					pos: s.pos.to_array(),
+					vel: s.vel.to_array(),
 				},
 				c.center,
 			)
@@ -148,13 +161,13 @@ impl Sim {
 			if !client.live {
 				continue;
 			}
-			// Self first (the reconciliation anchor), then nearest remotes
-			// within the client's own draw distance.
+			// Self is its own field now (the reconciliation anchor, at full
+			// precision); the rest are nearest-first within draw distance.
 			nearby.clear();
 			let mut me = None;
-			for (i, (p, col)) in roster.iter().enumerate() {
+			for (i, (p, own, col)) in roster.iter().enumerate() {
 				if p.id == client.id {
-					me = Some(i);
+					me = Some(*own);
 				} else if in_radius(*col, client.center, client.draw_dist) {
 					let (dx, dz) = (
 						col.0 as i64 - client.center.0 as i64,
@@ -171,19 +184,19 @@ impl Sim {
 				nearby.truncate(take);
 			}
 			players.clear();
-			players.extend(me.map(|i| roster[i].0));
 			players.extend(nearby.iter().map(|&(_, i)| roster[i].0));
-			let selected = players.len();
+			let selected = players.len() + usize::from(me.is_some());
 			// Serializing needs the owned `Datagram`; unwrap it afterwards to
 			// take the Vec back, exactly as the client's `recycle_batch` does.
 			let dg = Datagram::Snapshot(Snapshot {
 				server_tick: self.tick,
 				your_last_input_tick: client.last_input_tick,
-				players: std::mem::take(&mut players),
+				me,
+				others: std::mem::take(&mut players),
 			});
 			let encoded = codec::encode_datagram_into(&dg, &mut dgram).map(<[u8]>::to_vec);
 			if let Datagram::Snapshot(s) = dg {
-				players = s.players;
+				players = s.others;
 			}
 			match encoded {
 				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
@@ -516,13 +529,15 @@ mod tests {
 				.last()
 				.unwrap_or_else(|| panic!("client {id} got no snapshots"));
 			assert!(
-				snap.players.len() <= MAX_SNAPSHOT_PLAYERS,
-				"client {id}: {} players in snapshot",
-				snap.players.len()
+				snap.others.len() < MAX_SNAPSHOT_PLAYERS,
+				"client {id}: {} remotes in snapshot",
+				snap.others.len()
 			);
-			// Self is always present, first (the reconciliation anchor).
+			// Own state always rides its own field (the reconciliation
+			// anchor), and never duplicates into the remote list.
 			let my_id = (*id - 1) as u8;
-			assert_eq!(snap.players.first().map(|p| p.id), Some(my_id));
+			assert!(snap.me.is_some(), "client {id} got no self state");
+			assert!(!snap.others.iter().any(|p| p.id == my_id));
 		}
 	}
 
@@ -540,7 +555,7 @@ mod tests {
 		}
 		a.drain();
 		assert!(
-			a.snaps.last().unwrap().players.iter().any(|p| p.id == 1),
+			a.snaps.last().unwrap().others.iter().any(|p| p.id == 1),
 			"near remote present"
 		);
 
@@ -563,15 +578,14 @@ mod tests {
 		b.drain();
 		let a_last = a.snaps.last().expect("A still snapshotted");
 		assert!(
-			!a_last.players.iter().any(|p| p.id == 1),
+			!a_last.others.iter().any(|p| p.id == 1),
 			"far remote filtered: {:?}",
-			a_last.players
+			a_last.others
 		);
 		let b_last = b.snaps.last().expect("B still snapshotted");
-		assert_eq!(
-			b_last.players.first().map(|p| p.id),
-			Some(1),
-			"B keeps its own state"
+		assert!(
+			b_last.me.is_some(),
+			"B keeps its own state even with nobody nearby"
 		);
 	}
 }

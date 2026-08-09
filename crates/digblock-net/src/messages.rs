@@ -39,12 +39,40 @@ pub struct InputBatch {
 	pub inputs: Vec<InputTick>,
 }
 
+/// YOUR own authoritative state. Full `f32` precision, deliberately:
+/// `predict.rs`'s `POS_EPS2` is 1e-6, so the echo of a claim the server
+/// adopted has to round-trip bit-comparably or EVERY snapshot takes the
+/// rewind-and-replay path. This is the one place in a snapshot where
+/// precision is load-bearing rather than cosmetic.
+///
+/// No `look`: the server echoes back the direction we sent it, and nothing
+/// on the client reads it. No `id` either — it is ours by construction.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-pub struct NetPlayerState {
-	pub id: PlayerId,
+pub struct SelfState {
 	pub pos: [f32; 3],
 	pub vel: [f32; 3],
-	pub look: [f32; 3],
+}
+
+/// Somebody else, as the client actually consumes them. ~18 wire bytes for
+/// a walking player (28 worst case) against the flat 40 of the old shared
+/// struct (v13), which sent three f32s of `look` where only a yaw is ever
+/// read and three more of `vel` to drive a 250 ms-capped extrapolation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct RemoteState {
+	pub id: PlayerId,
+	/// Still `f32`: a remote's position is drawn directly, and quantizing
+	/// it would show up as stepping under interpolation.
+	pub pos: [f32; 3],
+	/// Velocity in thousandths of a block/s, clamped to `MAX_SPEED`
+	/// (25 000 — comfortably inside `i16`). Feeds only the capped
+	/// extrapolation in `remote.rs`, so a millimetre/s of resolution is
+	/// already far past what one frame can show.
+	pub vel: [i16; 3],
+	/// Facing as a whole-turn fraction: `0..=u16::MAX` maps onto `0..2π`,
+	/// giving 0.0055° of resolution. PITCH IS NOT SENT — `remote.rs` has
+	/// only ever computed `look.x.atan2(look.z)`, and remote players are
+	/// drawn upright.
+	pub yaw: u16,
 	/// What the player is holding, in hotbar wire encoding
 	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
 	/// clients render it in hand. Appended in v10.
@@ -59,13 +87,56 @@ pub struct NetPlayerState {
 /// this value as the unknown id it is. Appended in v12.
 pub const HELD_TOOL_FULL: u16 = u16::MAX - 2;
 
+/// Encode a look direction as the wire yaw. Vertical looks (a player
+/// staring straight down) have no yaw to speak of; `atan2(0, 0)` is 0,
+/// which is as good an answer as any and never NaN.
+pub fn yaw_to_wire(look: [f32; 3]) -> u16 {
+	let turns = look[0].atan2(look[2]) / std::f32::consts::TAU;
+	// atan2 gives (-π, π] → (-0.5, 0.5]; `rem_euclid` folds it to [0, 1).
+	(turns.rem_euclid(1.0) * 65536.0) as u16
+}
+
+/// Wire yaw back to radians, in `[0, 2π)`. Callers rotate by it, and
+/// rotation is 2π-periodic, so the shifted range versus `atan2`'s
+/// `(-π, π]` is not a difference anyone can see.
+pub fn yaw_from_wire(yaw: u16) -> f32 {
+	yaw as f32 / 65536.0 * std::f32::consts::TAU
+}
+
+/// Interpolate between two wire yaws along the SHORTEST arc.
+///
+/// Done in `u16` space on purpose: `wrapping_sub` on the difference is
+/// exactly the signed shortest arc, with the wrap at north handled for
+/// free. Lerping the decoded radians instead would sweep a player the long
+/// way round whenever they crossed the discontinuity — the old code dodged
+/// that only because it lerped the look VECTOR and renormalized.
+pub fn yaw_lerp(a: u16, b: u16, t: f32) -> u16 {
+	let arc = b.wrapping_sub(a) as i16;
+	a.wrapping_add((arc as f32 * t).round() as i16 as u16)
+}
+
+/// Velocity component → wire, clamped to the protocol's speed ceiling.
+pub fn vel_to_wire(v: f32) -> i16 {
+	let m = crate::protocol::MAX_SPEED;
+	// NaN clamps to 0 via the fallthrough: `f32::clamp` panics on a NaN
+	// bound, not a NaN value, but `as i16` on NaN is 0 anyway.
+	(v.clamp(-m, m) * 1000.0).round() as i16
+}
+
+pub fn vel_from_wire(v: i16) -> f32 {
+	v as f32 / 1000.0
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
 	pub server_tick: u32,
 	/// Highest input tick of YOURS the server has consumed —
 	/// the reconciliation anchor (personalized per client).
 	pub your_last_input_tick: u32,
-	pub players: Vec<NetPlayerState>,
+	/// Your own state. `None` only for a client the sim does not consider
+	/// live yet, which is also the case where there is nothing to ack.
+	pub me: Option<SelfState>,
+	pub others: Vec<RemoteState>,
 }
 
 // ---- reliable control stream -----------------------------------------
@@ -522,17 +593,119 @@ mod tests {
 		let d = Datagram::Snapshot(Snapshot {
 			server_tick: 999,
 			your_last_input_tick: 998,
-			players: vec![NetPlayerState {
+			me: Some(SelfState {
+				pos: [4.0, 5.0, 6.0],
+				vel: [0.0, -1.0, 0.0],
+			}),
+			others: vec![RemoteState {
 				id: 1,
 				pos: [1.0, 2.0, 3.0],
-				vel: [0.0, -1.0, 0.0],
-				look: [0.0, 0.0, 1.0],
+				vel: [0, -1000, 0],
+				yaw: 1234,
 				held: 5,
 			}],
 		});
 		let bytes = codec::encode_datagram(&d).unwrap();
 		let back = codec::decode_datagram(&bytes).unwrap();
 		assert_eq!(format!("{d:?}"), format!("{back:?}"));
+	}
+
+	/// A full snapshot must fit one datagram at the raised
+	/// `MAX_SNAPSHOT_PLAYERS`, with every field at its worst-case width —
+	/// the `const_assert` in protocol.rs asserts the arithmetic, this
+	/// asserts the actual encoder agrees with it.
+	///
+	/// The old cliff this guards: before interest management, snapshots
+	/// silently exceeded `MAX_DATAGRAM` at ~30 players and every snapshot
+	/// stopped being sent.
+	#[test]
+	fn a_full_snapshot_fits_one_datagram() {
+		use crate::protocol::{MAX_DATAGRAM, MAX_SNAPSHOT_PLAYERS};
+		let snap = Snapshot {
+			server_tick: u32::MAX,
+			your_last_input_tick: u32::MAX,
+			me: Some(SelfState {
+				pos: [12345.6; 3],
+				vel: [-9.5; 3],
+			}),
+			others: (0..MAX_SNAPSHOT_PLAYERS - 1)
+				.map(|i| RemoteState {
+					id: i as u8,
+					pos: [12345.6; 3],
+					vel: [i16::MIN, i16::MAX, -1],
+					yaw: u16::MAX,
+					// 3-byte varint: the widest `held` there is.
+					held: u16::MAX,
+				})
+				.collect(),
+		};
+		let n = crate::codec::encode_datagram(&Datagram::Snapshot(snap))
+			.expect("a full snapshot encodes")
+			.len();
+		assert!(
+			n <= MAX_DATAGRAM,
+			"{MAX_SNAPSHOT_PLAYERS} players encode to {n} bytes, over MAX_DATAGRAM {MAX_DATAGRAM}"
+		);
+	}
+
+	/// The wire yaw must survive a round trip to within its own resolution
+	/// (360° / 65536), including at the wrap and for a straight-down look,
+	/// where `atan2(0, 0)` has no meaningful answer but must not be NaN.
+	#[test]
+	fn yaw_round_trips_within_a_step() {
+		let step = std::f32::consts::TAU / 65536.0;
+		for (name, look) in [
+			("+z", [0.0f32, 0.0, 1.0]),
+			("-z", [0.0, 0.0, -1.0]),
+			("+x", [1.0, 0.0, 0.0]),
+			("-x", [-1.0, 0.0, 0.0]),
+			("diagonal", [0.707, 0.0, 0.707]),
+			("just past the wrap", [-0.0001, 0.0, -1.0]),
+		] {
+			let want = look[0].atan2(look[2]).rem_euclid(std::f32::consts::TAU);
+			let got = yaw_from_wire(yaw_to_wire(look));
+			// Compare on the circle: 0 and 2π are the same heading.
+			let d = (got - want).abs();
+			let d = d.min(std::f32::consts::TAU - d);
+			assert!(d <= step, "{name}: {got} vs {want} (> one step)");
+		}
+		// Straight down has no yaw; it must still be finite.
+		assert!(yaw_from_wire(yaw_to_wire([0.0, -1.0, 0.0])).is_finite());
+	}
+
+	/// Yaw interpolation takes the SHORT way round. Lerping decoded
+	/// radians instead would spin a player crossing the wrap almost all
+	/// the way back the other way.
+	#[test]
+	fn yaw_lerp_takes_the_short_arc() {
+		// A quarter turn either side of the wrap: 15/16 → 1/16 is an eighth
+		// of a turn forwards, not seven eighths backwards.
+		let a = (0.9375 * 65536.0) as u16;
+		let b = (0.0625 * 65536.0) as u16;
+		let mid = yaw_lerp(a, b, 0.5);
+		assert_eq!(mid, 0, "halfway is exactly north, not south");
+		assert_eq!(yaw_lerp(a, b, 0.0), a);
+		assert_eq!(yaw_lerp(a, b, 1.0), b);
+		// And the same arc walked backwards.
+		assert_eq!(yaw_lerp(b, a, 0.5), 0);
+		// An ordinary interior span is a plain lerp.
+		assert_eq!(yaw_lerp(1000, 3000, 0.5), 2000);
+	}
+
+	/// Velocity quantization keeps a millimetre/s and clamps at the
+	/// protocol's speed ceiling rather than wrapping into `i16`.
+	#[test]
+	fn velocity_quantization_is_lossless_enough_and_clamps() {
+		for v in [0.0f32, 0.5, -0.5, 4.0, -20.0, 19.999] {
+			let back = vel_from_wire(vel_to_wire(v));
+			assert!((back - v).abs() <= 0.001, "{v} → {back}");
+		}
+		let m = crate::protocol::MAX_SPEED;
+		assert_eq!(vel_from_wire(vel_to_wire(1e9)), m);
+		assert_eq!(vel_from_wire(vel_to_wire(-1e9)), -m);
+		// The ceiling has to fit i16 with room to spare, or the clamp
+		// would wrap into a velocity pointing the other way.
+		assert!((m * 1000.0) < i16::MAX as f32);
 	}
 
 	/// Golden bytes: an accidental reorder of fields or enum variants
@@ -617,21 +790,30 @@ mod tests {
 		let snap = Datagram::Snapshot(Snapshot {
 			server_tick: 6,
 			your_last_input_tick: 5,
-			players: vec![NetPlayerState {
-				id: 1,
+			me: Some(SelfState {
 				pos: [1.0, 0.0, 0.0],
 				vel: [0.0, 0.0, 0.0],
-				look: [0.0, 0.0, 1.0],
+			}),
+			others: vec![RemoteState {
+				id: 1,
+				pos: [1.0, 0.0, 0.0],
+				vel: [0, 0, 0],
+				yaw: 0,
 				held: 4,
 			}],
 		});
 		assert_eq!(
 			postcard::to_stdvec(&snap).unwrap(),
-			// variant 1, tick 6, acked 5, 1 player: id 1, pos x 1.0 le f32,
-			// zeros, look z 1.0, held 4 (appended in v10)
+			// v14 shape, 47 bytes against v13's 41 for a snapshot carrying
+			// BOTH your own state and one remote (v13 sent 40 per player
+			// and no separate self entry, so its two-player equivalent was
+			// 84). variant 1, tick 6, acked 5; me = Some tag 1 + pos
+			// (x 1.0 le f32, zeros) + vel zeros; then vec len 1, and the
+			// remote: id 1, pos (x 1.0, zeros), three zigzag i16 vels,
+			// yaw 0, held 4.
 			vec![
-				1, 6, 5, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 4
+				1, 6, 5, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4
 			]
 		);
 	}

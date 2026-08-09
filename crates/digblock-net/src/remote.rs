@@ -16,7 +16,10 @@ pub struct RemoteSnap {
 	pub server_tick: u32,
 	pub pos: Vec3,
 	pub vel: Vec3,
-	pub look: Vec3,
+	/// Facing as the wire's whole-turn fraction, interpolated in that same
+	/// space (see [`yaw_lerp`]) so a player crossing north takes the short
+	/// way round.
+	pub yaw: u16,
 	/// Held item in hotbar wire encoding (`WIRE_EMPTY`/`WIRE_TOOL`/block
 	/// id). Discrete — never interpolated; the newest bracket wins.
 	pub held: u16,
@@ -81,15 +84,14 @@ impl RemotePlayers {
 		out.clear();
 		let target = self.est_server_tick - INTERP_DELAY_TICKS;
 		for (&id, ring) in &self.players {
-			if let Some(pos_look) = sample_ring(ring, target) {
-				let (pos, look) = pos_look;
+			if let Some((pos, yaw)) = sample_ring(ring, target) {
 				// The held item is discrete state: always render the
 				// newest known value rather than a time-shifted one.
 				let held = ring.back().map_or(u16::MAX, |s| s.held);
 				out.push(RemoteDraw {
 					id,
 					pos,
-					yaw: look.x.atan2(look.z),
+					yaw: crate::messages::yaw_from_wire(yaw),
 					held,
 				});
 			}
@@ -97,17 +99,17 @@ impl RemotePlayers {
 	}
 }
 
-fn sample_ring(ring: &VecDeque<RemoteSnap>, target: f64) -> Option<(Vec3, Vec3)> {
+fn sample_ring(ring: &VecDeque<RemoteSnap>, target: f64) -> Option<(Vec3, u16)> {
 	let newest = *ring.back()?;
 	if target >= newest.server_tick as f64 {
 		// Past the newest snapshot: extrapolate along velocity, capped.
 		let over = (target - newest.server_tick as f64).min(EXTRAP_CAP_TICKS);
 		let pos = newest.pos + newest.vel * (over as f32 / TICK_RATE as f32);
-		return Some((pos, newest.look));
+		return Some((pos, newest.yaw));
 	}
 	let oldest = *ring.front()?;
 	if target <= oldest.server_tick as f64 {
-		return Some((oldest.pos, oldest.look));
+		return Some((oldest.pos, oldest.yaw));
 	}
 	// Bracket: last snap ≤ target and first snap > target.
 	let mut a = oldest;
@@ -118,11 +120,10 @@ fn sample_ring(ring: &VecDeque<RemoteSnap>, target: f64) -> Option<(Vec3, Vec3)>
 			let span = (s.server_tick - a.server_tick) as f64;
 			let t = ((target - a.server_tick as f64) / span) as f32;
 			let pos = a.pos.lerp(s.pos, t);
-			let look = a.look.lerp(s.look, t).normalize_or_zero();
-			return Some((pos, look));
+			return Some((pos, crate::messages::yaw_lerp(a.yaw, s.yaw, t)));
 		}
 	}
-	Some((newest.pos, newest.look))
+	Some((newest.pos, newest.yaw))
 }
 
 #[cfg(test)]
@@ -134,7 +135,7 @@ mod tests {
 			server_tick: tick,
 			pos: Vec3::new(x, 0.0, 0.0),
 			vel: Vec3::new(vx, 0.0, 0.0),
-			look: Vec3::Z,
+			yaw: 0,
 			held: u16::MAX,
 		}
 	}

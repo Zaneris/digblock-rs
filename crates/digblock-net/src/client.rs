@@ -504,34 +504,41 @@ impl NetClient {
 	}
 
 	fn on_snapshot(&mut self, snap: crate::messages::Snapshot, out: &mut Vec<NetEvent>) {
-		for p in &snap.players {
-			// A non-finite entry is dropped, not clamped. Reconcile would
-			// take the replay path on it (NaN fails every comparison), set
-			// the player's state to NaN, and the next aim ray would spin in
-			// the DDA loop forever — `t > max_dist` is its only exit and NaN
-			// never satisfies it. Remote entries feed the interpolator, which
-			// would smear the NaN across every later sample.
-			let (Some(pos), Some(vel)) = (finite_pos(p.pos), finite_pos(p.vel)) else {
+		// A non-finite entry is dropped, not clamped. Reconcile would take
+		// the replay path on it (NaN fails every comparison), set the
+		// player's state to NaN, and the next aim ray would spin in the DDA
+		// loop forever — `t > max_dist` is its only exit and NaN never
+		// satisfies it. Remote entries feed the interpolator, which would
+		// smear the NaN across every later sample. (Remote velocity is
+		// quantized and cannot be non-finite; position still can.)
+		if let Some(me) = snap.me {
+			match (finite_pos(me.pos), finite_pos(me.vel)) {
+				(Some(pos), Some(vel)) => out.push(NetEvent::Ack {
+					acked_input_tick: snap.your_last_input_tick,
+					me: digblock_core::player::PlayerState { pos, vel },
+				}),
+				_ => log::debug!("dropping non-finite self state from snapshot"),
+			}
+		}
+		for p in &snap.others {
+			let Some(pos) = finite_pos(p.pos) else {
 				log::debug!("dropping non-finite snapshot entry for player {}", p.id);
 				continue;
 			};
-			if Some(p.id) == self.my_id {
-				out.push(NetEvent::Ack {
-					acked_input_tick: snap.your_last_input_tick,
-					me: digblock_core::player::PlayerState { pos, vel },
-				});
-			} else {
-				self.remotes.push(
-					p.id,
-					RemoteSnap {
-						server_tick: snap.server_tick,
-						pos,
-						vel,
-						look: Vec3::from_array(p.look).normalize_or_zero(),
-						held: p.held,
-					},
-				);
-			}
+			self.remotes.push(
+				p.id,
+				RemoteSnap {
+					server_tick: snap.server_tick,
+					pos,
+					vel: Vec3::new(
+						crate::messages::vel_from_wire(p.vel[0]),
+						crate::messages::vel_from_wire(p.vel[1]),
+						crate::messages::vel_from_wire(p.vel[2]),
+					),
+					yaw: p.yaw,
+					held: p.held,
+				},
+			);
 		}
 	}
 
