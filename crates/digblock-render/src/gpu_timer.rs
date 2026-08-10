@@ -9,16 +9,26 @@ use digblock_core::metrics::GpuPassMs;
 use digblock_platform::Gpu;
 
 /// Query pairs (begin, end) per pass.
-pub const Q_SHADOW_WIDE: u32 = 0;
-pub const Q_SHADOW_NEAR: u32 = 2;
-pub const Q_MAIN: u32 = 4;
-pub const Q_OVERLAY: u32 = 6;
+///
+/// Every GI pass gets its own bracket. The GI system shipped with only
+/// `Q_GI` written and nothing harvesting it, and the resolve — the most
+/// expensive pass in the frame — bracketed by nothing at all, so the
+/// gap between measured GPU time and the actual frame was invisible.
+/// A pass that is not in this list does not exist as far as tuning is
+/// concerned.
+pub const Q_PREPASS: u32 = 0;
+pub const Q_MAIN: u32 = 2;
+pub const Q_OVERLAY: u32 = 4;
 /// Water pass (blit + prepass + water color), once the main pass splits.
-pub const Q_WATER: u32 = 8;
-/// RTGI probe-update compute (GI-DESIGN.md). Resolved with the rest but
-/// harvested only once the P5 metrics work appends its CSV column.
-pub const Q_GI: u32 = 10;
-const QUERY_COUNT: u32 = 12;
+pub const Q_WATER: u32 = 6;
+/// RTGI probe-update compute (GI-DESIGN.md).
+pub const Q_GI: u32 = 8;
+/// The half-res GI trace (probe gather + sun ray).
+pub const Q_GI_TRACE: u32 = 10;
+/// Temporal accumulation + à-trous. Unwritten until M4 lands them;
+/// unwritten queries resolve to 0, so the column simply reads 0.
+pub const Q_GI_DENOISE: u32 = 12;
+const QUERY_COUNT: u32 = 14;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
 /// Readback ring depth; covers the 2-3 frame map latency.
 const SLOTS: usize = 3;
@@ -106,10 +116,13 @@ impl GpuTimer {
 				}
 			};
 			let reading = GpuPassMs {
-				shadow_ms: pass(Q_SHADOW_WIDE as usize) + pass(Q_SHADOW_NEAR as usize),
+				prepass_ms: pass(Q_PREPASS as usize),
 				main_ms: pass(Q_MAIN as usize),
 				water_ms: pass(Q_WATER as usize),
 				overlay_ms: pass(Q_OVERLAY as usize),
+				gi_ms: pass(Q_GI as usize),
+				gi_trace_ms: pass(Q_GI_TRACE as usize),
+				gi_denoise_ms: pass(Q_GI_DENOISE as usize),
 			};
 			drop(data);
 			slot.read.unmap();

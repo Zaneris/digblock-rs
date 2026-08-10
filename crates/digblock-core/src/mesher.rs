@@ -48,18 +48,6 @@ pub struct MeshInput {
 	/// Indexed by `pidx` over coords in -1..=16; shell cells with no
 	/// backing chunk are air (0).
 	pub blocks: Box<[u16; PADDED_VOLUME]>,
-	/// Stage-B light bytes over the same padded index (low nibble block,
-	/// high nibble sky). Carried into the job like AO's neighbor cells —
-	/// ALREADY-COMPUTED field values, never propagation (the field
-	/// settles on the main thread before dispatch; LIGHT-DESIGN.md).
-	/// Zero-filled by `build`; `fill_light` copies the resident field in.
-	pub light: Box<[u8; PADDED_VOLUME]>,
-	/// Bounce (sun-fill) levels over the same padded index, low nibble
-	/// only — the third channel's sparse map, copied beside `light`.
-	pub bounce: Box<[u8; PADDED_VOLUME]>,
-	/// Any nonzero light byte — lets the hot solid loop skip the
-	/// per-face corner sampling entirely in the (typical) dark chunk.
-	pub lit: bool,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
 }
@@ -98,9 +86,6 @@ impl MeshInput {
 		let n = CHUNK_SIZE;
 		let mut input = MeshInput {
 			blocks: Box::new([0u16; PADDED_VOLUME]),
-			light: Box::new([0u8; PADDED_VOLUME]),
-			bounce: Box::new([0u8; PADDED_VOLUME]),
-			lit: false,
 			missing: [false; 6],
 		};
 		for y in 0..n {
@@ -148,59 +133,6 @@ impl MeshInput {
 			}
 		}
 		input
-	}
-
-	/// Copy the resident light field into the padded shell — the light
-	/// twin of `build`'s block copy, split out so the many block-only
-	/// call sites (tests, benches) stay dark by default. `chunk` answers
-	/// per chunk OFFSET (center included); `None` stays zero.
-	pub fn fill_light<'a>(
-		&mut self,
-		mut chunk: impl FnMut(i32, i32, i32) -> Option<&'a crate::light::LightChunk>,
-		mut bounce: impl FnMut(i32, i32, i32) -> Option<&'a crate::light::LightChunk>,
-	) {
-		use crate::light::LightChunk;
-		let n = CHUNK_SIZE;
-		let span = |d: i32| match d {
-			-1 => 15..16,
-			1 => 0..1,
-			_ => 0..16,
-		};
-		let copy = |dst: &mut [u8; PADDED_VOLUME], src: &LightChunk, dx: i32, dy: i32, dz: i32| {
-			for ly in span(dy) {
-				for lz in span(dz) {
-					for lx in span(dx) {
-						let v = match src {
-							LightChunk::Uniform(v) => *v,
-							LightChunk::Mixed(cells) => cells[(ly * n + lz) * n + lx],
-						};
-						dst[pidx(
-							lx as i32 + 16 * dx,
-							ly as i32 + 16 * dy,
-							lz as i32 + 16 * dz,
-						)] = v;
-					}
-				}
-			}
-		};
-		for dy in -1..=1 {
-			for dz in -1..=1 {
-				for dx in -1..=1 {
-					if let Some(src) = chunk(dx, dy, dz) {
-						if !matches!(src, LightChunk::Uniform(0)) {
-							self.lit = true;
-							copy(&mut self.light, src, dx, dy, dz);
-						}
-					}
-					if let Some(src) = bounce(dx, dy, dz) {
-						if !matches!(src, LightChunk::Uniform(0)) {
-							self.lit = true;
-							copy(&mut self.bounce, src, dx, dy, dz);
-						}
-					}
-				}
-			}
-		}
 	}
 
 	/// Block id at padded coords (each in -1..=16) — the state nibble is
@@ -296,70 +228,38 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// Pack a vertex's GEOMETRY word (word 0 — solid and water share it).
 /// Bits 0-7 x, 8-15 y, 16-23 z in TWELFTH-block units 0..=192 (the
 /// sub-block shape grid; full-block geometry lands on multiples of 12),
-/// 24-26 normal, 27-28 ao (0 darkest .. 3 open), 29-30 corner
-/// (0=TL 1=TR 2=BL 3=BR), 31 reserved.
+/// 24-26 normal, 27-28 corner (0=TL 1=TR 2=BL 3=BR), 29-31 free.
 ///
 /// Word 1 is per-stream material, assembled by the caller:
 /// solid — [`solid_word1`]: bits 0-9 texture layer (1024 cap =
 /// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
-/// 18-20 tint, 21 emissive (Stage-A fullbright — chunk.wgsl skips the
-/// lighting terms), 22-25 Stage-B blocklight (per-vertex smooth light),
-/// 26-29 skylight, 30-31 bounce (sun-fill, quantized from 0..=12 to 4
-/// levels — a soft omnidirectional term, so 2 bits + corner
-/// interpolation suffice). water — bits 0-9 texture layer,
-/// 10-23 payload (see MeshData::water), 24-31 the water cell's raw
-/// light byte (block nibble low, sky high; water reads
-/// its uv from the corner code and has no tint).
+/// 18 emissive (Stage-A fullbright — chunk.wgsl skips the lighting
+/// terms), 19-31 free. water — bits 0-9 texture layer, 10-23 payload
+/// (see MeshData::water), 24-31 free (water reads its uv from the
+/// corner code).
+///
+/// This layout is what the demolition left: the AO pair, the three
+/// Stage-B light channels and the per-block tint jitter all came out
+/// together, so the format was repacked tight rather than left holed.
+/// Every consumer moves with it — chunk.wgsl's `vs` and `vs_depth`,
+/// water.wgsl, and the renderer's vertex attributes.
 #[inline]
-fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
-	let (x, y, z) = v.pos;
-	debug_assert!(x <= 192 && y <= 192 && z <= 192 && corner < 4 && v.ao < 4);
-	x | (y << 8) | (z << 16) | ((normal as u32) << 24) | (v.ao << 27) | (corner << 29)
+fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
+	let (x, y, z) = pos;
+	debug_assert!(x <= 192 && y <= 192 && z <= 192 && corner < 4);
+	x | (y << 8) | (z << 16) | ((normal as u32) << 24) | (corner << 27)
 }
 
 /// The solid stream's material word (see [`pack`] for the layout).
-/// `light` is the three channels `[block, sky, bounce]`; bounce arrives
-/// raw (0..=BOUNCE_SEED) and is quantized to the 2-bit carve here —
-/// corner interpolation upstream runs at full precision.
 #[inline]
-fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32, emissive: bool, light: [u32; 3]) -> u32 {
-	let [bl, sky, bounce] = light;
+fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
-	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8 && bl < 16 && sky < 16 && bounce < 16);
-	tex | (uv_u << 10)
-		| (uv_v << 14)
-		| (tint << 18)
-		| ((emissive as u32) << 21)
-		| (bl << 22)
-		| (sky << 26)
-		| (((bounce + 2) >> 2).min(3) << 30)
+	debug_assert!(uv_u <= 12 && uv_v <= 12);
+	tex | (uv_u << 10) | (uv_v << 14) | ((emissive as u32) << 18)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
 /// are in twelfths of a block (0..=192 across the chunk).
-#[derive(Clone, Copy)]
-struct Vert {
-	pos: (u32, u32, u32),
-	ao: u32,
-}
-
-/// Per-block brightness jitter: a 3-bit step from a splitmix64 hash of
-/// the world block coords, breaking texture repetition on large uniform
-/// faces. World coords (not chunk-local) so the pattern doesn't tile
-/// with a 16-block period.
-#[inline]
-fn tint(wx: i64, wy: i64, wz: i64) -> u32 {
-	let mut h = (wx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-		^ (wy as u64).rotate_left(21)
-		^ (wz as u64).rotate_left(42);
-	h ^= h >> 30;
-	h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-	h ^= h >> 27;
-	h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
-	h ^= h >> 31;
-	(h & 7) as u32
-}
-
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block
 /// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
 /// offset + diagonal vector).
@@ -395,134 +295,28 @@ fn occludes(id: u16) -> bool {
 	BlockType::from_id(id).props().class == RenderClass::Opaque
 }
 
-/// Classic 4-level voxel AO for the face of block b toward `dir`: each
-/// corner is darkened by its two edge neighbors and their shared diagonal
-/// in the face's neighbor layer — `3 − side1 − side2 − corner`, floored
-/// to 0 when both sides occlude (the diagonal is then invisible).
-fn face_ao(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
-	let (ox, oy, oz) = dir.offset();
-	let b = [bx, by, bz];
-	let c = [bx + ox, by + oy, bz + oz]; // face's neighbor-layer cell
-									  // The two tangent axes of the face plane.
-	let (u, v) = match dir {
-		Dir::West | Dir::East => (1, 2),
-		Dir::Top | Dir::Bottom => (0, 2),
-		Dir::North | Dir::South => (0, 1),
-	};
-	let corners = face_corners(bx, by, bz, dir);
-	let mut ao = [3u32; 4];
-	for (i, p) in corners.iter().enumerate() {
-		let p = [p.0, p.1, p.2];
-		// Corner at the block's low lattice plane on a tangent axis looks
-		// −1 along it, at the high plane +1.
-		let su = if p[u] == b[u] { -1 } else { 1 };
-		let sv = if p[v] == b[v] { -1 } else { 1 };
-		let cell = |du: i32, dv: i32| -> bool {
-			let mut q = c;
-			q[u] += du;
-			q[v] += dv;
-			occludes(input.get(q[0], q[1], q[2]))
-		};
-		let s1 = cell(su, 0);
-		let s2 = cell(0, sv);
-		ao[i] = if s1 && s2 {
-			0
-		} else {
-			3 - u32::from(s1) - u32::from(s2) - u32::from(cell(su, sv))
-		};
-	}
-	ao
-}
-
-/// Per-corner Stage-B light (blocklight, skylight) for the face of block
-/// b toward `dir`: the smooth-light twin of [`face_ao`], sampling the
-/// same four cells around each corner in the face's neighbor layer and
-/// averaging the NON-OPAQUE ones (an opaque cell drops out of the
-/// denominator instead of dragging the corner dark — its occlusion is
-/// already AO's job). All four opaque → 0.
-fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 4]; 3] {
-	let (ox, oy, oz) = dir.offset();
-	let b = [bx, by, bz];
-	let c = [bx + ox, by + oy, bz + oz];
-	let (u, v) = match dir {
-		Dir::West | Dir::East => (1, 2),
-		Dir::Top | Dir::Bottom => (0, 2),
-		Dir::North | Dir::South => (0, 1),
-	};
-	let corners = face_corners(bx, by, bz, dir);
-	let mut out = [[0u32; 4]; 3];
-	for (i, p) in corners.iter().enumerate() {
-		let p = [p.0, p.1, p.2];
-		let su = if p[u] == b[u] { -1 } else { 1 };
-		let sv = if p[v] == b[v] { -1 } else { 1 };
-		let (mut bsum, mut ssum, mut fsum, mut cnt) = (0u32, 0u32, 0u32, 0u32);
-		for (du, dv) in [(0, 0), (su, 0), (0, sv), (su, sv)] {
-			let mut q = c;
-			q[u] += du;
-			q[v] += dv;
-			if !occludes(input.get(q[0], q[1], q[2])) {
-				let pi = pidx(q[0], q[1], q[2]);
-				let byte = u32::from(input.light[pi]);
-				bsum += byte & 0x0F;
-				ssum += byte >> 4;
-				fsum += u32::from(input.bounce[pi]) & 0x0F;
-				cnt += 1;
-			}
-		}
-		if cnt > 0 {
-			out[0][i] = (bsum + cnt / 2) / cnt;
-			out[1][i] = (ssum + cnt / 2) / cnt;
-			out[2][i] = (fsum + cnt / 2) / cnt;
-		}
-	}
-	out
-}
-
-/// A face's shading inputs on their way into the packed words: the
-/// per-corner AO and Stage-B light fields plus the per-block constants.
-struct Shade {
-	ao: [u32; 4],
-	/// [blocklight, skylight, bounce] per corner.
-	light: [[u32; 4]; 3],
-	tint: u32,
-	emissive: bool,
-}
-
-/// Emit one face quad with per-corner AO and light. Triangulation runs
-/// the quad diagonal between emit slots 0 and 3 (shared index pattern
-/// [3,1,0, 3,0,2]); the emit order flips so the diagonal passes through
-/// the lower-AO-sum corner pair — a single dark corner then shades a
-/// radial gradient instead of a hard crease across the face. The flip
-/// stays keyed on AO ALONE: light gradients are 16-level and shallow,
-/// and re-keying would churn every pinned mesh. Corner codes travel with
-/// their vertices, so uv is order-independent.
-fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, s: Shade) {
+/// Emit one face quad in `face_corners` order (TL TR BL BR), which
+/// [`quad_indices`] triangulates as the diagonal between emit slots 0
+/// and 3.
+///
+/// The order used to FLIP to [1,3,0,2] so that diagonal crossed the
+/// lower-AO-sum corner pair, turning a single dark corner into a radial
+/// gradient instead of a hard crease. With baked AO gone there is no
+/// per-corner signal left to steer it, so the winding is simply fixed —
+/// pinned by `every_quad_winds_in_face_corner_order`, because a quad
+/// wound the other way is deleted by `cull: Back`.
+fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, emissive: bool) {
 	let corners = face_corners(b.0 as i32, b.1 as i32, b.2 as i32, dir);
-	let order: [usize; 4] = if s.ao[0] + s.ao[3] > s.ao[1] + s.ao[2] {
-		[1, 3, 0, 2] // TR, BR, TL, BL — diagonal TR–BL
-	} else {
-		[0, 1, 2, 3] // TL, TR, BL, BR — diagonal TL–BR
-	};
-	for &ci in &order {
-		let (cx, cy, cz) = corners[ci];
+	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
+		let ci = ci as u32;
 		out.push(pack(
-			Vert {
-				pos: (cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
-				ao: s.ao[ci],
-			},
+			(cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
 			dir,
-			ci as u32,
+			ci,
 		));
 		// Full-rect uv straight from the corner code, exactly the mapping
 		// the shader used to derive itself.
-		out.push(solid_word1(
-			tex,
-			(ci as u32 & 1) * 12,
-			(ci as u32 >> 1) * 12,
-			s.tint,
-			s.emissive,
-			[s.light[0][ci], s.light[1][ci], s.light[2][ci]],
-		));
+		out.push(solid_word1(tex, (ci & 1) * 12, (ci >> 1) * 12, emissive));
 	}
 }
 
@@ -531,16 +325,7 @@ fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, s
 /// always emit; boundary quads cull against the neighbor's coverage of
 /// the shared plane (mask-driven, so stacked mirrored stairs and
 /// stair-against-wall cull correctly, cross-chunk included — the padded
-/// shell carries state). Shaped faces RECEIVE parent-corner AO: the
-/// parent cell's full-cube `face_ao` toward the quad's direction,
-/// bilinearly sampled at each vertex's face-frame uv ([`lerp_ao`]) — the
-/// baker's uv mirrors `face_corners`, so uv (0,0)..(12,12) spans exactly
-/// the TL..BR corners `face_ao` scores, and a full boundary face shades
-/// bit-identically to the cube face it replaces. Interior quads project
-/// along the normal onto the same parent face (a recessed tread under a
-/// diagonal occluder darkens like the cube top would). Shaped cells
-/// still never CAST AO (`occludes` keys on Opaque) — the Cutout
-/// precedent; correct partial casting needs coverage-aware occlusion.
+/// shell carries state).
 #[inline(never)]
 fn emit_shaped(
 	out: &mut Vec<u32>,
@@ -548,17 +333,11 @@ fn emit_shaped(
 	b: (usize, usize, usize),
 	me: BlockType,
 	cell: u16,
-	tint: u32,
 ) {
 	let variant = crate::shapes::shape_of(me, crate::chunk::cell_state(cell))
 		.expect("Shaped class ⇒ registered shape");
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
 	let n = CHUNK_SIZE;
-	// Parent-cube face AO (and light), computed once per direction that
-	// survives culling; every quad toward that direction interpolates
-	// from them.
-	let mut pao: [Option<[u32; 4]>; 6] = [None; 6];
-	let mut plight: [Option<[[u32; 4]; 3]>; 6] = [None; 6];
 	for q in &variant.quads {
 		if q.boundary {
 			let dir = q.dir;
@@ -582,38 +361,15 @@ fn emit_shaped(
 				_ => {}
 			}
 		}
-		let fa = *pao[q.dir as usize].get_or_insert_with(|| face_ao(input, bx, by, bz, q.dir));
-		let ao: [u32; 4] =
-			std::array::from_fn(|ci| lerp_ao(fa, u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1])));
-		let fl = if input.lit {
-			*plight[q.dir as usize].get_or_insert_with(|| face_light(input, bx, by, bz, q.dir))
-		} else {
-			[[0; 4]; 3]
-		};
-		let light: [[u32; 4]; 3] = std::array::from_fn(|chan| {
-			std::array::from_fn(|ci| {
-				bilerp12(fl[chan], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
-			})
-		});
-		// Same diagonal-flip rule as emit_face: corner codes travel with
-		// their vertices, so emit order only steers the triangulation.
-		let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
-			[1, 3, 0, 2]
-		} else {
-			[0, 1, 2, 3]
-		};
 		let tex = me.texture(q.dir);
-		for &ci in &order {
+		for ci in 0..4usize {
 			let corner = q.corners[ci];
 			out.push(pack(
-				Vert {
-					pos: (
-						bx as u32 * 12 + u32::from(corner[0]),
-						by as u32 * 12 + u32::from(corner[1]),
-						bz as u32 * 12 + u32::from(corner[2]),
-					),
-					ao: ao[ci],
-				},
+				(
+					bx as u32 * 12 + u32::from(corner[0]),
+					by as u32 * 12 + u32::from(corner[1]),
+					bz as u32 * 12 + u32::from(corner[2]),
+				),
 				q.dir,
 				ci as u32,
 			));
@@ -621,31 +377,10 @@ fn emit_shaped(
 				tex,
 				u32::from(q.uv[ci][0]),
 				u32::from(q.uv[ci][1]),
-				tint,
 				me.props().emissive,
-				[light[0][ci], light[1][ci], light[2][ci]],
 			));
 		}
 	}
-}
-
-/// Bilinear sample of a face's four corner values ([TL, TR, BL, BR] at
-/// uv (0,0) (12,0) (0,12) (12,12)) at a lattice uv (0..=12), rounded to
-/// the nearest level over the 144 weight sum — range-agnostic, so AO's
-/// 2-bit levels and light's 4-bit levels share it. At the corners it
-/// reproduces the corner values exactly, so full shaped boundary faces
-/// match cube faces.
-#[inline]
-fn bilerp12(c: [u32; 4], u: u32, v: u32) -> u32 {
-	let n = c[0] * (12 - u) * (12 - v) + c[1] * u * (12 - v) + c[2] * (12 - u) * v + c[3] * u * v;
-	(n + 72) / 144
-}
-
-/// AO's name for [`bilerp12`] — kept so the shaped-AO pins read as
-/// written.
-#[inline]
-fn lerp_ao(c: [u32; 4], u: u32, v: u32) -> u32 {
-	bilerp12(c, u, v)
 }
 
 /// Flat-index delta to the padded neighbor cell, per `Dir`.
@@ -660,7 +395,7 @@ const PDELTA: [isize; 6] = [
 
 /// Mesh a chunk from its padded snapshot. `base` is the chunk's world
 /// block origin — the tint hash needs world coordinates.
-pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
+pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 	let n = CHUNK_SIZE;
 	// Sized for a busy surface chunk; realloc past this is rare.
 	let mut mesh = MeshData {
@@ -679,12 +414,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 					continue;
 				}
 				if me.props().class == RenderClass::Shaped {
-					let bt = tint(
-						i64::from(base.0) + x as i64,
-						i64::from(base.1) + y as i64,
-						i64::from(base.2) + z as i64,
-					);
-					emit_shaped(&mut mesh.solid, input, (x, y, z), me, cell, bt);
+					emit_shaped(&mut mesh.solid, input, (x, y, z), me, cell);
 					continue;
 				}
 				// A fall's landing cell drives the spray emitters and the
@@ -701,7 +431,6 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 				// six faces (the shaped path hoists it the same way).
 				// Lazy, not eager: a buried cell emits nothing and must
 				// not pay for a hash nobody reads.
-				let mut cell_tint: Option<u32> = None;
 				for &dir in &DIRS {
 					// A missing face neighbor suppresses this border's
 					// faces; the padded ring makes every other lookup a
@@ -730,31 +459,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						});
 						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
 					} else {
-						let ao = face_ao(input, x as i32, y as i32, z as i32, dir);
-						let light = if input.lit {
-							face_light(input, x as i32, y as i32, z as i32, dir)
-						} else {
-							[[0; 4]; 3]
-						};
-						let bt = *cell_tint.get_or_insert_with(|| {
-							tint(
-								i64::from(base.0) + x as i64,
-								i64::from(base.1) + y as i64,
-								i64::from(base.2) + z as i64,
-							)
-						});
-						emit_face(
-							&mut mesh.solid,
-							(x, y, z),
-							dir,
-							tex,
-							Shade {
-								ao,
-								light,
-								tint: bt,
-								emissive: me.props().emissive,
-							},
-						);
+						emit_face(&mut mesh.solid, (x, y, z), dir, tex, me.props().emissive);
 					}
 				}
 			}
@@ -792,11 +497,10 @@ mod tests {
 	}
 
 	/// World origin for tests that don't care about the tint pattern.
-	const ZERO: (i32, i32, i32) = (0, 0, 0);
 
 	#[test]
 	fn lone_dirt_has_six_faces() {
-		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::Dirt)));
 		assert_eq!(m.solid.len(), 6 * 8);
 		assert!(m.water.is_empty());
 	}
@@ -824,8 +528,8 @@ mod tests {
 			8,
 			B::Water as u16 | 0b1111 << crate::chunk::STATE_SHIFT,
 		);
-		let a = mesh_chunk(&isolated(&plain), ZERO);
-		let b = mesh_chunk(&isolated(&stateful), ZERO);
+		let a = mesh_chunk(&isolated(&plain));
+		let b = mesh_chunk(&isolated(&stateful));
 		assert_eq!(a.solid, b.solid, "solid stream byte-identical");
 		assert_eq!(a.water, b.water, "water stream byte-identical");
 		assert_eq!(a.impacts, b.impacts);
@@ -841,7 +545,7 @@ mod tests {
 			8,
 			crate::chunk::make_cell(B::WoodStairs, crate::shapes::stair_state(facing)),
 		);
-		mesh_chunk(&isolated(&d), ZERO)
+		mesh_chunk(&isolated(&d))
 	}
 
 	#[test]
@@ -862,186 +566,6 @@ mod tests {
 	}
 
 	#[test]
-	fn shaped_faces_are_open_field_ao_and_match_full_block_conventions() {
-		let m = stair_mesh(crate::shapes::Facing::PosX);
-		assert!(!m.solid.is_empty());
-		for p in m.solid.chunks(2) {
-			assert_eq!(ao_of(p[0]), 3, "no occluders anywhere → full ao");
-		}
-		// The stair's full back boundary face (+x = Dir::West) must be
-		// bit-compatible with a full block's face geometry: same corner
-		// lattice positions (×12) in the same TL/TR/BL/BR slots — the
-		// shapes baker mirrors face_corners by construction. (Bottom and
-		// back are both full planes; the back is the pin.)
-		let want: Vec<(u32, u32, u32)> = face_corners(8, 8, 8, Dir::West)
-			.iter()
-			.map(|&(x, y, z)| (x as u32 * 12, y as u32 * 12, z as u32 * 12))
-			.collect();
-		let found = m.solid.chunks(8).any(|q| {
-			(0..4).all(|i| {
-				let w0 = q[i * 2];
-				dir_of(w0) == Dir::West as u32
-					&& corner_of(w0) == i as u32
-					&& (w0 & 0xff, (w0 >> 8) & 0xff, (w0 >> 16) & 0xff) == want[i]
-			})
-		});
-		assert!(found, "stair back face matches full-block conventions");
-	}
-
-	/// A shaped block's FULL boundary face shades exactly like the cube
-	/// face it replaces: same occluder, same per-corner-code AO as a
-	/// Dirt cube in the same cell — `lerp_ao` at uv (0,0)..(12,12) is
-	/// the identity on `face_ao`'s corner values.
-	#[test]
-	fn shaped_full_boundary_face_matches_cube_ao() {
-		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
-		let ao_by_corner = |m: &MeshData| {
-			let q = quad_of(&m.solid, 8, 8, 8, Dir::West);
-			let mut by = [u32::MAX; 4];
-			for w0 in q {
-				by[corner_of(w0) as usize] = ao_of(w0);
-			}
-			by
-		};
-		// Occluder in the back face's neighbor layer (x = 9), +y side.
-		let mut stair = ChunkData::default();
-		stair.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
-		stair.set(9, 9, 8, B::Stone);
-		let mut cube = ChunkData::default();
-		cube.set(8, 8, 8, B::Dirt);
-		cube.set(9, 9, 8, B::Stone);
-		let a = ao_by_corner(&mesh_chunk(&isolated(&stair), ZERO));
-		let b = ao_by_corner(&mesh_chunk(&isolated(&cube), ZERO));
-		assert_eq!(a, b, "stair back == cube back, per corner code");
-		assert!(a.iter().any(|&v| v < 3), "the occluder actually darkens");
-	}
-
-	/// Parent-corner AO: with the parent top face's TL corner floored to
-	/// 0 (the both-sides rule; corner field [TL, TR, BL, BR] =
-	/// [0, 2, 2, 3]), tread vertices sample the cube's top-face field —
-	/// exact at parent corners, interpolated mid-face, and recessed
-	/// interior treads project onto the same parent face.
-	#[test]
-	fn shaped_vertices_interpolate_parent_face_ao() {
-		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
-		let mut d = ChunkData::default();
-		d.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
-		d.set(9, 9, 8, B::Stone);
-		d.set(8, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		// Top-facing vertex AO by raw twelfth position.
-		let ao_at = |x: u32, y: u32, z: u32| -> u32 {
-			m.solid
-				.chunks(2)
-				.find(|p| {
-					dir_of(p[0]) == Dir::Top as u32
-						&& (p[0] & 0xff, (p[0] >> 8) & 0xff, (p[0] >> 16) & 0xff) == (x, y, z)
-				})
-				.map(|p| ao_of(p[0]))
-				.expect("vertex present")
-		};
-		// Top tread (y = 108, ON the boundary plane).
-		assert_eq!(ao_at(108, 108, 108), 0, "TL parent corner exact");
-		assert_eq!(ao_at(108, 108, 96), 2, "BL parent corner exact");
-		assert_eq!(ao_at(104, 108, 108), 1, "mid-face: between TL 0 and TR 2");
-		// Recessed middle tread (y = 104, an interior plane).
-		assert_eq!(ao_at(104, 104, 108), 1, "interior tread inherits the field");
-	}
-
-	/// Smooth blocklight: a face corner averages the light of the OPEN
-	/// cells around it in the neighbor layer, and an opaque diagonal
-	/// drops out of the denominator instead of dragging the corner dark
-	/// (that darkening is AO's job). The averaged value rides solid
-	/// word 1 bits 22-25 per vertex.
-	#[test]
-	fn face_light_averages_open_cells_and_ignores_opaque_corners() {
-		let mut d = ChunkData::default();
-		d.set(8, 8, 8, B::Dirt);
-		let mut input = isolated(&d);
-		input.lit = true;
-		input.light[pidx(8, 9, 8)] = 10;
-		input.light[pidx(7, 9, 8)] = 6;
-		input.light[pidx(8, 9, 7)] = 2;
-		// Corner 3 of the top face sits at lattice (8,9,8) and samples its
-		// low-x/low-z quadrant: 10, 6, 2, 0 — all open, mean 5.
-		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[0][3], 5);
-		// The same corner lands in the emitted vertex's word 1.
-		let m = mesh_chunk(&input, ZERO);
-		let lit = m
-			.solid
-			.chunks(2)
-			.find(|p| {
-				dir_of(p[0]) == Dir::Top as u32
-					&& (p[0] & 0xff, (p[0] >> 8) & 0xff, (p[0] >> 16) & 0xff) == (96, 108, 96)
-			})
-			.map(|p| light_of(p[1]))
-			.expect("top-face vertex present");
-		assert_eq!(lit, 5, "corner light packed into word 1");
-
-		// Same field with the diagonal (7,9,7) turned opaque: 3 open
-		// cells remain — (10+6+2)/3 rounds to 6, not down to 4.
-		d.set(7, 9, 7, B::Stone);
-		let mut input = isolated(&d);
-		input.lit = true;
-		input.light[pidx(8, 9, 8)] = 10;
-		input.light[pidx(7, 9, 8)] = 6;
-		input.light[pidx(8, 9, 7)] = 2;
-		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[0][3], 6);
-
-		// Skylight rides the high nibble through the same walk: bytes
-		// 0xF0/0x70/0x30 over the corner average (15+7+3+0+2)/4 = 6.
-		let mut d3 = ChunkData::default();
-		d3.set(8, 8, 8, B::Dirt);
-		let mut input = isolated(&d3);
-		input.lit = true;
-		input.light[pidx(8, 9, 8)] = 0xF0;
-		input.light[pidx(7, 9, 8)] = 0x70;
-		input.light[pidx(8, 9, 7)] = 0x30;
-		let both = face_light(&input, 8, 8, 8, Dir::Top);
-		assert_eq!(both[0][3], 0, "block nibble untouched");
-		assert_eq!(both[1][3], 6, "sky nibble averaged");
-	}
-
-	/// A shaped block's FULL boundary face is lit exactly like the cube
-	/// face it replaces — the light twin of
-	/// `shaped_full_boundary_face_matches_cube_ao`, through the parent
-	/// `face_light` + `bilerp12` path.
-	#[test]
-	fn shaped_full_boundary_face_matches_cube_light() {
-		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
-		let light_by_corner = |m: &MeshData| {
-			let q = quad_of(&m.solid, 8, 8, 8, Dir::West);
-			let mut by = [u32::MAX; 4];
-			for p in q.chunks(2) {
-				by[corner_of(p[0]) as usize] = light_of(p[1]);
-			}
-			by
-		};
-		let fill = |input: &mut MeshInput| {
-			input.lit = true;
-			input.light[pidx(9, 8, 8)] = 12;
-			input.light[pidx(9, 9, 8)] = 4;
-			input.light[pidx(9, 8, 9)] = 8;
-		};
-		let mut stair = ChunkData::default();
-		stair.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
-		let mut a_in = isolated(&stair);
-		fill(&mut a_in);
-		let mut cube = ChunkData::default();
-		cube.set(8, 8, 8, B::Dirt);
-		let mut b_in = isolated(&cube);
-		fill(&mut b_in);
-		let a = light_by_corner(&mesh_chunk(&a_in, ZERO));
-		let b = light_by_corner(&mesh_chunk(&b_in, ZERO));
-		assert_eq!(a, b, "stair back == cube back, per corner code");
-		let (min, max) = (a.iter().min().unwrap(), a.iter().max().unwrap());
-		assert!(min < max, "the uneven field actually varies per corner");
-	}
-
-	#[test]
 	fn shaped_boundary_culling() {
 		use crate::chunk::make_cell;
 		use crate::shapes::{stair_state, Facing};
@@ -1051,7 +575,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
 		d.set(9, 8, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let stair_back = m.solid.chunks(8).any(|q| {
 			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 9 * 12)
 		});
@@ -1066,7 +590,7 @@ mod tests {
 		let mut d2 = ChunkData::default();
 		d2.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
 		d2.set(8, 9, 8, B::Stone);
-		let m2 = mesh_chunk(&isolated(&d2), ZERO);
+		let m2 = mesh_chunk(&isolated(&d2));
 		let above_bottom = m2.solid.chunks(8).any(|q| {
 			dir_of(q[0]) == Dir::Bottom as u32 && q.chunks(2).all(|p| ((p[0] >> 8) & 0xff) == 108)
 		});
@@ -1078,7 +602,7 @@ mod tests {
 		let mut d3 = ChunkData::default();
 		d3.set_cell(8, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::PosX)));
 		d3.set_cell(9, 8, 8, make_cell(B::WoodStairs, stair_state(Facing::NegX)));
-		let m3 = mesh_chunk(&isolated(&d3), ZERO);
+		let m3 = mesh_chunk(&isolated(&d3));
 		let touching_backs = m3.solid.chunks(8).any(|q| {
 			let plane = q.chunks(2).all(|p| (p[0] & 0xff) == 9 * 12);
 			plane && (dir_of(q[0]) == Dir::West as u32 || dir_of(q[0]) == Dir::East as u32)
@@ -1116,7 +640,7 @@ mod tests {
 				}
 			},
 		);
-		let m = mesh_chunk(&input, ZERO);
+		let m = mesh_chunk(&input);
 		let back = m.solid.chunks(8).any(|q| {
 			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 16 * 12)
 		});
@@ -1137,7 +661,7 @@ mod tests {
 		);
 		d.set(7, 8, 8, B::Water);
 		use crate::shapes::Facing;
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let interface = m.water.chunks(8).any(|q| {
 			dir_of(q[0]) == Dir::West as u32 && q.chunks(2).all(|p| (p[0] & 0xff) == 8 * 12)
 		});
@@ -1149,7 +673,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 7, 8, B::Dirt); // below
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		// Water: 5 air-adjacent sides + top = faces toward air on all open
 		// sides. Dirt below: 5 visible faces (top hidden? no — top borders
 		// water, water is not solid → dirt top IS visible through water).
@@ -1164,7 +688,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(9, 8, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		// Each water block: faces toward air except toward each other.
 		assert_eq!(m.water.len() / 8, 2 * 5);
 	}
@@ -1173,7 +697,7 @@ mod tests {
 	fn missing_neighbor_suppresses_border_faces() {
 		let mut d = ChunkData::default();
 		d.set(0, 8, 8, B::Dirt); // on the −x border
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		assert_eq!(
 			m.solid.len() / 8,
 			5,
@@ -1192,7 +716,7 @@ mod tests {
 				Src::Missing
 			}
 		});
-		let m = mesh_chunk(&input, ZERO);
+		let m = mesh_chunk(&input);
 		assert_eq!(m.solid.len() / 8, 6, "top face vs air sentinel");
 	}
 
@@ -1209,7 +733,7 @@ mod tests {
 				Src::Missing
 			}
 		});
-		let m = mesh_chunk(&input, ZERO);
+		let m = mesh_chunk(&input);
 		assert_eq!(m.solid.len() / 8, 5, "+x face occluded by neighbor block");
 	}
 
@@ -1255,14 +779,7 @@ mod tests {
 	#[test]
 	fn packed_vertex_roundtrip() {
 		// Layer 700 proves the 10-bit field (the old format capped at 64).
-		let w0 = pack(
-			Vert {
-				pos: (16 * 12, 7 * 12, 3 * 12),
-				ao: 1,
-			},
-			Dir::East,
-			2,
-		);
+		let w0 = pack((16 * 12, 7 * 12, 3 * 12), Dir::East, 2);
 		assert_eq!(x_of(w0), 16);
 		assert_eq!(y_of(w0), 7);
 		assert_eq!(z_of(w0), 3);
@@ -1272,25 +789,16 @@ mod tests {
 			"positions are stored in twelfth-block units"
 		);
 		assert_eq!(dir_of(w0), Dir::East as u32);
-		assert_eq!(ao_of(w0), 1);
 		assert_eq!(corner_of(w0), 2);
-		let w1 = solid_word1(700, 12, 0, 5, false, [14, 9, 12]);
+		assert_eq!(w0 >> 29, 0, "bits 29-31 are free after the repack");
+		let w1 = solid_word1(700, 12, 0, false);
 		assert_eq!(w1 & 0x3ff, 700);
 		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
 		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
-		assert_eq!(tint_of(w1), 5);
-		assert_eq!((w1 >> 21) & 1, 0, "emissive bit clear");
-		assert_eq!(light_of(w1), 14, "Stage-B blocklight in bits 22-25");
-		assert_eq!(sky_of(w1), 9, "Stage-B skylight in bits 26-29");
-		assert_eq!(w1 >> 30, 3, "full bounce quantizes to the 2-bit max");
-		let dark = solid_word1(700, 12, 0, 5, true, [0, 0, 0]);
-		assert_eq!((dark >> 21) & 1, 1, "emissive bit set");
-		assert_eq!(light_of(dark), 0);
-		assert_eq!(sky_of(dark), 0);
-		assert_eq!(dark >> 30, 0);
-		// The 2-bit ramp: 0 → 0, 1..=5 → 0/1, mid → 2, seed-adjacent → 3.
-		let q = |b: u32| solid_word1(0, 0, 0, 0, false, [0, 0, b]) >> 30;
-		assert_eq!((q(1), q(4), q(8), q(11)), (0, 1, 2, 3));
+		assert_eq!((w1 >> 18) & 1, 0, "emissive bit clear");
+		assert_eq!(w1 >> 19, 0, "bits 19-31 are free after the repack");
+		let lit = solid_word1(700, 12, 0, true);
+		assert_eq!((lit >> 18) & 1, 1, "emissive bit set");
 	}
 
 	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come
@@ -1312,56 +820,9 @@ mod tests {
 		(w0 >> 24) & 0x7
 	}
 
-	/// Tint lives in the solid stream's WORD 1 now.
-	fn tint_of(w1: u32) -> u32 {
-		(w1 >> 18) & 0x7
-	}
-
-	/// Stage-B blocklight, solid word 1 bits 22-25.
-	fn light_of(w1: u32) -> u32 {
-		(w1 >> 22) & 0xf
-	}
-
-	/// Stage-B skylight, solid word 1 bits 26-29.
-	fn sky_of(w1: u32) -> u32 {
-		(w1 >> 26) & 0xf
-	}
-
-	#[test]
-	fn tint_varies_by_world_position_and_is_stable() {
-		// The same local block in two different chunks gets different
-		// tints (world-coord hash, no 16-block tiling), and meshing twice
-		// is bit-identical.
-		let d = solo(B::Dirt);
-		let a = mesh_chunk(&isolated(&d), ZERO);
-		let b = mesh_chunk(&isolated(&d), (16, 0, 0));
-		let c = mesh_chunk(&isolated(&d), ZERO);
-		assert_eq!(a.solid, c.solid, "meshing is deterministic");
-		assert_ne!(
-			tint_of(a.solid[1]),
-			tint_of(b.solid[1]),
-			"world offset changes the tint"
-		);
-		// Across a full chunk of stone, tints are non-constant.
-		let mut full = ChunkData::default();
-		for y in 0..4 {
-			for z in 0..16 {
-				for x in 0..16 {
-					full.set(x, y, z, B::Stone);
-				}
-			}
-		}
-		let m = mesh_chunk(&isolated(&full), ZERO);
-		let first = tint_of(m.solid[1]);
-		assert!(
-			m.solid.chunks(2).any(|p| tint_of(p[1]) != first),
-			"tint varies across the chunk"
-		);
-	}
-
 	#[test]
 	fn water_word_count_is_even() {
-		let m = mesh_chunk(&isolated(&solo(B::Water)), (48, 16, -32));
+		let m = mesh_chunk(&isolated(&solo(B::Water)));
 		assert_eq!(m.water.len() % 8, 0, "whole two-word quads only");
 		assert!(m.solid.is_empty());
 	}
@@ -1397,7 +858,7 @@ mod tests {
 	fn source_surface_drops_one_ninth() {
 		// Lone source with air above: top face all d = 9 − 8 = 1; side
 		// faces drop only their top-plane vertices; nothing is falling.
-		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::Water)));
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
 			assert_eq!(drop_of(w1), 1);
@@ -1418,7 +879,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 9, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		// Lower cell: water above → its side faces stay full height.
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
@@ -1440,7 +901,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 9, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		// 4 sides + bottom; the top face is occluded by the stone.
 		assert_eq!(m.water.len() / 8, 5);
 		for pair in m.water.chunks(2) {
@@ -1460,7 +921,7 @@ mod tests {
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(8, 9, 8, B::Stone);
 		d.set(9, 7, 8, B::Water); // plunge trigger in the +x column
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!(drop_of(w1), 0, "sealed at full height");
@@ -1477,7 +938,7 @@ mod tests {
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 9, 8, B::Stone);
 		d.set(7, 8, 8, B::Water); // open: air above
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let top = water_quad(&m.water, 7, 8, 8, Dir::Top);
 		for (w0, w1) in top {
 			let expect = u32::from(x_of(w0) != 8);
@@ -1487,7 +948,7 @@ mod tests {
 
 	#[test]
 	fn waterfall_top_drops_like_a_surface_cell() {
-		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)));
 		// Floating fall: 4 sides + top + bottom toward air. Air above, so
 		// its top-plane vertices take the corner surface (amount 8 → d=1)
 		// like any surface water; everything is flagged falling.
@@ -1500,7 +961,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(8, 9, 8, B::WaterFall);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!(drop_of(w1), 0, "submerged fall stays full");
@@ -1520,7 +981,7 @@ mod tests {
 		d.set(8, 8, 8, B::Stone);
 		d.set(9, 8, 8, B::WaterFlow7);
 		d.set(9, 7, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let upper = water_quad(&m.water, 8, 9, 8, Dir::Top);
 		for (w0, w1) in upper {
 			let expect = if x_of(w0) == 9 { 9 } else { 2 };
@@ -1549,7 +1010,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(7, 8, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let pool_top = water_quad(&m.water, 7, 8, 8, Dir::Top);
 		for (_, w1) in pool_top {
 			assert_eq!(drop_of(w1), 1, "pool surface undisturbed");
@@ -1586,7 +1047,7 @@ mod tests {
 		] {
 			d.set(x, 7, z, B::WaterFlow4); // ...and spreading below
 		}
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
 			assert_eq!(drop_of(w1), 1, "the source stays 8/9 tall");
 		}
@@ -1607,7 +1068,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(7, 8, 8, B::WaterFlow5);
 		d.set(8, 8, 8, B::WaterFall);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let fall_top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (w0, w1) in fall_top {
 			let expect = if x_of(w0) == 9 { 5 } else { 4 };
@@ -1623,13 +1084,13 @@ mod tests {
 		d.set(7, 8, 8, B::WaterFlow4);
 		d.set(8, 8, 9, B::WaterFlow4);
 		d.set(8, 8, 7, B::WaterFlow4);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
 			assert_eq!((w1 >> 15) & 7, 1, "flows toward +x");
 		}
 		// Sources rest even with open sides.
-		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::Water)));
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
 			assert_eq!((w1 >> 15) & 7, 0, "sources are still");
@@ -1641,13 +1102,13 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(8, 7, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!((w1 >> 18) & 1, 1, "splash cell foams");
 		}
 		// A fall still in the air doesn't.
-		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)));
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!((w1 >> 18) & 1, 0, "mid-air fall has no foam");
@@ -1671,11 +1132,11 @@ mod tests {
 		d.set(8, 7, 8, B::Stone);
 		d.set(10, 8, 8, B::WaterFall);
 		d.set(10, 7, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let mut impacts = m.impacts.clone();
 		impacts.sort_unstable();
 		assert_eq!(impacts, vec![8 | 8 << 4 | 8 << 8, 10 | 8 << 4 | 8 << 8]);
-		let m = mesh_chunk(&isolated(&solo(B::WaterFall)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::WaterFall)));
 		assert!(m.impacts.is_empty(), "mid-air fall is not an emitter");
 	}
 
@@ -1696,7 +1157,7 @@ mod tests {
 			d.set(x, 8, z, B::WaterFlow4); // the pool, sealing every side
 			d.set(x, 7, z, B::Stone);
 		}
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		assert!(
 			!m.water.chunks(8).any(|q| {
 				let c = |i: usize| (x_of(q[i * 2]), y_of(q[i * 2]), z_of(q[i * 2]));
@@ -1723,7 +1184,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(8, 7, 8, B::Water);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let side = water_quad(&m.water, 8, 8, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!(splash_of(w1), 3, "pool landing is an impact");
@@ -1743,7 +1204,7 @@ mod tests {
 		}
 		d.set(8, 8, 8, B::WaterFall);
 		d.set(8, 9, 8, B::WaterFall);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		for (dist, expect) in [(1, 2), (2, 1), (3, 0)] {
 			let top = water_quad(&m.water, 8 + dist, 7, 8, Dir::Top);
 			for (_, w1) in top {
@@ -1794,7 +1255,7 @@ mod tests {
 				Src::Air
 			}
 		});
-		mesh_chunk(&input, (128, 0, -64))
+		mesh_chunk(&input)
 	}
 
 	/// FNV-1a over every emitted word — a whole-mesh byte pin.
@@ -1817,7 +1278,15 @@ mod tests {
 	/// walk when no layer in reach holds falling water) must leave every
 	/// stream byte-identical — the impacts list drives spray emitters AND
 	/// waterfall audio, so a miss is silent in the mesh and audible in
-	/// the world. Golden captured before the skip existed.
+	/// the world.
+	///
+	/// Re-pinned at the M1 demolition (GI-DESIGN.md): the vertex format
+	/// repack moved the corner code from bits 29-30 to 27-28 and dropped
+	/// AO, the light nibbles and the tint, so every word changed. Quad
+	/// COUNTS are unchanged (4704 / 3224 / 2) — which is the part that
+	/// matters here, since the demolition removed shading, not geometry.
+	/// A count that moves means a culling or emission change and must not
+	/// be re-pinned without finding out why.
 	#[test]
 	fn water_heavy_chunk_mesh_is_pinned() {
 		let m = water_heavy();
@@ -1828,7 +1297,7 @@ mod tests {
 		);
 		assert_eq!(
 			digest(&m),
-			(4704, 3224, 2, 0xad1b_636f_3a49_3828),
+			(4704, 3224, 2, 0x89f2_6ce6_0311_3828),
 			"water-heavy mesh + impacts byte-identical"
 		);
 	}
@@ -1842,7 +1311,7 @@ mod tests {
 		for y in 8..=12 {
 			d.set(8, y, 8, B::WaterFall);
 		}
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		for (cell_y, expect) in [(12, 0), (8, 4)] {
 			let side = water_quad(&m.water, 8, cell_y, 8, Dir::West);
 			for (w0, w1) in side {
@@ -1851,7 +1320,7 @@ mod tests {
 			}
 		}
 		// Non-falling water carries zero fall bits.
-		let m = mesh_chunk(&isolated(&solo(B::Water)), ZERO);
+		let m = mesh_chunk(&isolated(&solo(B::Water)));
 		for pair in m.water.chunks(2) {
 			assert_eq!(fall_of(pair[1]), 0);
 		}
@@ -1865,7 +1334,7 @@ mod tests {
 		for y in 0..16 {
 			d.set(8, y, 8, B::WaterFall);
 		}
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		let side = water_quad(&m.water, 8, 0, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!(fall_of(w1), 15, "deep cells saturate");
@@ -1884,7 +1353,7 @@ mod tests {
 				Src::Air
 			}
 		});
-		let m = mesh_chunk(&input, ZERO);
+		let m = mesh_chunk(&input);
 		let side = water_quad(&m.water, 8, 15, 8, Dir::West);
 		for (_, w1) in side {
 			assert_eq!(fall_of(w1), 15, "unknown height above the seam");
@@ -1900,7 +1369,7 @@ mod tests {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFlow3);
 		d.set(9, 8, 8, B::WaterFlow5);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		assert_eq!(m.water.len() / 8, 2 * 5, "interface culled");
 		let top3 = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		let top5 = water_quad(&m.water, 9, 8, 8, Dir::Top);
@@ -1933,7 +1402,7 @@ mod tests {
 				Src::Air
 			}
 		});
-		let m = mesh_chunk(&input, ZERO);
+		let m = mesh_chunk(&input);
 		let top = water_quad(&m.water, 15, 8, 8, Dir::Top);
 		for (_, w1) in top {
 			assert_eq!(drop_of(w1), 1, "a source's top face stays full");
@@ -1948,7 +1417,7 @@ mod tests {
 				Src::Air
 			}
 		});
-		let flow_top = water_quad(&mesh_chunk(&mirror, ZERO).water, 0, 8, 8, Dir::Top);
+		let flow_top = water_quad(&mesh_chunk(&mirror).water, 0, 8, 8, Dir::Top);
 		for (w0, w1) in flow_top {
 			let expect = if x_of(w0) == 0 { 1 } else { 5 };
 			assert_eq!(drop_of(w1), expect, "seam pins, outer edge slopes away");
@@ -1969,7 +1438,7 @@ mod tests {
 		for (x, z) in [(7, 7), (9, 7), (7, 9), (9, 9)] {
 			d.set(x, 8, z, B::WaterFlow2);
 		}
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
 			assert_eq!(drop_of(w1), 1, "the source keeps its 8/9 surface");
 		}
@@ -1990,12 +1459,8 @@ mod tests {
 		assert_eq!(corners, [1, 5, 5, 7], "4/9 down to 2/9, no undershoot");
 	}
 
-	fn ao_of(w0: u32) -> u32 {
-		(w0 >> 27) & 0x3
-	}
-
 	fn corner_of(w0: u32) -> u32 {
-		(w0 >> 29) & 0x3
+		(w0 >> 27) & 0x3
 	}
 
 	/// The emitted quad (4 consecutive two-word vertices) for the given
@@ -2019,102 +1484,38 @@ mod tests {
 		panic!("face of ({bx},{by},{bz}) toward {dir:?} not found");
 	}
 
+	/// Every quad emits its corners in `face_corners` order, TL TR BL BR,
+	/// with no exceptions.
+	///
+	/// This replaces the old `quad_flips_toward_dark_tr_bl_diagonal`. The
+	/// emit order used to flip to [1,3,0,2] so the triangulation diagonal
+	/// crossed the darker AO corner pair; with baked AO gone there is no
+	/// per-corner signal left to steer it and the winding is simply fixed.
+	/// It still has to be pinned: `quad_indices` assumes this order, and a
+	/// quad wound the other way is deleted by `cull: Back` — invisible in
+	/// a unit test that only counts faces, obvious as holes on screen.
 	#[test]
-	fn open_field_face_has_full_ao() {
-		let m = mesh_chunk(&isolated(&solo(B::Dirt)), ZERO);
-		for pair in m.solid.chunks(2) {
-			assert_eq!(ao_of(pair[0]), 3, "no occluders anywhere");
-		}
-	}
-
-	#[test]
-	fn side_occluder_darkens_touching_corners() {
-		// Dirt at (8,8,8); occluder diagonally above at (9,9,8) sits in
-		// the top face's neighbor layer, +x of the face cell — exactly
-		// the two corners on the x=9 lattice edge (TL, BL) drop to 2.
+	fn every_quad_winds_in_face_corner_order() {
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Dirt);
-		d.set(9, 9, 8, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
-		assert_eq!(top.iter().filter(|v| ao_of(**v) == 2).count(), 2);
-		assert_eq!(top.iter().filter(|v| ao_of(**v) == 3).count(), 2);
-	}
-
-	#[test]
-	fn both_sides_floor_ao_to_zero() {
-		// Top-face corner at lattice (9,9,9): side1 (9,9,8) and side2
-		// (8,9,9) both occluded → that corner floors to 0 even though the
-		// diagonal cell (9,9,9) is empty.
-		let mut d = ChunkData::default();
-		d.set(8, 8, 8, B::Dirt);
-		d.set(9, 9, 8, B::Stone);
-		d.set(8, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
-		assert_eq!(top.iter().filter(|v| ao_of(**v) == 0).count(), 1);
-	}
-
-	#[test]
-	fn cross_chunk_occluder_darkens_border_corners() {
-		// The seam regression: the occluder exists only in the +x
-		// neighbor chunk, above the face plane — the old border-plane
-		// snapshot couldn't see it.
-		let mut d = ChunkData::default();
-		d.set(15, 8, 8, B::Dirt);
-		let mut other = ChunkData::default();
-		other.set(0, 9, 8, B::Stone); // padded (16, 9, 8)
-		let input = MeshInput::build(&d, |dx, dy, dz| {
-			if (dx, dy, dz) == (1, 0, 0) {
-				Src::Chunk(&other)
-			} else {
-				Src::Air
-			}
-		});
-		let m = mesh_chunk(&input, ZERO);
-		let top = quad_of(&m.solid, 15, 8, 8, Dir::Top);
-		assert_eq!(
-			top.iter().filter(|v| ao_of(**v) == 2).count(),
-			2,
-			"the two x=16 corners see the neighbor-chunk occluder"
-		);
-		assert_eq!(top.iter().filter(|v| ao_of(**v) == 3).count(), 2);
-	}
-
-	#[test]
-	fn quad_flips_toward_dark_tr_bl_diagonal() {
-		// Top face of (8,8,8): TL=(9,9,9) TR=(8,9,9) BL=(9,9,8) BR=(8,9,8).
-		// An occluder at TR's diagonal cell (7,9,9) darkens only TR →
-		// TL+BR = 6 > TR+BL = 5 → emit order rotates to [TR,BR,TL,BL].
-		let mut d = ChunkData::default();
-		d.set(8, 8, 8, B::Dirt);
-		d.set(7, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
-		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
-		assert_eq!(order, vec![1, 3, 0, 2], "diagonal through TR–BL");
-		// The dark-at-TL mirror keeps the default diagonal (which already
-		// runs through the dark corner).
-		let mut d = ChunkData::default();
-		d.set(8, 8, 8, B::Dirt);
-		d.set(9, 9, 9, B::Stone);
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		let top = quad_of(&m.solid, 8, 8, 8, Dir::Top);
-		let order: Vec<u32> = top.iter().map(|v| corner_of(*v)).collect();
-		assert_eq!(order, vec![0, 1, 2, 3], "default diagonal TL–BR");
-	}
-
-	#[test]
-	fn water_never_reorders_and_skips_ao() {
-		let mut d = ChunkData::default();
-		d.set(8, 8, 8, B::Water);
-		d.set(9, 9, 8, B::Stone); // would darken and flip a solid face
-		let m = mesh_chunk(&isolated(&d), ZERO);
-		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
-		let order: Vec<u32> = top.iter().map(|(w0, _)| corner_of(*w0)).collect();
-		assert_eq!(order, vec![0, 1, 2, 3], "water keeps the default order");
-		for (w0, _) in top {
-			assert_eq!(ao_of(w0), 3, "water skips AO");
+		// A neighbour on one side only, so the old rule would have had an
+		// asymmetric AO score to flip on.
+		d.set(9, 9, 8, B::Dirt);
+		let m = mesh_chunk(&isolated(&d));
+		for dir in [
+			Dir::West,
+			Dir::East,
+			Dir::North,
+			Dir::South,
+			Dir::Top,
+			Dir::Bottom,
+		] {
+			let q = quad_of(&m.solid, 8, 8, 8, dir);
+			assert_eq!(
+				q.map(corner_of),
+				[0, 1, 2, 3],
+				"{dir:?} must emit TL TR BL BR"
+			);
 		}
 	}
 
@@ -2127,7 +1528,7 @@ mod tests {
 		d.set(8, 8, 8, B::Leaves);
 		d.set(9, 8, 8, B::Leaves);
 		d.set(8, 7, 8, B::Dirt);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
 		let layer_of = |p: &[u32]| p[1] & 0x3ff;
 		let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 8).count() / 4;
@@ -2143,7 +1544,7 @@ mod tests {
 		// Per-face table: grass top/side/bottom are three distinct layers.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Grass);
-		let m = mesh_chunk(&isolated(&d), ZERO);
+		let m = mesh_chunk(&isolated(&d));
 		for p in m.solid.chunks(2) {
 			let expect = match dir_of(p[0]) as usize {
 				n if n == Dir::Top as usize => 3,    // GrassTop

@@ -110,7 +110,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	);
 	let albedo = select(in.albedo, tex.rgb, in.uvl.z >= 0.0);
 	// RTGI: quantized-sun lambert x traced visibility + probe indirect —
-	// the same combine as chunk.wgsl, minus AO.
+	// the same combine as chunk.wgsl.
 	let side = i32(frame.gi_misc.x);
 	let gp = in.world + in.wn * 0.6;
 	let indirect = INDIRECT_K
@@ -118,7 +118,6 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);
 	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
 	let sh = mix(1.0, sv, frame.light_dir.w);
-	var col = albedo * (frame.light_color.rgb * direct * sh + indirect);
-	col = apply_fog(col, distance(in.world, frame.cam_pos.xyz), in.world);
+	let col = albedo * (frame.light_color.rgb * direct * sh + indirect);
 	return vec4f(col, 1.0);
 }

@@ -1,9 +1,13 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
-// RTGI shading (GI-DESIGN.md): all lighting arrives through the
-// half-res GI resolve buffers — probe-traced indirect (sky, bounce,
-// torches) plus a per-pixel DDA sun visibility that replaces shadow
-// maps entirely. This shader just upsamples bilaterally and combines:
-// tex * ao * (light_color * lambert * sunvis + indirect), then fog.
+// RTGI shading (GI-DESIGN.md): ALL lighting arrives through the
+// half-res GI resolve buffers — probe-traced indirect plus a per-pixel
+// DDA sun visibility. This shader upsamples bilaterally and combines:
+// tex * (light_color * lambert * sunvis + indirect).
+//
+// Nothing else shades here any more. Baked AO, the Stage-B light
+// nibbles, the per-block tint jitter and the distance/underwater fog
+// all came out at the M1 demolition; contact darkening is the path
+// tracer's job now, and the participating medium is M2's.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -34,27 +38,24 @@ struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
+	// Lambert against the caster, flat per face (the geometry is
+	// blocky, so a face has exactly one normal).
 	@location(2) @interpolate(flat) direct: f32,
-	@location(3) fog_dist: f32,
-	// Per-vertex ambient occlusion factor, interpolated across the quad
-	// — contact darkening the probe grid is too coarse to resolve.
-	@location(4) ao: f32,
-	// World position — the underwater fog needs the ray endpoint.
-	@location(5) world: vec3f,
-	// Stage-A emissive (w1 bit 21): 1 = fullbright ink — the lighting
-	// terms are skipped entirely (fog still applies).
-	@location(6) @interpolate(flat) emissive: u32,
+	// Distance to the camera — the bilateral upsample's depth guide.
+	@location(3) view_dist: f32,
+	// Stage-A emissive (w1 bit 18): 1 = fullbright ink — the lighting
+	// terms are skipped entirely.
+	@location(4) @interpolate(flat) emissive: u32,
 	// Face-normal code (axis*2 + sign) matching gi_resolve's encoding,
 	// for the bilateral upsample's normal test.
-	@location(7) @interpolate(flat) ncode: u32,
+	@location(5) @interpolate(flat) ncode: u32,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
-// index, 27-28 ao, 29-30 corner. w1 — solid material: bits 0-9 texture
-// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint, 21 emissive,
-// 22-25 blocklight, 26-29 skylight (the light nibbles are legacy — dead
-// to this shader, deleted from the format when the old system goes).
+// index, 27-28 corner, 29-31 free. w1 — solid material: bits 0-9
+// texture layer, 10-13 uv u (twelfths), 14-17 uv v, 18 emissive,
+// 19-31 free. Must agree with `mesher::pack` / `solid_word1`.
 // Twelfths → blocks with the whole-block part split off in INTEGER
 // space: full-block lattice vertices (multiples of 12) decode exactly
 // even under fast-math (a plain /12.0 becomes an inexact reciprocal
@@ -86,14 +87,8 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.layer = w1 & 0x3ffu;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
-	o.fog_dist = distance(world, frame.cam_pos.xyz);
-	o.world = world;
-	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
-	// per-block tint step (w1 bits 18-20 → 0.95..1.05); tint is constant
-	// across the quad, so the product interpolates exactly.
-	let jitter = 1.0 + (f32((w1 >> 18u) & 7u) - 3.5) * (0.10 / 7.0);
-	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
-	o.emissive = (w1 >> 21u) & 1u;
+	o.view_dist = distance(world, frame.cam_pos.xyz);
+	o.emissive = (w1 >> 18u) & 1u;
 	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
 	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
 	o.ncode = code_of[ni];
@@ -114,11 +109,9 @@ fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> @builtin(
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Stage-A emissive: the ink is its own light — no sun, no GI, no AO.
-	// Fog still applies (a torch across the valley should haze out like
-	// everything else does).
+	// Stage-A emissive: the ink is its own light — no sun, no GI.
 	if i.emissive != 0u {
-		return vec4f(apply_fog(tex, i.fog_dist, i.world), frame.misc.x);
+		return vec4f(tex, frame.misc.x);
 	}
 	// Bilateral upsample of the half-res GI buffers: the 4 nearest
 	// half-res texels, each weighted by view-distance proximity and a
@@ -133,7 +126,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
 		let ind = textureLoad(gi_indirect, c, 0);
 		let sn = textureLoad(gi_sun, c, 0);
-		var w = 1.0 / (0.02 + abs(ind.w - i.fog_dist) / max(i.fog_dist, 1.0));
+		var w = 1.0 / (0.02 + abs(ind.w - i.view_dist) / max(i.view_dist, 1.0));
 		if u32(round(sn.g * 255.0)) != i.ncode {
 			w *= 0.01;
 		}
@@ -142,10 +135,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		wsum += w;
 	}
 	let indirect = acc / wsum;
-	// Twilight fades the traced sun exactly as it faded mapped shadows.
+	// Twilight fades the traced sun the way it faded mapped shadows.
 	let sh = mix(1.0, sun_acc / wsum, frame.light_dir.w);
-	var col = tex * i.ao * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
-	// Distance fog toward the sky horizon, hiding chunk pop-in.
-	col = apply_fog(col, i.fog_dist, i.world);
+	let col = tex * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
 	return vec4f(col, frame.misc.x);
 }

@@ -68,7 +68,6 @@ pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
 	pub draw_dist: i32,
 	/// Shadow map resolution: 2048 desktop, 1024 mobile.
-	pub shadow_size: u32,
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
@@ -141,9 +140,6 @@ pub struct EngineConfig {
 	/// outside bench — captures must stay deterministic, and worker
 	/// pools already produce across frames.
 	pub adaptive_stream: bool,
-	/// Distance fog band as fractions of the far plane.
-	pub fog_start_frac: f32,
-	pub fog_end_frac: f32,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
 	/// tiny values exercise the growth path in a normal run.
@@ -169,7 +165,6 @@ pub struct EngineConfig {
 	/// where the same slice costs more to encode and the refresh sawtooth
 	/// is a bigger share of the frame; the refresh just spans more frames,
 	/// and the sun moves imperceptibly over the difference.
-	pub wide_slice_draws: u32,
 	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot
 	/// bound this on the web: `write_buffer` merely RECORDS the copy and
 	/// Chrome's GPU process performs the staging transfer at submit, so the
@@ -188,7 +183,6 @@ impl EngineConfig {
 		let workers = std::thread::available_parallelism().map_or(4, |n| (n.get() - 2).clamp(2, 4));
 		Self {
 			draw_dist: 20,
-			shadow_size: 2048,
 			workers,
 			seed: None,
 			tod: None,
@@ -211,14 +205,11 @@ impl EngineConfig {
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
-			fog_start_frac: 0.70,
-			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
 			spike_log: false,
-			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			debug_gi: false,
 			debug_gi_probes: false,
@@ -228,7 +219,6 @@ impl EngineConfig {
 	pub fn mobile() -> Self {
 		Self {
 			draw_dist: 10,
-			shadow_size: 1024,
 			workers: 2,
 			seed: None,
 			tod: None,
@@ -252,14 +242,11 @@ impl EngineConfig {
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
-			fog_start_frac: 0.70,
-			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
 			spike_log: false,
-			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			debug_gi: false,
 			debug_gi_probes: false,
@@ -279,7 +266,6 @@ impl EngineConfig {
 			// Everything the main thread does is serialized with the render
 			// loop here, so the per-frame ceilings that desktop can afford
 			// to leave generous have to be real.
-			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			..Self::desktop()
 		}
@@ -292,10 +278,8 @@ impl EngineConfig {
 
 	pub(crate) fn render_config(&self) -> RenderConfig {
 		RenderConfig {
-			shadow_size: self.shadow_size,
 			draw_dist: self.draw_dist,
 			spray_droplets: self.spray_droplets,
-			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
 			debug_gi: self.debug_gi,
 			debug_gi_probes: self.debug_gi_probes,
@@ -329,14 +313,18 @@ const STREAM_BUDGET_MS: f32 = 3.0;
 /// nearest-first, so anything beyond that is the far ring choosing to wait
 /// rather than to hitch. The byte ceiling below still applies.
 const UPLOAD_MIN: usize = 2;
+
+/// The [`UPLOAD_MIN`] twin for the RTGI voxel window. Higher because a GI
+/// chunk is 4 KiB against a mesh's tens of KiB, and because a window the
+/// camera has outrun is not merely late — it traces rays against terrain
+/// that is no longer there.
+const GI_UPLOAD_MIN: u32 = 8;
 /// Mesh bytes per frame on desktop — high enough to be a backstop against
 /// pathological frames rather than a throttle on normal streaming.
 const UPLOAD_BYTES_MAX_NATIVE: usize = 8 << 20;
 /// …and on the web/mobile, where the staging copy lands in another
 /// process at submit time and is invisible to `upload_ms`.
 const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
-/// Wide-cascade slice size where encode is expensive (web, mobile).
-const WIDE_SLICE_DRAWS_CONSTRAINED: u32 = 448;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
@@ -808,6 +796,13 @@ fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// Camera far plane: draw_dist × 32 (Java World.updateDepth). One
+/// definition — it is set at construction and again whenever the
+/// settings screen retunes the draw distance.
+fn far_plane(draw_dist: i32) -> f32 {
+	(draw_dist * 32) as f32
+}
+
 fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
@@ -889,7 +884,7 @@ impl Engine {
 				.map_or(0, |d| d.subsec_nanos());
 			nanos as f64 / u32::MAX as f64 * 10000.0
 		});
-		let far = (config.draw_dist * 32) as f32;
+		let far = far_plane(config.draw_dist);
 		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
@@ -1215,7 +1210,7 @@ impl Engine {
 		}
 		if s.draw_dist != self.config.draw_dist {
 			self.config.draw_dist = s.draw_dist;
-			self.camera.far = (s.draw_dist * 32) as f32;
+			self.camera.far = far_plane(s.draw_dist);
 			self.pipeline.set_draw_dist(s.draw_dist);
 			if let Some(net) = self.net.as_mut() {
 				if net.ready() {
@@ -2065,11 +2060,6 @@ impl Engine {
 		self.pipeline.gi_redirty_all();
 	}
 
-	/// Camera far plane = light rig depth = draw_dist × 32 (Java World.updateDepth).
-	fn depth(&self) -> f32 {
-		(self.config.draw_dist * 32) as f32
-	}
-
 	fn camera_chunk(&self) -> ChunkPos {
 		ChunkPos::new(
 			(self.camera.pos.x / 16.0).floor() as i32,
@@ -2115,10 +2105,19 @@ impl Engine {
 		self.pending.maintain_ms = ms_since(t_maintain);
 		// RTGI: scroll the window to the camera (re-dirtying whatever
 		// just entered coverage), pull freshly-dirty chunks into the
-		// re-upload queue, then feed the voxel window under its own byte
-		// budget — a quarter of the mesh-upload ceiling, ~4 KiB a chunk,
-		// so a cold fill spans frames instead of spiking one
-		// (GI-DESIGN.md).
+		// re-upload queue, then feed the voxel window under a byte budget
+		// — a quarter of the mesh-upload ceiling, ~4 KiB a chunk — AND
+		// the shared streaming deadline (GI-DESIGN.md).
+		//
+		// The clock matters as much as the bytes: `classify_gi` walks all
+		// 4096 cells of a chunk, and the byte cap alone permits 512 of
+		// those in one frame. This was the only streaming stage that
+		// ignored `deadline`, and the only one charged to no phase — a
+		// classify burst landed in `busy_ms` with nothing to attribute it
+		// to. `GI_UPLOAD_MIN` is the same minimum-progress floor the mesh
+		// loop uses, so a frame that is already over budget still makes
+		// headway instead of starving the window forever.
+		let t_gi = web_time::Instant::now();
 		let gi_window = self.config.draw_dist;
 		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {
@@ -2130,7 +2129,11 @@ impl Engine {
 			renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
 		}
 		let mut gi_budget = self.config.upload_bytes_max / 4;
+		let mut gi_uploads = 0u32;
 		while gi_budget >= 4096 {
+			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
+				break;
+			}
 			let Some(pos) = self.gi_queue.pop_front() else {
 				break;
 			};
@@ -2145,8 +2148,10 @@ impl Engine {
 			if let Some(chunk) = self.pipeline.classify_gi(pos) {
 				renderer.gi_upload(gpu, pos, &chunk);
 				gi_budget -= 4096;
+				gi_uploads += 1;
 			}
 		}
+		self.pending.gi_ms = ms_since(t_gi);
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.
 		if self.net.is_none() {
@@ -2237,7 +2242,6 @@ impl Engine {
 		self.metrics.stale_dropped += m.stale_dropped;
 		self.metrics.requeued += m.requeued;
 		self.metrics.upload_saturated += m.saturated as u32;
-		self.metrics.light_pops += m.light_pops;
 		self.metrics.gauges = PipelineGauges {
 			gen_queue: m.gen_queue,
 			mesh_queue: m.mesh_queue,
@@ -2248,7 +2252,6 @@ impl Engine {
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
 			net_backlog: self.net_backlog.len() as u32,
-			light_pending: m.light_pending,
 			// The bytes the loop above just handed over — the number the
 			// byte cap actually governs, and the only per-frame signal for
 			// a staging transfer `upload_ms` structurally cannot time.
@@ -3081,63 +3084,18 @@ impl Engine {
 		// Directions toward the bodies in the sky (opposite the light).
 		let sun = -self.sun.sun_dir();
 		let moon = -self.sun.moon_dir();
-		let far = self.depth();
-		let (mut fog_start, mut fog_end) = (
-			self.config.fog_start_frac * far,
-			self.config.fog_end_frac * far,
-		);
 		let cam = self.camera.pos;
-		// Underwater: substitute the atmosphere the shaders read (the
-		// clear color and sky pass follow automatically) — no shader
-		// branches needed. The palette is DERIVED from the atmosphere
-		// sample, not hardcoded, so day/night falls out naturally.
-		// Tunables (shader partners: the WATER_* block in
-		// frame_common.wgsl):
-		// Mean albedo of the water tile texture — the biggest hue lever
-		// for matching submerged fog to the from-above deep-water look.
-		const UW_ALBEDO: [f32; 3] = [0.12, 0.27, 0.35];
-		// Day-arc-average direct-light factor folded into the deep color.
-		const UW_DIRECT: f32 = 0.6;
-		// Light funnels down through the surface: the submerged sky
-		// gradient brightens overhead (complements the Snell window).
-		const UW_ZENITH_BOOST: f32 = 1.8;
-		// Per-channel ambient survival underwater (red dies first, like
-		// WATER_EXTINCTION) — submerged terrain isn't lit by open air.
-		const UW_AMBIENT: [f32; 3] = [0.45, 0.75, 0.92];
+		// The sky is the sky, submerged or not. The old model substituted
+		// a hand-tuned deep-water palette for the atmosphere whenever the
+		// eye went under, which meant the GI rays were told the sky was
+		// green — the attenuation belongs on the PATH through the water
+		// (the sun DDA's transmittance today, M2's participating medium
+		// for the view ray), never in the radiance of the source.
 		let submerged = self.eye_in_water();
-		let (mut horizon, mut zenith) = (atmos.horizon, atmos.zenith);
-		let mut ambient = atmos.ambient;
-		if submerged {
-			// Lit deep-water color: what water.wgsl's `scatter` converges
-			// to from above (albedo x (ambient + direct)). The submerged
-			// fog and the below-horizon sky both converge HERE, which is
-			// what makes above/below views of the same water agree.
-			let uw =
-				|i: usize| UW_ALBEDO[i] * (atmos.ambient[i] + atmos.light_color[i] * UW_DIRECT);
-			horizon = [uw(0), uw(1), uw(2)];
-			zenith = [
-				horizon[0] * UW_ZENITH_BOOST,
-				horizon[1] * UW_ZENITH_BOOST,
-				horizon[2] * UW_ZENITH_BOOST,
-			];
-			// The band parameters are ignored by the submerged exp fog
-			// (apply_fog keys off water_misc.x) but stay sane for
-			// anything else reading them.
-			fog_start = 2.0;
-			fog_end = 28.0;
-			ambient = [
-				ambient[0] * UW_AMBIENT[0],
-				ambient[1] * UW_AMBIENT[1],
-				ambient[2] * UW_AMBIENT[2],
-			];
-		}
+		let (horizon, zenith) = (atmos.horizon, atmos.zenith);
 		FrameUniforms {
 			view_proj: vp.to_cols_array_2d(),
 			inv_view_proj: vp.inverse().to_cols_array_2d(),
-			// Dead since P4: no shader reads the cascade matrices — the
-			// slots survive only for the pinned layout, until P6 re-pins.
-			light_near: glam::Mat4::IDENTITY.to_cols_array_2d(),
-			light_wide: glam::Mat4::IDENTITY.to_cols_array_2d(),
 			light_dir: [caster.dir.x, caster.dir.y, caster.dir.z, caster.strength],
 			light_color: [
 				atmos.light_color[0],
@@ -3146,21 +3104,13 @@ impl Engine {
 				// Animation clock (water scroll/foam) in the spare lane.
 				self.time_secs,
 			],
-			ambient: [ambient[0], ambient[1], ambient[2], 0.0],
-			fog_color: [horizon[0], horizon[1], horizon[2], fog_start],
-			cam_pos: [cam.x, cam.y, cam.z, 1.0 / (fog_end - fog_start)],
+			clear_color: [horizon[0], horizon[1], horizon[2], 0.0],
+			cam_pos: [cam.x, cam.y, cam.z, 0.0],
 			sun_dir: [sun.x, sun.y, sun.z, atmos.star_intensity],
 			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
 			zenith: [zenith[0], zenith[1], zenith[2], 0.0],
 			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
-			misc: [
-				1.0,
-				1.0,
-				1.0 / self.config.shadow_size as f32,
-				// Wide-cascade texel size in world units (extent / resolution),
-				// the chunk shader's normal-offset distance.
-				far / self.config.shadow_size as f32,
-			],
+			misc: [1.0, 0.0, 0.0, 0.0],
 			water_misc: [
 				f32::from(submerged),
 				f32::from(self.config.ssr),
@@ -3199,9 +3149,8 @@ impl Game for Engine {
 		self.recompute_ui_scale();
 		self.build_renderer(gpu, surface_format);
 		log::info!(
-			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
-			self.config.draw_dist,
-			self.config.shadow_size
+			"engine init: draw_dist={} format={surface_format:?}",
+			self.config.draw_dist
 		);
 	}
 
@@ -3560,11 +3509,11 @@ impl Game for Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
-		// A fixed --tod freezes the sun angle (dev builds only). The
-		// returned wide-cascade-due flag is obsolete — RTGI has no
-		// cascades; the call still advances the day cycle and reanchor.
+		// A fixed --tod freezes the sun angle (dev builds only): advance
+		// the day cycle, then re-assert the override on top, so a capture
+		// run has a genuinely static sun for the GI to converge against.
 		let fixed_tod = self.config.tod;
-		let _ = self.sun.update(dt, self.camera.pos);
+		self.sun.update(dt);
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}

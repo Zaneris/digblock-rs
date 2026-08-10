@@ -31,7 +31,7 @@ pub fn start() -> Result<(), JsValue> {
 		.expect("window.location");
 
 	// Query params mirror the desktop flags: ?seed=, ?tod=, ?draw=,
-	// ?ssr=0, ?shadow=, ?overlay, ?name=, ?master= (menu multiplayer),
+	// ?ssr=0, ?overlay, ?name=, ?master= (menu multiplayer),
 	// ?join / ?server= (non-interactive join for scripted flows). The
 	// defaults are full desktop quality — these exist to opt weaker
 	// hardware down.
@@ -69,9 +69,6 @@ pub fn start() -> Result<(), JsValue> {
 			digblock_render::settings::UI_SCALE_MIN,
 			digblock_render::settings::UI_SCALE_MAX,
 		);
-	}
-	if let Some(s) = param::<u32>(&params, "shadow") {
-		config.shadow_size = s.clamp(512, 4096);
 	}
 	config.overlay = flag(&params, "overlay");
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and

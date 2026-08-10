@@ -6,9 +6,8 @@ use digblock_core::mesher::{quad_indices, MeshData};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 
-use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_WATER};
+use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_PREPASS, Q_WATER};
 use crate::overlay::Overlay;
-use crate::shadow::ShadowCascades;
 use crate::sky::SkyDraw;
 use crate::texture::BlockTextures;
 use crate::water::WaterDraw;
@@ -101,7 +100,7 @@ fn grown_slots(current: u32, needed: u32) -> u32 {
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The packed two-word chunk vertex (see `mesher::pack`), shared by the
-/// solid, water, and shadow pipelines.
+/// solid, water, and depth-prepass pipelines.
 const GEOMETRY_ATTRS: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
 	format: wgpu::VertexFormat::Uint32x2,
 	offset: 0,
@@ -126,8 +125,8 @@ pub(crate) fn geometry_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 /// once per pass. Every chunk draws one instance at `first_instance =
 /// slot`, so the vertex stage picks its own origin out and the per-chunk
 /// loop is `set_vertex_buffer` + `draw_indexed` — no bind group, no
-/// dynamic offset. chunk.wgsl / water.wgsl / shadow.wgsl all read it at
-/// `@location(1)` and must be changed together.
+/// dynamic offset. chunk.wgsl's `vs`/`vs_depth` and water.wgsl all read
+/// it at `@location(1)` and must be changed together.
 pub(crate) fn origin_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 	wgpu::VertexBufferLayout {
 		array_stride: ORIGIN_STRIDE,
@@ -141,15 +140,11 @@ pub(crate) fn origin_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 /// renderer itself never infers platform tiers from other knobs.
 #[derive(Clone)]
 pub struct RenderConfig {
-	/// Shadow map resolution (both cascades).
-	pub shadow_size: u32,
 	/// Draw distance in chunks (sizes the chunk-origin buffer).
 	pub draw_dist: i32,
 	/// Spray droplets per waterfall-impact instance (on top of the mist
 	/// slabs): 64 desktop, 24 mobile.
 	pub spray_droplets: u32,
-	/// Per-frame wide-shadow-refresh encode cap (see WIDE_SLICE_DRAWS).
-	pub wide_slice_draws: u32,
 	/// Force the initial chunk-origin capacity in slots (`DIG_CHUNK_SLOTS`
 	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
 	/// normal run. None = sized from `draw_dist`.
@@ -209,19 +204,16 @@ pub struct FrameUniforms {
 	pub view_proj: [[f32; 4]; 4],
 	/// Inverse of view_proj — sky-pass view-ray reconstruction.
 	pub inv_view_proj: [[f32; 4]; 4],
-	pub light_near: [[f32; 4]; 4],
-	pub light_wide: [[f32; 4]; 4],
 	/// xyz = active caster dir (sun or moon), toward the ground;
-	/// w = shadow strength 0..1 (twilight fade).
+	/// w = caster strength 0..1 (twilight fade).
 	pub light_dir: [f32; 4],
 	/// rgb = direct light color (sun by day, moonlight by night);
 	/// w = the animation clock in seconds (wraps at 600).
 	pub light_color: [f32; 4],
-	/// rgb = sky-tinted ambient floor.
-	pub ambient: [f32; 4],
-	/// rgb = fog color (sky horizon); w = fog start distance (units).
-	pub fog_color: [f32; 4],
-	/// xyz = camera position; w = 1 / (fog_end − fog_start).
+	/// rgb = the scene-pass clear color (the sky horizon tint the sky
+	/// pass then draws over); w reserved.
+	pub clear_color: [f32; 4],
+	/// xyz = camera position; w reserved.
 	pub cam_pos: [f32; 4],
 	/// xyz = direction toward the sun in the SKY (= −light dir);
 	/// w = star intensity 0..1.
@@ -232,8 +224,8 @@ pub struct FrameUniforms {
 	pub zenith: [f32; 4],
 	/// rgb = sky horizon color.
 	pub horizon: [f32; 4],
-	/// x = alpha, y = shadows enabled, z = shadow map texel size (UV),
-	/// w = wide-cascade texel size in world units (normal-offset bias).
+	/// x = water alpha; yzw reserved (the shadow-map lanes died with the
+	/// cascades — nothing has read them since).
 	pub misc: [f32; 4],
 	/// x = camera underwater (0/1), y = SSR enabled (0/1), z = water-
 	/// surface height above the camera (the shaders' underwater
@@ -277,10 +269,9 @@ pub struct ChunkGpu {
 	pub(crate) center: glam::Vec3,
 }
 
-/// This frame's culled draw lists. The resident set used to be walked —
-/// and frustum-tested — three separate times per frame (scene, near
-/// shadow, water); all three come out of one linear pass now, and the
-/// scene list carries the only draw ordering the pass gets.
+/// This frame's culled draw lists. The resident set is walked — and
+/// frustum-tested — exactly once per frame, and the scene list carries
+/// the only draw ordering the pass gets.
 struct CullLists {
 	/// Camera-visible solid chunks, coarsely front-to-back.
 	scene: Vec<u32>,
@@ -328,25 +319,12 @@ fn scatter_by_bucket(keyed: &[(u8, u32)], counts: &[u32; DIST_BUCKETS], out: &mu
 	}
 }
 
-/// Default per-frame wide-refresh encode cap (RenderConfig can
-/// override). A full-set encode in one frame is a guaranteed missed
-/// vsync; sliced it stays ~1-2ms/frame. Sized so a 256-block-tall
-/// world's drawn set (surface shell, not the full resident count) still
-/// refreshes within a handful of frames — the sun moves imperceptibly
-/// in that window.
-pub(crate) const WIDE_SLICE_DRAWS: u32 = 1536;
-
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
 	/// Depth-only prepass over the opaque solids: fills the scene depth
 	/// the GI resolve reconstructs world positions from, before any
 	/// shading runs.
 	prepass_pipeline: wgpu::RenderPipeline,
-	/// The two-cascade shadow system. DORMANT since P4: nothing samples
-	/// the maps and no shadow pass encodes — the field survives only so
-	/// P6 can delete the whole module in one sweep.
-	#[allow(dead_code)]
-	shadow: ShadowCascades,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
 	/// Fullscreen procedural sky, drawn after solids, before water.
@@ -509,7 +487,7 @@ impl Renderer {
 		// sampler), the offscreen scene color, and a linear sampler
 		// (refraction/SSR offsets). Folding the scene targets into
 		// group 0 keeps the water pipelines within the 4-bind-group
-		// default limit while freeing group 2 for the shadow split.
+		// default limit while freeing group 2 for the GI world data.
 		let water_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("water frame + scene targets"),
 			entries: &[
@@ -585,11 +563,6 @@ impl Renderer {
 			min_filter: wgpu::FilterMode::Linear,
 			..Default::default()
 		});
-
-		// The shadow system is DORMANT (P4): nothing samples its maps and
-		// nothing encodes its passes. Constructed only so P6 can delete
-		// the module, its config knobs, and this line together.
-		let shadow = ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws);
 
 		// Textures + the GI system come before the pipelines: the solid
 		// layout references the GI scene bind-group layout, and GiDraw's
@@ -810,7 +783,6 @@ impl Renderer {
 		Self {
 			solid_pipeline,
 			prepass_pipeline,
-			shadow,
 			water,
 			sky,
 			frame_buf,
@@ -874,10 +846,8 @@ impl Renderer {
 
 	/// Replace `origin_buf` with a larger one and repopulate it from the
 	/// CPU mirror in a single write of exactly the allocated slots — free
-	/// slots keep whatever they held, since no draw ever names them. Slot
-	/// numbers are untouched, so the shadow wide-refresh job (which
-	/// snapshots ChunkPos, not slots) is unaffected; every pass binds the
-	/// origin stream fresh each frame.
+	/// slots keep whatever they held, since no draw ever names them. Every
+	/// pass binds the origin stream fresh each frame.
 	fn grow_chunk_buf(&mut self, gpu: &Gpu, needed_slots: u32) {
 		let old = self.chunk_slots;
 		let new_slots = grown_slots(old, needed_slots);
@@ -1371,7 +1341,6 @@ impl Renderer {
 
 		let draw = ChunkDraw {
 			chunks: &self.chunks,
-			by_pos: &self.by_pos,
 			origin_buf: &self.origin_buf,
 			index_buf: &self.index_buf,
 		};
@@ -1392,7 +1361,7 @@ impl Renderer {
 						}),
 						stencil_ops: None,
 					}),
-					timestamp_writes: None,
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_PREPASS)),
 					occlusion_query_set: None,
 				});
 				pass.set_pipeline(&self.prepass_pipeline);
@@ -1440,10 +1409,13 @@ impl Renderer {
 			self.gi.encode_resolve(
 				gpu,
 				&mut encoder,
+				self.gpu_timer.as_ref(),
 				frame,
-				&targets.gi_resolve_bg,
-				&targets.gi_indirect_view,
-				&targets.gi_sun_view,
+				crate::gi::ResolveTargets {
+					bind: &targets.gi_resolve_bg,
+					indirect_view: &targets.gi_indirect_view,
+					sun_view: &targets.gi_sun_view,
+				},
 			);
 
 			// Scene pass: solids + sky into the offscreen color target;
@@ -1459,9 +1431,9 @@ impl Renderer {
 							// braces for far-plane precision edges (the sky
 							// pass covers every non-terrain pixel anyway).
 							load: wgpu::LoadOp::Clear(wgpu::Color {
-								r: f64::from(frame.fog_color[0]),
-								g: f64::from(frame.fog_color[1]),
-								b: f64::from(frame.fog_color[2]),
+								r: f64::from(frame.clear_color[0]),
+								g: f64::from(frame.clear_color[1]),
+								b: f64::from(frame.clear_color[2]),
 								a: 1.0,
 							}),
 							store: wgpu::StoreOp::Store,
@@ -1664,15 +1636,11 @@ impl Renderer {
 	}
 }
 
-/// Everything a pass needs to draw chunks: the resident set, its index
-/// (for the wide-refresh job, which snapshots ChunkPos), and the two
-/// buffers bound once per pass. One borrow instead of four in the pass
+/// Everything a pass needs to draw chunks: the resident set plus the two
+/// buffers bound once per pass. One borrow instead of three in the pass
 /// signatures, which otherwise grow an argument per feature.
 pub(crate) struct ChunkDraw<'a> {
 	pub chunks: &'a [ChunkGpu],
-	/// Read only by the dormant shadow module (P6 deletes both).
-	#[allow(dead_code)]
-	pub by_pos: &'a FxHashMap<ChunkPos, u32>,
 	pub origin_buf: &'a wgpu::Buffer,
 	pub index_buf: &'a wgpu::Buffer,
 }
@@ -1690,8 +1658,8 @@ impl ChunkDraw<'_> {
 /// `first_instance = slot` — which is how the vertex stage picks its
 /// origin out of the instance-step origin buffer bound once per pass.
 /// Two encoder calls where the dynamic-offset bind group cost three; on
-/// wasm each is a JS hop with validation, and the scene, both shadow
-/// passes, and both water subpasses each walk thousands of chunks.
+/// wasm each is a JS hop with validation, and the depth prepass, the
+/// scene, and both water subpasses each walk thousands of chunks.
 /// Returns the index count drawn.
 pub(crate) fn draw_chunk(pass: &mut wgpu::RenderPass<'_>, mesh: &ChunkMesh, slot: u32) -> u32 {
 	pass.set_vertex_buffer(0, mesh.buf.slice(..));
@@ -1711,9 +1679,8 @@ pub(crate) fn chunk_center(pos: ChunkPos) -> glam::Vec3 {
 
 /// Chunk bounding-sphere test against extracted side planes. RADIUS is
 /// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
-/// near/far deliberately ignored). Shared by the camera cull, both shadow
-/// frusta, and the near-map dirty test, so the magic constant lives once
-/// and the dirty test can't disagree with the pass it guards.
+/// near/far deliberately ignored). One definition, so the magic constant
+/// can't drift between the callers that share it.
 pub(crate) fn sphere_in_frustum(center: glam::Vec3, planes: &[glam::Vec4; 4]) -> bool {
 	const RADIUS: f32 = 13.86;
 	planes

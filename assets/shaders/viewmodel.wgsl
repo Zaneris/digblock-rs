@@ -47,13 +47,6 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// Face-axis contrast. The camera's probe ambient is one omni color, so
-// without this every unlit face of the item would read identically
-// flat; the values are the old world AXIS table, kept as the item's
-// own look (its faces rotate with the view, so a world-space gather
-// per face would be wrong anyway).
-const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
-
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
@@ -79,7 +72,7 @@ fn vs(
 	out.pos = vm.mvp * vec4f(pos, 1.0);
 	out.uv = uv;
 	out.layer = layer;
-	out.shade = (cam_light.ambient.rgb + vm.light_color.rgb * diffuse) * AXIS[f];
+	out.shade = cam_light.ambient.rgb + vm.light_color.rgb * diffuse;
 	return out;
 }
 

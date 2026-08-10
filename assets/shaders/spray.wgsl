@@ -103,10 +103,9 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	let dist = distance(world, frame.cam_pos.xyz);
 	alpha *= 1.0 - smoothstep(56.0, 64.0, dist);
 	// White-ish froth in the camera's probe ambient + traced direct
-	// (twilight-faded like every surface), fogged like everything else.
+	// (twilight-faded like every surface).
 	let sh = mix(1.0, cam_light.sun.x, frame.light_dir.w);
-	var col = vec3f(0.9, 0.94, 1.0) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
-	col = apply_fog(col, dist, world);
+	let col = vec3f(0.9, 0.94, 1.0) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;

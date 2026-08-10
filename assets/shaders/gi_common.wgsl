@@ -152,6 +152,29 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> f32
 	return exp(-water * 0.35);
 }
 
+// Is the probe at texel `t` carrying real radiance?
+//
+// A probe whose cell is solid — and whose six relocation neighbours are
+// solid too, so `gi_relocate` had nowhere to step — traces nothing and
+// stores BLACK. The update kernel flags exactly that in the atlas alpha
+// (0 = dead, gi_probe.wgsl's textureStore), and until now nothing read
+// the flag: every gather blended those zeros in as though they were
+// measured radiance, at full trilinear weight. That is where the dark
+// patches around trees, ridge interiors and any dense geometry came
+// from, and the bounce gather spread them further each sweep.
+//
+// A dead probe holds no information, so it must not vote at all — drop
+// it from the blend and let `wsum` fall, which is what makes the
+// cascade fall through to C1 and then to the analytic dome instead of
+// averaging in a lie. Axis 0's slab sits at z offset 0, and all six
+// axes of a probe are written with the same flag, so one load answers.
+fn gi_probe_alive(t: vec3i, c1: bool) -> bool {
+	if c1 {
+		return textureLoad(gi_atlas1, t, 0).a > 0.5;
+	}
+	return textureLoad(gi_atlas0, t, 0).a > 0.5;
+}
+
 // 3-axis gather from one cascade's atlas at a probe texel.
 fn gi_axis_gather(t: vec3i, nz: i32, n: vec3f, c1: bool) -> vec3f {
 	let w = n * n;
@@ -200,6 +223,13 @@ fn gi_cascade_gather(side: i32, p: vec3f, n: vec3f, dims4: vec4f, c1: bool, occ_
 			continue;
 		}
 		let t = ((g % dims) + dims) % dims;
+		// A probe buried in solid stores black; blending it in is what
+		// painted the dark patches. Skipping it costs its weight too, so
+		// a pixel surrounded by dead probes falls through to C1 and then
+		// to the analytic dome rather than averaging toward zero.
+		if !gi_probe_alive(t, c1) {
+			continue;
+		}
 		acc += w * gi_axis_gather(t, dims.z, n, c1);
 		wsum += w;
 	}

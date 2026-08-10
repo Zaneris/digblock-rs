@@ -20,7 +20,6 @@ mod renderer;
 pub mod settings;
 // DORMANT since P4 (RTGI replaced shadow maps); P6 deletes the module.
 #[allow(dead_code)]
-mod shadow;
 mod sky;
 mod smoothing;
 mod spray;

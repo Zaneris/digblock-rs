@@ -15,7 +15,7 @@ use digblock_core::gi::{opacity, GiChunk, GiOpacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
-use crate::gpu_timer::{GpuTimer, Q_GI};
+use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
 /// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
@@ -147,6 +147,15 @@ fn atlas_tex(device: &wgpu::Device, dims: (u32, u32, u32), label: &str) -> wgpu:
 /// GiUniforms layout (must match gi_probe.wgsl): dims, cam, sun,
 /// sun_color, zenith, horizon, sched, 4 inval spheres = 176 bytes.
 const GI_UNIFORM_SIZE: u64 = 176;
+
+/// The GI resolve's group 0 bind plus its two MRT attachments — one
+/// argument instead of three, which is what keeps the encode signature
+/// under clippy's limit as the pass grows.
+pub struct ResolveTargets<'a> {
+	pub bind: &'a wgpu::BindGroup,
+	pub indirect_view: &'a wgpu::TextureView,
+	pub sun_view: &'a wgpu::TextureView,
+}
 
 impl GiDraw {
 	pub fn new(
@@ -770,11 +779,15 @@ impl GiDraw {
 		&self,
 		gpu: &Gpu,
 		encoder: &mut wgpu::CommandEncoder,
+		timer: Option<&GpuTimer>,
 		frame: &FrameUniforms,
-		bind: &wgpu::BindGroup,
-		indirect_view: &wgpu::TextureView,
-		sun_view: &wgpu::TextureView,
+		out: ResolveTargets<'_>,
 	) {
+		let ResolveTargets {
+			bind,
+			indirect_view,
+			sun_view,
+		} = out;
 		let side = (self.window_chunks * 16) as f32;
 		let mut data = Vec::with_capacity(176);
 		for col in frame.inv_view_proj {
@@ -820,7 +833,7 @@ impl GiDraw {
 			label: Some("gi resolve"),
 			color_attachments: &[attach(indirect_view), attach(sun_view)],
 			depth_stencil_attachment: None,
-			timestamp_writes: None,
+			timestamp_writes: timer.and_then(|t| t.writes(Q_GI_TRACE)),
 			occlusion_query_set: None,
 		});
 		pass.set_pipeline(&self.resolve_pipeline);

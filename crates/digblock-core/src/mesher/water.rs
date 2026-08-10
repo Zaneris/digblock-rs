@@ -3,7 +3,7 @@
 //! of the solid mesher so the hot solid loop and the (deliberately
 //! outlined) water path evolve independently.
 
-use super::{face_corners, occludes, pack, Dir, MeshInput, Vert, PADDED};
+use super::{face_corners, occludes, pack, Dir, MeshInput, PADDED};
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::ID_MASK;
 
@@ -332,10 +332,6 @@ pub(super) fn emit_water_face(
 			return;
 		}
 	}
-	// Stage-B light of the water cell itself (bits 24-31: block nibble
-	// low, sky high — the raw field byte). Flat per cell: water carries
-	// no AO either, and the cell IS the pool's granularity.
-	let light = u32::from(input.light[super::pidx(bx, by, bz)]);
 	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
 		let d = drops[ci];
 		// Per-vertex fall distance: top-plane verts carry the cell's
@@ -347,13 +343,10 @@ pub(super) fn emit_water_face(
 			0
 		};
 		out.push(pack(
-			Vert {
-				pos: (cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
-				ao: 3,
-			},
+			(cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
 			dir,
 			ci as u32,
 		));
-		out.push(tex | ((d | state.flags() | (vfall << 10)) << 10) | (light << 24));
+		out.push(tex | ((d | state.flags() | (vfall << 10)) << 10));
 	}
 }

@@ -136,7 +136,6 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
 	);
-	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
 	pub const SKY: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
@@ -178,10 +177,9 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 15] = [
+	pub const ALL: [(&str, &str); 14] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
-		("shadow.wgsl", SHADOW),
 		("sky.wgsl", SKY),
 		("overlay.wgsl", OVERLAY),
 		("blit.wgsl", BLIT),

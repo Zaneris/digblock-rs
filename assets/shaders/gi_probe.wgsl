@@ -206,6 +206,15 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	let spacing = f32(gi.dims.w);
 	let g = vec3i(round(p / spacing));
 	let t = ((g % dims) + dims) % dims;
+	// Pinned twin of gi_common's `gi_probe_alive`. A probe buried in
+	// solid stored black, and this is the site that SPREAD it: a live
+	// probe would sample its buried neighbour, fold the zero into its
+	// own bounce term, store the dimmed result, and hand that to its
+	// neighbours next sweep. Returning no bounce is honest; returning a
+	// neighbour's black as bounce is a feedback loop.
+	if textureLoad(prev_atlas, t, 0).a <= 0.5 {
+		return vec3f(0.0);
+	}
 	let w = n * n;
 	var acc = vec3f(0.0);
 	// Axis slabs: 0/1 ±x, 2/3 ±y, 4/5 ±z.
