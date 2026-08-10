@@ -964,10 +964,16 @@ impl Pipeline {
 		});
 		// The light shell rides the same snapshot: already-settled field
 		// values only (maintain steps the BFS before any dispatch).
-		input.fill_light(|dx, dy, dz| {
-			self.light
-				.chunk(ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz))
-		});
+		input.fill_light(
+			|dx, dy, dz| {
+				self.light
+					.chunk(ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz))
+			},
+			|dx, dy, dz| {
+				self.light
+					.bounce_chunk(ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz))
+			},
+		);
 		input
 	}
 

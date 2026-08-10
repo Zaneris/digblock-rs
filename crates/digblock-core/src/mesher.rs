@@ -54,6 +54,9 @@ pub struct MeshInput {
 	/// settles on the main thread before dispatch; LIGHT-DESIGN.md).
 	/// Zero-filled by `build`; `fill_light` copies the resident field in.
 	pub light: Box<[u8; PADDED_VOLUME]>,
+	/// Bounce (sun-fill) levels over the same padded index, low nibble
+	/// only — the third channel's sparse map, copied beside `light`.
+	pub bounce: Box<[u8; PADDED_VOLUME]>,
 	/// Any nonzero light byte — lets the hot solid loop skip the
 	/// per-face corner sampling entirely in the (typical) dark chunk.
 	pub lit: bool,
@@ -96,6 +99,7 @@ impl MeshInput {
 		let mut input = MeshInput {
 			blocks: Box::new([0u16; PADDED_VOLUME]),
 			light: Box::new([0u8; PADDED_VOLUME]),
+			bounce: Box::new([0u8; PADDED_VOLUME]),
 			lit: false,
 			missing: [false; 6],
 		};
@@ -153,6 +157,7 @@ impl MeshInput {
 	pub fn fill_light<'a>(
 		&mut self,
 		mut chunk: impl FnMut(i32, i32, i32) -> Option<&'a crate::light::LightChunk>,
+		mut bounce: impl FnMut(i32, i32, i32) -> Option<&'a crate::light::LightChunk>,
 	) {
 		use crate::light::LightChunk;
 		let n = CHUNK_SIZE;
@@ -161,27 +166,36 @@ impl MeshInput {
 			1 => 0..1,
 			_ => 0..16,
 		};
+		let copy = |dst: &mut [u8; PADDED_VOLUME], src: &LightChunk, dx: i32, dy: i32, dz: i32| {
+			for ly in span(dy) {
+				for lz in span(dz) {
+					for lx in span(dx) {
+						let v = match src {
+							LightChunk::Uniform(v) => *v,
+							LightChunk::Mixed(cells) => cells[(ly * n + lz) * n + lx],
+						};
+						dst[pidx(
+							lx as i32 + 16 * dx,
+							ly as i32 + 16 * dy,
+							lz as i32 + 16 * dz,
+						)] = v;
+					}
+				}
+			}
+		};
 		for dy in -1..=1 {
 			for dz in -1..=1 {
 				for dx in -1..=1 {
-					let src = match chunk(dx, dy, dz) {
-						None | Some(LightChunk::Uniform(0)) => continue,
-						Some(src) => src,
-					};
-					self.lit = true;
-					for ly in span(dy) {
-						for lz in span(dz) {
-							for lx in span(dx) {
-								let v = match src {
-									LightChunk::Uniform(v) => *v,
-									LightChunk::Mixed(cells) => cells[(ly * n + lz) * n + lx],
-								};
-								self.light[pidx(
-									lx as i32 + 16 * dx,
-									ly as i32 + 16 * dy,
-									lz as i32 + 16 * dz,
-								)] = v;
-							}
+					if let Some(src) = chunk(dx, dy, dz) {
+						if !matches!(src, LightChunk::Uniform(0)) {
+							self.lit = true;
+							copy(&mut self.light, src, dx, dy, dz);
+						}
+					}
+					if let Some(src) = bounce(dx, dy, dz) {
+						if !matches!(src, LightChunk::Uniform(0)) {
+							self.lit = true;
+							copy(&mut self.bounce, src, dx, dy, dz);
 						}
 					}
 				}
@@ -290,7 +304,9 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
 /// 18-20 tint, 21 emissive (Stage-A fullbright — chunk.wgsl skips the
 /// lighting terms), 22-25 Stage-B blocklight (per-vertex smooth light),
-/// 26-29 skylight, 30-31 reserved. water — bits 0-9 texture layer,
+/// 26-29 skylight, 30-31 bounce (sun-fill, quantized from 0..=12 to 4
+/// levels — a soft omnidirectional term, so 2 bits + corner
+/// interpolation suffice). water — bits 0-9 texture layer,
 /// 10-23 payload (see MeshData::water), 24-31 the water cell's raw
 /// light byte (block nibble low, sky high; water reads
 /// its uv from the corner code and has no tint).
@@ -302,24 +318,21 @@ fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 }
 
 /// The solid stream's material word (see [`pack`] for the layout).
+/// `light` is the three channels `[block, sky, bounce]`; bounce arrives
+/// raw (0..=BOUNCE_SEED) and is quantized to the 2-bit carve here —
+/// corner interpolation upstream runs at full precision.
 #[inline]
-fn solid_word1(
-	tex: u32,
-	uv_u: u32,
-	uv_v: u32,
-	tint: u32,
-	emissive: bool,
-	light: u32,
-	sky: u32,
-) -> u32 {
+fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32, emissive: bool, light: [u32; 3]) -> u32 {
+	let [bl, sky, bounce] = light;
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
-	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8 && light < 16 && sky < 16);
+	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8 && bl < 16 && sky < 16 && bounce < 16);
 	tex | (uv_u << 10)
 		| (uv_v << 14)
 		| (tint << 18)
 		| ((emissive as u32) << 21)
-		| (light << 22)
+		| (bl << 22)
 		| (sky << 26)
+		| (((bounce + 2) >> 2).min(3) << 30)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
@@ -427,7 +440,7 @@ fn face_ao(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
 /// averaging the NON-OPAQUE ones (an opaque cell drops out of the
 /// denominator instead of dragging the corner dark — its occlusion is
 /// already AO's job). All four opaque → 0.
-fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 4]; 2] {
+fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 4]; 3] {
 	let (ox, oy, oz) = dir.offset();
 	let b = [bx, by, bz];
 	let c = [bx + ox, by + oy, bz + oz];
@@ -437,26 +450,29 @@ fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 
 		Dir::North | Dir::South => (0, 1),
 	};
 	let corners = face_corners(bx, by, bz, dir);
-	let mut out = [[0u32; 4]; 2];
+	let mut out = [[0u32; 4]; 3];
 	for (i, p) in corners.iter().enumerate() {
 		let p = [p.0, p.1, p.2];
 		let su = if p[u] == b[u] { -1 } else { 1 };
 		let sv = if p[v] == b[v] { -1 } else { 1 };
-		let (mut bsum, mut ssum, mut cnt) = (0u32, 0u32, 0u32);
+		let (mut bsum, mut ssum, mut fsum, mut cnt) = (0u32, 0u32, 0u32, 0u32);
 		for (du, dv) in [(0, 0), (su, 0), (0, sv), (su, sv)] {
 			let mut q = c;
 			q[u] += du;
 			q[v] += dv;
 			if !occludes(input.get(q[0], q[1], q[2])) {
-				let byte = u32::from(input.light[pidx(q[0], q[1], q[2])]);
+				let pi = pidx(q[0], q[1], q[2]);
+				let byte = u32::from(input.light[pi]);
 				bsum += byte & 0x0F;
 				ssum += byte >> 4;
+				fsum += u32::from(input.bounce[pi]) & 0x0F;
 				cnt += 1;
 			}
 		}
 		if cnt > 0 {
 			out[0][i] = (bsum + cnt / 2) / cnt;
 			out[1][i] = (ssum + cnt / 2) / cnt;
+			out[2][i] = (fsum + cnt / 2) / cnt;
 		}
 	}
 	out
@@ -466,8 +482,8 @@ fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 
 /// per-corner AO and Stage-B light fields plus the per-block constants.
 struct Shade {
 	ao: [u32; 4],
-	/// [blocklight, skylight] per corner.
-	light: [[u32; 4]; 2],
+	/// [blocklight, skylight, bounce] per corner.
+	light: [[u32; 4]; 3],
 	tint: u32,
 	emissive: bool,
 }
@@ -505,8 +521,7 @@ fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, s
 			(ci as u32 >> 1) * 12,
 			s.tint,
 			s.emissive,
-			s.light[0][ci],
-			s.light[1][ci],
+			[s.light[0][ci], s.light[1][ci], s.light[2][ci]],
 		));
 	}
 }
@@ -543,7 +558,7 @@ fn emit_shaped(
 	// survives culling; every quad toward that direction interpolates
 	// from them.
 	let mut pao: [Option<[u32; 4]>; 6] = [None; 6];
-	let mut plight: [Option<[[u32; 4]; 2]>; 6] = [None; 6];
+	let mut plight: [Option<[[u32; 4]; 3]>; 6] = [None; 6];
 	for q in &variant.quads {
 		if q.boundary {
 			let dir = q.dir;
@@ -573,16 +588,13 @@ fn emit_shaped(
 		let fl = if input.lit {
 			*plight[q.dir as usize].get_or_insert_with(|| face_light(input, bx, by, bz, q.dir))
 		} else {
-			[[0; 4]; 2]
+			[[0; 4]; 3]
 		};
-		let light: [[u32; 4]; 2] = [
+		let light: [[u32; 4]; 3] = std::array::from_fn(|chan| {
 			std::array::from_fn(|ci| {
-				bilerp12(fl[0], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
-			}),
-			std::array::from_fn(|ci| {
-				bilerp12(fl[1], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
-			}),
-		];
+				bilerp12(fl[chan], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
+			})
+		});
 		// Same diagonal-flip rule as emit_face: corner codes travel with
 		// their vertices, so emit order only steers the triangulation.
 		let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
@@ -611,8 +623,7 @@ fn emit_shaped(
 				u32::from(q.uv[ci][1]),
 				tint,
 				me.props().emissive,
-				light[0][ci],
-				light[1][ci],
+				[light[0][ci], light[1][ci], light[2][ci]],
 			));
 		}
 	}
@@ -723,7 +734,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						let light = if input.lit {
 							face_light(input, x as i32, y as i32, z as i32, dir)
 						} else {
-							[[0; 4]; 2]
+							[[0; 4]; 3]
 						};
 						let bt = *cell_tint.get_or_insert_with(|| {
 							tint(
@@ -1263,7 +1274,7 @@ mod tests {
 		assert_eq!(dir_of(w0), Dir::East as u32);
 		assert_eq!(ao_of(w0), 1);
 		assert_eq!(corner_of(w0), 2);
-		let w1 = solid_word1(700, 12, 0, 5, false, 14, 9);
+		let w1 = solid_word1(700, 12, 0, 5, false, [14, 9, 12]);
 		assert_eq!(w1 & 0x3ff, 700);
 		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
 		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
@@ -1271,10 +1282,15 @@ mod tests {
 		assert_eq!((w1 >> 21) & 1, 0, "emissive bit clear");
 		assert_eq!(light_of(w1), 14, "Stage-B blocklight in bits 22-25");
 		assert_eq!(sky_of(w1), 9, "Stage-B skylight in bits 26-29");
-		let dark = solid_word1(700, 12, 0, 5, true, 0, 0);
+		assert_eq!(w1 >> 30, 3, "full bounce quantizes to the 2-bit max");
+		let dark = solid_word1(700, 12, 0, 5, true, [0, 0, 0]);
 		assert_eq!((dark >> 21) & 1, 1, "emissive bit set");
 		assert_eq!(light_of(dark), 0);
 		assert_eq!(sky_of(dark), 0);
+		assert_eq!(dark >> 30, 0);
+		// The 2-bit ramp: 0 → 0, 1..=5 → 0/1, mid → 2, seed-adjacent → 3.
+		let q = |b: u32| solid_word1(0, 0, 0, 0, false, [0, 0, b]) >> 30;
+		assert_eq!((q(1), q(4), q(8), q(11)), (0, 1, 2, 3));
 	}
 
 	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come
