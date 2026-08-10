@@ -21,11 +21,28 @@ struct GiDebug {
 // C0's front probe atlas (six axis-major Z slabs); misc.yzw = dims.
 @group(0) @binding(4) var atlas_tex: texture_3d<f32>;
 
+// C0's probe spacing in blocks. Pinned twin of the value gi.rs builds
+// cascade 0 with; this view reads the atlas directly rather than through
+// gi_common's parameterised gather, so it has to be told.
+const C0_SPACING = 2.0;
+
 // Nearest-probe 3-axis gather of the C0 field at a world position.
+//
+// This is a THIRD copy of the axis gather, and it has already misled
+// once: it bypasses gi_common's `gi_cascade_gather` entirely, so a fix
+// made there (the dead-in-solid flag, which every gather blended in as
+// real radiance) did not show up in `DIG_GI=probes` and the capture read
+// as though the fix had not worked. It cannot share the real one until
+// this module can take the gi_common prelude — its bindings are its own
+// — but it can at least stop lying about the two things that matter: the
+// alive flag, and where C0's probes actually are.
 fn probe_light(p: vec3f, n: vec3f) -> vec3f {
 	let dims = vec3i(vec3f(dbg.misc.y, dbg.misc.z, dbg.misc.w));
-	let g = vec3i(round(p / 2.0));
+	let g = vec3i(round(p / C0_SPACING));
 	let t = ((g % dims) + dims) % dims;
+	if textureLoad(atlas_tex, t, 0).a <= 0.5 {
+		return vec3f(0.0);
+	}
 	let w = n * n;
 	let ax = select(1, 0, n.x > 0.0);
 	let ay = select(3, 2, n.y > 0.0);
@@ -84,27 +101,31 @@ fn coarse_cell(c: vec3i) -> u32 {
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let far = dbg.inv_view_proj * vec4f(i.ndc, 1.0, 1.0);
 	let dir = normalize(far.xyz / far.w - dbg.cam.xyz);
-	var p = dbg.cam.xyz;
-	var cell = vec3i(floor(p));
+	let p = dbg.cam.xyz;
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
-	// Distance along the ray to each next cell boundary.
-	var tmax = abs(select(floor(p) + 1.0, floor(p), dir < vec3f(0.0)) - p) * inv;
+	var r = gi_ray_init(p, dir, inv);
 	var water = 0.0;
-	var axis = 1u; // entry axis of the last step (0 x, 1 y, 2 z)
 	for (var it = 0; it < 512; it++) {
+		let cell = r.cell;
+		let axis = r.axis;
 		// Outside the lateral window or the vertical world going away:
 		// sky.
 		let lateral = length(vec2f(cell.xz) + 0.5 - dbg.cam.xz);
 		if lateral > dbg.cam.w * 0.5 - 1.0 || (cell.y > 255 && dir.y > 0.0) || cell.y < 0 {
 			break;
 		}
-		// Coarse gate: an empty 8-cube spares the fine load entirely
-		// (the DDA still steps cell by cell — the P2 kernel adds the
-		// true 8-block skip; the debug view only needs the correctness
-		// half of the coarse texture proven).
-		let cc = coarse_cell(cell >> vec3u(3u));
-		let v = select(0u, window_cell(cell), cc != 0u);
+		// Coarse gate, now the real two-level skip (gi_dda.wgsl): an
+		// empty 8-cube is left in one jump. This view exists to prove
+		// the window, the toroidal addressing and the coarse texture
+		// agree with what the probe kernel sees, so it has to march the
+		// same way the probe kernel does.
+		if coarse_cell(cell >> vec3u(3u)) == 0u {
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			r = gi_ray_step(r, step_dir, inv);
+			continue;
+		}
+		let v = window_cell(cell);
 		if v != 0u {
 			let m = lut[v];
 			let op = m.x >> 24u;
@@ -144,20 +165,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				water += 1.0;
 			}
 		}
-		// Step to the next cell across the nearest boundary.
-		if tmax.x < tmax.y && tmax.x < tmax.z {
-			cell.x += step_dir.x;
-			tmax.x += inv.x;
-			axis = 0u;
-		} else if tmax.y < tmax.z {
-			cell.y += step_dir.y;
-			tmax.y += inv.y;
-			axis = 1u;
-		} else {
-			cell.z += step_dir.z;
-			tmax.z += inv.z;
-			axis = 2u;
-		}
+		r = gi_ray_step(r, step_dir, inv);
 	}
 	let sky = mix(vec3f(0.75, 0.85, 1.0), vec3f(0.25, 0.45, 0.9), max(dir.y, 0.0));
 	return vec4f(mix(sky, vec3f(0.1, 0.3, 0.5), min(water * 0.12, 0.8)), 1.0);

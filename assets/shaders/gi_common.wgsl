@@ -142,10 +142,9 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 	}
 	let dir = sun.xyz;
 	let o = p + dir * GI_SURFACE_EPS;
-	var cell = vec3i(floor(o));
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
-	var tmax = abs(select(floor(o) + 1.0, floor(o), dir < vec3f(0.0)) - o) * inv;
+	var r = gi_ray_init(o, dir, inv);
 	var water = 0.0;
 	let lateral_max = f32(side) * 0.5 - 1.0;
 	for (var i = 0; i < 160; i++) {
@@ -164,33 +163,31 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 		// the voxel window) — the very first test returned "blocked" and
 		// the surface shadowed itself. `gi_occluded` directly above has
 		// always stepped first; this march simply never did.
-		if tmax.x < tmax.y && tmax.x < tmax.z {
-			cell.x += step_dir.x;
-			tmax.x += inv.x;
-		} else if tmax.y < tmax.z {
-			cell.y += step_dir.y;
-			tmax.y += inv.y;
-		} else {
-			cell.z += step_dir.z;
-			tmax.z += inv.z;
-		}
-		if cell.y > 255 {
+		r = gi_ray_step(r, step_dir, inv);
+		if r.cell.y > 255 {
 			break;
 		}
-		let lat = vec2f(cell.xz) + 0.5 - cam_xz;
+		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
 		if dot(lat, lat) > lateral_max * lateral_max {
 			break;
 		}
-		if !gi_coarse_empty(side, cell >> vec3u(3u)) {
-			let v = gi_cell(side, cell);
-			if v != 0u {
-				let op = gi_lut[v].x >> 24u;
-				if op == 2u {
-					return vec2f(0.0, water);
-				}
-				if op == 1u {
-					water += 1.0;
-				}
+		// Empty 8-cube: leave it in one jump instead of crawling its
+		// eight cells and re-asking the coarse texture at each.
+		if gi_coarse_empty(side, r.cell >> vec3u(3u)) {
+			// Skip lands on the LAST cell inside the empty brick; this
+			// loop steps at the top, so `continue` is what crosses out of
+			// it. Every iteration therefore advances at least one cell.
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			continue;
+		}
+		let v = gi_cell(side, r.cell);
+		if v != 0u {
+			let op = gi_lut[v].x >> 24u;
+			if op == 2u {
+				return vec2f(0.0, water);
+			}
+			if op == 1u {
+				water += 1.0;
 			}
 		}
 	}

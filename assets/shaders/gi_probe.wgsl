@@ -145,52 +145,43 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	var out: Hit;
 	out.hit = false;
 	out.water = 0.0;
-	var cell = vec3i(floor(from_p));
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
-	var tmax = abs(select(floor(from_p) + 1.0, floor(from_p), dir < vec3f(0.0)) - from_p) * inv;
-	var t = 0.0;
-	var axis = 1u;
+	var r = gi_ray_init(from_p, dir, inv);
 	let lateral_max = gi.cam.w * 0.5 - 1.0;
 	for (var it = 0; it < 256; it++) {
-		if t > max_t || (cell.y > 255 && dir.y > 0.0) || cell.y < 0 {
+		if r.t > max_t || (r.cell.y > 255 && dir.y > 0.0) || r.cell.y < 0 {
 			break;
 		}
-		let lat = vec2f(cell.xz) + 0.5 - gi.cam.xz;
+		let lat = vec2f(r.cell.xz) + 0.5 - gi.cam.xz;
 		if dot(lat, lat) > lateral_max * lateral_max {
 			break;
 		}
-		if !coarse_empty(cell >> vec3u(3u)) {
-			let v = window_cell(cell);
-			if v != 0u {
-				let op = lut[v].x >> 24u;
-				if op == 2u {
-					out.hit = true;
-					out.cell = cell;
-					out.axis = axis;
-					return out;
-				}
-				if op == 1u {
-					out.water += 1.0;
-				}
+		// The two-level skip (gi_dda.wgsl). Probe rays run to MAX_T = 160
+		// blocks through mostly-air, so this is where it pays most.
+		if coarse_empty(r.cell >> vec3u(3u)) {
+			// Skip lands on the last cell inside the empty brick, then
+			// steps out under the ordinary tie rule. Both are needed:
+			// this loop steps at the BOTTOM, so `continue` alone would
+			// not advance and the march would stall on its iteration cap.
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			r = gi_ray_step(r, step_dir, inv);
+			continue;
+		}
+		let v = window_cell(r.cell);
+		if v != 0u {
+			let op = lut[v].x >> 24u;
+			if op == 2u {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = r.axis;
+				return out;
+			}
+			if op == 1u {
+				out.water += 1.0;
 			}
 		}
-		if tmax.x < tmax.y && tmax.x < tmax.z {
-			cell.x += step_dir.x;
-			t = tmax.x;
-			tmax.x += inv.x;
-			axis = 0u;
-		} else if tmax.y < tmax.z {
-			cell.y += step_dir.y;
-			t = tmax.y;
-			tmax.y += inv.y;
-			axis = 1u;
-		} else {
-			cell.z += step_dir.z;
-			t = tmax.z;
-			tmax.z += inv.z;
-			axis = 2u;
-		}
+		r = gi_ray_step(r, step_dir, inv);
 	}
 	return out;
 }

@@ -146,6 +146,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
 	);
@@ -167,6 +168,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
@@ -187,15 +189,20 @@ pub mod shader {
 	/// transmittance is the same constant the view ray uses.
 	pub const GI_PROBE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_probe.wgsl"),
 	);
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
-	pub const GI_DEBUG: &str = include_str!("../../../assets/shaders/gi_debug.wgsl");
+	pub const GI_DEBUG: &str = concat!(
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_debug.wgsl"),
+	);
 	/// The half-res GI resolve pass (probes + per-pixel sun ray → the
 	/// scene's lighting inputs). Shares the gather core + group(2)
 	/// world bindings with water/players via the gi_common prelude.
 	pub const GI_RESOLVE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
 	);
@@ -205,9 +212,13 @@ pub mod shader {
 	/// it, which is exactly the coupling these files exist to prevent.
 	/// medium_common must validate with nothing before it at all.
 	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
-	pub const GI_COMMON: &str = include_str!("../../../assets/shaders/gi_common.wgsl");
+	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
+	pub const GI_COMMON: &str = concat!(
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+	);
 
-	pub const ALL: [(&str, &str); 16] = [
+	pub const ALL: [(&str, &str); 17] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -223,6 +234,7 @@ pub mod shader {
 		("gi_debug.wgsl", GI_DEBUG),
 		("gi_resolve.wgsl", GI_RESOLVE),
 		("medium_common.wgsl", MEDIUM_COMMON),
+		("gi_dda.wgsl", GI_DDA),
 		("gi_common.wgsl", GI_COMMON),
 	];
 }
