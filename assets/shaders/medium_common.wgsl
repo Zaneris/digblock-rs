@@ -69,13 +69,6 @@ const AIR_SIGMA = 3.912 / AIR_VISIBILITY;
 // by a factor of 2.3 in a constant nothing tied together.
 const WATER_SIGMA = vec3f(0.36, 0.068, 0.030);
 
-// The GI resolve hands the sun ray's water path length to the scene
-// shader through one rgba8 lane, so the hop needs a scale. 64 blocks is
-// far past saturation — at the red channel's sigma, 20 blocks of water
-// already transmits 7e-4 — so clamping there loses nothing anyone could
-// see. Encoder and decoder read this same line.
-const WATER_DEPTH_SCALE = 64.0;
-
 // Water's single-scatter albedo, folded with the multiple-scattering
 // gain a single-scatter term cannot represent. This is the one number
 // here that is chosen rather than measured: it sets how bright the

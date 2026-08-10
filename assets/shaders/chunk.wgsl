@@ -17,8 +17,9 @@
 @group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var blocks_smp: sampler;
 
-// The GI resolve outputs: rgba16f indirect rgb + view distance,
-// rgba8 sun visibility + face-normal code.
+// The GI resolve outputs, both rgba16f: indirect rgb + view distance,
+// and sun visibility + face-normal code + the sun ray's water path +
+// history length.
 @group(2) @binding(0) var gi_indirect: texture_2d<f32>;
 @group(2) @binding(1) var gi_sun: texture_2d<f32>;
 
@@ -184,7 +185,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				best = ind;
 				best_sun = sn;
 			}
-			if u32(round(sn.g * 255.0)) != i.ncode {
+			if u32(sn.g) != i.ncode {
 				continue;
 			}
 			matched = true;
@@ -208,7 +209,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// The sun ray's own water column, attenuated by the SAME sigma
 		// the view ray uses — so sunlight reaching a submerged surface is
 		// red-starved, not just dim.
-		let sun_tr = medium_water_tr(water_acc / wsum * WATER_DEPTH_SCALE);
+		let sun_tr = medium_water_tr(water_acc / wsum);
 		// Twilight fades the traced sun the way it faded mapped shadows.
 		let sh = mix(vec3f(1.0), sun_acc / wsum * sun_tr, frame.light_dir.w);
 		col = tex * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);

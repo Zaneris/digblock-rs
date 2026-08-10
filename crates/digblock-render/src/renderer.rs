@@ -334,6 +334,9 @@ pub struct Renderer {
 	/// the GI resolve reconstructs world positions from, before any
 	/// shading runs.
 	prepass_pipeline: wgpu::RenderPipeline,
+	/// Which of the two GI target pairs this frame writes; the other is
+	/// its history. Flipped once per `render`.
+	gi_ping: usize,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
 	/// Fullscreen procedural sky, drawn after solids, before water.
@@ -439,15 +442,22 @@ struct FrameTargets {
 	blit_bg: wgpu::BindGroup,
 	/// Depth-blit group 0: the live depth texture.
 	depth_blit_bg: wgpu::BindGroup,
-	/// GI resolve outputs, half res: indirect rgb + view dist (rgba16f)
-	/// and sun visibility + normal code (rgba8).
-	gi_indirect_view: wgpu::TextureView,
-	gi_sun_view: wgpu::TextureView,
-	/// Scene group 2: the two views above, textureLoad'd by chunk.wgsl.
-	gi_scene_bg: wgpu::BindGroup,
-	/// Resolve group 0: its uniform + the depth-copy tap (the GI world
-	/// data rides group 2 via `GiDraw::gather_bind`).
-	gi_resolve_bg: wgpu::BindGroup,
+	/// GI resolve outputs, half res, PING-PONGED: indirect rgb + view
+	/// distance, and sun visibility + normal code + water path + history
+	/// length. Two pairs with roles alternating per frame, so the resolve
+	/// reads last frame's while writing this frame's — never a copy.
+	/// Both rgba16f: the sun target used to be rgba8, which cannot hold a
+	/// running average (at a history length of 512 one frame contributes
+	/// 1/512 of a difference, which rounds to zero in 8 bits, and the
+	/// mean simply stops moving).
+	gi_indirect_view: [wgpu::TextureView; 2],
+	gi_sun_view: [wgpu::TextureView; 2],
+	/// Scene group 2 per ping: the pair chunk.wgsl textureLoad's.
+	gi_scene_bg: [wgpu::BindGroup; 2],
+	/// Resolve group 0 per ping: uniform + depth/normal taps + the OTHER
+	/// ping as history (the GI world data rides group 2 via
+	/// `GiDraw::gather_bind`).
+	gi_resolve_bg: [wgpu::BindGroup; 2],
 }
 
 impl Renderer {
@@ -803,6 +813,7 @@ impl Renderer {
 		Self {
 			solid_pipeline,
 			prepass_pipeline,
+			gi_ping: 0,
 			water,
 			sky,
 			frame_buf,
@@ -1252,27 +1263,52 @@ impl Renderer {
 				view_formats: &[],
 			})
 		};
-		let gi_indirect_view = gi_tex(wgpu::TextureFormat::Rgba16Float, "gi indirect")
-			.create_view(&Default::default());
-		let gi_sun_view =
-			gi_tex(wgpu::TextureFormat::Rgba8Unorm, "gi sun").create_view(&Default::default());
-		let gi_scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("gi scene"),
-			layout: self.gi.scene_bgl(),
-			entries: &[
-				wgpu::BindGroupEntry {
-					binding: 0,
-					resource: wgpu::BindingResource::TextureView(&gi_indirect_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 1,
-					resource: wgpu::BindingResource::TextureView(&gi_sun_view),
-				},
-			],
-		});
-		let gi_resolve_bg = self
-			.gi
-			.make_resolve_bind(gpu, &depth_copy_view, &normal_view);
+		let f16 = wgpu::TextureFormat::Rgba16Float;
+		let gi_indirect_view = [
+			gi_tex(f16, "gi indirect 0").create_view(&Default::default()),
+			gi_tex(f16, "gi indirect 1").create_view(&Default::default()),
+		];
+		let gi_sun_view = [
+			gi_tex(f16, "gi sun 0").create_view(&Default::default()),
+			gi_tex(f16, "gi sun 1").create_view(&Default::default()),
+		];
+		let scene_bg = |i: usize| {
+			gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some("gi scene"),
+				layout: self.gi.scene_bgl(),
+				entries: &[
+					wgpu::BindGroupEntry {
+						binding: 0,
+						resource: wgpu::BindingResource::TextureView(&gi_indirect_view[i]),
+					},
+					wgpu::BindGroupEntry {
+						binding: 1,
+						resource: wgpu::BindingResource::TextureView(&gi_sun_view[i]),
+					},
+				],
+			})
+		};
+		let gi_scene_bg = [scene_bg(0), scene_bg(1)];
+		// Ping i writes targets[i] and reads targets[1 - i] as history.
+		let gi_resolve_bg = [
+			self.gi.make_resolve_bind(
+				gpu,
+				&depth_copy_view,
+				&normal_view,
+				&gi_indirect_view[1],
+				&gi_sun_view[1],
+			),
+			self.gi.make_resolve_bind(
+				gpu,
+				&depth_copy_view,
+				&normal_view,
+				&gi_indirect_view[0],
+				&gi_sun_view[0],
+			),
+		];
+		// Fresh textures hold nothing: last frame's screen history went
+		// with them.
+		self.gi.reset_history();
 		self.targets = Some(FrameTargets {
 			size,
 			depth_view,
@@ -1313,6 +1349,10 @@ impl Renderer {
 			nametags,
 		} = *scene;
 		self.ensure_targets(gpu, size);
+		// Alternate the GI pair BEFORE anything reads it, so the resolve
+		// writes one half while sampling the other as history.
+		self.gi_ping ^= 1;
+		let ping = self.gi_ping;
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
@@ -1462,9 +1502,9 @@ impl Renderer {
 				self.gpu_timer.as_ref(),
 				frame,
 				crate::gi::ResolveTargets {
-					bind: &targets.gi_resolve_bg,
-					indirect_view: &targets.gi_indirect_view,
-					sun_view: &targets.gi_sun_view,
+					bind: &targets.gi_resolve_bg[ping],
+					indirect_view: &targets.gi_indirect_view[ping],
+					sun_view: &targets.gi_sun_view[ping],
 				},
 			);
 
@@ -1505,7 +1545,7 @@ impl Renderer {
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, &targets.gi_scene_bg, &[]);
+				pass.set_bind_group(2, &targets.gi_scene_bg[ping], &[]);
 				// Origins for every chunk, bound once — each draw selects
 				// its own with first_instance.
 				draw.bind(&mut pass);

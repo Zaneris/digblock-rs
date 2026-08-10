@@ -29,6 +29,19 @@ const PROBES_PER_DISPATCH: u32 = 2048;
 const WORLD_H: u32 = 256;
 /// Light-list capacity (GI-DESIGN.md): nearest emitters win.
 const MAX_LIGHTS: usize = 256;
+
+/// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
+/// The real sun is about 0.27 degrees of angular radius; this is 0.5,
+/// roughly twice that, which buys a penumbra that is sharp at contact
+/// and softens with distance to the occluder — the thing a shadow map
+/// never had — at no extra ray. Widen it and shadows get mushy AND
+/// noisier, since one sample has to cover more solid angle.
+const SUN_CONE_COS: f32 = 0.999_961_9; // cos(0.5 degrees)
+
+/// Below this cos between consecutive caster directions, the sun did not
+/// drift — it was TELEPORTED (`/time`). ~5.7 degrees is far more than the
+/// world clock moves in a frame and far less than any admin jump.
+const SUN_JUMP_COS: f32 = 0.995;
 /// Sun-direction quantization for GI rays: ~1.5° so shadow work stays
 /// still between steps and hysteresis glides across them.
 const SUN_QUANT: f32 = 38.0;
@@ -65,6 +78,16 @@ pub struct GiDraw {
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
+	/// Temporal state for the resolve's reprojection. `history_valid` is
+	/// cleared whenever last frame's buffers cannot be trusted: the first
+	/// frame, a renderer rebuild after device loss, or a sun jump (`/time`
+	/// can rotate the caster 180 degrees between two frames, and without
+	/// this the screen ghosts for seconds).
+	prev_vp: [[f32; 4]; 4],
+	prev_cam: [f32; 3],
+	prev_sun: [f32; 3],
+	history_valid: bool,
+	frame_i: u32,
 	lights_dirty: bool,
 	lights_buf: wgpu::Buffer,
 	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
@@ -568,6 +591,17 @@ impl GiDraw {
 					wgpu::TextureSampleType::Uint,
 					wgpu::TextureViewDimension::D2,
 				),
+				// Last frame's two outputs, ping-ponged in.
+				ftex(
+					3,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+				ftex(
+					4,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
 			],
 		});
 		// gi_common.wgsl's group(2): the GI world data every direct
@@ -638,7 +672,10 @@ impl GiDraw {
 		});
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
-			size: 176,
+			// 2 mat4 + 10 vec4. Grew at M4 by prev_view_proj, the previous
+			// camera + history-valid flag, the exact caster, and the
+			// sample-sequence lane.
+			size: 288,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -679,9 +716,11 @@ impl GiDraw {
 				module: &resolve_module,
 				entry_point: Some("fs"),
 				compilation_options: Default::default(),
+				// Both f16: the sun target holds a running average now, and
+				// rgba8 cannot (1/512 of a difference rounds to zero).
 				targets: &[
 					Some(wgpu::TextureFormat::Rgba16Float.into()),
-					Some(wgpu::TextureFormat::Rgba8Unorm.into()),
+					Some(wgpu::TextureFormat::Rgba16Float.into()),
 				],
 			}),
 			multiview: None,
@@ -717,6 +756,11 @@ impl GiDraw {
 			coarse,
 			window_chunks,
 			emitters: FxHashMap::default(),
+			prev_vp: [[0.0; 4]; 4],
+			prev_cam: [0.0; 3],
+			prev_sun: [0.0; 3],
+			history_valid: false,
+			frame_i: 0,
 			lights_dirty: false,
 			lights_buf,
 			inval_queue: Vec::new(),
@@ -765,6 +809,8 @@ impl GiDraw {
 		gpu: &Gpu,
 		depth_copy_view: &wgpu::TextureView,
 		normal_view: &wgpu::TextureView,
+		hist_indirect: &wgpu::TextureView,
+		hist_sun: &wgpu::TextureView,
 	) -> wgpu::BindGroup {
 		gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("gi resolve bg"),
@@ -782,13 +828,21 @@ impl GiDraw {
 					binding: 2,
 					resource: wgpu::BindingResource::TextureView(normal_view),
 				},
+				wgpu::BindGroupEntry {
+					binding: 3,
+					resource: wgpu::BindingResource::TextureView(hist_indirect),
+				},
+				wgpu::BindGroupEntry {
+					binding: 4,
+					resource: wgpu::BindingResource::TextureView(hist_sun),
+				},
 			],
 		})
 	}
 
 	/// Encode the half-res GI resolve into the two lighting targets.
 	pub fn encode_resolve(
-		&self,
+		&mut self,
 		gpu: &Gpu,
 		encoder: &mut wgpu::CommandEncoder,
 		timer: Option<&GpuTimer>,
@@ -801,7 +855,7 @@ impl GiDraw {
 			sun_view,
 		} = out;
 		let side = (self.window_chunks * 16) as f32;
-		let mut data = Vec::with_capacity(176);
+		let mut data = Vec::with_capacity(288);
 		for col in frame.inv_view_proj {
 			data.extend_from_slice(bytemuck::cast_slice(&col));
 		}
@@ -829,6 +883,37 @@ impl GiDraw {
 		data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
 		data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
 		data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
+		for col in self.prev_vp {
+			data.extend_from_slice(bytemuck::cast_slice(&col));
+		}
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			self.prev_cam[0],
+			self.prev_cam[1],
+			self.prev_cam[2],
+			f32::from(self.history_valid),
+		]));
+		// The EXACT caster, unquantized. Quantization exists so probes
+		// hold still between updates; on a per-pixel ray it is the
+		// lattice resonance, so the resolve takes the real direction and
+		// jitters it instead.
+		let e = [
+			-frame.light_dir[0],
+			-frame.light_dir[1],
+			-frame.light_dir[2],
+		];
+		let el = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt().max(1e-6);
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			e[0] / el,
+			e[1] / el,
+			e[2] / el,
+			self.last_sun[3],
+		]));
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			self.frame_i as f32,
+			SUN_CONE_COS,
+			0.0f32,
+			0.0f32,
+		]));
 		gpu.queue.write_buffer(&self.resolve_buf, 0, &data);
 		let attach = |view| {
 			Some(wgpu::RenderPassColorAttachment {
@@ -853,6 +938,23 @@ impl GiDraw {
 		pass.set_bind_group(1, &self.empty_bg, &[]);
 		pass.set_bind_group(2, self.gather_bind(), &[]);
 		pass.draw(0..3, 0..1);
+		drop(pass);
+		// Latch this frame as next frame's history. A large caster swing
+		// between two frames is `/time`, not the sky turning, and screen
+		// history that survives it ghosts for seconds.
+		let jumped = e[0] * self.prev_sun[0] + e[1] * self.prev_sun[1] + e[2] * self.prev_sun[2]
+			< SUN_JUMP_COS;
+		self.history_valid = !jumped;
+		self.prev_sun = [e[0] / el, e[1] / el, e[2] / el];
+		self.prev_vp = frame.view_proj;
+		self.prev_cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
+		self.frame_i = self.frame_i.wrapping_add(1);
+	}
+
+	/// Drop the screen-space history: device loss, a resize, or anything
+	/// else that leaves last frame's buffers describing another world.
+	pub fn reset_history(&mut self) {
+		self.history_valid = false;
 	}
 
 	/// Patch this frame's uniforms with the GI parameters the direct
