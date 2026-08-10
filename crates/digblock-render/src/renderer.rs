@@ -14,6 +14,13 @@ use crate::water::WaterDraw;
 use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
+/// The depth prepass's second output: one face-normal code per pixel
+/// (chunk.wgsl's `code_of`), 255 where no solid drew. Uint, not unorm —
+/// this is an index into a table, and it has to survive the round trip
+/// bit-exactly for the bilateral upsample's equality test to mean
+/// anything.
+const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
+
 /// Worst-case quads per 16³ chunk mesh: a solid chunk of the busiest
 /// shaped variant (every template quad emits when neighbors don't cover
 /// them). Dwarfs the old full-block checkerboard bound (2048 × 6). The
@@ -418,6 +425,11 @@ struct FrameTargets {
 	/// shores / SSR) — a color format because WebGPU forbids copying
 	/// into a depth texture, so it's filled by a fullscreen draw.
 	depth_copy_view: wgpu::TextureView,
+	/// Exact face-normal codes, written by the depth prepass alongside
+	/// depth and read by the GI resolve. Full res: the resolve is half
+	/// res and samples this at the matching full-res texel, the same way
+	/// it samples the depth copy.
+	normal_view: wgpu::TextureView,
 	/// Offscreen scene color view: solids + sky render here; water
 	/// samples it (refraction/SSR) while blending into the swapchain.
 	scene_view: wgpu::TextureView,
@@ -620,8 +632,14 @@ impl Renderer {
 			},
 		);
 
-		// Depth-only prepass: same vertex stream, position-only entry,
-		// no fragment stage — fills the depth the GI resolve consumes.
+		// Depth prepass: same vertex stream, and since M3 a fragment
+		// stage that rasterizes ONE face-normal code per pixel into an
+		// R8Uint target. That costs the double-rate Z a position-only
+		// pass would have had, and buys two things the GI could not get
+		// any other way: an exact normal for the resolve (its
+		// derivative-derived one was garbage on every silhouette) and a
+		// code bit-identical to the one chunk.wgsl compares against, so
+		// the bilateral upsample stops collapsing at edges.
 		let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth prepass"),
 			bind_group_layouts: &[&frame_bgl],
@@ -629,13 +647,13 @@ impl Renderer {
 		});
 		let prepass_pipeline = crate::pipeline_builder::build(
 			device,
-			None,
+			Some(NORMAL_FORMAT),
 			&crate::pipeline_builder::PipelineDesc {
 				label: "depth prepass",
 				layout: &prepass_layout,
 				module: &shader,
 				vs_entry: "vs_depth",
-				fs_entry: None,
+				fs_entry: Some("fs_depth"),
 				vertex_buffers: &chunk_vertex_layouts,
 				cull: Some(wgpu::Face::Back),
 				depth_write: true,
@@ -1146,6 +1164,17 @@ impl Renderer {
 			view_formats: &[],
 		});
 		let depth_copy_view = depth_copy.create_view(&wgpu::TextureViewDescriptor::default());
+		let normal_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("solid face-normal codes (r8uint)"),
+			size: extent,
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: NORMAL_FORMAT,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+			view_formats: &[],
+		});
+		let normal_view = normal_tex.create_view(&wgpu::TextureViewDescriptor::default());
 		let scene = gpu.device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("scene color"),
 			size: extent,
@@ -1241,11 +1270,14 @@ impl Renderer {
 				},
 			],
 		});
-		let gi_resolve_bg = self.gi.make_resolve_bind(gpu, &depth_copy_view);
+		let gi_resolve_bg = self
+			.gi
+			.make_resolve_bind(gpu, &depth_copy_view, &normal_view);
 		self.targets = Some(FrameTargets {
 			size,
 			depth_view,
 			depth_copy_view,
+			normal_view,
 			scene_view,
 			water_bg,
 			blit_bg,
@@ -1354,7 +1386,23 @@ impl Renderer {
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("depth prepass"),
-					color_attachments: &[],
+					// Cleared to 255: a code no real face carries, so a
+					// texel the prepass never wrote can never match a
+					// surface in the upsample's equality test.
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: &targets.normal_view,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							load: wgpu::LoadOp::Clear(wgpu::Color {
+								r: 255.0,
+								g: 0.0,
+								b: 0.0,
+								a: 0.0,
+							}),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
 					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
 						view: &targets.depth_view,
 						depth_ops: Some(wgpu::Operations {

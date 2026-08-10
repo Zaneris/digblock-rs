@@ -30,6 +30,20 @@ struct GiResolve {
 
 @group(0) @binding(0) var<uniform> rz: GiResolve;
 @group(0) @binding(1) var depth_tex: texture_2d<f32>;
+// The prepass's rasterized face-normal code (chunk.wgsl's `fs_depth`).
+// 255 = no solid was drawn here.
+@group(0) @binding(2) var normal_tex: texture_2d<u32>;
+
+// gi_resolve's normal-code order: axis * 2 + sign bit, indexed by the
+// code chunk.wgsl's `code_of` produces. One table, two readers.
+const CODE_NORMALS = array<vec3f, 6>(
+	vec3f(1.0, 0.0, 0.0),
+	vec3f(-1.0, 0.0, 0.0),
+	vec3f(0.0, 1.0, 0.0),
+	vec3f(0.0, -1.0, 0.0),
+	vec3f(0.0, 0.0, 1.0),
+	vec3f(0.0, 0.0, -1.0),
+);
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -69,8 +83,28 @@ fn fs(i: VsOut) -> FsOut {
 	let clip = vec4f(i.ndc, d, 1.0);
 	let wpos4 = rz.inv_view_proj * clip;
 	let p = wpos4.xyz / wpos4.w;
-	// Face normal from position derivatives — flat on block faces.
-	let n = normalize(cross(dpdy(p), dpdx(p)));
+	// EXACT face normal, rasterized by the prepass. This was
+	// `normalize(cross(dpdy(p), dpdx(p)))` — a half-res derivative,
+	// correct only where the 2x2 quad lies on one face and garbage on
+	// every silhouette, where it poisoned the ray origin, the ambient-
+	// cube axis weights and the backface term at once.
+	var code = textureLoad(normal_tex, clamp(uv, vec2i(0), vec2i(dim) - 1), 0).r;
+	if code > 5u {
+		// No solid was rasterized at this exact texel even though depth
+		// says something is here — a half-res sample landing on the far
+		// side of a silhouette. Fall back to the derivative rather than
+		// indexing out of the table.
+		let g = normalize(cross(dpdy(p), dpdx(p)));
+		let a = abs(g);
+		if a.x > a.y && a.x > a.z {
+			code = select(0u, 1u, g.x < 0.0);
+		} else if a.y > a.z {
+			code = 2u + select(0u, 1u, g.y < 0.0);
+		} else {
+			code = 4u + select(0u, 1u, g.z < 0.0);
+		}
+	}
+	let n = CODE_NORMALS[code];
 	// The true surface point: each march applies its own GI_SURFACE_EPS,
 	// so pushing off here as well is what stacked to 1.2 blocks of
 	// geometry that could not shadow anything.
@@ -80,16 +114,6 @@ fn fs(i: VsOut) -> FsOut {
 	let indirect =
 		gi_indirect(side, sp, n, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	let sv = gi_sun_vis(side, rz.cam.xz, rz.sun, sp, 160);
-	// Normal code: axis (0/1/2) * 2 + sign bit, packed to unorm8.
-	var code = 0u;
-	let an = abs(n);
-	if an.x > an.y && an.x > an.z {
-		code = select(0u, 1u, n.x < 0.0);
-	} else if an.y > an.z {
-		code = 2u + select(0u, 1u, n.y < 0.0);
-	} else {
-		code = 4u + select(0u, 1u, n.z < 0.0);
-	}
 	o.indirect = vec4f(indirect, length(p - rz.cam.xyz));
 	// r = sun reached, g = normal code, b = the sun ray's water path
 	// length. The path travels rather than a transmittance so the scene

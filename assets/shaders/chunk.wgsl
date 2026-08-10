@@ -37,7 +37,14 @@ const NORMALS = array<vec3f, 6>(
 );
 
 struct VsOut {
-	@builtin(position) pos: vec4f,
+	// @invariant, and load-bearing: the depth prepass runs `vs_depth` in
+	// a different pipeline and this pass depth-tests LessEqual against
+	// its result. Once the prepass grew a fragment stage and a varying
+	// (the face-normal code), the two pipelines no longer optimize the
+	// position math in the same context, and an ulp of divergence fails
+	// the test — solids full of view-dependent holes. water.wgsl learned
+	// this the hard way; both entries here carry the marker.
+	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	// Lambert against the caster, flat per face (the geometry is
@@ -100,15 +107,43 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	return o;
 }
 
-// Depth prepass entry: position only, feeding the R32F depth copy the
-// GI resolve reconstructs world positions from.
+// Depth prepass: fills the R32F depth copy the GI resolve reconstructs
+// world positions from, AND — since M3 — one R8Uint face-normal code
+// per pixel.
+//
+// That second output is what fixed two bugs at once. The resolve used to
+// take its normal from `cross(dpdy(p), dpdx(p))` at half res, which is
+// garbage on every silhouette and poisoned the ray origin, the ambient-
+// cube axis weights and the backface term. It then wrote that derived
+// code into the sun buffer, where `fs` below compares it against the
+// scene's EXACT per-vertex code — the two cannot agree at a silhouette,
+// so all four bilateral taps collapsed to w *= 0.01 and `acc / wsum`
+// amplified whichever tap was least wrong. Those were the horizontal
+// ticks along every edge.
+//
+// Rasterizing the code makes it exact AND makes it the same number on
+// both sides of the comparison, because it comes from this one table.
+struct DepthOut {
+	@invariant @builtin(position) pos: vec4f,
+	@location(0) @interpolate(flat) ncode: u32,
+}
+
 @vertex
-fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> @builtin(position) vec4f {
+fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> DepthOut {
 	let w0 = packed.x;
 	let x = twelfths(w0 & 0xffu);
 	let y = twelfths((w0 >> 8u) & 0xffu);
 	let z = twelfths((w0 >> 16u) & 0xffu);
-	return frame.view_proj * vec4f(vec3f(x, y, z) + origin.xyz, 1.0);
+	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
+	var o: DepthOut;
+	o.pos = frame.view_proj * vec4f(vec3f(x, y, z) + origin.xyz, 1.0);
+	o.ncode = code_of[(w0 >> 24u) & 7u];
+	return o;
+}
+
+@fragment
+fn fs_depth(i: DepthOut) -> @location(0) u32 {
+	return i.ncode;
 }
 
 @fragment
@@ -129,18 +164,45 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		var sun_acc = 0.0;
 		var water_acc = 0.0;
 		var wsum = 0.0;
+		// Nearest-depth fallback: remember the single closest tap in case
+		// no tap agrees on the face. Both codes are now the SAME number
+		// from chunk.wgsl's `code_of` — the resolve rasterizes it rather
+		// than deriving it — so a mismatch means the half-res texel
+		// genuinely belongs to another surface, not that the two sides
+		// disagree about the same one.
+		var best = vec4f(0.0);
+		var best_sun = vec4f(0.0);
+		var best_d = 1e30;
+		var matched = false;
 		for (var t = 0; t < 4; t++) {
 			let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
 			let ind = textureLoad(gi_indirect, c, 0);
 			let sn = textureLoad(gi_sun, c, 0);
-			var w = 1.0 / (0.02 + abs(ind.w - i.view_dist) / max(i.view_dist, 1.0));
-			if u32(round(sn.g * 255.0)) != i.ncode {
-				w *= 0.01;
+			let dd = abs(ind.w - i.view_dist);
+			if dd < best_d {
+				best_d = dd;
+				best = ind;
+				best_sun = sn;
 			}
+			if u32(round(sn.g * 255.0)) != i.ncode {
+				continue;
+			}
+			matched = true;
+			let w = 1.0 / (0.02 + dd / max(i.view_dist, 1.0));
 			acc += ind.rgb * w;
 			sun_acc += sn.r * w;
 			water_acc += sn.b * w;
 			wsum += w;
+		}
+		if !matched {
+			// Every tap is another surface. Take the nearest one whole
+			// rather than averaging four wrong answers — the old code
+			// weighted them 0.01 each, which normalizes away and left
+			// exactly that average, amplifying whichever was least wrong.
+			acc = best.rgb;
+			sun_acc = best_sun.r;
+			water_acc = best_sun.b;
+			wsum = 1.0;
 		}
 		let indirect = acc / wsum;
 		// The sun ray's own water column, attenuated by the SAME sigma

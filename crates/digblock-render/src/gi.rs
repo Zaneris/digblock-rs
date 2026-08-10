@@ -561,6 +561,13 @@ impl GiDraw {
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D2,
 				),
+				// The prepass's exact face-normal codes. Uint sample type
+				// — the value is a table index, not a colour.
+				ftex(
+					2,
+					wgpu::TextureSampleType::Uint,
+					wgpu::TextureViewDimension::D2,
+				),
 			],
 		});
 		// gi_common.wgsl's group(2): the GI world data every direct
@@ -750,13 +757,14 @@ impl GiDraw {
 		&self.cam_buf
 	}
 
-	/// Build the resolve's group-0 bind (uniform + depth tap) against
-	/// the current depth copy — called whenever the frame targets
-	/// rebuild.
+	/// Build the resolve's group-0 bind (uniform + the depth and
+	/// face-normal taps) against the current targets — called whenever
+	/// the frame targets rebuild.
 	pub fn make_resolve_bind(
 		&self,
 		gpu: &Gpu,
 		depth_copy_view: &wgpu::TextureView,
+		normal_view: &wgpu::TextureView,
 	) -> wgpu::BindGroup {
 		gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("gi resolve bg"),
@@ -769,6 +777,10 @@ impl GiDraw {
 				wgpu::BindGroupEntry {
 					binding: 1,
 					resource: wgpu::BindingResource::TextureView(depth_copy_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: wgpu::BindingResource::TextureView(normal_view),
 				},
 			],
 		})
