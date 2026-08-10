@@ -1756,16 +1756,23 @@ impl Engine {
 					// Abandon the hold the moment the server says no, so
 					// the progress bar stops instead of running the full
 					// dig time out against a block that can't break.
-					// Recording the cell is what stops `step_dig` opening
-					// a fresh hold on it next frame.
+					// Recording the cell — for EVERY reason, not just the
+					// ones we can name — is what stops `step_dig` opening
+					// a fresh hold and re-sending DigStart each frame (a
+					// reason-gated latch silently spun on any refusal this
+					// build didn't know).
 					if self.dig.as_ref().is_some_and(|d| d.cell == cell) {
 						self.cancel_dig();
 					}
-					if reason == digblock_net::messages::RejectReason::Protected
-						&& self.refused_cell != Some(cell)
-					{
+					if self.refused_cell != Some(cell) {
 						self.refused_cell = Some(cell);
-						self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+						use digblock_net::messages::RejectReason as R;
+						let msg = match reason {
+							R::Protected => digblock_core::protect::REFUSE_DIG_MSG,
+							R::SkillGated => digblock_core::skills::REFUSE_GATED_MSG,
+							_ => "the server refused that dig",
+						};
+						self.push_feed(msg.into());
 					}
 				}
 				NetEvent::Inventory { counts, pending } => {
@@ -2186,6 +2193,13 @@ impl Engine {
 		{
 			return false;
 		}
+		// The rock gate is fully client-predictable (we know our own
+		// Mining level); the server's DigStart refusal is the backstop.
+		if digblock_core::skills::dig_level_gate(hit.block)
+			> self.skills.level(digblock_core::skills::Skill::Mining)
+		{
+			return false;
+		}
 		if self.water_tool_selected() {
 			// A charged bucket digs nothing at all: it has one action
 			// left, and that action is on the other button.
@@ -2209,15 +2223,24 @@ impl Engine {
 		if self.refused_cell.is_some() && self.refused_cell != self.target.map(|h| h.cell) {
 			self.refused_cell = None;
 		}
-		// The locally-knowable refusal (the world floor). A server-side
-		// lock can't be predicted and arrives as `DigRefused` instead.
-		if let Some(h) = self
-			.target
-			.filter(|h| digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None))
-		{
-			if self.refused_cell != Some(h.cell) {
-				self.refused_cell = Some(h.cell);
-				self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+		// The locally-knowable refusals (the world floor, the rock gate).
+		// A server-side lock can't be predicted and arrives as
+		// `DigRefused` instead. The latch keeps each refusal to one feed
+		// line per aim, same as the server path.
+		if let Some((cell, msg)) = self.target.and_then(|h| {
+			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
+				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
+			} else if digblock_core::skills::dig_level_gate(h.block)
+				> self.skills.level(digblock_core::skills::Skill::Mining)
+			{
+				Some((h.cell, digblock_core::skills::REFUSE_GATED_MSG))
+			} else {
+				None
+			}
+		}) {
+			if self.refused_cell != Some(cell) {
+				self.refused_cell = Some(cell);
+				self.push_feed(msg.into());
 			}
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
@@ -2231,13 +2254,14 @@ impl Engine {
 			.is_some_and(|d| d.cell == hit.cell && d.cell_value == hit.cell_value);
 		if !on_same {
 			self.cancel_dig();
-			// Level-scaled hold time (SIM v11) — the same `dig_required`
+			// Family-scaled hold time (SIM v12) — the same `dig_required`
 			// the server's completion gate runs.
 			let required = hit
 				.block
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
 					digblock_core::skills::dig_required(
+						hit.block,
 						h,
 						self.skills.level(digblock_core::skills::Skill::Mining),
 					) as u16

@@ -630,6 +630,27 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
+	/// The client's Mining level (1 for an unknown conn).
+	#[cfg(test)]
+	pub(crate) fn test_mining_level(&self, conn_id: u64) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining))
+	}
+
+	/// Raise a client's Mining to `level` (total-XP floor — never lowers,
+	/// like the wire's max-total rule). Harness/bench support: edit-path
+	/// digs must clear the rock gate without earning through it (the
+	/// gate's own test drives DigStart raw). Not #[cfg(test)] because
+	/// netbench — a bin, not a test — drives a real in-process Sim whose
+	/// flat world is stone.
+	pub fn bench_set_mining_level(&mut self, conn_id: u64, level: u32) {
+		use digblock_core::skills::{total_xp_for, Skill};
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.skills.set_total(Skill::Mining, total_xp_for(level));
+		}
+	}
+
 	/// The cell a client currently holds a dig on, if any.
 	#[cfg(test)]
 	fn test_digging(&self, conn_id: u64) -> Option<(i32, i32, i32)> {
@@ -891,6 +912,25 @@ impl Sim {
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
+		// The rock gate (SIM v12), refused at the hold's start for the
+		// same reason protection is: the refusal is useless after the
+		// player held the button through a full dig timer. Honest
+		// clients predict it in `diggable()` and never send this.
+		if let Some(v) = cell_value {
+			let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
+			let mining = client.skills.level(digblock_core::skills::Skill::Mining);
+			if digblock_core::skills::dig_level_gate(b) > mining {
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: RejectReason::SkillGated,
+					},
+				);
+				return;
+			}
+		}
 		client.digging = match cell_value {
 			Some(v)
 				if digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
@@ -1939,11 +1979,56 @@ mod tests {
 		);
 	}
 
+	/// SIM v12's rock gate, server half: a DigStart on stone below
+	/// Mining 5 refuses with `SkillGated` and opens no hold (refused at
+	/// the START — the player must not hold the button through a dig
+	/// timer for nothing); at the gate level the hold opens normally.
+	#[test]
+	fn gated_rock_refuses_the_dig_start() {
+		use digblock_core::raycast::{raycast, REACH};
+		use glam::Vec3;
+		let mut sim = flat_sim("rockgate");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::SkillGated,
+					..
+				}
+			)),
+			"level-1 stone dig refused at the start: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+		sim.bench_set_mining_level(1, 5);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		}]);
+		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
+	}
+
 	/// XP is server-computed at the two chokepoints and lands as new
-	/// TOTALS: a stone dig pays `ceil(90/6) = 15` Mining, converting the
-	/// stone pays 9 Alchemy, and the totals survive reconnect and a full
-	/// server reboot via the identity store (join sync always carries a
-	/// `Skills` frame, empty for a fresh identity).
+	/// TOTALS: a stone dig pays `ceil(90/6) = 15` Mining on top of the
+	/// harness's gate grant, converting the rubble pays 8 Alchemy, and
+	/// the totals survive reconnect and a full server reboot via the
+	/// identity store (join sync always carries a `Skills` frame, empty
+	/// for a fresh identity).
 	#[test]
 	fn xp_awards_on_dig_and_alchemy_and_persists() {
 		use digblock_core::block::BlockType;
@@ -1967,6 +2052,8 @@ mod tests {
 			);
 			wait_live(&mut sim, 1);
 			let mut t = 0;
+			// dig_hold grants Mining 5 (the rock gate) = 394 total XP;
+			// the stone dig then pays its 15 on top.
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
 			c.drain();
 			assert!(
@@ -1974,10 +2061,10 @@ mod tests {
 					m,
 					ServerMsg::XpGain {
 						skill: 0,
-						total: 15
+						total: 409
 					}
 				)),
-				"stone dig pays 15 Mining: {:?}",
+				"stone dig pays 15 Mining on the granted 394: {:?}",
 				c.msgs
 			);
 
@@ -2008,7 +2095,7 @@ mod tests {
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
 					m,
-					ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 8)]
+					ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
 				)),
 				"reconnect carries the totals: {:?}",
 				c2.msgs
@@ -2024,7 +2111,7 @@ mod tests {
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 8)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
 			)),
 			"reboot carries the totals: {:?}",
 			c3.msgs

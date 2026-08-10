@@ -94,4 +94,11 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// ~0.42× at 99. Shared dig behavior both sides time independently, so
 /// a v10 client's holds would complete early or late against a v11
 /// server at any level but 30.
-pub const SIM_VERSION: u16 = 11;
+/// v12: per-material dig curves + the rock gate — `dig_required` keys on
+/// the block's `DigFamily` (Fixed flat / Soft 1250 / Wood 1350 / Rock
+/// 1700 at level 1, every family exactly 1000‰ at 30), and
+/// `skills::dig_level_gate` refuses rock digs below Mining 3–5 (client
+/// prediction + the server's DigStart backstop). A v11 peer times
+/// non-Soft holds differently at any level but 30 and would let a
+/// level-1 player open a hold on gated rock.
+pub const SIM_VERSION: u16 = 12;

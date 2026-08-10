@@ -164,28 +164,60 @@ impl SkillSet {
 
 // ---- dig speed -------------------------------------------------------
 
-/// §5.1's dig-speed multiplier in permille: 1250 (1.25× time) at level
-/// 1, EXACTLY 1000 at level 30 — today's hardness table is the
-/// mid-curve reference the early game climbs back to — and 417 at 99.
-/// Two exact-anchored linear segments with integer rounding, so the
-/// three pins hold precisely and everything between is monotonic.
-pub fn dig_speed_permille(level: u32) -> u32 {
+/// §5.1's per-family dig-speed multiplier in permille. Every family
+/// passes EXACTLY through 1000 at level 30 — today's hardness table is
+/// the shared mid-curve reference — so a family only shapes the approach
+/// (how hard the material resists a novice) and the ceiling (how fast
+/// mastery gets). Fixed is flat: foliage is already near-instant, the
+/// torch is a fixture, and the water scoop's duration is pinned to the
+/// viewmodel swing. Two exact-anchored round-half-up segments per
+/// family; the level-99 endpoint IS the speed floor — no second clamp.
+pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
+	use crate::block::DigFamily;
 	let level = level.clamp(1, 99);
+	let (start, end) = match family {
+		DigFamily::Fixed => (1000, 1000),
+		DigFamily::Soft => (1250, 417),
+		DigFamily::Wood => (1350, 500),
+		DigFamily::Rock => (1700, 417),
+	};
 	if level <= 30 {
-		1250 - (500 * (level - 1) + 29) / 58
+		start - (2 * (start - 1000) * (level - 1) + 29) / 58
 	} else {
-		1000 - (1166 * (level - 30) + 69) / 138
+		1000 - (2 * (1000 - end) * (level - 30) + 69) / 138
 	}
 }
 
 /// THE hold-to-dig duration both sides compute: `max(1,
-/// round(hardness · multiplier))` ticks at the digger's Mining level.
-/// Level 30 reproduces the legacy table bit-exactly; a level-up landing
-/// mid-hold skews client/server by a few ticks at most, which
-/// `dig_grace` absorbs — no new tolerance machinery.
-pub fn dig_required(hardness: u16, level: u32) -> u32 {
-	((u32::from(hardness) * dig_speed_permille(level) + 500) / 1000).max(1)
+/// round(hardness · family multiplier))` ticks at the digger's Mining
+/// level. Level 30 reproduces the legacy table bit-exactly for EVERY
+/// block; a level-up landing mid-hold skews client/server by a few
+/// ticks at most, which `dig_grace` absorbs — no new tolerance
+/// machinery. Hardness stays a separate parameter because callers hold
+/// the y-gated `dig_hardness(y)` result (the bedrock rule lives there).
+pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
+	((u32::from(hardness) * dig_speed_permille(block.dig_family(), level) + 500) / 1000).max(1)
 }
+
+/// §5.1's rock gate: the Mining level below which this block refuses to
+/// be dug at all (1 = ungated). Deliberately a strength wall — the doc's
+/// original "no strength wall" stance was reversed by design: rock
+/// opens a few levels in, after soft ground and loose gravel have paid
+/// for them. The client predicts this in `diggable()` (it knows its own
+/// level); the server refuses at DigStart with
+/// `RejectReason::SkillGated` as the backstop, exactly the `Protected`
+/// pattern.
+pub fn dig_level_gate(block: BlockType) -> u32 {
+	match block {
+		BlockType::Sandstone => 3,
+		BlockType::Stone | BlockType::StoneStairs | BlockType::StoneSlab | BlockType::Rubble => 5,
+		_ => 1, // Gravel stays the entry rock; everything else ungated
+	}
+}
+
+/// The feed line a gated dig speaks — beside `protect::REFUSE_*_MSG` in
+/// spirit: one wording shared by prediction and the server verdict.
+pub const REFUSE_GATED_MSG: &str = "this rock defies your mining level";
 
 // ---- award tables ----------------------------------------------------
 //
@@ -304,35 +336,79 @@ mod tests {
 		assert_eq!(decoded.to_wire(), vec![(0, 42)]);
 	}
 
-	/// §5.1's three anchors, held exactly: level 30 IS the legacy
-	/// hardness table (the old table lives on as a mid-curve golden),
-	/// level 1 is 1.25× it, level 99 lands on the pinned endgame times
-	/// — and `required` never rises with level anywhere between.
+	/// §5.1's per-family anchors, held exactly: level 30 IS the legacy
+	/// hardness table for EVERY family (the old table lives on as the
+	/// shared mid-curve golden), each family's 1/99 endpoints are pinned,
+	/// Soft reproduces the original SIM-v11 curve bit-exactly, Fixed
+	/// never scales — and `required` never rises with level anywhere.
 	#[test]
 	fn dig_speed_anchors_are_pinned() {
-		assert_eq!(dig_speed_permille(1), 1250);
-		assert_eq!(dig_speed_permille(30), 1000, "parity with today at 30");
-		assert_eq!(dig_speed_permille(99), 417);
+		use crate::block::DigFamily as F;
+		for (family, start, end) in [
+			(F::Fixed, 1000, 1000),
+			(F::Soft, 1250, 417),
+			(F::Wood, 1350, 500),
+			(F::Rock, 1700, 417),
+		] {
+			assert_eq!(dig_speed_permille(family, 1), start, "{family:?} at 1");
+			assert_eq!(
+				dig_speed_permille(family, 30),
+				1000,
+				"{family:?} parity with today at 30"
+			);
+			assert_eq!(dig_speed_permille(family, 99), end, "{family:?} at 99");
+		}
+		// Soft IS the shipped v11 curve, value for value.
+		for level in 1..=99 {
+			let legacy = if level <= 30 {
+				1250 - (500 * (level - 1) + 29) / 58
+			} else {
+				1000 - (1166 * (level - 30) + 69) / 138
+			};
+			assert_eq!(dig_speed_permille(F::Soft, level), legacy, "level {level}");
+		}
 		for &b in &BlockType::ALL {
 			let Some(h) = b.hardness_ticks() else {
 				continue;
 			};
 			assert_eq!(
-				dig_required(h, 30),
+				dig_required(b, h, 30),
 				u32::from(h),
 				"{b:?} at 30 = the legacy table exactly"
 			);
 			for level in 2..=99 {
 				assert!(
-					dig_required(h, level) <= dig_required(h, level - 1),
+					dig_required(b, h, level) <= dig_required(b, h, level - 1),
 					"{b:?} never slows with a level ({level})"
 				);
 			}
 		}
 		// The §5.1 table's spot values (60 Hz ticks).
-		assert_eq!(dig_required(90, 1), 113, "stone 1.88s at level 1");
-		assert_eq!(dig_required(90, 99), 38, "stone 0.63s at 99");
-		assert_eq!(dig_required(30, 1), 38, "dirt 0.63s at level 1");
+		use BlockType as B;
+		assert_eq!(dig_required(B::Stone, 90, 1), 153, "stone 2.55s at level 1");
+		assert_eq!(dig_required(B::Stone, 90, 99), 38, "stone 0.63s at 99");
+		assert_eq!(dig_required(B::Wood, 60, 1), 81, "wood 1.35s at level 1");
+		assert_eq!(dig_required(B::Wood, 60, 99), 30, "wood 0.50s at 99");
+		assert_eq!(dig_required(B::Dirt, 30, 1), 38, "dirt 0.63s at level 1");
+		// Fixed never scales: leaves and the scoop at 1 / 30 / 99.
+		for level in [1, 30, 99] {
+			assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
+			assert_eq!(dig_required(B::Water, 20, level), 20, "scoop flat");
+		}
+	}
+
+	/// The rock gate (§5.1, reversed-by-design "strength wall"): rock
+	/// refuses below its Mining level; gravel is the ungated entry rock.
+	#[test]
+	fn rock_is_gated_until_its_level() {
+		use BlockType as B;
+		assert_eq!(dig_level_gate(B::Sandstone), 3);
+		for b in [B::Stone, B::StoneStairs, B::StoneSlab, B::Rubble] {
+			assert_eq!(dig_level_gate(b), 5, "{b:?}");
+		}
+		for b in [B::Gravel, B::Dirt, B::Wood, B::Leaves, B::Water, B::Air] {
+			assert_eq!(dig_level_gate(b), 1, "{b:?} ungated");
+		}
 	}
 
 	/// §5.2's award table: `ceil(hardness_ticks / 6)` of the SHIPPED
