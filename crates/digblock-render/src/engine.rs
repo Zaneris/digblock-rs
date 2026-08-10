@@ -114,6 +114,11 @@ pub struct EngineConfig {
 	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
 	/// the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// Debug: hang a wide stone roof with NO walls over the ground ahead
+	/// of spawn — the beam-veto capture (a slanting morning sun must
+	/// reach under it exactly as the shadow map says; only the ambient
+	/// dome dims). Set by the desktop launcher from DIG_ROOF.
+	pub debug_roof: bool,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -187,6 +192,7 @@ impl EngineConfig {
 			debug_playerbox: false,
 			debug_shapes: false,
 			debug_vault: false,
+			debug_roof: false,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -224,6 +230,7 @@ impl EngineConfig {
 			debug_playerbox: false,
 			debug_shapes: false,
 			debug_vault: false,
+			debug_roof: false,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -700,6 +707,28 @@ fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
+/// of spawn with NO walls — the beam-veto capture. Skylight under it
+/// drops (lateral spread decays toward the middle), so this scene is
+/// exactly where scaling direct sun by the nibble went wrong: a morning
+/// sun slants in from the open side and must light the ground precisely
+/// where the shadow map says, with only the ambient dome dimming.
+fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in (bx - 8)..=(bx + 8) {
+		for z in (bz + 2)..=(bz + 18) {
+			out.push((x, by + 3, z, B::Stone as u16));
+		}
+	}
+	out
+}
+
 fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
@@ -856,6 +885,9 @@ impl Engine {
 				};
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn));
+				}
+				if config.debug_roof {
+					plan.extend(debug_roof_plan(spawn));
 				}
 				plan
 			},

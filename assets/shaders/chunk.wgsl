@@ -63,6 +63,11 @@ const TORCH_COLOR = vec3f(1.0, 0.82, 0.55);
 // (the entire pre-Stage-B surface) multiplies by exactly 1, so open
 // ground looks the same as it always did.
 const MIN_AMBIENT = 0.02;
+// Direct sun is vetoed, never scaled, by the sky nibble: any cell with
+// sky access above ~4/15 hands the beam entirely to the shadow map,
+// which alone knows the sun's angle. This is NOT Minecraft's model —
+// there the column IS sunlight; here it is only occlusion truth.
+const BEAM_SKY = 0.27;
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
@@ -174,11 +179,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// strength; ambient is the guaranteed floor. AO attenuates the whole
 	// color — contact darkening the shadow maps can't resolve.
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	// Skylight gates the WHOLE sun term — ambient (a cave gets no sky
-	// dome) and direct alike (the wide cascade can leak sunlight into
-	// terrain it never rendered, and sky=0 is the truth there).
+	// Skylight's two jobs are split: the ambient sky dome SCALES with
+	// the nibble (under a roof you see less sky), but the direct beam
+	// belongs to the shadow map — a 10am sun slants in under an
+	// open-sided roof, and only the cascade knows that. The nibble
+	// merely VETOES direct near sky=0, where the wide cascade can leak
+	// sunlight into terrain it never rendered and the field is the
+	// ground truth.
 	let skyf = mix(MIN_AMBIENT, 1.0, pow(i.light.y, 1.5));
-	let sun = (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh) * skyf;
+	let beam = smoothstep(0.0, BEAM_SKY, i.light.y);
+	let sun = frame.ambient.rgb * i.axis * skyf
+		+ frame.light_color.rgb * i.direct * sh * beam;
 	// Stage-B torchlight competes with the sun via a componentwise max —
 	// never a sum, so noon faces don't blow out beside a torch. The
 	// curve steepens the 16-level falloff; AO still darkens contact
