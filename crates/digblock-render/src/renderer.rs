@@ -158,6 +158,9 @@ pub struct RenderConfig {
 	/// the old lighting path with zero new GPU objects, until P6 removes
 	/// the choice.
 	pub rtgi: bool,
+	/// Replace the scene with the voxel-window debug raymarch
+	/// (`DIG_GI=window`; implies rtgi at the launcher).
+	pub debug_gi: bool,
 }
 
 /// Everything `Renderer::render` consumes for one frame, built by the
@@ -379,6 +382,8 @@ pub struct Renderer {
 	gpu_timer: Option<GpuTimer>,
 	/// RTGI probe compute; None with the flag off (see RenderConfig::rtgi).
 	gi: Option<crate::gi::GiDraw>,
+	/// Draw the voxel-window debug raymarch over the scene (DIG_GI).
+	debug_gi: bool,
 	/// Debug overlay; always constructed (cheap) so the device-loss
 	/// rebuild path recreates it for free.
 	overlay: Overlay,
@@ -769,7 +774,15 @@ impl Renderer {
 			near_dirty: true,
 			near_planes: None,
 			gpu_timer: GpuTimer::new(gpu),
-			gi: config.rtgi.then(|| crate::gi::GiDraw::new(gpu)),
+			gi: config.rtgi.then(|| {
+				crate::gi::GiDraw::new(
+					gpu,
+					config.draw_dist as u32,
+					&textures.layer_means,
+					surface_format,
+				)
+			}),
+			debug_gi: config.debug_gi,
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
 			players: crate::players::RemotePlayersDraw::new(
@@ -986,6 +999,14 @@ impl Renderer {
 		self.chunks[idx].water = self.store_mesh(gpu, prev, &mesh.water);
 		let center = self.chunks[idx].center;
 		self.mark_near_dirty(center);
+	}
+
+	/// RTGI: forward one classified chunk into the voxel window. No-op
+	/// with the flag off (the engine's drain is gated, this is a belt).
+	pub fn gi_upload(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &digblock_core::gi::GiChunk) {
+		if let Some(g) = self.gi.as_mut() {
+			g.upload_chunk(gpu, pos, gi);
+		}
 	}
 
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
@@ -1287,7 +1308,8 @@ impl Renderer {
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
 		if let Some(gi) = self.gi.as_mut() {
-			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref());
+			let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
+			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), cam);
 		}
 
 		let draw = ChunkDraw {
@@ -1482,6 +1504,14 @@ impl Renderer {
 			// The item in your own hand, over the finished world. Its own
 			// pass for one reason: it clears the depth buffer first. The
 			// item is a metre from the eye and would otherwise be sliced
+			// The voxel-window debug raymarch paints over the finished
+			// scene (overlay still lands on top) — the P1 gate capture.
+			if self.debug_gi {
+				if let Some(gi) = self.gi.as_mut() {
+					let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
+					gi.encode_debug(gpu, &mut encoder, target, frame.inv_view_proj, cam);
+				}
+			}
 			// open by the wall you walk into — but it still needs depth
 			// among its OWN faces, because a staircase in hand is not
 			// convex and back-face culling alone can't sort it. The water

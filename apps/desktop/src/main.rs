@@ -79,6 +79,7 @@ fn main() {
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
 			"--rtgi" => config.rtgi = true,
+			// DIG_GI=window handled below with the other env debug flags.
 			"--bench" => config.bench = true,
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
@@ -142,6 +143,13 @@ fn main() {
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
 	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
+	// DIG_GI=window: paint the voxel-window raymarch over the scene
+	// (GI-DESIGN.md P1 gate). Needs the GI resources, so it implies
+	// --rtgi.
+	if std::env::var("DIG_GI").as_deref() == Ok("window") {
+		config.debug_gi = true;
+		config.rtgi = true;
+	}
 	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
 	// stocked inventory, so `--screenshot` can capture a UI screen (they
 	// are otherwise reachable only through live input).

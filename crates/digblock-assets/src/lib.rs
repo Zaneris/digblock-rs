@@ -166,8 +166,10 @@ pub mod shader {
 	/// compute passes carry their own small GI uniform block, not the
 	/// pinned Frame layout.
 	pub const GI_PROBE: &str = include_str!("../../../assets/shaders/gi_probe.wgsl");
+	/// The voxel-window debug raymarch (`DIG_GI=window`).
+	pub const GI_DEBUG: &str = include_str!("../../../assets/shaders/gi_debug.wgsl");
 
-	pub const ALL: [(&str, &str); 13] = [
+	pub const ALL: [(&str, &str); 14] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -181,6 +183,7 @@ pub mod shader {
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
 		("viewmodel.wgsl", VIEWMODEL),
 		("gi_probe.wgsl", GI_PROBE),
+		("gi_debug.wgsl", GI_DEBUG),
 	];
 }
 

@@ -17,7 +17,7 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::light::{facts_of, CellFacts, LightField, LIGHT_BUDGET};
@@ -147,6 +147,12 @@ pub struct Pipeline {
 	/// a `ChunkSlot` field, so the BFS can read blocks while writing light
 	/// and so shared AIR_CHUNK sentinels still carry per-cell light.
 	light: LightField,
+	/// Chunks whose GI-window region is stale (RTGI; GI-DESIGN.md):
+	/// arrivals and edits land here, the engine drains via
+	/// `take_gi_dirty` under its upload budget. Tracked unconditionally —
+	/// a set insert is noise, and it stays bounded by the resident set
+	/// (drained or not) because it IS a set.
+	gi_dirty: FxHashSet<ChunkPos>,
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -444,6 +450,7 @@ impl Pipeline {
 			in_flight: 0,
 			job_cost: JobCost::new(),
 			light: LightField::new(),
+			gi_dirty: FxHashSet::default(),
 		}
 	}
 
@@ -707,6 +714,12 @@ impl Pipeline {
 						.map(|(cy, d)| (cy as i32, d.clone()))
 						.collect();
 					self.light.seed_column(x, z, &seed_stack);
+					// Every arriving chunk dirties its GI-window region —
+					// air ones included, since the toroidal window may hold
+					// a stale previous tenant there (GI-DESIGN.md).
+					for cy in 0..crate::chunk::WORLD_VCHUNK {
+						self.gi_dirty.insert(ChunkPos::new(x, cy, z));
+					}
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
@@ -1090,6 +1103,29 @@ impl Pipeline {
 		self.light.sky_light(x, y, z)
 	}
 
+	/// Drain the chunks whose GI-window region is stale (RTGI). The
+	/// caller owns budgeting: it takes everything and queues the excess,
+	/// so a burst (arrival column, cold fill) never re-dirties here.
+	pub fn take_gi_dirty(&mut self) -> Vec<ChunkPos> {
+		self.gi_dirty.drain().collect()
+	}
+
+	/// Classify one resident chunk for the GI window. None = not (or no
+	/// longer) resident — the caller drops the entry; if the region ever
+	/// becomes visible again it arrives, and arriving re-dirties it.
+	pub fn classify_gi(&self, pos: ChunkPos) -> Option<crate::gi::GiChunk> {
+		match &self.store.get(&pos)?.state {
+			ChunkState::Ready(data) => Some(crate::gi::classify_chunk(data)),
+			_ => None,
+		}
+	}
+
+	/// Re-dirty every resident chunk's GI-window region (device-loss
+	/// rebuild: the fresh window is empty and all GI data is derived).
+	pub fn gi_redirty_all(&mut self) {
+		self.gi_dirty.extend(self.store.keys().copied());
+	}
+
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
@@ -1146,6 +1182,10 @@ impl Pipeline {
 		// fluid, and authoritative edits all feed the field. Propagation
 		// itself waits for the next maintain's `step_light`.
 		self.light.on_cell_changed(x, y, z, prev, cell);
+		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
+		// Chunk-granular: the window has no padded shell, so an edit
+		// dirties exactly its own 16³ region.
+		self.gi_dirty.insert(pos);
 		if let Some(overlay) = &mut self.overlay {
 			overlay.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));

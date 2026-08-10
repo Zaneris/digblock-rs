@@ -7,6 +7,7 @@ pub mod chunk;
 pub mod decoration;
 pub mod dir;
 pub mod fluid;
+pub mod gi;
 pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;

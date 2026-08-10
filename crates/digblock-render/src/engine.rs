@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use digblock_core::chunk::ChunkPos;
@@ -173,6 +174,10 @@ pub struct EngineConfig {
 	/// removes the flag and the old stack with it. Launchers: `--rtgi`
 	/// (desktop), `?rtgi` (web).
 	pub rtgi: bool,
+	/// Debug: paint the voxel-window raymarch over the scene — the GI
+	/// window's visual proof (`DIG_GI=window`; forces `rtgi` on at the
+	/// launcher).
+	pub debug_gi: bool,
 }
 
 impl EngineConfig {
@@ -212,6 +217,7 @@ impl EngineConfig {
 			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			rtgi: false,
+			debug_gi: false,
 		}
 	}
 
@@ -251,6 +257,7 @@ impl EngineConfig {
 			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			rtgi: false,
+			debug_gi: false,
 		}
 	}
 
@@ -286,6 +293,7 @@ impl EngineConfig {
 			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
 			rtgi: self.rtgi,
+			debug_gi: self.debug_gi,
 		}
 	}
 }
@@ -461,6 +469,11 @@ pub struct Engine {
 	/// set: an upload for a queued position clears it, so a chunk that
 	/// comes back before its release is reached keeps its new mesh.
 	pending_evict_set: rustc_hash::FxHashSet<ChunkPos>,
+	/// RTGI voxel-window re-upload queue (chunk positions from
+	/// `Pipeline::take_gi_dirty`, drained under a per-frame byte
+	/// budget; the set half dedupes re-dirtied entries).
+	gi_queue: VecDeque<ChunkPos>,
+	gi_queued: rustc_hash::FxHashSet<ChunkPos>,
 	/// Camera chunk the upload queue was last ordered for.
 	upload_sort_center: ChunkPos,
 	size: (u32, u32),
@@ -952,6 +965,8 @@ impl Engine {
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
 			pending_evict_set: rustc_hash::FxHashSet::default(),
+			gi_queue: VecDeque::new(),
+			gi_queued: rustc_hash::FxHashSet::default(),
 			upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			size: (1, 1),
 			scale_factor: 1.0,
@@ -1984,6 +1999,12 @@ impl Engine {
 			&self.config.render_config(),
 		));
 		self.pipeline.remesh_all();
+		// The fresh renderer's GI window is empty; every resident chunk
+		// re-uploads through the ordinary budgeted drain (the GI mirror
+		// of the re-mesh above — device loss must never need a relight).
+		if self.config.rtgi {
+			self.pipeline.gi_redirty_all();
+		}
 	}
 
 	/// Camera far plane = light rig depth = draw_dist × 32 (Java World.updateDepth).
@@ -2034,6 +2055,33 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
+		// RTGI: pull freshly-dirty chunks into the re-upload queue, then
+		// feed the voxel window under its own byte budget — a quarter of
+		// the mesh-upload ceiling, ~4 KiB a chunk, so a cold fill spans
+		// frames instead of spiking one (GI-DESIGN.md).
+		if self.config.rtgi {
+			for pos in self.pipeline.take_gi_dirty() {
+				if self.gi_queued.insert(pos) {
+					self.gi_queue.push_back(pos);
+				}
+			}
+			let mut gi_budget = self.config.upload_bytes_max / 4;
+			while gi_budget >= 4096 {
+				let Some(pos) = self.gi_queue.pop_front() else {
+					break;
+				};
+				self.gi_queued.remove(&pos);
+				// Not resident anymore = evicted while queued: drop it —
+				// re-entry re-dirties.
+				if let Some(chunk) = self.pipeline.classify_gi(pos) {
+					renderer.gi_upload(gpu, pos, &chunk);
+					gi_budget -= 4096;
+				}
+			}
+		} else {
+			// Flag off: keep the pipeline's dirty set from accumulating.
+			self.pipeline.take_gi_dirty();
+		}
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.
 		if self.net.is_none() {
