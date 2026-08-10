@@ -19,12 +19,16 @@ use crate::chunk::{cell_id, split_world, ChunkPos, CHUNK_SIZE, CHUNK_VOLUME};
 
 pub const MAX_LIGHT: u8 = 15;
 
-/// BFS pops per `Pipeline::maintain` call. A count, not a deadline: pops
-/// are uniform-cost, and a count keeps settlement deterministic (pinned by
-/// `any_step_budget_settles_to_the_same_field`). One torch floods ~5k
-/// cells, so a single edit settles within a frame; only mass streaming
-/// carries over, and dirty-gating makes carry-over late, never wrong.
-pub const LIGHT_BUDGET: u32 = 16 * 1024;
+/// BFS pops per `step_light` call (two calls per maintain). A count, not
+/// a deadline: pops are uniform-cost, and a count keeps settlement
+/// deterministic (pinned by `any_step_budget_settles_to_the_same_field`).
+/// Sized so a torch edit (~5k flooded cells) settles within a frame or
+/// two, but a mass-streaming backlog can't blow the frame budget: a pop
+/// costs ~6 hash-map neighbor reads, and 16k×2 per maintain measurably
+/// moved the bench's p99 (+4ms); 4k×2 keeps the worst maintain ~1ms.
+/// Carry-over is late, never wrong — dirty-gating remeshes whatever
+/// settles later.
+pub const LIGHT_BUDGET: u32 = 4 * 1024;
 
 /// Per-chunk light storage. `Uniform` never allocates — dark chunks (and,
 /// in P3, full-sky chunks) stay a tag; `Mixed` allocates on the first

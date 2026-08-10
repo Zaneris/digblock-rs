@@ -1029,7 +1029,12 @@ impl Pipeline {
 				_ => None, // not resident: a wall until arrival seeding
 			}
 		});
-		if pops > 0 {
+		// Convert light writes into remesh bumps only once the field has
+		// SETTLED: draining per budget slice re-bumped the same chunks
+		// every maintain during mass streaming (+21% mesh jobs on the
+		// bench). Dispatch order is unaffected — a queued mesh snapshots
+		// at dispatch and the settle-before-dispatch sites run first.
+		if self.light.pending() == 0 {
 			self.apply_light_dirty();
 		}
 		pops
@@ -1348,6 +1353,20 @@ mod tests {
 		p.store[&pos].mesh_gen
 	}
 
+	/// Run maintain until the light field is settled AND its dirty set
+	/// has drained. `quiesce` only waits for chunk work — the budgeted
+	/// BFS can still be paying down the initial skylight backlog when it
+	/// returns, and light assertions made before settle are read races.
+	fn settle_light(p: &mut Pipeline, center: ChunkPos) {
+		for _ in 0..2000 {
+			let m = p.maintain(center, usize::MAX, None, None);
+			if m.light_pending == 0 && m.light_pops == 0 {
+				return;
+			}
+		}
+		panic!("light never settled");
+	}
+
 	#[test]
 	fn set_block_edits_and_bumps_border_neighbors() {
 		let mut p = Pipeline::new(0.0, 4, 2);
@@ -1524,12 +1543,13 @@ mod tests {
 			p.set_block(x, 200, 8, BlockType::Air);
 		}
 		quiesce(&mut p, center);
+		settle_light(&mut p, center);
 
 		let before: Vec<(ChunkPos, u64)> =
 			p.store.iter().map(|(pos, s)| (*pos, s.mesh_gen)).collect();
 		p.set_block(10, 200, 8, BlockType::Torch)
 			.expect("torch lands");
-		p.maintain(center, usize::MAX, None, None);
+		settle_light(&mut p, center);
 
 		// The field follows the tunnel and nothing else.
 		assert_eq!(p.light_at(10, 200, 8), 14, "the source");
@@ -1565,13 +1585,14 @@ mod tests {
 		// Torch in open sky near the +x residency rim: column 4 (x 64..79)
 		// is not resident at draw distance 4.
 		p.set_block(60, 200, 8, BlockType::Torch).expect("torch");
-		p.maintain(center, usize::MAX, None, None);
+		settle_light(&mut p, center);
 		assert_eq!(p.light_at(63, 200, 8), 11, "lit to the resident edge");
 		assert_eq!(p.light_at(64, 200, 8), 0, "nothing beyond residency");
 
 		// Step east: column 4 enters and generates; its cells must pick
 		// the field up from column 3's lit border.
 		quiesce(&mut p, ChunkPos::new(1, 0, 0));
+		settle_light(&mut p, ChunkPos::new(1, 0, 0));
 		assert_eq!(p.light_at(64, 200, 8), 10, "seeded across the border");
 		assert_eq!(p.light_at(70, 200, 8), 4, "spread deep into the newcomer");
 	}
@@ -1583,6 +1604,7 @@ mod tests {
 	fn open_column_is_full_skylight_to_the_ground() {
 		let mut p = Pipeline::new(0.0, 4, 2);
 		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		settle_light(&mut p, ChunkPos::new(0, 0, 0));
 		let surface = (0..=255)
 			.rev()
 			.find(|&y| {
@@ -1609,7 +1631,7 @@ mod tests {
 		quiesce(&mut p, center);
 
 		p.set_block(8, 200, 8, BlockType::Torch).expect("torch");
-		p.maintain(center, usize::MAX, None, None);
+		settle_light(&mut p, center);
 		assert_eq!(p.light_at(12, 200, 8), 10);
 
 		let far = ChunkPos::new(40, 0, 0);
@@ -1617,6 +1639,7 @@ mod tests {
 		assert_eq!(p.light_at(12, 200, 8), 0, "evicted light dropped");
 
 		quiesce(&mut p, center);
+		settle_light(&mut p, center);
 		assert_eq!(
 			p.block_at(8, 200, 8),
 			Some(BlockType::Torch),

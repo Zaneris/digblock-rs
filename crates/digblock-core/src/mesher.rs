@@ -290,9 +290,9 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
 /// 18-20 tint, 21 emissive (Stage-A fullbright — chunk.wgsl skips the
 /// lighting terms), 22-25 Stage-B blocklight (per-vertex smooth light),
-/// 26-29 reserved for skylight, 30-31 reserved. water — bits 0-9
-/// texture layer, 10-23 payload (see MeshData::water), 24-31 reserved
-/// (water light lands there in P4; water reads
+/// 26-29 skylight, 30-31 reserved. water — bits 0-9 texture layer,
+/// 10-23 payload (see MeshData::water), 24-31 the water cell's raw
+/// light byte (block nibble low, sky high; water reads
 /// its uv from the corner code and has no tint).
 #[inline]
 fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {

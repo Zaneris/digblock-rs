@@ -1,6 +1,36 @@
 # Bench baseline & hotspot analysis
 
-## 2026-08-09 — the server gets a jitter buffer (`INPUT_HOLD_MAX`)
+## 2026-08-10 — Stage-B voxel light (LIGHT-DESIGN.md)
+
+A/B on the seed-42 flight, same machine/session, baseline = pre-light main
+(27f9a2a):
+
+| metric | baseline | light (final) | note |
+|---|---|---|---|
+| fill | 4.29 s | 3.71 s | run-to-run variance band; not claimed as a win |
+| avg | 8.43 ms | 8.41 ms | flat |
+| p95 / p99 | 9.38 / 9.75 | 10.17 / 12.15 | the honest cost — fill-time skylight settling |
+| over-12.5ms | 10 | 9 | recovered (see below) |
+| hitches | 0 | 0 | |
+| mesh jobs | 76 444 | 85 923 | +12%: chunks re-mesh once with settled light |
+
+Two tuning findings, both now load-bearing:
+
+- **`LIGHT_BUDGET` 16k → 4k per `step_light` site.** A pop costs ~6 hash-map
+  neighbor reads; at 16k×2 per maintain a streaming backlog spent multiple
+  milliseconds inside `maintain` and p99 went to 14.0 ms with 54 frames over
+  12.5 ms. 4k×2 bounds the worst maintain near a millisecond; settling is
+  later, never wrong (dirty-gating remeshes whatever settles late).
+- **Dirty drains only when the field is SETTLED** (`pending() == 0`), not per
+  budget slice. Per-slice draining re-bumped the same chunks every maintain
+  while a backlog settled — +21% mesh jobs on the bench. One drain per settle
+  = one light remesh per chunk. Test-side corollary: `quiesce` means
+  chunk-quiet, not light-quiet — pipeline light tests must `settle_light`
+  before asserting, or they race the budget.
+
+Remaining p99 gap (~+2.4 ms) is fill-window skylight arrival work (descend
+scans + the settle drain's remesh burst) under the vsync headroom; steady
+flight shows `light q 0` every report window and zero hitches.
 
 Acting on the measurement pass below. The drain now refuses to step past a
 **hole** in the input tick sequence for up to `INPUT_HOLD_MAX` ticks, so an
