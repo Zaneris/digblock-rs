@@ -36,6 +36,9 @@ fn main() {
 	//            the sun azimuth plane)
 	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
 	//            tod 45, 1800 frames, bench.csv)
+	//   --fly N / --warp N (fly the bench path N frames then freeze, or
+	//            arrive at that same pose with no motion behind it — the
+	//            temporal-artifact A/B; pair with --frames)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -79,6 +82,16 @@ fn main() {
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
 			"--bench" => config.bench = true,
+			// Capture harness: fly the bench path N frames then freeze, vs
+			// arrive at that same pose with no motion behind it. Pair them
+			// with --frames to choose how long the camera then sits still —
+			// the diff is what a temporal artifact actually costs, which a
+			// plain still cannot show.
+			"--fly" => config.fly = Some(parse_or_die("--fly", args.next())),
+			"--warp" => {
+				config.fly = Some(parse_or_die("--warp", args.next()));
+				config.warp = true;
+			}
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),

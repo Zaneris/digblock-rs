@@ -50,6 +50,42 @@ Named here because this document previously described several of these as done:
   avoiding derivatives, which the rasterized normals removed, and tile classification,
   which nothing uses yet.
 
+## Measuring motion
+
+Every other capture in this engine is a still, which is the one case where a temporal
+artifact has already converged away — so for a while the system had no way to photograph
+its own worst failure mode. `--fly N` flies the bench path N frames and then FREEZES the
+camera; `--warp N` lands on that same pose with no motion behind it. Pair either with
+`--frames` to choose how long the camera then sits still. The pose is identical by
+construction: `--warp` runs the identical step loop, because the yaw accumulates through N
+`look` calls and a closed-form `yaw * N` differs in the last ulp — a subpixel shift across
+the whole frame, which would swamp the diff being read. The flight is a pure function of
+the frame index, so a repeat run reproduces at mean 0.007 / 0.00% of pixels — about 15x
+tighter than the interactive capture-noise floor, which is what makes small differences
+readable at all.
+
+The A/B that matters is `--fly N --frames M` against `--warp N --frames M`: same pose, same
+duration, same everything except whether the first N frames moved. On a correct temporal
+system that difference decays to the noise floor. **It currently does not** — see the
+accumulator note below.
+
+**The accumulator freezes.** The resolve blends with `alpha = 1/n` up to `N_MAX = 512` into
+an rgba16**float** history, and half-float carries a 10-bit mantissa: near a stored value of
+1.0 the ulp is ~1e-3, so `hi + (indirect - hi)/512` rounds to ZERO unless the difference
+exceeds roughly 0.25. About a quarter of the signal range therefore never converges — each
+pixel freezes at whatever partial value it held when the camera stopped, and the frozen
+pattern is locked to the path walked. Measured: walked-vs-warped at the same pose stays at
+mean 0.988 over 10.4% of pixels after **25 seconds** of stillness, against 0.134 with
+accumulation off. The voxel window is bit-identical after a walk (max 0) and the C0 probe
+field converges to a unique fixed point (max 1), so nothing upstream is involved. The N_MAX
+sweep grows and then saturates (1 -> 0.134, 32 -> 0.337, 64 -> 0.761, 128 -> 0.921,
+512 -> 0.979), which is a quantization freeze and not slow convergence, and the residual is
+worst in the brightest part of the frame exactly as float-ulp scaling predicts.
+
+This is the same failure this file's own resolve comment describes for the rgba8 target it
+replaced ("in 8 bits that rounds to zero and the average stops moving"). rgba16f was not
+enough headroom either, and a long history is only worth having if the format can carry it.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

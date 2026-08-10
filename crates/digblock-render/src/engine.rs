@@ -85,6 +85,18 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
+	/// Capture harness: run the bench flight for this many frames, then
+	/// FREEZE the camera there. Every capture in this engine is a still,
+	/// which is exactly the case where a temporal artifact has already
+	/// converged away — so a report about motion could not be measured at
+	/// all. Freezing at a pose the flight is a pure function of gives two
+	/// runs the identical camera by construction, with only their history
+	/// differing.
+	pub fly: Option<u32>,
+	/// Take all of `fly`'s steps on frame 0 instead of one per frame: the
+	/// same pose with no motion behind it. `--fly N` vs `--warp N` is the
+	/// A/B — walked there vs sat there.
+	pub warp: bool,
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
@@ -191,6 +203,8 @@ impl EngineConfig {
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
+			fly: None,
+			warp: false,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -228,6 +242,8 @@ impl EngineConfig {
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
 			bench: false,
+			fly: None,
+			warp: false,
 			ssr: false,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -452,6 +468,8 @@ pub struct Engine {
 	history_scratch: Vec<f32>,
 	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
 	bench_t: f32,
+	/// Steps of the scripted flight already taken, against `config.fly`.
+	fly_frames: u32,
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	/// Evicted chunks whose GPU buffers are still to be released, drained
@@ -1017,6 +1035,7 @@ impl Engine {
 			overlay_visible,
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
+			fly_frames: 0,
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
 			pending_evict_set: rustc_hash::FxHashSet::default(),
@@ -2066,6 +2085,23 @@ impl Engine {
 			0,
 			(self.camera.pos.z / 16.0).floor() as i32,
 		)
+	}
+
+	/// One tick of the scripted flight: a constant-speed line with a slow
+	/// yaw sweep, advanced by a fixed 60Hz tick so the path is a pure
+	/// function of how many times this has been called — identical
+	/// workload run-to-run, and identical pose whether the steps are
+	/// spread over frames (`--fly`) or taken at once (`--warp`).
+	fn fly_step(&mut self) {
+		const BENCH_SPEED: f32 = 30.0; // blocks per path-second
+		const BENCH_YAW: f32 = 12.0; // degrees per path-second
+							   // Altitude follows the terrain so worldgen retunes can't put the
+							   // flight underground; still a pure function of the step count.
+		self.bench_t += TICK;
+		let x = BENCH_SPEED * self.bench_t;
+		let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
+		self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
+		self.camera.look(BENCH_YAW * TICK, 0.0);
 	}
 
 	fn pump_pipeline(&mut self, gpu: &Gpu) {
@@ -3535,19 +3571,30 @@ impl Game for Engine {
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
-		// Scripted benchmark flight: constant-speed line with a slow yaw
-		// sweep, advanced one fixed 60Hz tick per frame so the path depends
-		// only on the frame index — identical workload run-to-run.
+		// Scripted flight — the bench's, and the capture harness's. Inputs
+		// are off and the camera is driven outright, so both return before
+		// the interactive half of update; streaming still runs, because
+		// `pump_pipeline` hangs off `render`, not off this.
 		if self.config.bench {
-			const BENCH_SPEED: f32 = 30.0; // blocks per path-second
-			const BENCH_YAW: f32 = 12.0; // degrees per path-second
-								// Altitude follows the terrain so worldgen retunes can't put the
-								// flight underground; still a pure function of the frame index.
-			self.bench_t += TICK;
-			let x = BENCH_SPEED * self.bench_t;
-			let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
-			self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
-			self.camera.look(BENCH_YAW * TICK, 0.0);
+			self.fly_step();
+			self.pending.update_ms = ms_since(t_update);
+			return;
+		}
+		if let Some(n) = self.config.fly {
+			// `--warp N` is `--fly N` with every step taken on frame 0 —
+			// literally the same loop, so the two land on a bit-identical
+			// pose. Re-deriving the pose in closed form would not: the yaw
+			// accumulates through N `look` calls, and one multiply by N
+			// differs in the last ulp, which is a subpixel shift across the
+			// whole frame and would swamp the diff the harness exists to
+			// read.
+			while self.fly_frames < n {
+				self.fly_step();
+				self.fly_frames += 1;
+				if !self.config.warp {
+					break;
+				}
+			}
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
