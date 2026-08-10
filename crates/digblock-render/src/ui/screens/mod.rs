@@ -3,6 +3,7 @@
 //! applies the actions they return.
 
 pub mod alchemy;
+pub mod character;
 pub mod inventory;
 
 #[cfg(test)]
@@ -85,6 +86,27 @@ mod tests {
 		let menu = crate::menu::Menu::new(true, Default::default(), None);
 		menu.view(size, s, false).emit(&mut dl, &style, size, 1.0);
 		out.push(("menu", dl));
+
+		let mut dl = DrawList::default();
+		let mut hits: HitMap<InvId> = HitMap::default();
+		// Mid-curve XP, not zero: fractional bars and the XP detail
+		// lines are exactly the text this screen could get wrong.
+		let mut skills = digblock_core::skills::SkillSet::default();
+		skills.add_xp(digblock_core::skills::Skill::Mining, 150_000);
+		skills.add_xp(digblock_core::skills::Skill::Alchemy, 30_000);
+		let mut screen = super::character::CharScreen::default();
+		screen.open();
+		screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style,
+			},
+			size,
+			&super::character::CharView::build(&skills),
+			1.0,
+		);
+		out.push(("character", dl));
 
 		out
 	}

@@ -54,6 +54,8 @@ struct StateFile {
 	hotbar: Vec<u16>,
 	/// Inventory-grid slots, same encoding; empty in older saves.
 	grid: Vec<u16>,
+	/// Per-skill XP totals; empty in pre-skills saves (level 1).
+	skills: Vec<(u8, u64)>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -430,6 +432,7 @@ impl WorldStore for LocalStorageWorldStore {
 			inventory: state.inventory,
 			hotbar: state.hotbar,
 			grid: state.grid,
+			skills: state.skills,
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -449,6 +452,7 @@ impl WorldStore for LocalStorageWorldStore {
 		inventory: &[(u16, u32)],
 		hotbar: &[u16],
 		grid: &[u16],
+		skills: &[(u8, u64)],
 		player: &PlayerPersist,
 	) {
 		if let Some(active) = &mut self.active {
@@ -456,6 +460,7 @@ impl WorldStore for LocalStorageWorldStore {
 				inventory: inventory.to_vec(),
 				hotbar: hotbar.to_vec(),
 				grid: grid.to_vec(),
+				skills: skills.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}

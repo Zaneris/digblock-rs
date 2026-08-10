@@ -116,6 +116,60 @@ pub fn hotbar<Id: Copy + PartialEq>(
 	}
 }
 
+/// One coalescing XP toast: rapid awards to the same skill accumulate
+/// into a single "+N SKILL" line instead of a scrolling storm. Engine
+/// state — [`xp_toasts`] just draws whatever is live.
+pub struct XpToast {
+	pub skill: digblock_core::skills::Skill,
+	pub amount: u64,
+	/// Seconds left; refreshed to [`XP_TOAST_TTL`] by each new award.
+	pub ttl: f32,
+}
+
+pub const XP_TOAST_TTL: f32 = 2.0;
+/// The fade window at the end of a toast's life.
+const XP_TOAST_FADE: f32 = 0.5;
+
+/// Scale a 0xAABBGGRR color's alpha byte.
+fn faded(color: u32, f: f32) -> u32 {
+	let a = ((color >> 24) as f32 * f.clamp(0.0, 1.0)) as u32;
+	a << 24 | (color & 0x00FF_FFFF)
+}
+
+/// Draw the live XP toasts, stacked upward above the hotbar, centered
+/// like the bar itself. Text rides the frame's size; the backdrop is
+/// sized from the face's line height (ink legitimately overflows the
+/// nominal box — accents above, descenders below).
+pub fn xp_toasts(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	toasts: &[XpToast],
+) {
+	let scale = style.scale;
+	let px = style.glyph;
+	let line = crate::font::face(style.face).line_h(px);
+	let pad_x = super::scale::text_pad_x(scale);
+	let gap = 4.0 * scale;
+	let mut bottom = row_grid(size, scale).origin.1 - super::theme::GAP_ABOVE_BAR * scale;
+	for toast in toasts.iter().rev() {
+		let fade = (toast.ttl / XP_TOAST_FADE).clamp(0.0, 1.0);
+		let text = format!("+{} {}", toast.amount, toast.skill.name());
+		let w = style.measure(&text) + 2.0 * pad_x;
+		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
+		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
+		dl.text(
+			Layer::Content,
+			rect.x + pad_x,
+			rect.y + (line - px) / 2.0,
+			px,
+			faded(WHITE, fade),
+			&text,
+		);
+		bottom = rect.y - gap;
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

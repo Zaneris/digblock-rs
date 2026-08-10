@@ -38,6 +38,9 @@ pub enum DebugScreen {
 	Bucket {
 		full: bool,
 	},
+	/// The character screen, with mid-curve XP stocked so the bars and
+	/// detail lines photograph as they play, not empty.
+	Skills,
 }
 
 impl DebugScreen {
@@ -51,6 +54,7 @@ impl DebugScreen {
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
+			"skills" | "character" => Some(Self::Skills),
 			_ => None,
 		}
 	}
@@ -447,6 +451,14 @@ pub struct Engine {
 	/// The alchemy screen (K toggles): block → sub-material conversion
 	/// and shaped-item crafting.
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
+	/// The character screen (C toggles): per-skill levels + XP bars.
+	char_screen: crate::ui::screens::character::CharScreen,
+	/// Per-skill XP totals: adopted from the server online
+	/// (`Skills`/`XpGain` — never client-claimed), computed through the
+	/// same core award functions offline.
+	skills: digblock_core::skills::SkillSet,
+	/// Live "+N SKILL" toasts above the hotbar (coalescing per skill).
+	xp_toasts: Vec<crate::ui::hud::XpToast>,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
 	/// A return-to-spawn is outstanding, so the next teleport that lands
@@ -834,6 +846,9 @@ impl Engine {
 			ui_hits: crate::ui::HitMap::default(),
 			inv_screen: Default::default(),
 			alch_screen: Default::default(),
+			char_screen: Default::default(),
+			skills: Default::default(),
+			xp_toasts: Vec::new(),
 			return_spawn_requested: false,
 			spawn_return_pending: false,
 			inv_grid: Default::default(),
@@ -872,6 +887,13 @@ impl Engine {
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy => engine.alch_screen.open(),
+				DebugScreen::Skills => {
+					// Mid-curve totals: fractional bars, real XP lines.
+					use digblock_core::skills::Skill;
+					engine.skills.add_xp(Skill::Mining, 150_000);
+					engine.skills.add_xp(Skill::Alchemy, 30_000);
+					engine.char_screen.open();
+				}
 			}
 		}
 		engine
@@ -1267,6 +1289,8 @@ impl Engine {
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
+		self.skills = Default::default();
+		self.xp_toasts.clear();
 		self.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.in_local_save = false;
@@ -1317,6 +1341,10 @@ impl Engine {
 			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
+		// The save's skill totals (empty for pre-skills saves = level 1);
+		// stale toasts belong to whatever world we just left.
+		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
+		self.xp_toasts.clear();
 		// Saved arrangement first (sanitizing decode), then reconcile as
 		// the backstop: legacy saves get the derived layout, and types
 		// the arrangement doesn't cover still land on the bar or grid.
@@ -1702,6 +1730,16 @@ impl Engine {
 						&mut self.hotbar,
 						&mut self.inv_grid,
 					);
+				}
+				NetEvent::Skills { xp } => {
+					// Join sync: adopt wholesale, no toasts — this is
+					// state arriving, not an award happening.
+					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
+				}
+				NetEvent::XpGain { skill, total } => {
+					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
+						self.apply_xp_total(s, total);
+					}
 				}
 				NetEvent::PlayerJoined { id, name } => {
 					self.push_feed(format!("{name} joined the server."));
@@ -2246,6 +2284,12 @@ impl Engine {
 				for &(c, _) in &cleared {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
+				// Offline, the engine IS the award authority — the same
+				// table the server's dig-credit chokepoint reads.
+				self.award_xp_offline(
+					digblock_core::skills::Skill::Mining,
+					digblock_core::skills::dig_xp(prev),
+				);
 			}
 		}
 	}
@@ -2537,8 +2581,60 @@ impl Engine {
 					if let AlchAction::Craft { item, .. } = act {
 						self.hotbar.auto_assign(item);
 					}
+					self.award_xp_offline(
+						digblock_core::skills::Skill::Alchemy,
+						digblock_core::skills::alchemy_xp(&core_op),
+					);
 				}
 			}
+		}
+	}
+
+	/// Adopt a new authoritative XP total for one skill: coalesce the
+	/// delta into a toast, and word + sound a level-up. Totals only
+	/// grow, so a replayed or reordered frame is a no-op. Both award
+	/// paths land here — the server's `XpGain` online, and
+	/// [`Self::award_xp_offline`] offline — so the presentation can't
+	/// drift between the two.
+	fn apply_xp_total(&mut self, skill: digblock_core::skills::Skill, total: u64) {
+		let old = self.skills.xp(skill);
+		if total <= old {
+			return;
+		}
+		self.skills.set_total(skill, total);
+		let delta = total - old;
+		match self.xp_toasts.iter_mut().find(|t| t.skill == skill) {
+			Some(t) => {
+				t.amount += delta;
+				t.ttl = crate::ui::hud::XP_TOAST_TTL;
+			}
+			None => self.xp_toasts.push(crate::ui::hud::XpToast {
+				skill,
+				amount: delta,
+				ttl: crate::ui::hud::XP_TOAST_TTL,
+			}),
+		}
+		let (old_level, new_level) = (
+			digblock_core::skills::level_for_xp(old),
+			digblock_core::skills::level_for_xp(total),
+		);
+		if new_level > old_level {
+			self.push_feed(format!("{} is now level {new_level}.", skill.display()));
+			self.emit(crate::audio::AudioCmd::Sfx {
+				sound: crate::audio::Sfx::Place,
+				pos: None,
+				gain: 0.9,
+			});
+		}
+	}
+
+	/// Offline XP award, through the same core award tables the server
+	/// runs. Online this is never called — the server's `XpGain` is the
+	/// only award path (XP is not client-predicted).
+	fn award_xp_offline(&mut self, skill: digblock_core::skills::Skill, amount: u64) {
+		if amount > 0 {
+			let total = self.skills.xp(skill).saturating_add(amount);
+			self.apply_xp_total(skill, total);
 		}
 	}
 
@@ -2825,6 +2921,7 @@ impl Game for Engine {
 			// leave-server) — the screens yield rather than stacking.
 			self.inv_screen.close();
 			self.alch_screen.close();
+			self.char_screen.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
@@ -2897,6 +2994,24 @@ impl Game for Engine {
 						self.apply_alchemy_action(act);
 					}
 				}
+			}
+			return;
+		}
+		// Character screen open: read-only, so the only inputs it eats
+		// are the ones that close it (C/Escape, consumed like the
+		// others') and the held-state hygiene on focus loss.
+		if self.char_screen.is_open() {
+			match event {
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.keys = HeldKeys::default();
+					self.touch.clear();
+					self.dig_held = false;
+				}
+				InputEvent::Key {
+					key: Key::C | Key::Escape,
+					pressed: true,
+				} => self.char_screen.close(),
+				_ => {}
 			}
 			return;
 		}
@@ -2982,6 +3097,13 @@ impl Game for Engine {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
 						self.alch_screen.open();
+					}
+				}
+				Key::C => {
+					if pressed {
+						self.keys = HeldKeys::default();
+						self.dig_held = false;
+						self.char_screen.open();
 					}
 				}
 				// Home: same request the menu row raises; update() gates
@@ -3150,6 +3272,9 @@ impl Game for Engine {
 		if self.menu.take_alchemy() {
 			self.alch_screen.open();
 		}
+		if self.menu.take_character() {
+			self.char_screen.open();
+		}
 		let spawn_requested =
 			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
 		if spawn_requested && self.spawn_cooldown == 0.0 {
@@ -3225,6 +3350,12 @@ impl Game for Engine {
 		for m in &mut self.feed {
 			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
+		// XP toasts fade out and drop (unlike the feed, nothing rereads
+		// an expired toast).
+		for t in &mut self.xp_toasts {
+			t.ttl -= dt;
+		}
+		self.xp_toasts.retain(|t| t.ttl > 0.0);
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;
@@ -3293,6 +3424,7 @@ impl Game for Engine {
 						&self.inventory.to_wire(),
 						&self.hotbar.to_wire(),
 						&self.inv_grid.to_wire(),
+						&self.skills.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
 							yaw: self.camera.yaw_deg,
@@ -3589,19 +3721,26 @@ impl Game for Engine {
 			} else if self.alch_screen.is_open() {
 				let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
 				self.alch_screen.build(&mut ui, size, &view, daylight);
+			} else if self.char_screen.is_open() {
+				let view = crate::ui::screens::character::CharView::build(&self.skills);
+				self.char_screen.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
 			});
+			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		// The hand is part of playing, not part of reading a screen: a
 		// menu, the inventory or the alchemy page all put it away.
-		let viewmodel = (in_game && !self.inv_screen.is_open() && !self.alch_screen.is_open())
-			.then(|| self.viewmodel_frame(&frame))
-			.flatten();
+		let viewmodel = (in_game
+			&& !self.inv_screen.is_open()
+			&& !self.alch_screen.is_open()
+			&& !self.char_screen.is_open())
+		.then(|| self.viewmodel_frame(&frame))
+		.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
@@ -3645,7 +3784,10 @@ impl Game for Engine {
 	}
 
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open() && !self.inv_screen.is_open() && !self.alch_screen.is_open()
+		!self.menu.is_open()
+			&& !self.inv_screen.is_open()
+			&& !self.alch_screen.is_open()
+			&& !self.char_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
@@ -3671,6 +3813,7 @@ impl Game for Engine {
 					&self.inventory.to_wire(),
 					&self.hotbar.to_wire(),
 					&self.inv_grid.to_wire(),
+					&self.skills.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
 						yaw: self.camera.yaw_deg,
@@ -3765,6 +3908,7 @@ mod store_tests {
 				inventory: vec![(3, 5)],
 				hotbar: self.0.borrow().open_hotbar.clone(),
 				grid: Vec::new(),
+				skills: Vec::new(),
 				player: Some(digblock_persist::PlayerPersist {
 					pos: [1.5, 140.0, 2.5],
 					yaw: 90.0,
@@ -3780,6 +3924,7 @@ mod store_tests {
 			_inventory: &[(u16, u32)],
 			hotbar: &[u16],
 			_grid: &[u16],
+			_skills: &[(u8, u64)],
 			_player: &digblock_persist::PlayerPersist,
 		) {
 			let mut state = self.0.borrow_mut();
@@ -3969,6 +4114,7 @@ mod store_tests {
 				inventory: Vec::new(),
 				hotbar: Vec::new(),
 				grid: Vec::new(),
+				skills: Vec::new(),
 				player: None,
 			})
 		}
@@ -3978,6 +4124,7 @@ mod store_tests {
 			_inventory: &[(u16, u32)],
 			_hotbar: &[u16],
 			_grid: &[u16],
+			_skills: &[(u8, u64)],
 			_player: &digblock_persist::PlayerPersist,
 		) {
 		}

@@ -551,6 +551,23 @@ impl Sim {
 					&mut client.grid,
 				);
 			}
+			// Mining XP from the journaled truth (`prev`), the same
+			// authority as the credit; one award even for a door pair.
+			// The frame carries the new TOTAL, so a lost or reordered
+			// frame can never double-pay.
+			let xp = digblock_core::skills::dig_xp(prev);
+			if xp > 0 {
+				let total = client
+					.skills
+					.add_xp(digblock_core::skills::Skill::Mining, xp);
+				send_frame(
+					&client.out,
+					&ServerMsg::XpGain {
+						skill: digblock_core::skills::Skill::Mining as u8,
+						total,
+					},
+				);
+			}
 			client.digging = None;
 		}
 		if let Some(hash) = client.identity {
@@ -736,6 +753,21 @@ impl Sim {
 					&mut client.hotbar,
 					&mut client.grid,
 				);
+				// Alchemy XP for the validated op, as a new TOTAL. Sent
+				// alongside the InventoryFull answer on the same stream.
+				let xp = digblock_core::skills::alchemy_xp(&core_op);
+				if xp > 0 {
+					let total = client
+						.skills
+						.add_xp(digblock_core::skills::Skill::Alchemy, xp);
+					send_frame(
+						&client.out,
+						&ServerMsg::XpGain {
+							skill: digblock_core::skills::Skill::Alchemy as u8,
+							total,
+						},
+					);
+				}
 			}
 		}
 		if let Some(hash) = client.identity {

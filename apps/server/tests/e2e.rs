@@ -320,7 +320,9 @@ impl TestClient {
 				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
 				NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
-				| NetEvent::Layout { .. } => {}
+				| NetEvent::Layout { .. }
+				| NetEvent::Skills { .. }
+				| NetEvent::XpGain { .. } => {}
 			}
 		}
 	}

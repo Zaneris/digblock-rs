@@ -424,6 +424,21 @@ pub enum ServerMsg {
 		cell: [i32; 3],
 		reason: RejectReason,
 	},
+	/// Full per-skill XP sync: `(skill index, total)` pairs, absent =
+	/// zero. Sent in join sync after `Layout` — always, even when empty
+	/// (a fresh identity), so the client never guesses. Levels are
+	/// derived client-side from the shared curve. Appended in v16.
+	Skills {
+		xp: Vec<(u8, u64)>,
+	},
+	/// One skill's new TOTAL after a server-side award. A total rather
+	/// than a delta on purpose: idempotent and reorder-safe — the client
+	/// takes the max and animates the difference itself. Appended in
+	/// v16.
+	XpGain {
+		skill: u8,
+		total: u64,
+	},
 }
 
 #[cfg(test)]
@@ -578,6 +593,17 @@ mod tests {
 			ServerMsg::Layout {
 				hotbar: vec![2, 5, u16::MAX - 1],
 				grid: vec![u16::MAX, 7],
+			},
+			ServerMsg::DigRefused {
+				cell: [1, 138, -3],
+				reason: RejectReason::Protected,
+			},
+			ServerMsg::Skills {
+				xp: vec![(0, 1_068), (1, 394)],
+			},
+			ServerMsg::XpGain {
+				skill: 0,
+				total: 1_103_585,
 			},
 		];
 		for m in msgs {
