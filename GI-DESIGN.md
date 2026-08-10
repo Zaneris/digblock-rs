@@ -1,18 +1,54 @@
 # GI-DESIGN — probe-traced global illumination
 
-Status: P4 complete — RTGI is the ONLY lighting path (there is no flag; the coexistence
-toggle died mid-P3 by user decision). Solids shade from the half-res resolve; water,
-players, spray, and the viewmodel are converted (P4): water and players gather the probe
-field per fragment through gi_common.wgsl's shared core + a short sun DDA, spray and the
-viewmodel read the 32-byte camera-light buffer a 1-invocation compute writes. Nothing
-samples the shadow maps and no shadow pass encodes — the shadow/light-field code is
-dormant dead weight until P6 deletes it (along with the old model it implemented: the
-two-cascade shadow maps, the Stage-B BFS voxel light field, the AXIS ambient model, the
-beam veto, and the underwater direct-light special cases — underwater dimming is now the
-sun DDA's water transmittance). The only survivors of the old model are baked per-vertex
-AO (contact-scale darkening sits below GI resolution) and the Stage-A emissive bit-21 ink.
-Capture envs: `DIG_VAULT` (torch room), `DIG_ROOF` (sun under an open roof), `DIG_DIVE`
-(flooded tank around the spawn camera — the underwater capture).
+Status: **M4 landed on `feat/rtgi`.** RTGI is the only lighting path and there is no flag.
+The raster stack it replaced is DELETED, not dormant: shadow.rs/shadow.wgsl and the
+cascades, core/light.rs and the Stage-B BFS voxel light field, baked per-vertex AO, all fog,
+the hand-tuned water look, and per-block tint jitter. LIGHT-DESIGN.md went with them.
+
+What lights the world now, in one sentence per stage:
+
+- A GPU **voxel window** (R8Uint, toroidal, `draw_dist` chunks on a side) plus an 8-block
+  coarse occupancy texture, both fed by byte- and clock-budgeted CPU classification.
+- Two **toroidal ambient-cube probe cascades** (C0 at 2-block spacing, C1 at 8), updated by
+  a compute kernel over a permuted round-robin: one workgroup per probe, 64 rays, folded to
+  6 axes, blended with a hysteresis ladder. Rays terminate in last frame's field, which is
+  where multi-bounce comes from, and take one **next-event sample** against the emitter
+  list per ray.
+- A **half-res resolve** per frame: the cascade gather (trilinear x backface x exact
+  short-DDA occlusion, C0 then C1 then an analytic dome) plus ONE sun ray along the exact,
+  unquantized caster jittered over a 0.5-degree cone. The result **accumulates temporally**
+  through a reprojection of last frame's buffers, alpha = 1/n with n climbing to 512.
+- Solids bilaterally upsample that against exact face normals rasterized by the depth
+  prepass. Water and players gather the probe field per fragment through gi_common.wgsl;
+  spray and the viewmodel read a 32-byte camera-light buffer a 1-invocation compute writes.
+- One **participating medium** (medium_common.wgsl) replaces every fog model, in-scattering
+  the same `sky_base` the sky pass draws.
+
+Capture envs: `DIG_VAULT` (torch room — the NEE test), `DIG_ROOF` (sun under an open roof),
+`DIG_DIVE` (flooded tank), `DIG_SHAPES` (slab/stair tops must be lit).
+
+## What is NOT built
+
+Named here because this document previously described several of these as done:
+
+- **No a-trous spatial filter and no neighbourhood clamp.** The resolve accumulates
+  temporally and rejects on depth + face code; there is no variance estimate and no spatial
+  pass. Disocclusion is rejected rather than filtered.
+- **No per-pixel indirect ray.** The resolve's indirect term is still the probe gather, not
+  a cosine-hemisphere path terminating in the cache. INDIRECT_K is gone, so the gather is
+  used unscaled, but it is not yet a pdf-weighted estimate.
+- **No tier scaling.** Every platform gets desktop budgets and an uncapped /2 resolve; the
+  web row of the original design was never implemented.
+- **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame, and
+  `gather_prev` still wraps the torus with no checksum or coverage bound, so a hit beyond
+  C0's 64-block reach can read a probe serving another world cell.
+- **No probe classification.** Every probe is swept at a flat rate forever; converged and
+  enclosed probes do not drop to a lower rate.
+- **The axis fold is lopsided**: `update_probes` barriers 64 threads and then leaves 6
+  alive, each running a serial 64-iteration reduction while 58 idle.
+- **No compute port.** The resolve is still a fragment pass. Its stated motivation was
+  avoiding derivatives, which the rasterized normals removed, and tile classification,
+  which nothing uses yet.
 
 ## Goals
 
@@ -148,5 +184,5 @@ P0 compute infra + this doc + `rtgi` flag (gate: flag-off bench parity) · P1 vo
 update/invalidate computes (gate: probe visualization capture) · P3 depth prepass + GI
 resolve + chunk.wgsl (gate: A/B captures; USER LOOK SIGN-OFF) · P4 water/players/
 viewmodel/spray/underwater · P5 perf + metrics + bench + web verify · P6 remove the old
-system (shadow.rs, shadow.wgsl, core light.rs, mesher light plumbing, cascade VPs, the
-~26 pinned tests, LIGHT-DESIGN.md, the flag itself).
+system — DONE at M1 (shadow.rs, shadow.wgsl, core light.rs, mesher light plumbing, cascade
+VPs, the ~26 pinned tests, LIGHT-DESIGN.md, the flag itself).
