@@ -20,6 +20,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use rustc_hash::FxHashMap;
 
 use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
+use crate::light::{facts_of, CellFacts, LightField, LIGHT_BUDGET};
 use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
@@ -95,6 +96,11 @@ pub struct Maintenance {
 	pub mesh_queue: u32,
 	/// Jobs handed to workers whose results haven't been drained yet.
 	pub in_flight: u32,
+	/// Light-BFS pops consumed this maintain (both `step_light` sites).
+	pub light_pops: u32,
+	/// Light queue depth left after this maintain — nonzero means the
+	/// budget carried propagation over to the next frame.
+	pub light_pending: u32,
 	/// Water cells restored by the edit overlay in columns that became
 	/// Ready this call — the caller re-schedules fluid there so a region
 	/// evicted mid-flow resumes (the client twin of the server's
@@ -137,6 +143,10 @@ pub struct Pipeline {
 	in_flight: u32,
 	/// Inline job-cost predictor (unused with a worker pool).
 	job_cost: JobCost,
+	/// Stage-B voxel light (LIGHT-DESIGN.md) — a sibling of the store, not
+	/// a `ChunkSlot` field, so the BFS can read blocks while writing light
+	/// and so shared AIR_CHUNK sentinels still carry per-cell light.
+	light: LightField,
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -433,6 +443,7 @@ impl Pipeline {
 			scanned: None,
 			in_flight: 0,
 			job_cost: JobCost::new(),
+			light: LightField::new(),
 		}
 	}
 
@@ -475,12 +486,23 @@ impl Pipeline {
 			mesh_queue: 0,
 			in_flight: 0,
 			overlaid_water: Vec::new(),
+			light_pops: 0,
+			light_pending: 0,
 		};
 		let center = ChunkPos::new(center.x, 0, center.z);
 		if self.scanned != Some((center, self.draw_dist)) {
 			self.center = center;
 			self.visibility_scan(&mut out.evicted);
+			// Evicted chunks drop their light — the field is derived and
+			// re-entry recomputes it via arrival seeding.
+			for &pos in &out.evicted {
+				self.light.drop_chunk(pos);
+			}
 		}
+		// Settle-before-dispatch, site 1: edits since the last maintain
+		// propagate before the inline executor dispatches (and snapshots)
+		// this frame's mesh jobs.
+		out.light_pops += self.step_light();
 		// Inline jobs run before the drain so their results land this
 		// frame; workers instead get topped up after (they produce across
 		// frames anyway).
@@ -499,6 +521,10 @@ impl Pipeline {
 			self.run_inline_jobs(inline_allowance);
 		}
 		self.drain_results(&mut out, upload_budget, deadline);
+		// Settle-before-dispatch, site 2: arrival seeds from the drain
+		// propagate before the workers snapshot their next batch.
+		out.light_pops += self.step_light();
+		out.light_pending = self.light.pending() as u32;
 		out.saturated = self.exec.has_pending();
 		out.requeued = self.top_up_workers();
 		out.gen_queue = self.gen_heap.len() as u32;
@@ -670,6 +696,19 @@ impl Pipeline {
 						}
 					}
 					landed.push((x, z));
+					// Arrival light seeding reads the stack AFTER the
+					// overlay re-applied (a restored torch must be in the
+					// scanned data); Arc clones are pointer-cheap and air
+					// chunks hold no emitters.
+					self.light.seed_column(
+						x,
+						z,
+						stack
+							.iter()
+							.enumerate()
+							.filter(|(_, d)| !is_air_chunk(d))
+							.map(|(cy, d)| (cy as i32, d.clone())),
+					);
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
@@ -970,6 +1009,66 @@ impl Pipeline {
 		crate::stream_budget::urgency((d2 as f32).sqrt(), self.draw_dist as f32)
 	}
 
+	/// Run the light BFS for one budget slice, then convert its dirty set
+	/// into remesh bumps. Both settle-before-dispatch sites call this, so
+	/// a mesh snapshot is never built from a half-propagated field.
+	fn step_light(&mut self) -> u32 {
+		let Pipeline { light, store, .. } = self;
+		let pops = light.step(LIGHT_BUDGET, |x, y, z| -> Option<CellFacts> {
+			let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
+			match store.get(&ChunkPos::new(cx, cy, cz)) {
+				Some(ChunkSlot {
+					state: ChunkState::Ready(d),
+					..
+				}) => Some(facts_of(d.get_cell(lx, ly, lz))),
+				_ => None, // not resident: a wall until arrival seeding
+			}
+		});
+		if pops > 0 {
+			self.apply_light_dirty();
+		}
+		pops
+	}
+
+	/// Bump `mesh_gen` for chunks whose padded shell saw a light write.
+	/// Reuses the arrival path's two skips: an empty mesh stays empty
+	/// (light shades faces, never creates them), and a queued job
+	/// snapshots at dispatch, after the field settled.
+	fn apply_light_dirty(&mut self) {
+		let Pipeline {
+			light,
+			store,
+			mesh_heap,
+			center,
+			..
+		} = self;
+		for pos in light.take_dirty() {
+			let Some(slot) = store.get_mut(&pos) else {
+				continue;
+			};
+			if !matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d)) {
+				continue;
+			}
+			if slot.empty_mesh_gen == Some(slot.mesh_gen) {
+				continue;
+			}
+			if slot.submitted_gen < slot.mesh_gen {
+				continue;
+			}
+			slot.mesh_gen += 1;
+			mesh_heap.push((
+				Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), *center)),
+				(pos.x, pos.y, pos.z),
+			));
+		}
+	}
+
+	/// Blocklight at a world cell — the mesher's shell builder and the
+	/// tests read the field through this.
+	pub fn light_at(&self, x: i32, y: i32, z: i32) -> u8 {
+		self.light.block_light(x, y, z)
+	}
+
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
@@ -1022,6 +1121,10 @@ impl Pipeline {
 		}
 		// COW: clones the 4KB array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
+		// The light hook rides the single write funnel, so dig, place,
+		// fluid, and authoritative edits all feed the field. Propagation
+		// itself waits for the next maintain's `step_light`.
+		self.light.on_cell_changed(x, y, z, prev, cell);
 		if let Some(overlay) = &mut self.overlay {
 			overlay.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));
@@ -1385,6 +1488,108 @@ mod tests {
 			p.store[&sky].mesh_gen > 0,
 			"regenerated sky chunk with content must mesh"
 		);
+	}
+
+	/// A torch in a dug tunnel crossing a chunk border: light follows the
+	/// open cells into the neighbor chunk (occlusion is structural — the
+	/// surrounding rock stays dark), and the remesh set is EXACTLY the
+	/// chunks whose padded shell saw a light write.
+	#[test]
+	fn light_crosses_chunk_borders_and_bumps_only_shell_touched_chunks() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		// A sealed stone box in the sky (worldgen caves near the terrain
+		// tunnel leaked light in an earlier version of this test), with a
+		// 1-cell tunnel at y=200 from x=6 through the border to x=19.
+		for x in 5..=20 {
+			for y in 199..=201 {
+				for z in 7..=9 {
+					p.set_block(x, y, z, BlockType::Stone);
+				}
+			}
+		}
+		for x in 6..=19 {
+			p.set_block(x, 200, 8, BlockType::Air);
+		}
+		quiesce(&mut p, center);
+
+		let before: Vec<(ChunkPos, u64)> =
+			p.store.iter().map(|(pos, s)| (*pos, s.mesh_gen)).collect();
+		p.set_block(10, 200, 8, BlockType::Torch)
+			.expect("torch lands");
+		p.maintain(center, usize::MAX, None, None);
+
+		// The field follows the tunnel and nothing else.
+		assert_eq!(p.light_at(10, 200, 8), 14, "the source");
+		assert_eq!(p.light_at(6, 200, 8), 10, "west end");
+		assert_eq!(p.light_at(15, 200, 8), 9, "last cell before the border");
+		assert_eq!(p.light_at(16, 200, 8), 8, "first cell across");
+		assert_eq!(p.light_at(19, 200, 8), 5, "east end");
+		assert_eq!(p.light_at(10, 201, 8), 0, "stone above stays dark");
+		assert_eq!(p.light_at(20, 200, 8), 0, "stone past the end stays dark");
+
+		// Exactly the torch's chunk (edit + interior writes) and the east
+		// neighbor (tunnel cells 16..=19, plus cell 15's shell) re-mesh.
+		let (west, east) = (ChunkPos::new(0, 12, 0), ChunkPos::new(1, 12, 0));
+		for (pos, gen) in &before {
+			let bumped = *pos == west || *pos == east;
+			assert_eq!(
+				mesh_gen(&p, *pos),
+				gen + u64::from(bumped),
+				"unexpected remesh at {pos:?}"
+			);
+		}
+	}
+
+	/// A column that generates AFTER a nearby torch settled must be seeded
+	/// from the resident field on arrival — the light mirror of the
+	/// cross-border re-dirty rule.
+	#[test]
+	fn a_late_neighbor_column_is_seeded_on_arrival() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		// Torch in open sky near the +x residency rim: column 4 (x 64..79)
+		// is not resident at draw distance 4.
+		p.set_block(60, 200, 8, BlockType::Torch).expect("torch");
+		p.maintain(center, usize::MAX, None, None);
+		assert_eq!(p.light_at(63, 200, 8), 11, "lit to the resident edge");
+		assert_eq!(p.light_at(64, 200, 8), 0, "nothing beyond residency");
+
+		// Step east: column 4 enters and generates; its cells must pick
+		// the field up from column 3's lit border.
+		quiesce(&mut p, ChunkPos::new(1, 0, 0));
+		assert_eq!(p.light_at(64, 200, 8), 10, "seeded across the border");
+		assert_eq!(p.light_at(70, 200, 8), 4, "spread deep into the newcomer");
+	}
+
+	/// Eviction drops a chunk's light; walking back relights it from the
+	/// overlay-restored torch (the field is derived, never persisted).
+	#[test]
+	fn evicted_light_is_dropped_and_reentry_relights() {
+		let mut p = Pipeline::with_overlay(0.0, 4, 2, crate::overlay::EditOverlay::default());
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		p.set_block(8, 200, 8, BlockType::Torch).expect("torch");
+		p.maintain(center, usize::MAX, None, None);
+		assert_eq!(p.light_at(12, 200, 8), 10);
+
+		let far = ChunkPos::new(40, 0, 0);
+		quiesce(&mut p, far);
+		assert_eq!(p.light_at(12, 200, 8), 0, "evicted light dropped");
+
+		quiesce(&mut p, center);
+		assert_eq!(
+			p.block_at(8, 200, 8),
+			Some(BlockType::Torch),
+			"overlay restored"
+		);
+		assert_eq!(p.light_at(8, 200, 8), 14, "reseeded on arrival");
+		assert_eq!(p.light_at(12, 200, 8), 10, "relit to the same field");
 	}
 
 	/// Overlaid water cells are reported for fluid rescheduling; solid

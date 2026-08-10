@@ -10,6 +10,7 @@ pub mod fluid;
 pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
+pub mod light;
 pub mod mesher;
 pub mod metrics;
 pub mod overlay;

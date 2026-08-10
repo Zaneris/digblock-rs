@@ -97,9 +97,9 @@ blocks! {
 	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
 	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
-	/// emissive: fullbright ink, visible in the dark but not (yet)
-	/// illuminating its surroundings — a way-marker, not a lamp.
-	Torch = 28 => dig(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 10),
+	/// emissive (fullbright ink) AND a Stage-B source: it seeds level 14
+	/// into the voxel light field (LIGHT-DESIGN.md).
+	Torch = 28 => dig(emits(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 14), 10),
 	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
@@ -127,6 +127,7 @@ const _: () = {
 				&& (p.tex_bottom as usize) < MAX_TEX_LAYERS,
 			"texture layer exceeds the vertex format's layer field"
 		);
+		assert!(p.light <= 15, "cast light exceeds the field's nibble");
 		i += 1;
 	}
 };
@@ -281,9 +282,14 @@ pub struct BlockProps {
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
 	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright
-	/// ink — the shader skips the sun/shadow/AO terms. No light is CAST;
-	/// that is Stage B's flood-fill field, its own future system.
+	/// ink — the shader skips the sun/shadow/AO terms. Independent of
+	/// [`Self::light`] on purpose: ore-reveal seams want ink that casts
+	/// nothing, and a future recessed lamp could cast without glowing.
 	pub emissive: bool,
+	/// Stage-B cast light (LIGHT-DESIGN.md): the level this block SEEDS
+	/// into the flood-fill field, 0–15. Purely client-side data — the
+	/// field it feeds is derived, never serialized.
+	pub light: u8,
 }
 
 const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
@@ -300,6 +306,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		drops: None,
 		shape: None,
 		emissive: false,
+		light: 0,
 	}
 }
 
@@ -335,6 +342,13 @@ const fn glows(mut p: BlockProps) -> BlockProps {
 	p
 }
 
+/// Stage-B cast light: this block seeds `level` (1–15) into the voxel
+/// light field.
+const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
+	p.light = level;
+	p
+}
+
 /// A water-family row: water bucket + fluid behavior.
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
@@ -354,6 +368,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		drops: None,
 		shape: None,
 		emissive: false,
+		light: 0,
 	}
 }
 
@@ -415,6 +430,13 @@ impl BlockType {
 			Dir::Bottom => p.tex_bottom,
 			_ => p.tex_side,
 		})
+	}
+
+	/// Stage-B cast-light level (0 = casts nothing). The seed value the
+	/// voxel light field's flood fill starts from (LIGHT-DESIGN.md).
+	#[inline]
+	pub fn light_level(self) -> u8 {
+		self.props().light
 	}
 
 	/// How much water this block holds, 1..=8 — None for non-water.

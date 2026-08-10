@@ -223,6 +223,9 @@ pub struct PipelineGauges {
 	pub evict_backlog: u32,
 	/// Inbound net events queued past this frame's edit budget.
 	pub net_backlog: u32,
+	/// Light-BFS queue depth left after maintain — nonzero means the
+	/// budget carried propagation to the next frame (LIGHT-DESIGN.md §6).
+	pub light_pending: u32,
 	/// Meshes handed to the GPU THIS frame, and their vertex bytes — the
 	/// per-frame view the run-window `meshes_uploaded` counter can't give.
 	/// Paired with `outside_ms` these are the whole point: on the web the
@@ -349,6 +352,8 @@ pub struct Metrics {
 	pub requeued: u32,
 	pub evicted: u32,
 	pub upload_saturated: u32,
+	/// Light-BFS pops this window (the propagation work done).
+	pub light_pops: u32,
 	// Gauges (last-write-wins).
 	pub gauges: PipelineGauges,
 	/// Connection health, written each frame while connected and cleared
@@ -385,7 +390,7 @@ busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,upl_ms,prep_ms,enc_ms,\
 gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
-drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms";
+drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms,light_pops,light_q";
 
 impl Metrics {
 	/// `spike_log` comes from the launcher: core is env-free by convention,
@@ -436,6 +441,7 @@ impl Metrics {
 			requeued: 0,
 			evicted: 0,
 			upload_saturated: 0,
+			light_pops: 0,
 			gauges: PipelineGauges::default(),
 			net: None,
 			render: RenderStats::default(),
@@ -711,7 +717,7 @@ impl Metrics {
 			return;
 		};
 		log::info!(
-			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
+			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | light {} q {} | gpu {:.1} MB",
 			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
 			if self.win_frames > 0 { self.win_sum.busy_ms / self.win_frames as f32 } else { 0.0 },
 			if self.win_frames > 0 { self.win_sum.outside_ms / self.win_frames as f32 } else { 0.0 },
@@ -720,6 +726,7 @@ impl Metrics {
 			self.gauges.gen_queue, self.gauges.mesh_queue, self.gauges.in_flight,
 			self.gauges.upload_backlog,
 			self.gauges.resident,
+			self.light_pops, self.gauges.light_pending,
 			self.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
 		);
 		if let Some(w) = &mut self.csv {
@@ -739,7 +746,7 @@ impl Metrics {
 {:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{},{:.2}",
+{},{},{},{},{},{},{},{:.2},{},{}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -788,6 +795,8 @@ impl Metrics {
 				r.triangles,
 				self.gpu_buffer_bytes,
 				self.stream_budget_ms,
+				self.light_pops,
+				self.gauges.light_pending,
 			);
 			let _ = w.flush();
 		}
@@ -807,6 +816,7 @@ impl Metrics {
 		self.requeued = 0;
 		self.evicted = 0;
 		self.upload_saturated = 0;
+		self.light_pops = 0;
 	}
 }
 

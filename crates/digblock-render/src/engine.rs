@@ -2003,6 +2003,7 @@ impl Engine {
 		self.metrics.stale_dropped += m.stale_dropped;
 		self.metrics.requeued += m.requeued;
 		self.metrics.upload_saturated += m.saturated as u32;
+		self.metrics.light_pops += m.light_pops;
 		self.metrics.gauges = PipelineGauges {
 			gen_queue: m.gen_queue,
 			mesh_queue: m.mesh_queue,
@@ -2013,6 +2014,7 @@ impl Engine {
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
 			net_backlog: self.net_backlog.len() as u32,
+			light_pending: m.light_pending,
 			// The bytes the loop above just handed over — the number the
 			// byte cap actually governs, and the only per-frame signal for
 			// a staging transfer `upload_ms` structurally cannot time.
