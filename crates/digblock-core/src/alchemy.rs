@@ -143,6 +143,9 @@ pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 		return Some(vec![(r.material, r.cost)]);
 	}
 	let lines: &[(E, u32)] = match b {
+		// Functional items are priced BY HAND (§7.3), never by volume —
+		// the torch's cost is a decision, not a measurement.
+		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
 		B::Stone | B::Sand | B::Sandstone => &[(E::Earth, 27)],
 		B::Wood => &[(E::Flora, 27)],
 		// 27-volume in the extraction ratio: Dirt 15/3 of 18 → 23 + 5.
@@ -164,6 +167,7 @@ pub fn craft_unlock(b: BlockType) -> Option<u32> {
 	Some(match b {
 		B::WoodSlab | B::StoneSlab => 1,
 		B::WoodStairs | B::StoneStairs => 5,
+		B::Torch => 8,
 		B::WoodDoor => 10,
 		B::Stone | B::Wood | B::Dirt | B::Sand => 20,
 		B::Sandstone | B::Snow | B::Grass | B::Mud => 30,
@@ -174,7 +178,8 @@ pub fn craft_unlock(b: BlockType) -> Option<u32> {
 
 /// Everything craftable, in the transmute tab's display order: shaped
 /// items first (the original catalog), then raw blocks by unlock.
-pub const CRAFT_ORDER: [BlockType; 14] = [
+pub const CRAFT_ORDER: [BlockType; 15] = [
+	BlockType::Torch,
 	BlockType::WoodSlab,
 	BlockType::StoneSlab,
 	BlockType::WoodStairs,

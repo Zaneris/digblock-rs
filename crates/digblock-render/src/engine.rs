@@ -606,6 +606,11 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 			));
 		}
 	}
+	// A torch row: one on the ground, one up on a wood plinth — the
+	// emissive head is the thing to photograph at night.
+	out.push((bx - 5, by, bz + 4, B::Torch as u16));
+	out.push((bx - 5, by, bz + 6, B::Wood as u16));
+	out.push((bx - 5, by + 1, bz + 6, B::Torch as u16));
 	// Slabs: both materials × both states, then a walkable seam row —
 	// 1/3 | 2/3 | full block | full + raised 1/3, every riser one
 	// auto-step (also eyeballs boundary culling on the shared planes).

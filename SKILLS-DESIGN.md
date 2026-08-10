@@ -11,8 +11,13 @@ migration" is that numbering choice, see §9), the Rubble rule, level-aware
 `apply_alchemy`, the two-tab screen with the drag-to-slot drip
 (`DIG_SCREEN=alchemy|transmute`), and the server extraction bucket
 (`extraction_pace_is_server_enforced`). Two design bugs §3.3 had were caught in
-implementation and fixed structurally — see the bonus-line pump rule there. M3+ remain
-design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+implementation and fixed structurally — see the bonus-line pump rule there. M3 (level-
+scaled dig speed, SIM v11, exact parity at 30) is landed, along with a rework of the
+transmute tab into §8.1's family model. M4 is HALF landed: the Stage-A emissive bit
+(solid vertex word 1 bit 21; chunk.wgsl returns fogged ink and skips sun/shadow/AO) and
+the Torch (ShapeKind::Torch — post + glowing head, hand-priced 4 Flora + 2 Earth at
+Alch 8, the LIGHTS family on the transmute tab, in the DIG_SHAPES showcase). The tool-
+slot formalization (§6) is the remaining M4 half; M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
