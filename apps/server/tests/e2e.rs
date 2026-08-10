@@ -182,7 +182,11 @@ impl TestServer {
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&data_dir);
-		let sim = Sim::new(42.0, &data_dir, 2, 2).unwrap();
+		// Seed 7 spawns on GRASS: the dig flows below run at Mining 1,
+		// and seed 42's spawn disc is bare Stone, which SIM v12's rock
+		// gate refuses (a real design consequence — a stone-spawn player
+		// levels on leaves/soil off the disc first).
+		let sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
 		let (event_tx, event_rx) = unbounded();
 		let running = Arc::new(AtomicBool::new(true));
 		let players = Arc::new(AtomicUsize::new(0));
@@ -349,6 +353,7 @@ impl TestClient {
 		}
 		self.client.send_dig_start(hit.cell);
 		let hold = digblock_core::skills::dig_required(
+			hit.block,
 			hit.block.hardness_ticks().expect("diggable target"),
 			1,
 		) + 6;

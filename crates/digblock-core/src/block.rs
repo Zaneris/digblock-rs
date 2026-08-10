@@ -43,17 +43,17 @@ blocks! {
 	/// river pools) is sources — flowing/falling states describe water in
 	/// transit under the Minecraft-style flow rules. Diggable only via the
 	/// water tool (the fluid-aware ray); the hardness is the scoop time.
-	Water = 1 => dig(water_props(8, true, false), 20),
-	Dirt = 2 => dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30),
-	Grass = 3 => dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30),
-	Sand = 4 => dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25),
+	Water = 1 => dig(water_props(8, true, false), 20, DigFamily::Fixed),
+	Dirt = 2 => dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30, DigFamily::Soft),
+	Grass = 3 => dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft),
+	Sand = 4 => dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25, DigFamily::Soft),
 	/// Mined stone drops Rubble (SKILLS-DESIGN §7.1): the clean block
 	/// exists only pristine in terrain or transmuted at the bench, which
 	/// is what makes transmutation the economy rather than a curiosity.
-	Stone = 5 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90), BlockType::Rubble),
-	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), 60),
-	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10),
-	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15),
+	Stone = 5 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble),
+	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), 60, DigFamily::Wood),
+	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed),
+	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
 	/// source or a landed fall, losing one amount per block.
 	WaterFlow1 = 9 => water_props(1, false, false),
@@ -66,40 +66,40 @@ blocks! {
 	/// Water falling through air: renders full-height, lands at amount 8.
 	WaterFall = 16 => water_props(8, false, true),
 	/// Savanna surface: sun-dried grass over dirt.
-	DryGrass = 17 => dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30),
+	DryGrass = 17 => dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft),
 	/// Marsh surface and subsoil: wet dark earth.
-	Mud = 18 => dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25),
+	Mud = 18 => dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25, DigFamily::Soft),
 	/// Steep-shore and scree surface: loose pebbled rock.
-	Gravel = 19 => dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45),
+	Gravel = 19 => dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
-	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10),
+	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
 	/// "All broken rock": mined sandstone is Rubble too, so the clean
 	/// block is craft-only like Stone's.
-	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70), BlockType::Rubble),
+	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble),
 	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
 	/// Crafted via alchemy from sub-wood, never generated.
-	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Stairs), 60),
-	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90),
+	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Stairs), 60, DigFamily::Wood),
+	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90, DigFamily::Rock),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy.
-	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::DOOR_WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Door), 45),
+	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::DOOR_WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Door), 45, DigFamily::Wood),
 	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
 	/// Placing onto a slab's top face grows it; the third grow converts
 	/// the cell to the plain base block. Hardness is a third of the base
 	/// block's, since each dig removes one third. Crafted via alchemy.
-	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Slab), 20),
-	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30),
+	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Slab), 20, DigFamily::Wood),
+	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30, DigFamily::Rock),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
 	/// placeable, and the mass Earth feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
-	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90),
+	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
 	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
 	/// emissive (fullbright ink) AND a Stage-B source: it seeds level 14
 	/// into the voxel light field (LIGHT-DESIGN.md).
-	Torch = 28 => dig(emits(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 14), 10),
+	Torch = 28 => dig(emits(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 14), 10, DigFamily::Fixed),
 	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
@@ -290,6 +290,31 @@ pub struct BlockProps {
 	/// into the flood-fill field, 0–15. Purely client-side data — the
 	/// field it feeds is derived, never serialized.
 	pub light: u8,
+	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
+	/// Set together with hardness by the `dig` builder so a diggable row
+	/// can never forget it. Shared client/server behavior — a family
+	/// change is a SIM_VERSION bump like a hardness retune.
+	pub dig_family: DigFamily,
+}
+
+/// The per-material dig-speed families (SKILLS-DESIGN §5.1). Each keys a
+/// Mining-level curve in `skills::dig_speed_permille`; all families pass
+/// EXACTLY through 1000‰ at level 30 (the legacy table is the shared
+/// mid-curve golden), so the family only shapes the approach and the
+/// ceiling. `Fixed` is the flat curve for things that must never scale:
+/// near-instant foliage, fixtures, and the water scoop whose duration is
+/// pinned to the viewmodel swing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DigFamily {
+	/// 1000‰ at every level — never faster, never slower.
+	Fixed,
+	/// Loose ground: today's original curve (1250 → 1000 → 417).
+	Soft,
+	/// Timber: a firmer start, a gentler ceiling (1350 → 1000 → 500).
+	Wood,
+	/// Rock resists a novice hard (1700 → 1000 → 417) and is level-gated
+	/// besides (`skills::dig_level_gate`).
+	Rock,
 }
 
 const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
@@ -307,6 +332,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		shape: None,
 		emissive: false,
 		light: 0,
+		dig_family: DigFamily::Fixed,
 	}
 }
 
@@ -323,9 +349,12 @@ const fn carveable(mut p: BlockProps) -> BlockProps {
 	p
 }
 
-/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks.
-const fn dig(mut p: BlockProps, ticks: u16) -> BlockProps {
+/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks at the
+/// level-30 reference, scaled by `family`'s Mining curve. Family rides
+/// the same builder as hardness so a new diggable row can't forget it.
+const fn dig(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
 	p.hardness_ticks = ticks;
+	p.dig_family = family;
 	p
 }
 
@@ -369,6 +398,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		shape: None,
 		emissive: false,
 		light: 0,
+		dig_family: DigFamily::Fixed,
 	}
 }
 
@@ -437,6 +467,12 @@ impl BlockType {
 	#[inline]
 	pub fn light_level(self) -> u8 {
 		self.props().light
+	}
+
+	/// The per-material dig-speed family (SKILLS-DESIGN §5.1).
+	#[inline]
+	pub fn dig_family(self) -> DigFamily {
+		self.props().dig_family
 	}
 
 	/// How much water this block holds, 1..=8 — None for non-water.
@@ -665,6 +701,45 @@ mod tests {
 				None => assert!(b.hardness_ticks().is_none(), "{b:?}"),
 			}
 		}
+	}
+
+	/// The family assignment is an explicit roster, so a new row's family
+	/// is a deliberate choice, never an accident of the builder default.
+	#[test]
+	fn dig_families_are_pinned() {
+		use DigFamily::*;
+		let expect = [
+			(BlockType::Water, Fixed), // scoop time = the viewmodel swing
+			(BlockType::Leaves, Fixed),
+			(BlockType::PineLeaves, Fixed),
+			(BlockType::Torch, Fixed),
+			(BlockType::Dirt, Soft),
+			(BlockType::Grass, Soft),
+			(BlockType::DryGrass, Soft),
+			(BlockType::Sand, Soft),
+			(BlockType::Mud, Soft),
+			(BlockType::Snow, Soft),
+			(BlockType::Wood, Wood),
+			(BlockType::WoodStairs, Wood),
+			(BlockType::WoodSlab, Wood),
+			(BlockType::WoodDoor, Wood),
+			(BlockType::Stone, Rock),
+			(BlockType::StoneStairs, Rock),
+			(BlockType::StoneSlab, Rock),
+			(BlockType::Sandstone, Rock),
+			(BlockType::Gravel, Rock),
+			(BlockType::Rubble, Rock),
+		];
+		for (b, f) in expect {
+			assert_eq!(b.dig_family(), f, "{b:?}");
+		}
+		// The roster covers every diggable block — a new diggable row
+		// must be added above.
+		let diggable = BlockType::ALL
+			.iter()
+			.filter(|b| b.hardness_ticks().is_some())
+			.count();
+		assert_eq!(expect.len(), diggable, "roster covers every diggable block");
 	}
 
 	#[test]

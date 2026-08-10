@@ -352,9 +352,9 @@ impl Sim {
 				cell == req.cell
 					&& cell_value == hit.cell_value
 					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
-						// Level-scaled hold time (SIM v11): the same
+						// Family-scaled hold time (SIM v12): the same
 						// `dig_required` the client's own timer runs.
-						let need = digblock_core::skills::dig_required(h, mining_level);
+						let need = digblock_core::skills::dig_required(hit.block, h, mining_level);
 						let have = progress + dig_grace(need);
 						short = need.saturating_sub(have);
 						have >= need
@@ -1254,6 +1254,9 @@ mod tests {
 		let mut sim = flat_sim("digpause");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// The flat world is stone: clear the rock gate (the gate has its
+		// own test; this one is about the aim-miss pause).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1296,9 +1299,9 @@ mod tests {
 		sim.tick_once(vec![dig(1)]);
 		// Back on target: the banked 40 survive the miss stretch (which
 		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~75 more verified ticks complete the stone (level-1 need is
-		// 113, grace 16 → ≥ 97 verified).
-		for _ in 0..75 {
+		// so ~100 more verified ticks complete the stone (Rock-family
+		// need at Mining 5 is 144, grace 16 → ≥ 128 verified).
+		for _ in 0..100 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -1335,6 +1338,8 @@ mod tests {
 		let mut sim = flat_sim("digrace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// Stone world: clear the rock gate (not under test here).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1350,8 +1355,8 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// Level-1 stone needs 113 ticks (grace 16 → ≥ 97 verified).
-		for _ in 0..110 {
+		// Mining-5 stone needs 144 ticks (grace 16 → ≥ 128 verified).
+		for _ in 0..140 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -1803,6 +1808,8 @@ mod tests {
 		let mut sim = flat_sim("digflood");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// Stone world: clear the rock gate (not under test here).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
