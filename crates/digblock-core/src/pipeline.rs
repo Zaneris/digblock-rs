@@ -698,17 +698,15 @@ impl Pipeline {
 					landed.push((x, z));
 					// Arrival light seeding reads the stack AFTER the
 					// overlay re-applied (a restored torch must be in the
-					// scanned data); Arc clones are pointer-cheap and air
-					// chunks hold no emitters.
-					self.light.seed_column(
-						x,
-						z,
-						stack
-							.iter()
-							.enumerate()
-							.filter(|(_, d)| !is_air_chunk(d))
-							.map(|(cy, d)| (cy as i32, d.clone())),
-					);
+					// scanned data); Arc clones are pointer-cheap. Air
+					// chunks ride along for the skylight descend (they
+					// become Uniform full-sky tags).
+					let seed_stack: Vec<(i32, Arc<ChunkData>)> = stack
+						.iter()
+						.enumerate()
+						.map(|(cy, d)| (cy as i32, d.clone()))
+						.collect();
+					self.light.seed_column(x, z, &seed_stack);
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
@@ -1074,6 +1072,11 @@ impl Pipeline {
 	/// tests read the field through this.
 	pub fn light_at(&self, x: i32, y: i32, z: i32) -> u8 {
 		self.light.block_light(x, y, z)
+	}
+
+	/// Skylight at a world cell.
+	pub fn sky_at(&self, x: i32, y: i32, z: i32) -> u8 {
+		self.light.sky_light(x, y, z)
 	}
 
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
@@ -1571,6 +1574,30 @@ mod tests {
 		quiesce(&mut p, ChunkPos::new(1, 0, 0));
 		assert_eq!(p.light_at(64, 200, 8), 10, "seeded across the border");
 		assert_eq!(p.light_at(70, 200, 8), 4, "spread deep into the newcomer");
+	}
+
+	/// The arrival descend: open columns carry full skylight from the
+	/// world top to the terrain surface (sky chunks as unallocated
+	/// Uniform tags), and buried cells hold none.
+	#[test]
+	fn open_column_is_full_skylight_to_the_ground() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		let surface = (0..=255)
+			.rev()
+			.find(|&y| {
+				p.block_at(8, y, 8)
+					.is_some_and(|b| b.props().class == crate::block::RenderClass::Opaque)
+			})
+			.expect("a surface exists");
+		assert_eq!(p.sky_at(8, 250, 8), 15, "high sky chunk");
+		assert_eq!(p.sky_at(8, surface + 1, 8), 15, "full sky at the surface");
+		assert_eq!(
+			p.sky_at(8, surface, 8),
+			0,
+			"the surface cell itself is opaque"
+		);
+		assert_eq!(p.sky_at(8, 2, 8), 0, "buried bedrock stays dark");
 	}
 
 	/// Eviction drops a chunk's light; walking back relights it from the

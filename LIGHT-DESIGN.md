@@ -1,9 +1,12 @@
 # Stage-B voxel light
 
-Status: **P1 (core field) built; P2–P4 pending.** This doc is written first, per
-SKILLS-DESIGN §7.4's reservation ("Stage B: its own design doc, later"). Phases
-land separately, each behind the full gate (`just check` + `just check-ios` +
-`just check-web`).
+Status: **P1–P3 built (field, torchlight, skylight); P4 pending.** This doc is
+written first, per SKILLS-DESIGN §7.4's reservation ("Stage B: its own design
+doc, later"). Phases land separately, each behind the full gate (`just check` +
+`just check-ios` + `just check-web`). Capture helpers: night `DIG_SHAPES=1`
+photographs torch pools; `DIG_VAULT=1` seals a stone vault around the spawn
+camera with one torch inside — the flagship "roofed room goes dark at noon"
+shot.
 
 ## 1. Goals / non-goals
 

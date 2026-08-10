@@ -303,10 +303,23 @@ fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 
 /// The solid stream's material word (see [`pack`] for the layout).
 #[inline]
-fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32, emissive: bool, light: u32) -> u32 {
+fn solid_word1(
+	tex: u32,
+	uv_u: u32,
+	uv_v: u32,
+	tint: u32,
+	emissive: bool,
+	light: u32,
+	sky: u32,
+) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
-	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8 && light < 16);
-	tex | (uv_u << 10) | (uv_v << 14) | (tint << 18) | ((emissive as u32) << 21) | (light << 22)
+	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8 && light < 16 && sky < 16);
+	tex | (uv_u << 10)
+		| (uv_v << 14)
+		| (tint << 18)
+		| ((emissive as u32) << 21)
+		| (light << 22)
+		| (sky << 26)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
@@ -408,13 +421,13 @@ fn face_ao(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
 	ao
 }
 
-/// Per-corner Stage-B light for the face of block b toward `dir`: the
-/// smooth-light twin of [`face_ao`], sampling the same four cells around
-/// each corner in the face's neighbor layer and averaging the NON-OPAQUE
-/// ones (an opaque cell drops out of the denominator instead of dragging
-/// the corner dark — its occlusion is already AO's job). All four opaque
-/// → 0. Blocklight nibble only; the sky nibble joins in P3.
-fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
+/// Per-corner Stage-B light (blocklight, skylight) for the face of block
+/// b toward `dir`: the smooth-light twin of [`face_ao`], sampling the
+/// same four cells around each corner in the face's neighbor layer and
+/// averaging the NON-OPAQUE ones (an opaque cell drops out of the
+/// denominator instead of dragging the corner dark — its occlusion is
+/// already AO's job). All four opaque → 0.
+fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [[u32; 4]; 2] {
 	let (ox, oy, oz) = dir.offset();
 	let b = [bx, by, bz];
 	let c = [bx + ox, by + oy, bz + oz];
@@ -424,22 +437,27 @@ fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4
 		Dir::North | Dir::South => (0, 1),
 	};
 	let corners = face_corners(bx, by, bz, dir);
-	let mut out = [0u32; 4];
+	let mut out = [[0u32; 4]; 2];
 	for (i, p) in corners.iter().enumerate() {
 		let p = [p.0, p.1, p.2];
 		let su = if p[u] == b[u] { -1 } else { 1 };
 		let sv = if p[v] == b[v] { -1 } else { 1 };
-		let (mut sum, mut cnt) = (0u32, 0u32);
+		let (mut bsum, mut ssum, mut cnt) = (0u32, 0u32, 0u32);
 		for (du, dv) in [(0, 0), (su, 0), (0, sv), (su, sv)] {
 			let mut q = c;
 			q[u] += du;
 			q[v] += dv;
 			if !occludes(input.get(q[0], q[1], q[2])) {
-				sum += u32::from(input.light[pidx(q[0], q[1], q[2])] & 0x0F);
+				let byte = u32::from(input.light[pidx(q[0], q[1], q[2])]);
+				bsum += byte & 0x0F;
+				ssum += byte >> 4;
 				cnt += 1;
 			}
 		}
-		out[i] = if cnt == 0 { 0 } else { (sum + cnt / 2) / cnt };
+		if cnt > 0 {
+			out[0][i] = (bsum + cnt / 2) / cnt;
+			out[1][i] = (ssum + cnt / 2) / cnt;
+		}
 	}
 	out
 }
@@ -448,7 +466,8 @@ fn face_light(input: &MeshInput, bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4
 /// per-corner AO and Stage-B light fields plus the per-block constants.
 struct Shade {
 	ao: [u32; 4],
-	light: [u32; 4],
+	/// [blocklight, skylight] per corner.
+	light: [[u32; 4]; 2],
 	tint: u32,
 	emissive: bool,
 }
@@ -486,7 +505,8 @@ fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, s
 			(ci as u32 >> 1) * 12,
 			s.tint,
 			s.emissive,
-			s.light[ci],
+			s.light[0][ci],
+			s.light[1][ci],
 		));
 	}
 }
@@ -523,7 +543,7 @@ fn emit_shaped(
 	// survives culling; every quad toward that direction interpolates
 	// from them.
 	let mut pao: [Option<[u32; 4]>; 6] = [None; 6];
-	let mut plight: [Option<[u32; 4]>; 6] = [None; 6];
+	let mut plight: [Option<[[u32; 4]; 2]>; 6] = [None; 6];
 	for q in &variant.quads {
 		if q.boundary {
 			let dir = q.dir;
@@ -553,10 +573,16 @@ fn emit_shaped(
 		let fl = if input.lit {
 			*plight[q.dir as usize].get_or_insert_with(|| face_light(input, bx, by, bz, q.dir))
 		} else {
-			[0; 4]
+			[[0; 4]; 2]
 		};
-		let light: [u32; 4] =
-			std::array::from_fn(|ci| bilerp12(fl, u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1])));
+		let light: [[u32; 4]; 2] = [
+			std::array::from_fn(|ci| {
+				bilerp12(fl[0], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
+			}),
+			std::array::from_fn(|ci| {
+				bilerp12(fl[1], u32::from(q.uv[ci][0]), u32::from(q.uv[ci][1]))
+			}),
+		];
 		// Same diagonal-flip rule as emit_face: corner codes travel with
 		// their vertices, so emit order only steers the triangulation.
 		let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
@@ -585,7 +611,8 @@ fn emit_shaped(
 				u32::from(q.uv[ci][1]),
 				tint,
 				me.props().emissive,
-				light[ci],
+				light[0][ci],
+				light[1][ci],
 			));
 		}
 	}
@@ -696,7 +723,7 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 						let light = if input.lit {
 							face_light(input, x as i32, y as i32, z as i32, dir)
 						} else {
-							[0; 4]
+							[[0; 4]; 2]
 						};
 						let bt = *cell_tint.get_or_insert_with(|| {
 							tint(
@@ -928,7 +955,7 @@ mod tests {
 		input.light[pidx(8, 9, 7)] = 2;
 		// Corner 3 of the top face sits at lattice (8,9,8) and samples its
 		// low-x/low-z quadrant: 10, 6, 2, 0 — all open, mean 5.
-		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[3], 5);
+		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[0][3], 5);
 		// The same corner lands in the emitted vertex's word 1.
 		let m = mesh_chunk(&input, ZERO);
 		let lit = m
@@ -950,7 +977,20 @@ mod tests {
 		input.light[pidx(8, 9, 8)] = 10;
 		input.light[pidx(7, 9, 8)] = 6;
 		input.light[pidx(8, 9, 7)] = 2;
-		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[3], 6);
+		assert_eq!(face_light(&input, 8, 8, 8, Dir::Top)[0][3], 6);
+
+		// Skylight rides the high nibble through the same walk: bytes
+		// 0xF0/0x70/0x30 over the corner average (15+7+3+0+2)/4 = 6.
+		let mut d3 = ChunkData::default();
+		d3.set(8, 8, 8, B::Dirt);
+		let mut input = isolated(&d3);
+		input.lit = true;
+		input.light[pidx(8, 9, 8)] = 0xF0;
+		input.light[pidx(7, 9, 8)] = 0x70;
+		input.light[pidx(8, 9, 7)] = 0x30;
+		let both = face_light(&input, 8, 8, 8, Dir::Top);
+		assert_eq!(both[0][3], 0, "block nibble untouched");
+		assert_eq!(both[1][3], 6, "sky nibble averaged");
 	}
 
 	/// A shaped block's FULL boundary face is lit exactly like the cube
@@ -1223,16 +1263,18 @@ mod tests {
 		assert_eq!(dir_of(w0), Dir::East as u32);
 		assert_eq!(ao_of(w0), 1);
 		assert_eq!(corner_of(w0), 2);
-		let w1 = solid_word1(700, 12, 0, 5, false, 14);
+		let w1 = solid_word1(700, 12, 0, 5, false, 14, 9);
 		assert_eq!(w1 & 0x3ff, 700);
 		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
 		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
 		assert_eq!(tint_of(w1), 5);
 		assert_eq!((w1 >> 21) & 1, 0, "emissive bit clear");
 		assert_eq!(light_of(w1), 14, "Stage-B blocklight in bits 22-25");
-		let dark = solid_word1(700, 12, 0, 5, true, 0);
+		assert_eq!(sky_of(w1), 9, "Stage-B skylight in bits 26-29");
+		let dark = solid_word1(700, 12, 0, 5, true, 0, 0);
 		assert_eq!((dark >> 21) & 1, 1, "emissive bit set");
 		assert_eq!(light_of(dark), 0);
+		assert_eq!(sky_of(dark), 0);
 	}
 
 	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come
@@ -1262,6 +1304,11 @@ mod tests {
 	/// Stage-B blocklight, solid word 1 bits 22-25.
 	fn light_of(w1: u32) -> u32 {
 		(w1 >> 22) & 0xf
+	}
+
+	/// Stage-B skylight, solid word 1 bits 26-29.
+	fn sky_of(w1: u32) -> u32 {
+		(w1 >> 26) & 0xf
 	}
 
 	#[test]

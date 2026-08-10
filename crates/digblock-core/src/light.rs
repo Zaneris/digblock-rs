@@ -68,12 +68,36 @@ pub fn facts_of(cell: u16) -> CellFacts {
 	}
 }
 
+/// Which nibble a queue entry belongs to. Blocklight spreads uniformly;
+/// skylight adds the column rule — straight DOWN at level 15 costs no
+/// decrement, which is what makes an open shaft bright to the floor and
+/// a roof's removal cascade all the way down it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Channel {
+	Block,
+	Sky,
+}
+
+impl Channel {
+	#[inline]
+	fn shift(self) -> u8 {
+		match self {
+			Channel::Block => 0,
+			Channel::Sky => 4,
+		}
+	}
+}
+
+/// A world cell position on a wavefront.
+type Cell = (i32, i32, i32);
+
 pub struct LightField {
 	chunks: FxHashMap<ChunkPos, LightChunk>,
-	add: VecDeque<(i32, i32, i32)>,
-	/// Removal wavefront: the position and the light value it HELD, which
-	/// bounds how far the darkness spreads.
-	remove: VecDeque<((i32, i32, i32), u8)>,
+	/// Per-channel add wavefronts (blocklight, skylight).
+	add: [VecDeque<Cell>; 2],
+	/// Per-channel removal wavefronts: the position and the light value
+	/// it HELD, which bounds how far the darkness spreads.
+	remove: [VecDeque<(Cell, u8)>; 2],
 	/// Chunks whose padded mesh shell saw a light write since the last
 	/// `take_dirty` — the remesh set. Same shell rule as `set_cell`'s
 	/// neighbor bumps.
@@ -90,27 +114,39 @@ impl LightField {
 	pub fn new() -> Self {
 		Self {
 			chunks: FxHashMap::default(),
-			add: VecDeque::new(),
-			remove: VecDeque::new(),
+			add: [VecDeque::new(), VecDeque::new()],
+			remove: [VecDeque::new(), VecDeque::new()],
 			dirty: FxHashSet::default(),
 		}
+	}
+
+	fn nibble(&self, x: i32, y: i32, z: i32, ch: Channel) -> u8 {
+		let Some(((cx, cy, cz), (lx, ly, lz))) = split_world(x, y, z) else {
+			return 0;
+		};
+		(self
+			.chunks
+			.get(&ChunkPos::new(cx, cy, cz))
+			.map_or(0, |c| c.get(lx, ly, lz))
+			>> ch.shift())
+			& 0x0F
 	}
 
 	/// Blocklight at a world cell (0 outside the world or in dark/absent
 	/// chunks).
 	pub fn block_light(&self, x: i32, y: i32, z: i32) -> u8 {
-		let Some(((cx, cy, cz), (lx, ly, lz))) = split_world(x, y, z) else {
-			return 0;
-		};
-		self.chunks
-			.get(&ChunkPos::new(cx, cy, cz))
-			.map_or(0, |c| c.get(lx, ly, lz))
-			& 0x0F
+		self.nibble(x, y, z, Channel::Block)
 	}
 
-	/// Queue depth (both wavefronts) — settled means zero.
+	/// Skylight at a world cell.
+	pub fn sky_light(&self, x: i32, y: i32, z: i32) -> u8 {
+		self.nibble(x, y, z, Channel::Sky)
+	}
+
+	/// Queue depth (all wavefronts) — settled means zero.
 	pub fn pending(&self) -> usize {
-		self.add.len() + self.remove.len()
+		self.add.iter().map(VecDeque::len).sum::<usize>()
+			+ self.remove.iter().map(VecDeque::len).sum::<usize>()
 	}
 
 	/// Per-chunk storage, for the mesh shell copy (`MeshInput::fill_light`).
@@ -119,16 +155,17 @@ impl LightField {
 		self.chunks.get(&pos)
 	}
 
-	/// Write the blocklight nibble, allocating `Mixed` on divergence and
+	/// Write one channel's nibble, allocating `Mixed` on divergence and
 	/// recording the shell-dirty set.
-	fn set_block_light(&mut self, x: i32, y: i32, z: i32, v: u8) {
+	fn set_nibble(&mut self, x: i32, y: i32, z: i32, v: u8, ch: Channel) {
 		let Some(((cx, cy, cz), (lx, ly, lz))) = split_world(x, y, z) else {
 			return;
 		};
+		let (sh, keep) = (ch.shift(), !(0x0F_u8 << ch.shift()));
 		let pos = ChunkPos::new(cx, cy, cz);
 		let entry = self.chunks.entry(pos).or_insert(LightChunk::Uniform(0));
 		if let LightChunk::Uniform(u) = entry {
-			if *u & 0x0F == v {
+			if (*u >> sh) & 0x0F == v {
 				return; // no divergence — stay unallocated
 			}
 			*entry = LightChunk::Mixed(Box::new([*u; CHUNK_VOLUME]));
@@ -137,10 +174,10 @@ impl LightField {
 			unreachable!("uniform was just promoted")
 		};
 		let cell = &mut cells[(ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx];
-		if *cell & 0x0F == v {
+		if (*cell >> sh) & 0x0F == v {
 			return;
 		}
-		*cell = (*cell & 0xF0) | v;
+		*cell = (*cell & keep) | (v << sh);
 		// The write's own chunk plus every neighbor whose padded shell
 		// contains the cell (face/edge/corner) — the mesh-visibility rule.
 		let offsets = |l: usize| -> &'static [i32] {
@@ -163,44 +200,68 @@ impl LightField {
 	/// The single edit hook, called from the local-write funnel
 	/// (`Pipeline::set_cell`) with the previous and new cell values. One
 	/// uniform rule covers torch place, torch dig, wall place, wall dig,
-	/// and fluid writes:
-	/// 1. stored light above the new emission → strip it (removal wave);
-	/// 2. the new cell emits → seed and spread;
-	/// 3. the new cell is open → pull neighboring light in.
+	/// roof place/dig, and fluid writes:
+	/// 1. stored light above the new emission → strip it (removal wave —
+	///    for skylight the emission is always 0, so any occlusion strips);
+	/// 2. the new cell emits (blocklight only) → seed and spread;
+	/// 3. the new cell is open → pull neighboring light in on BOTH
+	///    channels (a dug roof descends via the add rule's down-at-15).
 	pub fn on_cell_changed(&mut self, x: i32, y: i32, z: i32, _prev: u16, new: u16) {
 		let new = facts_of(new);
 		let cur = self.block_light(x, y, z);
 		if cur > new.emits {
-			self.set_block_light(x, y, z, 0);
-			self.remove.push_back(((x, y, z), cur));
+			self.set_nibble(x, y, z, 0, Channel::Block);
+			self.remove[Channel::Block as usize].push_back(((x, y, z), cur));
 		}
 		if new.emits > cur {
-			self.set_block_light(x, y, z, new.emits);
-			self.add.push_back((x, y, z));
+			self.set_nibble(x, y, z, new.emits, Channel::Block);
+			self.add[Channel::Block as usize].push_back((x, y, z));
 		}
-		if !new.opaque {
-			// A dug wall: surrounding light floods back in. Stale or dim
-			// entries self-discard at pop, so over-queuing is cheap.
+		if new.opaque {
+			let sky = self.sky_light(x, y, z);
+			if sky > 0 {
+				self.set_nibble(x, y, z, 0, Channel::Sky);
+				self.remove[Channel::Sky as usize].push_back(((x, y, z), sky));
+			}
+		} else {
+			// A dug wall or roof: surrounding light floods back in. Stale
+			// or dim entries self-discard at pop, so over-queuing is cheap.
 			for (dx, dy, dz) in NEIGHBORS {
-				self.add.push_back((x + dx, y + dy, z + dz));
+				self.add[Channel::Block as usize].push_back((x + dx, y + dy, z + dz));
+				self.add[Channel::Sky as usize].push_back((x + dx, y + dy, z + dz));
+			}
+			// The world's top row has no in-world cell above to descend
+			// from — above the world IS the sky.
+			if y == crate::chunk::WORLD_VBLOCK {
+				self.set_nibble(x, y, z, MAX_LIGHT, Channel::Sky);
+				self.add[Channel::Sky as usize].push_back((x, y, z));
 			}
 		}
 	}
 
-	/// Seed a freshly-landed column: every emitting cell in the stack
-	/// starts a wave, and the four horizontal neighbor columns' facing
-	/// light borders spread inward (the light mirror of the arrival
-	/// re-dirty rule). Runs AFTER the overlay re-applied its cells, so a
-	/// restored torch is in the scanned data.
+	/// Seed a freshly-landed column: the skylight DESCEND pass (level 15
+	/// straight down through non-opaque cells, per-chunk `Uniform(0xF0)`
+	/// for all-air chunks with every column still open), blocklight seeds
+	/// from every emitting cell, lateral seeds where a lit column meets a
+	/// blocked one (a pit wall, an overhang lip), and a TWO-WAY border
+	/// exchange with the four horizontal neighbor columns (the light
+	/// mirror of the arrival re-dirty rule). Runs AFTER the overlay
+	/// re-applied its cells, so a restored torch is in the scanned data.
 	pub fn seed_column(
 		&mut self,
 		x: i32,
 		z: i32,
-		stack: impl Iterator<Item = (i32, std::sync::Arc<crate::chunk::ChunkData>)>,
+		stack: &[(i32, std::sync::Arc<crate::chunk::ChunkData>)],
 	) {
-		let (bx, bz) = (x * CHUNK_SIZE as i32, z * CHUNK_SIZE as i32);
+		use crate::chunk::is_air_chunk;
+		let s = CHUNK_SIZE as i32;
+		let (bx, bz) = (x * s, z * s);
+		// Blocklight: emitter scan (air chunks hold no emitters).
 		for (cy, data) in stack {
-			let by = cy * CHUNK_SIZE as i32;
+			if is_air_chunk(data) {
+				continue;
+			}
+			let by = cy * s;
 			for (i, &cell) in data.blocks.iter().enumerate() {
 				let emits = BlockType::from_id(cell_id(cell)).light_level();
 				if emits > 0 {
@@ -208,16 +269,95 @@ impl LightField {
 					let (lz, ly) = (lyz % CHUNK_SIZE, lyz / CHUNK_SIZE);
 					let (wx, wy, wz) = (bx + lx as i32, by + ly as i32, bz + lz as i32);
 					if self.block_light(wx, wy, wz) < emits {
-						self.set_block_light(wx, wy, wz, emits);
+						self.set_nibble(wx, wy, wz, emits, Channel::Block);
 					}
-					self.add.push_back((wx, wy, wz));
+					self.add[Channel::Block as usize].push_back((wx, wy, wz));
 				}
 			}
 		}
-		// Border pull: any lit cell (≥ 2 — a 1 has nothing to give) in a
-		// neighbor column's facing layer re-spreads; pops into cells this
-		// column can't accept discard themselves.
-		let s = CHUNK_SIZE as i32;
+		// Skylight descend, top chunk first. `stop[lx][lz]` is the world
+		// y of the first opaque cell (the column's sky floor); i32::MIN =
+		// open to the world bottom.
+		let mut stop = [[i32::MIN; CHUNK_SIZE]; CHUNK_SIZE];
+		let mut open_cols = CHUNK_SIZE * CHUNK_SIZE;
+		for (cy, data) in stack.iter().rev() {
+			let by = cy * s;
+			if is_air_chunk(data) {
+				if open_cols == CHUNK_SIZE * CHUNK_SIZE {
+					// Whole footprint still open: tag, never allocate.
+					self.chunks
+						.entry(ChunkPos::new(x, *cy, z))
+						.or_insert(LightChunk::Uniform(0xF0));
+					self.dirty.insert(ChunkPos::new(x, *cy, z));
+					continue;
+				}
+				// Partially shadowed footprint: per-column fill.
+				let mut fills = Vec::new();
+				for (lx, col) in stop.iter().enumerate() {
+					for (lz, &st) in col.iter().enumerate() {
+						if st == i32::MIN {
+							fills.push((lx as i32, lz as i32));
+						}
+					}
+				}
+				for (lx, lz) in fills {
+					for ly in 0..s {
+						self.set_nibble(bx + lx, by + ly, bz + lz, MAX_LIGHT, Channel::Sky);
+					}
+				}
+				continue;
+			}
+			let mut writes = Vec::new();
+			for (lx, col) in stop.iter_mut().enumerate() {
+				for (lz, st) in col.iter_mut().enumerate() {
+					if *st != i32::MIN {
+						continue; // already blocked above
+					}
+					for ly in (0..CHUNK_SIZE).rev() {
+						let cell = data.blocks[(ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx];
+						if facts_of(cell).opaque {
+							*st = by + ly as i32;
+							open_cols -= 1;
+							break;
+						}
+						writes.push((bx + lx as i32, by + ly as i32, bz + lz as i32));
+					}
+				}
+			}
+			for (wx, wy, wz) in writes {
+				self.set_nibble(wx, wy, wz, MAX_LIGHT, Channel::Sky);
+			}
+		}
+		// Lateral seeds: where a lit column stands beside a blocked one,
+		// its 15-cells in the neighbor's shadow band spread sideways (pit
+		// walls, cave mouths, overhang rims).
+		for lx in 0..CHUNK_SIZE {
+			for lz in 0..CHUNK_SIZE {
+				let own = stop[lx][lz];
+				let mut deepest = own;
+				for (nx, nz) in [
+					(lx.wrapping_sub(1), lz),
+					(lx + 1, lz),
+					(lx, lz.wrapping_sub(1)),
+					(lx, lz + 1),
+				] {
+					if nx < CHUNK_SIZE && nz < CHUNK_SIZE {
+						deepest = deepest.max(stop[nx][nz]);
+					}
+				}
+				let base = if own == i32::MIN { 0 } else { own + 1 };
+				for wy in base..=deepest {
+					self.add[Channel::Sky as usize].push_back((bx + lx as i32, wy, bz + lz as i32));
+				}
+			}
+		}
+		// Two-way border exchange: lit cells (≥ 2 — a 1 has nothing to
+		// give) on EITHER side of each of the four borders re-spread, in
+		// whichever channel is lit. Pops into cells that can't accept
+		// discard themselves. Chunk pairs that are uniformly EQUAL (open
+		// sky facing open sky, dark facing dark) exchange nothing and are
+		// skipped wholesale — without that filter every surface column
+		// would queue tens of thousands of no-op sky pops at arrival.
 		for (nx, nz, fx, fz) in [
 			(x - 1, z, bx - 1, i32::MIN),
 			(x + 1, z, bx + s, i32::MIN),
@@ -225,24 +365,41 @@ impl LightField {
 			(x, z + 1, i32::MIN, bz + s),
 		] {
 			for cy in 0..crate::chunk::WORLD_VCHUNK {
-				let pos = ChunkPos::new(nx, cy, nz);
-				let Some(chunk) = self.chunks.get(&pos) else {
-					continue;
+				let theirs_c = self.chunks.get(&ChunkPos::new(nx, cy, nz));
+				let ours_c = self.chunks.get(&ChunkPos::new(x, cy, z));
+				let uniform = |c: Option<&LightChunk>| match c {
+					None => Some(0u8),
+					Some(LightChunk::Uniform(v)) => Some(*v),
+					Some(LightChunk::Mixed(_)) => None,
 				};
-				if matches!(chunk, LightChunk::Uniform(u) if u & 0x0F < 2) {
-					continue;
+				if let (Some(a), Some(b)) = (uniform(theirs_c), uniform(ours_c)) {
+					if a == b {
+						continue; // identical uniform faces: nothing to trade
+					}
 				}
 				let by = cy * s;
 				for a in 0..s {
 					for b in 0..s {
-						let (wx, wz) = if fz == i32::MIN {
-							(fx, bz + a)
+						// The neighbor's facing cell and our own opposite it.
+						let (theirs, ours) = if fz == i32::MIN {
+							let inward = if fx < bx { bx } else { bx + s - 1 };
+							((fx, by + b, bz + a), (inward, by + b, bz + a))
 						} else {
-							(bx + a, fz)
+							let inward = if fz < bz { bz } else { bz + s - 1 };
+							((bx + a, by + b, fz), (bx + a, by + b, inward))
 						};
-						let (wx, wy, wz) = (wx, by + b, wz);
-						if self.block_light(wx, wy, wz) >= 2 {
-							self.add.push_back((wx, wy, wz));
+						// Spread only ever crosses a ≥2 difference (the
+						// brighter side raises the dimmer to bright−1),
+						// so equal-height sky on both sides trades zero
+						// pops — the flat-terrain common case.
+						for ch in [Channel::Block, Channel::Sky] {
+							let tv = self.nibble(theirs.0, theirs.1, theirs.2, ch);
+							let ov = self.nibble(ours.0, ours.1, ours.2, ch);
+							if tv >= ov + 2 {
+								self.add[ch as usize].push_back(theirs);
+							} else if ov >= tv + 2 {
+								self.add[ch as usize].push_back(ours);
+							}
 						}
 					}
 				}
@@ -259,7 +416,11 @@ impl LightField {
 
 	/// Run the BFS for up to `budget` pops against the world read `facts`
 	/// (`None` = not resident = wall). Removals drain before adds — the
-	/// two-queue algorithm's ordering requirement. Returns pops consumed.
+	/// two-queue algorithm's ordering requirement — on both channels.
+	/// Skylight adds the column rule in both directions: straight down
+	/// from a 15 costs no decrement, and a 15 directly below a removed 15
+	/// is DEPENDENT (the shaft darkens all the way down), never a relight
+	/// source. Returns pops consumed.
 	pub fn step(
 		&mut self,
 		budget: u32,
@@ -267,36 +428,58 @@ impl LightField {
 	) -> u32 {
 		let mut pops = 0;
 		while pops < budget {
-			if let Some(((x, y, z), old)) = self.remove.pop_front() {
+			let ch = if !self.remove[Channel::Block as usize].is_empty()
+				|| !self.add[Channel::Block as usize].is_empty()
+			{
+				Channel::Block
+			} else {
+				Channel::Sky
+			};
+			if let Some(((x, y, z), old)) = self.remove[ch as usize].pop_front() {
 				pops += 1;
 				for (dx, dy, dz) in NEIGHBORS {
 					let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-					let nl = self.block_light(nx, ny, nz);
+					let nl = self.nibble(nx, ny, nz, ch);
 					if nl == 0 {
 						continue;
 					}
-					if nl < old {
-						self.set_block_light(nx, ny, nz, 0);
-						self.remove.push_back(((nx, ny, nz), nl));
-						// An emitter caught in the wave re-seeds itself.
-						if let Some(f) = facts(nx, ny, nz) {
-							if f.emits > 0 {
-								self.set_block_light(nx, ny, nz, f.emits);
-								self.add.push_back((nx, ny, nz));
+					let down_column =
+						ch == Channel::Sky && dy == -1 && old == MAX_LIGHT && nl == MAX_LIGHT;
+					if nl < old || down_column {
+						self.set_nibble(nx, ny, nz, 0, ch);
+						self.remove[ch as usize].push_back(((nx, ny, nz), nl));
+						// An emitter caught in the wave re-seeds itself
+						// (blocklight only — nothing emits sky).
+						if ch == Channel::Block {
+							if let Some(f) = facts(nx, ny, nz) {
+								if f.emits > 0 {
+									self.set_nibble(nx, ny, nz, f.emits, ch);
+									self.add[ch as usize].push_back((nx, ny, nz));
+								}
 							}
 						}
 					} else {
 						// Independently supported: the relight frontier.
-						self.add.push_back((nx, ny, nz));
+						self.add[ch as usize].push_back((nx, ny, nz));
 					}
 				}
-			} else if let Some((x, y, z)) = self.add.pop_front() {
+			} else if let Some((x, y, z)) = self.add[ch as usize].pop_front() {
 				pops += 1;
-				let l = self.block_light(x, y, z);
-				if l <= 1 {
-					continue; // stale entry, or nothing left to give
+				let l = self.nibble(x, y, z, ch);
+				if l == 0 {
+					continue; // stale entry
 				}
 				for (dx, dy, dz) in NEIGHBORS {
+					// Sky at 15 descends undecremented; every other spread
+					// (and every blocklight spread) pays 1.
+					let target = if ch == Channel::Sky && dy == -1 && l == MAX_LIGHT {
+						MAX_LIGHT
+					} else {
+						l - 1
+					};
+					if target == 0 {
+						continue;
+					}
 					let (nx, ny, nz) = (x + dx, y + dy, z + dz);
 					let Some(f) = facts(nx, ny, nz) else {
 						continue; // not resident: a wall for now
@@ -304,9 +487,9 @@ impl LightField {
 					if f.opaque {
 						continue;
 					}
-					if self.block_light(nx, ny, nz) + 1 < l {
-						self.set_block_light(nx, ny, nz, l - 1);
-						self.add.push_back((nx, ny, nz));
+					if self.nibble(nx, ny, nz, ch) < target {
+						self.set_nibble(nx, ny, nz, target, ch);
+						self.add[ch as usize].push_back((nx, ny, nz));
 					}
 				}
 			} else {
@@ -540,6 +723,96 @@ mod tests {
 			0,
 			"never written into the void"
 		);
+	}
+
+	/// Seed a horizontal sky plane (the unit-test stand-in for
+	/// `seed_column`'s descend): every cell of the plane starts at 15 and
+	/// the down-at-15 rule does the rest.
+	fn seed_sky_plane(
+		f: &mut LightField,
+		y: i32,
+		xs: std::ops::RangeInclusive<i32>,
+		zs: std::ops::RangeInclusive<i32>,
+	) {
+		for x in xs {
+			for z in zs.clone() {
+				f.set_nibble(x, y, z, MAX_LIGHT, Channel::Sky);
+				f.add[Channel::Sky as usize].push_back((x, y, z));
+			}
+		}
+	}
+
+	#[test]
+	fn sky_descends_undecremented_and_a_cave_mouth_attenuates_sideways() {
+		let mut w = World::open();
+		// Resident box; outside is wall. Stone plate at y=105 shadows
+		// x 95..=115 across the FULL z extent, so the only mouths are the
+		// x rims at 94 and 116.
+		w.bounds = Some(((90, 90, 90), (121, 112, 111)));
+		for x in 95..=115 {
+			for z in 90..=110 {
+				w.set((x, 105, z), BlockType::Stone);
+			}
+		}
+		let mut f = LightField::new();
+		seed_sky_plane(&mut f, 110, 90..=120, 90..=110);
+		settle(&mut f, &w);
+		assert_eq!(f.sky_light(105, 107, 100), 15, "open air above the plate");
+		assert_eq!(
+			f.sky_light(94, 91, 100),
+			15,
+			"open column: full to the floor"
+		);
+		assert_eq!(f.sky_light(105, 105, 100), 0, "the plate itself");
+		// Under the plate, light walks in from the west rim at x=94 and
+		// pays 1 per step: (95)=14 … (105)=4.
+		assert_eq!(f.sky_light(95, 100, 100), 14, "first cell inside the mouth");
+		assert_eq!(
+			f.sky_light(105, 100, 100),
+			4,
+			"attenuated deep under the plate"
+		);
+	}
+
+	#[test]
+	fn a_roof_zeroes_skylight_beneath_and_digging_it_floods_the_shaft() {
+		let mut w = World::open();
+		// The stone plate spans the WHOLE resident footprint, so nothing
+		// leaks around a rim — below it must be pitch dark.
+		w.bounds = Some(((95, 90, 95), (106, 112, 106)));
+		for x in 95..=105 {
+			for z in 95..=105 {
+				w.set((x, 105, z), BlockType::Stone);
+			}
+		}
+		let mut f = LightField::new();
+		seed_sky_plane(&mut f, 110, 95..=105, 95..=105);
+		settle(&mut f, &w);
+		assert_eq!(f.sky_light(100, 107, 100), 15, "above the roof");
+		for y in 90..105 {
+			assert_eq!(f.sky_light(100, y, 100), 0, "sealed below at y={y}");
+		}
+		// Dig one roof cell: the shaft floods at 15 all the way down
+		// (descend costs nothing), neighbors get lateral 14s.
+		place(&mut f, &mut w, (100, 105, 100), BlockType::Air);
+		settle(&mut f, &w);
+		for y in 90..=105 {
+			assert_eq!(f.sky_light(100, y, 100), 15, "shaft lit at y={y}");
+		}
+		assert_eq!(
+			f.sky_light(101, 100, 100),
+			14,
+			"lateral spread off the shaft"
+		);
+		// Roof it again: the down-dependence rule darkens the whole
+		// shaft — a 15 below a removed 15 is dependent, never a relight
+		// source.
+		place(&mut f, &mut w, (100, 105, 100), BlockType::Stone);
+		settle(&mut f, &w);
+		for y in 90..105 {
+			assert_eq!(f.sky_light(100, y, 100), 0, "resealed at y={y}");
+		}
+		assert_eq!(f.sky_light(101, 100, 100), 0, "laterals cleaned up too");
 	}
 
 	#[test]
