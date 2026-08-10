@@ -50,6 +50,71 @@ fn main() {
 	// darkening (the window lites are geometry, not texture).
 	let wood = load("Wood.png");
 	save("DoorWood.png", door(&wood, &mut rng));
+
+	// Broken rock — what mined stone actually drops (SKILLS-DESIGN §7.1):
+	// stone body with angular fracture cracks and chipped facets, reading
+	// as rough cobble when placed. Appended LAST so the shared rng stream
+	// leaves every earlier output byte-identical.
+	save("Rubble.png", rubble(&stone, &mut rng));
+}
+
+/// Fractured stone: slight darkening jitter, crack walks (a dark groove
+/// with a light catch edge one pixel down-right), and a few darker
+/// chipped facets — all wrapped modularly so the texture keeps tiling.
+fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
+	let mut out = stone.clone();
+	for p in out.pixels_mut() {
+		let n = rng.signed(6) - 4;
+		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
+	}
+	let s = SIZE as i32;
+	const DIRS: [(i32, i32); 8] = [
+		(1, 0),
+		(1, 1),
+		(0, 1),
+		(-1, 1),
+		(-1, 0),
+		(-1, -1),
+		(0, -1),
+		(1, -1),
+	];
+	for _ in 0..7 {
+		let (mut x, mut y) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
+		let mut d = rng.range(8) as usize;
+		for _ in 0..(24 + rng.range(16)) {
+			let p = out.get_pixel_mut(x.rem_euclid(s) as u32, y.rem_euclid(s) as u32);
+			p.0 = [add8(p.0[0], -42), add8(p.0[1], -42), add8(p.0[2], -42)];
+			let e = out.get_pixel_mut((x + 1).rem_euclid(s) as u32, (y + 1).rem_euclid(s) as u32);
+			e.0 = [add8(e.0[0], 12), add8(e.0[1], 12), add8(e.0[2], 12)];
+			if rng.range(3) == 0 {
+				// ±1 step of eight-way turn keeps cracks angular, not wavy.
+				d = (d + 7 + 2 * rng.range(2) as usize) % 8;
+			}
+			x += DIRS[d].0;
+			y += DIRS[d].1;
+		}
+	}
+	for _ in 0..12 {
+		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
+		let r = 1 + rng.range(2) as i32;
+		let delta = -(8 + rng.signed(6).abs());
+		for dy in -r..=r {
+			for dx in -r..=r {
+				if dx * dx + dy * dy <= r * r {
+					let p = out.get_pixel_mut(
+						(cx + dx).rem_euclid(s) as u32,
+						(cy + dy).rem_euclid(s) as u32,
+					);
+					p.0 = [
+						add8(p.0[0], delta),
+						add8(p.0[1], delta),
+						add8(p.0[2], delta),
+					];
+				}
+			}
+		}
+	}
+	out
 }
 
 /// Vertical plank seams every 16px (dark 2px groove with a light catch

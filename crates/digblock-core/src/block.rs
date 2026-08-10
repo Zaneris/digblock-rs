@@ -47,7 +47,10 @@ blocks! {
 	Dirt = 2 => dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30),
 	Grass = 3 => dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30),
 	Sand = 4 => dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25),
-	Stone = 5 => dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90),
+	/// Mined stone drops Rubble (SKILLS-DESIGN §7.1): the clean block
+	/// exists only pristine in terrain or transmuted at the bench, which
+	/// is what makes transmutation the economy rather than a curiosity.
+	Stone = 5 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90), BlockType::Rubble),
 	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), 60),
 	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10),
 	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15),
@@ -71,7 +74,9 @@ blocks! {
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
 	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
-	Sandstone = 21 => dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70),
+	/// "All broken rock": mined sandstone is Rubble too, so the clean
+	/// block is craft-only like Stone's.
+	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70), BlockType::Rubble),
 	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
 	/// Crafted via alchemy from sub-wood, never generated.
 	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Stairs), 60),
@@ -85,6 +90,11 @@ blocks! {
 	/// block's, since each dig removes one third. Crafted via alchemy.
 	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Slab), 20),
 	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30),
+	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
+	/// placeable, and the mass Earth feedstock at the bench. Placed, it
+	/// reads as rough cobble — the free rustic building material. Drops
+	/// itself, so it round-trips.
+	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -154,21 +164,54 @@ pub enum ShapeKind {
 	Slab,
 }
 
-/// Alchemy sub-material families (the "12ths dust" blocks convert into).
+/// Alchemy essence families — what blocks extract INTO at the bench
+/// (SKILLS-DESIGN §3). `repr` indices are a wire and persistence format
+/// (flagged inventory pairs `SUB_WIRE_FLAG | index`), APPEND-ONLY.
+///
+/// The first two indices deliberately keep the retired `Material`
+/// enum's numbering — Flora sits where sub-wood (0) lived and Earth
+/// where sub-stone (1) did — so every record and save written under the
+/// old two-family economy decodes 1:1 into the right essence with NO
+/// migration code anywhere. The design doc's decode-time migration is
+/// this numbering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Material {
-	Wood = 0,
-	Stone = 1,
+pub enum Essence {
+	/// Living matter: wood, grass tops, leaves. Legacy sub-wood's slot.
+	Flora = 0,
+	/// Mineral bulk: stone, sand, dirt. Legacy sub-stone's slot.
+	Earth = 1,
+	Aqua = 2,
+	/// Refined ore (bench-processed) — arrives with the ore milestone.
+	Metal = 3,
+	/// The rare one: cannot be transmuted into, ever.
+	Aether = 4,
 }
 
-impl Material {
-	pub const COUNT: usize = 2;
-	pub const ALL: [Material; Self::COUNT] = [Material::Wood, Material::Stone];
+impl Essence {
+	pub const COUNT: usize = 5;
+	pub const ALL: [Essence; Self::COUNT] = [
+		Essence::Flora,
+		Essence::Earth,
+		Essence::Aqua,
+		Essence::Metal,
+		Essence::Aether,
+	];
 
 	/// Strict decode of a wire family index.
 	#[inline]
 	pub fn try_from_index(v: u16) -> Option<Self> {
 		Self::ALL.get(v as usize).copied()
+	}
+
+	/// The screens' all-caps label.
+	pub fn name(self) -> &'static str {
+		match self {
+			Essence::Flora => "FLORA",
+			Essence::Earth => "EARTH",
+			Essence::Aqua => "AQUA",
+			Essence::Metal => "METAL",
+			Essence::Aether => "AETHER",
+		}
 	}
 }
 
@@ -260,6 +303,13 @@ const fn dig(mut p: BlockProps, ticks: u16) -> BlockProps {
 	p
 }
 
+/// Inventory credit override: a completed dig lands `d`, not the block
+/// itself (the rock family's Rubble rule).
+const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
+	p.drops = Some(d);
+	p
+}
+
 /// A water-family row: water bucket + fluid behavior.
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
@@ -300,6 +350,7 @@ mod tex {
 	pub const PINE_LEAVES: u16 = 14;
 	pub const SANDSTONE: u16 = 15;
 	pub const DOOR_WOOD: u16 = 16;
+	pub const RUBBLE: u16 = 17;
 }
 
 impl BlockType {
@@ -468,15 +519,13 @@ impl BlockType {
 		}
 	}
 
-	/// The alchemy family this block converts INTO (one block = 27
-	/// sub-units). v1 table: only the pure materials convert.
+	/// Can this block be broken down at the bench at all? The full
+	/// per-essence yield table lives in [`crate::alchemy::extract_base`]
+	/// — this is just its non-empty test, kept here for callers that
+	/// only filter.
 	#[inline]
-	pub fn sub_material(self) -> Option<Material> {
-		match self {
-			BlockType::Wood => Some(Material::Wood),
-			BlockType::Stone => Some(Material::Stone),
-			_ => None,
-		}
+	pub fn is_extractable(self) -> bool {
+		!crate::alchemy::extract_base(self).is_empty()
 	}
 }
 

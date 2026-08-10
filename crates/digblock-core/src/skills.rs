@@ -177,18 +177,19 @@ pub fn dig_xp(block: BlockType) -> u64 {
 	}
 }
 
-/// Alchemy XP per block extracted at the bench:
-/// `ceil(yield / 3)` of the conversion's sub-material yield.
-pub fn convert_xp_per_block() -> u64 {
-	u64::from(crate::shapes::SUBS_PER_BLOCK).div_ceil(3)
+/// Alchemy XP per block extracted at the bench: `ceil(base_total / 3)`
+/// of the block's BASE yield — fixed for life, never the level-scaled
+/// outcome (§4.1).
+pub fn convert_xp(block: BlockType) -> u64 {
+	u64::from(crate::alchemy::extract_total_base(block)).div_ceil(3)
 }
 
-/// Alchemy XP per crafted batch: `ceil(cost / 3)` of the recipe's
-/// sub-material cost. Zero for items with no recipe (which can't be
-/// crafted anyway).
+/// Alchemy XP per crafted batch: `ceil(ideal_cost / 3)` summed across
+/// the recipe's cost lines (pre-waste — fixed for life). Zero for
+/// uncraftable items.
 pub fn craft_xp(item: BlockType) -> u64 {
-	match crate::shapes::craft_recipe(item) {
-		Some(r) => u64::from(r.cost).div_ceil(3),
+	match crate::alchemy::craft_ideal(item) {
+		Some(lines) => u64::from(lines.iter().map(|&(_, n)| n).sum::<u32>()).div_ceil(3),
 		None => 0,
 	}
 }
@@ -198,7 +199,7 @@ pub fn craft_xp(item: BlockType) -> u64 {
 pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {
 	use crate::inventory::AlchemyOp;
 	match *op {
-		AlchemyOp::Convert { count, .. } => convert_xp_per_block() * u64::from(count),
+		AlchemyOp::Convert { block, count } => convert_xp(block) * u64::from(count),
 		AlchemyOp::Craft { item, count } => craft_xp(item) * u64::from(count),
 	}
 }
@@ -300,12 +301,25 @@ mod tests {
 		assert_eq!(dig_xp(B::Air), 0, "undiggable pays nothing");
 	}
 
+	/// §4.1's table, keyed on BASE yields/costs: Stone/Wood/Grass 9,
+	/// Dirt 6, Snow 3, the bucket charge 6, Rubble 8 — fixed for life
+	/// regardless of level-scaled outcomes.
 	#[test]
-	fn alchemy_xp_derives_from_the_current_tables() {
+	fn alchemy_xp_derives_from_the_base_tables() {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
-		// 27 subs per block → 9 XP per extraction.
-		assert_eq!(convert_xp_per_block(), 9);
+		for (block, xp) in [
+			(B::Stone, 9u64),
+			(B::Wood, 9),
+			(B::Grass, 9),
+			(B::Rubble, 8),
+			(B::Dirt, 6),
+			(B::Snow, 3),
+			(B::Water, 6),
+			(B::Leaves, 1),
+		] {
+			assert_eq!(convert_xp(block), xp, "{block:?}");
+		}
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Convert {
 				block: B::Stone,
@@ -313,9 +327,10 @@ mod tests {
 			}),
 			27
 		);
-		// Crafts pay a third of their cost, rounded up.
-		let stairs = crate::shapes::craft_recipe(B::WoodStairs).unwrap();
-		assert_eq!(craft_xp(B::WoodStairs), u64::from(stairs.cost).div_ceil(3));
+		// Crafts pay a third of their IDEAL cost, rounded up: stairs
+		// 18 → 6, a raw Dirt block (23 + 5 = 28) → 10.
+		assert_eq!(craft_xp(B::WoodStairs), 6);
+		assert_eq!(craft_xp(B::Dirt), 10);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 	}
 }

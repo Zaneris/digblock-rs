@@ -1,6 +1,7 @@
 //! Pure game logic: no GPU, no windowing. Everything here is testable
 //! headless on any machine.
 
+pub mod alchemy;
 pub mod block;
 pub mod chunk;
 pub mod decoration;

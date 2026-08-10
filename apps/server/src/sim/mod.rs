@@ -245,6 +245,10 @@ struct Client {
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
+	/// Bench-extraction bucket: capacity `EXTRACT_BURST`, refilled one
+	/// block per `extract_pace_ticks(level)` — the server-enforced half
+	/// of the drip (see `process_alchemy`).
+	extract_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
 	/// Journal columns owed to this client, drained a few per tick by
@@ -1287,6 +1291,7 @@ impl Sim {
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
+				extract_tokens: digblock_core::alchemy::EXTRACT_BURST,
 				draw_dist,
 				synced_columns: FxHashSet::default(),
 				sync_queue,
@@ -1855,13 +1860,14 @@ mod tests {
 			wait_live(&mut sim, 1);
 			let mut t = 0;
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
-			assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 1);
+			// The rock rule: mined stone lands as Rubble.
+			assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
 
-			// Park the Stone in grid slot 17 (a deliberate arrangement —
+			// Park the Rubble in grid slot 17 (a deliberate arrangement —
 			// it must survive reconnect and reboot verbatim).
 			let mut grid =
 				vec![digblock_core::hotbar::WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS];
-			grid[17] = BlockType::Stone as u16;
+			grid[17] = BlockType::Rubble as u16;
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Layout {
@@ -1881,7 +1887,7 @@ mod tests {
 				c2.msgs.iter().any(|m| matches!(
 					m,
 					ServerMsg::InventoryFull { counts }
-						if counts == &vec![(BlockType::Stone as u16, 1)]
+						if counts == &vec![(BlockType::Rubble as u16, 1)]
 				)),
 				"reconnect carries the credit: {:?}",
 				c2.msgs
@@ -1906,7 +1912,7 @@ mod tests {
 			c3.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::InventoryFull { counts }
-					if counts == &vec![(BlockType::Stone as u16, 1)]
+					if counts == &vec![(BlockType::Rubble as u16, 1)]
 			)),
 			"reboot carries the credit: {:?}",
 			c3.msgs
@@ -1915,7 +1921,7 @@ mod tests {
 			c3.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::Layout { grid, .. }
-					if grid.get(17) == Some(&(BlockType::Stone as u16))
+					if grid.get(17) == Some(&(BlockType::Rubble as u16))
 			)),
 			"reboot carries the arrangement: {:?}",
 			c3.msgs
@@ -1975,13 +1981,13 @@ mod tests {
 				c.msgs
 			);
 
-			// Convert the stone at the bench: 9 Alchemy XP, in wire order
-			// with the InventoryFull rebase.
+			// Convert the rubble the dig credited: ceil(24/3) = 8 Alchemy
+			// XP, in wire order with the InventoryFull rebase.
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
 					op: AlchemyOp::Convert {
-						block: BlockType::Stone as u16,
+						block: BlockType::Rubble as u16,
 						count: 1,
 					},
 				},
@@ -1990,8 +1996,8 @@ mod tests {
 			assert!(
 				c.msgs
 					.iter()
-					.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total: 9 })),
-				"conversion pays 9 Alchemy: {:?}",
+					.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total: 8 })),
+				"conversion pays 8 Alchemy: {:?}",
 				c.msgs
 			);
 
@@ -2002,7 +2008,7 @@ mod tests {
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
 					m,
-					ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 9)]
+					ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 8)]
 				)),
 				"reconnect carries the totals: {:?}",
 				c2.msgs
@@ -2018,11 +2024,71 @@ mod tests {
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 9)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, 15), (1, 8)]
 			)),
 			"reboot carries the totals: {:?}",
 			c3.msgs
 		);
+	}
+
+	/// §8.1's anti-cheat half: Convert ops draw from the per-player
+	/// extraction bucket, charged PER BLOCK. A smuggled bulk op the
+	/// bucket can't cover refuses with no debit and no XP, and a flood
+	/// of single ops beyond the burst refuses the same way — sustained
+	/// throughput can never beat one block per pace interval.
+	#[test]
+	fn extraction_pace_is_server_enforced() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::{AlchemyOp, EditKind};
+		use glam::Vec3;
+
+		let mut sim = flat_sim("pace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let mut t = 0;
+		for seq in 1..=3 {
+			dig_hold(&mut sim, 1, down, 90, seq, EditKind::Dig, &mut t);
+		}
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 3);
+		let convert = |count: u32| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Alchemy {
+				op: AlchemyOp::Convert {
+					block: BlockType::Rubble as u16,
+					count,
+				},
+			},
+		};
+		// A bulk op costs per block: 3 > the burst of 2 — refused
+		// outright, nothing debited.
+		sim.tick_once(vec![convert(3)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			3,
+			"bulk convert refused with no debit"
+		);
+		// The burst: two single-block ops land, the third runs dry.
+		sim.tick_once(vec![convert(1), convert(1), convert(1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"burst admits exactly 2"
+		);
+		// One pace interval refills exactly one token.
+		for _ in 0..digblock_core::alchemy::extract_pace_ticks(1) {
+			sim.tick_once(vec![]);
+		}
+		sim.tick_once(vec![convert(1)]);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
+		// Refused ops never paid XP: the final total reflects exactly
+		// the three landed blocks (ceil(24/3) = 8 each).
+		c.drain();
+		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
+			ServerMsg::XpGain { skill: 1, total } => Some(*total),
+			_ => None,
+		});
+		assert_eq!(last_alch, Some(3 * 8), "XP only for landed blocks");
 	}
 
 	/// A live identity refuses a second connection; anonymous (all-zero)

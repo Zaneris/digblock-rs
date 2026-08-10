@@ -23,11 +23,12 @@ pub mod tex {
 	pub const PINE_LEAVES: &[u8] = include_bytes!("../../../assets/textures/PineLeaves.png");
 	pub const SANDSTONE: &[u8] = include_bytes!("../../../assets/textures/Sandstone.png");
 	pub const DOOR_WOOD: &[u8] = include_bytes!("../../../assets/textures/DoorWood.png");
+	pub const RUBBLE: &[u8] = include_bytes!("../../../assets/textures/Rubble.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference (digblock-core block.rs `tex` module mirrors this list).
 	/// Append only; never reorder.
-	pub const LAYERS: [&[u8]; 17] = [
+	pub const LAYERS: [&[u8]; 18] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -45,6 +46,7 @@ pub mod tex {
 		PINE_LEAVES,
 		SANDSTONE,
 		DOOR_WOOD,
+		RUBBLE,
 	];
 }
 

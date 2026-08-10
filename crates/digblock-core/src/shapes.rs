@@ -16,7 +16,7 @@
 //! pinned by `full_cube_bakes_to_the_six_block_faces` here and a
 //! cross-check test in mesher.rs.
 
-use crate::block::{BlockType, Material, ShapeKind};
+use crate::block::{BlockType, Essence, ShapeKind};
 use crate::chunk::{cell_id, cell_state, STATE_MASK, STATE_SHIFT};
 use crate::dir::{Dir, DIRS};
 use glam::Vec3;
@@ -381,7 +381,7 @@ pub fn state_valid(cell: u16) -> bool {
 /// 13.5 units crafts as 2-for-27); both launch shapes are whole.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CraftRecipe {
-	pub material: Material,
+	pub material: Essence,
 	pub count: u32,
 	pub cost: u32,
 }
@@ -394,11 +394,11 @@ pub struct CraftRecipe {
 /// one block, closing the grow-to-base-block economy).
 pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
 	let (material, count, cost) = match b {
-		BlockType::WoodStairs => (Material::Wood, 1, 18),
-		BlockType::StoneStairs => (Material::Stone, 1, 18),
-		BlockType::WoodDoor => (Material::Wood, 1, 10),
-		BlockType::WoodSlab => (Material::Wood, 1, 9),
-		BlockType::StoneSlab => (Material::Stone, 1, 9),
+		BlockType::WoodStairs => (Essence::Flora, 1, 18),
+		BlockType::StoneStairs => (Essence::Earth, 1, 18),
+		BlockType::WoodDoor => (Essence::Flora, 1, 10),
+		BlockType::WoodSlab => (Essence::Flora, 1, 9),
+		BlockType::StoneSlab => (Essence::Earth, 1, 9),
 		_ => return None,
 	};
 	Some(CraftRecipe {

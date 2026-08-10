@@ -1,18 +1,38 @@
-//! The alchemy screen: break whole blocks down into sub-material units
-//! (1 block = 27, a 3×3×3 division) and craft sub-block shaped items
-//! (stairs, doors) from them. Pure click UI — no drags. The screen never
-//! mutates game state: `handle_input` returns actions; the engine
-//! applies them locally offline or sends them to the server online (the
-//! `InventoryFull` echo is the rebase), and locally gates affordability
-//! so honest clients never send failing ops.
+//! The alchemy screen (SKILLS-DESIGN §8.1): two tabs under a header
+//! that always shows the Alchemy level, its XP bar, and the essence
+//! holdings.
+//!
+//! **EXTRACT** is the player's inventory plus one drop target: drag a
+//! stack (from the grid, the bar, or the bucket tile) onto the
+//! extraction slot and it drips, one block per pace interval, until
+//! removed or dry. The slot is a POINTER to a block id, never a
+//! container — the stack stays in the inventory and visibly drains in
+//! place, so the slot touches neither `reconcile_layout` nor the wire.
+//! The drip is client-paced ordinary `Convert { count: 1 }` ops; the
+//! server enforces the same pace with its extraction token bucket, so
+//! pacing here is presentation, not trust.
+//!
+//! **TRANSMUTE** stays click-based (crafting is a decision, not a
+//! grind): every craftable in `alchemy::CRAFT_ORDER`, locked rows drawn
+//! dim with their level where the button would be, CLICK 1 · SHIFT 10 ·
+//! CTRL 100 multipliers clamped to what the holdings afford.
+//!
+//! The screen never mutates game state: `handle_input`/`tick` return
+//! actions; the engine applies them locally offline or sends them to
+//! the server online (the `InventoryFull` echo is the rebase).
 
-use digblock_core::block::{BlockType, Material};
+use digblock_core::alchemy;
+use digblock_core::block::{BlockType, Essence};
+use digblock_core::hotbar::HotbarItem;
+use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
 use digblock_core::inventory::Inventory;
-use digblock_core::shapes::{craft_recipe, CRAFTABLE, SUBS_PER_BLOCK};
+use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_platform::{InputEvent, Key, MouseButton};
 
+use crate::hotbar::{HotbarView, SlotView};
+use crate::ui::drag::{DragEvent, DragState, DRAG_THRESHOLD_PX};
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, Style, Ui, DIM, WHITE};
+use crate::ui::widgets::{self, GridSpec, Style, Ui, DIM, WHITE};
 use crate::ui::{hud, scale, theme, HitMap, InvId, Rect};
 
 /// One requested alchemy operation, in core vocabulary.
@@ -22,139 +42,111 @@ pub enum AlchAction {
 	Craft { item: BlockType, count: u32 },
 }
 
-/// Shift-click batch size (plain click = 1).
-const BULK: u32 = 10;
+const BULK_SHIFT: u32 = 10;
+const BULK_CTRL: u32 = 100;
 
-// Layout bases (logical px × ui scale). Everything shared with the rest
-// of the UI — padding, row heights, section gaps, the panel's minimum
-// width, its colors — comes from `ui::theme`, so this screen's text and
-// columns land exactly where the menu's do. Only the three sizes below
-// are this screen's own, and they are all *icon and button* geometry:
-// there is no text size here at all.
+// This screen's own geometry (theme tokens cover everything shared).
 const ROW_ICON: f32 = 36.0;
 const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
 const ICON_TEXT_GAP: f32 = 12.0;
-/// Minimum gap between a row's text and its button, so the two never
-/// touch on a narrow panel.
 const TEXT_BTN_GAP: f32 = 28.0;
+/// The extraction strip's slot square (the grid's own cell size).
+const STRIP_GAP: f32 = 12.0;
 
-/// The screen's per-frame view of the inventory, built by the engine
-/// from the same `Inventory` the actions will be validated against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AlchTab {
+	#[default]
+	Extract,
+	Transmute,
+}
+
+/// The screen's per-frame view: level, XP-bar fraction, essence
+/// holdings, craft rows — derived once so measure and emit agree.
 pub struct AlchView {
-	/// Blocks with a `sub_material` mapping the player holds.
-	pub convertibles: Vec<(BlockType, u32)>,
-	/// Sub-material holdings, `Material::ALL` order.
-	pub subs: [u32; Material::COUNT],
+	pub level: u32,
+	/// Progress toward the next level, 0..=1 (full at the cap).
+	pub xp_frac: f32,
+	pub subs: [u32; Essence::COUNT],
+	pub bucket_full: bool,
 }
 
 impl AlchView {
-	pub fn build(inv: &Inventory) -> Self {
-		Self {
-			convertibles: inv
-				.iter_nonzero()
-				.filter(|(b, _)| b.sub_material().is_some())
-				.collect(),
-			subs: [
-				inv.sub_count(Material::Wood),
-				inv.sub_count(Material::Stone),
-			],
-		}
-	}
-
-	/// Whole batches of `CRAFTABLE[i]` the holdings cover.
-	fn affordable(&self, i: usize) -> bool {
-		let r = craft_recipe(CRAFTABLE[i]).expect("CRAFTABLE rows have recipes");
-		self.subs[r.material as usize] >= r.cost
-	}
-}
-
-/// One row of the screen, shared by the measure and emit passes.
-enum Row {
-	Title,
-	/// A blank [`theme::SECTION_GAP`] between sections. A row rather than
-	/// an ad hoc `y +=` so the measure pass can't forget it.
-	Space,
-	/// Section headers, readouts, and hints — one dim text line.
-	Header(String),
-	Convert {
-		i: usize,
-		block: BlockType,
-		count: u32,
-	},
-	Craft {
-		i: usize,
-		item: BlockType,
-		cost: u32,
-		mat: &'static str,
-		ok: bool,
-	},
-}
-
-/// The text a row draws — the one place the measure and emit passes
-/// agree on what a row says.
-fn row_text(row: &Row) -> String {
-	match row {
-		Row::Space => String::new(),
-		Row::Title => "ALCHEMY".into(),
-		Row::Header(t) => t.clone(),
-		Row::Convert { count, .. } => format!("{count}"),
-		Row::Craft { cost, mat, .. } => format!("{cost} {mat}"),
-	}
-}
-
-/// Height of the box a row *draws* in. Titles and headers are plain text
-/// rows — the same box the menu draws its rows in, which is what keeps
-/// this screen's leading, and its text, identical to every other page.
-fn box_h(row: &Row, scale: f32) -> f32 {
-	match row {
-		Row::Space => 0.0,
-		Row::Title | Row::Header(_) => theme::ROW_H * scale,
-		Row::Convert { .. } | Row::Craft { .. } => theme::ACTION_ROW_H * scale,
-	}
-}
-
-/// Height a row *advances*: its box plus whatever separates it from the
-/// next one. [`theme::ROW_H`] already carries a text row's leading, so
-/// only the taller action rows take a gap.
-fn row_h(row: &Row, scale: f32) -> f32 {
-	box_h(row, scale)
-		+ match row {
-			Row::Space => theme::SECTION_GAP * scale,
-			Row::Title | Row::Header(_) => 0.0,
-			Row::Convert { .. } | Row::Craft { .. } => theme::ROW_GAP * scale,
-		}
-}
-
-/// Extent of the row stream at `style`: widest row, summed heights. Run
-/// once per candidate scale by the fit pass and once more to place, so
-/// it stays a pure function of (rows, style).
-fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
-	let s = style.scale;
-	let (mut width, mut height) = (0.0f32, 0.0f32);
-	for row in rows {
-		let w = match row {
-			Row::Space => 0.0,
-			Row::Title | Row::Header(_) => theme::text_row_w(style, &row_text(row)),
-			// Icon, gap, text, gap, button — all inside the same text
-			// inset the header rows use, so one left edge serves the
-			// whole panel.
-			Row::Convert { .. } | Row::Craft { .. } => {
-				theme::text_row_w(style, &row_text(row))
-					+ (ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
-			}
+	pub fn build(inv: &Inventory, skills_set: &SkillSet) -> Self {
+		let level = skills_set.level(Skill::Alchemy);
+		let xp = skills_set.xp(Skill::Alchemy);
+		let xp_frac = match skills::xp_to_next(level) {
+			Some(need) => ((xp - skills::total_xp_for(level)) as f32 / need as f32).clamp(0.0, 1.0),
+			None => 1.0,
 		};
-		width = width.max(w);
-		height += row_h(row, s);
+		let mut subs = [0u32; Essence::COUNT];
+		for (i, &e) in Essence::ALL.iter().enumerate() {
+			subs[i] = inv.sub_count(e);
+		}
+		Self {
+			level,
+			xp_frac,
+			subs,
+			bucket_full: inv.bucket_full(),
+		}
 	}
-	(width, height)
+
+	/// Whole batches of `item` the holdings afford at `level` (0 when
+	/// locked or unaffordable).
+	pub fn affordable(&self, item: BlockType) -> u32 {
+		match alchemy::craft_unlock(item) {
+			Some(unlock) if self.level >= unlock => {}
+			_ => return 0,
+		}
+		let Some(ideal) = alchemy::craft_ideal(item) else {
+			return 0;
+		};
+		// The bucket charge crafts one at a time by definition.
+		let cap = if item == BlockType::Water {
+			if self.bucket_full {
+				return 0;
+			}
+			1
+		} else {
+			u32::MAX
+		};
+		ideal
+			.iter()
+			.map(|&(e, n)| self.subs[e as usize] / alchemy::craft_cost(n, self.level))
+			.min()
+			.unwrap_or(0)
+			.min(cap)
+	}
 }
 
-#[derive(Default)]
 pub struct AlchScreen {
 	open: bool,
+	tab: AlchTab,
 	cursor: (f32, f32),
 	shift: bool,
+	ctrl: bool,
+	drag: DragState<InvId, BlockType>,
+	/// The extraction slot: which block id is being dripped, if any.
+	/// Screen-local UI state, cleared when the screen closes.
+	extracting: Option<BlockType>,
+	/// 0..1 through the current cycle; the in-flight cycle never sends
+	/// its op when interrupted (ops are atomic per block).
+	progress: f32,
+}
+
+impl Default for AlchScreen {
+	fn default() -> Self {
+		Self {
+			open: false,
+			tab: AlchTab::Extract,
+			cursor: (-1.0, -1.0),
+			shift: false,
+			ctrl: false,
+			drag: DragState::default(),
+			extracting: None,
+			progress: 0.0,
+		}
+	}
 }
 
 impl AlchScreen {
@@ -165,94 +157,89 @@ impl AlchScreen {
 	pub fn open(&mut self) {
 		self.open = true;
 		self.shift = false;
+		self.ctrl = false;
 	}
 
 	pub fn close(&mut self) {
 		self.open = false;
+		self.drag.cancel();
+		// Extraction runs only while the screen is open — you stand at
+		// the bench.
+		self.extracting = None;
+		self.progress = 0.0;
 	}
 
-	/// The screen's row stream, built once per frame — the measure pass
-	/// and the emit pass walk the SAME rows, so the panel can never
-	/// disagree with its content.
-	fn rows(view: &AlchView) -> Vec<Row> {
-		let mut rows = vec![
-			Row::Title,
-			Row::Space,
-			Row::Header("EXTRACTION (1 BLOCK = 27)".into()),
-		];
-		if view.convertibles.is_empty() {
-			rows.push(Row::Header("no raw materials".into()));
-		}
-		for (i, &(block, count)) in view.convertibles.iter().enumerate() {
-			rows.push(Row::Convert { i, block, count });
-		}
-		rows.push(Row::Header(format!(
-			"WOOD {}   STONE {}",
-			view.subs[0], view.subs[1]
-		)));
-		rows.push(Row::Space);
-		rows.push(Row::Header("TRANSMUTATION".into()));
-		for (i, &item) in CRAFTABLE.iter().enumerate() {
-			let r = craft_recipe(item).expect("CRAFTABLE rows have recipes");
-			rows.push(Row::Craft {
-				i,
-				item,
-				cost: r.cost,
-				mat: match r.material {
-					Material::Wood => "WOOD",
-					Material::Stone => "STONE",
-				},
-				ok: view.affordable(i),
-			});
-		}
-		rows.push(Row::Space);
-		rows.push(Row::Header("CLICK = 1   SHIFT-CLICK = 10".into()));
-		rows
+	pub fn cancel_drag(&mut self) {
+		self.drag.cancel();
 	}
 
-	/// Emit the screen: dim, panel, the sections (holdings with convert
-	/// buttons, sub-material readouts, craft rows). Two passes over one
-	/// row stream — measure (panel sizes to its widest row and summed
-	/// heights, scale applied exactly once), then emit. The panel
-	/// bottom-anchors above the hotbar so the bar never overlaps it.
-	/// `daylight` fades the full-screen dim only — the panel keeps its
-	/// backdrop.
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
+	/// Jump straight to a tab (capture harnesses and tests; play
+	/// switches through the tab strip).
+	pub fn set_tab(&mut self, tab: AlchTab) {
+		self.tab = tab;
+		if tab != AlchTab::Extract {
+			self.extracting = None;
+			self.progress = 0.0;
+		}
+	}
+
+	/// Advance the drip one frame; returns the op a completed cycle
+	/// sends. Stops (and clears the slot) when the stack runs dry or
+	/// the block stops qualifying — the in-flight cycle simply never
+	/// sends.
+	pub fn tick(&mut self, dt: f32, level: u32, inv: &Inventory) -> Option<AlchAction> {
+		if self.tab != AlchTab::Extract {
+			return None;
+		}
+		let Some(block) = self.extracting else {
+			self.progress = 0.0;
+			return None;
+		};
+		if inv.count(block) == 0 || level < alchemy::extract_unlock(block) {
+			self.extracting = None;
+			self.progress = 0.0;
+			return None;
+		}
+		let pace_secs = alchemy::extract_pace_ticks(level) as f32 / 60.0;
+		self.progress += dt / pace_secs;
+		if self.progress >= 1.0 {
+			self.progress -= 1.0;
+			return Some(AlchAction::Convert { block, count: 1 });
+		}
+		None
+	}
+
+	/// Emit the screen. The whole page shares one fitted style: this is
+	/// the tallest screen in the game, and `theme::fit_scale` steps the
+	/// full layout down the quarter-rung ladder when a short window at a
+	/// big interface scale can't hold it — never a fractional glyph.
+	pub fn build(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		size: (u32, u32),
+		view: &AlchView,
+		grid: &InvGrid,
+		inv: &Inventory,
+		daylight: f32,
+	) {
 		let window_scale = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		let rows = Self::rows(view);
-		// The hotbar keeps the window's own scale — only the panel shrinks
-		// — so its top is measured before any fit adjustment.
 		let bar_top = hud::row_grid(size, window_scale).origin.1;
-
-		// Fit pass. This screen is the tallest in the game and can outgrow
-		// a short window, in which case the panel used to slide under the
-		// hotbar and off the bottom of the screen with no symptom — only
-		// its TOP was ever clamped. `theme::fit_scale` steps the whole
-		// style down the quarter-step ladder until it fits, so a shrunken
-		// panel is drawn at a scale the UI legitimately runs at rather than
-		// at some fraction of one, and its text stays a standard size.
 		let budget = bar_top - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
-		let needed = |scale: f32| {
-			let style = Style::new(scale);
-			measure_rows(&rows, &style).1 + 2.0 * theme::PAD * scale
-		};
+		let needed = |s: f32| self.content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
 		let restore = ui.style;
 		let fitted = theme::fit_scale(window_scale, budget, needed);
 		if fitted != window_scale {
 			ui.style = Style::new(fitted);
 		}
-		let (s, glyph) = (ui.style.scale, ui.style.glyph);
+		let s = ui.style.scale;
 		let pad = theme::PAD * s;
 
-		let (width, height) = measure_rows(&rows, &ui.style);
-		// Row width first (this is what `theme::MIN_PANEL_W` bounds and
-		// what the menu's `content_w` computes), then the panel around it —
-		// so the two screens' panels are the same width for the same text.
+		let (width, height) = (self.content_w(&ui.style), self.content_h(&ui.style));
 		let row_w = width
 			.max(theme::MIN_PANEL_W * s)
 			.min(size.0 as f32 - 4.0 * pad);
@@ -263,107 +250,391 @@ impl AlchScreen {
 		let panel = theme::panel_of(row_x, row_y, row_w, height, s);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
-		// Emit. Every row is laid out in the same full-width box, and text
-		// sits at the row widget's own inset inside it — icons included, so
-		// one left edge serves the whole panel.
-		let text_pad = scale::text_pad_x(s);
 		let mut y = row_y;
-		let (cx, cy) = self.cursor;
-		for row in &rows {
-			let text = row_text(row);
-			let rect = Rect::new(row_x, y, row_w, box_h(row, s));
-			y += row_h(row, s);
-			match *row {
-				Row::Space => {}
-				Row::Title | Row::Header(_) => {
-					// The menu's row widget, drawing the menu's row: same
-					// box, same inset, same text size.
-					let color = if matches!(row, Row::Title) {
-						WHITE
-					} else {
-						DIM
-					};
-					widgets::row(
-						ui.dl,
-						&ui.style,
-						Layer::Content,
-						rect,
-						widgets::RowContent {
-							text: &text,
-							right: None,
-							bar: None,
-							color,
-							highlight: false,
-							caret: false,
-						},
-					);
-				}
-				Row::Convert { .. } | Row::Craft { .. } => {
-					let (block, actionable, id, btn_text, text_color) = match *row {
-						Row::Convert { i, block, count } => {
-							(block, count > 0, InvId::Convert(i as u8), "EXTRACT", WHITE)
-						}
-						Row::Craft { i, item, ok, .. } => (
-							item,
-							ok,
-							InvId::Craft(i as u8),
-							"TRANSMUTE",
-							if ok { WHITE } else { DIM },
-						),
-						_ => unreachable!(),
-					};
-					if actionable && rect.contains(cx, cy) {
-						ui.dl.quad(Layer::Backdrop, rect, widgets::ROW_HILIGHT);
-					}
-					let icon = ROW_ICON * s;
-					let (kind, tint) =
-						hud::item_icon(digblock_core::hotbar::HotbarItem::Block(block), false);
-					hud::draw_icon(
-						ui.dl,
-						Layer::Icons,
-						Rect::new(
-							rect.x + text_pad,
-							rect.y + (rect.h - icon) / 2.0,
-							icon,
-							icon,
-						),
-						kind,
-						tint,
-					);
-					widgets::label(
-						ui.dl,
-						Layer::Content,
-						rect.x + text_pad + icon + ICON_TEXT_GAP * s,
-						rect.y + (rect.h - glyph) / 2.0,
-						glyph,
-						text_color,
-						&text,
-					);
-					let btn = Rect::new(
-						rect.x + rect.w - text_pad - BTN_W * s,
-						rect.y + (rect.h - BTN_H * s) / 2.0,
-						BTN_W * s,
-						BTN_H * s,
-					);
-					widgets::button(ui, id, btn, btn_text, actionable, btn.contains(cx, cy));
-				}
-			}
+		self.emit_header(ui, view, row_x, row_w, &mut y);
+		match self.tab {
+			AlchTab::Extract => self.emit_extract(ui, view, grid, inv, row_x, row_w, y),
+			AlchTab::Transmute => self.emit_transmute(ui, view, row_x, row_w, y),
+		}
+
+		// The dragged stack rides the cursor above everything.
+		if let Some(&block) = self.drag.ghost() {
+			let icon_px = hud::ICON_PX * s;
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(block), false);
+			let (cx, cy) = self.drag.cursor;
+			hud::draw_icon(
+				ui.dl,
+				Layer::Ghost,
+				Rect::new(cx - icon_px / 2.0, cy - icon_px / 2.0, icon_px, icon_px),
+				kind,
+				tint,
+			);
 		}
 		ui.style = restore;
 	}
 
-	/// Feed one input event; returns the action the engine should apply
-	/// (already clamped to what the holdings afford).
+	// ---- layout ------------------------------------------------------
+
+	/// Header: title row (level + XP bar), essence readout, tab strip.
+	fn header_h(style: &Style) -> f32 {
+		3.0 * theme::ROW_H * style.scale
+	}
+
+	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
+		GridSpec {
+			origin,
+			cols: 9,
+			cell: hud::SLOT_PX * style.scale,
+			gap: hud::SLOT_GAP * style.scale,
+		}
+	}
+
+	fn content_w(&self, style: &Style) -> f32 {
+		match self.tab {
+			AlchTab::Extract => {
+				let spec = Self::grid_spec_at(style, (0.0, 0.0));
+				spec.extent(GRID_SLOTS).0
+			}
+			AlchTab::Transmute => {
+				let s = style.scale;
+				let widest = alchemy::CRAFT_ORDER
+					.iter()
+					.map(|&item| theme::text_row_w(style, &craft_text(item, u32::MAX)))
+					.fold(0.0f32, f32::max);
+				widest + (ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
+			}
+		}
+	}
+
+	fn content_h(&self, style: &Style) -> f32 {
+		let s = style.scale;
+		Self::header_h(style)
+			+ match self.tab {
+				AlchTab::Extract => {
+					let spec = Self::grid_spec_at(style, (0.0, 0.0));
+					// Strip (slot-height band) + gap + the grid.
+					hud::SLOT_PX * s
+						+ theme::SECTION_GAP * s
+						+ spec.extent(GRID_SLOTS).1
+						+ theme::ROW_GAP * s
+				}
+				AlchTab::Transmute => {
+					let rows = alchemy::CRAFT_ORDER.len() as f32;
+					rows * (theme::ACTION_ROW_H + theme::ROW_GAP) * s + theme::ROW_H * s
+				}
+			}
+	}
+
+	fn emit_header(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		view: &AlchView,
+		row_x: f32,
+		row_w: f32,
+		y: &mut f32,
+	) {
+		let s = ui.style.scale;
+		let row_h = theme::ROW_H * s;
+		// Title + level + XP bar (the settings rows' slider geometry as
+		// a readout, exactly like the character screen).
+		widgets::row(
+			ui.dl,
+			&ui.style,
+			Layer::Content,
+			Rect::new(row_x, *y, row_w, row_h),
+			widgets::RowContent {
+				text: &format!("ALCHEMY   LV {}", view.level),
+				right: None,
+				bar: Some(view.xp_frac),
+				color: WHITE,
+				highlight: false,
+				caret: false,
+			},
+		);
+		*y += row_h;
+		// Essence readout, always visible on both tabs.
+		let holdings = Essence::ALL
+			.iter()
+			.map(|&e| format!("{} {}", e.name(), view.subs[e as usize]))
+			.collect::<Vec<_>>()
+			.join("   ");
+		widgets::row(
+			ui.dl,
+			&ui.style,
+			Layer::Content,
+			Rect::new(row_x, *y, row_w, row_h),
+			widgets::RowContent {
+				text: &holdings,
+				right: None,
+				bar: None,
+				color: DIM,
+				highlight: false,
+				caret: false,
+			},
+		);
+		*y += row_h;
+		// Tab strip: two buttons, the active one rendered as plain text
+		// (you can't press where you already are).
+		let text_pad = scale::text_pad_x(s);
+		let mut x = row_x + text_pad;
+		for (i, (label, tab)) in [
+			("EXTRACT", AlchTab::Extract),
+			("TRANSMUTE", AlchTab::Transmute),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let w = ui.style.measure(label) + 2.0 * text_pad;
+			let rect = Rect::new(x, *y, w, row_h);
+			if tab == self.tab {
+				ui.dl.quad(Layer::Backdrop, rect, widgets::SLOT_BG);
+				widgets::label(
+					ui.dl,
+					Layer::Content,
+					rect.x + text_pad,
+					rect.y + (row_h - ui.style.glyph) / 2.0,
+					ui.style.glyph,
+					WHITE,
+					label,
+				);
+			} else {
+				widgets::button(
+					ui,
+					InvId::Tab(i as u8),
+					rect,
+					label,
+					true,
+					rect.contains(self.cursor.0, self.cursor.1),
+				);
+			}
+			x += w + STRIP_GAP * s;
+		}
+		*y += row_h;
+	}
+
+	/// The EXTRACT tab: the strip (slot + progress + preview + bucket
+	/// tile), then the real inventory grid.
+	#[allow(clippy::too_many_arguments)]
+	fn emit_extract(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		view: &AlchView,
+		grid: &InvGrid,
+		inv: &Inventory,
+		row_x: f32,
+		row_w: f32,
+		mut y: f32,
+	) {
+		let s = ui.style.scale;
+		let slot_px = hud::SLOT_PX * s;
+		let icon_px = hud::ICON_PX * s;
+		let text_pad = scale::text_pad_x(s);
+
+		// The extraction slot.
+		let slot_rect = Rect::new(row_x + text_pad, y, slot_px, slot_px);
+		let icon = self
+			.extracting
+			.map(|b| hud::item_icon(HotbarItem::Block(b), false));
+		widgets::slot(
+			ui,
+			InvId::ExtractSlot,
+			slot_rect,
+			icon,
+			icon_px,
+			self.extracting.is_some(),
+		);
+		// Progress bar along the slot's bottom edge.
+		if self.extracting.is_some() {
+			let bar_h = 4.0 * s;
+			let track = Rect::new(
+				slot_rect.x,
+				slot_rect.y + slot_rect.h - bar_h,
+				slot_rect.w,
+				bar_h,
+			);
+			ui.dl.quad(Layer::Content, track, 0x40FFFFFF);
+			ui.dl.quad(
+				Layer::Content,
+				Rect::new(
+					track.x,
+					track.y,
+					track.w * self.progress.clamp(0.0, 1.0),
+					track.h,
+				),
+				WHITE,
+			);
+		}
+		// Yield preview / hint beside the slot.
+		let preview = match self.extracting {
+			Some(b) => {
+				let yields = alchemy::extract_yields(b, view.level)
+					.iter()
+					.map(|&(e, n)| format!("{n} {}", e.name()))
+					.collect::<Vec<_>>()
+					.join(" + ");
+				let pace = alchemy::extract_pace_ticks(view.level) as f32 / 60.0;
+				format!("→ {yields}   ·   1 block / {pace:.2}s")
+			}
+			None => "drag a stack here to extract".into(),
+		};
+		widgets::label(
+			ui.dl,
+			Layer::Content,
+			slot_rect.x + slot_px + STRIP_GAP * s,
+			y + (slot_px - ui.style.glyph) / 2.0,
+			ui.style.glyph,
+			if self.extracting.is_some() {
+				WHITE
+			} else {
+				DIM
+			},
+			&preview,
+		);
+		// The bucket charge as a single water tile, right-aligned in the
+		// strip: it can't live in the grid (water is not slottable), and
+		// extracting it empties the tool.
+		if view.bucket_full && view.level >= alchemy::extract_unlock(BlockType::Water) {
+			let tile = Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px);
+			widgets::slot(
+				ui,
+				InvId::BucketTile,
+				tile,
+				Some(hud::item_icon(HotbarItem::Block(BlockType::Water), false)),
+				icon_px,
+				false,
+			);
+		}
+		y += slot_px + theme::SECTION_GAP * s;
+
+		// The real inventory grid — same slots, same badges, and its
+		// cells double as drag sources.
+		let spec = Self::grid_spec_at(
+			&ui.style,
+			(row_x + (row_w - self.content_w(&ui.style)) / 2.0, y),
+		);
+		for i in 0..GRID_SLOTS {
+			let rect = spec.rect(i);
+			let icon = grid
+				.get(i)
+				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
+			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
+			if let Some(b) = grid.get(i) {
+				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, inv.count(b), WHITE);
+			}
+		}
+	}
+
+	/// The TRANSMUTE tab: one row per craftable, locked rows dim with
+	/// their level where the button would be, then the multiplier hint.
+	fn emit_transmute(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		view: &AlchView,
+		row_x: f32,
+		row_w: f32,
+		mut y: f32,
+	) {
+		let s = ui.style.scale;
+		let glyph = ui.style.glyph;
+		let text_pad = scale::text_pad_x(s);
+		let (cx, cy) = self.cursor;
+		for (i, &item) in alchemy::CRAFT_ORDER.iter().enumerate() {
+			let rect = Rect::new(row_x, y, row_w, theme::ACTION_ROW_H * s);
+			y += (theme::ACTION_ROW_H + theme::ROW_GAP) * s;
+			let unlock = alchemy::craft_unlock(item).expect("CRAFT_ORDER is craftable");
+			let locked = view.level < unlock;
+			let affordable = view.affordable(item) > 0;
+			if !locked && affordable && rect.contains(cx, cy) {
+				ui.dl.quad(Layer::Backdrop, rect, widgets::ROW_HILIGHT);
+			}
+			let icon = ROW_ICON * s;
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
+			hud::draw_icon(
+				ui.dl,
+				Layer::Icons,
+				Rect::new(
+					rect.x + text_pad,
+					rect.y + (rect.h - icon) / 2.0,
+					icon,
+					icon,
+				),
+				kind,
+				tint,
+			);
+			let text = craft_text(item, view.level);
+			widgets::label(
+				ui.dl,
+				Layer::Content,
+				rect.x + text_pad + icon + ICON_TEXT_GAP * s,
+				rect.y + (rect.h - glyph) / 2.0,
+				glyph,
+				if locked || !affordable { DIM } else { WHITE },
+				&text,
+			);
+			if locked {
+				// The locked-row pattern: the level where the button
+				// would be, no hit rect — honest pixels, not a trap.
+				let label = format!("LV {unlock}");
+				let w = ui.style.measure(&label);
+				widgets::label(
+					ui.dl,
+					Layer::Content,
+					rect.x + rect.w - text_pad - BTN_W * s / 2.0 - w / 2.0,
+					rect.y + (rect.h - glyph) / 2.0,
+					glyph,
+					DIM,
+					&label,
+				);
+			} else {
+				let btn = Rect::new(
+					rect.x + rect.w - text_pad - BTN_W * s,
+					rect.y + (rect.h - BTN_H * s) / 2.0,
+					BTN_W * s,
+					BTN_H * s,
+				);
+				widgets::button(
+					ui,
+					InvId::Craft(i as u8),
+					btn,
+					"TRANSMUTE",
+					affordable,
+					btn.contains(cx, cy),
+				);
+			}
+		}
+		widgets::row(
+			ui.dl,
+			&ui.style,
+			Layer::Content,
+			Rect::new(row_x, y, row_w, theme::ROW_H * s),
+			widgets::RowContent {
+				text: "CLICK 1   ·   SHIFT 10   ·   CTRL 100",
+				right: None,
+				bar: None,
+				color: DIM,
+				highlight: false,
+				caret: false,
+			},
+		);
+	}
+
+	// ---- input -------------------------------------------------------
+
+	/// Feed one input event; returns a craft action (extraction goes
+	/// through `tick`). `bar` resolves bar-slot drag sources.
 	pub fn handle_input(
 		&mut self,
 		event: &InputEvent,
 		hits: &HitMap<InvId>,
-		_style: &Style,
+		style: &Style,
 		view: &AlchView,
+		grid: &InvGrid,
+		bar: &HotbarView,
 	) -> Option<AlchAction> {
 		match *event {
 			InputEvent::CursorMoved { x, y } => {
 				self.cursor = (x, y);
+				self.drag.on_move((x, y), DRAG_THRESHOLD_PX * style.scale);
 				None
 			}
 			InputEvent::Key {
@@ -373,30 +644,86 @@ impl AlchScreen {
 				self.shift = pressed;
 				None
 			}
+			InputEvent::Key {
+				key: Key::Ctrl,
+				pressed,
+			} => {
+				self.ctrl = pressed;
+				None
+			}
 			InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
 			} => {
 				let id = hits.hit(self.cursor.0, self.cursor.1)?;
-				let want = if self.shift { BULK } else { 1 };
 				match id {
-					InvId::Convert(i) => {
-						let &(block, have) = view.convertibles.get(i as usize)?;
-						let count = want.min(have);
-						(count > 0).then_some(AlchAction::Convert { block, count })
+					InvId::Tab(0) => {
+						self.tab = AlchTab::Extract;
+						self.drag.cancel();
+					}
+					InvId::Tab(_) => {
+						self.tab = AlchTab::Transmute;
+						self.drag.cancel();
+						self.extracting = None;
+						self.progress = 0.0;
+					}
+					// Clicking the occupied slot stops the drip (the
+					// in-flight cycle never sends).
+					InvId::ExtractSlot => {
+						self.extracting = None;
+						self.progress = 0.0;
+					}
+					InvId::Grid(i) => {
+						if let Some(b) = grid.get(i as usize) {
+							self.drag.on_press(self.cursor, id, b);
+						}
+					}
+					InvId::Bar(i) => {
+						if let Some(SlotView::Block { block, .. }) = bar.slots.get(i as usize) {
+							self.drag.on_press(self.cursor, id, *block);
+						}
+					}
+					InvId::BucketTile => {
+						self.drag.on_press(self.cursor, id, BlockType::Water);
 					}
 					InvId::Craft(i) => {
-						let item = *CRAFTABLE.get(i as usize)?;
-						let r = craft_recipe(item)?;
-						let batches = view.subs[r.material as usize] / r.cost;
-						let count = want.min(batches);
-						(count > 0).then_some(AlchAction::Craft { item, count })
+						let item = *alchemy::CRAFT_ORDER.get(i as usize)?;
+						let want = if self.ctrl {
+							BULK_CTRL
+						} else if self.shift {
+							BULK_SHIFT
+						} else {
+							1
+						};
+						let count = want.min(view.affordable(item));
+						return (count > 0).then_some(AlchAction::Craft { item, count });
 					}
-					_ => None,
 				}
+				None
+			}
+			InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: false,
+			} => {
+				if let DragEvent::Drop {
+					payload,
+					to: Some(InvId::ExtractSlot),
+					..
+				} = self.drag.on_release(hits)
+				{
+					// The gate the drop respects: extractable at all, and
+					// past its unlock (the bucket charge waits for 15).
+					if payload.is_extractable() && view.level >= alchemy::extract_unlock(payload) {
+						self.extracting = Some(payload);
+						self.progress = 0.0;
+					}
+				}
+				None
 			}
 			InputEvent::FocusLost => {
 				self.shift = false;
+				self.ctrl = false;
+				self.drag.cancel();
 				None
 			}
 			_ => None,
@@ -404,9 +731,46 @@ impl AlchScreen {
 	}
 }
 
-/// The conversion yield, re-exported for the engine's HUD hints.
-pub const fn subs_per_block() -> u32 {
-	SUBS_PER_BLOCK
+/// A craft row's text: name + per-line costs at the viewer's level
+/// (post-waste — what it will actually charge). `u32::MAX` level is
+/// the measuring pass's widest case.
+fn craft_text(item: BlockType, level: u32) -> String {
+	let name = block_name(item);
+	let level = level.min(99);
+	match alchemy::craft_ideal(item) {
+		Some(lines) => {
+			let costs = lines
+				.iter()
+				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, level), e.name()))
+				.collect::<Vec<_>>()
+				.join(" + ");
+			format!("{name}   —   {costs}")
+		}
+		None => name.into(),
+	}
+}
+
+/// Display names for the transmute rows (blocks have no Display impl —
+/// debug names like "WoodStairs" are not UI text).
+fn block_name(b: BlockType) -> &'static str {
+	use BlockType as B;
+	match b {
+		B::WoodSlab => "WOOD SLAB",
+		B::StoneSlab => "STONE SLAB",
+		B::WoodStairs => "WOOD STAIRS",
+		B::StoneStairs => "STONE STAIRS",
+		B::WoodDoor => "WOOD DOOR",
+		B::Stone => "STONE",
+		B::Wood => "WOOD",
+		B::Dirt => "DIRT",
+		B::Sand => "SAND",
+		B::Sandstone => "SANDSTONE",
+		B::Snow => "SNOW",
+		B::Grass => "GRASS",
+		B::Mud => "MUD",
+		B::Water => "WATER CHARGE",
+		_ => "?",
+	}
 }
 
 #[cfg(test)]
@@ -414,14 +778,38 @@ mod tests {
 	use super::*;
 	use crate::ui::draw::DrawList;
 	use digblock_core::block::BlockType as B;
+	use digblock_core::hotbar::Hotbar;
 
 	const SIZE: (u32, u32) = (1280, 800);
 
-	fn rig(inv: &Inventory) -> (AlchScreen, HitMap<InvId>, AlchView, Style) {
-		let view = AlchView::build(inv);
+	struct Rig {
+		screen: AlchScreen,
+		hits: HitMap<InvId>,
+		view: AlchView,
+		grid: InvGrid,
+		bar: HotbarView,
+		inv: Inventory,
+		style: Style,
+		level: u32,
+	}
+
+	fn skills_at(level: u32) -> SkillSet {
+		let mut s = SkillSet::default();
+		s.set_total(Skill::Alchemy, skills::total_xp_for(level));
+		s
+	}
+
+	fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
+		let mut inv = Inventory::default();
+		stock(&mut inv);
+		let mut hotbar = Hotbar::new();
+		let mut grid = InvGrid::default();
+		digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut grid);
+		let bar = HotbarView::build(&hotbar, &inv);
 		let style = Style::new(1.0);
 		let mut screen = AlchScreen::default();
 		screen.open();
+		let view = AlchView::build(&inv, &skills_at(level));
 		let mut dl = DrawList::default();
 		let mut hits = HitMap::default();
 		let mut ui = Ui {
@@ -429,327 +817,297 @@ mod tests {
 			hits: &mut hits,
 			style,
 		};
-		screen.build(&mut ui, SIZE, &view, 1.0);
-		(screen, hits, view, style)
-	}
-
-	fn click(
-		screen: &mut AlchScreen,
-		hits: &HitMap<InvId>,
-		style: &Style,
-		view: &AlchView,
-		id: InvId,
-		shift: bool,
-	) -> Option<AlchAction> {
-		let r = hits.rect_of(id).expect("button exists");
-		let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-		let feed = |s: &mut AlchScreen, ev: &InputEvent| s.handle_input(ev, hits, style, view);
-		if shift {
-			feed(
-				screen,
-				&InputEvent::Key {
-					key: Key::Shift,
-					pressed: true,
-				},
-			);
-		}
-		feed(screen, &InputEvent::CursorMoved { x: cx, y: cy });
-		let act = feed(
+		screen.build(&mut ui, SIZE, &view, &grid, &inv, 1.0);
+		crate::ui::hud::hotbar(&mut ui, SIZE, &bar, |i| InvId::Bar(i as u8));
+		Rig {
 			screen,
-			&InputEvent::MouseButton {
-				button: MouseButton::Left,
-				pressed: true,
-			},
-		);
-		if shift {
-			feed(
-				screen,
-				&InputEvent::Key {
-					key: Key::Shift,
-					pressed: false,
-				},
-			);
+			hits,
+			view,
+			grid,
+			bar,
+			inv,
+			style,
+			level,
 		}
-		act
 	}
 
-	#[test]
-	fn convert_click_and_shift_bulk_clamp() {
-		let mut inv = Inventory::default();
-		inv.add(B::Wood, 3);
-		let (mut s, hits, view, style) = rig(&inv);
-		assert_eq!(
-			click(&mut s, &hits, &style, &view, InvId::Convert(0), false),
-			Some(AlchAction::Convert {
-				block: B::Wood,
-				count: 1
-			})
-		);
-		// Shift asks for 10, holdings clamp to 3.
-		assert_eq!(
-			click(&mut s, &hits, &style, &view, InvId::Convert(0), true),
-			Some(AlchAction::Convert {
-				block: B::Wood,
-				count: 3
-			})
-		);
-	}
-
-	#[test]
-	fn craft_gated_on_affordability() {
-		// 54 sub-wood: three wood-stair batches (18 each), zero stone.
-		let mut inv = Inventory::default();
-		inv.add_sub(digblock_core::block::Material::Wood, 54);
-		let (mut s, hits, view, style) = rig(&inv);
-		assert_eq!(CRAFTABLE[0], B::WoodStairs);
-		assert_eq!(
-			click(&mut s, &hits, &style, &view, InvId::Craft(0), true),
-			Some(AlchAction::Craft {
-				item: B::WoodStairs,
-				count: 3
-			}),
-			"shift clamps to affordable batches"
-		);
-		// Stone stairs unaffordable: the button registered no hit rect.
-		assert!(hits.rect_of(InvId::Craft(1)).is_none());
-	}
-
-	#[test]
-	fn empty_inventory_builds_with_no_actionable_hits() {
-		let inv = Inventory::default();
-		let (_s, hits, _view, _style) = rig(&inv);
-		assert!(hits.rect_of(InvId::Convert(0)).is_none());
-		assert!(hits.rect_of(InvId::Craft(0)).is_none());
-		assert!(hits.rect_of(InvId::Craft(2)).is_none());
-	}
-
-	fn full_inv() -> Inventory {
-		let mut inv = Inventory::default();
-		inv.add(B::Wood, 5);
-		inv.add(B::Stone, 11);
-		inv.add_sub(digblock_core::block::Material::Wood, 54);
-		inv
-	}
-
-	/// The panel's backdrop quad at a given scale/window.
-	fn panel_rect(inv: &Inventory, size: (u32, u32), scale: f32) -> Rect {
-		let view = AlchView::build(inv);
-		let mut screen = AlchScreen::default();
-		screen.open();
+	fn rebuild(r: &mut Rig) {
+		r.view = AlchView::build(&r.inv, &skills_at(r.level));
 		let mut dl = DrawList::default();
 		let mut hits = HitMap::default();
 		let mut ui = Ui {
 			dl: &mut dl,
 			hits: &mut hits,
-			style: Style::new(scale),
+			style: r.style,
 		};
-		screen.build(&mut ui, size, &view, 1.0);
-		let (cmds, _) = dl.cmds(Layer::Backdrop);
-		cmds.iter()
-			.filter_map(|c| match c {
-				crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
-					Some(*rect)
-				}
-				_ => None,
-			})
-			.next()
-			.expect("panel quad")
+		r.screen.build(&mut ui, SIZE, &r.view, &r.grid, &r.inv, 1.0);
+		crate::ui::hud::hotbar(&mut ui, SIZE, &r.bar, |i| InvId::Bar(i as u8));
+		r.hits = hits;
 	}
 
-	/// The complaint this screen's theming answers was that it "uses
-	/// different font sizes from every other menu page". Sizes alone are
-	/// pinned by `screens::every_screen_draws_text_at_one_size`; what
-	/// this pins is the other half of looking like the same program —
-	/// text starts at the same inset from the panel edge as a menu row's
-	/// does, and the icons on the action rows share that edge instead of
-	/// hanging 8px to the left of it.
-	#[test]
-	fn text_and_icons_share_the_menus_left_column() {
-		let scale = 1.0;
-		let inset = theme::PAD * scale + scale::text_pad_x(scale);
+	fn feed(r: &mut Rig, ev: &InputEvent) -> Option<AlchAction> {
+		r.screen
+			.handle_input(ev, &r.hits, &r.style, &r.view, &r.grid, &r.bar)
+	}
 
-		let menu = crate::menu::Menu::new(true, Default::default(), None);
-		let view = menu.view(SIZE, scale, false);
-		let row = view.rows.first().expect("the menu has rows");
-		assert!(
-			(row.rect[0] + scale::text_pad_x(scale) - (view.panel[0] + inset)).abs() < 0.5,
-			"the menu itself moved: row text at {} vs panel {} + {inset}",
-			row.rect[0] + scale::text_pad_x(scale),
-			view.panel[0],
+	fn center(rect: Rect) -> (f32, f32) {
+		(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
+	}
+
+	fn drag_to(r: &mut Rig, from: InvId, to: (f32, f32)) -> Option<AlchAction> {
+		let src = center(r.hits.rect_of(from).expect("source exists"));
+		feed(r, &InputEvent::CursorMoved { x: src.0, y: src.1 });
+		feed(
+			r,
+			&InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: true,
+			},
 		);
+		feed(r, &InputEvent::CursorMoved { x: to.0, y: to.1 });
+		feed(
+			r,
+			&InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: false,
+			},
+		)
+	}
 
-		let view = AlchView::build(&full_inv());
-		let mut screen = AlchScreen::default();
-		screen.open();
-		let mut dl = DrawList::default();
-		let mut hits = HitMap::default();
-		screen.build(
-			&mut Ui {
+	fn source_of(r: &Rig, b: B) -> InvId {
+		if let Some(i) = r
+			.bar
+			.slots
+			.iter()
+			.position(|s| matches!(s, SlotView::Block { block, .. } if *block == b))
+		{
+			return InvId::Bar(i as u8);
+		}
+		for i in 0..GRID_SLOTS {
+			if r.grid.get(i) == Some(b) {
+				return InvId::Grid(i as u16);
+			}
+		}
+		panic!("{b:?} neither on the bar nor in the grid");
+	}
+
+	/// §8.1's core loop: drag a stack onto the slot, and the drip sends
+	/// one `Convert {{ count: 1 }}` per pace interval until the stack
+	/// runs dry — at which point the slot clears itself.
+	#[test]
+	fn drag_starts_the_drip_and_dry_stops_it() {
+		let mut r = rig_at(1, |inv| inv.add(B::Rubble, 2));
+		// Rubble reconciles onto the BAR first (bar-first filing), so
+		// the drag source is a bar slot — exactly the §8.1 "and hotbar"
+		// case.
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		let src = source_of(&r, B::Rubble);
+		assert_eq!(drag_to(&mut r, src, slot), None, "the drop itself is free");
+
+		// Half a cycle: nothing sent.
+		let pace = alchemy::extract_pace_ticks(1) as f32 / 60.0;
+		assert_eq!(r.screen.tick(pace * 0.5, 1, &r.inv), None);
+		// Completing the cycle sends exactly one single-block op.
+		assert_eq!(
+			r.screen.tick(pace * 0.6, 1, &r.inv),
+			Some(AlchAction::Convert {
+				block: B::Rubble,
+				count: 1
+			})
+		);
+		// Engine applies it; one left, drip continues.
+		assert!(digblock_core::inventory::apply_alchemy(
+			&mut r.inv,
+			digblock_core::inventory::AlchemyOp::Convert {
+				block: B::Rubble,
+				count: 1
+			},
+			1
+		));
+		assert_eq!(
+			r.screen.tick(pace * 1.1, 1, &r.inv),
+			Some(AlchAction::Convert {
+				block: B::Rubble,
+				count: 1
+			})
+		);
+		assert!(digblock_core::inventory::apply_alchemy(
+			&mut r.inv,
+			digblock_core::inventory::AlchemyOp::Convert {
+				block: B::Rubble,
+				count: 1
+			},
+			1
+		));
+		// Dry: the slot clears and nothing more is ever sent.
+		assert_eq!(r.screen.tick(pace * 2.0, 1, &r.inv), None);
+		assert_eq!(r.screen.extracting, None, "slot cleared on dry");
+	}
+
+	#[test]
+	fn clicking_the_slot_stops_and_closing_clears() {
+		let mut r = rig_at(1, |inv| inv.add(B::Wood, 5));
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		let src = source_of(&r, B::Wood);
+		drag_to(&mut r, src, slot);
+		assert_eq!(r.screen.extracting, Some(B::Wood));
+		// Click the slot: the in-flight cycle never sends.
+		feed(
+			&mut r,
+			&InputEvent::CursorMoved {
+				x: slot.0,
+				y: slot.1,
+			},
+		);
+		feed(
+			&mut r,
+			&InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: true,
+			},
+		);
+		assert_eq!(r.screen.extracting, None);
+
+		drag_to(&mut r, src, slot);
+		assert_eq!(r.screen.extracting, Some(B::Wood));
+		r.screen.close();
+		assert_eq!(r.screen.extracting, None, "you stand at the bench");
+	}
+
+	/// The bucket charge appears as a single water tile (level 15+ and
+	/// charged only), and extracting it is the ordinary Convert whose
+	/// debit IS the emptying.
+	#[test]
+	fn bucket_tile_extracts_the_charge() {
+		// Below 15: no tile at all.
+		let r = rig_at(1, |inv| inv.add(B::Water, 1));
+		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "locked at 1");
+
+		let mut r = rig_at(20, |inv| inv.add(B::Water, 1));
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		drag_to(&mut r, InvId::BucketTile, slot);
+		assert_eq!(r.screen.extracting, Some(B::Water));
+		let pace = alchemy::extract_pace_ticks(20) as f32 / 60.0;
+		assert_eq!(
+			r.screen.tick(pace * 1.01, 20, &r.inv),
+			Some(AlchAction::Convert {
+				block: B::Water,
+				count: 1
+			})
+		);
+		assert!(digblock_core::inventory::apply_alchemy(
+			&mut r.inv,
+			digblock_core::inventory::AlchemyOp::Convert {
+				block: B::Water,
+				count: 1
+			},
+			20
+		));
+		assert!(!r.inv.bucket_full(), "the debit is the emptying");
+		assert!(r.inv.sub_count(Essence::Aqua) > 0);
+		// Tile gone next frame.
+		rebuild(&mut r);
+		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "tile gone");
+	}
+
+	#[test]
+	fn craft_multipliers_clamp_and_locked_rows_have_no_hits() {
+		let mut r = rig_at(20, |inv| {
+			inv.add_sub(Essence::Flora, 500);
+		});
+		// Switch to the transmute tab.
+		let tab = center(r.hits.rect_of(InvId::Tab(1)).unwrap());
+		feed(&mut r, &InputEvent::CursorMoved { x: tab.0, y: tab.1 });
+		feed(
+			&mut r,
+			&InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: true,
+			},
+		);
+		rebuild(&mut r);
+
+		let idx = |item: B| {
+			alchemy::CRAFT_ORDER
+				.iter()
+				.position(|&b| b == item)
+				.unwrap() as u8
+		};
+		// Sandstone unlocks at 30 — locked at 20, so no hit rect.
+		assert!(
+			r.hits.rect_of(InvId::Craft(idx(B::Sandstone))).is_none(),
+			"locked row registers no button"
+		);
+		// Wood slab at level 20: cost ceil(9·1.4934…) — affordable.
+		let slab = idx(B::WoodSlab);
+		let btn = center(r.hits.rect_of(InvId::Craft(slab)).unwrap());
+		feed(&mut r, &InputEvent::CursorMoved { x: btn.0, y: btn.1 });
+		// Ctrl asks for 100, holdings clamp.
+		feed(
+			&mut r,
+			&InputEvent::Key {
+				key: Key::Ctrl,
+				pressed: true,
+			},
+		);
+		let batches = r.view.affordable(B::WoodSlab);
+		assert!(batches > 0 && batches < 100, "clamp is meaningful");
+		assert_eq!(
+			feed(
+				&mut r,
+				&InputEvent::MouseButton {
+					button: MouseButton::Left,
+					pressed: true,
+				}
+			),
+			Some(AlchAction::Craft {
+				item: B::WoodSlab,
+				count: batches
+			})
+		);
+	}
+
+	/// The panel bottom-anchors above the hotbar on both tabs, and a
+	/// short window at a big scale fits by stepping the ladder.
+	#[test]
+	fn panel_sits_above_the_hotbar_and_fits_short_windows() {
+		for (size, scale) in [
+			((1280u32, 800u32), 1.0f32),
+			((1280, 720), 1.75),
+			((960, 600), 2.5),
+		] {
+			let mut inv = Inventory::default();
+			inv.add(B::Wood, 5);
+			let grid = InvGrid::default();
+			let view = AlchView::build(&inv, &skills_at(41));
+			let mut screen = AlchScreen::default();
+			screen.open();
+			let mut dl = DrawList::default();
+			let mut hits = HitMap::default();
+			let mut ui = Ui {
 				dl: &mut dl,
 				hits: &mut hits,
 				style: Style::new(scale),
-			},
-			SIZE,
-			&view,
-			1.0,
-		);
-		let panel = panel_rect(&full_inv(), SIZE, scale);
-		let want = panel.x + inset;
-		// Every text command on the panel starts on the column, except the
-		// right-anchored button labels (centered in their own rect).
-		let lefts: Vec<f32> = dl
-			.cmds(Layer::Content)
-			.0
-			.iter()
-			.filter_map(|c| match c {
-				crate::ui::draw::Cmd::Text { x, .. } if *x < panel.x + panel.w / 2.0 => Some(*x),
-				_ => None,
-			})
-			.collect();
-		assert!(lefts.len() >= 4, "expected the header rows: {lefts:?}");
-		for x in &lefts {
-			// Header/title text sits on the column; a row's count text sits
-			// one icon further in, never left of it.
-			assert!(*x >= want - 0.5, "text at {x} is left of the column {want}");
-		}
-		assert!(
-			lefts.iter().any(|x| (x - want).abs() < 0.5),
-			"nothing sat on the column {want}: {lefts:?}"
-		);
-		// The icons open the row, on the same edge.
-		let icon_left = dl
-			.cmds(Layer::Icons)
-			.0
-			.iter()
-			.filter_map(|c| match c {
-				crate::ui::draw::Cmd::IconQuad { corners, .. } => {
-					Some(corners.iter().fold(f32::MAX, |m, p| m.min(p[0])))
-				}
-				_ => None,
-			})
-			.fold(f32::MAX, f32::min);
-		assert!(
-			(icon_left - want).abs() < 1.5,
-			"icons at {icon_left}, column {want}"
-		);
-	}
-
-	/// The old screen centered vertically and ran under the hotbar; the
-	/// redesign bottom-anchors above it.
-	#[test]
-	fn panel_sits_above_the_hotbar() {
-		let panel = panel_rect(&full_inv(), SIZE, 1.0);
-		let bar_top = hud::row_grid(SIZE, 1.0).origin.1;
-		assert!(
-			panel.y + panel.h <= bar_top - theme::GAP_ABOVE_BAR + 0.5,
-			"panel bottom {} vs bar top {bar_top}",
-			panel.y + panel.h
-		);
-	}
-
-	/// A short window at a large interface scale used to push the panel
-	/// straight off the bottom of the screen: only its TOP was clamped, so
-	/// tall content grew downward under the hotbar and out of the window
-	/// with no visible symptom. The fit pass shrinks the layout instead.
-	#[test]
-	fn panel_fits_a_short_window_at_a_large_interface_scale() {
-		// 1280x720 with interface scale 2.0 resolves to ~1.75 — the case
-		// that overflowed by ~200px before the fit pass existed.
-		let size = (1280, 720);
-		let panel = panel_rect(&full_inv(), size, 1.75);
-		let bar_top = hud::row_grid(size, 1.75).origin.1;
-		assert!(panel.y >= 0.0, "panel top off screen: {}", panel.y);
-		assert!(
-			panel.y + panel.h <= bar_top - theme::GAP_ABOVE_BAR * 1.75 + 0.5,
-			"panel bottom {} vs bar top {bar_top}",
-			panel.y + panel.h
-		);
-	}
-
-	/// The old panel width multiplied an already-clamped pixel width by
-	/// the scale; the redesign applies scale exactly once.
-	#[test]
-	fn panel_scales_once() {
-		let one = panel_rect(&full_inv(), SIZE, 1.0);
-		let two = panel_rect(&full_inv(), (2560, 1600), 2.0);
-		let ratio = two.w / one.w;
-		assert!(
-			(1.8..=2.2).contains(&ratio),
-			"2x window/scale ≈ 2x panel width, got {ratio} ({} vs {})",
-			one.w,
-			two.w
-		);
-	}
-
-	/// Rows were 26px tall with 48px icons stamped into them; now every
-	/// button row is disjoint from its neighbors.
-	#[test]
-	fn rows_do_not_overlap() {
-		let inv = full_inv();
-		let (_s, hits, _view, _style) = rig(&inv);
-		let mut rects: Vec<Rect> = [
-			hits.rect_of(InvId::Convert(0)),
-			hits.rect_of(InvId::Convert(1)),
-			hits.rect_of(InvId::Craft(0)),
-		]
-		.into_iter()
-		.flatten()
-		.collect();
-		assert!(rects.len() >= 3, "expected actionable rows");
-		rects.sort_by(|a, b| a.y.total_cmp(&b.y));
-		for pair in rects.windows(2) {
-			assert!(
-				pair[0].y + pair[0].h <= pair[1].y + 0.5,
-				"buttons overlap: {pair:?}"
-			);
-		}
-	}
-
-	/// Hovering an affordable row paints the shared highlight; moving
-	/// the cursor away removes it.
-	#[test]
-	fn hover_highlights_only_under_the_cursor() {
-		let inv = full_inv();
-		let (mut screen, hits, view, style) = rig(&inv);
-		let target = hits.rect_of(InvId::Craft(0)).expect("affordable craft");
-		let hilight_count = |screen: &AlchScreen| {
-			let mut dl = DrawList::default();
-			let mut h2 = HitMap::default();
-			let mut ui = Ui {
-				dl: &mut dl,
-				hits: &mut h2,
-				style,
 			};
-			screen.build(&mut ui, SIZE, &view, 1.0);
-			dl.cmds(Layer::Backdrop)
+			screen.build(&mut ui, size, &view, &grid, &inv, 1.0);
+			let bar_top = hud::row_grid(size, scale).origin.1;
+			let panel = dl
+				.cmds(Layer::Backdrop)
 				.0
 				.iter()
-				.filter(|c| {
-					matches!(
-						c,
-						crate::ui::draw::Cmd::Quad { color, .. }
-							if *color == widgets::ROW_HILIGHT
-					)
+				.find_map(|c| match c {
+					crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
+						Some(*rect)
+					}
+					_ => None,
 				})
-				.count()
-		};
-		screen.handle_input(
-			&InputEvent::CursorMoved {
-				x: target.x + target.w / 2.0,
-				y: target.y + target.h / 2.0,
-			},
-			&hits,
-			&style,
-			&view,
-		);
-		// Row highlight + button highlight under the cursor.
-		assert_eq!(hilight_count(&screen), 2, "hovered row + button");
-		screen.handle_input(
-			&InputEvent::CursorMoved { x: 1.0, y: 1.0 },
-			&hits,
-			&style,
-			&view,
-		);
-		assert_eq!(hilight_count(&screen), 0, "nothing hovered");
+				.expect("panel quad");
+			assert!(panel.y >= 0.0, "panel top on screen at {size:?}/{scale}");
+			assert!(
+				panel.y + panel.h <= bar_top + 0.5,
+				"panel under the bar at {size:?}/{scale}: {} vs {bar_top}",
+				panel.y + panel.h
+			);
+		}
 	}
 }

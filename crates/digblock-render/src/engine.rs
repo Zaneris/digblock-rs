@@ -41,6 +41,8 @@ pub enum DebugScreen {
 	/// The character screen, with mid-curve XP stocked so the bars and
 	/// detail lines photograph as they play, not empty.
 	Skills,
+	/// The alchemy screen's second tab (craft rows, locked rows, costs).
+	Transmute,
 }
 
 impl DebugScreen {
@@ -55,6 +57,7 @@ impl DebugScreen {
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
 			"skills" | "character" => Some(Self::Skills),
+			"transmute" => Some(Self::Transmute),
 			_ => None,
 		}
 	}
@@ -867,9 +870,16 @@ impl Engine {
 			] {
 				engine.inventory.add(block, n);
 			}
+			engine.inventory.add(BlockType::Rubble, 24);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Material::Wood, 54);
+				.add_sub(digblock_core::block::Essence::Flora, 54);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Earth, 120);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Aqua, 7);
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
@@ -886,7 +896,19 @@ impl Engine {
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
 				DebugScreen::Inventory => engine.inv_screen.open(),
-				DebugScreen::Alchemy => engine.alch_screen.open(),
+				DebugScreen::Alchemy | DebugScreen::Transmute => {
+					// A mid-curve level so the header's bar, the pace,
+					// and a mix of locked/unlocked rows all photograph.
+					engine
+						.skills
+						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
+					engine.alch_screen.open();
+					if screen == DebugScreen::Transmute {
+						engine
+							.alch_screen
+							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
+					}
+				}
 				DebugScreen::Skills => {
 					// Mid-curve totals: fractional bars, real XP lines.
 					use digblock_core::skills::Skill;
@@ -2577,7 +2599,8 @@ impl Engine {
 		match self.net.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
-				if apply_alchemy(&mut self.inventory, core_op) {
+				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
+				if apply_alchemy(&mut self.inventory, core_op, level) {
 					if let AlchAction::Craft { item, .. } = act {
 						self.hotbar.auto_assign(item);
 					}
@@ -2973,11 +2996,16 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
+					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let view =
+						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					self.alch_screen.handle_input(
 						&InputEvent::FocusLost,
 						&self.ui_hits,
 						&crate::ui::Style::new(self.ui_scale),
-						&crate::ui::screens::alchemy::AlchView::build(&self.inventory),
+						&view,
+						&self.inv_grid,
+						&bar,
 					);
 				}
 				InputEvent::Key {
@@ -2985,11 +3013,18 @@ impl Game for Engine {
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
+					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let view =
+						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					let style = crate::ui::Style::new(self.ui_scale);
-					let act = self
-						.alch_screen
-						.handle_input(&event, &self.ui_hits, &style, &view);
+					let act = self.alch_screen.handle_input(
+						&event,
+						&self.ui_hits,
+						&style,
+						&view,
+						&self.inv_grid,
+						&bar,
+					);
 					if let Some(act) = act {
 						self.apply_alchemy_action(act);
 					}
@@ -3356,6 +3391,15 @@ impl Game for Engine {
 			t.ttl -= dt;
 		}
 		self.xp_toasts.retain(|t| t.ttl > 0.0);
+		// The bench drip: while the extraction slot is occupied, each
+		// completed cycle sends one ordinary single-block Convert (the
+		// server paces the same rhythm with its extraction bucket).
+		if self.alch_screen.is_open() {
+			let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
+			if let Some(act) = self.alch_screen.tick(dt, level, &self.inventory) {
+				self.apply_alchemy_action(act);
+			}
+		}
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;
@@ -3719,8 +3763,16 @@ impl Game for Engine {
 				self.inv_screen
 					.build(&mut ui, size, &self.inv_grid, &self.inventory, daylight);
 			} else if self.alch_screen.is_open() {
-				let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
-				self.alch_screen.build(&mut ui, size, &view, daylight);
+				let view =
+					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
+				self.alch_screen.build(
+					&mut ui,
+					size,
+					&view,
+					&self.inv_grid,
+					&self.inventory,
+					daylight,
+				);
 			} else if self.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(&self.skills);
 				self.char_screen.build(&mut ui, size, &view, daylight);

@@ -1,10 +1,18 @@
 # Skills, Essence & Ore — design document
 
-Status: **building — §11's M1 (skills skeleton) is landed**: `digblock-core/src/skills.rs`
-(curve + awards, golden-pinned), protocol v16 (`Skills`/`XpGain`), `inventories.bin` v4,
-`state.json` skills, both server chokepoints awarding, XP toasts, the character screen
-(C / pause row / `DIG_SCREEN=skills`), offline parity through the same core functions.
-M2+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+Status: **building — §11's M1 (skills skeleton) and M2 (essence economy) are landed.**
+M1: `digblock-core/src/skills.rs` (curve + awards, golden-pinned), protocol v16
+(`Skills`/`XpGain`), `inventories.bin` v4, `state.json` skills, both server chokepoints
+awarding, XP toasts, the character screen (C / pause row / `DIG_SCREEN=skills`), offline
+parity through the same core functions. M2: `digblock-core/src/alchemy.rs` (extraction /
+waste / bonus tables, all integer math, `no_level_ever_creates_matter` pinned), the five
+essences with **legacy-preserving indices** (Flora=0, Earth=1 — the entire "decode-time
+migration" is that numbering choice, see §9), the Rubble rule, level-aware
+`apply_alchemy`, the two-tab screen with the drag-to-slot drip
+(`DIG_SCREEN=alchemy|transmute`), and the server extraction bucket
+(`extraction_pace_is_server_enforced`). Two design bugs §3.3 had were caught in
+implementation and fixed structurally — see the bonus-line pump rule there. M3+ remain
+design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
@@ -135,15 +143,23 @@ A rich find hoarded until your Alchemy rises is worth more later — deliberate.
 
 ### 3.3 Bonus lines (the "rarer essence unlocks")
 
-Flat additions, **not** scaled by efficiency — the unlock is the whole point:
+Flat additions, **not** scaled by efficiency — the unlock is the whole point.
+
+**The pump rule (found in implementation, pinned by
+`bonus_lines_never_sit_on_craftable_blocks`):** a bonus line on a *craftable* block is
+an essence pump — craft it from its cost essences, extract it back, pocket the bonus.
+At 99 the originally-drafted lines turned 2 Earth into 1 Metal (Stone trace minerals)
+and, worse, 2 Flora into 1 Aether (Wood heartwood), violating "Aether cannot be
+transmuted into, ever". So bonus lines live ONLY on recipe-less blocks: mined rock
+(Rubble, Gravel) and foliage. The heartwood flavor moved to pine resin:
 
 | Alch level | unlock |
 |--:|---|
-| 25 | Leaves +1 Aqua ("morning dew") |
-| 40 | Stone and Sandstone +1 Metal ("trace minerals") |
+| 25 | Leaves and PineLeaves +1 Aqua ("morning dew") |
+| 40 | **Rubble** +1 Metal ("trace minerals" — mined rock, never craftable Stone) |
 | 60 | Gravel +2 Metal |
-| 75 | Wood +1 Aether ("heartwood") |
-| 90 | Stone +1 Aether |
+| 75 | **PineLeaves** +1 Aether ("resin" — pine forests are the pre-ore Aether trickle) |
+| 90 | **Rubble** +1 Aether |
 
 ---
 
@@ -627,11 +643,13 @@ list; v1 is the summary.
   sent on award; the client animates the delta itself.
 - No new `ClientMsg`. `AlchemyOp::Convert/Craft` shapes unchanged — the server-side tables
   behind them change meaning. `EditRequest` unchanged (ore extraction is derived, §5.3).
-- Essence ids: the `Material` enum becomes `Essence { Earth=0, Flora=1, Aqua=2, Metal=3,
-  Aether=4 }` riding the same `SUB_WIRE_FLAG | index` pairs. Legacy families migrate at
-  **decode time** in both persistence formats and never re-emit: sub-wood → Flora 1:1,
-  sub-stone → Earth 1:1 (the water-stack precedent: a legacy count decodes to the new
-  currency, never a windfall, never wiped).
+- Essence ids: the `Material` enum becomes `Essence { Flora=0, Earth=1, Aqua=2, Metal=3,
+  Aether=4 }` riding the same `SUB_WIRE_FLAG | index` pairs. **The migration is a
+  numbering choice, not code**: Flora keeps sub-wood's index 0 and Earth keeps
+  sub-stone's 1, so every record and save written under the two-family economy decodes
+  1:1 with zero migration paths anywhere (flagged pairs carry no version, so
+  index-compat is the only migration that can't misfire). The water-stack precedent
+  holds: a legacy count decodes to the new currency, never a windfall, never wiped.
 - `SIM_VERSION 10 → 11`: level-scaled dig timing, ore hardness rows, DepletedStone.
 
 **Persistence**:
