@@ -58,6 +58,19 @@ const INDIRECT_K = 0.55;
 const RAYS: u32 = 64u;
 const MAX_T: f32 = 160.0;
 
+// How far an emitter is allowed to matter. `light` is a 0-15 level and
+// the 1/d^2 falloff has already buried it well before this; the bound
+// exists so a shadow ray is never traced across the whole window for a
+// contribution that rounds to nothing.
+const LIGHT_RANGE: f32 = 24.0;
+// Emitter radiance per unit of `light` level. One calibration constant,
+// and it is chosen rather than derived: `light` is a gameplay nibble,
+// not a photometric quantity. It is set so a torch's pool reads at the
+// brightness the direct-hit term (`alb * emit * 0.6`) already gives the
+// cell itself, which is what keeps a lit torch and the wall beside it
+// looking like one light source.
+const LIGHT_GAIN: f32 = 0.6;
+
 // The world grid cell this probe texel currently serves: congruent to
 // the texel index around the camera's grid position.
 fn probe_grid_cell(t: vec3i, n: vec3i, spacing: i32) -> vec3i {
@@ -186,6 +199,58 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	return out;
 }
 
+// Next-event estimation against the emitter list.
+//
+// The `lights` buffer has been uploaded and bound since P1 and read by
+// NO shader. Emitters reached the picture only when one of a probe's 64
+// Fibonacci rays happened to strike the single voxel a torch occupies —
+// exactly the firefly a light list exists to prevent. A 1-voxel emitter
+// subtends under 1% of the sphere at 3 blocks, so a given probe had
+// better than even odds of finding it not at all: large walls caught it
+// across many probes that bleed into one another, small isolated objects
+// sat in the few cells that all missed. That is why DIG_VAULT has a
+// warm pool on its walls and a pitch-black wood cube standing in it.
+//
+// One sample per ray, uniform over the list, weighted by 1/pdf = count.
+// With 64 rays a probe takes 64 NEE samples per update and the
+// hysteresis ladder filters what is left.
+fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
+	let count = bitcast<u32>(lights[0].x);
+	if count == 0u {
+		return vec3f(0.0);
+	}
+	let li = min(u32(rnd * f32(count)), count - 1u);
+	let l = lights[li + 1u];
+	let d = l.xyz - p;
+	let dist2 = dot(d, d);
+	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
+		return vec3f(0.0);
+	}
+	let dist = sqrt(dist2);
+	let dir = d / dist;
+	let ndl = dot(n, dir);
+	if ndl <= 0.0 {
+		return vec3f(0.0);
+	}
+	let cls = bitcast<u32>(l.w);
+	let emit = f32(lut[cls].y);
+	if emit <= 0.0 {
+		return vec3f(0.0);
+	}
+	// Stop short of the emitter's own cell: shaped blocks (the torch
+	// included) classify OPAQUE in the voxel window, so a ray run all
+	// the way to the light would be shadowed by the light.
+	let sh = march(p, dir, max(dist - 0.9, 0.0));
+	if sh.hit {
+		return vec3f(0.0);
+	}
+	// A voxel emitter as a point source: intensity falls as 1/d^2, and
+	// the near-field is clamped so a probe sharing a cell with a torch
+	// does not divide by nothing.
+	let radiance = albedo_of(cls) * emit * LIGHT_GAIN;
+	return radiance * (ndl / max(dist2, 1.0)) * medium_water_tr(sh.water) * f32(count);
+}
+
 fn albedo_of(v: u32) -> vec3f {
 	let m = lut[v].x;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
@@ -218,8 +283,9 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	return acc;
 }
 
-// Radiance arriving at the probe from one ray direction.
-fn trace_radiance(p: vec3f, dir: vec3f) -> vec3f {
+// Radiance arriving at the probe from one ray direction. `rnd` selects
+// this ray's NEE sample.
+fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	let h = march(p, dir, MAX_T);
 	// Per-channel now, and from medium_common's measured sigma — the
 	// same constant the view ray uses. This was a grey exp(-water*0.35)
@@ -253,6 +319,7 @@ fn trace_radiance(p: vec3f, dir: vec3f) -> vec3f {
 	}
 	let hp = vec3f(h.cell) + 0.5 + n * 0.6;
 	var incident = gather_prev(hp, n);
+	incident += nee(hp, n, rnd);
 	if gi.sun.w > 0.5 {
 		let ndl = max(dot(n, gi.sun.xyz), 0.0);
 		if ndl > 0.0 {
@@ -294,7 +361,11 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 	if solid_cell(cell) {
 		ray_rad[li] = vec3f(0.0);
 	} else {
-		ray_rad[li] = trace_radiance(p, dir);
+		// Per-ray, per-update decorrelated NEE pick: the ray index and
+		// the frame counter, hashed. Reusing one draw for all 64 rays
+		// would sample one emitter 64 times and miss the rest entirely.
+		let rnd = fract(sin(f32(li) * 12.9898 + f32(gi.sched.y) * 78.233) * 43758.5453);
+		ray_rad[li] = trace_radiance(p, dir, rnd);
 	}
 	ray_dir[li] = dir;
 	workgroupBarrier();
