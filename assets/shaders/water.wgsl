@@ -94,6 +94,10 @@ struct VsOut {
 	// Interpolated drop code (0 full .. 9 plunge) — the lip highlight
 	// keys on the plunging edge of a fall's crest.
 	@location(13) drop: f32,
+	// Stage-B light of the emitting water cell (w1 bits 24-27 block,
+	// 28-31 sky), flat per cell — water carries no AO either, and pools
+	// are cell-granular anyway. x = blocklight, y = skylight.
+	@location(14) @interpolate(flat) light: vec2f,
 }
 
 // 1D value noise (smoothstep-interpolated hash) — waterfall streaks.
@@ -247,6 +251,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.falling = (w1 >> 14u) & 1u;
 	o.fall_y = f32((w1 >> 20u) & 0xfu);
 	o.drop = f32(min((w1 >> 10u) & 0xfu, 9u));
+	o.light = vec2f(f32((w1 >> 24u) & 0xfu), f32((w1 >> 28u) & 0xfu)) / 15.0;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
@@ -362,12 +367,22 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
+	// Stage-B (LIGHT-DESIGN.md): skylight gates the sun terms exactly
+	// like chunk.wgsl, and torchlight competes via max — folded into the
+	// diffuse terms only, never the specular (a torch has no sun glint
+	// lobe to borrow).
+	let skyf = mix(0.02, 1.0, pow(i.light.y, 1.5));
+	let torch = vec3f(1.0, 0.82, 0.55) * pow(i.light.x, 1.8);
 	// Froth light: the same ambient+direct mix the spray billboards use
 	// (spray.wgsl), shadowed like the surface it sits on — so foam dims
 	// with the night instead of glowing unlit white.
-	let froth_light = frame.ambient.rgb + frame.light_color.rgb * 0.8 * sh;
+	let froth_light = max((frame.ambient.rgb + frame.light_color.rgb * 0.8 * sh) * skyf, torch);
 	// In-scattered water color (the body's own diffuse), streak-bright.
-	var scatter = alb * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	var scatter = alb
+		* max(
+			(frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh) * skyf,
+			torch,
+		);
 	scatter *= 1.0 + (s - 0.5) * 0.3;
 	// Rippled normal + Schlick fresnel. Impact turbulence: splash cells
 	// churn harder.

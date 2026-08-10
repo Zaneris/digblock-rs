@@ -109,6 +109,11 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
+	/// Debug: seal a stone vault around the spawn camera with one torch
+	/// inside — the Stage-B flagship capture (a roofed room goes DARK and
+	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
+	/// the desktop launcher from DIG_VAULT.
+	pub debug_vault: bool,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -181,6 +186,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_vault: false,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -217,6 +223,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_vault: false,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -641,6 +648,55 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
+/// one torch on the floor ahead and a stair to catch its falloff. The
+/// Stage-B flagship capture: skylight is stripped by the roof (the
+/// placement writes ride the ordinary edit hook), so the interior
+/// photographs DARK except the torch pool — at noon.
+fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{stair_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// Shell-first, carve-second ordering doesn't matter — placement is
+	// retried per cell and the light BFS settles under maintain either
+	// way. Interior: x±3, y −2..=+2, z −2..=+8 around the eye cell.
+	for x in (bx - 4)..=(bx + 4) {
+		for y in (by - 3)..=(by + 3) {
+			for z in (bz - 3)..=(bz + 9) {
+				let interior = (bx - 3..=bx + 3).contains(&x)
+					&& (by - 2..=by + 2).contains(&y)
+					&& (bz - 2..=bz + 8).contains(&z);
+				out.push((
+					x,
+					y,
+					z,
+					if interior {
+						B::Air as u16
+					} else {
+						B::Stone as u16
+					},
+				));
+			}
+		}
+	}
+	// The torch, and something with depth for its light to model.
+	out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	out.push((
+		bx - 2,
+		by - 2,
+		bz + 5,
+		make_cell(B::StoneStairs, stair_state(Facing::PosX)),
+	));
+	out.push((bx + 2, by - 2, bz + 4, B::Wood as u16));
+	out
+}
+
 fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
@@ -789,10 +845,16 @@ impl Engine {
 			player_save_accum: 0.0,
 			spawn_pos: spawn,
 			spawn_cooldown: 0.0,
-			debug_shapes_pending: if config.debug_shapes {
-				debug_shapes_plan(spawn)
-			} else {
-				Vec::new()
+			debug_shapes_pending: {
+				let mut plan = if config.debug_shapes {
+					debug_shapes_plan(spawn)
+				} else {
+					Vec::new()
+				};
+				if config.debug_vault {
+					plan.extend(debug_vault_plan(spawn));
+				}
+				plan
 			},
 			config,
 			seed,
@@ -2003,6 +2065,7 @@ impl Engine {
 		self.metrics.stale_dropped += m.stale_dropped;
 		self.metrics.requeued += m.requeued;
 		self.metrics.upload_saturated += m.saturated as u32;
+		self.metrics.light_pops += m.light_pops;
 		self.metrics.gauges = PipelineGauges {
 			gen_queue: m.gen_queue,
 			mesh_queue: m.mesh_queue,
@@ -2013,6 +2076,7 @@ impl Engine {
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
 			net_backlog: self.net_backlog.len() as u32,
+			light_pending: m.light_pending,
 			// The bytes the loop above just handed over — the number the
 			// byte cap actually governs, and the only per-frame signal for
 			// a staging transfer `upload_ms` structurally cannot time.

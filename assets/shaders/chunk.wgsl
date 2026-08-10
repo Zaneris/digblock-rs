@@ -49,12 +49,26 @@ struct VsOut {
 	// Stage-A emissive (w1 bit 21): 1 = fullbright ink — the lighting
 	// terms are skipped entirely (fog still applies).
 	@location(9) @interpolate(flat) emissive: u32,
+	// Stage-B light (w1 bits 22-25 block, 26-29 sky), normalized and
+	// interpolated — the per-vertex smooth values the mesher sampled from
+	// the flood-fill field (LIGHT-DESIGN.md). x = blocklight, y = sky.
+	@location(10) light: vec2f,
 }
+
+// Torchlight tint: warm, slightly under white so max() lets sunlight win
+// on open ground at noon while the torch owns the night and caves.
+const TORCH_COLOR = vec3f(1.0, 0.82, 0.55);
+// The ambient floor where no sky reaches: caves are nearly black, not
+// noon-bright — torchlight is what makes them readable. Full skylight
+// (the entire pre-Stage-B surface) multiplies by exactly 1, so open
+// ground looks the same as it always did.
+const MIN_AMBIENT = 0.02;
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
 // index, 27-28 ao, 29-30 corner. w1 — solid material: bits 0-9 texture
-// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint, 21 emissive.
+// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint, 21 emissive,
+// 22-25 blocklight, 26-29 skylight.
 // Twelfths → blocks with the whole-block part split off in INTEGER
 // space: full-block lattice vertices (multiples of 12) decode exactly
 // even under fast-math (a plain /12.0 becomes an inexact reciprocal
@@ -95,6 +109,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
 	o.axis = AXIS[ni];
 	o.emissive = (w1 >> 21u) & 1u;
+	o.light = vec2f(f32((w1 >> 22u) & 0xfu), f32((w1 >> 26u) & 0xfu)) / 15.0;
 
 	let pn = frame.light_near * vec4f(world, 1.0);
 	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
@@ -159,7 +174,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// strength; ambient is the guaranteed floor. AO attenuates the whole
 	// color — contact darkening the shadow maps can't resolve.
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = tex * i.ao * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
+	// Skylight gates the WHOLE sun term — ambient (a cave gets no sky
+	// dome) and direct alike (the wide cascade can leak sunlight into
+	// terrain it never rendered, and sky=0 is the truth there).
+	let skyf = mix(MIN_AMBIENT, 1.0, pow(i.light.y, 1.5));
+	let sun = (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh) * skyf;
+	// Stage-B torchlight competes with the sun via a componentwise max —
+	// never a sum, so noon faces don't blow out beside a torch. The
+	// curve steepens the 16-level falloff; AO still darkens contact
+	// creases under torchlight.
+	let torch = TORCH_COLOR * pow(i.light.x, 1.8);
+	var col = tex * i.ao * max(sun, torch);
 	// Distance fog toward the sky horizon, hiding chunk pop-in.
 	col = apply_fog(col, i.fog_dist, i.world);
 	return vec4f(col, frame.misc.x);

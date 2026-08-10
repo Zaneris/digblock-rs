@@ -139,6 +139,7 @@ fn main() {
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
 	// stocked inventory, so `--screenshot` can capture a UI screen (they
 	// are otherwise reachable only through live input).
