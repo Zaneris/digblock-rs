@@ -1325,6 +1325,11 @@ impl Renderer {
 		});
 	}
 
+	/// The GI voxel window's radius in chunks, as this renderer built it.
+	pub fn gi_window_chunks(&self) -> i32 {
+		self.gi.window_chunks()
+	}
+
 	/// Encode the frame in one command encoder, fixed order — probes →
 	/// depth prepass → depth blit → GI resolve → scene → water →
 	/// viewmodel → overlay (GI-DESIGN.md).

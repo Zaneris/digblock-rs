@@ -20,8 +20,8 @@ struct GiUniforms {
 	sun_color: vec4f,
 	zenith: vec4f,
 	horizon: vec4f,
-	// x: first probe index this dispatch, y: frame counter,
-	// z: light count cap, w: unused.
+	// x: this dispatch's PERMUTED base probe index, y: frame counter,
+	// z: light count cap, w: the sweep's permutation stride.
 	sched: vec4u,
 	// Up to 4 edit-invalidation spheres (xyz center, w radius; unused
 	// entries have radius 0), applied by the `inval` entry point.
@@ -334,7 +334,13 @@ var<workgroup> ray_dir: array<vec3f, 64>;
 fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
 	let n = vec3i(gi.dims.xyz);
 	let count = u32(n.x * n.y * n.z);
-	let pi = (gi.sched.x + wg.x) % count;
+	// Permuted sweep: sweep step k maps to probe (k * stride) % count,
+	// which is a bijection because the stride is coprime with the count.
+	// The base arrives pre-reduced (the CPU does `cursor * stride` in 64
+	// bits); only `wg.x * stride` happens here, and the stride is clamped
+	// so that cannot overflow. A contiguous cursor made convergence sweep
+	// the volume as a visible band.
+	let pi = (gi.sched.x + wg.x * gi.sched.w) % count;
 	let t = vec3i(vec3u(pi % gi.dims.x, (pi / gi.dims.x) % gi.dims.y, pi / (gi.dims.x * gi.dims.y)));
 	let spacing = i32(gi.dims.w);
 	let g = probe_grid_cell(t, n, spacing);

@@ -2118,7 +2118,13 @@ impl Engine {
 		// loop uses, so a frame that is already over budget still makes
 		// headway instead of starving the window forever.
 		let t_gi = web_time::Instant::now();
-		let gi_window = self.config.draw_dist;
+		// The window AS BUILT, never the live draw distance. Raising draw
+		// distance from the settings screen mutates `config.draw_dist`
+		// while the GI window texture keeps its construction size, and
+		// approving a chunk beyond that makes `upload_chunk`'s
+		// `rem_euclid` wrap it onto a different cell than the gather
+		// reads — one part of the world written into another's slot.
+		let gi_window = renderer.gi_window_chunks().min(self.config.draw_dist);
 		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {
 			if self.gi_queued.insert(pos) {

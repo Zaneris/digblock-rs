@@ -50,6 +50,8 @@ struct Cascade {
 	dims: (u32, u32, u32),
 	spacing: u32,
 	cursor: u32,
+	/// Permutation stride for the sweep (see `schedule_stride`).
+	stride: u32,
 	uniform_buf: wgpu::Buffer,
 	atlas: [wgpu::Texture; 2],
 	/// bind[i]: atlas[i] is prev (sampled), atlas[1-i] is out (written).
@@ -59,6 +61,34 @@ struct Cascade {
 impl Cascade {
 	fn probes(&self) -> u32 {
 		self.dims.0 * self.dims.1 * self.dims.2
+	}
+}
+
+/// Stride for the permuted probe sweep: about the golden fraction of the
+/// probe count, nudged until it is coprime with it, so `k -> k*stride mod
+/// count` is a bijection and consecutive sweep steps land far apart.
+/// Clamped so `wg.x * stride` cannot overflow u32 in the shader.
+fn schedule_stride(count: u32) -> u32 {
+	fn gcd(a: u32, b: u32) -> u32 {
+		if b == 0 {
+			a
+		} else {
+			gcd(b, a % b)
+		}
+	}
+	let cap = u32::MAX / PROBES_PER_DISPATCH.max(1);
+	let mut s = ((f64::from(count) * 0.618_033_988_749_895) as u32).clamp(1, cap.min(count.max(1)));
+	// `s` and `count` share a factor at most `count` times; in practice
+	// the first or second candidate lands.
+	let mut tries = 0;
+	while (gcd(s, count.max(1)) != 1 || s == 0) && tries < 64 {
+		s = if s + 1 > cap { 1 } else { s + 1 };
+		tries += 1;
+	}
+	if gcd(s, count.max(1)) != 1 {
+		1
+	} else {
+		s
 	}
 }
 
@@ -399,6 +429,7 @@ impl GiDraw {
 				dims,
 				spacing,
 				cursor: 0,
+				stride: schedule_stride(dims.0 * dims.1 * dims.2),
 				uniform_buf,
 				atlas,
 				bind,
@@ -1076,9 +1107,33 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
+	/// The voxel window's radius in chunks, AS BUILT.
+	///
+	/// The streaming side must key off this and not off the live
+	/// `config.draw_dist`, which the settings screen mutates at runtime
+	/// while the window texture keeps the size it was created with.
+	/// Approving a chunk outside the built window hands `upload_chunk` a
+	/// position whose `rem_euclid` wraps onto a DIFFERENT cell than the
+	/// gather's does — silently writing one part of the world into
+	/// another's slot, which is exactly the aliasing `gi_uploadable`
+	/// exists to prevent.
+	pub fn window_chunks(&self) -> i32 {
+		self.window_chunks as i32
+	}
+
 	/// Queue an edit position for probe invalidation (age reset around
 	/// it, ≤4 spheres applied per frame).
 	pub fn invalidate(&mut self, pos: [f32; 3]) {
+		// Bounded: only 4 spheres are drained per frame, and an unbounded
+		// queue grows without limit under any burst of edits (a fluid
+		// cascade, a bulk placement) and then spends minutes replaying
+		// invalidations for cells that have since changed again. Dropping
+		// the OLDEST is right — the newest edits are the ones whose light
+		// is most wrong.
+		const INVAL_MAX: usize = 256;
+		if self.inval_queue.len() >= INVAL_MAX {
+			self.inval_queue.remove(0);
+		}
 		self.inval_queue.push(pos);
 	}
 
@@ -1147,11 +1202,23 @@ impl GiDraw {
 			data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
+			// The sweep is PERMUTED, not contiguous. `cursor` walks the
+			// sweep index; the probe it selects is `(k * stride) % count`
+			// with stride coprime to count, so a full cycle still touches
+			// every probe exactly once while consecutive dispatches land
+			// far apart. A contiguous cursor made convergence sweep the
+			// volume as a visible band — dark regions appearing and
+			// clearing at random-looking moments while flying.
+			//
+			// The base is reduced here because `cursor * stride` would
+			// overflow u32 in the shader; `wg.x * stride` cannot, since
+			// the stride is clamped against PROBES_PER_DISPATCH.
+			let base = ((u64::from(c.cursor) * u64::from(c.stride)) % u64::from(c.probes())) as u32;
 			data.extend_from_slice(bytemuck::cast_slice(&[
-				c.cursor,
+				base,
 				self.frame,
 				MAX_LIGHTS as u32,
-				0,
+				c.stride,
 			]));
 			let radius = if ci == 0 { 8.0f32 } else { 16.0 };
 			for s in &spheres {
@@ -1247,5 +1314,67 @@ impl GiDraw {
 		// The front atlas is the one the flip just published.
 		pass.set_bind_group(0, &self.debug_bind[self.ping], &[]);
 		pass.draw(0..3, 0..1);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The sweep must be a PERMUTATION, not merely a shuffle: over one
+	/// full cycle every probe has to be traced exactly once, or some
+	/// probes never converge and others burn budget twice. That is the
+	/// whole reason the stride has to be coprime with the count, and it
+	/// is the kind of property that fails silently — the picture just
+	/// keeps a stale patch somewhere.
+	#[test]
+	fn the_permuted_sweep_visits_every_probe_exactly_once() {
+		for dims in [C0_DIMS, C1_DIMS, (1, 1, 1), (7, 5, 3), (16, 16, 16)] {
+			let count = dims.0 * dims.1 * dims.2;
+			let stride = schedule_stride(count);
+			let mut seen = vec![false; count as usize];
+			for k in 0..count {
+				let pi = ((u64::from(k) * u64::from(stride)) % u64::from(count)) as u32;
+				assert!(!seen[pi as usize], "{dims:?}: probe {pi} traced twice");
+				seen[pi as usize] = true;
+			}
+			assert!(
+				seen.iter().all(|&s| s),
+				"{dims:?}: a probe was never traced"
+			);
+		}
+	}
+
+	/// `wg.x * stride` is computed in u32 IN THE SHADER, where an
+	/// overflow silently wraps and the permutation stops being one.
+	#[test]
+	fn the_stride_cannot_overflow_the_shaders_multiply() {
+		for dims in [C0_DIMS, C1_DIMS, (64, 64, 64), (1, 1, 1)] {
+			let count = dims.0 * dims.1 * dims.2;
+			let stride = schedule_stride(count);
+			assert!(
+				u64::from(stride) * u64::from(PROBES_PER_DISPATCH) <= u64::from(u32::MAX),
+				"{dims:?}: stride {stride} overflows"
+			);
+		}
+	}
+
+	/// A contiguous cursor is what made convergence sweep as a visible
+	/// band. Consecutive sweep steps must land far apart in the probe
+	/// grid — this is the property, not an implementation detail.
+	#[test]
+	fn consecutive_sweep_steps_are_not_neighbours() {
+		let count = C0_DIMS.0 * C0_DIMS.1 * C0_DIMS.2;
+		let stride = schedule_stride(count);
+		let probe = |k: u32| ((u64::from(k) * u64::from(stride)) % u64::from(count)) as u32;
+		let mut worst = u32::MAX;
+		for k in 0..count.min(4096) {
+			let d = probe(k).abs_diff(probe(k + 1));
+			worst = worst.min(d.min(count - d));
+		}
+		assert!(
+			worst > count / 8,
+			"consecutive steps land {worst} apart out of {count} — that is a band"
+		);
 	}
 }
