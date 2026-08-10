@@ -334,8 +334,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let face_n = NORMALS[i.ni];
 	let side = i32(frame.gi_misc.x);
 	let gp = i.world;
-	let indirect = INDIRECT_K
-		* gi_indirect(side, gp, face_n, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
+	let indirect =
+		gi_indirect(side, gp, face_n, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
 	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
 	let sh = mix(vec3f(1.0), sv.x * medium_water_tr(sv.y), frame.light_dir.w);
 	// Froth light: the same direct+indirect mix the spray billboards

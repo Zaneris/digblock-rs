@@ -49,14 +49,15 @@ struct Frame {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 
-// Indirect calibration: probe radiance arrives in sky-color units,
-// which lands brighter than the old tuned ambient did — one knob scales
-// the whole indirect term into the look the direct term was tuned
-// against (P3; re-derive at P5 if the probe payload gets renormalized).
-// Lives here because chunk.wgsl AND every direct probe gatherer (water,
-// players) must agree; gi_probe.wgsl's cam_light carries a pinned twin
-// (`indirect_k_is_one_constant` in digblock-assets).
-const INDIRECT_K = 0.55;
+// INDIRECT_K is gone. It was 0.55 because probe radiance "lands brighter
+// than the old tuned ambient did" — a fudge against a term the M1
+// demolition deleted, so it had been calibrating the indirect half
+// against something that no longer existed. Scaling one half of the
+// light transport by a constant does not darken a picture, it breaks
+// energy conservation between the direct and indirect halves, and any
+// exposure the image needs belongs in one tonemap where it applies to
+// both. Its pinned twin in gi_probe.wgsl and the test that existed only
+// to hold the two equal are gone with it.
 
 // The water look tunables and `apply_fog` died at the M1 demolition;
 // medium_common.wgsl replaced both at M2 with one participating medium

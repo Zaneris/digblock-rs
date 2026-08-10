@@ -23,7 +23,7 @@ struct Vm {
 @group(0) @binding(0) var<uniform> vm: Vm;
 
 // RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
-// probe ambient at the camera (already INDIRECT_K-scaled), [1].rgb = sun
+// probe ambient at the camera, [1].rgb = sun
 // transmittance there — rgb, not one grey lane, because water absorbs
 // red an order of magnitude harder than blue and a submerged camera's
 // sunlight is tinted. The hand is at the camera by definition, so this IS its

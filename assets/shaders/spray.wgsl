@@ -12,7 +12,7 @@
 // (prepended by digblock-assets).
 
 // RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
-// probe ambient at the camera (already INDIRECT_K-scaled), [1].rgb =
+// probe ambient at the camera, [1].rgb =
 // sun transmittance there (rgb, not a grey lane — water absorbs red an
 // order of magnitude harder, so a submerged camera's sun is tinted). Billboards have no meaningful surface to
 // gather at, and spray lives within ~64 blocks of the eye — the

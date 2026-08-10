@@ -45,15 +45,10 @@ struct Light {
 @group(0) @binding(6) var out_atlas: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(7) var flags_tex: texture_storage_3d<r32uint, read_write>;
 // The camera-light sample the `cam_light` entry writes: [0] = omni
-// probe ambient at the camera (premultiplied by INDIRECT_K), [1].x =
+// probe ambient at the camera, [1].rgb =
 // sun visibility there. Spray and the viewmodel bind this as their
 // light rig — no CPU probe reads.
 @group(0) @binding(8) var<storage, read_write> cam_out: array<vec4f, 2>;
-
-// Pinned twin of frame_common.wgsl's INDIRECT_K (this module can't
-// take the frame prelude — its group(0) is the GI uniform). The
-// digblock-assets test `indirect_k_is_one_constant` holds them equal.
-const INDIRECT_K = 0.55;
 
 const RAYS: u32 = 64u;
 const MAX_T: f32 = 160.0;
@@ -451,7 +446,7 @@ fn cam_light() {
 			sv = medium_water_tr(h.water);
 		}
 	}
-	cam_out[0] = vec4f(amb * INDIRECT_K, 0.0);
+	cam_out[0] = vec4f(amb, 0.0);
 	// rgb, not one grey lane: sunlight reaching a submerged camera is
 	// red-starved, and the hand and the spray must agree with the world.
 	cam_out[1] = vec4f(sv, 0.0);

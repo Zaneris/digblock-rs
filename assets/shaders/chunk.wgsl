@@ -23,9 +23,6 @@
 @group(2) @binding(0) var gi_indirect: texture_2d<f32>;
 @group(2) @binding(1) var gi_sun: texture_2d<f32>;
 
-// INDIRECT_K (the probe-radiance calibration) arrives from
-// frame_common.wgsl — shared with every direct probe gatherer.
-
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(
@@ -212,7 +209,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let sun_tr = medium_water_tr(water_acc / wsum);
 		// Twilight fades the traced sun the way it faded mapped shadows.
 		let sh = mix(vec3f(1.0), sun_acc / wsum * sun_tr, frame.light_dir.w);
-		col = tex * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
+		col = tex * (frame.light_color.rgb * i.direct * sh + indirect);
 	}
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel

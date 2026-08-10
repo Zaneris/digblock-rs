@@ -273,26 +273,6 @@ mod tests {
 		}
 	}
 
-	/// frame_common.wgsl owns INDIRECT_K (chunk, water, players read it
-	/// through the prelude), but gi_probe.wgsl's cam_light entry cannot
-	/// take that prelude — its group(0) is the GI uniform — so it
-	/// carries a twin. Two constants, one value, or the hand/spray
-	/// brightness silently drifts from the world's.
-	#[test]
-	fn indirect_k_is_one_constant() {
-		let pick = |src: &str, name: &str| -> String {
-			src.lines()
-				.find(|l| l.trim_start().starts_with("const INDIRECT_K = "))
-				.unwrap_or_else(|| panic!("{name}: INDIRECT_K not found"))
-				.trim()
-				.to_string()
-		};
-		assert_eq!(
-			pick(super::shader::CHUNK, "frame_common"),
-			pick(super::shader::GI_PROBE, "gi_probe"),
-		);
-	}
-
 	// The size bound is the real assertion: a stock Google face is
 	// 200 KB-900 KB and fontdue eagerly outlines all of it at load, so
 	// committing an unsubset TTF is a startup regression that nothing
