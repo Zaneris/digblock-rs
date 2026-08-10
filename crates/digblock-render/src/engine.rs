@@ -3116,9 +3116,19 @@ impl Engine {
 			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
 			zenith: [zenith[0], zenith[1], zenith[2], 0.0],
 			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
-			// The medium's rim distance: where the streamed cylinder ends,
-			// which is the same number as the camera far plane.
-			misc: [1.0, far_plane(self.config.draw_dist), 0.0, 0.0],
+			// The medium's rim distance: where the STREAMED CYLINDER ends,
+			// which is draw_dist chunks of CHUNK_SIZE blocks — NOT the
+			// camera far plane, which is `draw_dist * 32` for legacy
+			// reasons and therefore sits at twice the distance any terrain
+			// exists at. Passing the far plane here (M2 did) put the rim
+			// ramp at 525-640 blocks in a world that stops at 320, so the
+			// term never fired and the streaming edge was never covered.
+			misc: [
+				1.0,
+				(self.config.draw_dist * digblock_core::chunk::CHUNK_SIZE as i32) as f32,
+				0.0,
+				0.0,
+			],
 			water_misc: [
 				f32::from(submerged),
 				f32::from(self.config.ssr),
