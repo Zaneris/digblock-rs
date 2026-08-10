@@ -162,6 +162,31 @@ impl SkillSet {
 	}
 }
 
+// ---- dig speed -------------------------------------------------------
+
+/// §5.1's dig-speed multiplier in permille: 1250 (1.25× time) at level
+/// 1, EXACTLY 1000 at level 30 — today's hardness table is the
+/// mid-curve reference the early game climbs back to — and 417 at 99.
+/// Two exact-anchored linear segments with integer rounding, so the
+/// three pins hold precisely and everything between is monotonic.
+pub fn dig_speed_permille(level: u32) -> u32 {
+	let level = level.clamp(1, 99);
+	if level <= 30 {
+		1250 - (500 * (level - 1) + 29) / 58
+	} else {
+		1000 - (1166 * (level - 30) + 69) / 138
+	}
+}
+
+/// THE hold-to-dig duration both sides compute: `max(1,
+/// round(hardness · multiplier))` ticks at the digger's Mining level.
+/// Level 30 reproduces the legacy table bit-exactly; a level-up landing
+/// mid-hold skews client/server by a few ticks at most, which
+/// `dig_grace` absorbs — no new tolerance machinery.
+pub fn dig_required(hardness: u16, level: u32) -> u32 {
+	((u32::from(hardness) * dig_speed_permille(level) + 500) / 1000).max(1)
+}
+
 // ---- award tables ----------------------------------------------------
 //
 // XP keys on fixed per-action bases, never on level-scaled outcomes —
@@ -277,6 +302,37 @@ mod tests {
 		let decoded = SkillSet::from_wire(&hostile);
 		assert_eq!(decoded.xp(Skill::Mining), 42);
 		assert_eq!(decoded.to_wire(), vec![(0, 42)]);
+	}
+
+	/// §5.1's three anchors, held exactly: level 30 IS the legacy
+	/// hardness table (the old table lives on as a mid-curve golden),
+	/// level 1 is 1.25× it, level 99 lands on the pinned endgame times
+	/// — and `required` never rises with level anywhere between.
+	#[test]
+	fn dig_speed_anchors_are_pinned() {
+		assert_eq!(dig_speed_permille(1), 1250);
+		assert_eq!(dig_speed_permille(30), 1000, "parity with today at 30");
+		assert_eq!(dig_speed_permille(99), 417);
+		for &b in &BlockType::ALL {
+			let Some(h) = b.hardness_ticks() else {
+				continue;
+			};
+			assert_eq!(
+				dig_required(h, 30),
+				u32::from(h),
+				"{b:?} at 30 = the legacy table exactly"
+			);
+			for level in 2..=99 {
+				assert!(
+					dig_required(h, level) <= dig_required(h, level - 1),
+					"{b:?} never slows with a level ({level})"
+				);
+			}
+		}
+		// The §5.1 table's spot values (60 Hz ticks).
+		assert_eq!(dig_required(90, 1), 113, "stone 1.88s at level 1");
+		assert_eq!(dig_required(90, 99), 38, "stone 0.63s at 99");
+		assert_eq!(dig_required(30, 1), 38, "dirt 0.63s at level 1");
 	}
 
 	/// §5.2's award table: `ceil(hardness_ticks / 6)` of the SHIPPED

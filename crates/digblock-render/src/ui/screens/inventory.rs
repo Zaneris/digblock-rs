@@ -186,9 +186,12 @@ impl InvScreen {
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Alchemy ids never appear while this screen is open.
-					InvId::Craft(_) | InvId::Tab(_) | InvId::ExtractSlot | InvId::BucketTile => {
-						return None
-					}
+					InvId::Craft(_)
+					| InvId::Family(_)
+					| InvId::CraftGo
+					| InvId::Tab(_)
+					| InvId::ExtractSlot
+					| InvId::BucketTile => return None,
 				};
 				self.drag.on_press(pos, id, payload);
 				None

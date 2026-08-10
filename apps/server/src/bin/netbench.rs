@@ -820,10 +820,11 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	let mut stats_base = digblock_server::sim::InputStats::default();
 	let mut edits_base = digblock_server::sim::EditStats::default();
 	let mut driver = EditDriver::default();
-	let stone_hardness = u32::from(
+	let stone_hardness = digblock_core::skills::dig_required(
 		digblock_core::block::BlockType::Stone
 			.dig_hardness(FLAT_TOP as i32)
 			.expect("stone is diggable"),
+		1,
 	);
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no

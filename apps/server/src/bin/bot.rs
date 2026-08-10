@@ -348,8 +348,10 @@ fn run_bot(
 							// down to bedrock must skip it, not retry forever.
 							if let Some(hardness) = hit.block.dig_hardness(hit.cell.1) {
 								client.send_dig_start(hit.cell);
+								// Level-scaled hold (bots are level 1);
 								// +2 ticks margin over the server's grace.
-								digging = Some((hit.cell, hit.block, t + hardness as u32 + 2));
+								let need = digblock_core::skills::dig_required(hardness, 1);
+								digging = Some((hit.cell, hit.block, t + need + 2));
 							} else {
 								next_edit_in = 1.0 / edit_rate;
 							}

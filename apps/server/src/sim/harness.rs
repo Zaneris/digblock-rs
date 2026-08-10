@@ -205,6 +205,10 @@ pub(crate) fn dig_hold(
 	t: &mut u32,
 ) -> (i32, i32, i32) {
 	use digblock_core::raycast::{raycast, raycast_fluid, REACH};
+	// Callers pass base-hardness-flavored hold lengths; stretch them by
+	// the level-1 dig-speed multiplier (SIM v11) so a "full hold" stays
+	// a full hold and a deliberately-short one stays short.
+	let hold_ticks = (hold_ticks * 1250).div_ceil(1000);
 	let pos = sim.test_player(conn_id).unwrap().pos;
 	let cast = if kind == digblock_net::messages::EditKind::Collect {
 		raycast_fluid

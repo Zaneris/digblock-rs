@@ -50,7 +50,6 @@ const ROW_ICON: f32 = 36.0;
 const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
 const ICON_TEXT_GAP: f32 = 12.0;
-const TEXT_BTN_GAP: f32 = 28.0;
 /// The extraction strip's slot square (the grid's own cell size).
 const STRIP_GAP: f32 = 12.0;
 
@@ -132,6 +131,11 @@ pub struct AlchScreen {
 	/// 0..1 through the current cycle; the in-flight cycle never sends
 	/// its op when interrupted (ops are atomic per block).
 	progress: f32,
+	/// Transmute tab: selected family / member within it.
+	family: usize,
+	member: usize,
+	/// Free-running clock driving the family tiles' member rotation.
+	clock: f32,
 }
 
 impl Default for AlchScreen {
@@ -145,9 +149,57 @@ impl Default for AlchScreen {
 			drag: DragState::default(),
 			extracting: None,
 			progress: 0.0,
+			family: 0,
+			member: 0,
+			clock: 0.0,
 		}
 	}
 }
+
+/// One transmute family: a tile that previews its members in slow
+/// rotation; selecting it lays the members out under the tab's single
+/// TRANSMUTE button. The grouping is the UI's own — SKILLS-DESIGN
+/// §7.2's material × shape grid arrives as more members per family,
+/// not more machinery.
+pub struct Family {
+	pub name: &'static str,
+	pub members: &'static [BlockType],
+}
+
+pub const FAMILIES: [Family; 5] = [
+	Family {
+		name: "SLABS",
+		members: &[BlockType::WoodSlab, BlockType::StoneSlab],
+	},
+	Family {
+		name: "STAIRS",
+		members: &[BlockType::WoodStairs, BlockType::StoneStairs],
+	},
+	Family {
+		name: "DOORS",
+		members: &[BlockType::WoodDoor],
+	},
+	Family {
+		name: "BLOCKS",
+		members: &[
+			BlockType::Stone,
+			BlockType::Wood,
+			BlockType::Dirt,
+			BlockType::Sand,
+			BlockType::Sandstone,
+			BlockType::Snow,
+			BlockType::Grass,
+			BlockType::Mud,
+		],
+	},
+	Family {
+		name: "WATER",
+		members: &[BlockType::Water],
+	},
+];
+
+/// Seconds each member holds the family tile before it rotates on.
+const FAMILY_CYCLE_SECS: f32 = 0.9;
 
 impl AlchScreen {
 	pub fn is_open(&self) -> bool {
@@ -188,6 +240,9 @@ impl AlchScreen {
 	/// the block stops qualifying — the in-flight cycle simply never
 	/// sends.
 	pub fn tick(&mut self, dt: f32, level: u32, inv: &Inventory) -> Option<AlchAction> {
+		// The family tiles' rotation runs whenever the screen is open
+		// (wrapped far below any f32 precision cliff).
+		self.clock = (self.clock + dt) % 3600.0;
 		if self.tab != AlchTab::Extract {
 			return None;
 		}
@@ -290,20 +345,10 @@ impl AlchScreen {
 	}
 
 	fn content_w(&self, style: &Style) -> f32 {
-		match self.tab {
-			AlchTab::Extract => {
-				let spec = Self::grid_spec_at(style, (0.0, 0.0));
-				spec.extent(GRID_SLOTS).0
-			}
-			AlchTab::Transmute => {
-				let s = style.scale;
-				let widest = alchemy::CRAFT_ORDER
-					.iter()
-					.map(|&item| theme::text_row_w(style, &craft_text(item, u32::MAX)))
-					.fold(0.0f32, f32::max);
-				widest + (ROW_ICON + ICON_TEXT_GAP + TEXT_BTN_GAP + BTN_W) * s
-			}
-		}
+		// Both tabs share the inventory grid's width, so switching tabs
+		// never makes the panel jump.
+		let spec = Self::grid_spec_at(style, (0.0, 0.0));
+		spec.extent(GRID_SLOTS).0
 	}
 
 	fn content_h(&self, style: &Style) -> f32 {
@@ -319,8 +364,13 @@ impl AlchScreen {
 						+ theme::ROW_GAP * s
 				}
 				AlchTab::Transmute => {
-					let rows = alchemy::CRAFT_ORDER.len() as f32;
-					rows * (theme::ACTION_ROW_H + theme::ROW_GAP) * s + theme::ROW_H * s
+					// Family row, member row, the detail strip, the
+					// multiplier hint.
+					let slot = hud::SLOT_PX * s;
+					3.0 * slot
+						+ 2.0 * theme::ROW_GAP * s
+						+ theme::SECTION_GAP * s
+						+ theme::ROW_H * s
 				}
 			}
 	}
@@ -373,10 +423,16 @@ impl AlchScreen {
 			},
 		);
 		*y += row_h;
-		// Tab strip: two buttons, the active one rendered as plain text
-		// (you can't press where you already are).
+		// The tab strip, drawn as TABS rather than a row of buttons: the
+		// active tab is a filled block whose base fuses into the content
+		// below it — the rule running under the strip breaks beneath it —
+		// while the inactive tab is dim, flat, pressable text sitting ON
+		// the rule.
+		const TAB_RULE: u32 = 0x40FFFFFF;
 		let text_pad = scale::text_pad_x(s);
+		let rule_h = (2.0 * s).round().max(1.0);
 		let mut x = row_x + text_pad;
+		let mut active_span = (row_x, row_x);
 		for (i, (label, tab)) in [
 			("EXTRACT", AlchTab::Extract),
 			("TRANSMUTE", AlchTab::Transmute),
@@ -387,7 +443,7 @@ impl AlchScreen {
 			let w = ui.style.measure(label) + 2.0 * text_pad;
 			let rect = Rect::new(x, *y, w, row_h);
 			if tab == self.tab {
-				ui.dl.quad(Layer::Backdrop, rect, widgets::SLOT_BG);
+				ui.dl.quad(Layer::Backdrop, rect, theme::FILL_BG);
 				widgets::label(
 					ui.dl,
 					Layer::Content,
@@ -397,18 +453,40 @@ impl AlchScreen {
 					WHITE,
 					label,
 				);
+				active_span = (rect.x, rect.x + rect.w);
 			} else {
-				widgets::button(
-					ui,
-					InvId::Tab(i as u8),
-					rect,
+				if rect.contains(self.cursor.0, self.cursor.1) {
+					ui.dl.quad(Layer::Backdrop, rect, widgets::ROW_HILIGHT);
+				}
+				widgets::label(
+					ui.dl,
+					Layer::Content,
+					rect.x + text_pad,
+					rect.y + (row_h - ui.style.glyph) / 2.0,
+					ui.style.glyph,
+					DIM,
 					label,
-					true,
-					rect.contains(self.cursor.0, self.cursor.1),
 				);
+				ui.hits.push(rect, InvId::Tab(i as u8));
 			}
 			x += w + STRIP_GAP * s;
 		}
+		let rule_y = *y + row_h - rule_h;
+		ui.dl.quad(
+			Layer::Backdrop,
+			Rect::new(row_x, rule_y, (active_span.0 - row_x).max(0.0), rule_h),
+			TAB_RULE,
+		);
+		ui.dl.quad(
+			Layer::Backdrop,
+			Rect::new(
+				active_span.1,
+				rule_y,
+				(row_x + row_w - active_span.1).max(0.0),
+				rule_h,
+			),
+			TAB_RULE,
+		);
 		*y += row_h;
 	}
 
@@ -524,8 +602,12 @@ impl AlchScreen {
 		}
 	}
 
-	/// The TRANSMUTE tab: one row per craftable, locked rows dim with
-	/// their level where the button would be, then the multiplier hint.
+	/// The TRANSMUTE tab: a row of FAMILY tiles (each slowly rotating
+	/// through its members — wood stairs, stone stairs, …), the selected
+	/// family's members laid out under it, then a detail strip and the
+	/// tab's single TRANSMUTE button. Locked members stay visible (dim,
+	/// selectable — the strip names their level); the button is the only
+	/// act.
 	fn emit_transmute(
 		&self,
 		ui: &mut Ui<'_, InvId>,
@@ -534,74 +616,125 @@ impl AlchScreen {
 		row_w: f32,
 		mut y: f32,
 	) {
+		const LOCKED_TINT: u32 = 0xFF58_5858;
 		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
 		let text_pad = scale::text_pad_x(s);
+		let slot_px = hud::SLOT_PX * s;
+		let icon_px = hud::ICON_PX * s;
 		let (cx, cy) = self.cursor;
-		for (i, &item) in alchemy::CRAFT_ORDER.iter().enumerate() {
-			let rect = Rect::new(row_x, y, row_w, theme::ACTION_ROW_H * s);
-			y += (theme::ACTION_ROW_H + theme::ROW_GAP) * s;
-			let unlock = alchemy::craft_unlock(item).expect("CRAFT_ORDER is craftable");
-			let locked = view.level < unlock;
-			let affordable = view.affordable(item) > 0;
-			if !locked && affordable && rect.contains(cx, cy) {
-				ui.dl.quad(Layer::Backdrop, rect, widgets::ROW_HILIGHT);
-			}
-			let icon = ROW_ICON * s;
-			let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
-			hud::draw_icon(
-				ui.dl,
-				Layer::Icons,
-				Rect::new(
-					rect.x + text_pad,
-					rect.y + (rect.h - icon) / 2.0,
-					icon,
-					icon,
-				),
-				kind,
-				tint,
+
+		// Family tiles, previews rotating on the shared clock.
+		let phase = (self.clock / FAMILY_CYCLE_SECS) as usize;
+		for (i, fam) in FAMILIES.iter().enumerate() {
+			let rect = Rect::new(
+				row_x + text_pad + i as f32 * (slot_px + hud::SLOT_GAP * s),
+				y,
+				slot_px,
+				slot_px,
 			);
-			let text = craft_text(item, view.level);
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				rect.x + text_pad + icon + ICON_TEXT_GAP * s,
-				rect.y + (rect.h - glyph) / 2.0,
-				glyph,
-				if locked || !affordable { DIM } else { WHITE },
-				&text,
+			let preview = fam.members[phase % fam.members.len()];
+			let icon = Some(hud::item_icon(HotbarItem::Block(preview), false));
+			widgets::slot(
+				ui,
+				InvId::Family(i as u8),
+				rect,
+				icon,
+				icon_px,
+				i == self.family,
 			);
-			if locked {
-				// The locked-row pattern: the level where the button
-				// would be, no hit rect — honest pixels, not a trap.
-				let label = format!("LV {unlock}");
-				let w = ui.style.measure(&label);
-				widgets::label(
-					ui.dl,
-					Layer::Content,
-					rect.x + rect.w - text_pad - BTN_W * s / 2.0 - w / 2.0,
-					rect.y + (rect.h - glyph) / 2.0,
-					glyph,
-					DIM,
-					&label,
-				);
-			} else {
-				let btn = Rect::new(
-					rect.x + rect.w - text_pad - BTN_W * s,
-					rect.y + (rect.h - BTN_H * s) / 2.0,
-					BTN_W * s,
-					BTN_H * s,
-				);
-				widgets::button(
-					ui,
-					InvId::Craft(i as u8),
-					btn,
-					"TRANSMUTE",
-					affordable,
-					btn.contains(cx, cy),
-				);
+		}
+		y += slot_px + theme::ROW_GAP * s;
+
+		// The selected family's members. Locked ones draw dim but stay
+		// selectable — the strip explains; affordable ones carry their
+		// batch count.
+		let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
+		let member = self.member.min(family.members.len() - 1);
+		for (j, &item) in family.members.iter().enumerate() {
+			let rect = Rect::new(
+				row_x + text_pad + j as f32 * (slot_px + hud::SLOT_GAP * s),
+				y,
+				slot_px,
+				slot_px,
+			);
+			let locked = alchemy::craft_unlock(item).is_none_or(|u| view.level < u);
+			let (kind, _) = hud::item_icon(HotbarItem::Block(item), false);
+			let tint = if locked { LOCKED_TINT } else { 0xFFFF_FFFF };
+			widgets::slot(
+				ui,
+				InvId::Craft(j as u8),
+				rect,
+				Some((kind, tint)),
+				icon_px,
+				j == member,
+			);
+			let batches = view.affordable(item);
+			if !locked && batches > 0 {
+				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, batches, WHITE);
 			}
 		}
+		y += slot_px + theme::SECTION_GAP * s;
+
+		// The detail strip: the selected member's icon, its name and
+		// per-line cost at YOUR level (post-waste — what it will actually
+		// charge), and the tab's one TRANSMUTE button.
+		let item = family.members[member];
+		let unlock = alchemy::craft_unlock(item).unwrap_or(u32::MAX);
+		let locked = view.level < unlock;
+		let batches = view.affordable(item);
+		let strip = Rect::new(row_x, y, row_w, slot_px);
+		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
+		hud::draw_icon(
+			ui.dl,
+			Layer::Icons,
+			Rect::new(
+				strip.x + text_pad,
+				strip.y + (slot_px - ROW_ICON * s) / 2.0,
+				ROW_ICON * s,
+				ROW_ICON * s,
+			),
+			kind,
+			if locked { LOCKED_TINT } else { tint },
+		);
+		let text = if locked {
+			format!("{}   —   LV {unlock}", block_name(item))
+		} else {
+			let costs = alchemy::craft_ideal(item)
+				.expect("members are craftable")
+				.iter()
+				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, view.level), e.name()))
+				.collect::<Vec<_>>()
+				.join(" + ");
+			match batches {
+				0 => format!("{}   —   {costs}", block_name(item)),
+				n => format!("{}   —   {costs}   ·   ×{n}", block_name(item)),
+			}
+		};
+		widgets::label(
+			ui.dl,
+			Layer::Content,
+			strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s,
+			strip.y + (slot_px - glyph) / 2.0,
+			glyph,
+			if locked || batches == 0 { DIM } else { WHITE },
+			&text,
+		);
+		let btn = Rect::new(
+			strip.x + strip.w - text_pad - BTN_W * s,
+			strip.y + (slot_px - BTN_H * s) / 2.0,
+			BTN_W * s,
+			BTN_H * s,
+		);
+		widgets::button(
+			ui,
+			InvId::CraftGo,
+			btn,
+			"TRANSMUTE",
+			!locked && batches > 0,
+			btn.contains(cx, cy),
+		);
+		y += slot_px + theme::ROW_GAP * s;
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -686,8 +819,31 @@ impl AlchScreen {
 					InvId::BucketTile => {
 						self.drag.on_press(self.cursor, id, BlockType::Water);
 					}
-					InvId::Craft(i) => {
-						let item = *alchemy::CRAFT_ORDER.get(i as usize)?;
+					InvId::Family(i) => {
+						let i = (i as usize).min(FAMILIES.len() - 1);
+						if self.family != i {
+							self.family = i;
+							// Land on the first member the level has
+							// opened (else the first, whose strip line
+							// names its unlock).
+							self.member = FAMILIES[i]
+								.members
+								.iter()
+								.position(|&m| {
+									alchemy::craft_unlock(m).is_some_and(|u| view.level >= u)
+								})
+								.unwrap_or(0);
+						}
+					}
+					InvId::Craft(j) => {
+						let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
+						if (j as usize) < family.members.len() {
+							self.member = j as usize;
+						}
+					}
+					InvId::CraftGo => {
+						let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
+						let item = *family.members.get(self.member)?;
 						let want = if self.ctrl {
 							BULK_CTRL
 						} else if self.shift {
@@ -728,25 +884,6 @@ impl AlchScreen {
 			}
 			_ => None,
 		}
-	}
-}
-
-/// A craft row's text: name + per-line costs at the viewer's level
-/// (post-waste — what it will actually charge). `u32::MAX` level is
-/// the measuring pass's widest case.
-fn craft_text(item: BlockType, level: u32) -> String {
-	let name = block_name(item);
-	let level = level.min(99);
-	match alchemy::craft_ideal(item) {
-		Some(lines) => {
-			let costs = lines
-				.iter()
-				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, level), e.name()))
-				.collect::<Vec<_>>()
-				.join(" + ");
-			format!("{name}   —   {costs}")
-		}
-		None => name.into(),
 	}
 }
 
@@ -1010,39 +1147,32 @@ mod tests {
 		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "tile gone");
 	}
 
+	/// The transmute flow: pick a family tile, pick a member, and the
+	/// tab's ONE button crafts it — multipliers clamp to affordability,
+	/// and a locked selection disables the button outright (no hit).
 	#[test]
-	fn craft_multipliers_clamp_and_locked_rows_have_no_hits() {
+	fn family_selection_and_the_single_transmute_button() {
 		let mut r = rig_at(20, |inv| {
 			inv.add_sub(Essence::Flora, 500);
 		});
+		let press = |r: &mut Rig, at: (f32, f32)| {
+			feed(r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+			feed(
+				r,
+				&InputEvent::MouseButton {
+					button: MouseButton::Left,
+					pressed: true,
+				},
+			)
+		};
 		// Switch to the transmute tab.
 		let tab = center(r.hits.rect_of(InvId::Tab(1)).unwrap());
-		feed(&mut r, &InputEvent::CursorMoved { x: tab.0, y: tab.1 });
-		feed(
-			&mut r,
-			&InputEvent::MouseButton {
-				button: MouseButton::Left,
-				pressed: true,
-			},
-		);
+		press(&mut r, tab);
 		rebuild(&mut r);
 
-		let idx = |item: B| {
-			alchemy::CRAFT_ORDER
-				.iter()
-				.position(|&b| b == item)
-				.unwrap() as u8
-		};
-		// Sandstone unlocks at 30 — locked at 20, so no hit rect.
-		assert!(
-			r.hits.rect_of(InvId::Craft(idx(B::Sandstone))).is_none(),
-			"locked row registers no button"
-		);
-		// Wood slab at level 20: cost ceil(9·1.4934…) — affordable.
-		let slab = idx(B::WoodSlab);
-		let btn = center(r.hits.rect_of(InvId::Craft(slab)).unwrap());
-		feed(&mut r, &InputEvent::CursorMoved { x: btn.0, y: btn.1 });
-		// Ctrl asks for 100, holdings clamp.
+		// Default: the SLABS family with WoodSlab selected. Ctrl asks
+		// for 100; the holdings clamp it.
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
 		feed(
 			&mut r,
 			&InputEvent::Key {
@@ -1053,16 +1183,51 @@ mod tests {
 		let batches = r.view.affordable(B::WoodSlab);
 		assert!(batches > 0 && batches < 100, "clamp is meaningful");
 		assert_eq!(
-			feed(
-				&mut r,
-				&InputEvent::MouseButton {
-					button: MouseButton::Left,
-					pressed: true,
-				}
-			),
+			press(&mut r, go),
 			Some(AlchAction::Craft {
 				item: B::WoodSlab,
 				count: batches
+			})
+		);
+		feed(
+			&mut r,
+			&InputEvent::Key {
+				key: Key::Ctrl,
+				pressed: false,
+			},
+		);
+
+		// The WATER family's one member is locked at 20: the tile still
+		// shows (the strip names LV 50), but the single button registers
+		// no hit — honest pixels, not a trap.
+		let water = center(r.hits.rect_of(InvId::Family(4)).unwrap());
+		press(&mut r, water);
+		rebuild(&mut r);
+		assert!(
+			r.hits.rect_of(InvId::Craft(0)).is_some(),
+			"locked member still shows"
+		);
+		assert!(
+			r.hits.rect_of(InvId::CraftGo).is_none(),
+			"no button under a locked pick"
+		);
+
+		// BLOCKS: switching family lands on the first unlocked member
+		// (Stone — unaffordable with no Earth, button dark); picking
+		// Wood by tile makes the one button craft THAT.
+		let blocks = center(r.hits.rect_of(InvId::Family(3)).unwrap());
+		press(&mut r, blocks);
+		rebuild(&mut r);
+		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
+		let wood = center(r.hits.rect_of(InvId::Craft(1)).unwrap());
+		press(&mut r, wood);
+		rebuild(&mut r);
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		assert_eq!(
+			press(&mut r, go),
+			Some(AlchAction::Craft {
+				item: B::Wood,
+				count: 1
 			})
 		);
 	}
