@@ -22,7 +22,11 @@ half — §6's tool formalization — is landed too: tools are item-only `blocks
 (legacy layouts that parked it mid-bar migrate on decode), `Hotbar::active_tool` is the
 second axis riding the Layout wire's 9th entry (`WIRE_TOOL` = the bucket), tap-9 on the
 selected tool slot cycles the owned roster, the faded rail draws once a second tool
-exists, and the server's Collect/pour gates check the active tool. M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+exists, and the server's Collect/pour gates check the active tool. A consolidation pass
+(2026-08-10) then landed **Stage-B voxel lighting** (LIGHT-DESIGN.md — torches
+illuminate, caves and roofed rooms go dark; §7.4 updated) and reconciled this document
+with the shipped code (§3.3 cumulative note, §4.1/§4.2 per-line-ceil ideals, §4.3 rows
+75/90, §5.3 ore ids 30–34, §10 pump-rule pin). M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
@@ -171,6 +175,10 @@ transmuted into, ever". So bonus lines live ONLY on recipe-less blocks: mined ro
 | 75 | **PineLeaves** +1 Aether ("resin" — pine forests are the pre-ore Aether trickle) |
 | 90 | **Rubble** +1 Aether |
 
+Lines are **cumulative**: each row adds to the ones before it, so a level-90
+extraction of Rubble yields the 40 trace minerals AND the 90 Aether, and
+PineLeaves at 75 keeps its 25 dew (`bonus_lines` returns every earned line).
+
 ---
 
 ## 4. Alchemy (the skill)
@@ -182,7 +190,7 @@ transmuted into, ever". So bonus lines live ONLY on recipe-less blocks: mined ro
 | bench extraction, per block | `ceil(base_total / 3)` — Stone/Wood/Grass 9, Dirt 6, Snow 3, bucket charge 6 |
 | bench extraction, per ore | Emberore 15, Duskstone 30, Glowvein 50, Aetherock 80 |
 | field ore extraction (the dual-XP cut, see §5.4) | 8 / 14 / 22 / 34 by tier |
-| transmutation, per craft | `ceil(ideal_cost / 3)` — slab 3, door 4, stairs 6, raw block 9, Resonant Pick 100 |
+| transmutation, per craft | `ceil(ideal_cost / 3)` — slab 3, door 4, stairs 6, raw block 9–10 (per-line ceil pushes Dirt/Mud ideals to 28 → XP 10; pinned by `alchemy_xp_derives_from_the_base_tables`), Resonant Pick 104 (312-unit ideal) |
 
 XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for
 life, RS-style. Extraction XP arrives **dripped**: the extract tab sends one
@@ -200,9 +208,10 @@ cost_per_line = ceil(ideal · waste(L))
 
 `ideal` stays the shipped volume rule — `raster_volume(...).div_ceil(SUB_UNIT_VOLUME)` —
 so the pinned `craft_costs_derive_from_collision_volume` test keeps working with a `waste`
-multiplier layered on top. Raw-block recipes cost the **full 27-volume** split in the
-block's extraction ratio (Dirt = 23 Earth + 5 Flora ideal), which combined with §3.1's
-≤ 27 extraction bases yields the no-matter-creation pin for free.
+multiplier layered on top. Raw-block recipes cost the **per-line ceil of the 27-volume split** in the
+block's extraction ratio (Dirt = 23 Earth + 5 Flora = a 28-unit ideal — each line
+rounds up separately), which combined with §3.1's ≤ 27 extraction bases yields the
+no-matter-creation pin with margin to spare.
 
 ### 4.3 Level table
 
@@ -223,10 +232,10 @@ block's extraction ratio (Dirt = 23 Earth + 5 Flora ideal), which combined with 
 | 55 | craft the **Resonant Pick** (240 Metal + 60 Earth + 12 Aether) |
 | 60 | **Pane**, **Gate** shapes (Glass Pane, Metal Bars); essence transmutation 3:1 (any → any, **except into Aether**) |
 | 70 | **Trapdoor** shape |
-| 75 | bonus line: heartwood; extraction pace → 0.25s per block |
+| 75 | bonus line: pine resin (PineLeaves — §3.3 moved it off craftable Wood); extraction pace → 0.25s per block |
 | 80 | craft the **Aetherlamp** (12 Metal + 3 Aether — the standing Aether sink) |
 | 85 | waste floor reached early: 1.10× from here (flat to 99's 1.05×) |
-| 90 | bonus line: Stone Aether |
+| 90 | bonus line: Rubble Aether (Stone is craftable — a Stone line would be the §3.3 essence pump) |
 | 99 | efficiency 100%, waste 1.05×; craft the **Master's Sigil** (99 Aether, cosmetic held item) |
 
 Material and shape unlocks compose per §7.2's `max(shape, material)` rule — StoneDoor
@@ -280,11 +289,14 @@ Four ores + a depletion block = **five new `blocks!` rows** (append-only, one PN
 
 | id | block | reveal at | depth band | hardness | bench yield |
 |--|---|--:|---|--:|---|
-| 27 | **Emberore** | Mining 10 | y ≤ 140 | 120t | 18 Metal |
-| 28 | **Duskstone** | Mining 30 | y ≤ 96 | 150t | 36 Metal |
-| 29 | **Glowvein** | Mining 55 | y ≤ 56 | 190t | 60 Metal |
-| 30 | **Aetherock** | Mining 80 | y ≤ 24 | 240t | 90 Metal + 9 Aether |
-| 31 | **DepletedStone** | — | — | 90t | `drops: Some(Rubble)` — the tapped-rock face (§7.1) |
+| 30 | **Emberore** | Mining 10 | y ≤ 140 | 120t | 18 Metal |
+| 31 | **Duskstone** | Mining 30 | y ≤ 96 | 150t | 36 Metal |
+| 32 | **Glowvein** | Mining 55 | y ≤ 56 | 190t | 60 Metal |
+| 33 | **Aetherock** | Mining 80 | y ≤ 24 | 240t | 90 Metal + 9 Aether |
+| 34 | **DepletedStone** | — | — | 90t | `drops: Some(Rubble)` — the tapped-rock face (§7.1) |
+
+(Ids start at 30: the append-only `blocks!` table has since taken 27 = Rubble,
+28 = Torch, 29 = Bucket.)
 
 **Placement** — `ore_at(x, y, z, seed) → Option<OreKind>`, pure, in `worldgen/`:
 per-family salted position hashes seed deposit centers (the `structures_near` pattern, so
@@ -521,11 +533,14 @@ stages:
   glitter in dark caves (a free Mining synergy). Cheap: no new passes, no light field.
   Limitation stated plainly: a Stage-A torch is visible in the dark but does not
   illuminate its surroundings — it's a way-marker, not a lamp.
-- **Stage B (its own design doc, later): true voxel light.** Flood-fill light field baked
-  per-vertex by the mesher like AO, propagated across chunk borders via the padded shell,
-  streamed under the same budget. A real system with real streaming implications —
-  explicitly deferred; the catalog does not wait for it, and Stage-A blocks upgrade in
-  place when it lands.
+- **Stage B — LANDED (see LIGHT-DESIGN.md): true voxel light.** Torches cast a real
+  flood-fill blocklight field and a full skylight column channel darkens caves and
+  roofed rooms. One correction to this section's original sketch: propagation is NOT
+  "via the padded shell" (a level-15 light reaches 15 cells, the shell reaches 1) — the
+  field is stored per chunk beside the store and the shell only carries settled values
+  into mesh jobs, the same role it plays for AO. `BlockProps.light`/`emits(level)` is
+  the source knob (Torch 14; Lantern and the Aetherlamp slot in as rows), independent
+  of `emissive` — ore seams still get ink that casts nothing.
 
 Torches are floor-mounted in v1 (one shape, no facing states); wall mounting is a state
 nibble away when wanted (§12).
@@ -690,6 +705,8 @@ list; v1 is the summary.
 - `xp_curve_table_is_pinned` — golden cumulative table.
 - `no_level_ever_creates_matter` — for every block × every level: total extraction yield
   < total craft cost; efficiency/waste monotonic and bounded.
+- `bonus_lines_never_sit_on_craftable_blocks` — the §3.3 pump rule: every bonus line
+  lives on a recipe-less block, so no craft-extract loop manufactures Metal or Aether.
 - `dig_speed_anchors_are_pinned` — level 30 reproduces the legacy hardness table
   **exactly** (the old table lives on as a mid-curve golden), level 1 is 1.25×, and
   `required` is strictly monotonic in between.
@@ -863,5 +880,5 @@ those are the two milestones that set prices players will remember.
   but one rubble keeps the extraction table and the cobble aesthetic simple.
 - **Torch mounting.** v1 is floor-mounted only (one baked shape, no facing states). Wall
   torches are a state-nibble variant like slab anchors when wanted.
-- **Stage B lighting** — the voxel light field (§7.4) is a real system with mesher and
-  streaming implications and gets its own design doc; nothing in this one depends on it.
+- **Stage B lighting** — RESOLVED: landed as LIGHT-DESIGN.md (blocklight + skylight,
+  §7.4). M5's ore-seam glitter still uses only the Stage-A ink bit, as designed.
