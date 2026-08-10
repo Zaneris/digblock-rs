@@ -38,11 +38,46 @@ impl CharView {
 				frac,
 			});
 			rows.push(Row::Info(info));
+			if let Some((lvl, what)) = next_unlock(skill, level) {
+				rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
+			}
 			rows.push(Row::Space);
 		}
 		rows.push(Row::Info(format!("TOTAL LEVEL {total_level}")));
 		Self { rows }
 	}
+}
+
+/// The §8.2 teaser tables: what the next level threshold above `level`
+/// opens. Screen-local prose over the CORE's numbers — the pin test
+/// holds every named level to the function that enforces it, so the
+/// strings can't drift from the tables.
+const ALCH_TEASERS: &[(u32, &str)] = &[
+	(5, "stairs"),
+	(8, "the torch"),
+	(10, "doors"),
+	(15, "extract the bucket charge"),
+	(20, "clean stone, wood, dirt, sand"),
+	(25, "morning dew; a faster bench"),
+	(30, "sandstone, snow, grass, mud"),
+	(40, "trace minerals from rubble"),
+	(50, "craft water"),
+	(60, "gravel's deep metal"),
+	(75, "pine resin; the fastest bench"),
+	(85, "the waste floor"),
+	(90, "rubble's aether"),
+	(99, "mastery"),
+];
+
+/// Mining's teasers are the rock gate (ore reveals arrive with M5).
+const MINING_TEASERS: &[(u32, &str)] = &[(3, "sandstone opens"), (5, "stone and rubble open")];
+
+fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
+	let table = match skill {
+		Skill::Mining => MINING_TEASERS,
+		Skill::Alchemy => ALCH_TEASERS,
+	};
+	table.iter().find(|&&(lvl, _)| lvl > level).copied()
 }
 
 /// Thousands-grouped decimal ("1,103,585") — XP totals get big enough
@@ -263,6 +298,56 @@ mod tests {
 		let all = texts(&emit(&skills)).join("\n");
 		assert!(all.contains("MINING   LV 99"), "{all}");
 		assert!(all.contains("1,103,585 XP — mastered"), "{all}");
+	}
+
+	/// Every teaser level is the CORE's number for that unlock — the
+	/// prose lives here, the thresholds live in the tables that enforce
+	/// them, and this is the seam that keeps them agreeing.
+	#[test]
+	fn teaser_levels_match_the_core_tables() {
+		use digblock_core::{alchemy, block::BlockType as B};
+		let alch = |lvl: u32| {
+			assert!(
+				ALCH_TEASERS.iter().any(|&(l, _)| l == lvl),
+				"no alchemy teaser at {lvl}"
+			);
+		};
+		assert_eq!(alchemy::craft_unlock(B::WoodStairs), Some(5));
+		alch(5);
+		assert_eq!(alchemy::craft_unlock(B::Torch), Some(8));
+		alch(8);
+		assert_eq!(alchemy::craft_unlock(B::WoodDoor), Some(10));
+		alch(10);
+		assert_eq!(alchemy::extract_unlock(B::Water), 15);
+		alch(15);
+		assert_eq!(alchemy::craft_unlock(B::Stone), Some(20));
+		alch(20);
+		assert_eq!(alchemy::craft_unlock(B::Sandstone), Some(30));
+		alch(30);
+		assert_eq!(alchemy::craft_unlock(B::Water), Some(50));
+		alch(50);
+		// The pace steps and bonus lines named in prose.
+		assert!(alchemy::extract_pace_ticks(25) < alchemy::extract_pace_ticks(24));
+		alch(25);
+		assert!(alchemy::extract_pace_ticks(75) < alchemy::extract_pace_ticks(74));
+		alch(75);
+		// Mining's teasers ARE the rock gate.
+		assert_eq!(digblock_core::skills::dig_level_gate(B::Sandstone), 3);
+		assert_eq!(digblock_core::skills::dig_level_gate(B::Stone), 5);
+		assert_eq!(
+			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
+			vec![3, 5]
+		);
+
+		// And the rows actually render: a level-1 character teases the
+		// first thresholds; past the last Mining gate, Mining shows none.
+		let fresh = texts(&emit(&SkillSet::default())).join("\n");
+		assert!(fresh.contains("next: LV 3 — sandstone opens"), "{fresh}");
+		assert!(fresh.contains("next: LV 5 — stairs"), "{fresh}");
+		let mut leveled = SkillSet::default();
+		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
+		let all = texts(&emit(&leveled)).join("\n");
+		assert!(!all.contains("next: LV 3 —"), "{all}");
 	}
 
 	#[test]

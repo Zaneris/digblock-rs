@@ -339,6 +339,9 @@ pub struct Engine {
 	camera: FlyCamera,
 	player: Player,
 	touch: TouchDriver,
+	/// The primary touch currently driving UI-surface pointer synthesis
+	/// (see the Touch arm at the top of `input`).
+	ui_touch: Option<u64>,
 	/// Walk (player physics) vs debug fly camera; F toggles.
 	walking: bool,
 	fly_key_down: bool,
@@ -863,6 +866,7 @@ impl Engine {
 			camera,
 			player: Player::new(spawn),
 			touch: TouchDriver::new(),
+			ui_touch: None,
 			walking: true,
 			fly_key_down: false,
 			overlay_key_down: false,
@@ -947,6 +951,14 @@ impl Engine {
 			engine
 				.inventory
 				.add_sub(digblock_core::block::Essence::Aqua, 7);
+			// Metal/Aether too, so the header's five columns photograph
+			// populated — two dead zeros read as a layout bug in shots.
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Metal, 12);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Aether, 3);
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
@@ -3050,6 +3062,45 @@ impl Game for Engine {
 		// Benchmark runs must be input-independent to stay comparable.
 		if self.config.bench {
 			return;
+		}
+		// UI surfaces speak pointer. While any is open, the PRIMARY touch
+		// synthesizes cursor + left-button events at this one site, so
+		// iOS gets menu taps, inventory drags, and the extract-slot drag
+		// (design-doc M2 debt) without any screen learning about touch.
+		// Gameplay touch (look/move) keeps its own arm below.
+		if let InputEvent::Touch { id, phase, x, y } = event {
+			if self.menu.is_open()
+				|| self.inv_screen.is_open()
+				|| self.alch_screen.is_open()
+				|| self.char_screen.is_open()
+			{
+				let (px, py) = (x * self.size.0 as f32, y * self.size.1 as f32);
+				match phase {
+					TouchPhase::Started if self.ui_touch.is_none() => {
+						self.ui_touch = Some(id);
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+						self.input(InputEvent::MouseButton {
+							button: MouseButton::Left,
+							pressed: true,
+						});
+					}
+					TouchPhase::Moved if self.ui_touch == Some(id) => {
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+					}
+					TouchPhase::Ended | TouchPhase::Cancelled if self.ui_touch == Some(id) => {
+						self.ui_touch = None;
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+						self.input(InputEvent::MouseButton {
+							button: MouseButton::Left,
+							pressed: false,
+						});
+					}
+					_ => {} // secondary touches park while a UI is up
+				}
+				return;
+			}
+			// No UI up: any lingering primary marker is stale.
+			self.ui_touch = None;
 		}
 		// Menu open: every input belongs to the menu — gameplay keys must
 		// not leak (typing a name would also walk). FocusLost still clears
