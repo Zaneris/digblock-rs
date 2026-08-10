@@ -19,6 +19,14 @@ use crate::chunk::{cell_id, split_world, ChunkPos, CHUNK_SIZE, CHUNK_VOLUME};
 
 pub const MAX_LIGHT: u8 = 15;
 
+/// The level a bounce seed starts at — an AIR cell with full sky sitting
+/// on an opaque cell is "sunlit ground", the one place the sun dumps
+/// energy for free all day, and its bounce reaches ~12 blocks into
+/// whatever shade adjoins it. 12 is deliberately below MAX_LIGHT: no
+/// spread value can ever collide with it, so a stored 12 uniquely
+/// identifies a seed (stale-seed cleanup keys on that).
+pub const BOUNCE_SEED: u8 = 12;
+
 /// BFS pops per `step_light` call (two calls per maintain). A count, not
 /// a deadline: pops are uniform-cost, and a count keeps settlement
 /// deterministic (pinned by `any_step_budget_settles_to_the_same_field`).
@@ -60,6 +68,10 @@ pub struct CellFacts {
 	/// `BlockType::light_level()` — the emission this cell re-seeds with
 	/// if a removal wave strips it.
 	pub emits: u8,
+	/// True only for Air. Bounce seeds require a genuinely empty cell
+	/// above ground — a water column reaching the sea floor is
+	/// non-opaque with full sky, but it is not a sunlit meadow.
+	pub air: bool,
 }
 
 /// Read facts for a raw cell value.
@@ -69,25 +81,36 @@ pub fn facts_of(cell: u16) -> CellFacts {
 	CellFacts {
 		opaque: b.props().class == crate::block::RenderClass::Opaque,
 		emits: b.light_level(),
+		air: b == BlockType::Air,
 	}
 }
 
 /// Which nibble a queue entry belongs to. Blocklight spreads uniformly;
 /// skylight adds the column rule — straight DOWN at level 15 costs no
 /// decrement, which is what makes an open shaft bright to the floor and
-/// a roof's removal cascade all the way down it.
+/// a roof's removal cascade all the way down it. Bounce spreads like
+/// blocklight but is seeded by GEOMETRY (sunlit ground), not by blocks —
+/// its sources are maintained by the seed-check queue, never by
+/// `light_level()`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Channel {
 	Block,
 	Sky,
+	Bounce,
 }
 
+const CHANNELS: usize = 3;
+
 impl Channel {
+	/// Nibble shift within the channel's backing map: block and sky share
+	/// a byte in the main map; bounce lives in its own sparse map's low
+	/// nibble (near-surface chunks only — deep chunks never allocate).
 	#[inline]
 	fn shift(self) -> u8 {
 		match self {
 			Channel::Block => 0,
 			Channel::Sky => 4,
+			Channel::Bounce => 0,
 		}
 	}
 }
@@ -97,11 +120,19 @@ type Cell = (i32, i32, i32);
 
 pub struct LightField {
 	chunks: FxHashMap<ChunkPos, LightChunk>,
-	/// Per-channel add wavefronts (blocklight, skylight).
-	add: [VecDeque<Cell>; 2],
+	/// Bounce's own sparse storage (low nibble). Separate from `chunks`
+	/// so the two-nibble byte layout there survives untouched and deep
+	/// chunks — where bounce is always zero — never allocate an entry.
+	bounce: FxHashMap<ChunkPos, LightChunk>,
+	/// Per-channel add wavefronts (blocklight, skylight, bounce).
+	add: [VecDeque<Cell>; CHANNELS],
 	/// Per-channel removal wavefronts: the position and the light value
 	/// it HELD, which bounds how far the darkness spreads.
-	remove: [VecDeque<(Cell, u8)>; 2],
+	remove: [VecDeque<(Cell, u8)>; CHANNELS],
+	/// Cells whose bounce-SEED status may have changed (an edit, a sky
+	/// nibble reaching or losing 15). Drained first in `step`, where the
+	/// facts closure is available to evaluate the seed rule.
+	seed_check: VecDeque<Cell>,
 	/// Chunks whose padded mesh shell saw a light write since the last
 	/// `take_dirty` — the remesh set. Same shell rule as `set_cell`'s
 	/// neighbor bumps.
@@ -118,8 +149,10 @@ impl LightField {
 	pub fn new() -> Self {
 		Self {
 			chunks: FxHashMap::default(),
-			add: [VecDeque::new(), VecDeque::new()],
-			remove: [VecDeque::new(), VecDeque::new()],
+			bounce: FxHashMap::default(),
+			add: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+			remove: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+			seed_check: VecDeque::new(),
 			dirty: FxHashSet::default(),
 		}
 	}
@@ -128,9 +161,11 @@ impl LightField {
 		let Some(((cx, cy, cz), (lx, ly, lz))) = split_world(x, y, z) else {
 			return 0;
 		};
-		(self
-			.chunks
-			.get(&ChunkPos::new(cx, cy, cz))
+		let map = match ch {
+			Channel::Bounce => &self.bounce,
+			_ => &self.chunks,
+		};
+		(map.get(&ChunkPos::new(cx, cy, cz))
 			.map_or(0, |c| c.get(lx, ly, lz))
 			>> ch.shift())
 			& 0x0F
@@ -147,16 +182,27 @@ impl LightField {
 		self.nibble(x, y, z, Channel::Sky)
 	}
 
+	/// Bounce light at a world cell (sun-fill from nearby sunlit ground).
+	pub fn bounce_light(&self, x: i32, y: i32, z: i32) -> u8 {
+		self.nibble(x, y, z, Channel::Bounce)
+	}
+
 	/// Queue depth (all wavefronts) — settled means zero.
 	pub fn pending(&self) -> usize {
 		self.add.iter().map(VecDeque::len).sum::<usize>()
 			+ self.remove.iter().map(VecDeque::len).sum::<usize>()
+			+ self.seed_check.len()
 	}
 
 	/// Per-chunk storage, for the mesh shell copy (`MeshInput::fill_light`).
 	/// `None` means uniformly dark.
 	pub fn chunk(&self, pos: ChunkPos) -> Option<&LightChunk> {
 		self.chunks.get(&pos)
+	}
+
+	/// Per-chunk bounce storage (low nibble). `None` means zero bounce.
+	pub fn bounce_chunk(&self, pos: ChunkPos) -> Option<&LightChunk> {
+		self.bounce.get(&pos)
 	}
 
 	/// Write one channel's nibble, allocating `Mixed` on divergence and
@@ -167,7 +213,11 @@ impl LightField {
 		};
 		let (sh, keep) = (ch.shift(), !(0x0F_u8 << ch.shift()));
 		let pos = ChunkPos::new(cx, cy, cz);
-		let entry = self.chunks.entry(pos).or_insert(LightChunk::Uniform(0));
+		let map = match ch {
+			Channel::Bounce => &mut self.bounce,
+			_ => &mut self.chunks,
+		};
+		let entry = map.entry(pos).or_insert(LightChunk::Uniform(0));
 		if let LightChunk::Uniform(u) = entry {
 			if (*u >> sh) & 0x0F == v {
 				return; // no divergence — stay unallocated
@@ -227,12 +277,18 @@ impl LightField {
 				self.set_nibble(x, y, z, 0, Channel::Sky);
 				self.remove[Channel::Sky as usize].push_back(((x, y, z), sky));
 			}
+			let b = self.bounce_light(x, y, z);
+			if b > 0 {
+				self.set_nibble(x, y, z, 0, Channel::Bounce);
+				self.remove[Channel::Bounce as usize].push_back(((x, y, z), b));
+			}
 		} else {
 			// A dug wall or roof: surrounding light floods back in. Stale
 			// or dim entries self-discard at pop, so over-queuing is cheap.
 			for (dx, dy, dz) in NEIGHBORS {
 				self.add[Channel::Block as usize].push_back((x + dx, y + dy, z + dz));
 				self.add[Channel::Sky as usize].push_back((x + dx, y + dy, z + dz));
+				self.add[Channel::Bounce as usize].push_back((x + dx, y + dy, z + dz));
 			}
 			// The world's top row has no in-world cell above to descend
 			// from — above the world IS the sky.
@@ -241,6 +297,12 @@ impl LightField {
 				self.add[Channel::Sky as usize].push_back((x, y, z));
 			}
 		}
+		// Any edit can create or destroy a bounce seed here or one cell
+		// up (place a block on open ground → its lid is the new seed; dig
+		// the ground under one → the old seed is stale). The rule needs
+		// the facts closure, so it is evaluated in `step`.
+		self.seed_check.push_back((x, y, z));
+		self.seed_check.push_back((x, y + 1, z));
 	}
 
 	/// Seed a freshly-landed column: the skylight DESCEND pass (level 15
@@ -281,8 +343,12 @@ impl LightField {
 		}
 		// Skylight descend, top chunk first. `stop[lx][lz]` is the world
 		// y of the first opaque cell (the column's sky floor); i32::MIN =
-		// open to the world bottom.
+		// open to the world bottom. `last_air` tracks whether the LAST
+		// non-opaque cell walked in each column was Air — i.e. whether
+		// the cell resting on the sky floor qualifies as a bounce seed
+		// (a water column reaching the sea floor does not).
 		let mut stop = [[i32::MIN; CHUNK_SIZE]; CHUNK_SIZE];
+		let mut last_air = [[false; CHUNK_SIZE]; CHUNK_SIZE];
 		let mut open_cols = CHUNK_SIZE * CHUNK_SIZE;
 		for (cy, data) in stack.iter().rev() {
 			let by = cy * s;
@@ -293,6 +359,7 @@ impl LightField {
 						.entry(ChunkPos::new(x, *cy, z))
 						.or_insert(LightChunk::Uniform(0xF0));
 					self.dirty.insert(ChunkPos::new(x, *cy, z));
+					last_air = [[true; CHUNK_SIZE]; CHUNK_SIZE];
 					continue;
 				}
 				// Partially shadowed footprint: per-column fill.
@@ -300,13 +367,20 @@ impl LightField {
 				for (lx, col) in stop.iter().enumerate() {
 					for (lz, &st) in col.iter().enumerate() {
 						if st == i32::MIN {
-							fills.push((lx as i32, lz as i32));
+							fills.push((lx, lz));
 						}
 					}
 				}
 				for (lx, lz) in fills {
+					last_air[lx][lz] = true;
 					for ly in 0..s {
-						self.set_nibble(bx + lx, by + ly, bz + lz, MAX_LIGHT, Channel::Sky);
+						self.set_nibble(
+							bx + lx as i32,
+							by + ly,
+							bz + lz as i32,
+							MAX_LIGHT,
+							Channel::Sky,
+						);
 					}
 				}
 				continue;
@@ -319,17 +393,40 @@ impl LightField {
 					}
 					for ly in (0..CHUNK_SIZE).rev() {
 						let cell = data.blocks[(ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx];
-						if facts_of(cell).opaque {
+						let f = facts_of(cell);
+						if f.opaque {
 							*st = by + ly as i32;
 							open_cols -= 1;
 							break;
 						}
+						last_air[lx][lz] = f.air;
 						writes.push((bx + lx as i32, by + ly as i32, bz + lz as i32));
 					}
 				}
 			}
 			for (wx, wy, wz) in writes {
 				self.set_nibble(wx, wy, wz, MAX_LIGHT, Channel::Sky);
+			}
+		}
+		// Bounce fill: each sunlit-ground column gets its settled vertical
+		// profile written directly (seed 12 on the ground, decaying up) —
+		// on flat terrain that IS the answer, so the one add queued per
+		// seed discards immediately and only slopes propagate. The exact
+		// mirror of the descend's write-then-let-BFS-refine trick.
+		for lx in 0..CHUNK_SIZE {
+			for lz in 0..CHUNK_SIZE {
+				let st = stop[lx][lz];
+				if st == i32::MIN || !last_air[lx][lz] {
+					continue;
+				}
+				let (wx, wz) = (bx + lx as i32, bz + lz as i32);
+				for h in 1..=i32::from(BOUNCE_SEED) {
+					let v = BOUNCE_SEED + 1 - h as u8;
+					if self.nibble(wx, st + h, wz, Channel::Bounce) < v {
+						self.set_nibble(wx, st + h, wz, v, Channel::Bounce);
+					}
+				}
+				self.add[Channel::Bounce as usize].push_back((wx, st + 1, wz));
 			}
 		}
 		// Lateral seeds: where a lit column stands beside a blocked one,
@@ -369,15 +466,22 @@ impl LightField {
 			(x, z + 1, i32::MIN, bz + s),
 		] {
 			for cy in 0..crate::chunk::WORLD_VCHUNK {
-				let theirs_c = self.chunks.get(&ChunkPos::new(nx, cy, nz));
-				let ours_c = self.chunks.get(&ChunkPos::new(x, cy, z));
-				let uniform = |c: Option<&LightChunk>| match c {
+				let uniform = |m: &FxHashMap<ChunkPos, LightChunk>, p: ChunkPos| match m.get(&p) {
 					None => Some(0u8),
 					Some(LightChunk::Uniform(v)) => Some(*v),
 					Some(LightChunk::Mixed(_)) => None,
 				};
-				if let (Some(a), Some(b)) = (uniform(theirs_c), uniform(ours_c)) {
-					if a == b {
+				let (tp, op) = (ChunkPos::new(nx, cy, nz), ChunkPos::new(x, cy, z));
+				// Both maps must agree uniformly for the wholesale skip —
+				// two open-sky air chunks are main-map-equal while their
+				// low cells can hold diverging bounce from the ground below.
+				if let (Some(a), Some(b), Some(ba), Some(bb)) = (
+					uniform(&self.chunks, tp),
+					uniform(&self.chunks, op),
+					uniform(&self.bounce, tp),
+					uniform(&self.bounce, op),
+				) {
+					if a == b && ba == bb {
 						continue; // identical uniform faces: nothing to trade
 					}
 				}
@@ -396,7 +500,7 @@ impl LightField {
 						// brighter side raises the dimmer to bright−1),
 						// so equal-height sky on both sides trades zero
 						// pops — the flat-terrain common case.
-						for ch in [Channel::Block, Channel::Sky] {
+						for ch in [Channel::Block, Channel::Sky, Channel::Bounce] {
 							let tv = self.nibble(theirs.0, theirs.1, theirs.2, ch);
 							let ov = self.nibble(ours.0, ours.1, ours.2, ch);
 							if tv >= ov + 2 {
@@ -415,6 +519,7 @@ impl LightField {
 	/// self-discard at pop (`facts` answers `None` there).
 	pub fn drop_chunk(&mut self, pos: ChunkPos) {
 		self.chunks.remove(&pos);
+		self.bounce.remove(&pos);
 		self.dirty.remove(&pos);
 	}
 
@@ -431,13 +536,36 @@ impl LightField {
 		mut facts: impl FnMut(i32, i32, i32) -> Option<CellFacts>,
 	) -> u32 {
 		let mut pops = 0;
+		// The bounce-seed rule, evaluated wherever a seed might have
+		// appeared or gone stale: an AIR cell on an opaque floor under
+		// full sky. A stored 12 is only ever a seed (spread caps at 11),
+		// so a 12 that fails the rule is stale and strips cleanly.
 		while pops < budget {
-			let ch = if !self.remove[Channel::Block as usize].is_empty()
-				|| !self.add[Channel::Block as usize].is_empty()
-			{
+			if let Some((x, y, z)) = self.seed_check.pop_front() {
+				pops += 1;
+				let is_seed = matches!(
+					(facts(x, y, z), facts(x, y - 1, z)),
+					(Some(f), Some(b)) if f.air && b.opaque
+				) && self.nibble(x, y, z, Channel::Sky) == MAX_LIGHT;
+				let cur = self.nibble(x, y, z, Channel::Bounce);
+				if is_seed && cur < BOUNCE_SEED {
+					self.set_nibble(x, y, z, BOUNCE_SEED, Channel::Bounce);
+					self.add[Channel::Bounce as usize].push_back((x, y, z));
+				} else if !is_seed && cur == BOUNCE_SEED {
+					self.set_nibble(x, y, z, 0, Channel::Bounce);
+					self.remove[Channel::Bounce as usize].push_back(((x, y, z), BOUNCE_SEED));
+				}
+				continue;
+			}
+			let busy = |f: &Self, ch: Channel| {
+				!f.remove[ch as usize].is_empty() || !f.add[ch as usize].is_empty()
+			};
+			let ch = if busy(self, Channel::Block) {
 				Channel::Block
-			} else {
+			} else if busy(self, Channel::Sky) {
 				Channel::Sky
+			} else {
+				Channel::Bounce
 			};
 			if let Some(((x, y, z), old)) = self.remove[ch as usize].pop_front() {
 				pops += 1;
@@ -452,12 +580,34 @@ impl LightField {
 					if nl < old || down_column {
 						self.set_nibble(nx, ny, nz, 0, ch);
 						self.remove[ch as usize].push_back(((nx, ny, nz), nl));
-						// An emitter caught in the wave re-seeds itself
-						// (blocklight only — nothing emits sky).
-						if ch == Channel::Block {
-							if let Some(f) = facts(nx, ny, nz) {
-								if f.emits > 0 {
-									self.set_nibble(nx, ny, nz, f.emits, ch);
+						match ch {
+							// An emitter caught in the wave re-seeds itself
+							// (blocklight only — nothing emits sky).
+							Channel::Block => {
+								if let Some(f) = facts(nx, ny, nz) {
+									if f.emits > 0 {
+										self.set_nibble(nx, ny, nz, f.emits, ch);
+										self.add[ch as usize].push_back((nx, ny, nz));
+									}
+								}
+							}
+							// A cell losing its sky 15 may have been a
+							// bounce seed's sky support.
+							Channel::Sky => {
+								if nl == MAX_LIGHT {
+									self.seed_check.push_back((nx, ny, nz));
+								}
+							}
+							// A bounce seed caught in the wave re-seeds
+							// exactly like an emitter.
+							Channel::Bounce => {
+								let reseed = matches!(
+									(facts(nx, ny, nz), facts(nx, ny - 1, nz)),
+									(Some(f), Some(b)) if f.air && b.opaque
+								) && self.nibble(nx, ny, nz, Channel::Sky)
+									== MAX_LIGHT;
+								if reseed {
+									self.set_nibble(nx, ny, nz, BOUNCE_SEED, ch);
 									self.add[ch as usize].push_back((nx, ny, nz));
 								}
 							}
@@ -494,6 +644,11 @@ impl LightField {
 					if self.nibble(nx, ny, nz, ch) < target {
 						self.set_nibble(nx, ny, nz, target, ch);
 						self.add[ch as usize].push_back((nx, ny, nz));
+						// Sky descending to 15 can mint a bounce seed
+						// (the flooded shaft's floor).
+						if ch == Channel::Sky && target == MAX_LIGHT {
+							self.seed_check.push_back((nx, ny, nz));
+						}
 					}
 				}
 			} else {
@@ -817,6 +972,116 @@ mod tests {
 			assert_eq!(f.sky_light(100, y, 100), 0, "resealed at y={y}");
 		}
 		assert_eq!(f.sky_light(101, 100, 100), 0, "laterals cleaned up too");
+	}
+
+	/// The half-roof world: a stone floor across the whole residency,
+	/// open sky on the west half, a stone roof (with its own sunlit lid)
+	/// over the east half. The mouths are only at the x=99/100 seam.
+	fn half_roof() -> (World, LightField) {
+		let mut w = World::open();
+		w.bounds = Some(((90, 95, 90), (111, 112, 111)));
+		for x in 90..111 {
+			for z in 90..111 {
+				w.set((x, 99, z), BlockType::Stone);
+			}
+		}
+		for x in 100..111 {
+			for z in 90..111 {
+				w.set((x, 103, z), BlockType::Stone);
+			}
+		}
+		let mut f = LightField::new();
+		seed_sky_plane(&mut f, 110, 90..=110, 90..=110);
+		(w, f)
+	}
+
+	#[test]
+	fn sunlit_ground_seeds_bounce_and_shade_keeps_a_gradient() {
+		let (w, mut f) = half_roof();
+		settle(&mut f, &w);
+		// Open ground: the air cell on the stone is a seed, decaying up.
+		assert_eq!(f.bounce_light(95, 100, 100), 12, "the seed itself");
+		assert_eq!(f.bounce_light(95, 103, 100), 9, "vertical profile");
+		// The roof's own lid is sunlit ground too.
+		assert_eq!(f.bounce_light(105, 104, 100), 12, "the roof lid");
+		// Under the roof: bounce walks in from the sunlit west with plain
+		// Manhattan decay — floor AND ceiling hold a real gradient.
+		assert_eq!(f.bounce_light(100, 100, 100), 11, "floor at the mouth");
+		assert_eq!(f.bounce_light(105, 100, 100), 6, "floor deep in");
+		assert_eq!(f.bounce_light(100, 102, 100), 9, "ceiling-adjacent");
+		// Under-roof ground is NOT a seed (its sky is lateral, < 15).
+		assert!(f.sky_light(105, 100, 100) < MAX_LIGHT);
+	}
+
+	#[test]
+	fn bounce_settles_identically_at_any_budget() {
+		for budget in [1, 7, 64, u32::MAX] {
+			let (w, mut f) = half_roof();
+			while f.pending() > 0 {
+				f.step(budget, w.facts());
+			}
+			assert_eq!(f.bounce_light(105, 100, 100), 6, "budget {budget}");
+			assert_eq!(f.bounce_light(100, 102, 100), 9, "budget {budget}");
+		}
+	}
+
+	#[test]
+	fn water_on_sunlit_ground_is_not_a_seed() {
+		let (mut w, mut f) = half_roof();
+		settle(&mut f, &w);
+		place(&mut f, &mut w, (95, 100, 100), BlockType::Water);
+		settle(&mut f, &w);
+		// The stale 12 strips (12 is seed-only) and relight restores the
+		// value its sunlit neighbors actually support.
+		assert_eq!(f.bounce_light(95, 100, 100), 11, "wet cell demoted");
+		assert_eq!(f.bounce_light(94, 100, 100), 12, "dry neighbor unaffected");
+	}
+
+	#[test]
+	fn sealing_the_sky_strips_the_seeds_below() {
+		let mut w = World::open();
+		w.bounds = Some(((95, 95, 95), (106, 112, 106)));
+		for x in 95..106 {
+			for z in 95..106 {
+				w.set((x, 99, z), BlockType::Stone);
+			}
+		}
+		let mut f = LightField::new();
+		seed_sky_plane(&mut f, 110, 95..=105, 95..=105);
+		settle(&mut f, &w);
+		assert_eq!(f.bounce_light(100, 100, 100), 12);
+		// Roof the ENTIRE residency: no rim, no sky, no seeds, no bounce.
+		for x in 95..106 {
+			for z in 95..106 {
+				place(&mut f, &mut w, (x, 103, z), BlockType::Stone);
+			}
+		}
+		settle(&mut f, &w);
+		assert_eq!(f.bounce_light(100, 100, 100), 0, "sealed floor");
+		assert_eq!(f.bounce_light(100, 102, 100), 0, "sealed ceiling");
+		assert_eq!(f.bounce_light(100, 104, 100), 12, "the new lid seeds");
+	}
+
+	#[test]
+	fn digging_the_ground_under_a_seed_relocates_it() {
+		let mut w = World::open();
+		w.bounds = Some(((95, 95, 95), (106, 112, 106)));
+		for y in [98, 99] {
+			for x in 95..106 {
+				for z in 95..106 {
+					w.set((x, y, z), BlockType::Stone);
+				}
+			}
+		}
+		let mut f = LightField::new();
+		seed_sky_plane(&mut f, 110, 95..=105, 95..=105);
+		settle(&mut f, &w);
+		place(&mut f, &mut w, (100, 99, 100), BlockType::Air);
+		settle(&mut f, &w);
+		// The hole floods with sky and its floor is the new seed; the old
+		// seed cell above is stale-stripped and relit to spread values.
+		assert_eq!(f.bounce_light(100, 99, 100), 12, "the hole floor seeds");
+		assert_eq!(f.bounce_light(100, 100, 100), 11, "old seed demoted");
 	}
 
 	#[test]

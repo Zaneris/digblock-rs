@@ -1,6 +1,30 @@
 # Skills, Essence & Ore — design document
 
-Status: **building — §11's M1 (skills skeleton) and M2 (essence economy) are landed.**
+Status: **§11's M1–M4 plus the consolidation pass are BUILT and merged (2026-08-09/10);
+M5–M7 remain design.**
+
+**Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy screen · M3
+level-scaled dig speed · M4 tool slot + Stage-A emissive + Torch · consolidation:
+Stage-B voxel lighting (LIGHT-DESIGN.md — torches illuminate, caves/roofed rooms go
+dark), this document reconciled with shipped code, §5.1's per-family dig curves + the
+rock level gate (SIM v12, protocol v17), §8's transmute-page polish + engine-level
+touch + §8.2 next-unlock teasers. Post-pass lighting refinements (user-driven): the
+direct-sun **beam veto** is merged (the shadow map owns the beam; the sky column only
+vetoes it near zero — a 10am sun reaches under an open-sided roof), and a third
+**bounce channel** (one-bounce sun-fill seeded at sunlit ground, the "GI look"
+compromise) is built and under visual evaluation — lighting may still be replaced
+wholesale by a low-res RTGI approach if the look doesn't satisfy.
+
+**Left to build:** **M5 — Ore** (`ore_at` placement + golden pins, ore rows at ids
+30–34, reveal-by-level remesh stamping, the Essence Siphon tool at Alch 10, field
+extraction writing DepletedStone + dual XP, §5.3–§5.4 — the headline feature) ·
+**M6 — Resonant Pick + endgame lines** (multi-cell dig at Mining 55+, prospector's
+sense, 99 masteries) · **M7 — catalog waves** (§7's materials × shapes grid, Glass,
+new shapes, Lantern/Aetherlamp/functional items, essence exchange — open-ended,
+release by release) · §12's open questions (death penalty, mobile UX pass, sounds).
+Bot-soak/playtest checkpoints after M5's ore rates land (§11 note).
+
+Milestone detail as originally built:
 M1: `digblock-core/src/skills.rs` (curve + awards, golden-pinned), protocol v16
 (`Skills`/`XpGain`), `inventories.bin` v4, `state.json` skills, both server chokepoints
 awarding, XP toasts, the character screen (C / pause row / `DIG_SCREEN=skills`), offline

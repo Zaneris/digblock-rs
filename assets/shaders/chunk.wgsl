@@ -32,6 +32,11 @@ const NORMALS = array<vec3f, 6>(
 // differentiates the direct term by orientation.
 const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
 
+// Bounce-axis weights (same order): the INVERSE hemisphere. Bounce is
+// sunlight thrown up off nearby sunlit ground, so undersides catch the
+// most, walls a middle share, and tops — already sun-served — the least.
+const BAXIS = array<f32, 6>(0.7, 0.65, 0.65, 1.0, 0.3, 0.7);
+
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
@@ -49,10 +54,13 @@ struct VsOut {
 	// Stage-A emissive (w1 bit 21): 1 = fullbright ink — the lighting
 	// terms are skipped entirely (fog still applies).
 	@location(9) @interpolate(flat) emissive: u32,
-	// Stage-B light (w1 bits 22-25 block, 26-29 sky), normalized and
-	// interpolated — the per-vertex smooth values the mesher sampled from
-	// the flood-fill field (LIGHT-DESIGN.md). x = blocklight, y = sky.
-	@location(10) light: vec2f,
+	// Stage-B light (w1 bits 22-25 block, 26-29 sky, 30-31 bounce),
+	// normalized and interpolated — the per-vertex smooth values the
+	// mesher sampled from the flood-fill field (LIGHT-DESIGN.md).
+	// x = blocklight, y = sky, z = bounce (sun-fill off sunlit ground).
+	@location(10) light: vec3f,
+	// The bounce hemisphere weight (constant per face).
+	@location(11) @interpolate(flat) baxis: f32,
 }
 
 // Torchlight tint: warm, slightly under white so max() lets sunlight win
@@ -68,6 +76,9 @@ const MIN_AMBIENT = 0.02;
 // which alone knows the sun's angle. This is NOT Minecraft's model —
 // there the column IS sunlight; here it is only occlusion truth.
 const BEAM_SKY = 0.27;
+// Strength of the one-bounce sun-fill (the third light channel) at full
+// bounce on a full-deficit underside, in light_color units.
+const BOUNCE_K = 0.6;
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
@@ -113,8 +124,13 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let jitter = 1.0 + (f32((w1 >> 18u) & 7u) - 3.5) * (0.10 / 7.0);
 	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
 	o.axis = AXIS[ni];
+	o.baxis = BAXIS[ni];
 	o.emissive = (w1 >> 21u) & 1u;
-	o.light = vec2f(f32((w1 >> 22u) & 0xfu), f32((w1 >> 26u) & 0xfu)) / 15.0;
+	o.light = vec3f(
+		f32((w1 >> 22u) & 0xfu) / 15.0,
+		f32((w1 >> 26u) & 0xfu) / 15.0,
+		f32(w1 >> 30u) / 3.0,
+	);
 
 	let pn = frame.light_near * vec4f(world, 1.0);
 	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
@@ -188,8 +204,16 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// ground truth.
 	let skyf = mix(MIN_AMBIENT, 1.0, pow(i.light.y, 1.5));
 	let beam = smoothstep(0.0, BEAM_SKY, i.light.y);
+	// Sun-fill: one bounce off nearby sunlit ground, scaled by the SKY
+	// DEFICIT (1 − skyf) so the open surface — whose tuned ambient
+	// already bakes an implied bounce — keeps exact pre-Stage-B parity,
+	// while shaded space under a roof refills toward realism instead of
+	// crushing to black. BAXIS inverts the hemisphere: ceilings catch
+	// floor bounce hardest. Rides light_color, so it warms at dusk and
+	// dies at night for free; a sealed cave has bounce 0 by BFS reach.
+	let fill = BOUNCE_K * i.light.z * i.baxis * (1.0 - skyf);
 	let sun = frame.ambient.rgb * i.axis * skyf
-		+ frame.light_color.rgb * i.direct * sh * beam;
+		+ frame.light_color.rgb * (i.direct * sh * beam + fill);
 	// Stage-B torchlight competes with the sun via a componentwise max —
 	// never a sum, so noon faces don't blow out beside a torch. The
 	// curve steepens the 16-level falloff; AO still darkens contact
