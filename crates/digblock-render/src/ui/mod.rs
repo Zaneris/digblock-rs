@@ -33,8 +33,12 @@ pub enum InvId {
 	Grid(u16),
 	/// One hotbar slot.
 	Bar(u8),
-	/// Alchemy: a craft row's button (index into `alchemy::CRAFT_ORDER`).
+	/// Alchemy: one member tile of the selected transmute family.
 	Craft(u8),
+	/// Alchemy: one transmute family tile (index into `FAMILIES`).
+	Family(u8),
+	/// Alchemy: the transmute tab's single TRANSMUTE button.
+	CraftGo,
 	/// Alchemy: one of the two tab-strip buttons (0 extract, 1 transmute).
 	Tab(u8),
 	/// Alchemy: the extraction drop target (a pointer, not a container).

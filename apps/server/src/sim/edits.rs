@@ -343,11 +343,17 @@ impl Sim {
 			// failure, and reporting it as a shortfall would read as the
 			// grace being too small when nothing was banked at all.
 			let mut short = 0u32;
+			let mining_level = self
+				.clients
+				.get(&req.conn_id)
+				.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining));
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
 				cell == req.cell
 					&& cell_value == hit.cell_value
 					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
-						let need = u32::from(h);
+						// Level-scaled hold time (SIM v11): the same
+						// `dig_required` the client's own timer runs.
+						let need = digblock_core::skills::dig_required(h, mining_level);
 						let have = progress + dig_grace(need);
 						short = need.saturating_sub(have);
 						have >= need
@@ -1281,8 +1287,9 @@ mod tests {
 		sim.tick_once(vec![dig(1)]);
 		// Back on target: the banked 40 survive the miss stretch (which
 		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~50 more verified ticks complete the stone (needs ≥ 74).
-		for _ in 0..50 {
+		// so ~75 more verified ticks complete the stone (level-1 need is
+		// 113, grace 16 → ≥ 97 verified).
+		for _ in 0..75 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -1334,7 +1341,8 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		for _ in 0..95 {
+		// Level-1 stone needs 113 ticks (grace 16 → ≥ 97 verified).
+		for _ in 0..110 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}

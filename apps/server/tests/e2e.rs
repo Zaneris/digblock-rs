@@ -348,7 +348,10 @@ impl TestClient {
 			std::thread::sleep(Duration::from_millis(16));
 		}
 		self.client.send_dig_start(hit.cell);
-		let hold = hit.block.hardness_ticks().expect("diggable target") as u32 + 6;
+		let hold = digblock_core::skills::dig_required(
+			hit.block.hardness_ticks().expect("diggable target"),
+			1,
+		) + 6;
 		for _ in 0..hold {
 			self.client
 				.predictor

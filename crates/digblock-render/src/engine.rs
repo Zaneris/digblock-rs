@@ -2151,7 +2151,18 @@ impl Engine {
 			.is_some_and(|d| d.cell == hit.cell && d.cell_value == hit.cell_value);
 		if !on_same {
 			self.cancel_dig();
-			let required = hit.block.dig_hardness(hit.cell.1).unwrap_or(u16::MAX);
+			// Level-scaled hold time (SIM v11) — the same `dig_required`
+			// the server's completion gate runs.
+			let required = hit
+				.block
+				.dig_hardness(hit.cell.1)
+				.map(|h| {
+					digblock_core::skills::dig_required(
+						h,
+						self.skills.level(digblock_core::skills::Skill::Mining),
+					) as u16
+				})
+				.unwrap_or(u16::MAX);
 			self.dig = Some(DigProgress {
 				cell: hit.cell,
 				cell_value: hit.cell_value,

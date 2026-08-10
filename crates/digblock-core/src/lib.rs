@@ -87,4 +87,10 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// mirrored in `overlaps_solid`, replacing v9's "the step needs no probe
 /// mirror" property: a rate-limited mount spends a few ticks with the
 /// capsule inside the side of the box it climbs.
-pub const SIM_VERSION: u16 = 10;
+/// v11: level-scaled dig speed — hold-to-dig duration is
+/// `skills::dig_required(hardness, mining_level)`: 1.25× today's times
+/// at level 1, parity at 30 (the legacy table is the mid-curve golden),
+/// ~0.42× at 99. Shared dig behavior both sides time independently, so
+/// a v10 client's holds would complete early or late against a v11
+/// server at any level but 30.
+pub const SIM_VERSION: u16 = 11;

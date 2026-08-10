@@ -595,13 +595,18 @@ never the screen. Rules, each load-bearing:
 - Extraction runs **only while the screen is open**. No AFK-extraction-while-mining; you
   stand at the bench.
 
-TRANSMUTE stays click-based (crafting is a decision, not a grind): category headers
-(BLOCKS / SHAPES / TOOLS / ESSENCE), locked rows drawn DIM with `Lv 55` where the button
-would be and no hit rect (the existing disabled-row pattern), owned tools as OWNED trophy
-rows (§7.3), costs displayed post-waste at your level, `CLICK 1 · SHIFT 10 · CTRL 100`
-multipliers. The catalog outgrows the tallest-screen-in-the-game problem, so: tabs bound
-the height, and if a tab still overflows, the panel scrolls **with captured wheel input
-while open** (the no-uncaptured-scroll rule) — `fit_scale` remains the fallback.
+TRANSMUTE stays click-based (crafting is a decision, not a grind), structured as
+**families with one button** (reworked to this shape during the build, on feedback that
+the flat row list didn't read): a row of FAMILY tiles — SLABS, STAIRS, DOORS, BLOCKS,
+WATER — each slowly rotating its icon through its members (wood stairs, stone stairs, …)
+on a shared clock; selecting a family lays its member tiles out beneath (locked members
+visible but dim, affordable ones badged with their batch count); a detail strip shows
+the selected member's name and post-waste cost at your level; and the tab has exactly
+ONE `TRANSMUTE` button, disabled (no hit rect) for a locked or unaffordable pick.
+`CLICK 1 · SHIFT 10 · CTRL 100` multipliers on that button. This is also the §7.2 grid's
+natural UI: a new material × shape pair is one more member in an existing family, so the
+catalog grows without the screen growing. Tools/essence-exchange rows join as families
+when they land (M4+). `fit_scale` remains the overflow fallback.
 
 ### 8.2 Character screen
 
