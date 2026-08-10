@@ -56,6 +56,55 @@ fn main() {
 	// as rough cobble when placed. Appended LAST so the shared rng stream
 	// leaves every earlier output byte-identical.
 	save("Rubble.png", rubble(&stone, &mut rng));
+
+	// Torch: the side texture maps the post's wood to the LOWER rows and
+	// the flame glow to the top rows (a box face's v runs top-down from
+	// the cell's top, so the flame head at y 7..10 samples rows 2..5);
+	// the flame top face gets its own radial-glow layer.
+	save("TorchSide.png", torch_side(&wood, &mut rng));
+	save("TorchFlame.png", torch_flame(&mut rng));
+}
+
+/// Wood post darkened, with the top ~5/12 of rows turned to flame glow
+/// (white-hot core rows fading through yellow to orange where the flame
+/// head's side faces sample).
+fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
+	let mut out = wood.clone();
+	let flame_rows = SIZE * 5 / 12; // rows 0..≈26 of 64
+	for (_, y, p) in out.enumerate_pixels_mut() {
+		if y < flame_rows {
+			// 0 at the very top (cool fringe) → 1 at the head's base.
+			let t = y as f32 / flame_rows as f32;
+			let j = rng.signed(10);
+			p.0 = [
+				clamp8(255.0 + j as f32),
+				clamp8(150.0 + 90.0 * t + j as f32),
+				clamp8(30.0 + 60.0 * t),
+			];
+		} else {
+			let g = rng.signed(5);
+			for c in p.0.iter_mut() {
+				*c = add8(*c, -18 + g);
+			}
+		}
+	}
+	out
+}
+
+/// The flame head's top: a radial white-yellow glow on ember orange.
+fn torch_flame(rng: &mut Rng) -> RgbImage {
+	let mut out = RgbImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
+		let j = rng.signed(8) as f32;
+		p.0 = [
+			clamp8(255.0 - 30.0 * d + j),
+			clamp8(230.0 - 120.0 * d + j),
+			clamp8(120.0 - 100.0 * d),
+		];
+	}
+	out
 }
 
 /// Fractured stone: slight darkening jitter, crack walks (a dark groove

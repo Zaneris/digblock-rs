@@ -95,6 +95,11 @@ blocks! {
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
 	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90),
+	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
+	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
+	/// emissive: fullbright ink, visible in the dark but not (yet)
+	/// illuminating its surroundings — a way-marker, not a lamp.
+	Torch = 28 => dig(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 10),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -162,6 +167,8 @@ pub enum ShapeKind {
 	Door,
 	/// Bottom-anchored 12×12×4 (state 0) or 12×12×8 (state 1) fill.
 	Slab,
+	/// Floor-mounted torch: post + glowing head, one stateless variant.
+	Torch,
 }
 
 /// Alchemy essence families — what blocks extract INTO at the bench
@@ -266,6 +273,10 @@ pub struct BlockProps {
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
+	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright
+	/// ink — the shader skips the sun/shadow/AO terms. No light is CAST;
+	/// that is Stage B's flood-fill field, its own future system.
+	pub emissive: bool,
 }
 
 const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
@@ -281,6 +292,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		hardness_ticks: 0,
 		drops: None,
 		shape: None,
+		emissive: false,
 	}
 }
 
@@ -310,6 +322,12 @@ const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
 	p
 }
 
+/// Stage-A emissive: the block's faces render fullbright.
+const fn glows(mut p: BlockProps) -> BlockProps {
+	p.emissive = true;
+	p
+}
+
 /// A water-family row: water bucket + fluid behavior.
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
@@ -328,6 +346,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		hardness_ticks: 0,
 		drops: None,
 		shape: None,
+		emissive: false,
 	}
 }
 
@@ -351,6 +370,8 @@ mod tex {
 	pub const SANDSTONE: u16 = 15;
 	pub const DOOR_WOOD: u16 = 16;
 	pub const RUBBLE: u16 = 17;
+	pub const TORCH_SIDE: u16 = 18;
+	pub const TORCH_FLAME: u16 = 19;
 }
 
 impl BlockType {

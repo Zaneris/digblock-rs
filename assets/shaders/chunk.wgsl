@@ -46,12 +46,15 @@ struct VsOut {
 	@location(7) @interpolate(flat) axis: f32,
 	// World position — the underwater fog needs the ray endpoint.
 	@location(8) world: vec3f,
+	// Stage-A emissive (w1 bit 21): 1 = fullbright ink — the lighting
+	// terms are skipped entirely (fog still applies).
+	@location(9) @interpolate(flat) emissive: u32,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
 // index, 27-28 ao, 29-30 corner. w1 — solid material: bits 0-9 texture
-// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint.
+// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint, 21 emissive.
 // Twelfths → blocks with the whole-block part split off in INTEGER
 // space: full-block lattice vertices (multiples of 12) decode exactly
 // even under fast-math (a plain /12.0 becomes an inexact reciprocal
@@ -91,6 +94,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let jitter = 1.0 + (f32((w1 >> 18u) & 7u) - 3.5) * (0.10 / 7.0);
 	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
 	o.axis = AXIS[ni];
+	o.emissive = (w1 >> 21u) & 1u;
 
 	let pn = frame.light_near * vec4f(world, 1.0);
 	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
@@ -141,6 +145,12 @@ fn shadow_vis(sc_near: vec3f, sc_wide: vec3f, direct: f32) -> f32 {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
+	// Stage-A emissive: the ink is its own light — no sun, no shadow,
+	// no AO. Fog still applies (a torch across the valley should haze
+	// out like everything else does).
+	if i.emissive != 0u {
+		return vec4f(apply_fog(tex, i.fog_dist, i.world), frame.misc.x);
+	}
 	var vis = 1.0;
 	if frame.misc.y > 0.5 {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);

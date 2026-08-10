@@ -234,9 +234,10 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// Word 1 is per-stream material, assembled by the caller:
 /// solid — [`solid_word1`]: bits 0-9 texture layer (1024 cap =
 /// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
-/// 18-20 tint, 21-31 reserved. water — bits 0-9 texture layer, 10-23
-/// payload (see MeshData::water), 24-31 reserved (water reads its uv
-/// from the corner code and has no tint).
+/// 18-20 tint, 21 emissive (Stage-A fullbright — chunk.wgsl skips the
+/// lighting terms), 22-31 reserved. water — bits 0-9 texture layer,
+/// 10-23 payload (see MeshData::water), 24-31 reserved (water reads
+/// its uv from the corner code and has no tint).
 #[inline]
 fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 	let (x, y, z) = v.pos;
@@ -246,10 +247,10 @@ fn pack(v: Vert, normal: Dir, corner: u32) -> u32 {
 
 /// The solid stream's material word (see [`pack`] for the layout).
 #[inline]
-fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32) -> u32 {
+fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, tint: u32, emissive: bool) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
 	debug_assert!(uv_u <= 12 && uv_v <= 12 && tint < 8);
-	tex | (uv_u << 10) | (uv_v << 14) | (tint << 18)
+	tex | (uv_u << 10) | (uv_v << 14) | (tint << 18) | ((emissive as u32) << 21)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
@@ -364,6 +365,7 @@ fn emit_face(
 	tex: u32,
 	ao: [u32; 4],
 	tint: u32,
+	emissive: bool,
 ) {
 	let corners = face_corners(b.0 as i32, b.1 as i32, b.2 as i32, dir);
 	let order: [usize; 4] = if ao[0] + ao[3] > ao[1] + ao[2] {
@@ -388,6 +390,7 @@ fn emit_face(
 			(ci as u32 & 1) * 12,
 			(ci as u32 >> 1) * 12,
 			tint,
+			emissive,
 		));
 	}
 }
@@ -476,6 +479,7 @@ fn emit_shaped(
 				u32::from(q.uv[ci][0]),
 				u32::from(q.uv[ci][1]),
 				tint,
+				me.props().emissive,
 			));
 		}
 	}
@@ -581,7 +585,15 @@ pub fn mesh_chunk(input: &MeshInput, base: (i32, i32, i32)) -> MeshData {
 								i64::from(base.2) + z as i64,
 							)
 						});
-						emit_face(&mut mesh.solid, (x, y, z), dir, tex, ao, bt);
+						emit_face(
+							&mut mesh.solid,
+							(x, y, z),
+							dir,
+							tex,
+							ao,
+							bt,
+							me.props().emissive,
+						);
 					}
 				}
 			}
@@ -1010,7 +1022,7 @@ mod tests {
 		assert_eq!(dir_of(w0), Dir::East as u32);
 		assert_eq!(ao_of(w0), 1);
 		assert_eq!(corner_of(w0), 2);
-		let w1 = solid_word1(700, 12, 0, 5);
+		let w1 = solid_word1(700, 12, 0, 5, false);
 		assert_eq!(w1 & 0x3ff, 700);
 		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
 		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");

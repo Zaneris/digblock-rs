@@ -166,7 +166,11 @@ pub struct Family {
 	pub members: &'static [BlockType],
 }
 
-pub const FAMILIES: [Family; 5] = [
+pub const FAMILIES: [Family; 6] = [
+	Family {
+		name: "LIGHTS",
+		members: &[BlockType::Torch],
+	},
 	Family {
 		name: "SLABS",
 		members: &[BlockType::WoodSlab, BlockType::StoneSlab],
@@ -906,6 +910,7 @@ fn block_name(b: BlockType) -> &'static str {
 		B::Grass => "GRASS",
 		B::Mud => "MUD",
 		B::Water => "WATER CHARGE",
+		B::Torch => "TORCH",
 		_ => "?",
 	}
 }
@@ -1170,8 +1175,12 @@ mod tests {
 		press(&mut r, tab);
 		rebuild(&mut r);
 
-		// Default: the SLABS family with WoodSlab selected. Ctrl asks
-		// for 100; the holdings clamp it.
+		// The default LIGHTS family's torch needs Earth this rig lacks —
+		// pick SLABS, whose WoodSlab the Flora affords. Ctrl asks for
+		// 100; the holdings clamp it.
+		let slabs = center(r.hits.rect_of(InvId::Family(1)).unwrap());
+		press(&mut r, slabs);
+		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
 		feed(
 			&mut r,
@@ -1200,7 +1209,7 @@ mod tests {
 		// The WATER family's one member is locked at 20: the tile still
 		// shows (the strip names LV 50), but the single button registers
 		// no hit — honest pixels, not a trap.
-		let water = center(r.hits.rect_of(InvId::Family(4)).unwrap());
+		let water = center(r.hits.rect_of(InvId::Family(5)).unwrap());
 		press(&mut r, water);
 		rebuild(&mut r);
 		assert!(
@@ -1215,7 +1224,7 @@ mod tests {
 		// BLOCKS: switching family lands on the first unlocked member
 		// (Stone — unaffordable with no Earth, button dark); picking
 		// Wood by tile makes the one button craft THAT.
-		let blocks = center(r.hits.rect_of(InvId::Family(3)).unwrap());
+		let blocks = center(r.hits.rect_of(InvId::Family(4)).unwrap());
 		press(&mut r, blocks);
 		rebuild(&mut r);
 		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
