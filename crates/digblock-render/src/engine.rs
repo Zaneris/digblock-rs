@@ -2033,6 +2033,17 @@ impl Engine {
 	/// True while the water tool is the selected hotbar item.
 	fn water_tool_selected(&self) -> bool {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
+			&& self.hotbar.active_tool() == BlockType::Bucket
+	}
+
+	/// The owned tool roster in deterministic block-id order: the
+	/// always-owned bucket plus every tool id with a nonzero count.
+	fn owned_tools(&self) -> Vec<BlockType> {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|b| b.is_tool() && (b.always_owned() || self.inventory.count(*b) > 0))
+			.collect()
 	}
 
 	/// True while the tool is out AND empty — the scooping state. This is
@@ -3121,7 +3132,18 @@ impl Game for Engine {
 				}
 				Key::Digit(n) => {
 					if pressed {
-						self.hotbar.select_digit(n);
+						// §6: 9 on the already-selected tool slot cycles
+						// the owned roster instead of reselecting it. The
+						// resulting Layout diff carries the new pick to
+						// the server before any edit that uses it.
+						let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS;
+						if n as usize == tool_slot && self.hotbar.selected_index() == tool_slot - 1
+						{
+							let owned = self.owned_tools();
+							self.hotbar.cycle_tool(&owned);
+						} else {
+							self.hotbar.select_digit(n);
+						}
 					}
 				}
 				Key::Backquote => {
@@ -3769,6 +3791,7 @@ impl Game for Engine {
 		}
 		if in_game {
 			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+			let owned_tools = self.owned_tools();
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui_dl,
 				hits: &mut self.ui_hits,
@@ -3799,6 +3822,14 @@ impl Game for Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
+			crate::ui::hud::tool_rail(
+				ui.dl,
+				&ui.style,
+				size,
+				&owned_tools,
+				self.hotbar.active_tool(),
+				self.inventory.bucket_full(),
+			);
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		// The hand is part of playing, not part of reading a screen: a
@@ -4091,18 +4122,24 @@ mod store_tests {
 		engine.set_world_store(Box::new(MockStore(calls.clone())));
 		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 
+		// §6 pinned the tool slot: a legacy layout that parked the tool
+		// mid-bar migrates on decode — the parked spot empties and the
+		// tool comes back at the end; blocks keep their slots.
 		let b3 = BlockType::try_from_id(3).unwrap();
-		assert_eq!(engine.hotbar.slots()[0], Some(HotbarItem::WaterTool));
+		assert_eq!(engine.hotbar.slots()[0], None, "parked spot empties");
 		assert_eq!(engine.hotbar.slots()[4], Some(HotbarItem::Block(b3)));
 		assert_eq!(
 			engine.hotbar.slots()[HOTBAR_SLOTS - 1],
-			None,
-			"auto-assign respects the saved layout (id 3 already placed)"
+			Some(HotbarItem::WaterTool),
+			"the tool slot is pinned to the end"
 		);
 
-		// Suspend hands the same arrangement back to the store.
+		// Suspend hands the MIGRATED arrangement back to the store.
 		engine.on_suspend();
-		assert_eq!(calls.borrow().saved_hotbar, wire.to_vec());
+		let mut migrated = [WIRE_EMPTY; HOTBAR_SLOTS];
+		migrated[4] = 3;
+		migrated[HOTBAR_SLOTS - 1] = WIRE_TOOL;
+		assert_eq!(calls.borrow().saved_hotbar, migrated.to_vec());
 	}
 
 	/// The walk sim holds while the player's column is ungenerated —

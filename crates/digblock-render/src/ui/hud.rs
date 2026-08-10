@@ -116,6 +116,47 @@ pub fn hotbar<Id: Copy + PartialEq>(
 	}
 }
 
+/// §6's faded tool rail: the owned tools OTHER than the active one,
+/// drawn as small reduced-alpha icons just right of the tool slot, in
+/// the roster's own deterministic order. A READOUT, not a target — no
+/// hit rects; tapping 9 on the selected tool slot is the interaction.
+/// With a single owned tool nothing draws at all.
+pub fn tool_rail(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	owned: &[digblock_core::block::BlockType],
+	active: digblock_core::block::BlockType,
+	bucket_full: bool,
+) {
+	use digblock_core::block::BlockType;
+	if owned.len() < 2 {
+		return;
+	}
+	const RAIL_TINT: u32 = 0x70FF_FFFF;
+	let scale = style.scale;
+	let grid = row_grid(size, scale);
+	let cell = 28.0 * scale;
+	let gap = 6.0 * scale;
+	let mut x = grid.origin.0 + grid.extent(HOTBAR_SLOTS).0 + SLOT_GAP * scale * 2.0;
+	let y = grid.origin.1 + grid.cell - cell;
+	for &tool in owned.iter().filter(|&&t| t != active) {
+		let kind = match tool {
+			BlockType::Bucket => IconKind::WaterTool { full: bucket_full },
+			// Future tools without authored icons read as their cube.
+			other => IconKind::Cube(other),
+		};
+		draw_icon(
+			dl,
+			Layer::Icons,
+			super::Rect::new(x, y, cell, cell),
+			kind,
+			RAIL_TINT,
+		);
+		x += cell + gap;
+	}
+}
+
 /// One coalescing XP toast: rapid awards to the same skill accumulate
 /// into a single "+N SKILL" line instead of a scrolling storm. Engine
 /// state — [`xp_toasts`] just draws whatever is live.

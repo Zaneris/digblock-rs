@@ -16,8 +16,13 @@ scaled dig speed, SIM v11, exact parity at 30) is landed, along with a rework of
 transmute tab into §8.1's family model. M4 is HALF landed: the Stage-A emissive bit
 (solid vertex word 1 bit 21; chunk.wgsl returns fogged ink and skips sun/shadow/AO) and
 the Torch (ShapeKind::Torch — post + glowing head, hand-priced 4 Flora + 2 Earth at
-Alch 8, the LIGHTS family on the transmute tab, in the DIG_SHAPES showcase). The tool-
-slot formalization (§6) is the remaining M4 half; M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+Alch 8, the LIGHTS family on the transmute tab, in the DIG_SHAPES showcase). M4's other
+half — §6's tool formalization — is landed too: tools are item-only `blocks!` rows
+(`Bucket = 29`, `is_tool`/`always_owned`), the tool slot is PINNED to the bar's end
+(legacy layouts that parked it mid-bar migrate on decode), `Hotbar::active_tool` is the
+second axis riding the Layout wire's 9th entry (`WIRE_TOOL` = the bucket), tap-9 on the
+selected tool slot cycles the owned roster, the faded rail draws once a second tool
+exists, and the server's Collect/pour gates check the active tool. M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
