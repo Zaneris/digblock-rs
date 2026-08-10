@@ -58,8 +58,12 @@ fn fs(i: VsOut) -> FsOut {
 	let uv = vec2i(vec2f(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5) * dim);
 	let d = textureLoad(depth_tex, clamp(uv, vec2i(0), vec2i(dim) - 1), 0).r;
 	if d >= 1.0 {
+		// Sky: lit, no water, and a normal code of 255 that matches no
+		// real face — so a sky texel never wins a weight in the scene's
+		// bilateral upsample. (`vec4f(1.0)` here used to claim a full
+		// WATER_DEPTH_SCALE of water in the blue lane.)
 		o.indirect = vec4f(0.0, 0.0, 0.0, 1e9);
-		o.sun = vec4f(1.0);
+		o.sun = vec4f(1.0, 1.0, 0.0, 1.0);
 		return o;
 	}
 	let clip = vec4f(i.ndc, d, 1.0);
@@ -84,6 +88,10 @@ fn fs(i: VsOut) -> FsOut {
 		code = 4u + select(0u, 1u, n.z < 0.0);
 	}
 	o.indirect = vec4f(indirect, length(p - rz.cam.xyz));
-	o.sun = vec4f(sv, f32(code) / 255.0, 0.0, 1.0);
+	// r = sun reached, g = normal code, b = the sun ray's water path
+	// length. The path travels rather than a transmittance so the scene
+	// shader can apply medium_common's per-channel WATER_SIGMA — the same
+	// water the view ray goes through.
+	o.sun = vec4f(sv.x, f32(code) / 255.0, min(sv.y / WATER_DEPTH_SCALE, 1.0), 1.0);
 	return o;
 }

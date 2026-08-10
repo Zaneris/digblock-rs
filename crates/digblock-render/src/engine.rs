@@ -3110,7 +3110,9 @@ impl Engine {
 			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
 			zenith: [zenith[0], zenith[1], zenith[2], 0.0],
 			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
-			misc: [1.0, 0.0, 0.0, 0.0],
+			// The medium's rim distance: where the streamed cylinder ends,
+			// which is the same number as the camera far plane.
+			misc: [1.0, far_plane(self.config.draw_dist), 0.0, 0.0],
 			water_misc: [
 				f32::from(submerged),
 				f32::from(self.config.ssr),

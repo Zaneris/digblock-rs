@@ -337,7 +337,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let indirect = INDIRECT_K
 		* gi_indirect(side, gp, face_n, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
 	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
-	let sh = mix(1.0, sv, frame.light_dir.w);
+	let sh = mix(vec3f(1.0), sv.x * medium_water_tr(sv.y), frame.light_dir.w);
 	// Froth light: the same direct+indirect mix the spray billboards
 	// use (spray.wgsl), shadowed like the surface it sits on — so foam
 	// dims with the night instead of glowing unlit white.
@@ -386,30 +386,46 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	if d_off >= i.pos.z {
 		suv = suv2;
 	}
-	// Clear water: what is behind the surface, straight through. The
-	// Beer-Lambert depth tint, the Snell window and the TIR mirror ring
-	// all came out at the M1 demolition — they were a hand-tuned model
-	// of exactly the transport M2's participating medium computes, and
-	// keeping them would have meant a tuned answer fighting a derived
-	// one. Until then water is a clear Fresnel pane from both sides.
+	// What is behind the surface, seen through the water body. The old
+	// hand-tuned Beer-Lambert depth tint, the Snell window and the TIR
+	// mirror ring came out at the M1 demolition; this is the same
+	// transport computed rather than tuned, over the reconstructed
+	// column. Water tints by DEPTH because red is absorbed an order of
+	// magnitude harder than blue (medium_common's measured sigma), not
+	// because a constant said which way to lean.
 	var col = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
+	let vray = -vdir;
+	col = medium_water_seg(
+		col,
+		medium_water_light(frame.zenith.rgb, max(-vray.y, 0.0) * thick * 0.5),
+		thick,
+	);
+	// How much of this pixel is still the refracted BACKDROP. That part
+	// already carries chunk.wgsl's medium the whole way from the camera,
+	// so fogging it again below would make distant water haze about
+	// twice as hard as the shore beside it — a visible step at the
+	// waterline. Only the surface's own light (froth, mirror, glint) has
+	// not travelled yet, and every term below is a `mix`, so one scalar
+	// tracks the split exactly.
+	var backdrop = 1.0;
+	let backdrop_col = col;
 	// Churned water is full of bubbles and reads white whatever the
 	// depth behind it; the mirror terms damp out over the same ramp.
 	col = mix(col, froth_tex * froth_light, aer);
+	backdrop *= 1.0 - aer;
 	// Contact foam line where the water meets ground (meaningless on the
 	// underside — thick is pinned to 0 there and would foam everything).
 	let shore = (1.0 - smoothstep(0.05, 0.45, thick)) * f32(!below);
 	col = mix(col, vec3f(0.95, 0.97, 1.0) * froth_light, shore * 0.25);
+	backdrop *= 1.0 - shore * 0.25;
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through head-on. SSR rides inside
 	// `reflection_color` and is explicitly staying.
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
-	col = mix(
-		col,
-		reflection_color(i.world, normalize(rr), i.view_dist),
-		fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below),
-	);
+	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below);
+	col = mix(col, reflection_color(i.world, normalize(rr), i.view_dist), mirror_w);
+	backdrop *= 1.0 - mirror_w;
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// a STATIC wash, brightest on the impact cell and fading with the
 	// splash code out to Chebyshev 2. Deliberately timeless. This was an
@@ -421,7 +437,9 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// churn harder here (`boost` above), so the foam has movement in it
 	// without the whole cell pulsing.
 	if i.splash > 0u {
-		col = mix(col, froth_light, 0.09 * f32(i.splash) * (1.0 - 0.5 * i.uv.y));
+		let foam_w = 0.09 * f32(i.splash) * (1.0 - 0.5 * i.uv.y);
+		col = mix(col, froth_light, foam_w);
+		backdrop *= 1.0 - foam_w;
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	// Glassy crest sheen where flow tips over a lip: strongest in the
@@ -433,5 +451,27 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// also claim to hide the bottom. Aeration still pins near-opaque and
 	// streak gaps still thin falling sheets.
 	let alpha = mix(max(mix(frame.misc.x, 1.0, fres), 0.0), 0.92, aer);
-	return vec4f(col, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
+	// The camera-to-surface medium, applied to the surface's own light
+	// only (see `backdrop` above). Every term above is a linear mix, so
+	// after n of them the pixel is exactly
+	//     col = B*backdrop + (surface light)
+	// with backdrop = prod(1 - w_k) and B the pre-mix backdrop. Peel the
+	// backdrop off, normalise what remains to a full-coverage radiance,
+	// fog THAT, and re-weight — which puts the in-scatter in proportional
+	// to how much of the pixel is actually surface. Fogging the composite
+	// instead would in-scatter a full pixel's worth of haze behind a
+	// pane that is mostly see-through.
+	let cover = max(1.0 - backdrop, 1e-4);
+	let back = backdrop_col * backdrop;
+	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let surf = medium_view(
+		(col - back) / cover,
+		frame.cam_pos.xyz,
+		i.world,
+		sky_in,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	) * cover;
+	return vec4f(back + surf, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
 }

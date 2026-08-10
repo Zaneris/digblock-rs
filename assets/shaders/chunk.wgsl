@@ -5,9 +5,11 @@
 // tex * (light_color * lambert * sunvis + indirect).
 //
 // Nothing else shades here any more. Baked AO, the Stage-B light
-// nibbles, the per-block tint jitter and the distance/underwater fog
-// all came out at the M1 demolition; contact darkening is the path
-// tracer's job now, and the participating medium is M2's.
+// nibbles and the per-block tint jitter came out at the M1 demolition —
+// contact darkening is the path tracer's job now. Distance and
+// underwater fog came out with them and came back at M2 as one
+// participating medium (medium_common.wgsl), applied once at the end to
+// emissive ink and lit surfaces alike.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -49,6 +51,8 @@ struct VsOut {
 	// Face-normal code (axis*2 + sign) matching gi_resolve's encoding,
 	// for the bilateral upsample's normal test.
 	@location(5) @interpolate(flat) ncode: u32,
+	// World position — the participating medium's segment endpoint.
+	@location(6) world: vec3f,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
@@ -92,6 +96,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
 	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
 	o.ncode = code_of[ni];
+	o.world = world;
 	return o;
 }
 
@@ -109,34 +114,57 @@ fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> @builtin(
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Stage-A emissive: the ink is its own light — no sun, no GI.
-	if i.emissive != 0u {
-		return vec4f(tex, frame.misc.x);
-	}
-	// Bilateral upsample of the half-res GI buffers: the 4 nearest
-	// half-res texels, each weighted by view-distance proximity and a
-	// face-normal match, so lighting never bleeds across the silhouette
-	// or around a corner.
-	let dim = vec2i(textureDimensions(gi_indirect)) - 1;
-	let base = (vec2i(i.pos.xy) - 1) / 2;
-	var acc = vec3f(0.0);
-	var sun_acc = 0.0;
-	var wsum = 0.0;
-	for (var t = 0; t < 4; t++) {
-		let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
-		let ind = textureLoad(gi_indirect, c, 0);
-		let sn = textureLoad(gi_sun, c, 0);
-		var w = 1.0 / (0.02 + abs(ind.w - i.view_dist) / max(i.view_dist, 1.0));
-		if u32(round(sn.g * 255.0)) != i.ncode {
-			w *= 0.01;
+	var col = tex;
+	// Emissive ink is its own light — no sun, no GI. It still travels to
+	// the eye through the medium like everything else, which is why the
+	// branch narrowed to the lighting instead of returning early.
+	if i.emissive == 0u {
+		// Bilateral upsample of the half-res GI buffers: the 4 nearest
+		// half-res texels, each weighted by view-distance proximity and a
+		// face-normal match, so lighting never bleeds across the
+		// silhouette or around a corner.
+		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
+		let base = (vec2i(i.pos.xy) - 1) / 2;
+		var acc = vec3f(0.0);
+		var sun_acc = 0.0;
+		var water_acc = 0.0;
+		var wsum = 0.0;
+		for (var t = 0; t < 4; t++) {
+			let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
+			let ind = textureLoad(gi_indirect, c, 0);
+			let sn = textureLoad(gi_sun, c, 0);
+			var w = 1.0 / (0.02 + abs(ind.w - i.view_dist) / max(i.view_dist, 1.0));
+			if u32(round(sn.g * 255.0)) != i.ncode {
+				w *= 0.01;
+			}
+			acc += ind.rgb * w;
+			sun_acc += sn.r * w;
+			water_acc += sn.b * w;
+			wsum += w;
 		}
-		acc += ind.rgb * w;
-		sun_acc += sn.r * w;
-		wsum += w;
+		let indirect = acc / wsum;
+		// The sun ray's own water column, attenuated by the SAME sigma
+		// the view ray uses — so sunlight reaching a submerged surface is
+		// red-starved, not just dim.
+		let sun_tr = medium_water_tr(water_acc / wsum * WATER_DEPTH_SCALE);
+		// Twilight fades the traced sun the way it faded mapped shadows.
+		let sh = mix(vec3f(1.0), sun_acc / wsum * sun_tr, frame.light_dir.w);
+		col = tex * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
 	}
-	let indirect = acc / wsum;
-	// Twilight fades the traced sun the way it faded mapped shadows.
-	let sh = mix(1.0, sun_acc / wsum, frame.light_dir.w);
-	let col = tex * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
-	return vec4f(col, frame.misc.x);
+	// The medium, from this surface to the eye. In-scatter is `sky_base`
+	// itself, so at distance the surface fades into exactly the sky pixel
+	// behind it — including the streaming rim, which is why the world's
+	// edge stops being visible rather than being hidden.
+	let ray = normalize(i.world - frame.cam_pos.xyz);
+	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let lit = medium_view(
+		col,
+		frame.cam_pos.xyz,
+		i.world,
+		sky,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	);
+	return vec4f(lit, frame.misc.x);
 }

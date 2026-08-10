@@ -224,8 +224,10 @@ pub struct FrameUniforms {
 	pub zenith: [f32; 4],
 	/// rgb = sky horizon color.
 	pub horizon: [f32; 4],
-	/// x = water alpha; yzw reserved (the shadow-map lanes died with the
-	/// cascades — nothing has read them since).
+	/// x = water alpha, y = the streaming radius in blocks (the
+	/// participating medium's rim distance — terrain is streamed in a
+	/// vertical cylinder, so this is a HORIZONTAL bound); zw reserved
+	/// (the remaining shadow-map lanes died with the cascades).
 	pub misc: [f32; 4],
 	/// x = camera underwater (0/1), y = SSR enabled (0/1), z = water-
 	/// surface height above the camera (the shaders' underwater

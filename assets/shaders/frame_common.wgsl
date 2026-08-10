@@ -26,8 +26,9 @@ struct Frame {
 	zenith: vec4f,
 	// rgb = sky horizon color
 	horizon: vec4f,
-	// x = alpha (1.0 solid / 0.7 water); yzw reserved — the shadow-map
-	// lanes died with the cascades.
+	// x = alpha (1.0 solid / 0.7 water), y = the streaming radius in
+	// blocks (the medium's rim distance — terrain streams as a vertical
+	// cylinder, so it bounds HORIZONTAL distance); zw reserved.
 	misc: vec4f,
 	// x = camera underwater (0/1), y = SSR enabled (0/1),
 	// z = water-surface height above the camera (underwater path-length
@@ -57,16 +58,8 @@ struct Frame {
 // (`indirect_k_is_one_constant` in digblock-assets).
 const INDIRECT_K = 0.55;
 
-// The water look tunables and `apply_fog` both died at the M1
-// demolition (GI-DESIGN.md). `apply_fog` was one function with two
-// hand-tuned models bolted together — a submerged Beer-Lambert
-// single-scatter and an above-water smoothstep toward one flat horizon
-// colour — and neither is coming back in that form. M2 replaces both
-// with a single participating medium whose in-scatter is the same
-// directional sky radiance the GI rays already sample, so haze and
-// lighting cannot drift apart the way two constant blocks guaranteed
-// they would.
-//
-// Until then there is deliberately NO distance falloff: the draw
-// distance ends in a hard rim against the sky. That is the honest
-// intermediate state, not an oversight.
+// The water look tunables and `apply_fog` died at the M1 demolition;
+// medium_common.wgsl replaced both at M2 with one participating medium
+// whose in-scatter is `sky_base` itself. Nothing atmospheric belongs
+// here any more — see that file for why the old haze could not have
+// been fixed by retuning it.

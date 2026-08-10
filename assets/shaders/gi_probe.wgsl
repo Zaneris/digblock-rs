@@ -230,7 +230,10 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 // Radiance arriving at the probe from one ray direction.
 fn trace_radiance(p: vec3f, dir: vec3f) -> vec3f {
 	let h = march(p, dir, MAX_T);
-	let water_att = exp(-h.water * 0.35);
+	// Per-channel now, and from medium_common's measured sigma — the
+	// same constant the view ray uses. This was a grey exp(-water*0.35)
+	// with no relationship to the water the eye looks through.
+	let water_att = medium_water_tr(h.water);
 	if !h.hit {
 		var sky = sky_radiance(dir);
 		// The sun disc itself: a bright narrow lobe so probes carry
@@ -264,7 +267,7 @@ fn trace_radiance(p: vec3f, dir: vec3f) -> vec3f {
 		if ndl > 0.0 {
 			let sh = march(hp, gi.sun.xyz, MAX_T);
 			if !sh.hit {
-				incident += gi.sun_color.rgb * ndl * exp(-sh.water * 0.35);
+				incident += gi.sun_color.rgb * ndl * medium_water_tr(sh.water);
 			}
 		}
 	}
@@ -379,15 +382,17 @@ fn cam_light() {
 	amb += gather_prev(p, vec3f(0.0, 0.0, 1.0));
 	amb += gather_prev(p, vec3f(0.0, 0.0, -1.0));
 	amb /= 6.0;
-	var sv = 0.0;
+	var sv = vec3f(0.0);
 	if gi.sun.w > 0.5 {
 		let h = march(p, gi.sun.xyz, MAX_T);
 		if !h.hit {
-			sv = exp(-h.water * 0.35);
+			sv = medium_water_tr(h.water);
 		}
 	}
 	cam_out[0] = vec4f(amb * INDIRECT_K, 0.0);
-	cam_out[1] = vec4f(sv, 0.0, 0.0, 0.0);
+	// rgb, not one grey lane: sunlight reaching a submerged camera is
+	// red-starved, and the hand and the spray must agree with the world.
+	cam_out[1] = vec4f(sv, 0.0);
 }
 
 // Edit invalidation: reset ages inside the spheres (both halves of the

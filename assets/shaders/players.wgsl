@@ -7,8 +7,9 @@
 // textured from the block array at layer (mode − 1). Lighting is RTGI
 // (GI-DESIGN.md): a per-fragment probe gather through gi_common plus a
 // short sun DDA — players never read the half-res resolve buffers,
-// whose depth prepass doesn't know them — with the standard distance
-// fog, so they sit in the scene like terrain does.
+// whose depth prepass doesn't know them — and then the same
+// participating medium (medium_common) the terrain beside them goes
+// through, so they sit in the scene rather than in front of it.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl, and
 // the group(2) GI world bindings + gather core from gi_common.wgsl
@@ -117,7 +118,20 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		* gi_indirect(side, gp, in.wn, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
 	let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);
 	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
-	let sh = mix(1.0, sv, frame.light_dir.w);
+	let sh = mix(vec3f(1.0), sv.x * medium_water_tr(sv.y), frame.light_dir.w);
 	let col = albedo * (frame.light_color.rgb * direct * sh + indirect);
-	return vec4f(col, 1.0);
+	// The same medium the terrain beside them goes through — that
+	// sharing is the whole reason it is a prelude and not a local.
+	let ray = normalize(in.world - frame.cam_pos.xyz);
+	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let lit = medium_view(
+		col,
+		frame.cam_pos.xyz,
+		in.world,
+		sky,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	);
+	return vec4f(lit, 1.0);
 }

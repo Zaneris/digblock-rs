@@ -103,13 +103,31 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 	return false;
 }
 
-// Sun visibility: march toward the sun until sky or a hit; water thins
-// the beam (exp transmittance — this is what dims sunlight underwater).
-// `sun` = quantized dir toward the sun (w = above-horizon 0/1);
-// `iters` caps the march (the resolve affords 160, water/players ~12).
-fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> f32 {
+// Sun visibility: march toward the sun until sky or a hit, counting the
+// water crossed on the way. `sun` = quantized dir toward the sun
+// (w = above-horizon 0/1); `iters` caps the march (the resolve affords
+// 160, water/players ~12). Returns:
+//
+//   .x = 1 if the sun is reached, 0 if an opaque cell blocks it or the
+//        caster is below the horizon
+//   .y = water cells crossed — the submerged PATH LENGTH, not an
+//        attenuation
+//
+// Returning the path instead of a transmittance is what leaves exactly
+// one water extinction constant in the engine. This used to end in
+// `exp(-water * 0.35)`: a grey per-cell fudge with no relationship to
+// the view ray's water tint, and the two disagreed by a factor of ~2.3
+// with nothing tying them together. The caller now applies
+// medium_common's per-channel WATER_SIGMA, so both rays through the same
+// water agree by construction and sunlight arrives underwater correctly
+// red-starved rather than uniformly dimmed.
+//
+// Cells, not exact chord lengths: a shallow ray crosses a cell over a
+// longer path than a steep one. That approximation predates this and is
+// left alone; M4's trace carries real segment lengths.
+fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec2f {
 	if sun.w < 0.5 {
-		return 0.0;
+		return vec2f(0.0, 0.0);
 	}
 	let dir = sun.xyz;
 	var cell = vec3i(floor(p));
@@ -131,7 +149,7 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> f32
 			if v != 0u {
 				let op = gi_lut[v].x >> 24u;
 				if op == 2u {
-					return 0.0;
+					return vec2f(0.0, water);
 				}
 				if op == 1u {
 					water += 1.0;
@@ -149,7 +167,7 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> f32
 			tmax.z += inv.z;
 		}
 	}
-	return exp(-water * 0.35);
+	return vec2f(1.0, water);
 }
 
 // Is the probe at texel `t` carrying real radiance?

@@ -119,19 +119,32 @@ pub mod font {
 
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time: frame_common.wgsl (the Frame uniform
-	// block + its group(0) binding, one definition for every pass that
-	// reads it) and sky_common.wgsl (the procedural-sky core — gradient,
-	// glow, stars — shared so the sky pass and water reflections can
-	// never silently drift apart). Prelude order is frame_common first,
-	// then sky_common, then the body file; naga error line numbers in
-	// the body files are offset by the total prelude length.
+	// with concat! at include time. Four of them, each the sole
+	// definition of one thing so the passes cannot silently disagree:
+	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
+	// medium_common.wgsl (the participating medium and its extinction
+	// constants), sky_common.wgsl (the procedural-sky core — gradient,
+	// glow, stars — shared so the sky pass, water reflections and the
+	// medium's in-scatter are one function), and gi_common.wgsl (the
+	// probe gather + the group(2) world bindings).
+	//
+	// Order is frame_common, medium_common, sky_common, gi_common, body.
+	// medium_common sits early on purpose: it is dependency-free (every
+	// input an argument) precisely so the GI compute kernels — which
+	// carry their own uniform block and CANNOT take frame_common — can
+	// still share its water extinction with the view ray.
+	//
+	// naga error line numbers in the body files are offset by the total
+	// prelude length.
 	pub const CHUNK: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
@@ -146,10 +159,14 @@ pub mod shader {
 	pub const DEPTH_BLIT: &str = include_str!("../../../assets/shaders/depth_blit.wgsl");
 	pub const SPRAY: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
@@ -165,19 +182,32 @@ pub mod shader {
 	pub const VIEWMODEL: &str = include_str!("../../../assets/shaders/viewmodel.wgsl");
 	/// RTGI probe-update compute (GI-DESIGN.md). No frame prelude: the
 	/// compute passes carry their own small GI uniform block, not the
-	/// pinned Frame layout.
-	pub const GI_PROBE: &str = include_str!("../../../assets/shaders/gi_probe.wgsl");
+	/// pinned Frame layout — but they DO take medium_common, which is
+	/// argument-only for exactly this reason, so the sun ray's water
+	/// transmittance is the same constant the view ray uses.
+	pub const GI_PROBE: &str = concat!(
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_probe.wgsl"),
+	);
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
 	pub const GI_DEBUG: &str = include_str!("../../../assets/shaders/gi_debug.wgsl");
 	/// The half-res GI resolve pass (probes + per-pixel sun ray → the
 	/// scene's lighting inputs). Shares the gather core + group(2)
 	/// world bindings with water/players via the gi_common prelude.
 	pub const GI_RESOLVE: &str = concat!(
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
 	);
+	/// The shared preludes, validated STANDALONE as well as through
+	/// their consumers: a prelude that only ever compiles concatenated
+	/// can pick up a silent dependency on whatever happens to precede
+	/// it, which is exactly the coupling these files exist to prevent.
+	/// medium_common must validate with nothing before it at all.
+	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
+	pub const GI_COMMON: &str = include_str!("../../../assets/shaders/gi_common.wgsl");
 
-	pub const ALL: [(&str, &str); 14] = [
+	pub const ALL: [(&str, &str); 16] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -192,6 +222,8 @@ pub mod shader {
 		("gi_probe.wgsl", GI_PROBE),
 		("gi_debug.wgsl", GI_DEBUG),
 		("gi_resolve.wgsl", GI_RESOLVE),
+		("medium_common.wgsl", MEDIUM_COMMON),
+		("gi_common.wgsl", GI_COMMON),
 	];
 }
 

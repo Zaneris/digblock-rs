@@ -23,8 +23,10 @@ struct Vm {
 @group(0) @binding(0) var<uniform> vm: Vm;
 
 // RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
-// probe ambient at the camera (already INDIRECT_K-scaled), [1].x = sun
-// visibility. The hand is at the camera by definition, so this IS its
+// probe ambient at the camera (already INDIRECT_K-scaled), [1].rgb = sun
+// transmittance there — rgb, not one grey lane, because water absorbs
+// red an order of magnitude harder than blue and a submerged camera's
+// sunlight is tinted. The hand is at the camera by definition, so this IS its
 // light — indoors the ambient carries the torch glow and the sun term
 // dies, no CPU probe reads anywhere.
 struct CamLight {
@@ -65,7 +67,7 @@ fn vs(
 	let n = NORMALS[f];
 	// Twilight fade (vm.light.w) and traced sun visibility both gate
 	// the direct term, exactly as `sh` does for world surfaces.
-	let sh = mix(1.0, cam_light.sun.x, vm.light.w);
+	let sh = mix(vec3f(1.0), cam_light.sun.rgb, vm.light.w);
 	let diffuse = max(dot(n, -vm.light.xyz), 0.0) * sh;
 
 	var out: VsOut;
