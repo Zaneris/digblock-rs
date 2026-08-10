@@ -14,7 +14,23 @@ pub const DIM: u32 = 0xFFB0B0B0;
 pub const SLOT_BG: u32 = super::theme::FILL_BG;
 /// Keyboard/hover highlight fill, shared by menu rows and buttons.
 pub const ROW_HILIGHT: u32 = 0x60FFFFFF;
+/// Track behind slider bars, progress bars, and the tab strip's rule —
+/// one alpha for every "inactive groove" in the UI.
+pub const BAR_TRACK: u32 = 0x40FFFFFF;
 const SEL_BORDER: u32 = 0xE0FFFFFF;
+const SEL_BORDER_WEAK: u32 = 0x80FFFFFF;
+
+/// Selection-ring weight for [`slot`]: `Strong` marks the thing an
+/// action will hit (the hotbar's active slot, a chosen member tile, an
+/// armed extraction slot); `Weak` marks enclosing context (the selected
+/// family whose members are on show). Two weights, one containment
+/// hierarchy — never two meanings at one weight on the same screen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SlotRing {
+	None,
+	Weak,
+	Strong,
+}
 
 /// Fade a full-screen dim with the world's own darkness so night menus
 /// aren't double-darkened: scales the alpha byte by `daylight` (1 noon →
@@ -68,34 +84,45 @@ pub fn label(dl: &mut DrawList, layer: Layer, x: f32, y: f32, px: f32, color: u3
 	dl.text(layer, x, y, px, color, text);
 }
 
-/// An item slot: backdrop quad + optional centered icon + optional
-/// selection border, hit-testable under `id`. Count text is the
-/// caller's job (the hotbar pins its size; other screens scale).
+/// An item slot: backdrop quad + hover wash + optional centered icon +
+/// selection ring, hit-testable under `id`. Count text is the caller's
+/// job (the hotbar pins its size; other screens scale). Hover uses the
+/// same [`ROW_HILIGHT`] wash as [`button`], so "the pointer is on
+/// something clickable" reads identically everywhere.
 pub fn slot<Id: Copy + PartialEq>(
 	ui: &mut Ui<'_, Id>,
 	id: Id,
 	rect: Rect,
 	icon: Option<(super::hud::IconKind, u32)>,
 	icon_px: f32,
-	selected: bool,
+	ring: SlotRing,
+	hovered: bool,
 ) {
 	ui.dl.quad(Layer::Backdrop, rect, SLOT_BG);
-	if selected {
+	if hovered {
+		ui.dl.quad(Layer::Backdrop, rect, ROW_HILIGHT);
+	}
+	let border = match ring {
+		SlotRing::None => None,
+		SlotRing::Weak => Some(SEL_BORDER_WEAK),
+		SlotRing::Strong => Some(SEL_BORDER),
+	};
+	if let Some(color) = border {
 		let t = (2.0 * ui.style.scale).round().max(1.0);
 		let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
 		let dl = &mut *ui.dl;
 		dl.quad(
 			Layer::Backdrop,
 			Rect::new(x - t, y - t, w + 2.0 * t, t),
-			SEL_BORDER,
+			color,
 		);
 		dl.quad(
 			Layer::Backdrop,
 			Rect::new(x - t, y + h, w + 2.0 * t, t),
-			SEL_BORDER,
+			color,
 		);
-		dl.quad(Layer::Backdrop, Rect::new(x - t, y, t, h), SEL_BORDER);
-		dl.quad(Layer::Backdrop, Rect::new(x + w, y, t, h), SEL_BORDER);
+		dl.quad(Layer::Backdrop, Rect::new(x - t, y, t, h), color);
+		dl.quad(Layer::Backdrop, Rect::new(x + w, y, t, h), color);
 	}
 	if let Some((kind, tint)) = icon {
 		super::hud::draw_icon(
@@ -204,7 +231,6 @@ pub fn caret_w(px: f32) -> f32 {
 /// so hit-testing shares it). No hit region — menu-style screens hit
 /// their rows by id through their own maps.
 pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowContent<'_>) {
-	const BAR_TRACK: u32 = 0x40FFFFFF;
 	let glyph = style.glyph;
 	let pad_x = scale::text_pad_x(style.scale);
 	let text_y = rect.y + (rect.h - glyph) / 2.0;
@@ -301,7 +327,15 @@ mod tests {
 		};
 		let rect = Rect::new(100.0, 200.0, 56.0, 56.0);
 		let kind = super::super::hud::IconKind::Cube(digblock_core::block::BlockType::Dirt);
-		slot(&mut ui, 3u8, rect, Some((kind, WHITE)), 48.0, true);
+		slot(
+			&mut ui,
+			3u8,
+			rect,
+			Some((kind, WHITE)),
+			48.0,
+			SlotRing::Strong,
+			false,
+		);
 		// Backdrop: slot bg + 4 border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), 5);
 		// A cube icon: three projected faces, all inside the icon rect.
@@ -319,6 +353,36 @@ mod tests {
 			}
 		}
 		assert_eq!(hits.hit(120.0, 220.0), Some(3));
+	}
+
+	/// The three ring weights and the hover wash are distinct quad
+	/// budgets: no ring = bare fill, weak/strong = +4 borders, hover = +1
+	/// wash under either.
+	#[test]
+	fn slot_rings_and_hover_have_distinct_quads() {
+		let quads = |ring: SlotRing, hovered: bool| {
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<u8> = HitMap::default();
+			let mut ui = Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: Style::new(1.0),
+			};
+			slot(
+				&mut ui,
+				1u8,
+				Rect::new(0.0, 0.0, 56.0, 56.0),
+				None,
+				48.0,
+				ring,
+				hovered,
+			);
+			dl.cmds(Layer::Backdrop).0.len()
+		};
+		assert_eq!(quads(SlotRing::None, false), 1);
+		assert_eq!(quads(SlotRing::None, true), 2, "hover wash");
+		assert_eq!(quads(SlotRing::Weak, false), 5);
+		assert_eq!(quads(SlotRing::Strong, true), 6, "wash + ring");
 	}
 
 	#[test]

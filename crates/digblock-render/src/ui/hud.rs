@@ -109,7 +109,13 @@ pub fn hotbar<Id: Copy + PartialEq>(
 			SlotView::Tool { full } => Some(item_icon(HotbarItem::WaterTool, full)),
 			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
-		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
+		// The HUD bar has no cursor: rings only, never hover.
+		let ring = if i == view.selected {
+			widgets::SlotRing::Strong
+		} else {
+			widgets::SlotRing::None
+		};
+		widgets::slot(ui, id_of(i), rect, icon, icon_px, ring, false);
 		if let SlotView::Block { count, .. } = view.slots[i] {
 			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, WHITE);
 		}

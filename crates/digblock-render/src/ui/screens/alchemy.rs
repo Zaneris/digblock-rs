@@ -13,9 +13,14 @@
 //! pacing here is presentation, not trust.
 //!
 //! **TRANSMUTE** stays click-based (crafting is a decision, not a
-//! grind): every craftable in `alchemy::CRAFT_ORDER`, locked rows drawn
-//! dim with their level where the button would be, CLICK 1 · SHIFT 10 ·
-//! CTRL 100 multipliers clamped to what the holdings afford.
+//! grind): a row of FAMILY tiles whose icons slowly rotate through
+//! their members, the selected family's members wrapped in a 9-column
+//! grid beneath (locked ones dim with an unlock badge, affordable ones
+//! count-badged), a detail strip, and the tab's ONE `TRANSMUTE` button
+//! — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what the holdings
+//! afford. `every_craftable_appears_in_exactly_one_family` holds
+//! `FAMILIES` to the core catalog, so a new craftable cannot silently
+//! miss the screen.
 //!
 //! The screen never mutates game state: `handle_input`/`tick` return
 //! actions; the engine applies them locally offline or sends them to
@@ -49,9 +54,14 @@ const BULK_CTRL: u32 = 100;
 const ROW_ICON: f32 = 36.0;
 const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
+/// Gap between an icon/slot and the text that describes it.
 const ICON_TEXT_GAP: f32 = 12.0;
-/// The extraction strip's slot square (the grid's own cell size).
-const STRIP_GAP: f32 = 12.0;
+/// Gap between the tab strip's tabs.
+const TAB_GAP: f32 = 12.0;
+/// The extraction progress bar's height, inset along the slot's bottom.
+const PROGRESS_H: f32 = 4.0;
+/// How long a rejected drop's explanation holds the preview line.
+const HINT_SECS: f32 = 2.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AlchTab {
@@ -136,6 +146,9 @@ pub struct AlchScreen {
 	member: usize,
 	/// Free-running clock driving the family tiles' member rotation.
 	clock: f32,
+	/// A rejected drop's explanation, shown in the preview line for
+	/// [`HINT_SECS`] — silence was the old behavior and read as a bug.
+	hint: Option<(String, f32)>,
 }
 
 impl Default for AlchScreen {
@@ -152,6 +165,7 @@ impl Default for AlchScreen {
 			family: 0,
 			member: 0,
 			clock: 0.0,
+			hint: None,
 		}
 	}
 }
@@ -247,6 +261,12 @@ impl AlchScreen {
 		// The family tiles' rotation runs whenever the screen is open
 		// (wrapped far below any f32 precision cliff).
 		self.clock = (self.clock + dt) % 3600.0;
+		if let Some((_, ttl)) = &mut self.hint {
+			*ttl -= dt;
+			if *ttl <= 0.0 {
+				self.hint = None;
+			}
+		}
 		if self.tab != AlchTab::Extract {
 			return None;
 		}
@@ -355,28 +375,33 @@ impl AlchScreen {
 		spec.extent(GRID_SLOTS).0
 	}
 
+	/// The tallest member row any family lays out (wrapped at the grid's
+	/// 9 columns) — the transmute arm sizes for it, so selecting a bigger
+	/// family never moves the panel either.
+	fn member_rows_h(style: &Style) -> f32 {
+		let spec = Self::grid_spec_at(style, (0.0, 0.0));
+		FAMILIES
+			.iter()
+			.map(|f| spec.extent(f.members.len()).1)
+			.fold(0.0, f32::max)
+	}
+
+	/// BOTH tabs' content height — the panel takes the taller arm, so
+	/// switching tabs never moves its top edge (bottom-anchored panels
+	/// used to jump 90px under the cursor). Pinned by
+	/// `panel_height_is_the_same_on_both_tabs`.
 	fn content_h(&self, style: &Style) -> f32 {
 		let s = style.scale;
-		Self::header_h(style)
-			+ match self.tab {
-				AlchTab::Extract => {
-					let spec = Self::grid_spec_at(style, (0.0, 0.0));
-					// Strip (slot-height band) + gap + the grid.
-					hud::SLOT_PX * s
-						+ theme::SECTION_GAP * s
-						+ spec.extent(GRID_SLOTS).1
-						+ theme::ROW_GAP * s
-				}
-				AlchTab::Transmute => {
-					// Family row, member row, the detail strip, the
-					// multiplier hint.
-					let slot = hud::SLOT_PX * s;
-					3.0 * slot
-						+ 2.0 * theme::ROW_GAP * s
-						+ theme::SECTION_GAP * s
-						+ theme::ROW_H * s
-				}
-			}
+		let spec = Self::grid_spec_at(style, (0.0, 0.0));
+		let extract = hud::SLOT_PX * s + theme::SECTION_GAP * s + spec.extent(GRID_SLOTS).1;
+		let transmute = hud::SLOT_PX * s
+			+ theme::ROW_GAP * s
+			+ Self::member_rows_h(style)
+			+ theme::SECTION_GAP * s
+			+ theme::ACTION_ROW_H * s
+			+ theme::ROW_GAP * s
+			+ theme::ROW_H * s;
+		Self::header_h(style) + extract.max(transmute)
 	}
 
 	fn emit_header(
@@ -432,7 +457,6 @@ impl AlchScreen {
 		// below it — the rule running under the strip breaks beneath it —
 		// while the inactive tab is dim, flat, pressable text sitting ON
 		// the rule.
-		const TAB_RULE: u32 = 0x40FFFFFF;
 		let text_pad = scale::text_pad_x(s);
 		let rule_h = (2.0 * s).round().max(1.0);
 		let mut x = row_x + text_pad;
@@ -473,13 +497,13 @@ impl AlchScreen {
 				);
 				ui.hits.push(rect, InvId::Tab(i as u8));
 			}
-			x += w + STRIP_GAP * s;
+			x += w + TAB_GAP * s;
 		}
 		let rule_y = *y + row_h - rule_h;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(row_x, rule_y, (active_span.0 - row_x).max(0.0), rule_h),
-			TAB_RULE,
+			widgets::BAR_TRACK,
 		);
 		ui.dl.quad(
 			Layer::Backdrop,
@@ -489,7 +513,7 @@ impl AlchScreen {
 				(row_x + row_w - active_span.1).max(0.0),
 				rule_h,
 			),
-			TAB_RULE,
+			widgets::BAR_TRACK,
 		);
 		*y += row_h;
 	}
@@ -511,8 +535,10 @@ impl AlchScreen {
 		let slot_px = hud::SLOT_PX * s;
 		let icon_px = hud::ICON_PX * s;
 		let text_pad = scale::text_pad_x(s);
+		let (cx, cy) = self.cursor;
 
-		// The extraction slot.
+		// The extraction slot: armed = the strong ring (it's the thing
+		// the drip acts on), remaining stack as an ordinary count badge.
 		let slot_rect = Rect::new(row_x + text_pad, y, slot_px, slot_px);
 		let icon = self
 			.extracting
@@ -523,18 +549,31 @@ impl AlchScreen {
 			slot_rect,
 			icon,
 			icon_px,
-			self.extracting.is_some(),
+			if self.extracting.is_some() {
+				widgets::SlotRing::Strong
+			} else {
+				widgets::SlotRing::None
+			},
+			slot_rect.contains(cx, cy),
 		);
-		// Progress bar along the slot's bottom edge.
-		if self.extracting.is_some() {
-			let bar_h = 4.0 * s;
+		if let Some(b) = self.extracting {
+			widgets::count_badge(
+				ui.dl,
+				Layer::Content,
+				&ui.style,
+				slot_rect,
+				inv.count(b),
+				WHITE,
+			);
+			// Progress bar along the slot's bottom edge.
+			let bar_h = PROGRESS_H * s;
 			let track = Rect::new(
 				slot_rect.x,
 				slot_rect.y + slot_rect.h - bar_h,
 				slot_rect.w,
 				bar_h,
 			);
-			ui.dl.quad(Layer::Content, track, 0x40FFFFFF);
+			ui.dl.quad(Layer::Content, track, widgets::BAR_TRACK);
 			ui.dl.quad(
 				Layer::Content,
 				Rect::new(
@@ -546,60 +585,77 @@ impl AlchScreen {
 				WHITE,
 			);
 		}
-		// Yield preview / hint beside the slot.
-		let preview = match self.extracting {
-			Some(b) => {
-				let yields = alchemy::extract_yields(b, view.level)
-					.iter()
-					.map(|&(e, n)| format!("{n} {}", e.name()))
-					.collect::<Vec<_>>()
-					.join(" + ");
-				let pace = alchemy::extract_pace_ticks(view.level) as f32 / 60.0;
-				format!("→ {yields}   ·   1 block / {pace:.2}s")
-			}
-			None => "drag a stack here to extract".into(),
-		};
-		widgets::label(
-			ui.dl,
-			Layer::Content,
-			slot_rect.x + slot_px + STRIP_GAP * s,
-			y + (slot_px - ui.style.glyph) / 2.0,
-			ui.style.glyph,
-			if self.extracting.is_some() {
-				WHITE
-			} else {
-				DIM
-			},
-			&preview,
-		);
 		// The bucket charge as a single water tile, right-aligned in the
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
-		if view.bucket_full && view.level >= alchemy::extract_unlock(BlockType::Water) {
-			let tile = Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px);
+		let bucket_tile = (view.bucket_full
+			&& view.level >= alchemy::extract_unlock(BlockType::Water))
+		.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
+		if let Some(tile) = bucket_tile {
 			widgets::slot(
 				ui,
 				InvId::BucketTile,
 				tile,
 				Some(hud::item_icon(HotbarItem::Block(BlockType::Water), false)),
 				icon_px,
-				false,
+				widgets::SlotRing::None,
+				tile.contains(cx, cy),
 			);
 		}
+		// Yield preview / hint beside the slot; a rejected drop's
+		// explanation borrows the line for a moment. Elided before the
+		// bucket tile — there is no clipping.
+		let preview = if let Some((hint, _)) = &self.hint {
+			hint.clone()
+		} else {
+			match self.extracting {
+				Some(b) => {
+					let yields = alchemy::extract_yields(b, view.level)
+						.iter()
+						.map(|&(e, n)| format!("{n} {}", e.name()))
+						.collect::<Vec<_>>()
+						.join(" + ");
+					let pace = alchemy::extract_pace_ticks(view.level) as f32 / 60.0;
+					format!("→ {yields}   ·   1 block / {pace:.2}s")
+				}
+				None => "drag a stack here to extract".into(),
+			}
+		};
+		let text_x = slot_rect.x + slot_px + ICON_TEXT_GAP * s;
+		let text_end = bucket_tile.map_or(row_x + row_w - text_pad, |t| t.x - ICON_TEXT_GAP * s);
+		widgets::label(
+			ui.dl,
+			Layer::Content,
+			text_x,
+			y + (slot_px - ui.style.glyph) / 2.0,
+			ui.style.glyph,
+			if self.hint.is_some() || self.extracting.is_some() {
+				WHITE
+			} else {
+				DIM
+			},
+			&elide(&ui.style, &preview, text_end - text_x),
+		);
 		y += slot_px + theme::SECTION_GAP * s;
 
 		// The real inventory grid — same slots, same badges, and its
-		// cells double as drag sources.
-		let spec = Self::grid_spec_at(
-			&ui.style,
-			(row_x + (row_w - self.content_w(&ui.style)) / 2.0, y),
-		);
+		// cells double as drag sources. Left-aligned on the same column
+		// as everything else (it used to center, sitting 4px off).
+		let spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
 			let icon = grid
 				.get(i)
 				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
-			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
+			widgets::slot(
+				ui,
+				InvId::Grid(i as u16),
+				rect,
+				icon,
+				icon_px,
+				widgets::SlotRing::None,
+				rect.contains(cx, cy),
+			);
 			if let Some(b) = grid.get(i) {
 				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, inv.count(b), WHITE);
 			}
@@ -628,73 +684,100 @@ impl AlchScreen {
 		let icon_px = hud::ICON_PX * s;
 		let (cx, cy) = self.cursor;
 
-		// Family tiles, previews rotating on the shared clock.
+		// Family tiles, previews rotating on the shared clock. The
+		// selected family wears the WEAK ring — it's context; the chosen
+		// member below is what the button acts on and gets the strong
+		// one. A family whose every member is locked dims like a locked
+		// tile and badges its earliest unlock.
 		let phase = (self.clock / FAMILY_CYCLE_SECS) as usize;
+		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		for (i, fam) in FAMILIES.iter().enumerate() {
-			let rect = Rect::new(
-				row_x + text_pad + i as f32 * (slot_px + hud::SLOT_GAP * s),
-				y,
-				slot_px,
-				slot_px,
-			);
+			let rect = fam_spec.rect(i);
+			let all_locked = fam
+				.members
+				.iter()
+				.all(|&m| alchemy::craft_unlock(m).is_none_or(|u| view.level < u));
 			let preview = fam.members[phase % fam.members.len()];
-			let icon = Some(hud::item_icon(HotbarItem::Block(preview), false));
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(preview), false);
 			widgets::slot(
 				ui,
 				InvId::Family(i as u8),
 				rect,
-				icon,
+				Some((kind, if all_locked { LOCKED_TINT } else { tint })),
 				icon_px,
-				i == self.family,
+				if i == self.family {
+					widgets::SlotRing::Weak
+				} else {
+					widgets::SlotRing::None
+				},
+				rect.contains(cx, cy),
 			);
+			if all_locked {
+				let earliest = fam
+					.members
+					.iter()
+					.filter_map(|&m| alchemy::craft_unlock(m))
+					.min()
+					.unwrap_or(99);
+				lock_badge(ui, rect, earliest);
+			}
 		}
 		y += slot_px + theme::ROW_GAP * s;
 
-		// The selected family's members. Locked ones draw dim but stay
-		// selectable — the strip explains; affordable ones carry their
-		// batch count.
+		// The selected family's members, wrapped at the grid's 9 columns
+		// so a growing catalog wraps instead of overflowing the panel.
+		// Locked ones dim with their unlock badge but stay selectable —
+		// the strip explains; affordable ones carry their batch count.
 		let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
 		let member = self.member.min(family.members.len() - 1);
+		let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		for (j, &item) in family.members.iter().enumerate() {
-			let rect = Rect::new(
-				row_x + text_pad + j as f32 * (slot_px + hud::SLOT_GAP * s),
-				y,
-				slot_px,
-				slot_px,
-			);
+			let rect = mem_spec.rect(j);
 			let locked = alchemy::craft_unlock(item).is_none_or(|u| view.level < u);
-			let (kind, _) = hud::item_icon(HotbarItem::Block(item), false);
-			let tint = if locked { LOCKED_TINT } else { 0xFFFF_FFFF };
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 			widgets::slot(
 				ui,
 				InvId::Craft(j as u8),
 				rect,
-				Some((kind, tint)),
+				Some((kind, if locked { LOCKED_TINT } else { tint })),
 				icon_px,
-				j == member,
+				if j == member {
+					widgets::SlotRing::Strong
+				} else {
+					widgets::SlotRing::None
+				},
+				rect.contains(cx, cy),
 			);
-			let batches = view.affordable(item);
-			if !locked && batches > 0 {
-				widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, batches, WHITE);
+			if locked {
+				lock_badge(ui, rect, alchemy::craft_unlock(item).unwrap_or(99));
+			} else {
+				let batches = view.affordable(item);
+				if batches > 0 {
+					widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, batches, WHITE);
+				}
 			}
 		}
-		y += slot_px + theme::SECTION_GAP * s;
+		y += Self::member_rows_h(&ui.style) + theme::SECTION_GAP * s;
 
-		// The detail strip: the selected member's icon, its name and
-		// per-line cost at YOUR level (post-waste — what it will actually
-		// charge), and the tab's one TRANSMUTE button.
+		// The detail strip (the shared action-row height): the selected
+		// member's icon, its name and per-line cost at YOUR level
+		// (post-waste — what it will actually charge), and the tab's one
+		// TRANSMUTE button. Locked reads dim with its level; unlocked
+		// but short reads full-color with what's MISSING — "can't yet"
+		// and "can't afford" are different answers.
 		let item = family.members[member];
 		let unlock = alchemy::craft_unlock(item).unwrap_or(u32::MAX);
 		let locked = view.level < unlock;
 		let batches = view.affordable(item);
-		let strip = Rect::new(row_x, y, row_w, slot_px);
+		let strip_h = theme::ACTION_ROW_H * s;
+		let strip = Rect::new(row_x, y, row_w, strip_h);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 		hud::draw_icon(
 			ui.dl,
 			Layer::Icons,
 			Rect::new(
 				strip.x + text_pad,
-				strip.y + (slot_px - ROW_ICON * s) / 2.0,
+				strip.y + (strip_h - ROW_ICON * s) / 2.0,
 				ROW_ICON * s,
 				ROW_ICON * s,
 			),
@@ -704,31 +787,44 @@ impl AlchScreen {
 		let text = if locked {
 			format!("{}   —   LV {unlock}", block_name(item))
 		} else {
-			let costs = alchemy::craft_ideal(item)
-				.expect("members are craftable")
+			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
+			let costs = ideal
 				.iter()
 				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, view.level), e.name()))
 				.collect::<Vec<_>>()
 				.join(" + ");
 			match batches {
-				0 => format!("{}   —   {costs}", block_name(item)),
+				0 => {
+					// Name the first shortfall so the player knows what
+					// to go extract.
+					let need = ideal
+						.iter()
+						.find_map(|&(e, n)| {
+							let cost = alchemy::craft_cost(n, view.level);
+							let have = view.subs[e as usize];
+							(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
+						})
+						.unwrap_or_else(|| "NOTHING TO CHARGE".into());
+					format!("{}   —   {costs}   ·   {need}", block_name(item))
+				}
 				n => format!("{}   —   {costs}   ·   ×{n}", block_name(item)),
 			}
 		};
+		let btn = Rect::new(
+			strip.x + strip.w - text_pad - BTN_W * s,
+			strip.y + (strip_h - BTN_H * s) / 2.0,
+			BTN_W * s,
+			BTN_H * s,
+		);
+		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		widgets::label(
 			ui.dl,
 			Layer::Content,
-			strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s,
-			strip.y + (slot_px - glyph) / 2.0,
+			text_x,
+			strip.y + (strip_h - glyph) / 2.0,
 			glyph,
-			if locked || batches == 0 { DIM } else { WHITE },
-			&text,
-		);
-		let btn = Rect::new(
-			strip.x + strip.w - text_pad - BTN_W * s,
-			strip.y + (slot_px - BTN_H * s) / 2.0,
-			BTN_W * s,
-			BTN_H * s,
+			if locked { DIM } else { WHITE },
+			&elide(&ui.style, &text, btn.x - ICON_TEXT_GAP * s - text_x),
 		);
 		widgets::button(
 			ui,
@@ -738,7 +834,7 @@ impl AlchScreen {
 			!locked && batches > 0,
 			btn.contains(cx, cy),
 		);
-		y += slot_px + theme::ROW_GAP * s;
+		y += strip_h + theme::ROW_GAP * s;
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -810,14 +906,22 @@ impl AlchScreen {
 						self.extracting = None;
 						self.progress = 0.0;
 					}
+					// Drags only arm where a legal target exists — the
+					// extraction slot lives on the EXTRACT tab; arming
+					// from the hotbar on TRANSMUTE produced a ghost with
+					// nowhere to land.
 					InvId::Grid(i) => {
-						if let Some(b) = grid.get(i as usize) {
-							self.drag.on_press(self.cursor, id, b);
+						if self.tab == AlchTab::Extract {
+							if let Some(b) = grid.get(i as usize) {
+								self.drag.on_press(self.cursor, id, b);
+							}
 						}
 					}
 					InvId::Bar(i) => {
-						if let Some(SlotView::Block { block, .. }) = bar.slots.get(i as usize) {
-							self.drag.on_press(self.cursor, id, *block);
+						if self.tab == AlchTab::Extract {
+							if let Some(SlotView::Block { block, .. }) = bar.slots.get(i as usize) {
+								self.drag.on_press(self.cursor, id, *block);
+							}
 						}
 					}
 					InvId::BucketTile => {
@@ -873,7 +977,19 @@ impl AlchScreen {
 				{
 					// The gate the drop respects: extractable at all, and
 					// past its unlock (the bucket charge waits for 15).
-					if payload.is_extractable() && view.level >= alchemy::extract_unlock(payload) {
+					// A refused drop SAYS why — silence read as a bug.
+					if !payload.is_extractable() {
+						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
+					} else if view.level < alchemy::extract_unlock(payload) {
+						self.hint = Some((
+							format!(
+								"{}   —   LV {}",
+								block_name(payload),
+								alchemy::extract_unlock(payload)
+							),
+							HINT_SECS,
+						));
+					} else {
 						self.extracting = Some(payload);
 						self.progress = 0.0;
 					}
@@ -889,6 +1005,51 @@ impl AlchScreen {
 			_ => None,
 		}
 	}
+}
+
+/// A locked tile's unlock level in its TOP-LEFT corner — the opposite
+/// corner from [`widgets::count_badge`], so a locked-but-affordable
+/// combination could carry both without collision. Frame glyph size,
+/// like every text on the page.
+fn lock_badge(ui: &mut Ui<'_, InvId>, slot: Rect, level: u32) {
+	const SHADOW: u32 = 0xE0000000;
+	let px = ui.style.glyph;
+	let inset = 2.0 * ui.style.scale;
+	let text = format!("{level}");
+	let off = (px / 16.0).round().max(1.0);
+	ui.dl.text(
+		Layer::Content,
+		slot.x + inset + off,
+		slot.y + inset + off,
+		px,
+		SHADOW,
+		&text,
+	);
+	ui.dl.text(
+		Layer::Content,
+		slot.x + inset,
+		slot.y + inset,
+		px,
+		DIM,
+		&text,
+	);
+}
+
+/// Cut `text` to fit `max_w`, marking the cut — there is no clipping,
+/// and a preview line that ran under the bucket tile read as overlap.
+fn elide(style: &Style, text: &str, max_w: f32) -> String {
+	if style.measure(text) <= max_w {
+		return text.into();
+	}
+	let mut out: String = text.into();
+	while !out.is_empty() {
+		out.pop();
+		let candidate = format!("{}...", out.trim_end());
+		if style.measure(&candidate) <= max_w {
+			return candidate;
+		}
+	}
+	String::new()
 }
 
 /// Display names for the transmute rows (blocks have no Display impl —
@@ -911,6 +1072,12 @@ fn block_name(b: BlockType) -> &'static str {
 		B::Mud => "MUD",
 		B::Water => "WATER CHARGE",
 		B::Torch => "TORCH",
+		// Extractables that only show up in the refusal hint.
+		B::Leaves => "LEAVES",
+		B::PineLeaves => "PINE LEAVES",
+		B::DryGrass => "DRY GRASS",
+		B::Gravel => "GRAVEL",
+		B::Rubble => "RUBBLE",
 		_ => "?",
 	}
 }
@@ -1281,6 +1448,60 @@ mod tests {
 				panel.y + panel.h <= bar_top + 0.5,
 				"panel under the bar at {size:?}/{scale}: {} vs {bar_top}",
 				panel.y + panel.h
+			);
+		}
+	}
+
+	/// The panel is bottom-anchored, so a per-tab height means the TOP
+	/// edge jumps under the cursor on every tab switch (it did — 90px).
+	/// `content_h` takes the taller arm for both tabs.
+	#[test]
+	fn panel_height_is_the_same_on_both_tabs() {
+		let panel_of = |tab: AlchTab| {
+			let inv = Inventory::default();
+			let grid = InvGrid::default();
+			let view = AlchView::build(&inv, &skills_at(10));
+			let mut screen = AlchScreen::default();
+			screen.open();
+			screen.set_tab(tab);
+			let mut dl = DrawList::default();
+			let mut hits = HitMap::default();
+			let mut ui = Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: Style::new(1.0),
+			};
+			screen.build(&mut ui, SIZE, &view, &grid, &inv, 1.0);
+			dl.cmds(Layer::Backdrop)
+				.0
+				.iter()
+				.find_map(|c| match c {
+					crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
+						Some(*rect)
+					}
+					_ => None,
+				})
+				.expect("panel quad")
+		};
+		let (a, b) = (panel_of(AlchTab::Extract), panel_of(AlchTab::Transmute));
+		assert_eq!(a, b, "one panel, both tabs");
+	}
+
+	/// `FAMILIES` is a hand-maintained mirror of the core catalog: every
+	/// craftable appears in exactly one family, so a new `craft_unlock`
+	/// entry cannot silently never reach the screen.
+	#[test]
+	fn every_craftable_appears_in_exactly_one_family() {
+		for &b in &BlockType::ALL {
+			let craftable = alchemy::craft_unlock(b).is_some();
+			let appearances: usize = FAMILIES
+				.iter()
+				.map(|f| f.members.iter().filter(|&&m| m == b).count())
+				.sum();
+			assert_eq!(
+				appearances,
+				usize::from(craftable),
+				"{b:?}: craftable blocks sit in exactly one family, others in none"
 			);
 		}
 	}

@@ -133,7 +133,15 @@ impl InvScreen {
 			let icon = grid
 				.get(i)
 				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
-			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
+			widgets::slot(
+				ui,
+				InvId::Grid(i as u16),
+				rect,
+				icon,
+				icon_px,
+				widgets::SlotRing::None,
+				rect.contains(self.drag.cursor.0, self.drag.cursor.1),
+			);
 			if let Some(b) = grid.get(i) {
 				// Same badge as the hotbar — the rows sit stacked, so a
 				// size mismatch would read as a glitch.

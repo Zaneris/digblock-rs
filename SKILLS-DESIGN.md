@@ -567,28 +567,35 @@ generous) and mechanisms.
 
 ## 8. UI
 
-### 8.1 Alchemy screen (total redo)
+### 8.1 Alchemy screen (total redo — SHIPPED; the mock below is the as-built layout)
 
-The current single linear list dies. New structure — same `Row`-stream architecture,
-theme tokens, one glyph size, `fit_scale` ladder:
+The old single linear list died. Structure — same `Row`-stream architecture, theme
+tokens, one glyph size, `fit_scale` ladder, everything on ONE left column, and the
+panel height is the max of both tabs so the bottom-anchored top edge never jumps on a
+tab switch (`panel_height_is_the_same_on_both_tabs`):
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ ALCHEMY  Lv 41            [██████████░░░░░░]  61%        │   header: level + XP bar
-│ EARTH 1,204   FLORA 356   AQUA 40   METAL 88   AE 2      │   essence readout (always visible)
-├──────────────────────────────────────────────────────────┤
-│   [ EXTRACT ]        TRANSMUTE                           │   tab strip
-├────────────────────────────┬─────────────────────────────┤
-│  ▦ ▦ ▦ ▦ ▦ ▦               │        ┌──────────┐         │
-│  ▦ ▦ ▦ ▦ ▦ ▦   inventory   │        │ ⧉ Stone  │         │
-│  ▦ ▦ ▦ ▦ ▦ ▦   grid + bar  │        │   ×214   │         │
-│  ▦ ▦ ▦ ▦ ▦ ▦   (the real   │        └[████░░░░]┘         │
-│  ▦ ▦ ▦ ▦ ▦ ▦    widget)    │      extraction slot        │
-│                            │                             │
-│  [🪣 charged]               │   → 24 EARTH each           │
-│   bucket tile              │   1 block / 0.35s           │
-└────────────────────────────┴─────────────────────────────┘
+│ ALCHEMY   LV 41                     [██████████░░░░░░]   │  header: level + XP bar
+│ FLORA 356   EARTH 1,204   AQUA 40   METAL 88   AETHER 2  │  essences (wire order, always visible)
+│ ┌─────────┐                                              │
+│ │ EXTRACT │  TRANSMUTE                                   │  real tabs: active fill fuses into
+│─┘         └──────────────────────────────────────────────│  the page; the rule breaks under it
+│ ┌────┐                                                   │
+│ │⧉ 214│  → 24 EARTH   ·   1 block / 0.35s      [🪣 tile] │  extraction slot (count badge +
+│ └[██░]┘                                                  │  progress inset) · preview, elided
+│  ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦                                       │  before the bucket tile
+│  ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦   the real inventory grid             │
+│  ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦   (same widget, drag sources)         │
+│  ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦                                       │
+└──────────────────────────────────────────────────────────┘
 ```
+
+(TRANSMUTE swaps the strip+grid for: family tiles → member tiles — both wrapped at the
+grid's 9 columns, locked tiles dimmed with a top-left unlock badge — then the
+`ACTION_ROW_H` detail strip with the ONE TRANSMUTE button. Hover washes every
+interactive tile; the selected family wears the WEAK ring, the acted-on member and an
+armed extraction slot the STRONG one — two weights, one containment hierarchy.)
 
 The EXTRACT tab is **your inventory plus one drop target** — the player picks the stack,
 never the screen. Rules, each load-bearing:
@@ -663,9 +670,11 @@ New screen, `C` key (new `Key` variant) + a pause-menu row + `DIG_SCREEN=skills`
 └────────────────────────────────────┘
 ```
 
-One row per skill: level, XP bar to next, next-unlock teaser (the teaser text is the
-unlock tables of §4.3/§5.5 as data). Clicking a row could later expand the full unlock
-list; v1 is the summary.
+One row per skill: level, XP bar to next, next-unlock teaser — SHIPPED, with the
+teaser prose screen-local and every named level pinned to the core function that
+enforces it (`teaser_levels_match_the_core_tables`). Mining's teasers are the §5.1
+rock-gate rows until ore lands (past Mining 5 the line simply drops). Clicking a row
+could later expand the full unlock list; v1 is the summary.
 
 ### 8.3 Feedback
 
@@ -743,6 +752,10 @@ list; v1 is the summary.
 - Reveal remesh: crossing a threshold bumps resident generation counters exactly once.
 - `every_screen_draws_text_at_one_size` / `..dims_and_panels_the_same_way` extended to the
   character screen and the rebuilt alchemy screen (three window sizes × four scales).
+- `panel_height_is_the_same_on_both_tabs` (the bottom-anchored panel's top edge never
+  jumps on a tab switch), `every_craftable_appears_in_exactly_one_family` (the screen's
+  `FAMILIES` mirror can't silently miss a new `craft_unlock` entry), and
+  `teaser_levels_match_the_core_tables` (§8.2's prose pinned to the enforcing functions).
 - Loopback-transport e2e: XP totals survive rejoin (v4 records), legacy v3 record joins at
   level 1 with inventory intact, legacy sub-materials decode to essences.
 - Netbench determinism: XP awards excluded from per-frame hashing or made order-stable
