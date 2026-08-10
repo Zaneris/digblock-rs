@@ -168,6 +168,11 @@ pub struct EngineConfig {
 	/// Chrome's GPU process performs the staging transfer at submit, so the
 	/// cost lands after everything this engine can measure.
 	pub upload_bytes_max: usize,
+	/// RTGI (GI-DESIGN.md): light through the probe-traced GI path
+	/// instead of the cascade/BFS stack. Off until look sign-off; P6
+	/// removes the flag and the old stack with it. Launchers: `--rtgi`
+	/// (desktop), `?rtgi` (web).
+	pub rtgi: bool,
 }
 
 impl EngineConfig {
@@ -206,6 +211,7 @@ impl EngineConfig {
 			spike_log: false,
 			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
+			rtgi: false,
 		}
 	}
 
@@ -244,6 +250,7 @@ impl EngineConfig {
 			spike_log: false,
 			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
+			rtgi: false,
 		}
 	}
 
@@ -278,6 +285,7 @@ impl EngineConfig {
 			spray_droplets: self.spray_droplets,
 			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
+			rtgi: self.rtgi,
 		}
 	}
 }

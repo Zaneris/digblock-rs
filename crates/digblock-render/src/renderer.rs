@@ -154,6 +154,10 @@ pub struct RenderConfig {
 	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
 	/// normal run. None = sized from `draw_dist`.
 	pub chunk_slots_override: Option<u32>,
+	/// RTGI (GI-DESIGN.md): build and dispatch the probe compute. Off =
+	/// the old lighting path with zero new GPU objects, until P6 removes
+	/// the choice.
+	pub rtgi: bool,
 }
 
 /// Everything `Renderer::render` consumes for one frame, built by the
@@ -373,6 +377,8 @@ pub struct Renderer {
 	near_planes: Option<[glam::Vec4; 4]>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
+	/// RTGI probe compute; None with the flag off (see RenderConfig::rtgi).
+	gi: Option<crate::gi::GiDraw>,
 	/// Debug overlay; always constructed (cheap) so the device-loss
 	/// rebuild path recreates it for free.
 	overlay: Overlay,
@@ -763,6 +769,7 @@ impl Renderer {
 			near_dirty: true,
 			near_planes: None,
 			gpu_timer: GpuTimer::new(gpu),
+			gi: config.rtgi.then(|| crate::gi::GiDraw::new(gpu)),
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
 			players: crate::players::RemotePlayersDraw::new(
@@ -1276,6 +1283,12 @@ impl Renderer {
 			.create_command_encoder(&wgpu::CommandEncoderDescriptor {
 				label: Some("frame"),
 			});
+
+		// RTGI probe update first: compute at the head of the encoder, so
+		// every later pass that reads the atlas sees this frame's write.
+		if let Some(gi) = self.gi.as_mut() {
+			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref());
+		}
 
 		let draw = ChunkDraw {
 			chunks: &self.chunks,

@@ -162,8 +162,12 @@ pub mod shader {
 	/// projection and light rig, so the shared Frame block would only be
 	/// an unused binding it must not declare.
 	pub const VIEWMODEL: &str = include_str!("../../../assets/shaders/viewmodel.wgsl");
+	/// RTGI probe-update compute (GI-DESIGN.md). No frame prelude: the
+	/// compute passes carry their own small GI uniform block, not the
+	/// pinned Frame layout.
+	pub const GI_PROBE: &str = include_str!("../../../assets/shaders/gi_probe.wgsl");
 
-	pub const ALL: [(&str, &str); 12] = [
+	pub const ALL: [(&str, &str); 13] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -176,6 +180,7 @@ pub mod shader {
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
 		("viewmodel.wgsl", VIEWMODEL),
+		("gi_probe.wgsl", GI_PROBE),
 	];
 }
 

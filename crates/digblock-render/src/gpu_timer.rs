@@ -15,7 +15,10 @@ pub const Q_MAIN: u32 = 4;
 pub const Q_OVERLAY: u32 = 6;
 /// Water pass (blit + prepass + water color), once the main pass splits.
 pub const Q_WATER: u32 = 8;
-const QUERY_COUNT: u32 = 10;
+/// RTGI probe-update compute (GI-DESIGN.md). Resolved with the rest but
+/// harvested only once the P5 metrics work appends its CSV column.
+pub const Q_GI: u32 = 10;
+const QUERY_COUNT: u32 = 12;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
 /// Readback ring depth; covers the 2-3 frame map latency.
 const SLOTS: usize = 3;
@@ -123,6 +126,15 @@ impl GpuTimer {
 	/// or None when timing is skipped this frame.
 	pub fn writes(&self, first: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
 		self.armed.then_some(wgpu::RenderPassTimestampWrites {
+			query_set: &self.query_set,
+			beginning_of_pass_write_index: Some(first),
+			end_of_pass_write_index: Some(first + 1),
+		})
+	}
+
+	/// The compute-pass twin of [`writes`].
+	pub fn compute_writes(&self, first: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+		self.armed.then_some(wgpu::ComputePassTimestampWrites {
 			query_set: &self.query_set,
 			beginning_of_pass_write_index: Some(first),
 			end_of_pass_write_index: Some(first + 1),

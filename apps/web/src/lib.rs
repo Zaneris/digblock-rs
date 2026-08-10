@@ -74,6 +74,7 @@ pub fn start() -> Result<(), JsValue> {
 		config.shadow_size = s.clamp(512, 4096);
 	}
 	config.overlay = flag(&params, "overlay");
+	config.rtgi = flag(&params, "rtgi");
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");

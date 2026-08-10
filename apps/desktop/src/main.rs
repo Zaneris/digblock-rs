@@ -78,6 +78,7 @@ fn main() {
 			"--drill" => options.auto_drill = true,
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
+			"--rtgi" => config.rtgi = true,
 			"--bench" => config.bench = true,
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),

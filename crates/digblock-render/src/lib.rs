@@ -7,6 +7,7 @@ mod camera;
 mod chat;
 mod engine;
 mod font;
+mod gi;
 mod gpu_timer;
 mod highlight;
 pub mod hotbar;

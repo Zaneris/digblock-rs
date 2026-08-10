@@ -1,0 +1,145 @@
+# GI-DESIGN — probe-traced global illumination
+
+Status: P0 in progress. Replaces the ENTIRE previous lighting model — the two-cascade
+shadow maps, the Stage-B BFS voxel light field (torch + skylight + bounce channels), the
+AXIS ambient model, the beam veto, and the underwater direct-light special cases. Until
+P6 removes them, both systems coexist behind `EngineConfig::rtgi` (`--rtgi` / `?rtgi=`),
+selected at pipeline build time. The only survivors of the old model are baked per-vertex
+AO (contact-scale darkening sits below GI resolution) and the Stage-A emissive bit-21 ink.
+
+## Goals
+
+- One mechanism lights everything: sun, sky, and torches are all radiance sources seen by
+  the same rays. No shadow maps, no per-light machinery beyond a light list.
+- Amortized over time, never in one frame: probes converge over fractions of a second with
+  hysteresis; world edits and sun movement propagate as re-convergence, not recompute.
+- GPU-resident: the web client is single-threaded — the CPU's only jobs are classifying
+  edited chunks (µs) and byte-budgeted uploads.
+- Low resolution with blending: coarse probes + a half-res resolve + temporal smoothing is
+  the look; crispness comes only from the per-pixel sun ray and baked AO.
+- Fits WebGPU baseline `Limits::default()` — no feature/limit negotiation.
+
+## Non-goals (v1)
+
+- Specular GI / reflections (SSR stays as-is for water).
+- Shadows beyond the voxel window (analytic fallback, mostly under fog).
+- Sub-block emitter geometry: a torch lights from its cell, as a voxel.
+- Colored transmission through water beyond a scalar transmittance.
+
+## Literature
+
+Majercik et al., *Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields*
+(JCGT 2019); *Ray Tracing Gems II* probe chapters (RTXGI scaling, relocation and
+classification); NVIDIA RTXGI-DDGI; DDGI-Minecraft (Vulkan); *Real-Time Rendering* 4th
+ed. ch. 11 (ambient-cube basis). Two deliberate deviations from stock DDGI, both possible
+because we own an exact voxel occupancy texture: (1) no octahedral visibility payload —
+leak suppression is exact short DDA occlusion at resolve time plus probe relocation;
+(2) the probe payload is a 6-axis ambient cube, not N×N octahedral — blocky world,
+6 texels/probe, trivial sampling.
+
+## Data model
+
+**Voxel window** — R8Uint 3D texture of GI-class ids, one texel per block, XZ-toroidal at
+chunk granularity, Y spans the full 256-block column (an up-ray always reaches sky; the
+window never scrolls vertically). Desktop 320×256×320 (25.6 MiB) / web 256×256×256
+(16.8 MiB) / iOS 192×256×192 (9.4 MiB). GI-class mapping is a pure function in
+`digblock-core` (headless-tested): air = 0, water = translucent, `emits`/`glows` blocks =
+emissive classes, Shaped blocks = opaque (the same v1 approximation fluid makes). A 16³
+chunk re-uploads as one 4 KiB `write_texture`; scrolling uploads only entering slabs.
+
+**Material LUT** — 256 × 8 B uniform: albedo rgb + opacity class, emissive rgb + intensity
+exponent. Albedo is the per-layer mean color, computed where the atlas upload already
+iterates the layers. Rays never touch the block atlas.
+
+**Coarse occupancy** — a second R8Uint 3D texture at /8 per axis; byte = any_solid |
+any_emissive << 1 per 8³ region, computed CPU-side at classification (8 B/chunk). Rays in
+empty space step 8 blocks per load.
+
+**Light list** — ≤256 emitters within C1 range: pos, rgb, radius = 16 B each, one storage
+buffer, rebuilt from per-chunk emitter lists kept at classification. Exists so next-event
+estimation makes a single torch voxel stable at 32 rays/probe instead of a firefly.
+
+**Probe cascades** — two toroidal camera-following grids of 6-axis irradiance probes:
+C0 at 2-block spacing 32×24×32 (64×48×64 coverage), C1 at 8-block spacing 32×20×32
+(256×160×256). iOS: 24×16×24 each. Payload: one rgba16float 3D atlas per cascade, dims
+(nx, ny, nz×6) — axis-major Z slabs, hardware trilinear with a half-texel Z inset so
+slabs never bleed. Ping-ponged: the update compute reads last frame's atlas (that read IS
+the infinite bounce) and writes the new one; a full copy precedes the amortized write.
+A r32uint flags texture per cascade carries age (8 b), dead-in-solid (1 b), and a
+relocation code (5 b — probe center nudged ≤1 block into air). Beyond C1: analytic
+fallback (ambient dome × face weight + lambert sun, visibility 1), faded in over C1's
+last 16 blocks.
+
+## Passes (frame order, RTGI on)
+
+probe copy → probe update (compute, per cascade) → invalidate (compute) → depth prepass
+(opaque solids, position-only) → depth blit to R32Float (existing pipeline, moved earlier;
+one R32F serves both GI resolve and water) → GI resolve → scene → water → viewmodel →
+overlay.
+
+**Probe update** — workgroup 64. Spherical-Fibonacci ray set rotated by a per-update hash.
+Per ray: coarse-skip DDA (~20 loads average) → on hit, LUT albedo/emissive + one sun DDA
+from the hit + a 6-axis gather from last frame's atlas; on miss, sky radiance from the
+frame's zenith/horizon gradient. Plus NEE against the ≤4 nearest list lights (one short
+DDA each). Scheduling is a permuted round-robin over probe index — responsiveness comes
+from the alpha ladder, not a priority structure.
+
+**GI resolve** — fullscreen at half res (¼ iOS; web capped 960×540), MRT. World position
+from R32F depth + inv_view_proj; face normal from depth derivatives (exact on a blocky
+world). Per pixel: the 8 surrounding C0 probes — 3 axis fetches each (n² ambient-cube
+weights) + a ~4-load DDA occlusion probe→pixel — falling through to C1 (occlusion capped
+at 8 coarse steps) then analytic; plus one sun-visibility DDA (~20 loads). Out: rgba16f
+(indirect rgb + view depth) and rgba8 (sun visibility + packed normal code).
+
+**Scene shading** — chunk.wgsl: emissive bit-21 early return unchanged; else
+`tex * ao * (light_color * sunvis * lambert + indirect)` via a 4-tap depth/normal-aware
+bilateral upsample of the GI buffers. Water: manual probe gather at the surface world pos
+in fs (no new varyings) + its own capped ~12-step sun DDA; underwater dimming is the sun
+ray accumulating transmittance through translucent voxels. Players: per-fragment gather +
+1-tap sun occlusion. Viewmodel/spray: a 1-invocation compute samples the field at the
+camera into a 32 B buffer copied into their UBOs.
+
+## Budgets and cadence
+
+| tier | probes/frame | rays/probe | full sweep | resolve | GI upload/frame |
+|---|---|---|---|---|---|
+| desktop | 4096 | 64 | ~0.18 s | ½ res | 2 MiB |
+| web | 1536 | 32 | ~0.5 s | ½ res, ≤960×540 | 256 KiB |
+| iOS | 1024 | 32 | ~0.55 s | ¼ res | 512 KiB |
+
+- Hysteresis alpha by probe age: 1.0 / 0.5 / 0.25 / 0.10 steady state.
+- Invalidation: ≤16 CPU edit spheres per frame (edit ±8 blocks C0, ±16 C1) reset ages; a
+  teleport zeroes every age and the alpha-1 sweep hides inside the streaming fill.
+- Sun: ray direction quantized to ~1.5° (one step per ~5 s at DAY_SECS = 1200); steps do
+  NOT invalidate — shadows glide across a step over 2–4 s of hysteresis. The smooth
+  un-quantized direction still drives `light_color`/lambert.
+- Convergence gates: a placed torch visibly lights ≤0.5 s desktop / ≤1.5 s web, settles
+  ≤3 s.
+
+## Invariants
+
+- The voxel window is DERIVED data: never serialized, never on the wire; device loss
+  rebuilds it by re-upload + age reset (drill-tested).
+- Classification is a pure function of the cell value — headless tests pin it.
+- Everything the rays read (window, LUT, coarse, light list, atlases) lives on the GPU;
+  the CPU never reads probes back.
+- Flag-off builds are bit-identical to the old system (P0 bench gate).
+
+## Test pins (grown per phase)
+
+- P1: classification table (air/water/emissive/shaped→opaque), coarse-byte derivation,
+  window addressing (toroidal chunk→texel), dirty-set feed from set_cell/arrival/evict.
+- P2/P3: naga-validated shaders (existing harness); frame-layout test updated with the GI
+  uniform fields; capture A/Bs — DIG_VAULT (sealed room: dark, then torch-lit), DIG_ROOF
+  (a 10am sun slants under a wall-less roof), tod 0/45/180.
+- P5: bench with a fixed-tod converged steady-state segment.
+
+## Phases
+
+P0 compute infra + this doc + `rtgi` flag (gate: flag-off bench parity) · P1 voxel window
++ LUT + light list (gate: `DIG_GI=window` debug raymarch capture) · P2 probe cascades +
+update/invalidate computes (gate: probe visualization capture) · P3 depth prepass + GI
+resolve + chunk.wgsl (gate: A/B captures; USER LOOK SIGN-OFF) · P4 water/players/
+viewmodel/spray/underwater · P5 perf + metrics + bench + web verify · P6 remove the old
+system (shadow.rs, shadow.wgsl, core light.rs, mesher light plumbing, cascade VPs, the
+~26 pinned tests, LIGHT-DESIGN.md, the flag itself).
