@@ -168,6 +168,9 @@ enum Act {
 	/// Close the menu and open the alchemy screen (engine drains
 	/// [`Menu::take_alchemy`]).
 	OpenAlchemy,
+	/// Close the menu and open the character screen (engine drains
+	/// [`Menu::take_character`]).
+	OpenCharacter,
 	JoinRow(usize),
 	Refresh,
 	OpenSettings,
@@ -228,6 +231,7 @@ pub struct Menu {
 	wants_return_spawn: bool,
 	wants_inventory: bool,
 	wants_alchemy: bool,
+	wants_character: bool,
 	/// Live settings, edited on the Settings screen. `settings.name`
 	/// tracks the last *joined-with* name; the `name` field above is the
 	/// live edit buffer.
@@ -260,6 +264,7 @@ impl Menu {
 			wants_return_spawn: false,
 			wants_inventory: false,
 			wants_alchemy: false,
+			wants_character: false,
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -322,6 +327,11 @@ impl Menu {
 	/// The Alchemy row was picked: the engine opens the screen.
 	pub fn take_alchemy(&mut self) -> bool {
 		std::mem::take(&mut self.wants_alchemy)
+	}
+
+	/// The Character row was picked: the engine opens the screen.
+	pub fn take_character(&mut self) -> bool {
+		std::mem::take(&mut self.wants_character)
 	}
 
 	/// The full settings snapshot, once per change batch. The engine
@@ -718,6 +728,10 @@ impl Menu {
 				self.wants_alchemy = true;
 				self.screen = None;
 			}
+			Act::OpenCharacter => {
+				self.wants_character = true;
+				self.screen = None;
+			}
 			Act::Refresh => {
 				if let Some(Screen::Browser(b)) = &mut self.screen {
 					if !b.fetching {
@@ -866,6 +880,7 @@ impl Menu {
 					}
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
+					acts.push((RowId::RootItem(9), Act::OpenCharacter));
 					if self.connected {
 						acts.push((RowId::RootItem(2), Act::LeaveServer));
 					} else {
@@ -984,6 +999,11 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", "K"),
+					);
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::RootItem(9), "Character", "C"),
 					);
 					if self.connected {
 						push(
@@ -1932,12 +1952,13 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_connected(true);
 		let acts = menu.acts();
-		// Back to Game + Return to Spawn + Inventory + Alchemy + Leave
-		// Server + Settings (no services).
-		assert_eq!(acts.len(), 6);
+		// Back to Game + Return to Spawn + Inventory + Alchemy +
+		// Character + Leave Server + Settings (no services).
+		assert_eq!(acts.len(), 7);
 		menu.handle_key(Key::Down); // Return to Spawn
 		menu.handle_key(Key::Down); // Inventory
 		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Down); // Character
 		menu.handle_key(Key::Down); // Leave Server
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_disconnect());
@@ -2018,8 +2039,8 @@ mod tests {
 		);
 		assert_eq!(
 			acts.len(),
-			5,
-			"Back to Game + Inventory + Alchemy + Leave World + Settings"
+			6,
+			"Back to Game + Inventory + Alchemy + Character + Leave World + Settings"
 		);
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view
@@ -2030,6 +2051,7 @@ mod tests {
 		// raised on the way to Settings.
 		menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
 		menu.handle_key(Key::Down); // Alchemy
+		menu.handle_key(Key::Down); // Character
 		menu.handle_key(Key::Down); // Leave World
 		menu.handle_key(Key::Down); // Settings
 		menu.handle_key(Key::Enter);
@@ -2042,7 +2064,7 @@ mod tests {
 		// Cooldown over: selectable again.
 		menu.open();
 		menu.set_spawn_cooldown(0);
-		assert_eq!(menu.acts().len(), 6, "spawn row is back");
+		assert_eq!(menu.acts().len(), 7, "spawn row is back");
 	}
 
 	fn open_settings(menu: &mut Menu) {

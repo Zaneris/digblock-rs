@@ -18,6 +18,7 @@ pub mod protect;
 pub mod raycast;
 pub mod shapes;
 pub mod simplex;
+pub mod skills;
 pub mod sky;
 pub mod spawn;
 pub mod stream_budget;

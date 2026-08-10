@@ -291,7 +291,9 @@ fn run_bot(
 				| NetEvent::Chat { .. }
 				| NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
-				| NetEvent::Layout { .. } => {}
+				| NetEvent::Layout { .. }
+				| NetEvent::Skills { .. }
+				| NetEvent::XpGain { .. } => {}
 			}
 		}
 

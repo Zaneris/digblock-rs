@@ -17,6 +17,8 @@ pub enum Key {
 	I,
 	/// Alchemy screen toggle.
 	K,
+	/// Character (skills) screen toggle.
+	C,
 	/// Return to spawn ("home").
 	H,
 	/// Chat open (multiplayer).
@@ -117,6 +119,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::KeyF => Key::F,
 		K::KeyI => Key::I,
 		K::KeyK => Key::K,
+		K::KeyC => Key::C,
 		K::KeyH => Key::H,
 		K::KeyT => Key::T,
 		K::Digit0 => Key::Digit(0),
