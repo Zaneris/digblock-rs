@@ -213,7 +213,7 @@ impl Sim {
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
 		// Copy what we need out of the client entry so the &mut borrow
 		// ends before the all-players InsidePlayer scan below.
-		let (id, out, live, player_pos, has_token, dig_state, slot_item) = {
+		let (id, out, live, player_pos, has_token, dig_state, slot_item, active_tool) = {
 			let Some(client) = self.clients.get_mut(&req.conn_id) else {
 				return;
 			};
@@ -240,6 +240,7 @@ impl Sim {
 					.as_ref()
 					.map(|d| (d.cell, d.cell_value, d.progress)),
 				slot_item,
+				client.hotbar.active_tool(),
 			)
 		};
 		// A refused push here just drops the reply; a stalled peer is
@@ -487,7 +488,13 @@ impl Sim {
 		// for pre-v10-shaped mistakes.
 		let slot_ok = match req.kind {
 			EditKind::Dig => true,
-			EditKind::Collect => slot_item == Some(Some(HotbarItem::WaterTool)),
+			// The tool slot must hold the BUCKET — with §6's tool axis the
+			// slot is one of a roster, and only the bucket scoops. The
+			// Layout carrying a cycle precedes this edit on the reliable
+			// stream, so honest clients can't race it.
+			EditKind::Collect => {
+				slot_item == Some(Some(HotbarItem::WaterTool)) && active_tool == BlockType::Bucket
+			}
 			EditKind::Place { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
 				// Pouring the bucket. Water is the ONLY thing the tool
@@ -496,7 +503,9 @@ impl Sim {
 				// so the arm above can no longer match it. The stock gate
 				// below enforces the charge — an empty bucket's pour bounces
 				// as NoStock.
-				Some(Some(HotbarItem::WaterTool)) => place_b == Some(BlockType::Water),
+				Some(Some(HotbarItem::WaterTool)) => {
+					place_b == Some(BlockType::Water) && active_tool == BlockType::Bucket
+				}
 				_ => false,
 			},
 			EditKind::Interact => unreachable!("routed to process_interact"),

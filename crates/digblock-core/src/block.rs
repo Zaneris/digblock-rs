@@ -100,6 +100,13 @@ blocks! {
 	/// emissive: fullbright ink, visible in the dark but not (yet)
 	/// illuminating its surroundings — a way-marker, not a lamp.
 	Torch = 28 => dig(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 10),
+	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
+	/// blocks that never render, collide, place, or slot — they exist so
+	/// ownership, prediction, rebase, and both persistence formats ride
+	/// the count machinery untouched. The bucket is owned by everyone
+	/// always ([`BlockType::always_owned`]); its charge stays the Water
+	/// count. Texture layers are 0 (never sampled — RenderClass::None).
+	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -503,7 +510,21 @@ impl BlockType {
 	/// the first reconcile.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water
+		self != BlockType::Water && !self.is_tool()
+	}
+
+	/// A tool id: an item-only row that lives in the dedicated tool slot,
+	/// never in a block slot or the grid, and never in the world.
+	#[inline]
+	pub fn is_tool(self) -> bool {
+		matches!(self, BlockType::Bucket)
+	}
+
+	/// Tools every player owns unconditionally (no craft, no count):
+	/// the bucket, exactly as it has been since the water tool shipped.
+	#[inline]
+	pub fn always_owned(self) -> bool {
+		self == BlockType::Bucket
 	}
 
 	/// A "whole block" for the water-regen rule's floor check: solid
@@ -573,8 +594,12 @@ mod tests {
 	fn table_sanity() {
 		for &b in &BlockType::ALL {
 			let p = b.props();
-			// Air is the only class-None block, and nothing colliding is None.
-			assert_eq!(p.class == RenderClass::None, b == BlockType::Air);
+			// Class-None is Air and the item-only tools, nothing else —
+			// and nothing colliding is None.
+			assert_eq!(
+				p.class == RenderClass::None,
+				b == BlockType::Air || b.is_tool()
+			);
 			if p.collides {
 				assert_ne!(p.class, RenderClass::None);
 			}

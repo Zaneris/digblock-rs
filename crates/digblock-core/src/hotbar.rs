@@ -19,13 +19,15 @@ pub const WIRE_TOOL: u16 = u16::MAX - 1;
 pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
-	/// The permanent water tool (pinned to the last slot). It has two
-	/// states, and its charge — one unit of water in the inventory, see
-	/// [`crate::inventory::Inventory::bucket_full`] — decides which:
-	/// empty, left-click holds on a source to scoop it and right-click
-	/// does nothing; charged, right-click pours the source back out and
-	/// left-click does nothing. Water is never an item in a slot, so the
-	/// bucket is the only thing that carries it.
+	/// THE tool slot marker — permanently the last slot (SKILLS-DESIGN
+	/// §6 formalized it: 8 block slots plus one dedicated tool slot).
+	/// WHICH tool it holds is a separate axis, [`Hotbar::active_tool`]:
+	/// tapping 9 with the slot already selected cycles through the owned
+	/// tool roster. The launch tool is the water bucket, whose charge —
+	/// one unit of water in the inventory, see
+	/// [`crate::inventory::Inventory::bucket_full`] — decides its
+	/// clicks: empty, left-click holds on a source to scoop; charged,
+	/// right-click pours it back out.
 	WaterTool,
 }
 
@@ -33,6 +35,11 @@ pub struct Hotbar {
 	slots: [Option<HotbarItem>; HOTBAR_SLOTS],
 	selected: usize,
 	scroll_accum: f32,
+	/// The tool the dedicated slot currently holds (always a
+	/// [`BlockType::is_tool`] id; the bucket by default). Rides the
+	/// `Layout` wire as the 9th entry, so the server's Collect/pour
+	/// validation always sees the current pick in wire order.
+	active_tool: BlockType,
 }
 
 impl Default for Hotbar {
@@ -52,6 +59,29 @@ impl Hotbar {
 			slots,
 			selected: 0,
 			scroll_accum: 0.0,
+			active_tool: BlockType::Bucket,
+		}
+	}
+
+	/// The tool the dedicated slot holds.
+	#[inline]
+	pub fn active_tool(&self) -> BlockType {
+		self.active_tool
+	}
+
+	/// Advance the active tool through `owned` (the engine's owned
+	/// roster, deterministic block-id order), wrapping. With one tool
+	/// the extra taps no-op; an active tool that fell out of the roster
+	/// snaps to its first entry.
+	pub fn cycle_tool(&mut self, owned: &[BlockType]) {
+		let Some(pos) = owned.iter().position(|&t| t == self.active_tool) else {
+			if let Some(&first) = owned.first() {
+				self.active_tool = first;
+			}
+			return;
+		};
+		if owned.len() > 1 {
+			self.active_tool = owned[(pos + 1) % owned.len()];
 		}
 	}
 
@@ -90,9 +120,8 @@ impl Hotbar {
 
 	/// Put `b` in `slot` (an inventory-screen drop). Move-not-duplicate:
 	/// if `b` already sits elsewhere on the bar the two slots swap, so a
-	/// type never appears twice. Refused (false) when the target holds
-	/// the WaterTool — the tool can only be displaced by a bar-to-bar
-	/// swap, never replaced from the grid.
+	/// type never appears twice. Refused (false) for the tool slot —
+	/// §6 fixed it in place; blocks live in 1..8.
 	pub fn assign(&mut self, slot: usize, b: BlockType) -> bool {
 		if slot >= HOTBAR_SLOTS || self.slots[slot] == Some(HotbarItem::WaterTool) {
 			return false;
@@ -106,9 +135,15 @@ impl Hotbar {
 		true
 	}
 
-	/// Swap two slots (a bar-to-bar drag; the WaterTool participates).
+	/// Swap two BLOCK slots (a bar-to-bar drag). The tool slot sits out:
+	/// §6 pinned it to the end, so a drag can no longer carry it around
+	/// the bar.
 	pub fn swap(&mut self, a: usize, b: usize) {
-		if a < HOTBAR_SLOTS && b < HOTBAR_SLOTS {
+		if a < HOTBAR_SLOTS
+			&& b < HOTBAR_SLOTS
+			&& self.slots[a] != Some(HotbarItem::WaterTool)
+			&& self.slots[b] != Some(HotbarItem::WaterTool)
+		{
 			self.slots.swap(a, b);
 		}
 	}
@@ -123,43 +158,50 @@ impl Hotbar {
 		true
 	}
 
+	/// Wire encoding: blocks are their ids, empties `WIRE_EMPTY`, and
+	/// the tool slot carries THE ACTIVE TOOL's id — except the bucket,
+	/// which keeps the `WIRE_TOOL` sentinel every stored layout already
+	/// uses (§6: the sentinel decodes as the migrated bucket id).
 	pub fn to_wire(&self) -> [u16; HOTBAR_SLOTS] {
 		self.slots.map(|s| match s {
 			None => WIRE_EMPTY,
-			Some(HotbarItem::WaterTool) => WIRE_TOOL,
+			Some(HotbarItem::WaterTool) if self.active_tool == BlockType::Bucket => WIRE_TOOL,
+			Some(HotbarItem::WaterTool) => self.active_tool as u16,
 			Some(HotbarItem::Block(b)) => b as u16,
 		})
 	}
 
 	/// Sanitizing decode of a persisted arrangement: unknown ids turn
 	/// into empty slots, a duplicated block keeps its first slot, and
-	/// exactly one WaterTool is enforced (a missing tool is restored to
-	/// the last empty slot, else the last slot). Hostile or stale input
-	/// always yields a valid bar.
+	/// the tool slot is ALWAYS the last one (§6) — `WIRE_TOOL` or a tool
+	/// id anywhere in the input just names the active tool (`WIRE_TOOL`
+	/// = the migrated bucket), and a legacy layout that had parked the
+	/// tool mid-bar comes back with it pinned at the end. Hostile or
+	/// stale input always yields a valid bar.
 	pub fn from_wire(wire: &[u16; HOTBAR_SLOTS]) -> Self {
 		let mut hb = Self::new();
 		hb.slots = [None; HOTBAR_SLOTS];
 		for (i, &w) in wire.iter().enumerate() {
 			let item = match w {
 				WIRE_EMPTY => continue,
-				WIRE_TOOL => HotbarItem::WaterTool,
+				WIRE_TOOL => {
+					hb.active_tool = BlockType::Bucket;
+					continue;
+				}
 				id => match BlockType::try_from_id(id) {
+					Some(b) if b.is_tool() => {
+						hb.active_tool = b;
+						continue;
+					}
 					Some(b) => HotbarItem::Block(b),
 					None => continue,
 				},
 			};
-			if !hb.slots.contains(&Some(item)) {
+			if i < HOTBAR_SLOTS - 1 && !hb.slots.contains(&Some(item)) {
 				hb.slots[i] = Some(item);
 			}
 		}
-		if !hb.slots.contains(&Some(HotbarItem::WaterTool)) {
-			let last_free = hb
-				.slots
-				.iter()
-				.rposition(|s| s.is_none())
-				.unwrap_or(HOTBAR_SLOTS - 1);
-			hb.slots[last_free] = Some(HotbarItem::WaterTool);
-		}
+		hb.slots[HOTBAR_SLOTS - 1] = Some(HotbarItem::WaterTool);
 		hb
 	}
 
@@ -250,18 +292,40 @@ mod tests {
 		assert_eq!(h.slots()[1], Some(HotbarItem::Block(B::Dirt)));
 	}
 
+	/// §6 pinned the tool slot to the end: nothing lands on it, nothing
+	/// clears it, and a drag can no longer carry it around the bar.
 	#[test]
-	fn water_tool_is_immovable_except_by_swap() {
+	fn the_tool_slot_is_fixed_in_place() {
 		let mut h = Hotbar::new();
 		let tool = HOTBAR_SLOTS - 1;
 		assert!(!h.assign(tool, B::Dirt), "grid drop onto the tool refused");
 		assert!(!h.clear_slot(tool), "tool cannot be unassigned");
-		assert_eq!(h.slots()[tool], Some(HotbarItem::WaterTool));
+		h.auto_assign(B::Dirt);
+		h.swap(tool, 0);
+		assert_eq!(h.slots()[tool], Some(HotbarItem::WaterTool), "unmoved");
+		assert_eq!(h.slots()[0], Some(HotbarItem::Block(B::Dirt)), "unmoved");
+		h.swap(0, 1); // block-to-block swaps still work
+		assert_eq!(h.slots()[1], Some(HotbarItem::Block(B::Dirt)));
+	}
 
-		h.swap(tool, 0); // bar-to-bar drag carries the tool
-		assert_eq!(h.slots()[0], Some(HotbarItem::WaterTool));
-		assert!(!h.clear_slot(0), "still protected at its new home");
-		assert!(h.clear_slot(tool), "the vacated slot clears fine");
+	/// §6's second axis: WHICH tool the slot holds. Tapping 9 on the
+	/// already-selected slot cycles the owned roster, wrapping; one tool
+	/// no-ops; a roster that dropped the active tool snaps to its first.
+	#[test]
+	fn cycling_walks_the_owned_roster() {
+		let mut h = Hotbar::new();
+		assert_eq!(h.active_tool(), B::Bucket, "the launch tool");
+		h.cycle_tool(&[B::Bucket]);
+		assert_eq!(h.active_tool(), B::Bucket, "one tool: taps no-op");
+		// A future two-tool roster cycles and wraps. (Bucket is the only
+		// tool id today, so stand in a block id for the second — the
+		// cycle is pure list arithmetic.)
+		h.cycle_tool(&[B::Bucket, B::Stone]);
+		assert_eq!(h.active_tool(), B::Stone);
+		h.cycle_tool(&[B::Bucket, B::Stone]);
+		assert_eq!(h.active_tool(), B::Bucket, "wraps");
+		h.cycle_tool(&[B::Dirt]);
+		assert_eq!(h.active_tool(), B::Dirt, "dropped roster snaps to first");
 	}
 
 	#[test]
@@ -269,34 +333,38 @@ mod tests {
 		let mut h = Hotbar::new();
 		h.auto_assign(B::Dirt);
 		h.auto_assign(B::Stone);
-		h.swap(HOTBAR_SLOTS - 1, 4); // custom tool position survives
 		let wire = h.to_wire();
+		assert_eq!(wire[HOTBAR_SLOTS - 1], WIRE_TOOL, "bucket = the sentinel");
 		let back = Hotbar::from_wire(&wire);
 		assert_eq!(back.slots(), h.slots());
+		assert_eq!(back.active_tool(), h.active_tool());
 
-		// Hostile input: unknown id, duplicate block, duplicate tool.
+		// Hostile input: unknown id, duplicate block, a legacy mid-bar
+		// tool sentinel. The tool slot always comes back pinned last.
 		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
 		wire[0] = 9999; // unknown → empty
 		wire[1] = B::Dirt as u16;
 		wire[2] = B::Dirt as u16; // dupe → first wins
-		wire[3] = WIRE_TOOL;
-		wire[4] = WIRE_TOOL; // dupe tool → dropped
+		wire[3] = WIRE_TOOL; // legacy parked tool → names the bucket, pins last
 		let hb = Hotbar::from_wire(&wire);
 		assert_eq!(hb.slots()[0], None);
 		assert_eq!(hb.slots()[1], Some(HotbarItem::Block(B::Dirt)));
 		assert_eq!(hb.slots()[2], None);
-		assert_eq!(hb.slots()[3], Some(HotbarItem::WaterTool));
-		assert_eq!(hb.slots()[4], None);
+		assert_eq!(hb.slots()[3], None, "the parked spot empties");
+		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
+		assert_eq!(hb.active_tool(), B::Bucket);
 
-		// Missing tool is restored to the last empty slot.
+		// A missing tool entry still yields the pinned slot; a tool ID in
+		// the input names the active tool instead of occupying a slot.
 		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
 		wire[0] = B::Stone as u16;
+		wire[8] = B::Bucket as u16;
 		let hb = Hotbar::from_wire(&wire);
 		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
-
-		// Tool restoration with a full-of-blocks tail still lands somewhere.
-		let all = Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS]);
-		assert!(all.slots().contains(&Some(HotbarItem::WaterTool)));
+		assert_eq!(hb.active_tool(), B::Bucket);
+		assert!(Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
+			.slots()
+			.contains(&Some(HotbarItem::WaterTool)));
 	}
 
 	#[test]
