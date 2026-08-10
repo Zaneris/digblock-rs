@@ -168,8 +168,11 @@ pub mod shader {
 	pub const GI_PROBE: &str = include_str!("../../../assets/shaders/gi_probe.wgsl");
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
 	pub const GI_DEBUG: &str = include_str!("../../../assets/shaders/gi_debug.wgsl");
+	/// The half-res GI resolve pass (probes + per-pixel sun ray → the
+	/// scene's lighting inputs).
+	pub const GI_RESOLVE: &str = include_str!("../../../assets/shaders/gi_resolve.wgsl");
 
-	pub const ALL: [(&str, &str); 14] = [
+	pub const ALL: [(&str, &str); 15] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("shadow.wgsl", SHADOW),
@@ -184,6 +187,7 @@ pub mod shader {
 		("viewmodel.wgsl", VIEWMODEL),
 		("gi_probe.wgsl", GI_PROBE),
 		("gi_debug.wgsl", GI_DEBUG),
+		("gi_resolve.wgsl", GI_RESOLVE),
 	];
 }
 

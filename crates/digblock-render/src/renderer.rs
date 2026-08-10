@@ -154,12 +154,8 @@ pub struct RenderConfig {
 	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
 	/// normal run. None = sized from `draw_dist`.
 	pub chunk_slots_override: Option<u32>,
-	/// RTGI (GI-DESIGN.md): build and dispatch the probe compute. Off =
-	/// the old lighting path with zero new GPU objects, until P6 removes
-	/// the choice.
-	pub rtgi: bool,
 	/// Replace the scene with the voxel-window debug raymarch
-	/// (`DIG_GI=window`; implies rtgi at the launcher).
+	/// (`DIG_GI=window`).
 	pub debug_gi: bool,
 	/// Debug raymarch shades hits with the C0 probe field instead of
 	/// raw albedo (`DIG_GI=probes`) — the P2 gate view.
@@ -336,8 +332,14 @@ pub(crate) const WIDE_SLICE_DRAWS: u32 = 1536;
 
 pub struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
+	/// Depth-only prepass over the opaque solids: fills the scene depth
+	/// the GI resolve reconstructs world positions from, before any
+	/// shading runs.
+	prepass_pipeline: wgpu::RenderPipeline,
 	/// The two-cascade shadow system (pipeline, maps, ping-pong,
-	/// sampling bind groups).
+	/// sampling bind groups). Solids no longer read the maps — only
+	/// water still samples them, until P4 moves it onto the GI buffers
+	/// and the whole system is deleted.
 	shadow: ShadowCascades,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
@@ -383,8 +385,9 @@ pub struct Renderer {
 	near_planes: Option<[glam::Vec4; 4]>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
-	/// RTGI probe compute; None with the flag off (see RenderConfig::rtgi).
-	gi: Option<crate::gi::GiDraw>,
+	/// RTGI: the voxel window, probe cascades, and the half-res resolve
+	/// — the lighting system (GI-DESIGN.md).
+	gi: crate::gi::GiDraw,
 	/// Draw the voxel-window debug raymarch over the scene (DIG_GI).
 	debug_gi: bool,
 	/// Debug overlay; always constructed (cheap) so the device-loss
@@ -444,6 +447,14 @@ struct FrameTargets {
 	blit_bg: wgpu::BindGroup,
 	/// Depth-blit group 0: the live depth texture.
 	depth_blit_bg: wgpu::BindGroup,
+	/// GI resolve outputs, half res: indirect rgb + view dist (rgba16f)
+	/// and sun visibility + normal code (rgba8).
+	gi_indirect_view: wgpu::TextureView,
+	gi_sun_view: wgpu::TextureView,
+	/// Scene group 2: the two views above, textureLoad'd by chunk.wgsl.
+	gi_scene_bg: wgpu::BindGroup,
+	/// Resolve group 0, one per atlas ping (see `GiDraw::front`).
+	gi_resolve_bg: [wgpu::BindGroup; 2],
 }
 
 impl Renderer {
@@ -575,17 +586,30 @@ impl Renderer {
 		});
 
 		// The shadow system owns its pipeline, maps, and the sampling
-		// layout the main pipelines reference as group 2.
+		// layout water still references as group 2 (until P4).
 		let shadow = ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws);
 
-		// Shared group scheme: 0 = frame, 1 = materials, 2 = shadows.
+		// Textures + the GI system come before the pipelines: the solid
+		// layout references the GI scene bind-group layout, and GiDraw's
+		// material LUT needs the per-layer means the atlas upload computes.
+		let textures = BlockTextures::new(gpu);
+		let gi = crate::gi::GiDraw::new(
+			gpu,
+			config.draw_dist as u32,
+			&textures.layer_means,
+			surface_format,
+			config.debug_gi_probes,
+		);
+
+		// Shared group scheme: 0 = frame, 1 = materials, 2 = the GI
+		// resolve outputs (water still holds shadows at 2 until P4).
 		// Chunk origins are NOT a bind group — they arrive as the
 		// instance-step vertex stream at slot 1 (see
 		// `origin_vertex_layout`). Water swaps group 0 for its
 		// frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[&frame_bgl, &materials_bgl, shadow.bind_group_layout()],
+			bind_group_layouts: &[&frame_bgl, &materials_bgl, gi.scene_bgl()],
 			push_constant_ranges: &[],
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -605,6 +629,34 @@ impl Renderer {
 				module: &shader,
 				vs_entry: "vs",
 				fs_entry: Some("fs"),
+				vertex_buffers: &chunk_vertex_layouts,
+				cull: Some(wgpu::Face::Back),
+				depth_write: true,
+				// The depth prepass wrote these exact values (vs_depth is
+				// the same transform on the same stream).
+				depth_compare: wgpu::CompareFunction::LessEqual,
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
+
+		// Depth-only prepass: same vertex stream, position-only entry,
+		// no fragment stage — fills the depth the GI resolve consumes.
+		let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("depth prepass"),
+			bind_group_layouts: &[&frame_bgl],
+			push_constant_ranges: &[],
+		});
+		let prepass_pipeline = crate::pipeline_builder::build(
+			device,
+			None,
+			&crate::pipeline_builder::PipelineDesc {
+				label: "depth prepass",
+				layout: &prepass_layout,
+				module: &shader,
+				vs_entry: "vs_depth",
+				fs_entry: None,
 				vertex_buffers: &chunk_vertex_layouts,
 				cull: Some(wgpu::Face::Back),
 				depth_write: true,
@@ -729,7 +781,6 @@ impl Renderer {
 		});
 
 		// Consumed here: the bind group holds the texture/sampler refs.
-		let textures = BlockTextures::new(gpu);
 		let materials_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("materials"),
 			layout: &materials_bgl,
@@ -754,6 +805,7 @@ impl Renderer {
 
 		Self {
 			solid_pipeline,
+			prepass_pipeline,
 			shadow,
 			water,
 			sky,
@@ -777,15 +829,7 @@ impl Renderer {
 			near_dirty: true,
 			near_planes: None,
 			gpu_timer: GpuTimer::new(gpu),
-			gi: config.rtgi.then(|| {
-				crate::gi::GiDraw::new(
-					gpu,
-					config.draw_dist as u32,
-					&textures.layer_means,
-					surface_format,
-					config.debug_gi_probes,
-				)
-			}),
+			gi,
 			debug_gi: config.debug_gi,
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
@@ -1005,19 +1049,14 @@ impl Renderer {
 		self.mark_near_dirty(center);
 	}
 
-	/// RTGI: forward one classified chunk into the voxel window. No-op
-	/// with the flag off (the engine's drain is gated, this is a belt).
+	/// RTGI: forward one classified chunk into the voxel window.
 	pub fn gi_upload(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &digblock_core::gi::GiChunk) {
-		if let Some(g) = self.gi.as_mut() {
-			g.upload_chunk(gpu, pos, gi);
-		}
+		self.gi.upload_chunk(gpu, pos, gi);
 	}
 
 	/// RTGI: queue probe invalidation around an edited cell.
 	pub fn gi_invalidate(&mut self, pos: [f32; 3]) {
-		if let Some(g) = self.gi.as_mut() {
-			g.invalidate(pos);
-		}
+		self.gi.invalidate(pos);
 	}
 
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
@@ -1198,6 +1237,44 @@ impl Renderer {
 				resource: wgpu::BindingResource::TextureView(&depth_view),
 			}],
 		});
+		// The GI resolve targets at half resolution — the chunk shader's
+		// bilateral upsample bridges the gap.
+		let gi_tex = |format, label| {
+			gpu.device.create_texture(&wgpu::TextureDescriptor {
+				label: Some(label),
+				size: wgpu::Extent3d {
+					width: (size.0 / 2).max(1),
+					height: (size.1 / 2).max(1),
+					depth_or_array_layers: 1,
+				},
+				mip_level_count: 1,
+				sample_count: 1,
+				dimension: wgpu::TextureDimension::D2,
+				format,
+				usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+					| wgpu::TextureUsages::TEXTURE_BINDING,
+				view_formats: &[],
+			})
+		};
+		let gi_indirect_view = gi_tex(wgpu::TextureFormat::Rgba16Float, "gi indirect")
+			.create_view(&Default::default());
+		let gi_sun_view =
+			gi_tex(wgpu::TextureFormat::Rgba8Unorm, "gi sun").create_view(&Default::default());
+		let gi_scene_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi scene"),
+			layout: self.gi.scene_bgl(),
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(&gi_indirect_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(&gi_sun_view),
+				},
+			],
+		});
+		let gi_resolve_bg = self.gi.make_resolve_binds(gpu, &depth_copy_view);
 		self.targets = Some(FrameTargets {
 			size,
 			depth_view,
@@ -1206,6 +1283,10 @@ impl Renderer {
 			water_bg,
 			blit_bg,
 			depth_blit_bg,
+			gi_indirect_view,
+			gi_sun_view,
+			gi_scene_bg,
+			gi_resolve_bg,
 		});
 	}
 
@@ -1318,9 +1399,8 @@ impl Renderer {
 
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
-		if let Some(gi) = self.gi.as_mut() {
-			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame);
-		}
+		self.gi
+			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame);
 
 		let draw = ChunkDraw {
 			chunks: &self.chunks,
@@ -1347,8 +1427,76 @@ impl Renderer {
 
 		{
 			let targets = self.targets.as_ref().expect("ensured above");
+			// Depth prepass: opaque solids only, no shading — the depth
+			// the GI resolve reconstructs world positions from.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("depth prepass"),
+					color_attachments: &[],
+					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+						view: &targets.depth_view,
+						depth_ops: Some(wgpu::Operations {
+							load: wgpu::LoadOp::Clear(1.0),
+							store: wgpu::StoreOp::Store,
+						}),
+						stencil_ops: None,
+					}),
+					timestamp_writes: None,
+					occlusion_query_set: None,
+				});
+				pass.set_pipeline(&self.prepass_pipeline);
+				pass.set_bind_group(0, &self.frame_bg, &[]);
+				draw.bind(&mut pass);
+				for &i in &self.lists.scene {
+					let chunk = &draw.chunks[i as usize];
+					let Some(mesh) = chunk.solid.as_ref() else {
+						continue;
+					};
+					stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
+				}
+			}
+
+			// Solid depth becomes sampleable R32Float — moved BEFORE the
+			// scene pass, because the GI resolve consumes it; water and
+			// the highlight decal read the same copy later. A fullscreen
+			// draw, not copy_texture_to_texture — WebGPU forbids
+			// depth32float as a copy destination.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("depth blit"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: &targets.depth_copy_view,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							// The blit overwrites every pixel.
+							load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: None,
+					timestamp_writes: None,
+					occlusion_query_set: None,
+				});
+				pass.set_pipeline(&self.depth_blit_pipeline);
+				pass.set_bind_group(0, &targets.depth_blit_bg, &[]);
+				pass.draw(0..3, 0..1);
+				stats.draw_calls += 1;
+			}
+
+			// GI resolve: probes + the per-pixel sun ray → the two
+			// half-res lighting inputs the scene pass upsamples.
+			self.gi.encode_resolve(
+				gpu,
+				&mut encoder,
+				frame,
+				&targets.gi_resolve_bg[self.gi.front()],
+				&targets.gi_indirect_view,
+				&targets.gi_sun_view,
+			);
+
 			// Scene pass: solids + sky into the offscreen color target;
-			// depth is stored for the copy below.
+			// depth arrives from the prepass (Load, LessEqual).
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("scene"),
@@ -1372,7 +1520,7 @@ impl Renderer {
 					depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
 						view: &targets.depth_view,
 						depth_ops: Some(wgpu::Operations {
-							load: wgpu::LoadOp::Clear(1.0),
+							load: wgpu::LoadOp::Load,
 							store: wgpu::StoreOp::Store,
 						}),
 						stencil_ops: None,
@@ -1384,7 +1532,7 @@ impl Renderer {
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
+				pass.set_bind_group(2, &targets.gi_scene_bg, &[]);
 				// Origins for every chunk, bound once — each draw selects
 				// its own with first_instance.
 				draw.bind(&mut pass);
@@ -1408,41 +1556,6 @@ impl Renderer {
 				// Sky after solids (depth test discards occluded fragments —
 				// near-free on TBDR); frame_bg is still bound at 0.
 				self.sky.draw(&mut pass);
-				stats.draw_calls += 1;
-			}
-
-			// Pre-water solid depth becomes sampleable: water reads it for
-			// column thickness (absorption, soft shores) while the live
-			// attachment goes on to take the water prepass's writes. A
-			// fullscreen draw, not copy_texture_to_texture — WebGPU forbids
-			// depth32float as a copy destination.
-			//
-			// Its only two consumers are the water shaders and the highlight
-			// decal's manual occlusion, so with no water in frustum and no
-			// crosshair target — caves, deserts, a dry menu backdrop — the
-			// full-res resolve is skipped outright. Nothing downstream can
-			// then read the stale copy it leaves behind.
-			let needs_depth_copy = !self.lists.water.is_empty() || highlight_target.is_some();
-			if needs_depth_copy {
-				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-					label: Some("depth blit"),
-					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-						view: &targets.depth_copy_view,
-						resolve_target: None,
-						ops: wgpu::Operations {
-							// The blit overwrites every pixel.
-							load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-							store: wgpu::StoreOp::Store,
-						},
-						depth_slice: None,
-					})],
-					depth_stencil_attachment: None,
-					timestamp_writes: None,
-					occlusion_query_set: None,
-				});
-				pass.set_pipeline(&self.depth_blit_pipeline);
-				pass.set_bind_group(0, &targets.depth_blit_bg, &[]);
-				pass.draw(0..3, 0..1);
 				stats.draw_calls += 1;
 			}
 
@@ -1517,10 +1630,9 @@ impl Renderer {
 			// The voxel-window debug raymarch paints over the finished
 			// scene (overlay still lands on top) — the P1 gate capture.
 			if self.debug_gi {
-				if let Some(gi) = self.gi.as_mut() {
-					let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
-					gi.encode_debug(gpu, &mut encoder, target, frame.inv_view_proj, cam);
-				}
+				let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
+				self.gi
+					.encode_debug(gpu, &mut encoder, target, frame.inv_view_proj, cam);
 			}
 			// open by the wall you walk into — but it still needs depth
 			// among its OWN faces, because a staircase in hand is not

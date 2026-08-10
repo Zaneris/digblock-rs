@@ -169,14 +169,8 @@ pub struct EngineConfig {
 	/// Chrome's GPU process performs the staging transfer at submit, so the
 	/// cost lands after everything this engine can measure.
 	pub upload_bytes_max: usize,
-	/// RTGI (GI-DESIGN.md): light through the probe-traced GI path
-	/// instead of the cascade/BFS stack. Off until look sign-off; P6
-	/// removes the flag and the old stack with it. Launchers: `--rtgi`
-	/// (desktop), `?rtgi` (web).
-	pub rtgi: bool,
 	/// Debug: paint the voxel-window raymarch over the scene — the GI
-	/// window's visual proof (`DIG_GI=window`; forces `rtgi` on at the
-	/// launcher).
+	/// window's visual proof (`DIG_GI=window`).
 	pub debug_gi: bool,
 	/// Debug: the raymarch shades hits with the probe field instead of
 	/// albedo (`DIG_GI=probes`) — the P2 gate view.
@@ -219,7 +213,6 @@ impl EngineConfig {
 			spike_log: false,
 			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
-			rtgi: false,
 			debug_gi: false,
 			debug_gi_probes: false,
 		}
@@ -260,7 +253,6 @@ impl EngineConfig {
 			spike_log: false,
 			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
-			rtgi: false,
 			debug_gi: false,
 			debug_gi_probes: false,
 		}
@@ -297,7 +289,6 @@ impl EngineConfig {
 			spray_droplets: self.spray_droplets,
 			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
-			rtgi: self.rtgi,
 			debug_gi: self.debug_gi,
 			debug_gi_probes: self.debug_gi_probes,
 		}
@@ -2008,9 +1999,7 @@ impl Engine {
 		// The fresh renderer's GI window is empty; every resident chunk
 		// re-uploads through the ordinary budgeted drain (the GI mirror
 		// of the re-mesh above — device loss must never need a relight).
-		if self.config.rtgi {
-			self.pipeline.gi_redirty_all();
-		}
+		self.pipeline.gi_redirty_all();
 	}
 
 	/// Camera far plane = light rig depth = draw_dist × 32 (Java World.updateDepth).
@@ -2065,31 +2054,26 @@ impl Engine {
 		// feed the voxel window under its own byte budget — a quarter of
 		// the mesh-upload ceiling, ~4 KiB a chunk, so a cold fill spans
 		// frames instead of spiking one (GI-DESIGN.md).
-		if self.config.rtgi {
-			for pos in self.pipeline.take_gi_dirty() {
-				if self.gi_queued.insert(pos) {
-					self.gi_queue.push_back(pos);
-				}
+		for pos in self.pipeline.take_gi_dirty() {
+			if self.gi_queued.insert(pos) {
+				self.gi_queue.push_back(pos);
 			}
-			for (x, y, z) in self.pipeline.take_gi_edits() {
-				renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
+		}
+		for (x, y, z) in self.pipeline.take_gi_edits() {
+			renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
+		}
+		let mut gi_budget = self.config.upload_bytes_max / 4;
+		while gi_budget >= 4096 {
+			let Some(pos) = self.gi_queue.pop_front() else {
+				break;
+			};
+			self.gi_queued.remove(&pos);
+			// Not resident anymore = evicted while queued: drop it —
+			// re-entry re-dirties.
+			if let Some(chunk) = self.pipeline.classify_gi(pos) {
+				renderer.gi_upload(gpu, pos, &chunk);
+				gi_budget -= 4096;
 			}
-			let mut gi_budget = self.config.upload_bytes_max / 4;
-			while gi_budget >= 4096 {
-				let Some(pos) = self.gi_queue.pop_front() else {
-					break;
-				};
-				self.gi_queued.remove(&pos);
-				// Not resident anymore = evicted while queued: drop it —
-				// re-entry re-dirties.
-				if let Some(chunk) = self.pipeline.classify_gi(pos) {
-					renderer.gi_upload(gpu, pos, &chunk);
-					gi_budget -= 4096;
-				}
-			}
-		} else {
-			// Flag off: keep the pipeline's dirty set from accumulating.
-			self.pipeline.take_gi_dirty();
 		}
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.

@@ -6,9 +6,8 @@
 //! emissive radiance, infinite bounce by sampling last frame's atlas
 //! at hits), an r32uint flags texture carrying per-probe age and the
 //! toroidal self-heal checksum, and an edit-invalidation dispatch.
-//!
-//! Constructed only when `EngineConfig::rtgi` is on — a flag-off build
-//! allocates nothing and encodes nothing.
+//! P3 added the half-res resolve pass (gi_resolve.wgsl) — RTGI is the
+//! only lighting path; there is no flag.
 
 use digblock_core::block::BlockType;
 use digblock_core::chunk::ChunkPos;
@@ -59,6 +58,9 @@ pub struct GiDraw {
 	frame: u32,
 	window: wgpu::Texture,
 	coarse: wgpu::Texture,
+	window_view: wgpu::TextureView,
+	coarse_view: wgpu::TextureView,
+	lut_buf: wgpu::Buffer,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
@@ -66,6 +68,16 @@ pub struct GiDraw {
 	lights_buf: wgpu::Buffer,
 	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
 	inval_queue: Vec<[f32; 3]>,
+	/// The half-res resolve pass (gi_resolve.wgsl): probes + per-pixel
+	/// sun DDA → the scene's two lighting inputs.
+	resolve_pipeline: wgpu::RenderPipeline,
+	resolve_bgl: wgpu::BindGroupLayout,
+	resolve_buf: wgpu::Buffer,
+	/// The scene pass's group 2: the two resolve outputs, textureLoad'd.
+	scene_bgl: wgpu::BindGroupLayout,
+	/// Last quantized sun (xyz dir + w above-horizon), set by `encode`
+	/// and consumed by the resolve uniform in the same frame.
+	last_sun: [f32; 4],
 	/// Debug raymarch (`DIG_GI=window|probes`).
 	debug_pipeline: wgpu::RenderPipeline,
 	/// One per front atlas (the debug view samples C0's newest).
@@ -466,6 +478,132 @@ impl GiDraw {
 			},
 		);
 
+		// The half-res resolve (gi_resolve.wgsl): its own uniform + the
+		// GI world data + a depth tap; two MRT outputs, no depth
+		// attachment, so it's built directly rather than through the
+		// single-target pipeline funnel.
+		let f_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+			binding,
+			visibility: wgpu::ShaderStages::FRAGMENT,
+			ty,
+			count: None,
+		};
+		let ftex = |binding, sample_type, dim| {
+			f_entry(
+				binding,
+				wgpu::BindingType::Texture {
+					sample_type,
+					view_dimension: dim,
+					multisampled: false,
+				},
+			)
+		};
+		let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("gi resolve bgl"),
+			entries: &[
+				f_entry(
+					0,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Uniform,
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
+				ftex(
+					1,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+				ftex(
+					2,
+					wgpu::TextureSampleType::Uint,
+					wgpu::TextureViewDimension::D3,
+				),
+				ftex(
+					3,
+					wgpu::TextureSampleType::Uint,
+					wgpu::TextureViewDimension::D3,
+				),
+				f_entry(
+					4,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Storage { read_only: true },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
+				ftex(
+					5,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D3,
+				),
+				ftex(
+					6,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D3,
+				),
+			],
+		});
+		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("gi resolve uniforms"),
+			size: 176,
+			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		let resolve_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("gi resolve"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::GI_RESOLVE.into()),
+		});
+		let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("gi resolve layout"),
+			bind_group_layouts: &[&resolve_bgl],
+			push_constant_ranges: &[],
+		});
+		let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("gi resolve"),
+			layout: Some(&resolve_layout),
+			vertex: wgpu::VertexState {
+				module: &resolve_module,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: &[],
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				..Default::default()
+			},
+			depth_stencil: None,
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &resolve_module,
+				entry_point: Some("fs"),
+				compilation_options: Default::default(),
+				targets: &[
+					Some(wgpu::TextureFormat::Rgba16Float.into()),
+					Some(wgpu::TextureFormat::Rgba8Unorm.into()),
+				],
+			}),
+			multiview: None,
+			cache: None,
+		});
+		// The scene pass's group 2: both resolve outputs, textureLoad'd
+		// by chunk.wgsl's bilateral upsample.
+		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("gi scene bgl"),
+			entries: &[
+				ftex(
+					0,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+				ftex(
+					1,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+			],
+		});
+
 		Self {
 			probe_pipeline,
 			inval_pipeline,
@@ -474,16 +612,144 @@ impl GiDraw {
 			frame: 0,
 			window,
 			coarse,
+			window_view,
+			coarse_view,
+			lut_buf,
 			window_chunks,
 			emitters: FxHashMap::default(),
 			lights_dirty: false,
 			lights_buf,
 			inval_queue: Vec::new(),
+			resolve_pipeline,
+			resolve_bgl,
+			resolve_buf,
+			scene_bgl,
+			last_sun: [0.0, 1.0, 0.0, 1.0],
 			debug_pipeline,
 			debug_bind,
 			debug_buf,
 			debug_probes,
 		}
+	}
+
+	pub fn scene_bgl(&self) -> &wgpu::BindGroupLayout {
+		&self.scene_bgl
+	}
+
+	/// Build the two resolve bind groups (one per atlas ping) against the
+	/// current depth copy — called whenever the frame targets rebuild.
+	pub fn make_resolve_binds(
+		&self,
+		gpu: &Gpu,
+		depth_copy_view: &wgpu::TextureView,
+	) -> [wgpu::BindGroup; 2] {
+		std::array::from_fn(|i| {
+			let a0 = self.cascades[0].atlas[i].create_view(&Default::default());
+			let a1 = self.cascades[1].atlas[i].create_view(&Default::default());
+			gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some("gi resolve bg"),
+				layout: &self.resolve_bgl,
+				entries: &[
+					wgpu::BindGroupEntry {
+						binding: 0,
+						resource: self.resolve_buf.as_entire_binding(),
+					},
+					wgpu::BindGroupEntry {
+						binding: 1,
+						resource: wgpu::BindingResource::TextureView(depth_copy_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 2,
+						resource: wgpu::BindingResource::TextureView(&self.window_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 3,
+						resource: wgpu::BindingResource::TextureView(&self.coarse_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 4,
+						resource: self.lut_buf.as_entire_binding(),
+					},
+					wgpu::BindGroupEntry {
+						binding: 5,
+						resource: wgpu::BindingResource::TextureView(&a0),
+					},
+					wgpu::BindGroupEntry {
+						binding: 6,
+						resource: wgpu::BindingResource::TextureView(&a1),
+					},
+				],
+			})
+		})
+	}
+
+	/// Which of the two resolve bind groups reads the front (just
+	/// written) atlases — valid after this frame's `encode`.
+	pub fn front(&self) -> usize {
+		self.ping
+	}
+
+	/// Encode the half-res GI resolve into the two lighting targets.
+	pub fn encode_resolve(
+		&self,
+		gpu: &Gpu,
+		encoder: &mut wgpu::CommandEncoder,
+		frame: &FrameUniforms,
+		bind: &wgpu::BindGroup,
+		indirect_view: &wgpu::TextureView,
+		sun_view: &wgpu::TextureView,
+	) {
+		let side = (self.window_chunks * 16) as f32;
+		let mut data = Vec::with_capacity(176);
+		for col in frame.inv_view_proj {
+			data.extend_from_slice(bytemuck::cast_slice(&col));
+		}
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			frame.cam_pos[0],
+			frame.cam_pos[1],
+			frame.cam_pos[2],
+			side,
+		]));
+		let d0 = self.cascades[0].dims;
+		let d1 = self.cascades[1].dims;
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			d0.0 as f32,
+			d0.1 as f32,
+			d0.2 as f32,
+			self.cascades[0].spacing as f32,
+		]));
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			d1.0 as f32,
+			d1.1 as f32,
+			d1.2 as f32,
+			self.cascades[1].spacing as f32,
+		]));
+		data.extend_from_slice(bytemuck::cast_slice(&self.last_sun));
+		data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
+		data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
+		data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
+		gpu.queue.write_buffer(&self.resolve_buf, 0, &data);
+		let attach = |view| {
+			Some(wgpu::RenderPassColorAttachment {
+				view,
+				resolve_target: None,
+				ops: wgpu::Operations {
+					load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+					store: wgpu::StoreOp::Store,
+				},
+				depth_slice: None,
+			})
+		};
+		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+			label: Some("gi resolve"),
+			color_attachments: &[attach(indirect_view), attach(sun_view)],
+			depth_stencil_attachment: None,
+			timestamp_writes: None,
+			occlusion_query_set: None,
+		});
+		pass.set_pipeline(&self.resolve_pipeline);
+		pass.set_bind_group(0, bind, &[]);
+		pass.draw(0..3, 0..1);
 	}
 
 	/// Upload one classified chunk into its toroidal window region (and
@@ -620,6 +886,7 @@ impl GiDraw {
 		];
 		let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt().max(1e-6);
 		let sun_up = if q[1] > 0.02 { 1.0f32 } else { 0.0 };
+		self.last_sun = [q[0] / ql, q[1] / ql, q[2] / ql, sun_up];
 		let spheres: Vec<[f32; 4]> = {
 			let take = self.inval_queue.len().min(4);
 			let drained: Vec<[f32; 3]> = self.inval_queue.drain(..take).collect();

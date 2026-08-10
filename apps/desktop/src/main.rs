@@ -78,8 +78,6 @@ fn main() {
 			"--drill" => options.auto_drill = true,
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
-			"--rtgi" => config.rtgi = true,
-			// DIG_GI=window handled below with the other env debug flags.
 			"--bench" => config.bench = true,
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
@@ -145,16 +143,12 @@ fn main() {
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	// DIG_GI=window|probes: paint the voxel-window raymarch over the
 	// scene, shading with raw albedo (P1 gate) or the C0 probe field
-	// (P2 gate). Needs the GI resources, so it implies --rtgi.
+	// (P2 gate).
 	match std::env::var("DIG_GI").as_deref() {
-		Ok("window") => {
-			config.debug_gi = true;
-			config.rtgi = true;
-		}
+		Ok("window") => config.debug_gi = true,
 		Ok("probes") => {
 			config.debug_gi = true;
 			config.debug_gi_probes = true;
-			config.rtgi = true;
 		}
 		_ => {}
 	}
