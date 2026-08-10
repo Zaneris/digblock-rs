@@ -17,11 +17,21 @@ struct Vm {
 	// xyz = light direction in item space (toward the ground);
 	// w = direct-light strength.
 	light: vec4f,
-	ambient: vec4f,
 	light_color: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> vm: Vm;
+
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
+// probe ambient at the camera (already INDIRECT_K-scaled), [1].x = sun
+// visibility. The hand is at the camera by definition, so this IS its
+// light — indoors the ambient carries the torch glow and the sun term
+// dies, no CPU probe reads anywhere.
+struct CamLight {
+	ambient: vec4f,
+	sun: vec4f,
+}
+@group(0) @binding(1) var<uniform> cam_light: CamLight;
 
 @group(1) @binding(0) var materials: texture_2d_array<f32>;
 @group(1) @binding(1) var mat_smp: sampler;
@@ -37,8 +47,11 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// Face-axis ambient, matching chunk.wgsl's AXIS — so a block reads the
-// same in the hand as it does in the world.
+// Face-axis contrast. The camera's probe ambient is one omni color, so
+// without this every unlit face of the item would read identically
+// flat; the values are the old world AXIS table, kept as the item's
+// own look (its faces rotate with the view, so a world-space gather
+// per face would be wrong anyway).
 const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
 
 struct VsOut {
@@ -57,13 +70,16 @@ fn vs(
 ) -> VsOut {
 	let f = min(face, 5u);
 	let n = NORMALS[f];
-	let diffuse = max(dot(n, -vm.light.xyz), 0.0) * vm.light.w;
+	// Twilight fade (vm.light.w) and traced sun visibility both gate
+	// the direct term, exactly as `sh` does for world surfaces.
+	let sh = mix(1.0, cam_light.sun.x, vm.light.w);
+	let diffuse = max(dot(n, -vm.light.xyz), 0.0) * sh;
 
 	var out: VsOut;
 	out.pos = vm.mvp * vec4f(pos, 1.0);
 	out.uv = uv;
 	out.layer = layer;
-	out.shade = (vm.ambient.rgb + vm.light_color.rgb * diffuse) * AXIS[f];
+	out.shade = (cam_light.ambient.rgb + vm.light_color.rgb * diffuse) * AXIS[f];
 	return out;
 }
 

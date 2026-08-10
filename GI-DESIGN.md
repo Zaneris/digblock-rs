@@ -1,11 +1,18 @@
 # GI-DESIGN — probe-traced global illumination
 
-Status: P0 in progress. Replaces the ENTIRE previous lighting model — the two-cascade
-shadow maps, the Stage-B BFS voxel light field (torch + skylight + bounce channels), the
-AXIS ambient model, the beam veto, and the underwater direct-light special cases. Until
-P6 removes them, both systems coexist behind `EngineConfig::rtgi` (`--rtgi` / `?rtgi=`),
-selected at pipeline build time. The only survivors of the old model are baked per-vertex
+Status: P4 complete — RTGI is the ONLY lighting path (there is no flag; the coexistence
+toggle died mid-P3 by user decision). Solids shade from the half-res resolve; water,
+players, spray, and the viewmodel are converted (P4): water and players gather the probe
+field per fragment through gi_common.wgsl's shared core + a short sun DDA, spray and the
+viewmodel read the 32-byte camera-light buffer a 1-invocation compute writes. Nothing
+samples the shadow maps and no shadow pass encodes — the shadow/light-field code is
+dormant dead weight until P6 deletes it (along with the old model it implemented: the
+two-cascade shadow maps, the Stage-B BFS voxel light field, the AXIS ambient model, the
+beam veto, and the underwater direct-light special cases — underwater dimming is now the
+sun DDA's water transmittance). The only survivors of the old model are baked per-vertex
 AO (contact-scale darkening sits below GI resolution) and the Stage-A emissive bit-21 ink.
+Capture envs: `DIG_VAULT` (torch room), `DIG_ROOF` (sun under an open roof), `DIG_DIVE`
+(flooded tank around the spawn camera — the underwater capture).
 
 ## Goals
 

@@ -168,9 +168,6 @@ pub struct RenderConfig {
 pub struct FrameScene<'a> {
 	pub uniforms: FrameUniforms,
 	pub view_proj: glam::Mat4,
-	pub near_vp: glam::Mat4,
-	pub wide_vp: glam::Mat4,
-	pub wide_due: bool,
 	pub size: (u32, u32),
 	/// Whole-UI scale for this frame (device scale factor × window size).
 	pub ui_scale: f32,
@@ -241,8 +238,17 @@ pub struct FrameUniforms {
 	/// x = camera underwater (0/1), y = SSR enabled (0/1), z = water-
 	/// surface height above the camera (the shaders' underwater
 	/// path-length clamp; meaningful only while x = 1), w reserved.
-	/// Appended last — mirror in frame_common.wgsl's Frame struct.
 	pub water_misc: [f32; 4],
+	/// RTGI fields, patched by `GiDraw::patch_frame` in `render` (the
+	/// engine writes zeros) — mirror frame_common.wgsl's Frame struct.
+	/// xyz = quantized dir toward the caster, w = above horizon (0/1).
+	pub gi_sun: [f32; 4],
+	/// C0 probe dims xyz, w = spacing (2).
+	pub gi0: [f32; 4],
+	/// C1 probe dims xyz, w = spacing (8).
+	pub gi1: [f32; 4],
+	/// x = voxel-window side in blocks. Appended last.
+	pub gi_misc: [f32; 4],
 }
 
 /// One uploaded mesh: the pooled buffer, the size class it was allocated
@@ -336,10 +342,10 @@ pub struct Renderer {
 	/// the GI resolve reconstructs world positions from, before any
 	/// shading runs.
 	prepass_pipeline: wgpu::RenderPipeline,
-	/// The two-cascade shadow system (pipeline, maps, ping-pong,
-	/// sampling bind groups). Solids no longer read the maps — only
-	/// water still samples them, until P4 moves it onto the GI buffers
-	/// and the whole system is deleted.
+	/// The two-cascade shadow system. DORMANT since P4: nothing samples
+	/// the maps and no shadow pass encodes — the field survives only so
+	/// P6 can delete the whole module in one sweep.
+	#[allow(dead_code)]
 	shadow: ShadowCascades,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
@@ -377,12 +383,6 @@ pub struct Renderer {
 	/// parked in `pool`) — the honest GPU footprint, not the subset a
 	/// mesh currently fills.
 	pub gpu_buffer_bytes: u64,
-	/// The near cascade must be redrawn this frame: its VP changed, or a
-	/// chunk inside the frustum it was drawn with was uploaded/removed.
-	near_dirty: bool,
-	/// Side planes of the VP the near map currently holds — the dirty
-	/// test above. None until the first draw.
-	near_planes: Option<[glam::Vec4; 4]>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// RTGI: the voxel window, probe cascades, and the half-res resolve
@@ -453,8 +453,9 @@ struct FrameTargets {
 	gi_sun_view: wgpu::TextureView,
 	/// Scene group 2: the two views above, textureLoad'd by chunk.wgsl.
 	gi_scene_bg: wgpu::BindGroup,
-	/// Resolve group 0, one per atlas ping (see `GiDraw::front`).
-	gi_resolve_bg: [wgpu::BindGroup; 2],
+	/// Resolve group 0: its uniform + the depth-copy tap (the GI world
+	/// data rides group 2 via `GiDraw::gather_bind`).
+	gi_resolve_bg: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -585,8 +586,9 @@ impl Renderer {
 			..Default::default()
 		});
 
-		// The shadow system owns its pipeline, maps, and the sampling
-		// layout water still references as group 2 (until P4).
+		// The shadow system is DORMANT (P4): nothing samples its maps and
+		// nothing encodes its passes. Constructed only so P6 can delete
+		// the module, its config knobs, and this line together.
 		let shadow = ShadowCascades::new(gpu, config.shadow_size, config.wide_slice_draws);
 
 		// Textures + the GI system come before the pipelines: the solid
@@ -601,10 +603,12 @@ impl Renderer {
 			config.debug_gi_probes,
 		);
 
-		// Shared group scheme: 0 = frame, 1 = materials, 2 = the GI
-		// resolve outputs (water still holds shadows at 2 until P4).
-		// Chunk origins are NOT a bind group — they arrive as the
-		// instance-step vertex stream at slot 1 (see
+		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the
+		// solids that's the two resolve outputs; water (and players)
+		// carry the raw GI world data instead (`GiDraw::gather_bgl`) and
+		// gather per fragment — their surfaces aren't in the depth
+		// prepass the resolve maps. Chunk origins are NOT a bind group —
+		// they arrive as the instance-step vertex stream at slot 1 (see
 		// `origin_vertex_layout`). Water swaps group 0 for its
 		// frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -614,7 +618,7 @@ impl Renderer {
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, shadow.bind_group_layout()],
+			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, gi.gather_bgl()],
 			push_constant_ranges: &[],
 		});
 
@@ -825,22 +829,31 @@ impl Renderer {
 			next_slot: 0,
 			chunk_slots,
 			gpu_buffer_bytes: 0,
-			// Nothing has been drawn into the near map yet.
-			near_dirty: true,
-			near_planes: None,
 			gpu_timer: GpuTimer::new(gpu),
-			gi,
 			debug_gi: config.debug_gi,
 			overlay: Overlay::new(gpu, surface_format),
-			spray: crate::spray::Spray::new(gpu, surface_format, &frame_bgl, config.spray_droplets),
+			spray: crate::spray::Spray::new(
+				gpu,
+				surface_format,
+				&frame_bgl,
+				gi.cam_light_buf(),
+				config.spray_droplets,
+			),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
 				surface_format,
 				&frame_bgl,
 				&materials_bgl,
+				gi.gather_bgl(),
 			),
 			highlight: crate::highlight::HighlightDraw::new(gpu, surface_format, &water_frame_bgl),
-			viewmodel: crate::viewmodel::ViewmodelDraw::new(gpu, surface_format, &materials_bgl),
+			viewmodel: crate::viewmodel::ViewmodelDraw::new(
+				gpu,
+				surface_format,
+				&materials_bgl,
+				gi.cam_light_buf(),
+			),
+			gi,
 			ui_icons: crate::ui::icons::UiIcons::new(gpu, surface_format, &materials_bgl),
 			targets: None,
 			water_frame_bgl,
@@ -1005,16 +1018,6 @@ impl Renderer {
 		Some(mesh)
 	}
 
-	/// A caster changed: the cached near map survives only if the chunk
-	/// sits outside the frustum that map was drawn with. An unchanged near
-	/// VP means this frame's pass would cull it by the identical test, so
-	/// the two can never disagree about what the map should contain.
-	fn mark_near_dirty(&mut self, center: glam::Vec3) {
-		self.near_dirty |= self
-			.near_planes
-			.is_none_or(|p| sphere_in_frustum(center, &p));
-	}
-
 	/// Upload (or replace) a chunk's mesh. Empty meshes remove the entry —
 	/// unlike the Java, a re-mesh to zero faces cannot leave a stale VBO.
 	pub fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, mesh: &MeshData) {
@@ -1045,8 +1048,6 @@ impl Renderer {
 		self.chunks[idx].solid = self.store_mesh(gpu, prev, &mesh.solid);
 		let prev = self.chunks[idx].water.take();
 		self.chunks[idx].water = self.store_mesh(gpu, prev, &mesh.water);
-		let center = self.chunks[idx].center;
-		self.mark_near_dirty(center);
 	}
 
 	/// RTGI: forward one classified chunk into the voxel window.
@@ -1071,7 +1072,6 @@ impl Renderer {
 			self.by_pos.insert(moved.pos, idx);
 		}
 		self.free_slots.push(old.slot);
-		self.mark_near_dirty(old.center);
 		for mesh in [old.solid, old.water].into_iter().flatten() {
 			self.recycle(mesh);
 		}
@@ -1088,7 +1088,6 @@ impl Renderer {
 			}
 		}
 		self.by_pos.clear();
-		self.near_dirty = true;
 	}
 
 	/// One linear pass over the resident set producing every list this
@@ -1148,10 +1147,6 @@ impl Renderer {
 		if self.targets.as_ref().map(|t| t.size) == Some(size) {
 			return;
 		}
-		// The shadow maps survive a resize, but a rebuild is the one moment
-		// nothing about the previous frame can be assumed — re-render the
-		// near cascade rather than reason about it.
-		self.near_dirty = true;
 		let extent = wgpu::Extent3d {
 			width: size.0.max(1),
 			height: size.1.max(1),
@@ -1274,7 +1269,7 @@ impl Renderer {
 				},
 			],
 		});
-		let gi_resolve_bg = self.gi.make_resolve_binds(gpu, &depth_copy_view);
+		let gi_resolve_bg = self.gi.make_resolve_bind(gpu, &depth_copy_view);
 		self.targets = Some(FrameTargets {
 			size,
 			depth_view,
@@ -1290,9 +1285,9 @@ impl Renderer {
 		});
 	}
 
-	/// Encode the frame in one command encoder, fixed order — wide shadow
-	/// (only when due) → near shadow → main pass. Shadow maps are written
-	/// and consumed in the same frame (fixes the Java one-frame lag).
+	/// Encode the frame in one command encoder, fixed order — probes →
+	/// depth prepass → depth blit → GI resolve → scene → water →
+	/// viewmodel → overlay (GI-DESIGN.md).
 	pub fn render(
 		&mut self,
 		gpu: &Gpu,
@@ -1302,9 +1297,6 @@ impl Renderer {
 		let FrameScene {
 			uniforms: ref frame,
 			view_proj,
-			near_vp,
-			wide_vp,
-			wide_due,
 			size,
 			ui_scale,
 			players,
@@ -1325,31 +1317,12 @@ impl Renderer {
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
-			wide_refreshed: self.shadow.refresh_pending(wide_due),
 			..Default::default()
 		};
-		// Near cascade: the VP is texel-snapped, so an unchanged VP over an
-		// unchanged caster set reproduces the map bit for bit — skip the
-		// pass and keep what the texture already holds. (A live day cycle
-		// rotates the VP every frame, so in normal play this is due every
-		// frame; it pays off whenever the sun is frozen or the scene is.)
-		let near_due = self.near_dirty || self.shadow.near_vp() != near_vp;
-		// Light-VP uploads + wide-refresh kickoff; the returned sample is
-		// captured before the encode below can flip the ping-pong.
-		let wide_sample = self.shadow.begin_frame(
-			&gpu.queue,
-			near_vp,
-			near_due,
-			wide_vp,
-			wide_due,
-			&self.chunks,
-		);
-		// Both cascades project with the VP their map was actually rendered
-		// with, not this frame's: the front wide map lags by up to one job,
-		// and the near map may be a cached earlier frame's.
+		// GI parameters into the frame uniforms (quantized caster, cascade
+		// dims, window side) — before the UBO uploads below.
 		let mut frame = *frame;
-		frame.light_wide = wide_sample.active_vp.to_cols_array_2d();
-		frame.light_near = self.shadow.near_vp().to_cols_array_2d();
+		self.gi.patch_frame(&mut frame);
 		let frame = &frame;
 		if let Some(t) = self.gpu_timer.as_mut() {
 			t.begin_frame();
@@ -1371,21 +1344,15 @@ impl Renderer {
 		water_frame.misc[0] = 0.7; // Java transparent-pass u_Alpha
 		gpu.queue
 			.write_buffer(&self.frame_water_buf, 0, bytemuck::bytes_of(&water_frame));
-		// One cull for the whole frame: scene, water, and near-shadow lists
-		// out of a single walk of the flat resident set.
+		// One cull for the whole frame: scene and water lists out of a
+		// single walk of the flat resident set.
 		let cam_planes = side_planes(view_proj);
-		let near_planes = near_due.then(|| side_planes(self.shadow.near_vp()));
 		let cam_chunk = (
 			(frame.cam_pos[0] / 16.0).floor() as i32,
 			(frame.cam_pos[2] / 16.0).floor() as i32,
 		);
-		stats.chunks_culled = Self::cull(
-			&self.chunks,
-			&mut self.lists,
-			&cam_planes,
-			near_planes.as_ref(),
-			cam_chunk,
-		);
+		stats.chunks_culled =
+			Self::cull(&self.chunks, &mut self.lists, &cam_planes, None, cam_chunk);
 		let spray_n = self.spray.prepare(
 			gpu,
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
@@ -1408,22 +1375,6 @@ impl Renderer {
 			origin_buf: &self.origin_buf,
 			index_buf: &self.index_buf,
 		};
-		// All shadow work (bootstrap clear → wide slice → near pass) in
-		// fixed order; a completed wide slice flips the ping-pong AFTER
-		// this frame's sample was captured above.
-		let shadow_stats = self.shadow.encode(
-			&mut encoder,
-			&draw,
-			near_due.then_some(self.lists.near.as_slice()),
-			self.gpu_timer.as_ref(),
-		);
-		if near_due {
-			self.near_dirty = false;
-			self.near_planes = near_planes;
-		}
-		stats.shadow_casters = shadow_stats.casters;
-		stats.draw_calls += shadow_stats.draw_calls;
-		stats.triangles += shadow_stats.triangles;
 
 		{
 			let targets = self.targets.as_ref().expect("ensured above");
@@ -1490,7 +1441,7 @@ impl Renderer {
 				gpu,
 				&mut encoder,
 				frame,
-				&targets.gi_resolve_bg[self.gi.front()],
+				&targets.gi_resolve_bg,
 				&targets.gi_indirect_view,
 				&targets.gi_sun_view,
 			);
@@ -1546,7 +1497,10 @@ impl Renderer {
 				}
 
 				// Remote players: opaque, depth-writing, before the sky so
-				// they occlude and fog like terrain (frame_bg is bound at 0).
+				// they occlude and fog like terrain (frame_bg is bound at
+				// 0). They gather the probe field per fragment, so their
+				// group 2 is the GI world data, not the resolve outputs.
+				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
 				let player_tris = self.players.draw(&mut pass);
 				if player_tris > 0 {
 					stats.draw_calls += 1;
@@ -1598,7 +1552,7 @@ impl Renderer {
 
 				pass.set_bind_group(0, &targets.water_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, self.shadow.sample_bind_group(&wide_sample), &[]);
+				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
 				draw.bind(&mut pass);
 				let (water_draws, water_tris) =
 					self.water.draw(&mut pass, draw.chunks, &self.lists.water);
@@ -1716,6 +1670,8 @@ impl Renderer {
 /// signatures, which otherwise grow an argument per feature.
 pub(crate) struct ChunkDraw<'a> {
 	pub chunks: &'a [ChunkGpu],
+	/// Read only by the dormant shadow module (P6 deletes both).
+	#[allow(dead_code)]
 	pub by_pos: &'a FxHashMap<ChunkPos, u32>,
 	pub origin_buf: &'a wgpu::Buffer,
 	pub index_buf: &'a wgpu::Buffer,

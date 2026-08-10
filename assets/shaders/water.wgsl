@@ -14,9 +14,12 @@
 // bits 20-23 the vertex fall distance (blocks below the lip, +1 on
 // bottom-plane verts so interpolation is continuous; drives gravity
 // stretch and aeration whitening).
-// The animation clock rides in frame.light_color.w. Lighting matches
-// chunk.wgsl minus AO/tint; alpha comes from misc.x (the water frame
-// UBO copy).
+// The animation clock rides in frame.light_color.w. Lighting is RTGI
+// (GI-DESIGN.md): a direct probe gather at the surface world position
+// through gi_common's shared cascade fallthrough, plus a short
+// per-fragment sun DDA — water never reads the half-res resolve
+// buffers, whose depth belongs to the solids BEHIND it. Alpha comes
+// from misc.x (the water frame UBO copy).
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl
 // (prepended by digblock-assets, before sky_common). The water pipelines
@@ -33,9 +36,14 @@
 @group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var blocks_smp: sampler;
 
-@group(2) @binding(0) var shadow_near: texture_depth_2d;
-@group(2) @binding(1) var shadow_wide: texture_depth_2d;
-@group(2) @binding(2) var shadow_smp: sampler_comparison;
+// Group 2 is the shared GI world data, declared by gi_common.wgsl
+// (prepended between sky_common and this file).
+
+// The sun DDA's step cap: water covers big screen areas, so it affords
+// a shorter march than the resolve's 160 — shore/cliff shadows within
+// this many blocks of the surface; beyond, the probes' indirect term
+// carries what's left (P5 revisits the number against the bench).
+const SUN_STEPS = 12;
 
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
@@ -47,9 +55,6 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(0.0, 1.0, 0.0),
 	vec3f(-1.0, 0.0, 0.0),
 );
-
-// Face-axis ambient, matching chunk.wgsl.
-const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
 
 // Surface drop per code, in ninths — LINEAR, and that is load-bearing:
 // d is 9 − the strongest water amount at the corner, so d/9 puts the
@@ -77,13 +82,10 @@ struct VsOut {
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) @interpolate(flat) direct: f32,
-	@location(3) sc_near: vec3f,
-	@location(4) sc_wide: vec3f,
 	@location(5) fog_dist: f32,
-	@location(6) @interpolate(flat) axis: f32,
 	// Splash code: 3 impact cell, 2/1 surrounding cells, 0 none.
 	@location(7) @interpolate(flat) splash: u32,
-	// World position (ripple field domain + view vector).
+	// World position (ripple field domain + view vector + GI gather).
 	@location(8) world: vec3f,
 	@location(9) @interpolate(flat) ni: u32,
 	@location(10) @interpolate(flat) flow: u32,
@@ -94,10 +96,6 @@ struct VsOut {
 	// Interpolated drop code (0 full .. 9 plunge) — the lip highlight
 	// keys on the plunging edge of a fall's crest.
 	@location(13) drop: f32,
-	// Stage-B light of the emitting water cell (w1 bits 24-27 block,
-	// 28-31 sky), flat per cell — water carries no AO either, and pools
-	// are cell-granular anyway. x = blocklight, y = skylight.
-	@location(14) @interpolate(flat) light: vec2f,
 }
 
 // 1D value noise (smoothstep-interpolated hash) — waterfall streaks.
@@ -251,46 +249,10 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.falling = (w1 >> 14u) & 1u;
 	o.fall_y = f32((w1 >> 20u) & 0xfu);
 	o.drop = f32(min((w1 >> 10u) & 0xfu, 9u));
-	o.light = vec2f(f32((w1 >> 24u) & 0xfu), f32((w1 >> 28u) & 0xfu)) / 15.0;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.fog_dist = distance(world, frame.cam_pos.xyz);
-	o.axis = AXIS[ni];
-
-	let pn = frame.light_near * vec4f(world, 1.0);
-	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
-	// Wide-cascade normal offset — see chunk.wgsl.
-	let pw = frame.light_wide * vec4f(world + n * frame.misc.w, 1.0);
-	o.sc_wide = vec3f(pw.xy * vec2f(0.5, -0.5) + 0.5, pw.z);
 	return o;
-}
-
-// 5-tap cross PCF, identical to chunk.wgsl.
-fn pcf5(tex: texture_depth_2d, sc: vec3f) -> f32 {
-	let px = frame.misc.z;
-	var v = textureSampleCompareLevel(tex, shadow_smp, sc.xy, sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
-	return v / 5.0;
-}
-
-fn shadow_vis(sc_near: vec3f, sc_wide: vec3f, direct: f32) -> f32 {
-	if direct <= 0.0 {
-		return 0.0;
-	}
-	let wsc = vec3f(sc_wide.xy, sc_wide.z - 0.0001);
-	let d = max(abs(sc_near.x - 0.5), abs(sc_near.y - 0.5)) * 2.0;
-	if d >= 1.0 {
-		return pcf5(shadow_wide, wsc);
-	}
-	let near = pcf5(shadow_near, sc_near);
-	let t = smoothstep(0.85, 1.0, d);
-	if t <= 0.0 {
-		return near;
-	}
-	return mix(near, pcf5(shadow_wide, wsc), t);
 }
 
 // Depth-prepass entry: rasterizes the same vs geometry with color
@@ -362,32 +324,25 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let cb = smoothstep(0.6, 1.0, sin(base_uv.y * 1.5 - t * 3.0 + back * 6.28));
 		s = mix((back + cb * 0.5) * 0.6, front + cf * 0.5, clamp(front, 0.0, 1.0));
 	}
-	var vis = 1.0;
-	if frame.misc.y > 0.5 {
-		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
-	}
-	let sh = mix(1.0, vis, frame.light_dir.w);
-	// Stage-B (LIGHT-DESIGN.md): the same ambient-scale / direct-veto
-	// split as chunk.wgsl (skyf shapes the sky dome, the shadow map owns
-	// the beam, the nibble only vetoes it near sky=0), and torchlight
-	// competes via max — folded into the diffuse terms only, never the
-	// specular (a torch has no sun glint lobe to borrow).
-	let skyf = mix(0.02, 1.0, pow(i.light.y, 1.5));
-	let beam = smoothstep(0.0, 0.27, i.light.y);
-	let torch = vec3f(1.0, 0.82, 0.55) * pow(i.light.x, 1.8);
-	// Froth light: the same ambient+direct mix the spray billboards use
-	// (spray.wgsl), shadowed like the surface it sits on — so foam dims
-	// with the night instead of glowing unlit white.
-	let froth_light = max(
-		frame.ambient.rgb * skyf + frame.light_color.rgb * 0.8 * sh * beam,
-		torch,
-	);
+	// RTGI: probe-field indirect at the surface (sky, bounce, torches —
+	// all one gathered term) + a short per-fragment sun DDA. Same
+	// combine as chunk.wgsl, minus AO. `sh` folds twilight exactly as
+	// mapped shadows did; it multiplies the diffuse terms AND the
+	// specular below, never the indirect (a torch has no sun glint lobe
+	// to borrow).
+	let face_n = NORMALS[i.ni];
+	let side = i32(frame.gi_misc.x);
+	let gp = i.world + face_n * 0.6;
+	let indirect = INDIRECT_K
+		* gi_indirect(side, gp, face_n, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
+	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
+	let sh = mix(1.0, sv, frame.light_dir.w);
+	// Froth light: the same direct+indirect mix the spray billboards
+	// use (spray.wgsl), shadowed like the surface it sits on — so foam
+	// dims with the night instead of glowing unlit white.
+	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	// In-scattered water color (the body's own diffuse), streak-bright.
-	var scatter = alb
-		* max(
-			frame.ambient.rgb * i.axis * skyf + frame.light_color.rgb * i.direct * sh * beam,
-			torch,
-		);
+	var scatter = alb * (frame.light_color.rgb * i.direct * sh + indirect);
 	scatter *= 1.0 + (s - 0.5) * 0.3;
 	// Rippled normal + Schlick fresnel. Impact turbulence: splash cells
 	// churn harder.

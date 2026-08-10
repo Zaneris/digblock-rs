@@ -133,6 +133,7 @@ pub mod shader {
 	pub const WATER: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
 	);
 	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
@@ -150,6 +151,7 @@ pub mod shader {
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	pub const HIGHLIGHT: &str = concat!(
@@ -169,8 +171,12 @@ pub mod shader {
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
 	pub const GI_DEBUG: &str = include_str!("../../../assets/shaders/gi_debug.wgsl");
 	/// The half-res GI resolve pass (probes + per-pixel sun ray → the
-	/// scene's lighting inputs).
-	pub const GI_RESOLVE: &str = include_str!("../../../assets/shaders/gi_resolve.wgsl");
+	/// scene's lighting inputs). Shares the gather core + group(2)
+	/// world bindings with water/players via the gi_common prelude.
+	pub const GI_RESOLVE: &str = concat!(
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
+	);
 
 	pub const ALL: [(&str, &str); 15] = [
 		("chunk.wgsl", CHUNK),
@@ -223,6 +229,26 @@ mod tests {
 			assert!(bytes.len() > 4, "{name}");
 			assert_eq!(&bytes[0..4], b"OggS", "{name}");
 		}
+	}
+
+	/// frame_common.wgsl owns INDIRECT_K (chunk, water, players read it
+	/// through the prelude), but gi_probe.wgsl's cam_light entry cannot
+	/// take that prelude — its group(0) is the GI uniform — so it
+	/// carries a twin. Two constants, one value, or the hand/spray
+	/// brightness silently drifts from the world's.
+	#[test]
+	fn indirect_k_is_one_constant() {
+		let pick = |src: &str, name: &str| -> String {
+			src.lines()
+				.find(|l| l.trim_start().starts_with("const INDIRECT_K = "))
+				.unwrap_or_else(|| panic!("{name}: INDIRECT_K not found"))
+				.trim()
+				.to_string()
+		};
+		assert_eq!(
+			pick(super::shader::CHUNK, "frame_common"),
+			pick(super::shader::GI_PROBE, "gi_probe"),
+		);
 	}
 
 	// The size bound is the real assertion: a stock Google face is

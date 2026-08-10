@@ -11,6 +11,17 @@
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
+// probe ambient at the camera (already INDIRECT_K-scaled), [1].x =
+// sun visibility there. Billboards have no meaningful surface to
+// gather at, and spray lives within ~64 blocks of the eye — the
+// camera's light is theirs.
+struct CamLight {
+	ambient: vec4f,
+	sun: vec4f,
+}
+@group(1) @binding(0) var<uniform> cam_light: CamLight;
+
 // Droplet loop length. Must divide the 600s animation clock wrap
 // exactly or the whole bank jumps at the seam: 600 / 1.0 = 600 cycles.
 // Long enough that a droplet thrown at the new higher speeds completes
@@ -91,9 +102,10 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	// so emitters never pop.
 	let dist = distance(world, frame.cam_pos.xyz);
 	alpha *= 1.0 - smoothstep(56.0, 64.0, dist);
-	// White-ish froth in the ambient + direct light (no shadow taps),
-	// fogged like everything else.
-	var col = vec3f(0.9, 0.94, 1.0) * (frame.ambient.rgb + frame.light_color.rgb * 0.8);
+	// White-ish froth in the camera's probe ambient + traced direct
+	// (twilight-faded like every surface), fogged like everything else.
+	let sh = mix(1.0, cam_light.sun.x, frame.light_dir.w);
+	var col = vec3f(0.9, 0.94, 1.0) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
 	col = apply_fog(col, dist, world);
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);

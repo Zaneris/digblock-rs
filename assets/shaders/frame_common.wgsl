@@ -39,9 +39,29 @@ struct Frame {
 	// z = water-surface height above the camera (underwater path-length
 	// clamp; only meaningful while x = 1), w reserved
 	water_misc: vec4f,
+	// RTGI probe-field parameters (patched by the renderer each frame
+	// from GiDraw — the engine writes zeros):
+	// xyz = quantized dir toward the sun (the GI rays' caster — moon at
+	// night), w = caster above horizon (0/1).
+	gi_sun: vec4f,
+	// C0 probe grid dims xyz, w = spacing in blocks (2).
+	gi0: vec4f,
+	// C1 far-cascade dims xyz, w = spacing (8).
+	gi1: vec4f,
+	// x = voxel-window side in blocks (the toroidal modulus).
+	gi_misc: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+
+// Indirect calibration: probe radiance arrives in sky-color units,
+// which lands brighter than the old tuned ambient did — one knob scales
+// the whole indirect term into the look the direct term was tuned
+// against (P3; re-derive at P5 if the probe payload gets renormalized).
+// Lives here because chunk.wgsl AND every direct probe gatherer (water,
+// players) must agree; gi_probe.wgsl's cam_light carries a pinned twin
+// (`indirect_k_is_one_constant` in digblock-assets).
+const INDIRECT_K = 0.55;
 
 // ---- Water look tunables (ONE place; the engine-side partners are
 // the UW_* consts by frame_uniforms() in engine.rs) -------------------

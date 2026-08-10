@@ -120,6 +120,12 @@ pub struct EngineConfig {
 	/// reach under it exactly as the shadow map says; only the ambient
 	/// dome dims). Set by the desktop launcher from DIG_ROOF.
 	pub debug_roof: bool,
+	/// Debug: flood an open-topped stone tank around the spawn camera so
+	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
+	/// P4: sun transmittance through the column dims submerged terrain,
+	/// the surface reads as a plane from below). Set by the desktop
+	/// launcher from DIG_DIVE.
+	pub debug_dive: bool,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -200,6 +206,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
+			debug_dive: false,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -240,6 +247,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
+			debug_dive: false,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -368,7 +376,6 @@ pub struct Engine {
 	overlay_key_down: bool,
 	tick_accum: f32,
 	sun: Sun,
-	wide_due: bool,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
 	/// Left mouse button currently held (hold-to-dig); right stays an edge.
@@ -725,6 +732,60 @@ fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_DIVE=1 layout: an open-topped stone tank flooded around the
+/// spawn camera, so the eye starts one block below the surface — the
+/// RTGI underwater capture. Open sky above is the light source: the
+/// sun DDA crosses the water column (transmittance dims submerged
+/// terrain), the probes see the pool through the same window, and the
+/// surface overhead photographs as a plane from below (Snell window /
+/// TIR mirror). Furniture on the floor gives the light something to
+/// model.
+fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{stair_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// Shell x±4 / z −4..+10, floor at −4, walls up to +2; interior
+	// carved then flooded to one block ABOVE the eye cell, so the
+	// camera is submerged with the surface in view. No ceiling — the
+	// sky lights the pool.
+	for x in (bx - 4)..=(bx + 4) {
+		for y in (by - 4)..=(by + 2) {
+			for z in (bz - 4)..=(bz + 10) {
+				let interior = (bx - 3..=bx + 3).contains(&x)
+					&& (by - 3..=by + 2).contains(&y)
+					&& (bz - 3..=bz + 9).contains(&z);
+				let cell = if !interior {
+					B::Stone as u16
+				} else if y <= by + 1 {
+					B::Water as u16
+				} else {
+					B::Air as u16
+				};
+				out.push((x, y, z, cell));
+			}
+		}
+	}
+	// Submerged furniture: sand strip, a stair, a wood pillar.
+	for dz in 2..=4 {
+		out.push((bx - 1, by - 3, bz + dz, B::Sand as u16));
+	}
+	out.push((
+		bx + 1,
+		by - 3,
+		bz + 4,
+		make_cell(B::StoneStairs, stair_state(Facing::PosX)),
+	));
+	out.push((bx + 2, by - 3, bz + 6, B::Wood as u16));
+	out.push((bx + 2, by - 2, bz + 6, B::Wood as u16));
+	out
+}
+
 /// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
 /// of spawn with NO walls — the beam-veto capture. Skylight under it
 /// drops (lateral spread decays toward the middle), so this scene is
@@ -907,6 +968,9 @@ impl Engine {
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
 				}
+				if config.debug_dive {
+					plan.extend(debug_dive_plan(spawn));
+				}
 				plan
 			},
 			config,
@@ -922,7 +986,6 @@ impl Engine {
 			overlay_key_down: false,
 			tick_accum: 0.0,
 			sun,
-			wide_due: false,
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			dig_held: false,
@@ -2946,7 +3009,6 @@ impl Engine {
 			.fold(Default::default(), crate::viewmodel::combine),
 			light_dir_view,
 			light_strength: d[3],
-			ambient: [frame.ambient[0], frame.ambient[1], frame.ambient[2]],
 			light_color: [
 				frame.light_color[0],
 				frame.light_color[1],
@@ -3011,7 +3073,7 @@ impl Engine {
 		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP
 	}
 
-	fn frame_uniforms(&self, near_vp: glam::Mat4) -> FrameUniforms {
+	fn frame_uniforms(&self) -> FrameUniforms {
 		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
 		let vp = self.camera.view_proj(aspect);
 		let caster = self.sun.caster();
@@ -3072,10 +3134,9 @@ impl Engine {
 		FrameUniforms {
 			view_proj: vp.to_cols_array_2d(),
 			inv_view_proj: vp.inverse().to_cols_array_2d(),
-			light_near: near_vp.to_cols_array_2d(),
-			// Placeholder: the renderer owns this slot — it overwrites it
-			// every frame with the ping-pong's active_vp (the map actually
-			// rendered, which may lag this frame's wide_vp by one job).
+			// Dead since P4: no shader reads the cascade matrices — the
+			// slots survive only for the pinned layout, until P6 re-pins.
+			light_near: glam::Mat4::IDENTITY.to_cols_array_2d(),
 			light_wide: glam::Mat4::IDENTITY.to_cols_array_2d(),
 			light_dir: [caster.dir.x, caster.dir.y, caster.dir.z, caster.strength],
 			light_color: [
@@ -3112,6 +3173,12 @@ impl Engine {
 				},
 				0.0,
 			],
+			// The renderer's GiDraw fills these (quantized caster, cascade
+			// dims, window side) via patch_frame each frame.
+			gi_sun: [0.0; 4],
+			gi0: [0.0; 4],
+			gi1: [0.0; 4],
+			gi_misc: [0.0; 4],
 		}
 	}
 }
@@ -3493,10 +3560,11 @@ impl Game for Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
-		// A fixed --tod freezes the sun angle but keeps the wide-cascade
-		// refresh cadence (the map must still track streamed-in chunks).
+		// A fixed --tod freezes the sun angle (dev builds only). The
+		// returned wide-cascade-due flag is obsolete — RTGI has no
+		// cascades; the call still advances the day cycle and reanchor.
 		let fixed_tod = self.config.tod;
-		self.wide_due |= self.sun.update(dt, self.camera.pos);
+		let _ = self.sun.update(dt, self.camera.pos);
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
@@ -3933,11 +4001,7 @@ impl Game for Engine {
 			self.remote_instances
 				.push([p.x, p.y, p.z, 0.8, 1.0, 1.0, 1.0, layer + 1.0]);
 		}
-		let d = self.depth();
-		let texels = self.config.shadow_size as f32;
-		let near_vp = self.sun.near_vp(self.camera.pos, d, texels);
-		let wide_vp = self.sun.wide_vp(d, texels);
-		let frame = self.frame_uniforms(near_vp);
+		let frame = self.frame_uniforms();
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
 		// Name tags: project each nearby remote's head-top to screen px.
@@ -3984,7 +4048,6 @@ impl Game for Engine {
 			tags += 1;
 		}
 		self.nametag_count = tags;
-		let wide_due = std::mem::take(&mut self.wide_due);
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
 		let overlay_stats = if self.overlay_visible {
@@ -4075,9 +4138,6 @@ impl Game for Engine {
 			let scene = FrameScene {
 				uniforms: frame,
 				view_proj,
-				near_vp,
-				wide_vp,
-				wide_due,
 				size,
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,

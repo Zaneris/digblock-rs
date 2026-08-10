@@ -52,15 +52,16 @@ impl Cascade {
 pub struct GiDraw {
 	probe_pipeline: wgpu::ComputePipeline,
 	inval_pipeline: wgpu::ComputePipeline,
+	/// One invocation sampling probes + sun visibility at the camera
+	/// into `cam_buf` — the light rig for spray and the viewmodel.
+	cam_pipeline: wgpu::ComputePipeline,
+	cam_buf: wgpu::Buffer,
 	cascades: [Cascade; 2],
 	/// Which atlas is the front (last written) — flips per frame.
 	ping: usize,
 	frame: u32,
 	window: wgpu::Texture,
 	coarse: wgpu::Texture,
-	window_view: wgpu::TextureView,
-	coarse_view: wgpu::TextureView,
-	lut_buf: wgpu::Buffer,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
@@ -73,6 +74,14 @@ pub struct GiDraw {
 	resolve_pipeline: wgpu::RenderPipeline,
 	resolve_bgl: wgpu::BindGroupLayout,
 	resolve_buf: wgpu::Buffer,
+	/// Bound at the resolve's empty group 1 (every slot in a pipeline
+	/// layout must hold a bind group, empty or not).
+	empty_bg: wgpu::BindGroup,
+	/// gi_common.wgsl's group(2) — the GI world data every direct
+	/// gatherer binds: the resolve, water, and players.
+	gather_bgl: wgpu::BindGroupLayout,
+	/// One per atlas ping; `gather_bind()` picks the front.
+	gather_bind: [wgpu::BindGroup; 2],
 	/// The scene pass's group 2: the two resolve outputs, textureLoad'd.
 	scene_bgl: wgpu::BindGroupLayout,
 	/// Last quantized sun (xyz dir + w above-horizon), set by `encode`
@@ -253,8 +262,30 @@ impl GiDraw {
 					},
 					count: None,
 				},
+				wgpu::BindGroupLayoutEntry {
+					binding: 8,
+					visibility: wgpu::ShaderStages::COMPUTE,
+					ty: wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Storage { read_only: false },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+					count: None,
+				},
 			],
 		});
+		// The camera-light sample cam_light writes and spray/viewmodel
+		// bind as a uniform (STORAGE for the compute write, UNIFORM for
+		// the render reads — same 32 bytes).
+		let cam_buf = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("gi camera light"),
+			size: 32,
+			usage: wgpu::BufferUsages::STORAGE
+				| wgpu::BufferUsages::UNIFORM
+				| wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		gpu.queue.write_buffer(&cam_buf, 0, &[0u8; 32]);
 		let window_view = window.create_view(&Default::default());
 		let coarse_view = coarse.create_view(&Default::default());
 
@@ -325,6 +356,10 @@ impl GiDraw {
 							binding: 7,
 							resource: wgpu::BindingResource::TextureView(&flags_view),
 						},
+						wgpu::BindGroupEntry {
+							binding: 8,
+							resource: cam_buf.as_entire_binding(),
+						},
 					],
 				})
 			});
@@ -363,6 +398,7 @@ impl GiDraw {
 		};
 		let probe_pipeline = compute("update_probes", "gi probe update");
 		let inval_pipeline = compute("inval", "gi invalidate");
+		let cam_pipeline = compute("cam_light", "gi camera light");
 
 		// Debug raymarch pipeline (fullscreen, no depth, swapchain target).
 		let debug_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -478,10 +514,12 @@ impl GiDraw {
 			},
 		);
 
-		// The half-res resolve (gi_resolve.wgsl): its own uniform + the
-		// GI world data + a depth tap; two MRT outputs, no depth
-		// attachment, so it's built directly rather than through the
-		// single-target pipeline funnel.
+		// The half-res resolve (gi_resolve.wgsl): its own uniform + a
+		// depth tap at group 0, the shared gather group at 2 (group 1
+		// deliberately empty — gi_common.wgsl pins the world data to
+		// group(2) because water/players have materials at 1); two MRT
+		// outputs, no depth attachment, so it's built directly rather
+		// than through the single-target pipeline funnel.
 		let f_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::FRAGMENT,
@@ -514,18 +552,26 @@ impl GiDraw {
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D2,
 				),
+			],
+		});
+		// gi_common.wgsl's group(2): the GI world data every direct
+		// gatherer binds (the resolve here, water and players through
+		// their pipeline layouts). One per atlas ping.
+		let gather_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("gi gather bgl"),
+			entries: &[
 				ftex(
-					2,
+					0,
 					wgpu::TextureSampleType::Uint,
 					wgpu::TextureViewDimension::D3,
 				),
 				ftex(
-					3,
+					1,
 					wgpu::TextureSampleType::Uint,
 					wgpu::TextureViewDimension::D3,
 				),
 				f_entry(
-					4,
+					2,
 					wgpu::BindingType::Buffer {
 						ty: wgpu::BufferBindingType::Storage { read_only: true },
 						has_dynamic_offset: false,
@@ -533,16 +579,46 @@ impl GiDraw {
 					},
 				),
 				ftex(
-					5,
+					3,
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D3,
 				),
 				ftex(
-					6,
+					4,
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D3,
 				),
 			],
+		});
+		let gather_bind = std::array::from_fn(|i| {
+			let a0 = cascades[0].atlas[i].create_view(&Default::default());
+			let a1 = cascades[1].atlas[i].create_view(&Default::default());
+			device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some("gi gather bg"),
+				layout: &gather_bgl,
+				entries: &[
+					wgpu::BindGroupEntry {
+						binding: 0,
+						resource: wgpu::BindingResource::TextureView(&window_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 1,
+						resource: wgpu::BindingResource::TextureView(&coarse_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 2,
+						resource: lut_buf.as_entire_binding(),
+					},
+					wgpu::BindGroupEntry {
+						binding: 3,
+						resource: wgpu::BindingResource::TextureView(&a0),
+					},
+					wgpu::BindGroupEntry {
+						binding: 4,
+						resource: wgpu::BindingResource::TextureView(&a1),
+					},
+				],
+			})
 		});
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
@@ -554,9 +630,18 @@ impl GiDraw {
 			label: Some("gi resolve"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::GI_RESOLVE.into()),
 		});
+		let empty_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("gi resolve empty"),
+			entries: &[],
+		});
+		let empty_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi resolve empty"),
+			layout: &empty_bgl,
+			entries: &[],
+		});
 		let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi resolve layout"),
-			bind_group_layouts: &[&resolve_bgl],
+			bind_group_layouts: &[&resolve_bgl, &empty_bgl, &gather_bgl],
 			push_constant_ranges: &[],
 		});
 		let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -607,14 +692,13 @@ impl GiDraw {
 		Self {
 			probe_pipeline,
 			inval_pipeline,
+			cam_pipeline,
+			cam_buf,
 			cascades,
 			ping: 0,
 			frame: 0,
 			window,
 			coarse,
-			window_view,
-			coarse_view,
-			lut_buf,
 			window_chunks,
 			emitters: FxHashMap::default(),
 			lights_dirty: false,
@@ -623,6 +707,9 @@ impl GiDraw {
 			resolve_pipeline,
 			resolve_bgl,
 			resolve_buf,
+			empty_bg,
+			gather_bgl,
+			gather_bind,
 			scene_bgl,
 			last_sun: [0.0, 1.0, 0.0, 1.0],
 			debug_pipeline,
@@ -636,57 +723,46 @@ impl GiDraw {
 		&self.scene_bgl
 	}
 
-	/// Build the two resolve bind groups (one per atlas ping) against the
-	/// current depth copy — called whenever the frame targets rebuild.
-	pub fn make_resolve_binds(
+	/// gi_common.wgsl's group(2) layout — water and players reference it
+	/// in their pipeline layouts.
+	pub fn gather_bgl(&self) -> &wgpu::BindGroupLayout {
+		&self.gather_bgl
+	}
+
+	/// The GI world bind group reading the FRONT (just written) atlases
+	/// — valid after this frame's `encode`.
+	pub fn gather_bind(&self) -> &wgpu::BindGroup {
+		&self.gather_bind[self.ping]
+	}
+
+	/// The 32-byte camera-light buffer `cam_light` writes — spray and
+	/// the viewmodel bind it as a uniform.
+	pub fn cam_light_buf(&self) -> &wgpu::Buffer {
+		&self.cam_buf
+	}
+
+	/// Build the resolve's group-0 bind (uniform + depth tap) against
+	/// the current depth copy — called whenever the frame targets
+	/// rebuild.
+	pub fn make_resolve_bind(
 		&self,
 		gpu: &Gpu,
 		depth_copy_view: &wgpu::TextureView,
-	) -> [wgpu::BindGroup; 2] {
-		std::array::from_fn(|i| {
-			let a0 = self.cascades[0].atlas[i].create_view(&Default::default());
-			let a1 = self.cascades[1].atlas[i].create_view(&Default::default());
-			gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some("gi resolve bg"),
-				layout: &self.resolve_bgl,
-				entries: &[
-					wgpu::BindGroupEntry {
-						binding: 0,
-						resource: self.resolve_buf.as_entire_binding(),
-					},
-					wgpu::BindGroupEntry {
-						binding: 1,
-						resource: wgpu::BindingResource::TextureView(depth_copy_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 2,
-						resource: wgpu::BindingResource::TextureView(&self.window_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 3,
-						resource: wgpu::BindingResource::TextureView(&self.coarse_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 4,
-						resource: self.lut_buf.as_entire_binding(),
-					},
-					wgpu::BindGroupEntry {
-						binding: 5,
-						resource: wgpu::BindingResource::TextureView(&a0),
-					},
-					wgpu::BindGroupEntry {
-						binding: 6,
-						resource: wgpu::BindingResource::TextureView(&a1),
-					},
-				],
-			})
+	) -> wgpu::BindGroup {
+		gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi resolve bg"),
+			layout: &self.resolve_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: self.resolve_buf.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(depth_copy_view),
+				},
+			],
 		})
-	}
-
-	/// Which of the two resolve bind groups reads the front (just
-	/// written) atlases — valid after this frame's `encode`.
-	pub fn front(&self) -> usize {
-		self.ping
 	}
 
 	/// Encode the half-res GI resolve into the two lighting targets.
@@ -749,7 +825,50 @@ impl GiDraw {
 		});
 		pass.set_pipeline(&self.resolve_pipeline);
 		pass.set_bind_group(0, bind, &[]);
+		pass.set_bind_group(1, &self.empty_bg, &[]);
+		pass.set_bind_group(2, self.gather_bind(), &[]);
 		pass.draw(0..3, 0..1);
+	}
+
+	/// Patch this frame's uniforms with the GI parameters the direct
+	/// gatherers (water, players) read: quantized caster, cascade dims,
+	/// window side. Also latches `last_sun` for this frame's `encode` /
+	/// `encode_resolve`. Call BEFORE the frame UBO uploads.
+	pub fn patch_frame(&mut self, frame: &mut FrameUniforms) {
+		// Quantized caster: the ACTIVE light (sun by day, moon by night —
+		// light_dir points toward the ground and light_color already
+		// matches it), snapped so probe results hold still between steps
+		// (~1.5°).
+		let s = [
+			-frame.light_dir[0],
+			-frame.light_dir[1],
+			-frame.light_dir[2],
+		];
+		let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
+		let q = [
+			(s[0] / len * SUN_QUANT).round() / SUN_QUANT,
+			(s[1] / len * SUN_QUANT).round() / SUN_QUANT,
+			(s[2] / len * SUN_QUANT).round() / SUN_QUANT,
+		];
+		let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt().max(1e-6);
+		let sun_up = if q[1] > 0.02 { 1.0f32 } else { 0.0 };
+		self.last_sun = [q[0] / ql, q[1] / ql, q[2] / ql, sun_up];
+		frame.gi_sun = self.last_sun;
+		let d0 = self.cascades[0].dims;
+		let d1 = self.cascades[1].dims;
+		frame.gi0 = [
+			d0.0 as f32,
+			d0.1 as f32,
+			d0.2 as f32,
+			self.cascades[0].spacing as f32,
+		];
+		frame.gi1 = [
+			d1.0 as f32,
+			d1.1 as f32,
+			d1.2 as f32,
+			self.cascades[1].spacing as f32,
+		];
+		frame.gi_misc = [(self.window_chunks * 16) as f32, 0.0, 0.0, 0.0];
 	}
 
 	/// Upload one classified chunk into its toroidal window region (and
@@ -875,24 +994,8 @@ impl GiDraw {
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
 		self.flush_lights(gpu, cam);
-		// Quantized caster: the ACTIVE light (sun by day, moon by night —
-		// light_dir points toward the ground and light_color already
-		// matches it), snapped so probe results hold still between steps
-		// (~1.5°).
-		let s = [
-			-frame.light_dir[0],
-			-frame.light_dir[1],
-			-frame.light_dir[2],
-		];
-		let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
-		let q = [
-			(s[0] / len * SUN_QUANT).round() / SUN_QUANT,
-			(s[1] / len * SUN_QUANT).round() / SUN_QUANT,
-			(s[2] / len * SUN_QUANT).round() / SUN_QUANT,
-		];
-		let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt().max(1e-6);
-		let sun_up = if q[1] > 0.02 { 1.0f32 } else { 0.0 };
-		self.last_sun = [q[0] / ql, q[1] / ql, q[2] / ql, sun_up];
+		// The quantized caster was latched by `patch_frame` (which the
+		// renderer calls before the frame uploads, every frame).
 		let spheres: Vec<[f32; 4]> = {
 			let take = self.inval_queue.len().min(4);
 			let drained: Vec<[f32; 3]> = self.inval_queue.drain(..take).collect();
@@ -913,12 +1016,7 @@ impl GiDraw {
 			let dims = [c.dims.0, c.dims.1, c.dims.2, c.spacing];
 			data.extend_from_slice(bytemuck::cast_slice(&dims));
 			data.extend_from_slice(bytemuck::cast_slice(&[cam[0], cam[1], cam[2], side]));
-			data.extend_from_slice(bytemuck::cast_slice(&[
-				q[0] / ql,
-				q[1] / ql,
-				q[2] / ql,
-				sun_up,
-			]));
+			data.extend_from_slice(bytemuck::cast_slice(&self.last_sun));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
@@ -955,6 +1053,12 @@ impl GiDraw {
 				pass.set_bind_group(0, &c.bind[self.ping], &[]);
 				pass.dispatch_workgroups(PROBES_PER_DISPATCH.min(c.probes()), 1, 1);
 			}
+			// Camera light for spray/viewmodel: one invocation against
+			// the C0 cascade (prev_atlas = last frame's front, gi.dims
+			// = C0 — the camera always sits inside C0's coverage).
+			pass.set_pipeline(&self.cam_pipeline);
+			pass.set_bind_group(0, &self.cascades[0].bind[self.ping], &[]);
+			pass.dispatch_workgroups(1, 1, 1);
 			if has_inval {
 				pass.set_pipeline(&self.inval_pipeline);
 				for c in &self.cascades {

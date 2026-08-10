@@ -16,11 +16,8 @@
 @group(2) @binding(0) var gi_indirect: texture_2d<f32>;
 @group(2) @binding(1) var gi_sun: texture_2d<f32>;
 
-// Indirect calibration: probe radiance arrives in sky-color units,
-// which lands brighter than the old tuned ambient did — one knob scales
-// the whole indirect term into the look the direct term was tuned
-// against (P3; re-derive at P5 if the probe payload gets renormalized).
-const INDIRECT_K = 0.55;
+// INDIRECT_K (the probe-radiance calibration) arrives from
+// frame_common.wgsl — shared with every direct probe gatherer.
 
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)

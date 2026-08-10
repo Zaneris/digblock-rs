@@ -44,6 +44,16 @@ struct Light {
 @group(0) @binding(5) var prev_atlas: texture_3d<f32>;
 @group(0) @binding(6) var out_atlas: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(7) var flags_tex: texture_storage_3d<r32uint, read_write>;
+// The camera-light sample the `cam_light` entry writes: [0] = omni
+// probe ambient at the camera (premultiplied by INDIRECT_K), [1].x =
+// sun visibility there. Spray and the viewmodel bind this as their
+// light rig — no CPU probe reads.
+@group(0) @binding(8) var<storage, read_write> cam_out: array<vec4f, 2>;
+
+// Pinned twin of frame_common.wgsl's INDIRECT_K (this module can't
+// take the frame prelude — its group(0) is the GI uniform). The
+// digblock-assets test `indirect_k_is_one_constant` holds them equal.
+const INDIRECT_K = 0.55;
 
 const RAYS: u32 = 64u;
 const MAX_T: f32 = 160.0;
@@ -338,6 +348,37 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 	if li == 0u {
 		textureStore(flags_tex, t, vec4u(sum | min(age + 1u, 255u), 0u, 0u, 0u));
 	}
+}
+
+// Camera light: one invocation samples the probe field and sun
+// visibility AT THE CAMERA into cam_out, for the passes with no world
+// position to gather at — spray billboards and the first-person
+// viewmodel. Dispatched with the C0 cascade's bind group (prev_atlas =
+// the front atlas, gi.dims = C0), after the probe update.
+@compute @workgroup_size(1)
+fn cam_light() {
+	let spacing = i32(gi.dims.w);
+	let g = vec3i(round(gi.cam.xyz / f32(spacing)));
+	let cell = relocate(g * spacing);
+	let p = vec3f(cell) + 0.5;
+	// Omnidirectional ambient: the mean of the 6 axis irradiances.
+	var amb = vec3f(0.0);
+	amb += gather_prev(p, vec3f(1.0, 0.0, 0.0));
+	amb += gather_prev(p, vec3f(-1.0, 0.0, 0.0));
+	amb += gather_prev(p, vec3f(0.0, 1.0, 0.0));
+	amb += gather_prev(p, vec3f(0.0, -1.0, 0.0));
+	amb += gather_prev(p, vec3f(0.0, 0.0, 1.0));
+	amb += gather_prev(p, vec3f(0.0, 0.0, -1.0));
+	amb /= 6.0;
+	var sv = 0.0;
+	if gi.sun.w > 0.5 {
+		let h = march(p, gi.sun.xyz, MAX_T);
+		if !h.hit {
+			sv = exp(-h.water * 0.35);
+		}
+	}
+	cam_out[0] = vec4f(amb * INDIRECT_K, 0.0);
+	cam_out[1] = vec4f(sv, 0.0, 0.0, 0.0);
 }
 
 // Edit invalidation: reset ages inside the spheres (both halves of the
