@@ -16,6 +16,12 @@
 @group(2) @binding(0) var gi_indirect: texture_2d<f32>;
 @group(2) @binding(1) var gi_sun: texture_2d<f32>;
 
+// Indirect calibration: probe radiance arrives in sky-color units,
+// which lands brighter than the old tuned ambient did — one knob scales
+// the whole indirect term into the look the direct term was tuned
+// against (P3; re-derive at P5 if the probe payload gets renormalized).
+const INDIRECT_K = 0.55;
+
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(
@@ -141,7 +147,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let indirect = acc / wsum;
 	// Twilight fades the traced sun exactly as it faded mapped shadows.
 	let sh = mix(1.0, sun_acc / wsum, frame.light_dir.w);
-	var col = tex * i.ao * (frame.light_color.rgb * i.direct * sh + indirect);
+	var col = tex * i.ao * (frame.light_color.rgb * i.direct * sh + indirect * INDIRECT_K);
 	// Distance fog toward the sky horizon, hiding chunk pop-in.
 	col = apply_fog(col, i.fog_dist, i.world);
 	return vec4f(col, frame.misc.x);

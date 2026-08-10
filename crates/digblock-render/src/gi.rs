@@ -875,9 +875,15 @@ impl GiDraw {
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
 		self.flush_lights(gpu, cam);
-		// Quantized sun: snap the direction so probe results hold still
-		// between steps (~1.5°).
-		let s = frame.sun_dir;
+		// Quantized caster: the ACTIVE light (sun by day, moon by night —
+		// light_dir points toward the ground and light_color already
+		// matches it), snapped so probe results hold still between steps
+		// (~1.5°).
+		let s = [
+			-frame.light_dir[0],
+			-frame.light_dir[1],
+			-frame.light_dir[2],
+		];
 		let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
 		let q = [
 			(s[0] / len * SUN_QUANT).round() / SUN_QUANT,

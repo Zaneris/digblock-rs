@@ -82,8 +82,44 @@ fn coarse_empty(c: vec3i) -> bool {
 	return textureLoad(coarse_tex, t, 0).r == 0u;
 }
 
+// Sky as a GI source: the dome colors, pulled toward their luminance —
+// the raw zenith blue is tuned for LOOKING at the sky, and bouncing it
+// at full saturation tints every shadow cold (the old ambient was a
+// separately tuned neutral for the same reason).
 fn sky_radiance(dir: vec3f) -> vec3f {
-	return mix(gi.horizon.rgb, gi.zenith.rgb, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+	let c = mix(gi.horizon.rgb, gi.zenith.rgb, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+	let lum = dot(c, vec3f(0.299, 0.587, 0.114));
+	return mix(c, vec3f(lum), 0.35);
+}
+
+fn solid_cell(c: vec3i) -> bool {
+	let v = window_cell(c);
+	return v != 0u && (lut[v].x >> 24u) == 2u;
+}
+
+// Deterministic probe relocation (DDGI's, made stateless): a probe
+// whose lattice cell is solid nudges ≤1 block into the first air
+// neighbor in a FIXED order — up first (cavities open upward), then
+// the sides, down last. The resolve recomputes the identical offset
+// from the same voxel window, so no flags bits carry it.
+fn relocate(cell: vec3i) -> vec3i {
+	if !solid_cell(cell) {
+		return cell;
+	}
+	var offs = array<vec3i, 6>(
+		vec3i(0, 1, 0),
+		vec3i(1, 0, 0),
+		vec3i(-1, 0, 0),
+		vec3i(0, 0, 1),
+		vec3i(0, 0, -1),
+		vec3i(0, -1, 0),
+	);
+	for (var k = 0; k < 6; k++) {
+		if !solid_cell(cell + offs[k]) {
+			return cell + offs[k];
+		}
+	}
+	return cell;
 }
 
 struct Hit {
@@ -227,7 +263,8 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 	let t = vec3i(vec3u(pi % gi.dims.x, (pi / gi.dims.x) % gi.dims.y, pi / (gi.dims.x * gi.dims.y)));
 	let spacing = i32(gi.dims.w);
 	let g = probe_grid_cell(t, n, spacing);
-	let p = vec3f(g * spacing) + 0.5;
+	let cell = relocate(g * spacing);
+	let p = vec3f(cell) + 0.5;
 
 	// Spherical Fibonacci direction, rotated per update by the frame
 	// counter folded into the golden-angle phase.
@@ -239,9 +276,9 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 	let th = ga * i + phase * 6.2831853;
 	let dir = normalize(vec3f(r * cos(th), z, r * sin(th)));
 
-	// A probe inside solid ground traces nothing useful: mark dead.
-	let inside = window_cell(g * spacing) != 0u && (lut[window_cell(g * spacing)].x >> 24u) == 2u;
-	if inside {
+	// A probe still inside solid after relocation traces nothing
+	// useful: dead (zero radiance).
+	if solid_cell(cell) {
 		ray_rad[li] = vec3f(0.0);
 	} else {
 		ray_rad[li] = trace_radiance(p, dir);
@@ -297,7 +334,7 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 		prev = result;
 	}
 	let blended = mix(prev, result, alpha);
-	textureStore(out_atlas, texel, vec4f(blended, select(1.0, 0.0, inside)));
+	textureStore(out_atlas, texel, vec4f(blended, select(1.0, 0.0, solid_cell(cell))));
 	if li == 0u {
 		textureStore(flags_tex, t, vec4u(sum | min(age + 1u, 255u), 0u, 0u, 0u));
 	}

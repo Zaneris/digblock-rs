@@ -155,6 +155,18 @@ pub struct Pipeline {
 	gi_dirty: FxHashSet<ChunkPos>,
 	/// Edited world cells awaiting probe invalidation (RTGI).
 	gi_edits: Vec<(i32, i32, i32)>,
+	/// The camera chunk the GI window is currently centered on — the
+	/// scroll anchor `gi_recenter` diffs against.
+	gi_center: Option<(i32, i32)>,
+}
+
+/// Is a chunk column inside the GI window's half-extent of `center`?
+/// The window is `w` chunks per side and toroidal, so exactly the
+/// columns in `[center - w/2, center + w/2)` map unambiguously; anything
+/// outside would alias onto an in-range column and corrupt it.
+fn gi_in_window(pos: ChunkPos, center: (i32, i32), w: i32) -> bool {
+	let lo = (center.0 - w / 2, center.1 - w / 2);
+	pos.x >= lo.0 && pos.x < lo.0 + w && pos.z >= lo.1 && pos.z < lo.1 + w
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -454,6 +466,7 @@ impl Pipeline {
 			light: LightField::new(),
 			gi_dirty: FxHashSet::default(),
 			gi_edits: Vec::new(),
+			gi_center: None,
 		}
 	}
 
@@ -1111,6 +1124,37 @@ impl Pipeline {
 	/// so a burst (arrival column, cold fill) never re-dirties here.
 	pub fn take_gi_dirty(&mut self) -> Vec<ChunkPos> {
 		self.gi_dirty.drain().collect()
+	}
+
+	/// Is this chunk inside the GI window centered on the last
+	/// `gi_recenter` call? The upload drain MUST check this: a chunk
+	/// outside the half-extent would alias onto an in-window column in
+	/// the toroidal texture and stamp far terrain over near.
+	pub fn gi_uploadable(&self, pos: ChunkPos, window_chunks: i32) -> bool {
+		self.gi_center
+			.is_some_and(|c| gi_in_window(pos, c, window_chunks))
+	}
+
+	/// Scroll the GI window: when the camera crosses a chunk boundary,
+	/// re-dirty every resident chunk that just ENTERED the half-extent —
+	/// its window texels still hold whatever far column aliased there
+	/// while it was out of range. The strip that left needs nothing:
+	/// reads are lateral-capped to the half-extent, so its stale texels
+	/// are unreachable until it re-enters (and re-dirties here).
+	pub fn gi_recenter(&mut self, center: ChunkPos, window_chunks: i32) {
+		let c = (center.x, center.z);
+		let old = self.gi_center;
+		if old == Some(c) {
+			return;
+		}
+		self.gi_center = Some(c);
+		for &pos in self.store.keys() {
+			if gi_in_window(pos, c, window_chunks)
+				&& !old.is_some_and(|o| gi_in_window(pos, o, window_chunks))
+			{
+				self.gi_dirty.insert(pos);
+			}
+		}
 	}
 
 	/// Drain edited cells for probe invalidation (RTGI).

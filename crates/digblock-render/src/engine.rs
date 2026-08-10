@@ -2050,10 +2050,14 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
-		// RTGI: pull freshly-dirty chunks into the re-upload queue, then
-		// feed the voxel window under its own byte budget — a quarter of
-		// the mesh-upload ceiling, ~4 KiB a chunk, so a cold fill spans
-		// frames instead of spiking one (GI-DESIGN.md).
+		// RTGI: scroll the window to the camera (re-dirtying whatever
+		// just entered coverage), pull freshly-dirty chunks into the
+		// re-upload queue, then feed the voxel window under its own byte
+		// budget — a quarter of the mesh-upload ceiling, ~4 KiB a chunk,
+		// so a cold fill spans frames instead of spiking one
+		// (GI-DESIGN.md).
+		let gi_window = self.config.draw_dist;
+		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {
 			if self.gi_queued.insert(pos) {
 				self.gi_queue.push_back(pos);
@@ -2068,8 +2072,13 @@ impl Engine {
 				break;
 			};
 			self.gi_queued.remove(&pos);
-			// Not resident anymore = evicted while queued: drop it —
-			// re-entry re-dirties.
+			// Outside the window's half-extent: uploading would ALIAS onto
+			// an in-window column — drop it; `gi_recenter` re-dirties it
+			// the moment it enters coverage. Not resident anymore =
+			// evicted while queued: same answer.
+			if !self.pipeline.gi_uploadable(pos, gi_window) {
+				continue;
+			}
 			if let Some(chunk) = self.pipeline.classify_gi(pos) {
 				renderer.gi_upload(gpu, pos, &chunk);
 				gi_budget -= 4096;

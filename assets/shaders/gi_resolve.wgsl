@@ -71,6 +71,29 @@ fn solid(c: vec3i) -> bool {
 	return v != 0u && (lut[v].x >> 24u) == 2u;
 }
 
+// Deterministic probe relocation — the EXACT twin of gi_probe.wgsl's
+// (same fixed neighbor order over the same voxel window), so the
+// gather looks for each probe where the trace actually ran.
+fn relocate(cell: vec3i) -> vec3i {
+	if !solid(cell) {
+		return cell;
+	}
+	var offs = array<vec3i, 6>(
+		vec3i(0, 1, 0),
+		vec3i(1, 0, 0),
+		vec3i(-1, 0, 0),
+		vec3i(0, 0, 1),
+		vec3i(0, 0, -1),
+		vec3i(0, -1, 0),
+	);
+	for (var k = 0; k < 6; k++) {
+		if !solid(cell + offs[k]) {
+			return cell + offs[k];
+		}
+	}
+	return cell;
+}
+
 // Short exact occlusion: DDA from `a` to `b`, true if any opaque cell
 // strictly between them. Capped steps — probes are near.
 fn occluded(a: vec3f, b: vec3f, cap: i32) -> bool {
@@ -185,7 +208,9 @@ fn cascade_gather(p: vec3f, n: vec3f, dims4: vec4f, c1: bool, occ_cap: i32) -> v
 	for (var i = 0; i < 8; i++) {
 		let o = vec3i(i & 1, (i >> 1) & 1, (i >> 2) & 1);
 		let g = vec3i(base) + o;
-		let pw = (vec3f(g) + 0.0) * spacing;
+		// The probe's cell center, after the same relocation nudge the
+		// trace applied (a probe buried in a wall steps into the open).
+		let pw = vec3f(relocate(g * i32(spacing))) + 0.5;
 		// Trilinear x backface (probe behind the surface contributes
 		// nothing) x exact occlusion.
 		let tw = abs(vec3f(vec3i(1) - o) - frac_p);
@@ -239,8 +264,11 @@ fn fs(i: VsOut) -> FsOut {
 	if g.w >= 0.05 {
 		indirect = g.rgb / g.w;
 	} else {
-		// Analytic fallback beyond/starved: dim sky dome.
-		indirect = mix(rz.horizon.rgb, rz.zenith.rgb, clamp(n.y * 0.5 + 0.5, 0.0, 1.0)) * 0.35;
+		// Analytic fallback beyond/starved: dim sky dome, desaturated
+		// the same way the probe kernel's sky_radiance is.
+		let c = mix(rz.horizon.rgb, rz.zenith.rgb, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
+		let lum = dot(c, vec3f(0.299, 0.587, 0.114));
+		indirect = mix(c, vec3f(lum), 0.35) * 0.35;
 	}
 	let sv = sun_vis(sp);
 	// Normal code: axis (0/1/2) * 2 + sign bit, packed to unorm8.
