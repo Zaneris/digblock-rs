@@ -113,6 +113,12 @@ impl LightField {
 		self.add.len() + self.remove.len()
 	}
 
+	/// Per-chunk storage, for the mesh shell copy (`MeshInput::fill_light`).
+	/// `None` means uniformly dark.
+	pub fn chunk(&self, pos: ChunkPos) -> Option<&LightChunk> {
+		self.chunks.get(&pos)
+	}
+
 	/// Write the blocklight nibble, allocating `Mixed` on divergence and
 	/// recording the shell-dirty set.
 	fn set_block_light(&mut self, x: i32, y: i32, z: i32, v: u8) {

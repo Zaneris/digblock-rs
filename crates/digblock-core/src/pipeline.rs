@@ -942,7 +942,7 @@ impl Pipeline {
 	}
 
 	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
-		MeshInput::build(center, |dx, dy, dz| {
+		let mut input = MeshInput::build(center, |dx, dy, dz| {
 			let np = ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz);
 			if np.y >= WORLD_VCHUNK {
 				return Src::Air; // Java air sentinel above the world
@@ -963,7 +963,14 @@ impl Pipeline {
 				}
 				_ => Src::Missing,
 			}
-		})
+		});
+		// The light shell rides the same snapshot: already-settled field
+		// values only (maintain steps the BFS before any dispatch).
+		input.fill_light(|dx, dy, dz| {
+			self.light
+				.chunk(ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz))
+		});
+		input
 	}
 
 	fn requeue(&mut self, job: Job) {
