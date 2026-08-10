@@ -367,20 +367,25 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
 	}
 	let sh = mix(1.0, vis, frame.light_dir.w);
-	// Stage-B (LIGHT-DESIGN.md): skylight gates the sun terms exactly
-	// like chunk.wgsl, and torchlight competes via max — folded into the
-	// diffuse terms only, never the specular (a torch has no sun glint
-	// lobe to borrow).
+	// Stage-B (LIGHT-DESIGN.md): the same ambient-scale / direct-veto
+	// split as chunk.wgsl (skyf shapes the sky dome, the shadow map owns
+	// the beam, the nibble only vetoes it near sky=0), and torchlight
+	// competes via max — folded into the diffuse terms only, never the
+	// specular (a torch has no sun glint lobe to borrow).
 	let skyf = mix(0.02, 1.0, pow(i.light.y, 1.5));
+	let beam = smoothstep(0.0, 0.27, i.light.y);
 	let torch = vec3f(1.0, 0.82, 0.55) * pow(i.light.x, 1.8);
 	// Froth light: the same ambient+direct mix the spray billboards use
 	// (spray.wgsl), shadowed like the surface it sits on — so foam dims
 	// with the night instead of glowing unlit white.
-	let froth_light = max((frame.ambient.rgb + frame.light_color.rgb * 0.8 * sh) * skyf, torch);
+	let froth_light = max(
+		frame.ambient.rgb * skyf + frame.light_color.rgb * 0.8 * sh * beam,
+		torch,
+	);
 	// In-scattered water color (the body's own diffuse), streak-bright.
 	var scatter = alb
 		* max(
-			(frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh) * skyf,
+			frame.ambient.rgb * i.axis * skyf + frame.light_color.rgb * i.direct * sh * beam,
 			torch,
 		);
 	scatter *= 1.0 + (s - 0.5) * 0.3;

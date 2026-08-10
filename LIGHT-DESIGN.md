@@ -113,10 +113,23 @@ without casting.
 - `chunk.wgsl`: `col = tex * ao * max(sun_term, TORCH_COLOR * curve(bl))` —
   `max`, not `+`, so noon faces don't blow out beside torches; the Stage-A
   emissive early-return and `apply_fog` are unchanged.
-- P3 scales `ambient`/`direct` by skylight with a `MIN_AMBIENT` floor: this is
-  what makes caves dark and torchlight readable. Skylight is the real column
-  channel (descends undecremented through non-opaque cells, spreads sideways
-  with decrement), not a depth heuristic — a player-roofed room must go dark.
+- Skylight's two jobs are SPLIT (this is not Minecraft, where the column is
+  the entire sunlight model — we have an angle-aware shadow map). The ambient
+  sky dome scales with the nibble (`skyf = mix(MIN_AMBIENT, 1, pow(sky, 1.5))`
+  — under a roof you see less sky), but DIRECT sun is only *vetoed* near
+  sky = 0 (`beam = smoothstep(0, BEAM_SKY≈4/15, sky)`) and otherwise belongs
+  entirely to the shadow map — a 10am sun slants in under an open-sided roof
+  and must light exactly what the cascade says it lights (`DIG_ROOF=1` is
+  that capture). The veto is what the field is FOR: a sealed room/cave has
+  sky = 0 with no BFS path at all, which kills the beam wherever the wide
+  cascade might leak sunlight into terrain it never rendered. Never scale
+  direct by the nibble continuously — that re-darkens sunlit ground under
+  any overhang. Known residual: a beam more than ~15 blocks under a very
+  large roof fades with the lateral skylight decay; the price of a static,
+  sun-angle-free field, and the fade is smooth.
+  Skylight itself is the real column channel (descends undecremented through
+  non-opaque cells, spreads sideways with decrement), not a depth heuristic —
+  a player-roofed room must go dark.
 - `water.wgsl` carries light in the widened `world.w` varying (the pass sits
   at 14 of 16 inter-stage variables); folded into scatter and froth, never the
   specular. `shadow.wgsl` reads word 0 only and never changes.
