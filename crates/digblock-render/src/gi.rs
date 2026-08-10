@@ -1,14 +1,14 @@
-//! RTGI probe volume (GI-DESIGN.md). P0: the crate's first compute
-//! pipeline — the real C0 probe atlas, one timed dispatch per frame,
-//! a placeholder kernel. P2 grows the trace (voxel window reads, ray
-//! budget amortization, ping-pong); what P0 pins is the shape: the
-//! atlas as six axis-major Z slabs, a small GI uniform block of its
-//! own (never the pinned Frame layout), and a dispatch that lives in
-//! the frame's single encoder ahead of every render pass.
+//! RTGI probe volume (GI-DESIGN.md). P1 built the voxel window the
+//! rays march; P2 makes the probes real: two toroidal 6-axis
+//! ambient-cube cascades (C0 2-block spacing near, C1 8-block far),
+//! ping-ponged rgba16float atlases updated by an amortized compute
+//! trace (spherical-Fibonacci rays, coarse-skip DDA, sun + sky +
+//! emissive radiance, infinite bounce by sampling last frame's atlas
+//! at hits), an r32uint flags texture carrying per-probe age and the
+//! toroidal self-heal checksum, and an edit-invalidation dispatch.
 //!
 //! Constructed only when `EngineConfig::rtgi` is on — a flag-off build
-//! allocates nothing and encodes nothing, which is what makes the P0
-//! bench-parity gate trivial to trust.
+//! allocates nothing and encodes nothing.
 
 use digblock_core::block::BlockType;
 use digblock_core::chunk::ChunkPos;
@@ -17,45 +17,61 @@ use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
 use crate::gpu_timer::{GpuTimer, Q_GI};
+use crate::renderer::FrameUniforms;
 
 /// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
 pub const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
-/// One probe = 64 threads today (P2 splits: threads = rays).
-const WORKGROUP: u32 = 64;
+/// C1 far cascade (8-block spacing).
+pub const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
+/// Probes traced per cascade per frame (the amortization grain).
+const PROBES_PER_DISPATCH: u32 = 2048;
 /// World height in blocks — the window's fixed Y extent (an up-ray
 /// always reaches sky; the window never scrolls vertically).
 const WORLD_H: u32 = 256;
 /// Light-list capacity (GI-DESIGN.md): nearest emitters win.
 const MAX_LIGHTS: usize = 256;
+/// Sun-direction quantization for GI rays: ~1.5° so shadow work stays
+/// still between steps and hysteresis glides across them.
+const SUN_QUANT: f32 = 38.0;
+
+struct Cascade {
+	dims: (u32, u32, u32),
+	spacing: u32,
+	cursor: u32,
+	uniform_buf: wgpu::Buffer,
+	atlas: [wgpu::Texture; 2],
+	/// bind[i]: atlas[i] is prev (sampled), atlas[1-i] is out (written).
+	bind: [wgpu::BindGroup; 2],
+}
+
+impl Cascade {
+	fn probes(&self) -> u32 {
+		self.dims.0 * self.dims.1 * self.dims.2
+	}
+}
 
 pub struct GiDraw {
-	pipeline: wgpu::ComputePipeline,
-	bind_group: wgpu::BindGroup,
-	uniform_buf: wgpu::Buffer,
-	/// Frame counter riding the uniform: the amortization cursor and
-	/// ray-rotation seed once P2 traces.
+	probe_pipeline: wgpu::ComputePipeline,
+	inval_pipeline: wgpu::ComputePipeline,
+	cascades: [Cascade; 2],
+	/// Which atlas is the front (last written) — flips per frame.
+	ping: usize,
 	frame: u32,
-	/// Kept alive for the debug view and the P3 resolve pass; the
-	/// compute writes it through `bind_group`.
-	#[allow(dead_code)]
-	atlas_view: wgpu::TextureView,
-	/// The voxel window: R8Uint, one texel per block, XZ-toroidal at
-	/// chunk granularity, Y = the whole world column.
 	window: wgpu::Texture,
-	/// The /8 coarse occupancy (bit 0 any blocker, bit 1 any emitter).
 	coarse: wgpu::Texture,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
-	/// Per-chunk emitter lists feeding the flattened light list.
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
 	lights_dirty: bool,
 	lights_buf: wgpu::Buffer,
-	/// Debug raymarch (`DIG_GI=window`): fullscreen DDA over the window
-	/// — the P1 gate capture, and the first consumer of the exact
-	/// march the P2 probe trace reuses.
+	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
+	inval_queue: Vec<[f32; 3]>,
+	/// Debug raymarch (`DIG_GI=window|probes`).
 	debug_pipeline: wgpu::RenderPipeline,
-	debug_bind_group: wgpu::BindGroup,
+	/// One per front atlas (the debug view samples C0's newest).
+	debug_bind: [wgpu::BindGroup; 2],
 	debug_buf: wgpu::Buffer,
+	debug_probes: bool,
 }
 
 /// The 256-entry material LUT (GI-DESIGN.md): everything a ray needs
@@ -87,15 +103,39 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 2]; 256] {
 	lut
 }
 
+fn atlas_tex(device: &wgpu::Device, dims: (u32, u32, u32), label: &str) -> wgpu::Texture {
+	device.create_texture(&wgpu::TextureDescriptor {
+		label: Some(label),
+		size: wgpu::Extent3d {
+			width: dims.0,
+			height: dims.1,
+			depth_or_array_layers: dims.2 * 6,
+		},
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: wgpu::TextureDimension::D3,
+		format: wgpu::TextureFormat::Rgba16Float,
+		usage: wgpu::TextureUsages::STORAGE_BINDING
+			| wgpu::TextureUsages::TEXTURE_BINDING
+			| wgpu::TextureUsages::COPY_SRC
+			| wgpu::TextureUsages::COPY_DST,
+		view_formats: &[],
+	})
+}
+
+/// GiUniforms layout (must match gi_probe.wgsl): dims, cam, sun,
+/// sun_color, zenith, horizon, sched, 4 inval spheres = 176 bytes.
+const GI_UNIFORM_SIZE: u64 = 176;
+
 impl GiDraw {
 	pub fn new(
 		gpu: &Gpu,
 		window_chunks: u32,
 		layer_means: &[[u8; 3]],
 		surface_format: wgpu::TextureFormat,
+		debug_probes: bool,
 	) -> Self {
 		let device = &gpu.device;
-		let (nx, ny, nz) = C0_DIMS;
 		let side = window_chunks * 16;
 		let window = device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("gi voxel window"),
@@ -134,7 +174,6 @@ impl GiDraw {
 		});
 		gpu.queue
 			.write_buffer(&lut_buf, 0, bytemuck::cast_slice(&lut));
-		// Header (count + pad) then MAX_LIGHTS × (vec3f pos, u32 class).
 		let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi light list"),
 			size: (16 + MAX_LIGHTS * 16) as u64,
@@ -142,28 +181,28 @@ impl GiDraw {
 			mapped_at_creation: false,
 		});
 		gpu.queue.write_buffer(&lights_buf, 0, &[0u8; 16]);
-		let atlas = device.create_texture(&wgpu::TextureDescriptor {
-			label: Some("gi probe atlas c0"),
-			size: wgpu::Extent3d {
-				width: nx,
-				height: ny,
-				// Six axis slabs, stacked in Z.
-				depth_or_array_layers: nz * 6,
+
+		// One bind-group layout serves both compute entry points.
+		let tex3 = |binding, sample_type| wgpu::BindGroupLayoutEntry {
+			binding,
+			visibility: wgpu::ShaderStages::COMPUTE,
+			ty: wgpu::BindingType::Texture {
+				sample_type,
+				view_dimension: wgpu::TextureViewDimension::D3,
+				multisampled: false,
 			},
-			mip_level_count: 1,
-			sample_count: 1,
-			dimension: wgpu::TextureDimension::D3,
-			format: wgpu::TextureFormat::Rgba16Float,
-			usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-			view_formats: &[],
-		});
-		let atlas_view = atlas.create_view(&Default::default());
-		let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("gi uniforms"),
-			size: 16,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-			mapped_at_creation: false,
-		});
+			count: None,
+		};
+		let storage_buf = |binding| wgpu::BindGroupLayoutEntry {
+			binding,
+			visibility: wgpu::ShaderStages::COMPUTE,
+			ty: wgpu::BindingType::Buffer {
+				ty: wgpu::BufferBindingType::Storage { read_only: true },
+				has_dynamic_offset: false,
+				min_binding_size: None,
+			},
+			count: None,
+		};
 		let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("gi probe bgl"),
 			entries: &[
@@ -177,8 +216,13 @@ impl GiDraw {
 					},
 					count: None,
 				},
+				tex3(1, wgpu::TextureSampleType::Uint),
+				tex3(2, wgpu::TextureSampleType::Uint),
+				storage_buf(3),
+				storage_buf(4),
+				tex3(5, wgpu::TextureSampleType::Float { filterable: false }),
 				wgpu::BindGroupLayoutEntry {
-					binding: 1,
+					binding: 6,
 					visibility: wgpu::ShaderStages::COMPUTE,
 					ty: wgpu::BindingType::StorageTexture {
 						access: wgpu::StorageTextureAccess::WriteOnly,
@@ -187,22 +231,105 @@ impl GiDraw {
 					},
 					count: None,
 				},
-			],
-		});
-		let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("gi probe bg"),
-			layout: &bgl,
-			entries: &[
-				wgpu::BindGroupEntry {
-					binding: 0,
-					resource: uniform_buf.as_entire_binding(),
-				},
-				wgpu::BindGroupEntry {
-					binding: 1,
-					resource: wgpu::BindingResource::TextureView(&atlas_view),
+				wgpu::BindGroupLayoutEntry {
+					binding: 7,
+					visibility: wgpu::ShaderStages::COMPUTE,
+					ty: wgpu::BindingType::StorageTexture {
+						access: wgpu::StorageTextureAccess::ReadWrite,
+						format: wgpu::TextureFormat::R32Uint,
+						view_dimension: wgpu::TextureViewDimension::D3,
+					},
+					count: None,
 				},
 			],
 		});
+		let window_view = window.create_view(&Default::default());
+		let coarse_view = coarse.create_view(&Default::default());
+
+		let make_cascade = |dims: (u32, u32, u32), spacing: u32, name: &str| -> Cascade {
+			let atlas = [
+				atlas_tex(device, dims, &format!("gi atlas {name} a")),
+				atlas_tex(device, dims, &format!("gi atlas {name} b")),
+			];
+			let flags = device.create_texture(&wgpu::TextureDescriptor {
+				label: Some(&format!("gi flags {name}")),
+				size: wgpu::Extent3d {
+					width: dims.0,
+					height: dims.1,
+					depth_or_array_layers: dims.2,
+				},
+				mip_level_count: 1,
+				sample_count: 1,
+				dimension: wgpu::TextureDimension::D3,
+				format: wgpu::TextureFormat::R32Uint,
+				usage: wgpu::TextureUsages::STORAGE_BINDING,
+				view_formats: &[],
+			});
+			let flags_view = flags.create_view(&Default::default());
+			let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+				label: Some(&format!("gi uniforms {name}")),
+				size: GI_UNIFORM_SIZE,
+				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+				mapped_at_creation: false,
+			});
+			let views = [
+				atlas[0].create_view(&Default::default()),
+				atlas[1].create_view(&Default::default()),
+			];
+			let bind = std::array::from_fn(|prev| {
+				device.create_bind_group(&wgpu::BindGroupDescriptor {
+					label: Some(&format!("gi probe bg {name} {prev}")),
+					layout: &bgl,
+					entries: &[
+						wgpu::BindGroupEntry {
+							binding: 0,
+							resource: uniform_buf.as_entire_binding(),
+						},
+						wgpu::BindGroupEntry {
+							binding: 1,
+							resource: wgpu::BindingResource::TextureView(&window_view),
+						},
+						wgpu::BindGroupEntry {
+							binding: 2,
+							resource: wgpu::BindingResource::TextureView(&coarse_view),
+						},
+						wgpu::BindGroupEntry {
+							binding: 3,
+							resource: lut_buf.as_entire_binding(),
+						},
+						wgpu::BindGroupEntry {
+							binding: 4,
+							resource: lights_buf.as_entire_binding(),
+						},
+						wgpu::BindGroupEntry {
+							binding: 5,
+							resource: wgpu::BindingResource::TextureView(&views[prev]),
+						},
+						wgpu::BindGroupEntry {
+							binding: 6,
+							resource: wgpu::BindingResource::TextureView(&views[1 - prev]),
+						},
+						wgpu::BindGroupEntry {
+							binding: 7,
+							resource: wgpu::BindingResource::TextureView(&flags_view),
+						},
+					],
+				})
+			});
+			Cascade {
+				dims,
+				spacing,
+				cursor: 0,
+				uniform_buf,
+				atlas,
+				bind,
+			}
+		};
+		let cascades = [
+			make_cascade(C0_DIMS, 2, "c0"),
+			make_cascade(C1_DIMS, 8, "c1"),
+		];
+
 		let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("gi probe"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::GI_PROBE.into()),
@@ -212,14 +339,18 @@ impl GiDraw {
 			bind_group_layouts: &[&bgl],
 			push_constant_ranges: &[],
 		});
-		let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-			label: Some("gi probe update"),
-			layout: Some(&layout),
-			module: &module,
-			entry_point: Some("update_probes"),
-			compilation_options: Default::default(),
-			cache: None,
-		});
+		let compute = |entry: &str, label: &str| {
+			device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+				label: Some(label),
+				layout: Some(&layout),
+				module: &module,
+				entry_point: Some(entry),
+				compilation_options: Default::default(),
+				cache: None,
+			})
+		};
+		let probe_pipeline = compute("update_probes", "gi probe update");
+		let inval_pipeline = compute("inval", "gi invalidate");
 
 		// Debug raymarch pipeline (fullscreen, no depth, swapchain target).
 		let debug_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -228,11 +359,11 @@ impl GiDraw {
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
-		let tex3u = |binding| wgpu::BindGroupLayoutEntry {
+		let ftex3 = |binding, sample_type, vis| wgpu::BindGroupLayoutEntry {
 			binding,
-			visibility: wgpu::ShaderStages::FRAGMENT,
+			visibility: vis,
 			ty: wgpu::BindingType::Texture {
-				sample_type: wgpu::TextureSampleType::Uint,
+				sample_type,
 				view_dimension: wgpu::TextureViewDimension::D3,
 				multisampled: false,
 			},
@@ -251,8 +382,16 @@ impl GiDraw {
 					},
 					count: None,
 				},
-				tex3u(1),
-				tex3u(2),
+				ftex3(
+					1,
+					wgpu::TextureSampleType::Uint,
+					wgpu::ShaderStages::FRAGMENT,
+				),
+				ftex3(
+					2,
+					wgpu::TextureSampleType::Uint,
+					wgpu::ShaderStages::FRAGMENT,
+				),
 				wgpu::BindGroupLayoutEntry {
 					binding: 3,
 					visibility: wgpu::ShaderStages::FRAGMENT,
@@ -263,31 +402,41 @@ impl GiDraw {
 					},
 					count: None,
 				},
+				ftex3(
+					4,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::ShaderStages::FRAGMENT,
+				),
 			],
 		});
-		let window_view = window.create_view(&Default::default());
-		let coarse_view = coarse.create_view(&Default::default());
-		let debug_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("gi debug bg"),
-			layout: &debug_bgl,
-			entries: &[
-				wgpu::BindGroupEntry {
-					binding: 0,
-					resource: debug_buf.as_entire_binding(),
-				},
-				wgpu::BindGroupEntry {
-					binding: 1,
-					resource: wgpu::BindingResource::TextureView(&window_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 2,
-					resource: wgpu::BindingResource::TextureView(&coarse_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 3,
-					resource: lut_buf.as_entire_binding(),
-				},
-			],
+		let debug_bind = std::array::from_fn(|i| {
+			let av = cascades[0].atlas[i].create_view(&Default::default());
+			device.create_bind_group(&wgpu::BindGroupDescriptor {
+				label: Some("gi debug bg"),
+				layout: &debug_bgl,
+				entries: &[
+					wgpu::BindGroupEntry {
+						binding: 0,
+						resource: debug_buf.as_entire_binding(),
+					},
+					wgpu::BindGroupEntry {
+						binding: 1,
+						resource: wgpu::BindingResource::TextureView(&window_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 2,
+						resource: wgpu::BindingResource::TextureView(&coarse_view),
+					},
+					wgpu::BindGroupEntry {
+						binding: 3,
+						resource: lut_buf.as_entire_binding(),
+					},
+					wgpu::BindGroupEntry {
+						binding: 4,
+						resource: wgpu::BindingResource::TextureView(&av),
+					},
+				],
+			})
 		});
 		let debug_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("gi debug"),
@@ -318,20 +467,22 @@ impl GiDraw {
 		);
 
 		Self {
-			pipeline,
-			bind_group,
-			uniform_buf,
+			probe_pipeline,
+			inval_pipeline,
+			cascades,
+			ping: 0,
 			frame: 0,
-			atlas_view,
 			window,
 			coarse,
 			window_chunks,
 			emitters: FxHashMap::default(),
 			lights_dirty: false,
 			lights_buf,
+			inval_queue: Vec::new(),
 			debug_pipeline,
-			debug_bind_group,
+			debug_bind,
 			debug_buf,
+			debug_probes,
 		}
 	}
 
@@ -413,6 +564,12 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
+	/// Queue an edit position for probe invalidation (age reset around
+	/// it, ≤4 spheres applied per frame).
+	pub fn invalidate(&mut self, pos: [f32; 3]) {
+		self.inval_queue.push(pos);
+	}
+
 	/// Rebuild the flattened light list when it changed: the nearest
 	/// MAX_LIGHTS emitters to the camera, count in the header.
 	fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3]) {
@@ -440,7 +597,108 @@ impl GiDraw {
 		gpu.queue.write_buffer(&self.lights_buf, 0, &bytes);
 	}
 
-	/// Draw the debug raymarch over the whole target (`DIG_GI=window`).
+	/// Encode this frame's probe updates (both cascades) at the head of
+	/// the frame's encoder: full prev→out copy, then the amortized
+	/// trace over PROBES_PER_DISPATCH probes, then edit invalidation.
+	pub fn encode(
+		&mut self,
+		gpu: &Gpu,
+		encoder: &mut wgpu::CommandEncoder,
+		timer: Option<&GpuTimer>,
+		frame: &FrameUniforms,
+	) {
+		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
+		self.flush_lights(gpu, cam);
+		// Quantized sun: snap the direction so probe results hold still
+		// between steps (~1.5°).
+		let s = frame.sun_dir;
+		let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
+		let q = [
+			(s[0] / len * SUN_QUANT).round() / SUN_QUANT,
+			(s[1] / len * SUN_QUANT).round() / SUN_QUANT,
+			(s[2] / len * SUN_QUANT).round() / SUN_QUANT,
+		];
+		let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt().max(1e-6);
+		let sun_up = if q[1] > 0.02 { 1.0f32 } else { 0.0 };
+		let spheres: Vec<[f32; 4]> = {
+			let take = self.inval_queue.len().min(4);
+			let drained: Vec<[f32; 3]> = self.inval_queue.drain(..take).collect();
+			(0..4)
+				.map(|i| {
+					drained
+						.get(i)
+						.map(|p| [p[0], p[1], p[2], 0.0]) // radius per cascade below
+						.unwrap_or([0.0; 4])
+				})
+				.collect()
+		};
+		let side = (self.window_chunks * 16) as f32;
+		let has_inval = spheres.iter().any(|s| s != &[0.0; 4]);
+		for ci in 0..2 {
+			let c = &self.cascades[ci];
+			let mut data = Vec::with_capacity(GI_UNIFORM_SIZE as usize);
+			let dims = [c.dims.0, c.dims.1, c.dims.2, c.spacing];
+			data.extend_from_slice(bytemuck::cast_slice(&dims));
+			data.extend_from_slice(bytemuck::cast_slice(&[cam[0], cam[1], cam[2], side]));
+			data.extend_from_slice(bytemuck::cast_slice(&[
+				q[0] / ql,
+				q[1] / ql,
+				q[2] / ql,
+				sun_up,
+			]));
+			data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
+			data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
+			data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
+			data.extend_from_slice(bytemuck::cast_slice(&[
+				c.cursor,
+				self.frame,
+				MAX_LIGHTS as u32,
+				0,
+			]));
+			let radius = if ci == 0 { 8.0f32 } else { 16.0 };
+			for s in &spheres {
+				let r = if s == &[0.0; 4] { 0.0 } else { radius };
+				data.extend_from_slice(bytemuck::cast_slice(&[s[0], s[1], s[2], r]));
+			}
+			gpu.queue.write_buffer(&c.uniform_buf, 0, &data);
+			// Full prev→out copy so untouched probes carry forward.
+			encoder.copy_texture_to_texture(
+				self.cascades[ci].atlas[self.ping].as_image_copy(),
+				self.cascades[ci].atlas[1 - self.ping].as_image_copy(),
+				wgpu::Extent3d {
+					width: c.dims.0,
+					height: c.dims.1,
+					depth_or_array_layers: c.dims.2 * 6,
+				},
+			);
+		}
+		{
+			let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+				label: Some("gi probes"),
+				timestamp_writes: timer.and_then(|t| t.compute_writes(Q_GI)),
+			});
+			pass.set_pipeline(&self.probe_pipeline);
+			for c in &self.cascades {
+				pass.set_bind_group(0, &c.bind[self.ping], &[]);
+				pass.dispatch_workgroups(PROBES_PER_DISPATCH.min(c.probes()), 1, 1);
+			}
+			if has_inval {
+				pass.set_pipeline(&self.inval_pipeline);
+				for c in &self.cascades {
+					pass.set_bind_group(0, &c.bind[self.ping], &[]);
+					pass.dispatch_workgroups(c.probes().div_ceil(64), 1, 1);
+				}
+			}
+		}
+		for c in &mut self.cascades {
+			let n = c.probes();
+			c.cursor = (c.cursor + PROBES_PER_DISPATCH.min(n)) % n;
+		}
+		self.ping = 1 - self.ping;
+		self.frame = self.frame.wrapping_add(1);
+	}
+
+	/// Draw the debug raymarch over the whole target (`DIG_GI=`).
 	pub fn encode_debug(
 		&mut self,
 		gpu: &Gpu,
@@ -457,9 +715,14 @@ impl GiDraw {
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			cam_pos[0], cam_pos[1], cam_pos[2], side,
 		]));
-		// The window's valid world range is the draw disc around the
-		// camera; the shader clamps its march to it.
-		data.extend_from_slice(bytemuck::cast_slice(&[0.0f32, 0.0, 0.0, 0.0]));
+		// misc.x: 1 = shade hits with the C0 probe field (DIG_GI=probes).
+		let mode = if self.debug_probes { 1.0f32 } else { 0.0 };
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			mode,
+			C0_DIMS.0 as f32,
+			C0_DIMS.1 as f32,
+			C0_DIMS.2 as f32,
+		]));
 		gpu.queue.write_buffer(&self.debug_buf, 0, &data);
 		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 			label: Some("gi debug"),
@@ -477,33 +740,8 @@ impl GiDraw {
 			occlusion_query_set: None,
 		});
 		pass.set_pipeline(&self.debug_pipeline);
-		pass.set_bind_group(0, &self.debug_bind_group, &[]);
+		// The front atlas is the one the flip just published.
+		pass.set_bind_group(0, &self.debug_bind[self.ping], &[]);
 		pass.draw(0..3, 0..1);
-	}
-
-	/// Encode this frame's probe update. Belongs at the head of the
-	/// frame's encoder, before any render pass reads the atlas.
-	pub fn encode(
-		&mut self,
-		gpu: &Gpu,
-		encoder: &mut wgpu::CommandEncoder,
-		timer: Option<&GpuTimer>,
-		cam_pos: [f32; 3],
-	) {
-		self.flush_lights(gpu, cam_pos);
-		let (nx, ny, nz) = C0_DIMS;
-		gpu.queue.write_buffer(
-			&self.uniform_buf,
-			0,
-			bytemuck::cast_slice(&[nx, ny, nz, self.frame]),
-		);
-		self.frame = self.frame.wrapping_add(1);
-		let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-			label: Some("gi probes"),
-			timestamp_writes: timer.and_then(|t| t.compute_writes(Q_GI)),
-		});
-		pass.set_pipeline(&self.pipeline);
-		pass.set_bind_group(0, &self.bind_group, &[]);
-		pass.dispatch_workgroups((nx * ny * nz).div_ceil(WORKGROUP), 1, 1);
 	}
 }

@@ -153,6 +153,8 @@ pub struct Pipeline {
 	/// a set insert is noise, and it stays bounded by the resident set
 	/// (drained or not) because it IS a set.
 	gi_dirty: FxHashSet<ChunkPos>,
+	/// Edited world cells awaiting probe invalidation (RTGI).
+	gi_edits: Vec<(i32, i32, i32)>,
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -451,6 +453,7 @@ impl Pipeline {
 			job_cost: JobCost::new(),
 			light: LightField::new(),
 			gi_dirty: FxHashSet::default(),
+			gi_edits: Vec::new(),
 		}
 	}
 
@@ -1110,6 +1113,11 @@ impl Pipeline {
 		self.gi_dirty.drain().collect()
 	}
 
+	/// Drain edited cells for probe invalidation (RTGI).
+	pub fn take_gi_edits(&mut self) -> Vec<(i32, i32, i32)> {
+		std::mem::take(&mut self.gi_edits)
+	}
+
 	/// Classify one resident chunk for the GI window. None = not (or no
 	/// longer) resident — the caller drops the entry; if the region ever
 	/// becomes visible again it arrives, and arriving re-dirties it.
@@ -1184,8 +1192,10 @@ impl Pipeline {
 		self.light.on_cell_changed(x, y, z, prev, cell);
 		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
 		// Chunk-granular: the window has no padded shell, so an edit
-		// dirties exactly its own 16³ region.
+		// dirties exactly its own 16³ region. Edits (unlike arrivals)
+		// also invalidate nearby probes so relight starts immediately.
 		self.gi_dirty.insert(pos);
+		self.gi_edits.push((x, y, z));
 		if let Some(overlay) = &mut self.overlay {
 			overlay.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));

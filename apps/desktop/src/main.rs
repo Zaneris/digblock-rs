@@ -143,12 +143,20 @@ fn main() {
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
 	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
-	// DIG_GI=window: paint the voxel-window raymarch over the scene
-	// (GI-DESIGN.md P1 gate). Needs the GI resources, so it implies
-	// --rtgi.
-	if std::env::var("DIG_GI").as_deref() == Ok("window") {
-		config.debug_gi = true;
-		config.rtgi = true;
+	// DIG_GI=window|probes: paint the voxel-window raymarch over the
+	// scene, shading with raw albedo (P1 gate) or the C0 probe field
+	// (P2 gate). Needs the GI resources, so it implies --rtgi.
+	match std::env::var("DIG_GI").as_deref() {
+		Ok("window") => {
+			config.debug_gi = true;
+			config.rtgi = true;
+		}
+		Ok("probes") => {
+			config.debug_gi = true;
+			config.debug_gi_probes = true;
+			config.rtgi = true;
+		}
+		_ => {}
 	}
 	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
 	// stocked inventory, so `--screenshot` can capture a UI screen (they

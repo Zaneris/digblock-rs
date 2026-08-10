@@ -18,6 +18,24 @@ struct GiDebug {
 @group(0) @binding(1) var window_tex: texture_3d<u32>;
 @group(0) @binding(2) var coarse_tex: texture_3d<u32>;
 @group(0) @binding(3) var<storage, read> lut: array<vec2u>;
+// C0's front probe atlas (six axis-major Z slabs); misc.yzw = dims.
+@group(0) @binding(4) var atlas_tex: texture_3d<f32>;
+
+// Nearest-probe 3-axis gather of the C0 field at a world position.
+fn probe_light(p: vec3f, n: vec3f) -> vec3f {
+	let dims = vec3i(vec3f(dbg.misc.y, dbg.misc.z, dbg.misc.w));
+	let g = vec3i(round(p / 2.0));
+	let t = ((g % dims) + dims) % dims;
+	let w = n * n;
+	let ax = select(1, 0, n.x > 0.0);
+	let ay = select(3, 2, n.y > 0.0);
+	let az = select(5, 4, n.z > 0.0);
+	var acc = vec3f(0.0);
+	acc += w.x * textureLoad(atlas_tex, t + vec3i(0, 0, ax * dims.z), 0).rgb;
+	acc += w.y * textureLoad(atlas_tex, t + vec3i(0, 0, ay * dims.z), 0).rgb;
+	acc += w.z * textureLoad(atlas_tex, t + vec3i(0, 0, az * dims.z), 0).rgb;
+	return acc;
+}
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -100,6 +118,21 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				var col = albedo * shade;
 				if m.y > 0u {
 					col = albedo * (1.0 + f32(m.y) * 0.15);
+				}
+				// Probe mode: light the hit with the C0 field instead —
+				// the whole P2 chain (trace, bounce, hysteresis, toroidal
+				// checksums) on screen at once.
+				if dbg.misc.x > 0.5 {
+					var fn_ = vec3f(0.0);
+					if axis == 0u {
+						fn_.x = -sign(dir.x);
+					} else if axis == 1u {
+						fn_.y = -sign(dir.y);
+					} else {
+						fn_.z = -sign(dir.z);
+					}
+					let hp = vec3f(cell) + 0.5 + fn_ * 0.6;
+					return vec4f(albedo * probe_light(hp, fn_), 1.0);
 				}
 				// Depth cue + water tint.
 				let d = length(vec3f(cell) + 0.5 - dbg.cam.xyz);

@@ -161,6 +161,9 @@ pub struct RenderConfig {
 	/// Replace the scene with the voxel-window debug raymarch
 	/// (`DIG_GI=window`; implies rtgi at the launcher).
 	pub debug_gi: bool,
+	/// Debug raymarch shades hits with the C0 probe field instead of
+	/// raw albedo (`DIG_GI=probes`) — the P2 gate view.
+	pub debug_gi_probes: bool,
 }
 
 /// Everything `Renderer::render` consumes for one frame, built by the
@@ -780,6 +783,7 @@ impl Renderer {
 					config.draw_dist as u32,
 					&textures.layer_means,
 					surface_format,
+					config.debug_gi_probes,
 				)
 			}),
 			debug_gi: config.debug_gi,
@@ -1006,6 +1010,13 @@ impl Renderer {
 	pub fn gi_upload(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &digblock_core::gi::GiChunk) {
 		if let Some(g) = self.gi.as_mut() {
 			g.upload_chunk(gpu, pos, gi);
+		}
+	}
+
+	/// RTGI: queue probe invalidation around an edited cell.
+	pub fn gi_invalidate(&mut self, pos: [f32; 3]) {
+		if let Some(g) = self.gi.as_mut() {
+			g.invalidate(pos);
 		}
 	}
 
@@ -1308,8 +1319,7 @@ impl Renderer {
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
 		if let Some(gi) = self.gi.as_mut() {
-			let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
-			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), cam);
+			gi.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame);
 		}
 
 		let draw = ChunkDraw {

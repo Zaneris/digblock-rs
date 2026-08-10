@@ -178,6 +178,9 @@ pub struct EngineConfig {
 	/// window's visual proof (`DIG_GI=window`; forces `rtgi` on at the
 	/// launcher).
 	pub debug_gi: bool,
+	/// Debug: the raymarch shades hits with the probe field instead of
+	/// albedo (`DIG_GI=probes`) — the P2 gate view.
+	pub debug_gi_probes: bool,
 }
 
 impl EngineConfig {
@@ -218,6 +221,7 @@ impl EngineConfig {
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			rtgi: false,
 			debug_gi: false,
+			debug_gi_probes: false,
 		}
 	}
 
@@ -258,6 +262,7 @@ impl EngineConfig {
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			rtgi: false,
 			debug_gi: false,
+			debug_gi_probes: false,
 		}
 	}
 
@@ -294,6 +299,7 @@ impl EngineConfig {
 			chunk_slots_override: self.chunk_slots_override,
 			rtgi: self.rtgi,
 			debug_gi: self.debug_gi,
+			debug_gi_probes: self.debug_gi_probes,
 		}
 	}
 }
@@ -2064,6 +2070,9 @@ impl Engine {
 				if self.gi_queued.insert(pos) {
 					self.gi_queue.push_back(pos);
 				}
+			}
+			for (x, y, z) in self.pipeline.take_gi_edits() {
+				renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
 			}
 			let mut gi_budget = self.config.upload_bytes_max / 4;
 			while gi_budget >= 4096 {
