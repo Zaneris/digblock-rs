@@ -71,7 +71,10 @@ fn fs(i: VsOut) -> FsOut {
 	let p = wpos4.xyz / wpos4.w;
 	// Face normal from position derivatives — flat on block faces.
 	let n = normalize(cross(dpdy(p), dpdx(p)));
-	let sp = p + n * 0.6;
+	// The true surface point: each march applies its own GI_SURFACE_EPS,
+	// so pushing off here as well is what stacked to 1.2 blocks of
+	// geometry that could not shadow anything.
+	let sp = p;
 	let side = i32(rz.cam.w);
 
 	let indirect =

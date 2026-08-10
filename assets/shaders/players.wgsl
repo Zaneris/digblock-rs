@@ -113,7 +113,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// RTGI: quantized-sun lambert x traced visibility + probe indirect —
 	// the same combine as chunk.wgsl.
 	let side = i32(frame.gi_misc.x);
-	let gp = in.world + in.wn * 0.6;
+	let gp = in.world;
 	let indirect = INDIRECT_K
 		* gi_indirect(side, gp, in.wn, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
 	let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);

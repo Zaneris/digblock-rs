@@ -20,6 +20,17 @@
 @group(2) @binding(3) var gi_atlas0: texture_3d<f32>;
 @group(2) @binding(4) var gi_atlas1: texture_3d<f32>;
 
+// How far off a surface a ray starts. It exists only to put the origin
+// on the AIR side of a face the point lies exactly on — nothing more.
+//
+// Every ray used to start 0.6 blocks out, and `gi_cascade_gather` added
+// its own 0.6 on top of the 0.6 its callers had already applied, so the
+// occlusion probe began 1.2 blocks off the surface: more than a whole
+// cell of geometry that could not shadow anything. Both marches below
+// step BEFORE they test, so the origin cell is skipped regardless and
+// the offset never needed to be large enough to leave it.
+const GI_SURFACE_EPS = 0.01;
+
 fn gi_cell(side: i32, c: vec3i) -> u32 {
 	if c.y < 0 || c.y > 255 {
 		return 0u;
@@ -130,14 +141,40 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 		return vec2f(0.0, 0.0);
 	}
 	let dir = sun.xyz;
-	var cell = vec3i(floor(p));
+	let o = p + dir * GI_SURFACE_EPS;
+	var cell = vec3i(floor(o));
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
-	var tmax = abs(select(floor(p) + 1.0, floor(p), dir < vec3f(0.0)) - p) * inv;
+	var tmax = abs(select(floor(o) + 1.0, floor(o), dir < vec3f(0.0)) - o) * inv;
 	var water = 0.0;
 	let lateral_max = f32(side) * 0.5 - 1.0;
 	for (var i = 0; i < 160; i++) {
-		if i >= iters || cell.y > 255 {
+		if i >= iters {
+			break;
+		}
+		// STEP FIRST, THEN TEST — this loop is where every slab, stair
+		// and door top went solid black.
+		//
+		// It used to test `cell` at the top, and on the first iteration
+		// `cell` is the shading point's OWN cell. For a full cube the
+		// point sits on the face, so that cell is the air outside and the
+		// test is harmless. A shaped block is a third of a cell tall, so
+		// its top surface lies INSIDE its own cell, which GI classifies
+		// opaque (occupancy is per cell — there are no sub-cell masks in
+		// the voxel window) — the very first test returned "blocked" and
+		// the surface shadowed itself. `gi_occluded` directly above has
+		// always stepped first; this march simply never did.
+		if tmax.x < tmax.y && tmax.x < tmax.z {
+			cell.x += step_dir.x;
+			tmax.x += inv.x;
+		} else if tmax.y < tmax.z {
+			cell.y += step_dir.y;
+			tmax.y += inv.y;
+		} else {
+			cell.z += step_dir.z;
+			tmax.z += inv.z;
+		}
+		if cell.y > 255 {
 			break;
 		}
 		let lat = vec2f(cell.xz) + 0.5 - cam_xz;
@@ -155,16 +192,6 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 					water += 1.0;
 				}
 			}
-		}
-		if tmax.x < tmax.y && tmax.x < tmax.z {
-			cell.x += step_dir.x;
-			tmax.x += inv.x;
-		} else if tmax.y < tmax.z {
-			cell.y += step_dir.y;
-			tmax.y += inv.y;
-		} else {
-			cell.z += step_dir.z;
-			tmax.z += inv.z;
 		}
 	}
 	return vec2f(1.0, water);
@@ -237,7 +264,7 @@ fn gi_cascade_gather(side: i32, p: vec3f, n: vec3f, dims4: vec4f, c1: bool, occ_
 		if w < 1e-4 {
 			continue;
 		}
-		if gi_occluded(side, p + n * 0.6, pw, occ_cap) {
+		if gi_occluded(side, p + n * GI_SURFACE_EPS, pw, occ_cap) {
 			continue;
 		}
 		let t = ((g % dims) + dims) % dims;
