@@ -50,7 +50,7 @@ struct Light {
 // light rig — no CPU probe reads.
 @group(0) @binding(8) var<storage, read_write> cam_out: array<vec4f, 2>;
 
-const RAYS: u32 = 64u;
+const RAYS: u32 = 32u;
 const MAX_T: f32 = 160.0;
 
 // How far an emitter is allowed to matter. `light` is a 0-15 level and
@@ -355,10 +355,10 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	return alb * incident * water_att;
 }
 
-var<workgroup> ray_rad: array<vec3f, 64>;
-var<workgroup> ray_dir: array<vec3f, 64>;
+var<workgroup> ray_rad: array<vec3f, RAYS>;
+var<workgroup> ray_dir: array<vec3f, RAYS>;
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(32)
 fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
 	let n = vec3i(gi.dims.xyz);
 	let count = u32(n.x * n.y * n.z);

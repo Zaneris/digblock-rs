@@ -23,7 +23,7 @@ pub const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
 /// C1 far cascade (8-block spacing).
 pub const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
 /// Probes traced per cascade per frame (the amortization grain).
-const PROBES_PER_DISPATCH: u32 = 2048;
+const PROBES_PER_DISPATCH: u32 = 512;
 /// World height in blocks — the window's fixed Y extent (an up-ray
 /// always reaches sky; the window never scrolls vertically).
 const WORLD_H: u32 = 256;
