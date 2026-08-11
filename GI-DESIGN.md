@@ -10,7 +10,7 @@ What lights the world now, in one sentence per stage:
 - A GPU **voxel window** (R8Uint, toroidal, `draw_dist` chunks on a side) plus an 8-block
   coarse occupancy texture, both fed by byte- and clock-budgeted CPU classification.
 - Two **toroidal ambient-cube probe cascades** (C0 at 2-block spacing, C1 at 8), updated by
-  a compute kernel over a permuted round-robin: one workgroup per probe, 64 rays, folded to
+  a compute kernel over a permuted round-robin: one workgroup per probe, 32 rays, folded to
   6 axes, blended with a hysteresis ladder. Rays terminate in last frame's field, which is
   where multi-bounce comes from, and take one **next-event sample** against the emitter
   list per ray.
@@ -43,23 +43,45 @@ Named here because this document previously described several of these as done:
 - **No per-pixel NEE.** The gather ray reaches emitters only by hitting them; the `lights`
   buffer is read by the probe kernel alone. A torch is therefore lit by the cascades plus
   whatever the gather ray happens to strike, not by a shadow ray drawn against the list.
-- **No tier scaling.** Every platform gets desktop budgets and an uncapped /2 resolve; the
-  web row of the original design was never implemented.
-- **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame, and
-  `gather_prev` (the probe kernel's own bounce) still wraps the torus with no checksum or
-  coverage bound, so a hit beyond C0's 64-block reach can read a probe serving another world
-  cell. The FRAGMENT-side gathers no longer do: `gi_cascade_gather` and `gi_cache_at` both
-  test `gi_in_cascade` first.
+- **No tier scaling, and that is now a DECISION rather than an omission.** Every platform
+  gets desktop budgets and an uncapped /2 resolve. The web row of the original design was
+  never implemented, and web keeps desktop settings for the time being.
+  What is known: at a matched 2992x1592 with the world quiesced, desktop runs 11.74 ms and
+  the browser is the slower of the two — but by how much is NOT established, because Chrome
+  caps requestAnimationFrame on an unfocused window (measured: `hasFocus:false`,
+  `rafHz:60.1`) and every web reading drifted downward over ~60s as focus settled, with CPU
+  `busy` flat at ~1.2 ms while `out` grew. Any ratio quoted from those runs is measuring
+  throttling as much as cost. M5's cadence cut (-19% frame time) applies to both platforms
+  equally, so whatever the gap is, it narrowed.
+  Whoever picks it up: re-measure with the Chrome window genuinely focused for the whole
+  run, and note that capping the half-res target is not a one-line change — chunk.wgsl's
+  bilateral upsample hard-codes the ratio (`base = (vec2i(i.pos.xy) - 1) / 2`), so the real
+  gi/full ratio has to be plumbed in first.
+- **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame.
+  That copy was M5a's headline target and it was measured out: it costs **9 microseconds**,
+  0.1% of the frame. Pricing it by DELETING it says the opposite (the atlas then holds
+  garbage, which changes the data and the downstream workload with it — the frame got 6%
+  *slower*); pricing it by ADDING four more is exact, because the result stays bit-identical.
+  The storage-buffer rewrite would touch five files and put storage buffers in fragment-stage
+  bind groups on WebGPU, which is real portability risk for a tenth of a percent. The
+  cleanliness argument — nothing ever sampled these with hardware filtering, so the texture
+  buys only the copy it forces — still stands on its own.
+  `gather_prev` DOES now bound itself to the cascade's coverage and validate the toroidal
+  checksum, matching the fragment side (M5b).
 - **The voxel window covers half the streamed radius.** It is built `draw_dist` chunks on a
   SIDE (+/-160 blocks) while terrain streams to `draw_dist` chunks of RADIUS (+/-320). 9.2% of
   pixels therefore have a sun ray that leaves the window and is answered "fully lit" on no
   data, along a boundary centred on the camera, and the final gather is bounded to 127
   blocks by the same number. Doubling it costs 26 -> 105 MiB and measurably helps; see the
   R8 note for why it was not simply shipped.
-- **No probe classification.** Every probe is swept at a flat rate forever; converged and
-  enclosed probes do not drop to a lower rate.
-- **The axis fold is lopsided**: `update_probes` barriers 64 threads and then leaves 6
-  alive, each running a serial 64-iteration reduction while 58 idle.
+- **No probe classification**, and **the axis fold is still lopsided** (`update_probes`
+  barriers the workgroup and then leaves 6 threads alive, each running a serial
+  RAYS-iteration reduction while the rest idle). Both were M5b items and both were measured
+  out, because M5a removed their justification: after the cadence cut the probe pass costs
+  **~0.33 ms of a 9.56 ms frame**, 3.5%, measured with an interleaved 512-vs-1024
+  probes/dispatch bracket. Classification might halve that in a static scene and
+  tree-reducing the fold takes a slice of it — 1-2% of frame each, for real complexity and,
+  for classification, real staleness risk. Revisit only if the probe pass grows again.
 - **No compute port.** The resolve is still a fragment pass. Its stated motivation was
   avoiding derivatives, which the rasterized normals removed, and tile classification,
   which nothing uses yet.
