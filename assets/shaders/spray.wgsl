@@ -105,7 +105,8 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	alpha *= 1.0 - smoothstep(56.0, 64.0, dist);
 	// White-ish froth in the camera's probe ambient + traced direct
 	// (twilight-faded like every surface).
-	let sh = mix(vec3f(1.0), cam_light.sun.rgb, frame.light_dir.w);
+	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
+	let sh = cam_light.sun.rgb * frame.light_dir.w;
 	let col = vec3f(0.9, 0.94, 1.0) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
 	// The medium, per vertex — droplets are billboards a few blocks
 	// across, so the segment barely varies over one. Underwater it is

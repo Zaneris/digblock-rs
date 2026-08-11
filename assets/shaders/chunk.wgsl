@@ -207,9 +207,26 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// the view ray uses — so sunlight reaching a submerged surface is
 		// red-starved, not just dim.
 		let sun_tr = medium_water_tr(water_acc / wsum);
-		// Twilight fades the traced sun the way it faded mapped shadows.
-		let sh = mix(vec3f(1.0), sun_acc / wsum * sun_tr, frame.light_dir.w);
-		col = tex * (frame.light_color.rgb * i.direct * sh + indirect);
+		// Twilight fades the LIGHT, not the shadow. This used to read
+		// `mix(vec3f(1.0), visibility, frame.light_dir.w)` — carried over
+		// from the shadow-map era, where fading a cascade out meant fading
+		// its shadowing toward "lit" because there was no other answer to
+		// give. Against a traced visibility it inverts the meaning: as the
+		// caster's strength falls to 0 below ~10 degrees of altitude, the
+		// blend returns 1.0, and every surface facing the caster takes
+		// FULL, UNSHADOWED direct light — through walls.
+		//
+		// It is not subtle. A sealed stone vault at sunrise lit one wall
+		// to 4x the other (86 vs 19 mean), uniformly across the whole
+		// face, and the lit wall FLIPPED at the horizon crossing as the
+		// caster changed from sun to moon and its azimuth reversed. It
+		// survived forcing sun visibility to zero, which is what a
+		// visibility term that is being ignored looks like.
+		//
+		// Strength belongs on the radiance. At full strength this is
+		// identical to what it replaced, so only twilight moves.
+		let sh = sun_acc / wsum * sun_tr;
+		col = tex * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
 	}
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel
