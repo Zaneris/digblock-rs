@@ -36,6 +36,27 @@ const MAX_LIGHTS: usize = 256;
 /// and softens with distance to the occluder — the thing a shadow map
 /// never had — at no extra ray. Widen it and shadows get mushy AND
 /// noisier, since one sample has to cover more solid angle.
+/// Format of the two ping-ponged resolve targets — BOTH of which hold a
+/// running average, which is the whole constraint. rgba8 was tried first
+/// and could not: at a history length of 512 each frame contributes 1/512
+/// of a difference and in 8 bits that rounds to zero, so the average
+/// stopped moving. rgba16f then failed the SAME way, one format up, and it
+/// took a capture harness that can see motion to notice — half-float
+/// carries a 10-bit mantissa, so near a stored value of 1.0 the ulp is
+/// ~1e-3 and `hi + (indirect - hi)/512` rounds away unless the difference
+/// exceeds ~0.25. A quarter of the signal range never converged: every
+/// pixel froze where it stood when the camera stopped, leaving a pattern
+/// locked to the path walked, permanently. Measured at mean 0.988 over
+/// 10.4% of pixels after 25 seconds of stillness (GI-DESIGN.md
+/// "Measuring motion").
+///
+/// So the rule is not "use a float format", it is that the format's
+/// mantissa has to carry the smallest increment the history length asks
+/// for: alpha of 1/N stalls once the residual falls under ~N ulps. f32's
+/// 24-bit mantissa puts that floor at ~1e-5 here, which is invisible;
+/// f16's put it at a quarter of the signal.
+pub const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
 const SUN_CONE_COS: f32 = 0.999_961_9; // cos(0.5 degrees)
 
 /// Below this cos between consecutive caster directions, the sun did not
@@ -747,12 +768,7 @@ impl GiDraw {
 				module: &resolve_module,
 				entry_point: Some("fs"),
 				compilation_options: Default::default(),
-				// Both f16: the sun target holds a running average now, and
-				// rgba8 cannot (1/512 of a difference rounds to zero).
-				targets: &[
-					Some(wgpu::TextureFormat::Rgba16Float.into()),
-					Some(wgpu::TextureFormat::Rgba16Float.into()),
-				],
+				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
 			}),
 			multiview: None,
 			cache: None,
@@ -1357,6 +1373,51 @@ mod tests {
 				"{dims:?}: stride {stride} overflows"
 			);
 		}
+	}
+
+	/// The history format must be able to REPRESENT the increment its
+	/// history length asks for. Twice now it could not: rgba8 first, then
+	/// rgba16f, both of which let `hi + (x - hi)/N_MAX` round to zero and
+	/// froze the running average at whatever it held — permanently, per
+	/// pixel, in a pattern locked to wherever the player had walked. It
+	/// took a capture harness that can see motion to notice either time,
+	/// because a still has already converged.
+	///
+	/// So the two knobs are pinned against each other. Blending at alpha
+	/// 1/N stalls once the residual falls under about N ulps of the stored
+	/// value; below one 8-bit output LSB that is invisible, and above it
+	/// the picture keeps a stale ghost. Raising N_MAX or dropping the
+	/// format now fails here instead.
+	#[test]
+	fn history_format_resolves_the_accumulator() {
+		// N_MAX lives in the shader; read it rather than duplicating it,
+		// so the two cannot drift.
+		let src = digblock_assets::shader::GI_RESOLVE;
+		let n_max: f32 = src
+			.split("const N_MAX = ")
+			.nth(1)
+			.and_then(|s| s.split(';').next())
+			.and_then(|s| s.trim().parse().ok())
+			.expect("gi_resolve.wgsl must declare `const N_MAX = <f32>;`");
+
+		// Explicit mantissa bits per format — the property under test, not
+		// something to infer from a byte count.
+		let mantissa_bits = match GI_ACC_FORMAT {
+			wgpu::TextureFormat::Rgba32Float => 23,
+			wgpu::TextureFormat::Rgba16Float => 10,
+			wgpu::TextureFormat::Rgba8Unorm => 8,
+			other => panic!("unknown accumulator format {other:?} — add its mantissa here"),
+		};
+		// Around a stored value of 1.0 (radiance and visibility both sit
+		// there), an update rounds away once d/N < ulp/2.
+		let stall = n_max * 2f32.powi(-(mantissa_bits + 1));
+		let one_lsb = 1.0 / 255.0;
+		assert!(
+			stall < one_lsb,
+			"{GI_ACC_FORMAT:?} with N_MAX {n_max} freezes the average while it is still \
+			 {stall:.4} out (one 8-bit LSB is {one_lsb:.4}) — the running mean stops moving \
+			 and every pixel keeps whatever it held when the camera stopped"
+		);
 	}
 
 	/// A contiguous cursor is what made convergence sweep as a visible

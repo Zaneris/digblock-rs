@@ -66,25 +66,35 @@ readable at all.
 
 The A/B that matters is `--fly N --frames M` against `--warp N --frames M`: same pose, same
 duration, same everything except whether the first N frames moved. On a correct temporal
-system that difference decays to the noise floor. **It currently does not** — see the
-accumulator note below.
+system that difference decays to the noise floor.
 
-**The accumulator freezes.** The resolve blends with `alpha = 1/n` up to `N_MAX = 512` into
-an rgba16**float** history, and half-float carries a 10-bit mantissa: near a stored value of
-1.0 the ulp is ~1e-3, so `hi + (indirect - hi)/512` rounds to ZERO unless the difference
-exceeds roughly 0.25. About a quarter of the signal range therefore never converges — each
-pixel freezes at whatever partial value it held when the camera stopped, and the frozen
-pattern is locked to the path walked. Measured: walked-vs-warped at the same pose stays at
-mean 0.988 over 10.4% of pixels after **25 seconds** of stillness, against 0.134 with
-accumulation off. The voxel window is bit-identical after a walk (max 0) and the C0 probe
-field converges to a unique fixed point (max 1), so nothing upstream is involved. The N_MAX
-sweep grows and then saturates (1 -> 0.134, 32 -> 0.337, 64 -> 0.761, 128 -> 0.921,
-512 -> 0.979), which is a quantization freeze and not slow convergence, and the residual is
-worst in the brightest part of the frame exactly as float-ulp scaling predicts.
+**The first thing it caught: the accumulator froze.** The resolve blends with `alpha = 1/n`
+up to `N_MAX = 512`, and the history was rgba16**float** — a 10-bit mantissa, so near a
+stored value of 1.0 the ulp is ~1e-3 and `hi + (indirect - hi)/512` rounded to ZERO unless
+the difference exceeded roughly 0.25. About a quarter of the signal range never converged:
+each pixel froze at whatever partial value it held when the camera stopped, leaving a stale
+pattern locked to the path walked, permanently. That was "weirdness that moves with you".
 
-This is the same failure this file's own resolve comment describes for the rgba8 target it
-replaced ("in 8 bits that rounds to zero and the average stops moving"). rgba16f was not
-enough headroom either, and a long history is only worth having if the format can carry it.
+Measured before the fix: walked-vs-warped at the same pose stayed at mean 0.988 over 10.4%
+of pixels after **25 seconds** of stillness, against 0.134 with accumulation switched off
+entirely. Everything upstream was exonerated by measurement, not by argument — the voxel
+window is bit-identical after a walk (max 0), the C0 probe field converges to a unique fixed
+point (max 1), and disabling the sun cone jitter changed nothing. The N_MAX sweep grew and
+then *saturated* (1 -> 0.134, 32 -> 0.337, 64 -> 0.761, 128 -> 0.921, 512 -> 0.979), which
+is a quantization freeze and not slow convergence, and the residual was worst in the
+brightest part of the frame exactly as float-ulp scaling predicts.
+
+The fix is `gi::GI_ACC_FORMAT` = rgba32float: walked-vs-warped 0.988 -> **0.200** (the same
+floor as no accumulation at all), frame-to-frame stability at rest 0.219 -> **0.032**, and
+no measurable frame cost (bench 106.9 -> 107.0 fps) — the resolve is DDA-bound, not
+bandwidth-bound. It costs ~15 MiB more VRAM for the four half-res targets, which is the web
+tier's problem, not the desktop's.
+
+This was the same failure the rgba8 target before it had ("in 8 bits that rounds to zero and
+the average stops moving"), recurring one format up. The rule that generalizes is not "use a
+float format" but that the mantissa must carry the smallest increment the history length
+asks for; `history_format_resolves_the_accumulator` in gi.rs pins N_MAX against the format
+so raising one without the other fails the build rather than the picture.
 
 ## Goals
 

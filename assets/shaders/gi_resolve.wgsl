@@ -24,11 +24,34 @@
 // into an image. Without the history, jitter is just noise; without the
 // jitter, the history has nothing to average.
 //
-// MRT, both rgba16f: indirect rgb + view distance, and sun visibility +
-// face-normal code + sun-ray water path + history length. The second
-// target used to be rgba8, which cannot accumulate — at a history length
-// of 512 each frame contributes 1/512 of a difference, and in 8 bits that
-// rounds to zero and the average stops moving.
+// MRT, both rgba32f (gi::GI_ACC_FORMAT): indirect rgb + view distance,
+// and sun visibility + face-normal code + sun-ray water path + history
+// length.
+//
+// BOTH targets hold a running average, and that is what dictates the
+// format. rgba8 was first and could not: at a history length of 512 each
+// frame contributes 1/512 of a difference, and in 8 bits that rounds to
+// zero, so the average stopped moving. rgba16f replaced it and failed the
+// SAME way — half-float carries a 10-bit mantissa, so near a stored value
+// of 1.0 the ulp is ~1e-3 and `hi + (indirect - hi)/512` rounds away
+// unless the difference exceeds about 0.25. A quarter of the signal range
+// never converged: every pixel froze where it stood when the camera
+// stopped, leaving a stale pattern locked to the path the player walked,
+// permanently. That is what "weirdness that moves with you" was.
+//
+// It survived because every capture in this engine was a still, which is
+// exactly when a temporal artifact has already converged away. `--fly` vs
+// `--warp` (GI-DESIGN.md "Measuring motion") is what finally photographed
+// it: mean 0.988 over 10.4% of pixels after 25 SECONDS of stillness, gone
+// to 0.200 / 1.4% on f32 — the same floor as switching accumulation off
+// entirely. Frame-to-frame stability at rest improved 7x with it.
+//
+// The rule is therefore not "use a float format" but that the mantissa has
+// to carry the smallest increment the history length asks for: alpha of
+// 1/N stalls once the residual falls under about N ulps, which f32 puts at
+// ~1e-5 here — far under one 8-bit output LSB. `history_format_resolves_
+// the_accumulator` in gi.rs pins N_MAX against the format so raising one
+// without the other fails the build rather than the picture.
 //
 // The gather core and the group(2) world bindings come from
 // gi_common.wgsl (prepended by digblock-assets); group 1 is empty.

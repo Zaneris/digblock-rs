@@ -1263,14 +1263,17 @@ impl Renderer {
 				view_formats: &[],
 			})
 		};
-		let f16 = wgpu::TextureFormat::Rgba16Float;
+		// One constant with the resolve pipeline's own targets — a skew
+		// here is a validation error, and the reason it is f32 is in
+		// gi::GI_ACC_FORMAT.
+		let acc = crate::gi::GI_ACC_FORMAT;
 		let gi_indirect_view = [
-			gi_tex(f16, "gi indirect 0").create_view(&Default::default()),
-			gi_tex(f16, "gi indirect 1").create_view(&Default::default()),
+			gi_tex(acc, "gi indirect 0").create_view(&Default::default()),
+			gi_tex(acc, "gi indirect 1").create_view(&Default::default()),
 		];
 		let gi_sun_view = [
-			gi_tex(f16, "gi sun 0").create_view(&Default::default()),
-			gi_tex(f16, "gi sun 1").create_view(&Default::default()),
+			gi_tex(acc, "gi sun 0").create_view(&Default::default()),
+			gi_tex(acc, "gi sun 1").create_view(&Default::default()),
 		];
 		let scene_bg = |i: usize| {
 			gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
