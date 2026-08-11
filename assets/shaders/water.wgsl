@@ -15,11 +15,17 @@
 // bottom-plane verts so interpolation is continuous; drives gravity
 // stretch and aeration whitening).
 // The animation clock rides in frame.light_color.w. Lighting is RTGI
-// (GI-DESIGN.md): a direct probe gather at the surface world position
-// through gi_common's shared cascade fallthrough, plus a short
-// per-fragment sun DDA — water never reads the half-res resolve
-// buffers, whose depth belongs to the solids BEHIND it. Alpha comes
-// from misc.x (the water frame UBO copy).
+// (GI-DESIGN.md): a probe gather at the surface world position through
+// gi_common's shared cascade fallthrough — evaluated PER VERTEX and
+// interpolated (R17: water quads are strictly per-cell, so vertices sit
+// ≤1 block apart against a probe field that is 2-block spaced and smooth
+// by construction; the full blend is ~112 loads and running it per
+// fragment at full res was the river frame spike) — plus a short
+// per-fragment sun DDA, which stays per pixel because shadow edges on
+// the surface are the one lighting signal sharper than the lattice.
+// Water never reads the half-res resolve buffers, whose depth belongs
+// to the solids BEHIND it. Alpha comes from misc.x (the water frame UBO
+// copy).
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl
 // (prepended by digblock-assets, before sky_common). The water pipelines
@@ -82,6 +88,9 @@ struct VsOut {
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) @interpolate(flat) direct: f32,
+	// Probe-field indirect, gathered in the vertex shader (see header) and
+	// perspective-interpolated across the ≤1-block quad.
+	@location(3) indirect: vec3f,
 	@location(5) view_dist: f32,
 	// Splash code: 3 impact cell, 2/1 surrounding cells, 0 none.
 	@location(7) @interpolate(flat) splash: u32,
@@ -220,11 +229,11 @@ fn twelfths(v: u32) -> f32 {
 	return f32(v / 12u) + f32(v % 12u) / 12.0;
 }
 
-// Location 1 is the instance-step chunk origin — see chunk.wgsl.
-@vertex
-fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
-	let w0 = packed.x;
-	let w1 = packed.y;
+// The one world-position decode, shared by the color and depth-prepass
+// vertex entries so their @invariant positions are built from the same
+// expressions — the LessEqual depth test between the two pipelines
+// depends on it (see VsOut.pos).
+fn water_world(w0: u32, w1: u32, origin: vec3f) -> vec3f {
 	// Geometry decode identical to chunk.wgsl: twelfth-block units, with
 	// the whole-block part split off in integer space for exactness.
 	let x = twelfths(w0 & 0xffu);
@@ -233,9 +242,17 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	// Surface drop: the shared corner code, straight into ninths. The
 	// water payload sits above the 10-bit layer field in w1.
 	y -= f32(min((w1 >> 10u) & 0xfu, 9u)) / DROP_LEVELS;
+	return vec3f(x, y, z) + origin;
+}
+
+// Location 1 is the instance-step chunk origin — see chunk.wgsl.
+@vertex
+fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
+	let w0 = packed.x;
+	let w1 = packed.y;
 	let ni = (w0 >> 24u) & 7u;
 	let n = NORMALS[ni];
-	let world = vec3f(x, y, z) + origin.xyz;
+	let world = water_world(w0, w1, origin.xyz);
 
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
@@ -252,12 +269,46 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.view_dist = distance(world, frame.cam_pos.xyz);
+	// The probe gather, hoisted out of the fragment shader (R17). The
+	// blend's own coverage checks keep this cheap where it doesn't
+	// matter: a vertex outside both cascades (all water past ~128
+	// blocks) early-outs to the analytic dome before touching a texel,
+	// so only near water — the fragments that used to pay ~112 loads
+	// EACH — pays the full path, once per corner instead of once per
+	// pixel.
+	o.indirect = gi_indirect(
+		i32(frame.gi_misc.x),
+		world,
+		n,
+		frame.cam_pos.xyz,
+		frame.gi0,
+		frame.gi1,
+		frame.zenith.rgb,
+		frame.horizon.rgb,
+		vec2i(4, 2),
+	);
 	return o;
 }
 
-// Depth-prepass entry: rasterizes the same vs geometry with color
-// writes masked off, recording only the nearest water depth so the
-// color pass blends a single layer.
+struct VsDepthOut {
+	// Same invariance contract as VsOut.pos — see there.
+	@invariant @builtin(position) pos: vec4f,
+}
+
+// Depth-prepass vertex entry: position only, so the prepass rasterizes
+// the same geometry without paying the vs probe gather twice. Its
+// position comes from the same water_world decode and the same
+// @invariant multiply as the color pass — the LessEqual test between
+// the two pipelines tolerates nothing less.
+@vertex
+fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsDepthOut {
+	var o: VsDepthOut;
+	o.pos = frame.view_proj * vec4f(water_world(packed.x, packed.y, origin.xyz), 1.0);
+	return o;
+}
+
+// Depth-prepass fragment entry: color writes masked off, recording only
+// the nearest water depth so the color pass blends a single layer.
 @fragment
 fn fs_depth() -> @location(0) vec4f {
 	return vec4f(0.0);
@@ -326,17 +377,15 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		s = mix((back + cb * 0.5) * 0.6, front + cf * 0.5, clamp(front, 0.0, 1.0));
 	}
 	// RTGI: probe-field indirect at the surface (sky, bounce, torches —
-	// all one gathered term) + a short per-fragment sun DDA. Same
-	// combine as chunk.wgsl, minus AO. `sh` folds twilight exactly as
-	// mapped shadows did; it multiplies the diffuse terms AND the
-	// specular below, never the indirect (a torch has no sun glint lobe
-	// to borrow).
-	let face_n = NORMALS[i.ni];
+	// all one gathered term), gathered per VERTEX and interpolated in
+	// (see the header), + a short per-fragment sun DDA. Same combine as
+	// chunk.wgsl, minus AO. `sh` folds twilight exactly as mapped
+	// shadows did; it multiplies the diffuse terms AND the specular
+	// below, never the indirect (a torch has no sun glint lobe to
+	// borrow).
 	let side = i32(frame.gi_misc.x);
-	let gp = i.world;
-	let indirect =
-		gi_indirect(side, gp, face_n, frame.cam_pos.xyz, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
-	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
+	let indirect = i.indirect;
+	let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, i.world, SUN_STEPS);
 	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
 	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
 	// Froth light: the same direct+indirect mix the spray billboards

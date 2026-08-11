@@ -557,6 +557,93 @@ resolves into a stepped stair profile, thin slab bands, and nothing at all under
 doors. Terrain captures move by noise only (conv 0.0075-0.03) — worldgen places no shaped
 cells, so the box test's cost is confined to player-built cells.
 
+### R17 — water stopped paying per pixel for a signal that varies per probe
+
+Standing at a river's edge looking down halved the frame rate, with the loss swinging as
+the view moved. The cause was priced into the code from M2 and documented next to
+`gi_cache_at` without anyone adding the two numbers together: water shades its indirect
+term by calling `gi_indirect` — the full 8-probe cascade blend, ~112 texture loads with a
+relocation walk and an occlusion DDA per probe — **per fragment, at full resolution**. The
+resolve survives that blend only because it runs at half res with temporal history behind
+it; the comment beside `gi_cache_at` even records the measurement (107 → 69 fps when the
+full blend ran per half-res pixel). And the cost is view-dependent by construction:
+`gi_cascade_gather` early-outs to the analytic dome outside cascade coverage, so an ocean
+on the horizon was nearly free while a river underfoot — every fragment inside C0, beside
+bank geometry that runs the relocation walks to their full six steps — was the worst case
+for the whole screen at once. That coverage cliff is exactly the "spikes when I look down"
+report.
+
+The fix is where the signal's own frequency says it should be: **the gather moved to the
+vertex shader**. Water quads are strictly per-cell (`emit_water_face` — corner drop codes
+are per-cell state, so nothing merges), which puts vertices ≤1 block apart against a probe
+field that is 2-block spaced and smooth by construction; perspective interpolation across
+a quad cannot lose anything the blend could represent. Millions of per-fragment blends
+become thousands of per-vertex ones, and the coverage early-outs keep distant vertices at
+pure ALU. The per-fragment sun DDA (SUN_STEPS = 12) stays per pixel — shadow edges on the
+surface are the one lighting signal sharper than the lattice, and it was never the cost.
+
+Two structural notes. The depth prepass gets its own position-only `vs_depth` entry so it
+doesn't pay the gather for geometry it only depth-tests; both entries build their
+`@invariant` position from the one shared `water_world` decode, which is what the color
+pass's LessEqual-against-prepass depth test demands (a divergence here is water full of
+view-dependent holes — the failure mode is unmissable, and the sea capture would have
+screamed). And the gather bind group (`gather_bgl`) gains VERTEX visibility — WebGPU
+baseline allows read-only storage and sampled textures in the vertex stage, so this fits
+`Limits::default()` unchanged.
+
+Parity: the sea-view still (seed 7, tod 45, spawn pose — open water right of frame) moved
+0.0504 old-vs-new against a 0.0435 same-build repeat floor (animated ripples dominate both
+numbers); the bottom-third band, all terrain, read 0.0001. Players (`players.wgsl`) keep
+the per-fragment gather deliberately: a player model is a few thousand fragments, not half
+the screen.
+
+**The honest postscript (R18's measurement):** this fix was real but it was a THIRD of the
+water pass, not the whole story — old→new measured 3.8 → 2.5 ms at a small window, and the
+user's play test correctly reported "no improvement." What the first diagnosis missed is in
+R18.
+
+### R18 — the sun march learned where the sky starts
+
+The user's report survived R17, so the guessing stopped and the scene got a harness pose:
+`DIG_RIVER=1` excavates a 49×49, 7-deep flooded basin ahead of the spawn camera (pair with
+`--pitch -35`), because NO existing capture put a shaded water surface on screen — DIVE is
+submerged, the spawn sea is 100+ blocks out, and that gap is exactly where R17's "fixed it"
+came from. Bisecting on that rig at the user's window size (Retina ~9 MP; `--size` holds
+the logical size but the physical size follows the display — verify the capture's pixel
+dimensions before comparing runs, two of these runs silently landed on different backing
+scales):
+
+- Stubbing the SSR march: −0.8 ms. Not the cost — looking down, the reflected ray exits
+  the screen in a few steps.
+- Stubbing the water sun DDA: −4.2 ms, the ENTIRE river-over-terrain premium. Twelve
+  iterations at 8 blocks per brick skip spent proving "open sky" — the loop has no early
+  exit short of y = 255, so every one of ~5 M water fragments paid ~9 dependent texture
+  loads to learn nothing was there.
+
+Two fixes were built; ONE survived measurement. The 64-cube super-brick (coarse mip 3,
+`gi_ray_skip_box`) lost both ways it was wired: checked before the brick it taxed every
+dense iteration of a latency-bound loop (river +5 ms), nested behind the brick it taxed
+every empty one, and at terrain altitudes a 64-cube almost always holds SOMETHING — the
+world's occupancy lives in a thin shell around y 120–220, so a cubic skip level asks the
+wrong-shaped question. Deleted, not shipped. What shipped is the **sky ceiling**: the
+window's highest occupied cell y, scanned on the CPU from a 51 KiB coarse-occupancy mirror
+whenever a chunk classifies (`sky_ceiling` in gi.rs), carried in `frame.gi_misc.y` /
+`rz.jitter.z` / probe `zenith.w`, and tested per iteration in every march as one float
+compare: a non-descending ray above it is a proven miss/lit. The climb now ends at the
+tallest local hill instead of the top of the world.
+
+Measured at matched 5.4 MP windows, settled intervals: river 14.5 → 13.2 ms, terrain-only
+control 10.4 → 9.2 ms — the ceiling pays everywhere (every resolve sun ray and probe ray
+climbs), not just on water. Parity: dive (underwater sun transmittance) 0.0125 ≈ floor;
+sea-view terrain band 0.0005; the sea's water band moved 0.10 entirely inside the distant
+glint stripes, which is ripple PHASE — the animation clock reaches frame 1200 at different
+wall times on different builds, a capture-harness trap to remember alongside the seedless
+one. The remaining river-over-terrain premium is ~4 ms at 5.4 MP: the sun DDA's surviving
+iterations near banks plus water's ordinary per-fragment work (ripples, refraction,
+medium). The next lever if it's ever needed is a per-column max-height texture (a real
+heightfield DDA answers "how far up until sky" in one load where the cubic mip could not);
+it was scoped and deliberately not built — diminishing returns until a player reports it.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

@@ -333,7 +333,7 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	if rz.sun.w > 0.5 {
 		let ndl = max(dot(hn, rz.sun_exact.xyz), 0.0);
 		if ndl > 0.0 {
-			let sv = gi_sun_vis(side, rz.cam.xz, rz.sun, hp, GI_GATHER_ITERS);
+			let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, GI_GATHER_ITERS);
 			e += rz.sun_color.rgb * ndl * sv.x * medium_water_tr(sv.y);
 		}
 	}
@@ -474,7 +474,7 @@ fn fs(i: VsOut) -> FsOut {
 		// and correlate two estimates that must average independently.
 		let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 		let rd = cosine_hemi(n, ui);
-		let hit = gi_march(side, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
+		let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
 		indirect = path_radiance(side, hit, rd);
 	}
 	// One sun ray along the EXACT direction, offset inside a cone about
@@ -502,7 +502,7 @@ fn fs(i: VsOut) -> FsOut {
 	let u = vec2f(jh, fract(jh * 1.6180339887));
 	var sdir = rz.sun_exact;
 	sdir = vec4f(sample_cone(sdir.xyz, u, rz.jitter.y), sdir.w);
-	let sv = gi_sun_vis(side, rz.cam.xz, sdir, sp, 320);
+	let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, 320);
 	let view_dist = length(p - rz.cam.xyz);
 	// Penumbra width: occluder distance x tan(cone half-angle) is the
 	// physical width in blocks; dividing by this texel's world footprint

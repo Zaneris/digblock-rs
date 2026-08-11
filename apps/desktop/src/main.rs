@@ -185,6 +185,7 @@ fn main() {
 	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
+	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
 	// DIG_GI=window|probes: paint the voxel-window raymarch over the
 	// scene, shading with raw albedo (P1 gate) or the C0 probe field
 	// (P2 gate).

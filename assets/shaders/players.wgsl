@@ -117,7 +117,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	let indirect =
 		gi_indirect(side, gp, in.wn, frame.cam_pos.xyz, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
 	let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);
-	let sv = gi_sun_vis(side, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
+	let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
 	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
 	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
 	let col = albedo * (frame.light_color.rgb * direct * sh + indirect);

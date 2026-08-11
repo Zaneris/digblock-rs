@@ -144,6 +144,15 @@ pub struct EngineConfig {
 	/// the surface reads as a plane from below). Set by the desktop
 	/// launcher from DIG_DIVE.
 	pub debug_dive: bool,
+	/// Debug: excavate a wide, deep basin AHEAD of the spawn camera and
+	/// flood it — the "standing at a river's edge looking into it" scene
+	/// (R17). Near water fills most of the frame from above, inside C0
+	/// beside bank geometry, with a submerged floor behind it for the
+	/// resolve's rays to cross — none of the other water captures put a
+	/// SHADED surface on screen at all (DIG_DIVE is submerged; the sea
+	/// at spawn is 100+ blocks out). Set by the desktop launcher from
+	/// DIG_RIVER.
+	pub debug_river: bool,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -223,6 +232,7 @@ impl EngineConfig {
 			debug_vault: false,
 			debug_roof: false,
 			debug_dive: false,
+			debug_river: false,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -263,6 +273,7 @@ impl EngineConfig {
 			debug_vault: false,
 			debug_roof: false,
 			debug_dive: false,
+			debug_river: false,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -804,6 +815,46 @@ fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn
+/// camera (yaw 0 faces +z), its surface ~3.6 blocks below the eye — the
+/// "standing at a river's edge looking into it" frame-cost scene (R17).
+/// Pair with `--pitch -35` so near water fills most of the screen. All
+/// of it sits inside C0 beside bank geometry (the expensive gather
+/// path), and the submerged stone floor keeps the resolve's rays
+/// crossing the water column, which is the other half of that scene's
+/// cost. 49×49 surface, 7 deep.
+fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in (bx - 25)..=(bx + 25) {
+		for y in (by - 10)..=(by + 8) {
+			for z in (bz + 2)..=(bz + 52) {
+				let interior = (bx - 24..=bx + 24).contains(&x)
+					&& y >= by - 9 && (bz + 3..=bz + 51).contains(&z);
+				let cell = if y >= by - 2 {
+					// Open air above the waterline — clears any hillside
+					// so the whole surface is in view from the rim.
+					B::Air as u16
+				} else if interior {
+					B::Water as u16
+				} else {
+					// Shell: floor and a one-block rim at water level, so
+					// the pool cannot drain and the banks give C0 probes
+					// geometry.
+					B::Stone as u16
+				};
+				out.push((x, y, z, cell));
+			}
+		}
+	}
+	out
+}
+
 /// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
 /// of spawn with NO walls — the beam-veto capture. Skylight under it
 /// drops (lateral spread decays toward the middle), so this scene is
@@ -995,6 +1046,9 @@ impl Engine {
 				}
 				if config.debug_dive {
 					plan.extend(debug_dive_plan(spawn));
+				}
+				if config.debug_river {
+					plan.extend(debug_river_plan(spawn));
 				}
 				plan
 			},

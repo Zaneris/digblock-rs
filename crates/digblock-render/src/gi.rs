@@ -146,6 +146,20 @@ pub struct GiDraw {
 	frame: u32,
 	window: wgpu::Texture,
 	coarse: wgpu::Texture,
+	/// CPU copy of the coarse texture, in upload order (x fastest, z
+	/// slowest) — what the sky ceiling is recomputed from when chunks
+	/// land. 51 KiB at the desktop side.
+	coarse_mirror: Box<[u8]>,
+	/// The mirror changed this frame; `sky_y` rescans at the next
+	/// `encode`.
+	coarse_mips_dirty: bool,
+	/// Highest occupied cell y anywhere in the window, in blocks (R18):
+	/// an ASCENDING ray above this is proven lit/sky in one float
+	/// compare, so the sun march stops at the tallest local hill instead
+	/// of climbing to y = 255 — recomputed with the skip mips. 255 until
+	/// the first flush (conservative: never breaks a ray early on
+	/// unclassified data).
+	sky_y: f32,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
@@ -246,6 +260,26 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 		];
 	}
 	lut
+}
+
+/// The window's sky ceiling (R18): the highest coarse brick row holding
+/// anything at all, as a cell y. A non-descending ray above it is proven
+/// lit/sky in one float compare, which is what ends the sun march's
+/// climb at the tallest local hill instead of y = 255 — proving open sky
+/// at 8 blocks per brick skip was ~9 dependent texture loads per
+/// fragment, most of a screen full of river's sun cost. Scanned top
+/// down, so a settled world answers in one slice; -1 when the mirror is
+/// still empty (rays find nothing either way).
+fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
+	(0..h)
+		.rev()
+		.find(|&y| {
+			(0..d).any(|z| {
+				let row = (z * h + y) * w;
+				mirror[row..row + w].iter().any(|&b| b != 0)
+			})
+		})
+		.map_or(-1.0, |y| (y * 8 + 7) as f32)
 }
 
 fn atlas_tex(device: &wgpu::Device, dims: (u32, u32, u32), label: &str) -> wgpu::Texture {
@@ -709,21 +743,32 @@ impl GiDraw {
 		});
 		// gi_common.wgsl's group(2): the GI world data every direct
 		// gatherer binds (the resolve here, water and players through
-		// their pipeline layouts). One per atlas ping.
+		// their pipeline layouts). One per atlas ping. VERTEX visibility
+		// is for water's per-vertex probe gather (R17) — WebGPU baseline
+		// allows read-only storage and textures in the vertex stage, and
+		// the extra visibility costs the fragment-only users nothing.
+		let g_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+			binding,
+			visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+			ty,
+			count: None,
+		};
+		let gtex = |binding, sample_type| {
+			g_entry(
+				binding,
+				wgpu::BindingType::Texture {
+					sample_type,
+					view_dimension: wgpu::TextureViewDimension::D3,
+					multisampled: false,
+				},
+			)
+		};
 		let gather_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("gi gather bgl"),
 			entries: &[
-				ftex(
-					0,
-					wgpu::TextureSampleType::Uint,
-					wgpu::TextureViewDimension::D3,
-				),
-				ftex(
-					1,
-					wgpu::TextureSampleType::Uint,
-					wgpu::TextureViewDimension::D3,
-				),
-				f_entry(
+				gtex(0, wgpu::TextureSampleType::Uint),
+				gtex(1, wgpu::TextureSampleType::Uint),
+				g_entry(
 					2,
 					wgpu::BindingType::Buffer {
 						ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -731,16 +776,8 @@ impl GiDraw {
 						min_binding_size: None,
 					},
 				),
-				ftex(
-					3,
-					wgpu::TextureSampleType::Float { filterable: false },
-					wgpu::TextureViewDimension::D3,
-				),
-				ftex(
-					4,
-					wgpu::TextureSampleType::Float { filterable: false },
-					wgpu::TextureViewDimension::D3,
-				),
+				gtex(3, wgpu::TextureSampleType::Float { filterable: false }),
+				gtex(4, wgpu::TextureSampleType::Float { filterable: false }),
 			],
 		});
 		let gather_bind = std::array::from_fn(|i| {
@@ -932,6 +969,10 @@ impl GiDraw {
 			frame: 0,
 			window,
 			coarse,
+			coarse_mirror: vec![0u8; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize]
+				.into_boxed_slice(),
+			coarse_mips_dirty: false,
+			sky_y: 255.0,
 			window_chunks,
 			emitters: FxHashMap::default(),
 			prev_vp: [[0.0; 4]; 4],
@@ -1156,7 +1197,8 @@ impl GiDraw {
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			self.frame_i as f32,
 			SUN_CONE_COS,
-			0.0f32,
+			// The sky ceiling (R18) — see `sky_y`.
+			self.sky_y,
 			0.0f32,
 		]));
 		// The live invalidation spheres, decayed here because this runs
@@ -1252,7 +1294,7 @@ impl GiDraw {
 			d1.2 as f32,
 			self.cascades[1].spacing as f32,
 		];
-		frame.gi_misc = [(self.window_chunks * 16) as f32, 0.0, 0.0, 0.0];
+		frame.gi_misc = [(self.window_chunks * 16) as f32, self.sky_y, 0.0, 0.0];
 	}
 
 	/// Upload one classified chunk into its toroidal window region (and
@@ -1307,6 +1349,22 @@ impl GiDraw {
 				depth_or_array_layers: 2,
 			},
 		);
+		// Keep the CPU mirror in step and mark the sky ceiling stale
+		// (R18); the next `encode` rescans it.
+		{
+			let w = (self.window_chunks * 2) as usize;
+			let h = (WORLD_H / 8) as usize;
+			for (ci, &b) in gi.coarse.iter().enumerate() {
+				let (dz, dy, dx) = (ci / 4, (ci / 2) % 2, ci % 2);
+				let m = ((tz as usize * 2 + dz) * h + (ty as usize * 2 + dy)) * w
+					+ tx as usize * 2
+					+ dx;
+				if self.coarse_mirror[m] != b {
+					self.coarse_mirror[m] = b;
+					self.coarse_mips_dirty = true;
+				}
+			}
+		}
 		let world = (
 			pos.x as f32 * 16.0,
 			pos.y as f32 * 16.0,
@@ -1402,6 +1460,12 @@ impl GiDraw {
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
 		self.flush_lights(gpu, cam);
+		// Rescan the sky ceiling when the mirror moved (R18).
+		if self.coarse_mips_dirty {
+			self.coarse_mips_dirty = false;
+			let (w, h) = ((self.window_chunks * 2) as usize, (WORLD_H / 8) as usize);
+			self.sky_y = sky_ceiling(&self.coarse_mirror, w, h, w);
+		}
 		// The quantized caster was latched by `patch_frame` (which the
 		// renderer calls before the frame uploads, every frame).
 		let spheres: Vec<[f32; 4]> = {
@@ -1436,7 +1500,14 @@ impl GiDraw {
 			data.extend_from_slice(bytemuck::cast_slice(&[cam[0], cam[1], cam[2], side]));
 			data.extend_from_slice(bytemuck::cast_slice(&self.last_sun));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
-			data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
+			// zenith.w carries the sky ceiling (R18) — the probe kernel
+			// only ever reads the color's rgb.
+			data.extend_from_slice(bytemuck::cast_slice(&[
+				frame.zenith[0],
+				frame.zenith[1],
+				frame.zenith[2],
+				self.sky_y,
+			]));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
 			// The sweep is PERMUTED, not contiguous. `cursor` walks the
 			// sweep index; the probe it selects is `(k * stride) % count`
@@ -1556,6 +1627,23 @@ impl GiDraw {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The ceiling must sit at the TOP of the highest occupied brick (a
+	/// ceiling one brick low un-shadows every hilltop), and an empty
+	/// mirror must answer "nothing anywhere" rather than 255 (which
+	/// would disable the early-out forever on an ocean world).
+	#[test]
+	fn the_sky_ceiling_tops_the_highest_brick() {
+		let (w, h, d) = (40usize, 32, 40);
+		let mut mirror = vec![0u8; w * h * d];
+		assert_eq!(sky_ceiling(&mirror, w, h, d), -1.0);
+		mirror[(17 * h + 9) * w + 33] = 0b01;
+		assert_eq!(sky_ceiling(&mirror, w, h, d), (9 * 8 + 7) as f32);
+		// A higher EMITTER-only brick raises it too — the ceiling gates
+		// hits of any kind.
+		mirror[(2 * h + 24) * w + 5] = 0b10;
+		assert_eq!(sky_ceiling(&mirror, w, h, d), (24 * 8 + 7) as f32);
+	}
 
 	/// The sweep must be a PERMUTATION, not merely a shuffle: over one
 	/// full cycle every probe has to be traced exactly once, or some

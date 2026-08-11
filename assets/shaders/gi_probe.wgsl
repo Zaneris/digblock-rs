@@ -161,7 +161,10 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	var r = gi_ray_init(from_p, dir, inv);
 	let lateral_max = gi_lateral_max(gi.cam.w);
 	for (var it = 0; it < 256; it++) {
-		if r.t > max_t || (r.cell.y > 255 && dir.y > 0.0) || r.cell.y < 0 {
+		// gi.zenith.w carries the sky ceiling (R18): a non-descending ray
+		// above the window's highest occupied cell can hit nothing — the
+		// gi_common twin comment has the measurement.
+		if r.t > max_t || (dir.y >= 0.0 && f32(r.cell.y) > gi.zenith.w) || r.cell.y < 0 {
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - gi.cam.xz;
@@ -169,9 +172,10 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 			break;
 		}
 		// The two-level skip (gi_dda.wgsl). Probe rays run to MAX_T = 160
-		// blocks through mostly-air, so this is where it pays most.
+		// blocks through mostly-air, so this is where it pays most. (A
+		// third 64-cube level was measured out — see gi_common's marches.)
 		if coarse_empty(r.cell >> vec3u(3u)) {
-			// Skip lands on the last cell inside the empty brick, then
+			// Skip lands on the last cell inside the empty region, then
 			// steps out under the ordinary tie rule. Both are needed:
 			// this loop steps at the BOTTOM, so `continue` alone would
 			// not advance and the march would stall on its iteration cap.

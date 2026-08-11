@@ -147,7 +147,7 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 // Cells, not exact chord lengths: a shallow ray crosses a cell over a
 // longer path than a steep one. That approximation predates this and is
 // left alone; M4's trace carries real segment lengths.
-fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec3f {
+fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec3f {
 	if sun.w < 0.5 {
 		return vec3f(0.0, 0.0, 0.0);
 	}
@@ -181,7 +181,13 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 		// the surface shadowed itself. `gi_occluded` directly above has
 		// always stepped first; this march simply never did.
 		r = gi_ray_step(r, step_dir, inv);
-		if r.cell.y > 255 {
+		// The sky ceiling (R18): a non-descending ray above the highest
+		// occupied cell in the whole window can never be blocked — one
+		// float compare ends the climb at the tallest local hill instead
+		// of y = 255. This is most of a screen full of water's sun cost:
+		// proving open sky at 8 blocks per skip was ~9 dependent texture
+		// loads per fragment.
+		if r.cell.y > 255 || (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
@@ -189,9 +195,14 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 			break;
 		}
 		// Empty 8-cube: leave it in one jump instead of crawling its
-		// eight cells and re-asking the coarse texture at each.
+		// eight cells and re-asking the coarse texture at each. (A
+		// 64-cube skip mip was built and MEASURED OUT here, both
+		// orderings: checked first it taxed every dense iteration of
+		// this latency-bound loop, nested it taxed every empty one, and
+		// at terrain altitudes 64-cubes almost always hold something —
+		// the sky ceiling above is what actually ends the climb.)
 		if gi_coarse_empty(side, r.cell >> vec3u(3u)) {
-			// Skip lands on the LAST cell inside the empty brick; this
+			// Skip lands on the LAST cell inside the empty region; this
 			// loop steps at the top, so `continue` is what crosses out of
 			// it. Every iteration therefore advances at least one cell.
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
@@ -239,7 +250,7 @@ struct GiHit {
 	water: f32,
 }
 
-fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i32) -> GiHit {
+fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i32) -> GiHit {
 	var out: GiHit;
 	out.hit = false;
 	out.cell = vec3i(0);
@@ -255,7 +266,10 @@ fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i
 			break;
 		}
 		r = gi_ray_step(r, step_dir, inv);
-		if r.t > max_t || r.cell.y > 255 || r.cell.y < 0 {
+		// Sky ceiling (R18): a non-descending ray above the window's
+		// highest occupied cell is a proven miss — see gi_sun_vis.
+		if r.t > max_t || r.cell.y > 255 || r.cell.y < 0
+			|| (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
@@ -263,8 +277,8 @@ fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i
 			break;
 		}
 		if gi_coarse_empty(side, r.cell >> vec3u(3u)) {
-			// Lands on the last cell inside the empty brick; the step at the
-			// top of the loop is what crosses out of it.
+			// Lands on the last cell inside the empty region; the step at
+			// the top of the loop is what crosses out of it.
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
 			continue;
 		}
