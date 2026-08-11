@@ -97,6 +97,13 @@ pub struct EngineConfig {
 	/// same pose with no motion behind it. `--fly N` vs `--warp N` is the
 	/// A/B — walked there vs sat there.
 	pub warp: bool,
+	/// Swap the path `fly`/`warp` follow for a ground walk. The bench
+	/// flight is a 30 blocks/s flyover 12 blocks up, which photographs the
+	/// fast, shallow-parallax end of screen motion; a player reports
+	/// temporal artifacts from the other end — eye height, walking pace,
+	/// ground a few blocks ahead, where one half-res texel covers far more
+	/// world per pixel. Same harness, second regime.
+	pub walk: bool,
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
@@ -205,6 +212,7 @@ impl EngineConfig {
 			bench: false,
 			fly: None,
 			warp: false,
+			walk: false,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -244,6 +252,7 @@ impl EngineConfig {
 			bench: false,
 			fly: None,
 			warp: false,
+			walk: false,
 			ssr: false,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -470,6 +479,9 @@ pub struct Engine {
 	bench_t: f32,
 	/// Steps of the scripted flight already taken, against `config.fly`.
 	fly_frames: u32,
+	/// Where `config.walk`'s oscillation is anchored: the camera's pose at
+	/// the first step, latched so `--fly` and `--warp` share it.
+	walk_origin: Option<Vec3>,
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	/// Evicted chunks whose GPU buffers are still to be released, drained
@@ -1036,6 +1048,7 @@ impl Engine {
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
 			fly_frames: 0,
+			walk_origin: None,
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
 			pending_evict_set: rustc_hash::FxHashSet::default(),
@@ -2095,9 +2108,29 @@ impl Engine {
 	fn fly_step(&mut self) {
 		const BENCH_SPEED: f32 = 30.0; // blocks per path-second
 		const BENCH_YAW: f32 = 12.0; // degrees per path-second
-							   // Altitude follows the terrain so worldgen retunes can't put the
-							   // flight underground; still a pure function of the step count.
+							   // The walk: one block forward, one block back, at eye height with
+							   // the ground a few blocks ahead — the repro exactly as reported.
+							   // An oscillation rather than a line keeps the column under the feet
+							   // constant, so the eye cannot step a whole block mid-path and
+							   // invalidate the history for a reason that is not the one under
+							   // test.
+		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
+		const WALK_PERIOD: f32 = 1.5; // seconds — peak 4.2 blocks/s, a walk
+		const WALK_PITCH: f32 = -25.0; // ground ~3.5 blocks ahead of the eye
 		self.bench_t += TICK;
+		if self.config.walk {
+			// Anchored on wherever the camera started, so the walk happens
+			// at spawn — which is where DIG_SHAPES/DIG_VAULT put geometry
+			// worth casting a shadow.
+			let o = *self.walk_origin.get_or_insert(self.camera.pos);
+			let phase = std::f32::consts::TAU * self.bench_t / WALK_PERIOD;
+			self.camera.pos = Vec3::new(o.x, o.y, o.z + WALK_AMP * phase.sin());
+			self.camera.yaw_deg = 0.0;
+			self.camera.pitch_deg = WALK_PITCH;
+			return;
+		}
+		// Altitude follows the terrain so worldgen retunes can't put the
+		// flight underground; still a pure function of the step count.
 		let x = BENCH_SPEED * self.bench_t;
 		let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
 		self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);

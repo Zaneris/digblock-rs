@@ -39,6 +39,10 @@ fn main() {
 	//   --fly N / --warp N (fly the bench path N frames then freeze, or
 	//            arrive at that same pose with no motion behind it — the
 	//            temporal-artifact A/B; pair with --frames)
+	//   --walk (modifier on either: an eye-height oscillation, one block
+	//            forward and one back, instead of the 30 blocks/s flyover —
+	//            a screen-space artifact scales with screen motion, so the
+	//            two paths are two regimes)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -92,6 +96,11 @@ fn main() {
 				config.fly = Some(parse_or_die("--warp", args.next()));
 				config.warp = true;
 			}
+			// Modifier on either: swap the flyover for an eye-height walk,
+			// one block forward and one back. Screen-space artifacts scale
+			// with screen motion, so the flyover and the walk are two
+			// regimes and a fix has to be measured in both.
+			"--walk" => config.walk = true,
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),
