@@ -156,7 +156,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(from_p, dir, inv);
-	let lateral_max = gi.cam.w * 0.5 - 1.0;
+	let lateral_max = gi_lateral_max(gi.cam.w);
 	for (var it = 0; it < 256; it++) {
 		if r.t > max_t || (r.cell.y > 255 && dir.y > 0.0) || r.cell.y < 0 {
 			break;

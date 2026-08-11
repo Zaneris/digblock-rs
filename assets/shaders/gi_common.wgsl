@@ -146,7 +146,7 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(o, dir, inv);
 	var water = 0.0;
-	let lateral_max = f32(side) * 0.5 - 1.0;
+	let lateral_max = gi_lateral_max(f32(side));
 	// The hard bound tracks the window, not a literal: with the brick skip
 	// an empty 8-cube costs one iteration, so a ray crossing the whole
 	// window needs far fewer steps than blocks — but a ray grazing dense
@@ -223,7 +223,7 @@ fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(o, dir, inv);
-	let lateral_max = f32(side) * 0.5 - 1.0;
+	let lateral_max = gi_lateral_max(f32(side));
 	for (var i = 0; i < 128; i++) {
 		if i >= iters {
 			break;

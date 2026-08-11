@@ -68,12 +68,36 @@ Named here because this document previously described several of these as done:
   buys only the copy it forces — still stands on its own.
   `gather_prev` DOES now bound itself to the cascade's coverage and validate the toroidal
   checksum, matching the fragment side (M5b).
-- **The voxel window covers half the streamed radius.** It is built `draw_dist` chunks on a
-  SIDE (+/-160 blocks) while terrain streams to `draw_dist` chunks of RADIUS (+/-320). 9.2% of
-  pixels therefore have a sun ray that leaves the window and is answered "fully lit" on no
-  data, along a boundary centred on the camera, and the final gather is bounded to 127
-  blocks by the same number. Doubling it costs 26 -> 105 MiB and measurably helps; see the
-  R8 note for why it was not simply shipped.
+- **The voxel window still covers half the streamed radius, and that is now a DECISION.** It
+  is built `draw_dist` chunks on a SIDE (+/-160 blocks) while terrain streams to `draw_dist`
+  chunks of RADIUS (+/-320), so 9.2% of pixels have a sun ray that leaves the window and is
+  answered "fully lit" on no data, along a boundary centred on the camera.
+  That statistic is real and it is very nearly INVISIBLE, which is the part that took
+  measuring. Building a window that genuinely covers +/-320 (side 640 AND lifting
+  `engine.rs`'s upload clamp, which is what the earlier attempt missed) and holding the sun
+  ray's reach as the only variable moves the image by mean 0.0169 — at the 0.007 repeat-noise
+  floor. Distant terrain is mostly lit anyway, so "lit" is usually the right answer, and by
+  160+ blocks the participating medium has faded the surface most of the way into the sky.
+  What DID matter at that range was the final gather, and it cost nothing to fix — see
+  `gather_max` in gi_resolve.wgsl. With the gather fixed, the whole remaining benefit of a
+  full-coverage window is mean 0.0556, confined to the horizon band, for **+75 MiB** (the
+  window texture goes 25 -> 100 MiB; note `gpu_buffer_bytes` in the metrics counts mesh
+  buffers only and does not see it) and a 4x slower initial fill, since the upload loop is
+  byte-budgeted per frame. Declined on that trade.
+  The earlier "doubling helps, mean 1.767, costs no frame time" note was **retracted**. That
+  build could not have been measuring new data: `engine.rs` clamps the upload window to
+  `draw_dist` independently of texture size, so the outer half of the texture was never
+  written, and wgpu zero-initializes it — which `gi_cell` reads as air, the same answer the
+  narrow window gave by breaking at its bound. Confirmed directly: with the debug view's
+  `cam.w`-scaled depth cue neutralized so a diff means geometry alone, `DIG_GI=window` at
+  side 320 vs side 640 differs by **50 pixels out of 5.4 million**. The 1.767 was several
+  `side`-derived bounds moving at once against unchanged data, and most of it was
+  `gather_max`.
+  Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the
+  full 256-block world height and most of it is empty air, so bounding Y is where the memory
+  actually is; and the far field plausibly needs only coarse occupancy (80x32x80 = 205 KiB at
+  side 640) rather than full material identity, since the gather ray only reaches
+  `GI_GATHER_T` = 32 blocks.
 - **No probe classification**, and **the axis fold is still lopsided** (`update_probes`
   barriers the workgroup and then leaves 6 threads alive, each running a serial
   RAYS-iteration reduction while the rest idle). Both were M5b items and both were measured
@@ -85,6 +109,33 @@ Named here because this document previously described several of these as done:
 - **No compute port.** The resolve is still a fragment pass. Its stated motivation was
   avoiding derivatives, which the rasterized normals removed, and tile classification,
   which nothing uses yet.
+- **The accumulator lives in SCREEN space, and that is a decision — the world-space
+  alternative was considered and rejected.** Most published path-traced GI keeps its
+  radiance cache on surfaces rather than on screen (Lumen's Surface Cache, NVIDIA SHaRC,
+  EA SEED's GIBS/surfels), and the usual objection to doing it here does not apply: the
+  surface parameterization problem that costs Lumen mesh cards and SHaRC a spatial hash is
+  FREE in a voxel world, where a face is exactly `(cell, axis, sign)` and adjacent same-axis
+  faces are contiguous, so bilinear works with no lightmap seams. The engine already has a
+  toroidal GPU voxel window with that addressing. It would buy two things the screen
+  accumulator cannot: convergence that SURVIVES motion (no reprojection at all, so nothing
+  to smear and no travel cap), and a large cost saving, since every pixel currently traces a
+  sun DDA every frame where SHaRC's update pass traces ~4% of them.
+  It was rejected on **resolution**, which is a hard arithmetic wall rather than a matter of
+  effort. The sun ray's penumbra 3 blocks from its occluder is ~0.05 blocks wide. An
+  affordable dense cache is ~4x4 texels per block face (+/-32 blocks, 3 faces/cell, 2 B =
+  25 MB), which quantizes that nearly-sharp edge into quarter-block stairs exactly where a
+  player is looking; 16x16 resolves it but reaches only +/-16 blocks inside 50 MB. SHaRC's
+  answer is a camera-distance-dependent cell size, which reintroduces re-bucketing at every
+  level crossing — a per-frame reprojection problem in world space, which is the problem the
+  whole exercise was meant to remove. Three further unsolved pieces sit behind that one:
+  eviction as the window slides, sun-motion invalidation, and shading faces the camera has
+  never seen.
+  What made this a QUALITY question rather than a bug fix is that R9 already closed the
+  defect that motivated it (walk residual 0.922 -> 0.578, flyover 2.84 -> 2.08, for 0.14 ms)
+  using SVGF's spatial half instead. Indirect should stay on the probes regardless — it is
+  smooth and does not smear — so the cache would only ever have carried sun visibility.
+  Reopen only if "converged while walking" becomes a requirement; denoised-while-walking is
+  what exists today.
 
 ## Measuring motion
 

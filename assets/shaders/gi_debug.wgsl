@@ -112,7 +112,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// Outside the lateral window or the vertical world going away:
 		// sky.
 		let lateral = length(vec2f(cell.xz) + 0.5 - dbg.cam.xz);
-		if lateral > dbg.cam.w * 0.5 - 1.0 || (cell.y > 255 && dir.y > 0.0) || cell.y < 0 {
+		if lateral > gi_lateral_max(dbg.cam.w) || (cell.y > 255 && dir.y > 0.0) || cell.y < 0 {
 			break;
 		}
 		// Coarse gate, now the real two-level skip (gi_dda.wgsl): an

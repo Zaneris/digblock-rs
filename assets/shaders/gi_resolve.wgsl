@@ -316,8 +316,30 @@ fn fs(i: VsOut) -> FsOut {
 	// Beyond the window's reach the ray has no voxel data to march, so
 	// those pixels keep the cascade blend — which is also where a per-pixel
 	// answer is worth least.
+	//
+	// "The window's reach" is `gi_lateral_max` and nothing narrower. This
+	// used to subtract GI_GATHER_T as well, reserving a 32-block margin so
+	// that a gather ray launched at the limit could still run its full
+	// length inside the data. That margin was unnecessary and it was
+	// expensive: `gi_march` ALREADY breaks on the same bound and returns a
+	// miss, so a ray leaving the window reads nothing invalid — it answers
+	// sky, which is what the fallback was going to say anyway. All the
+	// margin bought was 32 blocks of ring where a pixel that COULD have
+	// traced took the cascade blend instead.
+	//
+	// It cost more than it looks. Past C1's 128 blocks the blend is the
+	// analytic sky dome, so distant grass was lit by desaturated sky rather
+	// than by its own bounce and came out BLUE: measured over a hillside at
+	// ~200 blocks, G-B went from -9.4 to -4.5 when the margin came off,
+	// three quarters of the way to what a window with real data out there
+	// gets (-3.1) — for no memory and no frame time. The change is confined
+	// to the horizon band and follows terrain silhouettes rather than a
+	// camera-centred arc, so it moves the existing hard switch outward
+	// rather than adding a new one, and it lands where the participating
+	// medium has already faded the surface. See the R8 note in GI-DESIGN.md
+	// for why widening the window itself was measured and declined.
 	let lat = sp.xz - rz.cam.xz;
-	let gather_max = f32(side) * 0.5 - 1.0 - GI_GATHER_T;
+	let gather_max = gi_lateral_max(f32(side));
 	var indirect: vec3f;
 	if dot(lat, lat) > gather_max * gather_max {
 		indirect =

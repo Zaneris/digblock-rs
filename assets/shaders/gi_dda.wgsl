@@ -11,6 +11,24 @@
 // with a unit dir it is a distance in blocks, and `tmax` holds absolute
 // t values, not deltas.
 
+// How far from the camera the window still holds real data, in blocks.
+//
+// The window is `side` blocks across and centred on the camera, so cells
+// within this radius are always inside the uploaded band — a CIRCLE of
+// this radius fits inside the +/-side/2 square with a cell to spare. Every
+// march in the system breaks here and answers "nothing further" rather
+// than reading a texel that the toroidal wrap would alias onto another
+// part of the world.
+//
+// It lives here because all four marches need it and none of them can
+// share bindings: gi_common's two (fragment, group(2) world data),
+// gi_probe's (its own uniform group) and gi_debug's. Three hand-copied
+// steppers is how the same bug had to be found three times; the bounds
+// they march to are the same kind of shared fact.
+fn gi_lateral_max(side: f32) -> f32 {
+	return side * 0.5 - 1.0;
+}
+
 struct GiRay {
 	cell: vec3i,
 	// Absolute t at which the ray crosses the next boundary on each axis.
