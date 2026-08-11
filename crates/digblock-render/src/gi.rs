@@ -175,6 +175,8 @@ pub struct GiDraw {
 	frame_i: u32,
 	lights_dirty: bool,
 	lights_buf: wgpu::Buffer,
+	/// Camera position at the last light-list flush — see flush_lights.
+	lights_cam: [f32; 3],
 	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
 	inval_queue: Vec<[f32; 3]>,
 	/// Spheres the probe pass consumed, held live so the RESOLVE keeps
@@ -994,6 +996,7 @@ impl GiDraw {
 			frame_i: 0,
 			lights_dirty: false,
 			lights_buf,
+			lights_cam: [f32::INFINITY; 3],
 			inval_queue: Vec::new(),
 			resolve_inval: Vec::new(),
 			resolve_pipeline,
@@ -1439,11 +1442,30 @@ impl GiDraw {
 
 	/// Rebuild the flattened light list when it changed: the nearest
 	/// MAX_LIGHTS emitters to the camera, count in the header.
+	///
+	/// Order never matters to a reader — the probes sample uniformly and
+	/// the resolve's NEE scans actual positions — so a stale sort only
+	/// bites through the MAX_LIGHTS truncation: with more emitters than
+	/// slots, "nearest to a camera that has since left" quietly drops
+	/// the torches around the player. The refresh below re-sorts on
+	/// real movement in exactly that oversubscribed case, and stays
+	/// free in the common far-under-MAX_LIGHTS world.
 	fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3]) {
-		if !self.lights_dirty {
+		let total: usize = self.emitters.values().map(Vec::len).sum();
+		let moved = {
+			let d = [
+				cam[0] - self.lights_cam[0],
+				cam[1] - self.lights_cam[1],
+				cam[2] - self.lights_cam[2],
+			];
+			d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 16.0 * 16.0
+		};
+		let stale = total > MAX_LIGHTS && moved;
+		if !self.lights_dirty && !stale {
 			return;
 		}
 		self.lights_dirty = false;
+		self.lights_cam = cam;
 		let mut all: Vec<(f32, [f32; 4])> = self
 			.emitters
 			.values()
