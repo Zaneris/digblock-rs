@@ -123,6 +123,27 @@ fn sample_cone(dir: vec3f, u: vec2f, cos_max: f32) -> vec3f {
 	return normalize(tx * (sin_t * cos(phi)) + ty * (sin_t * sin(phi)) + dir * cos_t);
 }
 
+// How far the final-gather ray looks before giving up and asking the
+// cache. It only has to cover the range where a per-pixel answer beats a
+// 2-block-spaced probe blend — contact darkening, a wall's own bounce, a
+// tree's shade. Past that the cascades already hold the right answer and
+// tracing further would just buy variance.
+const GI_GATHER_T = 32.0;
+const GI_GATHER_ITERS = 96;
+
+// A cosine-weighted direction about `n` (Malley's method). Cosine
+// sampling is what makes this estimator weightless: the cos theta in the
+// rendering equation and the 1/pdf cancel exactly, so the gather is the
+// returned radiance itself with no factor to get wrong.
+fn cosine_hemi(n: vec3f, u: vec2f) -> vec3f {
+	let r = sqrt(u.x);
+	let phi = 6.2831853 * u.y;
+	let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+	let tx = normalize(cross(up, n));
+	let ty = cross(n, tx);
+	return normalize(tx * (r * cos(phi)) + ty * (r * sin(phi)) + n * sqrt(max(1.0 - u.x, 0.0)));
+}
+
 // gi_resolve's normal-code order: axis * 2 + sign bit, indexed by the
 // code chunk.wgsl's `code_of` produces. One table, two readers.
 const CODE_NORMALS = array<vec3f, 6>(
@@ -133,6 +154,61 @@ const CODE_NORMALS = array<vec3f, 6>(
 	vec3f(0.0, 0.0, 1.0),
 	vec3f(0.0, 0.0, -1.0),
 );
+
+// The tail of the gather path: radiance arriving from `dir` after the ray
+// resolved. This is where the probe cascades stop being "the answer" and
+// become what they were always meant to be — the cache that terminates a
+// path, so one ray buys the whole multi-bounce series.
+fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
+	let tr = medium_water_tr(h.water);
+	if !h.hit {
+		// Open in that direction. NOT the sun disc as well: gi_probe.wgsl
+		// adds a sun lobe here because a probe has no separate direct term,
+		// but this pass computes direct light explicitly below, and adding
+		// it to both halves would double-count the sun on every surface
+		// facing it.
+		return gi_sky_radiance(dir, rz.zenith.rgb, rz.horizon.rgb) * tr;
+	}
+	let v = gi_cell(side, h.cell);
+	let emit = gi_emit(v);
+	let alb = gi_albedo(v);
+	if emit > 0.0 {
+		return alb * emit * 0.6 * tr;
+	}
+	// The hit face, from the axis the DDA last crossed.
+	var hn = vec3f(0.0);
+	if h.axis == 0u {
+		hn.x = -sign(dir.x);
+	} else if h.axis == 1u {
+		hn.y = -sign(dir.y);
+	} else {
+		hn.z = -sign(dir.z);
+	}
+	let hp = vec3f(h.cell) + 0.5 + hn * 0.6;
+	// Irradiance at the hit = the cache (every bounce beyond this one, which
+	// is what makes one ray buy the whole series) plus this bounce's own
+	// direct sun. Both are deliberately the cheap versions — see
+	// gi_cache_at; this is a secondary point inside a temporally filtered
+	// one-sample estimate, and refining it costs far more than it is worth.
+	var e = gi_cache_at(
+		side,
+		hp,
+		hn,
+		rz.cam.xyz,
+		rz.dims0,
+		rz.dims1,
+		rz.zenith.rgb,
+		rz.horizon.rgb,
+	);
+	if rz.sun.w > 0.5 {
+		let ndl = max(dot(hn, rz.sun_exact.xyz), 0.0);
+		if ndl > 0.0 {
+			let sv = gi_sun_vis(side, rz.cam.xz, rz.sun, hp, GI_GATHER_ITERS);
+			e += rz.sun_color.rgb * ndl * sv.x * medium_water_tr(sv.y);
+		}
+	}
+	return alb * e * tr;
+}
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -200,8 +276,43 @@ fn fs(i: VsOut) -> FsOut {
 	let sp = p;
 	let side = i32(rz.cam.w);
 
-	let indirect =
-		gi_indirect(side, sp, n, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
+	// THE FINAL GATHER. One cosine-weighted ray from this pixel, resolved
+	// against the voxel window and terminated in the probe cache.
+	//
+	// The indirect term used to be the cascade blend at `sp` and nothing
+	// else, which is why this engine had no ambient occlusion and could
+	// not have had any: C0 samples irradiance every 2 blocks and
+	// interpolates, so it is smooth by construction and cannot represent
+	// darkening at contact scale. The per-probe occlusion DDA stops light
+	// leaking THROUGH a wall; it does not darken the corner where two meet.
+	// A ray that travels 0.3 blocks and returns a wall's dim bounce instead
+	// of the sky does, for free — contact darkening is not a separate term
+	// here, it is what a gather ray does when something is close.
+	//
+	// It also demotes the cache, which is the other half of the point. The
+	// probe field's convergence transient was measured (GI-DESIGN.md
+	// "Measuring motion") to be inherent to its cadence and immune to both
+	// better restarts and 16x the sweep budget; the way out was never to
+	// sweep harder but to stop making the near field depend on it.
+	//
+	// Beyond the window's reach the ray has no voxel data to march, so
+	// those pixels keep the cascade blend — which is also where a per-pixel
+	// answer is worth least.
+	let lat = sp.xz - rz.cam.xz;
+	let gather_max = f32(side) * 0.5 - 1.0 - GI_GATHER_T;
+	var indirect: vec3f;
+	if dot(lat, lat) > gather_max * gather_max {
+		indirect =
+			gi_indirect(side, sp, n, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
+	} else {
+		// A second, decorrelated draw from the same sequence — sharing the
+		// sun ray's sample would tie the gather direction to the sun cone
+		// and correlate two estimates that must average independently.
+		let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
+		let rd = cosine_hemi(n, ui);
+		let hit = gi_march(side, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
+		indirect = path_radiance(side, hit, rd);
+	}
 	// One sun ray along the EXACT direction, jittered over a cone about
 	// twice the real sun's angular radius. That gives a physical
 	// penumbra — sharp at contact, softening with distance to the

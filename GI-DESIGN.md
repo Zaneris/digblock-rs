@@ -14,10 +14,13 @@ What lights the world now, in one sentence per stage:
   6 axes, blended with a hysteresis ladder. Rays terminate in last frame's field, which is
   where multi-bounce comes from, and take one **next-event sample** against the emitter
   list per ray.
-- A **half-res resolve** per frame: the cascade gather (trilinear x backface x exact
-  short-DDA occlusion, C0 then C1 then an analytic dome) plus ONE sun ray along the exact,
-  unquantized caster jittered over a 0.5-degree cone. The result **accumulates temporally**
-  through a reprojection of last frame's buffers, alpha = 1/n with n climbing to 512.
+- A **half-res resolve** per frame: TWO per-pixel rays. One **final gather** — a
+  cosine-weighted hemisphere ray about the exact normal, marched through the voxel window
+  and terminated in the probe cache at whatever it hits, so a single ray buys the whole
+  multi-bounce series. And one **sun ray** along the exact, unquantized caster jittered over
+  a 0.5-degree cone. The result **accumulates temporally** through a reprojection of last
+  frame's buffers, alpha = 1/n with n climbing to 512. Beyond the window's reach there is
+  nothing to march, so those pixels keep the plain cascade gather.
 - Solids bilaterally upsample that against exact face normals rasterized by the depth
   prepass. Water and players gather the probe field per fragment through gi_common.wgsl;
   spray and the viewmodel read a 32-byte camera-light buffer a 1-invocation compute writes.
@@ -34,9 +37,9 @@ Named here because this document previously described several of these as done:
 - **No a-trous spatial filter and no neighbourhood clamp.** The resolve accumulates
   temporally and rejects on depth + face code; there is no variance estimate and no spatial
   pass. Disocclusion is rejected rather than filtered.
-- **No per-pixel indirect ray.** The resolve's indirect term is still the probe gather, not
-  a cosine-hemisphere path terminating in the cache. INDIRECT_K is gone, so the gather is
-  used unscaled, but it is not yet a pdf-weighted estimate.
+- **No per-pixel NEE.** The gather ray reaches emitters only by hitting them; the `lights`
+  buffer is read by the probe kernel alone. A torch is therefore lit by the cascades plus
+  whatever the gather ray happens to strike, not by a shadow ray drawn against the list.
 - **No tier scaling.** Every platform gets desktop budgets and an uncapped /2 resolve; the
   web row of the original design was never implemented.
 - **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame, and
@@ -109,11 +112,17 @@ every 128 frames of travel and is swept ~10 times in between, so the field is no
 "permanently mid-restart" while you walk. And raising `PROBES_PER_DISPATCH` to give a
 1-frame sweep — 16x the budget, no probe ever stale — bought only 21% at settle 2.
 
-So the transient is inherent to a world-space cache at this cadence, and the answer is not
-to sweep it harder but to stop making the near field depend on it: a per-pixel cosine ray
-terminating in the cache supplies local bounce immediately and leaves the cache carrying
-only the far tail. That is why Lumen and SHaRC both put a screen-space gather in front of a
-world cache, and it is the same missing ray that makes contact darkening impossible today.
+So the transient is inherent to a world-space cache at this cadence, and the answer was not
+to sweep it harder but to stop making the near field depend on it. **That is what the final
+gather did**, and the harness scored it: walked-vs-warped fell at every settle length —
+2.510 -> 2.272 at 2 frames, 1.713 -> 1.176 at 30, 0.675 -> 0.364 at 300, 0.200 -> 0.133 at
+1500 — while the cost went DOWN (107.0 -> 112.0 fps), because the 8-probe blend with a
+relocation walk and an occlusion march at every primary pixel went away with it. One
+cosine ray plus a 4-load cache lookup is cheaper than the gather it replaced.
+
+Being a 1-spp stochastic estimate, it costs a little at-rest noise: frame-to-frame 0.032 ->
+0.043, which is under a fifth of an 8-bit LSB and the reason the a-trous pass is still worth
+building rather than urgent.
 
 ## Goals
 
@@ -124,7 +133,9 @@ world cache, and it is the same missing ray that makes contact darkening impossi
 - GPU-resident: the web client is single-threaded — the CPU's only jobs are classifying
   edited chunks (µs) and byte-budgeted uploads.
 - Low resolution with blending: coarse probes + a half-res resolve + temporal smoothing is
-  the look; crispness comes only from the per-pixel sun ray and baked AO.
+  the look; crispness comes from the two per-pixel rays — the sun ray, and the final
+  gather. Baked AO is gone; contact darkening is what the gather ray does when the thing it
+  hits is close.
 - Fits WebGPU baseline `Limits::default()` — no feature/limit negotiation.
 
 ## Non-goals (v1)

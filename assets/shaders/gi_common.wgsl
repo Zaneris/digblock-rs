@@ -194,6 +194,86 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 	return vec2f(1.0, water);
 }
 
+// A general march, for the final gather's ray — the one thing `gi_occluded`
+// (a bool) and `gi_sun_vis` (a visibility) could not answer: WHAT was hit.
+// Same shape as `gi_sun_vis` deliberately, including stepping before
+// testing, so a shaped block never occludes its own surface here either.
+struct GiHit {
+	hit: bool,
+	cell: vec3i,
+	// Axis last crossed — the hit face's axis.
+	axis: u32,
+	// Water cells crossed on the way, as a PATH LENGTH (see gi_sun_vis).
+	water: f32,
+}
+
+fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i32) -> GiHit {
+	var out: GiHit;
+	out.hit = false;
+	out.cell = vec3i(0);
+	out.axis = 1u;
+	out.water = 0.0;
+	let o = p + dir * GI_SURFACE_EPS;
+	let step_dir = vec3i(sign(dir));
+	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
+	var r = gi_ray_init(o, dir, inv);
+	let lateral_max = f32(side) * 0.5 - 1.0;
+	for (var i = 0; i < 128; i++) {
+		if i >= iters {
+			break;
+		}
+		r = gi_ray_step(r, step_dir, inv);
+		if r.t > max_t || r.cell.y > 255 || r.cell.y < 0 {
+			break;
+		}
+		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
+		if dot(lat, lat) > lateral_max * lateral_max {
+			break;
+		}
+		if gi_coarse_empty(side, r.cell >> vec3u(3u)) {
+			// Lands on the last cell inside the empty brick; the step at the
+			// top of the loop is what crosses out of it.
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			continue;
+		}
+		let v = gi_cell(side, r.cell);
+		if v != 0u {
+			let op = gi_lut[v].x >> 24u;
+			if op == 2u {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = r.axis;
+				return out;
+			}
+			if op == 1u {
+				out.water += 1.0;
+			}
+		}
+	}
+	return out;
+}
+
+// Material LUT accessors — the twins of gi_probe.wgsl's, which reads the
+// same packed words out of its own binding.
+fn gi_albedo(v: u32) -> vec3f {
+	let m = gi_lut[v].x;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
+}
+
+fn gi_emit(v: u32) -> f32 {
+	return f32(gi_lut[v].y);
+}
+
+// Sky radiance along a direction, as a GI source: the dome colors pulled
+// toward their luminance, because the raw zenith blue is tuned for LOOKING
+// at the sky and bouncing it at full saturation tints every shadow cold.
+// The pinned twin of gi_probe.wgsl's `sky_radiance`.
+fn gi_sky_radiance(dir: vec3f, zenith: vec3f, horizon: vec3f) -> vec3f {
+	let c = mix(horizon, zenith, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
+	let lum = dot(c, vec3f(0.299, 0.587, 0.114));
+	return mix(c, vec3f(lum), 0.35);
+}
+
 // Is the probe at texel `t` carrying real radiance?
 //
 // A probe whose cell is solid — and whose six relocation neighbours are
@@ -278,12 +358,63 @@ fn gi_cascade_gather(side: i32, p: vec3f, n: vec3f, dims4: vec4f, c1: bool, occ_
 	return vec4f(acc, wsum);
 }
 
-// Analytic fallback beyond/starved probes: dim sky dome, desaturated
-// the same way the probe kernel's sky_radiance is.
+// Analytic fallback beyond/starved probes: the same dome, taken along the
+// surface normal and dimmed — it stands in for an IRRADIANCE the cascades
+// could not supply, not for the radiance arriving from one direction,
+// which is why it carries the extra factor and `gi_sky_radiance` does not.
 fn gi_sky_fallback(n: vec3f, zenith: vec3f, horizon: vec3f) -> vec3f {
-	let c = mix(horizon, zenith, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
-	let lum = dot(c, vec3f(0.299, 0.587, 0.114));
-	return mix(c, vec3f(lum), 0.35) * 0.35;
+	return gi_sky_radiance(n, zenith, horizon) * 0.35;
+}
+
+// Is `p` actually inside a cascade's coverage? The atlases are toroidal,
+// so `g % dims` ALWAYS yields a texel — just one serving a different
+// world cell once you leave the window. Every wrapped read outside
+// coverage is silently another place's light.
+fn gi_in_cascade(p: vec3f, cam: vec3f, dims4: vec4f) -> bool {
+	let half = vec3f(dims4.xyz) * dims4.w * 0.5;
+	return all(abs(p - cam) < half - vec3f(dims4.w));
+}
+
+// The cheap cache lookup that TERMINATES a gather path: nearest probe, no
+// relocation walk, no occlusion DDA. gi_probe.wgsl's own multi-bounce
+// (`gather_prev`) has always done exactly this, and for the same reason —
+// the value fetched is one bounce further out, already dim, and about to
+// be averaged over a hemisphere of directions and hundreds of frames.
+//
+// The difference is not small. `gi_cascade_gather` blends 8 probes, each
+// with a relocation walk and an occlusion march, which is ~112 texture
+// loads; this is 4. Running the full version at the end of the resolve's
+// gather ray measured 107 -> 69 fps, and refining a secondary bounce is
+// not what that budget should buy.
+//
+// Unlike `gather_prev` it checks coverage first, so a hit beyond a
+// cascade's reach falls through to the next one instead of reading a
+// wrapped texel from somewhere else entirely.
+fn gi_cache_at(
+	side: i32,
+	p: vec3f,
+	n: vec3f,
+	cam: vec3f,
+	dims0: vec4f,
+	dims1: vec4f,
+	zenith: vec3f,
+	horizon: vec3f,
+) -> vec3f {
+	if gi_in_cascade(p, cam, dims0) {
+		let d0 = vec3i(dims0.xyz);
+		let t0 = ((vec3i(round(p / dims0.w)) % d0) + d0) % d0;
+		if gi_probe_alive(t0, false) {
+			return gi_axis_gather(t0, d0.z, n, false);
+		}
+	}
+	if gi_in_cascade(p, cam, dims1) {
+		let d1 = vec3i(dims1.xyz);
+		let t1 = ((vec3i(round(p / dims1.w)) % d1) + d1) % d1;
+		if gi_probe_alive(t1, true) {
+			return gi_axis_gather(t1, d1.z, n, true);
+		}
+	}
+	return gi_sky_fallback(n, zenith, horizon);
 }
 
 // The full C0 → C1 → analytic fallthrough, exactly the resolve's rule,
