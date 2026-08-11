@@ -155,6 +155,14 @@ The A/B that matters is `--fly N --frames M` against `--warp N --frames M`: same
 duration, same everything except whether the first N frames moved. On a correct temporal
 system that difference decays to the noise floor.
 
+**With one caveat, learned the hard way in R13: the warp half is not a fixed reference.** Any
+change to the accumulator can move it too, and a change that shortens a STILL camera's history
+blurs the reference toward the thing being measured — which reads as a large improvement and
+is none. When the change under test touches accumulation, pin a converged frame once
+(`--warp N --frames 3000`) and measure every variant against that. Low-pass the diff 8x8
+while you are at it: a short history and a smeared one both differ from a converged frame,
+and only the smear survives a box filter.
+
 **`--walk` is the second regime, and it is the one players report from.** The bench path is
 a 30 blocks/s flyover twelve blocks up; a screen-space temporal artifact scales with how
 fast the IMAGE moves, so that path photographs one end of the range and a walk photographs
@@ -245,9 +253,9 @@ those drags the image along the direction of travel. Three things were measured,
   flattens the edge that should have triggered it. Removed rather than tuned; a real
   neighbourhood clamp needs the current frame's neighbours, which a fragment pass has not got.
 - **The cap belongs on reprojection travel**, which is the honest statement of when
-  reprojection is lossless. Travel is measurably zero at rest — a deliberately hypersensitive
-  `TRAVEL_K = 1000` still changed only 0.95% of pixels on a still camera — so a standing
-  player keeps all 512 frames and nothing is special-cased about standing still.
+  reprojection is lossless. Two things taken as settled here were not, and R13 below corrects
+  both: travel is NOT zero at rest, and a smooth `N_MAX/(1 + TRAVEL_K*travel)` is a per-frame
+  RATE where the blur it bounds is not.
 
 None of that is affordable without a spatial filter, because a short history is a noisy one:
 `gi_atrous.wgsl` is SVGF's other half, two edge-stopping iterations at strides 1 and 2. It
@@ -260,6 +268,77 @@ thermally settled machine, 110.4 -> **108.7 fps** (0.14 ms). The 5x5 B3 kernel S
 was built and measured too — 0.522 for 0.31 ms — and is the one to reach for if the history
 floor ever drops below `N_MOVING`. The filter changes a converged frame by 0.134 and skips
 entirely above `N_CONVERGED`, where it measures as a no-op.
+
+### R13 — the cap read the wrong variable, and rest was not rest
+
+R9's bisect ran entirely on `--walk`, whose ground sits 3.5 blocks ahead. That is the only
+part of the frame where per-frame parallax is large, so it is the only part where the travel
+cap ever engaged; everything past about four blocks kept walking around near `N_MAX`. A
+player reported it as a shadow ten blocks out that slides forward with them and snaps back on
+approach, which is the exact shape of "the fix works within four blocks". Approaching does not
+repair anything — the blur is roughly constant in screen texels, and walking closer magnifies
+the feature past it.
+
+Measured on `--walk`, history depth by distance band against the walked-vs-warped residual:
+
+| band                | mean n | a-trous skipped | residual | repeat noise |
+|---------------------|-------:|----------------:|---------:|-------------:|
+| under 3 blocks      |     15 |            0.0% |    0.085 |        0.000 |
+| 3-4 blocks          |     56 |            0.0% |    0.234 |        0.001 |
+| 4 blocks to horizon |    195 |           23.3% |    0.633 |        0.005 |
+
+n and the residual track each other monotonically, and the far field is doubly exposed:
+`gi_atrous` skips any pixel at or above `N_CONVERGED = 256`, so a quarter of the band that
+most needed the spatial filter was the band not getting it. Visualizing n directly — the
+resolve already stores it in `sun.a` — shows it as a red cap over the horizon and near-black
+under the feet.
+
+**Rest is not rest.** The fetch round-trips a world position out through `inv_view_proj` and
+back through `prev_view_proj`, and against a 640-block far plane f32 does not return what it
+was given: a dead-still camera measures **0.055-0.11 texels** of drift (median 0.06 near,
+0.07 far). That costs twice. The cap reads arithmetic as movement — and the bilinear fetch
+mixes in neighbours every frame at n ~ 450, which compounds into a multi-texel streak
+visible in a STILL frame. That streak was in every capture this project takes: the vault's
+torch pool had two vertical bands running out of it, and the resting terrace faces were
+mottled rather than flat. The earlier `TRAVEL_K = 1000` note cannot have measured what it was
+read as; at 0.08 texels that setting caps n at 12, and a still camera's image cannot have
+been 99% unchanged.
+
+The fix is two lines and one idea: **snap the fetch onto the lattice when the miss is under
+the arithmetic floor, then make the cap two-state.** `TRAVEL_EPS = 0.15` clears the measured
+drift and stays under half the slowest real motion in the frame (the far field's 0.36 median
+on `--walk`). Snapped means bilinear degenerates to a copy of the pixel's own history, so a
+standing camera is exact and keeps all 512 frames; anything else falls to `N_MOVING`. There
+is no useful middle, and the smooth form's mistake was pretending there was: once the fetch
+is off-lattice the blur compounds at a rate the sub-texel PHASE sets rather than the speed,
+because a pixel creeping a hundredth of a texel a frame still sweeps the whole phase range
+across a 512-frame history. `a_moving_pixel_always_gets_the_spatial_filter` pins
+`N_MOVING < N_CONVERGED` so the relationship the whole trade rests on cannot lapse again.
+
+Measured against a common converged reference (`--warp 600 --frames 3000`), with the diff
+low-passed 8x8 first — a short history and a smeared one both differ from a converged frame
+and a raw mean cannot tell them apart, but Monte Carlo noise averages away under a box filter
+and a displacement does not:
+
+| far field, 4 blocks to horizon | shipped | R13    |
+|--------------------------------|--------:|-------:|
+| smear vs converged truth       |  0.9625 | 0.4993 |
+| mean n walking                 |     195 |     27 |
+| a-trous skipped walking        |   23.3% |   0.0% |
+| mean n at rest                 |    ~450 |    510 |
+
+The convergence floor — the same reference against a 600-frame still capture — is 0.2248, so
+the excess falls 0.738 -> 0.275, a 63% cut. Cost is free: bench 152.8 -> 153.2 fps, GI trace
+4.309 -> 4.312 ms, denoise 4.493 -> 4.495 ms. The four pinned stills all move (VAULT 2.21,
+ROOF 3.48, SHAPES 3.41, DIVE 0.98) and all move the same way — the streak coming out.
+
+**A false positive on the way, recorded because it is the trap this harness sets.** The first
+form bounded `n * travel`, the total slide over a history's life, with no snap. It measured
+walked-vs-warped 0.633 -> 0.236 in the far field and read as a clean win. It was not: with no
+snap, the resting drift capped a STILL camera at n = 24 as well, so the reference had been
+blurred to match the thing under test. `--fly` vs `--warp` compares against a reference the
+change under test can move. Anything touching the accumulator has to be measured against a
+FIXED converged frame, not against its own warp.
 
 **The standing question this leaves is where the accumulator should live at all.** Screen
 space is used everywhere in the literature but SHORT: SVGF-class denoisers accumulate 4-32

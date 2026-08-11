@@ -263,6 +263,47 @@ mod tests {
 		}
 	}
 
+	/// Read a `const NAME = <number>;` out of a WGSL source.
+	fn wgsl_const(src: &str, name: &str) -> f64 {
+		let pat = format!("const {name} = ");
+		let at = src
+			.find(&pat)
+			.unwrap_or_else(|| panic!("{name}: not declared"));
+		let rest = &src[at + pat.len()..];
+		let end = rest
+			.find(';')
+			.unwrap_or_else(|| panic!("{name}: unterminated"));
+		rest[..end]
+			.trim()
+			.parse()
+			.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
+	}
+
+	/// The spatial filter has to run on every pixel the temporal one cut
+	/// short. That is the whole trade R9 made — give up temporal samples,
+	/// let `gi_atrous` hand them back — and it holds only while a moving
+	/// pixel's history stays under the length at which the filter decides
+	/// the pixel is converged and skips it.
+	///
+	/// It stopped holding silently once. The cap used to be a smooth
+	/// function of per-frame reprojection travel, and per-frame parallax
+	/// collapses with view distance, so the far field walked around at
+	/// n ~ 330 — above `N_CONVERGED`, where the filter switches itself off.
+	/// The band that most needed it was the band not getting it, and the
+	/// only symptom was a shadow ten blocks out sliding with the player
+	/// (R13). A two-state cap makes the relationship structural, and this
+	/// pins it so a future retune of either constant cannot re-open it.
+	#[test]
+	fn a_moving_pixel_always_gets_the_spatial_filter() {
+		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
+		let converged = wgsl_const(super::shader::GI_ATROUS, "N_CONVERGED");
+		assert!(
+			moving < converged,
+			"N_MOVING ({moving}) must stay under gi_atrous's N_CONVERGED ({converged}), \
+			 or a moving pixel takes neither a long history nor the filter"
+		);
+	}
+
 	#[test]
 	fn textures_are_nonempty_pngs() {
 		for bytes in super::tex::LAYERS {

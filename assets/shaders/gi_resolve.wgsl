@@ -98,12 +98,28 @@ struct GiResolve {
 // look accurate" actually means: ~5 s at 100 fps.
 const N_MAX = 512.0;
 
-// The floor the travel cap may not drive the average below, and the rate it
-// gets there: 1/(1 + k*travel) puts a texel of drift at ~170 frames and the
-// six-ish texels a walk moves the near ground at ~40. Below N_MOVING the
-// residual noise outruns what two a-trous iterations can absorb.
+// How deep an average a MOVING pixel may keep. Below this the residual
+// noise outruns what two a-trous iterations can absorb; SVGF-class
+// denoisers live at 4-32 for the same reason.
 const N_MOVING = 24.0;
-const TRAVEL_K = 2.0;
+
+// How far the reprojected fetch may miss its own texel, in texels, and
+// still be treated as having landed on it.
+//
+// This is an ARITHMETIC floor, not a motion threshold. The fetch round-trips
+// a world position out through `inv_view_proj` and back through
+// `prev_view_proj`; with a 640-block far plane f32 does not return what it
+// was given, and a standing camera measures a drift of 0.055-0.11 texels
+// (median 0.06 near, 0.07 far, on --walk --warp). GI-DESIGN.md used to say
+// travel was measurably zero at rest. It is not, and believing it cost twice
+// over: the cap below reads arithmetic as movement, and the bilinear fetch
+// mixes in neighbours a camera that has not moved has no business touching —
+// at n = 512 that steady-state blur is several texels wide, which is most of
+// why the resting far field was blotchy.
+//
+// 0.15 clears the measured drift with margin and is under half the slowest
+// real motion in the scene (the far field's 0.36 median on --walk).
+const TRAVEL_EPS = 0.15;
 
 // R2, the 2-D low-discrepancy sequence (Roberts 2018): the plastic
 // constant's reciprocal powers. Behind one function so a spatiotemporal
@@ -388,7 +404,16 @@ fn fs(i: VsOut) -> FsOut {
 				// ~512 frames to decay. Neither validation below can catch
 				// it: the neighbouring texel is the same face at the same
 				// distance, just the wrong point on it.
-				let hp = huv * hdim - 0.5;
+				//
+				// Below TRAVEL_EPS the miss is the f32 round trip and not
+				// the camera, so snap onto the lattice: bilinear then
+				// degenerates to a copy of this pixel's own history, which
+				// is exactly what a camera that has not moved should get.
+				// It is also what lets `travel` below read a true zero
+				// instead of arithmetic.
+				let hp_raw = huv * hdim - 0.5;
+				let still = length(hp_raw + 0.5 - i.pos.xy) < TRAVEL_EPS;
+				let hp = select(hp_raw, i.pos.xy - 0.5, still);
 				let b0 = floor(hp);
 				let f = hp - b0;
 				// Validate on the exact face code AND on the distance the
@@ -423,24 +448,35 @@ fn fs(i: VsOut) -> FsOut {
 				// corner darkens nothing — it just stops voting.
 				if wsum > 0.0 {
 					let inv = 1.0 / wsum;
-					// How deep an average this pixel is ALLOWED to keep.
-					// Reprojection is exact for static geometry, so the only
-					// thing a long history costs is the resampling done to
-					// carry it, and that is paid per texel of travel: a
-					// still camera reprojects onto itself, travels zero, and
-					// keeps every one of its 512 frames. A walking one drags
-					// its history several texels a frame, and a running
-					// average that deep smears along the walk (R9). Capping
-					// by travel is therefore not a motion heuristic bolted
-					// on — it is the statement of when reprojection is
-					// lossless, and it reads zero exactly when it is.
+					// How deep an average this pixel is ALLOWED to keep, and it
+					// is a two-state answer rather than a curve. Reprojection is
+					// exact for static geometry, so the only thing a long history
+					// costs is the resampling done to carry it — and once the
+					// fetch is off-lattice at all, each frame mixes in the
+					// neighbours and that blur COMPOUNDS at a rate the sub-texel
+					// phase sets, not the speed: a pixel creeping a hundredth of a
+					// texel a frame still sweeps the whole phase range across a
+					// 512-frame history. So there is no useful middle. Either the
+					// fetch landed on its texel and the history was free, or it did
+					// not and the history has to be short.
+					//
+					// It used to be `N_MAX/(1 + TRAVEL_K*travel)`, a per-frame RATE,
+					// and per-frame parallax collapses with distance while the blur
+					// does not. Ground three blocks out moves a couple of texels a
+					// frame and was capped near 40; the same ground at thirty moves
+					// 0.03 and kept 486. Measured on --walk: mean n 15 near, 56 mid,
+					// 195 far, with the walked-vs-warped residual tracking it at
+					// 0.085 / 0.234 / 0.633 over a 0.005 repeat-noise floor, and a
+					// quarter of the far field also above N_CONVERGED, where
+					// gi_atrous switches itself off. Only the near field was ever in
+					// the regime R9's N_MAX bisect measured, which is why that fix
+					// looked complete and was not (R13).
 					//
 					// What makes the short end affordable is gi_atrous:
 					// give up temporal samples and the spatial filter hands
 					// them back. Without it there is no setting of this that
 					// is both sharp under motion and clean at rest.
-					let travel = length(hp + 0.5 - i.pos.xy);
-					let cap = max(N_MAX / (1.0 + TRAVEL_K * travel), N_MOVING);
+					let cap = select(N_MOVING, N_MAX, still);
 					n_hist = min(min(s_n * inv + 1.0, N_MAX), cap);
 					let a = 1.0 / n_hist;
 					acc = mix(s_ind * inv, indirect, a);
