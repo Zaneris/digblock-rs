@@ -269,11 +269,15 @@ mod tests {
 
 	/// Read a `const NAME = <number>;` out of a WGSL source.
 	fn wgsl_const(src: &str, name: &str) -> f64 {
-		let pat = format!("const {name} = ");
-		let at = src
-			.find(&pat)
+		// Both declaration forms: `const NAME = v;` and the typed
+		// `const NAME: f32 = v;` gi_probe.wgsl uses — the pattern
+		// missing the typed form would report a pinned twin as
+		// "not declared" instead of comparing it.
+		let at = [format!("const {name} = "), format!("const {name}: f32 = ")]
+			.iter()
+			.find_map(|pat| src.find(pat).map(|at| at + pat.len()))
 			.unwrap_or_else(|| panic!("{name}: not declared"));
-		let rest = &src[at + pat.len()..];
+		let rest = &src[at..];
 		let end = rest
 			.find(';')
 			.unwrap_or_else(|| panic!("{name}: unterminated"));
@@ -335,6 +339,23 @@ mod tests {
 			n_sun <= moving,
 			"N_SUN ({n_sun}) must not exceed N_MOVING ({moving})"
 		);
+	}
+
+	/// The resolve's per-pixel NEE (R20) and the probe pass's stochastic
+	/// one price the same torch with const twins — the two live in
+	/// shaders that cannot share bindings, so the compiler can't hold
+	/// them together. If they drift, the deterministic direct pool and
+	/// the cache's bounce of that same pool disagree about the light's
+	/// strength, and the seam moves with the camera (the near field is
+	/// the ray, the far field is the cache). Retuning is legal — in both
+	/// files at once.
+	#[test]
+	fn resolve_and_probe_agree_on_light_calibration() {
+		for name in ["LIGHT_RANGE", "LIGHT_GAIN"] {
+			let r = wgsl_const(super::shader::GI_RESOLVE, name);
+			let p = wgsl_const(super::shader::GI_PROBE, name);
+			assert_eq!(r, p, "{name}: resolve {r} vs probe {p}");
+		}
 	}
 
 	#[test]

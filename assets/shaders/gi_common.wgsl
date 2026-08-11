@@ -122,7 +122,7 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 // Sun visibility: march toward the sun until sky or a hit, counting the
 // water crossed on the way. `sun` = quantized dir toward the sun
 // (w = above-horizon 0/1); `iters` caps the march (the resolve affords
-// 160, water/players ~12). Returns:
+// the full 320 hard bound, water/players ~12). Returns:
 //
 //   .x = 1 if the sun is reached, 0 if an opaque cell blocks it or the
 //        caster is below the horizon
@@ -294,12 +294,15 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 			}
 			if op == 3u {
 				// An EMITTING partial cell is a hit whole: the voxel is
-				// the emission model (LIGHT_GAIN is calibrated so the
-				// direct-hit term matches the NEE pool), and letting
-				// gather rays pass through the torch's cell is what
-				// collapsed the vault's pool to a fraction of itself.
-				// Only the SUN ray resolves an emitter's boxes — a torch
-				// must not cast a pillar shadow, but it must still glow.
+				// the emission model, and letting gather rays pass
+				// through the torch's cell is what collapsed the vault's
+				// pool to a fraction of itself. Since R20 the resolve
+				// SUPPRESSES this hit's emission for the one light its
+				// NEE ray sampled (path_radiance's skip_cell) — the
+				// whole-cell hit remains the direct path only for
+				// emitters nothing is NEE-sampling. Only the SUN ray
+				// resolves an emitter's boxes — a torch must not cast a
+				// pillar shadow, but it must still glow.
 				if gi_lut[v].y > 0u {
 					out.hit = true;
 					out.cell = r.cell;

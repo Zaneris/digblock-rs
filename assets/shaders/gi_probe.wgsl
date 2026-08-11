@@ -225,9 +225,13 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	return out;
 }
 
-// Next-event estimation against the emitter list.
+// Next-event estimation against the emitter list — no longer the only
+// NEE in the system: since R20 the resolve fires a DETERMINISTIC ray at
+// each pixel's dominant light from the same buffer, with const twins of
+// LIGHT_RANGE/LIGHT_GAIN pinned to these by
+// `resolve_and_probe_agree_on_light_calibration`.
 //
-// The `lights` buffer has been uploaded and bound since P1 and read by
+// Before P4 the `lights` buffer had been uploaded and bound but read by
 // NO shader. Emitters reached the picture only when one of a probe's 64
 // Fibonacci rays happened to strike the single voxel a torch occupies —
 // exactly the firefly a light list exists to prevent. A 1-voxel emitter

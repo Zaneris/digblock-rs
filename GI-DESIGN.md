@@ -41,9 +41,6 @@ Named here because this document previously described several of these as done:
   since a 3x3 of one-ray samples has a sigma wide enough to admit almost anything. SVGF
   itself does not use one. Disocclusion is rejected and then, where indirect is the light,
   PRIMED from the probe cache rather than filtered (R15).
-- **No per-pixel NEE.** The gather ray reaches emitters only by hitting them; the `lights`
-  buffer is read by the probe kernel alone. A torch is therefore lit by the cascades plus
-  whatever the gather ray happens to strike, not by a shadow ray drawn against the list.
 - **No tier scaling, and that is now a DECISION rather than an omission.** Every platform
   gets desktop budgets and an uncapped /2 resolve. The web row of the original design was
   never implemented, and web keeps desktop settings for the time being.
@@ -643,6 +640,78 @@ iterations near banks plus water's ordinary per-fragment work (ripples, refracti
 medium). The next lever if it's ever needed is a per-column max-height texture (a real
 heightfield DDA answers "how far up until sky" in one load where the cubic mip could not);
 it was scoped and deliberately not built — diminishing returns until a player reports it.
+
+### R19 — the column field: built, measured, declined
+
+R18's scoped next lever got its trial and did not ship; the full patch is parked on the
+`wip/r19-column-skip` branch. What was built matched the scoping exactly — a per-column
+max over every NONZERO class (water included, since the field licenses SKIPPING and the
+coarse bit-0 rule would let a jump lose the pool `sv.y` counts), merged per chunk into a
+side×side R8Uint field, and a `gi_ray_skip_column` that jumps a dense column
+bit-identically to stepping it. Measurement then cut it to one call site: with the gate
+in BOTH gi_common marches the resolve's trace cost went UP (river pose +1.1 ms), because
+an underwater pixel's sun ray sits below the water-inclusive colmax for its entire climb
+and pays the dependent 2D load per dense iteration without ever skipping — the
+super-brick lesson in a new hat. The one ray that profits is water.wgsl's `SUN_STEPS =
+12` sun march, launched at its own column's waterline; even there the gain was
+correctness, not milliseconds (frame cost inside bracket noise on river/shore/terrain at
+4.1 MP): the 12-iteration budget TRUNCATES into "lit" against far banks (`gi_sun_vis`
+answers lit when it runs out, measured at 0.10–0.23 low-passed in the water bands
+against an un-truncatable 96-iteration build), and the skip let the same 12 iterations
+reach the real occluder. That look change was declined at sign-off, so the truncation
+stands as a KNOWN, accepted artifact: distant shorelines render slightly un-shadowed.
+If a player ever reports it, start from the parked branch, not from scratch.
+
+Two harness traps earned their entry this round: **physics ticks ride the wall clock**,
+so two builds of different speed reach `--frames N` with the spawn settle in different
+states and every cross-build still is polluted by a sub-block camera shift — capture at
+≥1200 frames so both builds are long settled (terrain parity then reads 0.028 vs a
+0.014 repeat floor); and a coherent reflection streak shifted by ripple phase does NOT
+cancel under a low-pass, so water-band diffs across builds need eyes on crops, not
+thresholds.
+
+### R20 — torch light became a shadow ray, and the support block lit up
+
+Two symptoms, one estimator. The user's "massive flicker moving near a torch" and
+"torches should light the block they sit on" are the same defect seen twice: per pixel,
+torch light arrived ONLY when the 1-spp gather ray geometrically struck the torch's cell
+(`alb * emit * LIGHT_GAIN`, ~2% odds at 2 blocks, re-rolled every frame) — a
+high-magnitude Bernoulli trial history tuning was already measured unable to drown (the
+N_MOVING sweep at R14). And the support block could never win even the lottery: every
+march steps before it tests, so a ray leaving the top face starts INSIDE the torch cell
+and exits unregistered. The brightest surface in the room structurally received nothing.
+
+The fix is the R14 move applied to local lights (Q2RTX / GI-1.0 / RTXDI lineage — direct
+light gets its own deterministic low-variance estimator): the resolve binds the same
+`lights` buffer the probe pass NEE-samples (binding 5, its second fragment storage
+buffer), picks the DOMINANT in-range light per pixel (max `emit·ndl/max(d²,1)`, a
+deterministic pick so the pool is steady at n = 1), fires ONE `gi_march` shadow ray
+stopped 0.9 short of the light's cell, and adds the probe `nee()` formula minus the
+×count pdf. The gather's emission term for that one cell is SUPPRESSED whether or not
+the shadow ray connected (`path_radiance`'s `skip_cell`) — half-suppression puts the
+flicker back in the torch's shadow; other emitters keep the direct-hit term since
+nothing NEE-samples them. The disocclusion prime adds the (already computed) NEE term so
+a cave-mouth reveal beside a torch starts at the pool every later sample votes for.
+`LIGHT_RANGE`/`LIGHT_GAIN` are const twins of gi_probe's, pinned by
+`resolve_and_probe_agree_on_light_calibration` (which required teaching the test
+helper WGSL's typed const form — the untyped pattern reported gi_probe's as undeclared).
+
+Measured on the vault rig: the under-torch dark patch is gone; the walk's
+consecutive-frame flicker in the bright pool band halved (2.44 → 1.10) and the mid band
+dropped 35% (0.857 → 0.558) — the remaining whole-frame delta is texture-edge resample
+shimmer under motion, visible as the wall speckle pattern in the diff heatmap, not
+lighting noise. The room is legitimately brighter overall (+7.8 mean): per-pixel direct
+light used to be under-counted by the hit-lottery model everywhere the probes' point-lit
+cache couldn't reach except as bounce, and the ray now prices a torch exactly as the
+cache does — which is also what removed the near/far seam risk. Torch shadows are hard
+(point light, no penumbra machinery — v1, judged at look sign-off; the pool level moved
+and LIGHT_GAIN retune-in-both-files is the sanctioned knob if it reads too hot). Cost:
++0.3–0.6 ms trace at 4.1 MP in the sealed vault (every pixel in range of the torch — the
+worst case; brackets overlap same-build spread), zero measurable in torch-free scenes
+(count == 0 is one header read), frame time display-paced and unmoved. The light list
+also refreshes on >16 blocks of camera movement when more than MAX_LIGHTS emitters are
+resident — order never mattered to a reader, but the truncation to the nearest 256 was
+frozen at whatever camera last saw a chunk classify.
 
 ## Goals
 

@@ -123,6 +123,10 @@ struct GiResolve {
 // Last frame's outputs, ping-ponged (never copied).
 @group(0) @binding(3) var hist_indirect: texture_2d<f32>;
 @group(0) @binding(4) var hist_sun: texture_2d<f32>;
+// The emitter list (R20) — the same count-prefixed buffer the probe
+// pass NEE-samples, bound here for the per-pixel direct term. lights[0].x
+// is the count as a bitcast u32; entries are (xyz world center, w class).
+@group(0) @binding(5) var<storage, read> lights: array<vec4f>;
 
 // How many frames a still camera keeps sharpening for. alpha is
 // 1/n with n climbing to here, so this is what "takes a few seconds to
@@ -274,6 +278,82 @@ fn cosine_hemi(n: vec3f, u: vec2f) -> vec3f {
 	return normalize(tx * (r * cos(phi)) + ty * (r * sin(phi)) + n * sqrt(max(1.0 - u.x, 0.0)));
 }
 
+// Local-light calibration, the pinned twins of gi_probe.wgsl's — the
+// resolve's deterministic NEE ray and the probes' stochastic one must
+// price the same torch identically or the direct pool and its bounce
+// drift apart (`resolve_and_probe_agree_on_light_calibration`).
+const LIGHT_RANGE = 24.0;
+const LIGHT_GAIN = 0.6;
+// The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
+// anyway; 64 covers the worst dense diagonal with margin, because a
+// tight cap silently UN-shadows whatever lies past it — the bug
+// gi_sun_vis shipped once at 160 iterations against a 320-block window.
+const GI_NEE_ITERS = 64;
+// "No sampled light" sentinel for path_radiance's suppression compare:
+// no gather hit can land here (cells live in y 0..255).
+const NEE_NO_CELL = vec3i(1073741824);
+
+// The per-pixel direct term for local lights (R20): ONE deterministic
+// shadow ray to the DOMINANT emitter, the same move R14 made for the
+// sun applied to torches (Q2RTX / GI-1.0 / RTXDI lineage — direct
+// light gets its own low-variance estimator, separated from the noisy
+// 1-spp gather). Before this, a pixel's torch light arrived only when
+// the gather ray geometrically struck the torch's cell, re-randomized
+// every frame: a high-magnitude Bernoulli trial whose flicker no
+// history depth could drown (the N_MOVING sweep is in GI-DESIGN.md).
+// Deterministic means zero variance: the pool is steady at n = 1.
+//
+// It is also what finally lights the block a torch STANDS ON. Every
+// march steps before it tests, so a gather ray leaving the support
+// block's top face starts INSIDE the torch's cell and exits without
+// ever registering it — the brightest surface in the room structurally
+// could not receive the direct term. The NEE ray from that face runs
+// max(0.5 - 0.9, 0) = 0 blocks: unoccluded by construction.
+struct NeeLight {
+	valid: bool,
+	cell: vec3i,
+	dir: vec3f,
+	dist: f32,
+	dist2: f32,
+	ndl: f32,
+	// Emitter tint x emit x LIGHT_GAIN — irradiance-side, the surface
+	// albedo multiplies in the scene shader like the rest of indirect.
+	radiance: vec3f,
+}
+
+fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
+	var out: NeeLight;
+	out.valid = false;
+	let count = min(bitcast<u32>(lights[0].x), 256u);
+	var best = 0.0;
+	for (var i = 1u; i <= count; i++) {
+		let l = lights[i];
+		let d = l.xyz - p;
+		let dist2 = dot(d, d);
+		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
+			continue;
+		}
+		let ndl = dot(n, d) * inverseSqrt(dist2);
+		if ndl <= 0.0 {
+			continue;
+		}
+		let cls = bitcast<u32>(l.w);
+		let emit = gi_emit(cls);
+		let score = emit * ndl / max(dist2, 1.0);
+		if score > best {
+			best = score;
+			out.valid = true;
+			out.cell = vec3i(floor(l.xyz));
+			out.dist2 = dist2;
+			out.dist = sqrt(dist2);
+			out.dir = d / out.dist;
+			out.ndl = ndl;
+			out.radiance = gi_albedo(cls) * emit * LIGHT_GAIN;
+		}
+	}
+	return out;
+}
+
 // gi_resolve's normal-code order: axis * 2 + sign bit, indexed by the
 // code chunk.wgsl's `code_of` produces. One table, two readers.
 const CODE_NORMALS = array<vec3f, 6>(
@@ -289,7 +369,16 @@ const CODE_NORMALS = array<vec3f, 6>(
 // resolved. This is where the probe cascades stop being "the answer" and
 // become what they were always meant to be — the cache that terminates a
 // path, so one ray buys the whole multi-bounce series.
-fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
+//
+// `skip_cell` is the cell of the light the NEE ray sampled this pixel
+// (NEE_NO_CELL when none): its emission is suppressed here WHETHER OR
+// NOT the shadow ray connected, because the picked light's direct term
+// is the deterministic estimate alone — counting the stochastic hit too
+// doubles its energy, and letting it stand in for a blocked NEE ray
+// puts the old flicker right back in the torch's shadow. Other
+// emitters keep the direct-hit term: they are not being NEE-sampled,
+// so the gather is still their only direct path.
+fn path_radiance(side: i32, h: GiHit, dir: vec3f, skip_cell: vec3i) -> vec3f {
 	let tr = medium_water_tr(h.water);
 	if !h.hit {
 		// Open in that direction. NOT the sun disc as well: gi_probe.wgsl
@@ -303,7 +392,10 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	let emit = gi_emit(v);
 	let alb = gi_albedo(v);
 	if emit > 0.0 {
-		return alb * emit * 0.6 * tr;
+		if all(h.cell == skip_cell) {
+			return vec3f(0.0);
+		}
+		return alb * emit * LIGHT_GAIN * tr;
 	}
 	// The hit face, from the axis the DDA last crossed.
 	var hn = vec3f(0.0);
@@ -465,17 +557,38 @@ fn fs(i: VsOut) -> FsOut {
 	let gather_max = gi_lateral_max(f32(side));
 	let far = dot(lat, lat) > gather_max * gather_max;
 	var indirect: vec3f;
+	var nee = vec3f(0.0);
 	if far {
 		indirect =
 			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	} else {
+		// The deterministic direct term for the dominant local light —
+		// see pick_dominant_light. Folded into `indirect` BEFORE the
+		// accumulation below, so temporal blending, the edit spheres and
+		// the atrous machinery all carry it with no new plumbing: a
+		// deterministic input just passes through an average unchanged.
+		var skip_cell = NEE_NO_CELL;
+		let pick = pick_dominant_light(sp, n);
+		if pick.valid {
+			skip_cell = pick.cell;
+			// Stop short of the light's own cell (the probe nee()'s 0.9
+			// margin) so the whole-cell emitter rule can't self-occlude.
+			let sh = gi_march(
+				side, rz.jitter.z, rz.cam.xz, sp, pick.dir,
+				max(pick.dist - 0.9, 0.0), GI_NEE_ITERS,
+			);
+			if !sh.hit {
+				nee = pick.radiance * (pick.ndl / max(pick.dist2, 1.0))
+					* medium_water_tr(sh.water);
+			}
+		}
 		// A second, decorrelated draw from the same sequence — sharing the
 		// sun ray's sample would tie the gather direction to the sun cone
 		// and correlate two estimates that must average independently.
 		let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 		let rd = cosine_hemi(n, ui);
 		let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
-		indirect = path_radiance(side, hit, rd);
+		indirect = path_radiance(side, hit, rd, skip_cell) + nee;
 	}
 	// One sun ray along the EXACT direction, offset inside a cone about
 	// twice the real sun's angular radius — but the offset is STATIC and
@@ -730,9 +843,14 @@ fn fs(i: VsOut) -> FsOut {
 				// gather path.
 				var prior = indirect;
 				if !far {
+					// Plus the deterministic NEE term (already computed):
+					// the cache holds torch light only at probe resolution,
+					// and a cave-mouth reveal beside a torch must not start
+					// its history at a dimmer pool than the one every
+					// following sample will vote for.
 					prior = gi_cache_at(
 						side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb
-					);
+					) + nee;
 				}
 				n_hist = N_PRIOR;
 				acc = mix(prior, indirect, 1.0 / N_PRIOR);

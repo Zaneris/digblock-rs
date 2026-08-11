@@ -739,6 +739,18 @@ impl GiDraw {
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D2,
 				),
+				// The emitter list (R20): the per-pixel NEE ray samples the
+				// same buffer the probe pass does. Second storage buffer in
+				// this pipeline's fragment stage (gi_lut is the first), well
+				// under the WebGPU baseline limit of 8.
+				f_entry(
+					5,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Storage { read_only: true },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
 			],
 		});
 		// gi_common.wgsl's group(2): the GI world data every direct
@@ -1058,6 +1070,10 @@ impl GiDraw {
 				wgpu::BindGroupEntry {
 					binding: 4,
 					resource: wgpu::BindingResource::TextureView(hist_sun),
+				},
+				wgpu::BindGroupEntry {
+					binding: 5,
+					resource: self.lights_buf.as_entire_binding(),
 				},
 			],
 		})
