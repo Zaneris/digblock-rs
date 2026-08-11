@@ -156,8 +156,15 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 	}
 }
 
-fn window_attrs(title: &str) -> winit::window::WindowAttributes {
+fn window_attrs(title: &str, size: Option<(u32, u32)>) -> winit::window::WindowAttributes {
 	let attrs = Window::default_attributes().with_title(title.to_owned());
+	// LOGICAL, so a retina display doubles it to the same physical size a
+	// browser canvas reports at devicePixelRatio 2 — which is the whole
+	// point of being able to ask for one.
+	let attrs = match size {
+		Some((w, h)) => attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h)),
+		None => attrs,
+	};
 	#[cfg(target_os = "ios")]
 	let attrs = {
 		use winit::platform::ios::WindowAttributesExtIOS;
@@ -390,7 +397,10 @@ impl<G: Game> App<G> {
 
 	fn init_all(&mut self, el: &ActiveEventLoop) {
 		log::info!("lifecycle: initial launch");
-		let window = Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap());
+		let window = Arc::new(
+			el.create_window(window_attrs(&self.options.title, self.options.window_size))
+				.unwrap(),
+		);
 		#[cfg(not(target_arch = "wasm32"))]
 		{
 			let (gpu, surface, config) =
@@ -497,7 +507,10 @@ impl<G: Game> App<G> {
 	fn resume_from(&mut self, s: Suspended, el: &ActiveEventLoop) {
 		log::info!("lifecycle: resume (recreating surface)");
 		let window = s.window.unwrap_or_else(|| {
-			Arc::new(el.create_window(window_attrs(&self.options.title)).unwrap())
+			Arc::new(
+				el.create_window(window_attrs(&self.options.title, self.options.window_size))
+					.unwrap(),
+			)
 		});
 		let (surface, config) = create_surface(&s.gpu, window.clone(), self.options.no_vsync);
 		// Engine pipelines/buffers are untouched — the Device survived.

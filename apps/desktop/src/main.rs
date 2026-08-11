@@ -43,6 +43,9 @@ fn main() {
 	//            forward and one back, instead of the 30 blocks/s flyover —
 	//            a screen-space artifact scales with screen motion, so the
 	//            two paths are two regimes)
+	//   --size WxH (logical window size; the GI resolve is half-res off
+	//            the surface, so this is what a cross-platform comparison
+	//            has to hold equal)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -101,6 +104,24 @@ fn main() {
 			// with screen motion, so the flyover and the walk are two
 			// regimes and a fix has to be measured in both.
 			"--walk" => config.walk = true,
+			// A specific window size, LOGICAL. The GI resolve is half-res off
+			// the surface, so its cost scales with this directly — which makes
+			// it the one thing a desktop-vs-web comparison must hold equal
+			// before any of its numbers mean anything.
+			"--size" => {
+				let v: String = parse_or_die("--size", args.next());
+				let (w, h) = v.split_once('x').unwrap_or_else(|| {
+					eprintln!("--size wants WxH, e.g. --size 1728x1117");
+					std::process::exit(2);
+				});
+				let parse = |s: &str| -> u32 {
+					s.parse().unwrap_or_else(|_| {
+						eprintln!("--size wants WxH, e.g. --size 1728x1117");
+						std::process::exit(2);
+					})
+				};
+				options.window_size = Some((parse(w), parse(h)));
+			}
 			"--no-vsync" => options.no_vsync = true,
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),

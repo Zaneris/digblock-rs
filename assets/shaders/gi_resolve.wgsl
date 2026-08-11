@@ -243,6 +243,20 @@ fn fs(i: VsOut) -> FsOut {
 	let dim = vec2f(textureDimensions(depth_tex));
 	let uv = vec2i(vec2f(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5) * dim);
 	let d = textureLoad(depth_tex, clamp(uv, vec2i(0), vec2i(dim) - 1), 0).r;
+	// World position and its screen derivatives, taken HERE — before the
+	// sky early-out and before the silhouette branch below — because a
+	// derivative may only be evaluated in UNIFORM control flow. Tint
+	// enforces that and naga does not, so taking them where they were
+	// used compiled clean on desktop and made `gi resolve` an INVALID
+	// pipeline in Chrome: no GI at all in the browser, every frame, since
+	// the exact-normal fallback was written. Evaluating them
+	// unconditionally is the whole fix; the value is free to be used
+	// inside a branch, only the call site has to be uniform.
+	let clip = vec4f(i.ndc, d, 1.0);
+	let wpos4 = rz.inv_view_proj * clip;
+	let p = wpos4.xyz / wpos4.w;
+	let ddx_p = dpdx(p);
+	let ddy_p = dpdy(p);
 	if d >= 1.0 {
 		// Sky: lit, no water, and a normal code of 255 that matches no
 		// real face — so a sky texel never wins a weight in the scene's
@@ -252,9 +266,6 @@ fn fs(i: VsOut) -> FsOut {
 		o.sun = vec4f(1.0, 255.0, 0.0, 1.0);
 		return o;
 	}
-	let clip = vec4f(i.ndc, d, 1.0);
-	let wpos4 = rz.inv_view_proj * clip;
-	let p = wpos4.xyz / wpos4.w;
 	// EXACT face normal, rasterized by the prepass. This was
 	// `normalize(cross(dpdy(p), dpdx(p)))` — a half-res derivative,
 	// correct only where the 2x2 quad lies on one face and garbage on
@@ -266,7 +277,7 @@ fn fs(i: VsOut) -> FsOut {
 		// says something is here — a half-res sample landing on the far
 		// side of a silhouette. Fall back to the derivative rather than
 		// indexing out of the table.
-		let g = normalize(cross(dpdy(p), dpdx(p)));
+		let g = normalize(cross(ddy_p, ddx_p));
 		let a = abs(g);
 		if a.x > a.y && a.x > a.z {
 			code = select(0u, 1u, g.x < 0.0);
