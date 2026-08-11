@@ -278,6 +278,34 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	return acc;
 }
 
+// A probe grid cell's texel in the toroidal atlas, and the two reads the
+// camera light needs off it. Indexing by the grid cell directly is not a
+// convenience: `gather_prev` takes a world POINT and snaps it with
+// `round(p / spacing)`, so handing it a RELOCATED probe centre — nudged a
+// whole block at a spacing of 2 — rounds to the neighbouring probe's
+// texel and silently reads the wrong one.
+fn prev_texel(g: vec3i) -> vec3i {
+	let dims = vec3i(gi.dims.xyz);
+	return ((g % dims) + dims) % dims;
+}
+
+fn prev_alive(g: vec3i) -> bool {
+	return textureLoad(prev_atlas, prev_texel(g), 0).a > 0.5;
+}
+
+// The mean of a probe's six axis irradiances — an omnidirectional
+// ambient, for the billboards and the viewmodel that have no normal to
+// gather about.
+fn prev_omni(g: vec3i) -> vec3f {
+	let dims = vec3i(gi.dims.xyz);
+	let t = prev_texel(g);
+	var acc = vec3f(0.0);
+	for (var a = 0; a < 6; a++) {
+		acc += textureLoad(prev_atlas, t + vec3i(0, 0, a * dims.z), 0).rgb;
+	}
+	return acc / 6.0;
+}
+
 // Radiance arriving at the probe from one ray direction. `rnd` selects
 // this ray's NEE sample.
 fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
@@ -430,24 +458,65 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 // position to gather at — spray billboards and the first-person
 // viewmodel. Dispatched with the C0 cascade's bind group (prev_atlas =
 // the front atlas, gi.dims = C0), after the probe update.
+// This used to snap the camera to the C0 lattice — `round(cam/2)*2`,
+// relocate, and read that ONE probe six times. Two things then went wrong
+// together, and both were quantized to that 2-block snap, which is why
+// they appeared and vanished with a step rather than fading. `gather_prev`
+// returns literal black for a probe buried in solid (rightly — see its
+// comment), so a single dead probe zeroed all six axes at once; and the
+// sun ray started from the same buried point, hit immediately, and
+// returned no sun. Against a cliff — which is exactly where a waterfall
+// is — `relocate` tries six neighbours and can find every one of them
+// solid, so the pair produced FULLY BLACK spray from some standing
+// positions and bright spray from a step away.
+//
+// The fragment-side gathers never had this: `gi_cascade_gather` blends
+// eight probes, drops the dead ones OUT of the weight instead of folding
+// their zero in, and falls back to the sky dome when nothing survives.
+// This is that same discipline, which is all it ever needed.
 @compute @workgroup_size(1)
 fn cam_light() {
-	let spacing = i32(gi.dims.w);
-	let g = vec3i(round(gi.cam.xyz / f32(spacing)));
-	let cell = relocate(g * spacing);
-	let p = vec3f(cell) + 0.5;
-	// Omnidirectional ambient: the mean of the 6 axis irradiances.
+	let spacing = f32(gi.dims.w);
+	let cam = gi.cam.xyz;
+	// Trilinear over the eight probes around the camera ITSELF, on
+	// gi_cascade_gather's grid convention so the hand and the world agree
+	// about where a probe is. No snap: the camera is a real position, and
+	// quantizing it was only ever a way to name one texel to read.
+	let base = floor(cam / spacing - 0.5);
+	let frac = cam / spacing - 0.5 - base;
 	var amb = vec3f(0.0);
-	amb += gather_prev(p, vec3f(1.0, 0.0, 0.0));
-	amb += gather_prev(p, vec3f(-1.0, 0.0, 0.0));
-	amb += gather_prev(p, vec3f(0.0, 1.0, 0.0));
-	amb += gather_prev(p, vec3f(0.0, -1.0, 0.0));
-	amb += gather_prev(p, vec3f(0.0, 0.0, 1.0));
-	amb += gather_prev(p, vec3f(0.0, 0.0, -1.0));
-	amb /= 6.0;
+	var wsum = 0.0;
+	for (var k = 0; k < 8; k++) {
+		let o = vec3i(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+		let tw = abs(vec3f(vec3i(1) - o) - frac);
+		let w = tw.x * tw.y * tw.z;
+		if w < 1e-4 {
+			continue;
+		}
+		let g = vec3i(base) + o;
+		// Buried probes leave the average instead of voting black into
+		// it. This is the whole fix: one dead probe used to be the only
+		// probe, so its zero WAS the answer.
+		if !prev_alive(g) {
+			continue;
+		}
+		amb += prev_omni(g) * w;
+		wsum += w;
+	}
+	if wsum > 0.0 {
+		amb /= wsum;
+	} else {
+		// Every candidate was buried. The camera is inside geometry (or
+		// in a pocket smaller than the probe spacing), and the honest
+		// answer is the dome rather than black — black is what made the
+		// spray disappear.
+		amb = sky_radiance(vec3f(0.0, 1.0, 0.0)) * 0.35;
+	}
 	var sv = vec3f(0.0);
 	if gi.sun.w > 0.5 {
-		let h = march(p, gi.sun.xyz, MAX_T);
+		// From the camera, not from a snapped lattice point that may sit
+		// on the far side of a wall from it.
+		let h = march(cam, gi.sun.xyz, MAX_T);
 		if !h.hit {
 			sv = medium_water_tr(h.water);
 		}
