@@ -96,6 +96,25 @@ float format" but that the mantissa must carry the smallest increment the histor
 asks for; `history_format_resolves_the_accumulator` in gi.rs pins N_MAX against the format
 so raising one without the other fails the build rather than the picture.
 
+**What is left is the probe cache's own transient, and it is not a restart bug.** With the
+freeze fixed, walked-vs-warped decays properly — 2.53 at 2 frames of settle, 1.69 at 30,
+1.04 at 120, 0.67 at 300, 0.200 at 1500. Two plausible causes were tested and both were
+measured out. Seeding a remapped probe from its converged neighbour toward the camera,
+instead of restarting it at alpha 1.0 on one 64-ray estimate, changed **nothing** at any
+settle length (2.530 -> 2.510, 1.693 -> 1.713, ...); injecting a deliberately absurd value
+down that same path moved only 3.3% of pixels, which is the real lesson — an age-0 probe is
+trilinearly averaged over 8 probes, bilaterally upsampled and then temporally accumulated,
+so it barely reaches the screen. The premise was wrong too: a texel is remapped only about
+every 128 frames of travel and is swept ~10 times in between, so the field is not
+"permanently mid-restart" while you walk. And raising `PROBES_PER_DISPATCH` to give a
+1-frame sweep — 16x the budget, no probe ever stale — bought only 21% at settle 2.
+
+So the transient is inherent to a world-space cache at this cadence, and the answer is not
+to sweep it harder but to stop making the near field depend on it: a per-pixel cosine ray
+terminating in the cache supplies local bounce immediately and leaves the cache carrying
+only the far tail. That is why Lumen and SHaRC both put a screen-space gather in front of a
+world cache, and it is the same missing ray that makes contact darkening impossible today.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by
