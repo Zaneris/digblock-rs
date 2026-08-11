@@ -15,7 +15,7 @@ use digblock_core::gi::{opacity, GiChunk, GiOpacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
-use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
+use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_DENOISE, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
 /// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
@@ -56,6 +56,13 @@ const MAX_LIGHTS: usize = 256;
 /// 24-bit mantissa puts that floor at ~1e-5 here, which is invisible;
 /// f16's put it at a quarter of the signal.
 pub const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+// The a-trous tap strides, one entry per iteration. Doubling the stride
+// instead of growing the kernel is the whole trick: strides 1 and 2 of a
+// 5x5 B3 spline cover 11x11 for 50 taps. A third iteration (stride 4) is
+// deliberately not here — it reaches 23x23, which on a half-res buffer is
+// most of a shadow.
+const ATROUS_STEPS: [f32; 2] = [1.0, 2.0];
 
 const SUN_CONE_COS: f32 = 0.999_961_9; // cos(0.5 degrees)
 
@@ -147,6 +154,11 @@ pub struct GiDraw {
 	/// sun DDA → the scene's two lighting inputs.
 	resolve_pipeline: wgpu::RenderPipeline,
 	resolve_bgl: wgpu::BindGroupLayout,
+	atrous_pipeline: wgpu::RenderPipeline,
+	atrous_bgl: wgpu::BindGroupLayout,
+	/// One uniform per a-trous iteration — see the comment where they are
+	/// created for why this cannot be a single rewritten buffer.
+	atrous_buf: [wgpu::Buffer; ATROUS_STEPS.len()],
 	resolve_buf: wgpu::Buffer,
 	/// Bound at the resolve's empty group 1 (every slot in a pipeline
 	/// layout must hold a bind group, empty or not).
@@ -240,6 +252,7 @@ impl GiDraw {
 		debug_probes: bool,
 	) -> Self {
 		let device = &gpu.device;
+		let queue = &gpu.queue;
 		let side = window_chunks * 16;
 		let window = device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("gi voxel window"),
@@ -773,6 +786,84 @@ impl GiDraw {
 			multiview: None,
 			cache: None,
 		});
+		// The resolve's spatial half. It reads only what the two lighting
+		// targets already carry, so its layout is a uniform and that pair —
+		// no world bindings, no moments buffer (gi_atrous.wgsl derives both
+		// sigmas analytically from the stored mean and sample count).
+		let atrous_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("gi atrous bgl"),
+			entries: &[
+				f_entry(
+					0,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Uniform,
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
+				ftex(
+					1,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+				ftex(
+					2,
+					wgpu::TextureSampleType::Float { filterable: false },
+					wgpu::TextureViewDimension::D2,
+				),
+			],
+		});
+		// One buffer per iteration rather than one rewritten between them:
+		// both passes are encoded into the same submission, so a single
+		// buffer would hand BOTH of them whichever stride was written last.
+		// The strides are compile-time constants anyway.
+		let atrous_buf: [wgpu::Buffer; ATROUS_STEPS.len()] = std::array::from_fn(|i| {
+			let b = device.create_buffer(&wgpu::BufferDescriptor {
+				label: Some("gi atrous uniform"),
+				size: 16,
+				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+				mapped_at_creation: false,
+			});
+			queue.write_buffer(
+				&b,
+				0,
+				bytemuck::cast_slice(&[ATROUS_STEPS[i], 0.0, 0.0, 0.0]),
+			);
+			b
+		});
+		let atrous_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("gi atrous"),
+			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::GI_ATROUS.into()),
+		});
+		let atrous_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("gi atrous layout"),
+			bind_group_layouts: &[&atrous_bgl],
+			push_constant_ranges: &[],
+		});
+		let atrous_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+			label: Some("gi atrous"),
+			layout: Some(&atrous_layout),
+			vertex: wgpu::VertexState {
+				module: &atrous_module,
+				entry_point: Some("vs"),
+				compilation_options: Default::default(),
+				buffers: &[],
+			},
+			primitive: wgpu::PrimitiveState {
+				topology: wgpu::PrimitiveTopology::TriangleList,
+				..Default::default()
+			},
+			depth_stencil: None,
+			multisample: Default::default(),
+			fragment: Some(wgpu::FragmentState {
+				module: &atrous_module,
+				entry_point: Some("fs"),
+				compilation_options: Default::default(),
+				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
+			}),
+			multiview: None,
+			cache: None,
+		});
 		// The scene pass's group 2: both resolve outputs, textureLoad'd
 		// by chunk.wgsl's bilateral upsample.
 		let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -814,6 +905,9 @@ impl GiDraw {
 			resolve_pipeline,
 			resolve_bgl,
 			resolve_buf,
+			atrous_pipeline,
+			atrous_bgl,
+			atrous_buf,
 			empty_bg,
 			gather_bgl,
 			gather_bind,
@@ -885,6 +979,69 @@ impl GiDraw {
 				},
 			],
 		})
+	}
+
+	/// Build one a-trous iteration's bind: its stride uniform plus the pair
+	/// it reads. Iteration `i` reads whichever pair the previous stage
+	/// wrote, so the caller owns the ping — there is no state here.
+	pub fn make_atrous_bind(
+		&self,
+		gpu: &Gpu,
+		iter: usize,
+		src_indirect: &wgpu::TextureView,
+		src_sun: &wgpu::TextureView,
+	) -> wgpu::BindGroup {
+		gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi atrous bg"),
+			layout: &self.atrous_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: self.atrous_buf[iter].as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(src_indirect),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: wgpu::BindingResource::TextureView(src_sun),
+				},
+			],
+		})
+	}
+
+	/// Encode one a-trous iteration: read one lighting pair, write the
+	/// other. Both are full-screen half-res passes with no depth.
+	pub fn encode_atrous(
+		&self,
+		encoder: &mut wgpu::CommandEncoder,
+		timer: Option<&GpuTimer>,
+		bind: &wgpu::BindGroup,
+		indirect_view: &wgpu::TextureView,
+		sun_view: &wgpu::TextureView,
+	) {
+		let attach = |view| {
+			Some(wgpu::RenderPassColorAttachment {
+				view,
+				resolve_target: None,
+				ops: wgpu::Operations {
+					load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+					store: wgpu::StoreOp::Store,
+				},
+				depth_slice: None,
+			})
+		};
+		let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+			label: Some("gi atrous"),
+			color_attachments: &[attach(indirect_view), attach(sun_view)],
+			depth_stencil_attachment: None,
+			timestamp_writes: timer.and_then(|t| t.writes(Q_GI_DENOISE)),
+			occlusion_query_set: None,
+		});
+		pass.set_pipeline(&self.atrous_pipeline);
+		pass.set_bind_group(0, bind, &[]);
+		pass.draw(0..3, 0..1);
 	}
 
 	/// Encode the half-res GI resolve into the two lighting targets.

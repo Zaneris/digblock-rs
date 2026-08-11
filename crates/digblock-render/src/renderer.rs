@@ -334,9 +334,6 @@ pub struct Renderer {
 	/// the GI resolve reconstructs world positions from, before any
 	/// shading runs.
 	prepass_pipeline: wgpu::RenderPipeline,
-	/// Which of the two GI target pairs this frame writes; the other is
-	/// its history. Flipped once per `render`.
-	gi_ping: usize,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
 	/// Fullscreen procedural sky, drawn after solids, before water.
@@ -442,22 +439,32 @@ struct FrameTargets {
 	blit_bg: wgpu::BindGroup,
 	/// Depth-blit group 0: the live depth texture.
 	depth_blit_bg: wgpu::BindGroup,
-	/// GI resolve outputs, half res, PING-PONGED: indirect rgb + view
-	/// distance, and sun visibility + normal code + water path + history
-	/// length. Two pairs with roles alternating per frame, so the resolve
-	/// reads last frame's while writing this frame's — never a copy.
-	/// Both rgba16f: the sun target used to be rgba8, which cannot hold a
-	/// running average (at a history length of 512 one frame contributes
-	/// 1/512 of a difference, which rounds to zero in 8 bits, and the
-	/// mean simply stops moving).
+	/// GI lighting pairs, half res: indirect rgb + view distance, and sun
+	/// visibility + normal code + water path + history length. Format is
+	/// `gi::GI_ACC_FORMAT` because both hold a RUNNING AVERAGE — rgba8 and
+	/// then rgba16f each failed the same way, their mantissa too short to
+	/// resolve a 1/512 update, which froze every pixel where it stood.
+	///
+	/// The roles are FIXED, not ping-ponged, because the a-trous filter
+	/// gives the frame a natural cycle:
+	///
+	///   [0] <- resolve            [0] -> atrous(stride 1) -> [1]
+	///   [1] -> atrous(stride 2) -> [0] -> the scene pass
+	///
+	/// so [1] holds the once-filtered image at the end of every frame, and
+	/// that is exactly what the next frame wants as history (SVGF feeds the
+	/// first iteration's output back, which converges faster than feeding
+	/// back the raw accumulation). Two pairs cover it with no copy and no
+	/// alternating index.
 	gi_indirect_view: [wgpu::TextureView; 2],
 	gi_sun_view: [wgpu::TextureView; 2],
-	/// Scene group 2 per ping: the pair chunk.wgsl textureLoad's.
-	gi_scene_bg: [wgpu::BindGroup; 2],
-	/// Resolve group 0 per ping: uniform + depth/normal taps + the OTHER
-	/// ping as history (the GI world data rides group 2 via
-	/// `GiDraw::gather_bind`).
-	gi_resolve_bg: [wgpu::BindGroup; 2],
+	/// Scene group 2: pair [0], the one chunk.wgsl textureLoad's.
+	gi_scene_bg: wgpu::BindGroup,
+	/// Resolve group 0: uniform + depth/normal taps + pair [1] as history
+	/// (the GI world data rides group 2 via `GiDraw::gather_bind`).
+	gi_resolve_bg: wgpu::BindGroup,
+	/// One per a-trous iteration, each bound to the pair it reads.
+	gi_atrous_bg: [wgpu::BindGroup; 2],
 }
 
 impl Renderer {
@@ -813,7 +820,6 @@ impl Renderer {
 		Self {
 			solid_pipeline,
 			prepass_pipeline,
-			gi_ping: 0,
 			water,
 			sky,
 			frame_buf,
@@ -1291,23 +1297,21 @@ impl Renderer {
 				],
 			})
 		};
-		let gi_scene_bg = [scene_bg(0), scene_bg(1)];
-		// Ping i writes targets[i] and reads targets[1 - i] as history.
-		let gi_resolve_bg = [
-			self.gi.make_resolve_bind(
-				gpu,
-				&depth_copy_view,
-				&normal_view,
-				&gi_indirect_view[1],
-				&gi_sun_view[1],
-			),
-			self.gi.make_resolve_bind(
-				gpu,
-				&depth_copy_view,
-				&normal_view,
-				&gi_indirect_view[0],
-				&gi_sun_view[0],
-			),
+		// The scene reads [0]; the resolve reads [1], which is where last
+		// frame's first a-trous iteration left the filtered image.
+		let gi_scene_bg = scene_bg(0);
+		let gi_resolve_bg = self.gi.make_resolve_bind(
+			gpu,
+			&depth_copy_view,
+			&normal_view,
+			&gi_indirect_view[1],
+			&gi_sun_view[1],
+		);
+		let gi_atrous_bg = [
+			self.gi
+				.make_atrous_bind(gpu, 0, &gi_indirect_view[0], &gi_sun_view[0]),
+			self.gi
+				.make_atrous_bind(gpu, 1, &gi_indirect_view[1], &gi_sun_view[1]),
 		];
 		// Fresh textures hold nothing: last frame's screen history went
 		// with them.
@@ -1325,6 +1329,7 @@ impl Renderer {
 			gi_sun_view,
 			gi_scene_bg,
 			gi_resolve_bg,
+			gi_atrous_bg,
 		});
 	}
 
@@ -1357,10 +1362,6 @@ impl Renderer {
 			nametags,
 		} = *scene;
 		self.ensure_targets(gpu, size);
-		// Alternate the GI pair BEFORE anything reads it, so the resolve
-		// writes one half while sampling the other as history.
-		self.gi_ping ^= 1;
-		let ping = self.gi_ping;
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
@@ -1510,11 +1511,27 @@ impl Renderer {
 				self.gpu_timer.as_ref(),
 				frame,
 				crate::gi::ResolveTargets {
-					bind: &targets.gi_resolve_bg[ping],
-					indirect_view: &targets.gi_indirect_view[ping],
-					sun_view: &targets.gi_sun_view[ping],
+					bind: &targets.gi_resolve_bg,
+					indirect_view: &targets.gi_indirect_view[0],
+					sun_view: &targets.gi_sun_view[0],
 				},
 			);
+			// The spatial half. Two edge-stopped a-trous iterations,
+			// [0] -> [1] -> [0], which leaves the scene reading [0] and the
+			// once-filtered image parked in [1] as next frame's history.
+			// Without this the resolve's only estimator is time, which forces
+			// a history so deep it smears under motion — see gi_atrous.wgsl.
+			for (i, bind) in targets.gi_atrous_bg.iter().enumerate() {
+				let out = 1 - i;
+				self.gi.encode_atrous(
+					&mut encoder,
+					self.gpu_timer.as_ref(),
+					bind,
+					&targets.gi_indirect_view[out],
+					&targets.gi_sun_view[out],
+				);
+				stats.draw_calls += 1;
+			}
 
 			// Scene pass: solids + sky into the offscreen color target;
 			// depth arrives from the prepass (Load, LessEqual).
@@ -1553,7 +1570,7 @@ impl Renderer {
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, &targets.gi_scene_bg[ping], &[]);
+				pass.set_bind_group(2, &targets.gi_scene_bg, &[]);
 				// Origins for every chunk, bound once — each draw selects
 				// its own with first_instance.
 				draw.bind(&mut pass);

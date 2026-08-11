@@ -98,6 +98,13 @@ struct GiResolve {
 // look accurate" actually means: ~5 s at 100 fps.
 const N_MAX = 512.0;
 
+// The floor the travel cap may not drive the average below, and the rate it
+// gets there: 1/(1 + k*travel) puts a texel of drift at ~170 frames and the
+// six-ish texels a walk moves the near ground at ~40. Below N_MOVING the
+// residual noise outruns what two a-trous iterations can absorb.
+const N_MOVING = 24.0;
+const TRAVEL_K = 2.0;
+
 // R2, the 2-D low-discrepancy sequence (Roberts 2018): the plastic
 // constant's reciprocal powers. Behind one function so a spatiotemporal
 // blue-noise tile can replace it — STBN is measurably better at 1 spp
@@ -336,22 +343,76 @@ fn fs(i: VsOut) -> FsOut {
 			let huv = vec2f(nd.x * 0.5 + 0.5, 0.5 - nd.y * 0.5);
 			if all(huv >= vec2f(0.0)) && all(huv <= vec2f(1.0)) {
 				let hdim = vec2f(textureDimensions(hist_indirect));
-				let ht = clamp(vec2i(huv * hdim), vec2i(0), vec2i(hdim) - 1);
-				let hi = textureLoad(hist_indirect, ht, 0);
-				let hs = textureLoad(hist_sun, ht, 0);
+				// BILINEAR, per tap validated. A nearest tap here is what
+				// smeared the image along the direction of travel: at half
+				// res a texel spans a large slice of world on any grazing
+				// surface, and rounding the reprojected position to the
+				// nearest one pulls history from a world point up to half a
+				// texel away. That error is not noise — the sub-texel phase
+				// drifts monotonically as the camera walks, so it is BIASED
+				// along the walk, and at 511/512 history weight the
+				// accumulated image advects with the player and then needs
+				// ~512 frames to decay. Neither validation below can catch
+				// it: the neighbouring texel is the same face at the same
+				// distance, just the wrong point on it.
+				let hp = huv * hdim - 0.5;
+				let b0 = floor(hp);
+				let f = hp - b0;
 				// Validate on the exact face code AND on the distance the
 				// point WOULD have been at from the old camera — comparing
 				// stored view distances directly would reject the whole
 				// screen the moment the camera moves.
 				let want = length(p - rz.prev_cam.xyz);
-				let ok = u32(hs.g) == code
-					&& abs(hi.w - want) <= 0.02 * max(want, 1.0);
-				if ok {
-					n_hist = min(hs.a + 1.0, N_MAX);
+				var wsum = 0.0;
+				var s_ind = vec3f(0.0);
+				var s_sun = 0.0;
+				var s_wat = 0.0;
+				var s_n = 0.0;
+				for (var k = 0; k < 4; k++) {
+					let off = vec2f(f32(k & 1), f32(k >> 1u));
+					let w = mix(1.0 - f.x, f.x, off.x) * mix(1.0 - f.y, f.y, off.y);
+					let t = vec2i(b0 + off);
+					if w <= 0.0 || any(t < vec2i(0)) || any(t >= vec2i(hdim)) {
+						continue;
+					}
+					let hi = textureLoad(hist_indirect, t, 0);
+					let hs = textureLoad(hist_sun, t, 0);
+					if u32(hs.g) != code || abs(hi.w - want) > 0.02 * max(want, 1.0) {
+						continue;
+					}
+					wsum += w;
+					s_ind += hi.rgb * w;
+					s_sun += hs.r * w;
+					s_wat += hs.b * w;
+					s_n += hs.a * w;
+				}
+				// Renormalize over the taps that survived, so a rejected
+				// corner darkens nothing — it just stops voting.
+				if wsum > 0.0 {
+					let inv = 1.0 / wsum;
+					// How deep an average this pixel is ALLOWED to keep.
+					// Reprojection is exact for static geometry, so the only
+					// thing a long history costs is the resampling done to
+					// carry it, and that is paid per texel of travel: a
+					// still camera reprojects onto itself, travels zero, and
+					// keeps every one of its 512 frames. A walking one drags
+					// its history several texels a frame, and a running
+					// average that deep smears along the walk (R9). Capping
+					// by travel is therefore not a motion heuristic bolted
+					// on — it is the statement of when reprojection is
+					// lossless, and it reads zero exactly when it is.
+					//
+					// What makes the short end affordable is gi_atrous:
+					// give up temporal samples and the spatial filter hands
+					// them back. Without it there is no setting of this that
+					// is both sharp under motion and clean at rest.
+					let travel = length(hp + 0.5 - i.pos.xy);
+					let cap = max(N_MAX / (1.0 + TRAVEL_K * travel), N_MOVING);
+					n_hist = min(min(s_n * inv + 1.0, N_MAX), cap);
 					let a = 1.0 / n_hist;
-					acc = mix(hi.rgb, indirect, a);
-					acc_sun = mix(hs.r, sv.x, a);
-					acc_water = mix(hs.b, sv.y, a);
+					acc = mix(s_ind * inv, indirect, a);
+					acc_sun = mix(s_sun * inv, sv.x, a);
+					acc_water = mix(s_wat * inv, sv.y, a);
 				}
 			}
 		}

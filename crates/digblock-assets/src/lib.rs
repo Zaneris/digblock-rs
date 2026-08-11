@@ -206,6 +206,11 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
 	);
+	/// The resolve's spatial half: an edge-stopping a-trous filter over the
+	/// two half-res lighting targets. Dependency-free on purpose — it reads
+	/// only what those targets already carry, so it needs neither the world
+	/// bindings nor a moments buffer.
+	pub const GI_ATROUS: &str = include_str!("../../../assets/shaders/gi_atrous.wgsl");
 	/// The shared preludes, validated STANDALONE as well as through
 	/// their consumers: a prelude that only ever compiles concatenated
 	/// can pick up a silent dependency on whatever happens to precede
@@ -218,7 +223,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 17] = [
+	pub const ALL: [(&str, &str); 18] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -233,6 +238,7 @@ pub mod shader {
 		("gi_probe.wgsl", GI_PROBE),
 		("gi_debug.wgsl", GI_DEBUG),
 		("gi_resolve.wgsl", GI_RESOLVE),
+		("gi_atrous.wgsl", GI_ATROUS),
 		("medium_common.wgsl", MEDIUM_COMMON),
 		("gi_dda.wgsl", GI_DDA),
 		("gi_common.wgsl", GI_COMMON),

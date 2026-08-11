@@ -34,9 +34,12 @@ Capture envs: `DIG_VAULT` (torch room — the NEE test), `DIG_ROOF` (sun under a
 
 Named here because this document previously described several of these as done:
 
-- **No a-trous spatial filter and no neighbourhood clamp.** The resolve accumulates
-  temporally and rejects on depth + face code; there is no variance estimate and no spatial
-  pass. Disocclusion is rejected rather than filtered.
+- **No neighbourhood clamp.** The a-trous filter exists (`gi_atrous.wgsl`, two iterations),
+  but the history is validated and travel-capped rather than clipped to the current frame's
+  local range. A clamp needs the current frame's neighbours, which means splitting the
+  resolve into a raw trace and an accumulate pass; at 1 spp its value is also doubtful,
+  since a 3x3 of one-ray samples has a sigma wide enough to admit almost anything. SVGF
+  itself does not use one. Disocclusion is still rejected rather than filtered.
 - **No per-pixel NEE.** The gather ray reaches emitters only by hitting them; the `lights`
   buffer is read by the probe kernel alone. A torch is therefore lit by the cascades plus
   whatever the gather ray happens to strike, not by a shadow ray drawn against the list.
@@ -78,6 +81,22 @@ readable at all.
 The A/B that matters is `--fly N --frames M` against `--warp N --frames M`: same pose, same
 duration, same everything except whether the first N frames moved. On a correct temporal
 system that difference decays to the noise floor.
+
+**`--walk` is the second regime, and it is the one players report from.** The bench path is
+a 30 blocks/s flyover twelve blocks up; a screen-space temporal artifact scales with how
+fast the IMAGE moves, so that path photographs one end of the range and a walk photographs
+the other — eye height, walking pace, ground a few blocks ahead, where one half-res texel
+covers far more world per pixel. `--walk` modifies either `--fly` or `--warp` to swap the
+flyover for an oscillation about the spawn point, one block forward and one back on a 1.5 s
+period at pitch -25°. It oscillates rather than travelling so the column under the feet
+stays fixed and the eye cannot step a whole block mid-path, invalidating history for a
+reason that is not the one under test. Repeat noise is 0.007 (warp) and 0.003 (fly).
+
+This matters more than a second data point: the smear R9 fixed measured 0.92 on the walk and
+2.84 on the flyover, and it was the WALK crop that showed it as a picture — the flyover's
+larger number is mostly disocclusion, which is not a bug. Read the two together, and crop
+before believing a global mean: R9's artifact sat on one shadow and the flat foreground
+diluted it by a factor of five.
 
 **The first thing it caught: the accumulator froze.** The resolve blends with `alpha = 1/n`
 up to `N_MAX = 512`, and the history was rgba16**float** — a 10-bit mantissa, so near a
@@ -129,8 +148,57 @@ relocation walk and an occlusion march at every primary pixel went away with it.
 cosine ray plus a 4-load cache lookup is cheaper than the gather it replaced.
 
 Being a 1-spp stochastic estimate, it costs a little at-rest noise: frame-to-frame 0.032 ->
-0.043, which is under a fifth of an 8-bit LSB and the reason the a-trous pass is still worth
-building rather than urgent.
+0.043, which is under a fifth of an 8-bit LSB.
+
+**Then a player reported a smear, and it was the a-trous pass being missing.** Walking
+forward dragged the shadow behind a block forward; walking back the lit ground ate it away.
+`--walk` reproduced it: 0.922 mean, and cropped to the pit a feathered grey trail pulled
+several blocks out of the shadow. The bisect was decisive — with accumulation switched off
+the walked and warped frames agree to **0.001 over 0.00% of pixels**, so the voxel window
+and both probe cascades are bit-identical either way and every bit of it lived in the screen
+accumulator. At `N_MAX = 16` the smear is simply gone and the crop matches the still frame;
+at 512 it is severe.
+
+The mechanism is resampling, not reprojection: reprojection is exact for static geometry,
+but the fetch still lands between texels, and carrying a running average through hundreds of
+those drags the image along the direction of travel. Three things were measured, in order:
+
+- **A nearest history tap was quantizing the fetch** (0.922 -> 0.695 walk, 2.84 -> 2.49
+  flyover). Bilinear, validated per tap, replaced it. Note it changes the resting image by
+  ~0.49 as well — concentrated at depth discontinuities, where a half-res reconstruction is
+  ambiguous whichever tap it picks.
+- **An adaptive cap keyed on the history's own 2x2 gradient did exactly nothing** — 0.695 ->
+  0.695, max 56 -> 56. It read the gradient from the ALREADY-SMEARED history, so the smear
+  flattens the edge that should have triggered it. Removed rather than tuned; a real
+  neighbourhood clamp needs the current frame's neighbours, which a fragment pass has not got.
+- **The cap belongs on reprojection travel**, which is the honest statement of when
+  reprojection is lossless. Travel is measurably zero at rest — a deliberately hypersensitive
+  `TRAVEL_K = 1000` still changed only 0.95% of pixels on a still camera — so a standing
+  player keeps all 512 frames and nothing is special-cased about standing still.
+
+None of that is affordable without a spatial filter, because a short history is a noisy one:
+`gi_atrous.wgsl` is SVGF's other half, two edge-stopping iterations at strides 1 and 2. It
+needs **no moments buffer**, which SVGF spends a third ping-ponged target on, because both
+estimators here have an analytic variance from data already stored — sun visibility is a
+mean of n Bernoulli trials, so its standard error is exactly `sqrt(p(1-p)/n)`.
+
+Final: walk 0.922 -> **0.578**, flyover 2.84 -> **2.08**, and the crop is clean. Cost, on a
+thermally settled machine, 110.4 -> **108.7 fps** (0.14 ms). The 5x5 B3 kernel SVGF specifies
+was built and measured too — 0.522 for 0.31 ms — and is the one to reach for if the history
+floor ever drops below `N_MOVING`. The filter changes a converged frame by 0.134 and skips
+entirely above `N_CONVERGED`, where it measures as a no-op.
+
+**The standing question this leaves is where the accumulator should live at all.** Screen
+space is used everywhere in the literature but SHORT: SVGF-class denoisers accumulate 4-32
+frames and take the rest spatially. Long-lived accumulation moved to world and surface space
+precisely because it does not reproject — Lumen's Surface Cache, NVIDIA's SHaRC, EA SEED's
+GIBS, and HPG 2024's on-surface caches, which drop the screen/world hybrid outright on the
+grounds that "no reprojection is necessary in between frames, as the data is directly stored
+on the surface". A voxel world gets that nearly free, since a face IS `(cell, axis, sign)`
+where Lumen needs mesh cards and SHaRC needs a spatial hash. What stops it being obvious is
+resolution: an affordable per-face cache is 4x4 texels per block face, and the sun's penumbra
+three blocks from its occluder is ~0.05 blocks wide, so it would quantize a nearly-sharp edge
+into quarter-block stairs exactly where a player is looking.
 
 ## Goals
 
