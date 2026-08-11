@@ -293,6 +293,11 @@ mod tests {
 	/// only symptom was a shadow ten blocks out sliding with the player
 	/// (R13). A two-state cap makes the relationship structural, and this
 	/// pins it so a future retune of either constant cannot re-open it.
+	///
+	/// Since the deterministic sun this trade covers only INDIRECT: the sun
+	/// stopped relying on the converged/skip gate at all (its filter is
+	/// penumbra-driven reconstruction that runs at rest too, and its
+	/// history is capped at N_SUN — see the pin below).
 	#[test]
 	fn a_moving_pixel_always_gets_the_spatial_filter() {
 		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
@@ -301,6 +306,30 @@ mod tests {
 			moving < converged,
 			"N_MOVING ({moving}) must stay under gi_atrous's N_CONVERGED ({converged}), \
 			 or a moving pixel takes neither a long history nor the filter"
+		);
+	}
+
+	/// The whole point of the deterministic sun ray is that its history is
+	/// too short to smear: a k-frame average can only be dragged k frames
+	/// far, whatever the resampling does. That guarantee lives in one
+	/// constant, and someone "fixing" residual edge shimmer by raising it
+	/// back toward N_MAX would silently re-open the artifact R9 and R13
+	/// spent weeks measuring. It must also not exceed N_MOVING — the sun's
+	/// cap is the tighter of the two by design, so a moving pixel's shared
+	/// counter never makes the sun blend SLOWER than the indirect it rides
+	/// with.
+	#[test]
+	fn sun_history_is_short_by_construction() {
+		let n_sun = wgsl_const(super::shader::GI_RESOLVE, "N_SUN");
+		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
+		assert!(
+			n_sun <= 16.0,
+			"N_SUN ({n_sun}) has grown past the antialiasing regime — a long sun history \
+			 is the smear, not a quality knob"
+		);
+		assert!(
+			n_sun <= moving,
+			"N_SUN ({n_sun}) must not exceed N_MOVING ({moving})"
 		);
 	}
 

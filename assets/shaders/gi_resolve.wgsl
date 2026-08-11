@@ -8,25 +8,45 @@
 // sun-visibility DDA per pixel — the entire replacement for the
 // shadow-map system.
 //
-// M4 made that sun ray STOCHASTIC and gave the pass a memory, which are
-// one change and not two. The ray now takes the exact, unquantized sun
-// direction jittered over a small cone, and the result accumulates
-// across frames through a reprojected history.
+// M4 made that sun ray STOCHASTIC and averaged it through a reprojected
+// history; the smear fixes that followed (R9, R13) established that the
+// screen history's RESAMPLING is the one artifact no validation can
+// remove — repeated off-lattice bilinear fetches drag the accumulated
+// image along the direction of travel, and the only signal sharp enough
+// to show it is this pass's sun visibility. So the sun ray is now
+// DETERMINISTIC per world point and the penumbra is reconstructed
+// SPATIALLY (the SIGMA / FidelityFX-shadow pattern): the cone jitter
+// still exists but is STATIC, hashed from eighth-block world cells — so
+// a world point asks the same question every frame from every camera,
+// and its history has nothing stochastic left to average (per PIXEL was
+// tried first and shimmered under rotation — see the jitter's comment in
+// fs below). `gi_sun_vis` returns the occluder
+// distance, occluder_t x tan(cone) is the physical penumbra width, and
+// gi_atrous blurs exactly that many texels. Sun history is then capped
+// at N_SUN frames (see below) purely to antialias the dithered edge, and
+// the smear is bounded by construction.
 //
-// Both halves are needed together. Quantization exists so PROBES hold
-// still between updates; on a per-pixel ray it is bug 1 — sun.rs pins
-// the caster to dir.z == 0 and gi.rs snaps it to 1/38 steps, so every
-// shadow ray is an exactly-planar, exactly-rational line through a
+// The jitter cannot be dropped outright. Quantization exists so PROBES
+// hold still between updates; on a per-pixel ray it is bug 1 — sun.rs
+// pins the caster to dir.z == 0 and gi.rs snaps it to 1/38 steps, so
+// every shadow ray is an exactly-planar, exactly-rational line through a
 // cubic lattice, which aliases identically in every z-slice and
 // periodically in x/y. That is the streaking, and it is pinned to the
-// WORLD, not the screen. A cone jitter breaks the rational slope per
-// pixel per frame; the history is what turns the resulting noise back
-// into an image. Without the history, jitter is just noise; without the
-// jitter, the history has nothing to average.
+// WORLD, not the screen. A per-pixel cone offset breaks the rational
+// slope pixel by pixel; making it static in TIME is what turns the old
+// temporal noise into a fixed dither the spatial filter resolves. The
+// offset also self-scales as a penumbra sampler: at 1 block of occluder
+// distance the direction spread displaces the tested edge by well under
+// a texel (contact shadows stay hard), at 20 blocks it dithers exactly
+// the band the true penumbra spans.
 //
 // MRT, both rgba32f (gi::GI_ACC_FORMAT): indirect rgb + view distance,
-// and sun visibility + face-normal code + sun-ray water path + history
-// length.
+// and sun visibility + (face-normal code packed with the history length,
+// `code + 256*n` — WebGPU's baseline 32-byte attachment budget is
+// exactly spent, so the penumbra width earned its channel by the pack,
+// and 255 + 256*512 sits well inside f32's 24-bit mantissa; every
+// reader is a textureLoad, nothing ever hardware-filters these) +
+// sun-ray water path + penumbra width in half-res texels.
 //
 // BOTH targets hold a running average, and that is what dictates the
 // format. rgba8 was first and could not: at a history length of 512 each
@@ -79,9 +99,20 @@ struct GiResolve {
 	prev_cam: vec4f,
 	// xyz EXACT unquantized dir toward the sun, w above-horizon (0/1).
 	sun_exact: vec4f,
-	// x frame counter (the sample sequence's rotation), y cos of the sun
-	// cone's half-angle, zw free.
+	// x frame counter (the sample sequence's rotation — the GATHER ray's;
+	// the sun ray's sequence is deliberately frozen at frame 0), y cos of
+	// the sun cone's half-angle, zw free.
 	jitter: vec4f,
+	// Screen-history invalidation spheres (xyz center, w radius; w = 0 is
+	// an empty slot) — the same ≤4 edit spheres the probe pass consumed
+	// this frame, held live for a few sweep periods by gi.rs. A lighting
+	// edit (a torch placed, a wall dug) changes radiance on surfaces whose
+	// face code and depth never change, and a resting pixel at n = 512
+	// admits that change at 1/512 a frame — the light pool would fade in
+	// over seconds. Inside a sphere the history cap drops to N_MOVING, the
+	// same short-history + a-trous regime motion already uses, so the
+	// change lands in ~24 frames.
+	inval: array<vec4f, 4>,
 }
 
 @group(0) @binding(0) var<uniform> rz: GiResolve;
@@ -100,8 +131,38 @@ const N_MAX = 512.0;
 
 // How deep an average a MOVING pixel may keep. Below this the residual
 // noise outruns what two a-trous iterations can absorb; SVGF-class
-// denoisers live at 4-32 for the same reason.
-const N_MOVING = 24.0;
+// denoisers live at 4-32 for the same reason. Since the deterministic
+// sun this cap governs INDIRECT alone (the sun has its own, tighter
+// N_SUN), which is what finally allowed raising it: pre-R14 the sun
+// smear scaled with this number and pinned it at 24, while the 1-spp
+// gather's moving flicker — very visible in a torch-lit interior, where
+// indirect is the only light — wanted it deeper. Indirect is smooth, so
+// the extra history buys flicker reduction without visible smear; the
+// walk-regime rows outside the shadow band are the gate.
+const N_MOVING = 48.0;
+
+// How deep the SUN average may ever get, still or not. The sun estimate
+// is deterministic per pixel now, so history buys it nothing but edge
+// antialiasing where the static dither flips — a dozen frames is plenty —
+// and everything a long history costs (the resampling smear R9/R13
+// chased) it no longer pays. This cap, not the filter, is what makes the
+// smear bounded BY CONSTRUCTION: a 12-frame history can only be dragged
+// 12 frames far. Indirect keeps the full n — its 1-spp gather is
+// genuinely stochastic and does not smear, being smooth.
+const N_SUN = 12.0;
+
+// tan of the sun cone's half-angle (0.5 degrees) — must match
+// SUN_CONE_COS in gi.rs, pinned by `the_penumbra_knows_the_cone` in
+// digblock-assets. occluder_t x this = the physical penumbra width in
+// blocks; the screen derivatives turn it into texels per pixel.
+const SUN_TAN = 0.0087269;
+
+// The widest penumbra the a-trous can reconstruct, in half-res texels:
+// its two iterations reach stride 1 + 2 taps scaled up to 4x for wide
+// penumbras (gi_atrous.wgsl), 12 texels of combined support. Beyond
+// this a shadow renders sharper than physical — which the stochastic
+// version could not represent either at a 24-frame moving history.
+const PEN_MAX = 12.0;
 
 // How far the reprojected fetch may miss its own texel, in texels, and
 // still be treated as having landed on it.
@@ -276,10 +337,10 @@ fn fs(i: VsOut) -> FsOut {
 	if d >= 1.0 {
 		// Sky: lit, no water, and a normal code of 255 that matches no
 		// real face — so a sky texel never wins a weight in the scene's
-		// bilateral upsample, and a history length of 1 so nothing
-		// accumulates against it.
+		// bilateral upsample, and a history length of 1 (packed with the
+		// code) so nothing accumulates against it. Penumbra 0.
 		o.indirect = vec4f(0.0, 0.0, 0.0, 1e9);
-		o.sun = vec4f(1.0, 255.0, 0.0, 1.0);
+		o.sun = vec4f(1.0, 255.0 + 256.0, 0.0, 0.0);
 		return o;
 	}
 	// EXACT face normal, rasterized by the prepass. This was
@@ -369,15 +430,44 @@ fn fs(i: VsOut) -> FsOut {
 		let hit = gi_march(side, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
 		indirect = path_radiance(side, hit, rd);
 	}
-	// One sun ray along the EXACT direction, jittered over a cone about
-	// twice the real sun's angular radius. That gives a physical
-	// penumbra — sharp at contact, softening with distance to the
-	// occluder — for free, since it is the same single ray either way.
-	let u = sample2(uv, rz.jitter.x);
+	// One sun ray along the EXACT direction, offset inside a cone about
+	// twice the real sun's angular radius — but the offset is STATIC and
+	// anchored to the WORLD, so the answer is deterministic FOR A WORLD
+	// POINT and the penumbra comes from the occluder distance instead of
+	// from time. See the header for why the offset stays at all (lattice
+	// resonance).
+	//
+	// World-anchored, not screen-anchored, and the difference is a
+	// flicker that shipped and came back: a screen-hashed offset is
+	// static per PIXEL, but a moving camera slides every world point
+	// across the pixels, re-asking a different fixed question each frame
+	// — penumbra bands shimmered under rotation (measured +0.08..+0.16
+	// consecutive-frame delta in the mid-frame terrain bands on the
+	// flyover, and rotation is exactly the motion a player's mouse makes).
+	// Hashing eighth-block world cells gives a point the same offset from
+	// every camera. The hash point is pushed a sixteenth INTO the block
+	// behind the face, because the shading point sits exactly on the
+	// lattice plane the quantization cuts along — on the knife edge, the
+	// f32 reconstruction wobble would flip cells frame to frame, which is
+	// the flicker again by another route.
+	let jq = floor((sp - n * 0.0625) * 8.0);
+	let jh = fract(sin(dot(jq, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
+	let u = vec2f(jh, fract(jh * 1.6180339887));
 	var sdir = rz.sun_exact;
 	sdir = vec4f(sample_cone(sdir.xyz, u, rz.jitter.y), sdir.w);
 	let sv = gi_sun_vis(side, rz.cam.xz, sdir, sp, 320);
 	let view_dist = length(p - rz.cam.xyz);
+	// Penumbra width: occluder distance x tan(cone half-angle) is the
+	// physical width in blocks; dividing by this texel's world footprint
+	// (the derivatives, already taken unconditionally above) converts it
+	// to half-res texels with the projection AND the surface's grazing
+	// angle both accounted for — a grazing texel spans more world, so the
+	// same world-width penumbra is fewer texels there, which is correct.
+	// Lit pixels answer 0; gi_atrous spreads the width outward from the
+	// shadowed side (max over taps), which is what lets the lit half of
+	// the edge blur too.
+	let texel_world = max(max(length(ddx_p), length(ddy_p)), 1e-4);
+	let pen = clamp(sv.z * SUN_TAN / texel_world, 0.0, PEN_MAX);
 
 	// Reproject into last frame. Exact for static geometry, so this needs
 	// no motion vectors — only a validity test.
@@ -435,14 +525,18 @@ fn fs(i: VsOut) -> FsOut {
 					}
 					let hi = textureLoad(hist_indirect, t, 0);
 					let hs = textureLoad(hist_sun, t, 0);
-					if u32(hs.g) != code || abs(hi.w - want) > 0.02 * max(want, 1.0) {
+					// g packs `code + 256*n` — low bits validate, high
+					// bits are the history length (sun.a now carries the
+					// penumbra width instead).
+					let hg = u32(hs.g);
+					if (hg & 255u) != code || abs(hi.w - want) > 0.02 * max(want, 1.0) {
 						continue;
 					}
 					wsum += w;
 					s_ind += hi.rgb * w;
 					s_sun += hs.r * w;
 					s_wat += hs.b * w;
-					s_n += hs.a * w;
+					s_n += f32(hg >> 8u) * w;
 				}
 				// Renormalize over the taps that survived, so a rejected
 				// corner darkens nothing — it just stops voting.
@@ -476,12 +570,27 @@ fn fs(i: VsOut) -> FsOut {
 					// give up temporal samples and the spatial filter hands
 					// them back. Without it there is no setting of this that
 					// is both sharp under motion and clean at rest.
-					let cap = select(N_MOVING, N_MAX, still);
+					var cap = select(N_MOVING, N_MAX, still);
+					// A lighting edit near this surface: the probes are
+					// already re-tracing it, so let the screen follow at
+					// the short-history rate instead of 1/512.
+					for (var si = 0; si < 4; si++) {
+						let s = rz.inval[si];
+						if s.w > 0.0 && distance(p, s.xyz) < s.w {
+							cap = min(cap, N_MOVING);
+						}
+					}
 					n_hist = min(min(s_n * inv + 1.0, N_MAX), cap);
 					let a = 1.0 / n_hist;
 					acc = mix(s_ind * inv, indirect, a);
-					acc_sun = mix(s_sun * inv, sv.x, a);
-					acc_water = mix(s_wat * inv, sv.y, a);
+					// The sun blends at its own, much shorter depth — the
+					// estimate is deterministic, so this converges to the
+					// same answer and only the response time differs. The
+					// water path rides the sun's alpha: it is part of the
+					// same ray.
+					let a_sun = 1.0 / min(n_hist, N_SUN);
+					acc_sun = mix(s_sun * inv, sv.x, a_sun);
+					acc_water = mix(s_wat * inv, sv.y, a_sun);
 				}
 			}
 		}
@@ -490,10 +599,13 @@ fn fs(i: VsOut) -> FsOut {
 		n_hist = 1.0;
 	}
 	o.indirect = vec4f(acc, view_dist);
-	// r = sun visibility, g = normal code, b = the sun ray's water path
-	// in blocks, a = history length. The path travels rather than a
-	// transmittance so the scene shader can apply medium_common's
-	// per-channel WATER_SIGMA — the same water the view ray goes through.
-	o.sun = vec4f(acc_sun, f32(code), acc_water, n_hist);
+	// r = sun visibility, g = normal code + 256 x history length (round
+	// keeps the pack exact in f32; the lost fraction perturbs next
+	// frame's alpha by under 1/n^2), b = the sun ray's water path in
+	// blocks, a = penumbra width in half-res texels. The path travels
+	// rather than a transmittance so the scene shader can apply
+	// medium_common's per-channel WATER_SIGMA — the same water the view
+	// ray goes through.
+	o.sun = vec4f(acc_sun, f32(code) + 256.0 * round(n_hist), acc_water, pen);
 	return o;
 }

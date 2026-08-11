@@ -66,6 +66,19 @@ const ATROUS_STEPS: [f32; 2] = [1.0, 2.0];
 
 const SUN_CONE_COS: f32 = 0.999_961_9; // cos(0.5 degrees)
 
+/// How long a consumed edit sphere keeps capping the resolve's screen
+/// history (frames). A lighting edit changes radiance on surfaces whose
+/// face code and depth never change, and a resting pixel at n = 512 admits
+/// the change at 1/512 a frame — a placed torch's pool would fade in over
+/// seconds. The probes re-trace an age-reset probe on the sweep's next
+/// visit (a full C0 sweep is 24576/512 = 48 frames), so two periods holds
+/// the screen at the short-history rate until the cache underneath it has
+/// settled, multi-bounce included.
+const RESOLVE_INVAL_FRAMES: u32 = 96;
+/// Screen-cap radius around an edit, in blocks: C1's invalidation radius,
+/// which is also about how far a torch (light 14) reaches.
+const RESOLVE_INVAL_RADIUS: f32 = 16.0;
+
 /// Below this cos between consecutive caster directions, the sun did not
 /// drift — it was TELEPORTED (`/time`). ~5.7 degrees is far more than the
 /// world clock moves in a frame and far less than any admin jump.
@@ -150,6 +163,11 @@ pub struct GiDraw {
 	lights_buf: wgpu::Buffer,
 	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
 	inval_queue: Vec<[f32; 3]>,
+	/// Spheres the probe pass consumed, held live so the RESOLVE keeps
+	/// capping screen history around them while the probes re-converge
+	/// (position + remaining frames; ≤4, newest win — the uniform has
+	/// exactly four slots).
+	resolve_inval: Vec<([f32; 3], u32)>,
 	/// The half-res resolve pass (gi_resolve.wgsl): probes + per-pixel
 	/// sun DDA → the scene's two lighting inputs.
 	resolve_pipeline: wgpu::RenderPipeline,
@@ -737,10 +755,12 @@ impl GiDraw {
 		});
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
-			// 2 mat4 + 10 vec4. Grew at M4 by prev_view_proj, the previous
-			// camera + history-valid flag, the exact caster, and the
-			// sample-sequence lane.
-			size: 288,
+			// 2 mat4 + 10 vec4 + 4 invalidation spheres. Grew at M4 by
+			// prev_view_proj, the previous camera + history-valid flag, the
+			// exact caster, and the sample-sequence lane; the spheres came
+			// with the deterministic sun (screen history follows a lighting
+			// edit at the short rate).
+			size: 352,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -902,6 +922,7 @@ impl GiDraw {
 			lights_dirty: false,
 			lights_buf,
 			inval_queue: Vec::new(),
+			resolve_inval: Vec::new(),
 			resolve_pipeline,
 			resolve_bgl,
 			resolve_buf,
@@ -1059,7 +1080,7 @@ impl GiDraw {
 			sun_view,
 		} = out;
 		let side = (self.window_chunks * 16) as f32;
-		let mut data = Vec::with_capacity(288);
+		let mut data = Vec::with_capacity(352);
 		for col in frame.inv_view_proj {
 			data.extend_from_slice(bytemuck::cast_slice(&col));
 		}
@@ -1118,6 +1139,18 @@ impl GiDraw {
 			0.0f32,
 			0.0f32,
 		]));
+		// The live invalidation spheres, decayed here because this runs
+		// exactly once per frame. w = 0 marks an empty slot.
+		for i in 0..4 {
+			let s = self.resolve_inval.get(i).map_or([0.0f32; 4], |(p, _)| {
+				[p[0], p[1], p[2], RESOLVE_INVAL_RADIUS]
+			});
+			data.extend_from_slice(bytemuck::cast_slice(&s));
+		}
+		for e in &mut self.resolve_inval {
+			e.1 -= 1;
+		}
+		self.resolve_inval.retain(|e| e.1 > 0);
 		gpu.queue.write_buffer(&self.resolve_buf, 0, &data);
 		let attach = |view| {
 			Some(wgpu::RenderPassColorAttachment {
@@ -1354,6 +1387,16 @@ impl GiDraw {
 		let spheres: Vec<[f32; 4]> = {
 			let take = self.inval_queue.len().min(4);
 			let drained: Vec<[f32; 3]> = self.inval_queue.drain(..take).collect();
+			// What the probes start re-tracing this frame, the resolve's
+			// screen history must stop trusting for a while — same spheres,
+			// held live across RESOLVE_INVAL_FRAMES (newest win; the
+			// resolve uniform has exactly four slots).
+			for p in &drained {
+				if self.resolve_inval.len() >= 4 {
+					self.resolve_inval.remove(0);
+				}
+				self.resolve_inval.push((*p, RESOLVE_INVAL_FRAMES));
+			}
 			(0..4)
 				.map(|i| {
 					drained
@@ -1574,6 +1617,84 @@ mod tests {
 			"{GI_ACC_FORMAT:?} with N_MAX {n_max} freezes the average while it is still \
 			 {stall:.4} out (one 8-bit LSB is {one_lsb:.4}) — the running mean stops moving \
 			 and every pixel keeps whatever it held when the camera stopped"
+		);
+	}
+
+	/// Read a `const NAME = <number>;` out of a WGSL source (the pins
+	/// below hold shader constants against Rust ones, so they read the
+	/// shader rather than duplicating the number).
+	fn wgsl_f32(src: &str, name: &str) -> f32 {
+		let pat = format!("const {name} = ");
+		let at = src
+			.find(&pat)
+			.unwrap_or_else(|| panic!("{name}: not declared"));
+		let rest = &src[at + pat.len()..];
+		let end = rest
+			.find(';')
+			.unwrap_or_else(|| panic!("{name}: unterminated"));
+		rest[..end]
+			.trim()
+			.parse()
+			.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
+	}
+
+	/// The sun target's g channel packs `code + 256 * n`, and every reader
+	/// unpacks with integer bit-ops — which only works while the packed
+	/// integer is EXACT in the accumulator format. rgba32f holds integers
+	/// to 2^24; someone dropping the target to rgba16f "because the sun
+	/// history is short now" would corrupt the pack (and the indirect
+	/// counter inside it, which still climbs to N_MAX) long before the
+	/// average itself froze.
+	#[test]
+	fn packed_metadata_stays_exact() {
+		let n_max = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_MAX");
+		let mantissa_bits = match GI_ACC_FORMAT {
+			wgpu::TextureFormat::Rgba32Float => 23,
+			wgpu::TextureFormat::Rgba16Float => 10,
+			wgpu::TextureFormat::Rgba8Unorm => 8,
+			other => panic!("unknown accumulator format {other:?} — add its mantissa here"),
+		};
+		let packed_max = 255.0 + 256.0 * n_max;
+		let exact_to = 2f32.powi(mantissa_bits + 1);
+		assert!(
+			packed_max < exact_to,
+			"code + 256*N_MAX ({packed_max}) does not round-trip in {GI_ACC_FORMAT:?} \
+			 (integers are exact only below {exact_to}) — the face code and history \
+			 length come back corrupted"
+		);
+	}
+
+	/// The resolve turns the occluder distance into a penumbra width with
+	/// SUN_TAN, which must be the tangent of the SAME cone the per-pixel
+	/// direction offset samples (SUN_CONE_COS) — otherwise the dithered
+	/// edge band and the reconstruction kernel disagree about how wide the
+	/// penumbra is, and one of them shows.
+	#[test]
+	fn the_penumbra_knows_the_cone() {
+		let sun_tan = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "SUN_TAN");
+		let want = SUN_CONE_COS.acos().tan();
+		let rel = (sun_tan - want).abs() / want;
+		assert!(
+			rel < 0.01,
+			"SUN_TAN ({sun_tan}) is not tan(acos(SUN_CONE_COS)) = {want} — the cone and \
+			 the reconstruction width have drifted apart"
+		);
+	}
+
+	/// The widest penumbra the resolve will store (PEN_MAX) must fit
+	/// inside what the filter can actually spread: R taps per side, per
+	/// iteration, at that iteration's stride, scaled by at most
+	/// SUN_STRIDE_MAX. Widening one constant without the other leaves
+	/// shadows that claim a width the kernel never delivers.
+	#[test]
+	fn the_penumbra_fits_the_filter() {
+		let pen_max = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "PEN_MAX");
+		let stride_max = wgsl_f32(digblock_assets::shader::GI_ATROUS, "SUN_STRIDE_MAX");
+		let reach: f32 = ATROUS_STEPS.iter().map(|s| s * stride_max).sum();
+		assert!(
+			pen_max <= reach,
+			"PEN_MAX ({pen_max}) exceeds the filter's combined support ({reach} texels: \
+			 strides {ATROUS_STEPS:?} x SUN_STRIDE_MAX {stride_max})"
 		);
 	}
 

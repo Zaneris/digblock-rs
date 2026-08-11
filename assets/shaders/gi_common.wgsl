@@ -123,6 +123,12 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 //        caster is below the horizon
 //   .y = water cells crossed — the submerged PATH LENGTH, not an
 //        attenuation
+//   .z = the distance (blocks, `sun` is unit) at which the blocking cell
+//        was entered, 0 when nothing blocked. The resolve turns this into
+//        a penumbra width — occluder distance x tan(sun radius) is the
+//        physical penumbra, reconstructed spatially instead of waited for
+//        temporally — and the DDA already carries it as `r.t`, so a
+//        blocked ray answers it for free.
 //
 // Returning the path instead of a transmittance is what leaves exactly
 // one water extinction constant in the engine. This used to end in
@@ -136,9 +142,9 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 // Cells, not exact chord lengths: a shallow ray crosses a cell over a
 // longer path than a steep one. That approximation predates this and is
 // left alone; M4's trace carries real segment lengths.
-fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec2f {
+fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec3f {
 	if sun.w < 0.5 {
-		return vec2f(0.0, 0.0);
+		return vec3f(0.0, 0.0, 0.0);
 	}
 	let dir = sun.xyz;
 	let o = p + dir * GI_SURFACE_EPS;
@@ -190,14 +196,14 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 		if v != 0u {
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
-				return vec2f(0.0, water);
+				return vec3f(0.0, water, r.t);
 			}
 			if op == 1u {
 				water += 1.0;
 			}
 		}
 	}
-	return vec2f(1.0, water);
+	return vec3f(1.0, water, 0.0);
 }
 
 // A general march, for the final gather's ray — the one thing `gi_occluded`

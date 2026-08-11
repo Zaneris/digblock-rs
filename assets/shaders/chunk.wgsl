@@ -182,7 +182,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				best = ind;
 				best_sun = sn;
 			}
-			if u32(sn.g) != i.ncode {
+			// The low 8 bits are the face code; the high bits carry the
+			// history length (gi_resolve packs them so the penumbra width
+			// could have sun.a).
+			if (u32(sn.g) & 255u) != i.ncode {
 				continue;
 			}
 			matched = true;

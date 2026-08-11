@@ -352,6 +352,91 @@ resolution: an affordable per-face cache is 4x4 texels per block face, and the s
 three blocks from its occluder is ~0.05 blocks wide, so it would quantize a nearly-sharp edge
 into quarter-block stairs exactly where a player is looking.
 
+### R14 — the sun ray stopped being an estimate
+
+R13's standing question dissolves once the right question is asked: the only reason sun
+visibility needed a LONG screen history at all was that the penumbra was estimated with one
+random cone sample per pixel per frame — a 1-spp Bernoulli trial that takes hundreds of
+frames to converge. Every smear fix so far tuned how that history is carried; R14 removes
+the need for it. This is the production shadow-denoiser pattern (NVIDIA SIGMA, AMD
+FidelityFX): trace toward the sun's CENTER deterministically, record the occluder distance,
+and reconstruct the penumbra SPATIALLY with a filter width of `occluder_t x tan(cone)`. The
+reopen condition R13 set for the world-space cache — "converged while walking becomes a
+requirement" — is met without building one, by making the signal cheap to converge instead
+of expensive to carry.
+
+The pieces, each load-bearing:
+
+- **`gi_sun_vis` returns the occluder distance** — free, it is the DDA's own `r.t` at the
+  blocked return. The resolve converts it to half-res texels through the screen derivatives
+  (already computed unconditionally for Tint), so projection and grazing angle are both
+  accounted for per pixel, with no new uniform plumbing.
+- **The cone offset is STATIC, and anchored to the WORLD.** The offset cannot be dropped
+  (the caster is planar and rational — dropping it is the lattice resonance), but it can
+  stop being temporal noise: hashed from eighth-block world cells (the hash point pushed a
+  sixteenth INTO the block behind the face, because a shading point sits exactly on the
+  lattice plane the quantization cuts along), a world point asks the same question every
+  frame FROM EVERY CAMERA. Screen-hashed was built first and shimmered: a moving camera
+  slides every world point across the pixels, re-asking a different fixed question each
+  frame — measured +0.08..0.16 consecutive-frame flicker in the mid terrain bands on the
+  flyover, and mouse-look is exactly that motion at full screen speed. The world anchor is
+  world-space accumulation's stability property without its storage.
+- **Sun history is capped at `N_SUN = 12` frames, still or moving** — enough to antialias
+  the dither, short enough that smear is bounded BY CONSTRUCTION (a 12-frame average can
+  only be dragged 12 frames). Swept {8, 12, 16} on the shadow band: 1.395 / 1.339 / 1.426 —
+  8 shows the dither through, 16 re-admits drag; 12 stands. Indirect keeps its own cap.
+- **`n` moved into the sun target's g channel** (`code + 256*round(n)`, exact in f32's
+  mantissa, pinned by `packed_metadata_stays_exact`) — WebGPU's baseline 32-byte attachment
+  budget is spent, so the penumbra width earned sun.a by the pack. Every reader is a
+  `textureLoad` masking `& 255u`.
+- **`gi_atrous` gates per signal now.** Indirect keeps the original SVGF trade (filter
+  below `N_CONVERGED`, skip above). The sun's filter is not denoising but RECONSTRUCTION,
+  so it runs at rest too — a deterministic ray never builds a penumbra in time, and the old
+  skip would have shipped stair-edged shadows on every still frame. Inside the penumbra
+  regime there is deliberately NO luminance edge-stop (the 0/1 boundary is the thing to
+  blur; pen -> 0 collapses the kernel to identity, so contact stays hard), the width itself
+  spreads (max over accepted taps, so the LIT side of an edge blurs by iteration 2), and
+  the sun taps' stride scales up to 4x for wide penumbras (`the_penumbra_fits_the_filter`
+  pins PEN_MAX to the combined support). One shared tap ring serves indirect, Bernoulli
+  sun and the spread — splitting them into three loops was built first and measured
+  +0.32 ms; sharing the loads brought it back.
+- **`N_MOVING` rose 24 -> 48, and R14 is what made that legal.** Pre-R14 the sun smear
+  scaled with it and pinned it; with the sun on its own cap, deeper indirect history buys
+  flicker without smear. The 1-spp gather's moving flicker is very visible in a torch-lit
+  interior (DIG_VAULT on the walk path, consecutive-frame diff): 0.812 at 24 -> 0.693 at
+  48 -> 0.632 at 96 — but 96 overshoots, the indirect's own resampling blur returns
+  (shadow band 0.777 -> 1.133, non-shadow rows 0.607 -> 0.625). 48 is the sweet spot on
+  both axes at once. Note the vault metric is IDENTICAL pre/post R14 at equal N_MOVING —
+  that flicker predates R14 and was unmasked by the smear's removal, not caused.
+- **Lighting edits invalidate screen history.** The probe pass already consumed <=4 edit
+  spheres a frame; the same spheres now ride the resolve uniform for ~2 sweep periods and
+  cap `n_hist` at `N_MOVING` inside them — a placed torch's pool lands in ~a quarter
+  second instead of fading in over hundreds of frames on surfaces whose face code and
+  depth never change. Continuous time-of-day drift gets the same property free from
+  `N_SUN`; the `SUN_JUMP_COS` full reset stays for `/time`.
+
+Measured on `--walk` against the fixed converged reference, shadow band (the rows where the
+between-build delta lives — everything outside them is bit-identical across builds, which
+is itself the cleanest proof the sun change touched only the sun):
+
+| shadow band, walked vs converged  | pre-R14 | R14 (screen-hash) | R14 (world-anchor + 48) |
+|-----------------------------------|--------:|------------------:|------------------------:|
+| residual                          |  1.803  |            1.339  |                  0.777  |
+| excess over the non-shadow floor  |  1.17   |            0.72   |                  0.17   |
+
+At-rest frame-to-frame stability halved (0.133 -> 0.068 — the resting dither no longer
+flickers at all, it is a constant). The four capture envs moved only in penumbra texture;
+the vault (sun-free) is byte-for-byte the same lighting.
+
+**Measurement traps this round added to the list:** a seedless capture rolls a NEW WORLD
+(two "repeat" runs once compared two different planets); the walk pair needs `--tod` frozen
+or the 3000-frame reference sits under a different sun than the walked run and the diff
+measures the sky; `--frames` is the TOTAL frame the screenshot fires at (`--fly 600` wants
+`--frames 601`, not 1); `--tod` is dev-profile-only; and consecutive `just bench` runs
+drift thermally by more than the effects under test — only interleaved brackets are
+comparable, and the flyover's consecutive-frame diff cannot see rotation-only artifacts
+because its translation term dominates.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

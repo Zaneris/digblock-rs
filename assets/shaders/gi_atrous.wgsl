@@ -21,16 +21,30 @@
 // spatial filter removes: it buys back the samples a short history gives
 // up, so the history no longer has to be the only estimator.
 //
-// The engine keeps a LONG history anyway, because the cap that shortens it
-// is driven by reprojection travel (see gi_resolve.wgsl) and travel is
-// exactly zero when the camera holds still. So a still camera still
-// converges 512 frames deep with the filter switched off underneath it,
-// and only a moving one pays.
+// Two signals, and since the sun ray went deterministic they are in two
+// different BUSINESSES here, which is why each has its own gate:
 //
-// Two signals, deliberately still separate: sun visibility is near-binary
-// and high-frequency, indirect is smooth. They are filtered through the
-// same kernel but their own sigmas, which is the whole reason SVGF and
-// Lumen both keep them apart.
+// - INDIRECT is a genuinely stochastic 1-spp gather. Its regime is the
+//   original SVGF trade: filter while the history is short (n below
+//   N_CONVERGED), shut off once the temporal estimate has converged —
+//   measured a no-op there (mean change 0.00-0.08 where n sat at N_MAX).
+//
+// - SUN is deterministic per pixel with a static dither, and its filter
+//   is not denoising at all: it is RECONSTRUCTION. gi_resolve stores the
+//   physical penumbra width (occluder distance x cone tangent, in
+//   texels) in sun.a, and this pass blurs the hard 0/1 answer across
+//   exactly that many texels — the SIGMA / FidelityFX-shadow pattern.
+//   That means it must run AT REST TOO (a deterministic ray never builds
+//   a penumbra in time, so skipping at high n would ship stair-edged
+//   shadows on every still frame), it must NOT edge-stop on the sun
+//   value inside the penumbra (the 0/1 boundary is exactly the thing to
+//   blur into a gradient — pen -> 0 collapses the kernel to identity, so
+//   contact shadows stay hard without any luminance guard), and it
+//   spreads the width itself (max over accepted taps) so the LIT side of
+//   an edge, whose own ray answered pen = 0, blurs symmetrically by the
+//   second iteration. Where pen is sub-texel and the history is still
+//   short, the old Bernoulli path stands — that regime is noise, not a
+//   penumbra.
 //
 // NO MOMENT BUFFER. SVGF estimates variance by accumulating first and
 // second moments of luminance in a third target. This pass does not need
@@ -62,10 +76,12 @@ struct Atrous {
 const H = array<f32, 3>(0.25, 0.5, 0.25);
 const R = 1;
 
-// Above this the temporal estimate has already converged and the filter is
-// measurably a no-op — the near ground, where n sits at N_MAX, showed a
-// mean change of 0.00-0.08 with it running. Skipping it there is free at
-// rest, which is most of the time a player spends looking at anything.
+// Above this the temporal estimate has already converged and the INDIRECT
+// filter is measurably a no-op — the near ground, where n sits at N_MAX,
+// showed a mean change of 0.00-0.08 with it running. Skipping it there is
+// free at rest, which is most of the time a player spends looking at
+// anything. The sun reconstruction deliberately does NOT share this gate —
+// see the header.
 const N_CONVERGED = 256.0;
 
 // How many sigmas of disagreement it takes to stop the filter. Lower is a
@@ -79,6 +95,15 @@ const IND_SIGMA_MIN = 0.02;
 // than this is a different surface, not a neighbour — and on a grazing
 // plane consecutive texels legitimately differ, so it scales with stride.
 const DEPTH_K = 0.02;
+
+// Below this penumbra width (half-res texels) the edge is sharper than a
+// texel and there is nothing to reconstruct.
+const PEN_MIN = 0.5;
+// The sun taps' stride multiplier tops out here: with base strides 1 and 2
+// the two iterations then reach 1*4 + 2*4 = 12 texels of support, which is
+// gi_resolve's PEN_MAX — the two constants are pinned together by
+// `the_penumbra_fits_the_filter` in digblock-assets.
+const SUN_STRIDE_MAX = 4.0;
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -109,36 +134,41 @@ fn fs(i: VsOut) -> FsOut {
 	let ci = textureLoad(src_indirect, c, 0);
 	let cs = textureLoad(src_sun, c, 0);
 	var o: FsOut;
-	// Metadata rides through untouched: view distance, the exact face code
-	// and the history length are what the NEXT frame validates and filters
-	// against, and a filtered code is not a code.
+	// Metadata rides through untouched: view distance and the packed face
+	// code + history length are what the NEXT frame validates and filters
+	// against, and a filtered code is not a code. The penumbra width in
+	// sun.a is the one exception — it is spread below, deliberately.
 	o.indirect = ci;
 	o.sun = cs;
-	let code = u32(cs.g);
+	let cg = u32(cs.g);
+	let code = cg & 255u;
 	// Sky. It carries no lighting and must keep the sentinel code 255 that
 	// loses every weight in the scene's bilateral upsample.
 	if code > 5u {
 		return o;
 	}
-	let n = max(cs.a, 1.0);
-	if n >= N_CONVERGED {
-		return o;
-	}
-	// The analytic sigmas — see the header. Both shrink as 1/sqrt(n), so a
-	// pixel the temporal filter has converged admits almost nothing and the
-	// picture is left alone; a pixel one frame old admits its whole
-	// neighbourhood. That is the entire adaptivity, and it needs no motion
-	// test because n already carries one.
-	let p = clamp(cs.r, 0.0, 1.0);
-	let sun_sigma = max(sqrt(p * (1.0 - p) / n), SUN_SIGMA_MIN);
+	let n = max(f32(cg >> 8u), 1.0);
+	let step = i32(at.step.x);
+
+	// ---- One ring at the base stride serves three customers from the
+	// same 8 tap loads: the indirect gather (SVGF's original trade), the
+	// Bernoulli sun gather (used only if this pixel stays sub-texel), and
+	// the penumbra-width spread — a lit pixel cannot know it borders a
+	// shadow without looking, so the spread runs for every surface pixel;
+	// max over same-surface taps, written back to sun.a, is what lets the
+	// LIT half of an edge blur by iteration 2. Splitting these into three
+	// loops was built first and measured 0.32 ms over the old shader;
+	// sharing the loads brought it back.
+	let filter_ind = n < N_CONVERGED;
 	let cl = lum(ci.rgb);
 	let ind_sigma = max(cl / sqrt(n), IND_SIGMA_MIN);
-	let step = i32(at.step.x);
+	let p = clamp(cs.r, 0.0, 1.0);
+	let sun_sigma = max(sqrt(p * (1.0 - p) / n), SUN_SIGMA_MIN);
 	let dtol = DEPTH_K * at.step.x * max(ci.w, 1.0);
-
+	var pen = cs.a;
 	var w_ind = H[R] * H[R];
-	var w_sun = w_ind;
 	var a_ind = ci.rgb * w_ind;
+	var w_sun = w_ind;
 	var a_sun = cs.r * w_sun;
 	var a_wat = cs.b * w_sun;
 	for (var dy = -R; dy <= R; dy++) {
@@ -153,28 +183,75 @@ fn fs(i: VsOut) -> FsOut {
 			let ti = textureLoad(src_indirect, t, 0);
 			let ts = textureLoad(src_sun, t, 0);
 			// A different face is a different surface. The prepass
-			// rasterizes this code exactly, so this is a hard reject and not
-			// a weight — which is the same reason chunk.wgsl's bilateral
-			// upsample can compare it bit-for-bit.
-			if u32(ts.g) != code || abs(ti.w - ci.w) > dtol {
+			// rasterizes this code exactly, so this is a hard reject and
+			// not a weight — which is the same reason chunk.wgsl's
+			// bilateral upsample can compare it bit-for-bit.
+			if (u32(ts.g) & 255u) != code || abs(ti.w - ci.w) > dtol {
 				continue;
 			}
+			pen = max(pen, ts.a);
 			let h = H[dx + R] * H[dy + R];
 			// Edge stopping on the signals themselves. Without this the
-			// kernel blurs straight across a shadow boundary on a flat
+			// kernel blurs straight across a lighting boundary on a flat
 			// floor, where depth and normal are identical and only the
-			// lighting differs — which is most of what there is to protect
-			// in a world made of flat floors.
-			let ws = h * exp(-abs(ts.r - cs.r) / (SIGMA_L * sun_sigma));
+			// lighting differs.
 			let wi = h * exp(-abs(lum(ti.rgb) - cl) / (SIGMA_L * ind_sigma));
+			w_ind += wi;
+			a_ind += ti.rgb * wi;
+			let ws = h * exp(-abs(ts.r - cs.r) / (SIGMA_L * sun_sigma));
 			w_sun += ws;
 			a_sun += ts.r * ws;
 			a_wat += ts.b * ws;
-			w_ind += wi;
-			a_ind += ti.rgb * wi;
 		}
 	}
-	o.indirect = vec4f(a_ind / w_ind, ci.w);
-	o.sun = vec4f(a_sun / w_sun, cs.g, a_wat / w_sun, cs.a);
+	if filter_ind {
+		o.indirect = vec4f(a_ind / w_ind, ci.w);
+	}
+
+	if pen >= PEN_MIN {
+		// Penumbra regime: a Gaussian of the width physics asked for, no
+		// edge-stop on the sun value (the 0/1 step is exactly the thing to
+		// blur into a gradient), stride scaled up so wide penumbras fit
+		// inside a 3x3 ring. Water rides the same weights — it is part of
+		// the same ray. Only penumbra pixels pay this second ring.
+		let scale = clamp(ceil(pen / 3.0), 1.0, SUN_STRIDE_MAX);
+		let sstep = step * i32(scale);
+		let sdtol = dtol * scale;
+		// Treat the width as ~2 sigma so the kernel's reach matches it.
+		let sigma = max(pen * 0.5, PEN_MIN);
+		var wp = H[R] * H[R];
+		var ap = cs.r * wp;
+		var awp = cs.b * wp;
+		for (var dy = -R; dy <= R; dy++) {
+			for (var dx = -R; dx <= R; dx++) {
+				if dx == 0 && dy == 0 {
+					continue;
+				}
+				let t = c + vec2i(dx, dy) * sstep;
+				if any(t < vec2i(0)) || any(t >= dim) {
+					continue;
+				}
+				let ti = textureLoad(src_indirect, t, 0);
+				let ts = textureLoad(src_sun, t, 0);
+				if (u32(ts.g) & 255u) != code || abs(ti.w - ci.w) > sdtol {
+					continue;
+				}
+				let d = length(vec2f(f32(dx), f32(dy)) * f32(sstep));
+				let wg = H[dx + R] * H[dy + R] * exp(-0.5 * d * d / (sigma * sigma));
+				wp += wg;
+				ap += ts.r * wg;
+				awp += ts.b * wg;
+			}
+		}
+		o.sun = vec4f(ap / wp, cs.g, awp / wp, pen);
+	} else if n < N_CONVERGED {
+		// Sub-texel penumbra with a short history: not a gradient to
+		// reconstruct but residual noise where the static dither flips —
+		// the Bernoulli sums from the shared ring absorb it.
+		o.sun = vec4f(a_sun / w_sun, cs.g, a_wat / w_sun, pen);
+	} else {
+		// Converged interior: untouched but for the spread width.
+		o.sun = vec4f(cs.r, cs.g, cs.b, pen);
+	}
 	return o;
 }
