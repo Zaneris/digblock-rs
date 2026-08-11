@@ -252,11 +252,49 @@ fn albedo_of(v: u32) -> vec3f {
 }
 
 // Last frame's 6-axis irradiance at a world position along a normal.
+// Is `p` inside this cascade's window at all? The atlas is toroidal, so
+// `g % dims` ALWAYS yields a texel — just one serving a different world
+// cell once you leave the window. Rays reach MAX_T while C0 covers only
+// dims * spacing, so without this a distant hit folds a different part of
+// the world into this probe's bounce.
+//
+// The fragment-side gathers got this at R3 (`gi_in_cascade`). This is the
+// same bug on the compute side, and it is the worse half: a fragment that
+// reads a wrapped probe is wrong for one pixel for one frame, whereas a
+// PROBE that reads one folds the wrong radiance into its own stored value
+// and hands it on as bounce, every sweep, to everything that gathers it.
+fn prev_in_cascade(p: vec3f) -> bool {
+	let spacing = f32(gi.dims.w);
+	let half = vec3f(gi.dims.xyz) * spacing * 0.5;
+	return all(abs(p - gi.cam.xyz) < half - vec3f(spacing));
+}
+
 fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	let dims = vec3i(gi.dims.xyz);
 	let spacing = f32(gi.dims.w);
+	if !prev_in_cascade(p) {
+		// Beyond coverage there is no probe for `p`. The analytic dome is
+		// what the fragment side falls through to, and the same 0.35 —
+		// answering with a wrapped read instead is what this exists to
+		// stop, and answering with zero would darken every distant bounce.
+		return sky_radiance(n) * 0.35;
+	}
 	let g = vec3i(round(p / spacing));
 	let t = ((g % dims) + dims) % dims;
+	// Is this texel still serving the world cell we are asking about? The
+	// window is toroidal, so a texel is REMAPPED to a new world cell as
+	// the camera travels, and it keeps the old cell's radiance until the
+	// sweep reaches it. `update_probes` already computes this checksum and
+	// resets the probe's age on a mismatch — but only when it gets there.
+	// Reading it here is what stops the interval between the remap and the
+	// re-sweep from feeding another place's light into this probe's bounce
+	// and STORING it.
+	//
+	// This matters more since the cadence cut: a full sweep is 48 frames
+	// now rather than 12, so the stale window is four times longer.
+	if (textureLoad(flags_tex, t).r & 0xffff0000u) != checksum(g) {
+		return sky_radiance(n) * 0.35;
+	}
 	// Pinned twin of gi_common's `gi_probe_alive`. A probe buried in
 	// solid stored black, and this is the site that SPREAD it: a live
 	// probe would sample its buried neighbour, fold the zero into its
