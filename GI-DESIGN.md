@@ -487,6 +487,37 @@ in its shadowed distant bands and that is the intended trade read by a metric th
 bias but cannot see variance: those bands now show smooth cache lighting for the ~8 frames
 a reveal used to spend as speckle. The vault's converged still is unchanged (0.07).
 
+Two follow-ups from the first play test, same day:
+
+- **The prior is `gi_cache_at`, not `gi_indirect`.** Priming is bursty by nature — a camera
+  swing into a cave mouth reveals a hundred thousand half-res pixels in ONE frame — and the
+  full cascade blend is ~112 loads per call (8 probes × relocation walk × occlusion DDA,
+  twice), a call class already measured at 107 -> 69 fps when it ran per-pixel. That burst
+  was a visible frame spike on every cave look-in. The 4-load nearest-probe lookup that
+  already terminates every gather path is plenty for a prior that decays out in N_PRIOR
+  frames.
+- **The history depth tolerance widens to the surface's own gradient — but only on a
+  total strict miss** (SVGF's `fwidth(z)` rule, the one this system had skipped): a flat 2%
+  rejected every tap on every frame for any surface seen nearly edge-on — an east face
+  viewed looking north — because adjacent half-res texels on a grazing plane legitimately
+  span more depth than that. Those surfaces churned at n = 1 as a distracting flicker band
+  precisely where a face turns away. The tap loop now runs strict-first: pass 0 is the old
+  flat tolerance byte for byte, and only when it comes up EMPTY with a same-face near-miss
+  on record does a second pass rerun with the tolerance widened to `GRAZE_K` (2) texels of
+  the pixel's own per-texel depth span (`texel_world`, already live for the penumbra),
+  capped at `PRIME_MARGIN` base tolerances — sharing the reveal threshold, so a silhouette
+  gap stays rejected and the graze/reveal classification cannot disagree with the
+  acceptance rule. An always-widened single pass was built first and measured +0.2-0.4 ms
+  on the bench for the whole screen's benefit of nobody; the two-pass form confines every
+  new instruction to the churn population. Measured (always-widened variant; the two-pass
+  accepts a superset of nothing it accepted): the walk's smear guard IMPROVED
+  (walked-vs-conv 0.69 -> 0.66 — the walk translates toward/away, so its taps already
+  passed; rotation past an edge-on face is the case no harness path exercises, which is
+  exactly why the artifact survived this long), vault moving flicker 1.21 -> 1.15, and the
+  vault's walked-vs-converged gave back R15's earlier gain to sit at parity with pre-R15
+  (2.92 vs 2.90) — the deliberate trade of churn for a mild motion-blur that recovers at
+  rest, plus a prior that is coarser by four loads.
+
 ### R16 — a slab shadows as a slab
 
 Shaped cells classified OPAQUE in the voxel window ("the same v1 approximation fluid

@@ -249,6 +249,10 @@ pub mod shader {
 mod tests {
 	/// Validate every WGSL shader without needing a GPU, so CI catches
 	/// shader errors on any runner.
+	/// KNOWN GAP: this crate's naga is not wgpu's parser — `pass` is a
+	/// reserved word at runtime that validated fine here and killed the
+	/// resolve pipeline in the running engine (R15 follow-up). A shader
+	/// change still needs one live launch before it is believed.
 	#[test]
 	fn shaders_parse_and_validate() {
 		for (name, src) in super::shader::ALL {

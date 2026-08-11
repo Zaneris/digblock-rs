@@ -181,6 +181,13 @@ const N_PRIOR = 8.0;
 // is where the reveal ghost lives.
 const PRIME_SUN_MAX = 0.2;
 
+// How many texels of the surface's own depth gradient the history depth
+// tolerance widens to (the taps sit within one texel of the fetch, plus
+// the sub-texel phase). Grazing surfaces span more than the flat 2% per
+// texel, and a tolerance that ignores that is a flicker band exactly
+// where a face turns edge-on.
+const GRAZE_K = 2.0;
+
 // How many multiples of the depth tolerance a same-face tap may miss by
 // and still testify that the surface is merely GRAZED, not revealed —
 // the gate that keeps the prime off the near ground (see `grazed` in
@@ -563,37 +570,67 @@ fn fs(i: VsOut) -> FsOut {
 				// stored view distances directly would reject the whole
 				// screen the moment the camera moves.
 				let want = length(p - rz.prev_cam.xyz);
+				let base = 0.02 * max(want, 1.0);
 				var wsum = 0.0;
 				var s_ind = vec3f(0.0);
 				var s_sun = 0.0;
 				var s_wat = 0.0;
 				var s_n = 0.0;
-				for (var k = 0; k < 4; k++) {
-					let off = vec2f(f32(k & 1), f32(k >> 1u));
-					let w = mix(1.0 - f.x, f.x, off.x) * mix(1.0 - f.y, f.y, off.y);
-					let t = vec2i(b0 + off);
-					if w <= 0.0 || any(t < vec2i(0)) || any(t >= vec2i(hdim)) {
-						continue;
+				// Two passes, strict first. Pass 0 is the original flat 2%
+				// tolerance and the original loop, byte for byte — the hot
+				// path pays nothing new. Pass 1 exists for one population:
+				// a surface seen nearly edge-on (an east face viewed
+				// looking north) legitimately spans MORE depth than 2% per
+				// half-res texel, so the flat tolerance rejected all four
+				// taps on every frame with any camera motion at all, and
+				// those faces churned at n = 1 as a distracting flicker
+				// band. Only when the strict pass comes up EMPTY with a
+				// same-face near-miss on record does the loop rerun with
+				// the tolerance widened to the surface's own per-texel
+				// depth span (GRAZE_K x texel_world, SVGF's fwidth(z)
+				// rule — already live for the penumbra; an always-widened
+				// single pass was built first and measured +0.2-0.4 ms
+				// for the whole screen's benefit of nobody). The widening
+				// is capped at PRIME_MARGIN base tolerances, sharing the
+				// reveal threshold, so a silhouette gap stays rejected
+				// and the graze/reveal classification cannot disagree
+				// with the acceptance rule.
+				for (var relax = 0; relax < 2; relax++) {
+					let tol = select(
+						base,
+						clamp(GRAZE_K * texel_world, base, PRIME_MARGIN * base),
+						relax == 1,
+					);
+					for (var k = 0; k < 4; k++) {
+						let off = vec2f(f32(k & 1), f32(k >> 1u));
+						let w = mix(1.0 - f.x, f.x, off.x) * mix(1.0 - f.y, f.y, off.y);
+						let t = vec2i(b0 + off);
+						if w <= 0.0 || any(t < vec2i(0)) || any(t >= vec2i(hdim)) {
+							continue;
+						}
+						let hi = textureLoad(hist_indirect, t, 0);
+						let hs = textureLoad(hist_sun, t, 0);
+						// g packs `code + 256*n` — low bits validate, high
+						// bits are the history length (sun.a now carries
+						// the penumbra width instead).
+						let hg = u32(hs.g);
+						if (hg & 255u) != code {
+							continue;
+						}
+						let miss = abs(hi.w - want);
+						if miss > tol {
+							grazed = grazed || miss <= PRIME_MARGIN * base;
+							continue;
+						}
+						wsum += w;
+						s_ind += hi.rgb * w;
+						s_sun += hs.r * w;
+						s_wat += hs.b * w;
+						s_n += f32(hg >> 8u) * w;
 					}
-					let hi = textureLoad(hist_indirect, t, 0);
-					let hs = textureLoad(hist_sun, t, 0);
-					// g packs `code + 256*n` — low bits validate, high
-					// bits are the history length (sun.a now carries the
-					// penumbra width instead).
-					let hg = u32(hs.g);
-					if (hg & 255u) != code {
-						continue;
+					if wsum > 0.0 || !grazed {
+						break;
 					}
-					let derr = abs(hi.w - want) / (0.02 * max(want, 1.0));
-					if derr > 1.0 {
-						grazed = grazed || derr <= PRIME_MARGIN;
-						continue;
-					}
-					wsum += w;
-					s_ind += hi.rgb * w;
-					s_sun += hs.r * w;
-					s_wat += hs.b * w;
-					s_n += f32(hg >> 8u) * w;
 				}
 				// Renormalize over the taps that survived, so a rejected
 				// corner darkens nothing — it just stops voting.
@@ -681,10 +718,20 @@ fn fs(i: VsOut) -> FsOut {
 			let sun_lit =
 				sv.x * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
 			if sun_lit < PRIME_SUN_MAX {
+				// The CHEAP cache lookup, not the full cascade blend.
+				// Priming is bursty by nature — a camera swing into a
+				// cave reveals a hundred thousand pixels in one frame —
+				// and gi_indirect is ~112 loads (8 probes x relocation
+				// walk x occlusion DDA, twice); that class of call at
+				// the resolve's end measured 107 -> 69 fps once already.
+				// gi_cache_at is 4 loads, and a prior that decays out in
+				// N_PRIOR frames has no business being more exact than
+				// the multi-bounce term that already terminates every
+				// gather path.
 				var prior = indirect;
 				if !far {
-					prior = gi_indirect(
-						side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4)
+					prior = gi_cache_at(
+						side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb
 					);
 				}
 				n_hist = N_PRIOR;
