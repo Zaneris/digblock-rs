@@ -39,7 +39,8 @@ Named here because this document previously described several of these as done:
   local range. A clamp needs the current frame's neighbours, which means splitting the
   resolve into a raw trace and an accumulate pass; at 1 spp its value is also doubtful,
   since a 3x3 of one-ray samples has a sigma wide enough to admit almost anything. SVGF
-  itself does not use one. Disocclusion is still rejected rather than filtered.
+  itself does not use one. Disocclusion is rejected and then, where indirect is the light,
+  PRIMED from the probe cache rather than filtered (R15).
 - **No per-pixel NEE.** The gather ray reaches emitters only by hitting them; the `lights`
   buffer is read by the probe kernel alone. A torch is therefore lit by the cascades plus
   whatever the gather ray happens to strike, not by a shadow ray drawn against the list.
@@ -437,6 +438,94 @@ drift thermally by more than the effects under test — only interleaved bracket
 comparable, and the flyover's consecutive-frame diff cannot see rotation-only artifacts
 because its translation term dominates.
 
+### R15 — a reveal starts from the cache, not from noise
+
+The reported artifact: in indirectly-lit places — in shadow under a cliff, in a cave —
+surfaces the camera reveals (looking down a cave mouth, strafing or backpedalling so new
+world enters at the screen edge) "ghost" for a split second before settling. The mechanism
+is the disocclusion path: a pixel with no valid history restarted at n = 1 from its own raw
+1-spp gather, and where indirect light is the WHOLE signal that single ray is speckle — a
+cave floor's ray mostly finds dark walls and occasionally the bright mouth — so the
+revealed region visibly developed while n climbed through N_MOVING. Sun-lit reveals never
+showed it because the deterministic sun ray is converged from its first frame.
+
+The fix is the one the literature converges on (AMD GI-1.0's hash-grid fallback, Lumen's
+world-probe fallback at failed reprojections, NVIDIA's irradiance-cache disocclusion mix;
+ReBLUR's "history fix" pass is the same idea built by someone with no world cache to read):
+answer the no-history pixel from the world-space cache. This engine already owns one — the
+probe cascades, converged and resident — so a disoccluded pixel now primes its accumulator
+with the cascade blend at `N_PRIOR = 8` virtual samples and lets the ordinary 1/n machinery
+decay the prime out. No new buffers, no per-frame blend: the prime is an initial condition,
+and its residual weight after k real samples is ~8/(8+k).
+
+Two gates, both measured in rather than assumed, because the first cut fired on every miss
+and was a 9x regression:
+
+- **A grazing miss is not a reveal.** The near ground fails all four history taps by a
+  hair on most walking frames (adjacent half-res texels on a grazing plane legitimately
+  differ by more than the 2% depth tolerance), and the walk's backward half reveals the
+  whole bottom screen edge every cycle. Primed indiscriminately, walked-vs-converged went
+  0.69 -> 6.3 with the bottom third at 13.1, linear in N_PRIOR — the near field locked at
+  cache lighting, which is exactly the contact darkening the cache cannot see. So a
+  same-face tap that missed depth by ≤ `PRIME_MARGIN` (8) tolerances testifies the surface
+  never left the screen, and the pixel keeps the old unbiased n = 1 restart. A true
+  reveal's tap held the OCCLUDER, whole blocks nearer — different in kind, not degree.
+- **Only where indirect is the light.** A distance ramp was tried first (no prime under 4
+  blocks, full by 20) and just moved the bias to whatever band the ramp allowed — the
+  flyover's 12-25-block ground came back at 4.33 against 1.41. The partition that works is
+  the sun: where `sun_vis x N·L x above_horizon` clears `PRIME_SUN_MAX` (0.2) the gather is
+  a minor correction and the prime only pollutes it; where it doesn't — shadow, cave,
+  night, exactly where the ghost lives — the prime runs at full strength.
+
+Gated, the sun-lit regimes return to baseline (walk 0.68 vs 0.69, and the flyover's
+consecutive-frame flicker actually improves, 0.215 -> 0.197, because cache values are
+temporally stable where speckle is not), and the target case moves: DIG_VAULT under
+`--walk`, the torch-lit interior where every reveal is indirect, drops its walk flicker
+0.443 -> 0.332 (bottom third 0.462 -> 0.220, half) and its walked-vs-converged from 2.90 to
+2.61 with the wall band 4.16 -> 3.06. The flyover's walked-vs-converged rises 1.41 -> 1.83
+in its shadowed distant bands and that is the intended trade read by a metric that counts
+bias but cannot see variance: those bands now show smooth cache lighting for the ~8 frames
+a reveal used to spend as speckle. The vault's converged still is unchanged (0.07).
+
+### R16 — a slab shadows as a slab
+
+Shaped cells classified OPAQUE in the voxel window ("the same v1 approximation fluid
+makes"), so a 1/3 slab cast a full-block shadow onto the slab beside it, a torch post
+shaded like a pillar, and an open door blocked its own doorway. The literature check
+turned up the same artifact and the same fix shipped in SEUS PTGI ("blocks which are not a
+full-sized cube... aren't considered properly in lighting" -> per-shape sub-box tests
+behind a quality toggle) and formalized as ESVO's per-voxel "contours" (Laine & Karras
+2010): keep the grid, and clip the ray's in-cell [t_entry, t_exit] span against sub-cell
+geometry stored per class. The alternatives — fractional opacity per cell (VXGI-style,
+position-blind: a grazing ray that clears the slab's top still attenuates) and finer
+voxelization (Teardown, memory x resolution³) — lose to it on exactly the deterministic
+sun ray this engine leans on.
+
+Classification is state-aware now: shaped cells map per (id, state) to synthetic classes
+from `SHAPE_CLASS_BASE` (200) up — 25 of them — each carrying a ≤2-box cover of the
+shape's `shapes.rs` collision boxes in the widened LUT (box 0 = collision box 0 exactly,
+box 1 = the AABB union of the rest; exact for slabs and torches, a stair's L rounds up
+only its top rear quarter; over-blocks only, never under, worst case the old full cell).
+A state with no collision — an open door — classifies as AIR, which is what lets light
+through a doorway. `gi_boxes_hit` lives in gi_dda.wgsl so all three marches (the resolve's
+sun ray, the gather, the probe kernel's trace) share one definition and a slab shadows the
+cache exactly as it shadows the per-pixel ray; `gi_solid`/`solid_cell` (probe placement,
+the short probe-visibility DDA) deliberately still treat partial cells as whole — the old
+conservative behavior, one fewer thing to re-verify.
+
+One rule was earned by a broken capture rather than designed: **an emitting partial cell
+is a hit whole for the gather marches.** The first cut let gather rays sail through the
+torch's cell unless they clipped the thin post boxes, and the vault's pool collapsed
+(old-vs-new 12.5) — LIGHT_GAIN is calibrated so the direct-hit term `alb x emit x 0.6`
+matches the NEE pool, and the voxel IS the emission model. With the rule, the vault's
+converged still is back to 0.07 old-vs-new. Only the sun ray resolves an emitter's boxes:
+a torch must not cast a pillar shadow, but it must still glow.
+
+DIG_SHAPES photographs the payoff: the showcase's row of identical full dark squares
+resolves into a stepped stair profile, thin slab bands, and nothing at all under the open
+doors. Terrain captures move by noise only (conv 0.0075-0.03) — worldgen places no shaped
+cells, so the box test's cost is confined to player-built cells.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by
@@ -476,12 +565,22 @@ chunk granularity, Y spans the full 256-block column (an up-ray always reaches s
 window never scrolls vertically). Desktop 320×256×320 (25.6 MiB) / web 256×256×256
 (16.8 MiB) / iOS 192×256×192 (9.4 MiB). GI-class mapping is a pure function in
 `digblock-core` (headless-tested): air = 0, water = translucent, `emits`/`glows` blocks =
-emissive classes, Shaped blocks = opaque (the same v1 approximation fluid makes). A 16³
-chunk re-uploads as one 4 KiB `write_texture`; scrolling uploads only entering slabs.
+emissive classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until
+R16: they now classify per (id, state) into synthetic PARTIAL classes from
+`SHAPE_CLASS_BASE` (200) up, each carrying a ≤2-box cover of the shape's collision boxes
+(box 0 = the first collision box exactly, box 1 = the AABB union of the rest — over-blocks
+only, never under, worst case the old full cell), and a state with no collision at all (an
+open door) classifies as air, which is what lets light through a doorway. A 16³ chunk
+re-uploads as one 4 KiB `write_texture`; scrolling uploads only entering slabs.
 
-**Material LUT** — 256 × 8 B uniform: albedo rgb + opacity class, emissive rgb + intensity
-exponent. Albedo is the per-layer mean color, computed where the atlas upload already
-iterates the layers. Rays never touch the block atlas.
+**Material LUT** — 256 × 16 B storage: albedo rgb + opacity class (0 air / 1 water /
+2 opaque / 3 partial) and the cast-light level in the first two words, the partial class's
+two packed sub-boxes (twelfths, 4 bits per coordinate; 0 = no box) in the last two.
+Albedo is the per-layer mean color, computed where the atlas upload already iterates the
+layers; synthetic shape classes borrow their base block's albedo and light. Rays never
+touch the block atlas. `gi_boxes_hit` (gi_dda.wgsl, so the probe kernel and the fragment
+marches share one definition) tests the boxes against the ray's in-cell [t_entry, t_exit]
+span — the ESVO-contour / SEUS-PTGI pattern.
 
 **Coarse occupancy** — a second R8Uint 3D texture at /8 per axis; byte = any_solid |
 any_emissive << 1 per 8³ region, computed CPU-side at classification (8 B/chunk). Rays in

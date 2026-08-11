@@ -39,7 +39,7 @@ struct Light {
 @group(0) @binding(0) var<uniform> gi: GiUniforms;
 @group(0) @binding(1) var window_tex: texture_3d<u32>;
 @group(0) @binding(2) var coarse_tex: texture_3d<u32>;
-@group(0) @binding(3) var<storage, read> lut: array<vec2u>;
+@group(0) @binding(3) var<storage, read> lut: array<vec4u>;
 @group(0) @binding(4) var<storage, read> lights: array<vec4f>;
 @group(0) @binding(5) var prev_atlas: texture_3d<f32>;
 @group(0) @binding(6) var out_atlas: texture_storage_3d<rgba16float, write>;
@@ -112,7 +112,10 @@ fn sky_radiance(dir: vec3f) -> vec3f {
 
 fn solid_cell(c: vec3i) -> bool {
 	let v = window_cell(c);
-	return v != 0u && (lut[v].x >> 24u) == 2u;
+	// Partial cells (opacity 3) stay "solid" for probe placement — the
+	// pinned twin of gi_common's `gi_solid`, and the old conservative
+	// behavior. Only `march` below resolves their sub-boxes.
+	return v != 0u && (lut[v].x >> 24u) >= 2u;
 }
 
 // Deterministic probe relocation (DDGI's, made stateless): a probe
@@ -178,12 +181,36 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		}
 		let v = window_cell(r.cell);
 		if v != 0u {
+			// Word 0 only on the hot path — the pinned twin of
+			// gi_common's marches (16 B per occupied cell measured
+			// +0.4 ms on the bench).
 			let op = lut[v].x >> 24u;
 			if op == 2u {
 				out.hit = true;
 				out.cell = r.cell;
 				out.axis = r.axis;
 				return out;
+			}
+			if op == 3u {
+				// An EMITTING partial cell is a hit whole — the pinned
+				// twin of gi_common's `gi_march` rule (the voxel is the
+				// emission model; see there). Non-emitters block only
+				// where their boxes stand, so a slab shadows the cache
+				// exactly as it shadows the per-pixel sun ray.
+				if lut[v].y > 0u {
+					out.hit = true;
+					out.cell = r.cell;
+					out.axis = r.axis;
+					return out;
+				}
+				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+				let bh = gi_boxes_hit(from_p, dir, r.cell, r.t, t_exit, lut[v].zw, r.axis);
+				if bh.x >= 0.0 {
+					out.hit = true;
+					out.cell = r.cell;
+					out.axis = u32(bh.y);
+					return out;
+				}
 			}
 			if op == 1u {
 				out.water += 1.0;
@@ -232,9 +259,11 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	if emit <= 0.0 {
 		return vec3f(0.0);
 	}
-	// Stop short of the emitter's own cell: shaped blocks (the torch
-	// included) classify OPAQUE in the voxel window, so a ray run all
-	// the way to the light would be shadowed by the light.
+	// Stop short of the emitter's own cell. The torch classifies as a
+	// PARTIAL cell now (its post boxes), so its own geometry rarely
+	// blocks — but the margin stays: a ray run to the exact emitter
+	// point can still clip the box it stands in, and the light must
+	// never shadow itself.
 	let sh = march(p, dir, max(dist - 0.9, 0.0));
 	if sh.hit {
 		return vec3f(0.0);

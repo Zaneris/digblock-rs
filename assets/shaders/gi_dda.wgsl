@@ -29,6 +29,58 @@ fn gi_lateral_max(side: f32) -> f32 {
 	return side * 0.5 - 1.0;
 }
 
+// Ray vs the ≤2-box cover of a PARTIAL cell (opacity 3), over the
+// ray's span [t0, t1] inside `cell`. `bx` is the LUT entry's zw pair:
+// min twelfths in bits 0/4/8, max in 12/16/20 (core::gi::pack_box is
+// the packer and `box_pack_matches_the_shader_decode` pins the two
+// together; 0 = no box). `def_axis` answers for a ray already inside
+// the box's lateral bounds when it enters the cell, where no box plane
+// was crossed and the cell-entry face is the hit face. Returns
+// (hit t, axis) with t < 0 for a miss.
+//
+// It lives here, not in gi_common.wgsl, for the same reason the
+// steppers do: gi_probe.wgsl cannot take gi_common's bindings, and a
+// partial cell must block a probe ray and a sun ray identically or a
+// slab's shadow differs between the cache and the per-pixel answer.
+fn gi_boxes_hit(o: vec3f, dir: vec3f, cell: vec3i, t0: f32, t1: f32, bx: vec2u, def_axis: u32) -> vec2f {
+	var best = vec2f(-1.0, 0.0);
+	// An axis with no motion cannot bound t. The epsilon's sign is
+	// arbitrary: an origin inside the slab gets planes at ±huge (no
+	// constraint), one outside gets both huge with one sign (empty
+	// interval) — containment falls out either way, with no NaN from
+	// the 0 × inf a plain 1/dir would produce. The sun ray lives at
+	// dir.z == 0 permanently, so this is the common case, not a corner.
+	let d = select(dir, vec3f(1e-6), abs(dir) < vec3f(1e-6));
+	for (var i = 0; i < 2; i++) {
+		let p = select(bx.x, bx.y, i == 1);
+		if p == 0u {
+			continue;
+		}
+		let bmin = vec3u(p, p >> 4u, p >> 8u) & vec3u(0xfu);
+		let bmax = vec3u(p >> 12u, p >> 16u, p >> 20u) & vec3u(0xfu);
+		let lo = vec3f(cell) + vec3f(bmin) / 12.0;
+		let hi = vec3f(cell) + vec3f(bmax) / 12.0;
+		let ta = (lo - o) / d;
+		let tb = (hi - o) / d;
+		let near = min(ta, tb);
+		let far = max(ta, tb);
+		let tmin = max(max(near.x, near.y), max(near.z, t0));
+		let tmax = min(min(far.x, far.y), min(far.z, t1));
+		if tmin <= tmax && (best.x < 0.0 || tmin < best.x) {
+			var axis = def_axis;
+			if tmin == near.x {
+				axis = 0u;
+			} else if tmin == near.y {
+				axis = 1u;
+			} else if tmin == near.z {
+				axis = 2u;
+			}
+			best = vec2f(tmin, f32(axis));
+		}
+	}
+	return best;
+}
+
 struct GiRay {
 	cell: vec3i,
 	// Absolute t at which the ray crosses the next boundary on each axis.

@@ -151,6 +151,45 @@ const N_MOVING = 48.0;
 // genuinely stochastic and does not smear, being smooth.
 const N_SUN = 12.0;
 
+// The confidence a DISOCCLUDED pixel starts its history at, primed from
+// the probe cascade blend instead of from its own first sample.
+//
+// A pixel with no valid history used to restart at n = 1: the raw 1-spp
+// gather, which in an indirectly-lit interior is speckle — a cave floor's
+// single ray mostly finds dark walls and occasionally the bright mouth —
+// so every surface the camera revealed (a cave rim, the strip a strafe
+// pulls in at the screen edge) visibly "developed" for a half second
+// while n climbed. The cascade blend is the engine's own converged
+// WORLD-SPACE answer for that exact point — smooth, wrong only by the
+// contact darkening the per-pixel gather exists to add — so the reveal
+// starts from lighting that is already right at probe resolution and
+// sharpens, instead of starting from noise and converging. This is the
+// irradiance-cache disocclusion pattern (GI-1.0's hash-grid fallback,
+// Lumen's world-probe fallback, NVIDIA's cache-mix formulation), applied
+// as a PRIOR: acc starts at the blend with this much virtual history, so
+// the prime decays out at the accumulator's own 1/n rate (~N_PRIOR/n
+// residual weight) with no per-frame blend machinery.
+//
+// Kept under N_SUN and well under N_MOVING: the prior must never claim
+// more confidence than a moving pixel is allowed to keep, or the real
+// samples that follow can't correct it at the rate motion demands.
+const N_PRIOR = 8.0;
+
+// The prime fires only where the sun term is under this — see the gate
+// in fs. A sun-lit pixel's indirect is a minor correction the prime can
+// only bias; a shadowed pixel's indirect is its whole light, and that
+// is where the reveal ghost lives.
+const PRIME_SUN_MAX = 0.2;
+
+// How many multiples of the depth tolerance a same-face tap may miss by
+// and still testify that the surface is merely GRAZED, not revealed —
+// the gate that keeps the prime off the near ground (see `grazed` in
+// fs). Between the two populations there is a wide gap: a grazing
+// half-res texel at walking pitch misses by a few tolerances, an
+// occluder's tap misses by whole blocks (tens of tolerances at any
+// distance the near field cares about).
+const PRIME_MARGIN = 8.0;
+
 // tan of the sun cone's half-angle (0.5 degrees) — must match
 // SUN_CONE_COS in gi.rs, pinned by `the_penumbra_knows_the_cone` in
 // digblock-assets. occluder_t x this = the physical penumbra width in
@@ -417,8 +456,9 @@ fn fs(i: VsOut) -> FsOut {
 	// for why widening the window itself was measured and declined.
 	let lat = sp.xz - rz.cam.xz;
 	let gather_max = gi_lateral_max(f32(side));
+	let far = dot(lat, lat) > gather_max * gather_max;
 	var indirect: vec3f;
-	if dot(lat, lat) > gather_max * gather_max {
+	if far {
 		indirect =
 			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	} else {
@@ -475,6 +515,18 @@ fn fs(i: VsOut) -> FsOut {
 	var acc = indirect;
 	var acc_sun = sv.x;
 	var acc_water = sv.y;
+	// Did a same-face history tap fail depth only MARGINALLY? Then the
+	// surface is still on screen and the miss is a grazing fetch the
+	// tolerance clipped, not a reveal. The near ground fails all four
+	// taps this way on most walking frames — adjacent half-res texels on
+	// a grazing plane legitimately differ by more than the tolerance —
+	// and priming those pixels from the cache on EVERY such frame locked
+	// the whole near field at cache lighting: walked-vs-converged went
+	// 0.69 -> 6.3 (bottom third 13) when the prime fired on every miss
+	// indiscriminately. A true reveal is different in KIND, not degree:
+	// the tap under it held the OCCLUDER, whole blocks nearer, so its
+	// miss is many multiples of the tolerance.
+	var grazed = false;
 	if rz.prev_cam.w > 0.5 {
 		let pc = rz.prev_vp * vec4f(p, 1.0);
 		if pc.w > 0.0 {
@@ -529,7 +581,12 @@ fn fs(i: VsOut) -> FsOut {
 					// bits are the history length (sun.a now carries the
 					// penumbra width instead).
 					let hg = u32(hs.g);
-					if (hg & 255u) != code || abs(hi.w - want) > 0.02 * max(want, 1.0) {
+					if (hg & 255u) != code {
+						continue;
+					}
+					let derr = abs(hi.w - want) / (0.02 * max(want, 1.0));
+					if derr > 1.0 {
+						grazed = grazed || derr <= PRIME_MARGIN;
 						continue;
 					}
 					wsum += w;
@@ -596,7 +653,46 @@ fn fs(i: VsOut) -> FsOut {
 		}
 	}
 	if n_hist < 1.0 {
-		n_hist = 1.0;
+		if grazed {
+			// The surface never left the screen — the fetch just grazed
+			// the depth tolerance. Restart unbiased at n = 1, exactly the
+			// old behavior: the sample is noisy but centered, gi_atrous
+			// absorbs it, and next frame the fetch usually lands again.
+			n_hist = 1.0;
+		} else {
+			// Disocclusion: nothing on screen held this surface last frame
+			// (offscreen, a different face, or history whole blocks off —
+			// the occluder's). Prime the accumulator from the cascade
+			// blend — see N_PRIOR — rather than restarting at the raw
+			// gather, but only where INDIRECT is the light. On a sun-lit
+			// surface the gather term is a minor correction, so the
+			// prime can't help the picture there — but its bias can
+			// hurt it: the cache is missing exactly the contact-scale
+			// structure the gather adds, and a flat prime measured
+			// walked-vs-converged 0.69 -> 6.3 on the walk's sun-lit
+			// ground and 1.41 -> 4.33 on the flyover (a distance ramp
+			// was tried between the two and just moved the bias to
+			// whatever band the ramp allowed). In shadow, in a cave, at
+			// night — where the reveal ghost actually lives, because
+			// 1-spp speckle IS the whole signal there — the sun term is
+			// zero and the prime runs at full strength. The sun channel
+			// itself needs no prime: its ray is deterministic, so the
+			// current answer is already the converged one.
+			let sun_lit =
+				sv.x * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
+			if sun_lit < PRIME_SUN_MAX {
+				var prior = indirect;
+				if !far {
+					prior = gi_indirect(
+						side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4)
+					);
+				}
+				n_hist = N_PRIOR;
+				acc = mix(prior, indirect, 1.0 / N_PRIOR);
+			} else {
+				n_hist = 1.0;
+			}
+		}
 	}
 	o.indirect = vec4f(acc, view_dist);
 	// r = sun visibility, g = normal code + 256 x history length (round

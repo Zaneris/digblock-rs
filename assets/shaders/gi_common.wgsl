@@ -16,7 +16,7 @@
 
 @group(2) @binding(0) var gi_window: texture_3d<u32>;
 @group(2) @binding(1) var gi_coarse: texture_3d<u32>;
-@group(2) @binding(2) var<storage, read> gi_lut: array<vec2u>;
+@group(2) @binding(2) var<storage, read> gi_lut: array<vec4u>;
 @group(2) @binding(3) var gi_atlas0: texture_3d<f32>;
 @group(2) @binding(4) var gi_atlas1: texture_3d<f32>;
 
@@ -50,7 +50,12 @@ fn gi_coarse_empty(side: i32, c: vec3i) -> bool {
 
 fn gi_solid(side: i32, c: vec3i) -> bool {
 	let v = gi_cell(side, c);
-	return v != 0u && (gi_lut[v].x >> 24u) == 2u;
+	// Partial cells (opacity 3) count as solid here on purpose: this
+	// predicate places probes and gates the short probe-visibility DDA,
+	// where treating a slab as its whole cell is exactly the old — and
+	// conservative — behavior. Only the long marches below resolve the
+	// sub-boxes.
+	return v != 0u && (gi_lut[v].x >> 24u) >= 2u;
 }
 
 // Deterministic probe relocation — the EXACT twin of gi_probe.wgsl's
@@ -194,9 +199,24 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 		}
 		let v = gi_cell(side, r.cell);
 		if v != 0u {
+			// Word 0 only on the hot path: this loop is the frame's
+			// innermost, and loading the whole 16 B entry per occupied
+			// cell measured +0.4 ms on the bench. The box words are
+			// fetched only inside the partial branch.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
 				return vec3f(0.0, water, r.t);
+			}
+			if op == 3u {
+				// A shaped cell blocks only where its boxes actually
+				// stand — this is what lets a low sun clear the slab
+				// beside the one you placed, and a torch shade as a
+				// post instead of a pillar.
+				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
+				if bh.x >= 0.0 {
+					return vec3f(0.0, water, bh.x);
+				}
 			}
 			if op == 1u {
 				water += 1.0;
@@ -250,12 +270,36 @@ fn gi_march(side: i32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i
 		}
 		let v = gi_cell(side, r.cell);
 		if v != 0u {
+			// Word 0 only on the hot path — see gi_sun_vis.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
 				out.hit = true;
 				out.cell = r.cell;
 				out.axis = r.axis;
 				return out;
+			}
+			if op == 3u {
+				// An EMITTING partial cell is a hit whole: the voxel is
+				// the emission model (LIGHT_GAIN is calibrated so the
+				// direct-hit term matches the NEE pool), and letting
+				// gather rays pass through the torch's cell is what
+				// collapsed the vault's pool to a fraction of itself.
+				// Only the SUN ray resolves an emitter's boxes — a torch
+				// must not cast a pillar shadow, but it must still glow.
+				if gi_lut[v].y > 0u {
+					out.hit = true;
+					out.cell = r.cell;
+					out.axis = r.axis;
+					return out;
+				}
+				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
+				if bh.x >= 0.0 {
+					out.hit = true;
+					out.cell = r.cell;
+					out.axis = u32(bh.y);
+					return out;
+				}
 			}
 			if op == 1u {
 				out.water += 1.0;

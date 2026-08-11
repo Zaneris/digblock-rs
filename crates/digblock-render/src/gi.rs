@@ -200,21 +200,29 @@ pub struct GiDraw {
 }
 
 /// The 256-entry material LUT (GI-DESIGN.md): everything a ray needs
-/// per class byte. Two words per entry: albedo rgb + opacity class in
+/// per class byte. Four words per entry: albedo rgb + opacity class in
 /// the first, the cast-light level in the second (emission color is
-/// the albedo — a torch glows its own warm tone).
-fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 2]; 256] {
-	let mut lut = [[0u32; 2]; 256];
+/// the albedo — a torch glows its own warm tone), and the ≤2-box
+/// occlusion cover of a PARTIAL class (opacity 3) packed in the third
+/// and fourth (`core::gi::pack_box`; 0 = no box). Full cubes keep the
+/// base-id entries; the synthetic shape classes from
+/// `core::gi::shape_classes` fill 200.. and borrow their base block's
+/// albedo and light, so a slab bounces wood-colored and a torch's
+/// synthetic class still names its emission.
+fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
+	let mut lut = [[0u32; 4]; 256];
+	let albedo = |b: BlockType| -> [u8; 3] {
+		layer_means
+			.get(b.props().tex_top as usize)
+			.copied()
+			.unwrap_or([255, 255, 255])
+	};
 	for b in BlockType::ALL {
 		let id = b as usize;
 		if id >= 256 || b == BlockType::Air {
 			continue;
 		}
-		let p = b.props();
-		let m = layer_means
-			.get(p.tex_top as usize)
-			.copied()
-			.unwrap_or([255, 255, 255]);
+		let m = albedo(b);
 		let op = match opacity(b) {
 			GiOpacity::Air => 0u32,
 			GiOpacity::Translucent => 1,
@@ -222,7 +230,19 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 2]; 256] {
 		};
 		lut[id] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (op << 24),
-			u32::from(p.light),
+			u32::from(b.props().light),
+			0,
+			0,
+		];
+	}
+	for (i, sc) in digblock_core::gi::shape_classes().iter().enumerate() {
+		let m = albedo(sc.base);
+		let boxes = sc.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
+		lut[digblock_core::gi::SHAPE_CLASS_BASE as usize + i] = [
+			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (3 << 24),
+			u32::from(sc.base.props().light),
+			boxes[0],
+			boxes[1],
 		];
 	}
 	lut
@@ -303,7 +323,7 @@ impl GiDraw {
 		let lut = material_lut(layer_means);
 		let lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi material lut"),
-			size: (256 * 8) as u64,
+			size: (256 * 16) as u64,
 			usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -1696,6 +1716,60 @@ mod tests {
 			"PEN_MAX ({pen_max}) exceeds the filter's combined support ({reach} texels: \
 			 strides {ATROUS_STEPS:?} x SUN_STRIDE_MAX {stride_max})"
 		);
+	}
+
+	/// The disocclusion prior primes a fresh pixel's history from the
+	/// probe cache. It must stay under both caps that could otherwise be
+	/// asked to correct it: a primed pixel that is immediately moving
+	/// lives at N_MOVING, and the sun alpha rides min(n, N_SUN) — a prior
+	/// claiming more confidence than either would slow the very signals
+	/// the short caps exist to keep responsive.
+	#[test]
+	fn the_disocclusion_prior_stays_under_the_caps() {
+		let n_prior = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_PRIOR");
+		let n_moving = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_MOVING");
+		let n_sun = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_SUN");
+		assert!(n_prior > 1.0, "a prior of 1 is no prior at all");
+		assert!(
+			n_prior <= n_sun && n_prior < n_moving,
+			"N_PRIOR ({n_prior}) must stay under N_SUN ({n_sun}) and N_MOVING ({n_moving})"
+		);
+		// And its two gates must exist as real gates: a margin of ≤1
+		// would mark every depth rejection as grazing (the prime never
+		// fires), a sun ceiling of ≥1 would prime fully sun-lit pixels
+		// (measured as washed-out AO across the walk and fly regimes).
+		let margin = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "PRIME_MARGIN");
+		let sun_max = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "PRIME_SUN_MAX");
+		assert!(margin > 1.0, "PRIME_MARGIN ({margin}) gates nothing at ≤1");
+		assert!(
+			sun_max > 0.0 && sun_max < 1.0,
+			"PRIME_SUN_MAX ({sun_max}) must partition lit from unlit"
+		);
+	}
+
+	/// The LUT's packed sub-box words must decode in the shader to the
+	/// twelfths the shape authored — `gi_boxes_hit` unpacks min from bits
+	/// 0/4/8 and max from 12/16/20. The core side pins the same format
+	/// from the packer's end (`box_pack_matches_the_shader_decode`); this
+	/// end pins that the LUT actually carries the boxes: every synthetic
+	/// class entry is opacity 3 with a nonzero first box, borrowing its
+	/// base block's light level.
+	#[test]
+	fn the_lut_carries_the_shape_covers() {
+		let lut = material_lut(&[]);
+		let base = digblock_core::gi::SHAPE_CLASS_BASE as usize;
+		let classes = digblock_core::gi::shape_classes();
+		assert!(!classes.is_empty());
+		for (i, sc) in classes.iter().enumerate() {
+			let e = lut[base + i];
+			assert_eq!(e[0] >> 24, 3, "synthetic class {i} is not partial");
+			assert_ne!(e[2], 0, "synthetic class {i} lost its first box");
+			assert_eq!(e[1], u32::from(sc.base.props().light));
+		}
+		// And the torch's emitting class is synthetic now — the light
+		// list names classes, so the level has to ride along.
+		let torch = digblock_core::gi::gi_class(BlockType::Torch as u16);
+		assert_eq!(lut[torch as usize][1], 14);
 	}
 
 	/// A contiguous cursor is what made convergence sweep as a visible

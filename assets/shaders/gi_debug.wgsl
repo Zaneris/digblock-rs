@@ -17,7 +17,7 @@ struct GiDebug {
 @group(0) @binding(0) var<uniform> dbg: GiDebug;
 @group(0) @binding(1) var window_tex: texture_3d<u32>;
 @group(0) @binding(2) var coarse_tex: texture_3d<u32>;
-@group(0) @binding(3) var<storage, read> lut: array<vec2u>;
+@group(0) @binding(3) var<storage, read> lut: array<vec4u>;
 // C0's front probe atlas (six axis-major Z slabs); misc.yzw = dims.
 @group(0) @binding(4) var atlas_tex: texture_3d<f32>;
 
@@ -134,7 +134,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				f32((m.x >> 8u) & 0xffu),
 				f32((m.x >> 16u) & 0xffu),
 			) / 255.0;
-			if op == 2u {
+			// Partial cells (opacity 3) draw as their whole cell here on
+			// purpose: this view proves the WINDOW's contents, and the
+			// cell-granular picture is what the window actually stores.
+			if op >= 2u {
 				let shade = select(select(0.66, 1.0, axis == 1u), 0.80, axis == 0u);
 				var col = albedo * shade;
 				if m.y > 0u {
