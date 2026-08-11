@@ -147,7 +147,13 @@ fn gi_sun_vis(side: i32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec
 	var r = gi_ray_init(o, dir, inv);
 	var water = 0.0;
 	let lateral_max = f32(side) * 0.5 - 1.0;
-	for (var i = 0; i < 160; i++) {
+	// The hard bound tracks the window, not a literal: with the brick skip
+	// an empty 8-cube costs one iteration, so a ray crossing the whole
+	// window needs far fewer steps than blocks — but a ray grazing dense
+	// geometry does not, and truncating it silently un-shadows whatever is
+	// past the cut. That bug shipped once already at 160 iterations against
+	// a 320-block window.
+	for (var i = 0; i < 320; i++) {
 		if i >= iters {
 			break;
 		}
@@ -319,7 +325,25 @@ fn gi_axis_gather(t: vec3i, nz: i32, n: vec3f, c1: bool) -> vec3f {
 // 8-probe blend from one cascade; w accumulates weight, returns rgb.
 // `dims4` = cascade dims xyz + spacing w; `occ_cap` bounds the
 // per-probe occlusion DDA.
-fn gi_cascade_gather(side: i32, p: vec3f, n: vec3f, dims4: vec4f, c1: bool, occ_cap: i32) -> vec4f {
+fn gi_cascade_gather(
+	side: i32,
+	p: vec3f,
+	n: vec3f,
+	cam: vec3f,
+	dims4: vec4f,
+	c1: bool,
+	occ_cap: i32,
+) -> vec4f {
+	// Outside this cascade's window there is no probe for `p` — only a
+	// texel congruent to it, serving somewhere else entirely. Returning
+	// zero weight is what makes `gi_indirect` fall through to the next
+	// cascade and then to the analytic dome, instead of blending in a
+	// wrapped read from across the world at full trilinear weight. That
+	// wrapped read was live for every surface past C1's 128 blocks, which
+	// is most of the visible terrain at draw distance 20.
+	if !gi_in_cascade(p, cam, dims4) {
+		return vec4f(0.0);
+	}
 	let dims = vec3i(dims4.xyz);
 	let spacing = dims4.w;
 	let base = floor(p / spacing - 0.5);
@@ -425,15 +449,16 @@ fn gi_indirect(
 	side: i32,
 	p: vec3f,
 	n: vec3f,
+	cam: vec3f,
 	dims0: vec4f,
 	dims1: vec4f,
 	zenith: vec3f,
 	horizon: vec3f,
 	caps: vec2i,
 ) -> vec3f {
-	var g = gi_cascade_gather(side, p, n, dims0, false, caps.x);
+	var g = gi_cascade_gather(side, p, n, cam, dims0, false, caps.x);
 	if g.w < 0.05 {
-		let g1 = gi_cascade_gather(side, p, n, dims1, true, caps.y);
+		let g1 = gi_cascade_gather(side, p, n, cam, dims1, true, caps.y);
 		if g1.w >= 0.05 {
 			g = g1;
 		}

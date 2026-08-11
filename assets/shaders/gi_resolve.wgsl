@@ -303,7 +303,7 @@ fn fs(i: VsOut) -> FsOut {
 	var indirect: vec3f;
 	if dot(lat, lat) > gather_max * gather_max {
 		indirect =
-			gi_indirect(side, sp, n, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
+			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	} else {
 		// A second, decorrelated draw from the same sequence — sharing the
 		// sun ray's sample would tie the gather direction to the sun cone
@@ -320,7 +320,7 @@ fn fs(i: VsOut) -> FsOut {
 	let u = sample2(uv, rz.jitter.x);
 	var sdir = rz.sun_exact;
 	sdir = vec4f(sample_cone(sdir.xyz, u, rz.jitter.y), sdir.w);
-	let sv = gi_sun_vis(side, rz.cam.xz, sdir, sp, 160);
+	let sv = gi_sun_vis(side, rz.cam.xz, sdir, sp, 320);
 	let view_dist = length(p - rz.cam.xyz);
 
 	// Reproject into last frame. Exact for static geometry, so this needs

@@ -43,8 +43,16 @@ Named here because this document previously described several of these as done:
 - **No tier scaling.** Every platform gets desktop budgets and an uncapped /2 resolve; the
   web row of the original design was never implemented.
 - **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame, and
-  `gather_prev` still wraps the torus with no checksum or coverage bound, so a hit beyond
-  C0's 64-block reach can read a probe serving another world cell.
+  `gather_prev` (the probe kernel's own bounce) still wraps the torus with no checksum or
+  coverage bound, so a hit beyond C0's 64-block reach can read a probe serving another world
+  cell. The FRAGMENT-side gathers no longer do: `gi_cascade_gather` and `gi_cache_at` both
+  test `gi_in_cascade` first.
+- **The voxel window covers half the streamed radius.** It is built `draw_dist` chunks on a
+  SIDE (+/-160 blocks) while terrain streams to `draw_dist` chunks of RADIUS (+/-320). 9.2% of
+  pixels therefore have a sun ray that leaves the window and is answered "fully lit" on no
+  data, along a boundary centred on the camera, and the final gather is bounded to 127
+  blocks by the same number. Doubling it costs 26 -> 105 MiB and measurably helps; see the
+  R8 note for why it was not simply shipped.
 - **No probe classification.** Every probe is swept at a flat rate forever; converged and
   enclosed probes do not drop to a lower rate.
 - **The axis fold is lopsided**: `update_probes` barriers 64 threads and then leaves 6
