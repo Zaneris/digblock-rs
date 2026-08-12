@@ -219,8 +219,48 @@ pub const FAMILIES: [Family; 6] = [
 	},
 ];
 
-/// Seconds each member holds the family tile before it rotates on.
+/// Seconds one cycle of the family tile's member rotation takes.
 const FAMILY_CYCLE_SECS: f32 = 0.9;
+/// How much of that cycle is spent trading one member for the next.
+const FAMILY_SWAP_SECS: f32 = 0.30;
+
+/// Which member a family tile shows at `clock`, and how PRESENT it is
+/// (0..=1, scaling both the icon and its alpha).
+///
+/// The rotation used to hard-cut, which read as a glitch rather than as
+/// a tile cycling its contents. The outgoing member shrinks away over
+/// the first half of the swap window and the incoming one grows in over
+/// the second, so the tile never shows two icons at once — cross-fading
+/// two overlapping 3D icons is a double exposure of their internal
+/// faces, and the effect is a rotation, not a dissolve.
+///
+/// A one-member family never transitions: there is nothing to trade it
+/// for, and a tile pulsing on its own is just noise.
+fn family_preview(clock: f32, members: usize) -> (usize, f32) {
+	if members <= 1 {
+		return (0, 1.0);
+	}
+	let cycles = clock / FAMILY_CYCLE_SECS;
+	let i = cycles.floor().max(0.0) as usize;
+	let into = (cycles - cycles.floor()) * FAMILY_CYCLE_SECS;
+	let hold = FAMILY_CYCLE_SECS - FAMILY_SWAP_SECS;
+	if into < hold {
+		return (i % members, 1.0);
+	}
+	let u = (into - hold) / FAMILY_SWAP_SECS;
+	if u < 0.5 {
+		(i % members, 1.0 - 2.0 * u)
+	} else {
+		((i + 1) % members, 2.0 * u - 1.0)
+	}
+}
+
+/// Scale a 0xAABBGGRR tint's alpha by `f` (the icon's own fade, so the
+/// shrink doesn't just look like a small icon).
+fn tint_alpha(tint: u32, f: f32) -> u32 {
+	let a = ((tint >> 24) as f32 * f.clamp(0.0, 1.0)) as u32;
+	a << 24 | (tint & 0x00FF_FFFF)
+}
 
 impl AlchScreen {
 	pub fn is_open(&self) -> bool {
@@ -717,7 +757,6 @@ impl AlchScreen {
 		// member below is what the button acts on and gets the strong
 		// one. A family whose every member is locked dims like a locked
 		// tile and badges its earliest unlock.
-		let phase = (self.clock / FAMILY_CYCLE_SECS) as usize;
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		for (i, fam) in FAMILIES.iter().enumerate() {
 			let rect = fam_spec.rect(i);
@@ -725,14 +764,21 @@ impl AlchScreen {
 				.members
 				.iter()
 				.all(|&m| alchemy::craft_unlock(m).is_none_or(|u| view.level < u));
-			let preview = fam.members[phase % fam.members.len()];
+			// The tile trades one member for the next by shrinking the
+			// outgoing one away and growing the incoming one in, rather
+			// than cutting between them.
+			let (mi, present) = family_preview(self.clock, fam.members.len());
+			let preview = fam.members[mi];
 			let (kind, tint) = hud::item_icon(HotbarItem::Block(preview), false);
 			widgets::slot(
 				ui,
 				InvId::Family(i as u8),
 				rect,
-				Some((kind, if all_locked { LOCKED_TINT } else { tint })),
-				icon_px,
+				Some((
+					kind,
+					tint_alpha(if all_locked { LOCKED_TINT } else { tint }, present),
+				)),
+				icon_px * present,
 				if self.family == Some(i) {
 					widgets::SlotRing::Weak
 				} else {
@@ -1556,6 +1602,52 @@ mod tests {
 		};
 		let (a, b) = (panel_of(AlchTab::Extract), panel_of(AlchTab::Transmute));
 		assert_eq!(a, b, "one panel, both tabs");
+	}
+
+	/// The family tile rotates rather than cutting: a member holds at
+	/// full presence, shrinks away, and the NEXT one grows in — with the
+	/// handover happening at zero, so two icons never overlap.
+	#[test]
+	fn family_tiles_transition_instead_of_cutting() {
+		let hold = FAMILY_CYCLE_SECS - FAMILY_SWAP_SECS;
+		// The hold: member 0, fully present, start to just before the swap.
+		for t in [0.0, hold * 0.5, hold - 0.001] {
+			assert_eq!(family_preview(t, 3), (0, 1.0), "t={t}");
+		}
+		// The swap: presence falls to zero on the outgoing member...
+		let (i, p) = family_preview(hold + FAMILY_SWAP_SECS * 0.25, 3);
+		assert_eq!(i, 0);
+		assert!((p - 0.5).abs() < 1e-4, "half faded: {p}");
+		let (i, p) = family_preview(hold + FAMILY_SWAP_SECS * 0.5 - 0.001, 3);
+		assert_eq!(i, 0);
+		assert!(p < 0.01, "gone at the handover: {p}");
+		// ...and the next one grows from zero.
+		let (i, p) = family_preview(hold + FAMILY_SWAP_SECS * 0.5 + 0.001, 3);
+		assert_eq!(i, 1, "handover at the bottom of the dip");
+		assert!(p < 0.01, "arrives from nothing: {p}");
+		let (i, p) = family_preview(hold + FAMILY_SWAP_SECS * 0.999, 3);
+		assert_eq!(i, 1);
+		assert!(p > 0.99, "back to full by the next hold: {p}");
+		// Presence is never negative and never over 1, anywhere.
+		for n in 1..=8 {
+			let mut t = 0.0f32;
+			while t < 20.0 {
+				let (i, p) = family_preview(t, n);
+				assert!(i < n, "index in range at {t} (n={n})");
+				assert!((0.0..=1.0).contains(&p), "presence {p} at {t}");
+				t += 0.011;
+			}
+		}
+		// One member: nothing to trade for, so no pulsing at all.
+		for t in [0.0, 0.5, hold + 0.2, 5.0] {
+			assert_eq!(family_preview(t, 1), (0, 1.0), "t={t}");
+		}
+		// And it really does cycle: over one full lap of a 2-member
+		// family both members hold.
+		let seen: std::collections::HashSet<usize> = (0..200)
+			.map(|k| family_preview(k as f32 * 0.02, 2).0)
+			.collect();
+		assert_eq!(seen.len(), 2);
 	}
 
 	/// `FAMILIES` is a hand-maintained mirror of the core catalog: every
