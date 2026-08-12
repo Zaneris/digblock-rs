@@ -465,7 +465,6 @@ pub struct Renderer {
 	frame_bg: wgpu::BindGroup,
 	/// Water copy of the frame UBO, alpha 0.7 (Java u_Alpha for the
 	/// transparent pass); bound through `FrameTargets::water_bg`.
-	frame_water_buf: wgpu::Buffer,
 	/// Group 1: block texture array + sampler — one static bind group.
 	materials_bg: wgpu::BindGroup,
 	/// Slot-indexed chunk origins, bound as an instance-step vertex
@@ -983,14 +982,6 @@ impl Renderer {
 				resource: frame_buf.as_entire_binding(),
 			}],
 		});
-		// Bound through FrameTargets::water_bg (the water group 0 also
-		// holds the resize-recreated scene targets).
-		let frame_water_buf = device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("frame ubo (water)"),
-			size: std::mem::size_of::<FrameUniforms>() as u64,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-			mapped_at_creation: false,
-		});
 
 		let chunk_slots = config
 			.chunk_slots_override
@@ -1033,7 +1024,6 @@ impl Renderer {
 			sky,
 			frame_buf,
 			frame_bg,
-			frame_water_buf,
 			materials_bg,
 			origin_buf,
 			origins: Vec::new(),
@@ -1454,9 +1444,15 @@ impl Renderer {
 			label: Some("water frame + scene targets"),
 			layout: &self.water_frame_bgl,
 			entries: &[
+				// The SAME frame UBO the solids read. Water used to get a
+				// second copy of it for one field — a 0.7 alpha — and that
+				// field is gone (see water.wgsl's `alpha`), so the copy and
+				// its per-frame upload went with it. The water group still
+				// needs its own bind GROUP, because it also carries the
+				// resize-recreated scene targets.
 				wgpu::BindGroupEntry {
 					binding: 0,
-					resource: self.frame_water_buf.as_entire_binding(),
+					resource: self.frame_buf.as_entire_binding(),
 				},
 				wgpu::BindGroupEntry {
 					binding: 1,
@@ -1673,10 +1669,6 @@ impl Renderer {
 		self.ui_icons.prepare(gpu, size, ui);
 		gpu.queue
 			.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(frame));
-		let mut water_frame = *frame;
-		water_frame.misc[0] = 0.7; // Java transparent-pass u_Alpha
-		gpu.queue
-			.write_buffer(&self.frame_water_buf, 0, bytemuck::bytes_of(&water_frame));
 		// One cull for the whole frame: scene and water lists out of a
 		// single walk of the flat resident set.
 		let cam_planes = side_planes(view_proj);

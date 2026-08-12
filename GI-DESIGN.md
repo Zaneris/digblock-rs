@@ -870,6 +870,53 @@ the same reason the old CPU hash took world coords. And the probes' material alb
 untinted, so a block's ±8% does not ride its own bounce light: below the noise floor of a
 1-spp gather, and paying for it would mean a per-cell lookup inside every march.
 
+### R25 — water wrote itself over the backdrop it had already absorbed
+
+User report, with a screenshot: past some distance "the blocks under the water lose their blue
+colouring and look grey instead". Reproduced exactly from the debug panel's new `pos` line
+(`--seed 42 --pos 95.5 132.5 85.5 --yaw -313.7 --pitch -17.7 --tod 25.7`), which is what that
+line is for.
+
+Four candidates went first, each killed by an A/B rather than by argument:
+
+| suspect | test | result |
+|---|---|---|
+| `thick` wrong at range | visualised it; CPU ray-march of the same pose | 176–200 blocks, march says 181 — **correct** |
+| SSR reflecting the seabed | `DIG_STUB=wssr` | ≤4/255, no hue shift |
+| aerial haze | `AIR_VISIBILITY` 1600 → 1e8 | ≤12/255 on submerged pixels, r/b moves 0.06 |
+| Fresnel sky reflection | forced `mirror_w = 0` | band gets dimmer, **not bluer** (r/b 0.55 → 0.57) |
+
+Then the decomposition. `backdrop_col` — the scene sample with the medium applied — has a red
+channel of **exactly zero** across the whole band, which is right: 181 blocks of water at
+`WATER_SIGMA.r` is `exp(−65)`. Yet the final pixel's red was 53/255, and `back + surf` could
+not account for it. The missing term was outside the shader.
+
+`renderer.rs` wrote a second copy of the frame UBO for the water pass differing in one field,
+`misc[0] = 0.7`, commented "Java transparent-pass u_Alpha" — and water's alpha was built on it.
+That constant is from the raster port, and it outlived the M1 demolition that replaced the
+absorption model justifying it. The point of the current model is that the water fragment
+**samples the scene itself** and runs the transport over it: `back + surf` already IS the
+backdrop, absorbed. Blending that over the same backdrop at 0.75 re-adds an unabsorbed copy of
+it at 25%.
+
+Near shore the leak is invisible — a foot of water barely changes the bottom's colour, so the
+absorbed copy and the raw one nearly agree, which is why this survived every shallow-water
+capture the engine has. Under 180 blocks of water it was the entire picture: the transport
+takes the backdrop to black, and what you see is a quarter of the raw seabed in its own grey,
+against nothing. Hence "blocks under the water" — they were literally the blocks, arriving by a
+path the model does not have.
+
+Alpha is now the falling-sheet streak gate alone (`clamp(0.75 + 0.5·s)`, and `s` is 0.5 on
+every still surface, so exactly 1.0 everywhere else). A torn sheet genuinely is see-through in
+its gaps and `thick`, reconstructed from the depth buffer, cannot know about the tear — that
+one stays. With `misc.x` unread by water, the second frame UBO and its per-frame upload went
+too; the water bind group binds the same buffer the solids do (it still needs its own bind
+*group*, for the resize-recreated scene targets).
+
+Measured at the reported pose: the grey band's r/b goes 0.55–0.58 → 0.20–0.24, the shallows
+move 0.10 → 0.06, mean |diff| 18.0/255 over the water region and 0 outside it. DIG_RIVER and
+DIG_DIVE re-shot for sheets, shore lines and the submerged path.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

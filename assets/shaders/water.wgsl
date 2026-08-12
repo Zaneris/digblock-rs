@@ -24,8 +24,8 @@
 // per-fragment sun DDA, which stays per pixel because shadow edges on
 // the surface are the one lighting signal sharper than the lattice.
 // Water never reads the half-res resolve buffers, whose depth belongs
-// to the solids BEHIND it. Alpha comes from misc.x (the water frame UBO
-// copy).
+// to the solids BEHIND it. It writes OPAQUE — the fragment owns its own
+// backdrop (see the alpha note in `fs`).
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl
 // (prepended by digblock-assets, before sky_common). The water pipelines
@@ -589,11 +589,31 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	col += frame.light_color.rgb * lip * sh * 0.15;
-	// Alpha: the Fresnel base only. The depth-driven opacity ramp went
-	// with the absorption model that justified it — a clear pane cannot
-	// also claim to hide the bottom. Aeration still pins near-opaque and
-	// streak gaps still thin falling sheets.
-	let alpha = mix(max(mix(frame.misc.x, 1.0, fres), 0.0), 0.92, aer);
+	// Alpha: the falling-sheet streak gate, and nothing else.
+	//
+	// This fragment is not a pane laid OVER the scene. It sampled the
+	// scene itself (`scene_tex`) and ran the whole water transport across
+	// `thick` of it, so `back + surf` below already IS the backdrop,
+	// absorbed. Blending that over the same backdrop a second time re-adds
+	// an UNABSORBED copy of it.
+	//
+	// It used to, at 30%: `frame.misc.x` was 0.7, the Java raster port's
+	// transparent-pass u_Alpha, and it outlived the M1 demolition that
+	// replaced the absorption model justifying it. Near shore the leak is
+	// invisible, because a foot of water barely changes the bottom's
+	// colour and the absorbed copy and the raw one nearly agree. Under 180
+	// blocks of water — an ordinary grazing look across a bay, where the
+	// transport's answer is that you cannot see the bottom AT ALL and it
+	// had correctly taken the backdrop's red to exactly zero — the leak
+	// was the entire picture: the seabed came through in its own grey at a
+	// quarter strength, so distant water read as grey rock under glass
+	// while the shallows beside it stayed blue.
+	//
+	// The streak gaps stay. A torn falling sheet genuinely is see-through
+	// in its gaps, and `thick` — reconstructed from the depth buffer —
+	// cannot know about the tear. `s` is 0.5 on every still surface, so
+	// this is exactly 1.0 everywhere else.
+	let alpha = clamp(0.75 + 0.5 * s, 0.0, 1.0);
 	// The camera-to-surface medium, applied to the surface's own light
 	// only (see `backdrop` above). Every term above is a linear mix, so
 	// after n of them the pixel is exactly
@@ -616,5 +636,5 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		frame.water_misc,
 		frame.misc.y,
 	) * cover;
-	return vec4f(back + surf, clamp(alpha * (0.75 + 0.5 * s), 0.0, 1.0));
+	return vec4f(back + surf, alpha);
 }
