@@ -136,7 +136,10 @@ fn shape_faces(b: BlockType, state: u8, y_off: i32, out: &mut Vec<ItemFace>) {
 /// bucket has nothing else to fill the hole. It also means the charge is
 /// a real difference in the silhouette's interior rather than a tint.
 fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
-	let wood = BlockType::Wood.props().tex_side;
+	// Planed timber, not the log's bark: a pail is a made thing. This is
+	// the one place a layer is named directly rather than taken from a
+	// block, because the bucket is an item and has no block to ask.
+	let wood = digblock_core::block::tex::LUMBER_LIGHT;
 	let water = BlockType::Water.props().tex_side;
 	// Base plate, then walls one twelfth thick. The walls were two, and
 	// the 4×4 opening that left made the charge a speck at hotbar-icon
@@ -307,7 +310,7 @@ mod tests {
 	#[test]
 	fn the_bucket_is_wood_around_water() {
 		let f = faces(IconKind::WaterTool { full: true });
-		let wood = BlockType::Wood.props().tex_side;
+		let wood = digblock_core::block::tex::LUMBER_LIGHT;
 		let water = BlockType::Water.props().tex_side;
 		assert!(f.iter().any(|q| q.tex_layer == wood));
 		assert!(f.iter().any(|q| q.tex_layer == water));

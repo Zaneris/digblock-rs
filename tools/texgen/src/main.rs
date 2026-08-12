@@ -4,6 +4,17 @@
 //! commit the outputs — assets are `include_bytes!`d, so generated PNGs
 //! live in git; this tool is checked in for provenance and regeneration.
 //! Output matches the loader contract: 64×64 8-bit RGB, non-interlaced.
+//!
+//! A run rewrites EVERY output, so it is not a free operation: the noisy
+//! recipes below share one rng, so adding, removing or reordering a
+//! `save` rerolls the noise in every output after it, and a hand-edited
+//! source whose derivative was never regenerated comes back into sync the
+//! moment anyone runs this. Both are fine — a reroll of the same recipe
+//! is the same texture, and re-syncing is the point — but they mean the
+//! diff of a run is wider than the edit that prompted it. Retiring the
+//! door leaf (the door draws `LumberDark` directly now) and pointing the
+//! torch at `LumberLight` are both edits of that kind, and neither was
+//! regenerated: the committed outputs still carry the bytes they had.
 
 use image::RgbImage;
 
@@ -46,22 +57,20 @@ fn main() {
 	let sand = load("Sand.png");
 	save("Sandstone.png", sandstone(&sand, &mut rng));
 
-	// Door leaf: wood with vertical plank seams and a slight overall
-	// darkening (the window lites are geometry, not texture).
-	let wood = load("Wood.png");
-	save("DoorWood.png", door(&wood, &mut rng));
-
 	// Broken rock — what mined stone actually drops (SKILLS-DESIGN §7.1):
 	// stone body with angular fracture cracks and chipped facets, reading
-	// as rough cobble when placed. Appended LAST so the shared rng stream
-	// leaves every earlier output byte-identical.
+	// as rough cobble when placed.
 	save("Rubble.png", rubble(&stone, &mut rng));
 
-	// Torch: the side texture maps the post's wood to the LOWER rows and
+	// Torch: the side texture maps the post's timber to the LOWER rows and
 	// the flame glow to the top rows (a box face's v runs top-down from
 	// the cell's top, so the flame head at y 7..10 samples rows 2..5);
-	// the flame top face gets its own radial-glow layer.
-	save("TorchSide.png", torch_side(&wood, &mut rng));
+	// the flame top face gets its own radial-glow layer. Planed lumber and
+	// not the log's bark, because a torch is a whittled stick.
+	save(
+		"TorchSide.png",
+		torch_side(&load("LumberLight.png"), &mut rng),
+	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 }
 
@@ -161,26 +170,6 @@ fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 					];
 				}
 			}
-		}
-	}
-	out
-}
-
-/// Vertical plank seams every 16px (dark 2px groove with a light catch
-/// edge), a gentle overall darken, and per-pixel grain jitter.
-fn door(src: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = src.clone();
-	for (x, _y, p) in out.enumerate_pixels_mut() {
-		let seam = x % 16;
-		let d = match seam {
-			0 => -38,
-			1 => -22,
-			2 => 14, // light catch on the plank edge
-			_ => 0,
-		};
-		let grain = rng.signed(6);
-		for c in p.0.iter_mut() {
-			*c = add8(*c, d - 10 + grain);
 		}
 	}
 	out

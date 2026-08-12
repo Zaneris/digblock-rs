@@ -150,6 +150,15 @@ fn mean_rgb(img: &image::RgbaImage) -> [u8; 3] {
 // caught here at compile time, not as GPU corruption at 65 layers.
 const _: () = assert!(digblock_assets::tex::LAYERS.len() <= digblock_core::block::MAX_TEX_LAYERS);
 
+// And the two lists that have to agree, agree. `digblock-core` names the
+// layers by index and `digblock-assets` supplies them in that order, and
+// neither crate can see the other — this file is the only place both are
+// in scope. A length skew is what an inserted or deleted PNG looks like,
+// and it silently textures every block after it with its neighbour's
+// image, so it fails the BUILD rather than a test.
+const _: () =
+	assert!(digblock_assets::tex::LAYERS.len() == digblock_core::block::tex::COUNT as usize);
+
 #[cfg(test)]
 mod layer_tests {
 	/// Every PROPS texture index must name an existing LAYERS entry —

@@ -51,7 +51,7 @@ blocks! {
 	/// exists only pristine in terrain or transmuted at the bench, which
 	/// is what makes transmutation the economy rather than a curiosity.
 	Stone = 5 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble),
-	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), 60, DigFamily::Wood),
+	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood),
 	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed),
 	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
@@ -79,16 +79,16 @@ blocks! {
 	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble),
 	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
 	/// Crafted via alchemy from sub-wood, never generated.
-	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Stairs), 60, DigFamily::Wood),
+	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), ShapeKind::Stairs), 60, DigFamily::Wood),
 	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90, DigFamily::Rock),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy.
-	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::DOOR_WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Door), 45, DigFamily::Wood),
+	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK), ShapeKind::Door), 45, DigFamily::Wood),
 	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
 	/// Placing onto a slab's top face grows it; the third grow converts
 	/// the cell to the plain base block. Hardness is a third of the base
 	/// block's, since each dig removes one third. Crafted via alchemy.
-	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::WOOD, tex::WOOD_TOP, tex::WOOD_TOP), ShapeKind::Slab), 20, DigFamily::Wood),
+	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), ShapeKind::Slab), 20, DigFamily::Wood),
 	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30, DigFamily::Rock),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
 	/// placeable, and the mass Earth feedstock at the bench. Placed, it
@@ -403,15 +403,16 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 }
 
 /// Texture-array layers, matching digblock_assets::tex::LAYERS order.
-mod tex {
+pub mod tex {
 	pub const WATER: u16 = 0;
 	pub const DIRT: u16 = 1;
 	pub const GRASS_SIDE: u16 = 2;
 	pub const GRASS_TOP: u16 = 3;
 	pub const SAND: u16 = 4;
 	pub const STONE: u16 = 5;
-	pub const WOOD: u16 = 6;
-	pub const WOOD_TOP: u16 = 7;
+	/// The felled trunk: bark on the sides, growth rings on the cut ends.
+	pub const LOG: u16 = 6;
+	pub const LOG_TOP: u16 = 7;
 	pub const LEAVES: u16 = 8;
 	pub const SNOW: u16 = 9;
 	pub const DRY_GRASS_SIDE: u16 = 10;
@@ -420,10 +421,20 @@ mod tex {
 	pub const GRAVEL: u16 = 13;
 	pub const PINE_LEAVES: u16 = 14;
 	pub const SANDSTONE: u16 = 15;
-	pub const DOOR_WOOD: u16 = 16;
-	pub const RUBBLE: u16 = 17;
-	pub const TORCH_SIDE: u16 = 18;
-	pub const TORCH_FLAME: u16 = 19;
+	pub const RUBBLE: u16 = 16;
+	pub const TORCH_SIDE: u16 = 17;
+	pub const TORCH_FLAME: u16 = 18;
+	/// Planed timber — the material crafted things are made OF, as
+	/// opposed to [`LOG`], which is the tree. `LUMBER_RED` is registered
+	/// and unused; stairs and slabs are the obvious candidates.
+	pub const LUMBER_LIGHT: u16 = 19;
+	pub const LUMBER_DARK: u16 = 20;
+	pub const LUMBER_RED: u16 = 21;
+
+	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
+	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
+	/// digblock-render, the one crate that can see both.
+	pub const COUNT: u16 = LUMBER_RED + 1;
 }
 
 impl BlockType {
