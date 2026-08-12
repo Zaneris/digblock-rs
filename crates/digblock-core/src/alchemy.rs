@@ -196,10 +196,10 @@ pub const CRAFT_ORDER: [BlockType; 15] = [
 	BlockType::Water,
 ];
 
-/// Bench extraction pace in 60 Hz ticks per block: 0.5 s at level 1,
-/// 0.35 s from 25, 0.25 s from 75. Client-paced for presentation,
-/// server-enforced via the extraction token bucket.
-pub fn extract_pace_ticks(level: u32) -> u32 {
+/// The bench's pace for a WHOLE block — one whose 27 sub-units all come
+/// out, which is the 9-XP reference every other block is priced against:
+/// 0.5 s at level 1, 0.35 s from 25, 0.25 s from 75.
+pub fn base_pace_ticks(level: u32) -> u32 {
 	if level >= 75 {
 		15
 	} else if level >= 25 {
@@ -209,9 +209,43 @@ pub fn extract_pace_ticks(level: u32) -> u32 {
 	}
 }
 
-/// Extraction token-bucket burst (in blocks) — absorbs network bunching
-/// exactly as `EDIT_BURST` does for edits.
+/// The reference block's extraction XP (`convert_xp` of a full 27-unit
+/// base), i.e. what [`base_pace_ticks`] is the pace OF.
+const REF_XP: u32 = 9;
+
+/// Floor on the pace, in ticks. Leaves pay a single XP, and a strictly
+/// proportional pace would run them at 3 ticks — twenty a second, which
+/// is a stream of wire ops rather than a bench.
+const MIN_PACE_TICKS: u32 = 6;
+
+/// Bench extraction pace in 60 Hz ticks for ONE block of `b` at `level`:
+/// the level's whole-block pace scaled by what the block is WORTH, so
+/// the bench spends its time in proportion to what it yields. A stone
+/// (9 XP) takes the full interval, a slab third (3 XP) a third of it,
+/// and leaves fall to the floor above.
+///
+/// Keying on `convert_xp` rather than on a second table is deliberate:
+/// extraction XP is already `ceil(base_total / 3)`, i.e. the block's
+/// worth at the bench, so pace and pay can never disagree about which
+/// blocks are the substantial ones. Client-paced for presentation,
+/// server-enforced via the extraction token bucket.
+pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
+	let xp = crate::skills::convert_xp(b) as u32;
+	let ticks = (base_pace_ticks(level) * xp + REF_XP / 2) / REF_XP;
+	ticks.max(MIN_PACE_TICKS)
+}
+
+/// Extraction token-bucket burst, in REFERENCE blocks — absorbs network
+/// bunching exactly as `EDIT_BURST` does for edits. The bucket itself
+/// banks TICKS (the pace is per-block now), so its capacity is this many
+/// whole-block intervals: [`extract_burst_ticks`].
 pub const EXTRACT_BURST: f32 = 2.0;
+
+/// The extraction bucket's capacity in ticks at `level` — two whole
+/// blocks' worth, exactly as before the pace became per-block.
+pub fn extract_burst_ticks(level: u32) -> f32 {
+	EXTRACT_BURST * base_pace_ticks(level) as f32
+}
 
 #[cfg(test)]
 mod tests {
@@ -321,9 +355,9 @@ mod tests {
 		assert_eq!(craft_unlock(B::Water), Some(50));
 		assert_eq!(craft_unlock(B::Rubble), None);
 		assert_eq!(extract_unlock(B::Water), 15);
-		assert_eq!(extract_pace_ticks(1), 30);
-		assert_eq!(extract_pace_ticks(25), 21);
-		assert_eq!(extract_pace_ticks(75), 15);
+		assert_eq!(base_pace_ticks(1), 30);
+		assert_eq!(base_pace_ticks(25), 21);
+		assert_eq!(base_pace_ticks(75), 15);
 		// Every CRAFT_ORDER row really is craftable, and nothing
 		// craftable is missing from it.
 		for &b in &CRAFT_ORDER {
@@ -337,6 +371,59 @@ mod tests {
 				"{b:?} craftable iff listed"
 			);
 		}
+	}
+
+	/// The bench spends its time in proportion to what a block is worth:
+	/// the pace is `convert_xp` against the 9-XP whole block, floored so
+	/// the cheapest foliage doesn't become a wire-op stream.
+	#[test]
+	fn pace_tracks_what_a_block_is_worth() {
+		use BlockType as B;
+		// Level 1 (a 30-tick whole block), across the value range.
+		for (b, ticks) in [
+			(B::Stone, 30u32),  // the 9-XP reference itself
+			(B::Grass, 30),     //
+			(B::Rubble, 27),    // 8
+			(B::Sandstone, 23), // 7
+			(B::Dirt, 20),      // 6
+			(B::Water, 20),     // the bucket charge
+			(B::Gravel, 17),    // 5
+			(B::Sand, 13),      // 4
+			(B::Snow, 10),      // 3
+			(B::WoodSlab, 10),  // a slab third
+			(B::Leaves, 6),     // 1 XP — the floor, not 3 ticks
+		] {
+			assert_eq!(extract_pace_ticks(b, 1), ticks, "{b:?}");
+		}
+		// The level curve still applies on top, and pace never rises with
+		// level for any block.
+		assert_eq!(extract_pace_ticks(B::Stone, 25), 21);
+		assert_eq!(extract_pace_ticks(B::Stone, 75), 15);
+		for &b in &BlockType::ALL {
+			if !b.is_extractable() {
+				continue;
+			}
+			for level in 2..=99 {
+				assert!(
+					extract_pace_ticks(b, level) <= extract_pace_ticks(b, level - 1),
+					"{b:?} never slows at {level}"
+				);
+				assert!(extract_pace_ticks(b, level) >= MIN_PACE_TICKS, "{b:?}");
+			}
+			// A worth-more block is never quicker than a worth-less one.
+			for &o in &BlockType::ALL {
+				if o.is_extractable() && crate::skills::convert_xp(b) > crate::skills::convert_xp(o)
+				{
+					assert!(
+						extract_pace_ticks(b, 1) >= extract_pace_ticks(o, 1),
+						"{b:?} vs {o:?}"
+					);
+				}
+			}
+		}
+		// The bucket's capacity is still two whole blocks' worth.
+		assert_eq!(extract_burst_ticks(1), 60.0);
+		assert_eq!(extract_burst_ticks(99), 30.0);
 	}
 
 	/// Base yields never exceed a whole block's 27 sub-units, and every

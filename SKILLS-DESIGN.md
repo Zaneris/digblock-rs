@@ -249,7 +249,7 @@ no-matter-creation pin with margin to spare.
 | 10 | **Door** shape (10); craft the **Essence Siphon** (30 Flora + 15 Earth — pairs with Mining 10's first reveal) |
 | 15 | **extract the bucket charge** → 18 Aqua (the Aqua economy opens) |
 | 20 | materials: **clean Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand |
-| 25 | bonus line: dew (§3.3); extraction pace 0.5s → 0.35s per block; **Stone Bricks** |
+| 25 | bonus line: dew (§3.3); extraction pace 0.5s → 0.35s per WHOLE block (every block's own pace scales with it); **Stone Bricks** |
 | 30 | materials: **Sandstone, Snow, Glass, Grass, Mud** |
 | 35 | **Fence**, **Ladder** shapes (§7.2) |
 | 40 | bonus line: trace minerals; craft **Lantern**, **Framed Window** |
@@ -258,7 +258,7 @@ no-matter-creation pin with margin to spare.
 | 55 | craft the **Resonant Pick** (240 Metal + 60 Earth + 12 Aether) |
 | 60 | **Pane**, **Gate** shapes (Glass Pane, Metal Bars); essence transmutation 3:1 (any → any, **except into Aether**) |
 | 70 | **Trapdoor** shape |
-| 75 | bonus line: pine resin (PineLeaves — §3.3 moved it off craftable Wood); extraction pace → 0.25s per block |
+| 75 | bonus line: pine resin (PineLeaves — §3.3 moved it off craftable Wood); extraction pace → 0.25s per whole block |
 | 80 | craft the **Aetherlamp** (12 Metal + 3 Aether — the standing Aether sink) |
 | 85 | waste floor reached early: 1.10× from here (flat to 99's 1.05×) |
 | 90 | bonus line: Rubble Aether (Stone is craftable — a Stone line would be the §3.3 essence pump) |
@@ -627,6 +627,11 @@ never the screen. Rules, each load-bearing:
 - **Source is the real inventory grid** (and hotbar), the same widget, slot rendering,
   and `DragState` the inventory screen already uses. Drag a stack onto the extraction
   slot to begin; the yield preview and per-block pace draw beside it, at your level.
+  The pace is the BLOCK's, not just the level's: `extract_pace_ticks(block, level)`
+  scales the level's whole-block interval by the block's `convert_xp` against the 9-XP
+  reference, floored so 1-XP foliage doesn't become a wire-op stream. Keying it on the
+  XP table rather than a second table is what stops pace and pay disagreeing about
+  which blocks are the substantial ones.
 - **The extraction slot is a pointer, not a container.** It holds a selected block id;
   the stack never leaves the inventory, so the slot touches neither `reconcile_layout`
   nor the `Layout` wire — it is screen-local UI state, cleared when the screen closes.
@@ -640,10 +645,11 @@ never the screen. Rules, each load-bearing:
   shared edit token bucket (`EDIT_RATE_PER_SEC = 10`), so extraction never starves edits.
 - **But the pace itself is server-enforced** — client pacing is presentation, not trust
   (the return-to-spawn precedent: the server holds the clock). `Convert` ops draw from a
-  per-player **extraction bucket** alongside the general edit bucket: capacity ~2,
-  refilling one token per `pace(level)` interval, charged **per block** — a
-  `count: n` op costs n tokens, so the legacy bulk-Convert path can't sidestep the drip
-  either. An op arriving short refuses cleanly through the standing `InventoryFull`
+  per-player **extraction bucket** alongside the general edit bucket. The bucket banks
+  TICKS — one per tick, capacity two WHOLE blocks' worth (`extract_burst_ticks`) — and a
+  `Convert` spends the requested block's own `extract_pace_ticks(block, level) × count`,
+  so neither the legacy bulk-Convert path nor a stream of cheap blocks can sidestep the
+  drip. An op arriving short refuses cleanly through the standing `InventoryFull`
   rebase: nothing debited, no XP, and the honest client self-heals for free (the refused
   block is still in the count; the next cycle re-sends). Burst 2 absorbs network
   bunching exactly as `EDIT_BURST` does. Unlike the spawn cooldown, nothing persists —
@@ -770,9 +776,9 @@ could later expand the full unlock list; v1 is the summary.
   rubble→stone loop is a sink at every level (extract 24 < craft `ceil(27·waste)`).
 - `grid_gates_compose` — every authored material × shape pair unlocks at exactly
   `max(shape level, material level)`; no curated stragglers.
-- `extraction_pace_is_server_enforced` — Convert ops beyond `pace(level)` refuse with no
-  debit and no XP; sustained throughput of a flooding client ≤ honest throughput at the
-  same level; `count > 1` charges the bucket per block, not per op.
+- `extraction_pace_is_server_enforced` — Convert ops beyond `pace(block, level)` refuse
+  with no debit and no XP; sustained throughput of a flooding client ≤ honest throughput
+  at the same level; `count > 1` charges the bucket per block, not per op.
 - Reveal remesh: crossing a threshold bumps resident generation counters exactly once.
 - `every_screen_draws_text_at_one_size` / `..dims_and_panels_the_same_way` extended to the
   character screen and the rebuilt alchemy screen (three window sizes × four scales).

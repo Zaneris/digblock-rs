@@ -327,9 +327,9 @@ mod tests {
 		assert_eq!(alchemy::craft_unlock(B::Water), Some(50));
 		alch(50);
 		// The pace steps and bonus lines named in prose.
-		assert!(alchemy::extract_pace_ticks(25) < alchemy::extract_pace_ticks(24));
+		assert!(alchemy::base_pace_ticks(25) < alchemy::base_pace_ticks(24));
 		alch(25);
-		assert!(alchemy::extract_pace_ticks(75) < alchemy::extract_pace_ticks(74));
+		assert!(alchemy::base_pace_ticks(75) < alchemy::base_pace_ticks(74));
 		alch(75);
 		// Mining's teasers ARE the rock gate.
 		assert_eq!(digblock_core::skills::dig_level_gate(B::Sandstone), 3);

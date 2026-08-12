@@ -285,7 +285,9 @@ impl AlchScreen {
 			self.progress = 0.0;
 			return None;
 		}
-		let pace_secs = alchemy::extract_pace_ticks(level) as f32 / 60.0;
+		// The pace is the BLOCK's, not just the level's: a bench spends
+		// its time in proportion to what comes out.
+		let pace_secs = alchemy::extract_pace_ticks(block, level) as f32 / 60.0;
 		self.progress += dt / pace_secs;
 		if self.progress >= 1.0 {
 			self.progress -= 1.0;
@@ -641,7 +643,7 @@ impl AlchScreen {
 						.map(|&(e, n)| format!("{n} {}", e.name()))
 						.collect::<Vec<_>>()
 						.join(" + ");
-					let pace = alchemy::extract_pace_ticks(view.level) as f32 / 60.0;
+					let pace = alchemy::extract_pace_ticks(b, view.level) as f32 / 60.0;
 					format!("→ {yields}   ·   1 block / {pace:.2}s")
 				}
 				None => "drag a stack here to extract".into(),
@@ -1271,7 +1273,7 @@ mod tests {
 		assert_eq!(drag_to(&mut r, src, slot), None, "the drop itself is free");
 
 		// Half a cycle: nothing sent.
-		let pace = alchemy::extract_pace_ticks(1) as f32 / 60.0;
+		let pace = alchemy::extract_pace_ticks(B::Rubble, 1) as f32 / 60.0;
 		assert_eq!(r.screen.tick(pace * 0.5, 1, &r.inv), None);
 		// Completing the cycle sends exactly one single-block op.
 		assert_eq!(
@@ -1353,7 +1355,7 @@ mod tests {
 		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
 		drag_to(&mut r, InvId::BucketTile, slot);
 		assert_eq!(r.screen.extracting, Some(B::Water));
-		let pace = alchemy::extract_pace_ticks(20) as f32 / 60.0;
+		let pace = alchemy::extract_pace_ticks(B::Water, 20) as f32 / 60.0;
 		assert_eq!(
 			r.screen.tick(pace * 1.01, 20, &r.inv),
 			Some(AlchAction::Convert {

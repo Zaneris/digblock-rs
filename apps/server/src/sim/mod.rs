@@ -245,9 +245,10 @@ struct Client {
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
-	/// Bench-extraction bucket: capacity `EXTRACT_BURST`, refilled one
-	/// block per `extract_pace_ticks(level)` — the server-enforced half
-	/// of the drip (see `process_alchemy`).
+	/// Bench-extraction bucket, in TICKS: refilled one per tick, capped
+	/// at `extract_burst_ticks(level)` (two whole blocks' worth), and
+	/// spent at the extracted block's own `extract_pace_ticks` — the
+	/// server-enforced half of the drip (see `process_alchemy`).
 	extract_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
@@ -1331,7 +1332,9 @@ impl Sim {
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
-				extract_tokens: digblock_core::alchemy::EXTRACT_BURST,
+				extract_tokens: digblock_core::alchemy::extract_burst_ticks(
+					record.skills.level(digblock_core::skills::Skill::Alchemy),
+				),
 				draw_dist,
 				synced_columns: FxHashSet::default(),
 				sync_queue,
@@ -2183,7 +2186,7 @@ mod tests {
 			"burst admits exactly 2"
 		);
 		// One pace interval refills exactly one token.
-		for _ in 0..digblock_core::alchemy::extract_pace_ticks(1) {
+		for _ in 0..digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1) {
 			sim.tick_once(vec![]);
 		}
 		sim.tick_once(vec![convert(1)]);

@@ -141,14 +141,14 @@ impl Sim {
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
 			client.chat_tokens =
 				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
-			// The extraction bucket refills one block per pace interval
-			// at the client's own level, so the ceiling tracks the same
-			// pace the honest client's drip runs at.
-			let pace = digblock_core::alchemy::extract_pace_ticks(
-				client.skills.level(digblock_core::skills::Skill::Alchemy),
-			);
-			client.extract_tokens = (client.extract_tokens + 1.0 / pace as f32)
-				.min(digblock_core::alchemy::EXTRACT_BURST);
+			// The extraction bucket banks TICKS — one per tick — and a
+			// Convert spends the requested block's own pace out of it, so
+			// the ceiling tracks the honest client's drip whatever it is
+			// extracting. Capacity is still two whole blocks' worth.
+			client.extract_tokens =
+				(client.extract_tokens + 1.0).min(digblock_core::alchemy::extract_burst_ticks(
+					client.skills.level(digblock_core::skills::Skill::Alchemy),
+				));
 		}
 		let queue = std::mem::take(&mut self.action_queue);
 		for action in queue {
@@ -789,11 +789,16 @@ impl Sim {
 		// The extraction bucket, charged per block BEFORE the economy
 		// runs (an op it can't cover must not debit anything).
 		let core_op = core_op.filter(|op| match *op {
-			CoreOp::Convert { count, .. } => {
-				if client.extract_tokens < count as f32 {
+			CoreOp::Convert { block, count } => {
+				// The bucket is in ticks: a block costs its own pace, so a
+				// bulk `count` can't sidestep the drip and neither can a
+				// stream of cheap ones.
+				let cost =
+					digblock_core::alchemy::extract_pace_ticks(block, level) as f32 * count as f32;
+				if client.extract_tokens < cost {
 					return false;
 				}
-				client.extract_tokens -= count as f32;
+				client.extract_tokens -= cost;
 				true
 			}
 			CoreOp::Craft { .. } => true,
