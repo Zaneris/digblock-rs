@@ -561,6 +561,9 @@ impl Sim {
 			.clients
 			.get_mut(&req.conn_id)
 			.expect("checked live above");
+		// A level crossed by this award, announced once the client borrow
+		// above has ended (the broadcast walks every client).
+		let mut crossed = None;
 		if place_cell.is_none() {
 			if let Some(drop) = prev.dig_drop() {
 				client.inventory.add(drop, 1);
@@ -580,6 +583,7 @@ impl Sim {
 			// frame can never double-pay.
 			let xp = digblock_core::skills::dig_xp(prev);
 			if xp > 0 {
+				let before = client.skills.level(digblock_core::skills::Skill::Mining);
 				let total = client
 					.skills
 					.add_xp(digblock_core::skills::Skill::Mining, xp);
@@ -590,11 +594,18 @@ impl Sim {
 						total,
 					},
 				);
+				let after = client.skills.level(digblock_core::skills::Skill::Mining);
+				if after > before {
+					crossed = Some(after);
+				}
 			}
 			client.digging = None;
 		}
 		if let Some(hash) = client.identity {
 			self.player_store.put(hash, client.record());
+		}
+		if let Some(level) = crossed {
+			self.announce_level_up(id, digblock_core::skills::Skill::Mining, level);
 		}
 
 		// Journal + broadcast the first write under the client's seq, the
@@ -787,6 +798,9 @@ impl Sim {
 			}
 			CoreOp::Craft { .. } => true,
 		});
+		// As in the dig path: the crossing is announced after the client
+		// borrow ends, since the broadcast walks every client.
+		let mut crossed = None;
 		if let Some(core_op) = core_op {
 			if apply_alchemy(&mut client.inventory, core_op, level) {
 				// Mirror the client's auto-assign of freshly crafted items
@@ -810,14 +824,22 @@ impl Sim {
 							total,
 						},
 					);
+					let after = client.skills.level(digblock_core::skills::Skill::Alchemy);
+					if after > level {
+						crossed = Some(after);
+					}
 				}
 			}
 		}
+		let id = client.id;
 		if let Some(hash) = client.identity {
 			self.player_store.put(hash, client.record());
 		}
 		let counts = client.inventory.to_wire();
 		send_frame(&client.out, &ServerMsg::InventoryFull { counts });
+		if let Some(level) = crossed {
+			self.announce_level_up(id, digblock_core::skills::Skill::Alchemy, level);
+		}
 	}
 
 	/// A column just gained its FIRST edit: enroll every in-radius client

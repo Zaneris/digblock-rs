@@ -160,6 +160,12 @@ pub struct EngineConfig {
 	/// without a second client). Set by the desktop launcher from
 	/// DIG_PLAYERBOX.
 	pub debug_playerbox: bool,
+	/// Debug: throw a level-up confetti burst every couple of seconds, a
+	/// few blocks ahead. A burst is a rare, transient event, so it is
+	/// otherwise invisible to headless capture — the same argument
+	/// `debug_screen` makes for the input-only screens. Set by the
+	/// desktop launcher from DIG_CONFETTI.
+	pub debug_confetti: bool,
 	/// Debug: open a UI screen at startup with a stocked inventory, so a
 	/// headless `--screenshot` run can capture it. Set by the desktop
 	/// launcher from DIG_SCREEN.
@@ -283,6 +289,7 @@ impl EngineConfig {
 			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
+			debug_confetti: false,
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
@@ -331,6 +338,7 @@ impl EngineConfig {
 			sfx_vol: 1.0,
 			player_name: None,
 			debug_playerbox: false,
+			debug_confetti: false,
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
@@ -523,6 +531,16 @@ pub struct Engine {
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
+	/// Live level-up confetti bursts, in the flat instance layout the
+	/// shader reads (origin + age + seed). World state, so a world swap
+	/// forgets them; the flakes' whole motion derives from these three
+	/// numbers in confetti.wgsl, which is why aging them is the entire
+	/// simulation.
+	confetti: Vec<crate::confetti::BurstInstance>,
+	/// Burst counter — the per-burst seed, so two celebrations on the
+	/// same spot don't throw identical paper. Deliberately a counter
+	/// rather than an RNG: nothing here needs to be unpredictable.
+	confetti_seq: u32,
 	/// Reconciliation health, logged every ~5 s while connected.
 	net_corrections: u32,
 	net_error_accum: f32,
@@ -1163,6 +1181,8 @@ impl Engine {
 			tick_lerp: crate::smoothing::TickLerp::new(spawn),
 			remote_scratch: Vec::new(),
 			remote_instances: Vec::new(),
+			confetti: Vec::new(),
+			confetti_seq: 0,
 			net_corrections: 0,
 			net_error_accum: 0.0,
 			net_log_timer: 0.0,
@@ -1590,6 +1610,9 @@ impl Engine {
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.
 		self.refused_cell = None;
+		// Confetti is thrown at a world position; a new world has none of
+		// them left hanging in the air.
+		self.confetti.clear();
 		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
@@ -2126,6 +2149,30 @@ impl Engine {
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
 						self.apply_xp_total(s, total);
+					}
+				}
+				NetEvent::LevelUp {
+					player,
+					skill,
+					level,
+				} => {
+					// Someone else levelled: confetti over THEIR head. The
+					// position is last frame's interpolated sample — the
+					// same one their box was drawn at, which is the only
+					// place the paper could honestly come from. A player
+					// too far away to be sampled at all gets no burst,
+					// which is exactly right: nobody can see them.
+					if let Some(d) = self.remote_scratch.iter().find(|d| d.id == player) {
+						let eye = d.pos;
+						self.throw_confetti(eye);
+					}
+					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
+						let who = self
+							.player_names
+							.get(&player)
+							.cloned()
+							.unwrap_or_else(|| format!("player {player}"));
+						self.push_feed(format!("{who} reached {} level {level}.", s.display()));
 					}
 				}
 				NetEvent::PlayerJoined { id, name } => {
@@ -3151,7 +3198,35 @@ impl Engine {
 				pos: None,
 				gain: crate::audio::LEVEL_GAIN,
 			});
+			// Your own confetti, over your own head — first-person, that
+			// is paper falling past the camera. Everyone ELSE gets theirs
+			// from the server's `LevelUp` broadcast.
+			let eye = self.player.pos;
+			self.throw_confetti(eye);
 		}
+	}
+
+	/// Throw a confetti burst from a player's head. `eye` is the eye
+	/// position (the authoritative `Player::pos` locally, the
+	/// interpolated sample for a remote), and the burst sits just above
+	/// it so it erupts over the head rather than out of the face.
+	///
+	/// Over [`crate::confetti::MAX_BURSTS`] the oldest is dropped: a
+	/// celebration that can't be drawn is better lost than the newest
+	/// one, which is the one somebody is watching.
+	fn throw_confetti(&mut self, eye: Vec3) {
+		const HEAD_CLEARANCE: f32 = 0.55;
+		self.confetti_seq = self.confetti_seq.wrapping_add(1);
+		if self.confetti.len() >= crate::confetti::MAX_BURSTS {
+			self.confetti.remove(0);
+		}
+		self.confetti.push(crate::confetti::instance(
+			[eye.x, eye.y + HEAD_CLEARANCE, eye.z],
+			0.0,
+			// A spread-out seed: consecutive bursts must not look like
+			// the same paper thrown twice.
+			self.confetti_seq as f32 * 7.919,
+		));
 	}
 
 	/// Offline XP award, through the same core award tables the server
@@ -3988,6 +4063,19 @@ impl Game for Engine {
 			t.ttl -= dt;
 		}
 		self.xp_toasts.retain(|t| t.ttl > 0.0);
+		// Confetti: the age in lane 3 IS the simulation — every flake's
+		// arc is a pure function of it in the shader. A burst is dropped
+		// the moment it reaches the life the shader fades to zero at.
+		for b in &mut self.confetti {
+			b[3] += dt;
+		}
+		self.confetti.retain(|b| b[3] < crate::confetti::LIFE);
+		// DIG_CONFETTI=1: a burst every couple of seconds a few blocks
+		// ahead, so a capture run can photograph one at every age.
+		if self.config.debug_confetti && self.confetti.is_empty() {
+			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
+			self.throw_confetti(at);
+		}
 		// The bench drip: while the extraction slot is occupied, each
 		// completed cycle sends one ordinary single-block Convert (the
 		// server paces the same rhythm with its extraction bucket).
@@ -4418,6 +4506,7 @@ impl Game for Engine {
 				},
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
+				confetti: &self.confetti,
 				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),

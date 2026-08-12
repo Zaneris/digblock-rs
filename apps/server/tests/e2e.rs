@@ -326,7 +326,8 @@ impl TestClient {
 				| NetEvent::AdminCommands { .. }
 				| NetEvent::Layout { .. }
 				| NetEvent::Skills { .. }
-				| NetEvent::XpGain { .. } => {}
+				| NetEvent::XpGain { .. }
+				| NetEvent::LevelUp { .. } => {}
 			}
 		}
 	}

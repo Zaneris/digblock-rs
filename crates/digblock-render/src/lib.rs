@@ -5,6 +5,7 @@
 pub mod audio;
 mod camera;
 mod chat;
+mod confetti;
 mod engine;
 mod font;
 mod gi;

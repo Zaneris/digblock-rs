@@ -79,12 +79,19 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// digger's Mining level). Rides the existing `DigRefused` machinery;
 /// the append moves the version because a v16 peer can't decode the new
 /// variant index (and SIM v12 pairs with it anyway).
-pub const PROTOCOL_VERSION: u16 = 17;
+/// v18: `ServerMsg::LevelUp` — another player crossed a level, so
+/// everyone in earshot can throw confetti over their head. Broadcast to
+/// everyone BUT the author, who already learns it from their own
+/// `XpGain` total and celebrates locally; a level is derived from the
+/// shared curve on both sides, so the message carries the answer rather
+/// than the XP that implies it. An append, but the version moves for the
+/// usual reason: a v17 peer can't decode the new variant index.
+pub const PROTOCOL_VERSION: u16 = 18;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 17;
+pub const MIN_PROTOCOL: u16 = 18;
 
 // ---- handshake preamble ----------------------------------------------
 //

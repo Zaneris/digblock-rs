@@ -1388,6 +1388,26 @@ impl Sim {
 		self.broadcast_where(msg, |_| true);
 	}
 
+	/// Tell everyone BUT the author that they crossed a level — the cue
+	/// for the confetti over their head. The author is excluded here
+	/// rather than filtered client-side: they already have the `XpGain`
+	/// total that implies it, and celebrate off that.
+	pub(super) fn announce_level_up(
+		&self,
+		by: PlayerId,
+		skill: digblock_core::skills::Skill,
+		level: u32,
+	) {
+		self.broadcast_where(
+			&ServerMsg::LevelUp {
+				player: by,
+				skill: skill as u8,
+				level,
+			},
+			|c| c.id != by,
+		);
+	}
+
 	/// [`Self::broadcast`] restricted to clients matching `want`.
 	fn broadcast_where(&self, msg: &ServerMsg, want: impl Fn(&Client) -> bool) {
 		let Some(frame) = encode_frame(msg) else {

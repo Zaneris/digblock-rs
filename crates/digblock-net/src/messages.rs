@@ -445,6 +445,18 @@ pub enum ServerMsg {
 		skill: u8,
 		total: u64,
 	},
+	/// Another player just reached `level` in `skill` — the cue for the
+	/// confetti over their head. Sent to everyone BUT the author (who
+	/// learns it from their own `XpGain` and celebrates locally), so a
+	/// client never has to filter its own id out. Carries the derived
+	/// level rather than a total: nobody else's XP is any of your
+	/// business, and the level is all the presentation needs. Appended in
+	/// v18.
+	LevelUp {
+		player: PlayerId,
+		skill: u8,
+		level: u32,
+	},
 }
 
 #[cfg(test)]
@@ -610,6 +622,11 @@ mod tests {
 			ServerMsg::XpGain {
 				skill: 0,
 				total: 1_103_585,
+			},
+			ServerMsg::LevelUp {
+				player: 3,
+				skill: 1,
+				level: 42,
 			},
 		];
 		for m in msgs {

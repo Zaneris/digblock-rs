@@ -166,6 +166,14 @@ pub enum NetEvent {
 		skill: u8,
 		total: u64,
 	},
+	/// SOMEONE ELSE crossed a level (never our own — the server keeps
+	/// the author out of the broadcast). Presentation only: confetti over
+	/// their head, nothing about game state.
+	LevelUp {
+		player: PlayerId,
+		skill: u8,
+		level: u32,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -676,6 +684,15 @@ impl NetClient {
 			}
 			ServerMsg::Skills { xp } => out.push(NetEvent::Skills { xp }),
 			ServerMsg::XpGain { skill, total } => out.push(NetEvent::XpGain { skill, total }),
+			ServerMsg::LevelUp {
+				player,
+				skill,
+				level,
+			} => out.push(NetEvent::LevelUp {
+				player,
+				skill,
+				level,
+			}),
 		}
 	}
 

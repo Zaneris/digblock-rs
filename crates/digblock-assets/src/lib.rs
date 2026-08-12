@@ -190,6 +190,12 @@ pub mod shader {
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
+	pub const CONFETTI: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/confetti.wgsl"),
+	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
@@ -249,7 +255,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 18] = [
+	pub const ALL: [(&str, &str); 19] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -257,6 +263,7 @@ pub mod shader {
 		("blit.wgsl", BLIT),
 		("depth_blit.wgsl", DEPTH_BLIT),
 		("spray.wgsl", SPRAY),
+		("confetti.wgsl", CONFETTI),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),

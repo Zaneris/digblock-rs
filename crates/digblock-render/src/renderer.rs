@@ -299,6 +299,10 @@ pub struct FrameScene<'a> {
 	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
 	/// every frame (tiny — no change detection).
 	pub players: &'a [[f32; 8]],
+	/// Live level-up confetti bursts `[origin.xyz, age][seed, …]`, aged
+	/// by the engine — the flakes themselves are a pure function of these
+	/// in the shader.
+	pub confetti: &'a [crate::confetti::BurstInstance],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32, u32)],
 	/// Crosshair target for the highlight decal — cell, the shape's own
@@ -513,6 +517,9 @@ pub struct Renderer {
 	/// Stateless waterfall spray/mist billboards (instance list fed by
 	/// MeshData.impacts through upload_chunk).
 	spray: crate::spray::Spray,
+	/// Level-up confetti bursts, fed per-frame by the engine (the bursts
+	/// themselves are world state and live there).
+	confetti: crate::confetti::Confetti,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).
@@ -1047,6 +1054,12 @@ impl Renderer {
 				&frame_bgl,
 				gi.cam_light_buf(),
 				config.spray_droplets,
+			),
+			confetti: crate::confetti::Confetti::new(
+				gpu,
+				surface_format,
+				&frame_bgl,
+				gi.cam_light_buf(),
 			),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
@@ -1627,6 +1640,7 @@ impl Renderer {
 			ui_scale,
 			players,
 			overlay,
+			confetti,
 			feed,
 			target: highlight_target,
 			viewmodel,
@@ -1682,6 +1696,7 @@ impl Renderer {
 			gpu,
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
 		);
+		let confetti_n = self.confetti.prepare(gpu, confetti);
 
 		let mut encoder = gpu
 			.device
@@ -1966,6 +1981,12 @@ impl Renderer {
 				let spray_tris = self.spray.draw(&mut pass, live);
 				stats.draw_calls += u32::from(spray_tris > 0);
 				stats.triangles += spray_tris;
+
+				// Level-up confetti, over the same finished world as the
+				// spray it shares a pass (and a bind group) with.
+				let confetti_tris = self.confetti.draw(&mut pass, confetti_n);
+				stats.draw_calls += u32::from(confetti_tris > 0);
+				stats.triangles += confetti_tris;
 			}
 
 			// The item in your own hand, over the finished world. Its own
