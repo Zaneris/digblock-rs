@@ -2818,26 +2818,21 @@ impl Engine {
 	}
 
 	/// Resolve a pending right-click: USE beats PLACE — a door under the
-	/// interact ray toggles; otherwise placement against the plain
-	/// target, gated on stock ("you can only place what you gathered").
+	/// crosshair toggles; otherwise placement against the target, gated
+	/// on stock ("you can only place what you gathered").
 	fn apply_place(&mut self) {
 		if !std::mem::take(&mut self.click_place) {
 			return;
 		}
-		// Use: the interact ray also finds an OPEN door's swung leaf,
-		// which the plain target ray passes through.
-		let (origin, dir) = (self.camera.pos, self.camera.dir());
-		let pipeline = &self.pipeline;
-		let interact = digblock_core::raycast::raycast_interact(origin, dir, REACH, &|x, y, z| {
-			pipeline.cell_at(x, y, z)
-		});
-		if let Some(h) = interact {
-			if h.block.is_door() {
-				self.toggle_door(h);
-				return;
-			}
-		}
 		let Some(hit) = self.target else { return };
+		// Use: the pick ray narrow-phases against interaction boxes, so
+		// this finds an OPEN door on its swung leaf too — there is no
+		// second ray to walk.
+		if hit.block.is_door() {
+			self.toggle_door(hit);
+			return;
+		}
+		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		if hit.normal == (0, 0, 0) {
 			return;
 		}

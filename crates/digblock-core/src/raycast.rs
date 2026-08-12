@@ -26,8 +26,16 @@ pub struct RayHit {
 /// Walk the grid from `origin` along `dir` up to `max_dist`, returning the
 /// first colliding block. Unloaded (None) cells pass through, matching
 /// physics; water and air don't collide and are transparent to the ray.
-/// Shaped cells narrow-phase against their COLLISION boxes — an open
-/// door is transparent, a miss past a stair's open region continues.
+///
+/// Shaped cells narrow-phase against their INTERACTION boxes, not their
+/// collision ones, and a miss past a stair's open region continues the
+/// walk. Picking and physics are different questions: an open door has
+/// no collision at all — you walk through the doorway — but it is still
+/// a block standing there, and a block you can see is a block you can
+/// aim at, highlight and dig. Keying the crosshair off collision made
+/// an open door unpickable (and un-diggable, since the server
+/// re-raycasts through here too), so the only way to remove one was to
+/// close it first. The two box sets are identical for every other shape.
 pub fn raycast(
 	origin: Vec3,
 	dir: Vec3,
@@ -54,28 +62,8 @@ pub fn raycast_fluid(
 	})
 }
 
-/// Interact/use picking (door toggles): the standard colliding walk, but
-/// shaped cells narrow-phase against their INTERACTION boxes — an open
-/// door stays clickable on its swung leaf while the plain ray passes
-/// through the doorway. Client click and server re-validation share it.
-pub fn raycast_interact(
-	origin: Vec3,
-	dir: Vec3,
-	max_dist: f32,
-	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
-) -> Option<RayHit> {
-	walk(
-		origin,
-		dir,
-		max_dist,
-		cell_at,
-		&|c| BlockType::from_id(cell_id(c)).props().collides,
-		&crate::shapes::interaction_boxes,
-	)
-}
-
 /// The general walk: `stops` decides which loaded cells end the ray
-/// (shaped cells then narrow-phase against their collision boxes).
+/// (shaped cells then narrow-phase against their interaction boxes).
 pub fn raycast_with(
 	origin: Vec3,
 	dir: Vec3,
@@ -89,7 +77,7 @@ pub fn raycast_with(
 		max_dist,
 		cell_at,
 		stops,
-		&crate::shapes::collision_boxes,
+		&crate::shapes::interaction_boxes,
 	)
 }
 
@@ -363,25 +351,30 @@ mod tests {
 	}
 
 	#[test]
-	fn open_door_passes_plain_ray_but_stops_interact_ray() {
+	fn an_open_door_is_still_pickable_on_its_swung_leaf() {
 		let origin = Vec3::new(4.5, 0.5, 0.5);
-		// Closed: both rays stop at the leaf.
+		// Closed: the leaf spans the cell and stops the ray.
 		let closed = door_world(false);
 		let hit = raycast(origin, Vec3::X, 10.0, &closed).unwrap();
 		assert_eq!((hit.cell, hit.normal), ((6, 0, 0), (-1, 0, 0)));
-		let ihit = raycast_interact(origin, Vec3::X, 10.0, &closed).unwrap();
-		assert_eq!(ihit.cell, (6, 0, 0));
-		// Open: the plain ray threads the doorway to the wall; the
-		// interact ray still finds the swung leaf (against the −z face,
-		// so aim off-center toward it).
+		// Open: the doorway itself is clear — the ray threads it to the
+		// wall behind, which is what makes an open door walk-through and
+		// see-through.
 		let open = door_world(true);
 		let through = raycast(origin, Vec3::X, 10.0, &open).unwrap();
-		assert_eq!(through.cell, (9, 0, 0), "doorway is transparent to digs");
-		// The swung leaf is set back a twelfth (z 0.083..0.25).
+		assert_eq!(through.cell, (9, 0, 0), "the doorway is clear");
+		// But the leaf itself is still there, and still a target: aim at
+		// where it swung to (set back a twelfth, z 0.083..0.25) and the
+		// pick lands on the door. Physics has no box there at all — this
+		// is exactly the case that used to be unpickable.
 		let toward_leaf = Vec3::new(4.5, 0.5, 0.15);
-		let leaf = raycast_interact(toward_leaf, Vec3::X, 10.0, &open).unwrap();
-		assert_eq!(leaf.cell, (6, 0, 0), "open leaf still clickable");
+		let leaf = raycast(toward_leaf, Vec3::X, 10.0, &open).unwrap();
+		assert_eq!(leaf.cell, (6, 0, 0), "open leaf is aimable");
 		assert_eq!(leaf.block, B::WoodDoor);
+		assert!(
+			crate::shapes::collision_boxes(leaf.cell_value).is_empty(),
+			"and it got there with no collision box to hit"
+		);
 	}
 
 	#[test]

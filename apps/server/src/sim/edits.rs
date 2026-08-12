@@ -635,10 +635,9 @@ impl Sim {
 		self.broadcast_edit(seq, by, client_seq, edit, prev_cell);
 	}
 
-	/// A use/interact click: re-raycast with the interact-aware ray and
-	/// toggle the hit door pair. Same preamble gates as edits; `normal`
-	/// is not required to match (a swung open leaf has no meaningful
-	/// entry face).
+	/// A use/interact click: re-raycast and toggle the hit door pair.
+	/// Same preamble gates as edits; `normal` is not required to match (a
+	/// swung open leaf has no meaningful entry face).
 	fn process_interact(&mut self, req: PendingEditReq) {
 		let (id, out, live, player_pos, has_token) = {
 			let Some(client) = self.clients.get_mut(&req.conn_id) else {
@@ -687,9 +686,7 @@ impl Sim {
 			return reject(RejectReason::OutOfReach);
 		}
 		let store = &self.store;
-		let hit = digblock_core::raycast::raycast_interact(req.origin, dir, REACH, &|x, y, z| {
-			store.cell_at(x, y, z)
-		});
+		let hit = raycast(req.origin, dir, REACH, &|x, y, z| store.cell_at(x, y, z));
 		let Some(hit) = hit else {
 			return reject(RejectReason::OutOfReach);
 		};
@@ -2516,10 +2513,8 @@ mod tests {
 			target.2 as f32 + 0.05,
 		) - pos)
 			.normalize();
-		let hit = digblock_core::raycast::raycast_interact(pos, dir, REACH, &|x, y, z| {
-			sim.test_cell_at(x, y, z)
-		})
-		.expect("door under the interact ray");
+		let hit = raycast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("door under the pick ray");
 		assert_eq!(hit.cell, target);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
@@ -2540,16 +2535,16 @@ mod tests {
 		assert!(cell_state(lower_now) & 0b0100 != 0, "lower open");
 		assert!(cell_state(upper_now) & 0b0100 != 0, "upper open");
 
-		// An OPEN door is transparent to the dig ray, so close it first —
-		// clicking the SWUNG leaf, which now hugs a different cell face —
-		// then hold-dig the lower half: both cells clear, one credit.
+		// Close it again by clicking the SWUNG leaf, which now hugs a
+		// different cell face, then hold-dig the lower half: both cells
+		// clear, one credit. (The dig would land on the open leaf too —
+		// the pick ray finds it — but closing first is the older path and
+		// keeps this test covering both aims.)
 		let leaf_box = digblock_core::shapes::interaction_boxes(lower_now)[0];
 		let (leaf_lo, leaf_hi) = leaf_box.aabb(target);
 		let dir2 = ((leaf_lo + leaf_hi) * 0.5 - pos).normalize();
-		let hit2 = digblock_core::raycast::raycast_interact(pos, dir2, REACH, &|x, y, z| {
-			sim.test_cell_at(x, y, z)
-		})
-		.expect("open leaf under the interact ray");
+		let hit2 = raycast(pos, dir2, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("open leaf under the pick ray");
 		assert_eq!(hit2.cell, target, "swung leaf still clickable");
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
