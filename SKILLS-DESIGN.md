@@ -159,7 +159,7 @@ a sink at every level (see §4.2).
 | DryGrass | 18 | 6 | | | | |
 | Mud | 12 | 3 | 3 | | | |
 | Wood | | 27 | | | | |
-| Leaves / PineLeaves | | 3 | | | | |
+| Leaves / PineLeaves | | 1 | | | | foliage is water and structure; the essence is in the trunk (was 3 — at a 10-tick dig that paid Flora as fast as grass) |
 | Snow | | | 9 | | | cold biomes' economic identity |
 | Water (bucket charge) | | | 18 | | | unlocked Alch 15; consumes the charge |
 | WoodStairs | | 18 | | | | shaped items extract at volume — |

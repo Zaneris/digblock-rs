@@ -35,7 +35,13 @@ pub fn extract_base(b: BlockType) -> &'static [(Essence, u32)] {
 		B::DryGrass => &[(E::Earth, 18), (E::Flora, 6)],
 		B::Mud => &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
 		B::Wood => &[(E::Flora, 27)],
-		B::Leaves | B::PineLeaves => &[(E::Flora, 3)],
+		// Foliage is mostly water and structure — the timber's essence is
+		// in the trunk. One unit, not three: a leaf block digs in 10
+		// ticks and there are hundreds per tree, so at 3 it paid Flora at
+		// the same rate as grass (18/s of digging at level 30) from the
+		// one block the world hands you for free with every log. At 1 it
+		// is filler, and Wood is the timber.
+		B::Leaves | B::PineLeaves => &[(E::Flora, 1)],
 		B::Snow => &[(E::Aqua, 9)],
 		// The bucket charge: extracting it empties the tool.
 		B::Water => &[(E::Aqua, 18)],
