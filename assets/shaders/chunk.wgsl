@@ -147,7 +147,24 @@ fn fs_depth(i: DepthOut) -> @location(0) u32 {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	var col = tex;
+	// Fullbright ink is a light SOURCE, and a source has to out-read what
+	// it casts or the picture inverts: the flame is authored as an
+	// ordinary albedo texture, so at gain 1 it renders no brighter than a
+	// well-lit wall — and once the torch's near field stopped clipping
+	// (LIGHT_NEAR, gi_resolve.wgsl) the pool it threw was brighter than
+	// the flame throwing it. This is the ink alone: `glows` and `emits`
+	// are independent block properties, so nothing here changes what a
+	// torch CASTS, only how the emitter itself reads.
+	//
+	// The gain rides the ink's OWN luminance, because a torch is one
+	// block but not one material: the head and the wooden post are both
+	// fullbright, and a flat multiplier lifts the post into glowing wood.
+	// Weighting by value puts the light where the light is — the flame
+	// takes nearly the whole gain, the post barely moves — and it needs
+	// no texture-id special case in a shader to do it.
+	const EMISSIVE_GAIN = 1.6;
+	let ink = dot(tex, vec3f(0.299, 0.587, 0.114));
+	var col = tex * select(1.0, 1.0 + EMISSIVE_GAIN * ink * ink, i.emissive == 1u);
 	// Emissive ink is its own light — no sun, no GI. It still travels to
 	// the eye through the medium like everything else, which is why the
 	// branch narrowed to the lighting instead of returning early.

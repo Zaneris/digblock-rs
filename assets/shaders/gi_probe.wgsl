@@ -65,6 +65,13 @@ const LIGHT_RANGE: f32 = 24.0;
 // cell itself, which is what keeps a lit torch and the wall beside it
 // looking like one light source.
 const LIGHT_GAIN: f32 = 0.6;
+// Where the point model's near field stops being taken literally, in
+// blocks — the pinned twin of gi_resolve's, and the same reasoning: a
+// voxel emitter is not a point, 1/d^2 diverges into it, and the support
+// block half a block away took the whole of `emit * LIGHT_GAIN` against
+// a display whose white is 1.0. Beyond it the falloff is exactly 1/d^2,
+// so no probe outside this radius changes at all.
+const LIGHT_NEAR: f32 = 2.0;
 
 // The world grid cell this probe texel currently serves: congruent to
 // the texel index around the camera's grid position.
@@ -276,11 +283,13 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	if sh.hit {
 		return vec3f(0.0);
 	}
-	// A voxel emitter as a point source: intensity falls as 1/d^2, and
-	// the near-field is clamped so a probe sharing a cell with a torch
-	// does not divide by nothing.
+	// A voxel emitter as a point source: intensity falls as 1/d^2 outside
+	// LIGHT_NEAR and holds inside it — the clamp started as "don't divide
+	// by nothing" for a probe sharing a torch's cell and is now also what
+	// keeps the near field under the white point (see the constant).
 	let radiance = albedo_of(cls) * emit * LIGHT_GAIN;
-	return radiance * (ndl / max(dist2, 1.0)) * medium_water_tr(sh.water) * f32(count);
+	return radiance * (ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
+		* medium_water_tr(sh.water) * f32(count);
 }
 
 fn albedo_of(v: u32) -> vec3f {

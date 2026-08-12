@@ -782,6 +782,45 @@ natural cascade pose, the submerged pose and DIG_DIVE all diff at **mean ≤0.00
 of water are now ~7% of it; the biggest term left is the per-vertex `gi_indirect` at 0.83
 ms, which is the measured next lever if water is ever the problem again.
 
+### R22 — the torch out-lit its own flame
+
+User report: "the bright kind of overexposed looking circle right under torches", and a
+follow-up that the flame itself should read brighter. Both are the same defect, and it is a
+DISPLAY-RANGE one — which is worth naming, because the honest fix is the thing this engine
+deliberately does not have.
+
+R20's NEE prices a torch as a point source: `emit(14) × LIGHT_GAIN(0.6) × ndl / max(d², 1)`.
+The support block's top face sits half a block from the torch's centre, so it took the whole
+8.4 against a display whose white is 1.0 — a hard-edged ellipse of saturated orange with the
+floor texture gone inside it. Measured in the vault band: **2.96% of pixels with a channel at
+255 and not one of them actually white**, which is the giveaway — this is per-channel
+saturation shifting the hue to the light's, not a bright surface.
+
+Two changes, both stopgaps for the absent tonemap and both explicitly labelled as such:
+
+- **`LIGHT_NEAR = 2.0`**, the pinned twin of the existing near-field clamp (which was 1.0 for
+  the divide-by-nothing case, and is now also what keeps the near field near the white point).
+  Outside the radius the falloff is exactly 1/d², so nothing past it changes at all — the
+  floor and wall bands away from the torch move under 0.5%, and an outdoor scene with no
+  emitters diffs at **mean 0.0004, max 1**. The radius is a measured trade, not an extreme:
+  clipping goes 2.96% → 0.40% at 2.0 and bottoms out at 0.13% by 2.5, but that 0.13% IS the
+  torch's own emissive sprite (2.5 and 3.0 measure identically), and buying the last 0.27%
+  costs another 14% of pool brightness on a pool that already reads faint. What is left at
+  2.0 is a hot core at the flame's base; what went away is the flat ellipse.
+- **An emissive-ink gain in chunk.wgsl**, riding the ink's OWN luminance
+  (`1 + 1.6·lum²`). A light source has to out-read what it casts or the picture inverts —
+  and once the pool stopped clipping, the flame was dimmer than the light it threw. The
+  weighting matters because a torch is one block but not one material: head and wooden post
+  are both fullbright, and a flat multiplier lifts the post into glowing wood. This is the
+  ink alone; `glows` and `emits` stay independent, so nothing here changes what a torch CASTS.
+
+Neither touches perf (the clamp is a compile-time constant; the gain is a dot product on a
+fragment that already does eight texture loads). **The real fix stays on the backlog:** an
+HDR scene target plus one tonemap on the composite would roll the highlight off instead of
+flattening it. Note the offscreen scene colour is created with the SURFACE format today, so
+radiance is already clamped at the scene pass — a tonemap cannot simply be appended, it needs
+the HDR target first.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

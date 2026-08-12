@@ -351,7 +351,7 @@ mod tests {
 	/// files at once.
 	#[test]
 	fn resolve_and_probe_agree_on_light_calibration() {
-		for name in ["LIGHT_RANGE", "LIGHT_GAIN"] {
+		for name in ["LIGHT_RANGE", "LIGHT_GAIN", "LIGHT_NEAR"] {
 			let r = wgsl_const(super::shader::GI_RESOLVE, name);
 			let p = wgsl_const(super::shader::GI_PROBE, name);
 			assert_eq!(r, p, "{name}: resolve {r} vs probe {p}");

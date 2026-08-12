@@ -284,6 +284,36 @@ fn cosine_hemi(n: vec3f, u: vec2f) -> vec3f {
 // drift apart (`resolve_and_probe_agree_on_light_calibration`).
 const LIGHT_RANGE = 24.0;
 const LIGHT_GAIN = 0.6;
+// Where the point model's near field stops being taken literally, in
+// blocks. Beyond it the falloff is exactly 1/d^2 and NOTHING about the
+// pool changes; inside, irradiance holds at 1/LIGHT_NEAR^2.
+//
+// A voxel emitter is not a point, and a point's 1/d^2 diverges: the
+// support block's top face sits half a block from the torch's centre, so
+// it took `emit * LIGHT_GAIN` whole — 8.4 before the surface albedo,
+// against a display whose white is 1.0. The result was a hard-edged
+// ellipse of saturated orange under every torch, texture detail gone
+// inside it (measured: the red channel clipped over 3% of the vault
+// frame, with not one pixel actually white — the giveaway that this is
+// per-channel saturation, not a bright surface).
+//
+// The clamp already existed at 1.0 for the divide-by-nothing case; this
+// only widens it. The number is a DISPLAY fact, not a physical one, and
+// this is explicitly a stopgap: the honest fix is an HDR scene target
+// and one tonemap on the composite, which would roll the highlight off
+// instead of flattening it, and is on the backlog.
+//
+// 2.0 is a measured trade, not the extreme. Clipping in the vault pool
+// band goes 2.96% -> 0.40% here and bottoms out at 0.13% by 2.5 — but
+// 0.13% IS the torch's own emissive sprite, which no falloff can touch
+// (2.5 and 3.0 measure identically), and buying that last 0.27% costs
+// another 14% of pool brightness for a pool that already reads faint.
+// What is left at 2.0 is a small hot core at the flame's base, which is
+// what a flame should do; what went away is the flat, hard-edged
+// ellipse with no floor texture in it. Rooms are unaffected either way:
+// the floor and wall bands away from the torch move under 0.5%, because
+// this cannot touch anything past the radius.
+const LIGHT_NEAR = 2.0;
 // The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
 // anyway; 64 covers the worst dense diagonal with margin, because a
 // tight cap silently UN-shadows whatever lies past it — the bug
@@ -339,7 +369,7 @@ fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
 		}
 		let cls = bitcast<u32>(l.w);
 		let emit = gi_emit(cls);
-		let score = emit * ndl / max(dist2, 1.0);
+		let score = emit * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
 		if score > best {
 			best = score;
 			out.valid = true;
@@ -578,7 +608,7 @@ fn fs(i: VsOut) -> FsOut {
 				max(pick.dist - 0.9, 0.0), GI_NEE_ITERS,
 			);
 			if !sh.hit {
-				nee = pick.radiance * (pick.ndl / max(pick.dist2, 1.0))
+				nee = pick.radiance * (pick.ndl / max(pick.dist2, LIGHT_NEAR * LIGHT_NEAR))
 					* medium_water_tr(sh.water);
 			}
 		}
