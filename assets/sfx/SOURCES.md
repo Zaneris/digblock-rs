@@ -48,6 +48,49 @@ in the commit that added these files):
   oggenc -q 3 -o swim.ogg swim.wav
   ```
 
+- `level_up.ogg` — the ordinary level-up, 0.75 s one-shot: A5 into E6 a
+  beat later, each a sine plus a quarter-strength octave for a bell-ish
+  edge, exponential decays. Non-positional, so it needs no seam.
+
+  ```sh
+  ffmpeg -f lavfi -i "sine=f=880:d=0.75:r=44100" -f lavfi -i "sine=f=1760:d=0.75:r=44100" \
+         -f lavfi -i "sine=f=1318.51:d=0.75:r=44100" -f lavfi -i "sine=f=2637.02:d=0.75:r=44100" \
+    -filter_complex "[0:a]afade=t=in:st=0:d=0.008,afade=t=out:st=0.02:d=0.40:curve=exp,volume=0.9[n1];\
+  [1:a]afade=t=in:st=0:d=0.008,afade=t=out:st=0.02:d=0.22:curve=exp,volume=0.25[n1h];\
+  [2:a]adelay=140|140,afade=t=in:st=0.14:d=0.008,afade=t=out:st=0.16:d=0.55:curve=exp,volume=0.85[n2];\
+  [3:a]adelay=140|140,afade=t=in:st=0.14:d=0.008,afade=t=out:st=0.16:d=0.30:curve=exp,volume=0.22[n2h];\
+  [n1][n1h][n2][n2h]amix=inputs=4:normalize=0,aformat=sample_fmts=s16:channel_layouts=mono,\
+  alimiter=level_in=1:level_out=0.9,afade=t=out:st=0.70:d=0.05" -ar 44100 -ac 1 level_up.wav
+  oggenc -q 3 -o level_up.ogg level_up.wav
+  ```
+
+- `level_unlock.ogg` — the level-up that opens something, 1.30 s: the
+  same construction escalated to a C major arpeggio (C6 E6 G6 C7) at
+  110 ms apart, the top note held twice as long over a brief
+  high-passed noise shimmer. Deliberately the same tonic family as
+  `level_up.ogg` — one event, two sizes.
+
+  ```sh
+  ffmpeg -f lavfi -i "sine=f=1046.50:d=1.30:r=44100" -f lavfi -i "sine=f=2093.00:d=1.30:r=44100" \
+         -f lavfi -i "sine=f=1318.51:d=1.30:r=44100" -f lavfi -i "sine=f=2637.02:d=1.30:r=44100" \
+         -f lavfi -i "sine=f=1567.98:d=1.30:r=44100" -f lavfi -i "sine=f=3135.96:d=1.30:r=44100" \
+         -f lavfi -i "sine=f=2093.00:d=1.30:r=44100" -f lavfi -i "sine=f=4186.01:d=1.30:r=44100" \
+         -f lavfi -i "anoisesrc=d=1.30:c=white:a=0.9:r=44100" \
+    -filter_complex "[0:a]afade=t=in:st=0:d=0.006,afade=t=out:st=0.02:d=0.45:curve=exp,volume=0.75[a1];\
+  [1:a]afade=t=in:st=0:d=0.006,afade=t=out:st=0.02:d=0.25:curve=exp,volume=0.20[a1h];\
+  [2:a]adelay=110|110,afade=t=in:st=0.11:d=0.006,afade=t=out:st=0.13:d=0.45:curve=exp,volume=0.72[a2];\
+  [3:a]adelay=110|110,afade=t=in:st=0.11:d=0.006,afade=t=out:st=0.13:d=0.25:curve=exp,volume=0.18[a2h];\
+  [4:a]adelay=220|220,afade=t=in:st=0.22:d=0.006,afade=t=out:st=0.24:d=0.50:curve=exp,volume=0.72[a3];\
+  [5:a]adelay=220|220,afade=t=in:st=0.22:d=0.006,afade=t=out:st=0.24:d=0.28:curve=exp,volume=0.18[a3h];\
+  [6:a]adelay=330|330,afade=t=in:st=0.33:d=0.006,afade=t=out:st=0.35:d=0.85:curve=exp,volume=0.85[a4];\
+  [7:a]adelay=330|330,afade=t=in:st=0.33:d=0.006,afade=t=out:st=0.35:d=0.45:curve=exp,volume=0.22[a4h];\
+  [8:a]highpass=f=5000,adelay=330|330,afade=t=in:st=0.33:d=0.01,afade=t=out:st=0.35:d=0.55:curve=cub,volume=0.30[sh];\
+  [a1][a1h][a2][a2h][a3][a3h][a4][a4h][sh]amix=inputs=9:normalize=0,\
+  aformat=sample_fmts=s16:channel_layouts=mono,alimiter=level_in=1:level_out=0.92,\
+  afade=t=out:st=1.24:d=0.06" -ar 44100 -ac 1 level_unlock.wav
+  oggenc -q 3 -o level_unlock.ogg level_unlock.wav
+  ```
+
 - `splash.ogg` — water entry, 0.45 s one-shot. Two layers: a bright
   bandpassed white-noise impact decaying over 0.2 s, and a low brown-noise
   gurgle around 420 Hz decaying over 0.4 s. Unlike the loops above there

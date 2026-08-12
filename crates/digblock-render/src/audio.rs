@@ -32,6 +32,8 @@ pub enum Sfx {
 	AmbientWind,
 	AmbientWater,
 	AmbientCave,
+	LevelUp,
+	LevelUnlock,
 }
 
 /// The embedded bytes for a sound — the enum↔asset pairing lives here
@@ -56,11 +58,13 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::AmbientWind => a::AMBIENT_WIND,
 		Sfx::AmbientWater => a::AMBIENT_WATER,
 		Sfx::AmbientCave => a::AMBIENT_CAVE,
+		Sfx::LevelUp => a::LEVEL_UP,
+		Sfx::LevelUnlock => a::LEVEL_UNLOCK,
 	}
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 16] = [
+pub const ALL_SFX: [Sfx; 18] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -77,7 +81,24 @@ pub const ALL_SFX: [Sfx; 16] = [
 	Sfx::AmbientWind,
 	Sfx::AmbientWater,
 	Sfx::AmbientCave,
+	Sfx::LevelUp,
+	Sfx::LevelUnlock,
 ];
+
+/// The fanfare a level-up speaks: the plain chime, or the bigger one
+/// when that level opened something (see
+/// [`digblock_core::skills::level_unlocks_something`]).
+pub fn level_sfx(unlocked: bool) -> Sfx {
+	if unlocked {
+		Sfx::LevelUnlock
+	} else {
+		Sfx::LevelUp
+	}
+}
+
+/// Non-positional gain for the level fanfare — it is the player's own
+/// event, so it plays at the ears like a UI sound.
+pub const LEVEL_GAIN: f32 = 0.7;
 
 /// Sound-material class of a block (dig/break/step variants).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

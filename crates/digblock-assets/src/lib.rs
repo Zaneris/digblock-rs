@@ -95,8 +95,13 @@ pub mod sfx {
 	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
 	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
 	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
+	/// The ordinary level-up chime: a rising fifth.
+	pub const LEVEL_UP: &[u8] = include_bytes!("../../../assets/sfx/level_up.ogg");
+	/// The level-up that OPENS something: a four-note fanfare on top of
+	/// the same tonic, so the two read as the same event, escalated.
+	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
 
-	pub const ALL: [(&str, &[u8]); 16] = [
+	pub const ALL: [(&str, &[u8]); 18] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -113,6 +118,8 @@ pub mod sfx {
 		("ambient_wind.ogg", AMBIENT_WIND),
 		("ambient_water.ogg", AMBIENT_WATER),
 		("ambient_cave.ogg", AMBIENT_CAVE),
+		("level_up.ogg", LEVEL_UP),
+		("level_unlock.ogg", LEVEL_UNLOCK),
 	];
 }
 

@@ -3139,10 +3139,17 @@ impl Engine {
 		);
 		if new_level > old_level {
 			self.push_feed(format!("{} is now level {new_level}.", skill.display()));
+			// A level that OPENS something speaks with the bigger voice —
+			// derived from the gate tables, so the two sounds can't drift
+			// from what the level actually did. A multi-level jump (a big
+			// offline award, or a coalesced total) asks about every level
+			// crossed, not just the one landed on.
+			let unlocked = (old_level + 1..=new_level)
+				.any(|l| digblock_core::skills::level_unlocks_something(skill, l));
 			self.emit(crate::audio::AudioCmd::Sfx {
-				sound: crate::audio::Sfx::Place,
+				sound: crate::audio::level_sfx(unlocked),
 				pos: None,
-				gain: 0.9,
+				gain: crate::audio::LEVEL_GAIN,
 			});
 		}
 	}

@@ -219,6 +219,35 @@ pub fn dig_level_gate(block: BlockType) -> u32 {
 /// spirit: one wording shared by prediction and the server verdict.
 pub const REFUSE_GATED_MSG: &str = "this rock defies your mining level";
 
+// ---- unlocks ---------------------------------------------------------
+
+/// Does reaching `level` in `skill` open something that was shut at
+/// `level - 1`? The level-up fanfare asks this to pick its voice (a
+/// bigger sound for a level that hands you something), and the answer is
+/// DERIVED from the gate tables themselves rather than a second list —
+/// retuning a `craft_unlock` or a `dig_level_gate` moves the fanfare with
+/// it, and cannot drift.
+///
+/// Level 1 is never an unlock: it is where everyone starts, and no one
+/// levels up INTO it.
+pub fn level_unlocks_something(skill: Skill, level: u32) -> bool {
+	if level <= 1 || level > MAX_LEVEL {
+		return false;
+	}
+	BlockType::ALL.iter().any(|&b| match skill {
+		// A rock whose strength wall stands exactly here.
+		Skill::Mining => dig_level_gate(b) == level,
+		// A new recipe, a newly extractable block, or a bonus line that
+		// wasn't paying at the level below.
+		Skill::Alchemy => {
+			crate::alchemy::craft_unlock(b) == Some(level)
+				|| crate::alchemy::extract_unlock(b) == level
+				|| crate::alchemy::bonus_lines(b, level)
+					!= crate::alchemy::bonus_lines(b, level - 1)
+		}
+	})
+}
+
 // ---- award tables ----------------------------------------------------
 //
 // XP keys on fixed per-action bases, never on level-scaled outcomes —
@@ -408,6 +437,31 @@ mod tests {
 		}
 		for b in [B::Gravel, B::Dirt, B::Wood, B::Leaves, B::Water, B::Air] {
 			assert_eq!(dig_level_gate(b), 1, "{b:?} ungated");
+		}
+	}
+
+	/// The fanfare's question, derived from the gate tables: the levels
+	/// that hand you something are exactly the gate levels, and every
+	/// other level is an ordinary one.
+	#[test]
+	fn unlock_levels_are_the_gate_levels() {
+		// Mining: the two rock walls, and nothing else.
+		let mining: Vec<u32> = (1..=MAX_LEVEL)
+			.filter(|&l| level_unlocks_something(Skill::Mining, l))
+			.collect();
+		assert_eq!(mining, vec![3, 5], "sandstone, then stone");
+		// Alchemy: craft unlocks (5/8/10/20/30/50), the bucket charge's
+		// extraction (15), and the bonus lines (25/40/60/75/90).
+		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
+			.filter(|&l| level_unlocks_something(Skill::Alchemy, l))
+			.collect();
+		assert_eq!(alchemy, vec![5, 8, 10, 15, 20, 25, 30, 40, 50, 60, 75, 90]);
+		// Level 1 is where everyone starts — you never level up into it,
+		// and the slabs sitting at unlock 1 must not say otherwise.
+		for s in Skill::ALL {
+			assert!(!level_unlocks_something(s, 1), "{s:?}");
+			assert!(!level_unlocks_something(s, 0));
+			assert!(!level_unlocks_something(s, MAX_LEVEL + 1));
 		}
 	}
 
