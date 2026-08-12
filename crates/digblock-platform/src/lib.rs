@@ -100,6 +100,19 @@ pub struct RunOptions {
 	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
 	/// so benchmarks measure real frame cost, not vsync residue.
 	pub no_vsync: bool,
+	/// Logical window size, when a run needs a SPECIFIC one rather than
+	/// winit's 800x600 default. The GI resolve is half-res off the
+	/// surface, so its cost scales with this directly — which makes it the
+	/// one knob a desktop-vs-web comparison has to hold equal before any
+	/// of its numbers mean anything.
+	pub window_size: Option<(u32, u32)>,
+	/// Step the world by exactly this much per frame instead of by
+	/// measured wall time (`--fixed-dt`). Everything animated rides dt —
+	/// water ripple phase, the fluid sim, the spawn settle — so without
+	/// it two builds of DIFFERENT SPEED reach `--frames N` in different
+	/// world states and a parity capture measures the speed difference
+	/// instead of the change. See `GameClock`.
+	pub fixed_dt: Option<std::time::Duration>,
 }
 
 /// Why `run` came back with a failure the process should report.

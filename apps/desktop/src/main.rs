@@ -36,6 +36,20 @@ fn main() {
 	//            the sun azimuth plane)
 	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
 	//            tod 45, 1800 frames, bench.csv)
+	//   --fly N / --warp N (fly the bench path N frames then freeze, or
+	//            arrive at that same pose with no motion behind it — the
+	//            temporal-artifact A/B; pair with --frames)
+	//   --walk (modifier on either: an eye-height oscillation, one block
+	//            forward and one back, instead of the 30 blocks/s flyover —
+	//            a screen-space artifact scales with screen motion, so the
+	//            two paths are two regimes)
+	//   --size WxH (logical window size; the GI resolve is half-res off
+	//            the surface, so this is what a cross-platform comparison
+	//            has to hold equal)
+	//   --pos x y z (stand here instead of at the seed's spawn)
+	//   --fixed-dt S (step the world by exactly S per frame — what makes
+	//            a capture comparable ACROSS BUILDS at all)
+	//   DIG_STUB=<terms> (remove shading terms to attribute a frame)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -53,6 +67,7 @@ fn main() {
 	// beat the platform defaults — resolved after the parse loop.
 	let mut cli_draw: Option<i32> = None;
 	let mut cli_ssr: Option<bool> = None;
+	let mut cli_tod: Option<f32> = None;
 	let mut cli_ui_scale: Option<f32> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -79,23 +94,74 @@ fn main() {
 			"--mobile" => config = EngineConfig::mobile(),
 			"--overlay" => config.overlay = true,
 			"--bench" => config.bench = true,
+			// Capture harness: fly the bench path N frames then freeze, vs
+			// arrive at that same pose with no motion behind it. Pair them
+			// with --frames to choose how long the camera then sits still —
+			// the diff is what a temporal artifact actually costs, which a
+			// plain still cannot show.
+			"--fly" => config.fly = Some(parse_or_die("--fly", args.next())),
+			"--warp" => {
+				config.fly = Some(parse_or_die("--warp", args.next()));
+				config.warp = true;
+			}
+			// Modifier on either: swap the flyover for an eye-height walk,
+			// one block forward and one back. Screen-space artifacts scale
+			// with screen motion, so the flyover and the walk are two
+			// regimes and a fix has to be measured in both.
+			"--walk" => config.walk = true,
+			// A specific window size, LOGICAL. The GI resolve is half-res off
+			// the surface, so its cost scales with this directly — which makes
+			// it the one thing a desktop-vs-web comparison must hold equal
+			// before any of its numbers mean anything.
+			"--size" => {
+				let v: String = parse_or_die("--size", args.next());
+				let (w, h) = v.split_once('x').unwrap_or_else(|| {
+					eprintln!("--size wants WxH, e.g. --size 1728x1117");
+					std::process::exit(2);
+				});
+				let parse = |s: &str| -> u32 {
+					s.parse().unwrap_or_else(|_| {
+						eprintln!("--size wants WxH, e.g. --size 1728x1117");
+						std::process::exit(2);
+					})
+				};
+				options.window_size = Some((parse(w), parse(h)));
+			}
 			"--no-vsync" => options.no_vsync = true,
+			// Fixed simulation step, in seconds — a capture flag. Without
+			// it the water's ripple phase and the fluid/spawn settle ride
+			// the wall clock, so two builds of different speed reach the
+			// same `--frames N` in different world states and a parity
+			// diff measures that instead of the change under test.
+			"--fixed-dt" => {
+				let s: f32 = parse_or_die("--fixed-dt", args.next());
+				options.fixed_dt = Some(std::time::Duration::from_secs_f32(s));
+			}
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),
 			"--seed" => config.seed = Some(parse_or_die("--seed", args.next())),
-			// Dev builds only: in multiplayer the server dictates the
-			// world clock, so a shipped binary must not carry a local
-			// override (--bench still freezes tod internally — that's a
-			// programmatic single-player capture, not this flag).
-			"--tod" if cfg!(debug_assertions) => {
-				config.tod = Some(parse_or_die("--tod", args.next()));
-			}
-			"--tod" => {
-				eprintln!("--tod is available in dev builds only");
-				std::process::exit(2);
-			}
+			// Dev builds, or a capture run that quits on its own (checked
+			// after the loop, since --exit may come later). In multiplayer
+			// the server dictates the world clock, so a shipped binary
+			// must not let a SESSION carry a local override — but a run
+			// that terminates itself after a screenshot is a capture, not
+			// a session, and release is the only build whose frame times
+			// mean anything. Measuring a stub A/B under a free-running sun
+			// compares a lit frame against an unlit one: `gi_sun_vis`
+			// returns immediately once the caster is below the horizon.
+			"--tod" => cli_tod = Some(parse_or_die("--tod", args.next())),
 			"--yaw" => config.yaw = Some(parse_or_die("--yaw", args.next())),
 			"--pitch" => config.pitch = Some(parse_or_die("--pitch", args.next())),
+			// Stand somewhere specific instead of at the seed's spawn. The
+			// scenes this engine is slow in are natural water, which no
+			// synthetic plan builds — see EngineConfig::start_pos.
+			"--pos" => {
+				config.start_pos = Some([
+					parse_or_die("--pos x", args.next()),
+					parse_or_die("--pos y", args.next()),
+					parse_or_die("--pos z", args.next()),
+				]);
+			}
 			// SSR override in either direction (--mobile --ssr is the
 			// device-profiling escape hatch).
 			"--ui-scale" => cli_ui_scale = Some(parse_or_die("--ui-scale", args.next())),
@@ -113,6 +179,15 @@ fn main() {
 	}
 	if let Some(n) = frames {
 		options.screenshot_after_frames = n;
+	}
+	// See the --tod arm: dev builds always, release only for a run that
+	// ends itself.
+	if let Some(tod) = cli_tod {
+		if !cfg!(debug_assertions) && !options.exit_after_screenshot {
+			eprintln!("--tod needs a dev build, or --exit (a capture run that quits on its own)");
+			std::process::exit(2);
+		}
+		config.tod = Some(tod);
 	}
 	if config.bench {
 		config.seed.get_or_insert(42.0);
@@ -139,6 +214,39 @@ fn main() {
 	config.identity = load_identity();
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
+	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
+	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
+	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
+	// DIG_STUB=wsun,wssr,…: remove shading terms so ONE build can
+	// attribute a frame. A typo must be fatal — a run that silently
+	// measures the un-stubbed build is precisely the mistake this exists
+	// to stop.
+	if let Ok(v) = std::env::var("DIG_STUB") {
+		let (mask, bad) = digblock_render::stub::parse(&v);
+		if !bad.is_empty() {
+			eprintln!(
+				"unknown DIG_STUB term(s): {} — known: {}",
+				bad.join(", "),
+				digblock_render::stub::names()
+					.collect::<Vec<_>>()
+					.join(", ")
+			);
+			std::process::exit(2);
+		}
+		config.stub = mask;
+	}
+	// DIG_GI=window|probes: paint the voxel-window raymarch over the
+	// scene, shading with raw albedo (P1 gate) or the C0 probe field
+	// (P2 gate).
+	match std::env::var("DIG_GI").as_deref() {
+		Ok("window") => config.debug_gi = true,
+		Ok("probes") => {
+			config.debug_gi = true;
+			config.debug_gi_probes = true;
+		}
+		_ => {}
+	}
 	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
 	// stocked inventory, so `--screenshot` can capture a UI screen (they
 	// are otherwise reachable only through live input).

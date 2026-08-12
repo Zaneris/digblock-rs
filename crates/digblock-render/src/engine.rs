@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use digblock_core::chunk::ChunkPos;
@@ -38,6 +39,11 @@ pub enum DebugScreen {
 	Bucket {
 		full: bool,
 	},
+	/// The character screen, with mid-curve XP stocked so the bars and
+	/// detail lines photograph as they play, not empty.
+	Skills,
+	/// The alchemy screen's second tab (craft rows, locked rows, costs).
+	Transmute,
 }
 
 impl DebugScreen {
@@ -51,6 +57,8 @@ impl DebugScreen {
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
+			"skills" | "character" => Some(Self::Skills),
+			"transmute" => Some(Self::Transmute),
 			_ => None,
 		}
 	}
@@ -60,7 +68,6 @@ pub struct EngineConfig {
 	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
 	pub draw_dist: i32,
 	/// Shadow map resolution: 2048 desktop, 1024 mobile.
-	pub shadow_size: u32,
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
@@ -72,12 +79,42 @@ pub struct EngineConfig {
 	/// (yaw 0 faces +z, 90 faces +x; pitch defaults to −20).
 	pub yaw: Option<f32>,
 	pub pitch: Option<f32>,
+	/// Start the player here instead of at the seed's spawn point
+	/// (`--pos x y z`). The scenes this engine is actually slow in are
+	/// NATURAL water — terraced beds, stepped descents, cascades — and no
+	/// synthetic plan builds those: `debug_river_plan` digs a
+	/// flat-bottomed box with vertical walls, where only the rim is bank
+	/// and nothing ever falls, so it has no impact cells and its gather
+	/// early-outs almost everywhere. Two water perf fixes were measured on
+	/// it and both played badly. A pose flag is what lets a capture stand
+	/// in a real river instead. The debug plans key off the spawn too, so
+	/// they follow this point.
+	pub start_pos: Option<[f32; 3]>,
 	pub metrics_csv: Option<std::path::PathBuf>,
 	/// Start with the debug overlay visible (` toggles at runtime).
 	pub overlay: bool,
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
+	/// Capture harness: run the bench flight for this many frames, then
+	/// FREEZE the camera there. Every capture in this engine is a still,
+	/// which is exactly the case where a temporal artifact has already
+	/// converged away — so a report about motion could not be measured at
+	/// all. Freezing at a pose the flight is a pure function of gives two
+	/// runs the identical camera by construction, with only their history
+	/// differing.
+	pub fly: Option<u32>,
+	/// Take all of `fly`'s steps on frame 0 instead of one per frame: the
+	/// same pose with no motion behind it. `--fly N` vs `--warp N` is the
+	/// A/B — walked there vs sat there.
+	pub warp: bool,
+	/// Swap the path `fly`/`warp` follow for a ground walk. The bench
+	/// flight is a 30 blocks/s flyover 12 blocks up, which photographs the
+	/// fast, shallow-parallax end of screen motion; a player reports
+	/// temporal artifacts from the other end — eye height, walking pace,
+	/// ground a few blocks ahead, where one half-res texel covers far more
+	/// world per pixel. Same harness, second regime.
+	pub walk: bool,
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
@@ -102,6 +139,39 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
+	/// Debug: seal a stone vault around the spawn camera with one torch
+	/// inside — the Stage-B flagship capture (a roofed room goes DARK and
+	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
+	/// the desktop launcher from DIG_VAULT.
+	pub debug_vault: bool,
+	/// Debug: hang a wide stone roof with NO walls over the ground ahead
+	/// of spawn — the beam-veto capture (a slanting morning sun must
+	/// reach under it exactly as the shadow map says; only the ambient
+	/// dome dims). Set by the desktop launcher from DIG_ROOF.
+	pub debug_roof: bool,
+	/// Debug: flood an open-topped stone tank around the spawn camera so
+	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
+	/// P4: sun transmittance through the column dims submerged terrain,
+	/// the surface reads as a plane from below). Set by the desktop
+	/// launcher from DIG_DIVE.
+	pub debug_dive: bool,
+	/// Debug: excavate a wide, deep basin AHEAD of the spawn camera and
+	/// flood it — the "standing at a river's edge looking into it" scene
+	/// (R17). Near water fills most of the frame from above, inside C0
+	/// beside bank geometry, with a submerged floor behind it for the
+	/// resolve's rays to cross — none of the other water captures put a
+	/// SHADED surface on screen at all (DIG_DIVE is submerged; the sea
+	/// at spawn is 100+ blocks out). Set by the desktop launcher from
+	/// DIG_RIVER.
+	pub debug_river: bool,
+	/// Debug: shading terms to REMOVE this run (`DIG_STUB`, names in
+	/// `stub::parse`). One build then attributes a whole frame across a
+	/// handful of runs, instead of a rebuild per bisect — and, more to the
+	/// point, instead of a guess. The mask rides `frame.misc.z` and the
+	/// resolve's own uniform as a UNIFORM branch: zero cost at 0, and it
+	/// can never diverge inside a wave, so a stubbed run measures the term
+	/// it removed and nothing else.
+	pub stub: u32,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -117,9 +187,6 @@ pub struct EngineConfig {
 	/// outside bench — captures must stay deterministic, and worker
 	/// pools already produce across frames.
 	pub adaptive_stream: bool,
-	/// Distance fog band as fractions of the far plane.
-	pub fog_start_frac: f32,
-	pub fog_end_frac: f32,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
 	/// tiny values exercise the growth path in a normal run.
@@ -145,12 +212,17 @@ pub struct EngineConfig {
 	/// where the same slice costs more to encode and the refresh sawtooth
 	/// is a bigger share of the frame; the refresh just spans more frames,
 	/// and the sun moves imperceptibly over the difference.
-	pub wide_slice_draws: u32,
 	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot
 	/// bound this on the web: `write_buffer` merely RECORDS the copy and
 	/// Chrome's GPU process performs the staging transfer at submit, so the
 	/// cost lands after everything this engine can measure.
 	pub upload_bytes_max: usize,
+	/// Debug: paint the voxel-window raymarch over the scene — the GI
+	/// window's visual proof (`DIG_GI=window`).
+	pub debug_gi: bool,
+	/// Debug: the raymarch shades hits with the probe field instead of
+	/// albedo (`DIG_GI=probes`) — the P2 gate view.
+	pub debug_gi_probes: bool,
 }
 
 impl EngineConfig {
@@ -158,15 +230,18 @@ impl EngineConfig {
 		let workers = std::thread::available_parallelism().map_or(4, |n| (n.get() - 2).clamp(2, 4));
 		Self {
 			draw_dist: 20,
-			shadow_size: 2048,
 			workers,
 			seed: None,
 			tod: None,
 			yaw: None,
 			pitch: None,
+			start_pos: None,
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
+			fly: None,
+			warp: false,
+			walk: false,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -174,35 +249,42 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_vault: false,
+			debug_roof: false,
+			debug_dive: false,
+			debug_river: false,
+			stub: 0,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
-			fog_start_frac: 0.70,
-			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
 			spike_log: false,
-			wide_slice_draws: crate::renderer::WIDE_SLICE_DRAWS,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
+			debug_gi: false,
+			debug_gi_probes: false,
 		}
 	}
 
 	pub fn mobile() -> Self {
 		Self {
 			draw_dist: 10,
-			shadow_size: 1024,
 			workers: 2,
 			seed: None,
 			tod: None,
 			yaw: None,
 			pitch: None,
+			start_pos: None,
 			metrics_csv: None,
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
 			bench: false,
+			fly: None,
+			warp: false,
+			walk: false,
 			ssr: false,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -210,19 +292,23 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_shapes: false,
+			debug_vault: false,
+			debug_roof: false,
+			debug_dive: false,
+			debug_river: false,
+			stub: 0,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
 			adaptive_stream: false,
-			fog_start_frac: 0.70,
-			fog_end_frac: 0.95,
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
 			identity: [0; 16],
 			spike_log: false,
-			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
+			debug_gi: false,
+			debug_gi_probes: false,
 		}
 	}
 
@@ -239,7 +325,6 @@ impl EngineConfig {
 			// Everything the main thread does is serialized with the render
 			// loop here, so the per-frame ceilings that desktop can afford
 			// to leave generous have to be real.
-			wide_slice_draws: WIDE_SLICE_DRAWS_CONSTRAINED,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			..Self::desktop()
 		}
@@ -252,11 +337,12 @@ impl EngineConfig {
 
 	pub(crate) fn render_config(&self) -> RenderConfig {
 		RenderConfig {
-			shadow_size: self.shadow_size,
 			draw_dist: self.draw_dist,
 			spray_droplets: self.spray_droplets,
-			wide_slice_draws: self.wide_slice_draws,
 			chunk_slots_override: self.chunk_slots_override,
+			debug_gi: self.debug_gi,
+			debug_gi_probes: self.debug_gi_probes,
+			stub: self.stub,
 		}
 	}
 }
@@ -287,14 +373,18 @@ const STREAM_BUDGET_MS: f32 = 3.0;
 /// nearest-first, so anything beyond that is the far ring choosing to wait
 /// rather than to hitch. The byte ceiling below still applies.
 const UPLOAD_MIN: usize = 2;
+
+/// The [`UPLOAD_MIN`] twin for the RTGI voxel window. Higher because a GI
+/// chunk is 4 KiB against a mesh's tens of KiB, and because a window the
+/// camera has outrun is not merely late — it traces rays against terrain
+/// that is no longer there.
+const GI_UPLOAD_MIN: u32 = 8;
 /// Mesh bytes per frame on desktop — high enough to be a backstop against
 /// pathological frames rather than a throttle on normal streaming.
 const UPLOAD_BYTES_MAX_NATIVE: usize = 8 << 20;
 /// …and on the web/mobile, where the staging copy lands in another
 /// process at submit time and is invisible to `upload_ms`.
 const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
-/// Wide-cascade slice size where encode is expensive (web, mobile).
-const WIDE_SLICE_DRAWS_CONSTRAINED: u32 = 448;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
@@ -325,13 +415,15 @@ pub struct Engine {
 	camera: FlyCamera,
 	player: Player,
 	touch: TouchDriver,
+	/// The primary touch currently driving UI-surface pointer synthesis
+	/// (see the Touch arm at the top of `input`).
+	ui_touch: Option<u64>,
 	/// Walk (player physics) vs debug fly camera; F toggles.
 	walking: bool,
 	fly_key_down: bool,
 	overlay_key_down: bool,
 	tick_accum: f32,
 	sun: Sun,
-	wide_due: bool,
 	keys: HeldKeys,
 	look_accum: (f32, f32),
 	/// Left mouse button currently held (hold-to-dig); right stays an edge.
@@ -420,6 +512,11 @@ pub struct Engine {
 	history_scratch: Vec<f32>,
 	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
 	bench_t: f32,
+	/// Steps of the scripted flight already taken, against `config.fly`.
+	fly_frames: u32,
+	/// Where `config.walk`'s oscillation is anchored: the camera's pose at
+	/// the first step, latched so `--fly` and `--warp` share it.
+	walk_origin: Option<Vec3>,
 	/// Meshes drained but not yet uploaded (upload budget carry-over).
 	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
 	/// Evicted chunks whose GPU buffers are still to be released, drained
@@ -429,6 +526,11 @@ pub struct Engine {
 	/// set: an upload for a queued position clears it, so a chunk that
 	/// comes back before its release is reached keeps its new mesh.
 	pending_evict_set: rustc_hash::FxHashSet<ChunkPos>,
+	/// RTGI voxel-window re-upload queue (chunk positions from
+	/// `Pipeline::take_gi_dirty`, drained under a per-frame byte
+	/// budget; the set half dedupes re-dirtied entries).
+	gi_queue: VecDeque<ChunkPos>,
+	gi_queued: rustc_hash::FxHashSet<ChunkPos>,
 	/// Camera chunk the upload queue was last ordered for.
 	upload_sort_center: ChunkPos,
 	size: (u32, u32),
@@ -447,6 +549,14 @@ pub struct Engine {
 	/// The alchemy screen (K toggles): block → sub-material conversion
 	/// and shaped-item crafting.
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
+	/// The character screen (C toggles): per-skill levels + XP bars.
+	char_screen: crate::ui::screens::character::CharScreen,
+	/// Per-skill XP totals: adopted from the server online
+	/// (`Skills`/`XpGain` — never client-claimed), computed through the
+	/// same core award functions offline.
+	skills: digblock_core::skills::SkillSet,
+	/// Live "+N SKILL" toasts above the hotbar (coalescing per skill).
+	xp_toasts: Vec<crate::ui::hud::XpToast>,
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
 	/// A return-to-spawn is outstanding, so the next teleport that lands
@@ -591,6 +701,11 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 			));
 		}
 	}
+	// A torch row: one on the ground, one up on a wood plinth — the
+	// emissive head is the thing to photograph at night.
+	out.push((bx - 5, by, bz + 4, B::Torch as u16));
+	out.push((bx - 5, by, bz + 6, B::Wood as u16));
+	out.push((bx - 5, by + 1, bz + 6, B::Torch as u16));
 	// Slabs: both materials × both states, then a walkable seam row —
 	// 1/3 | 2/3 | full block | full + raised 1/3, every riser one
 	// auto-step (also eyeballs boundary culling on the shared planes).
@@ -619,6 +734,178 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		make_cell(B::WoodSlab, slab_state(false, false)),
 	));
 	out
+}
+
+/// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
+/// one torch on the floor ahead and a stair to catch its falloff. The
+/// Stage-B flagship capture: skylight is stripped by the roof (the
+/// placement writes ride the ordinary edit hook), so the interior
+/// photographs DARK except the torch pool — at noon.
+fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{stair_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// Shell-first, carve-second ordering doesn't matter — placement is
+	// retried per cell and the light BFS settles under maintain either
+	// way. Interior: x±3, y −2..=+2, z −2..=+8 around the eye cell.
+	for x in (bx - 4)..=(bx + 4) {
+		for y in (by - 3)..=(by + 3) {
+			for z in (bz - 3)..=(bz + 9) {
+				let interior = (bx - 3..=bx + 3).contains(&x)
+					&& (by - 2..=by + 2).contains(&y)
+					&& (bz - 2..=bz + 8).contains(&z);
+				out.push((
+					x,
+					y,
+					z,
+					if interior {
+						B::Air as u16
+					} else {
+						B::Stone as u16
+					},
+				));
+			}
+		}
+	}
+	// The torch, and something with depth for its light to model.
+	out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	out.push((
+		bx - 2,
+		by - 2,
+		bz + 5,
+		make_cell(B::StoneStairs, stair_state(Facing::PosX)),
+	));
+	out.push((bx + 2, by - 2, bz + 4, B::Wood as u16));
+	out
+}
+
+/// DIG_DIVE=1 layout: an open-topped stone tank flooded around the
+/// spawn camera, so the eye starts one block below the surface — the
+/// RTGI underwater capture. Open sky above is the light source: the
+/// sun DDA crosses the water column (transmittance dims submerged
+/// terrain), the probes see the pool through the same window, and the
+/// surface overhead photographs as a plane from below (Snell window /
+/// TIR mirror). Furniture on the floor gives the light something to
+/// model.
+fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{stair_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// Shell x±4 / z −4..+10, floor at −4, walls up to +2; interior
+	// carved then flooded to one block ABOVE the eye cell, so the
+	// camera is submerged with the surface in view. No ceiling — the
+	// sky lights the pool.
+	for x in (bx - 4)..=(bx + 4) {
+		for y in (by - 4)..=(by + 2) {
+			for z in (bz - 4)..=(bz + 10) {
+				let interior = (bx - 3..=bx + 3).contains(&x)
+					&& (by - 3..=by + 2).contains(&y)
+					&& (bz - 3..=bz + 9).contains(&z);
+				let cell = if !interior {
+					B::Stone as u16
+				} else if y <= by + 1 {
+					B::Water as u16
+				} else {
+					B::Air as u16
+				};
+				out.push((x, y, z, cell));
+			}
+		}
+	}
+	// Submerged furniture: sand strip, a stair, a wood pillar.
+	for dz in 2..=4 {
+		out.push((bx - 1, by - 3, bz + dz, B::Sand as u16));
+	}
+	out.push((
+		bx + 1,
+		by - 3,
+		bz + 4,
+		make_cell(B::StoneStairs, stair_state(Facing::PosX)),
+	));
+	out.push((bx + 2, by - 3, bz + 6, B::Wood as u16));
+	out.push((bx + 2, by - 2, bz + 6, B::Wood as u16));
+	out
+}
+
+/// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn
+/// camera (yaw 0 faces +z), its surface ~3.6 blocks below the eye — the
+/// "standing at a river's edge looking into it" frame-cost scene (R17).
+/// Pair with `--pitch -35` so near water fills most of the screen. All
+/// of it sits inside C0 beside bank geometry (the expensive gather
+/// path), and the submerged stone floor keeps the resolve's rays
+/// crossing the water column, which is the other half of that scene's
+/// cost. 49×49 surface, 7 deep.
+fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in (bx - 25)..=(bx + 25) {
+		for y in (by - 10)..=(by + 8) {
+			for z in (bz + 2)..=(bz + 52) {
+				let interior = (bx - 24..=bx + 24).contains(&x)
+					&& y >= by - 9 && (bz + 3..=bz + 51).contains(&z);
+				let cell = if y >= by - 2 {
+					// Open air above the waterline — clears any hillside
+					// so the whole surface is in view from the rim.
+					B::Air as u16
+				} else if interior {
+					B::Water as u16
+				} else {
+					// Shell: floor and a one-block rim at water level, so
+					// the pool cannot drain and the banks give C0 probes
+					// geometry.
+					B::Stone as u16
+				};
+				out.push((x, y, z, cell));
+			}
+		}
+	}
+	out
+}
+
+/// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
+/// of spawn with NO walls — the beam-veto capture. Skylight under it
+/// drops (lateral spread decays toward the middle), so this scene is
+/// exactly where scaling direct sun by the nibble went wrong: a morning
+/// sun slants in from the open side and must light the ground precisely
+/// where the shadow map says, with only the ambient dome dimming.
+fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in (bx - 8)..=(bx + 8) {
+		for z in (bz + 2)..=(bz + 18) {
+			out.push((x, by + 3, z, B::Stone as u16));
+		}
+	}
+	out
+}
+
+/// Camera far plane: draw_dist × 32 (Java World.updateDepth). One
+/// definition — it is set at construction and again whenever the
+/// settings screen retunes the draw distance.
+fn far_plane(draw_dist: i32) -> f32 {
+	(draw_dist * 32) as f32
 }
 
 fn ms_since(t: web_time::Instant) -> f32 {
@@ -702,7 +989,7 @@ impl Engine {
 				.map_or(0, |d| d.subsec_nanos());
 			nanos as f64 / u32::MAX as f64 * 10000.0
 		});
-		let far = (config.draw_dist * 32) as f32;
+		let far = far_plane(config.draw_dist);
 		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
@@ -715,7 +1002,12 @@ impl Engine {
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
 		let stream_floor = config.stream_budget_ms;
-		let spawn = digblock_core::player::spawn(seed);
+		// `--pos` replaces the seed's spawn wholesale, debug plans and
+		// return-to-spawn included: the point of standing somewhere is that
+		// everything keyed on the spawn follows you there.
+		let spawn = config
+			.start_pos
+			.map_or_else(|| digblock_core::player::spawn(seed), Vec3::from);
 		let mut camera = FlyCamera::new(far, spawn);
 		if let Some(yaw) = config.yaw {
 			camera.yaw_deg = yaw;
@@ -769,10 +1061,25 @@ impl Engine {
 			player_save_accum: 0.0,
 			spawn_pos: spawn,
 			spawn_cooldown: 0.0,
-			debug_shapes_pending: if config.debug_shapes {
-				debug_shapes_plan(spawn)
-			} else {
-				Vec::new()
+			debug_shapes_pending: {
+				let mut plan = if config.debug_shapes {
+					debug_shapes_plan(spawn)
+				} else {
+					Vec::new()
+				};
+				if config.debug_vault {
+					plan.extend(debug_vault_plan(spawn));
+				}
+				if config.debug_roof {
+					plan.extend(debug_roof_plan(spawn));
+				}
+				if config.debug_dive {
+					plan.extend(debug_dive_plan(spawn));
+				}
+				if config.debug_river {
+					plan.extend(debug_river_plan(spawn));
+				}
+				plan
 			},
 			config,
 			seed,
@@ -781,12 +1088,12 @@ impl Engine {
 			camera,
 			player: Player::new(spawn),
 			touch: TouchDriver::new(),
+			ui_touch: None,
 			walking: true,
 			fly_key_down: false,
 			overlay_key_down: false,
 			tick_accum: 0.0,
 			sun,
-			wide_due: false,
 			keys: HeldKeys::default(),
 			look_accum: (0.0, 0.0),
 			dig_held: false,
@@ -823,9 +1130,13 @@ impl Engine {
 			overlay_visible,
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
+			fly_frames: 0,
+			walk_origin: None,
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
 			pending_evict_set: rustc_hash::FxHashSet::default(),
+			gi_queue: VecDeque::new(),
+			gi_queued: rustc_hash::FxHashSet::default(),
 			upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			size: (1, 1),
 			scale_factor: 1.0,
@@ -834,6 +1145,9 @@ impl Engine {
 			ui_hits: crate::ui::HitMap::default(),
 			inv_screen: Default::default(),
 			alch_screen: Default::default(),
+			char_screen: Default::default(),
+			skills: Default::default(),
+			xp_toasts: Vec::new(),
 			return_spawn_requested: false,
 			spawn_return_pending: false,
 			inv_grid: Default::default(),
@@ -852,9 +1166,24 @@ impl Engine {
 			] {
 				engine.inventory.add(block, n);
 			}
+			engine.inventory.add(BlockType::Rubble, 24);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Material::Wood, 54);
+				.add_sub(digblock_core::block::Essence::Flora, 54);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Earth, 120);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Aqua, 7);
+			// Metal/Aether too, so the header's five columns photograph
+			// populated — two dead zeros read as a layout bug in shots.
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Metal, 12);
+			engine
+				.inventory
+				.add_sub(digblock_core::block::Essence::Aether, 3);
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
@@ -871,7 +1200,26 @@ impl Engine {
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
 				DebugScreen::Inventory => engine.inv_screen.open(),
-				DebugScreen::Alchemy => engine.alch_screen.open(),
+				DebugScreen::Alchemy | DebugScreen::Transmute => {
+					// A mid-curve level so the header's bar, the pace,
+					// and a mix of locked/unlocked rows all photograph.
+					engine
+						.skills
+						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
+					engine.alch_screen.open();
+					if screen == DebugScreen::Transmute {
+						engine
+							.alch_screen
+							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
+					}
+				}
+				DebugScreen::Skills => {
+					// Mid-curve totals: fractional bars, real XP lines.
+					use digblock_core::skills::Skill;
+					engine.skills.add_xp(Skill::Mining, 150_000);
+					engine.skills.add_xp(Skill::Alchemy, 30_000);
+					engine.char_screen.open();
+				}
 			}
 		}
 		engine
@@ -977,7 +1325,7 @@ impl Engine {
 		}
 		if s.draw_dist != self.config.draw_dist {
 			self.config.draw_dist = s.draw_dist;
-			self.camera.far = (s.draw_dist * 32) as f32;
+			self.camera.far = far_plane(s.draw_dist);
 			self.pipeline.set_draw_dist(s.draw_dist);
 			if let Some(net) = self.net.as_mut() {
 				if net.ready() {
@@ -1267,6 +1615,8 @@ impl Engine {
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
+		self.skills = Default::default();
+		self.xp_toasts.clear();
 		self.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.in_local_save = false;
@@ -1317,6 +1667,10 @@ impl Engine {
 			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
+		// The save's skill totals (empty for pre-skills saves = level 1);
+		// stale toasts belong to whatever world we just left.
+		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
+		self.xp_toasts.clear();
 		// Saved arrangement first (sanitizing decode), then reconcile as
 		// the backstop: legacy saves get the derived layout, and types
 		// the arrangement doesn't cover still land on the bar or grid.
@@ -1639,16 +1993,23 @@ impl Engine {
 					// Abandon the hold the moment the server says no, so
 					// the progress bar stops instead of running the full
 					// dig time out against a block that can't break.
-					// Recording the cell is what stops `step_dig` opening
-					// a fresh hold on it next frame.
+					// Recording the cell — for EVERY reason, not just the
+					// ones we can name — is what stops `step_dig` opening
+					// a fresh hold and re-sending DigStart each frame (a
+					// reason-gated latch silently spun on any refusal this
+					// build didn't know).
 					if self.dig.as_ref().is_some_and(|d| d.cell == cell) {
 						self.cancel_dig();
 					}
-					if reason == digblock_net::messages::RejectReason::Protected
-						&& self.refused_cell != Some(cell)
-					{
+					if self.refused_cell != Some(cell) {
 						self.refused_cell = Some(cell);
-						self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+						use digblock_net::messages::RejectReason as R;
+						let msg = match reason {
+							R::Protected => digblock_core::protect::REFUSE_DIG_MSG,
+							R::SkillGated => digblock_core::skills::REFUSE_GATED_MSG,
+							_ => "the server refused that dig",
+						};
+						self.push_feed(msg.into());
 					}
 				}
 				NetEvent::Inventory { counts, pending } => {
@@ -1702,6 +2063,16 @@ impl Engine {
 						&mut self.hotbar,
 						&mut self.inv_grid,
 					);
+				}
+				NetEvent::Skills { xp } => {
+					// Join sync: adopt wholesale, no toasts — this is
+					// state arriving, not an award happening.
+					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
+				}
+				NetEvent::XpGain { skill, total } => {
+					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
+						self.apply_xp_total(s, total);
+					}
 				}
 				NetEvent::PlayerJoined { id, name } => {
 					self.push_feed(format!("{name} joined the server."));
@@ -1798,11 +2169,10 @@ impl Engine {
 			&self.config.render_config(),
 		));
 		self.pipeline.remesh_all();
-	}
-
-	/// Camera far plane = light rig depth = draw_dist × 32 (Java World.updateDepth).
-	fn depth(&self) -> f32 {
-		(self.config.draw_dist * 32) as f32
+		// The fresh renderer's GI window is empty; every resident chunk
+		// re-uploads through the ordinary budgeted drain (the GI mirror
+		// of the re-mesh above — device loss must never need a relight).
+		self.pipeline.gi_redirty_all();
 	}
 
 	fn camera_chunk(&self) -> ChunkPos {
@@ -1811,6 +2181,43 @@ impl Engine {
 			0,
 			(self.camera.pos.z / 16.0).floor() as i32,
 		)
+	}
+
+	/// One tick of the scripted flight: a constant-speed line with a slow
+	/// yaw sweep, advanced by a fixed 60Hz tick so the path is a pure
+	/// function of how many times this has been called — identical
+	/// workload run-to-run, and identical pose whether the steps are
+	/// spread over frames (`--fly`) or taken at once (`--warp`).
+	fn fly_step(&mut self) {
+		const BENCH_SPEED: f32 = 30.0; // blocks per path-second
+		const BENCH_YAW: f32 = 12.0; // degrees per path-second
+							   // The walk: one block forward, one block back, at eye height with
+							   // the ground a few blocks ahead — the repro exactly as reported.
+							   // An oscillation rather than a line keeps the column under the feet
+							   // constant, so the eye cannot step a whole block mid-path and
+							   // invalidate the history for a reason that is not the one under
+							   // test.
+		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
+		const WALK_PERIOD: f32 = 1.5; // seconds — peak 4.2 blocks/s, a walk
+		const WALK_PITCH: f32 = -25.0; // ground ~3.5 blocks ahead of the eye
+		self.bench_t += TICK;
+		if self.config.walk {
+			// Anchored on wherever the camera started, so the walk happens
+			// at spawn — which is where DIG_SHAPES/DIG_VAULT put geometry
+			// worth casting a shadow.
+			let o = *self.walk_origin.get_or_insert(self.camera.pos);
+			let phase = std::f32::consts::TAU * self.bench_t / WALK_PERIOD;
+			self.camera.pos = Vec3::new(o.x, o.y, o.z + WALK_AMP * phase.sin());
+			self.camera.yaw_deg = 0.0;
+			self.camera.pitch_deg = WALK_PITCH;
+			return;
+		}
+		// Altitude follows the terrain so worldgen retunes can't put the
+		// flight underground; still a pure function of the step count.
+		let x = BENCH_SPEED * self.bench_t;
+		let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
+		self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
+		self.camera.look(BENCH_YAW * TICK, 0.0);
 	}
 
 	fn pump_pipeline(&mut self, gpu: &Gpu) {
@@ -1848,6 +2255,61 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
+		// RTGI: scroll the window to the camera (re-dirtying whatever
+		// just entered coverage), pull freshly-dirty chunks into the
+		// re-upload queue, then feed the voxel window under a byte budget
+		// — a quarter of the mesh-upload ceiling, ~4 KiB a chunk — AND
+		// the shared streaming deadline (GI-DESIGN.md).
+		//
+		// The clock matters as much as the bytes: `classify_gi` walks all
+		// 4096 cells of a chunk, and the byte cap alone permits 512 of
+		// those in one frame. This was the only streaming stage that
+		// ignored `deadline`, and the only one charged to no phase — a
+		// classify burst landed in `busy_ms` with nothing to attribute it
+		// to. `GI_UPLOAD_MIN` is the same minimum-progress floor the mesh
+		// loop uses, so a frame that is already over budget still makes
+		// headway instead of starving the window forever.
+		let t_gi = web_time::Instant::now();
+		// The window AS BUILT, never the live draw distance. Raising draw
+		// distance from the settings screen mutates `config.draw_dist`
+		// while the GI window texture keeps its construction size, and
+		// approving a chunk beyond that makes `upload_chunk`'s
+		// `rem_euclid` wrap it onto a different cell than the gather
+		// reads — one part of the world written into another's slot.
+		let gi_window = renderer.gi_window_chunks().min(self.config.draw_dist);
+		self.pipeline.gi_recenter(center, gi_window);
+		for pos in self.pipeline.take_gi_dirty() {
+			if self.gi_queued.insert(pos) {
+				self.gi_queue.push_back(pos);
+			}
+		}
+		for (x, y, z) in self.pipeline.take_gi_edits() {
+			renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
+		}
+		let mut gi_budget = self.config.upload_bytes_max / 4;
+		let mut gi_uploads = 0u32;
+		while gi_budget >= 4096 {
+			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
+				break;
+			}
+			let Some(pos) = self.gi_queue.pop_front() else {
+				break;
+			};
+			self.gi_queued.remove(&pos);
+			// Outside the window's half-extent: uploading would ALIAS onto
+			// an in-window column — drop it; `gi_recenter` re-dirties it
+			// the moment it enters coverage. Not resident anymore =
+			// evicted while queued: same answer.
+			if !self.pipeline.gi_uploadable(pos, gi_window) {
+				continue;
+			}
+			if let Some(chunk) = self.pipeline.classify_gi(pos) {
+				renderer.gi_upload(gpu, pos, &chunk);
+				gi_budget -= 4096;
+				gi_uploads += 1;
+			}
+		}
+		self.pending.gi_ms = ms_since(t_gi);
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling); server worlds have no overlay.
 		if self.net.is_none() {
@@ -1968,6 +2430,17 @@ impl Engine {
 	/// True while the water tool is the selected hotbar item.
 	fn water_tool_selected(&self) -> bool {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
+			&& self.hotbar.active_tool() == BlockType::Bucket
+	}
+
+	/// The owned tool roster in deterministic block-id order: the
+	/// always-owned bucket plus every tool id with a nonzero count.
+	fn owned_tools(&self) -> Vec<BlockType> {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|b| b.is_tool() && (b.always_owned() || self.inventory.count(*b) > 0))
+			.collect()
 	}
 
 	/// True while the tool is out AND empty — the scooping state. This is
@@ -2046,6 +2519,13 @@ impl Engine {
 		{
 			return false;
 		}
+		// The rock gate is fully client-predictable (we know our own
+		// Mining level); the server's DigStart refusal is the backstop.
+		if digblock_core::skills::dig_level_gate(hit.block)
+			> self.skills.level(digblock_core::skills::Skill::Mining)
+		{
+			return false;
+		}
 		if self.water_tool_selected() {
 			// A charged bucket digs nothing at all: it has one action
 			// left, and that action is on the other button.
@@ -2069,15 +2549,24 @@ impl Engine {
 		if self.refused_cell.is_some() && self.refused_cell != self.target.map(|h| h.cell) {
 			self.refused_cell = None;
 		}
-		// The locally-knowable refusal (the world floor). A server-side
-		// lock can't be predicted and arrives as `DigRefused` instead.
-		if let Some(h) = self
-			.target
-			.filter(|h| digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None))
-		{
-			if self.refused_cell != Some(h.cell) {
-				self.refused_cell = Some(h.cell);
-				self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into());
+		// The locally-knowable refusals (the world floor, the rock gate).
+		// A server-side lock can't be predicted and arrives as
+		// `DigRefused` instead. The latch keeps each refusal to one feed
+		// line per aim, same as the server path.
+		if let Some((cell, msg)) = self.target.and_then(|h| {
+			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
+				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
+			} else if digblock_core::skills::dig_level_gate(h.block)
+				> self.skills.level(digblock_core::skills::Skill::Mining)
+			{
+				Some((h.cell, digblock_core::skills::REFUSE_GATED_MSG))
+			} else {
+				None
+			}
+		}) {
+			if self.refused_cell != Some(cell) {
+				self.refused_cell = Some(cell);
+				self.push_feed(msg.into());
 			}
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
@@ -2091,7 +2580,19 @@ impl Engine {
 			.is_some_and(|d| d.cell == hit.cell && d.cell_value == hit.cell_value);
 		if !on_same {
 			self.cancel_dig();
-			let required = hit.block.dig_hardness(hit.cell.1).unwrap_or(u16::MAX);
+			// Family-scaled hold time (SIM v12) — the same `dig_required`
+			// the server's completion gate runs.
+			let required = hit
+				.block
+				.dig_hardness(hit.cell.1)
+				.map(|h| {
+					digblock_core::skills::dig_required(
+						hit.block,
+						h,
+						self.skills.level(digblock_core::skills::Skill::Mining),
+					) as u16
+				})
+				.unwrap_or(u16::MAX);
 			self.dig = Some(DigProgress {
 				cell: hit.cell,
 				cell_value: hit.cell_value,
@@ -2246,6 +2747,12 @@ impl Engine {
 				for &(c, _) in &cleared {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
+				// Offline, the engine IS the award authority — the same
+				// table the server's dig-credit chokepoint reads.
+				self.award_xp_offline(
+					digblock_core::skills::Skill::Mining,
+					digblock_core::skills::dig_xp(prev),
+				);
 			}
 		}
 	}
@@ -2533,12 +3040,65 @@ impl Engine {
 		match self.net.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
-				if apply_alchemy(&mut self.inventory, core_op) {
+				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
+				if apply_alchemy(&mut self.inventory, core_op, level) {
 					if let AlchAction::Craft { item, .. } = act {
 						self.hotbar.auto_assign(item);
 					}
+					self.award_xp_offline(
+						digblock_core::skills::Skill::Alchemy,
+						digblock_core::skills::alchemy_xp(&core_op),
+					);
 				}
 			}
+		}
+	}
+
+	/// Adopt a new authoritative XP total for one skill: coalesce the
+	/// delta into a toast, and word + sound a level-up. Totals only
+	/// grow, so a replayed or reordered frame is a no-op. Both award
+	/// paths land here — the server's `XpGain` online, and
+	/// [`Self::award_xp_offline`] offline — so the presentation can't
+	/// drift between the two.
+	fn apply_xp_total(&mut self, skill: digblock_core::skills::Skill, total: u64) {
+		let old = self.skills.xp(skill);
+		if total <= old {
+			return;
+		}
+		self.skills.set_total(skill, total);
+		let delta = total - old;
+		match self.xp_toasts.iter_mut().find(|t| t.skill == skill) {
+			Some(t) => {
+				t.amount += delta;
+				t.ttl = crate::ui::hud::XP_TOAST_TTL;
+			}
+			None => self.xp_toasts.push(crate::ui::hud::XpToast {
+				skill,
+				amount: delta,
+				ttl: crate::ui::hud::XP_TOAST_TTL,
+			}),
+		}
+		let (old_level, new_level) = (
+			digblock_core::skills::level_for_xp(old),
+			digblock_core::skills::level_for_xp(total),
+		);
+		if new_level > old_level {
+			self.push_feed(format!("{} is now level {new_level}.", skill.display()));
+			self.emit(crate::audio::AudioCmd::Sfx {
+				sound: crate::audio::Sfx::Place,
+				pos: None,
+				gain: 0.9,
+			});
+		}
+	}
+
+	/// Offline XP award, through the same core award tables the server
+	/// runs. Online this is never called — the server's `XpGain` is the
+	/// only award path (XP is not client-predicted).
+	fn award_xp_offline(&mut self, skill: digblock_core::skills::Skill, amount: u64) {
+		if amount > 0 {
+			let total = self.skills.xp(skill).saturating_add(amount);
+			self.apply_xp_total(skill, total);
 		}
 	}
 
@@ -2610,7 +3170,6 @@ impl Engine {
 			.fold(Default::default(), crate::viewmodel::combine),
 			light_dir_view,
 			light_strength: d[3],
-			ambient: [frame.ambient[0], frame.ambient[1], frame.ambient[2]],
 			light_color: [
 				frame.light_color[0],
 				frame.light_color[1],
@@ -2675,7 +3234,7 @@ impl Engine {
 		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP
 	}
 
-	fn frame_uniforms(&self, near_vp: glam::Mat4) -> FrameUniforms {
+	fn frame_uniforms(&self) -> FrameUniforms {
 		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
 		let vp = self.camera.view_proj(aspect);
 		let caster = self.sun.caster();
@@ -2683,64 +3242,18 @@ impl Engine {
 		// Directions toward the bodies in the sky (opposite the light).
 		let sun = -self.sun.sun_dir();
 		let moon = -self.sun.moon_dir();
-		let far = self.depth();
-		let (mut fog_start, mut fog_end) = (
-			self.config.fog_start_frac * far,
-			self.config.fog_end_frac * far,
-		);
 		let cam = self.camera.pos;
-		// Underwater: substitute the atmosphere the shaders read (the
-		// clear color and sky pass follow automatically) — no shader
-		// branches needed. The palette is DERIVED from the atmosphere
-		// sample, not hardcoded, so day/night falls out naturally.
-		// Tunables (shader partners: the WATER_* block in
-		// frame_common.wgsl):
-		// Mean albedo of the water tile texture — the biggest hue lever
-		// for matching submerged fog to the from-above deep-water look.
-		const UW_ALBEDO: [f32; 3] = [0.12, 0.27, 0.35];
-		// Day-arc-average direct-light factor folded into the deep color.
-		const UW_DIRECT: f32 = 0.6;
-		// Light funnels down through the surface: the submerged sky
-		// gradient brightens overhead (complements the Snell window).
-		const UW_ZENITH_BOOST: f32 = 1.8;
-		// Per-channel ambient survival underwater (red dies first, like
-		// WATER_EXTINCTION) — submerged terrain isn't lit by open air.
-		const UW_AMBIENT: [f32; 3] = [0.45, 0.75, 0.92];
+		// The sky is the sky, submerged or not. The old model substituted
+		// a hand-tuned deep-water palette for the atmosphere whenever the
+		// eye went under, which meant the GI rays were told the sky was
+		// green — the attenuation belongs on the PATH through the water
+		// (the sun DDA's transmittance today, M2's participating medium
+		// for the view ray), never in the radiance of the source.
 		let submerged = self.eye_in_water();
-		let (mut horizon, mut zenith) = (atmos.horizon, atmos.zenith);
-		let mut ambient = atmos.ambient;
-		if submerged {
-			// Lit deep-water color: what water.wgsl's `scatter` converges
-			// to from above (albedo x (ambient + direct)). The submerged
-			// fog and the below-horizon sky both converge HERE, which is
-			// what makes above/below views of the same water agree.
-			let uw =
-				|i: usize| UW_ALBEDO[i] * (atmos.ambient[i] + atmos.light_color[i] * UW_DIRECT);
-			horizon = [uw(0), uw(1), uw(2)];
-			zenith = [
-				horizon[0] * UW_ZENITH_BOOST,
-				horizon[1] * UW_ZENITH_BOOST,
-				horizon[2] * UW_ZENITH_BOOST,
-			];
-			// The band parameters are ignored by the submerged exp fog
-			// (apply_fog keys off water_misc.x) but stay sane for
-			// anything else reading them.
-			fog_start = 2.0;
-			fog_end = 28.0;
-			ambient = [
-				ambient[0] * UW_AMBIENT[0],
-				ambient[1] * UW_AMBIENT[1],
-				ambient[2] * UW_AMBIENT[2],
-			];
-		}
+		let (horizon, zenith) = (atmos.horizon, atmos.zenith);
 		FrameUniforms {
 			view_proj: vp.to_cols_array_2d(),
 			inv_view_proj: vp.inverse().to_cols_array_2d(),
-			light_near: near_vp.to_cols_array_2d(),
-			// Placeholder: the renderer owns this slot — it overwrites it
-			// every frame with the ping-pong's active_vp (the map actually
-			// rendered, which may lag this frame's wide_vp by one job).
-			light_wide: glam::Mat4::IDENTITY.to_cols_array_2d(),
 			light_dir: [caster.dir.x, caster.dir.y, caster.dir.z, caster.strength],
 			light_color: [
 				atmos.light_color[0],
@@ -2749,20 +3262,26 @@ impl Engine {
 				// Animation clock (water scroll/foam) in the spare lane.
 				self.time_secs,
 			],
-			ambient: [ambient[0], ambient[1], ambient[2], 0.0],
-			fog_color: [horizon[0], horizon[1], horizon[2], fog_start],
-			cam_pos: [cam.x, cam.y, cam.z, 1.0 / (fog_end - fog_start)],
+			clear_color: [horizon[0], horizon[1], horizon[2], 0.0],
+			cam_pos: [cam.x, cam.y, cam.z, 0.0],
 			sun_dir: [sun.x, sun.y, sun.z, atmos.star_intensity],
 			moon_dir: [moon.x, moon.y, moon.z, atmos.glow_strength],
 			zenith: [zenith[0], zenith[1], zenith[2], 0.0],
 			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
+			// The medium's rim distance: where the STREAMED CYLINDER ends,
+			// which is draw_dist chunks of CHUNK_SIZE blocks — NOT the
+			// camera far plane, which is `draw_dist * 32` for legacy
+			// reasons and therefore sits at twice the distance any terrain
+			// exists at. Passing the far plane here (M2 did) put the rim
+			// ramp at 525-640 blocks in a world that stops at 320, so the
+			// term never fired and the streaming edge was never covered.
 			misc: [
 				1.0,
-				1.0,
-				1.0 / self.config.shadow_size as f32,
-				// Wide-cascade texel size in world units (extent / resolution),
-				// the chunk shader's normal-offset distance.
-				far / self.config.shadow_size as f32,
+				(self.config.draw_dist * digblock_core::chunk::CHUNK_SIZE as i32) as f32,
+				// The cost-stub mask (DIG_STUB), exact in f32 well past the
+				// bits it uses. Zero in every normal run.
+				self.config.stub as f32,
+				0.0,
 			],
 			water_misc: [
 				f32::from(submerged),
@@ -2776,6 +3295,12 @@ impl Engine {
 				},
 				0.0,
 			],
+			// The renderer's GiDraw fills these (quantized caster, cascade
+			// dims, window side) via patch_frame each frame.
+			gi_sun: [0.0; 4],
+			gi0: [0.0; 4],
+			gi1: [0.0; 4],
+			gi_misc: [0.0; 4],
 		}
 	}
 }
@@ -2796,9 +3321,8 @@ impl Game for Engine {
 		self.recompute_ui_scale();
 		self.build_renderer(gpu, surface_format);
 		log::info!(
-			"engine init: draw_dist={} shadow={}px format={surface_format:?}",
-			self.config.draw_dist,
-			self.config.shadow_size
+			"engine init: draw_dist={} format={surface_format:?}",
+			self.config.draw_dist
 		);
 	}
 
@@ -2817,6 +3341,45 @@ impl Game for Engine {
 		if self.config.bench {
 			return;
 		}
+		// UI surfaces speak pointer. While any is open, the PRIMARY touch
+		// synthesizes cursor + left-button events at this one site, so
+		// iOS gets menu taps, inventory drags, and the extract-slot drag
+		// (design-doc M2 debt) without any screen learning about touch.
+		// Gameplay touch (look/move) keeps its own arm below.
+		if let InputEvent::Touch { id, phase, x, y } = event {
+			if self.menu.is_open()
+				|| self.inv_screen.is_open()
+				|| self.alch_screen.is_open()
+				|| self.char_screen.is_open()
+			{
+				let (px, py) = (x * self.size.0 as f32, y * self.size.1 as f32);
+				match phase {
+					TouchPhase::Started if self.ui_touch.is_none() => {
+						self.ui_touch = Some(id);
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+						self.input(InputEvent::MouseButton {
+							button: MouseButton::Left,
+							pressed: true,
+						});
+					}
+					TouchPhase::Moved if self.ui_touch == Some(id) => {
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+					}
+					TouchPhase::Ended | TouchPhase::Cancelled if self.ui_touch == Some(id) => {
+						self.ui_touch = None;
+						self.input(InputEvent::CursorMoved { x: px, y: py });
+						self.input(InputEvent::MouseButton {
+							button: MouseButton::Left,
+							pressed: false,
+						});
+					}
+					_ => {} // secondary touches park while a UI is up
+				}
+				return;
+			}
+			// No UI up: any lingering primary marker is stale.
+			self.ui_touch = None;
+		}
 		// Menu open: every input belongs to the menu — gameplay keys must
 		// not leak (typing a name would also walk). FocusLost still clears
 		// held state.
@@ -2825,6 +3388,7 @@ impl Game for Engine {
 			// leave-server) — the screens yield rather than stacking.
 			self.inv_screen.close();
 			self.alch_screen.close();
+			self.char_screen.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
 				self.touch.clear();
@@ -2876,11 +3440,16 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
+					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let view =
+						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					self.alch_screen.handle_input(
 						&InputEvent::FocusLost,
 						&self.ui_hits,
 						&crate::ui::Style::new(self.ui_scale),
-						&crate::ui::screens::alchemy::AlchView::build(&self.inventory),
+						&view,
+						&self.inv_grid,
+						&bar,
 					);
 				}
 				InputEvent::Key {
@@ -2888,15 +3457,40 @@ impl Game for Engine {
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
+					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let view =
+						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					let style = crate::ui::Style::new(self.ui_scale);
-					let act = self
-						.alch_screen
-						.handle_input(&event, &self.ui_hits, &style, &view);
+					let act = self.alch_screen.handle_input(
+						&event,
+						&self.ui_hits,
+						&style,
+						&view,
+						&self.inv_grid,
+						&bar,
+					);
 					if let Some(act) = act {
 						self.apply_alchemy_action(act);
 					}
 				}
+			}
+			return;
+		}
+		// Character screen open: read-only, so the only inputs it eats
+		// are the ones that close it (C/Escape, consumed like the
+		// others') and the held-state hygiene on focus loss.
+		if self.char_screen.is_open() {
+			match event {
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.keys = HeldKeys::default();
+					self.touch.clear();
+					self.dig_held = false;
+				}
+				InputEvent::Key {
+					key: Key::C | Key::Escape,
+					pressed: true,
+				} => self.char_screen.close(),
+				_ => {}
 			}
 			return;
 		}
@@ -2955,7 +3549,18 @@ impl Game for Engine {
 				}
 				Key::Digit(n) => {
 					if pressed {
-						self.hotbar.select_digit(n);
+						// §6: 9 on the already-selected tool slot cycles
+						// the owned roster instead of reselecting it. The
+						// resulting Layout diff carries the new pick to
+						// the server before any edit that uses it.
+						let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS;
+						if n as usize == tool_slot && self.hotbar.selected_index() == tool_slot - 1
+						{
+							let owned = self.owned_tools();
+							self.hotbar.cycle_tool(&owned);
+						} else {
+							self.hotbar.select_digit(n);
+						}
 					}
 				}
 				Key::Backquote => {
@@ -2982,6 +3587,13 @@ impl Game for Engine {
 						self.keys = HeldKeys::default();
 						self.dig_held = false;
 						self.alch_screen.open();
+					}
+				}
+				Key::C => {
+					if pressed {
+						self.keys = HeldKeys::default();
+						self.dig_held = false;
+						self.char_screen.open();
 					}
 				}
 				// Home: same request the menu row raises; update() gates
@@ -3069,26 +3681,38 @@ impl Game for Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
-		// A fixed --tod freezes the sun angle but keeps the wide-cascade
-		// refresh cadence (the map must still track streamed-in chunks).
+		// A fixed --tod freezes the sun angle (dev builds only): advance
+		// the day cycle, then re-assert the override on top, so a capture
+		// run has a genuinely static sun for the GI to converge against.
 		let fixed_tod = self.config.tod;
-		self.wide_due |= self.sun.update(dt, self.camera.pos);
+		self.sun.update(dt);
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
-		// Scripted benchmark flight: constant-speed line with a slow yaw
-		// sweep, advanced one fixed 60Hz tick per frame so the path depends
-		// only on the frame index — identical workload run-to-run.
+		// Scripted flight — the bench's, and the capture harness's. Inputs
+		// are off and the camera is driven outright, so both return before
+		// the interactive half of update; streaming still runs, because
+		// `pump_pipeline` hangs off `render`, not off this.
 		if self.config.bench {
-			const BENCH_SPEED: f32 = 30.0; // blocks per path-second
-			const BENCH_YAW: f32 = 12.0; // degrees per path-second
-								// Altitude follows the terrain so worldgen retunes can't put the
-								// flight underground; still a pure function of the frame index.
-			self.bench_t += TICK;
-			let x = BENCH_SPEED * self.bench_t;
-			let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
-			self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
-			self.camera.look(BENCH_YAW * TICK, 0.0);
+			self.fly_step();
+			self.pending.update_ms = ms_since(t_update);
+			return;
+		}
+		if let Some(n) = self.config.fly {
+			// `--warp N` is `--fly N` with every step taken on frame 0 —
+			// literally the same loop, so the two land on a bit-identical
+			// pose. Re-deriving the pose in closed form would not: the yaw
+			// accumulates through N `look` calls, and one multiply by N
+			// differs in the last ulp, which is a subpixel shift across the
+			// whole frame and would swamp the diff the harness exists to
+			// read.
+			while self.fly_frames < n {
+				self.fly_step();
+				self.fly_frames += 1;
+				if !self.config.warp {
+					break;
+				}
+			}
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -3149,6 +3773,9 @@ impl Game for Engine {
 		}
 		if self.menu.take_alchemy() {
 			self.alch_screen.open();
+		}
+		if self.menu.take_character() {
+			self.char_screen.open();
 		}
 		let spawn_requested =
 			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
@@ -3225,6 +3852,21 @@ impl Game for Engine {
 		for m in &mut self.feed {
 			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
+		// XP toasts fade out and drop (unlike the feed, nothing rereads
+		// an expired toast).
+		for t in &mut self.xp_toasts {
+			t.ttl -= dt;
+		}
+		self.xp_toasts.retain(|t| t.ttl > 0.0);
+		// The bench drip: while the extraction slot is occupied, each
+		// completed cycle sends one ordinary single-block Convert (the
+		// server paces the same rhythm with its extraction bucket).
+		if self.alch_screen.is_open() {
+			let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
+			if let Some(act) = self.alch_screen.tick(dt, level, &self.inventory) {
+				self.apply_alchemy_action(act);
+			}
+		}
 		if let Some(net) = self.net.as_ref() {
 			// Reconciliation health line, ~5 s cadence (matches metrics).
 			self.net_log_timer += dt;
@@ -3293,6 +3935,7 @@ impl Game for Engine {
 						&self.inventory.to_wire(),
 						&self.hotbar.to_wire(),
 						&self.inv_grid.to_wire(),
+						&self.skills.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
 							yaw: self.camera.yaw_deg,
@@ -3490,11 +4133,7 @@ impl Game for Engine {
 			self.remote_instances
 				.push([p.x, p.y, p.z, 0.8, 1.0, 1.0, 1.0, layer + 1.0]);
 		}
-		let d = self.depth();
-		let texels = self.config.shadow_size as f32;
-		let near_vp = self.sun.near_vp(self.camera.pos, d, texels);
-		let wide_vp = self.sun.wide_vp(d, texels);
-		let frame = self.frame_uniforms(near_vp);
+		let frame = self.frame_uniforms();
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
 		// Name tags: project each nearby remote's head-top to screen px.
@@ -3541,7 +4180,6 @@ impl Game for Engine {
 			tags += 1;
 		}
 		self.nametag_count = tags;
-		let wide_due = std::mem::take(&mut self.wide_due);
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
 		let overlay_stats = if self.overlay_visible {
@@ -3577,6 +4215,7 @@ impl Game for Engine {
 		}
 		if in_game {
 			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+			let owned_tools = self.owned_tools();
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui_dl,
 				hits: &mut self.ui_hits,
@@ -3587,30 +4226,50 @@ impl Game for Engine {
 				self.inv_screen
 					.build(&mut ui, size, &self.inv_grid, &self.inventory, daylight);
 			} else if self.alch_screen.is_open() {
-				let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory);
-				self.alch_screen.build(&mut ui, size, &view, daylight);
+				let view =
+					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
+				self.alch_screen.build(
+					&mut ui,
+					size,
+					&view,
+					&self.inv_grid,
+					&self.inventory,
+					daylight,
+				);
+			} else if self.char_screen.is_open() {
+				let view = crate::ui::screens::character::CharView::build(&self.skills);
+				self.char_screen.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
 			});
+			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
+			crate::ui::hud::tool_rail(
+				ui.dl,
+				&ui.style,
+				size,
+				&owned_tools,
+				self.hotbar.active_tool(),
+				self.inventory.bucket_full(),
+			);
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		// The hand is part of playing, not part of reading a screen: a
 		// menu, the inventory or the alchemy page all put it away.
-		let viewmodel = (in_game && !self.inv_screen.is_open() && !self.alch_screen.is_open())
-			.then(|| self.viewmodel_frame(&frame))
-			.flatten();
+		let viewmodel = (in_game
+			&& !self.inv_screen.is_open()
+			&& !self.alch_screen.is_open()
+			&& !self.char_screen.is_open())
+		.then(|| self.viewmodel_frame(&frame))
+		.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
 				view_proj,
-				near_vp,
-				wide_vp,
-				wide_due,
 				size,
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
@@ -3645,7 +4304,10 @@ impl Game for Engine {
 	}
 
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open() && !self.inv_screen.is_open() && !self.alch_screen.is_open()
+		!self.menu.is_open()
+			&& !self.inv_screen.is_open()
+			&& !self.alch_screen.is_open()
+			&& !self.char_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
@@ -3671,6 +4333,7 @@ impl Game for Engine {
 					&self.inventory.to_wire(),
 					&self.hotbar.to_wire(),
 					&self.inv_grid.to_wire(),
+					&self.skills.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
 						yaw: self.camera.yaw_deg,
@@ -3765,6 +4428,7 @@ mod store_tests {
 				inventory: vec![(3, 5)],
 				hotbar: self.0.borrow().open_hotbar.clone(),
 				grid: Vec::new(),
+				skills: Vec::new(),
 				player: Some(digblock_persist::PlayerPersist {
 					pos: [1.5, 140.0, 2.5],
 					yaw: 90.0,
@@ -3780,6 +4444,7 @@ mod store_tests {
 			_inventory: &[(u16, u32)],
 			hotbar: &[u16],
 			_grid: &[u16],
+			_skills: &[(u8, u64)],
 			_player: &digblock_persist::PlayerPersist,
 		) {
 			let mut state = self.0.borrow_mut();
@@ -3878,18 +4543,24 @@ mod store_tests {
 		engine.set_world_store(Box::new(MockStore(calls.clone())));
 		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 
+		// §6 pinned the tool slot: a legacy layout that parked the tool
+		// mid-bar migrates on decode — the parked spot empties and the
+		// tool comes back at the end; blocks keep their slots.
 		let b3 = BlockType::try_from_id(3).unwrap();
-		assert_eq!(engine.hotbar.slots()[0], Some(HotbarItem::WaterTool));
+		assert_eq!(engine.hotbar.slots()[0], None, "parked spot empties");
 		assert_eq!(engine.hotbar.slots()[4], Some(HotbarItem::Block(b3)));
 		assert_eq!(
 			engine.hotbar.slots()[HOTBAR_SLOTS - 1],
-			None,
-			"auto-assign respects the saved layout (id 3 already placed)"
+			Some(HotbarItem::WaterTool),
+			"the tool slot is pinned to the end"
 		);
 
-		// Suspend hands the same arrangement back to the store.
+		// Suspend hands the MIGRATED arrangement back to the store.
 		engine.on_suspend();
-		assert_eq!(calls.borrow().saved_hotbar, wire.to_vec());
+		let mut migrated = [WIRE_EMPTY; HOTBAR_SLOTS];
+		migrated[4] = 3;
+		migrated[HOTBAR_SLOTS - 1] = WIRE_TOOL;
+		assert_eq!(calls.borrow().saved_hotbar, migrated.to_vec());
 	}
 
 	/// The walk sim holds while the player's column is ungenerated —
@@ -3969,6 +4640,7 @@ mod store_tests {
 				inventory: Vec::new(),
 				hotbar: Vec::new(),
 				grid: Vec::new(),
+				skills: Vec::new(),
 				player: None,
 			})
 		}
@@ -3978,6 +4650,7 @@ mod store_tests {
 			_inventory: &[(u16, u32)],
 			_hotbar: &[u16],
 			_grid: &[u16],
+			_skills: &[(u8, u64)],
 			_player: &digblock_persist::PlayerPersist,
 		) {
 		}

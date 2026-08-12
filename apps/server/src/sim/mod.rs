@@ -245,6 +245,10 @@ struct Client {
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
+	/// Bench-extraction bucket: capacity `EXTRACT_BURST`, refilled one
+	/// block per `extract_pace_ticks(level)` — the server-enforced half
+	/// of the drip (see `process_alchemy`).
+	extract_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
 	/// Journal columns owed to this client, drained a few per tick by
@@ -279,6 +283,10 @@ struct Client {
 	/// Tick of the last granted return-to-spawn; `None` = never used
 	/// (the first request after joining is always allowed).
 	last_return_tick: Option<u32>,
+	/// Per-skill XP totals — the authoritative copy. Awards happen at
+	/// the two chokepoints (dig credit, alchemy) and reach the client as
+	/// `ServerMsg::XpGain` totals; levels derive from the shared curve.
+	skills: digblock_core::skills::SkillSet,
 }
 
 impl Client {
@@ -312,6 +320,7 @@ impl Client {
 			}),
 			pos: Some(self.player.pos.to_array()),
 			last_return_tick: self.last_return_tick,
+			skills: self.skills.clone(),
 		}
 	}
 }
@@ -621,6 +630,27 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
+	/// The client's Mining level (1 for an unknown conn).
+	#[cfg(test)]
+	pub(crate) fn test_mining_level(&self, conn_id: u64) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining))
+	}
+
+	/// Raise a client's Mining to `level` (total-XP floor — never lowers,
+	/// like the wire's max-total rule). Harness/bench support: edit-path
+	/// digs must clear the rock gate without earning through it (the
+	/// gate's own test drives DigStart raw). Not #[cfg(test)] because
+	/// netbench — a bin, not a test — drives a real in-process Sim whose
+	/// flat world is stone.
+	pub fn bench_set_mining_level(&mut self, conn_id: u64, level: u32) {
+		use digblock_core::skills::{total_xp_for, Skill};
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.skills.set_total(Skill::Mining, total_xp_for(level));
+		}
+	}
+
 	/// The cell a client currently holds a dig on, if any.
 	#[cfg(test)]
 	fn test_digging(&self, conn_id: u64) -> Option<(i32, i32, i32)> {
@@ -882,6 +912,25 @@ impl Sim {
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
+		// The rock gate (SIM v12), refused at the hold's start for the
+		// same reason protection is: the refusal is useless after the
+		// player held the button through a full dig timer. Honest
+		// clients predict it in `diggable()` and never send this.
+		if let Some(v) = cell_value {
+			let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
+			let mining = client.skills.level(digblock_core::skills::Skill::Mining);
+			if digblock_core::skills::dig_level_gate(b) > mining {
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: RejectReason::SkillGated,
+					},
+				);
+				return;
+			}
+		}
 		client.digging = match cell_value {
 			Some(v)
 				if digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
@@ -1210,6 +1259,14 @@ impl Sim {
 				grid: grid.to_wire().to_vec(),
 			},
 		);
+		// Per-skill XP totals — always sent, even empty (a fresh
+		// identity is level 1 everywhere), so the client never guesses.
+		ok &= send_frame(
+			&out,
+			&ServerMsg::Skills {
+				xp: record.skills.to_wire(),
+			},
+		);
 		if !ok {
 			// The handshake itself no longer competes with the column
 			// stream for queue space, so this is now a genuinely broken
@@ -1274,6 +1331,7 @@ impl Sim {
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
+				extract_tokens: digblock_core::alchemy::EXTRACT_BURST,
 				draw_dist,
 				synced_columns: FxHashSet::default(),
 				sync_queue,
@@ -1290,6 +1348,7 @@ impl Sim {
 				// Restored, not reset: otherwise reconnecting clears the
 				// cooldown and the timer is bypassed by rejoining.
 				last_return_tick: record.last_return_tick,
+				skills: record.skills,
 			},
 		);
 		self.residency_dirty = true;
@@ -1841,13 +1900,14 @@ mod tests {
 			wait_live(&mut sim, 1);
 			let mut t = 0;
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
-			assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 1);
+			// The rock rule: mined stone lands as Rubble.
+			assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
 
-			// Park the Stone in grid slot 17 (a deliberate arrangement —
+			// Park the Rubble in grid slot 17 (a deliberate arrangement —
 			// it must survive reconnect and reboot verbatim).
 			let mut grid =
 				vec![digblock_core::hotbar::WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS];
-			grid[17] = BlockType::Stone as u16;
+			grid[17] = BlockType::Rubble as u16;
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Layout {
@@ -1867,7 +1927,7 @@ mod tests {
 				c2.msgs.iter().any(|m| matches!(
 					m,
 					ServerMsg::InventoryFull { counts }
-						if counts == &vec![(BlockType::Stone as u16, 1)]
+						if counts == &vec![(BlockType::Rubble as u16, 1)]
 				)),
 				"reconnect carries the credit: {:?}",
 				c2.msgs
@@ -1892,7 +1952,7 @@ mod tests {
 			c3.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::InventoryFull { counts }
-					if counts == &vec![(BlockType::Stone as u16, 1)]
+					if counts == &vec![(BlockType::Rubble as u16, 1)]
 			)),
 			"reboot carries the credit: {:?}",
 			c3.msgs
@@ -1901,7 +1961,7 @@ mod tests {
 			c3.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::Layout { grid, .. }
-					if grid.get(17) == Some(&(BlockType::Stone as u16))
+					if grid.get(17) == Some(&(BlockType::Rubble as u16))
 			)),
 			"reboot carries the arrangement: {:?}",
 			c3.msgs
@@ -1917,6 +1977,205 @@ mod tests {
 			"{:?}",
 			c4.msgs
 		);
+	}
+
+	/// SIM v12's rock gate, server half: a DigStart on stone below
+	/// Mining 5 refuses with `SkillGated` and opens no hold (refused at
+	/// the START — the player must not hold the button through a dig
+	/// timer for nothing); at the gate level the hold opens normally.
+	#[test]
+	fn gated_rock_refuses_the_dig_start() {
+		use digblock_core::raycast::{raycast, REACH};
+		use glam::Vec3;
+		let mut sim = flat_sim("rockgate");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::SkillGated,
+					..
+				}
+			)),
+			"level-1 stone dig refused at the start: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+		sim.bench_set_mining_level(1, 5);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		}]);
+		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
+	}
+
+	/// XP is server-computed at the two chokepoints and lands as new
+	/// TOTALS: a stone dig pays `ceil(90/6) = 15` Mining on top of the
+	/// harness's gate grant, converting the rubble pays 8 Alchemy, and
+	/// the totals survive reconnect and a full server reboot via the
+	/// identity store (join sync always carries a `Skills` frame, empty
+	/// for a fresh identity).
+	#[test]
+	fn xp_awards_on_dig_and_alchemy_and_persists() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::{AlchemyOp, EditKind};
+		use glam::Vec3;
+
+		let dir = temp_dir("xp");
+		let identity = [8u8; 16];
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		{
+			let mut sim =
+				super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+			let mut c = connect_with_identity(&mut sim, 1, identity);
+			c.drain();
+			assert!(
+				c.msgs
+					.iter()
+					.any(|m| matches!(m, ServerMsg::Skills { xp } if xp.is_empty())),
+				"fresh identity syncs empty skills: {:?}",
+				c.msgs
+			);
+			wait_live(&mut sim, 1);
+			let mut t = 0;
+			// dig_hold grants Mining 5 (the rock gate) = 394 total XP;
+			// the stone dig then pays its 15 on top.
+			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			c.drain();
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::XpGain {
+						skill: 0,
+						total: 409
+					}
+				)),
+				"stone dig pays 15 Mining on the granted 394: {:?}",
+				c.msgs
+			);
+
+			// Convert the rubble the dig credited: ceil(24/3) = 8 Alchemy
+			// XP, in wire order with the InventoryFull rebase.
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Alchemy {
+					op: AlchemyOp::Convert {
+						block: BlockType::Rubble as u16,
+						count: 1,
+					},
+				},
+			}]);
+			c.drain();
+			assert!(
+				c.msgs
+					.iter()
+					.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total: 8 })),
+				"conversion pays 8 Alchemy: {:?}",
+				c.msgs
+			);
+
+			// Reconnect in the same run: the totals ride the Skills sync.
+			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+			let mut c2 = connect_with_identity(&mut sim, 2, identity);
+			c2.drain();
+			assert!(
+				c2.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+				)),
+				"reconnect carries the totals: {:?}",
+				c2.msgs
+			);
+			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
+			sim.shutdown();
+		}
+		// Full reboot on the same data dir.
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c3 = connect_with_identity(&mut sim, 3, identity);
+		c3.drain();
+		assert!(
+			c3.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+			)),
+			"reboot carries the totals: {:?}",
+			c3.msgs
+		);
+	}
+
+	/// §8.1's anti-cheat half: Convert ops draw from the per-player
+	/// extraction bucket, charged PER BLOCK. A smuggled bulk op the
+	/// bucket can't cover refuses with no debit and no XP, and a flood
+	/// of single ops beyond the burst refuses the same way — sustained
+	/// throughput can never beat one block per pace interval.
+	#[test]
+	fn extraction_pace_is_server_enforced() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::{AlchemyOp, EditKind};
+		use glam::Vec3;
+
+		let mut sim = flat_sim("pace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let mut t = 0;
+		for seq in 1..=3 {
+			dig_hold(&mut sim, 1, down, 90, seq, EditKind::Dig, &mut t);
+		}
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 3);
+		let convert = |count: u32| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Alchemy {
+				op: AlchemyOp::Convert {
+					block: BlockType::Rubble as u16,
+					count,
+				},
+			},
+		};
+		// A bulk op costs per block: 3 > the burst of 2 — refused
+		// outright, nothing debited.
+		sim.tick_once(vec![convert(3)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			3,
+			"bulk convert refused with no debit"
+		);
+		// The burst: two single-block ops land, the third runs dry.
+		sim.tick_once(vec![convert(1), convert(1), convert(1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"burst admits exactly 2"
+		);
+		// One pace interval refills exactly one token.
+		for _ in 0..digblock_core::alchemy::extract_pace_ticks(1) {
+			sim.tick_once(vec![]);
+		}
+		sim.tick_once(vec![convert(1)]);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
+		// Refused ops never paid XP: the final total reflects exactly
+		// the three landed blocks (ceil(24/3) = 8 each).
+		c.drain();
+		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
+			ServerMsg::XpGain { skill: 1, total } => Some(*total),
+			_ => None,
+		});
+		assert_eq!(last_alch, Some(3 * 8), "XP only for landed blocks");
 	}
 
 	/// A live identity refuses a second connection; anonymous (all-zero)

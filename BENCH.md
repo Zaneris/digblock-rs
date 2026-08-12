@@ -1,6 +1,80 @@
 # Bench baseline & hotspot analysis
 
-## 2026-08-09 — the server gets a jitter buffer (`INPUT_HOLD_MAX`)
+## 2026-08-11 — water attribution (`DIG_STUB`), R21
+
+M2 Max, 5.4 MP (`--size 1496x907` on a 2× display — verify PIXEL dims, `--size` is
+logical), `--draw-dist 32 --seed 42 --tod 45 --no-vsync --frames 1500`, settled interval
+of the metrics log. **Per-pass GPU counters are not used here and should not be:** on this
+TBDR the passes in `shots/f8-64.png` sum to 46.4 ms inside a 19.68 ms frame, because the
+tiling stage of one pass overlaps the fragment stage of the last. The only honest number
+is whole-frame time with one term removed at a time.
+
+Pose: submerged, looking up at the surface — `--pos -280 131 -232 --yaw 150 --pitch 30`.
+Chosen because it reproduces the user's report ("just as slow below the surface"), which
+no fragment-count hypothesis survives. Same-build repeat floor **0.02 ms**.
+
+| `DIG_STUB` | avg ms | saved | share of water |
+|---|---|---|---|
+| *(none)* | 14.85 | — | — |
+| `wsun` | 10.93 | **3.91** | 55% |
+| `wssr` | 13.16 | 1.68 | 23% |
+| `wvert` | 13.93 | 0.91 | 13% |
+| `wripple` | 14.77 | 0.07 | — |
+| `wrefract` | 14.79 | 0.05 | — |
+| `spray` | 14.71 | 0.13 | — |
+| `wflat` | 8.52 | 6.32 | 88% |
+| `nowater` | 7.69 | **7.15** | 100% |
+
+Water was 48% of the frame; without it the pose runs 130 fps. Both dominant terms were
+ray marches whose answers were multiplied by ~0 (GI-DESIGN.md R21). After gating them on
+their own contribution:
+
+| pose | water before | water after | frame before → after |
+|---|---|---|---|
+| submerged, looking up | 7.15 ms | **1.40** | 14.85 → 9.09 (67 → 110 fps) |
+| submerged, flat | 5.22 | **1.20** | 16.34 → 12.35 (61 → 81) |
+| above water, terraced river + cascade | 2.45 | **1.60** | 13.65 → 12.74 (73 → 79) |
+
+Residual at the submerged pose: `wvert` 0.83 ms (now the largest water term), rest of the
+fragment ~0.6, the two marches ~0.05 each.
+
+**Harness note that outlives these numbers:** cross-build image parity needs
+`--fixed-dt`. Everything animated rides dt, so two builds of different speed reach
+`--frames N` in different world states; at DIG_RIVER that put a *same-change* diff at mean
+6.9/255 against a 0.69 same-build floor, entirely in the ripple bands. With `--fixed-dt
+0.0166667` the same-build floor is 0.0001 (max 1) and the real parity reads ≤0.0023.
+
+## 2026-08-10 — Stage-B voxel light (LIGHT-DESIGN.md)
+
+A/B on the seed-42 flight, same machine/session, baseline = pre-light main
+(27f9a2a):
+
+| metric | baseline | light (final) | note |
+|---|---|---|---|
+| fill | 4.29 s | 3.71 s | run-to-run variance band; not claimed as a win |
+| avg | 8.43 ms | 8.41 ms | flat |
+| p95 / p99 | 9.38 / 9.75 | 10.17 / 12.15 | the honest cost — fill-time skylight settling |
+| over-12.5ms | 10 | 9 | recovered (see below) |
+| hitches | 0 | 0 | |
+| mesh jobs | 76 444 | 85 923 | +12%: chunks re-mesh once with settled light |
+
+Two tuning findings, both now load-bearing:
+
+- **`LIGHT_BUDGET` 16k → 4k per `step_light` site.** A pop costs ~6 hash-map
+  neighbor reads; at 16k×2 per maintain a streaming backlog spent multiple
+  milliseconds inside `maintain` and p99 went to 14.0 ms with 54 frames over
+  12.5 ms. 4k×2 bounds the worst maintain near a millisecond; settling is
+  later, never wrong (dirty-gating remeshes whatever settles late).
+- **Dirty drains only when the field is SETTLED** (`pending() == 0`), not per
+  budget slice. Per-slice draining re-bumped the same chunks every maintain
+  while a backlog settled — +21% mesh jobs on the bench. One drain per settle
+  = one light remesh per chunk. Test-side corollary: `quiesce` means
+  chunk-quiet, not light-quiet — pipeline light tests must `settle_light`
+  before asserting, or they race the budget.
+
+Remaining p99 gap (~+2.4 ms) is fill-window skylight arrival work (descend
+scans + the settle drain's remesh burst) under the vsync headroom; steady
+flight shows `light q 0` every report window and zero hitches.
 
 Acting on the measurement pass below. The drain now refuses to step past a
 **hole** in the input tick sequence for up to `INPUT_HOLD_MAX` ticks, so an

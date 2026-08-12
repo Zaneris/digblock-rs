@@ -19,6 +19,10 @@ const SPRAY_RADIUS: f32 = 64.0;
 
 pub struct Spray {
 	pipeline: wgpu::RenderPipeline,
+	/// Group 1: the RTGI camera-light buffer (gi_probe's cam_light) —
+	/// billboards have no surface to gather at, so the camera's probe
+	/// ambient + sun visibility light them.
+	cam_bg: wgpu::BindGroup,
 	instance_buf: wgpu::Buffer,
 	/// World-space impact centers, only for chunks that have any.
 	impacts: FxHashMap<ChunkPos, Vec<[f32; 3]>>,
@@ -33,6 +37,7 @@ impl Spray {
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
+		cam_light_buf: &wgpu::Buffer,
 		droplets: u32,
 	) -> Self {
 		let device = &gpu.device;
@@ -40,9 +45,30 @@ impl Spray {
 			label: Some("spray"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::SPRAY.into()),
 		});
+		let cam_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+			label: Some("spray cam light"),
+			entries: &[wgpu::BindGroupLayoutEntry {
+				binding: 0,
+				visibility: wgpu::ShaderStages::VERTEX,
+				ty: wgpu::BindingType::Buffer {
+					ty: wgpu::BufferBindingType::Uniform,
+					has_dynamic_offset: false,
+					min_binding_size: None,
+				},
+				count: None,
+			}],
+		});
+		let cam_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("spray cam light"),
+			layout: &cam_bgl,
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: cam_light_buf.as_entire_binding(),
+			}],
+		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("spray"),
-			bind_group_layouts: &[frame_bgl],
+			bind_group_layouts: &[frame_bgl, &cam_bgl],
 			push_constant_ranges: &[],
 		});
 		// No geometry buffer: one instance-stepped attribute (impact
@@ -82,6 +108,7 @@ impl Spray {
 		});
 		Self {
 			pipeline,
+			cam_bg,
 			instance_buf,
 			impacts: FxHashMap::default(),
 			scratch: Vec::new(),
@@ -148,6 +175,7 @@ impl Spray {
 			return 0;
 		}
 		pass.set_pipeline(&self.pipeline);
+		pass.set_bind_group(1, &self.cam_bg, &[]);
 		pass.set_vertex_buffer(0, self.instance_buf.slice(..));
 		pass.draw(0..6 * (MIST_N + self.droplets), 0..instances);
 		instances * (MIST_N + self.droplets) * 2

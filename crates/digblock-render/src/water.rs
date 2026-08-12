@@ -67,7 +67,10 @@ impl WaterDraw {
 				label: "water depth",
 				layout,
 				module: &shader,
-				vs_entry: "vs",
+				// Position-only vertex entry: the color pass's vs now runs
+				// the probe gather per vertex (R17), and the prepass must
+				// not pay that twice for geometry it only depth-tests.
+				vs_entry: "vs_depth",
 				fs_entry: Some("fs_depth"),
 				vertex_buffers: &vertex_layouts,
 				cull: None,

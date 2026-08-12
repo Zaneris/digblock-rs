@@ -1,11 +1,13 @@
 //! Pure game logic: no GPU, no windowing. Everything here is testable
 //! headless on any machine.
 
+pub mod alchemy;
 pub mod block;
 pub mod chunk;
 pub mod decoration;
 pub mod dir;
 pub mod fluid;
+pub mod gi;
 pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
@@ -18,6 +20,7 @@ pub mod protect;
 pub mod raycast;
 pub mod shapes;
 pub mod simplex;
+pub mod skills;
 pub mod sky;
 pub mod spawn;
 pub mod stream_budget;
@@ -85,4 +88,17 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// mirrored in `overlaps_solid`, replacing v9's "the step needs no probe
 /// mirror" property: a rate-limited mount spends a few ticks with the
 /// capsule inside the side of the box it climbs.
-pub const SIM_VERSION: u16 = 10;
+/// v11: level-scaled dig speed — hold-to-dig duration is
+/// `skills::dig_required(hardness, mining_level)`: 1.25× today's times
+/// at level 1, parity at 30 (the legacy table is the mid-curve golden),
+/// ~0.42× at 99. Shared dig behavior both sides time independently, so
+/// a v10 client's holds would complete early or late against a v11
+/// server at any level but 30.
+/// v12: per-material dig curves + the rock gate — `dig_required` keys on
+/// the block's `DigFamily` (Fixed flat / Soft 1250 / Wood 1350 / Rock
+/// 1700 at level 1, every family exactly 1000‰ at 30), and
+/// `skills::dig_level_gate` refuses rock digs below Mining 3–5 (client
+/// prediction + the server's DigStart backstop). A v11 peer times
+/// non-Soft holds differently at any level but 30 and would let a
+/// level-1 player open a hold on gated rock.
+pub const SIM_VERSION: u16 = 12;

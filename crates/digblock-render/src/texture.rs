@@ -8,6 +8,10 @@ use digblock_platform::Gpu;
 pub struct BlockTextures {
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
+	/// Mean rgb per texture layer (gamma-space, like the atlas) — the
+	/// GI material LUT's albedo source (GI-DESIGN.md): rays never
+	/// sample the atlas, they read one color per class.
+	pub layer_means: Vec<[u8; 3]>,
 }
 
 fn mip_levels(size: u32) -> u32 {
@@ -52,10 +56,12 @@ impl BlockTextures {
 			view_formats: &[],
 		});
 
+		let mut layer_means = Vec::with_capacity(digblock_assets::tex::LAYERS.len());
 		for (layer, bytes) in digblock_assets::tex::LAYERS.iter().enumerate() {
 			let img = image::load_from_memory(bytes)
 				.expect("decode block texture")
 				.to_rgba8();
+			layer_means.push(mean_rgb(&img));
 			assert_eq!(
 				(img.width(), img.height()),
 				(SIZE, SIZE),
@@ -114,8 +120,30 @@ impl BlockTextures {
 		Self {
 			array_view,
 			sampler,
+			layer_means,
 		}
 	}
+}
+
+/// Alpha-weighted mean color (cutout textures like leaves must not
+/// average toward their transparent filler).
+fn mean_rgb(img: &image::RgbaImage) -> [u8; 3] {
+	let (mut sum, mut weight) = ([0u64; 3], 0u64);
+	for p in img.pixels() {
+		let a = u64::from(p[3]);
+		for c in 0..3 {
+			sum[c] += u64::from(p[c]) * a;
+		}
+		weight += a;
+	}
+	if weight == 0 {
+		return [0; 3];
+	}
+	[
+		(sum[0] / weight) as u8,
+		(sum[1] / weight) as u8,
+		(sum[2] / weight) as u8,
+	]
 }
 
 // The texture array must fit the packed vertex format's layer field —

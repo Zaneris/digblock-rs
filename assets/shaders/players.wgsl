@@ -4,15 +4,23 @@
 // body box: 0.6 × 1.8 × 0.6 anchored to the eye (y −1.5 .. +0.3),
 // matching the capsule collider bounds, flat-colored. Mode > 0 is the
 // HELD ITEM companion: a small cube at a yaw-rotated hand offset,
-// textured from the block array at layer (mode − 1). Both are lit with
-// a flat lambert + the standard distance fog so they sit in the scene
-// like terrain does.
+// textured from the block array at layer (mode − 1). Lighting is RTGI
+// (GI-DESIGN.md): a per-fragment probe gather through gi_common plus a
+// short sun DDA — players never read the half-res resolve buffers,
+// whose depth prepass doesn't know them — and then the same
+// participating medium (medium_common) the terrain beside them goes
+// through, so they sit in the scene rather than in front of it.
 
-// The Frame struct + group(0) binding come from frame_common.wgsl
-// (prepended by digblock-assets).
+// The Frame struct + group(0) binding come from frame_common.wgsl, and
+// the group(2) GI world bindings + gather core from gi_common.wgsl
+// (both prepended by digblock-assets).
 
 @group(1) @binding(0) var materials: texture_2d_array<f32>;
 @group(1) @binding(1) var mat_smp: sampler;
+
+// Sun DDA step cap — players are a few boxes; shore-of-the-shadow
+// accuracy within this many blocks, probes carry the rest.
+const SUN_STEPS = 12;
 
 const QUAD = array<vec2f, 6>(
 	vec2f(0.0, 0.0),
@@ -43,13 +51,13 @@ const TANGENTS = array<vec3f, 6>(
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
-	// Light (ambient + diffuse) to multiply the albedo by.
-	@location(0) shade: vec3f,
 	// Flat body color; ignored when a texture layer is set.
-	@location(1) albedo: vec3f,
+	@location(0) albedo: vec3f,
 	// uv + array layer; layer < 0 = untextured body box.
-	@location(2) uvl: vec3f,
-	@location(3) world: vec3f,
+	@location(1) uvl: vec3f,
+	@location(2) world: vec3f,
+	// World-space face normal (flat — a box face has one).
+	@location(3) @interpolate(flat) wn: vec3f,
 }
 
 @vertex
@@ -81,15 +89,12 @@ fn vs(
 	let world = i0.xyz + rot;
 	let wn = vec3f(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
 
-	// Flat lambert against the shared light rig + ambient.
-	let diffuse = max(dot(wn, -frame.light_dir.xyz), 0.0) * frame.light_dir.w;
-
 	var out: VsOut;
 	out.pos = frame.view_proj * vec4f(world, 1.0);
-	out.shade = frame.ambient.rgb + frame.light_color.rgb * diffuse;
 	out.albedo = i1.rgb;
 	out.uvl = vec3f(uv, select(-1.0, i1.w - 1.0, held));
 	out.world = world;
+	out.wn = wn;
 	return out;
 }
 
@@ -105,7 +110,29 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		0.0,
 	);
 	let albedo = select(in.albedo, tex.rgb, in.uvl.z >= 0.0);
-	var col = albedo * in.shade;
-	col = apply_fog(col, distance(in.world, frame.cam_pos.xyz), in.world);
-	return vec4f(col, 1.0);
+	// RTGI: quantized-sun lambert x traced visibility + probe indirect —
+	// the same combine as chunk.wgsl.
+	let side = i32(frame.gi_misc.x);
+	let gp = in.world;
+	let indirect =
+		gi_indirect(side, gp, in.wn, frame.cam_pos.xyz, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb, vec2i(4, 2));
+	let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);
+	let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
+	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
+	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
+	let col = albedo * (frame.light_color.rgb * direct * sh + indirect);
+	// The same medium the terrain beside them goes through — that
+	// sharing is the whole reason it is a prelude and not a local.
+	let ray = normalize(in.world - frame.cam_pos.xyz);
+	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let lit = medium_view(
+		col,
+		frame.cam_pos.xyz,
+		in.world,
+		sky,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	);
+	return vec4f(lit, 1.0);
 }

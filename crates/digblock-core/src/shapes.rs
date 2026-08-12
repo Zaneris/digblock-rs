@@ -16,7 +16,7 @@
 //! pinned by `full_cube_bakes_to_the_six_block_faces` here and a
 //! cross-check test in mesher.rs.
 
-use crate::block::{BlockType, Material, ShapeKind};
+use crate::block::{BlockType, Essence, ShapeKind};
 use crate::chunk::{cell_id, cell_state, STATE_MASK, STATE_SHIFT};
 use crate::dir::{Dir, DIRS};
 use glam::Vec3;
@@ -294,6 +294,7 @@ pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
 		ShapeKind::Stairs => Some(&STAIRS[(state & 3) as usize]),
 		ShapeKind::Door => Some(&DOORS[(state & 0xF) as usize]),
 		ShapeKind::Slab => Some(&SLABS[(state & 3) as usize]),
+		ShapeKind::Torch => Some(&TORCHES[0]),
 	}
 }
 
@@ -316,6 +317,7 @@ pub fn prewarm() {
 	let _ = LazyLock::force(&STAIRS);
 	let _ = LazyLock::force(&DOORS);
 	let _ = LazyLock::force(&SLABS);
+	let _ = LazyLock::force(&TORCHES);
 }
 
 /// No sub-block geometry — physics/raycast take the unit-cube fast path.
@@ -371,6 +373,7 @@ pub fn state_valid(cell: u16) -> bool {
 		Some(ShapeKind::Stairs) => state & !3 == 0,
 		Some(ShapeKind::Door) => true,
 		Some(ShapeKind::Slab) => state & !3 == 0,
+		Some(ShapeKind::Torch) => state == 0,
 	}
 }
 
@@ -381,7 +384,7 @@ pub fn state_valid(cell: u16) -> bool {
 /// 13.5 units crafts as 2-for-27); both launch shapes are whole.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CraftRecipe {
-	pub material: Material,
+	pub material: Essence,
 	pub count: u32,
 	pub cost: u32,
 }
@@ -394,11 +397,11 @@ pub struct CraftRecipe {
 /// one block, closing the grow-to-base-block economy).
 pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
 	let (material, count, cost) = match b {
-		BlockType::WoodStairs => (Material::Wood, 1, 18),
-		BlockType::StoneStairs => (Material::Stone, 1, 18),
-		BlockType::WoodDoor => (Material::Wood, 1, 10),
-		BlockType::WoodSlab => (Material::Wood, 1, 9),
-		BlockType::StoneSlab => (Material::Stone, 1, 9),
+		BlockType::WoodStairs => (Essence::Flora, 1, 18),
+		BlockType::StoneStairs => (Essence::Earth, 1, 18),
+		BlockType::WoodDoor => (Essence::Flora, 1, 10),
+		BlockType::WoodSlab => (Essence::Flora, 1, 9),
+		BlockType::StoneSlab => (Essence::Earth, 1, 9),
 		_ => return None,
 	};
 	Some(CraftRecipe {
@@ -471,6 +474,28 @@ const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 8, 0], [12, 12, 12]),
 	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
+
+/// The torch: a slim centered post with a wider glowing head sitting on
+/// it. Floor-mounted, stateless — wall mounting is a state nibble away
+/// when wanted. Small enough that auto-step walks OVER it reads fine.
+const TORCH_BOXES: [SubBox; 2] = [
+	SubBox::new([5, 0, 5], [7, 7, 7]),
+	SubBox::new([4, 7, 4], [8, 10, 8]),
+];
+
+static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
+	let boxes = TORCH_BOXES.to_vec();
+	let baked = bake(&boxes);
+	[ShapeVariant {
+		collision: boxes.clone(),
+		interaction: boxes,
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}]
+});
 
 static SLABS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 	SLAB_BOXES.map(|b| {
@@ -852,6 +877,16 @@ mod tests {
 			assert!(!v.quads.is_empty());
 			max = max.max(v.quads.len());
 		}
+		{
+			let v = shape_of(BlockType::Torch, 0).unwrap();
+			assert!(!v.quads.is_empty());
+			assert_eq!(v.ramp, None);
+			assert!(
+				v.occludes_full.iter().all(|f| !f),
+				"a torch hides no neighbor face"
+			);
+			max = max.max(v.quads.len());
+		}
 		assert!(
 			max <= MAX_SHAPE_QUADS,
 			"worst variant emits {max} quads (cap {MAX_SHAPE_QUADS})"
@@ -1108,6 +1143,9 @@ mod tests {
 				}
 				// Cost prices the PLACED 1/3 item; grows debit one item each.
 				ShapeKind::Slab => raster_volume(&SLAB_BOXES[..1]) * r.count,
+				// Functional items are priced by hand (§7.3), never by
+				// volume — the torch has no `craft_recipe` row at all.
+				ShapeKind::Torch => unreachable!("torches are priced by hand"),
 			};
 			assert_eq!(
 				r.cost,

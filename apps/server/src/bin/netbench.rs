@@ -820,10 +820,15 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	let mut stats_base = digblock_server::sim::InputStats::default();
 	let mut edits_base = digblock_server::sim::EditStats::default();
 	let mut driver = EditDriver::default();
-	let stone_hardness = u32::from(
+	// The flat world is stone, which SIM v12 gates below Mining 5: the
+	// driver's client is granted the gate level after warmup (below), and
+	// the hold length uses the same level so client and sim agree.
+	let stone_hardness = digblock_core::skills::dig_required(
+		digblock_core::block::BlockType::Stone,
 		digblock_core::block::BlockType::Stone
 			.dig_hardness(FLAT_TOP as i32)
 			.expect("stone is diggable"),
+		5,
 	);
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no
@@ -838,6 +843,9 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	for step in 0..steps {
 		let measuring = step >= warmup;
 		if step == warmup {
+			// The rock gate would refuse every dig of the stone flat
+			// world at Mining 1; the client has joined by now.
+			sim.bench_set_mining_level(1, 5);
 			// Discard everything the startup transient produced.
 			corrections.clear();
 			max_div = 0.0;

@@ -133,7 +133,15 @@ impl InvScreen {
 			let icon = grid
 				.get(i)
 				.map(|b| hud::item_icon(HotbarItem::Block(b), false));
-			widgets::slot(ui, InvId::Grid(i as u16), rect, icon, icon_px, false);
+			widgets::slot(
+				ui,
+				InvId::Grid(i as u16),
+				rect,
+				icon,
+				icon_px,
+				widgets::SlotRing::None,
+				rect.contains(self.drag.cursor.0, self.drag.cursor.1),
+			);
 			if let Some(b) = grid.get(i) {
 				// Same badge as the hotbar — the rows sit stacked, so a
 				// size mismatch would read as a glitch.
@@ -181,12 +189,18 @@ impl InvScreen {
 				let payload = match id {
 					InvId::Grid(i) => HotbarItem::Block(grid.get(i as usize)?),
 					InvId::Bar(i) => match bar.slots.get(i as usize)? {
-						SlotView::Empty => return None,
-						SlotView::Tool { .. } => HotbarItem::WaterTool,
+						// §6 pinned the tool slot in place: it can't be
+						// dragged anywhere, so a press on it never arms.
+						SlotView::Empty | SlotView::Tool { .. } => return None,
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Alchemy ids never appear while this screen is open.
-					InvId::Convert(_) | InvId::Craft(_) => return None,
+					InvId::Craft(_)
+					| InvId::Family(_)
+					| InvId::CraftGo
+					| InvId::Tab(_)
+					| InvId::ExtractSlot
+					| InvId::BucketTile => return None,
 				};
 				self.drag.on_press(pos, id, payload);
 				None
@@ -386,20 +400,14 @@ mod tests {
 			drag(&mut r, InvId::Bar(0), (5.0, 5.0)),
 			Some(InvAction::ClearBar { slot: 0 })
 		);
-		// The tool refuses grid drops and the void.
+		// The tool slot is pinned (§6): its drags never even arm — grid,
+		// void, and bar targets alike produce nothing.
 		let g0 = center(r.hits.rect_of(InvId::Grid(0)).unwrap());
 		let tool = InvId::Bar((HOTBAR_SLOTS - 1) as u8);
 		assert_eq!(drag(&mut r, tool, g0), None);
 		assert_eq!(drag(&mut r, tool, (5.0, 5.0)), None);
-		// But swaps within the bar.
 		let bar2 = center(r.hits.rect_of(InvId::Bar(2)).unwrap());
-		assert_eq!(
-			drag(&mut r, tool, bar2),
-			Some(InvAction::SwapBar {
-				a: HOTBAR_SLOTS - 1,
-				b: 2
-			})
-		);
+		assert_eq!(drag(&mut r, tool, bar2), None);
 	}
 
 	#[test]

@@ -3,7 +3,7 @@
 //! of the solid mesher so the hot solid loop and the (deliberately
 //! outlined) water path evolve independently.
 
-use super::{face_corners, occludes, pack, Dir, MeshInput, Vert, PADDED};
+use super::{face_corners, occludes, pack, Dir, MeshInput, PADDED};
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::ID_MASK;
 
@@ -343,10 +343,7 @@ pub(super) fn emit_water_face(
 			0
 		};
 		out.push(pack(
-			Vert {
-				pos: (cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
-				ao: 3,
-			},
+			(cx as u32 * 12, cy as u32 * 12, cz as u32 * 12),
 			dir,
 			ci as u32,
 		));

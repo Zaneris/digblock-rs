@@ -24,15 +24,17 @@
 //!
 //! Format v2 appends an optional item layout (hotbar + grid wire
 //! arrangements) per record; v3 appends the player's last position and
-//! return-to-spawn cooldown. v1 and v2 files are still read — the
-//! archive-and-start-fresh path is reserved for actual corruption, never
-//! a routine upgrade (it would wipe every player's inventory). An older
-//! file simply has no stored position, so those players resume at spawn
-//! once and are stored in v3 from their next disconnect on.
+//! return-to-spawn cooldown; v4 appends per-skill XP totals. v1–v3
+//! files are still read — the archive-and-start-fresh path is reserved
+//! for actual corruption, never a routine upgrade (it would wipe every
+//! player's inventory). An older file simply has no stored position or
+//! skills, so those players resume at spawn once / start at level 1 and
+//! are stored in the current format from their next write on.
 
 use digblock_core::hotbar::HOTBAR_SLOTS;
 use digblock_core::inv_grid::GRID_SLOTS;
 use digblock_core::inventory::Inventory;
+use digblock_core::skills::SkillSet;
 use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,7 +43,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const HEADER_LEN: usize = 4 + 2 + 2 + 4; // magic | version | pad | count
 
 /// Dirty-state flush cadence.
@@ -101,6 +103,10 @@ pub struct PlayerRecord {
 	/// interval). That fails open across restarts, which is the safe
 	/// direction for a convenience cooldown.
 	pub last_return_tick: Option<u32>,
+	/// Per-skill XP totals. Pre-v4 records read as empty (level 1) with
+	/// their inventories intact — existing players keep their stuff and
+	/// start the skill system at the bottom like everyone else.
+	pub skills: SkillSet,
 }
 
 pub struct PlayerStore {
@@ -290,6 +296,14 @@ impl PlayerStore {
 					buf.push(1);
 					buf.extend_from_slice(&t.to_le_bytes());
 				}
+			}
+			// v4: per-skill XP — u8 pair count, then (u8 skill, u64 LE
+			// total) pairs, nonzero totals only (absent = zero).
+			let skills = rec.skills.to_wire();
+			buf.push(skills.len().min(u8::MAX as usize) as u8);
+			for (skill, total) in skills.iter().take(u8::MAX as usize) {
+				buf.push(*skill);
+				buf.extend_from_slice(&total.to_le_bytes());
 			}
 		}
 		buf
@@ -486,6 +500,21 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 		} else {
 			(None, None)
 		};
+		// v1–v3 records end here: skills read empty — level 1, with the
+		// inventory intact. Never the archive path for a routine upgrade.
+		let skills = if version >= 4 {
+			let mut n = [0u8; 1];
+			r.read_exact(&mut n).map_err(|_| bad("short record"))?;
+			let mut pairs = Vec::with_capacity(n[0] as usize);
+			for _ in 0..n[0] {
+				let mut b = [0u8; 9];
+				r.read_exact(&mut b).map_err(|_| bad("short record"))?;
+				pairs.push((b[0], u64::from_le_bytes(b[1..9].try_into().unwrap())));
+			}
+			SkillSet::from_wire(&pairs)
+		} else {
+			SkillSet::default()
+		};
 		out.push((
 			hash,
 			PlayerRecord {
@@ -493,6 +522,7 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				layout,
 				pos,
 				last_return_tick,
+				skills,
 			},
 		));
 	}
@@ -555,6 +585,7 @@ mod tests {
 				layout: None,
 				pos: None,
 				last_return_tick: None,
+				skills: SkillSet::default(),
 			},
 		);
 		// Fill to the cap with strangers, touching the veteran throughout
@@ -596,6 +627,7 @@ mod tests {
 					layout: None,
 					pos: None,
 					last_return_tick: None,
+					skills: SkillSet::default(),
 				},
 			);
 			// Age the flush clock so `maintain` fires this tick.
@@ -652,6 +684,7 @@ mod tests {
 					layout: Some(layout()),
 					pos: None,
 					last_return_tick: None,
+					skills: SkillSet::default(),
 				},
 			);
 			s.put(id_b, PlayerRecord::default());
@@ -794,6 +827,7 @@ mod tests {
 					layout: Some(layout()),
 					pos: Some([12.5, 130.5, -7.5]),
 					last_return_tick: Some(4242),
+					skills: SkillSet::default(),
 				},
 			);
 			s.sync();
@@ -819,6 +853,7 @@ mod tests {
 					layout: None,
 					pos: None,
 					last_return_tick: None,
+					skills: SkillSet::default(),
 				},
 			);
 			s.sync();
@@ -826,5 +861,81 @@ mod tests {
 		let s = PlayerStore::open(&dir).unwrap();
 		assert_eq!(s.get(&id).pos, None);
 		assert_eq!(s.get(&id).last_return_tick, None);
+	}
+
+	/// An existing v3 file (pre-skills) keeps every player's items,
+	/// arrangement and position, and reads back with empty skills —
+	/// level 1, nothing wiped. A routine upgrade must NOT trip the
+	/// archive-and-start-fresh path.
+	#[test]
+	fn v3_file_reads_with_empty_skills() {
+		use digblock_core::skills::Skill;
+		let dir = temp_dir("v3compat");
+		std::fs::create_dir_all(&dir).unwrap();
+		let id = hash_identity(&[11; 16]);
+		// Hand-built v3 snapshot: one record, one (Dirt, 9) pair, no
+		// layout, a position, no cooldown tick.
+		let mut buf = Vec::new();
+		buf.extend_from_slice(&MAGIC);
+		buf.extend_from_slice(&3u16.to_le_bytes());
+		buf.extend_from_slice(&[0, 0]);
+		buf.extend_from_slice(&1u32.to_le_bytes());
+		buf.extend_from_slice(&id);
+		buf.push(1);
+		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
+		buf.extend_from_slice(&9u32.to_le_bytes());
+		buf.push(0); // no layout
+		buf.push(1); // position
+		for c in [4.5f32, 131.0, -2.5] {
+			buf.extend_from_slice(&c.to_le_bytes());
+		}
+		buf.push(0); // no cooldown tick
+		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
+
+		let mut s = PlayerStore::open(&dir).unwrap();
+		let rec = s.get(&id);
+		assert_eq!(rec.inventory.count(BlockType::Dirt), 9, "v3 data survives");
+		assert_eq!(rec.pos, Some([4.5, 131.0, -2.5]));
+		assert_eq!(rec.skills, SkillSet::default(), "pre-skills = level 1");
+
+		// The next write upgrades the file to v4 losslessly.
+		let mut skills = SkillSet::default();
+		skills.add_xp(Skill::Mining, 1_068);
+		s.put(id, PlayerRecord { skills, ..rec });
+		s.sync();
+		let s = PlayerStore::open(&dir).unwrap();
+		assert_eq!(s.get(&id).skills.xp(Skill::Mining), 1_068);
+		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 9);
+		assert_eq!(s.get(&id).pos, Some([4.5, 131.0, -2.5]));
+	}
+
+	/// v4 round-trips skills alongside everything else.
+	#[test]
+	fn skills_round_trip() {
+		use digblock_core::skills::Skill;
+		let dir = temp_dir("v4skills");
+		let id = hash_identity(&[12; 16]);
+		let mut skills = SkillSet::default();
+		skills.add_xp(Skill::Mining, 146_751);
+		skills.add_xp(Skill::Alchemy, 394);
+		{
+			let mut s = PlayerStore::open(&dir).unwrap();
+			s.put(
+				id,
+				PlayerRecord {
+					inventory: Inventory::default(),
+					layout: Some(layout()),
+					pos: Some([1.0, 140.0, 2.0]),
+					last_return_tick: Some(60),
+					skills: skills.clone(),
+				},
+			);
+			s.sync();
+		}
+		let s = PlayerStore::open(&dir).unwrap();
+		let rec = s.get(&id);
+		assert_eq!(rec.skills, skills);
+		assert_eq!(rec.skills.level(Skill::Mining), 70);
+		assert_eq!(rec.layout, Some(layout()));
 	}
 }

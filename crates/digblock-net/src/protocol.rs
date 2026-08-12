@@ -66,12 +66,25 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// so puts the block somewhere else — and geometry that disagrees
 /// between the two ends is collision that disagrees, which the movement
 /// adoption envelope would fight tick by tick.
-pub const PROTOCOL_VERSION: u16 = 15;
+/// v16: skills — `ServerMsg::Skills` (full per-skill XP totals, sent in
+/// join sync after `Layout`) and `ServerMsg::XpGain` (one skill's new
+/// TOTAL after an award — idempotent and reorder-safe, the client
+/// animates the delta itself). XP is server-computed at the two award
+/// chokepoints (dig credit, alchemy) and never client-claimed; levels
+/// derive from the shared curve in `digblock_core::skills`. Pure
+/// appends, but the version still moves: a v16 client's join flow
+/// expects the skills sync a v15 server never sends.
+/// v17: the rock gate — `RejectReason::SkillGated` appended (a dig
+/// refused at `DigStart` because `skills::dig_level_gate` exceeds the
+/// digger's Mining level). Rides the existing `DigRefused` machinery;
+/// the append moves the version because a v16 peer can't decode the new
+/// variant index (and SIM v12 pairs with it anyway).
+pub const PROTOCOL_VERSION: u16 = 17;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 15;
+pub const MIN_PROTOCOL: u16 = 17;
 
 // ---- handshake preamble ----------------------------------------------
 //

@@ -20,6 +20,7 @@ impl RemotePlayersDraw {
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
 		materials_bgl: &wgpu::BindGroupLayout,
+		gi_gather_bgl: &wgpu::BindGroupLayout,
 	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -27,10 +28,13 @@ impl RemotePlayersDraw {
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::PLAYERS.into()),
 		});
 		// Group 1 (block materials) textures the held-item companion
-		// cubes; the scene pass has it bound already when we draw.
+		// cubes; the scene pass has it bound already when we draw. Group
+		// 2 is gi_common's GI world data — the renderer binds the front
+		// gather group before our draw (the resolve outputs the solids
+		// hold at 2 don't know player surfaces).
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("players"),
-			bind_group_layouts: &[frame_bgl, materials_bgl],
+			bind_group_layouts: &[frame_bgl, materials_bgl, gi_gather_bgl],
 			push_constant_ranges: &[],
 		});
 		// Opaque scene geometry: writes depth, occluded by terrain.

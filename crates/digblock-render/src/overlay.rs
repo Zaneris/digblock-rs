@@ -214,10 +214,11 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		1,
 		DIM,
 		format_args!(
-			"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} upl {:5.2} enc {:5.2} | busy {:5.2} out {:5.2} ms",
+			"cpu  acq {:5.2} upd {:5.2} mnt {:5.2} gi {:5.2} upl {:5.2} enc {:5.2} | busy {:5.2} out {:5.2} ms",
 			c.acquire_ms,
 			c.update_ms,
 			c.maintain_ms,
+			c.gi_ms,
 			c.upload_ms,
 			c.encode_ms,
 			c.busy_ms,
@@ -229,8 +230,14 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			2,
 			DIM,
 			format_args!(
-				"gpu  shadow {:5.2} main {:5.2} water {:5.2} overlay {:5.2} ms",
-				g.shadow_ms, g.main_ms, g.water_ms, g.overlay_ms
+				"gpu  pre {:5.2} main {:5.2} water {:5.2} ovl {:5.2} | gi {:5.2} trace {:5.2} denoise {:5.2} ms",
+				g.prepass_ms,
+				g.main_ms,
+				g.water_ms,
+				g.overlay_ms,
+				g.gi_ms,
+				g.gi_trace_ms,
+				g.gi_denoise_ms
 			),
 		),
 		None => line(2, DIM, format_args!("gpu  n/a")),
@@ -277,15 +284,13 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		5,
 		DIM,
 		format_args!(
-			"draw {:>5} drawn {:>5} culled | water {:>4} cast {:>5} calls {:>5} tri {:6.2}M vram {:6.1}M{}",
+			"draw {:>5} drawn {:>5} culled | water {:>4} calls {:>5} tri {:6.2}M vram {:6.1}M",
 			r.chunks_drawn,
 			r.chunks_culled,
 			r.water_draws,
-			r.shadow_casters,
 			r.draw_calls,
 			f64::from(r.triangles) / 1.0e6,
-			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
-			if r.wide_refreshed { " | wide" } else { "" }
+			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0)
 		),
 	);
 	// Connection health. TWO round trips, deliberately, because they answer
@@ -930,10 +935,13 @@ mod tests {
 			..Default::default()
 		};
 		stats.gpu = Some(digblock_core::metrics::GpuPassMs {
-			shadow_ms: 999.99,
+			prepass_ms: 999.99,
 			main_ms: 999.99,
 			water_ms: 999.99,
 			overlay_ms: 999.99,
+			gi_ms: 999.99,
+			gi_trace_ms: 999.99,
+			gi_denoise_ms: 999.99,
 		});
 		stats.gauges.gen_queue = 9999;
 		stats.gauges.mesh_queue = 9999;
@@ -945,10 +953,8 @@ mod tests {
 		stats.render.chunks_drawn = 99999;
 		stats.render.chunks_culled = 99999;
 		stats.render.water_draws = 9999;
-		stats.render.shadow_casters = 99999;
 		stats.render.draw_calls = 99999;
 		stats.render.chunks_resident = 99999;
-		stats.render.wide_refreshed = true;
 		// Connected, saturated. Without this the net line under test would
 		// be the short "offline" string and the budget would go unchecked
 		// on the one line that has the most fields.

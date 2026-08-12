@@ -1,9 +1,15 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
-// Gamma-space lighting: sky-tinted ambient + tod-colored direct term,
-// shadows attenuate only the direct term (strength fades at twilight),
-// distance fog toward the sky horizon color.
-// Shadows: 5-tap cross PCF on the near cascade, 1 hard tap on the wide
-// cascade, blended over the outer 15% of near coverage (no hard seam).
+// RTGI shading (GI-DESIGN.md): ALL lighting arrives through the
+// half-res GI resolve buffers — probe-traced indirect plus a per-pixel
+// DDA sun visibility. This shader upsamples bilaterally and combines:
+// tex * (light_color * lambert * sunvis + indirect).
+//
+// Nothing else shades here any more. Baked AO, the Stage-B light
+// nibbles and the per-block tint jitter came out at the M1 demolition —
+// contact darkening is the path tracer's job now. Distance and
+// underwater fog came out with them and came back at M2 as one
+// participating medium (medium_common.wgsl), applied once at the end to
+// emissive ink and lit surfaces alike.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -11,9 +17,11 @@
 @group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var blocks_smp: sampler;
 
-@group(2) @binding(0) var shadow_near: texture_depth_2d;
-@group(2) @binding(1) var shadow_wide: texture_depth_2d;
-@group(2) @binding(2) var shadow_smp: sampler_comparison;
+// The GI resolve outputs, both rgba16f: indirect rgb + view distance,
+// and sun visibility + face-normal code + the sun ray's water path +
+// history length.
+@group(2) @binding(0) var gi_indirect: texture_2d<f32>;
+@group(2) @binding(1) var gi_sun: texture_2d<f32>;
 
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
@@ -26,32 +34,37 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// Face-axis ambient (same order): tops catch the full sky dome, sides
-// less (x and z slightly different so adjoining walls separate tonally),
-// bottoms least. Scales only the ambient term — lambert already
-// differentiates the direct term by orientation.
-const AXIS = array<f32, 6>(0.85, 0.78, 0.78, 0.58, 1.0, 0.85);
-
 struct VsOut {
-	@builtin(position) pos: vec4f,
+	// @invariant, and load-bearing: the depth prepass runs `vs_depth` in
+	// a different pipeline and this pass depth-tests LessEqual against
+	// its result. Once the prepass grew a fragment stage and a varying
+	// (the face-normal code), the two pipelines no longer optimize the
+	// position math in the same context, and an ulp of divergence fails
+	// the test — solids full of view-dependent holes. water.wgsl learned
+	// this the hard way; both entries here carry the marker.
+	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
+	// Lambert against the caster, flat per face (the geometry is
+	// blocky, so a face has exactly one normal).
 	@location(2) @interpolate(flat) direct: f32,
-	@location(3) sc_near: vec3f,
-	@location(4) sc_wide: vec3f,
-	@location(5) fog_dist: f32,
-	// Per-vertex ambient occlusion factor, interpolated across the quad.
-	@location(6) ao: f32,
-	// Face-axis ambient factor (constant per face).
-	@location(7) @interpolate(flat) axis: f32,
-	// World position — the underwater fog needs the ray endpoint.
-	@location(8) world: vec3f,
+	// Distance to the camera — the bilateral upsample's depth guide.
+	@location(3) view_dist: f32,
+	// Stage-A emissive (w1 bit 18): 1 = fullbright ink — the lighting
+	// terms are skipped entirely.
+	@location(4) @interpolate(flat) emissive: u32,
+	// Face-normal code (axis*2 + sign) matching gi_resolve's encoding,
+	// for the bilateral upsample's normal test.
+	@location(5) @interpolate(flat) ncode: u32,
+	// World position — the participating medium's segment endpoint.
+	@location(6) world: vec3f,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
-// index, 27-28 ao, 29-30 corner. w1 — solid material: bits 0-9 texture
-// layer, 10-13 uv u (twelfths), 14-17 uv v, 18-20 tint.
+// index, 27-28 corner, 29-31 free. w1 — solid material: bits 0-9
+// texture layer, 10-13 uv u (twelfths), 14-17 uv v, 18 emissive,
+// 19-31 free. Must agree with `mesher::pack` / `solid_word1`.
 // Twelfths → blocks with the whole-block part split off in INTEGER
 // space: full-block lattice vertices (multiples of 12) decode exactly
 // even under fast-math (a plain /12.0 becomes an inexact reciprocal
@@ -63,9 +76,9 @@ fn twelfths(v: u32) -> f32 {
 // `origin` is location 1: the chunk's world origin, arriving from the
 // instance-step origin buffer the renderer binds once per pass, selected
 // by the draw's first_instance (= the chunk's slot). It replaced a
-// dynamic-offset UBO on group 3, so nothing here binds per chunk any
-// more — water.wgsl and shadow.wgsl carry the identical attribute and
-// must be changed with this one.
+// dynamic-offset UBO, so nothing here binds per chunk — water.wgsl and
+// the depth prepass carry the identical attribute and must be changed
+// with this one.
 @vertex
 fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let w0 = packed.x;
@@ -83,74 +96,172 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.layer = w1 & 0x3ffu;
 
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
-	o.fog_dist = distance(world, frame.cam_pos.xyz);
+	o.view_dist = distance(world, frame.cam_pos.xyz);
+	o.emissive = (w1 >> 18u) & 1u;
+	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
+	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
+	o.ncode = code_of[ni];
 	o.world = world;
-	// 4-level voxel AO from the mesher (0 → 0.6, 3 → 1.0) folded with the
-	// per-block tint step (w1 bits 18-20 → 0.95..1.05); tint is constant
-	// across the quad, so the product interpolates exactly.
-	let jitter = 1.0 + (f32((w1 >> 18u) & 7u) - 3.5) * (0.10 / 7.0);
-	o.ao = (0.6 + 0.4 * f32((w0 >> 27u) & 3u) / 3.0) * jitter;
-	o.axis = AXIS[ni];
-
-	let pn = frame.light_near * vec4f(world, 1.0);
-	o.sc_near = vec3f(pn.xy * vec2f(0.5, -0.5) + 0.5, pn.z);
-	// Wide-cascade normal offset: push the receiver one wide texel
-	// (misc.w, world units) along its face normal before projecting.
-	// The wide texels are ~26× the near cascade's, so hardware-PCF
-	// neighbor compares self-shadow flat ground without it; unlike a
-	// depth bias it is geometry-aware and doesn't erase the shadows of
-	// one-block terrain steps.
-	let pw = frame.light_wide * vec4f(world + n * frame.misc.w, 1.0);
-	o.sc_wide = vec3f(pw.xy * vec2f(0.5, -0.5) + 0.5, pw.z);
 	return o;
 }
 
-// 5-tap cross PCF; both maps share one resolution, so misc.z is the
-// texel size for either. Each tap is itself hardware-2×2 filtered.
-fn pcf5(tex: texture_depth_2d, sc: vec3f) -> f32 {
-	let px = frame.misc.z;
-	var v = textureSampleCompareLevel(tex, shadow_smp, sc.xy, sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(px, 0.0), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(-px, 0.0), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, px), sc.z);
-	v += textureSampleCompareLevel(tex, shadow_smp, sc.xy + vec2f(0.0, -px), sc.z);
-	return v / 5.0;
+// Depth prepass: fills the R32F depth copy the GI resolve reconstructs
+// world positions from, AND — since M3 — one R8Uint face-normal code
+// per pixel.
+//
+// That second output is what fixed two bugs at once. The resolve used to
+// take its normal from `cross(dpdy(p), dpdx(p))` at half res, which is
+// garbage on every silhouette and poisoned the ray origin, the ambient-
+// cube axis weights and the backface term. It then wrote that derived
+// code into the sun buffer, where `fs` below compares it against the
+// scene's EXACT per-vertex code — the two cannot agree at a silhouette,
+// so all four bilateral taps collapsed to w *= 0.01 and `acc / wsum`
+// amplified whichever tap was least wrong. Those were the horizontal
+// ticks along every edge.
+//
+// Rasterizing the code makes it exact AND makes it the same number on
+// both sides of the comparison, because it comes from this one table.
+struct DepthOut {
+	@invariant @builtin(position) pos: vec4f,
+	@location(0) @interpolate(flat) ncode: u32,
 }
 
-fn shadow_vis(sc_near: vec3f, sc_wide: vec3f, direct: f32) -> f32 {
-	if direct <= 0.0 {
-		return 0.0; // faces pointing away from the light are fully shadowed
-	}
-	// Tiny residual depth epsilon (~0.13 world units) on top of the
-	// vertex-side normal offset.
-	let wsc = vec3f(sc_wide.xy, sc_wide.z - 0.0001);
-	// 0 at the near-map center, 1 at its edge (Chebyshev distance in UV).
-	let d = max(abs(sc_near.x - 0.5), abs(sc_near.y - 0.5)) * 2.0;
-	if d >= 1.0 {
-		return pcf5(shadow_wide, wsc);
-	}
-	let near = pcf5(shadow_near, sc_near);
-	// Blend to wide over the outer 15% so the cascade seam never pops.
-	let t = smoothstep(0.85, 1.0, d);
-	if t <= 0.0 {
-		return near;
-	}
-	return mix(near, pcf5(shadow_wide, wsc), t);
+@vertex
+fn vs_depth(@location(0) packed: vec2u, @location(1) origin: vec4f) -> DepthOut {
+	let w0 = packed.x;
+	let x = twelfths(w0 & 0xffu);
+	let y = twelfths((w0 >> 8u) & 0xffu);
+	let z = twelfths((w0 >> 16u) & 0xffu);
+	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
+	var o: DepthOut;
+	o.pos = frame.view_proj * vec4f(vec3f(x, y, z) + origin.xyz, 1.0);
+	o.ncode = code_of[(w0 >> 24u) & 7u];
+	return o;
+}
+
+@fragment
+fn fs_depth(i: DepthOut) -> @location(0) u32 {
+	return i.ncode;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	var vis = 1.0;
-	if frame.misc.y > 0.5 {
-		vis = shadow_vis(i.sc_near, i.sc_wide, i.direct);
+	// Fullbright ink is a light SOURCE, and a source has to out-read what
+	// it casts or the picture inverts: the flame is authored as an
+	// ordinary albedo texture, so at gain 1 it renders no brighter than a
+	// well-lit wall — and once the torch's near field stopped clipping
+	// (LIGHT_NEAR, gi_resolve.wgsl) the pool it threw was brighter than
+	// the flame throwing it. This is the ink alone: `glows` and `emits`
+	// are independent block properties, so nothing here changes what a
+	// torch CASTS, only how the emitter itself reads.
+	//
+	// The gain rides the ink's OWN luminance, because a torch is one
+	// block but not one material: the head and the wooden post are both
+	// fullbright, and a flat multiplier lifts the post into glowing wood.
+	// Weighting by value puts the light where the light is — the flame
+	// takes nearly the whole gain, the post barely moves — and it needs
+	// no texture-id special case in a shader to do it.
+	const EMISSIVE_GAIN = 1.6;
+	let ink = dot(tex, vec3f(0.299, 0.587, 0.114));
+	var col = tex * select(1.0, 1.0 + EMISSIVE_GAIN * ink * ink, i.emissive == 1u);
+	// Emissive ink is its own light — no sun, no GI. It still travels to
+	// the eye through the medium like everything else, which is why the
+	// branch narrowed to the lighting instead of returning early.
+	if i.emissive == 0u {
+		// Bilateral upsample of the half-res GI buffers: the 4 nearest
+		// half-res texels, each weighted by view-distance proximity and a
+		// face-normal match, so lighting never bleeds across the
+		// silhouette or around a corner.
+		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
+		let base = (vec2i(i.pos.xy) - 1) / 2;
+		var acc = vec3f(0.0);
+		var sun_acc = 0.0;
+		var water_acc = 0.0;
+		var wsum = 0.0;
+		// Nearest-depth fallback: remember the single closest tap in case
+		// no tap agrees on the face. Both codes are now the SAME number
+		// from chunk.wgsl's `code_of` — the resolve rasterizes it rather
+		// than deriving it — so a mismatch means the half-res texel
+		// genuinely belongs to another surface, not that the two sides
+		// disagree about the same one.
+		var best = vec4f(0.0);
+		var best_sun = vec4f(0.0);
+		var best_d = 1e30;
+		var matched = false;
+		for (var t = 0; t < 4; t++) {
+			let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
+			let ind = textureLoad(gi_indirect, c, 0);
+			let sn = textureLoad(gi_sun, c, 0);
+			let dd = abs(ind.w - i.view_dist);
+			if dd < best_d {
+				best_d = dd;
+				best = ind;
+				best_sun = sn;
+			}
+			// The low 8 bits are the face code; the high bits carry the
+			// history length (gi_resolve packs them so the penumbra width
+			// could have sun.a).
+			if (u32(sn.g) & 255u) != i.ncode {
+				continue;
+			}
+			matched = true;
+			let w = 1.0 / (0.02 + dd / max(i.view_dist, 1.0));
+			acc += ind.rgb * w;
+			sun_acc += sn.r * w;
+			water_acc += sn.b * w;
+			wsum += w;
+		}
+		if !matched {
+			// Every tap is another surface. Take the nearest one whole
+			// rather than averaging four wrong answers — the old code
+			// weighted them 0.01 each, which normalizes away and left
+			// exactly that average, amplifying whichever was least wrong.
+			acc = best.rgb;
+			sun_acc = best_sun.r;
+			water_acc = best_sun.b;
+			wsum = 1.0;
+		}
+		let indirect = acc / wsum;
+		// The sun ray's own water column, attenuated by the SAME sigma
+		// the view ray uses — so sunlight reaching a submerged surface is
+		// red-starved, not just dim.
+		let sun_tr = medium_water_tr(water_acc / wsum);
+		// Twilight fades the LIGHT, not the shadow. This used to read
+		// `mix(vec3f(1.0), visibility, frame.light_dir.w)` — carried over
+		// from the shadow-map era, where fading a cascade out meant fading
+		// its shadowing toward "lit" because there was no other answer to
+		// give. Against a traced visibility it inverts the meaning: as the
+		// caster's strength falls to 0 below ~10 degrees of altitude, the
+		// blend returns 1.0, and every surface facing the caster takes
+		// FULL, UNSHADOWED direct light — through walls.
+		//
+		// It is not subtle. A sealed stone vault at sunrise lit one wall
+		// to 4x the other (86 vs 19 mean), uniformly across the whole
+		// face, and the lit wall FLIPPED at the horizon crossing as the
+		// caster changed from sun to moon and its azimuth reversed. It
+		// survived forcing sun visibility to zero, which is what a
+		// visibility term that is being ignored looks like.
+		//
+		// Strength belongs on the radiance. At full strength this is
+		// identical to what it replaced, so only twilight moves.
+		let sh = sun_acc / wsum * sun_tr;
+		col = tex * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
 	}
-	// Shadow attenuates only the direct term, scaled by twilight
-	// strength; ambient is the guaranteed floor. AO attenuates the whole
-	// color — contact darkening the shadow maps can't resolve.
-	let sh = mix(1.0, vis, frame.light_dir.w);
-	var col = tex * i.ao * (frame.ambient.rgb * i.axis + frame.light_color.rgb * i.direct * sh);
-	// Distance fog toward the sky horizon, hiding chunk pop-in.
-	col = apply_fog(col, i.fog_dist, i.world);
-	return vec4f(col, frame.misc.x);
+	// The medium, from this surface to the eye. In-scatter is `sky_base`
+	// itself, so at distance the surface fades into exactly the sky pixel
+	// behind it — including the streaming rim, which is why the world's
+	// edge stops being visible rather than being hidden.
+	let ray = normalize(i.world - frame.cam_pos.xyz);
+	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let lit = medium_view(
+		col,
+		frame.cam_pos.xyz,
+		i.world,
+		sky,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	);
+	return vec4f(lit, frame.misc.x);
 }

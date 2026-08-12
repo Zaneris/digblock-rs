@@ -23,11 +23,14 @@ pub mod tex {
 	pub const PINE_LEAVES: &[u8] = include_bytes!("../../../assets/textures/PineLeaves.png");
 	pub const SANDSTONE: &[u8] = include_bytes!("../../../assets/textures/Sandstone.png");
 	pub const DOOR_WOOD: &[u8] = include_bytes!("../../../assets/textures/DoorWood.png");
+	pub const RUBBLE: &[u8] = include_bytes!("../../../assets/textures/Rubble.png");
+	pub const TORCH_SIDE: &[u8] = include_bytes!("../../../assets/textures/TorchSide.png");
+	pub const TORCH_FLAME: &[u8] = include_bytes!("../../../assets/textures/TorchFlame.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference (digblock-core block.rs `tex` module mirrors this list).
 	/// Append only; never reorder.
-	pub const LAYERS: [&[u8]; 17] = [
+	pub const LAYERS: [&[u8]; 20] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -45,6 +48,9 @@ pub mod tex {
 		PINE_LEAVES,
 		SANDSTONE,
 		DOOR_WOOD,
+		RUBBLE,
+		TORCH_SIDE,
+		TORCH_FLAME,
 	];
 }
 
@@ -113,23 +119,37 @@ pub mod font {
 
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time: frame_common.wgsl (the Frame uniform
-	// block + its group(0) binding, one definition for every pass that
-	// reads it) and sky_common.wgsl (the procedural-sky core — gradient,
-	// glow, stars — shared so the sky pass and water reflections can
-	// never silently drift apart). Prelude order is frame_common first,
-	// then sky_common, then the body file; naga error line numbers in
-	// the body files are offset by the total prelude length.
+	// with concat! at include time. Four of them, each the sole
+	// definition of one thing so the passes cannot silently disagree:
+	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
+	// medium_common.wgsl (the participating medium and its extinction
+	// constants), sky_common.wgsl (the procedural-sky core — gradient,
+	// glow, stars — shared so the sky pass, water reflections and the
+	// medium's in-scatter are one function), and gi_common.wgsl (the
+	// probe gather + the group(2) world bindings).
+	//
+	// Order is frame_common, medium_common, sky_common, gi_common, body.
+	// medium_common sits early on purpose: it is dependency-free (every
+	// input an argument) precisely so the GI compute kernels — which
+	// carry their own uniform block and CANNOT take frame_common — can
+	// still share its water extinction with the view ray.
+	//
+	// naga error line numbers in the body files are offset by the total
+	// prelude length.
 	pub const CHUNK: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
 	);
-	pub const SHADOW: &str = include_str!("../../../assets/shaders/shadow.wgsl");
 	pub const SKY: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
@@ -140,10 +160,16 @@ pub mod shader {
 	pub const DEPTH_BLIT: &str = include_str!("../../../assets/shaders/depth_blit.wgsl");
 	pub const SPRAY: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	pub const HIGHLIGHT: &str = concat!(
@@ -156,11 +182,50 @@ pub mod shader {
 	/// projection and light rig, so the shared Frame block would only be
 	/// an unused binding it must not declare.
 	pub const VIEWMODEL: &str = include_str!("../../../assets/shaders/viewmodel.wgsl");
+	/// RTGI probe-update compute (GI-DESIGN.md). No frame prelude: the
+	/// compute passes carry their own small GI uniform block, not the
+	/// pinned Frame layout — but they DO take medium_common, which is
+	/// argument-only for exactly this reason, so the sun ray's water
+	/// transmittance is the same constant the view ray uses.
+	pub const GI_PROBE: &str = concat!(
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_probe.wgsl"),
+	);
+	/// The voxel-window debug raymarch (`DIG_GI=window`).
+	pub const GI_DEBUG: &str = concat!(
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_debug.wgsl"),
+	);
+	/// The half-res GI resolve pass (probes + per-pixel sun ray → the
+	/// scene's lighting inputs). Shares the gather core + group(2)
+	/// world bindings with water/players via the gi_common prelude.
+	pub const GI_RESOLVE: &str = concat!(
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
+	);
+	/// The resolve's spatial half: an edge-stopping a-trous filter over the
+	/// two half-res lighting targets. Dependency-free on purpose — it reads
+	/// only what those targets already carry, so it needs neither the world
+	/// bindings nor a moments buffer.
+	pub const GI_ATROUS: &str = include_str!("../../../assets/shaders/gi_atrous.wgsl");
+	/// The shared preludes, validated STANDALONE as well as through
+	/// their consumers: a prelude that only ever compiles concatenated
+	/// can pick up a silent dependency on whatever happens to precede
+	/// it, which is exactly the coupling these files exist to prevent.
+	/// medium_common must validate with nothing before it at all.
+	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
+	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
+	pub const GI_COMMON: &str = concat!(
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+	);
 
-	pub const ALL: [(&str, &str); 12] = [
+	pub const ALL: [(&str, &str); 18] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
-		("shadow.wgsl", SHADOW),
 		("sky.wgsl", SKY),
 		("overlay.wgsl", OVERLAY),
 		("blit.wgsl", BLIT),
@@ -170,6 +235,13 @@ pub mod shader {
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
 		("viewmodel.wgsl", VIEWMODEL),
+		("gi_probe.wgsl", GI_PROBE),
+		("gi_debug.wgsl", GI_DEBUG),
+		("gi_resolve.wgsl", GI_RESOLVE),
+		("gi_atrous.wgsl", GI_ATROUS),
+		("medium_common.wgsl", MEDIUM_COMMON),
+		("gi_dda.wgsl", GI_DDA),
+		("gi_common.wgsl", GI_COMMON),
 	];
 }
 
@@ -177,6 +249,10 @@ pub mod shader {
 mod tests {
 	/// Validate every WGSL shader without needing a GPU, so CI catches
 	/// shader errors on any runner.
+	/// KNOWN GAP: this crate's naga is not wgpu's parser — `pass` is a
+	/// reserved word at runtime that validated fine here and killed the
+	/// resolve pipeline in the running engine (R15 follow-up). A shader
+	/// change still needs one live launch before it is believed.
 	#[test]
 	fn shaders_parse_and_validate() {
 		for (name, src) in super::shader::ALL {
@@ -188,6 +264,97 @@ mod tests {
 			)
 			.validate(&module)
 			.unwrap_or_else(|e| panic!("{name}: validation error: {e:?}"));
+		}
+	}
+
+	/// Read a `const NAME = <number>;` out of a WGSL source.
+	fn wgsl_const(src: &str, name: &str) -> f64 {
+		// Both declaration forms: `const NAME = v;` and the typed
+		// `const NAME: f32 = v;` gi_probe.wgsl uses — the pattern
+		// missing the typed form would report a pinned twin as
+		// "not declared" instead of comparing it.
+		let at = [format!("const {name} = "), format!("const {name}: f32 = ")]
+			.iter()
+			.find_map(|pat| src.find(pat).map(|at| at + pat.len()))
+			.unwrap_or_else(|| panic!("{name}: not declared"));
+		let rest = &src[at..];
+		let end = rest
+			.find(';')
+			.unwrap_or_else(|| panic!("{name}: unterminated"));
+		rest[..end]
+			.trim()
+			.parse()
+			.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
+	}
+
+	/// The spatial filter has to run on every pixel the temporal one cut
+	/// short. That is the whole trade R9 made — give up temporal samples,
+	/// let `gi_atrous` hand them back — and it holds only while a moving
+	/// pixel's history stays under the length at which the filter decides
+	/// the pixel is converged and skips it.
+	///
+	/// It stopped holding silently once. The cap used to be a smooth
+	/// function of per-frame reprojection travel, and per-frame parallax
+	/// collapses with view distance, so the far field walked around at
+	/// n ~ 330 — above `N_CONVERGED`, where the filter switches itself off.
+	/// The band that most needed it was the band not getting it, and the
+	/// only symptom was a shadow ten blocks out sliding with the player
+	/// (R13). A two-state cap makes the relationship structural, and this
+	/// pins it so a future retune of either constant cannot re-open it.
+	///
+	/// Since the deterministic sun this trade covers only INDIRECT: the sun
+	/// stopped relying on the converged/skip gate at all (its filter is
+	/// penumbra-driven reconstruction that runs at rest too, and its
+	/// history is capped at N_SUN — see the pin below).
+	#[test]
+	fn a_moving_pixel_always_gets_the_spatial_filter() {
+		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
+		let converged = wgsl_const(super::shader::GI_ATROUS, "N_CONVERGED");
+		assert!(
+			moving < converged,
+			"N_MOVING ({moving}) must stay under gi_atrous's N_CONVERGED ({converged}), \
+			 or a moving pixel takes neither a long history nor the filter"
+		);
+	}
+
+	/// The whole point of the deterministic sun ray is that its history is
+	/// too short to smear: a k-frame average can only be dragged k frames
+	/// far, whatever the resampling does. That guarantee lives in one
+	/// constant, and someone "fixing" residual edge shimmer by raising it
+	/// back toward N_MAX would silently re-open the artifact R9 and R13
+	/// spent weeks measuring. It must also not exceed N_MOVING — the sun's
+	/// cap is the tighter of the two by design, so a moving pixel's shared
+	/// counter never makes the sun blend SLOWER than the indirect it rides
+	/// with.
+	#[test]
+	fn sun_history_is_short_by_construction() {
+		let n_sun = wgsl_const(super::shader::GI_RESOLVE, "N_SUN");
+		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
+		assert!(
+			n_sun <= 16.0,
+			"N_SUN ({n_sun}) has grown past the antialiasing regime — a long sun history \
+			 is the smear, not a quality knob"
+		);
+		assert!(
+			n_sun <= moving,
+			"N_SUN ({n_sun}) must not exceed N_MOVING ({moving})"
+		);
+	}
+
+	/// The resolve's per-pixel NEE (R20) and the probe pass's stochastic
+	/// one price the same torch with const twins — the two live in
+	/// shaders that cannot share bindings, so the compiler can't hold
+	/// them together. If they drift, the deterministic direct pool and
+	/// the cache's bounce of that same pool disagree about the light's
+	/// strength, and the seam moves with the camera (the near field is
+	/// the ray, the far field is the cache). Retuning is legal — in both
+	/// files at once.
+	#[test]
+	fn resolve_and_probe_agree_on_light_calibration() {
+		for name in ["LIGHT_RANGE", "LIGHT_GAIN", "LIGHT_NEAR"] {
+			let r = wgsl_const(super::shader::GI_RESOLVE, name);
+			let p = wgsl_const(super::shader::GI_PROBE, name);
+			assert_eq!(r, p, "{name}: resolve {r} vs probe {p}");
 		}
 	}
 

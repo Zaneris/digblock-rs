@@ -33,11 +33,19 @@ pub enum InvId {
 	Grid(u16),
 	/// One hotbar slot.
 	Bar(u8),
-	/// Alchemy: a convertible holding's "extract" button (index into
-	/// the built convertibles list).
-	Convert(u8),
-	/// Alchemy: a craft row's button (index into `shapes::CRAFTABLE`).
+	/// Alchemy: one member tile of the selected transmute family.
 	Craft(u8),
+	/// Alchemy: one transmute family tile (index into `FAMILIES`).
+	Family(u8),
+	/// Alchemy: the transmute tab's single TRANSMUTE button.
+	CraftGo,
+	/// Alchemy: one of the two tab-strip buttons (0 extract, 1 transmute).
+	Tab(u8),
+	/// Alchemy: the extraction drop target (a pointer, not a container).
+	ExtractSlot,
+	/// Alchemy: the bucket-charge tile beside the grid (drag source; the
+	/// charge can't live in the grid — water is not slottable).
+	BucketTile,
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

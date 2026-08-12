@@ -3,13 +3,14 @@
 //! applies the actions they return.
 
 pub mod alchemy;
+pub mod character;
 pub mod inventory;
 
 #[cfg(test)]
 mod tests {
 	use crate::ui::draw::{Cmd, DrawList, Layer};
 	use crate::ui::{scale, widgets::Style, HitMap, InvId, Ui};
-	use digblock_core::block::{BlockType as B, Material};
+	use digblock_core::block::{BlockType as B, Essence};
 	use digblock_core::inv_grid::InvGrid;
 	use digblock_core::inventory::Inventory;
 
@@ -17,7 +18,9 @@ mod tests {
 		let mut inv = Inventory::default();
 		inv.add(B::Wood, 5);
 		inv.add(B::Stone, 11);
-		inv.add_sub(Material::Wood, 54);
+		inv.add(B::Rubble, 24);
+		inv.add_sub(Essence::Flora, 54);
+		inv.add_sub(Essence::Earth, 120);
 		inv
 	}
 
@@ -43,21 +46,37 @@ mod tests {
 		let inv = stocked();
 		let mut out = Vec::new();
 
-		let mut dl = DrawList::default();
-		let mut hits: HitMap<InvId> = HitMap::default();
-		let mut alch = super::alchemy::AlchScreen::default();
-		alch.open();
-		alch.build(
-			&mut Ui {
-				dl: &mut dl,
-				hits: &mut hits,
-				style,
-			},
-			size,
-			&super::alchemy::AlchView::build(&inv),
-			1.0,
-		);
-		out.push(("alchemy", dl));
+		// A grid arrangement + mid-curve skills, so both alchemy tabs
+		// have real content (counts, costs, an XP bar).
+		let mut skills = digblock_core::skills::SkillSet::default();
+		skills.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
+		let mut hotbar = digblock_core::hotbar::Hotbar::new();
+		let mut inv_grid = InvGrid::default();
+		digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut inv_grid);
+
+		for (name, tab) in [
+			("alchemy", super::alchemy::AlchTab::Extract),
+			("alchemy-transmute", super::alchemy::AlchTab::Transmute),
+		] {
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<InvId> = HitMap::default();
+			let mut alch = super::alchemy::AlchScreen::default();
+			alch.open();
+			alch.set_tab(tab);
+			alch.build(
+				&mut Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style,
+				},
+				size,
+				&super::alchemy::AlchView::build(&inv, &skills),
+				&inv_grid,
+				&inv,
+				1.0,
+			);
+			out.push((name, dl));
+		}
 
 		let mut dl = DrawList::default();
 		let mut hits: HitMap<InvId> = HitMap::default();
@@ -85,6 +104,27 @@ mod tests {
 		let menu = crate::menu::Menu::new(true, Default::default(), None);
 		menu.view(size, s, false).emit(&mut dl, &style, size, 1.0);
 		out.push(("menu", dl));
+
+		let mut dl = DrawList::default();
+		let mut hits: HitMap<InvId> = HitMap::default();
+		// Mid-curve XP, not zero: fractional bars and the XP detail
+		// lines are exactly the text this screen could get wrong.
+		let mut skills = digblock_core::skills::SkillSet::default();
+		skills.add_xp(digblock_core::skills::Skill::Mining, 150_000);
+		skills.add_xp(digblock_core::skills::Skill::Alchemy, 30_000);
+		let mut screen = super::character::CharScreen::default();
+		screen.open();
+		screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style,
+			},
+			size,
+			&super::character::CharView::build(&skills),
+			1.0,
+		);
+		out.push(("character", dl));
 
 		out
 	}
@@ -151,7 +191,7 @@ mod tests {
 						"{name} mixed sizes {sizes:?}"
 					);
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
-					if name == "alchemy" {
+					if name.starts_with("alchemy") {
 						// The one screen that can outgrow its window, so its
 						// fit pass may step the whole page down. What it may
 						// not do is invent a size: every step is a quarter

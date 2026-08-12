@@ -109,10 +109,111 @@ pub fn hotbar<Id: Copy + PartialEq>(
 			SlotView::Tool { full } => Some(item_icon(HotbarItem::WaterTool, full)),
 			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
-		widgets::slot(ui, id_of(i), rect, icon, icon_px, i == view.selected);
+		// The HUD bar has no cursor: rings only, never hover.
+		let ring = if i == view.selected {
+			widgets::SlotRing::Strong
+		} else {
+			widgets::SlotRing::None
+		};
+		widgets::slot(ui, id_of(i), rect, icon, icon_px, ring, false);
 		if let SlotView::Block { count, .. } = view.slots[i] {
 			widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, count, WHITE);
 		}
+	}
+}
+
+/// §6's faded tool rail: the owned tools OTHER than the active one,
+/// drawn as small reduced-alpha icons just right of the tool slot, in
+/// the roster's own deterministic order. A READOUT, not a target — no
+/// hit rects; tapping 9 on the selected tool slot is the interaction.
+/// With a single owned tool nothing draws at all.
+pub fn tool_rail(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	owned: &[digblock_core::block::BlockType],
+	active: digblock_core::block::BlockType,
+	bucket_full: bool,
+) {
+	use digblock_core::block::BlockType;
+	if owned.len() < 2 {
+		return;
+	}
+	const RAIL_TINT: u32 = 0x70FF_FFFF;
+	let scale = style.scale;
+	let grid = row_grid(size, scale);
+	let cell = 28.0 * scale;
+	let gap = 6.0 * scale;
+	let mut x = grid.origin.0 + grid.extent(HOTBAR_SLOTS).0 + SLOT_GAP * scale * 2.0;
+	let y = grid.origin.1 + grid.cell - cell;
+	for &tool in owned.iter().filter(|&&t| t != active) {
+		let kind = match tool {
+			BlockType::Bucket => IconKind::WaterTool { full: bucket_full },
+			// Future tools without authored icons read as their cube.
+			other => IconKind::Cube(other),
+		};
+		draw_icon(
+			dl,
+			Layer::Icons,
+			super::Rect::new(x, y, cell, cell),
+			kind,
+			RAIL_TINT,
+		);
+		x += cell + gap;
+	}
+}
+
+/// One coalescing XP toast: rapid awards to the same skill accumulate
+/// into a single "+N SKILL" line instead of a scrolling storm. Engine
+/// state — [`xp_toasts`] just draws whatever is live.
+pub struct XpToast {
+	pub skill: digblock_core::skills::Skill,
+	pub amount: u64,
+	/// Seconds left; refreshed to [`XP_TOAST_TTL`] by each new award.
+	pub ttl: f32,
+}
+
+pub const XP_TOAST_TTL: f32 = 2.0;
+/// The fade window at the end of a toast's life.
+const XP_TOAST_FADE: f32 = 0.5;
+
+/// Scale a 0xAABBGGRR color's alpha byte.
+fn faded(color: u32, f: f32) -> u32 {
+	let a = ((color >> 24) as f32 * f.clamp(0.0, 1.0)) as u32;
+	a << 24 | (color & 0x00FF_FFFF)
+}
+
+/// Draw the live XP toasts, stacked upward above the hotbar, centered
+/// like the bar itself. Text rides the frame's size; the backdrop is
+/// sized from the face's line height (ink legitimately overflows the
+/// nominal box — accents above, descenders below).
+pub fn xp_toasts(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	toasts: &[XpToast],
+) {
+	let scale = style.scale;
+	let px = style.glyph;
+	let line = crate::font::face(style.face).line_h(px);
+	let pad_x = super::scale::text_pad_x(scale);
+	let gap = 4.0 * scale;
+	let mut bottom = row_grid(size, scale).origin.1 - super::theme::GAP_ABOVE_BAR * scale;
+	for toast in toasts.iter().rev() {
+		let fade = (toast.ttl / XP_TOAST_FADE).clamp(0.0, 1.0);
+		let text = format!("+{} {}", toast.amount, toast.skill.name());
+		let w = style.measure(&text) + 2.0 * pad_x;
+		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
+		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
+		dl.text(
+			Layer::Content,
+			rect.x + pad_x,
+			rect.y + (line - px) / 2.0,
+			px,
+			faded(WHITE, fade),
+			&text,
+		);
+		bottom = rect.y - gap;
 	}
 }
 

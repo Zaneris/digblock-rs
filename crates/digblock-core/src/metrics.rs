@@ -39,7 +39,7 @@ const REFRESH_MAX_MS: f32 = 40.0;
 /// their call sites and handed in.
 ///
 /// Phases partition the frame, summing to roughly `busy_ms`: acquire,
-/// update, maintain, upload, prep, encode. Note that `sim`, `net` and
+/// update, maintain, gi, upload, prep, encode. Note that `sim`, `net` and
 /// `persist` are a BREAKDOWN of `update_ms` rather than phases of their
 /// own — don't sum them alongside it.
 ///
@@ -60,6 +60,11 @@ pub struct FrameTimings {
 	pub persist_ms: f32,
 	/// `Pipeline::maintain`.
 	pub maintain_ms: f32,
+	/// RTGI window feed: scroll, classify, voxel-window upload. Sits
+	/// between `maintain` and the mesh upload loop and used to be timed by
+	/// nothing at all — a 512-chunk classify burst (a full 4096-cell walk
+	/// each) landed only in `busy_ms`, with no phase to attribute it to.
+	pub gi_ms: f32,
 	/// Evict + mesh-upload loop.
 	pub upload_ms: f32,
 	/// Post-pipeline, pre-encode frame prep: remote-player sampling, name
@@ -101,6 +106,7 @@ impl FrameTimings {
 		f(&mut self.sim_ms, x.sim_ms);
 		f(&mut self.persist_ms, x.persist_ms);
 		f(&mut self.maintain_ms, x.maintain_ms);
+		f(&mut self.gi_ms, x.gi_ms);
 		f(&mut self.upload_ms, x.upload_ms);
 		f(&mut self.prep_ms, x.prep_ms);
 		f(&mut self.encode_ms, x.encode_ms);
@@ -240,22 +246,25 @@ pub struct RenderStats {
 	pub chunks_drawn: u32,
 	pub chunks_culled: u32,
 	pub water_draws: u32,
-	/// Near-cascade shadow casters.
-	pub shadow_casters: u32,
 	pub draw_calls: u32,
 	pub triangles: u32,
-	pub wide_refreshed: bool,
 }
 
 /// GPU pass durations from timestamp queries (2-3 frames latent).
 #[derive(Clone, Copy, Default)]
 pub struct GpuPassMs {
-	pub shadow_ms: f32,
+	/// Depth prepass over opaque solids.
+	pub prepass_ms: f32,
 	pub main_ms: f32,
-	/// The split-off water pass (blit + prepass + color); 0.0 until the
-	/// renderer restructure lands.
+	/// The split-off water pass (blit + prepass + color).
 	pub water_ms: f32,
 	pub overlay_ms: f32,
+	/// RTGI probe-update compute.
+	pub gi_ms: f32,
+	/// The half-res GI trace.
+	pub gi_trace_ms: f32,
+	/// Temporal accumulation + à-trous; 0.0 until they exist.
+	pub gi_denoise_ms: f32,
 }
 
 /// Per-frame snapshot for the debug overlay: everything it draws.
@@ -381,11 +390,12 @@ pub struct Metrics {
 /// reordered, but old CSVs still can't be diffed naively against new ones
 /// (`BENCH.md` carries the same warning for the `gpu_water_ms` insertion).
 const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,dropped,refresh_ms,\
-busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,upl_ms,prep_ms,enc_ms,\
-gpu_shadow_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
+busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,gi_ms,upl_ms,prep_ms,enc_ms,\
+gpu_prepass_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
+gpu_gi_ms,gpu_gi_trace_ms,gpu_gi_denoise_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
-drawn,culled,water,casters,draws,tris,gpu_bytes,budget_ms";
+drawn,culled,water,draws,tris,gpu_bytes,budget_ms";
 
 impl Metrics {
 	/// `spike_log` comes from the launcher: core is env-free by convention,
@@ -515,7 +525,7 @@ impl Metrics {
 			};
 			if self.spike_log && timings.total_ms > spike_over {
 				log::info!(
-					"spike f{} total {:.2} busy {:.2} out {:.2} | acq {:.2} upd {:.2} (net {:.2} sim {:.2} sav {:.2}) mnt {:.2} upl {:.2} prep {:.2} enc {:.2} | gpu sh {:.2} main {:.2} water {:.2} | draws {} tris {}k wide {} | up {} ({}k) upl_q {} evict_q {} budget {:.1}",
+					"spike f{} total {:.2} busy {:.2} out {:.2} | acq {:.2} upd {:.2} (net {:.2} sim {:.2} sav {:.2}) mnt {:.2} gi {:.2} upl {:.2} prep {:.2} enc {:.2} | gpu pre {:.2} main {:.2} water {:.2} gi {:.2} trace {:.2} den {:.2} | draws {} tris {}k | up {} ({}k) upl_q {} evict_q {} budget {:.1}",
 					self.run_frames,
 					timings.total_ms,
 					timings.busy_ms,
@@ -526,15 +536,18 @@ impl Metrics {
 					timings.sim_ms,
 					timings.persist_ms,
 					timings.maintain_ms,
+					timings.gi_ms,
 					timings.upload_ms,
 					timings.prep_ms,
 					timings.encode_ms,
-					self.gpu.as_ref().map_or(0.0, |g| g.shadow_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.prepass_ms),
 					self.gpu.as_ref().map_or(0.0, |g| g.main_ms),
 					self.gpu.as_ref().map_or(0.0, |g| g.water_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.gi_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.gi_trace_ms),
+					self.gpu.as_ref().map_or(0.0, |g| g.gi_denoise_ms),
 					self.render.draw_calls,
 					self.render.triangles / 1000,
-					self.render.wide_refreshed as u32,
 					self.gauges.uploaded,
 					self.gauges.upload_bytes / 1024,
 					self.gauges.upload_backlog,
@@ -735,11 +748,12 @@ impl Metrics {
 			let _ = writeln!(
 				w,
 				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},{},{:.2},\
-{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {:.3},{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{},{:.2}",
+{},{},{},{},{},{},{:.2}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -755,13 +769,17 @@ impl Metrics {
 				win.sim_ms,
 				win.persist_ms,
 				win.maintain_ms,
+				win.gi_ms,
 				win.upload_ms,
 				win.prep_ms,
 				win.encode_ms,
-				gpu.shadow_ms,
+				gpu.prepass_ms,
 				gpu.main_ms,
 				gpu.water_ms,
 				gpu.overlay_ms,
+				gpu.gi_ms,
+				gpu.gi_trace_ms,
+				gpu.gi_denoise_ms,
 				self.gen_jobs.count,
 				self.gen_jobs.avg_ms(),
 				self.gen_jobs.max_ms,
@@ -783,7 +801,6 @@ impl Metrics {
 				r.chunks_drawn,
 				r.chunks_culled,
 				r.water_draws,
-				r.shadow_casters,
 				r.draw_calls,
 				r.triangles,
 				self.gpu_buffer_bytes,

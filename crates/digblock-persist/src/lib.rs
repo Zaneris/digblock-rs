@@ -52,6 +52,9 @@ pub struct WorldSave {
 	/// Inventory-grid slot assignments, same wire encoding. Empty =
 	/// legacy save (the engine derives the arrangement).
 	pub grid: Vec<u16>,
+	/// Per-skill XP totals as `(skill index, total)` pairs. Empty =
+	/// pre-skills save (level 1; nothing else is touched).
+	pub skills: Vec<(u8, u64)>,
 	pub player: Option<PlayerPersist>,
 }
 
@@ -73,12 +76,13 @@ pub trait WorldStore {
 	/// One accepted local edit (dig/place/fluid), full cell value.
 	fn append_edit(&mut self, x: i32, y: i32, z: i32, cell: u16);
 	/// Latest inventory + hotbar/grid arrangements (wire-encoded slots)
-	/// + player state (throttled to disk internally).
+	/// + skill XP totals + player state (throttled to disk internally).
 	fn save_player(
 		&mut self,
 		inventory: &[(u16, u32)],
 		hotbar: &[u16],
 		grid: &[u16],
+		skills: &[(u8, u64)],
 		player: &PlayerPersist,
 	);
 	/// Per-frame upkeep: bounded flush/compaction work.

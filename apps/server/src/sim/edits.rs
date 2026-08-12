@@ -141,6 +141,14 @@ impl Sim {
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
 			client.chat_tokens =
 				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
+			// The extraction bucket refills one block per pace interval
+			// at the client's own level, so the ceiling tracks the same
+			// pace the honest client's drip runs at.
+			let pace = digblock_core::alchemy::extract_pace_ticks(
+				client.skills.level(digblock_core::skills::Skill::Alchemy),
+			);
+			client.extract_tokens = (client.extract_tokens + 1.0 / pace as f32)
+				.min(digblock_core::alchemy::EXTRACT_BURST);
 		}
 		let queue = std::mem::take(&mut self.action_queue);
 		for action in queue {
@@ -205,7 +213,7 @@ impl Sim {
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
 		// Copy what we need out of the client entry so the &mut borrow
 		// ends before the all-players InsidePlayer scan below.
-		let (id, out, live, player_pos, has_token, dig_state, slot_item) = {
+		let (id, out, live, player_pos, has_token, dig_state, slot_item, active_tool) = {
 			let Some(client) = self.clients.get_mut(&req.conn_id) else {
 				return;
 			};
@@ -232,6 +240,7 @@ impl Sim {
 					.as_ref()
 					.map(|d| (d.cell, d.cell_value, d.progress)),
 				slot_item,
+				client.hotbar.active_tool(),
 			)
 		};
 		// A refused push here just drops the reply; a stalled peer is
@@ -335,11 +344,17 @@ impl Sim {
 			// failure, and reporting it as a shortfall would read as the
 			// grace being too small when nothing was banked at all.
 			let mut short = 0u32;
+			let mining_level = self
+				.clients
+				.get(&req.conn_id)
+				.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining));
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
 				cell == req.cell
 					&& cell_value == hit.cell_value
 					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
-						let need = u32::from(h);
+						// Family-scaled hold time (SIM v12): the same
+						// `dig_required` the client's own timer runs.
+						let need = digblock_core::skills::dig_required(hit.block, h, mining_level);
 						let have = progress + dig_grace(need);
 						short = need.saturating_sub(have);
 						have >= need
@@ -473,7 +488,13 @@ impl Sim {
 		// for pre-v10-shaped mistakes.
 		let slot_ok = match req.kind {
 			EditKind::Dig => true,
-			EditKind::Collect => slot_item == Some(Some(HotbarItem::WaterTool)),
+			// The tool slot must hold the BUCKET — with §6's tool axis the
+			// slot is one of a roster, and only the bucket scoops. The
+			// Layout carrying a cycle precedes this edit on the reliable
+			// stream, so honest clients can't race it.
+			EditKind::Collect => {
+				slot_item == Some(Some(HotbarItem::WaterTool)) && active_tool == BlockType::Bucket
+			}
 			EditKind::Place { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
 				// Pouring the bucket. Water is the ONLY thing the tool
@@ -482,7 +503,9 @@ impl Sim {
 				// so the arm above can no longer match it. The stock gate
 				// below enforces the charge — an empty bucket's pour bounces
 				// as NoStock.
-				Some(Some(HotbarItem::WaterTool)) => place_b == Some(BlockType::Water),
+				Some(Some(HotbarItem::WaterTool)) => {
+					place_b == Some(BlockType::Water) && active_tool == BlockType::Bucket
+				}
 				_ => false,
 			},
 			EditKind::Interact => unreachable!("routed to process_interact"),
@@ -549,6 +572,23 @@ impl Sim {
 					&client.inventory,
 					&mut client.hotbar,
 					&mut client.grid,
+				);
+			}
+			// Mining XP from the journaled truth (`prev`), the same
+			// authority as the credit; one award even for a door pair.
+			// The frame carries the new TOTAL, so a lost or reordered
+			// frame can never double-pay.
+			let xp = digblock_core::skills::dig_xp(prev);
+			if xp > 0 {
+				let total = client
+					.skills
+					.add_xp(digblock_core::skills::Skill::Mining, xp);
+				send_frame(
+					&client.out,
+					&ServerMsg::XpGain {
+						skill: digblock_core::skills::Skill::Mining as u8,
+						total,
+					},
 				);
 			}
 			client.digging = None;
@@ -704,6 +744,16 @@ impl Sim {
 	/// Alchemy convert/craft: validate against the core tables, apply the
 	/// shared `apply_alchemy` rule, persist, and answer — success or
 	/// failure — with the authoritative `InventoryFull` rebase.
+	///
+	/// Convert ops additionally draw from the per-player EXTRACTION
+	/// bucket, charged per block — the anti-cheat half of the bench
+	/// drip. The client paces one single-block op per interval for
+	/// presentation; a modified client flooding ops (or smuggling a
+	/// `count: 999` bulk op) runs the bucket dry and refuses through the
+	/// same standing rebase: nothing debited, no XP, and the honest
+	/// client self-heals for free. The gate lives HERE, not in
+	/// `apply_alchemy` — pacing is anti-cheat, not an economy rule, and
+	/// offline worlds keep running the identical economy unpaced.
 	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
 		use digblock_core::inventory::{apply_alchemy, AlchemyOp as CoreOp};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
@@ -727,8 +777,21 @@ impl Sim {
 				BlockType::try_from_id(item).map(|b| CoreOp::Craft { item: b, count })
 			}
 		};
+		let level = client.skills.level(digblock_core::skills::Skill::Alchemy);
+		// The extraction bucket, charged per block BEFORE the economy
+		// runs (an op it can't cover must not debit anything).
+		let core_op = core_op.filter(|op| match *op {
+			CoreOp::Convert { count, .. } => {
+				if client.extract_tokens < count as f32 {
+					return false;
+				}
+				client.extract_tokens -= count as f32;
+				true
+			}
+			CoreOp::Craft { .. } => true,
+		});
 		if let Some(core_op) = core_op {
-			if apply_alchemy(&mut client.inventory, core_op) {
+			if apply_alchemy(&mut client.inventory, core_op, level) {
 				// Mirror the client's auto-assign of freshly crafted items
 				// (it reconciles on the InventoryFull rebase below).
 				digblock_core::inv_grid::reconcile_layout(
@@ -736,6 +799,21 @@ impl Sim {
 					&mut client.hotbar,
 					&mut client.grid,
 				);
+				// Alchemy XP for the validated op, as a new TOTAL. Sent
+				// alongside the InventoryFull answer on the same stream.
+				let xp = digblock_core::skills::alchemy_xp(&core_op);
+				if xp > 0 {
+					let total = client
+						.skills
+						.add_xp(digblock_core::skills::Skill::Alchemy, xp);
+					send_frame(
+						&client.out,
+						&ServerMsg::XpGain {
+							skill: digblock_core::skills::Skill::Alchemy as u8,
+							total,
+						},
+					);
+				}
 			}
 		}
 		if let Some(hash) = client.identity {
@@ -1093,9 +1171,9 @@ mod tests {
 			c.msgs
 		);
 		assert_eq!(
-			sim.test_inventory_count(1, BlockType::Stone),
+			sim.test_inventory_count(1, BlockType::Rubble),
 			1,
-			"dig credited the drop"
+			"dig credited the drop (the rock rule: stone lands as rubble)"
 		);
 	}
 
@@ -1176,6 +1254,9 @@ mod tests {
 		let mut sim = flat_sim("digpause");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// The flat world is stone: clear the rock gate (the gate has its
+		// own test; this one is about the aim-miss pause).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1218,8 +1299,9 @@ mod tests {
 		sim.tick_once(vec![dig(1)]);
 		// Back on target: the banked 40 survive the miss stretch (which
 		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~50 more verified ticks complete the stone (needs ≥ 74).
-		for _ in 0..50 {
+		// so ~100 more verified ticks complete the stone (Rock-family
+		// need at Mining 5 is 144, grace 16 → ≥ 128 verified).
+		for _ in 0..100 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -1256,6 +1338,8 @@ mod tests {
 		let mut sim = flat_sim("digrace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// Stone world: clear the rock gate (not under test here).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1271,7 +1355,8 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		for _ in 0..95 {
+		// Mining-5 stone needs 144 ticks (grace 16 → ≥ 128 verified).
+		for _ in 0..140 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -1401,7 +1486,7 @@ mod tests {
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let mut t = 0;
 		dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
-		assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 1);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
 
 		// Place onto ground a few blocks out — outside our own capsule.
 		let pos = sim.test_player(1).unwrap().pos;
@@ -1417,7 +1502,7 @@ mod tests {
 					origin: pos.to_array(),
 					dir: out.to_array(),
 					kind: EditKind::Place {
-						block: BlockType::Stone as u16,
+						block: BlockType::Rubble as u16,
 					},
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
@@ -1426,12 +1511,12 @@ mod tests {
 			}]);
 		};
 		place(&mut sim, 2);
-		assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 0);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
 		place(&mut sim, 3);
 		c.drain();
 		assert!(
 			c.msgs.iter().any(
-				|m| matches!(m, ServerMsg::EditApplied { client_seq: 2, edit, .. } if edit.block == BlockType::Stone as u16)
+				|m| matches!(m, ServerMsg::EditApplied { client_seq: 2, edit, .. } if edit.block == BlockType::Rubble as u16)
 			),
 			"funded placement applied: {:?}",
 			c.msgs
@@ -1723,6 +1808,8 @@ mod tests {
 		let mut sim = flat_sim("digflood");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// Stone world: clear the rock gate (not under test here).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -2506,21 +2593,23 @@ mod tests {
 		let mut sim = flat_sim("alchemy");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.test_grant(1, BlockType::Stone, 1);
+		sim.test_grant(1, BlockType::Stone, 2);
 
 		// Convert + craft + place, all queued in ONE tick: wire order
-		// must debit before the place's stock gate runs.
+		// must debit before the place's stock gate runs. The slab is the
+		// level-1 craft (stairs wait for Alch 5), and a two-block
+		// convert fits the extraction bucket's burst exactly.
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let stair = make_cell(BlockType::StoneStairs, stair_state(Facing::PosX));
+		let slab = make_cell(BlockType::StoneSlab, 0);
 		sim.tick_once(vec![
 			SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
 					op: AlchemyOp::Convert {
 						block: BlockType::Stone as u16,
-						count: 1,
+						count: 2,
 					},
 				},
 			},
@@ -2528,7 +2617,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
 					op: AlchemyOp::Craft {
-						item: BlockType::StoneStairs as u16,
+						item: BlockType::StoneSlab as u16,
 						count: 1,
 					},
 				},
@@ -2540,12 +2629,12 @@ mod tests {
 					tick: 0,
 					origin: pos.to_array(),
 					dir: down.to_array(),
-					kind: EditKind::Place { block: stair },
+					kind: EditKind::Place { block: slab },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
 					// Converting spent every Stone, so its slot was
 					// released in the same reconcile that filed the
-					// crafted stairs — they land in slot 0. The same
+					// crafted slab — it lands in slot 0. The same
 					// derivation an honest client runs.
 					slot: 0,
 				},
@@ -2559,18 +2648,19 @@ mod tests {
 		);
 		assert_eq!(
 			sim.test_cell_at(target.0, target.1, target.2),
-			Some(stair),
+			Some(slab),
 			"craft-then-place landed in one tick: {:?}",
 			c.msgs
 		);
-		// 27 sub-stone minted, 18 spent.
+		// Level-1 economy: 2 stones → 20 Earth (floor(27·0.40) each),
+		// the slab costs ceil(9·1.60) = 15 — 5 left.
 		assert!(
 			c.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::InventoryFull { counts }
-					if counts.contains(&(0x8001, 9))
+					if counts.contains(&(0x8001, 5))
 			)),
-			"sub-stone remainder in the rebase: {:?}",
+			"Earth remainder in the rebase: {:?}",
 			c.msgs
 		);
 

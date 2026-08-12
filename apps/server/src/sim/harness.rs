@@ -212,6 +212,17 @@ pub(crate) fn dig_hold(
 		raycast
 	};
 	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("dig target");
+	// These tests exercise the EDIT path, not the rock gate: grant the
+	// target's gate level if the client is under it (the dedicated gate
+	// test drives DigStart raw). Callers pass base-hardness-flavored
+	// hold lengths; stretch them by the effective level's FAMILY
+	// multiplier (SIM v12) so a "full hold" stays a full hold and a
+	// deliberately-short one stays short.
+	let gate = digblock_core::skills::dig_level_gate(hit.block);
+	let level = sim.test_mining_level(conn_id).max(gate);
+	sim.bench_set_mining_level(conn_id, level);
+	let permille = digblock_core::skills::dig_speed_permille(hit.block.dig_family(), level);
+	let hold_ticks = (hold_ticks * permille).div_ceil(1000);
 	*t += 1;
 	sim.tick_once(vec![
 		SimEvent::Msg {

@@ -11,6 +11,18 @@
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
+// probe ambient at the camera, [1].rgb =
+// sun transmittance there (rgb, not a grey lane — water absorbs red an
+// order of magnitude harder, so a submerged camera's sun is tinted). Billboards have no meaningful surface to
+// gather at, and spray lives within ~64 blocks of the eye — the
+// camera's light is theirs.
+struct CamLight {
+	ambient: vec4f,
+	sun: vec4f,
+}
+@group(1) @binding(0) var<uniform> cam_light: CamLight;
+
 // Droplet loop length. Must divide the 600s animation clock wrap
 // exactly or the whole bank jumps at the seam: 600 / 1.0 = 600 cycles.
 // Long enough that a droplet thrown at the new higher speeds completes
@@ -91,14 +103,29 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	// so emitters never pop.
 	let dist = distance(world, frame.cam_pos.xyz);
 	alpha *= 1.0 - smoothstep(56.0, 64.0, dist);
-	// White-ish froth in the ambient + direct light (no shadow taps),
-	// fogged like everything else.
-	var col = vec3f(0.9, 0.94, 1.0) * (frame.ambient.rgb + frame.light_color.rgb * 0.8);
-	col = apply_fog(col, dist, world);
+	// White-ish froth in the camera's probe ambient + traced direct
+	// (twilight-faded like every surface).
+	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
+	let sh = cam_light.sun.rgb * frame.light_dir.w;
+	let col = vec3f(0.9, 0.94, 1.0) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
+	// The medium, per vertex — droplets are billboards a few blocks
+	// across, so the segment barely varies over one. Underwater it is
+	// what stops spray reading as bright specks in dark water.
+	let ray = normalize(world - frame.cam_pos.xyz);
+	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	let lit = medium_view(
+		col,
+		frame.cam_pos.xyz,
+		world,
+		sky,
+		frame.zenith.rgb,
+		frame.water_misc,
+		frame.misc.y,
+	);
 	var o: VsOut;
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;
-	o.col = vec4f(col, alpha);
+	o.col = vec4f(lit, alpha);
 	return o;
 }
 

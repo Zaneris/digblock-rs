@@ -17,7 +17,7 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src};
@@ -137,6 +137,26 @@ pub struct Pipeline {
 	in_flight: u32,
 	/// Inline job-cost predictor (unused with a worker pool).
 	job_cost: JobCost,
+	/// Chunks whose GI-window region is stale (RTGI; GI-DESIGN.md):
+	/// arrivals and edits land here, the engine drains via
+	/// `take_gi_dirty` under its upload budget. Tracked unconditionally —
+	/// a set insert is noise, and it stays bounded by the resident set
+	/// (drained or not) because it IS a set.
+	gi_dirty: FxHashSet<ChunkPos>,
+	/// Edited world cells awaiting probe invalidation (RTGI).
+	gi_edits: Vec<(i32, i32, i32)>,
+	/// The camera chunk the GI window is currently centered on — the
+	/// scroll anchor `gi_recenter` diffs against.
+	gi_center: Option<(i32, i32)>,
+}
+
+/// Is a chunk column inside the GI window's half-extent of `center`?
+/// The window is `w` chunks per side and toroidal, so exactly the
+/// columns in `[center - w/2, center + w/2)` map unambiguously; anything
+/// outside would alias onto an in-range column and corrupt it.
+fn gi_in_window(pos: ChunkPos, center: (i32, i32), w: i32) -> bool {
+	let lo = (center.0 - w / 2, center.1 - w / 2);
+	pos.x >= lo.0 && pos.x < lo.0 + w && pos.z >= lo.1 && pos.z < lo.1 + w
 }
 
 /// How jobs run: a worker-thread pool (native), or synchronously inside
@@ -433,6 +453,9 @@ impl Pipeline {
 			scanned: None,
 			in_flight: 0,
 			job_cost: JobCost::new(),
+			gi_dirty: FxHashSet::default(),
+			gi_edits: Vec::new(),
+			gi_center: None,
 		}
 	}
 
@@ -670,6 +693,12 @@ impl Pipeline {
 						}
 					}
 					landed.push((x, z));
+					// Every arriving chunk dirties its GI-window region —
+					// air ones included, since the toroidal window may hold
+					// a stale previous tenant there (GI-DESIGN.md).
+					for cy in 0..crate::chunk::WORLD_VCHUNK {
+						self.gi_dirty.insert(ChunkPos::new(x, cy, z));
+					}
 					let c = self.center;
 					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
@@ -903,7 +932,7 @@ impl Pipeline {
 	}
 
 	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
-		MeshInput::build(center, |dx, dy, dz| {
+		let input = MeshInput::build(center, |dx, dy, dz| {
 			let np = ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz);
 			if np.y >= WORLD_VCHUNK {
 				return Src::Air; // Java air sentinel above the world
@@ -924,7 +953,8 @@ impl Pipeline {
 				}
 				_ => Src::Missing,
 			}
-		})
+		});
+		input
 	}
 
 	fn requeue(&mut self, job: Job) {
@@ -968,6 +998,65 @@ impl Pipeline {
 			return 0.0;
 		};
 		crate::stream_budget::urgency((d2 as f32).sqrt(), self.draw_dist as f32)
+	}
+
+	/// Drain the chunks whose GI-window region is stale (RTGI). The
+	/// caller owns budgeting: it takes everything and queues the excess,
+	/// so a burst (arrival column, cold fill) never re-dirties here.
+	pub fn take_gi_dirty(&mut self) -> Vec<ChunkPos> {
+		self.gi_dirty.drain().collect()
+	}
+
+	/// Is this chunk inside the GI window centered on the last
+	/// `gi_recenter` call? The upload drain MUST check this: a chunk
+	/// outside the half-extent would alias onto an in-window column in
+	/// the toroidal texture and stamp far terrain over near.
+	pub fn gi_uploadable(&self, pos: ChunkPos, window_chunks: i32) -> bool {
+		self.gi_center
+			.is_some_and(|c| gi_in_window(pos, c, window_chunks))
+	}
+
+	/// Scroll the GI window: when the camera crosses a chunk boundary,
+	/// re-dirty every resident chunk that just ENTERED the half-extent —
+	/// its window texels still hold whatever far column aliased there
+	/// while it was out of range. The strip that left needs nothing:
+	/// reads are lateral-capped to the half-extent, so its stale texels
+	/// are unreachable until it re-enters (and re-dirties here).
+	pub fn gi_recenter(&mut self, center: ChunkPos, window_chunks: i32) {
+		let c = (center.x, center.z);
+		let old = self.gi_center;
+		if old == Some(c) {
+			return;
+		}
+		self.gi_center = Some(c);
+		for &pos in self.store.keys() {
+			if gi_in_window(pos, c, window_chunks)
+				&& !old.is_some_and(|o| gi_in_window(pos, o, window_chunks))
+			{
+				self.gi_dirty.insert(pos);
+			}
+		}
+	}
+
+	/// Drain edited cells for probe invalidation (RTGI).
+	pub fn take_gi_edits(&mut self) -> Vec<(i32, i32, i32)> {
+		std::mem::take(&mut self.gi_edits)
+	}
+
+	/// Classify one resident chunk for the GI window. None = not (or no
+	/// longer) resident — the caller drops the entry; if the region ever
+	/// becomes visible again it arrives, and arriving re-dirties it.
+	pub fn classify_gi(&self, pos: ChunkPos) -> Option<crate::gi::GiChunk> {
+		match &self.store.get(&pos)?.state {
+			ChunkState::Ready(data) => Some(crate::gi::classify_chunk(data)),
+			_ => None,
+		}
+	}
+
+	/// Re-dirty every resident chunk's GI-window region (device-loss
+	/// rebuild: the fresh window is empty and all GI data is derived).
+	pub fn gi_redirty_all(&mut self) {
+		self.gi_dirty.extend(self.store.keys().copied());
 	}
 
 	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
@@ -1022,6 +1111,12 @@ impl Pipeline {
 		}
 		// COW: clones the 4KB array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
+		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
+		// Chunk-granular: the window has no padded shell, so an edit
+		// dirties exactly its own 16³ region. Edits (unlike arrivals)
+		// also invalidate nearby probes so relight starts immediately.
+		self.gi_dirty.insert(pos);
+		self.gi_edits.push((x, y, z));
 		if let Some(overlay) = &mut self.overlay {
 			overlay.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));
@@ -1197,7 +1292,7 @@ fn run_job(job: Job) -> JobResult {
 			}
 		}
 		Job::Mesh { pos, gen, input } => {
-			let mesh = mesh_chunk(&input, (pos.x * 16, pos.y * 16, pos.z * 16));
+			let mesh = mesh_chunk(&input);
 			JobResult::Meshed {
 				out: MeshOutput { pos, gen, mesh },
 				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
@@ -1925,5 +2020,139 @@ mod tests {
 			"prediction {} collapsed below the lifetime floor",
 			c.predicted_ms()
 		);
+	}
+}
+
+#[cfg(test)]
+mod gi_window_tests {
+	use super::*;
+
+	/// Run maintain until all queues and workers are idle.
+	fn quiesce(p: &mut Pipeline, center: ChunkPos) {
+		for _ in 0..2000 {
+			let m = p.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				return;
+			}
+			std::thread::sleep(std::time::Duration::from_millis(1));
+		}
+		panic!("pipeline never quiesced");
+	}
+
+	/// THE invariant the toroidal window rests on: the admitted columns are
+	/// exactly one period wide, so no two of them share a texel. `w` columns
+	/// starting at `center - w/2` is a complete residue system mod `w` —
+	/// admit one more and it aliases onto a column already in the window,
+	/// stamping far terrain over near with no error anywhere.
+	#[test]
+	fn the_gi_window_admits_exactly_one_period_per_axis() {
+		for w in [4, 8, 20, 21] {
+			for center in [(0, 0), (3, -7), (-40, 96)] {
+				let mut seen = std::collections::HashSet::new();
+				let mut count = 0;
+				for x in (center.0 - 2 * w)..(center.0 + 2 * w) {
+					for z in (center.1 - 2 * w)..(center.1 + 2 * w) {
+						if !gi_in_window(ChunkPos::new(x, 0, z), center, w) {
+							continue;
+						}
+						count += 1;
+						// The toroidal slot this column would occupy.
+						let slot = (x.rem_euclid(w), z.rem_euclid(w));
+						assert!(
+							seen.insert(slot),
+							"w {w} center {center:?}: column ({x},{z}) aliases onto \
+							 slot {slot:?}, which another admitted column already owns"
+						);
+					}
+				}
+				assert_eq!(count, w * w, "w {w} center {center:?}: admitted count");
+			}
+		}
+	}
+
+	/// `gi_uploadable` is the gate on the upload drain, and it must refuse
+	/// everything until a centre exists — an upload before the first
+	/// `gi_recenter` has no window to be inside of.
+	#[test]
+	fn nothing_is_uploadable_before_the_window_is_centered() {
+		let p = Pipeline::new(0.0, 4, 0);
+		assert!(!p.gi_uploadable(ChunkPos::new(0, 0, 0), 8));
+	}
+
+	/// Scrolling must re-dirty every resident column that just ENTERED the
+	/// half-extent: while it was outside, its texels held whatever far
+	/// column aliased into them. The strip that LEFT needs nothing, because
+	/// reads are capped to the half-extent and its stale texels are
+	/// unreachable until it re-enters (and re-dirties here).
+	#[test]
+	fn recentering_redirties_exactly_the_columns_that_entered() {
+		let w = 4;
+		let mut p = Pipeline::new(0.0, 6, 0);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+
+		p.gi_recenter(ChunkPos::new(0, 0, 0), w);
+		let _ = p.take_gi_dirty();
+
+		// One chunk east. Columns at the new leading edge enter; the
+		// trailing edge leaves.
+		p.gi_recenter(ChunkPos::new(1, 0, 0), w);
+		let dirty: std::collections::HashSet<ChunkPos> = p.take_gi_dirty().into_iter().collect();
+
+		let resident: Vec<ChunkPos> = p.store.keys().copied().collect();
+		assert!(!resident.is_empty(), "test needs resident chunks");
+		for pos in resident {
+			let was_in = gi_in_window(pos, (0, 0), w);
+			let is_in = gi_in_window(pos, (1, 0), w);
+			let entered = is_in && !was_in;
+			assert_eq!(
+				dirty.contains(&pos),
+				entered,
+				"{pos:?}: entered={entered} but dirty={}",
+				dirty.contains(&pos)
+			);
+		}
+	}
+
+	/// A recentre onto the SAME chunk is a no-op — the camera moving within
+	/// one chunk must not re-upload the window every frame.
+	#[test]
+	fn recentering_onto_the_same_chunk_dirties_nothing() {
+		let mut p = Pipeline::new(0.0, 4, 0);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		p.gi_recenter(ChunkPos::new(0, 0, 0), 8);
+		let _ = p.take_gi_dirty();
+		p.gi_recenter(ChunkPos::new(0, 0, 0), 8);
+		assert!(p.take_gi_dirty().is_empty());
+	}
+
+	/// An edit dirties exactly its own column for the window (which has no
+	/// padded shell, unlike a mesh job) and queues the cell for probe
+	/// invalidation so relight starts without waiting for the sweep.
+	#[test]
+	fn an_edit_dirties_its_own_column_and_queues_a_probe_invalidation() {
+		let mut p = Pipeline::new(0.0, 4, 0);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		p.gi_recenter(center, 8);
+		let _ = p.take_gi_dirty();
+		let _ = p.take_gi_edits();
+
+		// An edit well inside a chunk, so no neighbour shell is involved.
+		let (x, y, z) = (8, 40, 8);
+		let cur = p.block_at(x, y, z);
+		let next = if cur == Some(crate::block::BlockType::Stone) {
+			crate::block::BlockType::Dirt
+		} else {
+			crate::block::BlockType::Stone
+		};
+		assert!(p.set_block(x, y, z, next).is_some(), "edit landed");
+
+		let dirty = p.take_gi_dirty();
+		assert_eq!(
+			dirty,
+			vec![ChunkPos::new(0, y.div_euclid(16), 0)],
+			"exactly the edited column, no shell"
+		);
+		assert_eq!(p.take_gi_edits(), vec![(x, y, z)]);
 	}
 }

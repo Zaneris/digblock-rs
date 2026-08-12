@@ -7,6 +7,7 @@ mod camera;
 mod chat;
 mod engine;
 mod font;
+mod gi;
 mod gpu_timer;
 mod highlight;
 pub mod hotbar;
@@ -17,7 +18,8 @@ mod pipeline_builder;
 mod players;
 mod renderer;
 pub mod settings;
-mod shadow;
+// DORMANT since P4 (RTGI replaced shadow maps); P6 deletes the module.
+#[allow(dead_code)]
 mod sky;
 mod smoothing;
 mod spray;
@@ -28,3 +30,6 @@ mod water;
 mod water_audio;
 
 pub use engine::{DebugScreen, Engine, EngineConfig};
+/// Cost-stub names for the launcher's `DIG_STUB` parse (the mask itself
+/// travels as `EngineConfig::stub`).
+pub use renderer::stub;

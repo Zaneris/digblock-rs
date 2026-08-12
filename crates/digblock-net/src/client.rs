@@ -154,6 +154,18 @@ pub enum NetEvent {
 	TimeOfDay {
 		tod: f32,
 	},
+	/// Full per-skill XP totals `(skill index, total)`, sent in join
+	/// sync — adopt wholesale (no toasts; this is state, not an award).
+	Skills {
+		xp: Vec<(u8, u64)>,
+	},
+	/// One skill's new authoritative XP total after a server-side
+	/// award. The client takes the max (reorder-safe) and animates the
+	/// delta itself.
+	XpGain {
+		skill: u8,
+		total: u64,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -662,6 +674,8 @@ impl NetClient {
 			ServerMsg::Layout { hotbar, grid } => {
 				out.push(NetEvent::Layout { hotbar, grid });
 			}
+			ServerMsg::Skills { xp } => out.push(NetEvent::Skills { xp }),
+			ServerMsg::XpGain { skill, total } => out.push(NetEvent::XpGain { skill, total }),
 		}
 	}
 

@@ -419,11 +419,11 @@ pub struct ViewmodelFrame {
 	pub kind: IconKind,
 	pub pose: Pose,
 	/// View-space light direction (toward the ground) and its strength
-	/// in w, plus the frame's ambient and direct colors — the same rig
-	/// the scene uses, so the hand doesn't glow at midnight.
+	/// in w, plus the frame's direct color — the same rig the scene
+	/// uses, so the hand doesn't glow at midnight. Ambient comes from
+	/// the RTGI camera-light buffer, not the CPU.
 	pub light_dir_view: Vec3,
 	pub light_strength: f32,
-	pub ambient: [f32; 3],
 	pub light_color: [f32; 3],
 }
 
@@ -433,7 +433,6 @@ struct Uniforms {
 	mvp: [[f32; 4]; 4],
 	/// xyz = light direction in item space; w = strength.
 	light: [f32; 4],
-	ambient: [f32; 4],
 	light_color: [f32; 4],
 }
 
@@ -453,24 +452,29 @@ impl ViewmodelDraw {
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		materials_bgl: &wgpu::BindGroupLayout,
+		cam_light_buf: &wgpu::Buffer,
 	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("viewmodel"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::VIEWMODEL.into()),
 		});
+		let uniform = |binding| wgpu::BindGroupLayoutEntry {
+			binding,
+			visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+			ty: wgpu::BindingType::Buffer {
+				ty: wgpu::BufferBindingType::Uniform,
+				has_dynamic_offset: false,
+				min_binding_size: None,
+			},
+			count: None,
+		};
+		// Binding 1 is the RTGI camera-light buffer (gi_probe's
+		// cam_light): the hand is at the camera, so that sample IS its
+		// ambient + sun visibility.
 		let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("viewmodel"),
-			entries: &[wgpu::BindGroupLayoutEntry {
-				binding: 0,
-				visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-				ty: wgpu::BindingType::Buffer {
-					ty: wgpu::BufferBindingType::Uniform,
-					has_dynamic_offset: false,
-					min_binding_size: None,
-				},
-				count: None,
-			}],
+			entries: &[uniform(0), uniform(1)],
 		});
 		let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("viewmodel uniforms"),
@@ -481,10 +485,16 @@ impl ViewmodelDraw {
 		let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("viewmodel"),
 			layout: &bgl,
-			entries: &[wgpu::BindGroupEntry {
-				binding: 0,
-				resource: uniform_buf.as_entire_binding(),
-			}],
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: uniform_buf.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: cam_light_buf.as_entire_binding(),
+				},
+			],
 		});
 		// Group 0 is our own transform + light rig; group 1 is the
 		// shared block material array, exactly as the players pass uses
@@ -577,7 +587,6 @@ impl ViewmodelDraw {
 			let u = Uniforms {
 				mvp: mvp(aspect, item_geom::height(f.kind), f.pose).to_cols_array_2d(),
 				light: [light.x, light.y, light.z, f.light_strength],
-				ambient: [f.ambient[0], f.ambient[1], f.ambient[2], 0.0],
 				light_color: [f.light_color[0], f.light_color[1], f.light_color[2], 0.0],
 			};
 			gpu.queue

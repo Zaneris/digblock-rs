@@ -12,11 +12,15 @@ pub enum Key {
 	Right,
 	Space,
 	Shift,
+	/// Either Control key (alchemy's ×100 craft multiplier).
+	Ctrl,
 	F,
 	/// Inventory screen toggle.
 	I,
 	/// Alchemy screen toggle.
 	K,
+	/// Character (skills) screen toggle.
+	C,
 	/// Return to spawn ("home").
 	H,
 	/// Chat open (multiplayer).
@@ -114,9 +118,11 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::ArrowRight => Key::Right,
 		K::Space => Key::Space,
 		K::ShiftLeft | K::ShiftRight => Key::Shift,
+		K::ControlLeft | K::ControlRight => Key::Ctrl,
 		K::KeyF => Key::F,
 		K::KeyI => Key::I,
 		K::KeyK => Key::K,
+		K::KeyC => Key::C,
 		K::KeyH => Key::H,
 		K::KeyT => Key::T,
 		K::Digit0 => Key::Digit(0),

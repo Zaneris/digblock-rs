@@ -291,7 +291,9 @@ fn run_bot(
 				| NetEvent::Chat { .. }
 				| NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
-				| NetEvent::Layout { .. } => {}
+				| NetEvent::Layout { .. }
+				| NetEvent::Skills { .. }
+				| NetEvent::XpGain { .. } => {}
 			}
 		}
 
@@ -342,12 +344,21 @@ fn run_bot(
 					if next_edit_in <= 0.0 {
 						next_edit_in = f32::INFINITY; // rearmed on completion
 						if let Some(hit) = raycast(p.pos, down, REACH, &world) {
-							// Same gate as the server — a bot that has dug
-							// down to bedrock must skip it, not retry forever.
-							if let Some(hardness) = hit.block.dig_hardness(hit.cell.1) {
+							// Same gates as the server — a bot that has dug
+							// down to bedrock (or level-gated rock; bots
+							// predict at Mining 1) must skip it, not retry
+							// forever.
+							if hit.block.dig_hardness(hit.cell.1).is_some()
+								&& digblock_core::skills::dig_level_gate(hit.block) <= 1
+							{
+								let hardness = hit.block.dig_hardness(hit.cell.1).unwrap();
 								client.send_dig_start(hit.cell);
-								// +2 ticks margin over the server's grace.
-								digging = Some((hit.cell, hit.block, t + hardness as u32 + 2));
+								// Family-scaled hold (bots assume level 1 —
+								// a leveled-up bot just over-holds); +2
+								// ticks margin over the server's grace.
+								let need =
+									digblock_core::skills::dig_required(hit.block, hardness, 1);
+								digging = Some((hit.cell, hit.block, t + need + 2));
 							} else {
 								next_edit_in = 1.0 / edit_rate;
 							}

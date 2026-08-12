@@ -31,7 +31,7 @@ pub fn start() -> Result<(), JsValue> {
 		.expect("window.location");
 
 	// Query params mirror the desktop flags: ?seed=, ?tod=, ?draw=,
-	// ?ssr=0, ?shadow=, ?overlay, ?name=, ?master= (menu multiplayer),
+	// ?ssr=0, ?overlay, ?name=, ?master= (menu multiplayer),
 	// ?join / ?server= (non-interactive join for scripted flows). The
 	// defaults are full desktop quality — these exist to opt weaker
 	// hardware down.
@@ -70,10 +70,25 @@ pub fn start() -> Result<(), JsValue> {
 			digblock_render::settings::UI_SCALE_MAX,
 		);
 	}
-	if let Some(s) = param::<u32>(&params, "shadow") {
-		config.shadow_size = s.clamp(512, 4096);
-	}
 	config.overlay = flag(&params, "overlay");
+	// The capture harness, same fields the desktop CLI drives. This is the
+	// only way to compare the two platforms honestly: the scripted pose is
+	// a pure function of the frame index, so `?warp=600` lands the browser
+	// on bit-identically the camera `--warp 600` lands the desktop on.
+	//
+	// ?warp is the one that measures RENDER cost. ?bench travels at 30
+	// blocks/s, and the web client runs chunk jobs inline on the main
+	// thread (`workers: 0`), so a travelling flight there is dominated by
+	// single-threaded worldgen and says almost nothing about the GI.
+	config.bench = flag(&params, "bench");
+	if let Some(n) = param::<u32>(&params, "fly") {
+		config.fly = Some(n);
+	}
+	if let Some(n) = param::<u32>(&params, "warp") {
+		config.fly = Some(n);
+		config.warp = true;
+	}
+	config.walk = flag(&params, "walk");
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
