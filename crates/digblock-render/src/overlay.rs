@@ -164,10 +164,10 @@ pub struct Overlay {
 	glyph: f32,
 }
 
-/// Compose the debug panel's six lines. Split out from the drawing so
-/// the column budget can be pinned headless — see
+/// Compose the debug panel's lines. Split out from the drawing so the
+/// column budget can be pinned headless — see
 /// `debug_lines_fit_the_column_budget`.
-fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 7]) {
+fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 8]) {
 	let s = stats;
 	let mut line = |i: usize, color: u32, args: std::fmt::Arguments<'_>| {
 		scratch.clear();
@@ -346,6 +346,69 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		),
 		None => line(6, DIM, format_args!("net  offline")),
 	}
+	// Where this frame was taken. Not a measurement — the reason it is on
+	// a performance panel is that a screenshot of a rendering bug is nearly
+	// useless without the world it happened in, and every field here is an
+	// argument the capture flags take:
+	//
+	//     --seed S --pos X Y Z --yaw Y --pitch P --tod T
+	//
+	// so photographing the panel is enough to reproduce the frame. The
+	// facing is the same eight-point compass the admin commands answer with
+	// (`core::compass`, east = sunrise = −x, north = −z) — a heading is what
+	// a player can actually report; a yaw in degrees is not.
+	//
+	// `seed` is the one unpadded field on the panel, deliberately — see
+	// [`seed_text`]. It cannot make the panel move: a seed is fixed for the
+	// whole session, and the width comes from DEBUG_COLS regardless.
+	let w = &s.world;
+	let facing = digblock_core::compass::compass_abbrev(look_dir(w.yaw_deg, w.pitch_deg));
+	line(
+		7,
+		DIM,
+		format_args!(
+			"pos {:>9.1} {:>7.1} {:>9.1} facing {:>2} yaw {:>6.1} pitch {:>5.1} | tod {:>5.1} | seed {}",
+			w.pos[0],
+			w.pos[1],
+			w.pos[2],
+			facing,
+			w.yaw_deg,
+			w.pitch_deg,
+			w.tod_deg,
+			seed_text(w.seed)
+		),
+	);
+}
+
+/// The seed at full round-trip precision, in the shorter of the two forms
+/// Rust prints an f64 in.
+///
+/// It has to round-trip exactly — worldgen is a pure function of the seed,
+/// so a seed the panel rounded names a DIFFERENT world, which is worse than
+/// printing none at all. It also has to be bounded, because the panel clips
+/// at [`DEBUG_COLS`] and clipping is how a wrong seed would arrive looking
+/// right. `{}` satisfies the first and not the second: it never uses an
+/// exponent, so a denormal seed is 300-plus characters of decimal. `{:e}`
+/// satisfies both but reads badly for the ordinary case (`4.2e1` for 42).
+/// Taking the shorter gives every plausible seed its plain form and the
+/// pathological ones a 24-character worst case.
+fn seed_text(seed: f64) -> String {
+	let plain = format!("{seed}");
+	let exp = format!("{seed:e}");
+	if plain.len() <= exp.len() {
+		plain
+	} else {
+		exp
+	}
+}
+
+/// The look vector for a yaw/pitch pair — `FlyCamera::dir`'s formula, kept
+/// here rather than borrowed so this module (and its headless tests) stay
+/// free of the camera.
+fn look_dir(yaw_deg: f32, pitch_deg: f32) -> glam::Vec3 {
+	let (ys, yc) = yaw_deg.to_radians().sin_cos();
+	let (ps, pc) = pitch_deg.to_radians().sin_cos();
+	glam::Vec3::new(ys * pc, ps, yc * pc)
 }
 
 impl Overlay {
@@ -681,7 +744,7 @@ impl Overlay {
 
 	fn push_debug_panel(&mut self, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
-		let mut lines: [(u32, String); 7] = Default::default();
+		let mut lines: [(u32, String); 8] = Default::default();
 		let mut scratch = std::mem::take(&mut self.line_scratch);
 		debug_lines(stats, &mut scratch, &mut lines);
 		self.line_scratch = scratch;
@@ -987,9 +1050,30 @@ mod tests {
 			remotes: u32::MAX,
 			tick_lead: u32::MAX,
 		});
+		// The world line's own worst case. `MIN_POSITIVE` is the value that
+		// costs `seed_text` the most: the plain form runs to 326 characters
+		// of leading zeros, so this is the case the exponent form exists
+		// for, and 24 is the bound the budget below is really checking.
+		stats.world = digblock_core::metrics::WorldStats {
+			pos: [-999_999.9, -999_999.9, -999_999.9],
+			yaw_deg: -359.9,
+			pitch_deg: -89.9,
+			tod_deg: 359.9,
+			seed: f64::MIN_POSITIVE,
+		};
+		assert!(
+			seed_text(f64::MIN_POSITIVE).len() <= 24,
+			"the longest seed an f64 can need"
+		);
+		assert_eq!(
+			seed_text(f64::MIN_POSITIVE).parse::<f64>(),
+			Ok(f64::MIN_POSITIVE),
+			"and it round-trips — a rounded seed is a different world"
+		);
+		assert_eq!(seed_text(42.0), "42", "an ordinary seed reads plainly");
 
 		let mut scratch = String::new();
-		let mut lines: [(u32, String); 7] = Default::default();
+		let mut lines: [(u32, String); 8] = Default::default();
 		debug_lines(&stats, &mut scratch, &mut lines);
 		for (i, (_, l)) in lines.iter().enumerate() {
 			let n = l.chars().count();
@@ -1016,7 +1100,7 @@ mod tests {
 	fn panel_width_is_independent_of_the_numbers() {
 		let mut scratch = String::new();
 		let widths = |s: &OverlayStats, scratch: &mut String| {
-			let mut lines: [(u32, String); 7] = Default::default();
+			let mut lines: [(u32, String); 8] = Default::default();
 			debug_lines(s, scratch, &mut lines);
 			lines.map(|(_, l)| l.chars().count())
 		};
@@ -1047,6 +1131,17 @@ mod tests {
 		busy.render.chunks_drawn = 8123;
 		busy.render.draw_calls = 12345;
 		busy.hitches_total = 61234;
+		// The world line streams too — a walking player moves every field
+		// on it EXCEPT the seed, which is fixed for the session and is the
+		// one field left unpadded (see `debug_lines`). So both snapshots
+		// carry the same seed and every other field differs.
+		busy.world = digblock_core::metrics::WorldStats {
+			pos: [-1234.5, 71.25, 8888.75],
+			yaw_deg: -179.5,
+			pitch_deg: 42.5,
+			tod_deg: 271.25,
+			seed: quiet.world.seed,
+		};
 		assert_eq!(widths(&quiet, &mut scratch), widths(&busy, &mut scratch));
 	}
 }

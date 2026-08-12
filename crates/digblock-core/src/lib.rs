@@ -4,6 +4,7 @@
 pub mod alchemy;
 pub mod block;
 pub mod chunk;
+pub mod compass;
 pub mod decoration;
 pub mod dir;
 pub mod fluid;

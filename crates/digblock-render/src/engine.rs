@@ -4308,7 +4308,18 @@ impl Game for Engine {
 		let overlay_stats = if self.overlay_visible {
 			self.metrics
 				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.history_scratch);
-			Some(self.metrics.overlay_stats())
+			let mut stats = self.metrics.overlay_stats();
+			// The reproduction line. `body_pos` and not `camera.pos`: the
+			// camera carries the tick lerp and the reconciliation offset,
+			// and the number here has to be the one `--pos` takes back.
+			stats.world = digblock_core::metrics::WorldStats {
+				pos: self.body_pos().to_array(),
+				yaw_deg: self.camera.yaw_deg,
+				pitch_deg: self.camera.pitch_deg,
+				tod_deg: self.sun.tod,
+				seed: self.seed,
+			};
+			Some(stats)
 		} else {
 			None
 		};

@@ -5,6 +5,7 @@
 //! the `AdminCommands` advertisement the client autocompletes from.
 
 use super::{client_send, OutMsg, Sim, SpawnLock};
+use digblock_core::compass::{cardinal, compass};
 use digblock_core::raycast::{raycast, REACH};
 use digblock_net::messages::ServerMsg;
 use digblock_net::protocol::{validate_name, MAX_CHAT_LEN, SERVER_ID};
@@ -44,40 +45,6 @@ const COMMANDS: &[(&str, &str)] = &[
 /// `/tp` coordinate clamp: far past any playable range, comfortably
 /// inside f32 world-position precision.
 const TP_LIMIT: i64 = 1_000_000;
-
-/// Compass → look vector. Derived from the engine's conventions, not
-/// invented: the sun rotates about world Z (sunrise on the −x horizon),
-/// and `Dir::West` is +x — so east = −x, west = +x; with camera yaw 0 =
-/// +z and +yaw turning right, north = −z, south = +z.
-fn cardinal(dir: &str) -> Option<Vec3> {
-	Some(match dir {
-		"n" | "north" => Vec3::new(0.0, 0.0, -1.0),
-		"s" | "south" => Vec3::new(0.0, 0.0, 1.0),
-		"e" | "east" => Vec3::new(-1.0, 0.0, 0.0),
-		"w" | "west" => Vec3::new(1.0, 0.0, 0.0),
-		_ => return None,
-	})
-}
-
-/// The rough inverse of [`cardinal`]: the reply to "face this way" is
-/// only useful if it names the way. Eight points, because `/set-spawn-dir`
-/// with no argument stores whatever the admin was actually looking at and
-/// calling a diagonal "east" would be a plain lie.
-fn compass(dir: Vec3) -> String {
-	// east = −x (sunrise), north = −z — the engine's convention.
-	let (east, north) = (-dir.x, -dir.z);
-	// A component earns a name only when it carries real weight:
-	// tan(22.5°) splits the eight sectors evenly.
-	const T: f32 = 0.4142;
-	let mut s = String::new();
-	if north.abs() > T * east.abs() {
-		s.push_str(if north > 0.0 { "north" } else { "south" });
-	}
-	if east.abs() > T * north.abs() {
-		s.push_str(if east > 0.0 { "east" } else { "west" });
-	}
-	s
-}
 
 /// Where a spawn eye reads as coordinates: the FLOOR block, not the eye.
 /// An admin who aimed at a block and got told a number two higher would

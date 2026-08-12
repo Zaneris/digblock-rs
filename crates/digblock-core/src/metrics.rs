@@ -290,6 +290,27 @@ pub struct GpuPassMs {
 	pub upscale_ms: f32,
 }
 
+/// Where the camera is standing and when — the overlay's reproduction
+/// line, and the only part of [`OverlayStats`] that is not a measurement.
+///
+/// It exists because a screenshot of a rendering bug is nearly useless
+/// without the world it was taken in: every field here is an argument the
+/// capture flags take (`--seed --pos --yaw --pitch --tod`), so a photo of
+/// the panel is a runnable repro. `Metrics` cannot know any of it — the
+/// engine fills this in after `overlay_stats()`.
+#[derive(Clone, Copy, Default)]
+pub struct WorldStats {
+	/// Eye position: exactly what `--pos` sets, so it can be typed back.
+	pub pos: [f32; 3],
+	pub yaw_deg: f32,
+	pub pitch_deg: f32,
+	/// Sun angle from straight-down, i.e. `--tod`.
+	pub tod_deg: f32,
+	/// Printed at full round-trip precision — worldgen is a pure function
+	/// of this, so a truncated seed is a different world.
+	pub seed: f64,
+}
+
 /// Per-frame snapshot for the debug overlay: everything it draws.
 #[derive(Clone, Default)]
 pub struct OverlayStats {
@@ -325,6 +346,8 @@ pub struct OverlayStats {
 	/// `None` when not connected to a server.
 	pub net: Option<NetStats>,
 	pub render: RenderStats,
+	/// Filled by the engine, not by `Metrics` — see [`WorldStats`].
+	pub world: WorldStats,
 	pub gpu_buffer_bytes: u64,
 	pub workers: u32,
 	/// Streaming budget in effect this frame (adaptive on web; the fixed
@@ -669,6 +692,9 @@ impl Metrics {
 			gauges: self.gauges,
 			net: self.net,
 			render: self.render,
+			// Not a measurement and not `Metrics`' to know: the engine
+			// stamps it on the way to the overlay.
+			world: WorldStats::default(),
 			gpu_buffer_bytes: self.gpu_buffer_bytes,
 			workers: self.workers,
 			stream_budget_ms: self.stream_budget_ms,
