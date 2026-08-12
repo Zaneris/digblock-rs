@@ -646,8 +646,8 @@ it was scoped and deliberately not built — diminishing returns until a player 
 
 ### R19 — the column field: built, measured, declined
 
-R18's scoped next lever got its trial and did not ship; the full patch is parked on the
-`wip/r19-column-skip` branch. What was built matched the scoping exactly — a per-column
+R18's scoped next lever got its trial and did not ship; the full patch is parked at the
+`archive/r19-column-skip` tag. What was built matched the scoping exactly — a per-column
 max over every NONZERO class (water included, since the field licenses SKIPPING and the
 coarse bit-0 rule would let a jump lose the pool `sv.y` counts), merged per chunk into a
 side×side R8Uint field, and a `gi_ray_skip_column` that jumps a dense column
