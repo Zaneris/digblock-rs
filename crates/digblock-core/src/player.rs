@@ -2216,7 +2216,7 @@ mod tests {
 				Some(make_cell(BlockType::WoodSlab, slab_state(true, false)))
 			} else if x == 12 && (y == 10 || y == 11) {
 				Some(make_cell(
-					BlockType::WoodDoor,
+					BlockType::LumberDoor,
 					door_state(Facing::PosX, false, y == 11),
 				))
 			} else {
@@ -2283,7 +2283,7 @@ mod tests {
 				some_cell(BlockType::Dirt)
 			} else if x == 12 && (y == 10 || y == 11) {
 				Some(make_cell(
-					BlockType::WoodDoor,
+					BlockType::LumberDoor,
 					door_state(Facing::PosX, open, y == 11),
 				))
 			} else {
@@ -2360,8 +2360,11 @@ mod tests {
 		// reaches the capsule (set back a twelfth, its front face at
 		// 0.25 of the cell — the cell center's capsule grazes it); the
 		// open state never blocks anywhere.
-		let closed = make_cell(BlockType::WoodDoor, door_state(Facing::PosX, false, false));
-		let open = make_cell(BlockType::WoodDoor, door_state(Facing::PosX, true, false));
+		let closed = make_cell(
+			BlockType::LumberDoor,
+			door_state(Facing::PosX, false, false),
+		);
+		let open = make_cell(BlockType::LumberDoor, door_state(Facing::PosX, true, false));
 		let near_leaf = Vec3::new(0.25, 11.5, 0.5);
 		assert!(placement_blocked(near_leaf, feet_cell, closed));
 		assert!(placement_blocked(eye, feet_cell, closed), "center grazes");

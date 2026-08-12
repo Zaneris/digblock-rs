@@ -399,9 +399,13 @@ pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
 	let (material, count, cost) = match b {
 		BlockType::WoodStairs => (Essence::Flora, 1, 18),
 		BlockType::StoneStairs => (Essence::Earth, 1, 18),
-		BlockType::WoodDoor => (Essence::Flora, 1, 10),
+		BlockType::LumberDoor => (Essence::Flora, 1, 10),
 		BlockType::WoodSlab => (Essence::Flora, 1, 9),
 		BlockType::StoneSlab => (Essence::Earth, 1, 9),
+		// Planed timber: the same shapes out of the same essence — a
+		// §7.2 material × shape pair costs what its shape costs.
+		BlockType::LumberStairs => (Essence::Flora, 1, 18),
+		BlockType::LumberSlab => (Essence::Flora, 1, 9),
 		_ => return None,
 	};
 	Some(CraftRecipe {
@@ -412,12 +416,14 @@ pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
 }
 
 /// Every craftable shaped item, in display order.
-pub const CRAFTABLE: [BlockType; 5] = [
+pub const CRAFTABLE: [BlockType; 7] = [
 	BlockType::WoodStairs,
 	BlockType::StoneStairs,
-	BlockType::WoodDoor,
+	BlockType::LumberDoor,
 	BlockType::WoodSlab,
 	BlockType::StoneSlab,
+	BlockType::LumberStairs,
+	BlockType::LumberSlab,
 ];
 
 // --- authored geometry ------------------------------------------------
@@ -874,7 +880,7 @@ mod tests {
 			max = max.max(v.quads.len());
 		}
 		for state in 0..16u8 {
-			let v = shape_of(BlockType::WoodDoor, state).unwrap();
+			let v = shape_of(BlockType::LumberDoor, state).unwrap();
 			assert!(!v.quads.is_empty());
 			max = max.max(v.quads.len());
 		}
@@ -987,8 +993,11 @@ mod tests {
 		// other two. Depth lands on x for a ±x facing, z for ±z.
 		for f in Facing::ALL {
 			for upper in [false, true] {
-				let b = draw_bounds(make_cell(BlockType::WoodDoor, door_state(f, false, upper)))
-					.unwrap();
+				let b = draw_bounds(make_cell(
+					BlockType::LumberDoor,
+					door_state(f, false, upper),
+				))
+				.unwrap();
 				let span = |i: usize| b.max[i] - b.min[i];
 				let (thin, wide) = match f {
 					Facing::PosX | Facing::NegX => (0, 2),
@@ -1002,7 +1011,7 @@ mod tests {
 		// Nothing drawn may fall outside the box, in any variant.
 		for (b, states) in [
 			(BlockType::StoneStairs, 4u8),
-			(BlockType::WoodDoor, 16),
+			(BlockType::LumberDoor, 16),
 			(BlockType::WoodSlab, 4),
 		] {
 			for state in 0..states {
@@ -1077,8 +1086,8 @@ mod tests {
 	fn door_variants() {
 		for f in Facing::ALL {
 			for upper in [false, true] {
-				let closed = shape_of(BlockType::WoodDoor, door_state(f, false, upper)).unwrap();
-				let open = shape_of(BlockType::WoodDoor, door_state(f, true, upper)).unwrap();
+				let closed = shape_of(BlockType::LumberDoor, door_state(f, false, upper)).unwrap();
+				let open = shape_of(BlockType::LumberDoor, door_state(f, true, upper)).unwrap();
 				// Closed: one uncut leaf box, set back a twelfth from the
 				// boundary — no face of a door ever fully covers a
 				// boundary plane. The interact set adds the handle knob on
@@ -1180,7 +1189,7 @@ mod tests {
 		assert!(!state_valid(make_cell(BlockType::WoodStairs, 0b0100)));
 		// Doors: the whole nibble decodes.
 		for s in 0..16u8 {
-			assert!(state_valid(make_cell(BlockType::WoodDoor, s)));
+			assert!(state_valid(make_cell(BlockType::LumberDoor, s)));
 		}
 		// Slabs: size bit 0 and anchor bit 1.
 		for b in [BlockType::WoodSlab, BlockType::StoneSlab] {

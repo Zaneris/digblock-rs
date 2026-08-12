@@ -45,10 +45,22 @@ fn cap(b: BlockType) -> u32 {
 /// `u16::MAX`-area sentinels, which never appear in inventory pairs.
 pub const SUB_WIRE_FLAG: u16 = 0x8000;
 
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Inventory {
 	counts: [u32; BlockType::COUNT],
 	subs: [u32; Essence::COUNT],
+}
+
+/// Hand-written rather than derived: std only implements `Default` for
+/// arrays up to 32 entries, and the block table passed that. An empty
+/// inventory is all zeros either way.
+impl Default for Inventory {
+	fn default() -> Self {
+		Self {
+			counts: [0; BlockType::COUNT],
+			subs: [0; Essence::COUNT],
+		}
+	}
 }
 
 impl Inventory {
@@ -338,7 +350,7 @@ mod tests {
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
-				item: BlockType::WoodDoor,
+				item: BlockType::LumberDoor,
 				count: 1
 			},
 			99
@@ -351,7 +363,7 @@ mod tests {
 			},
 			99
 		));
-		assert_eq!(inv.count(BlockType::WoodDoor), 1);
+		assert_eq!(inv.count(BlockType::LumberDoor), 1);
 		assert_eq!(inv.count(BlockType::WoodStairs), 2);
 		assert_eq!(inv.sub_count(Essence::Flora), 5);
 
@@ -412,7 +424,7 @@ mod tests {
 		assert!(!apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
-				item: BlockType::WoodDoor,
+				item: BlockType::LumberDoor,
 				count: ALCHEMY_MAX_COUNT + 1
 			},
 			99

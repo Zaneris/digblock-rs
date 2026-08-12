@@ -961,7 +961,7 @@ mod tests {
 			IconKind::Cube(BlockType::Dirt),
 			IconKind::Shaped(BlockType::WoodStairs),
 			IconKind::Shaped(BlockType::WoodSlab),
-			IconKind::Shaped(BlockType::WoodDoor),
+			IconKind::Shaped(BlockType::LumberDoor),
 			IconKind::WaterTool { full: true },
 			IconKind::WaterTool { full: false },
 		] {

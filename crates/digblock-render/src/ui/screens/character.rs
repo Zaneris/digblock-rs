@@ -55,12 +55,14 @@ impl CharView {
 const ALCH_TEASERS: &[(u32, &str)] = &[
 	(5, "stairs"),
 	(8, "the torch"),
-	(10, "doors"),
 	(15, "extract the bucket charge"),
 	(20, "clean stone, wood, dirt, sand"),
 	(25, "morning dew; a faster bench"),
 	(30, "sandstone, snow, grass, mud"),
-	(40, "trace minerals from rubble"),
+	(
+		40,
+		"planed lumber and its joinery; trace minerals from rubble",
+	),
 	(50, "craft water"),
 	(60, "gravel's deep metal"),
 	(75, "pine resin; the fastest bench"),
@@ -316,14 +318,17 @@ mod tests {
 		alch(5);
 		assert_eq!(alchemy::craft_unlock(B::Torch), Some(8));
 		alch(8);
-		assert_eq!(alchemy::craft_unlock(B::WoodDoor), Some(10));
-		alch(10);
 		assert_eq!(alchemy::extract_unlock(B::Water), 15);
 		alch(15);
 		assert_eq!(alchemy::craft_unlock(B::Stone), Some(20));
 		alch(20);
 		assert_eq!(alchemy::craft_unlock(B::Sandstone), Some(30));
 		alch(30);
+		// The planed-timber set — block, slab, stairs and door together.
+		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
+			assert_eq!(alchemy::craft_unlock(b), Some(40), "{b:?}");
+		}
+		alch(40);
 		assert_eq!(alchemy::craft_unlock(B::Water), Some(50));
 		alch(50);
 		// The pace steps and bonus lines named in prose.

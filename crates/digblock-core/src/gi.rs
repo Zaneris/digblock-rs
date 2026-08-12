@@ -267,9 +267,9 @@ mod tests {
 		// the doorway is the whole point of opening one.
 		for f in Facing::ALL {
 			for upper in [false, true] {
-				let open = make_cell(BlockType::WoodDoor, door_state(f, true, upper));
+				let open = make_cell(BlockType::LumberDoor, door_state(f, true, upper));
 				assert_eq!(gi_class(open), 0);
-				let closed = make_cell(BlockType::WoodDoor, door_state(f, false, upper));
+				let closed = make_cell(BlockType::LumberDoor, door_state(f, false, upper));
 				assert!(gi_class(closed) >= SHAPE_CLASS_BASE);
 			}
 		}

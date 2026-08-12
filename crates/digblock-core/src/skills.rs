@@ -450,12 +450,13 @@ mod tests {
 			.filter(|&l| level_unlocks_something(Skill::Mining, l))
 			.collect();
 		assert_eq!(mining, vec![3, 5], "sandstone, then stone");
-		// Alchemy: craft unlocks (5/8/10/20/30/50), the bucket charge's
+		// Alchemy: craft unlocks (5/8/20/30/40 — the whole planed-timber
+		// set lands on the last of those — and 50), the bucket charge's
 		// extraction (15), and the bonus lines (25/40/60/75/90).
 		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| level_unlocks_something(Skill::Alchemy, l))
 			.collect();
-		assert_eq!(alchemy, vec![5, 8, 10, 15, 20, 25, 30, 40, 50, 60, 75, 90]);
+		assert_eq!(alchemy, vec![5, 8, 15, 20, 25, 30, 40, 50, 60, 75, 90]);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.
 		for s in Skill::ALL {

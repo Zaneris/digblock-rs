@@ -41,9 +41,14 @@ pub fn extract_base(b: BlockType) -> &'static [(Essence, u32)] {
 		B::Water => &[(E::Aqua, 18)],
 		B::WoodStairs => &[(E::Flora, 18)],
 		B::StoneStairs => &[(E::Earth, 18)],
-		B::WoodDoor => &[(E::Flora, 10)],
+		B::LumberDoor => &[(E::Flora, 10)],
 		B::WoodSlab => &[(E::Flora, 9)],
 		B::StoneSlab => &[(E::Earth, 9)],
+		// Planed timber breaks back down exactly like the log it came
+		// from: the shaping is what was paid for, not the essence.
+		B::Lumber => &[(E::Flora, 27)],
+		B::LumberStairs => &[(E::Flora, 18)],
+		B::LumberSlab => &[(E::Flora, 9)],
 		_ => &[],
 	}
 }
@@ -147,7 +152,7 @@ pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 		// the torch's cost is a decision, not a measurement.
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
 		B::Stone | B::Sand | B::Sandstone => &[(E::Earth, 27)],
-		B::Wood => &[(E::Flora, 27)],
+		B::Wood | B::Lumber => &[(E::Flora, 27)],
 		// 27-volume in the extraction ratio: Dirt 15/3 of 18 → 23 + 5.
 		B::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
 		B::Grass => &[(E::Earth, 18), (E::Flora, 9)],
@@ -168,9 +173,15 @@ pub fn craft_unlock(b: BlockType) -> Option<u32> {
 		B::WoodSlab | B::StoneSlab => 1,
 		B::WoodStairs | B::StoneStairs => 5,
 		B::Torch => 8,
-		B::WoodDoor => 10,
 		B::Stone | B::Wood | B::Dirt | B::Sand => 20,
 		B::Sandstone | B::Snow | B::Grass | B::Mud => 30,
+		// §7.2's grid rule, exactly: a material × shape pair unlocks at
+		// `max(shape level, material level)`. Planed timber is a level-40
+		// MATERIAL, so its slab (shape 1), stairs (shape 5) and door
+		// (shape 10) all arrive WITH it rather than at their shapes' own
+		// levels — the whole joinery set opens at once, which is what
+		// makes the material read as a material.
+		B::Lumber | B::LumberSlab | B::LumberStairs | B::LumberDoor => 40,
 		B::Water => 50,
 		_ => return None,
 	})
@@ -178,15 +189,18 @@ pub fn craft_unlock(b: BlockType) -> Option<u32> {
 
 /// Everything craftable, in the transmute tab's display order: shaped
 /// items first (the original catalog), then raw blocks by unlock.
-pub const CRAFT_ORDER: [BlockType; 15] = [
+pub const CRAFT_ORDER: [BlockType; 18] = [
 	BlockType::Torch,
 	BlockType::WoodSlab,
 	BlockType::StoneSlab,
+	BlockType::LumberSlab,
 	BlockType::WoodStairs,
 	BlockType::StoneStairs,
-	BlockType::WoodDoor,
+	BlockType::LumberStairs,
+	BlockType::LumberDoor,
 	BlockType::Stone,
 	BlockType::Wood,
+	BlockType::Lumber,
 	BlockType::Dirt,
 	BlockType::Sand,
 	BlockType::Sandstone,
@@ -349,9 +363,13 @@ mod tests {
 		use BlockType as B;
 		assert_eq!(craft_unlock(B::WoodSlab), Some(1));
 		assert_eq!(craft_unlock(B::WoodStairs), Some(5));
-		assert_eq!(craft_unlock(B::WoodDoor), Some(10));
 		assert_eq!(craft_unlock(B::Stone), Some(20));
 		assert_eq!(craft_unlock(B::Sandstone), Some(30));
+		// §7.2's grid rule: the whole planed-timber set opens together at
+		// its MATERIAL's level, whatever each shape's own level is.
+		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
+			assert_eq!(craft_unlock(b), Some(40), "{b:?}");
+		}
 		assert_eq!(craft_unlock(B::Water), Some(50));
 		assert_eq!(craft_unlock(B::Rubble), None);
 		assert_eq!(extract_unlock(B::Water), 15);

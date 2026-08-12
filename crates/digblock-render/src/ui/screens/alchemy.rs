@@ -190,21 +190,30 @@ pub const FAMILIES: [Family; 6] = [
 	},
 	Family {
 		name: "SLABS",
-		members: &[BlockType::WoodSlab, BlockType::StoneSlab],
+		members: &[
+			BlockType::WoodSlab,
+			BlockType::StoneSlab,
+			BlockType::LumberSlab,
+		],
 	},
 	Family {
 		name: "STAIRS",
-		members: &[BlockType::WoodStairs, BlockType::StoneStairs],
+		members: &[
+			BlockType::WoodStairs,
+			BlockType::StoneStairs,
+			BlockType::LumberStairs,
+		],
 	},
 	Family {
 		name: "DOORS",
-		members: &[BlockType::WoodDoor],
+		members: &[BlockType::LumberDoor],
 	},
 	Family {
 		name: "BLOCKS",
 		members: &[
 			BlockType::Stone,
 			BlockType::Wood,
+			BlockType::Lumber,
 			BlockType::Dirt,
 			BlockType::Sand,
 			BlockType::Sandstone,
@@ -1166,7 +1175,10 @@ fn block_name(b: BlockType) -> &'static str {
 		B::StoneSlab => "STONE SLAB",
 		B::WoodStairs => "WOOD STAIRS",
 		B::StoneStairs => "STONE STAIRS",
-		B::WoodDoor => "WOOD DOOR",
+		B::LumberDoor => "LUMBER DOOR",
+		B::LumberSlab => "LUMBER SLAB",
+		B::LumberStairs => "LUMBER STAIRS",
+		B::Lumber => "LUMBER",
 		B::Stone => "STONE",
 		B::Wood => "WOOD",
 		B::Dirt => "DIRT",

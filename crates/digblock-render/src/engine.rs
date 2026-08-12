@@ -748,18 +748,19 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		let x = bx + 2 * i as i32 - 3;
 		out.push((x, by, bz + 4, make_cell(B::WoodStairs, stair_state(f))));
 		out.push((x, by, bz + 6, make_cell(B::StoneStairs, stair_state(f))));
+		out.push((x, by, bz + 2, make_cell(B::LumberStairs, stair_state(f))));
 		for (dz, open) in [(8, false), (10, true)] {
 			out.push((
 				x,
 				by,
 				bz + dz,
-				make_cell(B::WoodDoor, door_state(f, open, false)),
+				make_cell(B::LumberDoor, door_state(f, open, false)),
 			));
 			out.push((
 				x,
 				by + 1,
 				bz + dz,
-				make_cell(B::WoodDoor, door_state(f, open, true)),
+				make_cell(B::LumberDoor, door_state(f, open, true)),
 			));
 		}
 	}
@@ -773,7 +774,10 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	// auto-step (also eyeballs boundary culling on the shared planes).
 	// Ceiling slabs hang two cells up, where their underside is the
 	// thing to look at.
-	for (i, b) in [B::WoodSlab, B::StoneSlab].into_iter().enumerate() {
+	for (i, b) in [B::WoodSlab, B::StoneSlab, B::LumberSlab]
+		.into_iter()
+		.enumerate()
+	{
 		let x = bx + 2 * i as i32 - 3;
 		out.push((x, by, bz + 12, make_cell(b, slab_state(false, false))));
 		out.push((x, by, bz + 14, make_cell(b, slab_state(true, false))));

@@ -246,13 +246,13 @@ no-matter-creation pin with margin to spare.
 | 1 | extract the basic roster; **Slab** shape (ideal 9) |
 | 5 | **Stairs** shape (18) |
 | 8 | craft the **Torch** (4 Flora + 2 Earth — light before ore, §7.3) |
-| 10 | **Door** shape (10); craft the **Essence Siphon** (30 Flora + 15 Earth — pairs with Mining 10's first reveal) |
+| 10 | craft the **Essence Siphon** (30 Flora + 15 Earth — pairs with Mining 10's first reveal). (The **Door** shape was authored here; it ships as part of the level-40 planed-timber set instead — see below.) |
 | 15 | **extract the bucket charge** → 18 Aqua (the Aqua economy opens) |
 | 20 | materials: **clean Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand |
 | 25 | bonus line: dew (§3.3); extraction pace 0.5s → 0.35s per WHOLE block (every block's own pace scales with it); **Stone Bricks** |
 | 30 | materials: **Sandstone, Snow, Glass, Grass, Mud** |
 | 35 | **Fence**, **Ladder** shapes (§7.2) |
-| 40 | bonus line: trace minerals; craft **Lantern**, **Framed Window** |
+| 40 | bonus line: trace minerals; the **planed-timber** material and its whole joinery set (Lumber block, slab, stairs, door — §7.2's `max(shape, material)` rule with the material dominating every shape); craft **Lantern**, **Framed Window** |
 | 45 | **Pillar**, **Roof Wedge** shapes; materials: **Polished Stone**, **Sandstone Bricks** |
 | 50 | **craft Water**: 27 Aqua → 1 bucket charge (lossy vs. the 18 extraction — no loop); material: **Metal** (block + its grid shapes: MetalStairs, MetalDoor, …) |
 | 55 | craft the **Resonant Pick** (240 Metal + 60 Earth + 12 Aether) |

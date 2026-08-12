@@ -30,8 +30,10 @@ pub mod tex {
 	pub const TORCH_SIDE: &[u8] = include_bytes!("../../../assets/textures/TorchSide.png");
 	pub const TORCH_FLAME: &[u8] = include_bytes!("../../../assets/textures/TorchFlame.png");
 	// Hand-made again: planed timber in three tones, the material crafted
-	// things are made OF. `LUMBER_RED` is drawn and registered but not yet
-	// on any block.
+	// things are made OF. `LUMBER_LIGHT` is the joinery: the bucket, the
+	// torch post, and the Lumber block with its stairs, slab and door.
+	// `LUMBER_DARK` and `LUMBER_RED` are drawn and registered but not yet
+	// on any block — the obvious second and third timber materials.
 	pub const LUMBER_LIGHT: &[u8] = include_bytes!("../../../assets/textures/LumberLight.png");
 	pub const LUMBER_DARK: &[u8] = include_bytes!("../../../assets/textures/LumberDark.png");
 	pub const LUMBER_RED: &[u8] = include_bytes!("../../../assets/textures/LumberRed.png");

@@ -212,7 +212,7 @@ mod tests {
 		);
 		// A closed +x door is a plate on x, full on y and z.
 		let (lo, hi) = of(make_cell(
-			B::WoodDoor,
+			B::LumberDoor,
 			door_state(Facing::PosX, false, false),
 		));
 		assert!(hi[0] - lo[0] <= 1.0 / 3.0, "leaf is thin: {lo:?}..{hi:?}");

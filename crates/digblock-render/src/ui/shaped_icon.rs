@@ -144,7 +144,7 @@ mod tests {
 
 	#[test]
 	fn door_spans_both_vertical_halves() {
-		let quads = emitted(IconKind::Shaped(BlockType::WoodDoor), 0xFFFF_FFFF);
+		let quads = emitted(IconKind::Shaped(BlockType::LumberDoor), 0xFFFF_FFFF);
 		let ys: Vec<f32> = quads
 			.iter()
 			.flat_map(|(c, _, _)| c.iter().map(|p| p[1]))

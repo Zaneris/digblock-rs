@@ -339,7 +339,7 @@ mod tests {
 		move |x: i32, y: i32, z: i32| {
 			if x == 6 && (y == 0 || y == 1) && z == 0 {
 				Some(make_cell(
-					B::WoodDoor,
+					B::LumberDoor,
 					door_state(Facing::PosX, open, y == 1),
 				))
 			} else if x == 9 {
@@ -370,7 +370,7 @@ mod tests {
 		let toward_leaf = Vec3::new(4.5, 0.5, 0.15);
 		let leaf = raycast(toward_leaf, Vec3::X, 10.0, &open).unwrap();
 		assert_eq!(leaf.cell, (6, 0, 0), "open leaf is aimable");
-		assert_eq!(leaf.block, B::WoodDoor);
+		assert_eq!(leaf.block, B::LumberDoor);
 		assert!(
 			crate::shapes::collision_boxes(leaf.cell_value).is_empty(),
 			"and it got there with no collision box to hit"

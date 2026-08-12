@@ -121,8 +121,11 @@ pub fn material_of(b: BlockType) -> Material {
 		| BlockType::Leaves
 		| BlockType::PineLeaves
 		| BlockType::WoodStairs
-		| BlockType::WoodDoor
-		| BlockType::WoodSlab => Material::Wood,
+		| BlockType::LumberDoor
+		| BlockType::WoodSlab
+		| BlockType::Lumber
+		| BlockType::LumberStairs
+		| BlockType::LumberSlab => Material::Wood,
 		_ => Material::Earth,
 	}
 }

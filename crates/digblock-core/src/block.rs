@@ -82,8 +82,10 @@ blocks! {
 	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), ShapeKind::Stairs), 60, DigFamily::Wood),
 	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90, DigFamily::Rock),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
-	/// divided-lite window in the upper half. Crafted via alchemy.
-	WoodDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK), ShapeKind::Door), 45, DigFamily::Wood),
+	/// divided-lite window in the upper half. Crafted via alchemy — out
+	/// of planed `Lumber` like the rest of the joinery, which is why it
+	/// wears LUMBER_LIGHT and unlocks with the other lumber shapes.
+	LumberDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Door), 45, DigFamily::Wood),
 	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
 	/// Placing onto a slab's top face grows it; the third grow converts
 	/// the cell to the plain base block. Hardness is a third of the base
@@ -107,6 +109,15 @@ blocks! {
 	/// always ([`BlockType::always_owned`]); its charge stays the Water
 	/// count. Texture layers are 0 (never sampled — RenderClass::None).
 	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
+	/// Planed timber (SKILLS-DESIGN §7.2's material × shape grid): the
+	/// refined counterpart of the felled `Wood` trunk, craft-only and
+	/// never generated — the bench's second timber, opened well after the
+	/// log's own shapes. Exists as a full block because its slab has to
+	/// have something to complete into (three thirds = one block, the
+	/// rule that closes the slab economy).
+	Lumber = 30 => dig(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), 60, DigFamily::Wood),
+	LumberStairs = 31 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Stairs), 60, DigFamily::Wood),
+	LumberSlab = 32 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Slab), 20, DigFamily::Wood),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -425,8 +436,10 @@ pub mod tex {
 	pub const TORCH_SIDE: u16 = 17;
 	pub const TORCH_FLAME: u16 = 18;
 	/// Planed timber — the material crafted things are made OF, as
-	/// opposed to [`LOG`], which is the tree. `LUMBER_RED` is registered
-	/// and unused; stairs and slabs are the obvious candidates.
+	/// opposed to [`LOG`], which is the tree. [`LUMBER_LIGHT`] is the
+	/// joinery (the bucket, the torch post, and the Lumber block with its
+	/// stairs, slab and door); `LUMBER_DARK` and `LUMBER_RED` are
+	/// registered and unused — the obvious second and third timbers.
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
@@ -626,6 +639,7 @@ impl BlockType {
 		match self {
 			BlockType::WoodSlab => Some(BlockType::Wood),
 			BlockType::StoneSlab => Some(BlockType::Stone),
+			BlockType::LumberSlab => Some(BlockType::Lumber),
 			_ => None,
 		}
 	}
@@ -733,7 +747,10 @@ mod tests {
 			(BlockType::Wood, Wood),
 			(BlockType::WoodStairs, Wood),
 			(BlockType::WoodSlab, Wood),
-			(BlockType::WoodDoor, Wood),
+			(BlockType::LumberDoor, Wood),
+			(BlockType::Lumber, Wood),
+			(BlockType::LumberStairs, Wood),
+			(BlockType::LumberSlab, Wood),
 			(BlockType::Stone, Rock),
 			(BlockType::StoneStairs, Rock),
 			(BlockType::StoneSlab, Rock),

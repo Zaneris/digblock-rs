@@ -1994,15 +1994,15 @@ mod tests {
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		sim.test_grant(1, BlockType::WoodStairs, 5);
-		sim.test_grant(1, BlockType::WoodDoor, 5);
+		sim.test_grant(1, BlockType::LumberDoor, 5);
 		let bad = [
 			// Stateless block with state bits: still BadBlock.
 			(BlockType::Dirt as u16) | (1 << STATE_SHIFT),
 			// Stair with the non-facing state bits set.
 			make_cell(BlockType::WoodStairs, 0b0100),
 			// Door requests must be lower+closed — server derives upper.
-			make_cell(BlockType::WoodDoor, door_state(Facing::PosX, true, false)),
-			make_cell(BlockType::WoodDoor, door_state(Facing::PosX, false, true)),
+			make_cell(BlockType::LumberDoor, door_state(Facing::PosX, true, false)),
+			make_cell(BlockType::LumberDoor, door_state(Facing::PosX, false, true)),
 			// Spare bits 10-11.
 			(BlockType::WoodStairs as u16) | (1 << 10),
 		];
@@ -2397,8 +2397,11 @@ mod tests {
 		let mut sim = flat_sim("doorplace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.test_grant(1, BlockType::WoodDoor, 1);
-		let lower_cell = make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, false, false));
+		sim.test_grant(1, BlockType::LumberDoor, 1);
+		let lower_cell = make_cell(
+			BlockType::LumberDoor,
+			door_state(Facing::PosZ, false, false),
+		);
 		let target = place_cell(&mut sim, &mut c, 1, lower_cell);
 		let upper = (target.0, target.1 + 1, target.2);
 		assert_eq!(
@@ -2408,13 +2411,13 @@ mod tests {
 		assert_eq!(
 			sim.test_cell_at(upper.0, upper.1, upper.2),
 			Some(make_cell(
-				BlockType::WoodDoor,
+				BlockType::LumberDoor,
 				door_state(Facing::PosZ, false, true)
 			)),
 			"server derived the upper half"
 		);
 		assert_eq!(
-			sim.test_inventory_count(1, BlockType::WoodDoor),
+			sim.test_inventory_count(1, BlockType::LumberDoor),
 			0,
 			"one debit"
 		);
@@ -2460,13 +2463,13 @@ mod tests {
 			lower.0,
 			lower.1,
 			lower.2,
-			make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, true, false)),
+			make_cell(BlockType::LumberDoor, door_state(Facing::PosZ, true, false)),
 		);
 		sim.test_set_cell(
 			upper.0,
 			upper.1,
 			upper.2,
-			make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, true, true)),
+			make_cell(BlockType::LumberDoor, door_state(Facing::PosZ, true, true)),
 		);
 		sim.test_grant(1, BlockType::Stone, 1);
 
@@ -2499,7 +2502,7 @@ mod tests {
 		assert_eq!(
 			sim.test_cell_at(lower.0, lower.1, lower.2),
 			Some(make_cell(
-				BlockType::WoodDoor,
+				BlockType::LumberDoor,
 				door_state(Facing::PosZ, true, false)
 			)),
 			"the open door survived the placement"
@@ -2527,8 +2530,11 @@ mod tests {
 		let mut sim = flat_sim("doortoggle");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.test_grant(1, BlockType::WoodDoor, 1);
-		let lower_cell = make_cell(BlockType::WoodDoor, door_state(Facing::PosZ, false, false));
+		sim.test_grant(1, BlockType::LumberDoor, 1);
+		let lower_cell = make_cell(
+			BlockType::LumberDoor,
+			door_state(Facing::PosZ, false, false),
+		);
 		let target = place_cell(&mut sim, &mut c, 1, lower_cell);
 		let upper = (target.0, target.1 + 1, target.2);
 
@@ -2592,7 +2598,7 @@ mod tests {
 			"closed again"
 		);
 		let mut t = 100;
-		let hold = BlockType::WoodDoor.hardness_ticks().unwrap() as u32 + 6;
+		let hold = BlockType::LumberDoor.hardness_ticks().unwrap() as u32 + 6;
 		let dug = dig_hold(&mut sim, 1, dir, hold, 4, EditKind::Dig, &mut t);
 		assert_eq!(dug, target);
 		c.drain();
@@ -2603,7 +2609,7 @@ mod tests {
 			"partner cleared too"
 		);
 		assert_eq!(
-			sim.test_inventory_count(1, BlockType::WoodDoor),
+			sim.test_inventory_count(1, BlockType::LumberDoor),
 			1,
 			"one credit for the pair"
 		);
