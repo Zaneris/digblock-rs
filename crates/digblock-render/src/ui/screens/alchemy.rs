@@ -141,8 +141,11 @@ pub struct AlchScreen {
 	/// 0..1 through the current cycle; the in-flight cycle never sends
 	/// its op when interrupted (ops are atomic per block).
 	progress: f32,
-	/// Transmute tab: selected family / member within it.
-	family: usize,
+	/// Transmute tab: selected family / member within it. `None` until
+	/// the player picks a family — the tab opens with the family row and
+	/// nothing else, rather than pre-selecting one and naming an item
+	/// nobody asked about.
+	family: Option<usize>,
 	member: usize,
 	/// Free-running clock driving the family tiles' member rotation.
 	clock: f32,
@@ -162,7 +165,7 @@ impl Default for AlchScreen {
 			drag: DragState::default(),
 			extracting: None,
 			progress: 0.0,
-			family: 0,
+			family: None,
 			member: 0,
 			clock: 0.0,
 			hint: None,
@@ -237,6 +240,9 @@ impl AlchScreen {
 		// the bench.
 		self.extracting = None;
 		self.progress = 0.0;
+		// So does the transmute pick: the tab opens unselected every time.
+		self.family = None;
+		self.member = 0;
 	}
 
 	pub fn cancel_drag(&mut self) {
@@ -354,9 +360,11 @@ impl AlchScreen {
 
 	// ---- layout ------------------------------------------------------
 
-	/// Header: title row (level + XP bar), essence readout, tab strip.
+	/// Header: title row (level + XP bar), essence readout, tab strip,
+	/// and the gap that keeps the active tab's fill from touching the
+	/// first row of whichever tab it opened.
 	fn header_h(style: &Style) -> f32 {
-		3.0 * theme::ROW_H * style.scale
+		(3.0 * theme::ROW_H + theme::ROW_GAP) * style.scale
 	}
 
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
@@ -454,9 +462,12 @@ impl AlchScreen {
 		*y += row_h;
 		// The tab strip, drawn as TABS rather than a row of buttons: the
 		// active tab is a filled block whose base fuses into the content
-		// below it — the rule running under the strip breaks beneath it —
-		// while the inactive tab is dim, flat, pressable text sitting ON
-		// the rule.
+		// below it — the rule running under the strip breaks beneath it,
+		// and instead traces UP the tab's sides and over its top, so the
+		// strip reads as one continuous edge with a tab raised out of it
+		// rather than as a line with a floating box parked on it — while
+		// the inactive tab is dim, flat, pressable text sitting ON the
+		// rule.
 		let text_pad = scale::text_pad_x(s);
 		let rule_h = (2.0 * s).round().max(1.0);
 		let mut x = row_x + text_pad;
@@ -515,7 +526,22 @@ impl AlchScreen {
 			),
 			widgets::BAR_TRACK,
 		);
-		*y += row_h;
+		// The break, closed: the rule climbs the active tab's left edge,
+		// runs across its top and comes back down the right, meeting both
+		// straight runs. Emitted after the fill (same layer, so later wins)
+		// and only when a tab actually claimed a span.
+		if active_span.1 > active_span.0 {
+			for edge in [
+				Rect::new(active_span.0, *y, active_span.1 - active_span.0, rule_h),
+				Rect::new(active_span.0, *y, rule_h, row_h),
+				Rect::new(active_span.1 - rule_h, *y, rule_h, row_h),
+			] {
+				ui.dl.quad(Layer::Backdrop, edge, widgets::BAR_TRACK);
+			}
+		}
+		// The tab's fill ends at the rule; the content starts a gap below
+		// it, so the first slot row doesn't sit flush against the strip.
+		*y += row_h + theme::ROW_GAP * s;
 	}
 
 	/// The EXTRACT tab: the strip (slot + progress + preview + bucket
@@ -705,7 +731,7 @@ impl AlchScreen {
 				rect,
 				Some((kind, if all_locked { LOCKED_TINT } else { tint })),
 				icon_px,
-				if i == self.family {
+				if self.family == Some(i) {
 					widgets::SlotRing::Weak
 				} else {
 					widgets::SlotRing::None
@@ -728,32 +754,45 @@ impl AlchScreen {
 		// so a growing catalog wraps instead of overflowing the panel.
 		// Locked ones dim with their unlock badge but stay selectable —
 		// the strip explains; affordable ones carry their batch count.
-		let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
-		let member = self.member.min(family.members.len() - 1);
-		let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
-		for (j, &item) in family.members.iter().enumerate() {
-			let rect = mem_spec.rect(j);
-			let locked = alchemy::craft_unlock(item).is_none_or(|u| view.level < u);
-			let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
-			widgets::slot(
-				ui,
-				InvId::Craft(j as u8),
-				rect,
-				Some((kind, if locked { LOCKED_TINT } else { tint })),
-				icon_px,
-				if j == member {
-					widgets::SlotRing::Strong
+		// Nothing selected yet draws none of it: the row's height is
+		// reserved either way (`member_rows_h` is the max over every
+		// family), so picking one fills a gap instead of moving the page.
+		let picked = self.family.map(|f| f.min(FAMILIES.len() - 1));
+		if let Some(f) = picked {
+			let family = &FAMILIES[f];
+			let member = self.member.min(family.members.len() - 1);
+			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
+			for (j, &item) in family.members.iter().enumerate() {
+				let rect = mem_spec.rect(j);
+				let locked = alchemy::craft_unlock(item).is_none_or(|u| view.level < u);
+				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
+				widgets::slot(
+					ui,
+					InvId::Craft(j as u8),
+					rect,
+					Some((kind, if locked { LOCKED_TINT } else { tint })),
+					icon_px,
+					if j == member {
+						widgets::SlotRing::Strong
+					} else {
+						widgets::SlotRing::None
+					},
+					rect.contains(cx, cy),
+				);
+				if locked {
+					lock_badge(ui, rect, alchemy::craft_unlock(item).unwrap_or(99));
 				} else {
-					widgets::SlotRing::None
-				},
-				rect.contains(cx, cy),
-			);
-			if locked {
-				lock_badge(ui, rect, alchemy::craft_unlock(item).unwrap_or(99));
-			} else {
-				let batches = view.affordable(item);
-				if batches > 0 {
-					widgets::count_badge(ui.dl, Layer::Content, &ui.style, rect, batches, WHITE);
+					let batches = view.affordable(item);
+					if batches > 0 {
+						widgets::count_badge(
+							ui.dl,
+							Layer::Content,
+							&ui.style,
+							rect,
+							batches,
+							WHITE,
+						);
+					}
 				}
 			}
 		}
@@ -765,12 +804,30 @@ impl AlchScreen {
 		// TRANSMUTE button. Locked reads dim with its level; unlocked
 		// but short reads full-color with what's MISSING — "can't yet"
 		// and "can't afford" are different answers.
+		let strip_h = theme::ACTION_ROW_H * s;
+		let strip = Rect::new(row_x, y, row_w, strip_h);
+		// With nothing picked there is no item to name and nothing for the
+		// button to do, so the strip says what to do instead of naming an
+		// item the player never chose — and the modifier legend below it,
+		// which describes that button, waits with it.
+		let Some(f) = picked else {
+			widgets::label(
+				ui.dl,
+				Layer::Content,
+				strip.x + text_pad,
+				strip.y + (strip_h - glyph) / 2.0,
+				glyph,
+				DIM,
+				"SELECT A FAMILY",
+			);
+			return;
+		};
+		let family = &FAMILIES[f];
+		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
 		let unlock = alchemy::craft_unlock(item).unwrap_or(u32::MAX);
 		let locked = view.level < unlock;
 		let batches = view.affordable(item);
-		let strip_h = theme::ACTION_ROW_H * s;
-		let strip = Rect::new(row_x, y, row_w, strip_h);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 		hud::draw_icon(
 			ui.dl,
@@ -929,8 +986,8 @@ impl AlchScreen {
 					}
 					InvId::Family(i) => {
 						let i = (i as usize).min(FAMILIES.len() - 1);
-						if self.family != i {
-							self.family = i;
+						if self.family != Some(i) {
+							self.family = Some(i);
 							// Land on the first member the level has
 							// opened (else the first, whose strip line
 							// names its unlock).
@@ -944,13 +1001,13 @@ impl AlchScreen {
 						}
 					}
 					InvId::Craft(j) => {
-						let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
+						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
 						if (j as usize) < family.members.len() {
 							self.member = j as usize;
 						}
 					}
 					InvId::CraftGo => {
-						let family = &FAMILIES[self.family.min(FAMILIES.len() - 1)];
+						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
 						let item = *family.members.get(self.member)?;
 						let want = if self.ctrl {
 							BULK_CTRL
@@ -1342,9 +1399,21 @@ mod tests {
 		press(&mut r, tab);
 		rebuild(&mut r);
 
-		// The default LIGHTS family's torch needs Earth this rig lacks —
-		// pick SLABS, whose WoodSlab the Flora affords. Ctrl asks for
-		// 100; the holdings clamp it.
+		// It opens on the family row alone: no member is pre-picked, so
+		// there is nothing for the one button to act on and it isn't
+		// drawn. The tab used to land on LIGHTS/Torch and name an item
+		// nobody had asked for.
+		assert!(
+			r.hits.rect_of(InvId::Craft(0)).is_none(),
+			"no members before a family is picked"
+		);
+		assert!(
+			r.hits.rect_of(InvId::CraftGo).is_none(),
+			"no button before a family is picked"
+		);
+
+		// SLABS: the WoodSlab the Flora affords. Ctrl asks for 100; the
+		// holdings clamp it.
 		let slabs = center(r.hits.rect_of(InvId::Family(1)).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
