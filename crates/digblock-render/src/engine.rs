@@ -79,6 +79,17 @@ pub struct EngineConfig {
 	/// (yaw 0 faces +z, 90 faces +x; pitch defaults to −20).
 	pub yaw: Option<f32>,
 	pub pitch: Option<f32>,
+	/// Start the player here instead of at the seed's spawn point
+	/// (`--pos x y z`). The scenes this engine is actually slow in are
+	/// NATURAL water — terraced beds, stepped descents, cascades — and no
+	/// synthetic plan builds those: `debug_river_plan` digs a
+	/// flat-bottomed box with vertical walls, where only the rim is bank
+	/// and nothing ever falls, so it has no impact cells and its gather
+	/// early-outs almost everywhere. Two water perf fixes were measured on
+	/// it and both played badly. A pose flag is what lets a capture stand
+	/// in a real river instead. The debug plans key off the spawn too, so
+	/// they follow this point.
+	pub start_pos: Option<[f32; 3]>,
 	pub metrics_csv: Option<std::path::PathBuf>,
 	/// Start with the debug overlay visible (` toggles at runtime).
 	pub overlay: bool,
@@ -153,6 +164,14 @@ pub struct EngineConfig {
 	/// at spawn is 100+ blocks out). Set by the desktop launcher from
 	/// DIG_RIVER.
 	pub debug_river: bool,
+	/// Debug: shading terms to REMOVE this run (`DIG_STUB`, names in
+	/// `stub::parse`). One build then attributes a whole frame across a
+	/// handful of runs, instead of a rebuild per bisect — and, more to the
+	/// point, instead of a guess. The mask rides `frame.misc.z` and the
+	/// resolve's own uniform as a UNIFORM branch: zero cost at 0, and it
+	/// can never diverge inside a wave, so a stubbed run measures the term
+	/// it removed and nothing else.
+	pub stub: u32,
 	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
 	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
 	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
@@ -216,6 +235,7 @@ impl EngineConfig {
 			tod: None,
 			yaw: None,
 			pitch: None,
+			start_pos: None,
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
@@ -233,6 +253,7 @@ impl EngineConfig {
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
+			stub: 0,
 			debug_screen: None,
 			spray_droplets: 128,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -256,6 +277,7 @@ impl EngineConfig {
 			tod: None,
 			yaw: None,
 			pitch: None,
+			start_pos: None,
 			metrics_csv: None,
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
@@ -274,6 +296,7 @@ impl EngineConfig {
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
+			stub: 0,
 			debug_screen: None,
 			spray_droplets: 48,
 			stream_budget_ms: STREAM_BUDGET_MS,
@@ -319,6 +342,7 @@ impl EngineConfig {
 			chunk_slots_override: self.chunk_slots_override,
 			debug_gi: self.debug_gi,
 			debug_gi_probes: self.debug_gi_probes,
+			stub: self.stub,
 		}
 	}
 }
@@ -978,7 +1002,12 @@ impl Engine {
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
 		let stream_floor = config.stream_budget_ms;
-		let spawn = digblock_core::player::spawn(seed);
+		// `--pos` replaces the seed's spawn wholesale, debug plans and
+		// return-to-spawn included: the point of standing somewhere is that
+		// everything keyed on the spawn follows you there.
+		let spawn = config
+			.start_pos
+			.map_or_else(|| digblock_core::player::spawn(seed), Vec3::from);
 		let mut camera = FlyCamera::new(far, spawn);
 		if let Some(yaw) = config.yaw {
 			camera.yaw_deg = yaw;
@@ -3249,7 +3278,9 @@ impl Engine {
 			misc: [
 				1.0,
 				(self.config.draw_dist * digblock_core::chunk::CHUNK_SIZE as i32) as f32,
-				0.0,
+				// The cost-stub mask (DIG_STUB), exact in f32 well past the
+				// bits it uses. Zero in every normal run.
+				self.config.stub as f32,
 				0.0,
 			],
 			water_misc: [

@@ -123,7 +123,10 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 		lifecycle: Lifecycle::new(),
 		device_lost: Arc::new(AtomicBool::new(false)),
 		game,
-		clock: GameClock::new(),
+		clock: match options.fixed_dt {
+			Some(step) => GameClock::with_fixed_step(step),
+			None => GameClock::new(),
+		},
 		options,
 		cursor_grabbed: false,
 		prev_wants_grab: true,

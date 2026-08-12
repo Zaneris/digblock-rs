@@ -162,6 +162,78 @@ pub struct RenderConfig {
 	/// Debug raymarch shades hits with the C0 probe field instead of
 	/// raw albedo (`DIG_GI=probes`) — the P2 gate view.
 	pub debug_gi_probes: bool,
+	/// Cost-stub mask (`DIG_STUB`) — see `EngineConfig::stub`. The shader
+	/// halves ride `frame.misc.z`; the two bits here are pass-level and
+	/// have to be honoured on this side, because a term you can only
+	/// stub INSIDE a shader can never tell you what its geometry costs.
+	pub stub: u32,
+}
+
+/// Cost-stub bits (`DIG_STUB=<name>[,<name>…]`). Each removes one term
+/// so a single build can attribute a frame, which is the machinery two
+/// water perf rounds went without: R17 and R19 were both reasoned from
+/// code and measured on a pose that could not show the term they moved.
+///
+/// The shader-side bits are read in water.wgsl (and the resolve) through
+/// a UNIFORM branch, so an un-stubbed run pays nothing and a stubbed one
+/// never diverges within a wave. The two pass-level bits are honoured in
+/// `Renderer::render`.
+pub mod stub {
+	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is
+	/// ~120 dependent texture loads per water vertex inside C1, which is
+	/// a cost bounded by GEOMETRY rather than by pixels — the only
+	/// hypothesis that survives "it is just as slow below the surface".
+	pub const WVERT: u32 = 1 << 0;
+	/// Water's per-fragment `gi_sun_vis` (12 iterations) → lit.
+	pub const WSUN: u32 = 1 << 1;
+	/// `reflection_color`'s screen-space march → sky only.
+	pub const WSSR: u32 = 1 << 2;
+	/// Ripple gradient + specular → flat face normal.
+	pub const WRIPPLE: u32 = 1 << 3;
+	/// Thickness/refraction/medium → the straight scene sample.
+	pub const WREFRACT: u32 = 1 << 4;
+	/// Water's whole fragment shader → a flat colour on the first line:
+	/// the raster + vertex floor under everything above.
+	pub const WFLAT: u32 = 1 << 5;
+	/// Skip the spray billboards. A flat-walled pool has no falling
+	/// water and therefore NO impact cells, so this term has never once
+	/// appeared in a measurement of this engine.
+	pub const SPRAY: u32 = 1 << 6;
+	/// Skip the water pass entirely (depth prepass, colour, and all).
+	/// Bounds everything else: whatever this saves is the whole budget.
+	pub const NOWATER: u32 = 1 << 7;
+
+	const NAMES: [(&str, u32); 8] = [
+		("wvert", WVERT),
+		("wsun", WSUN),
+		("wssr", WSSR),
+		("wripple", WRIPPLE),
+		("wrefract", WREFRACT),
+		("wflat", WFLAT),
+		("spray", SPRAY),
+		("nowater", NOWATER),
+	];
+
+	/// Comma-separated names → mask. Unknown names are returned so the
+	/// launcher can complain: a typo that silently measures the
+	/// UN-stubbed build is exactly the failure this facility exists to
+	/// prevent.
+	pub fn parse(s: &str) -> (u32, Vec<String>) {
+		let mut mask = 0;
+		let mut bad = Vec::new();
+		for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+			match NAMES.iter().find(|(n, _)| *n == tok) {
+				Some((_, bit)) => mask |= bit,
+				None => bad.push(tok.to_string()),
+			}
+		}
+		(mask, bad)
+	}
+
+	/// Every name, for the launcher's usage line.
+	pub fn names() -> impl Iterator<Item = &'static str> {
+		NAMES.iter().map(|(n, _)| *n)
+	}
 }
 
 /// Everything `Renderer::render` consumes for one frame, built by the
@@ -377,6 +449,9 @@ pub struct Renderer {
 	gi: crate::gi::GiDraw,
 	/// Draw the voxel-window debug raymarch over the scene (DIG_GI).
 	debug_gi: bool,
+	/// Cost-stub mask (DIG_STUB) — only the two pass-level bits are read
+	/// here; the rest ride the frame uniform into the shaders.
+	stub: u32,
 	/// Debug overlay; always constructed (cheap) so the device-loss
 	/// rebuild path recreates it for free.
 	overlay: Overlay,
@@ -840,6 +915,7 @@ impl Renderer {
 			gpu_buffer_bytes: 0,
 			gpu_timer: GpuTimer::new(gpu),
 			debug_gi: config.debug_gi,
+			stub: config.stub,
 			overlay: Overlay::new(gpu, surface_format),
 			spray: crate::spray::Spray::new(
 				gpu,
@@ -1641,10 +1717,15 @@ impl Renderer {
 				pass.set_bind_group(1, &self.materials_bg, &[]);
 				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
 				draw.bind(&mut pass);
-				let (water_draws, water_tris) =
-					self.water.draw(&mut pass, draw.chunks, &self.lists.water);
-				stats.water_draws += water_draws;
-				stats.triangles += water_tris;
+				// DIG_STUB=nowater keeps the blit — that is what composites
+				// the scene into the swapchain — and drops only the water
+				// geometry, which bounds everything the water pass costs.
+				if self.stub & stub::NOWATER == 0 {
+					let (water_draws, water_tris) =
+						self.water.draw(&mut pass, draw.chunks, &self.lists.water);
+					stats.water_draws += water_draws;
+					stats.triangles += water_tris;
+				}
 
 				// Target highlight/crack decal, over the finished water so
 				// a box on a source (or a submerged block) survives the
@@ -1660,7 +1741,8 @@ impl Renderer {
 				// sheet and pool alike). Water left its frame+scene group
 				// bound at 0; spray wants the plain frame group.
 				pass.set_bind_group(0, &self.frame_bg, &[]);
-				let spray_tris = self.spray.draw(&mut pass, spray_n);
+				let live = u32::from(self.stub & stub::SPRAY == 0) * spray_n;
+				let spray_tris = self.spray.draw(&mut pass, live);
 				stats.draw_calls += u32::from(spray_tris > 0);
 				stats.triangles += spray_tris;
 			}

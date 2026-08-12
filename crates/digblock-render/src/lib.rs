@@ -30,3 +30,6 @@ mod water;
 mod water_audio;
 
 pub use engine::{DebugScreen, Engine, EngineConfig};
+/// Cost-stub names for the launcher's `DIG_STUB` parse (the mask itself
+/// travels as `EngineConfig::stub`).
+pub use renderer::stub;

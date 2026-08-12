@@ -51,6 +51,47 @@
 // carries what's left (P5 revisits the number against the bench).
 const SUN_STEPS = 12;
 
+// Below this much RADIANCE a term is not worth a ray march. It is an
+// IMPORTANCE threshold, not a quality knob: the error it admits is
+// exactly `weight × (what the march would have returned)`, and the gate
+// multiplies the weight by the light colour before comparing — so this
+// is in the same units as the pixel, 0.002 of the 1.0 that means white.
+//
+// Weighting by the light colour is not fussiness. This engine has no
+// tonemap, so radiance is HDR and 1.0 is merely "white": a 2% weight
+// against a 5-unit sky is a 10% error, not a 2% one. The first cut of
+// these gates compared bare weights and put a ripple-banded difference
+// across a whole basin — mean 6.96/255 against a 0.69 capture floor at
+// DIG_RIVER. That is what a parity pass is for.
+const SUN_MIN_L = 0.002;
+// The mirror gate gets NO tolerance, for the same reason. `mirror_w` is
+// pinned to EXACTLY zero on the underside of a surface seen from below
+// (`below`), so skipping there is exact rather than approximate — and
+// that is where the measured 1.68 ms sat. Anything above zero is a real
+// reflection against an HDR sky, and gets marched.
+const MIRROR_MIN_W = 0.0;
+
+// Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
+// the bit numbers, and this is the mirror). `frame.misc.z` is a UNIFORM,
+// so every branch below is uniform: an un-stubbed run pays nothing and a
+// stubbed one cannot diverge inside a wave, which is what makes the
+// difference between two runs the term and only the term.
+//
+// This exists because two rounds of water perf work were reasoned from
+// reading the code and measured on a pose that could not show what they
+// moved. Attribution is not a nicety here; it is the thing that was
+// missing.
+const STUB_WVERT = 1u;
+const STUB_WSUN = 2u;
+const STUB_WSSR = 4u;
+const STUB_WRIPPLE = 8u;
+const STUB_WREFRACT = 16u;
+const STUB_WFLAT = 32u;
+
+fn stubbed(bit: u32) -> bool {
+	return (u32(frame.misc.z) & bit) != 0u;
+}
+
 // Java normal() table order (VertTex.glsl):
 // 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
 const NORMALS = array<vec3f, 6>(
@@ -166,10 +207,21 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 // screen knows them, and open water still mirrors the actual sky. The
 // sun/moon discs are deliberately absent — the analytic specular lobe
 // plays their role on the rippled surface.
-fn reflection_color(origin: vec3f, ray: vec3f, dist: f32) -> vec3f {
+fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
-	if frame.water_misc.y < 0.5 {
+	// `weight` is the Fresnel blend this result is about to be mixed
+	// with, and the march is gated on it for the same reason the sun
+	// DDA above is gated on its own: it was running at full cost where
+	// it cannot show. Submerged, looking at the underside of a surface,
+	// `mirror_w` is pinned to EXACTLY zero — and `reflection_color` is
+	// called as a function argument, so the 28 dependent depth loads
+	// ran anyway and the answer was multiplied by nothing. That alone
+	// measured 1.68 ms, 23% of the water pass, on the submerged pose.
+	// Above water it retires the other degenerate case: head-on, Schlick
+	// bottoms out at the 0.02 floor, so a look straight down at calm
+	// water was paying the full march for 2% of a pixel.
+	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}
 	// World-space steps with a growing stride, projected per step; a
@@ -276,17 +328,20 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	// so only near water — the fragments that used to pay ~112 loads
 	// EACH — pays the full path, once per corner instead of once per
 	// pixel.
-	o.indirect = gi_indirect(
-		i32(frame.gi_misc.x),
-		world,
-		n,
-		frame.cam_pos.xyz,
-		frame.gi0,
-		frame.gi1,
-		frame.zenith.rgb,
-		frame.horizon.rgb,
-		vec2i(4, 2),
-	);
+	o.indirect = vec3f(0.25);
+	if !stubbed(STUB_WVERT) {
+		o.indirect = gi_indirect(
+			i32(frame.gi_misc.x),
+			world,
+			n,
+			frame.cam_pos.xyz,
+			frame.gi0,
+			frame.gi1,
+			frame.zenith.rgb,
+			frame.horizon.rgb,
+			vec2i(4, 2),
+		);
+	}
 	return o;
 }
 
@@ -316,6 +371,12 @@ fn fs_depth() -> @location(0) vec4f {
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
+	// The raster + vertex floor: everything below removed, so what a run
+	// with this bit still costs is geometry, binning and the vertex
+	// gather, which no in-shader stub of a fragment term can isolate.
+	if stubbed(STUB_WFLAT) {
+		return vec4f(0.1, 0.2, 0.3, 1.0);
+	}
 	let t = frame.light_color.w;
 	// Motion per face: falling sides run downward at 1.5 uv/s, flowing
 	// tops at 0.4 along the flow dir (sample offset opposes feature
@@ -376,26 +437,13 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		let cb = smoothstep(0.6, 1.0, sin(base_uv.y * 1.5 - t * 3.0 + back * 6.28));
 		s = mix((back + cb * 0.5) * 0.6, front + cf * 0.5, clamp(front, 0.0, 1.0));
 	}
-	// RTGI: probe-field indirect at the surface (sky, bounce, torches —
-	// all one gathered term), gathered per VERTEX and interpolated in
-	// (see the header), + a short per-fragment sun DDA. Same combine as
-	// chunk.wgsl, minus AO. `sh` folds twilight exactly as mapped
-	// shadows did; it multiplies the diffuse terms AND the specular
-	// below, never the indirect (a torch has no sun glint lobe to
-	// borrow).
-	let side = i32(frame.gi_misc.x);
-	let indirect = i.indirect;
-	let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, i.world, SUN_STEPS);
-	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
-	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
-	// Froth light: the same direct+indirect mix the spray billboards
-	// use (spray.wgsl), shadowed like the surface it sits on — so foam
-	// dims with the night instead of glowing unlit white.
-	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	// Rippled normal + Schlick fresnel. Impact turbulence: splash cells
 	// churn harder.
 	let boost = 1.0 + 0.5 * f32(i.splash);
-	let g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.view_dist);
+	var g = vec2f(0.0);
+	if !stubbed(STUB_WRIPPLE) {
+		g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.view_dist);
+	}
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
 	let mirror = 1.0 - 0.7 * aer;
@@ -415,26 +463,30 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// the refraction offset and the shore foam line, which are geometry;
 	// the Beer-Lambert tint it used to drive is M2's medium now.
 	let dims = vec2f(textureDimensions(scene_depth));
-	let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
-	let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
-	let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
-	let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
 	// Underside view (submerged camera, back of the face): the "scene
 	// behind" is the sky above the surface, so the reconstructed
 	// thickness is bogus (~far plane). The water column is behind the
-	// camera, not behind the surface — treat the pane as thin.
+	// camera, not behind the surface — treat the pane as thin. Hoisted
+	// above the thickness block because `mirror_w` needs it either way.
 	let below = frame.water_misc.x > 0.5 && dot(vdir, NORMALS[i.ni]) < 0.0;
-	let thick = select(max(scene_dist - i.view_dist, 0.0), 0.0, below);
-	// Refraction: sample the scene through a ripple-perturbed offset
-	// that grows with thickness (clamped so shores don't smear), and
-	// falls back to the straight sample when the offset ray would pull
-	// something in FRONT of the water across the surface.
+	var thick = 0.0;
 	var suv = i.pos.xy / dims;
-	let off = g * (0.10 * min(thick, 1.5));
-	let suv2 = clamp(suv + off, vec2f(0.0), vec2f(1.0));
-	let d_off = textureLoad(scene_depth, vec2i(suv2 * (dims - 1.0)), 0).x;
-	if d_off >= i.pos.z {
-		suv = suv2;
+	if !stubbed(STUB_WREFRACT) {
+		let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
+		let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
+		let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
+		let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
+		thick = select(max(scene_dist - i.view_dist, 0.0), 0.0, below);
+		// Refraction: sample the scene through a ripple-perturbed offset
+		// that grows with thickness (clamped so shores don't smear), and
+		// falls back to the straight sample when the offset ray would pull
+		// something in FRONT of the water across the surface.
+		let off = g * (0.10 * min(thick, 1.5));
+		let suv2 = clamp(suv + off, vec2f(0.0), vec2f(1.0));
+		let d_off = textureLoad(scene_depth, vec2i(suv2 * (dims - 1.0)), 0).x;
+		if d_off >= i.pos.z {
+			suv = suv2;
+		}
 	}
 	// What is behind the surface, seen through the water body. The old
 	// hand-tuned Beer-Lambert depth tint, the Snell window and the TIR
@@ -443,6 +495,53 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// column. Water tints by DEPTH because red is absorbed an order of
 	// magnitude harder than blue (medium_common's measured sigma), not
 	// because a constant said which way to lean.
+	// Contact foam line where the water meets ground (meaningless on the
+	// underside — thick is pinned to 0 there and would foam everything).
+	let shore = (1.0 - smoothstep(0.05, 0.45, thick)) * f32(!below);
+	// Glassy crest sheen where flow tips over a lip: strongest in the
+	// first fallen block, keyed to the plunging drop edge.
+	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
+	// RTGI: probe-field indirect at the surface (sky, bounce, torches —
+	// all one gathered term), gathered per VERTEX and interpolated in
+	// (see the header), + a short per-fragment sun DDA. Same combine as
+	// chunk.wgsl, minus AO. `sh` folds twilight exactly as mapped
+	// shadows did; it multiplies the foam and specular terms below,
+	// never the indirect (a torch has no sun glint lobe to borrow).
+	//
+	// AND IT IS GATED ON ITS OWN COEFFICIENT, which is the single
+	// biggest thing in the water pass. Water has no diffuse sun
+	// response — a transparent surface's colour is the refracted
+	// backdrop and the reflection, neither of which uses `sh`. The sun
+	// visibility reaches the pixel ONLY through foam (aeration, the
+	// shore line, splash cells), the glint lobe and the lip sheen. On
+	// calm open water away from the glint, and on ANY surface seen from
+	// below (where the lobe faces away), every one of those weights is
+	// ~0 — so twelve dependent voxel loads were computing a number that
+	// then got multiplied by nothing.
+	//
+	// Measured: 3.91 ms of a 7.15 ms water pass at the submerged pose,
+	// 55% of everything water costs. This is not an approximation of the
+	// lighting, it is importance — the admitted error is the weight
+	// times the radiance the march would have contributed, and both are
+	// in the sum below.
+	let side = i32(frame.gi_misc.x);
+	let indirect = i.indirect;
+	let lc = max(frame.light_color.r, max(frame.light_color.g, frame.light_color.b));
+	let sun_w = lc * max(
+		// Foam takes 0.8 of the light; the mixes carry their own weights.
+		0.8 * max(aer, max(shore * 0.25, 0.09 * f32(i.splash))),
+		max(spec * 2.0 * mirror, lip * 0.15),
+	);
+	var sv = vec3f(1.0, 0.0, 0.0);
+	if sun_w > SUN_MIN_L && !stubbed(STUB_WSUN) {
+		sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, i.world, SUN_STEPS);
+	}
+	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
+	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
+	// Froth light: the same direct+indirect mix the spray billboards
+	// use (spray.wgsl), shadowed like the surface it sits on — so foam
+	// dims with the night instead of glowing unlit white.
+	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	var col = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
 	let vray = -vdir;
 	col = medium_water_seg(
@@ -463,9 +562,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// depth behind it; the mirror terms damp out over the same ramp.
 	col = mix(col, froth_tex * froth_light, aer);
 	backdrop *= 1.0 - aer;
-	// Contact foam line where the water meets ground (meaningless on the
-	// underside — thick is pinned to 0 there and would foam everything).
-	let shore = (1.0 - smoothstep(0.05, 0.45, thick)) * f32(!below);
 	col = mix(col, vec3f(0.95, 0.97, 1.0) * froth_light, shore * 0.25);
 	backdrop *= 1.0 - shore * 0.25;
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
@@ -474,7 +570,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var rr = reflect(-vdir, nrm);
 	rr.y = max(rr.y, 0.02);
 	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below);
-	col = mix(col, reflection_color(i.world, normalize(rr), i.view_dist), mirror_w);
+	col = mix(col, reflection_color(i.world, normalize(rr), i.view_dist, mirror_w), mirror_w);
 	backdrop *= 1.0 - mirror_w;
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// a STATIC wash, brightest on the impact cell and fading with the
@@ -492,9 +588,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		backdrop *= 1.0 - foam_w;
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
-	// Glassy crest sheen where flow tips over a lip: strongest in the
-	// first fallen block, keyed to the plunging drop edge.
-	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
 	col += frame.light_color.rgb * lip * sh * 0.15;
 	// Alpha: the Fresnel base only. The depth-driven opacity ramp went
 	// with the absorption model that justified it — a clear pane cannot

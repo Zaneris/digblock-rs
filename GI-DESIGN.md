@@ -713,6 +713,75 @@ also refreshes on >16 blocks of camera movement when more than MAX_LIGHTS emitte
 resident — order never mattered to a reader, but the truncation to the nearest 256 was
 frozen at whatever camera last saw a chunk classify.
 
+### R21 — water was marching two rays whose answers were multiplied by nothing
+
+Third attempt at "looking into water halves the frame rate", and the first one that
+measured before it changed anything. R17 moved water's indirect gather to the vertex
+shader; R18 shipped the sky ceiling; R19 built the column field and was declined. The
+user's verdict after all three was that the cost was still there — and this time they
+gave the number that reframed it: same spot, same draw distance, **no water in view 120
+fps, lake in view 50.8 fps**. Water was not a 4 ms premium, it was HALF THE FRAME.
+
+Two things had to be built before a single line of shading changed, because both prior
+rounds had been reasoned from source and measured on a pose that could not show what they
+moved:
+
+- **`DIG_STUB`** (`renderer::stub`) — a uniform-branch mask that removes one shading term
+  per run, so a single build attributes a whole frame. Uniform, so an un-stubbed run pays
+  nothing and a stubbed one cannot diverge inside a wave.
+- **`--pos x y z` + `--fixed-dt S`** — stand in real worldgen water rather than in
+  `debug_river_plan`'s flat-walled box (a real river is TERRACED: the sim's 8→4→2→1 spread
+  gives every step its own level and its own unmergeable per-cell quad, the whole bed is
+  bank rather than just the rim, and cascades make impact cells the box has none of), and
+  step the world by a constant so two builds reach frame N in the same world state.
+  `--fixed-dt` alone took the DIG_RIVER same-pose repeat floor from **0.69/255 (max 124)
+  to 0.0001 (max 1)**: everything animated rides dt, so a cross-build capture used to
+  measure the speed difference, in the ripple bands, at ten times the floor. That is R19's
+  two harness traps retired rather than documented again.
+
+The attribution, at 5.4 MP / draw 32 / seed 42, submerged looking up at the surface —
+the "it's slow underwater too" case that killed every fragment-count hypothesis:
+
+| stub | avg ms | saved | share of water |
+|---|---|---|---|
+| none | 14.85 | — | — |
+| `wsun` (12-iter per-fragment sun DDA) | 10.93 | **3.91** | 55% |
+| `wssr` (28-step screen-space march) | 13.16 | 1.68 | 23% |
+| `wvert` (per-vertex `gi_indirect`) | 13.93 | 0.91 | 13% |
+| `wripple` / `wrefract` / `spray` | ~14.8 | ≤0.13 | noise |
+| `wflat` (whole fragment shader) | 8.52 | 6.32 | 88% |
+| `nowater` | 7.69 | **7.15** | 100% |
+
+Repeat floor 0.02 ms. Water was 48% of the frame and the no-water frame ran at 130 fps —
+the user's "120 at times", reproduced.
+
+**Then the finding that mattered: both dominant terms were being multiplied by ~zero.**
+Water has no diffuse sun response — a transparent surface's colour is the refracted
+backdrop plus the reflection, and neither uses `sh`. Sun visibility reaches the pixel ONLY
+through foam (aeration, the shore line, splash cells), the specular glint and the lip
+sheen. On calm open water away from the glint, and on ANY surface seen from below, every
+one of those weights is ~0. Meanwhile `reflection_color` is called as a FUNCTION ARGUMENT,
+so its 28 dependent depth loads ran even where `mirror_w` is pinned to exactly 0 (the
+underside of a surface, submerged). So both marches are now gated on their own
+contribution: `sun_w` (the max of those five weights, times the light colour) against
+`SUN_MIN_L`, and the mirror march against a mirror weight of exactly zero. This is
+importance, not approximation — the admitted error is the weight times the radiance the
+march would have returned.
+
+The threshold has to be in RADIANCE, and that is a lesson the parity pass taught: the
+first cut compared bare blend weights, and a 2% Fresnel weight against an HDR sky (this
+engine has no tonemap, so 1.0 is merely "white") put a ripple-banded difference across a
+whole basin at mean 6.96/255. Weighting by `light_color` and dropping the mirror
+tolerance to exactly zero fixed it.
+
+Measured after, same poses: water **7.15 → 1.40 ms** submerged-looking-up (frame 14.85 →
+9.09, 67 → 110 fps), **5.22 → 1.20** submerged-flat, **2.45 → 1.60** above water at a
+terraced river with a cascade. Parity with `--fixed-dt`: DIG_RIVER at −35 and −60, the
+natural cascade pose, the submerged pose and DIG_DIVE all diff at **mean ≤0.0023, max 1**
+(one pose has max 9 on isolated pixels, 0.000% over 2). The two ray marches that were 78%
+of water are now ~7% of it; the biggest term left is the per-vertex `gi_indirect` at 0.83
+ms, which is the measured next lever if water is ever the problem again.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

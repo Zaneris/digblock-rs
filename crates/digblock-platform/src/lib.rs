@@ -106,6 +106,13 @@ pub struct RunOptions {
 	/// one knob a desktop-vs-web comparison has to hold equal before any
 	/// of its numbers mean anything.
 	pub window_size: Option<(u32, u32)>,
+	/// Step the world by exactly this much per frame instead of by
+	/// measured wall time (`--fixed-dt`). Everything animated rides dt —
+	/// water ripple phase, the fluid sim, the spawn settle — so without
+	/// it two builds of DIFFERENT SPEED reach `--frames N` in different
+	/// world states and a parity capture measures the speed difference
+	/// instead of the change. See `GameClock`.
+	pub fixed_dt: Option<std::time::Duration>,
 }
 
 /// Why `run` came back with a failure the process should report.
