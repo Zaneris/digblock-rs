@@ -3,7 +3,10 @@
 Status: **M4 landed on `feat/rtgi`.** RTGI is the only lighting path and there is no flag.
 The raster stack it replaced is DELETED, not dormant: shadow.rs/shadow.wgsl and the
 cascades, core/light.rs and the Stage-B BFS voxel light field, baked per-vertex AO, all fog,
-the hand-tuned water look, and per-block tint jitter. LIGHT-DESIGN.md went with them.
+the hand-tuned water look, and per-block tint jitter. LIGHT-DESIGN.md went with them. The
+tint is the one item on that list that came BACK (R23) — as an albedo property in
+chunk.wgsl's `fs`, which is a different thing in a different place from the vertex-packed
+step folded into AO that died here.
 
 What lights the world now, in one sentence per stage:
 
@@ -820,6 +823,52 @@ HDR scene target plus one tonemap on the composite would roll the highlight off 
 flattening it. Note the offscreen scene colour is created with the SURFACE format today, so
 radiance is already clamped at the scene pass — a tonemap cannot simply be appended, it needs
 the HDR target first.
+
+### R23 — the per-block tint came back, on the albedo this time
+
+User report: the pre-RTGI engine had a per-block tint that broke up large flat surfaces of a
+single block type, and the flat RTGI look wants it back. It died at the M1 demolition
+(3cbed02) as collateral, not by argument: the old one (b6af702) packed a 3-bit splitmix hash
+of the world block coords into vertex bits 29-31 and folded it into the AO varying, so when
+AO went and the vertex words were repacked tight, the tint had nowhere to live.
+
+It does not need a vertex bit now. `fs` already carries `i.world` and the flat face code, so
+the block cell is `floor(world − n/24)` — nudged half a twelfth along the face's own normal,
+because on the face's axis the world position sits exactly on a cell boundary where `floor`
+answers the neighbour. That is exact for full blocks and shaped sub-boxes alike (the nudge is
+finer than the thinnest sub-box), so: **no vertex-format change, no re-mesh, no mesher touch,
+and no new varying** — which also means the `@invariant` contract with the depth prepass is
+untouched.
+
+**It multiplies albedo, never light.** That placement is the load-bearing part, and it is a
+placement the pre-RTGI engine did not have to think about: the à-trous filter and the temporal
+accumulator only ever see the lighting buffers, so a per-block step written into the light is
+a signal they are built to smooth across exactly the edges it lives on — blurred toward its
+own mean at stride 1, then averaged over up to 512 frames of history. On the albedo it lands
+after the bilateral upsample, where nothing downstream can filter, blur or accumulate it.
+Emissive ink is excluded structurally rather than by a test: the tint is computed inside the
+`i.emissive == 0u` branch, so an authored flame never reaches it, and R22's `ink`-weighted
+gain cannot be detuned by a ±8% albedo underneath it.
+
+Calibration was a four-way sweep (0, ±4%, ±8%, ±12% value with hue at 5/8 of it) captured on
+the DIG_VAULT stone wall, which is the flat one-material surface the feature exists for.
+**±4% is invisible**, and that is worth recording because it is the old jitter's ×0.95..1.05:
+mean |diff| 1.62/255 over a daylit terrain frame, max 10, and a 148-patch sample of the lit
+ground plane moved its luma stdev 28.61 → 28.65 — inside the noise. ±12% quilts: the wall
+stops reading as one material. **±8% value ships**, straight off the sweep. The **hue ships at
+±3%**, dialled back from the sweep's coupled ±5% on a live look — the two knobs are independent
+by construction (the hue rotation moves luminance by only 0.185·d) and the sweep only ever
+varied them together, so the value number is measured and the hue number is a look call on top
+of it. Note the sweep had to be shot in the dim room rather than in daylight, because an albedo
+jitter scales with the light — it varies most where a surface is brightest and all but vanishes
+in shade, which is correct for a material property but means a daylit capture flatters it.
+
+Two things the sweep also settled: the hash is a lowbias32 avalanche over a per-axis odd-stride
+sum of WORLD coords, and a 16× amplified diff shows crisp per-cell patches with no plane
+correlation along any axis and no 16-block tiling — chunk-local coords would tile, which is
+the same reason the old CPU hash took world coords. And the probes' material albedo stays
+untinted, so a block's ±8% does not ride its own bounce light: below the noise floor of a
+1-spp gather, and paying for it would mean a per-cell lookup inside every march.
 
 ## Goals
 

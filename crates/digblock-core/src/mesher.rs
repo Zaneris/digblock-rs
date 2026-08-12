@@ -393,8 +393,10 @@ const PDELTA: [isize; 6] = [
 	-1,                            // East  (−x)
 ];
 
-/// Mesh a chunk from its padded snapshot. `base` is the chunk's world
-/// block origin — the tint hash needs world coordinates.
+/// Mesh a chunk from its padded snapshot. Output is chunk-local: the
+/// `base` world origin this used to take left with the vertex-packed tint
+/// hash, and the world position a shader needs now comes from the
+/// instance-step origin buffer instead.
 pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 	let n = CHUNK_SIZE;
 	// Sized for a busy surface chunk; realloc past this is rare.
@@ -495,8 +497,6 @@ mod tests {
 	fn isolated(d: &ChunkData) -> MeshInput {
 		MeshInput::build(d, |_, _, _| Src::Missing)
 	}
-
-	/// World origin for tests that don't care about the tint pattern.
 
 	#[test]
 	fn lone_dirt_has_six_faces() {

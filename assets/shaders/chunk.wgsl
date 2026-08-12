@@ -4,12 +4,14 @@
 // DDA sun visibility. This shader upsamples bilaterally and combines:
 // tex * (light_color * lambert * sunvis + indirect).
 //
-// Nothing else shades here any more. Baked AO, the Stage-B light
-// nibbles and the per-block tint jitter came out at the M1 demolition —
-// contact darkening is the path tracer's job now. Distance and
-// underwater fog came out with them and came back at M2 as one
-// participating medium (medium_common.wgsl), applied once at the end to
-// emissive ink and lit surfaces alike.
+// Nothing else LIGHTS here any more. Baked AO and the Stage-B light
+// nibbles came out at the M1 demolition — contact darkening is the path
+// tracer's job now. Distance and underwater fog came out with them and
+// came back at M2 as one participating medium (medium_common.wgsl),
+// applied once at the end to emissive ink and lit surfaces alike. The
+// per-block tint jitter came out with the same demolition and came back
+// at R23 as `block_tint`, which is a material property rather than a
+// light and so sits on the albedo (see that function).
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -144,6 +146,84 @@ fn fs_depth(i: DepthOut) -> @location(0) u32 {
 	return i.ncode;
 }
 
+// lowbias32 avalanche (the mixer highlight.wgsl carries) over a linear
+// combination with a distinct odd stride per axis. The avalanche is what
+// destroys the linear relation, so there is no plane of correlated cells
+// along any axis. Coordinates are WORLD, not chunk-local — the same
+// reason the old CPU-side hash took world coords: chunk-local tiles the
+// pattern with a 16-block period, which reads as a grid.
+fn hash3(c: vec3i) -> u32 {
+	var x = bitcast<u32>(c.x) * 0x27d4eb2du
+		+ bitcast<u32>(c.y) * 0x9e3779b9u
+		+ bitcast<u32>(c.z) * 0x85ebca77u;
+	x ^= x >> 16u;
+	x *= 0x7feb352du;
+	x ^= x >> 15u;
+	x *= 0x846ca68bu;
+	x ^= x >> 16u;
+	return x;
+}
+
+// Per-block albedo jitter — one value step and one hue step per block
+// cell, so a hillside of a single grass id stops reading as wallpaper.
+// This is the M1 casualty coming back (R23), and it comes back somewhere
+// else: the old one (b6af702) packed a 3-bit hash into vertex bits 29-31
+// and folded it into the AO varying, so it needed a vertex bit, a
+// re-mesh, and a mesher that knew its chunk's world origin. None of that
+// now — `fs` already has the world position and the face code, and the
+// block cell is one floor() away.
+//
+// It multiplies ALBEDO, and that placement is the load-bearing part. The
+// à-trous filter and the temporal accumulator only ever see the lighting
+// buffers, so a per-block step written into the light is a signal they
+// are built to smooth across exactly the edges it lives on — it would
+// blur toward its own mean at stride 1 and then get averaged over 512
+// frames of history. On the albedo it lands after the bilateral
+// upsample, where nothing downstream can filter, blur or accumulate it.
+//
+// The probes' material albedo stays untinted, so a block's ±8% does not
+// ride its own bounce light. That is deliberate: it is below the noise
+// floor of a 1-spp gather, and paying for it would mean a per-cell
+// lookup inside every march.
+fn block_tint(world: vec3f, ncode: u32) -> vec3f {
+	// ±half-range of each step, calibrated on the DIG_VAULT stone wall —
+	// the flat one-material surface this exists for — against a sweep of
+	// 0, ±4%, ±8% and ±12%. ±4% (the old jitter's ×0.95..1.05, near
+	// enough) measured invisible at 1:1: mean 1.62/255 over a daylit
+	// terrain frame, and a 148-patch sample of the lit ground plane moved
+	// its luma stdev 28.61 → 28.65, i.e. inside the noise. ±12% quilts —
+	// the wall stops reading as one material. The hue is new and is what
+	// keeps a desaturated stone wall from varying in brightness alone,
+	// which reads as grime rather than as stone.
+	//
+	// Note these are ALBEDO half-ranges, so the visible effect scales
+	// with the light: the same wall varies most where it is brightest and
+	// the jitter all but vanishes in shade. That is correct for a
+	// material property and it is the reason the numbers were picked in a
+	// dim torch-lit room rather than in daylight.
+	const TINT_VALUE = 0.08;
+	const TINT_HUE = 0.03;
+	// Step half a twelfth INTO the surface along its own normal: on the
+	// face's axis `world` sits exactly on a cell boundary, where floor()
+	// answers the neighbour for a +face. Half a twelfth is finer than the
+	// thinnest sub-box and coarser than nothing, so the nudge lands
+	// inside this cell whatever the shape — a slab's top face at y+4/12
+	// and a full block's at y+1 both resolve to the cell they belong to.
+	let axis = ncode >> 1u;
+	let n = vec3f(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u))
+		* select(1.0, -1.0, (ncode & 1u) == 1u);
+	let h = hash3(vec3i(floor(world - n * (1.0 / 24.0))));
+	// Two disjoint 16-bit fields of an avalanched hash are independent,
+	// so one hash buys both steps.
+	let v = (f32(h >> 16u) * (1.0 / 65536.0) - 0.5) * 2.0 * TINT_VALUE;
+	// R and B in opposition about a fixed G — a rotation about the grey
+	// axis, warm one way and cool the other. It moves luminance by
+	// (0.299 − 0.114)·d, under a fifth of the hue step, so the two knobs
+	// stay independent enough to tune separately.
+	let d = (f32(h & 0xffffu) * (1.0 / 65536.0) - 0.5) * 2.0 * TINT_HUE;
+	return (1.0 + v) * vec3f(1.0 + d, 1.0, 1.0 - d);
+}
+
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
@@ -246,7 +326,13 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// Strength belongs on the radiance. At full strength this is
 		// identical to what it replaced, so only twilight moves.
 		let sh = sun_acc / wsum * sun_tr;
-		col = tex * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
+		// Per-block jitter belongs to the material, so it multiplies here
+		// and not into either lighting term. Emissive ink never reaches
+		// this line, which is the whole of its exclusion: an authored
+		// flame is not a surface with a colour to vary, and `ink` above
+		// feeds a calibrated gain that a ±8% albedo would detune.
+		let albedo = tex * block_tint(i.world, i.ncode);
+		col = albedo * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
 	}
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel
