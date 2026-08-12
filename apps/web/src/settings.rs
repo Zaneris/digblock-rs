@@ -15,6 +15,8 @@ struct SettingsFile {
 	sfx_vol: Option<f32>,
 	ssr: Option<bool>,
 	ui_scale: Option<f32>,
+	render_scale: Option<f32>,
+	gi_scale_div: Option<u32>,
 	/// Last-used multiplayer display name.
 	name: Option<String>,
 }
@@ -42,6 +44,8 @@ pub fn load(base: Settings) -> Settings {
 		sfx_vol: file.sfx_vol.unwrap_or(base.sfx_vol),
 		ssr: file.ssr.unwrap_or(base.ssr),
 		ui_scale: file.ui_scale.unwrap_or(base.ui_scale),
+		render_scale: file.render_scale.unwrap_or(base.render_scale),
+		gi_scale_div: file.gi_scale_div.unwrap_or(base.gi_scale_div),
 		name: file.name.unwrap_or(base.name),
 	}
 	.clamped()
@@ -55,6 +59,8 @@ pub fn save(s: &Settings) {
 		sfx_vol: Some(s.sfx_vol),
 		ssr: Some(s.ssr),
 		ui_scale: Some(s.ui_scale),
+		render_scale: Some(s.render_scale),
+		gi_scale_div: Some(s.gi_scale_div),
 		name: (!s.name.is_empty()).then(|| s.name.clone()),
 	};
 	let Ok(json) = serde_json::to_string(&file) else {

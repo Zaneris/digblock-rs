@@ -230,14 +230,19 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			2,
 			DIM,
 			format_args!(
-				"gpu  pre {:5.2} main {:5.2} water {:5.2} ovl {:5.2} | gi {:5.2} trace {:5.2} denoise {:5.2} ms",
+			// `ovl` is not here: it measures 0.00 in every capture this
+				// engine has taken, and the line is at its column budget.
+				// It is still a CSV column.
+				"gpu  pre {:5.2} main {:5.2} water {:5.2} up {:5.2} | gi {:5.2} trace {:5.2} den {:5.2} blit {:5.2} vm {:5.2}",
 				g.prepass_ms,
 				g.main_ms,
 				g.water_ms,
-				g.overlay_ms,
+				g.upscale_ms,
 				g.gi_ms,
 				g.gi_trace_ms,
-				g.gi_denoise_ms
+				g.gi_denoise_ms,
+				g.depth_blit_ms,
+				g.viewmodel_ms
 			),
 		),
 		None => line(2, DIM, format_args!("gpu  n/a")),
@@ -284,13 +289,18 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		5,
 		DIM,
 		format_args!(
-			"draw {:>5} drawn {:>5} culled | water {:>4} calls {:>5} tri {:6.2}M vram {:6.1}M",
+			"draw {:>5} drawn {:>5} culled | water {:>4} calls {:>5} tri {:6.2}M vram {:6.1}M | sky {:>4.0} emit {:>4}",
 			r.chunks_drawn,
 			r.chunks_culled,
 			r.water_draws,
 			r.draw_calls,
 			f64::from(r.triangles) / 1.0e6,
-			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0)
+			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
+			// The GI window's sky ceiling and emitter count. Both RATCHET
+			// as the world is explored — see RenderStats::sky_y. If frame
+			// time is degrading over a session, watch these two.
+			r.sky_y,
+			r.emitters
 		),
 	);
 	// Connection health. TWO round trips, deliberately, because they answer
@@ -942,6 +952,9 @@ mod tests {
 			gi_ms: 999.99,
 			gi_trace_ms: 999.99,
 			gi_denoise_ms: 999.99,
+			depth_blit_ms: 999.99,
+			viewmodel_ms: 999.99,
+			upscale_ms: 999.99,
 		});
 		stats.gauges.gen_queue = 9999;
 		stats.gauges.mesh_queue = 9999;
@@ -955,6 +968,9 @@ mod tests {
 		stats.render.water_draws = 9999;
 		stats.render.draw_calls = 99999;
 		stats.render.chunks_resident = 99999;
+		// The GI window's full-height ceiling and a saturated emitter map.
+		stats.render.sky_y = 255.0;
+		stats.render.emitters = 9999;
 		// Connected, saturated. Without this the net line under test would
 		// be the short "offline" string and the budget would go unchecked
 		// on the one line that has the most fields.

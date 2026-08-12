@@ -30,6 +30,11 @@ pub enum Key {
 	Digit(u8),
 	/// Grave/backtick: debug overlay toggle.
 	Backquote,
+	/// F7: rebuild the GI window's derived state from what is actually
+	/// resident. A debug drill routed to the ENGINE, unlike F8/F9/F10,
+	/// which the platform shell handles itself — this one needs GI state
+	/// the platform crate cannot see.
+	F7,
 	Escape,
 	Enter,
 	Backspace,
@@ -136,6 +141,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::Digit8 => Key::Digit(8),
 		K::Digit9 => Key::Digit(9),
 		K::Backquote => Key::Backquote,
+		K::F7 => Key::F7,
 		K::Escape => Key::Escape,
 		K::Enter | K::NumpadEnter => Key::Enter,
 		K::Backspace => Key::Backspace,

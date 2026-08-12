@@ -25,10 +25,26 @@ pub const Q_WATER: u32 = 6;
 pub const Q_GI: u32 = 8;
 /// The half-res GI trace (probe gather + sun ray).
 pub const Q_GI_TRACE: u32 = 10;
-/// Temporal accumulation + à-trous. Unwritten until M4 lands them;
-/// unwritten queries resolve to 0, so the column simply reads 0.
+/// À-trous iteration 1 (stride 1).
+///
+/// The two iterations need SEPARATE pairs. They used to share this one,
+/// and `encode_atrous` writes it unconditionally, so the stride-2 pass
+/// overwrote the stride-1 pass and the reported "denoise" number was one
+/// iteration masquerading as both — the same class of blind spot the
+/// header warns about, one level down from a pass.
 pub const Q_GI_DENOISE: u32 = 12;
-const QUERY_COUNT: u32 = 14;
+/// À-trous iteration 2 (stride 2).
+pub const Q_GI_DENOISE2: u32 = 14;
+/// The D32F → R32Float depth blit. A full-screen read+write of every
+/// pixel that ran untimed since it was written.
+pub const Q_DEPTH_BLIT: u32 = 16;
+/// The viewmodel pass — its own render pass with its own depth clear.
+pub const Q_VIEWMODEL: u32 = 18;
+/// The upscale pass: render resolution → the surface. A straight 1:1
+/// blit at render scale 1.0, so this is also the cost of the pass
+/// boundary the restructure added.
+pub const Q_UPSCALE: u32 = 20;
+const QUERY_COUNT: u32 = 22;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
 /// Readback ring depth; covers the 2-3 frame map latency.
 const SLOTS: usize = 3;
@@ -122,7 +138,12 @@ impl GpuTimer {
 				overlay_ms: pass(Q_OVERLAY as usize),
 				gi_ms: pass(Q_GI as usize),
 				gi_trace_ms: pass(Q_GI_TRACE as usize),
-				gi_denoise_ms: pass(Q_GI_DENOISE as usize),
+				// BOTH iterations, which is what this column always claimed
+				// to report and never did.
+				gi_denoise_ms: pass(Q_GI_DENOISE as usize) + pass(Q_GI_DENOISE2 as usize),
+				depth_blit_ms: pass(Q_DEPTH_BLIT as usize),
+				viewmodel_ms: pass(Q_VIEWMODEL as usize),
+				upscale_ms: pass(Q_UPSCALE as usize),
 			};
 			drop(data);
 			slot.read.unmap();

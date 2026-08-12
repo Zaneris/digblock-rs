@@ -1,5 +1,7 @@
 use digblock_platform::RunOptions;
-use digblock_render::settings::{UI_SCALE_MAX, UI_SCALE_MIN};
+use digblock_render::settings::{
+	GI_SCALE_DIVISORS, RENDER_SCALE_MAX, RENDER_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_MIN,
+};
 use digblock_render::{Engine, EngineConfig};
 
 mod audio;
@@ -43,6 +45,15 @@ fn main() {
 	//            forward and one back, instead of the 30 blocks/s flyover —
 	//            a screen-space artifact scales with screen motion, so the
 	//            two paths are two regimes)
+	//   --render-scale S (DEV/CAPTURE ONLY — no slider exposes it and it
+	//            is locked at 100% for players. World resolution as a
+	//            fraction of the surface; the UI stays native)
+	//   --gi-scale D (GI resolve divisor against the render size: 1/2/3/4;
+	//            2 shipped, 3 is the interactive high-DPI default. This is
+	//            the knob that pays — see settings::density_gi_div)
+	//   --bench-speed B (flyover blocks/s, default 30 — every BENCH.md
+	//            baseline's value. 30 is 7.5x walking pace and a different
+	//            STREAMING regime; use 4 to soak at how the game is played)
 	//   --size WxH (logical window size; the GI resolve is half-res off
 	//            the surface, so this is what a cross-platform comparison
 	//            has to hold equal)
@@ -69,6 +80,8 @@ fn main() {
 	let mut cli_ssr: Option<bool> = None;
 	let mut cli_tod: Option<f32> = None;
 	let mut cli_ui_scale: Option<f32> = None;
+	let mut cli_render_scale: Option<f32> = None;
+	let mut cli_gi_scale: Option<u32> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -109,6 +122,39 @@ fn main() {
 			// with screen motion, so the flyover and the walk are two
 			// regimes and a fix has to be measured in both.
 			"--walk" => config.walk = true,
+			// Flyover speed in blocks/s. The default 30 is 7.5x WALK_SPEED
+			// and is a different STREAMING regime, not just a faster one:
+			// at that pace the GI upload budget cannot keep up. Use 4 for a
+			// soak that matches how the game is played. Leave the DEFAULT
+			// alone — every BENCH.md baseline was taken at 30.
+			"--bench-speed" => {
+				config.bench_speed = parse_or_die("--bench-speed", args.next());
+			}
+			// Fire the F7 GI drill at frame N. Pair with --fly/--frames so
+			// the camera is frozen either side of it: same pose, same
+			// thermals, only the GI's derived age differs.
+			"--gi-drill-at" => {
+				config.gi_drill_at = Some(parse_or_die("--gi-drill-at", args.next()));
+			}
+			// The WORLD's resolution as a fraction of the surface; the
+			// upscale pass takes it to native and the UI is never touched.
+			// An explicit value also suppresses the density-derived
+			// default (see `render_scale_auto`).
+			"--render-scale" => {
+				let v: f32 = parse_or_die("--render-scale", args.next());
+				cli_render_scale = Some(v.clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX));
+			}
+			// GI resolve divisor against the RENDER size: 1, 2 (default),
+			// 3 or 4. Must divide exactly — chunk.wgsl's bilateral
+			// upsample is a 4-tap gather over an integer ratio.
+			"--gi-scale" => {
+				let d: u32 = parse_or_die("--gi-scale", args.next());
+				if !GI_SCALE_DIVISORS.contains(&d) {
+					eprintln!("--gi-scale wants one of {GI_SCALE_DIVISORS:?}");
+					std::process::exit(2);
+				}
+				cli_gi_scale = Some(d);
+			}
 			// A specific window size, LOGICAL. The GI resolve is half-res off
 			// the surface, so its cost scales with this directly — which makes
 			// it the one thing a desktop-vs-web comparison must hold equal
@@ -276,6 +322,8 @@ fn main() {
 			sfx_vol: config.sfx_vol,
 			ssr: config.ssr,
 			ui_scale: config.ui_scale,
+			render_scale: config.render_scale,
+			gi_scale_div: config.gi_scale_div,
 			name: String::new(),
 		});
 		config.draw_dist = saved.draw_dist;
@@ -283,6 +331,14 @@ fn main() {
 		config.sfx_vol = saved.sfx_vol;
 		config.ssr = saved.ssr;
 		config.ui_scale = saved.ui_scale;
+		// A saved value (or a --gi-scale flag, applied after this block) is
+		// an explicit preference; only its absence lets density pick.
+		// `settings::load` leaves `base` untouched when the file has no
+		// entry, so an unchanged value means nothing was saved.
+		config.gfx_defaults_auto =
+			cli_gi_scale.is_none() && saved.gi_scale_div == config.gi_scale_div;
+		config.render_scale = saved.render_scale;
+		config.gi_scale_div = saved.gi_scale_div;
 		// --name beats the remembered name (validated above vs at load).
 		if name.is_none() && !saved.name.is_empty() {
 			name = Some(saved.name);
@@ -297,6 +353,15 @@ fn main() {
 	}
 	if let Some(u) = cli_ui_scale {
 		config.ui_scale = u.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+	}
+	if let Some(d) = cli_gi_scale {
+		config.gi_scale_div = d;
+		config.gfx_defaults_auto = false;
+	}
+	// Dev/capture only — no slider exposes render scale (settings.rs says
+	// why), so this is the one way it moves.
+	if let Some(r) = cli_render_scale {
+		config.render_scale = r;
 	}
 
 	// The menu is for interactive runs only; --join must not sit on a

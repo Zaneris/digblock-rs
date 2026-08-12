@@ -248,6 +248,20 @@ pub struct RenderStats {
 	pub water_draws: u32,
 	pub draw_calls: u32,
 	pub triangles: u32,
+	/// The GI window's sky ceiling (R18) — the highest occupied cell in the
+	/// whole window, and the early-out every non-descending ray in the
+	/// resolve breaks on. It is a session HIGH-WATER MARK in practice: the
+	/// coarse mirror it is scanned from is never cleared on eviction, so
+	/// this climbs as terrain is explored and does not come back down. That
+	/// makes it the number to watch when frame time degrades over a session
+	/// — a filled window is the cost the engine actually has, and an empty
+	/// one (sky_y = -1, every ray breaking on iteration 1) is the cheapest
+	/// it can ever be.
+	pub sky_y: f32,
+	/// Emitter cells the GI knows about. Bounded by `MAX_LIGHTS` on the
+	/// GPU but NOT on the CPU: the map is only pruned when a chunk
+	/// re-classifies to zero emitters, so this also ratchets.
+	pub emitters: u32,
 }
 
 /// GPU pass durations from timestamp queries (2-3 frames latent).
@@ -263,8 +277,17 @@ pub struct GpuPassMs {
 	pub gi_ms: f32,
 	/// The half-res GI trace.
 	pub gi_trace_ms: f32,
-	/// Temporal accumulation + à-trous; 0.0 until they exist.
+	/// Temporal accumulation + à-trous — BOTH iterations summed. The two
+	/// shared one query pair until the second silently overwrote the
+	/// first, so this column reported the stride-2 pass alone.
 	pub gi_denoise_ms: f32,
+	/// The D32F → R32Float depth blit — a full-screen read+write that ran
+	/// untimed since it was written.
+	pub depth_blit_ms: f32,
+	/// The viewmodel pass (its own pass, its own depth clear).
+	pub viewmodel_ms: f32,
+	/// The upscale pass: render resolution → the surface.
+	pub upscale_ms: f32,
 }
 
 /// Per-frame snapshot for the debug overlay: everything it draws.
@@ -392,10 +415,10 @@ pub struct Metrics {
 const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,dropped,refresh_ms,\
 busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,gi_ms,upl_ms,prep_ms,enc_ms,\
 gpu_prepass_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
-gpu_gi_ms,gpu_gi_trace_ms,gpu_gi_denoise_ms,\
+gpu_gi_ms,gpu_gi_trace_ms,gpu_gi_denoise_ms,gpu_depth_blit_ms,gpu_viewmodel_ms,gpu_upscale_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
-drawn,culled,water,draws,tris,gpu_bytes,budget_ms";
+drawn,culled,water,draws,tris,gpu_bytes,budget_ms,sky_y,emitters";
 
 impl Metrics {
 	/// `spike_log` comes from the launcher: core is env-free by convention,
@@ -750,10 +773,10 @@ impl Metrics {
 				"{t:.1},{true_fps:.1},{:.2},{:.2},{:.2},{:.2},{},{},{:.2},\
 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {:.3},{:.3},{:.3},{:.3},\
-{:.3},{:.3},{:.3},\
+{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{:.2}",
+{},{},{},{},{},{},{:.2},{:.1},{}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -780,6 +803,9 @@ impl Metrics {
 				gpu.gi_ms,
 				gpu.gi_trace_ms,
 				gpu.gi_denoise_ms,
+				gpu.depth_blit_ms,
+				gpu.viewmodel_ms,
+				gpu.upscale_ms,
 				self.gen_jobs.count,
 				self.gen_jobs.avg_ms(),
 				self.gen_jobs.max_ms,
@@ -805,6 +831,8 @@ impl Metrics {
 				r.triangles,
 				self.gpu_buffer_bytes,
 				self.stream_budget_ms,
+				r.sky_y,
+				r.emitters,
 			);
 			let _ = w.flush();
 		}

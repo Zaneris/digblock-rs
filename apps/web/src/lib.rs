@@ -51,6 +51,8 @@ pub fn start() -> Result<(), JsValue> {
 		sfx_vol: config.sfx_vol,
 		ssr: config.ssr,
 		ui_scale: config.ui_scale,
+		render_scale: config.render_scale,
+		gi_scale_div: config.gi_scale_div,
 		name: String::new(),
 	});
 	config.draw_dist = saved.draw_dist;
@@ -58,6 +60,25 @@ pub fn start() -> Result<(), JsValue> {
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
 	config.ui_scale = saved.ui_scale;
+	// Density picks both only when NEITHER was saved — the engine applies
+	// them at the first `set_scale_factor`, where the backing scale is
+	// first known (see `gfx_defaults_auto`).
+	config.gfx_defaults_auto =
+		saved.render_scale == config.render_scale && saved.gi_scale_div == config.gi_scale_div;
+	config.render_scale = saved.render_scale;
+	config.gi_scale_div = saved.gi_scale_div;
+	if let Some(r) = param::<f32>(&params, "renderscale") {
+		config.render_scale = r.clamp(
+			digblock_render::settings::RENDER_SCALE_MIN,
+			digblock_render::settings::RENDER_SCALE_MAX,
+		);
+	}
+	if let Some(d) = param::<u32>(&params, "giscale") {
+		if digblock_render::settings::GI_SCALE_DIVISORS.contains(&d) {
+			config.gi_scale_div = d;
+			config.gfx_defaults_auto = false;
+		}
+	}
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(10, 32);
 	}

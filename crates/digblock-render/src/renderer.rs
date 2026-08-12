@@ -6,7 +6,10 @@ use digblock_core::mesher::{quad_indices, MeshData};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 
-use crate::gpu_timer::{GpuTimer, Q_MAIN, Q_OVERLAY, Q_PREPASS, Q_WATER};
+use crate::gpu_timer::{
+	GpuTimer, Q_DEPTH_BLIT, Q_GI_DENOISE, Q_GI_DENOISE2, Q_MAIN, Q_OVERLAY, Q_PREPASS, Q_UPSCALE,
+	Q_VIEWMODEL, Q_WATER,
+};
 use crate::overlay::Overlay;
 use crate::sky::SkyDraw;
 use crate::texture::BlockTextures;
@@ -163,9 +166,10 @@ pub struct RenderConfig {
 	/// raw albedo (`DIG_GI=probes`) — the P2 gate view.
 	pub debug_gi_probes: bool,
 	/// Cost-stub mask (`DIG_STUB`) — see `EngineConfig::stub`. The shader
-	/// halves ride `frame.misc.z`; the two bits here are pass-level and
-	/// have to be honoured on this side, because a term you can only
-	/// stub INSIDE a shader can never tell you what its geometry costs.
+	/// halves ride `frame.misc.z` (water) and the resolve's `jitter.w`;
+	/// the pass-level bits are honoured on this side, because a term you
+	/// can only stub INSIDE a shader can never tell you what its geometry
+	/// costs.
 	pub stub: u32,
 }
 
@@ -174,10 +178,11 @@ pub struct RenderConfig {
 /// water perf rounds went without: R17 and R19 were both reasoned from
 /// code and measured on a pose that could not show the term they moved.
 ///
-/// The shader-side bits are read in water.wgsl (and the resolve) through
-/// a UNIFORM branch, so an un-stubbed run pays nothing and a stubbed one
-/// never diverges within a wave. The two pass-level bits are honoured in
-/// `Renderer::render`.
+/// The shader-side bits are read in water.wgsl (through `frame.misc.z`)
+/// and gi_resolve.wgsl (through its own `jitter.w`, since the resolve does
+/// not bind the frame UBO) as a UNIFORM branch, so an un-stubbed run pays
+/// nothing and a stubbed one never diverges within a wave. The pass-level
+/// bits are honoured in `Renderer::render`.
 pub mod stub {
 	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is
 	/// ~120 dependent texture loads per water vertex inside C1, which is
@@ -203,7 +208,42 @@ pub mod stub {
 	/// Bounds everything else: whatever this saves is the whole budget.
 	pub const NOWATER: u32 = 1 << 7;
 
-	const NAMES: [(&str, u32); 8] = [
+	// The GI half. Water had stubs and the GI did not, which is why two
+	// rounds of water tuning have measured numbers behind them and the
+	// resolve — the frame's most expensive pass — has never had one term
+	// attributed. These ride the resolve's own uniform (`jitter.w`), not
+	// `frame.misc.z`: the resolve does not bind the frame UBO.
+	/// The resolve's per-pixel sun ray (up to 320 DDA iterations) → lit.
+	/// The single largest ray budget in the frame.
+	pub const GISUN: u32 = 1 << 8;
+	/// The resolve's cosine-hemisphere final gather (96 iterations) → the
+	/// cheap `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
+	pub const GIGATHER: u32 = 1 << 9;
+	/// The resolve's per-pixel NEE shadow ray (64 iterations) → skipped.
+	/// Zero in any scene with no emitter in range, by construction.
+	pub const GINEE: u32 = 1 << 10;
+	/// The whole resolve fragment → a constant on the first line: the
+	/// raster + history floor under every term above, the `wflat` twin.
+	pub const GIFLAT: u32 = 1 << 11;
+	/// Skip both à-trous iterations. Pass-level — the scene then reads the
+	/// raw resolve out of `[0]` and history goes stale, which is exactly
+	/// the point: this measures the filter, not the picture.
+	pub const GIATROUS: u32 = 1 << 12;
+	/// Skip the chunk draws in the SCENE pass only. The prepass still runs,
+	/// so depth and face codes are intact and the GI is untouched — this is
+	/// the one clean raster stub.
+	pub const NOSCENE: u32 = 1 << 13;
+	/// Skip the chunk draws in BOTH the prepass and the scene pass.
+	///
+	/// Read this as an UPPER BOUND on chunk-geometry cost, never as an
+	/// estimate, and never subtract it from `noscene` to "get" the prepass.
+	/// With no prepass geometry the depth buffer stays cleared, so every
+	/// resolve pixel takes the sky early-out and the frame's most expensive
+	/// pass goes trivially cheap too. A prepass-only stub would carry the
+	/// same confound with none of the honesty, which is why there isn't one.
+	pub const NORASTER: u32 = 1 << 14;
+
+	const NAMES: [(&str, u32); 15] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -212,6 +252,13 @@ pub mod stub {
 		("wflat", WFLAT),
 		("spray", SPRAY),
 		("nowater", NOWATER),
+		("gisun", GISUN),
+		("gigather", GIGATHER),
+		("ginee", GINEE),
+		("giflat", GIFLAT),
+		("giatrous", GIATROUS),
+		("noscene", NOSCENE),
+		("noraster", NORASTER),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the
@@ -242,7 +289,11 @@ pub mod stub {
 pub struct FrameScene<'a> {
 	pub uniforms: FrameUniforms,
 	pub view_proj: glam::Mat4,
+	/// The SURFACE size. The world may render smaller (see `scale`), but
+	/// the UI, name tags and every hit-test stay on this one.
 	pub size: (u32, u32),
+	/// World render scale + GI divisor for this frame.
+	pub scale: RenderScale,
 	/// Whole-UI scale for this frame (device scale factor × window size).
 	pub ui_scale: f32,
 	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
@@ -449,8 +500,9 @@ pub struct Renderer {
 	gi: crate::gi::GiDraw,
 	/// Draw the voxel-window debug raymarch over the scene (DIG_GI).
 	debug_gi: bool,
-	/// Cost-stub mask (DIG_STUB) — only the two pass-level bits are read
-	/// here; the rest ride the frame uniform into the shaders.
+	/// Cost-stub mask (DIG_STUB) — only the pass-level bits are read here;
+	/// the rest ride the frame uniform (water) or the resolve's own
+	/// uniform (GI) into the shaders.
 	stub: u32,
 	/// Debug overlay; always constructed (cheap) so the device-loss
 	/// rebuild path recreates it for free.
@@ -479,9 +531,12 @@ pub struct Renderer {
 	/// Layout of `FrameTargets::depth_blit_bg` (the live depth texture).
 	depth_blit_bgl: wgpu::BindGroupLayout,
 	linear_sampler: wgpu::Sampler,
-	/// Composites the offscreen scene into the swapchain at the start of
-	/// the water pass.
+	/// Composites the offscreen scene into the post target at the start of
+	/// the water pass. Has a depth-stencil state, so it may ONLY run in a
+	/// pass that has a depth attachment — see `upscale_pipeline`.
 	blit_pipeline: wgpu::RenderPipeline,
+	/// The same shader, depthless, for the standalone upscale pass.
+	upscale_pipeline: wgpu::RenderPipeline,
 	/// Resolves the live depth into the R32Float copy between the scene
 	/// and water passes (WebGPU forbids copying into a depth texture).
 	depth_blit_pipeline: wgpu::RenderPipeline,
@@ -491,8 +546,48 @@ pub struct Renderer {
 /// Renderer-owned per-frame render targets. The platform hands over only
 /// the swapchain view; depth and the offscreen scene color live here so
 /// the water pass can sample both.
+/// The two resolutions the world renders at, as one value so they cannot
+/// drift apart.
+///
+/// `render` is a fraction of the surface and `gi` is a whole-integer
+/// fraction of THAT. Anchoring the GI to the surface instead would give a
+/// ratio like 0.5/0.7 at render 0.7, and `chunk.wgsl`'s 4-tap bilateral
+/// gather walks a footprint that assumes an exact integer ratio — the
+/// upsample would read texels that no longer line up with the pixels it
+/// is weighting. `gi_ratio` is the number the shader is handed.
+#[derive(Clone, Copy, PartialEq)]
+pub struct RenderScale {
+	pub render: f32,
+	pub gi_div: u32,
+}
+
+impl RenderScale {
+	/// World render size for a surface size. At least 1x1 — a zero-sized
+	/// attachment is a validation error, and a minimized window can ask.
+	fn render_size(self, surface: (u32, u32)) -> (u32, u32) {
+		let s = self.render.clamp(0.1, 1.0);
+		(
+			((surface.0 as f32 * s).round() as u32).max(1),
+			((surface.1 as f32 * s).round() as u32).max(1),
+		)
+	}
+
+	/// GI resolve size: the render size divided by `gi_div`, rounded UP so
+	/// the GI buffer always covers every render pixel. Rounding down would
+	/// leave the last row/column of a non-divisible render size reading
+	/// past the edge of the GI texture.
+	fn gi_size(self, surface: (u32, u32)) -> (u32, u32) {
+		let r = self.render_size(surface);
+		let d = self.gi_div.max(1);
+		(r.0.div_ceil(d).max(1), r.1.div_ceil(d).max(1))
+	}
+}
+
 struct FrameTargets {
 	size: (u32, u32),
+	/// The scale the targets were built at — part of the rebuild key, so
+	/// moving either slider re-creates them.
+	scale: RenderScale,
 	/// Scene-pass depth attachment; resolved into `depth_copy_view` by
 	/// the depth-blit pass before water. (Views keep textures alive.)
 	depth_view: wgpu::TextureView,
@@ -506,12 +601,21 @@ struct FrameTargets {
 	/// it samples the depth copy.
 	normal_view: wgpu::TextureView,
 	/// Offscreen scene color view: solids + sky render here; water
-	/// samples it (refraction/SSR) while blending into the swapchain.
+	/// samples it (refraction/SSR) while blending into `post_view`.
 	scene_view: wgpu::TextureView,
+	/// Where the world is FINISHED, at render resolution: water, the
+	/// viewmodel and the GI debug view draw here over a blit of
+	/// `scene_view`, and the upscale pass takes this to the surface.
+	/// Separate from `scene_view` because water samples what it blends
+	/// over — see the comment at its creation.
+	post_view: wgpu::TextureView,
 	/// Water group 0: the water frame UBO + scene targets.
 	water_bg: wgpu::BindGroup,
-	/// Blit group 0: scene color + linear sampler.
+	/// Blit group 0: scene color + linear sampler — the water pass's
+	/// opening composite of `scene_view` into `post_view`.
 	blit_bg: wgpu::BindGroup,
+	/// Upscale group 0: `post_view` + linear sampler.
+	upscale_bg: wgpu::BindGroup,
 	/// Depth-blit group 0: the live depth texture.
 	depth_blit_bg: wgpu::BindGroup,
 	/// GI lighting pairs, half res: indirect rgb + view distance, and sun
@@ -680,6 +784,7 @@ impl Renderer {
 			&textures.layer_means,
 			surface_format,
 			config.debug_gi_probes,
+			config.stub,
 		);
 
 		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the
@@ -782,6 +887,35 @@ impl Renderer {
 				fs_entry: Some("fs"),
 				vertex_buffers: &[],
 				cull: None,
+				depth_write: false,
+				depth_compare: wgpu::CompareFunction::Always,
+				depth_bias: Default::default(),
+				blend: None,
+				write_mask: wgpu::ColorWrites::ALL,
+			},
+		);
+
+		// The upscale: the same shader and layout as `blit_pipeline`, but
+		// DEPTHLESS. `build` gives a pipeline a depth-stencil state, and a
+		// pipeline that has one may only run in a pass that has a depth
+		// attachment — which is why `blit_pipeline` works inside the water
+		// pass and silently invalidates the encoder in a standalone
+		// fullscreen pass. The failure mode is worth remembering: an
+		// invalid pass poisons the whole encoder, so `finish()` yields a
+		// command buffer that drops EVERY pass, and the window goes black
+		// with no HUD rather than showing a wrong-looking blit.
+		let upscale_pipeline = crate::pipeline_builder::build_depthless(
+			device,
+			surface_format,
+			&crate::pipeline_builder::PipelineDesc {
+				label: "upscale",
+				layout: &blit_layout,
+				module: &blit_shader,
+				vs_entry: "vs",
+				fs_entry: Some("fs"),
+				vertex_buffers: &[],
+				cull: None,
+				// Ignored — the pass has no depth attachment.
 				depth_write: false,
 				depth_compare: wgpu::CompareFunction::Always,
 				depth_bias: Default::default(),
@@ -946,6 +1080,7 @@ impl Renderer {
 			depth_blit_bgl,
 			linear_sampler,
 			blit_pipeline,
+			upscale_pipeline,
 			depth_blit_pipeline,
 			surface_format,
 		}
@@ -1145,6 +1280,9 @@ impl Renderer {
 
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.spray.remove_chunk(pos);
+		// Before the early return: GI residency is its own set, and an
+		// un-meshed chunk still owns an emitter entry.
+		self.gi.remove_chunk(pos);
 		let Some(idx) = self.by_pos.remove(&pos) else {
 			return;
 		};
@@ -1171,6 +1309,11 @@ impl Renderer {
 			}
 		}
 		self.by_pos.clear();
+		// A world swap used to carry the OLD world's emitters and coarse
+		// occupancy forward into the new one. Here — unlike a single
+		// eviction — wiping the mirror is safe and correct, because every
+		// slot is about to be rewritten by the incoming world anyway.
+		self.gi.clear_derived_state();
 	}
 
 	/// One linear pass over the resident set producing every list this
@@ -1226,13 +1369,17 @@ impl Renderer {
 	/// (Re)build the size-dependent frame targets when the size changes.
 	/// Covers first frame, window resize, resume-with-new-size, and the
 	/// device-loss rebuild (which resets `targets` to None).
-	fn ensure_targets(&mut self, gpu: &Gpu, size: (u32, u32)) {
-		if self.targets.as_ref().map(|t| t.size) == Some(size) {
+	fn ensure_targets(&mut self, gpu: &Gpu, size: (u32, u32), scale: RenderScale) {
+		if self.targets.as_ref().map(|t| (t.size, t.scale)) == Some((size, scale)) {
 			return;
 		}
+		// `size` stays the SURFACE size — it is the rebuild key, and it is
+		// what the overlay and every UI hit-test use. Only the world's
+		// targets shrink.
+		let render = scale.render_size(size);
 		let extent = wgpu::Extent3d {
-			width: size.0.max(1),
-			height: size.1.max(1),
+			width: render.0,
+			height: render.1,
 			depth_or_array_layers: 1,
 		};
 		let depth = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -1279,6 +1426,27 @@ impl Renderer {
 			view_formats: &[],
 		});
 		let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
+		// The post target: water, the viewmodel and the GI debug view draw
+		// HERE while sampling `scene` for refraction and SSR.
+		//
+		// Two textures rather than one, and this is not optional. Water
+		// reads the scene colour it is blending over, so a pass that both
+		// writes and samples one texture is a read-write hazard on the same
+		// resource — and an invalid pass poisons the whole encoder, so
+		// `finish()` yields a command buffer that drops EVERY pass in the
+		// frame. The symptom is a completely black window with no HUD, not
+		// a wrong-looking water surface.
+		let post = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("post color"),
+			size: extent,
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: self.surface_format,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+			view_formats: &[],
+		});
+		let post_view = post.create_view(&wgpu::TextureViewDescriptor::default());
 		// Both group-0 combos that depend on the resize-recreated
 		// textures are (re)built here: the water frame+scene group and
 		// the blit group.
@@ -1318,6 +1486,22 @@ impl Renderer {
 				},
 			],
 		});
+		// What the UPSCALE samples: the post target, i.e. the finished
+		// world at render resolution.
+		let upscale_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("upscale"),
+			layout: &self.blit_bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(&post_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+				},
+			],
+		});
 		let depth_blit_bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
 			label: Some("depth blit"),
 			layout: &self.depth_blit_bgl,
@@ -1326,14 +1510,16 @@ impl Renderer {
 				resource: wgpu::BindingResource::TextureView(&depth_view),
 			}],
 		});
-		// The GI resolve targets at half resolution — the chunk shader's
-		// bilateral upsample bridges the gap.
+		// The GI resolve targets at a whole-integer fraction of the RENDER
+		// size — the chunk shader's bilateral upsample bridges the gap,
+		// and its 4-tap gather is why the ratio must divide exactly.
+		let gi = scale.gi_size(size);
 		let gi_tex = |format, label| {
 			gpu.device.create_texture(&wgpu::TextureDescriptor {
 				label: Some(label),
 				size: wgpu::Extent3d {
-					width: (size.0 / 2).max(1),
-					height: (size.1 / 2).max(1),
+					width: gi.0,
+					height: gi.1,
 					depth_or_array_layers: 1,
 				},
 				mip_level_count: 1,
@@ -1394,12 +1580,15 @@ impl Renderer {
 		self.gi.reset_history();
 		self.targets = Some(FrameTargets {
 			size,
+			scale,
 			depth_view,
 			depth_copy_view,
 			normal_view,
 			scene_view,
+			post_view,
 			water_bg,
 			blit_bg,
+			upscale_bg,
 			depth_blit_bg,
 			gi_indirect_view,
 			gi_sun_view,
@@ -1410,6 +1599,17 @@ impl Renderer {
 	}
 
 	/// The GI voxel window's radius in chunks, as this renderer built it.
+	/// F7 drill: drop the GI's ratcheting derived state — see
+	/// `GiDraw::clear_derived_state`.
+	pub fn gi_clear_derived_state(&mut self) {
+		self.gi.clear_derived_state();
+	}
+
+	/// `sky_y` and the emitter count, for the F7 drill's log line.
+	pub fn gi_debug_state(&self) -> (f32, u32) {
+		self.gi.debug_state()
+	}
+
 	pub fn gi_window_chunks(&self) -> i32 {
 		self.gi.window_chunks()
 	}
@@ -1427,6 +1627,7 @@ impl Renderer {
 			uniforms: ref frame,
 			view_proj,
 			size,
+			scale,
 			ui_scale,
 			players,
 			overlay,
@@ -1437,15 +1638,18 @@ impl Renderer {
 			chat,
 			nametags,
 		} = *scene;
-		self.ensure_targets(gpu, size);
+		self.ensure_targets(gpu, size, scale);
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
 		self.highlight.set_target(gpu, highlight_target);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
+		let (sky_y, emitters) = self.gi.debug_state();
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
+			sky_y,
+			emitters,
 			..Default::default()
 		};
 		// GI parameters into the frame uniforms (quantized caster, cascade
@@ -1542,12 +1746,17 @@ impl Renderer {
 				pass.set_pipeline(&self.prepass_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				draw.bind(&mut pass);
-				for &i in &self.lists.scene {
-					let chunk = &draw.chunks[i as usize];
-					let Some(mesh) = chunk.solid.as_ref() else {
-						continue;
-					};
-					stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
+				// NORASTER empties the depth buffer as well as the pass, so
+				// the resolve downstream takes the sky early-out everywhere
+				// — an upper bound on geometry, not a prepass measurement.
+				if self.stub & stub::NORASTER == 0 {
+					for &i in &self.lists.scene {
+						let chunk = &draw.chunks[i as usize];
+						let Some(mesh) = chunk.solid.as_ref() else {
+							continue;
+						};
+						stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
+					}
 				}
 			}
 
@@ -1570,7 +1779,7 @@ impl Renderer {
 						depth_slice: None,
 					})],
 					depth_stencil_attachment: None,
-					timestamp_writes: None,
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_DEPTH_BLIT)),
 					occlusion_query_set: None,
 				});
 				pass.set_pipeline(&self.depth_blit_pipeline);
@@ -1597,11 +1806,20 @@ impl Renderer {
 			// once-filtered image parked in [1] as next frame's history.
 			// Without this the resolve's only estimator is time, which forces
 			// a history so deep it smears under motion — see gi_atrous.wgsl.
+			// DIG_STUB=giatrous drops both iterations, which leaves the
+			// scene reading the RAW resolve out of [0] and next frame's
+			// history stale. That is the honest price of measuring the
+			// filter: the number is the filter's cost, not a picture.
 			for (i, bind) in targets.gi_atrous_bg.iter().enumerate() {
+				if self.stub & stub::GIATROUS != 0 {
+					break;
+				}
 				let out = 1 - i;
 				self.gi.encode_atrous(
 					&mut encoder,
 					self.gpu_timer.as_ref(),
+					// One query pair per iteration — see encode_atrous.
+					if i == 0 { Q_GI_DENOISE } else { Q_GI_DENOISE2 },
 					bind,
 					&targets.gi_indirect_view[out],
 					&targets.gi_sun_view[out],
@@ -1650,13 +1868,17 @@ impl Renderer {
 				// Origins for every chunk, bound once — each draw selects
 				// its own with first_instance.
 				draw.bind(&mut pass);
-				for &i in &self.lists.scene {
-					let chunk = &draw.chunks[i as usize];
-					let Some(mesh) = chunk.solid.as_ref() else {
-						continue;
-					};
-					stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
-					stats.chunks_drawn += 1;
+				// The clean raster stub: the prepass above still ran, so
+				// depth and face codes are intact and the GI is untouched.
+				if self.stub & (stub::NOSCENE | stub::NORASTER) == 0 {
+					for &i in &self.lists.scene {
+						let chunk = &draw.chunks[i as usize];
+						let Some(mesh) = chunk.solid.as_ref() else {
+							continue;
+						};
+						stats.triangles += draw_chunk(&mut pass, mesh, chunk.slot) / 3;
+						stats.chunks_drawn += 1;
+					}
 				}
 
 				// Remote players: opaque, depth-writing, before the sky so
@@ -1676,17 +1898,24 @@ impl Renderer {
 				stats.draw_calls += 1;
 			}
 
-			// Water pass into the swapchain: composite the scene (blit),
-			// then transparent water in two subpasses — a depth-only
-			// prepass records the nearest water surface, then the color
-			// pass (no depth write, double-sided) shades only fragments at
-			// that depth, one blended layer per pixel. Depth is discarded
-			// at the end: nothing after this pass reads it.
+			// Water pass, in place on the scene target: transparent water in
+			// two subpasses — a depth-only prepass records the nearest water
+			// surface, then the color pass (no depth write, double-sided)
+			// shades only fragments at that depth, one blended layer per
+			// pixel. Depth is discarded at the end: nothing after this pass
+			// reads it.
+			//
+			// This used to target the SWAPCHAIN. It now targets `post_view`
+			// at RENDER resolution and one upscale pass at the end takes
+			// that to the surface — so the opening blit did not disappear,
+			// it just composites scene → post at render res instead of at
+			// native. It cannot be dropped: water SAMPLES `scene_view`, so
+			// the pass needs a destination that is not its source.
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("water"),
 					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-						view: target,
+						view: &targets.post_view,
 						resolve_target: None,
 						ops: wgpu::Operations {
 							// The blit overwrites every pixel; Clear beats
@@ -1718,7 +1947,7 @@ impl Renderer {
 				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
 				draw.bind(&mut pass);
 				// DIG_STUB=nowater keeps the blit — that is what composites
-				// the scene into the swapchain — and drops only the water
+				// the scene into the post target — and drops only the water
 				// geometry, which bounds everything the water pass costs.
 				if self.stub & stub::NOWATER == 0 {
 					let (water_draws, water_tris) =
@@ -1754,8 +1983,13 @@ impl Renderer {
 			// scene (overlay still lands on top) — the P1 gate capture.
 			if self.debug_gi {
 				let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
-				self.gi
-					.encode_debug(gpu, &mut encoder, target, frame.inv_view_proj, cam);
+				self.gi.encode_debug(
+					gpu,
+					&mut encoder,
+					&targets.post_view,
+					frame.inv_view_proj,
+					cam,
+				);
 			}
 			// open by the wall you walk into — but it still needs depth
 			// among its OWN faces, because a staircase in hand is not
@@ -1765,7 +1999,7 @@ impl Renderer {
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("viewmodel"),
 					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-						view: target,
+						view: &targets.post_view,
 						resolve_target: None,
 						ops: wgpu::Operations {
 							load: wgpu::LoadOp::Load,
@@ -1781,7 +2015,7 @@ impl Renderer {
 						}),
 						stencil_ops: None,
 					}),
-					timestamp_writes: None,
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_VIEWMODEL)),
 					occlusion_query_set: None,
 				});
 				let tris = self
@@ -1789,6 +2023,38 @@ impl Renderer {
 					.draw(&mut pass, &self.index_buf, &self.materials_bg);
 				stats.draw_calls += 1;
 				stats.triangles += tris;
+			}
+
+			// THE UPSCALE. Everything above rendered at RENDER resolution
+			// into `scene_view`; this is the one place it becomes the
+			// surface. At scale 1.0 it is a straight 1:1 blit — the same
+			// fullscreen draw that used to open the water pass — so the
+			// default frame gains a pass boundary and nothing else.
+			//
+			// The overlay deliberately comes AFTER: UI, text and name tags
+			// are drawn at native resolution straight onto the swapchain,
+			// so nothing the player reads is ever resampled.
+			{
+				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+					label: Some("upscale"),
+					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+						view: target,
+						resolve_target: None,
+						ops: wgpu::Operations {
+							// Covers every pixel; Clear beats Load on TBDR.
+							load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+							store: wgpu::StoreOp::Store,
+						},
+						depth_slice: None,
+					})],
+					depth_stencil_attachment: None,
+					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_UPSCALE)),
+					occlusion_query_set: None,
+				});
+				pass.set_pipeline(&self.upscale_pipeline);
+				pass.set_bind_group(0, &targets.upscale_bg, &[]);
+				pass.draw(0..3, 0..1);
+				stats.draw_calls += 1;
 			}
 		}
 

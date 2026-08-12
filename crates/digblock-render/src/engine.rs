@@ -108,6 +108,21 @@ pub struct EngineConfig {
 	/// same pose with no motion behind it. `--fly N` vs `--warp N` is the
 	/// A/B — walked there vs sat there.
 	pub warp: bool,
+	/// Fraction of the surface the WORLD renders at, before the upscale
+	/// pass takes it to native (`--render-scale` / `?renderscale=`). The
+	/// UI is never scaled by this. Capture paths hold it at 1.0.
+	pub render_scale: f32,
+	/// The GI resolve runs at `render_size / gi_scale_div`
+	/// (`--gi-scale` / `?giscale=`). Must be one of
+	/// `settings::GI_SCALE_DIVISORS` — see `RenderScale`.
+	pub gi_scale_div: u32,
+	/// No explicit lighting-detail preference (no flag, nothing saved), so
+	/// derive `gi_scale_div` from display density at the first
+	/// `set_scale_factor` — the first moment anything knows the
+	/// backing scale, since the launcher resolves settings before a window
+	/// exists. FALSE on every capture path, which is what keeps bench,
+	/// screenshot and drill runs on the shipped values.
+	pub gfx_defaults_auto: bool,
 	/// Swap the path `fly`/`warp` follow for a ground walk. The bench
 	/// flight is a 30 blocks/s flyover 12 blocks up, which photographs the
 	/// fast, shallow-parallax end of screen motion; a player reports
@@ -115,6 +130,21 @@ pub struct EngineConfig {
 	/// ground a few blocks ahead, where one half-res texel covers far more
 	/// world per pixel. Same harness, second regime.
 	pub walk: bool,
+	/// Flyover speed in blocks/s (`--bench-speed`). **Default 30.0**, which
+	/// every BENCH.md baseline was taken at — changing the default silently
+	/// invalidates all of them, so don't.
+	///
+	/// 30 blocks/s is 7.5x `WALK_SPEED`, and that is a different STREAMING
+	/// REGIME, not just a faster one: at flyover speed the GI upload budget
+	/// cannot keep up and the classify drain drops entries, so a cost that
+	/// only appears there may be budget starvation rather than a real leak.
+	/// Set this to 4 for a soak that matches how the game is actually
+	/// played. (`--walk` is not the same thing — it oscillates one block
+	/// either side of the origin, so it never brings new terrain in at all.)
+	pub bench_speed: f32,
+	/// Fire the F7 GI drill at this frame (`--gi-drill-at`), so the ratchet
+	/// is measurable with no human at the keyboard. See `update`.
+	pub gi_drill_at: Option<u32>,
 	/// Screen-space reflections on water (desktop default; the mobile
 	/// config keeps the procedural-sky fallback only).
 	pub ssr: bool,
@@ -242,6 +272,11 @@ impl EngineConfig {
 			fly: None,
 			warp: false,
 			walk: false,
+			render_scale: 1.0,
+			gfx_defaults_auto: false,
+			gi_scale_div: crate::settings::GI_SCALE_DEFAULT,
+			bench_speed: 30.0,
+			gi_drill_at: None,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -285,6 +320,11 @@ impl EngineConfig {
 			fly: None,
 			warp: false,
 			walk: false,
+			render_scale: 1.0,
+			gfx_defaults_auto: false,
+			gi_scale_div: crate::settings::GI_SCALE_DEFAULT,
+			bench_speed: 30.0,
+			gi_drill_at: None,
 			ssr: false,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -422,6 +462,10 @@ pub struct Engine {
 	walking: bool,
 	fly_key_down: bool,
 	overlay_key_down: bool,
+	/// F7 edge latch — the GI ratchet drill fires once per press.
+	gi_drill_key_down: bool,
+	/// Frames through `update`, for `--gi-drill-at`.
+	frames_seen: u32,
 	tick_accum: f32,
 	sun: Sun,
 	keys: HeldKeys,
@@ -1026,6 +1070,8 @@ impl Engine {
 				sfx_vol: config.sfx_vol,
 				ssr: config.ssr,
 				ui_scale: config.ui_scale,
+				render_scale: config.render_scale,
+				gi_scale_div: config.gi_scale_div,
 				name: config
 					.player_name
 					.clone()
@@ -1092,6 +1138,8 @@ impl Engine {
 			walking: true,
 			fly_key_down: false,
 			overlay_key_down: false,
+			gi_drill_key_down: false,
+			frames_seen: 0,
 			tick_accum: 0.0,
 			sun,
 			keys: HeldKeys::default(),
@@ -1333,6 +1381,12 @@ impl Engine {
 				}
 			}
 		}
+		// Both render scales are applied by simply storing them: the
+		// renderer keys its target rebuild on the scale it last built at,
+		// so the next frame re-creates them. No explicit invalidation, and
+		// nothing to keep in sync.
+		self.config.render_scale = s.render_scale;
+		self.config.gi_scale_div = s.gi_scale_div;
 		if let Some(store) = &mut self.settings_store {
 			store(&s);
 		}
@@ -2175,6 +2229,13 @@ impl Engine {
 		self.pipeline.gi_redirty_all();
 	}
 
+	/// The GI's ratcheting state, or zeros before the renderer exists.
+	fn renderer_gi_state(&self) -> (f32, u32) {
+		self.renderer
+			.as_ref()
+			.map_or((0.0, 0), Renderer::gi_debug_state)
+	}
+
 	fn camera_chunk(&self) -> ChunkPos {
 		ChunkPos::new(
 			(self.camera.pos.x / 16.0).floor() as i32,
@@ -2189,7 +2250,6 @@ impl Engine {
 	/// workload run-to-run, and identical pose whether the steps are
 	/// spread over frames (`--fly`) or taken at once (`--warp`).
 	fn fly_step(&mut self) {
-		const BENCH_SPEED: f32 = 30.0; // blocks per path-second
 		const BENCH_YAW: f32 = 12.0; // degrees per path-second
 							   // The walk: one block forward, one block back, at eye height with
 							   // the ground a few blocks ahead — the repro exactly as reported.
@@ -2214,7 +2274,7 @@ impl Engine {
 		}
 		// Altitude follows the terrain so worldgen retunes can't put the
 		// flight underground; still a pure function of the step count.
-		let x = BENCH_SPEED * self.bench_t;
+		let x = self.config.bench_speed * self.bench_t;
 		let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
 		self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
 		self.camera.look(BENCH_YAW * TICK, 0.0);
@@ -3281,7 +3341,9 @@ impl Engine {
 				// The cost-stub mask (DIG_STUB), exact in f32 well past the
 				// bits it uses. Zero in every normal run.
 				self.config.stub as f32,
-				0.0,
+				// The render:GI divisor chunk.wgsl's bilateral upsample
+				// walks its 2x2 neighbourhood with.
+				self.config.gi_scale_div as f32,
 			],
 			water_misc: [
 				f32::from(submerged),
@@ -3333,6 +3395,20 @@ impl Game for Engine {
 
 	fn set_scale_factor(&mut self, scale_factor: f32) {
 		self.scale_factor = scale_factor;
+		// The density-derived graphics defaults, applied here because this
+		// is the FIRST point anything knows the display's backing scale —
+		// the launcher resolves settings before a window exists.
+		// `gfx_defaults_auto` means "the player has expressed no
+		// preference": no flag, nothing saved. It is false on every
+		// capture path, so baselines keep the shipped values.
+		if self.config.gfx_defaults_auto {
+			self.config.gfx_defaults_auto = false;
+			let gi = crate::settings::density_gi_div(scale_factor);
+			self.config.gi_scale_div = gi;
+			// Keep the settings screen showing what is actually in use.
+			self.menu.set_gi_scale(gi);
+			log::info!("display scale {scale_factor}x: lighting detail /{gi}");
+		}
 		self.recompute_ui_scale();
 	}
 
@@ -3569,6 +3645,30 @@ impl Game for Engine {
 					}
 					self.overlay_key_down = pressed;
 				}
+				// F7: the GI ratchet drill. Clears the derived state that
+				// only ever grows (the coarse mirror behind `sky_y`, the
+				// emitter map) and re-queues every resident chunk, so both
+				// rebuild from what is ACTUALLY resident.
+				//
+				// A degradation that develops over minutes of wandering and
+				// never recovers is exactly what a ratchet looks like. If
+				// fps climbs back after this, the cost was stale state and
+				// the fix belongs in eviction; if it does not move, the cost
+				// is the filled window itself and no bookkeeping fix exists.
+				Key::F7 => {
+					if pressed && !self.gi_drill_key_down {
+						let (sky_before, emit_before) = self.renderer_gi_state();
+						if let Some(r) = self.renderer.as_mut() {
+							r.gi_clear_derived_state();
+						}
+						self.pipeline.gi_redirty_all();
+						log::info!(
+							"F7 GI drill: cleared derived state (sky_y {sky_before:.0}, \
+							 {emit_before} emitters) — watch both rebuild"
+						);
+					}
+					self.gi_drill_key_down = pressed;
+				}
 				Key::Escape => {
 					if pressed {
 						self.dig_held = false;
@@ -3671,6 +3771,24 @@ impl Game for Engine {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
 		self.time_secs = (self.time_secs + dt) % 600.0;
+		// The F7 GI drill on a timer, so the ratchet is measurable WITHOUT a
+		// human at the keyboard. Pair with `--fly N --frames M` (N < drill <
+		// M): the camera freezes at N, the drill fires mid-freeze, and the
+		// CSV rows either side are the same pose in the same thermal state
+		// with only the GI's derived age differing — which is the only way
+		// to separate "the ceiling ratcheted" from "the view got busier".
+		self.frames_seen += 1;
+		if self.config.gi_drill_at == Some(self.frames_seen) {
+			let (sky, emit) = self.renderer_gi_state();
+			if let Some(r) = self.renderer.as_mut() {
+				r.gi_clear_derived_state();
+			}
+			self.pipeline.gi_redirty_all();
+			log::info!(
+				"GI drill at frame {}: cleared (sky_y {sky:.0}, {emit} emitters)",
+				self.frames_seen
+			);
+		}
 		// DIG_SHAPES showcase: chunks stream in asynchronously, so retry
 		// the leftovers each frame until every cell has landed.
 		if !self.debug_shapes_pending.is_empty() {
@@ -3694,7 +3812,17 @@ impl Game for Engine {
 		// the interactive half of update; streaming still runs, because
 		// `pump_pipeline` hangs off `render`, not off this.
 		if self.config.bench {
-			self.fly_step();
+			// `--bench --fly N` freezes the camera at step N instead of
+			// flying forever. Without this the only way to get a frozen
+			// pose was `--fly` WITHOUT `--bench`, which is not the same
+			// run at all: `interactive` is derived as `!bench && ...`, so
+			// that path opens the menu, loads the user's SAVED settings,
+			// turns audio on and dials the master. A measurement taken
+			// there is not hermetic and not comparable to anything.
+			if self.config.fly.is_none_or(|n| self.fly_frames < n) {
+				self.fly_step();
+				self.fly_frames += 1;
+			}
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -4271,6 +4399,10 @@ impl Game for Engine {
 				uniforms: frame,
 				view_proj,
 				size,
+				scale: crate::renderer::RenderScale {
+					render: self.config.render_scale,
+					gi_div: self.config.gi_scale_div,
+				},
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
 				overlay: overlay_stats

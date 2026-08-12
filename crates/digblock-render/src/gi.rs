@@ -15,7 +15,7 @@ use digblock_core::gi::{opacity, GiChunk, GiOpacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
-use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_DENOISE, Q_GI_TRACE};
+use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
 /// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
@@ -162,6 +162,9 @@ pub struct GiDraw {
 	sky_y: f32,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
+	/// Cost-stub mask (DIG_STUB) — rides `jitter.w` into gi_resolve.wgsl,
+	/// which has no frame UBO of its own to read `misc.z` from.
+	stub: u32,
 	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
 	/// Temporal state for the resolve's reprojection. `history_valid` is
 	/// cleared whenever last frame's buffers cannot be trusted: the first
@@ -177,6 +180,9 @@ pub struct GiDraw {
 	lights_buf: wgpu::Buffer,
 	/// Camera position at the last light-list flush — see flush_lights.
 	lights_cam: [f32; 3],
+	/// Emitters written at that flush, so a move that changes WHICH are in
+	/// reach re-flushes even under `MAX_LIGHTS`.
+	lights_len: usize,
 	/// Edit positions awaiting probe invalidation (≤4 consumed/frame).
 	inval_queue: Vec<[f32; 3]>,
 	/// Spheres the probe pass consumed, held live so the RESOLVE keeps
@@ -272,6 +278,16 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 /// fragment, most of a screen full of river's sun cost. Scanned top
 /// down, so a settled world answers in one slice; -1 when the mirror is
 /// still empty (rays find nothing either way).
+/// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound
+/// EVERY march breaks at, in blocks from the camera. `flush_lights` uses
+/// it to drop emitters no ray could reach; the two must agree or the
+/// light list either hides a torch the shader would have traced or wastes
+/// a `MAX_LIGHTS` slot on one it would not. Pinned by
+/// `the_light_reach_matches_the_shaders_bound`.
+fn lateral_max(window_chunks: u32) -> f32 {
+	(window_chunks * 16) as f32 * 0.5 - 1.0
+}
+
 fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
 	(0..h)
 		.rev()
@@ -324,6 +340,7 @@ impl GiDraw {
 		layer_means: &[[u8; 3]],
 		surface_format: wgpu::TextureFormat,
 		debug_probes: bool,
+		stub: u32,
 	) -> Self {
 		let device = &gpu.device;
 		let queue = &gpu.queue;
@@ -988,6 +1005,7 @@ impl GiDraw {
 			coarse_mips_dirty: false,
 			sky_y: 255.0,
 			window_chunks,
+			stub,
 			emitters: FxHashMap::default(),
 			prev_vp: [[0.0; 4]; 4],
 			prev_cam: [0.0; 3],
@@ -997,6 +1015,7 @@ impl GiDraw {
 			lights_dirty: false,
 			lights_buf,
 			lights_cam: [f32::INFINITY; 3],
+			lights_len: 0,
 			inval_queue: Vec::new(),
 			resolve_inval: Vec::new(),
 			resolve_pipeline,
@@ -1114,10 +1133,15 @@ impl GiDraw {
 
 	/// Encode one a-trous iteration: read one lighting pair, write the
 	/// other. Both are full-screen half-res passes with no depth.
+	///
+	/// `query` is the caller's, one pair per ITERATION. Both used to write
+	/// `Q_GI_DENOISE`, so the second silently overwrote the first and the
+	/// denoise column reported the stride-2 pass alone.
 	pub fn encode_atrous(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
 		timer: Option<&GpuTimer>,
+		query: u32,
 		bind: &wgpu::BindGroup,
 		indirect_view: &wgpu::TextureView,
 		sun_view: &wgpu::TextureView,
@@ -1137,7 +1161,7 @@ impl GiDraw {
 			label: Some("gi atrous"),
 			color_attachments: &[attach(indirect_view), attach(sun_view)],
 			depth_stencil_attachment: None,
-			timestamp_writes: timer.and_then(|t| t.writes(Q_GI_DENOISE)),
+			timestamp_writes: timer.and_then(|t| t.writes(query)),
 			occlusion_query_set: None,
 		});
 		pass.set_pipeline(&self.atrous_pipeline);
@@ -1218,7 +1242,10 @@ impl GiDraw {
 			SUN_CONE_COS,
 			// The sky ceiling (R18) — see `sky_y`.
 			self.sky_y,
-			0.0f32,
+			// The cost-stub mask (DIG_STUB), exact in f32 well past the
+			// bits it uses. The resolve does not bind the frame UBO, so it
+			// cannot read `frame.misc.z` the way water.wgsl does.
+			self.stub as f32,
 		]));
 		// The live invalidation spheres, decayed here because this runs
 		// exactly once per frame. w = 0 marks an empty slot.
@@ -1424,6 +1451,58 @@ impl GiDraw {
 		self.window_chunks as i32
 	}
 
+	/// Forget an evicted chunk's emitters.
+	///
+	/// Nothing used to prune this map: the only removal was a chunk
+	/// re-classifying to zero emitters, so every torch ever seen stayed in
+	/// it for the process's life and a world swap carried the previous
+	/// world's forward. `flush_lights` walks the whole map every frame
+	/// before its early-out, and past `MAX_LIGHTS` a stale entry can
+	/// out-sort a live one.
+	///
+	/// Deliberately does NOT touch the coarse mirror. The window is
+	/// TOROIDAL and much smaller than residency, so an evicted chunk's
+	/// `rem_euclid` slot is very likely owned by a different, live chunk
+	/// by now — clearing it would erase real occupancy. (And it would buy
+	/// nothing: the drill in BENCH.md 2026-08-12 rebuilt `sky_y` to the
+	/// same value with frame time unmoved.)
+	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+		if self.emitters.remove(&pos).is_some() {
+			self.lights_dirty = true;
+		}
+	}
+
+	/// Drop every piece of GI state that only ever GROWS, so the next
+	/// upload sweep rebuilds it from what is actually resident (F7).
+	///
+	/// This is a diagnostic, not a fix. The coarse mirror and the emitter
+	/// map are never pruned on eviction, so both ratchet as a session
+	/// explores: `sky_y` climbs toward the tallest terrain seen ANYWHERE
+	/// rather than the tallest currently in the window, and every ray in
+	/// the resolve pays for the difference. Pair with `gi_redirty_all` on
+	/// the pipeline — this clears, that re-queues.
+	///
+	/// If frame time recovers after pressing F7, the ratchet is real and
+	/// the fix belongs in eviction, not here.
+	pub fn clear_derived_state(&mut self) {
+		self.coarse_mirror.fill(0);
+		self.coarse_mips_dirty = true;
+		self.emitters.clear();
+		self.lights_dirty = true;
+	}
+
+	/// The sky ceiling and the emitter-cell count, for the debug overlay
+	/// and the CSV. Both ratchet as the world is explored (the coarse
+	/// mirror and the emitter map are never pruned on eviction), which is
+	/// exactly why they are worth showing: they are the two pieces of GI
+	/// state that make a settled session cost more than a fresh one.
+	pub fn debug_state(&self) -> (f32, u32) {
+		(
+			self.sky_y,
+			self.emitters.values().map(Vec::len).sum::<usize>() as u32,
+		)
+	}
+
 	/// Queue an edit position for probe invalidation (age reset around
 	/// it, ≤4 spheres applied per frame).
 	pub fn invalidate(&mut self, pos: [f32; 3]) {
@@ -1451,7 +1530,24 @@ impl GiDraw {
 	/// real movement in exactly that oversubscribed case, and stays
 	/// free in the common far-under-MAX_LIGHTS world.
 	fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3]) {
-		let total: usize = self.emitters.values().map(Vec::len).sum();
+		// Only emitters a march can actually REACH belong in the list.
+		// Every trace breaks at `gi_lateral_max` (= side/2 − 1) of the
+		// camera, so an emitter past it cannot light anything however
+		// close it sorts — and with more than MAX_LIGHTS emitters it
+		// displaces one that can. Residency runs to draw_dist + 1 chunks
+		// while the window is draw_dist chunks on a SIDE, so "resident"
+		// reaches more than twice as far as "traceable" and this is not a
+		// rare edge.
+		let reach = lateral_max(self.window_chunks);
+		let in_reach = |e: &(f32, f32, f32, u8)| {
+			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+			dx * dx + dz * dz <= reach * reach
+		};
+		let total: usize = self
+			.emitters
+			.values()
+			.map(|v| v.iter().filter(|e| in_reach(e)).count())
+			.sum();
 		let moved = {
 			let d = [
 				cam[0] - self.lights_cam[0],
@@ -1460,7 +1556,11 @@ impl GiDraw {
 			];
 			d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 16.0 * 16.0
 		};
-		let stale = total > MAX_LIGHTS && moved;
+		// Any real move can change WHICH emitters are in reach, not just
+		// which MAX_LIGHTS of them are nearest — so the oversubscription
+		// clause is no longer the only reason to re-flush. Under the cap
+		// this costs one sort and a ≤4 KiB write per 16 blocks walked.
+		let stale = moved && (total > MAX_LIGHTS || total != self.lights_len);
 		if !self.lights_dirty && !stale {
 			return;
 		}
@@ -1470,6 +1570,7 @@ impl GiDraw {
 			.emitters
 			.values()
 			.flatten()
+			.filter(|e| in_reach(e))
 			.map(|&(x, y, z, class)| {
 				let d2 = (x - cam[0]).powi(2) + (y - cam[1]).powi(2) + (z - cam[2]).powi(2);
 				(d2, [x, y, z, f32::from_bits(u32::from(class))])
@@ -1478,6 +1579,7 @@ impl GiDraw {
 		all.sort_by(|a, b| a.0.total_cmp(&b.0));
 		all.truncate(MAX_LIGHTS);
 		let count = all.len() as u32;
+		self.lights_len = all.len();
 		let mut bytes = Vec::with_capacity(16 + all.len() * 16);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
 		for (_, e) in &all {
@@ -1665,6 +1767,34 @@ impl GiDraw {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// `flush_lights` drops emitters outside the reach every march breaks
+	/// at, so its bound has to BE the shader's. Read `gi_lateral_max` out
+	/// of gi_dda.wgsl rather than restating it: a hand-copied twin is how
+	/// this codebase found the same stepper bug three times, and drifting
+	/// here silently hides a torch the shader would have traced.
+	#[test]
+	fn the_light_reach_matches_the_shaders_bound() {
+		let src = digblock_assets::shader::GI_DDA;
+		let body = src
+			.split("fn gi_lateral_max(side: f32) -> f32 {")
+			.nth(1)
+			.expect("gi_dda.wgsl must declare gi_lateral_max(side)");
+		let expr = body
+			.split(';')
+			.next()
+			.expect("gi_lateral_max must have a return")
+			.replace("return", "")
+			.replace(char::is_whitespace, "");
+		assert_eq!(
+			expr, "side*0.5-1.0",
+			"gi_lateral_max changed shape — update `lateral_max` to match"
+		);
+		for wc in [8u32, 20, 32] {
+			let side = (wc * 16) as f32;
+			assert_eq!(lateral_max(wc), side * 0.5 - 1.0, "window {wc}");
+		}
+	}
 
 	/// The ceiling must sit at the TOP of the highest occupied brick (a
 	/// ceiling one brick low un-shadows every hilltop), and an empty

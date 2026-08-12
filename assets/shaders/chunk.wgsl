@@ -249,12 +249,20 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// the eye through the medium like everything else, which is why the
 	// branch narrowed to the lighting instead of returning early.
 	if i.emissive == 0u {
-		// Bilateral upsample of the half-res GI buffers: the 4 nearest
-		// half-res texels, each weighted by view-distance proximity and a
+		// Bilateral upsample of the reduced-res GI buffers: the 4 nearest
+		// GI texels, each weighted by view-distance proximity and a
 		// face-normal match, so lighting never bleeds across the
 		// silhouette or around a corner.
+		//
+		// The ratio is a UNIFORM, not the `/ 2` this hard-coded, which is
+		// what lets the GI resolve run at a third or a quarter of the
+		// render size (settings::GI_SCALE_DIVISORS). It stays an INTEGER
+		// divisor for exactly this line: `base` is the top-left of the 2x2
+		// GI neighbourhood covering this pixel, and a fractional ratio
+		// would make that neighbourhood drift off the texels it weights.
+		let gi_div = max(i32(frame.misc.w), 1);
 		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
-		let base = (vec2i(i.pos.xy) - 1) / 2;
+		let base = (vec2i(i.pos.xy) - gi_div / 2) / gi_div;
 		var acc = vec3f(0.0);
 		var sun_acc = 0.0;
 		var water_acc = 0.0;

@@ -101,7 +101,8 @@ struct GiResolve {
 	sun_exact: vec4f,
 	// x frame counter (the sample sequence's rotation — the GATHER ray's;
 	// the sun ray's sequence is deliberately frozen at frame 0), y cos of
-	// the sun cone's half-angle, zw free.
+	// the sun cone's half-angle, z the sky ceiling (R18), w the cost-stub
+	// mask (DIG_STUB).
 	jitter: vec4f,
 	// Screen-history invalidation spheres (xyz center, w radius; w = 0 is
 	// an empty slot) — the same ≤4 edit spheres the probe pass consumed
@@ -323,6 +324,21 @@ const GI_NEE_ITERS = 64;
 // no gather hit can land here (cells live in y 0..255).
 const NEE_NO_CELL = vec3i(1073741824);
 
+// Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
+// the bit numbers, and this is the mirror — water.wgsl is the other one).
+// `rz.jitter.w` is a UNIFORM, so every branch below is uniform: an
+// un-stubbed run pays nothing and a stubbed one cannot diverge inside a
+// wave. Water had this facility and the resolve did not, which is why the
+// frame's most expensive pass has never had a single term attributed.
+const STUB_GISUN = 256u;
+const STUB_GIGATHER = 512u;
+const STUB_GINEE = 1024u;
+const STUB_GIFLAT = 2048u;
+
+fn stubbed(bit: u32) -> bool {
+	return (u32(rz.jitter.w) & bit) != 0u;
+}
+
 // The per-pixel direct term for local lights (R20): ONE deterministic
 // shadow ray to the DOMINANT emitter, the same move R14 made for the
 // sun applied to torches (Q2RTX / GI-1.0 / RTXDI lineage — direct
@@ -538,6 +554,16 @@ fn fs(i: VsOut) -> FsOut {
 	// geometry that could not shadow anything.
 	let sp = p;
 	let side = i32(rz.cam.w);
+	// STUB_GIFLAT: the `wflat` twin. Everything below — three ray marches,
+	// the bilinear history fetch and the prime — replaced by a constant, so
+	// whatever this saves bounds the whole resolve. It sits AFTER the
+	// depth/normal fetch on purpose: the raster and attachment floor is not
+	// a term anyone can remove, so it should not be inside the number.
+	if stubbed(STUB_GIFLAT) {
+		o.indirect = vec4f(0.25, 0.25, 0.25, length(p - rz.cam.xyz));
+		o.sun = vec4f(1.0, f32(code) + 256.0, 0.0, 0.0);
+		return o;
+	}
 
 	// THE FINAL GATHER. One cosine-weighted ray from this pixel, resolved
 	// against the voxel window and terminated in the probe cache.
@@ -598,8 +624,12 @@ fn fs(i: VsOut) -> FsOut {
 		// the atrous machinery all carry it with no new plumbing: a
 		// deterministic input just passes through an average unchanged.
 		var skip_cell = NEE_NO_CELL;
+		// STUB_GINEE drops the light scan AND its shadow ray. In a scene
+		// with no emitter in range `pick.valid` is already false, so this
+		// term measures zero there by construction — that is the answer,
+		// not a broken run.
 		let pick = pick_dominant_light(sp, n);
-		if pick.valid {
+		if pick.valid && !stubbed(STUB_GINEE) {
 			skip_cell = pick.cell;
 			// Stop short of the light's own cell (the probe nee()'s 0.9
 			// margin) so the whole-cell emitter rule can't self-occlude.
@@ -615,10 +645,21 @@ fn fs(i: VsOut) -> FsOut {
 		// A second, decorrelated draw from the same sequence — sharing the
 		// sun ray's sample would tie the gather direction to the sun cone
 		// and correlate two estimates that must average independently.
-		let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
-		let rd = cosine_hemi(n, ui);
-		let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
-		indirect = path_radiance(side, hit, rd, skip_cell) + nee;
+		//
+		// STUB_GIGATHER falls back to the cheap cache lookup, which is
+		// exactly the pre-R8 design: the difference between the two is what
+		// the final gather costs, and R8 measured it going DOWN.
+		if stubbed(STUB_GIGATHER) {
+			indirect = gi_cache_at(
+				side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1,
+				rz.zenith.rgb, rz.horizon.rgb,
+			) + nee;
+		} else {
+			let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
+			let rd = cosine_hemi(n, ui);
+			let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
+			indirect = path_radiance(side, hit, rd, skip_cell) + nee;
+		}
 	}
 	// One sun ray along the EXACT direction, offset inside a cone about
 	// twice the real sun's angular radius — but the offset is STATIC and
@@ -645,7 +686,13 @@ fn fs(i: VsOut) -> FsOut {
 	let u = vec2f(jh, fract(jh * 1.6180339887));
 	var sdir = rz.sun_exact;
 	sdir = vec4f(sample_cone(sdir.xyz, u, rz.jitter.y), sdir.w);
-	let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, 320);
+	// STUB_GISUN answers "lit, dry, no occluder" without marching. 320
+	// iterations is the largest single ray budget in the frame, so this is
+	// the term to reach for first.
+	var sv = vec3f(sdir.w, 0.0, 0.0);
+	if !stubbed(STUB_GISUN) {
+		sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, 320);
+	}
 	let view_dist = length(p - rz.cam.xyz);
 	// Penumbra width: occluder distance x tan(cone half-angle) is the
 	// physical width in blocks; dividing by this texel's world footprint

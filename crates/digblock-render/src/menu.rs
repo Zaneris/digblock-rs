@@ -5,8 +5,8 @@
 //! through the overlay. The world keeps running (and rendering) behind it.
 
 use crate::settings::{
-	Settings, DRAW_MAX, DRAW_MIN, DRAW_STEP, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX,
-	VOL_STEP,
+	Settings, DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, UI_SCALE_MAX, UI_SCALE_MIN,
+	UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -146,6 +146,7 @@ enum Screen {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Setting {
 	DrawDist,
+	GiScale,
 	UiScale,
 	MusicVol,
 	SfxVol,
@@ -338,6 +339,15 @@ impl Menu {
 	/// applies runtime effects (draw dist, SSR, volume) and persists.
 	pub fn take_settings_change(&mut self) -> Option<Settings> {
 		std::mem::take(&mut self.settings_dirty).then(|| self.settings.clone())
+	}
+
+	/// Adopt the density-derived lighting detail the engine picked at the
+	/// first `set_scale_factor`, so the slider reads what is in use. Deliberately does NOT mark the settings dirty: nothing was
+	/// chosen, so there is nothing to persist — the derived default should
+	/// follow the display if the player later moves the window to another
+	/// one, and a saved value would freeze it.
+	pub fn set_gi_scale(&mut self, gi_scale_div: u32) {
+		self.settings.gi_scale_div = gi_scale_div;
 	}
 
 	/// World-store intents raised since the last drain.
@@ -609,6 +619,18 @@ impl Menu {
 				let v = (st.draw_dist + dir * DRAW_STEP).clamp(DRAW_MIN, DRAW_MAX);
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
+			// Steps through the DIVISOR list, not a continuous range —
+			// see settings::GI_SCALE_DIVISORS. `dir` is +1 = sharper, so
+			// it walks the list backwards (divisor 1 is full res).
+			Setting::GiScale => {
+				let i = GI_SCALE_DIVISORS
+					.iter()
+					.position(|&d| d == st.gi_scale_div)
+					.unwrap_or(1) as i32;
+				let n = GI_SCALE_DIVISORS.len() as i32;
+				let v = GI_SCALE_DIVISORS[(i - dir).clamp(0, n - 1) as usize];
+				std::mem::replace(&mut st.gi_scale_div, v) != v
+			}
 			Setting::UiScale => {
 				let v = snap_range(st.ui_scale, dir, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
 				(std::mem::replace(&mut st.ui_scale, v) - v).abs() > f32::EPSILON
@@ -640,6 +662,14 @@ impl Menu {
 					+ ((frac * span / DRAW_STEP as f32).round() as i32 * DRAW_STEP)
 						.clamp(0, DRAW_MAX - DRAW_MIN);
 				std::mem::replace(&mut st.draw_dist, v) != v
+			}
+			Setting::GiScale => {
+				let n = GI_SCALE_DIVISORS.len();
+				// Left = coarsest, right = sharpest, matching every other
+				// bar here (more fill = more of the thing).
+				let i = ((1.0 - frac) * (n - 1) as f32).round() as usize;
+				let v = GI_SCALE_DIVISORS[i.min(n - 1)];
+				std::mem::replace(&mut st.gi_scale_div, v) != v
 			}
 			Setting::UiScale => {
 				let span = UI_SCALE_MAX - UI_SCALE_MIN;
@@ -1075,11 +1105,33 @@ impl Menu {
 						(st.draw_dist - DRAW_MIN) as f32 / (DRAW_MAX - DRAW_MIN) as f32,
 					),
 				);
+				// Row indices are POSITIONAL — they must match
+				// SETTINGS_ROWS, which is what `acts()` walks. Inserting a
+				// row means renumbering every one below it.
+				{
+					let n = GI_SCALE_DIVISORS.len();
+					let i = GI_SCALE_DIVISORS
+						.iter()
+						.position(|&d| d == st.gi_scale_div)
+						.unwrap_or(1);
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::slider(
+							RowId::SettingsRow(1),
+							format!("Lighting Detail: {}", gi_scale_label(st.gi_scale_div)),
+							// Full bar = divisor 1 = sharpest, so more
+							// fill means more of the thing, like every
+							// other slider here.
+							(n - 1 - i) as f32 / (n - 1) as f32,
+						),
+					);
+				}
 				push(
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(1),
+						RowId::SettingsRow(2),
 						format!("Interface Scale: {:.0}%", st.ui_scale * 100.0),
 						(st.ui_scale - UI_SCALE_MIN) / (UI_SCALE_MAX - UI_SCALE_MIN),
 					),
@@ -1088,7 +1140,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(2),
+						RowId::SettingsRow(3),
 						format!("Music Volume: {:.0}%", st.music_vol * 100.0),
 						st.music_vol / VOL_MAX,
 					),
@@ -1097,7 +1149,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(3),
+						RowId::SettingsRow(4),
 						format!("SFX Volume: {:.0}%", st.sfx_vol * 100.0),
 						st.sfx_vol / VOL_MAX,
 					),
@@ -1106,7 +1158,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::item(
-						RowId::SettingsRow(4),
+						RowId::SettingsRow(5),
 						if st.ssr {
 							"Water Reflections: On"
 						} else {
@@ -1381,8 +1433,17 @@ const C_RED: u32 = 0xFF4040F0;
 /// mean remembering to bump it in two places or Back stopped clicking.
 const SETTINGS_BACK: u8 = SETTINGS_ROWS.len() as u8;
 
-const SETTINGS_ROWS: [Setting; 5] = [
+// Render scale is deliberately ABSENT: it is locked at 100% for players
+// and only `--render-scale` moves it (settings::RENDER_SCALE_MIN says
+// why). Re-exposing it means a row here, a match arm in `adjust_setting`
+// and `set_setting_frac`, a `RowSpec` below, and renumbering every row
+// after it — the indices are positional.
+const SETTINGS_ROWS: [Setting; 6] = [
 	Setting::DrawDist,
+	// Lighting detail sits next to draw distance: both trade picture for
+	// frame time, and a player hunting fps should find them together
+	// rather than one of them filed under "interface".
+	Setting::GiScale,
 	Setting::UiScale,
 	Setting::MusicVol,
 	Setting::SfxVol,
@@ -1407,6 +1468,18 @@ fn snap_range(v: f32, dir: i32, min: f32, max: f32, step: f32) -> f32 {
 
 fn snap_vol(v: f32, dir: i32) -> f32 {
 	snap_range(v, dir, 0.0, VOL_MAX, VOL_STEP)
+}
+
+/// Player-facing name for a GI divisor. Named for the PICTURE rather than
+/// the ratio ("Half" would read as half of the window, which it is not —
+/// it is half of the render scale, itself already a fraction).
+fn gi_scale_label(div: u32) -> &'static str {
+	match div {
+		1 => "Ultra",
+		2 => "High",
+		3 => "Medium",
+		_ => "Low",
+	}
 }
 
 struct RowSpec {
@@ -2096,7 +2169,29 @@ mod tests {
 		menu.handle_key(Key::Right);
 		assert!(menu.take_settings_change().is_none());
 
-		// Interface scale: sel 1, 100% -> 95%, then down to the min.
+		// Lighting detail: sel 1. Render scale has no row — it is locked
+		// at 100% for players (settings::RENDER_SCALE_MIN says why), so
+		// nothing here can move it. Walks the DIVISOR list, and Left is
+		// coarser — so it ends on the largest divisor, not the smallest.
+		menu.handle_key(Key::Down);
+		menu.handle_key(Key::Left);
+		assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 3);
+		for _ in 0..10 {
+			menu.handle_key(Key::Left);
+		}
+		assert_eq!(
+			menu.take_settings_change().unwrap().gi_scale_div,
+			*GI_SCALE_DIVISORS.last().unwrap()
+		);
+		menu.handle_key(Key::Left);
+		assert!(menu.take_settings_change().is_none(), "already coarsest");
+		// And back up to full res.
+		for _ in 0..10 {
+			menu.handle_key(Key::Right);
+		}
+		assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 1);
+
+		// Interface scale: sel 2, 100% -> 95%, then down to the min.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
@@ -2112,7 +2207,7 @@ mod tests {
 		menu.handle_key(Key::Left);
 		assert!(menu.take_settings_change().is_none(), "already at the min");
 
-		// Music volume: sel 2, 100% -> 90%, floor at 0.
+		// Music volume: sel 3, 100% -> 90%, floor at 0.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
@@ -2122,7 +2217,7 @@ mod tests {
 		}
 		assert_eq!(menu.take_settings_change().unwrap().music_vol, 0.0);
 
-		// SSR: sel 4, Enter toggles, Left also toggles.
+		// SSR: sel 5, Enter toggles, Left also toggles.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Enter);
@@ -2145,6 +2240,12 @@ mod tests {
 		assert!(view.rows.iter().any(|r| r
 			.text
 			.contains(&format!("Interface Scale: {:.0}%", UI_SCALE_MIN * 100.0))));
+		// No render-scale row exists at all.
+		assert!(!view.rows.iter().any(|r| r.text.contains("Render Scale")));
+		assert!(view
+			.rows
+			.iter()
+			.any(|r| r.text.contains("Lighting Detail: Ultra")));
 	}
 
 	/// Every notch of the interface-scale slider is reachable and lands on

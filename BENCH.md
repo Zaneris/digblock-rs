@@ -1,5 +1,152 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-12 — render scale, GI scale, and which one to actually spend
+
+Same machine and pose as the attribution entry below: 5.43 MP (2992×1814), `--bench
+--no-vsync --frames 1200 --fixed-dt 0.0166667`, seed 42, tod 45, draw 20. Interleaved,
+2 reps — spread ≤0.09 ms.
+
+| render scale | GI divisor | avg ms | vs native | image Δ vs native |
+|---|---|---|---|---|
+| 1.0 | 2 | 12.50 | — | — |
+| 0.85 | 2 | 10.22 | −18% | — |
+| 0.7 | 2 | 8.74 | **−30%** | mean **18.61**/255 |
+| **1.0** | **3** | **8.72** | **−30%** | mean **0.11**/255, max 76, 4.7% of pixels |
+| 0.7 | 3 | 8.33 | −33% | — |
+
+**The two buy the same 30%, and the GI notch costs ~170× less picture.** That is not
+intuition — the plan had render scale as the headline lever and GI-ratio decoupling
+parked in reserve as "a genuine quality trade". It is the other way round, because the
+à-trous filter and the bilateral upsample already reconstruct that signal, while a render
+scale drop resamples everything including the geometry edges this engine is made of.
+
+So the interactive **high-DPI default is native resolution with lighting detail at /3**
+(`settings::density_defaults`), not a reduced render scale. Render scale remains a slider
+for anyone who needs more than one notch's worth.
+
+Applied once at the first `set_scale_factor` — the first moment anything knows the backing
+scale — and only when the player has expressed no preference (no flag, nothing saved).
+Every capture path leaves `gfx_defaults_auto` false, so bench/screenshot/drill stay on the
+shipped values and no recorded baseline moves. Verified on a throwaway profile: logs
+`display scale 2x: render scale 100%, lighting detail /3` and writes no settings file, so
+the derived default follows the display instead of freezing into a saved preference.
+
+Parity: at render 1.0 / GI 2 the new plumbing is mean **0.0013**/255, max 1 against the
+pre-scale build — the `gi_div` uniform reproduces `chunk.wgsl`'s old hard-coded `/ 2`
+exactly.
+
+**Cost of the frame restructure itself** (water and the viewmodel moved onto a
+render-resolution `post` target, one upscale pass to the surface), interleaved ×2 at
+render scale 1.0: **12.03 → 12.26 ms, +0.235 ms (+2.0%)** — the extra native-res
+fullscreen pass. It inverts the moment either scale drops below native.
+
+**Trap worth keeping:** `blit_pipeline` is built with `pipeline_builder::build`, which
+attaches a depth-stencil state, and a pipeline carrying one may only run in a pass that
+HAS a depth attachment. It worked for years inside the water pass, which has one. Reusing
+it in a standalone fullscreen pass invalidates the encoder — and an invalid pass poisons
+the whole `CommandEncoder`, so `finish()` yields a command buffer where every pass is
+dropped. The symptom is a black window with no HUD and all GPU timestamps reading 0.00,
+which looks nothing like a bad blit. `upscale_pipeline` is the depthless twin.
+`RUST_LOG=warn` surfaces it as "Encoder is invalid"; filtering logs to `wgpu` targets
+hides it, because the handler logs under `digblock_platform::app`.
+
+## 2026-08-12 — GI attribution (`DIG_STUB` extended), and the window-size trap
+
+M2 Max, **5.43 MP (2992×1814)** — `--size 1728x1117` clamps to the usable screen, so this
+is effectively fullscreen and the same framebuffer as `shots/f8-64.png`. `--bench
+--no-vsync --frames 1500 --fixed-dt 0.0166667`, seed 42, tod 45, draw 20. Rep 1 of an
+interleaved cycle (see the caveat at the end — this is one rep, not a settled floor).
+
+`DIG_STUB` covered water only; the GI resolve — the frame's most expensive pass — had
+never had a single term attributed. Added `gisun gigather ginee giflat giatrous` (resolve,
+riding its own `jitter.w` since it binds no frame UBO) and `noscene noraster` (raster).
+
+| `DIG_STUB` | avg ms | term cost | share of frame |
+|---|---|---|---|
+| *(none)* | 11.79 | — | — |
+| `giflat` (whole resolve) | 4.70 | **7.09** | **60%** |
+| `gigather` (96-iter final gather) | 5.92 | **5.87** | 50% |
+| `gisun` (320-iter sun ray) | 9.02 | 2.77 | 23% |
+| `ginee` | 11.79 | 0.00 | none — no emitters in a vanilla world, correct |
+| `noscene` (scene chunk raster) | 11.85 | **~0** | — |
+| `noraster` (all chunk geometry) | 7.13 | 4.66 | confounded, upper bound only |
+
+**The GI resolve is 60% of the frame, and the final gather is a bigger term than the sun
+ray** — the opposite of what the iteration counts (96 vs 320) suggest, because the sun
+ray's sky-ceiling early-out fires on most upward rays while the gather marches 32 blocks
+of real geometry. `noscene ≈ baseline` says the scene-pass chunk raster is free on this
+TBDR: draw calls and triangles are a CPU-encode cost here, not a GPU one.
+
+**The window-size trap, which is the finding that outlives the table.** The identical
+bracket at the DEFAULT bench window measures *backwards* — `gisun` 7.19 vs a 6.28
+baseline, `giflat` 6.88, every stub apparently *adding* time. That frame is not GPU-bound,
+so removing GPU work changes nothing and run-to-run variance is the whole signal. Any GI
+measurement taken at the default window size is worthless; use the real one.
+
+Two stubs are confounded by construction and are documented as such in `renderer::stub`:
+
+- `noraster` empties the depth buffer, so every resolve pixel takes the sky early-out and
+  the most expensive pass goes cheap too. Never subtract it from `noscene` to get the
+  prepass — there is deliberately no prepass-only stub.
+- `giatrous` measured 12.19, *slower* than baseline, because skipping the filter also
+  starves the history feedback into `[1]` and pushes more pixels down the prime path every
+  frame. It is not the filter's cost. (The filter measured 0.14 ms when it landed.)
+
+**`gpu_gi_denoise_ms` changed meaning.** Both à-trous iterations wrote query pair 12/13, so
+the second silently overwrote the first and the column reported the stride-2 pass alone.
+Each iteration now has its own pair and the column sums them: it roughly doubles (5.65 →
+10.66 on the same scene). Pre-2026-08-12 CSVs read about half. `gpu_depth_blit_ms` and
+`gpu_viewmodel_ms` are new — both passes ran untimed since they were written; the depth
+blit is ~0.26 ms.
+
+### The session ratchet — walking-speed soak
+
+`--bench-speed B` (default **30**, every prior baseline's value) makes the flyover's speed
+a flag. 30 blocks/s is 7.5× `WALK_SPEED` and a different *streaming* regime, not merely a
+faster one: at that pace the GI upload budget cannot keep up. `--walk` is not a substitute
+— its one-block oscillation never brings new terrain into the window.
+
+`--bench-speed 4 --frames 13500` (225 world-seconds, ~900 blocks) at 5.43 MP:
+
+| t_s | 5 | 30 | 60 | 70 | 135 | 155 |
+|---|---|---|---|---|---|---|
+| fps | 129.5 | 115.0 | 79.5 | 64.2 | 82.1 | 91.4 |
+| `sky_y` | 183 | 183 | 199 | 223 | 239 | 239 |
+
+`sky_y` is monotone and never falls, which looked like a ratchet: the CPU coarse mirror it
+is scanned from is never cleared on eviction, so in principle it climbs toward the tallest
+terrain seen anywhere in the *session* rather than anywhere in the *window*, and every
+non-descending ray in the resolve breaks on it.
+
+### That hypothesis is REFUTED — do not spend time on it again
+
+`--bench --fly 9000 --frames 12000 --gi-drill-at 10500 --bench-speed 4`: camera frozen at
+frame 9000, the drill (clear the mirror + emitter map, `gi_redirty_all`) fires at 10500,
+against an identical control with no drill. Same pose, same thermal state, same frame
+indices — the only difference is the GI's derived age.
+
+| frozen-pose tail | fps | avg ms | `sky_y` |
+|---|---|---|---|
+| A, drill at 10500 | 83.8 | 11.93 | 223 |
+| B, control | 83.9 | 11.93 | 223 |
+
+Whole-run avg **11.57 vs 11.56**. `sky_y` was cleared from 223 and **rebuilt to 223**.
+Clearing the derived state and rebuilding it from what is actually resident changes
+nothing, because the state was already correct — 223 is the genuine ceiling of the
+resident window, not a stale high-water mark. `sky_y` rising 183 → 239 across the soak is
+real terrain entering the window as you walk.
+
+So the reported "120 fps at spawn, 50 after wandering, never recovers" is **not stale GI
+bookkeeping**. It is the true steady-state cost of a fully streamed world at full
+resolution, and the resolve owns 60% of it. The `GiDraw::emitters` map is still an
+unbounded leak worth fixing on its own merits (nothing prunes it on eviction, and
+`flush_lights` sums it every frame before its early-out), but it is latent: only `Torch`
+emits and worldgen places none, so a vanilla world measures `emitters 0` throughout.
+
+**Bonus: this pair is the repeat floor.** Two full runs differing by 0.01 ms whole-run avg
+puts the harness noise well under any term in the attribution table above, so those
+single-rep numbers stand.
+
 ## 2026-08-11 — water attribution (`DIG_STUB`), R21
 
 M2 Max, 5.4 MP (`--size 1496x907` on a 2× display — verify PIXEL dims, `--size` is

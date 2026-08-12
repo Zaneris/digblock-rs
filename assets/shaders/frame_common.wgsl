@@ -28,7 +28,9 @@ struct Frame {
 	horizon: vec4f,
 	// x = alpha (1.0 solid / 0.7 water), y = the streaming radius in
 	// blocks (the medium's rim distance — terrain streams as a vertical
-	// cylinder, so it bounds HORIZONTAL distance); zw reserved.
+	// cylinder, so it bounds HORIZONTAL distance), z = the cost-stub mask
+	// (DIG_STUB; renderer.rs's `stub` module owns the bits), w = the
+	// render:GI resolution divisor for chunk.wgsl's bilateral upsample.
 	misc: vec4f,
 	// x = camera underwater (0/1), y = SSR enabled (0/1),
 	// z = water-surface height above the camera (underwater path-length
