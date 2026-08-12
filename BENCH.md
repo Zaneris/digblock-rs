@@ -1,5 +1,89 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-12 — the toroidal wrap was 25% of the frame
+
+Same machine and pose as the attribution entry below: M2 Max, 5.43 MP (2992×1814),
+`--bench --no-vsync --frames 1200 --fixed-dt 0.0166667`, seed 42, tod 45, draw 20.
+Interleaved, 3 reps per arm with the first discarded — spread **0.02 ms**.
+
+| | avg ms | fps | p95 | p99 | over-12.5ms |
+|---|---|---|---|---|---|
+| baseline | 11.75 | 85.1 | 16.33 | 18.53 | 458 |
+| **after** | **8.83** | **113.3** | **12.35** | **15.09** | **51** |
+
+**−2.92 ms, −24.8%, and 89% of the over-budget frames gone**, for four lines of WGSL
+that change no arithmetic result. Capture is pixel-identical: mean **0.00002**/255,
+max 1, 0.0024% of pixels, against a 0.11% capture-noise floor.
+
+**It was address math, not shading.** `gi_cell` and `gi_coarse_empty` wrapped the
+toroidal window with the textbook positive-modulo `((c % s) + s) % s`. On a GPU with no
+integer divide unit each `%` is an emulated sequence, and the marches ran the pair twice
+per iteration — once for the coarse brick, once for the fine cell — over two wrapping
+axes. **Eight emulated divisions stood between every DDA step and its texture load**, in
+the loop the stub table below attributes 40% of the frame to. Two changes, each measured
+on its own:
+
+1. **One modulo per axis** (`gi_wrap2`) — the second only fixes a negative first result,
+   which a compare and an add do for free. 11.75 → ~9.6.
+2. **One wrap for both levels of the skip** — the window side is a multiple of 8, so
+   `wrap(c, side) >> 3` IS `wrap(c >> 3, side / 8)`, and the brick address is three
+   shifts off the fine one. ~9.6 → 8.83.
+
+Attribution first, which is what pointed here (baseline 14.84 on a noisier machine, so
+read the shares, not the absolutes): `giflat` 6.48 ms / 44% of the frame, `gigather`
+6.22 / 42%, `gisun` 3.37 / 23%, `giatrous` 1.21, `noscene` 0.93, `nowater` 0.56. The
+final gather is essentially the whole resolve, and the gather is the DDA.
+
+### The walking soak — the win widens, the ratchet does not go away
+
+`--bench-speed 4 --frames 13500` (225 world-seconds, ~900 blocks), compared at the same
+POINT ON THE WALK (cumulative frames), not the same wall-clock bucket — the faster build
+is further along at any given second and the naive comparison flatters it.
+
+| ~frame | 1000 | 3000 | 5000 | 7000 | 9000 | 11000 | 13000 |
+|---|---|---|---|---|---|---|---|
+| baseline ms | 10.57 | 10.96 | 17.15 | 15.96 | 14.99 | 15.08 | 15.15 |
+| after ms | 6.10 | 7.28 | 10.26 | 10.49 | 8.69 | 8.87 | 9.53 |
+| gain | −42% | −34% | −40% | −34% | −42% | −41% | −37% |
+
+Whole-run: **14.58 → 8.84 ms**, hitches 216 → 1. The gain is *larger* at walking pace
+than on the flyover, because the slow path is more DDA-bound and less streaming-bound.
+
+**The session ratchet is scaled, not removed.** Baseline climbs 10.6 → 15.1 (+43%)
+across the walk; the fixed build climbs 6.1 → 9.5 (+56%). Both degrade by about the same
+FACTOR, which is the expected shape if the ratchet is "more DDA iterations per ray" and
+this change is a constant factor on the cost of one iteration. It confirms the 2026-08-12
+drill finding from the other direction: the decline is real geometry, and the lever on it
+is per-iteration cost.
+
+**Nothing accumulates on the CPU.** Across the whole 225-second walk, `busy_ms` moves
+2.66 → 3.33 (tracking chunk count, identical on both arms), `gpu_bytes` 208 → 261 MB
+(mesh density, identical on both), `emitters` 0 throughout, and `sky_y` 183 → 239 exactly
+as the drill predicted. No unbounded container, no leak.
+
+### Measured and rejected — do not retry
+
+- **Cache the last brick index** and skip the coarse load while the march stays inside
+  it. The redundancy is real (a dense brick is re-asked up to 8 times), but the load is a
+  hit in a 51 KiB texture and the extra live register plus the divergent branch cost more:
+  **12.02 → 14.03 ms.** Pinned in a comment at `gi_coarse_empty_w`.
+- **Replace `gi_ray_skip_brick`'s three float divides** with multiplies by
+  `max(abs(dir), 1e-6)` (which is `1/inv` by construction). No measurable change, and it
+  puts an ulp of slop into a function whose comment records that the position form was
+  measurably wrong. Reverted.
+- **The same wrap fix in `gi_probe.wgsl`.** Neutral within noise — the probe compute is
+  ~0.9 ms of the frame, not 6. Kept anyway, because the two steppers are pinned twins and
+  must not drift.
+
+### Caveat on the machine
+
+Three soak pairs were thrown away to background macOS daemons (`duetexpertd`,
+`speechmaintenanced` pegging two cores; load average 18). The tell is `gen jobs avg`
+rising 0.85 → 2.6 → 4.1 ms and a `worst` in the hundreds of ms — the GPU numbers move
+with it. Check `uptime` before trusting a bench, and note that the clean baseline here
+(11.75) reproduces the 11.79 recorded in the attribution entry below, which is what
+confirms the machine was in the documented state.
+
 ## 2026-08-12 — render scale, GI scale, and which one to actually spend
 
 Same machine and pose as the attribution entry below: 5.43 MP (2992×1814), `--bench

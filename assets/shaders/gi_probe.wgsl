@@ -89,22 +89,33 @@ fn checksum(g: vec3i) -> u32 {
 	return ((u.x * 3u + u.y * 977u + u.z * 6151u) & 0xffffu) << 16u;
 }
 
-fn window_cell(c: vec3i) -> u32 {
-	let side = i32(gi.cam.w);
-	if c.y < 0 || c.y > 255 {
-		return 0u;
-	}
-	let t = vec3i(((c.x % side) + side) % side, c.y, ((c.z % side) + side) % side);
-	return textureLoad(window_tex, t, 0).r;
+// The wrap helpers, twins of gi_common's — one modulo per axis, shared
+// between the coarse and fine lookups. The reasoning (and the bench
+// numbers, which were taken on the resolve rather than here) is over
+// there; this kernel's own march measures inside the noise either way,
+// but the two steppers have to stay the same code or the cache and the
+// per-pixel answer drift.
+fn wrap2(v: vec2i, m: i32) -> vec2i {
+	let r = v % vec2i(m);
+	return select(r, r + vec2i(m), r < vec2i(0));
 }
 
-fn coarse_empty(c: vec3i) -> bool {
-	let side = i32(gi.cam.w) / 8;
-	if c.y < 0 || c.y > 31 {
+fn window_cell_w(w: vec2i, y: i32) -> u32 {
+	if y < 0 || y > 255 {
+		return 0u;
+	}
+	return textureLoad(window_tex, vec3i(w.x, y, w.y), 0).r;
+}
+
+fn coarse_empty_w(w: vec2i, y: i32) -> bool {
+	if y < 0 || y > 255 {
 		return true;
 	}
-	let t = vec3i(((c.x % side) + side) % side, c.y, ((c.z % side) + side) % side);
-	return textureLoad(coarse_tex, t, 0).r == 0u;
+	return textureLoad(coarse_tex, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r == 0u;
+}
+
+fn window_cell(c: vec3i) -> u32 {
+	return window_cell_w(wrap2(c.xz, i32(gi.cam.w)), c.y);
 }
 
 // Sky as a GI source: the dome colors, pulled toward their luminance —
@@ -181,7 +192,8 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		// The two-level skip (gi_dda.wgsl). Probe rays run to MAX_T = 160
 		// blocks through mostly-air, so this is where it pays most. (A
 		// third 64-cube level was measured out — see gi_common's marches.)
-		if coarse_empty(r.cell >> vec3u(3u)) {
+		let w = wrap2(r.cell.xz, i32(gi.cam.w));
+		if coarse_empty_w(w, r.cell.y) {
 			// Skip lands on the last cell inside the empty region, then
 			// steps out under the ordinary tie rule. Both are needed:
 			// this loop steps at the BOTTOM, so `continue` alone would
@@ -190,7 +202,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 			r = gi_ray_step(r, step_dir, inv);
 			continue;
 		}
-		let v = window_cell(r.cell);
+		let v = window_cell_w(w, r.cell.y);
 		if v != 0u {
 			// Word 0 only on the hot path — the pinned twin of
 			// gi_common's marches (16 B per occupied cell measured
