@@ -475,13 +475,19 @@ const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
 
-/// The torch: a slim centered post with a wider glowing head sitting on
-/// it. Floor-mounted, stateless — wall mounting is a state nibble away
-/// when wanted. Small enough that auto-step walks OVER it reads fine.
-const TORCH_BOXES: [SubBox; 2] = [
-	SubBox::new([5, 0, 5], [7, 7, 7]),
-	SubBox::new([4, 7, 4], [8, 10, 8]),
-];
+/// The torch: one centered post, 2/12 square and 10/12 tall.
+/// Floor-mounted, stateless — wall mounting is a state nibble away when
+/// wanted. Small enough that auto-step walks OVER it reads fine.
+///
+/// 2/12 is as slim as a CENTERED box gets on this grid (an odd width
+/// can't straddle the middle), and the head is what came off to get
+/// here: it used to flare to 4/12 over the last 3/12 of the height,
+/// overhanging the post a twelfth on every side, which read as a mallet
+/// rather than a flame. Nothing is lost by dropping it — the flame is
+/// the TEXTURE's business, not the silhouette's: `torch_side` paints its
+/// top 5/12 of rows as glow, so the same box carries wood below and fire
+/// above, and the top face is `TORCH_FLAME` either way.
+const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
 
 static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
 	let boxes = TORCH_BOXES.to_vec();
