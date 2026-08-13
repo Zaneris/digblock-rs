@@ -58,6 +58,13 @@ const BTN_H: f32 = 34.0;
 const ICON_TEXT_GAP: f32 = 12.0;
 /// Gap between the tab strip's tabs.
 const TAB_GAP: f32 = 12.0;
+/// Gap between the tab strip and the first row of whichever tab is
+/// open. A SECTION break, not a row gap: crossing from the tab into its
+/// contents is the biggest boundary on the page, and at `ROW_GAP` the
+/// first slot row read as part of the strip. Lives here rather than in
+/// the theme because only this screen has tabs — a constant one screen
+/// uses does not belong in the shared tokens.
+const TAB_CONTENT_GAP: f32 = theme::SECTION_GAP;
 /// The extraction progress bar's height, inset along the slot's bottom.
 const PROGRESS_H: f32 = 4.0;
 /// How long a rejected drop's explanation holds the preview line.
@@ -415,10 +422,11 @@ impl AlchScreen {
 	// ---- layout ------------------------------------------------------
 
 	/// Header: title row (level + XP bar), essence readout, tab strip,
-	/// and the gap that keeps the active tab's fill from touching the
-	/// first row of whichever tab it opened.
+	/// and [`TAB_CONTENT_GAP`] below it. Must stay in step with the
+	/// `*y` the header actually leaves behind in `emit_header` — this is
+	/// the measure half of the same layout.
 	fn header_h(style: &Style) -> f32 {
-		(3.0 * theme::ROW_H + theme::ROW_GAP) * style.scale
+		(3.0 * theme::ROW_H + TAB_CONTENT_GAP) * style.scale
 	}
 
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
@@ -595,7 +603,7 @@ impl AlchScreen {
 		}
 		// The tab's fill ends at the rule; the content starts a gap below
 		// it, so the first slot row doesn't sit flush against the strip.
-		*y += row_h + theme::ROW_GAP * s;
+		*y += row_h + TAB_CONTENT_GAP * s;
 	}
 
 	/// The EXTRACT tab: the strip (slot + progress + preview + bucket
