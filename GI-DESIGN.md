@@ -961,6 +961,173 @@ This is the third constant now standing in for the missing tonemap, after `LIGHT
 `EMISSIVE_GAIN`. The honest fix remains an HDR scene target and one tonemap on the composite;
 until then every torch tuning is spending the same fixed 0–1 range.
 
+### R27 — one shadow ray, all the torches
+
+User report: flicker still there away from torches, worst at night, worst with several torches
+near each other, **only while moving**, and even a slow walk shows it — sometimes as thin
+shards stretching away from the torches for a frame or two.
+
+R20 built the shadow ray and picked the **argmax**. That covers DIG_VAULT, which holds one
+torch. Every other emitter kept the gather's direct-hit term — `alb * emit * LIGHT_GAIN`, about
+6.0 against a display whose white is 1.0, on odds near 1e-4. Two estimators for one quantity,
+reconciled for exactly one light, and R20's own note says so.
+
+**The instrument came first, because DIG_VAULT structurally cannot show this**: an eleven-block
+room puts every surface inside `LIGHT_RANGE` and holds the one emitter count the argmax covers
+completely. `DIG_TORCHES=<n>` is an open courtyard with the cluster 17 blocks out and floor
+running past `LIGHT_RANGE`, so `n` is a knob with the geometry fixed. `DIG_TORCHES_FAR=<n>`
+parks emitters 45 blocks BEHIND the camera, where they can only change the light list's LENGTH.
+`DIG_TORCHES_WALL` screens the cluster so emitters occlude each other.
+
+**The metric is a same-pose diff, and it is the reusable part.** `--walk` oscillates on a 1.5 s
+period and `--fixed-dt 1/60` makes that exactly 90 frames, so frames N and N+90 sit at the
+IDENTICAL camera pose after 90 frames of continuous motion: the diff holds no parallax at all,
+only the temporal noise of a moving accumulator. Frame N vs N+1 cannot separate the two — a
+0-torch walk reads 0.56 there and 0.014 here, so the consecutive-frame number is mostly
+parallax. Repeat runs diff at **0.000** (max 1).
+
+**Attribution** (8 torches, night, walking, same pose; mean |Δ|/255 and the far quarter of the
+frame):
+
+| build | mean | far band |
+|---|---|---|
+| shipped | 0.434 | 0.829 |
+| `DIG_STUB=ginee` — no NEE, all 8 on the lottery | 0.562 | 0.976 |
+| `DIG_STUB=gigather` — no per-pixel gather | 0.111 | 0.195 |
+| `DIG_STUB=gigather,ginee` — probe cache alone | 0.078 | 0.193 |
+| every emitter hit suppressed (one-line probe) | **0.068** | **0.047** |
+
+84% of the flicker and 94% of the far band, for **5.9%** of the scene's light. And it tracked
+the emitters the argmax does NOT cover: 0/1/2/4/8 torches at 0.014 / 0.045 / 0.138 / 0.280 /
+0.434.
+
+Every clause of the report is that one term:
+
+- **only while moving** — the hit is absorbed by history depth alone. At rest `n` reaches
+  `N_MAX` = 512; the instant the camera moves it clamps to `N_MOVING` = 48, so each hit lands
+  **10.7x harder** and decays in 0.8 s instead of 8.5. Measured 0.008 at rest against 0.434
+  walking, 54x.
+- **even a slow walk** — `still` is a BINARY test at `TRAVEL_EPS` = 0.15 texels. There is no
+  ramp: a camera creeping at 0.2 texels a frame gets the identical n = 48 regime as a sprint.
+- **away from the torches** — the term is RADIANCE, so it does not fall off at all. Its mean
+  drops as 1/d² and its spike does not, so relative noise grows LINEARLY with distance; past
+  `LIGHT_RANGE` nothing NEE-samples and every torch is pure lottery.
+- **at night** — against band luminance, 6.1% at `--tod 180` and 0.7% at noon.
+- **thin shards for a frame or two** — `sample2`'s R2 rotation is GLOBAL to the frame and
+  `cosine_hemi` maps `u.x` → 1 to grazing rays, so on some frames whole correlated regions fire
+  near-horizontal rays together, and a grazing ray reaching a torch twenty blocks off still
+  returns the full 6.0. Over frames 900–907 the typical consecutive pair moves 0.61 with 0.08%
+  of pixels flashing over 6/255; **902 → 903 spikes to 1.94 with 2.09%**. That spike is flat at
+  0.12–0.15% with the gather stubbed, and flat with no torches.
+
+Three suspects died by measurement rather than by argument, recorded so they are not rebuilt.
+**Not gi_probe's uniform light pick** — `nee()` draws one entry uniformly over the whole list
+and reweights by ×count with no range cull, which looks like a variance bomb as the list grows;
+adding 48 emitters that cannot light one visible pixel (`emit` confirmed 8 → 56 on the overlay)
+moved flicker 0.434 → **0.440**. **Not the deterministic NEE ray** — 0.033 of the total, and it
+does not produce the burst. **Not history depth** — R14's own `N_MOVING` sweep already bottomed
+out, and 96 brings the resampling smear back.
+
+**The fix is one estimator instead of two.** `path_radiance` returns nothing for an emitting
+cell, and the direct term is RESAMPLED over every in-range emitter rather than picked.
+`resample_light` is Talbot-style RIS in its exact discrete form: the loop already visits all
+≤ 256 entries, so there is no candidate subset to draw — one weighted-reservoir pass selects
+light i with probability exactly `p_i / Σp`, and the contribution weight is `Σp / p_sel`. The
+target function is R20's own score, `emit·ndl/max(d², LIGHT_NEAR²)`, which makes the estimator
+**exact rather than merely unbiased** whenever the in-range emitters share a tint and are
+mutually visible: `f_i = albedo · LIGHT_GAIN · p_i`, so `f_sel/p_sel · Σp = albedo · LIGHT_GAIN
+· Σp` and the drawn index cancels. Every torch in the world is one class today, so in the open
+the pool is as steady at n = 1 as the argmax was, while carrying ALL of the light instead of
+the brightest slice of it.
+
+One uniform PER RESERVOIR UPDATE is load-bearing. Reusing a single draw for every candidate is
+the tempting shortcut and it is wrong — the tests become nested events on one variable, so the
+last candidate keeps its exact marginal while everything before it is squeezed (three equal
+weights land 1/2, 1/6, 1/3 instead of thirds). An LCG advanced per ACCEPTED candidate costs
+three ALU, on the in-range lights only. Checked against a 400k-trial reference implementation:
+selection matches `p_i/Σp` to 7e-5, and the estimator with visibility recovers 5.2498 against a
+truth of 5.2500.
+
+Two things had to come with it:
+
+- **gi_probe's emitter hit went too**, on the same argument (`nee` covers every emitter there as
+  well), and it was carrying a stale calibration — `emit * 0.6`, the pre-R26 `LIGHT_GAIN`,
+  invisible to `resolve_and_probe_agree_on_light_calibration` because that pin compares the two
+  shaders' NAMED consts and a bare literal has no name to compare. The cache's own flicker
+  HALVED rather than rising (0.078 → 0.038), which is also what retires the worry that the
+  ×count pick would start to bite once it was the only path.
+- **An emitting partial cell stopped being a hit whole.** That rule was never about occlusion —
+  it existed so a gather ray would reliably strike the torch's cell and collect its emission,
+  because letting rays through collapsed the vault's pool. With the emission gone it was doing
+  only the thing its own comment said it must not: casting a full 1×1×1 shadow from a 2/12 post,
+  into the NEE rays of every other torch in a cluster. Worth 0.076 → 0.070 mean and 0.044 →
+  0.035 far at 8 torches, with 1 torch unmoved.
+
+**Measured**, same pose, night, walking (mean |Δ| / far band / frame luma):
+
+| torches | shipped | R27 | luma shipped → R27 |
+|---|---|---|---|
+| 0 | 0.014 / 0.007 | 0.014 / 0.007 | 14.32 → 14.32 |
+| 1 | 0.045 / 0.042 | 0.033 / 0.031 | 15.02 → 15.00 |
+| 2 | 0.138 / 0.229 | 0.045 / 0.032 | 15.50 → 15.99 |
+| 4 | 0.280 / 0.515 | 0.058 / 0.033 | 16.30 → 17.72 |
+| 8 | **0.434 / 0.829** | **0.070 / 0.035** | 18.09 → 21.68 |
+
+The far band is the line that matters: it was linear in the emitter count and is now flat.
+Noon moves 0.618 / 0.956 → 0.268 / 0.162, so this is not a night-only fix.
+
+**The room gets brighter, and that is a look call, not a bug.** +19.8% at 8 torches, +8.7% at
+4, +3.2% at 2, and **−0.1% at 1** — the parity that matters, since with one light RIS degenerates
+to exactly the argmax. Seven of eight torches were previously delivering their light through a
+channel whose hit probability at 15 blocks is ~9e-5, which a 48-frame moving history cannot
+collect: unbiased over an ensemble, and in practice simply absent while walking. `LIGHT_GAIN`
+is the sanctioned knob if the pool now reads hot (its table is on the constant in
+gi_probe.wgsl), and note its old calibration anchor — "the brightness the direct-hit term
+already gave the emitting cell" — no longer exists.
+
+**Parity on the existing capture envs.** DIG_ROOF (no emitter) is untouched at **mean 0.002,
+max 1**. DIG_VAULT moves mean 2.175 and **loses 6.5% of its luma** (33.51 → 31.34): with one
+torch the resampled NEE *is* the old argmax, so all of that is the gather's and the cache's
+emitter hits going away with nothing to replace them — the vault is the one scene where this
+change is pure subtraction. DIG_SHAPES moves mean 2.490 at **+0.01 luma**, a redistribution
+rather than a shift, and it moves at all because it holds two torches (it is a slab/stair scene,
+which is not where you look for emitters — checking rather than assuming is what turned a
+"no-emitter scene changed?!" scare into a one-line explanation). Its same-build repeat floor at
+1500 frames is **0.000**.
+
+**Cost**, interleaved brackets at `--gi-scale 1 --size 1280x720 --draw-dist 16`, an artificially
+heavy config chosen so the frame is longer than any refresh interval:
+
+| scene | frame ms | gi trace ms |
+|---|---|---|
+| DIG_VAULT (1 torch) | 8.99 → 8.95 (−0.4%) | 6.21 → 6.07 (−2.3%) |
+| DIG_TORCHES=8 | 14.61 → 16.89 (+15.6%) | 11.83 → 13.70 (**+15.8%**) |
+
+Free where one emitter is in range, and about +1.9 ms of trace on an eight-torch cluster — which
+scales with the GI resolution, so the shipped divisor divides it. Some of that is work the fix
+BUYS rather than wastes: a NEE ray no longer terminates early against a neighbouring torch's
+false full-cube occluder, so shadow rays in a cluster now actually run their length. Deferring
+the per-candidate `sqrt`/`gi_light_margin` to the winner measured +13.6% against +15.8%, but the
+within-build spread on that second bracket was 13%, so treat the deferral as obviously-correct
+work removal rather than as a measured 2 points.
+
+**Two measurement traps this round, both worth the standing list.** `--display N` is new and it
+is not a convenience: on a multi-monitor desk the window opens wherever the desktop last had
+focus, so an unpinned bracket compares a 120 Hz screen against a 60 Hz one — and a display-paced
+frame lets the GPU downclock, which inflates every timestamp in the CSV together. The first,
+unpinned bracket read `avg_ms` of exactly 8.330 and 16.670 (the two refresh intervals) and had
+`gpu_gi_denoise_ms` swinging 2.53 → 8.05 **within one build**, on a pass this change does not
+touch. `refresh_ms` in the CSV is the tell. And frame N vs N+1 is not a flicker metric — use the
+90-frame same-pose diff above.
+
+**What is left, and the number that would justify the next step.** The draw is proportional to
+UNSHADOWED contribution, so a point that can only see some of what it samples gets a Bernoulli
+on the pool total — the one thing the target function cannot price. `DIG_TORCHES_WALL` exists
+to measure it rather than argue it: 8 torches screened in half read **0.103 / 0.099** against
+0.070 / 0.035 in the open. Real, and still 4x better than the shipped build's OPEN case. The
+fix is a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, which the resolve already
+does, and M-clamp around 20); it is deliberately NOT built here, and 0.103 is the number to beat.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

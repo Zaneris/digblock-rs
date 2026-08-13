@@ -106,6 +106,20 @@ pub struct RunOptions {
 	/// one knob a desktop-vs-web comparison has to hold equal before any
 	/// of its numbers mean anything.
 	pub window_size: Option<(u32, u32)>,
+	/// Open the window on this monitor (index into winit's enumeration)
+	/// instead of wherever the desktop last had focus.
+	///
+	/// This is a MEASUREMENT knob, not a convenience. A window that opens
+	/// on whichever screen the user most recently clicked lands on a
+	/// different refresh rate and a different backing scale run to run,
+	/// and both are load-bearing: the physical framebuffer follows the
+	/// scale, so the GI resolve's cost changes with it, and a
+	/// display-paced frame lets the GPU downclock, which inflates every
+	/// timestamp in the CSV. A bracket taken across two screens is
+	/// measuring the screens. `--display` pins it; the chosen monitor's
+	/// name, size and refresh are logged so a capture records which one
+	/// it ran on.
+	pub display: Option<usize>,
 	/// Step the world by exactly this much per frame instead of by
 	/// measured wall time (`--fixed-dt`). Everything animated rides dt —
 	/// water ripple phase, the fluid sim, the spawn settle — so without

@@ -238,17 +238,11 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 				return out;
 			}
 			if op == 3u {
-				// An EMITTING partial cell is a hit whole — the pinned
-				// twin of gi_common's `gi_march` rule (the voxel is the
-				// emission model; see there). Non-emitters block only
-				// where their boxes stand, so a slab shadows the cache
-				// exactly as it shadows the per-pixel sun ray.
-				if lut[v].y > 0u {
-					out.hit = true;
-					out.cell = r.cell;
-					out.axis = r.axis;
-					return out;
-				}
+				// Every partial cell blocks only where its boxes stand,
+				// emitters included since R27 — the pinned twin of
+				// gi_common's `gi_march` rule. See there for why the
+				// emitting special case existed and why taking the
+				// emission out of these marches is what retired it.
 				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
 				let bh = gi_boxes_hit(from_p, dir, r.cell, r.t, t_exit, lut[v].zw, r.axis);
 				if bh.x >= 0.0 {
@@ -450,9 +444,20 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	// probe field = the infinite bounce).
 	let v = window_cell(h.cell);
 	let alb = albedo_of(v);
-	let emit = f32(lut[v].y);
-	if emit > 0.0 {
-		return alb * emit * 0.6 * water_att;
+	if f32(lut[v].y) > 0.0 {
+		// An emitter reaches the cache through `nee` below and nowhere
+		// else — the twin of gi_resolve's `path_radiance` rule (R27), for
+		// the same reason: this term is radiance, so it does not fall off,
+		// and a probe that catches a torch on one of 32 rays folds a 6.0
+		// into a 6-axis average that then hysteresis-blends for 48 frames.
+		// The cell still occludes.
+		//
+		// It also had a stale calibration. This read `emit * 0.6` — the
+		// pre-R26 LIGHT_GAIN, left behind when the constant went to 0.75,
+		// and invisible to `resolve_and_probe_agree_on_light_calibration`
+		// because that pin compares the two shaders' NAMED consts and a
+		// bare literal has no name to compare.
+		return vec3f(0.0);
 	}
 	var n = vec3f(0.0);
 	if h.axis == 0u {

@@ -174,6 +174,12 @@ fn main() {
 				options.window_size = Some((parse(w), parse(h)));
 			}
 			"--no-vsync" => options.no_vsync = true,
+			// Pin the window to one monitor (index into winit's
+			// enumeration). Frame-time captures are not comparable across
+			// screens — backing scale sets the physical framebuffer and a
+			// display-paced frame lets the GPU downclock — so any bracket
+			// on a multi-monitor desk wants this.
+			"--display" => options.display = Some(parse_or_die("--display", args.next())),
 			// Fixed simulation step, in seconds — a capture flag. Without
 			// it the water's ripple phase and the fluid/spawn settle ride
 			// the wall clock, so two builds of different speed reach the
@@ -265,6 +271,25 @@ fn main() {
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
+	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();
+	// DIG_TORCHES=<n>: the courtyard, lit by n torches. A COUNT rather than
+	// a flag, because the emitter count is the variable — the resolve's NEE
+	// covers exactly one light per pixel, so 1 vs 8 with the geometry held
+	// fixed is the whole experiment.
+	for (name, slot) in [
+		("DIG_TORCHES", &mut config.debug_torches),
+		("DIG_TORCHES_FAR", &mut config.debug_torches_far),
+	] {
+		if let Ok(v) = std::env::var(name) {
+			match v.parse::<i32>() {
+				Ok(n) => *slot = n,
+				Err(_) => {
+					eprintln!("{name} must be a torch count, got {v:?}");
+					std::process::exit(2);
+				}
+			}
+		}
+	}
 	// DIG_STUB=wsun,wssr,…: remove shading terms so ONE build can
 	// attribute a frame. A typo must be fatal — a run that silently
 	// measures the un-stubbed build is precisely the mistake this exists

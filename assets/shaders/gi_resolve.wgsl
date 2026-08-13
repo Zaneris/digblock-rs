@@ -321,9 +321,6 @@ const LIGHT_NEAR = 2.0;
 // tight cap silently UN-shadows whatever lies past it — the bug
 // gi_sun_vis shipped once at 160 iterations against a 320-block window.
 const GI_NEE_ITERS = 64;
-// "No sampled light" sentinel for path_radiance's suppression compare:
-// no gather hit can land here (cells live in y 0..255).
-const NEE_NO_CELL = vec3i(1073741824);
 
 // Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
 // the bit numbers, and this is the mirror — water.wgsl is the other one).
@@ -340,41 +337,95 @@ fn stubbed(bit: u32) -> bool {
 	return (u32(rz.jitter.w) & bit) != 0u;
 }
 
-// The per-pixel direct term for local lights (R20): ONE deterministic
-// shadow ray to the DOMINANT emitter, the same move R14 made for the
-// sun applied to torches (Q2RTX / GI-1.0 / RTXDI lineage — direct
-// light gets its own low-variance estimator, separated from the noisy
-// 1-spp gather). Before this, a pixel's torch light arrived only when
-// the gather ray geometrically struck the torch's cell, re-randomized
-// every frame: a high-magnitude Bernoulli trial whose flicker no
-// history depth could drown (the N_MOVING sweep is in GI-DESIGN.md).
-// Deterministic means zero variance: the pool is steady at n = 1.
+// The per-pixel direct term for local lights: ONE shadow ray, but at a
+// light RESAMPLED over the whole in-range list rather than at the
+// brightest one (R27; R20 built the shadow ray and picked the argmax).
 //
-// It is also what finally lights the block a torch STANDS ON. Every
-// march steps before it tests, so a gather ray leaving the support
-// block's top face starts INSIDE the torch's cell and exits without
-// ever registering it — the brightest surface in the room structurally
-// could not receive the direct term. The NEE ray from that face runs
-// max(0.5 - 0.9, 0) = 0 blocks: unoccluded by construction.
+// R20's argmax gave one light a zero-variance estimator and left every
+// other emitter to the gather's direct-hit lottery — `alb * emit *
+// LIGHT_GAIN`, about 6.0 against a display whose white is 1.0, on odds
+// near 1e-4. Measured on the DIG_TORCHES courtyard, same-pose walking
+// flicker rises with the emitters the argmax does NOT cover (0/1/2/4/8
+// torches: 0.014 / 0.045 / 0.138 / 0.280 / 0.434), and deleting the
+// gather's emitter term outright removes 84% of it for 5.9% of the
+// scene's light. GI-DESIGN.md R27 has the tables.
+//
+// So the gather no longer returns emitter radiance AT ALL (see
+// path_radiance) and this covers every emitter instead of one. The
+// estimator is Talbot-style RIS (resampled importance sampling) in its
+// exact discrete form: the loop already visits all <= 256 entries, so
+// there is no candidate SUBSET to draw — one weighted-reservoir pass
+// selects light i with probability exactly p_i / sum(p), and the
+// contribution weight is sum(p) / p_sel.
+//
+// The target function is R20's own score, `emit * ndl / max(d2,
+// LIGHT_NEAR^2)` — the unshadowed irradiance up to the emitter's tint.
+// That makes the estimator EXACT, not merely unbiased, whenever the
+// in-range emitters share a tint and are all visible: f_i = albedo *
+// LIGHT_GAIN * p_i, so f_sel / p_sel * sum(p) = albedo * LIGHT_GAIN *
+// sum(p), which does not depend on which light was drawn. Every torch
+// in the world is one class today, so in the open the pool is as steady
+// at n = 1 as the argmax was, while carrying ALL of the light instead of
+// the brightest slice of it.
+//
+// What is left is visibility, which the target function cannot see: the
+// draw is proportional to UNSHADOWED contribution, so a point that can
+// only see half of what it samples gets a Bernoulli on the pool total
+// rather than the old Bernoulli on a 6.0 spike. That residual is what a
+// temporal reservoir (ReSTIR DI: reproject the reservoir through
+// `prev_vp`, M-clamp) would remove, and it is deliberately NOT built
+// here — the measurement decides, and it needs a scene with emitters
+// occluded from each other (`DIG_TORCHES_WALL`).
+//
+// The R20 property that must not regress: this is still what lights the
+// block a torch STANDS ON. Every march steps before it tests, so a
+// gather ray leaving the support block's top face starts INSIDE the
+// torch's cell and exits without registering it — the brightest surface
+// in the room can only be lit from here. The NEE ray from that face runs
+// max(0.5 - margin, 0) = 0 blocks: unoccluded by construction.
 struct NeeLight {
 	valid: bool,
-	cell: vec3i,
 	dir: vec3f,
 	dist: f32,
-	dist2: f32,
-	ndl: f32,
-	// Emitter tint x emit x LIGHT_GAIN — irradiance-side, the surface
-	// albedo multiplies in the scene shader like the rest of indirect.
-	radiance: vec3f,
-	// How far short of it the shadow ray must stop (gi_light_margin).
+	// The WHOLE in-range pool's unshadowed irradiance, carried by the one
+	// drawn sample (f_sel / p_sel x sum(p)) — already through the falloff
+	// and the cosine, so the use site only gates it on the shadow ray.
+	// The surface albedo multiplies in the scene shader, like the rest of
+	// indirect.
+	irradiance: vec3f,
+	// How far short of the drawn light the shadow ray must stop
+	// (gi_light_margin).
 	margin: f32,
 }
 
-fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
+// One uniform per reservoir update, which is what makes the selection
+// correct. Reusing a single draw for every candidate is the tempting
+// shortcut and it is WRONG: the tests `u < p_i / sum_i` are then nested
+// events on one variable, so the last candidate keeps its exact marginal
+// while everything before it is squeezed (three equal weights land
+// 1/2, 1/6, 1/3 instead of thirds). An LCG advanced per ACCEPTED
+// candidate costs three ALU on the in-range lights only.
+fn lcg_next(state: ptr<function, u32>) -> f32 {
+	*state = *state * 1664525u + 1013904223u;
+	return f32(*state >> 8u) * (1.0 / 16777216.0);
+}
+
+fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 	var out: NeeLight;
 	out.valid = false;
 	let count = min(bitcast<u32>(lights[0].x), 256u);
-	var best = 0.0;
+	var rng = seed;
+	// sum(p) over every candidate, which IS the pool's total irradiance
+	// divided by the emitter tint — so it is both the reservoir's
+	// normalizer and the answer.
+	var wsum = 0.0;
+	var sel_cls = 0u;
+	// Only the POSITION is kept per update. Everything derived from it —
+	// the distance, the direction, `gi_light_margin`'s sqrt — is computed
+	// once after the loop instead of on every candidate that happens to
+	// win the reservoir, which on a cluster is most of them. Same answer,
+	// since the winner is the winner.
+	var sel_pos = vec3f(0.0);
 	for (var i = 1u; i <= count; i++) {
 		let l = lights[i];
 		let d = l.xyz - p;
@@ -382,24 +433,38 @@ fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
 		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
 			continue;
 		}
-		let ndl = dot(n, d) * inverseSqrt(dist2);
+		let inv_dist = inverseSqrt(dist2);
+		let ndl = dot(n, d) * inv_dist;
 		if ndl <= 0.0 {
 			continue;
 		}
 		let cls = bitcast<u32>(l.w);
-		let emit = gi_emit(cls);
-		let score = emit * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
-		if score > best {
-			best = score;
-			out.valid = true;
-			out.cell = vec3i(floor(l.xyz));
-			out.dist2 = dist2;
-			out.dist = sqrt(dist2);
-			out.dir = d / out.dist;
-			out.ndl = ndl;
-			out.radiance = gi_albedo(cls) * emit * LIGHT_GAIN;
-			out.margin = gi_light_margin(l.xyz);
+		// The target function, and the ONLY LUT read on the candidate
+		// path: the drawn light's tint is fetched once, below. A tint that
+		// varies between classes just makes this a slightly worse target,
+		// never a biased one.
+		let score = gi_emit(cls) * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+		if score <= 0.0 {
+			continue;
 		}
+		wsum += score;
+		if lcg_next(&rng) * wsum < score {
+			out.valid = true;
+			sel_pos = l.xyz;
+			sel_cls = cls;
+		}
+	}
+	if out.valid {
+		let d = sel_pos - p;
+		out.dist = length(d);
+		out.dir = d / out.dist;
+		out.margin = gi_light_margin(sel_pos);
+		// f_sel / p_sel x sum(p), with the division done in closed form:
+		// the target IS the contribution up to the tint, so `score_sel`
+		// cancels exactly and never appears. That cancellation is the
+		// whole reason this reads as one deterministic multiply rather
+		// than as a ratio of two sampled quantities.
+		out.irradiance = gi_albedo(sel_cls) * LIGHT_GAIN * wsum;
 	}
 	return out;
 }
@@ -420,15 +485,30 @@ const CODE_NORMALS = array<vec3f, 6>(
 // become what they were always meant to be — the cache that terminates a
 // path, so one ray buys the whole multi-bounce series.
 //
-// `skip_cell` is the cell of the light the NEE ray sampled this pixel
-// (NEE_NO_CELL when none): its emission is suppressed here WHETHER OR
-// NOT the shadow ray connected, because the picked light's direct term
-// is the deterministic estimate alone — counting the stochastic hit too
-// doubles its energy, and letting it stand in for a blocked NEE ray
-// puts the old flicker right back in the torch's shadow. Other
-// emitters keep the direct-hit term: they are not being NEE-sampled,
-// so the gather is still their only direct path.
-fn path_radiance(side: i32, h: GiHit, dir: vec3f, skip_cell: vec3i) -> vec3f {
+// An emitting cell contributes NOTHING here (R27). `resample_light`
+// covers every in-range emitter with a shadow ray, so a gather hit on
+// one is either a double count or — where the shadow ray was blocked —
+// the old flicker reinstated inside the torch's own shadow. R20
+// suppressed exactly the one cell it NEE'd and left the rest paying
+// `alb * emit * LIGHT_GAIN`: radiance, so it does not fall off with
+// distance, which is why the noise it made GREW with distance while its
+// energy shrank. Measured: 84% of the flicker, 5.9% of the light.
+//
+// The cell still OCCLUDES, which is correct — a torch is an object, and
+// the NEE ray is what carries its emission. And the suppression is
+// unconditional rather than range-gated: `LIGHT_RANGE` already declares
+// that an emitter past 24 blocks may not matter (gi_probe's `nee`
+// enforces the same bound), and this was the one path in the system that
+// let one contribute from anywhere inside `GI_GATHER_T`, at full
+// radiance and full variance. One reach, everywhere.
+//
+// The known gap, named because it is not free: with more than
+// MAX_LIGHTS emitters inside `flush_lights`' reach, the list truncates
+// to the 256 nearest THE CAMERA, so a distant surface's own nearby
+// torches can fall off the list and now go dark rather than arriving as
+// lottery noise. That trade is deliberate — it was never a usable signal
+// — but it is the thing to watch if a base ever holds 256 torches.
+fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	let tr = medium_water_tr(h.water);
 	if !h.hit {
 		// Open in that direction. NOT the sun disc as well: gi_probe.wgsl
@@ -439,13 +519,9 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f, skip_cell: vec3i) -> vec3f {
 		return gi_sky_radiance(dir, rz.zenith.rgb, rz.horizon.rgb) * tr;
 	}
 	let v = gi_cell(side, h.cell);
-	let emit = gi_emit(v);
 	let alb = gi_albedo(v);
-	if emit > 0.0 {
-		if all(h.cell == skip_cell) {
-			return vec3f(0.0);
-		}
-		return alb * emit * LIGHT_GAIN * tr;
+	if gi_emit(v) > 0.0 {
+		return vec3f(0.0);
 	}
 	// The hit face, from the axis the DDA last crossed.
 	var hn = vec3f(0.0);
@@ -622,19 +698,30 @@ fn fs(i: VsOut) -> FsOut {
 		indirect =
 			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	} else {
-		// The deterministic direct term for the dominant local light —
-		// see pick_dominant_light. Folded into `indirect` BEFORE the
-		// accumulation below, so temporal blending, the edit spheres and
-		// the atrous machinery all carry it with no new plumbing: a
-		// deterministic input just passes through an average unchanged.
-		var skip_cell = NEE_NO_CELL;
+		// The direct term for local lights — see resample_light. Folded
+		// into `indirect` BEFORE the accumulation below, so temporal
+		// blending, the edit spheres and the atrous machinery all carry it
+		// with no new plumbing.
+		//
+		// The reservoir's seed is an integer pixel/frame hash rather than a
+		// draw off `sample2`'s R2 sequence, and that is not laziness: the
+		// selection is driven by the per-candidate LCG inside the loop, so
+		// stratifying the SEED would buy nothing the reservoir could use.
+		// It does have to advance with the frame — the residual variance
+		// here is the visibility Bernoulli, and a static world-anchored
+		// draw would freeze it into a fixed spatial dither the accumulator
+		// can never average out, which is a worse artifact than the one
+		// this removes.
+		//
 		// STUB_GINEE drops the light scan AND its shadow ray. In a scene
 		// with no emitter in range `pick.valid` is already false, so this
 		// term measures zero there by construction — that is the answer,
 		// not a broken run.
-		let pick = pick_dominant_light(sp, n);
+		let seed = (u32(uv.x) * 73856093u)
+			^ (u32(uv.y) * 19349663u)
+			^ (u32(rz.jitter.x) * 83492791u);
+		let pick = resample_light(sp, n, seed);
 		if pick.valid && !stubbed(STUB_GINEE) {
-			skip_cell = pick.cell;
 			// Stop short of the light's own cell (gi_light_margin, shared
 			// with the probe nee()) so the whole-cell emitter rule can't
 			// self-occlude.
@@ -643,8 +730,7 @@ fn fs(i: VsOut) -> FsOut {
 				max(pick.dist - pick.margin, 0.0), GI_NEE_ITERS,
 			);
 			if !sh.hit {
-				nee = pick.radiance * (pick.ndl / max(pick.dist2, LIGHT_NEAR * LIGHT_NEAR))
-					* medium_water_tr(sh.water);
+				nee = pick.irradiance * medium_water_tr(sh.water);
 			}
 		}
 		// A second, decorrelated draw from the same sequence — sharing the
@@ -663,7 +749,7 @@ fn fs(i: VsOut) -> FsOut {
 			let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 			let rd = cosine_hemi(n, ui);
 			let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
-			indirect = path_radiance(side, hit, rd, skip_cell) + nee;
+			indirect = path_radiance(side, hit, rd) + nee;
 		}
 	}
 	// One sun ray along the EXACT direction, offset inside a cone about

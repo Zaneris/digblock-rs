@@ -344,22 +344,21 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 				return out;
 			}
 			if op == 3u {
-				// An EMITTING partial cell is a hit whole: the voxel is
-				// the emission model, and letting gather rays pass
-				// through the torch's cell is what collapsed the vault's
-				// pool to a fraction of itself. Since R20 the resolve
-				// SUPPRESSES this hit's emission for the one light its
-				// NEE ray sampled (path_radiance's skip_cell) — the
-				// whole-cell hit remains the direct path only for
-				// emitters nothing is NEE-sampling. Only the SUN ray
-				// resolves an emitter's boxes — a torch must not cast a
-				// pillar shadow, but it must still glow.
-				if gi_lut[v].y > 0u {
-					out.hit = true;
-					out.cell = r.cell;
-					out.axis = r.axis;
-					return out;
-				}
+				// An emitting partial cell resolves its boxes like every
+				// other partial (R27). It used to be a hit WHOLE, and that
+				// rule was never about occlusion — it was there so a gather
+				// ray would reliably strike the torch's cell and collect
+				// `alb * emit * LIGHT_GAIN`, because letting rays pass
+				// through collapsed the vault's pool to a fraction of
+				// itself. R27 removed the emission from this path entirely
+				// (`path_radiance`), which left the rule doing only the one
+				// thing its own comment said it must not do: casting a full
+				// 1x1x1 shadow from a torch that is a 2/12 post.
+				//
+				// It matters most exactly where R27 aims. With the direct
+				// term now resampled over EVERY in-range emitter, a
+				// clustered set of torches was shadowing each other's NEE
+				// rays as solid cubes.
 				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
 				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
 				if bh.x >= 0.0 {

@@ -159,7 +159,12 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 	}
 }
 
-fn window_attrs(title: &str, size: Option<(u32, u32)>) -> winit::window::WindowAttributes {
+fn window_attrs(
+	title: &str,
+	size: Option<(u32, u32)>,
+	display: Option<usize>,
+	_el: &ActiveEventLoop,
+) -> winit::window::WindowAttributes {
 	let attrs = Window::default_attributes().with_title(title.to_owned());
 	// LOGICAL, so a retina display doubles it to the same physical size a
 	// browser canvas reports at devicePixelRatio 2 — which is the whole
@@ -168,6 +173,54 @@ fn window_attrs(title: &str, size: Option<(u32, u32)>) -> winit::window::WindowA
 		Some((w, h)) => attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h)),
 		None => attrs,
 	};
+	// Pin the window to one monitor. Without it the window opens wherever
+	// the desktop last had focus, so a capture run silently changes
+	// BACKING SCALE (the physical framebuffer, and with it the GI
+	// resolve's cost) and REFRESH RATE (a display-paced frame lets the GPU
+	// downclock, inflating every timestamp in the metrics CSV) between one
+	// run and the next. An interleaved before/after bracket taken across a
+	// 60 Hz and a 120 Hz screen measures the screens.
+	//
+	// Positioned at the monitor's own origin rather than centred, because
+	// the point is repeatability, not looks; winit's coordinates are
+	// global desktop physical pixels, so a monitor's `position()` is
+	// exactly the corner of that screen.
+	#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+	let attrs = match display {
+		None => attrs,
+		Some(i) => {
+			let mons: Vec<_> = _el.available_monitors().collect();
+			match mons.get(i) {
+				Some(m) => {
+					let p = m.position();
+					let hz = m.refresh_rate_millihertz().unwrap_or(0) as f32 / 1000.0;
+					log::info!(
+						"display {i}: {:?} {}x{} @{hz:.2}Hz scale {:.2} origin {},{}",
+						m.name().unwrap_or_default(),
+						m.size().width,
+						m.size().height,
+						m.scale_factor(),
+						p.x,
+						p.y,
+					);
+					attrs.with_position(winit::dpi::PhysicalPosition::new(p.x, p.y))
+				}
+				None => {
+					// Fatal, like every other bad capture flag: a run that
+					// silently fell back to "wherever" is exactly the
+					// non-repeatable measurement this exists to prevent.
+					log::error!(
+						"--display {i}: only {} monitor(s) — {:?}",
+						mons.len(),
+						mons.iter().map(|m| m.name()).collect::<Vec<_>>()
+					);
+					std::process::exit(2);
+				}
+			}
+		}
+	};
+	#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+	let _ = display;
 	#[cfg(target_os = "ios")]
 	let attrs = {
 		use winit::platform::ios::WindowAttributesExtIOS;
@@ -401,8 +454,13 @@ impl<G: Game> App<G> {
 	fn init_all(&mut self, el: &ActiveEventLoop) {
 		log::info!("lifecycle: initial launch");
 		let window = Arc::new(
-			el.create_window(window_attrs(&self.options.title, self.options.window_size))
-				.unwrap(),
+			el.create_window(window_attrs(
+				&self.options.title,
+				self.options.window_size,
+				self.options.display,
+				el,
+			))
+			.unwrap(),
 		);
 		#[cfg(not(target_arch = "wasm32"))]
 		{
@@ -511,8 +569,13 @@ impl<G: Game> App<G> {
 		log::info!("lifecycle: resume (recreating surface)");
 		let window = s.window.unwrap_or_else(|| {
 			Arc::new(
-				el.create_window(window_attrs(&self.options.title, self.options.window_size))
-					.unwrap(),
+				el.create_window(window_attrs(
+					&self.options.title,
+					self.options.window_size,
+					self.options.display,
+					el,
+				))
+				.unwrap(),
 			)
 		});
 		let (surface, config) = create_surface(&s.gpu, window.clone(), self.options.no_vsync);

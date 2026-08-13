@@ -200,6 +200,22 @@ pub struct EngineConfig {
 	/// at spawn is 100+ blocks out). Set by the desktop launcher from
 	/// DIG_RIVER.
 	pub debug_river: bool,
+	/// Debug: how many torches `debug_torches_plan` lights its courtyard
+	/// with, 0 = scene off. The local-light capture DIG_VAULT cannot be:
+	/// a room deeper than `LIGHT_RANGE` and an emitter COUNT that varies
+	/// with the geometry held fixed. Set by the desktop launcher from
+	/// DIG_TORCHES.
+	pub debug_torches: i32,
+	/// Debug: extra torches parked 45 blocks BEHIND the camera, out of
+	/// every visible surface's `LIGHT_RANGE` but inside the light list's
+	/// reach — so they change the emitter COUNT without changing one
+	/// pixel of direct light. Set from DIG_TORCHES_FAR.
+	pub debug_torches_far: i32,
+	/// Debug: screen the torch cluster in half, so emitters are occluded
+	/// from each other — the only pose that can measure a resampled NEE's
+	/// residual, which is entirely a visibility term. Set from
+	/// DIG_TORCHES_WALL.
+	pub debug_torches_wall: bool,
 	/// Debug: shading terms to REMOVE this run (`DIG_STUB`, names in
 	/// `stub::parse`). One build then attributes a whole frame across a
 	/// handful of runs, instead of a rebuild per bisect — and, more to the
@@ -295,6 +311,9 @@ impl EngineConfig {
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
+			debug_torches: 0,
+			debug_torches_far: 0,
+			debug_torches_wall: false,
 			stub: 0,
 			debug_screen: None,
 			spray_droplets: 128,
@@ -344,6 +363,9 @@ impl EngineConfig {
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
+			debug_torches: 0,
+			debug_torches_far: 0,
+			debug_torches_wall: false,
 			stub: 0,
 			debug_screen: None,
 			spray_droplets: 48,
@@ -967,6 +989,113 @@ fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_TORCHES=&lt;n&gt; layout: an open-topped stone courtyard ahead of
+/// spawn with `n` torches clustered at its near end and forty blocks of
+/// bare floor running away from them.
+///
+/// DIG_VAULT cannot photograph the remaining local-light noise, and the
+/// two reasons are the whole point of this scene. Its room is eleven
+/// blocks deep, so every surface in it sits inside `LIGHT_RANGE` and
+/// well inside the near-field clamp — there is no "far from the torch"
+/// band at all. And it holds exactly ONE torch, which is the single case
+/// the resolve's dominant-light NEE covers completely: with one emitter
+/// in range the deterministic ray is the whole direct term and the
+/// gather's emitter-hit lottery is suppressed for it.
+///
+/// So: `n` is a knob (1 vs 8 with the geometry held fixed) and the floor
+/// runs to +44 so a capture crosses the 24-block `LIGHT_RANGE` edge with
+/// the same material and the same face code either side of it. No roof —
+/// the report is about NIGHT, where the sky is a dim second source
+/// rather than absent, so `--tod 180` is the pose and `--tod 0` is the
+/// control that shows the sun masking it.
+fn debug_torches_plan(spawn: Vec3, n: i32, far: i32, wall: bool) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// Floor at by−3 (DIG_VAULT's convention: the first air cell is by−2),
+	// cleared to by+8 so nothing worldgen left overhead shadows the run.
+	for x in (bx - 16)..=(bx + 16) {
+		for z in (bz - 6)..=(bz + 46) {
+			out.push((x, by - 3, z, B::Stone as u16));
+			for y in (by - 2)..=(by + 8) {
+				let wall = x == bx - 16 || x == bx + 16 || z == bz + 46 || z == bz - 6;
+				out.push((
+					x,
+					y,
+					z,
+					if wall && y <= by + 2 {
+						B::Stone as u16
+					} else {
+						B::Air as u16
+					},
+				));
+			}
+		}
+	}
+	// The cluster: up to 8 torches on 3-block centres around (bx, bz+17),
+	// laid down in a fixed order so `n` = 1 keeps the same first torch in
+	// the same cell as `n` = 8 and the A/B moves one variable.
+	//
+	// Seventeen blocks out, not two, because the report is about distance:
+	// an eye-height camera at spawn then holds all three regimes in one
+	// frame — bare floor from 0 to 12 blocks lit only by what reaches it
+	// (the band the artifact is reported in, and the one a half-res texel
+	// magnifies most), the pools themselves at 14-20, and floor running out
+	// past `LIGHT_RANGE` behind them where no NEE fires at all.
+	const SPOTS: [(i32, i32); 8] = [
+		(0, 17),
+		(3, 17),
+		(-3, 17),
+		(0, 20),
+		(3, 20),
+		(-3, 20),
+		(0, 14),
+		(3, 14),
+	];
+	for &(dx, dz) in SPOTS.iter().take(n.clamp(0, 8) as usize) {
+		out.push((bx + dx, by - 2, bz + dz, B::Torch as u16));
+	}
+	// `wall` cuts the cluster in half with a solid screen, so a floor
+	// point on either side sees some of the torches and not the others.
+	//
+	// That is the one case a resampled NEE cannot price: the draw is
+	// proportional to UNSHADOWED contribution, so a point that can only
+	// see half of what it samples gets a Bernoulli on the pool total. The
+	// open courtyard cannot show it — with every emitter visible the
+	// estimator is exact — so without this the residual would have to be
+	// argued rather than measured.
+	if wall {
+		for dy in 0..4 {
+			for dx in -7..=7 {
+				out.push((bx + dx, by - 2 + dy, bz + 18, B::Stone as u16));
+			}
+		}
+	}
+	// `far` torches on a pad 45 blocks BEHIND the camera, outside the
+	// courtyard wall. They cannot light one pixel of the capture — every
+	// visible surface is past `LIGHT_RANGE` from them and the wall is in
+	// the way — but they are well inside the 95-block reach `flush_lights`
+	// keeps, so they land in the light LIST.
+	//
+	// That is the entire experiment. The resolve scans the list by
+	// position, so it does not care; gi_probe's `nee` picks ONE entry
+	// UNIFORMLY over the whole list and divides by 1/count, so every entry
+	// that cannot contribute still takes its turn and multiplies the ones
+	// that can. If flicker tracks `far` with the picture held fixed, the
+	// probe cache's light selection is a source in its own right.
+	for i in 0..far.clamp(0, 64) {
+		let x = bx - 6 + (i % 8) * 3;
+		let z = bz - 45 - (i / 8) * 3;
+		out.push((x, by - 3, z, B::Stone as u16));
+		out.push((x, by - 2, z, B::Torch as u16));
+	}
+	out
+}
+
 /// Camera far plane: draw_dist × 32 (Java World.updateDepth). One
 /// definition — it is set at construction and again whenever the
 /// settings screen retunes the draw distance.
@@ -1146,6 +1275,14 @@ impl Engine {
 				}
 				if config.debug_river {
 					plan.extend(debug_river_plan(spawn));
+				}
+				if config.debug_torches > 0 {
+					plan.extend(debug_torches_plan(
+						spawn,
+						config.debug_torches,
+						config.debug_torches_far,
+						config.debug_torches_wall,
+					));
 				}
 				plan
 			},
