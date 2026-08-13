@@ -917,6 +917,50 @@ Measured at the reported pose: the grey band's r/b goes 0.55–0.58 → 0.20–0
 move 0.10 → 0.06, mean |diff| 18.0/255 over the water region and 0 outside it. DIG_RIVER and
 DIG_DIVE re-shot for sheets, shore lines and the submerged path.
 
+### R26 — the torch radiated from its handle, and the margin that hid it
+
+Two changes, one of which only became reachable because of the other.
+
+**The origin.** Every emitter was flattened to its cell CENTRE (`gi.rs`'s `+ 0.5` per axis).
+For a full cube that is right; for a torch it put the point source in the wooden post, about a
+fifth of a block below the flame the eye reads as the source. Under `LIGHT_NEAR` that costs no
+brightness at all — irradiance is flat inside 2 blocks — so the only thing it moved was shadow
+geometry, which is why nothing had caught it. `digblock_core::gi::light_origin(class)` now
+answers per class: 0.5 for anything unshaped, and for a shaped emitter the centre of the cell's
+top-5/12 emissive band clipped to the shape's own extent. That band is not a magic number —
+texgen's `torch_side` glows exactly its top `SIZE * 5 / 12` rows, and shaped UVs are cut from
+the CELL's face (`uv_cell`: `v = G − 1 − y`), so a 10/12 post shows fire from 7/12 to 10/12 and
+the origin lands at **8.5/12**. Pinned by `a_torch_radiates_from_its_flame_not_its_handle`.
+
+**The margin that broke.** Raising it lit four dark, cell-aligned wedges on the floor around
+the torch's base. NEE's `max(dist − 0.9, 0)` stop-short is what stops the whole-cell emitter
+rule from letting a light occlude itself, and **0.9 is the cell half-diagonal (0.866) plus
+slack** — a sphere of that radius around a CENTRED light contains its own cell exactly, which
+is the entire reason the constant worked. From 8.5/12 the cell's lower corners sit 1.0 away,
+outside it, so shadow rays arriving from below re-entered the emitting cell through those four
+corners and the post shadowed itself. Attribution was measured, not argued: the wedges are
+present at the old gain, and `DIG_STUB=ginee` shows that whole region going black, confirming
+NEE is the only thing lighting it and a blocked ray reads as a hole.
+
+`gi_light_margin(p)` in **gi_dda.wgsl** replaces the constant with the distance from the light
+to the farthest corner of its own cell, `length(max(frac, 1 − frac)) + 0.035` — identically 0.9
+for a centred light, ~1.03 at flame height, and correct for whatever origin a wall-mounted
+emitter eventually has. It lives in the shared DDA rather than as twinned constants, so the
+resolve and the probes agree by construction instead of by a pin.
+
+**The gain.** `LIGHT_GAIN` 0.6 → **0.75**. The table is on the constant in gi_probe.wgsl; the
+finding worth repeating here is that the obvious compensation does not exist. A brighter pool
+makes the flame stop out-reading what it casts, and `EMISSIVE_GAIN` cannot answer: at 2.4
+against 1.6 the sprite moved **3 luminance levels out of 255**, because the ink is already
+clamped by the surface-format scene target. So pool brightness is bought directly out of that
+margin — flame/pool 1.78 at 0.60, 1.29 at 0.75, and 1.00 at 1.20, where the wall behind the
+torch reads as bright as the flame and the picture inverts. Clipping over the same run goes
+0.12% → 0.65% (R22 removed a 2.96%). 0.75 is the last notch before that turns over.
+
+This is the third constant now standing in for the missing tonemap, after `LIGHT_NEAR` and
+`EMISSIVE_GAIN`. The honest fix remains an HDR scene target and one tonemap on the composite;
+until then every torch tuning is spending the same fixed 0–1 range.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by

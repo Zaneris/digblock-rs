@@ -186,3 +186,33 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 	);
 	return o;
 }
+
+// How far short of an emitter a shadow ray must stop so that the
+// emitter's own cell can never occlude it.
+//
+// An emitting cell is a hit WHOLE for every march but the sun ray (the
+// voxel is the emission model, and LIGHT_GAIN is calibrated against the
+// direct-hit term), so NEE guards against self-occlusion by stopping
+// short of the light rather than by teaching the DDA a skip cell. The
+// distance that guarantees it is the light's distance to the FARTHEST
+// CORNER of its own cell — 0.866, the half diagonal, for a light at the
+// cell center, which is where the hardcoded 0.9 this replaced came
+// from, slack included.
+//
+// That constant was only ever correct while the origin WAS the center.
+// `gi::light_origin` puts a shaped emitter's point source where its
+// geometry actually glows — a torch's flame, y = 8.5/12 — and from
+// there the cell's lower corners sit 1.0 away, inside the old margin:
+// rays arriving from below re-entered the emitting cell through them
+// and the torch shadowed itself in four cell-aligned wedges on the
+// floor around its base. Deriving the margin keeps that impossible for
+// whatever origin a future wall-mounted or off-center emitter has.
+//
+// It is deliberately the whole cell and not the shape's own boxes: the
+// window classifies an emitter as a hit whole, so the boxes are not
+// what a gather march would test against anyway.
+fn gi_light_margin(p: vec3f) -> f32 {
+	let f = p - floor(p);
+	// +0.035 is the slack the 0.9 carried over the 0.866 half diagonal.
+	return length(max(f, vec3f(1.0) - f)) + 0.035;
+}

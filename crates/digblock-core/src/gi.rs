@@ -128,6 +128,57 @@ pub fn shape_classes() -> &'static [ShapeClass] {
 	&SHAPE_CLASSES.0
 }
 
+/// The emissive band of a shaped emitter, as a fraction of its cell
+/// measured DOWN FROM THE CELL TOP.
+///
+/// texgen's `torch_side` paints its top `SIZE * 5 / 12` rows as fire and
+/// leaves the rest as wood, and shaped UVs are cut from the CELL's face
+/// (`shapes::uv_cell`: `v = G - 1 - y`), so the band is cell-relative,
+/// not box-relative — the part of it above the shape's own top simply
+/// isn't drawn. For the torch (a post 10/12 tall) that leaves a visible
+/// flame from 7/12 to 10/12.
+const EMISSIVE_BAND: f32 = 5.0 / 12.0;
+
+/// Where inside its cell an emitting class actually radiates from, in
+/// block units (0..1 per axis).
+///
+/// A full cube emits from its center. A shaped emitter does NOT: a torch
+/// is a slim post whose fire is the top third of its height, so a center
+/// origin puts the point source in the wooden handle, roughly a fifth of
+/// a block below the flame the eye reads as the source. Under
+/// `LIGHT_NEAR` that costs no brightness — irradiance is flat in there —
+/// but the hard point shadows it casts project from the wrong height.
+///
+/// Horizontally the box center and the cell center agree for anything
+/// symmetric (the torch's post is centered), so this only really moves y
+/// today; it is written per-axis so a wall-mounted variant works when
+/// the state nibble arrives.
+pub fn light_origin(class: u8) -> [f32; 3] {
+	const MID: [f32; 3] = [0.5, 0.5, 0.5];
+	if class < SHAPE_CLASS_BASE {
+		return MID;
+	}
+	let Some(sc) = shape_classes().get((class - SHAPE_CLASS_BASE) as usize) else {
+		return MID;
+	};
+	let boxes: Vec<SubBox> = sc.boxes.iter().flatten().copied().collect();
+	let Some(b) = union_box(&boxes) else {
+		return MID;
+	};
+	let g = f32::from(shapes::GRID);
+	let ctr = |lo: u8, hi: u8| (f32::from(lo) + f32::from(hi)) * 0.5 / g;
+	// Clip the cell's emissive band to the shape's own extent. A shape
+	// that doesn't reach the band at all (a slab, were one ever to emit)
+	// keeps its box center rather than an origin outside its geometry.
+	let band_lo = (1.0 - EMISSIVE_BAND) * g;
+	let y = if f32::from(b.max[1]) > band_lo {
+		(band_lo.max(f32::from(b.min[1])) + f32::from(b.max[1])) * 0.5 / g
+	} else {
+		ctr(b.min[1], b.max[1])
+	};
+	[ctr(b.min[0], b.max[0]), y, ctr(b.min[2], b.max[2])]
+}
+
 /// The class byte for one cell: 0 for air, the block id for full cubes
 /// and fluids, a synthetic [`shape_classes`] entry for shaped cells —
 /// which is the one place the state nibble matters (a 1/3 floor slab
@@ -236,6 +287,19 @@ mod tests {
 				if b == BlockType::Air { 0 } else { b as u8 }
 			);
 		}
+	}
+
+	#[test]
+	fn a_torch_radiates_from_its_flame_not_its_handle() {
+		let o = light_origin(gi_class(make_cell(BlockType::Torch, 0)));
+		// The post is 2/12 square and 10/12 tall; the cell's top 5/12
+		// emissive band clipped to it is 7/12..10/12, centered at 8.5/12.
+		// Horizontally the centered post agrees with the cell center.
+		assert!((o[0] - 0.5).abs() < 1e-6, "{o:?}");
+		assert!((o[2] - 0.5).abs() < 1e-6, "{o:?}");
+		assert!((o[1] - 8.5 / 12.0).abs() < 1e-6, "{o:?}");
+		// Full cubes are untouched — the point source stays the center.
+		assert_eq!(light_origin(BlockType::Stone as u8), [0.5, 0.5, 0.5]);
 	}
 
 	#[test]

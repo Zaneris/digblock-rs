@@ -60,11 +60,34 @@ const MAX_T: f32 = 160.0;
 const LIGHT_RANGE: f32 = 24.0;
 // Emitter radiance per unit of `light` level. One calibration constant,
 // and it is chosen rather than derived: `light` is a gameplay nibble,
-// not a photometric quantity. It is set so a torch's pool reads at the
-// brightness the direct-hit term (`alb * emit * 0.6`) already gives the
-// cell itself, which is what keeps a lit torch and the wall beside it
-// looking like one light source.
-const LIGHT_GAIN: f32 = 0.6;
+// not a photometric quantity. 0.6 set the pool at the brightness the
+// direct-hit term already gave the emitting cell itself, which is what
+// keeps a lit torch and the wall beside it looking like one source.
+//
+// 0.75 buys a torch that lights a room rather than a puddle, and it is
+// a CEILING rather than a preference: the flame's own ink cannot follow
+// the pool up. chunk.wgsl's EMISSIVE_GAIN was tried at 2.4 against 1.6
+// and moved the sprite 3 luminance levels out of 255 — the ink is
+// already clamped by the surface-format scene target, so there is no
+// headroom above it to buy the contrast back with. Every step of pool
+// brightness therefore comes straight out of the margin by which the
+// source out-reads what it casts. Measured in DIG_VAULT at the standard
+// capture pose (--tod 90 --pitch -20, 1200 frames):
+//
+//   gain   clip(R>=254)   flame   pool   flame/pool
+//   0.60         0.12%    211.4  118.8         1.78
+//   0.75         0.65%    212.8  165.2         1.29
+//   0.90         2.45%    219.6  190.5         1.15
+//   1.20         5.32%    216.7  216.6         1.00
+//
+// At 1.00 the wall behind the torch reads as bright as the flame and
+// the picture inverts. 0.75 is where the pool grows most for the least
+// of that margin; past it the clip fraction turns over into the
+// hard-edged-ellipse regime LIGHT_NEAR was introduced to remove (R22
+// measured 2.96% there). The real headroom is an HDR scene target and
+// one tonemap on the composite — the same backlog item LIGHT_NEAR and
+// EMISSIVE_GAIN are both stopgaps for.
+const LIGHT_GAIN: f32 = 0.75;
 // Where the point model's near field stops being taken literally, in
 // blocks — the pinned twin of gi_resolve's, and the same reasoning: a
 // voxel emitter is not a point, 1/d^2 diverges into it, and the support
@@ -290,8 +313,11 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// PARTIAL cell now (its post boxes), so its own geometry rarely
 	// blocks — but the margin stays: a ray run to the exact emitter
 	// point can still clip the box it stands in, and the light must
-	// never shadow itself.
-	let sh = march(p, dir, max(dist - 0.9, 0.0));
+	// never shadow itself. `gi_light_margin` derives it from where in
+	// its cell the light actually sits, so it holds for an origin that
+	// is not the cell center — see its comment for what a flame-height
+	// torch did to a flat 0.9.
+	let sh = march(p, dir, max(dist - gi_light_margin(l.xyz), 0.0));
 	if sh.hit {
 		return vec3f(0.0);
 	}

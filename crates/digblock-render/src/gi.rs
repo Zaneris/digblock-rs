@@ -1416,14 +1416,18 @@ impl GiDraw {
 			pos.y as f32 * 16.0,
 			pos.z as f32 * 16.0,
 		);
+		// Not the cell center: `light_origin` puts a shaped emitter's point
+		// source where its geometry actually glows (the torch's flame, not
+		// its handle), and answers 0.5 for every full cube.
 		let list: Vec<_> = gi
 			.emitters
 			.iter()
 			.map(|&(x, y, z, class)| {
+				let o = digblock_core::gi::light_origin(class);
 				(
-					world.0 + f32::from(x) + 0.5,
-					world.1 + f32::from(y) + 0.5,
-					world.2 + f32::from(z) + 0.5,
+					world.0 + f32::from(x) + o[0],
+					world.1 + f32::from(y) + o[1],
+					world.2 + f32::from(z) + o[2],
 					class,
 				)
 			})

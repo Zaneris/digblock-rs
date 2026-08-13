@@ -284,7 +284,8 @@ fn cosine_hemi(n: vec3f, u: vec2f) -> vec3f {
 // price the same torch identically or the direct pool and its bounce
 // drift apart (`resolve_and_probe_agree_on_light_calibration`).
 const LIGHT_RANGE = 24.0;
-const LIGHT_GAIN = 0.6;
+// 0.75 since R26 — the retune's measured table lives on gi_probe's twin.
+const LIGHT_GAIN = 0.75;
 // Where the point model's near field stops being taken literally, in
 // blocks. Beyond it the falloff is exactly 1/d^2 and NOTHING about the
 // pool changes; inside, irradiance holds at 1/LIGHT_NEAR^2.
@@ -365,6 +366,8 @@ struct NeeLight {
 	// Emitter tint x emit x LIGHT_GAIN — irradiance-side, the surface
 	// albedo multiplies in the scene shader like the rest of indirect.
 	radiance: vec3f,
+	// How far short of it the shadow ray must stop (gi_light_margin).
+	margin: f32,
 }
 
 fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
@@ -395,6 +398,7 @@ fn pick_dominant_light(p: vec3f, n: vec3f) -> NeeLight {
 			out.dir = d / out.dist;
 			out.ndl = ndl;
 			out.radiance = gi_albedo(cls) * emit * LIGHT_GAIN;
+			out.margin = gi_light_margin(l.xyz);
 		}
 	}
 	return out;
@@ -631,11 +635,12 @@ fn fs(i: VsOut) -> FsOut {
 		let pick = pick_dominant_light(sp, n);
 		if pick.valid && !stubbed(STUB_GINEE) {
 			skip_cell = pick.cell;
-			// Stop short of the light's own cell (the probe nee()'s 0.9
-			// margin) so the whole-cell emitter rule can't self-occlude.
+			// Stop short of the light's own cell (gi_light_margin, shared
+			// with the probe nee()) so the whole-cell emitter rule can't
+			// self-occlude.
 			let sh = gi_march(
 				side, rz.jitter.z, rz.cam.xz, sp, pick.dir,
-				max(pick.dist - 0.9, 0.0), GI_NEE_ITERS,
+				max(pick.dist - pick.margin, 0.0), GI_NEE_ITERS,
 			);
 			if !sh.hit {
 				nee = pick.radiance * (pick.ndl / max(pick.dist2, LIGHT_NEAR * LIGHT_NEAR))
