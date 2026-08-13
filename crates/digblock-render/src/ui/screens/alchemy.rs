@@ -228,9 +228,12 @@ pub const FAMILIES: [Family; 6] = [
 	},
 ];
 
-/// Seconds one cycle of the family tile's member rotation takes.
-const FAMILY_CYCLE_SECS: f32 = 0.9;
+/// Seconds one cycle of the family tile's member rotation takes. A
+/// member is meant to be READ before it goes, so the hold is most of it.
+const FAMILY_CYCLE_SECS: f32 = 1.8;
 /// How much of that cycle is spent trading one member for the next.
+/// Fixed, not a fraction of the cycle: a slower rotation should hold
+/// each member longer, not perform the handover in slow motion.
 const FAMILY_SWAP_SECS: f32 = 0.30;
 
 /// Which member a family tile shows at `clock`, and how PRESENT it is
