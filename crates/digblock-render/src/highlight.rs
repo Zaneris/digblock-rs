@@ -15,7 +15,7 @@ use digblock_platform::Gpu;
 const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 
 /// The crosshair target the decal wraps: the cell, the block-local box
-/// within it, and the dig progress (`None` = idle outline, no crack web).
+/// within it, and the dig progress (`None` = idle outline, no crack).
 ///
 /// The box is what makes a shaped block outline at its own size. It comes
 /// from `shapes::draw_bounds`, i.e. from the geometry the mesher actually
@@ -48,6 +48,25 @@ impl HighlightTarget {
 			progress,
 		}
 	}
+}
+
+/// Which crack a cell wears. Rides the instance as **word 7**, i.e. the
+/// `w` of the second vec4 — the shader's box is `i1.xyz` and the seed is
+/// `i1.w`, and the two are one attribute because the 48-byte instance is
+/// already three vec4s and a fourth for one scalar is wasteful.
+///
+/// That packing is the whole reason for [`the_seed_is_the_cell_not_the_box`]:
+/// the shader read `i1.x` — the box's own minimum x, which is 0.0 on
+/// every full cube — from the day it was written until R28, so the
+/// per-cell pattern this function computes was thrown away and every
+/// block in the world cracked identically. Nothing crashed and nothing
+/// looked broken; it just silently wasn't varying.
+fn cell_seed(cell: (i32, i32, i32)) -> u32 {
+	(cell.0 as u32)
+		.wrapping_mul(73_856_093)
+		.wrapping_add((cell.1 as u32).wrapping_mul(19_349_663))
+		.wrapping_add((cell.2 as u32).wrapping_mul(83_492_791))
+		& 0xFFFF
 }
 
 pub struct HighlightDraw {
@@ -132,12 +151,7 @@ impl HighlightDraw {
 			return;
 		};
 		let cell = t.cell;
-		// Seed from the cell so each block cracks with its own pattern.
-		let seed = (cell.0 as u32)
-			.wrapping_mul(73_856_093)
-			.wrapping_add((cell.1 as u32).wrapping_mul(19_349_663))
-			.wrapping_add((cell.2 as u32).wrapping_mul(83_492_791))
-			& 0xFFFF;
+		let seed = cell_seed(cell);
 		let data: [f32; 12] = [
 			cell.0 as f32,
 			cell.1 as f32,
@@ -217,5 +231,25 @@ mod tests {
 		));
 		assert!(hi[0] - lo[0] <= 1.0 / 3.0, "leaf is thin: {lo:?}..{hi:?}");
 		assert_eq!(([lo[1], lo[2]], [hi[1], hi[2]]), ([0.0, 0.0], [1.0, 1.0]));
+	}
+
+	/// Neighbouring cells must not crack alike, and the seed must not be
+	/// derivable from the box — the bug this pins had the shader reading
+	/// the box's min x as the seed, which is 0.0 on every full cube, so
+	/// the whole world shared one pattern.
+	#[test]
+	fn the_seed_is_the_cell_not_the_box() {
+		let base = (12, 70, -5);
+		let seen: std::collections::HashSet<u32> = (-2..=2)
+			.flat_map(|dx| (-2..=2).flat_map(move |dy| (-2..=2).map(move |dz| (dx, dy, dz))))
+			.map(|(dx, dy, dz)| cell_seed((base.0 + dx, base.1 + dy, base.2 + dz)))
+			.collect();
+		assert_eq!(seen.len(), 125, "125 neighbouring cells, 125 patterns");
+		// One step on any axis changes it — an adjacent pair is the case
+		// a player actually sees, quarrying along a wall.
+		for step in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+			let next = (base.0 + step.0, base.1 + step.1, base.2 + step.2);
+			assert_ne!(cell_seed(base), cell_seed(next), "neighbour on {step:?}");
+		}
 	}
 }

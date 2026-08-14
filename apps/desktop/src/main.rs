@@ -272,6 +272,19 @@ fn main() {
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
 	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();
+	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
+	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
+	// 80 100`, which is the only way to see the break spread — one still
+	// says nothing about whether it grows outward or just fades in.
+	if let Ok(v) = std::env::var("DIG_CRACK") {
+		match v.parse::<f32>() {
+			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_crack = Some(p / 100.0),
+			_ => {
+				eprintln!("DIG_CRACK must be a percent in 0..=100, got {v:?}");
+				std::process::exit(2);
+			}
+		}
+	}
 	// DIG_TORCHES=<n>: the courtyard, lit by n torches. A COUNT rather than
 	// a flag, because the emitter count is the variable — the resolve's NEE
 	// covers exactly one light per pixel, so 1 vs 8 with the geometry held

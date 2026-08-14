@@ -305,7 +305,7 @@ family is what keeps leaves/torches/the scoop from ever speeding up. Spot values
 A released hold keeps its banked ticks and bleeds them back to untouched at **one whole
 bar per second** — so one second is the *ceiling*, paid only by a block a tick from
 breaking, and a barely-started hold is gone almost at once. A hold resumed inside the
-window inherits what is left, and the crack web reads the same number, so it visibly
+window inherits what is left, and the crack reads the same number, so it visibly
 retreats and picks back up rather than snapping between full and gone. Setting the rate
 as a fraction of the bar rather than in ticks is what makes the web retreat at one
 visible speed on leaves and on stone alike.

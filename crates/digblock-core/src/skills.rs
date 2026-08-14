@@ -204,7 +204,7 @@ pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
 /// one whole bar per second, so a block a tick from breaking takes the
 /// full second and a barely-started one is gone almost at once. Setting
 /// it as a fraction of the bar rather than in ticks is what makes the
-/// crack web retreat at the same visible speed on leaves and on stone.
+/// crack retreat at the same visible speed on leaves and on stone.
 pub const DIG_DECAY_TICKS: u32 = 60;
 
 /// What is left of `progress` banked ticks out of `required` after
@@ -410,7 +410,7 @@ mod tests {
 
 	/// The decay is a FRACTION of the bar per tick, not a tick count:
 	/// every block loses the same share of its own progress in the same
-	/// wall time, so the crack web retreats at one speed everywhere and
+	/// wall time, so the crack retreats at one speed everywhere and
 	/// a full bar is gone in exactly a second whatever the hardness.
 	#[test]
 	fn an_abandoned_hold_bleeds_out_in_exactly_one_second() {

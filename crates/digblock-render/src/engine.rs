@@ -166,6 +166,15 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
+	/// Debug: pin the crack decal at this progress (0..1) on whatever the
+	/// crosshair is holding, and stand a wall of blocks two cells ahead
+	/// for it to hold. Digging is INPUT-driven and a hold lasts a second
+	/// or two, so the crack is otherwise unphotographable — the same
+	/// argument `debug_confetti` makes, and the reason two look-and-feel
+	/// regressions shipped in the screens before `debug_screen` existed.
+	/// A sweep of runs over 0..1 is what shows the break spreading. Set
+	/// by the desktop launcher from DIG_CRACK.
+	pub debug_crack: Option<f32>,
 	/// Debug: open a UI screen at startup with a stocked inventory, so a
 	/// headless `--screenshot` run can capture it. Set by the desktop
 	/// launcher from DIG_SCREEN.
@@ -306,6 +315,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_confetti: false,
+			debug_crack: None,
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
@@ -358,6 +368,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: false,
 			debug_confetti: false,
+			debug_crack: None,
 			debug_shapes: false,
 			debug_vault: false,
 			debug_roof: false,
@@ -783,7 +794,7 @@ struct DigProgress {
 }
 
 impl DigProgress {
-	/// Progress after the decay so far: what the crack web draws, what a
+	/// Progress after the decay so far: what the crack draws, what a
 	/// resumed hold inherits, and what the server's gate charges.
 	fn banked(&self) -> u16 {
 		digblock_core::skills::dig_decayed(
@@ -1022,6 +1033,32 @@ fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 				};
 				out.push((x, y, z, cell));
 			}
+		}
+	}
+	out
+}
+
+/// DIG_CRACK=&lt;p&gt; layout: a flat wall of blocks two cells ahead of the
+/// spawn camera, tall and wide enough that the crosshair lands on one
+/// whatever the eye height resolves to.
+///
+/// Dirt, not Stone: the decal only draws on a cell `diggable` says yes
+/// to, and rock is behind the Mining gate, so a fresh capture profile
+/// would photograph nothing at all. The neighbours either side are a
+/// second material because the crack is seeded per (cell, face) — three
+/// blocks in one frame is what shows the pattern is not one stamp.
+fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in (bx - 2)..=(bx + 2) {
+		for y in (by - 3)..=(by + 2) {
+			let b = if x == bx { B::Dirt } else { B::Lumber };
+			out.push((x, y, bz + 2, b as u16));
 		}
 	}
 	out
@@ -1342,6 +1379,9 @@ impl Engine {
 				} else {
 					Vec::new()
 				};
+				if config.debug_crack.is_some() {
+					plan.extend(debug_crack_plan(spawn));
+				}
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn));
 				}
@@ -3586,7 +3626,7 @@ impl Engine {
 	/// its own size), and dig progress — `None` = idle outline.
 	///
 	/// The water tool never reports progress, in either state, so the
-	/// outline stays but the crack web never appears. Empty, it marks the
+	/// outline stays but the crack never appears. Empty, it marks the
 	/// source the scoop will take — chipping a block apart is not what is
 	/// happening, and the swinging hand is the feedback instead. Charged,
 	/// it marks the ordinary block the pour will land against, which is
@@ -3604,11 +3644,12 @@ impl Engine {
 		// The DECAYED progress, so a released hold's web visibly retreats
 		// (and a resumed one picks up from the retreated web) rather than
 		// snapping between full and gone.
-		let progress = self
-			.dig
-			.as_ref()
-			.filter(|d| d.cell == hit.cell)
-			.map(|d| (f32::from(d.banked()) / f32::from(d.required.max(1))).min(1.0));
+		let progress = self.config.debug_crack.or_else(|| {
+			self.dig
+				.as_ref()
+				.filter(|d| d.cell == hit.cell)
+				.map(|d| (f32::from(d.banked()) / f32::from(d.required.max(1))).min(1.0))
+		});
 		Some(boxed(progress))
 	}
 
@@ -5420,7 +5461,7 @@ mod water_tool_tests {
 	/// The charge decides which ray is cast, and so what the crosshair
 	/// is even pointing at: an empty bucket sees the source it can scoop,
 	/// a charged one sees straight through it to the block it can pour
-	/// against. Both outline; neither ever draws the dig crack web.
+	/// against. Both outline; neither ever draws the dig crack.
 	#[test]
 	fn the_charge_switches_the_ray_and_the_outline() {
 		let (mut engine, source, wall) = corridor();
@@ -5633,14 +5674,14 @@ mod dig_decay_tests {
 		}
 	}
 
-	/// The crack web's own number, as `dig_progress` hands it to the
+	/// The crack's own number, as `dig_progress` hands it to the
 	/// highlight instance.
 	fn web(engine: &Engine) -> Option<f32> {
 		engine.dig_progress().and_then(|t| t.progress)
 	}
 
 	/// Letting go part-way no longer bins the hold: it bleeds back to
-	/// untouched over a second, the crack web retreats with it (same
+	/// untouched over a second, the crack retreats with it (same
 	/// number, one source), and picking the button back up resumes from
 	/// what is left instead of from zero.
 	#[test]
