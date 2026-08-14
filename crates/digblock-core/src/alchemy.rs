@@ -538,10 +538,22 @@ mod tests {
 
 	/// Base yields never exceed a whole block's 27 sub-units, and every
 	/// extractable block pays at least something at level 1.
+	///
+	/// **Ore is the deliberate exception**, and the only one the rule can
+	/// safely have: a vein is a CONCENTRATE, not a substance you shape, so
+	/// it pays 18–99 units. That is not matter creation because ore has no
+	/// recipe to make it from — there is nothing to run the loop with. The
+	/// cap exists to stop a craftable substance out-yielding its own cost,
+	/// and `no_level_ever_creates_matter` is the test that actually says so.
 	#[test]
 	fn bases_stay_under_a_block() {
 		for &b in &BlockType::ALL {
 			let total = extract_total_base(b);
+			if crate::worldgen::ore::ORES.contains(&b) {
+				assert!(total > 0, "{b:?} must be worth taking to the bench");
+				assert!(craft_ideal(b).is_none(), "{b:?} must have no recipe");
+				continue;
+			}
 			assert!(total <= SUBS_PER_BLOCK, "{b:?} base {total}");
 			if total > 0 {
 				let l1: u32 = extract_yields(b, 1).iter().map(|&(_, n)| n).sum();

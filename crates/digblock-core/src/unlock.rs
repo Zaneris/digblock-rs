@@ -127,6 +127,25 @@ pub fn craft(b: BlockType) -> Option<u32> {
 	Some(material(m)?.max(shape(s)))
 }
 
+/// The Mining level a vein of `b` becomes VISIBLE at (SKILLS-DESIGN
+/// §5.3), or `None` for anything that is not an ore.
+///
+/// This is a stranger gate than the others, and deliberately: below it the
+/// cell is Stone to that player in every respect — it renders as stone,
+/// raycasts as stone, digs as stone, and the server agrees, so a
+/// low-level miner tunnelling through a deposit spends it without ever
+/// knowing. You dig what you can see. That is what makes crossing a
+/// threshold an event (veins fade in around you) rather than a number.
+pub fn reveal(b: BlockType) -> Option<u32> {
+	Some(match b {
+		BlockType::Emberore => 10,
+		BlockType::Duskstone => 30,
+		BlockType::Glowvein => 55,
+		BlockType::Aetherock => 80,
+		_ => return None,
+	})
+}
+
 /// Alchemy level required to break `b` down at the bench (1 = always).
 /// The bucket charge waits for 15 — the Aqua economy's opening move.
 pub fn extract(b: BlockType) -> u32 {

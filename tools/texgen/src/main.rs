@@ -72,6 +72,108 @@ fn main() {
 		torch_side(&load("LumberLight.png"), &mut rng),
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
+
+	// The four ore faces (SKILLS-DESIGN §5.3) and the tapped one. APPENDED
+	// at the end deliberately: the noisy recipes share one rng, so an
+	// insertion anywhere above rerolls every output after it and the diff
+	// of a regeneration would be the whole texture directory.
+	//
+	// Each is stone with tier-coloured flecks — the gravel recipe's blob
+	// walk, but coloured rather than shaded, and with a light rim so a
+	// fleck reads as a crystal set into rock instead of a stain on it.
+	//
+	// The deep pair carry the Stage-A emissive bit, so their cores are
+	// picked BRIGHT as well as saturated: chunk.wgsl gains that ink by
+	// luminance, and a near-white fleck would glow at the cost of having
+	// no colour left to glow IN.
+	for (name, core, rim) in [
+		("Emberore.png", [214u8, 96, 34], [255u8, 176, 84]),
+		("Duskstone.png", [104, 78, 168], [172, 146, 236]),
+		("Glowvein.png", [72, 226, 214], [198, 255, 248]),
+		("Aetherock.png", [240, 214, 96], [255, 248, 200]),
+	] {
+		save(name, ore(&stone, core, rim, &mut rng));
+	}
+	// A tapped vein face: the flecks are GONE and their sockets are not.
+	// Empty pockets are what makes DepletedStone read as spent rather than
+	// as one more grey rock — the miner's feedback that this face is done.
+	save("DepletedStone.png", depleted(&stone, &mut rng));
+}
+
+/// Stone with mineral flecks: a coloured core, a lighter catch rim, and a
+/// dark socket around it so each fleck sits IN the rock rather than on it.
+///
+/// Eighteen flecks, not the gravel recipe's forty: a vein has to read as
+/// rock that HAS ore in it. At forty the stone disappeared and the face
+/// became a solid colour, which is the same mistake as a fleck with no
+/// socket, one scale up.
+fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+	let mut out = stone.clone();
+	for p in out.pixels_mut() {
+		let n = rng.signed(6);
+		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
+	}
+	let s = SIZE as i32;
+	for _ in 0..18 {
+		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
+		let r = 2 + rng.range(2) as i32;
+		for dy in -r - 1..=r + 1 {
+			for dx in -r - 1..=r + 1 {
+				let d2 = dx * dx + dy * dy;
+				let p = out.get_pixel_mut(
+					(cx + dx).rem_euclid(s) as u32,
+					(cy + dy).rem_euclid(s) as u32,
+				);
+				if d2 <= (r - 1).max(0) * (r - 1).max(0) {
+					let j = rng.signed(10);
+					p.0 = [add8(core[0], j), add8(core[1], j), add8(core[2], j)];
+				} else if d2 <= r * r {
+					let j = rng.signed(8);
+					p.0 = [add8(rim[0], j), add8(rim[1], j), add8(rim[2], j)];
+				} else if d2 <= (r + 1) * (r + 1) {
+					p.0 = [add8(p.0[0], -30), add8(p.0[1], -30), add8(p.0[2], -30)];
+				}
+			}
+		}
+	}
+	out
+}
+
+/// Stone with the flecks knocked out: empty sockets, darkest at the
+/// centre, with a light lip where the pick broke the rim.
+fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
+	let mut out = stone.clone();
+	for p in out.pixels_mut() {
+		let n = rng.signed(6);
+		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
+	}
+	let s = SIZE as i32;
+	for _ in 0..18 {
+		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
+		let r = 2 + rng.range(2) as i32;
+		for dy in -r - 1..=r + 1 {
+			for dx in -r - 1..=r + 1 {
+				let d2 = dx * dx + dy * dy;
+				let p = out.get_pixel_mut(
+					(cx + dx).rem_euclid(s) as u32,
+					(cy + dy).rem_euclid(s) as u32,
+				);
+				if d2 <= (r - 1).max(0) * (r - 1).max(0) {
+					let j = rng.signed(5);
+					p.0 = [
+						add8(p.0[0], -58 + j),
+						add8(p.0[1], -58 + j),
+						add8(p.0[2], -56 + j),
+					];
+				} else if d2 <= r * r {
+					p.0 = [add8(p.0[0], -34), add8(p.0[1], -34), add8(p.0[2], -32)];
+				} else if d2 <= (r + 1) * (r + 1) {
+					p.0 = [add8(p.0[0], 14), add8(p.0[1], 14), add8(p.0[2], 14)];
+				}
+			}
+		}
+	}
+	out
 }
 
 /// Wood post darkened, with the top ~5/12 of rows turned to flame glow

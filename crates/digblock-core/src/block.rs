@@ -149,6 +149,26 @@ blocks! {
 	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
 	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
 	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
+	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the ITEM
+	/// and for the reveal stamp; worldgen places none of them, because ore
+	/// is DERIVED — `build_column` still returns Stone and the journal
+	/// still carries Stone, which is what lets veins appear in worlds that
+	/// already exist. Not `crafted` either: the bench cannot make ore, so
+	/// gating its pickup would gate a thing with no recipe to gate it by.
+	/// A PLACED ore block is ordinary chunk data — visible to everyone at
+	/// any level, diggable at face value, and it drops itself, so showing
+	/// off a find round-trips.
+	Emberore = 48 => mat(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), Material::Emberore),
+	Duskstone = 49 => mat(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), Material::Duskstone),
+	/// The deep pair glow: Stage-A emissive INK only, no `emits` — a
+	/// revealed seam glitters in a dark cave and casts nothing, which is
+	/// the split the two light properties exist for.
+	Glowvein = 50 => mat(glows(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock)), Material::Aetherock),
+	/// The tapped-out vein face: what a field extraction leaves behind
+	/// instead of a hole, so mining ore never excavates and the mountain
+	/// keeps its shape. Crumbles to Rubble like any other rock.
+	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -591,11 +611,19 @@ pub mod tex {
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
+	/// The four ore faces and the tapped one (SKILLS-DESIGN §5.3): stone
+	/// bodies with tier-coloured flecks, the deep two bright enough to
+	/// read as ink in a dark cave.
+	pub const EMBERORE: u16 = 22;
+	pub const DUSKSTONE: u16 = 23;
+	pub const GLOWVEIN: u16 = 24;
+	pub const AETHEROCK: u16 = 25;
+	pub const DEPLETED_STONE: u16 = 26;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = LUMBER_RED + 1;
+	pub const COUNT: u16 = DEPLETED_STONE + 1;
 }
 
 impl BlockType {
@@ -986,6 +1014,11 @@ mod tests {
 			(BlockType::SandstoneDoor, Rock),
 			(BlockType::Gravel, Rock),
 			(BlockType::Rubble, Rock),
+			(BlockType::Emberore, Rock),
+			(BlockType::Duskstone, Rock),
+			(BlockType::Glowvein, Rock),
+			(BlockType::Aetherock, Rock),
+			(BlockType::DepletedStone, Rock),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -1026,6 +1059,11 @@ mod tests {
 			(B::SandstoneDoor, M::Sandstone),
 			(B::Gravel, M::Gravel),
 			(B::Rubble, M::Rubble),
+			(B::Emberore, M::Emberore),
+			(B::Duskstone, M::Duskstone),
+			(B::Glowvein, M::Glowvein),
+			(B::Aetherock, M::Aetherock),
+			(B::DepletedStone, M::DepletedStone),
 			(B::Wood, M::Wood),
 			(B::WoodStairs, M::Wood),
 			(B::WoodSlab, M::Wood),
