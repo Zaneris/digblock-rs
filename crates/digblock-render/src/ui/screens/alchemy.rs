@@ -18,19 +18,21 @@
 //! grid beneath (locked ones dim with an unlock badge, affordable ones
 //! count-badged), a detail strip, and the tab's ONE `TRANSMUTE` button
 //! — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what the holdings
-//! afford. `every_craftable_appears_in_exactly_one_family` holds
-//! `FAMILIES` to the core catalog, so a new craftable cannot silently
-//! miss the screen.
+//! afford. The families are DERIVED from §7.2's shape axis rather than
+//! mirrored by hand, and `every_craftable_appears_in_exactly_one_family`
+//! holds the derivation to the core catalog, so a new craftable cannot
+//! silently miss the screen.
 //!
 //! The screen never mutates game state: `handle_input`/`tick` return
 //! actions; the engine applies them locally offline or sends them to
 //! the server online (the `InventoryFull` echo is the rebase).
 
 use digblock_core::alchemy;
-use digblock_core::block::{BlockType, Essence};
+use digblock_core::block::{BlockType, Essence, ShapeFamily};
 use digblock_core::hotbar::HotbarItem;
 use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
 use digblock_core::inventory::Inventory;
+use digblock_core::material::Material;
 use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -182,58 +184,54 @@ impl Default for AlchScreen {
 
 /// One transmute family: a tile that previews its members in slow
 /// rotation; selecting it lays the members out under the tab's single
-/// TRANSMUTE button. The grouping is the UI's own — SKILLS-DESIGN
-/// §7.2's material × shape grid arrives as more members per family,
-/// not more machinery.
+/// TRANSMUTE button.
+///
+/// The grouping is no longer the UI's own — it IS SKILLS-DESIGN §7.2's
+/// shape axis (`block::ShapeFamily`), with members in material (i.e.
+/// unlock) order. A new material × shape pair therefore joins its family
+/// on its own, which is what lets the catalog grow without the screen
+/// growing. Only the FUNCTIONAL families are authored here, because §7.3's
+/// hand-priced items are not a substance in a form and have no axis to
+/// derive from.
 pub struct Family {
 	pub name: &'static str,
-	pub members: &'static [BlockType],
+	pub members: Vec<BlockType>,
 }
 
-pub const FAMILIES: [Family; 6] = [
-	Family {
-		name: "LIGHTS",
-		members: &[BlockType::Torch],
-	},
-	Family {
-		name: "SLABS",
-		members: &[
-			BlockType::WoodSlab,
-			BlockType::StoneSlab,
-			BlockType::LumberSlab,
-		],
-	},
-	Family {
-		name: "STAIRS",
-		members: &[
-			BlockType::WoodStairs,
-			BlockType::StoneStairs,
-			BlockType::LumberStairs,
-		],
-	},
-	Family {
-		name: "DOORS",
-		members: &[BlockType::LumberDoor],
-	},
-	Family {
-		name: "BLOCKS",
-		members: &[
-			BlockType::Stone,
-			BlockType::Wood,
-			BlockType::Lumber,
-			BlockType::Dirt,
-			BlockType::Sand,
-			BlockType::Sandstone,
-			BlockType::Snow,
-			BlockType::Grass,
-			BlockType::Mud,
-		],
-	},
-	Family {
-		name: "WATER",
-		members: &[BlockType::Water],
-	},
+/// Families the grid cannot derive: hand-priced functional items, grouped
+/// by what they DO. Drawn after the shape families.
+const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 2] = [
+	("LIGHTS", &[BlockType::Torch]),
+	("WATER", &[BlockType::Water]),
 ];
+
+/// The transmute tab's families, built once per process: one per shape in
+/// `ShapeFamily::ALL` order (members in material order, empty families
+/// dropped), then the functional ones.
+pub fn families() -> &'static [Family] {
+	static FAMILIES: std::sync::OnceLock<Vec<Family>> = std::sync::OnceLock::new();
+	FAMILIES.get_or_init(|| {
+		let mut out: Vec<Family> = ShapeFamily::ALL
+			.into_iter()
+			.map(|s| Family {
+				name: s.name(),
+				members: Material::ALL
+					.into_iter()
+					.filter_map(|m| BlockType::from_grid(m, s))
+					.filter(|&b| unlock::craft(b).is_some())
+					.collect(),
+			})
+			// A shape nobody has authored a material for yet would draw an
+			// empty tile with nothing behind it.
+			.filter(|f| !f.members.is_empty())
+			.collect();
+		out.extend(FUNCTIONAL_FAMILIES.iter().map(|&(name, members)| Family {
+			name,
+			members: members.to_vec(),
+		}));
+		out
+	})
+}
 
 /// Seconds one cycle of the family tile's member rotation takes. A
 /// member is meant to be READ before it goes, so the hold is most of it.
@@ -450,7 +448,7 @@ impl AlchScreen {
 	/// family never moves the panel either.
 	fn member_rows_h(style: &Style) -> f32 {
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
-		FAMILIES
+		families()
 			.iter()
 			.map(|f| spec.extent(f.members.len()).1)
 			.fold(0.0, f32::max)
@@ -777,7 +775,7 @@ impl AlchScreen {
 		// one. A family whose every member is locked dims like a locked
 		// tile and badges its earliest unlock.
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
-		for (i, fam) in FAMILIES.iter().enumerate() {
+		for (i, fam) in families().iter().enumerate() {
 			let rect = fam_spec.rect(i);
 			let all_locked = fam
 				.members
@@ -824,9 +822,9 @@ impl AlchScreen {
 		// Nothing selected yet draws none of it: the row's height is
 		// reserved either way (`member_rows_h` is the max over every
 		// family), so picking one fills a gap instead of moving the page.
-		let picked = self.family.map(|f| f.min(FAMILIES.len() - 1));
+		let picked = self.family.map(|f| f.min(families().len() - 1));
 		if let Some(f) = picked {
-			let family = &FAMILIES[f];
+			let family = &families()[f];
 			let member = self.member.min(family.members.len() - 1);
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 			for (j, &item) in family.members.iter().enumerate() {
@@ -889,7 +887,7 @@ impl AlchScreen {
 			);
 			return;
 		};
-		let family = &FAMILIES[f];
+		let family = &families()[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
 		let need = unlock::craft(item).unwrap_or(u32::MAX);
@@ -1052,13 +1050,13 @@ impl AlchScreen {
 						self.drag.on_press(self.cursor, id, BlockType::Water);
 					}
 					InvId::Family(i) => {
-						let i = (i as usize).min(FAMILIES.len() - 1);
+						let i = (i as usize).min(families().len() - 1);
 						if self.family != Some(i) {
 							self.family = Some(i);
 							// Land on the first member the level has
 							// opened (else the first, whose strip line
 							// names its unlock).
-							self.member = FAMILIES[i]
+							self.member = families()[i]
 								.members
 								.iter()
 								.position(|&m| unlock::can_craft(m, view.level))
@@ -1066,13 +1064,13 @@ impl AlchScreen {
 						}
 					}
 					InvId::Craft(j) => {
-						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
+						let family = &families()[self.family?.min(families().len() - 1)];
 						if (j as usize) < family.members.len() {
 							self.member = j as usize;
 						}
 					}
 					InvId::CraftGo => {
-						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
+						let family = &families()[self.family?.min(families().len() - 1)];
 						let item = *family.members.get(self.member)?;
 						let want = if self.ctrl {
 							BULK_CTRL
@@ -1480,9 +1478,11 @@ mod tests {
 			"no button before a family is picked"
 		);
 
-		// SLABS: the WoodSlab the Flora affords. Ctrl asks for 100; the
-		// holdings clamp it.
-		let slabs = center(r.hits.rect_of(InvId::Family(1)).unwrap());
+		// SLABS is the first family (the shape axis leads, cheapest form
+		// first, and the hand-priced ones follow). Its first unlocked
+		// member is the WoodSlab the Flora affords; Ctrl asks for 100 and
+		// the holdings clamp it.
+		let slabs = center(r.hits.rect_of(InvId::Family(0)).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -1525,15 +1525,12 @@ mod tests {
 			"no button under a locked pick"
 		);
 
-		// BLOCKS: switching family lands on the first unlocked member
-		// (Stone — unaffordable with no Earth, button dark); picking
-		// Wood by tile makes the one button craft THAT.
-		let blocks = center(r.hits.rect_of(InvId::Family(4)).unwrap());
+		// BLOCKS: switching family lands on the first unlocked member —
+		// Wood, since the grid puts a material's whole learned set at the
+		// material's own level and Wood is the starter timber — and the
+		// one button crafts THAT.
+		let blocks = center(r.hits.rect_of(InvId::Family(3)).unwrap());
 		press(&mut r, blocks);
-		rebuild(&mut r);
-		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
-		let wood = center(r.hits.rect_of(InvId::Craft(1)).unwrap());
-		press(&mut r, wood);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
 		assert_eq!(
@@ -1543,6 +1540,13 @@ mod tests {
 				count: 1
 			})
 		);
+		// And picking an unlocked-but-unaffordable member by tile takes
+		// the button away again: "can't yet" and "can't afford" are
+		// different answers, and only one of them leaves a hit rect.
+		let stone = center(r.hits.rect_of(InvId::Craft(4)).unwrap());
+		press(&mut r, stone);
+		rebuild(&mut r);
+		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
 	}
 
 	/// The panel bottom-anchors above the hotbar on both tabs, and a
@@ -1670,14 +1674,16 @@ mod tests {
 		assert_eq!(seen.len(), 2);
 	}
 
-	/// `FAMILIES` is a hand-maintained mirror of the core catalog: every
-	/// craftable appears in exactly one family, so a new `unlock::craft`
-	/// entry cannot silently never reach the screen.
+	/// The families are derived from the shape axis, so a new material ×
+	/// shape pair reaches the screen on its own — but a hand-priced
+	/// FUNCTIONAL item still has to be filed by hand, and this is what
+	/// catches one that wasn't. Every craftable appears in exactly one
+	/// family; nothing else appears at all.
 	#[test]
 	fn every_craftable_appears_in_exactly_one_family() {
 		for &b in &BlockType::ALL {
 			let craftable = unlock::craft(b).is_some();
-			let appearances: usize = FAMILIES
+			let appearances: usize = families()
 				.iter()
 				.map(|f| f.members.iter().filter(|&&m| m == b).count())
 				.sum();

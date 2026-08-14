@@ -16,7 +16,7 @@
 //! pinned by `full_cube_bakes_to_the_six_block_faces` here and a
 //! cross-check test in mesher.rs.
 
-use crate::block::{BlockType, Essence, ShapeKind};
+use crate::block::{BlockType, ShapeKind};
 use crate::chunk::{cell_id, cell_state, STATE_MASK, STATE_SHIFT};
 use crate::dir::{Dir, DIRS};
 use glam::Vec3;
@@ -441,52 +441,17 @@ pub fn state_valid(cell: u16) -> bool {
 
 // --- alchemy ----------------------------------------------------------
 
-/// One alchemy craft: `count` items out of `cost` units of `material`.
-/// Batched so fractional-unit shapes stay exact (a future half-slab at
-/// 13.5 units crafts as 2-for-27); both launch shapes are whole.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct CraftRecipe {
-	pub material: Essence,
-	pub count: u32,
-	pub cost: u32,
+/// How many items one craft produces. Batched so a fractional-unit shape
+/// stays exact (a future half-slab at 13.5 units would craft 2-for-27);
+/// every shape authored so far is whole, so this is 1 throughout.
+///
+/// The COST is not here: it is the shape's volume
+/// ([`crate::block::ShapeFamily::units`]) prorated by the material's
+/// essence split (`crate::material`), which is what makes a new
+/// material × shape pair a block row rather than another table entry.
+pub fn craft_batch(_b: BlockType) -> u32 {
+	1
 }
-
-/// The craft table. Costs are the shape's filled 12ths volume rounded up
-/// to whole sub-units (pinned against the rasterized volumes by a test):
-/// stairs 1152/64 → 18 (exactly 2/3 block), door 588/64 → 10 (uncut
-/// leaves — the window lites don't discount — plus the handle and the
-/// two hinges), slab 576/64 → 9 (exactly a third — three slabs equal
-/// one block, closing the grow-to-base-block economy).
-pub fn craft_recipe(b: BlockType) -> Option<CraftRecipe> {
-	let (material, count, cost) = match b {
-		BlockType::WoodStairs => (Essence::Flora, 1, 18),
-		BlockType::StoneStairs => (Essence::Earth, 1, 18),
-		BlockType::LumberDoor => (Essence::Flora, 1, 10),
-		BlockType::WoodSlab => (Essence::Flora, 1, 9),
-		BlockType::StoneSlab => (Essence::Earth, 1, 9),
-		// Planed timber: the same shapes out of the same essence — a
-		// §7.2 material × shape pair costs what its shape costs.
-		BlockType::LumberStairs => (Essence::Flora, 1, 18),
-		BlockType::LumberSlab => (Essence::Flora, 1, 9),
-		_ => return None,
-	};
-	Some(CraftRecipe {
-		material,
-		count,
-		cost,
-	})
-}
-
-/// Every craftable shaped item, in display order.
-pub const CRAFTABLE: [BlockType; 7] = [
-	BlockType::WoodStairs,
-	BlockType::StoneStairs,
-	BlockType::LumberDoor,
-	BlockType::WoodSlab,
-	BlockType::StoneSlab,
-	BlockType::LumberStairs,
-	BlockType::LumberSlab,
-];
 
 // --- authored geometry ------------------------------------------------
 
@@ -1293,34 +1258,44 @@ mod tests {
 		assert!(baked.occludes_full.iter().all(|&f| f));
 	}
 
+	/// §4.2's volume rule, now stated once per SHAPE rather than once per
+	/// authored block: every material × shape pair prorates the material's
+	/// 27-unit split by these numbers, so pinning the shape axis covers
+	/// every pair the catalog will ever grow — including the ones that do
+	/// not exist yet.
 	#[test]
 	fn craft_costs_derive_from_collision_volume() {
-		for b in CRAFTABLE {
-			let r = craft_recipe(b).unwrap();
-			// Cost = ceil(filled volume / 64), from the canonical closed
-			// geometry; doors price BOTH halves (uncut leaves — lites
-			// don't discount) plus the handle and both hinges.
-			let volume = match b.props().shape.unwrap() {
-				ShapeKind::Stairs => raster_volume(&STAIR_BOXES) * r.count,
-				ShapeKind::Door => {
-					(raster_volume(&[LEAF, HANDLE, HINGE_LOWER])
-						+ raster_volume(&[LEAF, HINGE_UPPER]))
-						* r.count
-				}
-				// Cost prices the PLACED 1/3 item; grows debit one item each.
-				ShapeKind::Slab => raster_volume(&SLAB_BOXES[..1]) * r.count,
-				// Functional items are priced by hand (§7.3), never by
-				// volume — the torch has no `craft_recipe` row at all.
-				ShapeKind::Torch => unreachable!("torches are priced by hand"),
-			};
+		use crate::block::ShapeFamily;
+		// Cost = ceil(filled volume / 64), from the canonical closed
+		// geometry; doors price BOTH halves (uncut leaves — the lites
+		// don't discount) plus the handle and both hinges; a slab prices
+		// the PLACED 1/3 item, so grows debit one item each.
+		let volume = |s: ShapeFamily| match s {
+			ShapeFamily::Block => SUBS_PER_BLOCK * SUB_UNIT_VOLUME,
+			ShapeFamily::Stairs => raster_volume(&STAIR_BOXES),
+			ShapeFamily::Door => {
+				raster_volume(&[LEAF, HANDLE, HINGE_LOWER]) + raster_volume(&[LEAF, HINGE_UPPER])
+			}
+			ShapeFamily::Slab => raster_volume(&SLAB_BOXES[..1]),
+		};
+		for s in ShapeFamily::ALL {
 			assert_eq!(
-				r.cost,
-				volume.div_ceil(SUB_UNIT_VOLUME),
-				"{b:?} cost matches volume {volume}"
+				s.units(),
+				volume(s).div_ceil(SUB_UNIT_VOLUME),
+				"{s:?} units match volume {}",
+				volume(s)
 			);
-			assert_eq!(r.count, 1, "launch shapes craft singly");
 		}
-		assert_eq!(craft_recipe(BlockType::Stone), None);
+		// A whole cube is 27 units exactly — the identity the raw-block
+		// recipes prorate through, and the reason three slabs make a block.
+		assert_eq!(ShapeFamily::Block.units(), SUBS_PER_BLOCK);
+		assert_eq!(ShapeFamily::Slab.units() * 3, SUBS_PER_BLOCK);
+		// Functional items are priced by hand (§7.3), never by volume —
+		// the torch has no shape FAMILY at all, which is how it opts out.
+		assert_eq!(BlockType::Torch.shape_family(), None);
+		for &b in &BlockType::ALL {
+			assert_eq!(craft_batch(b), 1, "{b:?} — launch shapes craft singly");
+		}
 		assert_eq!(SUBS_PER_BLOCK * SUB_UNIT_VOLUME, 1728, "exact division");
 	}
 

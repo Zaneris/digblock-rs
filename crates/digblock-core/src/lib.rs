@@ -12,6 +12,7 @@ pub mod gi;
 pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
+pub mod material;
 pub mod mesher;
 pub mod metrics;
 pub mod overlay;
@@ -109,4 +110,13 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// up by someone who couldn't have made it. Client prediction plus the
 /// server's DigStart backstop, exactly as v12's rock gate; a v12 peer
 /// would open holds the new server refuses.
-pub const SIM_VERSION: u16 = 13;
+/// v14: the material × shape grid — `unlock::craft` is DERIVED as
+/// `max(shape level, material level)` (SKILLS-DESIGN §7.2, `material.rs`)
+/// instead of hand-listed, which moves five thresholds: Wood 20 → 1,
+/// Dirt/Sand 20 → 5, StoneSlab 1 → 20, StoneStairs 5 → 20. Because
+/// `unlock::pickup` derives from `craft`, those are v13's craft gate
+/// answering differently — a v13 peer would open a hold on a stone slab
+/// the new server refuses below Alchemy 20, and refuse one on a log the
+/// new server allows. Worldgen and physics are untouched, so both
+/// goldens hold and no world is staled.
+pub const SIM_VERSION: u16 = 14;

@@ -53,10 +53,10 @@ impl CharView {
 /// holds every named level to the function that enforces it, so the
 /// strings can't drift from the tables.
 const ALCH_TEASERS: &[(u32, &str)] = &[
-	(5, "stairs"),
+	(5, "the stairs shape; dirt and sand"),
 	(8, "the torch"),
 	(15, "planed lumber and its joinery; the bucket charge"),
-	(20, "clean stone, wood, dirt, sand"),
+	(20, "clean stone — block, slab and stairs together"),
 	(25, "morning dew; a faster bench"),
 	(30, "sandstone, snow, grass, mud"),
 	(40, "trace minerals from rubble"),
@@ -351,7 +351,7 @@ mod tests {
 		// first thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		assert!(fresh.contains("next: LV 3 — sandstone opens"), "{fresh}");
-		assert!(fresh.contains("next: LV 5 — stairs"), "{fresh}");
+		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
 		let all = texts(&emit(&leveled)).join("\n");

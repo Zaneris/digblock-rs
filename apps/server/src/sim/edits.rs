@@ -2880,22 +2880,24 @@ mod tests {
 		let mut sim = flat_sim("alchemy");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.test_grant(1, BlockType::Stone, 2);
+		sim.test_grant(1, BlockType::Wood, 2);
 
 		// Convert + craft + place, all queued in ONE tick: wire order
-		// must debit before the place's stock gate runs. The slab is the
-		// level-1 craft (stairs wait for Alch 5), and a two-block
-		// convert fits the extraction bucket's burst exactly.
+		// must debit before the place's stock gate runs. The WOOD slab is
+		// the level-1 craft — under §7.2's grid the material carries the
+		// progression, so clean stone in any shape waits for the mason's
+		// unlock at 20 — and a two-block convert fits the extraction
+		// bucket's burst exactly.
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let slab = make_cell(BlockType::StoneSlab, 0);
+		let slab = make_cell(BlockType::WoodSlab, 0);
 		sim.tick_once(vec![
 			SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
 					op: AlchemyOp::Convert {
-						block: BlockType::Stone as u16,
+						block: BlockType::Wood as u16,
 						count: 2,
 					},
 				},
@@ -2904,7 +2906,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
 					op: AlchemyOp::Craft {
-						item: BlockType::StoneSlab as u16,
+						item: BlockType::WoodSlab as u16,
 						count: 1,
 					},
 				},
@@ -2919,7 +2921,7 @@ mod tests {
 					kind: EditKind::Place { block: slab },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-					// Converting spent every Stone, so its slot was
+					// Converting spent every Wood, so its slot was
 					// released in the same reconcile that filed the
 					// crafted slab — it lands in slot 0. The same
 					// derivation an honest client runs.
@@ -2939,31 +2941,33 @@ mod tests {
 			"craft-then-place landed in one tick: {:?}",
 			c.msgs
 		);
-		// Level-1 economy: 2 stones → 20 Earth (floor(27·0.40) each),
+		// Level-1 economy: 2 logs → 20 Flora (floor(27·0.40) each),
 		// the slab costs ceil(9·1.60) = 15 — 5 left.
 		assert!(
 			c.msgs.iter().any(|m| matches!(
 				m,
 				ServerMsg::InventoryFull { counts }
-					if counts.contains(&(0x8001, 5))
+					if counts.contains(&(0x8000, 5))
 			)),
-			"Earth remainder in the rebase: {:?}",
+			"Flora remainder in the rebase: {:?}",
 			c.msgs
 		);
 
-		// Invalid ops still answer with the authoritative rebase.
+		// Invalid ops still answer with the authoritative rebase — here a
+		// real recipe at an impossible count, so it is the affordability
+		// gate refusing rather than the unlock.
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::Alchemy {
 				op: AlchemyOp::Craft {
-					item: BlockType::StoneStairs as u16,
+					item: BlockType::WoodSlab as u16,
 					count: 999,
 				},
 			},
 		}]);
-		let before = sim.test_inventory_count(1, BlockType::StoneStairs);
+		let before = sim.test_inventory_count(1, BlockType::WoodSlab);
 		c.drain();
-		assert_eq!(sim.test_inventory_count(1, BlockType::StoneStairs), before);
+		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), before);
 		assert!(
 			c.msgs
 				.iter()

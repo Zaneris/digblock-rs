@@ -16,49 +16,47 @@
 //!   2 Earth into 1 Metal, or worse, manufactures Aether, which nothing
 //!   may. So trace minerals and the Aether lines live on MINED rock
 //!   (Rubble, Gravel) and foliage, which have no recipes.
+//!
+//! Neither table is written out block by block any more. A structural
+//! block is a MATERIAL in a SHAPE (SKILLS-DESIGN §7.2, [`crate::material`]),
+//! so both sides prorate the material's 27-unit split by the shape's
+//! volume — and the two invariants above become properties of the axis
+//! rather than facts a test happens to check. What remains hand-written
+//! here is the FUNCTIONAL roster: torches, the bucket charge, lamps and
+//! tools, which §7.3 prices by hand precisely because they are not matter.
 
 use crate::block::{BlockType, Essence};
-use crate::shapes::craft_recipe;
+use crate::material::{cost_split, yield_split};
 
-/// Base extraction yields at 100% efficiency (level 99), ≤ 27 total —
-/// the shortfall is structure lost to the process. Empty = not
-/// extractable at the bench.
-pub fn extract_base(b: BlockType) -> &'static [(Essence, u32)] {
-	use BlockType as B;
-	use Essence as E;
+/// Functional items' extraction yields — the ones with no material, so
+/// nothing to prorate. Everything else derives; see [`extract_base`].
+fn functional_extract(b: BlockType) -> &'static [(Essence, u32)] {
 	match b {
-		B::Stone => &[(E::Earth, 27)],
-		B::Rubble => &[(E::Earth, 24)],
-		B::Sandstone => &[(E::Earth, 21)],
-		B::Gravel => &[(E::Earth, 15)],
-		B::Sand => &[(E::Earth, 12)],
-		B::Dirt => &[(E::Earth, 15), (E::Flora, 3)],
-		B::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-		B::DryGrass => &[(E::Earth, 18), (E::Flora, 6)],
-		B::Mud => &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
-		B::Wood => &[(E::Flora, 27)],
-		// Foliage is mostly water and structure — the timber's essence is
-		// in the trunk. One unit, not three: a leaf block digs in 10
-		// ticks and there are hundreds per tree, so at 3 it paid Flora at
-		// the same rate as grass (18/s of digging at level 30) from the
-		// one block the world hands you for free with every log. At 1 it
-		// is filler, and Wood is the timber.
-		B::Leaves | B::PineLeaves => &[(E::Flora, 1)],
-		B::Snow => &[(E::Aqua, 9)],
 		// The bucket charge: extracting it empties the tool.
-		B::Water => &[(E::Aqua, 18)],
-		B::WoodStairs => &[(E::Flora, 18)],
-		B::StoneStairs => &[(E::Earth, 18)],
-		B::LumberDoor => &[(E::Flora, 10)],
-		B::WoodSlab => &[(E::Flora, 9)],
-		B::StoneSlab => &[(E::Earth, 9)],
-		// Planed timber breaks back down exactly like the log it came
-		// from: the shaping is what was paid for, not the essence.
-		B::Lumber => &[(E::Flora, 27)],
-		B::LumberStairs => &[(E::Flora, 18)],
-		B::LumberSlab => &[(E::Flora, 9)],
+		BlockType::Water => &[(Essence::Aqua, 18)],
+		// A torch is a fixture, not stock — you place it or you carry it.
 		_ => &[],
 	}
+}
+
+/// Base extraction yields at 100% efficiency (level 99), ≤ 27 total for a
+/// whole block — the shortfall is structure lost to the process. Empty =
+/// not extractable at the bench.
+///
+/// Derived: the material's base ([`crate::material::Material::extract_units`])
+/// prorated DOWN to the shape's volume, so a stair gives back two thirds
+/// of its substance and a slab a third, in whatever essences that
+/// substance is made of. Allocates a short Vec; every caller is cold (op
+/// validation and a screen, never a per-cell loop).
+pub fn extract_base(b: BlockType) -> Vec<(Essence, u32)> {
+	let Some((m, s)) = b.grid_cell() else {
+		return functional_extract(b).to_vec();
+	};
+	let base = m.extract_units();
+	if base.is_empty() {
+		return Vec::new();
+	}
+	yield_split(base, s.units())
 }
 
 /// Flat bonus lines, NOT scaled by efficiency — the unlock is the whole
@@ -96,8 +94,8 @@ pub fn scaled_yield(base: u32, level: u32) -> u32 {
 /// flat bonus lines, merged per essence.
 pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	let mut out: Vec<(Essence, u32)> = extract_base(b)
-		.iter()
-		.map(|&(e, base)| (e, scaled_yield(base, level)))
+		.into_iter()
+		.map(|(e, base)| (e, scaled_yield(base, level)))
 		.collect();
 	for &(e, n) in bonus_lines(b, level) {
 		match out.iter_mut().find(|(oe, _)| *oe == e) {
@@ -111,7 +109,7 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (`ceil(total / 3)`, never the level-scaled outcome).
 pub fn extract_total_base(b: BlockType) -> u32 {
-	extract_base(b).iter().map(|&(_, n)| n).sum()
+	extract_base(b).into_iter().map(|(_, n)| n).sum()
 }
 
 /// Transmutation waste multiplier in permille: 1600 (1.60×) at level 1
@@ -133,60 +131,65 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 	(ideal * waste_permille(level)).div_ceil(1000)
 }
 
-/// Ideal (pre-waste) craft cost lines for anything craftable: shaped
-/// items at their volume-rule cost in their family's essence, raw
-/// blocks at the full 27-volume split in their extraction ratio
-/// (`ceil(27 · base_e / base_total)` per line — with the ≤ 27 bases,
-/// that alone yields no-matter-creation). `None` = not craftable.
-pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
+/// Functional items' craft costs — priced BY HAND (§7.3), never by
+/// volume, because a torch's cost is a decision rather than a
+/// measurement. Cross-family costs live here on purpose: they are what
+/// make the essences feel like an economy instead of parallel currencies.
+///
+/// The LEVELS these open at are not here — every threshold in the game
+/// lives in [`crate::unlock`], and `unlock::functional` is this list's
+/// twin (pinned to it, so an item cannot have a price without a level or
+/// the other way round).
+pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
-	// Shaped items keep the pinned volume rule via `craft_recipe`; the
-	// family essence is Flora for wood, Earth for stone.
-	if let Some(r) = craft_recipe(b) {
-		return Some(vec![(r.material, r.cost)]);
-	}
-	let lines: &[(E, u32)] = match b {
-		// Functional items are priced BY HAND (§7.3), never by volume —
-		// the torch's cost is a decision, not a measurement.
+	Some(match b {
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
-		B::Stone | B::Sand | B::Sandstone => &[(E::Earth, 27)],
-		B::Wood | B::Lumber => &[(E::Flora, 27)],
-		// 27-volume in the extraction ratio: Dirt 15/3 of 18 → 23 + 5.
-		B::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
-		B::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-		B::Mud => &[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
-		B::Snow => &[(E::Aqua, 27)],
 		// The bucket charge: lossy against its 18-Aqua extraction — no
 		// loop. Refused while the bucket is already full.
 		B::Water => &[(E::Aqua, 27)],
 		_ => return None,
-	};
-	Some(lines.to_vec())
+	})
 }
 
-/// Everything craftable, in the transmute tab's display order: shaped
-/// items first (the original catalog), then raw blocks by unlock.
-pub const CRAFT_ORDER: [BlockType; 18] = [
-	BlockType::Torch,
-	BlockType::WoodSlab,
-	BlockType::StoneSlab,
-	BlockType::LumberSlab,
-	BlockType::WoodStairs,
-	BlockType::StoneStairs,
-	BlockType::LumberStairs,
-	BlockType::LumberDoor,
-	BlockType::Lumber,
-	BlockType::Stone,
-	BlockType::Wood,
-	BlockType::Dirt,
-	BlockType::Sand,
-	BlockType::Sandstone,
-	BlockType::Snow,
-	BlockType::Grass,
-	BlockType::Mud,
-	BlockType::Water,
-];
+/// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
+/// not craftable.
+///
+/// Derived for every structural block: the material's 27-unit split
+/// ([`crate::material::Material::craft_units`]) prorated UP to the
+/// shape's volume. Rounding the cost side up where [`extract_base`]
+/// rounds down is what makes "no matter creation" hold for every shape
+/// of every material without a proof per pair.
+pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
+	if let Some(lines) = functional_ideal(b) {
+		return Some(lines.to_vec());
+	}
+	let (m, s) = b.grid_cell()?;
+	Some(cost_split(m.craft_units()?, s.units()))
+}
+
+/// Everything craftable, in the transmute tab's display order: by shape
+/// family, members in material (i.e. unlock) order, with the hand-priced
+/// functional items last. Derived from the grid, so a new material ×
+/// shape pair appears without anyone maintaining a list.
+pub fn craft_order() -> Vec<BlockType> {
+	use crate::block::ShapeFamily;
+	let mut out = Vec::new();
+	for s in ShapeFamily::ALL {
+		for m in crate::material::Material::ALL {
+			match BlockType::from_grid(m, s) {
+				Some(b) if craft_ideal(b).is_some() => out.push(b),
+				_ => {}
+			}
+		}
+	}
+	out.extend(
+		BlockType::ALL
+			.into_iter()
+			.filter(|b| !b.is_grid_item() && functional_ideal(*b).is_some()),
+	);
+	out
+}
 
 /// The bench's pace for a WHOLE block — one whose 27 sub-units all come
 /// out, which is the 9-XP reference every other block is priced against:
@@ -344,17 +347,103 @@ mod tests {
 		assert_eq!(base_pace_ticks(1), 30);
 		assert_eq!(base_pace_ticks(25), 21);
 		assert_eq!(base_pace_ticks(75), 15);
-		// Every CRAFT_ORDER row really is craftable, and nothing
-		// craftable is missing from it.
-		for &b in &CRAFT_ORDER {
+		// The display order is derived, so it can neither list something
+		// uncraftable nor miss something craftable — but it must still be
+		// a permutation, with nothing doubled by a grid cell claimed twice.
+		let order = craft_order();
+		for &b in &order {
 			assert!(craft_ideal(b).is_some(), "{b:?}");
 		}
 		for &b in &BlockType::ALL {
 			assert_eq!(
 				craft_ideal(b).is_some(),
-				CRAFT_ORDER.contains(&b),
+				order.contains(&b),
 				"{b:?} craftable iff listed"
 			);
+		}
+		let mut seen = order.clone();
+		seen.sort_by_key(|b| *b as u16);
+		seen.dedup();
+		assert_eq!(seen.len(), order.len(), "no block listed twice");
+		// Shape-major, material-minor: every slab together, then every
+		// stair — which is exactly how the transmute tab groups them.
+		let mut runs: Vec<_> = order
+			.iter()
+			.map(|b| b.grid_cell().map(|(_, s)| s))
+			.collect();
+		runs.dedup();
+		for (i, f) in runs.iter().enumerate() {
+			assert!(
+				!runs[..i].contains(f),
+				"{f:?} members are not contiguous in the display order"
+			);
+		}
+	}
+
+	/// The launch roster's numbers, block by block — this is a REFACTOR
+	/// of four hand-written tables into one derivation, so every recipe
+	/// and yield that shipped must still be the same number.
+	#[test]
+	fn the_grid_reproduces_the_shipped_tables() {
+		use BlockType as B;
+		use Essence as E;
+		/// One shipped row: the block, what it extracts to, what it costs.
+		type Row = (
+			BlockType,
+			&'static [(Essence, u32)],
+			&'static [(Essence, u32)],
+		);
+		let cases: &[Row] = &[
+			// block, extraction base, craft ideal
+			(B::Stone, &[(E::Earth, 27)], &[(E::Earth, 27)]),
+			(B::Rubble, &[(E::Earth, 24)], &[]),
+			(B::Sandstone, &[(E::Earth, 21)], &[(E::Earth, 27)]),
+			(B::Gravel, &[(E::Earth, 15)], &[]),
+			(B::Sand, &[(E::Earth, 12)], &[(E::Earth, 27)]),
+			(
+				B::Dirt,
+				&[(E::Earth, 15), (E::Flora, 3)],
+				&[(E::Earth, 23), (E::Flora, 5)],
+			),
+			(
+				B::Grass,
+				&[(E::Earth, 18), (E::Flora, 9)],
+				&[(E::Earth, 18), (E::Flora, 9)],
+			),
+			(B::DryGrass, &[(E::Earth, 18), (E::Flora, 6)], &[]),
+			(
+				B::Mud,
+				&[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
+				&[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
+			),
+			(B::Wood, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::Leaves, &[(E::Flora, 1)], &[]),
+			(B::PineLeaves, &[(E::Flora, 1)], &[]),
+			(B::Snow, &[(E::Aqua, 9)], &[(E::Aqua, 27)]),
+			(B::Water, &[(E::Aqua, 18)], &[(E::Aqua, 27)]),
+			(B::WoodStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::StoneStairs, &[(E::Earth, 18)], &[(E::Earth, 18)]),
+			(B::LumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+			(B::WoodSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::StoneSlab, &[(E::Earth, 9)], &[(E::Earth, 9)]),
+			(B::Lumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::LumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::LumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::Torch, &[], &[(E::Flora, 4), (E::Earth, 2)]),
+		];
+		for &(b, base, ideal) in cases {
+			assert_eq!(extract_base(b), base.to_vec(), "{b:?} extraction");
+			let want = (!ideal.is_empty()).then(|| ideal.to_vec());
+			assert_eq!(craft_ideal(b), want, "{b:?} recipe");
+		}
+		// And the roster is exhaustive on both sides: nothing outside the
+		// list extracts or crafts at all.
+		for &b in &BlockType::ALL {
+			if cases.iter().any(|&(c, _, _)| c == b) {
+				continue;
+			}
+			assert!(extract_base(b).is_empty(), "{b:?} extracts unexpectedly");
+			assert!(craft_ideal(b).is_none(), "{b:?} crafts unexpectedly");
 		}
 	}
 

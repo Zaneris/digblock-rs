@@ -237,7 +237,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				let taken = inv.try_take_sub(e, alchemy::craft_cost(n, level) * count);
 				debug_assert!(taken, "checked above");
 			}
-			let per_batch = crate::shapes::craft_recipe(item).map_or(1, |r| r.count);
+			let per_batch = crate::shapes::craft_batch(item);
 			inv.add(item, per_batch * count);
 			true
 		}
