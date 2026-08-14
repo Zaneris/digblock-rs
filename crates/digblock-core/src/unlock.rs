@@ -98,6 +98,14 @@ pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// First light, pre-ore on purpose (§7.3).
 		BlockType::Torch => 8,
+		// Furniture: the first things you make because you want them
+		// rather than because you need them, so they sit just past the
+		// timber set that supplies them.
+		BlockType::Chair => 18,
+		BlockType::Table => 18,
+		// The bed waits for the Aqua economy it costs (extraction opens at
+		// 15), which is the whole reason its price crosses families.
+		BlockType::Bed => 35,
 		// Crafting the bucket charge, lossy against extracting it.
 		BlockType::Water => 50,
 		_ => return None,
@@ -483,6 +491,9 @@ mod tests {
 				B::RedLumberStairs,
 				B::RedLumberSlab,
 				B::RedLumberDoor,
+				B::Table,
+				B::Chair,
+				B::Bed,
 			]
 		);
 	}
@@ -569,7 +580,10 @@ mod tests {
 		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Alchemy, l))
 			.collect();
-		assert_eq!(alchemy, vec![5, 8, 15, 20, 25, 30, 40, 50, 60, 75, 90]);
+		assert_eq!(
+			alchemy,
+			vec![5, 8, 15, 18, 20, 25, 30, 35, 40, 50, 60, 75, 90]
+		);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.
 		for s in Skill::ALL {

@@ -141,6 +141,14 @@ blocks! {
 	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
 	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
+	/// Furniture (SKILLS-DESIGN §7.3): FUNCTIONAL items, not §7.2 grid
+	/// cells — a table is a thing, the way a torch is, rather than a form
+	/// any substance could be worked into. So they carry no material,
+	/// wear the joinery timber, and are priced by hand — which is also
+	/// what lets the bed's cost cross essence families.
+	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
+	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
+	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -211,6 +219,14 @@ pub enum ShapeKind {
 	Slab,
 	/// Floor-mounted torch: post + glowing head, one stateless variant.
 	Torch,
+	/// Full-footprint top on four legs; stateless, so tables pushed
+	/// together read as one surface.
+	Table,
+	/// Seat, back and four legs; state nibble bits 0-1 = facing (the back).
+	Chair,
+	/// A one-cell cot: mattress on a low frame, pillow at the head end;
+	/// state nibble bits 0-1 = facing (the head).
+	Bed,
 }
 
 /// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form
@@ -648,8 +664,21 @@ impl BlockType {
 			Some(ShapeKind::Slab) => Some(ShapeFamily::Slab),
 			Some(ShapeKind::Stairs) => Some(ShapeFamily::Stairs),
 			Some(ShapeKind::Door) => Some(ShapeFamily::Door),
-			Some(ShapeKind::Torch) => None,
+			// Functional shapes: things, not forms any substance could be
+			// worked into. They opt out of the grid and are priced by hand.
+			Some(ShapeKind::Torch | ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed) => None,
 		}
+	}
+
+	/// Does placing this block derive a facing from the placer's look?
+	/// The state encoding is shared (bits 0-1), so one predicate covers
+	/// the ascending stair and every piece of furniture that has a front.
+	#[inline]
+	pub fn takes_facing(self) -> bool {
+		matches!(
+			self.props().shape,
+			Some(ShapeKind::Stairs | ShapeKind::Chair | ShapeKind::Bed)
+		)
 	}
 
 	/// Is this block one cell of §7.2's material × shape grid — a substance
@@ -944,6 +973,9 @@ mod tests {
 			(BlockType::RedLumberStairs, Wood),
 			(BlockType::RedLumberSlab, Wood),
 			(BlockType::RedLumberDoor, Wood),
+			(BlockType::Table, Wood),
+			(BlockType::Chair, Wood),
+			(BlockType::Bed, Wood),
 			(BlockType::Stone, Rock),
 			(BlockType::StoneStairs, Rock),
 			(BlockType::StoneSlab, Rock),
@@ -1041,6 +1073,9 @@ mod tests {
 				B::WaterFall,
 				B::Torch,
 				B::Bucket,
+				B::Table,
+				B::Chair,
+				B::Bed,
 			]
 		);
 	}

@@ -295,6 +295,9 @@ pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
 		ShapeKind::Door => Some(&DOORS[(state & 0xF) as usize]),
 		ShapeKind::Slab => Some(&SLABS[(state & 3) as usize]),
 		ShapeKind::Torch => Some(&TORCHES[0]),
+		ShapeKind::Table => Some(&TABLES[0]),
+		ShapeKind::Chair => Some(&CHAIRS[(state & 3) as usize]),
+		ShapeKind::Bed => Some(&BEDS[(state & 3) as usize]),
 	}
 }
 
@@ -318,6 +321,9 @@ pub fn prewarm() {
 	let _ = LazyLock::force(&DOORS);
 	let _ = LazyLock::force(&SLABS);
 	let _ = LazyLock::force(&TORCHES);
+	let _ = LazyLock::force(&TABLES);
+	let _ = LazyLock::force(&CHAIRS);
+	let _ = LazyLock::force(&BEDS);
 }
 
 /// No sub-block geometry — physics/raycast take the unit-cube fast path.
@@ -435,7 +441,8 @@ pub fn state_valid(cell: u16) -> bool {
 		Some(ShapeKind::Stairs) => state & !3 == 0,
 		Some(ShapeKind::Door) => true,
 		Some(ShapeKind::Slab) => state & !3 == 0,
-		Some(ShapeKind::Torch) => state == 0,
+		Some(ShapeKind::Torch) | Some(ShapeKind::Table) => state == 0,
+		Some(ShapeKind::Chair) | Some(ShapeKind::Bed) => state & !3 == 0,
 	}
 }
 
@@ -522,6 +529,58 @@ const SLAB_BOXES: [SubBox; 4] = [
 /// above, and the top face is `TORCH_FLAME` either way.
 const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
 
+/// A table: a full-footprint top two twelfths thick on four corner legs.
+/// Stateless — a square top has no facing to lose, and it means tables
+/// pushed together read as one continuous surface rather than a grid of
+/// rotations that don't line up.
+///
+/// The top is deliberately the whole 12×12, not inset: an inset top
+/// leaves a visible gap between adjacent tables at exactly the seam a
+/// player builds a long table across.
+const TABLE_BOXES: [SubBox; 5] = [
+	SubBox::new([0, 10, 0], [12, 12, 12]),
+	SubBox::new([1, 0, 1], [3, 10, 3]),
+	SubBox::new([9, 0, 1], [11, 10, 3]),
+	SubBox::new([1, 0, 9], [3, 10, 11]),
+	SubBox::new([9, 0, 9], [11, 10, 11]),
+];
+
+/// A chair, canonically BACKED toward +x: seat at 6/12, back rising from
+/// it, four legs. Placing uses the look direction unrotated, so a chair
+/// dropped while facing +x has its back away and its seat turned toward
+/// the placer — which is what you want when setting one at a table.
+///
+/// The seat sits above `AUTO_STEP_MAX`, so a walk does not climb onto
+/// furniture; you jump onto a chair like anything else waist-high.
+const CHAIR_BOXES: [SubBox; 6] = [
+	SubBox::new([2, 6, 2], [10, 8, 10]),
+	SubBox::new([8, 8, 2], [10, 12, 10]),
+	SubBox::new([2, 0, 2], [4, 6, 4]),
+	SubBox::new([8, 0, 2], [10, 6, 4]),
+	SubBox::new([2, 0, 8], [4, 6, 10]),
+	SubBox::new([8, 0, 8], [10, 6, 10]),
+];
+
+/// A bed, canonically HEADED toward +x: a mattress on a low frame with a
+/// raised pillow at the head end, so the facing is readable from across a
+/// room rather than only up close.
+///
+/// One cell, not two. A two-cell frame is the obvious next version, but a
+/// horizontal pair is genuinely new machinery — the door's pair is
+/// VERTICAL, and `door_partner`, `object_bounds`, the place path's derived
+/// second cell and the server's assembled `writes` all special-case that
+/// axis. A cot is a real object today; the long frame can arrive with the
+/// feature that would justify the cost (setting your spawn), which is when
+/// somebody actually has to answer where a sleeper wakes up.
+const BED_BOXES: [SubBox; 6] = [
+	SubBox::new([0, 3, 1], [12, 6, 11]),
+	SubBox::new([8, 6, 2], [11, 8, 10]),
+	SubBox::new([0, 0, 1], [2, 3, 3]),
+	SubBox::new([0, 0, 9], [2, 3, 11]),
+	SubBox::new([10, 0, 1], [12, 3, 3]),
+	SubBox::new([10, 0, 9], [12, 3, 11]),
+];
+
 static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
 	let boxes = TORCH_BOXES.to_vec();
 	let baked = bake(&boxes);
@@ -535,6 +594,31 @@ static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
 		ramp: None,
 	}]
 });
+
+static TABLES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [furniture(&TABLE_BOXES, 0)]);
+
+static CHAIRS: LazyLock<[ShapeVariant; 4]> =
+	LazyLock::new(|| Facing::ALL.map(|f| furniture(&CHAIR_BOXES, f as u8)));
+
+static BEDS: LazyLock<[ShapeVariant; 4]> =
+	LazyLock::new(|| Facing::ALL.map(|f| furniture(&BED_BOXES, f as u8)));
+
+/// One furniture variant: rotate the canonical boxes, bake, and let
+/// collision and the interact ray share them. Furniture has no swung
+/// pose and no ramp — the whole family is "solid where it is drawn".
+fn furniture(canonical: &[SubBox], k: u8) -> ShapeVariant {
+	let boxes = rotate_boxes(canonical, k);
+	let baked = bake(&boxes);
+	ShapeVariant {
+		collision: boxes.clone(),
+		interaction: boxes,
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}
+}
 
 static SLABS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 	SLAB_BOXES.map(|b| {
@@ -1299,6 +1383,76 @@ mod tests {
 		assert_eq!(SUBS_PER_BLOCK * SUB_UNIT_VOLUME, 1728, "exact division");
 	}
 
+	/// The furniture family, which is where a piece's FRONT has to survive
+	/// the rotation: a chair whose back stayed on +x for every facing
+	/// would still pass every generic bake test and be useless.
+	#[test]
+	fn furniture_turns_and_stands() {
+		use crate::chunk::make_cell;
+		// A chair's back is the far half along its facing axis, and moves
+		// with it — the union of the boxes above the seat is what a player
+		// reads as the front/back, so that is what this checks.
+		let back_of = |f: Facing| {
+			let boxes = collision_boxes(make_cell(BlockType::Chair, stair_state(f)));
+			let high: Vec<&SubBox> = boxes.iter().filter(|b| b.max[1] > 8).collect();
+			assert_eq!(high.len(), 1, "{f:?}: one back");
+			*high[0]
+		};
+		assert!(back_of(Facing::PosX).min[0] >= 6, "back on +x");
+		assert!(back_of(Facing::NegX).max[0] <= 6, "back on -x");
+		assert!(back_of(Facing::PosZ).min[2] >= 6, "back on +z");
+		assert!(back_of(Facing::NegZ).max[2] <= 6, "back on -z");
+		// The bed's pillow is the same story at the head end.
+		let pillow_of = |f: Facing| {
+			let boxes = collision_boxes(make_cell(BlockType::Bed, stair_state(f)));
+			*boxes
+				.iter()
+				.find(|b| b.min[1] >= 6)
+				.expect("the raised pillow")
+		};
+		assert!(pillow_of(Facing::PosX).min[0] >= 6, "head on +x");
+		assert!(pillow_of(Facing::NegZ).max[2] <= 6, "head on -z");
+		// The table is stateless, so every nibble resolves to one shape —
+		// which is what lets tables pushed together read as one surface.
+		let top = collision_boxes(BlockType::Table as u16);
+		for s in 0..16u8 {
+			assert_eq!(collision_boxes(make_cell(BlockType::Table, s)), top);
+		}
+		// Every piece is solid where it is drawn, never occludes a
+		// SIDEWAYS boundary (a rank of chairs must not hide the room
+		// behind it), and stands clear of the auto-step window —
+		// furniture is climbed onto, not walked over.
+		for b in [BlockType::Table, BlockType::Chair, BlockType::Bed] {
+			let v = shape_of(b, 0).expect("shaped");
+			assert!(!v.collision.is_empty(), "{b:?}");
+			for d in [Dir::West, Dir::East, Dir::North, Dir::South] {
+				assert!(!v.occludes_full[d as usize], "{b:?} walls off {d:?}");
+			}
+			// `AUTO_STEP_MAX` is 4/12, so a walk mounts any top within a
+			// third of the feet. Furniture must not be walked onto — but
+			// the bed's legs top out at 3/12, and that is fine BECAUSE the
+			// mattress sits straight on them: the mount's headroom probe
+			// refuses. So the property is not "no low surface", it is "no
+			// low surface a capsule could actually stand on".
+			for low in v.collision.iter().filter(|c| c.max[1] <= 4) {
+				let capped = v.collision.iter().any(|c| {
+					c.min[1] <= low.max[1]
+						&& c.max[1] > low.max[1]
+						&& c.min[0] < low.max[0]
+						&& c.max[0] > low.min[0]
+						&& c.min[2] < low.max[2]
+						&& c.max[2] > low.min[2]
+				});
+				assert!(capped, "{b:?} offers a bare {}/12 step", low.max[1]);
+			}
+			let walkable = v.collision.iter().map(|c| c.max[1]).max().unwrap();
+			assert!(u32::from(walkable) > 4, "{b:?} is a doormat");
+		}
+		// The table's top DOES cover its ceiling boundary, which is what
+		// lets a floor of tables cull like a floor of slabs.
+		assert!(shape_of(BlockType::Table, 0).unwrap().occludes_full[Dir::Top as usize]);
+	}
+
 	#[test]
 	fn state_validity() {
 		use crate::chunk::make_cell;
@@ -1324,6 +1478,17 @@ mod tests {
 			}
 			assert!(!state_valid(make_cell(b, 0b0100)));
 			assert!(!state_valid(make_cell(b, 0b1000)));
+		}
+		// Furniture: the table is stateless like the torch; the chair and
+		// the bed take a facing and nothing else.
+		assert!(state_valid(BlockType::Table as u16));
+		assert!(!state_valid(make_cell(BlockType::Table, 1)));
+		for b in [BlockType::Chair, BlockType::Bed] {
+			for f in Facing::ALL {
+				assert!(state_valid(make_cell(b, stair_state(f))), "{b:?}");
+			}
+			assert!(!state_valid(make_cell(b, 0b0100)), "{b:?}");
+			assert!(!state_valid(make_cell(b, 0b1000)), "{b:?}");
 		}
 		// Unknown id, and spare bits 10-11, always refuse.
 		assert!(!state_valid(999));

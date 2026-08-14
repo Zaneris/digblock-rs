@@ -200,8 +200,12 @@ pub struct Family {
 
 /// Families the grid cannot derive: hand-priced functional items, grouped
 /// by what they DO. Drawn after the shape families.
-const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 2] = [
+const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	("LIGHTS", &[BlockType::Torch]),
+	(
+		"FURNITURE",
+		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
+	),
 	("WATER", &[BlockType::Water]),
 ];
 
@@ -1189,6 +1193,9 @@ fn block_name(b: BlockType) -> String {
 	match b {
 		BlockType::Water => "WATER CHARGE".into(),
 		BlockType::Torch => "TORCH".into(),
+		BlockType::Table => "TABLE".into(),
+		BlockType::Chair => "CHAIR".into(),
+		BlockType::Bed => "BED".into(),
 		_ => "?".into(),
 	}
 }
@@ -1466,11 +1473,22 @@ mod tests {
 			"no button before a family is picked"
 		);
 
-		// SLABS is the first family (the shape axis leads, cheapest form
-		// first, and the hand-priced ones follow). Its first unlocked
-		// member is the WoodSlab the Flora affords; Ctrl asks for 100 and
-		// the holdings clamp it.
-		let slabs = center(r.hits.rect_of(InvId::Family(0)).unwrap());
+		// Families are DERIVED from the shape axis, so their indices move
+		// as the catalog grows — look them up by the name a player reads
+		// rather than by a position that means nothing.
+		let family = |name: &str| {
+			InvId::Family(
+				families()
+					.iter()
+					.position(|f| f.name == name)
+					.unwrap_or_else(|| panic!("no {name} family")) as u8,
+			)
+		};
+		// SLABS leads (the shape axis first, cheapest form first, the
+		// hand-priced ones after). Its first unlocked member is the
+		// WoodSlab the Flora affords; Ctrl asks for 100 and the holdings
+		// clamp it.
+		let slabs = center(r.hits.rect_of(family("SLABS")).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -1501,7 +1519,7 @@ mod tests {
 		// The WATER family's one member is locked at 20: the tile still
 		// shows (the strip names LV 50), but the single button registers
 		// no hit — honest pixels, not a trap.
-		let water = center(r.hits.rect_of(InvId::Family(5)).unwrap());
+		let water = center(r.hits.rect_of(family("WATER")).unwrap());
 		press(&mut r, water);
 		rebuild(&mut r);
 		assert!(
@@ -1517,7 +1535,7 @@ mod tests {
 		// Wood, since the grid puts a material's whole learned set at the
 		// material's own level and Wood is the starter timber — and the
 		// one button crafts THAT.
-		let blocks = center(r.hits.rect_of(InvId::Family(3)).unwrap());
+		let blocks = center(r.hits.rect_of(family("BLOCKS")).unwrap());
 		press(&mut r, blocks);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());

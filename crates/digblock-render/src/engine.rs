@@ -861,30 +861,56 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	let mut out = Vec::new();
 	let stairs = shaped_roster(ShapeFamily::Stairs);
 	let doors = shaped_roster(ShapeFamily::Door);
-	for (i, f) in Facing::ALL.into_iter().enumerate() {
-		let x = bx + 2 * i as i32 - 3;
-		for (j, &b) in stairs.iter().enumerate() {
-			out.push((x, by, bz + 2 + 2 * j as i32, make_cell(b, stair_state(f))));
+	let slabs = shaped_roster(ShapeFamily::Slab);
+	// One z cursor, walked front to back, so a row added anywhere pushes
+	// what follows instead of colliding with it. Nearest first is what the
+	// camera actually frames: the FURNITURE rides right behind the stairs
+	// because it is the newest thing to look at.
+	let mut z = bz + 2;
+	for (j, &b) in stairs.iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
+			out.push((
+				bx + 2 * i as i32 - 3,
+				by,
+				z + 2 * j as i32,
+				make_cell(b, stair_state(f)),
+			));
 		}
-		// Doors start behind the stair rows and take two z rows each
-		// (closed, then open) so both states of every material are in one
-		// capture, at the two heights a leaf spans.
-		let door_z = bz + 2 + 2 * stairs.len() as i32;
-		for (j, &b) in doors.iter().enumerate() {
+	}
+	z += 2 * stairs.len() as i32;
+	// Furniture × 4 facings: the table is stateless, so its row is four
+	// identical tops — which is the point, since pushed together they read
+	// as one surface. The chair and the bed turn.
+	for (j, b) in [B::Table, B::Chair, B::Bed].into_iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
+			let state = if b.takes_facing() { stair_state(f) } else { 0 };
+			out.push((
+				bx + 2 * i as i32 - 3,
+				by,
+				z + 2 * j as i32,
+				make_cell(b, state),
+			));
+		}
+	}
+	z += 6;
+	// Doors take two z rows each (closed, then open), at the two heights a
+	// leaf spans, so both states of every material are in one capture.
+	for (j, &b) in doors.iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
 			for (dz, open) in [(0, false), (2, true)] {
-				let z = door_z + 4 * j as i32 + dz;
 				for upper in [false, true] {
 					out.push((
-						x,
+						bx + 2 * i as i32 - 3,
 						by + i32::from(upper),
-						z,
+						z + 4 * j as i32 + dz,
 						make_cell(b, door_state(f, open, upper)),
 					));
 				}
 			}
 		}
 	}
-	let slab_z = bz + 2 + 2 * stairs.len() as i32 + 4 * doors.len() as i32;
+	z += 4 * doors.len() as i32;
+	let slab_z = z;
 	// A torch row: one on the ground, one up on a wood plinth — the
 	// emissive head is the thing to photograph at night.
 	out.push((bx - 5, by, bz + 4, B::Torch as u16));
@@ -895,7 +921,7 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	// auto-step (also eyeballs boundary culling on the shared planes).
 	// Ceiling slabs hang two cells up, where their underside is the
 	// thing to look at.
-	for (i, b) in shaped_roster(ShapeFamily::Slab).into_iter().enumerate() {
+	for (i, b) in slabs.into_iter().enumerate() {
 		let x = bx + 2 * i as i32 - 3;
 		out.push((x, by, slab_z, make_cell(b, slab_state(false, false))));
 		out.push((x, by, slab_z + 2, make_cell(b, slab_state(true, false))));
@@ -3379,7 +3405,10 @@ impl Engine {
 				hit.cell.1 + hit.normal.1,
 				hit.cell.2 + hit.normal.2,
 			);
-			let placed = if block.is_stair() {
+			// Stairs and furniture with a front share the encoding
+			// (facing in bits 0-1), so one branch turns both — and a
+			// new facing shape cannot forget to be turned at all.
+			let placed = if block.takes_facing() {
 				make_cell(block, stair_state(quantized_facing(dir)))
 			} else if block.is_door() {
 				make_cell(block, door_state(quantized_facing(dir), false, false))

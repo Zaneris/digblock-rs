@@ -145,6 +145,15 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use Essence as E;
 	Some(match b {
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
+		// Furniture is timber and joinery — near its volume, but chosen,
+		// not measured: a chair is mostly air and still costs a chair.
+		B::Chair => &[(E::Flora, 6)],
+		B::Table => &[(E::Flora, 9)],
+		// The bed is the catalog's first genuinely cross-family price:
+		// a timber frame AND the bedding on it. Aqua has exactly one
+		// source (the bucket charge, extraction unlocked at 15), so this
+		// is what makes carrying water home worth doing.
+		B::Bed => &[(E::Flora, 21), (E::Aqua, 6)],
 		// The bucket charge: lossy against its 18-Aqua extraction — no
 		// loop. Refused while the bucket is already full.
 		B::Water => &[(E::Aqua, 27)],

@@ -186,8 +186,13 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 				// at a third and only grows by stacking more on top, so a
 				// 2/3 icon advertised a stack you don't have.
 				shape_faces(b, slab_state(false, false), 0, &mut out);
-			} else {
+			} else if b.takes_facing() {
+				// Stairs and furniture with a front, turned the same way
+				// so the icon shows the piece three-quarters on.
 				shape_faces(b, stair_state(Facing::NegX), 0, &mut out);
+			} else {
+				// Stateless shaped items — the torch, the table.
+				shape_faces(b, 0, 0, &mut out);
 			}
 		}
 		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
