@@ -68,10 +68,11 @@ pub struct GiChunk {
 ///
 /// The price to know before adding a material: **~12 classes per shaped
 /// material** (stairs 4 facings + slab 4 anchors/thirds + door 4 closed
-/// variants), measured at 69 of 144 for six. That is roughly six more
-/// materials before this split has to move again — and a NEW shape family
-/// costs its own covers in every material at once, so a fence or a pane
-/// is far more expensive here than a fourth timber.
+/// variants), measured at 117 of 144 across eleven shaped materials plus
+/// the furniture. That is roughly two more materials before this split
+/// has to move again — and a NEW shape family costs its own covers in
+/// every material at once, so a fence or a pane is far more expensive
+/// here than a fourth timber.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,

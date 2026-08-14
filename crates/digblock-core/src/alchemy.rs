@@ -154,6 +154,9 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// Metal a goal rather than a number. The Aether line is what
 		// keeps Aetherock worth reaching for before the lamps arrive.
 		B::ResonantPick => &[(E::Metal, 240), (E::Earth, 60), (E::Aether, 12)],
+		B::Lantern => &[(E::Metal, 8), (E::Earth, 6)],
+		B::Aetherlamp => &[(E::Metal, 12), (E::Aether, 3)],
+		B::MastersSigil => &[(E::Aether, 99)],
 		// Furniture is timber and joinery — near its volume, but chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Flora, 6)],

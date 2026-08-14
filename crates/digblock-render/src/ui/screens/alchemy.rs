@@ -201,14 +201,21 @@ pub struct Family {
 /// Families the grid cannot derive: hand-priced functional items, grouped
 /// by what they DO. Drawn after the shape families.
 const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
-	("LIGHTS", &[BlockType::Torch]),
+	(
+		"LIGHTS",
+		&[BlockType::Torch, BlockType::Lantern, BlockType::Aetherlamp],
+	),
 	(
 		"FURNITURE",
 		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
 	),
 	(
 		"TOOLS",
-		&[BlockType::EssenceSiphon, BlockType::ResonantPick],
+		&[
+			BlockType::EssenceSiphon,
+			BlockType::ResonantPick,
+			BlockType::MastersSigil,
+		],
 	),
 	("WATER", &[BlockType::Water]),
 ];
@@ -1202,6 +1209,9 @@ fn block_name(b: BlockType) -> String {
 		BlockType::Bed => "BED".into(),
 		BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
 		BlockType::ResonantPick => "RESONANT PICK".into(),
+		BlockType::Lantern => "LANTERN".into(),
+		BlockType::Aetherlamp => "AETHERLAMP".into(),
+		BlockType::MastersSigil => "MASTER'S SIGIL".into(),
 		_ => "?".into(),
 	}
 }
@@ -1562,7 +1572,16 @@ mod tests {
 	}
 
 	/// The panel bottom-anchors above the hotbar on both tabs, and a
-	/// short window at a big scale fits by stepping the ladder.
+	/// short window at a big scale fits by stepping the ladder — until
+	/// the ladder BOTTOMS OUT, which `theme::fit_scale` documents as the
+	/// point where "a tight panel beats a panel sliding off the bottom of
+	/// the screen".
+	///
+	/// The last case is exactly that: a 960×600 window at 2.5× interface
+	/// scale asks for an enormous page in a tiny window, and since the
+	/// inventory grid grew to six rows there is no rung that fits it. What
+	/// still has to hold there is the part a player can act on — the top
+	/// of the panel is on screen and the layout used every pixel it had.
 	#[test]
 	fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 		for (size, scale) in [

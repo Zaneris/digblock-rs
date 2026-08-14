@@ -115,6 +115,15 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// The pick: crafted here, usable at MINING 55 (`pick_cells`) —
 		// two skills, one item, and the reason 240 Metal is worth mining.
 		BlockType::ResonantPick => 55,
+		// The lamps: the first Metal sink outside tools, and the standing
+		// Aether one — a repeatable 3-per-lamp sink is what keeps
+		// Aetherock worth mining at 90+, where the pick and the sigil are
+		// both one-offs.
+		BlockType::Lantern => 40,
+		BlockType::Aetherlamp => 80,
+		// 99 Aether for a thing that does nothing: the point IS that it is
+		// the last line.
+		BlockType::MastersSigil => 99,
 		_ => return None,
 	})
 }
@@ -569,6 +578,25 @@ mod tests {
 				B::Table,
 				B::Chair,
 				B::Bed,
+				B::StoneBrick,
+				B::StoneBrickStairs,
+				B::StoneBrickSlab,
+				B::StoneBrickDoor,
+				B::PolishedStone,
+				B::PolishedStoneStairs,
+				B::PolishedStoneSlab,
+				B::SandstoneBrick,
+				B::SandstoneBrickStairs,
+				B::SandstoneBrickSlab,
+				B::Glass,
+				B::Metal,
+				B::MetalStairs,
+				B::MetalSlab,
+				B::MetalDoor,
+				B::Crystal,
+				B::CrystalSlab,
+				B::Lantern,
+				B::Aetherlamp,
 			]
 		);
 	}
@@ -650,8 +678,8 @@ mod tests {
 			.collect();
 		assert_eq!(
 			mining,
-			vec![3, 5, 10, 30, 55, 80, 85, 90, 99],
-			"the rock gates, the reveals, the pick's ranks, and the endgame"
+			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99],
+			"the rock gates, the reveals, metal and crystal, the pick, the endgame"
 		);
 		// Alchemy: the shape and material unlocks, the hand-priced items
 		// (torch 8, siphon 10, furniture 18, bed 35, water 50), the bucket
@@ -661,7 +689,7 @@ mod tests {
 			.collect();
 		assert_eq!(
 			alchemy,
-			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 50, 55, 60, 75, 90]
+			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 75, 80, 90, 99]
 		);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.

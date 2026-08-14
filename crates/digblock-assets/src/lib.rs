@@ -44,6 +44,18 @@ pub mod tex {
 	pub const GLOWVEIN: &[u8] = include_bytes!("../../../assets/textures/Glowvein.png");
 	pub const AETHEROCK: &[u8] = include_bytes!("../../../assets/textures/Aetherock.png");
 	pub const DEPLETED_STONE: &[u8] = include_bytes!("../../../assets/textures/DepletedStone.png");
+	// The later materials (§7.2) and the two lamps (§7.3), all
+	// texgen-derived: dressed stone, leaded glass, planished metal, an
+	// Aether lattice, and a lit pane in a frame.
+	pub const STONE_BRICK: &[u8] = include_bytes!("../../../assets/textures/StoneBrick.png");
+	pub const SANDSTONE_BRICK: &[u8] =
+		include_bytes!("../../../assets/textures/SandstoneBrick.png");
+	pub const POLISHED_STONE: &[u8] = include_bytes!("../../../assets/textures/PolishedStone.png");
+	pub const GLASS: &[u8] = include_bytes!("../../../assets/textures/Glass.png");
+	pub const METAL: &[u8] = include_bytes!("../../../assets/textures/Metal.png");
+	pub const CRYSTAL: &[u8] = include_bytes!("../../../assets/textures/Crystal.png");
+	pub const LANTERN: &[u8] = include_bytes!("../../../assets/textures/Lantern.png");
+	pub const AETHERLAMP: &[u8] = include_bytes!("../../../assets/textures/Aetherlamp.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -56,7 +68,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 27] = [
+	pub const LAYERS: [&[u8]; 35] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -84,6 +96,14 @@ pub mod tex {
 		GLOWVEIN,
 		AETHEROCK,
 		DEPLETED_STONE,
+		STONE_BRICK,
+		SANDSTONE_BRICK,
+		POLISHED_STONE,
+		GLASS,
+		METAL,
+		CRYSTAL,
+		LANTERN,
+		AETHERLAMP,
 	];
 }
 

@@ -13,9 +13,18 @@ use crate::block::BlockType;
 use crate::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
-/// 4 rows of 9 (matching the hotbar's width) — comfortably above the
-/// block-type count, so a full collection always fits.
-pub const GRID_SLOTS: usize = 36;
+/// 6 rows of 9 (matching the hotbar's width) — comfortably above the
+/// slottable block-type count, so a full collection always fits.
+///
+/// That claim used to be a comment and is now a TEST
+/// (`the_grid_holds_every_type_a_player_can_own`), because the catalog
+/// grew past the old four rows: 36 grid + 8 bar slots held every type
+/// exactly until §7.2's later materials landed, and a player who owned
+/// one of everything would have found sixteen of them with nowhere to
+/// go. The wire does not care — `from_wire` takes what it is given and
+/// pads, so a save written at four rows decodes into six with its
+/// arrangement intact.
+pub const GRID_SLOTS: usize = 54;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InvGrid {
@@ -207,6 +216,57 @@ mod tests {
 		let slottable = types.iter().filter(|(b, _)| b.is_slottable()).count();
 		assert!(slottable < types.len(), "the set must include water");
 		assert_eq!(on_grid + on_bar - 1, slottable, "everything placed once");
+	}
+
+	/// The capacity claim `GRID_SLOTS` makes, as an assertion rather than
+	/// a comment: every type a player can actually hold has somewhere to
+	/// be. A catalog wave that outgrows the grid fails HERE rather than
+	/// silently stranding whatever sorted last.
+	#[test]
+	fn the_grid_holds_every_type_a_player_can_own() {
+		// What a player can actually END UP HOLDING: something has to drop
+		// it or the bench has to make it. `is_slottable` alone also counts
+		// air and the water flow states, which nothing ever hands you.
+		let ownable = B::ALL
+			.iter()
+			.filter(|b| {
+				b.is_slottable() && (b.dig_drop().is_some() || crate::unlock::craft(**b).is_some())
+			})
+			.count();
+		// The bar's last slot is the tool's and holds no block.
+		let room = GRID_SLOTS + HOTBAR_SLOTS - 1;
+		assert!(
+			ownable <= room,
+			"{ownable} ownable types into {room} slots — grow GRID_SLOTS"
+		);
+		// And the headroom is nearly gone, which is worth knowing BEFORE
+		// the next wave: six rows is as tall as the alchemy screen's
+		// extract tab can be and still fit a 960×600 window at the
+		// interface-scale ceiling (`panel_sits_above_the_hotbar_and_fits_short_windows`
+		// is the wall). A seventh row needs that screen to scroll first,
+		// so a catalog wave that outgrows this is a UI job as well as a
+		// block row.
+		assert!(
+			room - ownable <= 4,
+			"unexpected slack — did the roster shrink?"
+		);
+	}
+
+	/// A layout saved at the old four rows decodes into six with its
+	/// arrangement intact, and one from the future is simply truncated.
+	#[test]
+	fn a_shorter_saved_grid_decodes_and_pads() {
+		let mut wire = vec![WIRE_EMPTY; 36];
+		wire[0] = B::Stone as u16;
+		wire[35] = B::Dirt as u16;
+		let grid = InvGrid::from_wire(&wire);
+		assert_eq!(grid.slots()[0], Some(B::Stone));
+		assert_eq!(grid.slots()[35], Some(B::Dirt));
+		assert!(grid.slots()[36..].iter().all(|s| s.is_none()));
+		assert_eq!(
+			InvGrid::from_wire(&vec![B::Stone as u16; 999]).slots()[0],
+			Some(B::Stone)
+		);
 	}
 
 	/// Water's count is the bucket's charge, not a stack, so it claims no

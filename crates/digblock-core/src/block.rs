@@ -184,6 +184,49 @@ blocks! {
 	/// biggest essence sink. Held, one hold breaks the plane of the face
 	/// you hit: three wide, and the full nine from Mining 85.
 	ResonantPick = 54 => props(RenderClass::None, false, 0, 0, 0),
+	/// §7.2's dressed stones — the same rock, worked. Free under the
+	/// grid: a material row, a texture, and every shape it is authored
+	/// in unlocks with it.
+	StoneBrick = 55 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), 90, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickStairs = 56 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickSlab = 57 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Slab), 30, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickDoor = 58 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Door), 68, DigFamily::Rock), Material::StoneBrick),
+	PolishedStone = 59 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), 90, DigFamily::Rock), Material::PolishedStone),
+	PolishedStoneStairs = 60 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::PolishedStone),
+	PolishedStoneSlab = 61 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::PolishedStone),
+	SandstoneBrick = 62 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), 70, DigFamily::Rock), Material::SandstoneBrick),
+	SandstoneBrickStairs = 63 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::SandstoneBrick),
+	SandstoneBrickSlab = 64 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Slab), 23, DigFamily::Rock), Material::SandstoneBrick),
+	/// Leaded glass. OPAQUE, and that is the honest half of §12's open
+	/// question: see-through glass is a RENDER problem (the depth
+	/// prepass writes the whole quad, so a cutout discard would need
+	/// the prepass to sample the atlas too), not a catalog one. This is
+	/// a building material that reads as glass without pretending the
+	/// light goes through it, and it upgrades in place when the render
+	/// answer lands.
+	Glass = 65 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::GLASS, tex::GLASS, tex::GLASS)), 25, DigFamily::Soft), Material::Glass),
+	/// The prestige material: Metal comes only from ore, so a metal
+	/// wall is a statement about how long somebody has been mining.
+	Metal = 66 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::METAL, tex::METAL, tex::METAL)), 150, DigFamily::Rock), Material::Metal),
+	MetalStairs = 67 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Stairs), 150, DigFamily::Rock), Material::Metal),
+	MetalSlab = 68 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Slab), 50, DigFamily::Rock), Material::Metal),
+	MetalDoor = 69 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Door), 113, DigFamily::Rock), Material::Metal),
+	/// Grown from Aether, and it GLOWS — Stage-A ink only, like the
+	/// deep ore seams, so a crystal wall lights nothing and reads in
+	/// the dark.
+	Crystal = 70 => mat(glows(dig(crafted(props(RenderClass::Opaque, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), 120, DigFamily::Rock)), Material::Crystal),
+	CrystalSlab = 71 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock), Material::Crystal),
+	/// §7.3's lamps: the first Metal sink outside tools, and the
+	/// standing Aether one. Both are FUNCTIONAL — a lamp is a thing, not
+	/// a form — so both are hand-priced, and both cast real light as well
+	/// as wearing the ink.
+	Lantern = 72 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::LANTERN, tex::LANTERN, tex::LANTERN))), 13), 30, DigFamily::Rock),
+	Aetherlamp = 73 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::AETHERLAMP, tex::AETHERLAMP, tex::AETHERLAMP))), 15), 30, DigFamily::Rock),
+	/// The Master's Sigil (Alch 99): 99 Aether for a thing that does
+	/// nothing at all. An item-only row like the tools — never placed,
+	/// never rendered in the world — because what it is FOR is being the
+	/// last line of the catalog.
+	MastersSigil = 74 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -634,11 +677,20 @@ pub mod tex {
 	pub const GLOWVEIN: u16 = 24;
 	pub const AETHEROCK: u16 = 25;
 	pub const DEPLETED_STONE: u16 = 26;
+	/// §7.2's later materials and §7.3's two lamps.
+	pub const STONE_BRICK: u16 = 27;
+	pub const SANDSTONE_BRICK: u16 = 28;
+	pub const POLISHED_STONE: u16 = 29;
+	pub const GLASS: u16 = 30;
+	pub const METAL: u16 = 31;
+	pub const CRYSTAL: u16 = 32;
+	pub const LANTERN: u16 = 33;
+	pub const AETHERLAMP: u16 = 34;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = DEPLETED_STONE + 1;
+	pub const COUNT: u16 = AETHERLAMP + 1;
 }
 
 impl BlockType {
@@ -848,7 +900,10 @@ impl BlockType {
 	pub fn is_tool(self) -> bool {
 		matches!(
 			self,
-			BlockType::Bucket | BlockType::EssenceSiphon | BlockType::ResonantPick
+			BlockType::Bucket
+				| BlockType::EssenceSiphon
+				| BlockType::ResonantPick
+				| BlockType::MastersSigil
 		)
 	}
 
@@ -1037,6 +1092,25 @@ mod tests {
 			(BlockType::Glowvein, Rock),
 			(BlockType::Aetherock, Rock),
 			(BlockType::DepletedStone, Rock),
+			(BlockType::StoneBrick, Rock),
+			(BlockType::StoneBrickStairs, Rock),
+			(BlockType::StoneBrickSlab, Rock),
+			(BlockType::StoneBrickDoor, Rock),
+			(BlockType::PolishedStone, Rock),
+			(BlockType::PolishedStoneStairs, Rock),
+			(BlockType::PolishedStoneSlab, Rock),
+			(BlockType::SandstoneBrick, Rock),
+			(BlockType::SandstoneBrickStairs, Rock),
+			(BlockType::SandstoneBrickSlab, Rock),
+			(BlockType::Glass, Soft),
+			(BlockType::Metal, Rock),
+			(BlockType::MetalStairs, Rock),
+			(BlockType::MetalSlab, Rock),
+			(BlockType::MetalDoor, Rock),
+			(BlockType::Crystal, Rock),
+			(BlockType::CrystalSlab, Rock),
+			(BlockType::Lantern, Rock),
+			(BlockType::Aetherlamp, Rock),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -1082,6 +1156,23 @@ mod tests {
 			(B::Glowvein, M::Glowvein),
 			(B::Aetherock, M::Aetherock),
 			(B::DepletedStone, M::DepletedStone),
+			(B::StoneBrick, M::StoneBrick),
+			(B::StoneBrickStairs, M::StoneBrick),
+			(B::StoneBrickSlab, M::StoneBrick),
+			(B::StoneBrickDoor, M::StoneBrick),
+			(B::PolishedStone, M::PolishedStone),
+			(B::PolishedStoneStairs, M::PolishedStone),
+			(B::PolishedStoneSlab, M::PolishedStone),
+			(B::SandstoneBrick, M::SandstoneBrick),
+			(B::SandstoneBrickStairs, M::SandstoneBrick),
+			(B::SandstoneBrickSlab, M::SandstoneBrick),
+			(B::Glass, M::Glass),
+			(B::Metal, M::Metal),
+			(B::MetalStairs, M::Metal),
+			(B::MetalSlab, M::Metal),
+			(B::MetalDoor, M::Metal),
+			(B::Crystal, M::Crystal),
+			(B::CrystalSlab, M::Crystal),
 			(B::Wood, M::Wood),
 			(B::WoodStairs, M::Wood),
 			(B::WoodSlab, M::Wood),
@@ -1134,6 +1225,9 @@ mod tests {
 				B::Bed,
 				B::EssenceSiphon,
 				B::ResonantPick,
+				B::Lantern,
+				B::Aetherlamp,
+				B::MastersSigil,
 			]
 		);
 	}

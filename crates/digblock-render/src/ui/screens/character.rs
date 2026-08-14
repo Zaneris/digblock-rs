@@ -62,14 +62,17 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(25, "dark lumber; morning dew; a faster bench"),
 	(30, "sandstone, snow, grass, mud"),
 	(35, "the bed — timber and bedding both"),
-	(40, "red lumber; trace minerals from rubble"),
-	(50, "craft water"),
+	(40, "red lumber; the lantern; trace minerals"),
+	(45, "polished stone and sandstone brick"),
+	(50, "craft water; METAL — the prestige block"),
 	(55, "the resonant pick"),
 	(60, "gravel's deep metal"),
+	(65, "crystal, grown from aether"),
 	(75, "pine resin; the fastest bench"),
+	(80, "the aetherlamp — the standing aether sink"),
 	(85, "the waste floor"),
 	(90, "rubble's aether"),
-	(99, "mastery"),
+	(99, "mastery; the master's sigil"),
 ];
 
 /// Mining's teasers: the two rock gates, then the four ore reveals — the
@@ -79,7 +82,9 @@ const MINING_TEASERS: &[(u32, &str)] = &[
 	(5, "stone and rubble open"),
 	(10, "emberore reveals — bring a siphon"),
 	(30, "duskstone reveals"),
+	(40, "metal opens — you can break what you smelt"),
 	(55, "glowvein reveals; the resonant pick swings wide"),
+	(60, "crystal opens"),
 	(80, "aetherock reveals"),
 	(85, "the pick's full nine"),
 	(90, "prospector's sense — you hear what you can't see"),
@@ -348,7 +353,7 @@ mod tests {
 		// else, so an extra row here would be a promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5, 10, 30, 55, 80, 85, 90, 99]
+			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.

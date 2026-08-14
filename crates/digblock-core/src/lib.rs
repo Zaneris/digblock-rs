@@ -136,4 +136,10 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// multiplier over the level and the active tool), so a v15 peer times
 /// every pick hold differently and breaks one cell where the new server
 /// breaks nine. Mining 99's +1 ore rides here too.
-pub const SIM_VERSION: u16 = 16;
+/// v17: §7.2's later materials and §7.3's lamps — twenty-one block rows
+/// (dressed stone, glass, metal, crystal, the two lamps, the sigil). No
+/// existing behaviour changes, but the ids do: a v16 peer decodes 55..74
+/// as Air, so a metal wall would simply not be there. Metal and Crystal
+/// also pick up `unlock::mine` gates at 40 and 60, which is v12's rock
+/// gate answering for substances that had no blocks until now.
+pub const SIM_VERSION: u16 = 17;
