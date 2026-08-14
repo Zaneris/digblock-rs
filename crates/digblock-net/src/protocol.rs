@@ -92,7 +92,32 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// sibling of v17's rock gate on the other skill, on the same DigRefused
 /// machinery; the append moves the version because a v18 peer can't
 /// decode the new variant index (and SIM v13 pairs with it anyway).
-pub const PROTOCOL_VERSION: u16 = 19;
+/// v20: the arrival hold — `ServerMsg::AreaReady` appended. Same reason
+/// again: a v19 peer can't decode the new variant index.
+pub const PROTOCOL_VERSION: u16 = 20;
+
+/// Chunk-column radius around an arrival — a join or a teleport — whose
+/// journaled columns must reach the client before it may render or
+/// simulate. Three columns is the bounded choice: at
+/// `JOIN_SYNC_PER_TICK` the near set clears in a handful of ticks on any
+/// real world, while the rest keeps streaming in behind the player as it
+/// always has.
+///
+/// Sized in COLUMNS rather than blocks because that is the unit the
+/// journal is indexed and shipped in ([`ServerMsg::JournalColumn`]), so
+/// the gate can be answered exactly rather than estimated.
+pub const AREA_SYNC_RADIUS: i32 = 3;
+
+/// How long the client will wait for [`ServerMsg::AreaReady`] before
+/// giving up and entering the world anyway.
+///
+/// A hold that can hang is worse than the artifact it removes: the marker
+/// rides the reliable stream, but a server wedged mid-sync, or one whose
+/// outbound queue never opens the room join sync reserves, would strand
+/// the player on a loading screen with no way out. Five seconds is far
+/// past the few ticks the radius needs on a healthy link, and the fallback
+/// is exactly today's behaviour.
+pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for

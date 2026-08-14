@@ -296,7 +296,10 @@ fn run_bot(
 				| NetEvent::Layout { .. }
 				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
-				| NetEvent::LevelUp { .. } => {}
+				| NetEvent::LevelUp { .. }
+				// Bots have no camera to hold and no world to render; they
+				// simulate against the server's answers either way.
+				| NetEvent::AreaReady => {}
 			}
 		}
 

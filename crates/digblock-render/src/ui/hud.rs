@@ -31,6 +31,37 @@ pub enum IconKind {
 	WaterTool { full: bool },
 }
 
+/// The arrival cover: an OPAQUE full-screen fill with one centred line,
+/// held over a join or a teleport until the server has shipped the
+/// journaled columns around the destination.
+///
+/// Opaque rather than the screens' translucent dim on purpose — the whole
+/// point is that what is behind it is worldgen the journal is about to
+/// overwrite, so showing any of it through is showing the artifact. It is
+/// emitted on `Ghost`, the topmost layer, because it has to cover the
+/// hotbar and the crosshair too: nothing under it is real yet.
+pub fn arrival_cover(
+	dl: &mut super::DrawList,
+	style: &super::Style,
+	size: (u32, u32),
+	label: &str,
+) {
+	const COVER: u32 = 0xFF0A0A0A;
+	const INK: u32 = 0xFFE8E8E8;
+	let (w, h) = (size.0 as f32, size.1 as f32);
+	dl.quad(Layer::Ghost, super::Rect::new(0.0, 0.0, w, h), COVER);
+	let glyph = style.glyph;
+	let text_w = crate::font::ui().measure(label, glyph);
+	dl.text(
+		Layer::Ghost,
+		(w - text_w) / 2.0,
+		(h - glyph) / 2.0,
+		glyph,
+		INK,
+		label,
+	);
+}
+
 /// The aim crosshair (hidden while any screen owns the cursor).
 pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 	const COLOR: u32 = 0xC0FFFFFF;

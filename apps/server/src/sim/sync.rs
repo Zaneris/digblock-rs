@@ -7,7 +7,8 @@ use digblock_net::messages::{
 	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
 };
 use digblock_net::protocol::{
-	FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR, TICK_RATE,
+	AREA_SYNC_RADIUS, FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR,
+	TICK_RATE,
 };
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -121,6 +122,17 @@ impl Sim {
 					client.sync_queue_set.insert(col);
 				}
 			}
+			// A client mid-arrival is waiting on the columns nearest its
+			// new centre, so put those at the head. The join path sorts
+			// its own queue as it builds it; this covers the teleport
+			// path, where the scan appends to whatever was already owed.
+			// `AreaReady` below then reads the front and nothing else.
+			if client.arrival_hold {
+				let center = client.center;
+				let mut cols: Vec<(i32, i32)> = client.sync_queue.drain(..).collect();
+				cols.sort_by_key(|&col| super::radius_key(col, center));
+				client.sync_queue = cols.into();
+			}
 		}
 		self.pump_join_sync();
 	}
@@ -140,28 +152,54 @@ impl Sim {
 	fn pump_join_sync(&mut self) {
 		let journal = &self.journal;
 		for client in self.clients.values_mut() {
-			if client.sync_queue.is_empty() || client.dead.get() {
+			if client.dead.get() {
 				continue;
 			}
-			let room = client
-				.out
-				.capacity()
-				.saturating_sub(JOIN_SYNC_RESERVE)
-				.min(JOIN_SYNC_PER_TICK);
-			for _ in 0..room {
-				let Some(col) = client.sync_queue.pop_front() else {
-					break;
-				};
-				client.sync_queue_set.remove(&col);
-				// It may have left range while it sat in the queue.
-				if !in_radius(col, client.center, client.draw_dist) {
-					continue;
+			if !client.sync_queue.is_empty() {
+				let room = client
+					.out
+					.capacity()
+					.saturating_sub(JOIN_SYNC_RESERVE)
+					.min(JOIN_SYNC_PER_TICK);
+				for _ in 0..room {
+					let Some(col) = client.sync_queue.pop_front() else {
+						break;
+					};
+					client.sync_queue_set.remove(&col);
+					// It may have left range while it sat in the queue.
+					if !in_radius(col, client.center, client.draw_dist) {
+						continue;
+					}
+					if !send_journal_column_to(journal, &client.out, col.0, col.1) {
+						client.dead.set(true);
+						break;
+					}
+					client.synced_columns.insert(col);
 				}
-				if !send_journal_column_to(journal, &client.out, col.0, col.1) {
+			}
+			// Release the arrival hold once nothing within `AREA_SYNC_RADIUS`
+			// is still owed. The queue is sorted nearest-first for a client
+			// in this state, so its FRONT is the whole test — an O(1) read
+			// rather than a scan of a queue that can be thousands long.
+			//
+			// `live` and `needs_sync_scan` are both load-bearing: a teleport
+			// sets the hold a tick before `update_residency` notices the new
+			// centre, and releasing on the pre-teleport queue would report
+			// the wrong area ready. An empty queue is the ordinary case for
+			// an unedited destination and releases immediately, which is why
+			// this sits outside the emptiness check above.
+			if client.arrival_hold
+				&& client.live
+				&& !client.needs_sync_scan
+				&& client
+					.sync_queue
+					.front()
+					.is_none_or(|&col| !in_radius(col, client.center, AREA_SYNC_RADIUS))
+			{
+				client.arrival_hold = false;
+				if !send_frame(&client.out, &ServerMsg::AreaReady) {
 					client.dead.set(true);
-					break;
 				}
-				client.synced_columns.insert(col);
 			}
 		}
 	}
@@ -349,6 +387,105 @@ mod tests {
 			claimed_vel: [0.0; 3],
 			active_slot: 0,
 		}
+	}
+
+	/// Ticks until `AreaReady` lands, panicking rather than looping if it
+	/// never does. Returns how many `JournalColumn`s preceded it.
+	fn columns_before_area_ready(sim: &mut Sim, c: &mut TestClient) -> usize {
+		for _ in 0..600 {
+			sim.tick_once(vec![]);
+			std::thread::sleep(std::time::Duration::from_millis(1));
+			c.drain();
+			if let Some(at) = c
+				.msgs
+				.iter()
+				.position(|m| matches!(m, ServerMsg::AreaReady))
+			{
+				return c.msgs[..at]
+					.iter()
+					.filter(|m| matches!(m, ServerMsg::JournalColumn { .. }))
+					.count();
+			}
+		}
+		panic!("AreaReady never arrived");
+	}
+
+	/// An untouched world owes the joiner nothing, so the hold must
+	/// release on the first pump. A gate that waits for a message the
+	/// server has no reason to send is a gate that always times out.
+	#[test]
+	fn an_unedited_spawn_releases_the_arrival_hold_immediately() {
+		let mut sim = flat_sim("area-clean");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		assert_eq!(
+			columns_before_area_ready(&mut sim, &mut c),
+			0,
+			"nothing was edited; no column should precede the marker"
+		);
+	}
+
+	/// The marker is the whole point: it must arrive AFTER the journaled
+	/// column the player is standing on, or the client un-holds onto the
+	/// worldgen the journal was about to overwrite — the artifact this
+	/// exists to remove.
+	#[test]
+	fn the_spawn_column_lands_before_the_arrival_hold_releases() {
+		let dir = temp_dir("area-edited");
+		// The spawn's own column, journaled before anyone joins — history
+		// to sync rather than an edit made after the join.
+		let (sx, sz) = (FLAT_SPAWN.x.floor() as i32, FLAT_SPAWN.z.floor() as i32);
+		let (cx, cz) = (sx.div_euclid(16), sz.div_euclid(16));
+		{
+			let mut j = crate::journal::Journal::open(&dir, SEED).unwrap();
+			j.append(
+				digblock_net::messages::BlockEdit {
+					x: sx,
+					y: FLAT_SPAWN.y.floor() as i32 - 2,
+					z: sz,
+					block: digblock_core::block::BlockType::Air as u16,
+				},
+				0,
+			);
+			j.sync();
+		}
+		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let before = columns_before_area_ready(&mut sim, &mut c);
+		assert!(before >= 1, "the edited column should have been sent first");
+		let spawn_col_sent = c.msgs.iter().any(
+			|m| matches!(m, ServerMsg::JournalColumn { cx: mx, cz: mz, .. } if (*mx, *mz) == (cx, cz)),
+		);
+		assert!(spawn_col_sent, "spawn column {cx},{cz} never arrived");
+	}
+
+	/// A teleport is an arrival too: the destination's journal is no more
+	/// synced than a join's, so the hold re-arms and a SECOND marker has
+	/// to follow. Without it a `/tp` drops the player onto worldgen with
+	/// nothing telling the client to wait.
+	#[test]
+	fn a_teleport_rearms_the_arrival_hold() {
+		let mut sim = flat_sim("area-tp");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		columns_before_area_ready(&mut sim, &mut c);
+		c.msgs.clear();
+		// The real path, not `test_teleport` (which stages a position
+		// without going through `teleport_client` and so would prove
+		// nothing): return-to-spawn is the one every client can ask for.
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: digblock_net::messages::ClientMsg::ReturnToSpawn,
+		}]);
+		c.drain();
+		assert!(
+			c.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Teleported { .. })),
+			"the teleport itself should have landed"
+		);
+		columns_before_area_ready(&mut sim, &mut c);
 	}
 
 	/// A crash/evict left a WaterFall journaled mid-air with nothing

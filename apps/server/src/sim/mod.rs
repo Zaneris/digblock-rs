@@ -264,6 +264,16 @@ struct Client {
 	needs_sync_scan: bool,
 	live: bool,
 	center: (i32, i32),
+	/// This client is mid-ARRIVAL — it joined or was teleported and is
+	/// holding its world (no render, no player sim) until every journaled
+	/// column within `AREA_SYNC_RADIUS` of the new centre has been sent.
+	/// Cleared by emitting `ServerMsg::AreaReady`, which is the only thing
+	/// that releases it short of the client's own timeout.
+	///
+	/// Set at the arrival rather than counted at the scan because the two
+	/// happen a tick apart: a teleport moves the position now, and
+	/// `update_residency` only notices the new centre next tick.
+	arrival_hold: bool,
 	/// Authoritative per-player block counts (the client predicts against
 	/// its own copy and reconciles).
 	inventory: Inventory,
@@ -1082,6 +1092,14 @@ impl Sim {
 		client.drift = Vec3::ZERO;
 		client.digging = None;
 		client.last_intent = PlayerIntent::default();
+		// A teleport is an arrival: the destination's journaled columns are
+		// no more synced than a join's, and the client would otherwise land
+		// on pristine worldgen and be corrected off it. `needs_sync_scan` is
+		// set here rather than left to the centre-change check, so a hop
+		// within one column still resolves (its scan finds nothing owed and
+		// the hold releases the same tick).
+		client.arrival_hold = true;
+		client.needs_sync_scan = true;
 		if look != Vec3::ZERO {
 			// The client adopts this facing; mirror it so the server's
 			// aim raycasts agree until the next input overwrites it.
@@ -1240,13 +1258,21 @@ impl Sim {
 		// O(every edited column in the world); the radius test still does
 		// the real filtering.
 		let center = column_of(spawn);
-		let mut sync_queue: std::collections::VecDeque<(i32, i32)> =
-			std::collections::VecDeque::new();
-		for col in self.journal.index.columns_near(center, draw_dist) {
-			if in_radius(col, center, draw_dist) {
-				sync_queue.push_back(col);
-			}
-		}
+		let mut cols: Vec<(i32, i32)> = self
+			.journal
+			.index
+			.columns_near(center, draw_dist)
+			.filter(|&col| in_radius(col, center, draw_dist))
+			.collect();
+		// Nearest first. The order used to be whatever the region index
+		// yielded, which on a mature world can leave the spawn column
+		// itself until late in a stream of thousands — so the ground the
+		// player is actually standing on was among the last to arrive.
+		// That is what the arrival hold waits on, and sorting is what
+		// keeps the wait proportional to the radius rather than to how
+		// edited the whole draw distance happens to be.
+		cols.sort_by_key(|&col| radius_key(col, center));
+		let sync_queue: std::collections::VecDeque<(i32, i32)> = cols.into();
 		let sync_queue_set: FxHashSet<(i32, i32)> = sync_queue.iter().copied().collect();
 		let queued = sync_queue.len();
 		// `JournalDone` carries no ordering obligation the client acts on
@@ -1358,6 +1384,11 @@ impl Sim {
 				needs_sync_scan: false,
 				live: false,
 				center,
+				// A join is the first arrival. The queue above is already
+				// sorted nearest-first and `live` gates the release, so
+				// this holds until the spawn's own columns have landed —
+				// or releases on the first pump if the spawn is untouched.
+				arrival_hold: true,
 				inventory,
 				hotbar,
 				grid,
@@ -1495,6 +1526,16 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 /// test, which syncs a client columns it is nowhere near and force-drops it
 /// when the queue refuses; debug panics. The subtraction is widened too:
 /// `col.0 - center.0` alone overflows at the i32 extremes.
+/// Squared column distance — the ordering key `in_radius` tests against,
+/// shared so "near" means the same thing to the sort and to the gate.
+fn radius_key(col: (i32, i32), center: (i32, i32)) -> i64 {
+	let (dx, dz) = (
+		col.0 as i64 - center.0 as i64,
+		col.1 as i64 - center.1 as i64,
+	);
+	dx * dx + dz * dz
+}
+
 fn in_radius(col: (i32, i32), center: (i32, i32), r: i32) -> bool {
 	let (dx, dz) = (
 		col.0 as i64 - center.0 as i64,

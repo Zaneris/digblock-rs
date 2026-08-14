@@ -458,11 +458,43 @@ const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
-/// Authoritative edits applied per frame. Each costs a copy-on-write cell
-/// write plus up to eight mesh-heap pushes, so a join sync's worth of them
-/// in one frame is a visible stall; spread over frames it is invisible,
-/// and the world simply fills in as fast as meshing can keep up anyway.
-const NET_EDIT_BUDGET: usize = 256;
+/// Share of one display interval `pump_net` may spend applying
+/// authoritative edits. Each costs a copy-on-write cell write plus up to
+/// eight mesh-heap pushes, so a join sync's worth of them in one frame is
+/// a visible stall; spread over frames it is invisible, and the world
+/// simply fills in as fast as meshing can keep up anyway.
+///
+/// A COUNT could not express that, which is what this replaced. What one
+/// edit costs swings by more than an order of magnitude — whether its
+/// chunk is still shared decides a 16³ copy-on-write — and the mesh jobs
+/// it queues run INLINE on this same thread on the web (`workers: 0`),
+/// later in the same frame, so the apply is only half of what a burst
+/// actually spends. The old 256 was sized against a 16.67 ms native frame
+/// with worker threads behind it; at 120 Hz on the web the frame is
+/// 8.33 ms and the meshing is not behind anything. Pricing the slice in
+/// TIME makes the same code back off on the platform that cannot afford
+/// it, with no constant to retune per display.
+const NET_EDIT_SHARE: f32 = 0.15;
+/// Edits that land before the clock is consulted at all — the guarantee
+/// that a frame already over budget still drains rather than parking the
+/// queue forever. Same shape as `EVICT_MIN` and the inline executor's
+/// per-`maintain` floor.
+const NET_EDIT_MIN: usize = 32;
+/// Edits between deadline checks. `Instant::now` is `performance.now()`
+/// on the web: cheap, but not free enough to call per cell.
+const NET_EDIT_CHECK: usize = 32;
+/// Hard ceiling however cheap the edits measure, so one frame on a fast
+/// machine cannot run away with the whole queue and spend the interval
+/// the render still needs. This is the count the budget replaced.
+const NET_EDIT_MAX: usize = 256;
+
+// Relationships between the four, asserted at BUILD time because they are
+// arithmetic on constants: a test could only restate them. The floor must
+// be reachable and under the ceiling, and the check stride must divide it
+// — otherwise the first deadline read lands past the floor and the floor
+// is not the floor.
+const _: () = assert!(NET_EDIT_MIN > 0 && NET_EDIT_MIN <= NET_EDIT_MAX);
+const _: () = assert!(NET_EDIT_MIN % NET_EDIT_CHECK == 0);
 
 /// Messages the feed keeps. Also the scrollback: entries are no longer
 /// dropped when they expire, so this is how far back the chat box can
@@ -647,6 +679,15 @@ pub struct Engine {
 	/// is ours and says so. Kept apart from the teleport's `look`, which
 	/// a server with `/set-spawn-dir` set fills in on this path too.
 	spawn_return_pending: bool,
+	/// Seconds left holding the world after an arrival — a join or a
+	/// teleport — while the server ships the journaled columns around the
+	/// destination (`ServerMsg::AreaReady`). `None` = not holding.
+	///
+	/// Counts DOWN rather than storing a deadline so it needs no clock of
+	/// its own, and so a suspended tab resumes with its full wait rather
+	/// than an expired one. Zero releases exactly as the marker does:
+	/// a hold that cannot time out is worse than the artifact it removes.
+	arrival_hold: Option<f32>,
 	/// The inventory-grid arrangement behind the hotbar (slot
 	/// assignments; counts stay in `inventory`). Kept consistent by
 	/// `reconcile_layout` every frame.
@@ -1107,6 +1148,24 @@ fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
 
+/// Milliseconds a frame may spend applying authoritative edits, given the
+/// measured display interval — so the same queue takes half as much of a
+/// 120 Hz frame as of a 60 Hz one (see [`NET_EDIT_SHARE`]).
+///
+/// A free function rather than a method because the scaling rule is the
+/// part worth pinning, and a test for it should not need a GPU.
+/// `refresh_ms` is a measured percentile that reads zero until it settles;
+/// the 60 Hz interval is the fallback, which is also what every
+/// pre-existing baseline was taken at.
+fn net_edit_budget_ms(refresh_ms: f32) -> f32 {
+	let interval = if refresh_ms > 0.0 {
+		refresh_ms
+	} else {
+		1000.0 / 60.0
+	};
+	interval * NET_EDIT_SHARE
+}
+
 /// Coarse "last played" age for the world list.
 fn age_label(now_ms: u64, then_ms: u64) -> String {
 	let secs = now_ms.saturating_sub(then_ms) / 1000;
@@ -1359,6 +1418,7 @@ impl Engine {
 			xp_toasts: Vec::new(),
 			return_spawn_requested: false,
 			spawn_return_pending: false,
+			arrival_hold: None,
 			inv_grid: Default::default(),
 			last_layout_sent: None,
 		};
@@ -1992,6 +2052,35 @@ impl Engine {
 		self.menu.set_world_list(rows);
 	}
 
+	/// Hold the world after an arrival — a join or a teleport — until the
+	/// server reports the journaled columns around the destination sent
+	/// (`NetEvent::AreaReady`), or the wait runs out.
+	///
+	/// Offline arrivals never hold: a local world's edits are already in
+	/// the overlay before the pipeline classifies air, so there is nothing
+	/// in flight to wait for and a cover would be a pause for its own sake.
+	fn begin_arrival_hold(&mut self) {
+		if self.net.is_some() {
+			self.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
+		}
+	}
+
+	/// Release it, whichever way it ended. Also closes the join's
+	/// Connecting screen, which is a no-op for a teleport (that path
+	/// covers itself from the HUD) and for a hold that timed out with the
+	/// menu already gone.
+	fn end_arrival_hold(&mut self) {
+		if self.arrival_hold.take().is_some() {
+			self.menu.on_welcome();
+			// The pose we are about to start simulating from is the one the
+			// server gave us, now standing on the real world rather than on
+			// worldgen. Re-anchor so the first drawn frame does not
+			// interpolate out of wherever the held frames left the lerp.
+			self.tick_lerp.reset(self.player.pos);
+			self.prev_player_pos = self.player.pos;
+		}
+	}
+
 	/// Adopt an authoritative facing: yaw from the horizontal direction,
 	/// pitch levelled. Shared by teleports and the spawn facing an admin
 	/// set, so the two can never disagree about which way `look` points.
@@ -2102,14 +2191,29 @@ impl Engine {
 				other => queue.push_back(other),
 			}
 		}
-		let mut edit_budget = NET_EDIT_BUDGET;
+		// Edits are budgeted in TIME (see `NET_EDIT_SHARE`); everything
+		// else in the queue is bookkeeping that costs nothing to run.
+		// Stopping still parks the WHOLE remaining queue rather than
+		// letting cheap events overtake — the ordering rule above is what
+		// makes that mandatory, and it is unchanged by the budget's units.
+		let edit_deadline = net_edit_budget_ms(self.metrics.refresh_ms());
+		let t_edits = web_time::Instant::now();
+		let mut edits_applied = 0usize;
 		let mut drop_net = false;
 		while let Some(next) = queue.front() {
 			if matches!(next, NetEvent::Edit { .. }) {
-				if edit_budget == 0 {
+				if edits_applied >= NET_EDIT_MAX {
 					break;
 				}
-				edit_budget -= 1;
+				// The floor lands before the clock is ever read, so a
+				// frame that is already long still makes progress.
+				if edits_applied >= NET_EDIT_MIN
+					&& edits_applied % NET_EDIT_CHECK == 0
+					&& ms_since(t_edits) >= edit_deadline
+				{
+					break;
+				}
+				edits_applied += 1;
 			}
 			let ev = queue.pop_front().expect("front() just succeeded");
 			match ev {
@@ -2122,7 +2226,12 @@ impl Engine {
 					..
 				} => {
 					self.my_player_id = Some(player_id);
-					self.menu.on_welcome();
+					// NOT `menu.on_welcome()` yet: the Connecting screen IS
+					// the join's loading cover, and closing it here is what
+					// used to show the player pristine worldgen for the
+					// second it took the journal to arrive. It closes when
+					// the hold releases.
+					self.begin_arrival_hold();
 					self.swap_world(seed, spawn);
 					// The admin's `/set-spawn-dir`, sent only when this
 					// join actually placed us at spawn — a resume in place
@@ -2328,7 +2437,13 @@ impl Engine {
 						.unwrap_or_else(|| format!("player {id}"));
 					self.push_feed(format!("{name} left the server."));
 				}
-				NetEvent::Teleported { pos, look } => self.apply_teleport(pos, look),
+				NetEvent::Teleported { pos, look } => {
+					self.apply_teleport(pos, look);
+					// A teleport is an arrival too — the destination's
+					// journal is no more synced than a join's.
+					self.begin_arrival_hold();
+				}
+				NetEvent::AreaReady => self.end_arrival_hold(),
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
@@ -4304,6 +4419,32 @@ impl Game for Engine {
 		}
 		self.pending.persist_ms = ms_since(t_persist);
 
+		// Arrival hold: run the wait down and give up on it if the marker
+		// never lands. A server that wedges mid-sync, or one whose outbound
+		// queue never opens the room join sync reserves, must not be able
+		// to strand a player on a loading screen — the fallback is exactly
+		// the behaviour this replaced.
+		if let Some(left) = self.arrival_hold {
+			let left = left - dt;
+			// A connection that ended can never deliver the marker, and the
+			// world we fall back to playing offline is generated, not
+			// synced — so release now rather than making the player watch
+			// the timeout run out over a server that is already gone. This
+			// covers every drop path at once (menu disconnect, refusal,
+			// timeout, `return_to_title`) instead of one hook each.
+			if self.net.is_none() {
+				self.end_arrival_hold();
+			} else if left <= 0.0 {
+				log::warn!(
+					"arrival hold: no AreaReady in {:.0}s — entering the world anyway",
+					digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS
+				);
+				self.end_arrival_hold();
+			} else {
+				self.arrival_hold = Some(left);
+			}
+		}
+
 		if self.walking {
 			// Fixed 60 Hz player simulation (Java feel was tuned per-frame
 			// at 60fps; the accumulator preserves it at any display rate).
@@ -4337,14 +4478,22 @@ impl Game for Engine {
 					self.player.pos.z.floor() as i32,
 				)
 				.is_some();
-			if !column_loaded {
+			// The arrival hold suspends the sim on exactly the terms an
+			// unloaded feet column does, and for the same reason: the
+			// geometry under the player is not the geometry the server is
+			// simulating against. Predicting through it is what produced
+			// the correction that reads as being *moved* after joining —
+			// you stand on worldgen, the server stands on the journal, and
+			// the first snapshot settles it visibly.
+			let world_ready = column_loaded && self.arrival_hold.is_none();
+			if !world_ready {
 				self.tick_accum = 0.0;
 				// Zeroing the accumulator parks the lerp at alpha = 0, which
 				// would draw a whole tick BACKWARDS; hold in place instead.
 				self.tick_lerp.reset(self.player.pos);
 			}
 			match self.net.as_mut() {
-				_ if !column_loaded => {}
+				_ if !world_ready => {}
 				Some(net) if net.ready() => {
 					// Reconcile against the latest snapshot before predicting
 					// this frame's ticks; corrections land as a decaying
@@ -4622,6 +4771,18 @@ impl Game for Engine {
 				self.inventory.bucket_full(),
 			);
 		}
+		// Last, and over everything: while the arrival hold is up, the
+		// world behind this is pristine worldgen the journal is about to
+		// overwrite. The menu path covers its own case (the Connecting
+		// screen simply stays up), so this is the in-game one — a teleport.
+		if self.arrival_hold.is_some() && in_game {
+			crate::ui::hud::arrival_cover(
+				&mut self.ui_dl,
+				&crate::ui::Style::new(self.ui_scale),
+				size,
+				"Loading world...",
+			);
+		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		// The hand is part of playing, not part of reading a screen: a
 		// menu, the inventory or the alchemy page all put it away.
@@ -4742,6 +4903,45 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
 		self.0.set_block(x, y, z, b).is_some()
+	}
+}
+
+#[cfg(test)]
+mod net_budget_tests {
+	use super::*;
+
+	/// The whole reason the edit drain is priced in time rather than
+	/// counted: the same queue must take half as much of a 120 Hz frame as
+	/// of a 60 Hz one. The count it replaced (256) was sized against the
+	/// 16.67 ms native frame and spent the same share of an 8.33 ms web
+	/// frame, which is twice the interval it was allowed.
+	#[test]
+	fn net_edit_budget_scales_with_the_display_interval() {
+		let at60 = net_edit_budget_ms(1000.0 / 60.0);
+		let at120 = net_edit_budget_ms(1000.0 / 120.0);
+		assert!(
+			(at120 * 2.0 - at60).abs() < 1e-4,
+			"120 Hz must get exactly half: {at120} vs {at60}"
+		);
+		// `refresh_ms` reads zero until the estimate settles; falling back
+		// to anything but the 60 Hz interval would move every baseline.
+		assert_eq!(net_edit_budget_ms(0.0), at60);
+		assert_eq!(net_edit_budget_ms(-1.0), at60);
+	}
+
+	/// The budget is a slice of the frame, not the frame. Nothing here
+	/// pins the exact share, but a drain allowed a quarter of the interval
+	/// is no longer a budget — the render still has to fit.
+	#[test]
+	fn net_edit_budget_leaves_the_frame_its_interval() {
+		for hz in [30.0, 60.0, 120.0, 144.0] {
+			let interval = 1000.0 / hz;
+			let budget = net_edit_budget_ms(interval);
+			assert!(
+				budget > 0.0 && budget < interval * 0.25,
+				"{hz} Hz: {budget} of {interval}"
+			);
+		}
 	}
 }
 

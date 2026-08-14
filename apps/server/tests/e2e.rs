@@ -327,7 +327,8 @@ impl TestClient {
 				| NetEvent::Layout { .. }
 				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
-				| NetEvent::LevelUp { .. } => {}
+				| NetEvent::LevelUp { .. }
+				| NetEvent::AreaReady => {}
 			}
 		}
 	}

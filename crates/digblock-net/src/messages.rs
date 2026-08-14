@@ -463,6 +463,22 @@ pub enum ServerMsg {
 		skill: u8,
 		level: u32,
 	},
+	/// Every journaled column within `AREA_SYNC_RADIUS` of where you were
+	/// just put has been sent — the ground under you is the real one now.
+	///
+	/// The client holds the world (no render, no player sim) from `Welcome`
+	/// or `Teleported` until this lands, because until then it is standing
+	/// on pristine worldgen the journal is about to overwrite: on a spawn
+	/// anyone has dug out, the arrival pose is a guess that the first
+	/// snapshot then corrects, which reads as being *moved* after joining.
+	///
+	/// It is deliberately not `JournalDone`, which is sent at handshake
+	/// time BEFORE any column goes out and only names a sequence number.
+	/// One message covers both entrances: a join and a teleport are the
+	/// same event to the world around you. Sent immediately when the
+	/// radius holds no edits at all, so an untouched world never waits.
+	/// Appended in v20.
+	AreaReady,
 }
 
 #[cfg(test)]

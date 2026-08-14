@@ -56,6 +56,11 @@ pub enum NetEvent {
 	Refused {
 		reason: String,
 	},
+	/// The journaled columns around the last arrival have all landed — see
+	/// [`crate::messages::ServerMsg::AreaReady`]. Releases the hold the
+	/// engine puts on rendering and the player sim at `Welcome` and at
+	/// `Teleported`.
+	AreaReady,
 	/// Local-player slice of a snapshot (remote players are consumed
 	/// internally by `remotes`).
 	Ack {
@@ -601,6 +606,11 @@ impl NetClient {
 				}
 			}
 			ServerMsg::JournalDone { .. } => {}
+			// The arrival hold's release. Ordered behind the
+			// `JournalColumn`s it reports on, because both ride the
+			// reliable stream — so a client that has this has the
+			// columns.
+			ServerMsg::AreaReady => out.push(NetEvent::AreaReady),
 			ServerMsg::EditApplied {
 				by,
 				client_seq,
