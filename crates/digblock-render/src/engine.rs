@@ -773,6 +773,25 @@ struct DigProgress {
 	cell_value: u16,
 	ticks: u16,
 	required: u16,
+	/// Ticks since the hold stopped advancing. Zero while the button is
+	/// down and on target; counting up while `ticks` bleeds back toward
+	/// untouched (`skills::dig_decayed`). `ticks` itself is never
+	/// rewritten by the decay — it is the banked peak, and the decay is
+	/// derived from it, so client and server compute the same number
+	/// from the same two counts instead of two rounding chains.
+	idle: u16,
+}
+
+impl DigProgress {
+	/// Progress after the decay so far: what the crack web draws, what a
+	/// resumed hold inherits, and what the server's gate charges.
+	fn banked(&self) -> u16 {
+		digblock_core::skills::dig_decayed(
+			u32::from(self.ticks),
+			u32::from(self.required),
+			u32::from(self.idle),
+		) as u16
+	}
 }
 
 /// Stair/door placement facing from the look direction: the dominant
@@ -2904,7 +2923,7 @@ impl Engine {
 		// A charged bucket has no left-click action at all — not even the
 		// "you can't dig that" complaint below, which belongs to a dig.
 		if !self.dig_held || (self.water_tool_selected() && !self.scoop_ready()) {
-			self.cancel_dig();
+			self.release_dig();
 			return;
 		}
 		// Aiming somewhere new clears the refusal, so a fresh attempt on
@@ -2931,15 +2950,31 @@ impl Engine {
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
 		let Some(hit) = valid else {
-			self.cancel_dig();
+			self.release_dig();
 			return;
 		};
-		let on_same = self
+		// Three cases, and only the first advances a tick this step: an
+		// already-live hold on this exact cell, a DECAYING one on it
+		// (resumed, inheriting whatever the decay left), or a fresh one.
+		let same = self
 			.dig
 			.as_ref()
-			.is_some_and(|d| d.cell == hit.cell && d.cell_value == hit.cell_value);
-		if !on_same {
-			self.cancel_dig();
+			.filter(|d| d.cell == hit.cell && d.cell_value == hit.cell_value)
+			.map(|d| (d.idle == 0, d.banked()));
+		if !same.is_some_and(|(live, _)| live) {
+			// A resume keeps its banked progress; anything else drops what
+			// it was holding (and tells the server, which is what stops it
+			// verifying aim on a cell we walked away from). Either way the
+			// hold re-opens from here, DigStart included — the server was
+			// told to stop the moment the button came up, so a resume has
+			// to ask it to start counting again.
+			let carried = match same {
+				Some((_, banked)) => banked,
+				None => {
+					self.cancel_dig();
+					0
+				}
+			};
 			// Family-scaled hold time (SIM v12) — the same `dig_required`
 			// the server's completion gate runs.
 			let required = hit
@@ -2956,8 +2991,9 @@ impl Engine {
 			self.dig = Some(DigProgress {
 				cell: hit.cell,
 				cell_value: hit.cell_value,
-				ticks: 0,
+				ticks: carried,
 				required,
+				idle: 0,
 			});
 			if let Some(net) = self.net.as_mut() {
 				if net.ready() {
@@ -2988,7 +3024,7 @@ impl Engine {
 			return;
 		}
 		let (done, pitch) = {
-			let d = self.dig.as_mut().expect("on_same checked");
+			let d = self.dig.as_mut().expect("live hold checked");
 			d.ticks += 1;
 			// Pitch ramp at 10 Hz: the loop climbs toward completion.
 			let pitch = (d.ticks % 6 == 0 && d.required > 0)
@@ -3007,7 +3043,44 @@ impl Engine {
 		}
 	}
 
-	/// Abandon any in-progress hold (release, retarget, invalid target).
+	/// Stop digging, but KEEP what the hold banked: progress bleeds back
+	/// to untouched over `skills::DIG_DECAY_TICKS` and a hold resumed
+	/// inside that window inherits what is left, so a thumb slipping off
+	/// the button no longer costs the whole block. Called once per 60 Hz
+	/// step while not digging — that repetition is what advances the
+	/// decay, and dropping the record at zero is what keeps a spent hold
+	/// from being resumed for free.
+	///
+	/// The server is told once, on the transition, and runs the identical
+	/// decay from ITS release to ITS resume. Those two windows are the
+	/// same interval on a stable link — both ends are shifted by the same
+	/// one-way delay — so only the JITTER between the cancel and the next
+	/// start separates them, which is what `dig_grace` already exists to
+	/// absorb.
+	fn release_dig(&mut self) {
+		let Some(d) = self.dig.as_mut() else {
+			return;
+		};
+		let stopping = d.idle == 0;
+		d.idle = d.idle.saturating_add(1);
+		if d.banked() == 0 {
+			self.dig = None;
+		}
+		if stopping {
+			if let Some(net) = self.net.as_mut() {
+				if net.ready() {
+					net.send_dig_cancel();
+				}
+			}
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_DIG,
+			});
+		}
+	}
+
+	/// Discard any in-progress hold outright, decay and all — a retarget
+	/// onto a different cell, a world swap, or a server refusal. The soft
+	/// path (button up, target momentarily lost) is `release_dig`.
 	fn cancel_dig(&mut self) {
 		if self.dig.take().is_some() {
 			if let Some(net) = self.net.as_mut() {
@@ -3528,11 +3601,14 @@ impl Engine {
 		if !self.diggable(hit) {
 			return None;
 		}
+		// The DECAYED progress, so a released hold's web visibly retreats
+		// (and a resumed one picks up from the retreated web) rather than
+		// snapping between full and gone.
 		let progress = self
 			.dig
 			.as_ref()
 			.filter(|d| d.cell == hit.cell)
-			.map(|d| (d.ticks as f32 / d.required.max(1) as f32).min(1.0));
+			.map(|d| (f32::from(d.banked()) / f32::from(d.required.max(1))).min(1.0));
 		Some(boxed(progress))
 	}
 
@@ -5418,10 +5494,15 @@ mod craft_gate_tests {
 	use digblock_core::skills::{total_xp_for, Skill};
 	use digblock_core::unlock::Kind;
 
-	/// A generated world with a torch — craft-only, Alchemy 8 — floating
-	/// in open air two blocks ahead of the camera. Open sky well above
-	/// spawn, so a worldgen retune can't move terrain into the shot.
+	/// A torch — craft-only, Alchemy 8 — two blocks ahead.
 	fn torch_ahead() -> (Engine, (i32, i32, i32)) {
+		block_ahead(BlockType::Torch)
+	}
+
+	/// A generated world with one block floating in open air two blocks
+	/// ahead of the camera. Open sky well above spawn, so a worldgen
+	/// retune can't move terrain into the shot.
+	pub(super) fn block_ahead(block: BlockType) -> (Engine, (i32, i32, i32)) {
 		let mut config = EngineConfig::desktop();
 		config.workers = 0;
 		config.seed = Some(3.0);
@@ -5446,7 +5527,7 @@ mod craft_gate_tests {
 		);
 		engine
 			.pipeline
-			.set_block(cell.0, cell.1, cell.2, BlockType::Torch)
+			.set_block(cell.0, cell.1, cell.2, block)
 			.expect("chunk ready");
 		// Eye at the cell's mid-height, dead on the post's axis.
 		engine.camera.pos = Vec3::new(
@@ -5525,5 +5606,149 @@ mod craft_gate_tests {
 			Some(cell),
 			"the hold opens"
 		);
+	}
+}
+
+#[cfg(test)]
+mod dig_decay_tests {
+	use super::craft_gate_tests::block_ahead;
+	use super::*;
+	use digblock_core::skills::DIG_DECAY_TICKS;
+
+	/// Aimed at a diggable block with the button down, stepped `n` times.
+	fn hold(engine: &mut Engine, n: u32) {
+		engine.dig_held = true;
+		for _ in 0..n {
+			engine.update_target();
+			engine.step_dig();
+		}
+	}
+
+	/// Button up, stepped `n` times — the decay's only clock.
+	fn release(engine: &mut Engine, n: u32) {
+		engine.dig_held = false;
+		for _ in 0..n {
+			engine.update_target();
+			engine.step_dig();
+		}
+	}
+
+	/// The crack web's own number, as `dig_progress` hands it to the
+	/// highlight instance.
+	fn web(engine: &Engine) -> Option<f32> {
+		engine.dig_progress().and_then(|t| t.progress)
+	}
+
+	/// Letting go part-way no longer bins the hold: it bleeds back to
+	/// untouched over a second, the crack web retreats with it (same
+	/// number, one source), and picking the button back up resumes from
+	/// what is left instead of from zero.
+	#[test]
+	fn releasing_a_hold_bleeds_it_out_instead_of_binning_it() {
+		let (mut engine, cell) = block_ahead(BlockType::Dirt);
+		engine.update_target();
+		assert_eq!(engine.target.map(|h| h.cell), Some(cell), "aimed at it");
+
+		// Open the hold (the opening step banks nothing), then bank half
+		// of what the block needs.
+		hold(&mut engine, 1);
+		let need = engine.dig.as_ref().expect("hold opened").required;
+		assert!(need >= 8, "dirt should be a real hold, not {need} ticks");
+		hold(&mut engine, u32::from(need) / 2);
+		let peak = engine.dig.as_ref().unwrap().ticks;
+		assert_eq!(peak, need / 2, "banked what was held");
+		let full = web(&engine).expect("the web is drawn while digging");
+
+		// Release: the record survives, and both the banked ticks and
+		// the web fall together. (Ten ticks, not one — the decay
+		// truncates down, so a block needing under 60 ticks loses
+		// nothing on the very first.)
+		release(&mut engine, 10);
+		let d = engine.dig.as_ref().expect("the release kept the hold");
+		assert_eq!(d.ticks, peak, "the peak is not rewritten");
+		assert_eq!(d.idle, 10, "the decay started");
+		let after = web(&engine).expect("the web is still drawn");
+		assert!(after < full, "the web should retreat: {after} vs {full}");
+		assert!(
+			(after - f32::from(d.banked()) / f32::from(need)).abs() < 1e-6,
+			"the web draws the decayed number, not a second one"
+		);
+
+		// A full window of release erases it — record and web together.
+		release(&mut engine, DIG_DECAY_TICKS);
+		assert!(engine.dig.is_none(), "a spent hold is dropped");
+		assert_eq!(web(&engine), None, "and the block outlines unbroken");
+	}
+
+	/// Half a second off the button costs half a BAR, not half of what
+	/// was banked — which is what makes one second the ceiling for every
+	/// block rather than a flat wait — and the resumed hold completes in
+	/// what is still owed.
+	#[test]
+	fn a_resumed_hold_keeps_what_the_decay_left() {
+		let (mut engine, cell) = block_ahead(BlockType::Dirt);
+		engine.update_target();
+		hold(&mut engine, 1);
+		let need = engine.dig.as_ref().expect("hold opened").required;
+		hold(&mut engine, u32::from(need) - 1);
+		assert_eq!(
+			engine.dig.as_ref().unwrap().ticks,
+			need - 1,
+			"one tick from breaking"
+		);
+
+		let idle = DIG_DECAY_TICKS / 2;
+		release(&mut engine, idle);
+		let left = engine.dig.as_ref().expect("still held").banked();
+		assert_eq!(
+			u32::from(left),
+			digblock_core::skills::dig_decayed(u32::from(need - 1), u32::from(need), idle),
+			"the shared rule, not a second implementation"
+		);
+		assert!(left > 0 && left < need / 2 + 1, "about half a bar gone");
+
+		// Resuming inherits it: the opening step banks nothing, so the
+		// block breaks exactly `need - left` steps later.
+		hold(&mut engine, 1);
+		assert_eq!(
+			engine.dig.as_ref().unwrap().ticks,
+			left,
+			"picked up at {left}"
+		);
+		hold(&mut engine, u32::from(need - left) - 1);
+		assert_eq!(
+			engine.pipeline.block_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Dirt),
+			"the resumed hold still owed a tick"
+		);
+		hold(&mut engine, 1);
+		assert_eq!(
+			engine.pipeline.block_at(cell.0, cell.1, cell.2),
+			Some(BlockType::Air),
+			"the resumed hold broke it"
+		);
+	}
+
+	/// Aiming at a DIFFERENT block is not a release — the old hold is
+	/// gone outright, because only one cell can be decaying and it must
+	/// be the one under the crosshair.
+	#[test]
+	fn retargeting_drops_the_old_hold_outright() {
+		let (mut engine, cell) = block_ahead(BlockType::Dirt);
+		engine.update_target();
+		hold(&mut engine, 10);
+		assert!(engine.dig.as_ref().unwrap().ticks > 0, "banked something");
+
+		// Put a second block in front of the first, so the same ray now
+		// stops one cell short: a fresh hold at zero.
+		let other = (cell.0, cell.1, cell.2 - 1);
+		engine
+			.pipeline
+			.set_block(other.0, other.1, other.2, BlockType::Dirt)
+			.expect("chunk ready");
+		hold(&mut engine, 1);
+		let d = engine.dig.as_ref().expect("the new hold opened");
+		assert_eq!(d.cell, other, "on the other block");
+		assert_eq!((d.ticks, d.idle), (0, 0), "from scratch");
 	}
 }

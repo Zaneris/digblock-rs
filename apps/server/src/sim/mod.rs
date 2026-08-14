@@ -906,9 +906,11 @@ impl Sim {
 	/// like the client's retarget stream — an old first-wins per-tick cap
 	/// silently dropped the restart of a cancel+restart pair bunched into
 	/// one tick drain, leaving an honest hold with no server record
-	/// (DigIncomplete pop-back on completion). Floods can't spin the
-	/// timer — every start zeroes progress — and the action-queue cap
-	/// bounds the per-tick volume.
+	/// (DigIncomplete pop-back on completion). Floods still can't spin
+	/// the timer: a start on a new cell zeroes progress, and one on the
+	/// same cell can only ever RE-READ what the decay has left (see
+	/// below) — never add to it. The action-queue cap bounds the
+	/// per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
 		// Before the client borrow: `spawn_lock` reads all of `self`.
 		let lock = self.spawn_lock();
@@ -958,17 +960,43 @@ impl Sim {
 				return;
 			}
 		}
+		// Re-opening a hold on the SAME unchanged cell resumes it: it is
+		// worth whatever the decay has left, which is the number the
+		// client's own bar is showing. Everything else starts at zero.
+		//
+		// `off_target` is deliberately carried across the resume rather
+		// than cleared. It is what still limits a start FLOOD: a client
+		// spamming DigStart to freeze the decay on a nearly-broken block
+		// while looking elsewhere goes on accumulating misses, trips
+		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
+		// resumer is on target, so its first verify tick zeroes this.
+		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let resumed = client
+			.digging
+			.as_ref()
+			.filter(|d| d.cell == cell && Some(d.cell_value) == cell_value)
+			.map(|d| {
+				let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
+					d.cell_value,
+				));
+				let need = b
+					.dig_hardness(cell.1)
+					.map_or(0, |h| digblock_core::skills::dig_required(b, h, level));
+				(d.banked(need), d.off_target)
+			});
 		client.digging = match cell_value {
 			Some(v)
 				if digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
 					.dig_hardness(cell.1)
 					.is_some() =>
 			{
+				let (progress, off_target) = resumed.unwrap_or((0, 0));
 				Some(edits::DigState {
 					cell,
 					cell_value: v,
-					progress: 0,
-					off_target: 0,
+					progress,
+					off_target,
+					idle: 0,
 				})
 			}
 			// Undiggable/unloaded target: no hold. The completing edit

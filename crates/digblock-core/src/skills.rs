@@ -199,6 +199,32 @@ pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
 	((u32::from(hardness) * dig_speed_permille(block.dig_family(), level) + 500) / 1000).max(1)
 }
 
+/// How long a released hold takes to bleed all the way back to
+/// untouched. One second is the MAXIMUM, not a flat cost: the rate is
+/// one whole bar per second, so a block a tick from breaking takes the
+/// full second and a barely-started one is gone almost at once. Setting
+/// it as a fraction of the bar rather than in ticks is what makes the
+/// crack web retreat at the same visible speed on leaves and on stone.
+pub const DIG_DECAY_TICKS: u32 = 60;
+
+/// What is left of `progress` banked ticks out of `required` after
+/// `idle` ticks of not digging.
+///
+/// THE one decay rule: the client predicts with it, the server's
+/// completion gate charges it, and offline play runs the same call, so
+/// no two of them can drift. Integer and exact — it takes the ELAPSED
+/// idle count rather than accumulating a per-tick subtraction, because a
+/// fractional per-tick rate (`required / 60` is under 1 for every block
+/// in the game) rounds to zero and would decay nothing at all.
+///
+/// Truncating down means the bar always outlives its arithmetic by up
+/// to a tick, and reaches exactly zero at [`DIG_DECAY_TICKS`] for every
+/// hardness.
+pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
+	let idle = idle.min(DIG_DECAY_TICKS);
+	progress.saturating_sub(required.saturating_mul(idle) / DIG_DECAY_TICKS)
+}
+
 // Progression gates — the Mining strength wall and the Alchemy craft
 // gate — live in `crate::unlock` with every other threshold, next to the
 // one question each of their consumers asks. This module owns the curve,
@@ -380,6 +406,48 @@ mod tests {
 			assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
 			assert_eq!(dig_required(B::Water, 20, level), 20, "scoop flat");
 		}
+	}
+
+	/// The decay is a FRACTION of the bar per tick, not a tick count:
+	/// every block loses the same share of its own progress in the same
+	/// wall time, so the crack web retreats at one speed everywhere and
+	/// a full bar is gone in exactly a second whatever the hardness.
+	#[test]
+	fn an_abandoned_hold_bleeds_out_in_exactly_one_second() {
+		// Every diggable block in the game, at the level extremes.
+		for &b in &BlockType::ALL {
+			let Some(h) = b.hardness_ticks() else {
+				continue;
+			};
+			for level in [1, 30, 99] {
+				let need = dig_required(b, h, level);
+				assert_eq!(dig_decayed(need, need, 0), need, "{b:?} untouched at rest");
+				assert_eq!(
+					dig_decayed(need, need, DIG_DECAY_TICKS),
+					0,
+					"{b:?} full bar gone at one second"
+				);
+				// Monotone, and never below zero however long it idles.
+				let mut prev = need;
+				for idle in 1..=DIG_DECAY_TICKS * 2 {
+					let now = dig_decayed(need, need, idle);
+					assert!(now <= prev, "{b:?} decay went back up at {idle}");
+					prev = now;
+				}
+				// Half the window costs half the bar (to the truncation).
+				let half = dig_decayed(need, need, DIG_DECAY_TICKS / 2);
+				assert!(
+					half.abs_diff(need / 2) <= 1,
+					"{b:?} half a second should cost half a bar, not {half} of {need}"
+				);
+			}
+		}
+		// A part-filled bar empties proportionally sooner — that is what
+		// makes "one second" a ceiling rather than a flat wait.
+		let need = dig_required(BlockType::Stone, 90, 1); // 153
+		assert_eq!(dig_decayed(need / 4, need, DIG_DECAY_TICKS / 4), 0);
+		// And a single banked tick on a long hold is gone on the first.
+		assert_eq!(dig_decayed(1, need, 1), 0);
 	}
 
 	/// §5.2's award table: `ceil(hardness_ticks / 6)` of the SHIPPED

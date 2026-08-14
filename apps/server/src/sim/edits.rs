@@ -66,10 +66,25 @@ pub(super) struct DigState {
 	pub(super) cell_value: u16,
 	/// Ticks the server's own aim ray has confirmed on this cell. Only
 	/// these count toward completion — wall ticks with a missed aim are
-	/// a pause, not progress and not a reset.
+	/// a pause, not progress and not a reset. This is the banked PEAK:
+	/// the decay below is derived from it rather than written back into
+	/// it, so both ends compute one number from the same two counts.
 	pub(super) progress: u32,
 	/// Consecutive ticks the server's own aim ray missed the cell.
 	pub(super) off_target: u32,
+	/// Ticks since the hold stopped advancing — zero while it is live.
+	/// A released hold (or one that lost aim for good) bleeds down
+	/// through `skills::dig_decayed` instead of vanishing, and the
+	/// client runs the identical decay over the identical interval.
+	pub(super) idle: u32,
+}
+
+impl DigState {
+	/// Banked progress after the decay so far — what the completion gate
+	/// charges and what a resumed hold inherits.
+	pub(super) fn banked(&self, required: u32) -> u32 {
+		digblock_core::skills::dig_decayed(self.progress, required, self.idle)
+	}
 }
 
 impl Sim {
@@ -100,6 +115,13 @@ impl Sim {
 				client.digging = None;
 				continue;
 			}
+			// A released hold has no aim to verify and banks nothing — it
+			// only bleeds. Skipping the ray here is also what keeps this
+			// loop's cost tied to who is actually digging.
+			if state.idle > 0 {
+				state.idle = (state.idle + 1).min(digblock_core::skills::DIG_DECAY_TICKS);
+				continue;
+			}
 			let block = BlockType::from_id(digblock_core::chunk::cell_id(state.cell_value));
 			// Water sources are picked with the fluid-aware ray; solid
 			// digs with the plain one — same filters the client used.
@@ -128,7 +150,14 @@ impl Sim {
 			} else {
 				state.off_target += 1;
 				if state.off_target > DIG_OFF_TARGET_RESET {
-					client.digging = None;
+					// Sustained loss of aim ends the hold but no longer
+					// discards it: the client gave this cell up half a
+					// second ago and has been decaying since. Entering
+					// the decay here instead lands the two ends within
+					// that half second of each other, and errs in the
+					// server's favour — it decays LATER, so an honest
+					// completion is never short.
+					state.idle = 1;
 				}
 			}
 		}
@@ -159,8 +188,13 @@ impl Sim {
 				ClientAction::Edit(req) => self.process_one_edit(req),
 				ClientAction::DigStart { conn_id, cell } => self.handle_dig_start(conn_id, cell),
 				ClientAction::DigCancel { conn_id } => {
+					// The button came up. Stop banking, but start the same
+					// decay the client started when it sent this — a hold
+					// resumed inside the window is worth what is left of it.
 					if let Some(client) = self.clients.get_mut(&conn_id) {
-						client.digging = None;
+						if let Some(state) = &mut client.digging {
+							state.idle = state.idle.max(1);
+						}
 					}
 				}
 				ClientAction::Alchemy { conn_id, op } => self.process_alchemy(conn_id, op),
@@ -238,7 +272,7 @@ impl Sim {
 				client
 					.digging
 					.as_ref()
-					.map(|d| (d.cell, d.cell_value, d.progress)),
+					.map(|d| (d.cell, d.cell_value, d.progress, d.idle)),
 				slot_item,
 				client.hotbar.active_tool(),
 			)
@@ -348,14 +382,18 @@ impl Sim {
 				.clients
 				.get(&req.conn_id)
 				.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining));
-			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress)| {
+			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress, idle)| {
 				cell == req.cell
 					&& cell_value == hit.cell_value
 					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
 						// Family-scaled hold time (SIM v12): the same
 						// `dig_required` the client's own timer runs.
 						let need = digblock_core::skills::dig_required(hit.block, h, mining_level);
-						let have = progress + dig_grace(need);
+						// A hold that has been bleeding since its release is
+						// worth what the decay left it, never what it peaked
+						// at — the client's bar shows the same number.
+						let banked = digblock_core::skills::dig_decayed(progress, need, idle);
+						let have = banked + dig_grace(need);
 						short = need.saturating_sub(have);
 						have >= need
 					})
@@ -1202,12 +1240,17 @@ mod tests {
 	}
 
 	/// Looking away for a SUSTAINED stretch (past DIG_OFF_TARGET_RESET)
-	/// abandons the server's record entirely.
+	/// ends the hold, and the decay then bleeds the banked ticks away —
+	/// so coming back long afterwards still cannot complete the block.
 	#[test]
 	fn look_away_mid_hold_resets() {
 		let mut sim = flat_sim("lookaway");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// The flat world is stone: clear the rock gate, or DigStart is
+		// refused outright and this test asserts nothing (it did — the
+		// gate shipped in protocol v17 and silently hollowed it out).
+		sim.bench_set_mining_level(1, 5);
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1225,23 +1268,239 @@ mod tests {
 		]);
 		// 30 on target, 45 at the horizon (> the 30-tick abandon), then
 		// back on target well past the would-be completion time: the
-		// hold is gone, the banked 30 ticks with it.
+		// hold stopped advancing at the abandon and the banked 30 ticks
+		// bled out over the second that followed.
 		for _ in 0..30 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
+		let banked = |sim: &super::super::Sim| {
+			sim.clients
+				.get(&1)
+				.unwrap()
+				.digging
+				.as_ref()
+				.map(|d| (d.progress, d.idle))
+		};
+		assert_eq!(banked(&sim), Some((30, 0)), "30 verified ticks banked");
 		for _ in 0..45 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, Vec3::Z)], 1)]);
 		}
-		assert!(
-			sim.clients.get(&1).unwrap().digging.is_none(),
-			"sustained miss abandoned the hold"
+		// The abandon landed at miss 31, so 15 of the 45 were decay.
+		assert_eq!(
+			banked(&sim),
+			Some((30, 15)),
+			"sustained miss stopped the hold and started the decay"
 		);
 		for _ in 0..90 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 1,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Dig,
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [0, 0, 0],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert_eq!(
+			banked(&sim).map(|(p, i)| digblock_core::skills::dig_decayed(p, 90, i)),
+			Some(0),
+			"a full decay window later there is nothing left of the 30"
+		);
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					client_seq: 1,
+					reason: RejectReason::DigIncomplete
+				}
+			)),
+			"look-away reset the hold: {:?}",
+			c.msgs
+		);
+	}
+
+	/// Releasing the button no longer bins the hold: it bleeds down at
+	/// one bar per second and a restart inside that window inherits
+	/// exactly what is left. The client runs the identical arithmetic on
+	/// the identical interval, which is what keeps its bar honest.
+	#[test]
+	fn a_released_hold_decays_and_a_restart_inherits_the_remainder() {
+		let mut sim = flat_sim("digdecay");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, 5);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+		let start = || SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			},
+		};
+		let state = |sim: &super::super::Sim| {
+			sim.clients
+				.get(&1)
+				.unwrap()
+				.digging
+				.as_ref()
+				.map(|d| (d.progress, d.idle, d.banked(need)))
+		};
+
+		let mut t = 0;
+		t += 1;
+		sim.tick_once(vec![start(), batch(vec![aim(t, down)], 1)]);
+		// Most of the way through: enough banked that half a second of
+		// decay leaves something behind to inherit.
+		for _ in 0..(need - 20) {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		assert_eq!(
+			state(&sim),
+			Some((need - 20, 0, need - 20)),
+			"banked in full, none decayed"
+		);
+
+		// Button up, still aiming at it — the hold survives, shrinking.
+		t += 1;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigCancel,
+			},
+			batch(vec![aim(t, down)], 1),
+		]);
+		for _ in 0..29 {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		// 30 idle ticks = half the window = half a BAR's worth of ticks
+		// gone, which is more than half of what was banked. (The peak is
+		// one past the loop: the cancel tick's verify ran before the
+		// queued cancel did, which is honest either way.)
+		let (peak, idle, banked) = state(&sim).expect("the hold survived the release");
+		assert_eq!((peak, idle), (need - 19, 30), "peak kept, decay counted");
+		assert_eq!(banked, peak - need / 2, "half a second cost half a bar");
+
+		// Restarting inherits the remainder, not zero and not the peak.
+		// `verify_digs` runs ahead of the action queue, so the restart
+		// tick charges one more tick of decay before it resumes.
+		t += 1;
+		sim.tick_once(vec![start(), batch(vec![aim(t, down)], 1)]);
+		let left = digblock_core::skills::dig_decayed(peak, need, idle + 1);
+		assert!(left > 0 && left < peak, "a partial remainder: {left}");
+		assert_eq!(
+			state(&sim),
+			Some((left, 0, left)),
+			"the restart picked up where the decay left it"
+		);
+
+		// And it completes from there in what is still owed, not a whole
+		// fresh bar — with `dig_grace` doing what it always does.
+		for _ in 0..(need - left - digblock_net::protocol::dig_grace(need)) {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 1,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: down.to_array(),
+				kind: EditKind::Dig,
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [0, 0, 0],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditApplied { client_seq: 1, edit, .. }
+					if (edit.x, edit.y, edit.z) == hit.cell
+			)),
+			"the resumed hold completed: {:?}",
+			c.msgs
+		);
+	}
+
+	/// A hold left to bleed all the way out is worth nothing — a client
+	/// cannot park a nearly-broken block and cash it in later.
+	#[test]
+	fn a_fully_decayed_hold_is_worth_nothing() {
+		let mut sim = flat_sim("digspent");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, 5);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+
+		let mut t = 0;
+		t += 1;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigStart {
+					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				},
+			},
+			batch(vec![aim(t, down)], 1),
+		]);
+		// One tick short of breaking it, then let go for two seconds.
+		for _ in 0..(need - 1) {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		t += 1;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigCancel,
+			},
+			batch(vec![aim(t, down)], 1),
+		]);
+		for _ in 0..120 {
+			t += 1;
+			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
+		}
+		// Restart and immediately claim it: worth zero, so the claim is
+		// short by everything but the grace.
+		t += 1;
+		sim.tick_once(vec![
+			SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigStart {
+					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				},
+			},
+			batch(vec![aim(t, down)], 1),
+		]);
+		assert_eq!(
+			sim.clients
+				.get(&1)
+				.unwrap()
+				.digging
+				.as_ref()
+				.map(|d| d.banked(need)),
+			Some(0),
+			"a spent hold restarts at zero"
+		);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::EditRequest {
@@ -1264,7 +1523,7 @@ mod tests {
 					reason: RejectReason::DigIncomplete
 				}
 			)),
-			"look-away reset the hold: {:?}",
+			"a two-second-old hold cashed in: {:?}",
 			c.msgs
 		);
 	}

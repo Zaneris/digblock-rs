@@ -377,7 +377,12 @@ pub fn dig_grace(hardness_ticks: u32) -> u32 {
 /// own simulated state. A missed tick just doesn't count toward the
 /// hold (a pause, not a reset — transient misses are expected from
 /// honest clients: look lag, reconciliation camera offsets); only this
-/// many CONSECUTIVE misses abandons the hold outright (~500 ms).
+/// many CONSECUTIVE misses ends it (~500 ms).
+///
+/// "Ends" no longer means "discards": the hold then bleeds away over
+/// `skills::DIG_DECAY_TICKS` exactly as a released one does, since a
+/// client that has been off this cell for half a second has been
+/// decaying its own copy the whole time.
 pub const DIG_OFF_TARGET_RESET: u32 = 30;
 
 /// Movement adoption envelope: a claimed post-tick position within this

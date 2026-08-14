@@ -301,6 +301,25 @@ family is what keeps leaves/torches/the scoop from ever speeding up. Spot values
 2.55s at L1 (153t) → 1.50s at 30 → 0.63s at 99; Wood 1.35s → 1.00s → 0.50s; Dirt 0.63s
 → 0.50s → 0.21s.
 
+**Letting go decays, it does not reset** (`skills::dig_decayed`, `DIG_DECAY_TICKS`).
+A released hold keeps its banked ticks and bleeds them back to untouched at **one whole
+bar per second** — so one second is the *ceiling*, paid only by a block a tick from
+breaking, and a barely-started hold is gone almost at once. A hold resumed inside the
+window inherits what is left, and the crack web reads the same number, so it visibly
+retreats and picks back up rather than snapping between full and gone. Setting the rate
+as a fraction of the bar rather than in ticks is what makes the web retreat at one
+visible speed on leaves and on stone alike.
+
+Both ends run that one function over their own release→resume interval. On a stable
+link those intervals are the SAME length — the client's release and its restart are
+each shifted by the same one-way delay — so only the jitter between the two separates
+them, which is what `dig_grace` already absorbs. The server also errs the safe way at
+every seam: `DIG_OFF_TARGET_RESET` starts its decay half a second *after* the client
+gave the cell up, and `verify_digs` runs ahead of the action queue, so its banked
+number is never below the one the player's bar is showing. Progress is stored as the
+banked PEAK plus an idle count, never decremented in place, so the two sides compute
+one number from the same two integers instead of two rounding chains.
+
 **The rock gate** (`unlock::mine`) is a deliberate reversal of this section's
 original "no strength wall" stance: Sandstone opens at Mining **3**, Stone (+ its
 shapes) and Rubble at **5**; Gravel stays the ungated entry rock, so a fresh player
