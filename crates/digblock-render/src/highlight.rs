@@ -6,35 +6,47 @@
 //! Always and the shader occludes by hand against the pre-water solid
 //! depth copy (bound through the water frame group). Never depth-writes.
 //!
-//! The box is the target's own bounds, not the unit cell — see
-//! [`HighlightTarget`].
+//! The box is the target's own bounds, not the unit cell, and for a door
+//! it is the whole two-cell leaf — see [`HighlightTarget`].
 
 use digblock_platform::Gpu;
 
 /// One instance: cell + progress, box lo + seed, box hi + spare.
 const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 
-/// The crosshair target the decal wraps: the cell, the block-local box
-/// within it, and the dig progress (`None` = idle outline, no crack).
+/// The crosshair target the decal wraps: the anchor cell, the box around
+/// the whole object relative to it, and the dig progress (`None` = idle
+/// outline, no crack).
 ///
 /// The box is what makes a shaped block outline at its own size. It comes
-/// from `shapes::draw_bounds`, i.e. from the geometry the mesher actually
-/// drew — a full cube's is the whole cell, which is why every unshaped
-/// block looks exactly as it always did.
+/// from `shapes::object_bounds`, i.e. from the geometry the mesher
+/// actually drew — a full cube's is the whole cell, which is why every
+/// unshaped block looks exactly as it always did.
+///
+/// A door is the one thing here that is bigger than its cell: `cell` is
+/// its LOWER half whichever half the ray hit, and the box runs 0..2 in y.
+/// Both halves therefore produce an identical target — same outline, and
+/// (since the crack seed is the cell) the same fracture — which is what
+/// makes it read as one object, and matches the click, since digging
+/// either half takes both.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HighlightTarget {
+	/// The cell the box is anchored to — the targeted cell for everything
+	/// except a door, where it is the pair's lower half.
 	pub cell: (i32, i32, i32),
-	/// Block-local AABB, 0..1 per axis.
+	/// Anchor-local AABB, 0..1 per axis for a single-cell object and up to
+	/// 0..2 in y for a door.
 	pub lo: [f32; 3],
 	pub hi: [f32; 3],
 	pub progress: Option<f32>,
 }
 
 impl HighlightTarget {
-	/// Box a raw cell value's drawn geometry.
+	/// Box the whole object a raw cell value belongs to.
 	pub fn new(cell: (i32, i32, i32), value: u16, progress: Option<f32>) -> Self {
 		let s = 1.0 / f32::from(digblock_core::shapes::GRID);
-		let (lo, hi) = match digblock_core::shapes::draw_bounds(value) {
+		let (cell, bounds) = digblock_core::shapes::object_bounds(cell, value);
+		let (lo, hi) = match bounds {
 			Some(b) => (
 				b.min.map(|v| f32::from(v) * s),
 				b.max.map(|v| f32::from(v) * s),
@@ -224,13 +236,58 @@ mod tests {
 			of(make_cell(B::StoneSlab, slab_state(true, true))),
 			([0.0, 1.0 / 3.0, 0.0], [1.0, 1.0, 1.0])
 		);
-		// A closed +x door is a plate on x, full on y and z.
+		// A closed +x door is a plate on x, full on z — and two cells tall,
+		// which `a_door_boxes_as_one_object` covers.
 		let (lo, hi) = of(make_cell(
 			B::LumberDoor,
 			door_state(Facing::PosX, false, false),
 		));
 		assert!(hi[0] - lo[0] <= 1.0 / 3.0, "leaf is thin: {lo:?}..{hi:?}");
-		assert_eq!(([lo[1], lo[2]], [hi[1], hi[2]]), ([0.0, 0.0], [1.0, 1.0]));
+		assert_eq!(([lo[1], lo[2]], [hi[2]]), ([0.0, 0.0], [1.0]));
+	}
+
+	/// A door is one object across two cells, so aiming at either half
+	/// must produce the SAME target: the same anchor (hence the same crack
+	/// seed, since the seed is the cell), and one box around both leaves.
+	/// Boxing the half under the crosshair framed whichever panel you
+	/// happened to aim at, which is not what the click acts on — digging
+	/// either half takes the pair.
+	#[test]
+	fn a_door_boxes_as_one_object() {
+		let lower = (3, 40, 7);
+		let upper = (lower.0, lower.1 + 1, lower.2);
+		for f in Facing::ALL {
+			for open in [false, true] {
+				let a = HighlightTarget::new(
+					lower,
+					make_cell(B::LumberDoor, door_state(f, open, false)),
+					None,
+				);
+				let b = HighlightTarget::new(
+					upper,
+					make_cell(B::LumberDoor, door_state(f, open, true)),
+					None,
+				);
+				assert_eq!(a, b, "{f:?} open={open}: both halves, one target");
+				assert_eq!(a.cell, lower, "anchored on the lower half");
+				assert_eq!(
+					(a.lo[1], a.hi[1]),
+					(0.0, 2.0),
+					"{f:?} open={open}: two cells tall"
+				);
+				// The union is a real union: the handle protrudes a twelfth
+				// past the leaf on the lower half only, so the box's thin
+				// axis is 4/12 rather than the upper panel's 2/12.
+				let thin = (a.hi[0] - a.lo[0]).min(a.hi[2] - a.lo[2]);
+				assert!(
+					(thin - 4.0 / 12.0).abs() < 1e-6,
+					"{f:?} open={open}: leaf + handle = 4/12, got {thin}"
+				);
+			}
+		}
+		// The seed is a function of the anchor, so equal targets crack
+		// alike — which is only interesting because the two cells do not.
+		assert_ne!(cell_seed(lower), cell_seed(upper));
 	}
 
 	/// Neighbouring cells must not crack alike, and the seed must not be

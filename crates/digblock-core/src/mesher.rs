@@ -234,9 +234,10 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// solid — [`solid_word1`]: bits 0-9 texture layer (1024 cap =
 /// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
 /// 18 emissive (Stage-A fullbright — chunk.wgsl skips the lighting
-/// terms), 19-31 free. water — bits 0-9 texture layer, 10-23 payload
-/// (see MeshData::water), 24-31 free (water reads its uv from the
-/// corner code).
+/// terms), 19 tint-from-below (`shapes::tint_from_below` — chunk.wgsl
+/// hashes the cell one down for its per-block tint), 20-31 free.
+/// water — bits 0-9 texture layer, 10-23 payload (see MeshData::water),
+/// 24-31 free (water reads its uv from the corner code).
 ///
 /// This layout is what the demolition left: the AO pair, the three
 /// Stage-B light channels and the per-block tint jitter all came out
@@ -252,10 +253,10 @@ fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
 
 /// The solid stream's material word (see [`pack`] for the layout).
 #[inline]
-fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool) -> u32 {
+fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool, tint_below: bool) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
 	debug_assert!(uv_u <= 12 && uv_v <= 12);
-	tex | (uv_u << 10) | (uv_v << 14) | ((emissive as u32) << 18)
+	tex | (uv_u << 10) | (uv_v << 14) | ((emissive as u32) << 18) | ((tint_below as u32) << 19)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
@@ -315,8 +316,16 @@ fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, e
 			ci,
 		));
 		// Full-rect uv straight from the corner code, exactly the mapping
-		// the shader used to derive itself.
-		out.push(solid_word1(tex, (ci & 1) * 12, (ci >> 1) * 12, emissive));
+		// the shader used to derive itself. A full cube always tints from
+		// its own cell — the only multi-cell object is the door, and a
+		// door is Shaped.
+		out.push(solid_word1(
+			tex,
+			(ci & 1) * 12,
+			(ci >> 1) * 12,
+			emissive,
+			false,
+		));
 	}
 }
 
@@ -336,6 +345,9 @@ fn emit_shaped(
 ) {
 	let variant = crate::shapes::shape_of(me, crate::chunk::cell_state(cell))
 		.expect("Shaped class ⇒ registered shape");
+	// A door's upper half hashes the cell below it for its per-block tint,
+	// so the two-cell leaf wears one tint. Per cell, not per quad.
+	let tint_below = crate::shapes::tint_from_below(cell);
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
 	let n = CHUNK_SIZE;
 	for q in &variant.quads {
@@ -378,6 +390,7 @@ fn emit_shaped(
 				u32::from(q.uv[ci][0]),
 				u32::from(q.uv[ci][1]),
 				me.props().emissive,
+				tint_below,
 			));
 		}
 	}
@@ -791,14 +804,52 @@ mod tests {
 		assert_eq!(dir_of(w0), Dir::East as u32);
 		assert_eq!(corner_of(w0), 2);
 		assert_eq!(w0 >> 29, 0, "bits 29-31 are free after the repack");
-		let w1 = solid_word1(700, 12, 0, false);
+		let w1 = solid_word1(700, 12, 0, false, false);
 		assert_eq!(w1 & 0x3ff, 700);
 		assert_eq!((w1 >> 10) & 0xf, 12, "uv u in twelfths");
 		assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
 		assert_eq!((w1 >> 18) & 1, 0, "emissive bit clear");
-		assert_eq!(w1 >> 19, 0, "bits 19-31 are free after the repack");
-		let lit = solid_word1(700, 12, 0, true);
+		assert_eq!((w1 >> 19) & 1, 0, "tint-from-below bit clear");
+		assert_eq!(w1 >> 20, 0, "bits 20-31 are free after the repack");
+		let lit = solid_word1(700, 12, 0, true, false);
 		assert_eq!((lit >> 18) & 1, 1, "emissive bit set");
+		let down = solid_word1(700, 12, 0, false, true);
+		assert_eq!((down >> 19) & 1, 1, "tint-from-below bit set");
+	}
+
+	/// The mesh is where a door's two halves agree to wear one tint: the
+	/// upper half's every vertex carries word-1 bit 19, so chunk.wgsl
+	/// hashes the cell below it and both halves land on the same tint.
+	/// The lower half must NOT carry it, or the leaf tints off the block
+	/// under the door.
+	#[test]
+	fn a_doors_upper_half_tints_from_the_cell_below() {
+		use crate::shapes::{door_state, Facing};
+		let tint_bits = |upper: bool| {
+			let mut d = ChunkData::default();
+			d.set_cell(
+				8,
+				8,
+				8,
+				crate::chunk::make_cell(B::LumberDoor, door_state(Facing::PosX, false, upper)),
+			);
+			let m = mesh_chunk(&isolated(&d));
+			assert!(!m.solid.is_empty(), "a door half meshes to something");
+			m.solid
+				.chunks_exact(2)
+				.map(|w| (w[1] >> 19) & 1)
+				.collect::<std::collections::HashSet<u32>>()
+		};
+		assert_eq!(
+			tint_bits(false),
+			std::collections::HashSet::from([0]),
+			"the lower half hashes its own cell"
+		);
+		assert_eq!(
+			tint_bits(true),
+			std::collections::HashSet::from([1]),
+			"the upper half hashes the one below"
+		);
 	}
 
 	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come

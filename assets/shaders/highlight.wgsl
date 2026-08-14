@@ -12,12 +12,18 @@
 // to see whether the break SPREADS or merely fades in.
 //
 // The box is the TARGET'S OWN bounds, not the unit cell: a shaped block
-// hands over `shapes::draw_bounds`, so a slab or a door outlines at its
-// own size. That is why the two scalar look constants below (inflation
-// and border width) are absolute world distances rather than fractions
-// of a face — a third-slab scaled the same way would wear a border a
-// third as thick, and a door leaf's would all but vanish. Both still
-// evaluate to exactly their old values on a full cube.
+// hands over `shapes::object_bounds`, so a slab outlines at its own size
+// and a door outlines as one two-cell leaf. That is why the two scalar
+// look constants below (inflation and border width) are absolute world
+// distances rather than fractions of a face — a third-slab scaled the
+// same way would wear a border a third as thick, and a door leaf's would
+// all but vanish. Both still evaluate to exactly their old values on a
+// full cube.
+//
+// Nothing here assumes the box fits inside its cell: `local` is built
+// from the box's own centre and half-extents and added to the instance's
+// cell origin, so a door's 0..2 y range spans both halves for free, and
+// `size` hands the fracture a 1×2 face to spread across.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).

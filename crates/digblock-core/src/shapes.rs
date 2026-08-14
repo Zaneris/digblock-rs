@@ -353,6 +353,68 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 	shape_of_cell(cell).map(|v| v.bounds)
 }
 
+/// The cell a whole OBJECT is anchored to, plus the box of best fit
+/// around all of it, in twelfths **of that anchor cell** — so a door
+/// hands back its LOWER half and a box two cells tall (`max[1]` = 24),
+/// and every single-cell block hands back itself and [`draw_bounds`].
+/// The caller must not assume the box fits inside one cell.
+///
+/// This is the crosshair outline's box, and it exists because a door is
+/// one object wearing two cells: boxing the half under the crosshair
+/// drew a frame around whichever panel you happened to aim at, which is
+/// not the thing the click acts on — dig either half and both go.
+///
+/// The partner's geometry is DERIVED (same id, same facing, same open
+/// bit, other half) rather than read out of the world, exactly as
+/// [`door_partner`] derives its cell: the pair is written in one tick and
+/// replayed per-cell LWW, so the two halves cannot disagree about which
+/// variant they are, and this stays a pure function of one cell value.
+///
+/// The union is a real union, not the lower half stretched: the handle
+/// protrudes a twelfth past the leaf and the lites do not, so the two
+/// halves have different x extents and only one of them reaches the box's
+/// edge.
+pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Option<SubBox>) {
+	let b = BlockType::from_id(cell_id(value));
+	if !b.is_door() {
+		return (cell, draw_bounds(value));
+	}
+	let state = cell_state(value);
+	let (facing, open, upper) = door_parts(state);
+	let half = |up: bool| shape_of(b, door_state(facing, open, up)).map(|v| v.bounds);
+	let (Some(lower), Some(top)) = (half(false), half(true)) else {
+		return (cell, draw_bounds(value));
+	};
+	// Both halves in the anchor's frame: the lower at its own height, the
+	// upper one whole cell up.
+	let mut u = lower;
+	for a in 0..3 {
+		let lift = if a == 1 { GRID } else { 0 };
+		u.min[a] = u.min[a].min(top.min[a] + lift);
+		u.max[a] = u.max[a].max(top.max[a] + lift);
+	}
+	let anchor = if upper {
+		door_partner(cell, state)
+	} else {
+		cell
+	};
+	(anchor, Some(u))
+}
+
+/// Whether a cell takes its per-block tint from the cell BELOW instead of
+/// its own: the upper half of a door, so a two-cell leaf wears ONE tint
+/// and reads as one object rather than as two planks sawn from different
+/// timber. Rides the mesh as solid word 1 bit 19 — see
+/// `mesher::solid_word1` and chunk.wgsl's `block_tint`.
+///
+/// A cell, not a block type, because it is the door's *half* that decides
+/// — and it is deliberately a hash-anchor shift rather than a "doors are
+/// exempt" rule, so the leaf still varies from the door next to it.
+#[inline]
+pub fn tint_from_below(cell: u16) -> bool {
+	BlockType::from_id(cell_id(cell)).is_door() && door_parts(cell_state(cell)).2
+}
+
 /// THE wire gate for cell values (relaxes the server's old all-state-
 /// bits-are-BadBlock rule): known id, spare bits clear, and a state the
 /// id's shape actually defines (zero for stateless blocks; facing-only
@@ -1028,6 +1090,95 @@ mod tests {
 					}
 				}
 			}
+		}
+	}
+
+	/// A door is one object across two cells, so `object_bounds` answers
+	/// the same anchor and the same box from either half: the pair's lower
+	/// cell, and a box two cells tall.
+	///
+	/// The union has to be a real union rather than the lower half
+	/// stretched — the handle protrudes past the leaf on the lower half
+	/// and the lites do not, so it is the LOWER half that sets the thin
+	/// axis and the UPPER half's box does not reach it.
+	#[test]
+	fn a_door_bounds_as_one_object() {
+		use crate::chunk::make_cell;
+		let lower = (3, 40, 7);
+		let upper = (lower.0, lower.1 + 1, lower.2);
+		for f in Facing::ALL {
+			for open in [false, true] {
+				let at = |c, up| {
+					object_bounds(c, make_cell(BlockType::LumberDoor, door_state(f, open, up)))
+				};
+				let a = at(lower, false);
+				let b = at(upper, true);
+				assert_eq!(a, b, "{f:?} open={open}: both halves, one object");
+				let (anchor, bounds) = a;
+				assert_eq!(anchor, lower, "anchored on the lower half");
+				let u = bounds.unwrap();
+				assert_eq!((u.min[1], u.max[1]), (0, 24), "two cells tall");
+				// Every part of both halves is inside the union.
+				for up in [false, true] {
+					let half =
+						draw_bounds(make_cell(BlockType::LumberDoor, door_state(f, open, up)))
+							.unwrap();
+					let lift = u8::from(up) * GRID;
+					for i in 0..3 {
+						let (mn, mx) = if i == 1 {
+							(half.min[1] + lift, half.max[1] + lift)
+						} else {
+							(half.min[i], half.max[i])
+						};
+						assert!(
+							mn >= u.min[i] && mx <= u.max[i],
+							"{f:?} open={open} upper={up}: {half:?} escapes {u:?} on axis {i}"
+						);
+					}
+				}
+			}
+		}
+	}
+
+	/// Everything that is not a door is its own object: same cell, same
+	/// box `draw_bounds` already gave.
+	#[test]
+	fn a_single_cell_block_is_its_own_object() {
+		use crate::chunk::make_cell;
+		let c = (3, 40, 7);
+		for v in [
+			BlockType::Stone as u16,
+			make_cell(BlockType::StoneStairs, stair_state(Facing::PosZ)),
+			make_cell(BlockType::WoodSlab, slab_state(true, true)),
+			make_cell(BlockType::Torch, 0),
+		] {
+			assert_eq!(object_bounds(c, v), (c, draw_bounds(v)), "cell {v:#x}");
+		}
+	}
+
+	/// Only a door's UPPER half tints from the cell below. The lower half
+	/// must not, or the leaf takes its tint from whatever it stands on.
+	#[test]
+	fn only_a_doors_upper_half_tints_from_below() {
+		use crate::chunk::make_cell;
+		for f in Facing::ALL {
+			for open in [false, true] {
+				assert!(tint_from_below(make_cell(
+					BlockType::LumberDoor,
+					door_state(f, open, true)
+				)));
+				assert!(!tint_from_below(make_cell(
+					BlockType::LumberDoor,
+					door_state(f, open, false)
+				)));
+			}
+		}
+		for v in [
+			BlockType::Stone as u16,
+			make_cell(BlockType::StoneStairs, stair_state(Facing::PosX)),
+			make_cell(BlockType::WoodSlab, slab_state(false, true)),
+		] {
+			assert!(!tint_from_below(v), "cell {v:#x} is one cell");
 		}
 	}
 

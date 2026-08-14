@@ -60,13 +60,17 @@ struct VsOut {
 	@location(5) @interpolate(flat) ncode: u32,
 	// World position — the participating medium's segment endpoint.
 	@location(6) world: vec3f,
+	// w1 bit 19: take the per-block tint from the cell one BELOW this
+	// one. Set on a door's upper half so its two cells wear one tint.
+	@location(7) @interpolate(flat) tint_down: u32,
 }
 
 // Packed vertex, two words. w0 — geometry: bits 0-7 x, 8-15 y, 16-23 z
 // (TWELFTH-block units 0..=192, the sub-block shape grid), 24-26 normal
 // index, 27-28 corner, 29-31 free. w1 — solid material: bits 0-9
 // texture layer, 10-13 uv u (twelfths), 14-17 uv v, 18 emissive,
-// 19-31 free. Must agree with `mesher::pack` / `solid_word1`.
+// 19 tint-from-below, 20-31 free. Must agree with `mesher::pack` /
+// `solid_word1`.
 // Twelfths → blocks with the whole-block part split off in INTEGER
 // space: full-block lattice vertices (multiples of 12) decode exactly
 // even under fast-math (a plain /12.0 becomes an inexact reciprocal
@@ -100,6 +104,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.direct = max(dot(n, -frame.light_dir.xyz), 0.0);
 	o.view_dist = distance(world, frame.cam_pos.xyz);
 	o.emissive = (w1 >> 18u) & 1u;
+	o.tint_down = (w1 >> 19u) & 1u;
 	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
 	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
 	o.ncode = code_of[ni];
@@ -185,7 +190,15 @@ fn hash3(c: vec3i) -> u32 {
 // ride its own bounce light. That is deliberate: it is below the noise
 // floor of a 1-spp gather, and paying for it would mean a per-cell
 // lookup inside every march.
-fn block_tint(world: vec3f, ncode: u32) -> vec3f {
+//
+// `tint_down` (w1 bit 19) shifts the hashed cell one down. A door is one
+// object across two cells, and hashing each half separately gave it two
+// tints — the leaf read as two planks sawn from different timber, which
+// is exactly the material break this function exists to CREATE between
+// neighbouring blocks. Anchoring the upper half on the lower one is a
+// shift of the anchor, not an exemption: the door still varies from the
+// door beside it, it just stops varying down its own middle.
+fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 	// ±half-range of each step, calibrated on the DIG_VAULT stone wall —
 	// the flat one-material surface this exists for — against a sweep of
 	// 0, ±4%, ±8% and ±12%. ±4% (the old jitter's ×0.95..1.05, near
@@ -212,7 +225,9 @@ fn block_tint(world: vec3f, ncode: u32) -> vec3f {
 	let axis = ncode >> 1u;
 	let n = vec3f(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u))
 		* select(1.0, -1.0, (ncode & 1u) == 1u);
-	let h = hash3(vec3i(floor(world - n * (1.0 / 24.0))));
+	var cell = vec3i(floor(world - n * (1.0 / 24.0)));
+	cell.y -= i32(tint_down);
+	let h = hash3(cell);
 	// Two disjoint 16-bit fields of an avalanched hash are independent,
 	// so one hash buys both steps.
 	let v = (f32(h >> 16u) * (1.0 / 65536.0) - 0.5) * 2.0 * TINT_VALUE;
@@ -339,7 +354,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// this line, which is the whole of its exclusion: an authored
 		// flame is not a surface with a colour to vary, and `ink` above
 		// feeds a calibrated gain that a ±8% albedo would detune.
-		let albedo = tex * block_tint(i.world, i.ncode);
+		let albedo = tex * block_tint(i.world, i.ncode, i.tint_down);
 		col = albedo * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
 	}
 	// The medium, from this surface to the eye. In-scatter is `sky_base`

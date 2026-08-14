@@ -184,6 +184,11 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
+	/// Debug: stand a rank of doors three cells ahead of spawn, close
+	/// enough that the crosshair lands on one. Set by the desktop
+	/// launcher from DIG_DOORS. See [`debug_doors_plan`] for why
+	/// `debug_shapes` does not cover this.
+	pub debug_doors: bool,
 	/// Debug: seal a stone vault around the spawn camera with one torch
 	/// inside — the Stage-B flagship capture (a roofed room goes DARK and
 	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
@@ -317,6 +322,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
+			debug_doors: false,
 			debug_vault: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -370,6 +376,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
+			debug_doors: false,
 			debug_vault: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -1064,6 +1071,59 @@ fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_DOORS=1 layout: a rank of door pairs standing three cells ahead
+/// of the spawn camera with nothing in front of them, plus a plain
+/// Lumber column beside them as the tint reference.
+///
+/// DIG_SHAPES already stands every door variant, so this looks like a
+/// duplicate and is not: it stands them EIGHT blocks out behind three
+/// rows of stairs sharing their x columns, and from eye height a
+/// one-block stair projects straight over the lower half of the door
+/// behind it. The seam between a door's two cells is the one thing a
+/// door has to be judged on — it is one object wearing two cells, so the
+/// tint has to match across it and the outline has to wrap both — and it
+/// is the one thing that scene cannot show. Three cells out also puts
+/// the pair inside the interact ray, which is what makes the outline
+/// photographable at all.
+///
+/// The reference column is deliberately the door's OWN material: the
+/// leaf must read as one piece of timber down its own middle while still
+/// differing from the timber beside it, and a capture that only proves
+/// the first half of that would pass just as well if the tint had been
+/// switched off.
+fn debug_doors_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{door_state, Facing};
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// NegZ faces the camera: the leaf sits against the cell face the
+	// facing points at, and the camera is on the −z side.
+	for (dx, f, open) in [
+		(0, Facing::NegZ, false),
+		(2, Facing::NegZ, true),
+		(-2, Facing::PosX, false),
+	] {
+		for upper in [false, true] {
+			out.push((
+				bx + dx,
+				by + i32::from(upper),
+				bz + 3,
+				make_cell(B::LumberDoor, door_state(f, open, upper)),
+			));
+		}
+	}
+	for y in by..=(by + 1) {
+		out.push((bx - 3, y, bz + 3, B::Lumber as u16));
+		out.push((bx + 3, y, bz + 3, B::Lumber as u16));
+	}
+	out
+}
+
 /// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
 /// of spawn with NO walls — the beam-veto capture. Skylight under it
 /// drops (lateral spread decays toward the middle), so this scene is
@@ -1379,6 +1439,9 @@ impl Engine {
 				} else {
 					Vec::new()
 				};
+				if config.debug_doors {
+					plan.extend(debug_doors_plan(spawn));
+				}
 				if config.debug_crack.is_some() {
 					plan.extend(debug_crack_plan(spawn));
 				}
@@ -1486,6 +1549,21 @@ impl Engine {
 		// left them the one part of the UI a headless capture could not
 		// see — and a layout regression on the alchemy page shipped
 		// because of exactly that.
+		if engine.config.debug_doors {
+			// A door is craft-only, so `unlock::pickup` refuses it below
+			// its recipe and `dig_progress` draws NOTHING on a cell
+			// `diggable` says no to — the same trap DIG_CRACK sidesteps by
+			// standing a Dirt wall. Without the level this scene could not
+			// photograph the outline it exists for. Read out of the unlock
+			// table rather than written down, so retuning the timber set
+			// moves the capture with it.
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Alchemy,
+				digblock_core::skills::total_xp_for(digblock_core::unlock::pickup(
+					BlockType::LumberDoor,
+				)),
+			);
+		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
 				(BlockType::Wood, 5u32),

@@ -267,6 +267,7 @@ fn main() {
 	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
 	config.debug_confetti = std::env::var_os("DIG_CONFETTI").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
+	config.debug_doors = std::env::var_os("DIG_DOORS").is_some();
 	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
