@@ -1,28 +1,61 @@
 # Skills, Essence & Ore — design document
 
-Status: **§11's M1–M4 plus the consolidation pass are BUILT and merged (2026-08-09/10);
-M5–M7 remain design.**
+Status: **§11's M1–M7 are BUILT and merged. The document below is the
+design as written; where the implementation diverged, the code and
+CLAUDE.md are the authority and the divergences are listed here.**
 
-**Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy screen · M3
-level-scaled dig speed · M4 tool slot + Stage-A emissive + Torch · consolidation:
-Stage-B voxel lighting (LIGHT-DESIGN.md — torches illuminate, caves/roofed rooms go
-dark), this document reconciled with shipped code, §5.1's per-family dig curves + the
-rock level gate (SIM v12, protocol v17), §8's transmute-page polish + engine-level
-touch + §8.2 next-unlock teasers. Post-pass lighting refinements (user-driven): the
-direct-sun **beam veto** is merged (the shadow map owns the beam; the sky column only
-vetoes it near zero — a 10am sun reaches under an open-sided roof), and a third
-**bounce channel** (one-bounce sun-fill seeded at sunlit ground, the "GI look"
-compromise) is built and under visual evaluation — lighting may still be replaced
-wholesale by a low-res RTGI approach if the look doesn't satisfy.
+**Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy
+screen · M3 level-scaled dig speed · M4 tool slot + Stage-A emissive +
+Torch · the RTGI rewrite (GI-DESIGN.md replaced LIGHT-DESIGN.md's Stage-B
+voxel lighting entirely) · **M5 ore** (`worldgen/ore.rs`, the reveal
+stamp, the Essence Siphon, field extraction, dual XP) · **M6 the Resonant
+Pick** + prospector's sense + the 99 mastery · **M7's first wave** (§7.2's
+material × shape GRID, three timbers, furniture, dressed stone, glass,
+metal, crystal, the two lamps, the sigil).
 
-**Left to build:** **M5 — Ore** (`ore_at` placement + golden pins, ore rows at ids
-30–34, reveal-by-level remesh stamping, the Essence Siphon tool at Alch 10, field
-extraction writing DepletedStone + dual XP, §5.3–§5.4 — the headline feature) ·
-**M6 — Resonant Pick + endgame lines** (multi-cell dig at Mining 55+, prospector's
-sense, 99 masteries) · **M7 — catalog waves** (§7's materials × shapes grid, Glass,
-new shapes, Lantern/Aetherlamp/functional items, essence exchange — open-ended,
-release by release) · §12's open questions (death penalty, mobile UX pass, sounds).
-Bot-soak/playtest checkpoints after M5's ore rates land (§11 note).
+**Where the code diverges from this document, and why:**
+
+- **§7.2's grid is the implementation, not a curation rule.**
+  `unlock::craft` is DERIVED as `max(shape, material)` from
+  `core/material.rs` and `block::ShapeFamily`; craft cost and extraction
+  yield prorate the material's 27-unit split by the shape's volume. The
+  BLOCKS shape sits at level 1, so a material arrives in every form you
+  have already learned. Five thresholds moved (§4.3's table is stale
+  where it disagrees): Wood 20 → 1, Dirt/Sand 20 → 5, StoneSlab 1 → 20,
+  StoneStairs 5 → 20.
+- **§5.3's depth bands OVERLAP.** Exclusive bands would leave a Mining-10
+  player at y = 20 finding nothing at all; every tier stays available all
+  the way down and the deep ones are simply rarer.
+- **Ore ids are 48–52**, not the doc's 30–34 (the lumber set took those).
+- **The reveal stamps block IDS into the mesh input**, not texture layers
+  — the mesher, the emissive bit and `block_tint` then need no changes at
+  all. The mining level reaches the worker in an `OreStamp` rather than
+  as a mesher field.
+- **Multiplayer keeps an `EditOverlay`** (only re-application is
+  conditional), because the anti-dupe's "has this cell been written?"
+  question is one the client has to answer too.
+- **Field extraction needs no new wire**; only the tool refusal does
+  (`RejectReason::NeedsTool`, protocol v21).
+- **The pick is a PLANE, not a bore** — 3 wide at 55, 9 at 85 — and its
+  timing multiplier is LEVEL-only, never derived from how many cells
+  qualify, or the two ends disagree by 3× over a single differing cell.
+- **Furniture and the bed are FUNCTIONAL items**, not grid cells: a table
+  is a thing, not a form any substance takes. The bed is one cell (a
+  horizontal two-cell pair is new machinery — the door's pair is
+  vertical), and its Flora + Aqua price is the catalog's first genuinely
+  cross-family cost.
+- **Glass ships opaque** (§12's render question is unanswered: the depth
+  prepass writes the whole quad, so a cutout discard needs the prepass to
+  sample the atlas).
+- **Ore's bench XP is `ceil(base/3)` like everything else** (6/12/20/33),
+  not §4.1's hand-set 15/30/50/80 — the rule was kept, the exception
+  dropped. Field XP (§5.4) is tabled as written.
+
+**Still design:** §7.2's later SHAPES (fence, ladder, pillar, pane, gate,
+trapdoor — each a `shapes.rs` project), the 3:1 essence exchange and the
+Water craft's own `AlchemyOp` arm, the ore-draw effect's remote half (a
+snapshot field for who is drawing on which cell) and its sustained audio
+loop, the prospector's own sourced shimmer, and §12's open questions.
 
 Milestone detail as originally built:
 M1: `digblock-core/src/skills.rs` (curve + awards, golden-pinned), protocol v16
