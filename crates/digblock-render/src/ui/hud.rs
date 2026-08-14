@@ -86,6 +86,21 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 /// `tool_full` is the water tool's charge, which is player state rather
 /// than part of the slot assignment, so it has to arrive alongside the
 /// item; every other item ignores it.
+/// The block behind an icon, if there is one — the water tool is an item
+/// with no block row to ask.
+///
+/// The inverse of [`item_icon`], and the ONE place "which block is this
+/// icon" is answered. Both questions derived from it are properties of
+/// the block and never a special case on a type: whether the item draws
+/// as fullbright ink (`props().emissive`) and whether holding it lights
+/// the room (`props().light > 0`).
+pub fn icon_block(kind: IconKind) -> Option<BlockType> {
+	match kind {
+		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
+		IconKind::WaterTool { .. } => None,
+	}
+}
+
 pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	match item {
 		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),

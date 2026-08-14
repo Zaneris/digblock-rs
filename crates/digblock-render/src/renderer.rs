@@ -299,6 +299,17 @@ pub struct FrameScene<'a> {
 	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
 	/// every frame (tiny — no change detection).
 	pub players: &'a [[f32; 8]],
+	/// The item in each remote's hand: its `IconKind` (the geometry to
+	/// draw, from `item_geom`) plus
+	/// `[eye.xyz, yaw, emissive, height in twelfths, 0, 0]`.
+	pub held: &'a [(crate::ui::hud::IconKind, [f32; 8])],
+	/// Lights players are CARRYING this frame — yours and every remote's
+	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI
+	/// light list, so a torch in a hand lights a room exactly as one on
+	/// the floor does. Passed with the frame rather than set ahead of it,
+	/// because `flush_lights` runs inside `GiDraw::encode` and an
+	/// out-of-order setter would be a hazard for nothing.
+	pub carried: &'a [crate::gi::Emitter],
 	/// Live level-up confetti bursts `[origin.xyz, age][seed, …]`, aged
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
@@ -1639,6 +1650,8 @@ impl Renderer {
 			scale,
 			ui_scale,
 			players,
+			held,
+			carried,
 			overlay,
 			confetti,
 			feed,
@@ -1652,6 +1665,7 @@ impl Renderer {
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
+		self.players.set_held(gpu, held);
 		self.highlight.set_target(gpu, highlight_target);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
@@ -1707,7 +1721,7 @@ impl Renderer {
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
 		self.gi
-			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame);
+			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame, carried);
 
 		let draw = ChunkDraw {
 			chunks: &self.chunks,
@@ -1893,9 +1907,9 @@ impl Renderer {
 				// 0). They gather the probe field per fragment, so their
 				// group 2 is the GI world data, not the resolve outputs.
 				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
-				let player_tris = self.players.draw(&mut pass);
+				let player_tris = self.players.draw(&mut pass, &self.index_buf);
 				if player_tris > 0 {
-					stats.draw_calls += 1;
+					stats.draw_calls += self.players.draw_calls();
 					stats.triangles += player_tris;
 				}
 

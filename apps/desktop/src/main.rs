@@ -264,11 +264,31 @@ fn main() {
 	// (std::env is a stub on the wasm target).
 	config.player_name = name.clone();
 	config.identity = load_identity();
-	config.debug_playerbox = std::env::var_os("DIG_PLAYERBOX").is_some();
+	// DIG_PLAYERBOX=<item>: the fake remote's held item, in WIRE terms —
+	// which is what makes the scene a real check of `held_icon` rather
+	// than a second code path, and what lets it photograph a remote's lit
+	// torch. Historically any value meant "on", and on meant a dirt cube,
+	// so those spellings still do exactly that. An unknown one is fatal,
+	// per DIG_CRACK: a typo must never silently capture the wrong scene.
+	if let Ok(v) = std::env::var("DIG_PLAYERBOX") {
+		match digblock_render::parse_held_item(&v) {
+			Some(id) => config.debug_playerbox = Some(id),
+			None => {
+				eprintln!(
+					"DIG_PLAYERBOX: unknown item {v:?} — known: dirt, torch, \
+					 stairs, slab, door, bucket, bucket-full, empty"
+				);
+				std::process::exit(2);
+			}
+		}
+	}
 	config.debug_confetti = std::env::var_os("DIG_CONFETTI").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
 	config.debug_doors = std::env::var_os("DIG_DOORS").is_some();
 	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
+	// DIG_VAULT_DARK=1: the vault with no torch on its floor, so the only
+	// source in the room is the one being carried.
+	config.debug_vault_dark = std::env::var_os("DIG_VAULT_DARK").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();

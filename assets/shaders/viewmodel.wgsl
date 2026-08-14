@@ -17,6 +17,10 @@ struct Vm {
 	// xyz = light direction in item space (toward the ground);
 	// w = direct-light strength.
 	light: vec4f,
+	// rgb = the frame's direct colour; w = 1.0 when the item is
+	// fullbright ink (`glows`). Derived from the drawn item rather than
+	// plumbed in from the engine, so it is not possible to draw a torch
+	// and forget the flag.
 	light_color: vec4f,
 }
 
@@ -84,5 +88,19 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// page has no mips, and Tint's derivative-uniformity rule wants the
 	// level spelled out anyway.
 	let tex = textureSampleLevel(materials, mat_smp, in.uv, i32(in.layer), 0.0);
-	return vec4f(tex.rgb * in.shade, 1.0);
+	// Fullbright ink is its own light: no ambient, no sun, no diffuse —
+	// exactly as chunk.wgsl treats the same block standing in the world,
+	// and through the same shared `emissive_ink`, so a torch you are
+	// holding and a torch on the floor in front of you are one object
+	// rendered twice rather than two objects that happen to match.
+	//
+	// No medium term on either branch, unlike chunk.wgsl. Two independent
+	// reasons: the item is one world unit from the eye, where air
+	// transmittance is 1.0 to every digit that matters; and this pass
+	// carries no frame uniforms to read a medium from, which is the whole
+	// point of authoring it in view space. The one honest gap that leaves
+	// — a submerged camera's hand takes no water extinction — is already
+	// true today and is not introduced here.
+	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), vm.light_color.w > 0.5);
+	return vec4f(lit, 1.0);
 }

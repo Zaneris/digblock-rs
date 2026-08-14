@@ -381,9 +381,13 @@ pub fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 
 /// One vertex: position in twelfths, uv, texture layer, face index into
 /// the shader's normal table. 24 B.
+///
+/// Shared with `players.rs`, which draws the SAME geometry in a remote
+/// player's hand — so your hand and theirs are one build rather than two
+/// that happen to match.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vert {
+pub(crate) struct Vert {
 	pos: [f32; 3],
 	uv: [f32; 2],
 	layer: u32,
@@ -392,12 +396,12 @@ struct Vert {
 
 /// Enough for the widest item (a door: two stacked shape variants) with
 /// room to spare.
-const MAX_QUADS: usize = 4 * digblock_core::shapes::MAX_SHAPE_QUADS + 32;
+pub(crate) const MAX_QUADS: usize = 4 * digblock_core::shapes::MAX_SHAPE_QUADS + 32;
 
 /// Build this frame's vertex list for `kind`. Pure — the corners come
 /// straight from [`item_geom`], which orders them for
 /// `mesher::quad_indices`.
-fn build(kind: IconKind, out: &mut Vec<Vert>) {
+pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 	out.clear();
 	for f in item_geom::faces(kind) {
 		let face = f.dir as u32;
@@ -433,7 +437,31 @@ struct Uniforms {
 	mvp: [[f32; 4]; 4],
 	/// xyz = light direction in item space; w = strength.
 	light: [f32; 4],
+	/// rgb = the frame's direct color; w = 1 when the item is fullbright
+	/// ink (see [`uniforms`]).
 	light_color: [f32; 4],
+}
+
+/// The frame's uniform block.
+///
+/// Pure, and separate from `prepare`, for two reasons: a test can ask
+/// what actually reaches the GPU without a device, and the emissive flag
+/// is DERIVED here from the drawn item rather than plumbed through
+/// `ViewmodelFrame` — so it is structurally impossible to draw a torch
+/// and forget to light it.
+fn uniforms(aspect: f32, f: &ViewmodelFrame) -> Uniforms {
+	let light = light_in_item_space(f.light_dir_view, f.pose);
+	let emissive = crate::ui::hud::icon_block(f.kind).is_some_and(|b| b.props().emissive);
+	Uniforms {
+		mvp: mvp(aspect, item_geom::height(f.kind), f.pose).to_cols_array_2d(),
+		light: [light.x, light.y, light.z, f.light_strength],
+		light_color: [
+			f.light_color[0],
+			f.light_color[1],
+			f.light_color[2],
+			f32::from(emissive),
+		],
+	}
 }
 
 // ---- draw -------------------------------------------------------------
@@ -583,12 +611,7 @@ impl ViewmodelDraw {
 				0,
 				bytemuck::cast_slice(&scratch[..quads * 4]),
 			);
-			let light = light_in_item_space(f.light_dir_view, f.pose);
-			let u = Uniforms {
-				mvp: mvp(aspect, item_geom::height(f.kind), f.pose).to_cols_array_2d(),
-				light: [light.x, light.y, light.z, f.light_strength],
-				light_color: [f.light_color[0], f.light_color[1], f.light_color[2], 0.0],
-			};
+			let u = uniforms(aspect, f);
 			gpu.queue
 				.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u));
 		}
@@ -637,6 +660,28 @@ mod tests {
 
 	fn centre(aspect: f32, height: i32, pose: Pose) -> [f32; 3] {
 		ndc(aspect, height, pose, [6.0, height as f32 / 2.0, 6.0])
+	}
+
+	/// A torch in your hand is a lit torch, and a dirt block is not — and
+	/// neither answer is written down anywhere: both fall out of the
+	/// block's own `glows` row, so a second emitter needs no edit here.
+	#[test]
+	fn a_torch_in_hand_is_ink_and_a_dirt_block_is_not() {
+		let frame = |kind| ViewmodelFrame {
+			kind,
+			pose: Pose::default(),
+			light_dir_view: Vec3::new(0.0, -1.0, 0.0),
+			light_strength: 1.0,
+			light_color: [1.0, 1.0, 1.0],
+		};
+		let ink = |kind| uniforms(ASPECT, &frame(kind)).light_color[3];
+		assert_eq!(ink(IconKind::Shaped(BlockType::Torch)), 1.0);
+		assert_eq!(ink(IconKind::Cube(BlockType::Dirt)), 0.0);
+		assert_eq!(ink(IconKind::Shaped(BlockType::WoodStairs)), 0.0);
+		// The pail is planed timber and its charge is water; neither
+		// glows, in either state.
+		assert_eq!(ink(IconKind::WaterTool { full: false }), 0.0);
+		assert_eq!(ink(IconKind::WaterTool { full: true }), 0.0);
 	}
 
 	#[test]

@@ -20,6 +20,10 @@ use crate::renderer::FrameUniforms;
 
 /// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
 pub const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
+/// C0's probe spacing in blocks — the finest scale the bounce field can
+/// resolve, and therefore the granularity a moving emitter has to be
+/// re-placed at (`engine::CARRY_INVAL_STEP`).
+pub const C0_SPACING: u32 = 2;
 /// C1 far cascade (8-block spacing).
 pub const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
 /// Probes traced per cascade per frame (the amortization grain).
@@ -29,6 +33,14 @@ const PROBES_PER_DISPATCH: u32 = 512;
 const WORLD_H: u32 = 256;
 /// Light-list capacity (GI-DESIGN.md): nearest emitters win.
 const MAX_LIGHTS: usize = 256;
+
+/// One entry in the light list: world position and the GI class byte
+/// whose LUT row carries its cast level and its tint.
+///
+/// A light a player is CARRYING is one of these too. It just isn't in a
+/// chunk — which is the whole of the difference, and no reader of the
+/// list can tell.
+pub type Emitter = (f32, f32, f32, u8);
 
 /// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
 /// The real sun is about 0.27 degrees of angular radius; this is 0.5,
@@ -165,7 +177,14 @@ pub struct GiDraw {
 	/// Cost-stub mask (DIG_STUB) — rides `jitter.w` into gi_resolve.wgsl,
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
-	emitters: FxHashMap<ChunkPos, Vec<(f32, f32, f32, u8)>>,
+	emitters: FxHashMap<ChunkPos, Vec<Emitter>>,
+	/// The carried lights the list was last flushed with — see
+	/// `flush_lights`, which compares this frame's against it. A carried
+	/// torch is not a second kind of light: it is an entry in the ONE
+	/// list that happens to move, and every consumer of that list (both
+	/// NEE paths, and through the probes the water surface, remote
+	/// players and `cam_light`) sees it without knowing the difference.
+	carried: Vec<Emitter>,
 	/// Temporal state for the resolve's reprojection. `history_valid` is
 	/// cleared whenever last frame's buffers cannot be trusted: the first
 	/// frame, a renderer rebuild after device loss, or a sun jump (`/time`
@@ -286,6 +305,53 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 /// `the_light_reach_matches_the_shaders_bound`.
 fn lateral_max(window_chunks: u32) -> f32 {
 	(window_chunks * 16) as f32 * 0.5 - 1.0
+}
+
+/// The light list's payload: every reachable emitter, at most the
+/// `MAX_LIGHTS` nearest `cam`, in the 16-byte GPU entry form
+/// (`[x, y, z, bitcast(class)]`).
+///
+/// Split out of `flush_lights` because that needs a `Gpu` to upload and
+/// this is the part with a rule in it.
+///
+/// Carried lights — a player holding a torch — are simply more
+/// candidates. There is no reservation and no separate cap, because the
+/// distance rule already does the right thing at both ends: a carrier's
+/// own light sits half a block from the camera and can never be the one
+/// dropped however many torches a world has, and a distant player's
+/// torch losing its slot to 256 nearer emitters is the correct answer
+/// under the same rule that governs everything else here.
+///
+/// Selection, NOT ordering. The doc on `flush_lights` records why: no
+/// reader cares about the order, so the only thing the distance is for
+/// is deciding which ones survive the cap. Under the cap nothing
+/// survives-or-doesn't and the list goes out unordered; over it,
+/// `select_nth_unstable_by` partitions in O(n) rather than sorting in
+/// O(n log n). That matters now in a way it did not before: a carried
+/// light moves, so this runs EVERY frame while anyone is walking, over
+/// every emitter within `lateral_max` — 159 blocks at draw distance 20.
+fn select_lights(
+	emitters: impl Iterator<Item = Emitter>,
+	carried: &[Emitter],
+	cam: [f32; 3],
+	reach: f32,
+) -> Vec<[f32; 4]> {
+	let mut all: Vec<(f32, [f32; 4])> = emitters
+		.chain(carried.iter().copied())
+		.filter(|e| {
+			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+			dx * dx + dz * dz <= reach * reach
+		})
+		.map(|(x, y, z, class)| {
+			let d2 = (x - cam[0]).powi(2) + (y - cam[1]).powi(2) + (z - cam[2]).powi(2);
+			(d2, [x, y, z, f32::from_bits(u32::from(class))])
+		})
+		.collect();
+	if all.len() > MAX_LIGHTS {
+		all.select_nth_unstable_by(MAX_LIGHTS, |a, b| a.0.total_cmp(&b.0));
+		all.truncate(MAX_LIGHTS);
+	}
+	all.into_iter().map(|(_, e)| e).collect()
 }
 
 fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
@@ -561,7 +627,7 @@ impl GiDraw {
 			}
 		};
 		let cascades = [
-			make_cascade(C0_DIMS, 2, "c0"),
+			make_cascade(C0_DIMS, C0_SPACING, "c0"),
 			make_cascade(C1_DIMS, 8, "c1"),
 		];
 
@@ -1007,6 +1073,7 @@ impl GiDraw {
 			window_chunks,
 			stub,
 			emitters: FxHashMap::default(),
+			carried: Vec::new(),
 			prev_vp: [[0.0; 4]; 4],
 			prev_cam: [0.0; 3],
 			prev_sun: [0.0; 3],
@@ -1492,6 +1559,7 @@ impl GiDraw {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;
 		self.emitters.clear();
+		self.carried.clear();
 		self.lights_dirty = true;
 	}
 
@@ -1503,7 +1571,10 @@ impl GiDraw {
 	pub fn debug_state(&self) -> (f32, u32) {
 		(
 			self.sky_y,
-			self.emitters.values().map(Vec::len).sum::<usize>() as u32,
+			// Carried lights are counted too, and not for completeness:
+			// this field is how you answer "is the torch in my hand
+			// actually in the list" without a debugger.
+			(self.emitters.values().map(Vec::len).sum::<usize>() + self.carried.len()) as u32,
 		)
 	}
 
@@ -1533,7 +1604,7 @@ impl GiDraw {
 	/// the torches around the player. The refresh below re-sorts on
 	/// real movement in exactly that oversubscribed case, and stays
 	/// free in the common far-under-MAX_LIGHTS world.
-	fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3]) {
+	fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], carried: &[Emitter]) {
 		// Only emitters a march can actually REACH belong in the list.
 		// Every trace breaks at `gi_lateral_max` (= side/2 − 1) of the
 		// camera, so an emitter past it cannot light anything however
@@ -1547,11 +1618,15 @@ impl GiDraw {
 			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		};
+		// Carried lights count toward `total` like any other: they are in
+		// the list the truncation applies to, so leaving them out of the
+		// tally would let a full world hide one.
 		let total: usize = self
 			.emitters
 			.values()
 			.map(|v| v.iter().filter(|e| in_reach(e)).count())
-			.sum();
+			.sum::<usize>()
+			+ carried.iter().filter(|e| in_reach(e)).count();
 		let moved = {
 			let d = [
 				cam[0] - self.lights_cam[0],
@@ -1565,30 +1640,35 @@ impl GiDraw {
 		// clause is no longer the only reason to re-flush. Under the cap
 		// this costs one sort and a ≤4 KiB write per 16 blocks walked.
 		let stale = moved && (total > MAX_LIGHTS || total != self.lights_len);
-		if !self.lights_dirty && !stale {
+		// A carried light moves with its carrier, so the list is stale the
+		// moment one does. EXACT equality, not an epsilon, and that is the
+		// load-bearing part: at rest the presentation eye is bit-identical
+		// frame to frame (`TickLerp::render_pos` returns `curr` exactly
+		// when `prev == curr`, and the reconciliation offset snaps to zero
+		// rather than decaying forever), so a player standing still with a
+		// torch keeps the early-out and a room lit by it converges as
+		// deeply as one lit from the floor. An epsilon would be inventing
+		// tolerance for a quantity that has none, and the number chosen
+		// would quietly decide when a slow creep stops lighting the room.
+		let carried_moved = carried != self.carried.as_slice();
+		if !self.lights_dirty && !stale && !carried_moved {
 			return;
 		}
+		self.carried.clear();
+		self.carried.extend_from_slice(carried);
 		self.lights_dirty = false;
 		self.lights_cam = cam;
-		let mut all: Vec<(f32, [f32; 4])> = self
-			.emitters
-			.values()
-			.flatten()
-			.filter(|e| in_reach(e))
-			.map(|&(x, y, z, class)| {
-				let d2 = (x - cam[0]).powi(2) + (y - cam[1]).powi(2) + (z - cam[2]).powi(2);
-				(d2, [x, y, z, f32::from_bits(u32::from(class))])
-			})
-			.collect();
-		all.sort_by(|a, b| a.0.total_cmp(&b.0));
-		all.truncate(MAX_LIGHTS);
+		let all = select_lights(
+			self.emitters.values().flatten().copied(),
+			carried,
+			cam,
+			reach,
+		);
 		let count = all.len() as u32;
 		self.lights_len = all.len();
 		let mut bytes = Vec::with_capacity(16 + all.len() * 16);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
-		for (_, e) in &all {
-			bytes.extend_from_slice(bytemuck::cast_slice(e));
-		}
+		bytes.extend_from_slice(bytemuck::cast_slice(&all));
 		gpu.queue.write_buffer(&self.lights_buf, 0, &bytes);
 	}
 
@@ -1601,9 +1681,10 @@ impl GiDraw {
 		encoder: &mut wgpu::CommandEncoder,
 		timer: Option<&GpuTimer>,
 		frame: &FrameUniforms,
+		carried: &[Emitter],
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
-		self.flush_lights(gpu, cam);
+		self.flush_lights(gpu, cam, carried);
 		// Rescan the sky ceiling when the mirror moved (R18).
 		if self.coarse_mips_dirty {
 			self.coarse_mips_dirty = false;
@@ -1798,6 +1879,47 @@ mod tests {
 			let side = (wc * 16) as f32;
 			assert_eq!(lateral_max(wc), side * 0.5 - 1.0, "window {wc}");
 		}
+	}
+
+	/// A carried torch is an entry in the ordinary light list, so the
+	/// only thing that needs pinning is that the ordinary rules land it
+	/// in the right place: nearest-first sorting must make the carrier's
+	/// own light unloseable, and the reach filter must drop a carrier who
+	/// walked out of the window exactly as it drops a placed torch.
+	#[test]
+	fn a_carried_light_is_a_light_like_any_other() {
+		let cam = [100.0, 64.0, 100.0];
+		let reach = lateral_max(20);
+		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+			digblock_core::block::BlockType::Torch,
+			0,
+		));
+		// A full list of placed torches, every one of them in reach and
+		// none of them at the camera.
+		let placed: Vec<_> = (0..MAX_LIGHTS)
+			.map(|i| (cam[0] + 2.0 + i as f32 * 0.01, cam[1], cam[2], class))
+			.collect();
+		let mine = digblock_core::gi::carried_origin(glam::Vec3::from_array(cam));
+		let carried = [(mine.x, mine.y, mine.z, class)];
+		let out = select_lights(placed.iter().copied(), &carried, cam, reach);
+		assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
+		let entry = out
+			.iter()
+			.find(|e| [e[0], e[1], e[2]] == mine.to_array())
+			.expect(
+				"the light in your own hand is the nearest thing there is — a \
+				 full world must not be able to truncate it away",
+			);
+		assert_eq!(
+			entry[3].to_bits(),
+			u32::from(class),
+			"a carried torch carries the same class byte a placed one does, \
+			 so tint and level come from one LUT entry"
+		);
+		// Out past the reach every march breaks at: dropped, like any
+		// other emitter no ray could have traced.
+		let far = [(cam[0] + reach + 1.0, cam[1], cam[2], class)];
+		assert!(select_lights(std::iter::empty(), &far, cam, reach).is_empty());
 	}
 
 	/// The ceiling must sit at the TOP of the highest occupied brick (a

@@ -39,6 +39,13 @@ pub enum DebugScreen {
 	Bucket {
 		full: bool,
 	},
+	/// Also not a screen: stock and SELECT a torch, so the one held item
+	/// that is also a LIGHT is photographable. `Hand` cannot serve —
+	/// `reconcile_layout` files by block id, so its first slot is Dirt —
+	/// and a torch in hand differs from every other item in three places
+	/// at once: the viewmodel draws it fullbright, a remote's hand draws
+	/// its real post, and the GI light list carries it.
+	Torch,
 	/// The character screen, with mid-curve XP stocked so the bars and
 	/// detail lines photograph as they play, not empty.
 	Skills,
@@ -57,11 +64,36 @@ impl DebugScreen {
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
+			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
 			_ => None,
 		}
 	}
+}
+
+/// Parse `DIG_PLAYERBOX`'s value: what the fake remote holds, in HOTBAR
+/// WIRE terms.
+///
+/// Lives here rather than in the launcher for the same reason
+/// [`DebugScreen::parse`] does — the launcher owns the environment, the
+/// engine owns what the names mean. A wire id rather than a block so the
+/// scene walks the real `held_icon` decode, tool sentinels included.
+/// `None` is an unknown name, which the launcher makes fatal.
+pub fn parse_held_item(s: &str) -> Option<u16> {
+	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
+	Some(match s.trim().to_ascii_lowercase().as_str() {
+		// Any value used to mean "on", and on meant a dirt cube.
+		"" | "1" | "on" | "yes" | "true" | "dirt" => BlockType::Dirt as u16,
+		"torch" => BlockType::Torch as u16,
+		"stairs" => BlockType::WoodStairs as u16,
+		"slab" => BlockType::WoodSlab as u16,
+		"door" => BlockType::LumberDoor as u16,
+		"bucket" => WIRE_TOOL,
+		"bucket-full" => digblock_net::messages::HELD_TOOL_FULL,
+		"empty" => WIRE_EMPTY,
+		_ => return None,
+	})
 }
 
 pub struct EngineConfig {
@@ -156,10 +188,13 @@ pub struct EngineConfig {
 	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
 	/// $USER) — the engine itself must stay env-free for wasm.
 	pub player_name: Option<String>,
-	/// Debug: park a fake remote player 5 blocks ahead (GPU-path check
-	/// without a second client). Set by the desktop launcher from
-	/// DIG_PLAYERBOX.
-	pub debug_playerbox: bool,
+	/// Debug: park a fake remote player 5 blocks ahead, holding this item
+	/// (GPU-path check without a second client). A held-item WIRE id, not
+	/// a block, so the scene walks `held_icon` end to end and is a real
+	/// check of that decode rather than a second code path — which is
+	/// also how it can photograph a remote's lit torch. Set by the
+	/// desktop launcher from DIG_PLAYERBOX.
+	pub debug_playerbox: Option<u16>,
 	/// Debug: throw a level-up confetti burst every couple of seconds, a
 	/// few blocks ahead. A burst is a rare, transient event, so it is
 	/// otherwise invisible to headless capture — the same argument
@@ -194,6 +229,13 @@ pub struct EngineConfig {
 	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
 	/// the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the
+	/// only source in it is the one the player is CARRYING. Set by the
+	/// desktop launcher from DIG_VAULT_DARK. A modifier rather than a
+	/// re-spelling of DIG_VAULT, because `DIG_VAULT=0` already means
+	/// "vault on" and silently inverting a value someone may have typed
+	/// costs an afternoon.
+	pub debug_vault_dark: bool,
 	/// Debug: hang a wide stone roof with NO walls over the ground ahead
 	/// of spawn — the beam-veto capture (a slanting morning sun must
 	/// reach under it exactly as the shadow map says; only the ambient
@@ -318,12 +360,13 @@ impl EngineConfig {
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
-			debug_playerbox: false,
+			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -372,12 +415,13 @@ impl EngineConfig {
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
-			debug_playerbox: false,
+			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -603,6 +647,8 @@ pub struct Engine {
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
+	held_instances: Vec<(crate::ui::hud::IconKind, [f32; 8])>,
+	carried: Carried,
 	/// Live level-up confetti bursts, in the flat instance layout the
 	/// shader reads (origin + age + seed). World state, so a world swap
 	/// forgets them; the flakes' whole motion derives from these three
@@ -907,7 +953,7 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// Stage-B flagship capture: skylight is stripped by the roof (the
 /// placement writes ride the ordinary edit hook), so the interior
 /// photographs DARK except the torch pool — at noon.
-fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
 	use digblock_core::shapes::{stair_state, Facing};
@@ -939,8 +985,15 @@ fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 			}
 		}
 	}
-	// The torch, and something with depth for its light to model.
-	out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	// The torch, and something with depth for its light to model. The
+	// torch is optional (DIG_VAULT_DARK) because a room whose ONLY source
+	// is the one being carried is the capture a held light needs — with
+	// the floor torch present the two pools cannot be told apart. Keeping
+	// it is the other half of the pair: same lamp, placed and carried, in
+	// one frame, so a calibration drift between them is visible.
+	if torch {
+		out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	}
 	out.push((
 		bx - 2,
 		by - 2,
@@ -1310,17 +1363,188 @@ fn player_color(id: u8) -> [f32; 3] {
 	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
 }
 
-/// Texture-array layer for a snapshot's held-item wire id (`None` =
-/// empty hand, unknown id from a newer server, or nothing to draw).
-fn held_tex_layer(held: u16) -> Option<u16> {
-	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
-	match held {
-		WIRE_EMPTY => None,
-		// The remote hand is one small cube, so the bucket's charge is
-		// all it can say: wood for an empty pail, water for a full one.
-		WIRE_TOOL => Some(BlockType::Wood.props().tex_side),
-		digblock_net::messages::HELD_TOOL_FULL => Some(BlockType::Water.props().tex_side),
-		id => BlockType::try_from_id(id).map(|b| b.props().tex_side),
+/// What a snapshot's held-item wire id looks like in a remote's hand.
+///
+/// Routes through `hud::item_icon`, the same function the hotbar and
+/// your own viewmodel use, so a remote hand can never show a different
+/// object from the one its owner is looking at. `None` = an empty hand,
+/// an unknown id from a newer server, or an id no slot could legally
+/// hold.
+fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
+	use digblock_core::hotbar::{HotbarItem, WIRE_EMPTY, WIRE_TOOL};
+	let (item, full) = match held {
+		WIRE_EMPTY => return None,
+		WIRE_TOOL => (HotbarItem::WaterTool, false),
+		digblock_net::messages::HELD_TOOL_FULL => (HotbarItem::WaterTool, true),
+		// `is_slottable` is a wire-trust gate, not a nicety: a stale or
+		// hostile server can name Water or a tool id here, and either
+		// would otherwise be drawn as an item no slot can hold.
+		id => (
+			HotbarItem::Block(BlockType::try_from_id(id).filter(|b| b.is_slottable())?),
+			false,
+		),
+	};
+	Some(crate::ui::hud::item_icon(item, full).0)
+}
+
+/// Carrier key for the local player. Remote carriers key on their
+/// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
+const CARRIER_SELF: u16 = u16::MAX;
+
+/// Everything one remote contributes to this frame: the body box, the
+/// item in its hand, and the light that item carries.
+///
+/// ONE site, so the fake remote `DIG_PLAYERBOX` parks exercises exactly
+/// what a real one does — which is the only reason that scene is worth
+/// having.
+fn push_remote(
+	bodies: &mut Vec<[f32; 8]>,
+	held_out: &mut Vec<(crate::ui::hud::IconKind, [f32; 8])>,
+	carried: &mut Carried,
+	id: u8,
+	pos: Vec3,
+	yaw: f32,
+	held: u16,
+) {
+	let c = player_color(id);
+	bodies.push([pos.x, pos.y, pos.z, yaw, c[0], c[1], c[2], 0.0]);
+	let Some(kind) = held_icon(held) else {
+		return;
+	};
+	let block = crate::ui::hud::icon_block(kind);
+	held_out.push((
+		kind,
+		[
+			pos.x,
+			pos.y,
+			pos.z,
+			yaw,
+			f32::from(block.is_some_and(|b| b.props().emissive)),
+			crate::item_geom::height(kind) as f32,
+			0.0,
+			0.0,
+		],
+	));
+	carried.push(u16::from(id), pos, block);
+}
+
+/// How near the camera a carried light has to be for its MOTION to be
+/// worth re-placing in the probe field.
+///
+/// The light itself still reaches the list at any range — this is only
+/// about the invalidation sphere, and past this distance the wake it
+/// leaves is too dim and too far to read (a torch 32 blocks out delivers
+/// about 0.01 radiance, under 3/255 before albedo). `GiDraw::invalidate`
+/// drains four spheres a frame and shares that budget with world edits,
+/// so a crowd of distant carriers must not be able to spend it.
+///
+/// This gate is the ONLY bound applied here, deliberately. Past it the
+/// queue's own policy is already the right one: bounded at 256 and
+/// dropping the OLDEST, because the newest position is the one whose
+/// light is most wrong. A second per-frame cap on top would either
+/// starve a carrier (skip it, and its last-fire position is already
+/// recorded) or hand the probes a position its carrier left seconds ago.
+const CARRIED_INVAL_DIST: f32 = 32.0;
+
+/// How far a carried light must travel before its motion is re-placed in
+/// the probe field.
+///
+/// A DISTANCE since the last fire, deliberately **not** a cell crossing.
+/// A crossing test is phase-dependent and pathological: a player resting
+/// on a cell boundary with the sub-block wobble the tick lerp and the
+/// decaying reconciliation offset both produce crosses back and forth
+/// every frame, so somebody standing still would fire sixty spheres a
+/// second. Distance has no such failure mode, is frame-rate independent,
+/// needs no hysteresis, and handles a teleport for free.
+///
+/// One C0 probe spacing, so a probe can never be more than its own cell
+/// stale between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
+const CARRY_INVAL_STEP: f32 = 2.0;
+
+/// This frame's carried lights, and the bookkeeping that turns a light
+/// which MOVES into a light that was re-PLACED.
+///
+/// The whole design is in that sentence: a torch in a hand is an
+/// ordinary entry in the ordinary GI light list, and its motion is
+/// expressed through the same hook a block edit uses. Travelling a probe
+/// spacing fires `Renderer::gi_invalidate`, which resets probe ages
+/// around the new position — so the bounce field re-traces at full
+/// weight instead of decaying from a stale value at 0.10 a sweep — and
+/// caps the resolve's screen history nearby while it does. Standing
+/// still fires nothing, so a lit room settles as deeply as one lit from
+/// the floor.
+#[derive(Default)]
+struct Carried {
+	/// What goes to the GI light list, in `FrameScene::carried` order.
+	lights: Vec<crate::gi::Emitter>,
+	/// Carrier key per entry of `lights`, same index.
+	keys: Vec<u16>,
+	/// Where each carrier's light last fired an invalidation. A `Vec`
+	/// rather than a map because a snapshot holds at most
+	/// `MAX_SNAPSHOT_PLAYERS` of these and a linear scan over forty
+	/// entries beats hashing one.
+	fired: Vec<(u16, Vec3)>,
+	/// Positions to invalidate this frame, drained into the renderer.
+	pending: Vec<[f32; 3]>,
+}
+
+impl Carried {
+	fn begin(&mut self) {
+		self.lights.clear();
+		self.keys.clear();
+		self.pending.clear();
+	}
+
+	/// Add one carrier if what they hold emits at all.
+	///
+	/// Derived, never special-cased: any block whose `emits` level is
+	/// nonzero is a light in a hand exactly as it is a light on the
+	/// ground, and it enters the list under the SAME class byte a placed
+	/// one does — so tint, cast level and `light_origin`'s flame offset
+	/// all come from one LUT row and a carried torch cannot drift from
+	/// the torch beside it.
+	fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>) {
+		let Some(b) = held.filter(|b| b.props().light > 0) else {
+			return;
+		};
+		let o = digblock_core::gi::carried_origin(eye);
+		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(b, 0));
+		self.lights.push((o.x, o.y, o.z, class));
+		self.keys.push(key);
+	}
+
+	/// Close the frame: note which carriers have travelled far enough to
+	/// be re-placed, and forget the ones that are gone.
+	///
+	/// A carrier that is NEW fires immediately — the probes around it
+	/// have never seen this light — which is what makes selecting a torch
+	/// light the room without waiting for a step.
+	fn finish(&mut self, cam: Vec3) {
+		for (i, &key) in self.keys.iter().enumerate() {
+			let (x, y, z, _) = self.lights[i];
+			let p = Vec3::new(x, y, z);
+			let slot = self.fired.iter().position(|(k, _)| *k == key);
+			if let Some(s) = slot {
+				if self.fired[s].1.distance_squared(p) < CARRY_INVAL_STEP * CARRY_INVAL_STEP {
+					continue;
+				}
+			}
+			// One sphere, not two. A step is far shorter than the sphere
+			// `invalidate` queues (radius 8 in C0, 16 in C1), so the space
+			// just vacated is covered many times over; only a jump longer
+			// than the radius would need the departure point, and nothing
+			// in the game moves a player that far without a teleport,
+			// which resets the whole screen history anyway.
+			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
+				self.pending.push([x, y, z]);
+				match slot {
+					Some(s) => self.fired[s].1 = p,
+					None => self.fired.push((key, p)),
+				}
+			}
+		}
+		let keys = &self.keys;
+		self.fired.retain(|(k, _)| keys.contains(k));
 	}
 }
 
@@ -1446,7 +1670,7 @@ impl Engine {
 					plan.extend(debug_crack_plan(spawn));
 				}
 				if config.debug_vault {
-					plan.extend(debug_vault_plan(spawn));
+					plan.extend(debug_vault_plan(spawn, !config.debug_vault_dark));
 				}
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
@@ -1503,6 +1727,8 @@ impl Engine {
 			tick_lerp: crate::smoothing::TickLerp::new(spawn),
 			remote_scratch: Vec::new(),
 			remote_instances: Vec::new(),
+			held_instances: Vec::new(),
+			carried: Carried::default(),
 			confetti: Vec::new(),
 			confetti_seq: 0,
 			net_corrections: 0,
@@ -1593,6 +1819,10 @@ impl Engine {
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
+			// Conditional, so no other capture's inventory grid moves.
+			if screen == DebugScreen::Torch {
+				engine.inventory.add(BlockType::Torch, 12);
+			}
 			digblock_core::inv_grid::reconcile_layout(
 				&engine.inventory,
 				&mut engine.hotbar,
@@ -1605,6 +1835,17 @@ impl Engine {
 				DebugScreen::Bucket { .. } => engine
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
+				DebugScreen::Torch => {
+					// Find the slot rather than writing a number down:
+					// `reconcile_layout` files by block id, so retuning the
+					// stocking list above would otherwise silently select
+					// something else. No skill is needed — `unlock::pickup`
+					// gates DIGGING a craft-only block, not holding one.
+					let want = Some(HotbarItem::Block(BlockType::Torch));
+					if let Some(i) = engine.hotbar.slots().iter().position(|s| *s == want) {
+						engine.hotbar.select_digit(i as u8 + 1);
+					}
+				}
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy | DebugScreen::Transmute => {
 					// A mid-curve level so the header's bar, the pace,
@@ -4332,6 +4573,20 @@ impl Game for Engine {
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
+		// WHICH item is in the hand, ahead of the scripted-flight returns
+		// below, because the hand is part of the frame: the viewmodel draws
+		// `Swap::shown()` and a carried light hangs off it, so leaving this
+		// after them made both invisible to `--bench` — a harness that can
+		// never draw a held item can never measure one either. Costs
+		// nothing on the existing baselines: they fly with an empty bar, so
+		// `selected` is None and `shown` stays None. The bob and the swing
+		// stay at the tail with the audio, since they are driven by motion
+		// the scripted camera does not have.
+		let selected = self
+			.hotbar
+			.selected_item()
+			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
+		self.view_swap.advance(dt, selected);
 		// Scripted flight — the bench's, and the capture harness's. Inputs
 		// are off and the camera is driven outright, so both return before
 		// the interactive half of update; streaming still runs, because
@@ -4778,11 +5033,6 @@ impl Game for Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.view_swing.advance(dt);
-		let selected = self
-			.hotbar
-			.selected_item()
-			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
-		self.view_swap.advance(dt, selected);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
@@ -4800,39 +5050,60 @@ impl Game for Engine {
 		// Remote players, sampled ~100 ms in the past between snapshots;
 		// the instance list rides FrameScene and re-uploads every frame.
 		self.remote_instances.clear();
+		self.held_instances.clear();
+		self.carried.begin();
+		// Your own hand has no world position — the viewmodel is authored
+		// in view space — so the LIGHT is body-anchored exactly like
+		// everyone else's (`gi::carried_origin`). Keyed off the item the
+		// renderer DRAWS rather than the hotbar's selection, so the light
+		// and the visible torch arrive and leave together through the swap
+		// dip; and read unconditionally, because opening the inventory
+		// puts the hand away, not the torch out.
+		self.carried.push(
+			CARRIER_SELF,
+			self.camera.pos,
+			self.view_swap.shown().and_then(crate::ui::hud::icon_block),
+		);
 		if let Some(net) = self.net.as_ref() {
 			net.remotes.sample(&mut self.remote_scratch);
-			for d in &self.remote_scratch {
-				let c = player_color(d.id);
-				self.remote_instances
-					.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
-				// Held-item companion: a small textured cube in hand
-				// (instance mode = texture layer + 1; empty hand = none).
-				if let Some(layer) = held_tex_layer(d.held) {
-					self.remote_instances.push([
-						d.pos.x,
-						d.pos.y,
-						d.pos.z,
-						d.yaw,
-						1.0,
-						1.0,
-						1.0,
-						layer as f32 + 1.0,
-					]);
-				}
+			for i in 0..self.remote_scratch.len() {
+				let d = self.remote_scratch[i];
+				push_remote(
+					&mut self.remote_instances,
+					&mut self.held_instances,
+					&mut self.carried,
+					d.id,
+					d.pos,
+					d.yaw,
+					d.held,
+				);
 			}
 		}
 		// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
 		// a GPU-path check that needs no second client (held cube: dirt).
-		if self.config.debug_playerbox {
-			let p = self.camera.pos + self.camera.dir() * 5.0;
-			let c = player_color(2);
-			self.remote_instances
-				.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
-			let layer = BlockType::Dirt.props().tex_side as f32;
-			self.remote_instances
-				.push([p.x, p.y, p.z, 0.8, 1.0, 1.0, 1.0, layer + 1.0]);
+		if let Some(held) = self.config.debug_playerbox {
+			// Flat-forward, not along the camera's pitch: a remote player
+			// stands on the ground rather than hovering wherever you happen
+			// to be looking.
+			let d = self.camera.dir();
+			let flat = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+			let p = self.camera.pos + flat * 5.0;
+			// Facing the camera, not a fixed yaw. The hand is on one side
+			// of the body, so a yaw the capture does not control decides
+			// whether the held item is on screen at all — and it hid the
+			// item entirely once the hand moved to the correct side.
+			let yaw = (-flat.x).atan2(-flat.z);
+			push_remote(
+				&mut self.remote_instances,
+				&mut self.held_instances,
+				&mut self.carried,
+				2,
+				p,
+				yaw,
+				held,
+			);
 		}
+		self.carried.finish(self.camera.pos);
 		let frame = self.frame_uniforms();
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
@@ -4989,6 +5260,13 @@ impl Game for Engine {
 		.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
+			// A carried light that has travelled re-places itself through
+			// the same hook a block edit uses, so the probes around it
+			// re-trace at full weight instead of decaying from a stale
+			// value. See `Carried`.
+			for p in &self.carried.pending {
+				r.gi_invalidate(*p);
+			}
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
@@ -5000,6 +5278,8 @@ impl Game for Engine {
 				},
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
+				held: &self.held_instances,
+				carried: &self.carried.lights,
 				confetti: &self.confetti,
 				overlay: overlay_stats
 					.as_ref()
@@ -5098,6 +5378,153 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
 		self.0.set_block(x, y, z, b).is_some()
+	}
+}
+
+#[cfg(test)]
+mod carried_tests {
+	use super::*;
+
+	fn torch_at(c: &mut Carried, key: u16, eye: Vec3) {
+		c.push(key, eye, Some(BlockType::Torch));
+	}
+
+	/// A carried light must be re-placed no less often than the bounce
+	/// field can resolve, or a carrier outruns a whole probe cell between
+	/// fires and the cache holds light from somewhere they have left.
+	#[test]
+	fn a_carrier_never_outruns_a_probe_cell() {
+		assert!(
+			CARRY_INVAL_STEP <= crate::gi::C0_SPACING as f32,
+			"the step must stay inside C0's own spacing"
+		);
+	}
+
+	/// The whole cost model rests on this: a player standing still with a
+	/// torch is not a moving emitter, so nothing is invalidated and the
+	/// room they are in converges as deeply as one lit from the floor.
+	///
+	/// It is also why the trigger is a DISTANCE and not a cell crossing.
+	/// The second half of this test is the pathology a crossing rule
+	/// has: a carrier wobbling either side of a cell boundary — which is
+	/// what the tick lerp and the decaying reconciliation offset produce
+	/// — would fire on every single frame.
+	#[test]
+	fn a_still_carrier_is_not_a_moving_emitter() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		for f in 0..600 {
+			c.begin();
+			torch_at(&mut c, CARRIER_SELF, eye);
+			c.finish(eye);
+			// The first frame places the light: the probes around it have
+			// never seen it, which is what lights the room the moment you
+			// select a torch.
+			let want = usize::from(f == 0);
+			assert_eq!(c.pending.len(), want, "frame {f}");
+		}
+		// Straddling a cell boundary, a hundredth of a block either way.
+		let edge = Vec3::new(64.0, 70.5, 64.0);
+		let mut c = Carried::default();
+		c.begin();
+		torch_at(&mut c, CARRIER_SELF, edge);
+		c.finish(edge);
+		for f in 0..600 {
+			let p = edge + Vec3::Z * if f % 2 == 0 { 0.01 } else { -0.01 };
+			c.begin();
+			torch_at(&mut c, CARRIER_SELF, p);
+			c.finish(p);
+			assert!(c.pending.is_empty(), "wobble fired on frame {f}");
+		}
+	}
+
+	/// Walking fires once per step travelled, not once per frame — the
+	/// probes around the carrier re-trace at full weight instead of
+	/// decaying from a stale value.
+	#[test]
+	fn a_walking_carrier_fires_once_per_step() {
+		let start = Vec3::new(64.0, 70.0, 64.0);
+		let per_frame = digblock_core::player::WALK_SPEED / 60.0;
+		let mut c = Carried::default();
+		let mut fires = 0usize;
+		let frames = 300; // five seconds
+		for f in 0..frames {
+			let p = start + Vec3::Z * (per_frame * f as f32);
+			c.begin();
+			torch_at(&mut c, CARRIER_SELF, p);
+			c.finish(p);
+			fires += c.pending.len();
+		}
+		let walked = per_frame * (frames - 1) as f32;
+		// One placement plus one per step of travel.
+		let want = 1 + (walked / CARRY_INVAL_STEP) as usize;
+		assert_eq!(fires, want, "walked {walked} blocks");
+	}
+
+	/// Only a block that EMITS is carried, and the answer is derived from
+	/// the block table rather than named — so a second emitter needs no
+	/// edit here, and the bucket (whose charge is Water, and whose empty
+	/// state decodes to a tool sentinel) is never a light.
+	#[test]
+	fn only_an_emitting_block_lights_a_hand() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		for b in BlockType::ALL {
+			let mut c = Carried::default();
+			c.begin();
+			c.push(CARRIER_SELF, eye, Some(b));
+			assert_eq!(
+				c.lights.len(),
+				usize::from(b.props().light > 0),
+				"{b:?} light {}",
+				b.props().light
+			);
+		}
+		let mut c = Carried::default();
+		c.begin();
+		c.push(CARRIER_SELF, eye, None);
+		assert!(c.lights.is_empty(), "an empty hand is not a light");
+	}
+
+	/// A carried torch enters the list under the same class byte a placed
+	/// one does, so tint, cast level and the flame's own origin offset all
+	/// come from one LUT row.
+	#[test]
+	fn a_carried_torch_borrows_the_placed_torchs_class() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		c.begin();
+		torch_at(&mut c, CARRIER_SELF, eye);
+		let want =
+			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Torch, 0));
+		assert_eq!(c.lights[0].3, want);
+		assert!(
+			want >= digblock_core::gi::SHAPE_CLASS_BASE,
+			"the shaped class"
+		);
+		let o = digblock_core::gi::carried_origin(eye);
+		assert_eq!(
+			(c.lights[0].0, c.lights[0].1, c.lights[0].2),
+			(o.x, o.y, o.z)
+		);
+	}
+
+	/// A carrier far from the camera still LIGHTS — it is in the list —
+	/// but its motion does not spend an invalidation sphere, because the
+	/// four a frame belong to world edits and a wake that far out cannot
+	/// be read.
+	#[test]
+	fn a_distant_carriers_motion_costs_nothing() {
+		let cam = Vec3::new(64.0, 70.0, 64.0);
+		let far = cam + Vec3::X * (CARRIED_INVAL_DIST + 4.0);
+		let mut c = Carried::default();
+		for f in 0..120 {
+			let p = far + Vec3::Z * (f as f32 * 0.5);
+			c.begin();
+			torch_at(&mut c, 3, p);
+			c.finish(cam);
+			assert_eq!(c.lights.len(), 1, "still a light on frame {f}");
+			assert!(c.pending.is_empty(), "spent a sphere on frame {f}");
+		}
 	}
 }
 
