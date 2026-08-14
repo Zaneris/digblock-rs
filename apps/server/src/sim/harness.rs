@@ -56,8 +56,33 @@ pub(crate) fn flat_source() -> ColumnSource {
 }
 
 pub(crate) fn flat_sim(tag: &str) -> Sim {
+	flat_sim_at(tag, FLAT_SPAWN)
+}
+
+/// A flat sim spawning somewhere specific. Ore is DERIVED from world
+/// position (SKILLS-DESIGN §5.3), so a test about veins cannot pick its
+/// cell — it has to go and stand where one is.
+pub(crate) fn flat_sim_at(tag: &str, spawn: Vec3) -> Sim {
 	let dir = temp_dir(tag);
-	Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap()
+	Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), spawn).unwrap()
+}
+
+/// The first cell of the flat world's TOP surface that holds a vein, and
+/// the eye position to stand over it from. Searched rather than written
+/// down because the answer is a property of the placement hash, and a
+/// hard-coded coordinate would silently stop being a vein the moment
+/// anyone retuned the density.
+pub(crate) fn a_vein_under_spawn() -> ((i32, i32, i32), Vec3, digblock_core::BlockType) {
+	let y = FLAT_GROUND_TOP as i32;
+	for z in -80..80 {
+		for x in -80..80 {
+			if let Some(ore) = digblock_core::worldgen::ore::ore_at(x, y, z, SEED) {
+				let eye = Vec3::new(x as f32 + 0.5, FLAT_SPAWN.y, z as f32 + 0.5);
+				return ((x, y, z), eye, ore);
+			}
+		}
+	}
+	panic!("no vein in the flat world's surface — retune or widen the search");
 }
 
 pub(crate) struct TestClient {

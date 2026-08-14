@@ -503,6 +503,16 @@ impl Pipeline {
 		self.mining_level
 	}
 
+	/// Has this cell ever been written in this world? The ore reveal's
+	/// anti-dupe gate, answered from the same map the mesh stamp reads —
+	/// so the client's dig prediction and its own rendering agree, and
+	/// both agree with the server's journal.
+	pub fn cell_edited(&self, x: i32, y: i32, z: i32) -> bool {
+		self.edits
+			.column(x.div_euclid(16), z.div_euclid(16))
+			.is_some_and(|c| c.contains_key(&(x, y, z)))
+	}
+
 	/// Call every frame with the player's chunk position. Performs the
 	/// visibility scan on chunk-boundary crossings, tops up workers, and
 	/// drains results (mesh outputs capped at `upload_budget`; the whole

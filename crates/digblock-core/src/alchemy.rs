@@ -145,6 +145,11 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use Essence as E;
 	Some(match b {
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
+		// NO METAL, ever: ore needs the siphon and Metal needs ore, so a
+		// Metal-priced siphon deadlocks the economy on the first world
+		// where nobody has one. Flora and Earth are what a fresh miner
+		// already has too much of.
+		B::EssenceSiphon => &[(E::Flora, 30), (E::Earth, 15)],
 		// Furniture is timber and joinery — near its volume, but chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Flora, 6)],

@@ -662,6 +662,28 @@ impl Sim {
 		}
 	}
 
+	/// Put a tool in a client's hand. The tool slot's Layout entry is the
+	/// second axis (`Hotbar::active_tool`), so granting the item is not
+	/// the same as holding it — which is exactly the distinction the
+	/// siphon gate is about.
+	#[cfg(test)]
+	pub(crate) fn bench_set_active_tool(
+		&mut self,
+		conn_id: u64,
+		tool: digblock_core::block::BlockType,
+	) {
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.hotbar.cycle_tool(&[tool]);
+		}
+	}
+
+	/// A client's XP total in one skill — the two-sided award tests read
+	/// it, since a dual award is only interesting as a pair.
+	#[cfg(test)]
+	pub(crate) fn test_skill_xp(&self, conn_id: u64, skill: digblock_core::skills::Skill) -> u64 {
+		self.clients.get(&conn_id).map_or(0, |c| c.skills.xp(skill))
+	}
+
 	/// Raise a client's Alchemy to `level` — the craft gate's counterpart
 	/// of [`Self::bench_set_mining_level`], for edit-path tests that dig
 	/// craft-only blocks (slabs, stairs, doors, torches).
@@ -911,6 +933,42 @@ impl Sim {
 	/// same cell can only ever RE-READ what the decay has left (see
 	/// below) — never add to it. The action-queue cap bounds the
 	/// per-tick volume.
+	/// Has this cell ever been written? The ore reveal's anti-dupe gate
+	/// (SKILLS-DESIGN §5.3), answered from the journal — the complete and
+	/// correct source, fluid included. `JournalIndex::record` only ever
+	/// inserts, so the answer is monotone: a spent vein cannot be
+	/// un-spent by putting stone back.
+	pub(super) fn cell_edited(&self, x: i32, y: i32, z: i32) -> bool {
+		self.journal
+			.index
+			.column(x.div_euclid(16), z.div_euclid(16))
+			.is_some_and(|c| c.contains_key(&(x, y, z)))
+	}
+
+	/// What a dig on this cell is FOR this client — the same question the
+	/// client predicted with, asked of the server's own world.
+	pub(super) fn ore_dig_mode(
+		&self,
+		conn_id: u64,
+		cell: (i32, i32, i32),
+	) -> digblock_core::worldgen::ore::DigMode {
+		use digblock_core::worldgen::ore::DigMode;
+		let Some(client) = self.clients.get(&conn_id) else {
+			return DigMode::Break;
+		};
+		let Some(v) = self.store.cell_at(cell.0, cell.1, cell.2) else {
+			return DigMode::Break;
+		};
+		digblock_core::worldgen::ore::dig_mode(
+			v,
+			cell,
+			self.store.seed(),
+			client.skills.level(digblock_core::skills::Skill::Mining),
+			self.cell_edited(cell.0, cell.1, cell.2),
+			client.hotbar.active_tool(),
+		)
+	}
+
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
 		// Before the client borrow: `spawn_lock` reads all of `self`.
 		let lock = self.spawn_lock();
@@ -954,12 +1012,34 @@ impl Sim {
 						reason: match req.kind {
 							Kind::Strength => RejectReason::SkillGated,
 							Kind::Recipe => RejectReason::NotUnlocked,
+							Kind::Tool => RejectReason::NeedsTool,
 						},
 					},
 				);
 				return;
 			}
 		}
+		// A revealed vein with the wrong tool refuses here too, for
+		// exactly the reason the skill gates do — a refusal that arrives
+		// after a two-second hold is not a refusal, it is a punishment.
+		// Below the reveal this never fires: that player's world has no
+		// vein in it, so the cell digs as the stone it appears to be.
+		if self.ore_dig_mode(conn_id, cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
+			if let Some(client) = self.clients.get_mut(&conn_id) {
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: RejectReason::NeedsTool,
+					},
+				);
+			}
+			return;
+		}
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
 		// Re-opening a hold on the SAME unchanged cell resumes it: it is
 		// worth whatever the decay has left, which is the number the
 		// client's own bar is showing. Everything else starts at zero.
@@ -2129,6 +2209,113 @@ mod tests {
 			},
 		}]);
 		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
+	}
+
+	/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test,
+	/// because the three halves only mean anything together:
+	///
+	/// 1. Below the reveal, a vein is stone. The hold opens, the dig
+	///    completes, and the player gets rubble and never knows: you dig
+	///    what you can see, and spending an unseen seam is the cost of
+	///    tunnelling through country you have not levelled into.
+	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with
+	///    `NeedsTool` and opens no hold — if you can see the seam, the
+	///    game will not let you spend it by accident.
+	/// 3. With the siphon, the completing dig writes DepletedStone rather
+	///    than air, credits the ORE (not the cell's Rubble), and pays BOTH
+	///    skills (§5.4's dual award).
+	#[test]
+	fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
+		use digblock_core::block::BlockType;
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		let (cell, eye, ore) = super::harness::a_vein_under_spawn();
+		let reveal = digblock_core::unlock::reveal(ore).expect("an ore");
+
+		// 1. Below the reveal: stone all the way down.
+		let mut sim = super::harness::flat_sim_at("ore-blind", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal - 1);
+		let mut t = 100;
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 + 8;
+		let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(dug, cell, "dug the cell the vein is in");
+		assert_eq!(sim.test_cell_at(cell.0, cell.1, cell.2), Some(0), "a hole");
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"rubble, and no idea what was lost"
+		);
+		assert_eq!(sim.test_inventory_count(1, ore), 0);
+
+		// 2. At the reveal, bare-handed: refused before the hold opens.
+		let mut sim = super::harness::flat_sim_at("ore-refuse", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [cell.0, cell.1, cell.2],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::NeedsTool,
+					..
+				}
+			)),
+			"a revealed vein refuses a bare hand: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+		// 3. With the siphon: a draw, not a dig.
+		let mut sim = super::harness::flat_sim_at("ore-draw", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.test_grant(1, BlockType::EssenceSiphon, 1);
+		sim.bench_set_active_tool(1, BlockType::EssenceSiphon);
+		let before = (
+			sim.test_skill_xp(1, Skill::Mining),
+			sim.test_skill_xp(1, Skill::Alchemy),
+		);
+		let mut t = 100;
+		// Timed as the ORE, which is slower than the stone it sits in.
+		let hold = ore.hardness_ticks().unwrap() as u32 + 8;
+		let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::DepletedStone as u16),
+			"a tapped face, not a hole — mining ore never excavates"
+		);
+		assert_eq!(sim.test_inventory_count(1, ore), 1, "the ore itself");
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			0,
+			"never the stone's own drop"
+		);
+		let (mining_xp, alch_xp) = digblock_core::skills::ore_field_xp(ore).expect("an ore");
+		assert_eq!(
+			sim.test_skill_xp(1, Skill::Mining) - before.0,
+			mining_xp,
+			"full Mining at the rock face"
+		);
+		assert_eq!(
+			sim.test_skill_xp(1, Skill::Alchemy) - before.1,
+			alch_xp,
+			"and the Alchemy cut — neither skill levels alone"
+		);
 	}
 
 	/// SIM v13's craft gate, server half: a DigStart on a craft-only block

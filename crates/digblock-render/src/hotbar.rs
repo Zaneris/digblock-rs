@@ -9,9 +9,14 @@ use digblock_core::inventory::Inventory;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SlotView {
 	Empty,
-	/// The water tool and whether it's charged — the bucket's own count,
-	/// so the bar shows the charge where a stack would show its number.
+	/// The tool slot: WHICH tool is active, and whether the bucket is
+	/// charged (the bucket's own count, so the bar shows the charge where
+	/// a stack would show its number). The slot always holds
+	/// `HotbarItem::WaterTool` on the wire — `active_tool` is the second
+	/// axis — so the icon has to come from the tool, not from the slot,
+	/// or every tool in the game draws as a bucket.
 	Tool {
+		tool: BlockType,
 		full: bool,
 	},
 	Block {
@@ -32,6 +37,7 @@ impl HotbarView {
 			slots[i] = match s {
 				None => SlotView::Empty,
 				Some(HotbarItem::WaterTool) => SlotView::Tool {
+					tool: hotbar.active_tool(),
 					full: inventory.bucket_full(),
 				},
 				Some(HotbarItem::Block(b)) => SlotView::Block {
@@ -76,7 +82,10 @@ mod tests {
 		assert_eq!(v.slots[2], SlotView::Empty);
 		assert_eq!(
 			v.slots[HOTBAR_SLOTS - 1],
-			SlotView::Tool { full: false },
+			SlotView::Tool {
+				tool: BlockType::Bucket,
+				full: false
+			},
 			"an empty bucket"
 		);
 		assert_eq!(v.selected, 0);
@@ -90,6 +99,12 @@ mod tests {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Water, 1);
 		let v = HotbarView::build(&hotbar, &inv);
-		assert_eq!(v.slots[HOTBAR_SLOTS - 1], SlotView::Tool { full: true });
+		assert_eq!(
+			v.slots[HOTBAR_SLOTS - 1],
+			SlotView::Tool {
+				tool: BlockType::Bucket,
+				full: true
+			}
+		);
 	}
 }

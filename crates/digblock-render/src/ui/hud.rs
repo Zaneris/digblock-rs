@@ -29,6 +29,10 @@ pub enum IconKind {
 	/// not. The charge is drawn, not tinted — "have I got water?" is the
 	/// question the bar has to answer at a glance.
 	WaterTool { full: bool },
+	/// The Essence Siphon: a funnel, a stem, and a glowing bulb. Its own
+	/// geometry rather than the cube fallback, because a tool with no
+	/// texture layers of its own would otherwise draw as a water cube.
+	Siphon,
 }
 
 /// The arrival cover: an OPAQUE full-screen fill with one centred line,
@@ -89,6 +93,11 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	match item {
 		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
+		// A tool has no texture layers of its own, so `Cube` would draw it
+		// as WATER — which is what the transmute screen did to the siphon
+		// until this arm existed. Every path that can name a tool routes
+		// through `tool_icon`, screens included.
+		HotbarItem::Block(b) if b.is_tool() => (tool_icon(b, tool_full), FULL_TINT),
 		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
 		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
 	}
@@ -137,7 +146,7 @@ pub fn hotbar<Id: Copy + PartialEq>(
 		let rect = grid.rect(i);
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
-			SlotView::Tool { full } => Some(item_icon(HotbarItem::WaterTool, full)),
+			SlotView::Tool { tool, full } => Some((tool_icon(tool, full), FULL_TINT)),
 			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
 		// The HUD bar has no cursor: rings only, never hover.
@@ -158,6 +167,19 @@ pub fn hotbar<Id: Copy + PartialEq>(
 /// the roster's own deterministic order. A READOUT, not a target — no
 /// hit rects; tapping 9 on the selected tool slot is the interaction.
 /// With a single owned tool nothing draws at all.
+/// The icon for a tool. Tools have no texture layers of their own (they
+/// never render in the world), so every one of them needs authored
+/// geometry — the old cube fallback drew a WATER cube for anything new.
+pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
+	match tool {
+		BlockType::EssenceSiphon => IconKind::Siphon,
+		// The bucket, and anything a future row forgets to author: a cube
+		// is wrong, but it is visibly wrong rather than invisible.
+		BlockType::Bucket => IconKind::WaterTool { full: bucket_full },
+		other => IconKind::Cube(other),
+	}
+}
+
 pub fn tool_rail(
 	dl: &mut super::DrawList,
 	style: &super::widgets::Style,
@@ -166,7 +188,6 @@ pub fn tool_rail(
 	active: digblock_core::block::BlockType,
 	bucket_full: bool,
 ) {
-	use digblock_core::block::BlockType;
 	if owned.len() < 2 {
 		return;
 	}
@@ -178,11 +199,7 @@ pub fn tool_rail(
 	let mut x = grid.origin.0 + grid.extent(HOTBAR_SLOTS).0 + SLOT_GAP * scale * 2.0;
 	let y = grid.origin.1 + grid.cell - cell;
 	for &tool in owned.iter().filter(|&&t| t != active) {
-		let kind = match tool {
-			BlockType::Bucket => IconKind::WaterTool { full: bucket_full },
-			// Future tools without authored icons read as their cube.
-			other => IconKind::Cube(other),
-		};
+		let kind = tool_icon(tool, bucket_full);
 		draw_icon(
 			dl,
 			Layer::Icons,

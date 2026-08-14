@@ -646,7 +646,7 @@ mod tests {
 						let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
 						let was_edited = edited.contains(&(i as u16));
 						let want =
-							ore::revealed(B::Stone as u16, x, y, z, seed, mining, was_edited)
+							ore::revealed(B::Stone as u16, (x, y, z), seed, mining, was_edited)
 								.map_or(B::Stone as u16, |o| o as u16);
 						assert_eq!(input.blocks[i], want, "({x},{y},{z}) at mining {mining}");
 					}

@@ -119,4 +119,12 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// the new server refuses below Alchemy 20, and refuse one on a log the
 /// new server allows. Worldgen and physics are untouched, so both
 /// goldens hold and no world is staled.
-pub const SIM_VERSION: u16 = 14;
+/// v15: ore (SKILLS-DESIGN §5.3). Veins are DERIVED — `worldgen::ore` is
+/// a pure function both ends evaluate, `build_column` is byte-identical
+/// and the journal still carries Stone — but what a dig DOES is now
+/// shared behaviour: a revealed vein with the Essence Siphon in hand is
+/// an extraction that writes `DepletedStone` and credits the ore, one
+/// without it is refused at `DigStart`, and an extraction is TIMED as
+/// the ore rather than as the stone the cell holds. A v14 peer would
+/// break a seam into rubble at stone speed and lose it.
+pub const SIM_VERSION: u16 = 15;

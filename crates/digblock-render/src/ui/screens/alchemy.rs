@@ -200,12 +200,13 @@ pub struct Family {
 
 /// Families the grid cannot derive: hand-priced functional items, grouped
 /// by what they DO. Drawn after the shape families.
-const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
+const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
 	("LIGHTS", &[BlockType::Torch]),
 	(
 		"FURNITURE",
 		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
 	),
+	("TOOLS", &[BlockType::EssenceSiphon]),
 	("WATER", &[BlockType::Water]),
 ];
 
@@ -1196,6 +1197,7 @@ fn block_name(b: BlockType) -> String {
 		BlockType::Table => "TABLE".into(),
 		BlockType::Chair => "CHAIR".into(),
 		BlockType::Bed => "BED".into(),
+		BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
 		_ => "?".into(),
 	}
 }

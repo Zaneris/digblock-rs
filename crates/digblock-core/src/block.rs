@@ -169,6 +169,16 @@ blocks! {
 	/// instead of a hole, so mining ore never excavates and the mountain
 	/// keeps its shape. Crumbles to Rubble like any other rock.
 	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
+	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
+	/// like the bucket, but CRAFTED rather than owned from the start
+	/// (Alch 10). Held, a dig-hold on a revealed vein draws the ore out
+	/// and leaves DepletedStone; without it a revealed vein refuses the
+	/// hold entirely, so nobody stone-digs a seam away by accident.
+	///
+	/// Its price carries no Metal, ever: ore needs the siphon and Metal
+	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
+	/// first world where nobody has one.
+	EssenceSiphon = 53 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -831,7 +841,7 @@ impl BlockType {
 	/// never in a block slot or the grid, and never in the world.
 	#[inline]
 	pub fn is_tool(self) -> bool {
-		matches!(self, BlockType::Bucket)
+		matches!(self, BlockType::Bucket | BlockType::EssenceSiphon)
 	}
 
 	/// Tools every player owns unconditionally (no craft, no count):
@@ -1114,6 +1124,7 @@ mod tests {
 				B::Table,
 				B::Chair,
 				B::Bed,
+				B::EssenceSiphon,
 			]
 		);
 	}

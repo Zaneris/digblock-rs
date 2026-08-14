@@ -55,6 +55,7 @@ impl CharView {
 const ALCH_TEASERS: &[(u32, &str)] = &[
 	(5, "the stairs shape; dirt and sand"),
 	(8, "the torch"),
+	(10, "the essence siphon — ore needs it"),
 	(15, "planed lumber and its joinery; the bucket charge"),
 	(18, "furniture: the table and the chair"),
 	(20, "clean stone — block, slab, stairs and door together"),
@@ -70,8 +71,16 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(99, "mastery"),
 ];
 
-/// Mining's teasers are the rock gate (ore reveals arrive with M5).
-const MINING_TEASERS: &[(u32, &str)] = &[(3, "sandstone opens"), (5, "stone and rubble open")];
+/// Mining's teasers: the two rock gates, then the four ore reveals — the
+/// levels the whole skill is shaped around.
+const MINING_TEASERS: &[(u32, &str)] = &[
+	(3, "sandstone opens"),
+	(5, "stone and rubble open"),
+	(10, "emberore reveals — bring a siphon"),
+	(30, "duskstone reveals"),
+	(55, "glowvein reveals"),
+	(80, "aetherock reveals"),
+];
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
 	let table = match skill {
@@ -335,7 +344,7 @@ mod tests {
 		// else, so an extra row here would be a promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5]
+			vec![3, 5, 10, 30, 55, 80]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.

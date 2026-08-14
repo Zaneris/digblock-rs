@@ -277,6 +277,14 @@ impl Sim {
 				client.hotbar.active_tool(),
 			)
 		};
+		// Is this dig a field EXTRACTION (SKILLS-DESIGN §5.3)? Resolved
+		// here, from the server's own world and the client's own level and
+		// tool — the same `ore::dig_mode` the client predicted with, so
+		// neither end can decide alone what an action was.
+		let extracting = match self.ore_dig_mode(req.conn_id, req.cell) {
+			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+			_ => None,
+		};
 		// A refused push here just drops the reply; a stalled peer is
 		// caught (and killed) by the snapshot/broadcast paths within ticks.
 		let reject = |reason: RejectReason| {
@@ -418,6 +426,14 @@ impl Sim {
 				// else clears. Collect never stops in a slab (fluid ray).
 				let new_val = if hit.block.is_slab() {
 					digblock_core::shapes::slab_shrunk(hit.cell_value)
+				} else if extracting.is_some() {
+					// The vein is DRAWN out, not dug out: the cell becomes
+					// a tapped face, so mining ore never excavates and the
+					// mountainside keeps its shape. Writing a different id
+					// (rather than the same Stone back) is also what makes
+					// the edit unambiguously real to the journal, LWW
+					// replay and mesh invalidation.
+					BlockType::DepletedStone as u16
 				} else {
 					air
 				};
@@ -603,7 +619,11 @@ impl Sim {
 		// above has ended (the broadcast walks every client).
 		let mut crossed = None;
 		if place_cell.is_none() {
-			if let Some(drop) = prev.dig_drop() {
+			// An extraction credits the ORE, never the cell's own drop:
+			// the cell was Stone and Stone hands out Rubble, which is the
+			// whole reason quarrying stays a Mining question and drawing a
+			// vein does not.
+			if let Some(drop) = extracting.or_else(|| prev.dig_drop()) {
 				client.inventory.add(drop, 1);
 				// Mirror the client's auto-assign of a newly acquired type
 				// (same deterministic derivation), so the very next place
@@ -619,22 +639,36 @@ impl Sim {
 			// authority as the credit; one award even for a door pair.
 			// The frame carries the new TOTAL, so a lost or reordered
 			// frame can never double-pay.
-			let xp = digblock_core::skills::dig_xp(prev);
-			if xp > 0 {
-				let before = client.skills.level(digblock_core::skills::Skill::Mining);
-				let total = client
-					.skills
-					.add_xp(digblock_core::skills::Skill::Mining, xp);
+			//
+			// A field extraction pays BOTH skills (§5.4): full Mining, plus
+			// a minor Alchemy cut at the rock face, with the substantial
+			// Alchemy XP waiting at the bench. Each ore is a fixed total
+			// split across two moments, so neither skill can be levelled
+			// entirely from inside the other.
+			let (mining_xp, alch_xp) =
+				match extracting.and_then(digblock_core::skills::ore_field_xp) {
+					Some((m, a)) => (m, a),
+					None => (digblock_core::skills::dig_xp(prev), 0),
+				};
+			for (skill, xp) in [
+				(digblock_core::skills::Skill::Mining, mining_xp),
+				(digblock_core::skills::Skill::Alchemy, alch_xp),
+			] {
+				if xp == 0 {
+					continue;
+				}
+				let before = client.skills.level(skill);
+				let total = client.skills.add_xp(skill, xp);
 				send_frame(
 					&client.out,
 					&ServerMsg::XpGain {
-						skill: digblock_core::skills::Skill::Mining as u8,
+						skill: skill as u8,
 						total,
 					},
 				);
-				let after = client.skills.level(digblock_core::skills::Skill::Mining);
+				let after = client.skills.level(skill);
 				if after > before {
-					crossed = Some(after);
+					crossed = Some((skill, after));
 				}
 			}
 			client.digging = None;
@@ -642,8 +676,8 @@ impl Sim {
 		if let Some(hash) = client.identity {
 			self.player_store.put(hash, client.record());
 		}
-		if let Some(level) = crossed {
-			self.announce_level_up(id, digblock_core::skills::Skill::Mining, level);
+		if let Some((skill, level)) = crossed {
+			self.announce_level_up(id, skill, level);
 		}
 
 		// Journal + broadcast the first write under the client's seq, the

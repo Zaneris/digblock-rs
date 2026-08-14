@@ -252,6 +252,28 @@ pub fn convert_xp(block: BlockType) -> u64 {
 	u64::from(crate::alchemy::extract_total_base(block)).div_ceil(3)
 }
 
+/// The DUAL award for one field extraction at the rock face (§5.4):
+/// `(Mining, Alchemy)`. `None` for anything that is not an ore.
+///
+/// Field extraction is mechanically a mine and thematically a crude
+/// alchemical separation, so it pays both — and the Alchemy cut is
+/// deliberately the small half, with the substantial Alchemy XP waiting
+/// at the bench (`convert_xp`). Each ore therefore carries a fixed total
+/// split across TWO moments, and neither skill can be levelled entirely
+/// from inside the other.
+///
+/// Tabled rather than derived from hardness: this is a headline reward
+/// and the curve through it is a decision, not a consequence.
+pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
+	Some(match ore {
+		BlockType::Emberore => (40, 8),
+		BlockType::Duskstone => (70, 14),
+		BlockType::Glowvein => (110, 22),
+		BlockType::Aetherock => (170, 34),
+		_ => return None,
+	})
+}
+
 /// Alchemy XP per crafted batch: `ceil(ideal_cost / 3)` summed across
 /// the recipe's cost lines (pre-waste — fixed for life). Zero for
 /// uncraftable items.

@@ -31,10 +31,18 @@ pub const BUCKET_CHARGE: u32 = 1;
 /// [`Inventory::add`] and [`Inventory::from_wire`] — so a save or a
 /// server record written back when water was an ordinary stack decodes
 /// as a full bucket rather than a windfall of free sources.
+///
+/// Tools cap at ONE (SKILLS-DESIGN §7.3): owning a tool is a yes/no, so a
+/// second craft has nowhere to go and is refused before any debit by the
+/// standing `InventoryFull` rebase. That also makes ownership itself a
+/// count, which is what lets the tool rail, prediction and both
+/// persistence formats carry a new tool with no machinery at all.
 #[inline]
 fn cap(b: BlockType) -> u32 {
 	if b == BlockType::Water {
 		BUCKET_CHARGE
+	} else if b.is_tool() {
+		1
 	} else {
 		MAX_STACK
 	}

@@ -98,6 +98,10 @@ pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// First light, pre-ore on purpose (§7.3).
 		BlockType::Torch => 8,
+		// The ore tool, one level before the first vein reveals at Mining
+		// 10 — the game's first cross-skill handshake, and the reason
+		// neither skill can be levelled entirely from inside the other.
+		BlockType::EssenceSiphon => 10,
 		// Furniture: the first things you make because you want them
 		// rather than because you need them, so they sit just past the
 		// timber set that supplies them.
@@ -226,6 +230,10 @@ pub enum Kind {
 	/// The block is craft-only and this Alchemy level cannot make one, so
 	/// picking it up would hand out an item the player can't own yet.
 	Recipe,
+	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
+	/// other two this is not about a LEVEL at all — it is the one refusal
+	/// a player can clear without gaining anything, by switching tools.
+	Tool,
 }
 
 impl Kind {
@@ -236,6 +244,7 @@ impl Kind {
 		match self {
 			Kind::Strength => "this rock defies your mining level",
 			Kind::Recipe => "you haven't unlocked this yet",
+			Kind::Tool => "this vein needs an essence siphon",
 		}
 	}
 }
@@ -299,7 +308,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		// A rock whose strength wall stands exactly here. The craft gate
 		// needs no arm of its own: it derives from `craft`, which the
 		// Alchemy arm already covers.
-		Skill::Mining => mine(b) == level,
+		Skill::Mining => mine(b) == level || reveal(b) == Some(level),
 		// A new recipe, a newly extractable block, or a bonus line that
 		// wasn't paying at the level below.
 		Skill::Alchemy => {
@@ -592,16 +601,20 @@ mod tests {
 		let mining: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Mining, l))
 			.collect();
-		assert_eq!(mining, vec![3, 5], "sandstone, then stone");
-		// Alchemy: craft unlocks (5/8/20/30/50), the bucket charge's
-		// extraction and the whole planed-timber set (both 15), and the
-		// bonus lines (25/40/60/75/90).
+		assert_eq!(
+			mining,
+			vec![3, 5, 10, 30, 55, 80],
+			"the rock gates, then the four reveals"
+		);
+		// Alchemy: the shape and material unlocks, the hand-priced items
+		// (torch 8, siphon 10, furniture 18, bed 35, water 50), the bucket
+		// charge's extraction at 15, and the bonus lines (25/40/60/75/90).
 		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Alchemy, l))
 			.collect();
 		assert_eq!(
 			alchemy,
-			vec![5, 8, 15, 18, 20, 25, 30, 35, 40, 50, 60, 75, 90]
+			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 50, 60, 75, 90]
 		);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.

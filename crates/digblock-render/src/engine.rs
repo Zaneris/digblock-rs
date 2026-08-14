@@ -2633,6 +2633,7 @@ impl Engine {
 							R::Protected => digblock_core::protect::REFUSE_DIG_MSG,
 							R::SkillGated => digblock_core::unlock::Kind::Strength.message(),
 							R::NotUnlocked => digblock_core::unlock::Kind::Recipe.message(),
+							R::NeedsTool => digblock_core::unlock::Kind::Tool.message(),
 							_ => "the server refused that dig",
 						};
 						self.push_feed(msg.into());
@@ -3176,6 +3177,29 @@ impl Engine {
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
 
+	/// What a dig on this cell IS for us right now (SKILLS-DESIGN §5.3)
+	/// — the same `ore::dig_mode` the server asks of its own world, so
+	/// prediction and authority cannot disagree about whether an action
+	/// was a dig, a draw, or a refusal.
+	///
+	/// The chunk store still holds Stone here: the reveal is a stamp on
+	/// the MESH input, never a world write, which is what keeps ore out of
+	/// the journal and out of everyone else's world.
+	fn ore_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::ore::DigMode {
+		use digblock_core::worldgen::ore::DigMode;
+		let Some(v) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
+			return DigMode::Break;
+		};
+		digblock_core::worldgen::ore::dig_mode(
+			v,
+			cell,
+			self.seed,
+			self.skills.level(digblock_core::skills::Skill::Mining),
+			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
+			self.hotbar.active_tool(),
+		)
+	}
+
 	fn diggable(&self, hit: &RayHit) -> bool {
 		// Permanently protected cells never start a hold. Only the world
 		// floor is knowable client-side — a server's spawn lock is its own
@@ -3189,6 +3213,11 @@ impl Engine {
 		// levels); the server's DigStart refusals are the backstop, and it
 		// asks this same question.
 		if digblock_core::unlock::dig_blocked(hit.block, &self.skills).is_some() {
+			return false;
+		}
+		// A revealed vein and the wrong tool: predicted here so the hold
+		// never opens, exactly as the server refuses it at `DigStart`.
+		if self.ore_dig_mode(hit.cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
 			return false;
 		}
 		if self.water_tool_selected() {
@@ -3221,6 +3250,10 @@ impl Engine {
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
 				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
+			} else if self.ore_dig_mode(h.cell)
+				== digblock_core::worldgen::ore::DigMode::NeedsSiphon
+			{
+				Some((h.cell, digblock_core::unlock::Kind::Tool.message()))
 			} else {
 				digblock_core::unlock::dig_blocked(h.block, &self.skills)
 					.map(|req| (h.cell, req.kind.message()))
@@ -3260,12 +3293,17 @@ impl Engine {
 			};
 			// Family-scaled hold time (SIM v12) — the same `dig_required`
 			// the server's completion gate runs.
-			let required = hit
-				.block
+			// An EXTRACTION is timed as the ORE rather than as the stone
+			// the cell still holds, so a deep seam takes longer than a
+			// shallow one and the ore rows' hardnesses are not dead
+			// numbers on blocks nobody digs.
+			let timed =
+				digblock_core::worldgen::ore::dig_block(self.ore_dig_mode(hit.cell), hit.block);
+			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
 					digblock_core::skills::dig_required(
-						hit.block,
+						timed,
 						h,
 						self.skills.level(digblock_core::skills::Skill::Mining),
 					) as u16
@@ -3399,10 +3437,20 @@ impl Engine {
 				}
 			}
 		}
+		// A field extraction (SKILLS-DESIGN §5.3): the vein is DRAWN out,
+		// not dug out, so the cell becomes a tapped face and the mountain
+		// keeps its shape. Resolved before the write, because it changes
+		// both what is written and what is credited.
+		let extracting = match self.ore_dig_mode(hit.cell) {
+			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+			_ => None,
+		};
 		// Slabs shrink one third per completed dig (2/3 → 1/3 → Air);
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
 			digblock_core::shapes::slab_shrunk(prev_cell)
+		} else if extracting.is_some() {
+			BlockType::DepletedStone as u16
 		} else {
 			air
 		};
@@ -3435,8 +3483,11 @@ impl Engine {
 		// No swing is started here: the arc that began with this hold is
 		// running out on this very frame, and re-striking it is what used
 		// to bolt a whole second stroke onto a finished scoop.
-		// One credit even for the two-cell door.
-		let drop = prev.dig_drop();
+		// One credit even for the two-cell door. An extraction credits the
+		// ORE, never the cell's own drop — the cell is Stone and Stone hands
+		// out Rubble, which is exactly what quarrying should give and
+		// exactly what drawing a seam should not.
+		let drop = extracting.or_else(|| prev.dig_drop());
 		if let Some(d) = drop {
 			self.inventory.add(d, 1);
 			self.hotbar.auto_assign(d);
@@ -3464,11 +3515,17 @@ impl Engine {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
 				// Offline, the engine IS the award authority — the same
-				// table the server's dig-credit chokepoint reads.
-				self.award_xp_offline(
-					digblock_core::skills::Skill::Mining,
-					digblock_core::skills::dig_xp(prev),
-				);
+				// tables the server's dig-credit chokepoint reads, including
+				// §5.4's dual award at the rock face.
+				let (mining_xp, alch_xp) =
+					match extracting.and_then(digblock_core::skills::ore_field_xp) {
+						Some((m, a)) => (m, a),
+						None => (digblock_core::skills::dig_xp(prev), 0),
+					};
+				self.award_xp_offline(digblock_core::skills::Skill::Mining, mining_xp);
+				if alch_xp > 0 {
+					self.award_xp_offline(digblock_core::skills::Skill::Alchemy, alch_xp);
+				}
 			}
 		}
 	}
@@ -3910,6 +3967,16 @@ impl Engine {
 		}
 		if !self.diggable(hit) {
 			return None;
+		}
+		// A field extraction shows the outline and NO crack — the water
+		// tool's precedent. Nothing is breaking: the seam is being drawn
+		// out of rock that stays standing, and a spreading web would say
+		// the opposite of what is happening.
+		if matches!(
+			self.ore_dig_mode(hit.cell),
+			digblock_core::worldgen::ore::DigMode::Extract(_)
+		) {
+			return Some(boxed(None));
 		}
 		// The DECAYED progress, so a released hold's web visibly retreats
 		// (and a resumed one picks up from the retreated web) rather than

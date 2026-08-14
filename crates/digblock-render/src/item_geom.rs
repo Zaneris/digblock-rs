@@ -161,6 +161,23 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	}
 }
 
+/// The Essence Siphon: a wide funnel that swallows the rock face, a
+/// narrow stem, and a glowing bulb where the drawn essence collects.
+///
+/// The bulb is what makes it read at hotbar size — a plain dark tube is a
+/// silhouette nobody can name, and the glow says "this pulls something
+/// OUT" in the one place the icon has to say anything at all. The flame
+/// layer is borrowed rather than drawn: it is the only bright texture the
+/// atlas has, and a siphon full of light is the right lie.
+fn siphon_faces(out: &mut Vec<ItemFace>) {
+	let dark = digblock_core::block::tex::LUMBER_DARK;
+	let light = digblock_core::block::tex::LUMBER_LIGHT;
+	let glow = digblock_core::block::tex::TORCH_FLAME;
+	box_faces([2, 0, 2], [10, 3, 10], |_| dark, out);
+	box_faces([5, 3, 5], [7, 8, 7], |_| light, out);
+	box_faces([4, 8, 4], [8, 11, 8], |_| glow, out);
+}
+
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
 pub fn height(kind: IconKind) -> i32 {
@@ -196,6 +213,7 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 			}
 		}
 		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
+		IconKind::Siphon => siphon_faces(&mut out),
 	}
 	out
 }

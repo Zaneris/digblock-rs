@@ -258,9 +258,7 @@ pub fn lowest_reveal() -> u32 {
 /// back into the coordinate to regrow it.
 pub fn revealed(
 	cell: u16,
-	x: i32,
-	y: i32,
-	z: i32,
+	at: (i32, i32, i32),
 	seed: f64,
 	mining: u32,
 	edited: bool,
@@ -268,8 +266,58 @@ pub fn revealed(
 	if edited || crate::chunk::cell_id(cell) != BlockType::Stone as u16 {
 		return None;
 	}
-	let ore = ore_at(x, y, z, seed)?;
+	let ore = ore_at(at.0, at.1, at.2, seed)?;
 	(mining >= crate::unlock::reveal(ore)?).then_some(ore)
+}
+
+/// What a dig on one cell actually IS, for this player with this tool in
+/// hand (SKILLS-DESIGN §5.3). The one question the client's prediction and
+/// the server's validation both ask, so they cannot disagree about whether
+/// an action was a dig, a draw, or a refusal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DigMode {
+	/// Ordinary: the cell breaks and drops what it drops.
+	Break,
+	/// A revealed vein with the siphon in hand: the cell becomes
+	/// [`BlockType::DepletedStone`] and the ore lands in the inventory.
+	/// Mining ore never excavates, so the mountainside keeps its shape.
+	Extract(BlockType),
+	/// A revealed vein and no siphon. Refused at `DigStart`, not at the
+	/// completing edit — if you can SEE the seam, the game will not let
+	/// you spend it on a stone dig by accident, and it says so before you
+	/// hold the button through a two-second timer for nothing.
+	NeedsSiphon,
+}
+
+pub fn dig_mode(
+	cell: u16,
+	at: (i32, i32, i32),
+	seed: f64,
+	mining: u32,
+	edited: bool,
+	active_tool: BlockType,
+) -> DigMode {
+	match revealed(cell, at, seed, mining, edited) {
+		// Below the reveal there is nothing here to protect: that player's
+		// client and server agree the cell is stone, so it digs as stone
+		// and the vein is spent. You dig what you can see.
+		None => DigMode::Break,
+		Some(ore) if active_tool == BlockType::EssenceSiphon => DigMode::Extract(ore),
+		Some(_) => DigMode::NeedsSiphon,
+	}
+}
+
+/// The block a dig is TIMED and CREDITED as. A vein lives in a cell that
+/// still holds Stone — the reveal is a mesh stamp, not a world write — so
+/// without this an extraction would take a stone's 90 ticks and pay a
+/// stone's XP however deep the seam was, and the ore rows' hardnesses
+/// would be dead numbers on blocks nobody ever digs.
+#[inline]
+pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
+	match mode {
+		DigMode::Extract(ore) => ore,
+		_ => cell_block,
+	}
 }
 
 #[cfg(test)]
@@ -392,27 +440,29 @@ mod tests {
 		let (x, y, z, _) = ore_cells(seed)[0];
 		let max = crate::skills::MAX_LEVEL;
 		assert!(
-			revealed(stone, x, y, z, seed, max, false).is_some(),
+			revealed(stone, (x, y, z), seed, max, false).is_some(),
 			"pristine"
 		);
 		// Somebody put stone back where the vein was.
-		assert_eq!(revealed(stone, x, y, z, seed, max, true), None, "edited");
+		assert_eq!(revealed(stone, (x, y, z), seed, max, true), None, "edited");
 		// And the tapped face itself never re-reads as ore.
 		let spent = BlockType::DepletedStone as u16;
-		assert_eq!(revealed(spent, x, y, z, seed, max, false), None);
-		assert_eq!(revealed(spent, x, y, z, seed, max, true), None);
+		assert_eq!(revealed(spent, (x, y, z), seed, max, false), None);
+		assert_eq!(revealed(spent, (x, y, z), seed, max, true), None);
 		// Nor does anything else standing in that coordinate.
 		for b in [BlockType::Air, BlockType::Rubble, BlockType::Emberore] {
-			assert_eq!(revealed(b as u16, x, y, z, seed, max, false), None, "{b:?}");
+			assert_eq!(
+				revealed(b as u16, (x, y, z), seed, max, false),
+				None,
+				"{b:?}"
+			);
 		}
 		// A shaped cell in the same coordinate is not stone either, state
 		// nibble or no state nibble.
 		assert_eq!(
 			revealed(
 				make_cell(BlockType::StoneSlab, 1),
-				x,
-				y,
-				z,
+				(x, y, z),
 				seed,
 				max,
 				false
@@ -445,8 +495,8 @@ mod tests {
 				Some(ore),
 				"the centre is in the blob"
 			);
-			assert_eq!(revealed(stone, x, y, z, seed, need - 1, false), None);
-			assert_eq!(revealed(stone, x, y, z, seed, need, false), Some(ore));
+			assert_eq!(revealed(stone, (x, y, z), seed, need - 1, false), None);
+			assert_eq!(revealed(stone, (x, y, z), seed, need, false), Some(ore));
 		}
 	}
 
