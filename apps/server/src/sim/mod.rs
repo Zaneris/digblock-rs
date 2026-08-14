@@ -652,6 +652,17 @@ impl Sim {
 		}
 	}
 
+	/// Raise a client's Alchemy to `level` — the craft gate's counterpart
+	/// of [`Self::bench_set_mining_level`], for edit-path tests that dig
+	/// craft-only blocks (slabs, stairs, doors, torches).
+	#[cfg(test)]
+	pub(crate) fn bench_set_alchemy_level(&mut self, conn_id: u64, level: u32) {
+		use digblock_core::skills::{total_xp_for, Skill};
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			c.skills.set_total(Skill::Alchemy, total_xp_for(level));
+		}
+	}
+
 	/// The cell a client currently holds a dig on, if any.
 	#[cfg(test)]
 	fn test_digging(&self, conn_id: u64) -> Option<(i32, i32, i32)> {
@@ -913,20 +924,25 @@ impl Sim {
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
-		// The rock gate (SIM v12), refused at the hold's start for the
-		// same reason protection is: the refusal is useless after the
-		// player held the button through a full dig timer. Honest
-		// clients predict it in `diggable()` and never send this.
+		// The skill gates (SIM v12's rock gate, v13's craft gate), refused
+		// at the hold's start for the same reason protection is: the
+		// refusal is useless after the player held the button through a
+		// full dig timer. Honest clients predict it and never send this.
 		if let Some(v) = cell_value {
 			let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
-			let mining = client.skills.level(digblock_core::skills::Skill::Mining);
-			if digblock_core::skills::dig_level_gate(b) > mining {
+			// One question, the same one the client predicted with; the
+			// wire reason is all this end adds.
+			if let Some(req) = digblock_core::unlock::dig_blocked(b, &client.skills) {
+				use digblock_core::unlock::Kind;
 				client.digging = None;
 				client_send(
 					client,
 					&ServerMsg::DigRefused {
 						cell: [cell.0, cell.1, cell.2],
-						reason: RejectReason::SkillGated,
+						reason: match req.kind {
+							Kind::Strength => RejectReason::SkillGated,
+							Kind::Recipe => RejectReason::NotUnlocked,
+						},
 					},
 				);
 				return;
@@ -2044,6 +2060,82 @@ mod tests {
 			},
 		}]);
 		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
+	}
+
+	/// SIM v13's craft gate, server half: a DigStart on a craft-only block
+	/// below the Alchemy level that makes it refuses with `NotUnlocked` and
+	/// opens no hold — you cannot mine your way to a torch you can't yet
+	/// transmute, in your own world or through somebody else's build. The
+	/// natural block beside it stays freely diggable at the same level.
+	#[test]
+	fn craft_only_blocks_refuse_the_dig_start() {
+		use digblock_core::block::BlockType;
+		use digblock_core::raycast::{raycast, REACH};
+		use glam::Vec3;
+		let mut sim = flat_sim("craftgate");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let ground = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Stand a torch on the flat world's surface, clear of the capsule
+		// (DigStart validates the gates and the cell, never the reach). The
+		// world is stone, so clear the rock gate too — this test is about
+		// the other one.
+		sim.bench_set_mining_level(1, 5);
+		let cell = (ground.cell.0 + 3, ground.cell.1 + 1, ground.cell.2);
+		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Torch as u16);
+		let start = |sim: &mut super::Sim| {
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::DigStart {
+					cell: [cell.0, cell.1, cell.2],
+				},
+			}]);
+		};
+
+		start(&mut sim);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::NotUnlocked,
+					..
+				}
+			)),
+			"level-1 torch dig refused at the start: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+		// One level short is still short — the gate is the recipe's level.
+		sim.bench_set_alchemy_level(1, 7);
+		start(&mut sim);
+		assert_eq!(sim.test_digging(1), None, "still gated at Alchemy 7");
+
+		sim.bench_set_alchemy_level(1, 8);
+		start(&mut sim);
+		assert_eq!(sim.test_digging(1), Some(cell), "gate cleared at 8");
+
+		// The stone underneath was never the craft gate's business.
+		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Air as u16);
+		let mut c2 = connect(&mut sim, 2);
+		wait_live(&mut sim, 2);
+		sim.bench_set_mining_level(2, 5);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 2,
+			msg: ClientMsg::DigStart {
+				cell: [ground.cell.0, ground.cell.1, ground.cell.2],
+			},
+		}]);
+		c2.drain();
+		assert_eq!(
+			sim.test_digging(2),
+			Some(ground.cell),
+			"natural stone digs at Alchemy 1: {:?}",
+			c2.msgs
+		);
 	}
 
 	/// XP is server-computed at the two chokepoints and lands as new

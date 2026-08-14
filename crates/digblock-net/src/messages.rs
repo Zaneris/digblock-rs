@@ -301,12 +301,18 @@ pub enum RejectReason {
 	/// client never aims the scoop with a full bucket — the fluid ray is
 	/// only picked while it's empty. Appended in v12.
 	BucketFull,
-	/// Dig refused: the block's `skills::dig_level_gate` exceeds the
+	/// Dig refused: the block's `unlock::mine` level exceeds the
 	/// digger's Mining level (SKILLS-DESIGN §5.1's rock gate). Sent at
 	/// `DigStart` like `Protected`, so the player isn't left holding the
 	/// button; honest clients predict it in `diggable()` and never open
 	/// the hold. Appended in v17.
 	SkillGated,
+	/// Dig refused: the block is craft-only and the digger's Alchemy level
+	/// is below its `unlock::craft` level, so the pickup would hand out
+	/// an item they cannot make (`unlock::pickup`). Rides the
+	/// same `DigStart` path as `SkillGated`; predicted in `diggable()`.
+	/// Appended in v19.
+	NotUnlocked,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

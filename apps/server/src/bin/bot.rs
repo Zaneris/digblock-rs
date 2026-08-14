@@ -218,6 +218,8 @@ fn run_bot(
 	// In-progress timed dig: target cell, its block, and the predicted
 	// tick the hold satisfies the server's hardness gate.
 	let mut digging: Option<((i32, i32, i32), BlockType, u32)> = None;
+	// A bot never earns XP, so it asks the skill gates as a fresh player.
+	let bot_skills = digblock_core::skills::SkillSet::default();
 
 	// Terrain-only world model: enough for plausible claims and digs.
 	// (No caves/trees/edits — off claims are simply not adopted.)
@@ -345,12 +347,14 @@ fn run_bot(
 					if next_edit_in <= 0.0 {
 						next_edit_in = f32::INFINITY; // rearmed on completion
 						if let Some(hit) = raycast(p.pos, down, REACH, &world) {
-							// Same gates as the server — a bot that has dug
-							// down to bedrock (or level-gated rock; bots
-							// predict at Mining 1) must skip it, not retry
-							// forever.
+							// Same gates as the server, asked the same way — a
+							// bot that has dug down to bedrock (or onto
+							// level-gated rock, or somebody's craft-only
+							// build; bots run at level 1) must skip it,
+							// not retry forever.
 							if hit.block.dig_hardness(hit.cell.1).is_some()
-								&& digblock_core::skills::dig_level_gate(hit.block) <= 1
+								&& digblock_core::unlock::dig_blocked(hit.block, &bot_skills)
+									.is_none()
 							{
 								let hardness = hit.block.dig_hardness(hit.cell.1).unwrap();
 								client.send_dig_start(hit.cell);

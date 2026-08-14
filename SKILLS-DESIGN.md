@@ -52,7 +52,10 @@ illuminate, caves and roofed rooms go dark; §7.4 updated) and reconciled this d
 with the shipped code (§3.3 cumulative note, §4.1/§4.2 per-line-ceil ideals, §4.3 rows
 75/90, §5.3 ore ids 30–34, §10 pump-rule pin), then landed §5.1's **per-material dig
 families and the rock gate** (SIM v12, protocol v17 — Fixed/Soft/Wood/Rock curves all
-exact at 30; Sandstone opens at Mining 3, Stone/Rubble at 5). M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+exact at 30; Sandstone opens at Mining 3, Stone/Rubble at 5), and its Alchemy twin, the
+**craft gate** (SIM v13, protocol v19 — a craft-only block refuses to be dug below the
+Alchemy level that makes it, so a pickup can't route around an unlock; the planed-timber
+set moved 40 → **15** with it, joining the bucket charge). M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
@@ -246,13 +249,13 @@ no-matter-creation pin with margin to spare.
 | 1 | extract the basic roster; **Slab** shape (ideal 9) |
 | 5 | **Stairs** shape (18) |
 | 8 | craft the **Torch** (4 Flora + 2 Earth — light before ore, §7.3) |
-| 10 | craft the **Essence Siphon** (30 Flora + 15 Earth — pairs with Mining 10's first reveal). (The **Door** shape was authored here; it ships as part of the level-40 planed-timber set instead — see below.) |
-| 15 | **extract the bucket charge** → 18 Aqua (the Aqua economy opens) |
+| 10 | craft the **Essence Siphon** (30 Flora + 15 Earth — pairs with Mining 10's first reveal). (The **Door** shape was authored here; it ships as part of the level-15 planed-timber set instead — see below.) |
+| 15 | **extract the bucket charge** → 18 Aqua (the Aqua economy opens); the **planed-timber** material and its whole joinery set (Lumber block, slab, stairs, door — §7.2's `max(shape, material)` rule with the material dominating every shape) |
 | 20 | materials: **clean Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand |
 | 25 | bonus line: dew (§3.3); extraction pace 0.5s → 0.35s per WHOLE block (every block's own pace scales with it); **Stone Bricks** |
 | 30 | materials: **Sandstone, Snow, Glass, Grass, Mud** |
 | 35 | **Fence**, **Ladder** shapes (§7.2) |
-| 40 | bonus line: trace minerals; the **planed-timber** material and its whole joinery set (Lumber block, slab, stairs, door — §7.2's `max(shape, material)` rule with the material dominating every shape); craft **Lantern**, **Framed Window** |
+| 40 | bonus line: trace minerals; craft **Lantern**, **Framed Window** |
 | 45 | **Pillar**, **Roof Wedge** shapes; materials: **Polished Stone**, **Sandstone Bricks** |
 | 50 | **craft Water**: 27 Aqua → 1 bucket charge (lossy vs. the 18 extraction — no loop); material: **Metal** (block + its grid shapes: MetalStairs, MetalDoor, …) |
 | 55 | craft the **Resonant Pick** (240 Metal + 60 Earth + 12 Aether) |
@@ -298,14 +301,30 @@ family is what keeps leaves/torches/the scoop from ever speeding up. Spot values
 2.55s at L1 (153t) → 1.50s at 30 → 0.63s at 99; Wood 1.35s → 1.00s → 0.50s; Dirt 0.63s
 → 0.50s → 0.21s.
 
-**The rock gate** (`skills::dig_level_gate`) is a deliberate reversal of this section's
+**The rock gate** (`unlock::mine`) is a deliberate reversal of this section's
 original "no strength wall" stance: Sandstone opens at Mining **3**, Stone (+ its
 shapes) and Rubble at **5**; Gravel stays the ungated entry rock, so a fresh player
 levels on soil and scree (~80 dirt digs to 5) before rock opens. Refusal happens at
 `DigStart` via `RejectReason::SkillGated` (protocol v17) — the `Protected` pattern, so
 nobody holds a button through a dig timer for nothing — and the client predicts it in
-`diggable()` (it knows its own level; `REFUSE_GATED_MSG` is the shared wording). Ore
+`diggable()` (it knows its own level; `unlock::Kind::Strength`'s message is the shared wording). Ore
 (§5.3) stays gated by *visibility* on top of this.
+
+**The craft gate** (`unlock::pickup`, SIM v13 / protocol v19) is the same
+refusal on the other skill: a **craft-only** block — one worldgen never places, marked
+`crafted` in its `blocks!` row and pinned against worldgen itself by
+`worldgen_never_places_a_crafted_block` — refuses to be dug below the Alchemy level of
+its own §4 recipe. Every one standing in a world was made by somebody, so picking one up
+is a way of *having* it, and mining must not route around an unlock: WoodStairs/
+StoneStairs at Alch **5**, Torch at **8**, the whole planed-timber set at **15** (slabs
+sit at recipe level 1, i.e. ungated in practice). The gate keys on the DROP, not the
+cell, which is what keeps pristine Stone a Mining question — it hands out Rubble, and
+Rubble has no recipe at all — and on craft-*only* rather than craftable, or the level-20
+`Wood` recipe would shut a fresh player out of the first tree they see. Same machinery
+as the rock gate: refused at `DigStart` with `RejectReason::NotUnlocked`, predicted in
+`diggable()`, one shared wording in `unlock::Kind::Recipe`'s message ("you haven't unlocked this
+yet"). Placing, opening and walking on other people's builds are all untouched — only
+the pickup is refused.
 
 The server's completion gate already carries `dig_grace(need) = 4 + min(need/5, 12)`; a
 level-up landing mid-hold can skew client/server `required` by a few ticks and the grace
@@ -501,6 +520,7 @@ unlock axes replace it for structural pieces:
 
 | Alch | material (craft cost per §4.2: 27-vol in extraction ratio) |
 |--:|---|
+| 15 | **Planed Timber** (`Lumber`) — shipped; the joinery material, so its slab/stairs/door all land here rather than at their shapes' own 1/5/10 |
 | 20 | **Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand |
 | 25 | **Stone Bricks** — same cost as Stone, squared-off dressed texture |
 | 30 | Sandstone, Snow, **Glass** (sand-flavored Earth), **Grass**, **Mud** |
@@ -784,7 +804,7 @@ could later expand the full unlock list; v1 is the summary.
   character screen and the rebuilt alchemy screen (three window sizes × four scales).
 - `panel_height_is_the_same_on_both_tabs` (the bottom-anchored panel's top edge never
   jumps on a tab switch), `every_craftable_appears_in_exactly_one_family` (the screen's
-  `FAMILIES` mirror can't silently miss a new `craft_unlock` entry), and
+  `FAMILIES` mirror can't silently miss a new `unlock::craft` entry), and
   `teaser_levels_match_the_core_tables` (§8.2's prose pinned to the enforcing functions).
 - Loopback-transport e2e: XP totals survive rejoin (v4 records), legacy v3 record joins at
   level 1 with inventory intact, legacy sub-materials decode to essences.

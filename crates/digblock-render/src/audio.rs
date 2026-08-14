@@ -87,7 +87,7 @@ pub const ALL_SFX: [Sfx; 18] = [
 
 /// The fanfare a level-up speaks: the plain chime, or the bigger one
 /// when that level opened something (see
-/// [`digblock_core::skills::level_unlocks_something`]).
+/// [`digblock_core::unlock::opens`]).
 pub fn level_sfx(unlocked: bool) -> Sfx {
 	if unlocked {
 		Sfx::LevelUnlock

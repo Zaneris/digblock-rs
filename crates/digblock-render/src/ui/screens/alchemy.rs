@@ -32,6 +32,7 @@ use digblock_core::hotbar::HotbarItem;
 use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
 use digblock_core::inventory::Inventory;
 use digblock_core::skills::{self, Skill, SkillSet};
+use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
 use crate::hotbar::{HotbarView, SlotView};
@@ -110,9 +111,8 @@ impl AlchView {
 	/// Whole batches of `item` the holdings afford at `level` (0 when
 	/// locked or unaffordable).
 	pub fn affordable(&self, item: BlockType) -> u32 {
-		match alchemy::craft_unlock(item) {
-			Some(unlock) if self.level >= unlock => {}
-			_ => return 0,
+		if !unlock::can_craft(item, self.level) {
+			return 0;
 		}
 		let Some(ideal) = alchemy::craft_ideal(item) else {
 			return 0;
@@ -339,7 +339,7 @@ impl AlchScreen {
 			self.progress = 0.0;
 			return None;
 		};
-		if inv.count(block) == 0 || level < alchemy::extract_unlock(block) {
+		if inv.count(block) == 0 || !unlock::can_extract(block, level) {
 			self.extracting = None;
 			self.progress = 0.0;
 			return None;
@@ -676,9 +676,8 @@ impl AlchScreen {
 		// The bucket charge as a single water tile, right-aligned in the
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
-		let bucket_tile = (view.bucket_full
-			&& view.level >= alchemy::extract_unlock(BlockType::Water))
-		.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
+		let bucket_tile = (view.bucket_full && unlock::can_extract(BlockType::Water, view.level))
+			.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
 		if let Some(tile) = bucket_tile {
 			widgets::slot(
 				ui,
@@ -783,7 +782,7 @@ impl AlchScreen {
 			let all_locked = fam
 				.members
 				.iter()
-				.all(|&m| alchemy::craft_unlock(m).is_none_or(|u| view.level < u));
+				.all(|&m| !unlock::can_craft(m, view.level));
 			// The tile trades one member for the next by shrinking the
 			// outgoing one away and growing the incoming one in, rather
 			// than cutting between them.
@@ -810,7 +809,7 @@ impl AlchScreen {
 				let earliest = fam
 					.members
 					.iter()
-					.filter_map(|&m| alchemy::craft_unlock(m))
+					.filter_map(|&m| unlock::craft(m))
 					.min()
 					.unwrap_or(99);
 				lock_badge(ui, rect, earliest);
@@ -832,7 +831,7 @@ impl AlchScreen {
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 			for (j, &item) in family.members.iter().enumerate() {
 				let rect = mem_spec.rect(j);
-				let locked = alchemy::craft_unlock(item).is_none_or(|u| view.level < u);
+				let locked = !unlock::can_craft(item, view.level);
 				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 				widgets::slot(
 					ui,
@@ -848,7 +847,7 @@ impl AlchScreen {
 					rect.contains(cx, cy),
 				);
 				if locked {
-					lock_badge(ui, rect, alchemy::craft_unlock(item).unwrap_or(99));
+					lock_badge(ui, rect, unlock::craft(item).unwrap_or(99));
 				} else {
 					let batches = view.affordable(item);
 					if batches > 0 {
@@ -893,8 +892,8 @@ impl AlchScreen {
 		let family = &FAMILIES[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
-		let unlock = alchemy::craft_unlock(item).unwrap_or(u32::MAX);
-		let locked = view.level < unlock;
+		let need = unlock::craft(item).unwrap_or(u32::MAX);
+		let locked = !unlock::can_craft(item, view.level);
 		let batches = view.affordable(item);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 		hud::draw_icon(
@@ -910,7 +909,7 @@ impl AlchScreen {
 			if locked { LOCKED_TINT } else { tint },
 		);
 		let text = if locked {
-			format!("{}   —   LV {unlock}", block_name(item))
+			format!("{}   —   LV {need}", block_name(item))
 		} else {
 			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
 			let costs = ideal
@@ -1062,9 +1061,7 @@ impl AlchScreen {
 							self.member = FAMILIES[i]
 								.members
 								.iter()
-								.position(|&m| {
-									alchemy::craft_unlock(m).is_some_and(|u| view.level >= u)
-								})
+								.position(|&m| unlock::can_craft(m, view.level))
 								.unwrap_or(0);
 						}
 					}
@@ -1105,12 +1102,12 @@ impl AlchScreen {
 					// A refused drop SAYS why — silence read as a bug.
 					if !payload.is_extractable() {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
-					} else if view.level < alchemy::extract_unlock(payload) {
+					} else if !unlock::can_extract(payload, view.level) {
 						self.hint = Some((
 							format!(
 								"{}   —   LV {}",
 								block_name(payload),
-								alchemy::extract_unlock(payload)
+								unlock::extract(payload)
 							),
 							HINT_SECS,
 						));
@@ -1674,12 +1671,12 @@ mod tests {
 	}
 
 	/// `FAMILIES` is a hand-maintained mirror of the core catalog: every
-	/// craftable appears in exactly one family, so a new `craft_unlock`
+	/// craftable appears in exactly one family, so a new `unlock::craft`
 	/// entry cannot silently never reach the screen.
 	#[test]
 	fn every_craftable_appears_in_exactly_one_family() {
 		for &b in &BlockType::ALL {
-			let craftable = alchemy::craft_unlock(b).is_some();
+			let craftable = unlock::craft(b).is_some();
 			let appearances: usize = FAMILIES
 				.iter()
 				.map(|f| f.members.iter().filter(|&&m| m == b).count())

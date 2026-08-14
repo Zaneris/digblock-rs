@@ -55,14 +55,11 @@ impl CharView {
 const ALCH_TEASERS: &[(u32, &str)] = &[
 	(5, "stairs"),
 	(8, "the torch"),
-	(15, "extract the bucket charge"),
+	(15, "planed lumber and its joinery; the bucket charge"),
 	(20, "clean stone, wood, dirt, sand"),
 	(25, "morning dew; a faster bench"),
 	(30, "sandstone, snow, grass, mud"),
-	(
-		40,
-		"planed lumber and its joinery; trace minerals from rubble",
-	),
+	(40, "trace minerals from rubble"),
 	(50, "craft water"),
 	(60, "gravel's deep metal"),
 	(75, "pine resin; the fastest bench"),
@@ -302,47 +299,53 @@ mod tests {
 		assert!(all.contains("1,103,585 XP — mastered"), "{all}");
 	}
 
-	/// Every teaser level is the CORE's number for that unlock — the
-	/// prose lives here, the thresholds live in the tables that enforce
-	/// them, and this is the seam that keeps them agreeing.
+	/// Every level the CORE opens something at has prose here, DERIVED
+	/// from `unlock::opens` rather than restated — the thresholds live in
+	/// the one module that enforces them, the wording lives here, and
+	/// retuning a threshold fails this test until someone writes the
+	/// sentence for it. The extra teasers (the pace steps, the waste
+	/// floor, mastery) are levels that change a NUMBER rather than open a
+	/// recipe, so they are ours alone.
 	#[test]
-	fn teaser_levels_match_the_core_tables() {
-		use digblock_core::{alchemy, block::BlockType as B};
-		let alch = |lvl: u32| {
+	fn every_unlock_level_has_prose() {
+		use digblock_core::{alchemy, unlock};
+		for skill in Skill::ALL {
+			let table = match skill {
+				Skill::Mining => MINING_TEASERS,
+				Skill::Alchemy => ALCH_TEASERS,
+			};
+			for level in 1..=skills::MAX_LEVEL {
+				if unlock::opens(skill, level) {
+					assert!(
+						table.iter().any(|&(l, _)| l == level),
+						"{skill:?} opens something at {level} with nothing to say about it"
+					);
+				}
+			}
+			// Prose in level order, so `next_unlock`'s find() is the NEXT
+			// one rather than merely a later one.
 			assert!(
-				ALCH_TEASERS.iter().any(|&(l, _)| l == lvl),
-				"no alchemy teaser at {lvl}"
+				table.windows(2).all(|w| w[0].0 < w[1].0),
+				"{skill:?} teasers out of order"
 			);
-		};
-		assert_eq!(alchemy::craft_unlock(B::WoodStairs), Some(5));
-		alch(5);
-		assert_eq!(alchemy::craft_unlock(B::Torch), Some(8));
-		alch(8);
-		assert_eq!(alchemy::extract_unlock(B::Water), 15);
-		alch(15);
-		assert_eq!(alchemy::craft_unlock(B::Stone), Some(20));
-		alch(20);
-		assert_eq!(alchemy::craft_unlock(B::Sandstone), Some(30));
-		alch(30);
-		// The planed-timber set — block, slab, stairs and door together.
-		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
-			assert_eq!(alchemy::craft_unlock(b), Some(40), "{b:?}");
 		}
-		alch(40);
-		assert_eq!(alchemy::craft_unlock(B::Water), Some(50));
-		alch(50);
-		// The pace steps and bonus lines named in prose.
-		assert!(alchemy::base_pace_ticks(25) < alchemy::base_pace_ticks(24));
-		alch(25);
-		assert!(alchemy::base_pace_ticks(75) < alchemy::base_pace_ticks(74));
-		alch(75);
-		// Mining's teasers ARE the rock gate.
-		assert_eq!(digblock_core::skills::dig_level_gate(B::Sandstone), 3);
-		assert_eq!(digblock_core::skills::dig_level_gate(B::Stone), 5);
+		// Mining's teasers are EXACTLY the rock gate — it opens nothing
+		// else, so an extra row here would be a promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
 			vec![3, 5]
 		);
+		// The number-only levels, which `opens` deliberately does not
+		// report: the bench's two pace steps and the waste floor.
+		assert!(alchemy::base_pace_ticks(25) < alchemy::base_pace_ticks(24));
+		assert!(alchemy::base_pace_ticks(75) < alchemy::base_pace_ticks(74));
+		assert!(alchemy::waste_permille(85) < alchemy::waste_permille(84));
+		for l in [25, 75, 85] {
+			assert!(
+				ALCH_TEASERS.iter().any(|&(t, _)| t == l),
+				"no teaser at {l}"
+			);
+		}
 
 		// And the rows actually render: a level-1 character teases the
 		// first thresholds; past the last Mining gate, Mining shows none.

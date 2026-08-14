@@ -79,19 +79,19 @@ blocks! {
 	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble),
 	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
 	/// Crafted via alchemy from sub-wood, never generated.
-	WoodStairs = 22 => dig(shaped(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), ShapeKind::Stairs), 60, DigFamily::Wood),
-	StoneStairs = 23 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Stairs), 90, DigFamily::Rock),
+	WoodStairs = 22 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood),
+	StoneStairs = 23 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy — out
 	/// of planed `Lumber` like the rest of the joinery, which is why it
 	/// wears LUMBER_LIGHT and unlocks with the other lumber shapes.
-	LumberDoor = 24 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Door), 45, DigFamily::Wood),
+	LumberDoor = 24 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Door), 45, DigFamily::Wood),
 	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
 	/// Placing onto a slab's top face grows it; the third grow converts
 	/// the cell to the plain base block. Hardness is a third of the base
 	/// block's, since each dig removes one third. Crafted via alchemy.
-	WoodSlab = 25 => dig(shaped(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), ShapeKind::Slab), 20, DigFamily::Wood),
-	StoneSlab = 26 => dig(shaped(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE), ShapeKind::Slab), 30, DigFamily::Rock),
+	WoodSlab = 25 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood),
+	StoneSlab = 26 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
 	/// placeable, and the mass Earth feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
@@ -101,7 +101,7 @@ blocks! {
 	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
 	/// emissive (fullbright ink) AND a Stage-B source: it seeds level 14
 	/// into the voxel light field (LIGHT-DESIGN.md).
-	Torch = 28 => dig(emits(glows(shaped(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE), ShapeKind::Torch)), 14), 10, DigFamily::Fixed),
+	Torch = 28 => dig(emits(glows(shaped(crafted(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE)), ShapeKind::Torch)), 14), 10, DigFamily::Fixed),
 	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
@@ -111,13 +111,13 @@ blocks! {
 	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
 	/// Planed timber (SKILLS-DESIGN §7.2's material × shape grid): the
 	/// refined counterpart of the felled `Wood` trunk, craft-only and
-	/// never generated — the bench's second timber, opened well after the
-	/// log's own shapes. Exists as a full block because its slab has to
+	/// never generated — the bench's second timber, opened (Alch 15) after
+	/// the log's own shapes. Exists as a full block because its slab has to
 	/// have something to complete into (three thirds = one block, the
 	/// rule that closes the slab economy).
-	Lumber = 30 => dig(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), 60, DigFamily::Wood),
-	LumberStairs = 31 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Stairs), 60, DigFamily::Wood),
-	LumberSlab = 32 => dig(shaped(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT), ShapeKind::Slab), 20, DigFamily::Wood),
+	Lumber = 30 => dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood),
+	LumberStairs = 31 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood),
+	LumberSlab = 32 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -276,6 +276,13 @@ pub struct BlockProps {
 	/// Cave carving may replace this block (natural terrain, not
 	/// structures) — consumed by worldgen's cave pass.
 	pub carveable: bool,
+	/// The bench is this block's ONLY source: worldgen never places one, so
+	/// every one standing in a world was crafted by somebody. That is what
+	/// lets `unlock::pickup` refuse the DIG below the block's own
+	/// `unlock::craft` level — an item you cannot make yet is an item you
+	/// cannot mine your way around either. Pinned against worldgen itself
+	/// by `worldgen_never_places_a_crafted_block`.
+	pub crafted: bool,
 	/// Texture-array layer indices (order fixed by
 	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
 	/// range is reachable — the vertex format's layer field is 10 bits.
@@ -324,7 +331,7 @@ pub enum DigFamily {
 	/// Timber: a firmer start, a gentler ceiling (1350 → 1000 → 500).
 	Wood,
 	/// Rock resists a novice hard (1700 → 1000 → 417) and is level-gated
-	/// besides (`skills::dig_level_gate`).
+	/// besides (`unlock::mine`).
 	Rock,
 }
 
@@ -335,6 +342,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		bucket: MeshBucket::Solid,
 		fluid: None,
 		carveable: false,
+		crafted: false,
 		tex_side: side,
 		tex_top: top,
 		tex_bottom: bottom,
@@ -357,6 +365,14 @@ const fn shaped(mut p: BlockProps, kind: ShapeKind) -> BlockProps {
 /// Natural terrain the cave pass may carve through.
 const fn carveable(mut p: BlockProps) -> BlockProps {
 	p.carveable = true;
+	p
+}
+
+/// The other half of `carveable`'s question — where a block comes from:
+/// this one is never generated, only transmuted at the bench, which is
+/// what gates digging it up (`unlock::pickup`).
+const fn crafted(mut p: BlockProps) -> BlockProps {
+	p.crafted = true;
 	p
 }
 
@@ -401,6 +417,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 			falling,
 		}),
 		carveable: false,
+		crafted: false,
 		tex_side: tex::WATER,
 		tex_top: tex::WATER,
 		tex_bottom: tex::WATER,
@@ -642,6 +659,15 @@ impl BlockType {
 			BlockType::LumberSlab => Some(BlockType::Lumber),
 			_ => None,
 		}
+	}
+
+	/// Was this block necessarily crafted? Worldgen places none of these,
+	/// so every one in a world came off the bench — which is why digging
+	/// one asks for the recipe's own Alchemy level
+	/// (`crate::unlock::pickup`).
+	#[inline]
+	pub fn is_crafted_only(self) -> bool {
+		self.props().crafted
 	}
 
 	/// Can this block be broken down at the bench at all? The full

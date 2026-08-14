@@ -186,19 +186,19 @@ pub const ALCHEMY_MAX_COUNT: u32 = 999;
 
 /// THE alchemy rule, shared verbatim by the server's validation and the
 /// offline engine (single-player must match multiplayer bit-for-bit).
-/// `level` is the actor's Alchemy level — yields, costs, and unlocks
-/// all key on it (the tables live in [`crate::alchemy`]). Returns false
-/// — with the inventory untouched — on any invalid, locked, or
-/// unaffordable op.
+/// `level` is the actor's Alchemy level — yields and costs key on it
+/// ([`crate::alchemy`]), and so does whether the op is open at all
+/// ([`crate::unlock`]). Returns false — with the inventory untouched —
+/// on any invalid, locked, or unaffordable op.
 #[must_use]
 pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
-	use crate::alchemy;
+	use crate::{alchemy, unlock};
 	match op {
 		AlchemyOp::Convert { block, count } => {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
 			}
-			if level < alchemy::extract_unlock(block) {
+			if !unlock::can_extract(block, level) {
 				return false;
 			}
 			let yields = alchemy::extract_yields(block, level);
@@ -217,9 +217,8 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
 			}
-			match alchemy::craft_unlock(item) {
-				Some(unlock) if level >= unlock => {}
-				_ => return false,
+			if !unlock::can_craft(item, level) {
+				return false;
 			}
 			let ideal = alchemy::craft_ideal(item).expect("unlock implies a recipe");
 			// The bucket charge caps at one: a craft that would vanish

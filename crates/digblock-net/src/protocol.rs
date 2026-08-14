@@ -75,7 +75,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// appends, but the version still moves: a v16 client's join flow
 /// expects the skills sync a v15 server never sends.
 /// v17: the rock gate — `RejectReason::SkillGated` appended (a dig
-/// refused at `DigStart` because `skills::dig_level_gate` exceeds the
+/// refused at `DigStart` because `unlock::mine` exceeds the
 /// digger's Mining level). Rides the existing `DigRefused` machinery;
 /// the append moves the version because a v16 peer can't decode the new
 /// variant index (and SIM v12 pairs with it anyway).
@@ -86,12 +86,18 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// shared curve on both sides, so the message carries the answer rather
 /// than the XP that implies it. An append, but the version moves for the
 /// usual reason: a v17 peer can't decode the new variant index.
-pub const PROTOCOL_VERSION: u16 = 18;
+/// v19: the craft gate — `RejectReason::NotUnlocked` appended (a dig
+/// refused at `DigStart` because the block is craft-only and
+/// `unlock::craft` level exceeds the digger's Alchemy level). The
+/// sibling of v17's rock gate on the other skill, on the same DigRefused
+/// machinery; the append moves the version because a v18 peer can't
+/// decode the new variant index (and SIM v13 pairs with it anyway).
+pub const PROTOCOL_VERSION: u16 = 19;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 18;
+pub const MIN_PROTOCOL: u16 = 19;
 
 // ---- handshake preamble ----------------------------------------------
 //

@@ -464,6 +464,29 @@ fn heightmap_dump() {
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
 }
 
+/// `BlockProps::crafted` claims worldgen places none of these — the claim
+/// the craft gate rests on (`unlock::pickup` refuses to dig one
+/// below its recipe's level, which would be a wall across natural terrain
+/// if the world grew them). Asked of worldgen itself, over a spread of
+/// seeds and columns that touches every generation path: ocean, mountains,
+/// caves, rivers, and the decorated surface with its trees.
+#[test]
+fn worldgen_never_places_a_crafted_block() {
+	for seed in [42.0, 7.5, -300.25] {
+		for &(cx, cz) in &[(0, 0), (1, -1), (7, 3), (-12, 5), (40, -33)] {
+			for chunk in digblock_core::worldgen::build_column(cx, cz, seed) {
+				for &cell in chunk.blocks.iter() {
+					let b = BlockType::from_id(digblock_core::chunk::cell_id(cell));
+					assert!(
+						!b.is_crafted_only(),
+						"worldgen placed craft-only {b:?} at seed {seed} chunk ({cx},{cz})"
+					);
+				}
+			}
+		}
+	}
+}
+
 /// Pins worldgen output to the bit. If this fails, a given seed now
 /// produces different terrain: update the hash AND bump
 /// `digblock_core::SIM_VERSION` — terrain is never sent over the wire

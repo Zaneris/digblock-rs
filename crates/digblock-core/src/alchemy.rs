@@ -1,7 +1,9 @@
 //! The alchemy economy: extraction yields, bonus lines, transmutation
-//! costs, unlock levels, and the bench pace — every number the server
-//! and offline play must agree on (SKILLS-DESIGN §3–§4, §7). All
-//! integer math, no floats: yields and costs are cross-side constants.
+//! costs, and the bench pace — every number the server and offline play
+//! must agree on (SKILLS-DESIGN §3–§4, §7). All integer math, no floats:
+//! yields and costs are cross-side constants. The LEVELS that open each
+//! recipe are not here: every threshold in the game lives in
+//! [`crate::unlock`], beside the gates that enforce it.
 //!
 //! Two invariants hold the economy shut, both pinned by tests here:
 //!
@@ -106,15 +108,6 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	out
 }
 
-/// Alchemy level required to extract this block (1 = always). The
-/// bucket charge waits for 15 — the Aqua economy's opening move.
-pub fn extract_unlock(b: BlockType) -> u32 {
-	match b {
-		BlockType::Water => 15,
-		_ => 1,
-	}
-}
-
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (`ceil(total / 3)`, never the level-scaled outcome).
 pub fn extract_total_base(b: BlockType) -> u32 {
@@ -172,27 +165,6 @@ pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 	Some(lines.to_vec())
 }
 
-/// Alchemy level that unlocks crafting `b`; `None` = never craftable.
-pub fn craft_unlock(b: BlockType) -> Option<u32> {
-	use BlockType as B;
-	Some(match b {
-		B::WoodSlab | B::StoneSlab => 1,
-		B::WoodStairs | B::StoneStairs => 5,
-		B::Torch => 8,
-		B::Stone | B::Wood | B::Dirt | B::Sand => 20,
-		B::Sandstone | B::Snow | B::Grass | B::Mud => 30,
-		// §7.2's grid rule, exactly: a material × shape pair unlocks at
-		// `max(shape level, material level)`. Planed timber is a level-40
-		// MATERIAL, so its slab (shape 1), stairs (shape 5) and door
-		// (shape 10) all arrive WITH it rather than at their shapes' own
-		// levels — the whole joinery set opens at once, which is what
-		// makes the material read as a material.
-		B::Lumber | B::LumberSlab | B::LumberStairs | B::LumberDoor => 40,
-		B::Water => 50,
-		_ => return None,
-	})
-}
-
 /// Everything craftable, in the transmute tab's display order: shaped
 /// items first (the original catalog), then raw blocks by unlock.
 pub const CRAFT_ORDER: [BlockType; 18] = [
@@ -204,9 +176,9 @@ pub const CRAFT_ORDER: [BlockType; 18] = [
 	BlockType::StoneStairs,
 	BlockType::LumberStairs,
 	BlockType::LumberDoor,
+	BlockType::Lumber,
 	BlockType::Stone,
 	BlockType::Wood,
-	BlockType::Lumber,
 	BlockType::Dirt,
 	BlockType::Sand,
 	BlockType::Sandstone,
@@ -364,21 +336,11 @@ mod tests {
 		assert_eq!(extract_total_base(B::Stone), 27);
 	}
 
+	/// The bench's pace steps, and the catalog: the LEVELS that open each
+	/// recipe live in `crate::unlock`, which pins them beside the gates
+	/// they feed — here we only hold the catalog to the recipe table.
 	#[test]
-	fn unlocks_and_pace_follow_the_level_table() {
-		use BlockType as B;
-		assert_eq!(craft_unlock(B::WoodSlab), Some(1));
-		assert_eq!(craft_unlock(B::WoodStairs), Some(5));
-		assert_eq!(craft_unlock(B::Stone), Some(20));
-		assert_eq!(craft_unlock(B::Sandstone), Some(30));
-		// §7.2's grid rule: the whole planed-timber set opens together at
-		// its MATERIAL's level, whatever each shape's own level is.
-		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
-			assert_eq!(craft_unlock(b), Some(40), "{b:?}");
-		}
-		assert_eq!(craft_unlock(B::Water), Some(50));
-		assert_eq!(craft_unlock(B::Rubble), None);
-		assert_eq!(extract_unlock(B::Water), 15);
+	fn pace_steps_and_the_catalog_are_pinned() {
 		assert_eq!(base_pace_ticks(1), 30);
 		assert_eq!(base_pace_ticks(25), 21);
 		assert_eq!(base_pace_ticks(75), 15);
@@ -386,7 +348,6 @@ mod tests {
 		// craftable is missing from it.
 		for &b in &CRAFT_ORDER {
 			assert!(craft_ideal(b).is_some(), "{b:?}");
-			assert!(craft_unlock(b).is_some(), "{b:?}");
 		}
 		for &b in &BlockType::ALL {
 			assert_eq!(

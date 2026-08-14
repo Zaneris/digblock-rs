@@ -212,15 +212,25 @@ pub(crate) fn dig_hold(
 		raycast
 	};
 	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("dig target");
-	// These tests exercise the EDIT path, not the rock gate: grant the
-	// target's gate level if the client is under it (the dedicated gate
-	// test drives DigStart raw). Callers pass base-hardness-flavored
-	// hold lengths; stretch them by the effective level's FAMILY
-	// multiplier (SIM v12) so a "full hold" stays a full hold and a
-	// deliberately-short one stays short.
-	let gate = digblock_core::skills::dig_level_gate(hit.block);
-	let level = sim.test_mining_level(conn_id).max(gate);
-	sim.bench_set_mining_level(conn_id, level);
+	// These tests exercise the EDIT path, not the skill gates: grant every
+	// level the target asks for, whichever skill it asks it of (the
+	// dedicated gate tests drive DigStart raw). Walking `dig_requirements`
+	// rather than naming the gates means a third one is granted here for
+	// free. Callers pass base-hardness-flavored hold lengths; stretch them
+	// by the effective level's FAMILY multiplier (SIM v12) so a "full
+	// hold" stays a full hold and a deliberately-short one stays short.
+	use digblock_core::skills::Skill;
+	let mut level = sim.test_mining_level(conn_id);
+	for req in digblock_core::unlock::dig_requirements(hit.block) {
+		match req.skill {
+			Skill::Mining => {
+				level = level.max(req.level);
+				sim.bench_set_mining_level(conn_id, level);
+			}
+			Skill::Alchemy if req.level > 1 => sim.bench_set_alchemy_level(conn_id, req.level),
+			Skill::Alchemy => {}
+		}
+	}
 	let permille = digblock_core::skills::dig_speed_permille(hit.block.dig_family(), level);
 	let hold_ticks = (hold_ticks * permille).div_ceil(1000);
 	*t += 1;

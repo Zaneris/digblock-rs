@@ -27,6 +27,7 @@ pub mod spawn;
 pub mod stream_budget;
 pub mod sun;
 pub mod touch;
+pub mod unlock;
 pub mod worldgen;
 
 // Root re-exports: only what consumers actually reach through the crate
@@ -98,8 +99,14 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// v12: per-material dig curves + the rock gate — `dig_required` keys on
 /// the block's `DigFamily` (Fixed flat / Soft 1250 / Wood 1350 / Rock
 /// 1700 at level 1, every family exactly 1000‰ at 30), and
-/// `skills::dig_level_gate` refuses rock digs below Mining 3–5 (client
+/// `unlock::mine` refuses rock digs below Mining 3–5 (client
 /// prediction + the server's DigStart backstop). A v11 peer times
 /// non-Soft holds differently at any level but 30 and would let a
 /// level-1 player open a hold on gated rock.
-pub const SIM_VERSION: u16 = 12;
+/// v13: the craft gate — `unlock::pickup` refuses a dig whose
+/// drop is craft-only (`block::crafted`) below that item's own
+/// `unlock::craft` level, so a torch or a lumber stair can't be picked
+/// up by someone who couldn't have made it. Client prediction plus the
+/// server's DigStart backstop, exactly as v12's rock gate; a v12 peer
+/// would open holds the new server refuses.
+pub const SIM_VERSION: u16 = 13;
