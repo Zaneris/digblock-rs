@@ -431,19 +431,46 @@ mod tests {
 			(B::LumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
 			(B::Torch, &[], &[(E::Flora, 4), (E::Earth, 2)]),
 		];
-		for &(b, base, ideal) in cases {
+		// What the grid then GREW, at the same prices — a new material ×
+		// shape pair is a block row, and these are the numbers that fall
+		// out of it with nobody choosing them.
+		let grown: &[Row] = &[
+			(B::StoneDoor, &[(E::Earth, 10)], &[(E::Earth, 10)]),
+			(B::SandstoneStairs, &[(E::Earth, 14)], &[(E::Earth, 18)]),
+			(B::SandstoneSlab, &[(E::Earth, 7)], &[(E::Earth, 9)]),
+			(B::SandstoneDoor, &[(E::Earth, 7)], &[(E::Earth, 10)]),
+			(B::DarkLumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::DarkLumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::DarkLumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::DarkLumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+			(B::RedLumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::RedLumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::RedLumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::RedLumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+		];
+		for &(b, base, ideal) in cases.iter().chain(grown) {
 			assert_eq!(extract_base(b), base.to_vec(), "{b:?} extraction");
 			let want = (!ideal.is_empty()).then(|| ideal.to_vec());
 			assert_eq!(craft_ideal(b), want, "{b:?} recipe");
 		}
-		// And the roster is exhaustive on both sides: nothing outside the
-		// list extracts or crafts at all.
+		// Nothing gains an economy by accident: a block extracts or crafts
+		// only through a material it declared or a hand-priced entry, both
+		// of which are their own decisions elsewhere. (This replaces a
+		// closed roster, which would have to be re-listed with every
+		// catalog wave and would stop meaning anything by the third.)
 		for &b in &BlockType::ALL {
-			if cases.iter().any(|&(c, _, _)| c == b) {
-				continue;
+			if !b.is_grid_item() {
+				assert_eq!(
+					!extract_base(b).is_empty(),
+					!functional_extract(b).is_empty(),
+					"{b:?} extracts without a material or a hand-set yield"
+				);
+				assert_eq!(
+					craft_ideal(b).is_some(),
+					functional_ideal(b).is_some(),
+					"{b:?} crafts without a material or a hand-set price"
+				);
 			}
-			assert!(extract_base(b).is_empty(), "{b:?} extracts unexpectedly");
-			assert!(craft_ideal(b).is_none(), "{b:?} crafts unexpectedly");
 		}
 	}
 

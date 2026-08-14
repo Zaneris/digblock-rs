@@ -73,7 +73,7 @@ blocks! {
 	/// Steep-shore and scree surface: loose pebbled rock.
 	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock), Material::Gravel),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
-	PineLeaves = 20 => mat(dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineNeedle),
+	PineLeaves = 20 => mat(dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
 	/// "All broken rock": mined sandstone is Rubble too, so the clean
 	/// block is craft-only like Stone's.
@@ -119,6 +119,28 @@ blocks! {
 	Lumber = 30 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood), Material::Lumber),
 	LumberStairs = 31 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Lumber),
 	LumberSlab = 32 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Lumber),
+	/// The mason's door — §7.2's grid at work rather than a curated row: it
+	/// lands at Alch 20 because clean Stone does, and it arrives WITH the
+	/// stone block, slab and stairs because those shapes were learned long
+	/// before. Hardness is the timber door's 0.75× of its own base block.
+	StoneDoor = 33 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Door), 68, DigFamily::Rock), Material::Stone),
+	/// Sandstone's set, likewise free: the material opens at 30 and hands
+	/// over every shape at once.
+	SandstoneStairs = 34 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::Sandstone),
+	SandstoneSlab = 35 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Slab), 23, DigFamily::Rock), Material::Sandstone),
+	SandstoneDoor = 36 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Door), 53, DigFamily::Rock), Material::Sandstone),
+	/// The second timber (Alch 25). `LUMBER_DARK` was drawn and registered
+	/// with `LUMBER_LIGHT` and then sat unused on no block for a release —
+	/// under the grid a whole new joinery set is four rows and no new art.
+	DarkLumber = 37 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberStairs = 38 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberSlab = 39 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Slab), 20, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberDoor = 40 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Door), 45, DigFamily::Wood), Material::DarkLumber),
+	/// The third timber (Alch 40).
+	RedLumber = 41 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
+	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -221,13 +243,25 @@ impl ShapeFamily {
 		ShapeFamily::Block,
 	];
 
-	/// The tab's family label.
+	/// The tab's family label (plural — it names a group of tiles).
 	pub fn name(self) -> &'static str {
 		match self {
 			ShapeFamily::Block => "BLOCKS",
 			ShapeFamily::Slab => "SLABS",
 			ShapeFamily::Stairs => "STAIRS",
 			ShapeFamily::Door => "DOORS",
+		}
+	}
+
+	/// What an ITEM of this form is called after its material — "STONE" +
+	/// "STAIRS". `None` for the full cube, which is just the substance's
+	/// own name: nobody calls it a stone block.
+	pub fn item_suffix(self) -> Option<&'static str> {
+		match self {
+			ShapeFamily::Block => None,
+			ShapeFamily::Slab => Some("SLAB"),
+			ShapeFamily::Stairs => Some("STAIRS"),
+			ShapeFamily::Door => Some("DOOR"),
 		}
 	}
 
@@ -902,10 +936,22 @@ mod tests {
 			(BlockType::Lumber, Wood),
 			(BlockType::LumberStairs, Wood),
 			(BlockType::LumberSlab, Wood),
+			(BlockType::DarkLumber, Wood),
+			(BlockType::DarkLumberStairs, Wood),
+			(BlockType::DarkLumberSlab, Wood),
+			(BlockType::DarkLumberDoor, Wood),
+			(BlockType::RedLumber, Wood),
+			(BlockType::RedLumberStairs, Wood),
+			(BlockType::RedLumberSlab, Wood),
+			(BlockType::RedLumberDoor, Wood),
 			(BlockType::Stone, Rock),
 			(BlockType::StoneStairs, Rock),
 			(BlockType::StoneSlab, Rock),
+			(BlockType::StoneDoor, Rock),
 			(BlockType::Sandstone, Rock),
+			(BlockType::SandstoneStairs, Rock),
+			(BlockType::SandstoneSlab, Rock),
+			(BlockType::SandstoneDoor, Rock),
 			(BlockType::Gravel, Rock),
 			(BlockType::Rubble, Rock),
 		];
@@ -941,7 +987,11 @@ mod tests {
 			(B::Stone, M::Stone),
 			(B::StoneStairs, M::Stone),
 			(B::StoneSlab, M::Stone),
+			(B::StoneDoor, M::Stone),
 			(B::Sandstone, M::Sandstone),
+			(B::SandstoneStairs, M::Sandstone),
+			(B::SandstoneSlab, M::Sandstone),
+			(B::SandstoneDoor, M::Sandstone),
 			(B::Gravel, M::Gravel),
 			(B::Rubble, M::Rubble),
 			(B::Wood, M::Wood),
@@ -951,8 +1001,16 @@ mod tests {
 			(B::LumberStairs, M::Lumber),
 			(B::LumberSlab, M::Lumber),
 			(B::LumberDoor, M::Lumber),
+			(B::DarkLumber, M::DarkLumber),
+			(B::DarkLumberStairs, M::DarkLumber),
+			(B::DarkLumberSlab, M::DarkLumber),
+			(B::DarkLumberDoor, M::DarkLumber),
+			(B::RedLumber, M::RedLumber),
+			(B::RedLumberStairs, M::RedLumber),
+			(B::RedLumberSlab, M::RedLumber),
+			(B::RedLumberDoor, M::RedLumber),
 			(B::Leaves, M::Leaf),
-			(B::PineLeaves, M::PineNeedle),
+			(B::PineLeaves, M::PineLeaf),
 		];
 		for (b, m) in expect {
 			assert_eq!(b.material(), Some(m), "{b:?}");

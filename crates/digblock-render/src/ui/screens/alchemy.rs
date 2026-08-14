@@ -1174,34 +1174,22 @@ fn elide(style: &Style, text: &str, max_w: f32) -> String {
 
 /// Display names for the transmute rows (blocks have no Display impl —
 /// debug names like "WoodStairs" are not UI text).
-fn block_name(b: BlockType) -> &'static str {
-	use BlockType as B;
+///
+/// A grid item is its substance and its form, in that order — "STONE" +
+/// "STAIRS" — so a new material × shape pair names itself and cannot land
+/// on the old table's `?` fallback. Only the hand-priced functional items
+/// need naming by hand, for the same reason they need pricing by hand.
+fn block_name(b: BlockType) -> String {
+	if let Some((m, s)) = b.grid_cell() {
+		return match s.item_suffix() {
+			Some(suffix) => format!("{} {suffix}", m.name()),
+			None => m.name().into(),
+		};
+	}
 	match b {
-		B::WoodSlab => "WOOD SLAB",
-		B::StoneSlab => "STONE SLAB",
-		B::WoodStairs => "WOOD STAIRS",
-		B::StoneStairs => "STONE STAIRS",
-		B::LumberDoor => "LUMBER DOOR",
-		B::LumberSlab => "LUMBER SLAB",
-		B::LumberStairs => "LUMBER STAIRS",
-		B::Lumber => "LUMBER",
-		B::Stone => "STONE",
-		B::Wood => "WOOD",
-		B::Dirt => "DIRT",
-		B::Sand => "SAND",
-		B::Sandstone => "SANDSTONE",
-		B::Snow => "SNOW",
-		B::Grass => "GRASS",
-		B::Mud => "MUD",
-		B::Water => "WATER CHARGE",
-		B::Torch => "TORCH",
-		// Extractables that only show up in the refusal hint.
-		B::Leaves => "LEAVES",
-		B::PineLeaves => "PINE LEAVES",
-		B::DryGrass => "DRY GRASS",
-		B::Gravel => "GRAVEL",
-		B::Rubble => "RUBBLE",
-		_ => "?",
+		BlockType::Water => "WATER CHARGE".into(),
+		BlockType::Torch => "TORCH".into(),
+		_ => "?".into(),
 	}
 }
 

@@ -8,8 +8,12 @@
 //! chances to add a third gate and miss one. So the tables live here
 //! together, and so does the question:
 //!
-//! - **The levels** — [`craft`], [`extract`], [`mine`], [`pickup`]. Four
-//!   small tables, each the sole authority for its own axis.
+//! - **The levels** — [`shape`] and [`material`] (SKILLS-DESIGN §7.2's two
+//!   grid axes), [`functional`] for the hand-priced items, plus [`extract`]
+//!   and [`mine`]. Each is the sole authority for its own axis, and the
+//!   two questions players actually ask are DERIVED from them: [`craft`] is
+//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop. That
+//!   is what stopped the wood slab opening nineteen levels before wood.
 //! - **The questions** — [`can_craft`], [`can_extract`], [`dig_blocked`].
 //!   Callers ask these; they do not compare levels themselves. The dig
 //!   gates in particular are asked identically by client prediction, the
@@ -75,7 +79,7 @@ pub fn material(m: Material) -> Option<u32> {
 		| M::Gravel
 		| M::DryGrass
 		| M::Leaf
-		| M::PineNeedle
+		| M::PineLeaf
 		| M::Emberore
 		| M::Duskstone
 		| M::Glowvein
@@ -467,6 +471,18 @@ mod tests {
 				B::Lumber,
 				B::LumberStairs,
 				B::LumberSlab,
+				B::StoneDoor,
+				B::SandstoneStairs,
+				B::SandstoneSlab,
+				B::SandstoneDoor,
+				B::DarkLumber,
+				B::DarkLumberStairs,
+				B::DarkLumberSlab,
+				B::DarkLumberDoor,
+				B::RedLumber,
+				B::RedLumberStairs,
+				B::RedLumberSlab,
+				B::RedLumberDoor,
 			]
 		);
 	}

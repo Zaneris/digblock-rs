@@ -86,7 +86,7 @@ pub enum Material {
 	/// the two extract identically, because they are separate SUBSTANCES —
 	/// pine resin is the pre-ore Aether trickle and broadleaf never carries
 	/// it — and because one grid cell holds one block.
-	PineNeedle,
+	PineLeaf,
 	/// Revealed and extracted at the rock face, never at the bench in any
 	/// shape (§5.3).
 	Emberore,
@@ -124,7 +124,7 @@ impl Material {
 		Material::Gravel,
 		Material::DryGrass,
 		Material::Leaf,
-		Material::PineNeedle,
+		Material::PineLeaf,
 		Material::Emberore,
 		Material::Duskstone,
 		Material::Glowvein,
@@ -163,7 +163,7 @@ impl Material {
 			| M::Gravel
 			| M::DryGrass
 			| M::Leaf
-			| M::PineNeedle
+			| M::PineLeaf
 			| M::Emberore
 			| M::Duskstone
 			| M::Glowvein
@@ -194,7 +194,7 @@ impl Material {
 			// is in the trunk. One unit, not three: a leaf digs in 10 ticks
 			// and there are hundreds per tree, so at 3 it paid Flora as fast
 			// as grass from the block the world gives away with every log.
-			M::Leaf | M::PineNeedle => &[(E::Flora, 1)],
+			M::Leaf | M::PineLeaf => &[(E::Flora, 1)],
 			M::Metal => &[(E::Metal, 24)],
 			M::Crystal => &[(E::Aether, 12), (E::Metal, 6)],
 			// Raw ore is bench-processed whole (§3.1) — it has no shapes, so
@@ -233,7 +233,7 @@ impl Material {
 			M::Gravel => "GRAVEL",
 			M::DryGrass => "DRY GRASS",
 			M::Leaf => "LEAVES",
-			M::PineNeedle => "PINE NEEDLES",
+			M::PineLeaf => "PINE LEAVES",
 			M::Emberore => "EMBERORE",
 			M::Duskstone => "DUSKSTONE",
 			M::Glowvein => "GLOWVEIN",

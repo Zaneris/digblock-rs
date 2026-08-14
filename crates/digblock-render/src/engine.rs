@@ -831,11 +831,26 @@ fn quantized_facing(dir: Vec3) -> digblock_core::shapes::Facing {
 	}
 }
 
+/// Every authored block of one shape family, in material order — the
+/// showcase scenes walk this so a new material × shape pair photographs
+/// itself. The old scenes hand-listed `[WoodStairs, StoneStairs,
+/// LumberStairs]`, which is exactly the kind of mirror §7.2's grid exists
+/// to delete: two timbers landed and neither appeared in any capture.
+fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockType> {
+	digblock_core::material::Material::ALL
+		.into_iter()
+		.filter_map(|m| BlockType::from_grid(m, s))
+		.collect()
+}
+
 /// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye
-/// height near spawn (render verification needs no ground) — both stair
-/// materials × 4 facings, then closed and open doors.
+/// height near spawn (render verification needs no ground) — every stair
+/// material × 4 facings, then closed and open doors in every material,
+/// then the slabs. Rows run back in z, one material per row, so the rank
+/// grows backward as the catalog does instead of off the sides of the
+/// frame.
 fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
-	use digblock_core::block::BlockType as B;
+	use digblock_core::block::{BlockType as B, ShapeFamily};
 	use digblock_core::chunk::make_cell;
 	use digblock_core::shapes::{door_state, slab_state, stair_state, Facing};
 	let (bx, by, bz) = (
@@ -844,26 +859,32 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		spawn.z.floor() as i32,
 	);
 	let mut out = Vec::new();
+	let stairs = shaped_roster(ShapeFamily::Stairs);
+	let doors = shaped_roster(ShapeFamily::Door);
 	for (i, f) in Facing::ALL.into_iter().enumerate() {
 		let x = bx + 2 * i as i32 - 3;
-		out.push((x, by, bz + 4, make_cell(B::WoodStairs, stair_state(f))));
-		out.push((x, by, bz + 6, make_cell(B::StoneStairs, stair_state(f))));
-		out.push((x, by, bz + 2, make_cell(B::LumberStairs, stair_state(f))));
-		for (dz, open) in [(8, false), (10, true)] {
-			out.push((
-				x,
-				by,
-				bz + dz,
-				make_cell(B::LumberDoor, door_state(f, open, false)),
-			));
-			out.push((
-				x,
-				by + 1,
-				bz + dz,
-				make_cell(B::LumberDoor, door_state(f, open, true)),
-			));
+		for (j, &b) in stairs.iter().enumerate() {
+			out.push((x, by, bz + 2 + 2 * j as i32, make_cell(b, stair_state(f))));
+		}
+		// Doors start behind the stair rows and take two z rows each
+		// (closed, then open) so both states of every material are in one
+		// capture, at the two heights a leaf spans.
+		let door_z = bz + 2 + 2 * stairs.len() as i32;
+		for (j, &b) in doors.iter().enumerate() {
+			for (dz, open) in [(0, false), (2, true)] {
+				let z = door_z + 4 * j as i32 + dz;
+				for upper in [false, true] {
+					out.push((
+						x,
+						by + i32::from(upper),
+						z,
+						make_cell(b, door_state(f, open, upper)),
+					));
+				}
+			}
 		}
 	}
+	let slab_z = bz + 2 + 2 * stairs.len() as i32 + 4 * doors.len() as i32;
 	// A torch row: one on the ground, one up on a wood plinth — the
 	// emissive head is the thing to photograph at night.
 	out.push((bx - 5, by, bz + 4, B::Torch as u16));
@@ -874,15 +895,12 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	// auto-step (also eyeballs boundary culling on the shared planes).
 	// Ceiling slabs hang two cells up, where their underside is the
 	// thing to look at.
-	for (i, b) in [B::WoodSlab, B::StoneSlab, B::LumberSlab]
-		.into_iter()
-		.enumerate()
-	{
+	for (i, b) in shaped_roster(ShapeFamily::Slab).into_iter().enumerate() {
 		let x = bx + 2 * i as i32 - 3;
-		out.push((x, by, bz + 12, make_cell(b, slab_state(false, false))));
-		out.push((x, by, bz + 14, make_cell(b, slab_state(true, false))));
-		out.push((x, by + 2, bz + 12, make_cell(b, slab_state(false, true))));
-		out.push((x, by + 2, bz + 14, make_cell(b, slab_state(true, true))));
+		out.push((x, by, slab_z, make_cell(b, slab_state(false, false))));
+		out.push((x, by, slab_z + 2, make_cell(b, slab_state(true, false))));
+		out.push((x, by + 2, slab_z, make_cell(b, slab_state(false, true))));
+		out.push((x, by + 2, slab_z + 2, make_cell(b, slab_state(true, true))));
 	}
 	let base = [
 		make_cell(B::WoodSlab, slab_state(false, false)),
@@ -891,12 +909,12 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		B::Wood as u16,
 	];
 	for (dx, cell) in base.into_iter().enumerate() {
-		out.push((bx + 1 + dx as i32, by, bz + 16, cell));
+		out.push((bx + 1 + dx as i32, by, slab_z + 4, cell));
 	}
 	out.push((
 		bx + 4,
 		by + 1,
-		bz + 16,
+		slab_z + 4,
 		make_cell(B::WoodSlab, slab_state(false, false)),
 	));
 	out
