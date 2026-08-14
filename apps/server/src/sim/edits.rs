@@ -394,9 +394,18 @@ impl Sim {
 				cell == req.cell
 					&& cell_value == hit.cell_value
 					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
-						// Family-scaled hold time (SIM v12): the same
-						// `dig_required` the client's own timer runs.
-						let need = digblock_core::skills::dig_required(hit.block, h, mining_level);
+						// Family-scaled hold time (SIM v12), plus the pick's
+						// level-only multiplier (§5.6): the same
+						// `dig_required_with` the client's own timer runs.
+						let need = digblock_core::skills::dig_required_with(
+							digblock_core::worldgen::ore::dig_block(
+								self.ore_dig_mode(req.conn_id, req.cell),
+								hit.block,
+							),
+							h,
+							mining_level,
+							active_tool,
+						);
 						// A hold that has been bleeding since its release is
 						// worth what the decay left it, never what it peaked
 						// at — the client's bar shows the same number.
@@ -419,6 +428,11 @@ impl Sim {
 		// either half clears both).
 		let air = BlockType::Air as u16;
 		let mut writes: Vec<((i32, i32, i32), u16)> = Vec::with_capacity(2);
+		// How many BLOCKS this one action breaks: 1, or up to 9 with the
+		// Resonant Pick. A door's two cells are one block and never
+		// increment this — the credit and the XP are per block, not per
+		// cell, which is what `begin_multi`'s single `inv_delta` means.
+		let mut broken = 1u32;
 		let place_b = place_cell.map(|v| BlockType::from_id(digblock_core::chunk::cell_id(v)));
 		match place_cell {
 			None => {
@@ -438,6 +452,14 @@ impl Sim {
 					air
 				};
 				writes.push((req.cell, new_val));
+				// The Resonant Pick's plane (SKILLS-DESIGN §5.6), derived
+				// from the SERVER's raycast and its own world — never from
+				// anything the client chose. Extras clear outright: only
+				// the aimed cell can be a slab shrink or a tapped vein.
+				for c in self.pick_plane(req.conn_id, &hit, req.dir.to_array()) {
+					writes.push((c, air));
+					broken += 1;
+				}
 				if hit.block.is_door() {
 					let partner = digblock_core::shapes::door_partner(
 						req.cell,
@@ -623,8 +645,15 @@ impl Sim {
 			// the cell was Stone and Stone hands out Rubble, which is the
 			// whole reason quarrying stays a Mining question and drawing a
 			// vein does not.
+			// Mining 99's mastery: one extra raw ore per field extraction.
+			let credit = broken
+				+ extracting.map_or(0, |_| {
+					digblock_core::unlock::ore_mastery(
+						client.skills.level(digblock_core::skills::Skill::Mining),
+					)
+				});
 			if let Some(drop) = extracting.or_else(|| prev.dig_drop()) {
-				client.inventory.add(drop, 1);
+				client.inventory.add(drop, credit);
 				// Mirror the client's auto-assign of a newly acquired type
 				// (same deterministic derivation), so the very next place
 				// from that slot validates even before the client's Layout
@@ -648,7 +677,9 @@ impl Sim {
 			let (mining_xp, alch_xp) =
 				match extracting.and_then(digblock_core::skills::ore_field_xp) {
 					Some((m, a)) => (m, a),
-					None => (digblock_core::skills::dig_xp(prev), 0),
+					// Per BLOCK: a wide swing pays for what it broke, not
+					// for the swing. A door pair is still ONE block.
+					None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
 				};
 			for (skill, xp) in [
 				(digblock_core::skills::Skill::Mining, mining_xp),

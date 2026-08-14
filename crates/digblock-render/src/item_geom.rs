@@ -178,6 +178,22 @@ fn siphon_faces(out: &mut Vec<ItemFace>) {
 	box_faces([4, 8, 4], [8, 11, 8], |_| glow, out);
 }
 
+/// The Resonant Pick: a timber haft with a broad metal-dark head, and a
+/// bright core at the join.
+///
+/// The head is WIDE rather than pointed on purpose — the tool breaks a
+/// PLANE, and a narrow pick would promise a bore. The lit core is the
+/// same trick the siphon plays: at hotbar size a silhouette needs one
+/// bright thing to be recognisable at all.
+fn pick_faces(out: &mut Vec<ItemFace>) {
+	let haft = digblock_core::block::tex::LUMBER_LIGHT;
+	let head = digblock_core::block::tex::LUMBER_DARK;
+	let core = digblock_core::block::tex::TORCH_FLAME;
+	box_faces([5, 0, 5], [7, 9, 7], |_| haft, out);
+	box_faces([1, 9, 5], [11, 11, 7], |_| head, out);
+	box_faces([5, 8, 4], [7, 10, 8], |_| core, out);
+}
+
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
 pub fn height(kind: IconKind) -> i32 {
@@ -214,6 +230,7 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 		}
 		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
 		IconKind::Siphon => siphon_faces(&mut out),
+		IconKind::Pick => pick_faces(&mut out),
 	}
 	out
 }

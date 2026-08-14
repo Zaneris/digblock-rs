@@ -16,6 +16,7 @@ pub mod material;
 pub mod mesher;
 pub mod metrics;
 pub mod overlay;
+pub mod pick;
 pub mod pipeline;
 pub mod player;
 pub mod protect;
@@ -127,4 +128,12 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// without it is refused at `DigStart`, and an extraction is TIMED as
 /// the ore rather than as the stone the cell holds. A v14 peer would
 /// break a seam into rubble at stone speed and lose it.
-pub const SIM_VERSION: u16 = 15;
+/// v16: the Resonant Pick (SKILLS-DESIGN §5.6). One hold breaks the
+/// PLANE of the face it hits — three wide at Mining 55, nine at 85 — and
+/// the pick multiplies the hold time by a LEVEL-only factor
+/// (`skills::dig_required_with`). Both are shared behaviour derived from
+/// data each side already has (`pick::cells` over its own world, the
+/// multiplier over the level and the active tool), so a v15 peer times
+/// every pick hold differently and breaks one cell where the new server
+/// breaks nine. Mining 99's +1 ore rides here too.
+pub const SIM_VERSION: u16 = 16;

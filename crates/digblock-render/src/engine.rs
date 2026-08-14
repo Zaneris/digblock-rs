@@ -742,6 +742,8 @@ pub struct Engine {
 	/// by half a swap, so the exchange happens below the frame.
 	view_swap: crate::viewmodel::Swap,
 	ambient: crate::audio::Ambient,
+	/// The prospector's sense's cadence (SKILLS-DESIGN §5.5).
+	prospect: crate::audio::Prospect,
 	/// Scratch for batched audio commands (water voices).
 	audio_scratch: Vec<crate::audio::AudioCmd>,
 	/// Player eye position last frame (footstep distance).
@@ -1556,6 +1558,7 @@ impl Engine {
 			view_swing: crate::viewmodel::Swing::default(),
 			view_swap: crate::viewmodel::Swap::default(),
 			ambient: crate::audio::Ambient::default(),
+			prospect: crate::audio::Prospect::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
 			music_night: None,
@@ -1833,6 +1836,7 @@ impl Engine {
 	pub fn set_audio(&mut self, sink: Box<dyn crate::audio::AudioSink>) {
 		self.audio = Some(sink);
 		self.ambient.reset();
+		self.prospect.reset();
 		// Persisted volumes apply from the very first sound.
 		self.emit(crate::audio::AudioCmd::Volume {
 			music: self.config.music_vol,
@@ -2041,6 +2045,37 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
+		// The prospector's sense (SKILLS-DESIGN §5.5, Mining 90): a faint
+		// shimmer near a deposit whose tier you cannot yet see. Audio only
+		// — an overlay would make every reveal level meaningless.
+		//
+		// It borrows the cave bed's voice as a POSITIONAL one-shot, which
+		// is a stand-in: the design asks for its own sourced shimmer, and
+		// swapping this to a new `Sfx` variant is the whole change when
+		// one exists.
+		let mining = self.skills.level(digblock_core::skills::Skill::Mining);
+		let near = digblock_core::unlock::prospector(mining)
+			.then(|| {
+				digblock_core::worldgen::ore::unseen_nearby(
+					(
+						cam.x.floor() as i32,
+						cam.y.floor() as i32,
+						cam.z.floor() as i32,
+					),
+					self.seed,
+					mining,
+				)
+			})
+			.flatten();
+		if self.prospect.advance(near.is_some(), dt) {
+			if let Some(d) = near {
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::AmbientCave,
+					pos: Some(cell_center((d.x, d.y, d.z))),
+					gain: crate::audio::PROSPECT_GAIN,
+				});
+			}
+		}
 
 		// Music pool follows the world clock. `tod` is the sun's angle
 		// from straight down (0 = noon, ±90 = the horizons, 180 =
@@ -2135,6 +2170,7 @@ impl Engine {
 			id: crate::audio::LOOP_DIG,
 		});
 		self.ambient.reset();
+		self.prospect.reset();
 		self.swim_strokes.reset();
 		self.view_bob.reset();
 		self.view_swing.reset();
@@ -3200,6 +3236,33 @@ impl Engine {
 		)
 	}
 
+	/// The EXTRA cells a Resonant Pick hold breaks around `hit` — empty
+	/// unless the pick is in hand at its own Mining level. The set is
+	/// derived from the ray, never chosen: the server re-raycasts and
+	/// runs the same `pick::cells` over its own world.
+	fn pick_plane(&self, hit: &RayHit) -> Vec<(i32, i32, i32)> {
+		if self.hotbar.active_tool() != BlockType::ResonantPick {
+			return Vec::new();
+		}
+		let level = self.skills.level(digblock_core::skills::Skill::Mining);
+		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let pipeline = &self.pipeline;
+		let mut out = digblock_core::pick::cells(
+			hit.cell,
+			hit.normal,
+			self.camera.dir().to_array(),
+			digblock_core::unlock::pick_cells(level),
+			|c| {
+				pipeline
+					.cell_at(c.0, c.1, c.2)
+					.is_some_and(|v| digblock_core::chunk::cell_id(v) == id)
+			},
+		);
+		// The aimed cell leads the list and the caller already has it.
+		out.retain(|&c| c != hit.cell);
+		out
+	}
+
 	fn diggable(&self, hit: &RayHit) -> bool {
 		// Permanently protected cells never start a hold. Only the world
 		// floor is knowable client-side — a server's spawn lock is its own
@@ -3302,10 +3365,11 @@ impl Engine {
 			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
-					digblock_core::skills::dig_required(
+					digblock_core::skills::dig_required_with(
 						timed,
 						h,
 						self.skills.level(digblock_core::skills::Skill::Mining),
+						self.hotbar.active_tool(),
 					) as u16
 				})
 				.unwrap_or(u16::MAX);
@@ -3424,8 +3488,21 @@ impl Engine {
 			return;
 		};
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
-		// (cell, prev) list this dig clears — a door adds its partner.
+		// (cell, prev) list this dig clears — a door adds its partner, the
+		// Resonant Pick adds the plane of the face (SKILLS-DESIGN §5.6).
+		// Every extra cell holds the SAME id, which is what makes
+		// `begin_multi`'s single `inv_delta` a correct description of the
+		// whole group.
 		let mut cleared = vec![(hit.cell, prev_cell)];
+		for c in self.pick_plane(&hit) {
+			if let Some(v) = self.pipeline.cell_at(c.0, c.1, c.2) {
+				cleared.push((c, v));
+			}
+		}
+		// How many cells this ONE hold broke — 1 normally, up to 9 with
+		// the pick, and the count `begin_multi`'s single `inv_delta`
+		// carries for the whole group.
+		let broken = cleared.len() as u32;
 		if prev.is_door() {
 			let partner = digblock_core::shapes::door_partner(
 				hit.cell,
@@ -3488,8 +3565,16 @@ impl Engine {
 		// out Rubble, which is exactly what quarrying should give and
 		// exactly what drawing a seam should not.
 		let drop = extracting.or_else(|| prev.dig_drop());
+		// Mining 99's mastery: one extra raw ore per field extraction, and
+		// only there — the last level has to hand you something.
+		let credit = broken
+			+ extracting.map_or(0, |_| {
+				digblock_core::unlock::ore_mastery(
+					self.skills.level(digblock_core::skills::Skill::Mining),
+				)
+			});
 		if let Some(d) = drop {
-			self.inventory.add(d, 1);
+			self.inventory.add(d, credit);
 			self.hotbar.auto_assign(d);
 		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
@@ -3506,7 +3591,9 @@ impl Engine {
 					.enumerate()
 					.map(|(i, &(c, p))| (c, p, if i == 0 { new_val } else { air }))
 					.collect();
-				let seq = net.edits.begin_multi(&entries, tick, drop.map(|d| (d, 1)));
+				let seq = net
+					.edits
+					.begin_multi(&entries, tick, drop.map(|d| (d, credit as i32)));
 				let slot = self.hotbar.selected_index() as u8;
 				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0), slot);
 			}
@@ -3520,7 +3607,9 @@ impl Engine {
 				let (mining_xp, alch_xp) =
 					match extracting.and_then(digblock_core::skills::ore_field_xp) {
 						Some((m, a)) => (m, a),
-						None => (digblock_core::skills::dig_xp(prev), 0),
+						// Per BLOCK, so a wide swing pays for what it actually
+						// broke rather than for the swing.
+						None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
 					};
 				self.award_xp_offline(digblock_core::skills::Skill::Mining, mining_xp);
 				if alch_xp > 0 {

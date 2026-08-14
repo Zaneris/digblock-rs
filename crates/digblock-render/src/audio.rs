@@ -374,6 +374,50 @@ pub fn ambient_sfx(z: AmbientZone) -> Sfx {
 /// Ambient-bed state machine: classification comes from the engine
 /// (submersion test + worldgen surface height); this owns the
 /// hysteresis so boundary flicker never restarts the bed.
+/// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a
+/// deposit you cannot yet see, paced so it is a hint rather than a
+/// metronome.
+///
+/// A cadence emitter like `Footsteps`, but paced by TIME rather than by
+/// distance — the point is "something is near", and a player standing
+/// still at a wall should still hear it. Silence resets the clock, so
+/// walking into range speaks at once instead of on the next tick of a
+/// free-running timer.
+#[derive(Default)]
+pub struct Prospect {
+	since: f32,
+}
+
+/// Seconds between shimmers while in range.
+pub const PROSPECT_PERIOD_SECS: f32 = 6.0;
+/// Quiet enough to sit under the ambient bed — this is a suggestion, not
+/// an alarm.
+pub const PROSPECT_GAIN: f32 = 0.22;
+
+impl Prospect {
+	/// Advance by `dt` with the sense either in range or not; `Some(())`
+	/// on the frames a shimmer should sound.
+	pub fn advance(&mut self, in_range: bool, dt: f32) -> bool {
+		if !in_range {
+			// Out of range resets rather than pauses: crossing back in is
+			// the interesting moment and it should not have to wait out
+			// the remainder of a timer from somewhere else.
+			self.since = PROSPECT_PERIOD_SECS;
+			return false;
+		}
+		self.since += dt;
+		if self.since >= PROSPECT_PERIOD_SECS {
+			self.since = 0.0;
+			return true;
+		}
+		false
+	}
+
+	pub fn reset(&mut self) {
+		self.since = PROSPECT_PERIOD_SECS;
+	}
+}
+
 pub struct Ambient {
 	current: AmbientZone,
 	pending: AmbientZone,

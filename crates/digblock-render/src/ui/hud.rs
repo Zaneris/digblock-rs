@@ -33,6 +33,8 @@ pub enum IconKind {
 	/// geometry rather than the cube fallback, because a tool with no
 	/// texture layers of its own would otherwise draw as a water cube.
 	Siphon,
+	/// The Resonant Pick: a haft with a broad resonant head.
+	Pick,
 }
 
 /// The arrival cover: an OPAQUE full-screen fill with one centred line,
@@ -173,6 +175,7 @@ pub fn hotbar<Id: Copy + PartialEq>(
 pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 	match tool {
 		BlockType::EssenceSiphon => IconKind::Siphon,
+		BlockType::ResonantPick => IconKind::Pick,
 		// The bucket, and anything a future row forgets to author: a cube
 		// is wrong, but it is visibly wrong rather than invisible.
 		BlockType::Bucket => IconKind::WaterTool { full: bucket_full },

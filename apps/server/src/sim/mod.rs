@@ -677,6 +677,16 @@ impl Sim {
 		}
 	}
 
+	/// Lock the spawn region around `eye`, so protection tests can put an
+	/// immutable cell wherever they need one.
+	#[cfg(test)]
+	pub(crate) fn bench_lock_spawn_at(&mut self, eye: Vec3) {
+		self.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: eye.to_array(),
+			}));
+	}
+
 	/// A client's XP total in one skill — the two-sided award tests read
 	/// it, since a dual award is only interesting as a pair.
 	#[cfg(test)]
@@ -969,6 +979,39 @@ impl Sim {
 		)
 	}
 
+	/// The EXTRA cells a Resonant Pick hold breaks around this hit, from
+	/// the SERVER's own raycast and its own world. Derived rather than
+	/// declared: the client sends one `EditRequest` naming one cell, and
+	/// this end decides what that swing actually touched.
+	pub(super) fn pick_plane(
+		&self,
+		conn_id: u64,
+		hit: &digblock_core::raycast::RayHit,
+		dir: [f32; 3],
+	) -> Vec<(i32, i32, i32)> {
+		let Some(client) = self.clients.get(&conn_id) else {
+			return Vec::new();
+		};
+		if client.hotbar.active_tool() != digblock_core::block::BlockType::ResonantPick {
+			return Vec::new();
+		}
+		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let mut out = digblock_core::pick::cells(
+			hit.cell,
+			hit.normal,
+			dir,
+			digblock_core::unlock::pick_cells(level),
+			|c| {
+				self.store
+					.cell_at(c.0, c.1, c.2)
+					.is_some_and(|v| digblock_core::chunk::cell_id(v) == id)
+			},
+		);
+		out.retain(|&c| c != hit.cell);
+		out
+	}
+
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
 		// Before the client borrow: `spawn_lock` reads all of `self`.
 		let lock = self.spawn_lock();
@@ -1051,6 +1094,7 @@ impl Sim {
 		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
 		// resumer is on target, so its first verify tick zeroes this.
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let tool = client.hotbar.active_tool();
 		let resumed = client
 			.digging
 			.as_ref()
@@ -1059,9 +1103,9 @@ impl Sim {
 				let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
 					d.cell_value,
 				));
-				let need = b
-					.dig_hardness(cell.1)
-					.map_or(0, |h| digblock_core::skills::dig_required(b, h, level));
+				let need = b.dig_hardness(cell.1).map_or(0, |h| {
+					digblock_core::skills::dig_required_with(b, h, level, tool)
+				});
 				(d.banked(need), d.off_target)
 			});
 		client.digging = match cell_value {
@@ -2315,6 +2359,121 @@ mod tests {
 			sim.test_skill_xp(1, Skill::Alchemy) - before.1,
 			alch_xp,
 			"and the Alchemy cut — neither skill levels alone"
+		);
+	}
+
+	/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the
+	/// PLANE of the face it hits, derived from the server's own raycast
+	/// and its own world — the client names one cell and this end decides
+	/// what the swing touched.
+	///
+	/// The three properties that matter, in one test because they are one
+	/// mechanism: the width follows the level (3, then 9), every extra
+	/// cell holds the same id, and the credit is one per BLOCK broken —
+	/// which is what `begin_multi`'s single `inv_delta` describes.
+	#[test]
+	fn the_resonant_pick_breaks_the_plane_the_server_derives() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		for (level, want) in [(54u32, 1usize), (55, 3), (85, 9)] {
+			let mut sim = flat_sim(&format!("pick{level}"));
+			let mut c = connect(&mut sim, 1);
+			wait_live(&mut sim, 1);
+			sim.bench_set_mining_level(1, level);
+			sim.test_grant(1, BlockType::ResonantPick, 1);
+			sim.bench_set_active_tool(1, BlockType::ResonantPick);
+			let mut t = 100;
+			// Straight down at the flat stone floor: the plane is
+			// horizontal, so every cell of it is stone and qualifies.
+			let down = Vec3::new(0.0, -1.0, 0.0);
+			let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+			let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+			c.drain();
+			let broken = (-1..=1)
+				.flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
+				.filter(|&(dx, dz)| sim.test_cell_at(dug.0 + dx, dug.1, dug.2 + dz) == Some(0))
+				.count();
+			assert_eq!(broken, want, "level {level} breaks {want}");
+			assert_eq!(
+				sim.test_inventory_count(1, BlockType::Rubble),
+				want as u32,
+				"level {level}: one credit per block, not per swing"
+			);
+			// Nothing behind the face: a pick widens a wall, it does not
+			// bore through one.
+			assert_ne!(
+				sim.test_cell_at(dug.0, dug.1 - 1, dug.2),
+				Some(0),
+				"level {level} tunnelled"
+			);
+		}
+	}
+
+	/// A protected cell ANYWHERE in the pick's plane refuses the whole
+	/// swing — proved rather than cited, because "the check already runs
+	/// over the assembled `writes`" is exactly the kind of claim that
+	/// stops being true the moment somebody assembles the writes
+	/// differently. Nothing partially breaks: a refused action leaves the
+	/// aimed cell standing too.
+	#[test]
+	fn a_protected_cell_refuses_the_whole_pick_swing() {
+		use digblock_core::block::BlockType;
+		use digblock_core::raycast::{raycast, REACH};
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		let mut sim = flat_sim("pick-protect");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, 85);
+		sim.test_grant(1, BlockType::ResonantPick, 1);
+		sim.bench_set_active_tool(1, BlockType::ResonantPick);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
+		// so the aimed cell itself is free and the refusal can only come
+		// from a cell the swing reached. (`lock_region` is a box CLEAR
+		// out from the eye's column, floor at eye.y - 2.)
+		let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
+		sim.bench_lock_spawn_at(Vec3::new(
+			lock_x as f32 + 0.5,
+			hit.cell.1 as f32 + 2.5,
+			hit.cell.2 as f32 + 0.5,
+		));
+		assert!(
+			digblock_core::protect::immutable(
+				hit.cell.0 + 1,
+				hit.cell.1,
+				hit.cell.2,
+				sim.spawn_lock().as_ref()
+			) && !digblock_core::protect::immutable(
+				hit.cell.0,
+				hit.cell.1,
+				hit.cell.2,
+				sim.spawn_lock().as_ref()
+			),
+			"the lock has to straddle the plane, not swallow it"
+		);
+		let mut t = 100;
+		let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+		dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: digblock_net::messages::RejectReason::Protected,
+					..
+				}
+			)),
+			"the swing reached a locked cell: {:?}",
+			c.msgs
+		);
+		assert_ne!(
+			sim.test_cell_at(hit.cell.0, hit.cell.1, hit.cell.2),
+			Some(0),
+			"nothing partially broke"
 		);
 	}
 

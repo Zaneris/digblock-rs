@@ -150,6 +150,10 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// where nobody has one. Flora and Earth are what a fresh miner
 		// already has too much of.
 		B::EssenceSiphon => &[(E::Flora, 30), (E::Earth, 15)],
+		// The game's biggest sink, and the only thing that makes 240
+		// Metal a goal rather than a number. The Aether line is what
+		// keeps Aetherock worth reaching for before the lamps arrive.
+		B::ResonantPick => &[(E::Metal, 240), (E::Earth, 60), (E::Aether, 12)],
 		// Furniture is timber and joinery — near its volume, but chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Flora, 6)],

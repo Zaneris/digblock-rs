@@ -206,7 +206,10 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
 		"FURNITURE",
 		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
 	),
-	("TOOLS", &[BlockType::EssenceSiphon]),
+	(
+		"TOOLS",
+		&[BlockType::EssenceSiphon, BlockType::ResonantPick],
+	),
 	("WATER", &[BlockType::Water]),
 ];
 
@@ -1198,6 +1201,7 @@ fn block_name(b: BlockType) -> String {
 		BlockType::Chair => "CHAIR".into(),
 		BlockType::Bed => "BED".into(),
 		BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
+		BlockType::ResonantPick => "RESONANT PICK".into(),
 		_ => "?".into(),
 	}
 }

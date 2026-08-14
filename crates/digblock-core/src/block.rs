@@ -179,6 +179,11 @@ blocks! {
 	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
 	/// first world where nobody has one.
 	EssenceSiphon = 53 => props(RenderClass::None, false, 0, 0, 0),
+	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted at Alch 55, usable
+	/// at Mining 55 — the flagship cross-skill dependency, and the game's
+	/// biggest essence sink. Held, one hold breaks the plane of the face
+	/// you hit: three wide, and the full nine from Mining 85.
+	ResonantPick = 54 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -841,7 +846,10 @@ impl BlockType {
 	/// never in a block slot or the grid, and never in the world.
 	#[inline]
 	pub fn is_tool(self) -> bool {
-		matches!(self, BlockType::Bucket | BlockType::EssenceSiphon)
+		matches!(
+			self,
+			BlockType::Bucket | BlockType::EssenceSiphon | BlockType::ResonantPick
+		)
 	}
 
 	/// Tools every player owns unconditionally (no craft, no count):
@@ -1125,6 +1133,7 @@ mod tests {
 				B::Chair,
 				B::Bed,
 				B::EssenceSiphon,
+				B::ResonantPick,
 			]
 		);
 	}

@@ -64,6 +64,7 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(35, "the bed — timber and bedding both"),
 	(40, "red lumber; trace minerals from rubble"),
 	(50, "craft water"),
+	(55, "the resonant pick"),
 	(60, "gravel's deep metal"),
 	(75, "pine resin; the fastest bench"),
 	(85, "the waste floor"),
@@ -78,8 +79,11 @@ const MINING_TEASERS: &[(u32, &str)] = &[
 	(5, "stone and rubble open"),
 	(10, "emberore reveals — bring a siphon"),
 	(30, "duskstone reveals"),
-	(55, "glowvein reveals"),
+	(55, "glowvein reveals; the resonant pick swings wide"),
 	(80, "aetherock reveals"),
+	(85, "the pick's full nine"),
+	(90, "prospector's sense — you hear what you can't see"),
+	(99, "mastery: every vein gives one more"),
 ];
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
@@ -344,7 +348,7 @@ mod tests {
 		// else, so an extra row here would be a promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5, 10, 30, 55, 80]
+			vec![3, 5, 10, 30, 55, 80, 85, 90, 99]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.

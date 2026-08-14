@@ -112,6 +112,9 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		BlockType::Bed => 35,
 		// Crafting the bucket charge, lossy against extracting it.
 		BlockType::Water => 50,
+		// The pick: crafted here, usable at MINING 55 (`pick_cells`) —
+		// two skills, one item, and the reason 240 Metal is worth mining.
+		BlockType::ResonantPick => 55,
 		_ => return None,
 	})
 }
@@ -148,6 +151,39 @@ pub fn reveal(b: BlockType) -> Option<u32> {
 		BlockType::Aetherock => 80,
 		_ => return None,
 	})
+}
+
+/// How many cells one hold breaks with the Resonant Pick in hand
+/// (SKILLS-DESIGN §5.6): 1 below the tool's own Mining level, then the
+/// 3-wide row, then the full 3×3 plane.
+///
+/// A width, not a boolean, because the pick's two ranks are one
+/// progression: the same machinery widens, and the timing multiplier
+/// beside it in `skills` steps with it.
+pub fn pick_cells(level: u32) -> usize {
+	match level {
+		l if l >= 85 => 9,
+		l if l >= 55 => 3,
+		_ => 1,
+	}
+}
+
+/// Mining 90's **prospector's sense** (SKILLS-DESIGN §5.5): within
+/// [`PROSPECT_RANGE`] of a deposit you cannot yet SEE, a faint shimmer.
+/// Audio only, in the `Footsteps` cadence mould — never an overlay, or
+/// the reveal levels would stop meaning anything.
+pub fn prospector(level: u32) -> bool {
+	level >= 90
+}
+
+/// How far the prospector's sense reaches, in blocks.
+pub const PROSPECT_RANGE: i32 = 8;
+
+/// Mining 99's mastery (§5.5): every field extraction yields one extra
+/// raw ore. The last level has to hand you something, and a flat +1 on
+/// the rarest action in the game is the smallest thing that qualifies.
+pub fn ore_mastery(level: u32) -> u32 {
+	u32::from(level >= 99)
 }
 
 /// Alchemy level required to break `b` down at the bench (1 = always).
@@ -308,7 +344,18 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		// A rock whose strength wall stands exactly here. The craft gate
 		// needs no arm of its own: it derives from `craft`, which the
 		// Alchemy arm already covers.
-		Skill::Mining => mine(b) == level || reveal(b) == Some(level),
+		Skill::Mining => {
+			mine(b) == level
+				|| reveal(b) == Some(level)
+				// The pick's two ranks — a level that hands you a wider
+				// swing hands you something, exactly like a reveal.
+				|| (b == BlockType::ResonantPick && pick_cells(level) != pick_cells(level - 1))
+				// And the two endgame lines, which hand you something
+				// without handing you an item.
+				|| (b == BlockType::Air
+					&& (prospector(level) != prospector(level - 1)
+						|| ore_mastery(level) != ore_mastery(level - 1)))
+		}
 		// A new recipe, a newly extractable block, or a bonus line that
 		// wasn't paying at the level below.
 		Skill::Alchemy => {
@@ -603,8 +650,8 @@ mod tests {
 			.collect();
 		assert_eq!(
 			mining,
-			vec![3, 5, 10, 30, 55, 80],
-			"the rock gates, then the four reveals"
+			vec![3, 5, 10, 30, 55, 80, 85, 90, 99],
+			"the rock gates, the reveals, the pick's ranks, and the endgame"
 		);
 		// Alchemy: the shape and material unlocks, the hand-priced items
 		// (torch 8, siphon 10, furniture 18, bed 35, water 50), the bucket
@@ -614,7 +661,7 @@ mod tests {
 			.collect();
 		assert_eq!(
 			alchemy,
-			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 50, 60, 75, 90]
+			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 50, 55, 60, 75, 90]
 		);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.

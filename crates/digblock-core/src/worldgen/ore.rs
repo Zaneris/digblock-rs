@@ -307,6 +307,37 @@ pub fn dig_mode(
 	}
 }
 
+/// The nearest deposit within [`crate::unlock::PROSPECT_RANGE`] whose
+/// tier this miner cannot yet SEE — the prospector's sense (§5.5).
+///
+/// Unrevealed on purpose: a sense that also hums at veins already
+/// glittering in front of you is noise. This is the one hint the game
+/// gives about what is behind the wall, and it says only "something you
+/// have not levelled into is near", never what or exactly where.
+pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Deposit> {
+	let r = crate::unlock::PROSPECT_RANGE;
+	let mut best: Option<(i64, Deposit)> = None;
+	for d in deposits_near(
+		(at.0 - r, at.1 - r, at.2 - r),
+		(at.0 + r, at.1 + r, at.2 + r),
+		seed,
+	) {
+		if crate::unlock::reveal(d.ore).is_none_or(|need| mining >= need) {
+			continue;
+		}
+		let (dx, dy, dz) = (
+			i64::from(d.x - at.0),
+			i64::from(d.y - at.1),
+			i64::from(d.z - at.2),
+		);
+		let d2 = dx * dx + dy * dy + dz * dz;
+		if d2 <= i64::from(r) * i64::from(r) && best.is_none_or(|(b, _)| d2 < b) {
+			best = Some((d2, d));
+		}
+	}
+	best.map(|(_, d)| d)
+}
+
 /// The block a dig is TIMED and CREDITED as. A vein lives in a cell that
 /// still holds Stone — the reveal is a mesh stamp, not a world write — so
 /// without this an extraction would take a stone's 90 ticks and pay a
@@ -498,6 +529,42 @@ mod tests {
 			assert_eq!(revealed(stone, (x, y, z), seed, need - 1, false), None);
 			assert_eq!(revealed(stone, (x, y, z), seed, need, false), Some(ore));
 		}
+	}
+
+	/// The prospector's sense hears only what it CANNOT see: a vein
+	/// already glittering in front of the player is not a hint, and a
+	/// sense that hummed at one would be noise on every screen it
+	/// mattered on.
+	#[test]
+	fn the_prospectors_sense_is_deaf_to_what_it_can_already_see() {
+		let seed = 42.0;
+		let deep = deposits_near((-400, 1, -400), (400, 56, 400), seed)
+			.into_iter()
+			.find(|d| d.ore == BlockType::Glowvein)
+			.expect("a glowvein");
+		let at = (deep.x, deep.y, deep.z);
+		let need = crate::unlock::reveal(BlockType::Glowvein).unwrap();
+		assert_eq!(
+			unseen_nearby(at, seed, need - 1).map(|d| d.ore),
+			Some(BlockType::Glowvein),
+			"heard below its reveal"
+		);
+		assert!(
+			unseen_nearby(at, seed, crate::skills::MAX_LEVEL).is_none(),
+			"silent once every tier is visible"
+		);
+		// And it does not reach past its own range.
+		let far = (at.0 + crate::unlock::PROSPECT_RANGE * 4, at.1, at.2);
+		let heard = unseen_nearby(far, seed, need - 1);
+		assert!(
+			heard.is_none_or(|d| {
+				let dx = i64::from(d.x - far.0);
+				let dy = i64::from(d.y - far.1);
+				let dz = i64::from(d.z - far.2);
+				dx * dx + dy * dy + dz * dz <= i64::from(crate::unlock::PROSPECT_RANGE).pow(2)
+			}),
+			"heard something out of range"
+		);
 	}
 
 	/// The density knob, reported rather than merely bounded — the rates

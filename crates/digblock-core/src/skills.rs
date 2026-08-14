@@ -207,6 +207,44 @@ pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
 /// crack retreat at the same visible speed on leaves and on stone.
 pub const DIG_DECAY_TICKS: u32 = 60;
 
+/// The Resonant Pick's hold multiplier in permille (SKILLS-DESIGN §5.6),
+/// applied on top of the family curve when the pick is the ACTIVE tool.
+///
+/// **Level-only, never derived from how many cells actually qualify.** A
+/// world-derived multiplier would let client and server disagree by a
+/// factor of three whenever their worlds differ by one cell, which is far
+/// outside what `dig_grace` absorbs — the honest outcomes are a free
+/// completion or a `DigIncomplete` on a dig the player finished.
+///
+/// The consequence is deliberate: a LONE block costs the multiplier too.
+/// That is why the numbers are what they are — 1.75× spread against a
+/// 0.6× tool bonus nets 1.05×, so swinging at one block costs about what
+/// a bare hand does and the pick is always worth holding, while a full
+/// row is three blocks in the time of one.
+pub fn pick_permille(level: u32) -> u32 {
+	match crate::unlock::pick_cells(level) {
+		9 => 1800,
+		3 => 1050,
+		_ => 1000,
+	}
+}
+
+/// [`dig_required`] with the ACTIVE TOOL taken into account — the shape
+/// every dig-timing site should use, since the pick is the one tool that
+/// changes how long a hold takes.
+pub fn dig_required_with(
+	block: BlockType,
+	hardness: u16,
+	level: u32,
+	active_tool: BlockType,
+) -> u32 {
+	let base = dig_required(block, hardness, level);
+	if active_tool != BlockType::ResonantPick {
+		return base;
+	}
+	(base * pick_permille(level)).div_ceil(1000).max(1)
+}
+
 /// What is left of `progress` banked ticks out of `required` after
 /// `idle` ticks of not digging.
 ///
