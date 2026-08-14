@@ -194,6 +194,11 @@ pub struct EngineConfig {
 	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
 	/// the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// DIG_ORE=<tier 1..=4>: hollow a chamber around the nearest deposit
+	/// of that tier and stand in it, with the Mining level that reveals
+	/// it. Ore is derived and invisible below its level, so there is no
+	/// pose that photographs it — see [`debug_ore_plan`].
+	pub debug_ore: usize,
 	/// Debug: hang a wide stone roof with NO walls over the ground ahead
 	/// of spawn — the beam-veto capture (a slanting morning sun must
 	/// reach under it exactly as the shadow map says; only the ambient
@@ -324,6 +329,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_ore: 0,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -378,6 +384,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_ore: 0,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -946,6 +953,79 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_ORE=<tier 1..=4>: a chamber hollowed out around the nearest
+/// deposit of that tier, the vein left standing in its wall, and a torch
+/// on the floor to see it by. Returns the plan and where to stand.
+///
+/// Ore is DERIVED and invisible below its level, which makes it the least
+/// photographable thing in the game: there is no cell to teleport to,
+/// because the cell is Stone until someone with the level looks at it.
+/// Hence a scene rather than a pose — and hence the one rule that makes
+/// the scene work at all: **the carve must not touch the vein**. An edited
+/// cell never shows ore (that is the anti-dupe), so hollowing the box
+/// naively would delete the very thing being photographed. Every cell the
+/// deposit claims is left exactly as worldgen made it.
+fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+	use digblock_core::worldgen::ore;
+	let want = ore::ORES[tier.clamp(1, ore::ORES.len()) - 1];
+	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+	// Nearest deposit of the tier, horizontally — a search box wide
+	// enough that even Aetherock (one deposit in fifteen, and only in the
+	// bottom two grid rows) is found from any spawn.
+	let mut best: Option<(i64, ore::Deposit)> = None;
+	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 140, sz + 320), seed) {
+		if d.ore != want {
+			continue;
+		}
+		let (dx, dz) = (i64::from(d.x - sx), i64::from(d.z - sz));
+		let d2 = dx * dx + dz * dz;
+		if best.is_none_or(|(b, _)| d2 < b) {
+			best = Some((d2, d));
+		}
+	}
+	let Some((_, d)) = best else {
+		log::warn!("DIG_ORE: no {want:?} within reach of spawn");
+		return (spawn, Vec::new());
+	};
+	// The chamber: a box around the vein, minus the vein itself. Stood
+	// off far enough on -z that the camera is outside it looking in.
+	const R: i32 = 5;
+	let mut plan = Vec::new();
+	for y in (d.y - R)..=(d.y + R) {
+		for z in (d.z - R)..=(d.z + R) {
+			for x in (d.x - R)..=(d.x + R) {
+				if y <= digblock_core::block::BEDROCK_Y || ore::ore_at(x, y, z, seed).is_some() {
+					continue;
+				}
+				plan.push((x, y, z, BlockType::Air as u16));
+			}
+		}
+	}
+	// A floor two below the vein, so a standing player's EYE lands level
+	// with it — physics drops the camera onto that floor within a frame
+	// or two of a capture starting, and a pose that has to be looked up
+	// at is a pose nobody frames correctly.
+	let floor = d.y - 2;
+	for z in (d.z - R)..=(d.z + R) {
+		for x in (d.x - R)..=(d.x + R) {
+			plan.push((x, floor, z, BlockType::Stone as u16));
+		}
+	}
+	// A chamber this deep is lit by nothing at all and photographs as
+	// black; the torch is off to one side so the vein is raked rather
+	// than flattened by a light behind the camera.
+	plan.push((d.x - 3, floor + 1, d.z - 3, BlockType::Torch as u16));
+	log::info!("DIG_ORE: {want:?} vein at {},{},{}", d.x, d.y, d.z);
+	(
+		Vec3::new(
+			d.x as f32 + 0.5,
+			floor as f32 + 1.0 + digblock_core::player::EYE_TO_FEET,
+			d.z as f32 - 4.5,
+		),
+		plan,
+	)
+}
+
 /// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
 /// one torch on the floor ahead and a stair to catch its falloff. The
 /// Stage-B flagship capture: skylight is stripped by the roof (the
@@ -1422,6 +1502,21 @@ impl Engine {
 		let spawn = config
 			.start_pos
 			.map_or_else(|| digblock_core::player::spawn(seed), Vec3::from);
+		// DIG_ORE hollows its chamber around a deposit and stands the
+		// camera IN it, so the scene has to resolve before the pose is
+		// baked into the camera, the player and the tick lerp. An explicit
+		// `--pos` still wins: the scene only moves a camera that had
+		// nowhere particular to be.
+		let ore_scene = if config.debug_ore > 0 {
+			debug_ore_plan(spawn, seed, config.debug_ore)
+		} else {
+			(spawn, Vec::new())
+		};
+		let spawn = if config.start_pos.is_some() {
+			spawn
+		} else {
+			ore_scene.0
+		};
 		let mut camera = FlyCamera::new(far, spawn);
 		if let Some(yaw) = config.yaw {
 			camera.yaw_deg = yaw;
@@ -1491,6 +1586,9 @@ impl Engine {
 				}
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn));
+				}
+				if config.debug_ore > 0 {
+					plan.extend(ore_scene.1.clone());
 				}
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
@@ -1607,6 +1705,20 @@ impl Engine {
 					BlockType::LumberDoor,
 				)),
 			);
+		}
+		if engine.config.debug_ore > 0 {
+			// The scene exists to photograph a tier, so it grants exactly
+			// the level that reveals that tier — read out of the unlock
+			// table rather than written down, so retuning a reveal moves
+			// the capture with it. `sync_mining_reveal` then hands the
+			// level to the pipeline, which is what makes the stamp fire.
+			let ore = digblock_core::worldgen::ore::ORES[engine.config.debug_ore.clamp(1, 4) - 1];
+			let need = digblock_core::unlock::reveal(ore).unwrap_or(1);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Mining,
+				digblock_core::skills::total_xp_for(need),
+			);
+			engine.sync_mining_reveal(false);
 		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
@@ -2027,6 +2139,11 @@ impl Engine {
 		self.view_bob.reset();
 		self.view_swing.reset();
 		self.view_swap.reset();
+		// A replaced pipeline starts at Mining level 0, so a world entry
+		// has to hand it the level again or a high-level miner walks into
+		// plain stone until the next level-up. Silent: the discovery was
+		// made long ago.
+		self.sync_mining_reveal(false);
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -2575,8 +2692,12 @@ impl Engine {
 				}
 				NetEvent::Skills { xp } => {
 					// Join sync: adopt wholesale, no toasts — this is
-					// state arriving, not an award happening.
+					// state arriving, not an award happening. The ore
+					// reveal still has to follow it, or a Mining-60 player
+					// joins a server and sees plain stone until the next
+					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
+					self.sync_mining_reveal(false);
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -3694,6 +3815,30 @@ impl Engine {
 			// from the server's `LevelUp` broadcast.
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
+			self.sync_mining_reveal(true);
+		}
+	}
+
+	/// Hand the pipeline the Mining level its ore stamp reveals at, and
+	/// sweep every resident chunk when that crosses a tier (§5.3).
+	///
+	/// The sweep is `remesh_all`, which only ENQUEUES — the mesh heap
+	/// drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in
+	/// around you over a second or two instead of hitching the frame that
+	/// levelled you up.
+	fn sync_mining_reveal(&mut self, announce: bool) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Mining);
+		if !self.pipeline.set_mining_level(level) {
+			return;
+		}
+		self.pipeline.remesh_all();
+		// Only a LEVEL-UP says so. Entering a world, or a join sync
+		// handing over a Mining 60 you already had, crosses the same
+		// thresholds against a fresh pipeline and would announce a
+		// discovery you made an hour ago.
+		if announce {
+			self.push_feed("New veins shimmer into view.".into());
 		}
 	}
 

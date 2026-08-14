@@ -122,11 +122,24 @@ pub struct Pipeline {
 	deferred_edits: FxHashMap<(i32, i32), DeferredCells>,
 	/// Running total across the grouped map, so reporting it stays O(1).
 	deferred_count: usize,
-	/// Persistent local-edit overlay (single-player worlds): every
-	/// `set_block` records here and every generated column re-applies its
-	/// cells, so hard eviction can't lose edits. None in multiplayer —
-	/// the server's journal owns that world.
-	overlay: Option<crate::overlay::EditOverlay>,
+	/// Every cell this world has ever written, local or authoritative.
+	///
+	/// Two jobs, and they used to be one: re-applying edits onto a column
+	/// that regenerated (single-player only — the server's journal owns a
+	/// multiplayer world, so `reapply` is false there), and answering
+	/// "has this cell been touched?" for the ORE reveal, which BOTH modes
+	/// need. Multiplayer had no map at all, and without one a player's own
+	/// underground stone wall sprouts phantom veins the server does not
+	/// agree exist. So the map is always kept; only re-application is
+	/// conditional.
+	edits: crate::overlay::EditOverlay,
+	/// Re-apply `edits` onto a regenerating column, and report them for
+	/// persistence. False in multiplayer.
+	reapply: bool,
+	/// The looker's Mining level, which decides which ore tiers the mesh
+	/// stamp reveals (SKILLS-DESIGN §5.3). Crossing a threshold re-meshes
+	/// everything resident — see [`Pipeline::set_mining_level`].
+	mining_level: u32,
 	/// Edits recorded since the last `take_recorded_edits` drain (the
 	/// engine forwards them to the world store).
 	recorded: Vec<(i32, i32, i32, u16)>,
@@ -448,7 +461,9 @@ impl Pipeline {
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			deferred_edits: FxHashMap::default(),
 			deferred_count: 0,
-			overlay,
+			reapply: overlay.is_some(),
+			edits: overlay.unwrap_or_default(),
+			mining_level: 0,
 			recorded: Vec::new(),
 			scanned: None,
 			in_flight: 0,
@@ -465,9 +480,27 @@ impl Pipeline {
 		std::mem::take(&mut self.recorded)
 	}
 
-	/// The persistent edit overlay, when one is installed.
+	/// The persistent edit overlay, when this world re-applies one — the
+	/// single-player save path. Multiplayer still KEEPS the map (the ore
+	/// reveal reads it); it simply has no store to hand it to.
 	pub fn overlay(&self) -> Option<&crate::overlay::EditOverlay> {
-		self.overlay.as_ref()
+		self.reapply.then_some(&self.edits)
+	}
+
+	/// Set the Mining level the ore reveal stamps at, returning true when
+	/// that crosses a tier's threshold and every resident chunk therefore
+	/// has to re-mesh. The caller decides what to do about it (the engine
+	/// sweeps and says so in the feed) — this only reports the crossing,
+	/// so levelling up 60 times does not re-mesh 60 times.
+	pub fn set_mining_level(&mut self, level: u32) -> bool {
+		let was = std::mem::replace(&mut self.mining_level, level);
+		crate::worldgen::ore::ORES
+			.iter()
+			.any(|&o| crate::unlock::reveal(o).is_some_and(|need| (was < need) != (level < need)))
+	}
+
+	pub fn mining_level(&self) -> u32 {
+		self.mining_level
 	}
 
 	/// Call every frame with the player's chunk position. Performs the
@@ -677,8 +710,8 @@ impl Pipeline {
 					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
 					// rather than mutating it (refcount > 1), mirroring the
 					// server's `ChunkStore::drain` overlay.
-					if let Some(overlay) = &self.overlay {
-						if let Some(cells) = overlay.column(x, z) {
+					if self.reapply {
+						if let Some(cells) = self.edits.column(x, z) {
 							for (&(wx, wy, wz), &cell) in cells {
 								let Some(((_, cy, _), (lx, ly, lz))) =
 									crate::chunk::split_world(wx, wy, wz)
@@ -932,7 +965,7 @@ impl Pipeline {
 	}
 
 	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
-		let input = MeshInput::build(center, |dx, dy, dz| {
+		let mut input = MeshInput::build(center, |dx, dy, dz| {
 			let np = ChunkPos::new(pos.x + dx, pos.y + dy, pos.z + dz);
 			if np.y >= WORLD_VCHUNK {
 				return Src::Air; // Java air sentinel above the world
@@ -954,7 +987,53 @@ impl Pipeline {
 				_ => Src::Missing,
 			}
 		});
+		input.ore = self.ore_stamp(pos);
 		input
+	}
+
+	/// The ore reveal's per-job parcel (SKILLS-DESIGN §5.3), or `None`
+	/// when this chunk cannot show a vein at all.
+	///
+	/// The edited-cell list is gathered HERE because this is the only
+	/// place that has the map — the worker holds a snapshot of block ids
+	/// and nothing else. It walks the ≤4 columns the padded box overlaps
+	/// rather than the whole world's edits, and is empty for the
+	/// overwhelming majority of chunks.
+	fn ore_stamp(&self, pos: ChunkPos) -> Option<crate::mesher::OreStamp> {
+		use crate::worldgen::ore;
+		if self.mining_level < ore::lowest_reveal() {
+			return None;
+		}
+		let n = crate::chunk::CHUNK_SIZE as i32;
+		let origin = (pos.x * n - 1, pos.y * n - 1, pos.z * n - 1);
+		if origin.1 > ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS {
+			return None;
+		}
+		let span = crate::mesher::PADDED as i32 - 1;
+		let mut edited = Vec::new();
+		for cz in origin.2.div_euclid(n)..=(origin.2 + span).div_euclid(n) {
+			for cx in origin.0.div_euclid(n)..=(origin.0 + span).div_euclid(n) {
+				let Some(cells) = self.edits.column(cx, cz) else {
+					continue;
+				};
+				for &(x, y, z) in cells.keys() {
+					let (lx, ly, lz) = (x - origin.0, y - origin.1, z - origin.2);
+					if (0..=span).contains(&lx)
+						&& (0..=span).contains(&ly)
+						&& (0..=span).contains(&lz)
+					{
+						edited.push(crate::mesher::pidx(lx - 1, ly - 1, lz - 1) as u16);
+					}
+				}
+			}
+		}
+		edited.sort_unstable();
+		Some(crate::mesher::OreStamp {
+			seed: self.seed,
+			origin,
+			mining: self.mining_level,
+			edited,
+		})
 	}
 
 	fn requeue(&mut self, job: Job) {
@@ -1117,8 +1196,8 @@ impl Pipeline {
 		// also invalidate nearby probes so relight starts immediately.
 		self.gi_dirty.insert(pos);
 		self.gi_edits.push((x, y, z));
-		if let Some(overlay) = &mut self.overlay {
-			overlay.record(x, y, z, cell);
+		self.edits.record(x, y, z, cell);
+		if self.reapply {
 			self.recorded.push((x, y, z, cell));
 		}
 		slot.mesh_gen += 1;
@@ -1190,6 +1269,10 @@ impl Pipeline {
 		if crate::chunk::split_world(x, y, z).is_none() {
 			return ApplyEdit::Rejected;
 		}
+		// Recorded BEFORE the applied/deferred split: a cell the server has
+		// written is a cell the ore reveal must treat as spent whether or
+		// not its chunk happens to be resident yet.
+		self.edits.record(x, y, z, cell);
 		let col = (x.div_euclid(16), z.div_euclid(16));
 		if self.try_apply((x, y, z), cell) {
 			if let Some(cells) = self.deferred_edits.get_mut(&col) {
@@ -1291,7 +1374,16 @@ fn run_job(job: Job) -> JobResult {
 				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
 			}
 		}
-		Job::Mesh { pos, gen, input } => {
+		Job::Mesh {
+			pos,
+			gen,
+			mut input,
+		} => {
+			// The ore reveal runs HERE, in the worker, before anything
+			// reads the array: it rewrites qualifying pristine Stone to
+			// its ore's block id, so the mesher, the texture path and the
+			// emissive bit all just see a real ore block (§5.3).
+			input.apply_ore();
 			let mesh = mesh_chunk(&input);
 			JobResult::Meshed {
 				out: MeshOutput { pos, gen, mesh },
@@ -1397,6 +1489,37 @@ mod tests {
 	}
 
 	/// The client twin of the server's
+	/// A reveal sweep costs a re-mesh of everything resident, so it has to
+	/// fire exactly on the four thresholds and at no other level — which
+	/// also means levelling from 1 to 99 in one award sweeps ONCE, not
+	/// four times.
+	#[test]
+	fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
+		use crate::worldgen::ore;
+		let thresholds: Vec<u32> = ore::ORES
+			.iter()
+			.filter_map(|&o| crate::unlock::reveal(o))
+			.collect();
+		let mut p = Pipeline::new(0.0, 4, 0);
+		for level in 1..=crate::skills::MAX_LEVEL {
+			assert_eq!(
+				p.set_mining_level(level),
+				thresholds.contains(&level),
+				"stepping to {level}"
+			);
+		}
+		// Re-setting the same level is not a crossing, so a per-frame
+		// caller costs nothing.
+		assert!(!p.set_mining_level(crate::skills::MAX_LEVEL));
+		// And a single jump over all four sweeps exactly once.
+		let mut q = Pipeline::new(0.0, 4, 0);
+		assert!(q.set_mining_level(crate::skills::MAX_LEVEL));
+		assert!(!q.set_mining_level(crate::skills::MAX_LEVEL));
+		// Losing levels (a fresh world, a rejoin as somebody else) crosses
+		// back down and re-meshes too — the veins have to go away.
+		assert!(q.set_mining_level(1));
+	}
+
 	/// `journal_overlay_survives_evict_and_regen`: with an overlay
 	/// installed, a local edit survives hard eviction because the column
 	/// re-applies it when it regenerates.

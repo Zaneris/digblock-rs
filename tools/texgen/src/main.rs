@@ -86,13 +86,21 @@ fn main() {
 	// picked BRIGHT as well as saturated: chunk.wgsl gains that ink by
 	// luminance, and a near-white fleck would glow at the cost of having
 	// no colour left to glow IN.
-	for (name, core, rim) in [
-		("Emberore.png", [214u8, 96, 34], [255u8, 176, 84]),
-		("Duskstone.png", [104, 78, 168], [172, 146, 236]),
-		("Glowvein.png", [72, 226, 214], [198, 255, 248]),
-		("Aetherock.png", [240, 214, 96], [255, 248, 200]),
+	//
+	// They also darken their stone BODY hard (the `body` scale), and that
+	// is the load-bearing half. Emissive is a per-BLOCK flag, not a
+	// per-texel one: a glowing block renders its whole face at full
+	// albedo, so at body 1.0 a Glowvein in a black cave reads as a
+	// glowing white rock rather than as rock with glowing crystals in it.
+	// The contrast has to live in the texture, because the shader has no
+	// way to express it.
+	for (name, core, rim, body) in [
+		("Emberore.png", [214u8, 96, 34], [255u8, 176, 84], 1.0),
+		("Duskstone.png", [104, 78, 168], [172, 146, 236], 1.0),
+		("Glowvein.png", [72, 226, 214], [198, 255, 248], 0.30),
+		("Aetherock.png", [240, 214, 96], [255, 248, 200], 0.30),
 	] {
-		save(name, ore(&stone, core, rim, &mut rng));
+		save(name, ore(&stone, core, rim, body, &mut rng));
 	}
 	// A tapped vein face: the flecks are GONE and their sockets are not.
 	// Empty pockets are what makes DepletedStone read as spent rather than
@@ -107,11 +115,15 @@ fn main() {
 /// rock that HAS ore in it. At forty the stone disappeared and the face
 /// became a solid colour, which is the same mistake as a fleck with no
 /// socket, one scale up.
-fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], body: f32, rng: &mut Rng) -> RgbImage {
 	let mut out = stone.clone();
 	for p in out.pixels_mut() {
 		let n = rng.signed(6);
-		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
+		p.0 = [
+			clamp8(f32::from(add8(p.0[0], n)) * body),
+			clamp8(f32::from(add8(p.0[1], n)) * body),
+			clamp8(f32::from(add8(p.0[2], n)) * body),
+		];
 	}
 	let s = SIZE as i32;
 	for _ in 0..18 {

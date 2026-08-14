@@ -37,7 +37,7 @@ use crate::block::BlockType;
 const CELL: i32 = 12;
 
 /// The furthest a deposit's blob reaches from its centre.
-const MAX_RADIUS: i32 = 2;
+pub const MAX_RADIUS: i32 = 2;
 
 /// Salt for the deposit stream, distinct from decoration's families
 /// (tree 0, landmark, boulder, bush) so ore and trees never correlate.
@@ -231,6 +231,21 @@ pub const ORES: [BlockType; 4] = [
 	BlockType::Glowvein,
 	BlockType::Aetherock,
 ];
+
+/// No deposit's centre sits above this, so a chunk that starts above it
+/// can skip the whole reveal stamp. (A blob reaches [`MAX_RADIUS`] past
+/// its centre, which the callers' box already covers.)
+pub const MAX_DEPOSIT_Y: i32 = TIERS[0].1;
+
+/// The lowest Mining level at which ANY tier is visible — below it the
+/// stamp has nothing to do at all, which is the cheap early-out for every
+/// player who has not reached the first reveal.
+pub fn lowest_reveal() -> u32 {
+	ORES.iter()
+		.filter_map(|&o| crate::unlock::reveal(o))
+		.min()
+		.expect("four tiers")
+}
 
 /// THE visibility question, asked identically by the mesh stamp, the
 /// client's dig prediction and the server's validation: what ore does this

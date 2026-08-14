@@ -273,6 +273,13 @@ fn main() {
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
 	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();
+	// DIG_ORE=<tier 1..=4>: a chamber hollowed around the nearest deposit
+	// of that tier, with the Mining level that reveals it. Ore is derived
+	// and invisible below its level, so no pose alone can photograph it.
+	config.debug_ore = std::env::var("DIG_ORE")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(0);
 	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
 	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
 	// 80 100`, which is the only way to see the break spread — one still
