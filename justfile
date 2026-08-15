@@ -87,12 +87,31 @@ play-docker PROFILE="clean" *ARGS:
 	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
 
 # Dockerized server behind a tc netem profile: clean | wifi | cellular.
+#
+# The `trap ... down` is not a nicety, and it is why this recipe carries a
+# shebang for one command: `up` in the FOREGROUND leaves its containers
+# behind on Ctrl-C, which is how a run gets abandoned and then sits there
+# for weeks. `play` and `play-docker` have always cleaned up after
+# themselves; these two were the pair that didn't.
 compose PROFILE="clean":
+	#!/usr/bin/env bash
+	set -euo pipefail
+	trap 'docker compose -f docker/compose.yml down --remove-orphans' EXIT
 	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
 		docker compose -f docker/compose.yml up --build server
 
 # Same, plus a 4-bot soak that exits non-zero on missed snapshots.
+#
+# `--remove-orphans` matters more here than next door: the bots service is
+# behind a compose PROFILE, so a later `just compose` without it does not
+# consider the bots container part of the project and leaves it standing.
+# That is exactly how a `docker-bots-1` came to sit Exited for nine days.
+# The trap runs on the non-zero exit too — a failed soak is the run you
+# most want cleaned up, since you are about to start another.
 compose-bots PROFILE="clean":
+	#!/usr/bin/env bash
+	set -euo pipefail
+	trap 'docker compose -f docker/compose.yml --profile bots down --remove-orphans' EXIT
 	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
 		docker compose -f docker/compose.yml --profile bots up --build --abort-on-container-exit
 
@@ -260,3 +279,31 @@ ios-device:
 # Release-speed build with debug symbols, for Instruments/profilers.
 profile *ARGS:
 	cargo run --profile profiling -p digblock-desktop -- {{ARGS}}
+
+# Remove every Docker artifact this project creates, and nothing else.
+#
+# Scoped ON PURPOSE — `docker system prune` would take other projects'
+# containers and volumes with it, and a volume is where a database keeps
+# the only copy of its data. Everything named here is rebuilt on demand:
+# the e2e suite runs its own `docker build`, and compose builds with
+# `--build`, so the cost of being wrong is a slower next run.
+#
+# What this deliberately does NOT touch is the build CACHE, because that
+# is shared across every project on the machine. Cap it once at the
+# daemon instead of pruning it by hand — in ~/.docker/daemon.json,
+# `builder.gc.policy[].maxUsedSpace` is the ceiling. `defaultKeepStorage`
+# and `reservedSpace` read like caps and are not: they are the floor GC
+# refuses to prune BELOW, so setting only those lets the cache grow
+# without limit (measured here at 40GB against a 20GB "keep").
+#
+# Remove this project's containers and images; cache and other projects untouched.
+docker-clean:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	docker compose -f docker/compose.yml --profile bots down --remove-orphans 2>/dev/null || true
+	docker rm -f digblock-play-master 2>/dev/null || true
+	for img in digblock-master digblock-master-e2e digblock-server docker-master docker-server docker-bots; do
+		docker rmi -f "$img" 2>/dev/null || true
+	done
+	echo "digblock docker artifacts removed; build cache left alone (see comment)"
+	docker system df
