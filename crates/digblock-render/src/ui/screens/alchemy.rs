@@ -88,6 +88,11 @@ pub struct AlchView {
 	pub xp_frac: f32,
 	pub subs: [u32; Essence::COUNT],
 	pub bucket_full: bool,
+	/// How many more of each id the inventory can take. Zero for a tool
+	/// already owned and for a charged bucket — `apply_alchemy` refuses
+	/// a craft on exactly this number, so the button has to grey on it
+	/// too or the offer is a lie the player pays for.
+	pub headroom: [u32; BlockType::COUNT],
 }
 
 impl AlchView {
@@ -102,11 +107,16 @@ impl AlchView {
 		for (i, &e) in Essence::ALL.iter().enumerate() {
 			subs[i] = inv.sub_count(e);
 		}
+		let mut headroom = [0u32; BlockType::COUNT];
+		for &b in BlockType::ALL.iter() {
+			headroom[b as usize] = inv.headroom(b);
+		}
 		Self {
 			level,
 			xp_frac,
 			subs,
 			bucket_full: inv.bucket_full(),
+			headroom,
 		}
 	}
 
@@ -119,21 +129,15 @@ impl AlchView {
 		let Some(ideal) = alchemy::craft_ideal(item) else {
 			return 0;
 		};
-		// The bucket charge crafts one at a time by definition.
-		let cap = if item == BlockType::Water {
-			if self.bucket_full {
-				return 0;
-			}
-			1
-		} else {
-			u32::MAX
-		};
 		ideal
 			.iter()
 			.map(|&(e, n)| self.subs[e as usize] / alchemy::craft_cost(n, self.level))
 			.min()
 			.unwrap_or(0)
-			.min(cap)
+			// Capped types buy what they can hold and no more: one
+			// bucket charge, one of any tool. Affordability is not the
+			// only ceiling.
+			.min(self.headroom[item as usize])
 	}
 }
 
@@ -260,11 +264,9 @@ const FAMILY_SWAP_SECS: f32 = 0.30;
 /// (0..=1, scaling both the icon and its alpha).
 ///
 /// The rotation used to hard-cut, which read as a glitch rather than as
-/// a tile cycling its contents. The outgoing member shrinks away over
-/// the first half of the swap window and the incoming one grows in over
-/// the second, so the tile never shows two icons at once — cross-fading
-/// two overlapping 3D icons is a double exposure of their internal
-/// faces, and the effect is a rotation, not a dissolve.
+/// a tile cycling its contents. The handover itself is
+/// [`super::super::handover`] — the same shrink-away/grow-in the hotbar's
+/// tool slot plays when you cycle tools, and for the same reason.
 ///
 /// A one-member family never transitions: there is nothing to trade it
 /// for, and a tile pulsing on its own is just noise.
@@ -279,12 +281,8 @@ fn family_preview(clock: f32, members: usize) -> (usize, f32) {
 	if into < hold {
 		return (i % members, 1.0);
 	}
-	let u = (into - hold) / FAMILY_SWAP_SECS;
-	if u < 0.5 {
-		(i % members, 1.0 - 2.0 * u)
-	} else {
-		((i + 1) % members, 2.0 * u - 1.0)
-	}
+	let (incoming, present) = crate::ui::handover((into - hold) / FAMILY_SWAP_SECS);
+	((i + usize::from(incoming)) % members, present)
 }
 
 /// Scale a 0xAABBGGRR tint's alpha by `f` (the icon's own fade, so the
@@ -921,6 +919,14 @@ impl AlchScreen {
 			kind,
 			if locked { LOCKED_TINT } else { tint },
 		);
+		let btn = Rect::new(
+			strip.x + strip.w - text_pad - BTN_W * s,
+			strip.y + (strip_h - BTN_H * s) / 2.0,
+			BTN_W * s,
+			BTN_H * s,
+		);
+		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
+		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
 		let text = if locked {
 			format!("{}   —   LV {need}", block_name(item))
 		} else {
@@ -930,30 +936,42 @@ impl AlchScreen {
 				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, view.level), e.name()))
 				.collect::<Vec<_>>()
 				.join(" + ");
-			match batches {
-				0 => {
-					// Name the first shortfall so the player knows what
-					// to go extract.
-					let need = ideal
-						.iter()
-						.find_map(|&(e, n)| {
-							let cost = alchemy::craft_cost(n, view.level);
-							let have = view.subs[e as usize];
-							(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
-						})
-						.unwrap_or_else(|| "NOTHING TO CHARGE".into());
-					format!("{}   —   {costs}   ·   {need}", block_name(item))
+			let tail = match batches {
+				// A full cap is not a shortfall, and naming an essence
+				// here would send the player off to extract something
+				// that cannot help. Tools are a yes/no; the bucket holds
+				// one charge.
+				0 if view.headroom[item as usize] == 0 => {
+					if item.is_tool() {
+						"ALREADY OWNED".to_string()
+					} else {
+						"ALREADY CHARGED".to_string()
+					}
 				}
-				n => format!("{}   —   {costs}   ·   ×{n}", block_name(item)),
+				// Name the first shortfall so the player knows what to go
+				// extract.
+				0 => ideal
+					.iter()
+					.find_map(|&(e, n)| {
+						let cost = alchemy::craft_cost(n, view.level);
+						let have = view.subs[e as usize];
+						(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
+					})
+					.unwrap_or_else(|| "NOTHING TO CHARGE".into()),
+				n => format!("×{n}"),
+			};
+			// The TAIL is what has to survive: a price is a static fact
+			// the player can go and read, but "why can't I" is this
+			// line's whole job — and the three-essence prices at the end
+			// of the catalog are long enough to push it off the end.
+			// Drop the costs before letting that happen.
+			let full = format!("{}   —   {costs}   ·   {tail}", block_name(item));
+			if ui.style.measure(&full) <= avail {
+				full
+			} else {
+				format!("{}   —   {tail}", block_name(item))
 			}
 		};
-		let btn = Rect::new(
-			strip.x + strip.w - text_pad - BTN_W * s,
-			strip.y + (strip_h - BTN_H * s) / 2.0,
-			BTN_W * s,
-			BTN_H * s,
-		);
-		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		widgets::label(
 			ui.dl,
 			Layer::Content,
@@ -961,7 +979,7 @@ impl AlchScreen {
 			strip.y + (strip_h - glyph) / 2.0,
 			glyph,
 			if locked { DIM } else { WHITE },
-			&elide(&ui.style, &text, btn.x - ICON_TEXT_GAP * s - text_x),
+			&elide(&ui.style, &text, avail),
 		);
 		widgets::button(
 			ui,
@@ -1248,7 +1266,7 @@ mod tests {
 		let mut hotbar = Hotbar::new();
 		let mut grid = InvGrid::default();
 		digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut grid);
-		let bar = HotbarView::build(&hotbar, &inv);
+		let bar = HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default());
 		let style = Style::new(1.0);
 		let mut screen = AlchScreen::default();
 		screen.open();
@@ -1291,6 +1309,29 @@ mod tests {
 	fn feed(r: &mut Rig, ev: &InputEvent) -> Option<AlchAction> {
 		r.screen
 			.handle_input(ev, &r.hits, &r.style, &r.view, &r.grid, &r.bar)
+	}
+
+	/// Every line of text the screen draws, in emission order — for the
+	/// assertions that are about what a player READS.
+	fn text_of(r: &Rig) -> String {
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: r.style,
+		};
+		r.screen.build(&mut ui, SIZE, &r.view, &r.grid, &r.inv, 1.0);
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		cmds.iter()
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::Text { range, .. } => {
+					Some(&arena[range.0 as usize..range.1 as usize])
+				}
+				_ => None,
+			})
+			.collect::<Vec<_>>()
+			.join(" | ")
 	}
 
 	fn center(rect: Rect) -> (f32, f32) {
@@ -1724,5 +1765,70 @@ mod tests {
 				"{b:?}: craftable blocks sit in exactly one family, others in none"
 			);
 		}
+	}
+
+	/// Owning a tool is a yes/no (§7.3), so the bench sells exactly one
+	/// and then stops offering it. `apply_alchemy` refuses a craft that
+	/// would vanish into the cap — an offer the rule refuses is one the
+	/// player pays 240 Metal for and gets nothing back — and the strip
+	/// says WHY: a cap is not a shortfall, and naming an essence here
+	/// would send them off to extract something that cannot help.
+	#[test]
+	fn an_owned_tool_is_no_longer_on_offer() {
+		let mut r = rig_at(99, |inv| {
+			for &e in &Essence::ALL {
+				inv.add_sub(e, 5_000);
+			}
+		});
+		let press = |r: &mut Rig, at: (f32, f32)| {
+			feed(r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+			feed(
+				r,
+				&InputEvent::MouseButton {
+					button: MouseButton::Left,
+					pressed: true,
+				},
+			)
+		};
+		let tab = center(r.hits.rect_of(InvId::Tab(1)).unwrap());
+		press(&mut r, tab);
+		rebuild(&mut r);
+		let tools = families()
+			.iter()
+			.position(|f| f.name == "TOOLS")
+			.expect("a TOOLS family");
+		let at = center(r.hits.rect_of(InvId::Family(tools as u8)).unwrap());
+		press(&mut r, at);
+		rebuild(&mut r);
+		let member = families()[tools]
+			.members
+			.iter()
+			.position(|&m| m == B::ResonantPick)
+			.expect("the pick is a tool");
+		let at = center(r.hits.rect_of(InvId::Craft(member as u8)).unwrap());
+		press(&mut r, at);
+		rebuild(&mut r);
+
+		assert_eq!(r.view.affordable(B::ResonantPick), 1, "one, never a batch");
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		assert_eq!(
+			press(&mut r, go),
+			Some(AlchAction::Craft {
+				item: B::ResonantPick,
+				count: 1
+			})
+		);
+
+		// The server's answer arrives: it's in the bag. The offer closes.
+		r.inv.add(B::ResonantPick, 1);
+		rebuild(&mut r);
+		assert_eq!(r.view.affordable(B::ResonantPick), 0);
+		assert!(
+			r.hits.rect_of(InvId::CraftGo).is_none(),
+			"no button on an item that cannot be crafted"
+		);
+		let text = text_of(&r);
+		assert!(text.contains("ALREADY OWNED"), "the strip explains: {text}");
+		assert!(!text.contains("NEED"), "a cap is not a shortfall: {text}");
 	}
 }

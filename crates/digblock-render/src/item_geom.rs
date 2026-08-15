@@ -194,6 +194,23 @@ fn pick_faces(out: &mut Vec<ItemFace>) {
 	box_faces([5, 8, 4], [7, 10, 8], |_| core, out);
 }
 
+/// The Master's Sigil: a crystal set in a standing metal plate on a
+/// small foot. It DOES nothing — 99 Aether for the last line of the
+/// catalog — so it is drawn as a thing you display rather than a thing
+/// you swing: an emblem, face-on, with the gem proud of the plate on
+/// both sides so the shape reads at hotbar size.
+///
+/// It needs authored geometry for the same reason its siblings do: a
+/// tool carries no texture layers, so the cube fallback would draw the
+/// game's most expensive item as a block of whatever sits at layer 0.
+fn sigil_faces(out: &mut Vec<ItemFace>) {
+	let frame = digblock_core::block::tex::METAL;
+	let gem = digblock_core::block::tex::CRYSTAL;
+	box_faces([4, 0, 4], [8, 2, 8], |_| frame, out);
+	box_faces([2, 2, 5], [10, 10, 7], |_| frame, out);
+	box_faces([4, 4, 4], [8, 8, 8], |_| gem, out);
+}
+
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
 pub fn height(kind: IconKind) -> i32 {
@@ -231,6 +248,7 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
 		IconKind::Siphon => siphon_faces(&mut out),
 		IconKind::Pick => pick_faces(&mut out),
+		IconKind::Sigil => sigil_faces(&mut out),
 	}
 	out
 }

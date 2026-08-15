@@ -287,7 +287,7 @@ mod tests {
 		inv.add(B::Stone, 2);
 		let mut grid = InvGrid::default();
 		grid.place(1, B::Stone); // parked in grid slot 1
-		let bar = HotbarView::build(&hotbar, &inv);
+		let bar = HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default());
 		let style = Style::new(1.0);
 
 		// Build the frame exactly as the engine does: screen first,

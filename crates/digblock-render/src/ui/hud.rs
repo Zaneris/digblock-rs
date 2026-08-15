@@ -15,6 +15,16 @@ pub const SLOT_PX: f32 = 56.0;
 pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
+/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is
+/// not the ninth block slot, and standing it apart is the whole of how a
+/// player is told so — the icon in it is a tool whatever the bar holds.
+///
+/// It is added at DRAW time rather than folded into [`row_grid`], which
+/// stays the uniform nine-column geometry every panel measures itself
+/// against: the inventory grid's columns keep landing on the block slots
+/// they drop into, and the split is what the tool slot hangs off the
+/// right-hand end by.
+pub const TOOL_SPLIT: f32 = 20.0;
 
 const FULL_TINT: u32 = 0xFFFF_FFFF;
 
@@ -35,6 +45,8 @@ pub enum IconKind {
 	Siphon,
 	/// The Resonant Pick: a haft with a broad resonant head.
 	Pick,
+	/// The Master's Sigil: a crystal set in a standing metal plate.
+	Sigil,
 }
 
 /// The arrival cover: an OPAQUE full-screen fill with one centred line,
@@ -133,6 +145,18 @@ pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 	}
 }
 
+/// One bar slot's rect: the uniform grid, plus [`TOOL_SPLIT`] of clear
+/// air before the last one. The single place that knows the bar is 8
+/// block slots and a tool — the hit rects the inventory screen drops
+/// into come from here too, so the target can't drift from the picture.
+pub fn bar_slot_rect(grid: &GridSpec, i: usize, scale: f32) -> super::Rect {
+	let mut rect = grid.rect(i);
+	if i == HOTBAR_SLOTS - 1 {
+		rect.x += TOOL_SPLIT * scale;
+	}
+	rect
+}
+
 /// Emit the hotbar: slot widgets (backdrops, icons, selection border,
 /// hit rects under `id_of(i)`) plus stack counts, drawn at the frame's
 /// text size like the rest of the UI.
@@ -142,13 +166,25 @@ pub fn hotbar<Id: Copy + PartialEq>(
 	view: &HotbarView,
 	id_of: impl Fn(usize) -> Id,
 ) {
-	let grid = row_grid(size, ui.style.scale);
-	let icon_px = ICON_PX * ui.style.scale;
+	let scale = ui.style.scale;
+	let grid = row_grid(size, scale);
+	let base_icon = ICON_PX * scale;
 	for i in 0..HOTBAR_SLOTS {
-		let rect = grid.rect(i);
+		let rect = bar_slot_rect(&grid, i, scale);
+		let mut icon_px = base_icon;
 		let icon = match view.slots[i] {
 			SlotView::Empty => None,
-			SlotView::Tool { tool, full } => Some((tool_icon(tool, full), FULL_TINT)),
+			SlotView::Tool {
+				tool,
+				full,
+				present,
+			} => {
+				// Mid-handover the icon shrinks and fades; the SLOT
+				// itself doesn't move, so the exchange happens inside a
+				// bar that stays put.
+				icon_px *= present;
+				Some((tool_icon(tool, full), faded(FULL_TINT, present)))
+			}
 			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
 		// The HUD bar has no cursor: rings only, never hover.
@@ -176,6 +212,7 @@ pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 	match tool {
 		BlockType::EssenceSiphon => IconKind::Siphon,
 		BlockType::ResonantPick => IconKind::Pick,
+		BlockType::MastersSigil => IconKind::Sigil,
 		// The bucket, and anything a future row forgets to author: a cube
 		// is wrong, but it is visibly wrong rather than invisible.
 		BlockType::Bucket => IconKind::WaterTool { full: bucket_full },
@@ -188,27 +225,50 @@ pub fn tool_rail(
 	style: &super::widgets::Style,
 	size: (u32, u32),
 	owned: &[digblock_core::block::BlockType],
-	active: digblock_core::block::BlockType,
+	shown: digblock_core::block::BlockType,
 	bucket_full: bool,
+	present: f32,
 ) {
 	if owned.len() < 2 {
 		return;
 	}
 	const RAIL_TINT: u32 = 0x70FF_FFFF;
+	/// Rail slot size — subordinate to the bar's own [`SLOT_PX`] at a
+	/// glance, but big enough that WHICH tool it is can be read, which is
+	/// the only thing the rail is for.
+	const RAIL_CELL: f32 = 34.0;
+	const RAIL_ICON_PAD: f32 = 3.0;
 	let scale = style.scale;
 	let grid = row_grid(size, scale);
-	let cell = 28.0 * scale;
+	let cell = RAIL_CELL * scale;
 	let gap = 6.0 * scale;
-	let mut x = grid.origin.0 + grid.extent(HOTBAR_SLOTS).0 + SLOT_GAP * scale * 2.0;
+	let slot = bar_slot_rect(&grid, HOTBAR_SLOTS - 1, scale);
+	let mut x = slot.x + slot.w + SLOT_GAP * scale * 2.0;
 	let y = grid.origin.1 + grid.cell - cell;
-	for &tool in owned.iter().filter(|&&t| t != active) {
+	// The rail rides the same handover as the slot: `shown` is the tool
+	// being DRAWN, so membership changes at the midpoint — where every
+	// icon is at nothing — and no tool is ever in the slot and the rail
+	// at the same time.
+	let inset = cell * (1.0 - present) / 2.0;
+	for &tool in owned.iter().filter(|&&t| t != shown) {
 		let kind = tool_icon(tool, bucket_full);
+		let box_ = super::Rect::new(x, y, cell, cell);
+		// A faded slot, not a bare icon: these sit over open world, and
+		// a small dark tool against dark terrain was a smudge. The
+		// backdrop is the bar's own fill at the rail's alpha, so the
+		// rail reads as smaller, quieter slots of the same row.
+		dl.quad(Layer::Backdrop, box_, faded(widgets::SLOT_BG, present));
 		draw_icon(
 			dl,
 			Layer::Icons,
-			super::Rect::new(x, y, cell, cell),
+			super::Rect::new(
+				x + inset + RAIL_ICON_PAD * scale,
+				y + inset + RAIL_ICON_PAD * scale,
+				(cell - 2.0 * RAIL_ICON_PAD * scale) * present,
+				(cell - 2.0 * RAIL_ICON_PAD * scale) * present,
+			),
 			kind,
-			RAIL_TINT,
+			faded(RAIL_TINT, present),
 		);
 		x += cell + gap;
 	}
@@ -286,7 +346,7 @@ mod tests {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 3);
 		inv.add(BlockType::Stone, 12);
-		HotbarView::build(&hotbar, &inv)
+		HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default())
 	}
 
 	fn emit(scale: f32) -> (DrawList, HitMap<usize>) {
@@ -301,20 +361,54 @@ mod tests {
 		(dl, hits)
 	}
 
+	/// The nine-column lattice is centered and scales — and the block row
+	/// sits ON it, which is what keeps the inventory grid's columns over
+	/// the slots they drop into.
 	#[test]
 	fn row_is_bottom_centered_and_scales() {
 		for scale in [1.0f32, 2.0] {
 			let (_, hits) = emit(scale);
+			let grid = row_grid(SIZE, scale);
 			let first = hits.rect_of(0).unwrap();
-			let last = hits.rect_of(HOTBAR_SLOTS - 1).unwrap();
 			let left = first.x;
-			let right = SIZE.0 as f32 - (last.x + last.w);
+			let right = SIZE.0 as f32 - (grid.origin.0 + grid.extent(HOTBAR_SLOTS).0);
 			assert!((left - right).abs() < 0.5, "centered at {scale}x");
+			for i in 0..HOTBAR_SLOTS - 1 {
+				assert_eq!(
+					hits.rect_of(i).unwrap().x,
+					grid.rect(i).x,
+					"block slot {i} is on the lattice at {scale}x"
+				);
+			}
 			assert_eq!(first.w, SLOT_PX * scale, "slot size scales");
 			assert_eq!(
 				first.y + first.h,
 				SIZE.1 as f32 - BOTTOM_MARGIN * scale,
 				"bottom anchor scales"
+			);
+		}
+	}
+
+	/// §6: the last slot is the TOOL slot, not the ninth block slot, and
+	/// it says so by standing apart. It steps out of the lattice to the
+	/// right rather than pushing the row over, so nothing that was
+	/// aligned to the bar has to move — and the gap it leaves is a real
+	/// break, not a slightly wider seam.
+	#[test]
+	fn the_tool_slot_stands_apart_from_the_block_row() {
+		for scale in [1.0f32, 2.0, 3.0] {
+			let (_, hits) = emit(scale);
+			let seam = |a: usize, b: usize| {
+				let (a, b) = (hits.rect_of(a).unwrap(), hits.rect_of(b).unwrap());
+				b.x - (a.x + a.w)
+			};
+			let between_blocks = seam(0, 1);
+			let before_tool = seam(HOTBAR_SLOTS - 2, HOTBAR_SLOTS - 1);
+			assert_eq!(between_blocks, SLOT_GAP * scale, "the row's own seam");
+			assert_eq!(before_tool, (SLOT_GAP + TOOL_SPLIT) * scale);
+			assert!(
+				before_tool > between_blocks * 3.0,
+				"a break, not a seam: {before_tool} vs {between_blocks}"
 			);
 		}
 	}

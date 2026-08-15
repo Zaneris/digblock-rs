@@ -520,7 +520,16 @@ slot is a separate axis:
 - **The faded rail**: small icons at reduced alpha beside the tool slot, active tool
   excluded, in a fixed owned-order (block-id order — deterministic, no arrangement state
   to persist or sync). It's a readout, not a target: clicking is not required, cycling is
-  the interaction. HUD-layer icons via the existing `item_icon` sites.
+  the interaction. Built as faded *slots* rather than bare icons — they sit over open
+  world, and a dark tool on dark terrain was a smudge.
+- **The swap is a handover, not a cut** (built after the fact, and it is what makes
+  cycling read as one row rearranging itself rather than an icon glitching): the outgoing
+  tool shrinks away and the incoming one grows in, through the same curve the transmute
+  tab's family tiles rotate on (`ui::handover`). Everything else about the exchange —
+  which tools the rail lists — happens at the midpoint, where every icon is at nothing,
+  so no tool is ever in the slot and the rail at once. `ToolSwap` watches the active tool
+  rather than being told about the keypress, so a server `Layout` rebase and a rejoin
+  animate the same way a tap does.
 - **Wire**: `Layout.hotbar` keeps its 9 entries and its format; the 9th entry's meaning
   becomes "the active tool id" (the sentinel `WIRE_TOOL` decodes as the migrated bucket
   id). Slot enforcement is unchanged — `EditRequest.slot = 8` + the server's copy of the

@@ -39,6 +39,14 @@ pub enum DebugScreen {
 	Bucket {
 		full: bool,
 	},
+	/// One of the CRAFTED tools, owned and selected. Each carries
+	/// authored geometry — a tool has no texture layers of its own, so
+	/// the cube fallback draws it as a block of whatever sits at layer 0
+	/// — and that geometry shows up in three places at once (the hand,
+	/// the tool slot, the faded rail), none of which a capture can reach
+	/// without being told which tool to hold: the bucket is the only one
+	/// a fresh player owns.
+	Tool(BlockType),
 	/// The character screen, with mid-curve XP stocked so the bars and
 	/// detail lines photograph as they play, not empty.
 	Skills,
@@ -57,6 +65,9 @@ impl DebugScreen {
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
+			"siphon" => Some(Self::Tool(BlockType::EssenceSiphon)),
+			"pick" => Some(Self::Tool(BlockType::ResonantPick)),
+			"sigil" => Some(Self::Tool(BlockType::MastersSigil)),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
 			_ => None,
@@ -581,6 +592,10 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
+	/// The tool slot's handover animation — presentation only, and it
+	/// watches `hotbar.active_tool()` rather than being told, so every
+	/// way the tool can change animates the same way.
+	tool_swap: crate::hotbar::ToolSwap,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -1637,6 +1652,7 @@ impl Engine {
 			target: None,
 			inventory: Inventory::default(),
 			hotbar: Hotbar::new(),
+			tool_swap: crate::hotbar::ToolSwap::default(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
@@ -1752,6 +1768,16 @@ impl Engine {
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
+			// The tools. A tool is never in the grid (§6: not slottable)
+			// and the faded rail only draws once a SECOND one is owned,
+			// so a stocked bar is the only way any of this — the rail,
+			// the split before the tool slot, the authored icons that
+			// replace a cube fallback — reaches a capture at all.
+			for tool in BlockType::ALL {
+				if tool.is_tool() && !tool.always_owned() {
+					engine.inventory.add(tool, 1);
+				}
+			}
 			digblock_core::inv_grid::reconcile_layout(
 				&engine.inventory,
 				&mut engine.hotbar,
@@ -1764,6 +1790,22 @@ impl Engine {
 				DebugScreen::Bucket { .. } => engine
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
+				DebugScreen::Tool(want) => {
+					engine
+						.hotbar
+						.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8);
+					// Reached by CYCLING, the way a player reaches it —
+					// so the capture also proves the roster contains the
+					// tool it was asked for.
+					let owned = engine.owned_tools();
+					for _ in 0..owned.len() {
+						if engine.hotbar.active_tool() == want {
+							break;
+						}
+						engine.hotbar.cycle_tool(&owned);
+					}
+					assert_eq!(engine.hotbar.active_tool(), want, "DIG_SCREEN tool");
+				}
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy | DebugScreen::Transmute => {
 					// A mid-curve level so the header's bar, the pace,
@@ -4364,7 +4406,11 @@ impl Game for Engine {
 					pressed: true,
 				} => self.inv_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let style = crate::ui::Style::new(self.ui_scale);
 					let act = self.inv_screen.handle_input(
 						&event,
@@ -4389,7 +4435,11 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					self.alch_screen.handle_input(
@@ -4406,7 +4456,11 @@ impl Game for Engine {
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					let style = crate::ui::Style::new(self.ui_scale);
@@ -5126,10 +5180,17 @@ impl Game for Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.view_swing.advance(dt);
-		let selected = self
-			.hotbar
-			.selected_item()
-			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
+		let full = self.inventory.bucket_full();
+		self.tool_swap.advance(dt, self.hotbar.active_tool());
+		let selected = self.hotbar.selected_item().map(|i| match i {
+			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
+			// so the hand has to ask which tool is active — otherwise
+			// every tool in the game is held as a bucket. `shown` rather
+			// than `active_tool`, so the hand and the slot's icon change
+			// over together.
+			HotbarItem::WaterTool => crate::ui::hud::tool_icon(self.tool_swap.shown(), full),
+			other => crate::ui::hud::item_icon(other, full).0,
+		});
 		self.view_swap.advance(dt, selected);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
@@ -5273,7 +5334,8 @@ impl Game for Engine {
 			);
 		}
 		if in_game {
-			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+			let hotbar_view =
+				crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory, &self.tool_swap);
 			let owned_tools = self.owned_tools();
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui_dl,
@@ -5310,8 +5372,9 @@ impl Game for Engine {
 				&ui.style,
 				size,
 				&owned_tools,
-				self.hotbar.active_tool(),
+				self.tool_swap.shown(),
 				self.inventory.bucket_full(),
+				self.tool_swap.present(),
 			);
 		}
 		// Last, and over everything: while the arrival hold is up, the
