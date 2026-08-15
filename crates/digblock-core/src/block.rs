@@ -214,8 +214,15 @@ blocks! {
 	/// Grown from Aether, and it GLOWS — Stage-A ink only, like the
 	/// deep ore seams, so a crystal wall lights nothing and reads in
 	/// the dark.
+	///
+	/// The slab glows too, and that is not a courtesy: light is a property
+	/// of the SUBSTANCE, so a piece sawn off a glowing cube glows. The slab
+	/// shipped without the bit and the tell was the grow path — three
+	/// thirds complete into `Crystal` (`slab_grown` → `slab_base`), so the
+	/// identical volume of the identical stuff snapped to fullbright in one
+	/// frame. `every_shape_of_a_material_agrees_on_light` is the pin.
 	Crystal = 70 => mat(glows(dig(crafted(props(RenderClass::Opaque, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), 120, DigFamily::Rock)), Material::Crystal),
-	CrystalSlab = 71 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock), Material::Crystal),
+	CrystalSlab = 71 => mat(glows(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock)), Material::Crystal),
 	/// §7.3's lamps: the first Metal sink outside tools, and the
 	/// standing Aether one. Both are FUNCTIONAL — a lamp is a thing, not
 	/// a form — so both are hand-priced, and both cast real light as well
@@ -497,10 +504,18 @@ pub struct BlockProps {
 	/// ink — the shader skips the sun/shadow/AO terms. Independent of
 	/// [`Self::light`] on purpose: ore-reveal seams want ink that casts
 	/// nothing, and a future recessed lamp could cast without glowing.
+	///
+	/// Both stay per-ROW builders while everything else about a §7.2 grid
+	/// cell derives from the material × shape pair, so both are the one
+	/// thing a second shape of a substance can silently disagree about.
+	/// They may not: `every_shape_of_a_material_agrees_on_light` holds a
+	/// material's shapes to one answer, which is what a FUNCTIONAL row
+	/// (torch, lamp) opts out of by carrying no material at all.
 	pub emissive: bool,
 	/// Stage-B cast light (LIGHT-DESIGN.md): the level this block SEEDS
 	/// into the flood-fill field, 0–15. Purely client-side data — the
-	/// field it feeds is derived, never serialized.
+	/// field it feeds is derived, never serialized. Agrees across a
+	/// material's shapes for the same reason [`Self::emissive`] does.
 	pub light: u8,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
@@ -1289,6 +1304,82 @@ mod tests {
 					.count();
 				assert!(n <= 1, "{m:?} × {s:?} authored {n} times");
 			}
+		}
+	}
+
+	/// Light is a property of the SUBSTANCE, not of the piece it was cut
+	/// into: a crystal slab is the same crystal as the cube it came off,
+	/// so it wears the same ink and casts the same level.
+	///
+	/// This is the grid's one un-derived pair. The unlock level, the craft
+	/// cost, the extraction yield, the rock gate and the transmute family
+	/// all fall out of material × shape, but `emissive` and `light` stayed
+	/// per-ROW builders — and a per-row property on a grid axis drifts the
+	/// moment a material grows a second shape. It did: `Crystal` glowed and
+	/// `CrystalSlab` did not, so growing a slab stack through its third
+	/// third (`slab_grown` → `slab_base`) snapped the identical volume of
+	/// the identical stuff to fullbright in one frame.
+	///
+	/// The two properties are pinned SEPARATELY because they are genuinely
+	/// independent (see [`BlockProps::emissive`]): a deep seam wears ink
+	/// and casts nothing, and a recessed lamp could cast without glowing.
+	/// What neither may do is differ between a cube and its own slab.
+	///
+	/// FUNCTIONAL rows are outside this by construction rather than by
+	/// exemption — the torch and the two lamps carry no material at all
+	/// (`material_roster_is_pinned` spells that set out), so they are
+	/// hand-authored light with no sibling shape to agree with.
+	#[test]
+	fn every_shape_of_a_material_agrees_on_light() {
+		let mut compared = 0;
+		for &m in &Material::ALL {
+			let mut rows = BlockType::ALL
+				.into_iter()
+				.filter(|b| b.material() == Some(m));
+			let first = rows
+				.next()
+				.unwrap_or_else(|| panic!("{m:?} has no row at all"));
+			for b in rows {
+				assert_eq!(
+					b.props().emissive,
+					first.props().emissive,
+					"{b:?} and {first:?} are both {m:?} but disagree on the ink"
+				);
+				assert_eq!(
+					b.props().light,
+					first.props().light,
+					"{b:?} and {first:?} are both {m:?} but cast different light"
+				);
+				compared += 1;
+			}
+		}
+		// A walk that compares nothing passes forever. Every row carrying a
+		// material is either its material's first shape or one comparison,
+		// so this pins that the loop actually reached all of them.
+		let rows = BlockType::ALL
+			.into_iter()
+			.filter(|b| b.material().is_some())
+			.count();
+		assert_eq!(
+			compared + Material::COUNT,
+			rows,
+			"{compared} comparisons over {rows} rows in {} materials",
+			Material::COUNT
+		);
+		use BlockType as B;
+		// The set that actually exercises the rule, named so re-authoring
+		// the crystal is a deliberate edit rather than a silent one.
+		assert!(B::Crystal.props().emissive && B::CrystalSlab.props().emissive);
+		assert_eq!(
+			B::Crystal.props().light,
+			0,
+			"ink only — a wall lights nothing"
+		);
+		assert_eq!(B::CrystalSlab.props().light, 0);
+		// And the counter-examples, on the other side of the material line.
+		for b in [B::Torch, B::Lantern, B::Aetherlamp] {
+			assert_eq!(b.material(), None, "{b:?} is functional, so hand-authored");
+			assert!(b.props().emissive && b.props().light > 0, "{b:?} lights");
 		}
 	}
 

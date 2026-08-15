@@ -554,6 +554,7 @@ mod tests {
 	/// proves the match is exhaustive, not that the arms are sane.
 	#[test]
 	fn the_catalog_sounds_like_what_it_is_made_of() {
+		use digblock_core::block::ShapeFamily;
 		use BlockType as B;
 		for b in [
 			B::StoneBrick,
@@ -580,21 +581,36 @@ mod tests {
 		}
 		// Every shape of a substance sounds like the substance: a slab and
 		// a stair are the same stuff as the cube they came from.
+		//
+		// The cube is `from_grid(m, Block)` — §7.2's own inverse, and the
+		// lookup `slab_base` already uses. It used to be a `find` for the
+		// material's row whose `shape_family()` was `None`, which no grid
+		// row can ever satisfy: `None` is reserved for the FUNCTIONAL
+		// shapes (torch, table, chair, bed) and every one of those is
+		// material-LESS by construction, as `material_roster_is_pinned`
+		// spells out. The predicate was unsatisfiable, so all 75 iterations
+		// took the `continue` and the assert never ran once.
+		let mut worked = 0;
 		for b in BlockType::ALL {
-			let Some(base) = b.material().and_then(|m| {
-				BlockType::ALL
-					.into_iter()
-					.find(|o| o.material() == Some(m) && o.shape_family().is_none())
-			}) else {
-				continue;
-			};
+			let Some(m) = b.material() else { continue };
+			let base = BlockType::from_grid(m, ShapeFamily::Block)
+				.unwrap_or_else(|| panic!("{m:?} has no cube form to sound like"));
 			assert_eq!(
 				material_of(b),
 				material_of(base),
-				"{b:?} does not sound like the {:?} it is made of",
-				b.material().unwrap()
+				"{b:?} does not sound like the {m:?} it is made of"
 			);
+			worked += usize::from(b != base);
 		}
+		// And the guard the dead version needed: comparing every cube with
+		// itself would also pass, so pin that real slabs, stairs and doors
+		// were weighed against their cubes. A floor rather than a count —
+		// the catalog only grows, and this should not need touching when
+		// it does.
+		assert!(
+			worked > 20,
+			"only {worked} worked shapes reached their cube"
+		);
 	}
 
 	#[test]
