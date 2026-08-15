@@ -3,10 +3,10 @@
 use crossbeam_channel::unbounded;
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
-use digblock_server::{net, run_sim_loop, DEFAULT_PORT, DEFAULT_SEED};
+use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, net, run_sim_loop};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// A silently-defaulted flag on a server with a persistent journal is a

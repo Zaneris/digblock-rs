@@ -4,7 +4,7 @@
 
 use super::draw::{DrawList, Layer};
 use super::hit::HitMap;
-use super::{scale, Rect};
+use super::{Rect, scale};
 
 // Shared palette (0xAABBGGRR, matching overlay.rs).
 pub const WHITE: u32 = 0xFFFFFFFF;

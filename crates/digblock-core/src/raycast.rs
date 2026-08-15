@@ -144,10 +144,11 @@ fn cell_hit(
 	let mut best: Option<(f32, (i32, i32, i32))> = None;
 	for b in boxes_of(v) {
 		let (lo, hi) = b.aabb(cell);
-		if let Some((t, n)) = ray_box(origin, dir, lo, hi) {
-			if t <= max_dist && best.is_none_or(|(bt, _)| t < bt) {
-				best = Some((t, n));
-			}
+		if let Some((t, n)) = ray_box(origin, dir, lo, hi)
+			&& t <= max_dist
+			&& best.is_none_or(|(bt, _)| t < bt)
+		{
+			best = Some((t, n));
 		}
 	}
 	best.map(|(_, n)| hit(n))
@@ -209,10 +210,10 @@ fn walk(
 		if t > max_dist {
 			return None;
 		}
-		if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2)) {
-			if let Some(h) = cell_hit(origin, dir, max_dist, cell, v, normal, boxes_of) {
-				return Some(h);
-			}
+		if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2))
+			&& let Some(h) = cell_hit(origin, dir, max_dist, cell, v, normal, boxes_of)
+		{
+			return Some(h);
 		}
 	}
 }
@@ -288,7 +289,7 @@ mod tests {
 	// ---- shaped narrow phase --------------------------------------------
 
 	use crate::chunk::make_cell;
-	use crate::shapes::{door_state, stair_state, Facing};
+	use crate::shapes::{Facing, door_state, stair_state};
 
 	/// A +x-ascending stair with a solid wall a few cells behind it, over
 	/// air (no floor — rays only).

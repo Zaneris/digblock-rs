@@ -14,8 +14,8 @@ use std::sync::mpsc;
 
 use digblock_render::menu::{MenuCommand, MenuResponse, MenuServices, ServerEntry};
 use serde::Deserialize as _;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 #[derive(serde::Deserialize)]

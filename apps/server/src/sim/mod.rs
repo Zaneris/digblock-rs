@@ -21,12 +21,12 @@ pub(crate) mod harness;
 
 use crate::ban_store::BanStore;
 use crate::journal::Journal;
-use crate::player_store::{hash_identity, IdentityHash, PlayerLayout, PlayerRecord, PlayerStore};
+use crate::player_store::{IdentityHash, PlayerLayout, PlayerRecord, PlayerStore, hash_identity};
 use crate::spawn_store::{SpawnLock, SpawnStore};
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
 use digblock_core::hotbar::Hotbar;
-use digblock_core::inv_grid::{reconcile_layout, InvGrid};
+use digblock_core::inv_grid::{InvGrid, reconcile_layout};
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::protect::Region;
@@ -35,8 +35,8 @@ use digblock_net::messages::{
 	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
-	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
-	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
+	CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, PlayerId, RETURN_SPAWN_COOLDOWN_SECS,
+	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS, sanitize_chat, sanitize_name,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -318,7 +318,7 @@ impl Client {
 	/// does on the Layout wire.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::block::BlockType;
-		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
+		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
 		let tool = self.hotbar.active_tool();
 		match self.hotbar.slots()[slot] {
@@ -671,7 +671,7 @@ impl Sim {
 	/// netbench — a bin, not a test — drives a real in-process Sim whose
 	/// flat world is stone.
 	pub fn bench_set_mining_level(&mut self, conn_id: u64, level: u32) {
-		use digblock_core::skills::{total_xp_for, Skill};
+		use digblock_core::skills::{Skill, total_xp_for};
 		if let Some(c) = self.clients.get_mut(&conn_id) {
 			c.skills.set_total(Skill::Mining, total_xp_for(level));
 		}
@@ -719,7 +719,7 @@ impl Sim {
 	/// craft-only blocks (slabs, stairs, doors, torches).
 	#[cfg(test)]
 	pub(crate) fn bench_set_alchemy_level(&mut self, conn_id: u64, level: u32) {
-		use digblock_core::skills::{total_xp_for, Skill};
+		use digblock_core::skills::{Skill, total_xp_for};
 		if let Some(c) = self.clients.get_mut(&conn_id) {
 			c.skills.set_total(Skill::Alchemy, total_xp_for(level));
 		}
@@ -1315,10 +1315,10 @@ impl Sim {
 		if !client.live {
 			return;
 		}
-		if let Some(t) = client.last_return_tick {
-			if self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE {
-				return;
-			}
+		if let Some(t) = client.last_return_tick
+			&& self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE
+		{
+			return;
 		}
 		let pos = self.safe_spawn();
 		let look = self.spawn_look();
@@ -1379,11 +1379,11 @@ impl Sim {
 		// Two live connections sharing one persisted inventory would stomp
 		// each other's copy — refuse the second.
 		let identity = (identity != [0; 16]).then(|| hash_identity(&identity));
-		if let Some(hash) = identity {
-			if self.clients.values().any(|c| c.identity == Some(hash)) {
-				refuse(&out, "this identity is already connected".into());
-				return;
-			}
+		if let Some(hash) = identity
+			&& self.clients.values().any(|c| c.identity == Some(hash))
+		{
+			refuse(&out, "this identity is already connected".into());
+			return;
 		}
 		let record = identity
 			.map(|hash| self.player_store.get(&hash))
@@ -1793,7 +1793,7 @@ fn client_send_frame(client: &Client, frame: &std::sync::Arc<[u8]>) {
 mod tests {
 	use super::harness::*;
 	use super::{
-		ClientMsg, OutMsg, RejectReason, ServerMsg, SimEvent, MIN_PROTOCOL, PROTOCOL_VERSION,
+		ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg, SimEvent,
 	};
 	use digblock_net::codec::FrameReader;
 	use tokio::sync::mpsc::channel;
@@ -2257,7 +2257,7 @@ mod tests {
 	/// timer for nothing); at the gate level the hold opens normally.
 	#[test]
 	fn gated_rock_refuses_the_dig_start() {
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use glam::Vec3;
 		let mut sim = flat_sim("rockgate");
 		let mut c = connect(&mut sim, 1);
@@ -2490,7 +2490,7 @@ mod tests {
 	#[test]
 	fn a_protected_cell_refuses_the_whole_pick_swing() {
 		use digblock_core::block::BlockType;
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use digblock_net::messages::EditKind;
 		use glam::Vec3;
 		let mut sim = flat_sim("pick-protect");
@@ -2556,7 +2556,7 @@ mod tests {
 	#[test]
 	fn craft_only_blocks_refuse_the_dig_start() {
 		use digblock_core::block::BlockType;
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use glam::Vec3;
 		let mut sim = flat_sim("craftgate");
 		let mut c = connect(&mut sim, 1);
@@ -2948,10 +2948,11 @@ mod tests {
 			"joiner missing roster entry: {:?}",
 			b.msgs
 		);
-		assert!(!b
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::PlayerJoined { id: 1, .. })));
+		assert!(
+			!b.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::PlayerJoined { id: 1, .. }))
+		);
 
 		// The player already online hears the join...
 		a.drain();
@@ -2963,10 +2964,11 @@ mod tests {
 		// ...and the leave.
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
 		a.drain();
-		assert!(a
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 })));
+		assert!(
+			a.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 }))
+		);
 	}
 
 	#[test]

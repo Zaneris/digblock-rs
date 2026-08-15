@@ -1,10 +1,10 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
-use super::{column_of, in_radius, send_frame, OutMsg, OutTx, Sim, DGRAM_STALL_SECS};
+use super::{DGRAM_STALL_SECS, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
 use crate::journal::Journal;
 use digblock_net::codec;
 use digblock_net::messages::{
-	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
+	BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot, vel_to_wire, yaw_to_wire,
 };
 use digblock_net::protocol::{
 	AREA_SYNC_RADIUS, FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR,
@@ -363,8 +363,8 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 
 #[cfg(test)]
 mod tests {
-	use super::super::harness::*;
 	use super::super::Sim;
+	use super::super::harness::*;
 	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
 	use glam::Vec3;

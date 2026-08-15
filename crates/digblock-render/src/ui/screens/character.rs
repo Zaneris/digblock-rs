@@ -6,8 +6,8 @@
 use digblock_core::skills::{self, Skill, SkillSet};
 
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, Style, Ui, DIM, WHITE};
-use crate::ui::{hud, theme, InvId, Rect};
+use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
+use crate::ui::{InvId, Rect, hud, theme};
 
 /// The screen's per-frame view, derived once from the engine's
 /// `SkillSet` so the measure and emit passes read the same numbers.
@@ -265,8 +265,8 @@ impl CharScreen {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ui::draw::{Cmd, DrawList};
 	use crate::ui::HitMap;
+	use crate::ui::draw::{Cmd, DrawList};
 
 	const SIZE: (u32, u32) = (1280, 800);
 

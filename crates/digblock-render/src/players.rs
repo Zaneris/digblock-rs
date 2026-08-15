@@ -505,9 +505,10 @@ mod tests {
 		assert_eq!(runs.first().map(|(_, r)| r.start), Some(0));
 		assert_eq!(runs.last().map(|(_, r)| r.end), Some(v.len()));
 		assert!(runs.windows(2).all(|w| w[0].1.end == w[1].1.start));
-		assert!(runs
-			.iter()
-			.any(|(k, r)| *k == IconKind::Shaped(BlockType::Torch) && r.len() == 3));
+		assert!(
+			runs.iter()
+				.any(|(k, r)| *k == IconKind::Shaped(BlockType::Torch) && r.len() == 3)
+		);
 		// Every instance still present exactly once, just reordered — a
 		// sort that dropped or duplicated one would still group cleanly.
 		let mut seen: Vec<u32> = v.iter().map(|(_, i)| i[0] as u32).collect();

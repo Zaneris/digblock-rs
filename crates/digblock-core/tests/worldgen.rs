@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
-use digblock_core::decoration::{structures_near, Structure, STRUCTURE_APRON};
+use digblock_core::decoration::{STRUCTURE_APRON, Structure, structures_near};
 use digblock_core::worldgen::{
-	build_chunk, carved, column_shape, terrain_height, SurfaceKind, DIRT_DEPTH, SEA_LEVEL,
+	DIRT_DEPTH, SEA_LEVEL, SurfaceKind, build_chunk, carved, column_shape, terrain_height,
 };
-use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
+use digblock_core::{BlockType, CHUNK_SIZE, ChunkData, ChunkPos};
 
 /// The terrain-only expectation (no trees), re-implemented from the
 /// column rules over the public per-column shape. Validates fill_chunk's
@@ -460,7 +460,9 @@ fn heightmap_dump() {
 		}
 		biomes.push('\n');
 	}
-	println!("biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}");
+	println!(
+		"biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}"
+	);
 	// Sanity: the window contains both ocean and land.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));

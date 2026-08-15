@@ -3,18 +3,18 @@
 //! this file only moves bytes.
 
 use crate::master::{self, MasterState, VerifyError};
-use crate::sim::{OutMsg, SimEvent, OUT_CAP};
+use crate::sim::{OUT_CAP, OutMsg, SimEvent};
 use crossbeam_channel::Sender;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN,
-	PROTOCOL_VERSION, TICK_RATE,
+	MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE, decode_preamble,
+	encode_preamble,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::mpsc::channel;
 use tokio::sync::Notify;
+use tokio::sync::mpsc::channel;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerConfig};

@@ -22,7 +22,7 @@
 //! with a one-time status the menu surfaces.
 
 use digblock_persist::journal::{
-	merge_snapshot, region_of_block, region_snapshot_bytes, JournalError, JournalIndex, REGION_COLS,
+	JournalError, JournalIndex, REGION_COLS, merge_snapshot, region_of_block, region_snapshot_bytes,
 };
 use digblock_persist::{EditOverlay, PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use std::collections::HashSet;
@@ -499,14 +499,14 @@ impl WorldStore for LocalStorageWorldStore {
 		// Engine::close_local_save); anything still dirty here has no
 		// overlay to serialize from, so just detach.
 		self.write_state();
-		if let Some(a) = &self.active {
-			if !a.dirty.is_empty() {
-				log::warn!(
-					"world {} closed with {} unflushed region(s)",
-					a.id,
-					a.dirty.len()
-				);
-			}
+		if let Some(a) = &self.active
+			&& !a.dirty.is_empty()
+		{
+			log::warn!(
+				"world {} closed with {} unflushed region(s)",
+				a.id,
+				a.dirty.len()
+			);
 		}
 		self.active = None;
 	}

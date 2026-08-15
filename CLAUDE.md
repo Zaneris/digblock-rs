@@ -997,11 +997,12 @@ state; trunk roots are the single exception to decoration's write-into-Air-only 
 
 The main thread owns the chunk store and scheduling; workers run pure functions (terrain gen, meshing) over immutable
 snapshots — a mesh job gets a padded copy of its chunk (a one-block shell from every surrounding neighbour, feeding
-water corner heights). Staleness is handled by generation counters: results whose `gen` doesn't match are dropped; a new
-chunk bumps its own and affected Ready neighbors' counters. Edits go through `Pipeline::set_block`/`set_cell`
-(copy-on-write via `Arc::make_mut`, bumping only neighbors whose shell contains the edit). Vertices are two u32 words:
-word 0 geometry (positions in twelfths), word 1 material (a texture layer index bounded by `MAX_TEX_LAYERS`; water
-carries its surface/flow payload in the upper bits).
+water corner heights). Staleness is handled by generation counters: results whose `generation` doesn't match are dropped
+(the field was `gen` until edition 2024 reserved that word; the overlay and CSV labels still say `gen`); a new chunk
+bumps its own and affected Ready neighbors' counters. Edits go through `Pipeline::set_block`/`set_cell` (copy-on-write
+via `Arc::make_mut`, bumping only neighbors whose shell contains the edit). Vertices are two u32 words: word 0 geometry
+(positions in twelfths), word 1 material (a texture layer index bounded by `MAX_TEX_LAYERS`; water carries its
+surface/flow payload in the upper bits).
 
 **Water surface knitting** is the subtle part; the rules are commented at the code. `mesher/water.rs::corner_drop` is a
 pure function of the horizontal lattice corner — never of the cell emitting the face — which is what lets two cells

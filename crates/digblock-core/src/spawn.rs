@@ -25,7 +25,7 @@
 
 use crate::decoration::box_obstructed;
 use crate::protect::Region;
-use crate::worldgen::{carved, column_shape_above, column_shapes_in, SEA_LEVEL};
+use crate::worldgen::{SEA_LEVEL, carved, column_shape_above, column_shapes_in};
 use glam::Vec3;
 
 /// Clearance radius around the spawn column, in columns: the square disc
@@ -189,16 +189,16 @@ fn pristine_floor(x: i32, z: i32, seed: f64) -> Option<i32> {
 fn edits_clear(x: i32, z: i32, h: i32, edits: Edits) -> bool {
 	for cz in z - CLEAR..=z + CLEAR {
 		for cx in x - CLEAR..=x + CLEAR {
-			if let Some(cell) = edits(cx, h, cz) {
-				if !solid(cell) {
-					return false; // floor dug out from under the disc
-				}
+			if let Some(cell) = edits(cx, h, cz)
+				&& !solid(cell)
+			{
+				return false; // floor dug out from under the disc
 			}
 			for cy in h + 1..=h + CAPSULE {
-				if let Some(cell) = edits(cx, cy, cz) {
-					if solid(cell) {
-						return false; // built into the standing space
-					}
+				if let Some(cell) = edits(cx, cy, cz)
+					&& solid(cell)
+				{
+					return false; // built into the standing space
 				}
 			}
 		}

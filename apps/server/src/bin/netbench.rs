@@ -17,7 +17,7 @@
 
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick};
 use digblock_net::protocol::{PROTOCOL_VERSION, SNAPSHOT_DIVISOR, TICK_RATE};
-use digblock_server::sim::{OutMsg, Sim, SimEvent, OUT_CAP};
+use digblock_server::sim::{OUT_CAP, OutMsg, Sim, SimEvent};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -269,10 +269,10 @@ fn run(n: usize, edits: bool) -> String {
 		// claim that misses by too much skips the shape-aware capsule test
 		// entirely — the most expensive call in the input path.
 		for c in clients.iter() {
-			if let (Some(p), Some(pos)) = (c.predicted.as_ref(), sim.player_pos(c.conn_id)) {
-				if p.pos.distance(pos) < 1.0e-4 {
-					adopted += 1;
-				}
+			if let (Some(p), Some(pos)) = (c.predicted.as_ref(), sim.player_pos(c.conn_id))
+				&& p.pos.distance(pos) < 1.0e-4
+			{
+				adopted += 1;
 			}
 		}
 		drain(&mut clients);
@@ -561,7 +561,7 @@ const FLAT_TOP: usize = 126;
 /// Stone up to `FLAT_TOP`, air above — the harness's flat world, rebuilt
 /// here because that one is `#[cfg(test)]`.
 fn flat_source() -> digblock_server::store::ColumnSource {
-	use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+	use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK};
 	use std::sync::Arc;
 	Arc::new(|_cx, _cz| {
 		let mut full = ChunkData::default();
@@ -723,20 +723,20 @@ fn drive_edits(
 	// dig: it takes the OTHER tolerance site and is refused before any
 	// timed-dig gate, so probing cannot pollute the dig-shortfall counter
 	// with completions the client never intended to earn.
-	if step.is_multiple_of(PROBE_STRIDE) {
-		if let Some((cell, aim)) = pick_target(eye, heading, sim) {
-			d.seq += 1;
-			client.send_edit(
-				d.seq,
-				tick,
-				eye,
-				aim,
-				EditKind::Interact,
-				cell,
-				(0, 1, 0),
-				0,
-			);
-		}
+	if step.is_multiple_of(PROBE_STRIDE)
+		&& let Some((cell, aim)) = pick_target(eye, heading, sim)
+	{
+		d.seq += 1;
+		client.send_edit(
+			d.seq,
+			tick,
+			eye,
+			aim,
+			EditKind::Interact,
+			cell,
+			(0, 1, 0),
+			0,
+		);
 	}
 }
 
@@ -744,12 +744,12 @@ fn drive_edits(
 /// client also probes and digs — see [`EditDriver`].
 fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	use digblock_core::player::{Player, PlayerIntent};
+	use digblock_net::NetEvent;
 	use digblock_net::client::{NetClient, NetClientConfig};
 	use digblock_net::codec::{self, FrameReader};
 	use digblock_net::messages::Datagram;
 	use digblock_net::predict::Reconciled;
 	use digblock_net::protocol::PREAMBLE_LEN;
-	use digblock_net::NetEvent;
 
 	let dir = std::env::temp_dir().join(format!(
 		"digblock-netbench-link-{}-{}",
@@ -903,18 +903,19 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 				}
 				let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
 				let outcome = client.predictor.reconcile(p, t, me, &world);
-				if let Reconciled::Replayed { error } = outcome {
-					if measuring {
-						corrections.push(error.length());
-						replays += 1;
-					}
+				if let Reconciled::Replayed { error } = outcome
+					&& measuring
+				{
+					corrections.push(error.length());
+					replays += 1;
 				}
 				// A stale ack returns early without touching `last_rtt`, so
 				// sampling it there would re-count the previous round trip.
-				if measuring && outcome != Reconciled::StaleAck {
-					if let Some(rtt) = client.predictor.last_rtt() {
-						rtts.push(rtt * 1000.0);
-					}
+				if measuring
+					&& outcome != Reconciled::StaleAck
+					&& let Some(rtt) = client.predictor.last_rtt()
+				{
+					rtts.push(rtt * 1000.0);
 				}
 				client.note_reconciled(outcome);
 			}
@@ -922,52 +923,52 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 			// The client predicts on a fixed-rate accumulator and sends right
 			// after, exactly as `engine.rs` does — once per tick, not once
 			// per poll.
-			if sub == 0 {
-				if let Some(p) = player.as_mut() {
-					// Walk a slow circle so the world under the player changes.
-					let a = step as f32 / TICK_RATE as f32 * 0.5;
-					let heading = glam::Vec3::new(a.sin(), 0.0, a.cos());
-					// Only click inside the measured window. The `_max`
-					// counters are cumulative highs with no base to
-					// difference against, so a click during the settle
-					// would be indistinguishable from the run's own worst
-					// case — and the settle is a fall, which is exactly
-					// where the residual is largest.
-					if edits && measuring {
-						drive_edits(
-							&mut driver,
-							&mut client,
-							&sim,
-							p.pos,
-							heading,
-							step,
-							stone_hardness,
-						);
-					}
-					// Mining stands still and looks at the block; walking
-					// looks where it is going.
-					let (intent, dir) = if driver.holding > 0 {
-						(
-							PlayerIntent {
-								move_axis: glam::Vec2::ZERO,
-								jump: false,
-							},
-							driver.aim,
-						)
-					} else {
-						(
-							PlayerIntent {
-								move_axis: glam::Vec2::new(0.0, 1.0),
-								jump: false,
-							},
-							heading,
-						)
-					};
-					let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
-					client.predictor.predict(p, intent, dir, &world);
-					predicted_ticks += 1;
-					client.send_inputs();
+			if sub == 0
+				&& let Some(p) = player.as_mut()
+			{
+				// Walk a slow circle so the world under the player changes.
+				let a = step as f32 / TICK_RATE as f32 * 0.5;
+				let heading = glam::Vec3::new(a.sin(), 0.0, a.cos());
+				// Only click inside the measured window. The `_max`
+				// counters are cumulative highs with no base to
+				// difference against, so a click during the settle
+				// would be indistinguishable from the run's own worst
+				// case — and the settle is a fall, which is exactly
+				// where the residual is largest.
+				if edits && measuring {
+					drive_edits(
+						&mut driver,
+						&mut client,
+						&sim,
+						p.pos,
+						heading,
+						step,
+						stone_hardness,
+					);
 				}
+				// Mining stands still and looks at the block; walking
+				// looks where it is going.
+				let (intent, dir) = if driver.holding > 0 {
+					(
+						PlayerIntent {
+							move_axis: glam::Vec2::ZERO,
+							jump: false,
+						},
+						driver.aim,
+					)
+				} else {
+					(
+						PlayerIntent {
+							move_axis: glam::Vec2::new(0.0, 1.0),
+							jump: false,
+						},
+						heading,
+					)
+				};
+				let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
+				client.predictor.predict(p, intent, dir, &world);
+				predicted_ticks += 1;
+				client.send_inputs();
 			}
 
 			// ---- wire → server --------------------------------------------
@@ -1051,10 +1052,8 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 
 		// Divergence: what the player sees vs what the server holds. This
 		// is the number that becomes a rubber-band if it grows.
-		if measuring {
-			if let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
-				max_div = max_div.max((p.pos - sp).length());
-			}
+		if measuring && let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
+			max_div = max_div.max((p.pos - sp).length());
 		}
 	}
 

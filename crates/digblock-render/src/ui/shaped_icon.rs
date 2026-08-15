@@ -13,9 +13,9 @@ use digblock_core::dir::Dir;
 
 use crate::item_geom;
 
+use super::Rect;
 use super::draw::{DrawList, Layer};
 use super::hud::IconKind;
-use super::Rect;
 
 /// The implied view axis is (+x, +y, +z): exactly these faces show.
 fn visible(dir: Dir) -> bool {

@@ -16,17 +16,17 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
-use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src};
+use crate::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK, is_air_chunk};
+use crate::mesher::{MeshData, MeshInput, Src, mesh_chunk};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
 
 pub struct MeshOutput {
 	pub pos: ChunkPos,
-	pub gen: u64,
+	pub generation: u64,
 	pub mesh: MeshData,
 }
 
@@ -36,7 +36,7 @@ pub enum Job {
 	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,
-		gen: u64,
+		generation: u64,
 		/// Padded snapshot — the worker holds no Arc into the store, so
 		/// `set_block`'s copy-on-write almost never actually clones.
 		input: Box<MeshInput>,
@@ -74,16 +74,18 @@ pub enum JobResult {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKey {
 	Generate { x: i32, z: i32 },
-	Mesh { pos: ChunkPos, gen: u64 },
+	Mesh { pos: ChunkPos, generation: u64 },
 }
 
 impl Job {
 	pub fn key(&self) -> JobKey {
 		match self {
 			Job::Generate { x, z, .. } => JobKey::Generate { x: *x, z: *z },
-			Job::Mesh { pos, gen, .. } => JobKey::Mesh {
+			Job::Mesh {
+				pos, generation, ..
+			} => JobKey::Mesh {
 				pos: *pos,
-				gen: *gen,
+				generation: *generation,
 			},
 		}
 	}
@@ -415,21 +417,21 @@ impl CostRing {
 }
 
 struct JobCost {
-	gen: CostRing,
+	generation: CostRing,
 	mesh: CostRing,
 }
 
 impl JobCost {
 	fn new() -> Self {
 		Self {
-			gen: CostRing::new(12.0),
+			generation: CostRing::new(12.0),
 			mesh: CostRing::new(3.0),
 		}
 	}
 
 	fn observe(&mut self, is_gen: bool, ms: f32) {
 		let ring = if is_gen {
-			&mut self.gen
+			&mut self.generation
 		} else {
 			&mut self.mesh
 		};
@@ -437,7 +439,7 @@ impl JobCost {
 	}
 
 	fn predicted(&self, is_gen: bool) -> std::time::Duration {
-		let ring = if is_gen { &self.gen } else { &self.mesh };
+		let ring = if is_gen { &self.generation } else { &self.mesh };
 		std::time::Duration::from_secs_f32(ring.predicted_ms() / 1000.0)
 	}
 }
@@ -1010,18 +1012,18 @@ impl Pipeline {
 					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
 					// rather than mutating it (refcount > 1), mirroring the
 					// server's `ChunkStore::drain` overlay.
-					if self.reapply {
-						if let Some(cells) = self.edits.column(x, z) {
-							for (&(wx, wy, wz), &cell) in cells {
-								let Some(((_, cy, _), (lx, ly, lz))) =
-									crate::chunk::split_world(wx, wy, wz)
-								else {
-									continue;
-								};
-								Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, cell);
-								if crate::block::BlockType::from_id(cell).is_water() {
-									out.overlaid_water.push((wx, wy, wz));
-								}
+					if self.reapply
+						&& let Some(cells) = self.edits.column(x, z)
+					{
+						for (&(wx, wy, wz), &cell) in cells {
+							let Some(((_, cy, _), (lx, ly, lz))) =
+								crate::chunk::split_world(wx, wy, wz)
+							else {
+								continue;
+							};
+							Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, cell);
+							if crate::block::BlockType::from_id(cell).is_water() {
+								out.overlaid_water.push((wx, wy, wz));
 							}
 						}
 					}
@@ -1132,9 +1134,9 @@ impl Pipeline {
 					out.mesh_jobs.record(dur_ms);
 					match self.store.get_mut(&m.pos) {
 						// Only the newest generation may reach the GPU.
-						Some(slot) if slot.mesh_gen == m.gen => {
+						Some(slot) if slot.mesh_gen == m.generation => {
 							slot.empty_mesh_gen =
-								(m.mesh.is_empty() && !slot.mesh_missing).then_some(m.gen);
+								(m.mesh.is_empty() && !slot.mesh_missing).then_some(m.generation);
 							out.meshed.push(m);
 						}
 						_ => out.stale_dropped += 1, // stale or evicted
@@ -1304,12 +1306,12 @@ impl Pipeline {
 				let d = dist2(ChunkPos::new(x, 0, z), self.center);
 				self.gen_heap.push((Reverse(d), (x, z)));
 			}
-			JobKey::Mesh { pos, gen } => {
+			JobKey::Mesh { pos, generation } => {
 				let Some(slot) = self.store.get_mut(&pos) else {
 					return; // evicted
 				};
-				if slot.submitted_gen == gen {
-					slot.submitted_gen = gen.saturating_sub(1);
+				if slot.submitted_gen == generation {
+					slot.submitted_gen = generation.saturating_sub(1);
 				}
 				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
 				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
@@ -1344,13 +1346,17 @@ impl Pipeline {
 		if slot.mesh_gen <= slot.submitted_gen {
 			return None; // an equal-or-newer job is already in flight
 		}
-		let gen = slot.mesh_gen;
+		let generation = slot.mesh_gen;
 		let input = Box::new(self.build_mesh_input(pos, data));
 		let missing = input.missing.iter().any(|&m| m);
 		let slot = self.store.get_mut(&pos).expect("slot exists");
-		slot.submitted_gen = gen;
+		slot.submitted_gen = generation;
 		slot.mesh_missing = missing;
-		Some(Job::Mesh { pos, gen, input })
+		Some(Job::Mesh {
+			pos,
+			generation,
+			input,
+		})
 	}
 
 	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
@@ -1483,12 +1489,14 @@ impl Pipeline {
 				let d = dist2(ChunkPos::new(x, 0, z), self.center);
 				self.gen_heap.push((Reverse(d), (x, z)));
 			}
-			Job::Mesh { pos, gen, .. } => {
+			Job::Mesh {
+				pos, generation, ..
+			} => {
 				// Roll back the submitted marker so the job reschedules.
-				if let Some(slot) = self.store.get_mut(&pos) {
-					if slot.submitted_gen == gen {
-						slot.submitted_gen = gen - 1;
-					}
+				if let Some(slot) = self.store.get_mut(&pos)
+					&& slot.submitted_gen == generation
+				{
+					slot.submitted_gen = generation - 1;
 				}
 				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
 				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
@@ -1521,9 +1529,9 @@ impl Pipeline {
 	/// this thread to be absorbed. `in_flight_min_d2` is what keeps the
 	/// question "how near is the work" independent of WHERE it is running.
 	pub fn stream_urgency(&self) -> f32 {
-		let gen = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
+		let generation = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
-		let Some(d2) = gen
+		let Some(d2) = generation
 			.into_iter()
 			.chain(mesh)
 			.chain(self.in_flight_min_d2)
@@ -1708,14 +1716,14 @@ impl Pipeline {
 						continue;
 					}
 					let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-					if let Some(nslot) = self.store.get_mut(&np) {
-						if matches!(nslot.state, ChunkState::Ready(_)) {
-							nslot.mesh_gen += 1;
-							self.mesh_heap.push((
-								Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
-								(np.x, np.y, np.z),
-							));
-						}
+					if let Some(nslot) = self.store.get_mut(&np)
+						&& matches!(nslot.state, ChunkState::Ready(_))
+					{
+						nslot.mesh_gen += 1;
+						self.mesh_heap.push((
+							Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
+							(np.x, np.y, np.z),
+						));
 					}
 				}
 			}
@@ -1897,7 +1905,7 @@ pub fn run_job(job: Job) -> JobResult {
 		}
 		Job::Mesh {
 			pos,
-			gen,
+			generation,
 			mut input,
 		} => {
 			// The ore reveal runs HERE, in the worker, before anything
@@ -1907,7 +1915,11 @@ pub fn run_job(job: Job) -> JobResult {
 			input.apply_ore();
 			let mesh = mesh_chunk(&input);
 			JobResult::Meshed {
-				out: MeshOutput { pos, gen, mesh },
+				out: MeshOutput {
+					pos,
+					generation,
+					mesh,
+				},
 				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
 			}
 		}
@@ -2403,16 +2415,16 @@ mod tests {
 		let prev = p.set_block(8, 8, 8, new).expect("edit lands");
 		assert_ne!(prev, new);
 		assert_eq!(p.block_at(8, 8, 8), Some(new));
-		for (pos, gen) in &before {
-			let expect = gen + u64::from(*pos == ChunkPos::new(0, 0, 0));
+		for (pos, generation) in &before {
+			let expect = generation + u64::from(*pos == ChunkPos::new(0, 0, 0));
 			assert_eq!(mesh_gen(&p, *pos), expect, "{pos:?}");
 		}
 
 		// No-op returns None and bumps nothing.
 		let before = snapshot(&p);
 		assert!(p.set_block(8, 8, 8, new).is_none());
-		for (pos, gen) in &before {
-			assert_eq!(mesh_gen(&p, *pos), *gen);
+		for (pos, generation) in &before {
+			assert_eq!(mesh_gen(&p, *pos), *generation);
 		}
 
 		// An edit on a chunk face: it touches only the −x border, so the
@@ -2420,9 +2432,13 @@ mod tests {
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 8, 8));
 		p.set_block(0, 8, 8, new).expect("face edit");
-		for (pos, gen) in &before {
+		for (pos, generation) in &before {
 			let bumped = *pos == ChunkPos::new(0, 0, 0) || *pos == ChunkPos::new(-1, 0, 0);
-			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+			assert_eq!(
+				mesh_gen(&p, *pos),
+				generation + u64::from(bumped),
+				"{pos:?}"
+			);
 		}
 
 		// An edit in the world's bottom corner cell: it touches the −x, −z
@@ -2431,12 +2447,16 @@ mod tests {
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 0, 0));
 		p.set_block(0, 0, 0, new).expect("corner edit");
-		for (pos, gen) in &before {
+		for (pos, generation) in &before {
 			let bumped = *pos == ChunkPos::new(0, 0, 0)
 				|| *pos == ChunkPos::new(-1, 0, 0)
 				|| *pos == ChunkPos::new(0, 0, -1)
 				|| *pos == ChunkPos::new(-1, 0, -1);
-			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+			assert_eq!(
+				mesh_gen(&p, *pos),
+				generation + u64::from(bumped),
+				"{pos:?}"
+			);
 		}
 
 		// Out-of-world y is rejected.
@@ -2876,7 +2896,7 @@ mod tests {
 				.into_iter()
 				.find(|o| o.pos == ChunkPos::new(0, 0, 0))
 			{
-				got = Some(out.gen);
+				got = Some(out.generation);
 				break;
 			}
 			std::thread::sleep(std::time::Duration::from_millis(1));
@@ -2904,7 +2924,7 @@ mod tests {
 					uploaded.remove(&pos);
 				}
 				for out in m.meshed {
-					uploaded.insert(out.pos, out.gen);
+					uploaded.insert(out.pos, out.generation);
 				}
 				if m.gen_queue + m.mesh_queue == 0 && m.in_flight == 0 {
 					// let in-flight results land
@@ -2924,7 +2944,7 @@ mod tests {
 				uploaded.remove(&pos);
 			}
 			for out in m.meshed {
-				uploaded.insert(out.pos, out.gen);
+				uploaded.insert(out.pos, out.generation);
 			}
 			// Two consecutive idle observations: results can land between
 			// the channel check and the gauges snapshot.

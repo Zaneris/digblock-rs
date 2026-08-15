@@ -2,7 +2,7 @@
 //! device-loss recovery is "build a new one and re-upload meshes".
 
 use digblock_core::chunk::ChunkPos;
-use digblock_core::mesher::{quad_indices, MeshData};
+use digblock_core::mesher::{MeshData, quad_indices};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 
@@ -1364,10 +1364,10 @@ impl Renderer {
 		for (i, c) in chunks.iter().enumerate() {
 			let i = i as u32;
 			let solid = c.solid.is_some();
-			if let Some(planes) = near {
-				if solid && sphere_in_frustum(c.center, planes) {
-					lists.near.push(i);
-				}
+			if let Some(planes) = near
+				&& solid && sphere_in_frustum(c.center, planes)
+			{
+				lists.near.push(i);
 			}
 			if !sphere_in_frustum(c.center, cam) {
 				culled += 1;
@@ -2210,11 +2210,7 @@ pub(crate) fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
 	let r3 = m.row(3);
 	[r3 + r0, r3 - r0, r3 + r1, r3 - r1].map(|p| {
 		let len = p.truncate().length();
-		if len > 0.0 {
-			p / len
-		} else {
-			p
-		}
+		if len > 0.0 { p / len } else { p }
 	})
 }
 

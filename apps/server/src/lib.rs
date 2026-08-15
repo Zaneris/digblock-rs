@@ -16,8 +16,8 @@ pub mod store;
 
 use crossbeam_channel::Receiver;
 use sim::{Sim, SimEvent};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 4433;

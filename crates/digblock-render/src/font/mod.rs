@@ -13,7 +13,7 @@ mod atlas;
 mod face;
 mod wrap;
 
-pub use atlas::{GlyphAtlas, ATLAS_H, ATLAS_W};
+pub use atlas::{ATLAS_H, ATLAS_W, GlyphAtlas};
 pub use face::{Face, RasterGlyph};
 pub use wrap::wrap;
 

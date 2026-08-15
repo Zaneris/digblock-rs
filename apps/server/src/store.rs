@@ -8,9 +8,9 @@
 //! re-overlaid whenever a column regenerates.
 
 use crate::journal::JournalIndex;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use digblock_core::block::BlockType;
-use digblock_core::chunk::{split_world, BlockWorld, ChunkData, CHUNK_SIZE, WORLD_VCHUNK};
+use digblock_core::chunk::{BlockWorld, CHUNK_SIZE, ChunkData, WORLD_VCHUNK, split_world};
 use digblock_core::fluid::FluidWorld;
 use digblock_core::protect::Region;
 use digblock_core::worldgen::build_column;

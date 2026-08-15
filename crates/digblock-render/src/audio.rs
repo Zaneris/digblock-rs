@@ -555,8 +555,8 @@ mod tests {
 	/// proves the match is exhaustive, not that the arms are sane.
 	#[test]
 	fn the_catalog_sounds_like_what_it_is_made_of() {
-		use digblock_core::block::ShapeFamily;
 		use BlockType as B;
+		use digblock_core::block::ShapeFamily;
 		for b in [
 			B::StoneBrick,
 			B::PolishedStone,

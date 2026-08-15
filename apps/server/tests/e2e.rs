@@ -9,7 +9,7 @@
 use crossbeam_channel::unbounded;
 use digblock_core::block::BlockType;
 use digblock_core::player::Player;
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{REACH, raycast};
 use digblock_net::client::NetClientConfig;
 use digblock_net::messages::EditKind;
 use digblock_net::{NetClient, NetEvent};
@@ -19,8 +19,8 @@ use digblock_server::{net, run_sim_loop};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 // ---- containerized master harness ------------------------------------------

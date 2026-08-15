@@ -31,7 +31,7 @@
 use digblock_core::alchemy;
 use digblock_core::block::{BlockType, Essence, ShapeFamily};
 use digblock_core::hotbar::HotbarItem;
-use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
+use digblock_core::inv_grid::{GRID_SLOTS, InvGrid};
 use digblock_core::inventory::Inventory;
 use digblock_core::material::Material;
 use digblock_core::skills::{self, Skill, SkillSet};
@@ -39,10 +39,10 @@ use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
 use crate::hotbar::{HotbarView, SlotView};
-use crate::ui::drag::{DragEvent, DragState, DRAG_THRESHOLD_PX};
+use crate::ui::drag::{DRAG_THRESHOLD_PX, DragEvent, DragState};
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, GridSpec, Style, Ui, DIM, WHITE};
-use crate::ui::{hud, scale, theme, HitMap, InvId, Rect};
+use crate::ui::widgets::{self, DIM, GridSpec, Style, Ui, WHITE};
+use crate::ui::{HitMap, InvId, Rect, hud, scale, theme};
 
 /// One requested alchemy operation, in core vocabulary.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1085,17 +1085,17 @@ impl AlchScreen {
 					// from the hotbar on TRANSMUTE produced a ghost with
 					// nowhere to land.
 					InvId::Grid(i) => {
-						if self.tab == AlchTab::Extract {
-							if let Some(b) = grid.get(i as usize) {
-								self.drag.on_press(self.cursor, id, b);
-							}
+						if self.tab == AlchTab::Extract
+							&& let Some(b) = grid.get(i as usize)
+						{
+							self.drag.on_press(self.cursor, id, b);
 						}
 					}
 					InvId::Bar(i) => {
-						if self.tab == AlchTab::Extract {
-							if let Some(SlotView::Block { block, .. }) = bar.slots.get(i as usize) {
-								self.drag.on_press(self.cursor, id, *block);
-							}
+						if self.tab == AlchTab::Extract
+							&& let Some(SlotView::Block { block, .. }) = bar.slots.get(i as usize)
+						{
+							self.drag.on_press(self.cursor, id, *block);
 						}
 					}
 					InvId::BucketTile => {

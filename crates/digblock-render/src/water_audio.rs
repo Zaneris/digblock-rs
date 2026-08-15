@@ -3,7 +3,7 @@
 //! voices. Pure and GPU-free — reconciliation is unit-tested with
 //! synthetic impact maps.
 
-use crate::audio::{AudioCmd, LoopId, Sfx, LOOP_WATER_BASE};
+use crate::audio::{AudioCmd, LOOP_WATER_BASE, LoopId, Sfx};
 use digblock_core::chunk::ChunkPos;
 use glam::Vec3;
 use rustc_hash::FxHashMap;

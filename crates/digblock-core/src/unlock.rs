@@ -30,7 +30,7 @@
 use crate::alchemy;
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;
-use crate::skills::{Skill, SkillSet, MAX_LEVEL};
+use crate::skills::{MAX_LEVEL, Skill, SkillSet};
 
 // ---- the tables ------------------------------------------------------
 
@@ -598,10 +598,10 @@ mod tests {
 			// A shape you have already learned never delays a material:
 			// the level a substance arrives at is the level its whole
 			// learned set arrives at.
-			if let Some(ml) = material(m) {
-				if ml >= shape(s) {
-					assert_eq!(craft(b), Some(ml), "{b:?} arrives with {m:?}");
-				}
+			if let Some(ml) = material(m)
+				&& ml >= shape(s)
+			{
+				assert_eq!(craft(b), Some(ml), "{b:?} arrives with {m:?}");
 			}
 		}
 		// The composition is the point: reaching a material hands you every
@@ -876,7 +876,9 @@ mod tests {
 			.collect();
 		assert_eq!(
 			alchemy,
-			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 75, 80, 90, 99]
+			vec![
+				5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 75, 80, 90, 99
+			]
 		);
 		// The first level is where everyone starts — you never level up into
 		// it, and the slabs sitting at that unlock must not say otherwise.

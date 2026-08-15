@@ -19,8 +19,8 @@
 //! cross-check test in mesher.rs.
 
 use crate::block::{BlockType, ShapeKind};
-use crate::chunk::{cell_id, cell_state, STATE_MASK, STATE_SHIFT};
-use crate::dir::{Dir, DIRS};
+use crate::chunk::{STATE_MASK, STATE_SHIFT, cell_id, cell_state};
+use crate::dir::{DIRS, Dir};
 use glam::Vec3;
 use std::sync::LazyLock;
 

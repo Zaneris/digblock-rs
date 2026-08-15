@@ -1,16 +1,16 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use digblock_core::BlockType;
 use digblock_core::chunk::ChunkPos;
 use digblock_core::hotbar::{Hotbar, HotbarItem};
 use digblock_core::inventory::Inventory;
 use digblock_core::metrics::{FrameTimings, Metrics, PipelineGauges};
 use digblock_core::pipeline::Pipeline;
 use digblock_core::player::{Player, PlayerIntent, TICK};
-use digblock_core::raycast::{raycast, raycast_fluid, RayHit, REACH};
+use digblock_core::raycast::{REACH, RayHit, raycast, raycast_fluid};
 use digblock_core::sun::Sun;
 use digblock_core::touch::{Phase, TouchDriver};
-use digblock_core::BlockType;
 use digblock_platform::{Game, Gpu, InputEvent, Key, MouseButton, TouchPhase};
 use glam::{Vec2, Vec3};
 
@@ -982,7 +982,7 @@ fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockType> {
 fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::{BlockType as B, ShapeFamily};
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{door_state, slab_state, stair_state, Facing};
+	use digblock_core::shapes::{Facing, door_state, slab_state, stair_state};
 	let (bx, by, bz) = (
 		spawn.x.floor() as i32,
 		spawn.y.floor() as i32,
@@ -1189,7 +1189,7 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{stair_state, Facing};
+	use digblock_core::shapes::{Facing, stair_state};
 	let (bx, by, bz) = (
 		spawn.x.floor() as i32,
 		spawn.y.floor() as i32,
@@ -1249,7 +1249,7 @@ fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{stair_state, Facing};
+	use digblock_core::shapes::{Facing, stair_state};
 	let (bx, by, bz) = (
 		spawn.x.floor() as i32,
 		spawn.y.floor() as i32,
@@ -1381,7 +1381,7 @@ fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 fn debug_doors_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{door_state, Facing};
+	use digblock_core::shapes::{Facing, door_state};
 	let (bx, by, bz) = (
 		spawn.x.floor() as i32,
 		spawn.y.floor() as i32,
@@ -1793,10 +1793,10 @@ impl Carried {
 			let (x, y, z, _) = self.lights[i];
 			let p = Vec3::new(x, y, z);
 			let slot = self.fired.iter().position(|(k, _)| *k == key);
-			if let Some(s) = slot {
-				if self.fired[s].1.distance_squared(p) < CARRY_INVAL_STEP * CARRY_INVAL_STEP {
-					continue;
-				}
+			if let Some(s) = slot
+				&& self.fired[s].1.distance_squared(p) < CARRY_INVAL_STEP * CARRY_INVAL_STEP
+			{
+				continue;
 			}
 			// One sphere, not two. A step is far shorter than the sphere
 			// `invalidate` queues in either cascade, so the space
@@ -2368,10 +2368,10 @@ impl Engine {
 			self.config.draw_dist = s.draw_dist;
 			self.camera.far = far_plane(s.draw_dist);
 			self.pipeline.set_draw_dist(s.draw_dist);
-			if let Some(net) = self.net.as_mut() {
-				if net.ready() {
-					net.send_set_draw_dist(s.draw_dist);
-				}
+			if let Some(net) = self.net.as_mut()
+				&& net.ready()
+			{
+				net.send_set_draw_dist(s.draw_dist);
 			}
 		}
 		// Both render scales are applied by simply storing them: the
@@ -2408,7 +2408,7 @@ impl Engine {
 	/// owns it, because the viewmodel's bob reads the same delta and
 	/// this function returns early on a silent run.
 	fn step_audio(&mut self, dt: f32) {
-		use crate::audio::{ambient_sfx, step_sfx, AmbientZone, AudioCmd, LOOP_AMBIENT};
+		use crate::audio::{AmbientZone, AudioCmd, LOOP_AMBIENT, ambient_sfx, step_sfx};
 		/// Splash gain: a step into the shallows, plus this much per block
 		/// of the fall that preceded it, capped.
 		const SPLASH_GAIN_MIN: f32 = 0.3;
@@ -2542,14 +2542,14 @@ impl Engine {
 				)
 			})
 			.flatten();
-		if self.prospect.advance(near.is_some(), dt) {
-			if let Some(d) = near {
-				self.emit(AudioCmd::Sfx {
-					sound: crate::audio::Sfx::AmbientCave,
-					pos: Some(cell_center((d.x, d.y, d.z))),
-					gain: crate::audio::PROSPECT_GAIN,
-				});
-			}
+		if self.prospect.advance(near.is_some(), dt)
+			&& let Some(d) = near
+		{
+			self.emit(AudioCmd::Sfx {
+				sound: crate::audio::Sfx::AmbientCave,
+				pos: Some(cell_center((d.x, d.y, d.z))),
+				gain: crate::audio::PROSPECT_GAIN,
+			});
 		}
 
 		// Music pool follows the world clock. `tod` is the sun's angle
@@ -2702,14 +2702,14 @@ impl Engine {
 	/// is its last chance to see it before the pipeline is replaced.
 	fn close_local_save(&mut self) {
 		let recorded = self.pipeline.take_recorded_edits();
-		if let Some(store) = self.world_store.as_mut() {
-			if self.in_local_save {
-				for (x, y, z, cell) in recorded {
-					store.append_edit(x, y, z, cell);
-				}
-				store.flush(self.pipeline.overlay());
-				store.close_world();
+		if let Some(store) = self.world_store.as_mut()
+			&& self.in_local_save
+		{
+			for (x, y, z, cell) in recorded {
+				store.append_edit(x, y, z, cell);
 			}
+			store.flush(self.pipeline.overlay());
+			store.close_world();
 		}
 		self.in_local_save = false;
 	}
@@ -3111,24 +3111,24 @@ impl Engine {
 					let block = BlockType::from_id(digblock_core::chunk::cell_id(cell_value));
 					// Another PLAYER's dig/place gets a quiet cue; fluid
 					// results (SERVER_ID) and join sync stay silent.
-					if let Some(author) = remote_author {
-						if author != digblock_net::protocol::SERVER_ID {
-							let prev = self.pipeline.block_at(cell.0, cell.1, cell.2);
-							let sound = if block == BlockType::Air {
-								prev.filter(|p| !p.is_water() && *p != BlockType::Air)
-									.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
-							} else if !block.is_water() {
-								Some(crate::audio::Sfx::Place)
-							} else {
-								None
-							};
-							if let Some(sound) = sound {
-								self.emit(crate::audio::AudioCmd::Sfx {
-									sound,
-									pos: Some(cell_center(cell)),
-									gain: 0.5,
-								});
-							}
+					if let Some(author) = remote_author
+						&& author != digblock_net::protocol::SERVER_ID
+					{
+						let prev = self.pipeline.block_at(cell.0, cell.1, cell.2);
+						let sound = if block == BlockType::Air {
+							prev.filter(|p| !p.is_water() && *p != BlockType::Air)
+								.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
+						} else if !block.is_water() {
+							Some(crate::audio::Sfx::Place)
+						} else {
+							None
+						};
+						if let Some(sound) = sound {
+							self.emit(crate::audio::AudioCmd::Sfx {
+								sound,
+								pos: Some(cell_center(cell)),
+								gain: 0.5,
+							});
 						}
 					}
 					self.apply_remote_edit(cell, cell_value);
@@ -3412,12 +3412,12 @@ impl Engine {
 	/// spread over frames (`--fly`) or taken at once (`--warp`).
 	fn fly_step(&mut self) {
 		const BENCH_YAW: f32 = 12.0; // degrees per path-second
-							   // The walk: forward and back about a fixed origin, at eye
-							   // height with the ground just ahead — the repro as reported.
-							   // An oscillation rather than a line keeps the column under the feet
-							   // constant, so the eye cannot step a whole block mid-path and
-							   // invalidate the history for a reason that is not the one under
-							   // test.
+		// The walk: forward and back about a fixed origin, at eye
+		// height with the ground just ahead — the repro as reported.
+		// An oscillation rather than a line keeps the column under the feet
+		// constant, so the eye cannot step a whole block mid-path and
+		// invalidate the history for a reason that is not the one under
+		// test.
 		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
 		const WALK_PERIOD: f32 = 1.5; // seconds — its peak speed is a walk
 		const WALK_PITCH: f32 = -25.0; // puts the ground just ahead of the eye
@@ -3854,11 +3854,10 @@ impl Engine {
 				digblock_core::unlock::dig_blocked(h.block, &self.skills)
 					.map(|req| (h.cell, req.kind.message()))
 			}
-		}) {
-			if self.refused_cell != Some(cell) {
-				self.refused_cell = Some(cell);
-				self.push_feed(msg.into());
-			}
+		}) && self.refused_cell != Some(cell)
+		{
+			self.refused_cell = Some(cell);
+			self.push_feed(msg.into());
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
 		let Some(hit) = valid else {
@@ -3913,10 +3912,10 @@ impl Engine {
 				required,
 				idle: 0,
 			});
-			if let Some(net) = self.net.as_mut() {
-				if net.ready() {
-					net.send_dig_start(hit.cell);
-				}
+			if let Some(net) = self.net.as_mut()
+				&& net.ready()
+			{
+				net.send_dig_start(hit.cell);
 			}
 			// A scoop is a swing, not a mining hold: one stroke, no
 			// grinding loop. (Water has no sound material of its own, so
@@ -3986,10 +3985,10 @@ impl Engine {
 			self.dig = None;
 		}
 		if stopping {
-			if let Some(net) = self.net.as_mut() {
-				if net.ready() {
-					net.send_dig_cancel();
-				}
+			if let Some(net) = self.net.as_mut()
+				&& net.ready()
+			{
+				net.send_dig_cancel();
 			}
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_DIG,
@@ -4002,10 +4001,10 @@ impl Engine {
 	/// path (button up, target momentarily lost) is `release_dig`.
 	fn cancel_dig(&mut self) {
 		if self.dig.take().is_some() {
-			if let Some(net) = self.net.as_mut() {
-				if net.ready() {
-					net.send_dig_cancel();
-				}
+			if let Some(net) = self.net.as_mut()
+				&& net.ready()
+			{
+				net.send_dig_cancel();
 			}
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_DIG,
@@ -4044,10 +4043,10 @@ impl Engine {
 				hit.cell,
 				digblock_core::chunk::cell_state(prev_cell),
 			);
-			if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2) {
-				if BlockType::from_id(digblock_core::chunk::cell_id(pc)).is_door() {
-					cleared.push((partner, pc));
-				}
+			if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
+				&& BlockType::from_id(digblock_core::chunk::cell_id(pc)).is_door()
+			{
+				cleared.push((partner, pc));
 			}
 		}
 		// A field extraction (SKILLS-DESIGN §5.3): the vein is DRAWN out,
@@ -4361,10 +4360,10 @@ impl Engine {
 		}
 		let partner = door_partner(cell, cell_state(cur));
 		let mut entries = vec![(cell, cur, door_toggled(cur))];
-		if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2) {
-			if BlockType::from_id(cell_id(pc)).is_door() {
-				entries.push((partner, pc, door_toggled(pc)));
-			}
+		if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
+			&& BlockType::from_id(cell_id(pc)).is_door()
+		{
+			entries.push((partner, pc, door_toggled(pc)));
 		}
 		// A door in a protected cell is furniture, not a mechanism — the
 		// same refusal the server makes over its own write list, and
@@ -4395,21 +4394,21 @@ impl Engine {
 			gain: 0.6,
 		});
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
-		if let Some(net) = self.net.as_mut() {
-			if net.ready() {
-				let tick = net.predictor.current_tick();
-				let seq = net.edits.begin_multi(&entries, tick, None);
-				net.send_edit(
-					seq,
-					tick,
-					origin,
-					dir,
-					digblock_net::messages::EditKind::Interact,
-					hit.cell,
-					hit.normal,
-					self.hotbar.selected_index() as u8,
-				);
-			}
+		if let Some(net) = self.net.as_mut()
+			&& net.ready()
+		{
+			let tick = net.predictor.current_tick();
+			let seq = net.edits.begin_multi(&entries, tick, None);
+			net.send_edit(
+				seq,
+				tick,
+				origin,
+				dir,
+				digblock_net::messages::EditKind::Interact,
+				hit.cell,
+				hit.normal,
+				self.hotbar.selected_index() as u8,
+			);
 		}
 	}
 
@@ -4441,10 +4440,10 @@ impl Engine {
 			}
 			InvAction::MoveGrid { from, to } => self.inv_grid.swap(from, to),
 			InvAction::ClearBar { slot } => {
-				if let Some(Some(HotbarItem::Block(b))) = self.hotbar.slots().get(slot).copied() {
-					if self.hotbar.clear_slot(slot) {
-						self.inv_grid.file(b);
-					}
+				if let Some(Some(HotbarItem::Block(b))) = self.hotbar.slots().get(slot).copied()
+					&& self.hotbar.clear_slot(slot)
+				{
+					self.inv_grid.file(b);
 				}
 			}
 		}
@@ -4462,7 +4461,7 @@ impl Engine {
 	/// never no-ops.
 	fn apply_alchemy_action(&mut self, act: crate::ui::screens::alchemy::AlchAction) {
 		use crate::ui::screens::alchemy::AlchAction;
-		use digblock_core::inventory::{apply_alchemy, AlchemyOp};
+		use digblock_core::inventory::{AlchemyOp, apply_alchemy};
 		let (core_op, wire_op) = match act {
 			AlchAction::Convert { block, count } => (
 				AlchemyOp::Convert { block, count },
@@ -5469,23 +5468,22 @@ impl Game for Engine {
 			&mut self.hotbar,
 			&mut self.inv_grid,
 		);
-		if let Some(net) = self.net.as_mut() {
-			if net.ready() {
-				net.predictor.active_slot = self.hotbar.selected_index() as u8;
-				// First send only after the join-sync `ServerMsg::Layout`
-				// primed the dedup — reporting a pre-sync default would
-				// overwrite the identity's stored arrangement.
-				if let Some((last_bar, last_grid)) = self.last_layout_sent.as_ref() {
-					// `to_wire` returns arrays, so the comparison is free;
-					// only an actual change pays for the Vecs.
-					let bar = self.hotbar.to_wire();
-					let grid = self.inv_grid.to_wire();
-					if last_bar.as_slice() != bar.as_slice()
-						|| last_grid.as_slice() != grid.as_slice()
-					{
-						net.send_layout(&bar, &grid);
-						self.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
-					}
+		if let Some(net) = self.net.as_mut()
+			&& net.ready()
+		{
+			net.predictor.active_slot = self.hotbar.selected_index() as u8;
+			// First send only after the join-sync `ServerMsg::Layout`
+			// primed the dedup — reporting a pre-sync default would
+			// overwrite the identity's stored arrangement.
+			if let Some((last_bar, last_grid)) = self.last_layout_sent.as_ref() {
+				// `to_wire` returns arrays, so the comparison is free;
+				// only an actual change pays for the Vecs.
+				let bar = self.hotbar.to_wire();
+				let grid = self.inv_grid.to_wire();
+				if last_bar.as_slice() != bar.as_slice() || last_grid.as_slice() != grid.as_slice()
+				{
+					net.send_layout(&bar, &grid);
+					self.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
 				}
 			}
 		}
@@ -6489,7 +6487,7 @@ mod stream_budget_gate_tests {
 mod arrival_hold_tests {
 	use super::*;
 	use digblock_net::messages::ServerMsg;
-	use digblock_net::protocol::{encode_preamble, PROTOCOL_VERSION};
+	use digblock_net::protocol::{PROTOCOL_VERSION, encode_preamble};
 	use digblock_net::transport::NetTransport;
 
 	fn frame(msg: &ServerMsg) -> Vec<u8> {
@@ -6737,7 +6735,7 @@ mod store_tests {
 
 	#[test]
 	fn saved_hotbar_arrangement_restores_and_round_trips() {
-		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
+		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem, WIRE_EMPTY, WIRE_TOOL};
 
 		let calls = Rc::new(RefCell::new(Calls::default()));
 		// Custom arrangement: the tool parked at the head of the bar, and
@@ -6898,10 +6896,12 @@ mod store_tests {
 			(spawn.y - digblock_core::player::EYE_TO_FEET - 0.5).floor() as i32,
 			spawn.z.floor() as i32,
 		);
-		assert!(engine
-			.pipeline
-			.cell_at(ground.0, ground.1, ground.2)
-			.is_some());
+		assert!(
+			engine
+				.pipeline
+				.cell_at(ground.0, ground.1, ground.2)
+				.is_some()
+		);
 
 		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 		assert!(engine.in_local_save);
@@ -7055,7 +7055,7 @@ mod water_tool_tests {
 #[cfg(test)]
 mod craft_gate_tests {
 	use super::*;
-	use digblock_core::skills::{total_xp_for, Skill};
+	use digblock_core::skills::{Skill, total_xp_for};
 	use digblock_core::unlock::Kind;
 
 	/// A torch — craft-only, Alchemy 8 — two blocks ahead.

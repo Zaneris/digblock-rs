@@ -1026,7 +1026,9 @@ mod tests {
 		assert_eq!(
 			postcard::to_stdvec(&t).unwrap(),
 			// variant tag, pos as le f32s, then look (appended in v9)
-			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63]
+			vec![
+				10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
+			]
 		);
 	}
 

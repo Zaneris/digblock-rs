@@ -17,12 +17,12 @@
 //!   missing (the Java null) — so no bottom faces at world bottom
 
 use crate::block::{BlockType, RenderClass};
-use crate::chunk::{ChunkData, CHUNK_SIZE};
+use crate::chunk::{CHUNK_SIZE, ChunkData};
 
 mod water;
-use water::{emit_water_face, FallLayers, WaterState};
+use water::{FallLayers, WaterState, emit_water_face};
 
-use crate::dir::{Dir, DIRS};
+use crate::dir::{DIRS, Dir};
 
 /// Padded snapshot edge: the chunk plus a one-block shell from its
 /// neighbors.
@@ -457,7 +457,7 @@ fn emit_shaped(
 			match neighbor_cover(input.get_cell(bx + ox, by + oy, bz + oz), dir) {
 				Cover::Full => continue,
 				Cover::Partial(m) if m.covers(q.rect[0], q.rect[1], q.rect[2], q.rect[3]) => {
-					continue
+					continue;
 				}
 				_ => {}
 			}
@@ -778,7 +778,7 @@ mod tests {
 	#[test]
 	fn shaped_boundary_culling() {
 		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
+		use crate::shapes::{Facing, stair_state};
 		// Stair ascending +x with an opaque block at +x: the stair's full
 		// back face is culled, and the wall's −x face is culled too (the
 		// stair's back fully covers the shared plane).
@@ -823,7 +823,7 @@ mod tests {
 	#[test]
 	fn shaped_culling_works_across_chunk_borders() {
 		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
+		use crate::shapes::{Facing, stair_state};
 		// Stair at the chunk's +x border, opaque neighbor chunk beyond:
 		// the padded shell carries the neighbor, and the stair's full
 		// back face is culled through it.
@@ -843,11 +843,7 @@ mod tests {
 		let input = MeshInput::build(
 			&d,
 			|dx, _, _| {
-				if dx == 1 {
-					Src::Chunk(&wall)
-				} else {
-					Src::Air
-				}
+				if dx == 1 { Src::Chunk(&wall) } else { Src::Air }
 			},
 		);
 		let m = mesh_chunk(&input);
@@ -1023,7 +1019,7 @@ mod tests {
 	/// under the door.
 	#[test]
 	fn a_doors_upper_half_tints_from_the_cell_below() {
-		use crate::shapes::{door_state, Facing};
+		use crate::shapes::{Facing, door_state};
 		let tint_bits = |upper: bool| {
 			let mut d = ChunkData::default();
 			d.set_cell(

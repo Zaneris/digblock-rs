@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK};
+use crate::chunk::{AIR_CHUNK, ChunkData, ChunkPos};
 use crate::mesher::{MeshData, MeshInput, OreStamp, PADDED_VOLUME};
 use crate::pipeline::{Job, JobResult, MeshOutput};
 
@@ -150,10 +150,14 @@ impl Job {
 				out.extend_from_slice(&z.to_le_bytes());
 				out.extend_from_slice(&seed.to_le_bytes());
 			}
-			Job::Mesh { pos, gen, input } => {
+			Job::Mesh {
+				pos,
+				generation,
+				input,
+			} => {
 				out.push(TAG_MESH);
 				put_pos(&mut out, *pos);
-				out.extend_from_slice(&gen.to_le_bytes());
+				out.extend_from_slice(&generation.to_le_bytes());
 				// Six face flags in one byte; `missing` suppresses a
 				// border's faces, so losing one would punch holes in the
 				// world at chunk seams.
@@ -200,7 +204,7 @@ impl Job {
 			}),
 			TAG_MESH => {
 				let pos = r.pos()?;
-				let gen = r.u64()?;
+				let generation = r.u64()?;
 				let mask = r.u8()?;
 				let mut missing = [false; 6];
 				for (i, m) in missing.iter_mut().enumerate() {
@@ -234,7 +238,7 @@ impl Job {
 				}
 				Some(Job::Mesh {
 					pos,
-					gen,
+					generation,
 					input: Box::new(MeshInput {
 						blocks,
 						missing,
@@ -277,7 +281,7 @@ impl JobResult {
 			JobResult::Meshed { out: m, dur_ms } => {
 				out.push(TAG_MESH);
 				put_pos(&mut out, m.pos);
-				out.extend_from_slice(&m.gen.to_le_bytes());
+				out.extend_from_slice(&m.generation.to_le_bytes());
 				out.extend_from_slice(&dur_ms.to_le_bytes());
 				put_run_len(&mut out, m.mesh.solid.len());
 				put_u32s(&mut out, &m.mesh.solid);
@@ -323,7 +327,7 @@ impl JobResult {
 			}
 			TAG_MESH => {
 				let pos = r.pos()?;
-				let gen = r.u64()?;
+				let generation = r.u64()?;
 				let dur_ms = r.f32()?;
 				let solid = r.run(4, |r| r.u32())?;
 				let water = r.run(4, |r| r.u32())?;
@@ -331,7 +335,7 @@ impl JobResult {
 				Some(JobResult::Meshed {
 					out: MeshOutput {
 						pos,
-						gen,
+						generation,
 						mesh: MeshData {
 							solid,
 							water,
@@ -363,7 +367,7 @@ mod tests {
 		}
 		Job::Mesh {
 			pos: ChunkPos::new(-3, 5, 12),
-			gen: 9_000_000_001,
+			generation: 9_000_000_001,
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [true, false, false, true, false, true],
@@ -378,12 +382,17 @@ mod tests {
 	/// client meshes every chunk as though the looker had no Mining at
 	/// all — ore simply never appears, and nothing errors.
 	fn mesh_job_with_ore() -> Job {
-		let Job::Mesh { pos, gen, input } = mesh_job() else {
+		let Job::Mesh {
+			pos,
+			generation,
+			input,
+		} = mesh_job()
+		else {
 			unreachable!()
 		};
 		Job::Mesh {
 			pos,
-			gen,
+			generation,
 			input: Box::new(MeshInput {
 				ore: Some(OreStamp {
 					seed: -8123.5,
@@ -446,18 +455,23 @@ mod tests {
 
 	#[test]
 	fn mesh_job_round_trips() {
-		let Some(Job::Mesh { pos, gen, input }) = Job::decode(&mesh_job().encode()) else {
+		let Some(Job::Mesh {
+			pos,
+			generation,
+			input,
+		}) = Job::decode(&mesh_job().encode())
+		else {
 			panic!("decode");
 		};
 		let Job::Mesh {
 			input: orig,
 			pos: opos,
-			gen: ogen,
+			generation: ogen,
 		} = mesh_job()
 		else {
 			unreachable!()
 		};
-		assert_eq!((pos, gen), (opos, ogen));
+		assert_eq!((pos, generation), (opos, ogen));
 		assert_eq!(
 			input.missing, orig.missing,
 			"the face mask is not decorative"
@@ -517,7 +531,7 @@ mod tests {
 		}
 		let job = Job::Mesh {
 			pos: ChunkPos::new(0, solid_y as i32, 0),
-			gen: 7,
+			generation: 7,
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [false; 6],
@@ -532,7 +546,10 @@ mod tests {
 		let Some(JobResult::Meshed { out: after, .. }) = JobResult::decode(&result.encode()) else {
 			panic!("decode");
 		};
-		assert_eq!((after.pos, after.gen), (before.pos, before.gen));
+		assert_eq!(
+			(after.pos, after.generation),
+			(before.pos, before.generation)
+		);
 		assert_eq!(after.mesh.solid, before.mesh.solid);
 		assert_eq!(after.mesh.water, before.mesh.water);
 		assert_eq!(after.mesh.impacts, before.mesh.impacts);

@@ -25,15 +25,15 @@ mod terrain;
 
 pub use caves::carved;
 pub use classify::{
-	ColumnShape, SurfaceKind, SurfaceProps, TreeDensity, TreeSpecies, DIRT_DEPTH, SNOW_LINE,
-	STONE_SURFACE, TEMP_ALT_SHIFT,
+	ColumnShape, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE, SurfaceKind, SurfaceProps, TEMP_ALT_SHIFT,
+	TreeDensity, TreeSpecies,
 };
-pub use terrain::{TerrainParams, MAX_TERRAIN, SEA_LEVEL};
+pub use terrain::{MAX_TERRAIN, SEA_LEVEL, TerrainParams};
 
 use std::sync::Arc;
 
 use crate::block::BlockType;
-use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK, CHUNK_SIZE, WORLD_VCHUNK};
+use crate::chunk::{AIR_CHUNK, CHUNK_SIZE, ChunkData, ChunkPos, WORLD_VCHUNK};
 use crate::decoration::{decorate_chunk, structures_near};
 use classify::column_block;
 use terrain::fields;
@@ -288,7 +288,7 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 #[cfg(test)]
 mod tests {
 	use super::classify::{column_block, holds_water};
-	use super::terrain::{fields, spline, TerrainParams};
+	use super::terrain::{TerrainParams, fields, spline};
 	use super::*;
 	use crate::chunk::WORLD_VBLOCK;
 

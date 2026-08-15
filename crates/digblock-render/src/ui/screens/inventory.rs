@@ -7,17 +7,17 @@
 //! rects are the drop targets, so the on-screen bar is always the truth.
 
 use digblock_core::block::BlockType;
-use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
-use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
+use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem};
+use digblock_core::inv_grid::{GRID_SLOTS, InvGrid};
 use digblock_core::inventory::Inventory;
 use digblock_platform::{InputEvent, MouseButton};
 
 use crate::hotbar::{HotbarView, SlotView};
-use crate::ui::drag::{DragEvent, DragState, DRAG_THRESHOLD_PX};
+use crate::ui::drag::{DRAG_THRESHOLD_PX, DragEvent, DragState};
 use crate::ui::draw::Layer;
 use crate::ui::hud;
 use crate::ui::widgets::{self, GridSpec, Style, Ui, WHITE};
-use crate::ui::{theme, HitMap, InvId, Rect};
+use crate::ui::{HitMap, InvId, Rect, theme};
 
 /// Grid/bar mutations the engine applies to its core `Hotbar`/`InvGrid`
 /// (the screen never mutates game state). Core owns the invariants

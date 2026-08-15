@@ -10,7 +10,7 @@
 //! slots hold plain [`BlockType`]s — the invariant is in the type.
 
 use crate::block::BlockType;
-use crate::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY};
+use crate::hotbar::{HOTBAR_SLOTS, Hotbar, HotbarItem, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
 /// Whole rows of the hotbar's width, enough of them to sit comfortably
@@ -107,10 +107,10 @@ impl InvGrid {
 	pub fn from_wire(wire: &[u16]) -> Self {
 		let mut grid = Self::default();
 		for (i, &w) in wire.iter().take(GRID_SLOTS).enumerate() {
-			if let Some(b) = BlockType::try_from_id(w) {
-				if !grid.contains(b) {
-					grid.slots[i] = Some(b);
-				}
+			if let Some(b) = BlockType::try_from_id(w)
+				&& !grid.contains(b)
+			{
+				grid.slots[i] = Some(b);
 			}
 		}
 		grid
@@ -152,26 +152,25 @@ pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
 	// so its Alchemy unlock and the whole essence price are skipped. The
 	// bucket was safe only because it is `always_owned`, and that stopped
 	// being the whole roster.
-	if !inv.owns_tool(bar.active_tool()) {
-		if let Some(t) = inv.owned_tools().next() {
-			bar.set_active_tool(t);
-		}
+	if !inv.owns_tool(bar.active_tool())
+		&& let Some(t) = inv.owned_tools().next()
+	{
+		bar.set_active_tool(t);
 	}
 	for slot in 0..HOTBAR_SLOTS {
-		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
-			if inv.count(b) == 0 || !b.is_slottable() {
-				bar.clear_slot(slot);
-			}
+		if let Some(HotbarItem::Block(b)) = bar.slots()[slot]
+			&& (inv.count(b) == 0 || !b.is_slottable())
+		{
+			bar.clear_slot(slot);
 		}
 	}
 	for slot in 0..GRID_SLOTS {
-		if let Some(b) = grid.get(slot) {
-			if inv.count(b) == 0
+		if let Some(b) = grid.get(slot)
+			&& (inv.count(b) == 0
 				|| !b.is_slottable()
-				|| bar.slots().contains(&Some(HotbarItem::Block(b)))
-			{
-				grid.clear(slot);
-			}
+				|| bar.slots().contains(&Some(HotbarItem::Block(b))))
+		{
+			grid.clear(slot);
 		}
 	}
 	for (b, _) in inv.iter_nonzero() {

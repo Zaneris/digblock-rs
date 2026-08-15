@@ -27,7 +27,7 @@
 use std::sync::LazyLock;
 
 use crate::block::{BlockType, RenderClass};
-use crate::chunk::{ChunkData, CHUNK_SIZE, CHUNK_VOLUME};
+use crate::chunk::{CHUNK_SIZE, CHUNK_VOLUME, ChunkData};
 use crate::shapes::{self, SubBox};
 
 /// What a ray does when it enters a cell of this class.
@@ -329,7 +329,7 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 mod tests {
 	use super::*;
 	use crate::chunk::make_cell;
-	use crate::shapes::{door_state, slab_state, Facing};
+	use crate::shapes::{Facing, door_state, slab_state};
 
 	#[test]
 	fn every_block_id_fits_the_class_byte() {

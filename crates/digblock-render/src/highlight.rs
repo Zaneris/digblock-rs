@@ -202,7 +202,7 @@ mod tests {
 	use super::*;
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
-	use digblock_core::shapes::{door_state, slab_state, stair_state, Facing};
+	use digblock_core::shapes::{Facing, door_state, slab_state, stair_state};
 
 	/// The instance box, GPU-free. A full cube and a stair both fill the
 	/// cell; a slab and a door shrink to the volume they actually occupy.

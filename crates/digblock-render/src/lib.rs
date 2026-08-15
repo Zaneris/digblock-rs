@@ -28,7 +28,7 @@ mod viewmodel;
 mod water;
 mod water_audio;
 
-pub use engine::{parse_held_item, DebugScreen, Engine, EngineConfig};
+pub use engine::{DebugScreen, Engine, EngineConfig, parse_held_item};
 /// Cost-stub names for the launcher's `DIG_STUB` parse (the mask itself
 /// travels as `EngineConfig::stub`).
 pub use renderer::stub;

@@ -10,9 +10,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::{spawn_local, JsFuture};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 #[wasm_bindgen]
 extern "C" {

@@ -9,7 +9,7 @@ pub mod inventory;
 #[cfg(test)]
 mod tests {
 	use crate::ui::draw::{Cmd, DrawList, Layer};
-	use crate::ui::{scale, widgets::Style, HitMap, InvId, Ui};
+	use crate::ui::{HitMap, InvId, Ui, scale, widgets::Style};
 	use digblock_core::block::{BlockType as B, Essence};
 	use digblock_core::inv_grid::InvGrid;
 	use digblock_core::inventory::Inventory;

@@ -3,7 +3,7 @@
 //! of the solid mesher so the hot solid loop and the (deliberately
 //! outlined) water path evolve independently.
 
-use super::{face_corners, occludes, pack, Dir, MeshInput, PADDED};
+use super::{Dir, MeshInput, PADDED, face_corners, occludes, pack};
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::ID_MASK;
 
@@ -280,11 +280,7 @@ impl WaterState {
 				d += 1;
 				cy += 1;
 			}
-			if cy > 16 {
-				15
-			} else {
-				d.min(15)
-			}
+			if cy > 16 { 15 } else { d.min(15) }
 		} else {
 			0
 		};

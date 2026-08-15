@@ -7,7 +7,7 @@
 
 use digblock_core::block::BlockType;
 use digblock_core::player::{Player, PlayerIntent};
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{REACH, raycast};
 use digblock_core::worldgen::terrain_height;
 use digblock_net::client::NetClientConfig;
 use digblock_net::messages::EditKind;

@@ -4,13 +4,13 @@
 use digblock_core::block::BlockType;
 use digblock_core::player::{Player, PlayerIntent};
 use digblock_net::codec::{self, FrameReader};
-use digblock_net::loopback::{loopback_pair, LoopbackEnd};
+use digblock_net::loopback::{LoopbackEnd, loopback_pair};
 use digblock_net::messages::{
 	BlockEdit, ClientMsg, Datagram, RejectReason, RemoteState, SelfState, ServerMsg, Snapshot,
 };
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
-	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN, PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	decode_preamble, encode_preamble,
 };
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
@@ -355,9 +355,11 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		}
 		other => panic!("expected the authoritative Edit, got {other:?}"),
 	}
-	assert!(!events
-		.iter()
-		.any(|e| matches!(e, NetEvent::EditRejected { .. })));
+	assert!(
+		!events
+			.iter()
+			.any(|e| matches!(e, NetEvent::EditRejected { .. }))
+	);
 }
 
 #[test]

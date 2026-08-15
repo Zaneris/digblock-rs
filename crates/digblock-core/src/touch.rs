@@ -63,25 +63,25 @@ impl TouchDriver {
 					}
 					// Java Player.jumpCount: double-tap on the look side.
 					let now = Instant::now();
-					if let Some(last) = self.last_tap {
-						if now.duration_since(last).as_millis() < DOUBLE_TAP_MS {
-							self.jump_pending = true;
-						}
+					if let Some(last) = self.last_tap
+						&& now.duration_since(last).as_millis() < DOUBLE_TAP_MS
+					{
+						self.jump_pending = true;
 					}
 					self.last_tap = Some(now);
 				}
 			}
 			Phase::Moved => {
-				if let Some((mid, _, current)) = &mut self.move_touch {
-					if *mid == id {
-						*current = p;
-					}
+				if let Some((mid, _, current)) = &mut self.move_touch
+					&& *mid == id
+				{
+					*current = p;
 				}
-				if let Some((lid, last)) = &mut self.look_touch {
-					if *lid == id {
-						self.look_accum += (p - *last) * LOOK_DEGREES_PER_SCREEN;
-						*last = p;
-					}
+				if let Some((lid, last)) = &mut self.look_touch
+					&& *lid == id
+				{
+					self.look_accum += (p - *last) * LOOK_DEGREES_PER_SCREEN;
+					*last = p;
 				}
 			}
 			Phase::Ended | Phase::Cancelled => {

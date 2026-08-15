@@ -10,4 +10,4 @@ pub use hex::parse_sha256_hex;
 #[cfg(target_arch = "wasm32")]
 mod transport;
 #[cfg(target_arch = "wasm32")]
-pub use transport::{connect, probe, WebTransportClient};
+pub use transport::{WebTransportClient, connect, probe};

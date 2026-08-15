@@ -15,8 +15,8 @@
 //! Everything is pure integer twelfths; f32 appears only in UVs.
 
 use digblock_core::block::BlockType;
-use digblock_core::dir::{Dir, DIRS};
-use digblock_core::shapes::{self, door_state, slab_state, stair_state, Facing};
+use digblock_core::dir::{DIRS, Dir};
+use digblock_core::shapes::{self, Facing, door_state, slab_state, stair_state};
 
 use crate::ui::hud::IconKind;
 

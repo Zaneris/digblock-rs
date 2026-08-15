@@ -15,7 +15,7 @@
 //! nothing, and the pool's bootstrap decides when the first job runs.
 #![cfg(target_arch = "wasm32")]
 
-use digblock_core::pipeline::{run_job, Job};
+use digblock_core::pipeline::{Job, run_job};
 use wasm_bindgen::prelude::*;
 
 /// Decode a job, run it, encode the result — the whole worker.

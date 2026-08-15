@@ -11,7 +11,7 @@
 
 use digblock_core::block::BlockType;
 use digblock_core::chunk::ChunkPos;
-use digblock_core::gi::{opacity, GiChunk, GiOpacity};
+use digblock_core::gi::{GiChunk, GiOpacity, opacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
@@ -141,11 +141,7 @@ impl Cascade {
 /// Clamped so `wg.x * stride` cannot overflow u32 in the shader.
 fn schedule_stride(count: u32) -> u32 {
 	fn gcd(a: u32, b: u32) -> u32 {
-		if b == 0 {
-			a
-		} else {
-			gcd(b, a % b)
-		}
+		if b == 0 { a } else { gcd(b, a % b) }
 	}
 	let cap = u32::MAX / PROBES_PER_DISPATCH.max(1);
 	let mut s = ((f64::from(count) * 0.618_033_988_749_895) as u32).clamp(1, cap.min(count.max(1)));
@@ -156,11 +152,7 @@ fn schedule_stride(count: u32) -> u32 {
 		s = if s + 1 > cap { 1 } else { s + 1 };
 		tries += 1;
 	}
-	if gcd(s, count.max(1)) != 1 {
-		1
-	} else {
-		s
-	}
+	if gcd(s, count.max(1)) != 1 { 1 } else { s }
 }
 
 pub struct GiDraw {

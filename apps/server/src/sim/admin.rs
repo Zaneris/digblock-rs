@@ -4,11 +4,11 @@
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
 
-use super::{client_send, OutMsg, Sim, SpawnLock};
+use super::{OutMsg, Sim, SpawnLock, client_send};
 use digblock_core::compass::{cardinal, compass};
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{REACH, raycast};
 use digblock_net::messages::ServerMsg;
-use digblock_net::protocol::{validate_name, MAX_CHAT_LEN, SERVER_ID};
+use digblock_net::protocol::{MAX_CHAT_LEN, SERVER_ID, validate_name};
 use glam::Vec3;
 
 /// `(usage, description)` — usage's first token is the dispatch key and
@@ -600,14 +600,18 @@ mod tests {
 		let mut sim = admin_sim("advert");
 		let admin = connect_named(&mut sim, 1, "BOSS"); // case-insensitive
 		let other = connect_named(&mut sim, 2, "guest");
-		assert!(admin
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::AdminCommands { .. })));
-		assert!(!other
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::AdminCommands { .. })));
+		assert!(
+			admin
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
+		);
+		assert!(
+			!other
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
+		);
 	}
 
 	#[test]
@@ -626,13 +630,17 @@ mod tests {
 		// The guest's own slash line: private refusal, nothing broadcast
 		// (the admin's /help reply mentions /tp usage, so key on the
 		// guest's exact line).
-		assert!(server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("admin-only")));
-		assert!(!admin
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.contains("/tp 0 0"))));
+		assert!(
+			server_lines(&guest)
+				.iter()
+				.any(|t| t.contains("admin-only"))
+		);
+		assert!(
+			!admin
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.contains("/tp 0 0")))
+		);
 	}
 
 	#[test]
@@ -661,13 +669,17 @@ mod tests {
 		sim.tick_once(vec![chat(1, "/ban Griefer")]);
 		admin.drain();
 		victim.drain();
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("banned griefer")));
-		assert!(victim
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Refused { reason } if reason == "banned")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("banned griefer"))
+		);
+		assert!(
+			victim
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Refused { reason } if reason == "banned"))
+		);
 		assert!(sim.test_player(2).is_none(), "victim dropped");
 		// Same address (conn 2) reconnecting: refused at Hello.
 		let again = try_connect(&mut sim, 2, [0; 16]);
@@ -764,9 +776,11 @@ mod tests {
 		assert_eq!(look, [-1.0, 0.0, 0.0]);
 		assert_eq!(sim.test_look(1), Some(Vec3::new(-1.0, 0.0, 0.0)));
 		assert_eq!(sim.test_player(1).unwrap().pos.to_array(), pos);
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to 40 -20")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("teleported to 40 -20"))
+		);
 
 		// Relative: ~ keeps the axis, ~<d> offsets from the floor.
 		sim.tick_once(vec![chat(1, "/tp ~-10 ~ n")]);
@@ -793,9 +807,11 @@ mod tests {
 			.count();
 		sim.tick_once(vec![chat(1, "/tp up down")]);
 		admin.drain();
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("usage: /tp")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("usage: /tp"))
+		);
 		let after = sim.test_player(1).unwrap().pos;
 		assert_eq!((after.x, after.z), (before.x, before.z));
 		let teleports_after = admin
@@ -820,9 +836,11 @@ mod tests {
 		admin.drain();
 		let apos = sim.test_player(1).unwrap().pos;
 		assert_eq!((apos.x, apos.z), (gpos.x, gpos.z));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to guest")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("teleported to guest"))
+		);
 
 		// Separate again, then bring the guest to the admin.
 		sim.tick_once(vec![chat(1, "/tp 40 -20")]);
@@ -832,16 +850,22 @@ mod tests {
 		guest.drain();
 		let gpos = sim.test_player(2).unwrap().pos;
 		assert_eq!((gpos.x, gpos.z), (apos.x, apos.z));
-		assert!(guest
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Teleported { .. })));
-		assert!(server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("boss teleported you")));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("brought guest")));
+		assert!(
+			guest
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Teleported { .. }))
+		);
+		assert!(
+			server_lines(&guest)
+				.iter()
+				.any(|t| t.contains("boss teleported you"))
+		);
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("brought guest"))
+		);
 
 		// Edge cases: unknown player, self, missing arg — reply, no move.
 		let before = sim.test_player(1).unwrap().pos;
@@ -878,9 +902,11 @@ mod tests {
 				.expect("immediate TimeOfDay");
 			assert!((tod + 97.5).abs() < 0.01, "tod {tod}");
 		}
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("time set to 18:30")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("time set to 18:30"))
+		);
 
 		// Time keeps flowing from the new anchor: the next heartbeat has
 		// fallen by the elapsed ticks at the sun's rate, not reverted to
@@ -995,7 +1021,9 @@ mod tests {
 		let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
 		let h = spawn.y.floor() as i32 - 2;
 		assert_eq!(
-			(region.x0, region.x1, region.y0, region.y1, region.z0, region.z1),
+			(
+				region.x0, region.x1, region.y0, region.y1, region.z0, region.z1
+			),
 			(sx - 2, sx + 2, h, h + 3, sz - 2, sz + 2)
 		);
 
@@ -1221,9 +1249,11 @@ mod tests {
 		admin.drain();
 		// East = sunrise = −x.
 		assert_eq!(sim.test_spawn_dir(), Some(Vec3::new(-1.0, 0.0, 0.0)));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("facing east")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.contains("facing east"))
+		);
 
 		// A joiner arrives facing it...
 		let guest = connect_named(&mut sim, 2, "guest");

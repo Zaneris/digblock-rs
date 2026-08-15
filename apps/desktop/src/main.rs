@@ -270,11 +270,11 @@ fn main() {
 
 	// An explicit --name must be valid; a bad one is fatal like any other
 	// bad flag value (silently dropping it would surprise scripted joins).
-	if let Some(n) = &name {
-		if let Err(e) = digblock_net::protocol::validate_name(n) {
-			eprintln!("bad value for --name: {e}");
-			std::process::exit(2);
-		}
+	if let Some(n) = &name
+		&& let Err(e) = digblock_net::protocol::validate_name(n)
+	{
+		eprintln!("bad value for --name: {e}");
+		std::process::exit(2);
 	}
 	// Env-derived knobs live in the launcher; the engine stays env-free
 	// (std::env is a stub on the wasm target).
@@ -538,10 +538,10 @@ fn load_identity() -> [u8; 16] {
 				.unwrap_or_else(|| std::path::PathBuf::from("./digblock-identity"))
 		});
 	if let Ok(bytes) = std::fs::read(&path) {
-		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice()) {
-			if id != [0; 16] {
-				return id;
-			}
+		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice())
+			&& id != [0; 16]
+		{
+			return id;
 		}
 		log::warn!("identity file {} malformed — regenerating", path.display());
 	}

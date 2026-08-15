@@ -104,10 +104,10 @@ impl NetTransport for LoopbackEnd {
 			return;
 		}
 		d.sent += 1;
-		if let Some(n) = d.drop_every {
-			if d.sent.is_multiple_of(n) {
-				return;
-			}
+		if let Some(n) = d.drop_every
+			&& d.sent.is_multiple_of(n)
+		{
+			return;
 		}
 		if d.delay_pumps > 0 {
 			let pumps = d.delay_pumps;
@@ -142,13 +142,13 @@ impl NetTransport for LoopbackEnd {
 		}
 		// Queued bytes first, then the close — a real transport delivers
 		// what already arrived before it notices the stream ended.
-		if let Some(reason) = &d.closed {
-			if !self.closed_reported {
-				self.closed_reported = true;
-				out.push(TransportEvent::Disconnected {
-					reason: reason.clone(),
-				});
-			}
+		if let Some(reason) = &d.closed
+			&& !self.closed_reported
+		{
+			self.closed_reported = true;
+			out.push(TransportEvent::Disconnected {
+				reason: reason.clone(),
+			});
 		}
 	}
 

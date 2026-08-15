@@ -150,11 +150,7 @@ pub fn extract_total_base(b: BlockType) -> u32 {
 pub fn waste_permille(level: u32) -> u32 {
 	let level = level.clamp(1, 99);
 	let lin = 1600 - (550 * (level - 1) + 49) / 98;
-	if level >= 85 {
-		lin.min(1100)
-	} else {
-		lin
-	}
+	if level >= 85 { lin.min(1100) } else { lin }
 }
 
 /// One cost line at `level`: `ceil(ideal · waste)`.

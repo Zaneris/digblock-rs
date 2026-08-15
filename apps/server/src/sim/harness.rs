@@ -1,10 +1,10 @@
 //! Shared sim-test harness: an in-memory client over the `OutMsg`
 //! channel, and the flat synthetic world that makes tests instant.
 
-use super::{OutMsg, Sim, SimEvent, OUT_CAP};
+use super::{OUT_CAP, OutMsg, Sim, SimEvent};
 use crate::store::ColumnSource;
 use digblock_core::block::BlockType;
-use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK};
 use digblock_core::player::PlayerState;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, InputBatch, InputTick, ServerMsg, Snapshot};
@@ -12,7 +12,7 @@ use digblock_net::protocol::PROTOCOL_VERSION;
 use glam::Vec3;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Receiver};
+use tokio::sync::mpsc::{Receiver, channel};
 
 pub(crate) const SEED: f64 = 42.0;
 
@@ -267,7 +267,7 @@ pub(crate) fn dig_hold(
 	kind: digblock_net::messages::EditKind,
 	t: &mut u32,
 ) -> (i32, i32, i32) {
-	use digblock_core::raycast::{raycast, raycast_fluid, REACH};
+	use digblock_core::raycast::{REACH, raycast, raycast_fluid};
 	let pos = sim.test_player(conn_id).unwrap().pos;
 	let cast = if kind == digblock_net::messages::EditKind::Collect {
 		raycast_fluid

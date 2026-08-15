@@ -4,7 +4,7 @@
 //! targets, so the on-screen bar is always the truth.
 
 use digblock_core::block::BlockType;
-use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
+use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem};
 
 use super::draw::Layer;
 use super::widgets::{self, GridSpec, Ui, WHITE};

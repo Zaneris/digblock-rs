@@ -7,9 +7,9 @@ use crate::edits::{PendingEdit, PendingEdits};
 use crate::messages::{ClientMsg, Datagram, EditKind, RejectReason, ServerMsg};
 use crate::predict::{Predictor, Reconciled};
 use crate::protocol::{
-	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
-	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE, MIN_PROTOCOL, PREAMBLE_LEN,
-	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	CLIENT_TICK_LEAD, CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE,
+	MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, PlayerId, RECV_TIMEOUT_SECS, decode_preamble,
+	encode_preamble, sanitize_name,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};

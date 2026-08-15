@@ -73,11 +73,7 @@ impl Face {
 	/// so an unexpected codepoint degrades to a visible marker instead of
 	/// tofu. `'?'` is in every face we ship (the repertoire test pins it).
 	fn resolve(&self, c: char) -> char {
-		if self.covers(c) {
-			c
-		} else {
-			'?'
-		}
+		if self.covers(c) { c } else { '?' }
 	}
 
 	pub fn advance(&self, c: char, px: f32) -> f32 {

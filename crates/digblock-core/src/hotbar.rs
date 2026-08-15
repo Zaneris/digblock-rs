@@ -373,9 +373,11 @@ mod tests {
 		let hb = Hotbar::from_wire(&wire);
 		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
 		assert_eq!(hb.active_tool(), B::Bucket);
-		assert!(Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
-			.slots()
-			.contains(&Some(HotbarItem::WaterTool)));
+		assert!(
+			Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
+				.slots()
+				.contains(&Some(HotbarItem::WaterTool))
+		);
 	}
 
 	#[test]

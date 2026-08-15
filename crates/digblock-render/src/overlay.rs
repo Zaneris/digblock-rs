@@ -13,7 +13,7 @@ use crate::font;
 /// Frames shown in the frame-time graph.
 pub const GRAPH_FRAMES: usize = 120;
 
-use crate::ui::scale::{glyph_px, FIXED_GLYPH_PX};
+use crate::ui::scale::{FIXED_GLYPH_PX, glyph_px};
 
 // Logical bases, multiplied by the frame's ui_scale where a surface
 // scales. The debug panel deliberately uses them raw (a diagnostic, not
@@ -231,7 +231,7 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			2,
 			DIM,
 			format_args!(
-			// `ovl` is not here: it measures as nothing in every capture
+				// `ovl` is not here: it measures as nothing in every capture
 				// this engine has taken, and the line is at its column budget.
 				// It is still a CSV column.
 				"gpu  pre {:5.2} main {:5.2} water {:5.2} up {:5.2} | gi {:5.2} trace {:5.2} den {:5.2} blit {:5.2} vm {:5.2}",
@@ -396,11 +396,7 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 fn seed_text(seed: f64) -> String {
 	let plain = format!("{seed}");
 	let exp = format!("{seed:e}");
-	if plain.len() <= exp.len() {
-		plain
-	} else {
-		exp
-	}
+	if plain.len() <= exp.len() { plain } else { exp }
 }
 
 /// The look vector for a yaw/pitch pair — `FlyCamera::dir`'s formula, kept

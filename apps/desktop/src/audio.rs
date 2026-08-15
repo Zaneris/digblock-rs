@@ -20,7 +20,7 @@
 //! Music: fetched from the master server (never embedded) by a helper
 //! thread; the audio thread decodes and loops the playlist at low gain.
 
-use digblock_render::audio::{bytes, AudioCmd, AudioSink, LoopId, Sfx};
+use digblock_render::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use rodio::source::{Buffered, Source};
 use rodio::{Decoder, MixerDeviceSink, Player, SpatialPlayer};
 use std::collections::HashMap;

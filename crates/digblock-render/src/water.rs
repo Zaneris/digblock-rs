@@ -6,7 +6,7 @@
 
 use digblock_platform::Gpu;
 
-use crate::renderer::{draw_chunk, ChunkGpu};
+use crate::renderer::{ChunkGpu, draw_chunk};
 
 pub(crate) struct WaterDraw {
 	/// Depth-only prepass over the water geometry: writes the nearest

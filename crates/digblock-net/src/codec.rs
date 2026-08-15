@@ -6,8 +6,8 @@
 
 use crate::messages::Datagram;
 use crate::protocol::{MAX_DATAGRAM, MAX_FRAME};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 #[derive(Debug)]
 pub enum CodecError {

@@ -3,7 +3,7 @@
 //! `ui/hud.rs`; the icon pipeline in `ui/icons.rs`.
 
 use digblock_core::block::BlockType;
-use digblock_core::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS};
+use digblock_core::hotbar::{HOTBAR_SLOTS, Hotbar, HotbarItem};
 use digblock_core::inventory::Inventory;
 
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -622,9 +622,11 @@ mod tests {
 		assert!(text_charset().count() > 300);
 		// Names stay a strict subset — widening them is a cross-service
 		// change (see is_name_char).
-		assert!("abcABC019-_"
-			.chars()
-			.all(|c| is_name_char(c) && is_text_char(c)));
+		assert!(
+			"abcABC019-_"
+				.chars()
+				.all(|c| is_name_char(c) && is_text_char(c))
+		);
 		assert!(!is_name_char('é') && is_text_char('é'));
 	}
 }

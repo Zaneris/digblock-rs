@@ -287,8 +287,8 @@ fn sanitize(mut input: InputTick) -> Option<InputTick> {
 
 #[cfg(test)]
 mod tests {
-	use super::super::harness::*;
 	use super::super::Sim;
+	use super::super::harness::*;
 	use digblock_core::player::{Player, PlayerIntent, PlayerState, TICK};
 	use glam::Vec3;
 
@@ -412,9 +412,9 @@ mod tests {
 	#[test]
 	fn standing_on_stair_claim_adopted() {
 		use digblock_core::block::BlockType;
-		use digblock_core::chunk::{make_cell, ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK, make_cell};
 		use digblock_core::player::{Player, PlayerIntent, TICK};
-		use digblock_core::shapes::{stair_state, Facing};
+		use digblock_core::shapes::{Facing, stair_state};
 		use std::sync::Arc;
 
 		// Flat ground with a short stair flight ascending +z and a platform
@@ -514,7 +514,7 @@ mod tests {
 	#[test]
 	fn slab_stack_claim_adopted() {
 		use digblock_core::block::BlockType;
-		use digblock_core::chunk::{make_cell, ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK, make_cell};
 		use digblock_core::player::{Player, PlayerIntent, TICK};
 		use digblock_core::shapes::slab_state;
 		use std::sync::Arc;

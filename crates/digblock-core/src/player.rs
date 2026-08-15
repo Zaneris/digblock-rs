@@ -334,14 +334,14 @@ fn ramp_support(
 				continue;
 			}
 			for y in [y0, y0 + 1] {
-				if let CellShape::Ramp { facing, .. } = cell_shape(cell_at(x, y, z)) {
-					if let Some(top) = ramp_top(pos, (x, y, z), facing) {
-						let lift = top - feet;
-						if (-RAMP_SNAP_DOWN..=RAMP_SNAP_MAX).contains(&lift)
-							&& best.is_none_or(|(t, _)| top > t)
-						{
-							best = Some((top, facing));
-						}
+				if let CellShape::Ramp { facing, .. } = cell_shape(cell_at(x, y, z))
+					&& let Some(top) = ramp_top(pos, (x, y, z), facing)
+				{
+					let lift = top - feet;
+					if (-RAMP_SNAP_DOWN..=RAMP_SNAP_MAX).contains(&lift)
+						&& best.is_none_or(|(t, _)| top > t)
+					{
+						best = Some((top, facing));
 					}
 				}
 			}
@@ -622,10 +622,10 @@ impl Player {
 							}
 						}
 						CellShape::Ramp { facing, .. } => {
-							if let Some(top) = ramp_top(self.pos, (x, y, z), facing) {
-								if (top - feet).abs() <= RAMP_SNAP_DOWN {
-									return true;
-								}
+							if let Some(top) = ramp_top(self.pos, (x, y, z), facing)
+								&& (top - feet).abs() <= RAMP_SNAP_DOWN
+							{
+								return true;
 							}
 						}
 					}
@@ -1172,7 +1172,7 @@ mod tests {
 	fn airtime_grants_only_air_control_speed() {
 		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default()); // land
-												// Jump from a standstill, holding forward for the whole flight.
+		// Jump from a standstill, holding forward for the whole flight.
 		p.tick(
 			TICK,
 			Vec3::Z,
@@ -1607,7 +1607,7 @@ mod tests {
 	// ---- sub-block shapes ------------------------------------------------
 
 	use crate::chunk::make_cell;
-	use crate::shapes::{door_state, slab_state, stair_state, Facing};
+	use crate::shapes::{Facing, door_state, slab_state, stair_state};
 
 	/// A built four-step +x flight: each stair rests on a stone riser,
 	/// with a flush platform beyond. This is what a staircase a player
@@ -2504,7 +2504,7 @@ mod golden {
 	#[test]
 	fn golden_stair_trajectory_pins_sim_version() {
 		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
+		use crate::shapes::{Facing, stair_state};
 		// Flat ground with a three-stair flight ascending +z and a
 		// platform beyond; walk up, jump at the top, walk back down.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {

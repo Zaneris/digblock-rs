@@ -36,7 +36,7 @@ pub mod worldgen;
 // Root re-exports: only what consumers actually reach through the crate
 // root (everything stays reachable at its module path).
 pub use block::BlockType;
-pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
+pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 
 /// Version of the behavior client and server execute INDEPENDENTLY and
 /// must agree on bit-for-bit: `Player::tick` physics (prediction + the

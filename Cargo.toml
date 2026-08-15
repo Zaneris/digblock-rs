@@ -20,7 +20,7 @@ members = [
 
 [workspace.package]
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 # Mirrors the justfile/CI `-D warnings` policy in-source, so plain

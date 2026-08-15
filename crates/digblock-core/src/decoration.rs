@@ -13,9 +13,9 @@ use std::cell::RefCell;
 use std::thread::LocalKey;
 
 use crate::block::BlockType;
-use crate::chunk::{ChunkData, ChunkPos, CHUNK_SIZE, WORLD_VBLOCK};
+use crate::chunk::{CHUNK_SIZE, ChunkData, ChunkPos, WORLD_VBLOCK};
 use crate::worldgen::{
-	carved, column_shape_above, ColumnShape, TreeDensity, TreeSpecies, SEA_LEVEL,
+	ColumnShape, SEA_LEVEL, TreeDensity, TreeSpecies, carved, column_shape_above,
 };
 
 /// Horizontal reach guarantee: no structure block may sit further than

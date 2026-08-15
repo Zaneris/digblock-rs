@@ -68,11 +68,7 @@ impl Sun {
 	/// Wrap an angle into (−180, 180].
 	fn normalize(deg: f32) -> f32 {
 		let t = deg.rem_euclid(360.0);
-		if t > 180.0 {
-			t - 360.0
-		} else {
-			t
-		}
+		if t > 180.0 { t - 360.0 } else { t }
 	}
 
 	/// Advance the world clock.

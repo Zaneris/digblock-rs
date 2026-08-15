@@ -3,7 +3,7 @@
 //! capped velocity extrapolation when snapshots stall.
 
 use crate::protocol::{
-	PlayerId, EXTRAP_CAP_TICKS, INTERP_DELAY_TICKS, REMOTE_EXPIRE_TICKS, TICK_RATE,
+	EXTRAP_CAP_TICKS, INTERP_DELAY_TICKS, PlayerId, REMOTE_EXPIRE_TICKS, TICK_RATE,
 };
 use glam::Vec3;
 use rustc_hash::FxHashMap;

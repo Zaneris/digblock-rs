@@ -741,19 +741,28 @@ impl Metrics {
 		let fill = self
 			.streamed_at
 			.map_or_else(|| "n/a".to_owned(), |t| format!("{t:.2}s"));
-		let mut gen = self.run_gen_jobs;
-		gen.merge(self.gen_jobs);
+		let mut generation = self.run_gen_jobs;
+		generation.merge(self.gen_jobs);
 		let mut mesh = self.run_mesh_jobs;
 		mesh.merge(self.mesh_jobs);
 		let per_sec = |n: u32| n as f32 / elapsed.max(0.001);
 		Some(format!(
 			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup}{miss} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
 			frames as f32 / elapsed.max(0.001),
-			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
+			s.avg_ms,
+			s.p95_ms,
+			s.p99_ms,
+			s.worst_ms,
 			self.hitches_total,
 			self.gauges.resident,
-			gen.count, gen.avg_ms(), gen.max_ms, per_sec(gen.count),
-			mesh.count, mesh.avg_ms(), mesh.max_ms, per_sec(mesh.count),
+			generation.count,
+			generation.avg_ms(),
+			generation.max_ms,
+			per_sec(generation.count),
+			mesh.count,
+			mesh.avg_ms(),
+			mesh.max_ms,
+			per_sec(mesh.count),
 		))
 	}
 
@@ -778,12 +787,28 @@ impl Metrics {
 		};
 		log::info!(
 			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
-			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
-			if self.win_frames > 0 { self.win_sum.busy_ms / self.win_frames as f32 } else { 0.0 },
-			if self.win_frames > 0 { self.win_sum.outside_ms / self.win_frames as f32 } else { 0.0 },
-			self.hitches, self.dropped,
-			self.chunks_generated, self.meshes_uploaded, self.upload_kb,
-			self.gauges.gen_queue, self.gauges.mesh_queue, self.gauges.in_flight,
+			s.avg_ms,
+			s.p95_ms,
+			s.p99_ms,
+			s.worst_ms,
+			if self.win_frames > 0 {
+				self.win_sum.busy_ms / self.win_frames as f32
+			} else {
+				0.0
+			},
+			if self.win_frames > 0 {
+				self.win_sum.outside_ms / self.win_frames as f32
+			} else {
+				0.0
+			},
+			self.hitches,
+			self.dropped,
+			self.chunks_generated,
+			self.meshes_uploaded,
+			self.upload_kb,
+			self.gauges.gen_queue,
+			self.gauges.mesh_queue,
+			self.gauges.in_flight,
 			self.gauges.upload_backlog,
 			self.gauges.resident,
 			self.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),

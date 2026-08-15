@@ -139,11 +139,11 @@ pub fn start() -> Result<(), JsValue> {
 			digblock_render::settings::RENDER_SCALE_MAX,
 		);
 	}
-	if let Some(d) = param::<u32>(&params, "giscale") {
-		if digblock_render::settings::GI_SCALE_DIVISORS.contains(&d) {
-			config.gi_scale_div = d;
-			config.gfx_defaults_auto = false;
-		}
+	if let Some(d) = param::<u32>(&params, "giscale")
+		&& digblock_render::settings::GI_SCALE_DIVISORS.contains(&d)
+	{
+		config.gi_scale_div = d;
+		config.gfx_defaults_auto = false;
 	}
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(10, 32);

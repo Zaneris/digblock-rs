@@ -7,7 +7,7 @@
 //! wavelength apart); threshold/frequency sets bore width in blocks — so
 //! lower frequency + higher threshold = fewer, larger caves.
 
-use crate::simplex::{noise3, Noise3Column};
+use crate::simplex::{Noise3Column, noise3};
 
 const CAVE_FREQ: f64 = 0.02;
 const CAVE_THRESHOLD: f64 = 0.15;

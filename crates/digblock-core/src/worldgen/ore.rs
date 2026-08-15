@@ -209,10 +209,10 @@ fn for_each_deposit<T>(
 	for gy in lo(min.1)..=hi(max.1) {
 		for gz in lo(min.2)..=hi(max.2) {
 			for gx in lo(min.0)..=hi(max.0) {
-				if let Some(d) = deposit_in(gx, gy, gz, seed) {
-					if let Some(t) = f(d) {
-						return Some(t);
-					}
+				if let Some(d) = deposit_in(gx, gy, gz, seed)
+					&& let Some(t) = f(d)
+				{
+					return Some(t);
 				}
 			}
 		}
@@ -516,7 +516,7 @@ mod tests {
 					let (i, &(_, max_y, _)) = TIERS
 						.iter()
 						.enumerate()
-						.find(|(_, &(o, _, _))| o == d.ore)
+						.find(|&(_, &(o, _, _))| o == d.ore)
 						.expect("a listed tier");
 					assert!(d.y <= max_y, "{:?} at y {}", d.ore, d.y);
 					// The BLOB, not the centre: a deposit reaches

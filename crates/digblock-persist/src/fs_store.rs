@@ -6,7 +6,7 @@
 //! (inventory + player), written atomically on an if-dirty throttle at
 //! the server's InventoryStore cadence.
 
-use crate::journal::{world_version, Journal};
+use crate::journal::{Journal, world_version};
 use crate::{PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use digblock_core::overlay::EditOverlay;
 use digblock_net::messages::BlockEdit;
@@ -442,10 +442,11 @@ mod tests {
 		assert_eq!(edits, vec![((1, 100, 1), 7), ((900, 101, 900), 8)]);
 		s.close_world();
 		assert!(!legacy.exists(), "migrated, not left behind");
-		assert!(dir
-			.join(format!("world-{:016x}", 3.0f64.to_bits()))
-			.join("r.0.0.journal")
-			.exists());
+		assert!(
+			dir.join(format!("world-{:016x}", 3.0f64.to_bits()))
+				.join("r.0.0.journal")
+				.exists()
+		);
 		let _ = std::fs::remove_dir_all(&root);
 	}
 

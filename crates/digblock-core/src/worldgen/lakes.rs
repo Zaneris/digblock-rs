@@ -7,7 +7,7 @@
 //! the footprint is active the river carve is suppressed entirely: lake
 //! beats river.
 
-use super::terrain::{smoothstep, soft_ceiling, TerrainParams, SEA_LEVEL};
+use super::terrain::{SEA_LEVEL, TerrainParams, smoothstep, soft_ceiling};
 use crate::simplex::fbm2;
 
 pub struct LakeParams {

@@ -3,11 +3,11 @@
 //! sync: outbound is a tokio unbounded mpsc (sync `send`, async `recv`),
 //! inbound is a crossbeam unbounded channel (sync on both ends).
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use std::sync::atomic::{AtomicU32, Ordering};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use wtransport::{ClientConfig, Endpoint};
 
 enum Outgoing {

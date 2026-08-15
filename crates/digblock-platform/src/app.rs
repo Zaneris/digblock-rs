@@ -5,8 +5,8 @@
 //! desktop drill. `Suspended` has no surface field, so rendering without a
 //! surface is unrepresentable.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::clock::GameClock;
-use crate::input::{map_button, map_key, map_touch_phase, InputEvent};
+use crate::input::{InputEvent, map_button, map_key, map_touch_phase};
 use crate::lifecycle::{Action, Event as LcEvent, Lifecycle};
 use crate::{Game, Gpu, RunOptions};
 
@@ -867,13 +867,12 @@ impl<G: Game> App<G> {
 		// overlay (fixed contract with apps/web's index.html, like the
 		// canvas id).
 		#[cfg(target_arch = "wasm32")]
-		if self.frames_rendered == 1 {
-			if let (Some(w), Ok(ev)) = (
+		if self.frames_rendered == 1
+			&& let (Some(w), Ok(ev)) = (
 				web_sys::window(),
 				web_sys::Event::new("digblock-first-frame"),
 			) {
-				let _ = w.dispatch_event(&ev);
-			}
+			let _ = w.dispatch_event(&ev);
 		}
 		if self
 			.options
@@ -1018,8 +1017,8 @@ impl<G: Game> App<G> {
 /// events. Page-lifetime listeners: leaking the closures is deliberate.
 #[cfg(target_arch = "wasm32")]
 fn install_pointer_lock_listeners(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
-	use wasm_bindgen::closure::Closure;
 	use wasm_bindgen::JsCast;
+	use wasm_bindgen::closure::Closure;
 	let document = web_sys::window()
 		.and_then(|w| w.document())
 		.expect("document");
@@ -1199,11 +1198,10 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 						// gameplay keys must not double as text.
 						if pressed
 							&& (!self.game.wants_cursor_grab() || self.game.wants_text_input())
+							&& let Some(text) = &k.text
 						{
-							if let Some(text) = &k.text {
-								for ch in text.chars().filter(|c| !c.is_control()) {
-									self.game.input(InputEvent::Text { ch });
-								}
+							for ch in text.chars().filter(|c| !c.is_control()) {
+								self.game.input(InputEvent::Text { ch });
 							}
 						}
 						// A key that just closed the menu (Enter, hotkeys)
@@ -1227,10 +1225,11 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 	}
 
 	fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-		if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-			if self.cursor_grabbed && matches!(self.state, AppState::Running(_)) {
-				self.game.input(InputEvent::MouseDelta { dx, dy });
-			}
+		if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+			&& self.cursor_grabbed
+			&& matches!(self.state, AppState::Running(_))
+		{
+			self.game.input(InputEvent::MouseDelta { dx, dy });
 		}
 	}
 

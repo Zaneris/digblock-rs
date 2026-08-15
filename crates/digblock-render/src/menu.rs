@@ -5,7 +5,7 @@
 //! through the overlay. The world keeps running (and rendering) behind it.
 
 use crate::settings::{
-	Settings, DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, UI_SCALE_MAX, UI_SCALE_MIN,
+	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, Settings, UI_SCALE_MAX, UI_SCALE_MIN,
 	UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
 use digblock_net::transport::NetTransport;
@@ -466,13 +466,13 @@ impl Menu {
 				}
 			}
 			MenuResponse::Ping { server_id, ms } => {
-				if let Some(Screen::Browser(b)) = &mut self.screen {
-					if let Some(row) = b.rows.iter_mut().find(|r| r.entry.id == server_id) {
-						row.ping = match ms {
-							Some(ms) => PingState::Ms(ms),
-							None => PingState::Failed,
-						};
-					}
+				if let Some(Screen::Browser(b)) = &mut self.screen
+					&& let Some(row) = b.rows.iter_mut().find(|r| r.entry.id == server_id)
+				{
+					row.ping = match ms {
+						Some(ms) => PingState::Ms(ms),
+						None => PingState::Failed,
+					};
 				}
 			}
 			MenuResponse::Connect { transport, token } => {
@@ -508,13 +508,12 @@ impl Menu {
 					let act = self.acts()[i].1;
 					// A click inside a slider's bar sets the value from the
 					// click fraction instead of "activating" the row.
-					if let Act::SettingRow(s) = act {
-						if let Some(frac) =
+					if let Act::SettingRow(s) = act
+						&& let Some(frac) =
 							self.bar_frac_at(self.cursor.0, self.cursor.1, size, scale)
-						{
-							self.set_setting_frac(s, frac);
-							return;
-						}
+					{
+						self.set_setting_frac(s, frac);
+						return;
 					}
 					self.activate(act);
 				}
@@ -581,10 +580,10 @@ impl Menu {
 			},
 			Key::Left | Key::Right => {
 				// Slider adjust on the Settings screen only.
-				if matches!(self.screen, Some(Screen::Settings { .. })) {
-					if let Some(&(_, Act::SettingRow(s))) = self.acts().get(self.current_sel()) {
-						self.adjust_setting(s, if key == Key::Left { -1 } else { 1 });
-					}
+				if matches!(self.screen, Some(Screen::Settings { .. }))
+					&& let Some(&(_, Act::SettingRow(s))) = self.acts().get(self.current_sel())
+				{
+					self.adjust_setting(s, if key == Key::Left { -1 } else { 1 });
 				}
 			}
 			Key::Escape => match self.screen.take() {
@@ -692,7 +691,7 @@ impl Menu {
 	}
 
 	fn handle_text(&mut self, ch: char) {
-		use digblock_net::protocol::{is_name_char, is_text_char, MAX_DISPLAY_NAME};
+		use digblock_net::protocol::{MAX_DISPLAY_NAME, is_name_char, is_text_char};
 		match &mut self.screen {
 			Some(Screen::Browser(b)) => {
 				b.status = None;
@@ -763,12 +762,12 @@ impl Menu {
 				self.screen = None;
 			}
 			Act::Refresh => {
-				if let Some(Screen::Browser(b)) = &mut self.screen {
-					if !b.fetching {
-						b.fetching = true;
-						b.status = None;
-						self.pending_cmds.push(MenuCommand::RefreshServers);
-					}
+				if let Some(Screen::Browser(b)) = &mut self.screen
+					&& !b.fetching
+				{
+					b.fetching = true;
+					b.status = None;
+					self.pending_cmds.push(MenuCommand::RefreshServers);
 				}
 			}
 			Act::OpenSettings => self.screen = Some(Screen::Settings { sel: 0 }),
@@ -1577,7 +1576,7 @@ impl MenuView {
 		size: (u32, u32),
 		daylight: f32,
 	) {
-		use crate::ui::{theme, widgets, Layer, Rect};
+		use crate::ui::{Layer, Rect, theme, widgets};
 		dl.quad(
 			Layer::Content,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
@@ -1690,21 +1689,26 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_services_available();
 		menu.set_connected(true);
-		assert!(!menu
-			.acts()
-			.iter()
-			.any(|(_, act)| matches!(act, Act::OpenMultiplayer)));
-		assert!(!menu
-			.view(SIZE, 1.0, false)
-			.rows
-			.iter()
-			.any(|r| r.text.starts_with("Multiplayer")));
+		assert!(
+			!menu
+				.acts()
+				.iter()
+				.any(|(_, act)| matches!(act, Act::OpenMultiplayer))
+		);
+		assert!(
+			!menu
+				.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.any(|r| r.text.starts_with("Multiplayer"))
+		);
 		// Leaving brings it back (fresh backdrop world, startup menu).
 		menu.on_returned_to_title();
-		assert!(menu
-			.acts()
-			.iter()
-			.any(|(_, act)| matches!(act, Act::OpenMultiplayer)));
+		assert!(
+			menu.acts()
+				.iter()
+				.any(|(_, act)| matches!(act, Act::OpenMultiplayer))
+		);
 	}
 
 	/// The view emits through the framework: dim + panel + one text
@@ -1876,10 +1880,11 @@ mod tests {
 		});
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text.contains("Alpha")));
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| matches!(&r.right, Some((p, _)) if p == "34 ms")));
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| matches!(&r.right, Some((p, _)) if p == "34 ms"))
+		);
 
 		// Join the second server.
 		menu.handle_key(Key::Down);
@@ -1946,11 +1951,12 @@ mod tests {
 			menu.handle_text(ch);
 		}
 		menu.handle_key(Key::Backspace); // drop the trailing x
-		assert!(menu
-			.view(SIZE, 1.0, false)
-			.rows
-			.iter()
-			.any(|r| r.text.contains("name: ted_")));
+		assert!(
+			menu.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.any(|r| r.text.contains("name: ted_"))
+		);
 		for _ in 0..100 {
 			menu.handle_text('x');
 		}
@@ -1986,11 +1992,12 @@ mod tests {
 		let _ = menu.take_commands();
 		menu.handle_key(Key::Escape); // cancel connect
 		assert!(menu.take_disconnect());
-		assert!(menu
-			.view(SIZE, 1.0, false)
-			.rows
-			.iter()
-			.any(|r| r.text.contains("cancelled")));
+		assert!(
+			menu.view(SIZE, 1.0, false)
+				.rows
+				.iter()
+				.any(|r| r.text.contains("cancelled"))
+		);
 	}
 
 	#[test]
@@ -2116,10 +2123,11 @@ mod tests {
 			"Back to Game + Inventory + Alchemy + Character + Leave World + Settings"
 		);
 		let view = menu.view(SIZE, 1.0, false);
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Return to Spawn (42s)")));
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| r.text.contains("Return to Spawn (42s)"))
+		);
 		// Down skips the greyed row entirely: no spawn intent is ever
 		// raised on the way to Settings.
 		menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
@@ -2230,23 +2238,27 @@ mod tests {
 		menu.handle_key(Key::Escape);
 		open_settings(&mut menu);
 		let view = menu.view(SIZE, 1.0, false);
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Draw Distance: 32")));
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Music Volume: 0%")));
-		assert!(view.rows.iter().any(|r| r
-			.text
-			.contains(&format!("Interface Scale: {:.0}%", UI_SCALE_MIN * 100.0))));
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| r.text.contains("Draw Distance: 32"))
+		);
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| r.text.contains("Music Volume: 0%"))
+		);
+		assert!(view.rows.iter().any(|r| {
+			r.text
+				.contains(&format!("Interface Scale: {:.0}%", UI_SCALE_MIN * 100.0))
+		}));
 		// No render-scale row exists at all.
 		assert!(!view.rows.iter().any(|r| r.text.contains("Render Scale")));
-		assert!(view
-			.rows
-			.iter()
-			.any(|r| r.text.contains("Lighting Detail: Ultra")));
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| r.text.contains("Lighting Detail: Ultra"))
+		);
 	}
 
 	/// Every notch of the interface-scale slider is reachable and lands on
@@ -2439,7 +2451,7 @@ mod tests {
 		let mut menu = Menu::new(true, Settings::default(), None);
 		open_worlds(&mut menu, vec![]);
 		menu.handle_key(Key::Enter); // "Create New World" (only act)
-							   // Empty name: Enter is a no-op.
+		// Empty name: Enter is a no-op.
 		menu.handle_key(Key::Enter);
 		assert!(menu.take_world_intents().is_empty());
 		// Charset + cap; backspace edits.

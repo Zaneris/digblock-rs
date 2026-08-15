@@ -3,8 +3,8 @@
 //! has quirks); a frame is simply skipped when its readback slot is still
 //! in flight.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use digblock_core::metrics::GpuPassMs;
 use digblock_platform::Gpu;
