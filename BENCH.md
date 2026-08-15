@@ -112,6 +112,54 @@ linear memory on low-RAM devices, and a `upload_bytes_max` of 768 KiB a frame ag
 native's 8 MiB, which must move the knee earlier there. Re-measure on web before
 raising it. Lesson for the next bracket: pin the thermal state, not just `--display`.
 
+## 2026-08-14 — what a torch in your hand costs (R28)
+
+M2 Max, `--bench --warp 0` (parked in the sealed vault, no motion),
+`--fixed-dt 0.0166667`, seed 42, tod 45, `--display 0` pinned,
+`DIG_VAULT=1 DIG_VAULT_DARK=1 DIG_SCREEN=torch` — a room whose ONLY light is the one in
+the player's hand. Interleaved, 2 reps per arm; within-arm spread **0.08 / 0.02 ms**.
+
+| `--gi-scale` | resolution | baseline | `DIG_STUB=ginee` | term |
+|---|---|---|---|---|
+| 1 (resolve at full render res) | 5.79 MP, draw 20 | 19.76 / 19.68 | 17.75 / 17.73 | **1.98 ms** |
+| 3 (**the shipped default**) | 5.79 MP, draw 20 | 8.33 | — | not measurable |
+
+**1.98 ms at `--gi-scale 1`, and it is the worst case by construction.** A light at the
+eye puts every visible pixel inside `LIGHT_RANGE` with `ndl > 0`, so every one of them
+draws a candidate and fires a shadow ray — R20's sealed-vault worst case, except now it
+is the *normal* case for anyone carrying a torch. And the vault is eleven blocks across,
+so there is no far band to early-out. At the shipped divisor the resolve runs at a ninth
+of the pixels and the same scene sits at the 120 Hz cap with headroom to spare, which is
+why that row has no number: nothing to subtract from a frame that is not GPU-bound.
+
+**No existing baseline moves, and the reason is worth writing down.** `--bench` flies with
+an empty hotbar, so `Swap::shown()` is `None`, no carried light exists, and `flush_lights`
+behaves exactly as it did. Verified rather than assumed: the CSV's `emitters` column reads
+**0** on every pre-existing bench scene and **1** here.
+
+**The harness could not see a held item at all, and that had to be fixed first.** `update`
+returned on the scripted-flight path *before* advancing `Swap`, so under `--bench` the
+viewmodel never drew and a carried light never existed — the first attempt at this bracket
+measured `ginee` at 0.00 with `emitters` 0 and looked like a correct result. Hoisting the
+one `view_swap.advance` above that return costs the old baselines nothing (empty bar → no
+item either way) and is what makes a held item photographable and measurable.
+
+**The picture, same scene, 960×540, 600 frames.** Mean interior **58.6/255** with the torch
+in hand against **26.8** holding a non-emitting item — the carried torch is the room's
+light, not a tint on it. Clipping, R22's metric: **0.123 %** of pixels with any channel at
+255, of which 2.1 % are actually white, against R22's **0.40 %** placed-torch baseline.
+Carrying a torch clips *less* than standing next to one, and the near-field disc it throws
+at feet + 1.0 reads as a warm pool rather than the saturated ellipse the arithmetic
+predicted. `cam_light` does not blow out either, for a structural reason: a probe stores
+what its RAYS find, so a torch reaches the hand as bounce off the floor, never as
+`emit·GAIN/LIGHT_NEAR²`.
+
+**The CSV's `gpu_*` columns are unusable at this pose and that is not new.** They reported
+`gpu_gi_denoise_ms` of 34 ms inside a 19.8 ms frame, and moved by the same ~2 ms in phases
+the stub cannot touch (`gpu_main_ms`, `gpu_viewmodel_ms`) — including `refresh_ms`, which
+a shader stub cannot change at all. Take `avg_ms` from an interleaved bracket; the phase
+timers here are a global clock artefact, exactly the trap the 2026-08-12 entry named.
+
 ## 2026-08-12 — the toroidal wrap was 25% of the frame
 
 Same machine and pose as the attribution entry below: M2 Max, 5.43 MP (2992×1814),

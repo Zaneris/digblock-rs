@@ -216,3 +216,39 @@ fn gi_light_margin(p: vec3f) -> f32 {
 	// +0.035 is the slack the 0.9 carried over the 0.866 half diagonal.
 	return length(max(f, vec3f(1.0) - f)) + 0.035;
 }
+
+// A light list entry's w word: the GI class byte in bits 0-7, and bit 8
+// set when a player is CARRYING it. Every reader masks, exactly as the
+// resolve's history length rides its face code.
+//
+// The flag exists because `gi_light_margin` above is a property of the
+// light's CELL, and a carried light has no cell of its own. Its bound is
+// only ever reached because a placed emitter sits at a KNOWN offset
+// inside one — a torch's flame at 0.5/0.708/0.5 gives 1.036, the worst
+// any of them can do. A carried light hangs at feet + 1.0, so a carrier
+// standing on a block top lands on frac(y) == 0.0 — the degenerate
+// maximum of `max(f, 1 - f)` — and the margin runs 1.26 to 1.77
+// depending where in x/z they stand. The player's capsule is RADIUS 0.3,
+// so a wall they are brushing spans 0.3 to 1.3 from the light and falls
+// entirely inside that skip: the floor on its far side sees the light
+// through solid stone.
+const GI_LIGHT_CARRIED = 256u;
+
+fn gi_light_class(w: f32) -> u32 {
+	return bitcast<u32>(w) & 255u;
+}
+
+// The margin for one light list entry, and the ONE place the carried
+// case is decided so the two NEE passes cannot disagree about it.
+//
+// Zero for a carried light, and that is not slack: the origin is the
+// centre of the carrier's own capsule (on its axis, RADIUS 0.3 clear
+// laterally and 0.7 above its feet), so its cell is non-solid by
+// construction and there is nothing of its own for it to be occluded by.
+// A wall half a block away SHOULD block it, which is the whole point.
+fn gi_light_margin_of(l: vec4f) -> f32 {
+	if (bitcast<u32>(l.w) & GI_LIGHT_CARRIED) != 0u {
+		return 0.0;
+	}
+	return gi_light_margin(l.xyz);
+}
