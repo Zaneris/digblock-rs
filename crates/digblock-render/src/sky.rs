@@ -22,8 +22,8 @@ impl SkyDraw {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("sky"),
-			bind_group_layouts: &[frame_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(frame_bgl)],
+			immediate_size: 0,
 		});
 		let pipeline = crate::pipeline_builder::build(
 			device,

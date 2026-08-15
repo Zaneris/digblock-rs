@@ -110,6 +110,24 @@ pub struct RunOptions {
 	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
 	/// so benchmarks measure real frame cost, not vsync residue.
 	pub no_vsync: bool,
+	/// Draw into a texture of our own instead of the swapchain, and never
+	/// acquire or present. A capture flag, and the one that makes a
+	/// capture independent of the DESKTOP: a window that is minimized,
+	/// covered, or behind a screensaver is handed no surface texture at
+	/// all on macOS, so an unattended run through the swapchain simply
+	/// stops producing frames when the screen locks. Off this path there
+	/// is no compositor in the picture — no drawable, no vsync, no window
+	/// stacking.
+	///
+	/// Deliberately NOT implied by `--screenshot`: dropping the swapchain
+	/// also drops the present wait, so a frame-time run means something
+	/// different here, and every BENCH.md baseline was taken through the
+	/// surface. Opt in per run.
+	///
+	/// Composes with [`Self::auto_drill`] — suspend still drops and
+	/// rebuilds the surface, and this target with it — but the drill then
+	/// covers one transition less, since nothing acquires.
+	pub offscreen: bool,
 	/// Logical window size, when a run needs a SPECIFIC one rather than
 	/// winit's default. The GI resolve is a fraction of the surface, so
 	/// its cost scales with this directly — which makes it the one knob a

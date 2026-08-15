@@ -235,7 +235,15 @@ For `just run`:
   before/after bracket measures the screens (two different `refresh_ms` values across the bracket is the tell). The
   chosen monitor's name, size, scale and refresh are logged, and an out-of-range index is fatal. Physics ticks ride the
   wall clock, so cross-build stills need a long enough `--frames` for both cameras to be settled at rest, or the whole
-  diff is a sub-block pose shift.
+  diff is a sub-block pose shift. **A windowed capture has to stay VISIBLE on macOS** — a covered window is handed no
+  surface texture at all (an occluded `nextDrawable` stalls on vsync, so wgpu's Metal backend short-circuits it), and
+  the run then idles on `CurrentSurfaceTexture::Occluded` without ever reaching `--frames N`. New in wgpu 30: before it,
+  a capture behind another window still rendered. **A SCREENSAVER counts**, which is how this actually bites — start a
+  long bench, walk away, come back to a run that stopped where the screen locked. Nothing warns you; the process just
+  idles. **`--offscreen` is the way out**: the engine draws into a texture the shell owns instead of the swapchain, so
+  there is no drawable, no vsync and no compositor in the picture, and a capture runs the same with the screen locked as
+  with it awake. Deliberately not implied by `--screenshot` — it drops the present wait too, so a frame-time run means
+  something else off this path, and every BENCH.md baseline was taken through the surface.
 
 Metrics (`digblock-core/src/metrics.rs`) land in the periodic log line, the CSV, and the overlay; `DIG_SPIKELOG=1` logs
 per-phase breakdowns of over-budget frames. **F7** (or `--gi-drill-at N` headlessly) clears the GI's derived state and

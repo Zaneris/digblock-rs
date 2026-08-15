@@ -4,7 +4,7 @@
 //! rodio; a dead or deviceless audio thread silently mutes the game
 //! instead of failing it.
 //!
-//! Spatialization: one rodio `SpatialSink` per positional voice. Rodio's
+//! Spatialization: one rodio `SpatialPlayer` per positional voice. Rodio's
 //! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so
 //! every world coordinate (emitters and ears) is scaled by [`ATT`] to
 //! place that curve over a useful range of world distances.
@@ -22,7 +22,7 @@
 
 use digblock_render::audio::{bytes, AudioCmd, AudioSink, LoopId, Sfx};
 use rodio::source::{Buffered, Source};
-use rodio::{Decoder, OutputStream, Sink, SpatialSink};
+use rodio::{Decoder, MixerDeviceSink, Player, SpatialPlayer};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::mpsc;
@@ -145,8 +145,8 @@ impl Pool {
 type Cached = Buffered<Decoder<Cursor<&'static [u8]>>>;
 
 enum VoiceSink {
-	Spatial(SpatialSink),
-	Flat(Sink),
+	Spatial(SpatialPlayer),
+	Flat(Player),
 }
 
 /// A live voice plus its authored gain, kept so a later user-volume
@@ -190,7 +190,7 @@ impl Voice {
 }
 
 fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) {
-	let stream: OutputStream = match rodio::OutputStreamBuilder::open_default_stream() {
+	let stream: MixerDeviceSink = match rodio::DeviceSinkBuilder::open_default_sink() {
 		Ok(s) => s,
 		Err(e) => {
 			log::warn!("audio device unavailable ({e}) — running silent");
@@ -233,7 +233,7 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) 
 		..Pool::default()
 	};
 	let mut night = false;
-	let music = Sink::connect_new(mixer);
+	let music = Player::connect_new(mixer);
 	music.set_volume(MUSIC_GAIN);
 
 	loop {
@@ -389,7 +389,7 @@ fn play_voice(
 ) -> Voice {
 	let sink = match pos {
 		Some(p) => {
-			let s = SpatialSink::connect_new(
+			let s = SpatialPlayer::connect_new(
 				mixer,
 				(glam::Vec3::from_array(p) * ATT).to_array(),
 				left_ear,
@@ -403,7 +403,7 @@ fn play_voice(
 			VoiceSink::Spatial(s)
 		}
 		None => {
-			let s = Sink::connect_new(mixer);
+			let s = Player::connect_new(mixer);
 			if repeat {
 				s.append(src.repeat_infinite());
 			} else {

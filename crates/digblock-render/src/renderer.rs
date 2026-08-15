@@ -817,13 +817,17 @@ impl Renderer {
 		// frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[&frame_bgl, &materials_bgl, gi.scene_bgl()],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&frame_bgl), Some(&materials_bgl), Some(gi.scene_bgl())],
+			immediate_size: 0,
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, gi.gather_bgl()],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[
+				Some(&water_frame_bgl),
+				Some(&materials_bgl),
+				Some(gi.gather_bgl()),
+			],
+			immediate_size: 0,
 		});
 
 		let chunk_vertex_layouts = [geometry_vertex_layout(), origin_vertex_layout()];
@@ -859,8 +863,8 @@ impl Renderer {
 		// the bilateral upsample stops collapsing at edges.
 		let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth prepass"),
-			bind_group_layouts: &[&frame_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&frame_bgl)],
+			immediate_size: 0,
 		});
 		let prepass_pipeline = crate::pipeline_builder::build(
 			device,
@@ -893,8 +897,8 @@ impl Renderer {
 		});
 		let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("blit"),
-			bind_group_layouts: &[&blit_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&blit_bgl)],
+			immediate_size: 0,
 		});
 		let blit_pipeline = crate::pipeline_builder::build(
 			device,
@@ -966,8 +970,8 @@ impl Renderer {
 		});
 		let depth_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth blit"),
-			bind_group_layouts: &[&depth_blit_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&depth_blit_bgl)],
+			immediate_size: 0,
 		});
 		let depth_blit_pipeline = crate::pipeline_builder::build_depthless(
 			device,
@@ -1777,6 +1781,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_PREPASS)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.prepass_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
@@ -1816,6 +1821,7 @@ impl Renderer {
 					depth_stencil_attachment: None,
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_DEPTH_BLIT)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.depth_blit_pipeline);
 				pass.set_bind_group(0, &targets.depth_blit_bg, &[]);
@@ -1894,6 +1900,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_MAIN)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 
 				pass.set_pipeline(&self.solid_pipeline);
@@ -1970,6 +1977,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_WATER)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 
 				pass.set_pipeline(&self.blit_pipeline);
@@ -2058,6 +2066,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_VIEWMODEL)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				let tris = self
 					.viewmodel
@@ -2091,6 +2100,7 @@ impl Renderer {
 					depth_stencil_attachment: None,
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_UPSCALE)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.upscale_pipeline);
 				pass.set_bind_group(0, &targets.upscale_bg, &[]);
@@ -2117,6 +2127,7 @@ impl Renderer {
 				depth_stencil_attachment: None,
 				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_OVERLAY)),
 				occlusion_query_set: None,
+				multiview_mask: None,
 			});
 			// Sandwich: backdrops → main icons → content (counts, panel,
 			// feed, menu) → ghost icon → topmost ghost quads/text. One

@@ -29,6 +29,11 @@ pub enum Event {
 	SurfaceLost,
 	/// `SurfaceError::Timeout`.
 	SurfaceTimeout,
+	/// Nobody can see the window — it is minimized, or another window
+	/// covers it completely. Distinct from a timeout because it is not
+	/// transient: it lasts until a person moves a window, so the retry has
+	/// to be paced rather than immediate.
+	SurfaceOccluded,
 	/// Any other surface error.
 	SurfaceFatal,
 	/// The device-lost callback fired (possibly off-thread; the shell
@@ -59,6 +64,10 @@ pub enum Action {
 	ReconfigureSurface,
 	/// Transient (timeout): just request another frame.
 	RetryNextFrame,
+	/// Occluded: idle a beat, then ask again. Occlusion clears on its own
+	/// so the loop must keep asking, but asking as fast as the CPU allows
+	/// spends a whole core drawing nothing.
+	IdleThenRetry,
 	Exit,
 }
 
@@ -137,6 +146,7 @@ impl Lifecycle {
 			(Phase::Running, Event::DrillDeviceRebuild) => out.push(Action::RebuildRenderer),
 			(Phase::Running, Event::SurfaceLost) => out.push(Action::ReconfigureSurface),
 			(Phase::Running, Event::SurfaceTimeout) => out.push(Action::RetryNextFrame),
+			(Phase::Running, Event::SurfaceOccluded) => out.push(Action::IdleThenRetry),
 			(Phase::Running, Event::SurfaceFatal) => {
 				// A dying device surfaces (sic) as a generic fatal acquire
 				// error before wgpu's lost callback is pumped (the closure
@@ -250,6 +260,20 @@ mod tests {
 			acts(&mut l, Event::SurfaceTimeout),
 			vec![Action::RetryNextFrame]
 		);
+		// Occlusion asks again too, but never at the top of a redraw
+		// chain — a covered window would otherwise cost a whole core.
+		assert_eq!(
+			acts(&mut l, Event::SurfaceOccluded),
+			vec![Action::IdleThenRetry]
+		);
+		// ...and unlike a fatal error it never runs out of patience: it
+		// clears when somebody moves a window, which may be never.
+		for _ in 0..MAX_FATAL_RETRIES + 3 {
+			assert_eq!(
+				acts(&mut l, Event::SurfaceOccluded),
+				vec![Action::IdleThenRetry]
+			);
+		}
 		// Fatal is loss-suspect: bounded retries, then exit.
 		assert_eq!(
 			acts(&mut l, Event::SurfaceFatal),
@@ -376,6 +400,7 @@ mod tests {
 			DrillDeviceRebuild,
 			SurfaceLost,
 			SurfaceTimeout,
+			SurfaceOccluded,
 			SurfaceFatal,
 			DeviceLost,
 			SurfaceFormatPicked(Bgra8Unorm),

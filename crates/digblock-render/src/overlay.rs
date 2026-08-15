@@ -443,7 +443,7 @@ impl Overlay {
 			label: Some("overlay font"),
 			mag_filter: wgpu::FilterMode::Linear,
 			min_filter: wgpu::FilterMode::Linear,
-			mipmap_filter: wgpu::FilterMode::Nearest,
+			mipmap_filter: wgpu::MipmapFilterMode::Nearest,
 			..Default::default()
 		});
 		let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -507,8 +507,8 @@ impl Overlay {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("overlay"),
-			bind_group_layouts: &[&bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl)],
+			immediate_size: 0,
 		});
 		let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("overlay"),
@@ -517,13 +517,13 @@ impl Overlay {
 				module: &shader,
 				entry_point: Some("vs"),
 				compilation_options: Default::default(),
-				buffers: &[wgpu::VertexBufferLayout {
+				buffers: &[Some(wgpu::VertexBufferLayout {
 					array_stride: std::mem::size_of::<OverlayVertex>() as u64,
 					step_mode: wgpu::VertexStepMode::Vertex,
 					attributes: &wgpu::vertex_attr_array![
 						0 => Float32x2, 1 => Float32x2, 2 => Uint32
 					],
-				}],
+				})],
 			},
 			fragment: Some(wgpu::FragmentState {
 				module: &shader,
@@ -542,7 +542,7 @@ impl Overlay {
 			},
 			depth_stencil: None,
 			multisample: wgpu::MultisampleState::default(),
-			multiview: None,
+			multiview_mask: None,
 			cache: None,
 		});
 		let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {

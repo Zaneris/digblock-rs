@@ -671,8 +671,8 @@ impl GiDraw {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi probe layout"),
-			bind_group_layouts: &[&bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl)],
+			immediate_size: 0,
 		});
 		let compute = |entry: &str, label: &str| {
 			device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -780,8 +780,8 @@ impl GiDraw {
 		});
 		let debug_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi debug layout"),
-			bind_group_layouts: &[&debug_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&debug_bgl)],
+			immediate_size: 0,
 		});
 		let debug_pipeline = crate::pipeline_builder::build_depthless(
 			device,
@@ -968,8 +968,8 @@ impl GiDraw {
 		});
 		let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi resolve layout"),
-			bind_group_layouts: &[&resolve_bgl, &empty_bgl, &gather_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&resolve_bgl), Some(&empty_bgl), Some(&gather_bgl)],
+			immediate_size: 0,
 		});
 		let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("gi resolve"),
@@ -992,7 +992,7 @@ impl GiDraw {
 				compilation_options: Default::default(),
 				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
 			}),
-			multiview: None,
+			multiview_mask: None,
 			cache: None,
 		});
 		// The resolve's spatial half. It reads only what the two lighting
@@ -1046,8 +1046,8 @@ impl GiDraw {
 		});
 		let atrous_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi atrous layout"),
-			bind_group_layouts: &[&atrous_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&atrous_bgl)],
+			immediate_size: 0,
 		});
 		let atrous_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("gi atrous"),
@@ -1070,7 +1070,7 @@ impl GiDraw {
 				compilation_options: Default::default(),
 				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
 			}),
-			multiview: None,
+			multiview_mask: None,
 			cache: None,
 		});
 		// The scene pass's group 2: both resolve outputs, textureLoad'd
@@ -1265,6 +1265,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: timer.and_then(|t| t.writes(query)),
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.atrous_pipeline);
 		pass.set_bind_group(0, bind, &[]);
@@ -1379,6 +1380,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: timer.and_then(|t| t.writes(Q_GI_TRACE)),
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.resolve_pipeline);
 		pass.set_bind_group(0, bind, &[]);
@@ -1916,6 +1918,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: None,
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.debug_pipeline);
 		// The front atlas is the one the flip just published.

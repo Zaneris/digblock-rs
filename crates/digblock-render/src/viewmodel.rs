@@ -17,6 +17,7 @@
 //! into a wall while still occluding itself correctly — a staircase in
 //! hand is not convex, and back-face culling alone would not sort it.
 
+use glam::camera::rh::proj::directx::perspective;
 use glam::{Mat4, Vec3};
 
 use digblock_platform::Gpu;
@@ -354,7 +355,7 @@ pub fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 	let half_h = (FOV_Y_DEG.to_radians() / 2.0).tan() * DIST;
 	let half_w = half_h * aspect.max(0.01);
 	let rest = Vec3::new(REST_X_FRAC * half_w, REST_Y_FRAC * half_h, -DIST);
-	let proj = Mat4::perspective_rh(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
+	let proj = perspective(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
 	// Right to left: centre the twelfths on the origin, shrink to
 	// SIZE, turn to the resting orientation, apply this frame's flick,
 	// then park it in the corner.
@@ -531,8 +532,8 @@ impl ViewmodelDraw {
 		// it for their held cubes.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("viewmodel"),
-			bind_group_layouts: &[&bgl, materials_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl), Some(materials_bgl)],
+			immediate_size: 0,
 		});
 		let pipeline = crate::pipeline_builder::build(
 			device,

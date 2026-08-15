@@ -1,5 +1,42 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-15 — wgpu 26 → 30 is pixel-clean, and `--offscreen` is how it was measured
+
+Four majors of wgpu at once (optional vertex slots and bind-group layouts, `multiview_mask`, `Option` depth fields,
+`MipmapFilterMode`, a `CurrentSurfaceTexture` enum in place of a `Result`, `Queue::present`), plus glam 0.30 → 0.33
+moving the projection onto `camera::rh::proj::directx`. Mechanical, but it touched every pipeline in the engine, so the
+question was whether the picture moved.
+
+Debug build, M2 Max, `--seed 1234 --tod 40 --exit --fixed-dt 0.016 --size 960x540`, diffed as raw RGBA bytes. Every row
+is paired with a CONTROL — the same binary run twice — because this engine does not reproduce itself exactly and a
+cross-version number means nothing without knowing its own floor.
+
+**The settle length is the measurement.** A still of an accumulating renderer is only as comparable as its history is
+converged, and `--frames N` is what buys that:
+
+|             | control: same binary ×2         | wgpu 26 swapchain vs wgpu 30 `--offscreen` |
+| ----------- | ------------------------------- | ------------------------------------------ |
+| 60 frames   | —                               | 14.61% of bytes, max 165, mean 0.25        |
+| 400 frames  | 0.26%, max 2, mean 0.0027       | 2.03%, max 3, mean 0.0203                  |
+| 1200 frames | 0.26%, max 1, mean 0.0026       | —                                          |
+| 2500 frames | **0.049%, max 1, mean 0.00049** | **0.059%, max 1, mean 0.00059**            |
+
+**Converged, the two builds are the same picture.** At 2500 frames the cross-version diff is the control's own number —
+0.059% against 0.049%, max 1 LSB either way. Four majors of wgpu and three of glam moved nothing.
+
+Read the short runs as a warning, not a result. At 60 frames the A/B looked alarming and was measuring the spawn settle
+(physics ticks ride the wall clock, so two builds of different speed arrive at `--frames N` in different world states —
+this is the trap `--fixed-dt` exists for and does not fully close). At 400 it looked like a real ULP residual and
+invited a plausible story about glam's `perspective` swapping a divide for a reciprocal multiply; another 2000 frames of
+accumulation dissolved it. **Nothing was chased, because the number that would have justified chasing never survived a
+longer settle.**
+
+The A/B needed `--offscreen` to exist at all. wgpu 30's Metal backend refuses to hand a texture to an occluded window,
+and both runs were taken with the screen locked; through the swapchain the wgpu-30 arm produced zero frames in 20
+minutes at 97% CPU (which is also how the `SurfaceOccluded` → `IdleThenRetry` backoff got found). Frame times are NOT
+comparable across that pair — no present wait off the swapchain — so nothing here supersedes a baseline; this entry is
+about pixels only.
+
 ## 2026-08-14 — web chunk workers: the first scripted web bench
 
 The first `?bench` numbers ever taken in a browser. Chrome/WebGPU, M2 Max, 120 Hz,

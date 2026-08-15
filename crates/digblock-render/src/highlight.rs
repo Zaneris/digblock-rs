@@ -101,8 +101,8 @@ impl HighlightDraw {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("highlight"),
-			bind_group_layouts: &[water_frame_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(water_frame_bgl)],
+			immediate_size: 0,
 		});
 		// Translucent decal: depth compare Always (occlusion is manual,
 		// against the solid depth copy — see the module doc), never write.

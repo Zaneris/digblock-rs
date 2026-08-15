@@ -1,6 +1,11 @@
 //! Debug fly camera (M4–M7). Replaced as the view source by the Player in
 //! M8; kept behind a toggle afterwards.
 
+// glam names the [0, 1] clip-depth convention after DirectX, and its own
+// docs name WebGPU alongside it — that range is what this backend wants.
+// `rh` is the −z-forward view space every shader here is written against.
+use glam::camera::rh::proj::directx::perspective;
+use glam::camera::rh::view::look_to_mat4;
 use glam::{Mat4, Vec3};
 
 pub struct FlyCamera {
@@ -41,11 +46,11 @@ impl FlyCamera {
 	/// [`Self::view_proj`] for the viewmodel, which is authored in view
 	/// space and needs the world's light direction brought into it.
 	pub fn view(&self) -> Mat4 {
-		Mat4::look_to_rh(self.pos, self.dir(), Vec3::Y)
+		look_to_mat4(self.pos, self.dir(), Vec3::Y)
 	}
 
 	pub fn view_proj(&self, aspect: f32) -> Mat4 {
-		let proj = Mat4::perspective_rh(self.fov_y_deg.to_radians(), aspect, self.near, self.far);
+		let proj = perspective(self.fov_y_deg.to_radians(), aspect, self.near, self.far);
 		proj * self.view()
 	}
 }

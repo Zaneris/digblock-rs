@@ -121,7 +121,11 @@ impl GpuTimer {
 				self.armed = false; // still mapping — skip timing this frame
 				return;
 			}
-			let data = slot.read.slice(..).get_mapped_range();
+			let data = slot
+				.read
+				.slice(..)
+				.get_mapped_range()
+				.expect("the readback reported ready");
 			let ticks: &[u64] = bytemuck::cast_slice(&data);
 			let pass = |i: usize| -> f32 {
 				let (b, e) = (ticks[i], ticks[i + 1]);

@@ -38,9 +38,15 @@ digblock-net-native = { path = "crates/digblock-net-native" }
 digblock-net-web = { path = "crates/digblock-net-web" }
 digblock-persist = { path = "crates/digblock-persist" }
 
-wgpu = "26"
+wgpu = "30"
+# The shader-validation test's front end, and a workspace pin rather than
+# a crate-local one because it has to track wgpu's OWN naga generation.
+# An older naga accepts WGSL the runtime then rejects — which is the
+# single failure that test exists to catch, so a skew here silently turns
+# the gate off.
+naga = { version = "30", features = ["wgsl-in"] }
 winit = "0.30"
-glam = "0.30"
+glam = "0.33"
 crossbeam-channel = "0.5"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -50,7 +56,7 @@ rustc-hash = "2"
 # is what keeps fontdue no_std. Never enable `parallel` — it pulls rayon
 # and breaks the wasm build.
 fontdue = "0.9"
-rand = "0.9"
+rand = "0.10"
 # std::time::Instant re-export on native, performance.now() on wasm32 —
 # the workspace-wide Instant so every crate stays wasm-clean.
 web-time = "1"
@@ -62,7 +68,7 @@ console_error_panic_hook = "0.1"
 console_log = "1"
 log = "0.4"
 env_logger = "0.11"
-pollster = "0.4"
+pollster = "1"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1.1", features = ["use-std"] }
 tokio = { version = "1", default-features = false }
@@ -72,8 +78,8 @@ ureq = { version = "3", features = ["json"] }
 serde_json = "1"
 # Desktop-only audio output (apps/desktop is the sole consumer — the
 # engine talks to an injected AudioSink and never sees rodio).
-rodio = { version = "0.21", default-features = false, features = ["playback", "vorbis"] }
-sha2 = "0.10"
+rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis"] }
+sha2 = "0.11"
 dirs = "6"
 
 [profile.release]

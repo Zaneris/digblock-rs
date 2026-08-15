@@ -132,8 +132,8 @@ impl RemotePlayersDraw {
 		// switching between them leaves every bound group valid.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("players"),
-			bind_group_layouts: &[frame_bgl, materials_bgl, gi_gather_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(frame_bgl), Some(materials_bgl), Some(gi_gather_bgl)],
+			immediate_size: 0,
 		});
 		// Opaque scene geometry: writes depth, occluded by terrain.
 		let pipeline = crate::pipeline_builder::build(

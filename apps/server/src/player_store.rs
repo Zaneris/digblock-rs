@@ -901,6 +901,21 @@ mod tests {
 		assert_ne!(h, hash_identity(&[8; 16]));
 	}
 
+	/// The stored key is the FILE FORMAT: every record in `inventories.bin`
+	/// is filed under it, so a hash that moves orphans every player's items
+	/// silently — the store still loads, it just never finds anybody. The
+	/// test above only proves the hash agrees with itself inside one build,
+	/// which a swapped digest crate would satisfy while renaming every key.
+	/// Truncated SHA-256 of the secret, against an external vector.
+	#[test]
+	fn identity_hash_is_a_pinned_wire_format() {
+		let want = [
+			0xd7, 0x61, 0xd4, 0x06, 0xaf, 0x2a, 0x4a, 0x5a, 0x15, 0xf6, 0x7c, 0x92, 0x43, 0x78,
+			0xed, 0x88,
+		];
+		assert_eq!(hash_identity(&[7; 16]), want);
+	}
+
 	/// An existing v2 file (inventory + layout, no position) keeps every
 	/// player's items and arrangement and simply reports no stored
 	/// position — those players resume at spawn once, then store one.

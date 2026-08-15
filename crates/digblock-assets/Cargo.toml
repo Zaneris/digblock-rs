@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 
 [dev-dependencies]
-naga = { version = "26", features = ["wgsl-in"] }
+naga.workspace = true
 
 [lints]
 workspace = true

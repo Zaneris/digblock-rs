@@ -33,6 +33,10 @@ fn main() {
 
 	// Deterministic-capture flags:
 	//   --screenshot out.png [--exit] [--frames N]
+	//   --offscreen (draw off the swapchain — the flag that lets a capture
+	//            run with the screen locked or the window covered; not
+	//            implied by --screenshot, since it also drops the present
+	//            wait a frame-time run measures)
 	//   --seed <f64 bits or decimal> --metrics-csv out.csv
 	//   --yaw <deg> --pitch <deg> (initial camera view; yaw 90 faces +x,
 	//            the sun azimuth plane)
@@ -177,6 +181,15 @@ fn main() {
 				options.window_size = Some((parse(w), parse(h)));
 			}
 			"--no-vsync" => options.no_vsync = true,
+			// Render into a texture of our own and never touch the
+			// swapchain. What makes an unattended capture independent of
+			// the desktop: a covered or screensaver'd window is handed no
+			// surface texture on macOS, so a windowed run stops producing
+			// frames the moment the screen locks. Never implied by
+			// --screenshot — dropping the swapchain drops the present
+			// wait with it, and BENCH.md's baselines were taken through
+			// the surface.
+			"--offscreen" => options.offscreen = true,
 			// Pin the window to one monitor (index into winit's
 			// enumeration). Frame-time captures are not comparable across
 			// screens — backing scale sets the physical framebuffer and a

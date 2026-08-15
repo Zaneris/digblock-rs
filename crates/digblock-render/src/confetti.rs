@@ -77,8 +77,8 @@ impl Confetti {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("confetti"),
-			bind_group_layouts: &[frame_bgl, &cam_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(frame_bgl), Some(&cam_bgl)],
+			immediate_size: 0,
 		});
 		// Depth: occluded by terrain, never occludes anything itself —
 		// flakes are alpha-blended and drawn after the opaque world.

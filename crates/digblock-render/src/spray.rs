@@ -69,8 +69,8 @@ impl Spray {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("spray"),
-			bind_group_layouts: &[frame_bgl, &cam_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(frame_bgl), Some(&cam_bgl)],
+			immediate_size: 0,
 		});
 		// No geometry buffer: one instance-stepped attribute (impact
 		// center + spare w); vertex_index does the rest. Depth: occluded

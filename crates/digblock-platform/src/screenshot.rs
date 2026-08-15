@@ -50,9 +50,13 @@ pub fn capture(gpu: &Gpu, texture: &wgpu::Texture, format: wgpu::TextureFormat, 
 
 	let slice = buffer.slice(..);
 	slice.map_async(wgpu::MapMode::Read, |r| r.expect("map screenshot buffer"));
-	let _ = gpu.device.poll(wgpu::PollType::Wait);
+	// Unbounded on purpose: the wait's only job is to make the copy
+	// observable, and the map below panics anyway if it hasn't landed. A
+	// timeout here would only turn a wedged GPU into a confusing panic
+	// instead of a stall you can read off the stack.
+	let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
 
-	let data = slice.get_mapped_range();
+	let data = slice.get_mapped_range().expect("map screenshot buffer");
 	let mut pixels = Vec::with_capacity((width * height * 4) as usize);
 	let bgra = matches!(
 		format,
