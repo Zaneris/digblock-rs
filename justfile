@@ -3,7 +3,16 @@
 run *ARGS:
 	cargo run -p digblock-desktop -- {{ARGS}}
 
-# Deterministic perf run (release build — dev numbers aren't representative).
+# LEAVE THE WINDOW VISIBLE. macOS hands no surface texture to a window
+# nobody can see, so a run whose screen locks — or that goes behind a
+# full-screen window — stops producing frames and never reaches its frame
+# count. It idles instead of failing, so a stalled bench looks like a slow
+# one; `caffeinate -d just bench` if you mean to walk away. That is a
+# swapchain property, and the reason `--offscreen` exists for captures — a
+# bench cannot take that way out, because off the swapchain there is no
+# present wait left to measure.
+#
+# Deterministic perf run (release build — dev numbers aren't representative). Needs a visible window.
 bench *ARGS:
 	cargo run --release -p digblock-desktop -- --bench {{ARGS}}
 
