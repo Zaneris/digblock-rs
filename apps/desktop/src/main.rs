@@ -384,6 +384,11 @@ fn main() {
 	// Deterministic capture paths (bench, screenshot, drill) get no menu,
 	// no audio, and no master traffic — hermetic and bit-identical.
 	let interactive = !config.bench && options.screenshot.is_none() && !options.auto_drill;
+	// The engine needs the same answer: it decides from this whether to
+	// listen to input at all, and whether the shell may take the mouse
+	// pointer. Both used to key on `bench` alone, so a `--screenshot`
+	// run locked the operator's cursor and swallowed their keystrokes.
+	config.interactive = interactive;
 
 	// Saved settings apply to interactive runs only (captures must not be
 	// perturbed by user preferences), then explicit CLI flags win.

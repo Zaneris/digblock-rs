@@ -143,6 +143,26 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
+	/// Is a PERSON at this keyboard? False for every capture path —
+	/// bench, `--screenshot`, `--drill` — and it governs two things that
+	/// have to move together: whether [`Engine::input`] listens at all,
+	/// and whether the shell is allowed to take the mouse pointer.
+	///
+	/// The pointer half is the one that bit. A capture sets `menu:
+	/// false`, so no UI surface is open, so `wants_cursor_grab` answered
+	/// true on the first frame and the desktop shell locked the cursor
+	/// and hid it — for the whole run, on a window the operator never
+	/// asked to play. Every keystroke they made meanwhile went into the
+	/// world: a stray `E` opened the inventory into the shot, a stray
+	/// mouse move spun the camera off the pose. `bench` alone did not
+	/// cover it, because `--screenshot`/`--frames`/`--exit` runs are
+	/// captures that never set it — which is exactly the class of run a
+	/// person sits and watches.
+	///
+	/// The launcher already computes this predicate to decide the menu,
+	/// audio, the master URL and whether saved settings load; this field
+	/// is that same answer reaching the engine, not a second opinion.
+	pub interactive: bool,
 	/// Capture harness: run the bench flight for this many frames, then
 	/// FREEZE the camera there. Every capture in this engine is a still,
 	/// which is exactly the case where a temporal artifact has already
@@ -367,6 +387,11 @@ impl EngineConfig {
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
+			// Launchers narrow this; the DEFAULT has to be the safe one.
+			// A capture that forgets to set it merely accepts input it
+			// will not get; an interactive run that forgets is a game
+			// that ignores its player.
+			interactive: true,
 			fly: None,
 			warp: false,
 			walk: false,
@@ -423,6 +448,11 @@ impl EngineConfig {
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
 			bench: false,
+			// Launchers narrow this; the DEFAULT has to be the safe one.
+			// A capture that forgets to set it merely accepts input it
+			// will not get; an interactive run that forgets is a game
+			// that ignores its player.
+			interactive: true,
 			fly: None,
 			warp: false,
 			walk: false,
@@ -4840,8 +4870,15 @@ impl Game for Engine {
 	}
 
 	fn input(&mut self, event: InputEvent) {
-		// Benchmark runs must be input-independent to stay comparable.
-		if self.config.bench {
+		// A capture hears nothing. Benchmarks must be input-independent
+		// to stay comparable, and every other capture path wants it for a
+		// plainer reason: the operator is sitting at the machine that
+		// opened the window, and a keystroke meant for their editor must
+		// not open the inventory into the frame. `InputEvent` is only
+		// ever user input — resize, scale-factor and lifecycle arrive
+		// through their own `Game` methods — so dropping all of it here
+		// costs a capture nothing it needs.
+		if !self.config.interactive {
 			return;
 		}
 		// UI surfaces speak pointer. While any is open, the PRIMARY touch
@@ -5989,15 +6026,22 @@ impl Game for Engine {
 		self.metrics.frame(std::mem::take(&mut self.pending));
 	}
 
+	/// A capture never takes the pointer. Without the first clause a
+	/// capture answered YES on frame one — it opens with no menu, so no
+	/// UI surface is open, so the desktop shell locked the cursor and
+	/// hid it for the length of the run. The operator lost their mouse
+	/// to a window they never meant to play, and everything they typed
+	/// in the meantime landed in the world.
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open()
+		self.config.interactive
+			&& !self.menu.is_open()
 			&& !self.inv_screen.is_open()
 			&& !self.alch_screen.is_open()
 			&& !self.char_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
-		self.chat.is_open()
+		self.config.interactive && self.chat.is_open()
 	}
 
 	fn on_exit(&mut self) {
@@ -7152,6 +7196,88 @@ mod dig_decay_tests {
 		release(&mut engine, DIG_DECAY_TICKS);
 		assert!(engine.dig.is_none(), "a spent hold is dropped");
 		assert_eq!(web(&engine), None, "and the block outlines unbroken");
+	}
+
+	/// A capture ignores the keyboard AND leaves the mouse alone.
+	///
+	/// Both halves, because the second is the one that hurt: a capture
+	/// opens with no menu, so `wants_cursor_grab` used to answer true on
+	/// frame one and the desktop shell locked and hid the operator's
+	/// cursor for the whole run — on a window nobody asked to play. The
+	/// keystrokes they made in the meantime went into the world, and a
+	/// stray `I` opened the inventory into the shot.
+	///
+	/// `bench` alone did not cover it. `--screenshot`/`--frames`/`--exit`
+	/// runs are captures that never set `bench`, and those are precisely
+	/// the runs somebody sits and watches, so the flag this asserts on is
+	/// the launcher's own `interactive` predicate.
+	#[test]
+	fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
+		use digblock_platform::{InputEvent, Key};
+
+		let fresh = |interactive: bool| {
+			let mut config = EngineConfig::desktop();
+			config.interactive = interactive;
+			config.workers = 0;
+			config.seed = Some(3.0);
+			Engine::new(config)
+		};
+		let any_screen_open = |e: &Engine| {
+			e.menu.is_open()
+				|| e.inv_screen.is_open()
+				|| e.alch_screen.is_open()
+				|| e.char_screen.is_open()
+		};
+		// One key per engine. Pressing all four in sequence cancels
+		// itself — `I` opens the inventory, which then swallows `K` and
+		// `C` as drag input and closes on `Escape` — so a combined
+		// sweep would end with nothing open and "a capture opened
+		// nothing" would pass for entirely the wrong reason.
+		let opens = |interactive: bool, key: Key| {
+			let mut e = fresh(interactive);
+			e.input(InputEvent::Key { key, pressed: true });
+			e.input(InputEvent::Key {
+				key,
+				pressed: false,
+			});
+			any_screen_open(&e)
+		};
+		// `look_accum`, not the camera: a mouse delta is banked here and
+		// spent by `update`, so reading the camera straight after
+		// `input` would answer "unmoved" on an interactive run too.
+		let turns = |interactive: bool| {
+			let mut e = fresh(interactive);
+			e.input(InputEvent::MouseDelta {
+				dx: 240.0,
+				dy: 90.0,
+			});
+			e.look_accum != (0.0, 0.0)
+		};
+
+		// The three that were genuinely reachable. `Escape` is asserted
+		// on the capture side too, but it is NOT a control: `Menu::open`
+		// checks `enabled`, which a capture never sets, so Escape was
+		// already inert there and a control on it would fail for a
+		// reason that has nothing to do with this flag.
+		const SCREEN_KEYS: [Key; 3] = [Key::I, Key::K, Key::C];
+
+		// A capture is deaf and never asks for the pointer.
+		assert!(
+			!fresh(false).wants_cursor_grab(),
+			"a capture must never take the operator's cursor"
+		);
+		for key in SCREEN_KEYS.into_iter().chain([Key::Escape]) {
+			assert!(!opens(false, key), "a capture opened a screen on {key:?}");
+		}
+		assert!(!turns(false), "a capture banked a mouse delta to turn with");
+
+		// The controls: every one of those events DOES land on a real
+		// session, or the assertions above prove nothing at all.
+		assert!(fresh(true).wants_cursor_grab(), "a session grabs to play");
+		for key in SCREEN_KEYS {
+			assert!(opens(true, key), "{key:?} does not open anything anyway");
+		}
+		assert!(turns(true), "MouseDelta does not turn the camera anyway");
 	}
 
 	/// Half a second off the button costs half a BAR, not half of what
