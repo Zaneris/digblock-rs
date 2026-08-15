@@ -723,7 +723,7 @@ fn drive_edits(
 	// dig: it takes the OTHER tolerance site and is refused before any
 	// timed-dig gate, so probing cannot pollute the dig-shortfall counter
 	// with completions the client never intended to earn.
-	if step % PROBE_STRIDE == 0 {
+	if step.is_multiple_of(PROBE_STRIDE) {
 		if let Some((cell, aim)) = pick_target(eye, heading, sim) {
 			d.seq += 1;
 			client.send_edit(

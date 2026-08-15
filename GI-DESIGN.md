@@ -47,7 +47,8 @@ Named here because this document previously described several of these as done:
   flat while `out` grew. Any ratio quoted from those runs is measuring throttling as much as cost. M5's cadence cut
   moved frame time clearly, and it applies to both platforms equally, so whatever the gap is, it narrowed. Whoever picks
   it up: re-measure with the Chrome window genuinely focused for the whole run, and note that capping the half-res
-  target is not a one-line change — chunk.wgsl's bilateral upsample hard-codes the ratio (`base = (vec2i(i.pos.xy) - 1)
+  target is not a one-line change — chunk.wgsl's bilateral upsample hard-codes the ratio
+  (`base = (vec2i(i.pos.xy) - 1)
   / 2`), so the real gi/full ratio has to be plumbed in first.
 - **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame. That copy was M5a's headline
   target and it was measured out: it costs a sliver of the frame far too small to justify anything. Pricing it by ADDING
@@ -71,17 +72,16 @@ Named here because this document previously described several of these as done:
   QUADRUPLED window texture — **+75 MiB** (note `gpu_buffer_bytes` in the metrics counts mesh buffers only and does not
   see it) — and an initial fill slower in the same proportion, since the upload loop is byte-budgeted per frame.
   Declined on that trade, and those two figures are the trade. The earlier "doubling helps a lot and costs no frame
-  time" note was **retracted**. That build
-  could not have been measuring new data: `engine.rs` clamps the upload window to `draw_dist` independently of texture
-  size, so the outer half of the texture was never written, and wgpu zero-initializes it — which `gi_cell` reads as air,
-  the same answer the narrow window gave by breaking at its bound. Confirmed directly: with the debug view's
-  `cam.w`-scaled depth cue neutralized so a diff means geometry alone, `DIG_GI=window` at the shipped side vs a doubled
-  one differs by a literal handful of pixels in a multi-megapixel frame. The apparent win was several `side`-derived
-  bounds moving at once against unchanged data, and most of it was `gather_max`. Whoever revisits this: the honest fix
-  is not a bigger box. The window's Y extent is the full world height and most of it is empty air, so bounding Y is
-  where the memory actually is; and the far field plausibly needs only coarse occupancy — a small fraction of a
-  full-identity window's bytes even at the doubled side — rather than full material identity, since the gather ray only
-  reaches `GI_GATHER_T`.
+  time" note was **retracted**. That build could not have been measuring new data: `engine.rs` clamps the upload window
+  to `draw_dist` independently of texture size, so the outer half of the texture was never written, and wgpu
+  zero-initializes it — which `gi_cell` reads as air, the same answer the narrow window gave by breaking at its bound.
+  Confirmed directly: with the debug view's `cam.w`-scaled depth cue neutralized so a diff means geometry alone,
+  `DIG_GI=window` at the shipped side vs a doubled one differs by a literal handful of pixels in a multi-megapixel
+  frame. The apparent win was several `side`-derived bounds moving at once against unchanged data, and most of it was
+  `gather_max`. Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the full world
+  height and most of it is empty air, so bounding Y is where the memory actually is; and the far field plausibly needs
+  only coarse occupancy — a small fraction of a full-identity window's bytes even at the doubled side — rather than full
+  material identity, since the gather ray only reaches `GI_GATHER_T`.
 - **No probe classification**, and **the axis fold is still lopsided** (`update_probes` barriers the workgroup and then
   leaves one thread per ambient-cube axis alive, each running a serial RAYS-iteration reduction while the rest idle).
   Both were M5b items and both were measured out, because M5a removed their justification: after the cadence cut the
@@ -109,9 +109,9 @@ Named here because this document previously described several of these as done:
   further unsolved pieces sit behind that one: eviction as the window slides, sun-motion invalidation, and shading faces
   the camera has never seen. What made this a QUALITY question rather than a bug fix is that R9 already closed the
   defect that motivated it — walk residual 0.922 → 0.578, flyover 2.84 → 2.08, for 0.14 ms — using SVGF's spatial half
-  instead. Indirect should stay on the probes regardless — it is
-  smooth and does not smear — so the cache would only ever have carried sun visibility. Reopen only if "converged while
-  walking" becomes a requirement; denoised-while-walking is what exists today.
+  instead. Indirect should stay on the probes regardless — it is smooth and does not smear — so the cache would only
+  ever have carried sun visibility. Reopen only if "converged while walking" becomes a requirement;
+  denoised-while-walking is what exists today.
 
 ## Measuring motion
 
@@ -147,10 +147,11 @@ is not a bug. Read the two together, and crop before believing a global mean: R9
 flat foreground diluted it severalfold.
 
 **The first thing it caught: the accumulator froze.** The resolve blends with `alpha = 1/n` up to `N_MAX`, and the
-history was rgba16**float**, whose ulp near a stored value of 1.0 is far larger than one such update, so `hi + (indirect
-− hi)/N_MAX` rounded to ZERO unless the difference was already large. A wide band of the signal range never converged:
-each pixel froze at whatever partial value it held when the camera stopped, leaving a stale pattern locked to the path
-walked, permanently. That was "weirdness that moves with you".
+history was rgba16**float**, whose ulp near a stored value of 1.0 is far larger than one such update, so
+`hi + (indirect
+− hi)/N_MAX` rounded to ZERO unless the difference was already large. A wide band of the signal range
+never converged: each pixel froze at whatever partial value it held when the camera stopped, leaving a stale pattern
+locked to the path walked, permanently. That was "weirdness that moves with you".
 
 Measured before the fix: walked-vs-warped at the same pose stayed high after tens of seconds of stillness, against a
 floor several times lower with accumulation switched off entirely. Everything upstream was exonerated by measurement,
@@ -207,7 +208,8 @@ Three things were measured, in order:
   should have triggered it. Removed rather than tuned; a real neighbourhood clamp needs the current frame's neighbours,
   which a fragment pass has not got.
 - **The cap belongs on reprojection travel**, which is the honest statement of when reprojection is lossless. Two things
-  taken as settled here were not, and R13 below corrects both: travel is NOT zero at rest, and a smooth `N_MAX/(1 +
+  taken as settled here were not, and R13 below corrects both: travel is NOT zero at rest, and a smooth
+  `N_MAX/(1 +
   TRAVEL_K*travel)` is a per-frame RATE where the blur it bounds is not.
 
 None of that is affordable without a spatial filter, because a short history is a noisy one: `gi_atrous.wgsl` is SVGF's
@@ -252,7 +254,8 @@ frame (the far field's median on `--walk`). Snapped means bilinear degenerates t
 a standing camera is exact and keeps its full `N_MAX`; anything else falls to `N_MOVING`. There is no useful middle, and
 the smooth form's mistake was pretending there was: once the fetch is off-lattice the blur compounds at a rate the
 sub-texel PHASE sets rather than the speed, because a pixel creeping a hundredth of a texel a frame still sweeps the
-whole phase range across a history that long. `a_moving_pixel_always_gets_the_spatial_filter` pins `N_MOVING <
+whole phase range across a history that long. `a_moving_pixel_always_gets_the_spatial_filter` pins
+`N_MOVING <
 N_CONVERGED` so the relationship the whole trade rests on cannot lapse again.
 
 Measured against a common converged reference (`--warp 600 --frames 3000`), with the diff low-passed 8x8 first — a short
@@ -343,10 +346,11 @@ capture envs moved only in penumbra texture; the vault (sun-free) is byte-for-by
 
 **Measurement traps this round added to the list:** a seedless capture rolls a NEW WORLD (two "repeat" runs once
 compared two different planets); the walk pair needs `--tod` frozen or the 3000-frame reference sits under a different
-sun than the walked run and the diff measures the sky; `--frames` is the TOTAL frame the screenshot fires at (`--fly
-600` wants `--frames 601`, not 1); `--tod` is dev-profile-only; and consecutive `just bench` runs drift thermally by
-more than the effects under test — only interleaved brackets are comparable, and the flyover's consecutive-frame diff
-cannot see rotation-only artifacts because its translation term dominates.
+sun than the walked run and the diff measures the sky; `--frames` is the TOTAL frame the screenshot fires at
+(`--fly
+600` wants `--frames 601`, not 1); `--tod` is dev-profile-only; and consecutive `just bench` runs drift
+thermally by more than the effects under test — only interleaved brackets are comparable, and the flyover's
+consecutive-frame diff cannot see rotation-only artifacts because its translation term dominates.
 
 ### R15 — a reveal starts from the cache, not from noise
 
@@ -432,10 +436,11 @@ deliberately still treat partial cells as whole — the old conservative behavio
 
 One rule was earned by a broken capture rather than designed: **an emitting partial cell is a hit whole for the gather
 marches.** The first cut let gather rays sail through the torch's cell unless they clipped the thin post boxes, and the
-vault's pool collapsed — a huge old-vs-new diff — because `LIGHT_GAIN` is calibrated so the direct-hit term `alb × emit
-× LIGHT_GAIN` matches the NEE pool, and the voxel IS the emission model. With the rule, the vault's converged still is
-back at the repeat floor. Only the sun ray resolves an emitter's boxes: a torch must not cast a pillar shadow, but it
-must still glow.
+vault's pool collapsed — a huge old-vs-new diff — because `LIGHT_GAIN` is calibrated so the direct-hit term
+`alb × emit
+× LIGHT_GAIN` matches the NEE pool, and the voxel IS the emission model. With the rule, the vault's
+converged still is back at the repeat floor. Only the sun ray resolves an emitter's boxes: a torch must not cast a
+pillar shadow, but it must still glow.
 
 DIG_SHAPES photographs the payoff: the showcase's row of identical full dark squares resolves into a stepped stair
 profile, thin slab bands, and nothing at all under the open doors. Terrain captures move by noise only — worldgen places
@@ -594,14 +599,14 @@ source and measured on a pose that could not show what they moved:
 The attribution, at draw 32 / seed 42, submerged looking up at the surface — the "it's slow underwater too" case that
 killed every fragment-count hypothesis — ranked the terms unambiguously, every one of them far above the repeat floor:
 
-| stub | what it removes | rank |
-|---|---|---|
-| `wsun` | the per-fragment sun DDA | the largest single term, more than all the others together |
-| `wssr` | the screen-space reflection march | second, a substantial slice |
-| `wvert` | the per-vertex `gi_indirect` | third, smaller again |
-| `wripple` / `wrefract` / `spray` | ripples, refraction, spray | at the noise floor |
-| `wflat` | the whole water fragment shader | nearly all of water |
-| `nowater` | water entirely | the total, by definition |
+| stub                             | what it removes                   | rank                                                       |
+| -------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `wsun`                           | the per-fragment sun DDA          | the largest single term, more than all the others together |
+| `wssr`                           | the screen-space reflection march | second, a substantial slice                                |
+| `wvert`                          | the per-vertex `gi_indirect`      | third, smaller again                                       |
+| `wripple` / `wrefract` / `spray` | ripples, refraction, spray        | at the noise floor                                         |
+| `wflat`                          | the whole water fragment shader   | nearly all of water                                        |
+| `nowater`                        | water entirely                    | the total, by definition                                   |
 
 Water was very nearly half the frame, and the no-water frame ran at the rate the user reported seeing "at times" —
 reproduced.
@@ -703,17 +708,18 @@ gather, and paying for it would mean a per-cell lookup inside every march.
 ### R25 — water wrote itself over the backdrop it had already absorbed
 
 User report, with a screenshot: past some distance "the blocks under the water lose their blue colouring and look grey
-instead". Reproduced exactly from the debug panel's new `pos` line (`--seed 42 --pos 95.5 132.5 85.5 --yaw -313.7
+instead". Reproduced exactly from the debug panel's new `pos` line
+(`--seed 42 --pos 95.5 132.5 85.5 --yaw -313.7
 --pitch -17.7 --tod 25.7`), which is what that line is for.
 
 Four candidates went first, each killed by an A/B rather than by argument:
 
-| suspect | test | result |
-|---|---|---|
-| `thick` wrong at range | visualised it; CPU ray-march of the same pose | shader and march agree — **correct** |
-| SSR reflecting the seabed | `DIG_STUB=wssr` | negligible, no hue shift |
-| aerial haze | `AIR_VISIBILITY` raised to effectively infinite | barely moves submerged pixels, and r/b hardly at all |
-| Fresnel sky reflection | forced `mirror_w = 0` | band gets dimmer, **not bluer** |
+| suspect                   | test                                            | result                                               |
+| ------------------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `thick` wrong at range    | visualised it; CPU ray-march of the same pose   | shader and march agree — **correct**                 |
+| SSR reflecting the seabed | `DIG_STUB=wssr`                                 | negligible, no hue shift                             |
+| aerial haze               | `AIR_VISIBILITY` raised to effectively infinite | barely moves submerged pixels, and r/b hardly at all |
+| Fresnel sky reflection    | forced `mirror_w = 0`                           | band gets dimmer, **not bluer**                      |
 
 Then the decomposition. `backdrop_col` — the scene sample with the medium applied — has a red channel of **exactly
 zero** across the whole band, which is right: that many blocks of water at `WATER_SIGMA.r` extinguishes red completely.
@@ -800,21 +806,22 @@ open courtyard with the cluster well out from the camera and floor running past 
 geometry fixed. `DIG_TORCHES_FAR=<n>` parks emitters far BEHIND the camera, where they can only change the light list's
 LENGTH. `DIG_TORCHES_WALL` screens the cluster so emitters occlude each other.
 
-**The metric is a same-pose diff, and it is the reusable part.** `--walk` oscillates on a fixed period and `--fixed-dt
-1/60` makes that exactly 90 frames, so frames N and N+90 sit at the IDENTICAL camera pose after 90 frames of continuous
-motion: the diff holds no parallax at all, only the temporal noise of a moving accumulator. Frame N vs N+1 cannot
-separate the two — a 0-torch walk reads far higher there than here, so the consecutive-frame number is mostly parallax.
-Repeat runs diff at **zero**.
+**The metric is a same-pose diff, and it is the reusable part.** `--walk` oscillates on a fixed period and
+`--fixed-dt
+1/60` makes that exactly 90 frames, so frames N and N+90 sit at the IDENTICAL camera pose after 90 frames of
+continuous motion: the diff holds no parallax at all, only the temporal noise of a moving accumulator. Frame N vs N+1
+cannot separate the two — a 0-torch walk reads far higher there than here, so the consecutive-frame number is mostly
+parallax. Repeat runs diff at **zero**.
 
 **Attribution** (8 torches, night, walking, same pose; mean |Δ| and the far quarter of the frame), each build against
 the shipped one:
 
-| build | effect on flicker |
-|---|---|
-| `DIG_STUB=ginee` — no NEE, all 8 on the lottery | worse, in both mean and far band |
-| `DIG_STUB=gigather` — no per-pixel gather | far better |
-| `DIG_STUB=gigather,ginee` — probe cache alone | better still |
-| every emitter hit suppressed (one-line probe) | **the best of the set, and by far the flattest far band** |
+| build                                           | effect on flicker                                         |
+| ----------------------------------------------- | --------------------------------------------------------- |
+| `DIG_STUB=ginee` — no NEE, all 8 on the lottery | worse, in both mean and far band                          |
+| `DIG_STUB=gigather` — no per-pixel gather       | far better                                                |
+| `DIG_STUB=gigather,ginee` — probe cache alone   | better still                                              |
+| every emitter hit suppressed (one-line probe)   | **the best of the set, and by far the flattest far band** |
 
 The gather's emitter hit was the overwhelming majority of the flicker and nearly all of the far band, for a small share
 of the scene's light. And it tracked the emitters the argmax does NOT cover: flicker climbed monotonically over
@@ -1026,10 +1033,10 @@ while you hold a torch, other torches' shadows wash out rather than get noisy. U
 
 `DIG_VAULT_DARK` cannot measure this: it is a room with exactly one emitter, which is why it shipped unseen. The capture
 is `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_SCREEN=torch`, screened emitters plus a carried one, read against the same
-scene with a non-emitting item in hand — R27's 0.103 is what it has to be compared with, since this
-is the same estimator and the same fix (a temporal reservoir, M-clamped, reprojected through `prev_vp`). It is
-deliberately not built here either; what is new is only that the carried light makes R27's residual reachable in
-ordinary play rather than in a contrived screen.
+scene with a non-emitting item in hand — R27's 0.103 is what it has to be compared with, since this is the same
+estimator and the same fix (a temporal reservoir, M-clamped, reprojected through `prev_vp`). It is deliberately not
+built here either; what is new is only that the carried light makes R27's residual reachable in ordinary play rather
+than in a contrived screen.
 
 ## Goals
 
@@ -1117,11 +1124,13 @@ probes — 3 axis fetches each (n² ambient-cube weights) + a short DDA occlusio
 occlusion capped at a few coarse steps) then analytic; plus one sun-visibility DDA. Out: rgba16f (indirect rgb + view
 depth) and rgba8 (sun visibility + packed normal code).
 
-**Scene shading** — chunk.wgsl: the emissive bit's early return unchanged; else `tex * ao * (light_color * sunvis *
-lambert + indirect)` via a 4-tap depth/normal-aware bilateral upsample of the GI buffers. Water: manual probe gather at
-the surface world pos in fs (no new varyings) + its own capped sun DDA; underwater dimming is the sun ray accumulating
-transmittance through translucent voxels. Players: per-fragment gather + 1-tap sun occlusion. Viewmodel/spray: a
-1-invocation compute samples the field at the camera into a small buffer copied into their UBOs.
+**Scene shading** — chunk.wgsl: the emissive bit's early return unchanged; else
+`tex * ao * (light_color * sunvis *
+lambert + indirect)` via a 4-tap depth/normal-aware bilateral upsample of the GI
+buffers. Water: manual probe gather at the surface world pos in fs (no new varyings) + its own capped sun DDA;
+underwater dimming is the sun ray accumulating transmittance through translucent voxels. Players: per-fragment gather +
+1-tap sun occlusion. Viewmodel/spray: a 1-invocation compute samples the field at the camera into a small buffer copied
+into their UBOs.
 
 ## Budgets and cadence
 
@@ -1161,7 +1170,8 @@ sweep, iOS the coarsest resolve.
 ## Phases
 
 P0 compute infra + this doc + `rtgi` flag (gate: flag-off bench parity) · P1 voxel window
-+ LUT + light list (gate: `DIG_GI=window` debug raymarch capture) · P2 probe cascades + update/invalidate computes
+
+- LUT + light list (gate: `DIG_GI=window` debug raymarch capture) · P2 probe cascades + update/invalidate computes
   (gate: probe visualization capture) · P3 depth prepass + GI resolve + chunk.wgsl (gate: A/B captures; USER LOOK
   SIGN-OFF) · P4 water/players/ viewmodel/spray/underwater · P5 perf + metrics + bench + web verify · P6 remove the old
   system — DONE at M1 (shadow.rs, shadow.wgsl, core light.rs, mesher light plumbing, cascade VPs, the pinned tests that

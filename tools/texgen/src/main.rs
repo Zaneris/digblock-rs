@@ -145,7 +145,7 @@ fn bricks(base: &RgbImage, w: u32, h: u32, rng: &mut Rng) -> RgbImage {
 	let mut out = base.clone();
 	for (x, y, p) in out.enumerate_pixels_mut() {
 		let course = y / h;
-		let offset = if course % 2 == 0 { 0 } else { w / 2 };
+		let offset = if course.is_multiple_of(2) { 0 } else { w / 2 };
 		let bx = (x + offset) % w;
 		let by = y % h;
 		let n = rng.signed(5);

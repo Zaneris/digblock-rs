@@ -513,10 +513,10 @@ impl Sim {
 		self.process_edits();
 		self.step_fluid();
 		self.tick += 1;
-		if self.tick % SNAPSHOT_DIVISOR == 0 {
+		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();
 		}
-		if self.tick % TOD_SYNC_TICKS == 0 {
+		if self.tick.is_multiple_of(TOD_SYNC_TICKS) {
 			let msg = ServerMsg::TimeOfDay {
 				tod: self.current_tod(),
 			};
@@ -3170,10 +3170,8 @@ mod tests {
 		wait_live(&mut sim, 1);
 
 		// Walk well away from spawn.
-		let mut t = 100;
-		for _ in 0..240 {
+		for t in (100..).take(240) {
 			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
-			t += 1;
 		}
 		let away = sim.test_player(1).unwrap().pos;
 		assert!(away.distance(FLAT_SPAWN) > 5.0, "test needs to be away");

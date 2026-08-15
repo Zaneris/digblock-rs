@@ -65,10 +65,11 @@ quantities:
 - **Runnable commands and their arguments** — `just bot -- --bots 4`, `DIG_TORCHES=8 DIG_SCREEN=torch`, `--pitch -35`,
   `127.0.0.1`. A recipe stripped of its arguments stops being a recipe, and nothing in the code defines these; they are
   what you *type*, not a record of what something equals.
-- **A trailing annotation that decodes its own literal**, on the definition line: `const SUN_CONE_COS: f32 = 0.99996; //
-  cos(0.5°)`. This is not a second copy — it is the one site, made readable, and it moves with the value because it sits
-  on the same line. The rule forbids a value *restated somewhere else*, not a note explaining an opaque literal where it
-  is defined.
+- **A trailing annotation that decodes its own literal**, on the definition line:
+  `const SUN_CONE_COS: f32 = 0.99996; //
+  cos(0.5°)`. This is not a second copy — it is the one site, made readable,
+  and it moves with the value because it sits on the same line. The rule forbids a value *restated somewhere else*, not
+  a note explaining an opaque literal where it is defined.
 
 The test to apply: **would this number have to change if someone retuned a constant?** If yes, it is a copy and it comes
 out. If it would only change when you deliberately rewrite the sentence around it, it is a name or an input and it
@@ -130,9 +131,13 @@ Run a single test: `cargo test -p digblock-core --test worldgen` or `cargo test 
 intentionally disabled pre-deployment (`.github/workflows/ci.yml.disabled`); `just check` + `just check-ios` are the
 gate.
 
-Formatting uses hard tabs at the width `rustfmt.toml` sets. Markdown in this repo is **hard-wrapped**; keep new prose
-inside the same column budget the surrounding paragraphs use, so that editing a sentence touches one or two lines
-instead of reflowing a whole paragraph into the diff. Tables and fenced blocks are exempt.
+Formatting uses hard tabs at the width `rustfmt.toml` sets. Markdown is **hard-wrapped, by tool rather than by hand** —
+`just fmt-md` (dprint, `cargo install dprint --locked`) re-wraps every doc to the width `dprint.json` sets, and
+`just
+check-md` is the reporting half that `just check` runs. Wrapping is what keeps editing a sentence to a one-line
+diff instead of reflowing a paragraph; don't hand-wrap to a column budget you eyeball, and don't reflow a paragraph you
+didn't otherwise touch. The markdown plugin is **version-pinned** in `dprint.json` for the reason the Docker tags are:
+the plugin decides the wrapping, so one that drifts rewrites all twelve docs at once.
 
 Base images/toolchains in CI and Docker files are **suite-pinned on purpose** (builder and runtime must share a glibc;
 floating `1-slim` once broke a release). Bump the pins in `docker/Dockerfile*`, `.github/workflows/*`, and
@@ -146,16 +151,18 @@ names are mandatory (a length-bounded run of `a-z A-Z 0-9 - _`; canonical `valid
 `digblock-net/src/protocol.rs` owns both the bounds and the charset, mirrored as a regex backstop in the master's
 `/api/join` — which is why names stay ASCII-only). Chat: T/Enter to type; the server sanitizes to the Latin free-text
 alphabet (`is_text_char`/`text_charset`, printable ASCII plus Latin-1 and Latin Extended-A so European players can type
-their own words) and rate-limits (`CHAT_*`). Admin: `--admin-name`/`DIGBLOCK_ADMIN_NAME` grants chat commands (`/help
-/tp /goto /bring /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`) — bans by IP in `data/bans.json`,
-spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`, advertised to the client for
-Tab-autocomplete via `ServerMsg::AdminCommands`. `just play`/`just play-web` default the admin to name `admin`. Compass
-in `/tp`: east = sunrise = −x, north = −z.
+their own words) and rate-limits (`CHAT_*`). Admin: `--admin-name`/`DIGBLOCK_ADMIN_NAME` grants chat commands
+(`/help
+/tp /goto /bring /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`) — bans by IP in
+`data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`, advertised
+to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `just play`/`just play-web` default the admin to name
+`admin`. Compass in `/tp`: east = sunrise = −x, north = −z.
 
 Dev gotchas: use `127.0.0.1`, never `localhost` (macOS resolves it to `::1`; the server binds IPv4 only). The
 containerized master probes the host via `probeHost = host.docker.internal` — a LAN-IP hairpin breaks QUIC address
 validation under Docker's NAT, and production servers omit `probeHost`. If a client times out against the docker stack,
-read the server container's logs before blaming the network: a server dead at boot looks identical. Extra windows: `just
+read the server container's logs before blaming the network: a server dead at boot looks identical. Extra windows:
+`just
 run -- --master-url http://127.0.0.1:5200`, add `--join --name <name>` for scripted flows.
 
 ### Capture, bench & metrics flags
@@ -372,11 +379,12 @@ Invariants that bite if broken:
   pass of bandwidth — and cannot drift out of step with the accumulator.
 - **Sun thresholds are in RADIANCE** (`SUN_MIN_L`, weight × `light_color`), never a bare blend weight. There is no
   tonemap, so a weight that looks negligible against an HDR sky is a large error in the light it admits.
-- **Twilight strength (`light_dir.w`) multiplies the LIGHT, never the shadow.** `mix(vec3f(1.0), visibility,
-  light_dir.w)` is the shadow-map-era form; against a traced visibility it returns 1.0 as strength falls, lighting every
-  caster-facing surface at twilight through walls.
+- **Twilight strength (`light_dir.w`) multiplies the LIGHT, never the shadow.**
+  `mix(vec3f(1.0), visibility,
+  light_dir.w)` is the shadow-map-era form; against a traced visibility it returns 1.0 as
+  strength falls, lighting every caster-facing surface at twilight through walls.
 - **Water writes OPAQUE** (R25). The fragment samples `scene_tex` and runs the whole transport across `thick`, so `back
-  + surf` already IS the backdrop — alpha-blending it over the same backdrop re-adds an unabsorbed copy. Alpha is the
+  - surf` already IS the backdrop — alpha-blending it over the same backdrop re-adds an unabsorbed copy. Alpha is the
     falling-sheet streak gate alone (it rides the streak signal and nothing else, sitting at exactly 1.0 on every still
     surface).
 - **`gi_dda.wgsl` is the one DDA** and is dependency-free so the compute kernels can share it. It owns the two-level
@@ -508,9 +516,10 @@ toggle.
 **The two resolution knobs** (`settings.rs`, `renderer::RenderScale`): the world renders into `scene_view`/`post_view`
 at `surface × render_scale` and ONE upscale pass takes it to the surface, after which the overlay draws at native — so
 UI, text, name tags and the crosshair are never resampled. (Name tags project `view_proj → NDC × size`; the `size` fed
-to the overlay must stay the SURFACE size, which is the one way this silently regresses.) GI runs at `render_size /
-gi_scale_div`, an INTEGER divisor (`--gi-scale`, presented as "Ultra/High/Medium/Low"); the ratio rides `frame.misc.w`.
-GI scale is a fraction of the RENDER size, not the surface.
+to the overlay must stay the SURFACE size, which is the one way this silently regresses.) GI runs at
+`render_size /
+gi_scale_div`, an INTEGER divisor (`--gi-scale`, presented as "Ultra/High/Medium/Low"); the ratio rides
+`frame.misc.w`. GI scale is a fraction of the RENDER size, not the surface.
 
 Which knob to spend is **measured, not intuited** (BENCH.md 2026-08-12): a notch of render scale and a notch of lighting
 detail buy comparable frame time, but the GI notch costs far less picture, because the à-trous filter and the upsample
@@ -583,9 +592,10 @@ tracks (`/api/music`) and both fillers fetch at runtime. Mute: `--mute` / `?mute
 
 ## Browser client
 
-Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`). Query params mirror desktop flags: `?seed= ?tod= ?draw= ?ssr=0
-?overlay ?name= ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop quality; `?master=` defaults
-to the production master, explicitly empty disables multiplayer + music.
+Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`). Query params mirror desktop flags:
+`?seed= ?tod= ?draw= ?ssr=0
+?overlay ?name= ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop
+quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music.
 
 **Chunk jobs run in Web Workers** (`apps/web-worker` + `apps/web/src/jobs.rs`), a small default that drops to none on a
 low-core device; `?workers=N` overrides. Workers can't share linear memory, so jobs cross as bytes —
@@ -719,10 +729,11 @@ broken once: it **stands apart** — `hud::bar_slot_rect` adds `TOOL_SPLIT` befo
 folds into the row's **centring**, never into its spacing, so the lattice keeps one cell and one gap throughout and
 simply sits half a split further left. Centring it has to know about the split even though spacing must not: `row_grid`
 centred the bare lattice for a while and the tool slot, drawn just past its right edge, hung off the window at any size
-below a threshold — with the one test that measured the DRAWN last slot rewritten, in the same change, into `left - left
-== 0`; the exchange is a **handover**, not a cut — `hotbar::ToolSwap` shrinks the outgoing tool away and grows the
-incoming one in through the shared `ui::handover` curve the transmute tiles use, and everything else about the swap (the
-rail's membership) happens at the invisible midpoint; and every path that names a tool draws it through
+below a threshold — with the one test that measured the DRAWN last slot rewritten, in the same change, into
+`left - left
+== 0`; the exchange is a **handover**, not a cut — `hotbar::ToolSwap` shrinks the outgoing tool away and
+grows the incoming one in through the shared `ui::handover` curve the transmute tiles use, and everything else about the
+swap (the rail's membership) happens at the invisible midpoint; and every path that names a tool draws it through
 `hud::tool_icon`, **`item_icon` included is not enough** — `HotbarItem::WaterTool` names the SLOT, so the viewmodel has
 to ask which tool is in it or the whole roster is held as a bucket. The snapshot wire is the same trap and needed no new
 encoding: `Client::held_wire` sends the active tool's own block id (sentinels reserved for the bucket's two charges,
@@ -899,9 +910,10 @@ Three rules bite if broken:
   the ore rather than the cell's Rubble, pays both skills (`skills::ore_field_xp`), and shows no crack.
 
 The GI window's class byte is the capacity to watch: `gi::SHAPE_CLASS_BASE` splits the byte between full-cube ids and
-shaped covers, a shaped MATERIAL costs a dozen-odd covers, and the pin reports the remaining headroom. `DIG_ORE=<tier
-1..=4>` hollows a chamber around the nearest deposit of a tier and grants its level — the carve must not touch the vein,
-or the anti-dupe deletes what is being photographed.
+shaped covers, a shaped MATERIAL costs a dozen-odd covers, and the pin reports the remaining headroom.
+`DIG_ORE=<tier
+1..=4>` hollows a chamber around the nearest deposit of a tier and grants its level — the carve must not
+touch the vein, or the anti-dupe deletes what is being photographed.
 
 ### Tools & the Resonant Pick (core/pick.rs)
 
@@ -994,7 +1006,8 @@ all four corners at once, which without the pin loses the block's top face and s
 
 Suspend/resume and device-loss are standing regression targets for a future Android port. `Renderer::new` is a pure
 constructor so device-loss recovery is "build a new one and re-upload meshes" (`Game::rebuild_gpu_resources`).
-`Game::on_suspend` must be cheap and synchronous — the process may be killed with no further callbacks. Test via `just
+`Game::on_suspend` must be cheap and synchronous — the process may be killed with no further callbacks. Test via
+`just
 run --drill` or F9/F10 at runtime; F8 screenshots.
 
 ## iOS notes

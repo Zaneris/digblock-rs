@@ -1,7 +1,7 @@
 # Movement / positioning audit — 2026-08-06
 
-> **Status: F1, F2, F3 implemented** (see *Implementation* at the end).
-> F4 and F6 are documented-only by design; F5 is not done.
+> **Status: F1, F2, F3 implemented** (see *Implementation* at the end). F4 and F6 are documented-only by design; F5 is
+> not done.
 
 Follow-up to `PERF-AUDIT.md`. Question asked: is the client/server positioning enforcement causing the walking stutter,
 and if so is the adoption envelope too tight or is the correction smoothing too abrupt?
@@ -20,7 +20,8 @@ identical conditions. That contrast is the whole finding in one line.
 `scratchpad/netsim` is a closed-loop harness:
 
 - Client half: the **real** `digblock_net::predict::Predictor` plus a transcription of engine.rs's per-frame block
-  (`tick_accum` accumulator, `reconcile`, `send_inputs` stride, `correction_offset` decay, `camera.pos = player.pos +
+  (`tick_accum` accumulator, `reconcile`, `send_inputs` stride, `correction_offset` decay,
+  `camera.pos = player.pos +
   correction_offset`).
 - Server half: a **verbatim copy** of `apps/server/src/sim/movement.rs` `step_client` + the `step_physics` drain policy,
   against the real `Player::tick` and the real `overlaps_solid`.
@@ -38,15 +39,15 @@ more than 25%.
 
 ### The network adds essentially nothing
 
-| scenario | speedCV | min | max | bad% | replay/s | meanCorr | srvGap |
-|---|---|---|---|---|---|---|---|
-| offline, perfect 60 Hz pacing | 0.000 | 1.00 | 1.00 | 0.0% | – | – | – |
-| offline, ±3 ms pacing jitter | 0.305 | 0.00 | 1.95 | 36.2% | – | – | – |
-| online localhost, perfect pacing | 0.000 | 1.00 | 1.00 | 0.0% | 0.0 | – | 0.133 |
-| online localhost, ±3 ms pacing jitter | 0.305 | 0.00 | 1.90 | 37.3% | 0.0 | – | 0.141 |
-| online 30 ms RTT, ±3 ms pacing jitter | 0.305 | 0.00 | 1.90 | 37.3% | 0.0 | – | 0.211 |
-| online 80 ms RTT ±10 ms net jitter | 0.306 | 0.00 | 1.91 | 36.2% | 0.4 | 0.066 | 0.330 |
-| online 80 ms RTT, 2% loss | 0.331 | 0.00 | 1.96 | 37.9% | 0.6 | 0.070 | 0.330 |
+| scenario                              | speedCV | min  | max  | bad%  | replay/s | meanCorr | srvGap |
+| ------------------------------------- | ------- | ---- | ---- | ----- | -------- | -------- | ------ |
+| offline, perfect 60 Hz pacing         | 0.000   | 1.00 | 1.00 | 0.0%  | –        | –        | –      |
+| offline, ±3 ms pacing jitter          | 0.305   | 0.00 | 1.95 | 36.2% | –        | –        | –      |
+| online localhost, perfect pacing      | 0.000   | 1.00 | 1.00 | 0.0%  | 0.0      | –        | 0.133  |
+| online localhost, ±3 ms pacing jitter | 0.305   | 0.00 | 1.90 | 37.3% | 0.0      | –        | 0.141  |
+| online 30 ms RTT, ±3 ms pacing jitter | 0.305   | 0.00 | 1.90 | 37.3% | 0.0      | –        | 0.211  |
+| online 80 ms RTT ±10 ms net jitter    | 0.306   | 0.00 | 1.91 | 36.2% | 0.4      | 0.066    | 0.330  |
+| online 80 ms RTT, 2% loss             | 0.331   | 0.00 | 1.96 | 37.9% | 0.6      | 0.070    | 0.330  |
 
 Holding frame pacing constant, going from offline to 80 ms RTT with 2% packet loss moves speedCV from 0.305 to 0.331.
 Going from perfect pacing to ±3 ms pacing jitter — *with the network unchanged* — moves it from 0.000 to 0.305. The
@@ -56,11 +57,11 @@ pacing term is ~40x the network term.
 
 ### It gets worse as the display rate diverges from 60 Hz
 
-| scenario | speedCV | min | bad% |
-|---|---|---|---|
-| 144 Hz display, ±0.5 ms jitter | 1.124 | 0.00 | **100.0%** |
-| 60 Hz display, ±3 ms jitter | 0.305 | 0.00 | 36.2% |
-| 30 Hz display, ±4 ms jitter | 0.185 | 0.51 | 16.1% |
+| scenario                       | speedCV | min  | bad%       |
+| ------------------------------ | ------- | ---- | ---------- |
+| 144 Hz display, ±0.5 ms jitter | 1.124   | 0.00 | **100.0%** |
+| 60 Hz display, ±3 ms jitter    | 0.305   | 0.00 | 36.2%      |
+| 30 Hz display, ±4 ms jitter    | 0.185   | 0.51 | 16.1%      |
 
 At 144 Hz every frame is wrong, because 60 Hz of sim spread over 144 Hz of display is a 0,1,0,1,1,0,… pattern — over
 half the frames draw the player in exactly the same place as the previous one. This is the mechanism behind "it feels
@@ -72,25 +73,25 @@ Same mechanism, different incidence. Multiplayer frames do strictly more work (s
 application, remote sampling, name tags), so they pace worse — and the un-interpolated camera converts pacing jitter
 one-for-one into position jitter:
 
-| scenario | speedCV | bad% |
-|---|---|---|
-| LOCAL: ±1.5 ms pacing, no hitches | 0.266 | **10.7%** |
-| MULTI: ±4 ms pacing, 4% hitches, 40 ms RTT | 0.331 | **44.0%** |
-| MULTI + render interpolation | 0.000 | 0.0% |
+| scenario                                   | speedCV | bad%      |
+| ------------------------------------------ | ------- | --------- |
+| LOCAL: ±1.5 ms pacing, no hitches          | 0.266   | **10.7%** |
+| MULTI: ±4 ms pacing, 4% hitches, 40 ms RTT | 0.331   | **44.0%** |
+| MULTI + render interpolation               | 0.000   | 0.0%      |
 
 4x the bad frames, with the netcode contributing ~0.02 of the 0.065 speedCV difference. The stutter is *correlated* with
 multiplayer and *caused* by frame pacing.
 
 ### Both original hypotheses tested and rejected
 
-| fix applied to the worst realistic case (80 ms RTT, jittery) | speedCV | bad% |
-|---|---|---|
-| as shipped | 0.310 | 34.7% |
-| looser correction smoothing (tau 0.2 → 0.35 s) | 0.310 | 34.4% |
-| **render interpolation** | **0.024** | **0.0%** |
-| both | 0.019 | 0.0% |
-| 144 Hz + render interpolation | 0.000 | 0.0% |
-| 30 Hz web frame + render interpolation | 0.015 | 0.0% |
+| fix applied to the worst realistic case (80 ms RTT, jittery) | speedCV   | bad%     |
+| ------------------------------------------------------------ | --------- | -------- |
+| as shipped                                                   | 0.310     | 34.7%    |
+| looser correction smoothing (tau 0.2 → 0.35 s)               | 0.310     | 34.4%    |
+| **render interpolation**                                     | **0.024** | **0.0%** |
+| both                                                         | 0.019     | 0.0%     |
+| 144 Hz + render interpolation                                | 0.000     | 0.0%     |
+| 30 Hz web frame + render interpolation                       | 0.015     | 0.0%     |
 
 "Not enough fudge factor" — the envelope already has 2x headroom; replays fire 0–0.8 times per second during a steady
 walk and the mean correction is 0.066 blocks, one tick of walking. Raising `POS_TOLERANCE` would buy nothing and cost
@@ -104,24 +105,25 @@ of relaxing it: **zero**.
 
 Driving the real `RemotePlayers` with 20 Hz snapshots:
 
-| scenario | speedCV | min | bad% | lag (blocks) |
-|---|---|---|---|---|
-| 30 ms RTT, no jitter | 0.000 | 1.00 | 0.0% | 0.400 |
-| 30 ms RTT, ±3 ms net jitter | 0.001 | 1.00 | 0.0% | 0.374 |
-| 80 ms RTT, ±10 ms net jitter | 0.003 | 1.00 | 0.0% | 0.452 |
-| 80 ms RTT, ±10 ms jitter, 2% loss | 0.004 | 1.00 | 0.0% | 0.450 |
-| 30 ms RTT, client clock 0.1% fast | 0.001 | 1.00 | 0.0% | 0.260 |
-| 30 ms RTT, client clock **0.5% fast** | 0.055 | **0.19** | 1.0% | **−0.217** |
+| scenario                              | speedCV | min      | bad% | lag (blocks) |
+| ------------------------------------- | ------- | -------- | ---- | ------------ |
+| 30 ms RTT, no jitter                  | 0.000   | 1.00     | 0.0% | 0.400        |
+| 30 ms RTT, ±3 ms net jitter           | 0.001   | 1.00     | 0.0% | 0.374        |
+| 80 ms RTT, ±10 ms net jitter          | 0.003   | 1.00     | 0.0% | 0.452        |
+| 80 ms RTT, ±10 ms jitter, 2% loss     | 0.004   | 1.00     | 0.0% | 0.450        |
+| 30 ms RTT, client clock 0.1% fast     | 0.001   | 1.00     | 0.0% | 0.260        |
+| 30 ms RTT, client clock **0.5% fast** | 0.055   | **0.19** | 1.0% | **−0.217**   |
 
 0.003 vs 0.310 for the local camera under the same network. The `INTERP_DELAY_TICKS` buffer plus the lerp in
 `sample_ring` absorbs everything the network does. This is the proof that interpolation is the missing piece, not a
 tuning problem.
 
-The one weakness is at the bottom: `est_server_tick` is a **ratchet** (`max(integrated wall clock, newest snapshot
-tick)`) with no downward correction, so a client clock running fast drifts the sample target past the newest snapshot
-into extrapolation, where the `EXTRAP_CAP_TICKS` hold produces frozen frames (min ratio 0.19) and the drawn remote ends
-up *ahead* of truth (lag −0.217). 0.1% skew is fine; 0.5% is not. Not today's stutter, but it is a latent one-way
-failure.
+The one weakness is at the bottom: `est_server_tick` is a **ratchet**
+(`max(integrated wall clock, newest snapshot
+tick)`) with no downward correction, so a client clock running fast drifts
+the sample target past the newest snapshot into extrapolation, where the `EXTRAP_CAP_TICKS` hold produces frozen frames
+(min ratio 0.19) and the drawn remote ends up *ahead* of truth (lag −0.217). 0.1% skew is fine; 0.5% is not. Not today's
+stutter, but it is a latent one-way failure.
 
 ## Findings
 
@@ -143,7 +145,8 @@ Costs and constraints:
   under-performs.)
 - `camera.pos` is *also* the raycast origin for dig/place (`update_target`, `apply_place`) and the argument to
   `placement_blocked`. Gameplay should keep using the true `player.pos`; only the view matrix should use the
-  interpolated one. Sharing it would put a ≤0.067-block wobble into targeting — harmless against `EDIT_POS_TOLERANCE =
+  interpolated one. Sharing it would put a ≤0.067-block wobble into targeting — harmless against
+  `EDIT_POS_TOLERANCE =
   1.5`, but there is no reason to introduce it.
 
 ### F2 — `placement_blocked` / raycasts run from the offset camera
@@ -161,10 +164,10 @@ dependency on edits and gets stuck behind them.
 
 Measured cliff:
 
-| ack stall | speedCV | replay/s | maxCorr | srvGap |
-|---|---|---|---|---|
-| 200 ms (fluid burst) | 0.305 | 0.0 | – | 0.211 |
-| 2.5 s (join sync) | 0.319 | **18.3** | **1.60** | **1.458** |
+| ack stall            | speedCV | replay/s | maxCorr  | srvGap    |
+| -------------------- | ------- | -------- | -------- | --------- |
+| 200 ms (fluid burst) | 0.305   | 0.0      | –        | 0.211     |
+| 2.5 s (join sync)    | 0.319   | **18.3** | **1.60** | **1.458** |
 
 A 200 ms stall is completely absorbed — the frozen-claim design in `predict.rs` means a late ack still matches what we
 sent, so it costs nothing. That is a genuinely good property.
@@ -179,12 +182,13 @@ cliff entirely.
 
 ### F4 — Unloaded feet column freezes the input stream
 
-`engine.rs:2786-2790`. When the column under the player has not generated, the engine zeroes `tick_accum` and the `_ if
-!column_loaded` arm matches before the net arm, so `send_inputs()` is skipped too. The server then underruns and coasts
-on `last_intent` — it keeps walking while the client is frozen. Self-healing via adoption (measured srvGap actually
-*drops* to 0.177), so this is not a correction source, but it is a hard visual freeze and it is much more likely on web,
-where chunk jobs run inline on the main thread. Worth a note in whatever fixes F1: interpolation will not hide a frame
-where the sim genuinely did not run.
+`engine.rs:2786-2790`. When the column under the player has not generated, the engine zeroes `tick_accum` and the
+`_ if
+!column_loaded` arm matches before the net arm, so `send_inputs()` is skipped too. The server then underruns and
+coasts on `last_intent` — it keeps walking while the client is frozen. Self-healing via adoption (measured srvGap
+actually *drops* to 0.177), so this is not a correction source, but it is a hard visual freeze and it is much more
+likely on web, where chunk jobs run inline on the main thread. Worth a note in whatever fixes F1: interpolation will not
+hide a frame where the sim genuinely did not run.
 
 ### F5 — `est_server_tick` is a one-way ratchet
 
@@ -275,7 +279,8 @@ runs the safe direction.
 
 ### Verification
 
-`just check` (fmt, clippy `-D warnings`, `cargo test --workspace` including the Docker-backed server e2e suite), `just
+`just check` (fmt, clippy `-D warnings`, `cargo test --workspace` including the Docker-backed server e2e suite),
+`just
 check-web`, and `just check-ios` all pass. A 240-frame screenshot run confirms the render path is unchanged.
 
 What is *not* verified here: how it feels. The harness and the unit tests both measure a model of the frame loop, not

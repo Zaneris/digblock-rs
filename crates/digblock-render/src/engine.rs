@@ -628,7 +628,7 @@ const NET_EDIT_MAX: usize = 256;
 // — otherwise the first deadline read lands past the floor and the floor
 // is not the floor.
 const _: () = assert!(NET_EDIT_MIN > 0 && NET_EDIT_MIN <= NET_EDIT_MAX);
-const _: () = assert!(NET_EDIT_MIN % NET_EDIT_CHECK == 0);
+const _: () = assert!(NET_EDIT_MIN.is_multiple_of(NET_EDIT_CHECK));
 
 /// Messages the feed keeps. Also the scrollback: entries are no longer
 /// dropped when they expire, so this is how far back the chat box can
@@ -3059,7 +3059,7 @@ impl Engine {
 				// The floor lands before the clock is ever read, so a
 				// frame that is already long still makes progress.
 				if edits_applied >= NET_EDIT_MIN
-					&& edits_applied % NET_EDIT_CHECK == 0
+					&& edits_applied.is_multiple_of(NET_EDIT_CHECK)
 					&& ms_since(t_edits) >= edit_deadline
 				{
 					break;
@@ -3946,7 +3946,7 @@ impl Engine {
 			d.ticks += 1;
 			// Pitch ramp on a subdivision of the tick: the loop climbs
 			// toward completion.
-			let pitch = (d.ticks % 6 == 0 && d.required > 0)
+			let pitch = (d.ticks.is_multiple_of(6) && d.required > 0)
 				.then(|| 1.0 + 0.5 * d.ticks as f32 / d.required as f32);
 			(d.ticks >= d.required, pitch)
 		};
@@ -5221,12 +5221,10 @@ impl Game for Engine {
 				}
 				// Chat is multiplayer-only — there is no one to hear a
 				// single-player message.
-				Key::T | Key::Enter => {
-					if pressed && self.net.is_some() {
-						self.keys = HeldKeys::default();
-						self.dig_held = false;
-						self.chat.open();
-					}
+				Key::T | Key::Enter if pressed && self.net.is_some() => {
+					self.keys = HeldKeys::default();
+					self.dig_held = false;
+					self.chat.open();
 				}
 				_ => {}
 			},
@@ -5925,8 +5923,11 @@ impl Game for Engine {
 			None
 		};
 		let menu_view = self.menu.is_open().then(|| {
-			self.menu
-				.view(size, self.ui_scale, (self.time_secs * 2.0) as u32 % 2 == 0)
+			self.menu.view(
+				size,
+				self.ui_scale,
+				((self.time_secs * 2.0) as u32).is_multiple_of(2),
+			)
 		});
 		// HUD state gates with the crosshair: hidden under the menu and in
 		// bench captures' default state comparability is preserved (bench
@@ -6045,8 +6046,10 @@ impl Game for Engine {
 				target: highlight_target,
 				viewmodel,
 				ui: &self.ui_dl,
-				chat: (in_game && self.chat.is_open())
-					.then(|| self.chat.view((self.time_secs * 2.0) as u32 % 2 == 0)),
+				chat: (in_game && self.chat.is_open()).then(|| {
+					self.chat
+						.view(((self.time_secs * 2.0) as u32).is_multiple_of(2))
+				}),
 				nametags: &self.nametag_scratch[..self.nametag_count],
 			};
 			let stats = r.render(gpu, target, &scene);

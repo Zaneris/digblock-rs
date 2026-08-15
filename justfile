@@ -254,8 +254,22 @@ check-web:
 	cargo clippy -p digblock-web -p digblock-web-worker -p digblock-render \
 		-p digblock-platform --target wasm32-unknown-unknown -- -D warnings
 
+# The `cargo fmt` of the prose side: re-wrap every Markdown file to the
+# width `dprint.json` sets, so editing a sentence touches a line instead of
+# reflowing a whole paragraph into the diff. Needs `cargo install dprint
+# --locked`. The markdown PLUGIN is version-pinned in dprint.json for the
+# reason the Docker tags are pinned — the plugin decides the wrapping, and
+# one that drifts rewrites every doc at once into an unreviewable diff.
+fmt-md:
+	dprint fmt
+
+# The check half, for the gate. Reports, never writes.
+check-md:
+	dprint check
+
 check:
 	cargo fmt --all --check
+	just check-md
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
 

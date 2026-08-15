@@ -277,7 +277,7 @@ impl Sim {
 				);
 				let d2 = dx * dx + dz * dz;
 				let near = d2 <= (PLAYER_NEAR_COLS as i64).pow(2);
-				if !near && (snap_index + p.id as u32) % FAR_PLAYER_STRIDE != 0 {
+				if !near && !(snap_index + p.id as u32).is_multiple_of(FAR_PLAYER_STRIDE) {
 					continue;
 				}
 				nearby.push((d2, i));
@@ -829,10 +829,8 @@ mod tests {
 		// B walks away far beyond A's draw distance plus slack.
 		// Server-authoritative movement: forward inputs, never-adopted
 		// claims, so the sim's own physics carries B.
-		let mut t = 100;
-		for _ in 0..1500 {
+		for t in (100..).take(1500) {
 			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 2)]);
-			t += 1;
 		}
 		a.drain();
 		a.snaps.clear();

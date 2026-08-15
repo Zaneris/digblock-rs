@@ -705,10 +705,10 @@ impl Menu {
 			}
 			// World names never leave this machine, so they get the full
 			// text alphabet; same untypeable-invalid-chars property, own cap.
-			Some(Screen::CreateWorld { name, .. }) => {
-				if name.chars().count() < WORLD_NAME_MAX && is_text_char(ch) {
-					name.push(ch);
-				}
+			Some(Screen::CreateWorld { name, .. })
+				if name.chars().count() < WORLD_NAME_MAX && is_text_char(ch) =>
+			{
+				name.push(ch);
 			}
 			_ => {}
 		}

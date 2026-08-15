@@ -8,18 +8,18 @@ required (given anyway).
 Source: https://kenney.nl/assets/impact-sounds (kenney_impact-sounds.zip, License.txt in the pack states Creative
 Commons Zero).
 
-| file | built from |
-|---|---|
-| `dig_stone.ogg` | `impactMining_000..003` — four hits padded to 0.22 s slots, concatenated into a ~0.9 s rhythmic loop |
-| `dig_earth.ogg` | `impactSoft_heavy_000..003`, same construction |
-| `dig_wood.ogg` | `impactWood_medium_000..003`, same construction |
-| `break_stone.ogg` | `impactMining_004` |
-| `break_earth.ogg` | `impactSoft_heavy_004` |
-| `break_wood.ogg` | `impactWood_heavy_004` |
-| `place.ogg` | `impactSoft_medium_000` |
-| `step_stone.ogg` | `footstep_concrete_000` |
-| `step_earth.ogg` | `footstep_grass_000` |
-| `step_wood.ogg` | `footstep_wood_000` |
+| file              | built from                                                                                           |
+| ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `dig_stone.ogg`   | `impactMining_000..003` — four hits padded to 0.22 s slots, concatenated into a ~0.9 s rhythmic loop |
+| `dig_earth.ogg`   | `impactSoft_heavy_000..003`, same construction                                                       |
+| `dig_wood.ogg`    | `impactWood_medium_000..003`, same construction                                                      |
+| `break_stone.ogg` | `impactMining_004`                                                                                   |
+| `break_earth.ogg` | `impactSoft_heavy_004`                                                                               |
+| `break_wood.ogg`  | `impactWood_heavy_004`                                                                               |
+| `place.ogg`       | `impactSoft_medium_000`                                                                              |
+| `step_stone.ogg`  | `footstep_concrete_000`                                                                              |
+| `step_earth.ogg`  | `footstep_grass_000`                                                                                 |
+| `step_wood.ogg`   | `footstep_wood_000`                                                                                  |
 
 ## Synthesized (CC0 by construction)
 

@@ -180,12 +180,12 @@ Two things worth remembering:
 
 Measured against reconstructed v13 shapes, a realistic walking crowd (4 blocks/s, ordinary held ids):
 
-| players | v13 snapshot | v14 snapshot | | @20 Hz downstream |
-|---|---|---|---|---|
-| 2 | reference | ↓ smaller | improved | ↓ |
-| 8 | reference | ↓↓ smaller | improved | ↓↓ |
-| 16 | reference | ↓↓ smaller | improved | ↓↓ |
-| 24 | reference | ↓↓ smaller | improved | ↓↓ |
+| players | v13 snapshot | v14 snapshot |          | @20 Hz downstream |
+| ------- | ------------ | ------------ | -------- | ----------------- |
+| 2       | reference    | ↓ smaller    | improved | ↓                 |
+| 8       | reference    | ↓↓ smaller   | improved | ↓↓                |
+| 16      | reference    | ↓↓ smaller   | improved | ↓↓                |
+| 24      | reference    | ↓↓ smaller   | improved | ↓↓                |
 
 v14 is substantially smaller at every crowd size, per snapshot and per second alike, and the saving grows with the crowd
 — these are encoder-deterministic sizes, not sampled timings, so there is no noise floor to clear.

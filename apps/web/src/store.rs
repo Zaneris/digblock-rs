@@ -336,7 +336,7 @@ impl WorldStore for LocalStorageWorldStore {
 				}
 			})
 			.collect();
-		out.sort_by(|a, b| b.last_played_ms.cmp(&a.last_played_ms));
+		out.sort_by_key(|w| std::cmp::Reverse(w.last_played_ms));
 		out
 	}
 

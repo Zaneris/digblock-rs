@@ -308,8 +308,7 @@ mod tests {
 		// server ticks stay 1:1.
 		let mut local = Player::new(sim.spawn_anchor);
 		let mut history = Vec::new(); // local post-state per input tick
-		let mut t = 100;
-		for _ in 0..60 {
+		for t in (100..).take(60) {
 			let intent = PlayerIntent {
 				move_axis: glam::Vec2::new(0.0, 1.0),
 				jump: false,
@@ -318,7 +317,6 @@ mod tests {
 			let claim = local.state();
 			history.push(claim.pos);
 			sim.tick_once(vec![batch(vec![input(t, true, claim)], 1)]);
-			t += 1;
 		}
 
 		let server = sim.test_player(1).unwrap();
@@ -338,15 +336,13 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let before = sim.test_player(1).unwrap();
 
-		let mut t = 100;
-		for _ in 0..30 {
+		for t in (100..).take(30) {
 			// Claim teleports sideways, well outside POS_TOLERANCE.
 			let claim = PlayerState {
 				pos: before.pos + Vec3::new(3.0, 0.0, 0.0),
 				vel: Vec3::ZERO,
 			};
 			sim.tick_once(vec![batch(vec![input(t, false, claim)], 1)]);
-			t += 1;
 		}
 		let server = sim.test_player(1).unwrap();
 		assert!(
@@ -365,14 +361,12 @@ mod tests {
 
 		// Each claim steps further along: near the *previous claim* but
 		// far beyond MAX_SPEED * TICK per tick.
-		let mut t = 100;
-		for i in 1..=30 {
+		for (t, i) in (100..).zip(1..=30) {
 			let claim = PlayerState {
 				pos: start.pos + Vec3::new(2.0 * i as f32, 0.0, 0.0),
 				vel: Vec3::ZERO,
 			};
 			sim.tick_once(vec![batch(vec![input(t, false, claim)], 1)]);
-			t += 1;
 		}
 		let server = sim.test_player(1).unwrap();
 		assert!(
@@ -398,10 +392,8 @@ mod tests {
 			pos: start.pos - Vec3::new(0.0, 0.2, 0.0),
 			vel: Vec3::ZERO,
 		};
-		let mut t = 100;
-		for _ in 0..10 {
+		for t in (100..).take(10) {
 			sim.tick_once(vec![batch(vec![input(t, false, claim)], 1)]);
-			t += 1;
 		}
 		let server = sim.test_player(1).unwrap();
 		assert!(
@@ -933,10 +925,8 @@ mod tests {
 		// Somewhere the flat source has not been asked for yet.
 		let far = Vec3::new(6000.5, 129.5, 6000.5);
 		sim.test_teleport(1, far);
-		let mut t = 200u32;
-		for _ in 0..60 {
+		for t in (200u32..).take(60) {
 			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
-			t += 1;
 		}
 
 		let s = sim.input_stats(1);

@@ -8,10 +8,10 @@ Both are shipped as **static, subset** TTFs. Upstream ships variable fonts; `fon
 variable file would silently render its default master while carrying every other master's outlines. We pin the instance
 explicitly and then subset — see the commands below.
 
-| file | face | upstream | version |
-|---|---|---|---|
-| `ui.ttf` | Inter Regular | [google/fonts `ofl/inter`](https://github.com/google/fonts/tree/main/ofl/inter) @ `2d85e20` | 4.001 (`git-66647c0bb`) |
-| `mono.ttf` | JetBrains Mono Regular | [google/fonts `ofl/jetbrainsmono`](https://github.com/google/fonts/tree/main/ofl/jetbrainsmono) @ `2d85e20` | 2.211 |
+| file       | face                   | upstream                                                                                                    | version                 |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `ui.ttf`   | Inter Regular          | [google/fonts `ofl/inter`](https://github.com/google/fonts/tree/main/ofl/inter) @ `2d85e20`                 | 4.001 (`git-66647c0bb`) |
+| `mono.ttf` | JetBrains Mono Regular | [google/fonts `ofl/jetbrainsmono`](https://github.com/google/fonts/tree/main/ofl/jetbrainsmono) @ `2d85e20` | 2.211                   |
 
 `ui.ttf` draws all player-facing text. `mono.ttf` draws only the debug overlay and the spike log, which align columns
 with printf padding and therefore need a fixed advance.

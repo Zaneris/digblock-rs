@@ -17,13 +17,14 @@ just ios-sim              # simulator build+run   (requires full Xcode)
 just ios-device           # device build          (requires full Xcode)
 ```
 
-Deterministic-capture / metrics flags: `--seed <f64>` `--tod <deg>` (freezes the sun) `--screenshot out.png` `--frames
-N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass ms, pipeline job timings — one row per logging interval)
-`--overlay` (start with the debug overlay visible) `--bench` (scripted camera flight, inputs disabled, a fixed frame
-count, CSV to bench.csv, one-line summary on exit — incl. world fill time and over-budget frame-pacing counts at both
-refresh budgets; vsync-paced so it looks as played — add `--no-vsync` for uncapped raw-cost percentiles) `--no-vsync`
-(uncapped present) `--workers N` `--draw-dist N` (workload knobs) `--mobile` (the iOS config). Env: `DIG_SPIKELOG=1`
-logs a per-phase breakdown of every frame over the frame budget.
+Deterministic-capture / metrics flags: `--seed <f64>` `--tod <deg>` (freezes the sun) `--screenshot out.png`
+`--frames
+N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass ms, pipeline job timings — one row per logging
+interval) `--overlay` (start with the debug overlay visible) `--bench` (scripted camera flight, inputs disabled, a fixed
+frame count, CSV to bench.csv, one-line summary on exit — incl. world fill time and over-budget frame-pacing counts at
+both refresh budgets; vsync-paced so it looks as played — add `--no-vsync` for uncapped raw-cost percentiles)
+`--no-vsync` (uncapped present) `--workers N` `--draw-dist N` (workload knobs) `--mobile` (the iOS config). Env:
+`DIG_SPIKELOG=1` logs a per-phase breakdown of every frame over the frame budget.
 
 Controls: **WASD/arrows** move · mouse look (click to capture cursor) · **Space** jump · **F** toggle walk/fly · **`**
 (backquote) debug overlay · **Esc** release cursor / quit. Touch (iOS): left half = anchored joystick, right half = drag

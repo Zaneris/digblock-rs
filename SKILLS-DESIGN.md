@@ -17,9 +17,9 @@ three timbers, furniture, dressed stone, glass, metal, crystal, the two lamps, t
   every form you have already learned. Several thresholds moved and §4.3 is stale where it disagrees: the plain cubes of
   Wood, Dirt and Sand came *down* to the BLOCKS shape, and the Stone slab and stairs went *up* to Stone's own material
   level.
-- **§5.3's depth bands OVERLAP.** Exclusive bands would leave a Mining-10 player at y = 20 finding nothing at all —
-  past the shallowest tier's floor, and nowhere near the level the next tier reveals at; every tier stays available all
-  the way down and the deep ones are simply rarer.
+- **§5.3's depth bands OVERLAP.** Exclusive bands would leave a Mining-10 player at y = 20 finding nothing at all — past
+  the shallowest tier's floor, and nowhere near the level the next tier reveals at; every tier stays available all the
+  way down and the deep ones are simply rarer.
 - **Ore ids are not the ones §5.3 reserved** — the lumber set took those. Ids come from the append-only `blocks!` table
   and nowhere else.
 - **The reveal stamps block IDS into the mesh input**, not texture layers — the mesher, the emissive bit and
@@ -123,13 +123,13 @@ harmlessly.
 
 Five, replacing the two `Material` sub-material families outright:
 
-| essence | flavor | primary sources |
-|---|---|---|
-| **Earth** | mineral bulk | stone, sandstone, gravel, sand, dirt |
-| **Flora** | living matter | wood, grass tops, leaves |
-| **Aqua** | water | bucket charge, snow, mud traces |
-| **Metal** | refined ore | the four ore blocks (bench-processed) |
-| **Aether** | the rare one | Aetherock, high-level bonus lines only — **cannot be transmuted into, ever** |
+| essence    | flavor        | primary sources                                                              |
+| ---------- | ------------- | ---------------------------------------------------------------------------- |
+| **Earth**  | mineral bulk  | stone, sandstone, gravel, sand, dirt                                         |
+| **Flora**  | living matter | wood, grass tops, leaves                                                     |
+| **Aqua**   | water         | bucket charge, snow, mud traces                                              |
+| **Metal**  | refined ore   | the four ore blocks (bench-processed)                                        |
+| **Aether** | the rare one  | Aetherock, high-level bonus lines only — **cannot be transmuted into, ever** |
 
 Denominated in the existing sub-block base (`SUBS_PER_BLOCK` sub-units to a block, each of `SUB_UNIT_VOLUME` — both
 unchanged).
@@ -141,30 +141,30 @@ deliberately **short of a whole block's worth of sub-units** — the shortfall i
 what makes extract→craft→extract a sink at every level (see §4.2). Within one essence the ordering is the obvious one:
 clean rock pays the most, mined rubble a little less, and the loose materials less again.
 
-| block | yields | notes |
-|---|---|---|
-| Stone | Earth | the pure baseline, a whole block's worth — craft-only in practice (§7.1); closes the recycle loop |
-| **Rubble** | Earth | what mined rock actually is (§7.1); the mass Earth feedstock, just under clean Stone |
-| Sandstone | Earth | craft-only in practice — mined sandstone is Rubble too |
-| **Glass** | Earth | crafted blocks extract back at a loss, like everything |
-| Gravel | Earth | |
-| Sand | Earth | |
-| Dirt | Earth + a little Flora | |
-| Grass | Earth + Flora | the canonical split: mostly Earth, a Flora minority |
-| DryGrass | Earth + Flora | drier, so less Flora than Grass |
-| Mud | Earth + Flora + Aqua | |
-| Wood | Flora | the Flora baseline, a whole block's worth |
-| Leaves / PineLeaves | a token Flora | foliage is water and structure; the essence is in the trunk (cut from its first draft — against a near-instant dig it paid Flora as fast as grass) |
-| Snow | Aqua | cold biomes' economic identity |
-| Water (bucket charge) | Aqua | unlocked with the Aqua economy (§4.3); consumes the charge |
-| WoodStairs | Flora | shaped items extract at volume — |
-| StoneStairs | Earth | crafting is no longer one-way |
-| WoodDoor | Flora | |
-| WoodSlab / StoneSlab | (their material's essence) | in their family |
-| Emberore | Metal | the tiers rise steeply — |
-| Duskstone | Metal | each ore is worth |
-| Glowvein | Metal | markedly more than the one above it |
-| Aetherock | Metal + Aether | the only base Aether source |
+| block                 | yields                     | notes                                                                                                                                              |
+| --------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stone                 | Earth                      | the pure baseline, a whole block's worth — craft-only in practice (§7.1); closes the recycle loop                                                  |
+| **Rubble**            | Earth                      | what mined rock actually is (§7.1); the mass Earth feedstock, just under clean Stone                                                               |
+| Sandstone             | Earth                      | craft-only in practice — mined sandstone is Rubble too                                                                                             |
+| **Glass**             | Earth                      | crafted blocks extract back at a loss, like everything                                                                                             |
+| Gravel                | Earth                      |                                                                                                                                                    |
+| Sand                  | Earth                      |                                                                                                                                                    |
+| Dirt                  | Earth + a little Flora     |                                                                                                                                                    |
+| Grass                 | Earth + Flora              | the canonical split: mostly Earth, a Flora minority                                                                                                |
+| DryGrass              | Earth + Flora              | drier, so less Flora than Grass                                                                                                                    |
+| Mud                   | Earth + Flora + Aqua       |                                                                                                                                                    |
+| Wood                  | Flora                      | the Flora baseline, a whole block's worth                                                                                                          |
+| Leaves / PineLeaves   | a token Flora              | foliage is water and structure; the essence is in the trunk (cut from its first draft — against a near-instant dig it paid Flora as fast as grass) |
+| Snow                  | Aqua                       | cold biomes' economic identity                                                                                                                     |
+| Water (bucket charge) | Aqua                       | unlocked with the Aqua economy (§4.3); consumes the charge                                                                                         |
+| WoodStairs            | Flora                      | shaped items extract at volume —                                                                                                                   |
+| StoneStairs           | Earth                      | crafting is no longer one-way                                                                                                                      |
+| WoodDoor              | Flora                      |                                                                                                                                                    |
+| WoodSlab / StoneSlab  | (their material's essence) | in their family                                                                                                                                    |
+| Emberore              | Metal                      | the tiers rise steeply —                                                                                                                           |
+| Duskstone             | Metal                      | each ore is worth                                                                                                                                  |
+| Glowvein              | Metal                      | markedly more than the one above it                                                                                                                |
+| Aetherock             | Metal + Aether             | the only base Aether source                                                                                                                        |
 
 ### 3.2 Level scaling
 
@@ -185,13 +185,13 @@ ONLY on recipe-less blocks: mined rock (Rubble, Gravel) and foliage. The heartwo
 
 The lines in order, each at its own Alchemy threshold (`alchemy::bonus_lines`):
 
-| unlock | flavor |
-|---|---|
-| Leaves and PineLeaves start paying Aqua | "morning dew" — the first line, and the earliest |
-| loose rock starts paying Metal | "trace minerals" — mined rock, never craftable Stone |
-| that Metal line deepens | the mid-ladder rung |
-| **PineLeaves** start paying Aether | "resin" — pine forests are the pre-ore Aether trickle |
-| loose rock starts paying Aether too | the last line, and the deepest |
+| unlock                                  | flavor                                                |
+| --------------------------------------- | ----------------------------------------------------- |
+| Leaves and PineLeaves start paying Aqua | "morning dew" — the first line, and the earliest      |
+| loose rock starts paying Metal          | "trace minerals" — mined rock, never craftable Stone  |
+| that Metal line deepens                 | the mid-ladder rung                                   |
+| **PineLeaves** start paying Aether      | "resin" — pine forests are the pre-ore Aether trickle |
+| loose rock starts paying Aether too     | the last line, and the deepest                        |
 
 Lines are **cumulative**: each row adds to the ones before it, so an extraction at the top of the ladder yields the
 trace minerals AND the Aether, and PineLeaves keeps its dew once it has earned its resin (`bonus_lines` returns every
@@ -203,12 +203,12 @@ earned line).
 
 ### 4.1 XP sources
 
-| action | what the XP is derived from |
-|---|---|
-| bench extraction, per block | a fixed fraction of the block's total extraction base (`skills::convert_xp`) |
-| bench extraction, per ore | the same rule, so the tiers pay in proportion to what they give up |
-| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`) |
-| transmutation, per craft | a fixed fraction of the ideal cost (`skills::craft_xp`), so a slab pays least, a whole block more, and a tool most of all — pinned by `alchemy_xp_derives_from_the_base_tables`, per-line ceil included |
+| action                                           | what the XP is derived from                                                                                                                                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bench extraction, per block                      | a fixed fraction of the block's total extraction base (`skills::convert_xp`)                                                                                                                            |
+| bench extraction, per ore                        | the same rule, so the tiers pay in proportion to what they give up                                                                                                                                      |
+| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`)                                                                                                                                        |
+| transmutation, per craft                         | a fixed fraction of the ideal cost (`skills::craft_xp`), so a slab pays least, a whole block more, and a tool most of all — pinned by `alchemy_xp_derives_from_the_base_tables`, per-line ceil included |
 
 XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for life, RS-style. Extraction XP
 arrives **dripped**: the extract tab sends one `Convert { count: 1 }` per completed cycle (§8.1), so a hoard of stone is
@@ -275,12 +275,12 @@ carries a `DigFamily` (`blocks!`'s `dig` builder takes it beside hardness, so a 
 declares only TWO numbers: where it starts at the first level and where it ends at the cap. The SHAPE of the journey
 between them is authored ONCE, in a shared taper table, so no family can drift from the others:
 
-| family | members | why |
-|---|---|---|
-| **Fixed** | Leaves, PineLeaves, Torch, Water (scoop) | already near-instant / fixtures; the scoop is pinned to the viewmodel swing, so its endpoints are equal and it never scales |
-| **Soft** | Dirt, Grass, DryGrass, Sand, Mud, Snow | the gentlest climb — the shallowest penalty for a novice |
-| **Wood** | Wood + its shapes | timber resists a little more than soil, and masters a little less |
-| **Rock** | Stone, Sandstone, Gravel, Rubble + stone shapes | rock resists a novice viscerally — the steepest start, and it ends level with Soft |
+| family    | members                                         | why                                                                                                                         |
+| --------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Fixed** | Leaves, PineLeaves, Torch, Water (scoop)        | already near-instant / fixtures; the scoop is pinned to the viewmodel swing, so its endpoints are equal and it never scales |
+| **Soft**  | Dirt, Grass, DryGrass, Sand, Mud, Snow          | the gentlest climb — the shallowest penalty for a novice                                                                    |
+| **Wood**  | Wood + its shapes                               | timber resists a little more than soil, and masters a little less                                                           |
+| **Rock**  | Stone, Sandstone, Gravel, Rubble + stone shapes | rock resists a novice viscerally — the steepest start, and it ends level with Soft                                          |
 
 `skills::dig_speed_permille` walks the family's two endpoints along `DIG_TAPER`, and `dig_required(block, h, L)` scales
 the block's `hardness_ticks` by the result. `DIG_TAPER` is how much of that journey is complete at each step, in
@@ -290,8 +290,8 @@ floor (no second clamp knob), and the flat Fixed family gets its flatness for fr
 what keeps leaves/torches/the scoop from ever speeding up.
 
 Everything below argues about what a dig *feels* like, so the absolute scale it argues from: Stone runs 3.83 s at level
-1, 1.90 s by 30 and 0.63 s at the cap; Wood 2.03 s → 1.10 s → 0.50 s; Dirt 0.93 s → 0.50 s → 0.22 s. Those durations
-are the subject of every claim in this section — the code is still the authority on what the curve returns.
+1, 1.90 s by 30 and 0.63 s at the cap; Wood 2.03 s → 1.10 s → 0.50 s; Dirt 0.93 s → 0.50 s → 0.22 s. Those durations are
+the subject of every claim in this section — the code is still the authority on what the curve returns.
 
 **The curve is sampled every fifth level, plus the cap — and every jump is smaller than the one before it.** Those are
 one decision. `skills::dig_speed_step` holds the multiplier flat between steps, so a digger speeds up only on the
@@ -302,11 +302,11 @@ is what makes it legible. The taper then spends that budget front-loaded — eac
 its predecessor — so **the first step is the biggest speedup a player will ever feel**, and every later one lands a
 little softer. Both halves earn their keep: the early game is where a slow dig is most discouraging, and diminishing
 returns are what stop the last rungs from being rounding errors. The relative gain falls too, not just the absolute one
-(on stone, 11.7% off the hold at the first step against 2.6% at the last), so the easing is felt and not merely
-counted. Only the two endpoints are anchors and both must sit on the sampling grid,
-which is why the cap is a step of its own instead of the grid ending a rung short. `dig_speed_step` is the ONE place the
-step size lives, and `dig_speed_step(l) == l` is exactly the question "does this level make me faster" — which is what
-the UI has to ask to tell a player when the next jump lands.
+(on stone, 11.7% off the hold at the first step against 2.6% at the last), so the easing is felt and not merely counted.
+Only the two endpoints are anchors and both must sit on the sampling grid, which is why the cap is a step of its own
+instead of the grid ending a rung short. `dig_speed_step` is the ONE place the step size lives, and
+`dig_speed_step(l) == l` is exactly the question "does this level make me faster" — which is what the UI has to ask to
+tell a player when the next jump lands.
 
 **No level is parity with the hardness table any more (SIM v18).** From v11 through v17 one mid-ladder level sat at
 exactly 1× for every family, which made that level reproduce the shipped hardness table exactly, and the tests pinned
@@ -371,13 +371,13 @@ instead, rising steeply with the tier (+ the Alchemy cut, §5.4).
 Four ores + a depletion block = **five new `blocks!` rows** (append-only, one PNG + `LAYERS` entry each; names are
 placeholders until they survive contact with you):
 
-| block | reveal | depth band | bench yield |
-|---|---|---|---|
-| **Emberore** | the first, mid-way up the Mining ladder | the shallowest — surface caves already reach it | Metal |
-| **Duskstone** | the second | deeper | Metal |
-| **Glowvein** | the third, with the Resonant Pick | deeper still | Metal |
-| **Aetherock** | the last, near the cap | the deepest, just off bedrock | Metal + the only base Aether |
-| **DepletedStone** | — (never revealed; it is what a tapped cell becomes) | — | `drops: Some(Rubble)` — the tapped-rock face (§7.1) |
+| block             | reveal                                               | depth band                                      | bench yield                                         |
+| ----------------- | ---------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------- |
+| **Emberore**      | the first, mid-way up the Mining ladder              | the shallowest — surface caves already reach it | Metal                                               |
+| **Duskstone**     | the second                                           | deeper                                          | Metal                                               |
+| **Glowvein**      | the third, with the Resonant Pick                    | deeper still                                    | Metal                                               |
+| **Aetherock**     | the last, near the cap                               | the deepest, just off bedrock                   | Metal + the only base Aether                        |
+| **DepletedStone** | — (never revealed; it is what a tapped cell becomes) | —                                               | `drops: Some(Rubble)` — the tapped-rock face (§7.1) |
 
 Each tier is harder, richer and rarer than the one above it, and the bands overlap (see the divergence note at the top),
 so a tier a player has earned stays available all the way down. Reveal levels are `unlock::reveal`, hardness and yields
@@ -463,8 +463,8 @@ dedicated **tool slot**, drawn visually separated from the block row, with the l
 as today. Which tool sits *in* the slot is a separate axis:
 
 ```
- [1][2][3][4][5][6][7][8]   ┃ [9]┃ ▫ ▫
-  blocks (digits 1–8)         tool   faded rail: other owned tools
+[1][2][3][4][5][6][7][8]   ┃ [9]┃ ▫ ▫
+ blocks (digits 1–8)         tool   faded rail: other owned tools
 ```
 
 - **Ownership is inventory counts.** Tools are item-only `blocks!` rows — `RenderClass::None`, `collides: false`, not
@@ -537,27 +537,27 @@ structural pieces:
 **Materials** — can you transmute this substance into block form at all. In ladder order (levels in `unlock::material`,
 costs derived in `material.rs` from a whole block's essence split):
 
-| material | notes |
-|---|---|
-| **Planed Timber** (`Lumber`) | shipped; the joinery material, so its slab/stairs/door all land with the material rather than at their shapes' own levels |
-| **Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand | the first real wave |
-| **Stone Bricks** | same cost as Stone, squared-off dressed texture |
-| Sandstone, Snow, **Glass** (sand-flavored Earth), **Grass**, **Mud** | the multi-essence substances arrive here |
-| **Polished Stone**, **Sandstone Bricks** | the dressed pair |
-| **Metal** | a whole block's worth of Metal essence; scarce by construction, the prestige block |
+| material                                                             | notes                                                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Planed Timber** (`Lumber`)                                         | shipped; the joinery material, so its slab/stairs/door all land with the material rather than at their shapes' own levels |
+| **Stone** (the mason's unlock, §7.1), Wood, Dirt, Sand               | the first real wave                                                                                                       |
+| **Stone Bricks**                                                     | same cost as Stone, squared-off dressed texture                                                                           |
+| Sandstone, Snow, **Glass** (sand-flavored Earth), **Grass**, **Mud** | the multi-essence substances arrive here                                                                                  |
+| **Polished Stone**, **Sandstone Bricks**                             | the dressed pair                                                                                                          |
+| **Metal**                                                            | a whole block's worth of Metal essence; scarce by construction, the prestige block                                        |
 
 **Shapes** — can you work any substance into this form. Also in ladder order (`unlock::shape`; each shape's ideal is its
 own volume under the rule §4.2 already uses, so no shape needs a hand-set price):
 
-| shape | notes |
-|---|---|
-| Slab | the first form, and the cheapest |
-| Stairs | |
-| Door | |
-| Fence (posts + two rails), Ladder | Ladder is climbable = §12 |
-| Pillar, Roof Wedge | the wedge is a half-prism and reuses ramp physics |
-| Pane, Gate | a gate is a fence-height door |
-| Trapdoor | a horizontal door, so a new facing axis |
+| shape                             | notes                                             |
+| --------------------------------- | ------------------------------------------------- |
+| Slab                              | the first form, and the cheapest                  |
+| Stairs                            |                                                   |
+| Door                              |                                                   |
+| Fence (posts + two rails), Ladder | Ladder is climbable = §12                         |
+| Pillar, Roof Wedge                | the wedge is a half-prism and reuses ramp physics |
+| Pane, Gate                        | a gate is a fence-height door                     |
+| Trapdoor                          | a horizontal door, so a new facing axis           |
 
 A shaped item in material M gates at **`max(shape level, material level)`** — so a StoneDoor waits for Stone rather than
 for a curated late number of its own, MetalStairs and Metal Bars wait for Metal, and a Brick Slab arrives with the
@@ -575,17 +575,17 @@ economy, not parallel currencies.
 In ladder order; the prices live in `alchemy::functional_ideal` and the levels in `unlock::functional`, which are pinned
 twins so an item can't have a level without a price.
 
-| item | priced in | notes |
-|---|---|---|
-| **Torch** | Flora + Earth | first light, pre-ore on purpose; emissive (§7.4) |
-| **Essence Siphon** | Flora + Earth | the ore-extraction tool (§5.3); **no Metal in the cost, ever** — ore needs the siphon and Metal needs ore, so a Metal-priced siphon deadlocks the economy |
-| **Framed Window** | Earth + Flora | glass-in-wood-frame, the early window |
-| **Lantern** | Metal + Earth | metal-and-glass; first Metal sink outside tools |
-| **Water** (bucket charge) | Aqua | deliberately lossy against extracting a charge — no loop |
-| **Resonant Pick** | Metal + Earth + Aether | tool (§5.6); the catalog's biggest single price |
-| essence exchange | any → any **except Aether**, at a loss | |
-| **Aetherlamp** | Metal + Aether | brightest light; the standing Aether sink |
-| **Master's Sigil** | Aether alone | cosmetic held item, and the catalog's last line |
+| item                      | priced in                              | notes                                                                                                                                                     |
+| ------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Torch**                 | Flora + Earth                          | first light, pre-ore on purpose; emissive (§7.4)                                                                                                          |
+| **Essence Siphon**        | Flora + Earth                          | the ore-extraction tool (§5.3); **no Metal in the cost, ever** — ore needs the siphon and Metal needs ore, so a Metal-priced siphon deadlocks the economy |
+| **Framed Window**         | Earth + Flora                          | glass-in-wood-frame, the early window                                                                                                                     |
+| **Lantern**               | Metal + Earth                          | metal-and-glass; first Metal sink outside tools                                                                                                           |
+| **Water** (bucket charge) | Aqua                                   | deliberately lossy against extracting a charge — no loop                                                                                                  |
+| **Resonant Pick**         | Metal + Earth + Aether                 | tool (§5.6); the catalog's biggest single price                                                                                                           |
+| essence exchange          | any → any **except Aether**, at a loss |                                                                                                                                                           |
+| **Aetherlamp**            | Metal + Aether                         | brightest light; the standing Aether sink                                                                                                                 |
+| **Master's Sigil**        | Aether alone                           | cosmetic held item, and the catalog's last line                                                                                                           |
 
 The Aetherlamp matters economically: before it, Aether's only sinks are the pick (12, once) and the Sigil (99, once) —
 two purchases in a whole game. A repeatable 3-per-lamp sink is what keeps Aetherock worth mining at the top of the
@@ -672,14 +672,15 @@ load-bearing:
 - **But the pace itself is server-enforced** — client pacing is presentation, not trust (the return-to-spawn precedent:
   the server holds the clock). `Convert` ops draw from a per-player **extraction bucket** alongside the general edit
   bucket. The bucket banks TICKS — one per tick, capacity a small multiple of a whole block's worth
-  (`extract_burst_ticks`, `EXTRACT_BURST`) — and a `Convert` spends the requested block's own `extract_pace_ticks(block,
-  level) × count`, so neither the legacy bulk-Convert path nor a stream of cheap blocks can sidestep the drip. An op
-  arriving short refuses cleanly through the standing `InventoryFull` rebase: nothing debited, no XP, and the honest
-  client self-heals for free (the refused block is still in the count; the next cycle re-sends). The burst absorbs
-  network bunching exactly as `EDIT_BURST` does. Unlike the spawn cooldown, nothing persists — the window is short
-  enough that rejoin-to-reset buys a blink and isn't worth a `PlayerRecord` field. The gate lives in server op
-  validation like the edit bucket does, NOT in `apply_alchemy` — pacing is anti-cheat, not an economy rule, and offline
-  worlds keep running the identical economy.
+  (`extract_burst_ticks`, `EXTRACT_BURST`) — and a `Convert` spends the requested block's own
+  `extract_pace_ticks(block,
+  level) × count`, so neither the legacy bulk-Convert path nor a stream of cheap blocks can
+  sidestep the drip. An op arriving short refuses cleanly through the standing `InventoryFull` rebase: nothing debited,
+  no XP, and the honest client self-heals for free (the refused block is still in the count; the next cycle re-sends).
+  The burst absorbs network bunching exactly as `EDIT_BURST` does. Unlike the spawn cooldown, nothing persists — the
+  window is short enough that rejoin-to-reset buys a blink and isn't worth a `PlayerRecord` field. The gate lives in
+  server op validation like the edit bucket does, NOT in `apply_alchemy` — pacing is anti-cheat, not an economy rule,
+  and offline worlds keep running the identical economy.
 - **Pace**: one block per interval, the interval shortening at two points on the Alchemy ladder
   (`alchemy::base_pace_ticks`; these *replace* the old batch-cap unlocks). A big hoard is now minutes at the bench
   instead of a click — the RS-style "stand at the bench and watch the XP drip" is deliberate.
@@ -697,10 +698,11 @@ to this shape during the build, on feedback that the flat row list didn't read):
 DOORS, BLOCKS, WATER — each slowly rotating its icon through its members (wood stairs, stone stairs, …) on a shared
 clock; selecting a family lays its member tiles out beneath (locked members visible but dim, affordable ones badged with
 their batch count); a detail strip shows the selected member's name and post-waste cost at your level; and the tab has
-exactly ONE `TRANSMUTE` button, disabled (no hit rect) for a locked or unaffordable pick. `CLICK 1 · SHIFT 10 · CTRL
-100` multipliers on that button. This is also the §7.2 grid's natural UI: a new material × shape pair is one more member
-in an existing family, so the catalog grows without the screen growing. Tools/essence-exchange rows join as families
-when they land (M4+). `fit_scale` remains the overflow fallback.
+exactly ONE `TRANSMUTE` button, disabled (no hit rect) for a locked or unaffordable pick.
+`CLICK 1 · SHIFT 10 · CTRL
+100` multipliers on that button. This is also the §7.2 grid's natural UI: a new material ×
+shape pair is one more member in an existing family, so the catalog grows without the screen growing.
+Tools/essence-exchange rows join as families when they land (M4+). `fit_scale` remains the overflow fallback.
 
 ### 8.2 Character screen
 
@@ -768,8 +770,8 @@ expand the full unlock list; v1 is the summary.
 ## 10. Test plan (the pins that make this safe)
 
 - `xp_curve_table_is_pinned` — golden cumulative table.
-- `no_level_ever_creates_matter` — for every block × every level: total extraction yield
-  < total craft cost; efficiency/waste monotonic and bounded.
+- `no_level_ever_creates_matter` — for every block × every level: total extraction yield < total craft cost;
+  efficiency/waste monotonic and bounded.
 - `bonus_lines_never_sit_on_craftable_blocks` — the §3.3 pump rule: every bonus line lives on a recipe-less block, so no
   craft-extract loop manufactures Metal or Aether.
 - `dig_speed_anchors_are_pinned` — every family's two endpoints hold, Fixed never scales, and `required` is monotonic
@@ -871,6 +873,7 @@ another sourced sfx and another by-ear check. The pick's second/third dig cell i
 
 **M7 — Catalog waves** *(open-ended, ships release by release)*. Materials and shapes per §7.2's grid, functional items,
 glass, the lights. Hidden work — this is where the follow-on tail is longest:
+
 - **Every new shape is a shapes.rs project**, not a row: sub-box authoring, baked variants, `FaceMask` coverage,
   collision + interaction boxes, `state_valid` gates, a `MAX_SHAPE_QUADS` pin, facing tests. Trapdoor adds a **new
   facing axis** to the state nibble; Ladder needs the first new movement rule since swimming (§12 — ship decorative

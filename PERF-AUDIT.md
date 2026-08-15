@@ -1,10 +1,8 @@
 # Hot-path performance audit — frame-timing consistency (web-focused)
 
-> **Status: implemented.** Everything below has been applied except the
-> column-gen job slicing in §1, which measurement made much less urgent
-> than this document projected — see "Implementation notes" at the end.
-> Results and the new web baseline are in `BENCH.md`; this file is kept
-> as the reasoning record for why each change was made.
+> **Status: implemented.** Everything below has been applied except the column-gen job slicing in §1, which measurement
+> made much less urgent than this document projected — see "Implementation notes" at the end. Results and the new web
+> baseline are in `BENCH.md`; this file is kept as the reasoning record for why each change was made.
 
 Date: 2026-08-06. Scope: every per-frame path in the workspace, audited for *consistency* (spike elimination) rather
 than throughput, with the wasm build treated as the sensitive target (single thread, chunk jobs inline, rAF-paced).
@@ -285,7 +283,8 @@ offset) + `set_vertex_buffer` + `draw`, i.e. three wasm→JS encoder calls with 
 triplets per frame on web at draw 20, and water pays it twice per chunk.
 
 **Fix**: the chunk origin is 16 bytes. Move origins into a storage buffer indexed by `@builtin(instance_index)` (or an
-instance-step vertex buffer with `first_instance` as the slot index) so the loop collapses to `set_vertex_buffer +
+instance-step vertex buffer with `first_instance` as the slot index) so the loop collapses to
+`set_vertex_buffer +
 draw`. Combined with 4a's arena, adjacent chunks become contiguous draws.
 
 This is the on-ramp to GPU-driven rendering (Haar & Aaltonen, *GPU-Driven Rendering Pipelines*, SIGGRAPH 2015):
@@ -478,24 +477,21 @@ Grouped so that each stage is independently shippable and measurable.
 hitch counter, and a scripted web bench flight. Everything downstream is guesswork without it.
 
 **Stage 1 — the two structural web spikes.**
+
 1. Fix the busy-time signal (§0) — small diff, unblocks a shipped feature.
 2. Unify the three streaming deadlines (§3c) — land with 1, since 1 makes the stacking live.
 3. Slice the column-gen job into continuations (§1) — the largest single improvement to worst-frame on wasm.
 4. Prewarm the shape bakes (§5d) — three lines.
 
-**Stage 2 — the periodic hitches.**
-5. Incremental rim diff in `visibility_scan` + eviction hysteresis (§3a).
-6. Spread eviction, hash-set the retain (§3b).
-7. Incremental/regional localStorage save (§5a).
-8. Budget the net-event drain (§5b) and index deferred edits by column (§5c).
+**Stage 2 — the periodic hitches.** 5. Incremental rim diff in `visibility_scan` + eviction hysteresis (§3a). 6. Spread
+eviction, hash-set the retain (§3b). 7. Incremental/regional localStorage save (§5a). 8. Budget the net-event drain
+(§5b) and index deferred edits by column (§5c).
 
-**Stage 3 — steady-cost reductions that widen the headroom.**
-9. Coarse-lattice cave noise (§2) — biggest raw win, but batch it with any other worldgen retune since it forces a
-   `VERSION` bump.
-10. Border-occupancy masks to kill buried remeshes (§3e).
-11. Upload byte budget (§4b), chunk buffer pooling (§4a).
-12. Near-shadow caching (§4e), per-platform wide slice (§4f), conditional depth blit (§4g).
-13. Flat culled chunk list, front-to-back order, instance-indexed origins (§4c, §4d).
+**Stage 3 — steady-cost reductions that widen the headroom.** 9. Coarse-lattice cave noise (§2) — biggest raw win, but
+batch it with any other worldgen retune since it forces a `VERSION` bump. 10. Border-occupancy masks to kill buried
+remeshes (§3e). 11. Upload byte budget (§4b), chunk buffer pooling (§4a). 12. Near-shadow caching (§4e), per-platform
+wide slice (§4f), conditional depth blit (§4g). 13. Flat culled chunk list, front-to-back order, instance-indexed
+origins (§4c, §4d).
 
 **Stage 4 — opportunistic.** Allocation churn (§5g), splash-scan flag (§5h), structure apron memoization (§2),
 ambient-audio column cache (§5e), WebTransport key caching (§5f).

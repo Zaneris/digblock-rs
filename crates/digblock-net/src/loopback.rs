@@ -105,7 +105,7 @@ impl NetTransport for LoopbackEnd {
 		}
 		d.sent += 1;
 		if let Some(n) = d.drop_every {
-			if d.sent % n == 0 {
+			if d.sent.is_multiple_of(n) {
 				return;
 			}
 		}
