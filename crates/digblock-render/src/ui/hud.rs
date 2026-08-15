@@ -19,11 +19,21 @@ pub const BOTTOM_MARGIN: f32 = 12.0;
 /// not the ninth block slot, and standing it apart is the whole of how a
 /// player is told so — the icon in it is a tool whatever the bar holds.
 ///
-/// It is added at DRAW time rather than folded into [`row_grid`], which
-/// stays the uniform nine-column geometry every panel measures itself
-/// against: the inventory grid's columns keep landing on the block slots
-/// they drop into, and the split is what the tool slot hangs off the
-/// right-hand end by.
+/// It is added to ONE slot at DRAW time ([`bar_slot_rect`]) rather than
+/// to [`row_grid`]'s spacing, which stays the uniform nine-column lattice
+/// every panel measures itself against: the inventory grid's columns keep
+/// landing on the block slots they drop into, and the split is what the
+/// tool slot hangs off the right-hand end by.
+///
+/// [`row_grid`]'s CENTRING is the one thing that has to know about it,
+/// though, and briefly didn't: the drawn row is a split wider than the
+/// lattice, so centring the lattice alone left the row sitting half a
+/// split right of centre, with its right edge crossing the window edge
+/// before its left edge did — the tool slot's selection ring clipped and
+/// the whole tool rail gone, at 640×480 and 1.5×. The origin therefore
+/// centres `lattice + split` and the lattice keeps its uniform spacing;
+/// everything anchored to the bar simply moves left with it by half a
+/// split.
 pub const TOOL_SPLIT: f32 = 20.0;
 
 const FULL_TINT: u32 = 0xFFFF_FFFF;
@@ -156,12 +166,19 @@ pub fn draw_icon(
 
 /// The hotbar row's grid: bottom-centered. Shared with the inventory
 /// screen so its panel columns align with the bar.
+///
+/// The lattice this returns is nine even columns and nothing else — what
+/// gets CENTERED is the row as drawn, which is that lattice plus the
+/// [`TOOL_SPLIT`] the last slot steps out by. Centring the lattice alone
+/// is centring something narrower than the picture, and the difference
+/// lands entirely on the right-hand edge.
 pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 	let (cell, gap) = (SLOT_PX * scale, SLOT_GAP * scale);
 	let total_w = HOTBAR_SLOTS as f32 * cell + (HOTBAR_SLOTS as f32 - 1.0) * gap;
+	let drawn_w = total_w + TOOL_SPLIT * scale;
 	GridSpec {
 		origin: (
-			(size.0 as f32 - total_w) / 2.0,
+			(size.0 as f32 - drawn_w) / 2.0,
 			size.1 as f32 - BOTTOM_MARGIN * scale - cell,
 		),
 		cols: HOTBAR_SLOTS,
@@ -225,14 +242,14 @@ pub fn hotbar<Id: Copy + PartialEq>(
 	}
 }
 
-/// §6's faded tool rail: the owned tools OTHER than the active one,
-/// drawn as small reduced-alpha icons just right of the tool slot, in
-/// the roster's own deterministic order. A READOUT, not a target — no
-/// hit rects; tapping 9 on the selected tool slot is the interaction.
-/// With a single owned tool nothing draws at all.
-/// The icon for a tool. Tools have no texture layers of their own (they
-/// never render in the world), so every one of them needs authored
-/// geometry — the old cube fallback drew a WATER cube for anything new.
+/// The icon for a tool, keyed by the BLOCK — which is the axis
+/// [`item_icon`] does not have, since `HotbarItem::WaterTool` names the
+/// tool SLOT and the roster in it is a separate question. Every path
+/// that can name a tool comes through here.
+///
+/// Tools have no texture layers of their own (they never render in the
+/// world), so every one of them needs authored geometry — the old cube
+/// fallback drew a WATER cube for anything new.
 pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 	match tool {
 		BlockType::EssenceSiphon => IconKind::Siphon,
@@ -245,6 +262,11 @@ pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 	}
 }
 
+/// §6's faded tool rail: the owned tools OTHER than the one being shown
+/// in the slot, drawn as small reduced-alpha icons just right of it, in
+/// the roster's own deterministic order. A READOUT, not a target — no
+/// hit rects; tapping 9 on the selected tool slot is the interaction.
+/// With a single owned tool nothing draws at all.
 pub fn tool_rail(
 	dl: &mut super::DrawList,
 	style: &super::widgets::Style,
@@ -445,7 +467,7 @@ mod tests {
 		HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default())
 	}
 
-	fn emit(scale: f32) -> (DrawList, HitMap<usize>) {
+	fn emit_at(size: (u32, u32), scale: f32) -> (DrawList, HitMap<usize>) {
 		let mut dl = DrawList::default();
 		let mut hits = HitMap::default();
 		let mut ui = Ui {
@@ -453,35 +475,72 @@ mod tests {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		hotbar(&mut ui, SIZE, &sample_view(), |i| i);
+		hotbar(&mut ui, size, &sample_view(), |i| i);
 		(dl, hits)
 	}
 
-	/// The nine-column lattice is centered and scales — and the block row
-	/// sits ON it, which is what keeps the inventory grid's columns over
-	/// the slots they drop into.
+	fn emit(scale: f32) -> (DrawList, HitMap<usize>) {
+		emit_at(SIZE, scale)
+	}
+
+	/// The DRAWN row is centered — and the drawn row is the nine-column
+	/// lattice PLUS the split the tool slot steps out by, which is a real
+	/// [`TOOL_SPLIT`] wider than anything that measures the lattice. The
+	/// block slots sit on that lattice, which is what keeps the inventory
+	/// grid's columns over the slots they drop into.
+	///
+	/// `right` has to come off the LAST DRAWN SLOT. Taking it from
+	/// `grid.origin.0 + grid.extent(HOTBAR_SLOTS).0` instead reduces
+	/// algebraically to `left`, so the assertion becomes `left - left == 0`
+	/// and cannot fail — which is exactly how the split shipped folded
+	/// into the drawing but not into the centring, leaving the row half a
+	/// split right of centre with its right edge off the window first.
+	/// Swept over sizes and scales for the same reason
+	/// [`the_tool_rail_never_runs_off_the_window`] is: the bar takes more
+	/// of the window as the interface scale grows, so the narrow windows
+	/// are where an asymmetry costs something.
 	#[test]
 	fn row_is_bottom_centered_and_scales() {
-		for scale in [1.0f32, 2.0] {
-			let (_, hits) = emit(scale);
-			let grid = row_grid(SIZE, scale);
-			let first = hits.rect_of(0).unwrap();
-			let left = first.x;
-			let right = SIZE.0 as f32 - (grid.origin.0 + grid.extent(HOTBAR_SLOTS).0);
-			assert!((left - right).abs() < 0.5, "centered at {scale}x");
-			for i in 0..HOTBAR_SLOTS - 1 {
+		for size in [
+			(1280u32, 720u32),
+			(1920, 1080),
+			(960, 600),
+			(800, 600),
+			(640, 480),
+		] {
+			for scale in [1.0f32, 1.5, 2.0, 2.5, 3.0] {
+				let (_, hits) = emit_at(size, scale);
+				let grid = row_grid(size, scale);
+				let first = hits.rect_of(0).unwrap();
+				let last = hits.rect_of(HOTBAR_SLOTS - 1).unwrap();
+				let left = first.x;
+				let right = size.0 as f32 - (last.x + last.w);
+				assert!(
+					(left - right).abs() < 0.5,
+					"{size:?} at {scale}x: {left} of air on the left, {right} on the right"
+				);
+				// Every slot the lattice owns is ON it — the split is one
+				// slot stepping out at the end, never a wider seam applied
+				// to the row, and never the whole row shifted by hand.
+				for i in 0..HOTBAR_SLOTS - 1 {
+					assert_eq!(
+						hits.rect_of(i).unwrap().x,
+						grid.rect(i).x,
+						"block slot {i} is off the lattice at {size:?}/{scale}x"
+					);
+				}
 				assert_eq!(
-					hits.rect_of(i).unwrap().x,
-					grid.rect(i).x,
-					"block slot {i} is on the lattice at {scale}x"
+					last.x,
+					grid.rect(HOTBAR_SLOTS - 1).x + TOOL_SPLIT * scale,
+					"the tool slot is its lattice column plus the split"
+				);
+				assert_eq!(first.w, SLOT_PX * scale, "slot size scales");
+				assert_eq!(
+					first.y + first.h,
+					size.1 as f32 - BOTTOM_MARGIN * scale,
+					"bottom anchor scales"
 				);
 			}
-			assert_eq!(first.w, SLOT_PX * scale, "slot size scales");
-			assert_eq!(
-				first.y + first.h,
-				SIZE.1 as f32 - BOTTOM_MARGIN * scale,
-				"bottom anchor scales"
-			);
 		}
 	}
 

@@ -65,16 +65,29 @@ impl InvScreen {
 		self.drag.cancel();
 	}
 
-	/// The grid: 9 columns aligned with the hotbar, `GRID_SLOTS / 9`
-	/// rows stacked above it, wrapped in a panel.
-	fn grid_spec(size: (u32, u32), scale: f32) -> GridSpec {
-		let bar = hud::row_grid(size, scale);
+	/// The grid: 9 columns at the drawn style's own slot size,
+	/// `GRID_SLOTS / 9` rows. Nine because that is the hotbar's column
+	/// count — the grid is aligned to the bar, not merely the same shape
+	/// as it. Takes a `Style` rather than a bare scale because the fit
+	/// ladder may draw the page at a smaller one than the frame's, and
+	/// the measure pass has to ask about candidate scales; `origin` is
+	/// set per-build (see [`InvScreen::build`]).
+	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
 		GridSpec {
-			// Rows grow upward from just above the bar; origin is set
-			// per-build (see `build`).
-			origin: (bar.origin.0, bar.origin.1),
-			..bar
+			origin,
+			cols: HOTBAR_SLOTS,
+			cell: hud::SLOT_PX * style.scale,
+			gap: hud::SLOT_GAP * style.scale,
 		}
+	}
+
+	/// The panel's content height: one title row over the grid. The
+	/// measure half of [`InvScreen::build`]'s layout — `fit_scale` calls
+	/// it at candidate scales, so it must derive everything from the
+	/// style it is handed and read nothing already committed at the
+	/// frame's own.
+	fn content_h(style: &Style) -> f32 {
+		theme::ROW_H * style.scale + Self::grid_spec_at(style, (0.0, 0.0)).extent(GRID_SLOTS).1
 	}
 
 	/// Emit the screen: dim, panel, title, every grid slot (occupied
@@ -90,10 +103,7 @@ impl InvScreen {
 		inv: &Inventory,
 		daylight: f32,
 	) {
-		let scale = ui.style.scale;
-		let mut spec = Self::grid_spec(size, scale);
-		let (_, grid_h) = spec.extent(GRID_SLOTS);
-		spec.origin.1 -= theme::GAP_ABOVE_BAR * scale + grid_h;
+		let window_scale = ui.style.scale;
 
 		// Full-screen dim under everything this screen adds.
 		ui.dl.quad(
@@ -101,18 +111,57 @@ impl InvScreen {
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		let pad = theme::PAD * scale;
+
+		// Six rows of slots and a title band is `488 · scale` of page
+		// standing above the hotbar, which is more than a short window at
+		// a big interface scale has to give: at 1280×720 / 1.5 the panel's
+		// top edge lands at −12, and at 1600×900 / 2.25 the first row of
+		// slots sits at y = −108 and cannot be clicked at all. This screen
+		// grew into that when the grid went to 54 slots and simply ran off
+		// the TOP, because it positioned itself by subtraction from the bar
+		// and never checked.
+		//
+		// So it walks the same ladder the alchemy screen does: the WHOLE
+		// style steps down in quarters until the page fits between the bar
+		// and the top margin, re-measured per rung, never a fractional
+		// glyph. The bar is not ours to shrink — it is drawn after us at
+		// the frame's own scale — so every measurement taken against it
+		// stays in `window_scale`.
+		let bar = hud::row_grid(size, window_scale);
+		let budget = bar.origin.1 - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
+		let needed = |s: f32| Self::content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
+		let restore = ui.style;
+		let fitted = theme::fit_scale(window_scale, budget, needed);
+		if fitted != window_scale {
+			ui.style = Style::new(fitted);
+		}
+		let s = ui.style.scale;
+		let pad = theme::PAD * s;
 		// One shared text row for the title band — the same box, and so
 		// the same leading, every other screen's rows sit in.
-		let title_h = theme::ROW_H * scale;
-		let bar_w = hud::row_grid(size, scale).extent(HOTBAR_SLOTS).0;
-		let panel = theme::panel_of(
-			spec.origin.0,
-			spec.origin.1 - title_h,
-			bar_w,
-			title_h + grid_h,
-			scale,
-		);
+		let title_h = theme::ROW_H * s;
+		let (row_w, grid_h) = Self::grid_spec_at(&ui.style, (0.0, 0.0)).extent(GRID_SLOTS);
+		// The left column is the BAR's, so the grid's cells land on the
+		// slots they drop into. That alignment only exists while the two
+		// share a scale, though: once the ladder has stepped there is
+		// nothing left to align to, and hanging a narrower panel off the
+		// bar's rail would follow it off the window — at 960×600 / 2.5 the
+		// bar's own first column sits at x = −215. A fitted page therefore
+		// centres, like every other screen.
+		let row_x = if fitted == window_scale {
+			bar.origin.0
+		} else {
+			(size.0 as f32 - row_w) / 2.0
+		};
+		// Bottom-anchored to the bar, then clamped off the top edge: when
+		// even `theme::FIT_FLOOR` cannot buy the room, a page crowding the
+		// bar it stands above is still a page you can read, and one whose
+		// title has left the window is not.
+		let panel_y =
+			(bar.origin.1 - theme::GAP_ABOVE_BAR * window_scale - (title_h + grid_h + 2.0 * pad))
+				.max(theme::TOP_MARGIN * window_scale);
+		let panel = theme::panel_of(row_x, panel_y + pad, row_w, title_h + grid_h, s);
+		let spec = Self::grid_spec_at(&ui.style, (row_x, panel_y + pad + title_h));
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 		// Title text left-aligns with the first slot column, not at the
 		// row widget's inset: this panel's content is a grid, and a title
@@ -127,7 +176,7 @@ impl InvScreen {
 			WHITE,
 			"INVENTORY",
 		);
-		let icon_px = hud::ICON_PX * scale;
+		let icon_px = hud::ICON_PX * s;
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
 			let icon = grid
@@ -162,6 +211,9 @@ impl InvScreen {
 				tint,
 			);
 		}
+		// The frame's own style back: the hotbar draws after us, at the
+		// scale the window asked for and not the one we had to fit into.
+		ui.style = restore;
 	}
 
 	/// Feed one input event; returns the action the engine should apply.
@@ -265,11 +317,23 @@ impl InvScreen {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ui::draw::DrawList;
+	use crate::ui::draw::{Cmd, DrawList};
 	use digblock_core::block::BlockType as B;
 	use digblock_core::hotbar::Hotbar;
 
 	const SIZE: (u32, u32) = (1280, 800);
+
+	/// Every window × interface scale the layout assertions sweep. The
+	/// short ones are the point: this panel is `488 · scale` tall and it
+	/// is the tall windows that never had a problem.
+	const WINDOWS: [(u32, u32); 5] = [
+		(1280, 800),
+		(1280, 720),
+		(1600, 900),
+		(960, 600),
+		(800, 450),
+	];
+	const SCALES: [f32; 7] = [0.75, 1.0, 1.5, 1.75, 2.25, 2.5, 3.0];
 
 	struct Rig {
 		screen: InvScreen,
@@ -314,6 +378,202 @@ mod tests {
 
 	fn center(r: Rect) -> (f32, f32) {
 		(r.x + r.w / 2.0, r.y + r.h / 2.0)
+	}
+
+	/// One frame of the screen ALONE (the HUD bar is a separate call),
+	/// plus the style the caller is left holding — the bar draws after
+	/// this screen and has to get the frame's own scale back, whatever
+	/// the fit pass did with it.
+	fn emit_at(size: (u32, u32), scale: f32) -> (DrawList, HitMap<InvId>, Style) {
+		let mut inv = Inventory::default();
+		inv.add(B::Dirt, 5);
+		let mut grid = InvGrid::default();
+		grid.place(0, B::Dirt);
+		let mut screen = InvScreen::default();
+		screen.open();
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: Style::new(scale),
+		};
+		screen.build(&mut ui, size, &grid, &inv, 1.0);
+		let left_holding = ui.style;
+		(dl, hits, left_holding)
+	}
+
+	fn panel_rect(dl: &DrawList) -> Rect {
+		dl.cmds(Layer::Backdrop)
+			.0
+			.iter()
+			.find_map(|c| match c {
+				Cmd::Quad { rect, color } if *color == theme::PANEL_BG => Some(*rect),
+				_ => None,
+			})
+			.expect("the screen draws a panel in the shared color")
+	}
+
+	/// The scale the page actually drew at, read back off a slot — the
+	/// fit pass is invisible from outside otherwise, and a rung is a
+	/// statement about the WHOLE style, not just its text.
+	fn drawn_scale(hits: &HitMap<InvId>) -> f32 {
+		hits.rect_of(InvId::Grid(0)).unwrap().w / hud::SLOT_PX
+	}
+
+	fn glyph_of(dl: &DrawList) -> f32 {
+		let (cmds, _) = dl.cmds(Layer::Content);
+		cmds.iter()
+			.find_map(|c| match c {
+				Cmd::Text { px, .. } => Some(*px),
+				_ => None,
+			})
+			.expect("the screen draws its title")
+	}
+
+	/// Six rows of slots under a title band is `488 · scale` of page
+	/// standing above the hotbar, and this screen positioned itself by
+	/// pure subtraction from the bar without ever checking that the
+	/// result was still on the window. When the grid went to 54 slots it
+	/// simply ran off the TOP: at 1280×720 / 1.5 the panel's top edge sat
+	/// at −12, at 1600×900 / 2.25 the first row of slots was at y = −108
+	/// and could not be clicked at all, and at 960×600 / 2.5 the top edge
+	/// was at −620 with most of the page gone.
+	///
+	/// Nothing it draws may leave the window, and the page must still
+	/// stand ABOVE the bar rather than under it, at every window and
+	/// scale the game can produce.
+	#[test]
+	fn the_panel_always_fits_between_the_bar_and_the_top_of_the_window() {
+		for size in WINDOWS {
+			for scale in SCALES {
+				let (dl, hits, left_holding) = emit_at(size, scale);
+				let (w, h) = (size.0 as f32, size.1 as f32);
+				let panel = panel_rect(&dl);
+				let at = format!("{size:?} at {scale}x");
+				assert!(panel.y >= 0.0, "{at}: panel top edge at {}", panel.y);
+				assert!(panel.x >= 0.0, "{at}: panel left edge at {}", panel.x);
+				assert!(
+					panel.x + panel.w <= w + 0.5,
+					"{at}: panel right edge at {}",
+					panel.x + panel.w
+				);
+				assert!(
+					panel.y + panel.h <= hud::row_grid(size, scale).origin.1 + 0.5,
+					"{at}: the panel runs under the hotbar"
+				);
+				// Both ends of the grid are inside the window, so every
+				// cell between them is a drop target the cursor can reach.
+				for i in [0, GRID_SLOTS - 1] {
+					let cell = hits.rect_of(InvId::Grid(i as u16)).unwrap();
+					assert!(
+						cell.x >= 0.0
+							&& cell.y >= 0.0 && cell.x + cell.w <= w + 0.5
+							&& cell.y + cell.h <= h + 0.5,
+						"{at}: grid cell {i} at {cell:?} is off the window"
+					);
+				}
+				assert_eq!(
+					left_holding.scale, scale,
+					"{at}: the frame's own style has to come back for the bar"
+				);
+			}
+		}
+	}
+
+	/// The fit pass is a LADDER: the page draws either at the frame's own
+	/// scale or a whole quarter step down from it, glyph and boxes moving
+	/// together. The obvious implementation — multiply the style by
+	/// `budget / needed` — is what `ui::theme` exists to prevent, because
+	/// it lands the text on 14.3px beside a menu drawn at 28. And a page
+	/// with the room to spare must not step at all.
+	#[test]
+	fn the_page_steps_in_whole_rungs_and_only_when_it_has_to() {
+		// Room to spare, from a small window at a small scale up to a
+		// retina one: nothing shrinks.
+		for (size, scale) in [
+			((1280u32, 800u32), 1.0f32),
+			((2560, 1600), 2.0),
+			((1280, 800), 0.7),
+		] {
+			let (_, hits, _) = emit_at(size, scale);
+			assert!(
+				(drawn_scale(&hits) - scale).abs() < 1e-4,
+				"{size:?} at {scale}x has the room and should not have shrunk"
+			);
+		}
+		for size in WINDOWS {
+			for scale in SCALES {
+				let (dl, hits, _) = emit_at(size, scale);
+				let drawn = drawn_scale(&hits);
+				let at = format!("{size:?} at {scale}x");
+				assert!(drawn <= scale + 1e-4, "{at}: grew to {drawn}");
+				let rung = (scale - drawn) * 4.0;
+				assert!(
+					(rung - rung.round()).abs() < 1e-3 || (drawn - theme::FIT_FLOOR).abs() < 1e-4,
+					"{at}: drew at {drawn}, which is neither a quarter rung down nor the floor"
+				);
+				// The glyph is that rung's own whole-pixel size — the text
+				// stepped with the boxes, not by some fraction of its own.
+				assert_eq!(
+					glyph_of(&dl),
+					crate::ui::scale::glyph_px(drawn),
+					"{at}: text at {} against boxes at {drawn}x",
+					glyph_of(&dl)
+				);
+			}
+		}
+	}
+
+	/// This panel takes the BAR's geometry instead of centring like every
+	/// other screen, and the alignment is the whole reason: its columns
+	/// have to sit over the slots they drop into. The tool slot is not one
+	/// of them — §6 stands it apart off the right-hand end — so the eight
+	/// block slots are what the claim is about. Both sides read the one
+	/// `hud::row_grid`, which is what makes the bar's re-centring move the
+	/// grid with it rather than away from it.
+	#[test]
+	fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
+		// Only where the fit ladder has NOT stepped: at a smaller cell
+		// size there is no column alignment left to hold, which is exactly
+		// why a fitted page centres instead.
+		for size in [(1280u32, 800u32), (1600, 900)] {
+			for scale in [0.75f32, 1.0, 1.5] {
+				let mut inv = Inventory::default();
+				inv.add(B::Dirt, 5);
+				inv.add(B::Stone, 2);
+				let mut hotbar = Hotbar::new();
+				let mut grid = InvGrid::default();
+				digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut grid);
+				let bar = HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default());
+				let mut screen = InvScreen::default();
+				screen.open();
+				let mut dl = DrawList::default();
+				let mut hits = HitMap::default();
+				let mut ui = Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style: Style::new(scale),
+				};
+				// The engine's own frame order: screen first, then the bar,
+				// one hit map serving both.
+				screen.build(&mut ui, size, &grid, &inv, 1.0);
+				crate::ui::hud::hotbar(&mut ui, size, &bar, |i| InvId::Bar(i as u8));
+				assert!(
+					(drawn_scale(&hits) - scale).abs() < 1e-4,
+					"{size:?} at {scale}x was supposed to be a case with room"
+				);
+				for i in 0..HOTBAR_SLOTS - 1 {
+					let slot = hits.rect_of(InvId::Bar(i as u8)).unwrap();
+					let cell = hits.rect_of(InvId::Grid(i as u16)).unwrap();
+					assert_eq!(
+						cell.x, slot.x,
+						"{size:?} at {scale}x: grid column {i} is off bar slot {i}"
+					);
+					assert_eq!(cell.w, slot.w, "{size:?} at {scale}x: column {i} width");
+				}
+			}
+		}
 	}
 
 	fn drag(rig: &mut Rig, from: InvId, to: (f32, f32)) -> Option<InvAction> {
