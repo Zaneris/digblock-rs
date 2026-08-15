@@ -13,6 +13,7 @@ members = [
 	"apps/ios",
 	"apps/server",
 	"apps/web",
+	"apps/web-worker",
 	"tools/texgen",
 ]
 

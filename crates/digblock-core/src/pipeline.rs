@@ -30,7 +30,7 @@ pub struct MeshOutput {
 	pub mesh: MeshData,
 }
 
-enum Job {
+pub enum Job {
 	/// Generate the whole vertical chunk stack of column (x, z) — one
 	/// heightmap evaluation serves every chunk in the stack.
 	Generate { x: i32, z: i32, seed: f64 },
@@ -43,7 +43,7 @@ enum Job {
 	},
 }
 
-enum JobResult {
+pub enum JobResult {
 	Generated {
 		x: i32,
 		z: i32,
@@ -159,10 +159,47 @@ fn gi_in_window(pos: ChunkPos, center: (i32, i32), w: i32) -> bool {
 	pos.x >= lo.0 && pos.x < lo.0 + w && pos.z >= lo.1 && pos.z < lo.1 + w
 }
 
-/// How jobs run: a worker-thread pool (native), or synchronously inside
-/// `maintain` (`workers == 0` — the wasm main thread, and a native debug
-/// mode via `--workers 0`). Selected at runtime so the inline path is
-/// testable and benchable everywhere.
+/// A job pool this crate cannot build for itself — the browser's Web
+/// Workers, injected by the launcher exactly as `NetTransport` is, so
+/// `digblock-core` stays free of platform deps and the whole path is
+/// testable in-process (see `ImmediateDispatch` in this file's tests, the
+/// twin of `digblock-net`'s loopback transport).
+///
+/// Everything here is non-blocking: it is called from inside the frame.
+pub trait JobDispatch {
+	/// Is the pool usable at all? False while workers are still starting,
+	/// and permanently false if the platform refused to spawn any — the
+	/// pipeline then runs jobs inline, which is exactly the behaviour
+	/// this trait exists to replace. That fallback is why a browser that
+	/// blocks workers degrades instead of stalling.
+	fn ready(&self) -> bool;
+	/// Non-blocking submit. Hands the job back when the pool is full;
+	/// the caller requeues it (priority is re-evaluated next frame
+	/// anyway). Never run a refused job inline — it is refused because
+	/// the pool is busy, not because it is unavailable.
+	fn submit(&mut self, job: Job) -> Result<(), Job>;
+	/// Drain one finished job, if any. Results arrive asynchronously
+	/// (a worker message is its own event-loop task, not part of this
+	/// frame), so the pipeline pulls them into its own queue each
+	/// `maintain` and drains that under the frame budget.
+	fn poll(&mut self) -> Option<JobResult>;
+	/// Abandon everything in flight: after this returns, a result for any
+	/// job submitted before it must NEVER be delivered.
+	///
+	/// Load-bearing across a world change. A pool outlives the pipeline
+	/// that fed it (see `take_dispatch`), and a `Generated` result carries
+	/// only a column coordinate — so one still in flight from the old
+	/// world would land as authoritative terrain in the new one, at the
+	/// same (x, z), from a different seed. Implementations that can't
+	/// recall a dispatched job must instead discard its reply.
+	fn reset(&mut self);
+}
+
+/// How jobs run: a worker-thread pool (native), an injected out-of-process
+/// pool (the web), or synchronously inside `maintain` (`workers == 0` —
+/// the wasm main thread before its workers are up, and a native debug mode
+/// via `--workers 0`). Selected at runtime so the inline path is testable
+/// and benchable everywhere.
 enum Executor {
 	Inline {
 		/// Results of inline-executed jobs waiting for `drain_results`
@@ -174,20 +211,52 @@ enum Executor {
 		result_rx: Receiver<JobResult>,
 		_handles: Vec<std::thread::JoinHandle<()>>,
 	},
+	External {
+		dispatch: Box<dyn JobDispatch>,
+		/// Both the pool's drained results and any run inline while the
+		/// pool was unavailable. One queue, so the drain, the upload
+		/// budget and `has_pending` need no idea which is which.
+		results: VecDeque<JobResult>,
+	},
 }
 
 impl Executor {
 	fn try_recv(&mut self) -> Option<JobResult> {
 		match self {
-			Executor::Inline { results } => results.pop_front(),
+			Executor::Inline { results } | Executor::External { results, .. } => {
+				results.pop_front()
+			}
 			Executor::Workers { result_rx, .. } => result_rx.try_recv().ok(),
 		}
 	}
 
 	fn has_pending(&self) -> bool {
 		match self {
-			Executor::Inline { results } => !results.is_empty(),
+			Executor::Inline { results } | Executor::External { results, .. } => {
+				!results.is_empty()
+			}
 			Executor::Workers { result_rx, .. } => !result_rx.is_empty(),
+		}
+	}
+
+	/// Where an inline-executed job's result lands. Only the two
+	/// main-thread executors ever run one.
+	fn push_result(&mut self, r: JobResult) {
+		match self {
+			Executor::Inline { results } | Executor::External { results, .. } => {
+				results.push_back(r);
+			}
+			Executor::Workers { .. } => unreachable!("worker pools don't run jobs inline"),
+		}
+	}
+
+	/// True when jobs must run on this thread: the inline executor, or an
+	/// external pool that isn't up yet.
+	fn runs_inline(&self) -> bool {
+		match self {
+			Executor::Inline { .. } => true,
+			Executor::External { dispatch, .. } => !dispatch.ready(),
+			Executor::Workers { .. } => false,
 		}
 	}
 }
@@ -470,6 +539,56 @@ impl Pipeline {
 		self.overlay.as_ref()
 	}
 
+	/// Attach a platform job pool, upgrading the inline executor in place.
+	/// The pool need not be ready yet — jobs keep running inline until it
+	/// is, so nothing has to wait on a worker handshake.
+	///
+	/// Ignored when a worker-thread pool is already running: native has
+	/// one, and two pools would race for the same jobs.
+	pub fn set_dispatch(&mut self, dispatch: Box<dyn JobDispatch>) {
+		let results = match &mut self.exec {
+			Executor::Inline { results } | Executor::External { results, .. } => {
+				std::mem::take(results)
+			}
+			Executor::Workers { .. } => return,
+		};
+		self.exec = Executor::External { dispatch, results };
+	}
+
+	/// Detach the pool so it can outlive this pipeline — a world switch or
+	/// server join rebuilds the pipeline, and workers are expensive to
+	/// start and hold no world state of their own.
+	///
+	/// Resets the pool on the way out: in-flight jobs belong to the world
+	/// being torn down (see [`JobDispatch::reset`]).
+	pub fn take_dispatch(&mut self) -> Option<Box<dyn JobDispatch>> {
+		if !matches!(self.exec, Executor::External { .. }) {
+			return None;
+		}
+		let old = std::mem::replace(
+			&mut self.exec,
+			Executor::Inline {
+				results: VecDeque::new(),
+			},
+		);
+		let Executor::External { mut dispatch, .. } = old else {
+			unreachable!("checked above")
+		};
+		dispatch.reset();
+		self.in_flight = 0;
+		// The abandoned jobs were the only thing that would ever complete
+		// those slots — a chunk popped off the heap and handed to a pool
+		// is remembered nowhere else, so it would sit `Generating` for the
+		// rest of the session. Drop everything unfinished and force a
+		// rescan; `add_column` re-queues vacant slots from scratch. (The
+		// usual caller discards this pipeline anyway, but a half-built
+		// world that never finishes is not a state to leave reachable.)
+		self.store
+			.retain(|_, s| matches!(s.state, ChunkState::Ready(_)));
+		self.scanned = None;
+		Some(dispatch)
+	}
+
 	/// Call every frame with the player's chunk position. Performs the
 	/// visibility scan on chunk-boundary crossings, tops up workers, and
 	/// drains results (mesh outputs capped at `upload_budget`; the whole
@@ -518,7 +637,17 @@ impl Pipeline {
 		// minimum-progress floor (the drain always pulls one result, the
 		// upload loop always does `UPLOAD_MIN`), so a blown deadline delays
 		// work without ever starving it.
-		if matches!(self.exec, Executor::Inline { .. }) {
+		//
+		// An external pool's results arrived as their own event-loop tasks
+		// while this thread was elsewhere; pull them into the queue the
+		// drain reads first, so budgeting, staleness and `has_pending` stay
+		// identical for every executor.
+		if let Executor::External { dispatch, results } = &mut self.exec {
+			while let Some(r) = dispatch.poll() {
+				results.push_back(r);
+			}
+		}
+		if self.exec.runs_inline() {
 			self.run_inline_jobs(inline_allowance);
 		}
 		self.drain_results(&mut out, upload_budget, deadline);
@@ -861,10 +990,7 @@ impl Pipeline {
 			};
 			self.job_cost.observe(is_gen, dur_ms);
 			self.in_flight += 1;
-			let Executor::Inline { results } = &mut self.exec else {
-				unreachable!("run_inline_jobs is only called on Inline")
-			};
-			results.push_back(result);
+			self.exec.push_result(result);
 			if is_gen {
 				floor_done = true;
 			} else {
@@ -875,24 +1001,32 @@ impl Pipeline {
 	}
 
 	/// Returns the number of jobs bounced back because workers were
-	/// saturated (0 or 1 — a bounce ends the loop). No-op on the inline
-	/// executor (its jobs ran in `run_inline_jobs`).
+	/// saturated (0 or 1 — a bounce ends the loop). No-op whenever jobs
+	/// run on this thread (they already ran in `run_inline_jobs`).
 	fn top_up_workers(&mut self) -> u32 {
-		if matches!(self.exec, Executor::Inline { .. }) {
+		if self.exec.runs_inline() {
 			return 0;
 		}
 		while let Some(job) = self.pop_next_job() {
-			let Executor::Workers { job_tx, .. } = &self.exec else {
-				unreachable!("checked above")
+			let sent = match &mut self.exec {
+				Executor::Workers { job_tx, .. } => match job_tx.try_send(job) {
+					Ok(()) => Ok(()),
+					Err(TrySendError::Full(job)) => Err(Some(job)),
+					// The pool is gone; stop feeding it. The job stays
+					// popped — a disconnected pool is a dead client.
+					Err(TrySendError::Disconnected(_)) => Err(None),
+				},
+				Executor::External { dispatch, .. } => dispatch.submit(job).map_err(Some),
+				Executor::Inline { .. } => unreachable!("checked above"),
 			};
-			match job_tx.try_send(job) {
+			match sent {
 				Ok(()) => self.in_flight += 1,
-				Err(TrySendError::Full(job)) => {
-					// Put it back; workers are saturated.
+				// Put it back; the pool is saturated.
+				Err(Some(job)) => {
 					self.requeue(job);
 					return 1;
 				}
-				Err(TrySendError::Disconnected(_)) => break,
+				Err(None) => break,
 			}
 		}
 		0
@@ -1279,7 +1413,9 @@ pub enum ApplyEdit {
 
 /// The job body — two pure functions over owned snapshots. Shared by the
 /// worker threads and the inline executor.
-fn run_job(job: Job) -> JobResult {
+/// The entire worker surface: two pure calls over owned inputs. A
+/// platform job pool needs nothing else from this crate.
+pub fn run_job(job: Job) -> JobResult {
 	let start = web_time::Instant::now();
 	match job {
 		Job::Generate { x, z, seed } => {
@@ -1328,6 +1464,188 @@ mod tests {
 
 	fn mesh_gen(p: &Pipeline, pos: ChunkPos) -> u64 {
 		p.store[&pos].mesh_gen
+	}
+
+	/// The in-process twin of a Web Worker pool, and the reason the
+	/// External executor is testable by plain `cargo test` at all —
+	/// `digblock-net`'s loopback transport plays the same role for the
+	/// wire. Jobs go through the BYTES here, so a codec mistake fails the
+	/// pipeline's own tests instead of only `job_wire`'s.
+	#[derive(Default)]
+	struct DispatchStats {
+		submitted: usize,
+		resets: usize,
+	}
+
+	type Stats = std::rc::Rc<std::cell::RefCell<DispatchStats>>;
+
+	struct ImmediateDispatch {
+		ready: bool,
+		/// Results allowed to sit undelivered before `submit` refuses —
+		/// the saturation path a real pool hits constantly.
+		cap: usize,
+		done: VecDeque<JobResult>,
+		/// Shared with the test, which is how "the pool actually ran
+		/// these" is distinguishable from "they quietly ran inline".
+		stats: Stats,
+	}
+
+	impl ImmediateDispatch {
+		fn new(cap: usize) -> (Self, Stats) {
+			let stats = Stats::default();
+			(
+				Self {
+					ready: true,
+					cap,
+					done: VecDeque::new(),
+					stats: stats.clone(),
+				},
+				stats,
+			)
+		}
+	}
+
+	impl JobDispatch for ImmediateDispatch {
+		fn ready(&self) -> bool {
+			self.ready
+		}
+
+		fn submit(&mut self, job: Job) -> Result<(), Job> {
+			if self.done.len() >= self.cap {
+				return Err(job);
+			}
+			self.stats.borrow_mut().submitted += 1;
+			let job = Job::decode(&job.encode()).expect("job round-trip");
+			let result = run_job(job);
+			self.done
+				.push_back(JobResult::decode(&result.encode()).expect("result round-trip"));
+			Ok(())
+		}
+
+		fn poll(&mut self) -> Option<JobResult> {
+			self.done.pop_front()
+		}
+
+		fn reset(&mut self) {
+			self.stats.borrow_mut().resets += 1;
+			self.done.clear();
+		}
+	}
+
+	/// Per-chunk air flag plus a content checksum — enough to catch a
+	/// dropped cell, a transposed copy, or an air chunk that decoded into
+	/// a look-alike instead of the shared sentinel.
+	fn world_census(p: &Pipeline) -> Vec<(ChunkPos, bool, u64)> {
+		let mut v: Vec<_> = p
+			.store
+			.iter()
+			.map(|(pos, s)| match &s.state {
+				ChunkState::Ready(d) => (
+					*pos,
+					is_air_chunk(d),
+					d.blocks.iter().map(|&c| u64::from(c)).sum::<u64>(),
+				),
+				ChunkState::Generating => (*pos, false, u64::MAX),
+			})
+			.collect();
+		v.sort_by_key(|(p, _, _)| (p.x, p.y, p.z));
+		v
+	}
+
+	/// The executor is an implementation detail of WHERE jobs run, never
+	/// of what they produce. Same seed through a pool and through the
+	/// inline path must land the same world, sky chunks included.
+	#[test]
+	fn an_external_pool_builds_the_same_world_as_inline() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut inline = Pipeline::new(42.0, 3, 0);
+		quiesce(&mut inline, center);
+
+		let mut pooled = Pipeline::new(42.0, 3, 0);
+		let (d, stats) = ImmediateDispatch::new(64);
+		pooled.set_dispatch(Box::new(d));
+		quiesce(&mut pooled, center);
+
+		assert_eq!(world_census(&pooled), world_census(&inline));
+		assert!(
+			stats.borrow().submitted > 0,
+			"the pool must have run the jobs — a silent inline fallback \
+			 would pass the census and prove nothing"
+		);
+	}
+
+	/// A browser that refuses workers, and the seconds before a pool is
+	/// up, are the same case: keep running jobs on this thread.
+	#[test]
+	fn an_unready_pool_runs_jobs_inline() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(42.0, 3, 0);
+		let (mut d, stats) = ImmediateDispatch::new(64);
+		d.ready = false;
+		p.set_dispatch(Box::new(d));
+		quiesce(&mut p, center);
+
+		let mut control = Pipeline::new(42.0, 3, 0);
+		quiesce(&mut control, center);
+		assert_eq!(
+			world_census(&p),
+			world_census(&control),
+			"an unavailable pool must degrade to the inline path, not stall"
+		);
+		assert_eq!(
+			stats.borrow().submitted,
+			0,
+			"nothing may be handed to a pool that isn't up"
+		);
+	}
+
+	/// Saturation is the steady state of a real pool: the world still has
+	/// to finish through the requeue path.
+	#[test]
+	fn a_saturated_pool_still_finishes_the_world() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(42.0, 3, 0);
+		// One outstanding result at a time — every submit past the first
+		// bounces until the drain catches up.
+		let (d, _stats) = ImmediateDispatch::new(1);
+		p.set_dispatch(Box::new(d));
+		quiesce(&mut p, center);
+
+		let mut control = Pipeline::new(42.0, 3, 0);
+		quiesce(&mut control, center);
+		assert_eq!(world_census(&p), world_census(&control));
+	}
+
+	/// A pool outlives the pipeline that fed it, so detaching one must
+	/// abandon its in-flight work — a `Generated` result carries only a
+	/// column coordinate, and the next world reuses those coordinates.
+	#[test]
+	fn taking_the_pool_back_resets_it() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(42.0, 3, 0);
+		let (d, stats) = ImmediateDispatch::new(64);
+		p.set_dispatch(Box::new(d));
+		// One maintain is enough to have work outstanding.
+		p.maintain(center, usize::MAX, None, None);
+
+		let taken = p.take_dispatch().expect("a pool was attached");
+		assert_eq!(
+			stats.borrow().resets,
+			1,
+			"a detached pool must abandon the old world's jobs"
+		);
+		assert_eq!(p.in_flight, 0, "in-flight work went with the pool");
+		assert!(
+			p.take_dispatch().is_none(),
+			"the executor fell back to inline"
+		);
+		drop(taken);
+
+		// And the fallback still builds the world.
+		quiesce(&mut p, center);
+		let mut control = Pipeline::new(42.0, 3, 0);
+		quiesce(&mut control, center);
+		assert_eq!(world_census(&p), world_census(&control));
 	}
 
 	#[test]

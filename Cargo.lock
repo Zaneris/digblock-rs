@@ -951,6 +951,7 @@ version = "0.3.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
+ "digblock-core",
  "digblock-net",
  "digblock-net-web",
  "digblock-persist",
@@ -963,6 +964,15 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "digblock-web-worker"
+version = "0.3.0"
+dependencies = [
+ "console_error_panic_hook",
+ "digblock-core",
+ "wasm-bindgen",
 ]
 
 [[package]]

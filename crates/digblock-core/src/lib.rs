@@ -12,6 +12,7 @@ pub mod gi;
 pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
+pub mod job_wire;
 pub mod mesher;
 pub mod metrics;
 pub mod overlay;

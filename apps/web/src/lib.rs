@@ -7,6 +7,7 @@ use digblock_render::{Engine, EngineConfig};
 use wasm_bindgen::prelude::*;
 
 mod audio;
+mod jobs;
 mod services;
 mod settings;
 mod store;
@@ -97,11 +98,21 @@ pub fn start() -> Result<(), JsValue> {
 	// a pure function of the frame index, so `?warp=600` lands the browser
 	// on bit-identically the camera `--warp 600` lands the desktop on.
 	//
-	// ?warp is the one that measures RENDER cost. ?bench travels at 30
-	// blocks/s, and the web client runs chunk jobs inline on the main
-	// thread (`workers: 0`), so a travelling flight there is dominated by
-	// single-threaded worldgen and says almost nothing about the GI.
+	// ?warp is the one that measures RENDER cost: ?bench travels at 30
+	// blocks/s, which is a STREAMING regime, so a travelling flight is
+	// dominated by how fast chunks arrive and says little about the GI.
+	// (That used to be near-total — jobs ran on the main thread here —
+	// and is merely large now that a worker pool runs them.) Pair ?bench
+	// with ?frames=N: the summary is emitted at that boundary.
 	config.bench = flag(&params, "bench");
+	// A capture path must not sit on a menu screen. Desktop gets this for
+	// free — `EngineConfig::desktop()` starts menu-less — but the web
+	// default is a menu like an interactive launch, so `?bench` opened the
+	// title screen and the scripted flight never ran: a summary line with
+	// `fill n/a` over a backdrop world, measuring nothing.
+	if config.bench {
+		config.menu = false;
+	}
 	if let Some(n) = param::<u32>(&params, "fly") {
 		config.fly = Some(n);
 	}
@@ -110,6 +121,14 @@ pub fn start() -> Result<(), JsValue> {
 		config.warp = true;
 	}
 	config.walk = flag(&params, "walk");
+	// Chunk jobs run in Web Workers when the machine has cores to spare
+	// (jobs.rs); `?workers=N` overrides for A/B, and 0 is the pre-pool
+	// inline path exactly. The pipeline is told nothing — it upgrades when
+	// a pool is attached below — so this only records what to start, and
+	// what the debug overlay reports.
+	config.workers = param(&params, "workers").map_or_else(jobs::default_count, |n: usize| {
+		n.min(jobs::WORKERS_HARD_MAX)
+	});
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
@@ -139,9 +158,26 @@ pub fn start() -> Result<(), JsValue> {
 		Some(m) => Some(m),
 		None => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
 	};
+	let workers = config.workers;
 	let mut engine = Engine::new(config);
 	engine.set_settings_store(Box::new(settings::save));
 	engine.set_world_store(Box::new(store::LocalStorageWorldStore::new()));
+	// Chunk jobs move to Web Workers when there are cores for them. The
+	// pool is attached before the first frame but reports unready until a
+	// worker has instantiated, so the opening seconds still stream inline
+	// and nothing waits on a handshake.
+	if workers > 0 {
+		match worker_module_url() {
+			Some(url) => {
+				if let Some(pool) = jobs::WorkerPool::start(&url, workers) {
+					engine.set_job_dispatch(Box::new(pool));
+				}
+			}
+			// An older index.html, or the bundle served by hand: no pool,
+			// and the client behaves exactly as it did before there was one.
+			None => log::warn!("no worker module on the page; chunk jobs stay inline"),
+		}
+	}
 	// ?mute kills the whole audio stack; otherwise sound starts on the
 	// first click/keydown (Chrome's autoplay gesture rule).
 	if !flag(&params, "mute") {
@@ -154,10 +190,27 @@ pub fn start() -> Result<(), JsValue> {
 		engine,
 		digblock_platform::RunOptions {
 			title: "DigBlock".into(),
+			// `?frames=N` ends the run at frame N, which is what makes the
+			// bench summary reachable here (see `?bench`): winit's exit on
+			// wasm doesn't reliably run destructors, so the platform logs
+			// the summary at that boundary rather than from `Drop`.
+			exit_after_frames: param(&params, "frames"),
 			..Default::default()
 		},
 	)
 	.map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// The stamped worker module's URL, published on the global object by
+/// index.html — the only file that knows a build stamp. Keeping it there
+/// is what lets both modules be immutable-by-name: a stale index can ask
+/// for a pair that no longer exists (a clean 404, self-healing on reload)
+/// but never for half of a live one.
+fn worker_module_url() -> Option<String> {
+	js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__digblockWorkerUrl"))
+		.ok()
+		.and_then(|v| v.as_string())
+		.filter(|s| !s.is_empty())
 }
 
 /// Load-or-create the persistent identity secret (32 hex chars in

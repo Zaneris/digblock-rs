@@ -197,26 +197,43 @@ build-web:
 		echo "  cargo install wasm-bindgen-cli --version $want"
 		exit 1
 	fi
-	cargo build -p digblock-web --target wasm32-unknown-unknown --release
+	cargo build -p digblock-web -p digblock-web-worker \
+		--target wasm32-unknown-unknown --release
 	wasm=target/wasm32-unknown-unknown/release/digblock_web.wasm
+	worker=target/wasm32-unknown-unknown/release/digblock_web_worker.wasm
 	# The bindgen version is part of the stamp: it decides the mangled
 	# import names too, so the same wasm through a new CLI is a new pair.
 	if command -v sha256sum >/dev/null 2>&1; then sha=sha256sum; else sha="shasum -a 256"; fi
 	stamp=$( { cat "$wasm"; echo "$want"; } | $sha | cut -c1-12)
+	# The chunk-job worker (apps/web-worker) is a SECOND, independent pair:
+	# its own module, its own glue, its own stamp from its own bytes. Two
+	# pairs rather than one shared stamp, because a shared one would rename
+	# both modules whenever either changed and force clients to re-download
+	# a worker that hadn't moved. The invariant is unchanged and simply
+	# applied twice — each pair is immutable by name, and only index.html
+	# knows either stamp.
+	wstamp=$( { cat "$worker"; echo "$want"; } | $sha | cut -c1-12)
 	# Wipe the dir, or every local build leaves its predecessor behind and
 	# `pages deploy` uploads the lot.
 	rm -rf target/web/pkg
 	wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
 		--out-name "digblock_web_$stamp" "$wasm"
-	# Rewrites both references at once: `digblock_web.js` and
-	# `digblock_web_bg.wasm` are the same prefix wasm-bindgen just stamped.
-	sed "s|digblock_web|digblock_web_$stamp|g" apps/web/index.html > target/web/index.html
+	wasm-bindgen --target web --no-typescript --out-dir target/web/pkg \
+		--out-name "digblock_worker_$wstamp" "$worker"
+	# Rewrites every reference at once: within each pair the `.js` and the
+	# `_bg.wasm` share the prefix wasm-bindgen just stamped. The two
+	# patterns cannot collide — `digblock_worker` does not contain
+	# `digblock_web` — but the worker goes first regardless, so a future
+	# rename can only break the build rather than mis-stamp a live pair.
+	sed -e "s|digblock_worker|digblock_worker_$wstamp|g" \
+		-e "s|digblock_web|digblock_web_$stamp|g" \
+		apps/web/index.html > target/web/index.html
 	cp apps/web/_headers target/web/
 
 # Fast "is the web client still green" gate — no wasm-bindgen-cli needed.
 check-web:
-	cargo clippy -p digblock-web -p digblock-render -p digblock-platform \
-		--target wasm32-unknown-unknown -- -D warnings
+	cargo clippy -p digblock-web -p digblock-web-worker -p digblock-render \
+		-p digblock-platform --target wasm32-unknown-unknown -- -D warnings
 
 check:
 	cargo fmt --all --check
