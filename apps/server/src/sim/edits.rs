@@ -1124,30 +1124,8 @@ mod tests {
 	#[test]
 	fn bedrock_floor_refuses_digs() {
 		use digblock_core::block::BEDROCK_Y;
-		use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
-		use std::sync::Arc;
 
-		let source: crate::store::ColumnSource = Arc::new(|_cx, _cz| {
-			let mut floor = ChunkData::default();
-			for z in 0..16 {
-				for x in 0..16 {
-					floor.set(x, 0, z, BlockType::Stone);
-				}
-			}
-			let floor = Arc::new(floor);
-			(0..WORLD_VCHUNK as usize)
-				.map(|cy| {
-					if cy == 0 {
-						floor.clone()
-					} else {
-						AIR_CHUNK.clone()
-					}
-				})
-				.collect()
-		});
-		let spawn = Vec3::new(8.5, BEDROCK_Y as f32 + 2.5, 8.5);
-		let dir = temp_dir("bedrock");
-		let mut sim = super::super::Sim::new_with_source(SEED, &dir, 1, 2, source, spawn).unwrap();
+		let mut sim = bedrock_sim("bedrock");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 
@@ -1172,6 +1150,324 @@ mod tests {
 			Some(BlockType::Stone),
 			"floor block survived"
 		);
+	}
+
+	/// Nothing at all writes the world floor — every action the wire can
+	/// carry, driven against it in one world.
+	///
+	/// `dig_hardness(BEDROCK_Y) == None` is already pinned in block.rs and
+	/// it proves nothing about the call sites, because most of the writes
+	/// that can reach the floor are DERIVED rather than aimed: the
+	/// Resonant Pick's plane spreads onto cells the player never named, a
+	/// door's second half is worked out from the half you hit, a placement
+	/// lands one cell PAST the ray's target, and fluid falls into holes
+	/// nobody clicked. Each of those is its own seam and each has to
+	/// refuse on its own, so each is staged here and driven through the
+	/// real `Sim` — raycast, validation, write, journal, broadcast.
+	///
+	/// The floor is protected POSITIONALLY, never by block identity (there
+	/// is no bedrock block type; worldgen leaves plain Stone at y = 0), so
+	/// the phases below deliberately stand a slab of other things in it —
+	/// a door, a water source, a hole — and none of them opens a way in.
+	#[test]
+	fn nothing_writes_the_world_floor() {
+		use digblock_core::block::BEDROCK_Y as FLOOR;
+
+		/// Did the server refuse something as `Protected` since the last
+		/// clear? Both shapes count: `DigRefused` answers a hold that is
+		/// never allowed to open, `EditRejected` answers a write that was
+		/// assembled and then thrown out, and the phases below land on
+		/// different ones.
+		fn said_protected(c: &TestClient) -> bool {
+			c.msgs.iter().any(|m| {
+				matches!(
+					m,
+					ServerMsg::EditRejected {
+						reason: RejectReason::Protected,
+						..
+					} | ServerMsg::DigRefused {
+						reason: RejectReason::Protected,
+						..
+					}
+				)
+			})
+		}
+
+		let mut sim = bedrock_sim("floorpin");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let pos = sim.test_player(1).unwrap().pos;
+		let (sx, sz) = (pos.x.floor() as i32, pos.z.floor() as i32);
+		let mut t = 0;
+
+		// ---- 1. an ordinary hold-to-dig on the floor --------------------
+		// Refused when the hold STARTS, so the player is never left holding
+		// the button through a full timer for nothing.
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let dug = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+		assert_eq!(dug.1, FLOOR, "the ray has to reach the floor layer");
+		c.drain();
+		assert!(said_protected(&c), "a plain dig: {:?}", c.msgs);
+		assert_eq!(
+			sim.test_block_at(dug.0, dug.1, dug.2),
+			Some(BlockType::Stone),
+			"a plain dig broke the floor"
+		);
+		c.msgs.clear();
+
+		// ---- 2. a PLACE whose target lands in the floor plane ------------
+		// A placement writes `hit + normal`, and every ray from open air
+		// meets the floor's TOP face, whose normal points away from it — so
+		// the only exposure is a SIDE face, and that takes a hole beside the
+		// cell. Stage one (nothing in this test can open it, which is the
+		// point) and shoot through it at the wall it exposes: the target is
+		// then squarely a floor cell and the protected-write scan is the
+		// only thing left between the request and the store.
+		let hole = (sx - 1, FLOOR, sz);
+		let wall = (sx - 2, FLOOR, sz);
+		sim.test_set_cell(hole.0, hole.1, hole.2, BlockType::Air as u16);
+		sim.test_grant(1, BlockType::Stone, 1);
+		let dir = (Vec3::new(hole.0 as f32, FLOOR as f32 + 0.5, sz as f32 + 0.5) - pos).normalize();
+		let hit = raycast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("a wall through the hole");
+		assert_eq!(
+			(hit.cell, hit.normal),
+			(wall, (1, 0, 0)),
+			"the shot has to reach a SIDE face of the floor or this phase is vacuous"
+		);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 2,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: dir.to_array(),
+				kind: EditKind::Place {
+					block: BlockType::Stone as u16,
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(said_protected(&c), "a place into the floor: {:?}", c.msgs);
+		assert_eq!(
+			sim.test_block_at(hole.0, hole.1, hole.2),
+			Some(BlockType::Air),
+			"a placement landed in the floor plane"
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			1,
+			"stock spent on a refused place"
+		);
+		c.msgs.clear();
+
+		// ---- 3. a door pair straddling the floor -------------------------
+		// A door is ONE object across two cells, so both of its writes are
+		// derived from whichever half the ray found. Stand one with its
+		// lower half IN the floor and work the UPPER half — the half that is
+		// not protected — twice: a toggle, then a dig. Each assembles a
+		// write for the partner at y = 0, and each has to refuse the whole
+		// action rather than half-applying it.
+		let upper = (sx, FLOOR + 1, sz - 3);
+		let lower = (upper.0, FLOOR, upper.2);
+		let lower_cell = make_cell(
+			BlockType::LumberDoor,
+			door_state(Facing::PosZ, false, false),
+		);
+		let upper_cell = make_cell(BlockType::LumberDoor, door_state(Facing::PosZ, false, true));
+		sim.test_set_cell(lower.0, lower.1, lower.2, lower_cell);
+		sim.test_set_cell(upper.0, upper.1, upper.2, upper_cell);
+		// A closed PosZ leaf hugs the low-z face of its cell, so aim just
+		// inside it; the player stands on the high-z side.
+		let door_dir = (Vec3::new(
+			upper.0 as f32 + 0.5,
+			upper.1 as f32 + 0.5,
+			upper.2 as f32 + 0.05,
+		) - pos)
+			.normalize();
+		let door_hit = raycast(pos, door_dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("the upper leaf");
+		assert_eq!(door_hit.cell, upper, "the shot has to find the upper half");
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq: 3,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: door_dir.to_array(),
+				kind: EditKind::Interact,
+				cell: [upper.0, upper.1, upper.2],
+				normal: [0, 0, 0],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(said_protected(&c), "a door toggle: {:?}", c.msgs);
+		assert_eq!(
+			sim.test_cell_at(lower.0, lower.1, lower.2),
+			Some(lower_cell),
+			"a toggle swung the half standing in the floor"
+		);
+		assert_eq!(
+			sim.test_cell_at(upper.0, upper.1, upper.2),
+			Some(upper_cell),
+			"nothing partially toggles"
+		);
+		c.msgs.clear();
+
+		let door_hold = BlockType::LumberDoor.hardness_ticks().unwrap() as u32 + 6;
+		dig_hold(&mut sim, 1, door_dir, door_hold, 4, EditKind::Dig, &mut t);
+		c.drain();
+		assert!(said_protected(&c), "a door dig: {:?}", c.msgs);
+		assert_eq!(
+			sim.test_cell_at(lower.0, lower.1, lower.2),
+			Some(lower_cell),
+			"digging the free half cleared its partner out of the floor"
+		);
+		assert_eq!(
+			sim.test_cell_at(upper.0, upper.1, upper.2),
+			Some(upper_cell),
+			"nothing partially breaks"
+		);
+		c.msgs.clear();
+
+		// ---- 4. a bucket scoop out of the floor --------------------------
+		// A Collect empties its cell as surely as a dig does, and it picks
+		// its target with the FLUID ray rather than the plain one — a
+		// second entry into the same gate. The bucket is `always_owned` and
+		// its slot is pinned last, which is what `dig_hold` declares.
+		let spring = (sx + 2, FLOOR, sz);
+		sim.test_set_cell(spring.0, spring.1, spring.2, BlockType::Water as u16);
+		let scoop_dir = (Vec3::new(
+			spring.0 as f32 + 0.5,
+			FLOOR as f32 + 0.6,
+			spring.2 as f32 + 0.5,
+		) - pos)
+			.normalize();
+		let scoop_hit = digblock_core::raycast::raycast_fluid(pos, scoop_dir, REACH, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		})
+		.expect("the spring");
+		assert_eq!(scoop_hit.cell, spring, "the fluid ray has to stop in it");
+		// The hold length is immaterial — the refusal lands at DigStart, so
+		// no hold is ever recorded to complete against.
+		dig_hold(&mut sim, 1, scoop_dir, 20, 5, EditKind::Collect, &mut t);
+		c.drain();
+		assert!(said_protected(&c), "a scoop: {:?}", c.msgs);
+		assert_eq!(
+			sim.test_block_at(spring.0, spring.1, spring.2),
+			Some(BlockType::Water),
+			"a scoop emptied a floor cell"
+		);
+		c.msgs.clear();
+
+		// ---- 5. the Resonant Pick's plane --------------------------------
+		// The one phase whose action must SUCCEED. A nine-wide swing at the
+		// lower cell of a wall standing on the floor puts the floor row
+		// squarely in the plane, holding the very same Stone id, so nothing
+		// but `pick::breaks_as_extra`'s own y test keeps it out. Filtering
+		// is what is being pinned, NOT refusal: a locked spawn deliberately
+		// refuses the whole swing, and doing that at the floor made the pick
+		// stop working at the bottom of every mine and blame a cell the
+		// player never aimed at.
+		let px = sx + 3;
+		for y in [FLOOR + 1, FLOOR + 2] {
+			for z in (sz - 1)..=(sz + 1) {
+				sim.test_set_cell(px, y, z, BlockType::Stone as u16);
+			}
+		}
+		sim.bench_set_mining_level(1, 85);
+		sim.bench_set_active_tool(1, BlockType::ResonantPick);
+		let face = (px, FLOOR + 1, sz);
+		let swing = (Vec3::new(px as f32, FLOOR as f32 + 1.5, sz as f32 + 0.5) - pos).normalize();
+		let swing_hit = raycast(pos, swing, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("the wall's lower cell");
+		assert_eq!(
+			(swing_hit.cell, swing_hit.normal),
+			(face, (-1, 0, 0)),
+			"the swing has to enter through a vertical face"
+		);
+		assert!(
+			digblock_core::pick::cells(
+				swing_hit.cell,
+				swing_hit.normal,
+				swing.to_array(),
+				digblock_core::unlock::pick_cells(85),
+				|_| true,
+			)
+			.contains(&(px, FLOOR, sz)),
+			"the plane has to straddle the floor or this phase is vacuous"
+		);
+		let swing_hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+		dig_hold(&mut sim, 1, swing, swing_hold, 6, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(
+			sim.test_cell_at(face.0, face.1, face.2),
+			Some(0),
+			"the swing itself has to land, or the phase proves nothing: {:?}",
+			c.msgs
+		);
+		for z in (sz - 1)..=(sz + 1) {
+			assert_eq!(
+				sim.test_block_at(px, FLOOR, z),
+				Some(BlockType::Stone),
+				"the pick's plane reached the floor at z = {z}"
+			);
+		}
+		c.msgs.clear();
+
+		// ---- 6. fluid falling into a hole in the floor -------------------
+		// The write nobody requested. `water_cannot_flow_into_a_locked_region`
+		// covers the region half of the same predicate; this covers the
+		// floor half, which a lock test cannot — drop the `y <= WORLD_FLOOR`
+		// clause from `protect::immutable` and that test still passes.
+		let sink = (sx, FLOOR, sz + 3);
+		let src = (sink.0 - 1, FLOOR + 1, sink.2);
+		sim.test_set_cell(sink.0, sink.1, sink.2, BlockType::Air as u16);
+		assert!(sim
+			.store
+			.set_block(src.0, src.1, src.2, BlockType::Water)
+			.is_some());
+		sim.fluid.schedule_around(src.0, src.1, src.2);
+		for _ in 0..240 {
+			sim.tick_once(vec![]);
+		}
+		// The source rests on solid floor, so it spreads sideways and the
+		// flow arrives OVER the hole — which is what makes the next
+		// assertion about the floor rather than about a sim that never ran.
+		assert!(
+			sim.test_block_at(sink.0, sink.1 + 1, sink.2)
+				.is_some_and(BlockType::is_water),
+			"fluid never reached the hole; the phase proves nothing"
+		);
+		assert_eq!(
+			sim.test_block_at(sink.0, sink.1, sink.2),
+			Some(BlockType::Air),
+			"water fell into the world floor"
+		);
+
+		// ---- 7. the extraction seam --------------------------------------
+		// A field extraction is TIMED and CREDITED as the ore, so the
+		// completion gate asks `dig_hardness` of a block that is not the one
+		// in the world (`ore::dig_block`). That composition is the one gate
+		// no staged scene can reach — ore is derived from position and
+		// `deposit_in` keeps every blob clear of the floor, so there is no
+		// vein at y = 0 to aim at — and it is exactly the seam where a cell
+		// holding Stone could be dug on another block's hardness.
+		for &ore in &BlockType::ALL {
+			assert!(
+				digblock_core::worldgen::ore::dig_block(
+					digblock_core::worldgen::ore::DigMode::Extract(ore),
+					BlockType::Stone,
+				)
+				.dig_hardness(FLOOR)
+				.is_none(),
+				"an extraction timed as {ore:?} would complete at the floor"
+			);
+		}
 	}
 
 	/// The reserved state nibble travels the wire but nothing consumes

@@ -1094,9 +1094,41 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 	// with it — physics drops the camera onto that floor within a frame
 	// or two of a capture starting, and a pose that has to be looked up
 	// at is a pose nobody frames correctly.
-	let floor = d.y - 2;
+	//
+	// Guarded exactly like the carve, and for the same reason: this plate
+	// is laid THROUGH the blob. A max-radius deposit reaches
+	// `ore::MAX_RADIUS` = 2 straight down, so the cell right under the
+	// centre sits on the rim and `rim_open` keeps it three times in four —
+	// and the plan is applied through `pipeline.set_cell`, which records
+	// into the `EditOverlay`, after which `ore::revealed` answers None for
+	// that cell forever. An unguarded plate quietly deletes the vein it
+	// was laid down to photograph.
+	//
+	// Dropping the whole plane clear of the deposit instead (`d.y -
+	// MAX_RADIUS - 1`) would not replace this guard and would cost the
+	// pose: `ore_at` answers for every deposit in the 3×3×3 apron and not
+	// just this one, so a neighbour's blob can cross whatever plane we
+	// pick, and a floor a block lower puts the eye UNDER the vein — the
+	// one thing this scene exists to get right. Where a vein does cross,
+	// the cell keeps its pristine worldgen value, which is the ore-bearing
+	// Stone itself: the floor stays walkable and the seam simply runs
+	// through it. Only a cave cell a deposit happens to claim leaves a
+	// real gap, and that is the same hazard the carve above already
+	// accepts.
+	// Never at or below the world floor. `deposit_in` now keeps a whole
+	// BLOB clear of `BEDROCK_Y + MAX_RADIUS`, so `d.y >= 3` and this
+	// `max` cannot bite today — it is here because that is a coupling
+	// two modules apart, and the plate must not silently start writing
+	// the one plane the game promises is untouchable if the ore
+	// constraint is ever loosened. Clamped rather than skipped so the
+	// plate stays whole: a floor with holes in it is a worse capture
+	// than a floor one block high.
+	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
 	for z in (d.z - R)..=(d.z + R) {
 		for x in (d.x - R)..=(d.x + R) {
+			if ore::ore_at(x, floor, z, seed).is_some() {
+				continue;
+			}
 			plan.push((x, floor, z, BlockType::Stone as u16));
 		}
 	}
@@ -4165,6 +4197,22 @@ impl Engine {
 				make_cell(block, door_state(quantized_facing(dir), false, true)),
 			));
 		}
+		// Protected cells, scanned over the ASSEMBLED placements so a
+		// door's derived upper half and a slab grow (which rewrites the
+		// hit cell, not the one past its face) are both covered — the
+		// mirror of the server's scan over `writes`. Until now the only
+		// thing between a place and the world floor was
+		// `cell_is_replaceable`, which asks about block IDENTITY, and the
+		// floor rule is the one rule that must never depend on what
+		// happens to be standing there. Only the floor is knowable
+		// client-side; a spawn lock arrives as a rejection instead.
+		if placements
+			.iter()
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+		{
+			self.push_feed(digblock_core::protect::REFUSE_PLACE_MSG.into());
+			return;
+		}
 		if placements
 			.iter()
 			.any(|&(c, v)| digblock_core::player::placement_blocked(self.body_pos(), c, v))
@@ -4248,6 +4296,16 @@ impl Engine {
 			if BlockType::from_id(cell_id(pc)).is_door() {
 				entries.push((partner, pc, door_toggled(pc)));
 			}
+		}
+		// A door in a protected cell is furniture, not a mechanism — the
+		// same refusal the server makes over its own write list, and
+		// scanned over both halves because a leaf can straddle the floor
+		// with only its upper cell reachable.
+		if entries
+			.iter()
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+		{
+			return;
 		}
 		// Closing must not trap anyone — locally gate on ourselves; the
 		// server gates on every player.
@@ -6001,6 +6059,20 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 	}
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
+		// The world floor, refused exactly where the server's `StoreWorld`
+		// refuses it — offline this pipeline IS the authority, so the two
+		// have to answer alike or a local save diverges from the same
+		// world hosted. Refusing the WRITE rather than filtering the
+		// schedule is what covers every direction of approach:
+		// `schedule_around` always enqueues (x, 0, z), and until now only
+		// `cur.props().collides` kept water out of it — a property of
+		// whatever block happens to sit there, which is precisely what
+		// the floor rule must not depend on. The sim reads `false` as
+		// "didn't land" and declines to propagate onward. A spawn lock is
+		// server-only knowledge and stays unpredicted, hence `None`.
+		if digblock_core::protect::immutable(x, y, z, None) {
+			return false;
+		}
 		self.0.set_block(x, y, z, b).is_some()
 	}
 }
@@ -7152,5 +7224,93 @@ mod dig_decay_tests {
 		let d = engine.dig.as_ref().expect("the new hold opened");
 		assert_eq!(d.cell, other, "on the other block");
 		assert_eq!((d.ticks, d.idle), (0, 0), "from scratch");
+	}
+}
+
+#[cfg(test)]
+mod ore_capture_tests {
+	use super::*;
+	use digblock_core::worldgen::ore;
+
+	/// The chamber's own radius, mirrored from `debug_ore_plan`'s `R` so
+	/// the plate's footprint can be reasoned about from outside it.
+	const R: i32 = 5;
+
+	/// DIG_ORE's one rule, and the only one that makes the scene work at
+	/// all: the plan must not write over a single cell the deposit
+	/// claims. A write reaches the anti-dupe for real — the plan is
+	/// applied through `pipeline.set_cell`, which records into the
+	/// `EditOverlay`, and `ore::revealed` answers None for an edited cell
+	/// forever — so a stray write deletes the subject of the photograph
+	/// permanently, and silently, because the chamber still looks right.
+	///
+	/// The carve loop always guarded this. The floor plate did not, and
+	/// it is laid at `d.y - 2`, straight through the lowest rim of a
+	/// max-radius blob: the cell directly under the centre sits at
+	/// `d2 == r2`, so `Deposit::contains` falls through to `rim_open` and
+	/// keeps it three times in four.
+	///
+	/// `crossings` is what stops this going vacuous. It counts the vein
+	/// cells lying IN the plate's plane, so a sample that never puts one
+	/// there fails as loudly as a plan that paves over them — and the
+	/// plate is asserted to be exactly the plane minus those cells, which
+	/// pins that the guard skips the vein and nothing else.
+	#[test]
+	fn the_ore_capture_plan_never_writes_over_the_vein() {
+		let mut crossings = 0usize;
+		let mut plans = 0usize;
+		for i in 0..20 {
+			let seed = 1000.0 + f64::from(i) * 37.5;
+			// Any pose does: the plan only reads spawn's x/z, to pick the
+			// nearest deposit of the tier. Skipping the worldgen spawn
+			// search keeps this a pure ore-geometry test.
+			let spawn = Vec3::new(0.0, 90.0, 0.0);
+			for tier in 1..=ore::ORES.len() {
+				let (pos, plan) = debug_ore_plan(spawn, seed, tier);
+				if plan.is_empty() {
+					continue;
+				}
+				plans += 1;
+				for &(x, y, z, cell) in &plan {
+					assert!(
+						ore::ore_at(x, y, z, seed).is_none(),
+						"seed {seed} tier {tier}: plan writes {cell} over the vein \
+						 at {x},{y},{z}"
+					);
+				}
+				// The plate is the plan's only Stone, and the pose is
+				// authored from the deposit centre — enough to rebuild the
+				// footprint the unguarded loop used to pave.
+				let plate: Vec<_> = plan
+					.iter()
+					.filter(|c| c.3 == BlockType::Stone as u16)
+					.collect();
+				let floor = plate[0].1;
+				assert!(
+					plate.iter().all(|c| c.1 == floor),
+					"seed {seed} tier {tier}: the plate is one plane"
+				);
+				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
+				let mut vein = 0usize;
+				for z in (cz - R)..=(cz + R) {
+					for x in (cx - R)..=(cx + R) {
+						vein += usize::from(ore::ore_at(x, floor, z, seed).is_some());
+					}
+				}
+				let square = (2 * R + 1).pow(2) as usize;
+				assert_eq!(
+					plate.len() + vein,
+					square,
+					"seed {seed} tier {tier}: the plate is the plane minus the vein"
+				);
+				crossings += vein;
+			}
+		}
+		assert!(plans > 50, "the sample found deposits to photograph");
+		assert!(
+			crossings > 0,
+			"no vein crossed a floor plane in {plans} plans — this sample \
+			 cannot tell a guarded plate from an unguarded one"
+		);
 	}
 }

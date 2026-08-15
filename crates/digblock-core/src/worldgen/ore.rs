@@ -133,8 +133,16 @@ fn deposit_in(gx: i32, gy: i32, gz: i32, seed: f64) -> Option<Deposit> {
 	let y = gy * CELL + ((h >> 16) & 0xFF) as i32 % CELL;
 	let z = gz * CELL + ((h >> 24) & 0xFF) as i32 % CELL;
 	// The world floor is undiggable, and a vein you can see and never
-	// reach is worse than no vein.
-	if y <= crate::block::BEDROCK_Y {
+	// reach is worse than no vein — so the whole BLOB has to clear it,
+	// not just the centre. Guarding the centre alone left a deposit
+	// seeded at y = 1 or 2 reaching [`MAX_RADIUS`] below itself into
+	// y = 0, where `column_block` puts ordinary Stone (there is no
+	// bedrock block; the floor is positional). The reveal stamped it,
+	// the seam glittered in the bottom layer of the world, and
+	// `dig_hardness` then refused every hold on it forever — with
+	// `dig_mode` answering NeedsSiphon, which sends a player off to
+	// craft a tool for a block that can never break.
+	if y - MAX_RADIUS <= crate::block::BEDROCK_Y {
 		return None;
 	}
 	let ore = tier_at(y, h >> 32)?;
@@ -411,6 +419,16 @@ mod tests {
 	/// Golden per-seed positions, in the mould of `spawn_positions_are_pinned`:
 	/// a test that only asks whether ore MOVED cannot catch ore that moved
 	/// somewhere bad, so this pins where it actually is.
+	///
+	/// These numbers moved once, deliberately, and the old set is worth
+	/// recording because it was pinning a bug rather than guarding
+	/// against one: five of its six cells sat at y = 1 and the sixth at
+	/// y = 2, i.e. the first thing this golden ever described was a vein
+	/// packed against the undiggable floor. `deposit_in` guarded only the
+	/// deposit's CENTRE, so a blob reached [`MAX_RADIUS`] further down
+	/// into cells no dig can ever open. Everything here is now clear of
+	/// `BEDROCK_Y + MAX_RADIUS`, which
+	/// `no_vein_reaches_the_undiggable_floor` enforces in general.
 	#[test]
 	fn ore_positions_are_pinned() {
 		let found: Vec<_> = ore_cells(42.0).into_iter().take(6).collect();
@@ -418,13 +436,65 @@ mod tests {
 		assert_eq!(
 			found,
 			vec![
-				(-19, 1, 3, B::Emberore),
-				(-20, 1, 4, B::Emberore),
-				(-19, 1, 4, B::Emberore),
-				(-18, 1, 4, B::Emberore),
-				(-19, 1, 5, B::Emberore),
-				(-19, 2, 4, B::Emberore),
+				(46, 3, 6, B::Emberore),
+				(47, 3, 6, B::Emberore),
+				(48, 3, 6, B::Emberore),
+				(46, 4, 5, B::Emberore),
+				(47, 4, 5, B::Emberore),
+				(48, 4, 5, B::Emberore),
 			]
+		);
+		// The floor rule, restated against the golden itself, so a future
+		// re-pin cannot quietly walk these back down into the floor.
+		for &(_, y, _, _) in &found {
+			assert!(y > crate::block::BEDROCK_Y + MAX_RADIUS, "pinned at y {y}");
+		}
+	}
+
+	/// No ore is ever placed where no dig can reach it.
+	///
+	/// Asked of the CELLS rather than the deposits, because that is the
+	/// property that matters and it is the one the centre-only guard
+	/// missed: `deposit_in` refused a centre at or below the floor, but
+	/// a blob reaches [`MAX_RADIUS`] further down, so a deposit seeded at
+	/// y = 1 put ore in y = 0. There is no bedrock block — `column_block`
+	/// fills the floor with ordinary Stone — so the reveal saw a pristine
+	/// Stone cell and stamped it, and `dig_hardness` then refused every
+	/// hold on the seam forever.
+	///
+	/// Swept over several seeds because the failure is a hash away: one
+	/// seed's grid can easily have no deposit low enough to expose it.
+	#[test]
+	fn no_vein_reaches_the_undiggable_floor() {
+		use crate::block::BEDROCK_Y;
+		let mut low = 0u32;
+		for &seed in &[7.0f64, -3.5, 1234.5, 0.0, 98765.25] {
+			// Every y a blob could touch at or below the floor, plus the
+			// first diggable layer as the positive control.
+			for y in (BEDROCK_Y - MAX_RADIUS)..=(BEDROCK_Y + 1) {
+				for z in -60..60 {
+					for x in -60..60 {
+						let found = ore_at(x, y, z, seed);
+						if y <= BEDROCK_Y {
+							assert!(
+								found.is_none(),
+								"{found:?} at {x},{y},{z} (seed {seed}) — the floor \
+								 is undiggable, so this seam could never be mined"
+							);
+						} else if found.is_some() {
+							low += 1;
+						}
+					}
+				}
+			}
+		}
+		// Anti-vacuity: the sweep has to actually reach ore-bearing
+		// depth, or "nothing in the floor" is true because there is
+		// nothing anywhere.
+		assert!(
+			low > 0,
+			"no ore found at y = {} either — the sweep proves nothing",
+			BEDROCK_Y + 1
 		);
 	}
 
@@ -447,7 +517,16 @@ mod tests {
 						.find(|(_, &(o, _, _))| o == d.ore)
 						.expect("a listed tier");
 					assert!(d.y <= max_y, "{:?} at y {}", d.ore, d.y);
-					assert!(d.y > crate::block::BEDROCK_Y, "never in the floor");
+					// The BLOB, not the centre: a deposit reaches
+					// MAX_RADIUS below itself, and the cell it would
+					// reach into is an ordinary Stone the floor rule
+					// makes undiggable forever.
+					assert!(
+						d.y - MAX_RADIUS > crate::block::BEDROCK_Y,
+						"{:?} centred at y {} reaches the floor",
+						d.ore,
+						d.y
+					);
 					seen[i] += 1;
 				}
 			}

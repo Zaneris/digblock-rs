@@ -232,6 +232,11 @@ blocks! {
 /// The indestructible world floor: cells at this height can never be
 /// dug (`BlockType::dig_hardness`), and worldgen's cave pass never
 /// carves them — so no path exists to a hole in the bottom of the world.
+///
+/// This is THE number. [`crate::protect::WORLD_FLOOR`] — the write-side
+/// half of the same rule — is an alias of it rather than a second
+/// literal, so the plane a dig refuses and the plane a write refuses
+/// cannot drift apart.
 pub const BEDROCK_Y: i32 = 0;
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
