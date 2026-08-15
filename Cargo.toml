@@ -15,6 +15,7 @@ members = [
 	"apps/web",
 	"apps/web-worker",
 	"tools/texgen",
+	"tools/shadercheck",
 ]
 
 [workspace.package]

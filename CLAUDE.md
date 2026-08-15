@@ -113,7 +113,9 @@ just web                  # wasm build + serve at http://localhost:8080 (Chrome/
                           # wasm-bindgen-cli at Cargo.lock's exact version)
 just web-live             # same, but probes the production master first and defaults the URL
                           # to ?overlay&spikelog (frame-pacing diagnostics)
-just check-web            # clippy for wasm32-unknown-unknown — no CLI tools needed
+just check-web            # clippy for wasm32-unknown-unknown + check-shaders (needs Chrome)
+just check-shaders        # every shader through real Chrome's WGSL front end — the gate naga
+                          # cannot be (DIG_CHROME=<path> if Chrome lives somewhere unusual)
 just play                 # master container + native server + client at the menu
 just play-web             # same but serving the web bundle; open the printed URL
 just play-docker wifi     # desktop client vs containerized stack (clean | wifi | cellular netem)
@@ -651,12 +653,16 @@ Workspace with eight crates, two thin app launchers, and a dedicated server. The
   per-system modules (`sky.rs`, `water.rs`, `spray.rs`, `players.rs`, `overlay.rs`, `menu.rs`/`chat.rs`,
   `audio.rs`/`water_audio.rs`, `smoothing.rs`, `item_geom.rs`/`viewmodel.rs`, `ui/`).
 - **`crates/digblock-assets`** — compile-time embedded textures, WGSL, and the two UI typefaces (byte-identical on every
-  platform). Shaders are naga-validated by a test, so WGSL errors surface without a GPU — but naga is the PERMISSIVE
-  end, and neither `just check` nor `just check-web` runs Tint. Chrome rejects things naga accepts, and the failure is a
-  whole invalidated pipeline in the browser only (2026-08-14: `highlight.wgsl` mixed `*` and `^` unparenthesized —
-  "mixing '*' and '^' requires parenthesis" — costing the outline and the dig crack on web while every native gate
-  stayed green). Parenthesize mixed-precedence bitwise arithmetic, and load the page before believing a shader change is
-  fine.
+  platform). Shaders are validated **twice, by two different front ends, because one was never enough**. `cargo test`
+  runs naga, which needs no GPU and is the PERMISSIVE end; `just check-shaders` (inside `just check-web`, the
+  `tools/shadercheck` crate) hands every entry of `shader::ALL` to a headless Chrome and reports what Tint says. Chrome
+  rejects things naga accepts and the failure is a whole invalidated pipeline in the browser only, which shipped twice —
+  `pass` as a reserved word, and `highlight.wgsl` mixing `*` and `^` unparenthesized, costing the outline and the dig
+  crack on web while every native gate stayed green. Both gates read the same `ALL`, so a shader cannot be in one and
+  not the other. A real browser rather than a pinned `tint` binary on purpose: Dawn publishes no standalone tint, and a
+  pinned one drifts from the Chrome players actually run. Two things it still does NOT cover — it compiles MODULES, so
+  pipeline-level binding mismatches belong to `every_pipeline_builds_without_a_gpu` (digblock-render, wgpu's noop
+  backend, also naga); and neither gate runs the page, so anything beyond shader compilation still wants one live load.
 - **`crates/digblock-net`** — protocol + client netcode, **sans-IO** (wasm-clean). Postcard wire format, append-only
   evolution, `PROTOCOL_VERSION` bumped on breaks. Holds the movement predictor, pending-edit tracking, remote-player
   interpolation, and a loopback transport for plain `cargo test`.

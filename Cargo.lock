@@ -3068,6 +3068,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shadercheck"
+version = "0.3.0"
+dependencies = [
+ "digblock-assets",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

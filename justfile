@@ -276,10 +276,25 @@ build-web:
 		apps/web/index.html > target/web/index.html
 	cp apps/web/_headers target/web/
 
-# Fast "is the web client still green" gate — no wasm-bindgen-cli needed.
+# Compiles every shader with the front end that SHIPS them, by handing
+# them to a headless Chrome. naga (what `cargo test` runs) is the
+# permissive end and Tint is not, so a shader can pass every native gate
+# and still invalidate a whole pipeline in the browser — that has shipped
+# twice, most recently `highlight.wgsl` mixing `*` and `^` unparenthesized,
+# which cost the block outline and the dig crack on web. Needs Chrome
+# installed; `DIG_CHROME=/path/to/chrome` if it lives somewhere unusual.
+#
+# Compile every shader in real Chrome — the gate naga cannot be.
+check-shaders:
+	cargo run -q -p shadercheck
+
+# Needs Chrome for the shader half, but still no wasm-bindgen-cli.
+#
+# Fast "is the web client still green" gate — wasm32 clippy plus check-shaders.
 check-web:
 	cargo clippy -p digblock-web -p digblock-web-worker -p digblock-render \
 		-p digblock-platform --target wasm32-unknown-unknown -- -D warnings
+	just check-shaders
 
 # The `cargo fmt` of the prose side, so editing a sentence touches a line
 # instead of reflowing a whole paragraph into the diff. Needs `cargo install

@@ -327,12 +327,17 @@ pub mod shader {
 
 #[cfg(test)]
 mod tests {
-	/// Validate every WGSL shader without needing a GPU, so CI catches
-	/// shader errors on any runner.
-	/// KNOWN GAP: this crate's naga is not wgpu's parser — `pass` is a
-	/// reserved word at runtime that validated fine here and killed the
-	/// resolve pipeline in the running engine (R15 follow-up). A shader
-	/// change still needs one live launch before it is believed.
+	/// Validate every WGSL shader without needing a GPU or a browser, so
+	/// this runs on any machine and inside plain `cargo test`.
+	///
+	/// naga is the PERMISSIVE front end and deliberately not the only one
+	/// asked: `pass` is a reserved word at runtime that validated fine
+	/// here and killed the resolve pipeline in the running engine (R15
+	/// follow-up), and `highlight.wgsl` once mixed `*` and `^`
+	/// unparenthesized, which naga accepts and Tint does not. That second
+	/// front end is `just check-shaders` (tools/shadercheck), which
+	/// compiles this same `ALL` in a headless Chrome — keep both reading
+	/// `ALL` so a shader cannot be in one gate and not the other.
 	#[test]
 	fn shaders_parse_and_validate() {
 		for (name, src) in super::shader::ALL {

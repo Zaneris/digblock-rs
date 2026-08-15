@@ -68,11 +68,16 @@ jobs:
       # Anchored edits, not a global s/0.1.0/…/ — that string also
       # appears in comments and docs. Cargo.lock records workspace
       # members' versions, so it has to move with them.
+      #
+      # ONE Cargo.toml on purpose: every member inherits the version with
+      # `version.workspace = true`, so a new crate is covered the day it is
+      # added. This used to carry a second `sed` for tools/texgen, which
+      # was the only member holding a literal — and a list of crates to
+      # remember is a list somebody eventually doesn't.
       - name: Set version
         run: |
           v='${{ inputs.version }}'
           sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" Cargo.toml
-          sed -i "/^\[package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" tools/texgen/Cargo.toml
           sed -i "\|<key>CFBundleShortVersionString</key>|{n;s|<string>.*</string>|<string>$v</string>|;}" apps/ios/xcode/Info.plist
           cargo update --workspace
           git diff --stat

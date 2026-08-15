@@ -1,0 +1,11 @@
+[package]
+name = "shadercheck"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+digblock-assets.workspace = true
+
+[lints]
+workspace = true
