@@ -8,7 +8,7 @@
 
 use rustc_hash::FxHashMap;
 
-/// Final cell value per edited cell within one 16-wide chunk column.
+/// Final cell value per edited cell within one chunk column.
 pub type CellEdits = FxHashMap<(i32, i32, i32), u16>;
 
 #[derive(Default)]

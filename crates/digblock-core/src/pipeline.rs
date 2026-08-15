@@ -68,9 +68,9 @@ pub enum JobResult {
 /// `submitted_gen == mesh_gen` and never meshes again (invisible terrain).
 ///
 /// The payload is deliberately not retained. A `Mesh` job's `MeshInput`
-/// is ~12 KB and a pool may hold dozens outstanding — real memory on the
-/// platform this exists for — and the pipeline rebuilds it from the store
-/// at redispatch anyway.
+/// is a whole padded snapshot and a pool may hold dozens outstanding —
+/// real memory on the platform this exists for — and the pipeline rebuilds
+/// it from the store at redispatch anyway.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKey {
 	Generate { x: i32, z: i32 },
@@ -349,11 +349,11 @@ impl Executor {
 }
 
 /// Per-`maintain` floor for the inline executor: one `Generate` ends the
-/// batch immediately (a column is ~16 chunks of uninterruptible work);
-/// otherwise up to this many mesh jobs run. A count, not a wall-clock
-/// deadline, because job granularity is what actually bounds the stall.
-/// With an `inline_allowance`, more jobs may follow (see
-/// `run_inline_jobs`); this floor always runs regardless.
+/// batch immediately (a column is a whole stack of chunks of
+/// uninterruptible work); otherwise up to this many mesh jobs run. A
+/// count, not a wall-clock deadline, because job granularity is what
+/// actually bounds the stall. With an `inline_allowance`, more jobs may
+/// follow (see `run_inline_jobs`); this floor always runs regardless.
 const INLINE_MESH_CAP: usize = 4;
 
 /// Worst-of-recent window for inline job-cost prediction.
@@ -361,7 +361,7 @@ const COST_N: usize = 8;
 
 /// Fraction of the lifetime worst that survives as a floor under the
 /// recent window. Admission control needs a PESSIMISTIC bound, not a
-/// recent average: gen cost is bimodal (a flat ocean column is ~10× cheaper
+/// recent average: gen cost is bimodal (a flat ocean column is far cheaper
 /// than a mountain one), so `COST_N` cheap samples in a row would otherwise
 /// collapse the prediction and admit a job an order of magnitude bigger
 /// than the remaining budget. Half, not all, so a genuinely one-off
@@ -455,8 +455,8 @@ type DeferredCells = FxHashMap<(i32, i32, i32), u16>;
 /// Crossing one chunk boundary shifts the whole disc by one, so without a
 /// margin a player pacing back and forth over a single line evicts a
 /// crescent and immediately regenerates it, forever. One chunk of slack
-/// removes that churn for the price of the rim band's memory (~10% more
-/// resident columns at draw 20). Adds still use the exact draw distance —
+/// removes that churn for the price of the rim band's memory (a few
+/// percent more resident columns). Adds still use the exact draw distance —
 /// only eviction is lazy.
 const KEEP_MARGIN: i32 = 1;
 
@@ -499,7 +499,8 @@ fn interval_diff(a: i32, b: i32, other: Option<(i32, i32)>) -> [(i32, i32); 2] {
 /// zero-filled shell of a missing chunk, so such neighbors' existing
 /// meshes cannot be affected by this chunk's arrival. Face offsets are
 /// left false — face re-dirties are unconditional and never consult this.
-/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; ~200 byte reads total.
+/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; the whole scan is a couple of
+/// border planes' worth of byte reads.
 fn shell_affects(data: &ChunkData) -> [bool; 27] {
 	// The local cell range this chunk contributes to a neighbor at axis
 	// offset o (the neighbor sees us at -o): our high border row for +1,
@@ -635,7 +636,7 @@ impl Pipeline {
 	/// that crosses a tier's threshold and every resident chunk therefore
 	/// has to re-mesh. The caller decides what to do about it (the engine
 	/// sweeps and says so in the feed) — this only reports the crossing,
-	/// so levelling up 60 times does not re-mesh 60 times.
+	/// so a run of level-ups does not re-mesh once per level.
 	pub fn set_mining_level(&mut self, level: u32) -> bool {
 		let was = std::mem::replace(&mut self.mining_level, level);
 		crate::worldgen::ore::ORES
@@ -774,12 +775,12 @@ impl Pipeline {
 		// It used to be, because a column-gen job could outlast the whole
 		// stream budget on its own and leave the drain nothing — but paying
 		// for that by handing the drain a fresh full budget made the stages
-		// ADD UP (jobs + drain + uploads ≈ 1.5× budget plus overshoot),
-		// which is the miss the budget exists to avoid. Job slicing bounds
-		// the overrun at the source now, and each stage keeps a
-		// minimum-progress floor (the drain always pulls one result, the
-		// upload loop always does `UPLOAD_MIN`), so a blown deadline delays
-		// work without ever starving it.
+		// ADD UP (jobs, drain and uploads each spending a budget of their
+		// own, plus overshoot), which is the miss the budget exists to
+		// avoid. Job slicing bounds the overrun at the source now, and each
+		// stage keeps a minimum-progress floor (the drain always pulls one
+		// result, the upload loop always does `UPLOAD_MIN`), so a blown
+		// deadline delays work without ever starving it.
 		//
 		// An external pool's results arrived as their own event-loop tasks
 		// while this thread was elsewhere; pull them into the queue the
@@ -787,10 +788,11 @@ impl Pipeline {
 		// identical for every executor.
 		//
 		// Under the deadline, because the pull is not free: every `poll`
-		// decodes, and a `Generated` column is 16 chunks of bounds-checked
-		// u16 reads plus 16 fresh allocations on the one thread this whole
-		// change exists to protect. Always at least one, the same
-		// minimum-progress floor every other stage keeps — a frame already
+		// decodes, and a `Generated` column is a whole stack of chunks of
+		// bounds-checked u16 reads, one fresh allocation each, on the one
+		// thread this whole change exists to protect. Always at least one,
+		// the same minimum-progress floor every other stage keeps — a frame
+		// already
 		// over budget must still absorb something, or the pool's inbox only
 		// grows.
 		let mut lost: Vec<JobKey> = Vec::new();
@@ -811,7 +813,7 @@ impl Pipeline {
 				pulled += 1;
 			}
 			// Jobs the pool accepted and cannot answer for. Unbudgeted on
-			// purpose: this is a handful of 16-byte keys in a failure that
+			// purpose: this is a handful of small keys in a failure that
 			// is rare by construction, and deferring it is deferring the
 			// only record that those chunks were ever dispatched.
 			while let Some(key) = dispatch.lost() {
@@ -850,7 +852,7 @@ impl Pipeline {
 	/// boundary shifts the disc by one, which changes O(r) columns out of
 	/// O(r²), and this runs OUTSIDE the streaming deadline — a full rescan
 	/// here was an unbudgeted multi-millisecond burst arriving at walking
-	/// cadence, every 16 blocks.
+	/// cadence, once per chunk boundary crossed.
 	fn visibility_scan(&mut self, evicted: &mut Vec<ChunkPos>) {
 		let r = self.draw_dist;
 		let c = self.center;
@@ -993,8 +995,8 @@ impl Pipeline {
 					// overlay is re-applied just below); a server's edits
 					// do not, because `apply_authoritative` drops a cell
 					// from `deferred_edits` the moment it lands. The
-					// column's chunks enter and leave together, so y=0 is
-					// the probe `next_gen_job` uses too.
+					// column's chunks enter and leave together, so its
+					// bottom chunk is the probe `next_gen_job` uses too.
 					if !matches!(
 						self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
 						Some(ChunkState::Generating)
@@ -1220,7 +1222,7 @@ impl Pipeline {
 	/// Shares the caller's frame deadline, with the usual one-job floor.
 	/// Handing a job to a pool is not free on every platform: the web's
 	/// `submit` encodes it and copies it into a JS buffer — two passes
-	/// over an ~12 KB `MeshInput` that native's channel send does not
+	/// over a whole `MeshInput` that native's channel send does not
 	/// make — and a pass can offer `DEPTH × workers` of them, so an
 	/// unbudgeted top-up is a millisecond-scale stage hiding inside a
 	/// budget that thinks it covers everything.
@@ -1292,7 +1294,7 @@ impl Pipeline {
 			JobKey::Generate { x, z } => {
 				// Still `Generating` means nothing else has taken the
 				// column on; an evicted or already-landed one has no work
-				// to redo. Same y=0 probe `next_gen_job` uses.
+				// to redo. Same bottom-chunk probe `next_gen_job` uses.
 				if !matches!(
 					self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
 					Some(ChunkState::Generating)
@@ -1317,7 +1319,8 @@ impl Pipeline {
 
 	fn next_gen_job(&mut self) -> Option<Job> {
 		let (_, (x, z)) = self.gen_heap.pop()?;
-		// The column's chunks enter and leave the store together; probe y=0.
+		// The column's chunks enter and leave the store together; probe the
+		// bottom one.
 		match self.store.get(&ChunkPos::new(x, 0, z)) {
 			Some(slot) if matches!(slot.state, ChunkState::Generating) => Some(Job::Generate {
 				x,
@@ -1397,10 +1400,10 @@ impl Pipeline {
 	///   and `EditOverlay` has no eviction; multiplayer now keeps one too,
 	///   fed by every broadcast edit including the server's fluid churn.
 	///   So in exactly the places players build, a column holds tens of
-	///   thousands of entries and the box holds 18³ — and an F7 or a
-	///   reveal-threshold `remesh_all` pays it for every resident chunk at
-	///   once. Probing the box instead is a fixed cost with the same
-	///   answer.
+	///   thousands of entries and the box holds one padded snapshot — and
+	///   an F7 or a reveal-threshold `remesh_all` pays it for every
+	///   resident chunk at once. Probing the box instead is a fixed cost
+	///   with the same answer.
 	fn ore_stamp(&self, pos: ChunkPos) -> Option<crate::mesher::OreStamp> {
 		use crate::worldgen::ore;
 		if self.mining_level < ore::lowest_reveal() {
@@ -1653,11 +1656,11 @@ impl Pipeline {
 		if prev == cell {
 			return None;
 		}
-		// COW: clones the 4KB array only if a worker still holds a snapshot.
+		// COW: clones the cell array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
 		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
 		// Chunk-granular: the window has no padded shell, so an edit
-		// dirties exactly its own 16³ region. Edits (unlike arrivals)
+		// dirties exactly its own chunk. Edits (unlike arrivals)
 		// also invalidate nearby probes so relight starts immediately.
 		self.gi_dirty.insert(pos);
 		self.gi_edits.push((x, y, z));
@@ -2412,8 +2415,8 @@ mod tests {
 			assert_eq!(mesh_gen(&p, *pos), *gen);
 		}
 
-		// Face-cell edit at world (0,8,8): local (0,8,8) touches only the
-		// −x border — self + exactly 1 neighbor.
+		// An edit on a chunk face: it touches only the −x border, so the
+		// bumped set is self + exactly 1 neighbor.
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 8, 8));
 		p.set_block(0, 8, 8, new).expect("face edit");
@@ -2422,9 +2425,9 @@ mod tests {
 			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
 		}
 
-		// Corner-of-world edit at (0,0,0): local (0,0,0) touches −x, −z,
-		// and −y borders; the y−1 chunks are outside the world, so the
-		// bumped set is self + the two faces + their shared diagonal.
+		// An edit in the world's bottom corner cell: it touches the −x, −z
+		// and −y borders, and the chunks below are outside the world, so
+		// the bumped set is self + the two faces + their shared diagonal.
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 0, 0));
 		p.set_block(0, 0, 0, new).expect("corner edit");
@@ -2443,9 +2446,9 @@ mod tests {
 
 	/// The client twin of the server's
 	/// A reveal sweep costs a re-mesh of everything resident, so it has to
-	/// fire exactly on the four thresholds and at no other level — which
-	/// also means levelling from 1 to 99 in one award sweeps ONCE, not
-	/// four times.
+	/// fire exactly on the reveal thresholds and at no other level — which
+	/// also means one award that crosses every one of them sweeps ONCE,
+	/// not once per tier.
 	#[test]
 	fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 		use crate::worldgen::ore;
@@ -2492,7 +2495,7 @@ mod tests {
 		let recorded = p.take_recorded_edits();
 		assert_eq!(recorded, vec![(8, 8, 8, new as u16)], "edit recorded");
 
-		// Walk far away: the column at (0,0) hard-evicts...
+		// Walk far away: the edited column hard-evicts...
 		let far = ChunkPos::new(40, 0, 0);
 		quiesce(&mut p, far);
 		assert!(p.block_at(8, 8, 8).is_none(), "column evicted");
@@ -2532,8 +2535,8 @@ mod tests {
 		let center = ChunkPos::new(0, 0, 0);
 		quiesce(&mut p, center);
 
-		// y=250 is far above any terrain: chunk (0, 15, 0) is a shared
-		// AIR_CHUNK sentinel.
+		// A cell far above any terrain: its chunk is a shared AIR_CHUNK
+		// sentinel.
 		let sky = ChunkPos::new(0, 15, 0);
 		assert!(
 			matches!(&p.store[&sky].state, ChunkState::Ready(d) if is_air_chunk(d)),
@@ -3182,7 +3185,8 @@ mod tests {
 		// The recent window has fully turned over, but admission control
 		// keeps a share of the lifetime worst underneath it: gen cost is
 		// bimodal, and a run of cheap ocean columns must not license
-		// starting a mountain column that costs 10× the remaining budget.
+		// starting a mountain column that costs many times the remaining
+		// budget.
 		assert_eq!(
 			c.predicted_ms(),
 			5.0 * LIFETIME_FLOOR_FRAC,

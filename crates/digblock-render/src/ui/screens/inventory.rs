@@ -65,13 +65,13 @@ impl InvScreen {
 		self.drag.cancel();
 	}
 
-	/// The grid: 9 columns at the drawn style's own slot size,
-	/// `GRID_SLOTS / 9` rows. Nine because that is the hotbar's column
-	/// count — the grid is aligned to the bar, not merely the same shape
-	/// as it. Takes a `Style` rather than a bare scale because the fit
-	/// ladder may draw the page at a smaller one than the frame's, and
-	/// the measure pass has to ask about candidate scales; `origin` is
-	/// set per-build (see [`InvScreen::build`]).
+	/// The grid: as many columns as the hotbar has slots, at the drawn
+	/// style's own slot size, over however many rows `GRID_SLOTS` fills.
+	/// The bar's column count because the grid is aligned to the bar, not
+	/// merely the same shape as it. Takes a `Style` rather than a bare
+	/// scale because the fit ladder may draw the page at a smaller one
+	/// than the frame's, and the measure pass has to ask about candidate
+	/// scales; `origin` is set per-build (see [`InvScreen::build`]).
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
 		GridSpec {
 			origin,
@@ -112,21 +112,20 @@ impl InvScreen {
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
 
-		// Six rows of slots and a title band is `488 · scale` of page
-		// standing above the hotbar, which is more than a short window at
-		// a big interface scale has to give: at 1280×720 / 1.5 the panel's
-		// top edge lands at −12, and at 1600×900 / 2.25 the first row of
-		// slots sits at y = −108 and cannot be clicked at all. This screen
-		// grew into that when the grid went to 54 slots and simply ran off
-		// the TOP, because it positioned itself by subtraction from the bar
-		// and never checked.
+		// The slot rows and a title band make a page taller than a short
+		// window at a big interface scale has to give: the panel's top
+		// edge crosses the top of the window, and further up the scale the
+		// first row of slots goes with it and cannot be clicked at all.
+		// This screen grew into that when the grid gained its extra rows
+		// and simply ran off the TOP, because it positioned itself by
+		// subtraction from the bar and never checked.
 		//
 		// So it walks the same ladder the alchemy screen does: the WHOLE
-		// style steps down in quarters until the page fits between the bar
-		// and the top margin, re-measured per rung, never a fractional
-		// glyph. The bar is not ours to shrink — it is drawn after us at
-		// the frame's own scale — so every measurement taken against it
-		// stays in `window_scale`.
+		// style steps down a rung at a time until the page fits between
+		// the bar and the top margin, re-measured per rung, never a
+		// fractional glyph. The bar is not ours to shrink — it is drawn
+		// after us at the frame's own scale — so every measurement taken
+		// against it stays in `window_scale`.
 		let bar = hud::row_grid(size, window_scale);
 		let budget = bar.origin.1 - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
 		let needed = |s: f32| Self::content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
@@ -145,9 +144,10 @@ impl InvScreen {
 		// slots they drop into. That alignment only exists while the two
 		// share a scale, though: once the ladder has stepped there is
 		// nothing left to align to, and hanging a narrower panel off the
-		// bar's rail would follow it off the window — at 960×600 / 2.5 the
-		// bar's own first column sits at x = −215. A fitted page therefore
-		// centres, like every other screen.
+		// bar's rail would follow it off the window — on a small window at
+		// a large interface scale the bar's own first column sits off the
+		// left edge. A fitted page therefore centres, like every other
+		// screen.
 		let row_x = if fitted == window_scale {
 			bar.origin.0
 		} else {
@@ -324,8 +324,8 @@ mod tests {
 	const SIZE: (u32, u32) = (1280, 800);
 
 	/// Every window × interface scale the layout assertions sweep. The
-	/// short ones are the point: this panel is `488 · scale` tall and it
-	/// is the tall windows that never had a problem.
+	/// short ones are the point: this panel's height rides the scale, and
+	/// it is the tall windows that never had a problem.
 	const WINDOWS: [(u32, u32); 5] = [
 		(1280, 800),
 		(1280, 720),
@@ -431,14 +431,14 @@ mod tests {
 			.expect("the screen draws its title")
 	}
 
-	/// Six rows of slots under a title band is `488 · scale` of page
-	/// standing above the hotbar, and this screen positioned itself by
-	/// pure subtraction from the bar without ever checking that the
-	/// result was still on the window. When the grid went to 54 slots it
-	/// simply ran off the TOP: at 1280×720 / 1.5 the panel's top edge sat
-	/// at −12, at 1600×900 / 2.25 the first row of slots was at y = −108
-	/// and could not be clicked at all, and at 960×600 / 2.5 the top edge
-	/// was at −620 with most of the page gone.
+	/// The slot rows under a title band make a page whose height rides the
+	/// scale, and this screen positioned itself by pure subtraction from
+	/// the bar without ever checking that the result was still on the
+	/// window. When the grid gained its extra rows it simply ran off the
+	/// TOP: the panel's top edge crossed the top of the window, further up
+	/// the scale the first row of slots went with it and could not be
+	/// clicked at all, and on the smallest window at the largest scale
+	/// most of the page was gone.
 	///
 	/// Nothing it draws may leave the window, and the page must still
 	/// stand ABOVE the bar rather than under it, at every window and
@@ -482,11 +482,11 @@ mod tests {
 	}
 
 	/// The fit pass is a LADDER: the page draws either at the frame's own
-	/// scale or a whole quarter step down from it, glyph and boxes moving
+	/// scale or a whole rung down from it, glyph and boxes moving
 	/// together. The obvious implementation — multiply the style by
 	/// `budget / needed` — is what `ui::theme` exists to prevent, because
-	/// it lands the text on 14.3px beside a menu drawn at 28. And a page
-	/// with the room to spare must not step at all.
+	/// it lands the text on some fraction of the size the menu beside it
+	/// draws at. And a page with the room to spare must not step at all.
 	#[test]
 	fn the_page_steps_in_whole_rungs_and_only_when_it_has_to() {
 		// Room to spare, from a small window at a small scale up to a

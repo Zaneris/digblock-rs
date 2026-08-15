@@ -14,9 +14,10 @@
 //!
 //! **TRANSMUTE** stays click-based (crafting is a decision, not a
 //! grind): a row of FAMILY tiles whose icons slowly rotate through
-//! their members, the selected family's members wrapped in a 9-column
-//! grid beneath (locked ones dim with an unlock badge, affordable ones
-//! count-badged), a detail strip, and the tab's ONE `TRANSMUTE` button
+//! their members, the selected family's members wrapped into the
+//! inventory grid's columns beneath (locked ones dim with an unlock
+//! badge, affordable ones count-badged), a detail strip, and the tab's
+//! ONE `TRANSMUTE` button
 //! — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what the holdings
 //! afford. The families are DERIVED from §7.2's shape axis rather than
 //! mirrored by hand, and `every_craftable_appears_in_exactly_one_family`
@@ -462,8 +463,8 @@ impl AlchScreen {
 	}
 
 	/// The tallest member row any family lays out (wrapped at the grid's
-	/// 9 columns) — the transmute arm sizes for it, so selecting a bigger
-	/// family never moves the panel either.
+	/// own columns) — the transmute arm sizes for it, so selecting a
+	/// bigger family never moves the panel either.
 	fn member_rows_h(style: &Style) -> f32 {
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
 		families()
@@ -473,8 +474,8 @@ impl AlchScreen {
 	}
 
 	/// BOTH tabs' content height — the panel takes the taller arm, so
-	/// switching tabs never moves its top edge (bottom-anchored panels
-	/// used to jump 90px under the cursor). Pinned by
+	/// switching tabs never moves its top edge (a per-tab height jumped
+	/// the bottom-anchored panel under the cursor). Pinned by
 	/// `panel_height_is_the_same_on_both_tabs`.
 	fn content_h(&self, style: &Style) -> f32 {
 		let s = style.scale;
@@ -694,10 +695,10 @@ impl AlchScreen {
 		// extracting it empties the tool.
 		//
 		// Gated on the CHARGE only. The unlock is deliberately NOT a
-		// condition here, because hiding the tile below Alchemy 15 hid
-		// the refusal with it: the drop handler already answers
-		// "WATER CHARGE — LV 15", and that message was unreachable for
-		// the one item it was written for. Every block in the grid can be
+		// condition here, because hiding the tile below the charge's own
+		// unlock hid the refusal with it: the drop handler already names
+		// that level back, and the message was unreachable for the one
+		// item it was written for. Every block in the grid can be
 		// dragged and told its level; water has no grid slot to be told
 		// from, so this tile is the only place a player can ever learn
 		// the charge is worth Aqua at all. Locked it dims and still
@@ -757,7 +758,7 @@ impl AlchScreen {
 
 		// The real inventory grid — same slots, same badges, and its
 		// cells double as drag sources. Left-aligned on the same column
-		// as everything else (it used to center, sitting 4px off).
+		// as everything else (it used to center, sitting slightly off).
 		let spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		for i in 0..GRID_SLOTS {
 			let rect = spec.rect(i);
@@ -846,7 +847,7 @@ impl AlchScreen {
 		}
 		y += slot_px + theme::ROW_GAP * s;
 
-		// The selected family's members, wrapped at the grid's 9 columns
+		// The selected family's members, wrapped at the grid's own columns
 		// so a growing catalog wraps instead of overflowing the panel.
 		// Locked ones dim with their unlock badge but stay selectable —
 		// the strip explains; affordable ones carry their batch count.
@@ -1147,7 +1148,7 @@ impl AlchScreen {
 				} = self.drag.on_release(hits)
 				{
 					// The gate the drop respects: extractable at all, and
-					// past its unlock (the bucket charge waits for 15).
+					// past its unlock (the bucket charge waits for Aqua's).
 					// A refused drop SAYS why — silence read as a bug.
 					if !payload.is_extractable() {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
@@ -1398,11 +1399,11 @@ mod tests {
 	///
 	/// The tile used to be drawn only once `can_extract(Water)` passed,
 	/// which gated the same rule twice and lost the useful half: the drop
-	/// handler's "WATER CHARGE — LV 15" was unreachable, because the only
-	/// drag source for water was hidden until 15. Water is not slottable,
-	/// so unlike every other extractable there is no grid cell to learn
-	/// it from either — a player below 15 had no way to discover the
-	/// charge is worth anything at all.
+	/// handler's "WATER CHARGE" refusal was unreachable, because the only
+	/// drag source for water was hidden until the same unlock. Water is
+	/// not slottable, so unlike every other extractable there is no grid
+	/// cell to learn it from either — a player under that level had no
+	/// way to discover the charge is worth anything at all.
 	///
 	/// Both halves are asserted: that the tile EXISTS locked (else the
 	/// message is unreachable again), and that dropping it explains
@@ -1616,8 +1617,8 @@ mod tests {
 		};
 		// SLABS leads (the shape axis first, cheapest form first, the
 		// hand-priced ones after). Its first unlocked member is the
-		// WoodSlab the Flora affords; Ctrl asks for 100 and the holdings
-		// clamp it.
+		// WoodSlab the Flora affords; Ctrl asks for its whole batch and
+		// the holdings clamp it.
 		let slabs = center(r.hits.rect_of(family("SLABS")).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
@@ -1646,9 +1647,9 @@ mod tests {
 			},
 		);
 
-		// The WATER family's one member is locked at 20: the tile still
-		// shows (the strip names LV 50), but the single button registers
-		// no hit — honest pixels, not a trap.
+		// The WATER family's one member is locked at this rig's level: the
+		// tile still shows (the strip names the level it wants), but the
+		// single button registers no hit — honest pixels, not a trap.
 		let water = center(r.hits.rect_of(family("WATER")).unwrap());
 		press(&mut r, water);
 		rebuild(&mut r);
@@ -1691,11 +1692,11 @@ mod tests {
 	/// point where "a tight panel beats a panel sliding off the bottom of
 	/// the screen".
 	///
-	/// The last case is exactly that: a 960×600 window at 2.5× interface
-	/// scale asks for an enormous page in a tiny window, and since the
-	/// inventory grid grew to six rows there is no rung that fits it. What
-	/// still has to hold there is the part a player can act on — the top
-	/// of the panel is on screen and the layout used every pixel it had.
+	/// The last case is exactly that: the smallest window at the largest
+	/// interface scale asks for an enormous page in a tiny one, and since
+	/// the inventory grid grew there is no rung that fits it. What still
+	/// has to hold there is the part a player can act on — the top of the
+	/// panel is on screen and the layout used every pixel it had.
 	#[test]
 	fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 		for (size, scale) in [
@@ -1739,7 +1740,7 @@ mod tests {
 	}
 
 	/// The panel is bottom-anchored, so a per-tab height means the TOP
-	/// edge jumps under the cursor on every tab switch (it did — 90px).
+	/// edge jumps under the cursor on every tab switch (it did).
 	/// `content_h` takes the taller arm for both tabs.
 	#[test]
 	fn panel_height_is_the_same_on_both_tabs() {
@@ -1843,9 +1844,10 @@ mod tests {
 	/// Owning a tool is a yes/no (§7.3), so the bench sells exactly one
 	/// and then stops offering it. `apply_alchemy` refuses a craft that
 	/// would vanish into the cap — an offer the rule refuses is one the
-	/// player pays 240 Metal for and gets nothing back — and the strip
-	/// says WHY: a cap is not a shortfall, and naming an essence here
-	/// would send them off to extract something that cannot help.
+	/// player pays a tool's whole price for and gets nothing back — and
+	/// the strip says WHY: a cap is not a shortfall, and naming an
+	/// essence here would send them off to extract something that cannot
+	/// help.
 	#[test]
 	fn an_owned_tool_is_no_longer_on_offer() {
 		let mut r = rig_at(99, |inv| {

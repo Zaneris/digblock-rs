@@ -8,8 +8,8 @@
 //! unloaded chunks are non-solid to COLLISION (the Java null-block
 //! behavior); submersion instead switches the integration to the
 //! buoyant swim branch (slow sink, held-jump swim-up, surface breach).
-//! Run at a fixed 60 Hz tick: the ÷60 air control is a per-tick
-//! constant tuned at 60 fps.
+//! Run at a fixed tick (`TICK`): the air-control divisor is a per-tick
+//! constant tuned at that rate.
 //! Diverges from the Java: the point probes grew into a real capsule,
 //! ground movement accelerates toward the input target at WALK_ACCEL
 //! instead of snapping to full speed, and momentum carries over edges
@@ -31,15 +31,17 @@ pub const TICK: f32 = 1.0 / 60.0;
 
 // --- Swimming. Any change here is a sim-behavior change: re-pin BOTH
 // golden trajectories and bump SIM_VERSION. ---------------------------
-/// The rendered surface of a resting source sits this far below the
-/// cell top (water.wgsl sinks a corner d/9 of a block); physics flips
+/// The rendered surface of a resting source sits this far below the cell
+/// top (water.wgsl sinks a corner by its drop code's fraction of a
+/// block); physics flips
 /// where water LOOKS like it ends. Mirrored by the engine's eye_in_water.
 pub const WATER_SURFACE_DROP: f32 = 0.111;
 /// Passive sink speed in water when idle, blocks/s (the velocity target
 /// with no input; vs TERM_VELOCITY in air).
 pub const WATER_SINK_SPEED: f32 = -1.5;
 /// Exponential entry drag, 1/s, applied only below WATER_SINK_SPEED:
-/// kills a terminal-velocity plunge within ~2 blocks of the surface.
+/// brings a terminal-velocity plunge down to the idle sink speed within
+/// the first stretch under the surface.
 pub const WATER_DRAG: f32 = 10.0;
 /// Held-Space rise-speed target, blocks/s.
 pub const SWIM_UP_SPEED: f32 = 3.0;
@@ -49,9 +51,9 @@ pub const SWIM_SPEED: f32 = 2.5;
 /// (swim direction, Space-up, or the idle sink), blocks/s².
 pub const SWIM_ACCEL: f32 = 8.0;
 /// Swimming physics engages above this submersion; below it is wading
-/// and the dry rules apply unchanged. One block of water on solid
-/// ground wets 0.89/1.8 ≈ 0.49 of the capsule — waist-deep wading (and
-/// ankle-deep flow edges, which count as full cells) stays walkable.
+/// and the dry rules apply unchanged. One block of water on solid ground
+/// wets just under half the capsule — waist-deep wading (and ankle-deep
+/// flow edges, which count as full cells) stays walkable.
 const SWIM_THRESHOLD: f32 = 0.5;
 /// Jump held at or below this submersion (while moving) fires a full
 /// jump impulse — the way out of the pool. Must be ABOVE the swim
@@ -85,7 +87,7 @@ const GROUND_EPS: f32 = 1e-3;
 /// resolve flat onto the block plane. Radius-independent: an edge
 /// support contact has n.y = r/√(o²+r²) > 1/√2 for any overhang o < r.
 /// Stairs deliberately bypass it (the explicit ramp branch) — a 45° ramp
-/// normal is 0.7071, a float knife-edge away.
+/// normal is exactly 1/√2, a float knife-edge above this threshold.
 const GROUND_NORMAL_Y: f32 = 0.7;
 const RESOLVE_ITERS: usize = 4;
 /// Penetrations shallower than this wait for the next tick.
@@ -98,8 +100,8 @@ const SKIN: f32 = 1e-4;
 /// like ordinary walls.
 const RAMP_SNAP_MAX: f32 = 0.5;
 /// Downhill glue: feet this far ABOVE the ramp still snap down, so
-/// descending a flight never oscillates into free-fall (walking descent
-/// covers 4 b/s · TICK · 45° ≈ 0.067 per tick). Ramp-only — cube edges
+/// descending a flight never oscillates into free-fall (a walking descent
+/// of a 45° ramp drops `WALK_SPEED · TICK` per tick). Ramp-only — cube edges
 /// keep the walk-off-cliff momentum behavior bit-exact.
 const RAMP_SNAP_DOWN: f32 = 0.1;
 /// Probe skin for the shape-aware occupancy tests: covers resolver skin
@@ -110,18 +112,19 @@ const SKIN_PROBE: f32 = 2e-3;
 // --- Auto-step. Any change here is a sim-behavior change: bump
 // SIM_VERSION. ---------------------------------------------------------
 /// Max rise a walking player mounts automatically (SIM v9): one slab
-/// third. The ε absorbs 12ths-lattice float skew; the next real rise is
-/// 8/12, comfortably outside. Deliberately equal to one stair tread —
-/// stairs are excluded structurally (only the Ramp branch lifts on a
-/// stair; its box-fallback still walls), so the tread coincidence can't
-/// climb a stair's back face. Must stay under the adoption envelope's
-/// per-tick displacement clamp (~0.47) or honest step claims reject.
+/// third. The ε absorbs twelfths-lattice float skew; the next real rise
+/// is the two-thirds slab, comfortably outside. Deliberately equal to one
+/// stair tread — stairs are excluded structurally (only the Ramp branch
+/// lifts on a stair; its box-fallback still walls), so the tread
+/// coincidence can't climb a stair's back face. Must stay under the
+/// adoption envelope's per-tick displacement clamp or honest step claims
+/// reject.
 const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
 /// How fast a mount may carry the feet upward, blocks/s. This is exactly
 /// the rate a stair's 45° diagonal lifts a walk (rise = run, so the ramp
 /// climbs at `WALK_SPEED`), which is the point: a step and a flight of
 /// stairs are the same motion, and a step of one slab third now takes
-/// the ~5 ticks the equivalent ramp would. A ramp needs no clamp — its
+/// exactly the ticks the equivalent ramp would. A ramp needs no clamp — its
 /// geometry never asks for more — so this only ever binds on the step,
 /// whose surface is a cliff rather than a slope.
 ///
@@ -226,8 +229,8 @@ fn box_contact(pos: Vec3, lo: Vec3, hi: Vec3) -> Option<Contact> {
 		});
 	}
 	// Degenerate: the axis runs inside the box (a terminal-velocity
-	// landing can bury it ~0.03). Push out through the nearest face, in
-	// a fixed order so ties resolve identically everywhere.
+	// landing can bury it). Push out through the nearest face, in a
+	// fixed order so ties resolve identically everywhere.
 	let faces = [
 		(Vec3::Y, hi.y - p.y),
 		(Vec3::NEG_Y, p.y - lo.y),
@@ -497,8 +500,8 @@ fn xz_rect_dist2(pos: Vec3, x: i32, z: i32) -> f32 {
 	dx * dx + dz * dz
 }
 
-/// Every cell the player capsule at eye `pos` overlaps (exact
-/// capsule-vs-box test over the bounding cells, 2–12 results).
+/// Every cell the player capsule at eye `pos` overlaps (an exact
+/// capsule-vs-box test over the bounding cells).
 /// Placement rejection (client), the server's InsidePlayer scan, and
 /// claim probing must all agree on exactly these — the geometry lives
 /// here and nowhere else. The CELL_EPS shrink means resting contact
@@ -883,9 +886,10 @@ impl Player {
 			// ---- swimming: you swim where you point ----
 			// Entry damping: exponential drag only below the fastest
 			// INTENTIONAL descent (a straight-down dive at SWIM_SPEED),
-			// so a terminal-velocity plunge dies within ~2 blocks while
-			// deliberate dives never fight the drag. The max(0.0) keeps
-			// the dt.min(0.16) guard from flipping signs.
+			// so a terminal-velocity plunge dies just under the surface
+			// while deliberate dives never fight the drag. The max(0.0)
+			// keeps the dt clamp at the top of the tick from flipping
+			// signs.
 			if self.out.y < -SWIM_SPEED {
 				self.out.y *= (1.0 - WATER_DRAG * dt).max(0.0);
 			}
@@ -902,8 +906,8 @@ impl Player {
 			}
 			self.out += (target - self.out).clamp_length_max(SWIM_ACCEL * dt);
 			// Breach: jump held near the surface while moving fires a
-			// full jump — apex ≈ 1.27 blocks mounts an adjacent 1-high
-			// block through the ordinary landing resolution. Gated on
+			// full jump — its apex clears an adjacent one-block ledge,
+			// mounted through the ordinary landing resolution. Gated on
 			// movement so a stationary jump-hold treads instead of
 			// pogoing; horizontal carry is kept (no ground-jump damp) so
 			// the leap actually reaches the ledge.
@@ -1043,7 +1047,7 @@ mod tests {
 		Player::new(TEST_SPAWN)
 	}
 
-	/// Flat ground at y < 10: solid below, air above.
+	/// Flat ground: solid below the surface line, air above.
 	fn flat_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = (x, z);
 		some_cell(if y < 10 {
@@ -1118,7 +1122,7 @@ mod tests {
 	fn falls_and_lands_snapped() {
 		let mut p = new_player();
 		tick_n(&mut p, 600, PlayerIntent::default());
-		// Ground top surface at y=10; eye snaps to floor(y)+0.5.
+		// Landing snaps the eye to EYE_TO_FEET over the ground's top plane.
 		assert!((p.pos.y - 11.5).abs() < 0.001, "eye at {}", p.pos.y);
 	}
 
@@ -1189,7 +1193,7 @@ mod tests {
 			}
 		}
 		// Landing speed is just the air-control drift accumulated over
-		// the ~1 s flight — well under max walk speed.
+		// the flight — well under max walk speed.
 		let z0 = p.pos.z;
 		tick_n(&mut p, 1, forward);
 		let step = p.pos.z - z0;
@@ -1221,8 +1225,8 @@ mod tests {
 
 	#[test]
 	fn walking_off_an_edge_keeps_momentum() {
-		// Cliff: ground only at z < 12; walk forward off the edge at
-		// full speed and check the first airborne step keeps it (the
+		// Cliff: the ground stops at an edge ahead. Walk forward off it
+		// at full speed and check the first airborne step keeps it (the
 		// Java ×0.5 damping lost half).
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 && z < 12 {
@@ -1260,7 +1264,7 @@ mod tests {
 
 	#[test]
 	fn wall_blocks_and_slides() {
-		// Wall of solid at z >= 12 for y in 9..13; ground below y=10.
+		// A solid wall ahead, taller than the capsule, over flat ground.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 || (z >= 12 && y < 13) {
 				BlockType::Dirt
@@ -1272,7 +1276,7 @@ mod tests {
 		for _ in 0..600 {
 			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
 		}
-		// Walk forward (+z) into the wall for 3 seconds.
+		// Walk forward (+z) into the wall for several seconds.
 		for _ in 0..180 {
 			p.tick(
 				TICK,
@@ -1320,9 +1324,8 @@ mod tests {
 
 	#[test]
 	fn ceiling_stops_jump() {
-		// Flat ceiling at y=12 over the y<10 floor: a 2-block room. The
-		// crown must stop at the ceiling plane (the point collider sailed
-		// straight through).
+		// A flat ceiling two blocks over the floor. The crown must stop at
+		// the ceiling plane (the point collider sailed straight through).
 		let world = |_x: i32, y: i32, _z: i32| -> Option<u16> {
 			some_cell(if y < 10 || y == 12 {
 				BlockType::Dirt
@@ -1353,8 +1356,8 @@ mod tests {
 
 	#[test]
 	fn one_block_hole_blocked() {
-		// Wall at z >= 12 with only cell y=10 open: a 1-block hole the
-		// 1.8-tall capsule cannot fit through (the point collider walked
+		// A wall ahead with one cell open at ground level: a one-block
+		// hole the capsule cannot fit through (the point collider walked
 		// straight in).
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 || (z >= 12 && (11..14).contains(&y)) {
@@ -1379,8 +1382,8 @@ mod tests {
 
 	#[test]
 	fn two_block_corridor_passes() {
-		// Wall at z >= 12 with cells y=10..12 open: a 2-block corridor
-		// the 1.8-tall capsule walks through.
+		// A wall ahead opened to two cells of height: a corridor the
+		// capsule walks through.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 || (z >= 12 && y >= 12) {
 				BlockType::Dirt
@@ -1404,7 +1407,7 @@ mod tests {
 
 	#[test]
 	fn jump_mounts_one_block_step() {
-		// One-block step at z >= 12, open sky: hold forward + jump and
+		// A one-block step ahead under open sky: hold forward + jump and
 		// end up standing on it.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 || (z >= 12 && y == 10) {
@@ -1438,9 +1441,9 @@ mod tests {
 
 	#[test]
 	fn jump_clears_step_under_three_high_ceiling() {
-		// Same step, but with a flat ceiling at y=13 (a 3-block room over
-		// the floor). Head clearance while mounting is 1.2 blocks — the
-		// marginal case the capsule must still clear.
+		// Same step, but under a flat ceiling three blocks over the floor.
+		// Head clearance while mounting is the marginal case the capsule
+		// must still clear.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			some_cell(if y < 10 || (z >= 12 && y == 10) || y == 13 {
 				BlockType::Dirt
@@ -1480,8 +1483,9 @@ mod tests {
 
 	// ---- swimming --------------------------------------------------------
 
-	/// Solid below y=10, water sources 10..20 (visible surface at
-	/// 19.889), air above.
+	/// Solid ground under a deep column of water sources, air above. The
+	/// visible surface sits `WATER_SURFACE_DROP` below the top water
+	/// cell's lattice plane.
 	fn water_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = (x, z);
 		some_cell(if y < 10 {
@@ -1493,8 +1497,8 @@ mod tests {
 		})
 	}
 
-	/// `water_world` plus a solid shelf at z >= 12 whose top surface
-	/// (y = 20) sits level with the water cell tops.
+	/// `water_world` plus a solid shelf ahead whose top surface sits level
+	/// with the water cells' tops.
 	fn shelf_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		if z >= 12 && y < 20 {
 			return some_cell(BlockType::Dirt);
@@ -1517,8 +1521,8 @@ mod tests {
 		}
 		assert!(min_vy >= WATER_SINK_SPEED - 1e-3, "sink capped: {min_vy}");
 		let dropped = 15.0 - p.pos.y;
-		// Ramp to the sink target then coast: ~1.36 blocks in the first
-		// second — a gentle sink, nothing like dry gravity (~4.9).
+		// Ramp to the sink target then coast — a gentle sink, nothing
+		// like the drop dry gravity gives over the same second.
 		assert!((1.1..=1.5).contains(&dropped), "dropped {dropped}");
 	}
 
@@ -1537,8 +1541,8 @@ mod tests {
 				p.state().vel.y
 			);
 		}
-		// ~2 s of swim-up from depth: most of 6 blocks, minus the ramp
-		// and the surface bob band.
+		// Swimming up from depth: most of the climb to the surface, minus
+		// the ramp-up and the surface bob band.
 		assert!(p.pos.y > 16.0, "rose to {}", p.pos.y);
 	}
 
@@ -1556,8 +1560,8 @@ mod tests {
 		for _ in 0..60 {
 			diver.tick(TICK, down, forward, &water_world);
 		}
-		// A near-vertical dive approaches -SWIM_SPEED — clearly past the
-		// passive sink's ~1.36 blocks over the same second.
+		// A near-vertical dive approaches -SWIM_SPEED — clearly past what
+		// the passive sink covers over the same second.
 		assert!(diver.pos.y < 16.0 - 1.8, "dove to {}", diver.pos.y);
 
 		let mut climber = Player::new(Vec3::new(0.5, 13.0, 0.5));
@@ -1605,8 +1609,8 @@ mod tests {
 	use crate::chunk::make_cell;
 	use crate::shapes::{door_state, slab_state, stair_state, Facing};
 
-	/// A built four-step +x flight: each stair rests on a stone riser, a
-	/// flush platform (top y=14) beyond. This is what a staircase a player
+	/// A built four-step +x flight: each stair rests on a stone riser,
+	/// with a flush platform beyond. This is what a staircase a player
 	/// actually builds looks like; `flight_world` is the floating variant.
 	fn built_flight(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = z;
@@ -1628,16 +1632,16 @@ mod tests {
 		some_cell(BlockType::Air)
 	}
 
-	/// The per-tick rise a 4 b/s walk covers on a 45° ramp.
+	/// The per-tick rise a walk covers on a 45° ramp.
 	const RAMP_DY: f32 = 4.0 * TICK;
 
 	/// Walking a flight is ONE continuous climb, not a series of hops: the
 	/// feet move at the rate the ramp under them carries the walk, every
 	/// tick, in both directions — never faster, and never backwards.
 	/// Ascent failed both halves before SIM v10: merely brushing the next
-	/// step's cell popped the feet a third of a block early (5× the
-	/// honest per-tick rise), then the downhill glue clawed them back onto
-	/// the step below. Held for both flight styles — risers under the
+	/// step's cell popped the feet a full RADIUS early — many times the
+	/// honest per-tick rise — and the downhill glue then clawed them back
+	/// onto the step below. Held for both flight styles — risers under the
 	/// treads, and the floating diagonal.
 	#[test]
 	fn stair_flight_climbs_at_a_constant_rate() {
@@ -1648,9 +1652,9 @@ mod tests {
 			),
 			("floating", &flight_world),
 		] {
-			// flight_world ascends +z from z=12 to a platform at y=13;
-			// built_flight ascends +x from x=12 to one at y=14. Same walk
-			// in each one's own axis: up the flight, then back down it.
+			// flight_world ascends +z to a platform; built_flight ascends
+			// +x to a taller one. Same walk in each one's own axis: up the
+			// flight, then back down it.
 			let along_x = name == "built";
 			let dir = if along_x { Vec3::X } else { Vec3::Z };
 			let (start, top) = if along_x {
@@ -1700,8 +1704,8 @@ mod tests {
 		}
 	}
 
-	/// Flat ground (top at y=10 surface) with a 3-stair flight ascending
-	/// +z at z=12..14 and a solid platform (top at y=13) beyond.
+	/// Flat ground with a three-stair flight ascending +z and a solid
+	/// platform level with its top beyond.
 	fn flight_world(_x: i32, y: i32, z: i32) -> Option<u16> {
 		if y < 10 {
 			return some_cell(BlockType::Dirt);
@@ -1715,8 +1719,8 @@ mod tests {
 		}
 	}
 
-	/// One +x stair at (12, 10) with a flush stone landing behind it at
-	/// x >= 13 (landing top = stair top) — the ramp run-out scenario.
+	/// One +x stair with a flush stone landing behind it, the landing's
+	/// top level with the stair's — the ramp run-out scenario.
 	fn landing_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = z;
 		if y < 10 {
@@ -1733,9 +1737,9 @@ mod tests {
 	#[test]
 	fn stair_mounts_flush_landing_smoothly() {
 		// Without the run-out rule this walk ground against the landing's
-		// top corner for ~150 ticks (the wall push cancels the walk while
-		// the corner catches the bottom sphere). With it, the mount costs
-		// no meaningful time and the climb never dips.
+		// top corner for a visible stall (the wall push cancels the walk
+		// while the corner catches the bottom sphere). With it, the mount
+		// costs no meaningful time and the climb never dips.
 		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
 		let forward = PlayerIntent {
 			move_axis: Vec2::new(0.0, 1.0),
@@ -1756,9 +1760,10 @@ mod tests {
 
 	#[test]
 	fn stair_runout_blocked_by_taller_wall() {
-		// A 2-high wall behind the stair: no capsule headroom over the
-		// first cube's top, so the run-out exemption must not apply — the
-		// wall blocks at the top of the ramp like any wall.
+		// A wall behind the stair, tall enough to leave no capsule
+		// headroom over the first cube's top, so the run-out exemption
+		// must not apply — the wall blocks at the top of the ramp like
+		// any wall.
 		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
 			if x >= 13 && y == 11 {
 				return some_cell(BlockType::Stone);
@@ -1779,10 +1784,11 @@ mod tests {
 
 	#[test]
 	fn stair_side_wall_never_hoists() {
-		// A raised strip BESIDE the ramp (top flush with the stair's top,
-		// everywhere z >= 1): pressing into it diagonally while climbing
-		// slides along it, never hoists onto it — the run-out exemption is
-		// ahead-of-ascent only, so side faces keep blocking.
+		// A raised strip BESIDE the ramp, its top flush with the stair's
+		// and running the length of the approach: pressing into it
+		// diagonally while climbing slides along it, never hoists onto it
+		// — the run-out exemption is ahead-of-ascent only, so side faces
+		// keep blocking.
 		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
 			if y < 10 {
 				some_cell(BlockType::Dirt)
@@ -1803,8 +1809,9 @@ mod tests {
 			p.tick(TICK, Vec3::X, press, &world);
 			let feet = p.pos.y - EYE_TO_FEET;
 			// While the cylinder section overlaps the strip, its face
-			// blocks flush at 0.7; above that only the bottom sphere can
-			// legitimately round over the corner, by a bounded amount.
+			// blocks flush a RADIUS out from it; above that only the
+			// bottom sphere can legitimately round over the corner, by a
+			// bounded amount.
 			if feet < 10.69 {
 				assert!(p.pos.z < 0.71, "face kept blocking: {:?}", p.pos);
 			}
@@ -1825,13 +1832,13 @@ mod tests {
 
 	#[test]
 	fn overlaps_solid_runout_matches_resolver() {
-		// Mid-mount: feet on the ramp at u = 0.8, the bottom sphere
+		// Mid-mount: feet near the top of the ramp, the bottom sphere
 		// grazing the landing's top corner. The resolver exempts the
 		// landing cube, so the probe must not call this solid — else the
 		// adoption envelope rejects every honest mount claim.
 		let mid_mount = Vec3::new(12.8, 10.8 + EYE_TO_FEET, 0.5);
 		assert!(!overlaps_solid(mid_mount, &landing_world));
-		// The same position against the 2-high wall is a state the
+		// The same position against the taller wall is a state the
 		// resolver never produces — solid.
 		let walled = |x: i32, y: i32, z: i32| -> Option<u16> {
 			if x >= 13 && y == 11 {
@@ -1842,7 +1849,8 @@ mod tests {
 		assert!(overlaps_solid(mid_mount, &walled));
 	}
 
-	/// Flat ground with one +x-ascending stair at (12, 10, all z).
+	/// Flat ground with one +x-ascending stair standing on it, running the
+	/// full z.
 	fn one_stair_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = z;
 		if y < 10 {
@@ -1957,9 +1965,9 @@ mod tests {
 
 	// ---- auto-step (v9) --------------------------------------------------
 
-	/// Flat ground (top y=10) with a slab staircase ascending +x, every
-	/// riser exactly AUTO_STEP-sized: 1/3 slab at x=12, 2/3 at x=13,
-	/// full stone at x=14-15, and a 1/3 slab on top at x=15.
+	/// Flat ground with a slab staircase ascending +x, every riser exactly
+	/// AUTO_STEP-sized: a one-third slab, then a two-thirds slab, then
+	/// full stone, then a one-third slab standing on top of that.
 	fn slab_stack_world(x: i32, y: i32, z: i32) -> Option<u16> {
 		let _ = z;
 		if y < 10 {
@@ -1977,7 +1985,7 @@ mod tests {
 	/// A step up is the same motion as a stair: the feet rise at the
 	/// ramp rate, no faster, and the mount lands exactly as the axis
 	/// crosses onto the block. Before SIM v10 each rise was a one-tick
-	/// teleport of up to a third of a block — the jarring pop this pins
+	/// teleport of the whole `AUTO_STEP_MAX` — the jarring pop this pins
 	/// against. Every intermediate state must also pass `overlaps_solid`:
 	/// a rate-limited mount spends its ticks with the capsule inside the
 	/// side of the box it climbs, and the server's envelope probes
@@ -2019,7 +2027,7 @@ mod tests {
 			(prev - (11.0 + 1.0 / 3.0)).abs() < 0.001,
 			"topped out on the raised 1/3, feet = {prev}"
 		);
-		// 1/3 + 1/3 + 1/3 + 1/3 of rise, none of it in one tick.
+		// Four one-third rises, none of them taken in a single tick.
 		assert!(
 			rises >= 16,
 			"spread across ticks, only {rises} rising ticks"
@@ -2052,9 +2060,10 @@ mod tests {
 		};
 		const TOP: f32 = 10.0 + 1.0 / 3.0;
 		// Resting with the axis off the edge, the bottom sphere sits on
-		// the top CORNER, so the feet settle a few mm under the surface —
-		// RADIUS − √(RADIUS² − 0.05²) ≈ 0.004. That is the honest rest
-		// height; a mount-capped landing sinks ~0.03, an order out.
+		// the top CORNER, so the feet settle a hair under the surface —
+		// RADIUS − √(RADIUS² − d²) for the axis's overhang d. That is the
+		// honest rest height; a mount-capped landing sinks an order of
+		// magnitude deeper.
 		const CORNER_REST: f32 = 0.01;
 		for i in 0..40 {
 			// Axis just off the slab's -x edge; vary the drop phase.
@@ -2111,8 +2120,9 @@ mod tests {
 
 	#[test]
 	fn steps_up_slab_stack_and_probe_agrees() {
-		// 1/3 → 2/3 → full cube → cube + 1/3: four AUTO_STEP rises in one
-		// contiguous walk. Every post-tick position must read as
+		// One third → two thirds → full cube → cube plus a third: four
+		// AUTO_STEP rises in one contiguous walk. Every post-tick
+		// position must read as
 		// not-solid — the adoption envelope's probe runs on exactly these.
 		let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
 		let forward = PlayerIntent {
@@ -2142,8 +2152,8 @@ mod tests {
 
 	#[test]
 	fn two_thirds_rise_walls() {
-		// Ground straight into a 2/3 slab: an 8/12 rise must block like
-		// any wall — no step, no creep.
+		// Ground straight into a two-thirds slab: a rise past
+		// `AUTO_STEP_MAX` must block like any wall — no step, no creep.
 		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
 			let _ = z;
 			if y < 10 {
@@ -2169,9 +2179,9 @@ mod tests {
 
 	#[test]
 	fn step_blocked_under_low_ceiling() {
-		// A 1/3 slab under a ceiling leaving less than capsule height
-		// over its top (12.0 − 10.333 = 1.67 < 1.8): the step must not
-		// jam the crown — the slab blocks like a wall.
+		// A one-third slab under a ceiling that leaves less than the
+		// capsule's HEIGHT over its top: the step must not jam the crown
+		// — the slab blocks like a wall.
 		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
 			let _ = z;
 			if y < 10 {
@@ -2203,7 +2213,7 @@ mod tests {
 
 	#[test]
 	fn step_never_mounts_a_door_leaf() {
-		// Standing on a 2/3 slab beside a closed door: the leaf's top is
+		// Standing on a two-thirds slab beside a closed door: the leaf's top is
 		// exactly one step above the feet, but the mandatory upper half
 		// sits directly on it — the headroom probe is the ONLY thing
 		// keeping door tops unwalkable from slab height. If this fails
@@ -2223,7 +2233,7 @@ mod tests {
 				some_cell(BlockType::Air)
 			}
 		};
-		// Start standing on the 2/3 slab (feet 10.667), walking +x.
+		// Start standing on the two-thirds slab, walking +x.
 		let mut p = Player::new(Vec3::new(11.5, 10.0 + 2.0 / 3.0 + EYE_TO_FEET, 0.5));
 		let forward = PlayerIntent {
 			move_axis: Vec2::new(0.0, 1.0),
@@ -2242,7 +2252,7 @@ mod tests {
 
 	#[test]
 	fn jump_mounts_two_thirds_slab() {
-		// An 8/12 rise needs a jump — and the descent phase of the jump
+		// A two-thirds rise needs a jump — and the descent phase of the jump
 		// (out.y ≤ 0 with the feet inside the step window) completes the
 		// mount via the step rule.
 		let world = |x: i32, y: i32, z: i32| -> Option<u16> {
@@ -2274,7 +2284,7 @@ mod tests {
 		);
 	}
 
-	/// Ground plus a door pair (lower y=10, upper y=11) at x=12, hinged
+	/// Ground plus a door pair standing on it ahead of the walker, hinged
 	/// geometry irrelevant to the test — `open` toggles collision.
 	fn door_world(open: bool) -> impl Fn(i32, i32, i32) -> Option<u16> {
 		move |x: i32, y: i32, z: i32| -> Option<u16> {
@@ -2325,19 +2335,19 @@ mod tests {
 	fn overlaps_solid_is_shape_aware() {
 		// Standing ON a tread: feet inside the stair CELL but not its
 		// geometry — never "inside solid" (the anti-rubber-band rule).
-		let mid = Vec3::new(12.5, 10.5 + EYE_TO_FEET, 0.5); // ramp mid: u=0.5
+		let mid = Vec3::new(12.5, 10.5 + EYE_TO_FEET, 0.5); // halfway up the ramp
 		assert!(!overlaps_solid(mid, &one_stair_world));
-		// Buried 0.2 below the ramp: solid.
+		// Sunk below the ramp surface: solid.
 		let buried = mid - Vec3::Y * 0.2;
 		assert!(overlaps_solid(buried, &one_stair_world));
 		// Cube world sanity: resting on ground clear, dipped solid.
 		assert!(!overlaps_solid(Vec3::new(0.5, 11.5, 0.5), &flight_world));
 		assert!(overlaps_solid(Vec3::new(0.5, 11.3, 0.5), &flight_world));
-		// Door: the closed leaf is set back a twelfth (slab spans
-		// 0.083..0.25 of the cell), so the cell CENTER's capsule now
-		// grazes its front face (12.5 − 0.25 < RADIUS); clear needs
-		// front + RADIUS; open = no collision geometry at all (the
-		// handle knob is interaction-only and never counts).
+		// Door: the closed leaf is set back from the cell face it points
+		// at, so the cell CENTER's capsule now grazes the leaf's front
+		// face; clearing it needs a RADIUS beyond that face. Open = no
+		// collision geometry at all (the handle knob is interaction-only
+		// and never counts).
 		let center = Vec3::new(12.5, 11.5, 0.5);
 		let clear = Vec3::new(12.6, 11.5, 0.5);
 		let against = Vec3::new(12.25, 11.5, 0.5);
@@ -2357,9 +2367,9 @@ mod tests {
 		assert!(placement_blocked(eye, feet_cell, stair));
 		assert!(!placement_blocked(eye, (3, 10, 0), stair), "3 blocks away");
 		// A closed door leaf blocks only where its thin slab actually
-		// reaches the capsule (set back a twelfth, its front face at
-		// 0.25 of the cell — the cell center's capsule grazes it); the
-		// open state never blocks anywhere.
+		// reaches the capsule — set back from the cell face, but close
+		// enough that the cell center's capsule grazes it; the open state
+		// never blocks anywhere.
 		let closed = make_cell(
 			BlockType::LumberDoor,
 			door_state(Facing::PosX, false, false),
@@ -2398,8 +2408,9 @@ mod tests {
 
 	#[test]
 	fn wading_stays_dry_physics() {
-		// One block of water on solid ground: sub ≈ 0.49 < threshold —
-		// walking speed must be full WALK_SPEED, not SWIM_SPEED.
+		// One block of water on solid ground: submersion stays under
+		// SWIM_THRESHOLD — walking speed must be full WALK_SPEED, not
+		// SWIM_SPEED.
 		let shallow = |x: i32, y: i32, z: i32| -> Option<u16> {
 			let _ = (x, z);
 			some_cell(if y < 10 {
@@ -2494,7 +2505,7 @@ mod golden {
 	fn golden_stair_trajectory_pins_sim_version() {
 		use crate::chunk::make_cell;
 		use crate::shapes::{stair_state, Facing};
-		// Ground at y<10, a 3-stair flight ascending +z at z=12..14, a
+		// Flat ground with a three-stair flight ascending +z and a
 		// platform beyond; walk up, jump at the top, walk back down.
 		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 			if y < 10 {
@@ -2528,7 +2539,7 @@ mod golden {
 			);
 		}
 		let s = p.state();
-		// Tick 420 lands back on the ground after the full round trip —
+		// The last tick lands back on the ground after the round trip —
 		// ascent support, the landing-mount run-out, platform jump, and
 		// glued descent all feed these bits.
 		assert_eq!(
@@ -2567,7 +2578,7 @@ mod golden {
 			p.tick(TICK, Vec3::Z, intent, &shelf);
 		}
 		let s = p.state();
-		// Tick 240 catches the breach arc over the shelf lip — falling
+		// The last tick catches the breach arc over the shelf lip — falling
 		// in, sinking, swim-up, and the breach all feed these bits.
 		assert_eq!(
 			(s.pos.to_array(), s.vel.to_array()),

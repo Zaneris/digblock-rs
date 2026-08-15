@@ -2,9 +2,9 @@
 //
 // The BODY is one instanced box per player, generated entirely from
 // vertex_index (no geometry buffer — the spray.wgsl trick). Instance =
-// two vec4s: (eye position xyz, yaw) + (color rgb, spare). 0.6 × 1.8 ×
-// 0.6 anchored to the eye (y −1.5 .. +0.3), matching the capsule
-// collider bounds, flat-colored.
+// two vec4s: (eye position xyz, yaw) + (color rgb, spare). The box takes
+// the capsule collider's own width and height, anchored to the eye so it
+// stands where the collider does, flat-colored.
 //
 // The HELD ITEM is `vs_held` into the SAME `fs`: the real item geometry,
 // from
@@ -77,8 +77,8 @@ const DIR_NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// A cell (12 twelfths) renders 0.35 blocks across — exactly the cube
-// this replaced, so a held Dirt block is the same SIZE it always was.
+// A cell renders exactly as wide as the cube this replaced did, so a
+// held Dirt block is the same SIZE it always was.
 // Not the same pixels: the hand moved to the other side of the body
 // (HAND, below) and the item now sits at ITEM_YAW, both of which this
 // change fixed on purpose.
@@ -86,15 +86,15 @@ const HELD_SCALE = 0.35 / 12.0;
 
 // The hand. −x is the carrier's RIGHT: yaw is atan2(look.x, look.z), so
 // forward is +z, and right = forward × up = −x. The cube this replaced
-// sat at +0.44 — the carrier's LEFT — under a comment that said "right
-// of the body". With a cube nobody could tell; with a torch you can, and
-// your own viewmodel rests on the right (REST_X_FRAC).
+// sat at the mirrored offset — the carrier's LEFT — under a comment that
+// said "right of the body". With a cube nobody could tell; with a torch
+// you can, and your own viewmodel rests on the right (REST_X_FRAC).
 const HAND = vec3f(-0.44, -0.62, 0.34);
 
-// Turn the item 45 degrees about its own axis so a cube presents a
-// corner rather than a flat card — the same idea as viewmodel.wgsl's
-// REST_YAW, but a separate constant on purpose: that one is expressed in
-// VIEW space (−z forward) and this one in world space (+z forward), so
+// Turn the item about its own axis so a cube presents a corner rather
+// than a flat card — the same idea as viewmodel.wgsl's REST_YAW, but a
+// separate constant on purpose: that one is expressed in VIEW space
+// (−z forward) and this one in world space (+z forward), so
 // one shared symbol would mean two different rotations under one name.
 // The viewmodel's REST_PITCH is deliberately not copied — it is a
 // screen-space affordance for something a metre from your eye, and out
@@ -110,7 +110,7 @@ struct VsOut {
 	@location(2) world: vec3f,
 	// World-space face normal (flat — a box face has one).
 	@location(3) @interpolate(flat) wn: vec3f,
-	// 1 = fullbright ink (`glows`), skip the lighting entirely.
+	// Set means fullbright ink (`glows`): skip the lighting entirely.
 	@location(4) @interpolate(flat) emissive: f32,
 }
 
@@ -127,8 +127,8 @@ fn vs(
 	let b = cross(n, t);
 	let uv = QUAD[corner];
 	let local = n * 0.5 + (uv.x - 0.5) * t + (uv.y - 0.5) * b;
-	// Body proportions, eye-anchored: y −1.5 .. +0.3 around the eye,
-	// matching the capsule collider.
+	// Body proportions, eye-anchored: the box hangs from just above the
+	// eye down to the feet, matching the capsule collider.
 	let scaled = vec3f(local.x * 0.6, local.y * 1.8 - 0.6, local.z * 0.6);
 	let s = sin(i0.w);
 	let c = cos(i0.w);
@@ -160,8 +160,8 @@ fn vs_held(
 	@location(5) i1: vec4f, // emissive, item height in twelfths, spare, spare
 ) -> VsOut {
 	// Centre on the item's own origin the way viewmodel::mvp does — x/z
-	// on the cell centre, y on half the item's height — so a door (24
-	// twelfths tall) hangs in the hand the way a cube does.
+	// on the cell centre, y on half the item's height — so a door, which
+	// stands two cells tall, hangs in the hand the way a cube does.
 	let centred = (pos - vec3f(6.0, i1.y * 0.5, 6.0)) * HELD_SCALE;
 	let n = DIR_NORMALS[min(face, 5u)];
 	let is = sin(ITEM_YAW);

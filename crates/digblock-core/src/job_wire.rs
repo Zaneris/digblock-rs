@@ -16,12 +16,12 @@
 //! **The air sentinel is part of the format.** A generated column shares
 //! one [`AIR_CHUNK`] `Arc` for every sky chunk, and `is_air_chunk` tests
 //! that by POINTER — the pipeline skips meshing on it, and `drain_results`
-//! skips the neighbour re-dirty cascade. Encoding those chunks as 8 KB of
-//! zeroes each would decode into sixteen distinct all-air chunks that
-//! compare equal to air but aren't *the* air, and the mesher would start
-//! meshing the sky. So an air chunk travels as one flag byte and decodes
-//! back to a clone of the shared sentinel, which is what
-//! `generated_result_keeps_the_air_sentinel` pins.
+//! skips the neighbour re-dirty cascade. Encoding those chunks as a full
+//! block of zeroes each would decode into one distinct all-air chunk per
+//! level of the column — chunks that compare equal to air but aren't *the*
+//! air, and the mesher would start meshing the sky. So an air chunk
+//! travels as one flag byte and decodes back to a clone of the shared
+//! sentinel, which is what `generated_result_keeps_the_air_sentinel` pins.
 
 use std::sync::Arc;
 
@@ -127,8 +127,8 @@ fn put_run_len(out: &mut Vec<u8>, n: usize) {
 }
 
 impl Job {
-	/// Encoded size of a mesh job — the padded snapshot dominates, and it
-	/// is a fixed 11.7 KB, so the buffer is sized exactly once.
+	/// Encoded size of a mesh job — the padded snapshot dominates, and its
+	/// size is fixed, so the buffer is sized exactly once.
 	fn encoded_hint(&self) -> usize {
 		match self {
 			Job::Generate { .. } => 17,
@@ -177,7 +177,7 @@ impl Job {
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
 						out.extend_from_slice(&o.mining.to_le_bytes());
 						// The edit gate. Bounded by the edits inside one
-						// 18³ box, so a u32 count is never the limit, but
+						// padded snapshot, so a u32 count is never the limit, but
 						// dropping it would let the anti-dupe re-reveal a
 						// cell somebody has already mined.
 						out.extend_from_slice(&(o.edited.len() as u32).to_le_bytes());
@@ -263,7 +263,7 @@ impl JobResult {
 				out.extend_from_slice(&dur_ms.to_le_bytes());
 				put_run_len(&mut out, stack.len());
 				for chunk in stack {
-					// One byte for a sky chunk instead of 8 KB of zeroes —
+					// One byte for a sky chunk instead of a whole block of zeroes —
 					// and the decode side is what makes it *the* sentinel
 					// again rather than a look-alike (see the module doc).
 					if is_air(chunk) {

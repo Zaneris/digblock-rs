@@ -167,7 +167,7 @@ fn main() {
 			reregister.clone(),
 			players,
 		));
-		// The pinned cert is 10-day validity; rotate it in-process so a
+		// The pinned cert is short-lived; rotate it in-process so a
 		// long-running server never becomes unjoinable.
 		tokio::spawn(net::rotate_certs(endpoint.clone(), cert_hash, reregister));
 		tokio::select! {

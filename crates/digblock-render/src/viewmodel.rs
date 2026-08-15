@@ -6,9 +6,10 @@
 //! item **in view space** — the camera is the origin looking down −z,
 //! so there is no camera basis to derive, no yaw/pitch to reconstruct,
 //! and the pose is a function of walk phase and swing alone. It also
-//! carries its OWN projection (a fixed 55° field, near 0.01) so the
-//! item's on-screen size never moves when the world FOV or the window
-//! does, and so nothing this close can clip the world's near plane.
+//! carries its OWN projection — a fixed field and near plane of its own
+//! — so the item's on-screen size never moves when the world FOV or the
+//! window does, and so nothing this close can clip the world's near
+//! plane.
 //!
 //! The GPU half draws [`item_geom`] faces through the shared quad index
 //! pattern in a pass of its own, over the finished frame with a freshly
@@ -26,15 +27,15 @@ use crate::ui::hud::IconKind;
 // ---- pose -------------------------------------------------------------
 
 /// Vertical field of view of the viewmodel's own projection, degrees.
-/// Narrower than the world's 75° so the item reads with less distortion
-/// at this distance.
+/// Narrower than the world's so the item reads with less distortion at
+/// this distance.
 const FOV_Y_DEG: f32 = 55.0;
 /// How far in front of the eye the item sits, world units.
 const DIST: f32 = 1.0;
-/// Item size across, world units. A cube turned 45° presents its
-/// diagonal, so its silhouette is ~√2 of this — at the field and
-/// distance above that lands around a quarter of the viewport height,
-/// which is present without being in the way.
+/// Item size across, world units. A cube turned to the rest yaw presents
+/// its diagonal rather than a face, so its silhouette is the wider of the
+/// two — at the field and distance above, that lands present without
+/// being in the way.
 const SIZE: f32 = 0.18;
 /// Where the item rests, as a fraction of the frustum half-extents at
 /// `DIST`. Fractions rather than absolute offsets: the hand should keep
@@ -44,8 +45,8 @@ const SIZE: f32 = 0.18;
 const REST_X_FRAC: f32 = 0.48;
 const REST_Y_FRAC: f32 = -0.58;
 
-/// Resting orientation. Yawing −45° then tipping 20° toward the viewer
-/// puts the item's +x, +y and +z faces on screen — deliberately the
+/// Resting orientation. Yawing, then tipping toward the viewer, puts
+/// the item's +x, +y and +z faces on screen — deliberately the
 /// same three the inventory icon shows, so an item looks like itself in
 /// the hand and in the bar.
 const REST_YAW: f32 = -std::f32::consts::FRAC_PI_4;
@@ -73,7 +74,7 @@ const BOB_ATTACK: f32 = 6.0;
 /// where the distance accumulator has nothing to say. It fades out as
 /// the walk bob fades in, so the two never fight over the same axis.
 const BREATH_SECS: f32 = 4.5;
-/// Travel, as fractions of [`SIZE`]. A quarter of the bob's: this
+/// Travel, as fractions of [`SIZE`]. A fraction of the bob's: this
 /// should be noticed only when it stops.
 const BREATH_Y: f32 = 0.055;
 const BREATH_X: f32 = 0.022;
@@ -346,8 +347,9 @@ pub fn combine(a: Pose, b: Pose) -> Pose {
 }
 
 /// The full transform for the viewmodel: item twelfths → clip space.
-/// `height` is the geometry's height in twelfths (24 for a door), used
-/// to centre it, so a door hangs in the hand like a cube does.
+/// `height` is the geometry's height in twelfths — a door's spans both
+/// its cells — used to centre it, so a door hangs in the hand like a
+/// cube does.
 pub fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 	let half_h = (FOV_Y_DEG.to_radians() / 2.0).tan() * DIST;
 	let half_w = half_h * aspect.max(0.01);
@@ -379,8 +381,8 @@ pub fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 
 // ---- geometry ---------------------------------------------------------
 
-/// One vertex: position in twelfths, uv, texture layer, face index into
-/// the shader's normal table. 28 B.
+/// One vertex, in order: position in twelfths, uv, texture layer, face
+/// index into the shader's normal table.
 ///
 /// Shared with `players.rs`, which draws the SAME geometry in a remote
 /// player's hand — so your hand and theirs are one build rather than two
@@ -895,7 +897,7 @@ mod tests {
 		for _ in 0..60 {
 			s.advance(dt, Some(IconKind::Cube(BlockType::Dirt)));
 		}
-		// A new slot every ~6 frames: fast, but slower than the swap, so
+		// A new slot every few frames: fast, but slower than the swap, so
 		// each lands mid-rise — the case that used to snap.
 		let items = [BlockType::Stone, BlockType::Wood, BlockType::Gravel];
 		let mut prev = s.pose().offset.y;

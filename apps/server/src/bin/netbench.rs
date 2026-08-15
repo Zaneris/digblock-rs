@@ -50,10 +50,10 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// Player counts to sweep. 40 is `MAX_SNAPSHOT_PLAYERS`, where interest
-/// management starts having to choose.
+/// Player counts to sweep, straddling `MAX_SNAPSHOT_PLAYERS` — where
+/// interest management starts having to choose.
 const COUNTS: &[usize] = &[1, 8, 24, 40, 64];
-/// Ticks measured per count, after warmup. 600 = 10 s of sim.
+/// Ticks measured per count, after warmup — several seconds of sim.
 const TICKS: usize = 600;
 const WARMUP: usize = 120;
 
@@ -211,8 +211,8 @@ fn pct(sorted: &[f64], p: f64) -> f64 {
 fn run(n: usize, edits: bool) -> String {
 	let dir = std::env::temp_dir().join(format!("digblock-netbench-{n}-{}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
-	// sim_radius 6 is the shipped default; workers 4 keeps generation off
-	// the measured thread.
+	// The shipped default sim radius, with enough workers to keep
+	// generation off the measured thread.
 	let mut sim = Sim::new(42.0, &dir, 6, 4).expect("open bench world");
 	let mut clients = spawn_clients(&mut sim, n);
 
@@ -252,8 +252,9 @@ fn run(n: usize, edits: bool) -> String {
 		}
 		// Bracket allocations around `tick_once` ALONE, matching the timer.
 		// Spanning the whole loop body counted the harness's own per-client
-		// `vec![]` and the `Vec<SimEvent>` collect above — at n=64 that was
-		// ~65 of the 88.6 allocs/tick being reported as the server's.
+		// `vec![]` and the `Vec<SimEvent>` collect above — at the top of the
+		// sweep that was most of the allocs/tick being reported as the
+		// server's.
 		let a0 = ALLOCS.load(Ordering::Relaxed);
 		let b0 = ALLOC_BYTES.load(Ordering::Relaxed);
 		let start = Instant::now();
@@ -316,8 +317,8 @@ fn run(n: usize, edits: bool) -> String {
 
 fn main() {
 	let edits = !std::env::args().any(|a| a == "--no-edits");
-	// Long enough for the rate windows to settle and for a 500 ms link to
-	// complete many round trips.
+	// Long enough for the rate windows to settle and for even the worst
+	// profile's link to complete many round trips.
 	let link_secs = 20.0;
 	println!("digblock netbench — deterministic, socket-free, {TICKS} ticks per row");
 	println!(
@@ -372,7 +373,7 @@ fn main() {
 // `NetClient` (predictor, reconciliation, RTT estimator and all) against
 // the real `Sim`, joined by a deterministic impairing link.
 //
-// Everything is driven off a virtual 60 Hz clock with a seeded PRNG: no
+// Everything is driven off a virtual fixed-rate clock with a seeded PRNG: no
 // wall-clock, no threads, no sockets. Two runs of the same profile produce
 // the same numbers, which is what makes "did this change make loss worse"
 // a question you can actually answer.
@@ -586,9 +587,9 @@ fn flat_source() -> digblock_server::store::ColumnSource {
 	})
 }
 
-/// Wire/client sub-steps per 60 Hz server tick (2.08 ms each). The server
-/// still ticks at 60 Hz; this is the resolution at which packets are
-/// delivered and the client polls.
+/// Wire/client sub-steps per server tick. The server still ticks at its own
+/// rate; this is the resolution at which packets are delivered and the
+/// client polls.
 const SUBSTEPS: u32 = 8;
 
 struct LinkResult {
@@ -618,11 +619,11 @@ struct LinkResult {
 	dig_short_max: u32,
 }
 
-/// Idle ticks between dig attempts (1 s), so a row gets several complete
-/// holds rather than one long one.
+/// Idle ticks between dig attempts, so a row gets several complete holds
+/// rather than one long one.
 const DIG_IDLE_TICKS: u32 = 60;
-/// How often the walking client fires a residual probe (6/s, comfortably
-/// inside `EDIT_RATE_PER_SEC` 10 so it never starves the real digs).
+/// How often the walking client fires a residual probe — comfortably
+/// inside `EDIT_RATE_PER_SEC`, so it never starves the real digs.
 const PROBE_STRIDE: u32 = 10;
 /// How far to the side of the heading the client aims, in blocks.
 const TARGET_OFFSET: f32 = 3.0;
@@ -812,17 +813,18 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	// Measured harness-side over the whole window rather than read out of
 	// the client's `StatsAcc`, which publishes a closed 1-second bucket and
 	// an EWMA seeded during warmup — both of which report a phase of the run
-	// rather than the run. (The wifi row used to print 20.7 snap/s against a
-	// 20.0 nominal, which is the artifact admitting itself.)
+	// rather than the run. (The wifi row used to print MORE snapshots per
+	// second than the nominal rate, which is the artifact admitting itself.)
 	let mut rtts: Vec<f32> = Vec::new();
 	let mut snaps = 0u64;
 	let mut replays = 0u64;
 	let mut stats_base = digblock_server::sim::InputStats::default();
 	let mut edits_base = digblock_server::sim::EditStats::default();
 	let mut driver = EditDriver::default();
-	// The flat world is stone, which SIM v12 gates below Mining 5: the
-	// driver's client is granted the gate level after warmup (below), and
-	// the hold length uses the same level so client and sim agree.
+	// The flat world is stone, which SIM v12 puts behind the rock strength
+	// wall: the driver's client is granted the gate level after warmup
+	// (below), and the hold length uses the same level so client and sim
+	// agree.
 	let stone_hardness = digblock_core::skills::dig_required(
 		digblock_core::block::BlockType::Stone,
 		digblock_core::block::BlockType::Stone
@@ -833,8 +835,8 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no
 	// snapshots at all — which would read as 100% loss rather than as the
-	// startup it is. Also long enough for a 500 ms link to finish its
-	// handshake several times over.
+	// startup it is. Also long enough for even the worst profile's link to
+	// finish its handshake several times over.
 	let warmup = (4.0 * TICK_RATE as f64) as u32;
 	let steps = warmup + (secs * TICK_RATE as f64) as u32;
 	let dt = 1.0 / TICK_RATE as f32;
@@ -844,7 +846,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 		let measuring = step >= warmup;
 		if step == warmup {
 			// The strength wall would refuse every dig of the stone flat
-			// world at Mining 1; the client has joined by now.
+			// world at an unskilled level; the client has joined by now.
 			sim.bench_set_mining_level(
 				1,
 				digblock_core::unlock::mine(digblock_core::BlockType::Stone),
@@ -868,13 +870,13 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 
 		let mut sim_events: Vec<SimEvent> = Vec::new();
 		// Sub-step the wire and the client within each server tick. The
-		// server still ticks at exactly 60 Hz — a packet arriving mid-tick
-		// really does wait for the next boundary, and that quantization is
-		// the real thing being modelled. What was NOT real was the delivery
-		// check running once per tick against the same `now` the send used
-		// (`at = now + one_way` is never `<= now`), so every leg cost a
-		// whole 16.67 ms tick no matter how short the configured wire.
-		// Below one sub-step (2.08 ms) delays still round up.
+		// server still ticks at exactly its own rate — a packet arriving
+		// mid-tick really does wait for the next boundary, and that
+		// quantization is the real thing being modelled. What was NOT real
+		// was the delivery check running once per tick against the same
+		// `now` the send used (`at = now + one_way` is never `<= now`), so
+		// every leg cost a whole tick no matter how short the configured
+		// wire. Below one sub-step, delays still round up.
 		for sub in 0..SUBSTEPS {
 			wire.lock().unwrap().now += sub_dt as f64;
 
@@ -917,7 +919,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 				client.note_reconciled(outcome);
 			}
 
-			// The client predicts on a 60 Hz accumulator and sends right
+			// The client predicts on a fixed-rate accumulator and sends right
 			// after, exactly as `engine.rs` does — once per tick, not once
 			// per poll.
 			if sub == 0 {

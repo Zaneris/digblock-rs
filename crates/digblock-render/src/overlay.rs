@@ -22,7 +22,7 @@ const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
 
-/// A millisecond figure that may be unknown, in a FIXED five columns
+/// A millisecond figure that may be unknown, in a FIXED column width
 /// either way — the debug panel's width is a budget, not a measurement, so
 /// a field that changed width would slide every column after it.
 ///
@@ -44,12 +44,12 @@ impl std::fmt::Display for MsOrDash {
 /// Column budget for the debug panel. The panel's width is derived from
 /// this rather than from the current frame's longest line, so it never
 /// resizes or slides while numbers stream through it. Every field in the
-/// six lines is printf-padded to a fixed width, so this only has to cover
-/// the widest of them — currently the `net` line, at 114.
+/// panel's lines is printf-padded to a fixed width, so this only has to
+/// cover the widest of them — currently the `net` line.
 ///
 /// `debug_lines_fit_the_column_budget` pins it from both sides: every line
-/// must fit, and the budget must not sit more than 8 columns past the
-/// widest, so growing this to paper over a runaway line is not an option.
+/// must fit, and the budget must not sit far past the widest, so growing
+/// this to paper over a runaway line is not an option.
 const DEBUG_COLS: usize = 116;
 
 /// Baseline-to-baseline spacing in the debug panel. Never tighter than
@@ -108,7 +108,7 @@ fn visible_feed(
 
 const BAR_W: f32 = 2.0;
 const GRAPH_H: f32 = 66.0;
-/// Vertical scale: 3 px per ms (16.7ms line lands at 50px).
+/// Vertical scale of the frame-time graph, in px per ms.
 const MS_TO_PX: f32 = 3.0;
 
 /// Scale a color's alpha byte (0xAABBGGRR layout) by `a` in 0..=1.
@@ -127,8 +127,8 @@ const RED: u32 = 0xFF4040F0;
 const BG: u32 = crate::ui::theme::FILL_BG;
 const REF_LINE: u32 = 0x80FFFFFF;
 
-/// Debug panel worst case ≈ 500 quads; a long menu server list adds ~60
-/// chars × ~20 rows ≈ 1300 more. 8192 leaves lots of headroom.
+/// Sized for the debug panel's worst case plus a long menu server list,
+/// with plenty of headroom over both.
 const MAX_VERTS: usize = 6 * 8192;
 
 #[repr(C)]
@@ -175,14 +175,15 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		lines[i] = (color, scratch.clone());
 	};
 	// `drop` is the one that answers "did we miss a vsync slot": frames
-	// past 1.5× the MEASURED display period, so it works at any refresh
-	// rate. `hitch` is a fixed >33.4ms and cannot see a single dropped
-	// frame at 120Hz at all. `ref` is the estimated period backing drop —
-	// n/a until the first report window, during which drops aren't
-	// counted either, and ~10s stale after a refresh-rate change.
-	// Without these, a p95 of 17.6 on a 60Hz panel is unfalsifiable by
-	// eye: vsync can only present 16.67 or 33.3, so the tail is sampling
-	// noise, but nothing on the overlay said so.
+	// enough past the MEASURED display period to have missed one, so it
+	// works at any refresh rate. `hitch` is a fixed threshold and cannot
+	// see a single dropped frame on a fast panel at all. `ref` is the
+	// estimated period backing drop — n/a until the first report window,
+	// during which drops aren't counted either, and briefly stale after a
+	// refresh-rate change. Without these, a p95 a little over the display
+	// period is unfalsifiable by eye: vsync can only present whole
+	// multiples of that period, so the tail is sampling noise, but
+	// nothing on the overlay said so.
 	let refresh = match s.refresh_ms {
 		r if r > 0.0 => format!("{r:5.2}"),
 		_ => "  n/a".to_owned(),
@@ -230,8 +231,8 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 			2,
 			DIM,
 			format_args!(
-			// `ovl` is not here: it measures 0.00 in every capture this
-				// engine has taken, and the line is at its column budget.
+			// `ovl` is not here: it measures as nothing in every capture
+				// this engine has taken, and the line is at its column budget.
 				// It is still a CSV column.
 				"gpu  pre {:5.2} main {:5.2} water {:5.2} up {:5.2} | gi {:5.2} trace {:5.2} den {:5.2} blit {:5.2} vm {:5.2}",
 				g.prepass_ms,
@@ -308,16 +309,16 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 	//
 	// `ping` is the transport's own estimate — QUIC's, the same quantity the
 	// server browser shows, so the two finally agree. `rtt` is the INPUT→ACK
-	// loop: the wire PLUS the server's input buffer, the 60 Hz tick boundary
+	// loop: the wire PLUS the server's input buffer, the sim's tick boundary
 	// and the snapshot cadence, which is what the player actually feels when
 	// they turn or dig. Their gap is the server-side pipeline, and it is the
 	// part that moves when SNAPSHOT_DIVISOR or the send stride change.
 	//
 	// Showing only `rtt` and subtracting a constant was considered and
 	// measured to be wrong: on a LAN every `rtt` sample is one tick or two
-	// (16.7 or 33.3 ms) against a 4 ms wire, so the wire is a quarter of one
-	// quantum and no subtraction can recover it. `ping` is measured, not
-	// derived.
+	// against a wire far shorter than a tick, so the wire is a fraction of
+	// one quantum and no subtraction can recover it. `ping` is measured,
+	// not derived.
 	//
 	// `+-` is the mean deviation of `rtt` — an rtt without it is not a
 	// number you can act on. `rtt_last_ms` is deliberately NOT here: the
@@ -779,8 +780,9 @@ impl Overlay {
 			ty += line_px;
 		}
 
-		// Frame-time graph: newest bar on the right, green under 16.7ms,
-		// yellow under 33.4, red above; faint line at the 60Hz budget.
+		// Frame-time graph: newest bar on the right, green inside the
+		// frame budget, yellow inside twice it, red above; faint
+		// reference line at the budget itself.
 		let gy = ty + PAD + GRAPH_H; // baseline
 		let start = GRAPH_FRAMES.saturating_sub(history.len());
 		for (i, &ms) in history.iter().enumerate() {
@@ -1051,9 +1053,10 @@ mod tests {
 			tick_lead: u32::MAX,
 		});
 		// The world line's own worst case. `MIN_POSITIVE` is the value that
-		// costs `seed_text` the most: the plain form runs to 326 characters
-		// of leading zeros, so this is the case the exponent form exists
-		// for, and 24 is the bound the budget below is really checking.
+		// costs `seed_text` the most: the plain form runs to hundreds of
+		// characters of leading zeros, so this is the case the exponent
+		// form exists for, and its width is what the budget below is
+		// really checking.
 		stats.world = digblock_core::metrics::WorldStats {
 			pos: [-999_999.9, -999_999.9, -999_999.9],
 			yaw_deg: -359.9,

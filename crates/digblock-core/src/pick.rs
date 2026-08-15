@@ -1,7 +1,8 @@
 //! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6).
 //!
 //! One hold, several cells: the plane perpendicular to the face you hit,
-//! three wide at Mining 55 and the full nine at 85. The pair is derived
+//! a row at the first Mining milestone and the full plane at the second. The
+//! pair is derived
 //! from the ray, never chosen by the client — the server re-raycasts and
 //! runs this same function over its own world, so there is no cheat
 //! surface and no second opinion about which cells an action touched.
@@ -48,7 +49,7 @@ use crate::worldgen::ore::DigMode;
 ///   cell is the only one with a value derived for it. A door is one
 ///   object across two cells: a rank of doors in the plane became a rank
 ///   of orphaned halves standing on nothing, and the aimed door's own
-///   partner sits inside the 3×3, where it was counted as a second block
+///   partner sits inside the swung plane, where it was counted as a second block
 ///   broken and then written a second time by the door branch — one leaf
 ///   paying out two. A slab shrinks a third per hold; cleared outright it
 ///   pays one credit for up to three thirds, which is the matter rule
@@ -78,8 +79,8 @@ pub fn breaks_as_extra(id: u16, value: u16, at: (i32, i32, i32), mode: DigMode) 
 		&& mode == DigMode::Break
 }
 
-/// Which axis an axis-aligned unit normal points along (0 = x, 1 = y,
-/// 2 = z). Anything else answers y, which is what a degenerate normal
+/// Which axis an axis-aligned unit normal points along. Anything else
+/// answers the vertical axis, which is what a degenerate normal
 /// deserves — the caller has already refused the edit by then.
 fn axis_of(normal: (i32, i32, i32)) -> usize {
 	match normal {
@@ -89,7 +90,7 @@ fn axis_of(normal: (i32, i32, i32)) -> usize {
 	}
 }
 
-/// The axis a 3-WIDE break runs along: the horizontal one in the face's
+/// The axis a ROW break runs along: the horizontal one in the face's
 /// plane.
 ///
 /// For a wall (normal along x or z) there is exactly one horizontal
@@ -109,7 +110,8 @@ fn row_axis(normal: (i32, i32, i32), dir: [f32; 3]) -> usize {
 }
 
 /// The offsets one hold breaks, target first. `width` is the roster from
-/// [`crate::unlock::pick_cells`]: 1 (no pick), 3, or 9.
+/// [`crate::unlock::pick_cells`]: a single cell (no pick), a row, or the
+/// full plane.
 fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i32, i32)> {
 	let mut out = vec![(0, 0, 0)];
 	if width < 3 {
@@ -117,7 +119,7 @@ fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i3
 	}
 	let n = axis_of(normal);
 	let row = row_axis(normal, dir);
-	// The other in-plane axis, for the full 3×3.
+	// The other in-plane axis, for the full plane.
 	let up = (0..3).find(|&a| a != n && a != row).unwrap_or(1);
 	let mut push = |a: usize, b: Option<usize>, da: i32, db: i32| {
 		let mut o = [0i32; 3];

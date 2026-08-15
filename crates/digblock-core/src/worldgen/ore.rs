@@ -17,48 +17,50 @@
 //! - [`ore_at`] answers ONE cell. The dig path asks it once per action.
 //! - [`deposits_near`] gathers a box's worth of deposits so a caller can
 //!   test thousands of cells against a short list. The mesh stamp asks it
-//!   once per chunk, because 27 hashes per cell over a 18³ shell is a
-//!   millisecond of a worker's frame and a list walk is nothing.
+//!   once per chunk, because a hash per neighbouring grid cell over a
+//!   whole padded shell is a millisecond of a worker's frame and a list
+//!   walk is nothing.
 //!
 //! **The unedited rule is the anti-dupe, and it is load-bearing.** Ore
 //! manifests only where the cell is still pristine Stone. Without that,
-//! placing crafted Stone back into a spent vein coordinate would turn ~29
-//! Earth into 18–90 Metal, and Metal has no other source. Both sides can
-//! answer it: the server from the journal's per-cell map, the client from
-//! the same map streamed to it. `JournalIndex::record` only ever inserts,
-//! so "has this cell ever been written" is monotone and cannot un-spend a
-//! vein.
+//! placing crafted Stone back into a spent vein coordinate would turn one
+//! block's Earth into a vein's worth of Metal, and Metal has no other
+//! source. Both sides can answer it: the server from the journal's
+//! per-cell map, the client from the same map streamed to it.
+//! `JournalIndex::record` only ever inserts, so "has this cell ever been
+//! written" is monotone and cannot un-spend a vein.
 
 use crate::block::BlockType;
 
 /// Edge of one deposit grid cell, in blocks. A deposit reaches at most
 /// [`MAX_RADIUS`] from its centre, so a query only has to look at the
-/// 3×3×3 neighbourhood — that is the whole apron argument.
+/// immediately neighbouring grid cells — that is the whole apron argument.
 const CELL: i32 = 12;
 
 /// The furthest a deposit's blob reaches from its centre.
 pub const MAX_RADIUS: i32 = 2;
 
-/// Salt for the deposit stream, distinct from decoration's families
-/// (tree 0, landmark, boulder, bush) so ore and trees never correlate.
+/// Salt for the deposit stream, distinct from decoration's families (the
+/// tree, landmark, boulder and bush streams) so ore and trees never
+/// correlate.
 const DEPOSIT_SALT: u64 = 0x0e5e_ee45_1c3d_b10b;
 
-/// How many of 256 grid cells hold a deposit at all. The other half of
-/// the density knob is the blob radius in [`deposit_in`]; this one sets
-/// how SPREAD OUT veins are, which is what a player feels as "how far do
-/// I tunnel between finds". Measured at ~49 ore cells per 10,000 with
-/// these numbers — `ore_density_stays_in_a_playable_band` reports it.
+/// The share of grid cells that hold a deposit at all, in 256ths. The
+/// other half of the density knob is the blob radius in [`deposit_in`];
+/// this one sets how SPREAD OUT veins are, which is what a player feels as
+/// "how far do I tunnel between finds". `ore_density_stays_in_a_playable_band`
+/// measures what falls out of the pair and reports it.
 const DEPOSIT_IN_256: u64 = 200;
 
 /// The four tiers, deepest-first, with the greatest depth each may appear
 /// at and its share among the tiers available there.
 ///
 /// Bands OVERLAP on purpose. Making each band exclusive would mean a
-/// Mining-10 player who tunnels to y = 20 finds nothing at all — every
-/// deposit down there would be Aetherock, which they cannot see. Instead
-/// every tier stays available all the way down and the deep ones are
-/// simply rarer, so digging deeper raises what you MIGHT find without
-/// taking away what you can.
+/// player who tunnels deep with only the shallow tiers revealed finds
+/// nothing at all — every deposit down there would be Aetherock, which
+/// they cannot see. Instead every tier stays available all the way down
+/// and the deep ones are simply rarer, so digging deeper raises what you
+/// MIGHT find without taking away what you can.
 const TIERS: [(BlockType, i32, u64); 4] = [
 	(BlockType::Emberore, 140, 8),
 	(BlockType::Duskstone, 96, 4),
@@ -126,19 +128,19 @@ fn deposit_in(gx: i32, gy: i32, gz: i32, seed: f64) -> Option<Deposit> {
 	if h & 0xFF >= DEPOSIT_IN_256 {
 		return None;
 	}
-	// Centre anywhere in the cell. A byte reduced mod 12 is very slightly
-	// biased toward the low four offsets, which is the kind of thing
-	// nobody can see in a vein.
+	// Centre anywhere in the cell. A byte reduced mod the cell edge is
+	// very slightly biased toward the low offsets, which is the kind of
+	// thing nobody can see in a vein.
 	let x = gx * CELL + ((h >> 8) & 0xFF) as i32 % CELL;
 	let y = gy * CELL + ((h >> 16) & 0xFF) as i32 % CELL;
 	let z = gz * CELL + ((h >> 24) & 0xFF) as i32 % CELL;
 	// The world floor is undiggable, and a vein you can see and never
 	// reach is worse than no vein — so the whole BLOB has to clear it,
 	// not just the centre. Guarding the centre alone left a deposit
-	// seeded at y = 1 or 2 reaching [`MAX_RADIUS`] below itself into
-	// y = 0, where `column_block` puts ordinary Stone (there is no
-	// bedrock block; the floor is positional). The reveal stamped it,
-	// the seam glittered in the bottom layer of the world, and
+	// seeded just above the floor reaching [`MAX_RADIUS`] below itself
+	// into the bedrock course, where `column_block` puts ordinary Stone
+	// (there is no bedrock block; the floor is positional). The reveal
+	// stamped it, the seam glittered in the bottom layer of the world, and
 	// `dig_hardness` then refused every hold on it forever — with
 	// `dig_mode` answering NeedsSiphon, which sends a player off to
 	// craft a tool for a block that can never break.
@@ -348,8 +350,8 @@ pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Depo
 
 /// The block a dig is TIMED and CREDITED as. A vein lives in a cell that
 /// still holds Stone — the reveal is a mesh stamp, not a world write — so
-/// without this an extraction would take a stone's 90 ticks and pay a
-/// stone's XP however deep the seam was, and the ore rows' hardnesses
+/// without this an extraction would take a stone's own hold time and pay
+/// a stone's XP however deep the seam was, and the ore rows' hardnesses
 /// would be dead numbers on blocks nobody ever digs.
 #[inline]
 pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
@@ -422,10 +424,10 @@ mod tests {
 	///
 	/// These numbers moved once, deliberately, and the old set is worth
 	/// recording because it was pinning a bug rather than guarding
-	/// against one: five of its six cells sat at y = 1 and the sixth at
-	/// y = 2, i.e. the first thing this golden ever described was a vein
-	/// packed against the undiggable floor. `deposit_in` guarded only the
-	/// deposit's CENTRE, so a blob reached [`MAX_RADIUS`] further down
+	/// against one: nearly every cell in it sat in the first course above
+	/// the world floor, i.e. the first thing this golden ever described
+	/// was a vein packed against the undiggable floor. `deposit_in` guarded
+	/// only the deposit's CENTRE, so a blob reached [`MAX_RADIUS`] further down
 	/// into cells no dig can ever open. Everything here is now clear of
 	/// `BEDROCK_Y + MAX_RADIUS`, which
 	/// `no_vein_reaches_the_undiggable_floor` enforces in general.
@@ -456,8 +458,8 @@ mod tests {
 	/// Asked of the CELLS rather than the deposits, because that is the
 	/// property that matters and it is the one the centre-only guard
 	/// missed: `deposit_in` refused a centre at or below the floor, but
-	/// a blob reaches [`MAX_RADIUS`] further down, so a deposit seeded at
-	/// y = 1 put ore in y = 0. There is no bedrock block — `column_block`
+	/// a blob reaches [`MAX_RADIUS`] further down, so a deposit seeded just
+	/// above it put ore IN it. There is no bedrock block — `column_block`
 	/// fills the floor with ordinary Stone — so the reveal saw a pristine
 	/// Stone cell and stamped it, and `dig_hardness` then refused every
 	/// hold on the seam forever.
@@ -499,7 +501,7 @@ mod tests {
 	}
 
 	/// Depth bands: every tier stays reachable all the way down (the
-	/// overlap that keeps a low-level miner in business at y = 20), but
+	/// overlap that keeps a low-level miner in business deep down), but
 	/// none appears above its own ceiling.
 	#[test]
 	fn tiers_respect_their_depth_bands() {

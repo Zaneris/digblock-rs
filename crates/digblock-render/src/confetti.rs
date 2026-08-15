@@ -11,9 +11,9 @@
 
 use digblock_platform::Gpu;
 
-/// Simultaneous bursts. Sixteen is far past what a session ever shows at
-/// once (a level-up is rare and a burst is under three seconds), and
-/// costs a 512-byte buffer.
+/// Simultaneous bursts. The cap is far past what a session ever shows at
+/// once (a level-up is rare and a burst is short-lived — see [`LIFE`]),
+/// and the buffer it sizes is negligible.
 pub const MAX_BURSTS: usize = 16;
 /// Flakes per burst — keep in sync with confetti.wgsl PARTICLES.
 const PARTICLES: u32 = 96;

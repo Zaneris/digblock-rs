@@ -29,20 +29,21 @@ const CELL: i32 = 8;
 /// (`TreeDensity::Dense`) — a cheap pre-gate, so most cells reject on
 /// their hash roll before paying for a `column_shape` evaluation.
 const MAX_TREE_DENSITY_PCT: u64 = 55;
-pub const MAX_STRUCTURE_HEIGHT: i32 = 10; // trunk (≤7) + canopy cap (+1) + headroom
+pub const MAX_STRUCTURE_HEIGHT: i32 = 10; // trunk + canopy cap + headroom
 
-/// Landmark trees: one candidate per 64×64 cell at 2.5% — mean spacing
-/// ~400 blocks, so meeting one feels like an event. Max horizontal reach
-/// is 5 (canopy −4..=5 around a 2×2 trunk) ≤ STRUCTURE_APRON.
+/// Landmark trees: one rare candidate per grid cell, spaced far enough
+/// apart that meeting one feels like an event. The canopy's horizontal
+/// reach around the trunk stays within STRUCTURE_APRON.
 const LANDMARK_CELL: i32 = 64;
 const LANDMARK_PCT: u64 = 25; // of 1000
-pub const MAX_LANDMARK_HEIGHT: i32 = 13; // 2×2 trunk (≤10) + cap (+1) + headroom
+pub const MAX_LANDMARK_HEIGHT: i32 = 13; // trunk + cap + headroom
 /// Boulder / bush per-cell candidate percentages.
 const BOULDER_PCT: u64 = 10;
 const BUSH_PCT: u64 = 15;
 
 /// Per-family hash salts: full independent 64-bit streams, no bit-window
-/// bookkeeping. TREE = 0 bit-preserves the original tree stream.
+/// bookkeeping. The tree family's salt is the identity, which
+/// bit-preserves the original tree stream.
 const TREE_SALT: u64 = 0;
 const LANDMARK_SALT: u64 = 0x9e37_79b9_97f4_2c15;
 const BOULDER_SALT: u64 = 0xc2b2_ae3d_27d4_eb4f;
@@ -55,11 +56,11 @@ const BUSH_SALT: u64 = 0x1656_67b1_9e37_79f9;
 pub enum TreeKind {
 	/// The classic round broadleaf: two wide rings and a cap.
 	Blob,
-	/// Poplar-like column: a tall stack of 3×3 rings and a tip.
+	/// Poplar-like column: a tall stack of narrow rings and a tip.
 	TallNarrow,
 	/// Conifer: alternating wide/narrow tiers tapering to a tip.
 	Pine,
-	/// Low spreading oak: radius-3 rings under a wide cap.
+	/// Low spreading oak: broad rings under a wide cap.
 	SquatWide,
 	/// Savanna acacia: a bare trunk under an umbrella disc.
 	FlatTop,
@@ -166,10 +167,12 @@ fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
 	})
 }
 
-/// A rare 2×2-trunk giant with a wide umbrella canopy.
+/// A rare giant on a square multi-column trunk, with a wide umbrella
+/// canopy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Landmark {
-	/// North-west trunk column; the trunk occupies (x..=x+1, z..=z+1).
+	/// North-west trunk column; the trunk fills the square footprint
+	/// anchored here.
 	pub x: i32,
 	pub y: i32,
 	pub z: i32,
@@ -289,17 +292,17 @@ fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
 }
 
 impl Landmark {
-	/// Trunk roots one block into each of the four surface cells; the
-	/// canopy is two wide 10×10-minus-corners layers under a radius-2
-	/// layer and a 2×2 cap. Rim leaves of the wide layers jitter away
-	/// 50/50 like ordinary trees.
+	/// Trunk roots one block into each of its surface cells; the canopy is
+	/// two wide corner-clipped layers under a smaller one, capped over the
+	/// trunk. Rim leaves of the wide layers jitter away like ordinary
+	/// trees.
 	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
 		for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
 			for dy in -1..self.trunk_h {
 				f(self.x + dx, self.y + dy, self.z + dz, BlockType::Wood);
 			}
 		}
-		// (dy relative to y, x/z span around the 2×2 footprint, jitter).
+		// (dy relative to y, x/z span around the trunk footprint, jitter).
 		let layers: [(i32, i32, bool); 3] = [
 			(self.trunk_h - 2, 4, true),
 			(self.trunk_h - 1, 4, true),
@@ -313,7 +316,7 @@ impl Landmark {
 						continue;
 					}
 					if (0..=1).contains(&dx) && (0..=1).contains(&dz) && dy < self.trunk_h {
-						continue; // trunk occupies the center 2×2
+						continue; // the trunk occupies the centre cells
 					}
 					let rim = dx == -r || dx == r + 1 || dz == -r || dz == r + 1;
 					if jitter && rim && jroll(self.salt, dx, dz, dy - self.trunk_h) {
@@ -323,7 +326,7 @@ impl Landmark {
 				}
 			}
 		}
-		// 2×2 cap over the trunk.
+		// The cap over the trunk.
 		for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
 			f(
 				self.x + dx,
@@ -363,8 +366,9 @@ fn cell_boulder(cell_x: i32, cell_z: i32, seed: f64) -> Option<Boulder> {
 }
 
 impl Boulder {
-	/// 2–3 stone cells; partial burial falls out of the Air-only write
-	/// rule on slopes (cells inside higher neighbor terrain don't write).
+	/// A couple of stone cells; partial burial falls out of the Air-only
+	/// write rule on slopes (cells inside higher neighbor terrain don't
+	/// write).
 	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
 		const PATTERNS: [&[(i32, i32, i32)]; 4] = [
 			&[(0, 0, 0), (1, 0, 0)],
@@ -447,7 +451,7 @@ fn cell_candidates(cell_x: i32, cell_z: i32, seed: f64) -> CellCandidates {
 }
 
 /// Slots of the candidate memos below. A power of two, indexed by the low
-/// bits of the cell coordinates rather than a hash, so a 16×16 window of
+/// bits of the cell coordinates rather than a hash, so a square window of
 /// cells — wider than any single job's apron and its neighbours' — never
 /// self-evicts.
 const MEMO_SLOTS: usize = 256;
@@ -573,8 +577,8 @@ impl Tree {
 
 	/// Every block of the tree in world coordinates. The trunk roots one
 	/// block into the surface cell and wins over leaves; canopy layers are
-	/// listed per kind relative to the trunk top, with rim leaves of wide
-	/// (r ≥ 2) layers dropped 50/50 by the per-tree jitter roll. Conifers
+	/// listed per kind relative to the trunk top, with rim leaves of the
+	/// wide layers dropped by the per-tree jitter roll. Conifers
 	/// carry PineLeaves; every other kind carries Leaves.
 	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
 		f(self.x, self.y - 1, self.z, BlockType::Wood);
@@ -784,11 +788,10 @@ mod tests {
 						other => panic!("unexpected {other:?}"),
 					}
 				});
-				// 4 trunk columns, each rooted one block down.
+				// One column per trunk cell, each rooted one block down.
 				assert_eq!(wood, 4 * (trunk_h + 1));
-				// Two 10×10-minus-corners-minus-trunk layers (92 max, 60
-				// after full rim jitter), a 6×6-minus-corners layer (32),
-				// and the 2×2 cap.
+				// The two wide corner-clipped layers (at the low end, fully
+				// jittered), the smaller layer above them, and the cap.
 				assert!((156..=220).contains(&leaves), "leaves {leaves}");
 			}
 		}
@@ -838,7 +841,7 @@ mod tests {
 
 	/// Terrain-placed candidates land where their rules say: boulders on
 	/// rock surfaces, bushes on tree-valid ground, landmarks on flat
-	/// tree-valid 2×2 footprints.
+	/// tree-valid footprints.
 	#[test]
 	fn placements_match_surface_rules() {
 		let seed = 42.0;
@@ -880,7 +883,7 @@ mod tests {
 
 	/// Per-kind trunk range and leaf-count bounds: the maximum is the full
 	/// layer list; the minimum drops every jitterable rim cell of the wide
-	/// (r >= 2) layers.
+	/// layers.
 	fn expect_shape(
 		kind: TreeKind,
 	) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {

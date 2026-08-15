@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"DBJ1";
-/// v2: the block field widened to a u16 CELL (id + reserved state bits)
-/// at record bytes 12..14; `by` moved to byte 14. Old-version files are
+/// v2: the block field widened to a u16 CELL (id + reserved state bits),
+/// pushing `by` along behind it in the record. Old-version files are
 /// archived to `.vN.bak` at open and the world starts fresh.
 /// v3: worldgen retune (SIM v5) — the record format is unchanged, but the
 /// same seed now yields different terrain, so stored edits are stale;
@@ -53,7 +53,7 @@ const SYNC_INTERVAL_SECS: f32 = 1.0;
 /// Final block CELL value per edited cell within one chunk column.
 pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 
-/// Chunk columns per region axis — 16, so a region spans 256×256 blocks.
+/// Chunk columns per region axis: a region is this many columns square.
 ///
 /// Regions are the PERSISTENCE granularity, and exist because both homes
 /// of this format used to do work proportional to a world's total edit
@@ -64,7 +64,7 @@ pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 ///
 /// The size is a balance: bigger regions mean fewer, larger rewrites (and
 /// fewer localStorage keys); smaller ones mean more bookkeeping per edit.
-/// 256 blocks is a few minutes of building in one place.
+/// A region is about a few minutes of building in one place.
 pub const REGION_COLS: i32 = 16;
 
 /// Region owning a chunk column.
@@ -139,10 +139,11 @@ impl JournalIndex {
 	///
 	/// This is what keeps residency sync O(active) instead of O(world age).
 	/// The late-sync scan runs per client every time their center column
-	/// moves, i.e. every 16 blocks walked; against `edited_columns` that
-	/// was a full hash-map walk each time — 50 k columns × 255 players ×
-	/// ~64 crossings/s is millions of key visits a second, and it grows for
-	/// the life of the world while everything around it is bounded.
+	/// moves — once per column crossed; against `edited_columns` that was a
+	/// full hash-map walk each time, and a mature world's column count times
+	/// a full server's players times their crossing rate is millions of key
+	/// visits a second, growing for the life of the world while everything
+	/// around it is bounded.
 	pub fn columns_near(
 		&self,
 		center: (i32, i32),
@@ -359,8 +360,8 @@ const COMPACT_MIN_RECORDS: u64 = 10_000;
 /// by mutation), so a single tick can overshoot by one column.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RECORDS_PER_TICK: u64 = 4096;
-/// Intermediate tmp fsync cadence (~2 MB) so the finishing tick never
-/// pays one huge fsync inside the 60Hz budget.
+/// Intermediate tmp fsync cadence, in records, so the finishing tick
+/// never pays one huge fsync inside the sim's tick budget.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_RECORDS_PER_SYNC: u64 = 131_072;
 /// Cooldown after a completed run (fluid churn re-bloats slowly).
@@ -378,7 +379,7 @@ const COMPACT_DELTA_MAX: usize = 65_536;
 /// full pass, so its cost is fixed no matter how many regions a mature
 /// world holds — the pre-shard code summed every column's live cells on
 /// every tick instead. A sweep of even a few thousand regions completes
-/// in seconds, which is nothing against the 60s cooldown between runs.
+/// in seconds, which is nothing against `COMPACT_COOLDOWN_SECS`.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_SCAN_PER_TICK: usize = 8;
 /// Shard writers kept open at once. Regions are visited without bound —
@@ -398,10 +399,11 @@ const MAX_OPEN_REGIONS: usize = 64;
 /// [`Journal::open_writer`]).
 ///
 /// The two flags are separate because [`Journal::sync`] fires on a global
-/// "something was written" trigger, once a second, while the writer set is
-/// up to `MAX_OPEN_REGIONS` wide. Without a per-writer flag it fsynced all
-/// 64 descriptors every time any one of them took an append — 64 fsyncs a
-/// second on the sim thread, most of them for shards with nothing new.
+/// "something was written" trigger at a fixed interval, while the writer
+/// set is up to `MAX_OPEN_REGIONS` wide. Without a per-writer flag it
+/// fsynced EVERY open descriptor whenever any one of them took an append —
+/// a whole writer set's worth of fsyncs on the sim thread each interval,
+/// most of them for shards with nothing new.
 #[cfg(not(target_arch = "wasm32"))]
 struct RegionWriter {
 	file: BufWriter<File>,
@@ -714,8 +716,8 @@ impl Journal {
 		}
 	}
 
-	/// Bounded by the open-writer cap, and each flush is a memcpy of a
-	/// partial 8 KB buffer into the kernel.
+	/// Bounded by the open-writer cap, and each flush is a memcpy of one
+	/// partial buffer into the kernel.
 	fn flush_writers(&mut self) {
 		let mut errs = Vec::new();
 		for w in self.writers.values_mut() {
@@ -917,7 +919,7 @@ fn encode_record(x: i32, y: i32, z: i32, block: u16, by: PlayerId) -> [u8; RECOR
 	rec[8..12].copy_from_slice(&z.to_le_bytes());
 	rec[12..14].copy_from_slice(&block.to_le_bytes());
 	rec[14] = by;
-	// rec[15] reserved, zero.
+	// The trailing byte is reserved, and stays zero.
 	rec
 }
 
@@ -1137,7 +1139,7 @@ fn header_bytes(seed: f64) -> [u8; HEADER_LEN as usize] {
 /// The version of the journal for `seed` under `dir` when it is NOT the
 /// current one; None when there is none, it is current, or it is
 /// malformed. Pub so a save store can flag an incompatible world in its
-/// list (a 16-byte read per shard) without triggering `open`'s
+/// list (one header read per shard) without triggering `open`'s
 /// archive-and-start-fresh.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn world_version(dir: &Path, seed: f64) -> std::io::Result<Option<u16>> {
@@ -1269,8 +1271,8 @@ mod tests {
 	#[test]
 	fn columns_near_never_misses_what_a_full_scan_finds() {
 		let mut index = JournalIndex::default();
-		// One edit per column over a 96×96-column span straddling 0, i.e.
-		// 36 regions at REGION_COLS = 16.
+		// One edit per column over a square span straddling zero, wide
+		// enough to cover many whole regions each way.
 		for cx in -48..48 {
 			for cz in -48..48 {
 				index.record(edit(cx * 16, 130, cz * 16, 1));
@@ -1363,9 +1365,9 @@ mod tests {
 		assert_eq!(col.get(&(5, 130, -2)), Some(&4));
 		let col = j.index.column(1, 0).expect("column (1,0)");
 		assert_eq!(col.get(&(20, 131, 5)), Some(&3));
-		// The two cells sit in different regions, so they landed in
-		// different shards: (5,·,-2) is column (0,-1) -> region (0,-1),
-		// (20,·,5) is column (1,0) -> region (0,0).
+		// The two cells sit in different columns, and those columns fall in
+		// different regions — so they landed in different shards, each
+		// named for the region it holds.
 		assert_eq!(
 			shard_names(&dir, 42.0),
 			vec!["r.0.-1.journal", "r.0.0.journal"]
@@ -1464,7 +1466,8 @@ mod tests {
 			j.append(edit(2, 100, 2, 3), 1);
 			j.sync();
 		}
-		// Simulate a crash mid-record: append 7 stray bytes to the shard.
+		// Simulate a crash mid-record: append a partial record's worth of
+		// stray bytes to the shard.
 		let path = shard_of(&dir, 7.0, (0, 0));
 		let mut f = OpenOptions::new().append(true).open(&path).unwrap();
 		f.write_all(&[0xAB; 7]).unwrap();
@@ -1480,8 +1483,9 @@ mod tests {
 	fn boot_compaction_rewrites_bloated_shards() {
 		let dir = std::env::temp_dir().join(format!("dbj-compact-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
-		// 30k records over 100 distinct cells (fluid-style churn), all in
-		// region (0,0), plus one lone cell far away in region (11,11).
+		// Many records over a handful of distinct cells (fluid-style
+		// churn), all in one region, plus one lone cell far away in
+		// another.
 		{
 			let mut j = Journal::open(&dir, 9.0).unwrap();
 			for i in 0..30_000u32 {
@@ -1497,14 +1501,14 @@ mod tests {
 		);
 		assert_eq!(shard_len(&dir, 9.0, (11, 11)), HEADER_LEN + RECORD_LEN);
 
-		// Reopen: the bloated shard compacts to 100 live cells, index
-		// identical; the quiet shard is not rewritten at all.
+		// Reopen: the bloated shard compacts down to just its live cells,
+		// index identical; the quiet shard is not rewritten at all.
 		let j = Journal::open(&dir, 9.0).unwrap();
 		assert_eq!(shard_len(&dir, 9.0, (0, 0)), HEADER_LEN + 100 * RECORD_LEN);
 		assert_eq!(shard_len(&dir, 9.0, (11, 11)), HEADER_LEN + RECORD_LEN);
 		assert_eq!(j.index.next_seq, 101, "seq restarts at the on-disk count");
 		assert_eq!(j.index.live_cells(), 101);
-		// Last write for cell 5: i = 29905 -> block 29905 % 7.
+		// A surviving cell holds whatever its LAST write wrote.
 		let col = j.index.column(0, 0).unwrap();
 		assert_eq!(col.get(&(5, 120, 0)), Some(&((29_905u32 % 7) as u16)));
 		drop(j);
@@ -1590,12 +1594,12 @@ mod tests {
 		let dir = std::env::temp_dir().join(format!("dbj-rtmid-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		let mut j = Journal::open(&dir, 22.0).unwrap();
-		// Three columns × 4000 distinct cells: one copy step covers
-		// exactly two columns (budget 4096), guaranteeing a mid-run
-		// window with one column still pending — whichever the hash
-		// order picks.
-		// Three writes per cell: 36k records over 12k live cells, safely
-		// past the >2× ratio trigger.
+		// A few columns of several thousand distinct cells each, sized so
+		// one copy step (COMPACT_RECORDS_PER_TICK) covers all but one of
+		// them, guaranteeing a mid-run window with a column still pending
+		// — whichever the hash order picks. Writing every cell several
+		// times over puts the record count safely past the ratio that
+		// triggers compaction.
 		for round in 1..=3u16 {
 			for col in 0..3i32 {
 				for i in 0..4000i32 {
@@ -1615,8 +1619,8 @@ mod tests {
 		}
 		j.append(edit(300, 50, 7, 5), 2);
 		drive(&mut j);
-		// Base: two untouched columns (4000 each) + pending column with
-		// the re-edit already applied (4000). Delta: two re-edits.
+		// Base: the already-copied columns, plus the pending one with its
+		// re-edit already applied. Delta: the re-edits that diverted.
 		let live = j.index.live_cells();
 		assert_eq!(live, 12_001);
 		assert_eq!(
@@ -1728,8 +1732,9 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
-	/// A version-mismatched file (e.g. v1: u8 block at byte 12) can't be
-	/// read — misparsing it as v2 would corrupt every cell — but refusing
+	/// A version-mismatched file (e.g. v1, whose block field was a u8)
+	/// can't be read — misparsing it as v2 would corrupt every cell — but
+	/// refusing
 	/// to boot bricks persistent volumes across format breaks. It is
 	/// archived byte-intact to `.v1.bak` and a fresh world starts.
 	#[test]
@@ -1805,7 +1810,8 @@ mod tests {
 		let mut j = Journal::open(&dir, 31.0).unwrap();
 		let regions = MAX_OPEN_REGIONS + 8;
 		for r in 0..regions as i32 {
-			// One cell per region: 256 blocks apart on x.
+			// One cell per region: each append lands a whole region
+			// further along x.
 			j.append(edit(r * 256, 100, 0, (r % 7) as u16), 1);
 			assert!(j.writers.len() <= MAX_OPEN_REGIONS, "descriptor cap held");
 		}

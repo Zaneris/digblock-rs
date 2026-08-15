@@ -19,7 +19,7 @@ use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerConfig};
 
-/// How long a fresh connection gets to produce its 8-byte preamble.
+/// How long a fresh connection gets to produce its `PREAMBLE_LEN` preamble.
 const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard ceiling on everything before the sim hears about a connection:
@@ -29,8 +29,8 @@ const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Without it a peer could hold a connection slot forever by simply never
 /// opening the control stream — `accept_bi()` had no deadline, and
 /// `keep_alive_interval` means the idle timeout never fires against a peer
-/// whose QUIC stack merely ACKs (which the spec requires). 512 frozen tabs
-/// would then wedge the server against `MAX_CONNECTIONS` permanently.
+/// whose QUIC stack merely ACKs (which the spec requires). A wave of frozen
+/// tabs would then wedge the server against `MAX_CONNECTIONS` permanently.
 const LOBBY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long past the preamble the Hello frame gets (mirrors the sim's old
@@ -38,8 +38,8 @@ const LOBBY_TIMEOUT: Duration = Duration::from_secs(20);
 /// the token verifies).
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Outer bound on the master verify round trip (ureq's own timeout is 3 s;
-/// this also covers spawn_blocking queueing).
+/// Outer bound on the master verify round trip — longer than the ureq agent's
+/// own timeout in `master.rs`, since this also covers spawn_blocking queueing.
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Inbound throttling window. When a budget is exhausted the server stops
@@ -49,20 +49,21 @@ const THROTTLE_WINDOW: Duration = Duration::from_millis(100);
 /// Reliable frames decoded per window (edit floods can't amplify into
 /// unbounded SimEvents + rejection storms).
 const MSG_BUDGET: u32 = 32;
-/// Input datagrams decoded per window (2× the tick rate is generous).
+/// Input datagrams decoded per window — a multiple of the tick rate, so an
+/// honest client's bursts never clip.
 const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 
 /// Connections allowed to exist at once (counting pre-Hello lobby
-/// members). The 255-player cap applies only post-Hello, and every
+/// members). The player-id cap applies only post-Hello, and every
 /// accepted connection costs a task + inbound budgets; past this, new
 /// sessions are dropped before the WebTransport accept.
 const MAX_CONNECTIONS: usize = 512;
 
-/// Rotate the endpoint's certificate this often — well inside the 10-day
-/// validity so a few failed attempts (master down, clock trouble) still
-/// leave days of margin before the pinned cert expires.
+/// Rotate the endpoint's certificate this often — well inside the validity
+/// `fresh_identity` issues, so a few failed attempts (master down, clock
+/// trouble) still leave days of margin before the pinned cert expires.
 const CERT_ROTATE_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// Retry cadence after a failed rotation (~3 days of budget remain).
+/// Retry cadence after a failed rotation, while days of validity remain.
 const CERT_ROTATE_RETRY: Duration = Duration::from_secs(60 * 60);
 
 /// Fresh self-signed identity + the SHA-256 pin clients use: browsers via
@@ -70,9 +71,9 @@ const CERT_ROTATE_RETRY: Duration = Duration::from_secs(60 * 60);
 /// (`CertPolicy::PinnedSha256`; the default dev posture is Insecure
 /// with a loud warning).
 fn fresh_identity() -> anyhow::Result<(Identity, [u8; 32])> {
-	// 10-day validity, NOT the wtransport default of exactly 14: Chrome
-	// caps `serverCertificateHashes` certs at 14 days and rejects at the
-	// boundary with any clock skew. `rotate_certs` swaps in a fresh cert
+	// Shorter validity than the wtransport default, which sits exactly ON
+	// Chrome's cap for `serverCertificateHashes` certs — Chrome rejects at
+	// the boundary with any clock skew. `rotate_certs` swaps in a fresh cert
 	// every CERT_ROTATE_INTERVAL, so long-running servers never reach the
 	// window's edge.
 	let identity = Identity::self_signed_builder()
@@ -296,8 +297,8 @@ async fn lobby(
 	// onto a server. Leftover bytes buffered past the Hello frame carry
 	// into the main loop untouched.
 	// The client direction's cap, not the server's: nothing a client sends
-	// is large, and the 1 MB default exists for journal batches going the
-	// other way.
+	// is large, and the reader's much larger default limit exists for
+	// journal batches going the other way.
 	let mut frames = FrameReader::with_limit(MAX_CLIENT_FRAME);
 	let mut buf = vec![0u8; 64 * 1024];
 	let hello = match tokio::time::timeout(

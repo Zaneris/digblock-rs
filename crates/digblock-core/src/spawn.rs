@@ -28,13 +28,12 @@ use crate::protect::Region;
 use crate::worldgen::{carved, column_shape_above, column_shapes_in, SEA_LEVEL};
 use glam::Vec3;
 
-/// Clearance radius around the spawn column, in columns: the disc of
-/// ground a spawning player stands on. 2 = a 5×5 footprint.
+/// Clearance radius around the spawn column, in columns: the square disc
+/// of ground a spawning player stands on.
 pub const CLEAR: i32 = 2;
 
-/// Height of the air cylinder above the floor, in cells. The capsule is
-/// 1.8 tall standing on `h + 1`, so cells `h+1 ..= h+CAPSULE` must be
-/// clear.
+/// Height of the air cylinder above the floor, in cells. The player
+/// capsule stands on `h + 1`, so cells `h+1 ..= h+CAPSULE` must be clear.
 pub const CAPSULE: i32 = 3;
 
 /// Spawn never sits below sea level — a beach at the water's edge is
@@ -52,15 +51,16 @@ pub const SPAWN_FLOOR: i32 = SEA_LEVEL;
 /// continent for somewhere pleasant, not looking for a specific column.
 const ANCHOR_STEP: i32 = 8;
 
-/// 192 rings × 8 = 1536 blocks — at least one full continent wavelength,
-/// so the walk crosses any ocean the warped continent field can produce.
+/// Rings of [`ANCHOR_STEP`], enough of them to cover at least one full
+/// continent wavelength — so the walk crosses any ocean the warped
+/// continent field can produce.
 const ANCHOR_RINGS: i32 = 192;
 
 /// Radius around the anchor searched column-by-column before widening.
 /// Fine-grained because the damage being routed around is usually small:
-/// a single dug block fails a 5×5 disc, but a column three away is
-/// already clear, and stepping by [`ANCHOR_STEP`] there would bounce
-/// spawn 8 blocks for a 1×1 hole.
+/// a single dug block fails the whole disc, but a column just outside it
+/// is already clear, and stepping by [`ANCHOR_STEP`] there would bounce
+/// spawn a full stride for a one-block hole.
 const FINE_RADIUS: i32 = 16;
 
 /// How far the coarse phase looks before giving up, in blocks.
@@ -314,7 +314,8 @@ pub fn anchor(seed: f64) -> Vec3 {
 			}
 		}
 	}
-	// Pathological seed: no clear land within 1536 blocks — tread water.
+	// Pathological seed: no clear land anywhere the walk reaches — tread
+	// water.
 	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
 }
 
@@ -326,10 +327,10 @@ pub fn anchor(seed: f64) -> Vec3 {
 /// belongs in a field, not in this function.
 ///
 /// Cheap in the common case — validating the anchor is one presieve plus
-/// a 5×5×4 overlay probe — and the outward search only runs once the
-/// anchor is genuinely broken. Callers holding a protected spawn region
-/// can skip this entirely: an unmodifiable region cannot have stopped
-/// being valid.
+/// an overlay probe of the lock region — and the outward search only runs
+/// once the anchor is genuinely broken. Callers holding a protected spawn
+/// region can skip this entirely: an unmodifiable region cannot have
+/// stopped being valid.
 pub fn resolve(a: Vec3, seed: f64, edits: Edits) -> Vec3 {
 	let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
 	if let Some(h) = accepts(ax, az, seed, edits) {
@@ -399,7 +400,7 @@ mod tests {
 	fn digging_the_floor_moves_spawn_aside() {
 		let a = anchor(SEED);
 		let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
-		let h = a.y.floor() as i32 - 2; // eye is h + 2.5
+		let h = a.y.floor() as i32 - 2; // back out the floor from the eye (see `eye`)
 		let mut cells = HashMap::new();
 		cells.insert((ax, h, az), BlockType::Air as u16);
 		let moved = resolve(a, SEED, &overlay(cells));

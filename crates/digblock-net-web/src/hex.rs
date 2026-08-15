@@ -1,4 +1,4 @@
-/// Parse the 64-hex-char SHA-256 hash the master serves as `certHash`
+/// Parse the hex SHA-256 hash the master serves as `certHash`
 /// (separators like `:` or spaces are tolerated). Mirrors
 /// digblock-net-native's `CertPolicy::pinned_from_hex` — change both
 /// together.

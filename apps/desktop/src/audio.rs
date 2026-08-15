@@ -11,9 +11,9 @@
 //!
 //! The clamp is the part that matters: everything closer than `1/ATT`
 //! blocks comes back at unity, with NO falloff at all inside that ball.
-//! At the original 0.08 that plateau was 12.5 blocks wide, which is most
-//! of a scene — a waterfall one block away and one twelve blocks away
-//! were exactly as loud, and several could stack. Engine-side gains
+//! At the original scale that plateau spanned most of a scene — a
+//! waterfall at your feet and one across the room were exactly as loud,
+//! and several could stack. Engine-side gains
 //! (see `water_audio::gain_of`) taper with distance for the same reason,
 //! because relying on the panner alone is what made water ubiquitous.
 //!
@@ -28,10 +28,10 @@ use std::io::Cursor;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// World-to-rodio coordinate scale (see module docs). 0.18 puts the
-/// unity plateau at ~5.6 blocks — close enough that a sound at your feet
-/// is still full-strength, tight enough that walking away from one is
-/// audible.
+/// World-to-rodio coordinate scale (see module docs). Tuned to put the
+/// unity plateau a few blocks wide — close enough that a sound at your
+/// feet is still full-strength, tight enough that walking away from one
+/// is audible.
 const ATT: f32 = 0.18;
 /// Ear half-spacing in world blocks.
 const EAR_HALF: f32 = 0.2;
@@ -201,7 +201,8 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) 
 	};
 	let mixer = stream.mixer();
 
-	// Decode every embedded SFX once, up front (~0.5 MB of ogg).
+	// Decode every embedded SFX once, up front — the whole set is small
+	// enough to hold decoded for the process's life.
 	let mut cache: HashMap<Sfx, Cached> = HashMap::new();
 	for s in digblock_render::audio::ALL_SFX {
 		match Decoder::new(Cursor::new(bytes(s))) {

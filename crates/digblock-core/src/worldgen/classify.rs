@@ -13,17 +13,17 @@ pub const STONE_SURFACE: i32 = 190;
 pub const SNOW_LINE: f64 = 208.0;
 /// Blocks of dirt (or sand) between the surface and the stone below it.
 pub const DIRT_DEPTH: i32 = 3;
-/// Surface-classification dither: a ~9-block-wavelength noise nudges the
-/// beach band, the stone line, and the snow line (±6 blocks) so altitude
-/// zones meet in ragged natural edges instead of world-wide contours.
+/// Surface-classification dither: a short-wavelength noise nudges the
+/// beach band, the stone line, and the snow line so altitude zones meet
+/// in ragged natural edges instead of world-wide contours.
 const SURF_DITHER_FREQ: f64 = 0.11;
 const SURF_DITHER_OFF: f64 = 70999.0;
 /// Rise (blocks per block) beyond which a face is bare rock at any
-/// altitude — grass doesn't hold on ~54°+ slopes.
+/// altitude — grass doesn't hold on anything steeper.
 const STEEP_SLOPE: f64 = 1.4;
 /// Blocks the stone and snow lines move per unit of regional temperature
 /// (in lockstep, preserving the rock band between them): cold regions
-/// snow from ~168, warm ones never (the line exceeds MAX_TERRAIN).
+/// snow far lower, warm ones never (their line exceeds MAX_TERRAIN).
 pub const TEMP_ALT_SHIFT: f64 = 40.0;
 /// Temperature above which lowland turns to savanna.
 const WARM_T: f64 = 0.35;
@@ -39,11 +39,11 @@ const GRAVEL_SLOPE: f64 = 0.7;
 const MARSH_SLOPE: f64 = 0.25;
 /// …in lush regions.
 const MARSH_VEG: f64 = 0.1;
-/// Marsh puddle roll: ~20-block-wavelength noise dips scattered columns
-/// one block for standing pools.
+/// Marsh puddle roll: a short-wavelength noise dips scattered columns
+/// for standing pools.
 const PUDDLE_FREQ: f64 = 0.31;
 const PUDDLE_OFF: f64 = 71501.0;
-/// Scree patches: ~30-block noise turns rock surfaces below the snow
+/// Scree patches: a broad noise turns rock surfaces below the snow
 /// line into gravel where it exceeds the threshold.
 const SCREE_FREQ: f64 = 0.035;
 const SCREE_OFF: f64 = 108631.0;

@@ -45,12 +45,12 @@ macro_rules! transport_trait {
 			///
 			/// This exists because the client cannot derive it. The RTT the
 			/// netcode measures itself is the input→ack loop, which carries
-			/// the 60 Hz tick boundary, the snapshot cadence and the input
-			/// buffer on top of the wire — about 25 ms of pipeline, and on a
-			/// LAN that is not an offset but QUANTIZATION: every sample is
-			/// either one tick or two (16.7 or 33.3 ms) against a 4 ms wire,
-			/// so no constant subtracted from it can recover a number the
-			/// sampling never contained.
+			/// the sim tick boundary, the snapshot cadence and the input
+			/// buffer on top of the wire — a whole pipeline's worth, and on
+			/// a LAN that is not an offset but QUANTIZATION: every sample is
+			/// either one tick or two, against a wire far shorter than a
+			/// single tick, so no constant subtracted from it can recover a
+			/// number the sampling never contained.
 			///
 			/// `None` when the transport has no estimate — loopback and the
 			/// benchmark wires, which have no path to measure.

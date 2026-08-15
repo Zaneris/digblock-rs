@@ -4,13 +4,13 @@
 //! checks and LWW replay are the shared code paths and a shard is just an
 //! ordinary journal that holds one region. localStorage over IndexedDB
 //! deliberately: `flush` runs inside the synchronous `on_suspend`
-//! contract, and after LWW compaction a save is live-cells small
-//! (~21 bytes/cell base64), comfortably inside the quota.
+//! contract, and after LWW compaction a save is live-cells small — a
+//! handful of base64 bytes per cell, comfortably inside the quota.
 //!
 //! Sharding is why the save cost is bounded. A single blob meant every
 //! write re-serialized the world's ENTIRE edit history, base64'd it and
-//! handed it to a synchronous `setItem` — inside the frame, every five
-//! seconds, growing forever with the age of the save. Now only regions
+//! handed it to a synchronous `setItem` — inside the frame, on every
+//! flush, growing forever with the age of the save. Now only regions
 //! that actually changed are rewritten, so the cost tracks recent
 //! building rather than lifetime building.
 //!

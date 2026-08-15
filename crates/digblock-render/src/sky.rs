@@ -1,4 +1,4 @@
-//! Fullscreen procedural sky pass: one triangle at NDC depth 1.0,
+//! Fullscreen procedural sky pass: one triangle at the NDC far plane,
 //! depth-tested against the solids (LessEqual, no write) so occluded
 //! fragments are free; drawn after solids, before water so water
 //! blends over it.

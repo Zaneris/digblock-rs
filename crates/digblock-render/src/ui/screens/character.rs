@@ -304,7 +304,7 @@ mod tests {
 	#[test]
 	fn levels_bars_and_totals_derive_from_xp() {
 		let mut skills = SkillSet::default();
-		// Exactly level 10, dead on the boundary: 0 into the next step.
+		// Dead on a level boundary: nothing banked into the next step.
 		skills.set_total(Skill::Mining, skills::total_xp_for(10));
 		let dl = emit(&skills);
 		let all = texts(&dl).join("\n");
@@ -369,8 +369,8 @@ mod tests {
 			);
 		}
 
-		// And the rows actually render: a level-1 character teases the
-		// first thresholds; past the last Mining gate, Mining shows none.
+		// And the rows actually render: a fresh character teases the first
+		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		assert!(
 			fresh.contains("next: LV 5 — timber gives — trees and planed wood"),

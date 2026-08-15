@@ -22,8 +22,8 @@
 //
 // Nothing here assumes the box fits inside its cell: `local` is built
 // from the box's own centre and half-extents and added to the instance's
-// cell origin, so a door's 0..2 y range spans both halves for free, and
-// `size` hands the fracture a 1×2 face to spread across.
+// cell origin, so a door's two-cell y range spans both halves for free,
+// and `size` hands the fracture the whole leaf's face to spread across.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -66,8 +66,8 @@ const TANGENTS = array<vec3f, 6>(
 const TAU = 6.2831853;
 
 // Clearance past the decorated surface, in blocks — deterministic across
-// backends, unlike depth-bias units. (0.002 per side is what the old
-// unit-cube-scaled-by-1.004 came to.)
+// backends, unlike depth-bias units. (Per side, it is what the old
+// scale-the-unit-cube-up-a-hair came to.)
 const INFLATE = 0.002;
 // Border half-width ramp, in blocks, for the outline's dark edge.
 const EDGE0 = 0.015;
@@ -131,13 +131,14 @@ fn hash11(x0: u32) -> f32 {
 // ---------------------------------------------------------------------
 // The crack: a TREE of jagged polylines, not a radial web.
 //
-// Six root branches leave a hash-placed origin; each root throws off one
-// branch partway along, and four of those throw off one more. Sixteen
-// polylines whose heading random-walks at every joint, so no part of the
-// pattern is a rotation of any other part. That is the whole difference
-// from the spoke web this replaced: a spoke is a ray from the centre and
-// enough of them read as a pinwheel however hard you wobble them,
-// whereas a line that wanders and splits reads as something giving way.
+// Root branches leave a hash-placed origin; each root throws off one
+// branch partway along, and whatever slots remain carry one more
+// generation. Every polyline's heading random-walks at every joint, so
+// no part of the pattern is a rotation of any other part. That is the
+// whole difference from the spoke web this replaced: a spoke is a ray
+// from the centre and enough of them read as a pinwheel however hard you
+// wobble them, whereas a line that wanders and splits reads as something
+// giving way.
 //
 // Growth is by ARC LENGTH from the origin, not by radius: a point is
 // drawn only once the hold has propagated past it. So the break spreads
@@ -152,7 +153,7 @@ fn hash11(x0: u32) -> f32 {
 // spawn points in a different order. That pops mid-hold.
 //
 // Roots each fork ONCE, rather than a few of them forking twice. Both
-// spend the same sixteen polylines, but a fork lands beside its parent,
+// spend the same slot budget, but a fork lands beside its parent,
 // so the wide-and-shallow tree covers the face while the narrow-and-deep
 // one piles into one quadrant and leaves the opposite one bare — which
 // is what made the first two cuts read as a twig stuck to a block rather
@@ -161,8 +162,8 @@ fn hash11(x0: u32) -> f32 {
 // EVERY KNOB BELOW MARKED `per cell` IS A RANGE, NOT A VALUE, and is
 // drawn from the cell's own hash. That is the difference between blocks
 // whose cracks differ and blocks that crack DIFFERENTLY: with the shape
-// of the tree fixed and only its angles jittered, sixteen lines from a
-// point with one fork each is a signature, and the eye reads the
+// of the tree fixed and only its angles jittered, a fixed count of lines
+// from a point with one fork each is a signature, and the eye reads the
 // signature, not the angles. Rolling the root count, the jag, the fork
 // angle, the segment length and the weight per cell is what makes one
 // block split into four long heavy pieces and its neighbour craze into a
@@ -174,7 +175,7 @@ fn hash11(x0: u32) -> f32 {
 const CR_BRANCH = 16u; // slots; the ceiling on roots × 2 + their forks
 const CR_STEP = 4u;    // loop bound; deeper generations stop earlier
 const CR_ROOT_LO = 4u; // per cell: fewest roots...
-const CR_ROOT_N = 4u;  // ...and how many counts above that (so 4..7)
+const CR_ROOT_N = 4u;  // ...and how many counts above that it may roll
 const CR_JAG_LO = 0.32;   // per cell: heading turn per segment, radians
 const CR_JAG_N = 0.46;
 const CR_FORK_LO = 0.42;  // per cell: a fork's turn off its parent
@@ -197,8 +198,8 @@ const CR_SEG_FALL = 0.26;
 const CR_RAG = 16.0;   // warp cells across the face
 const CR_RAG_AMP = 0.018; // warp amplitude, face units
 // Head start withheld from a root, as a fraction of the full arc. Roots
-// all leaving at once put a symmetrical asterisk on the block for the
-// first quarter of the hold — the exact pinwheel this was meant to be
+// all leaving at once put a symmetrical asterisk on the block through
+// the opening of the hold — the exact pinwheel this was meant to be
 // rid of. Staggered, the break opens as one or two cracks and the rest
 // join in as it bites. Root 0 is never delayed, so the very first frame
 // of a hold has a mark.
@@ -221,7 +222,7 @@ fn cr_gen(i: u32, nroot: u32) -> u32 {
 
 // Slot for branch i's one child, or CR_BRANCH for "has none" — which is
 // also what the last generation gets, and what a wide tree's later roots
-// get once the sixteen slots run out.
+// get once the slots run out.
 fn cr_child(i: u32, nroot: u32) -> u32 {
 	if i < nroot * 2u {
 		return min(i + nroot, CR_BRANCH);
@@ -229,7 +230,7 @@ fn cr_child(i: u32, nroot: u32) -> u32 {
 	return CR_BRANCH;
 }
 
-// One mix, two 12-bit fields out — a 2D gradient costs four of these,
+// One mix, two disjoint fields out — a 2D gradient costs four of these,
 // not eight scalar hashes.
 fn cr_h2(c: vec2i) -> vec2f {
 	// The parentheses are MANDATORY, not style: Tint rejects a bare

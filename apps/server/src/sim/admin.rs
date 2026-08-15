@@ -94,9 +94,9 @@ pub(super) fn commands_msg() -> ServerMsg {
 	}
 }
 
-/// 24h clock → sun angle: one hour = 15°, anchored to the tod
-/// convention in `sun.rs` — 0:00 midnight (180), 6:00 sunrise (90),
-/// 12:00 noon (0), 18:00 sunset (−90).
+/// 24h clock → sun angle: the clock's hours spread evenly over the full
+/// turn, anchored to the tod convention in `sun.rs` (midnight at its wrap
+/// point, noon at its origin) and falling as the day advances.
 fn tod_of_clock(h: u32, m: u32) -> f32 {
 	180.0 - (h as f32 + m as f32 / 60.0) * 15.0
 }
@@ -242,8 +242,8 @@ impl Sim {
 				"not looking at the top of a block - aim at the surface to stand on",
 			);
 		}
-		// The hit cell is the floor; the eye sits centred two above it,
-		// exactly as `spawn::anchor` places one over a surface block.
+		// The hit cell is the floor; the eye sits centred above it, at
+		// exactly the offset `spawn::anchor` uses over a surface block.
 		let eye = Vec3::new(
 			hit.cell.0 as f32 + 0.5,
 			hit.cell.1 as f32 + 2.5,
@@ -643,7 +643,7 @@ mod tests {
 			sim.tick_once(vec![chat(1, "/ban-list")]);
 		}
 		admin.drain();
-		// Burst is 3; all six commands were answered.
+		// More lines than the chat burst allows; all were answered.
 		let n = server_lines(&admin)
 			.iter()
 			.filter(|t| t.contains("no bans"))
@@ -865,7 +865,8 @@ mod tests {
 		sim.tick_once(vec![chat(1, "/time 18:30")]);
 		admin.drain();
 		guest.drain();
-		// 18:30 → tod 180 − 18.5·15 = −97.5, pushed to both immediately.
+		// The evening hour maps through `tod_of_clock` and is pushed to both
+		// immediately.
 		for c in [&admin, &guest] {
 			let tod = c
 				.msgs
@@ -882,7 +883,7 @@ mod tests {
 			.any(|t| t.contains("time set to 18:30")));
 
 		// Time keeps flowing from the new anchor: the next heartbeat has
-		// fallen by the elapsed ticks (≤10 s at 0.3°/s), not reverted to
+		// fallen by the elapsed ticks at the sun's rate, not reverted to
 		// the tick clock.
 		for _ in 0..digblock_net::protocol::TOD_SYNC_TICKS {
 			sim.tick_once(vec![]);
@@ -989,7 +990,7 @@ mod tests {
 			server_lines(&admin)
 		);
 		let region = sim.spawn_lock().expect("locked");
-		// One block down, two out, three high, around the spawn floor.
+		// A box around the spawn floor: `spawn::lock_region`'s extents.
 		let spawn = FLAT_SPAWN;
 		let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
 		let h = spawn.y.floor() as i32 - 2;
@@ -1085,7 +1086,7 @@ mod tests {
 			"{:?}",
 			server_lines(&admin)
 		);
-		// The eye sits two over the block the ray hit — the same offset
+		// The eye sits over the block the ray hit — the same offset
 		// `spawn::anchor` puts one at over a surface block.
 		assert_eq!(
 			sim.test_spawn_point(),

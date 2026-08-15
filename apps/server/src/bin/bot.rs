@@ -80,7 +80,7 @@ fn main() {
 		.collect();
 
 	let mut failed = false;
-	// Expect at least half the nominal 20 Hz snapshot stream.
+	// Expect at least half the nominal snapshot stream.
 	let min_snapshots = (duration_secs * TICK_RATE as f32 / 3.0 * 0.5) as u32;
 	for (i, h) in handles.into_iter().enumerate() {
 		match h.join() {
@@ -121,8 +121,8 @@ struct ServerPick {
 	cert_hash: String,
 }
 
-/// List servers from the master (retrying up to ~30 s) and pick the first,
-/// or the first whose name contains `filter`.
+/// List servers from the master (retrying until a deadline) and pick the
+/// first, or the first whose name contains `filter`.
 fn pick_server(master_url: &str, filter: Option<&str>) -> Result<ServerPick, String> {
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let mut last_err = String::from("empty server list");
@@ -309,7 +309,7 @@ fn run_bot(
 			let down = Vec3::NEG_Y;
 
 			// Digging holds still and aims straight down; wandering
-			// otherwise (slow seeded heading drift, hop every ~4 s).
+			// otherwise (slow seeded heading drift, with a periodic hop).
 			let (dir, intent) = if digging.is_some() {
 				(down, PlayerIntent::default())
 			} else {
@@ -353,7 +353,7 @@ fn run_bot(
 							// Same gates as the server, asked the same way — a
 							// bot that has dug down to bedrock (or onto
 							// level-gated rock, or somebody's craft-only
-							// build; bots run at level 1) must skip it,
+							// build; bots run unskilled) must skip it,
 							// not retry forever.
 							if hit.block.dig_hardness(hit.cell.1).is_some()
 								&& digblock_core::unlock::dig_blocked(hit.block, &bot_skills)
@@ -361,9 +361,10 @@ fn run_bot(
 							{
 								let hardness = hit.block.dig_hardness(hit.cell.1).unwrap();
 								client.send_dig_start(hit.cell);
-								// Family-scaled hold (bots assume level 1 —
-								// a leveled-up bot just over-holds); +2
-								// ticks margin over the server's grace.
+								// Family-scaled hold (bots assume they are
+								// unskilled — a leveled-up bot just
+								// over-holds), plus a margin over the
+								// server's grace.
 								let need =
 									digblock_core::skills::dig_required(hit.block, hardness, 1);
 								digging = Some((hit.cell, hit.block, t + need + 2));

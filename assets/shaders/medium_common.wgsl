@@ -41,32 +41,32 @@
 // argue about — "how far can you see?" — instead of being a magic
 // exponent someone nudged until a screenshot looked right.
 //
-// 1.6 km is a light haze, and this IS a weather choice, so here is the
-// honest accounting rather than a claim of derivation. Genuinely clear
-// air (V = 20-50 km) is INVISIBLE at this world's scale — over the whole
-// 640-block draw distance it attenuates by under 3% — so a value that
-// shows aerial perspective necessarily declares hazy air. At V = 1600 a
-// surface 100 blocks out sits 22% of the way to the sky, 300 blocks 52%,
-// and the 640-block rim 78%; measured against the captures that reads as
-// depth on the far ridge with the foreground untouched. Shorter draw
-// distances get proportionally less, which is correct: the air does not
-// know what the user set, and the rim term below owns the boundary.
+// The visibility below is a light haze, and this IS a weather choice, so
+// here is the honest accounting rather than a claim of derivation.
+// Genuinely clear air — visibilities far beyond this one — is INVISIBLE
+// at this world's scale: across the whole draw distance it barely
+// attenuates at all, so a value that shows aerial perspective necessarily
+// declares hazy air. At the visibility chosen here the near field is
+// untouched, the mid ground is well on its way to the sky and the rim is
+// nearly all of it; measured against the captures that reads as depth on
+// the far ridge with the foreground untouched. Shorter draw distances get
+// proportionally less, which is correct: the air does not know what the
+// user set, and the rim term below owns the boundary.
 const AIR_VISIBILITY = 1600.0;
 const AIR_SIGMA = 3.912 / AIR_VISIBILITY;
 
 // Water extinction per block, per channel. These are MEASURED, not
-// chosen: the beam attenuation of clear natural water at roughly the RGB
-// primaries (Smith & Baker 1981 / Pope & Fry 1997 — about 0.36 /m at
-// 650 nm, 0.068 at 550, 0.030 at 450; a block is a metre). Water
-// absorbing red an order of magnitude harder than blue is the entire
-// reason it looks blue-green, and here that falls out of the transport
-// rather than out of a tint constant.
+// chosen: the beam attenuation of clear natural water sampled near the
+// RGB primaries (Smith & Baker 1981 / Pope & Fry 1997; a block is a
+// metre). Water absorbing red an order of magnitude harder than blue is
+// the entire reason it looks blue-green, and here that falls out of the
+// transport rather than out of a tint constant.
 //
 // This is the ONLY water extinction in the codebase. The view ray gets
 // it here; the sun ray gets it because `gi_sun_vis` now returns a water
-// PATH LENGTH instead of baking its own grey exp(-water * 0.35), and its
+// PATH LENGTH instead of baking its own grey exponential, and its
 // consumers apply this. Two rays through the same water used to disagree
-// by a factor of 2.3 in a constant nothing tied together.
+// outright, in a constant nothing tied together.
 const WATER_SIGMA = vec3f(0.36, 0.068, 0.030);
 
 // Water's single-scatter albedo, folded with the multiple-scattering

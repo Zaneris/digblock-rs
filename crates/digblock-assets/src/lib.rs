@@ -108,7 +108,7 @@ pub mod tex {
 }
 
 pub mod sfx {
-	//! Embedded sound effects: mono 44.1 kHz Ogg Vorbis (decoding
+	//! Embedded sound effects: mono Ogg Vorbis (decoding
 	//! happens in the platform audio fillers — this crate stays
 	//! dependency-free). Provenance per file: assets/sfx/SOURCES.md.
 	//! Music is deliberately NOT here — tracks are fetched from the
@@ -179,8 +179,8 @@ pub mod font {
 
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time. Five of them, each the sole
-	// definition of one thing so the passes cannot silently disagree:
+	// with concat! at include time, each the sole definition of one thing
+	// so the passes cannot silently disagree:
 	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
 	// medium_common.wgsl (the participating medium and its extinction
 	// constants), sky_common.wgsl (the procedural-sky core — gradient,
@@ -375,9 +375,9 @@ mod tests {
 	///
 	/// It stopped holding silently once. The cap used to be a smooth
 	/// function of per-frame reprojection travel, and per-frame parallax
-	/// collapses with view distance, so the far field walked around at
-	/// n ~ 330 — above `N_CONVERGED`, where the filter switches itself off.
-	/// The band that most needed it was the band not getting it, and the
+	/// collapses with view distance, so the far field walked around with a
+	/// history longer than `N_CONVERGED`, where the filter switches itself
+	/// off. The band that most needed it was the band not getting it, and the
 	/// only symptom was a shadow ten blocks out sliding with the player
 	/// (R13). A two-state cap makes the relationship structural, and this
 	/// pins it so a future retune of either constant cannot re-open it.
@@ -434,7 +434,7 @@ mod tests {
 	///
 	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is
 	/// what makes that true. The narrower pattern misses the TYPED form
-	/// (`const EMISSIVE_GAIN: f32 = 2.4;`) that `wgsl_const` itself
+	/// (`const EMISSIVE_GAIN: f32 = …;`) that `wgsl_const` itself
 	/// supports, and comparing the value cannot catch it either, since
 	/// the prelude is prepended and its declaration is the one found
 	/// first — so a shadowing local passed every assertion here.
@@ -520,11 +520,12 @@ mod tests {
 		}
 	}
 
-	// The size bound is the real assertion: a stock Google face is
-	// 200 KB-900 KB and fontdue eagerly outlines all of it at load, so
-	// committing an unsubset TTF is a startup regression that nothing
-	// else would catch. Subset to the Latin repertoire, each face is
-	// ~23 KB — see assets/fonts/SOURCES.md for the exact recipe.
+	// The size bound is the real assertion: a stock Google face runs to
+	// hundreds of kilobytes and fontdue eagerly outlines all of it at
+	// load, so committing an unsubset TTF is a startup regression that
+	// nothing else would catch. Subset to the Latin repertoire, a face is
+	// a small fraction of that — see assets/fonts/SOURCES.md for the exact
+	// recipe.
 	#[test]
 	fn faces_are_small_subset_ttfs() {
 		for (name, bytes) in super::font::ALL {

@@ -8,15 +8,16 @@ use crate::block::{BlockType, RenderClass};
 use crate::chunk::ID_MASK;
 
 /// Which padded y layers hold falling water, swept lazily one layer at a
-/// time. The splash ring scan below walks 5×5 cells across two layers per
-/// open surface cell — ~50 padded reads each, and a full ocean surface
-/// chunk pays that 256 times — yet it can only ever score off a FALLING
-/// cell, and almost no chunk has one. A layer sweep is 324 contiguous
-/// reads, at most once per layer per mesh job, and an ocean surface
-/// touches two layers.
+/// time. The splash ring scan below walks a square neighbourhood across
+/// two layers per open surface cell — dozens of scattered padded reads
+/// each, and a full ocean surface chunk pays that once per column — yet it
+/// can only ever score off a FALLING cell, and almost no chunk has one. A
+/// layer sweep is one contiguous plane, at most once per layer per mesh
+/// job, and an ocean surface touches two layers.
 #[derive(Default)]
 pub(super) struct FallLayers {
-	/// Bit (y + 1) per padded layer y ∈ -1..=16.
+	/// One bit per padded layer, biased by the shell so the layer below
+	/// the chunk still has a bit of its own.
 	swept: u32,
 	any: u32,
 }
@@ -51,10 +52,10 @@ impl FallLayers {
 /// The amount a water cell contributes to shared surface-corner
 /// heights. Falling cells don't surface at their nominal (full)
 /// amount: the sheet's lip continues the feeder's downward slope, one
-/// level below the highest adjacent resting water — a source (8) feeds
-/// a 7-high lip, a thin flow a thinner one — instead of popping back
-/// up to full height at the edge. No feeder in reach (e.g. a floating
-/// column) falls back to the nominal amount.
+/// level below the highest adjacent resting water — a source feeds the
+/// tallest lip there is short of full, a thin flow a thinner one —
+/// instead of popping back up to full height at the edge. No feeder in
+/// reach (e.g. a floating column) falls back to the nominal amount.
 fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Option<u8> {
 	let a = b.water_amount()?;
 	if !b.is_falling() {
@@ -63,8 +64,8 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 	let mut feeder = 0u8;
 	for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
 		let (nx, nz) = (x + dx, z + dz);
-		// Corner cells sit at -1..=16; their neighbors can leave the
-		// padded snapshot — skip those.
+		// Corner cells sit on the padded shell; their neighbors can
+		// leave the snapshot — skip those.
 		if !(-1..=16).contains(&nx) || !(-1..=16).contains(&nz) {
 			continue;
 		}
@@ -84,27 +85,28 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 /// water cells at height y: the corner touches up to four cells.
 /// Priority: if any touching column has water at y + 1, or holds a
 /// covered water cell (water at y with a non-air block above — it
-/// renders as a full cube), the surface is pinned full (d = 0) — a
-/// submerged neighbor, water hanging over a step this corner must rise
-/// to meet, or a ceiling-pressed cell to knit against. Else, if any
+/// renders as a full cube), the surface is pinned full (no drop at all)
+/// — a submerged neighbor, water hanging over a step this corner must
+/// rise to meet, or a ceiling-pressed cell to knit against. Else, if any
 /// touching cell is open air with water directly below, the surface
-/// continues a step down and this corner plunges the whole block
-/// (d = 9), so cascades render as connected ramps instead of stacked
-/// cliff slivers — but a resting SOURCE touching the corner outranks
-/// that, because a full block has to keep looking full exactly where it
-/// spills outward (see `a_spilling_source_keeps_its_full_height`). Else
-/// the drop is 9 − the STRONGEST touching amount.
+/// continues a step down and this corner plunges the whole block (the
+/// maximum drop), so cascades render as connected ramps instead of
+/// stacked cliff slivers — but a resting SOURCE touching the corner
+/// outranks that, because a full block has to keep looking full exactly
+/// where it spills outward (see `a_spilling_source_keeps_its_full_height`).
+/// Else the drop is the whole-block code minus the STRONGEST touching
+/// amount.
 ///
-/// Strongest, not the mean: the sim halves on spread (8 → 4 → 2 → 1), so
+/// Strongest, not the mean: the sim halves the amount on every spread, so
 /// averaging pulled every corner down toward the thinner water beyond
-/// it — a source flanked by 4s and 2s averaged to 5 and sank its own top
-/// face to 0.37 of a block, and the Flow4 beside it then ran 8/9 → 3/9
-/// instead of stopping at its own 4/9. Taking the max makes each cell's
-/// top face span exactly from its uphill neighbour's level down to its
-/// own, so the rendered surface reproduces the level ladder the sim
-/// actually computed. It also subsumes what used to be a separate
-/// source pin: a source contributes 8, which is already the highest
-/// amount there is.
+/// it — a source flanked by its own thinning flows averaged well under
+/// full and sank its own top face deep into the block, and the Flow4
+/// beside it then ran from that sunken lip clear past its own level
+/// instead of stopping at it. Taking the max makes each cell's top face
+/// span exactly from its uphill neighbour's level down to its own, so the
+/// rendered surface reproduces the level ladder the sim actually
+/// computed. It also subsumes what used to be a separate source pin: a
+/// source contributes the highest amount there is.
 ///
 /// Adjacent cells sharing the corner agree, so surfaces knit without
 /// cracks — including across chunk borders via the padded shell.
@@ -114,7 +116,7 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let mut source = false;
 	for cz in lz - 1..=lz {
 		for cx in lx - 1..=lx {
-			// Cell y is 0..=15, so y ± 1 stays inside the padded range.
+			// Cell y is inside the chunk, so y ± 1 stays in the shell.
 			let above = BlockType::from_id(input.get(cx, y + 1, cz));
 			if above.is_water() {
 				return 0;
@@ -186,22 +188,24 @@ pub(super) struct WaterState {
 	/// surface cell, so the lip knits with the pool feeding it.
 	pub(super) full: bool,
 	pub(super) falling: bool,
-	/// Horizontal flow direction code (0 still, 1 +x, 2 −x, 3 +z, 4 −z):
-	/// the side with the least water, where in-transit water is headed.
+	/// Horizontal flow direction code: still, or one of the four
+	/// horizontal sides in +x, −x, +z, −z order — the side with the least
+	/// water, where in-transit water is headed.
 	pub(super) flow: u32,
-	/// Splash code: 3 = a fall's impact cell (falling water striking
-	/// the pool surface or solid ground below), 2/1 = surface-water
-	/// cells at Chebyshev distance 1/2 from an impact. The shader reads
-	/// it as a static foam wash fading outward from the impact — it is
-	/// a DISTANCE, not a phase, so nothing here animates. 0 elsewhere.
+	/// Splash code: a fall's impact cell (falling water striking the
+	/// pool surface or solid ground below) carries the top code, and
+	/// surface-water cells step one code down per ring of Chebyshev
+	/// distance out from it. The shader reads it as a static foam wash
+	/// fading outward from the impact — it is a DISTANCE, not a phase, so
+	/// nothing here animates. Zero elsewhere.
 	pub(super) splash: u32,
-	/// Contiguous falling cells above this one (0 = sheet top), capped
-	/// at 15. When the walk hits the snapshot ceiling with the column
-	/// still falling, this saturates to 15 rather than reporting the
-	/// partial count: a fall crossing a vertical chunk seam whitens a
-	/// little early (masked by the splash below), where the partial
-	/// count would visibly reset the sheet to a glassy lip mid-fall.
-	/// Exact depth would need depth-encoded block variants.
+	/// Contiguous falling cells above this one, zero at the sheet top,
+	/// capped at what the payload field holds. When the walk hits the
+	/// snapshot ceiling with the column still falling, this saturates
+	/// rather than reporting the partial count: a fall crossing a vertical
+	/// chunk seam whitens a little early (masked by the splash below),
+	/// where the partial count would visibly reset the sheet to a glassy
+	/// lip mid-fall. Exact depth would need depth-encoded block variants.
 	pub(super) fall_dist: u32,
 }
 
@@ -241,11 +245,12 @@ impl WaterState {
 		let splash = if falling && is_impact(input, x, y, z) {
 			3
 		} else if !falling && !full && falls.reachable(input, y) {
-			// Ring scan: nearest impact in the 5×5 neighborhood at this
+			// Ring scan: nearest impact in the neighborhood at this
 			// level or one above (worldgen falls land one cell above
-			// the pool surface). Chebyshev 1 → 2, 2 → 1. An impact two
-			// blocks into a neighbor chunk sits outside the padded
-			// snapshot — a one-cell notch in an animated ring.
+			// the pool surface), scored a code lower per ring of
+			// Chebyshev distance out. An impact far enough into a
+			// neighbor chunk sits outside the padded snapshot — a
+			// notch in the ring.
 			let mut best = 0u32;
 			for dz in -2i32..=2 {
 				for dx in -2i32..=2 {
@@ -293,7 +298,7 @@ impl WaterState {
 	}
 
 	/// Payload bits above the per-vertex drop code (pre-shift: the whole
-	/// payload lands at word-1 bits 10.. above the texture layer).
+	/// payload lands in word 1 above the texture layer).
 	fn flags(self) -> u32 {
 		u32::from(self.falling) << 4 | self.flow << 5 | self.splash << 8
 	}
@@ -321,8 +326,8 @@ pub(super) fn emit_water_face(
 			drops[ci] = corner_drop(input, cx, by, cz);
 		}
 	}
-	// A side face whose whole top edge plunged the full block (d = 9)
-	// collapsed onto its bottom edge — zero area, skip it.
+	// A side face whose whole top edge plunged the full block collapsed
+	// onto its bottom edge — zero area, skip it.
 	if dir != Dir::Top && dir != Dir::Bottom {
 		let top_gone = corners
 			.iter()

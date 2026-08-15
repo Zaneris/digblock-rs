@@ -39,7 +39,8 @@ use rustc_hash::FxHashSet;
 
 use crate::block::BlockType;
 
-/// Seconds between flow steps (~the Minecraft 5-game-tick water cadence).
+/// Seconds between flow steps (the Minecraft water cadence, kept in
+/// seconds rather than game ticks).
 pub const FLOW_STEP_SECS: f32 = 0.25;
 /// Cell updates per flow step — bounds worst-case main-thread work.
 pub const FLOW_BUDGET: usize = 128;
@@ -64,10 +65,10 @@ pub struct FluidSim {
 
 const SIDES: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-/// Horizontal spread falloff: each step takes half the feeding amount
-/// (a source runs 8 → 4 → 2 → 1 → stop), much steeper than
-/// Minecraft's m − 1 — water reaches 3 blocks instead of 7 and pools
-/// hug their source. Strictly decreasing, so relaxation converges.
+/// Horizontal spread falloff: each step HALVES the feeding amount, much
+/// steeper than Minecraft's m − 1 — water runs a few blocks rather than
+/// most of a chunk, and pools hug their source. Strictly decreasing, so
+/// relaxation converges.
 fn falloff(m: u8) -> u8 {
 	m / 2
 }
@@ -182,9 +183,9 @@ mod tests {
 	use super::*;
 	use rustc_hash::FxHashMap;
 
-	/// Flat stone floor at y = 0 inside |x|,|z| ≤ 24, air above up to
-	/// y = 24, overridable per cell; outside → None (unloaded). `xmax`
-	/// shrinks the loaded region to model residency boundaries.
+	/// A bounded box of air over one flat stone floor course at the bottom,
+	/// overridable per cell; outside → None (unloaded). `xmax` shrinks the
+	/// loaded region to model residency boundaries.
 	struct MapWorld {
 		cells: FxHashMap<(i32, i32, i32), BlockType>,
 		xmax: i32,
@@ -247,8 +248,8 @@ mod tests {
 		w.set(0, 1, 0, BlockType::Water);
 		sim.schedule_around(0, 1, 0);
 		settle(&mut sim, &mut w);
-		// Amount halves with each Manhattan step: 8 at the source, then
-		// 4 → 2 → 1, nothing beyond distance 3.
+		// The amount halves with each Manhattan step, and the pool stops
+		// where the halving runs out.
 		for (dx, dz, expect) in [
 			(1, 0, Some(4u8)),
 			(0, -2, Some(2)),
@@ -260,7 +261,7 @@ mod tests {
 			let b = w.get(dx, 1, dz).unwrap();
 			assert_eq!(b.water_amount().filter(|_| b != BlockType::Water), expect);
 		}
-		// 1 source + the full Manhattan ball of radius 3.
+		// The source itself plus the full Manhattan ball the halving reaches.
 		assert_eq!(
 			w.water_cells().len(),
 			1 + (1..=3).map(|d| 4 * d).sum::<usize>()
@@ -284,10 +285,10 @@ mod tests {
 	fn water_falls_into_a_pit_and_spreads_on_its_floor() {
 		let mut w = MapWorld::new();
 		let mut sim = FluidSim::new();
-		// A 1-wide shaft at (3, 0, 0): the floor opens, stone at the
-		// bottom is the world edge (y < 0 → None, never solid), so give
-		// the pit its own floor by keeping y = 0 solid around it and
-		// dropping the source next to the hole at surface level.
+		// A one-cell shaft in the floor, within reach of the source: below
+		// the floor course is the world edge (None, never solid), so the
+		// shaft is bottomless — the floor around it stays solid and the
+		// source goes beside the hole at surface level.
 		w.set(3, 0, 0, BlockType::Air); // hole in the floor... bottomless
 		w.set(0, 1, 0, BlockType::Water);
 		sim.schedule_around(0, 1, 0);
@@ -306,8 +307,8 @@ mod tests {
 		let mut w = MapWorld::new();
 		let mut sim = FluidSim::new();
 		// Floating source high up: falls straight down, lands on the
-		// floor, then spreads a full radius-3 pool at y = 1 (falls are
-		// full strength, so the landing restarts the halving ladder).
+		// floor, then spreads a full-strength pool there (falls are full
+		// strength, so the landing restarts the halving ladder).
 		w.set(0, 6, 0, BlockType::Water);
 		sim.schedule_around(0, 6, 0);
 		settle(&mut sim, &mut w);
@@ -344,7 +345,7 @@ mod tests {
 			w.water_cells()
 		};
 
-		// World ends at x = 1: the +x half of the pool cannot form.
+		// The world now ends inside the pool: its far half cannot form.
 		let mut w = MapWorld::new();
 		w.xmax = 1;
 		let mut sim = FluidSim::new();
@@ -446,7 +447,7 @@ mod tests {
 	/// Nothing standing over air spreads outward — a SOURCE included.
 	/// Poured against a wall face, the block runs straight down the wall
 	/// and only its landing spreads; the placed cell's own level stays
-	/// dry on every side. Its own top face still renders 8/9 all round
+	/// dry on every side. Its own top face still renders full height all round
 	/// (`mesher::tests::a_spilling_source_keeps_its_full_height`), which
 	/// is the half of this arrangement that WAS broken.
 	#[test]

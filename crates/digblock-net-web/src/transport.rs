@@ -74,9 +74,9 @@ extern "C" {
 
 	/// A stream read's `{ done, value }`. Typed getters compile to direct
 	/// property access; `Reflect::get(&res, &"done".into())` interned a
-	/// FRESH JS string on every read instead — 40-300 of them a second
-	/// under snapshot plus reliable traffic, all of it GC pressure that
-	/// surfaces as render-thread pauses.
+	/// FRESH JS string on every read instead — one per read, under
+	/// snapshot plus reliable traffic, all of it GC pressure that surfaces
+	/// as render-thread pauses.
 	type ReadResult;
 	#[wasm_bindgen(method, getter)]
 	fn done(this: &ReadResult) -> JsValue;
@@ -143,8 +143,8 @@ pub struct WebTransportClient {
 	stats_supported: bool,
 }
 
-/// Frames between `getStats()` samples (~0.5 s at 60 fps). A smoothed RTT
-/// does not move fast enough to be worth a promise every frame.
+/// Frames between `getStats()` samples. A smoothed RTT does not move fast
+/// enough to be worth a promise every frame.
 const RTT_SAMPLE_FRAMES: u32 = 30;
 
 thread_local! {

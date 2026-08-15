@@ -89,8 +89,9 @@ pub fn column_shape_above(x: i32, z: i32, seed: f64, min_height: i32) -> Option<
 
 /// Column shapes over the inclusive rectangle `[x0, x1] × [z0, z1]`,
 /// row-major. Shares one padded field grid over the whole block the way
-/// [`column_shapes`] does for a chunk — from 3×3 up that beats calling
-/// `column_shape` per column, and it is bit-identical to doing so.
+/// [`column_shapes`] does for a chunk — past a couple of columns per side
+/// that beats calling `column_shape` per column, and it is bit-identical
+/// to doing so.
 pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<ColumnShape> {
 	let p = &TerrainParams::DEFAULT;
 	let (w, d) = ((x1 - x0 + 1) as usize, (z1 - z0 + 1) as usize);
@@ -120,10 +121,10 @@ pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<Co
 type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
 
 /// Column shapes for a chunk, indexed `[z][x]`. Evaluates the fields once
-/// per column of a one-column-padded grid (18×18 = 324 evals) so interior
-/// columns classify against their neighbors' heights without re-deriving
-/// them — 4× cheaper than the 5-evaluation `column_shape` path, and
-/// bit-identical to it (same f64 inputs to the same functions).
+/// per column of a one-column-padded grid so interior columns classify
+/// against their neighbors' heights without re-deriving them — several
+/// times cheaper than asking `column_shape` per column, and bit-identical
+/// to it (same f64 inputs to the same functions).
 fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 	let p = &TerrainParams::DEFAULT;
 	const PAD: usize = CHUNK_SIZE + 2;
@@ -178,7 +179,7 @@ fn fill_terrain(data: &mut ChunkData, py: i32, shapes: &ShapeMap) {
 
 /// Carve one column's share of one chunk from a cave walk the caller
 /// keeps across the whole vertical stack — the walk's lattice cache spans
-/// many more cells than one chunk's 16.
+/// many more cells than one chunk is tall.
 fn carve_column(
 	data: &mut ChunkData,
 	py: i32,
@@ -230,7 +231,7 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 }
 
 /// Generate the full vertical chunk stack of a column in one call,
-/// computing the 16×16 shape map once instead of once per chunk and
+/// computing the chunk's shape map once instead of once per chunk and
 /// carving each column in a single walk across the whole stack. Chunks
 /// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
 /// sentinel — no fill, no allocation, recognized by pointer downstream.
@@ -320,9 +321,9 @@ mod tests {
 		}
 	}
 
-	/// The padded-grid path and the 5-evaluation per-column path must
-	/// classify identically — the invariant that keeps chunk fills and
-	/// per-column probes (trees, spawn) agreeing about the world.
+	/// The padded-grid path and the per-column path must classify
+	/// identically — the invariant that keeps chunk fills and per-column
+	/// probes (trees, spawn) agreeing about the world.
 	#[test]
 	fn classification_paths_agree() {
 		let seed = 1234.5678;
@@ -467,10 +468,10 @@ mod tests {
 	}
 
 	/// Lakes exist, hold their water above the terrain, keep bounded
-	/// beds, and every water cell is laterally contained: each of the 4
-	/// neighbor columns covers it with water, solid ground within a
-	/// bank's height (2 blocks — the fill rule's bound), or a connecting
-	/// fall sheet (quantized level steps, exactly like river pools).
+	/// beds, and every water cell is laterally contained: each of the four
+	/// neighbor columns covers it with water, solid ground within a bank's
+	/// height (the fill rule's own bound), or a connecting fall sheet
+	/// (quantized level steps, exactly like river pools).
 	#[test]
 	fn lakes_exist_and_are_contained() {
 		let seed = 1234.5678;
@@ -578,8 +579,8 @@ mod tests {
 		let (mut ocean, mut beach, mut plains, mut mountain) = (0u32, 0u32, 0u32, 0u32);
 		let (mut forest, mut savanna, mut taiga) = (0u32, 0u32, 0u32);
 		let mut total = 0u32;
-		// ±8192 spans ~6.5 erosion / ~12 continent wavelengths — enough
-		// regions that single-seed variance can't starve a bucket.
+		// The sweep spans several erosion and continent wavelengths —
+		// enough regions that single-seed variance can't starve a bucket.
 		for x in (-8192..8192).step_by(64) {
 			for z in (-8192..8192).step_by(64) {
 				total += 1;

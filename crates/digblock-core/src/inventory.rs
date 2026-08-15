@@ -5,7 +5,7 @@
 //! overflow-inventory UI reads `iter_nonzero` directly).
 //!
 //! One count is not an item at all: water's, which is the water tool's
-//! charge (0 or 1 — see [`Inventory::bucket_full`]). Keeping it here
+//! charge (empty or full — see [`Inventory::bucket_full`]). Keeping it here
 //! rather than in a field of its own is deliberate; the bucket then
 //! predicts, rolls back on rejection, rebases and persists through the
 //! machinery that already does all four correctly for stacks.
@@ -49,7 +49,7 @@ fn cap(b: BlockType) -> u32 {
 }
 
 /// High bit marks a wire pair as a sub-material family, not a block id.
-/// Safely disjoint from block ids (10-bit) and from the hotbar's
+/// Safely disjoint from block ids (see `chunk::ID_BITS`) and from the hotbar's
 /// `u16::MAX`-area sentinels, which never appear in inventory pairs.
 pub const SUB_WIRE_FLAG: u16 = 0x8000;
 
@@ -272,7 +272,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			// would go and nothing would come back. Two capped kinds
 			// today: the bucket's one charge, and tools, where owning one
 			// is a yes/no (§7.3) — which is also what makes the transmute
-			// tab's ×10 and ×100 multipliers safe to point at a tool.
+			// tab's batch multipliers safe to point at a tool.
 			if inv.headroom(item) < per_batch.saturating_mul(count) {
 				return false;
 			}
@@ -381,7 +381,7 @@ mod tests {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Wood, 2);
 
-		// Convert 2 wood at level 99 → the full 27 Flora each.
+		// Convert both blocks at mastery → the whole block's Flora each.
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Convert {
@@ -393,8 +393,9 @@ mod tests {
 		assert_eq!(inv.count(BlockType::Wood), 0);
 		assert_eq!(inv.sub_count(Essence::Flora), 54);
 
-		// Craft a door (ideal 10, waste 1.05 → 11) and two stairs
-		// (ideal 18 → 19 each) = 49 of the 54; 5 left.
+		// Craft a door and two stairs; at mastery the ideal costs carry
+		// only the smallest waste markup, and the remainder is what the
+		// assertions below pin.
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
@@ -415,7 +416,8 @@ mod tests {
 		assert_eq!(inv.count(BlockType::WoodStairs), 2);
 		assert_eq!(inv.sub_count(Essence::Flora), 5);
 
-		// Level 1: 40% yields, 1.60× costs — the same wood buys less.
+		// The bottom of the curve: the poorest yields against the steepest
+		// waste, so the same wood buys less.
 		let mut low = Inventory::default();
 		low.add(BlockType::Wood, 1);
 		assert!(apply_alchemy(
@@ -486,7 +488,7 @@ mod tests {
 	fn multi_essence_crafts_never_half_charge() {
 		let mut inv = Inventory::default();
 		inv.add_sub(Essence::Earth, 100);
-		inv.add_sub(Essence::Flora, 1); // Dirt needs ceil(5·1.05) = 6
+		inv.add_sub(Essence::Flora, 1); // deliberately short of Dirt's Flora line
 		let before = inv.clone();
 		assert!(!apply_alchemy(
 			&mut inv,
@@ -511,9 +513,10 @@ mod tests {
 		assert_eq!(inv.sub_count(Essence::Flora), 0);
 	}
 
-	/// The bucket-charge economy: extraction needs Alch 15 and empties
-	/// the tool; crafting a charge needs 50, refuses on a full bucket,
-	/// and is lossy against the extraction — no loop.
+	/// The bucket-charge economy: extraction opens at water's own Alchemy
+	/// level and empties the tool; crafting a charge opens later still,
+	/// refuses on a full bucket, and is lossy against the extraction — no
+	/// loop.
 	#[test]
 	fn bucket_charge_extracts_and_crafts_without_a_loop() {
 		let mut inv = Inventory::default();
@@ -540,7 +543,8 @@ mod tests {
 		assert!(!inv.bucket_full(), "extracting the charge empties the tool");
 		assert_eq!(inv.sub_count(Essence::Aqua), 18);
 
-		// Craft a fresh charge at 50+: 27·1.05 → 29 Aqua for 18 back.
+		// Craft a fresh charge: the price plus waste comfortably exceeds
+		// what extracting one handed back.
 		inv.add_sub(Essence::Aqua, 11);
 		assert!(apply_alchemy(
 			&mut inv,
@@ -567,10 +571,10 @@ mod tests {
 
 	/// Owning a tool is a yes/no (§7.3), so the bench sells you exactly
 	/// one. Both ways to ask for a second are refused BEFORE any debit:
-	/// a batch multiplier — the transmute tab aims ×10 and ×100 at every
-	/// member, tools included — and a plain craft once it's in the bag.
-	/// `add` saturates, so an unrefused one would take 240 Metal and
-	/// hand back nothing.
+	/// a batch multiplier — the transmute tab aims those at every member,
+	/// tools included — and a plain craft once it's in the bag. `add`
+	/// saturates, so an unrefused one would take the whole batch's essence
+	/// and hand back nothing.
 	#[test]
 	fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 		let held = |inv: &Inventory| -> Vec<u32> {

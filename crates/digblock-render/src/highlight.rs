@@ -62,10 +62,11 @@ impl HighlightTarget {
 	}
 }
 
-/// Which crack a cell wears. Rides the instance as **word 7**, i.e. the
-/// `w` of the second vec4 — the shader's box is `i1.xyz` and the seed is
-/// `i1.w`, and the two are one attribute because the 48-byte instance is
-/// already three vec4s and a fourth for one scalar is wasteful.
+/// Which crack a cell wears. Rides the instance in the `w` of the vec4
+/// that carries the box's low corner — the shader's box is `i1.xyz` and
+/// the seed is `i1.w`, and the two are one attribute because the instance
+/// is already a whole number of vec4s and adding another for a lone scalar
+/// is wasteful.
 ///
 /// That packing is the whole reason for [`the_seed_is_the_cell_not_the_box`]:
 /// the shader read `i1.x` — the box's own minimum x, which is 0.0 on
@@ -275,9 +276,9 @@ mod tests {
 					(0.0, 2.0),
 					"{f:?} open={open}: two cells tall"
 				);
-				// The union is a real union: the handle protrudes a twelfth
-				// past the leaf on the lower half only, so the box's thin
-				// axis is 4/12 rather than the upper panel's 2/12.
+				// The union is a real union: the handle protrudes past the
+				// leaf on the lower half only, so the box's thin axis is
+				// wider there than on the upper panel alone.
 				let thin = (a.hi[0] - a.lo[0]).min(a.hi[2] - a.lo[2]);
 				assert!(
 					(thin - 4.0 / 12.0).abs() < 1e-6,

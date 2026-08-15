@@ -1208,17 +1208,16 @@ impl Menu {
 						PingState::Pending => ("...".to_string(), C_DIM),
 						PingState::Failed => ("n/a".to_string(), C_RED),
 						// Bands are round-trip times, and they line up with the
-						// netbench's link profiles: under 60 is lan/wifi
-						// territory (4-30 ms, indistinguishable from local),
-						// under 150 covers cellular (120 ms, where delivery is
-						// still 99.8% and corrections are 0.08 blocks), and
-						// past that is bad-4g, where delivery falls off even
-						// with the input hold. They read as too lenient only
-						// if you remember them being fed handshake times,
-						// which were roughly double an RTT — the probe now
-						// reports the transport's own estimate, so these mean
-						// what they say. Don't "retune" them for the old
-						// input.
+						// netbench's link profiles: green is lan/wifi
+						// territory, indistinguishable from local; yellow
+						// covers cellular, where delivery still holds up and
+						// corrections stay small; red is bad-4g, where
+						// delivery falls off even with the input hold. They
+						// read as too lenient only if you remember them being
+						// fed handshake times, which were roughly double an
+						// RTT — the probe now reports the transport's own
+						// estimate, so these mean what they say. Don't
+						// "retune" them for the old input.
 						PingState::Ms(ms) => (
 							format!("{ms} ms"),
 							if ms < 60 {
@@ -1433,11 +1432,11 @@ const C_RED: u32 = 0xFF4040F0;
 /// mean remembering to bump it in two places or Back stopped clicking.
 const SETTINGS_BACK: u8 = SETTINGS_ROWS.len() as u8;
 
-// Render scale is deliberately ABSENT: it is locked at 100% for players
-// and only `--render-scale` moves it (settings::RENDER_SCALE_MIN says
-// why). Re-exposing it means a row here, a match arm in `adjust_setting`
-// and `set_setting_frac`, a `RowSpec` below, and renumbering every row
-// after it — the indices are positional.
+// Render scale is deliberately ABSENT: it is locked at native for
+// players and only `--render-scale` moves it (settings::RENDER_SCALE_MIN
+// says why). Re-exposing it means a row here, a match arm in
+// `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
+// renumbering every row after it — the indices are positional.
 const SETTINGS_ROWS: [Setting; 6] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
@@ -1459,7 +1458,8 @@ pub(crate) fn bar_rect(row: [f32; 4], scale: f32) -> [f32; 4] {
 
 /// Step a slider by `dir`, re-derived from its step grid rather than
 /// added to the live value: repeated float addition drifts, and the
-/// interface scale's 5% step drifts faster than the volume's 10% one.
+/// interface scale's finer step drifts faster than the volume's coarser
+/// one.
 fn snap_range(v: f32, dir: i32, min: f32, max: f32, step: f32) -> f32 {
 	let steps = ((v - min) / step).round() as i32 + dir;
 	let last = ((max - min) / step).round() as i32;
@@ -1739,7 +1739,7 @@ mod tests {
 
 	/// The panel sizes itself to its widest row: no screen may lay out
 	/// text (plus any right-aligned column) past the row edge — the
-	/// browser's hint line used to overflow the old fixed 560px width.
+	/// browser's hint line used to overflow the old fixed panel width.
 	#[test]
 	fn panel_fits_every_row() {
 		let check = |menu: &Menu| {
@@ -2156,7 +2156,7 @@ mod tests {
 			"opening isn't a change"
 		);
 
-		// Draw distance: sel 0, step 2, clamped at DRAW_MAX.
+		// Draw distance: sel 0, one step per press, clamped at DRAW_MAX.
 		menu.handle_key(Key::Right);
 		let s = menu.take_settings_change().expect("dirty after adjust");
 		assert_eq!(s.draw_dist, 22);
@@ -2170,7 +2170,7 @@ mod tests {
 		assert!(menu.take_settings_change().is_none());
 
 		// Lighting detail: sel 1. Render scale has no row — it is locked
-		// at 100% for players (settings::RENDER_SCALE_MIN says why), so
+		// at native for players (settings::RENDER_SCALE_MIN says why), so
 		// nothing here can move it. Walks the DIVISOR list, and Left is
 		// coarser — so it ends on the largest divisor, not the smallest.
 		menu.handle_key(Key::Down);
@@ -2191,7 +2191,8 @@ mod tests {
 		}
 		assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 1);
 
-		// Interface scale: sel 2, 100% -> 95%, then down to the min.
+		// Interface scale: sel 2, one notch down from neutral, then on
+		// down to the min.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
@@ -2207,7 +2208,7 @@ mod tests {
 		menu.handle_key(Key::Left);
 		assert!(menu.take_settings_change().is_none(), "already at the min");
 
-		// Music volume: sel 3, 100% -> 90%, floor at 0.
+		// Music volume: sel 3, one notch down from full, floor at silence.
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Left);
 		let s = menu.take_settings_change().unwrap();
@@ -2249,9 +2250,10 @@ mod tests {
 	}
 
 	/// Every notch of the interface-scale slider is reachable and lands on
-	/// its exact grid value. With a 5% step the old add-to-the-live-value
-	/// path drifts, and the label rounds to whole percent — so a run to
-	/// one end and back is the test that would catch it.
+	/// its exact grid value. With a fine step the old
+	/// add-to-the-live-value path drifts, and the label rounds to whole
+	/// percent — so a run to one end and back is the test that would
+	/// catch it.
 	#[test]
 	fn ui_scale_slider_walks_its_whole_range_without_drift() {
 		let notches = ((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP).round() as i32;
@@ -2292,8 +2294,8 @@ mod tests {
 			.expect("draw slider row");
 		let [bx, by, bw, bh] = bar_rect(row.rect, 1.0);
 
-		// Click at 50% of the bar: snapped to the step grid around the
-		// range midpoint (10..=32 -> 21 -> snaps to 20 or 22).
+		// Click at the middle of the bar: snapped to the step grid around
+		// the range midpoint, so it lands on a notch either side of it.
 		let (cx, cy) = (bx + bw * 0.5, by + bh * 0.5);
 		menu.handle_input(&InputEvent::CursorMoved { x: cx, y: cy }, SIZE, 1.0);
 		menu.handle_input(
@@ -2445,14 +2447,14 @@ mod tests {
 			menu.handle_text(ch);
 		}
 		for ch in "abcdefghijklmnop".chars() {
-			menu.handle_text(ch); // runs into the 16-char cap
+			menu.handle_text(ch); // runs into the name-length cap
 		}
 		menu.handle_key(Key::Backspace);
 		let Some(Screen::CreateWorld { name, .. }) = &menu.screen else {
 			panic!("on create screen");
 		};
 		// World names take the full text alphabet (space and punctuation
-		// included — they never leave this machine), filled to the 16 cap,
+		// included — they never leave this machine), filled to the cap,
 		// minus the backspace.
 		assert_eq!(name, "My World!abcdef");
 		menu.handle_key(Key::Enter);

@@ -1,4 +1,5 @@
-//! The authoritative simulation: one instance, one thread, fixed 60 Hz.
+//! The authoritative simulation: one instance, one thread, one fixed tick
+//! rate (`TICK_RATE`).
 //! Socket-free by construction — the net layer (net.rs) feeds it
 //! [`SimEvent`]s and it emits pre-encoded [`OutMsg`]s onto per-client
 //! channels, so every behavior here is testable with plain `cargo test`.
@@ -64,10 +65,10 @@ const DRAW_DIST_MIN: i32 = 2;
 const DRAW_DIST_MAX: i32 = 32;
 
 /// A connection that passes the preamble but never completes Hello is
-/// dropped after this many ticks (5s — mirrors the preamble deadline).
-/// Without it a stalled handshake camps in the lobby forever: the
-/// server's own keep-alives defeat QUIC's idle timeout, and the 255-
-/// player cap applies only post-Hello.
+/// dropped after this many ticks — mirrors the preamble deadline. Without
+/// it a stalled handshake camps in the lobby forever: the server's own
+/// keep-alives defeat QUIC's idle timeout, and the player-id cap applies
+/// only post-Hello.
 const HELLO_TIMEOUT_TICKS: u32 = 5 * TICK_RATE;
 
 pub enum SimEvent {
@@ -97,10 +98,11 @@ pub enum OutMsg {
 	///
 	/// `Arc` rather than `Vec` because the interesting sends are
 	/// broadcasts: every landed edit goes to every client whose
-	/// `synced_columns` covers it, and fluid alone lands up to 512 edits a
-	/// second. Encoding per recipient meant 3 allocations and a fresh
-	/// postcard pass each — ~49 k allocations/s at 32 co-located players
-	/// during a waterfall, all producing byte-identical output. Now the
+	/// `synced_columns` covers it, and fluid alone lands a whole
+	/// `FLOW_BUDGET` of edits every flow step. Encoding per recipient meant
+	/// several allocations and a fresh postcard pass PER RECIPIENT,
+	/// multiplied by the crowd — tens of thousands of allocations a second
+	/// around a waterfall, all producing byte-identical output. Now the
 	/// fan-out is a refcount bump.
 	Frame(std::sync::Arc<[u8]>),
 	/// Ask the net layer to close the connection (refused handshake).
@@ -227,12 +229,12 @@ struct Client {
 	inputs: BTreeMap<u32, InputTick>,
 	last_input_tick: u32,
 	/// Highest input tick ever ADMITTED to the buffer, and a bitmap of the
-	/// 64 ticks below it (bit n = `admit_hi - n`). Together they separate an
+	/// ticks below it (bit n = `admit_hi - n`). Together they separate an
 	/// ordinary redundancy copy of a tick we already held — expected, free,
-	/// every tick rides two datagrams — from a tick the buffer had already
-	/// drained past when it arrived, which is the only rejection that means
-	/// an input was lost for good. Diagnostic only: nothing reads these
-	/// back into a decision.
+	/// every tick rides `INPUT_REDUNDANCY` datagrams — from a tick the
+	/// buffer had already drained past when it arrived, which is the only
+	/// rejection that means an input was lost for good. Diagnostic only:
+	/// nothing reads these back into a decision.
 	admit_hi: u32,
 	admit_seen: u64,
 	/// Consecutive ticks the drain has been holding the current hole open.
@@ -382,9 +384,9 @@ pub struct Sim {
 	last_oversize_log: Option<u32>,
 	/// Scratch for `send_snapshots`, reused across ticks: the shared
 	/// roster, the per-client candidate list, the selected-player Vec, and
-	/// the postcard encode buffer. The pass runs 20×/s over every client,
-	/// so building these fresh was the sim thread's largest steady-state
-	/// allocation source.
+	/// the postcard encode buffer. The pass runs every `SNAPSHOT_DIVISOR`
+	/// ticks over every client, so building these fresh was the sim
+	/// thread's largest steady-state allocation source.
 	snap_roster: Vec<(RemoteState, SelfState, (i32, i32))>,
 	snap_nearby: Vec<(i64, usize)>,
 	snap_players: Vec<RemoteState>,
@@ -499,7 +501,7 @@ impl Sim {
 		self.clients.len()
 	}
 
-	/// Run one 60 Hz tick with the events drained since the last one.
+	/// Run one tick with the events drained since the last one.
 	pub fn tick_once(&mut self, events: Vec<SimEvent>) {
 		self.reap_dead();
 		for ev in events {
@@ -654,7 +656,7 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
-	/// The client's Mining level (1 for an unknown conn).
+	/// The client's Mining level (the base level for an unknown conn).
 	#[cfg(test)]
 	pub(crate) fn test_mining_level(&self, conn_id: u64) -> u32 {
 		self.clients
@@ -1109,9 +1111,9 @@ impl Sim {
 		// gate will check against, or the decay clamps a resumed hold at
 		// one figure while the client's bar bleeds from another. That
 		// means the ore, not the stone the cell still holds — this arm
-		// asked `dig_block` nothing at all and read Stone's 90 for a
-		// 240-hardness seam. Resolved before the client borrow, since it
-		// reads the store.
+		// asked `dig_block` nothing at all and read Stone's hardness for a
+		// seam several times harder. Resolved before the client borrow,
+		// since it reads the store.
 		let mode = self.ore_dig_mode(conn_id, cell);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
@@ -1436,8 +1438,8 @@ impl Sim {
 
 		// Join sync: final cell state for every edited column in range,
 		// QUEUED rather than sent. Encoding them all here meant thousands
-		// of frames and megabytes inside one 16.7 ms tick on a mature world
-		// — a hitch for everyone else on the server, every time anyone
+		// of frames and megabytes inside one tick's budget on a mature
+		// world — a hitch for everyone else on the server, every time anyone
 		// joined — and past OUT_CAP the joiner simply lost the race and got
 		// dropped. `pump_join_sync` drains the queue a few per tick against
 		// the room the outbound queue actually has.
@@ -1491,7 +1493,8 @@ impl Sim {
 			},
 		);
 		// Per-skill XP totals — always sent, even empty (a fresh
-		// identity is level 1 everywhere), so the client never guesses.
+		// identity sits at the base level everywhere), so the client never
+		// guesses.
 		ok &= send_frame(
 			&out,
 			&ServerMsg::Skills {
@@ -1686,8 +1689,8 @@ impl Sim {
 /// match the admin check?
 ///
 /// Admin is granted by comparing against `Client::name`, which the master
-/// mints and `validate_name` constrains to 3-10 chars of `a-z A-Z 0-9 -
-/// _`. `--admin-name "big boss"` or an 11-character name can therefore
+/// mints and `validate_name` constrains to a short run of `a-z A-Z 0-9 -
+/// _`. `--admin-name "big boss"` or a name past that length can therefore
 /// never match ANYONE — the server booted with admin quietly disabled
 /// while logging a reassuring `admin: big boss`. The launcher now refuses
 /// the argument outright, which is what an operator wants from a typo in a
@@ -1709,10 +1712,10 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 
 /// Squared-distance test in i64: `col` is any edited column in the journal
 /// and `center` is any client's, so the separation is bounded only by
-/// `TP_LIMIT` (±62 500 columns). In i32 the product overflows from ~46 340
-/// columns apart — release wraps, and a wrapped negative sum passes the
-/// test, which syncs a client columns it is nowhere near and force-drops it
-/// when the queue refuses; debug panics. The subtraction is widened too:
+/// `TP_LIMIT`. In i32 the product overflows well inside that range —
+/// release wraps, and a wrapped negative sum passes the test, which syncs
+/// a client columns it is nowhere near and force-drops it when the queue
+/// refuses; debug panics. The subtraction is widened too:
 /// `col.0 - center.0` alone overflows at the i32 extremes.
 /// Squared column distance — the ordering key `in_radius` tests against,
 /// shared so "near" means the same thing to the sort and to the gate.
@@ -1824,7 +1827,8 @@ mod tests {
 				_ => None,
 			})
 			.expect("heartbeat within one sync period");
-		// 10 s at 0.3°/s — the sun moved ~3° toward noon (tod falls).
+		// One `TOD_SYNC_TICKS` period at the sun's rate — it has moved
+		// toward noon (tod falls).
 		assert!(
 			(welcome_tod - beat - 3.0).abs() < 0.1,
 			"welcome {welcome_tod} → beat {beat}"
@@ -1864,10 +1868,10 @@ mod tests {
 	/// `synced_columns`) no live edits there either.
 	#[test]
 	fn growing_draw_dist_syncs_the_newly_visible_ring() {
-		// A pre-journaled edit in column (6, 0): outside the harness Hello's
-		// draw_dist of 4, inside a widened 8. The client spawns in column
-		// (0, 0) and never moves, so `needs_sync_scan` can only come from
-		// the SetDrawDist itself.
+		// A pre-journaled edit in a column outside the harness Hello's
+		// draw distance and inside the widened one. The client spawns in
+		// the origin column and never moves, so `needs_sync_scan` can only
+		// come from the SetDrawDist itself.
 		let dir = temp_dir("drawgrow");
 		let col = (6, 0);
 		{
@@ -2057,8 +2061,8 @@ mod tests {
 		let c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		// Never drain: snapshots fill the bounded queue, then the stall
-		// clock runs. OUT_CAP fills after ~3*OUT_CAP ticks of snapshots,
-		// then DGRAM_STALL_SECS of Full escalates to dead.
+		// clock runs. OUT_CAP fills at one snapshot per SNAPSHOT_DIVISOR
+		// ticks, then DGRAM_STALL_SECS of Full escalates to dead.
 		let enough = 3 * super::OUT_CAP as u32 + (super::DGRAM_STALL_SECS + 2) * 60;
 		for _ in 0..enough {
 			sim.tick_once(vec![]);
@@ -2171,7 +2175,7 @@ mod tests {
 			// The rock rule: mined stone lands as Rubble.
 			assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
 
-			// Park the Rubble in grid slot 17 (a deliberate arrangement —
+			// Park the Rubble deep in the grid (a deliberate arrangement —
 			// it must survive reconnect and reboot verbatim).
 			let mut grid =
 				vec![digblock_core::hotbar::WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS];
@@ -2247,9 +2251,9 @@ mod tests {
 		);
 	}
 
-	/// The strength wall, server half: a DigStart on stone below
-	/// Mining 5 refuses with `SkillGated` and opens no hold (refused at
-	/// the START — the player must not hold the button through a dig
+	/// The strength wall, server half: a DigStart on stone below the Rock
+	/// family's wall refuses with `SkillGated` and opens no hold (refused
+	/// at the START — the player must not hold the button through a dig
 	/// timer for nothing); at the gate level the hold opens normally.
 	#[test]
 	fn gated_rock_refuses_the_dig_start() {
@@ -2402,9 +2406,9 @@ mod tests {
 
 		// 4. And it is timed as the ore on THIS end too. Case 3 alone
 		//    cannot show that: it holds for the ore's own length, which
-		//    satisfies a server timing the draw by either number. The
-		//    ores are 120–240 against Stone's 90, so a server reading the
-		//    cell's hardness would hand out an Aetherock for 37% of the
+		//    satisfies a server timing the draw by either number. An ore is
+		//    several times Stone's hardness, so a server reading the cell's
+		//    hardness would hand out an Aetherock for a fraction of the
 		//    intended hold — a gap `dig_grace` comes nowhere near, and one
 		//    a modified client can simply take.
 		let mut sim = super::harness::flat_sim_at("ore-short", eye);
@@ -2435,9 +2439,9 @@ mod tests {
 	/// what the swing touched.
 	///
 	/// The three properties that matter, in one test because they are one
-	/// mechanism: the width follows the level (3, then 9), every extra
-	/// cell holds the same id, and the credit is one per BLOCK broken —
-	/// which is what `begin_multi`'s single `inv_delta` describes.
+	/// mechanism: the width follows the level, every extra cell holds the
+	/// same id, and the credit is one per BLOCK broken — which is what
+	/// `begin_multi`'s single `inv_delta` describes.
 	#[test]
 	fn the_resonant_pick_breaks_the_plane_the_server_derives() {
 		use digblock_core::block::BlockType;
@@ -2501,7 +2505,7 @@ mod tests {
 		// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
 		// so the aimed cell itself is free and the refusal can only come
 		// from a cell the swing reached. (`lock_region` is a box CLEAR
-		// out from the eye's column, floor at eye.y - 2.)
+		// out from the eye's column, floored just below the eye.)
 		let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
 		sim.bench_lock_spawn_at(Vec3::new(
 			lock_x as f32 + 0.5,
@@ -2621,11 +2625,11 @@ mod tests {
 	}
 
 	/// XP is server-computed at the two chokepoints and lands as new
-	/// TOTALS: a stone dig pays `ceil(90/6) = 15` Mining on top of the
-	/// harness's gate grant, converting the rubble pays 8 Alchemy, and
-	/// the totals survive reconnect and a full server reboot via the
-	/// identity store (join sync always carries a `Skills` frame, empty
-	/// for a fresh identity).
+	/// TOTALS: a stone dig pays the block's `dig_xp` on top of the
+	/// harness's gate grant, converting the rubble pays its `convert_xp`
+	/// in Alchemy, and the totals survive reconnect and a full server
+	/// reboot via the identity store (join sync always carries a `Skills`
+	/// frame, empty for a fresh identity).
 	#[test]
 	fn xp_awards_on_dig_and_alchemy_and_persists() {
 		use digblock_core::block::BlockType;
@@ -2635,9 +2639,9 @@ mod tests {
 		let dir = temp_dir("xp");
 		let identity = [8u8; 16];
 		// dig_hold grants whatever the target's gates ask — for stone that
-		// is the Rock family's strength wall — and the dig pays its own 15
-		// on top of that level's total. Derived, so a retune of the wall or
-		// of the dig curve moves both halves together.
+		// is the Rock family's strength wall — and the dig pays its own
+		// `dig_xp` on top of that level's total. Derived, so a retune of
+		// the wall or of the dig curve moves both halves together.
 		let granted =
 			digblock_core::skills::total_xp_for(digblock_core::unlock::mine(BlockType::Stone));
 		let after = granted + digblock_core::skills::dig_xp(BlockType::Stone);
@@ -2666,8 +2670,8 @@ mod tests {
 				c.msgs
 			);
 
-			// Convert the rubble the dig credited: ceil(24/3) = 8 Alchemy
-			// XP, in wire order with the InventoryFull rebase.
+			// Convert the rubble the dig credited: its `convert_xp` in
+			// Alchemy, in wire order with the InventoryFull rebase.
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
@@ -2731,10 +2735,11 @@ mod tests {
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		// Derived from the constants, never spelled out: the bucket's
-		// capacity is no longer two reference blocks flat — it also has to
-		// cover the single costliest extraction, or the deepest ores are
-		// refused forever (`the_bucket_can_always_afford_the_costliest_block`).
-		// A test naming "2" pins the sizing instead of the RULE, and the
+		// capacity is no longer a flat count of reference blocks — it also
+		// has to cover the single costliest extraction, or the deepest ores
+		// are refused forever
+		// (`the_bucket_can_always_afford_the_costliest_block`). A test
+		// naming that count pins the sizing instead of the RULE, and the
 		// rule is what this is about: a full bucket admits a bounded bunch
 		// and not one block more.
 		let pace = digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1);
@@ -2794,7 +2799,7 @@ mod tests {
 		sim.tick_once(vec![convert(1)]);
 		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
 		// Refused ops never paid XP: the final total reflects exactly the
-		// landed blocks (ceil(24/3) = 8 each).
+		// landed blocks, at the rubble's own `convert_xp` each.
 		c.drain();
 		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
 			ServerMsg::XpGain { skill: 1, total } => Some(*total),
@@ -2875,7 +2880,7 @@ mod tests {
 		);
 
 		// After the window it works again. (Drain as we go — an undrained
-		// outbound queue trips the snapshot-stall reaper over 60s.)
+		// outbound queue trips the snapshot-stall reaper.)
 		for _ in 0..(RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE) {
 			sim.tick_once(vec![]);
 			c.drain();

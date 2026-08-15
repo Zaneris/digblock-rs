@@ -1,28 +1,31 @@
 // Water shader — fork of chunk.wgsl with the shared two-word vertex:
 // word 0 is the solid geometry packing (position/normal/corner; ao and
-// tint bits unused), word 1 holds the texture layer in bits 0-9 and the
-// per-vertex surface payload above it. Bits 10-13 are the drop code d
-// (9 − strongest corner amount): the vertex sinks d/9 below its lattice
-// height, so a surface corner sits at exactly the water level the sim
-// computed there — a source at 8/9, its spread at 4/9, then 2/9 and
-// 1/9 — with corner heights shared between adjacent cells (no cracks).
-// Bit 14 marks falling water (side faces
-// scroll downward), bits 15-17 the horizontal flow dir (0 still, 1 +x,
-// 2 −x, 3 +z, 4 −z; top faces scroll along it), bits 18-19 the splash
-// code (3 = fall impact cell; 2/1 = pool cells at Chebyshev 1/2 — a
-// static foam wash fading outward; all three boost ripple turbulence),
-// bits 20-23 the vertex fall distance (blocks below the lip, +1 on
-// bottom-plane verts so interpolation is continuous; drives gravity
-// stretch and aeration whitening).
+// tint bits unused), word 1 holds the texture layer with the per-vertex
+// surface payload packed above it, in this order: the drop code, the
+// falling-water flag, the horizontal flow dir, the splash code, and the
+// vertex fall distance.
+//
+// The drop code d is DROP_LEVELS minus the strongest water amount at the
+// corner, and the vertex sinks that many levels below its lattice
+// height — so a surface corner sits at exactly the water level the sim
+// computed there, with corner heights shared between adjacent cells (no
+// cracks). Falling water scrolls its side faces downward; the flow dir
+// (FLOW_DIRS below) scrolls top faces along the current; the splash code
+// ranks the fall's impact cell above the pool cells around it by
+// Chebyshev distance — a static foam wash fading outward, and every rank
+// boosts ripple turbulence; the fall distance counts blocks below the
+// lip (bottom-plane verts carry one more so interpolation is continuous)
+// and drives gravity stretch and aeration whitening.
 // The animation clock rides in frame.light_color.w. Lighting is RTGI
 // (GI-DESIGN.md): a probe gather at the surface world position through
 // gi_common's shared cascade fallthrough — evaluated PER VERTEX and
 // interpolated (R17: water quads are strictly per-cell, so vertices sit
-// ≤1 block apart against a probe field that is 2-block spaced and smooth
-// by construction; the full blend is ~112 loads and running it per
-// fragment at full res was the river frame spike) — plus a short
-// per-fragment sun DDA, which stays per pixel because shadow edges on
-// the surface are the one lighting signal sharper than the lattice.
+// at most a cell apart against a probe field spaced wider than that and
+// smooth by construction; the full blend is a burst of loads, and
+// running it per fragment at full res was the river frame spike) — plus
+// a short per-fragment sun DDA, which stays per pixel because shadow
+// edges on the surface are the one lighting signal sharper than the
+// lattice.
 // Water never reads the half-res resolve buffers, whose depth belongs
 // to the solids BEHIND it. It writes OPAQUE — the fragment owns its own
 // backdrop (see the alpha note in `fs`).
@@ -46,8 +49,8 @@
 // (prepended between sky_common and this file).
 
 // The sun DDA's step cap: water covers big screen areas, so it affords
-// a shorter march than the resolve's 160 — shore/cliff shadows within
-// this many blocks of the surface; beyond, the probes' indirect term
+// a shorter march than the resolve's — shore/cliff shadows within this
+// many blocks of the surface; beyond, the probes' indirect term
 // carries what's left (P5 revisits the number against the bench).
 const SUN_STEPS = 12;
 
@@ -55,20 +58,21 @@ const SUN_STEPS = 12;
 // IMPORTANCE threshold, not a quality knob: the error it admits is
 // exactly `weight × (what the march would have returned)`, and the gate
 // multiplies the weight by the light colour before comparing — so this
-// is in the same units as the pixel, 0.002 of the 1.0 that means white.
+// is in the same units as the pixel, a fraction of the 1.0 that means
+// white.
 //
 // Weighting by the light colour is not fussiness. This engine has no
-// tonemap, so radiance is HDR and 1.0 is merely "white": a 2% weight
-// against a 5-unit sky is a 10% error, not a 2% one. The first cut of
-// these gates compared bare weights and put a ripple-banded difference
-// across a whole basin — mean 6.96/255 against a 0.69 capture floor at
-// DIG_RIVER. That is what a parity pass is for.
+// tonemap, so radiance is HDR and 1.0 is merely "white": a small weight
+// against a sky several times brighter than white is a proportionally
+// larger error. The first cut of these gates compared bare weights and
+// put a ripple-banded difference across a whole basin, well clear of the
+// capture floor at DIG_RIVER. That is what a parity pass is for.
 const SUN_MIN_L = 0.002;
 // The mirror gate gets NO tolerance, for the same reason. `mirror_w` is
 // pinned to EXACTLY zero on the underside of a surface seen from below
 // (`below`), so skipping there is exact rather than approximate — and
-// that is where the measured 1.68 ms sat. Anything above zero is a real
-// reflection against an HDR sky, and gets marched.
+// that is where the cost this gate retires sat. Anything above zero is a
+// real reflection against an HDR sky, and gets marched.
 const MIRROR_MIN_W = 0.0;
 
 // Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
@@ -92,8 +96,8 @@ fn stubbed(bit: u32) -> bool {
 	return (u32(frame.misc.z) & bit) != 0u;
 }
 
-// Java normal() table order (VertTex.glsl):
-// 0=W(+x) 1=N(+z) 2=S(-z) 3=B(-y) 4=T(+y) 5=E(-x)
+// Java normal() table order (VertTex.glsl), which is also the face code
+// order the mesher packs: W(+x), N(+z), S(-z), B(-y), T(+y), E(-x).
 const NORMALS = array<vec3f, 6>(
 	vec3f(1.0, 0.0, 0.0),
 	vec3f(0.0, 0.0, 1.0),
@@ -103,18 +107,18 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// Surface drop per code, in ninths — LINEAR, and that is load-bearing:
-// d is 9 − the strongest water amount at the corner, so d/9 puts the
-// vertex at exactly the level the sim computed and nothing else. This
-// was a hand-tuned concave curve (0.32/0.50/0.63/0.73/…) from back when
+// Surface drop per code, in levels — LINEAR, and that is load-bearing:
+// d is DROP_LEVELS − the strongest water amount at the corner, so
+// d / DROP_LEVELS puts the vertex at exactly the level the sim computed
+// and nothing else. This was a hand-tuned concave curve from back when
 // corners took the MEAN amount and every code bunched up near the top;
 // once corners take the max, the codes land straight on the sim's
-// ladder and the curve just falsified them — a Flow4's lip is d = 5,
-// which the curve sank to 0.27 of a block instead of its own 4/9.
-// 0 pins full height (submerged water and all bottom-plane vertices);
-// 9 is the cascade plunge, sinking the corner a whole block to meet
-// the water one step down. Divided, not tabulated, so the mapping
-// cannot drift from the ninths the mesher packs.
+// ladder and the curve just falsified them — a flowing lip came out
+// well under its own level.
+// A zero code pins full height (submerged water and all bottom-plane
+// vertices); the full code is the cascade plunge, sinking the corner a
+// whole block to meet the water one step down. Divided, not tabulated,
+// so the mapping cannot drift from the levels the mesher packs.
 const DROP_LEVELS = 9.0;
 
 struct VsOut {
@@ -130,10 +134,11 @@ struct VsOut {
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) @interpolate(flat) direct: f32,
 	// Probe-field indirect, gathered in the vertex shader (see header) and
-	// perspective-interpolated across the ≤1-block quad.
+	// perspective-interpolated across the cell-sized quad.
 	@location(3) indirect: vec3f,
 	@location(5) view_dist: f32,
-	// Splash code: 3 impact cell, 2/1 surrounding cells, 0 none.
+	// Splash code: highest on the impact cell, stepping down through the
+	// surrounding cells to zero for no splash at all.
 	@location(7) @interpolate(flat) splash: u32,
 	// World position (ripple field domain + view vector + GI gather).
 	@location(8) world: vec3f,
@@ -141,10 +146,11 @@ struct VsOut {
 	@location(10) @interpolate(flat) flow: u32,
 	@location(11) @interpolate(flat) falling: u32,
 	// Blocks fallen below the lip, continuous down a sheet (top-plane
-	// verts carry the cell's count, bottom-plane +1). Saturates at 15.
+	// verts carry the cell's count, bottom-plane one more). Saturates at
+	// the ceiling of the field the mesher packs it into.
 	@location(12) fall_y: f32,
-	// Interpolated drop code (0 full .. 9 plunge) — the lip highlight
-	// keys on the plunging edge of a fall's crest.
+	// Interpolated drop code (zero is full height, full is the plunge) —
+	// the lip highlight keys on the plunging edge of a fall's crest.
 	@location(13) drop: f32,
 }
 
@@ -157,7 +163,7 @@ fn vnoise1(x: f32) -> f32 {
 	return mix(a, b, f * f * (3.0 - 2.0 * f));
 }
 
-// Flow-dir codes (word 1 bits 5-7) as xz vectors.
+// Flow-dir codes as xz vectors; the first entry is still water.
 const FLOW_DIRS = array<vec2f, 5>(
 	vec2f(0.0, 0.0),
 	vec2f(1.0, 0.0),
@@ -171,8 +177,9 @@ const FLOW_DIRS = array<vec2f, 5>(
 // (impact turbulence hook); octaves fade out with distance and the
 // whole field rolls off so far water can't alias into pixel shimmer.
 fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
-	// Wave directions: aligned to the current (±40° spread) when the
-	// cell flows, fixed spread directions on still water.
+	// Wave directions: aligned to the current, with the other two fanned
+	// to either side of it, when the cell flows; fixed spread directions
+	// on still water.
 	var d0 = vec2f(0.80, 0.60);
 	var d1 = vec2f(-0.71, 0.71);
 	var d2 = vec2f(0.97, -0.24);
@@ -191,8 +198,8 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 		1.0 - smoothstep(48.0, 120.0, dist),
 		1.0 - smoothstep(16.0, 48.0, dist),
 	) / (1.0 + dist * 0.015);
-	// Advect phase with the 0.4 blocks/s surface scroll so ripples
-	// ride the current instead of swimming against it.
+	// Advect phase with the top-face surface scroll so ripples ride the
+	// current instead of swimming against it.
 	let q = p - flow * (t * 0.4);
 	var g = d0 * (s.x * fade.x * cos(dot(d0, q) * f.x + t * spd.x));
 	g += d1 * (s.y * fade.y * cos(dot(d1, q) * f.y + t * spd.y));
@@ -215,12 +222,13 @@ fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f 
 	// DDA above is gated on its own: it was running at full cost where
 	// it cannot show. Submerged, looking at the underside of a surface,
 	// `mirror_w` is pinned to EXACTLY zero — and `reflection_color` is
-	// called as a function argument, so the 28 dependent depth loads
-	// ran anyway and the answer was multiplied by nothing. That alone
-	// measured 1.68 ms, 23% of the water pass, on the submerged pose.
+	// called as a function argument, so the march's dependent depth loads
+	// ran anyway and the answer was multiplied by nothing. That alone was a
+	// substantial slice of the water pass on the submerged pose (BENCH.md
+	// holds the figure).
 	// Above water it retires the other degenerate case: head-on, Schlick
-	// bottoms out at the 0.02 floor, so a look straight down at calm
-	// water was paying the full march for 2% of a pixel.
+	// bottoms out at its F0 floor, so a look straight down at calm water
+	// was paying the full march for a sliver of a pixel.
 	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}
@@ -291,8 +299,8 @@ fn water_world(w0: u32, w1: u32, origin: vec3f) -> vec3f {
 	let x = twelfths(w0 & 0xffu);
 	var y = twelfths((w0 >> 8u) & 0xffu);
 	let z = twelfths((w0 >> 16u) & 0xffu);
-	// Surface drop: the shared corner code, straight into ninths. The
-	// water payload sits above the 10-bit layer field in w1.
+	// Surface drop: the shared corner code, straight through DROP_LEVELS.
+	// The water payload sits above the layer field in w1.
 	y -= f32(min((w1 >> 10u) & 0xfu, 9u)) / DROP_LEVELS;
 	return vec3f(x, y, z) + origin;
 }
@@ -323,11 +331,11 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.view_dist = distance(world, frame.cam_pos.xyz);
 	// The probe gather, hoisted out of the fragment shader (R17). The
 	// blend's own coverage checks keep this cheap where it doesn't
-	// matter: a vertex outside both cascades (all water past ~128
-	// blocks) early-outs to the analytic dome before touching a texel,
-	// so only near water — the fragments that used to pay ~112 loads
-	// EACH — pays the full path, once per corner instead of once per
-	// pixel.
+	// matter: a vertex outside both cascades (all water beyond the
+	// cascades' reach) early-outs to the analytic dome before touching a
+	// texel, so only near water — the fragments that used to pay the
+	// whole blend EACH — pays the full path, once per corner instead of
+	// once per pixel.
 	o.indirect = vec3f(0.25);
 	if !stubbed(STUB_WVERT) {
 		o.indirect = gi_indirect(
@@ -378,11 +386,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		return vec4f(0.1, 0.2, 0.3, 1.0);
 	}
 	let t = frame.light_color.w;
-	// Motion per face: falling sides run downward at 1.5 uv/s, flowing
-	// tops at 0.4 along the flow dir (sample offset opposes feature
-	// motion). rate × len = speed; len bounds how far a layer slides.
+	// Motion per face: falling sides run downward, flowing tops along the
+	// flow dir (sample offset opposes feature motion). rate × len =
+	// speed; len bounds how far a layer slides.
 	let vertical = i.ni == 3u || i.ni == 4u;
-	// Blocks fallen at this pixel (+0.5 tames the lip singularity).
+	// Blocks fallen at this pixel (the bias tames the lip singularity).
 	let y_fallen = i.fall_y + 0.5;
 	var base_uv = i.uv;
 	var adv = vec2f(0.0);
@@ -391,8 +399,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	if i.falling == 1u && !vertical {
 		// Gravity stretch: v follows free-fall time of flight (√y), so
 		// features elongate and their world speed grows ∝ √y down the
-		// sheet. Past the 15-block cap the texture smears, hidden under
-		// full aeration whitening by then.
+		// sheet. Past the packed fall distance's cap the texture smears,
+		// hidden under full aeration whitening by then.
 		base_uv = vec2f(i.uv.x, sqrt(y_fallen) * 2.2);
 		adv = vec2f(0.0, -1.0);
 		rate = 0.25;
@@ -427,7 +435,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Falling-sheet structure: vertical streak noise tears the sheet
 	// into ropes with translucent gaps, and clump pulses ride the
 	// stretched v — two layers (front fast/bright, back slow/dim) give
-	// the sheet depth. s ~ 0.5 is neutral.
+	// the sheet depth. s is neutral at its midpoint.
 	var s = 0.5;
 	if i.falling == 1u && !vertical {
 		let h = select(i.world.x, i.world.z, i.ni == 0u || i.ni == 5u);
@@ -516,11 +524,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// shore line, splash cells), the glint lobe and the lip sheen. On
 	// calm open water away from the glint, and on ANY surface seen from
 	// below (where the lobe faces away), every one of those weights is
-	// ~0 — so twelve dependent voxel loads were computing a number that
-	// then got multiplied by nothing.
+	// ~0 — so a whole march of dependent voxel loads was computing a
+	// number that then got multiplied by nothing.
 	//
-	// Measured: 3.91 ms of a 7.15 ms water pass at the submerged pose,
-	// 55% of everything water costs. This is not an approximation of the
+	// Measured as the single biggest term in the water pass at the submerged
+	// pose — more than half of everything water costs, per BENCH.md. This is
+	// not an approximation of the
 	// lighting, it is importance — the admitted error is the weight
 	// times the radiance the march would have contributed, and both are
 	// in the sum below.
@@ -528,7 +537,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let indirect = i.indirect;
 	let lc = max(frame.light_color.r, max(frame.light_color.g, frame.light_color.b));
 	let sun_w = lc * max(
-		// Foam takes 0.8 of the light; the mixes carry their own weights.
+		// Foam takes a fixed share of the light; the mixes carry their own
+		// weights.
 		0.8 * max(aer, max(shore * 0.25, 0.09 * f32(i.splash))),
 		max(spec * 2.0 * mirror, lip * 0.15),
 	);
@@ -574,12 +584,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	backdrop *= 1.0 - mirror_w;
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// a STATIC wash, brightest on the impact cell and fading with the
-	// splash code out to Chebyshev 2. Deliberately timeless. This was an
-	// expanding ring keyed to fract(t * 0.9) plus a wobble on the impact
-	// churn, and the two together read as the impact strobing white
-	// once a second — the splash's motion belongs in the droplets
-	// (spray.wgsl), which throw upward, not in the pool surface
-	// brightening and dimming under them. The ripple normals still
+	// splash code out to the edge of the code's reach. Deliberately
+	// timeless. This was an expanding ring keyed to a fract of the clock
+	// plus a wobble on the impact churn, and the two together read as the
+	// impact strobing white on a loop — the splash's motion belongs in
+	// the droplets (spray.wgsl), which throw upward, not in the pool
+	// surface brightening and dimming under them. The ripple normals still
 	// churn harder here (`boost` above), so the foam has movement in it
 	// without the whole cell pulsing.
 	if i.splash > 0u {
@@ -597,22 +607,23 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// absorbed. Blending that over the same backdrop a second time re-adds
 	// an UNABSORBED copy of it.
 	//
-	// It used to, at 30%: `frame.misc.x` was 0.7, the Java raster port's
+	// It used to: `frame.misc.x` carried the Java raster port's
 	// transparent-pass u_Alpha, and it outlived the M1 demolition that
 	// replaced the absorption model justifying it. Near shore the leak is
-	// invisible, because a foot of water barely changes the bottom's
-	// colour and the absorbed copy and the raw one nearly agree. Under 180
-	// blocks of water — an ordinary grazing look across a bay, where the
+	// invisible, because a shallow column barely changes the bottom's
+	// colour and the absorbed copy and the raw one nearly agree. Under a
+	// bay's worth of water — an ordinary grazing look, where the
 	// transport's answer is that you cannot see the bottom AT ALL and it
 	// had correctly taken the backdrop's red to exactly zero — the leak
 	// was the entire picture: the seabed came through in its own grey at a
-	// quarter strength, so distant water read as grey rock under glass
-	// while the shallows beside it stayed blue.
+	// fraction of full strength, so distant water read as grey rock under
+	// glass while the shallows beside it stayed blue.
 	//
 	// The streak gaps stay. A torn falling sheet genuinely is see-through
 	// in its gaps, and `thick` — reconstructed from the depth buffer —
-	// cannot know about the tear. `s` is 0.5 on every still surface, so
-	// this is exactly 1.0 everywhere else.
+	// cannot know about the tear. `s` sits at its neutral midpoint on
+	// every still surface, so this is exactly 1.0 — fully opaque —
+	// everywhere else.
 	let alpha = clamp(0.75 + 0.5 * s, 0.0, 1.0);
 	// The camera-to-surface medium, applied to the surface's own light
 	// only (see `backdrop` above). Every term above is a linear mix, so

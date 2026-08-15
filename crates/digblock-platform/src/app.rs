@@ -166,9 +166,9 @@ fn window_attrs(
 	_el: &ActiveEventLoop,
 ) -> winit::window::WindowAttributes {
 	let attrs = Window::default_attributes().with_title(title.to_owned());
-	// LOGICAL, so a retina display doubles it to the same physical size a
-	// browser canvas reports at devicePixelRatio 2 — which is the whole
-	// point of being able to ask for one.
+	// LOGICAL, so a retina display scales it to the same physical size a
+	// browser canvas reports at the matching devicePixelRatio — which is
+	// the whole point of being able to ask for one.
 	let attrs = match size {
 		Some((w, h)) => attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h)),
 		None => attrs,
@@ -178,8 +178,8 @@ fn window_attrs(
 	// BACKING SCALE (the physical framebuffer, and with it the GI
 	// resolve's cost) and REFRESH RATE (a display-paced frame lets the GPU
 	// downclock, inflating every timestamp in the metrics CSV) between one
-	// run and the next. An interleaved before/after bracket taken across a
-	// 60 Hz and a 120 Hz screen measures the screens.
+	// run and the next. An interleaved before/after bracket taken across
+	// two screens of different refresh measures the screens.
 	//
 	// Positioned at the monitor's own origin rather than centred, because
 	// the point is repeatability, not looks; winit's coordinates are
@@ -661,8 +661,9 @@ impl<G: Game> App<G> {
 						// give the queue a bounded moment to drain (error
 						// path; a stall is already certain), and re-check
 						// the flag before declaring the error fatal.
-						// PollType::Wait is deliberately avoided: it can
-						// block 60s on a wedged queue.
+						// PollType::Wait is deliberately avoided: on a
+						// wedged queue it blocks for wgpu's whole wait
+						// timeout.
 						#[cfg(not(target_arch = "wasm32"))]
 						let lost = {
 							let mut lost = false;
@@ -764,8 +765,9 @@ impl<G: Game> App<G> {
 	/// Automated lifecycle drill (`--drill`). Exercises byte-for-byte the
 	/// same transitions the OS lifecycle events use. Steps advance on a
 	/// counter, never on exact frame equality: failed frames don't
-	/// increment `frames_rendered`, so an `== 60` match would re-destroy
-	/// the freshly recovered device every retry frame.
+	/// increment `frames_rendered`, so an equality match on the step's
+	/// frame would re-destroy the freshly recovered device every retry
+	/// frame.
 	fn auto_drill(&mut self, el: &ActiveEventLoop) {
 		match (self.drill_step, self.frames_rendered) {
 			(0, 20..) => {
@@ -784,7 +786,8 @@ impl<G: Game> App<G> {
 				// callback — it only invalidates the device; the closure
 				// fires from device maintenance (the poll in the acquire-
 				// error arm pumps it) and ReinitDevice recovers. Reaching
-				// frame 100 means the app rendered on the recovered device.
+				// the final step means the app rendered on the recovered
+				// device.
 				log::info!("auto-drill: destroying the device (real loss)");
 				self.drill_step = 3;
 				if let AppState::Running(r) = &self.state {

@@ -2,12 +2,12 @@
 //!
 //! Workers can't share the client's linear memory, so jobs cross as bytes
 //! (`digblock_core::job_wire`) in transferable `ArrayBuffer`s. That costs a
-//! copy each way — ~12 KB out for a mesh job, a few KB back — against jobs
-//! that cost 0.1–1.2 ms, so the transfer has never been the interesting
-//! number. What the pool buys is the main thread: streaming used to be paid
-//! for out of frame headroom (and out of an *unbudgeted* floor batch that no
-//! controller could shed), which is the one resource that vanishes on the
-//! weak hardware this exists for.
+//! copy each way — a few kilobytes out for a mesh job, less back — against
+//! jobs that cost around a millisecond, so the transfer has never been the
+//! interesting number. What the pool buys is the main thread: streaming used
+//! to be paid for out of frame headroom (and out of an *unbudgeted* floor
+//! batch that no controller could shed), which is the one resource that
+//! vanishes on the weak hardware this exists for.
 //!
 //! The pool is best-effort by construction, in both directions. Until a
 //! worker reports in — and forever, if the browser refuses to spawn any —
@@ -31,11 +31,12 @@ use wasm_bindgen::prelude::*;
 /// throughput story. `top_up_workers` refills once per `maintain`, so a
 /// worker that empties its queue mid-frame idles until the next one:
 /// throughput caps at `DEPTH × workers × fps` no matter how fast the jobs
-/// are. At 2 that measured 460 jobs/s on a 120 Hz browser with the pool
-/// 9% utilized and 1124 columns queued — the same starvation BENCH.md's
-/// second pass found natively with `bounded(workers*2)`, whose fix was
-/// `workers*16`. Deep enough that a worker always has a backlog; the queue
-/// costs nothing but the encoded jobs sitting in it.
+/// are. At a shallow depth that measured a few hundred jobs/s on a
+/// high-refresh browser with the pool barely utilized and a thousand
+/// columns still queued — the same starvation BENCH.md's second pass found
+/// natively with `bounded(workers*2)`, whose fix was `workers*16`. Deep
+/// enough that a worker always has a backlog; the queue costs nothing but
+/// the encoded jobs sitting in it.
 const DEPTH: usize = 16;
 
 /// Sweeps a slot may go without a reply while holding work before it is
@@ -46,34 +47,31 @@ const DEPTH: usize = 16;
 /// A hidden tab throttles the workers as hard as it throttles the page, so
 /// a wall clock would declare a perfectly healthy pool dead on the first
 /// frame back from a background tab; a sweep counter simply doesn't
-/// advance while nothing is running. At 60 Hz this is ~10 s against jobs
-/// that cost ~1 ms and a queue that drains in tens of milliseconds — two
-/// orders of magnitude of slack, so it fires only on a worker that is
-/// genuinely not coming back.
+/// advance while nothing is running. At a display-paced frame rate this is
+/// seconds of grace against jobs that cost about a millisecond and a queue
+/// that drains in tens of milliseconds — two orders of magnitude of slack,
+/// so it fires only on a worker that is genuinely not coming back.
 const WEDGE_SWEEPS: u32 = 600;
 
 /// Default ceiling on workers, whatever the machine reports.
 ///
-/// Measured in Chrome, M2 Max, 120 Hz, `?bench&fly=1&frames=1500&seed=42`,
-/// draw 20 — the full table is in BENCH.md:
+/// The sweep behind this — fill time, p99, worst frame and dropped-frame
+/// count against worker count — is in BENCH.md, with the browser, machine
+/// and capture recipe recorded alongside it.
 ///
-/// | workers | fill | p99 | worst | over-12.5 ms |
-/// |---|---|---|---|---|
-/// | 0 | never (>12.5 s) | 11.10 | 11.80 | 0 |
-/// | 2 | 11.91 s | 9.70 | 11.00 | 0 |
-/// | 4 | 4.63 s | 10.20 | 15.50 | 4 |
-///
-/// **Four was measured and declined, not overlooked.** It fills 2.6×
-/// faster and still beats the inline path on p99, but it is the only arm
-/// that drops a frame, and this whole change exists to buy frame time
-/// rather than spend it. Jobs move off-thread; ABSORBING their results —
-/// store bookkeeping and `write_buffer` — is pinned to the thread that
-/// owns the device and cannot follow them, which is what the 15.50 ms
-/// worst is. Two takes a slower fill for a clean frame.
+/// **The next rung up was measured and declined, not overlooked.** It
+/// fills much faster and still beats the inline path on p99, but it is the
+/// only arm that drops a frame, and this whole change exists to buy frame
+/// time rather than spend it. Jobs move off-thread; ABSORBING their
+/// results — store bookkeeping and `write_buffer` — is pinned to the
+/// thread that owns the device and cannot follow them, which is what its
+/// worst-frame column is. The shipped count takes a slower fill for a
+/// clean frame.
 ///
 /// Note this constant is NOT what protects weak hardware — `default_count`
-/// does, via `cores - 2`. A 4-core machine gets 2 whatever this says, and
-/// a 1–2 core machine gets none. Raising it only ever affects machines
+/// does, via `cores - 2`. A machine barely above the reserve is capped by
+/// that subtraction whatever this says, and one at or below it gets none.
+/// Raising it only ever affects machines
 /// with cores to spare, so re-measure THERE (and on the fill, which is
 /// what a player actually waits on) before changing it.
 pub const MAX_WORKERS: usize = 2;
@@ -85,9 +83,9 @@ pub const MAX_WORKERS: usize = 2;
 pub const WORKERS_HARD_MAX: usize = 8;
 
 /// How many workers to start on this machine, before any `?workers=`
-/// override. Zero on a 1–2 core device: two more wasm instances, each with
-/// its own linear memory, is a poor trade where there is no spare core to
-/// run them on and little RAM to hold them.
+/// override. Zero on a device with barely any cores: more wasm instances,
+/// each with its own linear memory, is a poor trade where there is no
+/// spare core to run them on and little RAM to hold them.
 pub fn default_count() -> usize {
 	let cores = web_sys::window()
 		.map(|w| w.navigator().hardware_concurrency() as usize)
@@ -120,7 +118,7 @@ struct Slot {
 	dead: Rc<Cell<bool>>,
 	/// Posted and unanswered, in dispatch order. The key is all the
 	/// pipeline needs to requeue the job (see `JobKey`), which is why the
-	/// ~12 KB payload is not retained alongside it.
+	/// encoded payload is not retained alongside it.
 	sent: VecDeque<(u64, JobKey)>,
 	/// Consecutive sweeps this slot has held work without answering.
 	quiet_sweeps: u32,
@@ -211,8 +209,8 @@ impl WorkerPool {
 	/// the pipeline runs jobs inline only when the pool reports UNREADY —
 	/// a refusal means "busy", which is not the same thing — streaming
 	/// would stop for the rest of the page session with nothing in the
-	/// log. On a 3-core device the pool is one worker, so one trap is the
-	/// whole pool.
+	/// log. On a machine that `default_count` gives a single worker, one
+	/// trap is the whole pool.
 	fn sweep(&mut self) {
 		for (i, slot) in self.slots.iter_mut().enumerate() {
 			if !slot.dead.get() {

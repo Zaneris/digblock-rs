@@ -23,12 +23,13 @@
 // How far off a surface a ray starts. It exists only to put the origin
 // on the AIR side of a face the point lies exactly on — nothing more.
 //
-// Every ray used to start 0.6 blocks out, and `gi_cascade_gather` added
-// its own 0.6 on top of the 0.6 its callers had already applied, so the
-// occlusion probe began 1.2 blocks off the surface: more than a whole
-// cell of geometry that could not shadow anything. Both marches below
-// step BEFORE they test, so the origin cell is skipped regardless and
-// the offset never needed to be large enough to leave it.
+// Every ray used to start a good fraction of a block out, and
+// `gi_cascade_gather` added its own offset on top of the one its callers
+// had already applied, so the occlusion probe began more than a whole
+// cell off the surface: that much geometry could not shadow anything at
+// all. Both marches below step BEFORE they test, so the origin cell is
+// skipped regardless and the offset never needed to be large enough to
+// leave it.
 const GI_SURFACE_EPS = 0.01;
 
 // The toroidal wrap, ONE integer modulo per axis instead of two.
@@ -38,13 +39,14 @@ const GI_SURFACE_EPS = 0.01;
 // positive-modulo, and on a GPU with no integer divide unit each `%` is
 // an emulated sequence, not an instruction. The marches below ran it
 // twice per iteration — once for the coarse brick, once for the fine
-// cell — over two wrapping axes, so EIGHT emulated divisions stood
-// between every DDA step and its texture load, in the loop that is 40%
-// of the frame. The second modulo exists only to fix a negative first
-// result, which a compare and an add do for free.
+// cell — over two wrapping axes, so a whole stack of emulated divisions
+// stood between every DDA step and its texture load, in the loop that
+// dominates the frame. The second modulo exists only to fix a negative
+// first result, which a compare and an add do for free.
 //
-// Measured on the standard bench at 5.43 MP, 3 reps, spread 0.02 ms:
-// 11.75 -> 9.6 ms for this half alone, capture pixel-identical.
+// Measured on the standard bench, repeated, well outside the run-to-run
+// spread: a large frame-time win for this half alone, capture
+// pixel-identical.
 //
 // The lateral pair is wrapped together because y never wraps (the window
 // is world-height) and a vec2 modulo is one instruction sequence, not
@@ -66,22 +68,22 @@ fn gi_cell_w(w: vec2i, y: i32) -> u32 {
 // The coarse brick from the SAME pre-wrapped lateral coordinate, which
 // is what lets one wrap serve both levels of the skip.
 //
-// The window side is a multiple of 8, so for c = q*side + w the identity
-// wrap(c >> 3, side / 8) == wrap(c, side) >> 3 holds exactly (both sides
-// are floor(w / 8), and w >= 0 makes the shift the division). That is
-// the whole trick: the brick address is three shifts off the fine one,
-// with no modulo of its own. That halves the wrap again — the two
-// changes together take the bench 11.75 -> 8.83 ms (85 -> 113 fps), and
-// p95 16.33 -> 12.35.
+// The window side is a multiple of the brick size, so for c = q*side + w
+// the identity wrap(c >> s, side >> s) == wrap(c, side) >> s holds
+// exactly (both sides are floor(w / brick), and w >= 0 makes the shift
+// the division). That is the whole trick: the brick address is a shift
+// off the fine one, with no modulo of its own. That halves the wrap
+// again — the two changes together take a large bite out of the bench's
+// mean frame time and its p95 alike.
 //
 // Measured and REJECTED here, so it is not tried a third time: caching
 // the last brick index and skipping the coarse load while the march
-// stays inside it. The load it saves is a hit in a 51 KiB texture; the
-// extra live register and the divergent branch cost more than that, and
-// it measured 12.02 -> 14.03 ms.
+// stays inside it. The load it saves is a hit in a texture small enough
+// to stay resident; the extra live register and the divergent branch cost
+// more than that, and it measured slower.
 //
 // The y guard is the FINE bound now, because the caller passes the fine
-// y; `y >> 3u` lands it in the coarse texture's 0..31.
+// y; `y >> 3u` lands it inside the coarse texture's own vertical range.
 fn gi_coarse_empty_w(w: vec2i, y: i32) -> bool {
 	if y < 0 || y > 255 {
 		return true;
@@ -97,8 +99,8 @@ fn gi_cell(side: i32, c: vec3i) -> u32 {
 
 fn gi_solid(side: i32, c: vec3i) -> bool {
 	let v = gi_cell(side, c);
-	// Partial cells (opacity 3) count as solid here on purpose: this
-	// predicate places probes and gates the short probe-visibility DDA,
+	// Partial cells count as solid here on purpose: this predicate
+	// places probes and gates the short probe-visibility DDA,
 	// where treating a slab as its whole cell is exactly the old — and
 	// conservative — behavior. Only the long marches below resolve the
 	// sub-boxes.
@@ -169,7 +171,7 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 // Sun visibility: march toward the sun until sky or a hit, counting the
 // water crossed on the way. `sun` = quantized dir toward the sun
 // (w = above-horizon 0/1); `iters` caps the march (the resolve affords
-// the full 320 hard bound, water/players ~12). Returns:
+// the full hard bound below, water/players a far shorter one). Returns:
 //
 //   .x = 1 if the sun is reached, 0 if an opaque cell blocks it or the
 //        caster is below the horizon
@@ -183,10 +185,10 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 //        blocked ray answers it for free.
 //
 // Returning the path instead of a transmittance is what leaves exactly
-// one water extinction constant in the engine. This used to end in
-// `exp(-water * 0.35)`: a grey per-cell fudge with no relationship to
-// the view ray's water tint, and the two disagreed by a factor of ~2.3
-// with nothing tying them together. The caller now applies
+// one water extinction constant in the engine. This used to end in a
+// grey per-cell exponential: a fudge with no relationship to the view
+// ray's water tint, and the two disagreed outright, with nothing tying
+// them together. The caller now applies
 // medium_common's per-channel WATER_SIGMA, so both rays through the same
 // water agree by construction and sunlight arrives underwater correctly
 // red-starved rather than uniformly dimmed.
@@ -206,11 +208,11 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 	var water = 0.0;
 	let lateral_max = gi_lateral_max(f32(side));
 	// The hard bound tracks the window, not a literal: with the brick skip
-	// an empty 8-cube costs one iteration, so a ray crossing the whole
+	// an empty brick costs one iteration, so a ray crossing the whole
 	// window needs far fewer steps than blocks — but a ray grazing dense
 	// geometry does not, and truncating it silently un-shadows whatever is
-	// past the cut. That bug shipped once already at 160 iterations against
-	// a 320-block window.
+	// past the cut. That bug shipped once already, with an iteration cap
+	// set to half what the window could demand.
 	for (var i = 0; i < 320; i++) {
 		if i >= iters {
 			break;
@@ -231,9 +233,9 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		// The sky ceiling (R18): a non-descending ray above the highest
 		// occupied cell in the whole window can never be blocked — one
 		// float compare ends the climb at the tallest local hill instead
-		// of y = 255. This is most of a screen full of water's sun cost:
-		// proving open sky at 8 blocks per skip was ~9 dependent texture
-		// loads per fragment.
+		// of at the top of the world. This is most of a screen full of
+		// water's sun cost: proving open sky one coarse brick at a time
+		// was a whole string of dependent texture loads per fragment.
 		if r.cell.y > 255 || (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
 			break;
 		}
@@ -241,12 +243,12 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		if dot(lat, lat) > lateral_max * lateral_max {
 			break;
 		}
-		// Empty 8-cube: leave it in one jump instead of crawling its
-		// eight cells and re-asking the coarse texture at each. (A
-		// 64-cube skip mip was built and MEASURED OUT here, both
+		// Empty coarse brick: leave it in one jump instead of crawling
+		// its cells and re-asking the coarse texture at each. (A third,
+		// coarser skip mip was built and MEASURED OUT here, both
 		// orderings: checked first it taxed every dense iteration of
 		// this latency-bound loop, nested it taxed every empty one, and
-		// at terrain altitudes 64-cubes almost always hold something —
+		// at terrain altitudes its bricks almost always hold something —
 		// the sky ceiling above is what actually ends the climb.)
 		//
 		// ONE wrap serves both levels — see gi_coarse_empty_w.
@@ -261,8 +263,8 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		let v = gi_cell_w(w, r.cell.y);
 		if v != 0u {
 			// Word 0 only on the hot path: this loop is the frame's
-			// innermost, and loading the whole 16 B entry per occupied
-			// cell measured +0.4 ms on the bench. The box words are
+			// innermost, and loading the whole LUT entry per occupied
+			// cell measured a clear cost on the bench. The box words are
 			// fetched only inside the partial branch.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
@@ -352,8 +354,8 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 				// through collapsed the vault's pool to a fraction of
 				// itself. R27 removed the emission from this path entirely
 				// (`path_radiance`), which left the rule doing only the one
-				// thing its own comment said it must not do: casting a full
-				// 1x1x1 shadow from a torch that is a 2/12 post.
+				// thing its own comment said it must not do: casting a
+				// whole-cell shadow from a torch that is a thin post.
 				//
 				// It matters most exactly where R27 aims. With the direct
 				// term now resampled over EVERY in-range emitter, a
@@ -456,8 +458,8 @@ fn gi_cascade_gather(
 	// zero weight is what makes `gi_indirect` fall through to the next
 	// cascade and then to the analytic dome, instead of blending in a
 	// wrapped read from across the world at full trilinear weight. That
-	// wrapped read was live for every surface past C1's 128 blocks, which
-	// is most of the visible terrain at draw distance 20.
+	// wrapped read was live for every surface past C1's coverage, which
+	// is most of the visible terrain at ordinary draw distances.
 	if !gi_in_cascade(p, cam, dims4) {
 		return vec4f(0.0);
 	}
@@ -523,10 +525,10 @@ fn gi_in_cascade(p: vec3f, cam: vec3f, dims4: vec4f) -> bool {
 // be averaged over a hemisphere of directions and hundreds of frames.
 //
 // The difference is not small. `gi_cascade_gather` blends 8 probes, each
-// with a relocation walk and an occlusion march, which is ~112 texture
-// loads; this is 4. Running the full version at the end of the resolve's
-// gather ray measured 107 -> 69 fps, and refining a secondary bounce is
-// not what that budget should buy.
+// with a relocation walk and an occlusion march, which is dozens of
+// texture loads; this is a handful. Running the full version at the end
+// of the resolve's gather ray measured a large frame-rate drop, and
+// refining a secondary bounce is not what that budget should buy.
 //
 // Unlike `gather_prev` it checks coverage first, so a hit beyond a
 // cascade's reach falls through to the next one instead of reading a
@@ -560,8 +562,8 @@ fn gi_cache_at(
 
 // The full C0 → C1 → analytic fallthrough, exactly the resolve's rule,
 // shared so water/players light like the terrain beside them. `caps` =
-// per-cascade occlusion DDA caps (the resolve affords (8,4); the
-// direct-gather consumers halve them).
+// per-cascade occlusion DDA caps (the resolve affords the deeper pair;
+// the direct-gather consumers halve them).
 fn gi_indirect(
 	side: i32,
 	p: vec3f,

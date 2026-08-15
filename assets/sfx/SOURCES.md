@@ -1,12 +1,12 @@
 # SFX provenance
 
-All files are mono 44.1 kHz Ogg Vorbis (oggenc q3), processed with ffmpeg.
-Everything here is CC0 — no attribution required (given anyway).
+All files are mono 44.1 kHz Ogg Vorbis (oggenc q3), processed with ffmpeg. Everything here is CC0 — no attribution
+required (given anyway).
 
 ## From Kenney "Impact Sounds" (CC0)
 
-Source: https://kenney.nl/assets/impact-sounds (kenney_impact-sounds.zip,
-License.txt in the pack states Creative Commons Zero).
+Source: https://kenney.nl/assets/impact-sounds (kenney_impact-sounds.zip, License.txt in the pack states Creative
+Commons Zero).
 
 | file | built from |
 |---|---|
@@ -23,19 +23,16 @@ License.txt in the pack states Creative Commons Zero).
 
 ## Synthesized (CC0 by construction)
 
-Generated in-repo with ffmpeg `anoisesrc` noise + filters, tail
-crossfaded into the head for a silent loop seam (the build recipe lives
-in the commit that added these files):
+Generated in-repo with ffmpeg `anoisesrc` noise + filters, tail crossfaded into the head for a silent loop seam (the
+build recipe lives in the commit that added these files):
 
 - `waterfall.ogg` — brown noise bandpassed 120–2400 Hz + a white-noise hiss layer, 7 s loop
 - `ambient_wind.ogg` — pink noise lowpassed at 900 Hz with a 0.13 Hz swell, 14 s loop
 - `ambient_water.ogg` — brown noise lowpassed at 420 Hz (muffled underwater bed), 12 s loop
 - `ambient_cave.ogg` — sub-160 Hz brown drone + faint airy shimmer, 16 s loop
-- `swim.ogg` — one swim stroke, 0.55 s one-shot, played on a distance
-  cadence while swimming. Deliberately softer and rounder than
-  `splash.ogg`: a mid-band noise swirl for the arm through the surface
-  over a low body roll. Like `splash.ogg` it ends in silence, no seam
-  crossfade.
+- `swim.ogg` — one swim stroke, 0.55 s one-shot, played on a distance cadence while swimming. Deliberately softer and
+  rounder than `splash.ogg`: a mid-band noise swirl for the arm through the surface over a low body roll. Like
+  `splash.ogg` it ends in silence, no seam crossfade.
 
   ```sh
   ffmpeg -f lavfi -i "anoisesrc=d=0.55:c=white:a=0.9:r=44100" \
@@ -48,9 +45,8 @@ in the commit that added these files):
   oggenc -q 3 -o swim.ogg swim.wav
   ```
 
-- `level_up.ogg` — the ordinary level-up, 0.75 s one-shot: A5 into E6 a
-  beat later, each a sine plus a quarter-strength octave for a bell-ish
-  edge, exponential decays. Non-positional, so it needs no seam.
+- `level_up.ogg` — the ordinary level-up, 0.75 s one-shot: A5 into E6 a beat later, each a sine plus a quarter-strength
+  octave for a bell-ish edge, exponential decays. Non-positional, so it needs no seam.
 
   ```sh
   ffmpeg -f lavfi -i "sine=f=880:d=0.75:r=44100" -f lavfi -i "sine=f=1760:d=0.75:r=44100" \
@@ -64,11 +60,9 @@ in the commit that added these files):
   oggenc -q 3 -o level_up.ogg level_up.wav
   ```
 
-- `level_unlock.ogg` — the level-up that opens something, 1.30 s: the
-  same construction escalated to a C major arpeggio (C6 E6 G6 C7) at
-  110 ms apart, the top note held twice as long over a brief
-  high-passed noise shimmer. Deliberately the same tonic family as
-  `level_up.ogg` — one event, two sizes.
+- `level_unlock.ogg` — the level-up that opens something, 1.30 s: the same construction escalated to a C major arpeggio
+  (C6 E6 G6 C7) at 110 ms apart, the top note held twice as long over a brief high-passed noise shimmer. Deliberately
+  the same tonic family as `level_up.ogg` — one event, two sizes.
 
   ```sh
   ffmpeg -f lavfi -i "sine=f=1046.50:d=1.30:r=44100" -f lavfi -i "sine=f=2093.00:d=1.30:r=44100" \
@@ -91,10 +85,9 @@ in the commit that added these files):
   oggenc -q 3 -o level_unlock.ogg level_unlock.wav
   ```
 
-- `splash.ogg` — water entry, 0.45 s one-shot. Two layers: a bright
-  bandpassed white-noise impact decaying over 0.2 s, and a low brown-noise
-  gurgle around 420 Hz decaying over 0.4 s. Unlike the loops above there
-  is no seam crossfade — it ends in silence.
+- `splash.ogg` — water entry, 0.45 s one-shot. Two layers: a bright bandpassed white-noise impact decaying over 0.2 s,
+  and a low brown-noise gurgle around 420 Hz decaying over 0.4 s. Unlike the loops above there is no seam crossfade — it
+  ends in silence.
 
   ```sh
   ffmpeg -f lavfi -i "anoisesrc=d=0.45:c=white:a=0.9:r=44100" \

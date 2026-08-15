@@ -12,7 +12,7 @@ pub enum Key {
 	Right,
 	Space,
 	Shift,
-	/// Either Control key (alchemy's ×100 craft multiplier).
+	/// Either Control key (alchemy's largest craft multiplier).
 	Ctrl,
 	F,
 	/// Inventory screen toggle.

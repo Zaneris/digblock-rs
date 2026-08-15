@@ -9,12 +9,13 @@ use digblock_core::chunk::ChunkPos;
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
-/// Instance cap (nearest win); 16 B each — a fixed 4 KB buffer.
+/// Instance cap (nearest win); one vec4 apiece, so the buffer behind it
+/// is a fixed, modest allocation.
 const MAX_INSTANCES: usize = 256;
 /// Mist slabs per instance — keep in sync with spray.wgsl MIST_N.
 const MIST_N: u32 = 3;
-/// CPU cull radius; matches the shader's 56..64 fade band so emitters
-/// never pop.
+/// CPU cull radius; lands at the far end of the shader's own fade band,
+/// so an emitter is already invisible by the time it is dropped.
 const SPRAY_RADIUS: f32 = 64.0;
 
 pub struct Spray {
@@ -27,8 +28,8 @@ pub struct Spray {
 	/// World-space impact centers, only for chunks that have any.
 	impacts: FxHashMap<ChunkPos, Vec<[f32; 3]>>,
 	scratch: Vec<[f32; 4]>,
-	/// Droplets per instance (on top of the MIST_N mist slabs):
-	/// 128 desktop, 48 on the mobile config.
+	/// Droplets per instance (on top of the MIST_N mist slabs); the mobile
+	/// config asks for markedly fewer.
 	droplets: u32,
 }
 

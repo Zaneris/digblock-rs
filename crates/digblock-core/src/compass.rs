@@ -23,7 +23,7 @@ pub fn cardinal(dir: &str) -> Option<Vec3> {
 }
 
 /// Which of the eight sectors `dir` points into, indexing [`NAMES`] and
-/// [`ABBREV`]: 0 = north, then clockwise. `None` for a direction with no
+/// [`ABBREV`]: north first, then clockwise. `None` for a direction with no
 /// horizontal component to name — straight up or down has no heading, and
 /// answering "north" for it would be a lie rather than a rounding.
 fn sector(dir: Vec3) -> Option<usize> {
@@ -99,8 +99,9 @@ mod tests {
 		assert_eq!(compass(Vec3::Z), "south");
 	}
 
-	/// Diagonals get named as diagonals, and the split is even: at 22.5°
-	/// off an axis the name is still the axis, at 22.6° it is the diagonal.
+	/// Diagonals get named as diagonals, and the split is even: just inside
+	/// a sector's half-angle off an axis the name is still that axis, just
+	/// past it the name is the diagonal.
 	#[test]
 	fn eight_sectors_split_evenly() {
 		let at = |deg: f32| {

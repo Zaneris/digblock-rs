@@ -3,8 +3,8 @@
 //! journal (the exact server layout — a `world-<seedbits>/` directory of
 //! per-region shards; `Journal` does the legacy-file migration, boot
 //! compaction and torn-tail recovery for free), and `state.json`
-//! (inventory + player), written atomically on a 5s-if-dirty throttle
-//! (the server's InventoryStore cadence).
+//! (inventory + player), written atomically on an if-dirty throttle at
+//! the server's InventoryStore cadence.
 
 use crate::journal::{world_version, Journal};
 use crate::{PlayerPersist, WorldMeta, WorldSave, WorldStore};
@@ -36,7 +36,8 @@ struct StateFile {
 	hotbar: Vec<u16>,
 	/// Inventory-grid slots, same encoding; empty in older saves.
 	grid: Vec<u16>,
-	/// Per-skill XP totals; empty in pre-skills saves (level 1).
+	/// Per-skill XP totals; empty in pre-skills saves, which then derive
+	/// every skill at its base level.
 	skills: Vec<(u8, u64)>,
 	player: Option<([f32; 3], f32, f32)>,
 }

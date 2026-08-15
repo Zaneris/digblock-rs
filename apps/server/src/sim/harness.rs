@@ -22,12 +22,12 @@ pub(crate) fn temp_dir(tag: &str) -> PathBuf {
 	dir
 }
 
-/// Flat synthetic world: stone through y = 126, air above. Column
+/// Flat synthetic world: stone up to this level, air above. Column
 /// generation is microseconds, so tests that don't care about terrain
 /// shape never pay real worldgen.
 pub(crate) const FLAT_GROUND_TOP: usize = 126;
-/// Standing eye height over the flat ground: `top + 2.5`, exactly what
-/// `player::spawn` returns for a surface block — grounded from tick 1.
+/// Standing eye height over the flat ground, exactly what `player::spawn`
+/// returns for a surface block — grounded from the first tick.
 pub(crate) const FLAT_SPAWN: Vec3 = Vec3::new(8.5, FLAT_GROUND_TOP as f32 + 2.5, 8.5);
 
 pub(crate) fn flat_source() -> ColumnSource {
@@ -69,7 +69,7 @@ pub(crate) fn flat_sim_at(tag: &str, spawn: Vec3) -> Sim {
 
 /// A world that is nothing but its own floor: one stone layer at
 /// y = `BEDROCK_Y`, air all the way up. The flat world's ground stands
-/// 126 blocks above the floor, so a test about the floor would have to
+/// most of a world above the floor, so a test about the floor would have to
 /// tunnel down to it first; this stands the player straight on it, which
 /// puts every cell a ray can reach within one or two blocks of the plane
 /// under audit.
@@ -95,8 +95,8 @@ pub(crate) fn bedrock_source() -> ColumnSource {
 	})
 }
 
-/// Standing eye height over the world floor — the same `top + 2.5` the
-/// flat world uses, so the player is grounded from tick 1.
+/// Standing eye height over the world floor — the same surface offset the
+/// flat world uses, so the player is grounded from the first tick.
 pub(crate) const BEDROCK_SPAWN: Vec3 =
 	Vec3::new(8.5, digblock_core::block::BEDROCK_Y as f32 + 2.5, 8.5);
 
@@ -151,7 +151,7 @@ impl TestClient {
 	}
 }
 
-/// Per-conn dummy peer address: distinct IPs (10.0.x.y) so ban tests
+/// Per-conn dummy peer address: a distinct IP per conn id, so ban tests
 /// never cross-ban unrelated test clients.
 pub(crate) fn test_addr(conn_id: u64) -> std::net::SocketAddr {
 	let (hi, lo) = ((conn_id >> 8) as u8, conn_id as u8);

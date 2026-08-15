@@ -22,7 +22,7 @@ use wasm_bindgen::prelude::*;
 ///
 /// A message that doesn't decode answers with an empty buffer rather than
 /// trapping: the wasm here has no way to report a fault except by dying,
-/// and a dead worker is a pool that silently loses a third of its
+/// and a dead worker is a pool that silently loses a share of its
 /// throughput for the rest of the session. The main thread reads an empty
 /// reply as "accepted, could not run it", hands the job back to the
 /// pipeline through `JobDispatch::lost`, and the chunk is requeued — the

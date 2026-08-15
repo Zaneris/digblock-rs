@@ -1,6 +1,7 @@
-//! GPU pass timing via timestamp queries. Debug facility: readings are
-//! 2-3 frames latent and advisory (Metal counter sampling has quirks);
-//! a frame is simply skipped when its readback slot is still in flight.
+//! GPU pass timing via timestamp queries. Debug facility: readings lag by
+//! the depth of the readback ring and are advisory (Metal counter sampling
+//! has quirks); a frame is simply skipped when its readback slot is still
+//! in flight.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,7 +26,7 @@ pub const Q_WATER: u32 = 6;
 pub const Q_GI: u32 = 8;
 /// The half-res GI trace (probe gather + sun ray).
 pub const Q_GI_TRACE: u32 = 10;
-/// À-trous iteration 1 (stride 1).
+/// À-trous iteration 1 (the stride-1 pass).
 ///
 /// The two iterations need SEPARATE pairs. They used to share this one,
 /// and `encode_atrous` writes it unconditionally, so the stride-2 pass
@@ -33,7 +34,7 @@ pub const Q_GI_TRACE: u32 = 10;
 /// iteration masquerading as both — the same class of blind spot the
 /// header warns about, one level down from a pass.
 pub const Q_GI_DENOISE: u32 = 12;
-/// À-trous iteration 2 (stride 2).
+/// À-trous iteration 2 (the stride-2 pass).
 pub const Q_GI_DENOISE2: u32 = 14;
 /// The D32F → R32Float depth blit. A full-screen read+write of every
 /// pixel that ran untimed since it was written.
@@ -41,12 +42,12 @@ pub const Q_DEPTH_BLIT: u32 = 16;
 /// The viewmodel pass — its own render pass with its own depth clear.
 pub const Q_VIEWMODEL: u32 = 18;
 /// The upscale pass: render resolution → the surface. A straight 1:1
-/// blit at render scale 1.0, so this is also the cost of the pass
+/// blit at the default render scale, so this is also the cost of the pass
 /// boundary the restructure added.
 pub const Q_UPSCALE: u32 = 20;
 const QUERY_COUNT: u32 = 22;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
-/// Readback ring depth; covers the 2-3 frame map latency.
+/// Readback ring depth; deep enough to cover the buffer-map latency.
 const SLOTS: usize = 3;
 
 struct Slot {

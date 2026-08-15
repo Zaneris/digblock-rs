@@ -10,7 +10,7 @@ use digblock_net::protocol::{
 };
 use glam::Vec3;
 
-/// Jitter-buffer hard cap (~half a second of inputs).
+/// Jitter-buffer hard cap: a fraction of a second's worth of inputs.
 const INPUT_BUF_CAP: usize = 30;
 /// Extra slack on the per-tick displacement clamp for float noise.
 const DISPLACEMENT_MARGIN: f32 = 0.05;
@@ -35,7 +35,7 @@ impl Sim {
 				// to be. Deliberately NOT derived from `input.tick` against
 				// `self.tick`: the client's counter free-runs and
 				// permanently loses ticks to its own frame hitches
-				// (`tick_accum` caps at 0.25 s and zeroes on an unloaded
+				// (`tick_accum` is capped and zeroes on an unloaded
 				// column), so that difference measures client frame pacing
 				// as much as the wire. This measures the wire alone — a
 				// stalled client still delivers in order, and an in-order
@@ -105,8 +105,8 @@ impl Sim {
 				});
 				// Discard what arrived while frozen instead of banking it.
 				// Skipping the drain entirely let the buffer fill to
-				// INPUT_BUF_CAP and then double-drain thirty stale ticks at
-				// 2x on unfreeze — a visible sprint after every /tp into
+				// INPUT_BUF_CAP and then double-drain every stale tick in it
+				// on unfreeze — a visible sprint after every /tp into
 				// ungenerated terrain, replaying intent from before the
 				// teleport. The newest input's aim and slot are still worth
 				// keeping: they describe the client NOW, and nothing about
@@ -129,13 +129,13 @@ impl Sim {
 			// input per tick; two when the buffer has backed up.
 			//
 			// The threshold is the target ITSELF, not target + slack. It
-			// used to be `> JITTER_BUFFER_TICKS + 2`, which only trimmed
-			// above 4 and so could never converge on the depth it names:
-			// with `CLIENT_TICK_LEAD` starting the client 5 ticks ahead,
-			// equilibrium sat at 3-4 ticks (50-67 ms) against a nominal
-			// 33 ms, and every input paid the difference on its way to
-			// adoption. `DIG_GRACE_BASE` was sized around that lag
-			// ("~3 ticks even on localhost") — it was paying for this.
+			// used to be `JITTER_BUFFER_TICKS` plus a slack, which only
+			// trimmed above that sum and so could never converge on the
+			// depth it names: with `CLIENT_TICK_LEAD` starting the client
+			// ahead of the server, equilibrium sat above the nominal depth
+			// and every input paid the difference on its way to adoption.
+			// `DIG_GRACE_BASE` was sized around that lag — it was paying
+			// for this.
 			let consume = if client.inputs.len() > JITTER_BUFFER_TICKS as usize {
 				2
 			} else {
@@ -155,11 +155,12 @@ impl Sim {
 			client.stats.depth_max = client.stats.depth_max.max(depth);
 
 			// Hold a HOLE open. `pop_first` takes the lowest tick present,
-			// so a buffer holding {103, 104} with 100 consumed steps
-			// straight to 103 and kills 101 and 102 the moment they land —
-			// `handle_inputs` refuses anything at or below the mark. Waiting
-			// a few ticks for the hole to fill is the entire difference
-			// between a reordered input arriving late and one lost for good.
+			// so a buffer missing the next tick but holding later ones steps
+			// straight past the gap and kills the missing ticks the moment
+			// they land — `handle_inputs` refuses anything at or below the
+			// mark. Waiting a few ticks for the hole to fill is the entire
+			// difference between a reordered input arriving late and one
+			// lost for good.
 			//
 			// This is a hole, not an underrun: the buffer is non-empty and
 			// the tick we want is simply not in it yet. An empty buffer
@@ -167,8 +168,8 @@ impl Sim {
 			//
 			// `last_input_tick != 0` is load-bearing. A fresh client's first
 			// input is tick ~CLIENT_TICK_LEAD, so `next` would be 1 and
-			// every join would stall the full cap against a hundred-tick
-			// "hole" that was never a hole.
+			// every join would stall the full cap against a "hole" the size
+			// of the client's whole lead, which was never a hole.
 			let next = client.last_input_tick.wrapping_add(1);
 			if client.last_input_tick != 0
 				&& !client.inputs.is_empty()
@@ -339,7 +340,7 @@ mod tests {
 
 		let mut t = 100;
 		for _ in 0..30 {
-			// Claim teleports 3 blocks sideways: outside POS_TOLERANCE.
+			// Claim teleports sideways, well outside POS_TOLERANCE.
 			let claim = PlayerState {
 				pos: before.pos + Vec3::new(3.0, 0.0, 0.0),
 				vel: Vec3::ZERO,
@@ -362,7 +363,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
 
-		// Each claim is 2 blocks further: near the *previous claim* but
+		// Each claim steps further along: near the *previous claim* but
 		// far beyond MAX_SPEED * TICK per tick.
 		let mut t = 100;
 		for i in 1..=30 {
@@ -389,7 +390,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
 
-		// Claim the feet dipped 0.2 into the surface block: well within
+		// Claim the feet dipped slightly into the surface block: well within
 		// POS_TOLERANCE and the per-tick displacement clamp, but the
 		// capsule's bottom sphere overlaps the floor cell — only a real
 		// body collider catches this (the old point probes sat above it).
@@ -424,8 +425,8 @@ mod tests {
 		use digblock_core::shapes::{stair_state, Facing};
 		use std::sync::Arc;
 
-		// Flat ground (top at 126) with a 3-stair flight ascending +z at
-		// z = 12..14 and a platform beyond, in chunk (0, 0).
+		// Flat ground with a short stair flight ascending +z and a platform
+		// beyond, in chunk (0, 0).
 		let source: crate::store::ColumnSource = Arc::new(|cx, cz| {
 			let mut full = ChunkData::default();
 			let mut top = ChunkData::default();
@@ -440,8 +441,8 @@ mod tests {
 				}
 			}
 			if (cx, cz) == (0, 0) {
-				// Surface is y=127 (local 15 in chunk 7); the flight
-				// rises 127→129, crossing into the next vchunk.
+				// The surface sits in the top row of its vchunk, so the
+				// flight rises across the boundary into the next one.
 				top.set_cell(
 					8,
 					15,
@@ -515,9 +516,9 @@ mod tests {
 	}
 
 	/// Honest auto-step claims adopt verbatim (SIM v9): a twin walks a
-	/// slab staircase (1/3 → 2/3 → full stone, each riser exactly one
-	/// AUTO_STEP), and every post-step claim must pass the probe and the
-	/// per-tick displacement clamp — no rubber-band on the way up.
+	/// slab staircase (thin slab → thick slab → full stone, each riser
+	/// exactly one AUTO_STEP), and every post-step claim must pass the probe
+	/// and the per-tick displacement clamp — no rubber-band on the way up.
 	#[test]
 	fn slab_stack_claim_adopted() {
 		use digblock_core::block::BlockType;
@@ -526,8 +527,8 @@ mod tests {
 		use digblock_core::shapes::slab_state;
 		use std::sync::Arc;
 
-		// Flat ground (top plane 127) with slab risers ascending +z at
-		// y = 127: 1/3 at z=12, 2/3 at z=13, full stone at z=14..16.
+		// Flat ground with slab risers ascending +z on the surface plane:
+		// thin slab, then thick slab, then full stone.
 		let source: crate::store::ColumnSource = Arc::new(|cx, cz| {
 			let mut full = ChunkData::default();
 			let mut top = ChunkData::default();
@@ -610,7 +611,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let start = sim.test_player(1).unwrap();
 
-		// Fly cheat riding the per-tick envelope: every claim +0.4 blocks
+		// Fly cheat riding the per-tick envelope: every claim a small step
 		// up from the previous claim — each one individually within
 		// POS_TOLERANCE and the displacement clamp while adopted, but the
 		// delta EWMA is pure +y bias and trips DRIFT_TOLERANCE within a
@@ -663,8 +664,8 @@ mod tests {
 		}
 		let settled = sim.test_player(1).unwrap();
 
-		// Honest client whose claims wobble ±5 mm around the sim —
-		// alternating sign, so the delta EWMA cancels vectorially and
+		// Honest client whose claims wobble a few millimetres around the
+		// sim — alternating sign, so the delta EWMA cancels vectorially and
 		// every single claim keeps being adopted, even over many ticks.
 		let mut last_claim = settled;
 		for i in 0..240 {
@@ -688,9 +689,9 @@ mod tests {
 			let _c = connect(&mut sim, 1);
 			wait_live(&mut sim, 1);
 
-			// 60 forward inputs. Clean: one batch per tick. Lossy: every
-			// other delivery dropped, survivors carry the last 4 ticks
-			// (the wire redundancy window).
+			// A run of forward inputs. Clean: one batch per tick. Lossy:
+			// every other delivery dropped, survivors carrying the wire's
+			// redundancy window.
 			let inputs: Vec<_> = (0..60).map(|i| input(100 + i, true, no_claim())).collect();
 			for (i, _) in inputs.iter().enumerate() {
 				let events = if lossy {
@@ -740,8 +741,8 @@ mod tests {
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 
-		// In-order delivery, every datagram carrying the last 4 ticks —
-		// exactly what the wire does at INPUT_REDUNDANCY 4.
+		// In-order delivery, every datagram carrying a redundancy window's
+		// worth of ticks — exactly what the wire does at INPUT_REDUNDANCY.
 		let inputs: Vec<_> = (0..60).map(|i| input(100 + i, true, no_claim())).collect();
 		for i in 0..inputs.len() {
 			let lo = i.saturating_sub(3);
@@ -754,25 +755,25 @@ mod tests {
 		let s = sim.input_stats(1);
 		assert_eq!(s.late_lost, 0, "in-order redundancy is never late: {s:?}");
 		assert_eq!(s.consumed, 60, "every tick applied exactly once: {s:?}");
-		// 3 re-sends for each tick past the first three.
+		// One re-send per redundancy copy, for every tick past the first
+		// window.
 		assert_eq!(s.dup, 174, "re-sends were seen and classified: {s:?}");
 		assert_eq!(sim.test_last_input_tick(1), 159, "all inputs consumed");
 	}
 
 	/// Reordering, which nothing pinned before `INPUT_HOLD_MAX` existed:
 	/// `determinism_under_datagram_loss` delivers in order, so it cannot see
-	/// this. Blocks arriving newest-first used to cost three ticks in four —
-	/// the newest set the high-water mark and the rest landed under it. The
-	/// hold now waits for the hole and recovers them.
+	/// this. Blocks arriving newest-first used to cost every tick but the
+	/// newest in each block — that one set the high-water mark and the rest
+	/// landed under it. The hold now waits for the hole and recovers them.
 	#[test]
 	fn reordered_inputs_are_recovered_by_the_hold() {
 		let mut sim = flat_sim("reorder-late");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 
-		// Blocks of four delivered newest-first: 103,102,101,100 then
-		// 107,106,105,104, and so on. One tick per datagram, so the reorder
-		// is isolated from redundancy.
+		// Fixed-size blocks of ticks, each delivered newest-first. One tick
+		// per datagram, so the reorder is isolated from redundancy.
 		for block in 0..15u32 {
 			let base = 100 + block * 4;
 			for k in (0..4).rev() {
@@ -784,24 +785,25 @@ mod tests {
 		}
 
 		let s = sim.input_stats(1);
-		// 57 of 60, not 15. Every block after the first is fully recovered:
-		// its newest tick opens a hole the drain refuses to step past, and
-		// the three older ones fill it before the cap expires.
+		// Nearly all of them, not one per block. Every block after the first
+		// is fully recovered: its newest tick opens a hole the drain refuses
+		// to step past, and the older ones fill it before the cap expires.
 		assert_eq!(s.consumed, 57, "the hold recovered the reorder: {s:?}");
 		assert!(s.held > 0, "it recovered them by holding: {s:?}");
 		assert_eq!(s.dup, 0, "nothing was a re-send: {s:?}");
 		// The first block is the exception and must stay one: with nothing
 		// consumed yet there is no high-water mark to hold against, so its
-		// three older ticks land under the first and are lost. That is the
+		// older ticks land under the first and are lost. That is the
 		// `last_input_tick != 0` guard being visible, not a leak — without
-		// it a fresh join would stall against a hundred-tick phantom hole.
+		// it a fresh join would stall against a phantom hole the size of the
+		// client's lead.
 		assert_eq!(s.late_lost, 3, "only the first block was lost: {s:?}");
 		assert_eq!(s.late_want_max, 4, "depth that would have held it: {s:?}");
 	}
 
 	/// The mechanism in isolation: one hole, filled one tick later. Without
-	/// the hold the drain steps to 103 immediately and 102 is dead on
-	/// arrival.
+	/// the hold the drain steps to the later tick immediately and the late
+	/// one is dead on arrival.
 	#[test]
 	fn a_hole_is_held_open_for_the_late_input() {
 		let mut sim = flat_sim("hole-filled");
@@ -832,7 +834,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 
 		sim.tick_once(vec![batch(vec![input(101, true, no_claim())], 1)]);
-		// 102 never arrives.
+		// The tick between them never arrives.
 		sim.tick_once(vec![batch(vec![input(103, true, no_claim())], 1)]);
 		for _ in 0..(INPUT_HOLD_MAX + 4) {
 			sim.tick_once(vec![]);
@@ -863,8 +865,8 @@ mod tests {
 		assert_eq!(s.consumed, 1, "applied on the very next drain: {s:?}");
 	}
 
-	/// A hold must be a DELAY, not a step: the catch-up drain
-	/// (`consume = 2` above `JITTER_BUFFER_TICKS`) has to give back the
+	/// A hold must be a DELAY, not a step: the catch-up drain (the extra
+	/// consume above `JITTER_BUFFER_TICKS`) has to give back the
 	/// ticks the hold borrowed, or every hole would permanently deepen the
 	/// buffer and every later input would pay for it.
 	#[test]
@@ -903,8 +905,8 @@ mod tests {
 		// depth — one in, one out forever — and every later input would pay
 		// that as standing latency. `JITTER_BUFFER_TICKS` is the level the
 		// catch-up trims to, so being at or under it is "level with the
-		// wire"; it is not zero, because a stride-2 sender always has a
-		// tick or so in hand.
+		// wire"; it is not zero, because a sender delivering in strides
+		// always has a tick or so in hand.
 		let backlog = sim.test_input_backlog(1);
 		assert!(
 			backlog <= JITTER_BUFFER_TICKS as usize,
@@ -920,7 +922,7 @@ mod tests {
 
 	/// Freezing on an unloaded column must not BANK a buffer. Skipping the
 	/// drain entirely let inputs pile to `INPUT_BUF_CAP` and then
-	/// double-drain thirty stale ticks at 2x on unfreeze — a sprint,
+	/// double-drain every stale tick in it on unfreeze — a sprint,
 	/// replaying intent from before the teleport that caused the freeze.
 	#[test]
 	fn a_frozen_client_does_not_bank_a_buffer() {
@@ -958,9 +960,9 @@ mod tests {
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 
-		// Deliver a sparse run in one batch — ticks 100 and 108, nothing
-		// between — then let the drain sample it. Two inputs are resident,
-		// but the buffer spans nine ticks.
+		// Deliver a sparse run in one batch — two ticks with a gap between
+		// them — then let the drain sample it. Two inputs are resident, but
+		// the buffer spans the whole gap.
 		sim.tick_once(vec![batch(
 			vec![input(100, true, no_claim()), input(108, true, no_claim())],
 			1,

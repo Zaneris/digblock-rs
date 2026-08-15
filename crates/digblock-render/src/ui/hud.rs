@@ -20,17 +20,18 @@ pub const BOTTOM_MARGIN: f32 = 12.0;
 /// player is told so — the icon in it is a tool whatever the bar holds.
 ///
 /// It is added to ONE slot at DRAW time ([`bar_slot_rect`]) rather than
-/// to [`row_grid`]'s spacing, which stays the uniform nine-column lattice
-/// every panel measures itself against: the inventory grid's columns keep
-/// landing on the block slots they drop into, and the split is what the
-/// tool slot hangs off the right-hand end by.
+/// to [`row_grid`]'s spacing, which stays the uniform lattice every panel
+/// measures itself against: the inventory grid's columns keep landing on
+/// the block slots they drop into, and the split is what the tool slot
+/// hangs off the right-hand end by.
 ///
 /// [`row_grid`]'s CENTRING is the one thing that has to know about it,
 /// though, and briefly didn't: the drawn row is a split wider than the
 /// lattice, so centring the lattice alone left the row sitting half a
 /// split right of centre, with its right edge crossing the window edge
 /// before its left edge did — the tool slot's selection ring clipped and
-/// the whole tool rail gone, at 640×480 and 1.5×. The origin therefore
+/// the whole tool rail gone, on a small window at a large interface
+/// scale. The origin therefore
 /// centres `lattice + split` and the lattice keeps its uniform spacing;
 /// everything anchored to the bar simply moves left with it by half a
 /// split.
@@ -188,9 +189,10 @@ pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 }
 
 /// One bar slot's rect: the uniform grid, plus [`TOOL_SPLIT`] of clear
-/// air before the last one. The single place that knows the bar is 8
-/// block slots and a tool — the hit rects the inventory screen drops
-/// into come from here too, so the target can't drift from the picture.
+/// air before the last one. The single place that knows the bar's last
+/// slot is a tool rather than a block — the hit rects the inventory
+/// screen drops into come from here too, so the target can't drift from
+/// the picture.
 pub fn bar_slot_rect(grid: &GridSpec, i: usize, scale: f32) -> super::Rect {
 	let mut rect = grid.rect(i);
 	if i == HOTBAR_SLOTS - 1 {
@@ -294,8 +296,9 @@ pub fn tool_rail(
 	let start = slot.x + slot.w + SLOT_GAP * scale * 2.0;
 	// The rail grows rightward from the bar's last slot into whatever the
 	// centred bar leaves — and that space SHRINKS as the interface scale
-	// grows, because the bar takes more of the window. Three owned tools
-	// at 1.5× on a narrow window ran the last icon clean off the edge.
+	// grows, because the bar takes more of the window. A full rail at a
+	// large interface scale on a narrow window ran the last icon clean
+	// off the edge.
 	// Squeeze the cells to fit, down to a floor where they can still be
 	// told apart, and then draw only what actually fits.
 	let n = owned.iter().filter(|&&t| t != shown).count();
@@ -483,7 +486,7 @@ mod tests {
 		emit_at(SIZE, scale)
 	}
 
-	/// The DRAWN row is centered — and the drawn row is the nine-column
+	/// The DRAWN row is centered — and the drawn row is the block-slot
 	/// lattice PLUS the split the tool slot steps out by, which is a real
 	/// [`TOOL_SPLIT`] wider than anything that measures the lattice. The
 	/// block slots sit on that lattice, which is what keeps the inventory
@@ -616,8 +619,9 @@ mod tests {
 	}
 
 	/// Counts used to be pinned at `scale::FIXED_GLYPH_PX` while the slots
-	/// around them scaled, so on a dense display a 32px UI carried 16px
-	/// stack numbers. They ride the frame's text size now.
+	/// around them scaled, so on a dense display the stack numbers stayed
+	/// put while the UI around them grew. They ride the frame's text size
+	/// now.
 	#[test]
 	fn counts_scale_with_the_slots() {
 		const SHADOW: u32 = 0xE0000000;
@@ -632,8 +636,8 @@ mod tests {
 				_ => None,
 			})
 			.collect();
-		// Dirt count 3 and Stone count 12 print (tool and empties don't),
-		// each as a shadow + digit pair.
+		// Both stocked block slots print their counts (the tool and the
+		// empties don't), each as a shadow + digit pair.
 		let (shadows, counts): (Vec<_>, Vec<_>) = texts.iter().partition(|(_, _, c)| *c == SHADOW);
 		assert_eq!(counts.len(), 2);
 		assert_eq!(shadows.len(), 2, "every count carries a drop shadow");
@@ -652,7 +656,7 @@ mod tests {
 		let icons = dl.cmds(Layer::Icons).0;
 		assert!(icons.iter().all(|c| matches!(c, Cmd::IconQuad { .. })));
 		assert!(icons.len() > 6, "two cubes plus a bucket");
-		// Backdrop: 9 slot bgs + 4 selection border quads.
+		// Backdrop: one bg per slot, plus the selection's border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), HOTBAR_SLOTS + 4);
 		// Every stocked slot draws at full tint — the grey zero-count
 		// state is gone; an exhausted type leaves the bar entirely.

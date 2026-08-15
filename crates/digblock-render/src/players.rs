@@ -11,31 +11,31 @@
 //! `viewmodel::build` — the one authority your own hand and the
 //! inventory icons already share — so a remote's torch is a torch, a
 //! bucket shows its charge, and a stair is a stair. It used to be one
-//! 0.35-block cube textured with whatever `tex_side` the item happened
-//! to have.
+//! small cube textured with whatever `tex_side` the item happened to
+//! have.
 
 use digblock_platform::Gpu;
 
 use crate::ui::hud::IconKind;
 use crate::viewmodel::Vert;
 
-/// Comfortably past `MAX_SNAPSHOT_PLAYERS` (40) with room for the
-/// debug carrier; 32 B per instance, so 4 KiB a buffer.
+/// Comfortably past `MAX_SNAPSHOT_PLAYERS` with room for the debug
+/// carrier; the per-instance record is small, so the buffer is too.
 ///
-/// It was 64 and shared between bodies and held items, which truncated
-/// silently from 33 players up: each player pushed two instances into
-/// one stream. Splitting the streams is what fixes it, and the headroom
-/// is what keeps it fixed.
+/// It used to be smaller AND shared between bodies and held items, which
+/// truncated silently once a busy server filled half of it: each player
+/// pushed two instances into one stream. Splitting the streams is what
+/// fixes it, and the headroom is what keeps it fixed.
 const MAX_INSTANCES: usize = 128;
 
 /// Quad budget for the cached item meshes.
 ///
-/// Every item a hand can hold, together: the slottable catalog (a cube
-/// is 6, a door up to two shape variants), both bucket charges, and the
-/// authored tools, which are the expensive ones. That is ~1200 quads
-/// today, so this holds the whole catalog with room to spare and the
-/// cache never needs eviction. Overflow logs and SKIPS the kind rather
-/// than truncating a mesh, which would silently drop faces.
+/// Every item a hand can hold, together: the slottable catalog (a cube's
+/// faces, a door up to two shape variants), both bucket charges, and the
+/// authored tools, which are the expensive ones. The whole catalog fits
+/// with room to spare, so the cache never needs eviction. Overflow logs
+/// and SKIPS the kind rather than truncating a mesh, which would silently
+/// drop faces.
 ///
 /// Sized against `every_held_item_fits_the_quad_budget`, which counts
 /// exactly what the cache can be asked for — so the catalog growing past
@@ -281,8 +281,8 @@ impl RemotePlayersDraw {
 	///
 	/// A kind that CANNOT be cached is remembered too, as a zero-quad
 	/// entry. Without that the lookup below misses it every frame, so
-	/// `viewmodel::build` re-tessellates and `log::warn!` fires at 60 Hz
-	/// for as long as anybody holds the thing.
+	/// `viewmodel::build` re-tessellates and `log::warn!` fires once a
+	/// frame for as long as anybody holds the thing.
 	fn ensure_mesh(&mut self, gpu: &Gpu, kind: IconKind) -> Option<usize> {
 		if let Some(i) = self.items.iter().position(|m| m.kind == kind) {
 			return (self.items[i].quads > 0).then_some(i);
@@ -333,10 +333,10 @@ impl RemotePlayersDraw {
 
 	/// Upload this frame's held items and plan their draws.
 	///
-	/// `held` is `(kind, [eye.xyz, yaw, emissive, height in twelfths, 0,
-	/// 0])`. Grouped by kind so each distinct item is ONE instanced draw;
-	/// the set is one entry per person on screen, so the sort is over a
-	/// couple of dozen entries at most.
+	/// `held` is `(kind, [eye.xyz, yaw, emissive, height in twelfths, then
+	/// padding])`. Grouped by kind so each distinct item is ONE instanced
+	/// draw; the set is one entry per person on screen, so the sort is
+	/// over a handful of entries.
 	pub fn set_held(&mut self, gpu: &Gpu, held: &[(IconKind, [f32; 8])]) {
 		self.batches.clear();
 		self.instances.clear();

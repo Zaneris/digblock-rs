@@ -5,16 +5,16 @@
 //! Slab shape. Before this module the pair was hand-tabled four separate
 //! times — in `unlock::craft`, in `unlock::mine`, in `shapes::craft_recipe`
 //! and in the transmute screen's `FAMILIES` — and the four disagreed: the
-//! wood slab opened at Alchemy 1 while the wood *block* waited for 20, and
-//! `unlock::craft`'s own doc comment claimed the `max(shape, material)`
-//! rule it did not implement.
+//! wood slab opened at the very first Alchemy level while the wood *block*
+//! waited most of the ladder, and `unlock::craft`'s own doc comment claimed
+//! the `max(shape, material)` rule it did not implement.
 //!
 //! So a block declares its material once (the `mat` builder in `block.rs`,
 //! read back through [`crate::block::BlockType::material`]) and everything
 //! else derives:
 //!
 //! - **Unlock level** = `max(shape level, material level)` — [`crate::unlock::craft`].
-//! - **Craft cost** = the material's 27-unit split, prorated to the shape's
+//! - **Craft cost** = the material's whole-cube split, prorated to the shape's
 //!   volume — [`crate::alchemy::craft_ideal`].
 //! - **Extraction yield** = the material's base, prorated the same way —
 //!   [`crate::alchemy::extract_base`].
@@ -30,8 +30,9 @@
 //!   hands you broken — mined rock, gravel, foliage. Those are exactly the
 //!   blocks that may carry §3.3's bonus lines, so "a bonus line never sits
 //!   on a craftable block" is now a property of the material.
-//! - Every material's craft split is `>= 27` units and its extraction base
-//!   is `<= 27`, so prorating both by the same shape volume preserves
+//! - Every material's craft split is at least a whole cube's worth of units
+//!   and its extraction base is at most that, so prorating both by the same
+//!   shape volume preserves
 //!   `no_level_ever_creates_matter` at every shape for free.
 //!
 //! Functional items — torches, lamps, tools, the bucket charge, the bed —
@@ -133,12 +134,13 @@ impl Material {
 		Material::DepletedStone,
 	];
 
-	/// The 27-unit craft split — what a FULL CUBE of this substance costs
+	/// The whole-cube craft split — what a FULL CUBE of this substance costs
 	/// before waste, in the block's own essence ratio. `None` = the bench
 	/// cannot make this substance in any shape, which is also what makes it
 	/// eligible for a bonus line.
 	///
-	/// Totals sit at or above 27 on purpose: the shortfall against
+	/// Totals sit at or above a whole cube's worth on purpose: the shortfall
+	/// against
 	/// [`Self::extract_units`] is the loss that keeps extract→craft→extract
 	/// a sink (§4.2).
 	pub fn craft_units(self) -> Option<&'static [(Essence, u32)]> {
@@ -150,15 +152,15 @@ impl Material {
 			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Earth, 27)],
 			// Sand-flavored Earth, fused: the same bulk, a different form.
 			M::Glass => &[(E::Earth, 27)],
-			// 27 volume in the 15/3 extraction ratio, each line ceiled
-			// separately — which is why the total lands at 28, not 27.
+			// A whole cube's volume in the extraction ratio, each line ceiled
+			// separately — which is why the total overshoots a cube by a unit.
 			M::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
 			M::Grass => &[(E::Earth, 18), (E::Flora, 9)],
 			M::Mud => &[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
 			M::Snow => &[(E::Aqua, 27)],
 			M::Metal => &[(E::Metal, 27)],
 			// Aether-bound, with a metal lattice to hold it: the only
-			// repeatable Aether sink big enough to matter at 80+.
+			// repeatable Aether sink big enough to matter in the endgame.
 			M::Crystal => &[(E::Aether, 18), (E::Metal, 9)],
 			M::Rubble
 			| M::Gravel
@@ -173,8 +175,9 @@ impl Material {
 		})
 	}
 
-	/// Base extraction yield for a FULL CUBE at 100% efficiency, `<= 27` —
-	/// the shortfall is structure lost to the process (§3.1).
+	/// Base extraction yield for a FULL CUBE at full efficiency, never more
+	/// than the craft split — the shortfall is structure lost to the
+	/// process (§3.1).
 	pub fn extract_units(self) -> &'static [(Essence, u32)] {
 		use Essence as E;
 		use Material as M;
@@ -192,8 +195,9 @@ impl Material {
 			M::Mud => &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
 			M::Snow => &[(E::Aqua, 9)],
 			// Foliage is mostly water and structure — the timber's essence
-			// is in the trunk. One unit, not three: a leaf digs in 10 ticks
-			// and there are hundreds per tree, so at 3 it paid Flora as fast
+			// is in the trunk. One unit, not three: a leaf digs almost
+			// instantly and there are hundreds per tree, so at three it paid
+			// Flora as fast
 			// as grass from the block the world gives away with every log.
 			M::Leaf | M::PineLeaf => &[(E::Flora, 1)],
 			M::Metal => &[(E::Metal, 24)],
@@ -244,16 +248,16 @@ impl Material {
 	}
 }
 
-/// Prorate a 27-unit essence split down to a shape's `units`, rounding
+/// Prorate a whole-cube essence split down to a shape's `units`, rounding
 /// each line UP — the craft side, where the player pays.
 ///
-/// A whole cube (`units == 27`) is the identity, which is what keeps every
+/// A whole cube is the identity, which is what keeps every
 /// raw-block recipe exactly what it was before the grid.
 pub fn cost_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> {
 	prorate(lines, units, true)
 }
 
-/// Prorate a 27-unit essence split down to a shape's `units`, rounding
+/// Prorate a whole-cube essence split down to a shape's `units`, rounding
 /// each line DOWN — the extraction side, where the player is paid.
 ///
 /// Rounding the two sides in opposite directions is what makes

@@ -25,9 +25,9 @@ pub const DEFAULT_PORT: u16 = 4433;
 /// (the desktop's random-seed default would strand the saved edits).
 pub const DEFAULT_SEED: f64 = 42.0;
 
-/// Run the 60 Hz sim loop until `running` goes false. Instant-anchored
-/// pacing; when the OS oversleeps more than 5 ticks (container jitter),
-/// the backlog is dropped rather than replayed.
+/// Run the sim loop until `running` goes false. Instant-anchored pacing;
+/// when the OS oversleeps past the catch-up bound (container jitter), the
+/// backlog is dropped rather than replayed.
 pub fn run_sim_loop(
 	mut sim: Sim,
 	events: Receiver<SimEvent>,

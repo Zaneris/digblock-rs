@@ -17,7 +17,7 @@ struct Vm {
 	// xyz = light direction in item space (toward the ground);
 	// w = direct-light strength.
 	light: vec4f,
-	// rgb = the frame's direct colour; w = 1.0 when the item is
+	// rgb = the frame's direct colour; w is set when the item is
 	// fullbright ink (`glows`). Derived from the drawn item rather than
 	// plumbed in from the engine, so it is not possible to draw a torch
 	// and forget the flag.
@@ -42,8 +42,8 @@ struct CamLight {
 @group(1) @binding(0) var materials: texture_2d_array<f32>;
 @group(1) @binding(1) var mat_smp: sampler;
 
-// Indexed by digblock_core::dir::Dir's discriminants:
-// 0=West(+x) 1=North(+z) 2=South(-z) 3=Bottom(-y) 4=Top(+y) 5=East(-x).
+// Indexed by digblock_core::dir::Dir's discriminants, in their order:
+// West(+x), North(+z), South(-z), Bottom(-y), Top(+y), East(-x).
 const NORMALS = array<vec3f, 6>(
 	vec3f(1.0, 0.0, 0.0),
 	vec3f(0.0, 0.0, 1.0),

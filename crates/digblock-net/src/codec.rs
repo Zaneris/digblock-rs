@@ -36,7 +36,7 @@ pub fn encode_datagram(d: &Datagram) -> Result<Vec<u8>, CodecError> {
 
 /// Encode into a caller-owned buffer (cleared first) and return the
 /// encoded slice. Senders that keep the buffer between calls — the
-/// per-frame input datagram, the 20 Hz snapshot fan-out — reuse one
+/// per-frame input datagram, the periodic snapshot fan-out — reuse one
 /// allocation for the life of the connection.
 pub fn encode_datagram_into<'a>(
 	d: &Datagram,
@@ -231,7 +231,7 @@ mod tests {
 		);
 
 		let mut strict = FrameReader::with_limit(MAX_CLIENT_FRAME);
-		// Only the 4-byte header — the body has not even arrived yet.
+		// Only the length header — the body has not even arrived yet.
 		strict.extend(&wire[..4]);
 		assert!(
 			matches!(strict.next_frame(), Err(CodecError::Oversize(_))),

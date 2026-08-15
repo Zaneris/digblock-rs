@@ -1,6 +1,6 @@
-//! Remote player interpolation: render other players ~100 ms in the
-//! past, lerping between 20 Hz snapshot states, with capped velocity
-//! extrapolation when snapshots stall.
+//! Remote player interpolation: render other players [`INTERP_DELAY_TICKS`]
+//! behind the estimated server clock, lerping between snapshot states, with
+//! capped velocity extrapolation when snapshots stall.
 
 use crate::protocol::{
 	PlayerId, EXTRAP_CAP_TICKS, INTERP_DELAY_TICKS, REMOTE_EXPIRE_TICKS, TICK_RATE,
@@ -151,27 +151,28 @@ mod tests {
 		r.push(1, snap(0, 0.0, 0.0));
 		r.push(1, snap(3, 3.0, 0.0));
 		r.push(1, snap(6, 12.0, 0.0));
-		// est clock = 6; force target = 4.5 by lifting est to 10.5.
+		// Lift the estimated clock so the interpolation target lands
+		// squarely between the two newest snaps.
 		r.est_server_tick = 4.5 + INTERP_DELAY_TICKS;
 		let mut out = Vec::new();
 		r.sample(&mut out);
 		assert_eq!(out.len(), 1);
-		// Halfway between tick 3 (x=3) and tick 6 (x=12) → x = 7.5.
+		// Halfway between the bracketing snaps is the midpoint of their x.
 		assert!((out[0].pos.x - 7.5).abs() < 1e-5, "x = {}", out[0].pos.x);
 	}
 
 	#[test]
 	fn extrapolation_capped_then_holds() {
 		let mut r = RemotePlayers::default();
-		r.push(1, snap(0, 0.0, 6.0)); // 6 blocks/s = 0.1 blocks/tick
+		r.push(1, snap(0, 0.0, 6.0)); // a steady velocity along +x
 		let mut out = Vec::new();
 
-		// 10 ticks past the newest snap → 1.0 block extrapolated.
+		// A short way past the newest snap → extrapolated along velocity.
 		r.est_server_tick = 10.0 + INTERP_DELAY_TICKS;
 		r.sample(&mut out);
 		assert!((out[0].pos.x - 1.0).abs() < 1e-5, "x = {}", out[0].pos.x);
 
-		// 100 ticks past → capped at EXTRAP_CAP_TICKS (15) → 1.5 blocks.
+		// Far past it → the extrapolation clamps at EXTRAP_CAP_TICKS.
 		r.est_server_tick = 100.0 + INTERP_DELAY_TICKS;
 		r.sample(&mut out);
 		assert!((out[0].pos.x - 1.5).abs() < 1e-5, "x = {}", out[0].pos.x);

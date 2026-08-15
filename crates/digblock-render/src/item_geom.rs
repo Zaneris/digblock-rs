@@ -20,8 +20,8 @@ use digblock_core::shapes::{self, door_state, slab_state, stair_state, Facing};
 
 use crate::ui::hud::IconKind;
 
-/// One face to draw: geometry in twelfths (y may exceed 12 for the
-/// door's stacked halves), UVs already 0..1.
+/// One face to draw: geometry in twelfths (y may run past a single cell
+/// for the door's stacked halves), UVs already 0..1.
 pub struct ItemFace {
 	pub dir: Dir,
 	pub corners: [[i32; 3]; 4],
@@ -141,10 +141,9 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	// block, because the bucket is an item and has no block to ask.
 	let wood = digblock_core::block::tex::LUMBER_LIGHT;
 	let water = BlockType::Water.props().tex_side;
-	// Base plate, then walls one twelfth thick. The walls were two, and
-	// the 4×4 opening that left made the charge a speck at hotbar-icon
-	// size — the wider mouth more than doubles the water you can see, for
-	// one twelfth of pail.
+	// Base plate, then thin walls. They used to be thicker, and the narrow
+	// opening that left made the charge a speck at hotbar-icon size — the
+	// wider mouth shows far more water for a sliver of pail.
 	box_faces([2, 1, 2], [10, 2, 10], |_| wood, out);
 	for (min, max) in [
 		([2, 2, 2], [3, 9, 10]),  // -x wall
@@ -195,10 +194,10 @@ fn pick_faces(out: &mut Vec<ItemFace>) {
 }
 
 /// The Master's Sigil: a crystal set in a standing metal plate on a
-/// small foot. It DOES nothing — 99 Aether for the last line of the
-/// catalog — so it is drawn as a thing you display rather than a thing
-/// you swing: an emblem, face-on, with the gem proud of the plate on
-/// both sides so the shape reads at hotbar size.
+/// small foot. It DOES nothing — an Aether price for the last line of
+/// the catalog — so it is drawn as a thing you display rather than a
+/// thing you swing: an emblem, face-on, with the gem proud of the plate
+/// on both sides so the shape reads at hotbar size.
 ///
 /// It needs authored geometry for the same reason its siblings do: a
 /// tool carries no texture layers, so the cube fallback would draw the

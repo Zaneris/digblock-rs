@@ -1,6 +1,6 @@
 //! Minimal base64 (standard alphabet, padded) for byte-blob stores
-//! (localStorage holds strings). Hand-rolled: ~40 lines beats a new
-//! dependency, and living here (not the wasm-only web crate) keeps it
+//! (localStorage holds strings). Hand-rolled: a handful of lines beats a
+//! new dependency, and living here (not the wasm-only web crate) keeps it
 //! under native unit tests.
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -72,7 +72,7 @@ mod tests {
 
 	#[test]
 	fn roundtrip_all_lengths_and_bytes() {
-		// Every length remainder (0, 1, 2 mod 3) over full byte range.
+		// Every length remainder mod 3, over the full byte range.
 		for len in 0..=300usize {
 			let bytes: Vec<u8> = (0..len).map(|i| (i * 7 + len) as u8).collect();
 			let enc = encode(&bytes);

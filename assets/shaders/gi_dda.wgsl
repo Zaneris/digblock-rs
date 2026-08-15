@@ -29,11 +29,12 @@ fn gi_lateral_max(side: f32) -> f32 {
 	return side * 0.5 - 1.0;
 }
 
-// Ray vs the ≤2-box cover of a PARTIAL cell (opacity 3), over the
-// ray's span [t0, t1] inside `cell`. `bx` is the LUT entry's zw pair:
-// min twelfths in bits 0/4/8, max in 12/16/20 (core::gi::pack_box is
-// the packer and `box_pack_matches_the_shader_decode` pins the two
-// together; 0 = no box). `def_axis` answers for a ray already inside
+// Ray vs the box cover of a PARTIAL cell, over the ray's span
+// [t0, t1] inside `cell`. `bx` is the LUT entry's zw pair, one word per
+// box, each packing that box's min and max corner in twelfths
+// (core::gi::pack_box is the packer and
+// `box_pack_matches_the_shader_decode` pins the two together; an empty
+// word means no box). `def_axis` answers for a ray already inside
 // the box's lateral bounds when it enters the cell, where no box plane
 // was crossed and the cell-entry face is the hit face. Returns
 // (hit t, axis) with t < 0 for a miss.
@@ -124,13 +125,13 @@ fn gi_ray_step(r: GiRay, step_dir: vec3i, inv: vec3f) -> GiRay {
 	return o;
 }
 
-// Advance to the LAST cell of the empty 8-cube containing `r.cell`,
-// leaving the boundary crossing itself to the ordinary step.
+// Advance to the LAST cell of the empty coarse brick containing
+// `r.cell`, leaving the boundary crossing itself to the ordinary step.
 //
 // THIS is the two-level skip GI-DESIGN.md describes and that was never
 // written. The coarse texture existed and was consulted, but an empty
 // brick only ever saved the fine texture load — the march still crawled
-// through all eight cells, and asked the coarse texture again at every
+// through every cell of it, and asked the coarse texture again at every
 // one of them. Air is most of a voxel world, so most of the DDA's life
 // was spent stepping through nothing.
 //
@@ -140,10 +141,11 @@ fn gi_ray_step(r: GiRay, step_dir: vec3i, inv: vec3f) -> GiRay {
 // plane, so where a ray leaves through a brick EDGE it jumps to the
 // diagonal cell and skips the one the stepper would have entered first —
 // and with the sun direction quantized to a small rational and pinned to
-// dir.z == 0, edge exits are periodic rather than rare. It changed 0.83%
-// of pixels against a 0.11% capture-noise floor, at shadow boundaries.
-// Reconstructing from the origin also accumulates f32 error over a
-// 160-block march, which the incremental form does not have.
+// dir.z == 0, edge exits are periodic rather than rare. It moved a
+// measurable slice of the frame, well clear of the capture-noise floor,
+// all of it at shadow boundaries. Reconstructing from the origin also
+// accumulates f32 error over a long march, which the incremental form
+// does not have.
 //
 // The counts below are structural. From a cell inside the brick there
 // are exactly `n` boundary crossings left on each axis before that axis
@@ -195,17 +197,17 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 // direct-hit term), so NEE guards against self-occlusion by stopping
 // short of the light rather than by teaching the DDA a skip cell. The
 // distance that guarantees it is the light's distance to the FARTHEST
-// CORNER of its own cell — 0.866, the half diagonal, for a light at the
-// cell center, which is where the hardcoded 0.9 this replaced came
-// from, slack included.
+// CORNER of its own cell — the half diagonal, for a light at the cell
+// center, which is where the hardcoded margin this replaced came from,
+// slack included.
 //
 // That constant was only ever correct while the origin WAS the center.
 // `gi::light_origin` puts a shaped emitter's point source where its
-// geometry actually glows — a torch's flame, y = 8.5/12 — and from
-// there the cell's lower corners sit 1.0 away, inside the old margin:
-// rays arriving from below re-entered the emitting cell through them
-// and the torch shadowed itself in four cell-aligned wedges on the
-// floor around its base. Deriving the margin keeps that impossible for
+// geometry actually glows — a torch's flame, partway up its cell — and
+// from there the cell's lower corners sit further off than the old
+// margin reached: rays arriving from below re-entered the emitting cell
+// through them and the torch shadowed itself in cell-aligned wedges on
+// the floor around its base. Deriving the margin keeps that impossible for
 // whatever origin a future wall-mounted or off-center emitter has.
 //
 // It is deliberately the whole cell and not the shape's own boxes: the
@@ -213,25 +215,26 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 // what a gather march would test against anyway.
 fn gi_light_margin(p: vec3f) -> f32 {
 	let f = p - floor(p);
-	// +0.035 is the slack the 0.9 carried over the 0.866 half diagonal.
+	// The addend is the slack the old fixed margin carried over the bare
+	// half diagonal.
 	return length(max(f, vec3f(1.0) - f)) + 0.035;
 }
 
-// A light list entry's w word: the GI class byte in bits 0-7, and bit 8
-// set when a player is CARRYING it. Every reader masks, exactly as the
-// resolve's history length rides its face code.
+// A light list entry's w word: the GI class byte, plus a flag set when a
+// player is CARRYING it. Every reader masks, exactly as the resolve's
+// history length rides its face code.
 //
 // The flag exists because `gi_light_margin` above is a property of the
-// light's CELL, and a carried light has no cell of its own. Its bound is
-// only ever reached because a placed emitter sits at a KNOWN offset
-// inside one — a torch's flame at 0.5/0.708/0.5 gives 1.036, the worst
-// any of them can do. A carried light hangs at feet + 1.0, so a carrier
-// standing on a block top lands on frac(y) == 0.0 — the degenerate
-// maximum of `max(f, 1 - f)` — and the margin runs 1.26 to 1.77
-// depending where in x/z they stand. The player's capsule is RADIUS 0.3,
-// so a wall they are brushing spans 0.3 to 1.3 from the light and falls
-// entirely inside that skip: the floor on its far side sees the light
-// through solid stone.
+// light's CELL, and a carried light has no cell of its own. Its bound
+// stays modest only because a placed emitter sits at a KNOWN offset
+// inside one — a torch's flame is the worst any of them can do. A
+// carried light hangs above its carrier's feet, so a carrier standing on
+// a block top lands on frac(y) == 0.0 — the degenerate maximum of
+// `max(f, 1 - f)` — and the margin grows past a whole block, further
+// still depending where in x/z they stand. That is wider than the
+// player's own capsule, so a wall they are brushing falls entirely
+// inside that skip: the floor on its far side sees the light through
+// solid stone.
 const GI_LIGHT_CARRIED = 256u;
 
 fn gi_light_class(w: f32) -> u32 {
@@ -241,11 +244,11 @@ fn gi_light_class(w: f32) -> u32 {
 // The margin for one light list entry, and the ONE place the carried
 // case is decided so the two NEE passes cannot disagree about it.
 //
-// Zero for a carried light, and that is not slack: the origin is the
-// centre of the carrier's own capsule (on its axis, RADIUS 0.3 clear
-// laterally and 0.7 above its feet), so its cell is non-solid by
-// construction and there is nothing of its own for it to be occluded by.
-// A wall half a block away SHOULD block it, which is the whole point.
+// Zero for a carried light, and that is not slack: the origin is on the
+// axis of the carrier's own capsule, inside the space that capsule
+// already occupies, so its cell is non-solid by construction and there
+// is nothing of its own for it to be occluded by. A wall right beside it
+// SHOULD block it, which is the whole point.
 fn gi_light_margin_of(l: vec4f) -> f32 {
 	if (bitcast<u32>(l.w) & GI_LIGHT_CARRIED) != 0u {
 		return 0.0;

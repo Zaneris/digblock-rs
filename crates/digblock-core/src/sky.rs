@@ -21,9 +21,10 @@ pub struct Atmosphere {
 }
 
 /// Keyframes over `e` = sin of sun altitude (+1 noon, 0 horizon,
-/// −1 midnight), descending. Noon is tuned so a fully lit top face gets
-/// ambient + direct ≈ 1.15 — close to the old flat-lit 1.2 peak;
-/// pushing the sum much past that blows the block textures out to neon.
+/// −1 midnight), descending. Noon is tuned so ambient + direct on a fully
+/// lit top face lands just above unity — about where the old flat lighting
+/// peaked; pushing the sum much past that blows the block textures out to
+/// neon.
 #[rustfmt::skip]
 const KEYS: &[(f32, Atmosphere)] = &[
 	(1.00, Atmosphere { // noon

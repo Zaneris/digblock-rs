@@ -112,9 +112,9 @@ pub fn parse_held_item(s: &str) -> Option<u16> {
 }
 
 pub struct EngineConfig {
-	/// Draw distance in chunks: 20 desktop, 10 mobile (Java Config).
+	/// Draw distance in chunks; the mobile config ships a shorter one
+	/// (Java Config).
 	pub draw_dist: i32,
-	/// Shadow map resolution: 2048 desktop, 1024 mobile.
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
@@ -123,7 +123,8 @@ pub struct EngineConfig {
 	/// world clock because `update()` re-asserts it every frame.
 	pub tod: Option<f32>,
 	/// Initial camera yaw/pitch in degrees for deterministic captures
-	/// (yaw 0 faces +z, 90 faces +x; pitch defaults to −20).
+	/// (yaw 0 faces +z, 90 faces +x; an absent pitch takes a default
+	/// downward tilt).
 	pub yaw: Option<f32>,
 	pub pitch: Option<f32>,
 	/// Start the player here instead of at the seed's spawn point
@@ -177,7 +178,7 @@ pub struct EngineConfig {
 	pub warp: bool,
 	/// Fraction of the surface the WORLD renders at, before the upscale
 	/// pass takes it to native (`--render-scale` / `?renderscale=`). The
-	/// UI is never scaled by this. Capture paths hold it at 1.0.
+	/// UI is never scaled by this. Capture paths hold it at native.
 	pub render_scale: f32,
 	/// The GI resolve runs at `render_size / gi_scale_div`
 	/// (`--gi-scale` / `?giscale=`). Must be one of
@@ -191,23 +192,24 @@ pub struct EngineConfig {
 	/// screenshot and drill runs on the shipped values.
 	pub gfx_defaults_auto: bool,
 	/// Swap the path `fly`/`warp` follow for a ground walk. The bench
-	/// flight is a 30 blocks/s flyover 12 blocks up, which photographs the
+	/// flight is a fast flyover well above the ground, which photographs the
 	/// fast, shallow-parallax end of screen motion; a player reports
 	/// temporal artifacts from the other end — eye height, walking pace,
 	/// ground a few blocks ahead, where one half-res texel covers far more
 	/// world per pixel. Same harness, second regime.
 	pub walk: bool,
-	/// Flyover speed in blocks/s (`--bench-speed`). **Default 30.0**, which
-	/// every BENCH.md baseline was taken at — changing the default silently
-	/// invalidates all of them, so don't.
+	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline
+	/// was taken at the default — changing it silently invalidates all of
+	/// them, so don't.
 	///
-	/// 30 blocks/s is 7.5x `WALK_SPEED`, and that is a different STREAMING
-	/// REGIME, not just a faster one: at flyover speed the GI upload budget
-	/// cannot keep up and the classify drain drops entries, so a cost that
-	/// only appears there may be budget starvation rather than a real leak.
-	/// Set this to 4 for a soak that matches how the game is actually
-	/// played. (`--walk` is not the same thing — it oscillates one block
-	/// either side of the origin, so it never brings new terrain in at all.)
+	/// The default is several times `WALK_SPEED`, and that is a different
+	/// STREAMING REGIME, not just a faster one: at flyover speed the GI
+	/// upload budget cannot keep up and the classify drain drops entries, so
+	/// a cost that only appears there may be budget starvation rather than a
+	/// real leak. Drop this to walking pace for a soak that matches how the
+	/// game is actually played. (`--walk` is not the same thing — it
+	/// oscillates about a fixed origin, so it never brings new terrain in at
+	/// all.)
 	pub bench_speed: f32,
 	/// Fire the F7 GI drill at this frame (`--gi-drill-at`), so the ratchet
 	/// is measurable with no human at the keyboard. See `update`.
@@ -217,13 +219,13 @@ pub struct EngineConfig {
 	pub ssr: bool,
 	/// User multiplier on the derived UI scale (settings slider).
 	pub ui_scale: f32,
-	/// User volume multipliers (settings sliders): 1.0 = authored gains.
+	/// User volume multipliers (settings sliders); unity = authored gains.
 	pub music_vol: f32,
 	pub sfx_vol: f32,
 	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
 	/// $USER) — the engine itself must stay env-free for wasm.
 	pub player_name: Option<String>,
-	/// Debug: park a fake remote player 5 blocks ahead, holding this item
+	/// Debug: park a fake remote player a few blocks ahead, holding this item
 	/// (GPU-path check without a second client). A held-item WIRE id, not
 	/// a block, so the scene walks `held_icon` end to end and is a real
 	/// check of that decode rather than a second code path — which is
@@ -260,9 +262,9 @@ pub struct EngineConfig {
 	/// `debug_shapes` does not cover this.
 	pub debug_doors: bool,
 	/// Debug: seal a stone vault around the spawn camera with one torch
-	/// inside — the Stage-B flagship capture (a roofed room goes DARK and
-	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
-	/// the desktop launcher from DIG_VAULT.
+	/// inside — the NEE capture, and any look call about a dim room (a
+	/// roofed room goes DARK and torchlight is what makes it readable;
+	/// GI-DESIGN.md). Set by the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
 	/// DIG_ORE=<tier 1..=4>: hollow a chamber around the nearest deposit
 	/// of that tier and stand in it, with the Mining level that reveals
@@ -293,7 +295,7 @@ pub struct EngineConfig {
 	/// beside bank geometry, with a submerged floor behind it for the
 	/// resolve's rays to cross — none of the other water captures put a
 	/// SHADED surface on screen at all (DIG_DIVE is submerged; the sea
-	/// at spawn is 100+ blocks out). Set by the desktop launcher from
+	/// at spawn is far out of frame). Set by the desktop launcher from
 	/// DIG_RIVER.
 	pub debug_river: bool,
 	/// Debug: how many torches `debug_torches_plan` lights its courtyard
@@ -302,7 +304,7 @@ pub struct EngineConfig {
 	/// with the geometry held fixed. Set by the desktop launcher from
 	/// DIG_TORCHES.
 	pub debug_torches: i32,
-	/// Debug: extra torches parked 45 blocks BEHIND the camera, out of
+	/// Debug: extra torches parked well BEHIND the camera, out of
 	/// every visible surface's `LIGHT_RANGE` but inside the light list's
 	/// reach — so they change the emitter COUNT without changing one
 	/// pixel of direct light. Set from DIG_TORCHES_FAR.
@@ -320,10 +322,10 @@ pub struct EngineConfig {
 	/// can never diverge inside a wave, so a stubbed run measures the term
 	/// it removed and nothing else.
 	pub stub: u32,
-	/// Spray droplets per waterfall-impact instance: 128 desktop, 48
-	/// mobile (was inferred in the renderer from draw_dist <= 10). Each
-	/// is a sub-tenth-block alpha billboard, so the cost is overdraw on
-	/// a handful of culled emitters, not geometry.
+	/// Spray droplets per waterfall-impact instance; the mobile config
+	/// ships fewer (it used to be inferred in the renderer from the draw
+	/// distance). Each is a sub-tenth-block alpha billboard, so the cost
+	/// is overdraw on a handful of culled emitters, not geometry.
 	pub spray_droplets: u32,
 	/// Per-frame wall-clock budget for main-thread streaming (see the
 	/// STREAM_BUDGET_MS doc below, which is the default).
@@ -347,7 +349,7 @@ pub struct EngineConfig {
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
 	pub auto_join: Option<String>,
-	/// Persistent 16-byte identity secret keying the server-side persisted
+	/// Persistent identity secret keying the server-side persisted
 	/// inventory; all zeros = anonymous. The LAUNCHER fills this (desktop:
 	/// data-dir file; web: localStorage) — the engine stays env-free.
 	pub identity: [u8; 16],
@@ -497,9 +499,9 @@ impl EngineConfig {
 	}
 
 	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
-	/// handles it — verified 120fps at draw 20 + SSR), and the menu opens
-	/// by default like a desktop interactive run. URL params (?draw=
-	/// ?ssr=0 ?shadow=) opt weaker hardware down.
+	/// handles it — verified at the desktop draw distance with SSR on), and
+	/// the menu opens by default like a desktop interactive run. URL params
+	/// (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
 	///
 	/// `workers: 0` here is the FLOOR, not the shipped setting: wasm has
 	/// no std threads, so a pipeline built from this config runs jobs
@@ -563,7 +565,7 @@ struct HeldKeys {
 /// uploads, with leftovers carried in `pending_uploads` to later frames.
 /// Workers keep producing at full speed — undrained results wait in the
 /// channel — so this trades a longer fill tail for even frame pacing:
-/// streaming + render must fit a 120Hz vsync frame (8.3ms).
+/// streaming + render must fit inside one high-refresh vsync interval.
 const STREAM_BUDGET_MS: f32 = 3.0;
 /// Uploads always make this much progress per frame even with the budget
 /// exhausted, so a saturated drain can never starve the upload queue.
@@ -574,7 +576,7 @@ const STREAM_BUDGET_MS: f32 = 3.0;
 const UPLOAD_MIN: usize = 2;
 
 /// The [`UPLOAD_MIN`] twin for the RTGI voxel window. Higher because a GI
-/// chunk is 4 KiB against a mesh's tens of KiB, and because a window the
+/// chunk is a small fraction of a mesh's size, and because a window the
 /// camera has outrun is not merely late — it traces rays against terrain
 /// that is no longer there.
 const GI_UPLOAD_MIN: u32 = 8;
@@ -595,16 +597,17 @@ const EVICT_MIN: usize = 8;
 ///
 /// A COUNT could not express that, which is what this replaced. What one
 /// edit costs swings by more than an order of magnitude — whether its
-/// chunk is still shared decides a 16³ copy-on-write — and the mesh jobs
-/// it queues are charged to this same thread later in the same frame even
-/// with a Web Worker pool up — feeding one encodes and copies the ~12 KB
-/// snapshot, and absorbing the result is main-thread work by definition —
-/// so the apply is only half of what a burst actually spends. With no pool
-/// (a 1–2 core device, a browser that refused workers, `?workers=0`) they
-/// run here outright. The old 256 was sized against a 16.67 ms native frame
-/// with worker threads behind it; at 120 Hz on the web the frame is
-/// 8.33 ms. Pricing the slice in TIME makes the same code back off on the
-/// platform that cannot afford it, with no constant to retune per display.
+/// chunk is still shared decides a whole-chunk copy-on-write — and the mesh
+/// jobs it queues are charged to this same thread later in the same frame
+/// even with a Web Worker pool up — feeding one encodes and copies the
+/// padded snapshot, and absorbing the result is main-thread work by
+/// definition — so the apply is only half of what a burst actually spends.
+/// With no pool (a 1–2 core device, a browser that refused workers,
+/// `?workers=0`) they run here outright. The COUNT it replaced was sized
+/// against a native frame with worker threads behind it, while a
+/// high-refresh web frame is a fraction of that. Pricing the slice in TIME
+/// makes the same code back off on the platform that cannot afford it, with
+/// no constant to retune per display.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -673,8 +676,8 @@ pub struct Engine {
 	/// `DigStart` every frame for as long as the button was down.
 	refused_cell: Option<(i32, i32, i32)>,
 	click_place: bool,
-	/// In-progress hold-to-dig, advanced at 60 Hz while `dig_held` stays
-	/// on a valid, unchanged target.
+	/// In-progress hold-to-dig, advanced at the fixed sim rate while
+	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
 	/// Fixed-rate accumulator for the dig state machine — independent of
 	/// the walk/fly tick loops so digging works in both modes.
@@ -695,8 +698,8 @@ pub struct Engine {
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
 	flow_accum: f32,
-	/// Shader animation clock, wrapped at 600s (carried in the otherwise
-	/// unused light_color.w — no uniform layout change).
+	/// Shader animation clock, wrapped on a long period (carried in the
+	/// otherwise unused light_color.w — no uniform layout change).
 	time_secs: f32,
 	/// Multiplayer client; None = single-player (every connected branch
 	/// below is dead in that case).
@@ -709,9 +712,10 @@ pub struct Engine {
 	/// reconcile needs the physics `block_at` borrow).
 	pending_ack: Option<(u32, digblock_core::player::PlayerState)>,
 	/// Visual-only reconciliation smoothing: camera = player + offset,
-	/// decaying ~200 ms so corrections nudge instead of teleport.
+	/// decaying over a fraction of a second so corrections nudge instead of
+	/// teleport.
 	correction_offset: Vec3,
-	/// Visual-only sampling of the fixed 60 Hz player sim: the camera
+	/// Visual-only sampling of the fixed-rate player sim: the camera
 	/// draws between the last two tick states instead of snapping to the
 	/// newest one. Without it frame-pacing jitter IS position jitter —
 	/// measurably the dominant stutter source, well ahead of anything the
@@ -732,7 +736,7 @@ pub struct Engine {
 	/// same spot don't throw identical paper. Deliberately a counter
 	/// rather than an RNG: nothing here needs to be unpredictable.
 	confetti_seq: u32,
-	/// Reconciliation health, logged every ~5 s while connected.
+	/// Reconciliation health, logged on a slow cadence while connected.
 	net_corrections: u32,
 	net_error_accum: f32,
 	net_log_timer: f32,
@@ -768,7 +772,7 @@ pub struct Engine {
 	ambient_height: Option<((i32, i32), i32)>,
 	overlay_visible: bool,
 	history_scratch: Vec<f32>,
-	/// Scripted-flight clock (bench mode), in fixed 60Hz ticks.
+	/// Scripted-flight clock (bench mode), in fixed sim ticks.
 	bench_t: f32,
 	/// Steps of the scripted flight already taken, against `config.fly`.
 	fly_frames: u32,
@@ -792,7 +796,7 @@ pub struct Engine {
 	/// Camera chunk the upload queue was last ordered for.
 	upload_sort_center: ChunkPos,
 	size: (u32, u32),
-	/// Device pixels per logical pixel (shell-reported; 1.0 until told).
+	/// Device pixels per logical pixel (shell-reported; unscaled until told).
 	scale_factor: f32,
 	/// Whole-UI scale derived from `size` + `scale_factor` each time
 	/// either changes.
@@ -1127,8 +1131,8 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 	//
 	// Guarded exactly like the carve, and for the same reason: this plate
 	// is laid THROUGH the blob. A max-radius deposit reaches
-	// `ore::MAX_RADIUS` = 2 straight down, so the cell right under the
-	// centre sits on the rim and `rim_open` keeps it three times in four —
+	// `ore::MAX_RADIUS` straight down, so the cell right under the
+	// centre sits on the rim and `rim_open` keeps it more often than not —
 	// and the plan is applied through `pipeline.set_cell`, which records
 	// into the `EditOverlay`, after which `ore::revealed` answers None for
 	// that cell forever. An unguarded plate quietly deletes the vein it
@@ -1146,13 +1150,13 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 	// real gap, and that is the same hazard the carve above already
 	// accepts.
 	// Never at or below the world floor. `deposit_in` now keeps a whole
-	// BLOB clear of `BEDROCK_Y + MAX_RADIUS`, so `d.y >= 3` and this
-	// `max` cannot bite today — it is here because that is a coupling
-	// two modules apart, and the plate must not silently start writing
-	// the one plane the game promises is untouchable if the ore
-	// constraint is ever loosened. Clamped rather than skipped so the
-	// plate stays whole: a floor with holes in it is a worse capture
-	// than a floor one block high.
+	// BLOB clear of `BEDROCK_Y + MAX_RADIUS`, so this `max` cannot bite
+	// today — it is here because that is a coupling two modules apart,
+	// and the plate must not silently start writing the one plane the
+	// game promises is untouchable if the ore constraint is ever
+	// loosened. Clamped rather than skipped so the plate stays whole: a
+	// floor with holes in it is a worse capture than a floor one block
+	// high.
 	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
 	for z in (d.z - R)..=(d.z + R) {
 		for x in (d.x - R)..=(d.x + R) {
@@ -1179,9 +1183,9 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 
 /// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
 /// one torch on the floor ahead and a stair to catch its falloff. The
-/// Stage-B flagship capture: skylight is stripped by the roof (the
-/// placement writes ride the ordinary edit hook), so the interior
-/// photographs DARK except the torch pool — at noon.
+/// NEE capture: skylight is stripped by the roof (the placement writes
+/// ride the ordinary edit hook), so the interior photographs DARK except
+/// the torch pool — at noon.
 fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
@@ -1194,7 +1198,8 @@ fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	let mut out = Vec::new();
 	// Shell-first, carve-second ordering doesn't matter — placement is
 	// retried per cell and the light BFS settles under maintain either
-	// way. Interior: x±3, y −2..=+2, z −2..=+8 around the eye cell.
+	// way. The interior is a box around the eye cell, reaching further
+	// AHEAD in z than behind so the torch pool has room to fall off.
 	for x in (bx - 4)..=(bx + 4) {
 		for y in (by - 3)..=(by + 3) {
 			for z in (bz - 3)..=(bz + 9) {
@@ -1251,7 +1256,7 @@ fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		spawn.z.floor() as i32,
 	);
 	let mut out = Vec::new();
-	// Shell x±4 / z −4..+10, floor at −4, walls up to +2; interior
+	// A stone shell reaching further ahead in z than behind, its interior
 	// carved then flooded to one block ABOVE the eye cell, so the
 	// camera is submerged with the surface in view. No ceiling — the
 	// sky lights the pool.
@@ -1288,13 +1293,13 @@ fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 }
 
 /// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn
-/// camera (yaw 0 faces +z), its surface ~3.6 blocks below the eye — the
+/// camera (yaw 0 faces +z), its surface a few blocks below the eye — the
 /// "standing at a river's edge looking into it" frame-cost scene (R17).
 /// Pair with `--pitch -35` so near water fills most of the screen. All
 /// of it sits inside C0 beside bank geometry (the expensive gather
 /// path), and the submerged stone floor keeps the resolve's rays
 /// crossing the water column, which is the other half of that scene's
-/// cost. 49×49 surface, 7 deep.
+/// cost.
 fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	let (bx, by, bz) = (
@@ -1442,7 +1447,7 @@ fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// gather's emitter-hit lottery is suppressed for it.
 ///
 /// So: `n` is a knob (1 vs 8 with the geometry held fixed) and the floor
-/// runs to +44 so a capture crosses the 24-block `LIGHT_RANGE` edge with
+/// runs well past `LIGHT_RANGE`, so a capture crosses that edge with
 /// the same material and the same face code either side of it. No roof —
 /// the report is about NIGHT, where the sky is a dim second source
 /// rather than absent, so `--tod 180` is the pose and `--tod 0` is the
@@ -1455,8 +1460,9 @@ fn debug_torches_plan(spawn: Vec3, n: i32, far: i32, wall: bool) -> Vec<(i32, i3
 		spawn.z.floor() as i32,
 	);
 	let mut out = Vec::new();
-	// Floor at by−3 (DIG_VAULT's convention: the first air cell is by−2),
-	// cleared to by+8 so nothing worldgen left overhead shadows the run.
+	// Floor laid to DIG_VAULT's convention — one cell below the first air
+	// cell — and cleared far enough overhead that nothing worldgen left
+	// there shadows the run.
 	for x in (bx - 16)..=(bx + 16) {
 		for z in (bz - 6)..=(bz + 46) {
 			out.push((x, by - 3, z, B::Stone as u16));
@@ -1475,16 +1481,16 @@ fn debug_torches_plan(spawn: Vec3, n: i32, far: i32, wall: bool) -> Vec<(i32, i3
 			}
 		}
 	}
-	// The cluster: up to 8 torches on 3-block centres around (bx, bz+17),
-	// laid down in a fixed order so `n` = 1 keeps the same first torch in
-	// the same cell as `n` = 8 and the A/B moves one variable.
+	// The cluster: the `SPOTS` roster, spaced a few blocks apart, laid down
+	// in a fixed order so `n` = 1 keeps the same first torch in the same
+	// cell as `n` = 8 and the A/B moves one variable.
 	//
-	// Seventeen blocks out, not two, because the report is about distance:
-	// an eye-height camera at spawn then holds all three regimes in one
-	// frame — bare floor from 0 to 12 blocks lit only by what reaches it
-	// (the band the artifact is reported in, and the one a half-res texel
-	// magnifies most), the pools themselves at 14-20, and floor running out
-	// past `LIGHT_RANGE` behind them where no NEE fires at all.
+	// Parked well down the courtyard rather than at the camera's feet,
+	// because the report is about distance: an eye-height camera at spawn
+	// then holds all three regimes in one frame — near floor lit only by
+	// what reaches it (the band the artifact is reported in, and the one a
+	// half-res texel magnifies most), the pools themselves, and floor
+	// running out past `LIGHT_RANGE` behind them where no NEE fires at all.
 	const SPOTS: [(i32, i32); 8] = [
 		(0, 17),
 		(3, 17),
@@ -1514,11 +1520,11 @@ fn debug_torches_plan(spawn: Vec3, n: i32, far: i32, wall: bool) -> Vec<(i32, i3
 			}
 		}
 	}
-	// `far` torches on a pad 45 blocks BEHIND the camera, outside the
+	// `far` torches on a pad well BEHIND the camera, outside the
 	// courtyard wall. They cannot light one pixel of the capture — every
 	// visible surface is past `LIGHT_RANGE` from them and the wall is in
-	// the way — but they are well inside the 95-block reach `flush_lights`
-	// keeps, so they land in the light LIST.
+	// the way — but they are well inside the reach `flush_lights` keeps,
+	// so they land in the light LIST.
 	//
 	// That is the entire experiment. The resolve scans the list by
 	// position, so it does not care; gi_probe's `nee` picks ONE entry
@@ -1535,9 +1541,9 @@ fn debug_torches_plan(spawn: Vec3, n: i32, far: i32, wall: bool) -> Vec<(i32, i3
 	out
 }
 
-/// Camera far plane: draw_dist × 32 (Java World.updateDepth). One
-/// definition — it is set at construction and again whenever the
-/// settings screen retunes the draw distance.
+/// Camera far plane, a fixed multiple of the draw distance in chunks
+/// (Java World.updateDepth). One definition — it is set at construction
+/// and again whenever the settings screen retunes the draw distance.
 fn far_plane(draw_dist: i32) -> f32 {
 	(draw_dist * 32) as f32
 }
@@ -1547,13 +1553,13 @@ fn ms_since(t: web_time::Instant) -> f32 {
 }
 
 /// Milliseconds a frame may spend applying authoritative edits, given the
-/// measured display interval — so the same queue takes half as much of a
-/// 120 Hz frame as of a 60 Hz one (see [`NET_EDIT_SHARE`]).
+/// measured display interval — so the same queue takes proportionally less
+/// of a shorter frame (see [`NET_EDIT_SHARE`]).
 ///
 /// A free function rather than a method because the scaling rule is the
 /// part worth pinning, and a test for it should not need a GPU.
 /// `refresh_ms` is a measured percentile that reads zero until it settles;
-/// the 60 Hz interval is the fallback, which is also what every
+/// the nominal interval is the fallback, which is also what every
 /// pre-existing baseline was taken at.
 fn net_edit_budget_ms(refresh_ms: f32) -> f32 {
 	let interval = if refresh_ms > 0.0 {
@@ -1628,10 +1634,10 @@ fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
 /// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
 const CARRIER_SELF: u16 = u16::MAX;
 /// Carrier key for `DIG_PLAYERBOX`'s fake remote. Out of the `PlayerId`
-/// space on purpose: it borrows id 2 for its COLOUR, and keying off that
-/// made it share a `Carried::fired` slot with a real player 2 — two
-/// carriers, one last-fired position, so both re-placed their light on
-/// almost every frame.
+/// space on purpose: it borrows a real id for its COLOUR, and keying off
+/// that made it share a `Carried::fired` slot with the live player wearing
+/// the same id — two carriers, one last-fired position, so both re-placed
+/// their light on almost every frame.
 const CARRIER_DEBUG: u16 = u16::MAX - 1;
 
 /// One remote as this frame sees them.
@@ -1687,17 +1693,17 @@ fn push_remote(
 ///
 /// The light itself still reaches the list at any range — this is only
 /// about the invalidation sphere, and past this distance the wake it
-/// leaves is too dim and too far to read (a torch 32 blocks out delivers
-/// about 0.01 radiance, under 3/255 before albedo). `GiDraw::invalidate`
-/// drains four spheres a frame and shares that budget with world edits,
-/// so a crowd of distant carriers must not be able to spend it.
+/// leaves is too dim and too far to read (a torch out there delivers less
+/// than one step of 8-bit output before albedo). `GiDraw::invalidate`
+/// drains a fixed few spheres a frame and shares that budget with world
+/// edits, so a crowd of distant carriers must not be able to spend it.
 ///
 /// This gate is the ONLY bound applied here, deliberately. Past it the
-/// queue's own policy is already the right one: bounded at 256 and
-/// dropping the OLDEST, because the newest position is the one whose
-/// light is most wrong. A second per-frame cap on top would either
-/// starve a carrier (skip it, and its last-fire position is already
-/// recorded) or hand the probes a position its carrier left seconds ago.
+/// queue's own policy is already the right one: bounded, and dropping
+/// the OLDEST, because the newest position is the one whose light is
+/// most wrong. A second per-frame cap on top would either starve a
+/// carrier (skip it, and its last-fire position is already recorded) or
+/// hand the probes a position its carrier left seconds ago.
 const CARRIED_INVAL_DIST: f32 = 32.0;
 
 /// How far a carried light must travel before its motion is re-placed in
@@ -1707,8 +1713,8 @@ const CARRIED_INVAL_DIST: f32 = 32.0;
 /// A crossing test is phase-dependent and pathological: a player resting
 /// on a cell boundary with the sub-block wobble the tick lerp and the
 /// decaying reconciliation offset both produce crosses back and forth
-/// every frame, so somebody standing still would fire sixty spheres a
-/// second. Distance has no such failure mode, is frame-rate independent,
+/// every frame, so somebody standing still would fire a sphere every
+/// frame. Distance has no such failure mode, is frame-rate independent,
 /// needs no hysteresis, and handles a teleport for free.
 ///
 /// One C0 probe spacing, so a probe can never be more than its own cell
@@ -1723,10 +1729,9 @@ const CARRY_INVAL_STEP: f32 = 2.0;
 /// expressed through the same hook a block edit uses. Travelling a probe
 /// spacing fires `Renderer::gi_invalidate`, which resets probe ages
 /// around the new position — so the bounce field re-traces at full
-/// weight instead of decaying from a stale value at 0.10 a sweep — and
-/// caps the resolve's screen history nearby while it does. Standing
-/// still fires nothing, so a lit room settles as deeply as one lit from
-/// the floor.
+/// weight instead of decaying slowly from a stale value — and caps the
+/// resolve's screen history nearby while it does. Standing still fires
+/// nothing, so a lit room settles as deeply as one lit from the floor.
 #[derive(Default)]
 struct Carried {
 	/// What goes to the GI light list, in `FrameScene::carried` order.
@@ -1735,7 +1740,7 @@ struct Carried {
 	keys: Vec<u16>,
 	/// Where each carrier's light last fired an invalidation. A `Vec`
 	/// rather than a map because a snapshot holds at most
-	/// `MAX_SNAPSHOT_PLAYERS` of these and a linear scan over forty
+	/// `MAX_SNAPSHOT_PLAYERS` of these and a linear scan over that many
 	/// entries beats hashing one.
 	fired: Vec<(u16, Vec3)>,
 	/// Positions to invalidate this frame, each with the carrier it
@@ -1794,7 +1799,7 @@ impl Carried {
 				}
 			}
 			// One sphere, not two. A step is far shorter than the sphere
-			// `invalidate` queues (radius 8 in C0, 16 in C1), so the space
+			// `invalidate` queues in either cascade, so the space
 			// just vacated is covered many times over; only a jump longer
 			// than the radius would need the departure point, and nothing
 			// in the game moves a player that far without a teleport,
@@ -1807,11 +1812,11 @@ impl Carried {
 		// arriving is, and it is the half that was missing: `flush_lights`
 		// drops the entry from the GPU list the same frame, so the direct
 		// pool dies at once — but the probes keep its bounce and decay it
-		// at 0.10 a sweep, a 5.3 s half-life, so a room stayed lit by a
-		// torch that had been put away. Digging a PLACED torch has always
-		// invalidated, through `take_gi_edits`, which is precisely the
-		// asymmetry a carried light is not supposed to have. Covers a
-		// remote disconnecting or falling out of the snapshot too.
+		// over seconds, so a room stayed lit by a torch that had been put
+		// away. Digging a PLACED torch has always invalidated, through
+		// `take_gi_edits`, which is precisely the asymmetry a carried
+		// light is not supposed to have. Covers a remote disconnecting
+		// or falling out of the snapshot too.
 		let keys = &self.keys;
 		let (cam, pending) = (cam, &mut self.pending);
 		self.fired.retain(|&(k, p)| {
@@ -2549,10 +2554,10 @@ impl Engine {
 
 		// Music pool follows the world clock. `tod` is the sun's angle
 		// from straight down (0 = noon, ±90 = the horizons, 180 =
-		// midnight), so hour = 12 - tod/15 and the 18:00-06:00 night
-		// window is exactly "sun below the horizon". No hysteresis
-		// needed: tod is monotonic, and the filler only acts on this at
-		// the next track boundary anyway.
+		// midnight), so hour = 12 - tod/15 and the night window is
+		// exactly "sun below the horizon". No hysteresis needed: tod is
+		// monotonic, and the filler only acts on this at the next track
+		// boundary anyway.
 		let night = self.sun.tod.abs() >= 90.0;
 		if self.music_night != Some(night) {
 			self.music_night = Some(night);
@@ -2680,10 +2685,10 @@ impl Engine {
 		// lands is the behaviour `ToolSwap` documents.
 		self.tool_swap
 			.advance(crate::hotbar::ToolSwap::SECS, self.hotbar.active_tool());
-		// A replaced pipeline starts at Mining level 0, so a world entry
-		// has to hand it the level again or a high-level miner walks into
-		// plain stone until the next level-up. Silent: the discovery was
-		// made long ago.
+		// A replaced pipeline starts with no Mining level at all, so a
+		// world entry has to hand it the level again or a high-level miner
+		// walks into plain stone until the next level-up. Silent: the
+		// discovery was made long ago.
 		self.sync_mining_reveal(false);
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
@@ -2905,7 +2910,7 @@ impl Engine {
 	/// on exactly the two paths that need the hold. That guard armed
 	/// nothing, and since `Welcome` no longer closes the Connecting screen
 	/// itself, it stranded every join on "Joining world..." forever — the
-	/// 5 s escape hatch cannot fire on a hold that was never set.
+	/// timeout escape hatch cannot fire on a hold that was never set.
 	fn begin_arrival_hold(&mut self) {
 		self.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}
@@ -2935,7 +2940,7 @@ impl Engine {
 	}
 
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
-	/// and camera — a 200 ms smoothed slide across half the map would
+	/// and camera — the reconciliation slide across half the map would
 	/// fight streaming — and drop everything that describes the
 	/// pre-teleport position (the decaying correction offset, a stashed
 	/// ack, any dig in progress, the footstep odometer). A non-zero
@@ -3023,12 +3028,13 @@ impl Engine {
 				// edits (they ride datagrams, edits ride the reliable
 				// stream — already unordered relative to each other), and
 				// they must never wait behind a parked backlog. The
-				// predictor's buffer only reaches back `BUF_CAP` ticks
-				// (2.1 s): an ack delayed past that falls out of the
-				// buffer, so EVERY later snapshot takes the forced-replay
-				// path — measured at 18 replays/s with 1.6-block
-				// corrections. Join sync on a heavily edited world is
-				// enough to get there at NET_EDIT_BUDGET per frame.
+				// predictor's buffer only reaches back `BUF_CAP` ticks:
+				// an ack delayed past that falls out of the buffer, so
+				// EVERY later snapshot takes the forced-replay path —
+				// measured as a continuous stream of replays carrying
+				// corrections big enough to see. Join sync on a heavily
+				// edited world is enough to get there at
+				// NET_EDIT_BUDGET per frame.
 				NetEvent::Ack {
 					acked_input_tick,
 					me,
@@ -3143,10 +3149,11 @@ impl Engine {
 					// world floor is predicted locally, but a spawn lock
 					// is server-side knowledge.
 					//
-					// `inv_delta` is the dig/place discriminator (+1 = dig
-					// credit, -1 = place debit) — NOT `placed == Air`,
-					// which a slab dig breaks by writing its shrunk value.
-					// A multi-cell action carries the delta on its first
+					// `inv_delta` is the dig/place discriminator (a
+					// positive count is a dig credit, a negative one a
+					// place debit) — NOT `placed == Air`, which a slab
+					// dig breaks by writing its shrunk value. A
+					// multi-cell action carries the delta on its first
 					// entry only, so this speaks once per action rather
 					// than once per cell.
 					if reason == Some(digblock_net::messages::RejectReason::Protected) {
@@ -3399,21 +3406,21 @@ impl Engine {
 	}
 
 	/// One tick of the scripted flight: a constant-speed line with a slow
-	/// yaw sweep, advanced by a fixed 60Hz tick so the path is a pure
+	/// yaw sweep, advanced by a fixed sim tick so the path is a pure
 	/// function of how many times this has been called — identical
 	/// workload run-to-run, and identical pose whether the steps are
 	/// spread over frames (`--fly`) or taken at once (`--warp`).
 	fn fly_step(&mut self) {
 		const BENCH_YAW: f32 = 12.0; // degrees per path-second
-							   // The walk: one block forward, one block back, at eye height with
-							   // the ground a few blocks ahead — the repro exactly as reported.
+							   // The walk: forward and back about a fixed origin, at eye
+							   // height with the ground just ahead — the repro as reported.
 							   // An oscillation rather than a line keeps the column under the feet
 							   // constant, so the eye cannot step a whole block mid-path and
 							   // invalidate the history for a reason that is not the one under
 							   // test.
 		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
-		const WALK_PERIOD: f32 = 1.5; // seconds — peak 4.2 blocks/s, a walk
-		const WALK_PITCH: f32 = -25.0; // ground ~3.5 blocks ahead of the eye
+		const WALK_PERIOD: f32 = 1.5; // seconds — its peak speed is a walk
+		const WALK_PITCH: f32 = -25.0; // puts the ground just ahead of the eye
 		self.bench_t += TICK;
 		if self.config.walk {
 			// Anchored on wherever the camera started, so the walk happens
@@ -3467,7 +3474,7 @@ impl Engine {
 		self.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
 		// Previously each stage got its own slice of the budget and they
-		// summed to ~1.5× it; now they consume from the same clock, and the
+		// summed to more than it; now they consume from the same clock, and the
 		// per-stage minimum-progress floors keep any single stage from
 		// being starved by an earlier one that overran.
 		let deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
@@ -3483,17 +3490,17 @@ impl Engine {
 		// RTGI: scroll the window to the camera (re-dirtying whatever
 		// just entered coverage), pull freshly-dirty chunks into the
 		// re-upload queue, then feed the voxel window under a byte budget
-		// — a quarter of the mesh-upload ceiling, ~4 KiB a chunk — AND
-		// the shared streaming deadline (GI-DESIGN.md).
+		// — a fraction of the mesh-upload ceiling — AND the shared
+		// streaming deadline (GI-DESIGN.md).
 		//
-		// The clock matters as much as the bytes: `classify_gi` walks all
-		// 4096 cells of a chunk, and the byte cap alone permits 512 of
-		// those in one frame. This was the only streaming stage that
-		// ignored `deadline`, and the only one charged to no phase — a
-		// classify burst landed in `busy_ms` with nothing to attribute it
-		// to. `GI_UPLOAD_MIN` is the same minimum-progress floor the mesh
-		// loop uses, so a frame that is already over budget still makes
-		// headway instead of starving the window forever.
+		// The clock matters as much as the bytes: `classify_gi` walks
+		// every cell of a chunk, and the byte cap alone permits many
+		// chunks' worth of that in one frame. This was the only streaming
+		// stage that ignored `deadline`, and the only one charged to no
+		// phase — a classify burst landed in `busy_ms` with nothing to
+		// attribute it to. `GI_UPLOAD_MIN` is the same minimum-progress
+		// floor the mesh loop uses, so a frame that is already over budget
+		// still makes headway instead of starving the window forever.
 		let t_gi = web_time::Instant::now();
 		// The window AS BUILT, never the live draw distance. Raising draw
 		// distance from the settings screen mutates `config.draw_dist`
@@ -3545,9 +3552,9 @@ impl Engine {
 		let t_upload = web_time::Instant::now();
 		self.metrics.evicted += m.evicted.len() as u32;
 		if !m.evicted.is_empty() {
-			// A boundary crossing evicts a whole rim arc at once (600+
-			// chunks at draw 20). Membership has to be a hash lookup, not a
-			// linear scan of the evicted Vec per pending element, and the
+			// A boundary crossing evicts a whole rim arc at once —
+			// hundreds of chunks. Membership has to be a hash lookup, not
+			// a linear scan of the evicted Vec per pending element, and the
 			// GPU-side release is spread over frames below: buffers merely
 			// idle until dropped, so nothing is gained by freeing them all
 			// inside one frame.
@@ -3818,7 +3825,7 @@ impl Engine {
 		}
 	}
 
-	/// One 60 Hz step of the hold-to-dig state machine. Purely
+	/// One fixed-rate step of the hold-to-dig state machine. Purely
 	/// predictive online — the server runs its own timer and aim checks.
 	fn step_dig(&mut self) {
 		// A charged bucket has no left-click action at all — not even the
@@ -3937,7 +3944,8 @@ impl Engine {
 		let (done, pitch) = {
 			let d = self.dig.as_mut().expect("live hold checked");
 			d.ticks += 1;
-			// Pitch ramp at 10 Hz: the loop climbs toward completion.
+			// Pitch ramp on a subdivision of the tick: the loop climbs
+			// toward completion.
 			let pitch = (d.ticks % 6 == 0 && d.required > 0)
 				.then(|| 1.0 + 0.5 * d.ticks as f32 / d.required as f32);
 			(d.ticks >= d.required, pitch)
@@ -3957,7 +3965,7 @@ impl Engine {
 	/// Stop digging, but KEEP what the hold banked: progress bleeds back
 	/// to untouched over `skills::DIG_DECAY_TICKS` and a hold resumed
 	/// inside that window inherits what is left, so a thumb slipping off
-	/// the button no longer costs the whole block. Called once per 60 Hz
+	/// the button no longer costs the whole block. Called once per sim
 	/// step while not digging — that repetition is what advances the
 	/// decay, and dropping the record at zero is what keeps a spent hold
 	/// from being resumed for free.
@@ -4027,8 +4035,8 @@ impl Engine {
 				cleared.push((c, v));
 			}
 		}
-		// How many cells this ONE hold broke — 1 normally, up to 9 with
-		// the pick, and the count `begin_multi`'s single `inv_delta`
+		// How many cells this ONE hold broke — one normally, a whole plane
+		// with the pick, and the count `begin_multi`'s single `inv_delta`
 		// carries for the whole group.
 		let broken = cleared.len() as u32;
 		if prev.is_door() {
@@ -4220,9 +4228,9 @@ impl Engine {
 				hit.cell.1 + hit.normal.1,
 				hit.cell.2 + hit.normal.2,
 			);
-			// Stairs and furniture with a front share the encoding
-			// (facing in bits 0-1), so one branch turns both — and a
-			// new facing shape cannot forget to be turned at all.
+			// Stairs and furniture with a front carry their facing in the
+			// same state field, so one branch turns both — and a new
+			// facing shape cannot forget to be turned at all.
 			let placed = if block.takes_facing() {
 				make_cell(block, stair_state(quantized_facing(dir)))
 			} else if block.is_door() {
@@ -4662,7 +4670,7 @@ impl Engine {
 	/// viewmodel draws `Swap::shown()` and a carried light hangs off it,
 	/// so a harness that never advances this can neither draw a held item
 	/// nor measure one — `--bench` could do neither, and the first attempt
-	/// at R28's cost bracket read `ginee` at 0.00 with `emitters` 0 and
+	/// at R28's cost bracket read both `ginee` and `emitters` as empty and
 	/// looked like a correct result. Costs the old baselines nothing: they
 	/// fly with an empty bar, so `selected` is None and `shown` stays
 	/// None. The bob and the swing stay interactive-only, since they are
@@ -4724,9 +4732,10 @@ impl Engine {
 
 	/// Camera eye below the VISIBLE water surface? (None = unloaded =
 	/// dry.) The cell test alone flips at the lattice boundary, but the
-	/// rendered surface of a resting source sits ~0.111 below the cell
-	/// top (water.wgsl sinks a corner d/9) — without the offset the underwater
-	/// atmosphere pops in while the camera is still visibly above water.
+	/// rendered surface of a resting source sits `WATER_SURFACE_DROP`
+	/// below the cell top (water.wgsl sinks a corner by `d/9`) — without
+	/// the offset the underwater atmosphere pops in while the camera is
+	/// still visibly above water.
 	/// The flip happens FLIP_EARLY above the visible surface: the near
 	/// plane clips the surface pane before the eye reaches it, and
 	/// without the margin there are a few frames of neither-above-nor-
@@ -4806,10 +4815,10 @@ impl Engine {
 			horizon: [horizon[0], horizon[1], horizon[2], 0.0],
 			// The medium's rim distance: where the STREAMED CYLINDER ends,
 			// which is draw_dist chunks of CHUNK_SIZE blocks — NOT the
-			// camera far plane, which is `draw_dist * 32` for legacy
-			// reasons and therefore sits at twice the distance any terrain
-			// exists at. Passing the far plane here (M2 did) put the rim
-			// ramp at 525-640 blocks in a world that stops at 320, so the
+			// camera far plane, which is a larger multiple of draw_dist for
+			// legacy reasons and therefore sits well beyond anywhere terrain
+			// exists at all. Passing the far plane here (M2 did) put the rim
+			// ramp outside the streamed cylinder entirely, so the
 			// term never fired and the streaming edge was never covered.
 			misc: [
 				1.0,
@@ -5397,7 +5406,7 @@ impl Game for Engine {
 			self.push_feed("Left the world.".into());
 			self.return_to_title();
 		}
-		// Return to spawn: one shared 60s cooldown gates the menu row.
+		// Return to spawn: one shared cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
 		// pump_net); local play resolves and lands immediately.
 		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
@@ -5518,7 +5527,7 @@ impl Game for Engine {
 			}
 		}
 		if let Some(net) = self.net.as_ref() {
-			// Reconciliation health line, ~5 s cadence (matches metrics).
+			// Reconciliation health line, on the metrics cadence.
 			self.net_log_timer += dt;
 			if self.net_log_timer >= 5.0 && net.ready() {
 				let avg = if self.net_corrections > 0 {
@@ -5539,9 +5548,9 @@ impl Game for Engine {
 			}
 		}
 
-		// Crosshair target → placement edge → hold-to-dig stepping (fixed
-		// 60 Hz so offline and online dig timing share the server's tick
-		// domain, in walk AND fly mode). All outside the physics
+		// Crosshair target → placement edge → hold-to-dig stepping (at the
+		// fixed sim rate, so offline and online dig timing share the
+		// server's tick domain, in walk AND fly mode). All outside the physics
 		// `block_at` borrow: raycast (immutable) → set_block (mutable) →
 		// player tick (immutable), strictly sequential.
 		self.update_target();
@@ -5625,8 +5634,8 @@ impl Game for Engine {
 		}
 
 		if self.walking {
-			// Fixed 60 Hz player simulation (Java feel was tuned per-frame
-			// at 60fps; the accumulator preserves it at any display rate).
+			// Fixed-rate player simulation (Java feel was tuned per-frame at
+			// that same rate; the accumulator preserves it at any display rate).
 			let touch_jump = self.touch.take_jump();
 			let key_axis = Vec2::new(
 				(self.keys.d as i32 - self.keys.a as i32) as f32,
@@ -5712,7 +5721,7 @@ impl Game for Engine {
 					}
 				}
 			}
-			// ~200 ms exponential decay; snapped off below a millimeter.
+			// Sub-second exponential decay; snapped off once imperceptible.
 			self.correction_offset *= (-dt / 0.2).exp();
 			if self.correction_offset.length_squared() < 1e-6 {
 				self.correction_offset = Vec3::ZERO;
@@ -5783,7 +5792,7 @@ impl Game for Engine {
 		// menu/UI rebuild, frame uniforms — used to be untimed, so a spike
 		// in any of it showed up in `total_ms` and in no phase at all.
 		self.prep_start = Some(web_time::Instant::now());
-		// Remote players, sampled ~100 ms in the past between snapshots;
+		// Remote players, sampled an interpolation delay in the past;
 		// the instance list rides FrameScene and re-uploads every frame.
 		self.remote_instances.clear();
 		self.held_instances.clear();
@@ -5818,7 +5827,7 @@ impl Game for Engine {
 				);
 			}
 		}
-		// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
+		// DIG_PLAYERBOX=1: park a fake remote player a few blocks ahead —
 		// a GPU-path check that needs no second client (held cube: dirt).
 		if let Some(held) = self.config.debug_playerbox {
 			// Flat-forward, not along the camera's pitch: a remote player
@@ -5859,7 +5868,8 @@ impl Game for Engine {
 			if self.net.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
 				continue;
 			}
-			// Remote pos is the eye; the box top is +0.3, tag floats above.
+			// Remote pos is the eye; the box top sits just above it, and the
+			// tag floats above that.
 			let clip = view_proj * (d.pos + Vec3::Y * 0.55).extend(1.0);
 			if clip.w <= 0.0 {
 				continue;
@@ -5894,7 +5904,8 @@ impl Game for Engine {
 		}
 		self.nametag_count = tags;
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
-		// end of this fn) and GPU ms lags 2-3 frames — fine for a debug HUD.
+		// end of this fn) and GPU ms lags the readback ring — fine for a
+		// debug HUD.
 		let overlay_stats = if self.overlay_visible {
 			self.metrics
 				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.history_scratch);
@@ -6045,9 +6056,9 @@ impl Game for Engine {
 			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
 		}
 		// Occupancy: the whole handler span minus the vsync wait that blocks
-		// inside it on native (and is ~0 on the web). Closed here rather
-		// than by the platform after `render` so it reaches this frame's
-		// record instead of the next one's.
+		// inside it on native (and is effectively absent on the web). Closed
+		// here rather than by the platform after `render` so it reaches this
+		// frame's record instead of the next one's.
 		self.pending.busy_ms = self
 			.frame_start
 			.take()
@@ -6139,7 +6150,7 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 		// have to answer alike or a local save diverges from the same
 		// world hosted. Refusing the WRITE rather than filtering the
 		// schedule is what covers every direction of approach:
-		// `schedule_around` always enqueues (x, 0, z), and until now only
+		// `schedule_around` always enqueues the floor row too, and until now only
 		// `cur.props().collides` kept water out of it — a property of
 		// whatever block happens to sit there, which is precisely what
 		// the floor rule must not depend on. The sim reads `false` as
@@ -6313,11 +6324,11 @@ mod carried_tests {
 	/// A light going OUT is a lighting change exactly as one arriving is.
 	///
 	/// `flush_lights` drops the entry the same frame, so the direct pool
-	/// dies at once — but the probes hold its bounce and decay it at 0.10
-	/// a sweep, a 5.3 s half-life, so without this a room stayed lit by a
-	/// torch that had been put away. Digging a PLACED torch has always
-	/// invalidated, through `take_gi_edits`, and the whole R28 thesis is
-	/// that a carried light is not a second kind of thing.
+	/// dies at once — but the probes hold its bounce and decay it over
+	/// seconds, so without this a room stayed lit by a torch that had
+	/// been put away. Digging a PLACED torch has always invalidated,
+	/// through `take_gi_edits`, and the whole R28 thesis is that a
+	/// carried light is not a second kind of thing.
 	#[test]
 	fn putting_a_torch_away_invalidates_where_it_was() {
 		let eye = Vec3::new(64.0, 70.0, 64.0);
@@ -6395,10 +6406,10 @@ mod net_budget_tests {
 	use super::*;
 
 	/// The whole reason the edit drain is priced in time rather than
-	/// counted: the same queue must take half as much of a 120 Hz frame as
-	/// of a 60 Hz one. The count it replaced (256) was sized against the
-	/// 16.67 ms native frame and spent the same share of an 8.33 ms web
-	/// frame, which is twice the interval it was allowed.
+	/// counted: the same queue must take proportionally less of a shorter
+	/// frame. The COUNT it replaced was sized against a native frame and
+	/// spent that same absolute time on a web frame a fraction as long,
+	/// which is far more of the interval than it was ever allowed.
 	#[test]
 	fn net_edit_budget_scales_with_the_display_interval() {
 		let at60 = net_edit_budget_ms(1000.0 / 60.0);
@@ -6408,14 +6419,14 @@ mod net_budget_tests {
 			"120 Hz must get exactly half: {at120} vs {at60}"
 		);
 		// `refresh_ms` reads zero until the estimate settles; falling back
-		// to anything but the 60 Hz interval would move every baseline.
+		// to anything but the nominal interval would move every baseline.
 		assert_eq!(net_edit_budget_ms(0.0), at60);
 		assert_eq!(net_edit_budget_ms(-1.0), at60);
 	}
 
 	/// The budget is a slice of the frame, not the frame. Nothing here
-	/// pins the exact share, but a drain allowed a quarter of the interval
-	/// is no longer a budget — the render still has to fit.
+	/// pins the exact share, but a drain allowed a large fraction of the
+	/// interval is no longer a budget — the render still has to fit.
 	#[test]
 	fn net_edit_budget_leaves_the_frame_its_interval() {
 		for hz in [30.0, 60.0, 120.0, 144.0] {
@@ -6502,7 +6513,7 @@ mod arrival_hold_tests {
 
 	/// The join's loading cover is the hold: `Welcome` no longer closes the
 	/// Connecting screen itself, so a `Welcome` that arms nothing strands
-	/// the player on "Joining world..." forever — the 5 s escape hatch
+	/// the player on "Joining world..." forever — the timeout escape hatch
 	/// cannot fire on a hold that was never set.
 	///
 	/// This shipped broken because `begin_arrival_hold` asked
@@ -6558,7 +6569,7 @@ mod arrival_hold_tests {
 		engine.update(Duration::from_millis(16));
 		assert!(engine.arrival_hold.is_some(), "held on arrival");
 
-		// Just past `AREA_SYNC_TIMEOUT_SECS` worth of 16 ms frames.
+		// Just past `AREA_SYNC_TIMEOUT_SECS` worth of the frames above.
 		let frames = (digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS / 0.016).ceil() as u32 + 1;
 		for _ in 0..frames {
 			engine.update(Duration::from_millis(16));
@@ -6689,8 +6700,9 @@ mod store_tests {
 			}
 		}
 
-		// A local edit + >5s of updates: the edit reaches the store and a
-		// player snapshot fires; maintain runs every frame.
+		// A local edit, then enough updates to cross the snapshot interval:
+		// the edit reaches the store and a player snapshot fires; maintain
+		// runs every frame.
 		let new = if engine.pipeline.block_at(1, 101, 1) == Some(BlockType::Stone) {
 			BlockType::Dirt
 		} else {
@@ -6725,8 +6737,8 @@ mod store_tests {
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
 
 		let calls = Rc::new(RefCell::new(Calls::default()));
-		// Custom arrangement: tool moved to slot 0, the inventory's block
-		// (id 3) parked in slot 4.
+		// Custom arrangement: the tool parked at the head of the bar, and
+		// the inventory's block partway along it.
 		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
 		wire[0] = WIRE_TOOL;
 		wire[4] = 3;
@@ -6772,8 +6784,8 @@ mod store_tests {
 		config.seed = Some(3.0);
 		let mut engine = Engine::new(config);
 		engine.set_world_store(Box::new(MockStore(calls)));
-		// MockStore's save has seed 7.0 ≠ backdrop 3.0: the pipeline is
-		// rebuilt from scratch, so nothing is generated at entry.
+		// MockStore's save carries a different seed from the backdrop, so the
+		// pipeline is rebuilt from scratch and nothing is generated at entry.
 		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 		let start = engine.player.pos;
 
@@ -7209,9 +7221,9 @@ mod dig_decay_tests {
 		let full = web(&engine).expect("the web is drawn while digging");
 
 		// Release: the record survives, and both the banked ticks and
-		// the web fall together. (Ten ticks, not one — the decay
-		// truncates down, so a block needing under 60 ticks loses
-		// nothing on the very first.)
+		// the web fall together. (Several ticks, not one — the decay
+		// truncates down, so a short enough block loses nothing on the
+		// very first.)
 		release(&mut engine, 10);
 		let d = engine.dig.as_ref().expect("the release kept the hold");
 		assert_eq!(d.ticks, peak, "the peak is not rewritten");
@@ -7401,11 +7413,11 @@ mod ore_capture_tests {
 	/// forever — so a stray write deletes the subject of the photograph
 	/// permanently, and silently, because the chamber still looks right.
 	///
-	/// The carve loop always guarded this. The floor plate did not, and
-	/// it is laid at `d.y - 2`, straight through the lowest rim of a
-	/// max-radius blob: the cell directly under the centre sits at
+	/// The carve loop always guarded this. The floor plate did not, and it
+	/// is laid BELOW the deposit centre, straight through the lowest rim of
+	/// a max-radius blob: the cell directly under the centre sits at
 	/// `d2 == r2`, so `Deposit::contains` falls through to `rim_open` and
-	/// keeps it three times in four.
+	/// keeps it more often than not.
 	///
 	/// `crossings` is what stops this going vacuous. It counts the vein
 	/// cells lying IN the plate's plane, so a sample that never puts one

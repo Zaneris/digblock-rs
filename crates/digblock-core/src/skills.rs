@@ -41,7 +41,7 @@ impl Skill {
 		}
 	}
 
-	/// Sentence-case display for feed lines ("Mining is now level 48").
+	/// Sentence-case display for feed lines ("Mining is now level N").
 	pub fn display(self) -> &'static str {
 		match self {
 			Skill::Mining => "Mining",
@@ -52,12 +52,14 @@ impl Skill {
 
 pub const MAX_LEVEL: u32 = 99;
 
-/// XP to advance FROM level L (index L-1) to L+1: `floor(83 · 2^(L/10))`
-/// — doubles every 10 levels. Pinned as integers rather than computed
-/// with `powf` at runtime: the values are a golden constant both sides
-/// must agree on forever, and libm rounding is not a foundation for
-/// that. Generated once at full precision; the pins in the tests below
-/// hold the table to the design table in SKILLS-DESIGN.md §2.
+/// XP to advance FROM level L (index L-1) to L+1: a slow exponential, a
+/// fixed leading coefficient against a fixed per-level growth ratio, so the
+/// price doubles over a fixed span of levels (SKILLS-DESIGN.md §2 argues
+/// the shape). THIS TABLE IS THE CURVE — it is not a cache of a formula
+/// stated elsewhere. Pinned as integers rather than computed with `powf` at
+/// runtime: the values are a golden constant both sides must agree on
+/// forever, and libm rounding is not a foundation for that. Generated once
+/// at full precision, and `xp_curve_table_is_pinned` holds it.
 const XP_TO_NEXT: [u64; (MAX_LEVEL - 1) as usize] = [
 	88, 95, 102, 109, 117, 125, 134, //
 	144, 154, 166, 177, 190, 204, 219, //
@@ -76,7 +78,7 @@ const XP_TO_NEXT: [u64; (MAX_LEVEL - 1) as usize] = [
 ];
 
 /// XP required to advance from `level` to `level + 1`; `None` at the
-/// cap (and for the impossible level 0).
+/// cap (and below the first level, which no player is ever at).
 pub fn xp_to_next(level: u32) -> Option<u64> {
 	if !(1..MAX_LEVEL).contains(&level) {
 		return None;
@@ -84,7 +86,8 @@ pub fn xp_to_next(level: u32) -> Option<u64> {
 	Some(XP_TO_NEXT[(level - 1) as usize])
 }
 
-/// Cumulative XP at which `level` is first reached (level ≤ 1 → 0).
+/// Cumulative XP at which `level` is first reached (nothing is owed at
+/// the first level or below).
 pub fn total_xp_for(level: u32) -> u64 {
 	let level = level.min(MAX_LEVEL);
 	XP_TO_NEXT
@@ -164,33 +167,34 @@ impl SkillSet {
 
 // ---- dig speed -------------------------------------------------------
 
-/// The levels at which a dig gets faster: every FIFTH level, plus 99.
+/// The levels at which a dig gets faster: a fixed stride up the ladder,
+/// plus the cap.
 ///
-/// A dig speeds up twenty times in a life, not ninety-eight. Under the
-/// old per-level curve most levels moved a hold by a single tick or by
-/// nothing at all, so the reward read as noise; a fifth of the levels
-/// carrying five times as much is the same total speedup made legible.
+/// A dig speeds up a couple of dozen times in a life rather than at every
+/// level. Under the old per-level curve most levels moved a hold by a
+/// single tick or by nothing at all, so the reward read as noise; a
+/// fraction of the levels carrying proportionally more is the same total
+/// speedup made legible.
 /// The grid is deliberately independent of the curve's shape — this
 /// table says WHEN a player gets faster, [`DIG_TAPER`] says by how much.
 pub const DIG_STEPS: [u32; 21] = [
 	1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99,
 ];
 
-/// How much of the journey from the level-1 speed to the level-99 speed
-/// is complete at each of [`DIG_STEPS`], in permille. A pinned integer
+/// How much of the journey from a family's novice speed to its mastery
+/// speed is complete at each of [`DIG_STEPS`], in permille. A pinned integer
 /// table, never a `powf` — same reason as the XP curve: it is a golden
 /// both ends must agree on to the unit, and a float would let two
 /// platforms round a hold apart.
 ///
 /// **The increments strictly decrease, and that IS the design.** Each
-/// jump is roughly an eighth smaller than the one before it (139, 120,
-/// 105, 91 … 13, 11, 10), so the very first — level 1 → 5 — is the
-/// biggest speedup a player will ever feel, and every later one lands a
-/// little softer. Both halves of that matter: the early game is where a
-/// slow dig is most discouraging, and diminishing returns are what stop
-/// level 90 from being a rounding error. The relative gain falls too
-/// (stone: 11.7% at the first step, 2.6% at the last), so the curve
-/// eases off in felt terms and not merely in ticks.
+/// jump is a constant fraction smaller than the one before it, so the
+/// very first step is the biggest speedup a player will ever feel, and
+/// every later one lands a little softer. Both halves of that matter: the
+/// early game is where a slow dig is most discouraging, and diminishing
+/// returns are what stop a late level from being a rounding error. The
+/// relative gain falls too, not just the absolute one, so the curve eases
+/// off in felt terms and not merely in ticks.
 ///
 /// One table serves every family: a family declares only where its range
 /// starts and ends, and the SHAPE of the journey between them is shared.
@@ -200,9 +204,9 @@ const DIG_TAPER: [u32; 21] = [
 	990, 1000,
 ];
 
-/// Which entry of [`DIG_STEPS`]/[`DIG_TAPER`] a level spends: 1..=4 all
-/// dig at the level-1 speed, 5..=9 at the level-5 speed, and so on to
-/// 95..=98, with 99 its own final step.
+/// Which entry of [`DIG_STEPS`]/[`DIG_TAPER`] a level spends: every level
+/// digs at the speed of the last step it reached, and the cap is its own
+/// final step.
 fn dig_step_index(level: u32) -> usize {
 	let level = level.clamp(1, 99);
 	if level >= 99 {
@@ -222,19 +226,19 @@ pub fn dig_speed_step(level: u32) -> u32 {
 }
 
 /// §5.1's per-family dig-speed multiplier in permille: two endpoints per
-/// family — the level-1 speed and the level-99 speed — with [`DIG_TAPER`]
+/// family — its novice speed and its mastery speed — with [`DIG_TAPER`]
 /// deciding how the journey between them is spent. A family therefore
 /// says only how hard its material resists a novice and how fast mastery
 /// gets; the shape of the climb is the same for all of them. Fixed is
 /// flat: foliage is already near-instant, the torch is a fixture, and the
 /// water scoop's duration is pinned to the viewmodel swing.
 ///
-/// The level-99 endpoint IS the speed floor — no second clamp. There is
-/// no mid anchor: level 30 was pinned at 1000 for every family through
-/// SIM v12–v17, which made that one level reproduce the shipped hardness
-/// table exactly, and SIM v18 dropped it. So `hardness_ticks` is a BASE
-/// the curve scales at every level, and outside `Fixed` no level spends
-/// it — don't reintroduce a `dig_required(b, h, 30) == h` assertion.
+/// The mastery endpoint IS the speed floor — no second clamp. There is no
+/// mid anchor: one mid-ladder level used to be pinned so that it
+/// reproduced the shipped hardness table exactly, through SIM v12–v17, and
+/// SIM v18 dropped it. So `hardness_ticks` is a BASE the curve scales at
+/// every level, and outside `Fixed` no level spends it unscaled — don't
+/// reintroduce an assertion that some level returns the raw hardness.
 pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	use crate::block::DigFamily;
 	let (start, end) = match family {
@@ -246,9 +250,9 @@ pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	start - (DIG_TAPER[dig_step_index(level)] * (start - end) + 500) / 1000
 }
 
-/// THE hold-to-dig duration both sides compute: `max(1,
-/// round(hardness · family multiplier))` ticks at the digger's Mining
-/// level. A level-up landing mid-hold skews client/server by a few
+/// THE hold-to-dig duration both sides compute: the hardness scaled by the
+/// family multiplier for the digger's Mining level, rounded and floored to
+/// at least one tick. A level-up landing mid-hold skews client/server by a few
 /// ticks at most, which `dig_grace` absorbs — no new tolerance
 /// machinery. Hardness stays a separate parameter because callers hold
 /// the y-gated `dig_hardness(y)` result (the bedrock rule lives there).
@@ -268,16 +272,16 @@ pub const DIG_DECAY_TICKS: u32 = 60;
 /// applied on top of the family curve when the pick is the ACTIVE tool.
 ///
 /// **Level-only, never derived from how many cells actually qualify.** A
-/// world-derived multiplier would let client and server disagree by a
-/// factor of three whenever their worlds differ by one cell, which is far
+/// world-derived multiplier would let client and server disagree by the
+/// whole multiplier whenever their worlds differ by one cell, which is far
 /// outside what `dig_grace` absorbs — the honest outcomes are a free
 /// completion or a `DigIncomplete` on a dig the player finished.
 ///
 /// The consequence is deliberate: a LONE block costs the multiplier too.
-/// That is why the numbers are what they are — 1.75× spread against a
-/// 0.6× tool bonus nets 1.05×, so swinging at one block costs about what
-/// a bare hand does and the pick is always worth holding, while a full
-/// row is three blocks in the time of one.
+/// That is why the numbers are what they are — the spread penalty is set
+/// against an offsetting tool bonus that very nearly cancels it, so
+/// swinging at one block costs about what a bare hand does and the pick is
+/// always worth holding, while a full row clears in the time of one.
 pub fn pick_permille(level: u32) -> u32 {
 	match crate::unlock::pick_cells(level) {
 		9 => 1800,
@@ -309,8 +313,8 @@ pub fn dig_required_with(
 /// completion gate charges it, and offline play runs the same call, so
 /// no two of them can drift. Integer and exact — it takes the ELAPSED
 /// idle count rather than accumulating a per-tick subtraction, because a
-/// fractional per-tick rate (`required / 60` is under 1 for every block
-/// in the game) rounds to zero and would decay nothing at all.
+/// fractional per-tick rate would be under one for every block in the game,
+/// so it would round to zero and decay nothing at all.
 ///
 /// Truncating down means the bar always outlives its arithmetic by up
 /// to a tick, and reaches exactly zero at [`DIG_DECAY_TICKS`] for every
@@ -331,7 +335,7 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // per-action XP is fixed for life. Shared verbatim by the server's
 // chokepoints and the offline engine.
 
-/// Mining XP for a completed dig of `block`: `ceil(hardness_ticks / 6)`.
+/// Mining XP for a completed dig of `block`, scaled down from its hardness.
 /// Zero for the undiggable (which can't complete a dig anyway).
 pub fn dig_xp(block: BlockType) -> u64 {
 	match block.hardness_ticks() {
@@ -340,8 +344,8 @@ pub fn dig_xp(block: BlockType) -> u64 {
 	}
 }
 
-/// Alchemy XP per block extracted at the bench: `ceil(base_total / 3)`
-/// of the block's BASE yield — fixed for life, never the level-scaled
+/// Alchemy XP per block extracted at the bench, scaled down from the
+/// block's BASE yield — fixed for life, never the level-scaled
 /// outcome (§4.1).
 pub fn convert_xp(block: BlockType) -> u64 {
 	u64::from(crate::alchemy::extract_total_base(block)).div_ceil(3)
@@ -369,8 +373,8 @@ pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
 	})
 }
 
-/// Alchemy XP per crafted batch: `ceil(ideal_cost / 3)` summed across
-/// the recipe's cost lines (pre-waste — fixed for life). Zero for
+/// Alchemy XP per crafted batch, scaled down from the ideal cost summed
+/// across the recipe's cost lines (pre-waste — fixed for life). Zero for
 /// uncraftable items.
 pub fn craft_xp(item: BlockType) -> u64 {
 	match crate::alchemy::craft_ideal(item) {
@@ -393,8 +397,9 @@ pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {
 mod tests {
 	use super::*;
 
-	/// The golden cumulative table from SKILLS-DESIGN.md §2. If curve
-	/// tuning is ever wanted, this pin moves WITH it, deliberately.
+	/// The golden cumulative pin on [`XP_TO_NEXT`] (SKILLS-DESIGN.md §2 for
+	/// the shape it buys). If curve tuning is ever wanted, this pin moves
+	/// WITH it, deliberately.
 	#[test]
 	fn xp_curve_table_is_pinned() {
 		for (level, to_next, cumulative) in [
@@ -465,13 +470,13 @@ mod tests {
 	}
 
 	/// §5.1's per-family endpoints, held exactly, plus goldens along the
-	/// shared taper — level 30 is now derived, not an anchor (SIM v18 drops
+	/// shared taper — the old mid-ladder anchor is now derived (SIM v18 drops
 	/// the mid-curve parity with the shipped hardness table), so it is
 	/// pinned here as an OUTPUT to catch a taper edit nobody meant.
 	#[test]
 	fn dig_speed_anchors_are_pinned() {
 		use crate::block::DigFamily as F;
-		// The two design inputs per family: level 1 and level 99.
+		// The two design inputs per family: its novice and mastery endpoints.
 		for (family, start, end) in [
 			(F::Fixed, 1000, 1000),
 			(F::Soft, 1875, 417),
@@ -503,7 +508,7 @@ mod tests {
 				);
 			}
 		}
-		// The §5.1 table's spot values (60 Hz ticks).
+		// The §5.1 table's spot values, in sim ticks.
 		use BlockType as B;
 		assert_eq!(dig_required(B::Stone, 90, 1), 230, "stone 3.83s at level 1");
 		assert_eq!(dig_required(B::Stone, 90, 30), 114, "stone 1.90s at 30");
@@ -513,20 +518,21 @@ mod tests {
 		assert_eq!(dig_required(B::Wood, 60, 99), 30, "wood 0.50s at 99");
 		assert_eq!(dig_required(B::Dirt, 30, 1), 56, "dirt 0.93s at level 1");
 		assert_eq!(dig_required(B::Dirt, 30, 30), 30, "dirt 0.50s at 30");
-		// Fixed never scales: leaves and the scoop at 1 / 30 / 99.
+		// Fixed never scales: leaves and the scoop hold all the way up.
 		for level in [1, 30, 99] {
 			assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
 			assert_eq!(dig_required(B::Water, 20, level), 20, "scoop flat");
 		}
 	}
 
-	/// The grid and the taper together: a dig gets faster exactly twenty
+	/// The grid and the taper together: a dig gets faster a fixed number of
 	/// times, the FIRST jump is the biggest of the game, and every jump
 	/// after it is strictly smaller than the one before.
 	#[test]
 	fn every_dig_speedup_is_smaller_than_the_one_before() {
 		use crate::block::DigFamily as F;
-		// The grid: 1..=4 hold at 1, then the multiples of 5, then 99.
+		// The grid: the earliest levels hold at the first step, then the
+		// stride, then the cap on its own.
 		for level in 1..=99 {
 			let expect = match level {
 				1..=4 => 1,
@@ -582,8 +588,8 @@ mod tests {
 				);
 			}
 		}
-		// A stone dig gets faster on the fives and nowhere else, and the
-		// first jump (27 ticks) dwarfs the last (1).
+		// A stone dig gets faster on the stride and nowhere else, and the
+		// first jump dwarfs the last.
 		use BlockType as B;
 		assert_eq!(dig_required(B::Stone, 90, 4), 230, "still the level-1 hold");
 		assert_eq!(
@@ -639,8 +645,8 @@ mod tests {
 		assert_eq!(dig_decayed(1, need, 1), 0);
 	}
 
-	/// §5.2's award table: `ceil(hardness_ticks / 6)` of the SHIPPED
-	/// hardness values — XP is fixed per action for life.
+	/// §5.2's award table, derived from the SHIPPED hardness values — XP is
+	/// fixed per action for life.
 	#[test]
 	fn dig_xp_follows_the_hardness_table() {
 		use BlockType as B;
@@ -661,9 +667,8 @@ mod tests {
 		assert_eq!(dig_xp(B::Air), 0, "undiggable pays nothing");
 	}
 
-	/// §4.1's table, keyed on BASE yields/costs: Stone/Wood/Grass 9,
-	/// Dirt 6, Snow 3, the bucket charge 6, Rubble 8 — fixed for life
-	/// regardless of level-scaled outcomes.
+	/// §4.1's table, keyed on BASE yields/costs — fixed for life regardless
+	/// of level-scaled outcomes.
 	#[test]
 	fn alchemy_xp_derives_from_the_base_tables() {
 		use crate::inventory::AlchemyOp;
@@ -687,8 +692,7 @@ mod tests {
 			}),
 			27
 		);
-		// Crafts pay a third of their IDEAL cost, rounded up: stairs
-		// 18 → 6, a raw Dirt block (23 + 5 = 28) → 10.
+		// Crafts pay a fixed fraction of their IDEAL cost, rounded up.
 		assert_eq!(craft_xp(B::WoodStairs), 6);
 		assert_eq!(craft_xp(B::Dirt), 10);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");

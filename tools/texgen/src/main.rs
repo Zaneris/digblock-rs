@@ -3,7 +3,8 @@
 //! established pixel-art style. Run manually (`cargo run -p texgen`) and
 //! commit the outputs — assets are `include_bytes!`d, so generated PNGs
 //! live in git; this tool is checked in for provenance and regeneration.
-//! Output matches the loader contract: 64×64 8-bit RGB, non-interlaced.
+//! Output matches the loader contract: `SIZE`-square 8-bit RGB,
+//! non-interlaced.
 //!
 //! A run rewrites EVERY output, so it is not a free operation: the noisy
 //! recipes below share one rng, so adding, removing or reordering a
@@ -64,9 +65,9 @@ fn main() {
 
 	// Torch: the side texture maps the post's timber to the LOWER rows and
 	// the flame glow to the top rows (a box face's v runs top-down from
-	// the cell's top, so the flame head at y 7..10 samples rows 2..5);
-	// the flame top face gets its own radial-glow layer. Planed lumber and
-	// not the log's bark, because a torch is a whittled stick.
+	// the cell's top, so the shape's flame head samples the texture's TOP
+	// rows); the flame top face gets its own radial-glow layer. Planed
+	// lumber and not the log's bark, because a torch is a whittled stick.
 	save(
 		"TorchSide.png",
 		torch_side(&load("LumberLight.png"), &mut rng),
@@ -90,8 +91,9 @@ fn main() {
 	// They also darken their stone BODY hard (the `body` scale), and that
 	// is the load-bearing half. Emissive is a per-BLOCK flag, not a
 	// per-texel one: a glowing block renders its whole face at full
-	// albedo, so at body 1.0 a Glowvein in a black cave reads as a
-	// glowing white rock rather than as rock with glowing crystals in it.
+	// albedo, so with the body left undarkened a Glowvein in a black cave
+	// reads as a glowing white rock rather than as rock with glowing
+	// crystals in it.
 	// The contrast has to live in the texture, because the shader has no
 	// way to express it.
 	for (name, core, rim, body) in [
@@ -299,10 +301,10 @@ fn lamp(lit: [u8; 3], frame: [u8; 3], rng: &mut Rng) -> RgbImage {
 /// Stone with mineral flecks: a coloured core, a lighter catch rim, and a
 /// dark socket around it so each fleck sits IN the rock rather than on it.
 ///
-/// Eighteen flecks, not the gravel recipe's forty: a vein has to read as
-/// rock that HAS ore in it. At forty the stone disappeared and the face
-/// became a solid colour, which is the same mistake as a fleck with no
-/// socket, one scale up.
+/// Far fewer flecks than the gravel recipe scatters pebbles: a vein has
+/// to read as rock that HAS ore in it. At the gravel count the stone
+/// disappeared and the face became a solid colour, which is the same
+/// mistake as a fleck with no socket, one scale up.
 fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], body: f32, rng: &mut Rng) -> RgbImage {
 	let mut out = stone.clone();
 	for p in out.pixels_mut() {
@@ -376,12 +378,12 @@ fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Wood post darkened, with the top ~5/12 of rows turned to flame glow
+/// Wood post darkened, with the top band of rows turned to flame glow
 /// (white-hot core rows fading through yellow to orange where the flame
 /// head's side faces sample).
 fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = wood.clone();
-	let flame_rows = SIZE * 5 / 12; // rows 0..≈26 of 64
+	let flame_rows = SIZE * 5 / 12; // the flame band, in the shape's twelfths
 	for (_, y, p) in out.enumerate_pixels_mut() {
 		if y < flame_rows {
 			// 0 at the very top (cool fringe) → 1 at the head's base.
@@ -576,7 +578,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 	]
 }
 
-/// Green → yellow-tan: hue −30°, saturation ×0.8, value ×1.05.
+/// Green → yellow-tan: hue swung back toward yellow, a touch desaturated
+/// and a touch lighter.
 fn dry(p: [u8; 3]) -> [u8; 3] {
 	let (h, s, v) = rgb_to_hsv(p);
 	hsv_to_rgb(h - 30.0, s * 0.8, (v * 1.05).min(1.0))
@@ -608,7 +611,7 @@ fn mud(dirt: &RgbImage, rng: &mut Rng) -> RgbImage {
 
 fn sandstone(sand: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = sand.clone();
-	// Horizontal strata: darken bands of 3–6 rows by a per-band amount,
+	// Horizontal strata: darken bands of a few rows by a per-band amount,
 	// wrapped per-pixel noise keeping the grain. Row phases come from the
 	// seeded stream, so regeneration is byte-identical.
 	let mut y = 0u32;
@@ -638,8 +641,8 @@ fn gravel(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 		let n = rng.signed(8);
 		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
 	}
-	// ~40 pebbles: small lightened/darkened blobs with a darker 1px rim,
-	// wrapped modularly so the texture keeps tiling.
+	// Pebbles: small lightened/darkened blobs with a darker rim one pixel
+	// wide, wrapped modularly so the texture keeps tiling.
 	let s = SIZE as i32;
 	for _ in 0..40 {
 		let (cx, cz) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);

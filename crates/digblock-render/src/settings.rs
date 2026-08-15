@@ -10,18 +10,18 @@ pub const DRAW_MIN: i32 = 10;
 pub const DRAW_MAX: i32 = 32;
 pub const DRAW_STEP: i32 = 2;
 
-/// Volume sliders: multipliers on the authored gains. 1.0 (= 100%) is
+/// Volume sliders: multipliers on the authored gains. Unity gain sits at
 /// the slider midpoint so quiet mixes can be boosted, not just cut.
 pub const VOL_MAX: f32 = 2.0;
 pub const VOL_STEP: f32 = 0.1;
 
 /// Render-scale bounds. **No slider exposes this today** — render scale is
-/// locked at 100% for players and only `--render-scale` / `?renderscale=`
-/// move it, because the upscale is a plain bilinear blit: dropping it to
-/// 0.7 measured mean 18.61/255 against the GI notch's 0.11 for the same
-/// 30% (BENCH.md 2026-08-12). The whole path stays built, wired and
-/// reachable from the flag so it does not rot, and re-exposing it is a
-/// slider row plus an EASU/RCAS filter in the upscale pass.
+/// locked at native for players and only `--render-scale` / `?renderscale=`
+/// move it, because the upscale is a plain bilinear blit: notching it down
+/// measured an image delta orders of magnitude worse than the GI notch that
+/// buys the same time (BENCH.md 2026-08-12). The whole path stays built,
+/// wired and reachable from the flag so it does not rot, and re-exposing it
+/// is a slider row plus an EASU/RCAS filter in the upscale pass.
 ///
 /// `RENDER_SCALE_STEP` is what that row would step by; it is unused while
 /// the row is hidden.
@@ -37,10 +37,11 @@ pub const RENDER_SCALE_STEP: f32 = 0.05;
 /// resolution, so the render:GI ratio has to be a clean integer or the
 /// footprint it walks stops matching the texels it reads. It is also why
 /// GI scale is expressed against the RENDER size and not the surface —
-/// anchored to native, render 0.7 with a half-res GI would ask for a
-/// ratio of 0.714.
+/// anchored to native instead, a fractional render scale under a halved GI
+/// would ask for a ratio that is not an integer at all.
 ///
-/// 2 is the shipped default, so a default frame is unchanged.
+/// [`GI_SCALE_DEFAULT`] is the shipped notch, so a default frame is
+/// unchanged.
 pub const GI_SCALE_DIVISORS: [u32; 4] = [1, 2, 3, 4];
 pub const GI_SCALE_DEFAULT: u32 = 2;
 
@@ -86,7 +87,7 @@ impl Default for Settings {
 			sfx_vol: 1.0,
 			ssr: true,
 			ui_scale: 1.0,
-			// 1.0, NOT the high-DPI default. This struct is also what
+			// Native, NOT the high-DPI default. This struct is also what
 			// bench/screenshot/drill runs use (they skip settings load
 			// entirely), and those must stay at native or every recorded
 			// baseline shifts under them. The density-derived default is
@@ -102,22 +103,15 @@ impl Default for Settings {
 /// display's backing scale. Applied once, and only when the player has
 /// expressed no preference — see `EngineConfig::gfx_defaults_auto`.
 ///
-/// A high-density panel spends ~4x the pixels of its logical window, and
-/// the GI resolve is 60% of this frame, so something has to give there.
-/// **Which** term gives is a measured call, not a taste one (BENCH.md
-/// 2026-08-12, interleaved at 5.43 MP):
-///
-/// | | avg ms | vs native | image delta |
-/// |---|---|---|---|
-/// | render 1.0, gi 2 | 12.50 | — | — |
-/// | render 0.7, gi 2 | 8.74 | −30% | mean 18.61/255 |
-/// | render 1.0, gi 3 | 8.72 | −30% | mean **0.11**/255 |
-///
-/// The two buy the same time and the GI notch costs ~170x less picture,
-/// because the a-trous filter and the bilateral upsample already
-/// reconstruct that signal — so a dense display keeps the world at NATIVE
-/// resolution and drops lighting detail instead. Render scale is not a
-/// knob players have at all today; see `RENDER_SCALE_MIN`.
+/// A high-density panel spends a multiple of its logical window's pixels,
+/// and the GI resolve is the largest term in that frame, so something has
+/// to give there. **Which** term gives is a measured call, not a taste one:
+/// the interleaved A/B in BENCH.md 2026-08-12 has a render-scale notch and
+/// a GI-scale notch buying the SAME time, with the GI notch costing orders
+/// of magnitude less picture — because the a-trous filter and the bilateral
+/// upsample already reconstruct that signal. So a dense display keeps the
+/// world at NATIVE resolution and drops lighting detail instead. Render
+/// scale is not a knob players have at all today; see `RENDER_SCALE_MIN`.
 pub fn density_gi_div(backing_scale: f32) -> u32 {
 	if backing_scale >= 1.5 {
 		3
@@ -196,7 +190,7 @@ mod tests {
 		assert_eq!(Settings::default().render_scale, 1.0);
 		assert_eq!(Settings::default().gi_scale_div, GI_SCALE_DEFAULT);
 		// High density drops LIGHTING DETAIL, not resolution — the two
-		// measured the same win and this one costs ~170x less picture.
+		// measured the same win and this one costs far less picture.
 		assert_eq!(density_gi_div(2.0), 3);
 		assert_eq!(density_gi_div(1.0), GI_SCALE_DEFAULT);
 

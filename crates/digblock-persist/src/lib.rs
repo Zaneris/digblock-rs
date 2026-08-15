@@ -53,7 +53,8 @@ pub struct WorldSave {
 	/// legacy save (the engine derives the arrangement).
 	pub grid: Vec<u16>,
 	/// Per-skill XP totals as `(skill index, total)` pairs. Empty =
-	/// pre-skills save (level 1; nothing else is touched).
+	/// pre-skills save (every skill derives at its base level; nothing
+	/// else is touched).
 	pub skills: Vec<(u8, u64)>,
 	pub player: Option<PlayerPersist>,
 }

@@ -130,11 +130,11 @@ mod tests {
 	}
 
 	/// A screen is a panel over a dimmed world, and every screen should
-	/// present that the same way. The menu dimmed to `0xA0` behind a
-	/// `0x90000000` panel while the in-game screens dimmed to `0x70`
-	/// behind a `0xC0101010` one — two separate `PANEL_BG` constants that
-	/// had quietly drifted apart, which read as the pages having different
-	/// transparency when you tabbed between them.
+	/// present that the same way. The menu laid a heavier dim behind a
+	/// lighter panel while the in-game screens did the opposite — two
+	/// separate `PANEL_BG` constants that had quietly drifted apart, which
+	/// read as the pages having different transparency when you tabbed
+	/// between them.
 	#[test]
 	fn every_screen_dims_and_panels_the_same_way() {
 		use crate::ui::theme;
@@ -153,7 +153,7 @@ mod tests {
 				.iter()
 				.find(|(rect, _)| *rect == full)
 				.unwrap_or_else(|| panic!("{name} drew no full-screen dim"));
-			// `daylight` 1.0 leaves `scaled_dim` a no-op, so this is the
+			// Full `daylight` leaves `scaled_dim` a no-op, so this is the
 			// authored constant.
 			assert_eq!(dim.1, theme::SCREEN_DIM, "{name} dim");
 			assert!(
@@ -167,9 +167,10 @@ mod tests {
 
 	/// The invariant the whole `ui::theme` module exists to hold: a screen
 	/// draws all of its text at the frame's one text size. The alchemy
-	/// screen broke it twice at once — a 1.35× title, and a shrink-to-fit
-	/// that scaled its glyph by an arbitrary fraction — and the result was
-	/// immediately visible as "the alchemy page uses different fonts".
+	/// screen broke it twice at once — an enlarged title, and a
+	/// shrink-to-fit that scaled its glyph by an arbitrary fraction — and
+	/// the result was immediately visible as "the alchemy page uses
+	/// different fonts".
 	///
 	/// The only sanctioned exception in the entire UI is
 	/// [`scale::FIXED_GLYPH_PX`], the debug overlay's pinned diagnostic
@@ -178,9 +179,9 @@ mod tests {
 	fn every_screen_draws_text_at_one_size() {
 		use crate::ui::theme;
 		for size in [(1280u32, 800u32), (1280, 720), (2560, 1600), (960, 600)] {
-			// Includes the off-quarter scales a 5%-step interface-scale
-			// preference now produces (1.0 × 0.7, 2.0 × 0.85): the frame's
-			// size is whatever `glyph_px` gives, not a value off a grid.
+			// Includes the off-grid scales a fine-stepped interface-scale
+			// preference now produces: the frame's size is whatever
+			// `glyph_px` gives, not a value off a grid.
 			for &s in &[0.7f32, 0.75, 1.0, 1.7, 1.75, 2.5] {
 				let want = Style::new(s).glyph;
 				for (name, dl) in each_screen(size, s) {
@@ -195,17 +196,18 @@ mod tests {
 					if name.starts_with("alchemy") || name == "inventory" {
 						// The screens that can outgrow their window, so a
 						// fit pass may step the whole page down. Both draw
-						// the same six-row, 54-slot grid — the inventory
-						// screen with a title row on top, which makes it the
+						// the same inventory grid — the inventory screen
+						// with a title row on top, which makes it the
 						// TALLER of the two, and it went without a ladder
 						// long enough to hang its first row off the top of
 						// an ordinary window.
 						//
-						// What a fit pass may not do is invent a size: every
-						// step is a quarter off the frame's own scale, not a
-						// fraction of it, and the last one is the floor it
-						// bottoms out on — `theme::FIT_FLOOR`, which sits
-						// BELOW the interface scale's own floor because the
+						// What a fit pass may not do is invent a size:
+						// every step is one `theme::fit_scale` rung off the
+						// frame's own scale, not a fraction of it, and the
+						// last one is the floor it bottoms out on —
+						// `theme::FIT_FLOOR`, which sits BELOW the
+						// interface scale's own floor because the
 						// alternative to a cramped page is an unreachable
 						// one.
 						let mut rungs: Vec<f32> = (0..16)

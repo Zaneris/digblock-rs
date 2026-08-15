@@ -156,11 +156,11 @@ async fn join(
 	Ok((digblock_net_web::connect(&join.url, hash), token))
 }
 
-/// Decode the master's 32-char hex join token.
+/// Decode the master's hex join token.
 ///
 /// The ASCII-hex check is load-bearing, not belt-and-braces: `hex.len()` is
-/// BYTES, so a 32-byte string carrying a multi-byte character (`"€" +
-/// 29×"a"`) passes the length gate and then panics on
+/// BYTES, so a string of the right BYTE length carrying a multi-byte
+/// character passes the length gate and then panics on
 /// `&hex[i * 2..i * 2 + 2]`, which splits it mid-codepoint — aborting the
 /// wasm module. `?master=` is attacker-supplied in any shared link, so this
 /// needs no compromise to reach. `parse_sha256_hex` beside it has always

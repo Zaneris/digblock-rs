@@ -1,10 +1,11 @@
 //! Face directions — pure grid geometry, shared by the block table,
 //! mesher, and anything that reasons about faces. Deliberately BELOW
 //! block.rs in the layering: the base data modules must not depend on
-//! the 1400-line mesher.
+//! the mesher.
 
 /// Directions in the Java normal-table order (VertTex.glsl normal()):
-/// 0=West(+x) 1=North(+z) 2=South(−z) 3=Bottom(−y) 4=Top(+y) 5=East(−x).
+/// West(+x), North(+z), South(−z), Bottom(−y), Top(+y), East(−x). The
+/// discriminants are that order and nothing else reads them by value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
 pub enum Dir {

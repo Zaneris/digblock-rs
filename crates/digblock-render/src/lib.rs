@@ -19,8 +19,6 @@ mod pipeline_builder;
 mod players;
 mod renderer;
 pub mod settings;
-// DORMANT since P4 (RTGI replaced shadow maps); P6 deletes the module.
-#[allow(dead_code)]
 mod sky;
 mod smoothing;
 mod spray;

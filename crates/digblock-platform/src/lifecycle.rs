@@ -62,7 +62,7 @@ pub enum Action {
 	Exit,
 }
 
-/// Ordered actions for one event (at most two today).
+/// Ordered actions for one event (a short list today).
 pub type Actions = Vec<Action>;
 
 /// Frames a fatal acquire error is treated as loss-suspect (retried)
@@ -308,7 +308,7 @@ mod tests {
 	fn fatal_acquire_is_loss_suspect_then_exits() {
 		let mut l = Lifecycle::new();
 		l.on(Event::OsResumed);
-		// No DeviceLost ever arrives: two retry frames, then give up.
+		// No DeviceLost ever arrives: the whole retry budget, then give up.
 		assert_eq!(
 			acts(&mut l, Event::SurfaceFatal),
 			vec![Action::RetryNextFrame]
@@ -352,7 +352,7 @@ mod tests {
 		);
 		l.on(Event::OsSuspended);
 		l.on(Event::OsResumed);
-		// Fresh budget after the resume: two retries again before exit.
+		// Fresh budget after the resume: the full allowance again before exit.
 		assert_eq!(
 			acts(&mut l, Event::SurfaceFatal),
 			vec![Action::RetryNextFrame]

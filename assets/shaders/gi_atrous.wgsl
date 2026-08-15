@@ -3,23 +3,24 @@
 // run twice with a doubling tap stride.
 //
 // WHY IT EXISTS, measured rather than assumed. Without it every bit of
-// variance reduction in this system is temporal, which forces the history
-// deep — N_MAX was 512 — and a 512-frame SCREEN-SPACE history cannot
-// survive a moving camera. Reprojection is exact for static geometry, but
-// the fetch still lands between texels, and resampling a half-res buffer
-// every frame for hundreds of frames drags the accumulated image along the
-// direction of travel. Walking one block forward and one back with the
-// ground three blocks ahead (`--walk`, GI-DESIGN.md "Measuring motion")
-// pulled a feathered grey trail several blocks out of a pit shadow.
+// variance reduction in this system is temporal, which forces N_MAX deep
+// — and a deep SCREEN-SPACE history cannot survive a moving camera.
+// Reprojection is exact for static geometry, but the fetch still lands
+// between texels, and resampling a half-res buffer every frame for the
+// whole length of that history drags the accumulated image along the
+// direction of travel. Walking forward and back with the ground a few
+// blocks ahead (`--walk`, GI-DESIGN.md "Measuring motion") pulled a
+// feathered grey trail out of a pit shadow.
 //
 // The bisect: with accumulation switched off entirely the walked and
-// warped frames agree to **mean 0.001 over 0.00% of pixels** — the voxel
-// window and both probe cascades are bit-identical either way, so none of
-// it was upstream. At N_MAX = 16 the smear is simply gone and the crop
-// matches the still frame. At 512 it is severe. There is no N that is both
-// sharp under motion and clean at rest, and that is precisely the trade a
-// spatial filter removes: it buys back the samples a short history gives
-// up, so the history no longer has to be the only estimator.
+// warped frames agree **to the capture-noise floor** — the voxel window
+// and both probe cascades are bit-identical either way, so none of it was
+// upstream. At a short N_MAX the smear is simply gone and the crop
+// matches the still frame; at a deep one it is severe. There is no N that
+// is both sharp under motion and clean at rest, and that is precisely the
+// trade a spatial filter removes: it buys back the samples a short
+// history gives up, so the history no longer has to be the only
+// estimator.
 //
 // Two signals, and since the sun ray went deterministic they are in two
 // different BUSINESSES here, which is why each has its own gate:
@@ -27,7 +28,7 @@
 // - INDIRECT is a genuinely stochastic 1-spp gather. Its regime is the
 //   original SVGF trade: filter while the history is short (n below
 //   N_CONVERGED), shut off once the temporal estimate has converged —
-//   measured a no-op there (mean change 0.00-0.08 where n sat at N_MAX).
+//   measured a no-op there (no visible change where n sat at N_MAX).
 //
 // - SUN is deterministic per pixel with a static dither, and its filter
 //   is not denoising at all: it is RECONSTRUCTION. gi_resolve stores the
@@ -57,7 +58,8 @@
 // drift out of step with the accumulator the way a separate buffer can.
 
 struct Atrous {
-	// x tap stride in texels (1, then 2), y unused.
+	// x tap stride in texels (doubling between the two iterations),
+	// y unused.
 	step: vec4f,
 }
 
@@ -65,20 +67,21 @@ struct Atrous {
 @group(0) @binding(1) var src_indirect: texture_2d<f32>;
 @group(0) @binding(2) var src_sun: texture_2d<f32>;
 
-// The a-trous kernel, 3x3 separable, and the reason the stride doubles
-// instead of the kernel growing: two passes at strides 1 and 2 cover 7x7
-// for 18 taps. SVGF specifies the 5x5 B3 spline, reaching 11x11 for 50; it
-// was built and measured here, and it buys a walk-regime residual of 0.522
-// against this one's 0.578 for 0.31 ms against 0.14 — a tenth of the
-// remaining error for twice the cost, at a point where the artifact it
-// exists to remove is already gone from the picture in both. The wider
-// kernel is the one to reach for if the history floor ever drops.
+// The a-trous kernel, separable, and the reason the stride doubles
+// instead of the kernel growing: two narrow passes at doubling strides
+// cover the same footprint a single wide kernel would, for a fraction of
+// the taps. SVGF specifies the B3 spline, which reaches further for
+// several times the taps; it was built and measured here, and it buys a
+// slightly smaller walk-regime residual for twice the cost, at a point
+// where the artifact it exists to remove is already gone from the picture
+// in both. The wider kernel is the one to reach for if the history floor
+// ever drops.
 const H = array<f32, 3>(0.25, 0.5, 0.25);
 const R = 1;
 
 // Above this the temporal estimate has already converged and the INDIRECT
 // filter is measurably a no-op — the near ground, where n sits at N_MAX,
-// showed a mean change of 0.00-0.08 with it running. Skipping it there is
+// showed no visible change with it running. Skipping it there is
 // free at rest, which is most of the time a player spends looking at
 // anything. The sun reconstruction deliberately does NOT share this gate —
 // see the header.
@@ -99,9 +102,9 @@ const DEPTH_K = 0.02;
 // Below this penumbra width (half-res texels) the edge is sharper than a
 // texel and there is nothing to reconstruct.
 const PEN_MIN = 0.5;
-// The sun taps' stride multiplier tops out here: with base strides 1 and 2
-// the two iterations then reach 1*4 + 2*4 = 12 texels of support, which is
-// gi_resolve's PEN_MAX — the two constants are pinned together by
+// The sun taps' stride multiplier tops out here: scaled up by it, the two
+// iterations' base strides reach exactly gi_resolve's PEN_MAX of combined
+// support — the two constants are pinned together by
 // `the_penumbra_fits_the_filter` in digblock-assets.
 const SUN_STRIDE_MAX = 4.0;
 
@@ -142,7 +145,7 @@ fn fs(i: VsOut) -> FsOut {
 	o.sun = cs;
 	let cg = u32(cs.g);
 	let code = cg & 255u;
-	// Sky. It carries no lighting and must keep the sentinel code 255 that
+	// Sky. It carries no lighting and must keep the sentinel code that
 	// loses every weight in the scene's bilateral upsample.
 	if code > 5u {
 		return o;
@@ -151,13 +154,13 @@ fn fs(i: VsOut) -> FsOut {
 	let step = i32(at.step.x);
 
 	// ---- One ring at the base stride serves three customers from the
-	// same 8 tap loads: the indirect gather (SVGF's original trade), the
+	// same tap loads: the indirect gather (SVGF's original trade), the
 	// Bernoulli sun gather (used only if this pixel stays sub-texel), and
 	// the penumbra-width spread — a lit pixel cannot know it borders a
 	// shadow without looking, so the spread runs for every surface pixel;
 	// max over same-surface taps, written back to sun.a, is what lets the
 	// LIT half of an edge blur by iteration 2. Splitting these into three
-	// loops was built first and measured 0.32 ms over the old shader;
+	// loops was built first and measured a clear cost over the old shader;
 	// sharing the loads brought it back.
 	let filter_ind = n < N_CONVERGED;
 	let cl = lum(ci.rgb);
@@ -212,7 +215,7 @@ fn fs(i: VsOut) -> FsOut {
 		// Penumbra regime: a Gaussian of the width physics asked for, no
 		// edge-stop on the sun value (the 0/1 step is exactly the thing to
 		// blur into a gradient), stride scaled up so wide penumbras fit
-		// inside a 3x3 ring. Water rides the same weights — it is part of
+		// inside one ring. Water rides the same weights — it is part of
 		// the same ray. Only penumbra pixels pay this second ring.
 		let scale = clamp(ceil(pen / 3.0), 1.0, SUN_STRIDE_MAX);
 		let sstep = step * i32(scale);

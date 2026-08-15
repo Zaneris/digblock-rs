@@ -18,31 +18,31 @@ use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
 /// The depth prepass's second output: one face-normal code per pixel
-/// (chunk.wgsl's `code_of`), 255 where no solid drew. Uint, not unorm —
-/// this is an index into a table, and it has to survive the round trip
-/// bit-exactly for the bilateral upsample's equality test to mean
-/// anything.
+/// (chunk.wgsl's `code_of`), a sentinel code where no solid drew. Uint,
+/// not unorm — this is an index into a table, and it has to survive the
+/// round trip bit-exactly for the bilateral upsample's equality test to
+/// mean anything.
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
 
-/// Worst-case quads per 16³ chunk mesh: a solid chunk of the busiest
-/// shaped variant (every template quad emits when neighbors don't cover
-/// them). Dwarfs the old full-block checkerboard bound (2048 × 6). The
-/// shared index buffer this sizes is ~3.75 MiB — one-time, fine on
-/// mobile; `upload_chunk` guards the cap instead of trusting it.
+/// Worst-case quads per chunk mesh: a solid chunk of the busiest shaped
+/// variant (every template quad emits when neighbors don't cover them).
+/// Dwarfs the old full-block checkerboard bound. The shared index buffer
+/// this sizes is allocated once and stays small enough for mobile;
+/// `upload_chunk` guards the cap instead of trusting it.
 const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
 
 /// Chunk-origin stride: one `vec4f` per slot in the instance-step origin
-/// stream. Was 256 bytes — the uniform dynamic-offset alignment, not the
-/// data — back when each draw rebound a slice of a UBO.
+/// stream. Was padded out to the uniform dynamic-offset alignment rather
+/// than to the data — back when each draw rebound a slice of a UBO.
 pub(crate) const ORIGIN_STRIDE: u64 = 16;
 
-/// Chunk vertex-buffer size class. A remesh (an edit dirties up to 27
-/// neighbours; walking churns the rim continuously) nearly always lands
-/// inside the class of the mesh it replaces, so it is written over the
-/// live allocation; what does change class is recycled through the free
-/// list below. Both matter most on Chrome, where every buffer create and
-/// destroy is a GPU-process allocation plus a deferred free that wgpu
-/// batches into periodic cleanup spikes.
+/// Chunk vertex-buffer size class. A remesh (an edit dirties every
+/// neighbour whose shell it falls in; walking churns the rim continuously)
+/// nearly always lands inside the class of the mesh it replaces, so it is
+/// written over the live allocation; what does change class is recycled
+/// through the free list below. Both matter most on Chrome, where every
+/// buffer create and destroy is a GPU-process allocation plus a deferred
+/// free that wgpu batches into periodic cleanup spikes.
 const SIZE_CLASS: u64 = 16 * 1024;
 /// Ceiling on retired bytes held for reuse. Rim churn at walking speed is
 /// well under a MiB a frame, so this covers seconds of travel; past it
@@ -68,7 +68,7 @@ const DIST_BUCKETS: usize = 48;
 /// the view and hands it to the synchronous GPU copy in one step, with
 /// no wasm allocation in between.
 fn buffer_init(gpu: &Gpu, label: &str, usage: wgpu::BufferUsages, contents: &[u8]) -> wgpu::Buffer {
-	// write_buffer requires 4-byte-aligned sizes; all callers upload
+	// write_buffer requires u32-aligned sizes; all callers upload
 	// u32-packed data.
 	debug_assert_eq!(contents.len() % 4, 0, "buffer_init needs u32-aligned data");
 	let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -88,10 +88,11 @@ fn size_class(bytes: u64) -> u64 {
 
 /// Chunk-origin slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
-/// full stack of every in-range column (16B a slot — a few hundred KB).
-/// A starting estimate, not a ceiling: `grow_chunk_buf` takes over at 85%
-/// occupancy, which is what a future runtime draw-distance change will
-/// lean on.
+/// full stack of every in-range column — a slot is one `vec4f`, so even
+/// the whole stack is a rounding error against the meshes. A starting
+/// estimate, not a ceiling: `grow_chunk_buf` takes over before the buffer
+/// fills, which is what a future runtime draw-distance change will lean
+/// on.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
@@ -101,7 +102,7 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 }
 
 /// New capacity when `needed` exceeds the current slot count: round up
-/// to the 256-slot granularity, but never less than double (amortized
+/// to the allocation granularity, but never less than double (amortized
 /// growth — a handful of reallocations over a whole session).
 fn grown_slots(current: u32, needed: u32) -> u32 {
 	needed.next_multiple_of(256).max(current.saturating_mul(2))
@@ -153,7 +154,7 @@ pub struct RenderConfig {
 	/// Draw distance in chunks (sizes the chunk-origin buffer).
 	pub draw_dist: i32,
 	/// Spray droplets per waterfall-impact instance (on top of the mist
-	/// slabs): 64 desktop, 24 mobile.
+	/// slabs); the mobile config asks for fewer.
 	pub spray_droplets: u32,
 	/// Force the initial chunk-origin capacity in slots (`DIG_CHUNK_SLOTS`
 	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
@@ -184,12 +185,12 @@ pub struct RenderConfig {
 /// nothing and a stubbed one never diverges within a wave. The pass-level
 /// bits are honoured in `Renderer::render`.
 pub mod stub {
-	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is
-	/// ~120 dependent texture loads per water vertex inside C1, which is
-	/// a cost bounded by GEOMETRY rather than by pixels — the only
+	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is a long
+	/// chain of dependent texture loads per water vertex inside C1, which
+	/// is a cost bounded by GEOMETRY rather than by pixels — the only
 	/// hypothesis that survives "it is just as slow below the surface".
 	pub const WVERT: u32 = 1 << 0;
-	/// Water's per-fragment `gi_sun_vis` (12 iterations) → lit.
+	/// Water's per-fragment `gi_sun_vis` (a short march) → lit.
 	pub const WSUN: u32 = 1 << 1;
 	/// `reflection_color`'s screen-space march → sky only.
 	pub const WSSR: u32 = 1 << 2;
@@ -213,13 +214,13 @@ pub mod stub {
 	// resolve — the frame's most expensive pass — has never had one term
 	// attributed. These ride the resolve's own uniform (`jitter.w`), not
 	// `frame.misc.z`: the resolve does not bind the frame UBO.
-	/// The resolve's per-pixel sun ray (up to 320 DDA iterations) → lit.
-	/// The single largest ray budget in the frame.
+	/// The resolve's per-pixel sun ray → lit. The single largest ray budget
+	/// in the frame.
 	pub const GISUN: u32 = 1 << 8;
-	/// The resolve's cosine-hemisphere final gather (96 iterations) → the
-	/// cheap `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
+	/// The resolve's cosine-hemisphere final gather → the cheap
+	/// `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
 	pub const GIGATHER: u32 = 1 << 9;
-	/// The resolve's per-pixel NEE shadow ray (64 iterations) → skipped.
+	/// The resolve's per-pixel NEE shadow ray → skipped.
 	/// Zero in any scene with no emitter in range, by construction.
 	pub const GINEE: u32 = 1 << 10;
 	/// The whole resolve fragment → a constant on the first line: the
@@ -301,7 +302,7 @@ pub struct FrameScene<'a> {
 	pub players: &'a [[f32; 8]],
 	/// The item in each remote's hand: its `IconKind` (the geometry to
 	/// draw, from `item_geom`) plus
-	/// `[eye.xyz, yaw, emissive, height in twelfths, 0, 0]`.
+	/// `[eye.xyz, yaw, emissive, height in twelfths, spare, spare]`.
 	pub held: &'a [(crate::ui::hud::IconKind, [f32; 8])],
 	/// Lights players are CARRYING this frame — yours and every remote's
 	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI
@@ -353,7 +354,8 @@ pub struct FrameUniforms {
 	/// w = caster strength 0..1 (twilight fade).
 	pub light_dir: [f32; 4],
 	/// rgb = direct light color (sun by day, moonlight by night);
-	/// w = the animation clock in seconds (wraps at 600).
+	/// w = the animation clock in seconds (periodically wrapped, so it
+	/// stays exact in f32 across a long session).
 	pub light_color: [f32; 4],
 	/// rgb = the scene-pass clear color (the sky horizon tint the sky
 	/// pass then draws over); w reserved.
@@ -382,9 +384,9 @@ pub struct FrameUniforms {
 	/// engine writes zeros) — mirror frame_common.wgsl's Frame struct.
 	/// xyz = quantized dir toward the caster, w = above horizon (0/1).
 	pub gi_sun: [f32; 4],
-	/// C0 probe dims xyz, w = spacing (2).
+	/// C0 probe dims xyz, w = that cascade's probe spacing in blocks.
 	pub gi0: [f32; 4],
-	/// C1 probe dims xyz, w = spacing (8).
+	/// C1 probe dims xyz, w = that cascade's probe spacing in blocks.
 	pub gi1: [f32; 4],
 	/// x = voxel-window side in blocks. Appended last.
 	pub gi_misc: [f32; 4],
@@ -478,8 +480,8 @@ pub struct Renderer {
 	sky: SkyDraw,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
-	/// Water copy of the frame UBO, alpha 0.7 (Java u_Alpha for the
-	/// transparent pass); bound through `FrameTargets::water_bg`.
+	/// Water copy of the frame UBO, carrying its own alpha (Java u_Alpha
+	/// for the transparent pass); bound through `FrameTargets::water_bg`.
 	/// Group 1: block texture array + sampler — one static bind group.
 	materials_bg: wgpu::BindGroup,
 	/// Slot-indexed chunk origins, bound as an instance-step vertex
@@ -568,10 +570,10 @@ pub struct Renderer {
 ///
 /// `render` is a fraction of the surface and `gi` is a whole-integer
 /// fraction of THAT. Anchoring the GI to the surface instead would give a
-/// ratio like 0.5/0.7 at render 0.7, and `chunk.wgsl`'s 4-tap bilateral
-/// gather walks a footprint that assumes an exact integer ratio — the
-/// upsample would read texels that no longer line up with the pixels it
-/// is weighting. `gi_ratio` is the number the shader is handed.
+/// fractional ratio the moment render scale left native, and `chunk.wgsl`'s
+/// 4-tap bilateral gather walks a footprint that assumes an exact integer
+/// ratio — the upsample would read texels that no longer line up with the
+/// pixels it is weighting. `gi_ratio` is the number the shader is handed.
 #[derive(Clone, Copy, PartialEq)]
 pub struct RenderScale {
 	pub render: f32,
@@ -579,7 +581,7 @@ pub struct RenderScale {
 }
 
 impl RenderScale {
-	/// World render size for a surface size. At least 1x1 — a zero-sized
+	/// World render size for a surface size. At least one pixel — a zero-sized
 	/// attachment is a validation error, and a minimized window can ask.
 	fn render_size(self, surface: (u32, u32)) -> (u32, u32) {
 		let s = self.render.clamp(0.1, 1.0);
@@ -639,7 +641,8 @@ struct FrameTargets {
 	/// visibility + normal code + water path + history length. Format is
 	/// `gi::GI_ACC_FORMAT` because both hold a RUNNING AVERAGE — rgba8 and
 	/// then rgba16f each failed the same way, their mantissa too short to
-	/// resolve a 1/512 update, which froze every pixel where it stood.
+	/// resolve an update of one part in the longest history the accumulator
+	/// reaches, which froze every pixel where it stood.
 	///
 	/// The roles are FIXED, not ping-ponged, because the a-trous filter
 	/// gives the frame a natural cycle:
@@ -713,8 +716,8 @@ impl Renderer {
 		// targets — the pre-water solid depth copy (textureLoad, no
 		// sampler), the offscreen scene color, and a linear sampler
 		// (refraction/SSR offsets). Folding the scene targets into
-		// group 0 keeps the water pipelines within the 4-bind-group
-		// default limit while freeing group 2 for the GI world data.
+		// group 0 keeps the water pipelines within the default
+		// bind-group limit while freeing group 2 for the GI world data.
 		let water_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("water frame + scene targets"),
 			entries: &[
@@ -1100,7 +1103,7 @@ impl Renderer {
 		}
 	}
 
-	/// Latest GPU pass reading (2-3 frames latent); None when timestamps
+	/// Latest GPU pass reading (a few frames latent); None when timestamps
 	/// are unsupported or nothing has been read back yet.
 	pub fn gpu_pass_ms(&self) -> Option<digblock_core::metrics::GpuPassMs> {
 		self.gpu_timer.as_ref().and_then(|t| t.latest)
@@ -1133,10 +1136,10 @@ impl Renderer {
 	}
 
 	/// Claim an origin slot for a newly resident chunk and publish its
-	/// origin. Growth fires at 85% occupancy rather than at overflow: the
-	/// reallocate-and-repopulate lands in one frame, and the path that
-	/// reaches it — a runtime draw-distance increase — is already the
-	/// frame doing the most other work.
+	/// origin. Growth fires while there is still headroom rather than at
+	/// overflow: the reallocate-and-repopulate lands in one frame, and the
+	/// path that reaches it — a runtime draw-distance increase — is already
+	/// the frame doing the most other work.
 	fn alloc_slot(&mut self, gpu: &Gpu, pos: ChunkPos) -> u32 {
 		let slot = match self.free_slots.pop() {
 			Some(s) => s,
@@ -1477,7 +1480,7 @@ impl Renderer {
 			layout: &self.water_frame_bgl,
 			entries: &[
 				// The SAME frame UBO the solids read. Water used to get a
-				// second copy of it for one field — a 0.7 alpha — and that
+				// second copy of it for one field — a constant alpha — and that
 				// field is gone (see water.wgsl's `alpha`), so the copy and
 				// its per-frame upload went with it. The water group still
 				// needs its own bind GROUP, because it also carries the
@@ -1747,9 +1750,9 @@ impl Renderer {
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("depth prepass"),
-					// Cleared to 255: a code no real face carries, so a
-					// texel the prepass never wrote can never match a
-					// surface in the upsample's equality test.
+					// Cleared to a sentinel code no real face carries,
+					// so a texel the prepass never wrote can never
+					// match a surface in the upsample's equality test.
 					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
 						view: &targets.normal_view,
 						resolve_target: None,
@@ -2065,9 +2068,9 @@ impl Renderer {
 
 			// THE UPSCALE. Everything above rendered at RENDER resolution
 			// into `scene_view`; this is the one place it becomes the
-			// surface. At scale 1.0 it is a straight 1:1 blit — the same
-			// fullscreen draw that used to open the water pass — so the
-			// default frame gains a pass boundary and nothing else.
+			// surface. At native render scale it is a straight 1:1 blit —
+			// the same fullscreen draw that used to open the water pass —
+			// so the default frame gains a pass boundary and nothing else.
 			//
 			// The overlay deliberately comes AFTER: UI, text and name tags
 			// are drawn at native resolution straight onto the swapchain,
@@ -2178,10 +2181,10 @@ pub(crate) fn chunk_center(pos: ChunkPos) -> glam::Vec3 {
 	)
 }
 
-/// Chunk bounding-sphere test against extracted side planes. RADIUS is
-/// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
-/// near/far deliberately ignored). One definition, so the magic constant
-/// can't drift between the callers that share it.
+/// Chunk bounding-sphere test against extracted side planes. RADIUS is the
+/// chunk's half-diagonal (Java sphereInFrustumWithoutNearFar — near/far
+/// deliberately ignored). One definition, so the magic constant can't
+/// drift between the callers that share it.
 pub(crate) fn sphere_in_frustum(center: glam::Vec3, planes: &[glam::Vec4; 4]) -> bool {
 	const RADIUS: f32 = 13.86;
 	planes
@@ -2234,13 +2237,13 @@ mod tests {
 
 	#[test]
 	fn grown_slots_sizing() {
-		// Min ×2 dominates just past the boundary.
+		// The doubling floor dominates just past the boundary.
 		assert_eq!(super::grown_slots(4096, 4097), 8192);
-		// 256-granularity dominates for tiny forced capacities.
+		// The granularity floor dominates for tiny forced capacities.
 		assert_eq!(super::grown_slots(8, 9), 256);
-		// A large jump lands on the next multiple of 256 past `needed`.
+		// A large jump lands on the next granularity step past `needed`.
 		assert_eq!(super::grown_slots(8192, 20000), 20224);
-		// An exact multiple stays put when it already covers ×2.
+		// An exact multiple stays put when it already covers the doubling.
 		assert_eq!(super::grown_slots(100, 512), 512);
 	}
 

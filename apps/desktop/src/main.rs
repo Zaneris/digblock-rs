@@ -36,25 +36,27 @@ fn main() {
 	//   --seed <f64 bits or decimal> --metrics-csv out.csv
 	//   --yaw <deg> --pitch <deg> (initial camera view; yaw 90 faces +x,
 	//            the sun azimuth plane)
-	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
-	//            tod 45, 1800 frames, bench.csv)
+	//   --bench (scripted flight, inputs off, vsync off; supplies its own
+	//            seed, tod, frame count and CSV path)
 	//   --fly N / --warp N (fly the bench path N frames then freeze, or
 	//            arrive at that same pose with no motion behind it — the
 	//            temporal-artifact A/B; pair with --frames)
 	//   --walk (modifier on either: an eye-height oscillation, one block
-	//            forward and one back, instead of the 30 blocks/s flyover —
-	//            a screen-space artifact scales with screen motion, so the
+	//            forward and one back, instead of the flyover — a
+	//            screen-space artifact scales with screen motion, so the
 	//            two paths are two regimes)
 	//   --render-scale S (DEV/CAPTURE ONLY — no slider exposes it and it
-	//            is locked at 100% for players. World resolution as a
+	//            is locked at native for players. World resolution as a
 	//            fraction of the surface; the UI stays native)
 	//   --gi-scale D (GI resolve divisor against the render size: 1/2/3/4;
-	//            2 shipped, 3 is the interactive high-DPI default. This is
-	//            the knob that pays — see settings::density_gi_div)
-	//   --bench-speed B (flyover blocks/s, default 30 — every BENCH.md
-	//            baseline's value. 30 is 7.5x walking pace and a different
-	//            STREAMING regime; use 4 to soak at how the game is played)
-	//   --size WxH (logical window size; the GI resolve is half-res off
+	//            the interactive high-DPI default is derived from display
+	//            density. This is the knob that pays — see
+	//            settings::density_gi_div)
+	//   --bench-speed B (flyover blocks/s; the DEFAULT is every BENCH.md
+	//            baseline's value, several times walking pace and a
+	//            different STREAMING regime — drop it to walking pace to
+	//            soak at how the game is played)
+	//   --size WxH (logical window size; the GI resolve is a fraction of
 	//            the surface, so this is what a cross-platform comparison
 	//            has to hold equal)
 	//   --pos x y z (stand here instead of at the seed's spawn)
@@ -92,9 +94,9 @@ fn main() {
 			// first listed server (or the one matching --server).
 			"--join" => join = true,
 			"--server" => server_filter = Some(parse_or_die::<String>("--server", args.next())),
-			// Display name (3-10 chars: a-z A-Z 0-9 - _). Pre-fills the
-			// menu field; required for --join. Never defaulted — entering
-			// a name is mandatory.
+			// Display name, held to `validate_name`'s alphabet and length.
+			// Pre-fills the menu field; required for --join. Never
+			// defaulted — entering a name is mandatory.
 			"--name" => name = Some(parse_or_die::<String>("--name", args.next())),
 			"--mute" => mute = true,
 			"--screenshot" => {
@@ -122,11 +124,12 @@ fn main() {
 			// with screen motion, so the flyover and the walk are two
 			// regimes and a fix has to be measured in both.
 			"--walk" => config.walk = true,
-			// Flyover speed in blocks/s. The default 30 is 7.5x WALK_SPEED
-			// and is a different STREAMING regime, not just a faster one:
-			// at that pace the GI upload budget cannot keep up. Use 4 for a
-			// soak that matches how the game is played. Leave the DEFAULT
-			// alone — every BENCH.md baseline was taken at 30.
+			// Flyover speed in blocks/s. The default is several times
+			// WALK_SPEED and is a different STREAMING regime, not just a
+			// faster one: at that pace the GI upload budget cannot keep
+			// up. Drop it to walking pace for a soak that matches how the
+			// game is played. Leave the DEFAULT alone — every BENCH.md
+			// baseline was taken at it.
 			"--bench-speed" => {
 				config.bench_speed = parse_or_die("--bench-speed", args.next());
 			}
@@ -144,9 +147,9 @@ fn main() {
 				let v: f32 = parse_or_die("--render-scale", args.next());
 				cli_render_scale = Some(v.clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX));
 			}
-			// GI resolve divisor against the RENDER size: 1, 2 (default),
-			// 3 or 4. Must divide exactly — chunk.wgsl's bilateral
-			// upsample is a 4-tap gather over an integer ratio.
+			// GI resolve divisor against the RENDER size, one of
+			// `GI_SCALE_DIVISORS`. Must divide exactly — chunk.wgsl's
+			// bilateral upsample is a 4-tap gather over an integer ratio.
 			"--gi-scale" => {
 				let d: u32 = parse_or_die("--gi-scale", args.next());
 				if !GI_SCALE_DIVISORS.contains(&d) {
@@ -155,7 +158,7 @@ fn main() {
 				}
 				cli_gi_scale = Some(d);
 			}
-			// A specific window size, LOGICAL. The GI resolve is half-res off
+			// A specific window size, LOGICAL. The GI resolve is a fraction of
 			// the surface, so its cost scales with this directly — which makes
 			// it the one thing a desktop-vs-web comparison must hold equal
 			// before any of its numbers mean anything.
@@ -247,7 +250,7 @@ fn main() {
 		config.metrics_csv.get_or_insert_with(|| "bench.csv".into());
 		options.exit_after_frames = Some(u64::from(frames.unwrap_or(1800)));
 		// Vsync-paced by default: the flight looks as played and the
-		// over-12.5ms count measures real dropped frames. Add --no-vsync
+		// over-budget frame count measures real drops. Add --no-vsync
 		// for uncapped raw-cost measurement (percentiles = true frame
 		// cost; presentation judders inherently at >display rate).
 	}
@@ -320,8 +323,8 @@ fn main() {
 	}
 	// DIG_TORCHES=<n>: the courtyard, lit by n torches. A COUNT rather than
 	// a flag, because the emitter count is the variable — the resolve's NEE
-	// covers exactly one light per pixel, so 1 vs 8 with the geometry held
-	// fixed is the whole experiment.
+	// covers one light per pixel, so a single torch against a cluster, with
+	// the geometry held fixed, is the whole experiment.
 	for (name, slot) in [
 		("DIG_TORCHES", &mut config.debug_torches),
 		("DIG_TORCHES_FAR", &mut config.debug_torches_far),
@@ -508,8 +511,8 @@ fn main() {
 	}
 }
 
-/// Load-or-create the persistent 16-byte identity secret keying the
-/// server-side persisted inventory. A bearer secret by design (there are
+/// Load-or-create the persistent identity secret keying the server-side
+/// persisted inventory. A bearer secret by design (there are
 /// no accounts): whoever holds the bytes owns the inventory, so the file
 /// lives in the user's data dir. DIG_IDENTITY_FILE overrides the path —
 /// how a second local client gets its own identity for testing.

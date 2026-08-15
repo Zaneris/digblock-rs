@@ -6,20 +6,21 @@ use glam::Vec3;
 /// Interpolation anchor: the player position from *before* the most
 /// recent sim tick.
 ///
-/// The player sim is a fixed 60 Hz accumulator while frames arrive at
-/// whatever rate the display and the frame budget allow. Drawing the raw
-/// post-tick position samples that sim at an unrelated rate, so the tick
-/// lands 0, 1 or 2 times per frame and the camera alternates between not
-/// moving and moving double — aliasing that gets *worse* the further the
-/// refresh rate is from 60 (at 144 Hz over half the frames draw no
-/// motion at all, and no amount of network tuning touches it).
+/// The player sim runs on a fixed-`TICK` accumulator while frames arrive
+/// at whatever rate the display and the frame budget allow. Drawing the
+/// raw post-tick position samples that sim at an unrelated rate, so a
+/// frame may run no tick, one, or several, and the camera alternates
+/// between not moving and moving double — aliasing that gets *worse* the
+/// further the refresh rate is from the sim rate (on a high-refresh panel
+/// whole frames draw no motion at all, and no amount of network tuning
+/// touches it).
 ///
 /// The fix is the standard one — Fiedler's *Fix Your Timestep!*, Unity's
 /// `Rigidbody.interpolation`, Unreal's `ENetworkSmoothingMode` — draw
 /// between the two states by how far the accumulator has refilled. It
-/// costs half a tick (8.3 ms) of average visual latency; extrapolating
-/// forward instead would avoid that but overshoots into walls, which is
-/// much worse in a voxel world.
+/// costs half a tick of average visual latency; extrapolating forward
+/// instead would avoid that but overshoots into walls, which is much
+/// worse in a voxel world.
 ///
 /// Presentation only: gameplay (targeting, occupancy, the wire) reads the
 /// authoritative `Player::pos`, never this.
@@ -63,15 +64,15 @@ impl TickLerp {
 	/// Written out rather than `Vec3::lerp`, and the difference is not
 	/// stylistic. glam's lerp is `a*(1 - t) + b*t`, which is exact at
 	/// `t == 1` but NOT when `a == b`: two roundings of the same
-	/// coordinate need not sum back to it, and measured over the
-	/// accumulator's phase range it misses on 1.1% of frames at y = 70.5
-	/// and 6.2% at z = -3.75 (0% only at exact powers of two). A player
-	/// standing perfectly still therefore had a camera that jittered in
-	/// the last ulp every few frames. Nothing SEES that directly — but
-	/// `GiDraw::flush_lights` compares a carried light's position for
-	/// exact equality to decide whether the light list is stale, so a
-	/// still torch-bearer paid a full rebuild on roughly one frame in
-	/// seven. `a + (b - a)*t` returns `a` bit-exactly whenever `a == b`,
+	/// coordinate need not sum back to it, and swept over the
+	/// accumulator's whole phase range it misses on a steady fraction of
+	/// frames at awkward coordinates (never at exact powers of two). A
+	/// player standing perfectly still therefore had a camera that
+	/// jittered in the last ulp every few frames. Nothing SEES that
+	/// directly — but `GiDraw::flush_lights` compares a carried light's
+	/// position for exact equality to decide whether the light list is
+	/// stale, so a still torch-bearer paid a full rebuild on a large share
+	/// of frames. `a + (b - a)*t` returns `a` bit-exactly when `a == b`,
 	/// which is the property that early-out actually rests on; `t == 1`
 	/// is the backstop path and is still correct to an ulp.
 	pub fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
@@ -111,9 +112,9 @@ mod tests {
 		}
 	}
 
-	/// The bug this module exists for: a 60 Hz sim sampled by jittery
-	/// 60 Hz frames draws 0 or 2 ticks of motion per frame. Interpolating
-	/// must hold apparent speed near constant.
+	/// The bug this module exists for: a fixed-rate sim sampled by jittery
+	/// frames of nearly the same period draws zero or two ticks of motion
+	/// per frame. Interpolating must hold apparent speed near constant.
 	#[test]
 	fn jittery_frames_draw_constant_speed() {
 		const SPEED: f32 = 4.0;
@@ -183,7 +184,7 @@ mod tests {
 		let accum = TICK * 0.5;
 		let before = lerp.render_pos(curr, accum);
 
-		// Reconcile: server put us 0.3 back, so error = pre - post.
+		// Reconcile: the server put us back, so error = pre - post.
 		let error = Vec3::new(0.0, 0.0, 0.3);
 		let rewound = curr - error;
 		lerp.rewind(error);

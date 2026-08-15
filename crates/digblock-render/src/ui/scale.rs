@@ -24,30 +24,30 @@ pub const UI_SCALE_FLOOR: f32 = 0.75;
 /// the derived scale. Lives here rather than in `settings.rs` (which
 /// re-exports it) because [`ui_scale`] is what gives the numbers meaning.
 ///
-/// The step is 5%, and every notch changes something: `ui_scale`
-/// quantizes only the derived half, then applies the preference exactly.
-/// A step matching the quarter quantization was the old contract — it
-/// made the slider coarse for no benefit once the preference stopped
-/// being quantized with everything else.
+/// Every notch changes something: `ui_scale` quantizes only the derived
+/// half, then applies the preference exactly. A step matching that
+/// quantization was the old contract — it made the slider coarse for no
+/// benefit once the preference stopped being quantized with everything
+/// else.
 pub const UI_SCALE_MIN: f32 = 0.70;
 pub const UI_SCALE_MAX: f32 = 1.50;
 pub const UI_SCALE_STEP: f32 = 0.05;
 
 /// Whole-UI scale: the display's own scale factor × a window-size factor
-/// × the user's preference. Reference: a 1280×800 logical window at 1×
-/// with the preference at 1.0 is exactly the pre-scaling design (scale
-/// 1.0); bigger windows, denser displays and a higher preference all
-/// grow the UI from there.
+/// × the user's preference. Reference: the design's own logical window
+/// at 1× with a neutral preference is exactly the pre-scaling design
+/// (scale 1.0); bigger windows, denser displays and a higher preference
+/// all grow the UI from there.
 ///
 /// `scale_factor` is the OS's own setting, straight from the window — a
 /// display at 125% arrives here as 1.25 and is applied as-is, which is
 /// why the slider reads a *multiplier* and not an absolute size.
 ///
-/// Only the derived half (`sf × win`) is quantized, to quarter steps:
+/// Only the derived half (`sf × win`) is quantized, onto a coarse grid:
 /// that half moves continuously as a window is dragged or crosses onto
 /// another display, and unquantized it shimmers. The user's preference
-/// is a deliberate discrete choice, so it is applied exactly — a 5%
-/// notch of the slider must not silently round away to the notch above.
+/// is a deliberate discrete choice, so it is applied exactly — a notch
+/// of the slider must not silently round away to the notch above.
 pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 	let sf = scale_factor.max(0.5);
 	let (lw, lh) = (size.0 as f32 / sf, size.1 as f32 / sf);
@@ -87,8 +87,8 @@ mod tests {
 	#[test]
 	fn reference_window_is_unit_scale() {
 		assert_eq!(ui_scale((1280, 800), 1.0, 1.0), 1.0);
-		// The pre-scaling default window (1280×720) sits just under the
-		// reference height: still a sane near-1 step, never below 0.75.
+		// The pre-scaling default window sits just under the reference
+		// height: still a sane near-1 step, never below the floor.
 		assert!(ui_scale((1280, 720), 1.0, 1.0) >= 0.75);
 	}
 
@@ -97,7 +97,7 @@ mod tests {
 		let s = ui_scale((2560, 1600), 2.0, 1.0); // same logical window, 2× glass
 		assert_eq!(s, 2.0);
 		// The DERIVED half is what's quantized: at the default preference
-		// every result is a quarter step, never below the floor, never
+		// every result lands on that grid, never below the floor, never
 		// above the cap.
 		for w in (640..=3840).step_by(160) {
 			for &sf in &[1.0f32, 1.5, 2.0, 3.0] {
@@ -113,9 +113,9 @@ mod tests {
 
 	#[test]
 	fn window_factor_caps_both_ways() {
-		// A tiny window can't shrink the UI below 0.75×...
+		// A tiny window can't shrink the UI below the floor...
 		assert_eq!(ui_scale((640, 400), 1.0, 1.0), 0.75);
-		// ...and a huge 1× display caps at 1.5× the device factor.
+		// ...and a huge one caps the window factor instead of growing on.
 		assert_eq!(ui_scale((3840, 2400), 1.0, 1.0), 1.5);
 	}
 
@@ -130,7 +130,7 @@ mod tests {
 			ui_scale((1280, 800), 1.0, UI_SCALE_MIN),
 			UI_SCALE_MIN * base
 		);
-		// A 2× retina window at max preference is clamped, not unbounded.
+		// A dense display at max preference is clamped, not unbounded.
 		assert_eq!(ui_scale((2560, 1600), 3.0, UI_SCALE_MAX), UI_SCALE_CAP);
 		// Out-of-range and garbage preferences clamp rather than escape.
 		assert_eq!(ui_scale((1280, 800), 1.0, f32::NAN), base);
@@ -138,10 +138,10 @@ mod tests {
 		assert_eq!(ui_scale((1280, 800), 1.0, 99.0), UI_SCALE_MAX * base);
 	}
 
-	/// The point of a 5% step: every notch of the slider has to change
+	/// The point of a fine step: every notch of the slider has to change
 	/// something. It used to be quantized away with the derived scale —
-	/// at the reference window, 80%/90%/100% all resolved to 1.0 — which
-	/// is why the step matched the quarter grid before.
+	/// at the reference window several adjacent notches all resolved to
+	/// the same scale — which is why the step matched that grid before.
 	#[test]
 	fn every_slider_notch_changes_the_scale() {
 		let notches = ((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP).round() as i32;
@@ -157,9 +157,9 @@ mod tests {
 		}
 	}
 
-	// The ladder is continuous now (12/16/20/24…), not the bitmap font's
-	// 8/16/24/32 — that coarseness was a Nearest-sampler artifact and is
-	// what made a UI-scale slider pointless before.
+	// The ladder is continuous now, not the bitmap font's multiples of its
+	// cell — that coarseness was a Nearest-sampler artifact and is what
+	// made a UI-scale slider pointless before.
 	#[test]
 	fn text_size_tracks_scale_in_whole_pixels() {
 		assert_eq!(glyph_px(1.0), 16.0);

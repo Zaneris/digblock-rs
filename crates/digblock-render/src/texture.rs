@@ -1,6 +1,6 @@
-//! Block texture array + sampler (the materials bind group's contents;
-//! shadow maps live in shadow.rs). Full mip chain generated on CPU
-//! (box filter), sampled min=linear/mip=linear, mag=nearest — the Java
+//! Block texture array + sampler (the materials bind group's contents).
+//! Full mip chain generated on CPU (box filter), sampled
+//! min=linear/mip=linear, mag=nearest — the Java
 //! MipMapLinearLinear/Nearest look.
 
 use digblock_platform::Gpu;
@@ -147,7 +147,8 @@ fn mean_rgb(img: &image::RgbaImage) -> [u8; 3] {
 }
 
 // The texture array must fit the packed vertex format's layer field —
-// caught here at compile time, not as GPU corruption at 65 layers.
+// caught here at compile time, not as GPU corruption on the first layer
+// past the field's range.
 const _: () = assert!(digblock_assets::tex::LAYERS.len() <= digblock_core::block::MAX_TEX_LAYERS);
 
 // And the two lists that have to agree, agree. `digblock-core` names the
