@@ -751,6 +751,7 @@ impl<G: Game> App<G> {
 			.exit_after_frames
 			.is_some_and(|n| self.frames_rendered >= n)
 		{
+			self.game.on_exit();
 			el.exit();
 			return;
 		}

@@ -26,7 +26,7 @@ use crate::dir::{Dir, DIRS};
 /// Padded snapshot edge: the chunk plus a one-block shell from its
 /// neighbors.
 pub const PADDED: usize = CHUNK_SIZE + 2;
-const PADDED_VOLUME: usize = PADDED * PADDED * PADDED;
+pub const PADDED_VOLUME: usize = PADDED * PADDED * PADDED;
 
 /// Where a neighbor chunk's blocks come from when building a `MeshInput`,
 /// keyed by chunk offset (dx, dy, dz) ∈ {-1,0,1}³.

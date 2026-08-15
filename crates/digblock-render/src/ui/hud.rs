@@ -117,6 +117,29 @@ pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	}
 }
 
+/// The block behind an icon, if there is one — the water tool is an item
+/// with no block row to ask.
+///
+/// The inverse of [`item_icon`], and the ONE place "which block is this
+/// icon" is answered. Both questions derived from it are properties of
+/// the block and never a special case on a type: whether the item draws
+/// as fullbright ink (`props().emissive`) and whether holding it lights
+/// the room (`props().light > 0`).
+pub fn icon_block(kind: IconKind) -> Option<BlockType> {
+	match kind {
+		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
+		IconKind::WaterTool { .. } => None,
+		// The authored tools DO have rows — item-only ones — so they
+		// answer with them rather than with absence. Both derived
+		// questions then stay properties of the row, which is the rule
+		// this function exists to keep: none of these three glows or
+		// emits today, and a row that starts to needs no change here.
+		IconKind::Siphon => Some(BlockType::EssenceSiphon),
+		IconKind::Pick => Some(BlockType::ResonantPick),
+		IconKind::Sigil => Some(BlockType::MastersSigil),
+	}
+}
+
 /// Draw one 3D item icon into `rect` (every icon path goes through the
 /// dimetric projector — one consistent visual language).
 pub fn draw_icon(

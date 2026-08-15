@@ -1,0 +1,23 @@
+[package]
+name = "digblock-web-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Deliberately core-only: no wgpu, no winit, no net, and no `web-sys`. This
+# module is instantiated once per Web Worker and each instance carries its
+# own linear memory, so its size is a per-worker RAM cost on exactly the
+# low-end devices the worker pool exists to help.
+#
+# Wasm-gated like apps/web, so `just check` builds it as an empty rlib on
+# the host instead of pulling wasm-bindgen into a native build.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+digblock-core.workspace = true
+wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true
+
+[lints]
+workspace = true

@@ -199,6 +199,39 @@ pub fn light_origin(class: u8) -> [f32; 3] {
 	[ctr(b.min[0], b.max[0]), y, ctr(b.min[2], b.max[2])]
 }
 
+/// How far below the eye a light a player is CARRYING hangs.
+///
+/// The eye sits [`crate::player::EYE_TO_CROWN`] below the crown of a
+/// [`crate::player::HEIGHT`] body, so this lands at feet + 1.0 —
+/// comfortably inside the capsule, which is the whole point. See
+/// [`carried_origin`].
+pub const CARRY_DROP: f32 = 0.5;
+
+/// Where a light carried by a player whose eye is at `eye` radiates
+/// from.
+///
+/// Deliberately a function of the player's POSITION alone and not of
+/// their facing, which costs one thing and buys two.
+///
+/// What it costs: the light does not sit where the item is drawn. The
+/// viewmodel hangs its item off the hand and `players.wgsl` offsets the
+/// remote one by a yaw-rotated half block, so the light and the flame
+/// you can see are about that far apart. Against `LIGHT_RANGE` = 24 that
+/// is nothing.
+///
+/// What it buys, and neither is cosmetic. **Mouse-look never moves the
+/// light**, so a player standing still and turning is not a moving
+/// emitter: no invalidation fires, the resolve's screen history climbs
+/// back to `N_MAX`, and a lit room settles as deeply as one lit by a
+/// torch on the floor. A hand-anchored origin swings through half a
+/// block on every look and would hold the near field permanently short.
+/// And **the cell is guaranteed non-solid**: the player's own capsule
+/// occupies it, so nothing can bury the light inside geometry when they
+/// brush a wall — which would otherwise put the room out.
+pub fn carried_origin(eye: glam::Vec3) -> glam::Vec3 {
+	eye - glam::Vec3::Y * CARRY_DROP
+}
+
 /// The class byte for one cell: 0 for air, the block id for full cubes
 /// and fluids, a synthetic [`shape_classes`] entry for shaped cells —
 /// which is the one place the state nibble matters (a 1/3 floor slab
@@ -327,6 +360,24 @@ mod tests {
 	/// is the wall §7.2's grid walks toward one material at a time (each
 	/// shaped material spends ~16 covers) and the failure mode is a
 	/// LazyLock panic at startup rather than anything a reader can price.
+	#[test]
+	fn a_carried_light_hangs_inside_the_body() {
+		use crate::player::{EYE_TO_CROWN, EYE_TO_FEET};
+		// Yaw-independent: the origin is a function of position alone, so
+		// a player turning on the spot is not a moving emitter. There is
+		// no facing argument to pass — that IS the guarantee — so the
+		// test states the consequence: only y moves.
+		let eye = glam::Vec3::new(12.25, 70.5, -3.75);
+		let o = carried_origin(eye);
+		assert_eq!((o.x, o.z), (eye.x, eye.z));
+		// Strictly inside the capsule the player already occupies, and
+		// with clearance either side — that is what makes the light's
+		// cell provably non-solid. Brushing a wall must never bury it and
+		// put the room out.
+		assert!(o.y + 0.5 < eye.y + EYE_TO_CROWN, "{o:?} near the crown");
+		assert!(o.y - 0.5 > eye.y - EYE_TO_FEET, "{o:?} near the feet");
+	}
+
 	#[test]
 	fn shape_classes_fit_the_byte() {
 		let n = shape_classes().len();

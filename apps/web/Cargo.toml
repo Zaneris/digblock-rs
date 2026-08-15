@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 # Everything is wasm-gated: on native targets this crate is an empty rlib,
 # so `just check` builds it without pulling wasm-only deps.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+digblock-core.workspace = true
 digblock-render.workspace = true
 digblock-platform.workspace = true
 digblock-net.workspace = true
@@ -26,7 +27,17 @@ serde_json.workspace = true
 web-sys = { workspace = true, features = [
 	"Window",
 	"Location",
+	"Navigator",
 	"UrlSearchParams",
+	# Chunk-job worker pool (jobs.rs).
+	"Worker",
+	"WorkerOptions",
+	"WorkerType",
+	"Blob",
+	"BlobPropertyBag",
+	"Url",
+	"MessageEvent",
+	"Event",
 	"Request",
 	"RequestInit",
 	"Response",

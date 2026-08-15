@@ -179,16 +179,19 @@ pub mod font {
 
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time. Four of them, each the sole
+	// with concat! at include time. Five of them, each the sole
 	// definition of one thing so the passes cannot silently disagree:
 	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
 	// medium_common.wgsl (the participating medium and its extinction
 	// constants), sky_common.wgsl (the procedural-sky core — gradient,
 	// glow, stars — shared so the sky pass, water reflections and the
-	// medium's in-scatter are one function), and gi_common.wgsl (the
-	// probe gather + the group(2) world bindings).
+	// medium's in-scatter are one function), gi_common.wgsl (the probe
+	// gather + the group(2) world bindings), and ink_common.wgsl (the
+	// fullbright-ink gain, so a `glows` block reads the same in the
+	// world, in your hand and in somebody else's).
 	//
-	// Order is frame_common, medium_common, sky_common, gi_common, body.
+	// Order is frame_common, medium_common, sky_common, gi_common,
+	// ink_common, body.
 	// medium_common sits early on purpose: it is dependency-free (every
 	// input an argument) precisely so the GI compute kernels — which
 	// carry their own uniform block and CANNOT take frame_common — can
@@ -200,6 +203,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
@@ -236,6 +240,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	pub const HIGHLIGHT: &str = concat!(
@@ -246,8 +251,14 @@ pub mod shader {
 	/// The first-person viewmodel. Deliberately WITHOUT the frame
 	/// prelude: it is authored in view space and carries its own
 	/// projection and light rig, so the shared Frame block would only be
-	/// an unused binding it must not declare.
-	pub const VIEWMODEL: &str = include_str!("../../../assets/shaders/viewmodel.wgsl");
+	/// an unused binding it must not declare. ink_common is the one
+	/// prelude it can take, and only because it declares no bindings at
+	/// all — a torch in your hand has to glow by the same rule as the
+	/// torch on the floor beside it, and that rule is a pure function.
+	pub const VIEWMODEL: &str = concat!(
+		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/viewmodel.wgsl"),
+	);
 	/// RTGI probe-update compute (GI-DESIGN.md). No frame prelude: the
 	/// compute passes carry their own small GI uniform block, not the
 	/// pinned Frame layout — but they DO take medium_common, which is
@@ -284,12 +295,13 @@ pub mod shader {
 	/// medium_common must validate with nothing before it at all.
 	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
 	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
+	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
 	pub const GI_COMMON: &str = concat!(
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 19] = [
+	pub const ALL: [(&str, &str); 20] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -308,6 +320,7 @@ pub mod shader {
 		("gi_atrous.wgsl", GI_ATROUS),
 		("medium_common.wgsl", MEDIUM_COMMON),
 		("gi_dda.wgsl", GI_DDA),
+		("ink_common.wgsl", INK_COMMON),
 		("gi_common.wgsl", GI_COMMON),
 	];
 }
@@ -405,6 +418,72 @@ mod tests {
 		assert!(
 			n_sun <= moving,
 			"N_SUN ({n_sun}) must not exceed N_MOVING ({moving})"
+		);
+	}
+
+	/// A `glows` block reads the same wherever it is drawn, because there
+	/// is ONE definition of the gain and every pass that can draw one
+	/// takes it as a prelude.
+	///
+	/// The pin is a COUNT of DECLARATIONS, not a comparison of values, and
+	/// that is the point: two module-scope declarations would be a WGSL
+	/// error and need no test, but a function-scope `const EMISSIVE_GAIN`
+	/// shadows the prelude's silently — and a torch that glowed one way in
+	/// the world and another way in a hand is precisely what
+	/// ink_common.wgsl exists to make impossible.
+	///
+	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is
+	/// what makes that true. The narrower pattern misses the TYPED form
+	/// (`const EMISSIVE_GAIN: f32 = 2.4;`) that `wgsl_const` itself
+	/// supports, and comparing the value cannot catch it either, since
+	/// the prelude is prepended and its declaration is the one found
+	/// first — so a shadowing local passed every assertion here.
+	#[test]
+	fn every_pass_that_draws_ink_shares_one_gain() {
+		let shared = wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN");
+		for (name, src) in [
+			("chunk", super::shader::CHUNK),
+			("viewmodel", super::shader::VIEWMODEL),
+			("players", super::shader::PLAYERS),
+		] {
+			assert_eq!(
+				src.matches("const EMISSIVE_GAIN").count(),
+				1,
+				"{name} declares the gain more than once — a local const \
+				 shadows the shared one"
+			);
+			assert_eq!(wgsl_const(src, "EMISSIVE_GAIN"), shared, "{name}");
+			// Two occurrences at least: the prelude's `fn emissive_ink(`
+			// and one call. Bare `contains` is true by construction here,
+			// because the prelude is concatenated in either way — it would
+			// pass for a pass that took the prelude and then ignored it.
+			assert!(
+				src.matches("emissive_ink(").count() >= 2,
+				"{name} takes the ink prelude but never calls it"
+			);
+		}
+	}
+
+	/// The counted pattern must actually match the spelling it is there
+	/// to catch. Asserting on a hand-built source rather than on the real
+	/// shaders, because the whole failure mode is a form that no shader
+	/// contains today.
+	#[test]
+	fn the_ink_pin_catches_a_shadowing_local() {
+		let shadowed = concat!(
+			include_str!("../../../assets/shaders/ink_common.wgsl"),
+			"fn f() -> f32 { const EMISSIVE_GAIN: f32 = 2.4; return EMISSIVE_GAIN; }\n",
+		);
+		assert_eq!(
+			shadowed.matches("const EMISSIVE_GAIN").count(),
+			2,
+			"the pattern the pin counts must see a typed local declaration"
+		);
+		// And the value comparison alone does NOT, which is why the count
+		// is the load-bearing half.
+		assert_eq!(
+			wgsl_const(shadowed, "EMISSIVE_GAIN"),
+			wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN"),
 		);
 	}
 

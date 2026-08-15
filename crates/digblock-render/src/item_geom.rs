@@ -253,58 +253,9 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 	out
 }
 
-/// The layer covering the most of an item's authored faces — the single
-/// texture that stands in for it where only one is available, which today
-/// is the small cube a REMOTE player is drawn holding.
-///
-/// Derived rather than tabled, because the alternative is a hand-kept
-/// mirror of these same authoring functions. It matters most for tools:
-/// they carry no texture layers of their own, so the `props().tex_side`
-/// every other item uses would draw them as a block of whatever happens
-/// to sit at layer 0. Ties break on the lowest layer, so the answer is
-/// stable across builds. `None` only for an item that authors no faces.
-pub fn dominant_layer(kind: IconKind) -> Option<u16> {
-	let mut counts: Vec<(u16, usize)> = Vec::new();
-	for f in faces(kind) {
-		match counts.iter_mut().find(|(l, _)| *l == f.tex_layer) {
-			Some((_, n)) => *n += 1,
-			None => counts.push((f.tex_layer, 1)),
-		}
-	}
-	counts
-		.into_iter()
-		.max_by_key(|&(layer, n)| (n, std::cmp::Reverse(layer)))
-		.map(|(l, _)| l)
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	/// Every tool has a texture that is actually ITS texture. A tool row
-	/// carries no layers, so the cube fallback draws layer 0 — whatever
-	/// PNG happens to be first — and that is how a remote player swinging
-	/// a 240-Metal pick came to be holding a block of water.
-	#[test]
-	fn every_tool_stands_in_as_something_it_is_made_of() {
-		use digblock_core::block::BlockType as B;
-		for b in B::ALL.into_iter().filter(|b| b.is_tool()) {
-			let kind = crate::ui::hud::tool_icon(b, false);
-			let layer = dominant_layer(kind)
-				.unwrap_or_else(|| panic!("{b:?} authors no faces to borrow a texture from"));
-			// Layer 0 is only correct by accident: it is the fallback the
-			// untextured tool row would have produced anyway.
-			assert!(
-				faces(kind).iter().any(|f| f.tex_layer == layer),
-				"{b:?} borrowed a layer it does not draw"
-			);
-			assert_ne!(
-				layer,
-				b.props().tex_side,
-				"{b:?} fell back to the untextured row's own layer"
-			);
-		}
-	}
 
 	/// Both triangles of every face must wind counter-clockwise as seen
 	/// from OUTSIDE the box, under `mesher::quad_indices`' [3,1,0,3,0,2]

@@ -1128,6 +1128,135 @@ to measure it rather than argue it: 8 torches screened in half read **0.103 / 0.
 fix is a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, which the resolve already
 does, and M-clamp around 20); it is deliberately NOT built here, and 0.103 is the number to beat.
 
+### R28 — a torch in a hand is a torch
+
+A Torch is `emits(14)` and always has been, but only ever *as a placed cell*: `GiDraw::emitters`
+is keyed by `ChunkPos` and written only by `upload_chunk`, so there was no path by which a light
+could exist anywhere but a voxel. Pick a torch up and it stopped being a light.
+
+**The governing decision, and it is what makes this small: no carve-out.** A carried torch is an
+ordinary entry in the ordinary light list. `flush_lights` folds a per-frame `carried` slice into
+the same candidate iterator as the chunk emitters, under the same reach filter and the same
+`MAX_LIGHTS` selection — and **the two NEE passes differ by one question:** `gi_light_margin_of`
+asks whether the entry is carried, which is bit 8 of its packed `w` word (`GI_LIGHT_CARRIED`,
+mirrored by `gi::LIGHT_CARRIED`).
+
+That one exception is not a softening of the rule, it is the rule applied honestly. The margin is
+how far short of a light its shadow ray stops so the light's OWN CELL cannot occlude it, derived
+from where in that cell the light sits — and a carried light has no cell. Left to the general
+formula it lands on the degenerate maximum, because the origin is feet + 1.0 and a carrier
+standing on a block top gives `frac(y) == 0.0`: 1.26 to 1.77 against the 1.036 a torch's flame is
+the worst placed emitter can produce. The player's capsule is `RADIUS` 0.3, so a wall they are
+brushing spans 0.3 to 1.3 from the light and falls entirely inside that skip — the floor on its
+far side lit through solid stone. The carried answer is **zero**, and it is exact rather than
+tuned: the origin is on the carrier's own capsule axis, so its cell is non-solid by construction
+and a wall half a block away is supposed to block it.
+Every consumer of that list picks a carried light up for free: the probe NEE (so it bounces), the
+resolve's per-pixel reservoir (so it throws hard shadows), the water surface's per-vertex gather,
+`players.wgsl`'s remote-player shading, and `cam_light` (so it lights your own hand and the
+spray). The class byte is `gi_class(make_cell(Torch, 0))` — the *same* synthetic shape class a
+placed torch uses, so tint, level and R26's flame offset come from one LUT row and the two lamps
+cannot drift apart.
+
+**Where it hangs.** `gi::carried_origin(eye) = eye − 0.5·Y`, a function of the carrier's POSITION
+and not their facing. Two properties fall out and both are load-bearing. The cell is provably
+non-solid, because the carrier's own capsule occupies it — so brushing a wall can never bury the
+light and put the room out. And **mouse-look does not move it**, so a player standing still and
+turning is not a moving emitter: nothing invalidates, the screen history climbs back to `N_MAX`,
+and a room lit from a hand settles as deeply as one lit from the floor. A hand-anchored origin
+swings through half a block on every flick and would hold the near field permanently short. The
+cost is that the light does not sit exactly where the item is drawn (~0.55 blocks for a remote),
+which is nothing against `LIGHT_RANGE` = 24 — and nothing at all in shadow terms, since players
+are not in the voxel window and a carrier never occludes their own light anyway.
+
+**Motion is expressed as re-placement, not as a new mechanism.** Travel a probe spacing and the
+light fires the same `gi_invalidate` a block edit fires: probe ages reset, so the bounce field
+re-traces at α = 1.0 on its next visit instead of decaying from a stale value at 0.10 a sweep
+(5.3 s half-life), and the resolve caps screen history nearby while it does. The trigger is a
+DISTANCE since the last fire, deliberately **not** a cell crossing — a crossing test is
+phase-dependent, and a player resting on a cell boundary with the sub-block wobble the tick lerp
+and the decaying reconciliation offset both produce would fire sixty spheres a second. Distance
+has no such failure mode, needs no hysteresis, and handles a teleport. `CARRY_INVAL_STEP` = 2.0 =
+one C0 spacing, so a carrier can never outrun a probe cell between fires; only carriers within 32
+blocks spend a sphere, because past that the wake is unreadable.
+
+**Going out is a re-placement too**, and it is the half that is easy to forget. Put a torch away
+and `flush_lights` drops the entry the same frame, so the direct pool dies at once — but the
+probes keep its bounce and decay it at 0.10 a sweep, so without a fire at the position it left,
+the room stays lit by a torch that is gone for seconds. `Carried::finish` therefore invalidates
+for a carrier who has STOPPED emitting as well as one who has moved, which covers swapping items,
+a remote disconnecting, and a remote falling out of the snapshot. Digging a placed torch has
+always invalidated through `take_gi_edits`; the whole thesis is that the two lamps behave alike.
+
+**The bookkeeping is banked only once the sphere is actually queued** (`Carried::commit`, run
+after the drain rather than inside `finish`). `pending` is consumed inside the renderer arm, so
+recording a fire at queue time meant a frame with no renderer — device loss, or the wait for the
+GPU at startup — logged one that never happened, and the carrier then sat stale until it had
+walked another whole step.
+
+**The four screen-cap slots are shared, and the two streams evict their own.** Draining the probe
+queue also pushes each sphere into `GiDraw::resolve_inval`, which holds exactly four for
+`RESOLVE_INVAL_FRAMES` = 96 and is what stops a resting pixel at n = 512 admitting a lighting
+change at 1/512 a frame. A world edit fires once; a carried light fires twice a second at
+`WALK_SPEED`, so under a plain newest-wins ring one walking torch-bearer holds three of the four
+continuously and two of them turn it over faster than an edit's own window — a dug-out torch's
+pool fading back in over seconds, which is precisely what the 96 exists to prevent. Eviction is
+therefore per-kind: each stream recycles its own oldest slot, so an edit that wins one keeps it
+for the full 96 frames however far anybody walks, and no second constant had to be invented.
+
+**`flush_lights` stopped sorting.** Its own doc already said order never matters to a reader — the
+sort existed only so the truncation kept the nearest. That was free while the list was static and
+is not now: a carried light moves, so the flush runs every frame anyone walks, over every emitter
+within `lateral_max` (159 blocks at draw 20). Under the cap it now goes out unordered; over it,
+`select_nth_unstable_by` partitions in O(n). No reservation for carried lights and no
+`MAX_CARRIED`: the distance rule already does the right thing at both ends, since your own light
+is half a block from the camera and cannot be the one dropped, while a distant player's torch
+losing its slot to 256 nearer emitters is the correct answer under the rule that governs
+everything else.
+
+**Measured, `DIG_VAULT_DARK=1 DIG_SCREEN=torch` at 960×540, tod 45, 600 frames.** Mean interior
+**58.6/255** against **26.8** for the same room with a non-emitting item in hand — the carried
+torch is the room's light. Clipping, R22's metric: **0.123 %** of pixels with any channel at 255,
+of which 2.1 % are actually white, against R22's **0.40 %** placed-torch baseline. The near-field
+disc a light at feet + 1.0 throws sits entirely inside `LIGHT_NEAR` where irradiance is flat, and
+it reads as a warm pool rather than a saturated ellipse — carrying a torch clips *less* than
+standing next to one. `cam_light` does not blow out either, and the reason is structural: a probe
+stores what its RAYS find, so a torch reaches the hand as its bounce off the floor, never as
+`emit·GAIN/LIGHT_NEAR²`.
+
+**What is left, and the number that would justify the next step.** The screen accumulator is a
+per-world-point average, which is exactly why a placed torch has zero lag at any history depth:
+the irradiance at a world point does not change as you walk past it. A carried light breaks that
+premise — the signal at a world point moves at the carrier's speed — so the direct pool trails by
+the history depth. Walking, `still` already clamps to `N_MOVING` = 48, and the steady-state
+attenuation is `x·eˣ·E₂(x)` with `x = d/(v·N/60)`: at `WALK_SPEED` the pool reads 0.60 of truth at
+8 blocks and 0.45 at 4. This is the one place "just another torch" is not literally true, and it
+is a bias rather than the variance every previous round measured — so the instrument is a
+low-passed `--fly 600` against a FIXED converged `--warp` reference, banded by distance, not the
+90-frame same-pose diff. If it reads badly the minimum fix needs no new binding: `rz.inval[si].w`
+is a radius, so a carrier sphere can ride it with a NEGATIVE one and cap at an `N_CARRIED` short
+of `N_MOVING` — with a second uncapped local for the sun's alpha, since `a_sun` shares that
+counter and R14's sweep already rejected 8 for daylight shadows.
+
+**And the one that R28's own capture could not see.** The resolve's reservoir gates the WHOLE
+in-range pool's irradiance on the visibility of the single light it drew, which is R27's known
+residual — but a carried light skews the draw hard, because `score` clamps `dist2` at
+`LIGHT_NEAR² = 4` and a light half a block from the eye takes that clamp with a high `ndl`. A wall
+torch 8 blocks out scores 16x lower and wins about one frame in seventeen; at 16 blocks, one in
+fifty. Its irradiance is still paid in full every frame — `wsum` is a plain sum and unaffected —
+but its OCCLUSION is now sampled that rarely, and because the carried light is itself never
+occluded (nothing sits between an eye and a point half a block below it) the usual answer is
+"unshadowed". So while you hold a torch, other torches' shadows wash out rather than get noisy.
+Unbiased, and it converges — but at `N_MOVING` = 48 while walking that is 3 effective samples.
+
+`DIG_VAULT_DARK` cannot measure this: it is a room with exactly one emitter, which is why it
+shipped unseen. The capture is `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_SCREEN=torch`, screened
+emitters plus a carried one, read against the same scene with a non-emitting item in hand —
+R27's 0.103 is the number it has to be compared with, since this is the same estimator and the
+same fix (a temporal reservoir, M-clamped, reprojected through `prev_vp`). It is deliberately not
+built here either; what is new is only that the carried light makes R27's residual reachable in
+ordinary play rather than in a contrived screen.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by
@@ -1146,7 +1275,9 @@ does, and M-clamp around 20); it is deliberately NOT built here, and 0.103 is th
 
 - Specular GI / reflections (SSR stays as-is for water).
 - Shadows beyond the voxel window (analytic fallback, mostly under fog).
-- Sub-block emitter geometry: a torch lights from its cell, as a voxel.
+- ~~Sub-block emitter geometry: a torch lights from its cell, as a voxel.~~ Retired: R26
+  gave shaped emitters a real origin inside their cell, and R28 gave a carried one no cell
+  at all.
 - Colored transmission through water beyond a scalar transmittance.
 
 ## Literature
@@ -1188,9 +1319,12 @@ span — the ESVO-contour / SEUS-PTGI pattern.
 any_emissive << 1 per 8³ region, computed CPU-side at classification (8 B/chunk). Rays in
 empty space step 8 blocks per load.
 
-**Light list** — ≤256 emitters within C1 range: pos, rgb, radius = 16 B each, one storage
-buffer, rebuilt from per-chunk emitter lists kept at classification. Exists so next-event
-estimation makes a single torch voxel stable at 32 rays/probe instead of a firefly.
+**Light list** — ≤256 emitters within `gi_lateral_max` of the camera: `pos` + the GI class
+byte bit-cast into `w`, 16 B each, one storage buffer. Tint and cast level come from that
+class's material-LUT row, so nothing about a light's *look* rides the list. Rebuilt from
+the per-chunk emitter lists kept at classification, plus (R28) the lights players are
+CARRYING. Exists so next-event estimation makes a single torch voxel stable at 32
+rays/probe instead of a firefly.
 
 **Probe cascades** — two toroidal camera-following grids of 6-axis irradiance probes:
 C0 at 2-block spacing 32×24×32 (64×48×64 coverage), C1 at 8-block spacing 32×20×32

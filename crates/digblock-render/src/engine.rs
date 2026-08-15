@@ -47,6 +47,13 @@ pub enum DebugScreen {
 	/// without being told which tool to hold: the bucket is the only one
 	/// a fresh player owns.
 	Tool(BlockType),
+	/// Also not a screen: stock and SELECT a torch, so the one held item
+	/// that is also a LIGHT is photographable. `Hand` cannot serve —
+	/// `reconcile_layout` files by block id, so its first slot is Dirt —
+	/// and a torch in hand differs from every other item in three places
+	/// at once: the viewmodel draws it fullbright, a remote's hand draws
+	/// its real post, and the GI light list carries it.
+	Torch,
 	/// The character screen, with mid-curve XP stocked so the bars and
 	/// detail lines photograph as they play, not empty.
 	Skills,
@@ -68,11 +75,40 @@ impl DebugScreen {
 			"siphon" => Some(Self::Tool(BlockType::EssenceSiphon)),
 			"pick" => Some(Self::Tool(BlockType::ResonantPick)),
 			"sigil" => Some(Self::Tool(BlockType::MastersSigil)),
+			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
 			_ => None,
 		}
 	}
+}
+
+/// Parse `DIG_PLAYERBOX`'s value: what the fake remote holds, in HOTBAR
+/// WIRE terms.
+///
+/// Lives here rather than in the launcher for the same reason
+/// [`DebugScreen::parse`] does — the launcher owns the environment, the
+/// engine owns what the names mean. A wire id rather than a block so the
+/// scene walks the real `held_icon` decode, tool sentinels included.
+/// `None` is an unknown name, which the launcher makes fatal.
+pub fn parse_held_item(s: &str) -> Option<u16> {
+	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
+	Some(match s.trim().to_ascii_lowercase().as_str() {
+		// Any value used to mean "on", and on meant a dirt cube — "0"
+		// and "off" included, because the switch was presence-only
+		// (`var_os`), exactly as `DIG_VAULT=0` still means vault ON.
+		"" | "0" | "1" | "on" | "off" | "yes" | "no" | "true" | "false" | "dirt" => {
+			BlockType::Dirt as u16
+		}
+		"torch" => BlockType::Torch as u16,
+		"stairs" => BlockType::WoodStairs as u16,
+		"slab" => BlockType::WoodSlab as u16,
+		"door" => BlockType::LumberDoor as u16,
+		"bucket" => WIRE_TOOL,
+		"bucket-full" => digblock_net::messages::HELD_TOOL_FULL,
+		"empty" => WIRE_EMPTY,
+		_ => return None,
+	})
 }
 
 pub struct EngineConfig {
@@ -167,10 +203,13 @@ pub struct EngineConfig {
 	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
 	/// $USER) — the engine itself must stay env-free for wasm.
 	pub player_name: Option<String>,
-	/// Debug: park a fake remote player 5 blocks ahead (GPU-path check
-	/// without a second client). Set by the desktop launcher from
-	/// DIG_PLAYERBOX.
-	pub debug_playerbox: bool,
+	/// Debug: park a fake remote player 5 blocks ahead, holding this item
+	/// (GPU-path check without a second client). A held-item WIRE id, not
+	/// a block, so the scene walks `held_icon` end to end and is a real
+	/// check of that decode rather than a second code path — which is
+	/// also how it can photograph a remote's lit torch. Set by the
+	/// desktop launcher from DIG_PLAYERBOX.
+	pub debug_playerbox: Option<u16>,
 	/// Debug: throw a level-up confetti burst every couple of seconds, a
 	/// few blocks ahead. A burst is a rare, transient event, so it is
 	/// otherwise invisible to headless capture — the same argument
@@ -210,6 +249,13 @@ pub struct EngineConfig {
 	/// it. Ore is derived and invisible below its level, so there is no
 	/// pose that photographs it — see [`debug_ore_plan`].
 	pub debug_ore: usize,
+	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the
+	/// only source in it is the one the player is CARRYING. Set by the
+	/// desktop launcher from DIG_VAULT_DARK. A modifier rather than a
+	/// re-spelling of DIG_VAULT, because `DIG_VAULT=0` already means
+	/// "vault on" and silently inverting a value someone may have typed
+	/// costs an afternoon.
+	pub debug_vault_dark: bool,
 	/// Debug: hang a wide stone roof with NO walls over the ground ahead
 	/// of spawn — the beam-veto capture (a slanting morning sun must
 	/// reach under it exactly as the shadow map says; only the ambient
@@ -263,11 +309,11 @@ pub struct EngineConfig {
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
 	/// Grow the streaming budget from measured frame headroom, scaled
-	/// by how near the closest pending job is (the inline-executor web
-	/// build; see `stream_budget`) — rim-only churn while walking stays
-	/// at the fixed floor. Only effective with `workers == 0` and
-	/// outside bench — captures must stay deterministic, and worker
-	/// pools already produce across frames.
+	/// by how near the closest pending job is (the web build; see
+	/// `stream_budget`) — rim-only churn while walking stays at the
+	/// fixed floor. Effective outside bench only: captures must stay
+	/// deterministic. It is NOT conditioned on the executor — see
+	/// `adaptive_effective`.
 	pub adaptive_stream: bool,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
@@ -334,13 +380,14 @@ impl EngineConfig {
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
-			debug_playerbox: false,
+			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
 			debug_ore: 0,
+			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -389,13 +436,14 @@ impl EngineConfig {
 			music_vol: 1.0,
 			sfx_vol: 1.0,
 			player_name: None,
-			debug_playerbox: false,
+			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
 			debug_ore: 0,
+			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
 			debug_river: false,
@@ -419,10 +467,15 @@ impl EngineConfig {
 	}
 
 	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
-	/// handles it — verified 120fps at draw 20 + SSR), but jobs run
-	/// inline on the main thread (workers: 0 — wasm has no std threads)
-	/// and the menu opens by default like a desktop interactive run.
-	/// URL params (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
+	/// handles it — verified 120fps at draw 20 + SSR), and the menu opens
+	/// by default like a desktop interactive run. URL params (?draw=
+	/// ?ssr=0 ?shadow=) opt weaker hardware down.
+	///
+	/// `workers: 0` here is the FLOOR, not the shipped setting: wasm has
+	/// no std threads, so a pipeline built from this config runs jobs
+	/// inline. The launcher overwrites the field with what it intends to
+	/// spawn and attaches a Web Worker pool afterwards (`apps/web/jobs.rs`),
+	/// which the pipeline upgrades to when its first worker answers.
 	pub fn web() -> Self {
 		Self {
 			workers: 0,
@@ -437,8 +490,18 @@ impl EngineConfig {
 	}
 
 	/// The adaptive budget's effective enable (see `adaptive_stream`).
+	///
+	/// Deliberately NOT gated on the executor. What this enables is ONE
+	/// deadline covering jobs, drain, eviction and uploads together — and
+	/// moving jobs to a pool moves only the jobs. A `workers == 0`
+	/// condition here therefore snapped the drain and the uploads back to
+	/// the fixed floor the instant web workers were switched on: jobs got
+	/// faster, absorption got slower, and the machines with headroom to
+	/// spend lost it. The JOB half is gated where it belongs instead —
+	/// `Pipeline::maintain` spends the allowance only when jobs are
+	/// actually running on this thread.
 	fn adaptive_effective(&self) -> bool {
-		self.adaptive_stream && self.workers == 0 && !self.bench
+		self.adaptive_stream && !self.bench
 	}
 
 	pub(crate) fn render_config(&self) -> RenderConfig {
@@ -503,13 +566,15 @@ const EVICT_MIN: usize = 8;
 /// A COUNT could not express that, which is what this replaced. What one
 /// edit costs swings by more than an order of magnitude — whether its
 /// chunk is still shared decides a 16³ copy-on-write — and the mesh jobs
-/// it queues run INLINE on this same thread on the web (`workers: 0`),
-/// later in the same frame, so the apply is only half of what a burst
-/// actually spends. The old 256 was sized against a 16.67 ms native frame
+/// it queues are charged to this same thread later in the same frame even
+/// with a Web Worker pool up — feeding one encodes and copies the ~12 KB
+/// snapshot, and absorbing the result is main-thread work by definition —
+/// so the apply is only half of what a burst actually spends. With no pool
+/// (a 1–2 core device, a browser that refused workers, `?workers=0`) they
+/// run here outright. The old 256 was sized against a 16.67 ms native frame
 /// with worker threads behind it; at 120 Hz on the web the frame is
-/// 8.33 ms and the meshing is not behind anything. Pricing the slice in
-/// TIME makes the same code back off on the platform that cannot afford
-/// it, with no constant to retune per display.
+/// 8.33 ms. Pricing the slice in TIME makes the same code back off on the
+/// platform that cannot afford it, with no constant to retune per display.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -625,6 +690,8 @@ pub struct Engine {
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
 	remote_instances: Vec<[f32; 8]>,
+	held_instances: Vec<(crate::ui::hud::IconKind, [f32; 8])>,
+	carried: Carried,
 	/// Live level-up confetti bursts, in the flat instance layout the
 	/// shader reads (origin + age + seed). World state, so a world swap
 	/// forgets them; the flakes' whole motion derives from these three
@@ -653,6 +720,11 @@ pub struct Engine {
 	/// Adaptive streaming-budget controller (web/inline builds; the fixed
 	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
 	stream_budget: digblock_core::stream_budget::StreamBudget,
+	/// The bench summary has been emitted; a second call would report a
+	/// different (fallback) line, because `bench_summary` consumes the run
+	/// history. Two exits can reach it — `Game::on_exit` and `Drop` — and
+	/// which one fires depends on the platform.
+	bench_reported: bool,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
 	pending: FrameTimings,
@@ -1048,7 +1120,7 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 /// Stage-B flagship capture: skylight is stripped by the roof (the
 /// placement writes ride the ordinary edit hook), so the interior
 /// photographs DARK except the torch pool — at noon.
-fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
 	use digblock_core::shapes::{stair_state, Facing};
@@ -1080,8 +1152,15 @@ fn debug_vault_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 			}
 		}
 	}
-	// The torch, and something with depth for its light to model.
-	out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	// The torch, and something with depth for its light to model. The
+	// torch is optional (DIG_VAULT_DARK) because a room whose ONLY source
+	// is the one being carried is the capture a held light needs — with
+	// the floor torch present the two pools cannot be told apart. Keeping
+	// it is the other half of the pair: same lamp, placed and carried, in
+	// one frame, so a calibration drift between them is visible.
+	if torch {
+		out.push((bx, by - 2, bz + 6, B::Torch as u16));
+	}
 	out.push((
 		bx - 2,
 		by - 2,
@@ -1451,51 +1530,260 @@ fn player_color(id: u8) -> [f32; 3] {
 	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
 }
 
-/// Texture-array layer for a snapshot's held-item wire id (`None` =
-/// empty hand, unknown id from a newer server, or nothing to draw).
-fn held_tex_layer(held: u16) -> Option<u16> {
-	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
-	match held {
-		WIRE_EMPTY => None,
-		// The remote hand is one small cube, so the bucket's charge is
-		// all it can say: wood for an empty pail, water for a full one.
-		WIRE_TOOL => Some(BlockType::Wood.props().tex_side),
-		digblock_net::messages::HELD_TOOL_FULL => Some(BlockType::Water.props().tex_side),
-		// Any other tool arrives as its own id, and a tool carries no
-		// texture layers — `props().tex_side` would draw the game's most
-		// expensive item as a block of whatever sits at layer 0. Its
-		// AUTHORED faces have real textures, so borrow the one it is
-		// mostly made of; a future tool is covered the moment its icon is.
-		id => BlockType::try_from_id(id).map(|b| {
-			if b.is_tool() {
-				tool_cube_layer(b)
-			} else {
-				b.props().tex_side
-			}
-		}),
-	}
+/// What a snapshot's held-item wire id looks like in a remote's hand.
+///
+/// Routes through `hud::item_icon`, the same function the hotbar and
+/// your own viewmodel use, so a remote hand can never show a different
+/// object from the one its owner is looking at. `None` = an empty hand,
+/// an unknown id from a newer server, or an id no slot could legally
+/// hold.
+fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
+	use digblock_core::hotbar::{HotbarItem, WIRE_EMPTY, WIRE_TOOL};
+	let (item, full) = match held {
+		WIRE_EMPTY => return None,
+		WIRE_TOOL => (HotbarItem::WaterTool, false),
+		digblock_net::messages::HELD_TOOL_FULL => (HotbarItem::WaterTool, true),
+		// Still a wire-trust gate, not a nicety: a stale or hostile
+		// server can name Water here, which no slot can hold and which
+		// would otherwise draw as an item. A TOOL id is legitimate now
+		// though — `Hotbar::to_wire` sends the active tool as its own id
+		// and only the bucket as `WIRE_TOOL` — so tools are admitted
+		// explicitly rather than by relaxing `is_slottable`, which is
+		// answering a different question (may a GRID slot hold this).
+		// `item_icon` routes them on to `tool_icon`, so a remote's pick
+		// draws its authored geometry exactly as its owner's hand does.
+		id => (
+			HotbarItem::Block(
+				BlockType::try_from_id(id).filter(|b| b.is_slottable() || b.is_tool())?,
+			),
+			false,
+		),
+	};
+	Some(crate::ui::hud::item_icon(item, full).0)
 }
 
-/// The single texture that best stands in for a tool at remote-hand size.
-/// Memoized: this is asked once per remote player per frame, and the
-/// answer is a property of the authored geometry.
-fn tool_cube_layer(tool: BlockType) -> u16 {
-	use std::sync::OnceLock;
-	static LAYERS: OnceLock<Vec<(u16, u16)>> = OnceLock::new();
-	let table = LAYERS.get_or_init(|| {
-		BlockType::ALL
-			.into_iter()
-			.filter(|b| b.is_tool())
-			.filter_map(|b| {
-				let kind = crate::ui::hud::tool_icon(b, false);
-				crate::item_geom::dominant_layer(kind).map(|l| (b as u16, l))
-			})
-			.collect()
-	});
-	table
-		.iter()
-		.find(|&&(id, _)| id == tool as u16)
-		.map_or(BlockType::Wood.props().tex_side, |&(_, l)| l)
+/// Carrier key for the local player. Remote carriers key on their
+/// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
+const CARRIER_SELF: u16 = u16::MAX;
+/// Carrier key for `DIG_PLAYERBOX`'s fake remote. Out of the `PlayerId`
+/// space on purpose: it borrows id 2 for its COLOUR, and keying off that
+/// made it share a `Carried::fired` slot with a real player 2 — two
+/// carriers, one last-fired position, so both re-placed their light on
+/// almost every frame.
+const CARRIER_DEBUG: u16 = u16::MAX - 1;
+
+/// One remote as this frame sees them.
+///
+/// `key` and `id` are deliberately separate: the key identifies a
+/// CARRIER across frames and the id only picks a colour, which is what
+/// lets `DIG_PLAYERBOX` borrow a colour without borrowing a `PlayerId`.
+struct Remote {
+	key: u16,
+	id: u8,
+	pos: Vec3,
+	yaw: f32,
+	held: u16,
+}
+
+/// Everything one remote contributes to this frame: the body box, the
+/// item in its hand, and the light that item carries.
+///
+/// ONE site, so the fake remote `DIG_PLAYERBOX` parks exercises exactly
+/// what a real one does — which is the only reason that scene is worth
+/// having.
+fn push_remote(
+	bodies: &mut Vec<[f32; 8]>,
+	held_out: &mut Vec<(crate::ui::hud::IconKind, [f32; 8])>,
+	carried: &mut Carried,
+	r: &Remote,
+) {
+	let Remote { id, pos, yaw, .. } = *r;
+	let c = player_color(id);
+	bodies.push([pos.x, pos.y, pos.z, yaw, c[0], c[1], c[2], 0.0]);
+	let Some(kind) = held_icon(r.held) else {
+		return;
+	};
+	let block = crate::ui::hud::icon_block(kind);
+	held_out.push((
+		kind,
+		[
+			pos.x,
+			pos.y,
+			pos.z,
+			yaw,
+			f32::from(block.is_some_and(|b| b.props().emissive)),
+			crate::item_geom::height(kind) as f32,
+			0.0,
+			0.0,
+		],
+	));
+	carried.push(r.key, pos, block);
+}
+
+/// How near the camera a carried light has to be for its MOTION to be
+/// worth re-placing in the probe field.
+///
+/// The light itself still reaches the list at any range — this is only
+/// about the invalidation sphere, and past this distance the wake it
+/// leaves is too dim and too far to read (a torch 32 blocks out delivers
+/// about 0.01 radiance, under 3/255 before albedo). `GiDraw::invalidate`
+/// drains four spheres a frame and shares that budget with world edits,
+/// so a crowd of distant carriers must not be able to spend it.
+///
+/// This gate is the ONLY bound applied here, deliberately. Past it the
+/// queue's own policy is already the right one: bounded at 256 and
+/// dropping the OLDEST, because the newest position is the one whose
+/// light is most wrong. A second per-frame cap on top would either
+/// starve a carrier (skip it, and its last-fire position is already
+/// recorded) or hand the probes a position its carrier left seconds ago.
+const CARRIED_INVAL_DIST: f32 = 32.0;
+
+/// How far a carried light must travel before its motion is re-placed in
+/// the probe field.
+///
+/// A DISTANCE since the last fire, deliberately **not** a cell crossing.
+/// A crossing test is phase-dependent and pathological: a player resting
+/// on a cell boundary with the sub-block wobble the tick lerp and the
+/// decaying reconciliation offset both produce crosses back and forth
+/// every frame, so somebody standing still would fire sixty spheres a
+/// second. Distance has no such failure mode, is frame-rate independent,
+/// needs no hysteresis, and handles a teleport for free.
+///
+/// One C0 probe spacing, so a probe can never be more than its own cell
+/// stale between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
+const CARRY_INVAL_STEP: f32 = 2.0;
+
+/// This frame's carried lights, and the bookkeeping that turns a light
+/// which MOVES into a light that was re-PLACED.
+///
+/// The whole design is in that sentence: a torch in a hand is an
+/// ordinary entry in the ordinary GI light list, and its motion is
+/// expressed through the same hook a block edit uses. Travelling a probe
+/// spacing fires `Renderer::gi_invalidate`, which resets probe ages
+/// around the new position — so the bounce field re-traces at full
+/// weight instead of decaying from a stale value at 0.10 a sweep — and
+/// caps the resolve's screen history nearby while it does. Standing
+/// still fires nothing, so a lit room settles as deeply as one lit from
+/// the floor.
+#[derive(Default)]
+struct Carried {
+	/// What goes to the GI light list, in `FrameScene::carried` order.
+	lights: Vec<crate::gi::Emitter>,
+	/// Carrier key per entry of `lights`, same index.
+	keys: Vec<u16>,
+	/// Where each carrier's light last fired an invalidation. A `Vec`
+	/// rather than a map because a snapshot holds at most
+	/// `MAX_SNAPSHOT_PLAYERS` of these and a linear scan over forty
+	/// entries beats hashing one.
+	fired: Vec<(u16, Vec3)>,
+	/// Positions to invalidate this frame, each with the carrier it
+	/// belongs to, drained into the renderer and only then banked by
+	/// [`Carried::commit`] — see there for why the two are separate.
+	pending: Vec<(u16, [f32; 3])>,
+}
+
+impl Carried {
+	fn begin(&mut self) {
+		self.lights.clear();
+		self.keys.clear();
+		self.pending.clear();
+	}
+
+	/// Add one carrier if what they hold emits at all.
+	///
+	/// Derived, never special-cased: any block whose `emits` level is
+	/// nonzero is a light in a hand exactly as it is a light on the
+	/// ground, and it enters the list under the SAME class byte a placed
+	/// one does — so tint and cast level come from one LUT row and a
+	/// carried torch cannot drift from the torch beside it.
+	///
+	/// What it does NOT share is `gi::light_origin`. That is applied
+	/// CPU-side in `GiDraw::upload_chunk`, baked into a chunk emitter's
+	/// world position before it ever reaches the list, and it answers
+	/// "where inside its cell does this shape glow" — a question a
+	/// carried light has no cell to ask. `carried_origin` is the whole
+	/// answer here. Do not "unify" the two: removing the offset in
+	/// upload_chunk silently undoes R26 and puts every placed torch's
+	/// light back at its cell centre.
+	fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>) {
+		let Some(b) = held.filter(|b| b.props().light > 0) else {
+			return;
+		};
+		let o = digblock_core::gi::carried_origin(eye);
+		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(b, 0));
+		self.lights.push((o.x, o.y, o.z, class));
+		self.keys.push(key);
+	}
+
+	/// Close the frame: note which carriers have travelled far enough to
+	/// be re-placed, and which have STOPPED being lights.
+	///
+	/// A carrier that is NEW fires immediately — the probes around it
+	/// have never seen this light — which is what makes selecting a torch
+	/// light the room without waiting for a step.
+	fn finish(&mut self, cam: Vec3) {
+		for (i, &key) in self.keys.iter().enumerate() {
+			let (x, y, z, _) = self.lights[i];
+			let p = Vec3::new(x, y, z);
+			let slot = self.fired.iter().position(|(k, _)| *k == key);
+			if let Some(s) = slot {
+				if self.fired[s].1.distance_squared(p) < CARRY_INVAL_STEP * CARRY_INVAL_STEP {
+					continue;
+				}
+			}
+			// One sphere, not two. A step is far shorter than the sphere
+			// `invalidate` queues (radius 8 in C0, 16 in C1), so the space
+			// just vacated is covered many times over; only a jump longer
+			// than the radius would need the departure point, and nothing
+			// in the game moves a player that far without a teleport,
+			// which resets the whole screen history anyway.
+			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
+				self.pending.push((key, [x, y, z]));
+			}
+		}
+		// A light going OUT is a lighting change exactly as a light
+		// arriving is, and it is the half that was missing: `flush_lights`
+		// drops the entry from the GPU list the same frame, so the direct
+		// pool dies at once — but the probes keep its bounce and decay it
+		// at 0.10 a sweep, a 5.3 s half-life, so a room stayed lit by a
+		// torch that had been put away. Digging a PLACED torch has always
+		// invalidated, through `take_gi_edits`, which is precisely the
+		// asymmetry a carried light is not supposed to have. Covers a
+		// remote disconnecting or falling out of the snapshot too.
+		let keys = &self.keys;
+		let (cam, pending) = (cam, &mut self.pending);
+		self.fired.retain(|&(k, p)| {
+			if keys.contains(&k) {
+				return true;
+			}
+			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
+				pending.push((k, [p.x, p.y, p.z]));
+			}
+			false
+		});
+	}
+
+	/// Bank the positions that actually reached the renderer.
+	///
+	/// Separate from `finish` because `pending` is drained inside the
+	/// `renderer.is_some()` arm: banking at queue time meant that a frame
+	/// with no renderer — device loss, or the wait for the GPU at startup
+	/// — recorded a fire that never happened, and the carrier then sat
+	/// stale until it had walked another whole `CARRY_INVAL_STEP`.
+	///
+	/// A departed carrier is not re-banked: its key is gone from `fired`
+	/// and its light no longer exists, so there is nothing left to
+	/// compare a future position against.
+	fn commit(&mut self) {
+		for &(key, p) in &self.pending {
+			let p = Vec3::from_array(p);
+			match self.fired.iter().position(|(k, _)| *k == key) {
+				Some(s) => self.fired[s].1 = p,
+				None if self.keys.contains(&key) => self.fired.push((key, p)),
+				None => {}
+			}
+		}
+	}
 }
 
 /// Pack linear RGB into the overlay's 0xAABBGGRR vertex color (opaque).
@@ -1519,7 +1807,6 @@ impl Engine {
 		// frame first meshes a door (see `shapes::prewarm`).
 		digblock_core::shapes::prewarm();
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
-		metrics.workers = config.workers as u32;
 		if config.bench {
 			metrics.record_run_history();
 		}
@@ -1534,7 +1821,6 @@ impl Engine {
 			nanos as f64 / u32::MAX as f64 * 10000.0
 		});
 		let far = far_plane(config.draw_dist);
-		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
 		let pipeline = Pipeline::with_overlay(
@@ -1542,6 +1828,13 @@ impl Engine {
 			config.draw_dist,
 			config.workers,
 			digblock_core::overlay::EditOverlay::default(),
+		);
+		// The pipeline's own count, not `config.workers`: on the web that
+		// is a REQUEST the launcher may not be able to honour, and a pool
+		// is attached later (and reports zero until its workers answer).
+		log::info!(
+			"world seed: {seed} | {} chunk workers",
+			pipeline.worker_count()
 		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
@@ -1636,7 +1929,7 @@ impl Engine {
 					plan.extend(debug_crack_plan(spawn));
 				}
 				if config.debug_vault {
-					plan.extend(debug_vault_plan(spawn));
+					plan.extend(debug_vault_plan(spawn, !config.debug_vault_dark));
 				}
 				if config.debug_ore > 0 {
 					plan.extend(ore_scene.1.clone());
@@ -1697,6 +1990,8 @@ impl Engine {
 			tick_lerp: crate::smoothing::TickLerp::new(spawn),
 			remote_scratch: Vec::new(),
 			remote_instances: Vec::new(),
+			held_instances: Vec::new(),
+			carried: Carried::default(),
 			confetti: Vec::new(),
 			confetti_seq: 0,
 			net_corrections: 0,
@@ -1715,6 +2010,7 @@ impl Engine {
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
 			fly_frames: 0,
+			bench_reported: false,
 			walk_origin: None,
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
@@ -1811,6 +2107,10 @@ impl Engine {
 					engine.inventory.add(tool, 1);
 				}
 			}
+			// Conditional, so no other capture's inventory grid moves.
+			if screen == DebugScreen::Torch {
+				engine.inventory.add(BlockType::Torch, 12);
+			}
 			digblock_core::inv_grid::reconcile_layout(
 				&engine.inventory,
 				&mut engine.hotbar,
@@ -1838,6 +2138,17 @@ impl Engine {
 						engine.hotbar.cycle_tool(&owned);
 					}
 					assert_eq!(engine.hotbar.active_tool(), want, "DIG_SCREEN tool");
+				}
+				DebugScreen::Torch => {
+					// Find the slot rather than writing a number down:
+					// `reconcile_layout` files by block id, so retuning the
+					// stocking list above would otherwise silently select
+					// something else. No skill is needed — `unlock::pickup`
+					// gates DIGGING a craft-only block, not holding one.
+					let want = Some(HotbarItem::Block(BlockType::Torch));
+					if let Some(i) = engine.hotbar.slots().iter().position(|s| *s == want) {
+						engine.hotbar.select_digit(i as u8 + 1);
+					}
 				}
 				DebugScreen::Inventory => engine.inv_screen.open(),
 				DebugScreen::Alchemy | DebugScreen::Transmute => {
@@ -1924,6 +2235,28 @@ impl Engine {
 	/// batch from the Settings screen.
 	pub fn set_settings_store(&mut self, store: crate::settings::SettingsStore) {
 		self.settings_store = Some(store);
+	}
+
+	/// Inject a platform chunk-job pool (launcher-owned: the web's Web
+	/// Workers; native uses its own threads and ignores this). Safe to
+	/// call before the pool has finished starting — jobs run inline until
+	/// it reports ready.
+	pub fn set_job_dispatch(&mut self, dispatch: Box<dyn digblock_core::pipeline::JobDispatch>) {
+		self.pipeline.set_dispatch(dispatch);
+	}
+
+	/// Swap in a fresh chunk pipeline, carrying any job pool across.
+	/// Every world change (server join, return to title, loading a save)
+	/// goes through here: workers cost real time to start and hold no
+	/// world state, so respawning them per world would be pure loss —
+	/// and `take_dispatch` is what stops the old world's in-flight
+	/// columns landing as terrain in the new one.
+	fn install_pipeline(&mut self, pipeline: Pipeline) {
+		let dispatch = self.pipeline.take_dispatch();
+		self.pipeline = pipeline;
+		if let Some(dispatch) = dispatch {
+			self.pipeline.set_dispatch(dispatch);
+		}
 	}
 
 	/// Inject the named-save backend (launcher-owned: desktop files, web
@@ -2182,7 +2515,11 @@ impl Engine {
 		self.seed = seed;
 		self.spawn_pos = spawn;
 		// No overlay: the server's journal owns this world's edits.
-		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
+		self.install_pipeline(Pipeline::new(
+			seed,
+			self.config.draw_dist,
+			self.config.workers,
+		));
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		// The server's InventoryFull (right behind JournalDone) is the
@@ -2293,12 +2630,12 @@ impl Engine {
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
 		self.spawn_pos = spawn;
-		self.pipeline = Pipeline::with_overlay(
+		self.install_pipeline(Pipeline::with_overlay(
 			seed,
 			self.config.draw_dist,
 			self.config.workers,
 			digblock_core::overlay::EditOverlay::default(),
-		);
+		));
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
@@ -2336,12 +2673,12 @@ impl Engine {
 			&& self.pipeline.overlay().is_some_and(|o| o.is_empty());
 		self.seed = save.meta.seed;
 		if !reuse {
-			self.pipeline = Pipeline::with_overlay(
+			self.install_pipeline(Pipeline::with_overlay(
 				save.meta.seed,
 				self.config.draw_dist,
 				self.config.workers,
 				overlay,
-			);
+			));
 		}
 		// Resume in place when the save carries a position (edits restore
 		// identically, so the spot the player stood on regenerates under
@@ -3028,12 +3365,23 @@ impl Engine {
 			self.config.stream_budget_ms
 		};
 		self.metrics.stream_budget_ms = budget_ms;
+		// Sampled every frame from the executor rather than set once from
+		// the config, because the config is a REQUEST. A web pool that
+		// failed to start, hasn't finished its handshake, or has had every
+		// worker written off reports 0 here and streams inline — and a run
+		// that streamed inline must not be recorded in BENCH.md as a
+		// pooled arm, which is what the `?workers=` table is selected by.
+		self.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
 		// Previously each stage got its own slice of the budget and they
 		// summed to ~1.5× it; now they consume from the same clock, and the
 		// per-stage minimum-progress floors keep any single stage from
 		// being starved by an earlier one that overran.
 		let deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
+		// Offered unconditionally under an adaptive budget; `maintain`
+		// consumes it only while jobs run on this thread, so a web client
+		// whose worker pool is still starting (or was refused) keeps
+		// exactly the pre-pool behaviour.
 		let allowance = adaptive.then(|| Duration::from_secs_f32(budget_ms / 1000.0));
 		let m = self
 			.pipeline
@@ -4189,6 +4537,35 @@ impl Engine {
 	/// This frame's held item, if the hand has anything in it. The pose
 	/// is authored in view space by `viewmodel.rs`, so all this does is
 	/// pick the item and hand over the frame's light rig.
+	/// Advance WHICH item is in the hand, and the swap dip between two.
+	///
+	/// Its own method because it has to run on three paths: once at the
+	/// tail of the interactive update, where it must follow
+	/// `reconcile_layout`; and once before each scripted-flight return,
+	/// because the hand is part of the frame a capture photographs. The
+	/// viewmodel draws `Swap::shown()` and a carried light hangs off it,
+	/// so a harness that never advances this can neither draw a held item
+	/// nor measure one — `--bench` could do neither, and the first attempt
+	/// at R28's cost bracket read `ginee` at 0.00 with `emitters` 0 and
+	/// looked like a correct result. Costs the old baselines nothing: they
+	/// fly with an empty bar, so `selected` is None and `shown` stays
+	/// None. The bob and the swing stay interactive-only, since they are
+	/// driven by motion the scripted camera does not have.
+	fn advance_hand(&mut self, dt: f32) {
+		let full = self.inventory.bucket_full();
+		self.tool_swap.advance(dt, self.hotbar.active_tool());
+		let selected = self.hotbar.selected_item().map(|i| match i {
+			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
+			// so the hand has to ask which tool is active — otherwise
+			// every tool in the game is held as a bucket. `shown` rather
+			// than `active_tool`, so the hand and the slot's icon change
+			// over together.
+			HotbarItem::WaterTool => crate::ui::hud::tool_icon(self.tool_swap.shown(), full),
+			other => crate::ui::hud::item_icon(other, full).0,
+		});
+		self.view_swap.advance(dt, selected);
+	}
+
 	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
 		// The SWAP's item, not the hotbar's: mid-swap the hand is still
 		// holding the one it hasn't put away yet.
@@ -4347,13 +4724,25 @@ impl Engine {
 	}
 }
 
+impl Engine {
+	/// Emit the one-line run summary, from whichever exit reaches it
+	/// first. On the web that is `Game::on_exit`, because winit's exit
+	/// unwinds through JS and `Drop` may never run — which is why `?bench`
+	/// produced no output there at all before this existed.
+	fn report_bench(&mut self) {
+		if !self.config.bench || self.bench_reported {
+			return;
+		}
+		self.bench_reported = true;
+		if let Some(line) = self.metrics.bench_summary() {
+			log::info!("{line}");
+		}
+	}
+}
+
 impl Drop for Engine {
 	fn drop(&mut self) {
-		if self.config.bench {
-			if let Some(line) = self.metrics.bench_summary() {
-				log::info!("{line}");
-			}
-		}
+		self.report_bench();
 	}
 }
 
@@ -4815,6 +5204,7 @@ impl Game for Engine {
 				self.fly_step();
 				self.fly_frames += 1;
 			}
+			self.advance_hand(dt);
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -4833,6 +5223,7 @@ impl Game for Engine {
 					break;
 				}
 			}
+			self.advance_hand(dt);
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -5245,18 +5636,13 @@ impl Game for Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.view_swing.advance(dt);
-		let full = self.inventory.bucket_full();
-		self.tool_swap.advance(dt, self.hotbar.active_tool());
-		let selected = self.hotbar.selected_item().map(|i| match i {
-			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
-			// so the hand has to ask which tool is active — otherwise
-			// every tool in the game is held as a bucket. `shown` rather
-			// than `active_tool`, so the hand and the slot's icon change
-			// over together.
-			HotbarItem::WaterTool => crate::ui::hud::tool_icon(self.tool_swap.shown(), full),
-			other => crate::ui::hud::item_icon(other, full).0,
-		});
-		self.view_swap.advance(dt, selected);
+		// At the TAIL on the interactive path, after `reconcile_layout` and
+		// `pump_net`: a slot whose count reached zero is only released by
+		// the reconcile above, so reading the bar ahead of it drew — and
+		// LIT — a torch from a hand that had just placed its last one. The
+		// scripted-flight arms call this before their own returns instead,
+		// because the hand is part of the frame they capture.
+		self.advance_hand(dt);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
@@ -5274,39 +5660,66 @@ impl Game for Engine {
 		// Remote players, sampled ~100 ms in the past between snapshots;
 		// the instance list rides FrameScene and re-uploads every frame.
 		self.remote_instances.clear();
+		self.held_instances.clear();
+		self.carried.begin();
+		// Your own hand has no world position — the viewmodel is authored
+		// in view space — so the LIGHT is body-anchored exactly like
+		// everyone else's (`gi::carried_origin`). Keyed off the item the
+		// renderer DRAWS rather than the hotbar's selection, so the light
+		// and the visible torch arrive and leave together through the swap
+		// dip; and read unconditionally, because opening the inventory
+		// puts the hand away, not the torch out.
+		self.carried.push(
+			CARRIER_SELF,
+			self.camera.pos,
+			self.view_swap.shown().and_then(crate::ui::hud::icon_block),
+		);
 		if let Some(net) = self.net.as_ref() {
 			net.remotes.sample(&mut self.remote_scratch);
-			for d in &self.remote_scratch {
-				let c = player_color(d.id);
-				self.remote_instances
-					.push([d.pos.x, d.pos.y, d.pos.z, d.yaw, c[0], c[1], c[2], 0.0]);
-				// Held-item companion: a small textured cube in hand
-				// (instance mode = texture layer + 1; empty hand = none).
-				if let Some(layer) = held_tex_layer(d.held) {
-					self.remote_instances.push([
-						d.pos.x,
-						d.pos.y,
-						d.pos.z,
-						d.yaw,
-						1.0,
-						1.0,
-						1.0,
-						layer as f32 + 1.0,
-					]);
-				}
+			for i in 0..self.remote_scratch.len() {
+				let d = self.remote_scratch[i];
+				push_remote(
+					&mut self.remote_instances,
+					&mut self.held_instances,
+					&mut self.carried,
+					&Remote {
+						key: u16::from(d.id),
+						id: d.id,
+						pos: d.pos,
+						yaw: d.yaw,
+						held: d.held,
+					},
+				);
 			}
 		}
 		// DIG_PLAYERBOX=1: park a fake remote player 5 blocks ahead —
 		// a GPU-path check that needs no second client (held cube: dirt).
-		if self.config.debug_playerbox {
-			let p = self.camera.pos + self.camera.dir() * 5.0;
-			let c = player_color(2);
-			self.remote_instances
-				.push([p.x, p.y, p.z, 0.8, c[0], c[1], c[2], 0.0]);
-			let layer = BlockType::Dirt.props().tex_side as f32;
-			self.remote_instances
-				.push([p.x, p.y, p.z, 0.8, 1.0, 1.0, 1.0, layer + 1.0]);
+		if let Some(held) = self.config.debug_playerbox {
+			// Flat-forward, not along the camera's pitch: a remote player
+			// stands on the ground rather than hovering wherever you happen
+			// to be looking.
+			let d = self.camera.dir();
+			let flat = Vec3::new(d.x, 0.0, d.z).normalize_or_zero();
+			let p = self.camera.pos + flat * 5.0;
+			// Facing the camera, not a fixed yaw. The hand is on one side
+			// of the body, so a yaw the capture does not control decides
+			// whether the held item is on screen at all — and it hid the
+			// item entirely once the hand moved to the correct side.
+			let yaw = (-flat.x).atan2(-flat.z);
+			push_remote(
+				&mut self.remote_instances,
+				&mut self.held_instances,
+				&mut self.carried,
+				&Remote {
+					key: CARRIER_DEBUG,
+					id: 2,
+					pos: p,
+					yaw,
+					held,
+				},
+			);
 		}
+		self.carried.finish(self.camera.pos);
 		let frame = self.frame_uniforms();
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
@@ -5465,6 +5878,15 @@ impl Game for Engine {
 		.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
+			// A carried light that has travelled — or has just gone out —
+			// re-places itself through the same hook a block edit uses, so
+			// the probes around it re-trace at full weight instead of
+			// decaying from a stale value. See `Carried`. `commit` runs
+			// only once they have actually been queued.
+			for &(_, p) in &self.carried.pending {
+				r.gi_invalidate_moving(p);
+			}
+			self.carried.commit();
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
@@ -5476,6 +5898,8 @@ impl Game for Engine {
 				},
 				ui_scale: self.ui_scale,
 				players: &self.remote_instances,
+				held: &self.held_instances,
+				carried: &self.carried.lights,
 				confetti: &self.confetti,
 				overlay: overlay_stats
 					.as_ref()
@@ -5516,6 +5940,10 @@ impl Game for Engine {
 
 	fn wants_text_input(&self) -> bool {
 		self.chat.is_open()
+	}
+
+	fn on_exit(&mut self) {
+		self.report_bench();
 	}
 
 	fn on_suspend(&mut self) {
@@ -5578,6 +6006,244 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 }
 
 #[cfg(test)]
+mod carried_tests {
+	use super::*;
+
+	fn torch_at(c: &mut Carried, key: u16, eye: Vec3) {
+		c.push(key, eye, Some(BlockType::Torch));
+	}
+
+	/// One frame of one carrier holding a torch, in exactly the order
+	/// `Engine::render` runs it — `commit` included, since that is what
+	/// banks the fire, and without it every frame looks like the first.
+	/// Answers how many spheres the frame queued.
+	fn frame(c: &mut Carried, key: u16, eye: Vec3, cam: Vec3) -> usize {
+		frame_holding(c, key, eye, cam, Some(BlockType::Torch))
+	}
+
+	/// The same, for a hand holding anything (or nothing).
+	fn frame_holding(
+		c: &mut Carried,
+		key: u16,
+		eye: Vec3,
+		cam: Vec3,
+		held: Option<BlockType>,
+	) -> usize {
+		c.begin();
+		c.push(key, eye, held);
+		c.finish(cam);
+		let n = c.pending.len();
+		c.commit();
+		n
+	}
+
+	/// A carried light must be re-placed no less often than the bounce
+	/// field can resolve, or a carrier outruns a whole probe cell between
+	/// fires and the cache holds light from somewhere they have left.
+	#[test]
+	fn a_carrier_never_outruns_a_probe_cell() {
+		assert!(
+			CARRY_INVAL_STEP <= crate::gi::C0_SPACING as f32,
+			"the step must stay inside C0's own spacing"
+		);
+	}
+
+	/// The whole cost model rests on this: a player standing still with a
+	/// torch is not a moving emitter, so nothing is invalidated and the
+	/// room they are in converges as deeply as one lit from the floor.
+	///
+	/// It is also why the trigger is a DISTANCE and not a cell crossing.
+	/// The second half of this test is the pathology a crossing rule
+	/// has: a carrier wobbling either side of a cell boundary — which is
+	/// what the tick lerp and the decaying reconciliation offset produce
+	/// — would fire on every single frame.
+	#[test]
+	fn a_still_carrier_is_not_a_moving_emitter() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		for f in 0..600 {
+			// The first frame places the light: the probes around it have
+			// never seen it, which is what lights the room the moment you
+			// select a torch.
+			let want = usize::from(f == 0);
+			assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), want, "frame {f}");
+		}
+		// Straddling a cell boundary, a hundredth of a block either way.
+		let edge = Vec3::new(64.0, 70.5, 64.0);
+		let mut c = Carried::default();
+		frame(&mut c, CARRIER_SELF, edge, edge);
+		for f in 0..600 {
+			let p = edge + Vec3::Z * if f % 2 == 0 { 0.01 } else { -0.01 };
+			assert_eq!(frame(&mut c, CARRIER_SELF, p, p), 0, "wobble fired on {f}");
+		}
+	}
+
+	/// Walking fires once per step travelled, not once per frame — the
+	/// probes around the carrier re-trace at full weight instead of
+	/// decaying from a stale value.
+	#[test]
+	fn a_walking_carrier_fires_once_per_step() {
+		let start = Vec3::new(64.0, 70.0, 64.0);
+		let per_frame = digblock_core::player::WALK_SPEED / 60.0;
+		let mut c = Carried::default();
+		let mut fires = 0usize;
+		let frames = 300; // five seconds
+		for f in 0..frames {
+			let p = start + Vec3::Z * (per_frame * f as f32);
+			fires += frame(&mut c, CARRIER_SELF, p, p);
+		}
+		let walked = per_frame * (frames - 1) as f32;
+		// One placement plus one per step of travel.
+		let want = 1 + (walked / CARRY_INVAL_STEP) as usize;
+		assert_eq!(fires, want, "walked {walked} blocks");
+	}
+
+	/// Only a block that EMITS is carried, and the answer is derived from
+	/// the block table rather than named — so a second emitter needs no
+	/// edit here, and the bucket (whose charge is Water, and whose empty
+	/// state decodes to a tool sentinel) is never a light.
+	#[test]
+	fn only_an_emitting_block_lights_a_hand() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		for b in BlockType::ALL {
+			let mut c = Carried::default();
+			c.begin();
+			c.push(CARRIER_SELF, eye, Some(b));
+			assert_eq!(
+				c.lights.len(),
+				usize::from(b.props().light > 0),
+				"{b:?} light {}",
+				b.props().light
+			);
+		}
+		let mut c = Carried::default();
+		c.begin();
+		c.push(CARRIER_SELF, eye, None);
+		assert!(c.lights.is_empty(), "an empty hand is not a light");
+	}
+
+	/// A carried torch enters the list under the same class byte a placed
+	/// one does, so tint and cast level come from one LUT row. NOT the
+	/// flame offset — that is `gi::light_origin`, applied CPU-side to
+	/// chunk emitters only, and a carried light has no cell to offset
+	/// within; see `Carried::push`.
+	#[test]
+	fn a_carried_torch_borrows_the_placed_torchs_class() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		c.begin();
+		torch_at(&mut c, CARRIER_SELF, eye);
+		let want =
+			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Torch, 0));
+		assert_eq!(c.lights[0].3, want);
+		assert!(
+			want >= digblock_core::gi::SHAPE_CLASS_BASE,
+			"the shaped class"
+		);
+		let o = digblock_core::gi::carried_origin(eye);
+		assert_eq!(
+			(c.lights[0].0, c.lights[0].1, c.lights[0].2),
+			(o.x, o.y, o.z)
+		);
+	}
+
+	/// A carrier far from the camera still LIGHTS — it is in the list —
+	/// but its motion does not spend an invalidation sphere, because the
+	/// four a frame belong to world edits and a wake that far out cannot
+	/// be read.
+	#[test]
+	fn a_distant_carriers_motion_costs_nothing() {
+		let cam = Vec3::new(64.0, 70.0, 64.0);
+		let far = cam + Vec3::X * (CARRIED_INVAL_DIST + 4.0);
+		let mut c = Carried::default();
+		for f in 0..120 {
+			let p = far + Vec3::Z * (f as f32 * 0.5);
+			assert_eq!(frame(&mut c, 3, p, cam), 0, "spent a sphere on frame {f}");
+			assert_eq!(c.lights.len(), 1, "still a light on frame {f}");
+		}
+	}
+
+	/// A light going OUT is a lighting change exactly as one arriving is.
+	///
+	/// `flush_lights` drops the entry the same frame, so the direct pool
+	/// dies at once — but the probes hold its bounce and decay it at 0.10
+	/// a sweep, a 5.3 s half-life, so without this a room stayed lit by a
+	/// torch that had been put away. Digging a PLACED torch has always
+	/// invalidated, through `take_gi_edits`, and the whole R28 thesis is
+	/// that a carried light is not a second kind of thing.
+	#[test]
+	fn putting_a_torch_away_invalidates_where_it_was() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let gone = digblock_core::gi::carried_origin(eye).to_array();
+		let mut c = Carried::default();
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 1, "selecting lights");
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 0, "then settles");
+		// Swap to something that does not emit: one sphere, at the place
+		// the light was, and then silence.
+		c.begin();
+		c.push(CARRIER_SELF, eye, Some(BlockType::Dirt));
+		c.finish(eye);
+		assert_eq!(c.pending.len(), 1, "putting it away must invalidate");
+		assert_eq!(c.pending[0].1, gone, "at the position it lit from");
+		c.commit();
+		assert_eq!(
+			frame_holding(&mut c, CARRIER_SELF, eye, eye, Some(BlockType::Dirt)),
+			0,
+			"and not again every frame afterwards"
+		);
+		// Re-selecting it is a new light, so it places again.
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 1, "re-selecting");
+	}
+
+	/// The same for a carrier who simply vanishes — a remote
+	/// disconnecting, or dropping out of the snapshot.
+	#[test]
+	fn a_departed_carrier_invalidates_where_it_was() {
+		let cam = Vec3::new(64.0, 70.0, 64.0);
+		let eye = cam + Vec3::X * 6.0;
+		let mut c = Carried::default();
+		assert_eq!(frame(&mut c, 7, eye, cam), 1);
+		// Nobody at all this frame.
+		c.begin();
+		c.finish(cam);
+		assert_eq!(c.pending.len(), 1, "a carrier who left takes their light");
+		c.commit();
+		c.begin();
+		c.finish(cam);
+		assert!(c.pending.is_empty(), "and is then forgotten");
+	}
+
+	/// A frame that never reached the renderer must not be banked as a
+	/// fire, or the carrier sits stale until it has walked another whole
+	/// step. `commit` is what separates queued from applied.
+	#[test]
+	fn an_unapplied_fire_is_retried() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		for _ in 0..5 {
+			// finish() without commit(): the renderer was absent (device
+			// loss, or the wait for the GPU at startup).
+			c.begin();
+			torch_at(&mut c, CARRIER_SELF, eye);
+			c.finish(eye);
+			assert_eq!(c.pending.len(), 1, "still owed an invalidation");
+		}
+		c.commit();
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 0, "banked once");
+	}
+
+	/// The fake remote `DIG_PLAYERBOX` parks must not share a carrier key
+	/// with a real player: two carriers on one `fired` slot overwrite each
+	/// other's last-fired position, so both re-place on nearly every
+	/// frame.
+	#[test]
+	fn the_debug_carrier_key_is_nobodys_player_id() {
+		assert!(u16::from(u8::MAX) < CARRIER_DEBUG);
+		assert_ne!(CARRIER_DEBUG, CARRIER_SELF);
+	}
+}
+
+#[cfg(test)]
 mod net_budget_tests {
 	use super::*;
 
@@ -5613,6 +6279,48 @@ mod net_budget_tests {
 				"{hz} Hz: {budget} of {interval}"
 			);
 		}
+	}
+}
+
+#[cfg(test)]
+mod stream_budget_gate_tests {
+	use super::*;
+
+	/// The trap this gate's split exists to close. The adaptive budget is
+	/// ONE deadline over jobs, drain, eviction and uploads, and only the
+	/// jobs can move to a worker pool — so gating it on the executor sent
+	/// the drain and the uploads back to the fixed floor the moment web
+	/// workers were switched on. Jobs faster, absorption slower, on
+	/// exactly the machines that had headroom to spend.
+	#[test]
+	fn a_worker_backed_web_client_keeps_its_adaptive_budget() {
+		let mut web = EngineConfig::web();
+		assert!(
+			web.adaptive_effective(),
+			"the inline web client is the baseline"
+		);
+		web.workers = 2;
+		assert!(
+			web.adaptive_effective(),
+			"moving jobs to a pool must not drop drain and uploads to the floor"
+		);
+	}
+
+	/// Captures stay hermetic: bench pins the fixed floor whatever else is
+	/// configured, so no baseline drifts with the display's headroom.
+	#[test]
+	fn bench_still_pins_the_fixed_budget() {
+		let mut web = EngineConfig::web();
+		web.bench = true;
+		assert!(!web.adaptive_effective());
+		web.workers = 2;
+		assert!(!web.adaptive_effective());
+	}
+
+	/// Desktop never opted in, and a worker count must not opt it in.
+	#[test]
+	fn desktop_stays_on_the_fixed_budget() {
+		assert!(!EngineConfig::desktop().adaptive_effective());
 	}
 }
 

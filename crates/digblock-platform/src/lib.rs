@@ -60,6 +60,15 @@ pub trait Game: 'static {
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
+	/// The run is ending on its own terms (`exit_after_frames`), before
+	/// the event loop is told to exit.
+	///
+	/// Exists because a `Drop` impl is not a portable exit hook: on wasm,
+	/// winit's exit unwinds through JS and destructors do not reliably
+	/// run, so anything a capture is FOR — the bench summary — would be
+	/// emitted on native and silently lost on the web, which is the
+	/// platform with no other way to report it.
+	fn on_exit(&mut self) {}
 	/// Polled once per frame. `false` (menu open) releases the cursor and
 	/// routes clicks/positions to the game as UI input; the shell re-grabs
 	/// on the rising edge. Defaults to the classic always-grabbed FPS

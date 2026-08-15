@@ -1,5 +1,165 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-14 — web chunk workers: the first scripted web bench
+
+The first `?bench` numbers ever taken in a browser. Chrome/WebGPU, M2 Max,
+120 Hz, `?bench&fly=1&frames=1500&seed=42&mute`, draw 20, lighting detail /3
+(the density default at 2× display scale). `?workers=` picks the arm.
+
+| | `workers=0` | `workers=2` (shipped) | `workers=4` |
+|---|---|---|---|
+| fill | **n/a — never, in 12.5 s** | **11.91 s** | **4.63 s** |
+| avg | 8.33 | 8.33 | 8.34 |
+| p95 | 10.60 | **9.30** | 9.40 |
+| p99 | 11.10 | **9.70** | 10.20 |
+| worst | 11.80 | **11.00** | 15.50 |
+| over-8.3 / over-12.5 ms | 461 / 0 | 433 / 0 | 439 / **4** |
+| gen jobs | 138 (11/s) avg 2.29 ms | **1245 (100/s)** avg 1.29 ms | 1245 avg 1.17 ms |
+| mesh jobs | 5630 (451/s) avg 0.14 ms | **43644 (3497/s)** avg 0.10 ms | 33367 avg 0.08 ms |
+| busy (overlay) | 1.02–1.04 ms | 1.24–1.40 ms | 1.07–2.01 ms |
+| uploads / 5 s | ~25 MB | ~200 MB | ~350 MB |
+
+**4 workers was measured and declined.** It fills 2.6× faster than 2 and
+still beats the inline path on p99 (10.20 vs 11.10), but it is the only arm
+that drops a frame at all (4 over 12.5 ms, worst 15.50) — and this change
+exists to buy frame time, not to spend it. Shipping 2. Note the shipped cap
+is not what protects weak hardware: `default_count`'s `cores - 2` is, so a
+4-core machine gets 2 regardless and a 1–2 core machine gets none. Raising
+`MAX_WORKERS` only ever affects machines with cores to spare.
+
+Also note 4 workers does FEWER mesh jobs than 2 (33k vs 44k): a faster fill
+lands stack siblings together, so fewer cross-border remesh cascades fire —
+the same effect the second pass's column-gen rework measured natively.
+
+**Every frame percentile improved while the client did ~8× the streaming
+work.** That is the whole thesis: the streaming tax left the frame. `busy`
+rising 1.0 → 1.4 ms is the absorption that CANNOT follow the jobs off-thread
+(store bookkeeping, `write_buffer` — both pinned to the thread owning the
+device), and it is a fifth of what the jobs were costing.
+
+**Per-job cost is ordinary, and an earlier scare was a misreading.** A run
+taken while the pool was feed-starved reported gen avg 5.85 ms and looked
+like a 5× wasm penalty. It was the menu BACKDROP world's terrain — cave
+noise makes column cost bimodal (PERF-AUDIT §2), and the earlier 1.17 ms web
+figure was taken there too, not at the seed-42 spawn. At the same pose it is
+1.29 ms in a worker against 0.83–1.01 ms native, i.e. wasm costs ~1.4×.
+Workers also beat the main thread per job (1.29 vs 2.29 ms) because an
+inline job's wall clock includes competing with the render loop.
+
+**Read the `workers=0` arm as floor-only, not as the shipped client.**
+`?bench` disables the adaptive allowance (`adaptive_effective`), so that arm
+runs the fixed floor — and the tell is in the table: 451 mesh/s is
+`INLINE_MESH_CAP` (4) × 120 fps almost exactly. A user on today's adaptive
+inline path sits somewhere better than this. The shipped-vs-shipped number
+needs overlay readings on a NON-bench run, which is still owed.
+
+Two bugs found by taking this measurement at all, both worth remembering:
+
+- **The pool was feed-rate starved at first**, capping throughput at
+  `DEPTH × workers × fps` = 480 jobs/s with the pool 9% utilized and 1124
+  columns queued. `top_up_workers` refills once per `maintain`, so a worker
+  that empties its queue idles until the next frame. This is the SAME
+  starvation the second pass found natively with `bounded(workers*2)`, and
+  the same fix: depth 2 → 16.
+- **`?bench` opened the menu**, because `EngineConfig::web()` starts with
+  `menu: true` while desktop starts menu-less. The flight still ran (it
+  returns before the interactive half), so this cost comparability and
+  appearance rather than correctness — but "capture paths must not sit on a
+  menu screen" is a documented rule and the web bench was breaking it.
+
+## 2026-08-14 — what the web's inline executor actually costs
+
+Groundwork for the browser's Web Worker chunk pool. `--workers 0` IS the web's
+executor (`Pipeline::build` forces it on wasm), so a native bracket measures what
+that platform gives up — modulo one caveat that turns out to matter.
+
+M2 Max, 120 Hz vsync, `--bench --display 0 --fly 1 --frames 4800`, seed 42, draw 20.
+`--fly 1` freezes the camera after one frame, so this is the initial fill with no
+travel demand. Over-12.5 ms counts are out of 4739 scored frames.
+
+| workers | fill | avg | p95 | p99 | over-12.5 ms |
+|---|---|---|---|---|---|
+| 0 (inline) | **113.4 s** | 8.47 | 9.64 | 16.52 | 687 (of 21939) |
+| 1 | 23.4 s | 8.34 | 9.00 | 10.04 | 9 |
+| 2 | 9.8–10.1 s | 8.34 | 8.73 | 9.21 | 5 |
+| 4 | 3.6–3.7 s | 8.35 | 8.90 | 9.38–11.41 | 19–41 |
+
+The inline row needed a 22000-frame run to finish at all; at 4800 frames it never
+completed the fill, having managed 425 of the 1245 gen jobs in 40 s. On the
+travelling flight (`--bench-speed 30`, 15 s) it is 6× fewer gen jobs and 13× fewer
+mesh jobs than 4 workers, and never fills.
+
+**Read the inline row as a lower bound, not as the shipped web client.** `--bench`
+disables the adaptive allowance for determinism (`adaptive_effective`), so
+`--workers 0` there runs the floor batch ONLY — one `Generate`, or
+`INLINE_MESH_CAP` = 4 meshes, per frame. The shipped web build gets an allowance
+equal to its whole budget, observed at 5.6 ms while streaming (see the 2026-08-06
+web readings) ≈ 0.67 core-seconds/s, which against ~5.4 s of wasm job work puts its
+real fill in the 8–10 s range — i.e. roughly where 2 workers land, not where 113 s
+does. **On a machine with headroom the adaptive budget already buys most of what a
+worker pool would.** The case for the pool is the hardware WITHOUT headroom, where
+the controller collapses to its 3.0 ms floor while job costs rise 3–4×, plus the
+floor batch that no controller can shed at all (PERF-AUDIT §1).
+
+**A retraction.** A first pass of this bracket, taken on a thermally loaded machine
+right after a release build, read 340 over-12.5 ms frames at 4 workers against 30 at
+2, and was briefly used to argue a hard pacing knee at 2. Re-measured cold, twice, it
+is 19–41 against 5 — the direction survives (absorbing results is pinned to the
+thread that owns the device, so a faster pool spends more main thread per frame, not
+less) but the cliff does not. Natively the 4-worker trade is still worth it. Two
+remains the WEB default on grounds this bracket cannot measure: per-worker wasm
+linear memory on low-RAM devices, and a `upload_bytes_max` of 768 KiB a frame against
+native's 8 MiB, which must move the knee earlier there. Re-measure on web before
+raising it. Lesson for the next bracket: pin the thermal state, not just `--display`.
+
+## 2026-08-14 — what a torch in your hand costs (R28)
+
+M2 Max, `--bench --warp 0` (parked in the sealed vault, no motion),
+`--fixed-dt 0.0166667`, seed 42, tod 45, `--display 0` pinned,
+`DIG_VAULT=1 DIG_VAULT_DARK=1 DIG_SCREEN=torch` — a room whose ONLY light is the one in
+the player's hand. Interleaved, 2 reps per arm; within-arm spread **0.08 / 0.02 ms**.
+
+| `--gi-scale` | resolution | baseline | `DIG_STUB=ginee` | term |
+|---|---|---|---|---|
+| 1 (resolve at full render res) | 5.79 MP, draw 20 | 19.76 / 19.68 | 17.75 / 17.73 | **1.98 ms** |
+| 3 (**the shipped default**) | 5.79 MP, draw 20 | 8.33 | — | not measurable |
+
+**1.98 ms at `--gi-scale 1`, and it is the worst case by construction.** A light at the
+eye puts every visible pixel inside `LIGHT_RANGE` with `ndl > 0`, so every one of them
+draws a candidate and fires a shadow ray — R20's sealed-vault worst case, except now it
+is the *normal* case for anyone carrying a torch. And the vault is eleven blocks across,
+so there is no far band to early-out. At the shipped divisor the resolve runs at a ninth
+of the pixels and the same scene sits at the 120 Hz cap with headroom to spare, which is
+why that row has no number: nothing to subtract from a frame that is not GPU-bound.
+
+**No existing baseline moves, and the reason is worth writing down.** `--bench` flies with
+an empty hotbar, so `Swap::shown()` is `None`, no carried light exists, and `flush_lights`
+behaves exactly as it did. Verified rather than assumed: the CSV's `emitters` column reads
+**0** on every pre-existing bench scene and **1** here.
+
+**The harness could not see a held item at all, and that had to be fixed first.** `update`
+returned on the scripted-flight path *before* advancing `Swap`, so under `--bench` the
+viewmodel never drew and a carried light never existed — the first attempt at this bracket
+measured `ginee` at 0.00 with `emitters` 0 and looked like a correct result. Hoisting the
+one `view_swap.advance` above that return costs the old baselines nothing (empty bar → no
+item either way) and is what makes a held item photographable and measurable.
+
+**The picture, same scene, 960×540, 600 frames.** Mean interior **58.6/255** with the torch
+in hand against **26.8** holding a non-emitting item — the carried torch is the room's
+light, not a tint on it. Clipping, R22's metric: **0.123 %** of pixels with any channel at
+255, of which 2.1 % are actually white, against R22's **0.40 %** placed-torch baseline.
+Carrying a torch clips *less* than standing next to one, and the near-field disc it throws
+at feet + 1.0 reads as a warm pool rather than the saturated ellipse the arithmetic
+predicted. `cam_light` does not blow out either, for a structural reason: a probe stores
+what its RAYS find, so a torch reaches the hand as bounce off the floor, never as
+`emit·GAIN/LIGHT_NEAR²`.
+
+**The CSV's `gpu_*` columns are unusable at this pose and that is not new.** They reported
+`gpu_gi_denoise_ms` of 34 ms inside a 19.8 ms frame, and moved by the same ~2 ms in phases
+the stub cannot touch (`gpu_main_ms`, `gpu_viewmodel_ms`) — including `refresh_ms`, which
+a shader stub cannot change at all. Take `avg_ms` from an interleaved bracket; the phase
+timers here are a global clock artefact, exactly the trap the 2026-08-12 entry named.
+
 ## 2026-08-12 — the toroidal wrap was 25% of the frame
 
 Same machine and pose as the attribution entry below: M2 Max, 5.43 MP (2992×1814),
