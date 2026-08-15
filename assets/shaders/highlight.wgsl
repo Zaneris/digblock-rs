@@ -238,7 +238,7 @@ fn cr_h2(c: vec2i) -> vec2f {
 	// passes the asset validation test, and then invalidates this whole
 	// pipeline in Chrome — no outline, no crack, a wall of uncaptured
 	// errors. `gi_resolve.wgsl`'s hash is written the same way.
-	var x = (u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
+	var x =(u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
 	x ^= x >> 16u;
 	x *= 0x7feb352du;
 	x ^= x >> 15u;
