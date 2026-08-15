@@ -232,7 +232,13 @@ fn cr_child(i: u32, nroot: u32) -> u32 {
 // One mix, two 12-bit fields out — a 2D gradient costs four of these,
 // not eight scalar hashes.
 fn cr_h2(c: vec2i) -> vec2f {
-	var x = (u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
+	// The parentheses are MANDATORY, not style: Tint rejects a bare
+	// `a * b ^ c * d` ("mixing '*' and '^' requires parenthesis") while
+	// naga accepts it, so an unparenthesized version compiles natively,
+	// passes the asset validation test, and then invalidates this whole
+	// pipeline in Chrome — no outline, no crack, a wall of uncaptured
+	// errors. `gi_resolve.wgsl`'s hash is written the same way.
+	var x =(u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
 	x ^= x >> 16u;
 	x *= 0x7feb352du;
 	x ^= x >> 15u;

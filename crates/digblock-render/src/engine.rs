@@ -293,11 +293,11 @@ pub struct EngineConfig {
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
 	/// Grow the streaming budget from measured frame headroom, scaled
-	/// by how near the closest pending job is (the inline-executor web
-	/// build; see `stream_budget`) — rim-only churn while walking stays
-	/// at the fixed floor. Only effective with `workers == 0` and
-	/// outside bench — captures must stay deterministic, and worker
-	/// pools already produce across frames.
+	/// by how near the closest pending job is (the web build; see
+	/// `stream_budget`) — rim-only churn while walking stays at the
+	/// fixed floor. Effective outside bench only: captures must stay
+	/// deterministic. It is NOT conditioned on the executor — see
+	/// `adaptive_effective`.
 	pub adaptive_stream: bool,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
@@ -449,10 +449,15 @@ impl EngineConfig {
 	}
 
 	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
-	/// handles it — verified 120fps at draw 20 + SSR), but jobs run
-	/// inline on the main thread (workers: 0 — wasm has no std threads)
-	/// and the menu opens by default like a desktop interactive run.
-	/// URL params (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
+	/// handles it — verified 120fps at draw 20 + SSR), and the menu opens
+	/// by default like a desktop interactive run. URL params (?draw=
+	/// ?ssr=0 ?shadow=) opt weaker hardware down.
+	///
+	/// `workers: 0` here is the FLOOR, not the shipped setting: wasm has
+	/// no std threads, so a pipeline built from this config runs jobs
+	/// inline. The launcher overwrites the field with what it intends to
+	/// spawn and attaches a Web Worker pool afterwards (`apps/web/jobs.rs`),
+	/// which the pipeline upgrades to when its first worker answers.
 	pub fn web() -> Self {
 		Self {
 			workers: 0,
@@ -467,8 +472,18 @@ impl EngineConfig {
 	}
 
 	/// The adaptive budget's effective enable (see `adaptive_stream`).
+	///
+	/// Deliberately NOT gated on the executor. What this enables is ONE
+	/// deadline covering jobs, drain, eviction and uploads together — and
+	/// moving jobs to a pool moves only the jobs. A `workers == 0`
+	/// condition here therefore snapped the drain and the uploads back to
+	/// the fixed floor the instant web workers were switched on: jobs got
+	/// faster, absorption got slower, and the machines with headroom to
+	/// spend lost it. The JOB half is gated where it belongs instead —
+	/// `Pipeline::maintain` spends the allowance only when jobs are
+	/// actually running on this thread.
 	fn adaptive_effective(&self) -> bool {
-		self.adaptive_stream && self.workers == 0 && !self.bench
+		self.adaptive_stream && !self.bench
 	}
 
 	pub(crate) fn render_config(&self) -> RenderConfig {
@@ -533,13 +548,15 @@ const EVICT_MIN: usize = 8;
 /// A COUNT could not express that, which is what this replaced. What one
 /// edit costs swings by more than an order of magnitude — whether its
 /// chunk is still shared decides a 16³ copy-on-write — and the mesh jobs
-/// it queues run INLINE on this same thread on the web (`workers: 0`),
-/// later in the same frame, so the apply is only half of what a burst
-/// actually spends. The old 256 was sized against a 16.67 ms native frame
+/// it queues are charged to this same thread later in the same frame even
+/// with a Web Worker pool up — feeding one encodes and copies the ~12 KB
+/// snapshot, and absorbing the result is main-thread work by definition —
+/// so the apply is only half of what a burst actually spends. With no pool
+/// (a 1–2 core device, a browser that refused workers, `?workers=0`) they
+/// run here outright. The old 256 was sized against a 16.67 ms native frame
 /// with worker threads behind it; at 120 Hz on the web the frame is
-/// 8.33 ms and the meshing is not behind anything. Pricing the slice in
-/// TIME makes the same code back off on the platform that cannot afford
-/// it, with no constant to retune per display.
+/// 8.33 ms. Pricing the slice in TIME makes the same code back off on the
+/// platform that cannot afford it, with no constant to retune per display.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -681,6 +698,11 @@ pub struct Engine {
 	/// Adaptive streaming-budget controller (web/inline builds; the fixed
 	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
 	stream_budget: digblock_core::stream_budget::StreamBudget,
+	/// The bench summary has been emitted; a second call would report a
+	/// different (fallback) line, because `bench_summary` consumes the run
+	/// history. Two exits can reach it — `Game::on_exit` and `Drop` — and
+	/// which one fires depends on the platform.
+	bench_reported: bool,
 	/// Phase timings for the in-progress frame, handed to metrics at the
 	/// end of render().
 	pending: FrameTimings,
@@ -1636,7 +1658,6 @@ impl Engine {
 		// frame first meshes a door (see `shapes::prewarm`).
 		digblock_core::shapes::prewarm();
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
-		metrics.workers = config.workers as u32;
 		if config.bench {
 			metrics.record_run_history();
 		}
@@ -1651,7 +1672,6 @@ impl Engine {
 			nanos as f64 / u32::MAX as f64 * 10000.0
 		});
 		let far = far_plane(config.draw_dist);
-		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
 		let pipeline = Pipeline::with_overlay(
@@ -1659,6 +1679,13 @@ impl Engine {
 			config.draw_dist,
 			config.workers,
 			digblock_core::overlay::EditOverlay::default(),
+		);
+		// The pipeline's own count, not `config.workers`: on the web that
+		// is a REQUEST the launcher may not be able to honour, and a pool
+		// is attached later (and reports zero until its workers answer).
+		log::info!(
+			"world seed: {seed} | {} chunk workers",
+			pipeline.worker_count()
 		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
@@ -1814,6 +1841,7 @@ impl Engine {
 			history_scratch: Vec::new(),
 			bench_t: 0.0,
 			fly_frames: 0,
+			bench_reported: false,
 			walk_origin: None,
 			pending_uploads: std::collections::VecDeque::new(),
 			pending_evicts: std::collections::VecDeque::new(),
@@ -1997,6 +2025,28 @@ impl Engine {
 	/// batch from the Settings screen.
 	pub fn set_settings_store(&mut self, store: crate::settings::SettingsStore) {
 		self.settings_store = Some(store);
+	}
+
+	/// Inject a platform chunk-job pool (launcher-owned: the web's Web
+	/// Workers; native uses its own threads and ignores this). Safe to
+	/// call before the pool has finished starting — jobs run inline until
+	/// it reports ready.
+	pub fn set_job_dispatch(&mut self, dispatch: Box<dyn digblock_core::pipeline::JobDispatch>) {
+		self.pipeline.set_dispatch(dispatch);
+	}
+
+	/// Swap in a fresh chunk pipeline, carrying any job pool across.
+	/// Every world change (server join, return to title, loading a save)
+	/// goes through here: workers cost real time to start and hold no
+	/// world state, so respawning them per world would be pure loss —
+	/// and `take_dispatch` is what stops the old world's in-flight
+	/// columns landing as terrain in the new one.
+	fn install_pipeline(&mut self, pipeline: Pipeline) {
+		let dispatch = self.pipeline.take_dispatch();
+		self.pipeline = pipeline;
+		if let Some(dispatch) = dispatch {
+			self.pipeline.set_dispatch(dispatch);
+		}
 	}
 
 	/// Inject the named-save backend (launcher-owned: desktop files, web
@@ -2224,7 +2274,11 @@ impl Engine {
 		self.seed = seed;
 		self.spawn_pos = spawn;
 		// No overlay: the server's journal owns this world's edits.
-		self.pipeline = Pipeline::new(seed, self.config.draw_dist, self.config.workers);
+		self.install_pipeline(Pipeline::new(
+			seed,
+			self.config.draw_dist,
+			self.config.workers,
+		));
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		// The server's InventoryFull (right behind JournalDone) is the
@@ -2329,12 +2383,12 @@ impl Engine {
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
 		self.spawn_pos = spawn;
-		self.pipeline = Pipeline::with_overlay(
+		self.install_pipeline(Pipeline::with_overlay(
 			seed,
 			self.config.draw_dist,
 			self.config.workers,
 			digblock_core::overlay::EditOverlay::default(),
-		);
+		));
 		self.player = Player::new(spawn);
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
@@ -2372,12 +2426,12 @@ impl Engine {
 			&& self.pipeline.overlay().is_some_and(|o| o.is_empty());
 		self.seed = save.meta.seed;
 		if !reuse {
-			self.pipeline = Pipeline::with_overlay(
+			self.install_pipeline(Pipeline::with_overlay(
 				save.meta.seed,
 				self.config.draw_dist,
 				self.config.workers,
 				overlay,
-			);
+			));
 		}
 		// Resume in place when the save carries a position (edits restore
 		// identically, so the spot the player stood on regenerates under
@@ -3059,12 +3113,23 @@ impl Engine {
 			self.config.stream_budget_ms
 		};
 		self.metrics.stream_budget_ms = budget_ms;
+		// Sampled every frame from the executor rather than set once from
+		// the config, because the config is a REQUEST. A web pool that
+		// failed to start, hasn't finished its handshake, or has had every
+		// worker written off reports 0 here and streams inline — and a run
+		// that streamed inline must not be recorded in BENCH.md as a
+		// pooled arm, which is what the `?workers=` table is selected by.
+		self.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
 		// Previously each stage got its own slice of the budget and they
 		// summed to ~1.5× it; now they consume from the same clock, and the
 		// per-stage minimum-progress floors keep any single stage from
 		// being starved by an earlier one that overran.
 		let deadline = t_maintain + Duration::from_secs_f32(budget_ms / 1000.0);
+		// Offered unconditionally under an adaptive budget; `maintain`
+		// consumes it only while jobs run on this thread, so a web client
+		// whose worker pool is still starting (or was refused) keeps
+		// exactly the pre-pool behaviour.
 		let allowance = adaptive.then(|| Duration::from_secs_f32(budget_ms / 1000.0));
 		let m = self
 			.pipeline
@@ -4228,13 +4293,25 @@ impl Engine {
 	}
 }
 
+impl Engine {
+	/// Emit the one-line run summary, from whichever exit reaches it
+	/// first. On the web that is `Game::on_exit`, because winit's exit
+	/// unwinds through JS and `Drop` may never run — which is why `?bench`
+	/// produced no output there at all before this existed.
+	fn report_bench(&mut self) {
+		if !self.config.bench || self.bench_reported {
+			return;
+		}
+		self.bench_reported = true;
+		if let Some(line) = self.metrics.bench_summary() {
+			log::info!("{line}");
+		}
+	}
+}
+
 impl Drop for Engine {
 	fn drop(&mut self) {
-		if self.config.bench {
-			if let Some(line) = self.metrics.bench_summary() {
-				log::info!("{line}");
-			}
-		}
+		self.report_bench();
 	}
 }
 
@@ -5420,6 +5497,10 @@ impl Game for Engine {
 		self.chat.is_open()
 	}
 
+	fn on_exit(&mut self) {
+		self.report_bench();
+	}
+
 	fn on_suspend(&mut self) {
 		log::info!("engine: on_suspend (state save point)");
 		self.metrics.pause();
@@ -5753,6 +5834,48 @@ mod net_budget_tests {
 				"{hz} Hz: {budget} of {interval}"
 			);
 		}
+	}
+}
+
+#[cfg(test)]
+mod stream_budget_gate_tests {
+	use super::*;
+
+	/// The trap this gate's split exists to close. The adaptive budget is
+	/// ONE deadline over jobs, drain, eviction and uploads, and only the
+	/// jobs can move to a worker pool — so gating it on the executor sent
+	/// the drain and the uploads back to the fixed floor the moment web
+	/// workers were switched on. Jobs faster, absorption slower, on
+	/// exactly the machines that had headroom to spend.
+	#[test]
+	fn a_worker_backed_web_client_keeps_its_adaptive_budget() {
+		let mut web = EngineConfig::web();
+		assert!(
+			web.adaptive_effective(),
+			"the inline web client is the baseline"
+		);
+		web.workers = 2;
+		assert!(
+			web.adaptive_effective(),
+			"moving jobs to a pool must not drop drain and uploads to the floor"
+		);
+	}
+
+	/// Captures stay hermetic: bench pins the fixed floor whatever else is
+	/// configured, so no baseline drifts with the display's headroom.
+	#[test]
+	fn bench_still_pins_the_fixed_budget() {
+		let mut web = EngineConfig::web();
+		web.bench = true;
+		assert!(!web.adaptive_effective());
+		web.workers = 2;
+		assert!(!web.adaptive_effective());
+	}
+
+	/// Desktop never opted in, and a worker count must not opt it in.
+	#[test]
+	fn desktop_stays_on_the_fixed_budget() {
+		assert!(!EngineConfig::desktop().adaptive_effective());
 	}
 }
 

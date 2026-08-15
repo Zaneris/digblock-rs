@@ -1,4 +1,11 @@
-//! Adaptive per-frame streaming budget for the inline (wasm) executor.
+//! Adaptive per-frame streaming budget for the wasm client.
+//!
+//! It governs the whole main-thread streaming deadline — pulling a job
+//! pool's replies, the result drain, evictions and GPU uploads — and NOT
+//! only the jobs, which is why it is not conditioned on where jobs run.
+//! Moving jobs to a pool moves the jobs; absorbing their results stays
+//! pinned to the thread that owns the device.
+//!
 //! Feedback controller over measured frame headroom: grows the budget
 //! slowly while the worst recent frame still has slack against a 60fps
 //! frame interval, collapses to the floor on any near-miss. The floor is

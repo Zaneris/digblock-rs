@@ -48,6 +48,16 @@
 		<div id="bar"><div></div></div>
 		<div id="status">Downloading…</div>
 	</div>
+	<script>
+		// The chunk-job workers' module (apps/web-worker), published for
+		// the client to start its pool from — apps/web/src/jobs.rs reads
+		// this global. It lives here because index.html is the ONE file
+		// that knows a build stamp: that is what lets every module in
+		// /pkg be immutable by name, so no cache at any layer can pair a
+		// fresh module with stale glue. Never inline the stamp anywhere
+		// else, and never hardcode a stamped name here by hand.
+		globalThis.__digblockWorkerUrl = "./pkg/digblock_worker.js";
+	</script>
 	<script type="module">
 		import init from "./pkg/digblock_web.js";
 
