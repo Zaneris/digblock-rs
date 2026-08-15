@@ -1228,6 +1228,7 @@ fn bad_data(msg: impl Into<String>) -> std::io::Error {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use super::*;
+	use std::assert_matches;
 
 	fn edit(x: i32, y: i32, z: i32, block: u16) -> BlockEdit {
 		BlockEdit { x, y, z, block }
@@ -1336,14 +1337,14 @@ mod tests {
 			JournalError::WrongVersion(1)
 		);
 		// Seed mismatch and corruption are refused too.
-		assert!(matches!(
+		assert_matches!(
 			parse_snapshot(&bytes, 43.0).unwrap_err(),
 			JournalError::SeedMismatch { .. }
-		));
-		assert!(matches!(
+		);
+		assert_matches!(
 			parse_snapshot(b"nope", 42.0).unwrap_err(),
 			JournalError::Corrupt(_)
-		));
+		);
 	}
 
 	#[test]

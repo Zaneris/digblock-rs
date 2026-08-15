@@ -247,6 +247,7 @@ mod tests {
 	use super::*;
 	use digblock_core::block::BlockType;
 	use glam::Vec2;
+	use std::assert_matches;
 
 	fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 		Some(if y < 10 {
@@ -310,7 +311,7 @@ mod tests {
 		let mut server = server_run(&inputs[..10], landed_player().state());
 		server.pos.x += 2.0;
 		let r = pred.reconcile(&mut player, 109, server, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		// Post-reconcile state must equal the reference: the server state
 		// at that ack plus the inputs after it, bit-exact.
 		let want = server_run(&inputs[10..], server);
@@ -350,7 +351,7 @@ mod tests {
 		// so even a "correct" server state takes the replay path.
 		let state = player.state();
 		let r = pred.reconcile(&mut player, 10, state, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 	}
 
 	#[test]
@@ -398,7 +399,7 @@ mod tests {
 		let mut s = rest;
 		s.pos.x += 0.005;
 		let r = pred.reconcile(&mut player, 109, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		let replayed = player.state();
 		// One RTT later the server has adopted our in-flight `rest` claims
 		// and echoes them. That matches what we sent for the newer ack —
@@ -422,11 +423,11 @@ mod tests {
 		let mut s = rest;
 		s.pos.x += 2.0;
 		let r = pred.reconcile(&mut player, 109, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		let mut s2 = rest;
 		s2.pos.x += 2.5;
 		let r = pred.reconcile(&mut player, 115, s2, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 	}
 
 	/// Every wire copy of a tick must carry the identical claim: under
@@ -444,7 +445,7 @@ mod tests {
 		let mut s = rest;
 		s.pos.x += 0.5;
 		let r = pred.reconcile(&mut player, 105, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		// Re-sent ticks repeat the frozen claim, not the rewritten post.
 		for i in pred.input_batch().inputs {
 			assert_eq!(i.claimed_pos, rest.pos.to_array());

@@ -15,6 +15,7 @@ use digblock_net::protocol::{
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
 use glam::{Vec2, Vec3};
+use std::assert_matches;
 
 fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 	Some(if y < 10 {
@@ -144,10 +145,10 @@ fn configured_token_and_identity_reach_the_wire() {
 
 	client.poll(&mut events, 0.016);
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.first(),
 		Some(ClientMsg::Hello { token: t, identity: i, .. }) if *t == token && *i == identity
-	));
+	);
 }
 
 #[test]
@@ -160,10 +161,10 @@ fn full_frame_handshake_edits_snapshot() {
 	// Client connects and sends Hello.
 	client.poll(&mut events, 0.016);
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.first(),
 		Some(ClientMsg::Hello { protocol, .. }) if *protocol == PROTOCOL_VERSION
-	));
+	);
 
 	// The server welcomes from a tick well past zero.
 	server.send(&ServerMsg::Welcome {
@@ -181,11 +182,11 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Welcome { seed, player_id: 1, tod, .. })
 			if *seed == 42.0 && *tod == 45.0
-	));
+	);
 	assert!(client.ready());
 	assert_eq!(client.predictor.current_tick(), 600 + CLIENT_TICK_LEAD);
 
@@ -193,10 +194,10 @@ fn full_frame_handshake_edits_snapshot() {
 	server.send(&ServerMsg::TimeOfDay { tod: 44.5 });
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::TimeOfDay { tod }) if *tod == 44.5
-	));
+	);
 
 	// Predict a few ticks and send inputs.
 	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
@@ -231,14 +232,14 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Edit {
 			cell: (3, 9, 4),
 			cell_value: 0, // Air
 			..
 		})
-	));
+	);
 
 	// Snapshot: our ack + one remote player.
 	let me = player.state();
@@ -259,10 +260,10 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Ack { acked_input_tick, .. }) if *acked_input_tick == first
-	));
+	);
 	assert!(!client.remotes.is_empty());
 
 	// Predicted dig, then rejection → revert event with the right prev
@@ -541,14 +542,11 @@ fn dig_start_and_cancel_reach_the_wire() {
 	client.send_dig_start((3, 9, -4));
 	client.send_dig_cancel();
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.get(1),
 		Some(ClientMsg::DigStart { cell: [3, 9, -4] })
-	));
-	assert!(matches!(
-		server.client_msgs.get(2),
-		Some(ClientMsg::DigCancel)
-	));
+	);
+	assert_matches!(server.client_msgs.get(2), Some(ClientMsg::DigCancel));
 }
 
 #[test]

@@ -1796,6 +1796,7 @@ mod tests {
 		ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg, SimEvent,
 	};
 	use digblock_net::codec::FrameReader;
+	use std::assert_matches;
 	use tokio::sync::mpsc::channel;
 
 	#[test]
@@ -1998,10 +1999,10 @@ mod tests {
 		for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
 			sim.tick_once(vec![]);
 		}
-		assert!(matches!(
+		assert_matches!(
 			rx.try_recv(),
 			Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-		));
+		);
 		// Crossing it: reaped with a Close so the net task ends.
 		sim.tick_once(vec![]);
 		let mut closed = false;

@@ -23,6 +23,7 @@ pub struct ServerEntry {
 }
 
 /// Menu → launcher requests, serviced on the launcher's thread.
+#[derive(Debug)]
 pub enum MenuCommand {
 	RefreshServers,
 	/// Mint a one-time token for `server_id` as `name`, connect, and send
@@ -60,6 +61,7 @@ pub struct MenuServices {
 
 /// Menu → engine intents for named local worlds (take-pattern, not
 /// `MenuServices` — the world store is engine-local and synchronous).
+#[derive(Debug)]
 pub enum WorldIntent {
 	Refresh,
 	Create { name: String },
@@ -1605,6 +1607,7 @@ impl MenuView {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::assert_matches;
 
 	const SIZE: (u32, u32) = (1280, 800);
 
@@ -1866,10 +1869,10 @@ mod tests {
 		let mut menu = Menu::new(true, named("ted"), None);
 		menu.set_services_available();
 		open_browser(&mut menu);
-		assert!(matches!(
+		assert_matches!(
 			menu.take_commands().as_slice(),
 			[MenuCommand::RefreshServers]
-		));
+		);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![
 			entry("s1", "Alpha"),
 			entry("s2", "Beta"),
@@ -2021,10 +2024,10 @@ mod tests {
 			SIZE,
 			1.0,
 		);
-		assert!(matches!(
+		assert_matches!(
 			menu.take_commands().as_slice(),
 			[MenuCommand::RefreshServers]
-		));
+		);
 	}
 
 	#[test]
@@ -2362,10 +2365,10 @@ mod tests {
 		}
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
 		menu.handle_key(Key::Enter); // join row 0
-		assert!(matches!(
+		assert_matches!(
 			menu.take_commands().as_slice(),
 			[MenuCommand::Join { name, .. }] if name == "Miner42"
-		));
+		);
 		let s = menu.take_settings_change().expect("join persists the name");
 		assert_eq!(s.name, "Miner42");
 
@@ -2399,10 +2402,7 @@ mod tests {
 		menu.set_store_available();
 		menu.set_sel(0);
 		menu.handle_key(Key::Enter); // Singleplayer (row 0 pre-entry)
-		assert!(matches!(
-			menu.take_world_intents().as_slice(),
-			[WorldIntent::Refresh]
-		));
+		assert_matches!(menu.take_world_intents().as_slice(), [WorldIntent::Refresh]);
 		menu.set_world_list(rows);
 	}
 
@@ -2416,10 +2416,7 @@ mod tests {
 		// Enter opens the world list, not the game.
 		menu.handle_key(Key::Enter);
 		assert!(menu.is_open());
-		assert!(matches!(
-			menu.take_world_intents().as_slice(),
-			[WorldIntent::Refresh]
-		));
+		assert_matches!(menu.take_world_intents().as_slice(), [WorldIntent::Refresh]);
 		// Entering a world unlocks Back to Game and swaps Singleplayer
 		// for Leave World: switching saves goes back through the title.
 		menu.on_world_entered();
@@ -2437,10 +2434,10 @@ mod tests {
 		open_worlds(&mut menu, vec![world_row("w1", "Home", true)]);
 		menu.handle_key(Key::Enter); // world row -> actions
 		menu.handle_key(Key::Enter); // Enter World
-		assert!(matches!(
+		assert_matches!(
 			menu.take_world_intents().as_slice(),
 			[WorldIntent::Enter { id }] if id == "w1"
-		));
+		);
 		// Engine opens it and reports success.
 		menu.on_world_entered();
 		assert!(!menu.is_open());
@@ -2470,10 +2467,10 @@ mod tests {
 		// minus the backspace.
 		assert_eq!(name, "My World!abcdef");
 		menu.handle_key(Key::Enter);
-		assert!(matches!(
+		assert_matches!(
 			menu.take_world_intents().as_slice(),
 			[WorldIntent::Create { name }] if name == "My World!abcdef"
-		));
+		);
 		assert!(
 			matches!(&menu.screen, Some(Screen::Worlds(w)) if w.status.is_some()),
 			"back on the list with a status while the engine works"
@@ -2499,10 +2496,10 @@ mod tests {
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Enter); // confirm screen
 		menu.handle_key(Key::Enter); // "Delete forever" is row 0
-		assert!(matches!(
+		assert_matches!(
 			menu.take_world_intents().as_slice(),
 			[WorldIntent::Delete { id }] if id == "w1"
-		));
+		);
 	}
 
 	#[test]

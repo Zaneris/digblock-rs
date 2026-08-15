@@ -570,6 +570,7 @@ mod tests {
 	use digblock_net::messages::{ClientMsg, ServerMsg};
 	use digblock_net::protocol::SERVER_ID;
 	use glam::Vec3;
+	use std::assert_matches;
 
 	fn chat(conn_id: u64, text: &str) -> SimEvent {
 		SimEvent::Msg {
@@ -695,10 +696,10 @@ mod tests {
 		drop(sim);
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
 		let again = try_connect(&mut sim, 2, [0; 16]);
-		assert!(matches!(
+		assert_matches!(
 			again.msgs.first(),
 			Some(ServerMsg::Refused { reason }) if reason == "banned"
-		));
+		);
 		// Unbanned (by name) → welcome again.
 		sim.set_admin_name(Some("boss".into()));
 		let mut admin = connect_named(&mut sim, 1, "boss");
@@ -708,7 +709,7 @@ mod tests {
 		assert!(server_lines(&admin).iter().any(|t| t.contains("griefer")));
 		assert!(server_lines(&admin).iter().any(|t| t.contains("unbanned")));
 		let back = try_connect(&mut sim, 2, [0; 16]);
-		assert!(matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. })));
+		assert_matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. }));
 	}
 
 	#[test]
@@ -1320,10 +1321,10 @@ mod tests {
 		// A first join under a real identity banks a position...
 		let id = [7u8; 16];
 		let first = crate::sim::harness::try_connect_as(&mut sim, 2, id, "guest");
-		assert!(matches!(
+		assert_matches!(
 			first.msgs.first(),
 			Some(ServerMsg::Welcome { spawn_look, .. }) if *spawn_look == [0.0, 0.0, -1.0]
-		));
+		);
 		wait_live(&mut sim, 2);
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
 
