@@ -108,25 +108,65 @@ pub enum Material {
 	Wood,
 }
 
-/// Which material a block sounds like. Total over every block — new
-/// blocks fall back to Earth rather than panicking.
+/// Which material a block sounds like — derived from what the block IS,
+/// never from a roster.
+///
+/// §7.2's substance axis answers this for every real block, and it is
+/// already the thing that decides a block's price, yield and unlock, so
+/// it can hardly be wrong about what it sounds like. Functional items
+/// (the torch, the lamps) have no substance by design; those fall to the
+/// `DigFamily` their row declares.
+///
+/// Both matches are EXHAUSTIVE on purpose. This used to be a hand-listed
+/// roster ending in `_ => Earth`, and it silently missed every one of the
+/// 42 rows §7.2 added: mining an Aetherock seam, breaking crystal or
+/// walking a metal floor all played the sound of digging soil. With no
+/// catch-all arm, a new material or a new dig family fails the BUILD
+/// instead — which is the same protection `dig_families_are_pinned` gives
+/// the table this reads from.
 pub fn material_of(b: BlockType) -> Material {
-	match b {
-		BlockType::Stone
-		| BlockType::Gravel
-		| BlockType::Sandstone
-		| BlockType::StoneStairs
-		| BlockType::StoneSlab => Material::Stone,
-		BlockType::Wood
-		| BlockType::Leaves
-		| BlockType::PineLeaves
-		| BlockType::WoodStairs
-		| BlockType::LumberDoor
-		| BlockType::WoodSlab
-		| BlockType::Lumber
-		| BlockType::LumberStairs
-		| BlockType::LumberSlab => Material::Wood,
-		_ => Material::Earth,
+	use digblock_core::block::DigFamily;
+	use digblock_core::material::Material as Subst;
+	if let Some(m) = b.material() {
+		return match m {
+			// Timber, growing or planed — and the canopy, which is closer
+			// to wood than to either of the others.
+			Subst::Wood
+			| Subst::Lumber
+			| Subst::DarkLumber
+			| Subst::RedLumber
+			| Subst::Leaf
+			| Subst::PineLeaf => Material::Wood,
+			// Rock and everything won from it: dressed stone, glass, the
+			// refined substances, and the ores in the wall.
+			Subst::Stone
+			| Subst::StoneBrick
+			| Subst::PolishedStone
+			| Subst::Sandstone
+			| Subst::SandstoneBrick
+			| Subst::Glass
+			| Subst::Metal
+			| Subst::Crystal
+			| Subst::Rubble
+			| Subst::Gravel
+			| Subst::Emberore
+			| Subst::Duskstone
+			| Subst::Glowvein
+			| Subst::Aetherock
+			| Subst::DepletedStone => Material::Stone,
+			// Loose ground.
+			Subst::Dirt
+			| Subst::Sand
+			| Subst::Snow
+			| Subst::Grass
+			| Subst::DryGrass
+			| Subst::Mud => Material::Earth,
+		};
+	}
+	match b.dig_family() {
+		DigFamily::Rock => Material::Stone,
+		DigFamily::Wood => Material::Wood,
+		DigFamily::Soft | DigFamily::Fixed => Material::Earth,
 	}
 }
 
@@ -371,9 +411,6 @@ pub fn ambient_sfx(z: AmbientZone) -> Sfx {
 	}
 }
 
-/// Ambient-bed state machine: classification comes from the engine
-/// (submersion test + worldgen surface height); this owns the
-/// hysteresis so boundary flicker never restarts the bed.
 /// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a
 /// deposit you cannot yet see, paced so it is a hint rather than a
 /// metronome.
@@ -383,9 +420,21 @@ pub fn ambient_sfx(z: AmbientZone) -> Sfx {
 /// still at a wall should still hear it. Silence resets the clock, so
 /// walking into range speaks at once instead of on the next tick of a
 /// free-running timer.
-#[derive(Default)]
 pub struct Prospect {
 	since: f32,
+}
+
+/// Starts READY, exactly as [`Prospect::reset`] leaves it. The derived
+/// `Default` started at zero instead, so the very first deposit a session
+/// walked up to sat silent for a full period — the one shimmer that most
+/// needed to arrive on time, since it is the only one that tells a player
+/// this sense exists at all.
+impl Default for Prospect {
+	fn default() -> Self {
+		Self {
+			since: PROSPECT_PERIOD_SECS,
+		}
+	}
 }
 
 /// Seconds between shimmers while in range.
@@ -414,10 +463,13 @@ impl Prospect {
 	}
 
 	pub fn reset(&mut self) {
-		self.since = PROSPECT_PERIOD_SECS;
+		*self = Self::default();
 	}
 }
 
+/// Ambient-bed state machine: classification comes from the engine
+/// (submersion test + worldgen surface height); this owns the hysteresis
+/// so boundary flicker never restarts the bed.
 pub struct Ambient {
 	current: AmbientZone,
 	pending: AmbientZone,
@@ -494,6 +546,55 @@ mod tests {
 		assert_eq!(material_of(BlockType::Sandstone), Material::Stone);
 		assert_eq!(material_of(BlockType::Mud), Material::Earth);
 		assert_eq!(material_of(BlockType::PineLeaves), Material::Wood);
+	}
+
+	/// The rows §7.2 added, which the old hand-listed roster missed
+	/// entirely — every one of them dug, broke and was walked on as DIRT.
+	/// Spot-checked across all three classes, because "it compiles" only
+	/// proves the match is exhaustive, not that the arms are sane.
+	#[test]
+	fn the_catalog_sounds_like_what_it_is_made_of() {
+		use BlockType as B;
+		for b in [
+			B::StoneBrick,
+			B::PolishedStone,
+			B::SandstoneBrick,
+			B::Metal,
+			B::Crystal,
+			B::Glass,
+			B::DepletedStone,
+			B::Emberore,
+			B::Duskstone,
+			B::Glowvein,
+			B::Aetherock,
+			B::StoneDoor,
+			B::Rubble,
+		] {
+			assert_eq!(material_of(b), Material::Stone, "{b:?}");
+		}
+		for b in [B::DarkLumber, B::RedLumber, B::Lumber, B::LumberDoor] {
+			assert_eq!(material_of(b), Material::Wood, "{b:?}");
+		}
+		for b in [B::Dirt, B::Sand, B::Snow, B::DryGrass] {
+			assert_eq!(material_of(b), Material::Earth, "{b:?}");
+		}
+		// Every shape of a substance sounds like the substance: a slab and
+		// a stair are the same stuff as the cube they came from.
+		for b in BlockType::ALL {
+			let Some(base) = b.material().and_then(|m| {
+				BlockType::ALL
+					.into_iter()
+					.find(|o| o.material() == Some(m) && o.shape_family().is_none())
+			}) else {
+				continue;
+			};
+			assert_eq!(
+				material_of(b),
+				material_of(base),
+				"{b:?} does not sound like the {:?} it is made of",
+				b.material().unwrap()
+			);
+		}
 	}
 
 	#[test]
