@@ -56,7 +56,31 @@ pub struct GiChunk {
 /// is a plain block id (or air); everything from here up indexes
 /// [`shape_classes`]. The two ranges can never collide —
 /// `shape_classes_fit_the_byte` pins both ends.
-pub const SHAPE_CLASS_BASE: u8 = 200;
+///
+/// The window texture is `R8Uint`, so 256 classes is the whole budget and
+/// this constant is where it is SPLIT. It sat at 200 while there were
+/// eight shaped rows, which left 56 slots — and SKILLS-DESIGN §7.2's grid
+/// spends those per MATERIAL (a timber's stairs, slab and door are ~12
+/// covers), so the third timber overflowed it. Full cubes need far less
+/// room than 200 ids: the split moved down to leave the shaped side the
+/// space the catalog actually grows into. Both halves are pinned, and the
+/// pin reports the headroom rather than merely passing.
+///
+/// The price to know before adding a material: **~12 classes per shaped
+/// material** (stairs 4 facings + slab 4 anchors/thirds + door 4 closed
+/// variants), measured at 117 of 144 across eleven shaped materials plus
+/// the furniture.
+///
+/// Those 27 free slots are NOT a material's worth of room. The pin holds
+/// 16 back deliberately (`room - n >= 16`), so the build fails while
+/// there is still space to think in rather than at the panic — which
+/// leaves **11 spendable and the next full material costs 12**. The next
+/// shaped material therefore has to move the split FIRST, and there is
+/// plenty to move: the full-cube half is only used up to id 74, so 37
+/// ids sit idle below the base. A NEW shape family is the expensive
+/// case, since it costs its own covers in every material at once — a
+/// fence or a pane is far more than a fourth timber.
+pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,
 /// and the ≤2-box occlusion cover in twelfths.
@@ -84,14 +108,17 @@ fn union_box(boxes: &[SubBox]) -> Option<SubBox> {
 
 /// The class table and the (id, state) → class byte index. Index slots
 /// hold the class byte, or 0 for "occludes nothing" (an open door).
-static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, [u8; 1024])> = LazyLock::new(|| {
+///
+/// The index is sized by the roster rather than a fixed 1024, so shaped
+/// rows are limited only by the class budget above — the old `[u8; 1024]`
+/// silently capped shaped ids at 63, which the grid's materials reach.
+static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, Vec<u8>)> = LazyLock::new(|| {
 	let mut classes: Vec<ShapeClass> = Vec::new();
-	let mut index = [0u8; 1024];
+	let mut index = vec![0u8; BlockType::COUNT * 16];
 	for b in BlockType::ALL {
 		if b.props().shape.is_none() {
 			continue;
 		}
-		assert!((b as usize) < 64, "shape index packs the id into 6 bits");
 		// All 16 nibbles, not just canonically-valid states: `shape_of`
 		// masks a nibble down to a real variant, and the window must
 		// answer for whatever a journal or an edit actually stored.
@@ -335,6 +362,11 @@ mod tests {
 		assert_eq!(light_origin(BlockType::Stone as u8), [0.5, 0.5, 0.5]);
 	}
 
+	/// Both halves of the `R8Uint` window's 256-class budget, and the
+	/// headroom left in each — the numbers, not just a pass, because this
+	/// is the wall §7.2's grid walks toward one material at a time (each
+	/// shaped material spends ~16 covers) and the failure mode is a
+	/// LazyLock panic at startup rather than anything a reader can price.
 	#[test]
 	fn a_carried_light_hangs_inside_the_body() {
 		use crate::player::{EYE_TO_CROWN, EYE_TO_FEET};
@@ -356,8 +388,32 @@ mod tests {
 	#[test]
 	fn shape_classes_fit_the_byte() {
 		let n = shape_classes().len();
+		let room = 256 - SHAPE_CLASS_BASE as usize;
 		assert!(n > 0);
-		assert!(SHAPE_CLASS_BASE as usize + n <= 256, "{n} classes overflow");
+		assert!(
+			n <= room,
+			"{n} shape classes in {room} slots — lower SHAPE_CLASS_BASE or widen the window"
+		);
+		// The other half: a full cube's class IS its id, so every UNSHAPED
+		// row has to stay below the split. Tools never reach the window,
+		// but their ids sit in the same space and cost nothing to cover.
+		let highest = BlockType::ALL
+			.iter()
+			.filter(|b| b.props().shape.is_none())
+			.map(|&b| b as usize)
+			.max()
+			.expect("air at least");
+		assert!(
+			highest < SHAPE_CLASS_BASE as usize,
+			"full-cube id {highest} collides with the shape classes"
+		);
+		// Headroom, spelled out so a catalog wave can be priced before it
+		// is written rather than after it panics.
+		assert!(
+			room - n >= 16,
+			"only {} shape slots left — one more shaped material and it overflows",
+			room - n
+		);
 	}
 
 	#[test]

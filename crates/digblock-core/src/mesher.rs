@@ -50,6 +50,25 @@ pub struct MeshInput {
 	pub blocks: Box<[u16; PADDED_VOLUME]>,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
+	/// The ore reveal (SKILLS-DESIGN §5.3), when this job's owner wants
+	/// one. Consumed by [`MeshInput::apply_ore`] in the WORKER, before any
+	/// meshing — see that method for why the stamp writes block ids.
+	pub ore: Option<OreStamp>,
+}
+
+/// Everything the reveal needs, gathered on the main thread (which is the
+/// only place that knows what has been edited) and carried to the worker.
+pub struct OreStamp {
+	pub seed: f64,
+	/// World position of the padded array's `(-1, -1, -1)` corner.
+	pub origin: (i32, i32, i32),
+	/// The looker's Mining level. Two players standing in the same cave
+	/// mesh the same chunk differently, which is the feature.
+	pub mining: u32,
+	/// Padded indices of cells this world has ever written, SORTED — the
+	/// anti-dupe's edit gate. Almost always empty, and bounded by the
+	/// edits inside one 18³ box even in a heavily built area.
+	pub edited: Vec<u16>,
 }
 
 /// Padded flat index for coords in -1..=16 — same y,z,x nesting as
@@ -87,6 +106,7 @@ impl MeshInput {
 		let mut input = MeshInput {
 			blocks: Box::new([0u16; PADDED_VOLUME]),
 			missing: [false; 6],
+			ore: None,
 		};
 		for y in 0..n {
 			for z in 0..n {
@@ -148,6 +168,72 @@ impl MeshInput {
 	#[inline]
 	pub fn get_cell(&self, x: i32, y: i32, z: i32) -> u16 {
 		self.blocks[pidx(x, y, z)]
+	}
+
+	/// The ore reveal (SKILLS-DESIGN §5.3): rewrite qualifying pristine
+	/// Stone cells to their ore's BLOCK ID, before anything looks at this
+	/// array.
+	///
+	/// Stamping ids rather than texture layers is the whole trick. The
+	/// design doc proposed teaching the mesher about ore and swapping the
+	/// layer it picks; instead the mesher, the texture path, the emissive
+	/// bit, `block_tint` and shaped culling all simply see a real ore
+	/// block and need no change whatsoever. The reveal costs one function
+	/// call in the worker and nothing anywhere else.
+	///
+	/// Runs deposit-major, not cell-major: a chunk sits under a few dozen
+	/// deposits and holds 5,832 cells, so walking the blobs is two orders
+	/// of magnitude less work than asking every cell.
+	pub fn apply_ore(&mut self) {
+		use crate::worldgen::ore;
+		let Some(stamp) = self.ore.take() else {
+			return;
+		};
+		let (ox, oy, oz) = stamp.origin;
+		let span = PADDED as i32 - 1;
+		if stamp.mining < ore::lowest_reveal() || oy > ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS {
+			return;
+		}
+		let stone = BlockType::Stone as u16;
+		let inside = |v: i32, base: i32| (v - base).clamp(0, span);
+		// Pass one: every deposit CLAIMS its cells, revealed or not, in
+		// the same grid order `ore::ore_at` walks — so the first deposit
+		// to reach a shared cell wins on both sides. A claim that turns
+		// out to be invisible is undone below; skipping unrevealed
+		// deposits here would let a later one stamp a cell the dig path
+		// says belongs to the first, and a vein you can see and cannot
+		// extract is the worst outcome this whole system has.
+		let mut claimed: Vec<u16> = Vec::new();
+		for d in ore::deposits_near((ox, oy, oz), (ox + span, oy + span, oz + span), stamp.seed) {
+			for y in inside(d.y - ore::MAX_RADIUS, oy)..=inside(d.y + ore::MAX_RADIUS, oy) {
+				for z in inside(d.z - ore::MAX_RADIUS, oz)..=inside(d.z + ore::MAX_RADIUS, oz) {
+					for x in inside(d.x - ore::MAX_RADIUS, ox)..=inside(d.x + ore::MAX_RADIUS, ox) {
+						let i = ((y * PADDED as i32 + z) * PADDED as i32 + x) as usize;
+						if self.blocks[i] != stone
+							|| !d.contains(ox + x, oy + y, oz + z)
+							|| stamp.edited.binary_search(&(i as u16)).is_ok()
+						{
+							continue;
+						}
+						self.blocks[i] = d.ore as u16;
+						claimed.push(i as u16);
+					}
+				}
+			}
+		}
+		// Pass two: anything claimed by a tier this miner cannot see goes
+		// back to being stone, which is exactly what they dig.
+		//
+		// Only the CLAIMED indices, never a sweep of the array: a PLACED
+		// ore block is ordinary chunk data that everyone can see at any
+		// level, and a sweep would quietly turn somebody's trophy wall
+		// into stone for every visitor below the tier.
+		for i in claimed {
+			let b = BlockType::from_id(self.blocks[i as usize]);
+			if crate::unlock::reveal(b).is_some_and(|need| stamp.mining < need) {
+				self.blocks[i as usize] = stone;
+			}
+		}
 	}
 }
 
@@ -509,6 +595,114 @@ mod tests {
 	/// All 26 neighbors missing — the old ALL_MISSING fixture.
 	fn isolated(d: &ChunkData) -> MeshInput {
 		MeshInput::build(d, |_, _, _| Src::Missing)
+	}
+
+	/// The reveal stamp and the DIG path must answer identically for
+	/// every cell — one is a worker rewriting block ids, the other is
+	/// `ore::revealed` asked once at a dig, and a disagreement is either a
+	/// vein you can see and cannot extract or one you cannot see and
+	/// accidentally do.
+	///
+	/// Swept over a whole padded box rather than spot-checked, because the
+	/// two failure modes that matter (an unrevealed deposit shadowing a
+	/// revealed one at a shared cell; a claim on the shell the dig path
+	/// would refuse) both live in specific cells nobody would think to
+	/// pick.
+	#[test]
+	fn the_reveal_stamp_and_the_dig_path_agree() {
+		use crate::worldgen::ore;
+		let seed = 42.0;
+		let span = PADDED as i32 - 1;
+		// A box straddling every tier's ceiling, so the sweep sees mixed
+		// tiers, edited cells and the bands' edges in one pass.
+		for (origin, mining, edited) in [
+			((-24, 1, -4), crate::skills::MAX_LEVEL, vec![]),
+			((-24, 1, -4), 10, vec![]),
+			(
+				(-24, 1, -4),
+				30,
+				vec![pidx(0, 0, 0) as u16, pidx(3, 4, 5) as u16],
+			),
+			((0, 100, -16), crate::skills::MAX_LEVEL, vec![]),
+			((0, 40, -24), 55, vec![]),
+			// Below the first reveal nothing may be stamped at all.
+			((-24, 1, -4), 9, vec![]),
+		] {
+			let mut input = MeshInput {
+				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
+				missing: [false; 6],
+				ore: Some(OreStamp {
+					seed,
+					origin,
+					mining,
+					edited: edited.clone(),
+				}),
+			};
+			input.apply_ore();
+			for ly in 0..=span {
+				for lz in 0..=span {
+					for lx in 0..=span {
+						let i = ((ly * PADDED as i32 + lz) * PADDED as i32 + lx) as usize;
+						let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
+						let was_edited = edited.contains(&(i as u16));
+						let want =
+							ore::revealed(B::Stone as u16, (x, y, z), seed, mining, was_edited)
+								.map_or(B::Stone as u16, |o| o as u16);
+						assert_eq!(input.blocks[i], want, "({x},{y},{z}) at mining {mining}");
+					}
+				}
+			}
+		}
+	}
+
+	/// The stamp only ever touches PRISTINE stone: air stays air, a
+	/// placed ore block someone is showing off stays exactly what it is
+	/// (at any level — it is ordinary chunk data), and a shaped stone cell
+	/// is not stone.
+	#[test]
+	fn the_reveal_stamp_leaves_everything_else_alone() {
+		use crate::worldgen::ore;
+		let seed = 42.0;
+		let origin = (-24, 1, -4);
+		let others = [
+			B::Air as u16,
+			B::Aetherock as u16,
+			B::DepletedStone as u16,
+			B::Rubble as u16,
+			crate::chunk::make_cell(B::StoneSlab, 1),
+		];
+		let mut input = MeshInput {
+			blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
+			missing: [false; 6],
+			ore: Some(OreStamp {
+				seed,
+				origin,
+				mining: crate::skills::MAX_LEVEL,
+				edited: Vec::new(),
+			}),
+		};
+		// Salt the array so every non-stone value sits on a cell the
+		// stamp would otherwise have claimed.
+		let veins: Vec<usize> = (0..PADDED_VOLUME)
+			.filter(|&i| {
+				let (lx, lz, ly) = (i % PADDED, (i / PADDED) % PADDED, i / (PADDED * PADDED));
+				ore::ore_at(
+					origin.0 + lx as i32,
+					origin.1 + ly as i32,
+					origin.2 + lz as i32,
+					seed,
+				)
+				.is_some()
+			})
+			.collect();
+		assert!(veins.len() >= others.len(), "need vein cells to salt");
+		for (slot, &v) in veins.iter().zip(others.iter()) {
+			input.blocks[*slot] = v;
+		}
+		input.apply_ore();
+		for (slot, &v) in veins.iter().zip(others.iter()) {
+			assert_eq!(input.blocks[*slot], v, "the stamp rewrote a non-stone cell");
+		}
 	}
 
 	#[test]

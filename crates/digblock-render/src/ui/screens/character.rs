@@ -53,23 +53,43 @@ impl CharView {
 /// holds every named level to the function that enforces it, so the
 /// strings can't drift from the tables.
 const ALCH_TEASERS: &[(u32, &str)] = &[
-	(5, "stairs"),
+	(5, "the stairs shape; dirt and sand"),
 	(8, "the torch"),
+	(10, "the essence siphon — ore needs it"),
 	(15, "planed lumber and its joinery; the bucket charge"),
-	(20, "clean stone, wood, dirt, sand"),
-	(25, "morning dew; a faster bench"),
+	(18, "furniture: the table and the chair"),
+	(20, "clean stone — block, slab, stairs and door together"),
+	(25, "dark lumber; morning dew; a faster bench"),
 	(30, "sandstone, snow, grass, mud"),
-	(40, "trace minerals from rubble"),
-	(50, "craft water"),
+	(35, "the bed — timber and bedding both"),
+	(40, "red lumber; the lantern; trace minerals"),
+	(45, "polished stone and sandstone brick"),
+	(50, "craft water; METAL — the prestige block"),
+	(55, "the resonant pick"),
 	(60, "gravel's deep metal"),
+	(65, "crystal, grown from aether"),
 	(75, "pine resin; the fastest bench"),
+	(80, "the aetherlamp — the standing aether sink"),
 	(85, "the waste floor"),
 	(90, "rubble's aether"),
-	(99, "mastery"),
+	(99, "mastery; the master's sigil"),
 ];
 
-/// Mining's teasers are the rock gate (ore reveals arrive with M5).
-const MINING_TEASERS: &[(u32, &str)] = &[(3, "sandstone opens"), (5, "stone and rubble open")];
+/// Mining's teasers: the two rock gates, then the four ore reveals — the
+/// levels the whole skill is shaped around.
+const MINING_TEASERS: &[(u32, &str)] = &[
+	(3, "sandstone opens"),
+	(5, "stone and rubble open"),
+	(10, "emberore reveals — bring a siphon"),
+	(30, "duskstone reveals"),
+	(40, "metal opens — you can break what you smelt"),
+	(55, "glowvein reveals; the resonant pick swings wide"),
+	(60, "crystal opens"),
+	(80, "aetherock reveals"),
+	(85, "the pick's full nine"),
+	(90, "prospector's sense — you hear what you can't see"),
+	(99, "mastery: every vein gives one more"),
+];
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
 	let table = match skill {
@@ -333,7 +353,7 @@ mod tests {
 		// else, so an extra row here would be a promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5]
+			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.
@@ -351,7 +371,7 @@ mod tests {
 		// first thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		assert!(fresh.contains("next: LV 3 — sandstone opens"), "{fresh}");
-		assert!(fresh.contains("next: LV 5 — stairs"), "{fresh}");
+		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
 		let all = texts(&emit(&leveled)).join("\n");

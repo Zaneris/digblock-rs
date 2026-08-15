@@ -56,8 +56,71 @@ pub(crate) fn flat_source() -> ColumnSource {
 }
 
 pub(crate) fn flat_sim(tag: &str) -> Sim {
+	flat_sim_at(tag, FLAT_SPAWN)
+}
+
+/// A flat sim spawning somewhere specific. Ore is DERIVED from world
+/// position (SKILLS-DESIGN §5.3), so a test about veins cannot pick its
+/// cell — it has to go and stand where one is.
+pub(crate) fn flat_sim_at(tag: &str, spawn: Vec3) -> Sim {
 	let dir = temp_dir(tag);
-	Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap()
+	Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), spawn).unwrap()
+}
+
+/// A world that is nothing but its own floor: one stone layer at
+/// y = `BEDROCK_Y`, air all the way up. The flat world's ground stands
+/// 126 blocks above the floor, so a test about the floor would have to
+/// tunnel down to it first; this stands the player straight on it, which
+/// puts every cell a ray can reach within one or two blocks of the plane
+/// under audit.
+pub(crate) fn bedrock_source() -> ColumnSource {
+	Arc::new(|_cx, _cz| {
+		let mut floor = ChunkData::default();
+		for z in 0..16 {
+			for x in 0..16 {
+				// LOCAL y 0 of chunk 0 — which is world y 0, i.e. `BEDROCK_Y`.
+				floor.set(x, 0, z, BlockType::Stone);
+			}
+		}
+		let floor = Arc::new(floor);
+		(0..WORLD_VCHUNK as usize)
+			.map(|cy| {
+				if cy == 0 {
+					floor.clone()
+				} else {
+					AIR_CHUNK.clone()
+				}
+			})
+			.collect()
+	})
+}
+
+/// Standing eye height over the world floor — the same `top + 2.5` the
+/// flat world uses, so the player is grounded from tick 1.
+pub(crate) const BEDROCK_SPAWN: Vec3 =
+	Vec3::new(8.5, digblock_core::block::BEDROCK_Y as f32 + 2.5, 8.5);
+
+pub(crate) fn bedrock_sim(tag: &str) -> Sim {
+	let dir = temp_dir(tag);
+	Sim::new_with_source(SEED, &dir, 1, 2, bedrock_source(), BEDROCK_SPAWN).unwrap()
+}
+
+/// The first cell of the flat world's TOP surface that holds a vein, and
+/// the eye position to stand over it from. Searched rather than written
+/// down because the answer is a property of the placement hash, and a
+/// hard-coded coordinate would silently stop being a vein the moment
+/// anyone retuned the density.
+pub(crate) fn a_vein_under_spawn() -> ((i32, i32, i32), Vec3, digblock_core::BlockType) {
+	let y = FLAT_GROUND_TOP as i32;
+	for z in -80..80 {
+		for x in -80..80 {
+			if let Some(ore) = digblock_core::worldgen::ore::ore_at(x, y, z, SEED) {
+				let eye = Vec3::new(x as f32 + 0.5, FLAT_SPAWN.y, z as f32 + 0.5);
+				return ((x, y, z), eye, ore);
+			}
+		}
+	}
+	panic!("no vein in the flat world's surface — retune or widen the search");
 }
 
 pub(crate) struct TestClient {

@@ -18,6 +18,28 @@ pub use draw::{DrawList, Layer};
 pub use hit::HitMap;
 pub use widgets::{Style, Ui};
 
+/// One item trading places with another **in a single slot**: at `u`
+/// (0..=1 through the handover), is the INCOMING item the one to draw,
+/// and how present is it (0..=1, scaling both its size and its alpha)?
+///
+/// The outgoing item shrinks away over the first half and the incoming
+/// one grows in over the second, so the slot never shows two icons at
+/// once — cross-fading two overlapping 3D icons is a double exposure of
+/// their internal faces, and the effect wanted is a rotation, not a
+/// dissolve. Present passes through exactly 0 at the changeover, which
+/// is what lets everything else about the exchange (which tool the rail
+/// lists, which member a family tile names) happen unseen.
+///
+/// Shared by the transmute tab's rotating family tiles and the hotbar's
+/// tool slot: a swap should look like a swap wherever it happens.
+pub fn handover(u: f32) -> (bool, f32) {
+	if u < 0.5 {
+		(false, 1.0 - 2.0 * u)
+	} else {
+		(true, 2.0 * u - 1.0)
+	}
+}
+
 impl From<[f32; 4]> for Rect {
 	fn from([x, y, w, h]: [f32; 4]) -> Self {
 		Self { x, y, w, h }

@@ -1,28 +1,61 @@
 # Skills, Essence & Ore — design document
 
-Status: **§11's M1–M4 plus the consolidation pass are BUILT and merged (2026-08-09/10);
-M5–M7 remain design.**
+Status: **§11's M1–M7 are BUILT and merged. The document below is the
+design as written; where the implementation diverged, the code and
+CLAUDE.md are the authority and the divergences are listed here.**
 
-**Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy screen · M3
-level-scaled dig speed · M4 tool slot + Stage-A emissive + Torch · consolidation:
-Stage-B voxel lighting (LIGHT-DESIGN.md — torches illuminate, caves/roofed rooms go
-dark), this document reconciled with shipped code, §5.1's per-family dig curves + the
-rock level gate (SIM v12, protocol v17), §8's transmute-page polish + engine-level
-touch + §8.2 next-unlock teasers. Post-pass lighting refinements (user-driven): the
-direct-sun **beam veto** is merged (the shadow map owns the beam; the sky column only
-vetoes it near zero — a 10am sun reaches under an open-sided roof), and a third
-**bounce channel** (one-bounce sun-fill seeded at sunlit ground, the "GI look"
-compromise) is built and under visual evaluation — lighting may still be replaced
-wholesale by a low-res RTGI approach if the look doesn't satisfy.
+**Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy
+screen · M3 level-scaled dig speed · M4 tool slot + Stage-A emissive +
+Torch · the RTGI rewrite (GI-DESIGN.md replaced LIGHT-DESIGN.md's Stage-B
+voxel lighting entirely) · **M5 ore** (`worldgen/ore.rs`, the reveal
+stamp, the Essence Siphon, field extraction, dual XP) · **M6 the Resonant
+Pick** + prospector's sense + the 99 mastery · **M7's first wave** (§7.2's
+material × shape GRID, three timbers, furniture, dressed stone, glass,
+metal, crystal, the two lamps, the sigil).
 
-**Left to build:** **M5 — Ore** (`ore_at` placement + golden pins, ore rows at ids
-30–34, reveal-by-level remesh stamping, the Essence Siphon tool at Alch 10, field
-extraction writing DepletedStone + dual XP, §5.3–§5.4 — the headline feature) ·
-**M6 — Resonant Pick + endgame lines** (multi-cell dig at Mining 55+, prospector's
-sense, 99 masteries) · **M7 — catalog waves** (§7's materials × shapes grid, Glass,
-new shapes, Lantern/Aetherlamp/functional items, essence exchange — open-ended,
-release by release) · §12's open questions (death penalty, mobile UX pass, sounds).
-Bot-soak/playtest checkpoints after M5's ore rates land (§11 note).
+**Where the code diverges from this document, and why:**
+
+- **§7.2's grid is the implementation, not a curation rule.**
+  `unlock::craft` is DERIVED as `max(shape, material)` from
+  `core/material.rs` and `block::ShapeFamily`; craft cost and extraction
+  yield prorate the material's 27-unit split by the shape's volume. The
+  BLOCKS shape sits at level 1, so a material arrives in every form you
+  have already learned. Five thresholds moved (§4.3's table is stale
+  where it disagrees): Wood 20 → 1, Dirt/Sand 20 → 5, StoneSlab 1 → 20,
+  StoneStairs 5 → 20.
+- **§5.3's depth bands OVERLAP.** Exclusive bands would leave a Mining-10
+  player at y = 20 finding nothing at all; every tier stays available all
+  the way down and the deep ones are simply rarer.
+- **Ore ids are 48–52**, not the doc's 30–34 (the lumber set took those).
+- **The reveal stamps block IDS into the mesh input**, not texture layers
+  — the mesher, the emissive bit and `block_tint` then need no changes at
+  all. The mining level reaches the worker in an `OreStamp` rather than
+  as a mesher field.
+- **Multiplayer keeps an `EditOverlay`** (only re-application is
+  conditional), because the anti-dupe's "has this cell been written?"
+  question is one the client has to answer too.
+- **Field extraction needs no new wire**; only the tool refusal does
+  (`RejectReason::NeedsTool`, protocol v21).
+- **The pick is a PLANE, not a bore** — 3 wide at 55, 9 at 85 — and its
+  timing multiplier is LEVEL-only, never derived from how many cells
+  qualify, or the two ends disagree by 3× over a single differing cell.
+- **Furniture and the bed are FUNCTIONAL items**, not grid cells: a table
+  is a thing, not a form any substance takes. The bed is one cell (a
+  horizontal two-cell pair is new machinery — the door's pair is
+  vertical), and its Flora + Aqua price is the catalog's first genuinely
+  cross-family cost.
+- **Glass ships opaque** (§12's render question is unanswered: the depth
+  prepass writes the whole quad, so a cutout discard needs the prepass to
+  sample the atlas).
+- **Ore's bench XP is `ceil(base/3)` like everything else** (6/12/20/33),
+  not §4.1's hand-set 15/30/50/80 — the rule was kept, the exception
+  dropped. Field XP (§5.4) is tabled as written.
+
+**Still design:** §7.2's later SHAPES (fence, ladder, pillar, pane, gate,
+trapdoor — each a `shapes.rs` project), the 3:1 essence exchange and the
+Water craft's own `AlchemyOp` arm, the ore-draw effect's remote half (a
+snapshot field for who is drawing on which cell) and its sustained audio
+loop, the prospector's own sourced shimmer, and §12's open questions.
 
 Milestone detail as originally built:
 M1: `digblock-core/src/skills.rs` (curve + awards, golden-pinned), protocol v16
@@ -55,7 +88,8 @@ families and the rock gate** (SIM v12, protocol v17 — Fixed/Soft/Wood/Rock cur
 exact at 30; Sandstone opens at Mining 3, Stone/Rubble at 5), and its Alchemy twin, the
 **craft gate** (SIM v13, protocol v19 — a craft-only block refuses to be dug below the
 Alchemy level that makes it, so a pickup can't route around an unlock; the planed-timber
-set moved 40 → **15** with it, joining the bucket charge). M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+set moved 40 → **15** with it, joining the bucket charge). M5, M6 and M7's first wave
+landed after that — the header above lists what each one brought. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
@@ -476,7 +510,10 @@ slot is a separate axis:
   and both persistence formats all ride the existing count machinery untouched. Launch
   roster: the **bucket** (owned from the start, as today), the **Essence Siphon**
   (crafted Alch 10), the **Resonant Pick** (crafted Alch 55) — three tools, which is
-  exactly when tap-9 cycling and the rail earn their keep.
+  exactly when tap-9 cycling and the rail earn their keep. Shipped: **four**, since
+  §7.3's **Master's Sigil** (Alch 99) is an item-only row you hold and so is `is_tool`
+  too — it does nothing, but it caps at one, cycles and draws in the rail like the rest,
+  which is exactly the point of routing ownership through the counts.
 - **Cycling**: tapping **9 again while the tool slot is already selected** advances the
   active tool through the owned set, wrapping. No new keys, and touch gets the identical
   rule for free — first tap of the tool slot selects it, further taps cycle. Selecting the
@@ -487,7 +524,16 @@ slot is a separate axis:
 - **The faded rail**: small icons at reduced alpha beside the tool slot, active tool
   excluded, in a fixed owned-order (block-id order — deterministic, no arrangement state
   to persist or sync). It's a readout, not a target: clicking is not required, cycling is
-  the interaction. HUD-layer icons via the existing `item_icon` sites.
+  the interaction. Built as faded *slots* rather than bare icons — they sit over open
+  world, and a dark tool on dark terrain was a smudge.
+- **The swap is a handover, not a cut** (built after the fact, and it is what makes
+  cycling read as one row rearranging itself rather than an icon glitching): the outgoing
+  tool shrinks away and the incoming one grows in, through the same curve the transmute
+  tab's family tiles rotate on (`ui::handover`). Everything else about the exchange —
+  which tools the rail lists — happens at the midpoint, where every icon is at nothing,
+  so no tool is ever in the slot and the rail at once. `ToolSwap` watches the active tool
+  rather than being told about the keypress, so a server `Layout` rebase and a rejoin
+  animate the same way a tap does.
 - **Wire**: `Layout.hotbar` keeps its 9 entries and its format; the 9th entry's meaning
   becomes "the active tool id" (the sentinel `WIRE_TOOL` decodes as the migrated bucket
   id). Slot enforcement is unchanged — `EditRequest.slot = 8` + the server's copy of the

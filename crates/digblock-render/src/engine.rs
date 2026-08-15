@@ -39,6 +39,14 @@ pub enum DebugScreen {
 	Bucket {
 		full: bool,
 	},
+	/// One of the CRAFTED tools, owned and selected. Each carries
+	/// authored geometry — a tool has no texture layers of its own, so
+	/// the cube fallback draws it as a block of whatever sits at layer 0
+	/// — and that geometry shows up in three places at once (the hand,
+	/// the tool slot, the faded rail), none of which a capture can reach
+	/// without being told which tool to hold: the bucket is the only one
+	/// a fresh player owns.
+	Tool(BlockType),
 	/// Also not a screen: stock and SELECT a torch, so the one held item
 	/// that is also a LIGHT is photographable. `Hand` cannot serve —
 	/// `reconcile_layout` files by block id, so its first slot is Dirt —
@@ -64,6 +72,9 @@ impl DebugScreen {
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),
+			"siphon" => Some(Self::Tool(BlockType::EssenceSiphon)),
+			"pick" => Some(Self::Tool(BlockType::ResonantPick)),
+			"sigil" => Some(Self::Tool(BlockType::MastersSigil)),
 			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
@@ -132,6 +143,26 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
+	/// Is a PERSON at this keyboard? False for every capture path —
+	/// bench, `--screenshot`, `--drill` — and it governs two things that
+	/// have to move together: whether [`Engine::input`] listens at all,
+	/// and whether the shell is allowed to take the mouse pointer.
+	///
+	/// The pointer half is the one that bit. A capture sets `menu:
+	/// false`, so no UI surface is open, so `wants_cursor_grab` answered
+	/// true on the first frame and the desktop shell locked the cursor
+	/// and hid it — for the whole run, on a window the operator never
+	/// asked to play. Every keystroke they made meanwhile went into the
+	/// world: a stray `E` opened the inventory into the shot, a stray
+	/// mouse move spun the camera off the pose. `bench` alone did not
+	/// cover it, because `--screenshot`/`--frames`/`--exit` runs are
+	/// captures that never set it — which is exactly the class of run a
+	/// person sits and watches.
+	///
+	/// The launcher already computes this predicate to decide the menu,
+	/// audio, the master URL and whether saved settings load; this field
+	/// is that same answer reaching the engine, not a second opinion.
+	pub interactive: bool,
 	/// Capture harness: run the bench flight for this many frames, then
 	/// FREEZE the camera there. Every capture in this engine is a still,
 	/// which is exactly the case where a temporal artifact has already
@@ -233,6 +264,11 @@ pub struct EngineConfig {
 	/// torchlight is what makes it readable; LIGHT-DESIGN.md P3). Set by
 	/// the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// DIG_ORE=<tier 1..=4>: hollow a chamber around the nearest deposit
+	/// of that tier and stand in it, with the Mining level that reveals
+	/// it. Ore is derived and invisible below its level, so there is no
+	/// pose that photographs it — see [`debug_ore_plan`].
+	pub debug_ore: usize,
 	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the
 	/// only source in it is the one the player is CARRYING. Set by the
 	/// desktop launcher from DIG_VAULT_DARK. A modifier rather than a
@@ -351,6 +387,11 @@ impl EngineConfig {
 			metrics_csv: None,
 			overlay: false,
 			bench: false,
+			// Launchers narrow this; the DEFAULT has to be the safe one.
+			// A capture that forgets to set it merely accepts input it
+			// will not get; an interactive run that forgets is a game
+			// that ignores its player.
+			interactive: true,
 			fly: None,
 			warp: false,
 			walk: false,
@@ -370,6 +411,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_ore: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -406,6 +448,11 @@ impl EngineConfig {
 			// iOS has no keyboard toggle; flip this for device profiling.
 			overlay: false,
 			bench: false,
+			// Launchers narrow this; the DEFAULT has to be the safe one.
+			// A capture that forgets to set it merely accepts input it
+			// will not get; an interactive run that forgets is a game
+			// that ignores its player.
+			interactive: true,
 			fly: None,
 			warp: false,
 			walk: false,
@@ -425,6 +472,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_ore: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -639,6 +687,10 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
+	/// The tool slot's handover animation — presentation only, and it
+	/// watches `hotbar.active_tool()` rather than being told, so every
+	/// way the tool can change animates the same way.
+	tool_swap: crate::hotbar::ToolSwap,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -807,6 +859,8 @@ pub struct Engine {
 	/// by half a swap, so the exchange happens below the frame.
 	view_swap: crate::viewmodel::Swap,
 	ambient: crate::audio::Ambient,
+	/// The prospector's sense's cadence (SKILLS-DESIGN §5.5).
+	prospect: crate::audio::Prospect,
 	/// Scratch for batched audio commands (water voices).
 	audio_scratch: Vec<crate::audio::AudioCmd>,
 	/// Player eye position last frame (footstep distance).
@@ -903,11 +957,26 @@ fn quantized_facing(dir: Vec3) -> digblock_core::shapes::Facing {
 	}
 }
 
+/// Every authored block of one shape family, in material order — the
+/// showcase scenes walk this so a new material × shape pair photographs
+/// itself. The old scenes hand-listed `[WoodStairs, StoneStairs,
+/// LumberStairs]`, which is exactly the kind of mirror §7.2's grid exists
+/// to delete: two timbers landed and neither appeared in any capture.
+fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockType> {
+	digblock_core::material::Material::ALL
+		.into_iter()
+		.filter_map(|m| BlockType::from_grid(m, s))
+		.collect()
+}
+
 /// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye
-/// height near spawn (render verification needs no ground) — both stair
-/// materials × 4 facings, then closed and open doors.
+/// height near spawn (render verification needs no ground) — every stair
+/// material × 4 facings, then closed and open doors in every material,
+/// then the slabs. Rows run back in z, one material per row, so the rank
+/// grows backward as the catalog does instead of off the sides of the
+/// frame.
 fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
-	use digblock_core::block::BlockType as B;
+	use digblock_core::block::{BlockType as B, ShapeFamily};
 	use digblock_core::chunk::make_cell;
 	use digblock_core::shapes::{door_state, slab_state, stair_state, Facing};
 	let (bx, by, bz) = (
@@ -916,26 +985,58 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		spawn.z.floor() as i32,
 	);
 	let mut out = Vec::new();
-	for (i, f) in Facing::ALL.into_iter().enumerate() {
-		let x = bx + 2 * i as i32 - 3;
-		out.push((x, by, bz + 4, make_cell(B::WoodStairs, stair_state(f))));
-		out.push((x, by, bz + 6, make_cell(B::StoneStairs, stair_state(f))));
-		out.push((x, by, bz + 2, make_cell(B::LumberStairs, stair_state(f))));
-		for (dz, open) in [(8, false), (10, true)] {
+	let stairs = shaped_roster(ShapeFamily::Stairs);
+	let doors = shaped_roster(ShapeFamily::Door);
+	let slabs = shaped_roster(ShapeFamily::Slab);
+	// One z cursor, walked front to back, so a row added anywhere pushes
+	// what follows instead of colliding with it. Nearest first is what the
+	// camera actually frames: the FURNITURE rides right behind the stairs
+	// because it is the newest thing to look at.
+	let mut z = bz + 2;
+	for (j, &b) in stairs.iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
 			out.push((
-				x,
+				bx + 2 * i as i32 - 3,
 				by,
-				bz + dz,
-				make_cell(B::LumberDoor, door_state(f, open, false)),
-			));
-			out.push((
-				x,
-				by + 1,
-				bz + dz,
-				make_cell(B::LumberDoor, door_state(f, open, true)),
+				z + 2 * j as i32,
+				make_cell(b, stair_state(f)),
 			));
 		}
 	}
+	z += 2 * stairs.len() as i32;
+	// Furniture × 4 facings: the table is stateless, so its row is four
+	// identical tops — which is the point, since pushed together they read
+	// as one surface. The chair and the bed turn.
+	for (j, b) in [B::Table, B::Chair, B::Bed].into_iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
+			let state = if b.takes_facing() { stair_state(f) } else { 0 };
+			out.push((
+				bx + 2 * i as i32 - 3,
+				by,
+				z + 2 * j as i32,
+				make_cell(b, state),
+			));
+		}
+	}
+	z += 6;
+	// Doors take two z rows each (closed, then open), at the two heights a
+	// leaf spans, so both states of every material are in one capture.
+	for (j, &b) in doors.iter().enumerate() {
+		for (i, f) in Facing::ALL.into_iter().enumerate() {
+			for (dz, open) in [(0, false), (2, true)] {
+				for upper in [false, true] {
+					out.push((
+						bx + 2 * i as i32 - 3,
+						by + i32::from(upper),
+						z + 4 * j as i32 + dz,
+						make_cell(b, door_state(f, open, upper)),
+					));
+				}
+			}
+		}
+	}
+	z += 4 * doors.len() as i32;
+	let slab_z = z;
 	// A torch row: one on the ground, one up on a wood plinth — the
 	// emissive head is the thing to photograph at night.
 	out.push((bx - 5, by, bz + 4, B::Torch as u16));
@@ -946,15 +1047,12 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	// auto-step (also eyeballs boundary culling on the shared planes).
 	// Ceiling slabs hang two cells up, where their underside is the
 	// thing to look at.
-	for (i, b) in [B::WoodSlab, B::StoneSlab, B::LumberSlab]
-		.into_iter()
-		.enumerate()
-	{
+	for (i, b) in slabs.into_iter().enumerate() {
 		let x = bx + 2 * i as i32 - 3;
-		out.push((x, by, bz + 12, make_cell(b, slab_state(false, false))));
-		out.push((x, by, bz + 14, make_cell(b, slab_state(true, false))));
-		out.push((x, by + 2, bz + 12, make_cell(b, slab_state(false, true))));
-		out.push((x, by + 2, bz + 14, make_cell(b, slab_state(true, true))));
+		out.push((x, by, slab_z, make_cell(b, slab_state(false, false))));
+		out.push((x, by, slab_z + 2, make_cell(b, slab_state(true, false))));
+		out.push((x, by + 2, slab_z, make_cell(b, slab_state(false, true))));
+		out.push((x, by + 2, slab_z + 2, make_cell(b, slab_state(true, true))));
 	}
 	let base = [
 		make_cell(B::WoodSlab, slab_state(false, false)),
@@ -963,15 +1061,120 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		B::Wood as u16,
 	];
 	for (dx, cell) in base.into_iter().enumerate() {
-		out.push((bx + 1 + dx as i32, by, bz + 16, cell));
+		out.push((bx + 1 + dx as i32, by, slab_z + 4, cell));
 	}
 	out.push((
 		bx + 4,
 		by + 1,
-		bz + 16,
+		slab_z + 4,
 		make_cell(B::WoodSlab, slab_state(false, false)),
 	));
 	out
+}
+
+/// DIG_ORE=<tier 1..=4>: a chamber hollowed out around the nearest
+/// deposit of that tier, the vein left standing in its wall, and a torch
+/// on the floor to see it by. Returns the plan and where to stand.
+///
+/// Ore is DERIVED and invisible below its level, which makes it the least
+/// photographable thing in the game: there is no cell to teleport to,
+/// because the cell is Stone until someone with the level looks at it.
+/// Hence a scene rather than a pose — and hence the one rule that makes
+/// the scene work at all: **the carve must not touch the vein**. An edited
+/// cell never shows ore (that is the anti-dupe), so hollowing the box
+/// naively would delete the very thing being photographed. Every cell the
+/// deposit claims is left exactly as worldgen made it.
+fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+	use digblock_core::worldgen::ore;
+	let want = ore::ORES[tier.clamp(1, ore::ORES.len()) - 1];
+	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+	// Nearest deposit of the tier, horizontally — a search box wide
+	// enough that even Aetherock (one deposit in fifteen, and only in the
+	// bottom two grid rows) is found from any spawn.
+	let mut best: Option<(i64, ore::Deposit)> = None;
+	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 140, sz + 320), seed) {
+		if d.ore != want {
+			continue;
+		}
+		let (dx, dz) = (i64::from(d.x - sx), i64::from(d.z - sz));
+		let d2 = dx * dx + dz * dz;
+		if best.is_none_or(|(b, _)| d2 < b) {
+			best = Some((d2, d));
+		}
+	}
+	let Some((_, d)) = best else {
+		log::warn!("DIG_ORE: no {want:?} within reach of spawn");
+		return (spawn, Vec::new());
+	};
+	// The chamber: a box around the vein, minus the vein itself. Stood
+	// off far enough on -z that the camera is outside it looking in.
+	const R: i32 = 5;
+	let mut plan = Vec::new();
+	for y in (d.y - R)..=(d.y + R) {
+		for z in (d.z - R)..=(d.z + R) {
+			for x in (d.x - R)..=(d.x + R) {
+				if y <= digblock_core::block::BEDROCK_Y || ore::ore_at(x, y, z, seed).is_some() {
+					continue;
+				}
+				plan.push((x, y, z, BlockType::Air as u16));
+			}
+		}
+	}
+	// A floor two below the vein, so a standing player's EYE lands level
+	// with it — physics drops the camera onto that floor within a frame
+	// or two of a capture starting, and a pose that has to be looked up
+	// at is a pose nobody frames correctly.
+	//
+	// Guarded exactly like the carve, and for the same reason: this plate
+	// is laid THROUGH the blob. A max-radius deposit reaches
+	// `ore::MAX_RADIUS` = 2 straight down, so the cell right under the
+	// centre sits on the rim and `rim_open` keeps it three times in four —
+	// and the plan is applied through `pipeline.set_cell`, which records
+	// into the `EditOverlay`, after which `ore::revealed` answers None for
+	// that cell forever. An unguarded plate quietly deletes the vein it
+	// was laid down to photograph.
+	//
+	// Dropping the whole plane clear of the deposit instead (`d.y -
+	// MAX_RADIUS - 1`) would not replace this guard and would cost the
+	// pose: `ore_at` answers for every deposit in the 3×3×3 apron and not
+	// just this one, so a neighbour's blob can cross whatever plane we
+	// pick, and a floor a block lower puts the eye UNDER the vein — the
+	// one thing this scene exists to get right. Where a vein does cross,
+	// the cell keeps its pristine worldgen value, which is the ore-bearing
+	// Stone itself: the floor stays walkable and the seam simply runs
+	// through it. Only a cave cell a deposit happens to claim leaves a
+	// real gap, and that is the same hazard the carve above already
+	// accepts.
+	// Never at or below the world floor. `deposit_in` now keeps a whole
+	// BLOB clear of `BEDROCK_Y + MAX_RADIUS`, so `d.y >= 3` and this
+	// `max` cannot bite today — it is here because that is a coupling
+	// two modules apart, and the plate must not silently start writing
+	// the one plane the game promises is untouchable if the ore
+	// constraint is ever loosened. Clamped rather than skipped so the
+	// plate stays whole: a floor with holes in it is a worse capture
+	// than a floor one block high.
+	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
+	for z in (d.z - R)..=(d.z + R) {
+		for x in (d.x - R)..=(d.x + R) {
+			if ore::ore_at(x, floor, z, seed).is_some() {
+				continue;
+			}
+			plan.push((x, floor, z, BlockType::Stone as u16));
+		}
+	}
+	// A chamber this deep is lit by nothing at all and photographs as
+	// black; the torch is off to one side so the vein is raked rather
+	// than flattened by a light behind the camera.
+	plan.push((d.x - 3, floor + 1, d.z - 3, BlockType::Torch as u16));
+	log::info!("DIG_ORE: {want:?} vein at {},{},{}", d.x, d.y, d.z);
+	(
+		Vec3::new(
+			d.x as f32 + 0.5,
+			floor as f32 + 1.0 + digblock_core::player::EYE_TO_FEET,
+			d.z as f32 - 4.5,
+		),
+		plan,
+	)
 }
 
 /// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
@@ -1402,11 +1605,19 @@ fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
 		WIRE_EMPTY => return None,
 		WIRE_TOOL => (HotbarItem::WaterTool, false),
 		digblock_net::messages::HELD_TOOL_FULL => (HotbarItem::WaterTool, true),
-		// `is_slottable` is a wire-trust gate, not a nicety: a stale or
-		// hostile server can name Water or a tool id here, and either
-		// would otherwise be drawn as an item no slot can hold.
+		// Still a wire-trust gate, not a nicety: a stale or hostile
+		// server can name Water here, which no slot can hold and which
+		// would otherwise draw as an item. A TOOL id is legitimate now
+		// though — `Hotbar::to_wire` sends the active tool as its own id
+		// and only the bucket as `WIRE_TOOL` — so tools are admitted
+		// explicitly rather than by relaxing `is_slottable`, which is
+		// answering a different question (may a GRID slot hold this).
+		// `item_icon` routes them on to `tool_icon`, so a remote's pick
+		// draws its authored geometry exactly as its owner's hand does.
 		id => (
-			HotbarItem::Block(BlockType::try_from_id(id).filter(|b| b.is_slottable())?),
+			HotbarItem::Block(
+				BlockType::try_from_id(id).filter(|b| b.is_slottable() || b.is_tool())?,
+			),
 			false,
 		),
 	};
@@ -1696,6 +1907,21 @@ impl Engine {
 		let spawn = config
 			.start_pos
 			.map_or_else(|| digblock_core::player::spawn(seed), Vec3::from);
+		// DIG_ORE hollows its chamber around a deposit and stands the
+		// camera IN it, so the scene has to resolve before the pose is
+		// baked into the camera, the player and the tick lerp. An explicit
+		// `--pos` still wins: the scene only moves a camera that had
+		// nowhere particular to be.
+		let ore_scene = if config.debug_ore > 0 {
+			debug_ore_plan(spawn, seed, config.debug_ore)
+		} else {
+			(spawn, Vec::new())
+		};
+		let spawn = if config.start_pos.is_some() {
+			spawn
+		} else {
+			ore_scene.0
+		};
 		let mut camera = FlyCamera::new(far, spawn);
 		if let Some(yaw) = config.yaw {
 			camera.yaw_deg = yaw;
@@ -1735,6 +1961,7 @@ impl Engine {
 			view_swing: crate::viewmodel::Swing::default(),
 			view_swap: crate::viewmodel::Swap::default(),
 			ambient: crate::audio::Ambient::default(),
+			prospect: crate::audio::Prospect::default(),
 			audio_scratch: Vec::new(),
 			prev_player_pos: spawn,
 			music_night: None,
@@ -1765,6 +1992,9 @@ impl Engine {
 				}
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn, !config.debug_vault_dark));
+				}
+				if config.debug_ore > 0 {
+					plan.extend(ore_scene.1.clone());
 				}
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
@@ -1810,6 +2040,7 @@ impl Engine {
 			target: None,
 			inventory: Inventory::default(),
 			hotbar: Hotbar::new(),
+			tool_swap: crate::hotbar::ToolSwap::default(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
@@ -1885,6 +2116,20 @@ impl Engine {
 				)),
 			);
 		}
+		if engine.config.debug_ore > 0 {
+			// The scene exists to photograph a tier, so it grants exactly
+			// the level that reveals that tier — read out of the unlock
+			// table rather than written down, so retuning a reveal moves
+			// the capture with it. `sync_mining_reveal` then hands the
+			// level to the pipeline, which is what makes the stamp fire.
+			let ore = digblock_core::worldgen::ore::ORES[engine.config.debug_ore.clamp(1, 4) - 1];
+			let need = digblock_core::unlock::reveal(ore).unwrap_or(1);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Mining,
+				digblock_core::skills::total_xp_for(need),
+			);
+			engine.sync_mining_reveal(false);
+		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
 				(BlockType::Wood, 5u32),
@@ -1914,6 +2159,16 @@ impl Engine {
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
+			// The tools. A tool is never in the grid (§6: not slottable)
+			// and the faded rail only draws once a SECOND one is owned,
+			// so a stocked bar is the only way any of this — the rail,
+			// the split before the tool slot, the authored icons that
+			// replace a cube fallback — reaches a capture at all.
+			for tool in BlockType::ALL {
+				if tool.is_tool() && !tool.always_owned() {
+					engine.inventory.add(tool, 1);
+				}
+			}
 			// Conditional, so no other capture's inventory grid moves.
 			if screen == DebugScreen::Torch {
 				engine.inventory.add(BlockType::Torch, 12);
@@ -1930,6 +2185,22 @@ impl Engine {
 				DebugScreen::Bucket { .. } => engine
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
+				DebugScreen::Tool(want) => {
+					engine
+						.hotbar
+						.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8);
+					// Reached by CYCLING, the way a player reaches it —
+					// so the capture also proves the roster contains the
+					// tool it was asked for.
+					let owned = engine.owned_tools();
+					for _ in 0..owned.len() {
+						if engine.hotbar.active_tool() == want {
+							break;
+						}
+						engine.hotbar.cycle_tool(&owned);
+					}
+					assert_eq!(engine.hotbar.active_tool(), want, "DIG_SCREEN tool");
+				}
 				DebugScreen::Torch => {
 					// Find the slot rather than writing a number down:
 					// `reconcile_layout` files by block id, so retuning the
@@ -2013,6 +2284,7 @@ impl Engine {
 	pub fn set_audio(&mut self, sink: Box<dyn crate::audio::AudioSink>) {
 		self.audio = Some(sink);
 		self.ambient.reset();
+		self.prospect.reset();
 		// Persisted volumes apply from the very first sound.
 		self.emit(crate::audio::AudioCmd::Volume {
 			music: self.config.music_vol,
@@ -2243,6 +2515,37 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
+		// The prospector's sense (SKILLS-DESIGN §5.5, Mining 90): a faint
+		// shimmer near a deposit whose tier you cannot yet see. Audio only
+		// — an overlay would make every reveal level meaningless.
+		//
+		// It borrows the cave bed's voice as a POSITIONAL one-shot, which
+		// is a stand-in: the design asks for its own sourced shimmer, and
+		// swapping this to a new `Sfx` variant is the whole change when
+		// one exists.
+		let mining = self.skills.level(digblock_core::skills::Skill::Mining);
+		let near = digblock_core::unlock::prospector(mining)
+			.then(|| {
+				digblock_core::worldgen::ore::unseen_nearby(
+					(
+						cam.x.floor() as i32,
+						cam.y.floor() as i32,
+						cam.z.floor() as i32,
+					),
+					self.seed,
+					mining,
+				)
+			})
+			.flatten();
+		if self.prospect.advance(near.is_some(), dt) {
+			if let Some(d) = near {
+				self.emit(AudioCmd::Sfx {
+					sound: crate::audio::Sfx::AmbientCave,
+					pos: Some(cell_center((d.x, d.y, d.z))),
+					gain: crate::audio::PROSPECT_GAIN,
+				});
+			}
+		}
 
 		// Music pool follows the world clock. `tod` is the sun's angle
 		// from straight down (0 = noon, ±90 = the horizons, 180 =
@@ -2284,6 +2587,22 @@ impl Engine {
 		// The server's InventoryFull (right behind JournalDone) is the
 		// authoritative base; local single-player stock must not leak in.
 		self.inventory = Inventory::default();
+		// Its `Skills` (always sent, right behind `Layout`) is the same
+		// kind of base, and clearing these is not about the stale NUMBER
+		// — it is about who reads it before the real one lands.
+		// `reset_world_transients` below hands the Mining level straight
+		// to the pipeline we just installed (`sync_mining_reveal`), so a
+		// previous world's level would stamp veins into THIS world's
+		// terrain for the whole window between `Welcome` and `Skills`. In
+		// that window `ore_dig_mode` answers `NeedsSiphon` on cells the
+		// server calls plain stone, so `diggable` refuses holds the server
+		// would have accepted — and the correction, when `Skills` arrives,
+		// costs a full `remesh_all`. Level 1 is the honest guess: it
+		// under-reveals rather than over-, and every reveal it misses
+		// arrives moments later with the real totals. Toasts go with the
+		// totals they animate, exactly as in the other two entry points.
+		self.skills = Default::default();
+		self.xp_toasts.clear();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -2341,10 +2660,31 @@ impl Engine {
 			id: crate::audio::LOOP_DIG,
 		});
 		self.ambient.reset();
+		self.prospect.reset();
 		self.swim_strokes.reset();
 		self.view_bob.reset();
 		self.view_swing.reset();
 		self.view_swap.reset();
+		// The tool slot's handover animates whenever the active tool
+		// changes, which is right for a cycle and wrong for a world entry:
+		// the bar we are about to draw is state ARRIVING, not an exchange
+		// anybody performed. Advancing by a full window completes whatever
+		// was in flight and adopts the tool the bar holds now, so the
+		// first frame draws it at rest. A bare `Default::default()` will
+		// not do — it shows the BUCKET, which is the wrong half of the
+		// problem: entering a save whose layout makes any other tool
+		// active would still grow that tool in from a bucket that was
+		// never in the hand. Callers install the layout first
+		// (`enter_local_world` reconciles before it calls here); a join
+		// has none yet, and the server `Layout` rebase animating when it
+		// lands is the behaviour `ToolSwap` documents.
+		self.tool_swap
+			.advance(crate::hotbar::ToolSwap::SECS, self.hotbar.active_tool());
+		// A replaced pipeline starts at Mining level 0, so a world entry
+		// has to hand it the level again or a high-level miner walks into
+		// plain stone until the next level-up. Silent: the discovery was
+		// made long ago.
+		self.sync_mining_reveal(false);
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -2840,6 +3180,7 @@ impl Engine {
 							R::Protected => digblock_core::protect::REFUSE_DIG_MSG,
 							R::SkillGated => digblock_core::unlock::Kind::Strength.message(),
 							R::NotUnlocked => digblock_core::unlock::Kind::Recipe.message(),
+							R::NeedsTool => digblock_core::unlock::Kind::Tool.message(),
 							_ => "the server refused that dig",
 						};
 						self.push_feed(msg.into());
@@ -2899,8 +3240,12 @@ impl Engine {
 				}
 				NetEvent::Skills { xp } => {
 					// Join sync: adopt wholesale, no toasts — this is
-					// state arriving, not an award happening.
+					// state arriving, not an award happening. The ore
+					// reveal still has to follow it, or a Mining-60 player
+					// joins a server and sees plain stone until the next
+					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
+					self.sync_mining_reveal(false);
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -3315,12 +3660,13 @@ impl Engine {
 
 	/// The owned tool roster in deterministic block-id order: the
 	/// always-owned bucket plus every tool id with a nonzero count.
+	///
+	/// The predicate lives in core so the rail this feeds and the
+	/// ownership check `reconcile_layout` makes are literally the same
+	/// question — a client offering a tool its own server would take back
+	/// is a rejected swing, not a feature.
 	fn owned_tools(&self) -> Vec<BlockType> {
-		BlockType::ALL
-			.iter()
-			.copied()
-			.filter(|b| b.is_tool() && (b.always_owned() || self.inventory.count(*b) > 0))
-			.collect()
+		self.inventory.owned_tools().collect()
 	}
 
 	/// True while the tool is out AND empty — the scooping state. This is
@@ -3390,6 +3736,59 @@ impl Engine {
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
 
+	/// What a dig on this cell IS for us right now (SKILLS-DESIGN §5.3)
+	/// — the same `ore::dig_mode` the server asks of its own world, so
+	/// prediction and authority cannot disagree about whether an action
+	/// was a dig, a draw, or a refusal.
+	///
+	/// The chunk store still holds Stone here: the reveal is a stamp on
+	/// the MESH input, never a world write, which is what keeps ore out of
+	/// the journal and out of everyone else's world.
+	fn ore_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::ore::DigMode {
+		use digblock_core::worldgen::ore::DigMode;
+		let Some(v) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
+			return DigMode::Break;
+		};
+		digblock_core::worldgen::ore::dig_mode(
+			v,
+			cell,
+			self.seed,
+			self.skills.level(digblock_core::skills::Skill::Mining),
+			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
+			self.hotbar.active_tool(),
+		)
+	}
+
+	/// The EXTRA cells a Resonant Pick hold breaks around `hit` — empty
+	/// unless the pick is in hand at its own Mining level. The set is
+	/// derived from the ray, never chosen: the server re-raycasts and
+	/// runs the same `pick::cells` over its own world.
+	fn pick_plane(&self, hit: &RayHit) -> Vec<(i32, i32, i32)> {
+		if self.hotbar.active_tool() != BlockType::ResonantPick {
+			return Vec::new();
+		}
+		let level = self.skills.level(digblock_core::skills::Skill::Mining);
+		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let mut out = digblock_core::pick::cells(
+			hit.cell,
+			hit.normal,
+			self.camera.dir().to_array(),
+			digblock_core::unlock::pick_cells(level),
+			// The same rule the server runs over its own world — including
+			// the world floor, which `dig_hardness` refuses at exactly the
+			// y `protect::immutable` does. A server's spawn lock is its own
+			// secret and stays unpredicted, as everywhere else.
+			|c| {
+				self.pipeline.cell_at(c.0, c.1, c.2).is_some_and(|v| {
+					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(c))
+				})
+			},
+		);
+		// The aimed cell leads the list and the caller already has it.
+		out.retain(|&c| c != hit.cell);
+		out
+	}
+
 	fn diggable(&self, hit: &RayHit) -> bool {
 		// Permanently protected cells never start a hold. Only the world
 		// floor is knowable client-side — a server's spawn lock is its own
@@ -3403,6 +3802,11 @@ impl Engine {
 		// levels); the server's DigStart refusals are the backstop, and it
 		// asks this same question.
 		if digblock_core::unlock::dig_blocked(hit.block, &self.skills).is_some() {
+			return false;
+		}
+		// A revealed vein and the wrong tool: predicted here so the hold
+		// never opens, exactly as the server refuses it at `DigStart`.
+		if self.ore_dig_mode(hit.cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
 			return false;
 		}
 		if self.water_tool_selected() {
@@ -3435,6 +3839,10 @@ impl Engine {
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
 				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
+			} else if self.ore_dig_mode(h.cell)
+				== digblock_core::worldgen::ore::DigMode::NeedsSiphon
+			{
+				Some((h.cell, digblock_core::unlock::Kind::Tool.message()))
 			} else {
 				digblock_core::unlock::dig_blocked(h.block, &self.skills)
 					.map(|req| (h.cell, req.kind.message()))
@@ -3474,14 +3882,20 @@ impl Engine {
 			};
 			// Family-scaled hold time (SIM v12) — the same `dig_required`
 			// the server's completion gate runs.
-			let required = hit
-				.block
+			// An EXTRACTION is timed as the ORE rather than as the stone
+			// the cell still holds, so a deep seam takes longer than a
+			// shallow one and the ore rows' hardnesses are not dead
+			// numbers on blocks nobody digs.
+			let timed =
+				digblock_core::worldgen::ore::dig_block(self.ore_dig_mode(hit.cell), hit.block);
+			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
-					digblock_core::skills::dig_required(
-						hit.block,
+					digblock_core::skills::dig_required_with(
+						timed,
 						h,
 						self.skills.level(digblock_core::skills::Skill::Mining),
+						self.hotbar.active_tool(),
 					) as u16
 				})
 				.unwrap_or(u16::MAX);
@@ -3600,8 +4014,23 @@ impl Engine {
 			return;
 		};
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
-		// (cell, prev) list this dig clears — a door adds its partner.
+		// (cell, prev) list this dig clears — a door adds its partner, the
+		// Resonant Pick adds the plane of the face (SKILLS-DESIGN §5.6).
+		// Every extra cell holds the SAME id and is the plain breakable
+		// case (`pick::breaks_as_extra`), which is what makes
+		// `begin_multi`'s single `inv_delta` a correct description of the
+		// whole group — and what keeps the aimed door's own partner out of
+		// the plane, where it used to be counted AND written twice.
 		let mut cleared = vec![(hit.cell, prev_cell)];
+		for c in self.pick_plane(&hit) {
+			if let Some(v) = self.pipeline.cell_at(c.0, c.1, c.2) {
+				cleared.push((c, v));
+			}
+		}
+		// How many cells this ONE hold broke — 1 normally, up to 9 with
+		// the pick, and the count `begin_multi`'s single `inv_delta`
+		// carries for the whole group.
+		let broken = cleared.len() as u32;
 		if prev.is_door() {
 			let partner = digblock_core::shapes::door_partner(
 				hit.cell,
@@ -3613,10 +4042,20 @@ impl Engine {
 				}
 			}
 		}
+		// A field extraction (SKILLS-DESIGN §5.3): the vein is DRAWN out,
+		// not dug out, so the cell becomes a tapped face and the mountain
+		// keeps its shape. Resolved before the write, because it changes
+		// both what is written and what is credited.
+		let extracting = match self.ore_dig_mode(hit.cell) {
+			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+			_ => None,
+		};
 		// Slabs shrink one third per completed dig (2/3 → 1/3 → Air);
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
 			digblock_core::shapes::slab_shrunk(prev_cell)
+		} else if extracting.is_some() {
+			BlockType::DepletedStone as u16
 		} else {
 			air
 		};
@@ -3649,16 +4088,36 @@ impl Engine {
 		// No swing is started here: the arc that began with this hold is
 		// running out on this very frame, and re-striking it is what used
 		// to bolt a whole second stroke onto a finished scoop.
-		// One credit even for the two-cell door.
-		let drop = prev.dig_drop();
+		// One credit even for the two-cell door. An extraction credits the
+		// ORE, never the cell's own drop — the cell is Stone and Stone hands
+		// out Rubble, which is exactly what quarrying should give and
+		// exactly what drawing a seam should not.
+		let drop = extracting.or_else(|| prev.dig_drop());
+		// Mining 99's mastery: one extra raw ore per field extraction, and
+		// only there — the last level has to hand you something.
+		let credit = broken
+			+ extracting.map_or(0, |_| {
+				digblock_core::unlock::ore_mastery(
+					self.skills.level(digblock_core::skills::Skill::Mining),
+				)
+			});
 		if let Some(d) = drop {
-			self.inventory.add(d, 1);
+			self.inventory.add(d, credit);
 			self.hotbar.auto_assign(d);
 		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
-				let kind = if self.hotbar.selected_item() == Some(HotbarItem::WaterTool) {
+				// `tool` is `water_tool_selected` — the SLOT is not enough.
+				// It is the same predicate `diggable` and the scoop ray use,
+				// and the same one the server's Collect gate asks
+				// (`slot_item == WaterTool && active_tool == Bucket`).
+				// Reading the slot alone called every hold with the siphon,
+				// pick or sigil in hand a Collect, which the server answered
+				// WrongSlot: cell and credit reverted, so with any tool but
+				// the bucket active the player could dig NOTHING online —
+				// veins included — while offline the identical input worked.
+				let kind = if tool {
 					digblock_net::messages::EditKind::Collect
 				} else {
 					digblock_net::messages::EditKind::Dig
@@ -3669,7 +4128,9 @@ impl Engine {
 					.enumerate()
 					.map(|(i, &(c, p))| (c, p, if i == 0 { new_val } else { air }))
 					.collect();
-				let seq = net.edits.begin_multi(&entries, tick, drop.map(|d| (d, 1)));
+				let seq = net
+					.edits
+					.begin_multi(&entries, tick, drop.map(|d| (d, credit as i32)));
 				let slot = self.hotbar.selected_index() as u8;
 				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0), slot);
 			}
@@ -3678,11 +4139,19 @@ impl Engine {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
 				// Offline, the engine IS the award authority — the same
-				// table the server's dig-credit chokepoint reads.
-				self.award_xp_offline(
-					digblock_core::skills::Skill::Mining,
-					digblock_core::skills::dig_xp(prev),
-				);
+				// tables the server's dig-credit chokepoint reads, including
+				// §5.4's dual award at the rock face.
+				let (mining_xp, alch_xp) =
+					match extracting.and_then(digblock_core::skills::ore_field_xp) {
+						Some((m, a)) => (m, a),
+						// Per BLOCK, so a wide swing pays for what it actually
+						// broke rather than for the swing.
+						None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
+					};
+				self.award_xp_offline(digblock_core::skills::Skill::Mining, mining_xp);
+				if alch_xp > 0 {
+					self.award_xp_offline(digblock_core::skills::Skill::Alchemy, alch_xp);
+				}
 			}
 		}
 	}
@@ -3713,7 +4182,18 @@ impl Engine {
 			// ray: the fluid ray stops INSIDE a source, leaving no face
 			// normal to build against, which is why right-clicking water
 			// with the old collect-only tool did nothing at all.
-			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => BlockType::Water,
+			//
+			// The BUCKET, not the slot: the server's place gate requires
+			// `active_tool == Bucket`, so pouring with the pick or siphon
+			// active answered WrongSlot and the source appeared and
+			// vanished. Offline there was no such correction and it simply
+			// poured — a pick that puts down water.
+			Some(HotbarItem::WaterTool)
+				if self.hotbar.active_tool() == BlockType::Bucket
+					&& self.inventory.bucket_full() =>
+			{
+				BlockType::Water
+			}
 			// An empty bucket has nothing to give. Doors above still toggle.
 			Some(HotbarItem::WaterTool) | None => return,
 		};
@@ -3740,7 +4220,10 @@ impl Engine {
 				hit.cell.1 + hit.normal.1,
 				hit.cell.2 + hit.normal.2,
 			);
-			let placed = if block.is_stair() {
+			// Stairs and furniture with a front share the encoding
+			// (facing in bits 0-1), so one branch turns both — and a
+			// new facing shape cannot forget to be turned at all.
+			let placed = if block.takes_facing() {
 				make_cell(block, stair_state(quantized_facing(dir)))
 			} else if block.is_door() {
 				make_cell(block, door_state(quantized_facing(dir), false, false))
@@ -3774,6 +4257,22 @@ impl Engine {
 				upper,
 				make_cell(block, door_state(quantized_facing(dir), false, true)),
 			));
+		}
+		// Protected cells, scanned over the ASSEMBLED placements so a
+		// door's derived upper half and a slab grow (which rewrites the
+		// hit cell, not the one past its face) are both covered — the
+		// mirror of the server's scan over `writes`. Until now the only
+		// thing between a place and the world floor was
+		// `cell_is_replaceable`, which asks about block IDENTITY, and the
+		// floor rule is the one rule that must never depend on what
+		// happens to be standing there. Only the floor is knowable
+		// client-side; a spawn lock arrives as a rejection instead.
+		if placements
+			.iter()
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+		{
+			self.push_feed(digblock_core::protect::REFUSE_PLACE_MSG.into());
+			return;
 		}
 		if placements
 			.iter()
@@ -3858,6 +4357,16 @@ impl Engine {
 			if BlockType::from_id(cell_id(pc)).is_door() {
 				entries.push((partner, pc, door_toggled(pc)));
 			}
+		}
+		// A door in a protected cell is furniture, not a mechanism — the
+		// same refusal the server makes over its own write list, and
+		// scanned over both halves because a leaf can straddle the floor
+		// with only its upper cell reachable.
+		if entries
+			.iter()
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+		{
+			return;
 		}
 		// Closing must not trap anyone — locally gate on ourselves; the
 		// server gates on every player.
@@ -4026,6 +4535,30 @@ impl Engine {
 			// from the server's `LevelUp` broadcast.
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
+			self.sync_mining_reveal(true);
+		}
+	}
+
+	/// Hand the pipeline the Mining level its ore stamp reveals at, and
+	/// sweep every resident chunk when that crosses a tier (§5.3).
+	///
+	/// The sweep is `remesh_all`, which only ENQUEUES — the mesh heap
+	/// drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in
+	/// around you over a second or two instead of hitching the frame that
+	/// levelled you up.
+	fn sync_mining_reveal(&mut self, announce: bool) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Mining);
+		if !self.pipeline.set_mining_level(level) {
+			return;
+		}
+		self.pipeline.remesh_all();
+		// Only a LEVEL-UP says so. Entering a world, or a join sync
+		// handing over a Mining 60 you already had, crosses the same
+		// thresholds against a fresh pipeline and would announce a
+		// discovery you made an hour ago.
+		if announce {
+			self.push_feed("New veins shimmer into view.".into());
 		}
 	}
 
@@ -4098,6 +4631,16 @@ impl Engine {
 		if !self.diggable(hit) {
 			return None;
 		}
+		// A field extraction shows the outline and NO crack — the water
+		// tool's precedent. Nothing is breaking: the seam is being drawn
+		// out of rock that stays standing, and a spreading web would say
+		// the opposite of what is happening.
+		if matches!(
+			self.ore_dig_mode(hit.cell),
+			digblock_core::worldgen::ore::DigMode::Extract(_)
+		) {
+			return Some(boxed(None));
+		}
 		// The DECAYED progress, so a released hold's web visibly retreats
 		// (and a resumed one picks up from the retreated web) rather than
 		// snapping between full and gone.
@@ -4110,9 +4653,6 @@ impl Engine {
 		Some(boxed(progress))
 	}
 
-	/// This frame's held item, if the hand has anything in it. The pose
-	/// is authored in view space by `viewmodel.rs`, so all this does is
-	/// pick the item and hand over the frame's light rig.
 	/// Advance WHICH item is in the hand, and the swap dip between two.
 	///
 	/// Its own method because it has to run on three paths: once at the
@@ -4128,13 +4668,23 @@ impl Engine {
 	/// None. The bob and the swing stay interactive-only, since they are
 	/// driven by motion the scripted camera does not have.
 	fn advance_hand(&mut self, dt: f32) {
-		let selected = self
-			.hotbar
-			.selected_item()
-			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
+		let full = self.inventory.bucket_full();
+		self.tool_swap.advance(dt, self.hotbar.active_tool());
+		let selected = self.hotbar.selected_item().map(|i| match i {
+			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
+			// so the hand has to ask which tool is active — otherwise
+			// every tool in the game is held as a bucket. `shown` rather
+			// than `active_tool`, so the hand and the slot's icon change
+			// over together.
+			HotbarItem::WaterTool => crate::ui::hud::tool_icon(self.tool_swap.shown(), full),
+			other => crate::ui::hud::item_icon(other, full).0,
+		});
 		self.view_swap.advance(dt, selected);
 	}
 
+	/// This frame's held item, if the hand has anything in it. The pose
+	/// is authored in view space by `viewmodel.rs`, so all this does is
+	/// pick the item and hand over the frame's light rig.
 	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
 		// The SWAP's item, not the hotbar's: mid-swap the hand is still
 		// holding the one it hasn't put away yet.
@@ -4351,8 +4901,15 @@ impl Game for Engine {
 	}
 
 	fn input(&mut self, event: InputEvent) {
-		// Benchmark runs must be input-independent to stay comparable.
-		if self.config.bench {
+		// A capture hears nothing. Benchmarks must be input-independent
+		// to stay comparable, and every other capture path wants it for a
+		// plainer reason: the operator is sitting at the machine that
+		// opened the window, and a keystroke meant for their editor must
+		// not open the inventory into the frame. `InputEvent` is only
+		// ever user input — resize, scale-factor and lifecycle arrive
+		// through their own `Game` methods — so dropping all of it here
+		// costs a capture nothing it needs.
+		if !self.config.interactive {
 			return;
 		}
 		// UI surfaces speak pointer. While any is open, the PRIMARY touch
@@ -4429,7 +4986,11 @@ impl Game for Engine {
 					pressed: true,
 				} => self.inv_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let style = crate::ui::Style::new(self.ui_scale);
 					let act = self.inv_screen.handle_input(
 						&event,
@@ -4454,7 +5015,11 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.touch.clear();
 					self.dig_held = false;
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					self.alch_screen.handle_input(
@@ -4471,7 +5036,11 @@ impl Game for Engine {
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+					let bar = crate::hotbar::HotbarView::build(
+						&self.hotbar,
+						&self.inventory,
+						&self.tool_swap,
+					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 					let style = crate::ui::Style::new(self.ui_scale);
@@ -5369,7 +5938,8 @@ impl Game for Engine {
 			);
 		}
 		if in_game {
-			let hotbar_view = crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory);
+			let hotbar_view =
+				crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory, &self.tool_swap);
 			let owned_tools = self.owned_tools();
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui_dl,
@@ -5406,8 +5976,9 @@ impl Game for Engine {
 				&ui.style,
 				size,
 				&owned_tools,
-				self.hotbar.active_tool(),
+				self.tool_swap.shown(),
 				self.inventory.bucket_full(),
+				self.tool_swap.present(),
 			);
 		}
 		// Last, and over everything: while the arrival hold is up, the
@@ -5486,15 +6057,22 @@ impl Game for Engine {
 		self.metrics.frame(std::mem::take(&mut self.pending));
 	}
 
+	/// A capture never takes the pointer. Without the first clause a
+	/// capture answered YES on frame one — it opens with no menu, so no
+	/// UI surface is open, so the desktop shell locked the cursor and
+	/// hid it for the length of the run. The operator lost their mouse
+	/// to a window they never meant to play, and everything they typed
+	/// in the meantime landed in the world.
 	fn wants_cursor_grab(&self) -> bool {
-		!self.menu.is_open()
+		self.config.interactive
+			&& !self.menu.is_open()
 			&& !self.inv_screen.is_open()
 			&& !self.alch_screen.is_open()
 			&& !self.char_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
-		self.chat.is_open()
+		self.config.interactive && self.chat.is_open()
 	}
 
 	fn on_exit(&mut self) {
@@ -5556,6 +6134,20 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 	}
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
+		// The world floor, refused exactly where the server's `StoreWorld`
+		// refuses it — offline this pipeline IS the authority, so the two
+		// have to answer alike or a local save diverges from the same
+		// world hosted. Refusing the WRITE rather than filtering the
+		// schedule is what covers every direction of approach:
+		// `schedule_around` always enqueues (x, 0, z), and until now only
+		// `cur.props().collides` kept water out of it — a property of
+		// whatever block happens to sit there, which is precisely what
+		// the floor rule must not depend on. The sim reads `false` as
+		// "didn't land" and declines to propagate onward. A spawn lock is
+		// server-only knowledge and stays unpredicted, hence `None`.
+		if digblock_core::protect::immutable(x, y, z, None) {
+			return false;
+		}
 		self.0.set_block(x, y, z, b).is_some()
 	}
 }
@@ -6637,6 +7229,88 @@ mod dig_decay_tests {
 		assert_eq!(web(&engine), None, "and the block outlines unbroken");
 	}
 
+	/// A capture ignores the keyboard AND leaves the mouse alone.
+	///
+	/// Both halves, because the second is the one that hurt: a capture
+	/// opens with no menu, so `wants_cursor_grab` used to answer true on
+	/// frame one and the desktop shell locked and hid the operator's
+	/// cursor for the whole run — on a window nobody asked to play. The
+	/// keystrokes they made in the meantime went into the world, and a
+	/// stray `I` opened the inventory into the shot.
+	///
+	/// `bench` alone did not cover it. `--screenshot`/`--frames`/`--exit`
+	/// runs are captures that never set `bench`, and those are precisely
+	/// the runs somebody sits and watches, so the flag this asserts on is
+	/// the launcher's own `interactive` predicate.
+	#[test]
+	fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
+		use digblock_platform::{InputEvent, Key};
+
+		let fresh = |interactive: bool| {
+			let mut config = EngineConfig::desktop();
+			config.interactive = interactive;
+			config.workers = 0;
+			config.seed = Some(3.0);
+			Engine::new(config)
+		};
+		let any_screen_open = |e: &Engine| {
+			e.menu.is_open()
+				|| e.inv_screen.is_open()
+				|| e.alch_screen.is_open()
+				|| e.char_screen.is_open()
+		};
+		// One key per engine. Pressing all four in sequence cancels
+		// itself — `I` opens the inventory, which then swallows `K` and
+		// `C` as drag input and closes on `Escape` — so a combined
+		// sweep would end with nothing open and "a capture opened
+		// nothing" would pass for entirely the wrong reason.
+		let opens = |interactive: bool, key: Key| {
+			let mut e = fresh(interactive);
+			e.input(InputEvent::Key { key, pressed: true });
+			e.input(InputEvent::Key {
+				key,
+				pressed: false,
+			});
+			any_screen_open(&e)
+		};
+		// `look_accum`, not the camera: a mouse delta is banked here and
+		// spent by `update`, so reading the camera straight after
+		// `input` would answer "unmoved" on an interactive run too.
+		let turns = |interactive: bool| {
+			let mut e = fresh(interactive);
+			e.input(InputEvent::MouseDelta {
+				dx: 240.0,
+				dy: 90.0,
+			});
+			e.look_accum != (0.0, 0.0)
+		};
+
+		// The three that were genuinely reachable. `Escape` is asserted
+		// on the capture side too, but it is NOT a control: `Menu::open`
+		// checks `enabled`, which a capture never sets, so Escape was
+		// already inert there and a control on it would fail for a
+		// reason that has nothing to do with this flag.
+		const SCREEN_KEYS: [Key; 3] = [Key::I, Key::K, Key::C];
+
+		// A capture is deaf and never asks for the pointer.
+		assert!(
+			!fresh(false).wants_cursor_grab(),
+			"a capture must never take the operator's cursor"
+		);
+		for key in SCREEN_KEYS.into_iter().chain([Key::Escape]) {
+			assert!(!opens(false, key), "a capture opened a screen on {key:?}");
+		}
+		assert!(!turns(false), "a capture banked a mouse delta to turn with");
+
+		// The controls: every one of those events DOES land on a real
+		// session, or the assertions above prove nothing at all.
+		assert!(fresh(true).wants_cursor_grab(), "a session grabs to play");
+		for key in SCREEN_KEYS {
+			assert!(opens(true, key), "{key:?} does not open anything anyway");
+		}
+		assert!(turns(true), "MouseDelta does not turn the camera anyway");
+	}
+
 	/// Half a second off the button costs half a BAR, not half of what
 	/// was banked — which is what makes one second the ceiling for every
 	/// block rather than a flat wait — and the resumed hold completes in
@@ -6707,5 +7381,93 @@ mod dig_decay_tests {
 		let d = engine.dig.as_ref().expect("the new hold opened");
 		assert_eq!(d.cell, other, "on the other block");
 		assert_eq!((d.ticks, d.idle), (0, 0), "from scratch");
+	}
+}
+
+#[cfg(test)]
+mod ore_capture_tests {
+	use super::*;
+	use digblock_core::worldgen::ore;
+
+	/// The chamber's own radius, mirrored from `debug_ore_plan`'s `R` so
+	/// the plate's footprint can be reasoned about from outside it.
+	const R: i32 = 5;
+
+	/// DIG_ORE's one rule, and the only one that makes the scene work at
+	/// all: the plan must not write over a single cell the deposit
+	/// claims. A write reaches the anti-dupe for real — the plan is
+	/// applied through `pipeline.set_cell`, which records into the
+	/// `EditOverlay`, and `ore::revealed` answers None for an edited cell
+	/// forever — so a stray write deletes the subject of the photograph
+	/// permanently, and silently, because the chamber still looks right.
+	///
+	/// The carve loop always guarded this. The floor plate did not, and
+	/// it is laid at `d.y - 2`, straight through the lowest rim of a
+	/// max-radius blob: the cell directly under the centre sits at
+	/// `d2 == r2`, so `Deposit::contains` falls through to `rim_open` and
+	/// keeps it three times in four.
+	///
+	/// `crossings` is what stops this going vacuous. It counts the vein
+	/// cells lying IN the plate's plane, so a sample that never puts one
+	/// there fails as loudly as a plan that paves over them — and the
+	/// plate is asserted to be exactly the plane minus those cells, which
+	/// pins that the guard skips the vein and nothing else.
+	#[test]
+	fn the_ore_capture_plan_never_writes_over_the_vein() {
+		let mut crossings = 0usize;
+		let mut plans = 0usize;
+		for i in 0..20 {
+			let seed = 1000.0 + f64::from(i) * 37.5;
+			// Any pose does: the plan only reads spawn's x/z, to pick the
+			// nearest deposit of the tier. Skipping the worldgen spawn
+			// search keeps this a pure ore-geometry test.
+			let spawn = Vec3::new(0.0, 90.0, 0.0);
+			for tier in 1..=ore::ORES.len() {
+				let (pos, plan) = debug_ore_plan(spawn, seed, tier);
+				if plan.is_empty() {
+					continue;
+				}
+				plans += 1;
+				for &(x, y, z, cell) in &plan {
+					assert!(
+						ore::ore_at(x, y, z, seed).is_none(),
+						"seed {seed} tier {tier}: plan writes {cell} over the vein \
+						 at {x},{y},{z}"
+					);
+				}
+				// The plate is the plan's only Stone, and the pose is
+				// authored from the deposit centre — enough to rebuild the
+				// footprint the unguarded loop used to pave.
+				let plate: Vec<_> = plan
+					.iter()
+					.filter(|c| c.3 == BlockType::Stone as u16)
+					.collect();
+				let floor = plate[0].1;
+				assert!(
+					plate.iter().all(|c| c.1 == floor),
+					"seed {seed} tier {tier}: the plate is one plane"
+				);
+				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
+				let mut vein = 0usize;
+				for z in (cz - R)..=(cz + R) {
+					for x in (cx - R)..=(cx + R) {
+						vein += usize::from(ore::ore_at(x, floor, z, seed).is_some());
+					}
+				}
+				let square = (2 * R + 1).pow(2) as usize;
+				assert_eq!(
+					plate.len() + vein,
+					square,
+					"seed {seed} tier {tier}: the plate is the plane minus the vein"
+				);
+				crossings += vein;
+			}
+		}
+		assert!(plans > 50, "the sample found deposits to photograph");
+		assert!(
+			crossings > 0,
+			"no vein crossed a floor plane in {plans} plans — this sample \
+			 cannot tell a guarded plate from an unguarded one"
+		);
 	}
 }

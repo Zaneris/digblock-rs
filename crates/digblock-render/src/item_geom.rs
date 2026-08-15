@@ -161,6 +161,56 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	}
 }
 
+/// The Essence Siphon: a wide funnel that swallows the rock face, a
+/// narrow stem, and a glowing bulb where the drawn essence collects.
+///
+/// The bulb is what makes it read at hotbar size — a plain dark tube is a
+/// silhouette nobody can name, and the glow says "this pulls something
+/// OUT" in the one place the icon has to say anything at all. The flame
+/// layer is borrowed rather than drawn: it is the only bright texture the
+/// atlas has, and a siphon full of light is the right lie.
+fn siphon_faces(out: &mut Vec<ItemFace>) {
+	let dark = digblock_core::block::tex::LUMBER_DARK;
+	let light = digblock_core::block::tex::LUMBER_LIGHT;
+	let glow = digblock_core::block::tex::TORCH_FLAME;
+	box_faces([2, 0, 2], [10, 3, 10], |_| dark, out);
+	box_faces([5, 3, 5], [7, 8, 7], |_| light, out);
+	box_faces([4, 8, 4], [8, 11, 8], |_| glow, out);
+}
+
+/// The Resonant Pick: a timber haft with a broad metal-dark head, and a
+/// bright core at the join.
+///
+/// The head is WIDE rather than pointed on purpose — the tool breaks a
+/// PLANE, and a narrow pick would promise a bore. The lit core is the
+/// same trick the siphon plays: at hotbar size a silhouette needs one
+/// bright thing to be recognisable at all.
+fn pick_faces(out: &mut Vec<ItemFace>) {
+	let haft = digblock_core::block::tex::LUMBER_LIGHT;
+	let head = digblock_core::block::tex::LUMBER_DARK;
+	let core = digblock_core::block::tex::TORCH_FLAME;
+	box_faces([5, 0, 5], [7, 9, 7], |_| haft, out);
+	box_faces([1, 9, 5], [11, 11, 7], |_| head, out);
+	box_faces([5, 8, 4], [7, 10, 8], |_| core, out);
+}
+
+/// The Master's Sigil: a crystal set in a standing metal plate on a
+/// small foot. It DOES nothing — 99 Aether for the last line of the
+/// catalog — so it is drawn as a thing you display rather than a thing
+/// you swing: an emblem, face-on, with the gem proud of the plate on
+/// both sides so the shape reads at hotbar size.
+///
+/// It needs authored geometry for the same reason its siblings do: a
+/// tool carries no texture layers, so the cube fallback would draw the
+/// game's most expensive item as a block of whatever sits at layer 0.
+fn sigil_faces(out: &mut Vec<ItemFace>) {
+	let frame = digblock_core::block::tex::METAL;
+	let gem = digblock_core::block::tex::CRYSTAL;
+	box_faces([4, 0, 4], [8, 2, 8], |_| frame, out);
+	box_faces([2, 2, 5], [10, 10, 7], |_| frame, out);
+	box_faces([4, 4, 4], [8, 8, 8], |_| gem, out);
+}
+
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
 pub fn height(kind: IconKind) -> i32 {
@@ -186,11 +236,19 @@ pub fn faces(kind: IconKind) -> Vec<ItemFace> {
 				// at a third and only grows by stacking more on top, so a
 				// 2/3 icon advertised a stack you don't have.
 				shape_faces(b, slab_state(false, false), 0, &mut out);
-			} else {
+			} else if b.takes_facing() {
+				// Stairs and furniture with a front, turned the same way
+				// so the icon shows the piece three-quarters on.
 				shape_faces(b, stair_state(Facing::NegX), 0, &mut out);
+			} else {
+				// Stateless shaped items — the torch, the table.
+				shape_faces(b, 0, 0, &mut out);
 			}
 		}
 		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
+		IconKind::Siphon => siphon_faces(&mut out),
+		IconKind::Pick => pick_faces(&mut out),
+		IconKind::Sigil => sigil_faces(&mut out),
 	}
 	out
 }

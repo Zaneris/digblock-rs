@@ -8,8 +8,12 @@
 //! chances to add a third gate and miss one. So the tables live here
 //! together, and so does the question:
 //!
-//! - **The levels** — [`craft`], [`extract`], [`mine`], [`pickup`]. Four
-//!   small tables, each the sole authority for its own axis.
+//! - **The levels** — [`shape`] and [`material`] (SKILLS-DESIGN §7.2's two
+//!   grid axes), [`functional`] for the hand-priced items, plus [`extract`]
+//!   and [`mine`]. Each is the sole authority for its own axis, and the
+//!   two questions players actually ask are DERIVED from them: [`craft`] is
+//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop. That
+//!   is what stopped the wood slab opening nineteen levels before wood.
 //! - **The questions** — [`can_craft`], [`can_extract`], [`dig_blocked`].
 //!   Callers ask these; they do not compare levels themselves. The dig
 //!   gates in particular are asked identically by client prediction, the
@@ -24,31 +28,171 @@
 //! the server's verdict speak the same sentence because there is only one.
 
 use crate::alchemy;
-use crate::block::BlockType;
+use crate::block::{BlockType, ShapeFamily};
+use crate::material::Material;
 use crate::skills::{Skill, SkillSet, MAX_LEVEL};
 
 // ---- the tables ------------------------------------------------------
 
-/// Alchemy level that unlocks crafting `b`; `None` = never craftable.
+/// The Alchemy level that opens a SHAPE — can you work any substance into
+/// this form at all? (SKILLS-DESIGN §7.2's shape axis.)
 ///
-/// §7.2's grid rule holds throughout: a material × shape pair unlocks at
-/// `max(shape level, material level)`.
-pub fn craft(b: BlockType) -> Option<u32> {
-	use BlockType as B;
+/// The full cube sits at 1 deliberately: the progression belongs to the
+/// materials, so a substance arrives in every form you have already
+/// learned rather than dribbling in one shape at a time. Reaching a shape
+/// LATER then hands it to you in every material you already own.
+pub fn shape(s: ShapeFamily) -> u32 {
+	match s {
+		ShapeFamily::Block | ShapeFamily::Slab => 1,
+		ShapeFamily::Stairs => 5,
+		ShapeFamily::Door => 10,
+	}
+}
+
+/// The Alchemy level that opens a MATERIAL — can you transmute this
+/// substance into block form at all? `None` = never, in any shape, which
+/// is what makes it eligible for a §3.3 bonus line.
+///
+/// Materials with no authored block yet are still listed: the level IS
+/// the design, and a catalog wave should be a block row and a PNG.
+pub fn material(m: Material) -> Option<u32> {
+	use Material as M;
+	Some(match m {
+		// The starter timber and the loose ground under your feet — what
+		// the world hands a fresh player, so the bench has something to do
+		// on day one.
+		M::Wood => 1,
+		M::Dirt | M::Sand => 5,
+		// Planed timber: the joinery material.
+		M::Lumber => 15,
+		// The mason's unlock (§7.1) — clean rock exists only pristine in
+		// terrain or transmuted here, which is what makes Rubble matter.
+		M::Stone => 20,
+		M::DarkLumber | M::StoneBrick => 25,
+		M::Sandstone | M::Snow | M::Grass | M::Mud | M::Glass => 30,
+		M::RedLumber => 40,
+		M::PolishedStone | M::SandstoneBrick => 45,
+		// Scarce by construction: Metal comes only from ore.
+		M::Metal => 50,
+		M::Crystal => 65,
+		M::Rubble
+		| M::Gravel
+		| M::DryGrass
+		| M::Leaf
+		| M::PineLeaf
+		| M::Emberore
+		| M::Duskstone
+		| M::Glowvein
+		| M::Aetherock
+		| M::DepletedStone => return None,
+	})
+}
+
+/// The Alchemy level for a FUNCTIONAL item — one §7.3 prices by hand
+/// because it is a function rather than a substance. `None` = not a
+/// functional item (ask the grid instead).
+///
+/// The twin of [`alchemy::functional_ideal`]: a level and a price are one
+/// decision, pinned so neither can exist without the other.
+pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
-		B::WoodSlab | B::StoneSlab => 1,
-		B::WoodStairs | B::StoneStairs => 5,
-		B::Torch => 8,
-		// Planed timber is a level-15 MATERIAL, so its slab (shape 1),
-		// stairs (shape 5) and door (shape 10) all arrive WITH it rather
-		// than at their shapes' own levels — the whole joinery set opens
-		// at once, which is what makes the material read as a material.
-		B::Lumber | B::LumberSlab | B::LumberStairs | B::LumberDoor => 15,
-		B::Stone | B::Wood | B::Dirt | B::Sand => 20,
-		B::Sandstone | B::Snow | B::Grass | B::Mud => 30,
-		B::Water => 50,
+		// First light, pre-ore on purpose (§7.3).
+		BlockType::Torch => 8,
+		// The ore tool, one level before the first vein reveals at Mining
+		// 10 — the game's first cross-skill handshake, and the reason
+		// neither skill can be levelled entirely from inside the other.
+		BlockType::EssenceSiphon => 10,
+		// Furniture: the first things you make because you want them
+		// rather than because you need them, so they sit just past the
+		// timber set that supplies them.
+		BlockType::Chair => 18,
+		BlockType::Table => 18,
+		// The bed waits for the Aqua economy it costs (extraction opens at
+		// 15), which is the whole reason its price crosses families.
+		BlockType::Bed => 35,
+		// Crafting the bucket charge, lossy against extracting it.
+		BlockType::Water => 50,
+		// The pick: crafted here, usable at MINING 55 (`pick_cells`) —
+		// two skills, one item, and the reason 240 Metal is worth mining.
+		BlockType::ResonantPick => 55,
+		// The lamps: the first Metal sink outside tools, and the standing
+		// Aether one — a repeatable 3-per-lamp sink is what keeps
+		// Aetherock worth mining at 90+, where the pick and the sigil are
+		// both one-offs.
+		BlockType::Lantern => 40,
+		BlockType::Aetherlamp => 80,
+		// 99 Aether for a thing that does nothing: the point IS that it is
+		// the last line.
+		BlockType::MastersSigil => 99,
 		_ => return None,
 	})
+}
+
+/// Alchemy level that unlocks crafting `b`; `None` = never craftable.
+///
+/// §7.2's grid rule, now enforced rather than described: a material ×
+/// shape pair unlocks at `max(shape level, material level)`. StoneDoor
+/// lands at 20 because Stone does, not because anyone curated it; and
+/// reaching Stone at 20 opens clean stone in the block, slab, stairs and
+/// door forms together, because those shapes were already learned.
+pub fn craft(b: BlockType) -> Option<u32> {
+	if let Some(level) = functional(b) {
+		return Some(level);
+	}
+	let (m, s) = b.grid_cell()?;
+	Some(material(m)?.max(shape(s)))
+}
+
+/// The Mining level a vein of `b` becomes VISIBLE at (SKILLS-DESIGN
+/// §5.3), or `None` for anything that is not an ore.
+///
+/// This is a stranger gate than the others, and deliberately: below it the
+/// cell is Stone to that player in every respect — it renders as stone,
+/// raycasts as stone, digs as stone, and the server agrees, so a
+/// low-level miner tunnelling through a deposit spends it without ever
+/// knowing. You dig what you can see. That is what makes crossing a
+/// threshold an event (veins fade in around you) rather than a number.
+pub fn reveal(b: BlockType) -> Option<u32> {
+	Some(match b {
+		BlockType::Emberore => 10,
+		BlockType::Duskstone => 30,
+		BlockType::Glowvein => 55,
+		BlockType::Aetherock => 80,
+		_ => return None,
+	})
+}
+
+/// How many cells one hold breaks with the Resonant Pick in hand
+/// (SKILLS-DESIGN §5.6): 1 below the tool's own Mining level, then the
+/// 3-wide row, then the full 3×3 plane.
+///
+/// A width, not a boolean, because the pick's two ranks are one
+/// progression: the same machinery widens, and the timing multiplier
+/// beside it in `skills` steps with it.
+pub fn pick_cells(level: u32) -> usize {
+	match level {
+		l if l >= 85 => 9,
+		l if l >= 55 => 3,
+		_ => 1,
+	}
+}
+
+/// Mining 90's **prospector's sense** (SKILLS-DESIGN §5.5): within
+/// [`PROSPECT_RANGE`] of a deposit you cannot yet SEE, a faint shimmer.
+/// Audio only, in the `Footsteps` cadence mould — never an overlay, or
+/// the reveal levels would stop meaning anything.
+pub fn prospector(level: u32) -> bool {
+	level >= 90
+}
+
+/// How far the prospector's sense reaches, in blocks.
+pub const PROSPECT_RANGE: i32 = 8;
+
+/// Mining 99's mastery (§5.5): every field extraction yields one extra
+/// raw ore. The last level has to hand you something, and a flat +1 on
+/// the rarest action in the game is the smallest thing that qualifies.
+pub fn ore_mastery(level: u32) -> u32 {
+	u32::from(level >= 99)
 }
 
 /// Alchemy level required to break `b` down at the bench (1 = always).
@@ -66,10 +210,53 @@ pub fn extract(b: BlockType) -> u32 {
 /// a few levels in, after soft ground and loose gravel have paid for
 /// them.
 pub fn mine(b: BlockType) -> u32 {
-	match b {
-		BlockType::Sandstone => 3,
-		BlockType::Stone | BlockType::StoneStairs | BlockType::StoneSlab | BlockType::Rubble => 5,
-		_ => 1, // Gravel stays the entry rock; everything else ungated
+	b.material().map_or(1, mine_material)
+}
+
+/// The rock gate keyed on the SUBSTANCE, which is the only thing strength
+/// can be about — a stone stair resists a novice exactly as its stone
+/// does, and listing every shape by hand was how the old table came to
+/// name four blocks and miss the fifth.
+fn mine_material(m: Material) -> u32 {
+	use Material as M;
+	match m {
+		M::Sandstone | M::SandstoneBrick => 3,
+		M::Stone | M::StoneBrick | M::PolishedStone | M::Rubble | M::DepletedStone => 5,
+		// The ORES, at exactly the level that reveals them. A vein in
+		// pristine stone is already invisible below its tier, so this arm
+		// is about the other way an ore block exists: one somebody PLACED.
+		// That is ordinary chunk data every visitor sees at any level
+		// (`apply_ore`'s second pass reverts only cells it claimed, never
+		// a placed block), so without these arms the whole table fell
+		// through to `_ => 1` and a Mining-1 newcomer could strip a
+		// Mining-80 player's Aetherock wall. The tell was the neighbour:
+		// DepletedStone — the SPENT face, worth Rubble — sat at 5 while
+		// the ore itself was ungated.
+		//
+		// Keyed to `reveal` rather than hand-numbered, so a retune of the
+		// reveal ladder cannot leave the two disagreeing;
+		// `every_ore_is_gated_at_its_own_reveal` pins that they match.
+		M::Emberore => reveal_of(BlockType::Emberore),
+		M::Duskstone => reveal_of(BlockType::Duskstone),
+		M::Glowvein => reveal_of(BlockType::Glowvein),
+		M::Aetherock => reveal_of(BlockType::Aetherock),
+		// The hard substances ore pays for: a pick has to be worth
+		// something before someone else's metal wall comes apart.
+		M::Metal => 40,
+		M::Crystal => 60,
+		// Gravel stays the entry rock; everything else ungated.
+		_ => 1,
+	}
+}
+
+/// [`reveal`] for a block known to be an ore, for use inside
+/// [`mine_material`]'s table. Panics on anything else, which is a
+/// compile-time-shaped mistake made loud at first call rather than
+/// silently answering 1 — the exact failure this helper exists to fix.
+fn reveal_of(b: BlockType) -> u32 {
+	match reveal(b) {
+		Some(l) => l,
+		None => panic!("{b:?} is in the ore gate but has no reveal level"),
 	}
 }
 
@@ -117,6 +304,10 @@ pub enum Kind {
 	/// The block is craft-only and this Alchemy level cannot make one, so
 	/// picking it up would hand out an item the player can't own yet.
 	Recipe,
+	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
+	/// other two this is not about a LEVEL at all — it is the one refusal
+	/// a player can clear without gaining anything, by switching tools.
+	Tool,
 }
 
 impl Kind {
@@ -127,6 +318,7 @@ impl Kind {
 		match self {
 			Kind::Strength => "this rock defies your mining level",
 			Kind::Recipe => "you haven't unlocked this yet",
+			Kind::Tool => "this vein needs an essence siphon",
 		}
 	}
 }
@@ -190,7 +382,18 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		// A rock whose strength wall stands exactly here. The craft gate
 		// needs no arm of its own: it derives from `craft`, which the
 		// Alchemy arm already covers.
-		Skill::Mining => mine(b) == level,
+		Skill::Mining => {
+			mine(b) == level
+				|| reveal(b) == Some(level)
+				// The pick's two ranks — a level that hands you a wider
+				// swing hands you something, exactly like a reveal.
+				|| (b == BlockType::ResonantPick && pick_cells(level) != pick_cells(level - 1))
+				// And the two endgame lines, which hand you something
+				// without handing you an item.
+				|| (b == BlockType::Air
+					&& (prospector(level) != prospector(level - 1)
+						|| ore_mastery(level) != ore_mastery(level - 1)))
+		}
 		// A new recipe, a newly extractable block, or a bonus line that
 		// wasn't paying at the level below.
 		Skill::Alchemy => {
@@ -210,17 +413,27 @@ mod tests {
 	#[test]
 	fn craft_levels_are_pinned() {
 		use BlockType as B;
+		// The starter timber, in every form you have learned so far.
+		assert_eq!(craft(B::Wood), Some(1));
 		assert_eq!(craft(B::WoodSlab), Some(1));
-		assert_eq!(craft(B::StoneSlab), Some(1));
-		assert_eq!(craft(B::WoodStairs), Some(5));
+		assert_eq!(craft(B::WoodStairs), Some(5), "the stairs SHAPE opens");
+		assert_eq!(craft(B::Dirt), Some(5));
+		assert_eq!(craft(B::Sand), Some(5));
 		assert_eq!(craft(B::Torch), Some(8));
 		// §7.2's grid rule: the whole planed-timber set opens together at
 		// its MATERIAL's level, whatever each shape's own level is.
 		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
 			assert_eq!(craft(b), Some(15), "{b:?}");
 		}
-		assert_eq!(craft(B::Stone), Some(20));
-		assert_eq!(craft(B::Sandstone), Some(30));
+		// And the mason's unlock does the same for stone: the slab and the
+		// stairs no longer arrive nineteen levels before the block they are
+		// cut from, which is the inversion the grid exists to fix.
+		for b in [B::Stone, B::StoneSlab, B::StoneStairs] {
+			assert_eq!(craft(b), Some(20), "{b:?}");
+		}
+		for b in [B::Sandstone, B::Snow, B::Grass, B::Mud] {
+			assert_eq!(craft(b), Some(30), "{b:?}");
+		}
 		assert_eq!(craft(B::Water), Some(50));
 		assert_eq!(craft(B::Rubble), None, "mined rock is never crafted");
 		assert_eq!(extract(B::Water), 15, "the bucket charge");
@@ -233,6 +446,129 @@ mod tests {
 				craft(b).is_some(),
 				alchemy::craft_ideal(b).is_some(),
 				"{b:?}: an unlock level and a recipe come as a pair"
+			);
+		}
+	}
+
+	/// Every ore is dug at exactly the level that lets you SEE it.
+	///
+	/// The two numbers have to move together or they contradict each
+	/// other: `reveal` decides when a vein appears, and `mine` decides
+	/// when the block may be broken. `mine_material` reads `reveal`
+	/// rather than repeating it, and this is the pin on that — it fails
+	/// if an arm is dropped and the material falls back to the table's
+	/// ungated `_`, which is exactly how every ore came to be minable at
+	/// Mining 1.
+	#[test]
+	fn every_ore_is_gated_at_its_own_reveal() {
+		for &ore in &crate::worldgen::ore::ORES {
+			let seen = reveal(ore).expect("an ore has a reveal level");
+			assert_eq!(
+				mine(ore),
+				seen,
+				"{ore:?} reveals at {seen} but is minable at {}",
+				mine(ore)
+			);
+			assert!(
+				mine(ore) > 1,
+				"{ore:?} is ungated — a placed ore block is ordinary chunk \
+				 data that any level can see and break"
+			);
+		}
+	}
+
+	/// The other half of the rock gate: no material may reach the
+	/// ungated fallback by ACCIDENT.
+	///
+	/// `mine_material`'s `_ => 1` is correct for soil, foliage and the
+	/// entry rock, and wrong for anything hard — but the two are
+	/// indistinguishable at the match arm, so a new substance that
+	/// nobody remembers to gate simply becomes free. Spelling the
+	/// ungated set out makes joining it a decision, the way
+	/// `material_roster_is_pinned` makes having a material at all one.
+	#[test]
+	fn the_ungated_materials_are_spelled_out() {
+		use Material as M;
+		let ungated: Vec<Material> = Material::ALL
+			.into_iter()
+			.filter(|&m| mine_material(m) == 1)
+			.collect();
+		assert_eq!(
+			ungated,
+			vec![
+				M::Wood,
+				M::Dirt,
+				M::Sand,
+				M::Lumber,
+				M::DarkLumber,
+				M::Snow,
+				M::Grass,
+				M::Mud,
+				M::Glass,
+				M::RedLumber,
+				M::Gravel,
+				M::DryGrass,
+				M::Leaf,
+				M::PineLeaf,
+			],
+			"a material joined or left the ungated set — is that intended?"
+		);
+	}
+
+	/// §7.2's grid rule, enforced instead of described: EVERY authored
+	/// material × shape pair unlocks at exactly `max(shape, material)` —
+	/// no curated stragglers, and no pair that quietly predates the
+	/// substance it is cut from.
+	#[test]
+	fn grid_gates_compose() {
+		for &b in &BlockType::ALL {
+			let Some((m, s)) = b.grid_cell() else {
+				// Everything outside the grid is hand-gated, and every
+				// hand-gated item has a hand-written price to match.
+				assert_eq!(
+					craft(b),
+					functional(b),
+					"{b:?} is not a grid item, so only `functional` may gate it"
+				);
+				assert_eq!(
+					functional(b).is_some(),
+					alchemy::functional_ideal(b).is_some(),
+					"{b:?}: a hand-priced item needs a hand-set level"
+				);
+				continue;
+			};
+			assert!(
+				functional(b).is_none(),
+				"{b:?} is a grid item and must not also be hand-gated"
+			);
+			assert_eq!(
+				craft(b),
+				material(m).map(|l| l.max(shape(s))),
+				"{b:?} = max({s:?}, {m:?})"
+			);
+			// A shape you have already learned never delays a material:
+			// the level a substance arrives at is the level its whole
+			// learned set arrives at.
+			if let Some(ml) = material(m) {
+				if ml >= shape(s) {
+					assert_eq!(craft(b), Some(ml), "{b:?} arrives with {m:?}");
+				}
+			}
+		}
+		// The composition is the point: reaching a material hands you every
+		// shape you already know, in one level-up.
+		use crate::block::ShapeFamily;
+		for &m in &Material::ALL {
+			let Some(ml) = material(m) else { continue };
+			let together: Vec<u32> = ShapeFamily::ALL
+				.into_iter()
+				.filter(|&s| shape(s) <= ml)
+				.filter_map(|s| BlockType::from_grid(m, s))
+				.filter_map(craft)
+				.collect();
+			assert!(
+				together.iter().all(|&l| l == ml),
+				"{m:?} does not arrive all at once: {together:?}"
 			);
 		}
 	}
@@ -257,19 +593,20 @@ mod tests {
 	#[test]
 	fn craft_only_blocks_are_gated_until_they_can_be_made() {
 		use BlockType as B;
-		// The gate IS the recipe's level, item by item.
-		for b in [B::WoodSlab, B::StoneSlab] {
-			assert_eq!(pickup(b), 1, "{b:?} — a level-1 recipe");
-		}
-		for b in [B::WoodStairs, B::StoneStairs] {
-			assert_eq!(pickup(b), 5, "{b:?}");
-		}
+		// The gate IS the recipe's level, item by item — and the recipe's
+		// level now follows the material, so a stone shape asks for the
+		// mason's unlock rather than for the shape's own.
+		assert_eq!(pickup(B::WoodSlab), 1, "a level-1 recipe");
+		assert_eq!(pickup(B::WoodStairs), 5);
 		assert_eq!(pickup(B::Torch), 8);
 		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
 			assert_eq!(pickup(b), 15, "{b:?} — the timber set");
 		}
+		for b in [B::StoneSlab, B::StoneStairs] {
+			assert_eq!(pickup(b), 20, "{b:?} — clean stone in any form");
+		}
 		// Craftable is NOT the question — being craft-ONLY is. Every one of
-		// these has a recipe (Stone at 20, Wood at 20, Water at 50), and
+		// these has a recipe (Stone at 20, Wood at 1, Water at 50), and
 		// every one of them also grows, erodes or pools in a fresh world.
 		for b in [B::Stone, B::Wood, B::Dirt, B::Sand, B::Grass, B::Water] {
 			assert!(craft(b).is_some(), "{b:?} is craftable");
@@ -320,6 +657,40 @@ mod tests {
 				B::Lumber,
 				B::LumberStairs,
 				B::LumberSlab,
+				B::StoneDoor,
+				B::SandstoneStairs,
+				B::SandstoneSlab,
+				B::SandstoneDoor,
+				B::DarkLumber,
+				B::DarkLumberStairs,
+				B::DarkLumberSlab,
+				B::DarkLumberDoor,
+				B::RedLumber,
+				B::RedLumberStairs,
+				B::RedLumberSlab,
+				B::RedLumberDoor,
+				B::Table,
+				B::Chair,
+				B::Bed,
+				B::StoneBrick,
+				B::StoneBrickStairs,
+				B::StoneBrickSlab,
+				B::StoneBrickDoor,
+				B::PolishedStone,
+				B::PolishedStoneStairs,
+				B::PolishedStoneSlab,
+				B::SandstoneBrick,
+				B::SandstoneBrickStairs,
+				B::SandstoneBrickSlab,
+				B::Glass,
+				B::Metal,
+				B::MetalStairs,
+				B::MetalSlab,
+				B::MetalDoor,
+				B::Crystal,
+				B::CrystalSlab,
+				B::Lantern,
+				B::Aetherlamp,
 			]
 		);
 	}
@@ -357,9 +728,9 @@ mod tests {
 		);
 		assert_eq!(
 			dig_blocked(B::StoneStairs, &at(5, 1)).map(|r| (r.level, r.kind)),
-			Some((5, Kind::Recipe))
+			Some((20, Kind::Recipe))
 		);
-		assert_eq!(dig_blocked(B::StoneStairs, &at(5, 5)), None, "both met");
+		assert_eq!(dig_blocked(B::StoneStairs, &at(5, 20)), None, "both met");
 		// Every requirement any block has is one `dig_blocked` reports:
 		// satisfy the others and fall one level short of this one.
 		for &b in &BlockType::ALL {
@@ -399,14 +770,21 @@ mod tests {
 		let mining: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Mining, l))
 			.collect();
-		assert_eq!(mining, vec![3, 5], "sandstone, then stone");
-		// Alchemy: craft unlocks (5/8/20/30/50), the bucket charge's
-		// extraction and the whole planed-timber set (both 15), and the
-		// bonus lines (25/40/60/75/90).
+		assert_eq!(
+			mining,
+			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99],
+			"the rock gates, the reveals, metal and crystal, the pick, the endgame"
+		);
+		// Alchemy: the shape and material unlocks, the hand-priced items
+		// (torch 8, siphon 10, furniture 18, bed 35, water 50), the bucket
+		// charge's extraction at 15, and the bonus lines (25/40/60/75/90).
 		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Alchemy, l))
 			.collect();
-		assert_eq!(alchemy, vec![5, 8, 15, 20, 25, 30, 40, 50, 60, 75, 90]);
+		assert_eq!(
+			alchemy,
+			vec![5, 8, 10, 15, 18, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 75, 80, 90, 99]
+		);
 		// Level 1 is where everyone starts — you never level up into it,
 		// and the slabs sitting at unlock 1 must not say otherwise.
 		for s in Skill::ALL {

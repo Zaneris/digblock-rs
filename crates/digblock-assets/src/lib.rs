@@ -32,11 +32,30 @@ pub mod tex {
 	// Hand-made again: planed timber in three tones, the material crafted
 	// things are made OF. `LUMBER_LIGHT` is the joinery: the bucket, the
 	// torch post, and the Lumber block with its stairs, slab and door.
-	// `LUMBER_DARK` and `LUMBER_RED` are drawn and registered but not yet
-	// on any block — the obvious second and third timber materials.
+	// `LUMBER_DARK` and `LUMBER_RED` are the second and third timbers.
 	pub const LUMBER_LIGHT: &[u8] = include_bytes!("../../../assets/textures/LumberLight.png");
 	pub const LUMBER_DARK: &[u8] = include_bytes!("../../../assets/textures/LumberDark.png");
 	pub const LUMBER_RED: &[u8] = include_bytes!("../../../assets/textures/LumberRed.png");
+	// The ore faces (SKILLS-DESIGN §5.3), texgen-derived from STONE:
+	// tier-coloured flecks with a catch rim and a dark socket, and the
+	// tapped face where the flecks are gone and the sockets are not.
+	pub const EMBERORE: &[u8] = include_bytes!("../../../assets/textures/Emberore.png");
+	pub const DUSKSTONE: &[u8] = include_bytes!("../../../assets/textures/Duskstone.png");
+	pub const GLOWVEIN: &[u8] = include_bytes!("../../../assets/textures/Glowvein.png");
+	pub const AETHEROCK: &[u8] = include_bytes!("../../../assets/textures/Aetherock.png");
+	pub const DEPLETED_STONE: &[u8] = include_bytes!("../../../assets/textures/DepletedStone.png");
+	// The later materials (§7.2) and the two lamps (§7.3), all
+	// texgen-derived: dressed stone, leaded glass, planished metal, an
+	// Aether lattice, and a lit pane in a frame.
+	pub const STONE_BRICK: &[u8] = include_bytes!("../../../assets/textures/StoneBrick.png");
+	pub const SANDSTONE_BRICK: &[u8] =
+		include_bytes!("../../../assets/textures/SandstoneBrick.png");
+	pub const POLISHED_STONE: &[u8] = include_bytes!("../../../assets/textures/PolishedStone.png");
+	pub const GLASS: &[u8] = include_bytes!("../../../assets/textures/Glass.png");
+	pub const METAL: &[u8] = include_bytes!("../../../assets/textures/Metal.png");
+	pub const CRYSTAL: &[u8] = include_bytes!("../../../assets/textures/Crystal.png");
+	pub const LANTERN: &[u8] = include_bytes!("../../../assets/textures/Lantern.png");
+	pub const AETHERLAMP: &[u8] = include_bytes!("../../../assets/textures/Aetherlamp.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -49,7 +68,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 22] = [
+	pub const LAYERS: [&[u8]; 35] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -72,6 +91,19 @@ pub mod tex {
 		LUMBER_LIGHT,
 		LUMBER_DARK,
 		LUMBER_RED,
+		EMBERORE,
+		DUSKSTONE,
+		GLOWVEIN,
+		AETHEROCK,
+		DEPLETED_STONE,
+		STONE_BRICK,
+		SANDSTONE_BRICK,
+		POLISHED_STONE,
+		GLASS,
+		METAL,
+		CRYSTAL,
+		LANTERN,
+		AETHERLAMP,
 	];
 }
 

@@ -94,7 +94,13 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// decode the new variant index (and SIM v13 pairs with it anyway).
 /// v20: the arrival hold — `ServerMsg::AreaReady` appended. Same reason
 /// again: a v19 peer can't decode the new variant index.
-pub const PROTOCOL_VERSION: u16 = 20;
+/// v21: ore's tool gate — `RejectReason::NeedsTool` appended, sent at
+/// `DigStart` when a revealed vein meets the wrong tool (SKILLS-DESIGN
+/// §5.3). Same reason a third time; SIM v15 pairs with it. Field
+/// extraction itself needs NO new wire: both ends derive it from
+/// `ore::dig_mode` over data they already share, so `EditRequest` is
+/// untouched.
+pub const PROTOCOL_VERSION: u16 = 21;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or

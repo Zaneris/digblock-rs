@@ -31,10 +31,18 @@ pub const BUCKET_CHARGE: u32 = 1;
 /// [`Inventory::add`] and [`Inventory::from_wire`] — so a save or a
 /// server record written back when water was an ordinary stack decodes
 /// as a full bucket rather than a windfall of free sources.
+///
+/// Tools cap at ONE (SKILLS-DESIGN §7.3): owning a tool is a yes/no, so a
+/// second craft has nowhere to go and is refused before any debit by the
+/// standing `InventoryFull` rebase. That also makes ownership itself a
+/// count, which is what lets the tool rail, prediction and both
+/// persistence formats carry a new tool with no machinery at all.
 #[inline]
 fn cap(b: BlockType) -> u32 {
 	if b == BlockType::Water {
 		BUCKET_CHARGE
+	} else if b.is_tool() {
+		1
 	} else {
 		MAX_STACK
 	}
@@ -82,6 +90,43 @@ impl Inventory {
 	#[inline]
 	pub fn bucket_full(&self) -> bool {
 		self.count(BlockType::Water) >= BUCKET_CHARGE
+	}
+
+	/// How many more of `b` this inventory can accept — its [`cap`] less
+	/// what it holds. Zero for a tool already owned and for a charged
+	/// bucket; effectively unbounded for everything else.
+	///
+	/// [`apply_alchemy`] refuses a craft on exactly this number and the
+	/// transmute screen greys its button on it, so the offer and the rule
+	/// cannot drift: [`Self::add`] SATURATES, so a craft into a full cap
+	/// would otherwise debit the essence and hand back nothing.
+	#[inline]
+	pub fn headroom(&self, b: BlockType) -> u32 {
+		cap(b).saturating_sub(self.count(b))
+	}
+
+	/// Does the player have this tool? Tools cap at one, so ownership IS
+	/// the count — except the bucket, which everyone starts with
+	/// ([`BlockType::always_owned`]). Non-tools are never owned in this
+	/// sense, whatever their stack says.
+	#[inline]
+	pub fn owns_tool(&self, b: BlockType) -> bool {
+		b.is_tool() && (b.always_owned() || self.count(b) > 0)
+	}
+
+	/// The owned tool roster, in block-id order: what tapping 9 cycles
+	/// through, what the rail lists, and — via
+	/// [`crate::inv_grid::reconcile_layout`] — the only tools a client may
+	/// claim to be holding. One definition, because the client's roster
+	/// and the server's gate disagreeing is exactly how a tool gets used
+	/// without being owned.
+	///
+	/// Never empty in practice: the bucket is `always_owned`.
+	pub fn owned_tools(&self) -> impl Iterator<Item = BlockType> + '_ {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|&b| self.owns_tool(b))
 	}
 
 	/// Debit `n` if the stock covers it; false (and no change) otherwise.
@@ -221,9 +266,14 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				return false;
 			}
 			let ideal = alchemy::craft_ideal(item).expect("unlock implies a recipe");
-			// The bucket charge caps at one: a craft that would vanish
-			// into the cap is refused, never silently paid for.
-			if item == BlockType::Water && (count != 1 || inv.bucket_full()) {
+			let per_batch = crate::shapes::craft_batch(item);
+			// A craft that would VANISH into the type's cap is refused,
+			// never silently paid for — `add` saturates, so the essence
+			// would go and nothing would come back. Two capped kinds
+			// today: the bucket's one charge, and tools, where owning one
+			// is a yes/no (§7.3) — which is also what makes the transmute
+			// tab's ×10 and ×100 multipliers safe to point at a tool.
+			if inv.headroom(item) < per_batch.saturating_mul(count) {
 				return false;
 			}
 			// All-or-nothing across the cost lines: check everything,
@@ -237,7 +287,6 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				let taken = inv.try_take_sub(e, alchemy::craft_cost(n, level) * count);
 				debug_assert!(taken, "checked above");
 			}
-			let per_batch = crate::shapes::craft_recipe(item).map_or(1, |r| r.count);
 			inv.add(item, per_batch * count);
 			true
 		}
@@ -514,5 +563,65 @@ mod tests {
 			99
 		));
 		assert_eq!(inv.sub_count(Essence::Aqua), 100, "nothing paid");
+	}
+
+	/// Owning a tool is a yes/no (§7.3), so the bench sells you exactly
+	/// one. Both ways to ask for a second are refused BEFORE any debit:
+	/// a batch multiplier — the transmute tab aims ×10 and ×100 at every
+	/// member, tools included — and a plain craft once it's in the bag.
+	/// `add` saturates, so an unrefused one would take 240 Metal and
+	/// hand back nothing.
+	#[test]
+	fn a_tool_is_crafted_once_and_never_paid_for_twice() {
+		let held = |inv: &Inventory| -> Vec<u32> {
+			Essence::ALL.iter().map(|&e| inv.sub_count(e)).collect()
+		};
+		let pick = BlockType::ResonantPick;
+		let mut inv = Inventory::default();
+		for &e in &Essence::ALL {
+			inv.add_sub(e, 100_000);
+		}
+
+		let before = held(&inv);
+		assert!(
+			!apply_alchemy(
+				&mut inv,
+				AlchemyOp::Craft {
+					item: pick,
+					count: 10
+				},
+				99
+			),
+			"nine of the ten would vanish into the cap"
+		);
+		assert_eq!(held(&inv), before, "nothing paid");
+		assert_eq!(inv.count(pick), 0);
+
+		assert!(apply_alchemy(
+			&mut inv,
+			AlchemyOp::Craft {
+				item: pick,
+				count: 1
+			},
+			99
+		));
+		assert_eq!(inv.count(pick), 1);
+		let owned = held(&inv);
+		assert_ne!(owned, before, "the first one costs");
+
+		assert!(
+			!apply_alchemy(
+				&mut inv,
+				AlchemyOp::Craft {
+					item: pick,
+					count: 1
+				},
+				99
+			),
+			"a tool already owned has nowhere to go"
+		);
+		assert_eq!(held(&inv), owned, "and so costs nothing");
+		assert_eq!(inv.count(pick), 1);
+		assert_eq!(inv.headroom(pick), 0, "the screen greys on this number");
 	}
 }

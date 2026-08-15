@@ -30,12 +30,17 @@ const MAX_INSTANCES: usize = 128;
 
 /// Quad budget for the cached item meshes.
 ///
-/// Every slottable item in the game together is a few hundred quads (a
-/// cube is 6, the bucket 30, a door up to two shape variants), so this
-/// holds the whole catalog with room to spare and the cache never needs
-/// eviction. Overflow logs and SKIPS the kind rather than truncating a
-/// mesh, which would silently drop faces.
-const ITEM_QUAD_BUDGET: usize = 1024;
+/// Every item a hand can hold, together: the slottable catalog (a cube
+/// is 6, a door up to two shape variants), both bucket charges, and the
+/// authored tools, which are the expensive ones. That is ~1200 quads
+/// today, so this holds the whole catalog with room to spare and the
+/// cache never needs eviction. Overflow logs and SKIPS the kind rather
+/// than truncating a mesh, which would silently drop faces.
+///
+/// Sized against `every_held_item_fits_the_quad_budget`, which counts
+/// exactly what the cache can be asked for — so the catalog growing past
+/// it fails a test rather than dropping an item from somebody's hand.
+const ITEM_QUAD_BUDGET: usize = 2048;
 
 /// One item's geometry inside the shared vertex buffer.
 struct ItemMesh {
@@ -72,6 +77,13 @@ fn kind_key(k: IconKind) -> u32 {
 		IconKind::Cube(b) => b as u32,
 		IconKind::Shaped(b) => (1 << 16) | b as u32,
 		IconKind::WaterTool { full } => (2 << 16) | u32::from(full),
+		// The authored tools carry no payload, so each is exactly one
+		// kind. Their own band rather than borrowing a block id: this
+		// only has to be a total order, and a collision would merge two
+		// different items into one instanced draw.
+		IconKind::Siphon => 3 << 16,
+		IconKind::Pick => (3 << 16) | 1,
+		IconKind::Sigil => (3 << 16) | 2,
 	}
 }
 
@@ -432,6 +444,15 @@ mod tests {
 			.collect();
 		for full in [false, true] {
 			v.push(crate::ui::hud::item_icon(HotbarItem::WaterTool, full).0);
+		}
+		// The TOOLS too. A tool is not slottable, so the filter above
+		// cannot reach one — but `held_icon` admits a tool id off the
+		// wire (it is how `Hotbar::to_wire` sends a non-bucket active
+		// tool), so a remote can be holding one and the cache has to
+		// have room for its authored geometry. The budget is what makes
+		// eviction unnecessary; a kind it never counted breaks that.
+		for b in BlockType::ALL.into_iter().filter(|b| b.is_tool()) {
+			v.push(crate::ui::hud::tool_icon(b, false));
 		}
 		v
 	}

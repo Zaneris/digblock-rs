@@ -91,6 +91,13 @@ pub fn start() -> Result<(), JsValue> {
 	// saved. Two runs of the same arm have to measure the same thing.
 	let interactive = !config.bench && config.fly.is_none();
 	config.menu = interactive;
+	// Also what the engine reads to decide whether to listen to input
+	// and whether to ask for pointer lock. On the web the lock request
+	// needs a user gesture and Chrome simply refuses one from rAF, so a
+	// capture never held the pointer here the way desktop did — but a
+	// scripted `?fly` run still accepted keystrokes, which is the same
+	// bug with a quieter symptom.
+	config.interactive = interactive;
 
 	// Saved settings apply to interactive runs only; explicit query params
 	// win over both (URL > saved > default — the desktop CLI precedence).

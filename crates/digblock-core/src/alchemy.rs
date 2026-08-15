@@ -16,54 +16,66 @@
 //!   2 Earth into 1 Metal, or worse, manufactures Aether, which nothing
 //!   may. So trace minerals and the Aether lines live on MINED rock
 //!   (Rubble, Gravel) and foliage, which have no recipes.
+//!
+//! Neither table is written out block by block any more. A structural
+//! block is a MATERIAL in a SHAPE (SKILLS-DESIGN §7.2, [`crate::material`]),
+//! so both sides prorate the material's 27-unit split by the shape's
+//! volume — and the two invariants above become properties of the axis
+//! rather than facts a test happens to check. What remains hand-written
+//! here is the FUNCTIONAL roster: torches, the bucket charge, lamps and
+//! tools, which §7.3 prices by hand precisely because they are not matter.
 
 use crate::block::{BlockType, Essence};
-use crate::shapes::craft_recipe;
+use crate::material::{cost_split, yield_split};
 
-/// Base extraction yields at 100% efficiency (level 99), ≤ 27 total —
-/// the shortfall is structure lost to the process. Empty = not
-/// extractable at the bench.
-pub fn extract_base(b: BlockType) -> &'static [(Essence, u32)] {
-	use BlockType as B;
-	use Essence as E;
+/// Functional items' extraction yields — the ones with no material, so
+/// nothing to prorate. Everything else derives; see [`extract_base`].
+fn functional_extract(b: BlockType) -> &'static [(Essence, u32)] {
 	match b {
-		B::Stone => &[(E::Earth, 27)],
-		B::Rubble => &[(E::Earth, 24)],
-		B::Sandstone => &[(E::Earth, 21)],
-		B::Gravel => &[(E::Earth, 15)],
-		B::Sand => &[(E::Earth, 12)],
-		B::Dirt => &[(E::Earth, 15), (E::Flora, 3)],
-		B::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-		B::DryGrass => &[(E::Earth, 18), (E::Flora, 6)],
-		B::Mud => &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
-		B::Wood => &[(E::Flora, 27)],
-		// Foliage is mostly water and structure — the timber's essence is
-		// in the trunk. One unit, not three: a leaf block digs in 10
-		// ticks and there are hundreds per tree, so at 3 it paid Flora at
-		// the same rate as grass (18/s of digging at level 30) from the
-		// one block the world hands you for free with every log. At 1 it
-		// is filler, and Wood is the timber.
-		B::Leaves | B::PineLeaves => &[(E::Flora, 1)],
-		B::Snow => &[(E::Aqua, 9)],
 		// The bucket charge: extracting it empties the tool.
-		B::Water => &[(E::Aqua, 18)],
-		B::WoodStairs => &[(E::Flora, 18)],
-		B::StoneStairs => &[(E::Earth, 18)],
-		B::LumberDoor => &[(E::Flora, 10)],
-		B::WoodSlab => &[(E::Flora, 9)],
-		B::StoneSlab => &[(E::Earth, 9)],
-		// Planed timber breaks back down exactly like the log it came
-		// from: the shaping is what was paid for, not the essence.
-		B::Lumber => &[(E::Flora, 27)],
-		B::LumberStairs => &[(E::Flora, 18)],
-		B::LumberSlab => &[(E::Flora, 9)],
+		BlockType::Water => &[(Essence::Aqua, 18)],
+		// A torch is a fixture, not stock — you place it or you carry it.
 		_ => &[],
 	}
 }
 
+/// Base extraction yields at 100% efficiency (level 99), ≤ 27 total for a
+/// whole block — the shortfall is structure lost to the process. Empty =
+/// not extractable at the bench.
+///
+/// Derived: the material's base ([`crate::material::Material::extract_units`])
+/// prorated DOWN to the shape's volume, so a stair gives back two thirds
+/// of its substance and a slab a third, in whatever essences that
+/// substance is made of. Allocates a short Vec; every caller is cold (op
+/// validation and a screen, never a per-cell loop).
+pub fn extract_base(b: BlockType) -> Vec<(Essence, u32)> {
+	let Some((m, s)) = b.grid_cell() else {
+		return functional_extract(b).to_vec();
+	};
+	let base = m.extract_units();
+	if base.is_empty() {
+		return Vec::new();
+	}
+	yield_split(base, s.units())
+}
+
 /// Flat bonus lines, NOT scaled by efficiency — the unlock is the whole
-/// point. Only ever on blocks without a craft recipe (see module doc;
-/// pinned by `bonus_lines_never_sit_on_craftable_blocks`).
+/// point.
+///
+/// The rule is stronger than "no recipe", and the weaker form is what
+/// let a pump ship: a line may not sit on a recipe-less block that is
+/// the DROP of a craftable one either, because the drop is reachable
+/// from the recipe in one dig. Rubble carried "trace minerals" on
+/// exactly that footing — `Stone` and `Sandstone` are craftable and both
+/// `drops: Rubble` (the Rubble rule), so craft → place → dig → extract
+/// closed the loop and turned Earth into Metal and Aether at 8 Earth a
+/// unit. Both halves are pinned by
+/// `bonus_lines_never_sit_on_craftable_blocks`, which now follows
+/// `dig_drop`.
+///
+/// The two trickles the Rubble lines provided survive on hosts nothing
+/// craftable drops into: Metal on `Gravel` (60) and Aether on
+/// `PineLeaves` (75).
 pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 	use BlockType as B;
 	use Essence as E;
@@ -75,10 +87,19 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 		// Aether trickle instead.
 		B::PineLeaves if level >= 75 => &[(E::Aqua, 1), (E::Aether, 1)],
 		B::PineLeaves if level >= 25 => &[(E::Aqua, 1)],
-		// "Trace minerals" — mined rock only; clean Stone/Sandstone are
-		// craftable and would pump Earth into Metal.
-		B::Rubble if level >= 90 => &[(E::Metal, 1), (E::Aether, 1)],
-		B::Rubble if level >= 40 => &[(E::Metal, 1)],
+		// "Trace minerals" — loose rock that no recipe reaches. Gravel is
+		// worldgen-only and is nothing's drop; Rubble is NOT eligible,
+		// however recipe-less it looks, because craftable rock drops it.
+		//
+		// Both of Rubble's rungs moved here rather than being deleted:
+		// 90 was an Alchemy milestone (`unlock::opens` derives the
+		// level-up fanfare from a bonus line appearing, so dropping the
+		// arm made 90 a dead level, caught by
+		// `unlock_levels_are_the_threshold_levels`), and the Aether rung
+		// is the pre-Aetherock trickle that keeps the deep lamps
+		// reachable. Gravel is scarcer than Rubble, which is the point —
+		// the trickle was never meant to scale with every stone mined.
+		B::Gravel if level >= 90 => &[(E::Metal, 2), (E::Aether, 1)],
 		B::Gravel if level >= 60 => &[(E::Metal, 2)],
 		_ => &[],
 	}
@@ -96,8 +117,8 @@ pub fn scaled_yield(base: u32, level: u32) -> u32 {
 /// flat bonus lines, merged per essence.
 pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	let mut out: Vec<(Essence, u32)> = extract_base(b)
-		.iter()
-		.map(|&(e, base)| (e, scaled_yield(base, level)))
+		.into_iter()
+		.map(|(e, base)| (e, scaled_yield(base, level)))
 		.collect();
 	for &(e, n) in bonus_lines(b, level) {
 		match out.iter_mut().find(|(oe, _)| *oe == e) {
@@ -110,8 +131,16 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (`ceil(total / 3)`, never the level-scaled outcome).
+///
+/// Totals the split without BUILDING it. `extract_base` allocates, and
+/// this is not a cold path the way that one is: `convert_xp` reaches here,
+/// `extract_pace_ticks` reaches `convert_xp`, and the server's token
+/// bucket asks for the pace every tick for every connected player.
 pub fn extract_total_base(b: BlockType) -> u32 {
-	extract_base(b).iter().map(|&(_, n)| n).sum()
+	let Some((m, s)) = b.grid_cell() else {
+		return functional_extract(b).iter().map(|&(_, n)| n).sum();
+	};
+	crate::material::yield_total(m.extract_units(), s.units())
 }
 
 /// Transmutation waste multiplier in permille: 1600 (1.60×) at level 1
@@ -133,60 +162,86 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 	(ideal * waste_permille(level)).div_ceil(1000)
 }
 
-/// Ideal (pre-waste) craft cost lines for anything craftable: shaped
-/// items at their volume-rule cost in their family's essence, raw
-/// blocks at the full 27-volume split in their extraction ratio
-/// (`ceil(27 · base_e / base_total)` per line — with the ≤ 27 bases,
-/// that alone yields no-matter-creation). `None` = not craftable.
-pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
+/// Functional items' craft costs — priced BY HAND (§7.3), never by
+/// volume, because a torch's cost is a decision rather than a
+/// measurement. Cross-family costs live here on purpose: they are what
+/// make the essences feel like an economy instead of parallel currencies.
+///
+/// The LEVELS these open at are not here — every threshold in the game
+/// lives in [`crate::unlock`], and `unlock::functional` is this list's
+/// twin (pinned to it, so an item cannot have a price without a level or
+/// the other way round).
+pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
-	// Shaped items keep the pinned volume rule via `craft_recipe`; the
-	// family essence is Flora for wood, Earth for stone.
-	if let Some(r) = craft_recipe(b) {
-		return Some(vec![(r.material, r.cost)]);
-	}
-	let lines: &[(E, u32)] = match b {
-		// Functional items are priced BY HAND (§7.3), never by volume —
-		// the torch's cost is a decision, not a measurement.
+	Some(match b {
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
-		B::Stone | B::Sand | B::Sandstone => &[(E::Earth, 27)],
-		B::Wood | B::Lumber => &[(E::Flora, 27)],
-		// 27-volume in the extraction ratio: Dirt 15/3 of 18 → 23 + 5.
-		B::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
-		B::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-		B::Mud => &[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
-		B::Snow => &[(E::Aqua, 27)],
+		// NO METAL, ever: ore needs the siphon and Metal needs ore, so a
+		// Metal-priced siphon deadlocks the economy on the first world
+		// where nobody has one. Flora and Earth are what a fresh miner
+		// already has too much of.
+		B::EssenceSiphon => &[(E::Flora, 30), (E::Earth, 15)],
+		// The game's biggest sink, and the only thing that makes 240
+		// Metal a goal rather than a number. The Aether line is what
+		// keeps Aetherock worth reaching for before the lamps arrive.
+		B::ResonantPick => &[(E::Metal, 240), (E::Earth, 60), (E::Aether, 12)],
+		B::Lantern => &[(E::Metal, 8), (E::Earth, 6)],
+		B::Aetherlamp => &[(E::Metal, 12), (E::Aether, 3)],
+		B::MastersSigil => &[(E::Aether, 99)],
+		// Furniture is timber and joinery — near its volume, but chosen,
+		// not measured: a chair is mostly air and still costs a chair.
+		B::Chair => &[(E::Flora, 6)],
+		B::Table => &[(E::Flora, 9)],
+		// The bed is the catalog's first genuinely cross-family price:
+		// a timber frame AND the bedding on it. Aqua has exactly one
+		// source (the bucket charge, extraction unlocked at 15), so this
+		// is what makes carrying water home worth doing.
+		B::Bed => &[(E::Flora, 21), (E::Aqua, 6)],
 		// The bucket charge: lossy against its 18-Aqua extraction — no
 		// loop. Refused while the bucket is already full.
 		B::Water => &[(E::Aqua, 27)],
 		_ => return None,
-	};
-	Some(lines.to_vec())
+	})
 }
 
-/// Everything craftable, in the transmute tab's display order: shaped
-/// items first (the original catalog), then raw blocks by unlock.
-pub const CRAFT_ORDER: [BlockType; 18] = [
-	BlockType::Torch,
-	BlockType::WoodSlab,
-	BlockType::StoneSlab,
-	BlockType::LumberSlab,
-	BlockType::WoodStairs,
-	BlockType::StoneStairs,
-	BlockType::LumberStairs,
-	BlockType::LumberDoor,
-	BlockType::Lumber,
-	BlockType::Stone,
-	BlockType::Wood,
-	BlockType::Dirt,
-	BlockType::Sand,
-	BlockType::Sandstone,
-	BlockType::Snow,
-	BlockType::Grass,
-	BlockType::Mud,
-	BlockType::Water,
-];
+/// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
+/// not craftable.
+///
+/// Derived for every structural block: the material's 27-unit split
+/// ([`crate::material::Material::craft_units`]) prorated UP to the
+/// shape's volume. Rounding the cost side up where [`extract_base`]
+/// rounds down is what makes "no matter creation" hold for every shape
+/// of every material without a proof per pair.
+pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
+	if let Some(lines) = functional_ideal(b) {
+		return Some(lines.to_vec());
+	}
+	let (m, s) = b.grid_cell()?;
+	Some(cost_split(m.craft_units()?, s.units()))
+}
+
+/// Everything craftable, in the transmute tab's display order: by shape
+/// family, members in material (i.e. unlock) order, with the hand-priced
+/// functional items last. Derived from the grid, so a new material ×
+/// shape pair appears without anyone maintaining a list.
+pub fn craft_order() -> Vec<BlockType> {
+	use crate::block::ShapeFamily;
+	let mut out = Vec::new();
+	for s in ShapeFamily::ALL {
+		for m in crate::material::Material::ALL {
+			match BlockType::from_grid(m, s) {
+				Some(b) if craft_ideal(b).is_some() => out.push(b),
+				_ => {}
+			}
+		}
+	}
+	out.extend(
+		BlockType::ALL
+			.into_iter()
+			.filter(|b| !b.is_grid_item() && functional_ideal(*b).is_some()),
+	);
+	out
+}
 
 /// The bench's pace for a WHOLE block — one whose 27 sub-units all come
 /// out, which is the 9-XP reference every other block is priced against:
@@ -233,10 +288,46 @@ pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
 /// whole-block intervals: [`extract_burst_ticks`].
 pub const EXTRACT_BURST: f32 = 2.0;
 
-/// The extraction bucket's capacity in ticks at `level` — two whole
-/// blocks' worth, exactly as before the pace became per-block.
+/// The block a single extraction costs the most for — the largest
+/// [`crate::skills::convert_xp`] in the catalog.
+///
+/// Memoized: the server's token-bucket refill asks for the bucket's
+/// capacity every tick for every connected client, and the answer is a
+/// property of the block table, not of the caller.
+fn costliest_extract_block() -> BlockType {
+	static MAX: std::sync::OnceLock<BlockType> = std::sync::OnceLock::new();
+	*MAX.get_or_init(|| {
+		BlockType::ALL
+			.into_iter()
+			.max_by_key(|&b| crate::skills::convert_xp(b))
+			.unwrap_or(BlockType::Stone)
+	})
+}
+
+/// The extraction bucket's capacity in ticks at `level`: two whole
+/// blocks' worth, or ONE costliest extraction if that is more.
+///
+/// The second half is not a nicety. The bucket banks ticks and a Convert
+/// spends [`extract_pace_ticks`] of them, which scales with the block's
+/// `convert_xp` — while the burst was sized off the 9-XP reference block
+/// alone. The two deepest ores are worth 20 and 33 XP, so their pace
+/// exceeded a FULL bucket at every level and `process_alchemy` refused
+/// them forever: no debit, no yield, no XP, just the standing rebase.
+/// Aether has exactly one source, so that silently walled off the
+/// Master's Sigil, the Aetherlamp and the Resonant Pick — online only,
+/// since offline extraction is unpaced, which is the worst way to find
+/// out. `bases_stay_under_a_block` used to make it impossible
+/// (`total <= 27` implies `convert_xp <= REF_XP` implies pace ≤ one
+/// reference interval); ore is the deliberate exception to that bound, so
+/// the guarantee has to be stated here instead, and
+/// `the_bucket_can_always_afford_the_costliest_block` pins it.
+///
+/// Sustained throughput is untouched: the bucket still refills one tick
+/// per tick, so the drip is exactly as slow as it always was. Only the
+/// bunching allowance grows, and only to what a single op actually costs.
 pub fn extract_burst_ticks(level: u32) -> f32 {
-	EXTRACT_BURST * base_pace_ticks(level) as f32
+	let reference = EXTRACT_BURST * base_pace_ticks(level) as f32;
+	reference.max(extract_pace_ticks(costliest_extract_block(), level) as f32)
 }
 
 #[cfg(test)]
@@ -315,6 +406,43 @@ mod tests {
 		}
 	}
 
+	/// The same rule one dig further out, which is where it actually
+	/// leaked. "Recipe-less" is not enough: a block reachable from a
+	/// recipe by DIGGING what it makes is just as pumpable, because the
+	/// craft and the extract are then two halves of one loop.
+	///
+	/// Rubble shipped a bonus on exactly that footing. It has no recipe
+	/// — but Stone and Sandstone do, and both `drops: Rubble` (the
+	/// Rubble rule), so craft → place → dig → extract ran at a profit:
+	/// 30 Earth in and 22 Earth + 1 Metal + 1 Aether out at Alchemy 90,
+	/// unbounded, against a design where Metal comes only from ore and
+	/// Aether only from Aetherock.
+	///
+	/// Neither of the two pins above could see it. This one asks whether
+	/// the bonus is reachable, not whether its host has a recipe, and it
+	/// is deliberately checked against `dig_drop` rather than a hand
+	/// list — a new craftable whose drop happens to carry a line fails
+	/// here on the day it is written.
+	#[test]
+	fn no_craftable_block_drops_into_a_bonus_line() {
+		for &b in &BlockType::ALL {
+			if craft_ideal(b).is_none() {
+				continue;
+			}
+			let Some(drop) = b.dig_drop() else {
+				continue;
+			};
+			for level in 1..=99 {
+				let lines = bonus_lines(drop, level);
+				assert!(
+					lines.is_empty(),
+					"craftable {b:?} drops {drop:?}, which bonuses {lines:?} at \
+					 Alchemy {level} — that closes a craft-and-extract loop"
+				);
+			}
+		}
+	}
+
 	/// §7.1's loop numbers: mined rock is Rubble, and refining it into
 	/// clean Stone costs ~5 rubble at level 1 and ~1.2 at 99 — always a
 	/// sink, and the recycle of clean Stone is one too.
@@ -344,17 +472,130 @@ mod tests {
 		assert_eq!(base_pace_ticks(1), 30);
 		assert_eq!(base_pace_ticks(25), 21);
 		assert_eq!(base_pace_ticks(75), 15);
-		// Every CRAFT_ORDER row really is craftable, and nothing
-		// craftable is missing from it.
-		for &b in &CRAFT_ORDER {
+		// The display order is derived, so it can neither list something
+		// uncraftable nor miss something craftable — but it must still be
+		// a permutation, with nothing doubled by a grid cell claimed twice.
+		let order = craft_order();
+		for &b in &order {
 			assert!(craft_ideal(b).is_some(), "{b:?}");
 		}
 		for &b in &BlockType::ALL {
 			assert_eq!(
 				craft_ideal(b).is_some(),
-				CRAFT_ORDER.contains(&b),
+				order.contains(&b),
 				"{b:?} craftable iff listed"
 			);
+		}
+		let mut seen = order.clone();
+		seen.sort_by_key(|b| *b as u16);
+		seen.dedup();
+		assert_eq!(seen.len(), order.len(), "no block listed twice");
+		// Shape-major, material-minor: every slab together, then every
+		// stair — which is exactly how the transmute tab groups them.
+		let mut runs: Vec<_> = order
+			.iter()
+			.map(|b| b.grid_cell().map(|(_, s)| s))
+			.collect();
+		runs.dedup();
+		for (i, f) in runs.iter().enumerate() {
+			assert!(
+				!runs[..i].contains(f),
+				"{f:?} members are not contiguous in the display order"
+			);
+		}
+	}
+
+	/// The launch roster's numbers, block by block — this is a REFACTOR
+	/// of four hand-written tables into one derivation, so every recipe
+	/// and yield that shipped must still be the same number.
+	#[test]
+	fn the_grid_reproduces_the_shipped_tables() {
+		use BlockType as B;
+		use Essence as E;
+		/// One shipped row: the block, what it extracts to, what it costs.
+		type Row = (
+			BlockType,
+			&'static [(Essence, u32)],
+			&'static [(Essence, u32)],
+		);
+		let cases: &[Row] = &[
+			// block, extraction base, craft ideal
+			(B::Stone, &[(E::Earth, 27)], &[(E::Earth, 27)]),
+			(B::Rubble, &[(E::Earth, 24)], &[]),
+			(B::Sandstone, &[(E::Earth, 21)], &[(E::Earth, 27)]),
+			(B::Gravel, &[(E::Earth, 15)], &[]),
+			(B::Sand, &[(E::Earth, 12)], &[(E::Earth, 27)]),
+			(
+				B::Dirt,
+				&[(E::Earth, 15), (E::Flora, 3)],
+				&[(E::Earth, 23), (E::Flora, 5)],
+			),
+			(
+				B::Grass,
+				&[(E::Earth, 18), (E::Flora, 9)],
+				&[(E::Earth, 18), (E::Flora, 9)],
+			),
+			(B::DryGrass, &[(E::Earth, 18), (E::Flora, 6)], &[]),
+			(
+				B::Mud,
+				&[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
+				&[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
+			),
+			(B::Wood, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::Leaves, &[(E::Flora, 1)], &[]),
+			(B::PineLeaves, &[(E::Flora, 1)], &[]),
+			(B::Snow, &[(E::Aqua, 9)], &[(E::Aqua, 27)]),
+			(B::Water, &[(E::Aqua, 18)], &[(E::Aqua, 27)]),
+			(B::WoodStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::StoneStairs, &[(E::Earth, 18)], &[(E::Earth, 18)]),
+			(B::LumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+			(B::WoodSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::StoneSlab, &[(E::Earth, 9)], &[(E::Earth, 9)]),
+			(B::Lumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::LumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::LumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::Torch, &[], &[(E::Flora, 4), (E::Earth, 2)]),
+		];
+		// What the grid then GREW, at the same prices — a new material ×
+		// shape pair is a block row, and these are the numbers that fall
+		// out of it with nobody choosing them.
+		let grown: &[Row] = &[
+			(B::StoneDoor, &[(E::Earth, 10)], &[(E::Earth, 10)]),
+			(B::SandstoneStairs, &[(E::Earth, 14)], &[(E::Earth, 18)]),
+			(B::SandstoneSlab, &[(E::Earth, 7)], &[(E::Earth, 9)]),
+			(B::SandstoneDoor, &[(E::Earth, 7)], &[(E::Earth, 10)]),
+			(B::DarkLumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::DarkLumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::DarkLumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::DarkLumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+			(B::RedLumber, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::RedLumberStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
+			(B::RedLumberSlab, &[(E::Flora, 9)], &[(E::Flora, 9)]),
+			(B::RedLumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
+		];
+		for &(b, base, ideal) in cases.iter().chain(grown) {
+			assert_eq!(extract_base(b), base.to_vec(), "{b:?} extraction");
+			let want = (!ideal.is_empty()).then(|| ideal.to_vec());
+			assert_eq!(craft_ideal(b), want, "{b:?} recipe");
+		}
+		// Nothing gains an economy by accident: a block extracts or crafts
+		// only through a material it declared or a hand-priced entry, both
+		// of which are their own decisions elsewhere. (This replaces a
+		// closed roster, which would have to be re-listed with every
+		// catalog wave and would stop meaning anything by the third.)
+		for &b in &BlockType::ALL {
+			if !b.is_grid_item() {
+				assert_eq!(
+					!extract_base(b).is_empty(),
+					!functional_extract(b).is_empty(),
+					"{b:?} extracts without a material or a hand-set yield"
+				);
+				assert_eq!(
+					craft_ideal(b).is_some(),
+					functional_ideal(b).is_some(),
+					"{b:?} crafts without a material or a hand-set price"
+				);
+			}
 		}
 	}
 
@@ -406,17 +647,85 @@ mod tests {
 				}
 			}
 		}
-		// The bucket's capacity is still two whole blocks' worth.
-		assert_eq!(extract_burst_ticks(1), 60.0);
-		assert_eq!(extract_burst_ticks(99), 30.0);
+		// The bucket's capacity is two whole blocks' worth, or one
+		// costliest extraction where that is more — see
+		// `the_bucket_can_always_afford_the_costliest_block`.
+		assert_eq!(extract_burst_ticks(1), 110.0);
+		assert_eq!(extract_burst_ticks(99), 55.0);
+		assert_eq!(
+			extract_burst_ticks(1),
+			extract_pace_ticks(costliest_extract_block(), 1) as f32,
+			"the costliest ore is what sets it, not the reference block"
+		);
+	}
+
+	/// A full bucket must be able to pay for the costliest single
+	/// extraction, or that block cannot be extracted AT ALL online: the
+	/// server refuses on `extract_tokens < cost` and the tokens never
+	/// reach it, so the op is dropped in silence — no debit, no yield, no
+	/// XP, just the standing rebase. Offline is unpaced, so single-player
+	/// looks perfect while the dedicated server is a wall.
+	///
+	/// This used to follow from `bases_stay_under_a_block`: a base of at
+	/// most 27 sub-units means `convert_xp <= REF_XP`, so the pace never
+	/// exceeded one reference interval and two of them always covered it.
+	/// Ore is exempt from that bound — a vein is a concentrate — which
+	/// removed the proof without anyone noticing, and left Glowvein and
+	/// Aetherock permanently un-extractable.
+	#[test]
+	fn the_bucket_can_always_afford_the_costliest_block() {
+		for &b in &BlockType::ALL {
+			if !b.is_extractable() {
+				continue;
+			}
+			for level in 1..=99 {
+				let cost = extract_pace_ticks(b, level) as f32;
+				let burst = extract_burst_ticks(level);
+				assert!(
+					cost <= burst,
+					"{b:?} at level {level}: one Convert costs {cost} ticks \
+					 against a {burst}-tick bucket — refused forever"
+				);
+			}
+		}
+		// And the ores that broke it are genuinely the expensive end.
+		assert!(
+			crate::skills::convert_xp(costliest_extract_block()) > REF_XP as u64,
+			"a catalog where the reference block IS the costliest would \
+			 make this test vacuous"
+		);
+	}
+
+	/// `extract_total_base` sums the split without building it, so the
+	/// two have to agree for every block — a fast path that quietly
+	/// disagreed with the yields it totals would move extraction XP, the
+	/// bench pace and the token bucket all at once.
+	#[test]
+	fn the_total_matches_the_split_it_totals() {
+		for &b in &BlockType::ALL {
+			let split: u32 = extract_base(b).into_iter().map(|(_, n)| n).sum();
+			assert_eq!(extract_total_base(b), split, "{b:?}");
+		}
 	}
 
 	/// Base yields never exceed a whole block's 27 sub-units, and every
 	/// extractable block pays at least something at level 1.
+	///
+	/// **Ore is the deliberate exception**, and the only one the rule can
+	/// safely have: a vein is a CONCENTRATE, not a substance you shape, so
+	/// it pays 18–99 units. That is not matter creation because ore has no
+	/// recipe to make it from — there is nothing to run the loop with. The
+	/// cap exists to stop a craftable substance out-yielding its own cost,
+	/// and `no_level_ever_creates_matter` is the test that actually says so.
 	#[test]
 	fn bases_stay_under_a_block() {
 		for &b in &BlockType::ALL {
 			let total = extract_total_base(b);
+			if crate::worldgen::ore::ORES.contains(&b) {
+				assert!(total > 0, "{b:?} must be worth taking to the bench");
+				assert!(craft_ideal(b).is_none(), "{b:?} must have no recipe");
+				continue;
+			}
 			assert!(total <= SUBS_PER_BLOCK, "{b:?} base {total}");
 			if total > 0 {
 				let l1: u32 = extract_yields(b, 1).iter().map(|&(_, n)| n).sum();

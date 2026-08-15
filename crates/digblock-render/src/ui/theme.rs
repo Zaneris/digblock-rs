@@ -104,17 +104,35 @@ pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
 /// prevent. A quarter step is the same increment the derived half of
 /// [`scale::ui_scale`] moves in, so a shrunken panel is the page one
 /// smaller window would have drawn, not a differently-designed one.
-/// Bottoms out at [`scale::UI_SCALE_FLOOR`]: past there the window is
-/// simply too short, and a tight panel beats a panel sliding off the
-/// bottom of the screen.
+/// Bottoms out at [`FIT_FLOOR`], which is LOWER than the interface
+/// scale's own floor on purpose — see that constant.
 pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 	const STEP: f32 = 0.25;
 	let mut s = scale;
-	while needed(s) > budget && s > scale::UI_SCALE_FLOOR {
-		s = (s - STEP).max(scale::UI_SCALE_FLOOR);
+	while needed(s) > budget && s > FIT_FLOOR {
+		s = (s - STEP).max(FIT_FLOOR);
 	}
 	s
 }
+
+/// How far the fit ladder may step, as distinct from
+/// [`scale::UI_SCALE_FLOOR`] — the smallest interface scale a player may
+/// CHOOSE.
+///
+/// They were the same number until a screen stopped fitting at 0.75, and
+/// the difference matters because the two floors answer different
+/// questions. The interface floor is a taste limit: below it text is
+/// unpleasantly small, so the slider does not go there. This one is a
+/// last resort, and its alternative is not "slightly bigger text" but a
+/// page whose bottom half is behind the hotbar — which is what the
+/// alchemy screen's extract tab does in a 960×600 window at 2.5× now
+/// that the inventory grid is six rows deep.
+///
+/// A cramped page you can read all of beats a comfortable one you
+/// cannot reach the bottom of, so the ladder is allowed one more rung
+/// than the slider is. It is still a ladder: the whole style steps
+/// together and the glyph never lands on a fraction.
+pub const FIT_FLOOR: f32 = 0.5;
 
 #[cfg(test)]
 mod tests {
@@ -138,7 +156,7 @@ mod tests {
 
 	#[test]
 	fn an_impossible_budget_bottoms_out_instead_of_looping() {
-		assert_eq!(fit_scale(3.0, 0.0, |s| 400.0 * s), scale::UI_SCALE_FLOOR);
-		assert_eq!(fit_scale(0.75, -1.0, |s| 400.0 * s), scale::UI_SCALE_FLOOR);
+		assert_eq!(fit_scale(3.0, 0.0, |s| 400.0 * s), FIT_FLOOR);
+		assert_eq!(fit_scale(0.75, -1.0, |s| 400.0 * s), FIT_FLOOR);
 	}
 }

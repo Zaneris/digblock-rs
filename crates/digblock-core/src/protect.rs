@@ -9,7 +9,16 @@
 
 /// The bottom-most layer of the world. Digging it would leave a hole
 /// through the floor of a finite world with nothing underneath.
-pub const WORLD_FLOOR: i32 = 0;
+///
+/// The same plane as [`crate::block::BEDROCK_Y`] BY CONSTRUCTION, not by
+/// coincidence: the two names exist because the floor is asked about in
+/// two vocabularies — "how long does this take to dig" ([`crate::block::
+/// BlockType::dig_hardness`], which answers None here) and "may this cell
+/// be written" ([`immutable`], which answers no) — and both questions
+/// have to draw the line at the same y or a dig refuses where a place
+/// lands, or worse. Aliasing rather than repeating the literal is what
+/// makes that impossible to get wrong; there is one number.
+pub const WORLD_FLOOR: i32 = crate::block::BEDROCK_Y;
 
 /// An inclusive box of unmodifiable cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

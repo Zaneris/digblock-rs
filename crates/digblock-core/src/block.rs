@@ -7,6 +7,7 @@
 //! flat array of cells with AIR=0 as the natural default).
 
 use crate::dir::Dir;
+use crate::material::Material;
 
 /// One table generates the enum, `COUNT`, `ALL`, and `PROPS` together —
 /// adding a block is ONE row here (plus a PNG + `LAYERS` entry in
@@ -44,16 +45,16 @@ blocks! {
 	/// transit under the Minecraft-style flow rules. Diggable only via the
 	/// water tool (the fluid-aware ray); the hardness is the scoop time.
 	Water = 1 => dig(water_props(8, true, false), 20, DigFamily::Fixed),
-	Dirt = 2 => dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30, DigFamily::Soft),
-	Grass = 3 => dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft),
-	Sand = 4 => dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25, DigFamily::Soft),
+	Dirt = 2 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30, DigFamily::Soft), Material::Dirt),
+	Grass = 3 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft), Material::Grass),
+	Sand = 4 => mat(dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25, DigFamily::Soft), Material::Sand),
 	/// Mined stone drops Rubble (SKILLS-DESIGN §7.1): the clean block
 	/// exists only pristine in terrain or transmuted at the bench, which
 	/// is what makes transmutation the economy rather than a curiosity.
-	Stone = 5 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble),
-	Wood = 6 => dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood),
-	Leaves = 7 => dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed),
-	Snow = 8 => dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft),
+	Stone = 5 => mat(drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble), Material::Stone),
+	Wood = 6 => mat(dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood), Material::Wood),
+	Leaves = 7 => mat(dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed), Material::Leaf),
+	Snow = 8 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft), Material::Snow),
 	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
 	/// source or a landed fall, losing one amount per block.
 	WaterFlow1 = 9 => water_props(1, false, false),
@@ -66,37 +67,37 @@ blocks! {
 	/// Water falling through air: renders full-height, lands at amount 8.
 	WaterFall = 16 => water_props(8, false, true),
 	/// Savanna surface: sun-dried grass over dirt.
-	DryGrass = 17 => dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft),
+	DryGrass = 17 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft), Material::DryGrass),
 	/// Marsh surface and subsoil: wet dark earth.
-	Mud = 18 => dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25, DigFamily::Soft),
+	Mud = 18 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25, DigFamily::Soft), Material::Mud),
 	/// Steep-shore and scree surface: loose pebbled rock.
-	Gravel = 19 => dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock),
+	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock), Material::Gravel),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
-	PineLeaves = 20 => dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed),
+	PineLeaves = 20 => mat(dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
 	/// "All broken rock": mined sandstone is Rubble too, so the clean
 	/// block is craft-only like Stone's.
-	Sandstone = 21 => drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble),
+	Sandstone = 21 => mat(drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble), Material::Sandstone),
 	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
 	/// Crafted via alchemy from sub-wood, never generated.
-	WoodStairs = 22 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood),
-	StoneStairs = 23 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock),
+	WoodStairs = 22 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Wood),
+	StoneStairs = 23 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Stone),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy — out
 	/// of planed `Lumber` like the rest of the joinery, which is why it
 	/// wears LUMBER_LIGHT and unlocks with the other lumber shapes.
-	LumberDoor = 24 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Door), 45, DigFamily::Wood),
+	LumberDoor = 24 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Door), 45, DigFamily::Wood), Material::Lumber),
 	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
 	/// Placing onto a slab's top face grows it; the third grow converts
 	/// the cell to the plain base block. Hardness is a third of the base
 	/// block's, since each dig removes one third. Crafted via alchemy.
-	WoodSlab = 25 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood),
-	StoneSlab = 26 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock),
+	WoodSlab = 25 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Wood),
+	StoneSlab = 26 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Stone),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
 	/// placeable, and the mass Earth feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
-	Rubble = 27 => dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock),
+	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock), Material::Rubble),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
 	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
 	/// emissive (fullbright ink) AND a Stage-B source: it seeds level 14
@@ -115,14 +116,134 @@ blocks! {
 	/// the log's own shapes. Exists as a full block because its slab has to
 	/// have something to complete into (three thirds = one block, the
 	/// rule that closes the slab economy).
-	Lumber = 30 => dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood),
-	LumberStairs = 31 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood),
-	LumberSlab = 32 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood),
+	Lumber = 30 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood), Material::Lumber),
+	LumberStairs = 31 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Lumber),
+	LumberSlab = 32 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Lumber),
+	/// The mason's door — §7.2's grid at work rather than a curated row: it
+	/// lands at Alch 20 because clean Stone does, and it arrives WITH the
+	/// stone block, slab and stairs because those shapes were learned long
+	/// before. Hardness is the timber door's 0.75× of its own base block.
+	StoneDoor = 33 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Door), 68, DigFamily::Rock), Material::Stone),
+	/// Sandstone's set, likewise free: the material opens at 30 and hands
+	/// over every shape at once.
+	SandstoneStairs = 34 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::Sandstone),
+	SandstoneSlab = 35 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Slab), 23, DigFamily::Rock), Material::Sandstone),
+	SandstoneDoor = 36 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Door), 53, DigFamily::Rock), Material::Sandstone),
+	/// The second timber (Alch 25). `LUMBER_DARK` was drawn and registered
+	/// with `LUMBER_LIGHT` and then sat unused on no block for a release —
+	/// under the grid a whole new joinery set is four rows and no new art.
+	DarkLumber = 37 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberStairs = 38 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberSlab = 39 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Slab), 20, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberDoor = 40 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Door), 45, DigFamily::Wood), Material::DarkLumber),
+	/// The third timber (Alch 40).
+	RedLumber = 41 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
+	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
+	/// Furniture (SKILLS-DESIGN §7.3): FUNCTIONAL items, not §7.2 grid
+	/// cells — a table is a thing, the way a torch is, rather than a form
+	/// any substance could be worked into. So they carry no material,
+	/// wear the joinery timber, and are priced by hand — which is also
+	/// what lets the bed's cost cross essence families.
+	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
+	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
+	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
+	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the ITEM
+	/// and for the reveal stamp; worldgen places none of them, because ore
+	/// is DERIVED — `build_column` still returns Stone and the journal
+	/// still carries Stone, which is what lets veins appear in worlds that
+	/// already exist. Not `crafted` either: the bench cannot make ore, so
+	/// gating its pickup would gate a thing with no recipe to gate it by.
+	/// A PLACED ore block is ordinary chunk data — visible to everyone at
+	/// any level, diggable at face value, and it drops itself, so showing
+	/// off a find round-trips.
+	Emberore = 48 => mat(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), Material::Emberore),
+	Duskstone = 49 => mat(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), Material::Duskstone),
+	/// The deep pair glow: Stage-A emissive INK only, no `emits` — a
+	/// revealed seam glitters in a dark cave and casts nothing, which is
+	/// the split the two light properties exist for.
+	Glowvein = 50 => mat(glows(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock)), Material::Aetherock),
+	/// The tapped-out vein face: what a field extraction leaves behind
+	/// instead of a hole, so mining ore never excavates and the mountain
+	/// keeps its shape. Crumbles to Rubble like any other rock.
+	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
+	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
+	/// like the bucket, but CRAFTED rather than owned from the start
+	/// (Alch 10). Held, a dig-hold on a revealed vein draws the ore out
+	/// and leaves DepletedStone; without it a revealed vein refuses the
+	/// hold entirely, so nobody stone-digs a seam away by accident.
+	///
+	/// Its price carries no Metal, ever: ore needs the siphon and Metal
+	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
+	/// first world where nobody has one.
+	EssenceSiphon = 53 => props(RenderClass::None, false, 0, 0, 0),
+	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted at Alch 55, usable
+	/// at Mining 55 — the flagship cross-skill dependency, and the game's
+	/// biggest essence sink. Held, one hold breaks the plane of the face
+	/// you hit: three wide, and the full nine from Mining 85.
+	ResonantPick = 54 => props(RenderClass::None, false, 0, 0, 0),
+	/// §7.2's dressed stones — the same rock, worked. Free under the
+	/// grid: a material row, a texture, and every shape it is authored
+	/// in unlocks with it.
+	StoneBrick = 55 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), 90, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickStairs = 56 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickSlab = 57 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Slab), 30, DigFamily::Rock), Material::StoneBrick),
+	StoneBrickDoor = 58 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE_BRICK, tex::STONE_BRICK, tex::STONE_BRICK)), ShapeKind::Door), 68, DigFamily::Rock), Material::StoneBrick),
+	PolishedStone = 59 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), 90, DigFamily::Rock), Material::PolishedStone),
+	PolishedStoneStairs = 60 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::PolishedStone),
+	PolishedStoneSlab = 61 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::POLISHED_STONE, tex::POLISHED_STONE, tex::POLISHED_STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::PolishedStone),
+	SandstoneBrick = 62 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), 70, DigFamily::Rock), Material::SandstoneBrick),
+	SandstoneBrickStairs = 63 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::SandstoneBrick),
+	SandstoneBrickSlab = 64 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Slab), 23, DigFamily::Rock), Material::SandstoneBrick),
+	/// Leaded glass. OPAQUE, and that is the honest half of §12's open
+	/// question: see-through glass is a RENDER problem (the depth
+	/// prepass writes the whole quad, so a cutout discard would need
+	/// the prepass to sample the atlas too), not a catalog one. This is
+	/// a building material that reads as glass without pretending the
+	/// light goes through it, and it upgrades in place when the render
+	/// answer lands.
+	Glass = 65 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::GLASS, tex::GLASS, tex::GLASS)), 25, DigFamily::Soft), Material::Glass),
+	/// The prestige material: Metal comes only from ore, so a metal
+	/// wall is a statement about how long somebody has been mining.
+	Metal = 66 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::METAL, tex::METAL, tex::METAL)), 150, DigFamily::Rock), Material::Metal),
+	MetalStairs = 67 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Stairs), 150, DigFamily::Rock), Material::Metal),
+	MetalSlab = 68 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Slab), 50, DigFamily::Rock), Material::Metal),
+	MetalDoor = 69 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::METAL, tex::METAL, tex::METAL)), ShapeKind::Door), 113, DigFamily::Rock), Material::Metal),
+	/// Grown from Aether, and it GLOWS — Stage-A ink only, like the
+	/// deep ore seams, so a crystal wall lights nothing and reads in
+	/// the dark.
+	///
+	/// The slab glows too, and that is not a courtesy: light is a property
+	/// of the SUBSTANCE, so a piece sawn off a glowing cube glows. The slab
+	/// shipped without the bit and the tell was the grow path — three
+	/// thirds complete into `Crystal` (`slab_grown` → `slab_base`), so the
+	/// identical volume of the identical stuff snapped to fullbright in one
+	/// frame. `every_shape_of_a_material_agrees_on_light` is the pin.
+	Crystal = 70 => mat(glows(dig(crafted(props(RenderClass::Opaque, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), 120, DigFamily::Rock)), Material::Crystal),
+	CrystalSlab = 71 => mat(glows(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock)), Material::Crystal),
+	/// §7.3's lamps: the first Metal sink outside tools, and the
+	/// standing Aether one. Both are FUNCTIONAL — a lamp is a thing, not
+	/// a form — so both are hand-priced, and both cast real light as well
+	/// as wearing the ink.
+	Lantern = 72 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::LANTERN, tex::LANTERN, tex::LANTERN))), 13), 30, DigFamily::Rock),
+	Aetherlamp = 73 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::AETHERLAMP, tex::AETHERLAMP, tex::AETHERLAMP))), 15), 30, DigFamily::Rock),
+	/// The Master's Sigil (Alch 99): 99 Aether for a thing that does
+	/// nothing at all. An item-only row like the tools — never placed,
+	/// never rendered in the world — because what it is FOR is being the
+	/// last line of the catalog.
+	MastersSigil = 74 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be
 /// dug (`BlockType::dig_hardness`), and worldgen's cave pass never
 /// carves them — so no path exists to a hole in the bottom of the world.
+///
+/// This is THE number. [`crate::protect::WORLD_FLOOR`] — the write-side
+/// half of the same rule — is an alias of it rather than a second
+/// literal, so the plane a dig refuses and the plane a write refuses
+/// cannot drift apart.
 pub const BEDROCK_Y: i32 = 0;
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
@@ -188,6 +309,86 @@ pub enum ShapeKind {
 	Slab,
 	/// Floor-mounted torch: post + glowing head, one stateless variant.
 	Torch,
+	/// Full-footprint top on four legs; stateless, so tables pushed
+	/// together read as one surface.
+	Table,
+	/// Seat, back and four legs; state nibble bits 0-1 = facing (the back).
+	Chair,
+	/// A one-cell cot: mattress on a low frame, pillow at the head end;
+	/// state nibble bits 0-1 = facing (the head).
+	Bed,
+}
+
+/// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form
+/// a substance is worked into. Distinct from [`ShapeKind`], which is a
+/// rendering/collision tag — `Block` has no sub-block geometry at all, and
+/// `ShapeKind::Torch` is a functional item rather than a form you can put
+/// any material into, so it has no family here.
+///
+/// The transmute tab's families ARE this enum, which is why a new
+/// material × shape pair grows the catalog without growing the screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShapeFamily {
+	/// The full cube — the shape a material arrives in.
+	Block,
+	Slab,
+	Stairs,
+	Door,
+}
+
+impl ShapeFamily {
+	pub const COUNT: usize = 4;
+	/// The order the transmute tab lists families in — small worked pieces
+	/// first, the full cube last, which is also roughly cheapest-first.
+	/// There is exactly ONE such order: the screen reads this rather than
+	/// keeping a display list of its own.
+	pub const ALL: [ShapeFamily; Self::COUNT] = [
+		ShapeFamily::Slab,
+		ShapeFamily::Stairs,
+		ShapeFamily::Door,
+		ShapeFamily::Block,
+	];
+
+	/// The tab's family label (plural — it names a group of tiles).
+	pub fn name(self) -> &'static str {
+		match self {
+			ShapeFamily::Block => "BLOCKS",
+			ShapeFamily::Slab => "SLABS",
+			ShapeFamily::Stairs => "STAIRS",
+			ShapeFamily::Door => "DOORS",
+		}
+	}
+
+	/// What an ITEM of this form is called after its material — "STONE" +
+	/// "STAIRS". `None` for the full cube, which is just the substance's
+	/// own name: nobody calls it a stone block.
+	pub fn item_suffix(self) -> Option<&'static str> {
+		match self {
+			ShapeFamily::Block => None,
+			ShapeFamily::Slab => Some("SLAB"),
+			ShapeFamily::Stairs => Some("STAIRS"),
+			ShapeFamily::Door => Some("DOOR"),
+		}
+	}
+
+	/// The form's volume in sub-units (27ths of a block) — §4.2's volume
+	/// rule, and the factor every craft cost and extraction yield in this
+	/// material is prorated by. Pinned against the rasterized geometry by
+	/// `shapes::craft_costs_derive_from_collision_volume`.
+	pub fn units(self) -> u32 {
+		match self {
+			// A whole cube prorates to itself, which is what keeps every
+			// raw-block recipe exactly what it was before the grid.
+			ShapeFamily::Block => crate::shapes::SUBS_PER_BLOCK,
+			// A third of a block: three slabs make one, the rule that
+			// closes the grow-to-base-block economy.
+			ShapeFamily::Slab => 9,
+			ShapeFamily::Stairs => 18,
+			// Both halves uncut (the window lites don't discount), plus the
+			// handle and the two hinges.
+			ShapeFamily::Door => 10,
+		}
+	}
 }
 
 /// Alchemy essence families — what blocks extract INTO at the bench
@@ -303,16 +504,31 @@ pub struct BlockProps {
 	/// ink — the shader skips the sun/shadow/AO terms. Independent of
 	/// [`Self::light`] on purpose: ore-reveal seams want ink that casts
 	/// nothing, and a future recessed lamp could cast without glowing.
+	///
+	/// Both stay per-ROW builders while everything else about a §7.2 grid
+	/// cell derives from the material × shape pair, so both are the one
+	/// thing a second shape of a substance can silently disagree about.
+	/// They may not: `every_shape_of_a_material_agrees_on_light` holds a
+	/// material's shapes to one answer, which is what a FUNCTIONAL row
+	/// (torch, lamp) opts out of by carrying no material at all.
 	pub emissive: bool,
 	/// Stage-B cast light (LIGHT-DESIGN.md): the level this block SEEDS
 	/// into the flood-fill field, 0–15. Purely client-side data — the
-	/// field it feeds is derived, never serialized.
+	/// field it feeds is derived, never serialized. Agrees across a
+	/// material's shapes for the same reason [`Self::emissive`] does.
 	pub light: u8,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
 	/// can never forget it. Shared client/server behavior — a family
 	/// change is a SIM_VERSION bump like a hardness retune.
 	pub dig_family: DigFamily,
+	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid).
+	/// Together with [`Self::shape`] it derives the unlock level, the craft
+	/// cost, the extraction yield and the rock gate — see
+	/// [`crate::material`]. `None` for air, the water family and every
+	/// FUNCTIONAL item (tools, torches, lamps): function is priced by hand,
+	/// never by volume, so those carry their own small tables instead.
+	pub material: Option<Material>,
 }
 
 /// The per-material dig-speed families (SKILLS-DESIGN §5.1). Each keys a
@@ -352,6 +568,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		emissive: false,
 		light: 0,
 		dig_family: DigFamily::Fixed,
+		material: None,
 	}
 }
 
@@ -392,6 +609,17 @@ const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
 	p
 }
 
+/// The substance half of SKILLS-DESIGN §7.2's grid. Everything a
+/// structural block's economy needs — unlock level, craft cost, extraction
+/// yield, rock gate — falls out of this plus the row's `shaped` tag, so a
+/// material × shape pair is a row and a PNG rather than four table edits.
+/// FUNCTIONAL items deliberately have none (`material_roster_is_pinned`
+/// holds the split).
+const fn mat(mut p: BlockProps, m: Material) -> BlockProps {
+	p.material = Some(m);
+	p
+}
+
 /// Stage-A emissive: the block's faces render fullbright.
 const fn glows(mut p: BlockProps) -> BlockProps {
 	p.emissive = true;
@@ -427,6 +655,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		emissive: false,
 		light: 0,
 		dig_family: DigFamily::Fixed,
+		material: None,
 	}
 }
 
@@ -460,11 +689,28 @@ pub mod tex {
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
+	/// The four ore faces and the tapped one (SKILLS-DESIGN §5.3): stone
+	/// bodies with tier-coloured flecks, the deep two bright enough to
+	/// read as ink in a dark cave.
+	pub const EMBERORE: u16 = 22;
+	pub const DUSKSTONE: u16 = 23;
+	pub const GLOWVEIN: u16 = 24;
+	pub const AETHEROCK: u16 = 25;
+	pub const DEPLETED_STONE: u16 = 26;
+	/// §7.2's later materials and §7.3's two lamps.
+	pub const STONE_BRICK: u16 = 27;
+	pub const SANDSTONE_BRICK: u16 = 28;
+	pub const POLISHED_STONE: u16 = 29;
+	pub const GLASS: u16 = 30;
+	pub const METAL: u16 = 31;
+	pub const CRYSTAL: u16 = 32;
+	pub const LANTERN: u16 = 33;
+	pub const AETHERLAMP: u16 = 34;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = LUMBER_RED + 1;
+	pub const COUNT: u16 = AETHERLAMP + 1;
 }
 
 impl BlockType {
@@ -514,6 +760,80 @@ impl BlockType {
 	#[inline]
 	pub fn dig_family(self) -> DigFamily {
 		self.props().dig_family
+	}
+
+	/// The substance this block is made of — the material half of §7.2's
+	/// grid. `None` for air, the water family, and functional items.
+	#[inline]
+	pub fn material(self) -> Option<Material> {
+		self.props().material
+	}
+
+	/// The form this block is worked into — the shape half of §7.2's grid.
+	/// `None` for a FUNCTIONAL shape (the torch), which is a thing rather
+	/// than a form any material could take.
+	#[inline]
+	pub fn shape_family(self) -> Option<ShapeFamily> {
+		match self.props().shape {
+			None => Some(ShapeFamily::Block),
+			Some(ShapeKind::Slab) => Some(ShapeFamily::Slab),
+			Some(ShapeKind::Stairs) => Some(ShapeFamily::Stairs),
+			Some(ShapeKind::Door) => Some(ShapeFamily::Door),
+			// Functional shapes: things, not forms any substance could be
+			// worked into. They opt out of the grid and are priced by hand.
+			Some(ShapeKind::Torch | ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed) => None,
+		}
+	}
+
+	/// Does placing this block derive a facing from the placer's look?
+	/// The state encoding is shared (bits 0-1), so one predicate covers
+	/// the ascending stair and every piece of furniture that has a front.
+	#[inline]
+	pub fn takes_facing(self) -> bool {
+		matches!(
+			self.props().shape,
+			Some(ShapeKind::Stairs | ShapeKind::Chair | ShapeKind::Bed)
+		)
+	}
+
+	/// Is this block one cell of §7.2's material × shape grid — a substance
+	/// in a form — as opposed to a functional item priced by hand?
+	#[inline]
+	pub fn is_grid_item(self) -> bool {
+		self.material().is_some() && self.shape_family().is_some()
+	}
+
+	/// The grid cell `self` occupies, if it is one.
+	#[inline]
+	pub fn grid_cell(self) -> Option<(Material, ShapeFamily)> {
+		Some((self.material()?, self.shape_family()?))
+	}
+
+	/// The authored block for a grid cell, or `None` where the catalog has
+	/// no such pair. The grid is a GATING rule, not a promise that every
+	/// cell exists — nobody is owed snow stairs.
+	///
+	/// Memoized, because this is not the cold lookup it reads as:
+	/// `slab_base` is the one asking, and it sits on the slab GROW path
+	/// that every place-against-a-slab runs through. A linear walk of the
+	/// catalog with two table reads per row is a lot of work to learn that
+	/// a wood slab completes into wood.
+	pub fn from_grid(m: Material, s: ShapeFamily) -> Option<BlockType> {
+		static GRID: std::sync::OnceLock<Vec<Option<BlockType>>> = std::sync::OnceLock::new();
+		let grid = GRID.get_or_init(|| {
+			let mut cells = vec![None; Material::COUNT * ShapeFamily::COUNT];
+			// First authored row wins, matching the `find` this replaced.
+			for b in BlockType::ALL {
+				if let Some((bm, bs)) = b.grid_cell() {
+					let slot = &mut cells[bm as usize * ShapeFamily::COUNT + bs as usize];
+					if slot.is_none() {
+						*slot = Some(b);
+					}
+				}
+			}
+			cells
+		});
+		grid[m as usize * ShapeFamily::COUNT + s as usize]
 	}
 
 	/// How much water this block holds, 1..=8 — None for non-water.
@@ -616,7 +936,13 @@ impl BlockType {
 	/// never in a block slot or the grid, and never in the world.
 	#[inline]
 	pub fn is_tool(self) -> bool {
-		matches!(self, BlockType::Bucket)
+		matches!(
+			self,
+			BlockType::Bucket
+				| BlockType::EssenceSiphon
+				| BlockType::ResonantPick
+				| BlockType::MastersSigil
+		)
 	}
 
 	/// Tools every player owns unconditionally (no craft, no count):
@@ -650,15 +976,16 @@ impl BlockType {
 		matches!(self.props().shape, Some(ShapeKind::Slab))
 	}
 
-	/// The full block a slab stack completes into on its third grow.
+	/// The full block a slab stack completes into on its third grow: the
+	/// same material in the `Block` shape. Derived rather than tabled, so a
+	/// new material's slab cannot be authored without something to complete
+	/// into (`every_slab_completes_into_its_material` pins that).
 	#[inline]
 	pub fn slab_base(self) -> Option<BlockType> {
-		match self {
-			BlockType::WoodSlab => Some(BlockType::Wood),
-			BlockType::StoneSlab => Some(BlockType::Stone),
-			BlockType::LumberSlab => Some(BlockType::Lumber),
-			_ => None,
+		if !self.is_slab() {
+			return None;
 		}
+		BlockType::from_grid(self.material()?, ShapeFamily::Block)
 	}
 
 	/// Was this block necessarily crafted? Worldgen places none of these,
@@ -676,7 +1003,7 @@ impl BlockType {
 	/// only filter.
 	#[inline]
 	pub fn is_extractable(self) -> bool {
-		!crate::alchemy::extract_base(self).is_empty()
+		crate::alchemy::extract_total_base(self) > 0
 	}
 }
 
@@ -777,12 +1104,51 @@ mod tests {
 			(BlockType::Lumber, Wood),
 			(BlockType::LumberStairs, Wood),
 			(BlockType::LumberSlab, Wood),
+			(BlockType::DarkLumber, Wood),
+			(BlockType::DarkLumberStairs, Wood),
+			(BlockType::DarkLumberSlab, Wood),
+			(BlockType::DarkLumberDoor, Wood),
+			(BlockType::RedLumber, Wood),
+			(BlockType::RedLumberStairs, Wood),
+			(BlockType::RedLumberSlab, Wood),
+			(BlockType::RedLumberDoor, Wood),
+			(BlockType::Table, Wood),
+			(BlockType::Chair, Wood),
+			(BlockType::Bed, Wood),
 			(BlockType::Stone, Rock),
 			(BlockType::StoneStairs, Rock),
 			(BlockType::StoneSlab, Rock),
+			(BlockType::StoneDoor, Rock),
 			(BlockType::Sandstone, Rock),
+			(BlockType::SandstoneStairs, Rock),
+			(BlockType::SandstoneSlab, Rock),
+			(BlockType::SandstoneDoor, Rock),
 			(BlockType::Gravel, Rock),
 			(BlockType::Rubble, Rock),
+			(BlockType::Emberore, Rock),
+			(BlockType::Duskstone, Rock),
+			(BlockType::Glowvein, Rock),
+			(BlockType::Aetherock, Rock),
+			(BlockType::DepletedStone, Rock),
+			(BlockType::StoneBrick, Rock),
+			(BlockType::StoneBrickStairs, Rock),
+			(BlockType::StoneBrickSlab, Rock),
+			(BlockType::StoneBrickDoor, Rock),
+			(BlockType::PolishedStone, Rock),
+			(BlockType::PolishedStoneStairs, Rock),
+			(BlockType::PolishedStoneSlab, Rock),
+			(BlockType::SandstoneBrick, Rock),
+			(BlockType::SandstoneBrickStairs, Rock),
+			(BlockType::SandstoneBrickSlab, Rock),
+			(BlockType::Glass, Soft),
+			(BlockType::Metal, Rock),
+			(BlockType::MetalStairs, Rock),
+			(BlockType::MetalSlab, Rock),
+			(BlockType::MetalDoor, Rock),
+			(BlockType::Crystal, Rock),
+			(BlockType::CrystalSlab, Rock),
+			(BlockType::Lantern, Rock),
+			(BlockType::Aetherlamp, Rock),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -794,6 +1160,247 @@ mod tests {
 			.filter(|b| b.hardness_ticks().is_some())
 			.count();
 		assert_eq!(expect.len(), diggable, "roster covers every diggable block");
+	}
+
+	/// The material assignment is an explicit roster for the same reason
+	/// the dig families are: it decides a block's unlock level, its craft
+	/// cost, its extraction yield and its rock gate all at once, so a new
+	/// row picking one up by accident would move four numbers silently.
+	/// The blocks WITHOUT a material are the other half of the decision —
+	/// functional items, priced by hand (§7.3).
+	#[test]
+	fn material_roster_is_pinned() {
+		use BlockType as B;
+		use Material as M;
+		let expect = [
+			(B::Dirt, M::Dirt),
+			(B::Grass, M::Grass),
+			(B::DryGrass, M::DryGrass),
+			(B::Sand, M::Sand),
+			(B::Mud, M::Mud),
+			(B::Snow, M::Snow),
+			(B::Stone, M::Stone),
+			(B::StoneStairs, M::Stone),
+			(B::StoneSlab, M::Stone),
+			(B::StoneDoor, M::Stone),
+			(B::Sandstone, M::Sandstone),
+			(B::SandstoneStairs, M::Sandstone),
+			(B::SandstoneSlab, M::Sandstone),
+			(B::SandstoneDoor, M::Sandstone),
+			(B::Gravel, M::Gravel),
+			(B::Rubble, M::Rubble),
+			(B::Emberore, M::Emberore),
+			(B::Duskstone, M::Duskstone),
+			(B::Glowvein, M::Glowvein),
+			(B::Aetherock, M::Aetherock),
+			(B::DepletedStone, M::DepletedStone),
+			(B::StoneBrick, M::StoneBrick),
+			(B::StoneBrickStairs, M::StoneBrick),
+			(B::StoneBrickSlab, M::StoneBrick),
+			(B::StoneBrickDoor, M::StoneBrick),
+			(B::PolishedStone, M::PolishedStone),
+			(B::PolishedStoneStairs, M::PolishedStone),
+			(B::PolishedStoneSlab, M::PolishedStone),
+			(B::SandstoneBrick, M::SandstoneBrick),
+			(B::SandstoneBrickStairs, M::SandstoneBrick),
+			(B::SandstoneBrickSlab, M::SandstoneBrick),
+			(B::Glass, M::Glass),
+			(B::Metal, M::Metal),
+			(B::MetalStairs, M::Metal),
+			(B::MetalSlab, M::Metal),
+			(B::MetalDoor, M::Metal),
+			(B::Crystal, M::Crystal),
+			(B::CrystalSlab, M::Crystal),
+			(B::Wood, M::Wood),
+			(B::WoodStairs, M::Wood),
+			(B::WoodSlab, M::Wood),
+			(B::Lumber, M::Lumber),
+			(B::LumberStairs, M::Lumber),
+			(B::LumberSlab, M::Lumber),
+			(B::LumberDoor, M::Lumber),
+			(B::DarkLumber, M::DarkLumber),
+			(B::DarkLumberStairs, M::DarkLumber),
+			(B::DarkLumberSlab, M::DarkLumber),
+			(B::DarkLumberDoor, M::DarkLumber),
+			(B::RedLumber, M::RedLumber),
+			(B::RedLumberStairs, M::RedLumber),
+			(B::RedLumberSlab, M::RedLumber),
+			(B::RedLumberDoor, M::RedLumber),
+			(B::Leaves, M::Leaf),
+			(B::PineLeaves, M::PineLeaf),
+		];
+		for (b, m) in expect {
+			assert_eq!(b.material(), Some(m), "{b:?}");
+		}
+		for &b in &BlockType::ALL {
+			let listed = expect.iter().any(|&(e, _)| e == b);
+			assert_eq!(b.material().is_some(), listed, "{b:?}");
+		}
+		// And the complement, spelled out: a new row joining the
+		// material-LESS set is a decision too, because it opts the block
+		// out of the grid and into being hand-priced.
+		let functional: Vec<BlockType> = BlockType::ALL
+			.into_iter()
+			.filter(|b| b.material().is_none())
+			.collect();
+		assert_eq!(
+			functional,
+			vec![
+				B::Air,
+				B::Water,
+				B::WaterFlow1,
+				B::WaterFlow2,
+				B::WaterFlow3,
+				B::WaterFlow4,
+				B::WaterFlow5,
+				B::WaterFlow6,
+				B::WaterFlow7,
+				B::WaterFall,
+				B::Torch,
+				B::Bucket,
+				B::Table,
+				B::Chair,
+				B::Bed,
+				B::EssenceSiphon,
+				B::ResonantPick,
+				B::Lantern,
+				B::Aetherlamp,
+				B::MastersSigil,
+			]
+		);
+	}
+
+	/// Grid membership: a substance in a form. The torch is the standing
+	/// counter-example — a shaped block that is a THING, not a form any
+	/// material could be worked into, so it has no family and is priced by
+	/// hand instead.
+	#[test]
+	fn the_grid_is_material_times_shape() {
+		use BlockType as B;
+		assert_eq!(
+			B::Stone.grid_cell(),
+			Some((Material::Stone, ShapeFamily::Block))
+		);
+		assert_eq!(
+			B::LumberDoor.grid_cell(),
+			Some((Material::Lumber, ShapeFamily::Door))
+		);
+		assert_eq!(B::Torch.shape_family(), None, "a torch is not a form");
+		assert!(!B::Torch.is_grid_item());
+		assert!(!B::Bucket.is_grid_item());
+		assert!(!B::Water.is_grid_item());
+		// `from_grid` is the inverse of `grid_cell` wherever a pair is
+		// authored, and each cell is authored at most once.
+		for &b in &BlockType::ALL {
+			if let Some((m, s)) = b.grid_cell() {
+				assert_eq!(BlockType::from_grid(m, s), Some(b), "{b:?}");
+			}
+		}
+		for &m in &Material::ALL {
+			for &s in &ShapeFamily::ALL {
+				let n = BlockType::ALL
+					.iter()
+					.filter(|b| b.grid_cell() == Some((m, s)))
+					.count();
+				assert!(n <= 1, "{m:?} × {s:?} authored {n} times");
+			}
+		}
+	}
+
+	/// Light is a property of the SUBSTANCE, not of the piece it was cut
+	/// into: a crystal slab is the same crystal as the cube it came off,
+	/// so it wears the same ink and casts the same level.
+	///
+	/// This is the grid's one un-derived pair. The unlock level, the craft
+	/// cost, the extraction yield, the rock gate and the transmute family
+	/// all fall out of material × shape, but `emissive` and `light` stayed
+	/// per-ROW builders — and a per-row property on a grid axis drifts the
+	/// moment a material grows a second shape. It did: `Crystal` glowed and
+	/// `CrystalSlab` did not, so growing a slab stack through its third
+	/// third (`slab_grown` → `slab_base`) snapped the identical volume of
+	/// the identical stuff to fullbright in one frame.
+	///
+	/// The two properties are pinned SEPARATELY because they are genuinely
+	/// independent (see [`BlockProps::emissive`]): a deep seam wears ink
+	/// and casts nothing, and a recessed lamp could cast without glowing.
+	/// What neither may do is differ between a cube and its own slab.
+	///
+	/// FUNCTIONAL rows are outside this by construction rather than by
+	/// exemption — the torch and the two lamps carry no material at all
+	/// (`material_roster_is_pinned` spells that set out), so they are
+	/// hand-authored light with no sibling shape to agree with.
+	#[test]
+	fn every_shape_of_a_material_agrees_on_light() {
+		let mut compared = 0;
+		for &m in &Material::ALL {
+			let mut rows = BlockType::ALL
+				.into_iter()
+				.filter(|b| b.material() == Some(m));
+			let first = rows
+				.next()
+				.unwrap_or_else(|| panic!("{m:?} has no row at all"));
+			for b in rows {
+				assert_eq!(
+					b.props().emissive,
+					first.props().emissive,
+					"{b:?} and {first:?} are both {m:?} but disagree on the ink"
+				);
+				assert_eq!(
+					b.props().light,
+					first.props().light,
+					"{b:?} and {first:?} are both {m:?} but cast different light"
+				);
+				compared += 1;
+			}
+		}
+		// A walk that compares nothing passes forever. Every row carrying a
+		// material is either its material's first shape or one comparison,
+		// so this pins that the loop actually reached all of them.
+		let rows = BlockType::ALL
+			.into_iter()
+			.filter(|b| b.material().is_some())
+			.count();
+		assert_eq!(
+			compared + Material::COUNT,
+			rows,
+			"{compared} comparisons over {rows} rows in {} materials",
+			Material::COUNT
+		);
+		use BlockType as B;
+		// The set that actually exercises the rule, named so re-authoring
+		// the crystal is a deliberate edit rather than a silent one.
+		assert!(B::Crystal.props().emissive && B::CrystalSlab.props().emissive);
+		assert_eq!(
+			B::Crystal.props().light,
+			0,
+			"ink only — a wall lights nothing"
+		);
+		assert_eq!(B::CrystalSlab.props().light, 0);
+		// And the counter-examples, on the other side of the material line.
+		for b in [B::Torch, B::Lantern, B::Aetherlamp] {
+			assert_eq!(b.material(), None, "{b:?} is functional, so hand-authored");
+			assert!(b.props().emissive && b.props().light > 0, "{b:?} lights");
+		}
+	}
+
+	/// A slab has to have something to complete into — that is why the
+	/// `Lumber` block exists at all. Derived from the material, so a new
+	/// timber's slab cannot ship without its cube.
+	#[test]
+	fn every_slab_completes_into_its_material() {
+		for &b in &BlockType::ALL {
+			if !b.is_slab() {
+				assert_eq!(b.slab_base(), None, "{b:?} is not a slab");
+				continue;
+			}
+			let base = b.slab_base().unwrap_or_else(|| panic!("{b:?} has no base"));
+			assert_eq!(base.material(), b.material(), "{b:?}");
+			assert_eq!(base.shape_family(), Some(ShapeFamily::Block), "{b:?}");
+		}
+		use BlockType as B;
+		assert_eq!(B::WoodSlab.slab_base(), Some(B::Wood));
+		assert_eq!(B::StoneSlab.slab_base(), Some(B::Stone));
+		assert_eq!(B::LumberSlab.slab_base(), Some(B::Lumber));
 	}
 
 	#[test]

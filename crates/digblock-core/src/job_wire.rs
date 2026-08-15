@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK};
-use crate::mesher::{MeshData, MeshInput, PADDED_VOLUME};
+use crate::mesher::{MeshData, MeshInput, OreStamp, PADDED_VOLUME};
 use crate::pipeline::{Job, JobResult, MeshOutput};
 
 const TAG_GENERATE: u8 = 0;
@@ -132,7 +132,12 @@ impl Job {
 	fn encoded_hint(&self) -> usize {
 		match self {
 			Job::Generate { .. } => 17,
-			Job::Mesh { .. } => 26 + PADDED_VOLUME * 2,
+			// The ore stamp is a flag byte when absent, and otherwise
+			// seed + origin + level + count + two bytes an edited cell.
+			Job::Mesh { input, .. } => {
+				let ore = input.ore.as_ref().map_or(1, |o| 29 + o.edited.len() * 2);
+				26 + ore + PADDED_VOLUME * 2
+			}
 		}
 	}
 
@@ -157,6 +162,28 @@ impl Job {
 					mask |= u8::from(m) << i;
 				}
 				out.push(mask);
+				// The ore reveal, when this job carries one. Present-flag
+				// first: it is `None` for every chunk meshed for a reason
+				// other than a reveal, which is most of them, and a level
+				// that reveals nothing still has to cross as itself rather
+				// than as absence — `apply_ore` is what decides.
+				match &input.ore {
+					None => out.push(0),
+					Some(o) => {
+						out.push(1);
+						out.extend_from_slice(&o.seed.to_le_bytes());
+						out.extend_from_slice(&o.origin.0.to_le_bytes());
+						out.extend_from_slice(&o.origin.1.to_le_bytes());
+						out.extend_from_slice(&o.origin.2.to_le_bytes());
+						out.extend_from_slice(&o.mining.to_le_bytes());
+						// The edit gate. Bounded by the edits inside one
+						// 18³ box, so a u32 count is never the limit, but
+						// dropping it would let the anti-dupe re-reveal a
+						// cell somebody has already mined.
+						out.extend_from_slice(&(o.edited.len() as u32).to_le_bytes());
+						put_u16s(&mut out, &o.edited);
+					}
+				}
 				put_u16s(&mut out, input.blocks.as_slice());
 			}
 		}
@@ -179,6 +206,28 @@ impl Job {
 				for (i, m) in missing.iter_mut().enumerate() {
 					*m = mask & (1 << i) != 0;
 				}
+				let ore = match r.u8()? {
+					0 => None,
+					1 => {
+						let seed = r.f64()?;
+						let origin = (r.i32()?, r.i32()?, r.i32()?);
+						let mining = r.u32()?;
+						let n = r.u32()? as usize;
+						let mut edited = Vec::with_capacity(n.min(PADDED_VOLUME));
+						for _ in 0..n {
+							edited.push(r.u16()?);
+						}
+						Some(OreStamp {
+							seed,
+							origin,
+							mining,
+							edited,
+						})
+					}
+					// Not a flag this format defines: fail the decode
+					// rather than guess, exactly as a bad tag does.
+					_ => return None,
+				};
 				let mut blocks = Box::new([0u16; PADDED_VOLUME]);
 				for cell in blocks.iter_mut() {
 					*cell = r.u16()?;
@@ -186,7 +235,11 @@ impl Job {
 				Some(Job::Mesh {
 					pos,
 					gen,
-					input: Box::new(MeshInput { blocks, missing }),
+					input: Box::new(MeshInput {
+						blocks,
+						missing,
+						ore,
+					}),
 				})
 			}
 			_ => None,
@@ -314,8 +367,68 @@ mod tests {
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [true, false, false, true, false, true],
+				ore: None,
 			}),
 		}
+	}
+
+	/// The same job carrying a reveal, which is the case a worker has to
+	/// be told about: the stamp is gathered on the main thread and
+	/// consumed inside `run_job`, so if it does not cross, a browser
+	/// client meshes every chunk as though the looker had no Mining at
+	/// all — ore simply never appears, and nothing errors.
+	fn mesh_job_with_ore() -> Job {
+		let Job::Mesh { pos, gen, input } = mesh_job() else {
+			unreachable!()
+		};
+		Job::Mesh {
+			pos,
+			gen,
+			input: Box::new(MeshInput {
+				ore: Some(OreStamp {
+					seed: -8123.5,
+					origin: (-32, 64, 4096),
+					mining: 47,
+					edited: vec![3, 17, 2044, 5831],
+				}),
+				..*input
+			}),
+		}
+	}
+
+	#[test]
+	fn a_mesh_job_carries_its_ore_stamp() {
+		let Some(Job::Mesh { input, .. }) = Job::decode(&mesh_job_with_ore().encode()) else {
+			panic!("decode");
+		};
+		let ore = input.ore.expect("the stamp survived the crossing");
+		assert_eq!(ore.seed, -8123.5);
+		assert_eq!(ore.origin, (-32, 64, 4096));
+		assert_eq!(
+			ore.mining, 47,
+			"two lookers mesh the same chunk differently"
+		);
+		assert_eq!(
+			ore.edited,
+			vec![3, 17, 2044, 5831],
+			"the anti-dupe's edit gate is not decorative: without it a \
+			 mined cell reveals again"
+		);
+		// And the blocks still land after it — a length the reader gets
+		// wrong would desync the array that follows, not just the stamp.
+		let Job::Mesh { input: orig, .. } = mesh_job() else {
+			unreachable!()
+		};
+		assert_eq!(input.blocks.as_slice(), orig.blocks.as_slice());
+	}
+
+	/// Absence has to survive too, and it is the common case.
+	#[test]
+	fn a_mesh_job_without_ore_stays_without() {
+		let Some(Job::Mesh { input, .. }) = Job::decode(&mesh_job().encode()) else {
+			panic!("decode");
+		};
+		assert!(input.ore.is_none());
 	}
 
 	#[test]
@@ -408,6 +521,7 @@ mod tests {
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [false; 6],
+				ore: None,
 			}),
 		};
 		let result = run_job(job);

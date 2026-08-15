@@ -30,8 +30,21 @@
 //! player's inventory). An older file simply has no stored position or
 //! skills, so those players resume at spawn once / start at level 1 and
 //! are stored in the current format from their next write on.
+//!
+//! The layout blob is SELF-DESCRIBING, which is what keeps growing the
+//! inventory grid out of the version field entirely. Its leading byte is
+//! a shape tag, not a bare present/absent flag: `0` absent, `1` the
+//! legacy fixed run of `HOTBAR_SLOTS + LEGACY_GRID_SLOTS` words that
+//! every file written before the grid grew still carries, and `2` a
+//! length-prefixed pair the reader pads or truncates into whatever the
+//! current constants are. Writes always emit `2`. So a `GRID_SLOTS`
+//! change is a no-op here — no version bump, no archive path, and no
+//! silent re-interpretation of somebody's stored arrangement, which is
+//! the failure this shape exists to make impossible. The one rule:
+//! [`LEGACY_GRID_SLOTS`] is frozen at the width tag `1` was written
+//! with and must never be re-pointed at `GRID_SLOTS`.
 
-use digblock_core::hotbar::HOTBAR_SLOTS;
+use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
 use digblock_core::inv_grid::GRID_SLOTS;
 use digblock_core::inventory::Inventory;
 use digblock_core::skills::SkillSet;
@@ -45,6 +58,57 @@ use std::time::{Duration, Instant};
 const MAGIC: [u8; 4] = *b"DBI1";
 const VERSION: u16 = 4;
 const HEADER_LEN: usize = 4 + 2 + 2 + 4; // magic | version | pad | count
+
+/// Shape tags for the per-record layout blob. See the module docs: this
+/// byte used to be a bare presence flag, and making it a tag is what
+/// lets the grid grow without touching [`VERSION`].
+const LAYOUT_ABSENT: u8 = 0;
+const LAYOUT_LEGACY: u8 = 1;
+const LAYOUT_SIZED: u8 = 2;
+
+/// The grid width [`LAYOUT_LEGACY`] blobs were written at — four rows of
+/// nine. FROZEN: it describes bytes already on disk, so it must never be
+/// re-pointed at [`GRID_SLOTS`], which is free to grow.
+const LEGACY_GRID_SLOTS: usize = 36;
+
+/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for
+/// exactly the same reason as [`LEGACY_GRID_SLOTS`], and split out
+/// because the legacy arm originally read the LIVE `HOTBAR_SLOTS` — the
+/// one half of the blob still described by a constant free to move.
+///
+/// It happens to equal `HOTBAR_SLOTS` today, so nothing was wrong; it
+/// was wrong in waiting. Grow the bar and every tag-`1` record
+/// over-reads by two bytes a slot, desyncs into the next record's
+/// identity hash, and `PlayerStore::open` takes that for corruption and
+/// archives everybody's inventory — precisely the failure the shape tag
+/// was introduced to make impossible, reintroduced through the half of
+/// the blob nobody froze. The regression test could not have caught it
+/// either, because `push_legacy_layout` built its fixture from the same
+/// live constant and would have moved with the break.
+const LEGACY_HOTBAR_SLOTS: usize = 9;
+
+/// Both frozen widths describe bytes on disk, so this asserts the
+/// FORMAT, not the constants: if today's hotbar ever differs, the legacy
+/// arm must keep reading 9 and this line is the reminder that it does.
+const _: () = assert!(
+	LEGACY_HOTBAR_SLOTS == 9 && LEGACY_GRID_SLOTS == 36,
+	"legacy layout widths describe bytes already written — never retune them"
+);
+
+/// The sized blob spends one byte per length, which is the whole reason
+/// growing the grid costs nothing here. Fail the BUILD rather than
+/// truncating somebody's arrangement to `len & 255`. Two asserts, not one
+/// conjunction: today's values make either side imply the other, which
+/// clippy reads as a redundant comparison rather than as the guard on
+/// future growth it is.
+const _: () = assert!(
+	HOTBAR_SLOTS <= u8::MAX as usize,
+	"the hotbar length is a u8 on disk — widen the blob before growing past 255"
+);
+const _: () = assert!(
+	GRID_SLOTS <= u8::MAX as usize,
+	"the grid length is a u8 on disk — widen the blob before growing past 255"
+);
 
 /// Dirty-state flush cadence.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
@@ -270,11 +334,14 @@ impl PlayerStore {
 				buf.extend_from_slice(&block.to_le_bytes());
 				buf.extend_from_slice(&count.to_le_bytes());
 			}
-			// v2: the layout blob, presence-flagged.
+			// v2: the layout blob, shape-tagged. Always the sized form —
+			// the legacy tag is read-only, for files already on disk.
 			match &rec.layout {
-				None => buf.push(0),
+				None => buf.push(LAYOUT_ABSENT),
 				Some(layout) => {
-					buf.push(1);
+					buf.push(LAYOUT_SIZED);
+					buf.push(layout.hotbar.len() as u8);
+					buf.push(layout.grid.len() as u8);
 					for w in layout.hotbar.iter().chain(layout.grid.iter()) {
 						buf.extend_from_slice(&w.to_le_bytes());
 					}
@@ -423,6 +490,44 @@ impl Drop for StoreWriter {
 	}
 }
 
+/// Decode a layout blob of `hotbar_len + grid_len` words into the CURRENT
+/// shape, padding short halves with `WIRE_EMPTY` and dropping any beyond
+/// today's constants.
+///
+/// It always consumes exactly the words the writer declared, whatever the
+/// constants are now — that is the part that matters. A reader that
+/// stopped early would leave the remainder to be read as the next field
+/// and desync the whole record stream, which is precisely how a grid
+/// resize turns into "archive the file and start fresh".
+///
+/// Truncation is lossy by construction (a shrinking grid has nowhere to
+/// put the tail), but `reconcile_layout` re-files anything that lost its
+/// slot on the first pass after load, so no item is lost — only its
+/// placement.
+fn read_layout(
+	r: &mut &[u8],
+	hotbar_len: usize,
+	grid_len: usize,
+	bad: &dyn Fn(&str) -> io::Error,
+) -> io::Result<PlayerLayout> {
+	let mut hotbar = [WIRE_EMPTY; HOTBAR_SLOTS];
+	let mut grid = [WIRE_EMPTY; GRID_SLOTS];
+	for i in 0..hotbar_len + grid_len {
+		let mut b = [0u8; 2];
+		r.read_exact(&mut b).map_err(|_| bad("short record"))?;
+		let w = u16::from_le_bytes(b);
+		let slot = if i < hotbar_len {
+			hotbar.get_mut(i)
+		} else {
+			grid.get_mut(i - hotbar_len)
+		};
+		if let Some(slot) = slot {
+			*slot = w;
+		}
+	}
+	Ok(PlayerLayout { hotbar, grid })
+}
+
 fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 	let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
 	let mut r = bytes;
@@ -453,21 +558,29 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 		}
 		// v1 records end here (inventory only): layout stays None.
 		let layout = if version >= 2 {
-			let mut flag = [0u8; 1];
-			r.read_exact(&mut flag).map_err(|_| bad("short record"))?;
-			if flag[0] == 1 {
-				let mut words = [0u16; HOTBAR_SLOTS + GRID_SLOTS];
-				for w in words.iter_mut() {
-					let mut b = [0u8; 2];
-					r.read_exact(&mut b).map_err(|_| bad("short record"))?;
-					*w = u16::from_le_bytes(b);
+			let mut tag = [0u8; 1];
+			r.read_exact(&mut tag).map_err(|_| bad("short record"))?;
+			match tag[0] {
+				LAYOUT_ABSENT => None,
+				// Written before the grid grew: a fixed run at the frozen
+				// width, decoded into today's shape.
+				LAYOUT_LEGACY => Some(read_layout(
+					&mut r,
+					LEGACY_HOTBAR_SLOTS,
+					LEGACY_GRID_SLOTS,
+					&bad,
+				)?),
+				LAYOUT_SIZED => {
+					let mut lens = [0u8; 2];
+					r.read_exact(&mut lens).map_err(|_| bad("short record"))?;
+					Some(read_layout(
+						&mut r,
+						lens[0] as usize,
+						lens[1] as usize,
+						&bad,
+					)?)
 				}
-				Some(PlayerLayout {
-					hotbar: words[..HOTBAR_SLOTS].try_into().unwrap(),
-					grid: words[HOTBAR_SLOTS..].try_into().unwrap(),
-				})
-			} else {
-				None
+				_ => return Err(bad("unknown layout tag")),
 			}
 		} else {
 			None
@@ -549,7 +662,7 @@ fn bak_path(path: &Path) -> PathBuf {
 mod tests {
 	use super::*;
 	use digblock_core::block::BlockType;
-	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
+	use digblock_core::hotbar::WIRE_TOOL;
 
 	fn temp_dir(tag: &str) -> PathBuf {
 		let dir = std::env::temp_dir().join(format!("dbinv-{tag}-{}", std::process::id()));
@@ -564,6 +677,26 @@ mod tests {
 		let mut grid = [WIRE_EMPTY; GRID_SLOTS];
 		grid[17] = BlockType::Stone as u16;
 		PlayerLayout { hotbar, grid }
+	}
+
+	/// Append a layout the way every file written before the grid grew
+	/// carries it: the bare `1` tag and a fixed run at the OLD width, with
+	/// no lengths of its own. Hand-built on purpose — a fixture derived
+	/// from the current constants would move with them and stop testing
+	/// the thing that broke.
+	/// A tag-`1` blob exactly as it was written to disk. BOTH widths are
+	/// the frozen ones on purpose — a fixture built from today's live
+	/// constants moves with any change to them, so it can never fail on
+	/// the resize it exists to guard against.
+	fn push_legacy_layout(buf: &mut Vec<u8>, l: &PlayerLayout) {
+		buf.push(LAYOUT_LEGACY);
+		for i in 0..LEGACY_HOTBAR_SLOTS {
+			let w = l.hotbar.get(i).copied().unwrap_or(WIRE_EMPTY);
+			buf.extend_from_slice(&w.to_le_bytes());
+		}
+		for i in 0..LEGACY_GRID_SLOTS {
+			buf.extend_from_slice(&l.grid[i].to_le_bytes());
+		}
 	}
 
 	/// Eviction is least-recently-USED, not first-inserted. The old policy
@@ -784,11 +917,7 @@ mod tests {
 		buf.push(1);
 		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
 		buf.extend_from_slice(&3u32.to_le_bytes());
-		buf.push(1);
-		let l = layout();
-		for w in l.hotbar.iter().chain(l.grid.iter()) {
-			buf.extend_from_slice(&w.to_le_bytes());
-		}
+		push_legacy_layout(&mut buf, &layout());
 		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
 
 		let mut s = PlayerStore::open(&dir).unwrap();
@@ -907,6 +1036,143 @@ mod tests {
 		assert_eq!(s.get(&id).skills.xp(Skill::Mining), 1_068);
 		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 9);
 		assert_eq!(s.get(&id).pos, Some([4.5, 131.0, -2.5]));
+	}
+
+	/// THE grid-growth test: a complete v4 file written when the grid was
+	/// four rows still reads, with every player's items, arrangement,
+	/// position and XP intact — no version bump, no archive path.
+	///
+	/// Growing `GRID_SLOTS` broke exactly this once. The layout blob was a
+	/// fixed, length-free run, so a wider reader over-read into the pos
+	/// flag, the return tick and the skills blob, desynced into the next
+	/// record's identity hash, and `open` took the resulting parse error
+	/// for corruption — archiving the file and wiping every player on the
+	/// first restart after deploy. Nothing caught it because the other
+	/// round-trip fixtures are all built from the CURRENT constants, which
+	/// move together. This one is hand-built at the frozen width and does
+	/// not.
+	#[test]
+	fn a_file_written_at_the_old_grid_width_still_reads() {
+		use digblock_core::skills::Skill;
+		let dir = temp_dir("gridgrowth");
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("inventories.bin");
+		let id_a = hash_identity(&[21; 16]);
+		let id_b = hash_identity(&[22; 16]);
+		let mut skills = SkillSet::default();
+		skills.add_xp(Skill::Mining, 146_751);
+		skills.add_xp(Skill::Alchemy, 394);
+
+		// Two records, so an over-read desyncs into the second one's
+		// identity hash the way it would on a real server.
+		let mut buf = Vec::new();
+		buf.extend_from_slice(&MAGIC);
+		buf.extend_from_slice(&4u16.to_le_bytes());
+		buf.extend_from_slice(&[0, 0]);
+		buf.extend_from_slice(&2u32.to_le_bytes());
+		for (id, dirt) in [(id_a, 12u32), (id_b, 5)] {
+			buf.extend_from_slice(&id);
+			buf.push(1);
+			buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
+			buf.extend_from_slice(&dirt.to_le_bytes());
+			push_legacy_layout(&mut buf, &layout());
+			buf.push(1); // position
+			for c in [8.5f32, 133.0, -4.5] {
+				buf.extend_from_slice(&c.to_le_bytes());
+			}
+			buf.push(1); // return tick
+			buf.extend_from_slice(&99u32.to_le_bytes());
+			let wire = skills.to_wire();
+			buf.push(wire.len() as u8);
+			for (skill, total) in &wire {
+				buf.push(*skill);
+				buf.extend_from_slice(&total.to_le_bytes());
+			}
+		}
+		std::fs::write(&path, &buf).unwrap();
+
+		let mut s = PlayerStore::open(&dir).unwrap();
+		assert!(
+			!path.with_extension(format!("bin.v{VERSION}.bak")).exists(),
+			"a routine grid resize must never take the archive path"
+		);
+		let a = s.get(&id_a);
+		assert_eq!(a.inventory.count(BlockType::Dirt), 12, "items survive");
+		assert_eq!(a.pos, Some([8.5, 133.0, -4.5]), "position survives");
+		assert_eq!(a.last_return_tick, Some(99));
+		assert_eq!(a.skills, skills, "XP survives");
+		// The stored arrangement lands on the SAME slots in the wider grid,
+		// with the new rows empty — a migration, not a reshuffle.
+		let l = a.layout.clone().expect("layout survives");
+		assert_eq!(l.hotbar, layout().hotbar);
+		assert_eq!(l.grid[17], BlockType::Stone as u16);
+		assert!(
+			l.grid[LEGACY_GRID_SLOTS..].iter().all(|&w| w == WIRE_EMPTY),
+			"the rows the old file never had come back empty"
+		);
+		// The record behind it parsed too — an over-read would have eaten
+		// its hash and lost it entirely.
+		assert_eq!(s.get(&id_b).inventory.count(BlockType::Dirt), 5);
+
+		// And the next write stores the sized form, which round-trips at
+		// the full width.
+		s.put(id_a, PlayerRecord { ..a });
+		s.sync();
+		let s = PlayerStore::open(&dir).unwrap();
+		let back = s.get(&id_a).layout.expect("still there");
+		assert_eq!(back.grid[17], BlockType::Stone as u16);
+		assert_eq!(back.grid.len(), GRID_SLOTS);
+		assert_eq!(s.get(&id_a).skills, skills);
+	}
+
+	/// The sized blob is read against the lengths it declares, not the
+	/// constants of the day, so a file from a FUTURE build (a wider grid)
+	/// truncates cleanly instead of desyncing the record stream.
+	#[test]
+	fn a_wider_stored_grid_truncates_without_desyncing() {
+		let dir = temp_dir("widergrid");
+		std::fs::create_dir_all(&dir).unwrap();
+		let id_a = hash_identity(&[23; 16]);
+		let id_b = hash_identity(&[24; 16]);
+		let wide = GRID_SLOTS + 9;
+		let mut buf = Vec::new();
+		buf.extend_from_slice(&MAGIC);
+		buf.extend_from_slice(&4u16.to_le_bytes());
+		buf.extend_from_slice(&[0, 0]);
+		buf.extend_from_slice(&2u32.to_le_bytes());
+		for (id, dirt) in [(id_a, 3u32), (id_b, 4)] {
+			buf.extend_from_slice(&id);
+			buf.push(1);
+			buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
+			buf.extend_from_slice(&dirt.to_le_bytes());
+			buf.push(LAYOUT_SIZED);
+			buf.push(HOTBAR_SLOTS as u8);
+			buf.push(wide as u8);
+			for w in layout().hotbar.iter() {
+				buf.extend_from_slice(&w.to_le_bytes());
+			}
+			for i in 0..wide {
+				let w = if i == 17 {
+					BlockType::Stone as u16
+				} else {
+					WIRE_EMPTY
+				};
+				buf.extend_from_slice(&w.to_le_bytes());
+			}
+			buf.push(0); // no position
+			buf.push(0); // no return tick
+			buf.push(0); // no skills
+		}
+		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
+
+		let s = PlayerStore::open(&dir).unwrap();
+		let a = s.get(&id_a).layout.expect("layout survives");
+		assert_eq!(a.grid[17], BlockType::Stone as u16);
+		assert_eq!(
+			s.get(&id_b).inventory.count(BlockType::Dirt),
+			4,
+			"the extra words were consumed, not read as the next field"
+		);
 	}
 
 	/// v4 round-trips skills alongside everything else.

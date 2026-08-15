@@ -313,6 +313,13 @@ pub enum RejectReason {
 	/// same `DigStart` path as `SkillGated`; predicted in `diggable()`.
 	/// Appended in v19.
 	NotUnlocked,
+	/// Dig refused: the cell shows this player a revealed ore vein and
+	/// their active tool is not the Essence Siphon (SKILLS-DESIGN §5.3).
+	/// If you can SEE the seam, the game will not let you spend it on a
+	/// stone dig by accident. Sent at `DigStart` like `SkillGated`, so
+	/// nobody holds the button through a timer for nothing; predicted in
+	/// `diggable()`. Appended in v21.
+	NeedsTool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

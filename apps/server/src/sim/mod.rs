@@ -246,7 +246,9 @@ struct Client {
 	edit_tokens: f32,
 	chat_tokens: f32,
 	/// Bench-extraction bucket, in TICKS: refilled one per tick, capped
-	/// at `extract_burst_ticks(level)` (two whole blocks' worth), and
+	/// at `extract_burst_ticks(level)` (two whole blocks' worth, or one
+	/// costliest extraction where that is more — an op no bucket can hold
+	/// is an op that is refused forever), and
 	/// spent at the extracted block's own `extract_pace_ticks` — the
 	/// server-enforced half of the drip (see `process_alchemy`).
 	extract_tokens: f32,
@@ -304,11 +306,22 @@ impl Client {
 	/// The held item for snapshots, in hotbar wire encoding. The tool
 	/// reports its charge too — a bucket is a different thing full than
 	/// empty, and the difference is the whole point of holding one.
+	///
+	/// WHICH tool, though, is the second axis: the slot only ever says
+	/// `WaterTool`, so reporting the slot drew every remote player's
+	/// Resonant Pick as a bucket — or, if their bucket happened to be
+	/// charged, as a cube of water. The encoding needed nothing new for
+	/// it: tools are real block ids, so this sends the tool's own id and
+	/// keeps the sentinels for the bucket, exactly as `Hotbar::to_wire`
+	/// does on the Layout wire.
 	fn held_wire(&self) -> u16 {
+		use digblock_core::block::BlockType;
 		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
+		let tool = self.hotbar.active_tool();
 		match self.hotbar.slots()[slot] {
 			None => WIRE_EMPTY,
+			Some(HotbarItem::WaterTool) if tool != BlockType::Bucket => tool as u16,
 			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => {
 				digblock_net::messages::HELD_TOOL_FULL
 			}
@@ -662,6 +675,43 @@ impl Sim {
 		}
 	}
 
+	/// Put a tool in a client's hand. The tool slot's Layout entry is the
+	/// second axis (`Hotbar::active_tool`), so granting the item is not
+	/// the same as holding it — which is exactly the distinction the
+	/// siphon gate is about.
+	#[cfg(test)]
+	pub(crate) fn bench_set_active_tool(
+		&mut self,
+		conn_id: u64,
+		tool: digblock_core::block::BlockType,
+	) {
+		if let Some(c) = self.clients.get_mut(&conn_id) {
+			// Owning it is a precondition for holding it — `reconcile_layout`
+			// takes back a tool the counts don't cover — so the harness has
+			// to hand over the item as well as the slot, exactly like the
+			// craft that would have earned it.
+			c.inventory.add(tool, 1);
+			c.hotbar.cycle_tool(&[tool]);
+		}
+	}
+
+	/// Lock the spawn region around `eye`, so protection tests can put an
+	/// immutable cell wherever they need one.
+	#[cfg(test)]
+	pub(crate) fn bench_lock_spawn_at(&mut self, eye: Vec3) {
+		self.spawn_store
+			.set_lock(Some(crate::spawn_store::SpawnLock {
+				eye: eye.to_array(),
+			}));
+	}
+
+	/// A client's XP total in one skill — the two-sided award tests read
+	/// it, since a dual award is only interesting as a pair.
+	#[cfg(test)]
+	pub(crate) fn test_skill_xp(&self, conn_id: u64, skill: digblock_core::skills::Skill) -> u64 {
+		self.clients.get(&conn_id).map_or(0, |c| c.skills.xp(skill))
+	}
+
 	/// Raise a client's Alchemy to `level` — the craft gate's counterpart
 	/// of [`Self::bench_set_mining_level`], for edit-path tests that dig
 	/// craft-only blocks (slabs, stairs, doors, torches).
@@ -900,6 +950,82 @@ impl Sim {
 		}
 	}
 
+	/// Has this cell ever been written? The ore reveal's anti-dupe gate
+	/// (SKILLS-DESIGN §5.3), answered from the journal — the complete and
+	/// correct source, fluid included. `JournalIndex::record` only ever
+	/// inserts, so the answer is monotone: a spent vein cannot be
+	/// un-spent by putting stone back.
+	pub(super) fn cell_edited(&self, x: i32, y: i32, z: i32) -> bool {
+		self.journal
+			.index
+			.column(x.div_euclid(16), z.div_euclid(16))
+			.is_some_and(|c| c.contains_key(&(x, y, z)))
+	}
+
+	/// What a dig on this cell is FOR this client — the same question the
+	/// client predicted with, asked of the server's own world.
+	pub(super) fn ore_dig_mode(
+		&self,
+		conn_id: u64,
+		cell: (i32, i32, i32),
+	) -> digblock_core::worldgen::ore::DigMode {
+		use digblock_core::worldgen::ore::DigMode;
+		let Some(client) = self.clients.get(&conn_id) else {
+			return DigMode::Break;
+		};
+		let Some(v) = self.store.cell_at(cell.0, cell.1, cell.2) else {
+			return DigMode::Break;
+		};
+		digblock_core::worldgen::ore::dig_mode(
+			v,
+			cell,
+			self.store.seed(),
+			client.skills.level(digblock_core::skills::Skill::Mining),
+			self.cell_edited(cell.0, cell.1, cell.2),
+			client.hotbar.active_tool(),
+		)
+	}
+
+	/// The EXTRA cells a Resonant Pick hold breaks around this hit, from
+	/// the SERVER's own raycast and its own world. Derived rather than
+	/// declared: the client sends one `EditRequest` naming one cell, and
+	/// this end decides what that swing actually touched.
+	pub(super) fn pick_plane(
+		&self,
+		conn_id: u64,
+		hit: &digblock_core::raycast::RayHit,
+		dir: [f32; 3],
+	) -> Vec<(i32, i32, i32)> {
+		let Some(client) = self.clients.get(&conn_id) else {
+			return Vec::new();
+		};
+		if client.hotbar.active_tool() != digblock_core::block::BlockType::ResonantPick {
+			return Vec::new();
+		}
+		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		// A LOCKED cell is deliberately not filtered here: the assembled
+		// writes are scanned for protection and the whole swing is refused,
+		// which is what `a_protected_cell_refuses_the_whole_pick_swing`
+		// pins ("nothing partially breaks"). The world floor is a different
+		// matter and is handled inside the rule — it is not a policy, it is
+		// a cell no dig of any kind can touch, and letting the plane reach
+		// it made the pick refuse every swing at the bottom of a mine.
+		let mut out = digblock_core::pick::cells(
+			hit.cell,
+			hit.normal,
+			dir,
+			digblock_core::unlock::pick_cells(level),
+			|c| {
+				self.store.cell_at(c.0, c.1, c.2).is_some_and(|v| {
+					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(conn_id, c))
+				})
+			},
+		);
+		out.retain(|&c| c != hit.cell);
+		out
+	}
+
 	/// Record a hold-to-dig start (called from the ordered queue drain):
 	/// capture the cell's CURRENT block — the client never gets to claim
 	/// what it is digging. Within a tick the LAST start wins, exactly
@@ -954,12 +1080,42 @@ impl Sim {
 						reason: match req.kind {
 							Kind::Strength => RejectReason::SkillGated,
 							Kind::Recipe => RejectReason::NotUnlocked,
+							Kind::Tool => RejectReason::NeedsTool,
 						},
 					},
 				);
 				return;
 			}
 		}
+		// A revealed vein with the wrong tool refuses here too, for
+		// exactly the reason the skill gates do — a refusal that arrives
+		// after a two-second hold is not a refusal, it is a punishment.
+		// Below the reveal this never fires: that player's world has no
+		// vein in it, so the cell digs as the stone it appears to be.
+		if self.ore_dig_mode(conn_id, cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
+			if let Some(client) = self.clients.get_mut(&conn_id) {
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: RejectReason::NeedsTool,
+					},
+				);
+			}
+			return;
+		}
+		// The resume's `required` has to be the SAME number the completion
+		// gate will check against, or the decay clamps a resumed hold at
+		// one figure while the client's bar bleeds from another. That
+		// means the ore, not the stone the cell still holds — this arm
+		// asked `dig_block` nothing at all and read Stone's 90 for a
+		// 240-hardness seam. Resolved before the client borrow, since it
+		// reads the store.
+		let mode = self.ore_dig_mode(conn_id, cell);
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
 		// Re-opening a hold on the SAME unchanged cell resumes it: it is
 		// worth whatever the decay has left, which is the number the
 		// client's own bar is showing. Everything else starts at zero.
@@ -971,17 +1127,21 @@ impl Sim {
 		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
 		// resumer is on target, so its first verify tick zeroes this.
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let tool = client.hotbar.active_tool();
 		let resumed = client
 			.digging
 			.as_ref()
 			.filter(|d| d.cell == cell && Some(d.cell_value) == cell_value)
 			.map(|d| {
-				let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
-					d.cell_value,
-				));
-				let need = b
-					.dig_hardness(cell.1)
-					.map_or(0, |h| digblock_core::skills::dig_required(b, h, level));
+				let b = digblock_core::worldgen::ore::dig_block(
+					mode,
+					digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
+						d.cell_value,
+					)),
+				);
+				let need = b.dig_hardness(cell.1).map_or(0, |h| {
+					digblock_core::skills::dig_required_with(b, h, level, tool)
+				});
 				(d.banked(need), d.off_target)
 			});
 		client.digging = match cell_value {
@@ -2131,6 +2291,256 @@ mod tests {
 		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
 	}
 
+	/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test,
+	/// because the three halves only mean anything together:
+	///
+	/// 1. Below the reveal, a vein is stone. The hold opens, the dig
+	///    completes, and the player gets rubble and never knows: you dig
+	///    what you can see, and spending an unseen seam is the cost of
+	///    tunnelling through country you have not levelled into.
+	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with
+	///    `NeedsTool` and opens no hold — if you can see the seam, the
+	///    game will not let you spend it by accident.
+	/// 3. With the siphon, the completing dig writes DepletedStone rather
+	///    than air, credits the ORE (not the cell's Rubble), and pays BOTH
+	///    skills (§5.4's dual award).
+	#[test]
+	fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
+		use digblock_core::block::BlockType;
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		let (cell, eye, ore) = super::harness::a_vein_under_spawn();
+		let reveal = digblock_core::unlock::reveal(ore).expect("an ore");
+
+		// 1. Below the reveal: stone all the way down.
+		let mut sim = super::harness::flat_sim_at("ore-blind", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal - 1);
+		let mut t = 100;
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 + 8;
+		let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(dug, cell, "dug the cell the vein is in");
+		assert_eq!(sim.test_cell_at(cell.0, cell.1, cell.2), Some(0), "a hole");
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"rubble, and no idea what was lost"
+		);
+		assert_eq!(sim.test_inventory_count(1, ore), 0);
+
+		// 2. At the reveal, bare-handed: refused before the hold opens.
+		let mut sim = super::harness::flat_sim_at("ore-refuse", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [cell.0, cell.1, cell.2],
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::NeedsTool,
+					..
+				}
+			)),
+			"a revealed vein refuses a bare hand: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+		// 3. With the siphon: a draw, not a dig.
+		let mut sim = super::harness::flat_sim_at("ore-draw", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.test_grant(1, BlockType::EssenceSiphon, 1);
+		sim.bench_set_active_tool(1, BlockType::EssenceSiphon);
+		let before = (
+			sim.test_skill_xp(1, Skill::Mining),
+			sim.test_skill_xp(1, Skill::Alchemy),
+		);
+		let mut t = 100;
+		// Timed as the ORE, which is slower than the stone it sits in.
+		let hold = ore.hardness_ticks().unwrap() as u32 + 8;
+		let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(dug, cell);
+		assert_eq!(
+			sim.test_cell_at(cell.0, cell.1, cell.2),
+			Some(BlockType::DepletedStone as u16),
+			"a tapped face, not a hole — mining ore never excavates"
+		);
+		assert_eq!(sim.test_inventory_count(1, ore), 1, "the ore itself");
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			0,
+			"never the stone's own drop"
+		);
+		let (mining_xp, alch_xp) = digblock_core::skills::ore_field_xp(ore).expect("an ore");
+		assert_eq!(
+			sim.test_skill_xp(1, Skill::Mining) - before.0,
+			mining_xp,
+			"full Mining at the rock face"
+		);
+		assert_eq!(
+			sim.test_skill_xp(1, Skill::Alchemy) - before.1,
+			alch_xp,
+			"and the Alchemy cut — neither skill levels alone"
+		);
+
+		// 4. And it is timed as the ore on THIS end too. Case 3 alone
+		//    cannot show that: it holds for the ore's own length, which
+		//    satisfies a server timing the draw by either number. The
+		//    ores are 120–240 against Stone's 90, so a server reading the
+		//    cell's hardness would hand out an Aetherock for 37% of the
+		//    intended hold — a gap `dig_grace` comes nowhere near, and one
+		//    a modified client can simply take.
+		let mut sim = super::harness::flat_sim_at("ore-short", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.test_grant(1, BlockType::EssenceSiphon, 1);
+		sim.bench_set_active_tool(1, BlockType::EssenceSiphon);
+		let mut t = 100;
+		let stone_hold = BlockType::Stone.hardness_ticks().unwrap() as u32 + 8;
+		assert!(
+			stone_hold < ore.hardness_ticks().unwrap() as u32,
+			"the vein has to out-last its stone or this proves nothing"
+		);
+		let dug = dig_hold(&mut sim, 1, down, stone_hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert_eq!(
+			sim.test_cell_at(dug.0, dug.1, dug.2),
+			Some(BlockType::Stone as u16),
+			"a stone-length hold does not draw the vein"
+		);
+		assert_eq!(sim.test_inventory_count(1, ore), 0, "and credits nothing");
+	}
+
+	/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the
+	/// PLANE of the face it hits, derived from the server's own raycast
+	/// and its own world — the client names one cell and this end decides
+	/// what the swing touched.
+	///
+	/// The three properties that matter, in one test because they are one
+	/// mechanism: the width follows the level (3, then 9), every extra
+	/// cell holds the same id, and the credit is one per BLOCK broken —
+	/// which is what `begin_multi`'s single `inv_delta` describes.
+	#[test]
+	fn the_resonant_pick_breaks_the_plane_the_server_derives() {
+		use digblock_core::block::BlockType;
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		for (level, want) in [(54u32, 1usize), (55, 3), (85, 9)] {
+			let mut sim = flat_sim(&format!("pick{level}"));
+			let mut c = connect(&mut sim, 1);
+			wait_live(&mut sim, 1);
+			sim.bench_set_mining_level(1, level);
+			sim.test_grant(1, BlockType::ResonantPick, 1);
+			sim.bench_set_active_tool(1, BlockType::ResonantPick);
+			let mut t = 100;
+			// Straight down at the flat stone floor: the plane is
+			// horizontal, so every cell of it is stone and qualifies.
+			let down = Vec3::new(0.0, -1.0, 0.0);
+			let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+			let dug = dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+			c.drain();
+			let broken = (-1..=1)
+				.flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
+				.filter(|&(dx, dz)| sim.test_cell_at(dug.0 + dx, dug.1, dug.2 + dz) == Some(0))
+				.count();
+			assert_eq!(broken, want, "level {level} breaks {want}");
+			assert_eq!(
+				sim.test_inventory_count(1, BlockType::Rubble),
+				want as u32,
+				"level {level}: one credit per block, not per swing"
+			);
+			// Nothing behind the face: a pick widens a wall, it does not
+			// bore through one.
+			assert_ne!(
+				sim.test_cell_at(dug.0, dug.1 - 1, dug.2),
+				Some(0),
+				"level {level} tunnelled"
+			);
+		}
+	}
+
+	/// A protected cell ANYWHERE in the pick's plane refuses the whole
+	/// swing — proved rather than cited, because "the check already runs
+	/// over the assembled `writes`" is exactly the kind of claim that
+	/// stops being true the moment somebody assembles the writes
+	/// differently. Nothing partially breaks: a refused action leaves the
+	/// aimed cell standing too.
+	#[test]
+	fn a_protected_cell_refuses_the_whole_pick_swing() {
+		use digblock_core::block::BlockType;
+		use digblock_core::raycast::{raycast, REACH};
+		use digblock_net::messages::EditKind;
+		use glam::Vec3;
+		let mut sim = flat_sim("pick-protect");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, 85);
+		sim.test_grant(1, BlockType::ResonantPick, 1);
+		sim.bench_set_active_tool(1, BlockType::ResonantPick);
+		let pos = sim.test_player(1).unwrap().pos;
+		let down = Vec3::new(0.0, -1.0, 0.0);
+		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
+		// so the aimed cell itself is free and the refusal can only come
+		// from a cell the swing reached. (`lock_region` is a box CLEAR
+		// out from the eye's column, floor at eye.y - 2.)
+		let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
+		sim.bench_lock_spawn_at(Vec3::new(
+			lock_x as f32 + 0.5,
+			hit.cell.1 as f32 + 2.5,
+			hit.cell.2 as f32 + 0.5,
+		));
+		assert!(
+			digblock_core::protect::immutable(
+				hit.cell.0 + 1,
+				hit.cell.1,
+				hit.cell.2,
+				sim.spawn_lock().as_ref()
+			) && !digblock_core::protect::immutable(
+				hit.cell.0,
+				hit.cell.1,
+				hit.cell.2,
+				sim.spawn_lock().as_ref()
+			),
+			"the lock has to straddle the plane, not swallow it"
+		);
+		let mut t = 100;
+		let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+		dig_hold(&mut sim, 1, down, hold, 1, EditKind::Dig, &mut t);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditRejected {
+					reason: digblock_net::messages::RejectReason::Protected,
+					..
+				}
+			)),
+			"the swing reached a locked cell: {:?}",
+			c.msgs
+		);
+		assert_ne!(
+			sim.test_cell_at(hit.cell.0, hit.cell.1, hit.cell.2),
+			Some(0),
+			"nothing partially broke"
+		);
+	}
+
 	/// SIM v13's craft gate, server half: a DigStart on a craft-only block
 	/// below the Alchemy level that makes it refuses with `NotUnlocked` and
 	/// opens no hold — you cannot mine your way to a torch you can't yet
@@ -2316,12 +2726,27 @@ mod tests {
 		let mut sim = flat_sim("pace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// Derived from the constants, never spelled out: the bucket's
+		// capacity is no longer two reference blocks flat — it also has to
+		// cover the single costliest extraction, or the deepest ores are
+		// refused forever (`the_bucket_can_always_afford_the_costliest_block`).
+		// A test naming "2" pins the sizing instead of the RULE, and the
+		// rule is what this is about: a full bucket admits a bounded bunch
+		// and not one block more.
+		let pace = digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1);
+		let admits = (digblock_core::alchemy::extract_burst_ticks(1) / pace as f32) as u32;
+		let over = admits + 1;
+		assert!(admits >= 2, "a burst that admits fewer than two is not one");
+		assert!(
+			(over * pace) as f32 > digblock_core::alchemy::extract_burst_ticks(1),
+			"the over-budget op has to actually be over budget"
+		);
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let mut t = 0;
-		for seq in 1..=3 {
+		for seq in 1..=over {
 			dig_hold(&mut sim, 1, down, 90, seq, EditKind::Dig, &mut t);
 		}
-		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 3);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), over);
 		let convert = |count: u32| SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::Alchemy {
@@ -2331,35 +2756,47 @@ mod tests {
 				},
 			},
 		};
-		// A bulk op costs per block: 3 > the burst of 2 — refused
-		// outright, nothing debited.
-		sim.tick_once(vec![convert(3)]);
+		// One op per tick throughout: an Alchemy message also spends an
+		// EDIT token, so bunching several into one tick measures that
+		// bucket instead of this one.
+		//
+		// A bulk op costs per block, so one block past the burst is one
+		// block too many — refused outright, nothing debited.
+		sim.tick_once(vec![convert(over)]);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::Rubble),
-			3,
-			"bulk convert refused with no debit"
+			over,
+			"bulk convert beyond the burst refused with no debit"
 		);
-		// The burst: two single-block ops land, the third runs dry.
-		sim.tick_once(vec![convert(1), convert(1), convert(1)]);
+		// Exactly the burst, though, lands — and empties the bucket.
+		sim.tick_once(vec![convert(admits)]);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::Rubble),
 			1,
-			"burst admits exactly 2"
+			"a bulk op the bucket CAN cover goes through"
 		);
-		// One pace interval refills exactly one token.
-		for _ in 0..digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1) {
+		// Which leaves nothing for the next one: the burst is spent and a
+		// single tick's refill is not a block.
+		sim.tick_once(vec![convert(1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"the drip is what is left once the burst is gone"
+		);
+		// One pace interval refills exactly one block's worth.
+		for _ in 0..pace {
 			sim.tick_once(vec![]);
 		}
 		sim.tick_once(vec![convert(1)]);
 		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
-		// Refused ops never paid XP: the final total reflects exactly
-		// the three landed blocks (ceil(24/3) = 8 each).
+		// Refused ops never paid XP: the final total reflects exactly the
+		// landed blocks (ceil(24/3) = 8 each).
 		c.drain();
 		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
 			ServerMsg::XpGain { skill: 1, total } => Some(*total),
 			_ => None,
 		});
-		assert_eq!(last_alch, Some(3 * 8), "XP only for landed blocks");
+		assert_eq!(last_alch, Some(u64::from(over) * 8), "XP only for landed");
 	}
 
 	/// A live identity refuses a second connection; anonymous (all-zero)

@@ -18,19 +18,21 @@
 //! grid beneath (locked ones dim with an unlock badge, affordable ones
 //! count-badged), a detail strip, and the tab's ONE `TRANSMUTE` button
 //! — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what the holdings
-//! afford. `every_craftable_appears_in_exactly_one_family` holds
-//! `FAMILIES` to the core catalog, so a new craftable cannot silently
-//! miss the screen.
+//! afford. The families are DERIVED from §7.2's shape axis rather than
+//! mirrored by hand, and `every_craftable_appears_in_exactly_one_family`
+//! holds the derivation to the core catalog, so a new craftable cannot
+//! silently miss the screen.
 //!
 //! The screen never mutates game state: `handle_input`/`tick` return
 //! actions; the engine applies them locally offline or sends them to
 //! the server online (the `InventoryFull` echo is the rebase).
 
 use digblock_core::alchemy;
-use digblock_core::block::{BlockType, Essence};
+use digblock_core::block::{BlockType, Essence, ShapeFamily};
 use digblock_core::hotbar::HotbarItem;
 use digblock_core::inv_grid::{InvGrid, GRID_SLOTS};
 use digblock_core::inventory::Inventory;
+use digblock_core::material::Material;
 use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -70,6 +72,11 @@ const TAB_CONTENT_GAP: f32 = theme::SECTION_GAP;
 const PROGRESS_H: f32 = 4.0;
 /// How long a rejected drop's explanation holds the preview line.
 const HINT_SECS: f32 = 2.0;
+/// What a tile the level has not opened yet wears. Both tabs dim rather
+/// than hide, and both stay interactive — the screen teaches by letting
+/// you ask and answering, which is the whole reason a locked tile is
+/// still a drop source and still a click target.
+const LOCKED_TINT: u32 = 0xFF58_5858;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AlchTab {
@@ -86,6 +93,11 @@ pub struct AlchView {
 	pub xp_frac: f32,
 	pub subs: [u32; Essence::COUNT],
 	pub bucket_full: bool,
+	/// How many more of each id the inventory can take. Zero for a tool
+	/// already owned and for a charged bucket — `apply_alchemy` refuses
+	/// a craft on exactly this number, so the button has to grey on it
+	/// too or the offer is a lie the player pays for.
+	pub headroom: [u32; BlockType::COUNT],
 }
 
 impl AlchView {
@@ -100,11 +112,16 @@ impl AlchView {
 		for (i, &e) in Essence::ALL.iter().enumerate() {
 			subs[i] = inv.sub_count(e);
 		}
+		let mut headroom = [0u32; BlockType::COUNT];
+		for &b in BlockType::ALL.iter() {
+			headroom[b as usize] = inv.headroom(b);
+		}
 		Self {
 			level,
 			xp_frac,
 			subs,
 			bucket_full: inv.bucket_full(),
+			headroom,
 		}
 	}
 
@@ -117,21 +134,15 @@ impl AlchView {
 		let Some(ideal) = alchemy::craft_ideal(item) else {
 			return 0;
 		};
-		// The bucket charge crafts one at a time by definition.
-		let cap = if item == BlockType::Water {
-			if self.bucket_full {
-				return 0;
-			}
-			1
-		} else {
-			u32::MAX
-		};
 		ideal
 			.iter()
 			.map(|&(e, n)| self.subs[e as usize] / alchemy::craft_cost(n, self.level))
 			.min()
 			.unwrap_or(0)
-			.min(cap)
+			// Capped types buy what they can hold and no more: one
+			// bucket charge, one of any tool. Affordability is not the
+			// only ceiling.
+			.min(self.headroom[item as usize])
 	}
 }
 
@@ -182,58 +193,69 @@ impl Default for AlchScreen {
 
 /// One transmute family: a tile that previews its members in slow
 /// rotation; selecting it lays the members out under the tab's single
-/// TRANSMUTE button. The grouping is the UI's own — SKILLS-DESIGN
-/// §7.2's material × shape grid arrives as more members per family,
-/// not more machinery.
+/// TRANSMUTE button.
+///
+/// The grouping is no longer the UI's own — it IS SKILLS-DESIGN §7.2's
+/// shape axis (`block::ShapeFamily`), with members in material (i.e.
+/// unlock) order. A new material × shape pair therefore joins its family
+/// on its own, which is what lets the catalog grow without the screen
+/// growing. Only the FUNCTIONAL families are authored here, because §7.3's
+/// hand-priced items are not a substance in a form and have no axis to
+/// derive from.
 pub struct Family {
 	pub name: &'static str,
-	pub members: &'static [BlockType],
+	pub members: Vec<BlockType>,
 }
 
-pub const FAMILIES: [Family; 6] = [
-	Family {
-		name: "LIGHTS",
-		members: &[BlockType::Torch],
-	},
-	Family {
-		name: "SLABS",
-		members: &[
-			BlockType::WoodSlab,
-			BlockType::StoneSlab,
-			BlockType::LumberSlab,
+/// Families the grid cannot derive: hand-priced functional items, grouped
+/// by what they DO. Drawn after the shape families.
+const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
+	(
+		"LIGHTS",
+		&[BlockType::Torch, BlockType::Lantern, BlockType::Aetherlamp],
+	),
+	(
+		"FURNITURE",
+		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
+	),
+	(
+		"TOOLS",
+		&[
+			BlockType::EssenceSiphon,
+			BlockType::ResonantPick,
+			BlockType::MastersSigil,
 		],
-	},
-	Family {
-		name: "STAIRS",
-		members: &[
-			BlockType::WoodStairs,
-			BlockType::StoneStairs,
-			BlockType::LumberStairs,
-		],
-	},
-	Family {
-		name: "DOORS",
-		members: &[BlockType::LumberDoor],
-	},
-	Family {
-		name: "BLOCKS",
-		members: &[
-			BlockType::Stone,
-			BlockType::Wood,
-			BlockType::Lumber,
-			BlockType::Dirt,
-			BlockType::Sand,
-			BlockType::Sandstone,
-			BlockType::Snow,
-			BlockType::Grass,
-			BlockType::Mud,
-		],
-	},
-	Family {
-		name: "WATER",
-		members: &[BlockType::Water],
-	},
+	),
+	("WATER", &[BlockType::Water]),
 ];
+
+/// The transmute tab's families, built once per process: one per shape in
+/// `ShapeFamily::ALL` order (members in material order, empty families
+/// dropped), then the functional ones.
+pub fn families() -> &'static [Family] {
+	static FAMILIES: std::sync::OnceLock<Vec<Family>> = std::sync::OnceLock::new();
+	FAMILIES.get_or_init(|| {
+		let mut out: Vec<Family> = ShapeFamily::ALL
+			.into_iter()
+			.map(|s| Family {
+				name: s.name(),
+				members: Material::ALL
+					.into_iter()
+					.filter_map(|m| BlockType::from_grid(m, s))
+					.filter(|&b| unlock::craft(b).is_some())
+					.collect(),
+			})
+			// A shape nobody has authored a material for yet would draw an
+			// empty tile with nothing behind it.
+			.filter(|f| !f.members.is_empty())
+			.collect();
+		out.extend(FUNCTIONAL_FAMILIES.iter().map(|&(name, members)| Family {
+			name,
+			members: members.to_vec(),
+		}));
+		out
+	})
+}
 
 /// Seconds one cycle of the family tile's member rotation takes. A
 /// member is meant to be READ before it goes, so the hold is most of it.
@@ -247,11 +269,9 @@ const FAMILY_SWAP_SECS: f32 = 0.30;
 /// (0..=1, scaling both the icon and its alpha).
 ///
 /// The rotation used to hard-cut, which read as a glitch rather than as
-/// a tile cycling its contents. The outgoing member shrinks away over
-/// the first half of the swap window and the incoming one grows in over
-/// the second, so the tile never shows two icons at once — cross-fading
-/// two overlapping 3D icons is a double exposure of their internal
-/// faces, and the effect is a rotation, not a dissolve.
+/// a tile cycling its contents. The handover itself is
+/// [`super::super::handover`] — the same shrink-away/grow-in the hotbar's
+/// tool slot plays when you cycle tools, and for the same reason.
 ///
 /// A one-member family never transitions: there is nothing to trade it
 /// for, and a tile pulsing on its own is just noise.
@@ -266,12 +286,8 @@ fn family_preview(clock: f32, members: usize) -> (usize, f32) {
 	if into < hold {
 		return (i % members, 1.0);
 	}
-	let u = (into - hold) / FAMILY_SWAP_SECS;
-	if u < 0.5 {
-		(i % members, 1.0 - 2.0 * u)
-	} else {
-		((i + 1) % members, 2.0 * u - 1.0)
-	}
+	let (incoming, present) = crate::ui::handover((into - hold) / FAMILY_SWAP_SECS);
+	((i + usize::from(incoming)) % members, present)
 }
 
 /// Scale a 0xAABBGGRR tint's alpha by `f` (the icon's own fade, so the
@@ -450,7 +466,7 @@ impl AlchScreen {
 	/// family never moves the panel either.
 	fn member_rows_h(style: &Style) -> f32 {
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
-		FAMILIES
+		families()
 			.iter()
 			.map(|f| spec.extent(f.members.len()).1)
 			.fold(0.0, f32::max)
@@ -676,14 +692,28 @@ impl AlchScreen {
 		// The bucket charge as a single water tile, right-aligned in the
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
-		let bucket_tile = (view.bucket_full && unlock::can_extract(BlockType::Water, view.level))
+		//
+		// Gated on the CHARGE only. The unlock is deliberately NOT a
+		// condition here, because hiding the tile below Alchemy 15 hid
+		// the refusal with it: the drop handler already answers
+		// "WATER CHARGE — LV 15", and that message was unreachable for
+		// the one item it was written for. Every block in the grid can be
+		// dragged and told its level; water has no grid slot to be told
+		// from, so this tile is the only place a player can ever learn
+		// the charge is worth Aqua at all. Locked it dims and still
+		// drags, exactly as a locked transmute tile dims and still
+		// selects — pinned by `a_locked_bucket_charge_still_explains_itself`.
+		let bucket_tile = view
+			.bucket_full
 			.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
 		if let Some(tile) = bucket_tile {
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(BlockType::Water), false);
+			let locked = !unlock::can_extract(BlockType::Water, view.level);
 			widgets::slot(
 				ui,
 				InvId::BucketTile,
 				tile,
-				Some(hud::item_icon(HotbarItem::Block(BlockType::Water), false)),
+				Some((kind, if locked { LOCKED_TINT } else { tint })),
 				icon_px,
 				widgets::SlotRing::None,
 				tile.contains(cx, cy),
@@ -763,7 +793,6 @@ impl AlchScreen {
 		row_w: f32,
 		mut y: f32,
 	) {
-		const LOCKED_TINT: u32 = 0xFF58_5858;
 		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
 		let text_pad = scale::text_pad_x(s);
@@ -777,7 +806,7 @@ impl AlchScreen {
 		// one. A family whose every member is locked dims like a locked
 		// tile and badges its earliest unlock.
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
-		for (i, fam) in FAMILIES.iter().enumerate() {
+		for (i, fam) in families().iter().enumerate() {
 			let rect = fam_spec.rect(i);
 			let all_locked = fam
 				.members
@@ -824,9 +853,9 @@ impl AlchScreen {
 		// Nothing selected yet draws none of it: the row's height is
 		// reserved either way (`member_rows_h` is the max over every
 		// family), so picking one fills a gap instead of moving the page.
-		let picked = self.family.map(|f| f.min(FAMILIES.len() - 1));
+		let picked = self.family.map(|f| f.min(families().len() - 1));
 		if let Some(f) = picked {
-			let family = &FAMILIES[f];
+			let family = &families()[f];
 			let member = self.member.min(family.members.len() - 1);
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 			for (j, &item) in family.members.iter().enumerate() {
@@ -889,7 +918,7 @@ impl AlchScreen {
 			);
 			return;
 		};
-		let family = &FAMILIES[f];
+		let family = &families()[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
 		let need = unlock::craft(item).unwrap_or(u32::MAX);
@@ -908,6 +937,14 @@ impl AlchScreen {
 			kind,
 			if locked { LOCKED_TINT } else { tint },
 		);
+		let btn = Rect::new(
+			strip.x + strip.w - text_pad - BTN_W * s,
+			strip.y + (strip_h - BTN_H * s) / 2.0,
+			BTN_W * s,
+			BTN_H * s,
+		);
+		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
+		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
 		let text = if locked {
 			format!("{}   —   LV {need}", block_name(item))
 		} else {
@@ -917,30 +954,42 @@ impl AlchScreen {
 				.map(|&(e, n)| format!("{} {}", alchemy::craft_cost(n, view.level), e.name()))
 				.collect::<Vec<_>>()
 				.join(" + ");
-			match batches {
-				0 => {
-					// Name the first shortfall so the player knows what
-					// to go extract.
-					let need = ideal
-						.iter()
-						.find_map(|&(e, n)| {
-							let cost = alchemy::craft_cost(n, view.level);
-							let have = view.subs[e as usize];
-							(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
-						})
-						.unwrap_or_else(|| "NOTHING TO CHARGE".into());
-					format!("{}   —   {costs}   ·   {need}", block_name(item))
+			let tail = match batches {
+				// A full cap is not a shortfall, and naming an essence
+				// here would send the player off to extract something
+				// that cannot help. Tools are a yes/no; the bucket holds
+				// one charge.
+				0 if view.headroom[item as usize] == 0 => {
+					if item.is_tool() {
+						"ALREADY OWNED".to_string()
+					} else {
+						"ALREADY CHARGED".to_string()
+					}
 				}
-				n => format!("{}   —   {costs}   ·   ×{n}", block_name(item)),
+				// Name the first shortfall so the player knows what to go
+				// extract.
+				0 => ideal
+					.iter()
+					.find_map(|&(e, n)| {
+						let cost = alchemy::craft_cost(n, view.level);
+						let have = view.subs[e as usize];
+						(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
+					})
+					.unwrap_or_else(|| "NOTHING TO CHARGE".into()),
+				n => format!("×{n}"),
+			};
+			// The TAIL is what has to survive: a price is a static fact
+			// the player can go and read, but "why can't I" is this
+			// line's whole job — and the three-essence prices at the end
+			// of the catalog are long enough to push it off the end.
+			// Drop the costs before letting that happen.
+			let full = format!("{}   —   {costs}   ·   {tail}", block_name(item));
+			if ui.style.measure(&full) <= avail {
+				full
+			} else {
+				format!("{}   —   {tail}", block_name(item))
 			}
 		};
-		let btn = Rect::new(
-			strip.x + strip.w - text_pad - BTN_W * s,
-			strip.y + (strip_h - BTN_H * s) / 2.0,
-			BTN_W * s,
-			BTN_H * s,
-		);
-		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		widgets::label(
 			ui.dl,
 			Layer::Content,
@@ -948,7 +997,7 @@ impl AlchScreen {
 			strip.y + (strip_h - glyph) / 2.0,
 			glyph,
 			if locked { DIM } else { WHITE },
-			&elide(&ui.style, &text, btn.x - ICON_TEXT_GAP * s - text_x),
+			&elide(&ui.style, &text, avail),
 		);
 		widgets::button(
 			ui,
@@ -1052,13 +1101,13 @@ impl AlchScreen {
 						self.drag.on_press(self.cursor, id, BlockType::Water);
 					}
 					InvId::Family(i) => {
-						let i = (i as usize).min(FAMILIES.len() - 1);
+						let i = (i as usize).min(families().len() - 1);
 						if self.family != Some(i) {
 							self.family = Some(i);
 							// Land on the first member the level has
 							// opened (else the first, whose strip line
 							// names its unlock).
-							self.member = FAMILIES[i]
+							self.member = families()[i]
 								.members
 								.iter()
 								.position(|&m| unlock::can_craft(m, view.level))
@@ -1066,13 +1115,13 @@ impl AlchScreen {
 						}
 					}
 					InvId::Craft(j) => {
-						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
+						let family = &families()[self.family?.min(families().len() - 1)];
 						if (j as usize) < family.members.len() {
 							self.member = j as usize;
 						}
 					}
 					InvId::CraftGo => {
-						let family = &FAMILIES[self.family?.min(FAMILIES.len() - 1)];
+						let family = &families()[self.family?.min(families().len() - 1)];
 						let item = *family.members.get(self.member)?;
 						let want = if self.ctrl {
 							BULK_CTRL
@@ -1176,34 +1225,30 @@ fn elide(style: &Style, text: &str, max_w: f32) -> String {
 
 /// Display names for the transmute rows (blocks have no Display impl —
 /// debug names like "WoodStairs" are not UI text).
-fn block_name(b: BlockType) -> &'static str {
-	use BlockType as B;
+///
+/// A grid item is its substance and its form, in that order — "STONE" +
+/// "STAIRS" — so a new material × shape pair names itself and cannot land
+/// on the old table's `?` fallback. Only the hand-priced functional items
+/// need naming by hand, for the same reason they need pricing by hand.
+fn block_name(b: BlockType) -> String {
+	if let Some((m, s)) = b.grid_cell() {
+		return match s.item_suffix() {
+			Some(suffix) => format!("{} {suffix}", m.name()),
+			None => m.name().into(),
+		};
+	}
 	match b {
-		B::WoodSlab => "WOOD SLAB",
-		B::StoneSlab => "STONE SLAB",
-		B::WoodStairs => "WOOD STAIRS",
-		B::StoneStairs => "STONE STAIRS",
-		B::LumberDoor => "LUMBER DOOR",
-		B::LumberSlab => "LUMBER SLAB",
-		B::LumberStairs => "LUMBER STAIRS",
-		B::Lumber => "LUMBER",
-		B::Stone => "STONE",
-		B::Wood => "WOOD",
-		B::Dirt => "DIRT",
-		B::Sand => "SAND",
-		B::Sandstone => "SANDSTONE",
-		B::Snow => "SNOW",
-		B::Grass => "GRASS",
-		B::Mud => "MUD",
-		B::Water => "WATER CHARGE",
-		B::Torch => "TORCH",
-		// Extractables that only show up in the refusal hint.
-		B::Leaves => "LEAVES",
-		B::PineLeaves => "PINE LEAVES",
-		B::DryGrass => "DRY GRASS",
-		B::Gravel => "GRAVEL",
-		B::Rubble => "RUBBLE",
-		_ => "?",
+		BlockType::Water => "WATER CHARGE".into(),
+		BlockType::Torch => "TORCH".into(),
+		BlockType::Table => "TABLE".into(),
+		BlockType::Chair => "CHAIR".into(),
+		BlockType::Bed => "BED".into(),
+		BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
+		BlockType::ResonantPick => "RESONANT PICK".into(),
+		BlockType::Lantern => "LANTERN".into(),
+		BlockType::Aetherlamp => "AETHERLAMP".into(),
+		BlockType::MastersSigil => "MASTER'S SIGIL".into(),
+		_ => "?".into(),
 	}
 }
 
@@ -1239,7 +1284,7 @@ mod tests {
 		let mut hotbar = Hotbar::new();
 		let mut grid = InvGrid::default();
 		digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut grid);
-		let bar = HotbarView::build(&hotbar, &inv);
+		let bar = HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default());
 		let style = Style::new(1.0);
 		let mut screen = AlchScreen::default();
 		screen.open();
@@ -1284,6 +1329,29 @@ mod tests {
 			.handle_input(ev, &r.hits, &r.style, &r.view, &r.grid, &r.bar)
 	}
 
+	/// Every line of text the screen draws, in emission order — for the
+	/// assertions that are about what a player READS.
+	fn text_of(r: &Rig) -> String {
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: r.style,
+		};
+		r.screen.build(&mut ui, SIZE, &r.view, &r.grid, &r.inv, 1.0);
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		cmds.iter()
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::Text { range, .. } => {
+					Some(&arena[range.0 as usize..range.1 as usize])
+				}
+				_ => None,
+			})
+			.collect::<Vec<_>>()
+			.join(" | ")
+	}
+
 	fn center(rect: Rect) -> (f32, f32) {
 		(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
 	}
@@ -1323,6 +1391,55 @@ mod tests {
 			}
 		}
 		panic!("{b:?} neither on the bar nor in the grid");
+	}
+
+	/// A charged bucket is draggable at EVERY level, and below the Aqua
+	/// unlock the drop says so.
+	///
+	/// The tile used to be drawn only once `can_extract(Water)` passed,
+	/// which gated the same rule twice and lost the useful half: the drop
+	/// handler's "WATER CHARGE — LV 15" was unreachable, because the only
+	/// drag source for water was hidden until 15. Water is not slottable,
+	/// so unlike every other extractable there is no grid cell to learn
+	/// it from either — a player below 15 had no way to discover the
+	/// charge is worth anything at all.
+	///
+	/// Both halves are asserted: that the tile EXISTS locked (else the
+	/// message is unreachable again), and that dropping it explains
+	/// rather than silently starting a drip.
+	#[test]
+	fn a_locked_bucket_charge_still_explains_itself() {
+		let mut r = rig_at(1, |inv| inv.add(B::Water, 1));
+		assert!(r.view.bucket_full, "the rig has a charged bucket");
+		assert!(
+			!unlock::can_extract(B::Water, 1),
+			"level 1 is below the Aqua unlock, or this test proves nothing"
+		);
+
+		// The source exists even though the level does not allow the op.
+		let tile = r
+			.hits
+			.rect_of(InvId::BucketTile)
+			.expect("a charged bucket offers its tile at every level");
+		assert!(tile.w > 0.0 && tile.h > 0.0);
+
+		// Dropping it starts no drip and leaves an explanation naming the
+		// level, not a bare refusal and not silence.
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
+		let (hint, _) = r.screen.hint.clone().expect("a refused drop says why");
+		assert!(
+			hint.contains(&unlock::extract(B::Water).to_string()),
+			"the hint has to name the level: {hint:?}"
+		);
+		assert!(r.screen.extracting.is_none(), "no drip below the unlock");
+
+		// And at the unlock the same drag works, so the gate is a gate
+		// and not a wall.
+		let mut r = rig_at(unlock::extract(B::Water), |inv| inv.add(B::Water, 1));
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
+		assert_eq!(r.screen.extracting, Some(B::Water), "the drip starts");
 	}
 
 	/// §8.1's core loop: drag a stack onto the slot, and the drip sends
@@ -1408,14 +1525,20 @@ mod tests {
 		assert_eq!(r.screen.extracting, None, "you stand at the bench");
 	}
 
-	/// The bucket charge appears as a single water tile (level 15+ and
-	/// charged only), and extracting it is the ordinary Convert whose
-	/// debit IS the emptying.
+	/// The bucket charge appears as a single water tile whenever the tool
+	/// is charged, and extracting it is the ordinary Convert whose debit
+	/// IS the emptying.
 	#[test]
 	fn bucket_tile_extracts_the_charge() {
-		// Below 15: no tile at all.
-		let r = rig_at(1, |inv| inv.add(B::Water, 1));
-		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "locked at 1");
+		// An EMPTY bucket offers nothing — there is no charge to point at,
+		// and that is the only condition the tile has. The level is NOT
+		// one: below the unlock the tile is drawn locked so the drop can
+		// explain itself (`a_locked_bucket_charge_still_explains_itself`).
+		let r = rig_at(20, |_| {});
+		assert!(
+			r.hits.rect_of(InvId::BucketTile).is_none(),
+			"nothing to extract from an empty bucket"
+		);
 
 		let mut r = rig_at(20, |inv| inv.add(B::Water, 1));
 		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
@@ -1480,9 +1603,22 @@ mod tests {
 			"no button before a family is picked"
 		);
 
-		// SLABS: the WoodSlab the Flora affords. Ctrl asks for 100; the
-		// holdings clamp it.
-		let slabs = center(r.hits.rect_of(InvId::Family(1)).unwrap());
+		// Families are DERIVED from the shape axis, so their indices move
+		// as the catalog grows — look them up by the name a player reads
+		// rather than by a position that means nothing.
+		let family = |name: &str| {
+			InvId::Family(
+				families()
+					.iter()
+					.position(|f| f.name == name)
+					.unwrap_or_else(|| panic!("no {name} family")) as u8,
+			)
+		};
+		// SLABS leads (the shape axis first, cheapest form first, the
+		// hand-priced ones after). Its first unlocked member is the
+		// WoodSlab the Flora affords; Ctrl asks for 100 and the holdings
+		// clamp it.
+		let slabs = center(r.hits.rect_of(family("SLABS")).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -1513,7 +1649,7 @@ mod tests {
 		// The WATER family's one member is locked at 20: the tile still
 		// shows (the strip names LV 50), but the single button registers
 		// no hit — honest pixels, not a trap.
-		let water = center(r.hits.rect_of(InvId::Family(5)).unwrap());
+		let water = center(r.hits.rect_of(family("WATER")).unwrap());
 		press(&mut r, water);
 		rebuild(&mut r);
 		assert!(
@@ -1525,15 +1661,12 @@ mod tests {
 			"no button under a locked pick"
 		);
 
-		// BLOCKS: switching family lands on the first unlocked member
-		// (Stone — unaffordable with no Earth, button dark); picking
-		// Wood by tile makes the one button craft THAT.
-		let blocks = center(r.hits.rect_of(InvId::Family(4)).unwrap());
+		// BLOCKS: switching family lands on the first unlocked member —
+		// Wood, since the grid puts a material's whole learned set at the
+		// material's own level and Wood is the starter timber — and the
+		// one button crafts THAT.
+		let blocks = center(r.hits.rect_of(family("BLOCKS")).unwrap());
 		press(&mut r, blocks);
-		rebuild(&mut r);
-		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
-		let wood = center(r.hits.rect_of(InvId::Craft(1)).unwrap());
-		press(&mut r, wood);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
 		assert_eq!(
@@ -1543,10 +1676,26 @@ mod tests {
 				count: 1
 			})
 		);
+		// And picking an unlocked-but-unaffordable member by tile takes
+		// the button away again: "can't yet" and "can't afford" are
+		// different answers, and only one of them leaves a hit rect.
+		let stone = center(r.hits.rect_of(InvId::Craft(4)).unwrap());
+		press(&mut r, stone);
+		rebuild(&mut r);
+		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
 	}
 
 	/// The panel bottom-anchors above the hotbar on both tabs, and a
-	/// short window at a big scale fits by stepping the ladder.
+	/// short window at a big scale fits by stepping the ladder — until
+	/// the ladder BOTTOMS OUT, which `theme::fit_scale` documents as the
+	/// point where "a tight panel beats a panel sliding off the bottom of
+	/// the screen".
+	///
+	/// The last case is exactly that: a 960×600 window at 2.5× interface
+	/// scale asks for an enormous page in a tiny window, and since the
+	/// inventory grid grew to six rows there is no rung that fits it. What
+	/// still has to hold there is the part a player can act on — the top
+	/// of the panel is on screen and the layout used every pixel it had.
 	#[test]
 	fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 		for (size, scale) in [
@@ -1670,14 +1819,16 @@ mod tests {
 		assert_eq!(seen.len(), 2);
 	}
 
-	/// `FAMILIES` is a hand-maintained mirror of the core catalog: every
-	/// craftable appears in exactly one family, so a new `unlock::craft`
-	/// entry cannot silently never reach the screen.
+	/// The families are derived from the shape axis, so a new material ×
+	/// shape pair reaches the screen on its own — but a hand-priced
+	/// FUNCTIONAL item still has to be filed by hand, and this is what
+	/// catches one that wasn't. Every craftable appears in exactly one
+	/// family; nothing else appears at all.
 	#[test]
 	fn every_craftable_appears_in_exactly_one_family() {
 		for &b in &BlockType::ALL {
 			let craftable = unlock::craft(b).is_some();
-			let appearances: usize = FAMILIES
+			let appearances: usize = families()
 				.iter()
 				.map(|f| f.members.iter().filter(|&&m| m == b).count())
 				.sum();
@@ -1687,5 +1838,70 @@ mod tests {
 				"{b:?}: craftable blocks sit in exactly one family, others in none"
 			);
 		}
+	}
+
+	/// Owning a tool is a yes/no (§7.3), so the bench sells exactly one
+	/// and then stops offering it. `apply_alchemy` refuses a craft that
+	/// would vanish into the cap — an offer the rule refuses is one the
+	/// player pays 240 Metal for and gets nothing back — and the strip
+	/// says WHY: a cap is not a shortfall, and naming an essence here
+	/// would send them off to extract something that cannot help.
+	#[test]
+	fn an_owned_tool_is_no_longer_on_offer() {
+		let mut r = rig_at(99, |inv| {
+			for &e in &Essence::ALL {
+				inv.add_sub(e, 5_000);
+			}
+		});
+		let press = |r: &mut Rig, at: (f32, f32)| {
+			feed(r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+			feed(
+				r,
+				&InputEvent::MouseButton {
+					button: MouseButton::Left,
+					pressed: true,
+				},
+			)
+		};
+		let tab = center(r.hits.rect_of(InvId::Tab(1)).unwrap());
+		press(&mut r, tab);
+		rebuild(&mut r);
+		let tools = families()
+			.iter()
+			.position(|f| f.name == "TOOLS")
+			.expect("a TOOLS family");
+		let at = center(r.hits.rect_of(InvId::Family(tools as u8)).unwrap());
+		press(&mut r, at);
+		rebuild(&mut r);
+		let member = families()[tools]
+			.members
+			.iter()
+			.position(|&m| m == B::ResonantPick)
+			.expect("the pick is a tool");
+		let at = center(r.hits.rect_of(InvId::Craft(member as u8)).unwrap());
+		press(&mut r, at);
+		rebuild(&mut r);
+
+		assert_eq!(r.view.affordable(B::ResonantPick), 1, "one, never a batch");
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		assert_eq!(
+			press(&mut r, go),
+			Some(AlchAction::Craft {
+				item: B::ResonantPick,
+				count: 1
+			})
+		);
+
+		// The server's answer arrives: it's in the bag. The offer closes.
+		r.inv.add(B::ResonantPick, 1);
+		rebuild(&mut r);
+		assert_eq!(r.view.affordable(B::ResonantPick), 0);
+		assert!(
+			r.hits.rect_of(InvId::CraftGo).is_none(),
+			"no button on an item that cannot be crafted"
+		);
+		let text = text_of(&r);
+		assert!(text.contains("ALREADY OWNED"), "the strip explains: {text}");
+		assert!(!text.contains("NEED"), "a cap is not a shortfall: {text}");
 	}
 }

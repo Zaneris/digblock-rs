@@ -13,9 +13,18 @@ use crate::block::BlockType;
 use crate::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
-/// 4 rows of 9 (matching the hotbar's width) — comfortably above the
-/// block-type count, so a full collection always fits.
-pub const GRID_SLOTS: usize = 36;
+/// 6 rows of 9 (matching the hotbar's width) — comfortably above the
+/// slottable block-type count, so a full collection always fits.
+///
+/// That claim used to be a comment and is now a TEST
+/// (`the_grid_holds_every_type_a_player_can_own`), because the catalog
+/// grew past the old four rows: 36 grid + 8 bar slots held every type
+/// exactly until §7.2's later materials landed, and a player who owned
+/// one of everything would have found sixteen of them with nowhere to
+/// go. The wire does not care — `from_wire` takes what it is given and
+/// pads, so a save written at four rows decodes into six with its
+/// arrangement intact.
+pub const GRID_SLOTS: usize = 54;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InvGrid {
@@ -132,6 +141,21 @@ impl InvGrid {
 /// so the edit that empties a stack is still validated against the
 /// layout that holds it; the slot clears on the next frame.
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
+	// The tool slot's second axis, which no sweep below can reach: the bar
+	// holds `WaterTool` while `Hotbar::active_tool` says WHICH tool, and
+	// `from_wire` believes any tool id it is handed. That id arrives from
+	// the client on every `Layout`, so ownership has to be re-asserted
+	// here — the one place that sees the counts. Without it a crafted
+	// `Layout` naming the Resonant Pick is enough to swing it: the
+	// server's pick and siphon gates read `active_tool` and nothing else,
+	// so the Alch 55 unlock and the whole essence price are skipped. The
+	// bucket was safe only because it is `always_owned`, and that stopped
+	// being the whole roster.
+	if !inv.owns_tool(bar.active_tool()) {
+		if let Some(t) = inv.owned_tools().next() {
+			bar.set_active_tool(t);
+		}
+	}
 	for slot in 0..HOTBAR_SLOTS {
 		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
 			if inv.count(b) == 0 || !b.is_slottable() {
@@ -209,6 +233,57 @@ mod tests {
 		assert_eq!(on_grid + on_bar - 1, slottable, "everything placed once");
 	}
 
+	/// The capacity claim `GRID_SLOTS` makes, as an assertion rather than
+	/// a comment: every type a player can actually hold has somewhere to
+	/// be. A catalog wave that outgrows the grid fails HERE rather than
+	/// silently stranding whatever sorted last.
+	#[test]
+	fn the_grid_holds_every_type_a_player_can_own() {
+		// What a player can actually END UP HOLDING: something has to drop
+		// it or the bench has to make it. `is_slottable` alone also counts
+		// air and the water flow states, which nothing ever hands you.
+		let ownable = B::ALL
+			.iter()
+			.filter(|b| {
+				b.is_slottable() && (b.dig_drop().is_some() || crate::unlock::craft(**b).is_some())
+			})
+			.count();
+		// The bar's last slot is the tool's and holds no block.
+		let room = GRID_SLOTS + HOTBAR_SLOTS - 1;
+		assert!(
+			ownable <= room,
+			"{ownable} ownable types into {room} slots — grow GRID_SLOTS"
+		);
+		// And the headroom is nearly gone, which is worth knowing BEFORE
+		// the next wave: six rows is as tall as the alchemy screen's
+		// extract tab can be and still fit a 960×600 window at the
+		// interface-scale ceiling (`panel_sits_above_the_hotbar_and_fits_short_windows`
+		// is the wall). A seventh row needs that screen to scroll first,
+		// so a catalog wave that outgrows this is a UI job as well as a
+		// block row.
+		assert!(
+			room - ownable <= 4,
+			"unexpected slack — did the roster shrink?"
+		);
+	}
+
+	/// A layout saved at the old four rows decodes into six with its
+	/// arrangement intact, and one from the future is simply truncated.
+	#[test]
+	fn a_shorter_saved_grid_decodes_and_pads() {
+		let mut wire = vec![WIRE_EMPTY; 36];
+		wire[0] = B::Stone as u16;
+		wire[35] = B::Dirt as u16;
+		let grid = InvGrid::from_wire(&wire);
+		assert_eq!(grid.slots()[0], Some(B::Stone));
+		assert_eq!(grid.slots()[35], Some(B::Dirt));
+		assert!(grid.slots()[36..].iter().all(|s| s.is_none()));
+		assert_eq!(
+			InvGrid::from_wire(&vec![B::Stone as u16; 999]).slots()[0],
+			Some(B::Stone)
+		);
+	}
+
 	/// Water's count is the bucket's charge, not a stack, so it claims no
 	/// slot — including in layouts saved back when it did. That sweep is
 	/// the whole migration for existing players.
@@ -238,6 +313,65 @@ mod tests {
 			"reclaimed"
 		);
 		assert_eq!(grid.get(3), None);
+	}
+
+	/// A client can name any tool it likes on the `Layout` wire —
+	/// `Hotbar::from_wire` has no counts to check it against. Reconciling
+	/// is what takes an unowned one back, and it is the ONLY thing that
+	/// does: the server's pick and siphon gates read `active_tool`
+	/// directly, so a tool that survives this call is a tool that gets
+	/// used for free.
+	#[test]
+	fn an_unowned_active_tool_is_taken_back() {
+		let inv = inv_of(&[(B::Dirt, 1)]);
+		let mut grid = InvGrid::default();
+		// What a forged Layout does: `from_wire` believes the id.
+		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		wire[HOTBAR_SLOTS - 1] = B::ResonantPick as u16;
+		let mut bar = Hotbar::from_wire(&wire);
+		assert_eq!(bar.active_tool(), B::ResonantPick, "decoded as claimed");
+
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(
+			bar.active_tool(),
+			B::Bucket,
+			"an unowned tool falls back to the one every player has"
+		);
+
+		// Owning it makes the same claim stick — the gate is the count,
+		// not a whitelist.
+		let inv = inv_of(&[(B::Dirt, 1), (B::ResonantPick, 1)]);
+		let mut bar = Hotbar::from_wire(&wire);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.active_tool(), B::ResonantPick);
+		assert!(
+			!bar.slots()
+				.contains(&Some(HotbarItem::Block(B::ResonantPick))),
+			"and owning a tool still never fills a block slot"
+		);
+
+		// Losing it mid-session (a rebase that zeroes the count) hands the
+		// slot back rather than leaving a phantom pick in hand.
+		let inv = inv_of(&[(B::Dirt, 1)]);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.active_tool(), B::Bucket);
+	}
+
+	/// The roster the tool slot cycles is the roster ownership is judged
+	/// against — one definition, so the client's rail and the server's
+	/// gate cannot disagree about what is in hand.
+	#[test]
+	fn the_owned_roster_starts_at_the_bucket_and_grows_by_count() {
+		let inv = Inventory::default();
+		assert_eq!(inv.owned_tools().collect::<Vec<_>>(), vec![B::Bucket]);
+		let inv = inv_of(&[(B::EssenceSiphon, 1), (B::Stone, 40)]);
+		let owned: Vec<_> = inv.owned_tools().collect();
+		assert!(owned.contains(&B::Bucket) && owned.contains(&B::EssenceSiphon));
+		assert!(!owned.contains(&B::Stone), "a stack is not a tool");
+		assert!(
+			owned.windows(2).all(|w| (w[0] as u16) < (w[1] as u16)),
+			"block-id order, so both ends cycle the same way"
+		);
 	}
 
 	#[test]

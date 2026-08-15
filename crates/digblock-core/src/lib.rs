@@ -13,9 +13,11 @@ pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
 pub mod job_wire;
+pub mod material;
 pub mod mesher;
 pub mod metrics;
 pub mod overlay;
+pub mod pick;
 pub mod pipeline;
 pub mod player;
 pub mod protect;
@@ -110,4 +112,35 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// up by someone who couldn't have made it. Client prediction plus the
 /// server's DigStart backstop, exactly as v12's rock gate; a v12 peer
 /// would open holds the new server refuses.
-pub const SIM_VERSION: u16 = 13;
+/// v14: the material × shape grid — `unlock::craft` is DERIVED as
+/// `max(shape level, material level)` (SKILLS-DESIGN §7.2, `material.rs`)
+/// instead of hand-listed, which moves five thresholds: Wood 20 → 1,
+/// Dirt/Sand 20 → 5, StoneSlab 1 → 20, StoneStairs 5 → 20. Because
+/// `unlock::pickup` derives from `craft`, those are v13's craft gate
+/// answering differently — a v13 peer would open a hold on a stone slab
+/// the new server refuses below Alchemy 20, and refuse one on a log the
+/// new server allows. Worldgen and physics are untouched, so both
+/// goldens hold and no world is staled.
+/// v15: ore (SKILLS-DESIGN §5.3). Veins are DERIVED — `worldgen::ore` is
+/// a pure function both ends evaluate, `build_column` is byte-identical
+/// and the journal still carries Stone — but what a dig DOES is now
+/// shared behaviour: a revealed vein with the Essence Siphon in hand is
+/// an extraction that writes `DepletedStone` and credits the ore, one
+/// without it is refused at `DigStart`, and an extraction is TIMED as
+/// the ore rather than as the stone the cell holds. A v14 peer would
+/// break a seam into rubble at stone speed and lose it.
+/// v16: the Resonant Pick (SKILLS-DESIGN §5.6). One hold breaks the
+/// PLANE of the face it hits — three wide at Mining 55, nine at 85 — and
+/// the pick multiplies the hold time by a LEVEL-only factor
+/// (`skills::dig_required_with`). Both are shared behaviour derived from
+/// data each side already has (`pick::cells` over its own world, the
+/// multiplier over the level and the active tool), so a v15 peer times
+/// every pick hold differently and breaks one cell where the new server
+/// breaks nine. Mining 99's +1 ore rides here too.
+/// v17: §7.2's later materials and §7.3's lamps — twenty-one block rows
+/// (dressed stone, glass, metal, crystal, the two lamps, the sigil). No
+/// existing behaviour changes, but the ids do: a v16 peer decodes 55..74
+/// as Air, so a metal wall would simply not be there. Metal and Crystal
+/// also pick up `unlock::mine` gates at 40 and 60, which is v12's rock
+/// gate answering for substances that had no blocks until now.
+pub const SIM_VERSION: u16 = 17;

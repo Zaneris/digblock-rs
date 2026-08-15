@@ -17,12 +17,17 @@ pub struct EditOverlay {
 }
 
 impl EditOverlay {
-	/// Record the final cell value at a world position (LWW).
-	pub fn record(&mut self, x: i32, y: i32, z: i32, cell: u16) {
+	/// Record the final cell value at a world position (LWW). True if this
+	/// cell had never been recorded — which is a MESH-visible transition,
+	/// not bookkeeping: `ore::revealed` short-circuits on "has this cell
+	/// been touched?", so the first record on a cell is what stops its
+	/// column showing a vein there.
+	pub fn record(&mut self, x: i32, y: i32, z: i32, cell: u16) -> bool {
 		self.columns
 			.entry((x.div_euclid(16), z.div_euclid(16)))
 			.or_default()
-			.insert((x, y, z), cell);
+			.insert((x, y, z), cell)
+			.is_none()
 	}
 
 	pub fn column(&self, cx: i32, cz: i32) -> Option<&CellEdits> {

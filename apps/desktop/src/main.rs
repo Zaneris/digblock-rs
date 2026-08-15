@@ -298,6 +298,13 @@ fn main() {
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
 	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();
+	// DIG_ORE=<tier 1..=4>: a chamber hollowed around the nearest deposit
+	// of that tier, with the Mining level that reveals it. Ore is derived
+	// and invisible below its level, so no pose alone can photograph it.
+	config.debug_ore = std::env::var("DIG_ORE")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(0);
 	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
 	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
 	// 80 100`, which is the only way to see the break spread — one still
@@ -377,6 +384,11 @@ fn main() {
 	// Deterministic capture paths (bench, screenshot, drill) get no menu,
 	// no audio, and no master traffic — hermetic and bit-identical.
 	let interactive = !config.bench && options.screenshot.is_none() && !options.auto_drill;
+	// The engine needs the same answer: it decides from this whether to
+	// listen to input at all, and whether the shell may take the mouse
+	// pointer. Both used to key on `bench` alone, so a `--screenshot`
+	// run locked the operator's cursor and swallowed their keystrokes.
+	config.interactive = interactive;
 
 	// Saved settings apply to interactive runs only (captures must not be
 	// perturbed by user preferences), then explicit CLI flags win.

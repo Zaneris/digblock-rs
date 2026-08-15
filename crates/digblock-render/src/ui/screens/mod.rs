@@ -176,6 +176,7 @@ mod tests {
 	/// size, which no screen here draws.
 	#[test]
 	fn every_screen_draws_text_at_one_size() {
+		use crate::ui::theme;
 		for size in [(1280u32, 800u32), (1280, 720), (2560, 1600), (960, 600)] {
 			// Includes the off-quarter scales a 5%-step interface-scale
 			// preference now produces (1.0 × 0.7, 2.0 × 0.85): the frame's
@@ -191,19 +192,29 @@ mod tests {
 						"{name} mixed sizes {sizes:?}"
 					);
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
-					if name.starts_with("alchemy") {
-						// The one screen that can outgrow its window, so its
-						// fit pass may step the whole page down. What it may
-						// not do is invent a size: every step is a quarter
-						// off the frame's own scale, not a fraction of it,
-						// and the last one is the floor it bottoms out on.
+					if name.starts_with("alchemy") || name == "inventory" {
+						// The screens that can outgrow their window, so a
+						// fit pass may step the whole page down. Both draw
+						// the same six-row, 54-slot grid — the inventory
+						// screen with a title row on top, which makes it the
+						// TALLER of the two, and it went without a ladder
+						// long enough to hang its first row off the top of
+						// an ordinary window.
+						//
+						// What a fit pass may not do is invent a size: every
+						// step is a quarter off the frame's own scale, not a
+						// fraction of it, and the last one is the floor it
+						// bottoms out on — `theme::FIT_FLOOR`, which sits
+						// BELOW the interface scale's own floor because the
+						// alternative to a cramped page is an unreachable
+						// one.
 						let mut rungs: Vec<f32> = (0..16)
 							.map(|k| scale::glyph_px(s - k as f32 * 0.25))
 							.collect();
-						rungs.push(scale::glyph_px(scale::UI_SCALE_FLOOR));
+						rungs.push(scale::glyph_px(theme::FIT_FLOOR));
 						assert!(
 							rungs.contains(&px),
-							"alchemy drew {px}px, not a rung down from {s}: {rungs:?}"
+							"{name} drew {px}px, not a rung down from {s}: {rungs:?}"
 						);
 					} else {
 						assert_eq!(px, want, "{name} shrank to {px}");
