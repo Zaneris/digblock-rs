@@ -88,7 +88,8 @@ families and the rock gate** (SIM v12, protocol v17 — Fixed/Soft/Wood/Rock cur
 exact at 30; Sandstone opens at Mining 3, Stone/Rubble at 5), and its Alchemy twin, the
 **craft gate** (SIM v13, protocol v19 — a craft-only block refuses to be dug below the
 Alchemy level that makes it, so a pickup can't route around an unlock; the planed-timber
-set moved 40 → **15** with it, joining the bucket charge). M5+ remain design. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
+set moved 40 → **15** with it, joining the bucket charge). M5, M6 and M7's first wave
+landed after that — the header above lists what each one brought. Originally fleshed out from the brainstorm of 2026-08-09, grounded in
 the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every number in here
 is a tuning proposal, not a promise — but the *shapes* (which functions exist, where
 authority lives, what migrates how) are meant to be the real plan.
@@ -509,7 +510,10 @@ slot is a separate axis:
   and both persistence formats all ride the existing count machinery untouched. Launch
   roster: the **bucket** (owned from the start, as today), the **Essence Siphon**
   (crafted Alch 10), the **Resonant Pick** (crafted Alch 55) — three tools, which is
-  exactly when tap-9 cycling and the rail earn their keep.
+  exactly when tap-9 cycling and the rail earn their keep. Shipped: **four**, since
+  §7.3's **Master's Sigil** (Alch 99) is an item-only row you hold and so is `is_tool`
+  too — it does nothing, but it caps at one, cycles and draws in the rail like the rest,
+  which is exactly the point of routing ownership through the counts.
 - **Cycling**: tapping **9 again while the tool slot is already selected** advances the
   active tool through the owned set, wrapping. No new keys, and touch gets the identical
   rule for free — first tap of the tool slot selects it, further taps cycle. Selecting the

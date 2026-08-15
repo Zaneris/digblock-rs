@@ -950,17 +950,6 @@ impl Sim {
 		}
 	}
 
-	/// Record a hold-to-dig start (called from the ordered queue drain):
-	/// capture the cell's CURRENT block — the client never gets to claim
-	/// what it is digging. Within a tick the LAST start wins, exactly
-	/// like the client's retarget stream — an old first-wins per-tick cap
-	/// silently dropped the restart of a cancel+restart pair bunched into
-	/// one tick drain, leaving an honest hold with no server record
-	/// (DigIncomplete pop-back on completion). Floods still can't spin
-	/// the timer: a start on a new cell zeroes progress, and one on the
-	/// same cell can only ever RE-READ what the decay has left (see
-	/// below) — never add to it. The action-queue cap bounds the
-	/// per-tick volume.
 	/// Has this cell ever been written? The ore reveal's anti-dupe gate
 	/// (SKILLS-DESIGN §5.3), answered from the journal — the complete and
 	/// correct source, fluid included. `JournalIndex::record` only ever
@@ -1037,6 +1026,17 @@ impl Sim {
 		out
 	}
 
+	/// Record a hold-to-dig start (called from the ordered queue drain):
+	/// capture the cell's CURRENT block — the client never gets to claim
+	/// what it is digging. Within a tick the LAST start wins, exactly
+	/// like the client's retarget stream — an old first-wins per-tick cap
+	/// silently dropped the restart of a cancel+restart pair bunched into
+	/// one tick drain, leaving an honest hold with no server record
+	/// (DigIncomplete pop-back on completion). Floods still can't spin
+	/// the timer: a start on a new cell zeroes progress, and one on the
+	/// same cell can only ever RE-READ what the decay has left (see
+	/// below) — never add to it. The action-queue cap bounds the
+	/// per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
 		// Before the client borrow: `spawn_lock` reads all of `self`.
 		let lock = self.spawn_lock();

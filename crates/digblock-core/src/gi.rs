@@ -60,7 +60,7 @@ pub struct GiChunk {
 /// The window texture is `R8Uint`, so 256 classes is the whole budget and
 /// this constant is where it is SPLIT. It sat at 200 while there were
 /// eight shaped rows, which left 56 slots — and SKILLS-DESIGN §7.2's grid
-/// spends those per MATERIAL (a timber's stairs, slab and door are ~16
+/// spends those per MATERIAL (a timber's stairs, slab and door are ~12
 /// covers), so the third timber overflowed it. Full cubes need far less
 /// room than 200 ids: the split moved down to leave the shaped side the
 /// space the catalog actually grows into. Both halves are pinned, and the
@@ -69,10 +69,17 @@ pub struct GiChunk {
 /// The price to know before adding a material: **~12 classes per shaped
 /// material** (stairs 4 facings + slab 4 anchors/thirds + door 4 closed
 /// variants), measured at 117 of 144 across eleven shaped materials plus
-/// the furniture. That is roughly two more materials before this split
-/// has to move again — and a NEW shape family costs its own covers in
-/// every material at once, so a fence or a pane is far more expensive
-/// here than a fourth timber.
+/// the furniture.
+///
+/// Those 27 free slots are NOT a material's worth of room. The pin holds
+/// 16 back deliberately (`room - n >= 16`), so the build fails while
+/// there is still space to think in rather than at the panic — which
+/// leaves **11 spendable and the next full material costs 12**. The next
+/// shaped material therefore has to move the split FIRST, and there is
+/// plenty to move: the full-cube half is only used up to id 74, so 37
+/// ids sit idle below the base. A NEW shape family is the expensive
+/// case, since it costs its own covers in every material at once — a
+/// fence or a pane is far more than a fourth timber.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,

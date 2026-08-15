@@ -1794,7 +1794,6 @@ impl Pipeline {
 		self.deferred_count
 	}
 
-	/// True if the cell now holds `v` (freshly written or already there).
 	/// Re-mesh the chunk owning this cell, without writing anything. For
 	/// the one case where a chunk's MESH depends on something other than
 	/// its cells: the ore reveal reads the edit overlay, so recording a
@@ -1820,6 +1819,7 @@ impl Pipeline {
 		));
 	}
 
+	/// True if the cell now holds `v` (freshly written or already there).
 	fn try_apply(&mut self, cell: (i32, i32, i32), v: u16) -> bool {
 		self.set_cell(cell.0, cell.1, cell.2, v).is_some()
 			|| self.cell_at(cell.0, cell.1, cell.2) == Some(v)
