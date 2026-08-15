@@ -117,23 +117,25 @@ pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	}
 }
 
-/// The block behind an icon, if there is one — the water tool is an item
-/// with no block row to ask.
+/// The block behind an icon.
 ///
-/// The inverse of [`item_icon`], and the ONE place "which block is this
-/// icon" is answered. Both questions derived from it are properties of
-/// the block and never a special case on a type: whether the item draws
-/// as fullbright ink (`props().emissive`) and whether holding it lights
-/// the room (`props().light > 0`).
+/// The inverse of [`item_icon`] / [`tool_icon`], and the ONE place "which
+/// block is this icon" is answered. Both questions derived from it are
+/// properties of the block and never a special case on a type: whether
+/// the item draws as fullbright ink (`props().emissive`) and whether
+/// holding it lights the room (`props().light > 0`).
+///
+/// **Every icon has a row, tools included** — they are item-only rows,
+/// but they are rows, and asking one is exactly how those two questions
+/// stay properties of the block. No tool glows or emits today, so this
+/// answers the same thing absence did; a row that starts to needs no
+/// change here, which is the whole point of routing through it. `None`
+/// is left for an icon with genuinely nothing behind it rather than
+/// standing for "this is a tool".
 pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 	match kind {
 		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
-		IconKind::WaterTool { .. } => None,
-		// The authored tools DO have rows — item-only ones — so they
-		// answer with them rather than with absence. Both derived
-		// questions then stay properties of the row, which is the rule
-		// this function exists to keep: none of these three glows or
-		// emits today, and a row that starts to needs no change here.
+		IconKind::WaterTool { .. } => Some(BlockType::Bucket),
 		IconKind::Siphon => Some(BlockType::EssenceSiphon),
 		IconKind::Pick => Some(BlockType::ResonantPick),
 		IconKind::Sigil => Some(BlockType::MastersSigil),
@@ -385,6 +387,53 @@ mod tests {
 	use digblock_core::inventory::Inventory;
 
 	const SIZE: (u32, u32) = (1280, 720);
+
+	/// `icon_block` is a HAND-WRITTEN inverse, and the compiler only
+	/// checks that an arm exists. `IconKind` is closed, so a new variant
+	/// cannot be forgotten — but naming the wrong block in one compiles
+	/// perfectly, and the two questions this answers are exactly the ones
+	/// nobody would notice being wrong: an item would wear another item's
+	/// fullbright ink, and carry another item's light. A lamp icon
+	/// pointing at an unlit row simply stops lighting the room, in the
+	/// hand and on every remote player at once.
+	///
+	/// So walk the real catalog both ways rather than restating the
+	/// match. Tools go through `tool_icon` because that is the function
+	/// keyed by BLOCK; `item_icon(WaterTool, _)` is keyed by the SLOT,
+	/// whose active tool is a separate axis and need not be the bucket.
+	#[test]
+	fn icon_block_names_the_block_its_icon_was_built_from() {
+		for b in BlockType::ALL {
+			if b.is_tool() {
+				for full in [false, true] {
+					assert_eq!(
+						icon_block(tool_icon(b, full)),
+						Some(b),
+						"{b:?} (full={full}) does not survive the round trip"
+					);
+				}
+			} else if b.is_slottable() {
+				assert_eq!(
+					icon_block(item_icon(HotbarItem::Block(b), false).0),
+					Some(b),
+					"{b:?} does not survive the round trip"
+				);
+			}
+		}
+	}
+
+	/// The properties the inverse exists to serve. Stated as a rule about
+	/// ROWS, so it keeps holding when a future tool is authored to glow:
+	/// what the hand draws and what it lights must be what the block says,
+	/// never what the icon's variant happens to be.
+	#[test]
+	fn what_an_icon_glows_and_lights_by_comes_from_its_row() {
+		for b in BlockType::ALL.into_iter().filter(|b| b.is_tool()) {
+			let row = icon_block(tool_icon(b, false)).expect("a tool has a row");
+			assert_eq!(row.props().emissive, b.props().emissive);
+			assert_eq!(row.props().light, b.props().light);
+		}
+	}
 
 	fn sample_view() -> HotbarView {
 		let mut hotbar = Hotbar::new();
