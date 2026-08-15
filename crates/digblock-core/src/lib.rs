@@ -143,4 +143,33 @@ pub use chunk::{ChunkData, ChunkPos, CHUNK_SIZE};
 /// as Air, so a metal wall would simply not be there. Metal and Crystal
 /// also pick up `unlock::mine` gates at 40 and 60, which is v12's rock
 /// gate answering for substances that had no blocks until now.
-pub const SIM_VERSION: u16 = 17;
+/// v18: the dig curve rebuilt end to end (SKILLS-DESIGN §5.1). Three
+/// things change together. **The shape**: a family is now just two
+/// endpoints — its level-1 speed and its level-99 speed — with one
+/// shared `DIG_TAPER` deciding how the journey between them is spent,
+/// replacing v12's two linear segments hinged on a mid anchor. **The
+/// numbers**: every level-99 endpoint is exactly what it was, and level 1
+/// is half again as slow (Soft 1250 → 1875, Wood 1350 → 2025, Rock
+/// 1700 → 2550), so the early game is a longer climb and mastery lands
+/// where it already did. **The grid**: the curve is sampled every fifth
+/// level plus 99 (`skills::dig_speed_step`), twenty jumps in a life
+/// rather than ninety-eight sub-tick ones, each strictly smaller than the
+/// one before so level 1 → 5 is the biggest speedup a player ever feels.
+/// The load-bearing casualty is that **level 30 is no longer parity with
+/// the shipped hardness table** — it was the shared mid-curve golden from
+/// v11 through v17, and `hardness_ticks` is now a base the curve scales
+/// at every level. Both sides time holds independently, so a v17 peer's
+/// completions arrive early against a v18 server at every level but 99.
+///
+/// v18 also re-keys the STRENGTH WALL (`unlock::mine`) off the substance
+/// and onto the same `DigFamily`: Fixed/Soft from the first swing, Wood
+/// at 5, Rock at 10 — soil → timber → rock, every block of a family
+/// opening together. v12's per-material numbers survive only as a SECOND
+/// gate for substances that must also be earned (the ores at their own
+/// reveal, Metal 40, Crystal 60), and `mine` takes the later of the two.
+/// Sandstone therefore moves 3 → 10, stone 5 → 10, and gravel and timber
+/// stop being ungated. Emberore's reveal moves 10 → 15 with it, so the
+/// first vein is no longer visible in the first stone a player can break.
+/// Same shape as v12: client prediction plus the server's DigStart
+/// backstop, so a v17 peer opens holds the new server refuses.
+pub const SIM_VERSION: u16 = 18;

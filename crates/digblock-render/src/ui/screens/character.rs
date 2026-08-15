@@ -75,12 +75,13 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(99, "mastery; the master's sigil"),
 ];
 
-/// Mining's teasers: the two rock gates, then the four ore reveals — the
+/// Mining's teasers: the strength wall's two rungs, then the four ore
+/// reveals — the
 /// levels the whole skill is shaped around.
 const MINING_TEASERS: &[(u32, &str)] = &[
-	(3, "sandstone opens"),
-	(5, "stone and rubble open"),
-	(10, "emberore reveals — bring a siphon"),
+	(5, "timber gives — trees and planed wood"),
+	(10, "rock gives — gravel, sandstone, stone"),
+	(15, "emberore reveals — bring a siphon"),
 	(30, "duskstone reveals"),
 	(40, "metal opens — you can break what you smelt"),
 	(55, "glowvein reveals; the resonant pick swings wide"),
@@ -349,11 +350,12 @@ mod tests {
 				"{skill:?} teasers out of order"
 			);
 		}
-		// Mining's teasers are EXACTLY the rock gate — it opens nothing
-		// else, so an extra row here would be a promise the game breaks.
+		// Mining's teasers are EXACTLY what it opens — the strength wall's
+		// two rungs and then the reveals — so an extra row here would be a
+		// promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99]
+			vec![5, 10, 15, 30, 40, 55, 60, 80, 85, 90, 99]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.
@@ -370,12 +372,16 @@ mod tests {
 		// And the rows actually render: a level-1 character teases the
 		// first thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
-		assert!(fresh.contains("next: LV 3 — sandstone opens"), "{fresh}");
+		assert!(
+			fresh.contains("next: LV 5 — timber gives — trees and planed wood"),
+			"{fresh}"
+		);
 		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
 		let all = texts(&emit(&leveled)).join("\n");
-		assert!(!all.contains("next: LV 3 —"), "{all}");
+		assert!(!all.contains("next: LV 5 — timber"), "{all}");
+		assert!(all.contains("next: LV 15 — emberore reveals"), "{all}");
 	}
 
 	#[test]

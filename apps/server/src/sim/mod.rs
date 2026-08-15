@@ -664,7 +664,7 @@ impl Sim {
 
 	/// Raise a client's Mining to `level` (total-XP floor — never lowers,
 	/// like the wire's max-total rule). Harness/bench support: edit-path
-	/// digs must clear the rock gate without earning through it (the
+	/// digs must clear the strength wall without earning through it (the
 	/// gate's own test drives DigStart raw). Not #[cfg(test)] because
 	/// netbench — a bin, not a test — drives a real in-process Sim whose
 	/// flat world is stone.
@@ -1062,7 +1062,7 @@ impl Sim {
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
-		// The skill gates (SIM v12's rock gate, v13's craft gate), refused
+		// The skill gates (§5.1's strength wall, v13's craft gate), refused
 		// at the hold's start for the same reason protection is: the
 		// refusal is useless after the player held the button through a
 		// full dig timer. Honest clients predict it and never send this.
@@ -2247,7 +2247,7 @@ mod tests {
 		);
 	}
 
-	/// SIM v12's rock gate, server half: a DigStart on stone below
+	/// The strength wall, server half: a DigStart on stone below
 	/// Mining 5 refuses with `SkillGated` and opens no hold (refused at
 	/// the START — the player must not hold the button through a dig
 	/// timer for nothing); at the gate level the hold opens normally.
@@ -2281,7 +2281,10 @@ mod tests {
 		);
 		assert_eq!(sim.test_digging(1), None, "no hold opened");
 
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(
+			1,
+			digblock_core::unlock::mine(digblock_core::BlockType::Stone),
+		);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
@@ -2559,9 +2562,9 @@ mod tests {
 		let ground = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		// Stand a torch on the flat world's surface, clear of the capsule
 		// (DigStart validates the gates and the cell, never the reach). The
-		// world is stone, so clear the rock gate too — this test is about
+		// world is stone, so clear the strength wall too — this test is about
 		// the other one.
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let cell = (ground.cell.0 + 3, ground.cell.1 + 1, ground.cell.2);
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Torch as u16);
 		let start = |sim: &mut super::Sim| {
@@ -2601,7 +2604,7 @@ mod tests {
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Air as u16);
 		let mut c2 = connect(&mut sim, 2);
 		wait_live(&mut sim, 2);
-		sim.bench_set_mining_level(2, 5);
+		sim.bench_set_mining_level(2, digblock_core::unlock::mine(BlockType::Stone));
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 2,
 			msg: ClientMsg::DigStart {
@@ -2631,6 +2634,13 @@ mod tests {
 
 		let dir = temp_dir("xp");
 		let identity = [8u8; 16];
+		// dig_hold grants whatever the target's gates ask — for stone that
+		// is the Rock family's strength wall — and the dig pays its own 15
+		// on top of that level's total. Derived, so a retune of the wall or
+		// of the dig curve moves both halves together.
+		let granted =
+			digblock_core::skills::total_xp_for(digblock_core::unlock::mine(BlockType::Stone));
+		let after = granted + digblock_core::skills::dig_xp(BlockType::Stone);
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		{
 			let mut sim =
@@ -2646,19 +2656,13 @@ mod tests {
 			);
 			wait_live(&mut sim, 1);
 			let mut t = 0;
-			// dig_hold grants Mining 5 (the rock gate) = 394 total XP;
-			// the stone dig then pays its 15 on top.
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
 			c.drain();
 			assert!(
-				c.msgs.iter().any(|m| matches!(
-					m,
-					ServerMsg::XpGain {
-						skill: 0,
-						total: 409
-					}
-				)),
-				"stone dig pays 15 Mining on the granted 394: {:?}",
+				c.msgs
+					.iter()
+					.any(|m| matches!(m, ServerMsg::XpGain { skill: 0, total } if *total == after)),
+				"stone dig pays 15 Mining on the granted {granted}: {:?}",
 				c.msgs
 			);
 
@@ -2689,7 +2693,7 @@ mod tests {
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
 					m,
-					ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+					ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
 				)),
 				"reconnect carries the totals: {:?}",
 				c2.msgs
@@ -2705,7 +2709,7 @@ mod tests {
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
 			)),
 			"reboot carries the totals: {:?}",
 			c3.msgs

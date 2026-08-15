@@ -1628,10 +1628,10 @@ mod tests {
 		let mut sim = flat_sim("lookaway");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// The flat world is stone: clear the rock gate, or DigStart is
+		// The flat world is stone: clear the strength wall, or DigStart is
 		// refused outright and this test asserts nothing (it did — the
 		// gate shipped in protocol v17 and silently hollowed it out).
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1719,11 +1719,15 @@ mod tests {
 		let mut sim = flat_sim("digdecay");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		);
 		let start = || SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
@@ -1826,11 +1830,15 @@ mod tests {
 		let mut sim = flat_sim("digspent");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		);
 
 		let mut t = 0;
 		t += 1;
@@ -1918,12 +1926,19 @@ mod tests {
 		let mut sim = flat_sim("digpause");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// The flat world is stone: clear the rock gate (the gate has its
+		// The flat world is stone: clear the strength wall (it has its
 		// own test; this one is about the aim-miss pause).
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Derived, never hardcoded: the Rock family's curve is a tuning
+		// number and this test is about the aim-miss pause, not its value.
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		) as usize;
 
 		let mut t = 0;
 		t += 1;
@@ -1963,9 +1978,9 @@ mod tests {
 		sim.tick_once(vec![dig(1)]);
 		// Back on target: the banked 40 survive the miss stretch (which
 		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~100 more verified ticks complete the stone (Rock-family
-		// need at Mining 5 is 144, grace 16 → ≥ 128 verified).
-		for _ in 0..100 {
+		// so another `need` verified ticks complete the stone — a whole
+		// bar's worth clears `need - grace` from any starting bank.
+		for _ in 0..need {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -2002,11 +2017,18 @@ mod tests {
 		let mut sim = flat_sim("digrace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Stone world: clear the rock gate (not under test here).
-		sim.bench_set_mining_level(1, 5);
+		// Stone world: clear the strength wall (not under test here).
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Derived, never hardcoded — the curve is a tuning number and this
+		// test is about wire order.
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		) as usize;
 
 		let mut t = 0;
 		t += 1;
@@ -2019,8 +2041,9 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// Mining-5 stone needs 144 ticks (grace 16 → ≥ 128 verified).
-		for _ in 0..140 {
+		// A full bar of verified ticks at Mining 5, so the completing
+		// request below is honest whatever the family curve says.
+		for _ in 0..need {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -2472,8 +2495,8 @@ mod tests {
 		let mut sim = flat_sim("digflood");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Stone world: clear the rock gate (not under test here).
-		sim.bench_set_mining_level(1, 5);
+		// Stone world: clear the strength wall (not under test here).
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();

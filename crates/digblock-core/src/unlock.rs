@@ -2,7 +2,7 @@
 //! asks. Nothing else may hold an unlock number.
 //!
 //! Progression used to be spread across the modules that consumed it —
-//! craft and extraction levels in `alchemy`, the rock gate in `skills`,
+//! craft and extraction levels in `alchemy`, the strength wall in `skills`,
 //! and each call site re-deriving "may this player do this?" by hand from
 //! two tables and a comparison. Five copies of a comparison is five
 //! chances to add a third gate and miss one. So the tables live here
@@ -98,9 +98,9 @@ pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// First light, pre-ore on purpose (§7.3).
 		BlockType::Torch => 8,
-		// The ore tool, one level before the first vein reveals at Mining
-		// 10 — the game's first cross-skill handshake, and the reason
-		// neither skill can be levelled entirely from inside the other.
+		// The ore tool, ready before the first vein reveals at Mining 15 —
+		// the game's first cross-skill handshake, and the reason neither
+		// skill can be levelled entirely from inside the other.
 		BlockType::EssenceSiphon => 10,
 		// Furniture: the first things you make because you want them
 		// rather than because you need them, so they sit just past the
@@ -154,7 +154,15 @@ pub fn craft(b: BlockType) -> Option<u32> {
 /// threshold an event (veins fade in around you) rather than a number.
 pub fn reveal(b: BlockType) -> Option<u32> {
 	Some(match b {
-		BlockType::Emberore => 10,
+		// Deliberately ABOVE the Rock family's strength wall (§5.1), not on
+		// it. Ore that reveals at exactly the level rock opens is ore you
+		// have never not seen: the first seam would appear in the first
+		// stone you were ever able to break, and the stretch of plain
+		// quarrying the ladder is built around would not exist. It also
+		// leaves the property untestable — an unrevealed vein digs as
+		// ordinary stone, and there is no level that can dig stone and not
+		// see the tier-1 vein in it.
+		BlockType::Emberore => 15,
 		BlockType::Duskstone => 30,
 		BlockType::Glowvein => 55,
 		BlockType::Aetherock => 80,
@@ -204,24 +212,49 @@ pub fn extract(b: BlockType) -> u32 {
 	}
 }
 
-/// §5.1's rock gate: the Mining level below which `b` refuses to be dug
-/// at all (1 = ungated). Deliberately a strength wall — the doc's
-/// original "no strength wall" stance was reversed by design: rock opens
-/// a few levels in, after soft ground and loose gravel have paid for
-/// them.
+/// §5.1's strength wall: the Mining level below which `b` refuses to be
+/// dug at all (1 = ungated). Deliberately a wall — the doc's original "no
+/// strength wall" stance was reversed by design.
+///
+/// TWO gates, and a block waits for the later of them. [`mine_family`] is
+/// the strength ladder every diggable block sits on; [`mine_material`] is
+/// the handful of substances that additionally have to be EARNED, and it
+/// can only ever push a block later, never earlier.
 pub fn mine(b: BlockType) -> u32 {
-	b.material().map_or(1, mine_material)
+	let family = mine_family(b.dig_family());
+	let material = b.material().map_or(1, mine_material);
+	family.max(material)
 }
 
-/// The rock gate keyed on the SUBSTANCE, which is the only thing strength
-/// can be about — a stone stair resists a novice exactly as its stone
-/// does, and listing every shape by hand was how the old table came to
-/// name four blocks and miss the fifth.
+/// The strength wall keyed on the DIG FAMILY — the same axis that decides
+/// how long a hold takes (§5.1), which is the only thing raw strength can
+/// honestly be about. Soil and foliage from the first swing, timber at 5,
+/// rock at 10: the ladder a player climbs is soil → trees → stone, and
+/// each rung is opened by digging the one below it.
+///
+/// Keying it here rather than on the substance is what stopped rock being
+/// the only family with a wall at all. It also puts GRAVEL behind the
+/// same 10 as stone — it used to be the ungated "entry rock", and it
+/// isn't one any more, because timber is the thing that now stands
+/// between bare ground and the quarry.
+fn mine_family(f: crate::block::DigFamily) -> u32 {
+	use crate::block::DigFamily as F;
+	match f {
+		F::Fixed | F::Soft => 1,
+		F::Wood => 5,
+		F::Rock => 10,
+	}
+}
+
+/// The substances that have to be earned on top of their family's wall,
+/// keyed on the SUBSTANCE because that is what being earned is about — a
+/// metal stair resists exactly as its metal does, and listing every shape
+/// by hand was how the old table came to name four blocks and miss the
+/// fifth. Everything whose only wall is its strength answers 1 here and
+/// takes [`mine_family`]'s number.
 fn mine_material(m: Material) -> u32 {
 	use Material as M;
 	match m {
-		M::Sandstone | M::SandstoneBrick => 3,
-		M::Stone | M::StoneBrick | M::PolishedStone | M::Rubble | M::DepletedStone => 5,
 		// The ORES, at exactly the level that reveals them. A vein in
 		// pristine stone is already invisible below its tier, so this arm
 		// is about the other way an ore block exists: one somebody PLACED.
@@ -231,7 +264,8 @@ fn mine_material(m: Material) -> u32 {
 		// through to `_ => 1` and a Mining-1 newcomer could strip a
 		// Mining-80 player's Aetherock wall. The tell was the neighbour:
 		// DepletedStone — the SPENT face, worth Rubble — sat at 5 while
-		// the ore itself was ungated.
+		// the ore itself was ungated. The family wall does not cover this:
+		// ore is Rock, so on strength alone it would open at 10.
 		//
 		// Keyed to `reveal` rather than hand-numbered, so a retune of the
 		// reveal ladder cannot leave the two disagreeing;
@@ -244,7 +278,7 @@ fn mine_material(m: Material) -> u32 {
 		// something before someone else's metal wall comes apart.
 		M::Metal => 40,
 		M::Crystal => 60,
-		// Gravel stays the entry rock; everything else ungated.
+		// Everything else waits only for its family's strength wall.
 		_ => 1,
 	}
 }
@@ -260,7 +294,7 @@ fn reveal_of(b: BlockType) -> u32 {
 	}
 }
 
-/// The rock gate's Alchemy counterpart: the level below which `b` refuses
+/// The strength wall's Alchemy counterpart: the level below which `b` refuses
 /// to be dug because picking it up would hand you an item you cannot make
 /// (1 = ungated).
 ///
@@ -299,7 +333,7 @@ pub fn can_extract(b: BlockType, level: u32) -> bool {
 /// each carries the wording the feed speaks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
-	/// The material is too hard for this Mining level (the rock gate).
+	/// The block is too hard for this Mining level (the strength wall).
 	Strength,
 	/// The block is craft-only and this Alchemy level cannot make one, so
 	/// picking it up would hand out an item the player can't own yet.
@@ -477,41 +511,49 @@ mod tests {
 		}
 	}
 
-	/// The other half of the rock gate: no material may reach the
-	/// ungated fallback by ACCIDENT.
+	/// The other half of the strength wall: no material may reach the
+	/// EARNED table's ungated fallback by accident.
 	///
-	/// `mine_material`'s `_ => 1` is correct for soil, foliage and the
-	/// entry rock, and wrong for anything hard — but the two are
-	/// indistinguishable at the match arm, so a new substance that
-	/// nobody remembers to gate simply becomes free. Spelling the
-	/// ungated set out makes joining it a decision, the way
+	/// `mine_material`'s `_ => 1` means "this substance is only as hard as
+	/// its family", which is right for soil, foliage, timber and plain
+	/// rock and wrong for anything that has to be paid for — but the two
+	/// are indistinguishable at the match arm, so a new substance nobody
+	/// remembers to gate simply inherits its family's wall and no more.
+	/// Spelling the set out makes joining it a decision, the way
 	/// `material_roster_is_pinned` makes having a material at all one.
 	#[test]
-	fn the_ungated_materials_are_spelled_out() {
+	fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
 		use Material as M;
-		let ungated: Vec<Material> = Material::ALL
+		let family_only: Vec<Material> = Material::ALL
 			.into_iter()
 			.filter(|&m| mine_material(m) == 1)
 			.collect();
 		assert_eq!(
-			ungated,
+			family_only,
 			vec![
 				M::Wood,
 				M::Dirt,
 				M::Sand,
 				M::Lumber,
+				M::Stone,
 				M::DarkLumber,
+				M::StoneBrick,
+				M::Sandstone,
 				M::Snow,
 				M::Grass,
 				M::Mud,
 				M::Glass,
 				M::RedLumber,
+				M::PolishedStone,
+				M::SandstoneBrick,
+				M::Rubble,
 				M::Gravel,
 				M::DryGrass,
 				M::Leaf,
 				M::PineLeaf,
+				M::DepletedStone,
 			],
-			"a material joined or left the ungated set — is that intended?"
+			"a material joined or left the family-only set — is that intended?"
 		);
 	}
 
@@ -573,17 +615,53 @@ mod tests {
 		}
 	}
 
-	/// The rock gate (§5.1, the reversed-by-design "strength wall"): rock
-	/// refuses below its Mining level; gravel is the ungated entry rock.
+	/// The strength wall (§5.1, the reversed-by-design stance): the ladder
+	/// is the DIG FAMILY, so it is soil → timber → rock and every block of
+	/// a family opens together, shapes included. Substances that must also
+	/// be earned take the later of the two gates.
 	#[test]
-	fn rock_is_gated_until_its_level() {
+	fn the_strength_wall_is_the_dig_family() {
 		use BlockType as B;
-		assert_eq!(mine(B::Sandstone), 3);
-		for b in [B::Stone, B::StoneStairs, B::StoneSlab, B::Rubble] {
-			assert_eq!(mine(b), 5, "{b:?}");
+		// Soil and foliage from the first swing.
+		for b in [B::Dirt, B::Grass, B::Sand, B::Snow, B::Mud, B::Leaves] {
+			assert_eq!(mine(b), 1, "{b:?} is Soft/Fixed");
 		}
-		for b in [B::Gravel, B::Dirt, B::Wood, B::Leaves, B::Water, B::Air] {
+		// Non-diggables and the scoop never gate on strength.
+		for b in [B::Water, B::Air] {
 			assert_eq!(mine(b), 1, "{b:?} ungated");
+		}
+		// Timber at 5, every shape of it — grown and planed alike.
+		for b in [
+			B::Wood,
+			B::WoodStairs,
+			B::WoodSlab,
+			B::Lumber,
+			B::LumberDoor,
+		] {
+			assert_eq!(mine(b), 5, "{b:?} is Wood family");
+		}
+		// Rock at 10, gravel and sandstone included: gravel used to be the
+		// ungated entry rock and timber has taken that job.
+		for b in [
+			B::Gravel,
+			B::Sandstone,
+			B::Stone,
+			B::StoneStairs,
+			B::StoneSlab,
+			B::Rubble,
+			B::DepletedStone,
+		] {
+			assert_eq!(mine(b), 10, "{b:?} is Rock family");
+		}
+		// And the earned substances sit past their family's wall, never
+		// before it — the max, not the material table alone.
+		assert_eq!(mine(B::Metal), 40);
+		assert_eq!(mine(B::Crystal), 60);
+		for b in BlockType::ALL {
+			assert!(
+				mine(b) >= mine_family(b.dig_family()),
+				"{b:?} dug before its family's strength wall"
+			);
 		}
 	}
 
@@ -711,11 +789,18 @@ mod tests {
 		// A fresh player: soil yes, rock no, other people's torches no.
 		let fresh = at(1, 1);
 		assert_eq!(dig_blocked(B::Dirt, &fresh), None);
-		assert_eq!(dig_blocked(B::Gravel, &fresh), None, "the entry rock");
 		assert_eq!(
-			dig_blocked(B::Stone, &fresh).map(|r| (r.skill, r.level, r.kind)),
-			Some((Skill::Mining, 5, Kind::Strength))
+			dig_blocked(B::Wood, &fresh).map(|r| (r.skill, r.level, r.kind)),
+			Some((Skill::Mining, 5, Kind::Strength)),
+			"timber is the second rung"
 		);
+		for b in [B::Gravel, B::Stone] {
+			assert_eq!(
+				dig_blocked(b, &fresh).map(|r| (r.skill, r.level, r.kind)),
+				Some((Skill::Mining, 10, Kind::Strength)),
+				"{b:?} is the third rung"
+			);
+		}
 		assert_eq!(
 			dig_blocked(B::Torch, &fresh).map(|r| (r.skill, r.level, r.kind)),
 			Some((Skill::Alchemy, 8, Kind::Recipe))
@@ -727,10 +812,10 @@ mod tests {
 			Some(Kind::Strength)
 		);
 		assert_eq!(
-			dig_blocked(B::StoneStairs, &at(5, 1)).map(|r| (r.level, r.kind)),
+			dig_blocked(B::StoneStairs, &at(10, 1)).map(|r| (r.level, r.kind)),
 			Some((20, Kind::Recipe))
 		);
-		assert_eq!(dig_blocked(B::StoneStairs, &at(5, 20)), None, "both met");
+		assert_eq!(dig_blocked(B::StoneStairs, &at(10, 20)), None, "both met");
 		// Every requirement any block has is one `dig_blocked` reports:
 		// satisfy the others and fall one level short of this one.
 		for &b in &BlockType::ALL {
@@ -766,14 +851,16 @@ mod tests {
 	/// other level is an ordinary one.
 	#[test]
 	fn unlock_levels_are_the_threshold_levels() {
-		// Mining: the two rock walls, and nothing else.
+		// Mining: the two strength rungs above the starting one, then the
+		// reveals — 15 sits one rung past rock on purpose, so a quarry is
+		// something you work before it starts glittering.
 		let mining: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Mining, l))
 			.collect();
 		assert_eq!(
 			mining,
-			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99],
-			"the rock gates, the reveals, metal and crystal, the pick, the endgame"
+			vec![5, 10, 15, 30, 40, 55, 60, 80, 85, 90, 99],
+			"timber and rock, the reveals, metal and crystal, the pick, the endgame"
 		);
 		// Alchemy: the shape and material unlocks, the hand-priced items
 		// (torch 8, siphon 10, furniture 18, bed 35, water 50), the bucket

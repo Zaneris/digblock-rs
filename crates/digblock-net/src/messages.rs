@@ -302,7 +302,7 @@ pub enum RejectReason {
 	/// only picked while it's empty. Appended in v12.
 	BucketFull,
 	/// Dig refused: the block's `unlock::mine` level exceeds the
-	/// digger's Mining level (SKILLS-DESIGN §5.1's rock gate). Sent at
+	/// digger's Mining level (SKILLS-DESIGN §5.1's strength wall). Sent at
 	/// `DigStart` like `Protected`, so the player isn't left holding the
 	/// button; honest clients predict it in `diggable()` and never open
 	/// the hold. Appended in v17.

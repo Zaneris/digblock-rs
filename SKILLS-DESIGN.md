@@ -69,7 +69,7 @@ migration" is that numbering choice, see §9), the Rubble rule, level-aware
 (`DIG_SCREEN=alchemy|transmute`), and the server extraction bucket
 (`extraction_pace_is_server_enforced`). Two design bugs §3.3 had were caught in
 implementation and fixed structurally — see the bonus-line pump rule there. M3 (level-
-scaled dig speed, SIM v11, exact parity at 30) is landed, along with a rework of the
+scaled dig speed, SIM v11, retuned end to end at v18) is landed, along with a rework of the
 transmute tab into §8.1's family model. M4 is HALF landed: the Stage-A emissive bit
 (solid vertex word 1 bit 21; chunk.wgsl returns fogged ink and skips sun/shadow/AO) and
 the Torch (ShapeKind::Torch — post + glowing head, hand-priced 4 Flora + 2 Earth at
@@ -84,8 +84,8 @@ exists, and the server's Collect/pour gates check the active tool. A consolidati
 illuminate, caves and roofed rooms go dark; §7.4 updated) and reconciled this document
 with the shipped code (§3.3 cumulative note, §4.1/§4.2 per-line-ceil ideals, §4.3 rows
 75/90, §5.3 ore ids 30–34, §10 pump-rule pin), then landed §5.1's **per-material dig
-families and the rock gate** (SIM v12, protocol v17 — Fixed/Soft/Wood/Rock curves all
-exact at 30; Sandstone opens at Mining 3, Stone/Rubble at 5), and its Alchemy twin, the
+families and the strength wall** (SIM v12, protocol v17; both retuned at SIM v18 — the
+curve rebuilt end to end and the wall re-keyed onto the dig family), and its Alchemy twin, the
 **craft gate** (SIM v13, protocol v19 — a craft-only block refuses to be dug below the
 Alchemy level that makes it, so a pickup can't route around an unlock; the planed-timber
 set moved 40 → **15** with it, joining the bucket charge). M5, M6 and M7's first wave
@@ -308,32 +308,60 @@ lands at 20, not a curated 70.
 
 ## 5. Mining (the skill)
 
-### 5.1 Breaking strength (SIM v12: per-material families + the rock gate)
+### 5.1 Breaking strength (SIM v18: per-material families + the strength wall)
 
-**Today's speed is the mid-curve reference, not the floor — per FAMILY.** Every diggable
-block carries a `DigFamily` (`blocks!`'s `dig` builder takes it beside hardness, so a
-row can't forget it), and every family's curve passes EXACTLY through 1000‰ at level 30
-— the legacy hardness table is the shared mid-curve golden — so a family only shapes the
-approach and the ceiling:
+**`hardness_ticks` is a base the curve scales, not a speed at any reference level — per
+FAMILY.** Every diggable block carries a `DigFamily` (`blocks!`'s `dig` builder takes it
+beside hardness, so a row can't forget it), and a family declares only TWO numbers: where
+it starts at level 1 and where it ends at 99. The SHAPE of the journey between them is
+authored ONCE, in a shared taper table, so no family can drift from the others:
 
-| family | members | L1 | L30 | L99 | why |
-|---|---|--:|--:|--:|---|
-| **Fixed** | Leaves, PineLeaves, Torch, Water (scoop) | 1000 | 1000 | 1000 | already near-instant / fixtures; the scoop is pinned to the viewmodel swing |
-| **Soft** | Dirt, Grass, DryGrass, Sand, Mud, Snow | 1250 | 1000 | 417 | the original gentle start |
-| **Wood** | Wood + its shapes | 1350 | 1000 | 500 | timber resists a little more, masters a little less |
-| **Rock** | Stone, Sandstone, Gravel, Rubble + stone shapes | 1700 | 1000 | 417 | rock resists a novice viscerally |
+| family | members | L1 | L99 | why |
+|---|---|--:|--:|---|
+| **Fixed** | Leaves, PineLeaves, Torch, Water (scoop) | 1000 | 1000 | already near-instant / fixtures; the scoop is pinned to the viewmodel swing |
+| **Soft** | Dirt, Grass, DryGrass, Sand, Mud, Snow | 1875 | 417 | the gentlest climb |
+| **Wood** | Wood + its shapes | 2025 | 500 | timber resists a little more, masters a little less |
+| **Rock** | Stone, Sandstone, Gravel, Rubble + stone shapes | 2550 | 417 | rock resists a novice viscerally |
 
 ```
-permille(family, L): two exact-anchored round-half-up segments
-  L ≤ 30: start − (2·(start−1000)·(L−1) + 29) / 58
-  L > 30: 1000 − (2·(1000−end)·(L−30) + 69) / 138
-required = max(1, round(hardness_ticks · permille / 1000))   // skills::dig_required(block, h, L)
+permille(family, L) = start − (DIG_TAPER[dig_step_index(L)] · (start − end) + 500) / 1000
+required            = max(1, round(hardness_ticks · permille / 1000))
+                                                 // skills::dig_required(block, h, L)
 ```
 
-The level-99 endpoint IS the speed floor — no second clamp knob, and the flat Fixed
-family is what keeps leaves/torches/the scoop from ever speeding up. Spot values: Stone
-2.55s at L1 (153t) → 1.50s at 30 → 0.63s at 99; Wood 1.35s → 1.00s → 0.50s; Dirt 0.63s
-→ 0.50s → 0.21s.
+`DIG_TAPER` is how much of that journey is complete at each step, in permille — a pinned
+integer table, never a `powf`, for the same reason the XP curve is one: it is a golden
+both ends must agree on to the unit, and a float would let two platforms round a hold
+apart. The level-99 endpoint IS the speed floor (no second clamp knob), and the flat
+Fixed family gets its flatness for free from a zero-width range, which is what keeps
+leaves/torches/the scoop from ever speeding up. Spot values: Stone 3.83s at L1 (230t) →
+1.90s at 30 → 0.63s at 99; Wood 2.03s → 1.10s → 0.50s; Dirt 0.93s → 0.50s → 0.22s.
+
+**The curve is sampled every FIFTH level, plus 99 — and every jump is smaller than the
+one before it.** Those are one decision. `skills::dig_speed_step` holds the multiplier
+flat between steps, so a digger speeds up at 5, 10, 15 … 95 and once more at 99: twenty
+jumps, twenty-one distinct speeds in a life. Under a per-level curve most levels moved a
+hold by a single tick or by nothing at all, and a reward you cannot feel is not a reward;
+a fifth of the levels moving five times as much is the same total speedup made legible.
+The taper then spends that budget front-loaded — each increment about an eighth under its
+predecessor (139, 120, 105, 91 … 13, 11, 10) — so **level 1 → 5 is the biggest speedup a
+player will ever feel**, and every later one lands a little softer. Both halves earn their
+keep: the early game is where a slow dig is most discouraging, and diminishing returns are
+what stop level 90 from being a rounding error. The relative gain falls too (stone: 11.7%
+at the first step, 2.6% at the last), so the easing is felt and not merely counted. Only 1
+and 99 are anchors and both sit on the grid, which is why 99 is a step of its own instead
+of the grid ending at 95. `dig_speed_step` is the ONE place the step size lives, and
+`dig_speed_step(l) == l` is exactly the question "does this level make me faster" — which
+is what the UI has to ask to tell a player when the next jump lands.
+
+**Level 30 is no longer parity with the hardness table (SIM v18).** It sat at 1000‰ for
+every family from v11 through v17, which made that one level reproduce the shipped table
+exactly, and the tests pinned `dig_required(b, h, 30) == h` for every block. v18 rebuilt
+the curve around its two endpoints and lengthened the early game — level 1 half again as
+slow, 99 untouched — so 30 is now an ordinary sample (Soft 994, Wood 1104, Rock 1262) and
+that assertion is gone with it. The consequence worth remembering: **no test may hardcode
+a hold length**; derive it from `skills::dig_required` (two server dig tests carried a
+literal 144 and broke on the retune).
 
 **Letting go decays, it does not reset** (`skills::dig_decayed`, `DIG_DECAY_TICKS`).
 A released hold keeps its banked ticks and bleeds them back to untouched at **one whole
@@ -354,10 +382,17 @@ number is never below the one the player's bar is showing. Progress is stored as
 banked PEAK plus an idle count, never decremented in place, so the two sides compute
 one number from the same two integers instead of two rounding chains.
 
-**The rock gate** (`unlock::mine`) is a deliberate reversal of this section's
-original "no strength wall" stance: Sandstone opens at Mining **3**, Stone (+ its
-shapes) and Rubble at **5**; Gravel stays the ungated entry rock, so a fresh player
-levels on soil and scree (~80 dirt digs to 5) before rock opens. Refusal happens at
+**The strength wall** (`unlock::mine`) is a deliberate reversal of this section's
+original "no strength wall" stance, and it is keyed on the **DIG FAMILY** — the same
+axis that decides how long a hold takes, which is the only thing raw strength can
+honestly be about. Fixed and Soft from the first swing, **Wood at 5**, **Rock at 10**:
+soil → trees → stone, each rung opened by digging the one below it (~79 dirt digs to 5,
+then ~67 logs to 10). Every block of a family opens together, shapes included, which is
+what stopped rock being the only family with a wall at all. Gravel is no longer the
+ungated "entry rock" — timber is what now stands between bare ground and the quarry. A
+handful of substances must be EARNED on top of their family's wall (`mine_material`:
+the four ores at their own reveal, Metal 40, Crystal 60) and a block waits for the
+later of the two — the material table can only ever push a block later, never earlier. Refusal happens at
 `DigStart` via `RejectReason::SkillGated` (protocol v17) — the `Protected` pattern, so
 nobody holds a button through a dig timer for nothing — and the client predicts it in
 `diggable()` (it knows its own level; `unlock::Kind::Strength`'s message is the shared wording). Ore
@@ -374,7 +409,7 @@ sit at recipe level 1, i.e. ungated in practice). The gate keys on the DROP, not
 cell, which is what keeps pristine Stone a Mining question — it hands out Rubble, and
 Rubble has no recipe at all — and on craft-*only* rather than craftable, or the level-20
 `Wood` recipe would shut a fresh player out of the first tree they see. Same machinery
-as the rock gate: refused at `DigStart` with `RejectReason::NotUnlocked`, predicted in
+as the strength wall: refused at `DigStart` with `RejectReason::NotUnlocked`, predicted in
 `diggable()`, one shared wording in `unlock::Kind::Recipe`'s message ("you haven't unlocked this
 yet"). Placing, opening and walking on other people's builds are all untouched — only
 the pickup is refused.
@@ -398,7 +433,7 @@ Four ores + a depletion block = **five new `blocks!` rows** (append-only, one PN
 
 | id | block | reveal at | depth band | hardness | bench yield |
 |--|---|--:|---|--:|---|
-| 30 | **Emberore** | Mining 10 | y ≤ 140 | 120t | 18 Metal |
+| 30 | **Emberore** | Mining 15 | y ≤ 140 | 120t | 18 Metal |
 | 31 | **Duskstone** | Mining 30 | y ≤ 96 | 150t | 36 Metal |
 | 32 | **Glowvein** | Mining 55 | y ≤ 56 | 190t | 60 Metal |
 | 33 | **Aetherock** | Mining 80 | y ≤ 24 | 240t | 90 Metal + 9 Aether |
@@ -465,11 +500,11 @@ across two moments; neither skill can be leveled entirely from inside the other.
 
 | Mining | unlock |
 |--:|---|
-| 1 | dig speeds by family: soil 1.25×, wood 1.35×, rock 1.7× today's times (§5.1 — the climb back is the early game); rock itself is gated |
-| 3 | **Sandstone opens** (the rock gate, §5.1) |
-| 5 | **Stone and Rubble open** (+ their shapes) |
-| every level | walks its family's curve toward **parity with today at 30** (§5.1) |
-| 10 | **Emberore** reveals — extraction needs the Essence Siphon (Alch 10, §5.3), the first cross-skill handshake |
+| 1 | dig speeds by family: soil 1.875×, wood 2.025×, rock 2.55× the hardness base (§5.1 — the climb back is the early game); only soil and foliage are diggable at all |
+| 5 | **timber opens** — the Wood family entire, grown and planed (§5.1's strength wall) |
+| 10 | **rock opens** — the Rock family entire: gravel, sandstone, stone, rubble and their shapes |
+| every 5th level | steps its family's curve one rung (§5.1); sampled at 5, 10, 15 … 95 and 99, never in between, each step smaller than the last |
+| 15 | **Emberore** reveals — extraction needs the Essence Siphon (Alch 10, §5.3), the first cross-skill handshake |
 | 30 | **Duskstone** reveals |
 | 55 | **Glowvein** reveals; the **Resonant Pick** becomes usable |
 | 80 | **Aetherock** reveals |

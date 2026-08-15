@@ -18,7 +18,8 @@
 //!   volume — [`crate::alchemy::craft_ideal`].
 //! - **Extraction yield** = the material's base, prorated the same way —
 //!   [`crate::alchemy::extract_base`].
-//! - **The rock gate** = the material's Mining level — [`crate::unlock::mine`].
+//! - **The earned half of the strength wall** = the material's own Mining
+//!   level, layered over its dig family's — [`crate::unlock::mine`].
 //! - **The transmute tab's families** = one per shape, members in material
 //!   order.
 //!

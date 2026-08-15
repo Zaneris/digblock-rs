@@ -164,34 +164,91 @@ impl SkillSet {
 
 // ---- dig speed -------------------------------------------------------
 
-/// §5.1's per-family dig-speed multiplier in permille. Every family
-/// passes EXACTLY through 1000 at level 30 — today's hardness table is
-/// the shared mid-curve reference — so a family only shapes the approach
-/// (how hard the material resists a novice) and the ceiling (how fast
-/// mastery gets). Fixed is flat: foliage is already near-instant, the
-/// torch is a fixture, and the water scoop's duration is pinned to the
-/// viewmodel swing. Two exact-anchored round-half-up segments per
-/// family; the level-99 endpoint IS the speed floor — no second clamp.
+/// The levels at which a dig gets faster: every FIFTH level, plus 99.
+///
+/// A dig speeds up twenty times in a life, not ninety-eight. Under the
+/// old per-level curve most levels moved a hold by a single tick or by
+/// nothing at all, so the reward read as noise; a fifth of the levels
+/// carrying five times as much is the same total speedup made legible.
+/// The grid is deliberately independent of the curve's shape — this
+/// table says WHEN a player gets faster, [`DIG_TAPER`] says by how much.
+pub const DIG_STEPS: [u32; 21] = [
+	1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99,
+];
+
+/// How much of the journey from the level-1 speed to the level-99 speed
+/// is complete at each of [`DIG_STEPS`], in permille. A pinned integer
+/// table, never a `powf` — same reason as the XP curve: it is a golden
+/// both ends must agree on to the unit, and a float would let two
+/// platforms round a hold apart.
+///
+/// **The increments strictly decrease, and that IS the design.** Each
+/// jump is roughly an eighth smaller than the one before it (139, 120,
+/// 105, 91 … 13, 11, 10), so the very first — level 1 → 5 — is the
+/// biggest speedup a player will ever feel, and every later one lands a
+/// little softer. Both halves of that matter: the early game is where a
+/// slow dig is most discouraging, and diminishing returns are what stop
+/// level 90 from being a rounding error. The relative gain falls too
+/// (stone: 11.7% at the first step, 2.6% at the last), so the curve
+/// eases off in felt terms and not merely in ticks.
+///
+/// One table serves every family: a family declares only where its range
+/// starts and ends, and the SHAPE of the journey between them is shared.
+/// `Fixed` has a zero-width range, so it stays flat for free.
+const DIG_TAPER: [u32; 21] = [
+	0, 139, 259, 364, 455, 535, 604, 664, 716, 761, 801, 835, 865, 891, 914, 934, 951, 966, 979,
+	990, 1000,
+];
+
+/// Which entry of [`DIG_STEPS`]/[`DIG_TAPER`] a level spends: 1..=4 all
+/// dig at the level-1 speed, 5..=9 at the level-5 speed, and so on to
+/// 95..=98, with 99 its own final step.
+fn dig_step_index(level: u32) -> usize {
+	let level = level.clamp(1, 99);
+	if level >= 99 {
+		DIG_STEPS.len() - 1
+	} else {
+		(level / 5) as usize
+	}
+}
+
+/// The level whose speed `level` actually digs at — the last step it has
+/// reached. Exposed because the UI has to be able to say when the next
+/// jump lands: a reward a player cannot see coming is the thing the grid
+/// exists to fix. `dig_speed_step(l) == l` is exactly "this level makes
+/// me faster".
+pub fn dig_speed_step(level: u32) -> u32 {
+	DIG_STEPS[dig_step_index(level)]
+}
+
+/// §5.1's per-family dig-speed multiplier in permille: two endpoints per
+/// family — the level-1 speed and the level-99 speed — with [`DIG_TAPER`]
+/// deciding how the journey between them is spent. A family therefore
+/// says only how hard its material resists a novice and how fast mastery
+/// gets; the shape of the climb is the same for all of them. Fixed is
+/// flat: foliage is already near-instant, the torch is a fixture, and the
+/// water scoop's duration is pinned to the viewmodel swing.
+///
+/// The level-99 endpoint IS the speed floor — no second clamp. There is
+/// no mid anchor: level 30 was pinned at 1000 for every family through
+/// SIM v12–v17, which made that one level reproduce the shipped hardness
+/// table exactly, and SIM v18 dropped it. So `hardness_ticks` is a BASE
+/// the curve scales at every level, and outside `Fixed` no level spends
+/// it — don't reintroduce a `dig_required(b, h, 30) == h` assertion.
 pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	use crate::block::DigFamily;
-	let level = level.clamp(1, 99);
 	let (start, end) = match family {
 		DigFamily::Fixed => (1000, 1000),
-		DigFamily::Soft => (1250, 417),
-		DigFamily::Wood => (1350, 500),
-		DigFamily::Rock => (1700, 417),
+		DigFamily::Soft => (1875, 417),
+		DigFamily::Wood => (2025, 500),
+		DigFamily::Rock => (2550, 417),
 	};
-	if level <= 30 {
-		start - (2 * (start - 1000) * (level - 1) + 29) / 58
-	} else {
-		1000 - (2 * (1000 - end) * (level - 30) + 69) / 138
-	}
+	start - (DIG_TAPER[dig_step_index(level)] * (start - end) + 500) / 1000
 }
 
 /// THE hold-to-dig duration both sides compute: `max(1,
 /// round(hardness · family multiplier))` ticks at the digger's Mining
-/// level. Level 30 reproduces the legacy table bit-exactly for EVERY
-/// block; a level-up landing mid-hold skews client/server by a few
+/// level. A level-up landing mid-hold skews client/server by a few
 /// ticks at most, which `dig_grace` absorbs — no new tolerance
 /// machinery. Hardness stays a separate parameter because callers hold
 /// the y-gated `dig_hardness(y)` result (the bedrock rule lives there).
@@ -407,46 +464,38 @@ mod tests {
 		assert_eq!(decoded.to_wire(), vec![(0, 42)]);
 	}
 
-	/// §5.1's per-family anchors, held exactly: level 30 IS the legacy
-	/// hardness table for EVERY family (the old table lives on as the
-	/// shared mid-curve golden), each family's 1/99 endpoints are pinned,
-	/// Soft reproduces the original SIM-v11 curve bit-exactly, Fixed
-	/// never scales — and `required` never rises with level anywhere.
+	/// §5.1's per-family endpoints, held exactly, plus goldens along the
+	/// shared taper — level 30 is now derived, not an anchor (SIM v18 drops
+	/// the mid-curve parity with the shipped hardness table), so it is
+	/// pinned here as an OUTPUT to catch a taper edit nobody meant.
 	#[test]
 	fn dig_speed_anchors_are_pinned() {
 		use crate::block::DigFamily as F;
+		// The two design inputs per family: level 1 and level 99.
 		for (family, start, end) in [
 			(F::Fixed, 1000, 1000),
-			(F::Soft, 1250, 417),
-			(F::Wood, 1350, 500),
-			(F::Rock, 1700, 417),
+			(F::Soft, 1875, 417),
+			(F::Wood, 2025, 500),
+			(F::Rock, 2550, 417),
 		] {
 			assert_eq!(dig_speed_permille(family, 1), start, "{family:?} at 1");
-			assert_eq!(
-				dig_speed_permille(family, 30),
-				1000,
-				"{family:?} parity with today at 30"
-			);
 			assert_eq!(dig_speed_permille(family, 99), end, "{family:?} at 99");
 		}
-		// Soft IS the shipped v11 curve, value for value.
-		for level in 1..=99 {
-			let legacy = if level <= 30 {
-				1250 - (500 * (level - 1) + 29) / 58
-			} else {
-				1000 - (1166 * (level - 30) + 69) / 138
-			};
-			assert_eq!(dig_speed_permille(F::Soft, level), legacy, "level {level}");
+		// Derived goldens along the way, one early / mid / late.
+		for (family, at15, at30, at60) in [
+			(F::Fixed, 1000, 1000, 1000),
+			(F::Soft, 1344, 994, 614),
+			(F::Wood, 1470, 1104, 706),
+			(F::Rock, 1774, 1262, 705),
+		] {
+			assert_eq!(dig_speed_permille(family, 15), at15, "{family:?} at 15");
+			assert_eq!(dig_speed_permille(family, 30), at30, "{family:?} at 30");
+			assert_eq!(dig_speed_permille(family, 60), at60, "{family:?} at 60");
 		}
 		for &b in &BlockType::ALL {
 			let Some(h) = b.hardness_ticks() else {
 				continue;
 			};
-			assert_eq!(
-				dig_required(b, h, 30),
-				u32::from(h),
-				"{b:?} at 30 = the legacy table exactly"
-			);
 			for level in 2..=99 {
 				assert!(
 					dig_required(b, h, level) <= dig_required(b, h, level - 1),
@@ -456,16 +505,96 @@ mod tests {
 		}
 		// The §5.1 table's spot values (60 Hz ticks).
 		use BlockType as B;
-		assert_eq!(dig_required(B::Stone, 90, 1), 153, "stone 2.55s at level 1");
+		assert_eq!(dig_required(B::Stone, 90, 1), 230, "stone 3.83s at level 1");
+		assert_eq!(dig_required(B::Stone, 90, 30), 114, "stone 1.90s at 30");
 		assert_eq!(dig_required(B::Stone, 90, 99), 38, "stone 0.63s at 99");
-		assert_eq!(dig_required(B::Wood, 60, 1), 81, "wood 1.35s at level 1");
+		assert_eq!(dig_required(B::Wood, 60, 1), 122, "wood 2.03s at level 1");
+		assert_eq!(dig_required(B::Wood, 60, 30), 66, "wood 1.10s at 30");
 		assert_eq!(dig_required(B::Wood, 60, 99), 30, "wood 0.50s at 99");
-		assert_eq!(dig_required(B::Dirt, 30, 1), 38, "dirt 0.63s at level 1");
+		assert_eq!(dig_required(B::Dirt, 30, 1), 56, "dirt 0.93s at level 1");
+		assert_eq!(dig_required(B::Dirt, 30, 30), 30, "dirt 0.50s at 30");
 		// Fixed never scales: leaves and the scoop at 1 / 30 / 99.
 		for level in [1, 30, 99] {
 			assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
 			assert_eq!(dig_required(B::Water, 20, level), 20, "scoop flat");
 		}
+	}
+
+	/// The grid and the taper together: a dig gets faster exactly twenty
+	/// times, the FIRST jump is the biggest of the game, and every jump
+	/// after it is strictly smaller than the one before.
+	#[test]
+	fn every_dig_speedup_is_smaller_than_the_one_before() {
+		use crate::block::DigFamily as F;
+		// The grid: 1..=4 hold at 1, then the multiples of 5, then 99.
+		for level in 1..=99 {
+			let expect = match level {
+				1..=4 => 1,
+				99 => 99,
+				_ => level / 5 * 5,
+			};
+			assert_eq!(dig_speed_step(level), expect, "step of {level}");
+		}
+		assert_eq!(dig_speed_step(0), 1, "clamps up");
+		assert_eq!(dig_speed_step(1000), 99, "clamps down");
+		assert_eq!(DIG_STEPS.len(), DIG_TAPER.len(), "one taper entry per step");
+		// The taper spends the whole journey and eases off the whole way.
+		assert_eq!(DIG_TAPER[0], 0, "the first step is the level-1 speed");
+		assert_eq!(DIG_TAPER[20], 1000, "the last step is the level-99 speed");
+		for i in 2..DIG_TAPER.len() {
+			let (prev, now) = (
+				DIG_TAPER[i - 1] - DIG_TAPER[i - 2],
+				DIG_TAPER[i] - DIG_TAPER[i - 1],
+			);
+			assert!(now < prev, "taper jump {i} ({now}) must be under {prev}");
+		}
+		for family in [F::Fixed, F::Soft, F::Wood, F::Rock] {
+			let flat = family == F::Fixed;
+			// Flat between steps, and it moves on every one of them.
+			for level in 2..=99 {
+				let (prev, now) = (
+					dig_speed_permille(family, level - 1),
+					dig_speed_permille(family, level),
+				);
+				if dig_speed_step(level) == level && !flat {
+					assert!(now < prev, "{family:?} must jump at its step {level}");
+				} else {
+					assert_eq!(now, prev, "{family:?} must hold flat at {level}");
+				}
+			}
+			// Twenty jumps in a life, so twenty-one distinct speeds.
+			let speeds: std::collections::BTreeSet<u32> =
+				(1..=99).map(|l| dig_speed_permille(family, l)).collect();
+			assert_eq!(speeds.len(), if flat { 1 } else { 21 }, "{family:?} speeds");
+			// And each of those jumps is smaller than its predecessor —
+			// the whole point, in the multiplier where it is exact (a
+			// given block's TICK count can wobble by one on rounding).
+			let at: Vec<u32> = DIG_STEPS
+				.iter()
+				.map(|&l| dig_speed_permille(family, l))
+				.collect();
+			for i in 2..at.len() {
+				let (prev, now) = (at[i - 2] - at[i - 1], at[i - 1] - at[i]);
+				assert!(
+					now < prev || flat,
+					"{family:?} jump at {} too big",
+					DIG_STEPS[i]
+				);
+			}
+		}
+		// A stone dig gets faster on the fives and nowhere else, and the
+		// first jump (27 ticks) dwarfs the last (1).
+		use BlockType as B;
+		assert_eq!(dig_required(B::Stone, 90, 4), 230, "still the level-1 hold");
+		assert_eq!(
+			dig_required(B::Stone, 90, 5),
+			203,
+			"the biggest jump: 27 ticks"
+		);
+		assert_eq!(dig_required(B::Stone, 90, 9), 203, "held to the next step");
+		assert_eq!(dig_required(B::Stone, 90, 95), 39, "the 95 step");
+		assert_eq!(dig_required(B::Stone, 90, 98), 39, "held at the 95 step");
+		assert_eq!(dig_required(B::Stone, 90, 99), 38, "the last jump: 1 tick");
 	}
 
 	/// The decay is a FRACTION of the bar per tick, not a tick count:

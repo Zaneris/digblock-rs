@@ -843,9 +843,12 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	for step in 0..steps {
 		let measuring = step >= warmup;
 		if step == warmup {
-			// The rock gate would refuse every dig of the stone flat
+			// The strength wall would refuse every dig of the stone flat
 			// world at Mining 1; the client has joined by now.
-			sim.bench_set_mining_level(1, 5);
+			sim.bench_set_mining_level(
+				1,
+				digblock_core::unlock::mine(digblock_core::BlockType::Stone),
+			);
 			// Discard everything the startup transient produced.
 			corrections.clear();
 			max_div = 0.0;

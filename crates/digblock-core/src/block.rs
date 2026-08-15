@@ -524,30 +524,34 @@ pub struct BlockProps {
 	pub dig_family: DigFamily,
 	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid).
 	/// Together with [`Self::shape`] it derives the unlock level, the craft
-	/// cost, the extraction yield and the rock gate — see
+	/// cost, the extraction yield and the earned half of the strength wall — see
 	/// [`crate::material`]. `None` for air, the water family and every
 	/// FUNCTIONAL item (tools, torches, lamps): function is priced by hand,
 	/// never by volume, so those carry their own small tables instead.
 	pub material: Option<Material>,
 }
 
-/// The per-material dig-speed families (SKILLS-DESIGN §5.1). Each keys a
-/// Mining-level curve in `skills::dig_speed_permille`; all families pass
-/// EXACTLY through 1000‰ at level 30 (the legacy table is the shared
-/// mid-curve golden), so the family only shapes the approach and the
-/// ceiling. `Fixed` is the flat curve for things that must never scale:
-/// near-instant foliage, fixtures, and the water scoop whose duration is
-/// pinned to the viewmodel swing.
+/// The per-material dig-speed families (SKILLS-DESIGN §5.1). A family is
+/// just the two ENDPOINTS of its Mining curve — its level-1 speed and its
+/// level-99 speed — so it chooses the approach and the ceiling and
+/// nothing else; the shape between them is one shared taper in
+/// `skills::dig_speed_permille`. It is also the axis the strength wall is
+/// keyed on (`unlock::mine`), which is what opens every block of a family
+/// together. `Fixed` is the zero-width range for things that must never
+/// scale: near-instant foliage, fixtures, and the water scoop whose
+/// duration is pinned to the viewmodel swing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DigFamily {
 	/// 1000‰ at every level — never faster, never slower.
 	Fixed,
-	/// Loose ground: today's original curve (1250 → 1000 → 417).
+	/// Loose ground: the gentlest climb (1875 → 417). Diggable from the
+	/// first swing.
 	Soft,
-	/// Timber: a firmer start, a gentler ceiling (1350 → 1000 → 500).
+	/// Timber: a firmer start, a gentler ceiling (2025 → 500). Opens at
+	/// Mining 5.
 	Wood,
-	/// Rock resists a novice hard (1700 → 1000 → 417) and is level-gated
-	/// besides (`unlock::mine`).
+	/// Rock resists a novice hard (2550 → 417) and is the last rung of
+	/// the strength wall — Mining 10.
 	Rock,
 }
 
@@ -593,9 +597,11 @@ const fn crafted(mut p: BlockProps) -> BlockProps {
 	p
 }
 
-/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks at the
-/// level-30 reference, scaled by `family`'s Mining curve. Family rides
-/// the same builder as hardness so a new diggable row can't forget it.
+/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks scaled
+/// by `family`'s Mining curve. `ticks` is the BASE the curve multiplies,
+/// not the duration at some reference level — only the flat `Fixed`
+/// family ever spends exactly it. Family rides the same builder as
+/// hardness so a new diggable row can't forget it.
 const fn dig(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
 	p.hardness_ticks = ticks;
 	p.dig_family = family;
@@ -611,7 +617,7 @@ const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
 
 /// The substance half of SKILLS-DESIGN §7.2's grid. Everything a
 /// structural block's economy needs — unlock level, craft cost, extraction
-/// yield, rock gate — falls out of this plus the row's `shaped` tag, so a
+/// yield, the earned strength wall — falls out of this plus the row's `shaped` tag, so a
 /// material × shape pair is a row and a PNG rather than four table edits.
 /// FUNCTIONAL items deliberately have none (`material_roster_is_pinned`
 /// holds the split).
@@ -1164,7 +1170,7 @@ mod tests {
 
 	/// The material assignment is an explicit roster for the same reason
 	/// the dig families are: it decides a block's unlock level, its craft
-	/// cost, its extraction yield and its rock gate all at once, so a new
+	/// cost, its extraction yield and its earned wall all at once, so a new
 	/// row picking one up by accident would move four numbers silently.
 	/// The blocks WITHOUT a material are the other half of the decision —
 	/// functional items, priced by hand (§7.3).
@@ -1312,7 +1318,7 @@ mod tests {
 	/// so it wears the same ink and casts the same level.
 	///
 	/// This is the grid's one un-derived pair. The unlock level, the craft
-	/// cost, the extraction yield, the rock gate and the transmute family
+	/// cost, the extraction yield, the earned wall and the transmute family
 	/// all fall out of material × shape, but `emissive` and `light` stayed
 	/// per-ROW builders — and a per-row property on a grid axis drifts the
 	/// moment a material grows a second shape. It did: `Crystal` glowed and
