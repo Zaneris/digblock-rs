@@ -20,6 +20,64 @@
 //!   outside what `dig_grace` absorbs: the honest outcomes are a free
 //!   completion or a `DigIncomplete` on a dig the player finished.
 
+use crate::block::BlockType;
+use crate::chunk::cell_id;
+use crate::worldgen::ore::DigMode;
+
+/// May this cell join the plane as an EXTRA? Asked of every candidate by
+/// both ends over their own worlds, so the two swings touch the same set
+/// — the plane is derived, and a rule applied on only one end is a
+/// rejected swing at best and a silent divergence at worst.
+///
+/// The AIMED cell is never asked. It has already been through
+/// `diggable`, the DigStart gates and the completion's own timing, and it
+/// is the only cell allowed to be a slab shrink or a tapped vein. An
+/// extra is the plain case or it is not in the group at all:
+///
+/// - **The same block id**, because `begin_multi` carries ONE `inv_delta`
+///   and `(block, +N)` has to describe the whole group.
+/// - **Diggable at this y**, which is what keeps the plane off the floor
+///   of the world. A nine-wide swing at a wall standing on bedrock
+///   includes y = 0, which holds the same Stone id — so nothing else
+///   would have stopped it. Offline that punched a hole straight through
+///   `protect::immutable`; online the protected-write scan rejected the
+///   WHOLE swing, so the pick simply stopped working at the bottom of a
+///   mine and blamed a cell the player never aimed at.
+/// - **Not a door, and not a slab.** Both are cells the extras loop
+///   cannot write correctly, because it writes bare air and the aimed
+///   cell is the only one with a value derived for it. A door is one
+///   object across two cells: a rank of doors in the plane became a rank
+///   of orphaned halves standing on nothing, and the aimed door's own
+///   partner sits inside the 3×3, where it was counted as a second block
+///   broken and then written a second time by the door branch — one leaf
+///   paying out two. A slab shrinks a third per hold; cleared outright it
+///   pays one credit for up to three thirds, which is the matter rule
+///   running backwards. Both make the standing comment at the extras loop
+///   ("only the aimed cell can be a slab shrink or a tapped vein") true
+///   instead of merely intended.
+/// - **An ordinary break, never an extraction.** The reveal is a stamp on
+///   the mesh, so a vein still HOLDS Stone and passes the id test. The
+///   plane would clear it to air, credit Rubble instead of ore, pay stone
+///   XP, and mark the cell edited — which `ore::revealed` reads as spent
+///   forever, so the deposit could never come back. Veins are drawn out
+///   one at a time, by the cell you aim at.
+///
+/// A locked SPAWN is deliberately not here. That is a policy, it is
+/// server-only knowledge, and a locked cell in the plane is meant to
+/// refuse the whole swing — `a_protected_cell_refuses_the_whole_pick_swing`
+/// pins it, on the grounds that nothing should partially break. The world
+/// floor is not policy: no dig of any kind touches it, both ends know
+/// where it is, and `dig_hardness` refuses it at exactly the y
+/// `protect::immutable` does.
+pub fn breaks_as_extra(id: u16, value: u16, at: (i32, i32, i32), mode: DigMode) -> bool {
+	let b = BlockType::from_id(cell_id(value));
+	cell_id(value) == id
+		&& b.dig_hardness(at.1).is_some()
+		&& !b.is_door()
+		&& !b.is_slab()
+		&& mode == DigMode::Break
+}
+
 /// Which axis an axis-aligned unit normal points along (0 = x, 1 = y,
 /// 2 = z). Anything else answers y, which is what a degenerate normal
 /// deserves — the caller has already refused the edit by then.
@@ -85,8 +143,9 @@ fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i3
 	out
 }
 
-/// The cells one hold breaks, target FIRST and every extra holding the
-/// same block id as the target (`same` is the caller's world lookup).
+/// The cells one hold breaks, target FIRST and every extra the caller's
+/// `extra_ok` accepts — which should be [`breaks_as_extra`] against that
+/// end's own world, and nothing looser.
 ///
 /// The order is deterministic and identical on both ends, which is what
 /// lets `begin_multi`'s single `inv_delta` describe the whole group.
@@ -95,18 +154,77 @@ pub fn cells(
 	normal: (i32, i32, i32),
 	dir: [f32; 3],
 	width: usize,
-	same: impl Fn((i32, i32, i32)) -> bool,
+	extra_ok: impl Fn((i32, i32, i32)) -> bool,
 ) -> Vec<(i32, i32, i32)> {
 	offsets(normal, dir, width)
 		.into_iter()
 		.map(|(dx, dy, dz)| (cell.0 + dx, cell.1 + dy, cell.2 + dz))
-		.filter(|&c| c == cell || same(c))
+		.filter(|&c| c == cell || extra_ok(c))
 		.collect()
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::chunk::make_cell;
+
+	/// The four ways a neighbour is NOT an ordinary extra. Each one was a
+	/// real break: the plane reached bedrock, shattered a rank of doors
+	/// into orphaned halves, double-paid the aimed door's own partner, and
+	/// cleared revealed veins to air for Rubble — the last one destroying
+	/// the deposit permanently, since a cleared cell is an edited cell and
+	/// `ore::revealed` never comes back from that.
+	#[test]
+	fn an_extra_has_to_be_the_plain_case() {
+		let stone = make_cell(BlockType::Stone, 0);
+		let id = cell_id(stone);
+		// The plain case, well above the floor.
+		assert!(breaks_as_extra(id, stone, (0, 40, 0), DigMode::Break));
+
+		// A different block is not in the group — `inv_delta` is one pair.
+		let dirt = make_cell(BlockType::Dirt, 0);
+		assert!(!breaks_as_extra(id, dirt, (0, 40, 0), DigMode::Break));
+
+		// The world floor holds the same id and must still be refused.
+		assert!(
+			!breaks_as_extra(id, stone, (0, 0, 0), DigMode::Break),
+			"the plane reached bedrock"
+		);
+
+		// A door is one object across two cells; the extras loop writes
+		// bare air and would leave its partner floating.
+		let door = make_cell(BlockType::LumberDoor, 0);
+		assert!(!breaks_as_extra(
+			cell_id(door),
+			door,
+			(0, 40, 0),
+			DigMode::Break
+		));
+
+		// A slab is thirds: cleared outright it pays one credit for up to
+		// three of them.
+		let slab = make_cell(BlockType::WoodSlab, 0);
+		assert!(!breaks_as_extra(
+			cell_id(slab),
+			slab,
+			(0, 40, 0),
+			DigMode::Break
+		));
+
+		// A revealed vein still HOLDS Stone, so only the mode can tell.
+		assert!(!breaks_as_extra(
+			id,
+			stone,
+			(0, 40, 0),
+			DigMode::Extract(BlockType::Emberore)
+		));
+		assert!(!breaks_as_extra(
+			id,
+			stone,
+			(0, 40, 0),
+			DigMode::NeedsSiphon
+		));
+	}
 
 	/// A wall breaks HORIZONTALLY: three wide is a tunnel, and the
 	/// vertical row it would otherwise cut is a well nobody asked for.

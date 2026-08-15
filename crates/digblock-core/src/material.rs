@@ -262,6 +262,15 @@ pub fn yield_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> 
 	prorate(lines, units, false)
 }
 
+/// The SUM of [`yield_split`] without building it. Same arithmetic, line
+/// by line, so it cannot drift from the split it totals — and no
+/// allocation, which matters because the extraction pace asks for this
+/// every tick for every connected player.
+pub fn yield_total(lines: &[(Essence, u32)], units: u32) -> u32 {
+	let subs = crate::shapes::SUBS_PER_BLOCK;
+	lines.iter().map(|&(_, n)| (n * units / subs).max(1)).sum()
+}
+
 fn prorate(lines: &[(Essence, u32)], units: u32, up: bool) -> Vec<(Essence, u32)> {
 	let subs = crate::shapes::SUBS_PER_BLOCK;
 	lines

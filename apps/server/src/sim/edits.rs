@@ -173,7 +173,9 @@ impl Sim {
 			// The extraction bucket banks TICKS — one per tick — and a
 			// Convert spends the requested block's own pace out of it, so
 			// the ceiling tracks the honest client's drip whatever it is
-			// extracting. Capacity is still two whole blocks' worth.
+			// extracting. Capacity is two whole blocks' worth, or one
+			// costliest extraction where that is larger — see
+			// `extract_burst_ticks`.
 			client.extract_tokens =
 				(client.extract_tokens + 1.0).min(digblock_core::alchemy::extract_burst_ticks(
 					client.skills.level(digblock_core::skills::Skill::Alchemy),
@@ -391,17 +393,26 @@ impl Sim {
 				.get(&req.conn_id)
 				.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining));
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress, idle)| {
+				// An extraction is timed as the ORE, which means BOTH halves
+				// come from the ore: the block (for its `DigFamily`) and the
+				// hardness. Taking the family from the ore and the hardness
+				// from the cell left the server asking for Stone's 90 while
+				// the client's bar ran on Aetherock's 240 — 2.67× apart, far
+				// outside `dig_grace`, so an honest client dug long past the
+				// requirement and a modified one completed the draw in 37% of
+				// the intended time with the server agreeing.
+				let timed = digblock_core::worldgen::ore::dig_block(
+					self.ore_dig_mode(req.conn_id, req.cell),
+					hit.block,
+				);
 				cell == req.cell
 					&& cell_value == hit.cell_value
-					&& hit.block.dig_hardness(req.cell.1).is_some_and(|h| {
+					&& timed.dig_hardness(req.cell.1).is_some_and(|h| {
 						// Family-scaled hold time (SIM v12), plus the pick's
 						// level-only multiplier (§5.6): the same
 						// `dig_required_with` the client's own timer runs.
 						let need = digblock_core::skills::dig_required_with(
-							digblock_core::worldgen::ore::dig_block(
-								self.ore_dig_mode(req.conn_id, req.cell),
-								hit.block,
-							),
+							timed,
 							h,
 							mining_level,
 							active_tool,
@@ -454,8 +465,10 @@ impl Sim {
 				writes.push((req.cell, new_val));
 				// The Resonant Pick's plane (SKILLS-DESIGN §5.6), derived
 				// from the SERVER's raycast and its own world — never from
-				// anything the client chose. Extras clear outright: only
-				// the aimed cell can be a slab shrink or a tapped vein.
+				// anything the client chose. Extras clear outright, and
+				// `pick::breaks_as_extra` is what makes that safe: only the
+				// aimed cell can be a slab shrink, a door pair or a tapped
+				// vein, because nothing else is allowed into the group.
 				for c in self.pick_plane(req.conn_id, &hit, req.dir.to_array()) {
 					writes.push((c, air));
 					broken += 1;
@@ -637,9 +650,10 @@ impl Sim {
 			.clients
 			.get_mut(&req.conn_id)
 			.expect("checked live above");
-		// A level crossed by this award, announced once the client borrow
-		// above has ended (the broadcast walks every client).
-		let mut crossed = None;
+		// The levels crossed by this award, announced once the client
+		// borrow above has ended (the broadcast walks every client). A
+		// LIST: one action can level both skills at once.
+		let mut crossed = Vec::new();
 		if place_cell.is_none() {
 			// An extraction credits the ORE, never the cell's own drop:
 			// the cell was Stone and Stone hands out Rubble, which is the
@@ -699,7 +713,13 @@ impl Sim {
 				);
 				let after = client.skills.level(skill);
 				if after > before {
-					crossed = Some((skill, after));
+					// PUSHED, not assigned. A field extraction pays both
+					// skills in one action, so a player sitting under both
+					// thresholds crosses both — and overwriting dropped the
+					// Mining one on the floor: no LevelUp broadcast, no
+					// confetti over their head for anyone else, no feed
+					// line. The single-award version could not reach this.
+					crossed.push((skill, after));
 				}
 			}
 			client.digging = None;
@@ -707,7 +727,7 @@ impl Sim {
 		if let Some(hash) = client.identity {
 			self.player_store.put(hash, client.record());
 		}
-		if let Some((skill, level)) = crossed {
+		for (skill, level) in crossed {
 			self.announce_level_up(id, skill, level);
 		}
 

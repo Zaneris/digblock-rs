@@ -85,6 +85,16 @@ impl Hotbar {
 		}
 	}
 
+	/// Force the active tool. For [`crate::inv_grid::reconcile_layout`]
+	/// only — it is the one place that sees the bar AND the counts, so it
+	/// is the only place that can tell whether a tool is actually owned.
+	/// Everything else cycles through the roster instead.
+	pub fn set_active_tool(&mut self, t: BlockType) {
+		if t.is_tool() {
+			self.active_tool = t;
+		}
+	}
+
 	pub fn slots(&self) -> &[Option<HotbarItem>; HOTBAR_SLOTS] {
 		&self.slots
 	}

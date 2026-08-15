@@ -1006,9 +1006,25 @@ impl Pipeline {
 	///
 	/// The edited-cell list is gathered HERE because this is the only
 	/// place that has the map — the worker holds a snapshot of block ids
-	/// and nothing else. It walks the ≤4 columns the padded box overlaps
-	/// rather than the whole world's edits, and is empty for the
-	/// overwhelming majority of chunks.
+	/// and nothing else.
+	///
+	/// This runs on the MAIN thread, once per mesh job, so its cost is
+	/// spent out of the same budget streaming is, and both of its guards
+	/// exist for that reason:
+	///
+	/// - No deposit reaching the box means nothing to reveal and nothing
+	///   to suppress, so there is no stamp at all. That is what keeps the
+	///   gather off the overwhelming majority of chunks — which the code
+	///   used to CLAIM while walking the map regardless.
+	/// - For the rest, the walk is whichever of the two is smaller. The
+	///   map walk is O(every edit ever made in the overlapping columns),
+	///   and `EditOverlay` has no eviction; multiplayer now keeps one too,
+	///   fed by every broadcast edit including the server's fluid churn.
+	///   So in exactly the places players build, a column holds tens of
+	///   thousands of entries and the box holds 18³ — and an F7 or a
+	///   reveal-threshold `remesh_all` pays it for every resident chunk at
+	///   once. Probing the box instead is a fixed cost with the same
+	///   answer.
 	fn ore_stamp(&self, pos: ChunkPos) -> Option<crate::mesher::OreStamp> {
 		use crate::worldgen::ore;
 		if self.mining_level < ore::lowest_reveal() {
@@ -1020,12 +1036,25 @@ impl Pipeline {
 			return None;
 		}
 		let span = crate::mesher::PADDED as i32 - 1;
-		let mut edited = Vec::new();
+		let far = (origin.0 + span, origin.1 + span, origin.2 + span);
+		// The same box `apply_ore` walks, so the two agree by construction.
+		if ore::deposits_near(origin, far, self.seed).is_empty() {
+			return None;
+		}
+		let mut cols = Vec::new();
+		let mut entries = 0usize;
 		for cz in origin.2.div_euclid(n)..=(origin.2 + span).div_euclid(n) {
 			for cx in origin.0.div_euclid(n)..=(origin.0 + span).div_euclid(n) {
-				let Some(cells) = self.edits.column(cx, cz) else {
-					continue;
-				};
+				if let Some(cells) = self.edits.column(cx, cz) {
+					entries += cells.len();
+					cols.push(((cx, cz), cells));
+				}
+			}
+		}
+		let volume = ((span + 1) as usize).pow(3);
+		let mut edited = Vec::new();
+		if entries <= volume {
+			for (_, cells) in &cols {
 				for &(x, y, z) in cells.keys() {
 					let (lx, ly, lz) = (x - origin.0, y - origin.1, z - origin.2);
 					if (0..=span).contains(&lx)
@@ -1033,6 +1062,29 @@ impl Pipeline {
 						&& (0..=span).contains(&lz)
 					{
 						edited.push(crate::mesher::pidx(lx - 1, ly - 1, lz - 1) as u16);
+					}
+				}
+			}
+		} else {
+			// One lookup per cell of the box, and each cell belongs to
+			// exactly one column — so this is `volume` probes in total, not
+			// per column.
+			for ((cx, cz), cells) in &cols {
+				let x0 = (cx * n).max(origin.0);
+				let x1 = (cx * n + n - 1).min(origin.0 + span);
+				let z0 = (cz * n).max(origin.2);
+				let z1 = (cz * n + n - 1).min(origin.2 + span);
+				for z in z0..=z1 {
+					for x in x0..=x1 {
+						for y in origin.1..=origin.1 + span {
+							if cells.contains_key(&(x, y, z)) {
+								edited.push(crate::mesher::pidx(
+									x - origin.0 - 1,
+									y - origin.1 - 1,
+									z - origin.2 - 1,
+								) as u16);
+							}
+						}
 					}
 				}
 			}
@@ -1206,8 +1258,24 @@ impl Pipeline {
 		// also invalidate nearby probes so relight starts immediately.
 		self.gi_dirty.insert(pos);
 		self.gi_edits.push((x, y, z));
-		self.edits.record(x, y, z, cell);
+		// Recorded here ONLY where this write is the authority. In
+		// multiplayer it is a prediction, and `apply_authoritative` records
+		// the server's answer instead — so the map still fills (a player's
+		// own stone wall is recorded the moment it is confirmed, and grows
+		// no phantom veins), but it fills with what the JOURNAL holds.
+		//
+		// The difference is rejections. A refusal is reverted through this
+		// same function, and `EditOverlay::record` is insert-only, so a
+		// predicted edit that the server threw out used to leave its cell
+		// marked edited forever while the server had never journaled it.
+		// From then on the two ends answered `ore::dig_mode` differently
+		// about that cell — client Break, server Extract or NeedsSiphon —
+		// and since the server refuses the hold and the client remembers
+		// the refusal, the cell became permanently un-minable. Every
+		// rejection reason reaches here: Protected, InsidePlayer, Occluded,
+		// DigIncomplete, or a cell simply dropped by the rate limiter.
 		if self.reapply {
+			self.edits.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));
 		}
 		slot.mesh_gen += 1;
@@ -1282,8 +1350,18 @@ impl Pipeline {
 		// Recorded BEFORE the applied/deferred split: a cell the server has
 		// written is a cell the ore reveal must treat as spent whether or
 		// not its chunk happens to be resident yet.
-		self.edits.record(x, y, z, cell);
+		let newly_edited = self.edits.record(x, y, z, cell);
 		let col = (x.div_euclid(16), z.div_euclid(16));
+		// A record can change what a chunk MESHES without changing a single
+		// cell. `set_cell` early-returns when the value already matches and
+		// never bumps `mesh_gen`, but the reveal keys on "edited", not on
+		// the value — so an LWW re-application or a re-streamed column
+		// writing Stone over Stone left a seam still glittering in a chunk
+		// whose dig path had just started calling it spent. Holding on it
+		// dug plain stone and destroyed the deposit for good.
+		if newly_edited && self.cell_at(x, y, z) == Some(cell) {
+			self.remesh_at(x, y, z);
+		}
 		if self.try_apply((x, y, z), cell) {
 			if let Some(cells) = self.deferred_edits.get_mut(&col) {
 				if cells.remove(&(x, y, z)).is_some() {
@@ -1314,6 +1392,31 @@ impl Pipeline {
 	}
 
 	/// True if the cell now holds `v` (freshly written or already there).
+	/// Re-mesh the chunk owning this cell, without writing anything. For
+	/// the one case where a chunk's MESH depends on something other than
+	/// its cells: the ore reveal reads the edit overlay, so recording a
+	/// cell can change what its column draws while every value stays put.
+	/// Neighbours are deliberately not bumped — the reveal is a per-cell
+	/// stamp inside the owning chunk and no padded shell reads it.
+	fn remesh_at(&mut self, x: i32, y: i32, z: i32) {
+		let Some(((cx, cy, cz), _)) = crate::chunk::split_world(x, y, z) else {
+			return;
+		};
+		let pos = ChunkPos::new(cx, cy, cz);
+		let Some(slot) = self.store.get_mut(&pos) else {
+			return;
+		};
+		if !matches!(slot.state, ChunkState::Ready(_)) {
+			return;
+		}
+		slot.mesh_gen += 1;
+		let center = self.center;
+		self.mesh_heap.push((
+			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
+			(pos.x, pos.y, pos.z),
+		));
+	}
+
 	fn try_apply(&mut self, cell: (i32, i32, i32), v: u16) -> bool {
 		self.set_cell(cell.0, cell.1, cell.2, v).is_some()
 			|| self.cell_at(cell.0, cell.1, cell.2) == Some(v)
@@ -1649,6 +1752,84 @@ mod tests {
 		p.set_block(8, 8, 8, new).unwrap();
 		assert!(p.take_recorded_edits().is_empty());
 		assert!(p.overlay().is_none());
+	}
+
+	/// In multiplayer the "has this cell been touched?" map mirrors the
+	/// SERVER's journal, so a local write only marks a cell edited once
+	/// authority confirms it — and a prediction that gets thrown out
+	/// leaves nothing behind.
+	///
+	/// The rollback is what forced this. It reverts through `set_cell`
+	/// like any other write, and `EditOverlay::record` is insert-only, so
+	/// a recorded prediction survived its own rejection: the cell stayed
+	/// edited on the client and pristine on the server, and from then on
+	/// the two ends answered `ore::dig_mode` differently about it — the
+	/// client digging it as stone and the server refusing the hold. Once
+	/// the client remembers that refusal the cell is dead for the session.
+	#[test]
+	fn a_rejected_prediction_leaves_the_cell_untouched() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		quiesce(&mut p, ChunkPos::new(0, 0, 0));
+		let old = p.cell_at(8, 8, 8).unwrap();
+		let new = if crate::chunk::cell_id(old) == BlockType::Stone as u16 {
+			BlockType::Dirt as u16
+		} else {
+			BlockType::Stone as u16
+		};
+		assert!(!p.cell_edited(8, 8, 8), "pristine to begin with");
+
+		// Predict, then take it back the way an EditRejected does.
+		p.set_cell(8, 8, 8, new).unwrap();
+		p.set_cell(8, 8, 8, old).unwrap();
+		assert!(
+			!p.cell_edited(8, 8, 8),
+			"a refused edit is not an edit — the server never journaled it"
+		);
+
+		// The server's own answer IS a record, and it sticks.
+		p.apply_authoritative(8, 8, 8, new);
+		assert!(p.cell_edited(8, 8, 8));
+	}
+
+	/// An authoritative write whose value already matches is still a
+	/// RECORD, and the first record on a cell changes what its chunk
+	/// draws: `ore::revealed` keys on "edited", not on the cell value. So
+	/// the chunk has to re-mesh even though nothing was written.
+	///
+	/// Journal replay does exactly this — an LWW re-application, a
+	/// re-streamed column — and `set_cell` early-returns on an unchanged
+	/// value without touching `mesh_gen`. The seam went on glittering in a
+	/// chunk whose dig path had already started calling it spent stone,
+	/// and holding on it destroyed the deposit.
+	#[test]
+	fn a_no_op_authoritative_write_still_remeshes_once() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+		let pos = ChunkPos::new(0, 0, 0);
+		let here = p.cell_at(8, 8, 8).unwrap();
+		let before = p.store.get(&pos).unwrap().mesh_gen;
+
+		// Same value in: nothing to write, but the cell is now edited.
+		assert_eq!(
+			p.apply_authoritative(8, 8, 8, here),
+			ApplyEdit::Applied,
+			"a matching value is applied, not deferred"
+		);
+		assert!(p.cell_edited(8, 8, 8), "recorded all the same");
+		assert!(
+			p.store.get(&pos).unwrap().mesh_gen > before,
+			"the reveal answer changed, so the chunk has to be re-drawn"
+		);
+
+		// And it does not keep re-meshing on every repeat.
+		let settled = p.store.get(&pos).unwrap().mesh_gen;
+		p.apply_authoritative(8, 8, 8, here);
+		assert_eq!(
+			p.store.get(&pos).unwrap().mesh_gen,
+			settled,
+			"only the FIRST record is a change"
+		);
 	}
 
 	/// The incremental crescent diff must maintain exactly the invariant a

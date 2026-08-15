@@ -792,10 +792,28 @@ impl BlockType {
 	/// The authored block for a grid cell, or `None` where the catalog has
 	/// no such pair. The grid is a GATING rule, not a promise that every
 	/// cell exists — nobody is owed snow stairs.
+	///
+	/// Memoized, because this is not the cold lookup it reads as:
+	/// `slab_base` is the one asking, and it sits on the slab GROW path
+	/// that every place-against-a-slab runs through. A linear walk of the
+	/// catalog with two table reads per row is a lot of work to learn that
+	/// a wood slab completes into wood.
 	pub fn from_grid(m: Material, s: ShapeFamily) -> Option<BlockType> {
-		BlockType::ALL
-			.into_iter()
-			.find(|b| b.grid_cell() == Some((m, s)))
+		static GRID: std::sync::OnceLock<Vec<Option<BlockType>>> = std::sync::OnceLock::new();
+		let grid = GRID.get_or_init(|| {
+			let mut cells = vec![None; Material::COUNT * ShapeFamily::COUNT];
+			// First authored row wins, matching the `find` this replaced.
+			for b in BlockType::ALL {
+				if let Some((bm, bs)) = b.grid_cell() {
+					let slot = &mut cells[bm as usize * ShapeFamily::COUNT + bs as usize];
+					if slot.is_none() {
+						*slot = Some(b);
+					}
+				}
+			}
+			cells
+		});
+		grid[m as usize * ShapeFamily::COUNT + s as usize]
 	}
 
 	/// How much water this block holds, 1..=8 — None for non-water.

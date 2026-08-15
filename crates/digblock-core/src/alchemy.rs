@@ -108,8 +108,16 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (`ceil(total / 3)`, never the level-scaled outcome).
+///
+/// Totals the split without BUILDING it. `extract_base` allocates, and
+/// this is not a cold path the way that one is: `convert_xp` reaches here,
+/// `extract_pace_ticks` reaches `convert_xp`, and the server's token
+/// bucket asks for the pace every tick for every connected player.
 pub fn extract_total_base(b: BlockType) -> u32 {
-	extract_base(b).into_iter().map(|(_, n)| n).sum()
+	let Some((m, s)) = b.grid_cell() else {
+		return functional_extract(b).iter().map(|&(_, n)| n).sum();
+	};
+	crate::material::yield_total(m.extract_units(), s.units())
 }
 
 /// Transmutation waste multiplier in permille: 1600 (1.60×) at level 1
@@ -257,10 +265,46 @@ pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
 /// whole-block intervals: [`extract_burst_ticks`].
 pub const EXTRACT_BURST: f32 = 2.0;
 
-/// The extraction bucket's capacity in ticks at `level` — two whole
-/// blocks' worth, exactly as before the pace became per-block.
+/// The block a single extraction costs the most for — the largest
+/// [`crate::skills::convert_xp`] in the catalog.
+///
+/// Memoized: the server's token-bucket refill asks for the bucket's
+/// capacity every tick for every connected client, and the answer is a
+/// property of the block table, not of the caller.
+fn costliest_extract_block() -> BlockType {
+	static MAX: std::sync::OnceLock<BlockType> = std::sync::OnceLock::new();
+	*MAX.get_or_init(|| {
+		BlockType::ALL
+			.into_iter()
+			.max_by_key(|&b| crate::skills::convert_xp(b))
+			.unwrap_or(BlockType::Stone)
+	})
+}
+
+/// The extraction bucket's capacity in ticks at `level`: two whole
+/// blocks' worth, or ONE costliest extraction if that is more.
+///
+/// The second half is not a nicety. The bucket banks ticks and a Convert
+/// spends [`extract_pace_ticks`] of them, which scales with the block's
+/// `convert_xp` — while the burst was sized off the 9-XP reference block
+/// alone. The two deepest ores are worth 20 and 33 XP, so their pace
+/// exceeded a FULL bucket at every level and `process_alchemy` refused
+/// them forever: no debit, no yield, no XP, just the standing rebase.
+/// Aether has exactly one source, so that silently walled off the
+/// Master's Sigil, the Aetherlamp and the Resonant Pick — online only,
+/// since offline extraction is unpaced, which is the worst way to find
+/// out. `bases_stay_under_a_block` used to make it impossible
+/// (`total <= 27` implies `convert_xp <= REF_XP` implies pace ≤ one
+/// reference interval); ore is the deliberate exception to that bound, so
+/// the guarantee has to be stated here instead, and
+/// `the_bucket_can_always_afford_the_costliest_block` pins it.
+///
+/// Sustained throughput is untouched: the bucket still refills one tick
+/// per tick, so the drip is exactly as slow as it always was. Only the
+/// bunching allowance grows, and only to what a single op actually costs.
 pub fn extract_burst_ticks(level: u32) -> f32 {
-	EXTRACT_BURST * base_pace_ticks(level) as f32
+	let reference = EXTRACT_BURST * base_pace_ticks(level) as f32;
+	reference.max(extract_pace_ticks(costliest_extract_block(), level) as f32)
 }
 
 #[cfg(test)]
@@ -543,9 +587,65 @@ mod tests {
 				}
 			}
 		}
-		// The bucket's capacity is still two whole blocks' worth.
-		assert_eq!(extract_burst_ticks(1), 60.0);
-		assert_eq!(extract_burst_ticks(99), 30.0);
+		// The bucket's capacity is two whole blocks' worth, or one
+		// costliest extraction where that is more — see
+		// `the_bucket_can_always_afford_the_costliest_block`.
+		assert_eq!(extract_burst_ticks(1), 110.0);
+		assert_eq!(extract_burst_ticks(99), 55.0);
+		assert_eq!(
+			extract_burst_ticks(1),
+			extract_pace_ticks(costliest_extract_block(), 1) as f32,
+			"the costliest ore is what sets it, not the reference block"
+		);
+	}
+
+	/// A full bucket must be able to pay for the costliest single
+	/// extraction, or that block cannot be extracted AT ALL online: the
+	/// server refuses on `extract_tokens < cost` and the tokens never
+	/// reach it, so the op is dropped in silence — no debit, no yield, no
+	/// XP, just the standing rebase. Offline is unpaced, so single-player
+	/// looks perfect while the dedicated server is a wall.
+	///
+	/// This used to follow from `bases_stay_under_a_block`: a base of at
+	/// most 27 sub-units means `convert_xp <= REF_XP`, so the pace never
+	/// exceeded one reference interval and two of them always covered it.
+	/// Ore is exempt from that bound — a vein is a concentrate — which
+	/// removed the proof without anyone noticing, and left Glowvein and
+	/// Aetherock permanently un-extractable.
+	#[test]
+	fn the_bucket_can_always_afford_the_costliest_block() {
+		for &b in &BlockType::ALL {
+			if !b.is_extractable() {
+				continue;
+			}
+			for level in 1..=99 {
+				let cost = extract_pace_ticks(b, level) as f32;
+				let burst = extract_burst_ticks(level);
+				assert!(
+					cost <= burst,
+					"{b:?} at level {level}: one Convert costs {cost} ticks \
+					 against a {burst}-tick bucket — refused forever"
+				);
+			}
+		}
+		// And the ores that broke it are genuinely the expensive end.
+		assert!(
+			crate::skills::convert_xp(costliest_extract_block()) > REF_XP as u64,
+			"a catalog where the reference block IS the costliest would \
+			 make this test vacuous"
+		);
+	}
+
+	/// `extract_total_base` sums the split without building it, so the
+	/// two have to agree for every block — a fast path that quietly
+	/// disagreed with the yields it totals would move extraction XP, the
+	/// bench pace and the token bucket all at once.
+	#[test]
+	fn the_total_matches_the_split_it_totals() {
+		for &b in &BlockType::ALL {
+			let split: u32 = extract_base(b).into_iter().map(|(_, n)| n).sum();
+			assert_eq!(extract_total_base(b), split, "{b:?}");
+		}
 	}
 
 	/// Base yields never exceed a whole block's 27 sub-units, and every

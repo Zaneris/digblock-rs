@@ -105,6 +105,30 @@ impl Inventory {
 		cap(b).saturating_sub(self.count(b))
 	}
 
+	/// Does the player have this tool? Tools cap at one, so ownership IS
+	/// the count — except the bucket, which everyone starts with
+	/// ([`BlockType::always_owned`]). Non-tools are never owned in this
+	/// sense, whatever their stack says.
+	#[inline]
+	pub fn owns_tool(&self, b: BlockType) -> bool {
+		b.is_tool() && (b.always_owned() || self.count(b) > 0)
+	}
+
+	/// The owned tool roster, in block-id order: what tapping 9 cycles
+	/// through, what the rail lists, and — via
+	/// [`crate::inv_grid::reconcile_layout`] — the only tools a client may
+	/// claim to be holding. One definition, because the client's roster
+	/// and the server's gate disagreeing is exactly how a tool gets used
+	/// without being owned.
+	///
+	/// Never empty in practice: the bucket is `always_owned`.
+	pub fn owned_tools(&self) -> impl Iterator<Item = BlockType> + '_ {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|&b| self.owns_tool(b))
+	}
+
 	/// Debit `n` if the stock covers it; false (and no change) otherwise.
 	#[must_use]
 	pub fn try_take(&mut self, b: BlockType, n: u32) -> bool {

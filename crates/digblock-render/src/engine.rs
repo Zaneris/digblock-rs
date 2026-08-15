@@ -1461,8 +1461,41 @@ fn held_tex_layer(held: u16) -> Option<u16> {
 		// all it can say: wood for an empty pail, water for a full one.
 		WIRE_TOOL => Some(BlockType::Wood.props().tex_side),
 		digblock_net::messages::HELD_TOOL_FULL => Some(BlockType::Water.props().tex_side),
-		id => BlockType::try_from_id(id).map(|b| b.props().tex_side),
+		// Any other tool arrives as its own id, and a tool carries no
+		// texture layers — `props().tex_side` would draw the game's most
+		// expensive item as a block of whatever sits at layer 0. Its
+		// AUTHORED faces have real textures, so borrow the one it is
+		// mostly made of; a future tool is covered the moment its icon is.
+		id => BlockType::try_from_id(id).map(|b| {
+			if b.is_tool() {
+				tool_cube_layer(b)
+			} else {
+				b.props().tex_side
+			}
+		}),
 	}
+}
+
+/// The single texture that best stands in for a tool at remote-hand size.
+/// Memoized: this is asked once per remote player per frame, and the
+/// answer is a property of the authored geometry.
+fn tool_cube_layer(tool: BlockType) -> u16 {
+	use std::sync::OnceLock;
+	static LAYERS: OnceLock<Vec<(u16, u16)>> = OnceLock::new();
+	let table = LAYERS.get_or_init(|| {
+		BlockType::ALL
+			.into_iter()
+			.filter(|b| b.is_tool())
+			.filter_map(|b| {
+				let kind = crate::ui::hud::tool_icon(b, false);
+				crate::item_geom::dominant_layer(kind).map(|l| (b as u16, l))
+			})
+			.collect()
+	});
+	table
+		.iter()
+		.find(|&&(id, _)| id == tool as u16)
+		.map_or(BlockType::Wood.props().tex_side, |&(_, l)| l)
 }
 
 /// Pack linear RGB into the overlay's 0xAABBGGRR vertex color (opaque).
@@ -3180,12 +3213,13 @@ impl Engine {
 
 	/// The owned tool roster in deterministic block-id order: the
 	/// always-owned bucket plus every tool id with a nonzero count.
+	///
+	/// The predicate lives in core so the rail this feeds and the
+	/// ownership check `reconcile_layout` makes are literally the same
+	/// question — a client offering a tool its own server would take back
+	/// is a rejected swing, not a feature.
 	fn owned_tools(&self) -> Vec<BlockType> {
-		BlockType::ALL
-			.iter()
-			.copied()
-			.filter(|b| b.is_tool() && (b.always_owned() || self.inventory.count(*b) > 0))
-			.collect()
+		self.inventory.owned_tools().collect()
 	}
 
 	/// True while the tool is out AND empty — the scooping state. This is
@@ -3288,16 +3322,19 @@ impl Engine {
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
-		let pipeline = &self.pipeline;
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
 			hit.normal,
 			self.camera.dir().to_array(),
 			digblock_core::unlock::pick_cells(level),
+			// The same rule the server runs over its own world — including
+			// the world floor, which `dig_hardness` refuses at exactly the
+			// y `protect::immutable` does. A server's spawn lock is its own
+			// secret and stays unpredicted, as everywhere else.
 			|c| {
-				pipeline
-					.cell_at(c.0, c.1, c.2)
-					.is_some_and(|v| digblock_core::chunk::cell_id(v) == id)
+				self.pipeline.cell_at(c.0, c.1, c.2).is_some_and(|v| {
+					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(c))
+				})
 			},
 		);
 		// The aimed cell leads the list and the caller already has it.
@@ -3532,9 +3569,11 @@ impl Engine {
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
 		// (cell, prev) list this dig clears — a door adds its partner, the
 		// Resonant Pick adds the plane of the face (SKILLS-DESIGN §5.6).
-		// Every extra cell holds the SAME id, which is what makes
+		// Every extra cell holds the SAME id and is the plain breakable
+		// case (`pick::breaks_as_extra`), which is what makes
 		// `begin_multi`'s single `inv_delta` a correct description of the
-		// whole group.
+		// whole group — and what keeps the aimed door's own partner out of
+		// the plane, where it used to be counted AND written twice.
 		let mut cleared = vec![(hit.cell, prev_cell)];
 		for c in self.pick_plane(&hit) {
 			if let Some(v) = self.pipeline.cell_at(c.0, c.1, c.2) {
@@ -3622,7 +3661,16 @@ impl Engine {
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.net.as_mut() {
 			Some(net) if net.ready() => {
-				let kind = if self.hotbar.selected_item() == Some(HotbarItem::WaterTool) {
+				// `tool` is `water_tool_selected` — the SLOT is not enough.
+				// It is the same predicate `diggable` and the scoop ray use,
+				// and the same one the server's Collect gate asks
+				// (`slot_item == WaterTool && active_tool == Bucket`).
+				// Reading the slot alone called every hold with the siphon,
+				// pick or sigil in hand a Collect, which the server answered
+				// WrongSlot: cell and credit reverted, so with any tool but
+				// the bucket active the player could dig NOTHING online —
+				// veins included — while offline the identical input worked.
+				let kind = if tool {
 					digblock_net::messages::EditKind::Collect
 				} else {
 					digblock_net::messages::EditKind::Dig
@@ -3687,7 +3735,18 @@ impl Engine {
 			// ray: the fluid ray stops INSIDE a source, leaving no face
 			// normal to build against, which is why right-clicking water
 			// with the old collect-only tool did nothing at all.
-			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => BlockType::Water,
+			//
+			// The BUCKET, not the slot: the server's place gate requires
+			// `active_tool == Bucket`, so pouring with the pick or siphon
+			// active answered WrongSlot and the source appeared and
+			// vanished. Offline there was no such correction and it simply
+			// poured — a pick that puts down water.
+			Some(HotbarItem::WaterTool)
+				if self.hotbar.active_tool() == BlockType::Bucket
+					&& self.inventory.bucket_full() =>
+			{
+				BlockType::Water
+			}
 			// An empty bucket has nothing to give. Doors above still toggle.
 			Some(HotbarItem::WaterTool) | None => return,
 		};

@@ -141,6 +141,21 @@ impl InvGrid {
 /// so the edit that empties a stack is still validated against the
 /// layout that holds it; the slot clears on the next frame.
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
+	// The tool slot's second axis, which no sweep below can reach: the bar
+	// holds `WaterTool` while `Hotbar::active_tool` says WHICH tool, and
+	// `from_wire` believes any tool id it is handed. That id arrives from
+	// the client on every `Layout`, so ownership has to be re-asserted
+	// here — the one place that sees the counts. Without it a crafted
+	// `Layout` naming the Resonant Pick is enough to swing it: the
+	// server's pick and siphon gates read `active_tool` and nothing else,
+	// so the Alch 55 unlock and the whole essence price are skipped. The
+	// bucket was safe only because it is `always_owned`, and that stopped
+	// being the whole roster.
+	if !inv.owns_tool(bar.active_tool()) {
+		if let Some(t) = inv.owned_tools().next() {
+			bar.set_active_tool(t);
+		}
+	}
 	for slot in 0..HOTBAR_SLOTS {
 		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
 			if inv.count(b) == 0 || !b.is_slottable() {
@@ -298,6 +313,65 @@ mod tests {
 			"reclaimed"
 		);
 		assert_eq!(grid.get(3), None);
+	}
+
+	/// A client can name any tool it likes on the `Layout` wire —
+	/// `Hotbar::from_wire` has no counts to check it against. Reconciling
+	/// is what takes an unowned one back, and it is the ONLY thing that
+	/// does: the server's pick and siphon gates read `active_tool`
+	/// directly, so a tool that survives this call is a tool that gets
+	/// used for free.
+	#[test]
+	fn an_unowned_active_tool_is_taken_back() {
+		let inv = inv_of(&[(B::Dirt, 1)]);
+		let mut grid = InvGrid::default();
+		// What a forged Layout does: `from_wire` believes the id.
+		let mut wire = [WIRE_EMPTY; HOTBAR_SLOTS];
+		wire[HOTBAR_SLOTS - 1] = B::ResonantPick as u16;
+		let mut bar = Hotbar::from_wire(&wire);
+		assert_eq!(bar.active_tool(), B::ResonantPick, "decoded as claimed");
+
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(
+			bar.active_tool(),
+			B::Bucket,
+			"an unowned tool falls back to the one every player has"
+		);
+
+		// Owning it makes the same claim stick — the gate is the count,
+		// not a whitelist.
+		let inv = inv_of(&[(B::Dirt, 1), (B::ResonantPick, 1)]);
+		let mut bar = Hotbar::from_wire(&wire);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.active_tool(), B::ResonantPick);
+		assert!(
+			!bar.slots()
+				.contains(&Some(HotbarItem::Block(B::ResonantPick))),
+			"and owning a tool still never fills a block slot"
+		);
+
+		// Losing it mid-session (a rebase that zeroes the count) hands the
+		// slot back rather than leaving a phantom pick in hand.
+		let inv = inv_of(&[(B::Dirt, 1)]);
+		reconcile_layout(&inv, &mut bar, &mut grid);
+		assert_eq!(bar.active_tool(), B::Bucket);
+	}
+
+	/// The roster the tool slot cycles is the roster ownership is judged
+	/// against — one definition, so the client's rail and the server's
+	/// gate cannot disagree about what is in hand.
+	#[test]
+	fn the_owned_roster_starts_at_the_bucket_and_grows_by_count() {
+		let inv = Inventory::default();
+		assert_eq!(inv.owned_tools().collect::<Vec<_>>(), vec![B::Bucket]);
+		let inv = inv_of(&[(B::EssenceSiphon, 1), (B::Stone, 40)]);
+		let owned: Vec<_> = inv.owned_tools().collect();
+		assert!(owned.contains(&B::Bucket) && owned.contains(&B::EssenceSiphon));
+		assert!(!owned.contains(&B::Stone), "a stack is not a tool");
+		assert!(
+			owned.windows(2).all(|w| (w[0] as u16) < (w[1] as u16)),
+			"block-id order, so both ends cycle the same way"
+		);
 	}
 
 	#[test]
