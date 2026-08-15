@@ -420,12 +420,13 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 	// normalizer and the answer.
 	var wsum = 0.0;
 	var sel_cls = 0u;
-	// Only the POSITION is kept per update. Everything derived from it —
-	// the distance, the direction, `gi_light_margin`'s sqrt — is computed
+	// Only the ENTRY is kept per update. Everything derived from it — the
+	// distance, the direction, `gi_light_margin`'s sqrt — is computed
 	// once after the loop instead of on every candidate that happens to
 	// win the reservoir, which on a cluster is most of them. Same answer,
-	// since the winner is the winner.
-	var sel_pos = vec3f(0.0);
+	// since the winner is the winner. The whole vec4 rather than just the
+	// position, because the margin is a question about the w word too.
+	var sel = vec4f(0.0);
 	for (var i = 1u; i <= count; i++) {
 		let l = lights[i];
 		let d = l.xyz - p;
@@ -438,7 +439,7 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		if ndl <= 0.0 {
 			continue;
 		}
-		let cls = bitcast<u32>(l.w);
+		let cls = gi_light_class(l.w);
 		// The target function, and the ONLY LUT read on the candidate
 		// path: the drawn light's tint is fetched once, below. A tint that
 		// varies between classes just makes this a slightly worse target,
@@ -450,15 +451,15 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		wsum += score;
 		if lcg_next(&rng) * wsum < score {
 			out.valid = true;
-			sel_pos = l.xyz;
+			sel = l;
 			sel_cls = cls;
 		}
 	}
 	if out.valid {
-		let d = sel_pos - p;
+		let d = sel.xyz - p;
 		out.dist = length(d);
 		out.dir = d / out.dist;
-		out.margin = gi_light_margin(sel_pos);
+		out.margin = gi_light_margin_of(sel);
 		// f_sel / p_sel x sum(p), with the division done in closed form:
 		// the target IS the contribution up to the tint, so `score_sel`
 		// cancels exactly and never appears. That cancellation is the

@@ -242,24 +242,16 @@ fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Fullbright ink is a light SOURCE, and a source has to out-read what
-	// it casts or the picture inverts: the flame is authored as an
-	// ordinary albedo texture, so at gain 1 it renders no brighter than a
-	// well-lit wall — and once the torch's near field stopped clipping
-	// (LIGHT_NEAR, gi_resolve.wgsl) the pool it threw was brighter than
-	// the flame throwing it. This is the ink alone: `glows` and `emits`
-	// are independent block properties, so nothing here changes what a
-	// torch CASTS, only how the emitter itself reads.
+	// Fullbright ink, through ink_common's shared `emissive_ink` — the ONE
+	// definition, so the same block reads identically here, in your own
+	// hand (viewmodel.wgsl) and in somebody else's (players.wgsl). The
+	// gain, why it rides the ink's own luminance, and what caps it all
+	// live on that function.
 	//
-	// The gain rides the ink's OWN luminance, because a torch is one
-	// block but not one material: the head and the wooden post are both
-	// fullbright, and a flat multiplier lifts the post into glowing wood.
-	// Weighting by value puts the light where the light is — the flame
-	// takes nearly the whole gain, the post barely moves — and it needs
-	// no texture-id special case in a shader to do it.
-	const EMISSIVE_GAIN = 1.6;
-	let ink = dot(tex, vec3f(0.299, 0.587, 0.114));
-	var col = tex * select(1.0, 1.0 + EMISSIVE_GAIN * ink * ink, i.emissive == 1u);
+	// This is the ink alone: `glows` and `emits` are independent block
+	// properties, so nothing here changes what a torch CASTS, only how
+	// the emitter itself reads.
+	var col = select(tex, emissive_ink(tex), i.emissive == 1u);
 	// Emissive ink is its own light — no sun, no GI. It still travels to
 	// the eye through the medium like everything else, which is why the
 	// branch narrowed to the lighting instead of returning early.

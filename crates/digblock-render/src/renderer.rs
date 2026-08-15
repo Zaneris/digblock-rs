@@ -299,6 +299,17 @@ pub struct FrameScene<'a> {
 	/// Remote-player instances `[pos.xyz, yaw, rgb, spare]`, uploaded
 	/// every frame (tiny — no change detection).
 	pub players: &'a [[f32; 8]],
+	/// The item in each remote's hand: its `IconKind` (the geometry to
+	/// draw, from `item_geom`) plus
+	/// `[eye.xyz, yaw, emissive, height in twelfths, 0, 0]`.
+	pub held: &'a [(crate::ui::hud::IconKind, [f32; 8])],
+	/// Lights players are CARRYING this frame — yours and every remote's
+	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI
+	/// light list, so a torch in a hand lights a room exactly as one on
+	/// the floor does. Passed with the frame rather than set ahead of it,
+	/// because `flush_lights` runs inside `GiDraw::encode` and an
+	/// out-of-order setter would be a hazard for nothing.
+	pub carried: &'a [crate::gi::Emitter],
 	/// Live level-up confetti bursts `[origin.xyz, age][seed, …]`, aged
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
@@ -1281,6 +1292,14 @@ impl Renderer {
 		self.gi.invalidate(pos);
 	}
 
+	/// The same, for a light a player is CARRYING that has moved or gone
+	/// out. Identical to the probes; the two are told apart only so a
+	/// walking carrier's stream cannot evict a world edit from the
+	/// resolve's four screen-cap slots (`GiDraw::resolve_inval`).
+	pub fn gi_invalidate_moving(&mut self, pos: [f32; 3]) {
+		self.gi.invalidate_moving(pos);
+	}
+
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.spray.remove_chunk(pos);
 		// Before the early return: GI residency is its own set, and an
@@ -1639,6 +1658,8 @@ impl Renderer {
 			scale,
 			ui_scale,
 			players,
+			held,
+			carried,
 			overlay,
 			confetti,
 			feed,
@@ -1652,14 +1673,12 @@ impl Renderer {
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
+		self.players.set_held(gpu, held);
 		self.highlight.set_target(gpu, highlight_target);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
-		let (sky_y, emitters) = self.gi.debug_state();
 		let mut stats = RenderStats {
 			chunks_resident: self.chunks.len() as u32,
-			sky_y,
-			emitters,
 			..Default::default()
 		};
 		// GI parameters into the frame uniforms (quantized caster, cascade
@@ -1707,7 +1726,13 @@ impl Renderer {
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
 		self.gi
-			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame);
+			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame, carried);
+		// AFTER the encode, not before it: `carried` is folded into the
+		// light list inside `flush_lights`, so reading these earlier
+		// reported the PREVIOUS frame's emitters — and zero on frame 0,
+		// which is every `--frames 1` capture and exactly the run the
+		// count exists to answer.
+		(stats.sky_y, stats.emitters) = self.gi.debug_state();
 
 		let draw = ChunkDraw {
 			chunks: &self.chunks,
@@ -1893,9 +1918,9 @@ impl Renderer {
 				// 0). They gather the probe field per fragment, so their
 				// group 2 is the GI world data, not the resolve outputs.
 				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
-				let player_tris = self.players.draw(&mut pass);
+				let player_tris = self.players.draw(&mut pass, &self.index_buf);
 				if player_tris > 0 {
-					stats.draw_calls += 1;
+					stats.draw_calls += self.players.draw_calls();
 					stats.triangles += player_tris;
 				}
 
