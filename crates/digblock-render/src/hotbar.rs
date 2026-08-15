@@ -63,8 +63,21 @@ impl ToolSwap {
 	/// Read every frame rather than latched, so the slot can never be
 	/// left drawing a tool the player doesn't have.
 	pub fn advance(&mut self, dt: f32, active: BlockType) {
-		if active != self.shown && self.left <= 0.0 {
-			self.left = Self::SECS;
+		if active != self.shown {
+			if self.left <= 0.0 {
+				self.left = Self::SECS;
+			} else if crate::ui::handover(1.0 - self.left / Self::SECS).0 {
+				// A second tap while the incoming tool is still GROWING IN.
+				// Mirroring `left` about the changeover puts the handover
+				// back in its shrinking half at the same presence, so the
+				// icon the player is looking at shrinks away and the new one
+				// grows in behind it. Letting it fall through instead
+				// swapped the icon in place at whatever size it had reached
+				// — the one hard cut this whole animation exists to avoid,
+				// and the easiest to hit, since cycling a roster means
+				// tapping 9 repeatedly.
+				self.left = Self::SECS - self.left;
+			}
 		}
 		self.left = (self.left - dt).max(0.0);
 		// Past the changeover — present has passed through zero — what
@@ -212,5 +225,57 @@ mod tests {
 		);
 		assert_eq!(swap.shown(), BlockType::ResonantPick);
 		assert_eq!(swap.present(), 1.0, "and settles fully present");
+	}
+
+	/// Cycling a roster means tapping 9 repeatedly, so the second tap
+	/// routinely lands while the first exchange is still growing its icon
+	/// in. That must keep handing over, not cut: the icon on screen
+	/// shrinks away first, however many taps arrive.
+	#[test]
+	fn a_tap_mid_handover_keeps_handing_over() {
+		const DT: f32 = 1.0 / 60.0;
+		let mut swap = ToolSwap::default();
+		// Run until the pick is not just shown but visibly ON SCREEN.
+		// Tapping exactly at the changeover proves nothing: presence is 0
+		// there, which is the whole point of the changeover.
+		let mut grew = false;
+		for _ in 0..18 {
+			swap.advance(DT, BlockType::ResonantPick);
+			if swap.shown() == BlockType::ResonantPick && swap.present() > 0.4 {
+				grew = true;
+				break;
+			}
+		}
+		assert!(grew, "reached the growing half with the icon visible");
+		let at_tap = swap.present();
+		assert!(at_tap < 1.0, "mid-growth, not settled: {at_tap}");
+
+		// The second tap. Whatever is on screen must not be replaced by a
+		// different icon at the same size.
+		swap.advance(DT, BlockType::EssenceSiphon);
+		assert_eq!(
+			swap.shown(),
+			BlockType::ResonantPick,
+			"the visible icon stays put and shrinks — no swap in place"
+		);
+		assert!(
+			swap.present() <= at_tap + 1e-4,
+			"and it shrinks from where it was rather than jumping: \
+			 {at_tap} -> {}",
+			swap.present()
+		);
+		let mut lowest = swap.present();
+		let mut flipped = None;
+		for i in 0..24 {
+			swap.advance(DT, BlockType::EssenceSiphon);
+			lowest = lowest.min(swap.present());
+			if swap.shown() == BlockType::EssenceSiphon && flipped.is_none() {
+				flipped = Some(i);
+			}
+		}
+		assert!(lowest < 0.06, "it still passes through nothing: {lowest}");
+		assert!(flipped.is_some(), "and the siphon does arrive");
+		assert_eq!(swap.shown(), BlockType::EssenceSiphon);
+		assert_eq!(swap.present(), 1.0);
 	}
 }

@@ -238,19 +238,43 @@ pub fn tool_rail(
 	/// the only thing the rail is for.
 	const RAIL_CELL: f32 = 34.0;
 	const RAIL_ICON_PAD: f32 = 3.0;
+	/// How far the cells may shrink to fit. Below this a tool icon is a
+	/// smudge, and a rail you cannot read is worth less than a short one.
+	const RAIL_MIN_SQUEEZE: f32 = 0.6;
 	let scale = style.scale;
 	let grid = row_grid(size, scale);
-	let cell = RAIL_CELL * scale;
-	let gap = 6.0 * scale;
 	let slot = bar_slot_rect(&grid, HOTBAR_SLOTS - 1, scale);
-	let mut x = slot.x + slot.w + SLOT_GAP * scale * 2.0;
+	let start = slot.x + slot.w + SLOT_GAP * scale * 2.0;
+	// The rail grows rightward from the bar's last slot into whatever the
+	// centred bar leaves — and that space SHRINKS as the interface scale
+	// grows, because the bar takes more of the window. Three owned tools
+	// at 1.5× on a narrow window ran the last icon clean off the edge.
+	// Squeeze the cells to fit, down to a floor where they can still be
+	// told apart, and then draw only what actually fits.
+	let n = owned.iter().filter(|&&t| t != shown).count();
+	let room = (size.0 as f32 - start - SLOT_GAP * scale * 2.0).max(0.0);
+	let span = |c: f32, g: f32| n as f32 * c + (n as f32 - 1.0) * g;
+	let full = span(RAIL_CELL * scale, 6.0 * scale);
+	let squeeze = if full > room && full > 0.0 {
+		(room / full).max(RAIL_MIN_SQUEEZE)
+	} else {
+		1.0
+	};
+	let cell = RAIL_CELL * scale * squeeze;
+	let gap = 6.0 * scale * squeeze;
+	let fits = if cell + gap > 0.0 {
+		(((room + gap) / (cell + gap)) as usize).min(n)
+	} else {
+		0
+	};
+	let mut x = start;
 	let y = grid.origin.1 + grid.cell - cell;
 	// The rail rides the same handover as the slot: `shown` is the tool
 	// being DRAWN, so membership changes at the midpoint — where every
 	// icon is at nothing — and no tool is ever in the slot and the rail
 	// at the same time.
 	let inset = cell * (1.0 - present) / 2.0;
-	for &tool in owned.iter().filter(|&&t| t != shown) {
+	for &tool in owned.iter().filter(|&&t| t != shown).take(fits) {
 		let kind = tool_icon(tool, bucket_full);
 		let box_ = super::Rect::new(x, y, cell, cell);
 		// A faded slot, not a bare icon: these sit over open world, and
@@ -386,6 +410,53 @@ mod tests {
 				SIZE.1 as f32 - BOTTOM_MARGIN * scale,
 				"bottom anchor scales"
 			);
+		}
+	}
+
+	/// The rail grows rightward from the bar into whatever the centred bar
+	/// leaves — which is LESS the bigger the interface scale, because the
+	/// bar itself takes more of the window. Nothing it draws may cross the
+	/// right edge, at any scale, on any window, with the full roster owned.
+	#[test]
+	fn the_tool_rail_never_runs_off_the_window() {
+		use digblock_core::block::BlockType as B;
+		let owned: Vec<B> = B::ALL.into_iter().filter(|b| b.is_tool()).collect();
+		assert!(owned.len() >= 3, "the roster has to be able to overflow");
+		for size in [(1280u32, 720u32), (960, 600), (800, 600), (640, 480)] {
+			for scale in [1.0f32, 1.5, 2.0, 2.5, 3.0] {
+				let mut dl = DrawList::default();
+				let style = Style::new(scale);
+				tool_rail(&mut dl, &style, size, &owned, B::Bucket, false, 1.0);
+				// Horizontal extent of every mark the rail makes — flat
+				// quads, block icons, and the projected faces of a 3D one.
+				let spans = [Layer::Backdrop, Layer::Icons, Layer::Content, Layer::Ghost]
+					.into_iter()
+					.flat_map(|l| dl.cmds(l).0)
+					.filter_map(|cmd| match cmd {
+						Cmd::Quad { rect, .. } | Cmd::Icon { rect, .. } => {
+							Some((rect.x, rect.x + rect.w))
+						}
+						Cmd::IconQuad { corners, .. } => Some((
+							corners.iter().fold(f32::MAX, |m, c| m.min(c[0])),
+							corners.iter().fold(f32::MIN, |m, c| m.max(c[0])),
+						)),
+						_ => None,
+					});
+				let mut drawn = 0;
+				for (lo, hi) in spans {
+					drawn += 1;
+					assert!(
+						hi <= size.0 as f32 + 0.5,
+						"{size:?} at {scale}x: rail reaches {hi} past {}",
+						size.0
+					);
+					assert!(lo >= 0.0, "{size:?} at {scale}x: rail starts off-screen");
+				}
+				// Not vacuous: where there IS room, the rail still draws.
+				if size == (1280, 720) && scale <= 1.5 {
+					assert!(drawn > 0, "{size:?} at {scale}x drew nothing at all");
+				}
+			}
 		}
 	}
 
