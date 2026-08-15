@@ -222,12 +222,41 @@ fn mine_material(m: Material) -> u32 {
 	match m {
 		M::Sandstone | M::SandstoneBrick => 3,
 		M::Stone | M::StoneBrick | M::PolishedStone | M::Rubble | M::DepletedStone => 5,
+		// The ORES, at exactly the level that reveals them. A vein in
+		// pristine stone is already invisible below its tier, so this arm
+		// is about the other way an ore block exists: one somebody PLACED.
+		// That is ordinary chunk data every visitor sees at any level
+		// (`apply_ore`'s second pass reverts only cells it claimed, never
+		// a placed block), so without these arms the whole table fell
+		// through to `_ => 1` and a Mining-1 newcomer could strip a
+		// Mining-80 player's Aetherock wall. The tell was the neighbour:
+		// DepletedStone — the SPENT face, worth Rubble — sat at 5 while
+		// the ore itself was ungated.
+		//
+		// Keyed to `reveal` rather than hand-numbered, so a retune of the
+		// reveal ladder cannot leave the two disagreeing;
+		// `every_ore_is_gated_at_its_own_reveal` pins that they match.
+		M::Emberore => reveal_of(BlockType::Emberore),
+		M::Duskstone => reveal_of(BlockType::Duskstone),
+		M::Glowvein => reveal_of(BlockType::Glowvein),
+		M::Aetherock => reveal_of(BlockType::Aetherock),
 		// The hard substances ore pays for: a pick has to be worth
 		// something before someone else's metal wall comes apart.
 		M::Metal => 40,
 		M::Crystal => 60,
 		// Gravel stays the entry rock; everything else ungated.
 		_ => 1,
+	}
+}
+
+/// [`reveal`] for a block known to be an ore, for use inside
+/// [`mine_material`]'s table. Panics on anything else, which is a
+/// compile-time-shaped mistake made loud at first call rather than
+/// silently answering 1 — the exact failure this helper exists to fix.
+fn reveal_of(b: BlockType) -> u32 {
+	match reveal(b) {
+		Some(l) => l,
+		None => panic!("{b:?} is in the ore gate but has no reveal level"),
 	}
 }
 
@@ -419,6 +448,71 @@ mod tests {
 				"{b:?}: an unlock level and a recipe come as a pair"
 			);
 		}
+	}
+
+	/// Every ore is dug at exactly the level that lets you SEE it.
+	///
+	/// The two numbers have to move together or they contradict each
+	/// other: `reveal` decides when a vein appears, and `mine` decides
+	/// when the block may be broken. `mine_material` reads `reveal`
+	/// rather than repeating it, and this is the pin on that — it fails
+	/// if an arm is dropped and the material falls back to the table's
+	/// ungated `_`, which is exactly how every ore came to be minable at
+	/// Mining 1.
+	#[test]
+	fn every_ore_is_gated_at_its_own_reveal() {
+		for &ore in &crate::worldgen::ore::ORES {
+			let seen = reveal(ore).expect("an ore has a reveal level");
+			assert_eq!(
+				mine(ore),
+				seen,
+				"{ore:?} reveals at {seen} but is minable at {}",
+				mine(ore)
+			);
+			assert!(
+				mine(ore) > 1,
+				"{ore:?} is ungated — a placed ore block is ordinary chunk \
+				 data that any level can see and break"
+			);
+		}
+	}
+
+	/// The other half of the rock gate: no material may reach the
+	/// ungated fallback by ACCIDENT.
+	///
+	/// `mine_material`'s `_ => 1` is correct for soil, foliage and the
+	/// entry rock, and wrong for anything hard — but the two are
+	/// indistinguishable at the match arm, so a new substance that
+	/// nobody remembers to gate simply becomes free. Spelling the
+	/// ungated set out makes joining it a decision, the way
+	/// `material_roster_is_pinned` makes having a material at all one.
+	#[test]
+	fn the_ungated_materials_are_spelled_out() {
+		use Material as M;
+		let ungated: Vec<Material> = Material::ALL
+			.into_iter()
+			.filter(|&m| mine_material(m) == 1)
+			.collect();
+		assert_eq!(
+			ungated,
+			vec![
+				M::Wood,
+				M::Dirt,
+				M::Sand,
+				M::Lumber,
+				M::DarkLumber,
+				M::Snow,
+				M::Grass,
+				M::Mud,
+				M::Glass,
+				M::RedLumber,
+				M::Gravel,
+				M::DryGrass,
+				M::Leaf,
+				M::PineLeaf,
+			],
+			"a material joined or left the ungated set — is that intended?"
+		);
 	}
 
 	/// §7.2's grid rule, enforced instead of described: EVERY authored

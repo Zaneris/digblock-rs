@@ -60,8 +60,22 @@ pub fn extract_base(b: BlockType) -> Vec<(Essence, u32)> {
 }
 
 /// Flat bonus lines, NOT scaled by efficiency — the unlock is the whole
-/// point. Only ever on blocks without a craft recipe (see module doc;
-/// pinned by `bonus_lines_never_sit_on_craftable_blocks`).
+/// point.
+///
+/// The rule is stronger than "no recipe", and the weaker form is what
+/// let a pump ship: a line may not sit on a recipe-less block that is
+/// the DROP of a craftable one either, because the drop is reachable
+/// from the recipe in one dig. Rubble carried "trace minerals" on
+/// exactly that footing — `Stone` and `Sandstone` are craftable and both
+/// `drops: Rubble` (the Rubble rule), so craft → place → dig → extract
+/// closed the loop and turned Earth into Metal and Aether at 8 Earth a
+/// unit. Both halves are pinned by
+/// `bonus_lines_never_sit_on_craftable_blocks`, which now follows
+/// `dig_drop`.
+///
+/// The two trickles the Rubble lines provided survive on hosts nothing
+/// craftable drops into: Metal on `Gravel` (60) and Aether on
+/// `PineLeaves` (75).
 pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 	use BlockType as B;
 	use Essence as E;
@@ -73,10 +87,19 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 		// Aether trickle instead.
 		B::PineLeaves if level >= 75 => &[(E::Aqua, 1), (E::Aether, 1)],
 		B::PineLeaves if level >= 25 => &[(E::Aqua, 1)],
-		// "Trace minerals" — mined rock only; clean Stone/Sandstone are
-		// craftable and would pump Earth into Metal.
-		B::Rubble if level >= 90 => &[(E::Metal, 1), (E::Aether, 1)],
-		B::Rubble if level >= 40 => &[(E::Metal, 1)],
+		// "Trace minerals" — loose rock that no recipe reaches. Gravel is
+		// worldgen-only and is nothing's drop; Rubble is NOT eligible,
+		// however recipe-less it looks, because craftable rock drops it.
+		//
+		// Both of Rubble's rungs moved here rather than being deleted:
+		// 90 was an Alchemy milestone (`unlock::opens` derives the
+		// level-up fanfare from a bonus line appearing, so dropping the
+		// arm made 90 a dead level, caught by
+		// `unlock_levels_are_the_threshold_levels`), and the Aether rung
+		// is the pre-Aetherock trickle that keeps the deep lamps
+		// reachable. Gravel is scarcer than Rubble, which is the point —
+		// the trickle was never meant to scale with every stone mined.
+		B::Gravel if level >= 90 => &[(E::Metal, 2), (E::Aether, 1)],
 		B::Gravel if level >= 60 => &[(E::Metal, 2)],
 		_ => &[],
 	}
@@ -379,6 +402,43 @@ mod tests {
 						"{b:?} has a bonus line at {level} but is craftable"
 					);
 				}
+			}
+		}
+	}
+
+	/// The same rule one dig further out, which is where it actually
+	/// leaked. "Recipe-less" is not enough: a block reachable from a
+	/// recipe by DIGGING what it makes is just as pumpable, because the
+	/// craft and the extract are then two halves of one loop.
+	///
+	/// Rubble shipped a bonus on exactly that footing. It has no recipe
+	/// — but Stone and Sandstone do, and both `drops: Rubble` (the
+	/// Rubble rule), so craft → place → dig → extract ran at a profit:
+	/// 30 Earth in and 22 Earth + 1 Metal + 1 Aether out at Alchemy 90,
+	/// unbounded, against a design where Metal comes only from ore and
+	/// Aether only from Aetherock.
+	///
+	/// Neither of the two pins above could see it. This one asks whether
+	/// the bonus is reachable, not whether its host has a recipe, and it
+	/// is deliberately checked against `dig_drop` rather than a hand
+	/// list — a new craftable whose drop happens to carry a line fails
+	/// here on the day it is written.
+	#[test]
+	fn no_craftable_block_drops_into_a_bonus_line() {
+		for &b in &BlockType::ALL {
+			if craft_ideal(b).is_none() {
+				continue;
+			}
+			let Some(drop) = b.dig_drop() else {
+				continue;
+			};
+			for level in 1..=99 {
+				let lines = bonus_lines(drop, level);
+				assert!(
+					lines.is_empty(),
+					"craftable {b:?} drops {drop:?}, which bonuses {lines:?} at \
+					 Alchemy {level} — that closes a craft-and-extract loop"
+				);
 			}
 		}
 	}
