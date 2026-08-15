@@ -71,6 +71,30 @@ const LAYOUT_SIZED: u8 = 2;
 /// re-pointed at [`GRID_SLOTS`], which is free to grow.
 const LEGACY_GRID_SLOTS: usize = 36;
 
+/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for
+/// exactly the same reason as [`LEGACY_GRID_SLOTS`], and split out
+/// because the legacy arm originally read the LIVE `HOTBAR_SLOTS` — the
+/// one half of the blob still described by a constant free to move.
+///
+/// It happens to equal `HOTBAR_SLOTS` today, so nothing was wrong; it
+/// was wrong in waiting. Grow the bar and every tag-`1` record
+/// over-reads by two bytes a slot, desyncs into the next record's
+/// identity hash, and `PlayerStore::open` takes that for corruption and
+/// archives everybody's inventory — precisely the failure the shape tag
+/// was introduced to make impossible, reintroduced through the half of
+/// the blob nobody froze. The regression test could not have caught it
+/// either, because `push_legacy_layout` built its fixture from the same
+/// live constant and would have moved with the break.
+const LEGACY_HOTBAR_SLOTS: usize = 9;
+
+/// Both frozen widths describe bytes on disk, so this asserts the
+/// FORMAT, not the constants: if today's hotbar ever differs, the legacy
+/// arm must keep reading 9 and this line is the reminder that it does.
+const _: () = assert!(
+	LEGACY_HOTBAR_SLOTS == 9 && LEGACY_GRID_SLOTS == 36,
+	"legacy layout widths describe bytes already written — never retune them"
+);
+
 /// The sized blob spends one byte per length, which is the whole reason
 /// growing the grid costs nothing here. Fail the BUILD rather than
 /// truncating somebody's arrangement to `len & 255`. Two asserts, not one
@@ -540,7 +564,12 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				LAYOUT_ABSENT => None,
 				// Written before the grid grew: a fixed run at the frozen
 				// width, decoded into today's shape.
-				LAYOUT_LEGACY => Some(read_layout(&mut r, HOTBAR_SLOTS, LEGACY_GRID_SLOTS, &bad)?),
+				LAYOUT_LEGACY => Some(read_layout(
+					&mut r,
+					LEGACY_HOTBAR_SLOTS,
+					LEGACY_GRID_SLOTS,
+					&bad,
+				)?),
 				LAYOUT_SIZED => {
 					let mut lens = [0u8; 2];
 					r.read_exact(&mut lens).map_err(|_| bad("short record"))?;
@@ -655,9 +684,14 @@ mod tests {
 	/// no lengths of its own. Hand-built on purpose — a fixture derived
 	/// from the current constants would move with them and stop testing
 	/// the thing that broke.
+	/// A tag-`1` blob exactly as it was written to disk. BOTH widths are
+	/// the frozen ones on purpose — a fixture built from today's live
+	/// constants moves with any change to them, so it can never fail on
+	/// the resize it exists to guard against.
 	fn push_legacy_layout(buf: &mut Vec<u8>, l: &PlayerLayout) {
 		buf.push(LAYOUT_LEGACY);
-		for w in l.hotbar.iter().take(HOTBAR_SLOTS) {
+		for i in 0..LEGACY_HOTBAR_SLOTS {
+			let w = l.hotbar.get(i).copied().unwrap_or(WIRE_EMPTY);
 			buf.extend_from_slice(&w.to_le_bytes());
 		}
 		for i in 0..LEGACY_GRID_SLOTS {

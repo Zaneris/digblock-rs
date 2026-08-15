@@ -2587,6 +2587,22 @@ impl Engine {
 		// The server's InventoryFull (right behind JournalDone) is the
 		// authoritative base; local single-player stock must not leak in.
 		self.inventory = Inventory::default();
+		// Its `Skills` (always sent, right behind `Layout`) is the same
+		// kind of base, and clearing these is not about the stale NUMBER
+		// — it is about who reads it before the real one lands.
+		// `reset_world_transients` below hands the Mining level straight
+		// to the pipeline we just installed (`sync_mining_reveal`), so a
+		// previous world's level would stamp veins into THIS world's
+		// terrain for the whole window between `Welcome` and `Skills`. In
+		// that window `ore_dig_mode` answers `NeedsSiphon` on cells the
+		// server calls plain stone, so `diggable` refuses holds the server
+		// would have accepted — and the correction, when `Skills` arrives,
+		// costs a full `remesh_all`. Level 1 is the honest guess: it
+		// under-reveals rather than over-, and every reveal it misses
+		// arrives moments later with the real totals. Toasts go with the
+		// totals they animate, exactly as in the other two entry points.
+		self.skills = Default::default();
+		self.xp_toasts.clear();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -2649,6 +2665,21 @@ impl Engine {
 		self.view_bob.reset();
 		self.view_swing.reset();
 		self.view_swap.reset();
+		// The tool slot's handover animates whenever the active tool
+		// changes, which is right for a cycle and wrong for a world entry:
+		// the bar we are about to draw is state ARRIVING, not an exchange
+		// anybody performed. Advancing by a full window completes whatever
+		// was in flight and adopts the tool the bar holds now, so the
+		// first frame draws it at rest. A bare `Default::default()` will
+		// not do — it shows the BUCKET, which is the wrong half of the
+		// problem: entering a save whose layout makes any other tool
+		// active would still grow that tool in from a bucket that was
+		// never in the hand. Callers install the layout first
+		// (`enter_local_world` reconciles before it calls here); a join
+		// has none yet, and the server `Layout` rebase animating when it
+		// lands is the behaviour `ToolSwap` documents.
+		self.tool_swap
+			.advance(crate::hotbar::ToolSwap::SECS, self.hotbar.active_tool());
 		// A replaced pipeline starts at Mining level 0, so a world entry
 		// has to hand it the level again or a high-level miner walks into
 		// plain stone until the next level-up. Silent: the discovery was
@@ -4622,9 +4653,6 @@ impl Engine {
 		Some(boxed(progress))
 	}
 
-	/// This frame's held item, if the hand has anything in it. The pose
-	/// is authored in view space by `viewmodel.rs`, so all this does is
-	/// pick the item and hand over the frame's light rig.
 	/// Advance WHICH item is in the hand, and the swap dip between two.
 	///
 	/// Its own method because it has to run on three paths: once at the
@@ -4654,6 +4682,9 @@ impl Engine {
 		self.view_swap.advance(dt, selected);
 	}
 
+	/// This frame's held item, if the hand has anything in it. The pose
+	/// is authored in view space by `viewmodel.rs`, so all this does is
+	/// pick the item and hand over the frame's light rig.
 	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
 		// The SWAP's item, not the hotbar's: mid-swap the hand is still
 		// holding the one it hasn't put away yet.

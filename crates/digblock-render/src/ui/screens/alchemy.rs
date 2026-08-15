@@ -72,6 +72,11 @@ const TAB_CONTENT_GAP: f32 = theme::SECTION_GAP;
 const PROGRESS_H: f32 = 4.0;
 /// How long a rejected drop's explanation holds the preview line.
 const HINT_SECS: f32 = 2.0;
+/// What a tile the level has not opened yet wears. Both tabs dim rather
+/// than hide, and both stay interactive — the screen teaches by letting
+/// you ask and answering, which is the whole reason a locked tile is
+/// still a drop source and still a click target.
+const LOCKED_TINT: u32 = 0xFF58_5858;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AlchTab {
@@ -687,14 +692,28 @@ impl AlchScreen {
 		// The bucket charge as a single water tile, right-aligned in the
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
-		let bucket_tile = (view.bucket_full && unlock::can_extract(BlockType::Water, view.level))
+		//
+		// Gated on the CHARGE only. The unlock is deliberately NOT a
+		// condition here, because hiding the tile below Alchemy 15 hid
+		// the refusal with it: the drop handler already answers
+		// "WATER CHARGE — LV 15", and that message was unreachable for
+		// the one item it was written for. Every block in the grid can be
+		// dragged and told its level; water has no grid slot to be told
+		// from, so this tile is the only place a player can ever learn
+		// the charge is worth Aqua at all. Locked it dims and still
+		// drags, exactly as a locked transmute tile dims and still
+		// selects — pinned by `a_locked_bucket_charge_still_explains_itself`.
+		let bucket_tile = view
+			.bucket_full
 			.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
 		if let Some(tile) = bucket_tile {
+			let (kind, tint) = hud::item_icon(HotbarItem::Block(BlockType::Water), false);
+			let locked = !unlock::can_extract(BlockType::Water, view.level);
 			widgets::slot(
 				ui,
 				InvId::BucketTile,
 				tile,
-				Some(hud::item_icon(HotbarItem::Block(BlockType::Water), false)),
+				Some((kind, if locked { LOCKED_TINT } else { tint })),
 				icon_px,
 				widgets::SlotRing::None,
 				tile.contains(cx, cy),
@@ -774,7 +793,6 @@ impl AlchScreen {
 		row_w: f32,
 		mut y: f32,
 	) {
-		const LOCKED_TINT: u32 = 0xFF58_5858;
 		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
 		let text_pad = scale::text_pad_x(s);
@@ -1375,6 +1393,55 @@ mod tests {
 		panic!("{b:?} neither on the bar nor in the grid");
 	}
 
+	/// A charged bucket is draggable at EVERY level, and below the Aqua
+	/// unlock the drop says so.
+	///
+	/// The tile used to be drawn only once `can_extract(Water)` passed,
+	/// which gated the same rule twice and lost the useful half: the drop
+	/// handler's "WATER CHARGE — LV 15" was unreachable, because the only
+	/// drag source for water was hidden until 15. Water is not slottable,
+	/// so unlike every other extractable there is no grid cell to learn
+	/// it from either — a player below 15 had no way to discover the
+	/// charge is worth anything at all.
+	///
+	/// Both halves are asserted: that the tile EXISTS locked (else the
+	/// message is unreachable again), and that dropping it explains
+	/// rather than silently starting a drip.
+	#[test]
+	fn a_locked_bucket_charge_still_explains_itself() {
+		let mut r = rig_at(1, |inv| inv.add(B::Water, 1));
+		assert!(r.view.bucket_full, "the rig has a charged bucket");
+		assert!(
+			!unlock::can_extract(B::Water, 1),
+			"level 1 is below the Aqua unlock, or this test proves nothing"
+		);
+
+		// The source exists even though the level does not allow the op.
+		let tile = r
+			.hits
+			.rect_of(InvId::BucketTile)
+			.expect("a charged bucket offers its tile at every level");
+		assert!(tile.w > 0.0 && tile.h > 0.0);
+
+		// Dropping it starts no drip and leaves an explanation naming the
+		// level, not a bare refusal and not silence.
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
+		let (hint, _) = r.screen.hint.clone().expect("a refused drop says why");
+		assert!(
+			hint.contains(&unlock::extract(B::Water).to_string()),
+			"the hint has to name the level: {hint:?}"
+		);
+		assert!(r.screen.extracting.is_none(), "no drip below the unlock");
+
+		// And at the unlock the same drag works, so the gate is a gate
+		// and not a wall.
+		let mut r = rig_at(unlock::extract(B::Water), |inv| inv.add(B::Water, 1));
+		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
+		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
+		assert_eq!(r.screen.extracting, Some(B::Water), "the drip starts");
+	}
+
 	/// §8.1's core loop: drag a stack onto the slot, and the drip sends
 	/// one `Convert {{ count: 1 }}` per pace interval until the stack
 	/// runs dry — at which point the slot clears itself.
@@ -1458,14 +1525,20 @@ mod tests {
 		assert_eq!(r.screen.extracting, None, "you stand at the bench");
 	}
 
-	/// The bucket charge appears as a single water tile (level 15+ and
-	/// charged only), and extracting it is the ordinary Convert whose
-	/// debit IS the emptying.
+	/// The bucket charge appears as a single water tile whenever the tool
+	/// is charged, and extracting it is the ordinary Convert whose debit
+	/// IS the emptying.
 	#[test]
 	fn bucket_tile_extracts_the_charge() {
-		// Below 15: no tile at all.
-		let r = rig_at(1, |inv| inv.add(B::Water, 1));
-		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "locked at 1");
+		// An EMPTY bucket offers nothing — there is no charge to point at,
+		// and that is the only condition the tile has. The level is NOT
+		// one: below the unlock the tile is drawn locked so the drop can
+		// explain itself (`a_locked_bucket_charge_still_explains_itself`).
+		let r = rig_at(20, |_| {});
+		assert!(
+			r.hits.rect_of(InvId::BucketTile).is_none(),
+			"nothing to extract from an empty bucket"
+		);
 
 		let mut r = rig_at(20, |inv| inv.add(B::Water, 1));
 		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
