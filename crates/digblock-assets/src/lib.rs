@@ -393,12 +393,19 @@ mod tests {
 	/// is ONE definition of the gain and every pass that can draw one
 	/// takes it as a prelude.
 	///
-	/// The pin is a COUNT, not a comparison, and that is the point: two
-	/// module-scope declarations would be a WGSL error and need no test,
-	/// but a function-scope `const EMISSIVE_GAIN` shadows the prelude's
-	/// silently — and a torch that glowed one way in the world and
-	/// another way in a hand is precisely what ink_common.wgsl exists to
-	/// make impossible.
+	/// The pin is a COUNT of DECLARATIONS, not a comparison of values, and
+	/// that is the point: two module-scope declarations would be a WGSL
+	/// error and need no test, but a function-scope `const EMISSIVE_GAIN`
+	/// shadows the prelude's silently — and a torch that glowed one way in
+	/// the world and another way in a hand is precisely what
+	/// ink_common.wgsl exists to make impossible.
+	///
+	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is
+	/// what makes that true. The narrower pattern misses the TYPED form
+	/// (`const EMISSIVE_GAIN: f32 = 2.4;`) that `wgsl_const` itself
+	/// supports, and comparing the value cannot catch it either, since
+	/// the prelude is prepended and its declaration is the one found
+	/// first — so a shadowing local passed every assertion here.
 	#[test]
 	fn every_pass_that_draws_ink_shares_one_gain() {
 		let shared = wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN");
@@ -408,17 +415,44 @@ mod tests {
 			("players", super::shader::PLAYERS),
 		] {
 			assert_eq!(
-				src.matches("EMISSIVE_GAIN = ").count(),
+				src.matches("const EMISSIVE_GAIN").count(),
 				1,
 				"{name} declares the gain more than once — a local const \
 				 shadows the shared one"
 			);
 			assert_eq!(wgsl_const(src, "EMISSIVE_GAIN"), shared, "{name}");
+			// Two occurrences at least: the prelude's `fn emissive_ink(`
+			// and one call. Bare `contains` is true by construction here,
+			// because the prelude is concatenated in either way — it would
+			// pass for a pass that took the prelude and then ignored it.
 			assert!(
-				src.contains("fn emissive_ink("),
-				"{name} must take the ink prelude, not restate it"
+				src.matches("emissive_ink(").count() >= 2,
+				"{name} takes the ink prelude but never calls it"
 			);
 		}
+	}
+
+	/// The counted pattern must actually match the spelling it is there
+	/// to catch. Asserting on a hand-built source rather than on the real
+	/// shaders, because the whole failure mode is a form that no shader
+	/// contains today.
+	#[test]
+	fn the_ink_pin_catches_a_shadowing_local() {
+		let shadowed = concat!(
+			include_str!("../../../assets/shaders/ink_common.wgsl"),
+			"fn f() -> f32 { const EMISSIVE_GAIN: f32 = 2.4; return EMISSIVE_GAIN; }\n",
+		);
+		assert_eq!(
+			shadowed.matches("const EMISSIVE_GAIN").count(),
+			2,
+			"the pattern the pin counts must see a typed local declaration"
+		);
+		// And the value comparison alone does NOT, which is why the count
+		// is the load-bearing half.
+		assert_eq!(
+			wgsl_const(shadowed, "EMISSIVE_GAIN"),
+			wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN"),
+		);
 	}
 
 	/// The resolve's per-pixel NEE (R20) and the probe pass's stochastic

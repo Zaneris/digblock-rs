@@ -380,7 +380,7 @@ pub fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 // ---- geometry ---------------------------------------------------------
 
 /// One vertex: position in twelfths, uv, texture layer, face index into
-/// the shader's normal table. 24 B.
+/// the shader's normal table. 28 B.
 ///
 /// Shared with `players.rs`, which draws the SAME geometry in a remote
 /// player's hand — so your hand and theirs are one build rather than two

@@ -298,7 +298,7 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	if ndl <= 0.0 {
 		return vec3f(0.0);
 	}
-	let cls = bitcast<u32>(l.w);
+	let cls = gi_light_class(l.w);
 	let emit = f32(lut[cls].y);
 	if emit <= 0.0 {
 		return vec3f(0.0);
@@ -310,8 +310,8 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// never shadow itself. `gi_light_margin` derives it from where in
 	// its cell the light actually sits, so it holds for an origin that
 	// is not the cell center — see its comment for what a flame-height
-	// torch did to a flat 0.9.
-	let sh = march(p, dir, max(dist - gi_light_margin(l.xyz), 0.0));
+	// torch did to a flat 0.9, and why a CARRIED light takes zero.
+	let sh = march(p, dir, max(dist - gi_light_margin_of(l), 0.0));
 	if sh.hit {
 		return vec3f(0.0);
 	}

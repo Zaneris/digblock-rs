@@ -270,8 +270,10 @@ fn main() {
 	// torch. Historically any value meant "on", and on meant a dirt cube,
 	// so those spellings still do exactly that. An unknown one is fatal,
 	// per DIG_CRACK: a typo must never silently capture the wrong scene.
-	if let Ok(v) = std::env::var("DIG_PLAYERBOX") {
-		match digblock_render::parse_held_item(&v) {
+	if let Some(v) = std::env::var_os("DIG_PLAYERBOX") {
+		// var_os, not var: a value that is not UTF-8 is a typo like any
+		// other and must be fatal, not silently drop the scene.
+		match v.to_str().and_then(digblock_render::parse_held_item) {
 			Some(id) => config.debug_playerbox = Some(id),
 			None => {
 				eprintln!(
@@ -285,10 +287,13 @@ fn main() {
 	config.debug_confetti = std::env::var_os("DIG_CONFETTI").is_some();
 	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
 	config.debug_doors = std::env::var_os("DIG_DOORS").is_some();
-	config.debug_vault = std::env::var_os("DIG_VAULT").is_some();
 	// DIG_VAULT_DARK=1: the vault with no torch on its floor, so the only
-	// source in the room is the one being carried.
+	// source in the room is the one being carried. It IMPLIES DIG_VAULT —
+	// every other DIG_* scene switches itself on, and a modifier that
+	// silently builds no room at all photographs open terrain and reads
+	// as "a carried torch barely lights anything".
 	config.debug_vault_dark = std::env::var_os("DIG_VAULT_DARK").is_some();
+	config.debug_vault = config.debug_vault_dark || std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();

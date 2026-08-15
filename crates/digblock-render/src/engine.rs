@@ -83,8 +83,12 @@ impl DebugScreen {
 pub fn parse_held_item(s: &str) -> Option<u16> {
 	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
 	Some(match s.trim().to_ascii_lowercase().as_str() {
-		// Any value used to mean "on", and on meant a dirt cube.
-		"" | "1" | "on" | "yes" | "true" | "dirt" => BlockType::Dirt as u16,
+		// Any value used to mean "on", and on meant a dirt cube — "0"
+		// and "off" included, because the switch was presence-only
+		// (`var_os`), exactly as `DIG_VAULT=0` still means vault ON.
+		"" | "0" | "1" | "on" | "off" | "yes" | "no" | "true" | "false" | "dirt" => {
+			BlockType::Dirt as u16
+		}
 		"torch" => BlockType::Torch as u16,
 		"stairs" => BlockType::WoodStairs as u16,
 		"slab" => BlockType::WoodSlab as u16,
@@ -1390,6 +1394,25 @@ fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
 /// Carrier key for the local player. Remote carriers key on their
 /// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
 const CARRIER_SELF: u16 = u16::MAX;
+/// Carrier key for `DIG_PLAYERBOX`'s fake remote. Out of the `PlayerId`
+/// space on purpose: it borrows id 2 for its COLOUR, and keying off that
+/// made it share a `Carried::fired` slot with a real player 2 — two
+/// carriers, one last-fired position, so both re-placed their light on
+/// almost every frame.
+const CARRIER_DEBUG: u16 = u16::MAX - 1;
+
+/// One remote as this frame sees them.
+///
+/// `key` and `id` are deliberately separate: the key identifies a
+/// CARRIER across frames and the id only picks a colour, which is what
+/// lets `DIG_PLAYERBOX` borrow a colour without borrowing a `PlayerId`.
+struct Remote {
+	key: u16,
+	id: u8,
+	pos: Vec3,
+	yaw: f32,
+	held: u16,
+}
 
 /// Everything one remote contributes to this frame: the body box, the
 /// item in its hand, and the light that item carries.
@@ -1401,14 +1424,12 @@ fn push_remote(
 	bodies: &mut Vec<[f32; 8]>,
 	held_out: &mut Vec<(crate::ui::hud::IconKind, [f32; 8])>,
 	carried: &mut Carried,
-	id: u8,
-	pos: Vec3,
-	yaw: f32,
-	held: u16,
+	r: &Remote,
 ) {
+	let Remote { id, pos, yaw, .. } = *r;
 	let c = player_color(id);
 	bodies.push([pos.x, pos.y, pos.z, yaw, c[0], c[1], c[2], 0.0]);
-	let Some(kind) = held_icon(held) else {
+	let Some(kind) = held_icon(r.held) else {
 		return;
 	};
 	let block = crate::ui::hud::icon_block(kind);
@@ -1425,7 +1446,7 @@ fn push_remote(
 			0.0,
 		],
 	));
-	carried.push(u16::from(id), pos, block);
+	carried.push(r.key, pos, block);
 }
 
 /// How near the camera a carried light has to be for its MOTION to be
@@ -1484,8 +1505,10 @@ struct Carried {
 	/// `MAX_SNAPSHOT_PLAYERS` of these and a linear scan over forty
 	/// entries beats hashing one.
 	fired: Vec<(u16, Vec3)>,
-	/// Positions to invalidate this frame, drained into the renderer.
-	pending: Vec<[f32; 3]>,
+	/// Positions to invalidate this frame, each with the carrier it
+	/// belongs to, drained into the renderer and only then banked by
+	/// [`Carried::commit`] — see there for why the two are separate.
+	pending: Vec<(u16, [f32; 3])>,
 }
 
 impl Carried {
@@ -1500,9 +1523,17 @@ impl Carried {
 	/// Derived, never special-cased: any block whose `emits` level is
 	/// nonzero is a light in a hand exactly as it is a light on the
 	/// ground, and it enters the list under the SAME class byte a placed
-	/// one does — so tint, cast level and `light_origin`'s flame offset
-	/// all come from one LUT row and a carried torch cannot drift from
-	/// the torch beside it.
+	/// one does — so tint and cast level come from one LUT row and a
+	/// carried torch cannot drift from the torch beside it.
+	///
+	/// What it does NOT share is `gi::light_origin`. That is applied
+	/// CPU-side in `GiDraw::upload_chunk`, baked into a chunk emitter's
+	/// world position before it ever reaches the list, and it answers
+	/// "where inside its cell does this shape glow" — a question a
+	/// carried light has no cell to ask. `carried_origin` is the whole
+	/// answer here. Do not "unify" the two: removing the offset in
+	/// upload_chunk silently undoes R26 and puts every placed torch's
+	/// light back at its cell centre.
 	fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>) {
 		let Some(b) = held.filter(|b| b.props().light > 0) else {
 			return;
@@ -1514,7 +1545,7 @@ impl Carried {
 	}
 
 	/// Close the frame: note which carriers have travelled far enough to
-	/// be re-placed, and forget the ones that are gone.
+	/// be re-placed, and which have STOPPED being lights.
 	///
 	/// A carrier that is NEW fires immediately — the probes around it
 	/// have never seen this light — which is what makes selecting a torch
@@ -1536,15 +1567,51 @@ impl Carried {
 			// in the game moves a player that far without a teleport,
 			// which resets the whole screen history anyway.
 			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
-				self.pending.push([x, y, z]);
-				match slot {
-					Some(s) => self.fired[s].1 = p,
-					None => self.fired.push((key, p)),
-				}
+				self.pending.push((key, [x, y, z]));
 			}
 		}
+		// A light going OUT is a lighting change exactly as a light
+		// arriving is, and it is the half that was missing: `flush_lights`
+		// drops the entry from the GPU list the same frame, so the direct
+		// pool dies at once — but the probes keep its bounce and decay it
+		// at 0.10 a sweep, a 5.3 s half-life, so a room stayed lit by a
+		// torch that had been put away. Digging a PLACED torch has always
+		// invalidated, through `take_gi_edits`, which is precisely the
+		// asymmetry a carried light is not supposed to have. Covers a
+		// remote disconnecting or falling out of the snapshot too.
 		let keys = &self.keys;
-		self.fired.retain(|(k, _)| keys.contains(k));
+		let (cam, pending) = (cam, &mut self.pending);
+		self.fired.retain(|&(k, p)| {
+			if keys.contains(&k) {
+				return true;
+			}
+			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
+				pending.push((k, [p.x, p.y, p.z]));
+			}
+			false
+		});
+	}
+
+	/// Bank the positions that actually reached the renderer.
+	///
+	/// Separate from `finish` because `pending` is drained inside the
+	/// `renderer.is_some()` arm: banking at queue time meant that a frame
+	/// with no renderer — device loss, or the wait for the GPU at startup
+	/// — recorded a fire that never happened, and the carrier then sat
+	/// stale until it had walked another whole `CARRY_INVAL_STEP`.
+	///
+	/// A departed carrier is not re-banked: its key is gone from `fired`
+	/// and its light no longer exists, so there is nothing left to
+	/// compare a future position against.
+	fn commit(&mut self) {
+		for &(key, p) in &self.pending {
+			let p = Vec3::from_array(p);
+			match self.fired.iter().position(|(k, _)| *k == key) {
+				Some(s) => self.fired[s].1 = p,
+				None if self.keys.contains(&key) => self.fired.push((key, p)),
+				None => {}
+			}
+		}
 	}
 }
 
@@ -3975,6 +4042,28 @@ impl Engine {
 	/// This frame's held item, if the hand has anything in it. The pose
 	/// is authored in view space by `viewmodel.rs`, so all this does is
 	/// pick the item and hand over the frame's light rig.
+	/// Advance WHICH item is in the hand, and the swap dip between two.
+	///
+	/// Its own method because it has to run on three paths: once at the
+	/// tail of the interactive update, where it must follow
+	/// `reconcile_layout`; and once before each scripted-flight return,
+	/// because the hand is part of the frame a capture photographs. The
+	/// viewmodel draws `Swap::shown()` and a carried light hangs off it,
+	/// so a harness that never advances this can neither draw a held item
+	/// nor measure one — `--bench` could do neither, and the first attempt
+	/// at R28's cost bracket read `ginee` at 0.00 with `emitters` 0 and
+	/// looked like a correct result. Costs the old baselines nothing: they
+	/// fly with an empty bar, so `selected` is None and `shown` stays
+	/// None. The bob and the swing stay interactive-only, since they are
+	/// driven by motion the scripted camera does not have.
+	fn advance_hand(&mut self, dt: f32) {
+		let selected = self
+			.hotbar
+			.selected_item()
+			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
+		self.view_swap.advance(dt, selected);
+	}
+
 	fn viewmodel_frame(&self, frame: &FrameUniforms) -> Option<crate::viewmodel::ViewmodelFrame> {
 		// The SWAP's item, not the hotbar's: mid-swap the hand is still
 		// holding the one it hasn't put away yet.
@@ -4573,20 +4662,6 @@ impl Game for Engine {
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
-		// WHICH item is in the hand, ahead of the scripted-flight returns
-		// below, because the hand is part of the frame: the viewmodel draws
-		// `Swap::shown()` and a carried light hangs off it, so leaving this
-		// after them made both invisible to `--bench` — a harness that can
-		// never draw a held item can never measure one either. Costs
-		// nothing on the existing baselines: they fly with an empty bar, so
-		// `selected` is None and `shown` stays None. The bob and the swing
-		// stay at the tail with the audio, since they are driven by motion
-		// the scripted camera does not have.
-		let selected = self
-			.hotbar
-			.selected_item()
-			.map(|i| crate::ui::hud::item_icon(i, self.inventory.bucket_full()).0);
-		self.view_swap.advance(dt, selected);
 		// Scripted flight — the bench's, and the capture harness's. Inputs
 		// are off and the camera is driven outright, so both return before
 		// the interactive half of update; streaming still runs, because
@@ -4603,6 +4678,7 @@ impl Game for Engine {
 				self.fly_step();
 				self.fly_frames += 1;
 			}
+			self.advance_hand(dt);
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -4621,6 +4697,7 @@ impl Game for Engine {
 					break;
 				}
 			}
+			self.advance_hand(dt);
 			self.pending.update_ms = ms_since(t_update);
 			return;
 		}
@@ -5033,6 +5110,13 @@ impl Game for Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.view_swing.advance(dt);
+		// At the TAIL on the interactive path, after `reconcile_layout` and
+		// `pump_net`: a slot whose count reached zero is only released by
+		// the reconcile above, so reading the bar ahead of it drew — and
+		// LIT — a torch from a hand that had just placed its last one. The
+		// scripted-flight arms call this before their own returns instead,
+		// because the hand is part of the frame they capture.
+		self.advance_hand(dt);
 		self.step_audio(dt);
 		self.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
@@ -5072,10 +5156,13 @@ impl Game for Engine {
 					&mut self.remote_instances,
 					&mut self.held_instances,
 					&mut self.carried,
-					d.id,
-					d.pos,
-					d.yaw,
-					d.held,
+					&Remote {
+						key: u16::from(d.id),
+						id: d.id,
+						pos: d.pos,
+						yaw: d.yaw,
+						held: d.held,
+					},
 				);
 			}
 		}
@@ -5097,10 +5184,13 @@ impl Game for Engine {
 				&mut self.remote_instances,
 				&mut self.held_instances,
 				&mut self.carried,
-				2,
-				p,
-				yaw,
-				held,
+				&Remote {
+					key: CARRIER_DEBUG,
+					id: 2,
+					pos: p,
+					yaw,
+					held,
+				},
 			);
 		}
 		self.carried.finish(self.camera.pos);
@@ -5260,13 +5350,15 @@ impl Game for Engine {
 		.flatten();
 		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
-			// A carried light that has travelled re-places itself through
-			// the same hook a block edit uses, so the probes around it
-			// re-trace at full weight instead of decaying from a stale
-			// value. See `Carried`.
-			for p in &self.carried.pending {
-				r.gi_invalidate(*p);
+			// A carried light that has travelled — or has just gone out —
+			// re-places itself through the same hook a block edit uses, so
+			// the probes around it re-trace at full weight instead of
+			// decaying from a stale value. See `Carried`. `commit` runs
+			// only once they have actually been queued.
+			for &(_, p) in &self.carried.pending {
+				r.gi_invalidate_moving(p);
 			}
+			self.carried.commit();
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
@@ -5389,6 +5481,30 @@ mod carried_tests {
 		c.push(key, eye, Some(BlockType::Torch));
 	}
 
+	/// One frame of one carrier holding a torch, in exactly the order
+	/// `Engine::render` runs it — `commit` included, since that is what
+	/// banks the fire, and without it every frame looks like the first.
+	/// Answers how many spheres the frame queued.
+	fn frame(c: &mut Carried, key: u16, eye: Vec3, cam: Vec3) -> usize {
+		frame_holding(c, key, eye, cam, Some(BlockType::Torch))
+	}
+
+	/// The same, for a hand holding anything (or nothing).
+	fn frame_holding(
+		c: &mut Carried,
+		key: u16,
+		eye: Vec3,
+		cam: Vec3,
+		held: Option<BlockType>,
+	) -> usize {
+		c.begin();
+		c.push(key, eye, held);
+		c.finish(cam);
+		let n = c.pending.len();
+		c.commit();
+		n
+	}
+
 	/// A carried light must be re-placed no less often than the bounce
 	/// field can resolve, or a carrier outruns a whole probe cell between
 	/// fires and the cache holds light from somewhere they have left.
@@ -5414,27 +5530,19 @@ mod carried_tests {
 		let eye = Vec3::new(64.0, 70.0, 64.0);
 		let mut c = Carried::default();
 		for f in 0..600 {
-			c.begin();
-			torch_at(&mut c, CARRIER_SELF, eye);
-			c.finish(eye);
 			// The first frame places the light: the probes around it have
 			// never seen it, which is what lights the room the moment you
 			// select a torch.
 			let want = usize::from(f == 0);
-			assert_eq!(c.pending.len(), want, "frame {f}");
+			assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), want, "frame {f}");
 		}
 		// Straddling a cell boundary, a hundredth of a block either way.
 		let edge = Vec3::new(64.0, 70.5, 64.0);
 		let mut c = Carried::default();
-		c.begin();
-		torch_at(&mut c, CARRIER_SELF, edge);
-		c.finish(edge);
+		frame(&mut c, CARRIER_SELF, edge, edge);
 		for f in 0..600 {
 			let p = edge + Vec3::Z * if f % 2 == 0 { 0.01 } else { -0.01 };
-			c.begin();
-			torch_at(&mut c, CARRIER_SELF, p);
-			c.finish(p);
-			assert!(c.pending.is_empty(), "wobble fired on frame {f}");
+			assert_eq!(frame(&mut c, CARRIER_SELF, p, p), 0, "wobble fired on {f}");
 		}
 	}
 
@@ -5450,10 +5558,7 @@ mod carried_tests {
 		let frames = 300; // five seconds
 		for f in 0..frames {
 			let p = start + Vec3::Z * (per_frame * f as f32);
-			c.begin();
-			torch_at(&mut c, CARRIER_SELF, p);
-			c.finish(p);
-			fires += c.pending.len();
+			fires += frame(&mut c, CARRIER_SELF, p, p);
 		}
 		let walked = per_frame * (frames - 1) as f32;
 		// One placement plus one per step of travel.
@@ -5486,8 +5591,10 @@ mod carried_tests {
 	}
 
 	/// A carried torch enters the list under the same class byte a placed
-	/// one does, so tint, cast level and the flame's own origin offset all
-	/// come from one LUT row.
+	/// one does, so tint and cast level come from one LUT row. NOT the
+	/// flame offset — that is `gi::light_origin`, applied CPU-side to
+	/// chunk emitters only, and a carried light has no cell to offset
+	/// within; see `Carried::push`.
 	#[test]
 	fn a_carried_torch_borrows_the_placed_torchs_class() {
 		let eye = Vec3::new(64.0, 70.0, 64.0);
@@ -5519,12 +5626,88 @@ mod carried_tests {
 		let mut c = Carried::default();
 		for f in 0..120 {
 			let p = far + Vec3::Z * (f as f32 * 0.5);
-			c.begin();
-			torch_at(&mut c, 3, p);
-			c.finish(cam);
+			assert_eq!(frame(&mut c, 3, p, cam), 0, "spent a sphere on frame {f}");
 			assert_eq!(c.lights.len(), 1, "still a light on frame {f}");
-			assert!(c.pending.is_empty(), "spent a sphere on frame {f}");
 		}
+	}
+
+	/// A light going OUT is a lighting change exactly as one arriving is.
+	///
+	/// `flush_lights` drops the entry the same frame, so the direct pool
+	/// dies at once — but the probes hold its bounce and decay it at 0.10
+	/// a sweep, a 5.3 s half-life, so without this a room stayed lit by a
+	/// torch that had been put away. Digging a PLACED torch has always
+	/// invalidated, through `take_gi_edits`, and the whole R28 thesis is
+	/// that a carried light is not a second kind of thing.
+	#[test]
+	fn putting_a_torch_away_invalidates_where_it_was() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let gone = digblock_core::gi::carried_origin(eye).to_array();
+		let mut c = Carried::default();
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 1, "selecting lights");
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 0, "then settles");
+		// Swap to something that does not emit: one sphere, at the place
+		// the light was, and then silence.
+		c.begin();
+		c.push(CARRIER_SELF, eye, Some(BlockType::Dirt));
+		c.finish(eye);
+		assert_eq!(c.pending.len(), 1, "putting it away must invalidate");
+		assert_eq!(c.pending[0].1, gone, "at the position it lit from");
+		c.commit();
+		assert_eq!(
+			frame_holding(&mut c, CARRIER_SELF, eye, eye, Some(BlockType::Dirt)),
+			0,
+			"and not again every frame afterwards"
+		);
+		// Re-selecting it is a new light, so it places again.
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 1, "re-selecting");
+	}
+
+	/// The same for a carrier who simply vanishes — a remote
+	/// disconnecting, or dropping out of the snapshot.
+	#[test]
+	fn a_departed_carrier_invalidates_where_it_was() {
+		let cam = Vec3::new(64.0, 70.0, 64.0);
+		let eye = cam + Vec3::X * 6.0;
+		let mut c = Carried::default();
+		assert_eq!(frame(&mut c, 7, eye, cam), 1);
+		// Nobody at all this frame.
+		c.begin();
+		c.finish(cam);
+		assert_eq!(c.pending.len(), 1, "a carrier who left takes their light");
+		c.commit();
+		c.begin();
+		c.finish(cam);
+		assert!(c.pending.is_empty(), "and is then forgotten");
+	}
+
+	/// A frame that never reached the renderer must not be banked as a
+	/// fire, or the carrier sits stale until it has walked another whole
+	/// step. `commit` is what separates queued from applied.
+	#[test]
+	fn an_unapplied_fire_is_retried() {
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		for _ in 0..5 {
+			// finish() without commit(): the renderer was absent (device
+			// loss, or the wait for the GPU at startup).
+			c.begin();
+			torch_at(&mut c, CARRIER_SELF, eye);
+			c.finish(eye);
+			assert_eq!(c.pending.len(), 1, "still owed an invalidation");
+		}
+		c.commit();
+		assert_eq!(frame(&mut c, CARRIER_SELF, eye, eye), 0, "banked once");
+	}
+
+	/// The fake remote `DIG_PLAYERBOX` parks must not share a carrier key
+	/// with a real player: two carriers on one `fired` slot overwrite each
+	/// other's last-fired position, so both re-place on nearly every
+	/// frame.
+	#[test]
+	fn the_debug_carrier_key_is_nobodys_player_id() {
+		assert!(u16::from(u8::MAX) < CARRIER_DEBUG);
+		assert_ne!(CARRIER_DEBUG, CARRIER_SELF);
 	}
 }
 

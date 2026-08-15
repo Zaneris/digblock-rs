@@ -86,6 +86,14 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 /// `tool_full` is the water tool's charge, which is player state rather
 /// than part of the slot assignment, so it has to arrive alongside the
 /// item; every other item ignores it.
+pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
+	match item {
+		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
+		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
+		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
+	}
+}
+
 /// The block behind an icon, if there is one — the water tool is an item
 /// with no block row to ask.
 ///
@@ -98,14 +106,6 @@ pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 	match kind {
 		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
 		IconKind::WaterTool { .. } => None,
-	}
-}
-
-pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
-	match item {
-		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
-		HotbarItem::Block(b) if b.props().shape.is_some() => (IconKind::Shaped(b), FULL_TINT),
-		HotbarItem::Block(b) => (IconKind::Cube(b), FULL_TINT),
 	}
 }
 

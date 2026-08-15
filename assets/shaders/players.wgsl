@@ -6,7 +6,8 @@
 // 0.6 anchored to the eye (y −1.5 .. +0.3), matching the capsule
 // collider bounds, flat-colored.
 //
-// The HELD ITEM is `vs_held`/`fs_held`: the real item geometry, from
+// The HELD ITEM is `vs_held` into the SAME `fs`: the real item geometry,
+// from
 // item_geom by way of viewmodel::build — the same authority the
 // inventory icons and your own hand already use, so a remote's torch is
 // a torch, a bucket is a bucket with its charge showing, and a stair is
@@ -77,8 +78,10 @@ const DIR_NORMALS = array<vec3f, 6>(
 );
 
 // A cell (12 twelfths) renders 0.35 blocks across — exactly the cube
-// this replaced, so a held Dirt block is pixel-identical and only the
-// SHAPED items changed.
+// this replaced, so a held Dirt block is the same SIZE it always was.
+// Not the same pixels: the hand moved to the other side of the body
+// (HAND, below) and the item now sits at ITEM_YAW, both of which this
+// change fixed on purpose.
 const HELD_SCALE = 0.35 / 12.0;
 
 // The hand. −x is the carrier's RIGHT: yaw is atan2(look.x, look.z), so

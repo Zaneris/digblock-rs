@@ -59,14 +59,57 @@ impl TickLerp {
 	/// Where to draw, given the post-tick position and the leftover
 	/// accumulator. `accum` is always < `TICK` after the sim loop; the
 	/// clamp is a backstop, not a normal path.
+	///
+	/// Written out rather than `Vec3::lerp`, and the difference is not
+	/// stylistic. glam's lerp is `a*(1 - t) + b*t`, which is exact at
+	/// `t == 1` but NOT when `a == b`: two roundings of the same
+	/// coordinate need not sum back to it, and measured over the
+	/// accumulator's phase range it misses on 1.1% of frames at y = 70.5
+	/// and 6.2% at z = -3.75 (0% only at exact powers of two). A player
+	/// standing perfectly still therefore had a camera that jittered in
+	/// the last ulp every few frames. Nothing SEES that directly — but
+	/// `GiDraw::flush_lights` compares a carried light's position for
+	/// exact equality to decide whether the light list is stale, so a
+	/// still torch-bearer paid a full rebuild on roughly one frame in
+	/// seven. `a + (b - a)*t` returns `a` bit-exactly whenever `a == b`,
+	/// which is the property that early-out actually rests on; `t == 1`
+	/// is the backstop path and is still correct to an ulp.
 	pub fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
-		self.prev.lerp(curr, (accum / TICK).clamp(0.0, 1.0))
+		let t = (accum / TICK).clamp(0.0, 1.0);
+		self.prev + (curr - self.prev) * t
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// A player who is not moving must draw at EXACTLY the same place
+	/// every frame, in every bit — not merely close.
+	///
+	/// The accumulator sweeps the whole tick between frames, so the lerp
+	/// parameter is different every time even at rest, and the naive
+	/// `a*(1 - t) + b*t` form does not return `a` for all of them. What
+	/// consumes the difference is `GiDraw::flush_lights`, which compares a
+	/// carried light's position for exact equality to decide whether the
+	/// GPU light list is stale; a camera that wobbles in the last ulp made
+	/// a motionless torch-bearer rebuild and re-upload it for nothing.
+	/// Coordinates deliberately include awkward fractions and a negative,
+	/// because powers of two pass either way.
+	#[test]
+	fn a_resting_camera_does_not_drift() {
+		for p in [
+			Vec3::new(64.0, 70.5, 64.0),
+			Vec3::new(12.25, 137.3, -3.75),
+			Vec3::new(-1023.7, 200.05, 511.9),
+		] {
+			let lerp = TickLerp::new(p);
+			for i in 0..20_000 {
+				let accum = TICK * (i as f32 / 20_000.0);
+				assert_eq!(lerp.render_pos(p, accum), p, "{p:?} at accum {accum}");
+			}
+		}
+	}
 
 	/// The bug this module exists for: a 60 Hz sim sampled by jittery
 	/// 60 Hz frames draws 0 or 2 ticks of motion per frame. Interpolating

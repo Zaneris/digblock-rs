@@ -75,6 +75,30 @@ fn kind_key(k: IconKind) -> u32 {
 	}
 }
 
+/// Sort a frame's held items into one contiguous run per distinct item,
+/// and answer where each run sits.
+///
+/// Its own function so the pin can call THIS rather than a copy of it —
+/// a test that restates the sort-and-scan in its own body proves the
+/// restatement works and nothing about the draw path. The set is one
+/// entry per person on screen, so this is a sort over a couple of dozen
+/// entries at most.
+fn group_by_kind(items: &mut [(IconKind, [f32; 8])]) -> Vec<(IconKind, std::ops::Range<usize>)> {
+	items.sort_unstable_by_key(|(k, _)| kind_key(*k));
+	let mut runs = Vec::new();
+	let mut i = 0;
+	while i < items.len() {
+		let kind = items[i].0;
+		let mut j = i;
+		while j < items.len() && items[j].0 == kind {
+			j += 1;
+		}
+		runs.push((kind, i..j));
+		i = j;
+	}
+	runs
+}
+
 impl RemotePlayersDraw {
 	pub fn new(
 		gpu: &Gpu,
@@ -242,20 +266,42 @@ impl RemotePlayersDraw {
 
 	/// Cache `kind`'s geometry if this is the first time it has been in
 	/// anybody's hand, and answer where it landed.
+	///
+	/// A kind that CANNOT be cached is remembered too, as a zero-quad
+	/// entry. Without that the lookup below misses it every frame, so
+	/// `viewmodel::build` re-tessellates and `log::warn!` fires at 60 Hz
+	/// for as long as anybody holds the thing.
 	fn ensure_mesh(&mut self, gpu: &Gpu, kind: IconKind) -> Option<usize> {
 		if let Some(i) = self.items.iter().position(|m| m.kind == kind) {
-			return Some(i);
+			return (self.items[i].quads > 0).then_some(i);
 		}
 		crate::viewmodel::build(kind, &mut self.scratch);
-		let quads = (self.scratch.len() / 4).min(crate::viewmodel::MAX_QUADS);
-		if quads == 0 {
+		let quads = self.scratch.len() / 4;
+		// Skip, never truncate — half an item is worse than none, and a
+		// truncated mesh would be CACHED, so it would render with faces
+		// missing for the rest of the process rather than once. Both
+		// bounds are real: MAX_QUADS is what one item's vertex range can
+		// address, ITEM_QUAD_BUDGET what the whole catalog shares.
+		if quads == 0 || quads > crate::viewmodel::MAX_QUADS {
+			if quads > 0 {
+				log::warn!("held item {kind:?} is {quads} quads, over MAX_QUADS; skipping");
+			}
+			self.items.push(ItemMesh {
+				kind,
+				base_vertex: 0,
+				quads: 0,
+			});
 			return None;
 		}
 		if self.item_quads + quads > ITEM_QUAD_BUDGET {
-			// Skip, never truncate: half an item is worse than none, and
-			// the budget holds the whole catalog, so this can only fire if
+			// The budget holds the whole catalog, so this can only fire if
 			// the catalog grew past it.
 			log::warn!("held-item cache full, skipping {kind:?}");
+			self.items.push(ItemMesh {
+				kind,
+				base_vertex: 0,
+				quads: 0,
+			});
 			return None;
 		}
 		let base_vertex = (self.item_quads * 4) as u32;
@@ -284,21 +330,14 @@ impl RemotePlayersDraw {
 		self.instances.clear();
 		self.instances.extend_from_slice(held);
 		self.instances.truncate(MAX_INSTANCES);
-		self.instances.sort_unstable_by_key(|(k, _)| kind_key(*k));
+		let runs = group_by_kind(&mut self.instances);
 		let mut flat: Vec<[f32; 8]> = Vec::with_capacity(self.instances.len());
-		let mut i = 0;
-		while i < self.instances.len() {
-			let kind = self.instances[i].0;
-			let mut j = i;
-			while j < self.instances.len() && self.instances[j].0 == kind {
-				j += 1;
-			}
+		for (kind, run) in runs {
 			if let Some(mi) = self.ensure_mesh(gpu, kind) {
 				let first = flat.len() as u32;
-				flat.extend(self.instances[i..j].iter().map(|(_, inst)| *inst));
+				flat.extend(self.instances[run].iter().map(|(_, inst)| *inst));
 				self.batches.push((mi, first..flat.len() as u32));
 			}
-			i = j;
 		}
 		if !flat.is_empty() {
 			gpu.queue
@@ -345,29 +384,74 @@ mod tests {
 	use super::*;
 	use digblock_core::block::BlockType;
 
+	/// `vs_held`'s vertex layout spells its attribute offsets out as
+	/// literals, so the struct they describe has to stay the shape they
+	/// assume — a field added to `Vert` would otherwise reinterpret every
+	/// held item's uv and texture layer as garbage with nothing failing.
+	#[test]
+	fn the_held_vertex_layout_matches_the_struct() {
+		assert_eq!(std::mem::size_of::<Vert>(), 28);
+		assert_eq!(std::mem::align_of::<Vert>(), 4);
+	}
+
+	/// players.wgsl's DIR_NORMALS is indexed by `Dir`'s discriminants, and
+	/// nothing but this pin holds it to them: get one wrong and a held
+	/// item's faces light from the wrong side, which reads as a shading
+	/// bug rather than a table bug.
+	#[test]
+	fn the_shader_normal_table_matches_dir() {
+		use digblock_core::dir::DIRS;
+		let table: Vec<&str> = digblock_assets::shader::PLAYERS
+			.split("const DIR_NORMALS = array<vec3f, 6>(")
+			.nth(1)
+			.expect("DIR_NORMALS declared")
+			.split(");")
+			.next()
+			.expect("terminated")
+			.lines()
+			.filter_map(|l| l.trim().strip_prefix("vec3f("))
+			.filter_map(|l| l.split(')').next())
+			.collect();
+		assert_eq!(table.len(), DIRS.len());
+		for (d, row) in DIRS.into_iter().zip(table) {
+			let (x, y, z) = d.offset();
+			let want = format!("{:.1}, {:.1}, {:.1}", x as f32, y as f32, z as f32);
+			assert_eq!(row, want, "{d:?} is index {}", d as usize);
+		}
+	}
+
+	/// Every icon a hand can hold, enumerated the way `held_icon` derives
+	/// them — through `hud::item_icon`, not by re-reading `props().shape`.
+	/// A test that rebuilds the mapping cannot notice the mapping change.
+	fn every_kind() -> Vec<IconKind> {
+		use digblock_core::hotbar::HotbarItem;
+		let mut v: Vec<IconKind> = BlockType::ALL
+			.into_iter()
+			.filter(|b| b.is_slottable())
+			.map(|b| crate::ui::hud::item_icon(HotbarItem::Block(b), false).0)
+			.collect();
+		for full in [false, true] {
+			v.push(crate::ui::hud::item_icon(HotbarItem::WaterTool, full).0);
+		}
+		v
+	}
+
 	/// The cache holds the whole catalog at once, which is what makes
-	/// eviction genuinely unnecessary rather than merely unlikely.
+	/// eviction genuinely unnecessary rather than merely unlikely — and
+	/// no single item may exceed what one vertex range can address, since
+	/// `ensure_mesh` now SKIPS such an item rather than truncating it.
 	#[test]
 	fn every_held_item_fits_the_quad_budget() {
 		let mut total = 0usize;
 		let mut scratch = Vec::new();
-		for b in BlockType::ALL {
-			if !b.is_slottable() {
-				continue;
-			}
-			let kind = if b.props().shape.is_some() {
-				IconKind::Shaped(b)
-			} else {
-				IconKind::Cube(b)
-			};
+		for kind in every_kind() {
 			crate::viewmodel::build(kind, &mut scratch);
 			let quads = scratch.len() / 4;
-			assert!(quads <= crate::viewmodel::MAX_QUADS, "{b:?} {quads} quads");
+			assert!(
+				quads <= crate::viewmodel::MAX_QUADS,
+				"{kind:?} is {quads} quads and would not be drawn at all"
+			);
 			total += quads;
-		}
-		for full in [false, true] {
-			crate::viewmodel::build(IconKind::WaterTool { full }, &mut scratch);
-			total += scratch.len() / 4;
 		}
 		assert!(
 			total <= ITEM_QUAD_BUDGET,
@@ -378,33 +462,48 @@ mod tests {
 	/// Grouping is what keeps a crowd to one draw per distinct item
 	/// rather than one per player, and every instance must land in
 	/// exactly one contiguous run.
+	///
+	/// Calls `group_by_kind` — the function `set_held` calls — so that
+	/// changing the grouping breaks this rather than leaving it green
+	/// against a copy of the old logic.
 	#[test]
 	fn held_items_group_one_run_per_kind() {
+		let inst = |n: f32| [n, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 		let mut v = [
-			(IconKind::Shaped(BlockType::Torch), 0u32),
-			(IconKind::Cube(BlockType::Dirt), 1),
-			(IconKind::Shaped(BlockType::Torch), 2),
-			(IconKind::WaterTool { full: true }, 3),
-			(IconKind::Cube(BlockType::Dirt), 4),
-			(IconKind::Shaped(BlockType::Torch), 5),
+			(IconKind::Shaped(BlockType::Torch), inst(0.0)),
+			(IconKind::Cube(BlockType::Dirt), inst(1.0)),
+			(IconKind::Shaped(BlockType::Torch), inst(2.0)),
+			(IconKind::WaterTool { full: true }, inst(3.0)),
+			(IconKind::Cube(BlockType::Dirt), inst(4.0)),
+			(IconKind::Shaped(BlockType::Torch), inst(5.0)),
 		];
-		v.sort_by_key(|(k, _)| kind_key(*k));
-		let mut runs = Vec::new();
-		let mut i = 0;
-		while i < v.len() {
-			let kind = v[i].0;
-			let mut j = i;
-			while j < v.len() && v[j].0 == kind {
-				j += 1;
-			}
-			runs.push((kind, j - i));
-			i = j;
-		}
+		let runs = group_by_kind(&mut v);
 		assert_eq!(runs.len(), 3, "three distinct items, three draws");
-		let total: usize = runs.iter().map(|(_, n)| n).sum();
-		assert_eq!(total, 6, "every instance drawn exactly once");
+		// Contiguous, in order, and covering everything: that triple is
+		// what lets a run be handed to draw_indexed as one instance range.
+		assert_eq!(runs.first().map(|(_, r)| r.start), Some(0));
+		assert_eq!(runs.last().map(|(_, r)| r.end), Some(v.len()));
+		assert!(runs.windows(2).all(|w| w[0].1.end == w[1].1.start));
 		assert!(runs
 			.iter()
-			.any(|(k, n)| *k == IconKind::Shaped(BlockType::Torch) && *n == 3));
+			.any(|(k, r)| *k == IconKind::Shaped(BlockType::Torch) && r.len() == 3));
+		// Every instance still present exactly once, just reordered — a
+		// sort that dropped or duplicated one would still group cleanly.
+		let mut seen: Vec<u32> = v.iter().map(|(_, i)| i[0] as u32).collect();
+		seen.sort_unstable();
+		assert_eq!(seen, [0, 1, 2, 3, 4, 5]);
+	}
+
+	/// Every kind a hand can hold must survive the cache, which is the
+	/// property `set_held` needs and `every_held_item_fits_the_quad_budget`
+	/// only half implies: an item can be inside both budgets and still
+	/// build zero quads.
+	#[test]
+	fn every_held_item_builds_geometry() {
+		let mut scratch = Vec::new();
+		for kind in every_kind() {
+			crate::viewmodel::build(kind, &mut scratch);
+			assert!(!scratch.is_empty(), "{kind:?} builds nothing to draw");
+		}
 	}
 }
