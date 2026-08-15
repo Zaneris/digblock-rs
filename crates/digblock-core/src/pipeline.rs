@@ -57,6 +57,38 @@ pub enum JobResult {
 	},
 }
 
+/// Enough of a [`Job`] to put it back on the heap it came off.
+///
+/// A pool that loses a job — a worker that trapped, was killed, or
+/// answered with a refusal — hands these back through
+/// [`JobDispatch::lost`], and `Pipeline::reclaim` requeues them. Without
+/// that a lost reply strands its chunk for the whole session, silently: a
+/// popped job is remembered NOWHERE else, so the column sits `Generating`
+/// forever (a hole in the world) or the chunk stays at
+/// `submitted_gen == mesh_gen` and never meshes again (invisible terrain).
+///
+/// The payload is deliberately not retained. A `Mesh` job's `MeshInput`
+/// is ~12 KB and a pool may hold dozens outstanding — real memory on the
+/// platform this exists for — and the pipeline rebuilds it from the store
+/// at redispatch anyway.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobKey {
+	Generate { x: i32, z: i32 },
+	Mesh { pos: ChunkPos, gen: u64 },
+}
+
+impl Job {
+	pub fn key(&self) -> JobKey {
+		match self {
+			Job::Generate { x, z, .. } => JobKey::Generate { x: *x, z: *z },
+			Job::Mesh { pos, gen, .. } => JobKey::Mesh {
+				pos: *pos,
+				gen: *gen,
+			},
+		}
+	}
+}
+
 enum ChunkState {
 	Generating,
 	Ready(Arc<ChunkData>),
@@ -68,11 +100,25 @@ struct ChunkSlot {
 	mesh_gen: u64,
 	/// Highest gen handed to a worker.
 	submitted_gen: u64,
-	/// Generation of the last accepted mesh, if that mesh was empty.
-	/// Diagonal neighbors' shell cells only shade existing faces (they
-	/// never create or cull them), so a chunk whose current mesh is empty
-	/// — every buried chunk — can skip diagonal re-dirties entirely.
+	/// Generation of the last accepted mesh, if that mesh was empty AND
+	/// was built with every face neighbor present. A chunk whose current
+	/// mesh is empty — every buried chunk — can then skip re-dirties
+	/// entirely: neighbors' shell cells only shade existing faces, they
+	/// never create them, so nothing stays nothing.
+	///
+	/// The face-neighbor condition is load-bearing, not caution.
+	/// `Src::Missing` doesn't merely read as air — it SUPPRESSES that
+	/// whole border (`MeshInput::missing`), so a chunk meshed beside an
+	/// ungenerated neighbor is empty for a reason that expires. Trusting
+	/// that emptiness left the border unemitted for the rest of the
+	/// session: a permanent hole wherever a solid chunk met the first
+	/// neighbor to arrive, which is every cave mouth and every surface
+	/// seam on the column that generated first.
 	empty_mesh_gen: Option<u64>,
+	/// The dispatched mesh job had at least one missing face neighbor
+	/// (see `empty_mesh_gen`). Tracked here rather than round-tripped
+	/// through the job, because the pipeline is what decided it.
+	mesh_missing: bool,
 }
 
 /// What the caller (renderer side) must do after a maintain() call, plus
@@ -135,6 +181,9 @@ pub struct Pipeline {
 	/// even when the player hasn't moved.
 	scanned: Option<(ChunkPos, i32)>,
 	in_flight: u32,
+	/// d² of the nearest job dispatched since the executor was last idle
+	/// — the in-flight half of `stream_urgency`.
+	in_flight_min_d2: Option<i64>,
 	/// Inline job-cost predictor (unused with a worker pool).
 	job_cost: JobCost,
 	/// Chunks whose GI-window region is stale (RTGI; GI-DESIGN.md):
@@ -183,6 +232,24 @@ pub trait JobDispatch {
 	/// frame), so the pipeline pulls them into its own queue each
 	/// `maintain` and drains that under the frame budget.
 	fn poll(&mut self) -> Option<JobResult>;
+	/// Drain one job the pool accepted and can no longer answer for: a
+	/// worker that trapped, was killed, or refused the work. The pipeline
+	/// requeues each one (see [`JobKey`]).
+	///
+	/// This is not an optional nicety — it is the other half of `submit`.
+	/// A job handed to a pool is remembered nowhere else, so a pool that
+	/// silently drops one leaves a permanent hole in the world. A pool
+	/// that structurally cannot lose a job returns `None` forever.
+	fn lost(&mut self) -> Option<JobKey>;
+	/// Workers attached and answering right now — what the debug overlay
+	/// and the bench summary report.
+	///
+	/// This must be the TRUTH rather than what was asked for. Every path
+	/// that yields no usable pool (the platform refused to spawn workers,
+	/// the module failed to load, every worker died) falls back to running
+	/// jobs on this thread, and a run that streamed inline must not be
+	/// recorded in BENCH.md as a pooled arm.
+	fn worker_count(&self) -> usize;
 	/// Abandon everything in flight: after this returns, a result for any
 	/// job submitted before it must NEVER be delivered.
 	///
@@ -192,6 +259,13 @@ pub trait JobDispatch {
 	/// world would land as authoritative terrain in the new one, at the
 	/// same (x, z), from a different seed. Implementations that can't
 	/// recall a dispatched job must instead discard its reply.
+	///
+	/// Abandoned jobs are NOT reported through `lost` either: the new
+	/// pipeline's store has never heard of those chunks. And whatever
+	/// per-worker accounting bounds `submit` has to be released here — a
+	/// pool that still counted the old world's jobs against its depth
+	/// would refuse the new world's while `ready` stayed true, which is
+	/// the one state where nothing streams and nothing runs inline.
 	fn reset(&mut self);
 }
 
@@ -521,6 +595,7 @@ impl Pipeline {
 			recorded: Vec::new(),
 			scanned: None,
 			in_flight: 0,
+			in_flight_min_d2: None,
 			job_cost: JobCost::new(),
 			gi_dirty: FxHashSet::default(),
 			gi_edits: Vec::new(),
@@ -576,6 +651,7 @@ impl Pipeline {
 		};
 		dispatch.reset();
 		self.in_flight = 0;
+		self.in_flight_min_d2 = None;
 		// The abandoned jobs were the only thing that would ever complete
 		// those slots — a chunk popped off the heap and handed to a pool
 		// is remembered nowhere else, so it would sit `Generating` for the
@@ -585,6 +661,26 @@ impl Pipeline {
 		// world that never finishes is not a state to leave reachable.)
 		self.store
 			.retain(|_, s| matches!(s.state, ChunkState::Ready(_)));
+		// A SURVIVING chunk strands the same way and more quietly:
+		// `next_mesh_job` refuses while `mesh_gen <= submitted_gen`, and
+		// the abandoned mesh job was the only thing that would ever roll
+		// that marker back (`requeue` does it; a dropped pool cannot). We
+		// can't tell which markers were in flight — a completed job leaves
+		// the same `submitted_gen == mesh_gen` — so roll every one back and
+		// re-queue, which is what `add_column`'s vacant-only rule
+		// structurally cannot do for a slot that is not vacant. Costs a
+		// re-mesh of the resident set, which is the cheap half of the
+		// regeneration the retain above already implies.
+		let center = self.center;
+		self.gen_heap.clear();
+		self.mesh_heap.clear();
+		for (pos, slot) in self.store.iter_mut() {
+			slot.submitted_gen = 0;
+			if matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d)) {
+				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), center);
+				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+			}
+		}
 		self.scanned = None;
 		Some(dispatch)
 	}
@@ -596,7 +692,11 @@ impl Pipeline {
 	/// so worker throughput is unaffected, only main-thread pacing).
 	/// `inline_allowance` lets the inline executor run extra jobs beyond
 	/// its fixed floor while their predicted cost fits (the adaptive web
-	/// budget); `None` keeps the floor-only batch. Ignored with workers.
+	/// budget); `None` keeps the floor-only batch. Ignored while jobs run
+	/// off-thread — the allowance prices JOBS, and a pool doesn't spend
+	/// this thread's time on them. `deadline` still governs everything
+	/// else, pool or not: pulling the pool's replies, the drain, and
+	/// feeding the pool are all main-thread work either way.
 	pub fn maintain(
 		&mut self,
 		center: ChunkPos,
@@ -642,20 +742,60 @@ impl Pipeline {
 		// while this thread was elsewhere; pull them into the queue the
 		// drain reads first, so budgeting, staleness and `has_pending` stay
 		// identical for every executor.
+		//
+		// Under the deadline, because the pull is not free: every `poll`
+		// decodes, and a `Generated` column is 16 chunks of bounds-checked
+		// u16 reads plus 16 fresh allocations on the one thread this whole
+		// change exists to protect. Always at least one, the same
+		// minimum-progress floor every other stage keeps — a frame already
+		// over budget must still absorb something, or the pool's inbox only
+		// grows.
+		let mut lost: Vec<JobKey> = Vec::new();
+		// The pull can stop with replies still in the pool, which
+		// `has_pending` — which sees only the decoded queue — cannot know.
+		let mut pull_cut = false;
 		if let Executor::External { dispatch, results } = &mut self.exec {
-			while let Some(r) = dispatch.poll() {
+			let mut pulled = 0usize;
+			loop {
+				if pulled > 0 && deadline.is_some_and(|d| web_time::Instant::now() >= d) {
+					pull_cut = true;
+					break;
+				}
+				let Some(r) = dispatch.poll() else {
+					break;
+				};
 				results.push_back(r);
+				pulled += 1;
+			}
+			// Jobs the pool accepted and cannot answer for. Unbudgeted on
+			// purpose: this is a handful of 16-byte keys in a failure that
+			// is rare by construction, and deferring it is deferring the
+			// only record that those chunks were ever dispatched.
+			while let Some(key) = dispatch.lost() {
+				lost.push(key);
+			}
+		}
+		if !lost.is_empty() {
+			log::warn!("{} chunk job(s) lost by the pool; requeued", lost.len());
+			for key in lost {
+				self.in_flight = self.in_flight.saturating_sub(1);
+				self.reclaim(key);
 			}
 		}
 		if self.exec.runs_inline() {
 			self.run_inline_jobs(inline_allowance);
 		}
 		self.drain_results(&mut out, upload_budget, deadline);
-		out.saturated = self.exec.has_pending();
-		out.requeued = self.top_up_workers();
+		out.saturated = self.exec.has_pending() || pull_cut;
+		out.requeued = self.top_up_workers(deadline);
 		out.gen_queue = self.gen_heap.len() as u32;
 		out.mesh_queue = self.mesh_heap.len() as u32;
 		out.in_flight = self.in_flight;
+		// Everything dispatched has been absorbed, so the in-flight half of
+		// `stream_urgency` has nothing left to speak for.
+		if self.in_flight == 0 {
+			self.in_flight_min_d2 = None;
+		}
 		out
 	}
 
@@ -759,6 +899,7 @@ impl Pipeline {
 					mesh_gen: 0,
 					submitted_gen: 0,
 					empty_mesh_gen: None,
+					mesh_missing: false,
 				});
 				fresh = true;
 			}
@@ -800,6 +941,24 @@ impl Pipeline {
 					dur_ms,
 				} => {
 					out.gen_jobs.record(dur_ms);
+					// Only a column still WAITING for terrain may take it.
+					// A `Generated` result carries no generation counter,
+					// so without this the SECOND one — a column evicted
+					// with its job still in a pool, re-entered, and
+					// dispatched again — overwrites live cells with
+					// pristine worldgen. Single-player survives that (the
+					// overlay is re-applied just below); a server's edits
+					// do not, because `apply_authoritative` drops a cell
+					// from `deferred_edits` the moment it lands. The
+					// column's chunks enter and leave together, so y=0 is
+					// the probe `next_gen_job` uses too.
+					if !matches!(
+						self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
+						Some(ChunkState::Generating)
+					) {
+						out.stale_dropped += 1;
+						continue;
+					}
 					// Re-apply persistent edits BEFORE the per-chunk air
 					// classification below: a block placed in a sky chunk
 					// must defeat `is_air_chunk` or it would never mesh.
@@ -867,6 +1026,14 @@ impl Pipeline {
 						// stays nothing. (This does NOT hold for edits, where
 						// digging removes coverage; `set_cell` has its own
 						// unconditional bump.)
+						//
+						// "Meshed to nothing" is narrower than it looks, and
+						// `empty_mesh_gen` is where that narrowness lives: a
+						// missing FACE neighbour also suppresses its whole
+						// border, so a chunk empty for THAT reason is not
+						// empty once the neighbour lands, and the slot
+						// declines to record it. Read its doc before widening
+						// this skip.
 						for oy in -1..=1 {
 							for oz in -1..=1i32 {
 								for ox in -1..=1i32 {
@@ -921,7 +1088,8 @@ impl Pipeline {
 					match self.store.get_mut(&m.pos) {
 						// Only the newest generation may reach the GPU.
 						Some(slot) if slot.mesh_gen == m.gen => {
-							slot.empty_mesh_gen = m.mesh.is_empty().then_some(m.gen);
+							slot.empty_mesh_gen =
+								(m.mesh.is_empty() && !slot.mesh_missing).then_some(m.gen);
 							out.meshed.push(m);
 						}
 						_ => out.stale_dropped += 1, // stale or evicted
@@ -984,12 +1152,14 @@ impl Pipeline {
 					break;
 				}
 			}
+			let d2 = self.job_dist2(&job);
 			let result = run_job(job);
 			let dur_ms = match &result {
 				JobResult::Generated { dur_ms, .. } | JobResult::Meshed { dur_ms, .. } => *dur_ms,
 			};
 			self.job_cost.observe(is_gen, dur_ms);
 			self.in_flight += 1;
+			self.note_dispatch(d2);
 			self.exec.push_result(result);
 			if is_gen {
 				floor_done = true;
@@ -1003,11 +1173,27 @@ impl Pipeline {
 	/// Returns the number of jobs bounced back because workers were
 	/// saturated (0 or 1 — a bounce ends the loop). No-op whenever jobs
 	/// run on this thread (they already ran in `run_inline_jobs`).
-	fn top_up_workers(&mut self) -> u32 {
+	///
+	/// Shares the caller's frame deadline, with the usual one-job floor.
+	/// Handing a job to a pool is not free on every platform: the web's
+	/// `submit` encodes it and copies it into a JS buffer — two passes
+	/// over an ~12 KB `MeshInput` that native's channel send does not
+	/// make — and a pass can offer `DEPTH × workers` of them, so an
+	/// unbudgeted top-up is a millisecond-scale stage hiding inside a
+	/// budget that thinks it covers everything.
+	fn top_up_workers(&mut self, deadline: Option<web_time::Instant>) -> u32 {
 		if self.exec.runs_inline() {
 			return 0;
 		}
-		while let Some(job) = self.pop_next_job() {
+		let mut submitted = 0usize;
+		loop {
+			if submitted > 0 && deadline.is_some_and(|d| web_time::Instant::now() >= d) {
+				break;
+			}
+			let Some(job) = self.pop_next_job() else {
+				break;
+			};
+			let d2 = self.job_dist2(&job);
 			let sent = match &mut self.exec {
 				Executor::Workers { job_tx, .. } => match job_tx.try_send(job) {
 					Ok(()) => Ok(()),
@@ -1020,7 +1206,11 @@ impl Pipeline {
 				Executor::Inline { .. } => unreachable!("checked above"),
 			};
 			match sent {
-				Ok(()) => self.in_flight += 1,
+				Ok(()) => {
+					self.in_flight += 1;
+					self.note_dispatch(d2);
+					submitted += 1;
+				}
 				// Put it back; the pool is saturated.
 				Err(Some(job)) => {
 					self.requeue(job);
@@ -1030,6 +1220,56 @@ impl Pipeline {
 			}
 		}
 		0
+	}
+
+	/// Flat d² from the streaming centre of whatever column a job covers —
+	/// the same key both heaps are ordered by.
+	fn job_dist2(&self, job: &Job) -> i64 {
+		let (x, z) = match job {
+			Job::Generate { x, z, .. } => (*x, *z),
+			Job::Mesh { pos, .. } => (pos.x, pos.z),
+		};
+		dist2(ChunkPos::new(x, 0, z), self.center)
+	}
+
+	/// Remember the nearest job dispatched since the executor was last
+	/// idle. Jobs go out nearest-first, so the minimum over everything
+	/// dispatched can only be nearer than the minimum over what is still
+	/// outstanding — it overestimates urgency and never underestimates it,
+	/// exactly like `stream_urgency`'s stale heap entries.
+	fn note_dispatch(&mut self, d2: i64) {
+		self.in_flight_min_d2 = Some(self.in_flight_min_d2.map_or(d2, |m| m.min(d2)));
+	}
+
+	/// Put back a job the pool lost. The twin of `requeue` for a job whose
+	/// payload is gone (see [`JobKey`]): a mesh job's `MeshInput` is
+	/// rebuilt at redispatch, so only the marker rollback carries over.
+	fn reclaim(&mut self, key: JobKey) {
+		match key {
+			JobKey::Generate { x, z } => {
+				// Still `Generating` means nothing else has taken the
+				// column on; an evicted or already-landed one has no work
+				// to redo. Same y=0 probe `next_gen_job` uses.
+				if !matches!(
+					self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
+					Some(ChunkState::Generating)
+				) {
+					return;
+				}
+				let d = dist2(ChunkPos::new(x, 0, z), self.center);
+				self.gen_heap.push((Reverse(d), (x, z)));
+			}
+			JobKey::Mesh { pos, gen } => {
+				let Some(slot) = self.store.get_mut(&pos) else {
+					return; // evicted
+				};
+				if slot.submitted_gen == gen {
+					slot.submitted_gen = gen.saturating_sub(1);
+				}
+				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
+				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+			}
+		}
 	}
 
 	fn next_gen_job(&mut self) -> Option<Job> {
@@ -1060,8 +1300,10 @@ impl Pipeline {
 		}
 		let gen = slot.mesh_gen;
 		let input = Box::new(self.build_mesh_input(pos, data));
+		let missing = input.missing.iter().any(|&m| m);
 		let slot = self.store.get_mut(&pos).expect("slot exists");
 		slot.submitted_gen = gen;
+		slot.mesh_missing = missing;
 		Some(Job::Mesh { pos, gen, input })
 	}
 
@@ -1125,13 +1367,40 @@ impl Pipeline {
 	/// Both heaps are keyed by flat d² from center so this is a peek; a
 	/// stale entry (column evicted or completed since queueing) can only
 	/// overestimate urgency, and only until a pop consumes it.
+	///
+	/// **In-flight work counts.** With the inline executor an empty pair
+	/// of heaps genuinely meant nothing was pending — a job left the heap
+	/// and finished inside the same `run_inline_jobs` call. A pool breaks
+	/// that: `top_up_workers` drains BOTH heaps into it, so the frame the
+	/// backlog is handed over reads as idle and collapses the shared
+	/// deadline to its floor — precisely as those results start landing on
+	/// this thread to be absorbed. `in_flight_min_d2` is what keeps the
+	/// question "how near is the work" independent of WHERE it is running.
 	pub fn stream_urgency(&self) -> f32 {
 		let gen = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
-		let Some(d2) = gen.into_iter().chain(mesh).min() else {
+		let Some(d2) = gen
+			.into_iter()
+			.chain(mesh)
+			.chain(self.in_flight_min_d2)
+			.min()
+		else {
 			return 0.0;
 		};
 		crate::stream_budget::urgency((d2 as f32).sqrt(), self.draw_dist as f32)
+	}
+
+	/// Workers actually running this pipeline's jobs — 0 on the inline
+	/// path, including a web build whose pool never started or has fallen
+	/// back to this thread. The overlay and the bench summary report this
+	/// rather than the requested count, so a run that streamed inline
+	/// cannot be recorded as a pooled one.
+	pub fn worker_count(&self) -> usize {
+		match &self.exec {
+			Executor::Inline { .. } => 0,
+			Executor::Workers { _handles, .. } => _handles.len(),
+			Executor::External { dispatch, .. } => dispatch.worker_count(),
+		}
 	}
 
 	/// Drain the chunks whose GI-window region is stale (RTGI). The
@@ -1450,16 +1719,24 @@ mod tests {
 	use super::*;
 	use crate::block::BlockType;
 
-	/// Run maintain until all queues and workers are idle.
-	fn quiesce(p: &mut Pipeline, center: ChunkPos) {
+	/// Run maintain until all queues and workers are idle, keeping every
+	/// mesh emitted on the way (see `mesh_census`).
+	fn quiesce_meshed(p: &mut Pipeline, center: ChunkPos) -> Vec<MeshOutput> {
+		let mut meshed = Vec::new();
 		for _ in 0..2000 {
-			let m = p.maintain(center, usize::MAX, None, None);
+			let mut m = p.maintain(center, usize::MAX, None, None);
+			meshed.append(&mut m.meshed);
 			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
-				return;
+				return meshed;
 			}
 			std::thread::sleep(std::time::Duration::from_millis(1));
 		}
 		panic!("pipeline never quiesced");
+	}
+
+	/// Run maintain until all queues and workers are idle.
+	fn quiesce(p: &mut Pipeline, center: ChunkPos) {
+		quiesce_meshed(p, center);
 	}
 
 	fn mesh_gen(p: &Pipeline, pos: ChunkPos) -> u64 {
@@ -1526,30 +1803,179 @@ mod tests {
 			self.done.pop_front()
 		}
 
+		fn lost(&mut self) -> Option<JobKey> {
+			None // runs every job it accepts, inside `submit`
+		}
+
+		fn worker_count(&self) -> usize {
+			usize::from(self.ready)
+		}
+
 		fn reset(&mut self) {
 			self.stats.borrow_mut().resets += 1;
 			self.done.clear();
 		}
 	}
 
-	/// Per-chunk air flag plus a content checksum — enough to catch a
-	/// dropped cell, a transposed copy, or an air chunk that decoded into
-	/// a look-alike instead of the shared sentinel.
+	/// A pool that behaves like a real one: a job is ACCEPTED now and
+	/// answered whenever the test says so, or never.
+	///
+	/// `ImmediateDispatch` cannot model the contracts that actually bite,
+	/// because it finishes every job inside `submit` — there is no such
+	/// thing as a dispatched-but-unanswered job in it, so `reset`'s
+	/// load-bearing rule (a reply for a pre-reset job must NEVER be
+	/// delivered) and the lost-job path are both invisible to it. The
+	/// state is shared with the test, which drives the two events a real
+	/// pool suffers and a synchronous double cannot: a late reply and a
+	/// dead worker.
+	#[derive(Default)]
+	struct HoldBackState {
+		/// Accepted, unanswered: the job, whether its worker is still
+		/// alive, and the world it was dispatched in.
+		held: VecDeque<(Job, bool, u64)>,
+		done: VecDeque<JobResult>,
+		lost: VecDeque<JobKey>,
+		/// Bumped by `reset`. Everything held under an older epoch belongs
+		/// to a world that no longer exists — a real pool drops those on
+		/// their dispatch id; this drops them on the epoch.
+		epoch: u64,
+	}
+
+	impl HoldBackState {
+		/// Run the oldest held job and deliver it. False when nothing was
+		/// held.
+		fn release(&mut self) -> bool {
+			let Some((job, alive, epoch)) = self.held.pop_front() else {
+				return false;
+			};
+			let key = job.key();
+			let result = run_job(job);
+			if epoch != self.epoch {
+				// Its world is gone. Not delivered, and NOT reported lost
+				// either: the current pipeline's store has never heard of
+				// that chunk.
+				return true;
+			}
+			if alive {
+				self.done.push_back(result);
+			} else {
+				self.lost.push_back(key);
+			}
+			true
+		}
+
+		/// The worker holding the oldest job dies: the job was accepted,
+		/// and no result will ever come back for it.
+		fn kill_oldest(&mut self) {
+			if let Some((_, alive, _)) = self.held.front_mut() {
+				*alive = false;
+			}
+		}
+	}
+
+	type Held = std::rc::Rc<std::cell::RefCell<HoldBackState>>;
+
+	struct HoldBackDispatch {
+		state: Held,
+		depth: usize,
+	}
+
+	impl HoldBackDispatch {
+		fn new(depth: usize) -> (Self, Held) {
+			let state = Held::default();
+			(
+				Self {
+					state: state.clone(),
+					depth,
+				},
+				state,
+			)
+		}
+	}
+
+	impl JobDispatch for HoldBackDispatch {
+		fn ready(&self) -> bool {
+			true
+		}
+
+		fn submit(&mut self, job: Job) -> Result<(), Job> {
+			let mut s = self.state.borrow_mut();
+			if s.held.len() >= self.depth {
+				return Err(job);
+			}
+			let epoch = s.epoch;
+			s.held.push_back((job, true, epoch));
+			Ok(())
+		}
+
+		fn poll(&mut self) -> Option<JobResult> {
+			self.state.borrow_mut().done.pop_front()
+		}
+
+		fn lost(&mut self) -> Option<JobKey> {
+			self.state.borrow_mut().lost.pop_front()
+		}
+
+		fn worker_count(&self) -> usize {
+			1
+		}
+
+		fn reset(&mut self) {
+			let mut s = self.state.borrow_mut();
+			s.epoch += 1;
+			s.done.clear();
+			s.lost.clear();
+		}
+	}
+
+	/// Per-chunk air flag plus a content hash — enough to catch a dropped
+	/// cell, a transposed copy, or an air chunk that decoded into a
+	/// look-alike instead of the shared sentinel.
+	///
+	/// The hash is POSITION-WEIGHTED on purpose. A plain sum over the
+	/// cells is permutation-invariant, so a codec that shuffled a chunk's
+	/// contents — the exact class of mistake a bytes-crossing job pool
+	/// introduces — would pass it unchanged.
 	fn world_census(p: &Pipeline) -> Vec<(ChunkPos, bool, u64)> {
 		let mut v: Vec<_> = p
 			.store
 			.iter()
 			.map(|(pos, s)| match &s.state {
-				ChunkState::Ready(d) => (
-					*pos,
-					is_air_chunk(d),
-					d.blocks.iter().map(|&c| u64::from(c)).sum::<u64>(),
-				),
+				ChunkState::Ready(d) => (*pos, is_air_chunk(d), cell_hash(&d.blocks)),
 				ChunkState::Generating => (*pos, false, u64::MAX),
 			})
 			.collect();
 		v.sort_by_key(|(p, _, _)| (p.x, p.y, p.z));
 		v
+	}
+
+	fn cell_hash(cells: &[u16]) -> u64 {
+		cells.iter().fold(0xcbf29ce484222325u64, |h, &c| {
+			(h ^ u64::from(c)).wrapping_mul(0x100000001b3)
+		})
+	}
+
+	/// The census `world_census` structurally cannot take: a mesh never
+	/// enters the store, so a job pool that mangled vertex words on the
+	/// way back would leave every stored cell intact. Keyed by chunk, the
+	/// newest emission winning, hashed in emission order per chunk.
+	fn mesh_census(meshed: &[MeshOutput]) -> Vec<(ChunkPos, u64)> {
+		let mut by_pos: std::collections::BTreeMap<(i32, i32, i32), u64> = Default::default();
+		for m in meshed {
+			let h = m
+				.mesh
+				.solid
+				.iter()
+				.chain(&m.mesh.water)
+				.fold(0xcbf29ce484222325u64, |h, &w| {
+					(h ^ u64::from(w)).wrapping_mul(0x100000001b3)
+				});
+			by_pos.insert((m.pos.x, m.pos.y, m.pos.z), h);
+		}
+		by_pos
+			.into_iter()
+			.map(|((x, y, z), h)| (ChunkPos::new(x, y, z), h))
+			.collect()
 	}
 
 	/// The executor is an implementation detail of WHERE jobs run, never
@@ -1559,14 +1985,19 @@ mod tests {
 	fn an_external_pool_builds_the_same_world_as_inline() {
 		let center = ChunkPos::new(0, 0, 0);
 		let mut inline = Pipeline::new(42.0, 3, 0);
-		quiesce(&mut inline, center);
+		let inline_meshes = quiesce_meshed(&mut inline, center);
 
 		let mut pooled = Pipeline::new(42.0, 3, 0);
 		let (d, stats) = ImmediateDispatch::new(64);
 		pooled.set_dispatch(Box::new(d));
-		quiesce(&mut pooled, center);
+		let pooled_meshes = quiesce_meshed(&mut pooled, center);
 
 		assert_eq!(world_census(&pooled), world_census(&inline));
+		assert_eq!(
+			mesh_census(&pooled_meshes),
+			mesh_census(&inline_meshes),
+			"the vertices are the half of a job's output the store never sees"
+		);
 		assert!(
 			stats.borrow().submitted > 0,
 			"the pool must have run the jobs — a silent inline fallback \
@@ -1607,13 +2038,18 @@ mod tests {
 		let mut p = Pipeline::new(42.0, 3, 0);
 		// One outstanding result at a time — every submit past the first
 		// bounces until the drain catches up.
-		let (d, _stats) = ImmediateDispatch::new(1);
+		let (d, stats) = ImmediateDispatch::new(1);
 		p.set_dispatch(Box::new(d));
 		quiesce(&mut p, center);
 
 		let mut control = Pipeline::new(42.0, 3, 0);
 		quiesce(&mut control, center);
 		assert_eq!(world_census(&p), world_census(&control));
+		assert!(
+			stats.borrow().submitted > 0,
+			"a pool that refused everything would finish the world inline \
+			 and prove nothing about the requeue path"
+		);
 	}
 
 	/// A pool outlives the pipeline that fed it, so detaching one must
@@ -1646,6 +2082,92 @@ mod tests {
 		let mut control = Pipeline::new(42.0, 3, 0);
 		quiesce(&mut control, center);
 		assert_eq!(world_census(&p), world_census(&control));
+	}
+
+	/// `reset`'s actual contract, which `ImmediateDispatch` cannot state:
+	/// a job dispatched before a world change must never land after it.
+	/// A `Generated` result carries only (x, z) — no seed — so one that
+	/// leaked would stamp the OLD world's terrain into the new one at the
+	/// same coordinates, and the census would show it as a world neither
+	/// seed generates.
+	#[test]
+	fn a_pre_reset_reply_never_reaches_the_next_world() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(42.0, 3, 0);
+		let (d, held) = HoldBackDispatch::new(64);
+		p.set_dispatch(Box::new(d));
+		// Hand the pool a batch of the FIRST world's columns, unanswered.
+		p.maintain(center, usize::MAX, None, None);
+		assert!(
+			p.in_flight > 0 && !held.borrow().held.is_empty(),
+			"the pool must be holding work"
+		);
+
+		// World change: the pool crosses over, its backlog does not.
+		let taken = p.take_dispatch().expect("a pool was attached");
+		let mut next = Pipeline::new(7.0, 3, 0);
+		next.set_dispatch(taken);
+		// Every one of those held jobs now finishes — real, decodable
+		// results for real columns, from the wrong seed — and the new
+		// world builds around them.
+		for _ in 0..8000 {
+			while held.borrow_mut().release() {}
+			let m = next.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+
+		let mut control = Pipeline::new(7.0, 3, 0);
+		quiesce(&mut control, center);
+		assert_eq!(
+			world_census(&next),
+			world_census(&control),
+			"a previous world's column landed in this one"
+		);
+	}
+
+	/// A worker that dies with jobs in hand is the failure the whole
+	/// `lost` path exists for: nothing else remembers those chunks were
+	/// dispatched, so without a requeue the column sits `Generating`
+	/// forever (a hole in the world) or the chunk never meshes again
+	/// (invisible terrain).
+	#[test]
+	fn a_pool_that_loses_jobs_still_finishes_the_world() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(42.0, 3, 0);
+		let (d, held) = HoldBackDispatch::new(8);
+		p.set_dispatch(Box::new(d));
+
+		let mut killed = 0usize;
+		for _ in 0..8000 {
+			{
+				// The worker holding the oldest job dies, over and over,
+				// until the pipeline has had to reclaim its way through a
+				// long run of them. Bounded so the run still terminates:
+				// the heaps are nearest-first, so an unbounded kill would
+				// keep killing the same nearest column forever.
+				let mut h = held.borrow_mut();
+				if killed < 50 && !h.held.is_empty() {
+					h.kill_oldest();
+					killed += 1;
+				}
+				while h.release() {}
+			}
+			let m = p.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		assert!(killed > 0, "no job was ever lost — the test proved nothing");
+
+		let mut control = Pipeline::new(42.0, 3, 0);
+		quiesce(&mut control, center);
+		assert_eq!(
+			world_census(&p),
+			world_census(&control),
+			"a lost job left a permanent hole in the world"
+		);
 	}
 
 	#[test]
@@ -2290,6 +2812,42 @@ mod tests {
 		);
 		quiesce(&mut p, center);
 		assert_eq!(p.stream_urgency(), 0.0, "quiescent again once filled");
+	}
+
+	/// Work in a pool is still work. `top_up_workers` drains BOTH heaps
+	/// into the pool, so a heaps-only urgency reads the busiest frame of
+	/// the fill as idle and collapses the shared streaming deadline to its
+	/// floor — exactly as those results start landing on this thread to be
+	/// absorbed. With the inline executor this was unreachable: a job left
+	/// the heap and finished inside the same call.
+	#[test]
+	fn urgency_counts_work_that_is_in_the_pool() {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 8, 0);
+		// Deep enough to swallow the whole first scan, and holding: after
+		// this call the heaps are empty and every job is outstanding.
+		let (d, held) = HoldBackDispatch::new(1 << 16);
+		p.set_dispatch(Box::new(d));
+		p.maintain(center, usize::MAX, None, None);
+		assert!(
+			p.gen_heap.is_empty() && p.mesh_heap.is_empty(),
+			"the pool must have taken the whole backlog for this to mean anything"
+		);
+		assert!(p.in_flight > 0, "and be holding it");
+		assert_eq!(
+			p.stream_urgency(),
+			1.0,
+			"near-field work in a pool is near-field work"
+		);
+
+		for _ in 0..8000 {
+			while held.borrow_mut().release() {}
+			let m = p.maintain(center, usize::MAX, None, None);
+			if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+				break;
+			}
+		}
+		assert_eq!(p.stream_urgency(), 0.0, "quiescent again once absorbed");
 	}
 
 	#[test]

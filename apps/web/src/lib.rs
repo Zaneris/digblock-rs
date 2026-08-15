@@ -12,8 +12,24 @@ mod services;
 mod settings;
 mod store;
 
+/// A query param that carries a value, absent if the key isn't there.
+///
+/// A key that IS there but doesn't parse is fatal, never a silent fall
+/// back to the default. These select bench arms — `?workers=`, `?frames=`,
+/// `?warp=` — and a typo that quietly ran the shipped default gets
+/// recorded in BENCH.md as the arm that was asked for. Same rule the
+/// engine's other capture knobs follow (a bad `DIG_STUB` term is fatal;
+/// desktop exits 2 on a bad flag value); on wasm the panic hook prints it
+/// to the console, which is this platform's version of exiting loudly.
 fn param<T: std::str::FromStr>(p: &web_sys::UrlSearchParams, key: &str) -> Option<T> {
-	p.get(key).and_then(|v| v.parse().ok())
+	let raw = p.get(key)?;
+	match raw.parse() {
+		Ok(v) => Some(v),
+		Err(_) => panic!(
+			"?{key}={raw:?} is not a valid {}",
+			std::any::type_name::<T>()
+		),
+	}
 }
 
 /// `?flag` and `?flag=1` both count; `?flag=0` doesn't.
@@ -44,9 +60,43 @@ pub fn start() -> Result<(), JsValue> {
 	if cfg!(debug_assertions) {
 		config.tod = param(&params, "tod");
 	}
-	// Saved settings first, explicit query params on top (URL > saved >
-	// default — the desktop CLI precedence).
-	let saved = settings::load(digblock_render::settings::Settings {
+	// The capture harness, same fields the desktop CLI drives. This is the
+	// only way to compare the two platforms honestly: the scripted pose is
+	// a pure function of the frame index, so `?warp=600` lands the browser
+	// on bit-identically the camera `--warp 600` lands the desktop on.
+	//
+	// ?warp is the one that measures RENDER cost: ?bench travels at 30
+	// blocks/s, which is a STREAMING regime, so a travelling flight is
+	// dominated by how fast chunks arrive and says little about the GI.
+	// (That used to be near-total — jobs ran on the main thread here —
+	// and is merely large now that a worker pool runs them.) Pair ?bench
+	// with ?frames=N: the summary is emitted at that boundary.
+	config.bench = flag(&params, "bench");
+	if let Some(n) = param::<u32>(&params, "fly") {
+		config.fly = Some(n);
+	}
+	if let Some(n) = param::<u32>(&params, "warp") {
+		config.fly = Some(n);
+		config.warp = true;
+	}
+	config.walk = flag(&params, "walk");
+
+	// ONE predicate, exactly as desktop derives it (`apps/desktop/main.rs`),
+	// rather than a guard per capture flag. A capture path gets no menu, no
+	// audio, no master traffic, and neither loads nor saves settings — the
+	// per-flag version of this shipped covering `?bench` alone, which left
+	// `?warp`/`?fly` running their scripted flight behind the title
+	// screen's dim, and left every capture reading (and WRITING) whatever
+	// draw distance and lighting detail this browser happened to have
+	// saved. Two runs of the same arm have to measure the same thing.
+	let interactive = !config.bench && config.fly.is_none();
+	config.menu = interactive;
+
+	// Saved settings apply to interactive runs only; explicit query params
+	// win over both (URL > saved > default — the desktop CLI precedence).
+	// A capture keeps the shipped defaults, which is what makes two runs of
+	// the same arm comparable on a browser that has ever been played on.
+	let defaults = digblock_render::settings::Settings {
 		draw_dist: config.draw_dist,
 		music_vol: config.music_vol,
 		sfx_vol: config.sfx_vol,
@@ -55,7 +105,12 @@ pub fn start() -> Result<(), JsValue> {
 		render_scale: config.render_scale,
 		gi_scale_div: config.gi_scale_div,
 		name: String::new(),
-	});
+	};
+	let saved = if interactive {
+		settings::load(defaults)
+	} else {
+		defaults
+	};
 	config.draw_dist = saved.draw_dist;
 	config.music_vol = saved.music_vol;
 	config.sfx_vol = saved.sfx_vol;
@@ -63,9 +118,11 @@ pub fn start() -> Result<(), JsValue> {
 	config.ui_scale = saved.ui_scale;
 	// Density picks both only when NEITHER was saved — the engine applies
 	// them at the first `set_scale_factor`, where the backing scale is
-	// first known (see `gfx_defaults_auto`).
-	config.gfx_defaults_auto =
-		saved.render_scale == config.render_scale && saved.gi_scale_div == config.gi_scale_div;
+	// first known (see `gfx_defaults_auto`). Never on a capture path: those
+	// keep the shipped values so no baseline moves with the display.
+	config.gfx_defaults_auto = interactive
+		&& saved.render_scale == config.render_scale
+		&& saved.gi_scale_div == config.gi_scale_div;
 	config.render_scale = saved.render_scale;
 	config.gi_scale_div = saved.gi_scale_div;
 	if let Some(r) = param::<f32>(&params, "renderscale") {
@@ -93,34 +150,6 @@ pub fn start() -> Result<(), JsValue> {
 		);
 	}
 	config.overlay = flag(&params, "overlay");
-	// The capture harness, same fields the desktop CLI drives. This is the
-	// only way to compare the two platforms honestly: the scripted pose is
-	// a pure function of the frame index, so `?warp=600` lands the browser
-	// on bit-identically the camera `--warp 600` lands the desktop on.
-	//
-	// ?warp is the one that measures RENDER cost: ?bench travels at 30
-	// blocks/s, which is a STREAMING regime, so a travelling flight is
-	// dominated by how fast chunks arrive and says little about the GI.
-	// (That used to be near-total — jobs ran on the main thread here —
-	// and is merely large now that a worker pool runs them.) Pair ?bench
-	// with ?frames=N: the summary is emitted at that boundary.
-	config.bench = flag(&params, "bench");
-	// A capture path must not sit on a menu screen. Desktop gets this for
-	// free — `EngineConfig::desktop()` starts menu-less — but the web
-	// default is a menu like an interactive launch, so `?bench` opened the
-	// title screen and the scripted flight never ran: a summary line with
-	// `fill n/a` over a backdrop world, measuring nothing.
-	if config.bench {
-		config.menu = false;
-	}
-	if let Some(n) = param::<u32>(&params, "fly") {
-		config.fly = Some(n);
-	}
-	if let Some(n) = param::<u32>(&params, "warp") {
-		config.fly = Some(n);
-		config.warp = true;
-	}
-	config.walk = flag(&params, "walk");
 	// Chunk jobs run in Web Workers when the machine has cores to spare
 	// (jobs.rs); `?workers=N` overrides for A/B, and 0 is the pre-pool
 	// inline path exactly. The pipeline is told nothing — it upgrades when
@@ -140,7 +169,8 @@ pub fn start() -> Result<(), JsValue> {
 		.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
 		.or_else(|| (!saved.name.is_empty()).then(|| saved.name.clone()));
 
-	if flag(&params, "join") {
+	let join = flag(&params, "join");
+	if join {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
 		// The menu refuses to join without a valid name.
 		if config.player_name.is_none() {
@@ -152,16 +182,28 @@ pub fn start() -> Result<(), JsValue> {
 
 	// The production master is the default; ?master= overrides for dev
 	// stacks, and an explicitly empty ?master= disables multiplayer + music
-	// entirely (no master, no server list, no token mint).
+	// entirely (no master, no server list, no token mint). The default
+	// applies to interactive runs and joins only — a capture path must not
+	// ping the master.
 	let master_url = match params.get("master") {
 		Some(m) if m.is_empty() => None,
 		Some(m) => Some(m),
-		None => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
+		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
+		None => None,
 	};
 	let workers = config.workers;
 	let mut engine = Engine::new(config);
-	engine.set_settings_store(Box::new(settings::save));
-	engine.set_world_store(Box::new(store::LocalStorageWorldStore::new()));
+	if interactive {
+		// A capture run must not WRITE settings either: a `?renderscale=`
+		// or `?draw=` on the URL would otherwise persist into every later
+		// interactive session on this browser.
+		engine.set_settings_store(Box::new(settings::save));
+	}
+	// Named local saves ride the menu; scripted joins and capture paths
+	// stay store-less (ephemeral world, hermetic run).
+	if interactive && !join {
+		engine.set_world_store(Box::new(store::LocalStorageWorldStore::new()));
+	}
 	// Chunk jobs move to Web Workers when there are cores for them. The
 	// pool is attached before the first frame but reports unready until a
 	// worker has instantiated, so the opening seconds still stream inline
@@ -179,8 +221,10 @@ pub fn start() -> Result<(), JsValue> {
 		}
 	}
 	// ?mute kills the whole audio stack; otherwise sound starts on the
-	// first click/keydown (Chrome's autoplay gesture rule).
-	if !flag(&params, "mute") {
+	// first click/keydown (Chrome's autoplay gesture rule). Audio rides
+	// interactive runs only — the engine's sink stays None on a capture,
+	// the same as desktop's.
+	if interactive && !flag(&params, "mute") {
 		engine.set_audio(audio::start(master_url.clone()));
 	}
 	if let Some(master_url) = master_url {

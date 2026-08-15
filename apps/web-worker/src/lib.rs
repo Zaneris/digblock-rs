@@ -23,8 +23,11 @@ use wasm_bindgen::prelude::*;
 /// A message that doesn't decode answers with an empty buffer rather than
 /// trapping: the wasm here has no way to report a fault except by dying,
 /// and a dead worker is a pool that silently loses a third of its
-/// throughput for the rest of the session. The main thread treats an empty
-/// reply as a dropped job and reschedules the chunk.
+/// throughput for the rest of the session. The main thread reads an empty
+/// reply as "accepted, could not run it", hands the job back to the
+/// pipeline through `JobDispatch::lost`, and the chunk is requeued — the
+/// bootstrap's catch answers this way for a trap too, so every accepted
+/// job produces exactly one reply.
 #[wasm_bindgen]
 pub fn run_job_bytes(input: &[u8]) -> Vec<u8> {
 	// Cheap after the first call, and the alternative on this platform is

@@ -247,11 +247,11 @@ pub struct EngineConfig {
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
 	/// Grow the streaming budget from measured frame headroom, scaled
-	/// by how near the closest pending job is (the inline-executor web
-	/// build; see `stream_budget`) — rim-only churn while walking stays
-	/// at the fixed floor. Only effective with `workers == 0` and
-	/// outside bench — captures must stay deterministic, and worker
-	/// pools already produce across frames.
+	/// by how near the closest pending job is (the web build; see
+	/// `stream_budget`) — rim-only churn while walking stays at the
+	/// fixed floor. Effective outside bench only: captures must stay
+	/// deterministic. It is NOT conditioned on the executor — see
+	/// `adaptive_effective`.
 	pub adaptive_stream: bool,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
@@ -401,10 +401,15 @@ impl EngineConfig {
 	}
 
 	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
-	/// handles it — verified 120fps at draw 20 + SSR), but jobs run
-	/// inline on the main thread (workers: 0 — wasm has no std threads)
-	/// and the menu opens by default like a desktop interactive run.
-	/// URL params (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
+	/// handles it — verified 120fps at draw 20 + SSR), and the menu opens
+	/// by default like a desktop interactive run. URL params (?draw=
+	/// ?ssr=0 ?shadow=) opt weaker hardware down.
+	///
+	/// `workers: 0` here is the FLOOR, not the shipped setting: wasm has
+	/// no std threads, so a pipeline built from this config runs jobs
+	/// inline. The launcher overwrites the field with what it intends to
+	/// spawn and attaches a Web Worker pool afterwards (`apps/web/jobs.rs`),
+	/// which the pipeline upgrades to when its first worker answers.
 	pub fn web() -> Self {
 		Self {
 			workers: 0,
@@ -495,13 +500,15 @@ const EVICT_MIN: usize = 8;
 /// A COUNT could not express that, which is what this replaced. What one
 /// edit costs swings by more than an order of magnitude — whether its
 /// chunk is still shared decides a 16³ copy-on-write — and the mesh jobs
-/// it queues run INLINE on this same thread on the web (`workers: 0`),
-/// later in the same frame, so the apply is only half of what a burst
-/// actually spends. The old 256 was sized against a 16.67 ms native frame
+/// it queues are charged to this same thread later in the same frame even
+/// with a Web Worker pool up — feeding one encodes and copies the ~12 KB
+/// snapshot, and absorbing the result is main-thread work by definition —
+/// so the apply is only half of what a burst actually spends. With no pool
+/// (a 1–2 core device, a browser that refused workers, `?workers=0`) they
+/// run here outright. The old 256 was sized against a 16.67 ms native frame
 /// with worker threads behind it; at 120 Hz on the web the frame is
-/// 8.33 ms and the meshing is not behind anything. Pricing the slice in
-/// TIME makes the same code back off on the platform that cannot afford
-/// it, with no constant to retune per display.
+/// 8.33 ms. Pricing the slice in TIME makes the same code back off on the
+/// platform that cannot afford it, with no constant to retune per display.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -1360,7 +1367,6 @@ impl Engine {
 		// frame first meshes a door (see `shapes::prewarm`).
 		digblock_core::shapes::prewarm();
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
-		metrics.workers = config.workers as u32;
 		if config.bench {
 			metrics.record_run_history();
 		}
@@ -1375,7 +1381,6 @@ impl Engine {
 			nanos as f64 / u32::MAX as f64 * 10000.0
 		});
 		let far = far_plane(config.draw_dist);
-		log::info!("world seed: {seed} | {} chunk workers", config.workers);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
 		let pipeline = Pipeline::with_overlay(
@@ -1383,6 +1388,13 @@ impl Engine {
 			config.draw_dist,
 			config.workers,
 			digblock_core::overlay::EditOverlay::default(),
+		);
+		// The pipeline's own count, not `config.workers`: on the web that
+		// is a REQUEST the launcher may not be able to honour, and a pool
+		// is attached later (and reports zero until its workers answer).
+		log::info!(
+			"world seed: {seed} | {} chunk workers",
+			pipeline.worker_count()
 		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);
 		let overlay_visible = config.overlay;
@@ -2787,6 +2799,13 @@ impl Engine {
 			self.config.stream_budget_ms
 		};
 		self.metrics.stream_budget_ms = budget_ms;
+		// Sampled every frame from the executor rather than set once from
+		// the config, because the config is a REQUEST. A web pool that
+		// failed to start, hasn't finished its handshake, or has had every
+		// worker written off reports 0 here and streams inline — and a run
+		// that streamed inline must not be recorded in BENCH.md as a
+		// pooled arm, which is what the `?workers=` table is selected by.
+		self.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
 		// Previously each stage got its own slice of the budget and they
 		// summed to ~1.5× it; now they consume from the same clock, and the
