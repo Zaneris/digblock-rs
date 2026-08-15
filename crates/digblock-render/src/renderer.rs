@@ -2246,6 +2246,74 @@ mod tests {
 		);
 	}
 
+	/// Every pipeline this renderer builds, validated with no GPU present.
+	///
+	/// The shader test in `digblock-assets` parses each WGSL file ALONE, so
+	/// it can only see that a shader is well-formed. It cannot see the seam
+	/// that actually breaks: a shader's bindings against the
+	/// `BindGroupLayout` the Rust side hand-wrote for it, a vertex buffer's
+	/// formats against the attributes the vertex stage declares, a
+	/// fragment's outputs against the target formats. All three are checked
+	/// at `create_render_pipeline` and nowhere earlier, which used to mean
+	/// "when somebody runs the game".
+	///
+	/// wgpu's noop backend stubs the HAL — nothing is compiled and nothing
+	/// is allocated — but `wgpu-core` runs its full validation first,
+	/// backend-independent. So this constructs the real `Renderer` on a
+	/// device that does not exist and gets the real errors, in the time a
+	/// unit test takes.
+	///
+	/// What it does NOT cover: naga is the permissive front end, and the
+	/// browser's is Tint. A shader that passes here can still invalidate a
+	/// pipeline in Chrome (see the `highlight.wgsl` precedence bug), so
+	/// this is not a substitute for loading the page.
+	#[cfg(not(target_arch = "wasm32"))]
+	#[test]
+	fn every_pipeline_builds_without_a_gpu() {
+		let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+			backends: wgpu::Backends::NOOP,
+			backend_options: wgpu::BackendOptions {
+				noop: wgpu::NoopBackendOptions::enabled(),
+				..Default::default()
+			},
+			..wgpu::InstanceDescriptor::new_without_display_handle()
+		});
+		let adapter =
+			pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+				.expect("the noop backend always yields an adapter");
+		let (device, queue) =
+			pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+				.expect("the noop backend always yields a device");
+
+		// Validation failures are reported out-of-band — `create_*` hands
+		// back an error resource rather than panicking — so the scope is
+		// what turns them into a failing test instead of a silent pass.
+		let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+		let gpu = digblock_platform::Gpu {
+			instance,
+			adapter,
+			device,
+			queue,
+		};
+		let _renderer = super::Renderer::new(
+			&gpu,
+			// The surface format the desktop swapchain actually picks;
+			// fragment outputs are validated against it.
+			wgpu::TextureFormat::Bgra8UnormSrgb,
+			&super::RenderConfig {
+				draw_dist: 8,
+				spray_droplets: 4,
+				chunk_slots_override: None,
+				debug_gi: false,
+				debug_gi_probes: false,
+				stub: 0,
+			},
+		);
+		if let Some(err) = pollster::block_on(scope.pop()) {
+			panic!("a pipeline failed validation:\n{err}");
+		}
+	}
+
 	#[test]
 	fn grown_slots_sizing() {
 		// The doubling floor dominates just past the boundary.
