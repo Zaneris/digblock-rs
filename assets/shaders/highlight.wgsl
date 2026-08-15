@@ -232,7 +232,7 @@ fn cr_child(i: u32, nroot: u32) -> u32 {
 // One mix, two 12-bit fields out — a 2D gradient costs four of these,
 // not eight scalar hashes.
 fn cr_h2(c: vec2i) -> vec2f {
-	var x = u32(c.x) * 0x9e3779b9u ^ u32(c.y) * 0x85ebca6bu;
+	var x = (u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
 	x ^= x >> 16u;
 	x *= 0x7feb352du;
 	x ^= x >> 15u;
