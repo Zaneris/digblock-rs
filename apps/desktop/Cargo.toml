@@ -23,6 +23,9 @@ rodio.workspace = true
 glam.workspace = true
 rand.workspace = true
 dirs.workspace = true
+sha2.workspace = true
+open.workspace = true
+arboard.workspace = true
 
 [lints]
 workspace = true

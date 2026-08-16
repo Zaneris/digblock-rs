@@ -1,6 +1,7 @@
 //! DigBlock dedicated server binary.
 
 use crossbeam_channel::unbounded;
+use digblock_net::protocol::AccountId;
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
 use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, net, run_sim_loop};
@@ -8,6 +9,36 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// Turn every `--admin` argument into an account id, in order.
+///
+/// An id passes straight through; a display name costs one lookup against
+/// the master. Doing it here rather than at each chat command is what makes
+/// admin a decision about an ACCOUNT: the name is resolved once, at boot,
+/// against the only party that can answer, and after that the name is just
+/// a label that its owner may change freely.
+fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, String> {
+	specs
+		.iter()
+		.map(|spec| {
+			if let Some(id) = AccountId::parse(spec).filter(|a| !a.is_none()) {
+				return Ok(id);
+			}
+			if digblock_net::protocol::validate_name(spec).is_err() {
+				return Err(format!(
+					"--admin {spec:?}: not an account id, and not a possible display name either"
+				));
+			}
+			master::lookup_account(master_url, spec).map_err(|e| {
+				format!(
+					"--admin {spec:?}: could not resolve that name with the master ({e}).\n\
+					 The player must have signed in and picked their name at least once. \
+					 Passing their account id instead avoids the lookup entirely."
+				)
+			})
+		})
+		.collect()
+}
 
 /// A silently-defaulted flag on a server with a persistent journal is a
 /// world-corruption hazard (`--seed banana` → default seed over existing
@@ -26,14 +57,19 @@ fn parse_or_die<T: std::str::FromStr>(flag: &str, val: Option<String>) -> T {
 use digblock_net::protocol::DEFAULT_MASTER_URL;
 
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
-	 [--master-url URL] [--probe-host HOST] [--advertise-port N] [--server-name S] [--port N] \
-	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin-name NAME]\n\
+	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
+	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
+	 [--max-conns-per-ip N]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
-	 https://master.digblock.net. --admin-name grants that player chat commands (/help /ban \
-	 /ban-list /unban /tp); env fallbacks: DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, \
-	 DIGBLOCK_PROBE_HOST, DIGBLOCK_ADVERTISE_PORT, DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, \
-	 DIGBLOCK_ADMIN_NAME)";
+	 https://master.digblock.net. --admin grants a player chat commands (/help /ban \
+	 /ban-list /unban /tp) — give an account id, which a player can copy from the game's \
+	 Account screen, or a display name, which is resolved to one at boot; repeat for \
+	 several admins. --max-conns-per-ip caps live connections from one address; \
+	 raise it for a local soak, where every bot shares one. Env fallbacks: \
+	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
+	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
+	 (comma-separated))";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -61,17 +97,23 @@ fn main() {
 	// host stays required: the server can never guess its public address.
 	let mut master_url = std::env::var("DIGBLOCK_MASTER_URL").ok();
 	let mut advertise_host = std::env::var("DIGBLOCK_ADVERTISE_HOST").ok();
-	let mut probe_host = std::env::var("DIGBLOCK_PROBE_HOST")
-		.ok()
-		.filter(|s| !s.is_empty());
 	let mut advertise_port: Option<u16> = std::env::var("DIGBLOCK_ADVERTISE_PORT")
 		.ok()
 		.map(|v| parse_or_die("DIGBLOCK_ADVERTISE_PORT", Some(v)));
 	let mut server_name =
 		std::env::var("DIGBLOCK_SERVER_NAME").unwrap_or_else(|_| "DigBlock Server".into());
-	let mut admin_name = std::env::var("DIGBLOCK_ADMIN_NAME")
+	let mut max_conns_per_ip: usize = std::env::var("DIGBLOCK_MAX_CONNS_PER_IP")
 		.ok()
-		.filter(|s| !s.is_empty());
+		.filter(|s| !s.is_empty())
+		.map(|v| parse_or_die("DIGBLOCK_MAX_CONNS_PER_IP", Some(v)))
+		.unwrap_or(net::DEFAULT_MAX_CONNECTIONS_PER_IP);
+	// Account ids or display names; names are resolved once at boot.
+	let mut admins: Vec<String> = std::env::var("DIGBLOCK_ADMIN_IDS")
+		.unwrap_or_default()
+		.split(',')
+		.map(|s| s.trim().to_string())
+		.filter(|s| !s.is_empty())
+		.collect();
 
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
@@ -85,12 +127,36 @@ fn main() {
 			"--advertise-host" => {
 				advertise_host = Some(parse_or_die("--advertise-host", args.next()));
 			}
-			"--probe-host" => probe_host = Some(parse_or_die("--probe-host", args.next())),
 			"--advertise-port" => {
 				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
 			}
 			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
-			"--admin-name" => admin_name = Some(parse_or_die("--admin-name", args.next())),
+			"--max-conns-per-ip" => {
+				max_conns_per_ip = parse_or_die("--max-conns-per-ip", args.next());
+			}
+			"--admin" => admins.push(parse_or_die("--admin", args.next())),
+			// Both of these were security holes, not merely renames, so
+			// they exit rather than mapping onto the replacement — an
+			// operator who quietly kept using them would be relying on the
+			// behaviour that was removed.
+			"--admin-name" => {
+				eprintln!(
+					"--admin-name is gone: admin was a display-name compare, and display names \
+					 are not an authorization input. Use --admin <account-id> (the player can \
+					 copy theirs from the game's Account screen) or --admin <name> to resolve \
+					 one at boot."
+				);
+				std::process::exit(2);
+			}
+			"--probe-host" => {
+				eprintln!(
+					"--probe-host is gone: the master no longer takes a probe address from the \
+					 registrant, because that meant clients could be aimed at an address it had \
+					 never verified. The dev NAT-hairpin case is Master:Dev:ProbeHostOverride on \
+					 the master itself."
+				);
+				std::process::exit(2);
+			}
 			other => {
 				eprintln!("unknown arg: {other}");
 				eprintln!("{USAGE}");
@@ -102,12 +168,14 @@ fn main() {
 	// Empty counts as unset, like DIGBLOCK_SEED: compose files pass
 	// blanks through.
 	let advertise_host = advertise_host.filter(|h| !h.is_empty());
+	let master_url = master_url.trim_end_matches('/').to_string();
+	let key_path = data_dir.join(master::KEY_FILE);
 	let master_cfg = MasterConfig {
-		url: master_url.trim_end_matches('/').to_string(),
+		url: master_url.clone(),
 		server_name,
 		advertise_host,
-		probe_host,
 		advertise_port: advertise_port.unwrap_or(port),
+		server_key: master::load_key(&key_path),
 	};
 
 	let mut sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
@@ -117,16 +185,25 @@ fn main() {
 			std::process::exit(1);
 		}
 	};
-	if let Some(name) = &admin_name {
-		// Refuse a name no player could ever have, rather than booting with
-		// admin silently granted to nobody.
-		if let Err(e) = digblock_server::sim::admin_name_is_usable(name) {
-			eprintln!("--admin-name {name:?}: {e}");
+	// Resolve every admin to an account id before the first player can
+	// connect. A name is looked up ONCE, against the master, and only the
+	// resulting id is kept — so renaming does not drop admin, and a name
+	// claimed later by somebody else never inherits it.
+	//
+	// An unresolvable admin is fatal, the same discipline the old
+	// --admin-name shape check had: a server that boots with admin silently
+	// granted to nobody is worse than one that refuses to boot.
+	let admin_accounts = match resolve_admins(&admins, &master_url) {
+		Ok(ids) => ids,
+		Err(e) => {
+			eprintln!("{e}");
 			std::process::exit(2);
 		}
-		log::info!("admin: {name}");
+	};
+	for (spec, id) in admins.iter().zip(&admin_accounts) {
+		log::info!("admin: {id} ({spec})");
 	}
-	sim.set_admin_name(admin_name);
+	sim.set_admin_accounts(admin_accounts);
 	log::info!("world seed {seed}, data dir {}", data_dir.display());
 
 	let (event_tx, event_rx) = unbounded();
@@ -166,12 +243,13 @@ fn main() {
 			cert_hash.clone(),
 			reregister.clone(),
 			players,
+			Some(key_path),
 		));
 		// The pinned cert is short-lived; rotate it in-process so a
 		// long-running server never becomes unjoinable.
 		tokio::spawn(net::rotate_certs(endpoint.clone(), cert_hash, reregister));
 		tokio::select! {
-			_ = net::serve(endpoint, event_tx, master_state.clone()) => {}
+			_ = net::serve(endpoint, event_tx, master_state.clone(), max_conns_per_ip) => {}
 			_ = shutdown_signal() => {}
 		}
 		if let Some(reg) = master_state.registration() {

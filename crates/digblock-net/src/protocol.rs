@@ -100,7 +100,14 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// extraction itself needs NO new wire: both ends derive it from
 /// `ore::dig_mode` over data they already share, so `EditRequest` is
 /// untouched.
-pub const PROTOCOL_VERSION: u16 = 21;
+/// v22: accounts. `Hello.identity` REMOVED — the first field this
+/// protocol has ever taken away rather than appended, which is why
+/// `MIN_PROTOCOL` moves with it instead of the usual one-way ratchet.
+/// It was a client-chosen bearer secret keying the server's persisted
+/// records; a player is now identified by the account id the MASTER
+/// returns from `/api/tokens/verify`, so the wire carries no claim about
+/// who anyone is. See AUTH-DESIGN.md and NET-AUDIT-2.md §1.4.
+pub const PROTOCOL_VERSION: u16 = 22;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -128,7 +135,13 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 19;
+///
+/// v22 is the one break in that rule: `Hello` LOST a field, so a v21
+/// decoder reading a v22 Hello would run off the end of the message. The
+/// floor has to rise to meet it. There is no compatibility loss worth
+/// mourning either — an older client's join token came from an
+/// unauthenticated `/api/join` that no longer exists.
+pub const MIN_PROTOCOL: u16 = 22;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -246,6 +259,112 @@ pub fn validate_name(name: &str) -> Result<(), &'static str> {
 		return Err("name must be 3-10 chars: a-z 0-9 - _");
 	}
 	Ok(())
+}
+
+// ---- account identity ------------------------------------------------
+
+/// A master-issued account id: the UUID that identifies a player
+/// everywhere, and the one thing in this system that is not self-asserted.
+///
+/// It reaches a game server ONLY from the master, as the answer to
+/// `/api/tokens/verify` — never from the client, which is exactly what
+/// makes it worth keying on. Server-side it is the persistence key for
+/// inventories and skills, the value `--admin` compares against, and what
+/// a ban records. Client-side the account screen shows it, because an
+/// operator needs to be handed one to grant admin.
+///
+/// It is public, not secret: knowing someone's account id lets you name
+/// them, not be them.
+///
+/// Lives here because this crate owns the master contract (see
+/// [`DEFAULT_MASTER_URL`], [`validate_name`]) and is wasm-clean, so the
+/// browser client and the dedicated server share one parser. Parsed and
+/// formatted by hand rather than pulling in a UUID crate — it is 16 bytes
+/// of hex with four dashes, and this crate stays dependency-light.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct AccountId(pub [u8; 16]);
+
+/// Where the dashes go in the canonical textual form.
+const UUID_GROUPS: [usize; 5] = [4, 2, 2, 2, 6];
+
+impl AccountId {
+	/// All zeros — "no account". Offline play and the loopback tests have
+	/// no master to ask, so they carry this.
+	pub const NONE: Self = Self([0; 16]);
+
+	pub fn is_none(&self) -> bool {
+		self.0 == [0; 16]
+	}
+
+	/// Parse the canonical hyphenated form, and also the bare 32-hex form
+	/// that .NET's "N" format and a hand-typed id can produce. Case
+	/// insensitive; anything else is `None`.
+	pub fn parse(s: &str) -> Option<Self> {
+		// Dashes are allowed but not arbitrary: either none, or exactly the
+		// canonical five groups at exactly the canonical offsets.
+		//
+		// The offsets are the load-bearing half. Counting dashes and checking
+		// the total length is not enough — 32 hex digits plus four dashes is
+		// the same total WHEREVER the dashes fall, so an id grouped 8-4-4-8-8
+		// passed a length-only rule while reading as well-formed everywhere it
+		// was later printed.
+		let b = s.as_bytes();
+		if b.contains(&b'-') {
+			if b.len() != 32 + UUID_GROUPS.len() - 1 {
+				return None;
+			}
+			let mut at = 0;
+			for group in &UUID_GROUPS[..UUID_GROUPS.len() - 1] {
+				at += group * 2;
+				if b[at] != b'-' {
+					return None;
+				}
+				at += 1;
+			}
+		}
+		let mut bytes = [0u8; 16];
+		let mut hex = s.bytes().filter(|&b| b != b'-');
+		for byte in &mut bytes {
+			let hi = from_hex(hex.next()?)?;
+			let lo = from_hex(hex.next()?)?;
+			*byte = hi << 4 | lo;
+		}
+		if hex.next().is_some() {
+			return None;
+		}
+		Some(Self(bytes))
+	}
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+	match b {
+		b'0'..=b'9' => Some(b - b'0'),
+		b'a'..=b'f' => Some(b - b'a' + 10),
+		b'A'..=b'F' => Some(b - b'A' + 10),
+		_ => None,
+	}
+}
+
+impl core::fmt::Display for AccountId {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		let mut i = 0;
+		for (g, len) in UUID_GROUPS.iter().enumerate() {
+			if g != 0 {
+				f.write_str("-")?;
+			}
+			for _ in 0..*len {
+				write!(f, "{:02x}", self.0[i])?;
+				i += 1;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl core::fmt::Debug for AccountId {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "AccountId({self})")
+	}
 }
 
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
@@ -562,6 +681,63 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The id the master prints and the id we parse have to be the same
+	/// string: an operator copies one out of the game and pastes it into
+	/// `--admin`, so a byte-order slip here would silently grant admin to
+	/// nobody.
+	#[test]
+	fn account_ids_round_trip_through_their_canonical_text() {
+		// Taken verbatim from the master's dev sign-in for subject "admin".
+		let text = "b2379408-3102-8b68-b56b-5774dec269b8";
+		let id = AccountId::parse(text).expect("canonical form parses");
+		assert_eq!(id.to_string(), text);
+		assert_eq!(id.0[0], 0xb2);
+		assert_eq!(id.0[15], 0xb8);
+
+		// The bare 32-hex form (.NET's "N") is the same id.
+		assert_eq!(AccountId::parse(&text.replace('-', "")), Some(id));
+		// Case-insensitive.
+		assert_eq!(AccountId::parse(&text.to_uppercase()), Some(id));
+	}
+
+	#[test]
+	fn a_malformed_account_id_is_refused_rather_than_truncated() {
+		assert_eq!(AccountId::parse(""), None);
+		assert_eq!(AccountId::parse("not-a-uuid"), None);
+		// Too short, too long, and a non-hex digit.
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b-5774dec269b"),
+			None
+		);
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b-5774dec269b8f"),
+			None
+		);
+		assert_eq!(
+			AccountId::parse("g2379408-3102-8b68-b56b-5774dec269b8"),
+			None
+		);
+		// Dashes in the wrong places: the right hex, the wrong shape.
+		assert_eq!(
+			AccountId::parse("b2-379408-3102-8b68-b56b-5774dec269b8"),
+			None
+		);
+		// The same, at the canonical LENGTH — 32 hex plus four dashes,
+		// grouped 8-4-4-8-8. A length-only rule accepted this, so an id
+		// that never round-trips to itself was read as well-formed.
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b5774-dec269b8"),
+			None
+		);
+		// And the degenerate case the length rule was written for.
+		assert_eq!(AccountId::parse("0-0-0-0-0"), None);
+		assert!(AccountId::NONE.is_none());
+		assert_eq!(
+			AccountId::NONE.to_string(),
+			"00000000-0000-0000-0000-000000000000"
+		);
+	}
 
 	/// Constant pipeline-lag base plus a hardness-proportional slice for
 	/// transient misses, capped so long digs don't hand a cheat more.

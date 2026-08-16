@@ -1,8 +1,14 @@
-//! Persistent per-player state (inventory counts + item layout), keyed
-//! by a hash of the client's identity secret. NOT part of the block
-//! journal — the journal is cell-keyed and its compaction discards
-//! authorship, so player-keyed state lives in this separate, much
-//! smaller file.
+//! Persistent per-player state (inventory counts + item layout), keyed by
+//! the player's master account id. NOT part of the block journal — the
+//! journal is cell-keyed and its compaction discards authorship, so
+//! player-keyed state lives in this separate, much smaller file.
+//!
+//! The key used to be a hash of a secret the CLIENT chose and sent in its
+//! Hello. It is now the account id the master returns from
+//! `/api/tokens/verify`, which changes two things beyond the bytes: a
+//! player's character follows their account rather than their machine, so
+//! signing in on a second device finds it — and a record can no longer be
+//! created, claimed, or flooded by anyone who simply picks a number.
 //!
 //! Records are tiny, so the format is a whole-file snapshot rewritten
 //! atomically (tmp + fsync + rename) at most once per [`FLUSH_INTERVAL`].
@@ -22,28 +28,39 @@
 //! the world stays consistent either way, only persistence degrades. It
 //! logs loudly and keeps serving from memory.
 //!
-//! Format v2 appends an optional item layout (hotbar + grid wire
-//! arrangements) per record; v3 appends the player's last position and
-//! return-to-spawn cooldown; v4 appends per-skill XP totals. v1–v3
-//! files are still read — the archive-and-start-fresh path is reserved
-//! for actual corruption, never a routine upgrade (it would wipe every
-//! player's inventory). An older file simply has no stored position or
-//! skills, so those players resume at spawn once / start at the bottom of
-//! the skill curve and are stored in the current format from their next
-//! write on.
+//! Format v2 appended an optional item layout (hotbar + grid wire
+//! arrangements) per record; v3 the player's last position and
+//! return-to-spawn cooldown; v4 per-skill XP totals. Each was an append,
+//! read behind a `version >=` guard, because the archive-and-start-fresh
+//! path is reserved for actual corruption and never a routine upgrade —
+//! it would wipe every player's inventory.
+//!
+//! **v5 changed what the 16-byte key MEANS** — from a hash of a device
+//! secret to a master account id — without changing a single byte of a
+//! record's body. That is why v1–v4 files are NOT read forward, and why
+//! [`MIN_VERSION`] equals [`VERSION`]: the records are structurally fine
+//! and semantically orphaned, since nothing can map an old device secret
+//! to the account of whoever held it. An older file is archived and the
+//! store starts empty. The archive is named for the version that
+//! DISPLACED it, not the version of its contents — `bak_path` formats
+//! with the current `VERSION` — so a v4 file taken out of service by this
+//! build lands at `inventories.bin.v5.bak`.
+//!
+//! That archive is the DELIBERATE exception to the rule above. The rule
+//! exists so an upgrade cannot silently wipe inventories; here the wipe is
+//! the honest outcome and the archive is what makes it recoverable, rather
+//! than a version bump quietly handing player A's stockpile to player B.
 //!
 //! The layout blob is SELF-DESCRIBING, which is what keeps growing the
 //! inventory grid out of the version field entirely. Its leading byte is
-//! a shape tag, not a bare present/absent flag: `0` absent, `1` the
-//! legacy fixed run of `HOTBAR_SLOTS + LEGACY_GRID_SLOTS` words that
-//! every file written before the grid grew still carries, and `2` a
-//! length-prefixed pair the reader pads or truncates into whatever the
-//! current constants are. Writes always emit `2`. So a `GRID_SLOTS`
+//! a shape tag, not a bare present/absent flag: [`LAYOUT_ABSENT`], or
+//! [`LAYOUT_SIZED`] followed by a length-prefixed pair the reader pads or
+//! truncates into whatever the current constants are. So a `GRID_SLOTS`
 //! change is a no-op here — no version bump, no archive path, and no
 //! silent re-interpretation of somebody's stored arrangement, which is
-//! the failure this shape exists to make impossible. The one rule:
-//! [`LEGACY_GRID_SLOTS`] is frozen at the width tag `1` was written
-//! with and must never be re-pointed at `GRID_SLOTS`.
+//! the failure this shape exists to make impossible. That property is why
+//! the tag survived the key change: the reasons the two exist are
+//! unrelated, and only one of them was ever about the version field.
 
 use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
 use digblock_core::inv_grid::GRID_SLOTS;
@@ -57,45 +74,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
+
+/// Oldest format this build reads. Equal to [`VERSION`] because v5
+/// redefined the key rather than extending the record — see the module
+/// docs.
+const MIN_VERSION: u16 = 5;
 const HEADER_LEN: usize = 4 + 2 + 2 + 4; // magic | version | pad | count
 
 /// Shape tags for the per-record layout blob. See the module docs: this
 /// byte used to be a bare presence flag, and making it a tag is what
 /// lets the grid grow without touching [`VERSION`].
 const LAYOUT_ABSENT: u8 = 0;
-const LAYOUT_LEGACY: u8 = 1;
+/// BURNED, not free. Tag `1` was a fixed run at the widths of the day, in
+/// files this build no longer reads — every one of them is pre-account and
+/// archived at the header, so the value can never reach the layout reader
+/// again. It stays reserved anyway: a future shape that reused `1` would
+/// be indistinguishable from those bytes if a v1–v4 file were ever read
+/// forward again, and the whole point of a tag is that its meanings are
+/// permanent.
+const _LAYOUT_LEGACY_BURNED: u8 = 1;
 const LAYOUT_SIZED: u8 = 2;
-
-/// The grid width [`LAYOUT_LEGACY`] blobs were written at. FROZEN: it
-/// describes bytes already on disk, so it must never be re-pointed at
-/// [`GRID_SLOTS`], which is free to grow.
-const LEGACY_GRID_SLOTS: usize = 36;
-
-/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for
-/// exactly the same reason as [`LEGACY_GRID_SLOTS`], and split out
-/// because the legacy arm originally read the LIVE `HOTBAR_SLOTS` — the
-/// one half of the blob still described by a constant free to move.
-///
-/// It happens to equal `HOTBAR_SLOTS` today, so nothing was wrong; it
-/// was wrong in waiting. Grow the bar and every tag-`1` record
-/// over-reads by two bytes a slot, desyncs into the next record's
-/// identity hash, and `PlayerStore::open` takes that for corruption and
-/// archives everybody's inventory — precisely the failure the shape tag
-/// was introduced to make impossible, reintroduced through the half of
-/// the blob nobody froze. The regression test could not have caught it
-/// either, because `push_legacy_layout` built its fixture from the same
-/// live constant and would have moved with the break.
-const LEGACY_HOTBAR_SLOTS: usize = 9;
-
-/// Both frozen widths describe bytes on disk, so this asserts the
-/// FORMAT, not the constants: if today's hotbar ever differs, the legacy
-/// arm must keep reading the LEGACY width, and this line is the reminder
-/// that it does.
-const _: () = assert!(
-	LEGACY_HOTBAR_SLOTS == 9 && LEGACY_GRID_SLOTS == 36,
-	"legacy layout widths describe bytes already written — never retune them"
-);
 
 /// The sized blob spends one byte per length, which is the whole reason
 /// growing the grid costs nothing here. Fail the BUILD rather than
@@ -115,29 +114,34 @@ const _: () = assert!(
 /// Dirty-state flush cadence.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Identity cap: beyond this, the least-recently-USED identity is evicted
-/// on insert. Bounds the file; an evicted (absent) player's state is lost —
-/// acceptable pre-deployment, revisit with real populations.
+/// Account cap: beyond this, the least-recently-USED record is evicted on
+/// insert. Bounds the file; an evicted (absent) player's state is lost.
 ///
 /// Least-recently-used, not first-inserted. The old policy never refreshed
 /// a key's position, so eviction walked strictly in join order and threw
-/// out the longest-standing players first — including ones currently
-/// online and actively writing. Note this bounds the file, not the abuse:
-/// `identity` is client-chosen and join tokens are free, so a flood of
-/// fresh identities still evicts real records. That root cause needs the
-/// master's login flow (see NET-AUDIT-2.md §1.5).
+/// out the longest-standing players first — including ones currently online
+/// and actively writing.
+///
+/// This used to bound the file without bounding the ABUSE: the key was
+/// client-chosen and join tokens were free, so a stream of join/disconnect
+/// cycles evicted every real record (NET-AUDIT-2.md §1.5). That is closed
+/// upstream now rather than here — a record needs a master account, an
+/// account needs a real Google or Facebook login, and `/api/join` is
+/// rate-limited per session. The cap is back to being what it says it is.
 const MAX_IDENTITIES: usize = 10_000;
 
-/// The stored key: SHA-256 of the client's identity secret, truncated.
-/// The raw secret is a bearer credential and never touches disk
-/// server-side.
-pub type IdentityHash = [u8; 16];
-
-pub fn hash_identity(secret: &[u8; 16]) -> IdentityHash {
-	use sha2::{Digest, Sha256};
-	let digest = Sha256::digest(secret);
-	digest[..16].try_into().expect("digest is 32 bytes")
-}
+/// The stored key: the player's master account id.
+///
+/// Sixteen bytes, exactly as before — a UUID is the same width as the
+/// truncated hash it replaced, which is why v5 rewrote the meaning of this
+/// field and nothing else about the format. Its byte order is a FILE
+/// FORMAT: every record is filed under it, so a parser that read the id
+/// differently would orphan every player silently, the store still loading
+/// and simply never finding anybody. That is pinned where the type lives,
+/// by `protocol::account_ids_round_trip_through_their_canonical_text`.
+// A `use` alias rather than a `type` alias so the tuple constructor comes
+// with it — this module builds keys from raw bytes when it parses a file.
+pub use digblock_net::protocol::AccountId as IdentityKey;
 
 /// A player's item arrangement in hotbar wire encoding (`WIRE_EMPTY`/
 /// `WIRE_TOOL`/block id), already sanitized by the sim before storage.
@@ -176,12 +180,12 @@ pub struct PlayerRecord {
 }
 
 pub struct PlayerStore {
-	map: FxHashMap<IdentityHash, PlayerRecord>,
+	map: FxHashMap<IdentityKey, PlayerRecord>,
 	/// LRU stamp per key, from `clock`. Eviction scans for the minimum,
 	/// which is O(n) but only runs when the store is at `MAX_IDENTITIES` —
 	/// `put` itself stays O(1), and it is called on every inventory-changing
 	/// edit, so it has to be.
-	used: FxHashMap<IdentityHash, u64>,
+	used: FxHashMap<IdentityKey, u64>,
 	clock: u64,
 	dirty: bool,
 	last_flush: Instant,
@@ -234,14 +238,14 @@ impl PlayerStore {
 
 	/// A player's persisted record; default (empty, no layout) when
 	/// unknown.
-	pub fn get(&self, id: &IdentityHash) -> PlayerRecord {
+	pub fn get(&self, id: &IdentityKey) -> PlayerRecord {
 		self.map.get(id).cloned().unwrap_or_default()
 	}
 
 	/// Write-through to memory; durable at the next flush. Touching a key
 	/// refreshes its LRU stamp, so an active player is never the eviction
 	/// candidate.
-	pub fn put(&mut self, id: IdentityHash, rec: PlayerRecord) {
+	pub fn put(&mut self, id: IdentityKey, rec: PlayerRecord) {
 		self.clock += 1;
 		self.used.insert(id, self.clock);
 		self.map.insert(id, rec);
@@ -320,24 +324,24 @@ impl PlayerStore {
 		buf.extend_from_slice(&(self.map.len() as u32).to_le_bytes());
 		// Oldest-used first, so a reload can rebuild the LRU ranking from
 		// file order alone (see `open`).
-		let mut keys: Vec<&IdentityHash> = self.map.keys().collect();
+		let mut keys: Vec<&IdentityKey> = self.map.keys().collect();
 		keys.sort_unstable_by_key(|k| self.used.get(*k).copied().unwrap_or(0));
 		// One scratch buffer for every record, not one Vec each: this loop
 		// runs over the whole store on every flush.
 		let mut pairs: Vec<(u16, u32)> = Vec::new();
-		for hash in keys {
-			let Some(rec) = self.map.get(hash) else {
+		for key in keys {
+			let Some(rec) = self.map.get(key) else {
 				continue;
 			};
 			rec.inventory.write_wire(&mut pairs);
-			buf.extend_from_slice(hash);
+			buf.extend_from_slice(&key.0);
 			buf.push(pairs.len().min(u8::MAX as usize) as u8);
 			for (block, count) in pairs.iter().take(u8::MAX as usize) {
 				buf.extend_from_slice(&block.to_le_bytes());
 				buf.extend_from_slice(&count.to_le_bytes());
 			}
-			// v2: the layout blob, shape-tagged. Always the sized form —
-			// the legacy tag is read-only, for files already on disk.
+			// The layout blob, shape-tagged. Always the sized form: it is
+			// the only shape v5 has ever written.
 			match &rec.layout {
 				None => buf.push(LAYOUT_ABSENT),
 				Some(layout) => {
@@ -530,7 +534,7 @@ fn read_layout(
 	Ok(PlayerLayout { hotbar, grid })
 }
 
-fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
+fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityKey, PlayerRecord)>> {
 	let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
 	let mut r = bytes;
 	let mut header = [0u8; HEADER_LEN];
@@ -539,14 +543,19 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 		return Err(bad("bad magic"));
 	}
 	let version = u16::from_le_bytes([header[4], header[5]]);
-	if !(1..=VERSION).contains(&version) {
+	if !(MIN_VERSION..=VERSION).contains(&version) {
+		// v1–v4 land here. Their records parse perfectly and mean nothing:
+		// the key was a device secret's hash, and no mapping exists from
+		// one of those to the account of whoever held it. Reading them
+		// forward would hand inventories to the wrong people. The caller
+		// archives the file and starts empty.
 		return Err(bad("unsupported version"));
 	}
 	let count = u32::from_le_bytes(header[8..12].try_into().unwrap());
 	let mut out = Vec::with_capacity(count as usize);
 	for _ in 0..count {
-		let mut hash = [0u8; 16];
-		r.read_exact(&mut hash).map_err(|_| bad("short record"))?;
+		let mut key = [0u8; 16];
+		r.read_exact(&mut key).map_err(|_| bad("short record"))?;
 		let mut n = [0u8; 1];
 		r.read_exact(&mut n).map_err(|_| bad("short record"))?;
 		let mut pairs = Vec::with_capacity(n[0] as usize);
@@ -558,20 +567,18 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				u32::from_le_bytes(pair[2..6].try_into().unwrap()),
 			));
 		}
-		// v1 records end here (inventory only): layout stays None.
-		let layout = if version >= 2 {
+		// Every section below is unconditional. Layout, position and skills
+		// arrived in v2, v3 and v4 as presence-flagged appends read behind
+		// `version >=` guards; with MIN_VERSION at 5 those guards could only
+		// ever be true, and a branch that cannot be taken is a branch nobody
+		// maintains. The per-field flags stay — they are what make a record
+		// optional, and they are read from the bytes rather than inferred
+		// from the header.
+		let layout = {
 			let mut tag = [0u8; 1];
 			r.read_exact(&mut tag).map_err(|_| bad("short record"))?;
 			match tag[0] {
 				LAYOUT_ABSENT => None,
-				// Written before the grid grew: a fixed run at the frozen
-				// width, decoded into today's shape.
-				LAYOUT_LEGACY => Some(read_layout(
-					&mut r,
-					LEGACY_HOTBAR_SLOTS,
-					LEGACY_GRID_SLOTS,
-					&bad,
-				)?),
 				LAYOUT_SIZED => {
 					let mut lens = [0u8; 2];
 					r.read_exact(&mut lens).map_err(|_| bad("short record"))?;
@@ -584,12 +591,8 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				}
 				_ => return Err(bad("unknown layout tag")),
 			}
-		} else {
-			None
 		};
-		// v1/v2 records end before these: the player resumes at spawn once,
-		// then stores a position from their next disconnect on.
-		let (pos, last_return_tick) = if version >= 3 {
+		let (pos, last_return_tick) = {
 			let mut flag = [0u8; 1];
 			r.read_exact(&mut flag).map_err(|_| bad("short record"))?;
 			let pos = if flag[0] == 1 {
@@ -612,13 +615,8 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				None
 			};
 			(pos, tick)
-		} else {
-			(None, None)
 		};
-		// v1–v3 records end here: skills read empty — bottom of the curve,
-		// with the inventory intact. Never the archive path for a routine
-		// upgrade.
-		let skills = if version >= 4 {
+		let skills = {
 			let mut n = [0u8; 1];
 			r.read_exact(&mut n).map_err(|_| bad("short record"))?;
 			let mut pairs = Vec::with_capacity(n[0] as usize);
@@ -628,11 +626,9 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 				pairs.push((b[0], u64::from_le_bytes(b[1..9].try_into().unwrap())));
 			}
 			SkillSet::from_wire(&pairs)
-		} else {
-			SkillSet::default()
 		};
 		out.push((
-			hash,
+			IdentityKey(key),
 			PlayerRecord {
 				inventory: Inventory::from_wire(&pairs),
 				layout,
@@ -673,6 +669,12 @@ mod tests {
 		dir
 	}
 
+	/// A distinct account id per test player. The value is arbitrary — what
+	/// matters is that two different `n` never collide.
+	fn key(n: u8) -> IdentityKey {
+		IdentityKey([n; 16])
+	}
+
 	fn layout() -> PlayerLayout {
 		let mut hotbar = [WIRE_EMPTY; HOTBAR_SLOTS];
 		hotbar[0] = BlockType::Dirt as u16;
@@ -682,23 +684,25 @@ mod tests {
 		PlayerLayout { hotbar, grid }
 	}
 
-	/// Append a layout the way every file written before the grid grew
-	/// carries it: the bare `1` tag and a fixed run at the OLD width, with
-	/// no lengths of its own. Hand-built on purpose — a fixture derived
-	/// from the current constants would move with them and stop testing
-	/// the thing that broke.
-	/// A tag-`1` blob exactly as it was written to disk. BOTH widths are
-	/// the frozen ones on purpose — a fixture built from today's live
-	/// constants moves with any change to them, so it can never fail on
-	/// the resize it exists to guard against.
-	fn push_legacy_layout(buf: &mut Vec<u8>, l: &PlayerLayout) {
-		buf.push(LAYOUT_LEGACY);
-		for i in 0..LEGACY_HOTBAR_SLOTS {
+	/// A sized layout blob written at explicit widths, so a fixture can
+	/// stand for a file some OTHER build wrote — narrower or wider than
+	/// today's grid.
+	///
+	/// The widths are arguments rather than read from the current
+	/// constants on purpose: a fixture built from the live constants moves
+	/// with them, so it can never fail on the resize it exists to guard
+	/// against. Words past the caller's own layout are `WIRE_EMPTY`.
+	fn push_sized_layout(buf: &mut Vec<u8>, l: &PlayerLayout, hotbar_len: usize, grid_len: usize) {
+		buf.push(LAYOUT_SIZED);
+		buf.push(hotbar_len as u8);
+		buf.push(grid_len as u8);
+		for i in 0..hotbar_len {
 			let w = l.hotbar.get(i).copied().unwrap_or(WIRE_EMPTY);
 			buf.extend_from_slice(&w.to_le_bytes());
 		}
-		for i in 0..LEGACY_GRID_SLOTS {
-			buf.extend_from_slice(&l.grid[i].to_le_bytes());
+		for i in 0..grid_len {
+			let w = l.grid.get(i).copied().unwrap_or(WIRE_EMPTY);
+			buf.extend_from_slice(&w.to_le_bytes());
 		}
 	}
 
@@ -711,7 +715,7 @@ mod tests {
 	fn eviction_spares_the_recently_used() {
 		let dir = temp_dir("lru");
 		let mut s = PlayerStore::open(&dir).unwrap();
-		let veteran = hash_identity(&[1; 16]);
+		let veteran = key(1);
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 7);
 		s.put(
@@ -730,7 +734,7 @@ mod tests {
 			let mut secret = [0u8; 16];
 			secret[..8].copy_from_slice(&(i as u64).to_le_bytes());
 			secret[8] = 0xff; // never collides with the veteran's [1; 16]
-			s.put(hash_identity(&secret), PlayerRecord::default());
+			s.put(IdentityKey(secret), PlayerRecord::default());
 			if i % 100 == 0 {
 				s.put(veteran, s.get(&veteran));
 			}
@@ -750,7 +754,7 @@ mod tests {
 	#[test]
 	fn the_interval_flush_persists_without_blocking_the_caller() {
 		let dir = temp_dir("asyncwrite");
-		let id = hash_identity(&[1; 16]);
+		let id = key(1);
 		let path = dir.join("inventories.bin");
 		{
 			let mut s = PlayerStore::open(&dir).unwrap();
@@ -788,8 +792,8 @@ mod tests {
 	#[test]
 	fn lru_order_survives_a_reopen() {
 		let dir = temp_dir("lruorder");
-		let old = hash_identity(&[1; 16]);
-		let new = hash_identity(&[2; 16]);
+		let old = key(1);
+		let new = key(2);
 		{
 			let mut s = PlayerStore::open(&dir).unwrap();
 			s.put(old, PlayerRecord::default());
@@ -806,8 +810,8 @@ mod tests {
 	#[test]
 	fn round_trips_across_reopen() {
 		let dir = temp_dir("roundtrip");
-		let id_a = hash_identity(&[1; 16]);
-		let id_b = hash_identity(&[2; 16]);
+		let id_a = key(1);
+		let id_b = key(2);
 		{
 			let mut s = PlayerStore::open(&dir).unwrap();
 			let mut inv = Inventory::default();
@@ -835,45 +839,62 @@ mod tests {
 		let b = s.get(&id_b);
 		assert_eq!(b.inventory, Inventory::default());
 		assert_eq!(b.layout, None);
-		assert!(s.get(&hash_identity(&[3; 16])).layout.is_none());
+		assert!(s.get(&key(3)).layout.is_none());
 	}
 
-	/// The v1 file (inventory-only records) still reads — an upgrade must
-	/// NOT trip the archive-and-start-fresh path and wipe every player.
+	/// A pre-account file is archived and the store starts empty — the same
+	/// path corruption takes, reached deliberately. What this pins is that
+	/// it does not CRASH and does not half-load: an operator upgrading finds
+	/// their old file intact beside the new one.
 	#[test]
-	fn v1_file_reads_with_no_layout() {
-		let dir = temp_dir("v1compat");
+	fn a_pre_account_file_is_archived_and_the_store_starts_empty() {
+		let dir = temp_dir("v4upgrade");
 		std::fs::create_dir_all(&dir).unwrap();
-		let id = hash_identity(&[5; 16]);
-		// Hand-built v1 snapshot: one record, one (block, count) pair.
+		let path = dir.join("inventories.bin");
+		// Hand-built v1 snapshot: one record, one (block, count) pair, keyed
+		// by what used to be a device-secret hash.
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);
 		buf.extend_from_slice(&1u16.to_le_bytes());
 		buf.extend_from_slice(&[0, 0]);
 		buf.extend_from_slice(&1u32.to_le_bytes());
-		buf.extend_from_slice(&id);
+		buf.extend_from_slice(&key(5).0);
 		buf.push(1);
 		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
 		buf.extend_from_slice(&7u32.to_le_bytes());
-		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
+		std::fs::write(&path, &buf).unwrap();
 
-		let mut s = PlayerStore::open(&dir).unwrap();
-		let rec = s.get(&id);
-		assert_eq!(rec.inventory.count(BlockType::Dirt), 7, "v1 data survives");
-		assert_eq!(rec.layout, None, "v1 records carry no layout");
-
-		// And the next write upgrades the file to v2 losslessly.
-		s.put(
-			id,
-			PlayerRecord {
-				layout: Some(layout()),
-				..rec
-			},
-		);
-		s.sync();
 		let s = PlayerStore::open(&dir).unwrap();
-		assert_eq!(s.get(&id).layout, Some(layout()));
-		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 7);
+		assert_eq!(
+			s.get(&key(5)).inventory,
+			Inventory::default(),
+			"an old record must not be handed to the account whose id shares its bytes"
+		);
+		let bak = path.with_extension(format!("bin.v{VERSION}.bak"));
+		assert_eq!(std::fs::read(&bak).unwrap(), buf, "archived byte-intact");
+	}
+
+	/// Every pre-account version is refused at the header, not read forward.
+	/// Their records parse perfectly and every one is keyed by a
+	/// device-secret hash that means nothing now — reading them would hand
+	/// each inventory to whichever account id happened to collide with it.
+	/// See the module docs on why this is the one sanctioned use of the
+	/// archive path for a version bump.
+	#[test]
+	fn a_pre_account_file_is_refused_rather_than_reinterpreted() {
+		for version in 1u16..VERSION {
+			let mut bytes = Vec::new();
+			bytes.extend_from_slice(&MAGIC);
+			bytes.extend_from_slice(&version.to_le_bytes());
+			bytes.extend_from_slice(&[0, 0]);
+			bytes.extend_from_slice(&1u32.to_le_bytes());
+			bytes.extend_from_slice(&key(7).0); // a key that used to be a hash
+			bytes.push(0); // no inventory pairs
+			assert!(
+				parse(&bytes).is_err(),
+				"v{version} must not be read forward into account-keyed records"
+			);
+		}
 	}
 
 	#[test]
@@ -883,7 +904,7 @@ mod tests {
 		let path = dir.join("inventories.bin");
 		std::fs::write(&path, b"garbage not a store").unwrap();
 		let s = PlayerStore::open(&dir).unwrap();
-		assert_eq!(s.get(&[0; 16]).inventory, Inventory::default());
+		assert_eq!(s.get(&key(0)).inventory, Inventory::default());
 		let bak = path.with_extension(format!("bin.v{VERSION}.bak"));
 		assert_eq!(
 			std::fs::read(&bak).unwrap(),
@@ -892,79 +913,11 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn identity_hash_is_stable_and_not_the_secret() {
-		let secret = [7; 16];
-		let h = hash_identity(&secret);
-		assert_eq!(h, hash_identity(&secret), "deterministic");
-		assert_ne!(h, secret, "never the raw bearer secret");
-		assert_ne!(h, hash_identity(&[8; 16]));
-	}
-
-	/// The stored key is the FILE FORMAT: every record in `inventories.bin`
-	/// is filed under it, so a hash that moves orphans every player's items
-	/// silently — the store still loads, it just never finds anybody. The
-	/// test above only proves the hash agrees with itself inside one build,
-	/// which a swapped digest crate would satisfy while renaming every key.
-	/// Truncated SHA-256 of the secret, against an external vector.
-	#[test]
-	fn identity_hash_is_a_pinned_wire_format() {
-		let want = [
-			0xd7, 0x61, 0xd4, 0x06, 0xaf, 0x2a, 0x4a, 0x5a, 0x15, 0xf6, 0x7c, 0x92, 0x43, 0x78,
-			0xed, 0x88,
-		];
-		assert_eq!(hash_identity(&[7; 16]), want);
-	}
-
-	/// An existing v2 file (inventory + layout, no position) keeps every
-	/// player's items and arrangement and simply reports no stored
-	/// position — those players resume at spawn once, then store one.
-	/// This must NOT trip the archive-and-start-fresh path.
-	#[test]
-	fn v2_file_reads_with_no_position() {
-		let dir = temp_dir("v2compat");
-		std::fs::create_dir_all(&dir).unwrap();
-		let id = hash_identity(&[6; 16]);
-		// Hand-built v2 snapshot: one record, one (block, count) pair, layout.
-		let mut buf = Vec::new();
-		buf.extend_from_slice(&MAGIC);
-		buf.extend_from_slice(&2u16.to_le_bytes());
-		buf.extend_from_slice(&[0, 0]);
-		buf.extend_from_slice(&1u32.to_le_bytes());
-		buf.extend_from_slice(&id);
-		buf.push(1);
-		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
-		buf.extend_from_slice(&3u32.to_le_bytes());
-		push_legacy_layout(&mut buf, &layout());
-		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
-
-		let mut s = PlayerStore::open(&dir).unwrap();
-		let rec = s.get(&id);
-		assert_eq!(rec.inventory.count(BlockType::Dirt), 3, "v2 data survives");
-		assert_eq!(rec.layout, Some(layout()), "v2 layout survives");
-		assert_eq!(rec.pos, None, "v2 records carry no position");
-		assert_eq!(rec.last_return_tick, None);
-
-		// The next write upgrades the file to v3 losslessly.
-		s.put(
-			id,
-			PlayerRecord {
-				pos: Some([1.5, 2.5, 3.5]),
-				..rec
-			},
-		);
-		s.sync();
-		let s = PlayerStore::open(&dir).unwrap();
-		assert_eq!(s.get(&id).pos, Some([1.5, 2.5, 3.5]));
-		assert_eq!(s.get(&id).layout, Some(layout()));
-		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 3);
-	}
-
-	/// v3 round-trips the position and cooldown tick.
+	/// The position and cooldown tick round-trip.
 	#[test]
 	fn position_and_cooldown_round_trip() {
 		let dir = temp_dir("v3pos");
-		let id = hash_identity(&[9; 16]);
+		let id = key(9);
 		{
 			let mut s = PlayerStore::open(&dir).unwrap();
 			s.put(
@@ -985,12 +938,12 @@ mod tests {
 		assert_eq!(rec.last_return_tick, Some(4242));
 	}
 
-	/// A record with no position stored (a player who never disconnected
-	/// under v3) reads back absent rather than as some default coordinate.
+	/// A record with no position stored (a player who never disconnected)
+	/// reads back absent rather than as some default coordinate.
 	#[test]
 	fn absent_position_stays_absent() {
 		let dir = temp_dir("v3nopos");
-		let id = hash_identity(&[10; 16]);
+		let id = key(10);
 		{
 			let mut s = PlayerStore::open(&dir).unwrap();
 			s.put(
@@ -1010,90 +963,50 @@ mod tests {
 		assert_eq!(s.get(&id).last_return_tick, None);
 	}
 
-	/// An existing v3 file (pre-skills) keeps every player's items,
-	/// arrangement and position, and reads back with empty skills —
-	/// bottom of the curve, nothing wiped. A routine upgrade must NOT trip
-	/// the archive-and-start-fresh path.
-	#[test]
-	fn v3_file_reads_with_empty_skills() {
-		use digblock_core::skills::Skill;
-		let dir = temp_dir("v3compat");
-		std::fs::create_dir_all(&dir).unwrap();
-		let id = hash_identity(&[11; 16]);
-		// Hand-built v3 snapshot: one record, one (block, count) pair, no
-		// layout, a position, no cooldown tick.
-		let mut buf = Vec::new();
-		buf.extend_from_slice(&MAGIC);
-		buf.extend_from_slice(&3u16.to_le_bytes());
-		buf.extend_from_slice(&[0, 0]);
-		buf.extend_from_slice(&1u32.to_le_bytes());
-		buf.extend_from_slice(&id);
-		buf.push(1);
-		buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
-		buf.extend_from_slice(&9u32.to_le_bytes());
-		buf.push(0); // no layout
-		buf.push(1); // position
-		for c in [4.5f32, 131.0, -2.5] {
-			buf.extend_from_slice(&c.to_le_bytes());
-		}
-		buf.push(0); // no cooldown tick
-		std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
-
-		let mut s = PlayerStore::open(&dir).unwrap();
-		let rec = s.get(&id);
-		assert_eq!(rec.inventory.count(BlockType::Dirt), 9, "v3 data survives");
-		assert_eq!(rec.pos, Some([4.5, 131.0, -2.5]));
-		assert_eq!(rec.skills, SkillSet::default(), "pre-skills = level 1");
-
-		// The next write upgrades the file to v4 losslessly.
-		let mut skills = SkillSet::default();
-		skills.add_xp(Skill::Mining, 1_068);
-		s.put(id, PlayerRecord { skills, ..rec });
-		s.sync();
-		let s = PlayerStore::open(&dir).unwrap();
-		assert_eq!(s.get(&id).skills.xp(Skill::Mining), 1_068);
-		assert_eq!(s.get(&id).inventory.count(BlockType::Dirt), 9);
-		assert_eq!(s.get(&id).pos, Some([4.5, 131.0, -2.5]));
-	}
-
-	/// THE grid-growth test: a complete v4 file written when the grid was
-	/// four rows still reads, with every player's items, arrangement,
+	/// THE grid-growth test: a complete file written when the grid was
+	/// narrower still reads, with every player's items, arrangement,
 	/// position and XP intact — no version bump, no archive path.
 	///
 	/// Growing `GRID_SLOTS` broke exactly this once. The layout blob was a
 	/// fixed, length-free run, so a wider reader over-read into the pos
 	/// flag, the return tick and the skills blob, desynced into the next
-	/// record's identity hash, and `open` took the resulting parse error
-	/// for corruption — archiving the file and wiping every player on the
-	/// first restart after deploy. Nothing caught it because the other
-	/// round-trip fixtures are all built from the CURRENT constants, which
-	/// move together. This one is hand-built at the frozen width and does
-	/// not.
+	/// record's key, and `open` took the resulting parse error for
+	/// corruption — archiving the file and wiping every player on the first
+	/// restart after deploy. Nothing caught it because the other round-trip
+	/// fixtures are all built from the CURRENT constants, which move
+	/// together. This one declares its widths and does not.
 	#[test]
 	fn a_file_written_at_the_old_grid_width_still_reads() {
 		use digblock_core::skills::Skill;
 		let dir = temp_dir("gridgrowth");
 		std::fs::create_dir_all(&dir).unwrap();
 		let path = dir.join("inventories.bin");
-		let id_a = hash_identity(&[21; 16]);
-		let id_b = hash_identity(&[22; 16]);
+		let id_a = key(21);
+		let id_b = key(22);
 		let mut skills = SkillSet::default();
 		skills.add_xp(Skill::Mining, 146_751);
 		skills.add_xp(Skill::Alchemy, 394);
+		// A grid narrower than today's, standing for the build that wrote
+		// the file. Derived from the live constant so it stays narrow as the
+		// grid grows, and asserted to still contain the slot under test —
+		// a fixture that quietly stopped covering its own case would pass
+		// forever.
+		let narrow = GRID_SLOTS - 9;
+		assert!(narrow > 17, "the fixture's occupied slot must be in range");
 
-		// Two records, so an over-read desyncs into the second one's
-		// identity hash the way it would on a real server.
+		// Two records, so an over-read desyncs into the second one's key the
+		// way it would on a real server.
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);
-		buf.extend_from_slice(&4u16.to_le_bytes());
+		buf.extend_from_slice(&VERSION.to_le_bytes());
 		buf.extend_from_slice(&[0, 0]);
 		buf.extend_from_slice(&2u32.to_le_bytes());
 		for (id, dirt) in [(id_a, 12u32), (id_b, 5)] {
-			buf.extend_from_slice(&id);
+			buf.extend_from_slice(&id.0);
 			buf.push(1);
 			buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
 			buf.extend_from_slice(&dirt.to_le_bytes());
-			push_legacy_layout(&mut buf, &layout());
+			push_sized_layout(&mut buf, &layout(), HOTBAR_SLOTS, narrow);
 			buf.push(1); // position
 			for c in [8.5f32, 133.0, -4.5] {
 				buf.extend_from_slice(&c.to_le_bytes());
@@ -1125,11 +1038,11 @@ mod tests {
 		assert_eq!(l.hotbar, layout().hotbar);
 		assert_eq!(l.grid[17], BlockType::Stone as u16);
 		assert!(
-			l.grid[LEGACY_GRID_SLOTS..].iter().all(|&w| w == WIRE_EMPTY),
+			l.grid[narrow..].iter().all(|&w| w == WIRE_EMPTY),
 			"the rows the old file never had come back empty"
 		);
 		// The record behind it parsed too — an over-read would have eaten
-		// its hash and lost it entirely.
+		// its key and lost it entirely.
 		assert_eq!(s.get(&id_b).inventory.count(BlockType::Dirt), 5);
 
 		// And the next write stores the sized form, which round-trips at
@@ -1150,16 +1063,16 @@ mod tests {
 	fn a_wider_stored_grid_truncates_without_desyncing() {
 		let dir = temp_dir("widergrid");
 		std::fs::create_dir_all(&dir).unwrap();
-		let id_a = hash_identity(&[23; 16]);
-		let id_b = hash_identity(&[24; 16]);
+		let id_a = key(23);
+		let id_b = key(24);
 		let wide = GRID_SLOTS + 9;
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);
-		buf.extend_from_slice(&4u16.to_le_bytes());
+		buf.extend_from_slice(&VERSION.to_le_bytes());
 		buf.extend_from_slice(&[0, 0]);
 		buf.extend_from_slice(&2u32.to_le_bytes());
 		for (id, dirt) in [(id_a, 3u32), (id_b, 4)] {
-			buf.extend_from_slice(&id);
+			buf.extend_from_slice(&id.0);
 			buf.push(1);
 			buf.extend_from_slice(&(BlockType::Dirt as u16).to_le_bytes());
 			buf.extend_from_slice(&dirt.to_le_bytes());
@@ -1193,12 +1106,12 @@ mod tests {
 		);
 	}
 
-	/// v4 round-trips skills alongside everything else.
+	/// Skills round-trip alongside everything else.
 	#[test]
 	fn skills_round_trip() {
 		use digblock_core::skills::Skill;
 		let dir = temp_dir("v4skills");
-		let id = hash_identity(&[12; 16]);
+		let id = key(12);
 		let mut skills = SkillSet::default();
 		skills.add_xp(Skill::Mining, 146_751);
 		skills.add_xp(Skill::Alchemy, 394);

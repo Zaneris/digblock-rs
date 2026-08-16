@@ -32,7 +32,6 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
-			identity: [0; 16],
 		},
 	)
 }
@@ -126,18 +125,19 @@ impl Stub {
 	}
 }
 
+/// The join token is the ONLY thing the client asserts about itself now.
+/// It used to also carry an identity secret; who a player is comes from the
+/// master's answer to `/api/tokens/verify` instead (v22).
 #[test]
-fn configured_token_and_identity_reach_the_wire() {
+fn the_configured_token_reaches_the_wire() {
 	let (a, b) = loopback_pair();
 	let token: [u8; 16] = [7; 16];
-	let identity: [u8; 16] = [9; 16];
 	let mut client = NetClient::new(
 		Box::new(a),
 		digblock_net::client::NetClientConfig {
 			name: "test".into(),
 			draw_dist: 8,
 			token,
-			identity,
 		},
 	);
 	let mut server = Stub::new(b);
@@ -147,7 +147,50 @@ fn configured_token_and_identity_reach_the_wire() {
 	server.pump();
 	assert_matches!(
 		server.client_msgs.first(),
-		Some(ClientMsg::Hello { token: t, identity: i, .. }) if *t == token && *i == identity
+		Some(ClientMsg::Hello { token: t, .. }) if *t == token
+	);
+}
+
+/// Leaving on purpose says so on the wire, and says it once.
+///
+/// The server drops the session the moment it reads this, which is what
+/// lets a player who quits come straight back — one account holds one live
+/// connection, so a goodbye that never arrives locks them out of their own
+/// seat until QUIC times it out.
+///
+/// The other half of `disconnect` — flushing before the socket closes — is
+/// not observable here: a loopback has nothing to flush. That half is
+/// pinned over real QUIC by the e2e `a_goodbye_frees_the_account_at_once`.
+#[test]
+fn leaving_says_goodbye_on_the_wire() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	server.client_msgs.clear();
+
+	client.disconnect();
+	server.pump();
+	assert_matches!(
+		server.client_msgs.as_slice(),
+		[ClientMsg::Bye],
+		"expected exactly one Bye, got {:?}",
+		server.client_msgs
+	);
+
+	// Idempotent: a second call after the transport reports Closed must
+	// not put another Bye on a stream nobody is reading. Every exit path
+	// can therefore call it without checking whether another already did.
+	server.client_msgs.clear();
+	client.disconnect();
+	server.pump();
+	assert!(
+		server.client_msgs.is_empty(),
+		"a second goodbye reached the wire: {:?}",
+		server.client_msgs
 	);
 }
 

@@ -39,6 +39,23 @@ macro_rules! transport_trait {
 			fn poll(&mut self, out: &mut Vec<TransportEvent>);
 			fn status(&self) -> ConnStatus;
 
+			/// Flush what is queued and close down gracefully.
+			///
+			/// The one method here that is allowed to take a moment, and
+			/// it has to be: dropping a transport closes the connection
+			/// immediately, so a goodbye written a microsecond earlier is
+			/// still sitting in a stream buffer when the socket goes. On a
+			/// process exit there is no later — a detached network thread
+			/// does not outlive `main`.
+			///
+			/// Bounded and best-effort in every implementation. Native
+			/// waits briefly for the flush; the browser cannot wait at all
+			/// on an unloading page, so it asks and moves on. Callers are
+			/// on their way out and must treat this as a courtesy, never
+			/// as a guarantee — the server still reaps a connection that
+			/// simply vanishes, just slowly.
+			fn close(&mut self) {}
+
 			/// The TRANSPORT's own smoothed round trip, in milliseconds —
 			/// what a ping reports, and the same quantity the server
 			/// browser's probe shows.

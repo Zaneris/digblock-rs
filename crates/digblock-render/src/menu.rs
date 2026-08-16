@@ -22,16 +22,55 @@ pub struct ServerEntry {
 	pub max_players: u32,
 }
 
+/// Who the player is signed in as, as far as anything drawable is
+/// concerned.
+///
+/// Deliberately not the session token. The token lives in the launcher's
+/// services thread — the only place that talks to the master — so this
+/// module stays what its header says it is: a state machine with no I/O and
+/// no secrets. A leak of everything the menu holds leaks a public name and
+/// a public id.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AccountView {
+	pub id: String,
+	/// `None` until the player picks one, which is exactly when the menu
+	/// must send them to the name screen instead of the server list.
+	pub name: Option<String>,
+}
+
+/// Pages [`Menu::test_open`] can jump to.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum TestPage {
+	SignIn,
+	ChooseName,
+	Account,
+}
+
 /// Menu → launcher requests, serviced on the launcher's thread.
 #[derive(Debug)]
 pub enum MenuCommand {
 	RefreshServers,
-	/// Mint a one-time token for `server_id` as `name`, connect, and send
-	/// back `MenuResponse::Connect`.
+	/// Mint a one-time token for `server_id` (the master supplies the name
+	/// from the signed-in account), connect, and send back
+	/// `MenuResponse::Connect`.
 	Join {
 		server_id: String,
+	},
+	/// Open the browser at the master's sign-in page and wait for the
+	/// answer. Long-running: the filler must not block its other work on it.
+	SignIn,
+	/// Abandon a sign-in in progress.
+	CancelSignIn,
+	/// Live availability check while the player types a name.
+	CheckName {
 		name: String,
 	},
+	/// Claim a name for the signed-in account.
+	SetName {
+		name: String,
+	},
+	SignOut,
 }
 
 /// Launcher → menu results.
@@ -50,6 +89,22 @@ pub enum MenuResponse {
 	JoinFailed {
 		reason: String,
 	},
+	/// A sign-in finished, a stored session was restored, or a sign-out
+	/// happened — `None` means signed out.
+	Account(Option<AccountView>),
+	SignInFailed {
+		reason: String,
+	},
+	/// Answer to `CheckName`. Carries the name it answers about, because
+	/// the player keeps typing while it is in flight and a stale answer
+	/// must not label the current text.
+	NameAvailable {
+		name: String,
+		available: bool,
+		reason: Option<String>,
+	},
+	/// Answer to `SetName`: the claimed name, or why not.
+	NameSet(Result<String, String>),
 }
 
 /// The channel pair the launcher hands the engine. Keeps HTTP entirely out
@@ -111,6 +166,34 @@ struct WorldsState {
 	status: Option<String>,
 }
 
+struct SignInState {
+	/// Set once the launcher reports a failure; until then the screen just
+	/// says it is waiting.
+	status: Option<String>,
+	/// Whether to go on to Multiplayer once signed in. False when the
+	/// player opened sign-in from the Account screen (a re-sign-in), where
+	/// landing back on Account is what they expect.
+	then_multiplayer: bool,
+}
+
+struct NameState {
+	name: String,
+	/// The last availability answer, and which name it was about. Compared
+	/// against `name` before it is shown, so a reply that arrives after two
+	/// more keystrokes does not label the current text.
+	checked: Option<(String, bool, Option<String>)>,
+	/// The name a `CheckName` is currently out for, if any. At most one is
+	/// ever in flight — see `check_typed_name`.
+	checking: Option<String>,
+	status: Option<String>,
+	/// True while a `SetName` is in flight, so the row reads as busy and a
+	/// second Enter does not queue a duplicate claim.
+	claiming: bool,
+	/// A rename (from the Account screen) rather than a first pick, which
+	/// only changes the wording and where Escape goes.
+	rename: bool,
+}
+
 enum Screen {
 	Root {
 		sel: usize,
@@ -140,6 +223,17 @@ enum Screen {
 	ConfirmDelete {
 		prev: WorldsState,
 		idx: usize,
+		sel: usize,
+	},
+	/// Waiting on the browser. Reached from Multiplayer while signed out.
+	SignIn(SignInState),
+	/// First sign-in, or a rename: claim a display name. Held here rather
+	/// than on the browser screen because a name is now an account-level
+	/// thing you own, not something re-typed per join.
+	ChooseName(NameState),
+	/// Signed-in account: the id to hand an operator, and the two things
+	/// you can do to the account from in-game.
+	Account {
 		sel: usize,
 	},
 }
@@ -187,6 +281,24 @@ enum Act {
 	DeleteWorld,
 	ConfirmDeleteWorld,
 	BackToWorlds,
+	/// Start the browser sign-in. `then_multiplayer` distinguishes "I
+	/// pressed Multiplayer while signed out" from "I pressed Sign In again
+	/// on the Account screen".
+	StartSignIn {
+		then_multiplayer: bool,
+	},
+	CancelSignIn,
+	/// Claim the typed name.
+	ConfirmName,
+	OpenAccount,
+	/// Put the account id on the clipboard (engine drains
+	/// [`Menu::take_clipboard`] — see why it drains from `input`, not
+	/// `update`).
+	CopyAccountId,
+	OpenRename,
+	SignOut,
+	/// Escape from the account screen back to the root menu.
+	CloseAccount,
 }
 
 /// Stable identity linking selectable actions to laid-out rows, so
@@ -205,6 +317,12 @@ pub enum RowId {
 	CreateWorld,
 	/// Rows on the actions/confirm screens, top to bottom.
 	WorldAction(u8),
+	/// The sign-in screen's single action (Cancel).
+	SignInCancel,
+	/// The name field on the name screen.
+	NameField,
+	/// Rows on the Account screen, top to bottom.
+	AccountRow(u8),
 }
 
 pub struct Menu {
@@ -217,8 +335,9 @@ pub struct Menu {
 	store_available: bool,
 	pending_worlds: Vec<WorldIntent>,
 	screen: Option<Screen>,
-	/// Player display name, edited in the browser's name field.
-	name: String,
+	/// Who we are signed in as; `None` = signed out. Set by the engine
+	/// from the launcher's answers — the menu never derives it.
+	account: Option<AccountView>,
 	/// Engine-maintained: currently connected to a server?
 	connected: bool,
 	/// The player has entered the world at least once (picked Play Local
@@ -235,9 +354,12 @@ pub struct Menu {
 	wants_inventory: bool,
 	wants_alchemy: bool,
 	wants_character: bool,
-	/// Live settings, edited on the Settings screen. `settings.name`
-	/// tracks the last *joined-with* name; the `name` field above is the
-	/// live edit buffer.
+	/// Text the player asked to copy, drained by the engine. A `String`
+	/// rather than a call because this module does no I/O — see
+	/// [`Menu::take_clipboard`] for why the engine drains it from `input`
+	/// rather than `update`.
+	wants_copy: Option<String>,
+	/// Live settings, edited on the Settings screen.
 	settings: Settings,
 	/// A settings value changed since the engine last drained it.
 	settings_dirty: bool,
@@ -250,14 +372,19 @@ pub struct Menu {
 }
 
 impl Menu {
-	pub fn new(enabled: bool, settings: Settings, auto_join: Option<String>) -> Self {
+	pub fn new(
+		enabled: bool,
+		settings: Settings,
+		auto_join: Option<String>,
+		account: Option<AccountView>,
+	) -> Self {
 		Self {
 			enabled,
 			services_available: false,
 			store_available: false,
 			pending_worlds: Vec::new(),
 			screen: enabled.then_some(Screen::Root { sel: 0 }),
-			name: settings.name.clone(),
+			account,
 			connected: false,
 			entered_world: false,
 			spawn_cooldown_secs: 0,
@@ -268,6 +395,7 @@ impl Menu {
 			wants_inventory: false,
 			wants_alchemy: false,
 			wants_character: false,
+			wants_copy: None,
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -341,6 +469,58 @@ impl Menu {
 	/// applies runtime effects (draw dist, SSR, volume) and persists.
 	pub fn take_settings_change(&mut self) -> Option<Settings> {
 		std::mem::take(&mut self.settings_dirty).then(|| self.settings.clone())
+	}
+
+	/// Text the player asked to put on the clipboard.
+	///
+	/// The engine drains this from `Engine::input`, immediately after
+	/// routing the event here — NOT from `update`. On web the clipboard
+	/// write has to happen inside the same task as the click that asked
+	/// for it, or the browser treats it as unprompted and refuses;
+	/// `update` runs in a later animation frame, which loses the gesture.
+	pub fn take_clipboard(&mut self) -> Option<String> {
+		self.wants_copy.take()
+	}
+
+	/// Who the launcher says we are. Also the startup path: a restored
+	/// session arrives this way.
+	pub fn set_account(&mut self, account: Option<AccountView>) {
+		self.account = account;
+	}
+
+	pub fn account(&self) -> Option<&AccountView> {
+		self.account.as_ref()
+	}
+
+	/// Open one of the account-flow pages directly, for the cross-screen
+	/// theme conformance tests in `ui::screens`.
+	///
+	/// They exist because these three pages are otherwise unreachable from
+	/// a test: each needs a signed-in account and a live services thread to
+	/// arrive at. A screen the theme tests cannot reach is exactly the kind
+	/// that has regressed unnoticed before — see the notes on
+	/// `every_screen_draws_text_at_one_size`.
+	#[cfg(test)]
+	pub(crate) fn test_open(&mut self, page: TestPage) {
+		self.account = Some(AccountView {
+			id: "b2379408-3102-8b68-b56b-5774dec269b8".into(),
+			name: Some("Miner42".into()),
+		});
+		self.screen = Some(match page {
+			TestPage::SignIn => Screen::SignIn(SignInState {
+				status: Some("sign-in timed out".into()),
+				then_multiplayer: true,
+			}),
+			TestPage::ChooseName => Screen::ChooseName(NameState {
+				name: "Miner42".into(),
+				checked: Some(("Miner42".into(), false, Some("that name is taken".into()))),
+				checking: None,
+				status: None,
+				claiming: false,
+				rename: true,
+			}),
+			TestPage::Account => Screen::Account { sel: 0 },
+		});
 	}
 
 	/// Adopt the density-derived lighting detail the engine picked at the
@@ -485,6 +665,58 @@ impl Menu {
 				// User already cancelled: dropping the transport closes it.
 			}
 			MenuResponse::JoinFailed { reason } => self.on_net_failed(&reason),
+
+			// A sign-in landed, a stored session was restored at startup,
+			// or we signed out. Only ADVANCE the screen when the player is
+			// standing on the one that was waiting for this — a session
+			// restored while they are reading Settings must not yank them
+			// somewhere else.
+			MenuResponse::Account(account) => {
+				self.account = account;
+				if let Some(Screen::SignIn(s)) = &self.screen {
+					let then_multiplayer = s.then_multiplayer;
+					match &self.account {
+						None => {
+							self.screen = Some(Screen::Root { sel: 0 });
+						}
+						Some(a) if a.name.is_none() => self.open_name_screen(false),
+						Some(_) if then_multiplayer => self.open_browser(),
+						Some(_) => self.screen = Some(Screen::Account { sel: 0 }),
+					}
+				}
+			}
+			MenuResponse::SignInFailed { reason } => {
+				if let Some(Screen::SignIn(s)) = &mut self.screen {
+					s.status = Some(reason);
+				}
+			}
+			MenuResponse::NameAvailable {
+				name,
+				available,
+				reason,
+			} => self.name_answered(name, available, reason),
+			MenuResponse::NameSet(result) => {
+				let Some(Screen::ChooseName(n)) = &mut self.screen else {
+					return None;
+				};
+				n.claiming = false;
+				match result {
+					Ok(name) => {
+						let rename = n.rename;
+						if let Some(a) = &mut self.account {
+							a.name = Some(name);
+						}
+						// A first pick was on the way to Multiplayer; a
+						// rename was a visit to the Account screen.
+						if rename {
+							self.screen = Some(Screen::Account { sel: 0 });
+						} else {
+							self.open_browser();
+						}
+					}
+					Err(e) => n.status = Some(e),
+				}
+			}
 		}
 		None
 	}
@@ -544,6 +776,7 @@ impl Menu {
 			Some(Screen::Worlds(w)) => w.sel,
 			Some(Screen::WorldActions { sel, .. }) => *sel,
 			Some(Screen::ConfirmDelete { sel, .. }) => *sel,
+			Some(Screen::Account { sel }) => *sel,
 			_ => 0,
 		}
 	}
@@ -556,6 +789,7 @@ impl Menu {
 			Some(Screen::Worlds(w)) => w.sel = sel,
 			Some(Screen::WorldActions { sel: s, .. }) => *s = sel,
 			Some(Screen::ConfirmDelete { sel: s, .. }) => *s = sel,
+			Some(Screen::Account { sel: s }) => *s = sel,
 			_ => {}
 		}
 	}
@@ -571,9 +805,10 @@ impl Menu {
 				}
 			}
 			Key::Backspace => match &mut self.screen {
-				Some(Screen::Browser(b)) => {
-					b.status = None;
-					self.name.pop();
+				Some(Screen::ChooseName(n)) => {
+					n.status = None;
+					n.name.pop();
+					self.check_typed_name();
 				}
 				Some(Screen::CreateWorld { name, .. }) => {
 					name.pop();
@@ -605,6 +840,23 @@ impl Menu {
 				| Some(Screen::ConfirmDelete { prev, .. }) => {
 					self.screen = Some(Screen::Worlds(prev));
 				}
+				Some(Screen::SignIn(_)) => {
+					self.screen = Some(Screen::Root { sel: 0 });
+					self.pending_cmds.push(MenuCommand::CancelSignIn);
+				}
+				// Backing out of a rename returns to Account. Backing out
+				// of a FIRST pick returns to the root: there is no account
+				// screen worth showing for an account that cannot join
+				// anything yet, and the player can start over from
+				// Multiplayer.
+				Some(Screen::ChooseName(n)) => {
+					self.screen = Some(if n.rename {
+						Screen::Account { sel: 0 }
+					} else {
+						Screen::Root { sel: 0 }
+					});
+				}
+				Some(Screen::Account { .. }) => self.screen = Some(Screen::Root { sel: 0 }),
 				None => {}
 			},
 			_ => {}
@@ -695,13 +947,14 @@ impl Menu {
 	fn handle_text(&mut self, ch: char) {
 		use digblock_net::protocol::{MAX_DISPLAY_NAME, is_name_char, is_text_char};
 		match &mut self.screen {
-			Some(Screen::Browser(b)) => {
-				b.status = None;
-				// Invalid characters (spaces, punctuation, non-ASCII) are
-				// untypeable rather than rejected later. Display names are
-				// deliberately narrower than chat — see is_name_char.
-				if self.name.chars().count() < MAX_DISPLAY_NAME && is_name_char(ch) {
-					self.name.push(ch);
+			// Invalid characters (spaces, punctuation, non-ASCII) are
+			// untypeable rather than rejected later. Display names are
+			// deliberately narrower than chat — see is_name_char.
+			Some(Screen::ChooseName(n)) => {
+				n.status = None;
+				if n.name.chars().count() < MAX_DISPLAY_NAME && is_name_char(ch) {
+					n.name.push(ch);
+					self.check_typed_name();
 				}
 			}
 			// World names never leave this machine, so they get the full
@@ -715,6 +968,58 @@ impl Menu {
 		}
 	}
 
+	/// Ask the master whether the typed name is free.
+	///
+	/// Considered per keystroke, but AT MOST ONE is ever out at a time: a
+	/// keystroke landing while a check is in flight sets nothing going, and
+	/// the reply re-fires for whatever the text says by then (see
+	/// `name_answered`). That is a debounce without a clock — which the menu
+	/// does not have and deliberately does not want — and it bounds a burst
+	/// of typing to one outstanding request instead of one per character.
+	///
+	/// It has to be here rather than in a filler. Both fillers serve
+	/// commands in order, and the desktop one does so on a single blocking
+	/// thread, so N queued checks put N sequential HTTP calls (10 s timeout
+	/// apiece) ahead of the Join the player presses next.
+	///
+	/// Short prefixes are skipped outright: every name passes through "a",
+	/// "ab" on the way to "abc", and asking about those is three round trips
+	/// per name that could never have been claimed anyway.
+	fn check_typed_name(&mut self) {
+		let Some(Screen::ChooseName(n)) = &mut self.screen else {
+			return;
+		};
+		let name = n.name.clone();
+		if digblock_net::protocol::validate_name(&name).is_err() {
+			n.checked = None;
+			return;
+		}
+		if n.checking.is_some() {
+			return;
+		}
+		n.checking = Some(name.clone());
+		self.pending_cmds.push(MenuCommand::CheckName { name });
+	}
+
+	/// An availability answer landed. Clears the in-flight slot and, if the
+	/// text moved on while it was out, asks once more about what is there
+	/// now — the tail of a burst, which is the answer the player is waiting
+	/// to see.
+	fn name_answered(&mut self, name: String, available: bool, reason: Option<String>) {
+		let Some(Screen::ChooseName(n)) = &mut self.screen else {
+			return;
+		};
+		n.checked = Some((name, available, reason));
+		n.checking = None;
+		let stale = n
+			.checked
+			.as_ref()
+			.is_some_and(|(asked, ..)| *asked != n.name);
+		if stale {
+			self.check_typed_name();
+		}
+	}
+
 	fn cancel_connect(&mut self) {
 		// Dropping the pending client closes any in-flight transport.
 		self.wants_disconnect = true;
@@ -724,20 +1029,93 @@ impl Menu {
 		}
 	}
 
+	fn open_browser(&mut self) {
+		self.pending_cmds.push(MenuCommand::RefreshServers);
+		self.screen = Some(Screen::Browser(BrowserState {
+			rows: Vec::new(),
+			sel: 0,
+			status: None,
+			fetching: true,
+		}));
+	}
+
+	/// The name picker. A rename starts from the current name (so a small
+	/// correction is a couple of keystrokes); a first pick starts empty.
+	fn open_name_screen(&mut self, rename: bool) {
+		let name = if rename {
+			self.account
+				.as_ref()
+				.and_then(|a| a.name.clone())
+				.unwrap_or_default()
+		} else {
+			String::new()
+		};
+		self.screen = Some(Screen::ChooseName(NameState {
+			name,
+			checked: None,
+			checking: None,
+			status: None,
+			claiming: false,
+			rename,
+		}));
+	}
+
 	fn activate(&mut self, act: Act) {
 		match act {
 			Act::CloseMenu => {
 				self.entered_world = true;
 				self.screen = None;
 			}
-			Act::OpenMultiplayer => {
-				self.pending_cmds.push(MenuCommand::RefreshServers);
-				self.screen = Some(Screen::Browser(BrowserState {
-					rows: Vec::new(),
-					sel: 0,
+			// Multiplayer routes through whatever the account still needs:
+			// sign in, then pick a name, then the server list. Each stage
+			// hands on to the next when its answer lands, so a first-time
+			// player presses one button and is walked the rest of the way.
+			Act::OpenMultiplayer => match &self.account {
+				None => self.activate(Act::StartSignIn {
+					then_multiplayer: true,
+				}),
+				Some(a) if a.name.is_none() => self.open_name_screen(false),
+				Some(_) => self.open_browser(),
+			},
+			Act::StartSignIn { then_multiplayer } => {
+				self.pending_cmds.push(MenuCommand::SignIn);
+				self.screen = Some(Screen::SignIn(SignInState {
 					status: None,
-					fetching: true,
+					then_multiplayer,
 				}));
+			}
+			Act::CancelSignIn => {
+				self.pending_cmds.push(MenuCommand::CancelSignIn);
+				self.screen = Some(Screen::Root { sel: 0 });
+			}
+			Act::ConfirmName => {
+				let Some(Screen::ChooseName(n)) = &mut self.screen else {
+					return;
+				};
+				if n.claiming {
+					return;
+				}
+				let name = n.name.trim().to_string();
+				if let Err(e) = digblock_net::protocol::validate_name(&name) {
+					n.status = Some(e.into());
+					return;
+				}
+				n.claiming = true;
+				n.status = None;
+				self.pending_cmds.push(MenuCommand::SetName { name });
+			}
+			Act::OpenAccount => self.screen = Some(Screen::Account { sel: 0 }),
+			Act::CloseAccount => self.screen = Some(Screen::Root { sel: 0 }),
+			Act::CopyAccountId => {
+				if let Some(a) = &self.account {
+					self.wants_copy = Some(a.id.clone());
+				}
+			}
+			Act::OpenRename => self.open_name_screen(true),
+			Act::SignOut => {
+				self.pending_cmds.push(MenuCommand::SignOut);
+				self.account = None;
+				self.screen = Some(Screen::Root { sel: 0 });
 			}
 			Act::LeaveServer => {
 				self.wants_disconnect = true;
@@ -852,19 +1230,11 @@ impl Menu {
 					self.adjust_setting(s, 1);
 				}
 			}
+			// No name is chosen here any more — the master puts the
+			// account's own name on the token. Reaching this screen at all
+			// means we are signed in and named, because Act::OpenMultiplayer
+			// walks those stages first.
 			Act::JoinRow(i) => {
-				let name = self.name.trim().to_string();
-				if let Err(e) = digblock_net::protocol::validate_name(&name) {
-					if let Some(Screen::Browser(b)) = &mut self.screen {
-						b.status = Some(e.into());
-					}
-					return;
-				}
-				// Remember the last name actually joined with.
-				if self.settings.name != name {
-					self.settings.name = name.clone();
-					self.settings_dirty = true;
-				}
 				let Some(Screen::Browser(prev)) = self.screen.take() else {
 					return;
 				};
@@ -876,8 +1246,7 @@ impl Menu {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				};
-				self.pending_cmds
-					.push(MenuCommand::Join { server_id, name });
+				self.pending_cmds.push(MenuCommand::Join { server_id });
 				self.screen = Some(Screen::Connecting {
 					prev,
 					label: format!("Connecting to {server_name}..."),
@@ -925,6 +1294,13 @@ impl Menu {
 					}
 					if self.services_available {
 						acts.push((RowId::RootItem(1), Act::OpenMultiplayer));
+						// The Account row sits below Multiplayer once
+						// there is an account to look at. Signed out,
+						// Multiplayer itself is the way in — a separate
+						// "Sign In" row would be two doors to one place.
+						if self.account.is_some() {
+							acts.push((RowId::RootItem(10), Act::OpenAccount));
+						}
 					}
 				}
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
@@ -949,6 +1325,18 @@ impl Menu {
 			}
 			Some(Screen::CreateWorld { .. }) => {
 				acts.push((RowId::CreateWorld, Act::ConfirmCreate));
+			}
+			Some(Screen::SignIn(_)) => {
+				acts.push((RowId::SignInCancel, Act::CancelSignIn));
+			}
+			Some(Screen::ChooseName(_)) => {
+				acts.push((RowId::NameField, Act::ConfirmName));
+			}
+			Some(Screen::Account { .. }) => {
+				for (i, act) in ACCOUNT_ROWS.iter().enumerate() {
+					acts.push((RowId::AccountRow(i as u8), *act));
+				}
+				acts.push((RowId::AccountRow(ACCOUNT_BACK), Act::CloseAccount));
 			}
 			Some(Screen::WorldActions { prev, idx, .. }) => {
 				let compatible = prev.rows.get(*idx).is_some_and(|r| r.compatible);
@@ -1064,11 +1452,31 @@ impl Menu {
 						);
 					}
 					if self.services_available {
+						// Signed out, this row IS the sign-in: pressing it
+						// walks sign-in → name → server list. Saying so on
+						// the row keeps the browser window from arriving
+						// as a surprise.
 						push(
 							&mut specs,
 							&mut y,
-							RowSpec::item(RowId::RootItem(1), "Multiplayer"),
+							match &self.account {
+								None => {
+									RowSpec::item_hint(RowId::RootItem(1), "Multiplayer", "sign in")
+								}
+								Some(_) => RowSpec::item(RowId::RootItem(1), "Multiplayer"),
+							},
 						);
+						if let Some(a) = &self.account {
+							push(
+								&mut specs,
+								&mut y,
+								RowSpec::item_hint(
+									RowId::RootItem(10),
+									"Account",
+									a.name.as_deref().unwrap_or("no name yet"),
+								),
+							);
+						}
 					} else {
 						push(
 							&mut specs,
@@ -1193,11 +1601,15 @@ impl Menu {
 			}
 			Some(Screen::Browser(b)) => {
 				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
-				push(
-					&mut specs,
-					&mut y,
-					RowSpec::field(None, format!("name: {}", self.name), blink),
-				);
+				// Static, not a field: the name belongs to the account now,
+				// so this says who you are rather than asking.
+				if let Some(name) = self.account.as_ref().and_then(|a| a.name.as_deref()) {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::dim(format!("playing as {name}")),
+					);
+				}
 				y += row_h * 0.25;
 				if b.fetching && b.rows.is_empty() {
 					push(&mut specs, &mut y, RowSpec::dim("fetching server list..."));
@@ -1310,6 +1722,128 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::dim("type a name, enter creates, esc: back"),
+				);
+			}
+			Some(Screen::SignIn(s)) => {
+				push(&mut specs, &mut y, RowSpec::title("SIGN IN"));
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::dim("finish signing in in your browser"),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					// Fullscreen hides the browser it just opened, and a
+					// player who does not know it is there reads the wait
+					// as a hang.
+					RowSpec::dim("(alt-tab to it if you can't see it)"),
+				);
+				if let Some(status) = &s.status {
+					push(&mut specs, &mut y, RowSpec::status(status.clone()));
+				}
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::SignInCancel, "Cancel"),
+				);
+			}
+			Some(Screen::ChooseName(n)) => {
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::title(if n.rename {
+						"CHANGE NAME"
+					} else {
+						"CHOOSE A NAME"
+					}),
+				);
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::field(Some(RowId::NameField), format!("name: {}", n.name), blink),
+				);
+				// The availability line, and only for the text on screen:
+				// a reply that arrives two keystrokes late must not label
+				// what is being typed now.
+				let live = n
+					.checked
+					.as_ref()
+					.filter(|(name, _, _)| *name == n.name.trim());
+				match (&n.status, live) {
+					(Some(status), _) => {
+						push(&mut specs, &mut y, RowSpec::status(status.clone()));
+					}
+					(None, Some((_, true, _))) => push(
+						&mut specs,
+						&mut y,
+						RowSpec {
+							color: C_GREEN,
+							..RowSpec::dim("available")
+						},
+					),
+					(None, Some((_, false, reason))) => push(
+						&mut specs,
+						&mut y,
+						RowSpec::status(reason.clone().unwrap_or_else(|| "taken".into())),
+					),
+					(None, None) => push(&mut specs, &mut y, RowSpec::dim(" ")),
+				}
+				y += row_h * 0.25;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::dim(if n.claiming {
+						"claiming..."
+					} else {
+						"3-10 chars: a-z A-Z 0-9 - _ , enter confirms"
+					}),
+				);
+			}
+			Some(Screen::Account { .. }) => {
+				push(&mut specs, &mut y, RowSpec::title("ACCOUNT"));
+				y += row_h * 0.5;
+				let (name, id) = match &self.account {
+					Some(a) => (
+						a.name.clone().unwrap_or_else(|| "(no name yet)".into()),
+						a.id.clone(),
+					),
+					None => ("(signed out)".into(), String::new()),
+				};
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::dim(format!("signed in as {name}")),
+				);
+				// The id is the thing an operator needs in order to put you
+				// in DIGBLOCK_ADMIN_IDS, so it is on screen in full rather
+				// than abbreviated — Copy ID is the convenience, not the
+				// only way to get it.
+				push(&mut specs, &mut y, RowSpec::dim(id));
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::AccountRow(0), "Copy ID"),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::AccountRow(1), "Change Name"),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::AccountRow(2), "Sign Out"),
+				);
+				y += row_h * 0.25;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::AccountRow(ACCOUNT_BACK), "Back"),
 				);
 			}
 			Some(Screen::WorldActions { prev, idx, .. }) => {
@@ -1432,6 +1966,13 @@ const C_RED: u32 = 0xFF4040F0;
 /// adjustable rows. Derived, never a literal — adding a setting used to
 /// mean remembering to bump it in two places or Back stopped clicking.
 const SETTINGS_BACK: u8 = SETTINGS_ROWS.len() as u8;
+
+/// The Account screen's actions, in screen order. Same positional
+/// discipline as `SETTINGS_ROWS`: `acts()` walks this and `view()` must
+/// emit the rows in the same order, because the selection index is a
+/// position into the list.
+const ACCOUNT_ROWS: [Act; 3] = [Act::CopyAccountId, Act::OpenRename, Act::SignOut];
+const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 
 // Render scale is deliberately ABSENT: it is locked at native for
 // players and only `--render-scale` moves it (settings::RENDER_SCALE_MIN
@@ -1611,12 +2152,23 @@ mod tests {
 
 	const SIZE: (u32, u32) = (1280, 800);
 
-	/// Default settings with a pre-filled name (most tests join as "ted").
-	fn named(name: &str) -> Settings {
-		Settings {
-			name: name.into(),
-			..Default::default()
-		}
+	/// A signed-in account with this display name. Most tests want one:
+	/// reaching the server browser at all now means being signed in and
+	/// named, because that is the route Multiplayer walks.
+	fn named(name: &str) -> Option<AccountView> {
+		Some(AccountView {
+			id: "b2379408-3102-8b68-b56b-5774dec269b8".into(),
+			name: Some(name.into()),
+		})
+	}
+
+	/// Signed in, but no name picked yet — the state a first sign-in
+	/// leaves behind.
+	fn unnamed() -> Option<AccountView> {
+		Some(AccountView {
+			id: "b2379408-3102-8b68-b56b-5774dec269b8".into(),
+			name: None,
+		})
 	}
 
 	fn entry(id: &str, name: &str) -> ServerEntry {
@@ -1639,7 +2191,7 @@ mod tests {
 	/// (hint "H"); picking Inventory raises the intent and closes.
 	#[test]
 	fn inventory_row_raises_intent_and_hotkey_hints_show() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		assert!(
 			!menu
 				.view(SIZE, 1.0, false)
@@ -1673,7 +2225,7 @@ mod tests {
 	/// The Alchemy row mirrors Inventory: raises its intent and closes.
 	#[test]
 	fn alchemy_row_raises_intent() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.handle_key(Key::Enter); // Play Local
 		menu.open();
 		menu.handle_key(Key::Down); // Return to Spawn
@@ -1689,7 +2241,7 @@ mod tests {
 	/// joining another server goes through Leave Server first.
 	#[test]
 	fn multiplayer_hidden_while_connected() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		menu.set_connected(true);
 		assert!(
@@ -1720,7 +2272,7 @@ mod tests {
 	#[test]
 	fn view_emits_draw_commands_and_hit_map_agrees() {
 		use crate::ui::draw::{Cmd, Layer};
-		let menu = Menu::new(true, named("ted"), None);
+		let menu = Menu::new(true, Settings::default(), None, named("ted"));
 		let view = menu.view(SIZE, 1.0, false);
 		let mut dl = crate::ui::DrawList::default();
 		view.emit(&mut dl, &crate::ui::Style::new(1.0), SIZE, 1.0);
@@ -1776,10 +2328,10 @@ mod tests {
 		};
 
 		// Root, with the long no-master hint.
-		let menu = Menu::new(true, named("ted"), None);
+		let menu = Menu::new(true, Settings::default(), None, named("ted"));
 		check(&menu);
 		// Browser: name field, server rows with ping column, hint line.
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		open_browser(&mut menu);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry(
@@ -1792,12 +2344,12 @@ mod tests {
 		});
 		check(&menu);
 		// Settings: slider rows carry text plus a right-aligned bar.
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_settings(&mut menu);
 		check(&menu);
 		// Worlds screens: list with detail column, create, actions,
 		// confirm.
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_worlds(
 			&mut menu,
 			vec![
@@ -1819,7 +2371,7 @@ mod tests {
 
 	#[test]
 	fn disabled_menu_never_opens() {
-		let mut menu = Menu::new(false, named("ted"), None);
+		let mut menu = Menu::new(false, Settings::default(), None, named("ted"));
 		assert!(!menu.is_open());
 		menu.open();
 		assert!(!menu.is_open());
@@ -1827,7 +2379,7 @@ mod tests {
 
 	#[test]
 	fn root_play_local_closes_and_escape_reopens() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		assert!(menu.is_open());
 		menu.handle_key(Key::Enter); // Play Local
 		assert!(!menu.is_open());
@@ -1837,16 +2389,23 @@ mod tests {
 
 	#[test]
 	fn multiplayer_requires_services() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, None);
 		// Startup, without services: Play Local + Settings only.
 		assert_eq!(menu.acts().len(), 2);
 		menu.set_services_available();
+		// Multiplayer joins them. No Account row while signed out — the
+		// Multiplayer row IS the way in, and two doors to one place is
+		// worse than one.
 		assert_eq!(menu.acts().len(), 3);
+
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_services_available();
+		assert_eq!(menu.acts().len(), 4, "signed in, Account joins the list");
 	}
 
 	#[test]
 	fn startup_menu_locks_until_first_world() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		// No Return to Spawn row (not even dim), and Escape is a no-op.
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(!view.rows.iter().any(|r| r.text.contains("Return to Spawn")));
@@ -1866,7 +2425,7 @@ mod tests {
 
 	#[test]
 	fn browser_flow_join_and_fail_returns_with_status() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		open_browser(&mut menu);
 		assert_matches!(
@@ -1893,10 +2452,7 @@ mod tests {
 		menu.handle_key(Key::Down);
 		menu.handle_key(Key::Enter);
 		match menu.take_commands().as_slice() {
-			[MenuCommand::Join { server_id, name }] => {
-				assert_eq!(server_id, "s2");
-				assert_eq!(name, "ted");
-			}
+			[MenuCommand::Join { server_id }] => assert_eq!(server_id, "s2"),
 			other => panic!("expected Join, got {} commands", other.len()),
 		}
 		// Failure lands back in the browser with the reason shown.
@@ -1909,46 +2465,55 @@ mod tests {
 		);
 	}
 
+	/// An illegal name is refused on the name screen rather than travelling
+	/// to the master. The rule itself is `validate_name`; what this pins is
+	/// that the screen consults it before spending a round trip.
 	#[test]
-	fn invalid_name_blocks_join_with_alert() {
+	fn an_invalid_name_is_refused_without_a_round_trip() {
 		for bad in ["", "ab"] {
-			let mut menu = Menu::new(true, named(bad), None);
+			let mut menu = Menu::new(true, Settings::default(), None, unnamed());
 			menu.set_services_available();
-			open_browser(&mut menu);
-			let _ = menu.take_commands(); // drain the RefreshServers from opening
-			menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+			menu.activate(Act::OpenMultiplayer);
+			for ch in bad.chars() {
+				menu.handle_text(ch);
+			}
+			let _ = menu.take_commands(); // availability checks, if any
 			menu.handle_key(Key::Enter);
 			assert!(
 				menu.take_commands().is_empty(),
-				"join with {bad:?} not blocked"
+				"{bad:?} should not reach the master"
 			);
 			let view = menu.view(SIZE, 1.0, false);
-			assert!(view.rows.iter().any(|r| r.text.contains("3-10 chars")));
+			assert!(
+				view.rows.iter().any(|r| r.text.contains("3-10 chars")),
+				"{bad:?}: no explanation shown"
+			);
 		}
 	}
 
+	/// A join carries the server and nothing else. The name it will be
+	/// played under is the account's, and the master reads it there.
 	#[test]
-	fn valid_name_joins() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+	fn a_join_carries_only_the_server() {
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		open_browser(&mut menu);
 		let _ = menu.take_commands();
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
-		for ch in "Ted_99".chars() {
-			menu.handle_text(ch);
-		}
 		menu.handle_key(Key::Enter);
 		match menu.take_commands().as_slice() {
-			[MenuCommand::Join { name, .. }] => assert_eq!(name, "Ted_99"),
+			[MenuCommand::Join { server_id }] => assert_eq!(server_id, "s1"),
 			other => panic!("expected Join, got {} commands", other.len()),
 		}
 	}
 
+	/// The name FIELD moved from the browser to the name screen, and it
+	/// keeps the same three properties: an alphabet, a cap, and backspace.
 	#[test]
 	fn text_edits_name_with_charset_cap_and_backspace() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, unnamed());
 		menu.set_services_available();
-		open_browser(&mut menu);
+		menu.activate(Act::OpenMultiplayer);
 		// Punctuation, spaces, and non-ASCII never enter the buffer.
 		for ch in "te d!é_x".chars() {
 			menu.handle_text(ch);
@@ -1974,9 +2539,59 @@ mod tests {
 		);
 	}
 
+	/// Typing a name is one availability check at a time, not one per
+	/// keystroke. Both fillers serve commands in order and the desktop one
+	/// blocks a thread doing it, so an unbounded queue of these would sit in
+	/// front of whatever the player does next.
+	#[test]
+	fn name_checks_coalesce_to_one_request_in_flight() {
+		let mut menu = Menu::new(true, Settings::default(), None, unnamed());
+		menu.set_services_available();
+		menu.activate(Act::OpenMultiplayer);
+		let _ = menu.take_commands();
+
+		let checks = |menu: &mut Menu| -> Vec<String> {
+			menu.take_commands()
+				.into_iter()
+				.filter_map(|c| match c {
+					MenuCommand::CheckName { name } => Some(name),
+					_ => None,
+				})
+				.collect()
+		};
+
+		// Six keystrokes. The first two are too short to be worth asking
+		// about; the rest land while the "abc" check is still out.
+		for ch in "abcdef".chars() {
+			menu.handle_text(ch);
+		}
+		assert_eq!(
+			checks(&mut menu),
+			vec!["abc".to_string()],
+			"one request for the burst, not one per character"
+		);
+
+		// The answer re-fires for whatever the field says NOW — the tail of
+		// the burst is the answer the player is waiting to see.
+		menu.on_response(MenuResponse::NameAvailable {
+			name: "abc".into(),
+			available: true,
+			reason: None,
+		});
+		assert_eq!(checks(&mut menu), vec!["abcdef".to_string()]);
+
+		// And once the answer matches the field, nothing re-fires.
+		menu.on_response(MenuResponse::NameAvailable {
+			name: "abcdef".into(),
+			available: true,
+			reason: None,
+		});
+		assert!(checks(&mut menu).is_empty(), "settled, so no further asks");
+	}
+
 	#[test]
 	fn welcome_closes_menu_and_cancel_restores_browser() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		open_browser(&mut menu);
 		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
@@ -1986,7 +2601,7 @@ mod tests {
 
 		// Second run: cancel instead. From a fresh (pre-entry) menu —
 		// Multiplayer lives on the title menu, not the in-game one.
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		menu.handle_key(Key::Down); // Multiplayer (after Play Local)
 		menu.handle_key(Key::Enter);
@@ -2005,7 +2620,7 @@ mod tests {
 
 	#[test]
 	fn click_hits_rows() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_services_available();
 		// Click "Multiplayer" (second selectable row).
 		let view = menu.view(SIZE, 1.0, false);
@@ -2032,7 +2647,7 @@ mod tests {
 
 	#[test]
 	fn leave_server_appears_when_connected() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_connected(true);
 		let acts = menu.acts();
 		// Back to Game + Return to Spawn + Inventory + Alchemy +
@@ -2061,12 +2676,12 @@ mod tests {
 				.map(|r| r.text.to_string())
 				.collect()
 		};
-		let mut local = Menu::new(true, named("ted"), None);
+		let mut local = Menu::new(true, Settings::default(), None, named("ted"));
 		local.set_services_available();
 		local.set_store_available();
 		local.on_world_entered();
 		local.open();
-		let mut server = Menu::new(true, named("ted"), None);
+		let mut server = Menu::new(true, Settings::default(), None, named("ted"));
 		server.set_services_available();
 		server.set_store_available();
 		server.set_connected(true);
@@ -2102,7 +2717,7 @@ mod tests {
 
 	#[test]
 	fn return_to_spawn_ready_activates_and_cooldown_greys() {
-		let mut menu = Menu::new(true, named("ted"), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.handle_key(Key::Enter); // Play Local: the row now exists
 		menu.open();
 		// Ready: directly after Back to Game (no services); activating
@@ -2160,7 +2775,7 @@ mod tests {
 
 	#[test]
 	fn settings_adjust_clamp_and_dirty_once() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_settings(&mut menu);
 		assert!(
 			menu.take_settings_change().is_none(),
@@ -2299,7 +2914,7 @@ mod tests {
 
 	#[test]
 	fn settings_bar_click_sets_snapped_value() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_settings(&mut menu);
 		let view = menu.view(SIZE, 1.0, false);
 		let row = view
@@ -2354,35 +2969,98 @@ mod tests {
 		assert!(menu.take_settings_change().is_none());
 	}
 
+	/// Pressing Multiplayer while signed out walks the whole route:
+	/// sign in, pick a name, then the server list. Each stage advances when
+	/// its answer arrives, so a first-time player presses one button.
 	#[test]
-	fn join_remembers_name_in_settings() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+	fn multiplayer_walks_sign_in_then_naming_then_the_list() {
+		let mut menu = Menu::new(true, Settings::default(), None, None);
 		menu.set_services_available();
-		open_browser(&mut menu);
-		menu.take_commands();
+		menu.activate(Act::OpenMultiplayer);
+		assert_matches!(
+			menu.take_commands().as_slice(),
+			[MenuCommand::SignIn],
+			"Multiplayer while signed out must start a sign-in"
+		);
+
+		// Signed in, but unnamed: the name screen, not the server list.
+		menu.on_response(MenuResponse::Account(unnamed()));
+		assert!(
+			menu.take_commands().is_empty(),
+			"no list fetch before a name"
+		);
 		for ch in "Miner42".chars() {
 			menu.handle_text(ch);
 		}
-		menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
-		menu.handle_key(Key::Enter); // join row 0
+		let checks = menu.take_commands();
+		assert!(
+			checks
+				.iter()
+				.any(|c| matches!(c, MenuCommand::CheckName { .. })),
+			"typing a legal name asks whether it is free"
+		);
+		menu.handle_key(Key::Enter);
 		assert_matches!(
 			menu.take_commands().as_slice(),
-			[MenuCommand::Join { name, .. }] if name == "Miner42"
+			[MenuCommand::SetName { name }] if name == "Miner42",
+			"enter claims the name"
 		);
-		let s = menu.take_settings_change().expect("join persists the name");
-		assert_eq!(s.name, "Miner42");
 
-		// Same name again next join: no redundant dirty.
-		menu.on_net_failed("kicked");
-		menu.handle_key(Key::Enter);
-		menu.take_commands();
-		assert!(menu.take_settings_change().is_none());
+		// The claim lands: now the server list.
+		menu.on_response(MenuResponse::NameSet(Ok("Miner42".into())));
+		assert_matches!(
+			menu.take_commands().as_slice(),
+			[MenuCommand::RefreshServers],
+			"a claimed name goes straight on to the browser"
+		);
+		assert_eq!(
+			menu.account().and_then(|a| a.name.as_deref()),
+			Some("Miner42")
+		);
+	}
+
+	/// Copy ID raises an intent rather than doing I/O — this module has
+	/// none — and hands over exactly the account id an operator needs.
+	#[test]
+	fn copy_id_offers_the_account_id() {
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_services_available();
+		menu.activate(Act::OpenAccount);
+		assert_eq!(menu.take_clipboard(), None, "nothing copied unprompted");
+		menu.activate(Act::CopyAccountId);
+		assert_eq!(
+			menu.take_clipboard().as_deref(),
+			Some("b2379408-3102-8b68-b56b-5774dec269b8")
+		);
+		assert_eq!(menu.take_clipboard(), None, "drained once");
+	}
+
+	/// Signing out drops the account immediately, without waiting for the
+	/// launcher to confirm: the player asked, and a menu that still says
+	/// "signed in as" while the request is in flight is a lie.
+	#[test]
+	fn signing_out_clears_the_account_at_once() {
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_services_available();
+		menu.activate(Act::OpenAccount);
+		menu.activate(Act::SignOut);
+		assert!(menu.account().is_none());
+		assert_matches!(menu.take_commands().as_slice(), [MenuCommand::SignOut]);
 	}
 
 	#[test]
-	fn prefilled_name_from_settings() {
-		let menu = Menu::new(true, named("Miner42"), None);
-		assert_eq!(menu.name, "Miner42");
+	fn the_browser_shows_the_account_name() {
+		let mut menu = Menu::new(true, Settings::default(), None, named("Miner42"));
+		menu.set_services_available();
+		open_browser(&mut menu);
+		let view = menu.view(SIZE, 1.0, false);
+		assert!(
+			view.rows
+				.iter()
+				.any(|r| r.text.contains("playing as Miner42")),
+			"{:?}",
+			view.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+		);
 	}
 
 	fn world_row(id: &str, name: &str, compatible: bool) -> WorldRow {
@@ -2408,7 +3086,7 @@ mod tests {
 
 	#[test]
 	fn store_replaces_play_local_until_entered() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_store_available();
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
@@ -2430,7 +3108,7 @@ mod tests {
 
 	#[test]
 	fn world_enter_flow_emits_intent() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_worlds(&mut menu, vec![world_row("w1", "Home", true)]);
 		menu.handle_key(Key::Enter); // world row -> actions
 		menu.handle_key(Key::Enter); // Enter World
@@ -2445,7 +3123,7 @@ mod tests {
 
 	#[test]
 	fn create_world_text_entry_and_intent() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_worlds(&mut menu, vec![]);
 		menu.handle_key(Key::Enter); // "Create New World" (only act)
 		// Empty name: Enter is a no-op.
@@ -2479,7 +3157,7 @@ mod tests {
 
 	#[test]
 	fn delete_requires_confirm() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_worlds(&mut menu, vec![world_row("w1", "Home", true)]);
 		menu.handle_key(Key::Enter); // actions
 		menu.handle_key(Key::Down); // Delete World
@@ -2504,7 +3182,7 @@ mod tests {
 
 	#[test]
 	fn incompatible_world_offers_delete_only() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		open_worlds(&mut menu, vec![world_row("w1", "Old", false)]);
 		menu.handle_key(Key::Enter); // actions
 		let acts = menu.acts();
@@ -2518,7 +3196,7 @@ mod tests {
 
 	#[test]
 	fn left_server_relocks_startup_menu() {
-		let mut menu = Menu::new(true, Settings::default(), None);
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 		menu.set_store_available();
 		menu.set_connected(true);
 		assert!(menu.entered_world);

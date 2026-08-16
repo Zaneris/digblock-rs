@@ -71,11 +71,11 @@ pub struct Settings {
 	/// The GI resolve runs at `render_size / gi_scale_div`. One of
 	/// [`GI_SCALE_DIVISORS`].
 	pub gi_scale_div: u32,
-	/// Last-used multiplayer display name; pre-fills the browser's name
-	/// field. Empty = never joined. Canonical validation still runs at
-	/// join time.
-	pub name: String,
 }
+// There is no `name` here any more. It used to be the last multiplayer
+// display name, re-typed per join and remembered as a convenience; a name
+// now belongs to the master account and travels with it, so the client has
+// nothing to remember and nothing to let drift.
 
 impl Default for Settings {
 	/// Desktop defaults (mobile launchers override before constructing
@@ -94,7 +94,6 @@ impl Default for Settings {
 			// applied by the LAUNCHER, for interactive runs only.
 			render_scale: 1.0,
 			gi_scale_div: GI_SCALE_DEFAULT,
-			name: String::new(),
 		}
 	}
 }
@@ -122,7 +121,7 @@ pub fn density_gi_div(backing_scale: f32) -> u32 {
 
 impl Settings {
 	/// Normalize untrusted values (a hand-edited settings file, an old
-	/// format) into the legal ranges; an invalid name degrades to empty.
+	/// format) into the legal ranges.
 	pub fn clamped(mut self) -> Self {
 		self.draw_dist = self.draw_dist.clamp(DRAW_MIN, DRAW_MAX);
 		self.music_vol = self.music_vol.clamp(0.0, VOL_MAX);
@@ -149,9 +148,6 @@ impl Settings {
 		if !GI_SCALE_DIVISORS.contains(&self.gi_scale_div) {
 			self.gi_scale_div = GI_SCALE_DEFAULT;
 		}
-		if digblock_net::protocol::validate_name(&self.name).is_err() {
-			self.name.clear();
-		}
 		self
 	}
 }
@@ -170,7 +166,6 @@ mod tests {
 			ui_scale: 9.0,
 			render_scale: 4.0,
 			gi_scale_div: 7,
-			name: "bad name!".into(),
 		}
 		.clamped();
 		assert_eq!(s.draw_dist, DRAW_MAX);
@@ -181,7 +176,6 @@ mod tests {
 		// An illegal divisor goes to the DEFAULT, not the nearest legal
 		// value — see `clamped`.
 		assert_eq!(s.gi_scale_div, GI_SCALE_DEFAULT);
-		assert!(s.name.is_empty());
 
 		// A capture run builds Settings::default() and must stay at the
 		// shipped values: bench/screenshot/drill skip the settings load,
@@ -212,7 +206,6 @@ mod tests {
 			ui_scale: 1.25,
 			render_scale: 0.75,
 			gi_scale_div: 3,
-			name: "Miner42".into(),
 		};
 		assert_eq!(ok.clone().clamped(), ok);
 	}

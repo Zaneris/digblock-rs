@@ -8,11 +8,12 @@
 //!
 //! HTTP contract (mirrors apps/master/Contracts.cs):
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
-//!   POST /api/join { serverId, displayName } → { token, expiresIn, url, certHash }
+//!   POST /api/join { serverId } → { token, expiresIn, url, certHash }
 
 use std::sync::mpsc;
 
-use digblock_render::menu::{MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use crate::auth::{self, Session};
+use digblock_render::menu::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -60,18 +61,44 @@ struct JoinResponse {
 /// Start the service task. Scripted joins are the menu's job
 /// (`EngineConfig::auto_join`) — the service layer is identical for
 /// interactive and scripted flows.
-pub fn start(master_url: String) -> MenuServices {
+pub fn start(master_url: String, session: Option<Session>) -> MenuServices {
 	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
 	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
-	wasm_bindgen_futures::spawn_local(run(master_url, cmd_rx, resp_tx));
+	wasm_bindgen_futures::spawn_local(run(master_url, session, cmd_rx, resp_tx));
 	MenuServices { cmd_tx, resp_rx }
+}
+
+fn view(session: &Session) -> AccountView {
+	AccountView {
+		id: session.account_id.clone(),
+		name: session.display_name.clone(),
+	}
 }
 
 async fn run(
 	master_url: String,
+	session: Option<Session>,
 	cmd_rx: mpsc::Receiver<MenuCommand>,
 	resp_tx: mpsc::Sender<MenuResponse>,
 ) {
+	// Rotate a restored session before anything needs it; a refusal means
+	// the token is gone and we are signed out.
+	let mut session = match session {
+		Some(s) => match auth::refresh(&master_url, &s.token).await {
+			Ok(fresh) => {
+				auth::store(&fresh);
+				Some(fresh)
+			}
+			Err(e) => {
+				log::info!("stored session is no longer valid ({e}) — signed out");
+				auth::clear();
+				None
+			}
+		},
+		None => None,
+	};
+	let _ = resp_tx.send(MenuResponse::Account(session.as_ref().map(view)));
+
 	loop {
 		while let Ok(cmd) = cmd_rx.try_recv() {
 			match cmd {
@@ -103,9 +130,55 @@ async fn run(
 						});
 					}
 				}
-				MenuCommand::Join { server_id, name } => {
-					let resp = join_resp(&master_url, &server_id, &name).await;
+				MenuCommand::Join { server_id } => {
+					let resp = match &session {
+						Some(s) => join_resp(&master_url, &server_id, &s.token).await,
+						None => MenuResponse::JoinFailed {
+							reason: "not signed in".into(),
+						},
+					};
 					let _ = resp_tx.send(resp);
+				}
+				// Navigating away replaces the document, so nothing after
+				// this runs — the answer arrives on the NEXT page load, as
+				// the ?code= callback lib.rs redeems before starting us.
+				MenuCommand::SignIn => {
+					if let Err(reason) = auth::begin(&master_url) {
+						let _ = resp_tx.send(MenuResponse::SignInFailed { reason });
+					}
+				}
+				// Nothing to cancel: there is no in-flight request, only a
+				// navigation that either happened or did not.
+				MenuCommand::CancelSignIn => {}
+				MenuCommand::CheckName { name } => {
+					let token = session
+						.as_ref()
+						.map(|s| s.token.as_str())
+						.unwrap_or_default();
+					let (available, reason) = auth::check_name(&master_url, token, &name).await;
+					let _ = resp_tx.send(MenuResponse::NameAvailable {
+						name,
+						available,
+						reason,
+					});
+				}
+				MenuCommand::SetName { name } => {
+					let result = match &session {
+						Some(s) => auth::set_name(&master_url, &s.token, &name).await,
+						None => Err("not signed in".into()),
+					};
+					if let (Ok(name), Some(s)) = (&result, &mut session) {
+						s.display_name = Some(name.clone());
+						auth::store(s);
+					}
+					let _ = resp_tx.send(MenuResponse::NameSet(result));
+				}
+				MenuCommand::SignOut => {
+					if let Some(s) = session.take() {
+						auth::sign_out(&master_url, &s.token).await;
+					}
+					auth::clear();
+					let _ = resp_tx.send(MenuResponse::Account(None));
 				}
 			}
 		}
@@ -113,8 +186,8 @@ async fn run(
 	}
 }
 
-async fn join_resp(master_url: &str, server_id: &str, name: &str) -> MenuResponse {
-	match join(master_url, server_id, name).await {
+async fn join_resp(master_url: &str, server_id: &str, session: &str) -> MenuResponse {
+	match join(master_url, server_id, session).await {
 		Ok((transport, token)) => MenuResponse::Connect {
 			transport: Box::new(transport),
 			token,
@@ -143,12 +216,18 @@ async fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 async fn join(
 	master_url: &str,
 	server_id: &str,
-	name: &str,
+	session: &str,
 ) -> Result<(digblock_net_web::WebTransportClient, [u8; 16]), String> {
-	let body = serde_json::json!({ "serverId": server_id, "displayName": name }).to_string();
-	let text = fetch_text("POST", &format!("{master_url}/api/join"), Some(body))
-		.await
-		.map_err(|e| format!("join request failed: {e}"))?;
+	// No displayName: the master reads it off the authenticated account.
+	let body = serde_json::json!({ "serverId": server_id }).to_string();
+	let text = fetch_bearer(
+		"POST",
+		&format!("{master_url}/api/join"),
+		Some(body),
+		Some(session),
+	)
+	.await
+	.map_err(|e| format!("join request failed: {e}"))?;
 	let join: JoinResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 	let token = parse_token(&join.token)?;
 	let hash = digblock_net_web::parse_sha256_hex(&join.cert_hash)
@@ -180,6 +259,15 @@ fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 }
 
 async fn fetch_text(method: &str, url: &str, body: Option<String>) -> Result<String, String> {
+	fetch_bearer(method, url, body, None).await
+}
+
+async fn fetch_bearer(
+	method: &str,
+	url: &str,
+	body: Option<String>,
+	bearer: Option<&str>,
+) -> Result<String, String> {
 	let init = web_sys::RequestInit::new();
 	init.set_method(method);
 	if let Some(b) = &body {
@@ -190,6 +278,12 @@ async fn fetch_text(method: &str, url: &str, body: Option<String>) -> Result<Str
 		request
 			.headers()
 			.set("content-type", "application/json")
+			.map_err(|e| js_err(&e))?;
+	}
+	if let Some(bearer) = bearer {
+		request
+			.headers()
+			.set("authorization", &format!("Bearer {bearer}"))
 			.map_err(|e| js_err(&e))?;
 	}
 	let window = web_sys::window().ok_or("no window")?;

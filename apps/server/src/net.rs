@@ -59,6 +59,17 @@ const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 /// sessions are dropped before the WebTransport accept.
 const MAX_CONNECTIONS: usize = 512;
 
+/// Live connections one peer address may hold, by default. Generous enough
+/// for a household or a shared connection playing together, tight enough
+/// that no single address can spend the whole table — see [`IpSlot`].
+///
+/// Configurable (`--max-conns-per-ip`) because the default is calibrated
+/// for an internet-facing server and every multi-client harness we run is
+/// the opposite case: `just bot -- --bots 12` and `just compose-bots` put
+/// every client behind ONE address, so the bots past the cap silently
+/// failed to connect and the soak read as a netcode regression.
+pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 8;
+
 /// Rotate the endpoint's certificate this often — well inside the validity
 /// `fresh_identity` issues, so a few failed attempts (master down, clock
 /// trouble) still leave days of margin before the pinned cert expires.
@@ -162,15 +173,69 @@ impl Drop for ConnSlot {
 	}
 }
 
+/// Live connections per peer address.
+type IpCounts = Arc<std::sync::Mutex<rustc_hash::FxHashMap<std::net::IpAddr, usize>>>;
+
+/// One address's share of the connection table, released on drop.
+///
+/// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an
+/// outbound token verify per slot per [`VERIFY_TIMEOUT`] window, turning
+/// this server into an unauthenticated amplifier against its own master
+/// (NET-AUDIT-2.md §1.6). The ordering that allows it is unavoidable — a
+/// connection's account is not known until the verify answers — so the cap
+/// goes on the thing that actually identifies the abuser at that point,
+/// which is the address.
+///
+/// Same RAII shape as [`ConnSlot`], and for the same reason: a panic
+/// anywhere in the connection task would skip a paired decrement and leak
+/// the count forever.
+struct IpSlot {
+	counts: IpCounts,
+	ip: std::net::IpAddr,
+}
+
+impl IpSlot {
+	/// `None` when this address already holds `limit` connections.
+	fn take(counts: &IpCounts, ip: std::net::IpAddr, limit: usize) -> Option<Self> {
+		let mut guard = counts.lock().expect("ip counts");
+		let n = guard.entry(ip).or_insert(0);
+		if *n >= limit {
+			return None;
+		}
+		*n += 1;
+		drop(guard);
+		Some(Self {
+			counts: counts.clone(),
+			ip,
+		})
+	}
+}
+
+impl Drop for IpSlot {
+	fn drop(&mut self) {
+		let mut guard = self.counts.lock().expect("ip counts");
+		if let Some(n) = guard.get_mut(&self.ip) {
+			*n -= 1;
+			// Remove at zero: otherwise the map grows one entry per address
+			// ever seen, for the life of the process.
+			if *n == 0 {
+				guard.remove(&self.ip);
+			}
+		}
+	}
+}
+
 /// Accept loop: one task per connection, forever. The endpoint is shared
 /// (`Arc`) with the cert-rotation task.
 pub async fn serve(
 	endpoint: Arc<Endpoint<Server>>,
 	events: Sender<SimEvent>,
 	master: Arc<MasterState>,
+	max_conns_per_ip: usize,
 ) {
 	let mut next_conn: u64 = 1;
 	let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	let per_ip: IpCounts = Arc::new(std::sync::Mutex::new(rustc_hash::FxHashMap::default()));
 	loop {
 		let incoming = endpoint.accept().await;
 		if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
@@ -186,6 +251,7 @@ pub async fn serve(
 		// RAII, not paired calls: a panic anywhere in the task below would
 		// skip a manual `fetch_sub` and leak the slot forever.
 		let slot = ConnSlot::take(&active);
+		let per_ip = per_ip.clone();
 		tokio::spawn(async move {
 			let _slot = slot;
 			// The accept itself is bounded too — a peer that completes the
@@ -197,6 +263,18 @@ pub async fn serve(
 				Ok(Ok(conn)) => conn,
 				Ok(Err(e)) => return log::warn!("conn {conn_id}: accept: {e}"),
 				Err(_) => return log::warn!("conn {conn_id}: accept timeout"),
+			};
+			// The per-address cap lands HERE rather than at the top of the
+			// accept loop, because the peer address is not known until the
+			// session resolves. That is the right place regardless: what it
+			// protects is the outbound token verify below, and by this point
+			// the QUIC handshake has been paid for either way.
+			let ip = conn.remote_address().ip();
+			let Some(_ip_slot) = IpSlot::take(&per_ip, ip, max_conns_per_ip) else {
+				return log::warn!(
+					"conn {conn_id}: refused, {ip} already holds {max_conns_per_ip} connections \
+					 (raise --max-conns-per-ip if this is a local soak)"
+				);
 			};
 			log::info!("conn {conn_id}: {}", conn.remote_address());
 			handle_connection(conn, conn_id, &events, &master).await;
@@ -329,20 +407,21 @@ async fn lobby(
 		return None;
 	};
 	let token = *token;
-	match verify_join(master, &token).await {
-		Ok(display_name) => {
-			// The master's identity wins over the claimed name; the sim's
+	let verified = match verify_join(master, &token).await {
+		Ok(verified) => {
+			// The master's answer wins over the claimed name; the sim's
 			// sanitize_name still applies downstream.
 			if let ClientMsg::Hello { name, .. } = &mut hello {
-				*name = display_name;
+				*name = verified.display_name.clone();
 			}
+			verified
 		}
 		Err(reason) => {
 			log::info!("conn {conn_id}: refused ({reason})");
 			send_refused(&mut send, reason).await;
 			return None;
 		}
-	}
+	};
 
 	let (out_tx, out_rx) = channel::<OutMsg>(OUT_CAP);
 	if events
@@ -350,6 +429,11 @@ async fn lobby(
 			conn_id,
 			out: out_tx,
 			addr: conn.remote_address(),
+			// Carried on the CONNECTION rather than in the Hello, because
+			// the client never said it: it is the master's answer, and
+			// putting it on the wire message would invite a future reader
+			// into treating it as something the peer claimed.
+			account: verified.account,
 		})
 		.is_err()
 	{
@@ -452,7 +536,10 @@ async fn serve_connection(
 /// master cannot confirm a token, nobody gets in — a registered server is a
 /// listed server, and with the master down no legitimate player can mint a
 /// token either.
-async fn verify_join(master: &MasterState, token: &[u8; 16]) -> Result<String, String> {
+async fn verify_join(
+	master: &MasterState,
+	token: &[u8; 16],
+) -> Result<master::VerifiedJoin, String> {
 	if *token == [0u8; 16] {
 		return Err("joining requires a token from the master server".into());
 	}
@@ -467,9 +554,9 @@ async fn verify_join(master: &MasterState, token: &[u8; 16]) -> Result<String, S
 	let verify =
 		tokio::task::spawn_blocking(move || master::verify_token(&url, &reg.server_key, &token_c));
 	match tokio::time::timeout(VERIFY_TIMEOUT, verify).await {
-		Ok(Ok(Ok(display_name))) => {
+		Ok(Ok(Ok(verified))) => {
 			master.mark_token_used(*token);
-			Ok(display_name)
+			Ok(verified)
 		}
 		Ok(Ok(Err(VerifyError::Denied))) => {
 			Err("token rejected — request a fresh join from the master server".into())

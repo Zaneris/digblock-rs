@@ -199,10 +199,15 @@ pub enum ClientMsg {
 		sim_version: u16,
 		/// Informational build string (diagnostics only).
 		build: String,
-		/// Persistent client identity secret; all zeros = anonymous (no
-		/// persistent inventory, no duplicate check). The server stores
-		/// only a hash of it.
-		identity: [u8; 16],
+		// v22 REMOVED `identity: [u8; 16]`, and removing rather than
+		// deprecating was the point. It was a client-chosen bearer secret
+		// that keyed the server's persisted inventory, replayed verbatim to
+		// every server a player ever joined — so any server operator held
+		// the credential to that player's records everywhere else
+		// (NET-AUDIT-2.md §1.4). Identity now arrives from the MASTER, via
+		// /api/tokens/verify, and the client asserts nothing about who it
+		// is. A dead 16-byte field that used to mean "trust me" is exactly
+		// the kind of thing that gets rewired by accident, so it is gone.
 	},
 	EditRequest {
 		/// Per-connection sequence, echoed back for confirm/reject.
@@ -503,7 +508,6 @@ mod tests {
 				token: [7; 16],
 				sim_version: 1,
 				build: "0.1.0".into(),
-				identity: [3; 16],
 			},
 			ClientMsg::EditRequest {
 				seq: 7,
@@ -708,7 +712,6 @@ mod tests {
 					token: [0xff; 16],
 					sim_version: u16::MAX,
 					build: "0.0.0-somewhat-long-prerelease-tag".into(),
-					identity: [0xff; 16],
 				},
 			),
 			(
@@ -896,16 +899,16 @@ mod tests {
 			token: [1; 16],
 			sim_version: 1,
 			build: "b".into(),
-			identity: [3; 16],
 		};
 		assert_eq!(
 			postcard::to_stdvec(&hello).unwrap(),
 			// variant tag, protocol, name, draw_dist (zigzag), the raw
-			// token bytes, sim_version, build, then the raw identity
-			// bytes (appended in v4)
+			// token bytes, sim_version, build. The trailing raw identity
+			// bytes were dropped in v22 — the one field this message has
+			// ever LOST, which is why MIN_PROTOCOL moved with it rather
+			// than the shape staying append-only.
 			vec![
-				0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98, 3, 3,
-				3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+				0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98
 			]
 		);
 

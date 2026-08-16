@@ -21,7 +21,7 @@ pub(crate) mod harness;
 
 use crate::ban_store::BanStore;
 use crate::journal::Journal;
-use crate::player_store::{IdentityHash, PlayerLayout, PlayerRecord, PlayerStore, hash_identity};
+use crate::player_store::{IdentityKey, PlayerLayout, PlayerRecord, PlayerStore};
 use crate::spawn_store::{SpawnLock, SpawnStore};
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
@@ -35,8 +35,9 @@ use digblock_net::messages::{
 	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
-	CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, PlayerId, RETURN_SPAWN_COOLDOWN_SECS,
-	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS, sanitize_chat, sanitize_name,
+	AccountId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, PlayerId,
+	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
+	sanitize_chat, sanitize_name,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -75,8 +76,14 @@ pub enum SimEvent {
 	Connected {
 		conn_id: u64,
 		out: OutTx,
-		/// Peer address — the ban key (`addr.ip()`).
+		/// Peer address — the IP half of the ban key.
 		addr: std::net::SocketAddr,
+		/// Who the master says this is. Established by `verify_join` before
+		/// this event exists, so by the time the sim sees a connection the
+		/// identity is already settled and nothing the peer sends can
+		/// change it. `AccountId::NONE` only in tests and the offline
+		/// harness, which have no master to ask.
+		account: AccountId,
 	},
 	Msg {
 		conn_id: u64,
@@ -290,9 +297,14 @@ struct Client {
 	/// held-item field in snapshots (display only; enforcement reads the
 	/// edit's own declared slot).
 	active_slot: u8,
-	/// `Some` = persistent identity (the stored hash, never the secret);
-	/// `None` = anonymous, session-only inventory.
-	identity: Option<IdentityHash>,
+	/// `Some` = the master-vouched account this session belongs to, which is
+	/// the key its records persist under; `None` = unverified, session-only
+	/// inventory (offline harness and tests only).
+	identity: Option<IdentityKey>,
+	/// The same account, unwrapped, for the authorization questions that
+	/// have no "anonymous" answer — admin and bans. `AccountId::NONE` when
+	/// there is none, which both of those refuse by construction.
+	account: AccountId,
 	/// In-progress hold-to-dig, if any (see `edits::DigState`).
 	digging: Option<edits::DigState>,
 	/// Tick of the last granted return-to-spawn; `None` = never used
@@ -370,8 +382,9 @@ pub struct Sim {
 	spawn_store: SpawnStore,
 	clients: FxHashMap<u64, Client>,
 	/// Connections that have not completed the Hello handshake, with the
-	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS).
-	lobby: FxHashMap<u64, (OutTx, u32, std::net::SocketAddr)>,
+	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS) and the account
+	/// the master vouched for at admission.
+	lobby: FxHashMap<u64, (OutTx, u32, std::net::SocketAddr, AccountId)>,
 	/// Client actions (edits + dig starts/cancels) queued this tick,
 	/// processed in wire order by `process_edits`.
 	action_queue: Vec<edits::ClientAction>,
@@ -394,10 +407,19 @@ pub struct Sim {
 	/// Persistent per-identity player records — inventory + item layout
 	/// (separate from the journal).
 	player_store: PlayerStore,
-	/// Persistent IP bans, enforced at Hello and driven by `/ban`.
+	/// Persistent bans (account + IP), enforced at Hello and driven by
+	/// `/ban`.
 	ban_store: BanStore,
-	/// The player name (case-insensitive) granted admin chat commands.
-	admin_name: Option<String>,
+	/// The accounts granted admin chat commands.
+	///
+	/// Accounts, not names. Admin used to be a case-insensitive compare
+	/// against `client.name`, which the master would hand to whoever asked
+	/// for it — so `--admin-name admin` plus a join under the name "admin"
+	/// was a complete server takeover, executable by anyone who read the
+	/// roster (NET-AUDIT-2.md §1.1). Names are display strings; this is an
+	/// authorization decision, and it keys on the one identifier the master
+	/// vouches for.
+	admin_accounts: FxHashSet<AccountId>,
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
@@ -464,22 +486,22 @@ impl Sim {
 			snap_buf: Vec::new(),
 			player_store,
 			ban_store,
-			admin_name: None,
+			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
 		})
 	}
 
-	/// Grant a player name (case-insensitive) the admin chat commands.
-	/// Empty counts as unset, like the env fallbacks.
+	/// Grant these accounts the admin chat commands. Replaces the whole set.
 	///
-	/// A name that could never be a real display name is REFUSED rather
-	/// than stored: it can only ever match nobody, so keeping it would
-	/// leave a server with admin silently disabled while its boot log said
-	/// otherwise. See [`admin_name_is_usable`].
-	pub fn set_admin_name(&mut self, name: Option<String>) {
-		self.admin_name = name
-			.filter(|n| !n.is_empty())
-			.filter(|n| admin_name_is_usable(n).is_ok());
+	/// `AccountId::NONE` is dropped: an unverified connection carries it, so
+	/// admitting it to this set would hand admin to every offline and test
+	/// connection at once.
+	pub fn set_admin_accounts(&mut self, accounts: impl IntoIterator<Item = AccountId>) {
+		self.admin_accounts = accounts.into_iter().filter(|a| !a.is_none()).collect();
+	}
+
+	fn is_admin(&self, account: AccountId) -> bool {
+		!account.is_none() && self.admin_accounts.contains(&account)
 	}
 
 	pub fn server_tick(&self) -> u32 {
@@ -786,8 +808,13 @@ impl Sim {
 
 	fn handle_event(&mut self, ev: SimEvent) {
 		match ev {
-			SimEvent::Connected { conn_id, out, addr } => {
-				self.lobby.insert(conn_id, (out, self.tick, addr));
+			SimEvent::Connected {
+				conn_id,
+				out,
+				addr,
+				account,
+			} => {
+				self.lobby.insert(conn_id, (out, self.tick, addr, account));
 			}
 			SimEvent::Msg { conn_id, msg } => match msg {
 				ClientMsg::Hello {
@@ -797,16 +824,7 @@ impl Sim {
 					token: _, // future reconnect-with-state
 					sim_version,
 					build,
-					identity,
-				} => self.handle_hello(
-					conn_id,
-					protocol,
-					name,
-					draw_dist,
-					sim_version,
-					build,
-					identity,
-				),
+				} => self.handle_hello(conn_id, protocol, name, draw_dist, sim_version, build),
 				ClientMsg::EditRequest {
 					seq,
 					tick: _,
@@ -881,13 +899,13 @@ impl Sim {
 					};
 					// `sanitize_chat` already trimmed.
 					let is_command = text.starts_with('/');
-					let Some(client) = self.clients.get_mut(&conn_id) else {
+					let Some(account) = self.clients.get(&conn_id).map(|c| c.account) else {
 						return; // lobby connections don't get to talk
 					};
-					let is_admin = self
-						.admin_name
-						.as_deref()
-						.is_some_and(|a| client.name.eq_ignore_ascii_case(a));
+					let is_admin = self.is_admin(account);
+					let Some(client) = self.clients.get_mut(&conn_id) else {
+						return;
+					};
 					// Admin command lines bypass the token bucket (several
 					// commands back-to-back is normal use, and replies are
 					// private — no broadcast to flood).
@@ -1343,7 +1361,6 @@ impl Sim {
 		self.teleport_client(conn_id, pos, look);
 	}
 
-	#[allow(clippy::too_many_arguments)]
 	fn handle_hello(
 		&mut self,
 		conn_id: u64,
@@ -1352,17 +1369,19 @@ impl Sim {
 		draw_dist: i32,
 		sim_version: u16,
 		build: String,
-		identity: [u8; 16],
 	) {
-		let Some((out, _, addr)) = self.lobby.remove(&conn_id) else {
+		let Some((out, _, addr, account)) = self.lobby.remove(&conn_id) else {
 			return;
 		};
 		let refuse = |out: &OutTx, reason: String| {
 			send_frame(&out.clone(), &ServerMsg::Refused { reason });
 			let _ = out.try_send(OutMsg::Close);
 		};
-		// Ban gate first — a banned peer learns nothing else.
-		if self.ban_store.is_banned(addr.ip()) {
+		// Ban gate first — a banned peer learns nothing else. Both keys are
+		// checked here: the account is the durable one (a new IP no longer
+		// buys a way back in), the IP still catches an unauthenticated peer
+		// and everyone sharing a griefer's connection.
+		if self.ban_store.is_banned(addr.ip()) || self.ban_store.is_account_banned(account) {
 			refuse(&out, "banned".into());
 			return;
 		}
@@ -1389,18 +1408,26 @@ impl Sim {
 			refuse(&out, "server full".into());
 			return;
 		};
-		// All-zeros = anonymous (session-only inventory, no dup check).
+		// AccountId::NONE = no master vouched for this connection, so there
+		// is nothing to persist against: session-only inventory, no dup
+		// check. That is the offline harness and the tests, never a real
+		// join — net.rs refuses a connection it could not verify.
+		//
 		// Two live connections sharing one persisted inventory would stomp
-		// each other's copy — refuse the second.
-		let identity = (identity != [0; 16]).then(|| hash_identity(&identity));
-		if let Some(hash) = identity
-			&& self.clients.values().any(|c| c.identity == Some(hash))
+		// each other's copy, so the second is refused. The check is the same
+		// shape it always was; what changed is that the key is now something
+		// the master said rather than something the client chose, so
+		// "already connected" can no longer be dodged by picking a different
+		// secret.
+		let identity = (!account.is_none()).then_some(account);
+		if let Some(account) = identity
+			&& self.clients.values().any(|c| c.identity == Some(account))
 		{
-			refuse(&out, "this identity is already connected".into());
+			refuse(&out, "this account is already connected".into());
 			return;
 		}
 		let record = identity
-			.map(|hash| self.player_store.get(&hash))
+			.map(|account| self.player_store.get(&account))
 			.unwrap_or_default();
 		let inventory = record.inventory;
 		// The item arrangement: the stored layout when one exists, else
@@ -1550,11 +1577,7 @@ impl Sim {
 		log::info!("player {id} ({name}) joined at tick {}", self.tick);
 		// The server's command set, so the chat box can autocomplete —
 		// admin only (nobody else can use them, or needs to see them).
-		let is_admin = self
-			.admin_name
-			.as_deref()
-			.is_some_and(|a| name.eq_ignore_ascii_case(a));
-		if is_admin {
+		if self.is_admin(account) {
 			send_frame(&out, &admin::commands_msg());
 		}
 		self.clients.insert(
@@ -1599,6 +1622,7 @@ impl Sim {
 				grid,
 				active_slot: 0,
 				identity,
+				account,
 				digging: None,
 				// Restored, not reset: otherwise reconnecting clears the
 				// cooldown and the timer is bypassed by rejoining.
@@ -1624,7 +1648,7 @@ impl Sim {
 			self.drop_client(conn_id);
 		}
 		let tick = self.tick;
-		self.lobby.retain(|conn_id, (out, since, _addr)| {
+		self.lobby.retain(|conn_id, (out, since, _addr, _account)| {
 			let keep = tick.wrapping_sub(*since) < HELLO_TIMEOUT_TICKS;
 			if !keep {
 				log::info!("conn {conn_id}: no Hello within the deadline — dropping");
@@ -1698,23 +1722,6 @@ impl Sim {
 		let used: FxHashSet<PlayerId> = self.clients.values().map(|c| c.id).collect();
 		(0..SERVER_ID).find(|id| !used.contains(id))
 	}
-}
-/// Can this string ever be a player's display name, and therefore ever
-/// match the admin check?
-///
-/// Admin is granted by comparing against `Client::name`, which the master
-/// mints and `validate_name` constrains to a short run of `a-z A-Z 0-9 -
-/// _`. `--admin-name "big boss"` or a name past that length can therefore
-/// never match ANYONE — the server booted with admin quietly disabled
-/// while logging a reassuring `admin: big boss`. The launcher now refuses
-/// the argument outright, which is what an operator wants from a typo in a
-/// security-relevant flag.
-///
-/// (This validates the SHAPE of the name, nothing more. Names are still
-/// self-asserted at the master, so admin remains impersonable until the
-/// login flow lands — see NET-AUDIT-2.md §1.1.)
-pub fn admin_name_is_usable(name: &str) -> Result<(), &'static str> {
-	digblock_net::protocol::validate_name(name)
 }
 
 fn column_of(pos: Vec3) -> (i32, i32) {
@@ -1807,7 +1814,8 @@ fn client_send_frame(client: &Client, frame: &std::sync::Arc<[u8]>) {
 mod tests {
 	use super::harness::*;
 	use super::{
-		ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg, SimEvent,
+		AccountId, ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg,
+		SimEvent,
 	};
 	use digblock_net::codec::FrameReader;
 	use std::assert_matches;
@@ -1947,6 +1955,7 @@ mod tests {
 					conn_id: 9,
 					out: tx,
 					addr: test_addr(9),
+					account: AccountId::NONE,
 				},
 				SimEvent::Msg {
 					conn_id: 9,
@@ -1957,7 +1966,6 @@ mod tests {
 						token: [0; 16],
 						sim_version,
 						build: "old-build".into(),
-						identity: [0; 16],
 					},
 				},
 			]);
@@ -2008,6 +2016,7 @@ mod tests {
 			conn_id: 7,
 			out: tx,
 			addr: test_addr(7),
+			account: AccountId::NONE,
 		}]);
 		// One tick short of the deadline: still in the lobby, no Close.
 		for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
@@ -2034,7 +2043,6 @@ mod tests {
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "late-build".into(),
-				identity: [0; 16],
 			},
 		}]);
 		assert_eq!(sim.player_count(), 0);
@@ -2141,6 +2149,7 @@ mod tests {
 				conn_id: 5,
 				out: tx,
 				addr: test_addr(5),
+				account: AccountId::NONE,
 			},
 			SimEvent::Msg {
 				conn_id: 5,
@@ -2151,7 +2160,6 @@ mod tests {
 					token: [0; 16],
 					sim_version: digblock_core::SIM_VERSION,
 					build: "t".into(),
-					identity: [0; 16],
 				},
 			},
 		]);
@@ -2170,20 +2178,22 @@ mod tests {
 	}
 
 	/// Inventory persists across reconnect AND across a full server
-	/// rebuild on the same data dir, keyed by the hashed identity.
+	/// rebuild on the same data dir, keyed by the ACCOUNT — which is what
+	/// makes a character follow a player to a second device rather than
+	/// staying with the machine that made it.
 	#[test]
-	fn identity_inventory_persists_across_reconnect_and_reboot() {
+	fn account_inventory_persists_across_reconnect_and_reboot() {
 		use digblock_core::block::BlockType;
 		use digblock_net::messages::EditKind;
 		use glam::Vec3;
 
 		let dir = temp_dir("persist");
-		let identity = [7u8; 16];
+		let account = test_account(7);
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		{
 			let mut sim =
 				super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-			let _c = connect_with_identity(&mut sim, 1, identity);
+			let _c = connect_as_account(&mut sim, 1, account);
 			wait_live(&mut sim, 1);
 			let mut t = 0;
 			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
@@ -2208,7 +2218,7 @@ mod tests {
 
 			// Reconnect within the same server run.
 			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
-			let mut c2 = connect_with_identity(&mut sim, 2, identity);
+			let mut c2 = connect_as_account(&mut sim, 2, account);
 			c2.drain();
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
@@ -2233,7 +2243,7 @@ mod tests {
 		// Full reboot on the same data dir.
 		let mut sim =
 			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		let mut c3 = connect_with_identity(&mut sim, 3, identity);
+		let mut c3 = connect_as_account(&mut sim, 3, account);
 		c3.drain();
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
@@ -2253,8 +2263,8 @@ mod tests {
 			"reboot carries the arrangement: {:?}",
 			c3.msgs
 		);
-		// A different identity starts empty.
-		let mut c4 = connect_with_identity(&mut sim, 4, [9u8; 16]);
+		// A different account starts empty.
+		let mut c4 = connect_as_account(&mut sim, 4, test_account(9));
 		c4.drain();
 		assert!(
 			c4.msgs.iter().any(|m| matches!(
@@ -2664,8 +2674,8 @@ mod tests {
 	/// TOTALS: a stone dig pays the block's `dig_xp` on top of the
 	/// harness's gate grant, converting the rubble pays its `convert_xp`
 	/// in Alchemy, and the totals survive reconnect and a full server
-	/// reboot via the identity store (join sync always carries a `Skills`
-	/// frame, empty for a fresh identity).
+	/// reboot via the account's stored record (join sync always carries a
+	/// `Skills` frame, empty for a fresh account).
 	#[test]
 	fn xp_awards_on_dig_and_alchemy_and_persists() {
 		use digblock_core::block::BlockType;
@@ -2673,7 +2683,7 @@ mod tests {
 		use glam::Vec3;
 
 		let dir = temp_dir("xp");
-		let identity = [8u8; 16];
+		let account = test_account(8);
 		// dig_hold grants whatever the target's gates ask — for stone that
 		// is the Rock family's strength wall — and the dig pays its own
 		// `dig_xp` on top of that level's total. Derived, so a retune of
@@ -2688,13 +2698,13 @@ mod tests {
 		{
 			let mut sim =
 				super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-			let mut c = connect_with_identity(&mut sim, 1, identity);
+			let mut c = connect_as_account(&mut sim, 1, account);
 			c.drain();
 			assert!(
 				c.msgs
 					.iter()
 					.any(|m| matches!(m, ServerMsg::Skills { xp } if xp.is_empty())),
-				"fresh identity syncs empty skills: {:?}",
+				"fresh account syncs empty skills: {:?}",
 				c.msgs
 			);
 			wait_live(&mut sim, 1);
@@ -2732,7 +2742,7 @@ mod tests {
 
 			// Reconnect in the same run: the totals ride the Skills sync.
 			sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
-			let mut c2 = connect_with_identity(&mut sim, 2, identity);
+			let mut c2 = connect_as_account(&mut sim, 2, account);
 			c2.drain();
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
@@ -2748,7 +2758,7 @@ mod tests {
 		// Full reboot on the same data dir.
 		let mut sim =
 			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		let mut c3 = connect_with_identity(&mut sim, 3, identity);
+		let mut c3 = connect_as_account(&mut sim, 3, account);
 		c3.drain();
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
@@ -2848,18 +2858,17 @@ mod tests {
 		assert_eq!(last_alch, Some(u64::from(over) * 8), "XP only for landed");
 	}
 
-	/// A live identity refuses a second connection; anonymous (all-zero)
-	/// identities coexist freely.
+	/// A live account refuses a second connection; unverified (accountless)
+	/// connections coexist freely, because they share no persisted record
+	/// to stomp.
 	#[test]
-	fn duplicate_identity_refused_anonymous_pairs_ok() {
+	fn duplicate_account_refused_anonymous_pairs_ok() {
 		let mut sim = flat_sim("dupid");
-		let _a = connect_with_identity(&mut sim, 1, [5u8; 16]);
-		let dup = try_connect(&mut sim, 2, [5u8; 16]);
-		assert!(
-			matches!(
-				dup.msgs.first(),
-				Some(ServerMsg::Refused { reason }) if reason.contains("identity")
-			),
+		let _a = connect_as_account(&mut sim, 1, test_account(5));
+		let dup = try_connect(&mut sim, 2, test_account(5));
+		assert_matches!(
+			dup.msgs.first(),
+			Some(ServerMsg::Refused { reason }) if reason.contains("account"),
 			"{:?}",
 			dup.msgs
 		);
@@ -2868,9 +2877,9 @@ mod tests {
 		let _c = connect(&mut sim, 4);
 		assert_eq!(sim.player_count(), 3);
 
-		// The refused identity can join once the holder leaves.
+		// The refused account can join once the holder leaves.
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
-		let _d = connect_with_identity(&mut sim, 5, [5u8; 16]);
+		let _d = connect_as_account(&mut sim, 5, test_account(5));
 		assert_eq!(sim.player_count(), 3);
 	}
 
@@ -3112,25 +3121,28 @@ mod tests {
 		);
 	}
 
-	/// `--admin-name` is matched against display names, which the master
-	/// constrains to `validate_name`. A value that can never be one grants
-	/// admin to nobody, so it is refused rather than stored — a server
-	/// must not boot logging "admin: big boss" with admin disabled.
+	/// Admin is an ACCOUNT compare, and the accountless connection must
+	/// never satisfy it. Every offline and test session carries
+	/// `AccountId::NONE`, so a set that admitted it would hand admin to all
+	/// of them at once — which is the shape of the bug this replaced, where
+	/// the key was something anyone could ask the master for.
 	#[test]
-	fn an_unusable_admin_name_is_refused_not_stored() {
-		let mut sim = flat_sim("adminname");
-		for bad in ["big boss", "ab", "abcdefghijk", "hé", "bang!"] {
-			sim.set_admin_name(Some(bad.into()));
-			assert_eq!(sim.admin_name, None, "{bad:?} should not grant admin");
-			assert!(super::admin_name_is_usable(bad).is_err(), "{bad:?}");
-		}
-		for good in ["boss", "Ted_L-99", "abc"] {
-			sim.set_admin_name(Some(good.into()));
-			assert_eq!(sim.admin_name.as_deref(), Some(good));
-			assert!(super::admin_name_is_usable(good).is_ok(), "{good:?}");
-		}
-		sim.set_admin_name(None);
-		assert_eq!(sim.admin_name, None);
+	fn the_accountless_connection_is_never_admin() {
+		let mut sim = flat_sim("adminacct");
+		let boss = test_account(3);
+
+		sim.set_admin_accounts([AccountId::NONE]);
+		assert!(sim.admin_accounts.is_empty(), "NONE must not be stored");
+		assert!(!sim.is_admin(AccountId::NONE));
+
+		sim.set_admin_accounts([boss, AccountId::NONE]);
+		assert!(sim.is_admin(boss));
+		assert!(!sim.is_admin(AccountId::NONE));
+		assert!(!sim.is_admin(test_account(4)));
+
+		// Replaces rather than accumulates: an operator's list is the list.
+		sim.set_admin_accounts([]);
+		assert!(!sim.is_admin(boss));
 	}
 
 	#[test]
@@ -3182,6 +3194,7 @@ mod tests {
 				conn_id: 9,
 				out: tx,
 				addr: test_addr(9),
+				account: AccountId::NONE,
 			},
 			SimEvent::Msg {
 				conn_id: 9,
@@ -3205,10 +3218,10 @@ mod tests {
 	#[test]
 	fn reconnect_resumes_at_the_last_position() {
 		let dir = temp_dir("resume");
-		let identity = [11u8; 16];
+		let account = test_account(11);
 		let mut sim =
 			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		let _c = connect_with_identity(&mut sim, 1, identity);
+		let _c = connect_as_account(&mut sim, 1, account);
 		wait_live(&mut sim, 1);
 
 		// Walk well away from spawn.
@@ -3219,7 +3232,7 @@ mod tests {
 		assert!(away.distance(FLAT_SPAWN) > 5.0, "test needs to be away");
 
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
-		let c2 = connect_with_identity(&mut sim, 2, identity);
+		let c2 = connect_as_account(&mut sim, 2, account);
 		let spawn = c2
 			.msgs
 			.iter()
@@ -3240,10 +3253,10 @@ mod tests {
 	#[test]
 	fn reconnect_does_not_reset_the_spawn_cooldown() {
 		let dir = temp_dir("resumecd");
-		let identity = [12u8; 16];
+		let account = test_account(12);
 		let mut sim =
 			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		let _c = connect_with_identity(&mut sim, 1, identity);
+		let _c = connect_as_account(&mut sim, 1, account);
 		wait_live(&mut sim, 1);
 
 		// Walk away and use the return, consuming the cooldown.
@@ -3264,7 +3277,7 @@ mod tests {
 			t += 1;
 		}
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
-		let _c2 = connect_with_identity(&mut sim, 2, identity);
+		let _c2 = connect_as_account(&mut sim, 2, account);
 		wait_live(&mut sim, 2);
 		let away = sim.test_player(2).unwrap().pos;
 		assert!(away.distance(FLAT_SPAWN) > 5.0, "resumed away from spawn");

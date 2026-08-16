@@ -90,6 +90,12 @@ extern "C" {
 	type WritableStreamDefaultWriter;
 	#[wasm_bindgen(method)]
 	fn write(this: &WritableStreamDefaultWriter, chunk: &JsValue) -> js_sys::Promise;
+	/// Signal end-of-stream. The returned promise settles once the
+	/// browser has flushed, which on an unloading page nobody is around
+	/// to await — but ASKING is what gives the pending writes a chance,
+	/// and it is the strongest thing a page has.
+	#[wasm_bindgen(method)]
+	fn close(this: &WritableStreamDefaultWriter) -> js_sys::Promise;
 	/// Room left before the stream's high-water mark; negative means the
 	/// browser is queueing faster than the connection drains. `null` once
 	/// the stream errors, and the getter throws on a released writer.
@@ -381,6 +387,30 @@ impl NetTransport for WebTransportClient {
 			}
 		}
 		self.sample_rtt();
+	}
+
+	/// Ask the browser to flush the reliable stream and end it.
+	///
+	/// No waiting, because a page cannot wait: `close()` hands back a
+	/// promise, and on the `pagehide` path there is no later task for it
+	/// to resolve in. Ordering is still on our side — the goodbye was
+	/// written to the same writer a moment ago, and a WritableStream
+	/// close is queued behind the writes already in it, so the browser
+	/// flushes them together if it flushes at all.
+	///
+	/// Strictly weaker than the native close, and that asymmetry is
+	/// inherent: nothing a tab does on unload is guaranteed to reach the
+	/// network. The server's idle timeout remains the backstop.
+	fn close(&mut self) {
+		if self.status == ConnStatus::Closed {
+			return;
+		}
+		if let Some(w) = &*self.reliable_writer.borrow() {
+			NOOP_CATCH.with(|c| {
+				let _ = w.close().catch(c);
+			});
+		}
+		self.status = ConnStatus::Closed;
 	}
 
 	fn status(&self) -> ConnStatus {

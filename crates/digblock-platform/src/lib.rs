@@ -60,14 +60,30 @@ pub trait Game: 'static {
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
-	/// The run is ending on its own terms (`exit_after_frames`), before
-	/// the event loop is told to exit.
+	/// We are going away for good: the window was closed, the page is
+	/// unloading, or a capture ran out its frames (`exit_after_frames`).
+	/// On a real departure it follows [`Game::on_suspend`], so state is
+	/// already saved — this is for the goodbyes state-saving cannot do,
+	/// like telling a server the player has left, or emitting a bench
+	/// summary. (A capture that runs out its frames reaches it without a
+	/// suspend: there is nothing to save, and every capture path is
+	/// deliberately hermetic.)
 	///
 	/// Exists because a `Drop` impl is not a portable exit hook: on wasm,
 	/// winit's exit unwinds through JS and destructors do not reliably
-	/// run, so anything a capture is FOR — the bench summary — would be
-	/// emitted on native and silently lost on the web, which is the
-	/// platform with no other way to report it.
+	/// run, so anything a capture is FOR would be emitted on native and
+	/// silently lost on the web, which is the platform with no other way
+	/// to report it.
+	///
+	/// Kept apart from `on_suspend` because they mean different things. A
+	/// backgrounded phone is suspended and may well come back; hanging up
+	/// on it would end a session the player still wants. This one fires
+	/// only when there is nothing to come back to.
+	///
+	/// May BLOCK, briefly, and is the only callback here allowed to: a
+	/// network flush queued and not waited for is a flush that loses the
+	/// race with the process exiting. Keep it to a fraction of a second —
+	/// a window that lingers after the click reads as a hang.
 	fn on_exit(&mut self) {}
 	/// Polled once per frame. `false` (menu open) releases the cursor and
 	/// routes clicks/positions to the game as UI input; the shell re-grabs

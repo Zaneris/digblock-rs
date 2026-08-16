@@ -156,10 +156,36 @@ fn pick_server(master_url: &str, filter: Option<&str>) -> Result<ServerPick, Str
 	}
 }
 
+/// Sign a bot in through the master's development-only endpoint.
+///
+/// Bots cannot open a browser, so they cannot do the real thing. The
+/// endpoint is honoured only when the master runs with
+/// `ASPNETCORE_ENVIRONMENT=Development` and `Master:Dev:AuthEnabled`, and a
+/// master with it set anywhere else refuses to boot — so this cannot reach
+/// a production master even by accident.
+fn dev_sign_in(master_url: &str, subject: &str) -> Result<String, String> {
+	let mut res = ureq::post(format!("{master_url}/api/dev/signin"))
+		.send_json(serde_json::json!({ "subject": subject, "platform": "bot" }))
+		.map_err(|e| e.to_string())?;
+	if res.status().as_u16() != 200 {
+		return Err(format!(
+			"http {} — is the master running with Master__Dev__AuthEnabled=true?",
+			res.status()
+		));
+	}
+	let body: serde_json::Value = res.body_mut().read_json().map_err(|e| e.to_string())?;
+	body["sessionToken"]
+		.as_str()
+		.map(str::to_string)
+		.ok_or_else(|| "no sessionToken in dev sign-in response".into())
+}
+
 /// Mint this bot's one-time token (tokens are single-use, one per bot).
-fn mint_token(master_url: &str, server_id: &str, name: &str) -> Result<[u8; 16], String> {
+fn mint_token(master_url: &str, server_id: &str, session: &str) -> Result<[u8; 16], String> {
+	// No displayName any more: the master looks up the account's own name.
 	let mut res = ureq::post(format!("{master_url}/api/join"))
-		.send_json(serde_json::json!({ "serverId": server_id, "displayName": name }))
+		.header("authorization", &format!("Bearer {session}"))
+		.send_json(serde_json::json!({ "serverId": server_id }))
 		.map_err(|e| e.to_string())?;
 	let join: serde_json::Value = res.body_mut().read_json().map_err(|e| e.to_string())?;
 	let hex = join["token"].as_str().ok_or("no token in join response")?;
@@ -185,8 +211,20 @@ fn run_bot(
 	duration_secs: f32,
 	edit_rate: f32,
 ) -> BotResult {
+	// One dev account per bot index, so a soak exercises the persistence
+	// path the way real players do: the same bot rejoining finds its own
+	// record, and different bots never share one.
 	let name = format!("bot-{index}");
-	let token = match mint_token(master_url, &server.id, &name) {
+	let session = match dev_sign_in(master_url, &name) {
+		Ok(session) => session,
+		Err(e) => {
+			return BotResult {
+				disconnected: Some(format!("dev sign-in failed: {e}")),
+				..Default::default()
+			};
+		}
+	};
+	let token = match mint_token(master_url, &server.id, &session) {
 		Ok(token) => token,
 		Err(e) => {
 			return BotResult {
@@ -204,9 +242,6 @@ fn run_bot(
 			name,
 			draw_dist: 4,
 			token,
-			// Random per run: exercises the persistence path in soaks
-			// without cross-bot identity collisions.
-			identity: rand::random(),
 		},
 	);
 

@@ -13,7 +13,18 @@ use wtransport::{ClientConfig, Endpoint};
 enum Outgoing {
 	Datagram(Vec<u8>),
 	Reliable(Vec<u8>),
+	/// Stop, but finish the reliable stream first. Distinct from the
+	/// channel simply closing (which also finishes) because the caller
+	/// wants to KNOW when the flush is done — see `NetTransport::close`.
+	Close,
 }
+
+/// How long a graceful close waits for the reliable stream to flush.
+///
+/// One round trip on anything healthy. Long enough for a bad link to get
+/// a goodbye out, short enough that closing the game window still feels
+/// instant — under the threshold where a person reads a window as sticky.
+const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// How the client validates the server's TLS certificate.
 #[derive(Clone, Copy, Debug)]
@@ -141,6 +152,43 @@ impl NetTransport for ChannelTransport {
 		}
 	}
 
+	/// Ask the background thread to flush and stop, then WAIT for it —
+	/// briefly, and only here.
+	///
+	/// Blocking is the point. The network thread is detached, so on a
+	/// process exit it is racing `main` returning and usually loses:
+	/// without this, closing the window would queue a goodbye that never
+	/// reached the wire, which is the whole reason a crashed client used
+	/// to sit in the server's player list until QUIC timed it out.
+	fn close(&mut self) {
+		if self.status == ConnStatus::Closed {
+			return;
+		}
+		// A dropped receiver means the thread is already gone; nothing to
+		// wait for and nothing more to send.
+		if self.out_tx.send(Outgoing::Close).is_err() {
+			self.status = ConnStatus::Closed;
+			return;
+		}
+		let deadline = std::time::Instant::now() + CLOSE_TIMEOUT;
+		loop {
+			let left = deadline.saturating_duration_since(std::time::Instant::now());
+			if left.is_zero() {
+				log::debug!("close: flush did not confirm within {CLOSE_TIMEOUT:?}");
+				break;
+			}
+			// Anything still arriving is discarded on purpose: we are
+			// leaving, and the only event worth reading is the one that
+			// says the flush finished.
+			match self.in_rx.recv_timeout(left) {
+				Ok(TransportEvent::Disconnected { .. }) => break,
+				Ok(_) => continue,
+				Err(_) => break,
+			}
+		}
+		self.status = ConnStatus::Closed;
+	}
+
 	fn status(&self) -> ConnStatus {
 		self.status
 	}
@@ -213,8 +261,11 @@ async fn run(
 						break format!("stream write: {e}");
 					}
 				}
-				// Engine dropped the transport: shut down quietly.
-				None => break "closed by client".to_string(),
+				// Asked to leave, or the engine dropped the transport.
+				// Either way the same tail runs below: everything queued
+				// ahead of this has already been written, and now it has
+				// to actually reach the wire.
+				Some(Outgoing::Close) | None => break "closed by client".to_string(),
 			},
 			dgram = conn.receive_datagram() => match dgram {
 				Ok(d) => {
@@ -231,5 +282,15 @@ async fn run(
 			},
 		}
 	};
+	// `write_all` only buffers into the QUIC stream; dropping `conn` on
+	// the way out of this function closes the connection and takes
+	// anything unsent with it. That is fine for the error paths — there
+	// is nothing left to say to a dead peer — and NOT fine for the one
+	// that matters: a `Bye` written a line ago, so the server frees the
+	// session now instead of waiting out an idle timeout.
+	//
+	// Bounded, because `finish` waits on the peer and the peer may be
+	// gone. A timeout here costs the goodbye, not the shutdown.
+	let _ = tokio::time::timeout(CLOSE_TIMEOUT, send.finish()).await;
 	disconnect(reason);
 }

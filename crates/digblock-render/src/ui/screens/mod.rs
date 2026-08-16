@@ -101,9 +101,26 @@ mod tests {
 		out.push(("inventory", dl));
 
 		let mut dl = DrawList::default();
-		let menu = crate::menu::Menu::new(true, Default::default(), None);
+		let menu = crate::menu::Menu::new(true, Default::default(), None, None);
 		menu.view(size, s, false).emit(&mut dl, &style, size, 1.0);
 		out.push(("menu", dl));
+
+		// The account-flow pages. They are worth listing individually
+		// rather than trusting the root menu to stand for all of them:
+		// each carries text the others do not (a full account id, a
+		// status line, an availability line), and it is exactly that kind
+		// of one-off row that has broken the one-text-size rule before.
+		for (name, page) in [
+			("menu-signin", crate::menu::TestPage::SignIn),
+			("menu-name", crate::menu::TestPage::ChooseName),
+			("menu-account", crate::menu::TestPage::Account),
+		] {
+			let mut dl = DrawList::default();
+			let mut menu = crate::menu::Menu::new(true, Default::default(), None, None);
+			menu.test_open(page);
+			menu.view(size, s, false).emit(&mut dl, &style, size, 1.0);
+			out.push((name, dl));
+		}
 
 		let mut dl = DrawList::default();
 		let mut hits: HitMap<InvId> = HitMap::default();

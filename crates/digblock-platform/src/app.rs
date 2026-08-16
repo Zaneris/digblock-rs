@@ -130,6 +130,11 @@ struct App<G: Game> {
 	/// edge, keeping the classic click-to-grab behavior bit-identical.
 	prev_wants_grab: bool,
 	frames_rendered: u64,
+	/// The goodbye has run. There are three doors out — the window's
+	/// close button, a capture exhausting its frames, and the event
+	/// loop's own `exiting` — and the first two are followed by the
+	/// third, so without this the game would be told twice.
+	shut_down: bool,
 	/// Read only by the native screenshot path.
 	#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 	screenshot_pending: bool,
@@ -189,6 +194,7 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 		cursor_grabbed: false,
 		prev_wants_grab: true,
 		frames_rendered: 0,
+		shut_down: false,
 		screenshot_pending: false,
 		launched_at: Instant::now(),
 		drill_ok: false,
@@ -637,6 +643,13 @@ impl<G: Game> App<G> {
 		}
 	}
 
+	/// Tell the game we are going, exactly once. See `shut_down`.
+	fn exit_once(&mut self) {
+		if !std::mem::replace(&mut self.shut_down, true) {
+			self.game.on_exit();
+		}
+	}
+
 	fn enter_suspend(&mut self) {
 		match std::mem::replace(&mut self.state, AppState::Uninitialized) {
 			AppState::Running(r) => {
@@ -644,6 +657,23 @@ impl<G: Game> App<G> {
 				self.clock.pause();
 				self.game.input(InputEvent::FocusLost);
 				self.game.on_suspend();
+				// On the web this arm is reached from `pagehide` with
+				// `persisted` set — the page went into the back/forward
+				// cache. It may be restored, but the connection will not
+				// be: a frozen page stops pumping and the socket dies
+				// with it. So say goodbye rather than leave the server
+				// holding a session nobody is behind.
+				//
+				// The OTHER pagehide — an actual close or navigation —
+				// does not come through here at all. winit turns that one
+				// into `LoopExiting`, which is why `exiting` below is
+				// where the web's real departure is handled.
+				//
+				// Native keeps suspend and exit apart: a backgrounded
+				// phone is suspended and may well come back, and hanging
+				// up on it would end a session the player still wants.
+				#[cfg(target_arch = "wasm32")]
+				self.exit_once();
 				// r.surface and r.depth drop here; gpu + window retained.
 				self.state = AppState::Suspended(Suspended {
 					gpu: r.gpu,
@@ -879,7 +909,7 @@ impl<G: Game> App<G> {
 			.exit_after_frames
 			.is_some_and(|n| self.frames_rendered >= n)
 		{
-			self.game.on_exit();
+			self.exit_once();
 			el.exit();
 			return;
 		}
@@ -1080,6 +1110,19 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 		self.dispatch(LcEvent::OsSuspended, el);
 	}
 
+	/// The loop is ending. On desktop this follows the close button's own
+	/// `el.exit()`, so the goodbye has already run and this is a no-op.
+	///
+	/// On the WEB it is the only notice we get: winit splits `pagehide`
+	/// by `persisted`, sending the back/forward-cache case to `suspended`
+	/// and a real close or navigation HERE, as `LoopExiting`. Without
+	/// this hook, closing a tab would say nothing to the server at all —
+	/// which is the case that matters most, since it is also the most
+	/// common way a browser player leaves.
+	fn exiting(&mut self, _el: &ActiveEventLoop) {
+		self.exit_once();
+	}
+
 	fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
 		match event {
 			WindowEvent::RedrawRequested => {
@@ -1097,6 +1140,7 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 			}
 			WindowEvent::CloseRequested => {
 				self.game.on_suspend();
+				self.exit_once();
 				el.exit();
 			}
 			WindowEvent::Focused(false) => {
