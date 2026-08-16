@@ -14,18 +14,33 @@ one bug wearing seven hats.
 
 ---
 
-## 1. Blocked on the master login flow
+## 1. Blocked on the master login flow — ALL SEVEN CLOSED (2026-08-14)
 
-**None of these are fixable at the game server.** They all reduce to the same missing primitive: the master mints an
-identity for anybody who asks for one. `POST /api/join` (`apps/master/Program.cs:155-167`) takes a `displayName`, checks
-it against `^[A-Za-z0-9_-]{3,10}$`, and hands back a valid token. There is no account, no ownership, no reservation, and
-no rate limit. Likewise `POST /api/register` (`Program.cs:64-104`) has no credential at all — the QUIC probe is a
-*reachability* check that everyone mistakes for an *authentication* check.
+**None of these were fixable at the game server.** They all reduced to the same missing primitive: the master minted an
+identity for anybody who asked for one. `POST /api/join` took a `displayName`, checked it against the name charset, and
+handed back a valid token. There was no account, no ownership, no reservation, and no rate limit. Likewise
+`POST /api/register` had no credential at all — the QUIC probe is a *reachability* check that everyone mistakes for an
+*authentication* check.
 
-Deferred until a real login flow exists. Revisit **all seven together** when it lands; fixing any one in isolation just
-moves the hole.
+The login flow landed, and all seven closed together, as this section insisted they had to. **`AUTH-DESIGN.md` is the
+reference** for the model, the flows, the registration algorithm and its rationale, and what is deliberately still not
+built. The per-finding notes below record what each one became; the prose above each is left as written, because the
+description of the hole is the useful part of a closed finding.
 
 ### 1.1 Admin authority is a self-asserted display name — CRITICAL
+
+**Closed.** Admin is `--admin <account-id>` (repeatable, or `DIGBLOCK_ADMIN_IDS`), and both `is_admin` sites compare the
+account the master vouched for. A display name grants nothing, which `admin_keys_on_the_account_not_the_name` pins by
+joining an impostor under the admin's exact name and asserting they get nothing.
+
+`--admin-name` **exits** rather than being remapped onto the new flag: it was a security hole, not a spelling, and an
+operator who kept using it would have been relying on the behaviour that was removed. `--admin` also accepts a display
+NAME, resolved once at boot against the master and stored as the id — so renaming does not drop admin and a name claimed
+later by someone else never inherits it. An unresolvable admin is fatal at boot, which is the same discipline the old
+shape check had.
+
+Name uniqueness came along for free: names are account-owned and unique at the master, so the "refuse a join whose name
+is already live" suggestion is structural rather than a check.
 
 `apps/server/src/sim/mod.rs:516-519` (and the join-time copy at `:969-972`)
 
@@ -57,6 +72,19 @@ string. Consider also refusing a join whose display name is already live on the 
 
 ### 1.2 Server registration is unauthenticated and evicts the incumbent — CRITICAL
 
+**Closed**, without adding a signup step. Registration stays anonymous; the FIRST registration of a `host:port` mints a
+key and the address remembers it (`ServerClaim`, the only registry state that is persisted). A later registration must
+present that key while anything is live there — otherwise 409, and the source address is temp-banned for a doubling
+interval, because the interesting version of this was a loop that re-fired on every victim re-registration.
+
+A claimed address that is NOT live can be re-keyed by a registrant that passes the probes, which is the recovery path
+for an operator who lost `./data`. It is safe for the same reason the probe order is what it is: passing the source
+probe means being the machine at that address.
+
+The e2e test this section flagged inverted: `a_keyless_registration_cannot_take_a_live_address` performs exactly the
+attack described here and asserts the 409 and the ban, and the dirty-name half of the old test moved to
+`a_dirty_server_name_is_sanitized_not_rejected`, which now presents its key like a real restart does.
+
 `apps/master/Program.cs:64-104`, `apps/master/Registry.cs:89-92`
 
 Registering the same `host:port` silently replaces the existing entry, taking its id and bearer key with it. The only
@@ -77,6 +105,13 @@ entry's key.
 
 ### 1.3 `probeHost` is client-supplied and is the only address ever dialed — CRITICAL
 
+**Closed.** `probeHost` is gone from `RegisterRequest`. The master probes the SOURCE address first — passing it proves
+the registrant is really a live QUIC endpoint at that address serving that certificate — and probes a differing
+advertised address as well, with both required on the normal path. An advertised address is never published unprobed.
+
+The dev NAT-hairpin case it existed for is `Master:Dev:ProbeHostOverride`: same effect, different authority. The master
+operator sets it, not an anonymous caller.
+
 `apps/master/Program.cs:93-97`, `apps/master/HealthChecker.cs:51`
 
 `probe.ProbeAsync(probeHost, ...)` and the health sweep both dial `entry.ProbeHost`, while the `entry.Url` handed to
@@ -91,6 +126,15 @@ omit `probeHost`, but nothing in the master requires or constrains that.
 `host.docker.internal` case), gate it behind an authenticated operator flag, not an anonymous request field.
 
 ### 1.4 The identity secret is a global bearer credential — HIGH
+
+**Closed by deletion.** `Hello.identity` is gone (protocol v22 — the one field this protocol has ever removed rather
+than appended, which is why `MIN_PROTOCOL` moved with it). A player is identified by the `AccountId` the master returns
+from `/api/tokens/verify`, so identity reaches the server from the master and never from the client. There is no
+replayable secret left to harvest: the join token is one-time and server-scoped, and the session token is presented only
+to the master.
+
+The design half this section deferred — "scoped per-server, or replaced entirely by the account" — took the second
+option. Per-server pseudonyms are discussed and declined in AUTH-DESIGN.md §1.1.
 
 `crates/digblock-net/src/messages.rs:130-133`, `apps/server/src/sim/mod.rs:844`
 
@@ -108,6 +152,15 @@ scoped per-server, or replaced entirely by the account the master vouches for.
 
 ### 1.5 Persisted records can be evicted by anyone — HIGH
 
+**Closed upstream rather than here.** `MAX_IDENTITIES` is unchanged and is now honestly just a file bound: records are
+keyed on accounts, an account costs a real Google or Facebook login, and `/api/join` is rate-limited per session.
+Filling the store is no longer something one client can do in an afternoon.
+
+`inventories.bin` moved to v5 for the key change alone — the record body is byte-identical. v1–v4 files are archived
+rather than read forward, which is the deliberate exception to that module's own no-archive-on-upgrade rule: the old
+keys are device-secret hashes with no mapping to accounts, so reading them would hand inventories to whoever happened to
+collide.
+
 `apps/server/src/player_store.rs:43,145-154`
 
 The store keeps `MAX_IDENTITIES` records. The LRU-order bug (re-`put` never refreshing a key's position, so online
@@ -119,6 +172,15 @@ oldest first.
 creation.
 
 ### 1.6 Ban enforcement runs after the master round trip — MEDIUM
+
+**Both halves addressed, one of them fully.** Bans now record the ACCOUNT as well as the IP, and either enforces — so
+evasion is no longer "a new IP while the evader's inventory and position survive intact". `/unban` takes a name, an IP,
+or an account id.
+
+The ORDERING is unchanged: `verify_join` still consumes the token before the sim sees the connection, because the
+account is not known until it has. What the ordering enabled — one peer holding every `MAX_CONNECTIONS` slot, each
+forcing an outbound verify — is capped by `DEFAULT_MAX_CONNECTIONS_PER_IP` instead, which is the fix that actually
+matches the shape of the abuse.
 
 `apps/server/src/net.rs:251` vs `apps/server/src/sim/mod.rs:808-812`
 
@@ -136,6 +198,12 @@ Note also that bans are IP-only (`ban_store.rs:47`) — deliberate, but it means
 inventory and position survive intact, since those are keyed by identity. With an account system, ban the account.
 
 ### 1.7 Unauthenticated outbound probe with an error oracle — MEDIUM (SSRF)
+
+**Closed on its own terms**, since registration stays anonymous by choice. The four `Reason` values stay — a self-hoster
+needs `certMismatch` apart from `timeout` to debug a port forward — and what goes is the set of interesting targets:
+`ProbeTargets` refuses anything off the public internet, checked AFTER DNS resolution, because a hostname resolving to a
+private address is the whole trick. `Detail` (the raw exception text, which described the master's own network) is empty
+outside Development, and the endpoint is rate-limited per source with the §1.2 temp-ban on top.
 
 `apps/master/Program.cs:97`, `apps/master/Probe.cs:44-106`
 
@@ -294,16 +362,15 @@ cannot do it either. A count is display text beside a name; it was never worth t
 Pinned by an e2e test that registers by hand with `players: -1` — a well-behaved client cannot send it, since
 `RegisterBody` is `u32` — and asserts the listing is still readable. Verified to fail against the unclamped master.
 
-**Still open in this section** (all cheapest to do alongside §1, since they are the same three-way mirror):
+**This section's leftovers — resolved with §1, as predicted.**
 
-- `ProtocolVersion`/`SimVersion` (`Contracts.cs:17-18`) are sent by `master.rs` and never read by the master or surfaced
-  in `ServerSummary`. Incompatible servers are listed indistinguishably from compatible ones, and the client discovers
-  the mismatch only after a full QUIC connect + Hello.
-- `JoinResponse.ExpiresIn` is read by neither filler.
-- The server never re-validates the master's `displayName` with `validate_name` — only `sanitize_name` runs, which
-  permits a longer string including spaces. The 3-10 ASCII rule is enforced in exactly one place, with no defence in
-  depth on the side that consumes it. That matters more than it looks, because §1.1 makes the name an authorization
-  input.
+- `ProtocolVersion`/`SimVersion` now ride `ServerSummary`, pinned by `the_listing_carries_protocol_and_sim_versions`. A
+  client can tell an incompatible server apart before spending a QUIC connect on it.
+- `JoinResponse.ExpiresIn` is still read by neither filler. Left alone: the token's life is far shorter than any
+  client-side use for the number, and both fillers redeem it immediately.
+- The display-name item **dissolved** rather than being fixed. Names are account-owned and unique at the master, chosen
+  through `POST /api/account/name`, and the joiner cannot pick one per request — so a name is no longer an authorization
+  input anywhere, which was the whole reason its validation mattered. `sanitize_name` stays as display hygiene.
 
 ### 2.6 The small ones — DONE
 
@@ -329,9 +396,21 @@ Pinned by an e2e test that registers by hand with `players: -1` — a well-behav
 
 ## 4. Still open
 
-Everything in §1, and the remainder of §2.5. Both wait on the master login flow — §2.5's leftovers are the same
-three-way mirror, and its display-name item in particular only becomes meaningful once a name is something the master
-vouches for rather than something a joiner picks.
+**Nothing from §1 or §2.5.** The login flow landed on 2026-08-14 and closed all of it; see `AUTH-DESIGN.md`, whose §6 is
+the standing list of what that work deliberately did NOT build.
+
+One thing the accounts work surfaced, **since fixed** and recorded here because the shape of it is worth keeping:
+**nothing sent `ClientMsg::Bye`**. The variant existed and the server handled it by dropping the client at once, but no
+client emitted one, so an abruptly-closed connection was only reaped on QUIC's idle timeout. Harmless while the
+duplicate check keyed on a secret a player might not have; not harmless once one account holds one live connection,
+because then the session being held belongs to the player trying to rejoin.
+
+The fix is `NetClient::disconnect`, called from every deliberate exit. The non-obvious half is that sending the message
+is not enough: `write_all` buffers into the QUIC stream, and dropping the transport closes the connection before it
+drains. So the native transport finishes the send stream on the way out and `close()` blocks briefly for it — a detached
+network thread otherwise loses the race with process exit, which is exactly the case that matters.
+`a_goodbye_frees_the_account_at_once` pins it over real QUIC with no sleep and no retry; an earlier draft of that test
+needed a twelve-attempt retry loop and still timed out, which is what the missing flush looked like from the outside.
 
 §4.1 has since been fixed and is kept here rather than moved, because the two diagnoses it had to walk back are the
 useful part. What it leaves open is server-side **aim** lag, called out at the end of it.

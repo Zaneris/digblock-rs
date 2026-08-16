@@ -16,7 +16,10 @@ re-litigating a decision or rebuilding something:
   built" list.
 - `BENCH.md` — every perf measurement, including the ones that refuted a hypothesis.
 - `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones.
-- `NET-AUDIT.md` / `NET-AUDIT-2.md`, `PERF-AUDIT.md` — netcode and frame-pacing audits.
+- `AUTH-DESIGN.md` — accounts, sign-in, and the master's trust model: the identity model, the OAuth flows, the
+  registration algorithm and why the probe order is what it is, and an honest "what is NOT built" list.
+- `NET-AUDIT.md` / `NET-AUDIT-2.md`, `PERF-AUDIT.md` — netcode and frame-pacing audits. NET-AUDIT-2 §1 was the
+  requirements doc for `AUTH-DESIGN.md`; all seven findings are closed there.
 
 ## Never write a value into prose
 
@@ -147,29 +150,45 @@ floating `1-slim` once broke a release). Bump the pins in `docker/Dockerfile*`, 
 
 ### Networking & dev gotchas
 
-Multiplayer is master-first with **no direct-connect path**: the .NET master (`apps/master`) lists servers, distributes
-cert pins, and mints one-time join tokens; a game server refuses any Hello it can't verify with the master. Display
-names are mandatory (a length-bounded run of `a-z A-Z 0-9 - _`; canonical `validate_name` in
-`digblock-net/src/protocol.rs` owns both the bounds and the charset, mirrored as a regex backstop in the master's
-`/api/join` — which is why names stay ASCII-only). Chat: T/Enter to type; the server sanitizes to the Latin free-text
-alphabet (`is_text_char`/`text_charset`, printable ASCII plus Latin-1 and Latin Extended-A so European players can type
-their own words) and rate-limits (`CHAT_*`). Admin: `--admin-name`/`DIGBLOCK_ADMIN_NAME` grants chat commands
-(`/help
-/tp /goto /bring /give /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`) — bans by IP in
-`data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`, advertised
-to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `/give` is the one command that writes a player's
-stocks, and it hands out ESSENCE rather than blocks on purpose — a block is an item that can be placed, so gifting one
-would be a world edit with no journal entry behind it and a slot to reconcile, while essence rides the standing
-`InventoryFull` rebase and no screen has to know a gift happened. It parses essence names off `Essence::name`, the
-screens' own label, so the command and the UI cannot drift about what a currency is called. `just play`/`just play-web`
-default the admin to name `admin`. Compass in `/tp`: east = sunrise = −x, north = −z.
+Multiplayer is master-first with **no direct-connect path**: the .NET master (`apps/master`) owns accounts, lists
+servers, distributes cert pins, and mints one-time join tokens; a game server refuses any Hello it can't verify with the
+master. **Playing online needs an account** — Google or Facebook through the master, never a provider token in the
+client. Read `AUTH-DESIGN.md` before touching any of it.
 
-Dev gotchas: use `127.0.0.1`, never `localhost` (macOS resolves it to `::1`; the server binds IPv4 only). The
-containerized master probes the host via `probeHost = host.docker.internal` — a LAN-IP hairpin breaks QUIC address
-validation under Docker's NAT, and production servers omit `probeHost`. If a client times out against the docker stack,
-read the server container's logs before blaming the network: a server dead at boot looks identical. Extra windows:
+Display names are account-owned and globally unique, chosen once at sign-in and changeable on a cooldown (a
+length-bounded run of `a-z A-Z 0-9 - _`; canonical `validate_name` in `digblock-net/src/protocol.rs` owns both the
+bounds and the charset, mirrored in the master's `Names` class — which is why names stay ASCII-only). A joiner cannot
+pick one per request, which is what makes `client.name` trustworthy server-side. Chat: T/Enter to type; the server
+sanitizes to the Latin free-text alphabet (`is_text_char`/`text_charset`, printable ASCII plus Latin-1 and Latin
+Extended-A so European players can type their own words) and rate-limits (`CHAT_*`).
+
+Admin: `--admin <account-id>` (repeatable) / `DIGBLOCK_ADMIN_IDS` grants chat commands
+(`/help
+/tp /goto /bring /give /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`). **Accounts, never
+names** — the name compare it replaced made joining as "admin" a complete server takeover. A display name also works and
+is resolved to an id ONCE at boot, so a rename doesn't drop admin and an unresolvable admin is fatal rather than
+silently granted to nobody. Players read their id from the in-game Account screen (Copy ID). Bans record the account AND
+the IP in `data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`,
+advertised to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `/give` is the one command that writes a
+player's stocks, and it hands out ESSENCE rather than blocks on purpose — a block is an item that can be placed, so
+gifting one would be a world edit with no journal entry behind it and a slot to reconcile, while essence rides the
+standing `InventoryFull` rebase and no screen has to know a gift happened. It parses essence names off `Essence::name`,
+the screens' own label, so the command and the UI cannot drift about what a currency is called.
+`just play`/`just
+play-web` grant `DEV_ADMIN_ID` (the dev sign-in's derived id for subject `admin`, pinned by an e2e
+test). Compass in `/tp`: east = sunrise = −x, north = −z.
+
+Dev gotchas: use `127.0.0.1`, never `localhost` (macOS resolves it to `::1`; the server binds IPv4 only — and sign-in
+redirects back to whatever origin the page is on, which the master allows by IP literal). Anything that can't open a
+browser signs in through `POST /api/dev/signin` — one account per subject string, honoured only under
+`ASPNETCORE_ENVIRONMENT=Development`, and a master with it set anywhere else **refuses to boot**. The dev master also
+needs `Master__Probe__AllowPrivateTargets` (the SSRF filter refuses non-public addresses) and
+`Master__Dev__ProbeHostOverride=host.docker.internal` (the master redirects its OWN probes; this replaced the
+registrant-supplied `probeHost`, which let a caller name the only address anyone verified). The justfile's
+`DEV_MASTER_ENV` is the one copy of all three. If a client times out against the docker stack, read the server
+container's logs before blaming the network: a server dead at boot looks identical. Extra windows:
 `just
-run -- --master-url http://127.0.0.1:5200`, add `--join --name <name>` for scripted flows.
+run -- --master-url http://127.0.0.1:5200`, add `--join --dev-signin <subject>` for scripted flows.
 
 ### Capture, bench & metrics flags
 
@@ -351,11 +370,12 @@ max and animates the delta). Join sync always sends `ServerMsg::Skills`, even em
 awards through the same core functions in the engine's offline arms only (`complete_dig`'s `_ =>`,
 `apply_alchemy_action`'s `_ =>`) — never award in the shared prediction path, or multiplayer double-pays.
 
-Persistence: `inventories.bin` v4 appends a skills blob (v1–v3 read-compat — a routine upgrade must never trip the
-archive path); local saves carry `skills` in `state.json`/`WorldSave` with serde defaults. UI: the character screen
-(`ui/screens/character.rs`, C key + pause-menu row + `DIG_SCREEN=skills`, member of both pinned theme tests), coalescing
-`+N SKILL` toasts above the hotbar (`hud::xp_toasts`), and a level-up feed line + sfx via `Engine::apply_xp_total` —
-both award paths land there so presentation can't drift.
+Persistence: `inventories.bin` carries a skills blob per record (added in v4, and unconditional from v5 on — the version
+floor rose with the key change, so nothing older reaches the reader); local saves carry `skills` in
+`state.json`/`WorldSave` with serde defaults. UI: the character screen (`ui/screens/character.rs`, C key + pause-menu
+row + `DIG_SCREEN=skills`, member of both pinned theme tests), coalescing `+N SKILL` toasts above the hotbar
+(`hud::xp_toasts`), and a level-up feed line + sfx via `Engine::apply_xp_total` — both award paths land there so
+presentation can't drift.
 
 ## Lighting (RTGI)
 
@@ -738,17 +758,39 @@ Workspace with eight crates, two thin app launchers, and a dedicated server. The
   connection), master HTTP client (`master.rs`), chunk store, append-only edit journal with boot compaction (terrain is
   never sent; join sync = seed + edits; old-version journals archive to `.vN.bak` — this destructive path is
   server-only).
-- **`apps/master`** — .NET 10 minimal API (BCL only, not in the cargo workspace). In-memory registry + one-time token
-  store; verifies reachability with a mandatory QUIC probe pinned to the registered cert hash (no probe-off mode; hosts
-  without UDP egress or libmsquic fail at boot). The Rust e2e tests boot its real container. Never put `Urls` in
-  appsettings.json — it overrides `ASPNETCORE_URLS` and breaks the container bind. The HTTP contract in `Contracts.cs`
-  is mirrored by `apps/server/src/master.rs` and `apps/desktop/src/services.rs` — change all three together.
+- **`apps/master`** — .NET 10 minimal API, not in the cargo workspace. Four first-party packages and no more: EF Core +
+  SQLite (accounts — the master's only durable state), its design-time tools, and the Google/Facebook auth handlers;
+  rate limiting needs none, it ships in the shared framework. In-memory registry + one-time token store beside the
+  database; verifies reachability with a mandatory QUIC probe pinned to the registered cert hash (no probe-off mode;
+  hosts without UDP egress or libmsquic fail at boot). The Rust e2e tests boot its real container. Never put `Urls` in
+  appsettings.json — it overrides `ASPNETCORE_URLS` and breaks the container bind. **EF Core turns SQLite's WAL on by
+  itself**, and WAL does not work over SMB, which is what the production volume is — `Data/JournalModeInterceptor.cs`
+  pins DELETE back unconditionally. Nothing above `Data/` may assume SQLite (no raw SQL, no SQLite-only types), so
+  `UseSqlite` is the one line that changes to move to Postgres. The HTTP contract in `Contracts.cs` is mirrored by
+  `apps/server/src/master.rs`, `apps/desktop/src/services.rs` and `apps/web/src/services.rs` — change all four together.
 
 ### Multiplayer model
 
-Joining is token-only: client gets a one-time token from the master (`POST /api/join`), sends it in `Hello`, the server
-consumes it via `POST /api/tokens/verify` (the master's display name wins). Verification fails **closed**; connected
-players are unaffected by a master outage.
+Joining is account-authenticated and token-mediated (`AUTH-DESIGN.md`): the client presents its SESSION to the master
+(`POST /api/join`, Bearer), gets a one-time token, sends it in `Hello`, and the server consumes it via
+`POST
+/api/tokens/verify` — which answers with the display name **and the `AccountId`**. Verification fails **closed**;
+connected players are unaffected by a master outage.
+
+**The client never asserts who it is.** `Hello` carries the opaque token bytes and nothing else about identity (v22
+removed the old `identity` secret); the account arrives from the master and rides `SimEvent::Connected`, so nothing on
+the wire can be mistaken for a claim. `AccountId` (`digblock-net/src/protocol.rs`, hand-parsed UUID, wasm-clean) is the
+key for `player_store` records, the value `--admin` compares, and what a ban records. One account holds one live
+connection — a second is refused, since two would stomp each other's persisted record, which is why every deliberate
+exit calls `NetClient::disconnect` (`ClientMsg::Bye` PLUS a bounded flush: the message alone only reaches a stream
+buffer, and dropping the transport closes the connection before it drains). `Game::on_exit` is that hook at the platform
+edge, kept apart from `on_suspend` because a backgrounded phone may come back. On web the departure arrives as winit's
+`exiting` (it splits `pagehide` by `persisted`: back/forward cache → `Suspended`, an actual close → `LoopExiting`), so
+wiring a goodbye to suspend alone would miss the common case of closing a tab. `DEFAULT_MAX_CONNECTIONS_PER_IP`
+(`--max-conns-per-ip`/`DIGBLOCK_MAX_CONNS_PER_IP`) caps how much of the connection table one address can spend, which is
+what stops the pre-Hello window being an amplifier against the master. It is a flag because every local soak is the
+opposite case — `just bot -- --bots N` and `just compose-bots` put every client behind ONE address, and a bot refused at
+accept is indistinguishable from a connect timeout.
 
 Server-authoritative everything, but movement uses an **adoption envelope**: clients send per-tick inputs plus claimed
 post-tick state; the server runs the same `Player::tick` and adopts claims within `POS_TOLERANCE` that aren't inside
@@ -773,8 +815,10 @@ old size decodes into the current one with its arrangement intact) are player-au
 count-based inventory — a type lives in exactly one slot, kept coherent by `reconcile_layout` (deterministic, run
 identically client- and server-side after every count change). The arrangement rides
 `ClientMsg::Layout`/`ServerMsg::Layout` on the reliable stream (in-order with edits, via the action queue) and persists
-per identity in the server's `player_store` (`inventories.bin` v4; v1–v3 read-compat — never wiped) and in local saves'
-`state.json`. Enforcement: `EditRequest.slot` declares the hotbar slot used, and Place/Collect must match its item
+per ACCOUNT in the server's `player_store` (`inventories.bin` v5 — same record body as v4, but the 16-byte key changed
+meaning from a device-secret hash to an `AccountId`, so v1–v4 files are archived rather than read forward: the one
+sanctioned use of that path for a version bump, since old keys map to nobody) and in local saves' `state.json`.
+Enforcement: `EditRequest.slot` declares the hotbar slot used, and Place/Collect must match its item
 (`RejectReason::WrongSlot`) — honest clients can't race it because Layout precedes the edit on the same stream.
 Snapshots carry each player's held item (`RemoteState.held`; the struct split out of `NetPlayerState` at v14), drawn in
 a remote's hand as its REAL geometry — `held_icon` routes the wire id through the same `hud::item_icon` the hotbar uses,

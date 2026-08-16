@@ -42,9 +42,33 @@ master *ARGS:
 	DYLD_FALLBACK_LIBRARY_PATH="${DYLD_FALLBACK_LIBRARY_PATH:-}:$(brew --prefix)/lib" \
 		dotnet run --project apps/master -- {{ARGS}}
 
+# The development master's environment. Three escapes, all of which the
+# master refuses to honour outside Development (and Dev:AuthEnabled makes
+# it refuse to BOOT outside it):
+#   Dev:AuthEnabled       — POST /api/dev/signin, an account per subject
+#                           string, for anything that cannot open a browser
+#   Probe:AllowPrivateTargets — the SSRF filter refuses non-public addresses
+#                           by default, and every address here is private
+#   Dev:ProbeHostOverride — the master dials the docker host itself. This
+#                           replaced the registrant-supplied probeHost, which
+#                           let a caller pick the only address ever verified
+#                           (NET-AUDIT-2.md §1.3).
+DEV_MASTER_ENV := "-e ASPNETCORE_ENVIRONMENT=Development " + \
+	"-e Master__Dev__AuthEnabled=true " + \
+	"-e Master__Probe__AllowPrivateTargets=true " + \
+	"-e Master__Dev__ProbeHostOverride=host.docker.internal"
+
+# The account id `just play` grants admin. Dev sign-in derives an account
+# id from the subject string (a salted hash of it, stamped as a v8 UUID —
+# see Dev/DevEndpoints.cs), so this is a constant rather than a startup
+# handshake. Pinned by the e2e test
+# `dev_account_ids_are_derived_from_the_subject`.
+DEV_ADMIN_ID := "b2379408-3102-8b68-b56b-5774dec269b8"
+
 # Journal persists in ./data. Joining is token-only, so a server without a
-# master registration can admit no one. --admin-name <player> grants that
-# player /help /tp /ban /ban-list /unban in chat.
+# master registration can admit no one. --admin <account-id> grants that
+# player /help /tp /ban /ban-list /unban in chat; a display name works too
+# and is resolved to an id once, at boot.
 # e.g. just server -- --master-url http://127.0.0.1:5200 --advertise-host 127.0.0.1
 #
 # Dedicated multiplayer server (headless). Requires a running master.
@@ -52,7 +76,15 @@ server *ARGS:
 	cargo run -p digblock-server --bin digblock-server -- {{ARGS}}
 
 # Picks a server from the master's list (the first, or `--server
-# NAME_FILTER`), mints one token per bot, then joins.
+# NAME_FILTER`), signs in as bot-<n> through the master's development
+# endpoint, mints one token each, then joins. One account per bot index, so
+# a soak exercises the persistence path the way real players do. Needs a
+# DEVELOPMENT master (Master__Dev__AuthEnabled) — a bot has no browser, and
+# a production master will refuse it.
+#
+# Past the server's per-address cap, start it with --max-conns-per-ip N:
+# every bot here shares one address, and the rest are refused at accept,
+# which the bot side cannot tell from a connect timeout.
 #
 # Headless bot client(s): `just bot -- --bots 4`.
 bot *ARGS:
@@ -62,14 +94,16 @@ bot *ARGS:
 # e2e tests) + native server + a client opening at the main menu (pick
 # Multiplayer, join "Local World" through the token flow); closing the
 # window (or Ctrl-C) stops all three. The server
-# advertises 127.0.0.1 (what host clients dial) and gives the master
-# host.docker.internal as its probe address — the only stable UDP path from
+# advertises 127.0.0.1 (what host clients dial) while the MASTER redirects
+# its own probes to host.docker.internal — the only stable UDP path from
 # the container to the host (the LAN-IP hairpin breaks QUIC address
 # validation under Docker's NAT).
 # Extra clients: `just run -- --master-url http://127.0.0.1:5200` (add
-# --join --name <name> to skip the menu for scripted flows; display
-# names are mandatory, 3-10 chars of a-z A-Z 0-9 - _). In-game: T or
-# Enter opens chat; --mute silences the audio stack.
+# --join --dev-signin <subject> to skip the menu for scripted flows — a
+# scripted run has no browser, so it signs in through the development
+# endpoint). In-game: T or Enter opens chat; --mute silences the audio
+# stack. The menu's Multiplayer row walks sign-in and name-picking the
+# first time; `admin` is already taken by this recipe.
 #
 # One-command multiplayer test: master + server + client, torn down together.
 play *ARGS:
@@ -80,25 +114,28 @@ play *ARGS:
 	docker build -q -t digblock-master apps/master >/dev/null
 	server=""
 	docker rm -f digblock-play-master >/dev/null 2>&1 || true
-	docker run -d --rm --name digblock-play-master \
+	docker run -d --rm --name digblock-play-master {{DEV_MASTER_ENV}} \
 		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
 	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
-	until curl -sf http://127.0.0.1:5200/api/servers >/dev/null 2>&1; do sleep 0.2; done
+	until curl -sf http://127.0.0.1:5200/health >/dev/null 2>&1; do sleep 0.2; done
 	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
-		--advertise-host 127.0.0.1 --probe-host host.docker.internal \
-		--server-name "Local World" --admin-name "${DIGBLOCK_ADMIN_NAME:-admin}" &
+		--advertise-host 127.0.0.1 \
+		--server-name "Local World" --admin "${DIGBLOCK_ADMIN_ID:-{{DEV_ADMIN_ID}}}" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
 	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
 
 # `just play` with the game server containerized too (compose), optionally
 # behind netem — `just play-docker wifi` plays under simulated wifi loss.
-# Same probe-host split, so the master's QUIC probe stays real: the server
-# advertises 127.0.0.1 for the host client while the master probes
-# host.docker.internal, which loops through the published UDP port back to
-# the server container. Host<->container UDP works fine; if the client
-# times out, check `docker logs docker-server-1` — a server that died at
-# boot looks identical to a network problem from the client side.
+# The master's QUIC probe stays real: the server advertises 127.0.0.1 for
+# the host client while the MASTER redirects its own probes to
+# host.docker.internal (Master:Dev:ProbeHostOverride), which loops through
+# the published UDP port back to the server container. That redirect used
+# to be a field of the registration request, until it turned out to mean a
+# registrant could name the only address anyone ever verified.
+# Host<->container UDP works fine; if the client times out, check
+# `docker logs docker-server-1` — a server that died at boot looks
+# identical to a network problem from the client side.
 #
 # Desktop client against the dockerized stack, behind netem: clean | wifi | cellular.
 play-docker PROFILE="clean" *ARGS:
@@ -107,6 +144,7 @@ play-docker PROFILE="clean" *ARGS:
 	cargo build -p digblock-desktop
 	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
 	ADVERTISE_HOST=127.0.0.1 PROBE_HOST=host.docker.internal \
+	ADMIN_IDS={{DEV_ADMIN_ID}} \
 		docker compose -f docker/compose.yml up --build -d master server
 	trap 'docker compose -f docker/compose.yml down' EXIT
 	./target/debug/digblock --master-url http://127.0.0.1:5200 {{ARGS}}
@@ -140,11 +178,18 @@ compose-bots PROFILE="clean":
 	NETEM="{{ if PROFILE == "wifi" { "delay 30ms loss 1%" } else if PROFILE == "cellular" { "delay 80ms 20ms distribution normal loss 3%" } else { "" } }}" \
 		docker compose -f docker/compose.yml --profile bots up --build --abort-on-container-exit
 
-# localhost is a secure context, so WebGPU and WebTransport both work over
-# plain http. Needs wasm-bindgen-cli at the exact version in Cargo.lock:
+# A loopback literal is a secure context, so WebGPU and WebTransport both
+# work over plain http. 127.0.0.1 rather than localhost, and not only for
+# the repo's usual reason: sign-in redirects back to whatever origin the
+# page is on, and the master allows a loopback redirect by IP LITERAL (RFC
+# 8252 prefers one, since a name resolves through a host's name service).
+# Opened as localhost, sign-in is refused as an address DigBlock does not
+# recognise. Needs wasm-bindgen-cli at the exact version in Cargo.lock:
 # cargo install wasm-bindgen-cli.
 # Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr=0 ?overlay
-# ?name= (validated: 3-10 chars of a-z A-Z 0-9 - _) ?mute.
+# ?mute, plus ?devsignin=<subject> for scripted joins (the browser sign-in
+# needs a real Google or Facebook app configured on the master, and the dev
+# master has neither).
 #
 # Browser client: release wasm build + bindgen + a static server on :8080.
 web:
@@ -152,7 +197,7 @@ web:
 	set -euo pipefail
 	just check-port-8080
 	just build-web
-	echo "→ http://localhost:8080"
+	echo "→ http://127.0.0.1:8080"
 	python3 -c 'import http.server, functools, mimetypes; \
 		mimetypes.add_type("application/wasm", ".wasm"); \
 		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
@@ -172,7 +217,7 @@ web-live QUERY="?overlay&spikelog":
 	curl -sf --max-time 10 https://master.digblock.net/api/servers >/dev/null \
 		|| { echo "master.digblock.net unreachable — not starting" >&2; exit 1; }
 	just build-web
-	echo "→ http://localhost:8080/{{QUERY}}   (master: https://master.digblock.net)"
+	echo "→ http://127.0.0.1:8080/{{QUERY}}   (master: https://master.digblock.net)"
 	python3 -c 'import http.server, functools, mimetypes; \
 		mimetypes.add_type("application/wasm", ".wasm"); \
 		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
@@ -191,16 +236,16 @@ play-web:
 	docker build -q -t digblock-master apps/master >/dev/null
 	server=""
 	docker rm -f digblock-play-master >/dev/null 2>&1 || true
-	docker run -d --rm --name digblock-play-master \
+	docker run -d --rm --name digblock-play-master {{DEV_MASTER_ENV}} \
 		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
 	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
-	until curl -sf http://127.0.0.1:5200/api/servers >/dev/null 2>&1; do sleep 0.2; done
+	until curl -sf http://127.0.0.1:5200/health >/dev/null 2>&1; do sleep 0.2; done
 	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
-		--advertise-host 127.0.0.1 --probe-host host.docker.internal \
-		--server-name "Local World" --admin-name "${DIGBLOCK_ADMIN_NAME:-admin}" &
+		--advertise-host 127.0.0.1 \
+		--server-name "Local World" --admin "${DIGBLOCK_ADMIN_ID:-{{DEV_ADMIN_ID}}}" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
-	echo "→ http://localhost:8080/?master=http://127.0.0.1:5200"
+	echo "→ http://127.0.0.1:8080/?master=http://127.0.0.1:5200"
 	python3 -c 'import http.server, functools, mimetypes; \
 		mimetypes.add_type("application/wasm", ".wasm"); \
 		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'

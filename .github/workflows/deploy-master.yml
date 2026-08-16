@@ -1,12 +1,12 @@
 # Build the master image and roll it out to the Azure Container App.
 #
-# On-demand only (Actions → deploy-master → Run workflow): the master is
-# a live service with in-memory state — a restart drops server
-# registrations for up to one heartbeat and any in-flight join tokens —
-# so it redeploys when chosen, not on every touch of apps/master. The
-# image goes to GHCR — no ACR needed; the Container App pulls ghcr.io as
-# an "other registry" (package must be public, or give the app registry
-# credentials).
+# On-demand only (Actions → deploy-master → Run workflow): the master is a
+# live service. A restart drops server registrations for up to one
+# heartbeat and any in-flight join tokens — all of which recover by
+# themselves — but it now also has DURABLE state, so read the storage note
+# below before the first deploy. The image goes to GHCR — no ACR needed;
+# the Container App pulls ghcr.io as an "other registry" (package must be
+# public, or give the app registry credentials).
 #
 # One-time setup this workflow expects:
 #   - Entra app with a federated credential for this repo's main branch,
@@ -14,6 +14,32 @@
 #   - Repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
 #   - Repo variable: AZURE_RG (the resource group name).
 #   - The container app itself created once (name: digblock-master).
+#
+# STORAGE — accounts live in SQLite at /data/master.db (see AUTH-DESIGN.md).
+# The Container App's own filesystem is EPHEMERAL, so without these two the
+# first redeploy silently takes every account with it:
+#   - An Azure Files share mounted at /data.
+#   - minReplicas = maxReplicas = 1. SQLite is single-writer, and two
+#     replicas over SMB is corruption, not contention.
+# The app pins the rollback journal to DELETE for the same reason (WAL does
+# not work over SMB); that part is in code, not configuration.
+#
+# SECRETS — the Google and Facebook OAuth credentials are Container App
+# secrets surfaced as Master__Auth__Google__ClientId / __ClientSecret (and
+# __Facebook__), never appsettings.json. A provider with no credentials
+# configured is simply off: its button never renders. That is how Facebook
+# ships dark until its App Review clears — and, with NEITHER configured,
+# how a fresh master admits nobody at all, since joining needs an account.
+#
+# The redirect URI to register with the provider is /signin-google (and
+# /signin-facebook) on this host — ASP.NET's default callback path, which
+# the app does not override. A mismatch surfaces only as the provider's
+# own redirect_uri_mismatch, with nothing in our logs.
+#
+# Those are the only settings sign-in needs. The clients' redirect targets
+# need no configuration at all: desktop uses loopback (matched by shape)
+# and the web origins are compiled in — see RedirectUris.Owned, and change
+# it there if the game's domain ever moves.
 #
 # Note: this is intentionally separate from ci.yml.disabled — CI stays
 # off pre-deployment; this only ships the master.
