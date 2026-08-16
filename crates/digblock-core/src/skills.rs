@@ -143,6 +143,23 @@ impl SkillSet {
 		*c = (*c).max(total);
 	}
 
+	/// Take the HIGHER total per skill, for the legacy-character migration.
+	///
+	/// The max, never the sum. Both sides are the same player's XP, and a
+	/// sum would pay them twice for one career — join a server on the new
+	/// account, grind, then claim the old character, and the totals add.
+	/// The max says the honest thing instead: you are as far along as your
+	/// furthest self, and the ladder is unchanged by having walked it on
+	/// two keys.
+	///
+	/// This is [`Self::set_total`]'s rule, and deliberately so: totals only
+	/// ever grow, in a merge exactly as on the wire.
+	pub fn merge_from(&mut self, other: &Self) {
+		for s in Skill::ALL {
+			self.set_total(s, other.xp(s));
+		}
+	}
+
 	/// Strict decode of `(skill index, total)` pairs: unknown skills
 	/// from a newer build drop harmlessly, duplicates last-write-win.
 	pub fn from_wire(pairs: &[(u8, u64)]) -> Self {
@@ -560,6 +577,33 @@ pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The legacy-character migration's XP rule: the higher total per
+	/// skill, never the sum.
+	///
+	/// A sum would pay one career twice — play the new account up, then
+	/// claim the old one, and the ladder shortens for anybody who happened
+	/// to have both. The max leaves the curve meaning what it meant.
+	#[test]
+	fn merging_two_of_a_players_careers_takes_the_further_one() {
+		let mut mine = SkillSet::default();
+		mine.add_xp(Skill::Mining, 100);
+		mine.add_xp(Skill::Alchemy, 900);
+
+		let mut old = SkillSet::default();
+		old.add_xp(Skill::Mining, 5_000);
+		old.add_xp(Skill::Alchemy, 40);
+
+		mine.merge_from(&old);
+		assert_eq!(mine.xp(Skill::Mining), 5_000, "the old career was further");
+		assert_eq!(mine.xp(Skill::Alchemy), 900, "the new one was, here");
+
+		// Never the sum, in either direction, and idempotent: a repeated
+		// claim of the same character cannot inflate anything.
+		let before = mine.clone();
+		mine.merge_from(&old);
+		assert_eq!(mine, before);
+	}
 
 	/// The golden cumulative pin on [`XP_TO_NEXT`] (SKILLS-DESIGN.md §2 for
 	/// the shape it buys). If curve tuning is ever wanted, this pin moves

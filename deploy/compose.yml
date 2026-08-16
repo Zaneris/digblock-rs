@@ -10,6 +10,10 @@
 # a shard per 256x256-block region) lives in ./data - that directory is
 # the complete backup. A pre-sharding single-file journal migrates in
 # place on first boot; nothing needs doing by hand.
+#
+# ./data also holds "master-key" from your first registration. It is what
+# lets THIS server re-register its address later; without it, an address
+# someone else is live on cannot be reclaimed. Back it up with the rest.
 services:
   digblock:
     # Pin a release by replacing "latest" with a version like "0.1.0".
@@ -29,7 +33,12 @@ services:
       # fresh world; the old world's journal stays in ./data and comes
       # back if you switch the seed back.
       #DIGBLOCK_SEED: "42"
-      # Optional admin: the player joining under this display name gets
-      # chat commands — /help /tp /ban /ban-list /unban (bans are by IP,
-      # stored in ./data/bans.json).
-      #DIGBLOCK_ADMIN_NAME: "YourName"
+      # Optional admins, by ACCOUNT ID, comma-separated. A player finds
+      # theirs in the game: Multiplayer -> Account -> Copy ID. They get
+      # /help /tp /ban /ban-list /unban in chat.
+      #
+      # Ids, not names: a display name is something anyone can ask for, so
+      # granting admin by name meant anyone who read the player list could
+      # take the server. A name works too and is looked up once when the
+      # server starts, but the id is what is stored either way.
+      #DIGBLOCK_ADMIN_IDS: "b2379408-3102-8b68-b56b-5774dec269b8"

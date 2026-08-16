@@ -16,7 +16,7 @@
 //! summary line per player count, for pasting into BENCH.md.
 
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick};
-use digblock_net::protocol::{PROTOCOL_VERSION, SNAPSHOT_DIVISOR, TICK_RATE};
+use digblock_net::protocol::{AccountId, PROTOCOL_VERSION, SNAPSHOT_DIVISOR, TICK_RATE};
 use digblock_server::sim::{OUT_CAP, OutMsg, Sim, SimEvent};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -78,13 +78,16 @@ fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
 	for i in 0..n {
 		let conn_id = i as u64 + 1;
 		let (tx, rx) = channel(OUT_CAP);
-		let mut identity = [0u8; 16];
-		identity[..8].copy_from_slice(&(conn_id).to_le_bytes());
+		// A distinct account per bench client, so each gets its own
+		// persisted record exactly as distinct players would.
+		let mut account = [0u8; 16];
+		account[..8].copy_from_slice(&(conn_id).to_le_bytes());
 		sim.tick_once(vec![
 			SimEvent::Connected {
 				conn_id,
 				out: tx,
 				addr: format!("127.0.0.1:{}", 40000 + i).parse().unwrap(),
+				account: AccountId(account),
 			},
 			SimEvent::Msg {
 				conn_id,
@@ -97,7 +100,6 @@ fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
 					token: [0; 16],
 					sim_version: digblock_core::SIM_VERSION,
 					build: "netbench".into(),
-					identity,
 				},
 			},
 		]);
@@ -787,7 +789,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 			name: "link".into(),
 			draw_dist: 20,
 			token: [0; 16],
-			identity: [7; 16],
+			legacy_identity: None,
 		},
 	);
 
@@ -796,6 +798,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 		conn_id: 1,
 		out: out_tx,
 		addr: "127.0.0.1:40000".parse().unwrap(),
+		account: AccountId([7; 16]),
 	}]);
 
 	// Server→client needs the preamble the real net layer writes; the sim

@@ -5,6 +5,7 @@ use digblock_render::settings::{
 use digblock_render::{Engine, EngineConfig};
 
 mod audio;
+mod auth;
 mod services;
 mod settings;
 
@@ -78,7 +79,10 @@ fn main() {
 	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
 	let mut join = false;
 	let mut server_filter: Option<String> = None;
-	let mut name: Option<String> = None;
+	// Scripted sign-in for runs that cannot open a browser (`just play`,
+	// the drill, anything with --join). The master honours it only in
+	// Development; see Dev/DevEndpoints.cs.
+	let mut dev_signin: Option<String> = None;
 	let mut mute = false;
 	// Recorded, not applied: CLI overrides beat the saved settings, which
 	// beat the platform defaults — resolved after the parse loop.
@@ -98,10 +102,21 @@ fn main() {
 			// first listed server (or the one matching --server).
 			"--join" => join = true,
 			"--server" => server_filter = Some(parse_or_die::<String>("--server", args.next())),
-			// Display name, held to `validate_name`'s alphabet and length.
-			// Pre-fills the menu field; required for --join. Never
-			// defaulted — entering a name is mandatory.
-			"--name" => name = Some(parse_or_die::<String>("--name", args.next())),
+			// Required for --join: a scripted run has no browser, so
+			// its session comes from the master's development sign-in.
+			"--dev-signin" => {
+				dev_signin = Some(parse_or_die::<String>("--dev-signin", args.next()));
+			}
+			// Not a rename: a display name is no longer something a client
+			// picks per run, so silently mapping this onto the account
+			// would be a lie about what the run is doing.
+			"--name" => {
+				eprintln!(
+					"--name is gone: your display name belongs to your DigBlock account now. \
+					 For scripted runs use --dev-signin <subject> against a development master."
+				);
+				std::process::exit(2);
+			}
 			"--mute" => mute = true,
 			"--screenshot" => {
 				options.screenshot =
@@ -288,18 +303,8 @@ fn main() {
 		options.exit_after_frames = Some(u64::from(n));
 	}
 
-	// An explicit --name must be valid; a bad one is fatal like any other
-	// bad flag value (silently dropping it would surprise scripted joins).
-	if let Some(n) = &name
-		&& let Err(e) = digblock_net::protocol::validate_name(n)
-	{
-		eprintln!("bad value for --name: {e}");
-		std::process::exit(2);
-	}
 	// Env-derived knobs live in the launcher; the engine stays env-free
 	// (std::env is a stub on the wasm target).
-	config.player_name = name.clone();
-	config.identity = load_identity();
 	// DIG_PLAYERBOX=<item>: the fake remote's held item, in WIRE terms —
 	// which is what makes the scene a real check of `held_icon` rather
 	// than a second code path, and what lets it photograph a remote's lit
@@ -487,7 +492,6 @@ fn main() {
 			ui_scale: config.ui_scale,
 			render_scale: config.render_scale,
 			gi_scale_div: config.gi_scale_div,
-			name: String::new(),
 		});
 		config.draw_dist = saved.draw_dist;
 		config.music_vol = saved.music_vol;
@@ -502,11 +506,6 @@ fn main() {
 			cli_gi_scale.is_none() && saved.gi_scale_div == config.gi_scale_div;
 		config.render_scale = saved.render_scale;
 		config.gi_scale_div = saved.gi_scale_div;
-		// --name beats the remembered name (validated above vs at load).
-		if name.is_none() && !saved.name.is_empty() {
-			name = Some(saved.name);
-			config.player_name = name.clone();
-		}
 	}
 	if let Some(d) = cli_draw {
 		config.draw_dist = d;
@@ -547,6 +546,50 @@ fn main() {
 		None => None,
 	};
 
+	// A scripted join has no browser and no menu, so its session comes from
+	// the master's development sign-in rather than the real flow. There is
+	// no unauthenticated fallback: joining is authenticated now, and
+	// pretending otherwise would fail later and less clearly. Done BEFORE
+	// the engine exists so the resolved name can go into its config.
+	let join_session = if join {
+		let master_url = master_url
+			.as_deref()
+			.map(|u| u.trim_end_matches('/'))
+			.unwrap_or_else(|| {
+				eprintln!(
+					"--join needs a master server: don't combine it with an empty --master-url"
+				);
+				std::process::exit(2);
+			});
+		let Some(subject) = dev_signin.as_deref() else {
+			eprintln!(
+				"--join needs --dev-signin <subject>, and a master running with \
+				 Master__Dev__AuthEnabled=true"
+			);
+			std::process::exit(2);
+		};
+		match auth::dev_sign_in(master_url, subject) {
+			Ok(s) => {
+				config.player_name = s.display_name.clone();
+				Some(s)
+			}
+			Err(e) => {
+				log::error!("--dev-signin via {master_url} failed: {e}");
+				std::process::exit(1);
+			}
+		}
+	} else {
+		None
+	};
+
+	// The pre-account character's lookup key, for servers this machine
+	// played on before accounts existed. Only on a path that can actually
+	// join: a capture run has no business reading it, and the migration
+	// costs a wire message per join for everyone who still has the file.
+	if interactive || join {
+		config.legacy_identity = legacy_identity();
+	}
+
 	let mut engine = Engine::new(config);
 	if interactive {
 		engine.set_settings_store(Box::new(settings::save));
@@ -567,12 +610,8 @@ fn main() {
 		));
 	}
 	if let Some(master_url) = master_url.as_deref().map(|u| u.trim_end_matches('/')) {
-		if join {
-			let Some(name) = name.as_deref() else {
-				eprintln!("--join needs --name <name> (3-10 chars: a-z A-Z 0-9 - _)");
-				std::process::exit(2);
-			};
-			match services::auto_join(master_url, server_filter.as_deref(), name) {
+		if let Some(session) = &join_session {
+			match services::auto_join(master_url, server_filter.as_deref(), &session.token) {
 				Ok((transport, token)) => {
 					engine.set_transport_with_token(Box::new(transport), token);
 				}
@@ -582,7 +621,14 @@ fn main() {
 				}
 			}
 		} else {
-			engine.set_menu_services(services::start(master_url.to_string()));
+			// A stored session is rotated on the services thread before
+			// anything can need it; the menu hears the result as an
+			// Account response.
+			engine.set_menu_services(services::start(
+				master_url.to_string(),
+				auth::load(&auth::session_path()),
+			));
+			engine.set_clipboard(Box::new(copy_to_clipboard));
 		}
 	} else if join {
 		eprintln!("--join needs a master server: don't combine it with an empty --master-url");
@@ -594,12 +640,21 @@ fn main() {
 	}
 }
 
-/// Load-or-create the persistent identity secret keying the server-side
-/// persisted inventory. A bearer secret by design (there are
-/// no accounts): whoever holds the bytes owns the inventory, so the file
-/// lives in the user's data dir. DIG_IDENTITY_FILE overrides the path —
-/// how a second local client gets its own identity for testing.
-fn load_identity() -> [u8; 16] {
+/// The key this machine's pre-account character is filed under on the
+/// servers it used to play on: the truncated SHA-256 of the old identity
+/// secret, which is exactly what those servers stored.
+///
+/// **Read-only, and it never creates the file.** The secret it hashes was a
+/// bearer credential the client used to mint out of thin air; nothing does
+/// that any more, so a machine without one has no old character and must
+/// not be given a key to somebody else's. Absent, unreadable and all-zeros
+/// all answer `None`, which the migration reads as "nothing to claim".
+///
+/// The secret itself stops here — only the hash goes on the wire. That is
+/// not much of a defence (the hash is the lookup key, so it is what a
+/// claim needs), but it costs nothing and it keeps the one file that used
+/// to be replayed to every server from being replayed anywhere at all.
+fn legacy_identity() -> Option<[u8; 16]> {
 	let path = std::env::var("DIG_IDENTITY_FILE")
 		.map(std::path::PathBuf::from)
 		.unwrap_or_else(|_| {
@@ -607,49 +662,40 @@ fn load_identity() -> [u8; 16] {
 				.map(|d| d.join("digblock").join("identity"))
 				.unwrap_or_else(|| std::path::PathBuf::from("./digblock-identity"))
 		});
-	if let Ok(bytes) = std::fs::read(&path) {
-		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice())
-			&& id != [0; 16]
-		{
-			return id;
-		}
-		log::warn!("identity file {} malformed — regenerating", path.display());
+	let secret = <[u8; 16]>::try_from(std::fs::read(&path).ok()?.as_slice()).ok()?;
+	if secret == [0; 16] {
+		return None;
 	}
-	let id: [u8; 16] = rand::random();
-	if let Some(parent) = path.parent() {
-		let _ = std::fs::create_dir_all(parent);
-	}
-	if let Err(e) = write_secret(&path, &id) {
-		log::warn!(
-			"could not persist identity to {} ({e}) — inventory is per-run",
-			path.display()
-		);
-	}
-	id
+	log::info!(
+		"found a pre-account identity at {} — offering it to servers for migration",
+		path.display()
+	);
+	Some(digblock_net::protocol::legacy_identity_hash(&secret))
 }
 
-/// Write the identity secret owner-readable only. It is a bearer
-/// credential — whoever holds it owns that player's inventory, layout and
-/// last position on every server — so the default 0644 of `fs::write` handed
-/// it to every other local user. (Scoping the secret per server, so a
-/// hostile server operator cannot replay it, needs the master's login flow;
-/// see NET-AUDIT-2.md §1.4.)
-fn write_secret(path: &std::path::Path, id: &[u8; 16]) -> std::io::Result<()> {
-	use std::io::Write;
-	let mut opts = std::fs::OpenOptions::new();
-	opts.write(true).create(true).truncate(true);
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::OpenOptionsExt;
-		opts.mode(0o600);
+/// The Account screen's Copy ID button.
+///
+/// The `Clipboard` is kept alive for the process rather than made per copy.
+/// On X11 the clipboard is not a buffer the system owns — it is a promise
+/// served by the application that put it there, so a context dropped right
+/// after setting takes the contents with it and the paste comes back empty.
+/// One long-lived instance keeps serving it. (The other obvious fix,
+/// arboard's `set().wait()`, blocks until another app takes the selection,
+/// which on this call path would freeze the frame.)
+fn copy_to_clipboard(text: &str) {
+	use std::sync::{Mutex, OnceLock};
+	static CLIPBOARD: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
+	let handle = CLIPBOARD.get_or_init(|| match arboard::Clipboard::new() {
+		Ok(c) => Some(Mutex::new(c)),
+		Err(e) => {
+			log::warn!("no clipboard available ({e}) — ids are on screen to copy by hand");
+			None
+		}
+	});
+	let Some(handle) = handle else { return };
+	let mut guard = handle.lock().expect("clipboard mutex");
+	match guard.set_text(text.to_string()) {
+		Ok(()) => log::info!("copied to clipboard"),
+		Err(e) => log::warn!("clipboard write failed: {e}"),
 	}
-	// `mode` only applies when the file is CREATED, so an existing 0644 file
-	// from an older build keeps its permissions — fix those up explicitly.
-	let mut f = opts.open(path)?;
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-	}
-	f.write_all(id)
 }

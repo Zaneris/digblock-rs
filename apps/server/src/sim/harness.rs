@@ -8,7 +8,7 @@ use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK};
 use digblock_core::player::PlayerState;
 use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, InputBatch, InputTick, ServerMsg, Snapshot};
-use digblock_net::protocol::PROTOCOL_VERSION;
+use digblock_net::protocol::{AccountId, PROTOCOL_VERSION};
 use glam::Vec3;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -158,12 +158,21 @@ pub(crate) fn test_addr(conn_id: u64) -> std::net::SocketAddr {
 	std::net::SocketAddr::from(([10, 0, hi, lo], 40000))
 }
 
+/// An anonymous connection: no master vouched for it, so the sim gives it
+/// a session-only inventory. That is the shape every test that does not
+/// care about persistence wants.
 pub(crate) fn connect(sim: &mut Sim, conn_id: u64) -> TestClient {
-	connect_with_identity(sim, conn_id, [0; 16])
+	connect_as_account(sim, conn_id, AccountId::NONE)
 }
 
-pub(crate) fn connect_with_identity(sim: &mut Sim, conn_id: u64, identity: [u8; 16]) -> TestClient {
-	let mut c = try_connect(sim, conn_id, identity);
+/// A test account id from a small number, so a test can say "the same
+/// player rejoining" without inventing a UUID.
+pub(crate) fn test_account(n: u8) -> AccountId {
+	AccountId([n; 16])
+}
+
+pub(crate) fn connect_as_account(sim: &mut Sim, conn_id: u64, account: AccountId) -> TestClient {
+	let mut c = try_connect(sim, conn_id, account);
 	assert!(
 		matches!(c.msgs.first(), Some(ServerMsg::Welcome { .. })),
 		"expected Welcome, got {:?}",
@@ -173,10 +182,33 @@ pub(crate) fn connect_with_identity(sim: &mut Sim, conn_id: u64, identity: [u8; 
 	c
 }
 
-/// Like `connect` but joining under an explicit display name (admin
-/// tests key on names).
+/// Like `connect` but joining under an explicit display name (roster and
+/// chat tests key on names).
 pub(crate) fn connect_named(sim: &mut Sim, conn_id: u64, name: &str) -> TestClient {
-	let mut c = try_connect_as(sim, conn_id, [0; 16], name);
+	connect_named_as(sim, conn_id, name, AccountId::NONE)
+}
+
+/// The account the admin tests grant. The value is arbitrary; what matters
+/// is that the sim is told this id and the admin's connection carries it,
+/// so the tests exercise admin-by-account. Under the old name compare they
+/// would have passed with any account at all — which was the bug.
+pub(crate) fn admin_account() -> AccountId {
+	test_account(0xAD)
+}
+
+pub(crate) fn connect_admin(sim: &mut Sim, conn_id: u64, name: &str) -> TestClient {
+	connect_named_as(sim, conn_id, name, admin_account())
+}
+
+/// A named join for a specific account — what an admin test needs, since
+/// admin keys on the account and the name is only what chat shows.
+pub(crate) fn connect_named_as(
+	sim: &mut Sim,
+	conn_id: u64,
+	name: &str,
+	account: AccountId,
+) -> TestClient {
+	let mut c = try_connect_as(sim, conn_id, account, name);
 	assert!(
 		matches!(c.msgs.first(), Some(ServerMsg::Welcome { .. })),
 		"expected Welcome, got {:?}",
@@ -188,15 +220,15 @@ pub(crate) fn connect_named(sim: &mut Sim, conn_id: u64, name: &str) -> TestClie
 
 /// Like `connect` but without asserting the handshake succeeded — for
 /// tests exercising refusals.
-pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, identity: [u8; 16]) -> TestClient {
+pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, account: AccountId) -> TestClient {
 	let name = format!("t{conn_id}");
-	try_connect_as(sim, conn_id, identity, &name)
+	try_connect_as(sim, conn_id, account, &name)
 }
 
 pub(crate) fn try_connect_as(
 	sim: &mut Sim,
 	conn_id: u64,
-	identity: [u8; 16],
+	account: AccountId,
 	name: &str,
 ) -> TestClient {
 	let (tx, rx) = channel(OUT_CAP);
@@ -205,6 +237,7 @@ pub(crate) fn try_connect_as(
 			conn_id,
 			out: tx,
 			addr: test_addr(conn_id),
+			account,
 		},
 		SimEvent::Msg {
 			conn_id,
@@ -215,7 +248,6 @@ pub(crate) fn try_connect_as(
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "test".into(),
-				identity,
 			},
 		},
 	]);

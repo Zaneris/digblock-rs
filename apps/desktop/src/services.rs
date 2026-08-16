@@ -1,16 +1,31 @@
-//! Master-server client services for the menu: server-list fetch, per-server
-//! ping probes, and the join flow (mint a one-time token, connect with the
-//! listed cert pin). One background thread owns all HTTP; the engine sees
-//! only the `MenuServices` channels — it stays wasm-clean and never blocks.
+//! Master-server client services for the menu: sign-in, the account's name,
+//! server-list fetch, per-server ping probes, and the join flow (mint a
+//! one-time token, connect with the listed cert pin). One background thread
+//! owns all HTTP; the engine sees only the `MenuServices` channels — it
+//! stays wasm-clean and never blocks.
+//!
+//! This thread is also the ONLY place the session token lives. The menu
+//! holds a name and an account id, both public; the engine holds neither.
 //!
 //! HTTP contract (mirrors apps/master/Contracts.cs):
-//!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
-//!   POST /api/join { serverId, displayName } → { token, expiresIn, url, certHash }
+//!   GET  /api/servers → { "servers": [{id, name, url, certHash, …}] }
+//!   POST /api/join { serverId } + Bearer session → { token, url, certHash }
+//!   see auth.rs for the sign-in and account calls
 
-use digblock_render::menu::{MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use crate::auth::{self, Session};
+use digblock_render::menu::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
 use serde::Deserialize as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+fn view(session: &Session) -> AccountView {
+	AccountView {
+		id: session.account_id.clone(),
+		name: session.display_name.clone(),
+	}
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,21 +66,47 @@ struct JoinResponse {
 	cert_hash: String,
 }
 
-pub fn start(master_url: String) -> MenuServices {
+pub fn start(master_url: String, session: Option<Session>) -> MenuServices {
 	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
 	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
 	std::thread::Builder::new()
 		.name("menu-services".into())
-		.spawn(move || run(master_url, cmd_rx, resp_tx))
+		.spawn(move || run(master_url, session, cmd_rx, resp_tx))
 		.expect("spawn menu-services thread");
 	MenuServices { cmd_tx, resp_rx }
 }
 
 fn run(
 	master_url: String,
+	session: Option<Session>,
 	cmd_rx: mpsc::Receiver<MenuCommand>,
 	resp_tx: mpsc::Sender<MenuResponse>,
 ) {
+	let path = auth::session_path();
+	// Rotate the stored session before anything else needs it. Refusal
+	// means the token is gone — expired, revoked from another device, or
+	// replayed — so drop it locally rather than discovering that at the
+	// first join.
+	let restored = session.and_then(|s| match auth::refresh(&master_url, &s.token) {
+		Ok(fresh) => {
+			auth::store(&path, &fresh);
+			Some(fresh)
+		}
+		Err(e) => {
+			log::info!("stored session is no longer valid ({e}) — signed out");
+			auth::clear(&path);
+			None
+		}
+	});
+	let _ = resp_tx.send(MenuResponse::Account(restored.as_ref().map(view)));
+
+	// Shared rather than owned by this loop, because a sign-in runs on its
+	// own thread (this one is a blocking recv) and is the one command that
+	// produces a session.
+	let session = Arc::new(std::sync::Mutex::new(restored));
+	// Shared with an in-flight sign-in thread so Cancel can end its wait.
+	let cancel = Arc::new(AtomicBool::new(false));
+
 	while let Ok(cmd) = cmd_rx.recv() {
 		match cmd {
 			MenuCommand::RefreshServers => {
@@ -98,15 +139,96 @@ fn run(
 					});
 				}
 			}
-			MenuCommand::Join { server_id, name } => {
-				let resp = match join(&master_url, &server_id, &name) {
-					Ok((transport, token)) => MenuResponse::Connect {
-						transport: Box::new(transport),
-						token,
+			MenuCommand::Join { server_id } => {
+				let token = session
+					.lock()
+					.expect("session mutex")
+					.as_ref()
+					.map(|s| s.token.clone());
+				let resp = match token {
+					Some(token) => match join(&master_url, &server_id, &token) {
+						Ok((transport, token)) => MenuResponse::Connect {
+							transport: Box::new(transport),
+							token,
+						},
+						Err(reason) => MenuResponse::JoinFailed { reason },
 					},
-					Err(reason) => MenuResponse::JoinFailed { reason },
+					None => MenuResponse::JoinFailed {
+						reason: "not signed in".into(),
+					},
 				};
 				let _ = resp_tx.send(resp);
+			}
+
+			// Sign-in gets its own thread. This loop is a blocking
+			// `recv()` that serves one command at a time, and a sign-in
+			// waits on a human in a browser — running it here would freeze
+			// the server list and every other command for up to three
+			// minutes.
+			MenuCommand::SignIn => {
+				cancel.store(false, Ordering::Relaxed);
+				let master_url = master_url.clone();
+				let resp_tx = resp_tx.clone();
+				let cancel = cancel.clone();
+				let session = session.clone();
+				std::thread::Builder::new()
+					.name("menu-signin".into())
+					.spawn(move || match auth::sign_in(&master_url, &cancel) {
+						Ok(s) => {
+							auth::store(&auth::session_path(), &s);
+							let account = view(&s);
+							*session.lock().expect("session mutex") = Some(s);
+							let _ = resp_tx.send(MenuResponse::Account(Some(account)));
+						}
+						Err(reason) => {
+							let _ = resp_tx.send(MenuResponse::SignInFailed { reason });
+						}
+					})
+					.expect("spawn menu-signin thread");
+			}
+			MenuCommand::CancelSignIn => cancel.store(true, Ordering::Relaxed),
+
+			// Answered inline, which is only safe because the MENU keeps at
+			// most one of these outstanding (`check_typed_name`). This loop
+			// is a blocking `recv()`, so one queued check per keystroke
+			// would put a run of 10 s-timeout GETs ahead of the Join the
+			// player presses next.
+			MenuCommand::CheckName { name } => {
+				let token = session
+					.lock()
+					.expect("session mutex")
+					.as_ref()
+					.map(|s| s.token.clone())
+					.unwrap_or_default();
+				let (available, reason) = auth::check_name(&master_url, &token, &name);
+				let _ = resp_tx.send(MenuResponse::NameAvailable {
+					name,
+					available,
+					reason,
+				});
+			}
+			MenuCommand::SetName { name } => {
+				let mut guard = session.lock().expect("session mutex");
+				let result = match guard.as_ref() {
+					Some(s) => auth::set_name(&master_url, &s.token, &name),
+					None => Err("not signed in".into()),
+				};
+				if let (Ok(name), Some(s)) = (&result, guard.as_mut()) {
+					s.display_name = Some(name.clone());
+					auth::store(&auth::session_path(), s);
+				}
+				drop(guard);
+				let _ = resp_tx.send(MenuResponse::NameSet(result));
+			}
+			MenuCommand::SignOut => {
+				// Cancel any sign-in still waiting on a browser, or its
+				// eventual success would sign us straight back in.
+				cancel.store(true, Ordering::Relaxed);
+				if let Some(s) = session.lock().expect("session mutex").take() {
+					auth::sign_out(&master_url, &s.token);
+				}
+				auth::clear(&auth::session_path());
+				let _ = resp_tx.send(MenuResponse::Account(None));
 			}
 		}
 	}
@@ -152,19 +274,39 @@ fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 		.collect())
 }
 
+/// Mint a join token and dial the server.
+///
+/// No display name goes up: the master reads it off the authenticated
+/// account. That is what makes the name on the far side something the
+/// server can trust rather than something the joiner asserted.
 fn join(
 	master_url: &str,
 	server_id: &str,
-	name: &str,
+	session: &str,
 ) -> Result<(digblock_net_native::ChannelTransport, [u8; 16]), String> {
 	let mut res = ureq::Agent::new_with_config(
 		ureq::Agent::config_builder()
 			.timeout_global(Some(Duration::from_secs(5)))
+			.http_status_as_error(false)
 			.build(),
 	)
 	.post(format!("{master_url}/api/join"))
-	.send_json(serde_json::json!({ "serverId": server_id, "displayName": name }))
+	.header("authorization", &format!("Bearer {session}"))
+	.send_json(serde_json::json!({ "serverId": server_id }))
 	.map_err(|e| format!("join request failed: {e}"))?;
+	if res.status().as_u16() != 200 {
+		let status = res.status().as_u16();
+		return Err(res
+			.body_mut()
+			.read_json::<serde_json::Value>()
+			.ok()
+			.and_then(|v| v["error"].as_str().map(str::to_string))
+			.unwrap_or_else(|| match status {
+				401 => "your sign-in has expired — sign in again".into(),
+				404 => "that server is no longer listed".into(),
+				_ => format!("join refused (http {status})"),
+			}));
+	}
 	let join: JoinResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
 	let token = parse_token(&join.token)?;
 	let policy = pin_policy(&join.cert_hash)?;
@@ -197,10 +339,12 @@ fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 
 /// Non-interactive `--join`: list (retrying briefly — scripted flows start
 /// the server moments earlier), pick first or by name filter, mint, connect.
+/// `session` is a session token — scripted runs get one from
+/// `--dev-signin`, since they cannot open a browser.
 pub fn auto_join(
 	master_url: &str,
 	filter: Option<&str>,
-	name: &str,
+	session: &str,
 ) -> Result<(digblock_net_native::ChannelTransport, [u8; 16]), String> {
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let picked = loop {
@@ -222,7 +366,7 @@ pub fn auto_join(
 		std::thread::sleep(Duration::from_millis(500));
 	};
 	log::info!("auto-join: \"{}\" at {}", picked.name, picked.url);
-	join(master_url, &picked.id, name)
+	join(master_url, &picked.id, session)
 }
 
 #[cfg(test)]

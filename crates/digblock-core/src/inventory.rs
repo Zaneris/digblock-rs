@@ -149,6 +149,27 @@ impl Inventory {
 			.filter(|&(_, n)| n > 0)
 	}
 
+	/// Fold `other` into this one, every line saturating at its own cap.
+	///
+	/// Written for the legacy-character migration, which is the only place
+	/// two inventories one player owns are ever combined. It goes through
+	/// [`Self::add`] and [`Self::add_sub`] rather than touching the arrays,
+	/// so the caps that make a tool unique and a bucket single-charge apply
+	/// to a merge exactly as they apply to a pickup — a player who owned the
+	/// same tool on both sides ends with one, not two.
+	///
+	/// Saturation means a merge can LOSE units at a full cap. That is the
+	/// honest outcome and the same one `add` gives everywhere else; the
+	/// alternative is a cap that is not a cap.
+	pub fn merge_from(&mut self, other: &Self) {
+		for (b, n) in other.iter_nonzero() {
+			self.add(b, n);
+		}
+		for m in Essence::ALL {
+			self.add_sub(m, other.sub_count(m));
+		}
+	}
+
 	#[inline]
 	pub fn sub_count(&self, m: Essence) -> u32 {
 		self.subs[m as usize]
@@ -296,6 +317,44 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The legacy-character migration's inventory rule: two piles one
+	/// player owns become one, and every cap still holds.
+	///
+	/// The tool line is the point. Both sides own a bucket, and a merge
+	/// that summed counts would hand back two — an item the game has no
+	/// way to represent, from a path no player ever asked for.
+	#[test]
+	fn merging_two_of_a_players_inventories_respects_every_cap() {
+		let mut mine = Inventory::default();
+		mine.add(BlockType::Dirt, 5);
+		mine.add(BlockType::Bucket, 1);
+		mine.add_sub(Essence::Earth, 40);
+
+		let mut old = Inventory::default();
+		old.add(BlockType::Dirt, 7);
+		old.add(BlockType::Stone, 3);
+		old.add(BlockType::Bucket, 1);
+		old.add_sub(Essence::Earth, 60);
+		old.add_sub(Essence::Flora, 2);
+
+		mine.merge_from(&old);
+		assert_eq!(mine.count(BlockType::Dirt), 12, "stacks add");
+		assert_eq!(mine.count(BlockType::Stone), 3, "and carry over");
+		assert_eq!(
+			mine.count(BlockType::Bucket),
+			cap(BlockType::Bucket),
+			"a tool owned on both sides is still one tool"
+		);
+		assert_eq!(mine.sub_count(Essence::Earth), 100, "essence adds too");
+		assert_eq!(mine.sub_count(Essence::Flora), 2);
+
+		// Merging with nothing changes nothing, which is the common case:
+		// most players have no old character on most servers.
+		let before = mine.clone();
+		mine.merge_from(&Inventory::default());
+		assert_eq!(mine, before);
+	}
 
 	#[test]
 	fn add_take_and_clamp() {

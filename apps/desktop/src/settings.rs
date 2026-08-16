@@ -16,8 +16,6 @@ struct SettingsFile {
 	ui_scale: Option<f32>,
 	render_scale: Option<f32>,
 	gi_scale_div: Option<u32>,
-	/// Last-used multiplayer display name.
-	name: Option<String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -50,7 +48,6 @@ pub fn load(base: Settings) -> Settings {
 		ui_scale: file.ui_scale.unwrap_or(base.ui_scale),
 		render_scale: file.render_scale.unwrap_or(base.render_scale),
 		gi_scale_div: file.gi_scale_div.unwrap_or(base.gi_scale_div),
-		name: file.name.unwrap_or(base.name),
 	}
 	.clamped()
 }
@@ -66,7 +63,6 @@ pub fn save(s: &Settings) {
 		ui_scale: Some(s.ui_scale),
 		render_scale: Some(s.render_scale),
 		gi_scale_div: Some(s.gi_scale_div),
-		name: (!s.name.is_empty()).then(|| s.name.clone()),
 	};
 	let path = path();
 	if let Some(parent) = path.parent() {

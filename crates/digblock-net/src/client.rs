@@ -34,9 +34,16 @@ pub struct NetClientConfig {
 	/// and verified server-side before admission. All zeros = no token
 	/// (loopback tests only — real servers refuse it).
 	pub token: [u8; 16],
-	/// Persistent client identity secret; keys the server-side persisted
-	/// inventory. All zeros = anonymous (session-only inventory).
-	pub identity: [u8; 16],
+	/// The key this machine's pre-account character was filed under, if
+	/// one is still on disk — the truncated hash of the old identity
+	/// secret, computed by the LAUNCHER so the secret itself stays there.
+	///
+	/// Sent once per connection as `ClaimLegacy`, and sent to EVERY server,
+	/// because each dedicated server holds its own records and a player
+	/// migrates on each one separately. The client cannot know which
+	/// servers it has already claimed on and does not try to: an
+	/// already-claimed or never-played server answers with silence.
+	pub legacy_identity: Option<[u8; 16]>,
 }
 
 #[derive(Debug)]
@@ -198,6 +205,12 @@ pub struct NetClient {
 	pre_buf: Vec<u8>,
 	server_protocol: Option<u16>,
 	session_token: Option<[u8; 16]>,
+	/// We have already said goodbye. Tracked here rather than read off
+	/// the transport's status because `NetTransport::close` is allowed to
+	/// be a no-op — every exit path may call `disconnect`, so the
+	/// idempotence has to hold for all of them, not just the ones whose
+	/// transport reports a state change.
+	left: bool,
 	/// Time spent in `Connecting` / connected-but-no-Welcome, for the
 	/// handshake deadlines (sans-IO: time arrives via `poll(dt)`).
 	connect_elapsed: f32,
@@ -288,6 +301,7 @@ impl NetClient {
 			pre_buf: Vec::with_capacity(PREAMBLE_LEN),
 			server_protocol: None,
 			session_token: None,
+			left: false,
 			connect_elapsed: 0.0,
 			handshake_elapsed: 0.0,
 			quiet_elapsed: 0.0,
@@ -532,10 +546,18 @@ impl NetClient {
 			token: self.config.token,
 			sim_version: digblock_core::SIM_VERSION,
 			build: env!("CARGO_PKG_VERSION").into(),
-			identity: self.config.identity,
 		};
 		if codec::write_frame(&hello, &mut self.send_buf).is_ok() {
 			self.transport.send_reliable(&self.send_buf);
+		}
+		// Immediately after, on the same ordered stream, so the server has
+		// already run the Hello and knows which account is asking. Sent
+		// here rather than on `Welcome` because both then land in the same
+		// server tick: the claim's corrected inventory follows the join
+		// sync in the same outbound batch, instead of a round trip later
+		// with an empty bar on screen in between.
+		if let Some(legacy) = self.config.legacy_identity {
+			self.send_msg(&ClientMsg::ClaimLegacy { legacy });
 		}
 	}
 
@@ -851,6 +873,32 @@ impl NetClient {
 			hotbar: hotbar.to_vec(),
 			grid: grid.to_vec(),
 		});
+	}
+
+	/// Say goodbye, and give it a moment to leave the machine.
+	///
+	/// Call this on every path where the player is knowingly going —
+	/// Leave Server, closing the window, the tab unloading. The server
+	/// drops the session the instant it reads a `Bye`, and without one it
+	/// has to wait out QUIC's idle timeout instead. That matters now that
+	/// records are keyed on an account and one account holds one live
+	/// connection: the player whose session is being held is the same
+	/// player trying to get back in.
+	///
+	/// The pairing is the whole point and is why this is one method
+	/// rather than two. `Bye` alone is a message queued into a stream
+	/// buffer; dropping the transport a line later takes it with it.
+	///
+	/// Best effort throughout. Nothing here can promise the message
+	/// arrives — a pulled cable, a killed process and a closed laptop all
+	/// still fall back on the server's timeout.
+	pub fn disconnect(&mut self) {
+		if self.left || self.transport.status() == crate::transport::ConnStatus::Closed {
+			return;
+		}
+		self.left = true;
+		self.send_msg(&ClientMsg::Bye);
+		self.transport.close();
 	}
 
 	fn send_msg(&mut self, msg: &ClientMsg) {

@@ -110,7 +110,19 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// would press TRANSMUTE and watch nothing happen, forever. The paired
 /// client sends the same op one item at a time, as it already does for
 /// `Convert`.
-pub const PROTOCOL_VERSION: u16 = 22;
+/// v23: accounts. `Hello.identity` REMOVED — the first field this
+/// protocol has ever taken away rather than appended, which is why
+/// `MIN_PROTOCOL` moves with it instead of the usual one-way ratchet.
+/// It was a client-chosen bearer secret keying the server's persisted
+/// records; a player is now identified by the account id the MASTER
+/// returns from `/api/tokens/verify`, so the wire carries no claim about
+/// who anyone is. See AUTH-DESIGN.md and NET-AUDIT-2.md §1.4.
+/// v24: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
+/// one-time transfer of a pre-account character onto the account that
+/// now owns it. An ordinary append (a v23 peer can't decode the new
+/// variant index), so `MIN_PROTOCOL` stays where v23 put it: a v23
+/// client can still play, it simply never migrates.
+pub const PROTOCOL_VERSION: u16 = 24;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -139,15 +151,20 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
 ///
-/// It moves with v22, which is the first break that is not about
-/// DECODING. Every earlier one appended a variant an old peer could not
-/// read, and the range could stay wide because everything inside it still
-/// meant the same thing; a v21 peer reads every v22 frame perfectly and
-/// simply cannot transmute in bulk any more — its transmute button would
-/// work for a single press and silently do nothing under CTRL. Refusing
-/// the handshake is the honest answer to that, and a range that admits a
-/// peer whose buttons don't work is worse than a narrow one.
-pub const MIN_PROTOCOL: u16 = 22;
+/// The floor has moved twice, and neither move was routine. v22 (the
+/// bench pacing BOTH halves) was the first break that is not about
+/// DECODING: a v21 peer reads every v22 frame perfectly and simply cannot
+/// transmute in bulk any more, its transmute button working for a single
+/// press and silently doing nothing under CTRL. Refusing the handshake is
+/// the honest answer, since a range that admits a peer whose buttons don't
+/// work is worse than a narrow one. v23 then LOST a field: `Hello` dropped
+/// `identity`, so a v22 decoder reading a v23 Hello would run off the end
+/// of the message, and the floor has to rise again to meet it. No
+/// compatibility loss worth mourning there either — an older client's join
+/// token came from an unauthenticated `/api/join` that no longer exists.
+/// v24 (the legacy claim) is an ordinary append and leaves the floor where
+/// v23 put it.
+pub const MIN_PROTOCOL: u16 = 23;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -265,6 +282,157 @@ pub fn validate_name(name: &str) -> Result<(), &'static str> {
 		return Err("name must be 3-10 chars: a-z 0-9 - _");
 	}
 	Ok(())
+}
+
+// ---- account identity ------------------------------------------------
+
+/// A master-issued account id: the UUID that identifies a player
+/// everywhere, and the one thing in this system that is not self-asserted.
+///
+/// It reaches a game server ONLY from the master, as the answer to
+/// `/api/tokens/verify` — never from the client, which is exactly what
+/// makes it worth keying on. Server-side it is the persistence key for
+/// inventories and skills, the value `--admin` compares against, and what
+/// a ban records. Client-side the account screen shows it, because an
+/// operator needs to be handed one to grant admin.
+///
+/// It is public, not secret: knowing someone's account id lets you name
+/// them, not be them.
+///
+/// Lives here because this crate owns the master contract (see
+/// [`DEFAULT_MASTER_URL`], [`validate_name`]) and is wasm-clean, so the
+/// browser client and the dedicated server share one parser. Parsed and
+/// formatted by hand rather than pulling in a UUID crate — it is 16 bytes
+/// of hex with four dashes, and this crate stays dependency-light.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct AccountId(pub [u8; 16]);
+
+/// Where the dashes go in the canonical textual form.
+const UUID_GROUPS: [usize; 5] = [4, 2, 2, 2, 6];
+
+impl AccountId {
+	/// All zeros — "no account". Offline play and the loopback tests have
+	/// no master to ask, so they carry this.
+	pub const NONE: Self = Self([0; 16]);
+
+	pub fn is_none(&self) -> bool {
+		self.0 == [0; 16]
+	}
+
+	/// Parse the canonical hyphenated form, and also the bare 32-hex form
+	/// that .NET's "N" format and a hand-typed id can produce. Case
+	/// insensitive; anything else is `None`.
+	pub fn parse(s: &str) -> Option<Self> {
+		// Dashes are allowed but not arbitrary: either none, or exactly the
+		// canonical five groups at exactly the canonical offsets.
+		//
+		// The offsets are the load-bearing half. Counting dashes and checking
+		// the total length is not enough — 32 hex digits plus four dashes is
+		// the same total WHEREVER the dashes fall, so an id grouped 8-4-4-8-8
+		// passed a length-only rule while reading as well-formed everywhere it
+		// was later printed.
+		let b = s.as_bytes();
+		if b.contains(&b'-') {
+			if b.len() != 32 + UUID_GROUPS.len() - 1 {
+				return None;
+			}
+			let mut at = 0;
+			for group in &UUID_GROUPS[..UUID_GROUPS.len() - 1] {
+				at += group * 2;
+				if b[at] != b'-' {
+					return None;
+				}
+				at += 1;
+			}
+		}
+		let mut bytes = [0u8; 16];
+		let mut hex = s.bytes().filter(|&b| b != b'-');
+		for byte in &mut bytes {
+			let hi = from_hex(hex.next()?)?;
+			let lo = from_hex(hex.next()?)?;
+			*byte = hi << 4 | lo;
+		}
+		if hex.next().is_some() {
+			return None;
+		}
+		Some(Self(bytes))
+	}
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+	match b {
+		b'0'..=b'9' => Some(b - b'0'),
+		b'a'..=b'f' => Some(b - b'a' + 10),
+		b'A'..=b'F' => Some(b - b'A' + 10),
+		_ => None,
+	}
+}
+
+impl core::fmt::Display for AccountId {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		let mut i = 0;
+		for (g, len) in UUID_GROUPS.iter().enumerate() {
+			if g != 0 {
+				f.write_str("-")?;
+			}
+			for _ in 0..*len {
+				write!(f, "{:02x}", self.0[i])?;
+				i += 1;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl core::fmt::Debug for AccountId {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "AccountId({self})")
+	}
+}
+
+/// The key a pre-account character is filed under: truncated SHA-256 of
+/// the device secret that owned it. What `ClientMsg::ClaimLegacy` carries.
+///
+/// **This is a FILE FORMAT, not a choice.** It reproduces exactly what
+/// pre-account servers computed over the client's identity secret, because
+/// that is what their `inventories.bin` records are keyed by. Move it by a
+/// byte and every migration silently finds nothing — the store still loads
+/// and simply never matches anybody, which is the failure mode with no
+/// symptom. Pinned against an external vector by
+/// `the_legacy_key_still_matches_what_old_servers_stored`.
+///
+/// Lives here, and not in either launcher, because BOTH launchers must
+/// agree with it and with each other: a player who used the desktop and
+/// the browser has one old character per server, and two spellings of this
+/// function would give them one key that works and one that does not.
+pub fn legacy_identity_hash(secret: &[u8; 16]) -> [u8; 16] {
+	use sha2::{Digest, Sha256};
+	Sha256::digest(secret)[..16]
+		.try_into()
+		.expect("digest is 32 bytes")
+}
+
+/// The same key, from the form the BROWSER stored its secret in: 32
+/// lowercase hex characters in `localStorage["digblock.identity"]`.
+/// `None` for anything that is not exactly that, including the all-zero
+/// secret a blocked-storage session used to fall back to.
+///
+/// Here rather than in the web launcher because it is the only step of the
+/// client's half that can silently differ from what the old client WROTE —
+/// a slicing slip decodes a different secret, hashes to a key no server
+/// holds, and the migration quietly finds nothing on every server forever.
+/// In the launcher it is unreachable from a test; here
+/// `the_two_launchers_derive_one_key_from_one_secret` covers it.
+pub fn legacy_identity_from_hex(hex: &str) -> Option<[u8; 16]> {
+	let b = hex.as_bytes();
+	if b.len() != 32 {
+		return None;
+	}
+	let mut secret = [0u8; 16];
+	for (i, out) in secret.iter_mut().enumerate() {
+		*out = from_hex(b[i * 2])? << 4 | from_hex(b[i * 2 + 1])?;
+	}
+	(secret != [0; 16]).then(|| legacy_identity_hash(&secret))
 }
 
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
@@ -581,6 +749,131 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The migration key must still be the one pre-account servers filed
+	/// their records under, or every claim quietly matches nothing.
+	///
+	/// This vector is the one the old server-side `hash_identity` was
+	/// pinned to, carried over verbatim when that function was deleted —
+	/// which is the point: the value is fixed by bytes already on players'
+	/// disks, and this crate is now the only place it is computed. A
+	/// swapped digest crate, a different truncation, an accidental hash of
+	/// the hex rather than the bytes: each would still pass a test that
+	/// only checked the function agreed with itself.
+	#[test]
+	fn the_legacy_key_still_matches_what_old_servers_stored() {
+		let want = [
+			0xd7, 0x61, 0xd4, 0x06, 0xaf, 0x2a, 0x4a, 0x5a, 0x15, 0xf6, 0x7c, 0x92, 0x43, 0x78,
+			0xed, 0x88,
+		];
+		assert_eq!(legacy_identity_hash(&[7; 16]), want);
+		// And it is the hash, never the secret: a launcher that shipped the
+		// raw file contents would hand every server the old bearer
+		// credential, which is the thing v23 removed.
+		assert_ne!(legacy_identity_hash(&[7; 16]), [7; 16]);
+	}
+
+	/// Desktop reads 16 raw bytes from a file; the browser reads 32 hex
+	/// characters out of localStorage. Same player, same secret, so they
+	/// must reach the same key — a player who used both has ONE old
+	/// character per server, and two decodings would give them one key that
+	/// works and one that silently matches nothing.
+	///
+	/// The hex here is written the way the old web client wrote it
+	/// (`format!("{b:02x}")` over the secret), which is what is sitting in
+	/// browsers now.
+	#[test]
+	fn the_two_launchers_derive_one_key_from_one_secret() {
+		let secret: [u8; 16] = [
+			0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xa5, 0xff, 0x3c, 0x42, 0x99, 0xde, 0x01, 0x02,
+			0x03, 0x04,
+		];
+		let stored: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+		assert_eq!(stored.len(), 32, "the shape the old client wrote");
+		assert_eq!(
+			legacy_identity_from_hex(&stored),
+			Some(legacy_identity_hash(&secret)),
+			"the browser's stored form and the file's raw bytes are one key"
+		);
+
+		// Uppercase is not what the old client wrote, but costs nothing to
+		// accept and would otherwise strand a hand-edited entry.
+		assert_eq!(
+			legacy_identity_from_hex(&stored.to_uppercase()),
+			Some(legacy_identity_hash(&secret))
+		);
+
+		// Anything else is "nothing to claim", never a wrong key.
+		assert_eq!(legacy_identity_from_hex(""), None);
+		assert_eq!(legacy_identity_from_hex(&stored[..30]), None, "too short");
+		assert_eq!(
+			legacy_identity_from_hex(&format!("{stored}00")),
+			None,
+			"too long"
+		);
+		assert_eq!(legacy_identity_from_hex(&"g".repeat(32)), None, "not hex");
+		// The all-zero secret was the blocked-storage fallback; it names no
+		// character, and hashing it would produce a real-looking key that
+		// every such browser would send.
+		assert_eq!(legacy_identity_from_hex(&"0".repeat(32)), None);
+	}
+
+	/// The id the master prints and the id we parse have to be the same
+	/// string: an operator copies one out of the game and pastes it into
+	/// `--admin`, so a byte-order slip here would silently grant admin to
+	/// nobody.
+	#[test]
+	fn account_ids_round_trip_through_their_canonical_text() {
+		// Taken verbatim from the master's dev sign-in for subject "admin".
+		let text = "b2379408-3102-8b68-b56b-5774dec269b8";
+		let id = AccountId::parse(text).expect("canonical form parses");
+		assert_eq!(id.to_string(), text);
+		assert_eq!(id.0[0], 0xb2);
+		assert_eq!(id.0[15], 0xb8);
+
+		// The bare 32-hex form (.NET's "N") is the same id.
+		assert_eq!(AccountId::parse(&text.replace('-', "")), Some(id));
+		// Case-insensitive.
+		assert_eq!(AccountId::parse(&text.to_uppercase()), Some(id));
+	}
+
+	#[test]
+	fn a_malformed_account_id_is_refused_rather_than_truncated() {
+		assert_eq!(AccountId::parse(""), None);
+		assert_eq!(AccountId::parse("not-a-uuid"), None);
+		// Too short, too long, and a non-hex digit.
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b-5774dec269b"),
+			None
+		);
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b-5774dec269b8f"),
+			None
+		);
+		assert_eq!(
+			AccountId::parse("g2379408-3102-8b68-b56b-5774dec269b8"),
+			None
+		);
+		// Dashes in the wrong places: the right hex, the wrong shape.
+		assert_eq!(
+			AccountId::parse("b2-379408-3102-8b68-b56b-5774dec269b8"),
+			None
+		);
+		// The same, at the canonical LENGTH — 32 hex plus four dashes,
+		// grouped 8-4-4-8-8. A length-only rule accepted this, so an id
+		// that never round-trips to itself was read as well-formed.
+		assert_eq!(
+			AccountId::parse("b2379408-3102-8b68-b56b5774-dec269b8"),
+			None
+		);
+		// And the degenerate case the length rule was written for.
+		assert_eq!(AccountId::parse("0-0-0-0-0"), None);
+		assert!(AccountId::NONE.is_none());
+		assert_eq!(
+			AccountId::NONE.to_string(),
+			"00000000-0000-0000-0000-000000000000"
+		);
+	}
 
 	/// Constant pipeline-lag base plus a hardness-proportional slice for
 	/// transient misses, capped so long digs don't hand a cheat more.

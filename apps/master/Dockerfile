@@ -13,5 +13,12 @@ RUN apk add --no-cache libmsquic
 WORKDIR /app
 COPY --from=build /out .
 ENV ASPNETCORE_URLS=http://0.0.0.0:5200
+# Accounts live here. In production /data MUST be a mounted volume (Azure
+# Files), or a redeploy silently starts from an empty account database —
+# the container's own layer is ephemeral. Created here so a plain
+# `docker run` (dev, and the Rust e2e suite) still boots with no mount.
+ENV Master__Db__Path=/data/master.db
+RUN mkdir -p /data
+VOLUME ["/data"]
 EXPOSE 5200
 ENTRYPOINT ["dotnet", "DigBlock.Master.dll"]

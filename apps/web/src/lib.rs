@@ -7,6 +7,7 @@ use digblock_render::{Engine, EngineConfig};
 use wasm_bindgen::prelude::*;
 
 mod audio;
+mod auth;
 mod jobs;
 mod services;
 mod settings;
@@ -37,10 +38,31 @@ fn flag(p: &web_sys::UrlSearchParams, key: &str) -> bool {
 	p.get(key).is_some_and(|v| v != "0")
 }
 
+/// Boot is async now: a sign-in that came back has to be redeemed with the
+/// master BEFORE the engine is built, or the menu would open signed out and
+/// then jump. `digblock_platform::run` returns immediately on wasm (winit
+/// keeps the loop alive through the event system), so nothing is lost by
+/// starting it from a task.
 #[wasm_bindgen(start)]
-pub fn start() -> Result<(), JsValue> {
+pub fn start() {
+	wasm_bindgen_futures::spawn_local(async {
+		if let Err(e) = boot().await {
+			log::error!("startup failed: {e:?}");
+		}
+	});
+}
+
+async fn boot() -> Result<(), JsValue> {
 	console_error_panic_hook::set_once();
 	let _ = console_log::init_with_level(log::Level::Info);
+
+	// A sign-in that came back lands here as `?code=&state=` and NOTHING
+	// else — the master replaces the redirect target's query with its own.
+	// `take_callback` puts back the query that configured this page from
+	// where `auth::begin` parked it, so it has to run BEFORE the params are
+	// read, or `?master=` is lost and the code is redeemed against the
+	// production default instead of the master that minted it.
+	let callback = auth::take_callback();
 
 	let params = web_sys::window()
 		.and_then(|w| w.location().search().ok())
@@ -112,7 +134,6 @@ pub fn start() -> Result<(), JsValue> {
 		ui_scale: config.ui_scale,
 		render_scale: config.render_scale,
 		gi_scale_div: config.gi_scale_div,
-		name: String::new(),
 	};
 	let saved = if interactive {
 		settings::load(defaults)
@@ -169,24 +190,10 @@ pub fn start() -> Result<(), JsValue> {
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
-	// ?name= is an explicit override, still held to `validate_name` —
-	// an invalid one is treated as absent; otherwise the remembered
-	// last-used name pre-fills the menu field.
-	config.player_name = params
-		.get("name")
-		.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
-		.or_else(|| (!saved.name.is_empty()).then(|| saved.name.clone()));
-
 	let join = flag(&params, "join");
 	if join {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
-		// The menu refuses to join without a valid name.
-		if config.player_name.is_none() {
-			config.player_name = Some("web".into());
-		}
 	}
-
-	config.identity = load_identity();
 
 	// The production master is the default; ?master= overrides for dev
 	// stacks, and an explicitly empty ?master= disables multiplayer + music
@@ -199,6 +206,54 @@ pub fn start() -> Result<(), JsValue> {
 		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
 		None => None,
 	};
+	// Redeem a returned sign-in before the engine exists, so the menu opens
+	// already signed in and the code leaves the address bar immediately.
+	let session = match (&master_url, callback) {
+		(Some(master_url), Some((code, verifier))) => {
+			match auth::exchange(master_url, &code, &verifier).await {
+				Ok(s) => {
+					auth::store(&s);
+					Some(s)
+				}
+				Err(e) => {
+					log::warn!("sign-in could not be completed: {e}");
+					auth::load()
+				}
+			}
+		}
+		_ => auth::load(),
+	};
+	// A scripted join cannot go through a browser round trip; ?devsignin=
+	// gets it a session the way desktop's --dev-signin does.
+	let session = match (&master_url, params.get("devsignin")) {
+		(Some(master_url), Some(subject)) if !subject.is_empty() => {
+			match auth::dev_sign_in(master_url, &subject).await {
+				Ok(s) => {
+					auth::store(&s);
+					Some(s)
+				}
+				Err(e) => {
+					log::error!("?devsignin failed: {e}");
+					session
+				}
+			}
+		}
+		_ => session,
+	};
+	config.player_name = session.as_ref().and_then(|s| s.display_name.clone());
+	config.account = session
+		.as_ref()
+		.map(|s| digblock_render::menu::AccountView {
+			id: s.account_id.clone(),
+			name: s.display_name.clone(),
+		});
+	// The pre-account character's lookup key, for servers this browser
+	// played on before accounts existed. Only where a join can happen: a
+	// capture path has no business reading it.
+	if interactive || join {
+		config.legacy_identity = legacy_identity();
+	}
+
 	let workers = config.workers;
 	let mut engine = Engine::new(config);
 	if interactive {
@@ -235,8 +290,9 @@ pub fn start() -> Result<(), JsValue> {
 	if interactive && !flag(&params, "mute") {
 		engine.set_audio(audio::start(master_url.clone()));
 	}
+	engine.set_clipboard(Box::new(copy_to_clipboard));
 	if let Some(master_url) = master_url {
-		engine.set_menu_services(services::start(master_url));
+		engine.set_menu_services(services::start(master_url, session));
 	}
 	digblock_platform::run(
 		engine,
@@ -265,46 +321,37 @@ fn worker_module_url() -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// Load-or-create the persistent identity secret, stored as hex in
-/// localStorage. Private-mode/blocked storage degrades to a random
-/// per-session identity — the game still runs, persistence doesn't.
-fn load_identity() -> [u8; 16] {
-	let fresh = |storage: Option<&web_sys::Storage>| -> [u8; 16] {
-		let mut id = [0u8; 16];
-		let filled = web_sys::window()
-			.and_then(|w| w.crypto().ok())
-			.and_then(|c| c.get_random_values_with_u8_array(&mut id).ok())
-			.is_some();
-		if !filled {
-			// No crypto object (ancient browser): weak fallback, still
-			// unique enough for a per-session identity.
-			for (i, b) in id.iter_mut().enumerate() {
-				*b = (js_sys::Math::random() * 256.0) as u8 ^ (i as u8);
-			}
-		}
-		if let Some(s) = storage {
-			let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
-			let _ = s.set_item("digblock.identity", &hex);
-		}
-		id
+/// The key this browser's pre-account character is filed under on the
+/// servers it used to play on: the truncated SHA-256 of the old identity
+/// secret, which localStorage still holds as hex.
+///
+/// The desktop twin of this is `legacy_identity` in apps/desktop. They
+/// must agree byte for byte — a player who used both gets the same key
+/// only if both hash the same secret the same way — which is why the hash
+/// itself is `protocol::legacy_identity_hash` and only the STORAGE differs
+/// here. Same rules: read-only, never created, and absent/malformed/
+/// all-zeros all answer `None`.
+fn legacy_identity() -> Option<[u8; 16]> {
+	let hex = web_sys::window()?
+		.local_storage()
+		.ok()??
+		.get_item("digblock.identity")
+		.ok()??;
+	let key = digblock_net::protocol::legacy_identity_from_hex(&hex)?;
+	log::info!("found a pre-account identity — offering it to servers for migration");
+	Some(key)
+}
+
+/// The Account screen's Copy ID button.
+///
+/// `navigator.clipboard.writeText` only works inside the task that handled
+/// the user's click, which is why the engine drains this from `input`
+/// rather than `update`. The returned promise is deliberately dropped:
+/// awaiting it would push the result into a later task, and there is
+/// nothing useful to do with it.
+fn copy_to_clipboard(text: &str) {
+	let Some(window) = web_sys::window() else {
+		return;
 	};
-	let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
-		return fresh(None);
-	};
-	match storage.get_item("digblock.identity") {
-		Ok(Some(hex)) if hex.len() == 32 => {
-			let mut id = [0u8; 16];
-			let ok = (0..16).all(|i| {
-				u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-					.map(|b| id[i] = b)
-					.is_ok()
-			});
-			if ok && id != [0; 16] {
-				id
-			} else {
-				fresh(Some(&storage))
-			}
-		}
-		_ => fresh(Some(&storage)),
-	}
+	let _ = window.navigator().clipboard().write_text(text);
 }

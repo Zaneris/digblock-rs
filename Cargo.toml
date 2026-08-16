@@ -82,6 +82,14 @@ serde_json = "1"
 rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis"] }
 sha2 = "0.11"
 dirs = "6"
+# Hands a URL to the system browser, for the desktop sign-in flow. Worth a
+# dependency rather than shelling out to `open`/`xdg-open`/`start`: the
+# Linux side alone is an xdg-open → gio → kde-open → wslview chain, and a
+# sign-in that silently fails to open anything looks like a hang.
+open = "5"
+# The Account screen's Copy ID button. Nothing else in the project reads or
+# writes a clipboard — there is no paste anywhere, deliberately.
+arboard = { version = "3", default-features = false }
 
 [profile.release]
 lto = "thin"

@@ -7,6 +7,7 @@
 //! a master-verified token, so there is no unregistered service mode —
 //! registration retries forever and joins are refused until it lands.
 
+use digblock_net::protocol::AccountId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -31,14 +32,19 @@ pub struct MasterConfig {
 	/// DNS name, or when the observed egress is not the game traffic's
 	/// ingress (multi-homed hosts, split routing).
 	pub advertise_host: Option<String>,
-	/// Alternate address for the master's reachability probes when its
-	/// network view differs from clients' (NAT-split dev topologies, e.g.
-	/// a containerized master probing host.docker.internal while clients
-	/// dial 127.0.0.1). None = probe the advertise host; production
-	/// servers leave this unset.
-	pub probe_host: Option<String>,
 	pub advertise_port: u16,
+	/// Our registration key for this address, if we have registered before.
+	///
+	/// The master remembers which key holds a `host:port` and refuses a
+	/// registration from anyone else while something is live there, so this
+	/// is what makes a restart a re-registration rather than a takeover
+	/// attempt. Persisted beside the world data ([`KEY_FILE`]); `None` on a
+	/// first run, which is when the master mints one.
+	pub server_key: Option<String>,
 }
+// probe_host is gone from this struct as well as the wire. The master
+// redirects its own probes now (Master:Dev:ProbeHostOverride) — letting the
+// registrant choose the only address ever dialed was NET-AUDIT-2.md §1.3.
 
 #[derive(Clone)]
 pub struct Registration {
@@ -114,8 +120,6 @@ struct RegisterBody<'a> {
 	/// None → the master fills in the observed remote address.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	host: Option<&'a str>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	probe_host: Option<&'a str>,
 	port: u16,
 	cert_hash: String,
 	players: u32,
@@ -155,6 +159,17 @@ struct VerifyBody {
 #[serde(rename_all = "camelCase")]
 struct VerifyOkBody {
 	display_name: String,
+	/// The master's account id for this player, as a hyphenated UUID. This
+	/// is the identity everything server-side keys on — inventory, skills,
+	/// admin, bans — and it arrives HERE rather than in the client's Hello
+	/// precisely so the client cannot choose it.
+	account_id: String,
+}
+
+/// What a verified token vouches for.
+pub struct VerifiedJoin {
+	pub display_name: String,
+	pub account: AccountId,
 }
 
 // ---- blocking HTTP (callers use spawn_blocking) ---------------------------
@@ -172,7 +187,6 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 	let body = RegisterBody {
 		name: &cfg.server_name,
 		host: cfg.advertise_host.as_deref(),
-		probe_host: cfg.probe_host.as_deref(),
 		port: cfg.advertise_port,
 		cert_hash: hex(cert_hash),
 		players: 0,
@@ -180,8 +194,14 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 		protocol_version: digblock_net::protocol::PROTOCOL_VERSION,
 		sim_version: digblock_core::SIM_VERSION,
 	};
-	let mut res = agent(Duration::from_secs(10))
-		.post(format!("{}/api/servers/register", cfg.url))
+	let mut req = agent(Duration::from_secs(10)).post(format!("{}/api/servers/register", cfg.url));
+	// Present our key if we hold one. Without it the master treats this as
+	// a first claim on the address — fine on a genuinely fresh install, and
+	// refused while another server is live there, which is the point.
+	if let Some(key) = &cfg.server_key {
+		req = req.header("authorization", &format!("Bearer {key}"));
+	}
+	let mut res = req
 		.send_json(&body)
 		.map_err(|e| RegisterError::Transport(e.to_string()))?;
 	match res.status().as_u16() {
@@ -214,22 +234,66 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 	}
 }
 
-/// `Ok(display_name)` consumes the token master-side; it will never verify
+/// A successful verify consumes the token master-side; it will never verify
 /// again anywhere.
-pub fn verify_token(url: &str, server_key: &str, token: &[u8; 16]) -> Result<String, VerifyError> {
+pub fn verify_token(
+	url: &str,
+	server_key: &str,
+	token: &[u8; 16],
+) -> Result<VerifiedJoin, VerifyError> {
 	let mut res = agent(Duration::from_secs(3))
 		.post(format!("{url}/api/tokens/verify"))
 		.header("authorization", &format!("Bearer {server_key}"))
 		.send_json(&VerifyBody { token: hex(token) })
 		.map_err(|e| VerifyError::Unavailable(e.to_string()))?;
 	match res.status().as_u16() {
-		200 => res
-			.body_mut()
-			.read_json::<VerifyOkBody>()
-			.map(|ok| ok.display_name)
-			.map_err(|e| VerifyError::Unavailable(format!("bad verify response: {e}"))),
+		200 => {
+			let ok: VerifyOkBody = res
+				.body_mut()
+				.read_json()
+				.map_err(|e| VerifyError::Unavailable(format!("bad verify response: {e}")))?;
+			// An unparseable account id fails the join rather than falling
+			// back to anonymous: the whole point of this answer is that the
+			// identity came from the master, and "we could not read it" is
+			// not a licence to invent one.
+			let account = AccountId::parse(&ok.account_id).ok_or_else(|| {
+				VerifyError::Unavailable(format!("master sent a bad account id: {}", ok.account_id))
+			})?;
+			Ok(VerifiedJoin {
+				display_name: ok.display_name,
+				account,
+			})
+		}
 		401 | 404 => Err(VerifyError::Denied),
 		s => Err(VerifyError::Unavailable(format!("http {s}"))),
+	}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountLookupBody {
+	account_id: String,
+}
+
+/// Resolve a display name to its account id. Used exactly once per admin at
+/// boot — the SERVER never asks this question again, because the answer it
+/// keeps is the id.
+pub fn lookup_account(url: &str, name: &str) -> Result<AccountId, String> {
+	let mut res = agent(Duration::from_secs(10))
+		.get(format!("{url}/api/accounts/by-name/{name}"))
+		.call()
+		.map_err(|e| e.to_string())?;
+	match res.status().as_u16() {
+		200 => {
+			let body: AccountLookupBody = res
+				.body_mut()
+				.read_json()
+				.map_err(|e| format!("bad lookup response: {e}"))?;
+			AccountId::parse(&body.account_id)
+				.ok_or_else(|| format!("master sent a bad account id: {}", body.account_id))
+		}
+		404 => Err(format!("no account is named {name:?}")),
+		s => Err(format!("http {s}")),
 	}
 }
 
@@ -280,12 +344,13 @@ pub fn notify_shutdown(url: &str, reg: &Registration) {
 /// registers the current cert.
 pub async fn run(
 	state: Arc<MasterState>,
-	cfg: MasterConfig,
+	mut cfg: MasterConfig,
 	cert_hash: Arc<RwLock<[u8; 32]>>,
 	reregister: Arc<tokio::sync::Notify>,
 	players: Arc<AtomicUsize>,
+	key_path: Option<std::path::PathBuf>,
 ) {
-	register_with_retry(&state, &cfg, &cert_hash).await;
+	register_with_retry(&state, &mut cfg, &cert_hash, key_path.as_deref()).await;
 	let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 	interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	interval.tick().await; // first tick fires immediately; skip it
@@ -293,7 +358,7 @@ pub async fn run(
 		tokio::select! {
 			_ = reregister.notified() => {
 				state.set_registration(None);
-				register_with_retry(&state, &cfg, &cert_hash).await;
+				register_with_retry(&state, &mut cfg, &cert_hash, key_path.as_deref()).await;
 				continue;
 			}
 			_ = interval.tick() => {}
@@ -312,7 +377,7 @@ pub async fn run(
 			Ok(Ok(false)) => {
 				log::warn!("master lost our registration (restart?); re-registering");
 				state.set_registration(None);
-				register_with_retry(&state, &cfg, &cert_hash).await;
+				register_with_retry(&state, &mut cfg, &cert_hash, key_path.as_deref()).await;
 			}
 			Ok(Err(e)) => log::warn!("heartbeat failed: {e}"),
 			Err(e) => log::warn!("heartbeat task failed: {e}"),
@@ -322,8 +387,9 @@ pub async fn run(
 
 async fn register_with_retry(
 	state: &MasterState,
-	cfg: &MasterConfig,
+	cfg: &mut MasterConfig,
 	cert_hash: &RwLock<[u8; 32]>,
+	key_path: Option<&std::path::Path>,
 ) {
 	let mut delay = RETRY_MIN;
 	loop {
@@ -339,6 +405,16 @@ async fn register_with_retry(
 					reg.observed_host,
 					cfg.advertise_port
 				);
+				// Hold on to the key: it is what makes the NEXT registration
+				// a re-registration rather than a claim someone else could
+				// have made. Usually unchanged; new on a first run, and new
+				// again if the master had to re-key us.
+				if cfg.server_key.as_deref() != Some(reg.server_key.as_str()) {
+					cfg.server_key = Some(reg.server_key.clone());
+					if let Some(path) = key_path {
+						store_key(path, &reg.server_key);
+					}
+				}
 				state.set_registration(Some(reg));
 				return;
 			}
@@ -372,6 +448,53 @@ async fn register_with_retry(
 		}
 		tokio::time::sleep(delay).await;
 		delay = (delay * 2).min(RETRY_MAX);
+	}
+}
+
+/// The file the registration key lives in, inside the server's data
+/// directory. Named so an operator backing up `./data` takes it with them —
+/// losing it is recoverable (the master re-keys a claim nothing is live on)
+/// but it means a window where the address is unheld.
+pub const KEY_FILE: &str = "master-key";
+
+/// Read a stored registration key. A missing file is the normal first-run
+/// case, not an error.
+pub fn load_key(path: &std::path::Path) -> Option<String> {
+	let raw = std::fs::read_to_string(path).ok()?;
+	let key = raw.trim().to_string();
+	(!key.is_empty()).then_some(key)
+}
+
+/// Persist the registration key, owner-readable only.
+///
+/// It is a bearer credential for one `host:port` on one master: whoever
+/// holds it can re-register that address, which means renaming the server
+/// or pointing it at a different machine. Not catastrophic — it grants no
+/// access to player data and cannot mint join tokens — but there is no
+/// reason for it to be world-readable beside a world journal that is.
+fn store_key(path: &std::path::Path, key: &str) {
+	let write = || -> std::io::Result<()> {
+		if let Some(dir) = path.parent() {
+			std::fs::create_dir_all(dir)?;
+		}
+		std::fs::write(path, key)?;
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+		}
+		Ok(())
+	};
+	match write() {
+		Ok(()) => log::info!("stored master registration key in {}", path.display()),
+		// Not fatal: the server runs fine, it just has to re-claim its
+		// address on every restart, and will fail to while anything else is
+		// live there.
+		Err(e) => log::warn!(
+			"could not persist the master registration key to {} ({e}) — \
+			 this server will re-claim its address on each restart",
+			path.display()
+		),
 	}
 }
 

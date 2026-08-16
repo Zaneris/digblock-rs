@@ -1,5 +1,6 @@
-//! Admin chat commands (`--admin-name`): dispatched from the Chat arm
-//! for slash-lines from the admin, never broadcast. Every outcome is
+//! Admin chat commands (`--admin <account-id>`): dispatched from the Chat
+//! arm for slash-lines from an admin ACCOUNT, never broadcast. Every
+//! outcome is
 //! answered with a private `SERVER_ID` chat reply. The command table is
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
@@ -571,8 +572,13 @@ impl Sim {
 			.collect();
 		let [target] = matches[..] else {
 			let msg = if matches.is_empty() {
-				format!("{name} is not online (bans need the player's IP)")
+				format!("{name} is not online (bans need the player's address)")
 			} else {
+				// Names are unique per account at the master now, so two
+				// live matches means two connections of the same account —
+				// which handle_hello already refuses. Kept as a guard rather
+				// than deleted: this branch is the difference between
+				// refusing and banning the wrong person.
 				format!("{} players named {name} - can't ban by name", matches.len())
 			};
 			return self.reply(conn_id, &msg);
@@ -580,16 +586,16 @@ impl Sim {
 		if target == conn_id {
 			return self.reply(conn_id, "not banning yourself");
 		}
-		let (ip, stored_name) = {
+		let (ip, stored_name, account) = {
 			let c = &self.clients[&target];
-			(c.addr.ip(), c.name.clone())
+			(c.addr.ip(), c.name.clone(), c.account)
 		};
 		if self.clients[&conn_id].addr.ip() == ip {
 			// Kicking every connection on the banned IP would include the
 			// admin — almost certainly two names from one household/NAT.
 			return self.reply(conn_id, &format!("{name} shares your IP - not banning it"));
 		}
-		self.ban_store.ban(&stored_name, ip);
+		self.ban_store.ban(&stored_name, ip, account);
 		// Kick every connection from the banned IP, not just the named one.
 		let kicked: Vec<u64> = self
 			.clients
@@ -650,7 +656,7 @@ mod tests {
 	use crate::sim::{Sim, SimEvent};
 	use digblock_core::block::BlockType;
 	use digblock_net::messages::{ClientMsg, ServerMsg};
-	use digblock_net::protocol::SERVER_ID;
+	use digblock_net::protocol::{AccountId, SERVER_ID};
 	use glam::Vec3;
 	use std::assert_matches;
 
@@ -663,8 +669,68 @@ mod tests {
 
 	fn admin_sim(tag: &str) -> Sim {
 		let mut sim = flat_sim(tag);
-		sim.set_admin_name(Some("boss".into()));
+		sim.set_admin_accounts([admin_account()]);
 		sim
+	}
+
+	/// Admin is an ACCOUNT decision. Two things follow, and both used to be
+	/// false: sharing the admin's display name grants nothing, and the
+	/// admin keeps their commands after a rename.
+	///
+	/// The name compare this replaced made `--admin-name admin` plus a join
+	/// under the name "admin" a complete server takeover (NET-AUDIT-2.md
+	/// §1.1). The impersonation half of that is what the second assertion
+	/// here pins.
+	#[test]
+	fn admin_keys_on_the_account_not_the_name() {
+		let mut sim = admin_sim("adminacct");
+
+		// The real admin, joined under any name at all.
+		let mut admin = connect_admin(&mut sim, 1, "boss");
+		sim.tick_once(vec![chat(1, "/help")]);
+		admin.drain();
+		assert!(
+			admin.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::Chat { text, .. } if text.starts_with("/help")
+			)),
+			"the admin's account gets the commands: {:?}",
+			admin.msgs
+		);
+
+		// Somebody else, wearing the same name. Under the old rule this was
+		// a takeover; now it is just a player with a confusing name.
+		let mut impostor = connect_named_as(&mut sim, 2, "boss", test_account(0x99));
+		sim.tick_once(vec![chat(2, "/help")]);
+		impostor.drain();
+		assert!(
+			!impostor
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.starts_with("/help"))),
+			"a matching NAME must grant nothing: {:?}",
+			impostor.msgs
+		);
+	}
+
+	/// An unverified connection carries `AccountId::NONE`. Admitting that to
+	/// the admin set would hand admin to every offline and test connection
+	/// at once, so it is dropped on the way in.
+	#[test]
+	fn the_empty_account_can_never_be_an_admin() {
+		let mut sim = flat_sim("adminnone");
+		sim.set_admin_accounts([AccountId::NONE]);
+		let mut anon = connect(&mut sim, 1);
+		sim.tick_once(vec![chat(1, "/help")]);
+		anon.drain();
+		assert!(
+			!anon
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.starts_with("/help"))),
+			"AccountId::NONE must not be grantable: {:?}",
+			anon.msgs
+		);
 	}
 
 	/// Server-authored chat lines received by a client.
@@ -681,7 +747,9 @@ mod tests {
 	#[test]
 	fn admin_gets_command_advertisement_others_do_not() {
 		let mut sim = admin_sim("advert");
-		let admin = connect_named(&mut sim, 1, "BOSS"); // case-insensitive
+		// The name is irrelevant now — the account is what is granted, so
+		// the admin can join as anything.
+		let admin = connect_admin(&mut sim, 1, "BOSS");
 		let other = connect_named(&mut sim, 2, "guest");
 		assert!(
 			admin
@@ -704,7 +772,7 @@ mod tests {
 	fn give_credits_essence_and_rebases_the_player_who_got_it() {
 		use digblock_core::block::Essence;
 		let mut sim = admin_sim("give");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		let mut guest = connect_named(&mut sim, 2, "guest");
 		wait_live(&mut sim, 1);
 		wait_live(&mut sim, 2);
@@ -766,7 +834,7 @@ mod tests {
 	#[test]
 	fn slash_lines_never_broadcast_and_non_admin_is_refused() {
 		let mut sim = admin_sim("slash");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		let mut guest = connect_named(&mut sim, 2, "guest");
 		sim.tick_once(vec![chat(1, "/help"), chat(2, "/tp 0 0")]);
 		admin.drain();
@@ -795,7 +863,7 @@ mod tests {
 	#[test]
 	fn admin_commands_bypass_the_chat_token_bucket() {
 		let mut sim = admin_sim("bucket");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		for _ in 0..6 {
 			sim.tick_once(vec![chat(1, "/ban-list")]);
 		}
@@ -812,8 +880,8 @@ mod tests {
 	fn ban_kicks_persists_and_refuses_reconnect() {
 		let dir = temp_dir("banflow");
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		sim.set_admin_name(Some("boss".into()));
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		sim.set_admin_accounts([admin_account()]);
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		let mut victim = connect_named(&mut sim, 2, "griefer");
 		sim.tick_once(vec![chat(1, "/ban Griefer")]);
 		admin.drain();
@@ -831,7 +899,7 @@ mod tests {
 		);
 		assert!(sim.test_player(2).is_none(), "victim dropped");
 		// Same address (conn 2) reconnecting: refused at Hello.
-		let again = try_connect(&mut sim, 2, [0; 16]);
+		let again = try_connect(&mut sim, 2, AccountId::NONE);
 		assert!(
 			matches!(
 				again.msgs.first(),
@@ -843,27 +911,27 @@ mod tests {
 		// Survives a server restart (bans.json).
 		drop(sim);
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		let again = try_connect(&mut sim, 2, [0; 16]);
+		let again = try_connect(&mut sim, 2, AccountId::NONE);
 		assert_matches!(
 			again.msgs.first(),
 			Some(ServerMsg::Refused { reason }) if reason == "banned"
 		);
 		// Unbanned (by name) → welcome again.
-		sim.set_admin_name(Some("boss".into()));
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		sim.set_admin_accounts([admin_account()]);
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		sim.tick_once(vec![chat(1, "/ban-list")]);
 		sim.tick_once(vec![chat(1, "/unban griefer")]);
 		admin.drain();
 		assert!(server_lines(&admin).iter().any(|t| t.contains("griefer")));
 		assert!(server_lines(&admin).iter().any(|t| t.contains("unbanned")));
-		let back = try_connect(&mut sim, 2, [0; 16]);
+		let back = try_connect(&mut sim, 2, AccountId::NONE);
 		assert_matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. }));
 	}
 
 	#[test]
 	fn ban_edge_cases_reply_without_banning() {
 		let mut sim = admin_sim("banedge");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		sim.tick_once(vec![chat(1, "/ban nosuch")]);
 		sim.tick_once(vec![chat(1, "/ban boss")]);
 		sim.tick_once(vec![chat(1, "/ban !!!")]);
@@ -904,7 +972,7 @@ mod tests {
 	#[test]
 	fn tp_absolute_relative_and_facing() {
 		let mut sim = admin_sim("tp");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		sim.tick_once(vec![chat(1, "/tp 40 -20 e")]);
 		admin.drain();
@@ -974,7 +1042,7 @@ mod tests {
 	#[test]
 	fn goto_and_bring_move_the_right_player() {
 		let mut sim = admin_sim("gotobring");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		let mut guest = connect_named(&mut sim, 2, "guest");
 		wait_live(&mut sim, 1);
 		wait_live(&mut sim, 2);
@@ -1033,7 +1101,7 @@ mod tests {
 	#[test]
 	fn time_sets_the_clock_and_reanchors_everyone() {
 		let mut sim = admin_sim("time");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		let mut guest = connect_named(&mut sim, 2, "guest");
 		sim.tick_once(vec![chat(1, "/time 18:30")]);
 		admin.drain();
@@ -1079,7 +1147,7 @@ mod tests {
 	#[test]
 	fn time_query_bare_hour_and_bad_input() {
 		let mut sim = admin_sim("timeedge");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		sim.tick_once(vec![chat(1, "/time 12:00")]);
 		sim.tick_once(vec![chat(1, "/time")]);
 		sim.tick_once(vec![chat(1, "/time 6")]);
@@ -1119,8 +1187,8 @@ mod tests {
 			j.sync();
 		}
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		sim.set_admin_name(Some("boss".into()));
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		sim.set_admin_accounts([admin_account()]);
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		sim.tick_once(vec![chat(1, "/tp 200 200")]);
 		admin.drain();
 		let pos = admin
@@ -1145,7 +1213,7 @@ mod tests {
 	#[test]
 	fn lock_spawn_toggles_and_reports() {
 		let mut sim = admin_sim("lockspawn");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 
 		sim.tick_once(vec![chat(1, "/lock-spawn")]);
 		admin.drain();
@@ -1211,7 +1279,7 @@ mod tests {
 	#[test]
 	fn set_spawn_needs_the_top_face_of_a_block() {
 		let mut sim = admin_sim("setspawn");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		let mut t = 0;
 		let eye = sim.test_player(1).unwrap().pos;
@@ -1280,7 +1348,7 @@ mod tests {
 	#[test]
 	fn set_spawn_refuses_ground_a_player_cannot_stand_on() {
 		let mut sim = admin_sim("setspawnbad");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		let mut t = 0;
 		// Dig a hole at the rim of the disc the admin is standing in the
@@ -1311,7 +1379,7 @@ mod tests {
 	#[test]
 	fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 		let mut sim = admin_sim("setspawnlock");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		sim.tick_once(vec![chat(1, "/lock-spawn on")]);
 		let before = sim.spawn_lock().expect("locked");
@@ -1373,7 +1441,7 @@ mod tests {
 	#[test]
 	fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 		let mut sim = admin_sim("spawndir");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 
 		// No argument: the admin's own look, flattened to a yaw.
@@ -1442,7 +1510,7 @@ mod tests {
 	#[test]
 	fn set_spawn_dir_rejects_a_facing_it_cannot_use() {
 		let mut sim = admin_sim("spawndirbad");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		let mut t = 0;
 		face(&mut sim, 1, Vec3::Y, &mut t);
@@ -1461,13 +1529,13 @@ mod tests {
 	fn a_resumed_join_does_not_get_the_spawn_facing() {
 		let dir = temp_dir("spawndirresume");
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
-		sim.set_admin_name(Some("boss".into()));
-		let _admin = connect_named(&mut sim, 1, "boss");
+		sim.set_admin_accounts([admin_account()]);
+		let _admin = connect_admin(&mut sim, 1, "boss");
 		wait_live(&mut sim, 1);
 		sim.tick_once(vec![chat(1, "/set-spawn-dir n")]);
 
-		// A first join under a real identity banks a position...
-		let id = [7u8; 16];
+		// A first join under a real account banks a position...
+		let id = test_account(7);
 		let first = crate::sim::harness::try_connect_as(&mut sim, 2, id, "guest");
 		assert_matches!(
 			first.msgs.first(),
@@ -1493,7 +1561,7 @@ mod tests {
 	#[test]
 	fn lock_spawn_rejects_a_bad_argument() {
 		let mut sim = admin_sim("lockspawnbad");
-		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
 		sim.tick_once(vec![chat(1, "/lock-spawn maybe")]);
 		admin.drain();
 		assert!(server_lines(&admin).iter().any(|l| l.contains("usage:")));

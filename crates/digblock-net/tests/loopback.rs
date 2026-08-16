@@ -32,7 +32,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
-			identity: [0; 16],
+			legacy_identity: None,
 		},
 	)
 }
@@ -126,18 +126,20 @@ impl Stub {
 	}
 }
 
+/// The join token is the ONLY thing the client asserts about itself now.
+/// It used to also carry an identity secret; who a player is comes from the
+/// master's answer to `/api/tokens/verify` instead (v23).
 #[test]
-fn configured_token_and_identity_reach_the_wire() {
+fn the_configured_token_reaches_the_wire() {
 	let (a, b) = loopback_pair();
 	let token: [u8; 16] = [7; 16];
-	let identity: [u8; 16] = [9; 16];
 	let mut client = NetClient::new(
 		Box::new(a),
 		digblock_net::client::NetClientConfig {
 			name: "test".into(),
 			draw_dist: 8,
 			token,
-			identity,
+			legacy_identity: None,
 		},
 	);
 	let mut server = Stub::new(b);
@@ -147,7 +149,102 @@ fn configured_token_and_identity_reach_the_wire() {
 	server.pump();
 	assert_matches!(
 		server.client_msgs.first(),
-		Some(ClientMsg::Hello { token: t, identity: i, .. }) if *t == token && *i == identity
+		Some(ClientMsg::Hello { token: t, .. }) if *t == token
+	);
+}
+
+/// A client holding an old identity offers it on every join, unprompted
+/// and right behind the Hello.
+///
+/// Both halves are load-bearing. Unprompted, because the client cannot
+/// know which servers it has already migrated on — there is no per-server
+/// state on this side, deliberately, and a server that has nothing for it
+/// simply says nothing back. Right behind the Hello, because the two then
+/// land in the same server tick, so the corrected inventory rides out with
+/// the join sync instead of a round trip later.
+#[test]
+fn an_old_identity_is_offered_immediately_after_hello() {
+	let (a, b) = loopback_pair();
+	let legacy = [9u8; 16];
+	let mut client = NetClient::new(
+		Box::new(a),
+		digblock_net::client::NetClientConfig {
+			name: "test".into(),
+			draw_dist: 8,
+			token: [0; 16],
+			legacy_identity: Some(legacy),
+		},
+	);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert_matches!(
+		server.client_msgs.as_slice(),
+		[
+			ClientMsg::Hello { .. },
+			ClientMsg::ClaimLegacy { legacy: l }
+		] if *l == legacy,
+		"expected exactly Hello then the claim, got {:?}",
+		server.client_msgs
+	);
+}
+
+/// A client with no old identity sends no claim at all — the case every
+/// new player is in, and the reason the migration costs them nothing.
+#[test]
+fn a_client_with_no_old_identity_claims_nothing() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert_matches!(server.client_msgs.as_slice(), [ClientMsg::Hello { .. }]);
+}
+
+/// Leaving on purpose says so on the wire, and says it once.
+///
+/// The server drops the session the moment it reads this, which is what
+/// lets a player who quits come straight back — one account holds one live
+/// connection, so a goodbye that never arrives locks them out of their own
+/// seat until QUIC times it out.
+///
+/// The other half of `disconnect` — flushing before the socket closes — is
+/// not observable here: a loopback has nothing to flush. That half is
+/// pinned over real QUIC by the e2e `a_goodbye_frees_the_account_at_once`.
+#[test]
+fn leaving_says_goodbye_on_the_wire() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	server.client_msgs.clear();
+
+	client.disconnect();
+	server.pump();
+	assert_matches!(
+		server.client_msgs.as_slice(),
+		[ClientMsg::Bye],
+		"expected exactly one Bye, got {:?}",
+		server.client_msgs
+	);
+
+	// Idempotent: a second call after the transport reports Closed must
+	// not put another Bye on a stream nobody is reading. Every exit path
+	// can therefore call it without checking whether another already did.
+	server.client_msgs.clear();
+	client.disconnect();
+	server.pump();
+	assert!(
+		server.client_msgs.is_empty(),
+		"a second goodbye reached the wire: {:?}",
+		server.client_msgs
 	);
 }
 

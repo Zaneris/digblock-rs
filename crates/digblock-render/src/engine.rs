@@ -18,6 +18,13 @@ use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 
+/// The launcher-injected clipboard writer, in the same shape as
+/// [`crate::settings::SettingsStore`]: the engine raises an intent, the
+/// launcher owns the platform call. Write-only — nothing in this project
+/// pastes, and adding a read would mean giving the game a way to see what
+/// the player copied somewhere else.
+pub type ClipboardSink = Box<dyn FnMut(&str)>;
+
 /// A UI screen [`EngineConfig::debug_screen`] can open at startup.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DebugScreen {
@@ -392,10 +399,22 @@ pub struct EngineConfig {
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
 	pub auto_join: Option<String>,
-	/// Persistent identity secret keying the server-side persisted
-	/// inventory; all zeros = anonymous. The LAUNCHER fills this (desktop:
-	/// data-dir file; web: localStorage) — the engine stays env-free.
-	pub identity: [u8; 16],
+	/// The signed-in account, if the launcher found a stored session. The
+	/// engine never reads or writes the session TOKEN — that lives in the
+	/// launcher's services thread, which is the only thing that talks to
+	/// the master. This is display state: who to say you are on the
+	/// account screen, and whether the menu offers Multiplayer or Sign In.
+	pub account: Option<crate::menu::AccountView>,
+	/// The key this machine's pre-account character was filed under, if an
+	/// old identity file is still on disk — see
+	/// `NetClientConfig::legacy_identity`. The LAUNCHER fills this, reading
+	/// the file and hashing it, so the secret itself never enters the
+	/// engine and there is nothing here to leak.
+	///
+	/// Read-only, and never created: a machine that has no old identity has
+	/// nothing to migrate, and minting one would invent a character out of
+	/// thin air.
+	pub legacy_identity: Option<[u8; 16]>,
 	/// Log a per-phase breakdown of every over-budget frame. The LAUNCHER
 	/// fills this (desktop: `DIG_SPIKELOG`; web: `?spikelog`) — reading the
 	/// environment inside core answers None forever on wasm, which is
@@ -475,7 +494,8 @@ impl EngineConfig {
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
-			identity: [0; 16],
+			account: None,
+			legacy_identity: None,
 			spike_log: false,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			debug_gi: false,
@@ -539,7 +559,8 @@ impl EngineConfig {
 			chunk_slots_override: None,
 			menu: false,
 			auto_join: None,
-			identity: [0; 16],
+			account: None,
+			legacy_identity: None,
 			spike_log: false,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			debug_gi: false,
@@ -942,6 +963,8 @@ pub struct Engine {
 	/// Launcher-injected settings persistence hook, called with each
 	/// change batch; None (bench, drill, iOS) = settings don't persist.
 	settings_store: Option<crate::settings::SettingsStore>,
+	/// Launcher-injected clipboard writer; see `set_clipboard`.
+	clipboard: Option<ClipboardSink>,
 	/// Launcher-injected named-save backend; None (bench, drill,
 	/// scripted joins, iOS) keeps the ephemeral "Play Local" flow.
 	world_store: Option<Box<dyn digblock_persist::WorldStore>>,
@@ -2079,9 +2102,6 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
-		// The name field starts empty unless a valid override was supplied
-		// (`?name=`/`--name`, or the persisted last-used name the launcher
-		// loaded into the config).
 		let menu = crate::menu::Menu::new(
 			config.menu,
 			crate::settings::Settings {
@@ -2092,13 +2112,9 @@ impl Engine {
 				ui_scale: config.ui_scale,
 				render_scale: config.render_scale,
 				gi_scale_div: config.gi_scale_div,
-				name: config
-					.player_name
-					.clone()
-					.filter(|n| digblock_net::protocol::validate_name(n).is_ok())
-					.unwrap_or_default(),
 			},
 			config.auto_join.clone(),
+			config.account.clone(),
 		);
 		let mut engine = Self {
 			menu,
@@ -2123,6 +2139,7 @@ impl Engine {
 			nametag_count: 0,
 			services: None,
 			settings_store: None,
+			clipboard: None,
 			world_store: None,
 			in_local_save: false,
 			player_save_accum: 0.0,
@@ -2432,13 +2449,18 @@ impl Engine {
 			.player_name
 			.clone()
 			.unwrap_or_else(|| "player".into());
+		// Hang up first if something is still attached. Not defensive
+		// clutter: one account holds one live connection, so a replaced
+		// connection the server has not noticed yet would make the JOIN
+		// WE ARE ABOUT TO MAKE the duplicate, and refuse it.
+		self.leave_server();
 		self.net = Some(digblock_net::NetClient::new(
 			transport,
 			digblock_net::client::NetClientConfig {
 				name,
 				draw_dist: self.config.draw_dist,
 				token,
-				identity: self.config.identity,
+				legacy_identity: self.config.legacy_identity,
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's
@@ -2473,6 +2495,13 @@ impl Engine {
 	/// batch from the Settings screen.
 	pub fn set_settings_store(&mut self, store: crate::settings::SettingsStore) {
 		self.settings_store = Some(store);
+	}
+
+	/// Inject the launcher's clipboard writer (desktop: arboard; web:
+	/// `navigator.clipboard`). Absent = Copy ID quietly does nothing,
+	/// which is the right answer for capture runs and iOS.
+	pub fn set_clipboard(&mut self, copy: ClipboardSink) {
+		self.clipboard = Some(copy);
 	}
 
 	/// Inject a platform chunk-job pool (launcher-owned: the web's Web
@@ -3167,6 +3196,22 @@ impl Engine {
 			self.feed.remove(0);
 		}
 		self.feed.push((text, FEED_TTL_SECS, color));
+	}
+
+	/// Hang up deliberately: say goodbye, then drop the connection.
+	/// `true` when there was one to drop.
+	///
+	/// EVERY path that ends a session on purpose goes through here —
+	/// Leave Server, Leave World, closing the window. The server frees
+	/// the account the moment it reads the `Bye`; skip it and the player
+	/// waits out an idle timeout before they can rejoin, since one
+	/// account may hold only one live connection.
+	fn leave_server(&mut self) -> bool {
+		let Some(mut net) = self.net.take() else {
+			return false;
+		};
+		net.disconnect();
+		true
 	}
 
 	/// Drain the network: remote edits into the pipeline, acks stashed
@@ -5300,6 +5345,17 @@ impl Game for Engine {
 				self.touch.clear();
 			} else {
 				self.menu.handle_input(&event, self.size, self.ui_scale);
+				// Drained HERE, not in `update`. A browser only honours a
+				// clipboard write that happens inside the same task as the
+				// click that asked for it; `update` runs in a later
+				// animation frame, by which point the gesture is gone and
+				// the write is silently refused. Every other menu intent
+				// is drained in `update`, and this one cannot be.
+				if let Some(text) = self.menu.take_clipboard()
+					&& let Some(copy) = &mut self.clipboard
+				{
+					copy(&text);
+				}
 			}
 			return;
 		}
@@ -5710,7 +5766,7 @@ impl Game for Engine {
 		for intent in self.menu.take_world_intents() {
 			self.handle_world_intent(intent);
 		}
-		if self.menu.take_disconnect() && self.net.take().is_some() {
+		if self.menu.take_disconnect() && self.leave_server() {
 			self.pending_ack = None;
 			self.correction_offset = Vec3::ZERO;
 			self.my_player_id = None;
@@ -5769,11 +5825,12 @@ impl Game for Engine {
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.menu.take_commands() {
-				// The menu-typed name becomes the session name, so the
-				// Hello introduces us consistently (the master's verified
-				// name still wins server-side).
-				if let crate::menu::MenuCommand::Join { name, .. } = &cmd {
-					self.config.player_name = Some(name.clone());
+				// The account's name becomes the session name, so the Hello
+				// introduces us consistently. It is a courtesy only: the
+				// server overwrites it with the master's answer, which is
+				// now the same string by construction.
+				if matches!(cmd, crate::menu::MenuCommand::Join { .. }) {
+					self.config.player_name = self.menu.account().and_then(|a| a.name.clone());
 				}
 				let _ = services.cmd_tx.send(cmd);
 			}
@@ -6438,7 +6495,15 @@ impl Game for Engine {
 		self.config.interactive && self.chat.is_open()
 	}
 
+	/// The window closed, the page is unloading, or a capture ran out its
+	/// frames. Hang up properly so the server frees the session now rather
+	/// than at its idle timeout — otherwise a player who quits and
+	/// relaunches is refused by their own still-live connection — and emit
+	/// the bench summary, which on the web has no other exit to ride.
 	fn on_exit(&mut self) {
+		if self.leave_server() {
+			log::info!("engine: on_exit (said goodbye to the server)");
+		}
 		self.report_bench();
 	}
 
