@@ -13,5 +13,12 @@ docker/data/
 # .NET master server build output.
 apps/master/bin/
 apps/master/obj/
+# Local account database from `just master` (and the design-time stub the
+# EF tools would create). Production keeps this on a mounted volume.
+apps/master/*.db
+apps/master/*.db-journal
 # Local wrangler state (Cloudflare Pages deploys run from this machine).
 .wrangler/
+# Per-machine secrets for the local master (see the dotenv-load note in
+# the justfile).
+.env
