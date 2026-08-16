@@ -797,15 +797,17 @@ blocks with each other's PNGs; a `const` assert in `digblock-render/src/texture.
 crates) fails the BUILD on a length skew.
 
 Texture vocabulary: **`LOG`/`LOG_TOP` is the tree** (bark, cut-end rings) and the **`LUMBER_*` set is planed timber** —
-the material crafted things are made of (`LUMBER_LIGHT` is the joinery — the bucket, the torch post, the furniture, and
-the `Lumber` block with its stairs, slab and door; `LUMBER_DARK` and `LUMBER_RED` are the second and third timbers,
-`DarkLumber` and `RedLumber` each arriving at its own Alchemy level with a full block/stairs/slab/door set — a handful
-of rows and no new art, which is what a material costs once the grid derives its levels and prices. `LUMBER_DARK` also
-stands in for metal in `item_geom`: the pick's head, the siphon's funnel). Calling both "wood" is what made it unclear
-which one a row was asking for. `Log.png` is seam-fixed for VERTICAL tiling (trunks stack); `GrassSide`/`DryGrassSide`
-deliberately do NOT tile vertically (dirt below, green fringe above), so a blanket tiling test is not possible. Derived
-textures come from the checked-in `tools/texgen`, outputs committed — a run rewrites EVERY output, and the noisy recipes
-share one rng, so adding or removing a `save` rerolls the noise in everything after it.
+the material crafted things are made of (`LUMBER_LIGHT` is the joinery — the bucket, the furniture, and the `Lumber`
+block with its stairs, slab and door; `LUMBER_DARK` and `LUMBER_RED` are the second and third timbers, `DarkLumber` and
+`RedLumber` each arriving at its own Alchemy level with a full block/stairs/slab/door set — a handful of rows and no new
+art, which is what a material costs once the grid derives its levels and prices. `LUMBER_DARK` also stands in for metal
+in `item_geom`: the pick's head, the siphon's funnel — and it is the **torch's post**, because that texture is drawn
+fullbright and a pale timber has no headroom left to take `emissive_ink`'s gain: it clipped on every channel and the
+post out-read the flame standing on it). Calling both "wood" is what made it unclear which one a row was asking for.
+`Log.png` is seam-fixed for VERTICAL tiling (trunks stack); `GrassSide`/`DryGrassSide` deliberately do NOT tile
+vertically (dirt below, green fringe above), so a blanket tiling test is not possible. Derived textures come from the
+checked-in `tools/texgen`, outputs committed — a run rewrites EVERY output, and the noisy recipes share one rng, so
+adding or removing a `save` rerolls the noise in everything after it.
 
 Chunk cells are `u16` end-to-end: 10-bit id, spare bits 10–11, STATE nibble in 12–15, travelling wire and journal as-is
 (protocol v8, journal v3). Mesher, physics, fluid, and raycast all key off the tables — no per-block special cases

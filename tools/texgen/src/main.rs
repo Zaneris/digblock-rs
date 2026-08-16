@@ -13,9 +13,10 @@
 //! moment anyone runs this. Both are fine — a reroll of the same recipe
 //! is the same texture, and re-syncing is the point — but they mean the
 //! diff of a run is wider than the edit that prompted it. Retiring the
-//! door leaf (the door draws `LumberDark` directly now) and pointing the
-//! torch at `LumberLight` are both edits of that kind, and neither was
-//! regenerated: the committed outputs still carry the bytes they had.
+//! door leaf (the door draws `LumberDark` directly now) was an edit of
+//! that kind. Cutting the torch's post from `LumberDark` was not: the
+//! run that followed it moved `TorchSide.png` and nothing else, which is
+//! what a tree already in sync looks like.
 
 use image::RgbImage;
 
@@ -67,10 +68,11 @@ fn main() {
 	// the flame glow to the top rows (a box face's v runs top-down from
 	// the cell's top, so the shape's flame head samples the texture's TOP
 	// rows); the flame top face gets its own radial-glow layer. Planed
-	// lumber and not the log's bark, because a torch is a whittled stick.
+	// lumber and not the log's bark, because a torch is a whittled stick —
+	// and the DARK timber, because this texture is drawn fullbright.
 	save(
 		"TorchSide.png",
-		torch_side(&load("LumberLight.png"), &mut rng),
+		torch_side(&load("LumberDark.png"), &mut rng),
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 
@@ -381,6 +383,15 @@ fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 /// Wood post darkened, with the top band of rows turned to flame glow
 /// (white-hot core rows fading through yellow to orange where the flame
 /// head's side faces sample).
+///
+/// The post is cut from the DARK timber, and that is not a style choice:
+/// this texture is never lit. The block `glows`, so every pixel of it
+/// goes through `emissive_ink`, whose gain rides the ink's own luminance
+/// — and a pale timber has no headroom left to take that gain. It clips
+/// on all three channels and the post reads as a white bar brighter than
+/// the fire on top of it, inverting the one relationship the gain exists
+/// to hold. Authored dark, the same weighting puts the gain where the
+/// fire is, which is what its comment always claimed it did.
 fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = wood.clone();
 	let flame_rows = SIZE * 5 / 12; // the flame band, in the shape's twelfths

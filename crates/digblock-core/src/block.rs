@@ -699,9 +699,12 @@ pub mod tex {
 	pub const TORCH_FLAME: u16 = 18;
 	/// Planed timber — the material crafted things are made OF, as
 	/// opposed to [`LOG`], which is the tree. [`LUMBER_LIGHT`] is the
-	/// joinery (the bucket, the torch post, and the Lumber block with its
-	/// stairs, slab and door); `LUMBER_DARK` and `LUMBER_RED` are
-	/// registered and unused — the obvious second and third timbers.
+	/// joinery (the bucket, the furniture, and the Lumber block with its
+	/// stairs, slab and door); [`LUMBER_DARK`] and [`LUMBER_RED`] are the
+	/// second and third timbers, each with a block set of its own. The
+	/// dark one is also what [`TORCH_SIDE`]'s post is cut from, because
+	/// that texture is drawn fullbright and a pale timber has no headroom
+	/// left to take the emissive gain.
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;

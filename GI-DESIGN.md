@@ -1038,6 +1038,33 @@ estimator and the same fix (a temporal reservoir, M-clamped, reprojected through
 built here either; what is new is only that the carried light makes R27's residual reachable in ordinary play rather
 than in a contrived screen.
 
+### R29 — the torch was a white stick
+
+User report: the torch itself reads far too bright — not the light it throws, which is right, just the object.
+
+R22's ink gain rides the ink's OWN luminance precisely so that a torch's flame takes it and the wooden post does not.
+That reasoning holds only while the post is darker than the flame, and in this texture it was not: `torch_side` cut the
+post from the light joinery timber, whose luminance sits within a hair of the flame band's own. The two therefore took
+essentially the same gain, and both went past 1.0. The post came off worse, because a flame keeps a low blue channel and
+still reads yellow once red and green clip, while a neutral pale timber clips on all three at once and renders pure
+white. Photographed in DIG_VAULT the torch was a featureless white bar with a yellow cap — the post out-reading the fire
+standing on it, which is the exact inversion R22 added the gain to prevent.
+
+**No shader change.** The post is now cut from `LumberDark`, far enough below the flame that the same weighting finally
+discriminates: the post keeps its grain and its silhouette, and the flame is the only part of the torch at the ceiling.
+Nothing about what a torch CASTS is in this change — `emits`, `LIGHT_GAIN` and `LIGHT_NEAR` are untouched — and the
+capture agrees: against the previous build at the same pose, every pixel outside the torch's own bounding box differs by
+at most one level in one channel, which is run-to-run noise. `gi::EMISSIVE_BAND` mirrors the recipe's flame band, which
+did not move, so R26's origin pin is undisturbed.
+
+The rule this leaves behind for the next emissive material: **an ink texture is authored for fullbright, not for lit.**
+Anything painted near white has no headroom left, and a gain that cannot be raised past the scene target's ceiling
+anyway (R22, R26) then spends itself entirely on clipping instead of on contrast. That rule is not new — texgen's ore
+recipe already darkens the stone BODY of the two glowing tiers for exactly this reason, and says so, because a glowing
+block draws its whole face at full albedo and the contrast has to live in the texture. The torch simply predates that
+recipe, and was never revisited when it landed. The lamps and the deep ore pair are dark enough to be safe today; a
+bright one shipping later would fail the same way, and it would read as a lighting bug rather than an art one.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,

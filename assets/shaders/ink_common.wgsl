@@ -28,6 +28,14 @@
 // id special case in a shader to do it. That is also why ONE per-draw
 // flag is enough for an item made of two materials.
 //
+// The corollary is a rule for the TEXTURE rather than for this function:
+// an ink texture is authored for FULLBRIGHT, not for lit. A material
+// painted near white has no headroom left to take any gain at all — it
+// clips on all three channels and reads as flat white — and the
+// weighting cannot separate it from a flame of the same luminance, which
+// is what made the torch's post out-read its own fire until the post was
+// cut from the dark timber (R29).
+//
 // This gain rather than a larger one: raising it further was tried and
 // barely moved the sprite at all, because the ink is already clamped by
 // the scene target's SURFACE format and cannot be raised to follow a
