@@ -101,6 +101,11 @@ const HAND = vec3f(-0.44, -0.62, 0.34);
 // in the world it would just lean the torch over.
 const ITEM_YAW = -0.785398163;
 
+// The per-FACE ink bit above the texture layer in the item vertex word
+// (viewmodel.rs's `INK_BIT`, and the twin of viewmodel.wgsl's constant).
+// Held items are built once for both hands, so both pipelines decode it.
+const ITEM_INK_BIT = 65536u;
+
 struct VsOut {
 	@builtin(position) pos: vec4f,
 	// Flat body color; ignored when a texture layer is set.
@@ -176,10 +181,14 @@ fn vs_held(
 	var out: VsOut;
 	out.pos = frame.view_proj * vec4f(world, 1.0);
 	out.albedo = vec3f(1.0);
-	out.uvl = vec3f(uv, f32(layer));
+	out.uvl = vec3f(uv, f32(layer & (ITEM_INK_BIT - 1u)));
 	out.world = world;
 	out.wn = vec3f(ni.x * c + ni.z * s, ni.y, -ni.x * s + ni.z * c);
-	out.emissive = i1.x;
+	// Two ways to be ink, exactly as in your own hand (viewmodel.wgsl):
+	// the whole item glows (the instance flag), or this one face does
+	// (the bit above the layer index). A remote's siphon has to hold the
+	// same lit bulb yours does, or the two hands disagree about one item.
+	out.emissive = max(i1.x, f32((layer & ITEM_INK_BIT) != 0u));
 	return out;
 }
 

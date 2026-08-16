@@ -58,6 +58,12 @@ pub mod tex {
 	pub const CRYSTAL: &[u8] = include_bytes!("../../../assets/textures/Crystal.png");
 	pub const LANTERN: &[u8] = include_bytes!("../../../assets/textures/Lantern.png");
 	pub const AETHERLAMP: &[u8] = include_bytes!("../../../assets/textures/Aetherlamp.png");
+	// The two tool glows (§7.3). Each is worn by a tool ROW whose block is
+	// never placed, so the layer is read in only two places — the emissive
+	// face of the tool's own geometry, and the GI material LUT, which is
+	// where the colour of the light it casts comes from.
+	pub const SIPHON_GLOW: &[u8] = include_bytes!("../../../assets/textures/SiphonGlow.png");
+	pub const PICK_GLOW: &[u8] = include_bytes!("../../../assets/textures/PickGlow.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -70,7 +76,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 35] = [
+	pub const LAYERS: [&[u8]; 37] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -106,6 +112,8 @@ pub mod tex {
 		CRYSTAL,
 		LANTERN,
 		AETHERLAMP,
+		SIPHON_GLOW,
+		PICK_GLOW,
 	];
 }
 

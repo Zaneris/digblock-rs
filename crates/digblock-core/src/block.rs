@@ -183,12 +183,30 @@ blocks! {
 	/// Its price carries no Metal, ever: ore needs the siphon and Metal
 	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
 	/// first world where nobody has one.
-	EssenceSiphon = 53 => props(RenderClass::None, false, 0, 0, 0),
+	///
+	/// It CASTS, and only just: the barrel holds drawn essence and the
+	/// work it exists for happens at the bottom of a mine, but it is an
+	/// extraction tool that happens to glow rather than a lamp. A green
+	/// pool at the feet, and the Resonant Pick well above it — the tool
+	/// you MINE with is the one worth carrying for its light.
+	/// `emissive` is
+	/// deliberately NOT set — a tool is not fullbright, only the one face
+	/// `item_geom` marks as its glow is (the torch is one material and
+	/// can afford a per-block flag; a tool has a body worth shading).
+	/// The tint comes from the texture, which is the whole reason a row
+	/// that renders nothing carries one.
+	EssenceSiphon = 53 => emits(props(RenderClass::None, false, tex::SIPHON_GLOW, tex::SIPHON_GLOW, tex::SIPHON_GLOW), 5),
 	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted and wielded at the
 	/// same level in either skill — the flagship cross-skill dependency,
 	/// and the game's biggest essence sink. Held, one hold breaks the plane
 	/// of the face you hit, over a square that widens again later in Mining.
-	ResonantPick = 54 => props(RenderClass::None, false, 0, 0, 0),
+	///
+	/// This is the level it casts at in ANY hand. It is the one light in
+	/// the game that answers to its wielder — see
+	/// [`crate::gi::carried_light`], which raises it at the rank that
+	/// widens the swing, so the tool's two ranks are one progression the
+	/// player can see.
+	ResonantPick = 54 => emits(props(RenderClass::None, false, tex::PICK_GLOW, tex::PICK_GLOW, tex::PICK_GLOW), 9),
 	/// §7.2's dressed stones — the same rock, worked. Free under the
 	/// grid: a material row, a texture, and every shape it is authored
 	/// in unlocks with it.
@@ -725,11 +743,19 @@ pub mod tex {
 	pub const CRYSTAL: u16 = 32;
 	pub const LANTERN: u16 = 33;
 	pub const AETHERLAMP: u16 = 34;
+	/// The two tool glows (§7.3), worn by the siphon and pick ROWS. Those
+	/// blocks are never placed, so these two layers are read in exactly
+	/// two places: the emissive face of the tool's authored geometry
+	/// (`item_geom`), and the GI material LUT, which takes the colour of
+	/// the light a held tool casts from its row's texture. Authoring the
+	/// glow authors the light.
+	pub const SIPHON_GLOW: u16 = 35;
+	pub const PICK_GLOW: u16 = 36;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = AETHERLAMP + 1;
+	pub const COUNT: u16 = PICK_GLOW + 1;
 }
 
 impl BlockType {

@@ -67,12 +67,18 @@ pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u
 		[cx + sx * s, cy + (sy - mid_sy) * s]
 	};
 	for q in &quads {
+		// A glowing face takes no directional shading. This projection has
+		// no light in it at all — the axis factors are a convention
+		// borrowed from the mesher — so "unshaded" is the whole of what
+		// fullbright can mean here, and it is enough to keep a tool's lit
+		// part reading as the lit part at hotbar size.
+		let f = if q.emissive { 1.0 } else { face_shade(q.dir) };
 		dl.icon_quad(
 			layer,
 			q.corners.map(project),
 			q.uv,
 			q.tex_layer,
-			shade(tint, face_shade(q.dir)),
+			shade(tint, f),
 		);
 	}
 }

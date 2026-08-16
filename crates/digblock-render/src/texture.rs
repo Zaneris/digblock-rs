@@ -162,16 +162,100 @@ const _: () =
 
 #[cfg(test)]
 mod layer_tests {
+	use digblock_core::block::BlockType;
+
+	/// Read a `const NAME = <number>;` out of a WGSL source. The shader
+	/// owns the value; this reads it back rather than mirroring it, so
+	/// there is nothing here that can go stale on its own.
+	fn wgsl_const(src: &str, name: &str) -> f32 {
+		let pat = format!("const {name} = ");
+		let at = src.find(&pat).expect("declared") + pat.len();
+		let rest = &src[at..];
+		rest[..rest.find(';').expect("terminated")]
+			.trim()
+			.parse()
+			.expect("a number")
+	}
+
 	/// Every PROPS texture index must name an existing LAYERS entry —
 	/// the cross-crate half of the add-a-block skew check.
 	#[test]
 	fn props_reference_existing_layers() {
 		let layers = digblock_assets::tex::LAYERS.len() as u16;
-		for &b in &digblock_core::block::BlockType::ALL {
+		for &b in &BlockType::ALL {
 			let p = b.props();
 			for t in [p.tex_side, p.tex_top, p.tex_bottom] {
 				assert!(t < layers, "{b:?} references missing layer {t}");
 			}
 		}
+	}
+
+	/// A tool in a hand is a working light, never a torch — and a LEVEL
+	/// alone cannot say so.
+	///
+	/// What an emitter delivers is its level times the luminance of its
+	/// own texture, because the GI material LUT takes the tint from that
+	/// row's mean and `irradiance = albedo x LIGHT_GAIN x wsum`. A
+	/// saturated blue carries barely a tenth of its channels' luminance,
+	/// so the pick out-LEVELS a torch at its resonant rank and still
+	/// lights a room a fraction as brightly. This is the only file that
+	/// can see the pixels and the rows at once, so it is where the claim
+	/// can be checked at all.
+	#[test]
+	fn a_tool_lights_less_than_a_torch() {
+		let cast = |b: BlockType, c: digblock_core::gi::CarriedLight| {
+			let m = super::mean_rgb(
+				&image::load_from_memory(digblock_assets::tex::LAYERS[b.props().tex_top as usize])
+					.expect("decode")
+					.to_rgba8(),
+			);
+			// The tint as the shader draws it: whitening is applied to the
+			// albedo, so it has to be applied here too — it is most of
+			// what a whitened light delivers, not a garnish on it.
+			let w = if c.whitened {
+				wgsl_const(digblock_assets::shader::GI_DDA, "GI_LIGHT_WHITEN")
+			} else {
+				0.0
+			};
+			let ch = |i: usize| {
+				let v = f32::from(m[i]) / 255.0;
+				v + (1.0 - v) * w
+			};
+			(0.299 * ch(0) + 0.587 * ch(1) + 0.114 * ch(2)) * f32::from(c.level)
+		};
+		let plain = |b: BlockType| digblock_core::gi::CarriedLight {
+			level: b.props().light,
+			whitened: false,
+		};
+		let torch = cast(BlockType::Torch, plain(BlockType::Torch));
+		// Every tool at the brightest it can ever be — which for the pick
+		// is its wielder's business, so ask the function that decides it
+		// rather than a number.
+		let brightest = |b: BlockType| {
+			(1..=100)
+				.map(|l| cast(b, digblock_core::gi::carried_light(b, l)))
+				.fold(0.0f32, f32::max)
+		};
+		for b in [BlockType::EssenceSiphon, BlockType::ResonantPick] {
+			let tool = brightest(b);
+			assert!(tool > 0.0, "{b:?} casts nothing");
+			assert!(
+				tool < torch * 0.75,
+				"{b:?} lights like a torch ({tool:.2} vs {torch:.2}) — a tool is \
+				 meant to be the light you work by, not the light you carry"
+			);
+		}
+		// And the order between them is the progression: the tool you MINE
+		// with, at the rank that earns it, is the best light either hand
+		// has short of a torch. The siphon is an extraction tool that
+		// happens to glow.
+		let (siphon, pick) = (
+			brightest(BlockType::EssenceSiphon),
+			brightest(BlockType::ResonantPick),
+		);
+		assert!(
+			pick > siphon * 2.0,
+			"the resonant pick has to READ as an upgrade ({pick:.2} vs {siphon:.2})"
+		);
 	}
 }

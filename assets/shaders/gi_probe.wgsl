@@ -297,7 +297,12 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 		return vec3f(0.0);
 	}
 	let cls = gi_light_class(l.w);
-	let emit = f32(lut[cls].y);
+	// The entry's own level when it has one (a tool whose wielder has
+	// earned a brighter glow), else the class's — see gi_dda.wgsl. The
+	// resolve's reservoir reads it the same way, so the two NEE passes
+	// price the same light identically.
+	let ov = gi_light_level(l.w);
+	let emit = select(f32(lut[cls].y), f32(ov), ov != 0u);
 	if emit <= 0.0 {
 		return vec3f(0.0);
 	}
@@ -318,7 +323,7 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// LIGHT_NEAR and holds inside it — the clamp started as "don't divide
 	// by nothing" for a probe sharing a torch's cell and is now also what
 	// keeps the near field under the white point (see the constant).
-	let radiance = albedo_of(cls) * emit * LIGHT_GAIN;
+	let radiance = gi_light_tint(l.w, albedo_of(cls)) * emit * LIGHT_GAIN;
 	return radiance * (ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
 		* medium_water_tr(sh.water) * f32(count);
 }

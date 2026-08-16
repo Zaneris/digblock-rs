@@ -321,6 +321,14 @@ fn main() {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(0);
+	// DIG_MINING=<level>: start there. Everything a level gates is
+	// otherwise unphotographable — the strength wall's refusals, dig
+	// speed, and the Resonant Pick's ranks, the second of which brightens
+	// the tool's own glow.
+	config.debug_mining = std::env::var("DIG_MINING")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(0);
 	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
 	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
 	// 80 100`, which is the only way to see the break spread — one still

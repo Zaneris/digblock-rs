@@ -58,7 +58,15 @@ struct VsOut {
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) shade: vec3f,
+	@location(3) @interpolate(flat) ink: f32,
 }
+
+// The per-FACE ink bit, riding above the texture layer in the same
+// vertex word (viewmodel.rs's `INK_BIT`). A tool is a shaded body with
+// one lit part set into it — a glowing bulb, a resonating core — which
+// the per-DRAW flag below cannot say: it can only make the whole item
+// fullbright, and a fullbright tool has no form left.
+const ITEM_INK_BIT = 65536u;
 
 @vertex
 fn vs(
@@ -77,7 +85,8 @@ fn vs(
 	var out: VsOut;
 	out.pos = vm.mvp * vec4f(pos, 1.0);
 	out.uv = uv;
-	out.layer = layer;
+	out.layer = layer & (ITEM_INK_BIT - 1u);
+	out.ink = f32((layer & ITEM_INK_BIT) != 0u);
 	out.shade = cam_light.ambient.rgb + vm.light_color.rgb * diffuse;
 	return out;
 }
@@ -101,6 +110,10 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// point of authoring it in view space. The one honest gap that leaves
 	// — a submerged camera's hand takes no water extinction — is already
 	// true today and is not introduced here.
-	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), vm.light_color.w > 0.5);
+	//
+	// Two ways to be ink and one function to draw it: the whole item
+	// (`glows`, a torch), or this face alone (a tool's lit part).
+	let ink = vm.light_color.w > 0.5 || in.ink > 0.5;
+	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), ink);
 	return vec4f(lit, 1.0);
 }

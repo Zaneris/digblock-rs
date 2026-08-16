@@ -209,27 +209,31 @@ For `just run`:
   that the beam knows the sun's angle rather than a sky column), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded basin
   ahead of spawn + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_PLAYERBOX=<item>` (a fake
   remote player facing you, holding that item — `dirt` (the default, and what a bare `1` still means) `torch` `stairs`
-  `slab` `door` `bucket` `bucket-full` `empty`; the value is a HELD-ITEM WIRE id, so the scene walks the real
-  `held_icon` decode rather than being a second code path, and an unknown name is fatal), `DIG_TORCHES=<n>` (an open
-  courtyard lit by n torches, cluster set well out and floor running past `LIGHT_RANGE` — the local-light capture
-  DIG_VAULT cannot be, since the vault's room is too small to have a far band and one torch is the single count the NEE
-  covers completely; `DIG_TORCHES_FAR=<n>` parks emitters where they change only the light list's LENGTH,
-  `DIG_TORCHES_WALL=1` screens the cluster so emitters occlude each other), `DIG_CONFETTI=1` (a level-up burst every
-  couple of seconds ahead of the camera — the event is rare and transient, so it is otherwise invisible to capture),
-  `DIG_CRACK=<percent>` (pins the dig-crack decal at that progress and stands a wall just ahead to hold it — the crack
-  is input-driven and a hold is over in a second, so a SWEEP of these runs is the only way to see whether it spreads or
-  just fades in; `--pitch` picks the row, and a run at 0 is the geometry-identical control since the shader's crack
-  branch is gated on progress), `DIG_DOORS=1` (a rank of door pairs just ahead — closed, open and edge-on — with plain
-  Lumber columns beside them as the tint reference, and Alchemy raised out of `unlock::pickup` so the craft-only leaf is
-  `diggable` and therefore outlines at all; DIG_SHAPES also stands every door variant but stands them further out behind
-  stair rows sharing their x columns, which projects straight over every lower half, so the seam a door is judged on —
-  one object, two cells — is the one thing that scene cannot show),
-  `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil` (opens that page
-  at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and invisible to
-  headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the viewmodel is
-  visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a torch — `hand`
-  cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the three tool names
-  cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at once).
+  `slab` `door` `bucket` `bucket-full` `siphon` `pick` `sigil` `empty`; the value is a HELD-ITEM WIRE id, so the scene
+  walks the real `held_icon` decode rather than being a second code path, and an unknown name is fatal — the two glowing
+  tools matter here because a remote's copy is a SECOND ink decode, in players.wgsl), `DIG_MINING=<level>` (start there;
+  a level is not a pose, and everything one gates is otherwise unphotographable — the strength wall's refusals, dig
+  speed, and the Resonant Pick's two ranks, the second of which brightens the tool's own glow. Applied after `DIG_ORE`'s
+  own grant, so an explicit level wins), `DIG_TORCHES=<n>` (an open courtyard lit by n torches, cluster set well out and
+  floor running past `LIGHT_RANGE` — the local-light capture DIG_VAULT cannot be, since the vault's room is too small to
+  have a far band and one torch is the single count the NEE covers completely; `DIG_TORCHES_FAR=<n>` parks emitters
+  where they change only the light list's LENGTH, `DIG_TORCHES_WALL=1` screens the cluster so emitters occlude each
+  other), `DIG_CONFETTI=1` (a level-up burst every couple of seconds ahead of the camera — the event is rare and
+  transient, so it is otherwise invisible to capture), `DIG_CRACK=<percent>` (pins the dig-crack decal at that progress
+  and stands a wall just ahead to hold it — the crack is input-driven and a hold is over in a second, so a SWEEP of
+  these runs is the only way to see whether it spreads or just fades in; `--pitch` picks the row, and a run at 0 is the
+  geometry-identical control since the shader's crack branch is gated on progress), `DIG_DOORS=1` (a rank of door pairs
+  just ahead — closed, open and edge-on — with plain Lumber columns beside them as the tint reference, and Alchemy
+  raised out of `unlock::pickup` so the craft-only leaf is `diggable` and therefore outlines at all; DIG_SHAPES also
+  stands every door variant but stands them further out behind stair rows sharing their x columns, which projects
+  straight over every lower half, so the seam a door is judged on — one object, two cells — is the one thing that scene
+  cannot show), `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  (opens that page at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and
+  invisible to headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the
+  viewmodel is visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a
+  torch — `hand` cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the
+  three tool names cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail
+  at once).
 - **Capture gotchas**: `--size` sets logical size but the physical framebuffer follows the display's backing scale —
   verify capture pixel dimensions before comparing frame-time runs. On a multi-monitor desk the window opens wherever
   the desktop last had focus, so **`--display N` (R27) is mandatory for any frame-time bracket**: refresh rate rides the
@@ -428,19 +432,25 @@ cast from `gi::light_origin(class)` — the cell centre for anything unshaped, a
 emissive band (a torch radiates from its flame rather than its handle, not from its handle; R26).
 `LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
 `resolve_and_probe_agree_on_light_calibration`; `LIGHT_NEAR` is where the point model's near field stops being taken
-literally (R22), and chunk.wgsl's emissive INK gain by luminance (`1 + 1.6·lum²`) keeps a source out-reading what it
-casts — barely, since that ink is already clamped by the scene target and cannot be raised to follow a brighter pool,
-which is what caps `LIGHT_GAIN` where it sits. NEE's stop-short margin is NOT a constant: `gi_light_margin`
-(gi_dda.wgsl, shared so both passes agree by construction) is the light's distance to the farthest corner of its own
-cell, because a fixed margin only covers that cell while the origin is its centre — and it is asked through
-`gi_light_margin_of`, which answers **zero** for a light with no cell of its own (a flag bit of the entry's `w` word,
-`GI_LIGHT_CARRIED`; a carried light's origin is on its carrier's capsule axis, so a wall half a block away is meant to
-block it and the general formula would swallow the whole wall). Both gains are stopgaps for the missing tonemap — which
-cannot simply be appended, because the offscreen scene colour uses the SURFACE format, so radiance is already clamped at
-the scene pass. `flush_lights` re-selects once the camera has moved far enough, when emitters exceed MAX_LIGHTS; spray
-and viewmodel read a camera-light buffer. The fullbright INK is one shared function, `emissive_ink` in
+literally (R22), and `emissive_ink`'s gain — quadratic in the ink's OWN luminance — keeps a source out-reading what it
+casts, barely, since that ink is already clamped by the scene target and cannot be raised to follow a brighter pool,
+which is what caps `LIGHT_GAIN` where it sits. The corollary belongs to the TEXTURE: **an ink texture is authored for
+fullbright, not for lit**, because a pale one has no headroom left to take the gain and clips on all three channels
+(R29, the torch's post; the ore recipe's darkened stone body knew it first). NEE's stop-short margin is NOT a constant:
+`gi_light_margin` (gi_dda.wgsl, shared so both passes agree by construction) is the light's distance to the farthest
+corner of its own cell, because a fixed margin only covers that cell while the origin is its centre — and it is asked
+through `gi_light_margin_of`, which answers **zero** for a light with no cell of its own (a flag bit of the entry's `w`
+word, `GI_LIGHT_CARRIED`; a carried light's origin is on its carrier's capsule axis, so a wall half a block away is
+meant to block it and the general formula would swallow the whole wall). Both gains are stopgaps for the missing tonemap
+— which cannot simply be appended, because the offscreen scene colour uses the SURFACE format, so radiance is already
+clamped at the scene pass. `flush_lights` re-selects once the camera has moved far enough, when emitters exceed
+MAX_LIGHTS; spray and viewmodel read a camera-light buffer. The fullbright INK is one shared function, `emissive_ink` in
 `ink_common.wgsl`, prepended to chunk/viewmodel/players so a `glows` block reads the same in the world, in your hand and
-in somebody else's (`every_pass_that_draws_ink_shares_one_gain` pins that nobody shadows it with a local const).
+in somebody else's (`every_pass_that_draws_ink_shares_one_gain` pins that nobody shadows it with a local const). An ITEM
+may also be ink in one place only: `ItemFace::emissive` rides above the texture index in the item vertex word
+(`viewmodel::INK_BIT`, decoded identically by viewmodel.wgsl and players.wgsl, and read by the 2D icons as "no
+directional shading"). That exists because `glows` is per BLOCK, which is right for a torch — one material — and wrong
+for a tool, which is a body worth shading with one lit part set into it (R30).
 
 **A light a player CARRIES is an ordinary entry in that same list** (R28) — there is no second lighting path, and
 neither GI shader knows the difference, which is what gives a carried torch bounce, hard shadows, water response and a
@@ -460,6 +470,20 @@ now runs every frame someone walks, so it SELECTS rather than sorts (`select_nth
 under the cap); it needs no reservation, since your own light is half a block from the camera and cannot be the one
 truncated. Staleness is compared on the REACH-FILTERED set, or a torch-bearer past `lateral_max` but inside the sync
 radius defeats the early-out every frame for nothing.
+
+**Not only torches** (R30): the Essence Siphon and the Resonant Pick `emit` too, so holding one lights the tunnel —
+green and blue, because an emitter's tint is the mean of its row's top texture and each wears a texgen orb that is ALSO
+the emissive face of its geometry. One authored thing decides how the tool looks and what its light looks like. The pick
+is the one emitter that answers to its WIELDER: `gi::carried_light(block, mining)` both raises its level and **whitens
+its cast tint** at the rank `unlock::pick_cells` widens the swing at, and both ride the light entry itself
+(`Emitter::level`/`whitened`, packed above `GI_LIGHT_CARRIED`; a level of 0 defers to the class, so every placed
+emitter's word is unchanged) because they are properties of the holder — two players holding the same tool share a LUT
+row and must be free to cast differently. A remote's tool casts at its row's level; their skills are not in the
+snapshot. Whitening (`gi_light_tint`, in the shared DDA so both NEE passes agree by construction) is what makes that
+step legible at all: what a light delivers is its level times its tint's luminance, and a saturated blue carries so
+little of it that raising the level alone reads as MORE BLUE rather than as brighter. It touches only the cast — the
+tool's own ink stays the authored blue in the hand and in the hotbar. The pin that holds "a tool is not a torch, and the
+pick reads as the upgrade" lives in `texture.rs`, the one file that sees both the rows and the pixels.
 
 ## Alchemy & the economy
 
@@ -939,8 +963,19 @@ usable at the same level in either skill) and the **Master's Sigil** (the last t
 entirely in Aether, and it DOES nothing — the point is that it is the catalog's last line). The sigil is `is_tool` for
 the mechanics, not for any function: an item-only row you HOLD, capped at one, cycling on tap-9 and drawing in the rail,
 kept out of the block slots and the grid by the rule the other three already use. Every path that names a tool goes
-through `hud::tool_icon`, because tools carry no texture layers and `IconKind::Cube` draws them as WATER;
-`SlotView::Tool` carries WHICH tool is active rather than assuming the bucket.
+through `hud::tool_icon`, because a tool has authored geometry and `IconKind::Cube` would draw it as a cube of its row's
+layer — which used to mean WATER (layer 0) and now, for the two that glow, means a cube of bare glow; `SlotView::Tool`
+carries WHICH tool is active rather than assuming the bucket.
+
+**The siphon and the pick are light sources** (R30): each `emits` below a torch's level and wears a texgen orb — green
+for the siphon, blue for the pick — that is at once the tool row's texture (whence the GI takes the colour of the light
+it casts) and the emissive face of its geometry (`glow_faces`, the per-face ink bit). Holding one lights the tunnel, so
+mining need not be one-handed. They are deliberately not equals: the siphon is an extraction tool that happens to glow
+and throws a pool around the feet, while the pick — the tool you MINE with — brightens AND whitens at its second rank
+(`gi::carried_light`, the only place in the game an emitter answers to its holder) into the best light either hand has
+short of a torch. The siphon's geometry was rebuilt in the same pass: a narrow nozzle, a tall glowing barrel, a side
+spout and a dark grip — its old wide base plate and stub of a stem read as a rubber stamp, and a downward funnel cannot
+help, since both views of an item look DOWN at it.
 
 The pick breaks the PLANE of the face it hits — widening once at each of two Mining milestones — derived on both ends
 from the ray (`pick::cells` over each side's own world), so the client names one cell and the server decides what the

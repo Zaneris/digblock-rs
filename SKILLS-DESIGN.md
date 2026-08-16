@@ -507,6 +507,16 @@ as today. Which tool sits *in* the slot is a separate axis:
   Pick** — three tools, which is exactly when tap-9 cycling and the rail earn their keep. Shipped: **four**, since
   §7.3's **Master's Sigil** is an item-only row you hold and so is `is_tool` too — it does nothing, but it caps at one,
   cycles and draws in the rail like the rest, which is exactly the point of routing ownership through the counts.
+- **The two crafted work tools carry their own light** (built after the fact; GI-DESIGN.md R30). The Essence Siphon and
+  the Resonant Pick each `emit` well below a torch, in the colour of the thing they deal in — the siphon's drawn essence
+  green, the pick's resonance blue — so the work they exist for, which happens at the bottom of a mine, does not have to
+  be done one-handed with a torch in the other hand. It costs the catalog nothing: a carried light is an ordinary
+  emitter, and the tint comes from the row's own texture. **The two are not equals, and that is the progression**: the
+  siphon throws a pool at the feet — it extracts for a living and glows incidentally — while the pick **steps up at its
+  second rank** into the best light either hand holds short of a torch, keyed on `unlock::pick_cells` rather than a
+  threshold of its own, so the level that widens the swing is the level the tool visibly answers to. The step whitens
+  the light as well as raising it, because a saturated blue carries so little luminance that level alone reads as more
+  blue rather than as brighter (GI-DESIGN.md R30). The tool itself stays blue; what it throws goes pale.
 - **Cycling**: tapping **9 again while the tool slot is already selected** advances the active tool through the owned
   set, wrapping. No new keys, and touch gets the identical rule for free — first tap of the tool slot selects it,
   further taps cycle. Selecting the slot by scroll then tapping 9 also cycles (the rule is "9 on an already-active tool

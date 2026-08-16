@@ -138,6 +138,23 @@ fn main() {
 		"Aetherlamp.png",
 		lamp([186, 226, 255], [70, 74, 96], &mut rng),
 	);
+	// The two tool glows (SKILLS-DESIGN §7.3): what the siphon collects
+	// and what the pick resonates with, each drawn as one orb and used
+	// TWICE — as the emissive face of its tool's geometry, and as the
+	// tool row's texture, which is where the GI material LUT reads the
+	// colour of the light it casts. One artifact decides how the tool
+	// looks and what its light looks like, so the two cannot drift.
+	//
+	// Appended after the lamps for the reason the ores were: everything
+	// above keeps the bytes it had.
+	save(
+		"SiphonGlow.png",
+		radial_glow([48, 190, 96], [12, 84, 48], &mut rng),
+	);
+	save(
+		"PickGlow.png",
+		radial_glow([60, 140, 235], [16, 40, 120], &mut rng),
+	);
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -410,6 +427,27 @@ fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 			for c in p.0.iter_mut() {
 				*c = add8(*c, -18 + g);
 			}
+		}
+	}
+	out
+}
+
+/// An orb: `core` at the centre falling to `rim` at the edge, jittered.
+/// [`torch_flame`]'s shape with the hue taken as an argument.
+///
+/// Both callers are drawn FULLBRIGHT, so both colours are authored with
+/// headroom (R29): a channel painted near white has none left to take
+/// `emissive_ink`'s gain, and an orb that clips on all three is a white
+/// blob rather than a coloured light. Only the dominant channel is meant
+/// to reach the ceiling — which is what leaves the glow a hue at all.
+fn radial_glow(core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+	let mut out = RgbImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
+		let j = rng.signed(8) as f32;
+		for (v, (&a, &b)) in p.0.iter_mut().zip(core.iter().zip(rim.iter())) {
+			*v = clamp8(f32::from(a) + (f32::from(b) - f32::from(a)) * d + j);
 		}
 	}
 	out

@@ -1065,6 +1065,61 @@ block draws its whole face at full albedo and the contrast has to live in the te
 recipe, and was never revisited when it landed. The lamps and the deep ore pair are dark enough to be safe today; a
 bright one shipping later would fail the same way, and it would read as a lighting bug rather than an art one.
 
+### R30 — the tools light the tunnel, and one of them answers to its wielder
+
+User ask: the Essence Siphon and the Resonant Pick should glow — dimmer than a carried torch, green and blue
+respectively, "enough to help them see what they're doing down deep" — with the pick brightening at its second rank, and
+the pick reading as the upgrade of the two.
+
+**Most of this is R28 being right.** A carried light is an ordinary entry in the ordinary light list, keyed off whatever
+the hand DRAWS, so `emits` on the two tool rows is the whole of "tools cast light": no new path, no second origin, hard
+shadows and bounce and a lit hand for free. Two things did not already exist, and neither is about carrying.
+
+**The colour comes from the texture, because it already did.** The material LUT takes an emitter's tint from the mean of
+its row's top layer — a torch glows its own warm flame. A tool row rendered nothing and so wore layer 0, which would
+have made both tools cast whatever the first texture in the atlas happens to be. Each now wears a texgen orb of its own,
+and that same layer is the emissive face of its geometry: **the glow you can see and the glow it throws are one authored
+thing**, and there is no second place to change one without the other. Both orbs are authored dark for R29's reason —
+they are drawn fullbright, so a pale one would clip on all three channels and cast white.
+
+**A per-FACE ink bit** (`ItemFace::emissive`, riding above the texture index in the item vertex word, decoded by
+viewmodel.wgsl and players.wgsl alike). The per-block `glows` flag is right for a torch, which is one material; a tool
+is a shaded body with one lit part set into it, and a per-draw flag can only choose between a tool with no form and a
+glow that isn't one. The icon path takes the same bit as "no directional shading", which is all fullbright can mean in a
+projection with no light in it.
+
+**Two per-ENTRY properties** (`Emitter::level` and `Emitter::whitened`, packed above the carried flag; a level of 0
+defers to the class, which is every placed emitter, so their words are bit-identical to before). The pick answers to its
+wielder at the rank that widens its swing — keyed on `unlock::pick_cells` reaching `PICK_PLANE` rather than on a second
+threshold — and that is a property of the HOLDER, not of the class: two players holding the same tool share a LUT row
+and must be free to cast differently. A remote's tool casts at its row's level, since their skills are not in the
+snapshot.
+
+**Why the rank whitens the light and not just raises it.** A saturated blue carries barely a tenth of its channels'
+luminance, so a blue light can be pushed to the top of the level range and still leave a room dim and uniformly blue —
+the first cut did exactly that, and read as *more blue* rather than as brighter. `gi_light_tint` pulls a whitened
+entry's tint toward white before the gain, which buys most of the brightness back and takes the cast away from
+blue-on-blue; the level it pairs with came DOWN accordingly. The tool's own INK is untouched, and that separation is the
+point: the pick still reads blue in the hand and in the hotbar, while the light it throws goes pale — a hot source, not
+a different tool.
+
+Measured in the sealed dark vault at the standard pose, mean luma over the lit floor (saturation of the same patch in
+brackets): torch 75 [0.48], siphon 37 [0.33], pick 41 [0.51] at its first rank and 62 [0.36] at its second. So the
+resonant pick is half again its own first rank and the brightest thing a hand holds short of a torch, while the siphon —
+halved on a look call, since it is an extraction tool that happens to glow rather than a lamp — sits at a pool around
+the feet. The pick out-LEVELS a torch at neither rank now, but it would still light the room far less if it did, because
+what an emitter delivers is its level times its tint's luminance — which is why the pin that holds "a tool is not a
+torch, and the pick reads as the upgrade" lives in `texture.rs`, the one file that can see the rows and the pixels at
+once, and multiplies the two through the same whitening the shader applies.
+
+**What the mixed-colour room showed, and what it did not.** A torch on the floor and a siphon in hand light the same
+vault warm at one end and green at the other, blending across the floor with no hue noise at rest — R27's residual (the
+reservoir tints the whole pool with the one light it drew) is a smooth spatial gradient here rather than the flicker a
+colour difference might have made of it. Worth re-checking under motion when a scene finally has several differently
+coloured emitters within one `LIGHT_RANGE`; `DIG_TORCHES=8 DIG_SCREEN=siphon` is the capture, and `DIG_MINING=<level>`
+(new here, since a level is not a pose and the pick's second rank is otherwise unphotographable) is what puts the pick
+at the rank worth shooting.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,

@@ -106,6 +106,16 @@ pub fn parse_held_item(s: &str) -> Option<u16> {
 		"door" => BlockType::LumberDoor as u16,
 		"bucket" => WIRE_TOOL,
 		"bucket-full" => digblock_net::messages::HELD_TOOL_FULL,
+		// The crafted tools, by their own block ids — which is exactly
+		// what `Client::held_wire` sends for them, the two sentinels
+		// being the bucket's charges. Named the same way `DIG_SCREEN`
+		// names them, and worth having because two of them now GLOW and
+		// CAST: a remote's siphon lighting the room is a second code path
+		// (players.wgsl's own ink decode) and this is the only way to
+		// photograph it.
+		"siphon" => BlockType::EssenceSiphon as u16,
+		"pick" => BlockType::ResonantPick as u16,
+		"sigil" => BlockType::MastersSigil as u16,
 		"empty" => WIRE_EMPTY,
 		_ => return None,
 	})
@@ -271,6 +281,14 @@ pub struct EngineConfig {
 	/// it. Ore is derived and invisible below its level, so there is no
 	/// pose that photographs it — see [`debug_ore_plan`].
 	pub debug_ore: usize,
+	/// DIG_MINING=<level>: start at that Mining level, 0 = leave it
+	/// alone. A level is not a pose and not a scene, and everything it
+	/// gates is invisible without it: the strength wall's refusals, dig
+	/// speed, and the Resonant Pick's two ranks — the second of which
+	/// brightens the tool's own glow, so a capture at level 1 photographs
+	/// the wrong light. Applied AFTER `debug_ore`'s own grant, so asking
+	/// for a level explicitly wins.
+	pub debug_mining: u32,
 	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the
 	/// only source in it is the one the player is CARRYING. Set by the
 	/// desktop launcher from DIG_VAULT_DARK. A modifier rather than a
@@ -414,6 +432,7 @@ impl EngineConfig {
 			debug_doors: false,
 			debug_vault: false,
 			debug_ore: 0,
+			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -475,6 +494,7 @@ impl EngineConfig {
 			debug_doors: false,
 			debug_vault: false,
 			debug_ore: 0,
+			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
 			debug_dive: false,
@@ -1685,7 +1705,11 @@ fn push_remote(
 			0.0,
 		],
 	));
-	carried.push(r.key, pos, block);
+	// Level 0: a remote's skills are not in the snapshot, so their tool
+	// casts at its row's own level. `carried_light` says why that is the
+	// right answer rather than a gap — inventing a rank for someone
+	// else's pick would light the room differently for the two of you.
+	carried.push(r.key, pos, block, 0);
 }
 
 /// How near the camera a carried light has to be for its MOTION to be
@@ -1772,13 +1796,29 @@ impl Carried {
 	/// answer here. Do not "unify" the two: removing the offset in
 	/// upload_chunk silently undoes R26 and puts every placed torch's
 	/// light back at its cell centre.
-	fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>) {
+	fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>, mining: u32) {
 		let Some(b) = held.filter(|b| b.props().light > 0) else {
 			return;
 		};
 		let o = digblock_core::gi::carried_origin(eye);
-		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(b, 0));
-		self.lights.push((o.x, o.y, o.z, class));
+		// What a carried light does NOT take from the class byte: how
+		// bright it burns and how blue it stays, when the wielder has
+		// earned better. Both ride the entry rather than the LUT, because
+		// the same tool in two hands may cast differently — see
+		// `core::gi::carried_light`, which is where the rule lives. The
+		// level goes out as 0 when it agrees with the row, so an ordinary
+		// carrier packs the word R28 packed.
+		let cast = digblock_core::gi::carried_light(b, mining);
+		self.lights.push(crate::gi::Emitter {
+			pos: o.to_array(),
+			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(b, 0)),
+			level: if cast.level == b.props().light {
+				0
+			} else {
+				cast.level
+			},
+			whitened: cast.whitened,
+		});
 		self.keys.push(key);
 	}
 
@@ -1790,8 +1830,7 @@ impl Carried {
 	/// light the room without waiting for a step.
 	fn finish(&mut self, cam: Vec3) {
 		for (i, &key) in self.keys.iter().enumerate() {
-			let (x, y, z, _) = self.lights[i];
-			let p = Vec3::new(x, y, z);
+			let p = Vec3::from_array(self.lights[i].pos);
 			let slot = self.fired.iter().position(|(k, _)| *k == key);
 			if let Some(s) = slot
 				&& self.fired[s].1.distance_squared(p) < CARRY_INVAL_STEP * CARRY_INVAL_STEP
@@ -1805,7 +1844,7 @@ impl Carried {
 			// in the game moves a player that far without a teleport,
 			// which resets the whole screen history anyway.
 			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
-				self.pending.push((key, [x, y, z]));
+				self.pending.push((key, p.to_array()));
 			}
 		}
 		// A light going OUT is a lighting change exactly as a light
@@ -2132,6 +2171,17 @@ impl Engine {
 			engine.skills.set_total(
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(need),
+			);
+			engine.sync_mining_reveal(false);
+		}
+		if engine.config.debug_mining > 0 {
+			// Last, so an explicit level overrides the one `debug_ore`
+			// grants for its tier: the two scenes compose (a chamber at a
+			// tier, walked into with a late-game pick), and the one the
+			// caller typed is the one they meant.
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Mining,
+				digblock_core::skills::total_xp_for(engine.config.debug_mining),
 			);
 			engine.sync_mining_reveal(false);
 		}
@@ -5800,6 +5850,7 @@ impl Game for Engine {
 			CARRIER_SELF,
 			self.camera.pos,
 			self.view_swap.shown().and_then(crate::ui::hud::icon_block),
+			self.skills.level(digblock_core::skills::Skill::Mining),
 		);
 		if let Some(net) = self.net.as_ref() {
 			net.remotes.sample(&mut self.remote_scratch);
@@ -6168,7 +6219,7 @@ mod carried_tests {
 	use super::*;
 
 	fn torch_at(c: &mut Carried, key: u16, eye: Vec3) {
-		c.push(key, eye, Some(BlockType::Torch));
+		c.push(key, eye, Some(BlockType::Torch), 1);
 	}
 
 	/// One frame of one carrier holding a torch, in exactly the order
@@ -6188,7 +6239,7 @@ mod carried_tests {
 		held: Option<BlockType>,
 	) -> usize {
 		c.begin();
-		c.push(key, eye, held);
+		c.push(key, eye, held, 1);
 		c.finish(cam);
 		let n = c.pending.len();
 		c.commit();
@@ -6266,7 +6317,7 @@ mod carried_tests {
 		for b in BlockType::ALL {
 			let mut c = Carried::default();
 			c.begin();
-			c.push(CARRIER_SELF, eye, Some(b));
+			c.push(CARRIER_SELF, eye, Some(b), 1);
 			assert_eq!(
 				c.lights.len(),
 				usize::from(b.props().light > 0),
@@ -6276,7 +6327,7 @@ mod carried_tests {
 		}
 		let mut c = Carried::default();
 		c.begin();
-		c.push(CARRIER_SELF, eye, None);
+		c.push(CARRIER_SELF, eye, None, 1);
 		assert!(c.lights.is_empty(), "an empty hand is not a light");
 	}
 
@@ -6293,15 +6344,57 @@ mod carried_tests {
 		torch_at(&mut c, CARRIER_SELF, eye);
 		let want =
 			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Torch, 0));
-		assert_eq!(c.lights[0].3, want);
+		assert_eq!(c.lights[0].class, want);
 		assert!(
 			want >= digblock_core::gi::SHAPE_CLASS_BASE,
 			"the shaped class"
 		);
 		let o = digblock_core::gi::carried_origin(eye);
+		assert_eq!(c.lights[0].pos, o.to_array());
+		// And no override: a torch is a torch in anyone's hand, whatever
+		// they have earned.
+		assert_eq!(c.lights[0].level, 0);
+	}
+
+	/// The one light in the game that answers to its wielder. Below the
+	/// pick's plane rank the entry defers to the LUT exactly as a torch
+	/// does; at it, the entry carries a level of its own — the rank the
+	/// player just felt widen the swing is the rank that brightens the
+	/// tool.
+	#[test]
+	fn the_pick_brightens_at_the_rank_that_widens_it() {
+		use digblock_core::unlock::{PICK_PLANE, pick_cells};
+		let eye = Vec3::new(64.0, 70.0, 64.0);
+		let base = BlockType::ResonantPick.props().light;
+		let level_at = |mining| {
+			let mut c = Carried::default();
+			c.begin();
+			c.push(CARRIER_SELF, eye, Some(BlockType::ResonantPick), mining);
+			c.lights[0].level
+		};
+		// The rank boundary is asked of `pick_cells`, never restated: one
+		// threshold, and this test moves with it.
+		let plane = (1..=100u32)
+			.find(|&l| pick_cells(l) == PICK_PLANE)
+			.expect("the pick reaches its plane rank somewhere on the ladder");
 		assert_eq!(
-			(c.lights[0].0, c.lights[0].1, c.lights[0].2),
-			(o.x, o.y, o.z)
+			level_at(plane - 1),
+			0,
+			"below the rank, the row's own level"
+		);
+		let raised = level_at(plane);
+		assert!(
+			raised > base,
+			"at the rank it casts brighter than its row ({raised} vs {base})"
+		);
+		// It out-LEVELS a torch here, and still lights a room a fraction
+		// as brightly, because what an emitter delivers is its level
+		// times its tint's luminance and this one is a saturated blue —
+		// `texture::layer_tests::a_tool_lights_less_than_a_torch` is
+		// where that can be checked against the actual pixels.
+		assert!(
+			u32::from(raised) <= crate::gi::LIGHT_LEVEL_MASK,
+			"a level has to fit the light entry's own field"
 		);
 	}
 
@@ -6339,7 +6432,7 @@ mod carried_tests {
 		// Swap to something that does not emit: one sphere, at the place
 		// the light was, and then silence.
 		c.begin();
-		c.push(CARRIER_SELF, eye, Some(BlockType::Dirt));
+		c.push(CARRIER_SELF, eye, Some(BlockType::Dirt), 1);
 		c.finish(eye);
 		assert_eq!(c.pending.len(), 1, "putting it away must invalidate");
 		assert_eq!(c.pending[0].1, gone, "at the position it lit from");

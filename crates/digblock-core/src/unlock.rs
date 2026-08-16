@@ -181,11 +181,19 @@ pub fn reveal(b: BlockType) -> Option<u32> {
 /// beside it in `skills` steps with it.
 pub fn pick_cells(level: u32) -> usize {
 	match level {
-		l if l >= 85 => 9,
+		l if l >= 85 => PICK_PLANE,
 		l if l >= 55 => 3,
 		_ => 1,
 	}
 }
+
+/// The pick's second rank: the full plane, the widest it ever breaks.
+///
+/// Named because two things key on "the pick is at its last rank" and
+/// neither may own a threshold of its own — [`pick_cells`] here, and
+/// [`crate::gi::carried_light`], which brightens the tool's glow at
+/// exactly the level the swing widens.
+pub const PICK_PLANE: usize = 9;
 
 /// The late-Mining **prospector's sense** (SKILLS-DESIGN §5.5): within
 /// [`PROSPECT_RANGE`] of a deposit you cannot yet SEE, a faint shimmer.

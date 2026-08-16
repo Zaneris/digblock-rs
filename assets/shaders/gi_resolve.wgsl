@@ -449,7 +449,13 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// path: the drawn light's tint is fetched once, below. A tint that
 		// varies between classes just makes this a slightly worse target,
 		// never a biased one.
-		let score = gi_emit(cls) * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+		//
+		// The entry may carry its own level (a tool whose wielder has
+		// earned a brighter one); zero defers to the class, which is
+		// every placed emitter.
+		let ov = gi_light_level(l.w);
+		let emit = select(gi_emit(cls), f32(ov), ov != 0u);
+		let score = emit * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
 		if score <= 0.0 {
 			continue;
 		}
@@ -470,7 +476,7 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// cancels exactly and never appears. That cancellation is the
 		// whole reason this reads as one deterministic multiply rather
 		// than as a ratio of two sampled quantities.
-		out.irradiance = gi_albedo(sel_cls) * LIGHT_GAIN * wsum;
+		out.irradiance = gi_light_tint(sel.w, gi_albedo(sel_cls)) * LIGHT_GAIN * wsum;
 	}
 	return out;
 }

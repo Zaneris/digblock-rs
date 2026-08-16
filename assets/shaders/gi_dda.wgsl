@@ -237,8 +237,43 @@ fn gi_light_margin(p: vec3f) -> f32 {
 // solid stone.
 const GI_LIGHT_CARRIED = 256u;
 
+// A per-ENTRY cast level, riding above the flag, or 0 for "take the
+// class's own" — which is every placed emitter, so their word is what it
+// always was. It exists because one light in the game answers to whoever
+// is holding it (the Resonant Pick brightens at the rank that widens its
+// swing), and a class byte cannot say that: two players holding the same
+// tool share a LUT row and must be free to cast differently.
+const GI_LIGHT_LEVEL_SHIFT = 9u;
+const GI_LIGHT_LEVEL_MASK = 15u;
+
+// The entry's second per-holder property: draw its tint pulled toward
+// white. The Resonant Pick wears it at its resonant rank, where the tool
+// stops being a blue signal and becomes a light to work by. It cannot be
+// a class property for the same reason the level cannot — every copy of
+// the tool shares one LUT row.
+const GI_LIGHT_WHITENED = 8192u;
+const GI_LIGHT_WHITEN = 0.35;
+
 fn gi_light_class(w: f32) -> u32 {
 	return bitcast<u32>(w) & 255u;
+}
+
+// The entry's own level, 0 when it defers to its class. Bit math only —
+// the LUT read stays at the call site, because this prelude is
+// dependency-free so the compute kernels can share it.
+fn gi_light_level(w: f32) -> u32 {
+	return (bitcast<u32>(w) >> GI_LIGHT_LEVEL_SHIFT) & GI_LIGHT_LEVEL_MASK;
+}
+
+// The tint an entry actually casts, given the one its class carries.
+// Takes the albedo as an argument rather than reading the LUT, which is
+// what keeps this prelude dependency-free — and is why the resolve and
+// the probes cannot disagree about a whitened light.
+fn gi_light_tint(w: f32, albedo: vec3f) -> vec3f {
+	if (bitcast<u32>(w) & GI_LIGHT_WHITENED) != 0u {
+		return mix(albedo, vec3f(1.0), GI_LIGHT_WHITEN);
+	}
+	return albedo;
 }
 
 // The margin for one light list entry, and the ONE place the carried

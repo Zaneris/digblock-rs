@@ -38,10 +38,30 @@ const MAX_LIGHTS: usize = 256;
 /// whose LUT row carries its cast level and its tint.
 ///
 /// A light a player is CARRYING is one of these too. It just isn't in a
-/// chunk — which is the whole of the difference, and the only reader
-/// that can tell is `gi_light_margin_of`, because the margin is a
-/// question about the light's CELL and a carried one has none.
-pub type Emitter = (f32, f32, f32, u8);
+/// chunk — which is the whole of the difference, and the only readers
+/// that can tell are `gi_light_margin_of`, because the margin is a
+/// question about the light's CELL and a carried one has none, and
+/// [`Self::level`], which only a carried light ever sets.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Emitter {
+	pub pos: [f32; 3],
+	pub class: u8,
+	/// Cast level for THIS entry, or 0 to take the class's own.
+	///
+	/// A placed emitter is always 0: a torch is a torch wherever it
+	/// stands, so its level belongs to its LUT row and one number serves
+	/// every copy of it in the world. The exception is a tool whose
+	/// wielder has earned a brighter one (`core::gi::carried_light`),
+	/// which is a property of the HOLDER and therefore of the entry —
+	/// there is no second class to give it, and the same pick in two
+	/// different hands must be free to cast differently.
+	pub level: u8,
+	/// Draw this entry's tint pulled toward white
+	/// (`core::gi::CarriedLight::whitened`). Per entry for the same
+	/// reason the level is: the class byte is shared by every copy of the
+	/// tool in the world, and this one belongs to who is holding it.
+	pub whitened: bool,
+}
 
 /// The flag riding above the class byte in a light entry's packed `w`
 /// word: this light is being CARRIED. The class byte occupies the low
@@ -58,6 +78,30 @@ pub type Emitter = (f32, f32, f32, u8);
 /// margin grows to swallow a whole wall they are standing against.
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_CARRIED: u32 = 256;
+
+/// Where [`Emitter::level`] rides in the same packed word, above the
+/// class byte and the carried flag. Zero means "no override" — the LUT
+/// row's own level stands — so a placed emitter's word is bit-identical
+/// to what it was before per-entry levels existed.
+///
+/// Four bits, which is every level the game authors: `emits` runs to the
+/// brightest lamp and no further. A wider range would want a wider field
+/// and there is room above it, but it would also want a reason.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_LEVEL_SHIFT: u32 = 9;
+pub(crate) const LIGHT_LEVEL_MASK: u32 = 15;
+
+/// [`Emitter::whitened`]'s flag, above the level field — the entry's
+/// second per-holder property, and packed rather than classed for the
+/// same reason.
+///
+/// HOW FAR toward white is not here: `GI_LIGHT_WHITEN` lives in
+/// gi_dda.wgsl, which is the only thing that applies it (`gi_light_tint`,
+/// shared so both NEE passes agree by construction), and a mirror on this
+/// side would be a second copy of a value with one user. The test that
+/// has to know it reads it back out of the shader source.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_WHITENED: u32 = 8192;
 
 /// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
 /// The real sun's disc is a fraction of a degree across; this cone is
@@ -358,19 +402,22 @@ fn select_lights(
 	cam: [f32; 3],
 	reach: f32,
 ) -> Vec<[f32; 4]> {
-	let placed = emitters.map(|(x, y, z, class)| (x, y, z, u32::from(class)));
-	let held = carried
-		.iter()
-		.map(|&(x, y, z, class)| (x, y, z, u32::from(class) | LIGHT_CARRIED));
+	let word = |e: Emitter, carried: u32| {
+		u32::from(e.class)
+			| carried | (u32::from(e.level) & LIGHT_LEVEL_MASK) << LIGHT_LEVEL_SHIFT
+			| if e.whitened { LIGHT_WHITENED } else { 0 }
+	};
+	let placed = emitters.map(|e| (e.pos, word(e, 0)));
+	let held = carried.iter().map(|&e| (e.pos, word(e, LIGHT_CARRIED)));
 	let mut all: Vec<(f32, [f32; 4])> = placed
 		.chain(held)
-		.filter(|e| {
-			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+		.filter(|(p, _)| {
+			let (dx, dz) = (p[0] - cam[0], p[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		})
-		.map(|(x, y, z, w)| {
-			let d2 = (x - cam[0]).powi(2) + (y - cam[1]).powi(2) + (z - cam[2]).powi(2);
-			(d2, [x, y, z, f32::from_bits(w)])
+		.map(|(p, w)| {
+			let d2 = (p[0] - cam[0]).powi(2) + (p[1] - cam[1]).powi(2) + (p[2] - cam[2]).powi(2);
+			(d2, [p[0], p[1], p[2], f32::from_bits(w)])
 		})
 		.collect();
 	if all.len() > MAX_LIGHTS {
@@ -1520,12 +1567,19 @@ impl GiDraw {
 			.iter()
 			.map(|&(x, y, z, class)| {
 				let o = digblock_core::gi::light_origin(class);
-				(
-					world.0 + f32::from(x) + o[0],
-					world.1 + f32::from(y) + o[1],
-					world.2 + f32::from(z) + o[2],
+				Emitter {
+					pos: [
+						world.0 + f32::from(x) + o[0],
+						world.1 + f32::from(y) + o[1],
+						world.2 + f32::from(z) + o[2],
+					],
 					class,
-				)
+					// Never overridden: a placed torch's level and tint are
+					// its row's, and every copy of it in the world agrees
+					// by construction.
+					level: 0,
+					whitened: false,
+				}
 			})
 			.collect();
 		let changed = if list.is_empty() {
@@ -1659,8 +1713,8 @@ impl GiDraw {
 		// the window is that many chunks on a SIDE, so "resident" reaches
 		// well past "traceable" and this is not a rare edge.
 		let reach = lateral_max(self.window_chunks);
-		let in_reach = |e: &(f32, f32, f32, u8)| {
-			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+		let in_reach = |e: &Emitter| {
+			let (dx, dz) = (e.pos[0] - cam[0], e.pos[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		};
 		// Carried lights count toward `total` like any other: they are in
@@ -1967,10 +2021,20 @@ mod tests {
 		// A full list of placed torches, every one of them in reach and
 		// none of them at the camera.
 		let placed: Vec<_> = (0..MAX_LIGHTS)
-			.map(|i| (cam[0] + 2.0 + i as f32 * 0.01, cam[1], cam[2], class))
+			.map(|i| Emitter {
+				pos: [cam[0] + 2.0 + i as f32 * 0.01, cam[1], cam[2]],
+				class,
+				level: 0,
+				whitened: false,
+			})
 			.collect();
 		let mine = digblock_core::gi::carried_origin(glam::Vec3::from_array(cam));
-		let carried = [(mine.x, mine.y, mine.z, class)];
+		let carried = [Emitter {
+			pos: mine.to_array(),
+			class,
+			level: 0,
+			whitened: false,
+		}];
 		let out = select_lights(placed.iter().copied(), &carried, cam, reach);
 		assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
 		let entry = out
@@ -2002,8 +2066,58 @@ mod tests {
 		);
 		// Out past the reach every march breaks at: dropped, like any
 		// other emitter no ray could have traced.
-		let far = [(cam[0] + reach + 1.0, cam[1], cam[2], class)];
+		let far = [Emitter {
+			pos: [cam[0] + reach + 1.0, cam[1], cam[2]],
+			class,
+			level: 0,
+			whitened: false,
+		}];
 		assert!(select_lights(std::iter::empty(), &far, cam, reach).is_empty());
+	}
+
+	/// A per-entry level has to reach the shader ON TOP of the class and
+	/// the carried flag, and an entry without one has to pack exactly the
+	/// word it packed before the field existed — otherwise every placed
+	/// torch in the world quietly changes brightness.
+	#[test]
+	fn a_wielders_level_rides_the_entry_and_nothing_elses() {
+		let cam = [0.0, 0.0, 0.0];
+		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+			digblock_core::block::BlockType::ResonantPick,
+			0,
+		));
+		let held = |level, whitened| {
+			let e = [Emitter {
+				pos: [1.0, 0.0, 0.0],
+				class,
+				level,
+				whitened,
+			}];
+			select_lights(std::iter::empty(), &e, cam, 8.0)[0][3].to_bits()
+		};
+		let plain = held(0, false);
+		assert_eq!(
+			plain,
+			u32::from(class) | LIGHT_CARRIED,
+			"no override, no bits"
+		);
+		let raised = held(13, true);
+		assert_eq!(raised & 255, u32::from(class), "the class is untouched");
+		assert_eq!(raised & LIGHT_CARRIED, LIGHT_CARRIED, "so is the flag");
+		assert_eq!(
+			(raised >> LIGHT_LEVEL_SHIFT) & LIGHT_LEVEL_MASK,
+			13,
+			"and the level reads back out of its own field"
+		);
+		assert_eq!(
+			raised & LIGHT_WHITENED,
+			LIGHT_WHITENED,
+			"and the tint flag out of its own bit"
+		);
+		// The two per-holder properties are independent: a light may be
+		// raised without being whitened, and the level field must not
+		// smear into the flag above it.
+		assert_eq!(held(LIGHT_LEVEL_MASK as u8, false) & LIGHT_WHITENED, 0);
 	}
 
 	/// The carried flag is packed here and unpacked in gi_dda.wgsl, which
@@ -2011,15 +2125,26 @@ mod tests {
 	/// two halves one thing, so agreement is what gets pinned.
 	#[test]
 	fn the_carried_flag_matches_the_shaders() {
-		let decl = format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;");
-		assert!(
-			digblock_assets::shader::GI_DDA.contains(&decl),
-			"gi_dda.wgsl must declare `{decl}`"
-		);
+		for decl in [
+			format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;"),
+			format!("const GI_LIGHT_LEVEL_SHIFT = {LIGHT_LEVEL_SHIFT}u;"),
+			format!("const GI_LIGHT_LEVEL_MASK = {LIGHT_LEVEL_MASK}u;"),
+			format!("const GI_LIGHT_WHITENED = {LIGHT_WHITENED}u;"),
+		] {
+			assert!(
+				digblock_assets::shader::GI_DDA.contains(&decl),
+				"gi_dda.wgsl must declare `{decl}`"
+			);
+		}
 		// And it has to stay clear of the class byte it shares the word
 		// with, which is what makes the mask legal at all. The other side
 		// needs no assert: `Emitter`'s class is a u8.
 		assert_eq!(LIGHT_CARRIED & 255, 0);
+		// Four tenants in one word now, and the packing is only legal
+		// while none of them overlaps another.
+		let level = LIGHT_LEVEL_MASK << LIGHT_LEVEL_SHIFT;
+		assert_eq!(level & (255 | LIGHT_CARRIED), 0);
+		assert_eq!(LIGHT_WHITENED & (255 | LIGHT_CARRIED | level), 0);
 	}
 
 	/// The ceiling must sit at the TOP of the highest occupied brick (a

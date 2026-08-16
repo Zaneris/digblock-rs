@@ -241,6 +241,66 @@ pub fn carried_origin(eye: glam::Vec3) -> glam::Vec3 {
 	eye - glam::Vec3::Y * CARRY_DROP
 }
 
+/// What a held emitter casts at, for a wielder at this Mining level.
+///
+/// Every block answers with its own row and stops there — a torch in a
+/// hand is the torch on the floor, which is the whole of R28. The
+/// Resonant Pick is the one exception in the game, and it is a
+/// deliberate one: the tool that breaks a whole plane resonates hard
+/// enough to work by, so its glow steps up with the swing.
+///
+/// Keyed on [`crate::unlock::pick_cells`] reaching
+/// [`crate::unlock::PICK_PLANE`] rather than on a level of its own,
+/// because two thresholds for one rank drift apart the first time
+/// either moves — and the point of the brighter glow is that it arrives
+/// on the swing the player just felt widen.
+///
+/// A remote's pick answers at its row's level: their skills are not in
+/// the snapshot, and inventing a rank for someone else's tool would put
+/// a light in the world that the player holding it cannot see.
+pub fn carried_light(b: BlockType, mining: u32) -> CarriedLight {
+	if b == BlockType::ResonantPick
+		&& crate::unlock::pick_cells(mining) == crate::unlock::PICK_PLANE
+	{
+		return CarriedLight {
+			level: PICK_RESONANT_LIGHT,
+			whitened: true,
+		};
+	}
+	CarriedLight {
+		level: b.props().light,
+		whitened: false,
+	}
+}
+
+/// What a held emitter casts: how much, and in what.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CarriedLight {
+	/// The cast level, [`crate::block::BlockProps::light`]'s units.
+	pub level: u8,
+	/// Draw this light's tint pulled toward white.
+	///
+	/// The pick's authored blue is what makes its glow READ as resonance
+	/// at a glance, and it is also why the tool is a poor lamp: a
+	/// saturated blue carries almost no luminance, so a room lit by one
+	/// is dim and uniformly blue however high the level goes. At the
+	/// resonant rank the tool stops being a signal and becomes a light to
+	/// work by — brighter, and less blue for the same reason a hot flame
+	/// is less orange. It rides the light-list ENTRY beside the level,
+	/// not the class, because it is a property of the wielder.
+	pub whitened: bool,
+}
+
+/// What the Resonant Pick casts at once it breaks the full plane — see
+/// [`carried_light`], the only thing that reads it.
+///
+/// Set against the WHITENED tint rather than the authored one, which is
+/// most of the answer to why it is not higher: whitening more than
+/// doubles what the same level delivers, so this lands the resonant pick
+/// as the brightest thing a hand can hold short of a torch, and the step
+/// up from its own first rank is one a player cannot miss.
+const PICK_RESONANT_LIGHT: u8 = 12;
+
 /// The class byte for one cell: 0 for air, the block id for full cubes
 /// and fluids, a synthetic [`shape_classes`] entry for shaped cells —
 /// which is the one place the state nibble matters (a thin floor slab

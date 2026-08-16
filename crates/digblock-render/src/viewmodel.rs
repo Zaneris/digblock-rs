@@ -408,17 +408,28 @@ pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 	out.clear();
 	for f in item_geom::faces(kind) {
 		let face = f.dir as u32;
+		// The ink bit rides above the layer index rather than taking an
+		// attribute of its own: this vertex feeds TWO pipelines (your own
+		// hand and a remote's), so a new attribute would be a format
+		// change in both, and the layer word has every bit spare.
+		let layer = u32::from(f.tex_layer) | (u32::from(f.emissive) << INK_BIT);
 		for i in 0..4 {
 			let c = f.corners[i];
 			out.push(Vert {
 				pos: [c[0] as f32, c[1] as f32, c[2] as f32],
 				uv: f.uv[i],
-				layer: u32::from(f.tex_layer),
+				layer,
 				face,
 			});
 		}
 	}
 }
+
+/// Where [`ItemFace::emissive`](item_geom::ItemFace::emissive) rides in
+/// the vertex's layer word, clear of every texture index there will ever
+/// be. Both item shaders mask it back out before they sample; pinned
+/// against the WGSL twins by `the_ink_bit_matches_the_shaders`.
+pub(crate) const INK_BIT: u32 = 16;
 
 /// Everything the viewmodel pass needs for one frame.
 #[derive(Clone, Copy)]
@@ -653,6 +664,60 @@ mod tests {
 	use digblock_core::block::BlockType;
 
 	const ASPECT: f32 = 16.0 / 9.0;
+
+	/// One vertex word, two readers — your own hand and a remote's — and
+	/// nothing but agreement makes them one item. Both shaders must
+	/// declare the same bit, and it must sit clear of every texture layer
+	/// there will ever be, since they share the word.
+	#[test]
+	fn the_ink_bit_matches_the_shaders() {
+		let decl = format!("const ITEM_INK_BIT = {}u;", 1u32 << INK_BIT);
+		for (name, src) in [
+			("viewmodel", digblock_assets::shader::VIEWMODEL),
+			("players", digblock_assets::shader::PLAYERS),
+		] {
+			assert!(src.contains(&decl), "{name}.wgsl must declare `{decl}`");
+		}
+		assert!(
+			u32::from(digblock_core::block::tex::COUNT) < 1u32 << INK_BIT,
+			"the layer index has to fit under the bit it shares a word with"
+		);
+	}
+
+	/// A tool's lit part is a FACE, not the item: the geometry has to
+	/// carry both kinds at once, or a glowing core costs the body its
+	/// shading.
+	#[test]
+	fn a_tool_glows_in_one_place_and_is_shaded_everywhere_else() {
+		for kind in [IconKind::Siphon, IconKind::Pick] {
+			let faces = crate::item_geom::faces(kind);
+			assert!(
+				faces.iter().any(|f| f.emissive),
+				"{kind:?} has no lit part — it is a light source with nothing to see"
+			);
+			assert!(
+				faces.iter().any(|f| !f.emissive),
+				"{kind:?} is fullbright throughout, which is the flat look the \
+				 per-face bit exists to avoid"
+			);
+			// The lit part wears the row's own texture, which is where the
+			// GI takes the colour of the light from: one authored thing,
+			// so the glow you see and the glow it throws cannot drift.
+			let block = crate::ui::hud::icon_block(kind).expect("a tool has a row");
+			assert!(
+				faces
+					.iter()
+					.filter(|f| f.emissive)
+					.all(|f| f.tex_layer == block.props().tex_top),
+				"{kind:?}'s glow is not its row's texture"
+			);
+			assert!(block.props().light > 0, "{kind:?} does not cast");
+			assert!(
+				!block.props().emissive,
+				"{kind:?} is fullbright as a BLOCK, which would flatten the whole tool"
+			);
+		}
+	}
 
 	/// Project an item-space point (twelfths) to normalized device
 	/// coordinates, so the tests can ask where the thing actually is.
