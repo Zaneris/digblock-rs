@@ -215,32 +215,35 @@ For `just run`:
   the other half of the pair: the same lamp placed and carried in one frame, so a calibration drift between them is
   visible. Neither can see the reservoir's carried-light skew, though — one emitter is not enough; that capture is
   `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_SCREEN=torch`, GI-DESIGN.md R28), `DIG_ROOF` (wall-less plate overhead; pins
-  that the beam knows the sun's angle rather than a sky column), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded basin
-  ahead of spawn + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_PLAYERBOX=<item>` (a fake
-  remote player facing you, holding that item — `dirt` (the default, and what a bare `1` still means) `torch` `stairs`
-  `slab` `door` `bucket` `bucket-full` `siphon` `pick` `sigil` `empty`; the value is a HELD-ITEM WIRE id, so the scene
-  walks the real `held_icon` decode rather than being a second code path, and an unknown name is fatal — the two glowing
-  tools matter here because a remote's copy is a SECOND ink decode, in players.wgsl), `DIG_MINING=<level>` (start there;
-  a level is not a pose, and everything one gates is otherwise unphotographable — the strength wall's refusals, dig
-  speed, and the Resonant Pick's two ranks, the second of which brightens the tool's own glow. Applied after `DIG_ORE`'s
-  own grant, so an explicit level wins), `DIG_TORCHES=<n>` (an open courtyard lit by n torches, cluster set well out and
-  floor running past `LIGHT_RANGE` — the local-light capture DIG_VAULT cannot be, since the vault's room is too small to
-  have a far band and one torch is the single count the NEE covers completely; `DIG_TORCHES_FAR=<n>` parks emitters
-  where they change only the light list's LENGTH, `DIG_TORCHES_WALL=1` screens the cluster so emitters occlude each
-  other), `DIG_CONFETTI=1` (a level-up burst every couple of seconds ahead of the camera — the event is rare and
-  transient, so it is otherwise invisible to capture), `DIG_CRACK=<percent>` (pins the dig-crack decal at that progress
-  and stands a wall just ahead to hold it — the crack is input-driven and a hold is over in a second, so a SWEEP of
-  these runs is the only way to see whether it spreads or just fades in; `--pitch` picks the row, and a run at 0 is the
-  geometry-identical control since the shader's crack branch is gated on progress), `DIG_SIPHON=<percent>` (pins the
-  essence draw at that progress on the vein under the crosshair — the same sweep argument, since one still cannot tell a
-  stream that thickens from one that merely brightens. Unlike the crack it cannot stand its own scene, because a vein is
-  derived worldgen and there is no placing one: it RIDES `DIG_ORE`, is fatal without it, and defaults
-  `DIG_SCREEN=siphon` for the tool and `--pitch` level so the ray goes through the deposit's middle row rather than the
-  floor plate in front of it), `DIG_DOORS=1` (a rank of door pairs just ahead — closed, open and edge-on — with plain
-  Lumber columns beside them as the tint reference, and Alchemy raised out of `unlock::pickup` so the craft-only leaf is
-  `diggable` and therefore outlines at all; DIG_SHAPES also stands every door variant but stands them further out behind
-  stair rows sharing their x columns, which projects straight over every lower half, so the seam a door is judged on —
-  one object, two cells — is the one thing that scene cannot show),
+  that the beam knows the sun's angle rather than a sky column), `DIG_TUNNEL` (a sealed ~52-block stone bore ahead of
+  spawn — the unproven-daylight capture, GI-DESIGN.md R32; its far end sits past the cascades' coverage and the gather
+  ray's reach, which no room-sized scene touches. Pair with `--pos` at a low y, since the fade it photographs is
+  depth-gated; the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER`
+  (flooded basin ahead of spawn + `--pitch -35`, the only pose with a SHADED water surface on screen),
+  `DIG_PLAYERBOX=<item>` (a fake remote player facing you, holding that item — `dirt` (the default, and what a bare `1`
+  still means) `torch` `stairs` `slab` `door` `bucket` `bucket-full` `siphon` `pick` `sigil` `empty`; the value is a
+  HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode rather than being a second code path, and an unknown
+  name is fatal — the two glowing tools matter here because a remote's copy is a SECOND ink decode, in players.wgsl),
+  `DIG_MINING=<level>` (start there; a level is not a pose, and everything one gates is otherwise unphotographable — the
+  strength wall's refusals, dig speed, and the Resonant Pick's two ranks, the second of which brightens the tool's own
+  glow. Applied after `DIG_ORE`'s own grant, so an explicit level wins), `DIG_TORCHES=<n>` (an open courtyard lit by n
+  torches, cluster set well out and floor running past `LIGHT_RANGE` — the local-light capture DIG_VAULT cannot be,
+  since the vault's room is too small to have a far band and one torch is the single count the NEE covers completely;
+  `DIG_TORCHES_FAR=<n>` parks emitters where they change only the light list's LENGTH, `DIG_TORCHES_WALL=1` screens the
+  cluster so emitters occlude each other), `DIG_CONFETTI=1` (a level-up burst every couple of seconds ahead of the
+  camera — the event is rare and transient, so it is otherwise invisible to capture), `DIG_CRACK=<percent>` (pins the
+  dig-crack decal at that progress and stands a wall just ahead to hold it — the crack is input-driven and a hold is
+  over in a second, so a SWEEP of these runs is the only way to see whether it spreads or just fades in; `--pitch` picks
+  the row, and a run at 0 is the geometry-identical control since the shader's crack branch is gated on progress),
+  `DIG_SIPHON=<percent>` (pins the essence draw at that progress on the vein under the crosshair — the same sweep
+  argument, since one still cannot tell a stream that thickens from one that merely brightens. Unlike the crack it
+  cannot stand its own scene, because a vein is derived worldgen and there is no placing one: it RIDES `DIG_ORE`, is
+  fatal without it, and defaults `DIG_SCREEN=siphon` for the tool and `--pitch` level so the ray goes through the
+  deposit's middle row rather than the floor plate in front of it), `DIG_DOORS=1` (a rank of door pairs just ahead —
+  closed, open and edge-on — with plain Lumber columns beside them as the tint reference, and Alchemy raised out of
+  `unlock::pickup` so the craft-only leaf is `diggable` and therefore outlines at all; DIG_SHAPES also stands every door
+  variant but stands them further out behind stair rows sharing their x columns, which projects straight over every
+  lower half, so the seam a door is judged on — one object, two cells — is the one thing that scene cannot show),
   `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil`
   (opens that page at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and
   invisible to headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the
@@ -385,9 +388,15 @@ distance and softly on each signal's own **analytic** variance. Solids bilateral
 normals rasterized by the depth prepass into R8Uint; water gathers its indirect **per vertex** (R17 — the prepass runs a
 position-only `vs_depth` sharing the color vs's `water_world` decode so the `@invariant`/LessEqual contract holds) and
 gates its two ray marches on their own contribution (R21). Reveals prime from the probe cache rather than restarting at
-n = 1 (R15), and the resolve's per-pixel NEE **resamples every in-range emitter** through a one-pass weighted reservoir
-(R27; R20 built the ray and picked the argmax) — which is what lights the block a torch stands on. Direct light has
-exactly ONE estimator: the gather returns no emitter radiance at all.
+n = 1 (R15), and the per-pixel NEE **resamples every in-range emitter** through a one-pass weighted reservoir (R27; R20
+built the ray and picked the argmax) — which is what lights the block a torch stands on. Direct light has exactly ONE
+estimator: the gather returns no emitter radiance at all, and `resample_light` lives in gi_common with the light list on
+the shared gather group, because players run it too (R33 — they are not in the depth prepass, so the resolve's half-res
+direct term can never cover them; without their own call a body beside a torch read black). Unproven daylight fades with
+depth (R32): a march that PROVES open sky answers full daylight at any depth, and every answer given on no data — the
+cascades' sky fallback, an exhausted march, the medium's in-scatter — multiplies by `medium_sky_fade`, whose top edge
+equals `SEA_LEVEL` and saturates there, so the surface world is bit-identical by construction and only underground goes
+honestly dark.
 
 Invariants that bite if broken:
 

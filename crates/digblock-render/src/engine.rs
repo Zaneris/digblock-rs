@@ -317,6 +317,15 @@ pub struct EngineConfig {
 	/// reach under it exactly as the shadow map says; only the ambient
 	/// dome dims). Set by the desktop launcher from DIG_ROOF.
 	pub debug_roof: bool,
+	/// Debug: seal a long stone tunnel ahead of the spawn camera, no
+	/// torch — the unproven-daylight capture (GI-DESIGN.md R32). Its far
+	/// end sits past the probe cascades' reach and past the gather ray's
+	/// length, which is exactly where every "answer sky on no data"
+	/// fallback fires; a vault is too small to reach any of them. Pair
+	/// with `--pos` at a low y — the fade the scene photographs is
+	/// depth-gated, and the plan keys off wherever the spawn is. Set by
+	/// the desktop launcher from DIG_TUNNEL.
+	pub debug_tunnel: bool,
 	/// Debug: flood an open-topped stone tank around the spawn camera so
 	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
 	/// P4: sun transmittance through the column dims submerged terrain,
@@ -452,6 +461,7 @@ impl EngineConfig {
 			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
+			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
 			debug_torches: 0,
@@ -515,6 +525,7 @@ impl EngineConfig {
 			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
+			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
 			debug_torches: 0,
@@ -1302,6 +1313,49 @@ fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 		make_cell(B::StoneStairs, stair_state(Facing::PosX)),
 	));
 	out.push((bx + 2, by - 2, bz + 4, B::Wood as u16));
+	out
+}
+
+/// DIG_TUNNEL=1 layout: a long sealed stone tunnel running ahead of the
+/// spawn camera, no torch — the unproven-daylight capture (GI-DESIGN.md
+/// R32). The length is the scene: the far end sits beyond the probe
+/// cascades' coverage and beyond the gather ray's reach, so every
+/// "answer sky on no data" fallback fires along it, which no room-sized
+/// scene can reach. Combine with `--pos` at a low y for the depth-gated
+/// fade; a run above `SKY_FADE_FULL_Y` is the geometry-identical
+/// control, since the fade saturates there.
+fn debug_tunnel_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// A one-block stone shell around a bore the player's capsule fits
+	// (eye at `by`, feet two cells down), reaching far enough ahead in z
+	// that the far wall photographs through every fallback regime at
+	// once: past C0's coverage, past the gather ray, and short of the
+	// window's edge.
+	for x in (bx - 2)..=(bx + 2) {
+		for y in (by - 3)..=(by + 1) {
+			for z in (bz - 3)..=(bz + 53) {
+				let interior = (bx - 1..=bx + 1).contains(&x)
+					&& (by - 2..=by).contains(&y)
+					&& (bz - 2..=bz + 52).contains(&z);
+				out.push((
+					x,
+					y,
+					z,
+					if interior {
+						B::Air as u16
+					} else {
+						B::Stone as u16
+					},
+				));
+			}
+		}
+	}
 	out
 }
 
@@ -2094,6 +2148,9 @@ impl Engine {
 				}
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
+				}
+				if config.debug_tunnel {
+					plan.extend(debug_tunnel_plan(spawn));
 				}
 				if config.debug_dive {
 					plan.extend(debug_dive_plan(spawn));

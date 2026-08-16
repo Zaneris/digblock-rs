@@ -1033,26 +1033,20 @@ impl GiDraw {
 					wgpu::TextureSampleType::Float { filterable: false },
 					wgpu::TextureViewDimension::D2,
 				),
-				// The emitter list (R20): the per-pixel NEE ray samples the
-				// same buffer the probe pass does. Second storage buffer in
-				// this pipeline's fragment stage (gi_lut is the first), well
-				// under the WebGPU baseline limit.
-				f_entry(
-					5,
-					wgpu::BindingType::Buffer {
-						ty: wgpu::BufferBindingType::Storage { read_only: true },
-						has_dynamic_offset: false,
-						min_binding_size: None,
-					},
-				),
+				// The emitter list moved into the shared gather group (R33)
+				// so players can run the same NEE the resolve does.
 			],
 		});
-		// gi_common.wgsl's group(2): the GI world data every direct
-		// gatherer binds (the resolve here, water and players through
-		// their pipeline layouts). One per atlas ping. VERTEX visibility
-		// is for water's per-vertex probe gather (R17) — WebGPU baseline
-		// allows read-only storage and textures in the vertex stage, and
-		// the extra visibility costs the fragment-only users nothing.
+		// gi_common.wgsl's group(2): the GI world data plus the emitter
+		// list, everything a direct gatherer binds (the resolve here,
+		// water and players through their pipeline layouts). One per atlas
+		// ping. VERTEX visibility is for water's per-vertex probe gather
+		// (R17) — WebGPU baseline allows read-only storage and textures in
+		// the vertex stage, and the extra visibility costs the
+		// fragment-only users nothing. The lights buffer lives HERE rather
+		// than in the resolve's own group since R33, because players run
+		// the same `resample_light` the resolve does and the two must read
+		// one declaration.
 		let g_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -1084,6 +1078,14 @@ impl GiDraw {
 				),
 				gtex(3, wgpu::TextureSampleType::Float { filterable: false }),
 				gtex(4, wgpu::TextureSampleType::Float { filterable: false }),
+				g_entry(
+					5,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Storage { read_only: true },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
 			],
 		});
 		let gather_bind = std::array::from_fn(|i| {
@@ -1112,6 +1114,10 @@ impl GiDraw {
 					wgpu::BindGroupEntry {
 						binding: 4,
 						resource: wgpu::BindingResource::TextureView(&a1),
+					},
+					wgpu::BindGroupEntry {
+						binding: 5,
+						resource: lights_buf.as_entire_binding(),
 					},
 				],
 			})
@@ -1370,10 +1376,6 @@ impl GiDraw {
 				wgpu::BindGroupEntry {
 					binding: 4,
 					resource: wgpu::BindingResource::TextureView(hist_sun),
-				},
-				wgpu::BindGroupEntry {
-					binding: 5,
-					resource: self.lights_buf.as_entire_binding(),
 				},
 			],
 		})
@@ -2222,6 +2224,40 @@ mod tests {
 			let side = (wc * 16) as f32;
 			assert_eq!(lateral_max(wc), side * 0.5 - 1.0, "window {wc}");
 		}
+	}
+
+	/// The unproven-daylight fade (R32) is bit-identical above its top
+	/// edge because `smoothstep` saturates there — which is only the
+	/// surface-world guarantee while that edge IS the surface's floor.
+	/// This crate is the one that sees both the shader source and
+	/// worldgen, so it holds the two together: the ramp tops out at
+	/// `SEA_LEVEL`, and its bottom edge sits below its top (a degenerate
+	/// or inverted smoothstep would fade nothing, or everything).
+	#[test]
+	fn the_sky_fade_tops_out_at_sea_level() {
+		let src = digblock_assets::shader::MEDIUM_COMMON;
+		let wgsl_const = |name: &str| -> f64 {
+			let pat = format!("const {name} = ");
+			let at = src
+				.find(&pat)
+				.unwrap_or_else(|| panic!("{name}: not declared in medium_common.wgsl"))
+				+ pat.len();
+			let rest = &src[at..];
+			let end = rest.find(';').expect("unterminated const");
+			rest[..end].trim().parse().expect("not a number")
+		};
+		let full = wgsl_const("SKY_FADE_FULL_Y");
+		let zero = wgsl_const("SKY_FADE_ZERO_Y");
+		assert_eq!(
+			full,
+			f64::from(digblock_core::worldgen::SEA_LEVEL),
+			"SKY_FADE_FULL_Y must equal SEA_LEVEL — above it the fade must saturate \
+			 so the surface world cannot change"
+		);
+		assert!(
+			zero < full,
+			"SKY_FADE_ZERO_Y ({zero}) must sit below SKY_FADE_FULL_Y ({full})"
+		);
 	}
 
 	/// A carried torch is an entry in the ordinary light list, so the

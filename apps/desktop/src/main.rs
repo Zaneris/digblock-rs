@@ -331,6 +331,7 @@ fn main() {
 	config.debug_vault_dark = std::env::var_os("DIG_VAULT_DARK").is_some();
 	config.debug_vault = config.debug_vault_dark || std::env::var_os("DIG_VAULT").is_some();
 	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
+	config.debug_tunnel = std::env::var_os("DIG_TUNNEL").is_some();
 	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
 	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
 	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();

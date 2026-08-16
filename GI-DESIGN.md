@@ -21,8 +21,9 @@ What lights the world now, in one sentence per stage:
   = 1/n with n climbing to `N_MAX`. Beyond the window's reach there is nothing to march, so those pixels keep the plain
   cascade gather.
 - Solids bilaterally upsample that against exact face normals rasterized by the depth prepass. Water and players gather
-  the probe field per fragment through gi_common.wgsl; spray and the viewmodel read a small camera-light buffer a
-  1-invocation compute writes.
+  the probe field per fragment through gi_common.wgsl — and players additionally run the shared `resample_light` NEE
+  against the emitter list (R33), because the resolve's half-res direct term only covers prepass surfaces; spray and the
+  viewmodel read a small camera-light buffer a 1-invocation compute writes.
 - One **participating medium** (medium_common.wgsl) replaces every fog model, in-scattering the same `sky_base` the sky
   pass draws.
 
@@ -61,27 +62,28 @@ Named here because this document previously described several of these as done:
   fragment side (M5b).
 - **The voxel window still covers half the streamed radius, and that is now a DECISION.** It is built `draw_dist` chunks
   on a SIDE while terrain streams to `draw_dist` chunks of RADIUS — half the reach — so 9.2% of pixels have a sun ray
-  that leaves the window and is answered "fully lit" on no data, along a boundary centred on the camera. That statistic
-  is real and it is very nearly INVISIBLE, which is the part that took measuring. Building a window that genuinely
-  covers the streamed radius (doubling the side AND lifting `engine.rs`'s upload clamp, which is what the earlier
-  attempt missed) and holding the sun ray's reach as the only variable moves the image by mean 0.0169 — at the 0.007
-  repeat-noise floor. Distant terrain is mostly lit anyway, so "lit" is usually the right answer, and by the window's
-  own half-reach the participating medium has faded the surface most of the way into the sky. What DID matter at that
-  range was the final gather, and it cost nothing to fix — see `gather_max` in gi_resolve.wgsl. With the gather fixed,
-  the whole remaining benefit of a full-coverage window is mean 0.0556, confined to the horizon band, bought for a
-  QUADRUPLED window texture — **+75 MiB** (note `gpu_buffer_bytes` in the metrics counts mesh buffers only and does not
-  see it) — and an initial fill slower in the same proportion, since the upload loop is byte-budgeted per frame.
-  Declined on that trade, and those two figures are the trade. The earlier "doubling helps a lot and costs no frame
-  time" note was **retracted**. That build could not have been measuring new data: `engine.rs` clamps the upload window
-  to `draw_dist` independently of texture size, so the outer half of the texture was never written, and wgpu
-  zero-initializes it — which `gi_cell` reads as air, the same answer the narrow window gave by breaking at its bound.
-  Confirmed directly: with the debug view's `cam.w`-scaled depth cue neutralized so a diff means geometry alone,
-  `DIG_GI=window` at the shipped side vs a doubled one differs by a literal handful of pixels in a multi-megapixel
-  frame. The apparent win was several `side`-derived bounds moving at once against unchanged data, and most of it was
-  `gather_max`. Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the full world
-  height and most of it is empty air, so bounding Y is where the memory actually is; and the far field plausibly needs
-  only coarse occupancy — a small fraction of a full-identity window's bytes even at the doubled side — rather than full
-  material identity, since the gather ray only reaches `GI_GATHER_T`.
+  that leaves the window and is answered "fully lit" on no data, along a boundary centred on the camera. (Since R32 that
+  no-data answer fades with depth below `SKY_FADE_FULL_Y`; at the surface, where this statistic was measured and
+  accepted, it is unchanged.) That statistic is real and it is very nearly INVISIBLE, which is the part that took
+  measuring. Building a window that genuinely covers the streamed radius (doubling the side AND lifting `engine.rs`'s
+  upload clamp, which is what the earlier attempt missed) and holding the sun ray's reach as the only variable moves the
+  image by mean 0.0169 — at the 0.007 repeat-noise floor. Distant terrain is mostly lit anyway, so "lit" is usually the
+  right answer, and by the window's own half-reach the participating medium has faded the surface most of the way into
+  the sky. What DID matter at that range was the final gather, and it cost nothing to fix — see `gather_max` in
+  gi_resolve.wgsl. With the gather fixed, the whole remaining benefit of a full-coverage window is mean 0.0556, confined
+  to the horizon band, bought for a QUADRUPLED window texture — **+75 MiB** (note `gpu_buffer_bytes` in the metrics
+  counts mesh buffers only and does not see it) — and an initial fill slower in the same proportion, since the upload
+  loop is byte-budgeted per frame. Declined on that trade, and those two figures are the trade. The earlier "doubling
+  helps a lot and costs no frame time" note was **retracted**. That build could not have been measuring new data:
+  `engine.rs` clamps the upload window to `draw_dist` independently of texture size, so the outer half of the texture
+  was never written, and wgpu zero-initializes it — which `gi_cell` reads as air, the same answer the narrow window gave
+  by breaking at its bound. Confirmed directly: with the debug view's `cam.w`-scaled depth cue neutralized so a diff
+  means geometry alone, `DIG_GI=window` at the shipped side vs a doubled one differs by a literal handful of pixels in a
+  multi-megapixel frame. The apparent win was several `side`-derived bounds moving at once against unchanged data, and
+  most of it was `gather_max`. Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the
+  full world height and most of it is empty air, so bounding Y is where the memory actually is; and the far field
+  plausibly needs only coarse occupancy — a small fraction of a full-identity window's bytes even at the doubled side —
+  rather than full material identity, since the gather ray only reaches `GI_GATHER_T`.
 - **No probe classification**, and **the axis fold is still lopsided** (`update_probes` barriers the workgroup and then
   leaves one thread per ambient-cube axis alive, each running a serial RAYS-iteration reduction while the rest idle).
   Both were M5b items and both were measured out, because M5a removed their justification: after the cadence cut the
@@ -1180,7 +1182,96 @@ tier 3's, and it was not planned: granting Aetherock's level reveals every tier 
 Emberore seam light the same chamber cyan and orange from opposite sides and blend across the floor with no hue noise —
 the multi-emitter check R30 asked for, arriving on its own.
 
-## Goals
+### R32 — an unproven answer must not be daylight
+
+User report: a long tunnel underground — fifty blocks, dug at any depth, down to bedrock — shows its DISTANT blocks lit
+by leaking daylight at noon while the near ones read correctly. The report is exact, and the near/far split is the
+diagnosis: every leak path is a place the system ANSWERS sky on no data, and every one of those paths only engages at
+range.
+
+**The leak was several paths, not one.** At fifty blocks the cascade fallthrough has left C0's coverage and C1's lattice
+probes are dead inside rock, so `gi_indirect` and `gi_cache_at` bottomed out in `gi_sky_fallback` — the live daytime
+dome, visibility 1 — for every gather hit past the near field. Independently, a gather ray fired DOWN the tunnel axis
+exhausts `GI_GATHER_T` without touching a wall, and `path_radiance` answered every miss with full sky radiance, proven
+or not; the probes' own `march` did the same with a sun lobe on top. `gi_sun_vis` answered its lateral and iteration
+exits "fully lit". And the participating medium in-scatters `sky_base` in proportion to view distance with no occlusion
+term at all, underground exactly as in open air — the dominant, distance-proportional term of the report.
+
+**The rule, stated once:** a march that PROVES open sky (the R18 ceiling test) keeps answering full daylight at any
+depth — that is what keeps a shaft's floor lit from above — and an answer given on NO data fades with depth. One ramp,
+`medium_sky_fade` in medium_common.wgsl (edges `SKY_FADE_FULL_Y`/`SKY_FADE_ZERO_Y`; the top edge equals `SEA_LEVEL`,
+pinned by `the_sky_fade_tops_out_at_sea_level`), multiplies every unproven answer: `gi_sky_fallback` and its
+compute-side twins in `gather_prev`/`cam_light`, the unproven exits of `gi_sun_vis` and both `march`es (the miss structs
+now carry a `sky` flag and the exhaust cell, so proven and unproven are distinguishable at last), the medium's air and
+down-welling in-scatter at the fragment's altitude, water's SSR-miss reflection fallback, and the water surface's
+backdrop in-scatter. The resolve's exhausted gather ray now terminates in the probe cache at its exhaust point (the DDGI
+ray-termination pattern, `dir` as the gather axis) mixed toward sky across the ramp band — so a sealed tunnel goes dark
+while a tunnel MOUTH still propagates real light inward through live C0 probes.
+
+**Why the guarantee is structural.** `smoothstep` saturates at its top edge, so at and above `SKY_FADE_FULL_Y` every
+touched term is bit-identical to the R31 image — the surface world, the accepted lateral-exit statistic in "What is NOT
+built", DIG_VAULT, DIG_ROOF and every BENCH.md baseline pose cannot move, and no retune elsewhere can re-open them.
+Open-air terrain below `SEA_LEVEL` is essentially all underwater, where the extra darkening is the desired behavior: the
+down-welling fade makes deep water darker with world depth on top of `WATER_SIGMA`'s own extinction, which was asked for
+by name ("as a bonus the hack would make water naturally darker the deeper you go"). The one deliberately unfaded family
+is anything PROVEN: sun rays and gather rays that clear the sky ceiling.
+
+**Scene:** `DIG_TUNNEL=1` (new) seals a stone bore ~52 blocks long ahead of spawn — long enough that its far wall
+photographs through every fallback regime at once, which no room-sized scene reaches. Pair with `--pos` at a low y; the
+same run above `SKY_FADE_FULL_Y` is the geometry-identical control, since the fade saturates there.
+
+**What the captures showed** (2026-08-16, seed 7, tod 90, fixed dt, 1200 frames, offscreen). The tunnel at
+`--pos 100 6
+100`: before, a visible daylight glow at the far end of a sealed unlit bore, its central band averaging RGB
+(10.9, 6.5, 5.5)/255; after, uniform dark at (0.7, 0.7, 0.7) — the crosshair — with 95% of the frame's pixels moved. The
+surface-guarantee triple at their standard poses — DIG_VAULT (`--pitch -20`), DIG_RIVER (`--pitch -35`), and the bare
+spawn noon shot — each moved by mean 0.0006–0.0011 per channel on 0.2–0.3% of pixels, an order of magnitude under the
+0.007 same-build repeat floor recorded in "What is NOT built": bit-identical up to the 1-spp gather's own noise, as the
+saturating ramp promises.
+
+### R33 — a player is lit by the same list as the wall behind them
+
+User report: players aren't lit by nearby or held lights — underground, a player holding a torch is a black silhouette
+with a glowing torch head, beside a wall the same torch lights perfectly well.
+
+**Direct light has exactly one estimator, and players were reachable by none of it.** Since R27 the gather paths return
+no emitter radiance at all; every photon a torch delivers arrives through NEE against the light list — the resolve's
+per-pixel reservoir, or the probes' stochastic sample, whose result reaches a surface only as BOUNCE. players.wgsl ran a
+probe gather and a sun ray and nothing else, and the resolve's half-res NEE can never cover a player: they are not in
+the depth prepass, so the resolve texels under their silhouette belong to the terrain behind them. A body beside a torch
+therefore received only the room's bounce — near black. (R28's framing of players as a consumer of the carried-light
+list was true only via that bounce.)
+
+**The fix is sharing, not duplicating.** The emitter list moved from the resolve's own bind group into gi_common's
+group(2) — the resolve's pipeline layout already carried the gather group, so the move cost one binding — and
+`resample_light`, `NeeLight`, `lcg_next` and the `LIGHT_*`/`GI_NEE_ITERS` calibration moved with it into gi_common.wgsl.
+The resolve, water and players now read ONE declaration; players call the same `resample_light` plus one `gi_march`
+shadow ray in their fragment shader, folded in beside the existing gather. Held items ride the same `fs`, so a remote's
+torch lights their own hand and bucket. `resolve_and_probe_agree_on_light_calibration` now sweeps players too, and
+`every_nee_consumer_runs_the_shared_estimator` pins that both fragment consumers define the function once and actually
+call it.
+
+**Two deliberate deviations from the resolve's call, both because players carry no accumulator and no à-trous.** The
+seed is STATIC, hashed from sub-block world cells: the resolve's advances per frame because its temporal filter averages
+the visibility Bernoulli out, and unfiltered that advance is raw flicker on a body — a static draw is a stable spatial
+dither, and with one light in range the reservoir degenerates to the argmax deterministically. And past `gi_lateral_max`
+the term simply drops (the resolve takes the cascade blend there); a player at that range covers a handful of pixels
+under the medium's fade.
+
+**The known geometric limit, named so nobody files it as a bug:** a player's OWN carried light hangs at
+`gi::carried_origin`, on their capsule axis — INSIDE the body box — so every body face backfaces it and the NEE term is
+zero for it by construction. Their body reads its own torch as the room's bounce, exactly as before; what R33 changes is
+every OTHER source — placed torches, ore seams (the rectangle sampler comes along for free), and other players' carried
+lights — which is the reported bug. `DIG_STUB=ginee` removes the players term together with the resolve's, so an
+attribution run cannot measure half of one estimator.
+
+**What the captures showed** (2026-08-16, seed 7, tod 90, fixed dt, 1200 frames, offscreen). The money shot is
+`DIG_VAULT_DARK=1 DIG_SCREEN=torch DIG_PLAYERBOX=1` — a dark room whose only source is YOUR carried torch, with the fake
+remote parked five blocks ahead: before, a black silhouette; after, a body and held block fully lit by the light in your
+hand, 2.03% of the frame's pixels moved and all of them on the player. In `DIG_VAULT=1 DIG_PLAYERBOX=1` (floor torch
+BEYOND the player) the fix reads more subtly and more correctly: the camera faces the player's shadowed side, and after
+R33 that side sits at the same near-black as the wood cube's camera face beside it, with the torch's rim wrapping both
+the same way — the player finally shades like the terrain next to them rather than like a hole in the scene.
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,
   no per-light machinery beyond a light list.
@@ -1196,7 +1287,8 @@ the multi-emitter check R30 asked for, arriving on its own.
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
-- Shadows beyond the voxel window (analytic fallback, mostly under fog).
+- Shadows beyond the voxel window (analytic fallback, mostly under fog; since R32 the fallback fades with depth below
+  `SKY_FADE_FULL_Y`, so "assume lit" is confined to the surface world where it is nearly always right).
 - ~~Sub-block emitter geometry: a torch lights from its cell, as a voxel.~~ Retired: R26 gave shaped emitters a real
   origin inside their cell, and R28 gave a carried one no cell at all.
 - Colored transmission through water beyond a scalar transmittance.
@@ -1237,7 +1329,8 @@ per load.
 bit-cast into `w`, one storage buffer. Tint and cast level come from that class's material-LUT row, so nothing about a
 light's *look* rides the list. Rebuilt from the per-chunk emitter lists kept at classification, plus (R28) the lights
 players are CARRYING. Exists so next-event estimation makes a single torch voxel stable at the probe pass's ray budget
-instead of a firefly.
+instead of a firefly. Since R33 it rides gi_common's shared group(2) rather than the resolve's own group, because the
+resolve and players run the one `resample_light` over it and must read one declaration.
 
 **Probe cascades** — two toroidal camera-following grids of 6-axis irradiance probes: C0 fine and near, C1 several times
 coarser and correspondingly wider, each a fixed grid whose dimensions (and iOS's smaller pair) live in `gi.rs`; coverage
@@ -1246,7 +1339,8 @@ hardware trilinear with a half-texel Z inset so slabs never bleed. Ping-ponged: 
 atlas (that read IS the infinite bounce) and writes the new one; a full copy precedes the amortized write. A r32uint
 flags texture per cascade carries, in order, the probe's age, a dead-in-solid bit and a relocation code (the probe
 centre nudged into air, at most a block). Beyond C1: analytic fallback (ambient dome × face weight + lambert sun,
-visibility 1), faded in over C1's outermost band.
+visibility 1), faded in over C1's outermost band — and, since R32, depth-faded through `medium_sky_fade`, because that
+fallback is an unproven answer and underground it was the daylight leaking into every long tunnel.
 
 ## Passes (frame order, RTGI on)
 

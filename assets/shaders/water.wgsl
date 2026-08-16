@@ -217,6 +217,11 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	// The analytic fallback is UNPROVEN sky — an underground pool must
+	// not mirror the daytime dome through its ceiling (R32; the SSR march
+	// below is real screen data and needs no fade). Saturates to 1 at the
+	// ramp's top edge, so open water is bit-identical.
+	sky *= medium_sky_fade(origin.y);
 	// `weight` is the Fresnel blend this result is about to be mixed
 	// with, and the march is gated on it for the same reason the sun
 	// DDA above is gated on its own: it was running at full cost where
@@ -554,9 +559,15 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	var col = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
 	let vray = -vdir;
+	// The down-welling source fades with depth (R32), exactly as
+	// medium_view's submerged branch does — an underground pool's
+	// backdrop must not in-scatter the daytime zenith.
 	col = medium_water_seg(
 		col,
-		medium_water_light(frame.zenith.rgb, max(-vray.y, 0.0) * thick * 0.5),
+		medium_water_light(
+			frame.zenith.rgb * medium_sky_fade(i.world.y),
+			max(-vray.y, 0.0) * thick * 0.5,
+		),
 		thick,
 	);
 	// How much of this pixel is still the refracted BACKDROP. That part
