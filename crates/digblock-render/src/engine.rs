@@ -3865,6 +3865,22 @@ impl Engine {
 		)
 	}
 
+	/// Has this cell ever been written — the provenance half of
+	/// `BlockType::dig_credit`, and the same bit `ore_dig_mode` above
+	/// passes to the reveal. Read off the `EditOverlay`, which MIRRORS the
+	/// server's journal in multiplayer, so both ends answer alike.
+	///
+	/// A place of one's own is recorded when the server echoes it rather
+	/// than when it is predicted (recording predictions is unfixable — a
+	/// rejection reverts through `set_cell` and `record` is insert-only),
+	/// so for one round trip a stone you just laid still reads as the
+	/// world's. That window cannot be reached by hand: a Rock-family hold
+	/// is orders of magnitude longer than a round trip, and the pick only
+	/// lengthens it.
+	fn cell_edited(&self, cell: (i32, i32, i32)) -> bool {
+		self.pipeline.cell_edited(cell.0, cell.1, cell.2)
+	}
+
 	/// The EXTRA cells a Resonant Pick hold breaks around `hit` — empty
 	/// unless the pick is in hand at its own Mining level. The set is
 	/// derived from the ray, never chosen: the server re-raycasts and
@@ -3874,7 +3890,9 @@ impl Engine {
 			return Vec::new();
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
+		let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let credit = hit.block.dig_credit(self.cell_edited(hit.cell), alchemy);
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
 			hit.normal,
@@ -3886,7 +3904,15 @@ impl Engine {
 			// secret and stays unpredicted, as everywhere else.
 			|c| {
 				self.pipeline.cell_at(c.0, c.1, c.2).is_some_and(|v| {
-					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(c))
+					digblock_core::pick::breaks_as_extra(
+						id,
+						credit,
+						v,
+						c,
+						self.ore_dig_mode(c),
+						self.cell_edited(c),
+						alchemy,
+					)
 				})
 			},
 		);
@@ -4166,6 +4192,15 @@ impl Engine {
 			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
 			_ => None,
 		};
+		// What the dig pays, resolved before the write for the same reason
+		// and one of its own: in a LOCAL world this engine is the authority,
+		// so `set_cell` records the coordinate itself — asking afterwards
+		// would find every dig standing in an edited cell and hand back
+		// clean stone for a quarried one.
+		let credit = prev.dig_credit(
+			self.cell_edited(hit.cell),
+			self.skills.level(digblock_core::skills::Skill::Alchemy),
+		);
 		// Slabs shrink one third per completed dig (2/3 → 1/3 → Air);
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
@@ -4236,11 +4271,12 @@ impl Engine {
 		// offline the arm below pays it, where the engine is the authority.
 		// The CELL is predicted on both, so the vein turns spent under the
 		// player's hand with no latency either way.
-		let drop = if extracting.is_some() {
-			None
-		} else {
-			prev.dig_drop()
-		};
+		//
+		// Everything else pays the `credit` resolved above the write: a
+		// stone somebody MADE comes back whole where the mountain's
+		// crumbles, so quarrying still hands out rubble and taking a
+		// mason's wall apart returns the wall.
+		let drop = if extracting.is_some() { None } else { credit };
 		if let Some(d) = drop {
 			self.inventory.add(d, broken);
 			self.hotbar.auto_assign(d);
@@ -7522,6 +7558,51 @@ mod dig_decay_tests {
 		release(&mut engine, DIG_DECAY_TICKS);
 		assert!(engine.dig.is_none(), "a spent hold is dropped");
 		assert_eq!(web(&engine), None, "and the block outlines unbroken");
+	}
+
+	/// The conditional rock rule, client half: a stone standing in a cell
+	/// somebody WROTE comes back whole to a mason and crumbles for anyone
+	/// who could not have cut it (SKILLS-DESIGN §7.1/§7.5). Prediction has
+	/// to agree with the server here or a quarry silently drifts the two
+	/// inventories apart — there is no rebase behind an ordinary dig.
+	///
+	/// `block_ahead` stands the block through `Pipeline::set_block`, and
+	/// the engine always carries an `EditOverlay`, so the cell it leaves is
+	/// an edited one — which is exactly the case under test. The pristine
+	/// half is `only_the_worlds_own_rock_crumbles` in core and the server's
+	/// own pair over the real edit path.
+	#[test]
+	fn the_client_predicts_a_placed_stone_coming_back_whole() {
+		use digblock_core::skills::{Skill, total_xp_for};
+		let mason = digblock_core::unlock::craft(BlockType::Stone).expect("clean stone is made");
+		for (alchemy, want) in [(mason, BlockType::Stone), (mason - 1, BlockType::Rubble)] {
+			let (mut engine, cell) = block_ahead(BlockType::Stone);
+			engine.skills.set_total(Skill::Mining, total_xp_for(99));
+			engine
+				.skills
+				.set_total(Skill::Alchemy, total_xp_for(alchemy));
+			engine.update_target();
+			assert_eq!(engine.target.map(|h| h.cell), Some(cell), "aimed at it");
+			assert!(
+				engine.pipeline.cell_edited(cell.0, cell.1, cell.2),
+				"the harness stands the block through an edit"
+			);
+			hold(&mut engine, 1);
+			let need = engine.dig.as_ref().expect("hold opened").required;
+			hold(&mut engine, u32::from(need) + 1);
+			assert_eq!(
+				engine.pipeline.block_at(cell.0, cell.1, cell.2),
+				Some(BlockType::Air),
+				"the hold completed at Alchemy {alchemy}"
+			);
+			assert_eq!(engine.inventory.count(want), 1, "Alchemy {alchemy}");
+			let other = if want == BlockType::Stone {
+				BlockType::Rubble
+			} else {
+				BlockType::Stone
+			};
+			assert_eq!(engine.inventory.count(other), 0, "Alchemy {alchemy}");
+		}
 	}
 
 	/// A capture ignores the keyboard AND leaves the mouse alone.

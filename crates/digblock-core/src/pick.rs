@@ -9,11 +9,15 @@
 //!
 //! Two rules make the rest of the machinery work unchanged:
 //!
-//! - **Every extra cell must hold the SAME block id.** That is not a
+//! - **Every extra cell must pay the SAME credit.** That is not a
 //!   flavour rule. `PendingEdits::begin_multi` carries ONE `inv_delta`
 //!   for the whole group, so a homogeneous break is exactly what makes
 //!   `(block, +N)` a correct description of what the player gained — and
-//!   what lets a rejection revert it in one subtraction.
+//!   what lets a rejection revert it in one subtraction. The same block
+//!   id was the test until a cell's provenance began deciding what it
+//!   hands back (`BlockType::dig_credit`), and a plane straddling a
+//!   quarry face and a mason's wall holds one id while paying out two
+//!   items.
 //! - **The timing multiplier is level-only** ([`crate::skills`]), never
 //!   derived from how many cells actually qualify. A world-derived
 //!   multiplier would let client and server disagree by a factor of
@@ -35,8 +39,15 @@ use crate::worldgen::ore::DigMode;
 /// is the only cell allowed to be a slab shrink or a tapped vein. An
 /// extra is the plain case or it is not in the group at all:
 ///
-/// - **The same block id**, because `begin_multi` carries ONE `inv_delta`
-///   and `(block, +N)` has to describe the whole group.
+/// - **The same CREDIT**, because `begin_multi` carries ONE `inv_delta`
+///   and `(block, +N)` has to describe the whole group. The same block id
+///   is not enough on its own: a cell somebody placed hands back what they
+///   put in it while the world's own crumbles
+///   ([`BlockType::dig_credit`]), so a plane straddling a quarry face and
+///   a mason's wall holds one id and pays out two items. Comparing the
+///   credit rather than the id covers the id too, since a differing id
+///   almost always credits differently — but not always, which is why the
+///   id test stays beside it: Stone and Sandstone both crumble to Rubble.
 /// - **Diggable at this y**, which is what keeps the plane off the floor
 ///   of the world. A nine-wide swing at a wall standing on bedrock
 ///   includes y = 0, which holds the same Stone id — so nothing else
@@ -70,9 +81,18 @@ use crate::worldgen::ore::DigMode;
 /// floor is not policy: no dig of any kind touches it, both ends know
 /// where it is, and `dig_hardness` refuses it at exactly the y
 /// `protect::immutable` does.
-pub fn breaks_as_extra(id: u16, value: u16, at: (i32, i32, i32), mode: DigMode) -> bool {
+pub fn breaks_as_extra(
+	id: u16,
+	credit: Option<BlockType>,
+	value: u16,
+	at: (i32, i32, i32),
+	mode: DigMode,
+	edited: bool,
+	alchemy: u32,
+) -> bool {
 	let b = BlockType::from_id(cell_id(value));
 	cell_id(value) == id
+		&& b.dig_credit(edited, alchemy) == credit
 		&& b.dig_hardness(at.1).is_some()
 		&& !b.is_door()
 		&& !b.is_slab()
@@ -170,26 +190,41 @@ mod tests {
 	use super::*;
 	use crate::chunk::make_cell;
 
-	/// The four ways a neighbour is NOT an ordinary extra. Each one was a
+	/// The five ways a neighbour is NOT an ordinary extra. Each one was a
 	/// real break: the plane reached bedrock, shattered a rank of doors
 	/// into orphaned halves, double-paid the aimed door's own partner, and
 	/// cleared revealed veins to air for Rubble — the last one destroying
 	/// the deposit permanently, since a cleared cell is an edited cell and
 	/// `ore::revealed` never comes back from that.
+	///
+	/// The fifth arrived with the conditional rock rule: two cells can hold
+	/// the same id and still pay out different items.
 	#[test]
 	fn an_extra_has_to_be_the_plain_case() {
 		let stone = make_cell(BlockType::Stone, 0);
 		let id = cell_id(stone);
+		// The aimed cell is the mountain's own rock, dug by a mason.
+		let mason = crate::unlock::craft(BlockType::Stone).expect("clean stone is craftable");
+		let rubble = BlockType::Stone.dig_credit(false, mason);
+		let extra =
+			|value, at, mode, edited| breaks_as_extra(id, rubble, value, at, mode, edited, mason);
 		// The plain case, well above the floor.
-		assert!(breaks_as_extra(id, stone, (0, 40, 0), DigMode::Break));
+		assert!(extra(stone, (0, 40, 0), DigMode::Break, false));
 
 		// A different block is not in the group — `inv_delta` is one pair.
 		let dirt = make_cell(BlockType::Dirt, 0);
-		assert!(!breaks_as_extra(id, dirt, (0, 40, 0), DigMode::Break));
+		assert!(!extra(dirt, (0, 40, 0), DigMode::Break, false));
+
+		// Nor is a stone somebody PLACED, which holds the very same id and
+		// hands back the clean block where its neighbours crumble.
+		assert!(
+			!extra(stone, (0, 40, 0), DigMode::Break, true),
+			"a placed stone pays a different item"
+		);
 
 		// The world floor holds the same id and must still be refused.
 		assert!(
-			!breaks_as_extra(id, stone, (0, 0, 0), DigMode::Break),
+			!extra(stone, (0, 0, 0), DigMode::Break, false),
 			"the plane reached bedrock"
 		);
 
@@ -198,9 +233,12 @@ mod tests {
 		let door = make_cell(BlockType::LumberDoor, 0);
 		assert!(!breaks_as_extra(
 			cell_id(door),
+			BlockType::LumberDoor.dig_credit(false, mason),
 			door,
 			(0, 40, 0),
-			DigMode::Break
+			DigMode::Break,
+			false,
+			mason
 		));
 
 		// A slab is thirds: cleared outright it pays one credit for up to
@@ -208,24 +246,22 @@ mod tests {
 		let slab = make_cell(BlockType::WoodSlab, 0);
 		assert!(!breaks_as_extra(
 			cell_id(slab),
+			BlockType::WoodSlab.dig_credit(false, mason),
 			slab,
 			(0, 40, 0),
-			DigMode::Break
+			DigMode::Break,
+			false,
+			mason
 		));
 
 		// A revealed vein still HOLDS Stone, so only the mode can tell.
-		assert!(!breaks_as_extra(
-			id,
+		assert!(!extra(
 			stone,
 			(0, 40, 0),
-			DigMode::Extract(BlockType::Emberore)
+			DigMode::Extract(BlockType::Emberore),
+			false
 		));
-		assert!(!breaks_as_extra(
-			id,
-			stone,
-			(0, 40, 0),
-			DigMode::NeedsSiphon
-		));
+		assert!(!extra(stone, (0, 40, 0), DigMode::NeedsSiphon, false));
 	}
 
 	/// A wall breaks HORIZONTALLY: three wide is a tunnel, and the

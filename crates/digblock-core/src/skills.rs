@@ -424,11 +424,27 @@ pub fn dig_award(
 	(flat * u64::from(depth_xp_permille(y)) / 1000, 0)
 }
 
-/// Alchemy XP per block extracted at the bench, scaled down from the
-/// block's BASE yield — fixed for life, never the level-scaled
-/// outcome (§4.1).
+/// Alchemy XP per block extracted at the bench: the block's worth at the
+/// bench ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
+/// yield) — fixed for life, never the level-scaled outcome (§4.1).
+///
+/// **Zero for anything the bench itself can make.** Extraction XP is paid
+/// for reducing what the WORLD made; taking apart your own transmutation
+/// teaches you nothing and pays nothing, which is what stops
+/// craft-then-extract being a standing converter from essence into levels.
+/// It keys on [`BlockType::is_bench_only`] and not on craftability so the
+/// statement is about where a block CAME from rather than what the catalog
+/// happens to offer — the same predicate the catalog is gated on, so the
+/// two cannot drift.
+///
+/// The bench's PACE deliberately does not follow: a made block is as much
+/// substance to take apart as a natural one, and `extract_pace_ticks` keys
+/// on the worth for that reason.
 pub fn convert_xp(block: BlockType) -> u64 {
-	u64::from(crate::alchemy::extract_total_base(block)).div_ceil(3)
+	if block.is_bench_only() {
+		return 0;
+	}
+	u64::from(crate::alchemy::extract_worth(block))
 }
 
 /// The DUAL award for one field extraction at the rock face (§5.4):
@@ -874,8 +890,7 @@ mod tests {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Stone, 9u64),
-			(B::Wood, 9),
+			(B::Wood, 9u64),
 			(B::Grass, 9),
 			(B::Rubble, 8),
 			(B::Dirt, 6),
@@ -887,14 +902,27 @@ mod tests {
 		}
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Convert {
-				block: B::Stone,
+				block: B::Wood,
 				count: 3
 			}),
 			27
 		);
+		// And nothing off the bench pays anything back. Clean stone is the
+		// pointed case: a quarried one is Rubble and pays, the clean block
+		// can only have been transmuted and pays nothing — which is what
+		// keeps the mason's own recipe from being an XP loop.
+		for block in [B::Stone, B::Lumber, B::StoneSlab, B::Torch] {
+			assert_eq!(convert_xp(block), 0, "{block:?} came off the bench");
+		}
+		// It is the PAY that goes, not the worth: the bench still spends its
+		// time on a stone in proportion to the substance in it.
+		assert_eq!(
+			crate::alchemy::extract_worth(B::Stone),
+			crate::alchemy::extract_worth(B::Grass)
+		);
 		// Crafts pay a fixed fraction of their IDEAL cost, rounded up.
 		assert_eq!(craft_xp(B::WoodStairs), 6);
-		assert_eq!(craft_xp(B::Dirt), 10);
+		assert_eq!(craft_xp(B::Lumber), 9);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 	}
 }

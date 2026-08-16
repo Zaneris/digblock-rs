@@ -210,7 +210,7 @@ pub struct Family {
 
 /// Families the grid cannot derive: hand-priced functional items, grouped
 /// by what they DO. Drawn after the shape families.
-const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
+const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	(
 		"LIGHTS",
 		&[BlockType::Torch, BlockType::Lantern, BlockType::Aetherlamp],
@@ -227,7 +227,6 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 4] = [
 			BlockType::MastersSigil,
 		],
 	),
-	("WATER", &[BlockType::Water]),
 ];
 
 /// The transmute tab's families, built once per process: one per shape in
@@ -1647,24 +1646,11 @@ mod tests {
 			},
 		);
 
-		// The WATER family's one member is locked at this rig's level: the
-		// tile still shows (the strip names the level it wants), but the
-		// single button registers no hit — honest pixels, not a trap.
-		let water = center(r.hits.rect_of(family("WATER")).unwrap());
-		press(&mut r, water);
-		rebuild(&mut r);
-		assert!(
-			r.hits.rect_of(InvId::Craft(0)).is_some(),
-			"locked member still shows"
-		);
-		assert!(
-			r.hits.rect_of(InvId::CraftGo).is_none(),
-			"no button under a locked pick"
-		);
-
 		// BLOCKS: switching family lands on the first unlocked member —
-		// Wood, since the grid puts a material's whole learned set at the
-		// material's own level and Wood is the starter timber — and the
+		// Lumber, since the grid puts a material's whole learned set at
+		// the material's own level and planed timber is the first
+		// substance the bench makes in cube form. (The felled log is not
+		// here: the world hands you that one, so it has no recipe.) The
 		// one button crafts THAT.
 		let blocks = center(r.hits.rect_of(family("BLOCKS")).unwrap());
 		press(&mut r, blocks);
@@ -1673,14 +1659,28 @@ mod tests {
 		assert_eq!(
 			press(&mut r, go),
 			Some(AlchAction::Craft {
-				item: B::Wood,
+				item: B::Lumber,
 				count: 1
 			})
 		);
-		// And picking an unlocked-but-unaffordable member by tile takes
-		// the button away again: "can't yet" and "can't afford" are
-		// different answers, and only one of them leaves a hit rect.
-		let stone = center(r.hits.rect_of(InvId::Craft(4)).unwrap());
+		// A member locked at this rig's level: the tile still shows (the
+		// strip names the level it wants), but the single button registers
+		// no hit — honest pixels, not a trap.
+		let dark = center(r.hits.rect_of(InvId::Craft(2)).unwrap());
+		press(&mut r, dark);
+		rebuild(&mut r);
+		assert!(
+			r.hits.rect_of(InvId::Craft(2)).is_some(),
+			"locked member still shows"
+		);
+		assert!(
+			r.hits.rect_of(InvId::CraftGo).is_none(),
+			"no button under a locked pick"
+		);
+		// And picking an unlocked-but-unaffordable member by tile keeps the
+		// button away: "can't yet" and "can't afford" are different
+		// answers, and neither leaves a hit rect.
+		let stone = center(r.hits.rect_of(InvId::Craft(1)).unwrap());
 		press(&mut r, stone);
 		rebuild(&mut r);
 		assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");

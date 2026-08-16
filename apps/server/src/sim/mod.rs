@@ -1019,7 +1019,12 @@ impl Sim {
 			return Vec::new();
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let credit = hit.block.dig_credit(
+			self.cell_edited(hit.cell.0, hit.cell.1, hit.cell.2),
+			alchemy,
+		);
 		// A LOCKED cell is deliberately not filtered here: the assembled
 		// writes are scanned for protection and the whole swing is refused,
 		// which is what `a_protected_cell_refuses_the_whole_pick_swing`
@@ -1034,7 +1039,15 @@ impl Sim {
 			digblock_core::unlock::pick_cells(level),
 			|c| {
 				self.store.cell_at(c.0, c.1, c.2).is_some_and(|v| {
-					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(conn_id, c))
+					digblock_core::pick::breaks_as_extra(
+						id,
+						credit,
+						v,
+						c,
+						self.ore_dig_mode(conn_id, c),
+						self.cell_edited(c.0, c.1, c.2),
+						alchemy,
+					)
 				})
 			},
 		);
