@@ -1080,11 +1080,14 @@ help, since both views of an item look DOWN at it.
 
 The pick breaks the PLANE of the face it hits — widening once at each of two Mining milestones — derived on both ends
 from the ray (`pick::cells` over each side's own world), so the client names one cell and the server decides what the
-swing touched. Two rules: every extra cell must hold the **same block id** (`begin_multi` carries ONE `inv_delta`, so
-homogeneity is what makes `(block, +N)` correct), and the hold multiplier is **level-only**
-(`skills::dig_required_with`) — a world-derived one would let the two ends disagree by the whole multiplier over a
-single differing cell, far outside `dig_grace`. A lone block therefore costs the multiplier too, which is why the spread
-penalty is set against an offsetting tool bonus.
+swing touched. Two rules: every extra cell must yield the **same credit** (`begin_multi` carries ONE `inv_delta`, so
+homogeneity is what makes `(block, +N)` correct — a matching block id stopped being enough once provenance decided a
+drop), and the hold multiplier is **level-only** (`skills::dig_required_with`) — a world-derived one would let the two
+ends disagree by the whole multiplier over a single differing cell, far outside `dig_grace`. A lone block therefore
+costs the multiplier too, which is why the spread penalty is set against an offsetting tool bonus. **The reach is a
+bonus in material, not in XP**: the aimed cell pays its whole Mining award and every cell behind it pays
+`PICK_EXTRA_PERMILLE` of one, floored at a point and capped at the aimed cell's own award (`skills::dig_award`,
+SKILLS-DESIGN §5.2).
 
 ### Spawn & protected cells (core/spawn.rs + core/protect.rs)
 

@@ -372,6 +372,23 @@ const PERMILLE: u32 = 1000;
 /// however small the award scale is retuned to be.
 pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 
+/// What a cell the Resonant Pick's swing reached — every cell but the one
+/// under the crosshair — pays, in permille of its own flat award (§5.6).
+///
+/// A wide swing is a reach bonus, not an XP multiplier. The pick already
+/// pays for itself in **material**: one hold hands back a whole plane of
+/// blocks, and the hold is only a level-only multiple of a single-cell one
+/// rather than the whole plane's worth of time. Paying full XP per cell on
+/// top of that would make the tool the only sensible way to earn Mining at
+/// all, and would make each of its two reach milestones a step change in
+/// levelling speed rather than in what the tool DOES.
+///
+/// Floored at one whole point per cell by [`dig_award`], since a fraction
+/// of the cheap end of the hardness order is nothing at all, and an extra
+/// cell that pays literally nothing reads as a bug rather than as a
+/// discount.
+pub const PICK_EXTRA_PERMILLE: u32 = 200;
+
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
 /// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then
 /// rising LINEARLY with depth to [`DEPTH_XP_MAX_PERMILLE`] at
@@ -407,6 +424,10 @@ pub fn depth_xp_permille(y: i32) -> u32 {
 /// the server validates the request against its own ray. The whole swing is
 /// scaled once rather than cell by cell — it is one action, and one rounding.
 ///
+/// **Only the aimed cell pays in full**; every other cell the swing took
+/// pays [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and
+/// never reaches that arm, since `broken` counts blocks rather than cells.
+///
 /// A field extraction pays §5.4's per-tier figure in BOTH skills instead,
 /// and the depth reward deliberately does not touch it. The ore tiers are
 /// depth-banded already — Aetherock is worth what it is worth *because* it
@@ -424,18 +445,34 @@ pub fn dig_award(
 	if let Some(split) = extracting.and_then(ore_field_xp) {
 		return split;
 	}
-	// Per BLOCK: a wide swing pays for what it broke, not for the swing.
-	// A door pair is still ONE block.
-	let flat = dig_xp(prev) * u64::from(broken);
-	// To NEAREST rather than truncated. The awards are small integers, so
-	// truncation quietly under-delivers the ramp, and it under-delivers it
-	// worst on the cheapest digs — the ones with the least room to show it.
-	// Rounding is also what makes the ramp's guarantee structural: every
-	// award moves with depth for any multiplier above unity, so neither a
-	// new cheap row nor a retune of the award scale can silently strand the
-	// bottom of the hardness order on a flat number.
 	let unit = u64::from(PERMILLE);
-	let mining = (flat * u64::from(depth_xp_permille(y)) + unit / 2) / unit;
+	let base = dig_xp(prev);
+	// A cell the swing reached, in permille of its own award: the fraction,
+	// floored at one whole point so the cheapest blocks still pay something,
+	// and capped at the award itself — which is what keeps a block worth
+	// nothing worth nothing, and stops the floor out-paying the cell it is
+	// a fraction of.
+	let each = (base * u64::from(PICK_EXTRA_PERMILLE))
+		.max(unit)
+		.min(base * unit);
+	// Everything stays in permille to here, so the swing is ONE rounding —
+	// it is one action, and a fraction rounded per cell and then multiplied
+	// out would drift further from the fraction the further the pick
+	// reaches, which is the opposite of what a widening swing should do.
+	let flat = match broken {
+		0 => 0,
+		n => base * unit + u64::from(n - 1) * each,
+	};
+	// To NEAREST rather than truncated. The awards are small integers, so
+	// truncation quietly under-delivers both the ramp and the fraction, and
+	// it under-delivers them worst on the cheapest digs — the ones with the
+	// least room to show it. Rounding is also what makes the ramp's
+	// guarantee structural: every award moves with depth for any multiplier
+	// above unity, so neither a new cheap row nor a retune of the award
+	// scale can silently strand the bottom of the hardness order on a flat
+	// number.
+	let scale = unit * unit;
+	let mining = (flat * u64::from(depth_xp_permille(y)) + scale / 2) / scale;
 	(mining, 0)
 }
 
@@ -807,17 +844,58 @@ mod tests {
 	}
 
 	/// The surface world is untouched: at the waterline and anywhere above
-	/// it a dig pays its flat table entry exactly, however many cells the
-	/// swing broke.
+	/// it a dig pays its flat table entry exactly, and a swing pays what a
+	/// swing pays there — depth is the only thing this ramp knows about, so
+	/// however many cells the pick took, y is not what decided it.
 	#[test]
 	fn the_depth_reward_is_flat_above_the_waterline() {
 		for y in [DEPTH_XP_FROM, DEPTH_XP_FROM + 1, DEPTH_XP_FROM + 90] {
-			assert_eq!(depth_xp_permille(y), 1000, "flat at y {y}");
+			assert_eq!(depth_xp_permille(y), PERMILLE, "flat at y {y}");
 			for b in diggables() {
 				assert_eq!(dig_award(b, None, 1, y), (dig_xp(b), 0), "{b:?} at y {y}");
-				assert_eq!(dig_award(b, None, 9, y), (dig_xp(b) * 9, 0), "swing at {y}");
+				assert_eq!(
+					dig_award(b, None, 9, y),
+					dig_award(b, None, 9, DEPTH_XP_FROM),
+					"swing at {y}"
+				);
 			}
 		}
+	}
+
+	/// §5.6: the pick's reach is a bonus in MATERIAL, not in XP. The cell
+	/// under the crosshair pays in full and every cell behind it a fraction
+	/// of one — floored at a point, because a fraction of the cheap end of
+	/// the hardness order is nothing at all, and capped at the award itself,
+	/// so the floor can never out-pay the cell it is a fraction of. Walked
+	/// over the whole diggable roster and every reach the tool has, because
+	/// both bounds bite only at the ends of the hardness order.
+	#[test]
+	fn a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction() {
+		// At the waterline the ramp is identity, so the split IS the answer.
+		let y = DEPTH_XP_FROM;
+		for b in diggables() {
+			let full = dig_xp(b);
+			assert_eq!(dig_award(b, None, 1, y).0, full, "{b:?} aimed cell");
+			let mut prev = full;
+			for broken in 2..=9u32 {
+				let got = dig_award(b, None, broken, y).0;
+				let step = got - prev;
+				assert!(step >= 1, "{b:?}: cell {broken} of the swing paid nothing");
+				assert!(step <= full, "{b:?}: cell {broken} out-paid the aimed one");
+				prev = got;
+			}
+			// And a plane is well short of paying per cell, for anything the
+			// fraction can actually cut into. At the floor of the scale it
+			// cannot: one point IS the whole award there.
+			if full > 1 {
+				assert!(dig_award(b, None, 9, y).0 < full * 9, "{b:?} pays per cell");
+			}
+		}
+		// The golden: a stone plane at the pick's widest reach, against what
+		// those same nine blocks pay as nine separate holds.
+		let stone = BlockType::Stone;
+		assert_eq!(dig_award(stone, None, 9, y).0, 21);
+		assert_eq!(dig_xp(stone) * 9, 72);
 	}
 
 	/// The ceiling lands on the deepest cell a dig can REACH, not on

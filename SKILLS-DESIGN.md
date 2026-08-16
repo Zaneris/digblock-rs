@@ -401,6 +401,16 @@ authored figures back into a consequence. And an extraction excavates nothing: i
 clearing that face is an ordinary dig that scales like any other. The miner at a deep vein is already paid for depth,
 for the rock they actually broke.
 
+**A wide swing is a bonus in reach, not in XP** (§5.6). The cell under the crosshair pays its whole award; every other
+cell the Resonant Pick's plane took pays `PICK_EXTRA_PERMILLE` of one — floored at a single point, because a fraction of
+the cheap end of the hardness order is nothing at all, and capped at the award itself, so that floor can never out-pay
+the cell it is a fraction of. The pick already pays for itself in **material**: one hold hands back a whole plane of
+blocks, and the hold is only a level-only multiple of a single-cell one rather than the plane's worth of time. Paying
+full XP per cell on top of that would make the tool the only sensible way to earn Mining at all, and would turn each of
+its two reach milestones into a step change in levelling speed rather than in what the tool *does*. The fraction stays
+in permille until the whole swing rounds once (`a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction`) — a
+per-cell rounding would drift further from the fraction the further the pick reaches, which is exactly backwards.
+
 `skills::dig_award` is the one call that puts all of it together — the flat table, the swing count, the depth reward and
 §5.4's split — so neither the server's chokepoint nor the engine's offline arm can read the tables and forget the rest.
 It keys on the **anchor** cell: a wide pick swing against a vertical face spans several rows, and the anchor is the one
@@ -541,11 +551,13 @@ no ESP overlay), and mastery at the cap adds a bonus ore to every field extracti
 
 Item-only `blocks!` row (like all tools, §6). Crafted at an Alchemy level and usable at the matching Mining level — the
 flagship cross-skill dependency. Held, a dig-hold on any diggable cell also digs the cell **directly behind it along
-−normal, if it holds the same block id**; `required` carries a level-only multiplier over the single-cell time
-(`skills::dig_required_with`); both drops and both XP awards land. The pair is derived from the server's own re-raycast
-(cell + face normal), never client-chosen — no cheat surface. Writes ride `begin_multi` under one seq exactly like door
-pairs. At the later Mining threshold the reach extends by another cell (`unlock::pick_cells`). Protection checks run
-per-cell via the assembled `writes` list, as they already do.
+−normal, if it holds the same block id and would credit the same item** (§7.1 — provenance decides a drop, so id alone
+stopped being enough); `required` carries a level-only multiplier over the single-cell time
+(`skills::dig_required_with`); both drops land in full, and the XP is the aimed cell's whole award plus a fraction of
+one for everything behind it (§5.2). The pair is derived from the server's own re-raycast (cell + face normal), never
+client-chosen — no cheat surface. Writes ride `begin_multi` under one seq exactly like door pairs. At the later Mining
+threshold the reach extends by another cell (`unlock::pick_cells`). Protection checks run per-cell via the assembled
+`writes` list, as they already do.
 
 ---
 
