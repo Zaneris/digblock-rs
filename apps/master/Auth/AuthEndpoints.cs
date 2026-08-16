@@ -66,6 +66,7 @@ public static class AuthEndpoints
                 o.Scope.Clear();
                 o.Scope.Add("openid");
                 o.SaveTokens = false;
+                FailWithAPage(o.Events);
             });
         }
         if (opts.Auth.Facebook.Enabled)
@@ -81,8 +82,39 @@ public static class AuthEndpoints
                 o.Fields.Clear();
                 o.Fields.Add("id");
                 o.SaveTokens = false;
+                FailWithAPage(o.Events);
             });
         }
+    }
+
+    /// <summary>A remote sign-in can fail without ever reaching
+    /// <c>/auth/complete</c>: the player cancels at the provider's consent
+    /// screen, or the browser replays a callback whose correlation cookie is
+    /// already spent — the back button after a finished sign-in does exactly
+    /// that. The handler's default is to throw, which reads as a stack page
+    /// in Development and a bare 500 in production, so both events answer
+    /// with the same page every other dead end in this flow gets.</summary>
+    private static void FailWithAPage(RemoteAuthenticationEvents events)
+    {
+        events.OnAccessDenied = ctx =>
+        {
+            ctx.HandleResponse();
+            return WriteErrorPage(ctx.Response,
+                "Sign-in was cancelled. Close this tab and start again from the game.");
+        };
+        events.OnRemoteFailure = ctx =>
+        {
+            ctx.HandleResponse();
+            return WriteErrorPage(ctx.Response,
+                "That sign-in is no longer valid. Close this tab and start again from the game.");
+        };
+    }
+
+    private static Task WriteErrorPage(HttpResponse response, string message)
+    {
+        response.StatusCode = 400;
+        response.ContentType = "text/html; charset=utf-8";
+        return response.WriteAsync(Pages.Error(message));
     }
 
     public static void MapAuthEndpoints(this WebApplication app)
