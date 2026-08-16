@@ -19,3 +19,6 @@ apps/master/*.db
 apps/master/*.db-journal
 # Local wrangler state (Cloudflare Pages deploys run from this machine).
 .wrangler/
+# Per-machine secrets for the local master (see the dotenv-load note in
+# the justfile).
+.env

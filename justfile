@@ -4,6 +4,12 @@
 # one-line summary goes at the BOTTOM of a block and the detail above it.
 # A block written top-down reads fine in the file and lists as a fragment.
 
+# A git-ignored `.env` at the repo root feeds every recipe: real OAuth
+# credentials for the local master live there (Master__Auth__Google__*),
+# never in this file or appsettings.json. Nothing breaks without one —
+# the provider is simply off and dev sign-in still works.
+set dotenv-load := true
+
 # The scene, capture and attribution flags are catalogued in CLAUDE.md.
 #
 # Desktop client, debug build — opens at the title menu.
@@ -53,10 +59,22 @@ master *ARGS:
 #                           replaced the registrant-supplied probeHost, which
 #                           let a caller pick the only address ever verified
 #                           (NET-AUDIT-2.md §1.3).
+# The value-less `-e` pair forwards the Google OAuth credentials from the
+# environment (i.e. from `.env`, via dotenv-load) into the container;
+# docker passes nothing for a variable that isn't set, so a machine with
+# no `.env` runs exactly as before.
 DEV_MASTER_ENV := "-e ASPNETCORE_ENVIRONMENT=Development " + \
 	"-e Master__Dev__AuthEnabled=true " + \
 	"-e Master__Probe__AllowPrivateTargets=true " + \
-	"-e Master__Dev__ProbeHostOverride=host.docker.internal"
+	"-e Master__Dev__ProbeHostOverride=host.docker.internal " + \
+	"-e Master__Auth__Google__ClientId " + \
+	"-e Master__Auth__Google__ClientSecret"
+
+# The play recipes bind-mount ./data/master over the image's /data volume
+# (accounts DB + data-protection keys). Without it the master's only
+# durable state dies with the --rm container: every restart of the stack
+# minted the same sign-in a brand-new account id, which orphaned the game
+# server's per-account player records and dropped the display name.
 
 # The account id `just play` grants admin. Dev sign-in derives an account
 # id from the subject string (a salted hash of it, stamped as a v8 UUID —
@@ -115,6 +133,7 @@ play *ARGS:
 	server=""
 	docker rm -f digblock-play-master >/dev/null 2>&1 || true
 	docker run -d --rm --name digblock-play-master {{DEV_MASTER_ENV}} \
+		-v "$PWD/data/master:/data" \
 		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
 	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
 	until curl -sf http://127.0.0.1:5200/health >/dev/null 2>&1; do sleep 0.2; done
@@ -237,6 +256,7 @@ play-web:
 	server=""
 	docker rm -f digblock-play-master >/dev/null 2>&1 || true
 	docker run -d --rm --name digblock-play-master {{DEV_MASTER_ENV}} \
+		-v "$PWD/data/master:/data" \
 		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
 	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
 	until curl -sf http://127.0.0.1:5200/health >/dev/null 2>&1; do sleep 0.2; done
