@@ -1,16 +1,16 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{in_radius, send_frame, Sim};
+use super::{Sim, in_radius, send_frame};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
 use digblock_core::player::TICK;
-use digblock_core::raycast::{raycast, raycast_fluid, REACH};
+use digblock_core::raycast::{REACH, raycast, raycast_fluid};
 use digblock_net::messages::{BlockEdit, EditKind, RejectReason, ServerMsg};
 use digblock_net::protocol::{
-	dig_grace, PlayerId, CHAT_BURST, CHAT_RATE_PER_SEC, DIG_OFF_TARGET_RESET, EDIT_BURST,
-	EDIT_POS_TOLERANCE, EDIT_RATE_PER_SEC, SERVER_ID, TICK_RATE,
+	CHAT_BURST, CHAT_RATE_PER_SEC, DIG_OFF_TARGET_RESET, EDIT_BURST, EDIT_POS_TOLERANCE,
+	EDIT_RATE_PER_SEC, PlayerId, SERVER_ID, TICK_RATE, dig_grace,
 };
 use glam::Vec3;
 
@@ -100,8 +100,8 @@ impl Sim {
 	/// This is what makes the completion check unforgeable: the only
 	/// client-supplied input is the initial cell, and every counted tick
 	/// was verified against the server's own position and look. Do NOT
-	/// "optimize" this away — it is ≤254 short DDA walks per tick, and
-	/// it is the anti-cheat.
+	/// "optimize" this away — it is one short DDA walk per DIGGING client
+	/// per tick, and it is the anti-cheat.
 	pub(super) fn verify_digs(&mut self) {
 		let store = &self.store;
 		for client in self.clients.values_mut() {
@@ -151,10 +151,10 @@ impl Sim {
 				state.off_target += 1;
 				if state.off_target > DIG_OFF_TARGET_RESET {
 					// Sustained loss of aim ends the hold but no longer
-					// discards it: the client gave this cell up half a
-					// second ago and has been decaying since. Entering
-					// the decay here instead lands the two ends within
-					// that half second of each other, and errs in the
+					// discards it: the client gave this cell up when it
+					// lost aim and has been decaying since. Entering the
+					// decay here instead lands the two ends at most one
+					// `DIG_OFF_TARGET_RESET` apart, and errs in the
 					// server's favour — it decays LATER, so an honest
 					// completion is never short.
 					state.idle = 1;
@@ -173,8 +173,8 @@ impl Sim {
 			// The extraction bucket banks TICKS — one per tick — and a
 			// Convert spends the requested block's own pace out of it, so
 			// the ceiling tracks the honest client's drip whatever it is
-			// extracting. Capacity is two whole blocks' worth, or one
-			// costliest extraction where that is larger — see
+			// extracting. Capacity is a short burst of whole blocks, or
+			// one costliest extraction where that is larger — see
 			// `extract_burst_ticks`.
 			client.extract_tokens =
 				(client.extract_tokens + 1.0).min(digblock_core::alchemy::extract_burst_ticks(
@@ -193,10 +193,10 @@ impl Sim {
 					// The button came up. Stop banking, but start the same
 					// decay the client started when it sent this — a hold
 					// resumed inside the window is worth what is left of it.
-					if let Some(client) = self.clients.get_mut(&conn_id) {
-						if let Some(state) = &mut client.digging {
-							state.idle = state.idle.max(1);
-						}
+					if let Some(client) = self.clients.get_mut(&conn_id)
+						&& let Some(state) = &mut client.digging
+					{
+						state.idle = state.idle.max(1);
 					}
 				}
 				ClientAction::Alchemy { conn_id, op } => self.process_alchemy(conn_id, op),
@@ -225,7 +225,7 @@ impl Sim {
 	/// counts, write through to the store. The client owns arrangement;
 	/// the server owns what it can afford to use.
 	fn process_layout(&mut self, conn_id: u64, hotbar: &[u16], grid: &[u16]) {
-		use digblock_core::hotbar::{Hotbar, HOTBAR_SLOTS, WIRE_EMPTY};
+		use digblock_core::hotbar::{HOTBAR_SLOTS, Hotbar, WIRE_EMPTY};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -246,7 +246,7 @@ impl Sim {
 	}
 
 	fn process_one_edit(&mut self, req: PendingEditReq) {
-		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS};
+		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem};
 		// Copy what we need out of the client entry so the &mut borrow
 		// ends before the all-players InsidePlayer scan below.
 		let (id, out, live, player_pos, has_token, dig_state, slot_item, active_tool) = {
@@ -330,11 +330,12 @@ impl Sim {
 						return reject(RejectReason::BadBlock);
 					}
 				}
-				// Slab requests must be the canonical floor 1/3 (state 0):
-				// the server derives grown values itself, so a client can
-				// never conjure a 2/3 fill (two thirds of material) from
-				// one item, and it derives the ceiling anchor from the
-				// normal it verified rather than taking the client's word.
+				// Slab requests must be the canonical floor third with no
+				// state bits set: the server derives grown values itself,
+				// so a client can never conjure a taller fill (more
+				// material) from one item, and it derives the ceiling
+				// anchor from the normal it verified rather than taking
+				// the client's word.
 				if b.is_slab() && digblock_core::chunk::cell_state(block) != 0 {
 					return reject(RejectReason::BadBlock);
 				}
@@ -396,11 +397,12 @@ impl Sim {
 				// An extraction is timed as the ORE, which means BOTH halves
 				// come from the ore: the block (for its `DigFamily`) and the
 				// hardness. Taking the family from the ore and the hardness
-				// from the cell left the server asking for Stone's 90 while
-				// the client's bar ran on Aetherock's 240 — 2.67× apart, far
-				// outside `dig_grace`, so an honest client dug long past the
-				// requirement and a modified one completed the draw in 37% of
-				// the intended time with the server agreeing.
+				// from the cell left the server asking for Stone's hold
+				// while the client's bar ran on Aetherock's — several times
+				// apart, far outside `dig_grace`, so an honest client dug
+				// long past the requirement and a modified one completed the
+				// draw in a fraction of the intended time with the server
+				// agreeing.
 				let timed = digblock_core::worldgen::ore::dig_block(
 					self.ore_dig_mode(req.conn_id, req.cell),
 					hit.block,
@@ -439,10 +441,10 @@ impl Sim {
 		// either half clears both).
 		let air = BlockType::Air as u16;
 		let mut writes: Vec<((i32, i32, i32), u16)> = Vec::with_capacity(2);
-		// How many BLOCKS this one action breaks: 1, or up to 9 with the
-		// Resonant Pick. A door's two cells are one block and never
-		// increment this — the credit and the XP are per block, not per
-		// cell, which is what `begin_multi`'s single `inv_delta` means.
+		// How many BLOCKS this one action breaks: one, or the whole plane
+		// with the Resonant Pick. A door's two cells are one block and
+		// never increment this — the credit and the XP are per block, not
+		// per cell, which is what `begin_multi`'s single `inv_delta` means.
 		let mut broken = 1u32;
 		let place_b = place_cell.map(|v| BlockType::from_id(digblock_core::chunk::cell_id(v)));
 		match place_cell {
@@ -451,14 +453,15 @@ impl Sim {
 				// else clears. Collect never stops in a slab (fluid ray).
 				let new_val = if hit.block.is_slab() {
 					digblock_core::shapes::slab_shrunk(hit.cell_value)
-				} else if extracting.is_some() {
+				} else if let Some(ore) = extracting {
 					// The vein is DRAWN out, not dug out: the cell becomes
-					// a tapped face, so mining ore never excavates and the
-					// mountainside keeps its shape. Writing a different id
-					// (rather than the same Stone back) is also what makes
-					// the edit unambiguously real to the journal, LWW
-					// replay and mesh invalidation.
-					BlockType::DepletedStone as u16
+					// the tier's own tapped face, so mining ore never
+					// excavates and the mountainside keeps its shape.
+					// Writing a different id (rather than the same Stone
+					// back) is also what makes the edit unambiguously real
+					// to the journal, LWW replay and mesh invalidation.
+					digblock_core::worldgen::ore::spent_rock(ore)
+						.expect("an Extract names one of the four tiers") as u16
 				} else {
 					air
 				};
@@ -523,7 +526,8 @@ impl Sim {
 					}
 					// A slab built against a ceiling hangs from it. Derived
 					// here from the verified normal, exactly as the client
-					// predicted it — the request itself is always state 0.
+					// predicted it — the request itself always carries the
+					// canonical floor slab.
 					let placed = if place_b.is_some_and(|b| b.is_slab()) {
 						v | (u16::from(digblock_core::shapes::slab_place_state(hit.normal))
 							<< digblock_core::chunk::STATE_SHIFT)
@@ -618,15 +622,15 @@ impl Sim {
 		if req.kind == EditKind::Collect && client.inventory.bucket_full() {
 			return reject(RejectReason::BucketFull);
 		}
-		if let Some(b) = place_b {
-			if !client.inventory.try_take(b, 1) {
-				let inv = client.inventory.to_wire();
-				reject(RejectReason::NoStock);
-				// Drift-repair backstop: the client predicted stock it
-				// doesn't have — hand it the authoritative base.
-				send_frame(&out, &ServerMsg::InventoryFull { counts: inv });
-				return;
-			}
+		if let Some(b) = place_b
+			&& !client.inventory.try_take(b, 1)
+		{
+			let inv = client.inventory.to_wire();
+			reject(RejectReason::NoStock);
+			// Drift-repair backstop: the client predicted stock it
+			// doesn't have — hand it the authoritative base.
+			send_frame(&out, &ServerMsg::InventoryFull { counts: inv });
+			return;
 		}
 
 		let (first_cell, first_val) = writes[0];
@@ -635,10 +639,10 @@ impl Sim {
 				.set_cell(first_cell.0, first_cell.1, first_cell.2, first_val)
 		else {
 			// Refund the debit — the world never changed.
-			if let Some(b) = place_b {
-				if let Some(client) = self.clients.get_mut(&req.conn_id) {
-					client.inventory.add(b, 1);
-				}
+			if let Some(b) = place_b
+				&& let Some(client) = self.clients.get_mut(&req.conn_id)
+			{
+				client.inventory.add(b, 1);
 			}
 			return reject(RejectReason::NotLoaded);
 		};
@@ -655,19 +659,34 @@ impl Sim {
 		// LIST: one action can level both skills at once.
 		let mut crossed = Vec::new();
 		if place_cell.is_none() {
-			// An extraction credits the ORE, never the cell's own drop:
-			// the cell was Stone and Stone hands out Rubble, which is the
-			// whole reason quarrying stays a Mining question and drawing a
-			// vein does not.
-			// Mining 99's mastery: one extra raw ore per field extraction.
-			let credit = broken
-				+ extracting.map_or(0, |_| {
-					digblock_core::unlock::ore_mastery(
-						client.skills.level(digblock_core::skills::Skill::Mining),
-					)
-				});
-			if let Some(drop) = extracting.or_else(|| prev.dig_drop()) {
-				client.inventory.add(drop, credit);
+			// An extraction credits ESSENCE, never a block: the siphon
+			// draws the seam out where it stands, so no ore is ever an
+			// item and the cell's own drop is beside the point (it was
+			// Stone, and Stone hands out Rubble — the whole reason
+			// quarrying stays a Mining question and drawing a vein does
+			// not). What the player can carry away is the spent rock now
+			// standing in the cell, on a later ordinary dig.
+			//
+			// Un-predicted, deliberately: the essence is a SPLIT, and a
+			// `PendingEdit` carries one `inv_delta`. Rather than widen the
+			// wire for the one tier that pays in two, this takes the path
+			// `ClientMsg::Alchemy` already takes and lets the rebase below
+			// carry the counts. The CELL is still predicted, so the vein
+			// turns spent under the player's hand with no latency.
+			if let Some(ore) = extracting {
+				let mining = client.skills.level(digblock_core::skills::Skill::Mining);
+				let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
+				for (e, n) in digblock_core::alchemy::field_yield(ore, alchemy, mining) {
+					client.inventory.add_sub(e, n);
+				}
+				send_frame(
+					&client.out,
+					&ServerMsg::InventoryFull {
+						counts: client.inventory.to_wire(),
+					},
+				);
+			} else if let Some(drop) = prev.dig_drop() {
+				client.inventory.add(drop, broken);
 				// Mirror the client's auto-assign of a newly acquired type
 				// (same deterministic derivation), so the very next place
 				// from that slot validates even before the client's Layout
@@ -678,23 +697,20 @@ impl Sim {
 					&mut client.grid,
 				);
 			}
-			// Mining XP from the journaled truth (`prev`), the same
-			// authority as the credit; one award even for a door pair.
-			// The frame carries the new TOTAL, so a lost or reordered
-			// frame can never double-pay.
+			// XP from the journaled truth (`prev`), the same authority as
+			// the credit, and from the cell's own depth (§5.2's reward for
+			// digging deep). The frame carries the new TOTAL, so a lost or
+			// reordered frame can never double-pay.
 			//
 			// A field extraction pays BOTH skills (§5.4): full Mining, plus
 			// a minor Alchemy cut at the rock face, with the substantial
 			// Alchemy XP waiting at the bench. Each ore is a fixed total
 			// split across two moments, so neither skill can be levelled
-			// entirely from inside the other.
+			// entirely from inside the other. ONE call decides all of it —
+			// the offline arm makes the same one, so the two economies
+			// cannot drift.
 			let (mining_xp, alch_xp) =
-				match extracting.and_then(digblock_core::skills::ore_field_xp) {
-					Some((m, a)) => (m, a),
-					// Per BLOCK: a wide swing pays for what it broke, not
-					// for the swing. A door pair is still ONE block.
-					None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
-				};
+				digblock_core::skills::dig_award(prev, extracting, broken, req.cell.1);
 			for (skill, xp) in [
 				(digblock_core::skills::Skill::Mining, mining_xp),
 				(digblock_core::skills::Skill::Alchemy, alch_xp),
@@ -835,10 +851,10 @@ impl Sim {
 		let cur = hit.cell_value;
 		let partner = door_partner(hit.cell, cell_state(cur));
 		let mut writes = vec![(hit.cell, cur, door_toggled(cur))];
-		if let Some(pc) = self.store.cell_at(partner.0, partner.1, partner.2) {
-			if BlockType::from_id(cell_id(pc)).is_door() {
-				writes.push((partner, pc, door_toggled(pc)));
-			}
+		if let Some(pc) = self.store.cell_at(partner.0, partner.1, partner.2)
+			&& BlockType::from_id(cell_id(pc)).is_door()
+		{
+			writes.push((partner, pc, door_toggled(pc)));
 		}
 		// A door inside a protected region is furniture, not a mechanism.
 		let lock = self.spawn_lock();
@@ -886,7 +902,7 @@ impl Sim {
 	/// `apply_alchemy` — pacing is anti-cheat, not an economy rule, and
 	/// offline worlds keep running the identical economy unpaced.
 	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
-		use digblock_core::inventory::{apply_alchemy, AlchemyOp as CoreOp};
+		use digblock_core::inventory::{AlchemyOp as CoreOp, apply_alchemy};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -929,33 +945,33 @@ impl Sim {
 		// As in the dig path: the crossing is announced after the client
 		// borrow ends, since the broadcast walks every client.
 		let mut crossed = None;
-		if let Some(core_op) = core_op {
-			if apply_alchemy(&mut client.inventory, core_op, level) {
-				// Mirror the client's auto-assign of freshly crafted items
-				// (it reconciles on the InventoryFull rebase below).
-				digblock_core::inv_grid::reconcile_layout(
-					&client.inventory,
-					&mut client.hotbar,
-					&mut client.grid,
+		if let Some(core_op) = core_op
+			&& apply_alchemy(&mut client.inventory, core_op, level)
+		{
+			// Mirror the client's auto-assign of freshly crafted items
+			// (it reconciles on the InventoryFull rebase below).
+			digblock_core::inv_grid::reconcile_layout(
+				&client.inventory,
+				&mut client.hotbar,
+				&mut client.grid,
+			);
+			// Alchemy XP for the validated op, as a new TOTAL. Sent
+			// alongside the InventoryFull answer on the same stream.
+			let xp = digblock_core::skills::alchemy_xp(&core_op);
+			if xp > 0 {
+				let total = client
+					.skills
+					.add_xp(digblock_core::skills::Skill::Alchemy, xp);
+				send_frame(
+					&client.out,
+					&ServerMsg::XpGain {
+						skill: digblock_core::skills::Skill::Alchemy as u8,
+						total,
+					},
 				);
-				// Alchemy XP for the validated op, as a new TOTAL. Sent
-				// alongside the InventoryFull answer on the same stream.
-				let xp = digblock_core::skills::alchemy_xp(&core_op);
-				if xp > 0 {
-					let total = client
-						.skills
-						.add_xp(digblock_core::skills::Skill::Alchemy, xp);
-					send_frame(
-						&client.out,
-						&ServerMsg::XpGain {
-							skill: digblock_core::skills::Skill::Alchemy as u8,
-							total,
-						},
-					);
-					let after = client.skills.level(digblock_core::skills::Skill::Alchemy);
-					if after > level {
-						crossed = Some(after);
-					}
+				let after = client.skills.level(digblock_core::skills::Skill::Alchemy);
+				if after > level {
+					crossed = Some(after);
 				}
 			}
 		}
@@ -1000,8 +1016,9 @@ impl Sim {
 			edit,
 			prev,
 		};
-		// Encoded once for the whole fan-out: fluid alone lands up to 512
-		// edits a second, each going to every client synced to the column.
+		// Encoded once for the whole fan-out: fluid alone lands a whole
+		// `FLOW_BUDGET` of edits every flow step, each going to every
+		// client synced to the column.
 		self.broadcast_where(&msg, |c| c.synced_columns.contains(&col) || c.id == by);
 	}
 
@@ -1038,7 +1055,7 @@ mod tests {
 	use super::super::harness::*;
 	use super::super::{Sim, SimEvent};
 	use digblock_core::block::BlockType;
-	use digblock_core::raycast::{raycast, REACH};
+	use digblock_core::raycast::{REACH, raycast};
 	use digblock_net::messages::{ClientMsg, EditKind, RejectReason, ServerMsg};
 	use glam::Vec3;
 
@@ -1070,9 +1087,9 @@ mod tests {
 
 		// 1. Wrong cell → Occluded.
 		sim.tick_once(vec![dig(1, pos, (hit.cell.0 + 1, hit.cell.1, hit.cell.2))]);
-		// 2. Origin 3 blocks off → OutOfReach.
+		// 2. Origin displaced past `EDIT_POS_TOLERANCE` → OutOfReach.
 		sim.tick_once(vec![dig(2, pos + Vec3::new(3.0, 0.0, 0.0), hit.cell)]);
-		// 3. Honest dig with the full timed hold (stone: 90 ticks) → applied.
+		// 3. Honest dig with the full timed hold → applied.
 		let mut t = 0;
 		let dug = dig_hold(&mut sim, 1, down, 90, 3, EditKind::Dig, &mut t);
 		assert_eq!(dug, hit.cell);
@@ -1107,20 +1124,21 @@ mod tests {
 			sim.test_block_at(edit.x, edit.y, edit.z),
 			Some(BlockType::Air)
 		);
-		assert!(sim
-			.journal
-			.index
-			.column(edit.x.div_euclid(16), edit.z.div_euclid(16))
-			.is_some_and(
-				|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u16))
-			));
+		assert!(
+			sim.journal
+				.index
+				.column(edit.x.div_euclid(16), edit.z.div_euclid(16))
+				.is_some_and(
+					|col| col.get(&(edit.x, edit.y, edit.z)) == Some(&(BlockType::Air as u16))
+				)
+		);
 	}
 
 	/// The world floor (y = BEDROCK_Y) is indestructible: DigStart
 	/// records no hold there, so even a full-length honest hold ends in
 	/// DigIncomplete and the block survives. World: a single stone layer
-	/// at y = 0 with the player standing on it, so the floor is the ray
-	/// target — no digging down through 126 blocks first.
+	/// at the world floor with the player standing on it, so the floor is
+	/// the ray target — no digging down through the column first.
 	#[test]
 	fn bedrock_floor_refuses_digs() {
 		use digblock_core::block::BEDROCK_Y;
@@ -1166,9 +1184,10 @@ mod tests {
 	/// real `Sim` — raycast, validation, write, journal, broadcast.
 	///
 	/// The floor is protected POSITIONALLY, never by block identity (there
-	/// is no bedrock block type; worldgen leaves plain Stone at y = 0), so
-	/// the phases below deliberately stand a slab of other things in it —
-	/// a door, a water source, a hole — and none of them opens a way in.
+	/// is no bedrock block type; worldgen leaves plain Stone at
+	/// `BEDROCK_Y`), so the phases below deliberately stand a slab of other
+	/// things in it — a door, a water source, a hole — and none of them
+	/// opens a way in.
 	#[test]
 	fn nothing_writes_the_world_floor() {
 		use digblock_core::block::BEDROCK_Y as FLOOR;
@@ -1269,8 +1288,8 @@ mod tests {
 		// derived from whichever half the ray found. Stand one with its
 		// lower half IN the floor and work the UPPER half — the half that is
 		// not protected — twice: a toggle, then a dig. Each assembles a
-		// write for the partner at y = 0, and each has to refuse the whole
-		// action rather than half-applying it.
+		// write for the partner in the floor plane, and each has to refuse
+		// the whole action rather than half-applying it.
 		let upper = (sx, FLOOR + 1, sz - 3);
 		let lower = (upper.0, FLOOR, upper.2);
 		let lower_cell = make_cell(
@@ -1365,8 +1384,8 @@ mod tests {
 		c.msgs.clear();
 
 		// ---- 5. the Resonant Pick's plane --------------------------------
-		// The one phase whose action must SUCCEED. A nine-wide swing at the
-		// lower cell of a wall standing on the floor puts the floor row
+		// The one phase whose action must SUCCEED. A full-plane swing at
+		// the lower cell of a wall standing on the floor puts the floor row
 		// squarely in the plane, holding the very same Stone id, so nothing
 		// but `pick::breaks_as_extra`'s own y test keeps it out. Filtering
 		// is what is being pinned, NOT refusal: a locked spawn deliberately
@@ -1427,10 +1446,11 @@ mod tests {
 		let sink = (sx, FLOOR, sz + 3);
 		let src = (sink.0 - 1, FLOOR + 1, sink.2);
 		sim.test_set_cell(sink.0, sink.1, sink.2, BlockType::Air as u16);
-		assert!(sim
-			.store
-			.set_block(src.0, src.1, src.2, BlockType::Water)
-			.is_some());
+		assert!(
+			sim.store
+				.set_block(src.0, src.1, src.2, BlockType::Water)
+				.is_some()
+		);
 		sim.fluid.schedule_around(src.0, src.1, src.2);
 		for _ in 0..240 {
 			sim.tick_once(vec![]);
@@ -1455,8 +1475,9 @@ mod tests {
 		// in the world (`ore::dig_block`). That composition is the one gate
 		// no staged scene can reach — ore is derived from position and
 		// `deposit_in` keeps every blob clear of the floor, so there is no
-		// vein at y = 0 to aim at — and it is exactly the seam where a cell
-		// holding Stone could be dug on another block's hardness.
+		// vein in the floor plane to aim at — and it is exactly the seam
+		// where a cell holding Stone could be dug on another block's
+		// hardness.
 		for &ore in &BlockType::ALL {
 			assert!(
 				digblock_core::worldgen::ore::dig_block(
@@ -1580,7 +1601,8 @@ mod tests {
 				slot: 0,
 			},
 		}]);
-		// Held for only 10 ticks (stone needs 90 − 16 grace).
+		// Held for a fraction of the required hold — short even of
+		// `dig_grace`.
 		let mut t = 0;
 		dig_hold(&mut sim, 1, down, 10, 2, EditKind::Dig, &mut t);
 		sim.tick_once(vec![SimEvent::Msg {
@@ -1628,10 +1650,10 @@ mod tests {
 		let mut sim = flat_sim("lookaway");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// The flat world is stone: clear the rock gate, or DigStart is
+		// The flat world is stone: clear the strength wall, or DigStart is
 		// refused outright and this test asserts nothing (it did — the
 		// gate shipped in protocol v17 and silently hollowed it out).
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -1647,10 +1669,11 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// 30 on target, 45 at the horizon (> the 30-tick abandon), then
-		// back on target well past the would-be completion time: the
-		// hold stopped advancing at the abandon and the banked 30 ticks
-		// bled out over the second that followed.
+		// A partial run on target, then a stretch at the horizon longer
+		// than `DIG_OFF_TARGET_RESET`, then back on target well past the
+		// would-be completion time: the hold stopped advancing at the
+		// abandon and the banked ticks bled out over the decay window
+		// that followed.
 		for _ in 0..30 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
@@ -1668,7 +1691,8 @@ mod tests {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, Vec3::Z)], 1)]);
 		}
-		// The abandon landed at miss 31, so 15 of the 45 were decay.
+		// The abandon landed one miss past `DIG_OFF_TARGET_RESET`, so the
+		// misses after it were decay.
 		assert_eq!(
 			banked(&sim),
 			Some((30, 15)),
@@ -1710,20 +1734,24 @@ mod tests {
 		);
 	}
 
-	/// Releasing the button no longer bins the hold: it bleeds down at
-	/// one bar per second and a restart inside that window inherits
-	/// exactly what is left. The client runs the identical arithmetic on
-	/// the identical interval, which is what keeps its bar honest.
+	/// Releasing the button no longer bins the hold: it bleeds down over
+	/// `DIG_DECAY_TICKS` and a restart inside that window inherits exactly
+	/// what is left. The client runs the identical arithmetic on the
+	/// identical interval, which is what keeps its bar honest.
 	#[test]
 	fn a_released_hold_decays_and_a_restart_inherits_the_remainder() {
 		let mut sim = flat_sim("digdecay");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		);
 		let start = || SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
@@ -1742,8 +1770,8 @@ mod tests {
 		let mut t = 0;
 		t += 1;
 		sim.tick_once(vec![start(), batch(vec![aim(t, down)], 1)]);
-		// Most of the way through: enough banked that half a second of
-		// decay leaves something behind to inherit.
+		// Most of the way through: enough banked that a partial decay
+		// window leaves something behind to inherit.
 		for _ in 0..(need - 20) {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
@@ -1767,8 +1795,8 @@ mod tests {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
-		// 30 idle ticks = half the window = half a BAR's worth of ticks
-		// gone, which is more than half of what was banked. (The peak is
+		// Half the decay window idle costs half a BAR's worth of ticks,
+		// which is more than half of what was banked. (The peak is
 		// one past the loop: the cancel tick's verify ran before the
 		// queued cancel did, which is honest either way.)
 		let (peak, idle, banked) = state(&sim).expect("the hold survived the release");
@@ -1826,11 +1854,15 @@ mod tests {
 		let mut sim = flat_sim("digspent");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-		let need = digblock_core::skills::dig_required(hit.block, 90, 5);
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		);
 
 		let mut t = 0;
 		t += 1;
@@ -1843,7 +1875,8 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// One tick short of breaking it, then let go for two seconds.
+		// One tick short of breaking it, then let go for well past the
+		// whole decay window.
 		for _ in 0..(need - 1) {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
@@ -1909,21 +1942,28 @@ mod tests {
 		);
 	}
 
-	/// A brief aim miss (over the old 8-tick reset, under the 30-tick
-	/// abandon) PAUSES the hold: the missed ticks don't count toward
-	/// completion, but the banked progress survives and the dig finishes
-	/// once enough verified ticks accumulate.
+	/// A brief aim miss (longer than the old consecutive-miss reset, well
+	/// under `DIG_OFF_TARGET_RESET`) PAUSES the hold: the missed ticks
+	/// don't count toward completion, but the banked progress survives and
+	/// the dig finishes once enough verified ticks accumulate.
 	#[test]
 	fn aim_miss_pauses_hold_instead_of_resetting() {
 		let mut sim = flat_sim("digpause");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// The flat world is stone: clear the rock gate (the gate has its
+		// The flat world is stone: clear the strength wall (it has its
 		// own test; this one is about the aim-miss pause).
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Derived, never hardcoded: the Rock family's curve is a tuning
+		// number and this test is about the aim-miss pause, not its value.
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		) as usize;
 
 		let mut t = 0;
 		t += 1;
@@ -1936,9 +1976,10 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// 40 verified ticks, then 15 off target: the wall clock says 55
-		// but only ~40 count — completing now is premature (this also
-		// pins that misses are a pause, not elapsed time).
+		// A partial run of verified ticks, then a brief stretch off
+		// target: the wall clock counts both but only the verified ones
+		// do — completing now is premature (this also pins that misses
+		// are a pause, not elapsed time).
 		for _ in 0..40 {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
@@ -1961,11 +2002,11 @@ mod tests {
 			},
 		};
 		sim.tick_once(vec![dig(1)]);
-		// Back on target: the banked 40 survive the miss stretch (which
-		// would have reset the hold under consecutive-miss-8 semantics),
-		// so ~100 more verified ticks complete the stone (Rock-family
-		// need at Mining 5 is 144, grace 16 → ≥ 128 verified).
-		for _ in 0..100 {
+		// Back on target: the banked ticks survive the miss stretch (which
+		// would have reset the hold under the old consecutive-miss rule),
+		// so another `need` verified ticks complete the stone — a whole
+		// bar's worth clears `need - grace` from any starting bank.
+		for _ in 0..need {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
@@ -2002,11 +2043,18 @@ mod tests {
 		let mut sim = flat_sim("digrace");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Stone world: clear the rock gate (not under test here).
-		sim.bench_set_mining_level(1, 5);
+		// Stone world: clear the strength wall (not under test here).
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+		// Derived, never hardcoded — the curve is a tuning number and this
+		// test is about wire order.
+		let need = digblock_core::skills::dig_required(
+			hit.block,
+			90,
+			digblock_core::unlock::mine(BlockType::Stone),
+		) as usize;
 
 		let mut t = 0;
 		t += 1;
@@ -2019,13 +2067,15 @@ mod tests {
 			},
 			batch(vec![aim(t, down)], 1),
 		]);
-		// Mining-5 stone needs 144 ticks (grace 16 → ≥ 128 verified).
-		for _ in 0..140 {
+		// A full bar of verified ticks at the level the strength wall
+		// grants, so the completing request below is honest whatever the
+		// family curve says.
+		for _ in 0..need {
 			t += 1;
 			sim.tick_once(vec![batch(vec![aim(t, down)], 1)]);
 		}
 		// One tick carries both the completing EditRequest for A and the
-		// DigStart for the block beneath it (what a client does 16 ms
+		// DigStart for the block beneath it (what a client does the tick
 		// after finishing A).
 		let below = (hit.cell.0, hit.cell.1 - 1, hit.cell.2);
 		sim.tick_once(vec![
@@ -2263,9 +2313,10 @@ mod tests {
 
 		// Collect naming a flow cell: the fluid ray never stops there.
 		let flow_cell = (source.0 + 1, source.1, source.2);
-		assert!(sim
-			.test_block_at(flow_cell.0, flow_cell.1, flow_cell.2)
-			.is_some_and(|b| b.is_water() && !b.is_fluid_source()));
+		assert!(
+			sim.test_block_at(flow_cell.0, flow_cell.1, flow_cell.2)
+				.is_some_and(|b| b.is_water() && !b.is_fluid_source())
+		);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::EditRequest {
@@ -2280,7 +2331,7 @@ mod tests {
 			},
 		}]);
 
-		// Collect the source with the real hold (water: 20 ticks).
+		// Collect the source with water's real timed hold.
 		let toward = (Vec3::new(
 			source.0 as f32 + 0.5,
 			source.1 as f32 + 0.5,
@@ -2318,9 +2369,10 @@ mod tests {
 		for _ in 0..600 {
 			sim.tick_once(vec![]);
 		}
-		assert!(sim
-			.test_block_at(flow_cell.0, flow_cell.1, flow_cell.2)
-			.is_some_and(|b| !b.is_water()));
+		assert!(
+			sim.test_block_at(flow_cell.0, flow_cell.1, flow_cell.2)
+				.is_some_and(|b| !b.is_water())
+		);
 	}
 
 	/// The bucket carries one charge, and the server owns it: an empty
@@ -2472,8 +2524,8 @@ mod tests {
 		let mut sim = flat_sim("digflood");
 		let _c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Stone world: clear the rock gate (not under test here).
-		sim.bench_set_mining_level(1, 5);
+		// Stone world: clear the strength wall (not under test here).
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -2575,8 +2627,8 @@ mod tests {
 
 	// ---- sub-block shapes (v8) ------------------------------------------
 
-	use digblock_core::chunk::{cell_state, make_cell, STATE_SHIFT};
-	use digblock_core::shapes::{door_state, stair_state, Facing};
+	use digblock_core::chunk::{STATE_SHIFT, cell_state, make_cell};
+	use digblock_core::shapes::{Facing, door_state, stair_state};
 
 	/// Aim at the ground and place `cell_value`; returns (support cell,
 	/// target cell). The caller grants stock first.
@@ -2643,7 +2695,7 @@ mod tests {
 			// Door requests must be lower+closed — server derives upper.
 			make_cell(BlockType::LumberDoor, door_state(Facing::PosX, true, false)),
 			make_cell(BlockType::LumberDoor, door_state(Facing::PosX, false, true)),
-			// Spare bits 10-11.
+			// A cell's spare bits, between the id and the state nibble.
 			(BlockType::WoodStairs as u16) | (1 << 10),
 		];
 		for (i, cell) in bad.into_iter().enumerate() {
@@ -2806,10 +2858,10 @@ mod tests {
 		);
 	}
 
-	/// Flat ground with a stone roof at y = 130 — a reachable ceiling
+	/// Flat ground with a stone roof at `ROOF_Y` — a reachable ceiling
 	/// over the spawn, which the flat world otherwise has nowhere.
 	fn roofed_sim(tag: &str) -> Sim {
-		use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+		use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK};
 		use std::sync::Arc;
 		const ROOF_Y: usize = 130;
 		let source: crate::store::ColumnSource = Arc::new(|_cx, _cz| {
@@ -2910,7 +2962,8 @@ mod tests {
 			Some(make_cell(BlockType::WoodSlab, slab_state(true, true)))
 		);
 
-		// WoodSlab hardness is 20 ticks per third.
+		// A slab is timed per third, and WoodSlab's third is short — this
+		// hold covers one of them outright.
 		let mut t = 0;
 		let dug = dig_hold(&mut sim, 1, Vec3::Y, 25, 3, EditKind::Dig, &mut t);
 		assert_eq!(dug, cell);
@@ -2949,7 +3002,8 @@ mod tests {
 		);
 		assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), 0);
 
-		// WoodSlab hardness is 20 ticks per third.
+		// A slab is timed per third, and WoodSlab's third is short — this
+		// hold covers one of them outright.
 		let mut t = 0;
 		let dug = dig_hold(&mut sim, 1, down, 25, 3, EditKind::Dig, &mut t);
 		assert_eq!(dug, cell);
@@ -3088,9 +3142,10 @@ mod tests {
 		let mut sim = flat_sim("doorover");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Stage the door directly and stock ONLY stone, so it lands in slot
-		// 0 and the slot gate cannot mask the result — without the
-		// replaceable check this request must actually land on the door.
+		// Stage the door directly and stock ONLY stone, so it lands in the
+		// first bar slot and the slot gate cannot mask the result —
+		// without the replaceable check this request must actually land on
+		// the door.
 		let pos = sim.test_player(1).unwrap().pos;
 		let lower = (
 			pos.x.floor() as i32 + 1,
@@ -3265,10 +3320,10 @@ mod tests {
 
 		// Convert + craft + place, all queued in ONE tick: wire order
 		// must debit before the place's stock gate runs. The WOOD slab is
-		// the level-1 craft — under §7.2's grid the material carries the
-		// progression, so clean stone in any shape waits for the mason's
-		// unlock at 20 — and a two-block convert fits the extraction
-		// bucket's burst exactly.
+		// the craft a fresh player can afford — under §7.2's grid the
+		// material carries the progression, so clean stone in any shape
+		// waits for its own material unlock — and this convert fits inside
+		// the extraction bucket's burst.
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
@@ -3304,8 +3359,8 @@ mod tests {
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
 					// Converting spent every Wood, so its slot was
 					// released in the same reconcile that filed the
-					// crafted slab — it lands in slot 0. The same
-					// derivation an honest client runs.
+					// crafted slab — it lands in the first bar slot.
+					// The same derivation an honest client runs.
 					slot: 0,
 				},
 			},
@@ -3322,8 +3377,9 @@ mod tests {
 			"craft-then-place landed in one tick: {:?}",
 			c.msgs
 		);
-		// Level-1 economy: 2 logs → 20 Flora (floor(27·0.40) each),
-		// the slab costs ceil(9·1.60) = 15 — 5 left.
+		// The level-1 economy: each log extracts at that level's yield and
+		// the slab costs its grid price with that level's waste multiplier
+		// on top, leaving the Flora remainder asserted below.
 		assert!(
 			c.msgs.iter().any(|m| matches!(
 				m,
@@ -3367,7 +3423,8 @@ mod tests {
 		let mut sim = flat_sim("wrongslot");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// Dirt → bar slot 0, Stone → bar slot 1 (grant reconciles).
+		// Each grant reconciles onto the bar in block-id order: Dirt first,
+		// then Stone.
 		sim.test_grant(1, BlockType::Dirt, 5);
 		sim.test_grant(1, BlockType::Stone, 5);
 		let pos = sim.test_player(1).unwrap().pos;
@@ -3425,8 +3482,9 @@ mod tests {
 			}
 		)));
 
-		// Same tick: move Dirt to slot 4 via Layout, then place from 4 —
-		// wire order means the arrangement lands first.
+		// Same tick: move Dirt to a different bar slot via Layout, then
+		// place from that slot — wire order means the arrangement lands
+		// first.
 		use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
 		let mut hotbar = vec![WIRE_EMPTY; digblock_core::hotbar::HOTBAR_SLOTS];
 		hotbar[4] = BlockType::Dirt as u16;
@@ -3463,9 +3521,9 @@ mod tests {
 		let mut c2 = connect(&mut sim, 2);
 		wait_live(&mut sim, 1);
 		wait_live(&mut sim, 2);
-		sim.test_grant(1, BlockType::Dirt, 1); // → bar slot 0
+		sim.test_grant(1, BlockType::Dirt, 1); // → the first bar slot
 
-		// Player 1 selects slot 0 (Dirt).
+		// Player 1 selects the Dirt slot.
 		let mut input0 = aim(1, Vec3::NEG_Y);
 		input0.active_slot = 0;
 		sim.tick_once(vec![batch(vec![input0], 1)]);
@@ -3666,7 +3724,7 @@ mod tests {
 		assert!(!region.contains(wx, wy, wz), "source must start outside");
 		assert!(sim.store.set_block(wx, wy, wz, BlockType::Water).is_some());
 		sim.fluid.schedule_around(wx, wy, wz);
-		// Plenty of flow steps for water to spread its full 3-block reach.
+		// Plenty of flow steps for water to spread its full lateral reach.
 		for _ in 0..240 {
 			sim.tick_once(vec![]);
 		}
@@ -3707,10 +3765,11 @@ mod tests {
 			FLAT_SPAWN.y.floor() as i32 - 2,
 			FLAT_SPAWN.z.floor() as i32,
 		);
-		assert!(sim
-			.spawn_lock()
-			.expect("locked")
-			.contains(cell.0, cell.1, cell.2));
+		assert!(
+			sim.spawn_lock()
+				.expect("locked")
+				.contains(cell.0, cell.1, cell.2)
+		);
 
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,

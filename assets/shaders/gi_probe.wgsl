@@ -1,5 +1,5 @@
-// RTGI probe update (GI-DESIGN.md). One workgroup = one probe × 64
-// rays DDA-marched through the voxel window; radiance folds into a
+// RTGI probe update (GI-DESIGN.md). One workgroup = one probe, its RAYS
+// directions DDA-marched through the voxel window; radiance folds into a
 // 6-axis ambient cube blended over time. The atlas is six axis-major
 // Z slabs: probe texel (x,y,z), axis a → (x, y, z + a*dims.z).
 //
@@ -7,8 +7,8 @@
 // cell is congruent to it around the camera; flags carry a checksum
 // of that cell, and a mismatch (the window scrolled) restarts the
 // probe at full alpha instead of blending into another place's light.
-// Sun direction arrives quantized (~1.5°) and steps do NOT reset ages
-// — shadows glide across a step on steady-state hysteresis.
+// Sun direction arrives quantized and steps do NOT reset ages —
+// shadows glide across a step on steady-state hysteresis.
 
 struct GiUniforms {
 	// C0/C1 grid dims (xyz) — w: this cascade's probe spacing in blocks.
@@ -53,47 +53,44 @@ struct Light {
 const RAYS: u32 = 32u;
 const MAX_T: f32 = 160.0;
 
-// How far an emitter is allowed to matter. `light` is a 0-15 level and
-// the 1/d^2 falloff has already buried it well before this; the bound
+// How far an emitter is allowed to matter. `light` is a gameplay level
+// and the 1/d^2 falloff has already buried it well before this; the bound
 // exists so a shadow ray is never traced across the whole window for a
 // contribution that rounds to nothing.
 const LIGHT_RANGE: f32 = 24.0;
 // Emitter radiance per unit of `light` level. One calibration constant,
 // and it is chosen rather than derived: `light` is a gameplay nibble,
-// not a photometric quantity. 0.6 set the pool at the brightness the
-// direct-hit term already gave the emitting cell itself, which is what
-// keeps a lit torch and the wall beside it looking like one source.
+// not a photometric quantity. It started at the value that set the pool
+// at the brightness the direct-hit term already gave the emitting cell
+// itself, which is what keeps a lit torch and the wall beside it looking
+// like one source.
 //
-// 0.75 buys a torch that lights a room rather than a puddle, and it is
-// a CEILING rather than a preference: the flame's own ink cannot follow
-// the pool up. chunk.wgsl's EMISSIVE_GAIN was tried at 2.4 against 1.6
-// and moved the sprite 3 luminance levels out of 255 — the ink is
-// already clamped by the surface-format scene target, so there is no
-// headroom above it to buy the contrast back with. Every step of pool
-// brightness therefore comes straight out of the margin by which the
-// source out-reads what it casts. Measured in DIG_VAULT at the standard
-// capture pose (--tod 90 --pitch -20, 1200 frames):
+// R26's retune buys a torch that lights a room rather than a puddle, and
+// the value is a CEILING rather than a preference: the flame's own ink
+// cannot follow the pool up. chunk.wgsl's EMISSIVE_GAIN was tried higher
+// and barely moved the sprite at all — the ink is already clamped by the
+// surface-format scene target, so there is no headroom above it to buy
+// the contrast back with. Every step of pool brightness therefore comes
+// straight out of the margin by which the source out-reads what it casts.
+// The gain sweep it was picked from — clip fraction, flame and pool
+// luminance and their ratio, measured in DIG_VAULT at the standard
+// capture pose (--tod 90 --pitch -20, 1200 frames) — is in GI-DESIGN.md
+// R26.
 //
-//   gain   clip(R>=254)   flame   pool   flame/pool
-//   0.60         0.12%    211.4  118.8         1.78
-//   0.75         0.65%    212.8  165.2         1.29
-//   0.90         2.45%    219.6  190.5         1.15
-//   1.20         5.32%    216.7  216.6         1.00
-//
-// At 1.00 the wall behind the torch reads as bright as the flame and
-// the picture inverts. 0.75 is where the pool grows most for the least
-// of that margin; past it the clip fraction turns over into the
-// hard-edged-ellipse regime LIGHT_NEAR was introduced to remove (R22
-// measured 2.96% there). The real headroom is an HDR scene target and
+// Raise it far enough and the wall behind the torch reads as bright as
+// the flame and the picture inverts. This value is where the pool grows
+// most for the least of that margin; past it the clip fraction turns over
+// into the hard-edged-ellipse regime LIGHT_NEAR was introduced to remove
+// (R22 measured it there). The real headroom is an HDR scene target and
 // one tonemap on the composite — the same backlog item LIGHT_NEAR and
 // EMISSIVE_GAIN are both stopgaps for.
 const LIGHT_GAIN: f32 = 0.75;
 // Where the point model's near field stops being taken literally, in
 // blocks — the pinned twin of gi_resolve's, and the same reasoning: a
 // voxel emitter is not a point, 1/d^2 diverges into it, and the support
-// block half a block away took the whole of `emit * LIGHT_GAIN` against
-// a display whose white is 1.0. Beyond it the falloff is exactly 1/d^2,
-// so no probe outside this radius changes at all.
+// block right beside it took the whole of `emit * LIGHT_GAIN` against a
+// display whose white is 1.0. Beyond it the falloff is exactly 1/d^2, so
+// no probe outside this radius changes at all.
 const LIGHT_NEAR: f32 = 2.0;
 
 // The world grid cell this probe texel currently serves: congruent to
@@ -153,8 +150,8 @@ fn sky_radiance(dir: vec3f) -> vec3f {
 
 fn solid_cell(c: vec3i) -> bool {
 	let v = window_cell(c);
-	// Partial cells (opacity 3) stay "solid" for probe placement — the
-	// pinned twin of gi_common's `gi_solid`, and the old conservative
+	// Partial cells stay "solid" for probe placement — the pinned
+	// twin of gi_common's `gi_solid`, and the old conservative
 	// behavior. Only `march` below resolves their sub-boxes.
 	return v != 0u && (lut[v].x >> 24u) >= 2u;
 }
@@ -212,9 +209,9 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		if dot(lat, lat) > lateral_max * lateral_max {
 			break;
 		}
-		// The two-level skip (gi_dda.wgsl). Probe rays run to MAX_T = 160
-		// blocks through mostly-air, so this is where it pays most. (A
-		// third 64-cube level was measured out — see gi_common's marches.)
+		// The two-level skip (gi_dda.wgsl). Probe rays run all the way to
+		// MAX_T through mostly-air, so this is where it pays most. (A
+		// third, coarser level was measured out — see gi_common's marches.)
 		let w = wrap2(r.cell.xz, i32(gi.cam.w));
 		if coarse_empty_w(w, r.cell.y) {
 			// Skip lands on the last cell inside the empty region, then
@@ -228,8 +225,8 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		let v = window_cell_w(w, r.cell.y);
 		if v != 0u {
 			// Word 0 only on the hot path — the pinned twin of
-			// gi_common's marches (16 B per occupied cell measured
-			// +0.4 ms on the bench).
+			// gi_common's marches (the whole entry per occupied cell
+			// measured a clear cost on the bench).
 			let op = lut[v].x >> 24u;
 			if op == 2u {
 				out.hit = true;
@@ -268,17 +265,18 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 // `resolve_and_probe_agree_on_light_calibration`.
 //
 // Before P4 the `lights` buffer had been uploaded and bound but read by
-// NO shader. Emitters reached the picture only when one of a probe's 64
+// NO shader. Emitters reached the picture only when one of a probe's
 // Fibonacci rays happened to strike the single voxel a torch occupies —
-// exactly the firefly a light list exists to prevent. A 1-voxel emitter
-// subtends under 1% of the sphere at 3 blocks, so a given probe had
-// better than even odds of finding it not at all: large walls caught it
-// across many probes that bleed into one another, small isolated objects
-// sat in the few cells that all missed. That is why DIG_VAULT has a
-// warm pool on its walls and a pitch-black wood cube standing in it.
+// exactly the firefly a light list exists to prevent. A single-voxel
+// emitter subtends a tiny fraction of the sphere at any useful distance,
+// so a given probe had better than even odds of finding it not at all:
+// large walls caught it across many probes that bleed into one another,
+// small isolated objects sat in the few cells that all missed. That is
+// why DIG_VAULT has a warm pool on its walls and a pitch-black wood cube
+// standing in it.
 //
 // One sample per ray, uniform over the list, weighted by 1/pdf = count.
-// With 64 rays a probe takes 64 NEE samples per update and the
+// A probe therefore takes one NEE sample per ray per update, and the
 // hysteresis ladder filters what is left.
 fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	let count = bitcast<u32>(lights[0].x);
@@ -286,8 +284,17 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 		return vec3f(0.0);
 	}
 	let li = min(u32(rnd * f32(count)), count - 1u);
-	let l = lights[li + 1u];
-	let d = l.xyz - p;
+	// Two vec4s an entry, as in the resolve: position and class word,
+	// then the rectangle a surface emitter radiates from.
+	let l = lights[li * 2u + 1u];
+	let q = lights[li * 2u + 2u];
+	// A point on the drawn light. The probe has one uniform to spend and
+	// has already spent it choosing WHICH light, so the point on the face
+	// is taken from a hash of the two it does have — a probe's rays are
+	// averaged over a long history and a fixed point on every rectangle
+	// would bake the face's centre line into the cache.
+	let s = gi_light_sample(l, q, p, fract(rnd * 37.0), fract(rnd * 91.0));
+	let d = s.p - p;
 	let dist2 = dot(d, d);
 	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
 		return vec3f(0.0);
@@ -299,7 +306,12 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 		return vec3f(0.0);
 	}
 	let cls = gi_light_class(l.w);
-	let emit = f32(lut[cls].y);
+	// The entry's own level when it has one (a tool whose wielder has
+	// earned a brighter glow), else the class's — see gi_dda.wgsl. The
+	// resolve's reservoir reads it the same way, so the two NEE passes
+	// price the same light identically.
+	let ov = gi_light_level(l.w);
+	let emit = select(f32(lut[cls].y & 0xffu), f32(ov), ov != 0u);
 	if emit <= 0.0 {
 		return vec3f(0.0);
 	}
@@ -310,7 +322,8 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// never shadow itself. `gi_light_margin` derives it from where in
 	// its cell the light actually sits, so it holds for an origin that
 	// is not the cell center — see its comment for what a flame-height
-	// torch did to a flat 0.9, and why a CARRIED light takes zero.
+	// torch did to the old flat margin, and why a CARRIED light takes
+	// zero.
 	let sh = march(p, dir, max(dist - gi_light_margin_of(l), 0.0));
 	if sh.hit {
 		return vec3f(0.0);
@@ -319,13 +332,26 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// LIGHT_NEAR and holds inside it — the clamp started as "don't divide
 	// by nothing" for a probe sharing a torch's cell and is now also what
 	// keeps the near field under the white point (see the constant).
-	let radiance = albedo_of(cls) * emit * LIGHT_GAIN;
-	return radiance * (ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
+	let radiance = gi_light_tint(l.w, emit_tint_of(cls)) * emit * LIGHT_GAIN;
+	// `s.w` is 1 for a point and cos(theta_l) * area for a rectangle —
+	// the factors that make an area source an area source, from the one
+	// shared sampler, so the probes and the resolve cannot price the same
+	// seam differently.
+	return radiance * (ndl * s.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
 		* medium_water_tr(sh.water) * f32(count);
 }
 
 fn albedo_of(v: u32) -> vec3f {
 	let m = lut[v].x;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
+}
+
+// The colour a class CASTS — gi_common's `gi_emit_tint` against this
+// shader's own binding. Usually the albedo, but an ore seam's mean is
+// stone and its light is not, so the cast colour rides the LUT word above
+// the level. See the twin for the measurement.
+fn emit_tint_of(v: u32) -> vec3f {
+	let m = lut[v].y >> 8u;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 
@@ -352,7 +378,7 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	let spacing = f32(gi.dims.w);
 	if !prev_in_cascade(p) {
 		// Beyond coverage there is no probe for `p`. The analytic dome is
-		// what the fragment side falls through to, and the same 0.35 —
+		// what the fragment side falls through to, dimmed the same way —
 		// answering with a wrapped read instead is what this exists to
 		// stop, and answering with zero would darken every distant bounce.
 		return sky_radiance(n) * 0.35;
@@ -368,8 +394,8 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	// re-sweep from feeding another place's light into this probe's bounce
 	// and STORING it.
 	//
-	// This matters more since the cadence cut: a full sweep is 48 frames
-	// now rather than 12, so the stale window is four times longer.
+	// This matters more since the cadence cut: a full sweep takes several
+	// times as many frames now, so the stale window is that much longer.
 	if (textureLoad(flags_tex, t).r & 0xffff0000u) != checksum(g) {
 		return sky_radiance(n) * 0.35;
 	}
@@ -398,8 +424,8 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 // camera light needs off it. Indexing by the grid cell directly is not a
 // convenience: `gather_prev` takes a world POINT and snaps it with
 // `round(p / spacing)`, so handing it a RELOCATED probe centre — nudged a
-// whole block at a spacing of 2 — rounds to the neighbouring probe's
-// texel and silently reads the wrong one.
+// whole block, which at C0's spacing is most of the way to the next probe
+// — rounds to the neighbouring texel and silently reads the wrong one.
 fn prev_texel(g: vec3i) -> vec3i {
 	let dims = vec3i(gi.dims.xyz);
 	return ((g % dims) + dims) % dims;
@@ -427,8 +453,8 @@ fn prev_omni(g: vec3i) -> vec3f {
 fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	let h = march(p, dir, MAX_T);
 	// Per-channel now, and from medium_common's measured sigma — the
-	// same constant the view ray uses. This was a grey exp(-water*0.35)
-	// with no relationship to the water the eye looks through.
+	// same constant the view ray uses. This was a grey exponential with
+	// no relationship to the water the eye looks through.
 	let water_att = medium_water_tr(h.water);
 	if !h.hit {
 		var sky = sky_radiance(dir);
@@ -448,15 +474,16 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 		// An emitter reaches the cache through `nee` below and nowhere
 		// else — the twin of gi_resolve's `path_radiance` rule (R27), for
 		// the same reason: this term is radiance, so it does not fall off,
-		// and a probe that catches a torch on one of 32 rays folds a 6.0
-		// into a 6-axis average that then hysteresis-blends for 48 frames.
-		// The cell still occludes.
+		// and a probe that catches a torch on one of its rays folds a huge
+		// value into a 6-axis average that then hysteresis-blends for a
+		// whole sweep. The cell still occludes.
 		//
-		// It also had a stale calibration. This read `emit * 0.6` — the
-		// pre-R26 LIGHT_GAIN, left behind when the constant went to 0.75,
-		// and invisible to `resolve_and_probe_agree_on_light_calibration`
-		// because that pin compares the two shaders' NAMED consts and a
-		// bare literal has no name to compare.
+		// It also had a stale calibration. This read `emit` times a bare
+		// literal — the pre-R26 LIGHT_GAIN, left behind when the constant
+		// was retuned, and invisible to the pin
+		// `resolve_and_probe_agree_on_light_calibration` because that pin
+		// compares the two shaders' NAMED consts and a bare literal has no
+		// name to compare.
 		return vec3f(0.0);
 	}
 	var n = vec3f(0.0);
@@ -518,8 +545,9 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 		ray_rad[li] = vec3f(0.0);
 	} else {
 		// Per-ray, per-update decorrelated NEE pick: the ray index and
-		// the frame counter, hashed. Reusing one draw for all 64 rays
-		// would sample one emitter 64 times and miss the rest entirely.
+		// the frame counter, hashed. Reusing one draw for every ray
+		// would sample one emitter over and over and miss the rest
+		// entirely.
 		let rnd = fract(sin(f32(li) * 12.9898 + f32(gi.sched.y) * 78.233) * 43758.5453);
 		ray_rad[li] = trace_radiance(p, dir, rnd);
 	}
@@ -585,9 +613,9 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 // position to gather at — spray billboards and the first-person
 // viewmodel. Dispatched with the C0 cascade's bind group (prev_atlas =
 // the front atlas, gi.dims = C0), after the probe update.
-// This used to snap the camera to the C0 lattice — `round(cam/2)*2`,
-// relocate, and read that ONE probe six times. Two things then went wrong
-// together, and both were quantized to that 2-block snap, which is why
+// This used to snap the camera to the C0 lattice — round to the nearest
+// probe, relocate, and read that ONE probe six times. Two things then went
+// wrong together, and both were quantized to that snap, which is why
 // they appeared and vanished with a step rather than fading. `gather_prev`
 // returns literal black for a probe buried in solid (rightly — see its
 // comment), so a single dead probe zeroed all six axes at once; and the

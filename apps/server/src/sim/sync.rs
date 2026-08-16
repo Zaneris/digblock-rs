@@ -1,10 +1,10 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
-use super::{column_of, in_radius, send_frame, OutMsg, OutTx, Sim, DGRAM_STALL_SECS};
+use super::{DGRAM_STALL_SECS, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
 use crate::journal::Journal;
 use digblock_net::codec;
 use digblock_net::messages::{
-	vel_to_wire, yaw_to_wire, BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot,
+	BlockEdit, Datagram, RemoteState, SelfState, ServerMsg, Snapshot, vel_to_wire, yaw_to_wire,
 };
 use digblock_net::protocol::{
 	AREA_SYNC_RADIUS, FAR_PLAYER_STRIDE, MAX_SNAPSHOT_PLAYERS, PLAYER_NEAR_COLS, SNAPSHOT_DIVISOR,
@@ -16,8 +16,8 @@ use tokio::sync::mpsc::error::TrySendError;
 /// so re-entry re-syncs (clients evict remote chunks too).
 const SYNC_SLACK: i32 = 2;
 
-/// Journal columns handed to one client per tick. At 60 Hz this drains a
-/// 1 000-column join in under a second while costing a fraction of a
+/// Journal columns handed to one client per tick. At the tick rate this
+/// drains even a wide join in under a second while costing a fraction of a
 /// millisecond per tick.
 const JOIN_SYNC_PER_TICK: usize = 16;
 /// Outbound slots kept free for live traffic while a sync drains, so a
@@ -26,7 +26,7 @@ const JOIN_SYNC_PER_TICK: usize = 16;
 const JOIN_SYNC_RESERVE: usize = 64;
 
 /// Neighbor journal-water rescans processed per tick (each is O(that
-/// column's journaled cells)) — an initial radius-6 load can't hitch the
+/// column's journaled cells)) — an initial full-radius load can't hitch the
 /// sim thread.
 const FACE_SCANS_PER_TICK: usize = 4;
 /// Backstop on the rescan queue under eviction churn.
@@ -109,7 +109,7 @@ impl Sim {
 				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
 			// Region-indexed, not a walk of every edited column in the
 			// world: this fires per client every time their center moves —
-			// every 16 blocks walked — and `edited_columns` grows for the
+			// once per column crossed — and `edited_columns` grows for the
 			// life of the world while everything around it stays O(active).
 			// The result is a superset (whole regions), so the radius test
 			// below still does the real filtering.
@@ -142,7 +142,7 @@ impl Sim {
 	///
 	/// Join sync used to run entirely inside `handle_hello`: every in-range
 	/// edited column encoded and pushed in ONE tick. On a mature world that
-	/// is thousands of frames and megabytes inside a 16.7 ms budget — a
+	/// is thousands of frames and megabytes inside one tick's budget — a
 	/// hitch for every other player on the server, on every join — and past
 	/// `OUT_CAP` it was a race the joiner lost outright, dropped for
 	/// "overflowing the outbound queue" through no fault of its own.
@@ -207,15 +207,16 @@ impl Sim {
 	pub(super) fn send_snapshots(&mut self) {
 		// Shared roster built once; per client only nearby players are
 		// selected, so snapshots can never outgrow one datagram (the cliff
-		// that used to silently kill all snapshots at ~30 players).
+		// that used to silently kill all snapshots on a busy server).
 		//
-		// Every buffer here is reused across ticks. This runs 20×/s and
-		// used to cost 9 allocations per client per snapshot — 46 k
-		// allocations and 15 MB/s of churn at 255 players, on the sim
-		// thread. The selection is also a `select_nth_unstable` rather than
-		// a full sort: only the nearest `MAX_SNAPSHOT_PLAYERS - 1` matter,
-		// and sorting the whole candidate list per client made the pass
-		// O(n² log n) — ~10 M comparisons/s at 255 players to choose 23.
+		// Every buffer here is reused across ticks. This runs on every
+		// snapshot and used to allocate per client per snapshot — tens of
+		// thousands of allocations and megabytes a second of churn at a full
+		// server, on the sim thread. The selection is also a
+		// `select_nth_unstable` rather than a full sort: only the nearest
+		// `MAX_SNAPSHOT_PLAYERS - 1` matter, and sorting the whole candidate
+		// list per client made the pass O(n² log n) — millions of
+		// comparisons a second at a full server to choose a handful.
 		// The roster carries each player BOTH ways: as the remote everyone
 		// else sees (quantized once here, not per recipient) and as the
 		// full-precision self state its owner needs back.
@@ -276,7 +277,7 @@ impl Sim {
 				);
 				let d2 = dx * dx + dz * dz;
 				let near = d2 <= (PLAYER_NEAR_COLS as i64).pow(2);
-				if !near && (snap_index + p.id as u32) % FAR_PLAYER_STRIDE != 0 {
+				if !near && !(snap_index + p.id as u32).is_multiple_of(FAR_PLAYER_STRIDE) {
 					continue;
 				}
 				nearby.push((d2, i));
@@ -362,8 +363,8 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 
 #[cfg(test)]
 mod tests {
-	use super::super::harness::*;
 	use super::super::Sim;
+	use super::super::harness::*;
 	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
 	use glam::Vec3;
@@ -371,7 +372,7 @@ mod tests {
 	fn dig_under(sim: &mut super::super::Sim, conn_id: u64, seq: u32) -> (i32, i32, i32) {
 		// At an angle: the ground under the player's feet stays intact so
 		// it can still walk (a hole underfoot would trap it in the pit).
-		// Full timed flow: the flat world is stone (90-tick hardness).
+		// Full timed flow, held for stone's own hardness.
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let mut t = 0;
 		dig_hold(sim, conn_id, down, 90, seq, EditKind::Dig, &mut t)
@@ -548,8 +549,8 @@ mod tests {
 		// Wait for column (1,0) — the walk's path — to be resident, so a
 		// loaded test host can't drop the player through ungenerated
 		// terrain mid-walk. Then let the loaded-side pool settle; col
-		// (2,0) is beyond sim_radius 1 of the spawn center, so the +x
-		// half cannot form yet.
+		// (2,0) is beyond this sim's residency radius from the spawn
+		// center, so the +x half cannot form yet.
 		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 		while sim.test_block_at(17, 0, 8).is_none() {
 			assert!(
@@ -653,9 +654,10 @@ mod tests {
 	/// edited column exactly once via JournalColumn.
 	#[test]
 	fn evict_and_reenter_resyncs_column_exactly_once() {
-		// Residency radius 3: columns generate well ahead of a 4-block/s
-		// walk even when parallel tests starve the worker threads (radius
-		// 1 can lag and drop the player through ungenerated terrain).
+		// A generous residency radius: columns generate well ahead of a
+		// walking player even when parallel tests starve the worker threads
+		// (a tight one can lag and drop the player through ungenerated
+		// terrain).
 		let dir = temp_dir("reenter");
 		let mut sim = Sim::new_with_source(SEED, &dir, 3, 2, flat_source(), FLAT_SPAWN).unwrap();
 		let mut a = connect(&mut sim, 1);
@@ -663,8 +665,8 @@ mod tests {
 		let cell = dig_under(&mut sim, 1, 1);
 		let col = (cell.0.div_euclid(16), cell.2.div_euclid(16));
 
-		// Walk out (+z) until well past draw_dist 4 + SYNC_SLACK 2, then
-		// back until near the edited column again — condition-driven, so
+		// Walk out (+z) until well past the client's draw_dist + SYNC_SLACK,
+		// then back until near the edited column again — condition-driven, so
 		// scheduler hiccups can't underschoot the distances. Drain as we
 		// go: an undrained queue would (correctly) trip the stall-kill.
 		let col_dist = |sim: &Sim| {
@@ -713,8 +715,9 @@ mod tests {
 	}
 
 	/// The regression test for the old cliff: every snapshot used to carry
-	/// every player and silently exceeded MAX_DATAGRAM at ~30 — now each
-	/// client gets self + nearest remotes, always within one datagram.
+	/// every player and silently exceeded MAX_DATAGRAM once a crowd
+	/// gathered — now each client gets self + nearest remotes, always
+	/// within one datagram.
 	#[test]
 	fn thirty_clients_all_receive_bounded_snapshots() {
 		let mut sim = flat_sim("thirty");
@@ -747,7 +750,7 @@ mod tests {
 
 	/// Distance tiers the RATE, it does not gate membership. A player past
 	/// `PLAYER_NEAR_COLS` but still inside draw distance keeps arriving —
-	/// at 320 blocks they are ~5 px tall at 1080p, which is small but very
+	/// out there they are only a few pixels tall, which is small but very
 	/// much visible, so dropping them outright would delete people you can
 	/// see. They simply arrive in one snapshot out of `FAR_PLAYER_STRIDE`.
 	#[test]
@@ -760,7 +763,7 @@ mod tests {
 		for id in [1, 2, 3] {
 			wait_live(&mut sim, id);
 		}
-		// The harness joins at draw_dist 4, inside PLAYER_NEAR_COLS — give A
+		// The harness's join draw_dist sits inside PLAYER_NEAR_COLS — give A
 		// a real client's radius so "far but visible" can exist at all.
 		sim.tick_once(vec![super::super::SimEvent::Msg {
 			conn_id: 1,
@@ -823,13 +826,11 @@ mod tests {
 			"near remote present"
 		);
 
-		// B walks away far beyond A's draw distance (4 columns + slack).
+		// B walks away far beyond A's draw distance plus slack.
 		// Server-authoritative movement: forward inputs, never-adopted
 		// claims, so the sim's own physics carries B.
-		let mut t = 100;
-		for _ in 0..1500 {
+		for t in (100..).take(1500) {
 			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 2)]);
-			t += 1;
 		}
 		a.drain();
 		a.snaps.clear();

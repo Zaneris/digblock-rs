@@ -17,7 +17,7 @@
 
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick};
 use digblock_net::protocol::{PROTOCOL_VERSION, SNAPSHOT_DIVISOR, TICK_RATE};
-use digblock_server::sim::{OutMsg, Sim, SimEvent, OUT_CAP};
+use digblock_server::sim::{OUT_CAP, OutMsg, Sim, SimEvent};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -50,10 +50,10 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// Player counts to sweep. 40 is `MAX_SNAPSHOT_PLAYERS`, where interest
-/// management starts having to choose.
+/// Player counts to sweep, straddling `MAX_SNAPSHOT_PLAYERS` — where
+/// interest management starts having to choose.
 const COUNTS: &[usize] = &[1, 8, 24, 40, 64];
-/// Ticks measured per count, after warmup. 600 = 10 s of sim.
+/// Ticks measured per count, after warmup — several seconds of sim.
 const TICKS: usize = 600;
 const WARMUP: usize = 120;
 
@@ -211,8 +211,8 @@ fn pct(sorted: &[f64], p: f64) -> f64 {
 fn run(n: usize, edits: bool) -> String {
 	let dir = std::env::temp_dir().join(format!("digblock-netbench-{n}-{}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
-	// sim_radius 6 is the shipped default; workers 4 keeps generation off
-	// the measured thread.
+	// The shipped default sim radius, with enough workers to keep
+	// generation off the measured thread.
 	let mut sim = Sim::new(42.0, &dir, 6, 4).expect("open bench world");
 	let mut clients = spawn_clients(&mut sim, n);
 
@@ -252,8 +252,9 @@ fn run(n: usize, edits: bool) -> String {
 		}
 		// Bracket allocations around `tick_once` ALONE, matching the timer.
 		// Spanning the whole loop body counted the harness's own per-client
-		// `vec![]` and the `Vec<SimEvent>` collect above — at n=64 that was
-		// ~65 of the 88.6 allocs/tick being reported as the server's.
+		// `vec![]` and the `Vec<SimEvent>` collect above — at the top of the
+		// sweep that was most of the allocs/tick being reported as the
+		// server's.
 		let a0 = ALLOCS.load(Ordering::Relaxed);
 		let b0 = ALLOC_BYTES.load(Ordering::Relaxed);
 		let start = Instant::now();
@@ -268,10 +269,10 @@ fn run(n: usize, edits: bool) -> String {
 		// claim that misses by too much skips the shape-aware capsule test
 		// entirely — the most expensive call in the input path.
 		for c in clients.iter() {
-			if let (Some(p), Some(pos)) = (c.predicted.as_ref(), sim.player_pos(c.conn_id)) {
-				if p.pos.distance(pos) < 1.0e-4 {
-					adopted += 1;
-				}
+			if let (Some(p), Some(pos)) = (c.predicted.as_ref(), sim.player_pos(c.conn_id))
+				&& p.pos.distance(pos) < 1.0e-4
+			{
+				adopted += 1;
 			}
 		}
 		drain(&mut clients);
@@ -316,8 +317,8 @@ fn run(n: usize, edits: bool) -> String {
 
 fn main() {
 	let edits = !std::env::args().any(|a| a == "--no-edits");
-	// Long enough for the rate windows to settle and for a 500 ms link to
-	// complete many round trips.
+	// Long enough for the rate windows to settle and for even the worst
+	// profile's link to complete many round trips.
 	let link_secs = 20.0;
 	println!("digblock netbench — deterministic, socket-free, {TICKS} ticks per row");
 	println!(
@@ -372,7 +373,7 @@ fn main() {
 // `NetClient` (predictor, reconciliation, RTT estimator and all) against
 // the real `Sim`, joined by a deterministic impairing link.
 //
-// Everything is driven off a virtual 60 Hz clock with a seeded PRNG: no
+// Everything is driven off a virtual fixed-rate clock with a seeded PRNG: no
 // wall-clock, no threads, no sockets. Two runs of the same profile produce
 // the same numbers, which is what makes "did this change make loss worse"
 // a question you can actually answer.
@@ -560,7 +561,7 @@ const FLAT_TOP: usize = 126;
 /// Stone up to `FLAT_TOP`, air above — the harness's flat world, rebuilt
 /// here because that one is `#[cfg(test)]`.
 fn flat_source() -> digblock_server::store::ColumnSource {
-	use digblock_core::chunk::{ChunkData, AIR_CHUNK, WORLD_VCHUNK};
+	use digblock_core::chunk::{AIR_CHUNK, ChunkData, WORLD_VCHUNK};
 	use std::sync::Arc;
 	Arc::new(|_cx, _cz| {
 		let mut full = ChunkData::default();
@@ -586,9 +587,9 @@ fn flat_source() -> digblock_server::store::ColumnSource {
 	})
 }
 
-/// Wire/client sub-steps per 60 Hz server tick (2.08 ms each). The server
-/// still ticks at 60 Hz; this is the resolution at which packets are
-/// delivered and the client polls.
+/// Wire/client sub-steps per server tick. The server still ticks at its own
+/// rate; this is the resolution at which packets are delivered and the
+/// client polls.
 const SUBSTEPS: u32 = 8;
 
 struct LinkResult {
@@ -618,11 +619,11 @@ struct LinkResult {
 	dig_short_max: u32,
 }
 
-/// Idle ticks between dig attempts (1 s), so a row gets several complete
-/// holds rather than one long one.
+/// Idle ticks between dig attempts, so a row gets several complete holds
+/// rather than one long one.
 const DIG_IDLE_TICKS: u32 = 60;
-/// How often the walking client fires a residual probe (6/s, comfortably
-/// inside `EDIT_RATE_PER_SEC` 10 so it never starves the real digs).
+/// How often the walking client fires a residual probe — comfortably
+/// inside `EDIT_RATE_PER_SEC`, so it never starves the real digs.
 const PROBE_STRIDE: u32 = 10;
 /// How far to the side of the heading the client aims, in blocks.
 const TARGET_OFFSET: f32 = 3.0;
@@ -722,20 +723,20 @@ fn drive_edits(
 	// dig: it takes the OTHER tolerance site and is refused before any
 	// timed-dig gate, so probing cannot pollute the dig-shortfall counter
 	// with completions the client never intended to earn.
-	if step % PROBE_STRIDE == 0 {
-		if let Some((cell, aim)) = pick_target(eye, heading, sim) {
-			d.seq += 1;
-			client.send_edit(
-				d.seq,
-				tick,
-				eye,
-				aim,
-				EditKind::Interact,
-				cell,
-				(0, 1, 0),
-				0,
-			);
-		}
+	if step.is_multiple_of(PROBE_STRIDE)
+		&& let Some((cell, aim)) = pick_target(eye, heading, sim)
+	{
+		d.seq += 1;
+		client.send_edit(
+			d.seq,
+			tick,
+			eye,
+			aim,
+			EditKind::Interact,
+			cell,
+			(0, 1, 0),
+			0,
+		);
 	}
 }
 
@@ -743,12 +744,12 @@ fn drive_edits(
 /// client also probes and digs — see [`EditDriver`].
 fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	use digblock_core::player::{Player, PlayerIntent};
+	use digblock_net::NetEvent;
 	use digblock_net::client::{NetClient, NetClientConfig};
 	use digblock_net::codec::{self, FrameReader};
 	use digblock_net::messages::Datagram;
 	use digblock_net::predict::Reconciled;
 	use digblock_net::protocol::PREAMBLE_LEN;
-	use digblock_net::NetEvent;
 
 	let dir = std::env::temp_dir().join(format!(
 		"digblock-netbench-link-{}-{}",
@@ -812,17 +813,18 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	// Measured harness-side over the whole window rather than read out of
 	// the client's `StatsAcc`, which publishes a closed 1-second bucket and
 	// an EWMA seeded during warmup — both of which report a phase of the run
-	// rather than the run. (The wifi row used to print 20.7 snap/s against a
-	// 20.0 nominal, which is the artifact admitting itself.)
+	// rather than the run. (The wifi row used to print MORE snapshots per
+	// second than the nominal rate, which is the artifact admitting itself.)
 	let mut rtts: Vec<f32> = Vec::new();
 	let mut snaps = 0u64;
 	let mut replays = 0u64;
 	let mut stats_base = digblock_server::sim::InputStats::default();
 	let mut edits_base = digblock_server::sim::EditStats::default();
 	let mut driver = EditDriver::default();
-	// The flat world is stone, which SIM v12 gates below Mining 5: the
-	// driver's client is granted the gate level after warmup (below), and
-	// the hold length uses the same level so client and sim agree.
+	// The flat world is stone, which SIM v12 puts behind the rock strength
+	// wall: the driver's client is granted the gate level after warmup
+	// (below), and the hold length uses the same level so client and sim
+	// agree.
 	let stone_hardness = digblock_core::skills::dig_required(
 		digblock_core::block::BlockType::Stone,
 		digblock_core::block::BlockType::Stone
@@ -833,8 +835,8 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	// Warm up before measuring: the client is not `live` server-side until
 	// its spawn column has been generated, and until then it gets no
 	// snapshots at all — which would read as 100% loss rather than as the
-	// startup it is. Also long enough for a 500 ms link to finish its
-	// handshake several times over.
+	// startup it is. Also long enough for even the worst profile's link to
+	// finish its handshake several times over.
 	let warmup = (4.0 * TICK_RATE as f64) as u32;
 	let steps = warmup + (secs * TICK_RATE as f64) as u32;
 	let dt = 1.0 / TICK_RATE as f32;
@@ -843,9 +845,12 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	for step in 0..steps {
 		let measuring = step >= warmup;
 		if step == warmup {
-			// The rock gate would refuse every dig of the stone flat
-			// world at Mining 1; the client has joined by now.
-			sim.bench_set_mining_level(1, 5);
+			// The strength wall would refuse every dig of the stone flat
+			// world at an unskilled level; the client has joined by now.
+			sim.bench_set_mining_level(
+				1,
+				digblock_core::unlock::mine(digblock_core::BlockType::Stone),
+			);
 			// Discard everything the startup transient produced.
 			corrections.clear();
 			max_div = 0.0;
@@ -865,13 +870,13 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 
 		let mut sim_events: Vec<SimEvent> = Vec::new();
 		// Sub-step the wire and the client within each server tick. The
-		// server still ticks at exactly 60 Hz — a packet arriving mid-tick
-		// really does wait for the next boundary, and that quantization is
-		// the real thing being modelled. What was NOT real was the delivery
-		// check running once per tick against the same `now` the send used
-		// (`at = now + one_way` is never `<= now`), so every leg cost a
-		// whole 16.67 ms tick no matter how short the configured wire.
-		// Below one sub-step (2.08 ms) delays still round up.
+		// server still ticks at exactly its own rate — a packet arriving
+		// mid-tick really does wait for the next boundary, and that
+		// quantization is the real thing being modelled. What was NOT real
+		// was the delivery check running once per tick against the same
+		// `now` the send used (`at = now + one_way` is never `<= now`), so
+		// every leg cost a whole tick no matter how short the configured
+		// wire. Below one sub-step, delays still round up.
 		for sub in 0..SUBSTEPS {
 			wire.lock().unwrap().now += sub_dt as f64;
 
@@ -898,71 +903,72 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 				}
 				let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
 				let outcome = client.predictor.reconcile(p, t, me, &world);
-				if let Reconciled::Replayed { error } = outcome {
-					if measuring {
-						corrections.push(error.length());
-						replays += 1;
-					}
+				if let Reconciled::Replayed { error } = outcome
+					&& measuring
+				{
+					corrections.push(error.length());
+					replays += 1;
 				}
 				// A stale ack returns early without touching `last_rtt`, so
 				// sampling it there would re-count the previous round trip.
-				if measuring && outcome != Reconciled::StaleAck {
-					if let Some(rtt) = client.predictor.last_rtt() {
-						rtts.push(rtt * 1000.0);
-					}
+				if measuring
+					&& outcome != Reconciled::StaleAck
+					&& let Some(rtt) = client.predictor.last_rtt()
+				{
+					rtts.push(rtt * 1000.0);
 				}
 				client.note_reconciled(outcome);
 			}
 
-			// The client predicts on a 60 Hz accumulator and sends right
+			// The client predicts on a fixed-rate accumulator and sends right
 			// after, exactly as `engine.rs` does — once per tick, not once
 			// per poll.
-			if sub == 0 {
-				if let Some(p) = player.as_mut() {
-					// Walk a slow circle so the world under the player changes.
-					let a = step as f32 / TICK_RATE as f32 * 0.5;
-					let heading = glam::Vec3::new(a.sin(), 0.0, a.cos());
-					// Only click inside the measured window. The `_max`
-					// counters are cumulative highs with no base to
-					// difference against, so a click during the settle
-					// would be indistinguishable from the run's own worst
-					// case — and the settle is a fall, which is exactly
-					// where the residual is largest.
-					if edits && measuring {
-						drive_edits(
-							&mut driver,
-							&mut client,
-							&sim,
-							p.pos,
-							heading,
-							step,
-							stone_hardness,
-						);
-					}
-					// Mining stands still and looks at the block; walking
-					// looks where it is going.
-					let (intent, dir) = if driver.holding > 0 {
-						(
-							PlayerIntent {
-								move_axis: glam::Vec2::ZERO,
-								jump: false,
-							},
-							driver.aim,
-						)
-					} else {
-						(
-							PlayerIntent {
-								move_axis: glam::Vec2::new(0.0, 1.0),
-								jump: false,
-							},
-							heading,
-						)
-					};
-					let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
-					client.predictor.predict(p, intent, dir, &world);
-					predicted_ticks += 1;
-					client.send_inputs();
+			if sub == 0
+				&& let Some(p) = player.as_mut()
+			{
+				// Walk a slow circle so the world under the player changes.
+				let a = step as f32 / TICK_RATE as f32 * 0.5;
+				let heading = glam::Vec3::new(a.sin(), 0.0, a.cos());
+				// Only click inside the measured window. The `_max`
+				// counters are cumulative highs with no base to
+				// difference against, so a click during the settle
+				// would be indistinguishable from the run's own worst
+				// case — and the settle is a fall, which is exactly
+				// where the residual is largest.
+				if edits && measuring {
+					drive_edits(
+						&mut driver,
+						&mut client,
+						&sim,
+						p.pos,
+						heading,
+						step,
+						stone_hardness,
+					);
 				}
+				// Mining stands still and looks at the block; walking
+				// looks where it is going.
+				let (intent, dir) = if driver.holding > 0 {
+					(
+						PlayerIntent {
+							move_axis: glam::Vec2::ZERO,
+							jump: false,
+						},
+						driver.aim,
+					)
+				} else {
+					(
+						PlayerIntent {
+							move_axis: glam::Vec2::new(0.0, 1.0),
+							jump: false,
+						},
+						heading,
+					)
+				};
+				let world = |x: i32, y: i32, z: i32| sim.cell_at(x, y, z);
+				client.predictor.predict(p, intent, dir, &world);
+				predicted_ticks += 1;
+				client.send_inputs();
 			}
 
 			// ---- wire → server --------------------------------------------
@@ -1046,10 +1052,8 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 
 		// Divergence: what the player sees vs what the server holds. This
 		// is the number that becomes a rubber-band if it grows.
-		if measuring {
-			if let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
-				max_div = max_div.max((p.pos - sp).length());
-			}
+		if measuring && let (Some(p), Some(sp)) = (player.as_ref(), sim.player_pos(1)) {
+			max_div = max_div.max((p.pos - sp).length());
 		}
 	}
 

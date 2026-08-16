@@ -5,28 +5,29 @@
 // fall-impact cell (xyz center, w spare); vertex_index picks the
 // particle (vi / 6) and quad corner (vi % 6). Particles 0..MIST_N are
 // large slow mist slabs jittered around the base; the rest are
-// ballistic droplets on a 0.75s loop (800 cycles per 600s clock wrap
-// — seamless).
+// ballistic droplets on a looped arc whose period divides the animation
+// clock's wrap exactly (LIFE, below — seamless).
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
-// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
-// probe ambient at the camera, [1].rgb =
-// sun transmittance there (rgb, not a grey lane — water absorbs red an
-// order of magnitude harder, so a submerged camera's sun is tinted). Billboards have no meaningful surface to
-// gather at, and spray lives within ~64 blocks of the eye — the
-// camera's light is theirs.
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni probe
+// ambient at the camera, [1].rgb = sun transmittance there (rgb, not a
+// grey lane — water absorbs red an order of magnitude harder, so a
+// submerged camera's sun is tinted). Billboards have no meaningful
+// surface to gather at, and spray lives close to the eye (spray.rs
+// SPRAY_RADIUS) — the camera's light is theirs.
 struct CamLight {
 	ambient: vec4f,
 	sun: vec4f,
 }
 @group(1) @binding(0) var<uniform> cam_light: CamLight;
 
-// Droplet loop length. Must divide the 600s animation clock wrap
-// exactly or the whole bank jumps at the seam: 600 / 1.0 = 600 cycles.
-// Long enough that a droplet thrown at the new higher speeds completes
-// its arc — apex lands at 0.33..0.58s, touchdown by ~1.16s.
+// Droplet loop length. Must divide the animation clock's wrap exactly,
+// a whole number of cycles per wrap, or the whole bank jumps at the
+// seam. Long enough that a droplet thrown at the new higher speeds gets
+// through its arc — its apex lands partway through the loop and it is
+// well into the fall again by the end.
 const LIFE: f32 = 1.0;
 // Mist slabs per instance — keep in sync with spray.rs MIST_N.
 const MIST_N: u32 = 3u;
@@ -66,8 +67,8 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 		// varies per slab but NOT over time — they used to breathe on
 		// offset clocks, which was part of the impact reading as a
 		// pulse. The droplets carry the motion now.
-		// Stacked to span the droplets' apex range (~0.5..1.5) rather
-		// than hugging the surface, so the mist reads as a plume rising
+		// Stacked to span the droplets' apex range rather than
+		// hugging the surface, so the mist reads as a plume rising
 		// out of the impact instead of a flat bank lying on the pool.
 		let stack = f32(pi);
 		center = inst.xyz
@@ -81,10 +82,9 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	} else {
 		// Droplet: velocity cone out of the impact, ballistic arc,
 		// growing and fading over its looped lifetime. The cone is
-		// deliberately steep — horizontal speed stays under a block a
-		// second while the throw is 3.0..5.2, so the spray reads as
-		// going UP out of the impact rather than spreading sideways
-		// across the pool.
+		// deliberately steep — the horizontal kick is a small fraction
+		// of the upward throw, so the spray reads as going UP out of the
+		// impact rather than spreading sideways across the pool.
 		let az = hash1(seed) * 6.2832;
 		let v0 = vec3f(cos(az), 0.0, sin(az)) * (0.3 + 0.9 * hash1(seed + 1.0))
 			+ vec3f(0.0, 3.0 + 2.2 * hash1(seed + 2.0), 0.0);

@@ -7,10 +7,10 @@
 //! pinned to the thread that owns the device.
 //!
 //! Feedback controller over measured frame headroom: grows the budget
-//! slowly while the worst recent frame still has slack against a 60fps
-//! frame interval, collapses to the floor on any near-miss. The floor is
-//! the fixed budget the engine ships with, so "no headroom proven" is
-//! exactly today's behavior.
+//! slowly while the worst recent frame still has slack against the
+//! protected frame interval, collapses to the floor on any near-miss.
+//! The floor is the fixed budget the engine ships with, so "no headroom
+//! proven" is exactly today's behavior.
 //!
 //! Headroom says how much the frame CAN afford; [`urgency`] says how
 //! much the pending work DESERVES. Steady-state walking only churns
@@ -20,20 +20,22 @@
 //! rim-only churn streams at the fixed floor exactly like the
 //! pre-adaptive build.
 
-/// 60fps frame interval — the protection target. High-refresh displays
-/// are deliberately allowed to eat down to 60fps while streaming.
+/// The frame interval this controller protects — deliberately a fixed
+/// target rather than the display's, so high-refresh displays are allowed
+/// to eat back down to it while streaming.
 const INTERVAL_MS: f32 = 16.7;
-/// Budget ceiling: leaves >4ms for update + encode inside the interval
+/// Budget ceiling: leaves room for update + encode inside the interval
 /// even with the drain/upload overshoot on top of the job allowance.
 const CEIL_MS: f32 = 10.0;
 /// Safety band under the interval: covers the growth taken during the
 /// 2-frame metrics feedback latency plus one job's prediction error, so
 /// the frame that triggers backoff is a near-miss, not a dropped frame.
 const MARGIN_MS: f32 = 2.0;
-/// Additive growth per clean frame — floor to ceiling in ~0.5s.
+/// Additive growth per clean frame: the climb from floor to ceiling is a
+/// ramp over many frames, never a jump.
 const GROW_MS: f32 = 0.25;
-/// Worst-of window (~0.5s at 60Hz). A single near-miss sample blocks
-/// growth until it ages out; an EMA would hide exactly that frame.
+/// Worst-of window, in frames. A single near-miss sample blocks growth
+/// until it ages out; an EMA would hide exactly that frame.
 const WINDOW_N: usize = 30;
 /// Growth holdoff after a hard miss, in frames.
 const COOLDOWN: u32 = 30;
@@ -173,7 +175,7 @@ mod tests {
 	#[test]
 	fn grows_additively_then_caps() {
 		let mut b = StreamBudget::new(FLOOR);
-		feed(&mut b, WINDOW_N, 16.0, 5.0); // busy 5.0, headroom 9.7
+		feed(&mut b, WINDOW_N, 16.0, 5.0); // light frames, plenty of headroom
 		let before = b.budget_ms();
 		let after = b.on_frame(16.0, 5.0, 1.0);
 		assert!((after - before - GROW_MS).abs() < 1e-4, "additive step");
@@ -184,7 +186,8 @@ mod tests {
 	#[test]
 	fn growth_clamped_by_headroom() {
 		let mut b = StreamBudget::new(FLOOR);
-		// busy 14.5 → headroom 0.2 < GROW_MS: steps shrink to the slack.
+		// Busy enough that the headroom left is under GROW_MS: steps
+		// shrink to the slack.
 		let out = feed(&mut b, 400, 16.0, 14.5);
 		assert!(
 			out <= INTERVAL_MS - MARGIN_MS,
@@ -198,7 +201,8 @@ mod tests {
 		let mut b = StreamBudget::new(FLOOR);
 		feed(&mut b, 200, 16.0, 5.0);
 		assert_eq!(b.budget_ms(), CEIL_MS);
-		// One busy = 16.0 sample: headroom −1.3 every frame it lingers.
+		// One sample busy past the interval: headroom stays negative for
+		// every frame it lingers in the window.
 		b.on_frame(16.4, 16.0, 1.0);
 		let mut prev = b.budget_ms();
 		assert!(prev < CEIL_MS, "backoff starts immediately");
@@ -251,8 +255,8 @@ mod tests {
 	fn web_signal_shape_still_grows() {
 		for &busy in &[1.0f32, 2.0, 5.0, 8.0] {
 			let mut b = StreamBudget::new(FLOOR);
-			// 60Hz rAF: delta is a full interval, acquire is ~0, and the
-			// real work is `busy`.
+			// rAF-paced: the delta is a full display interval, acquire is
+			// ~0, and the real work is `busy`.
 			let out = feed(&mut b, 200, 16.7, busy);
 			assert_eq!(
 				out, CEIL_MS,
@@ -268,14 +272,16 @@ mod tests {
 		);
 	}
 
-	/// A 120Hz web display quantizes the wall delta to 8.3 or 16.7 while
-	/// the work itself varies continuously; the budget must track the work,
-	/// not the quantized delta (which used to bistably slam floor/ceiling).
+	/// A high-refresh web display quantizes the wall delta to whole display
+	/// slots while the work itself varies continuously; the budget must
+	/// track the work, not the quantized delta (which used to bistably slam
+	/// floor/ceiling).
 	#[test]
 	fn high_refresh_web_tracks_work_not_quantized_delta() {
 		let mut b = StreamBudget::new(FLOOR);
-		// Work spilled past one 8.3ms slot, so the delta doubled — but 9ms
-		// of work still leaves real headroom against the 60fps target.
+		// Work spilled past one display slot, so the delta doubled — but
+		// that much work still leaves real headroom against the protected
+		// interval.
 		assert_eq!(feed(&mut b, 200, 16.7, 9.0), CEIL_MS);
 	}
 
@@ -288,9 +294,9 @@ mod tests {
 			x ^= x << 13;
 			x ^= x >> 7;
 			x ^= x << 17;
-			let frame = (x % 4000) as f32 / 100.0; // 0..40ms
-			let busy = ((x >> 16) % 4000) as f32 / 100.0; // 0..40ms
-			let urgency = ((x >> 32) % 100) as f32 / 100.0; // 0..1
+			let frame = (x % 4000) as f32 / 100.0; // tiny frames through stale ones
+			let busy = ((x >> 16) % 4000) as f32 / 100.0; // the same span of work
+			let urgency = ((x >> 32) % 100) as f32 / 100.0; // the whole urgency range
 			let out = b.on_frame(frame, busy, urgency);
 			assert!(
 				(FLOOR..=CEIL_MS).contains(&out),

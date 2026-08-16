@@ -2,9 +2,9 @@
 //! `blocks!` row, a texture PNG, and a `LAYERS` entry in digblock-assets
 //! — nothing else.
 //!
-//! Values are contiguous so they index tables directly (the Java used
-//! AIR=-1, WATER=0, DIRT=1, GRASS=2; shifted by +1 here so a chunk is a
-//! flat array of cells with AIR=0 as the natural default).
+//! Values are contiguous so they index tables directly (the Java numbered
+//! air below zero; everything is shifted here so a chunk is a flat array
+//! of cells with Air as the natural zero default).
 
 use crate::dir::Dir;
 use crate::material::Material;
@@ -40,7 +40,7 @@ macro_rules! blocks {
 
 blocks! {
 	Air = 0 => props(RenderClass::None, false, 0, 0, 0),
-	/// A water source: infinite, amount 8. All generated water (oceans,
+	/// A water source: infinite, at full amount. All generated water (oceans,
 	/// river pools) is sources — flowing/falling states describe water in
 	/// transit under the Minecraft-style flow rules. Diggable only via the
 	/// water tool (the fluid-aware ray); the hardness is the scoop time.
@@ -55,8 +55,9 @@ blocks! {
 	Wood = 6 => mat(dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood), Material::Wood),
 	Leaves = 7 => mat(dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed), Material::Leaf),
 	Snow = 8 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft), Material::Snow),
-	/// Flowing water, amount 1 (thinnest) … 7. Spread sideways from a
-	/// source or a landed fall, losing one amount per block.
+	/// Flowing water, from the thinnest up to just under a source. Spread
+	/// sideways from a source or a landed fall, thinning as it goes
+	/// (`fluid::falloff`).
 	WaterFlow1 = 9 => water_props(1, false, false),
 	WaterFlow2 = 10 => water_props(2, false, false),
 	WaterFlow3 = 11 => water_props(3, false, false),
@@ -64,7 +65,7 @@ blocks! {
 	WaterFlow5 = 13 => water_props(5, false, false),
 	WaterFlow6 = 14 => water_props(6, false, false),
 	WaterFlow7 = 15 => water_props(7, false, false),
-	/// Water falling through air: renders full-height, lands at amount 8.
+	/// Water falling through air: renders full-height, lands at full amount.
 	WaterFall = 16 => water_props(8, false, true),
 	/// Savanna surface: sun-dried grass over dirt.
 	DryGrass = 17 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::DRY_GRASS_SIDE, tex::DRY_GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft), Material::DryGrass),
@@ -78,8 +79,9 @@ blocks! {
 	/// "All broken rock": mined sandstone is Rubble too, so the clean
 	/// block is craft-only like Stone's.
 	Sandstone = 21 => mat(drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble), Material::Sandstone),
-	/// 3-step stairs (12ths sub-grid; facing in the cell state nibble).
-	/// Crafted via alchemy from sub-wood, never generated.
+	/// Stepped stairs on the sub-grid (geometry in `shapes.rs`; facing in
+	/// the cell state nibble). Crafted via alchemy from sub-wood, never
+	/// generated.
 	WoodStairs = 22 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Wood),
 	StoneStairs = 23 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Stone),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
@@ -87,10 +89,11 @@ blocks! {
 	/// of planed `Lumber` like the rest of the joinery, which is why it
 	/// wears LUMBER_LIGHT and unlocks with the other lumber shapes.
 	LumberDoor = 24 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Door), 45, DigFamily::Wood), Material::Lumber),
-	/// Stackable bottom-anchored third-slab (state bit 0 = two-thirds).
-	/// Placing onto a slab's top face grows it; the third grow converts
-	/// the cell to the plain base block. Hardness is a third of the base
-	/// block's, since each dig removes one third. Crafted via alchemy.
+	/// Stackable bottom-anchored third-slab (its thickness and anchor live
+	/// in the state nibble; `shapes::slab_state`). Placing onto a slab's
+	/// top face grows it; the third grow converts the cell to the plain
+	/// base block. Hardness is a third of the base block's, since each dig
+	/// removes one third. Crafted via alchemy.
 	WoodSlab = 25 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Wood),
 	StoneSlab = 26 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Stone),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
@@ -99,44 +102,46 @@ blocks! {
 	/// itself, so it round-trips.
 	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock), Material::Rubble),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
-	/// glowing head, crafted at Alch 8 — before ore on purpose. Stage-A
-	/// emissive (fullbright ink) AND a Stage-B source: it seeds level 14
-	/// into the voxel light field (LIGHT-DESIGN.md).
+	/// glowing head, crafted early — before ore on purpose. It both
+	/// `glows` (fullbright ink, so the head reads bright of itself) and
+	/// `emits`, which is what puts it in the GI light list.
 	Torch = 28 => dig(emits(glows(shaped(crafted(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE)), ShapeKind::Torch)), 14), 10, DigFamily::Fixed),
 	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
 	/// the count machinery untouched. The bucket is owned by everyone
 	/// always ([`BlockType::always_owned`]); its charge stays the Water
-	/// count. Texture layers are 0 (never sampled — RenderClass::None).
+	/// count. Its texture layers are placeholders, never sampled —
+	/// RenderClass::None.
 	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
 	/// Planed timber (SKILLS-DESIGN §7.2's material × shape grid): the
 	/// refined counterpart of the felled `Wood` trunk, craft-only and
-	/// never generated — the bench's second timber, opened (Alch 15) after
-	/// the log's own shapes. Exists as a full block because its slab has to
+	/// never generated — the bench's second timber, opened after the log's
+	/// own shapes. Exists as a full block because its slab has to
 	/// have something to complete into (three thirds = one block, the
 	/// rule that closes the slab economy).
 	Lumber = 30 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood), Material::Lumber),
 	LumberStairs = 31 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Lumber),
 	LumberSlab = 32 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Lumber),
 	/// The mason's door — §7.2's grid at work rather than a curated row: it
-	/// lands at Alch 20 because clean Stone does, and it arrives WITH the
-	/// stone block, slab and stairs because those shapes were learned long
-	/// before. Hardness is the timber door's 0.75× of its own base block.
+	/// lands where clean Stone does, because that is the material's level,
+	/// and it arrives WITH the stone block, slab and stairs because those
+	/// shapes were learned long before. Hardness keeps the timber door's
+	/// ratio against its own base block.
 	StoneDoor = 33 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Door), 68, DigFamily::Rock), Material::Stone),
-	/// Sandstone's set, likewise free: the material opens at 30 and hands
-	/// over every shape at once.
+	/// Sandstone's set, likewise free: the material opens at its own level
+	/// and hands over every shape at once.
 	SandstoneStairs = 34 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::Sandstone),
 	SandstoneSlab = 35 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Slab), 23, DigFamily::Rock), Material::Sandstone),
 	SandstoneDoor = 36 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Door), 53, DigFamily::Rock), Material::Sandstone),
-	/// The second timber (Alch 25). `LUMBER_DARK` was drawn and registered
+	/// The second timber. `LUMBER_DARK` was drawn and registered
 	/// with `LUMBER_LIGHT` and then sat unused on no block for a release —
 	/// under the grid a whole new joinery set is four rows and no new art.
 	DarkLumber = 37 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), 60, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberStairs = 38 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberSlab = 39 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Slab), 20, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberDoor = 40 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Door), 45, DigFamily::Wood), Material::DarkLumber),
-	/// The third timber (Alch 40).
+	/// The third timber.
 	RedLumber = 41 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
@@ -149,41 +154,68 @@ blocks! {
 	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
 	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
 	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
-	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the ITEM
-	/// and for the reveal stamp; worldgen places none of them, because ore
-	/// is DERIVED — `build_column` still returns Stone and the journal
-	/// still carries Stone, which is what lets veins appear in worlds that
-	/// already exist. Not `crafted` either: the bench cannot make ore, so
-	/// gating its pickup would gate a thing with no recipe to gate it by.
-	/// A PLACED ore block is ordinary chunk data — visible to everyone at
-	/// any level, diggable at face value, and it drops itself, so showing
-	/// off a find round-trips.
-	Emberore = 48 => mat(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), Material::Emberore),
-	Duskstone = 49 => mat(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), Material::Duskstone),
-	/// The deep pair glow: Stage-A emissive INK only, no `emits` — a
-	/// revealed seam glitters in a dark cave and casts nothing, which is
-	/// the split the two light properties exist for.
-	Glowvein = 50 => mat(glows(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock)), Material::Glowvein),
-	Aetherock = 51 => mat(glows(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock)), Material::Aetherock),
-	/// The tapped-out vein face: what a field extraction leaves behind
-	/// instead of a hole, so mining ore never excavates and the mountain
-	/// keeps its shape. Crumbles to Rubble like any other rock.
+	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the reveal
+	/// stamp and for nothing else you can hold: worldgen places none of
+	/// them, because ore is DERIVED — `build_column` still returns Stone
+	/// and the journal still carries Stone, which is what lets veins appear
+	/// in worlds that already exist. Not `crafted` either: the bench cannot
+	/// make ore, so gating its pickup would gate a thing with no recipe to
+	/// gate it by.
+	///
+	/// **A vein is world geometry, never an item.** Siphoning it draws the
+	/// essence straight into your stocks and leaves the tier's own spent
+	/// rock standing (`ore::spent_rock`), and THAT is what you break and
+	/// carry home. So `is_slottable` is false for all four and nothing can
+	/// credit one — which is also why the question "does a placed ore block
+	/// glow?" has no answer to get wrong.
+	///
+	/// All four `seams`: a revealed vein lights the room it opens into,
+	/// from the faces that open into it and no others. The two deep tiers
+	/// wore the ink already; the shallow pair join them here, which is what
+	/// their darkened texture bodies are for (GI-DESIGN.md R31).
+	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
+	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
+	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock), 6)), Material::Aetherock),
+	/// The generic grey tapped face the per-tier rocks at the end of this
+	/// table replaced. Kept, and unreachable: nothing writes it any more,
+	/// but journals and saves made before those rocks existed carry cells
+	/// that hold it, and an id that stops decoding is a world that stops
+	/// loading. It still crumbles to Rubble, which is what it always did.
 	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
 	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
-	/// like the bucket, but CRAFTED rather than owned from the start
-	/// (Alch 10). Held, a dig-hold on a revealed vein draws the ore out
+	/// like the bucket, but CRAFTED rather than owned from the start.
+	/// Held, a dig-hold on a revealed vein draws the ore out
 	/// and leaves DepletedStone; without it a revealed vein refuses the
 	/// hold entirely, so nobody stone-digs a seam away by accident.
 	///
 	/// Its price carries no Metal, ever: ore needs the siphon and Metal
 	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
 	/// first world where nobody has one.
-	EssenceSiphon = 53 => props(RenderClass::None, false, 0, 0, 0),
-	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted at Alch 55, usable
-	/// at Mining 55 — the flagship cross-skill dependency, and the game's
-	/// biggest essence sink. Held, one hold breaks the plane of the face
-	/// you hit: three wide, and the full nine from Mining 85.
-	ResonantPick = 54 => props(RenderClass::None, false, 0, 0, 0),
+	///
+	/// It CASTS, and only just: the barrel holds drawn essence and the
+	/// work it exists for happens at the bottom of a mine, but it is an
+	/// extraction tool that happens to glow rather than a lamp. A green
+	/// pool at the feet, and the Resonant Pick well above it — the tool
+	/// you MINE with is the one worth carrying for its light.
+	/// `emissive` is
+	/// deliberately NOT set — a tool is not fullbright, only the one face
+	/// `item_geom` marks as its glow is (the torch is one material and
+	/// can afford a per-block flag; a tool has a body worth shading).
+	/// The tint comes from the texture, which is the whole reason a row
+	/// that renders nothing carries one.
+	EssenceSiphon = 53 => emits(props(RenderClass::None, false, tex::SIPHON_GLOW, tex::SIPHON_GLOW, tex::SIPHON_GLOW), 5),
+	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted and wielded at the
+	/// same level in either skill — the flagship cross-skill dependency,
+	/// and the game's biggest essence sink. Held, one hold breaks the plane
+	/// of the face you hit, over a square that widens again later in Mining.
+	///
+	/// This is the level it casts at in ANY hand. It is the one light in
+	/// the game that answers to its wielder — see
+	/// [`crate::gi::carried_light`], which raises it at the rank that
+	/// widens the swing, so the tool's two ranks are one progression the
+	/// player can see.
+	ResonantPick = 54 => emits(props(RenderClass::None, false, tex::PICK_GLOW, tex::PICK_GLOW, tex::PICK_GLOW), 9),
 	/// §7.2's dressed stones — the same rock, worked. Free under the
 	/// grid: a material row, a texture, and every shape it is authored
 	/// in unlocks with it.
@@ -229,11 +261,27 @@ blocks! {
 	/// as wearing the ink.
 	Lantern = 72 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::LANTERN, tex::LANTERN, tex::LANTERN))), 13), 30, DigFamily::Rock),
 	Aetherlamp = 73 => dig(emits(glows(crafted(props(RenderClass::Opaque, true, tex::AETHERLAMP, tex::AETHERLAMP, tex::AETHERLAMP))), 15), 30, DigFamily::Rock),
-	/// The Master's Sigil (Alch 99): 99 Aether for a thing that does
-	/// nothing at all. An item-only row like the tools — never placed,
-	/// never rendered in the world — because what it is FOR is being the
-	/// last line of the catalog.
+	/// The Master's Sigil: the catalog's last unlock, priced in Aether
+	/// alone, for a thing that does nothing at all. An item-only row like
+	/// the tools — never placed, never rendered in the world — because
+	/// what it is FOR is being the last line of the catalog.
 	MastersSigil = 74 => props(RenderClass::None, false, 0, 0, 0),
+	/// The tapped-out vein faces, one per tier: what a field extraction
+	/// leaves behind instead of a hole, so mining ore never excavates and
+	/// the mountain keeps its shape.
+	///
+	/// Still the rock it was — same body, same flecks, the light gone out
+	/// of them — because a spent seam should read as the vein you worked
+	/// rather than as one more grey stone, and because the block you carry
+	/// home from it is a trophy of THAT tier. Each drops ITSELF, so the
+	/// face you tapped is the thing you take; ordinary chunk data with no
+	/// reveal gate, so everyone sees it on your wall whatever they have
+	/// levelled into. Neither `glows` nor `seams`: what a siphon takes out
+	/// is exactly the light.
+	DepletedEmberore = 75 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE), 90, DigFamily::Rock), Material::DepletedEmberore),
+	DepletedDuskstone = 76 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
+	DepletedGlowvein = 77 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
+	DepletedAetherock = 78 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -290,7 +338,7 @@ pub enum RenderClass {
 	/// Water mesh (alpha-blended, no depth write); emits faces only toward
 	/// `None` neighbors; culls same-type; top faces get the surface lip.
 	Translucent,
-	/// Sub-block geometry from the `shapes` registry (12ths grid). Solid
+	/// Sub-block geometry from the `shapes` registry (sub-grid). Solid
 	/// stream; occlusion is per-face via the shape's coverage masks, and
 	/// shaped blocks never cast AO (like Cutout).
 	Shaped,
@@ -301,21 +349,24 @@ pub enum RenderClass {
 /// this stays a plain tag so block.rs keeps sitting below the mesher.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ShapeKind {
-	/// 3 steps at 4/12 risers; state nibble bits 0-1 = facing.
+	/// An even stepped ascent; the state nibble carries the facing.
 	Stairs,
-	/// Thin two-cell leaf; state nibble = facing | open<<2 | upper<<3.
+	/// Thin two-cell leaf; the state nibble carries facing, open, and
+	/// which half of the leaf this cell is.
 	Door,
-	/// Bottom-anchored 12×12×4 (state 0) or 12×12×8 (state 1) fill.
+	/// Bottom-anchored partial fill; the state nibble carries the
+	/// thickness and the anchor.
 	Slab,
 	/// Floor-mounted torch: post + glowing head, one stateless variant.
 	Torch,
 	/// Full-footprint top on four legs; stateless, so tables pushed
 	/// together read as one surface.
 	Table,
-	/// Seat, back and four legs; state nibble bits 0-1 = facing (the back).
+	/// Seat, back and four legs; the state nibble carries the facing (the
+	/// back).
 	Chair,
 	/// A one-cell cot: mattress on a low frame, pillow at the head end;
-	/// state nibble bits 0-1 = facing (the head).
+	/// the state nibble carries the facing (the head).
 	Bed,
 }
 
@@ -371,9 +422,10 @@ impl ShapeFamily {
 		}
 	}
 
-	/// The form's volume in sub-units (27ths of a block) — §4.2's volume
-	/// rule, and the factor every craft cost and extraction yield in this
-	/// material is prorated by. Pinned against the rasterized geometry by
+	/// The form's volume in sub-units (`shapes::SUBS_PER_BLOCK` to a whole
+	/// cube) — §4.2's volume rule, and the factor every craft cost and
+	/// extraction yield in this material is prorated by. Pinned against
+	/// the rasterized geometry by
 	/// `shapes::craft_costs_derive_from_collision_volume`.
 	pub fn units(self) -> u32 {
 		match self {
@@ -457,7 +509,8 @@ pub enum MeshBucket {
 /// mesher and the fluid sim.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FluidProps {
-	/// Level 1..=8 this block holds (sources and falls are full).
+	/// The water level this block holds, thinnest up (sources and falls are
+	/// full).
 	pub amount: u8,
 	/// Infinite, never recomputed by the fluid sim.
 	pub source: bool,
@@ -486,11 +539,11 @@ pub struct BlockProps {
 	pub crafted: bool,
 	/// Texture-array layer indices (order fixed by
 	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
-	/// range is reachable — the vertex format's layer field is 10 bits.
+	/// range is reachable — the mesher's vertex layer field is what caps it.
 	pub tex_side: u16,
 	pub tex_top: u16,
 	pub tex_bottom: u16,
-	/// Hold-to-dig duration in 60 Hz sim ticks; 0 = cannot be dug or
+	/// Hold-to-dig duration in sim ticks; 0 = cannot be dug or
 	/// collected. Shared client/server behavior — retuning is a
 	/// SIM_VERSION bump.
 	pub hardness_ticks: u16,
@@ -512,11 +565,28 @@ pub struct BlockProps {
 	/// material's shapes to one answer, which is what a FUNCTIONAL row
 	/// (torch, lamp) opts out of by carrying no material at all.
 	pub emissive: bool,
-	/// Stage-B cast light (LIGHT-DESIGN.md): the level this block SEEDS
-	/// into the flood-fill field, 0–15. Purely client-side data — the
-	/// field it feeds is derived, never serialized. Agrees across a
-	/// material's shapes for the same reason [`Self::emissive`] does.
+	/// The level this block CASTS, feeding the GI material LUT and
+	/// `gi.rs`'s light list and nothing else (GI-DESIGN.md). Purely
+	/// client-side data — what it feeds is derived, never serialized.
+	/// Agrees across a material's shapes for the same reason
+	/// [`Self::emissive`] does.
 	pub light: u8,
+	/// This block radiates from its exposed FACES, not from the middle of
+	/// its cell — the difference between a lamp and a seam in a wall.
+	///
+	/// A torch is a point: it stands in open air and throws light every way
+	/// at once, and one entry at its flame is the whole of it. A vein is
+	/// not. Most of a vein is buried, and buried rock must light nothing —
+	/// so a cell's worth of ore is a light only where it MEETS the air, and
+	/// what it lights is the room in front of that face. Setting this makes
+	/// the block's light a surface quantity: `gi::classify_chunk` declines
+	/// to place a point source for it, and the mesher — which is already
+	/// deciding, face by face, what is exposed — hands the renderer the
+	/// merged rectangles instead (GI-DESIGN.md R31).
+	///
+	/// [`Self::light`] still says how bright, and the LUT still says in
+	/// what colour. This says only WHERE FROM.
+	pub surface_light: bool,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
 	/// can never forget it. Shared client/server behavior — a family
@@ -524,30 +594,34 @@ pub struct BlockProps {
 	pub dig_family: DigFamily,
 	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid).
 	/// Together with [`Self::shape`] it derives the unlock level, the craft
-	/// cost, the extraction yield and the rock gate — see
+	/// cost, the extraction yield and the earned half of the strength wall — see
 	/// [`crate::material`]. `None` for air, the water family and every
 	/// FUNCTIONAL item (tools, torches, lamps): function is priced by hand,
 	/// never by volume, so those carry their own small tables instead.
 	pub material: Option<Material>,
 }
 
-/// The per-material dig-speed families (SKILLS-DESIGN §5.1). Each keys a
-/// Mining-level curve in `skills::dig_speed_permille`; all families pass
-/// EXACTLY through 1000‰ at level 30 (the legacy table is the shared
-/// mid-curve golden), so the family only shapes the approach and the
-/// ceiling. `Fixed` is the flat curve for things that must never scale:
-/// near-instant foliage, fixtures, and the water scoop whose duration is
-/// pinned to the viewmodel swing.
+/// The per-material dig-speed families (SKILLS-DESIGN §5.1). A family is
+/// just the two ENDPOINTS of its Mining curve — its first-level speed and
+/// its mastery speed — so it chooses the approach and the ceiling and
+/// nothing else; the shape between them is one shared taper in
+/// `skills::dig_speed_permille`. It is also the axis the strength wall is
+/// keyed on (`unlock::mine`), which is what opens every block of a family
+/// together. `Fixed` is the zero-width range for things that must never
+/// scale: near-instant foliage, fixtures, and the water scoop whose
+/// duration is pinned to the viewmodel swing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DigFamily {
-	/// 1000‰ at every level — never faster, never slower.
+	/// Exactly the base duration at every level — never faster, never
+	/// slower.
 	Fixed,
-	/// Loose ground: today's original curve (1250 → 1000 → 417).
+	/// Loose ground: the gentlest climb, and diggable from the first swing.
 	Soft,
-	/// Timber: a firmer start, a gentler ceiling (1350 → 1000 → 500).
+	/// Timber: a firmer start and a gentler ceiling. The middle rung of the
+	/// strength wall.
 	Wood,
-	/// Rock resists a novice hard (1700 → 1000 → 417) and is level-gated
-	/// besides (`unlock::mine`).
+	/// Rock resists a novice hard, and is the last rung of the strength
+	/// wall.
 	Rock,
 }
 
@@ -567,6 +641,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		shape: None,
 		emissive: false,
 		light: 0,
+		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
 	}
@@ -593,9 +668,11 @@ const fn crafted(mut p: BlockProps) -> BlockProps {
 	p
 }
 
-/// Diggable: hold-to-dig completes after `ticks` 60 Hz sim ticks at the
-/// level-30 reference, scaled by `family`'s Mining curve. Family rides
-/// the same builder as hardness so a new diggable row can't forget it.
+/// Diggable: hold-to-dig completes after `ticks` sim ticks scaled
+/// by `family`'s Mining curve. `ticks` is the BASE the curve multiplies,
+/// not the duration at some reference level — only the flat `Fixed`
+/// family ever spends exactly it. Family rides the same builder as
+/// hardness so a new diggable row can't forget it.
 const fn dig(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
 	p.hardness_ticks = ticks;
 	p.dig_family = family;
@@ -611,7 +688,7 @@ const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
 
 /// The substance half of SKILLS-DESIGN §7.2's grid. Everything a
 /// structural block's economy needs — unlock level, craft cost, extraction
-/// yield, rock gate — falls out of this plus the row's `shaped` tag, so a
+/// yield, the earned strength wall — falls out of this plus the row's `shaped` tag, so a
 /// material × shape pair is a row and a PNG rather than four table edits.
 /// FUNCTIONAL items deliberately have none (`material_roster_is_pinned`
 /// holds the split).
@@ -626,10 +703,18 @@ const fn glows(mut p: BlockProps) -> BlockProps {
 	p
 }
 
-/// Stage-B cast light: this block seeds `level` (1–15) into the voxel
-/// light field.
+/// This block casts light at `level` — see [`BlockProps::light`].
 const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
 	p.light = level;
+	p
+}
+
+/// This block casts light at `level` from its exposed FACES rather than
+/// from the middle of its cell — see [`BlockProps::surface_light`]. A
+/// seam, not a lamp.
+const fn seams(mut p: BlockProps, level: u8) -> BlockProps {
+	p.light = level;
+	p.surface_light = true;
 	p
 }
 
@@ -654,6 +739,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		shape: None,
 		emissive: false,
 		light: 0,
+		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
 	}
@@ -683,9 +769,12 @@ pub mod tex {
 	pub const TORCH_FLAME: u16 = 18;
 	/// Planed timber — the material crafted things are made OF, as
 	/// opposed to [`LOG`], which is the tree. [`LUMBER_LIGHT`] is the
-	/// joinery (the bucket, the torch post, and the Lumber block with its
-	/// stairs, slab and door); `LUMBER_DARK` and `LUMBER_RED` are
-	/// registered and unused — the obvious second and third timbers.
+	/// joinery (the bucket, the furniture, and the Lumber block with its
+	/// stairs, slab and door); [`LUMBER_DARK`] and [`LUMBER_RED`] are the
+	/// second and third timbers, each with a block set of its own. The
+	/// dark one is also what [`TORCH_SIDE`]'s post is cut from, because
+	/// that texture is drawn fullbright and a pale timber has no headroom
+	/// left to take the emissive gain.
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
@@ -706,11 +795,29 @@ pub mod tex {
 	pub const CRYSTAL: u16 = 32;
 	pub const LANTERN: u16 = 33;
 	pub const AETHERLAMP: u16 = 34;
+	/// The two tool glows (§7.3), worn by the siphon and pick ROWS. Those
+	/// blocks are never placed, so these two layers are read in exactly
+	/// two places: the emissive face of the tool's authored geometry
+	/// (`item_geom`), and the GI material LUT, which takes the colour of
+	/// the light a held tool casts from its row's texture. Authoring the
+	/// glow authors the light.
+	pub const SIPHON_GLOW: u16 = 35;
+	pub const PICK_GLOW: u16 = 36;
+	/// The four SPENT vein faces — the same rock as their live tier, with
+	/// the light gone out of the flecks. One per tier rather than the one
+	/// grey [`DEPLETED_STONE`] they replace, because a tapped seam is still
+	/// the rock it was: you should be able to tell at a glance which vein
+	/// you worked, and the block you carry home from it is a trophy of that
+	/// tier and no other.
+	pub const DEPLETED_EMBERORE: u16 = 37;
+	pub const DEPLETED_DUSKSTONE: u16 = 38;
+	pub const DEPLETED_GLOWVEIN: u16 = 39;
+	pub const DEPLETED_AETHEROCK: u16 = 40;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = AETHERLAMP + 1;
+	pub const COUNT: u16 = DEPLETED_AETHEROCK + 1;
 }
 
 impl BlockType {
@@ -749,8 +856,8 @@ impl BlockType {
 		})
 	}
 
-	/// Stage-B cast-light level (0 = casts nothing). The seed value the
-	/// voxel light field's flood fill starts from (LIGHT-DESIGN.md).
+	/// The level this block casts, 0 for anything that casts nothing —
+	/// see [`BlockProps::light`].
 	#[inline]
 	pub fn light_level(self) -> u8 {
 		self.props().light
@@ -786,7 +893,7 @@ impl BlockType {
 	}
 
 	/// Does placing this block derive a facing from the placer's look?
-	/// The state encoding is shared (bits 0-1), so one predicate covers
+	/// The state encoding is shared, so one predicate covers
 	/// the ascending stair and every piece of furniture that has a front.
 	#[inline]
 	pub fn takes_facing(self) -> bool {
@@ -836,7 +943,7 @@ impl BlockType {
 		grid[m as usize * ShapeFamily::COUNT + s as usize]
 	}
 
-	/// How much water this block holds, 1..=8 — None for non-water.
+	/// How much water this block holds — None for non-water.
 	/// Sources and falling water are full; flowing water carries its
 	/// spread level. Pure table lookup: variant identity plays no part.
 	#[inline]
@@ -879,7 +986,7 @@ impl BlockType {
 		matches!(self, BlockType::Air) || self.is_water()
 	}
 
-	/// The flowing-water block for an amount 1..=7.
+	/// The flowing-water block for a below-source amount.
 	#[inline]
 	pub fn water_flow(amount: u8) -> BlockType {
 		debug_assert!((1..=7).contains(&amount));
@@ -899,8 +1006,8 @@ impl BlockType {
 	/// (y = `BEDROCK_Y`) is indestructible, so the bottom of the world
 	/// can never be opened. Client prediction, the server's hold + edit
 	/// validation, and the bot all route through this one predicate;
-	/// worldgen upholds the same floor by never carving y = 0 (see
-	/// worldgen/caves.rs).
+	/// worldgen upholds the same floor by never carving the bedrock course
+	/// (see worldgen/caves.rs).
 	#[inline]
 	pub fn dig_hardness(self, y: i32) -> Option<u16> {
 		if y <= BEDROCK_Y {
@@ -919,17 +1026,66 @@ impl BlockType {
 
 	/// Does holding this type claim a hotbar or inventory slot?
 	///
-	/// Everything does except water: the only water a player can carry is
-	/// the one charge in the water tool, and the tool has its own
-	/// permanent slot to show it in. Its count still lives in the
-	/// [`crate::inventory::Inventory`] — that is where the charge is
-	/// stored, synced and persisted — it simply never becomes an item you
-	/// arrange. [`crate::inv_grid::reconcile_layout`] is the enforcer, so
-	/// saves written while water WAS an item drop their water slots on
-	/// the first reconcile.
+	/// Two exceptions, and they are the same shape: a thing that exists in
+	/// the world but is never an item you arrange.
+	///
+	/// **Water** — the only water a player can carry is the one charge in
+	/// the water tool, and the tool has its own permanent slot to show it
+	/// in. Its count still lives in the [`crate::inventory::Inventory`],
+	/// which is where the charge is stored, synced and persisted.
+	///
+	/// **Raw ore** — a vein is world geometry. Siphoning it pays essence
+	/// straight into your stocks and leaves the tier's spent rock standing,
+	/// and the spent rock is the block you break and carry (SKILLS-DESIGN
+	/// §5.3). Nothing credits an ore block, so nothing may hold one.
+	///
+	/// [`crate::inv_grid::reconcile_layout`] is the enforcer in both cases,
+	/// which makes this the MIGRATION as well as the rule: a save written
+	/// while water was a stack, or while a siphon handed out ore, drops
+	/// those slots on the first reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water && !self.is_tool()
+		self != BlockType::Water && !self.is_tool() && !self.is_raw_ore()
+	}
+
+	/// One of the four live vein faces (SKILLS-DESIGN §5.3) — the blocks
+	/// the reveal stamp paints into pristine stone.
+	///
+	/// The roster itself is [`crate::worldgen::ore::ORES`]; this is the
+	/// membership test the block layer needs without reaching into
+	/// worldgen, and `ore_roster_matches_the_block_predicate` pins the two
+	/// against each other.
+	#[inline]
+	pub fn is_raw_ore(self) -> bool {
+		self.ore_flecks().is_some()
+	}
+
+	/// The fleck palette of a live vein: the crystal's own colour, and the
+	/// lighter rim that catches the light around it.
+	///
+	/// ONE authority for what a tier looks like. `texgen` paints the flecks
+	/// from it and paints the spent rock's dead flecks from it too, and the
+	/// GI material LUT casts the vein's light in the core colour — so a
+	/// retint moves the rock, its tapped sibling and the light it throws
+	/// together, and none of the three can drift.
+	///
+	/// It has to be stated rather than measured, and that is worth knowing
+	/// before anyone tries to derive it: an emitter's tint is normally the
+	/// mean of its texture, which works for a torch because a torch's
+	/// texture is mostly flame. An ore texture is a wide grey field with a
+	/// few flecks on it, so its mean is STONE — near enough colourless on
+	/// every tier — and no weighting of that image recovers the hue, since
+	/// the problem is the composition and not the average (GI-DESIGN.md
+	/// R31).
+	#[inline]
+	pub const fn ore_flecks(self) -> Option<([u8; 3], [u8; 3])> {
+		Some(match self {
+			BlockType::Emberore => ([214, 96, 34], [255, 176, 84]),
+			BlockType::Duskstone => ([104, 78, 168], [172, 146, 236]),
+			BlockType::Glowvein => ([72, 226, 214], [198, 255, 248]),
+			BlockType::Aetherock => ([240, 214, 96], [255, 248, 200]),
+			_ => return None,
+		})
 	}
 
 	/// A tool id: an item-only row that lives in the dedicated tool slot,
@@ -1149,6 +1305,10 @@ mod tests {
 			(BlockType::CrystalSlab, Rock),
 			(BlockType::Lantern, Rock),
 			(BlockType::Aetherlamp, Rock),
+			(BlockType::DepletedEmberore, Rock),
+			(BlockType::DepletedDuskstone, Rock),
+			(BlockType::DepletedGlowvein, Rock),
+			(BlockType::DepletedAetherock, Rock),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -1164,7 +1324,7 @@ mod tests {
 
 	/// The material assignment is an explicit roster for the same reason
 	/// the dig families are: it decides a block's unlock level, its craft
-	/// cost, its extraction yield and its rock gate all at once, so a new
+	/// cost, its extraction yield and its earned wall all at once, so a new
 	/// row picking one up by accident would move four numbers silently.
 	/// The blocks WITHOUT a material are the other half of the decision —
 	/// functional items, priced by hand (§7.3).
@@ -1194,6 +1354,10 @@ mod tests {
 			(B::Glowvein, M::Glowvein),
 			(B::Aetherock, M::Aetherock),
 			(B::DepletedStone, M::DepletedStone),
+			(B::DepletedEmberore, M::DepletedEmberore),
+			(B::DepletedDuskstone, M::DepletedDuskstone),
+			(B::DepletedGlowvein, M::DepletedGlowvein),
+			(B::DepletedAetherock, M::DepletedAetherock),
 			(B::StoneBrick, M::StoneBrick),
 			(B::StoneBrickStairs, M::StoneBrick),
 			(B::StoneBrickSlab, M::StoneBrick),
@@ -1312,7 +1476,7 @@ mod tests {
 	/// so it wears the same ink and casts the same level.
 	///
 	/// This is the grid's one un-derived pair. The unlock level, the craft
-	/// cost, the extraction yield, the rock gate and the transmute family
+	/// cost, the extraction yield, the earned wall and the transmute family
 	/// all fall out of material × shape, but `emissive` and `light` stayed
 	/// per-ROW builders — and a per-row property on a grid axis drifts the
 	/// moment a material grows a second shape. It did: `Crystal` glowed and

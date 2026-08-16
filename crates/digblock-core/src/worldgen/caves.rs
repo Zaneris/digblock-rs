@@ -2,20 +2,21 @@
 //! band alone carves space-filling sheets; requiring both fields near
 //! zero reduces the void to worm-like tunnel curves (and the carved
 //! volume roughly quadratically). Land columns only (no ocean-floor
-//! caves → no water walls at carved openings), never the bedrock layer
-//! at y=0. Frequency sets tunnel spacing (zero bands sit ~half a
+//! caves → no water walls at carved openings), never the bedrock course
+//! at the world floor. Frequency sets tunnel spacing (zero bands sit ~half a
 //! wavelength apart); threshold/frequency sets bore width in blocks — so
 //! lower frequency + higher threshold = fewer, larger caves.
 
-use crate::simplex::{noise3, Noise3Column};
+use crate::simplex::{Noise3Column, noise3};
 
 const CAVE_FREQ: f64 = 0.02;
 const CAVE_THRESHOLD: f64 = 0.15;
-/// Karst anisotropy: band 1's y-frequency is compressed ~2.2x, so its
-/// zero surfaces extend in x/z and stack in y — galleries prefer
-/// near-horizontal levels connected where band 2 wanders, like real
-/// cave systems following bedding planes. Its threshold is raised to
-/// give the vertically-thinner galleries back their headroom.
+/// Karst anisotropy: the gallery band's y-frequency is compressed against
+/// its horizontal one, so its zero surfaces extend in x/z and stack in
+/// y — galleries prefer near-horizontal levels connected where the worm
+/// band wanders, like real cave systems following bedding planes. Its
+/// threshold is raised to give the vertically-thinner galleries back
+/// their headroom.
 const CAVE_FREQ_Y: f64 = 0.045;
 const CAVE_THRESHOLD_1: f64 = 0.18;
 const CAVE_SEED_OFF: f64 = 16193.0;
@@ -62,10 +63,11 @@ impl CaveColumn {
 		}
 	}
 
-	/// Carve bits of the inclusive run `lo..=hi` (at most 32 cells), bit
-	/// `n` = `lo + n`. The anisotropic gallery band goes first (cheapest
-	/// reject) and the isotropic one only where it passed, so most cells
-	/// still cost one noise evaluation — but sweeping the gallery across
+	/// Carve bits of the inclusive run `lo..=hi` (no longer than the
+	/// returned bitmask), bit `n` = `lo + n`. The anisotropic gallery band
+	/// goes first (cheapest reject) and the isotropic one only where it
+	/// passed, so most cells still cost one noise evaluation — but
+	/// sweeping the gallery across
 	/// the whole run first leaves those evaluations independent, where the
 	/// per-cell short-circuit puts a coin-flip branch between them that
 	/// the predictor cannot learn.

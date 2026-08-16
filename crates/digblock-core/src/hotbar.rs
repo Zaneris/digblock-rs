@@ -11,7 +11,7 @@ use crate::block::BlockType;
 pub const HOTBAR_SLOTS: usize = 9;
 
 /// Wire/persist encoding of a slot: block ids are themselves, plus two
-/// sentinels well above any real id (ids are 10-bit).
+/// sentinels well above any real id (see `chunk::ID_BITS`).
 pub const WIRE_EMPTY: u16 = u16::MAX;
 pub const WIRE_TOOL: u16 = u16::MAX - 1;
 
@@ -20,7 +20,7 @@ pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
 	/// THE tool slot marker — permanently the last slot (SKILLS-DESIGN
-	/// §6 formalized it: 8 block slots plus one dedicated tool slot).
+	/// §6 formalized it: the block slots plus one dedicated tool slot).
 	/// WHICH tool it holds is a separate axis, [`Hotbar::active_tool`]:
 	/// tapping 9 with the slot already selected cycles through the owned
 	/// tool roster. The launch tool is the water bucket, whose charge —
@@ -37,8 +37,8 @@ pub struct Hotbar {
 	scroll_accum: f32,
 	/// The tool the dedicated slot currently holds (always a
 	/// [`BlockType::is_tool`] id; the bucket by default). Rides the
-	/// `Layout` wire as the 9th entry, so the server's Collect/pour
-	/// validation always sees the current pick in wire order.
+	/// `Layout` wire as its last entry, after the slots, so the server's
+	/// Collect/pour validation always sees the current pick in wire order.
 	active_tool: BlockType,
 }
 
@@ -108,7 +108,7 @@ impl Hotbar {
 	}
 
 	/// First acquisition of a block type claims the first free slot (the
-	/// tool holds the last one, so blocks fill 1..8; called on every dig
+	/// tool holds the last one, so blocks fill the rest; called on every dig
 	/// credit — later credits find it already assigned). A full bar
 	/// leaves the type unassigned — it still counts in the inventory,
 	/// just isn't reachable from the bar yet. A type that isn't
@@ -131,7 +131,7 @@ impl Hotbar {
 	/// Put `b` in `slot` (an inventory-screen drop). Move-not-duplicate:
 	/// if `b` already sits elsewhere on the bar the two slots swap, so a
 	/// type never appears twice. Refused (false) for the tool slot —
-	/// §6 fixed it in place; blocks live in 1..8.
+	/// §6 fixed it in place; blocks live in the slots before it.
 	pub fn assign(&mut self, slot: usize, b: BlockType) -> bool {
 		if slot >= HOTBAR_SLOTS || self.slots[slot] == Some(HotbarItem::WaterTool) {
 			return false;
@@ -222,9 +222,10 @@ impl Hotbar {
 		}
 	}
 
-	/// Wheel selection: accumulate notches, step once per ±1.0, wrapping.
-	/// Pixel-delta scrolls (trackpads) arrive fractional; the accumulator
-	/// turns mistuned normalization into a feel issue, not a skip.
+	/// Wheel selection: accumulate notches, step once per whole notch in
+	/// either direction, wrapping. Pixel-delta scrolls (trackpads) arrive
+	/// fractional; the accumulator turns mistuned normalization into a
+	/// feel issue, not a skip.
 	pub fn scroll(&mut self, dy: f32) {
 		self.scroll_accum += dy;
 		while self.scroll_accum >= 1.0 {
@@ -372,9 +373,11 @@ mod tests {
 		let hb = Hotbar::from_wire(&wire);
 		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
 		assert_eq!(hb.active_tool(), B::Bucket);
-		assert!(Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
-			.slots()
-			.contains(&Some(HotbarItem::WaterTool)));
+		assert!(
+			Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
+				.slots()
+				.contains(&Some(HotbarItem::WaterTool))
+		);
 	}
 
 	#[test]

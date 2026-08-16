@@ -97,11 +97,12 @@ pub struct RunOptions {
 	pub screenshot: Option<PathBuf>,
 	pub screenshot_after_frames: u32,
 	pub exit_after_screenshot: bool,
-	/// Automated lifecycle drill: at frame 20 suspend+resume (surface
-	/// dropped and recreated through the production transitions), at frame
-	/// 40 simulate device loss (renderer rebuild), at frame 60 destroy the
-	/// device for real (full ReinitDevice recovery), complete and exit at
-	/// frame 100. An incomplete drill makes `run` return an error.
+	/// Automated lifecycle drill, a step every few frames: suspend+resume
+	/// (surface dropped and recreated through the production transitions),
+	/// then a simulated device loss (renderer rebuild), then a real device
+	/// destroy (full ReinitDevice recovery), then complete and exit once
+	/// frames are landing again on the recovered device. An incomplete
+	/// drill makes `run` return an error.
 	/// Manual equivalents: F9 (hold suspended) and F10.
 	pub auto_drill: bool,
 	/// Exit after this many presented frames (benchmark runs).
@@ -109,11 +110,29 @@ pub struct RunOptions {
 	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
 	/// so benchmarks measure real frame cost, not vsync residue.
 	pub no_vsync: bool,
+	/// Draw into a texture of our own instead of the swapchain, and never
+	/// acquire or present. A capture flag, and the one that makes a
+	/// capture independent of the DESKTOP: a window that is minimized,
+	/// covered, or behind a screensaver is handed no surface texture at
+	/// all on macOS, so an unattended run through the swapchain simply
+	/// stops producing frames when the screen locks. Off this path there
+	/// is no compositor in the picture — no drawable, no vsync, no window
+	/// stacking.
+	///
+	/// Deliberately NOT implied by `--screenshot`: dropping the swapchain
+	/// also drops the present wait, so a frame-time run means something
+	/// different here, and every BENCH.md baseline was taken through the
+	/// surface. Opt in per run.
+	///
+	/// Composes with [`Self::auto_drill`] — suspend still drops and
+	/// rebuilds the surface, and this target with it — but the drill then
+	/// covers one transition less, since nothing acquires.
+	pub offscreen: bool,
 	/// Logical window size, when a run needs a SPECIFIC one rather than
-	/// winit's 800x600 default. The GI resolve is half-res off the
-	/// surface, so its cost scales with this directly — which makes it the
-	/// one knob a desktop-vs-web comparison has to hold equal before any
-	/// of its numbers mean anything.
+	/// winit's default. The GI resolve is a fraction of the surface, so
+	/// its cost scales with this directly — which makes it the one knob a
+	/// desktop-vs-web comparison has to hold equal before any of its
+	/// numbers mean anything.
 	pub window_size: Option<(u32, u32)>,
 	/// Open the window on this monitor (index into winit's enumeration)
 	/// instead of wherever the desktop last had focus.
@@ -142,7 +161,7 @@ pub struct RunOptions {
 #[derive(Debug)]
 pub enum RunError {
 	/// `--drill` exited before completing every step (the destroy-step
-	/// recovery must render through frame 100).
+	/// recovery must go on rendering on the recovered device).
 	DrillIncomplete { frames_rendered: u64 },
 }
 

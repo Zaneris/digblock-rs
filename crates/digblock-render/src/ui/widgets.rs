@@ -4,7 +4,7 @@
 
 use super::draw::{DrawList, Layer};
 use super::hit::HitMap;
-use super::{scale, Rect};
+use super::{Rect, scale};
 
 // Shared palette (0xAABBGGRR, matching overlay.rs).
 pub const WHITE: u32 = 0xFFFFFFFF;
@@ -168,16 +168,16 @@ pub fn button<Id: Copy + PartialEq>(
 	}
 }
 
-/// Stack-count badge in a slot's bottom-right corner: "99+" past two
-/// digits, with a one-pixel drop shadow so digits stay readable on light
-/// icons (snow, sand).
+/// Stack-count badge in a slot's bottom-right corner, saturating at
+/// "99+", with a drop shadow so digits stay readable on light icons
+/// (snow, sand).
 ///
 /// Drawn at the frame's text size like everything else. It used to be
 /// pinned at [`scale::FIXED_GLYPH_PX`] — a holdover from the bitmap font,
-/// whose sizes snapped to 8/16/24/32, so "one step down" was the only way
-/// to get a small badge. With a real face there is no ladder to step
-/// down, and a pinned 16px badge just read as half-size text next to a
-/// 32px UI on a dense display.
+/// whose sizes snapped to multiples of its cell, so "one step down" was
+/// the only way to get a small badge. With a real face there is no ladder
+/// to step down, and a pinned badge just read as half-size text beside a
+/// scaled-up UI on a dense display.
 pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, count: u32, c: u32) {
 	const SHADOW: u32 = 0xE0000000;
 	let px = style.glyph;
@@ -336,7 +336,7 @@ mod tests {
 			SlotRing::Strong,
 			false,
 		);
-		// Backdrop: slot bg + 4 border quads.
+		// Backdrop: the slot fill plus the ring's border quads.
 		assert_eq!(dl.cmds(Layer::Backdrop).0.len(), 5);
 		// A cube icon: three projected faces, all inside the icon rect.
 		let icons = dl.cmds(Layer::Icons).0;
@@ -356,8 +356,8 @@ mod tests {
 	}
 
 	/// The three ring weights and the hover wash are distinct quad
-	/// budgets: no ring = bare fill, weak/strong = +4 borders, hover = +1
-	/// wash under either.
+	/// budgets: no ring is a bare fill, weak and strong add the ring's
+	/// borders, and hover adds one wash under either.
 	#[test]
 	fn slot_rings_and_hover_have_distinct_quads() {
 		let quads = |ring: SlotRing, hovered: bool| {

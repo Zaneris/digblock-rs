@@ -20,9 +20,19 @@ web-time.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-# Layout tripwire only (frame_layout_matches_wgsl); same spec as
-# digblock-assets' shader-validation dev-dependency.
-naga = { version = "26", features = ["wgsl-in"] }
+# Layout tripwire only (frame_layout_matches_wgsl). The workspace pin, for
+# the reason digblock-assets uses it: this parses the SHIPPED WGSL, so a
+# front end older than the runtime's own naga answers a question about a
+# language the runtime no longer speaks.
+naga.workspace = true
+
+# `every_pipeline_builds_without_a_gpu` only. wgpu's noop backend stubs the
+# HAL but leaves wgpu-core's validation intact, which is the whole point —
+# see the test. Kept OFF wasm deliberately: the feature pulls wgpu-core and
+# wgpu-hal in, and the browser build otherwise links neither.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { workspace = true, features = ["noop"] }
+pollster.workspace = true
 
 [lints]
 workspace = true

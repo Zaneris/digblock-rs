@@ -42,8 +42,8 @@ const CORNERS = array<vec2f, 6>(
 	vec2f(0.5, 0.5),
 );
 
-// Six saturated party colors. Picked per flake, never blended, so a
-// burst reads as confetti rather than as a colored cloud.
+// Saturated party colors. Picked per flake, never blended, so a burst
+// reads as confetti rather than as a colored cloud.
 const PALETTE = array<vec3f, 6>(
 	vec3f(1.00, 0.28, 0.32),
 	vec3f(1.00, 0.78, 0.20),

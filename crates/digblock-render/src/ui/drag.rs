@@ -11,6 +11,7 @@ use super::hit::HitMap;
 /// Below it a press+release is a [`DragEvent::Click`], not a drop.
 pub const DRAG_THRESHOLD_PX: f32 = 4.0;
 
+#[derive(Debug)]
 pub enum DragEvent<Id, P> {
 	None,
 	/// Press and release under the threshold: a plain click on `id`.
@@ -96,6 +97,7 @@ impl<Id: Copy, P> DragState<Id, P> {
 mod tests {
 	use super::*;
 	use crate::ui::Rect;
+	use std::assert_matches;
 
 	fn map() -> HitMap<u8> {
 		let mut m = HitMap::default();
@@ -148,8 +150,8 @@ mod tests {
 		d.on_move((120.0, 20.0), DRAG_THRESHOLD_PX);
 		d.cancel();
 		assert!(d.ghost().is_none());
-		assert!(matches!(d.on_release(&map()), DragEvent::None));
+		assert_matches!(d.on_release(&map()), DragEvent::None);
 		// A release with no press at all (click began outside any slot).
-		assert!(matches!(d.on_release(&map()), DragEvent::None));
+		assert_matches!(d.on_release(&map()), DragEvent::None);
 	}
 }

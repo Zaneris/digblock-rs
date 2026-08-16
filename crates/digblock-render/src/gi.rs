@@ -1,6 +1,6 @@
 //! RTGI probe volume (GI-DESIGN.md). P1 built the voxel window the
 //! rays march; P2 makes the probes real: two toroidal 6-axis
-//! ambient-cube cascades (C0 2-block spacing near, C1 8-block far),
+//! ambient-cube cascades (C0 fine and near, C1 coarse and far),
 //! ping-ponged rgba16float atlases updated by an amortized compute
 //! trace (spherical-Fibonacci rays, coarse-skip DDA, sun + sky +
 //! emissive radiance, infinite bounce by sampling last frame's atlas
@@ -11,20 +11,20 @@
 
 use digblock_core::block::BlockType;
 use digblock_core::chunk::ChunkPos;
-use digblock_core::gi::{opacity, GiChunk, GiOpacity};
+use digblock_core::gi::{GiChunk, GiOpacity, opacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
 use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
-/// C0 probe grid (2-block spacing near cascade; see GI-DESIGN.md).
+/// C0 probe grid (the near cascade; see GI-DESIGN.md).
 pub const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
 /// C0's probe spacing in blocks — the finest scale the bounce field can
 /// resolve, and therefore the granularity a moving emitter has to be
 /// re-placed at (`engine::CARRY_INVAL_STEP`).
 pub const C0_SPACING: u32 = 2;
-/// C1 far cascade (8-block spacing).
+/// C1 far cascade (the coarse spacing).
 pub const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
 /// Probes traced per cascade per frame (the amortization grain).
 const PROBES_PER_DISPATCH: u32 = 512;
@@ -38,81 +38,177 @@ const MAX_LIGHTS: usize = 256;
 /// whose LUT row carries its cast level and its tint.
 ///
 /// A light a player is CARRYING is one of these too. It just isn't in a
-/// chunk — which is the whole of the difference, and the only reader
-/// that can tell is `gi_light_margin_of`, because the margin is a
-/// question about the light's CELL and a carried one has none.
-pub type Emitter = (f32, f32, f32, u8);
+/// chunk — which is the whole of the difference, and the only readers
+/// that can tell are `gi_light_margin_of`, because the margin is a
+/// question about the light's CELL and a carried one has none, and
+/// [`Self::level`], which only a carried light ever sets.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Emitter {
+	/// Where the light radiates from: a point for a lamp, the CENTRE of
+	/// the rectangle for a [`Self::face`] emitter.
+	///
+	/// One field for both because everything that reasons about a light
+	/// without shading it — the reach filter, the distance selection, the
+	/// reservoir's candidate score — wants a representative point and
+	/// nothing more.
+	pub pos: [f32; 3],
+	pub class: u8,
+	/// Cast level for THIS entry, or 0 to take the class's own.
+	///
+	/// A placed emitter is always 0: a torch is a torch wherever it
+	/// stands, so its level belongs to its LUT row and one number serves
+	/// every copy of it in the world. The exception is a tool whose
+	/// wielder has earned a brighter one (`core::gi::carried_light`),
+	/// which is a property of the HOLDER and therefore of the entry —
+	/// there is no second class to give it, and the same pick in two
+	/// different hands must be free to cast differently.
+	pub level: u8,
+	/// Draw this entry's tint pulled toward white
+	/// (`core::gi::CarriedLight::whitened`). Per entry for the same
+	/// reason the level is: the class byte is shared by every copy of the
+	/// tool in the world, and this one belongs to who is holding it.
+	pub whitened: bool,
+	/// The rectangle this light radiates from, for a SURFACE emitter — a
+	/// revealed vein's exposed face, merged by `mesher::lights`. `None`
+	/// is a point source: a torch, a lamp, a light in somebody's hand.
+	///
+	/// This is the one thing about an entry that changes how the estimator
+	/// works rather than merely what it is worth, so it is worth being
+	/// plain about what it buys. A point approximating a patch of glowing
+	/// rock is wrong in the two places you look at it from: standing at the
+	/// wall it is a hotspot rather than an even wash, and it has no cosine
+	/// at its own surface, so it spills light around the corner of the rock
+	/// it is supposed to be sitting IN. Sampling the rectangle fixes both,
+	/// which is why path tracers have extracted light polygons from
+	/// emissive geometry since NEE was new (GI-DESIGN.md R31).
+	pub face: Option<Face>,
+}
 
-/// Bit 8 of a light entry's packed `w` word: this light is being
-/// CARRIED. The class byte occupies 0–7 and every shader reader masks,
-/// exactly as the resolve's history length rides its face code.
+/// An axis-aligned emissive rectangle: which way it faces and how big it
+/// is. Its position is the [`Emitter::pos`] it rides with.
+///
+/// Voxel faces are axis-aligned by construction, so this is four numbers
+/// rather than a basis — and the shader rebuilds the two tangents the same
+/// way `mesher::lights::tangents` does, in ascending axis order, so the
+/// packer and the sampler cannot disagree about which extent is which.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Face {
+	/// The axis the outward normal lies along: 0, 1 or 2 for x, y, z.
+	pub axis: u8,
+	/// Outward normal points UP that axis rather than down it.
+	pub positive: bool,
+	/// Full extent in blocks along the two tangent axes, ascending.
+	pub ext: [f32; 2],
+}
+
+/// The flag riding above the class byte in a light entry's packed `w`
+/// word: this light is being CARRIED. The class byte occupies the low
+/// bits and every shader reader masks, exactly as the resolve's history
+/// length rides its face code.
 ///
 /// It exists for one reason, and it is not cosmetic: `gi_light_margin`
 /// is how far short of a light its shadow ray stops, derived from the
 /// light's position WITHIN ITS CELL. That bound is only tolerable
-/// because a placed emitter sits at a known offset inside one — a
-/// torch's flame gives 1.036, the worst any of them reach. A carried
-/// light hangs at feet + 1.0, so a carrier standing on a block top lands
-/// on the degenerate maximum and the margin runs to 1.77, which swallows
-/// a whole wall they are standing against. Pinned against the WGSL twin
-/// by `the_carried_flag_matches_the_shaders`.
+/// because a placed emitter sits at a known offset inside one — even a
+/// torch's flame, the worst of them, stays well inside its own cell. A
+/// carried light hangs on its carrier's capsule axis, so a carrier
+/// standing on a block top lands on the degenerate maximum and the
+/// margin grows to swallow a whole wall they are standing against.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_CARRIED: u32 = 256;
 
+/// Where [`Emitter::level`] rides in the same packed word, above the
+/// class byte and the carried flag. Zero means "no override" — the LUT
+/// row's own level stands — so a placed emitter's word is bit-identical
+/// to what it was before per-entry levels existed.
+///
+/// Four bits, which is every level the game authors: `emits` runs to the
+/// brightest lamp and no further. A wider range would want a wider field
+/// and there is room above it, but it would also want a reason.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_LEVEL_SHIFT: u32 = 9;
+pub(crate) const LIGHT_LEVEL_MASK: u32 = 15;
+
+/// [`Emitter::whitened`]'s flag, above the level field — the entry's
+/// second per-holder property, and packed rather than classed for the
+/// same reason.
+///
+/// HOW FAR toward white is not here: `GI_LIGHT_WHITEN` lives in
+/// gi_dda.wgsl, which is the only thing that applies it (`gi_light_tint`,
+/// shared so both NEE passes agree by construction), and a mirror on this
+/// side would be a second copy of a value with one user. The test that
+/// has to know it reads it back out of the shader source.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_WHITENED: u32 = 8192;
+
+/// [`Emitter::face`]'s flag: this entry is a RECTANGLE, and the second
+/// half of its pair carries the extents and the facing.
+///
+/// It is what makes the light list heterogeneous — punctual sources and
+/// area sources in one array, the way every production path tracer's is —
+/// and every reader branches on it exactly once, inside
+/// `gi_light_sample`. Punctual entries leave it clear and their second
+/// vec4 unused, so a torch's word is bit-identical to what it was before
+/// rectangles existed.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_QUAD: u32 = 16384;
+
 /// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
-/// The real sun is about 0.27 degrees of angular radius; this is 0.5,
-/// roughly twice that, which buys a penumbra that is sharp at contact
+/// The real sun's disc is a fraction of a degree across; this cone is
+/// deliberately wider, which buys a penumbra that is sharp at contact
 /// and softens with distance to the occluder — the thing a shadow map
 /// never had — at no extra ray. Widen it and shadows get mushy AND
 /// noisier, since one sample has to cover more solid angle.
 /// Format of the two ping-ponged resolve targets — BOTH of which hold a
 /// running average, which is the whole constraint. rgba8 was tried first
-/// and could not: at a history length of 512 each frame contributes 1/512
-/// of a difference and in 8 bits that rounds to zero, so the average
-/// stopped moving. rgba16f then failed the SAME way, one format up, and it
-/// took a capture harness that can see motion to notice — half-float
-/// carries a 10-bit mantissa, so near a stored value of 1.0 the ulp is
-/// ~1e-3 and `hi + (indirect - hi)/512` rounds away unless the difference
-/// exceeds ~0.25. A quarter of the signal range never converged: every
-/// pixel froze where it stood when the camera stopped, leaving a pattern
-/// locked to the path walked, permanently. Measured at mean 0.988 over
-/// 10.4% of pixels after 25 seconds of stillness (GI-DESIGN.md
-/// "Measuring motion").
+/// and could not: at full history length each frame contributes one
+/// `N_MAX`-th of a difference and in 8 bits that rounds to zero, so the
+/// average stopped moving. rgba16f then failed the SAME way, one format
+/// up, and it took a capture harness that can see motion to notice —
+/// half-float's 10-bit mantissa puts the ulp near a stored value of one
+/// above what `hi + (indirect - hi)/n` contributes, so the update rounds
+/// away unless the difference is a large fraction of the signal range.
+/// That whole fraction never converged: every pixel froze where it stood
+/// when the camera stopped, leaving a pattern locked to the path walked,
+/// permanently — measurable as a large stalled share of the frame after a
+/// long stillness (GI-DESIGN.md "Measuring motion").
 ///
 /// So the rule is not "use a float format", it is that the format's
 /// mantissa has to carry the smallest increment the history length asks
 /// for: alpha of 1/N stalls once the residual falls under ~N ulps. f32's
-/// 24-bit mantissa puts that floor at ~1e-5 here, which is invisible;
-/// f16's put it at a quarter of the signal.
+/// 24-bit mantissa puts that floor far below one output LSB, which is
+/// invisible; f16's put it inside the signal.
 pub const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 // The a-trous tap strides, one entry per iteration. Doubling the stride
-// instead of growing the kernel is the whole trick: strides 1 and 2 of a
-// 5x5 B3 spline cover 11x11 for 50 taps. A third iteration (stride 4) is
-// deliberately not here — it reaches 23x23, which on a half-res buffer is
-// most of a shadow.
+// instead of growing the kernel is the whole trick: these strides of a B3
+// spline kernel cover a footprint far wider than the taps they cost. A
+// further iteration is deliberately not here — its reach on a half-res
+// buffer is most of a shadow.
 const ATROUS_STEPS: [f32; 2] = [1.0, 2.0];
 
 const SUN_CONE_COS: f32 = 0.999_961_9; // cos(0.5 degrees)
 
 /// How long a consumed edit sphere keeps capping the resolve's screen
 /// history (frames). A lighting edit changes radiance on surfaces whose
-/// face code and depth never change, and a resting pixel at n = 512 admits
-/// the change at 1/512 a frame — a placed torch's pool would fade in over
-/// seconds. The probes re-trace an age-reset probe on the sweep's next
-/// visit (a full C0 sweep is 24576/512 = 48 frames), so two periods holds
-/// the screen at the short-history rate until the cache underneath it has
-/// settled, multi-bounce included.
+/// face code and depth never change, and a resting pixel at full history
+/// admits the change at one `N_MAX`-th a frame — a placed torch's pool
+/// would fade in over seconds. The probes re-trace an age-reset probe on
+/// the sweep's next visit, so two full sweep periods holds the screen at
+/// the short-history rate until the cache underneath it has settled,
+/// multi-bounce included.
 const RESOLVE_INVAL_FRAMES: u32 = 96;
 /// Screen-cap radius around an edit, in blocks: C1's invalidation radius,
-/// which is also about how far a torch (light 14) reaches.
+/// which is also about how far a torch reaches.
 const RESOLVE_INVAL_RADIUS: f32 = 16.0;
 
 /// Below this cos between consecutive caster directions, the sun did not
-/// drift — it was TELEPORTED (`/time`). ~5.7 degrees is far more than the
-/// world clock moves in a frame and far less than any admin jump.
+/// drift — it was TELEPORTED (`/time`). The threshold sits far above what
+/// the world clock moves in a frame and far below any admin jump.
 const SUN_JUMP_COS: f32 = 0.995;
-/// Sun-direction quantization for GI rays: ~1.5° so shadow work stays
-/// still between steps and hysteresis glides across them.
+/// Sun-direction quantization for GI rays: coarse enough that shadow work
+/// stays still between steps, fine enough that hysteresis glides across
+/// them.
 const SUN_QUANT: f32 = 38.0;
 
 struct Cascade {
@@ -139,11 +235,7 @@ impl Cascade {
 /// Clamped so `wg.x * stride` cannot overflow u32 in the shader.
 fn schedule_stride(count: u32) -> u32 {
 	fn gcd(a: u32, b: u32) -> u32 {
-		if b == 0 {
-			a
-		} else {
-			gcd(b, a % b)
-		}
+		if b == 0 { a } else { gcd(b, a % b) }
 	}
 	let cap = u32::MAX / PROBES_PER_DISPATCH.max(1);
 	let mut s = ((f64::from(count) * 0.618_033_988_749_895) as u32).clamp(1, cap.min(count.max(1)));
@@ -154,11 +246,7 @@ fn schedule_stride(count: u32) -> u32 {
 		s = if s + 1 > cap { 1 } else { s + 1 };
 		tries += 1;
 	}
-	if gcd(s, count.max(1)) != 1 {
-		1
-	} else {
-		s
-	}
+	if gcd(s, count.max(1)) != 1 { 1 } else { s }
 }
 
 pub struct GiDraw {
@@ -176,7 +264,7 @@ pub struct GiDraw {
 	coarse: wgpu::Texture,
 	/// CPU copy of the coarse texture, in upload order (x fastest, z
 	/// slowest) — what the sky ceiling is recomputed from when chunks
-	/// land. 51 KiB at the desktop side.
+	/// land. One byte per coarse brick, so it stays small.
 	coarse_mirror: Box<[u8]>,
 	/// The mirror changed this frame; `sky_y` rescans at the next
 	/// `encode`.
@@ -184,9 +272,9 @@ pub struct GiDraw {
 	/// Highest occupied cell y anywhere in the window, in blocks (R18):
 	/// an ASCENDING ray above this is proven lit/sky in one float
 	/// compare, so the sun march stops at the tallest local hill instead
-	/// of climbing to y = 255 — recomputed with the skip mips. 255 until
-	/// the first flush (conservative: never breaks a ray early on
-	/// unclassified data).
+	/// of climbing to the top of the world — recomputed with the skip
+	/// mips. Sits at the world ceiling until the first flush
+	/// (conservative: never breaks a ray early on unclassified data).
 	sky_y: f32,
 	/// XZ extent in chunks (= draw distance): the toroidal modulus.
 	window_chunks: u32,
@@ -194,6 +282,17 @@ pub struct GiDraw {
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
 	emitters: FxHashMap<ChunkPos, Vec<Emitter>>,
+	/// Surface emitters per chunk — a revealed vein's exposed faces, merged
+	/// into rectangles by the MESHER and delivered on its output rather
+	/// than derived here (`mesher::lights` says why at length; the short
+	/// version is that the chunk store holds Stone where a vein is, so
+	/// `classify_chunk` cannot see one).
+	///
+	/// A second map beside `emitters` rather than entries in it, because
+	/// the two arrive on different paths and at different times: one rides
+	/// the GI classify sweep, the other the mesh job. `flush_lights` chains
+	/// them, and the light list neither knows nor cares which is which.
+	surfaces: FxHashMap<ChunkPos, Vec<Emitter>>,
 	/// The carried lights the list was last flushed with — see
 	/// `flush_lights`, which compares this frame's against it. A carried
 	/// torch is not a second kind of light: it is an entry in the ONE
@@ -218,26 +317,25 @@ pub struct GiDraw {
 	/// Emitters written at that flush, so a move that changes WHICH are in
 	/// reach re-flushes even under `MAX_LIGHTS`.
 	lights_len: usize,
-	/// Positions awaiting probe invalidation (≤4 consumed/frame), each
-	/// flagged with whether it came from a MOVING light rather than a
-	/// world edit — see `resolve_inval` for the only thing that flag
-	/// changes.
+	/// Positions awaiting probe invalidation (the drain is bounded per
+	/// frame), each flagged with whether it came from a MOVING light
+	/// rather than a world edit — see `resolve_inval` for the only thing
+	/// that flag changes.
 	inval_queue: Vec<([f32; 3], bool)>,
 	/// Spheres the probe pass consumed, held live so the RESOLVE keeps
 	/// capping screen history around them while the probes re-converge
-	/// (position + remaining frames + the moving flag; ≤4, because the
-	/// uniform has exactly four slots).
+	/// (position + remaining frames + the moving flag; bounded by the
+	/// uniform's sphere slots).
 	///
 	/// Eviction is per-KIND, and that is load-bearing rather than tidy. A
 	/// world edit fires once; a carried light fires every
-	/// `CARRY_INVAL_STEP` of travel, which is twice a second at
-	/// `WALK_SPEED` — so against a plain newest-wins ring one walking
-	/// torch-bearer holds three of the four slots continuously (2/s
-	/// against `RESOLVE_INVAL_FRAMES` = 96 frames of life) and two of
-	/// them turn it over faster than an edit's window. Making each stream
-	/// recycle its OWN oldest slot bounds the moving one without a second
-	/// constant: an edit that wins a slot keeps it for the full 96 frames
-	/// however far anybody walks.
+	/// `CARRY_INVAL_STEP` of travel, which at `WALK_SPEED` is several
+	/// times a second — so against a plain newest-wins ring one walking
+	/// torch-bearer holds nearly every slot continuously (that rate
+	/// against `RESOLVE_INVAL_FRAMES` of life) and turns them over faster
+	/// than an edit's window. Making each stream recycle its OWN oldest
+	/// slot bounds the moving one without a second constant: an edit that
+	/// wins a slot keeps it for its full life however far anybody walks.
 	resolve_inval: Vec<([f32; 3], u32, bool)>,
 	/// The half-res resolve pass (gi_resolve.wgsl): probes + per-pixel
 	/// sun DDA → the scene's two lighting inputs.
@@ -270,16 +368,15 @@ pub struct GiDraw {
 	debug_probes: bool,
 }
 
-/// The 256-entry material LUT (GI-DESIGN.md): everything a ray needs
-/// per class byte. Four words per entry: albedo rgb + opacity class in
-/// the first, the cast-light level in the second (emission color is
-/// the albedo — a torch glows its own warm tone), and the ≤2-box
-/// occlusion cover of a PARTIAL class (opacity 3) packed in the third
-/// and fourth (`core::gi::pack_box`; 0 = no box). Full cubes keep the
-/// base-id entries; the synthetic shape classes from
-/// `core::gi::shape_classes` fill 200.. and borrow their base block's
-/// albedo and light, so a slab bounces wood-colored and a torch's
-/// synthetic class still names its emission.
+/// The material LUT (GI-DESIGN.md): one entry per class byte, holding
+/// everything a ray needs. Each entry carries, in order, albedo rgb plus
+/// the opacity class, the cast-light level (emission color is the albedo
+/// — a torch glows its own warm tone), and the two-box occlusion cover of
+/// a PARTIAL class (`core::gi::pack_box`). Full cubes keep the base-id
+/// entries; the synthetic shape classes from `core::gi::shape_classes`
+/// fill the range above `core::gi::SHAPE_CLASS_BASE` and borrow their
+/// base block's albedo and light, so a slab bounces wood-colored and a
+/// torch's synthetic class still names its emission.
 fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 	let mut lut = [[0u32; 4]; 256];
 	let albedo = |b: BlockType| -> [u8; 3] {
@@ -287,6 +384,29 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 			.get(b.props().tex_top as usize)
 			.copied()
 			.unwrap_or([255, 255, 255])
+	};
+	// Word 1: the cast level in the low byte, the cast COLOUR above it.
+	//
+	// The colour is normally just the albedo — a torch glows its own warm
+	// tone, and one authored texture deciding both how a thing looks and
+	// what its light looks like is the rule R30 was built on. An ore seam
+	// is the one row that cannot honour it, and not for want of trying: an
+	// ore texture is a wide grey field with a few bright flecks on it, so
+	// its mean IS stone. Measured, all four tiers land within a few percent
+	// of colourless (an ember seam would light a tunnel white), weighting
+	// the mean by the ink gain moves it almost not at all, and darkening
+	// the body cannot help — Aetherock was already dark and no more
+	// coloured for it. The problem is the texture's composition, not the
+	// average taken over it, so the ore rows state their cast colour
+	// instead. It is still one table: `ore_flecks` is the same palette
+	// texgen paints the flecks and their spent siblings from, so a retint
+	// moves the rock and its light together (GI-DESIGN.md R31).
+	let emit_word = |b: BlockType| -> u32 {
+		let t = b.ore_flecks().map_or_else(|| albedo(b), |(core, _)| core);
+		u32::from(b.props().light)
+			| u32::from(t[0]) << 8
+			| u32::from(t[1]) << 16
+			| u32::from(t[2]) << 24
 	};
 	for b in BlockType::ALL {
 		let id = b as usize;
@@ -301,7 +421,7 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 		};
 		lut[id] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (op << 24),
-			u32::from(b.props().light),
+			emit_word(b),
 			0,
 			0,
 		];
@@ -311,7 +431,7 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 		let boxes = sc.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
 		lut[digblock_core::gi::SHAPE_CLASS_BASE as usize + i] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (3 << 24),
-			u32::from(sc.base.props().light),
+			emit_word(sc.base),
 			boxes[0],
 			boxes[1],
 		];
@@ -322,10 +442,10 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 /// The window's sky ceiling (R18): the highest coarse brick row holding
 /// anything at all, as a cell y. A non-descending ray above it is proven
 /// lit/sky in one float compare, which is what ends the sun march's
-/// climb at the tallest local hill instead of y = 255 — proving open sky
-/// at 8 blocks per brick skip was ~9 dependent texture loads per
-/// fragment, most of a screen full of river's sun cost. Scanned top
-/// down, so a settled world answers in one slice; -1 when the mirror is
+/// climb at the tallest local hill instead of at the top of the world —
+/// proving open sky one brick skip at a time cost a dependent texture
+/// load per skip, most of a river scene's sun cost. Scanned top down, so
+/// a settled world answers in one slice; negative when the mirror is
 /// still empty (rays find nothing either way).
 /// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound
 /// EVERY march breaks at, in blocks from the camera. `flush_lights` uses
@@ -338,7 +458,7 @@ fn lateral_max(window_chunks: u32) -> f32 {
 }
 
 /// The light list's payload: every reachable emitter, at most the
-/// `MAX_LIGHTS` nearest `cam`, in the 16-byte GPU entry form
+/// `MAX_LIGHTS` nearest `cam`, in the GPU entry form
 /// (`[x, y, z, bitcast(class)]`).
 ///
 /// Split out of `flush_lights` because that needs a `Gpu` to upload and
@@ -349,8 +469,8 @@ fn lateral_max(window_chunks: u32) -> f32 {
 /// distance rule already does the right thing at both ends: a carrier's
 /// own light sits half a block from the camera and can never be the one
 /// dropped however many torches a world has, and a distant player's
-/// torch losing its slot to 256 nearer emitters is the correct answer
-/// under the same rule that governs everything else here.
+/// torch losing its slot to a full list of nearer emitters is the correct
+/// answer under the same rule that governs everything else here.
 ///
 /// Selection, NOT ordering. The doc on `flush_lights` records why: no
 /// reader cares about the order, so the only thing the distance is for
@@ -359,26 +479,54 @@ fn lateral_max(window_chunks: u32) -> f32 {
 /// `select_nth_unstable_by` partitions in O(n) rather than sorting in
 /// O(n log n). That matters now in a way it did not before: a carried
 /// light moves, so this runs EVERY frame while anyone is walking, over
-/// every emitter within `lateral_max` — 159 blocks at draw distance 20.
+/// every emitter within `lateral_max`.
 fn select_lights(
 	emitters: impl Iterator<Item = Emitter>,
 	carried: &[Emitter],
 	cam: [f32; 3],
 	reach: f32,
-) -> Vec<[f32; 4]> {
-	let placed = emitters.map(|(x, y, z, class)| (x, y, z, u32::from(class)));
-	let held = carried
-		.iter()
-		.map(|&(x, y, z, class)| (x, y, z, u32::from(class) | LIGHT_CARRIED));
-	let mut all: Vec<(f32, [f32; 4])> = placed
+) -> Vec<[f32; 8]> {
+	let entry = |e: Emitter, carried: u32| {
+		let w = u32::from(e.class)
+			| carried | (u32::from(e.level) & LIGHT_LEVEL_MASK) << LIGHT_LEVEL_SHIFT
+			| if e.whitened { LIGHT_WHITENED } else { 0 }
+			| if e.face.is_some() { LIGHT_QUAD } else { 0 };
+		// The second half is the rectangle, or zero. A punctual light's
+		// pair is [pos, class] then four zeros, so the only thing that
+		// changed for a torch is the stride.
+		let f = e.face.map_or([0.0; 4], |f| {
+			[
+				f.ext[0],
+				f.ext[1],
+				f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
+				0.0,
+			]
+		});
+		(
+			e.pos,
+			[
+				e.pos[0],
+				e.pos[1],
+				e.pos[2],
+				f32::from_bits(w),
+				f[0],
+				f[1],
+				f[2],
+				f[3],
+			],
+		)
+	};
+	let placed = emitters.map(|e| entry(e, 0));
+	let held = carried.iter().map(|&e| entry(e, LIGHT_CARRIED));
+	let mut all: Vec<(f32, [f32; 8])> = placed
 		.chain(held)
-		.filter(|e| {
-			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+		.filter(|(p, _)| {
+			let (dx, dz) = (p[0] - cam[0], p[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		})
-		.map(|(x, y, z, w)| {
-			let d2 = (x - cam[0]).powi(2) + (y - cam[1]).powi(2) + (z - cam[2]).powi(2);
-			(d2, [x, y, z, f32::from_bits(w)])
+		.map(|(p, e)| {
+			let d2 = (p[0] - cam[0]).powi(2) + (p[1] - cam[1]).powi(2) + (p[2] - cam[2]).powi(2);
+			(d2, e)
 		})
 		.collect();
 	if all.len() > MAX_LIGHTS {
@@ -386,6 +534,30 @@ fn select_lights(
 		all.truncate(MAX_LIGHTS);
 	}
 	all.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Could any cell of this chunk be within `reach` of `cam` laterally?
+///
+/// The per-EMITTER reach test is what decides the light list; this is the
+/// same question asked of a whole chunk first, so a chunk well outside the
+/// traceable window costs one compare instead of one per entry it holds.
+///
+/// That distinction did not matter while emitters were torches. It matters
+/// now: a revealed vein contributes a rectangle per exposed face, caves are
+/// made of exposed faces, and residency reaches roughly twice as far as
+/// `gi_lateral_max` in every direction — so most of the map is chunks no
+/// march can reach, and `flush_lights` walks the map every frame anyone is
+/// moving.
+///
+/// Conservative by construction: it measures to the chunk's nearest EDGE,
+/// so it can only ever admit a chunk the per-emitter test then rejects,
+/// never drop one that held a reachable light.
+fn chunk_in_reach(pos: ChunkPos, cam: [f32; 3], reach: f32) -> bool {
+	let n = digblock_core::chunk::CHUNK_SIZE as f32;
+	let axis = |lo: f32, c: f32| (lo - c).max(c - (lo + n)).max(0.0);
+	let dx = axis(pos.x as f32 * n, cam[0]);
+	let dz = axis(pos.z as f32 * n, cam[2]);
+	dx * dx + dz * dz <= reach * reach
 }
 
 fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
@@ -420,8 +592,8 @@ fn atlas_tex(device: &wgpu::Device, dims: (u32, u32, u32), label: &str) -> wgpu:
 	})
 }
 
-/// GiUniforms layout (must match gi_probe.wgsl): dims, cam, sun,
-/// sun_color, zenith, horizon, sched, 4 inval spheres = 176 bytes.
+/// GiUniforms layout (must match gi_probe.wgsl), in order: dims, cam,
+/// sun, sun_color, zenith, horizon, sched, then the inval spheres.
 const GI_UNIFORM_SIZE: u64 = 176;
 
 /// The GI resolve's group 0 bind plus its two MRT attachments — one
@@ -484,7 +656,10 @@ impl GiDraw {
 			.write_buffer(&lut_buf, 0, bytemuck::cast_slice(&lut));
 		let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi light list"),
-			size: (16 + MAX_LIGHTS * 16) as u64,
+			// A header vec4, then TWO vec4s an entry: the position and
+			// class word, then the rectangle a surface emitter radiates
+			// from (zero for a point source).
+			size: (16 + MAX_LIGHTS * 32) as u64,
 			usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -563,7 +738,7 @@ impl GiDraw {
 		});
 		// The camera-light sample cam_light writes and spray/viewmodel
 		// bind as a uniform (STORAGE for the compute write, UNIFORM for
-		// the render reads — same 32 bytes).
+		// the render reads — one buffer, both usages).
 		let cam_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi camera light"),
 			size: 32,
@@ -671,8 +846,8 @@ impl GiDraw {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi probe layout"),
-			bind_group_layouts: &[&bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl)],
+			immediate_size: 0,
 		});
 		let compute = |entry: &str, label: &str| {
 			device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -780,8 +955,8 @@ impl GiDraw {
 		});
 		let debug_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi debug layout"),
-			bind_group_layouts: &[&debug_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&debug_bgl)],
+			immediate_size: 0,
 		});
 		let debug_pipeline = crate::pipeline_builder::build_depthless(
 			device,
@@ -861,7 +1036,7 @@ impl GiDraw {
 				// The emitter list (R20): the per-pixel NEE ray samples the
 				// same buffer the probe pass does. Second storage buffer in
 				// this pipeline's fragment stage (gi_lut is the first), well
-				// under the WebGPU baseline limit of 8.
+				// under the WebGPU baseline limit.
 				f_entry(
 					5,
 					wgpu::BindingType::Buffer {
@@ -943,7 +1118,8 @@ impl GiDraw {
 		});
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
-			// 2 mat4 + 10 vec4 + 4 invalidation spheres. Grew at M4 by
+			// The camera matrices, the resolve's vec4 block, then the
+			// invalidation spheres. Grew at M4 by
 			// prev_view_proj, the previous camera + history-valid flag, the
 			// exact caster, and the sample-sequence lane; the spheres came
 			// with the deterministic sun (screen history follows a lighting
@@ -967,8 +1143,8 @@ impl GiDraw {
 		});
 		let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi resolve layout"),
-			bind_group_layouts: &[&resolve_bgl, &empty_bgl, &gather_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&resolve_bgl), Some(&empty_bgl), Some(&gather_bgl)],
+			immediate_size: 0,
 		});
 		let resolve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("gi resolve"),
@@ -991,7 +1167,7 @@ impl GiDraw {
 				compilation_options: Default::default(),
 				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
 			}),
-			multiview: None,
+			multiview_mask: None,
 			cache: None,
 		});
 		// The resolve's spatial half. It reads only what the two lighting
@@ -1045,8 +1221,8 @@ impl GiDraw {
 		});
 		let atrous_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("gi atrous layout"),
-			bind_group_layouts: &[&atrous_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&atrous_bgl)],
+			immediate_size: 0,
 		});
 		let atrous_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 			label: Some("gi atrous"),
@@ -1069,7 +1245,7 @@ impl GiDraw {
 				compilation_options: Default::default(),
 				targets: &[Some(GI_ACC_FORMAT.into()), Some(GI_ACC_FORMAT.into())],
 			}),
-			multiview: None,
+			multiview_mask: None,
 			cache: None,
 		});
 		// The scene pass's group 2: both resolve outputs, textureLoad'd
@@ -1107,6 +1283,7 @@ impl GiDraw {
 			window_chunks,
 			stub,
 			emitters: FxHashMap::default(),
+			surfaces: FxHashMap::default(),
 			carried: Vec::new(),
 			prev_vp: [[0.0; 4]; 4],
 			prev_cam: [0.0; 3],
@@ -1153,8 +1330,8 @@ impl GiDraw {
 		&self.gather_bind[self.ping]
 	}
 
-	/// The 32-byte camera-light buffer `cam_light` writes — spray and
-	/// the viewmodel bind it as a uniform.
+	/// The camera-light buffer `cam_light` writes — spray and the
+	/// viewmodel bind it as a uniform.
 	pub fn cam_light_buf(&self) -> &wgpu::Buffer {
 		&self.cam_buf
 	}
@@ -1264,6 +1441,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: timer.and_then(|t| t.writes(query)),
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.atrous_pipeline);
 		pass.set_bind_group(0, bind, &[]);
@@ -1378,6 +1556,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: timer.and_then(|t| t.writes(Q_GI_TRACE)),
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.resolve_pipeline);
 		pass.set_bind_group(0, bind, &[]);
@@ -1410,8 +1589,8 @@ impl GiDraw {
 	pub fn patch_frame(&mut self, frame: &mut FrameUniforms) {
 		// Quantized caster: the ACTIVE light (sun by day, moon by night —
 		// light_dir points toward the ground and light_color already
-		// matches it), snapped so probe results hold still between steps
-		// (~1.5°).
+		// matches it), snapped by `SUN_QUANT` so probe results hold still
+		// between steps.
 		let s = [
 			-frame.light_dir[0],
 			-frame.light_dir[1],
@@ -1519,18 +1698,30 @@ impl GiDraw {
 		);
 		// Not the cell center: `light_origin` puts a shaped emitter's point
 		// source where its geometry actually glows (the torch's flame, not
-		// its handle), and answers 0.5 for every full cube.
+		// its handle), and answers the centre for every full cube.
 		let list: Vec<_> = gi
 			.emitters
 			.iter()
 			.map(|&(x, y, z, class)| {
 				let o = digblock_core::gi::light_origin(class);
-				(
-					world.0 + f32::from(x) + o[0],
-					world.1 + f32::from(y) + o[1],
-					world.2 + f32::from(z) + o[2],
+				Emitter {
+					pos: [
+						world.0 + f32::from(x) + o[0],
+						world.1 + f32::from(y) + o[1],
+						world.2 + f32::from(z) + o[2],
+					],
 					class,
-				)
+					// Never overridden: a placed torch's level and tint are
+					// its row's, and every copy of it in the world agrees
+					// by construction.
+					level: 0,
+					whitened: false,
+					// A point source. Surface emitters never reach this
+					// list at all — `classify_chunk` declines to place one,
+					// because the cells it would place them for are mostly
+					// buried and it cannot see which are not.
+					face: None,
+				}
 			})
 			.collect();
 		let changed = if list.is_empty() {
@@ -1556,6 +1747,67 @@ impl GiDraw {
 		self.window_chunks as i32
 	}
 
+	/// Take one chunk's surface emitters from a finished mesh job
+	/// (`MeshData::lights`) — the vein rectangles this player can see.
+	///
+	/// Called on every mesh result, empty list included, because "this
+	/// chunk has no vein faces any more" is exactly what a completed
+	/// extraction produces and it has to reach the list. The same path
+	/// carries a tier lighting up the moment its reveal level is crossed:
+	/// crossing one re-meshes, the re-mesh stamps the ore, and the faces
+	/// arrive here with no threshold logic anywhere in the renderer.
+	pub fn set_chunk_lights(&mut self, pos: ChunkPos, packed: &[u32]) {
+		use digblock_core::mesher::lights;
+		let world = (
+			pos.x as f32 * 16.0,
+			pos.y as f32 * 16.0,
+			pos.z as f32 * 16.0,
+		);
+		let list: Vec<Emitter> = packed
+			.iter()
+			.map(|&w| {
+				let (cell, dir, span_u, span_v, id) = lights::unpack(w);
+				let (au, av) = lights::tangents(dir);
+				let an = 3 - au - av;
+				let off = dir.offset();
+				let positive = [off.0, off.1, off.2][an] > 0;
+				let mut c = [
+					world.0 + cell.0 as f32,
+					world.1 + cell.1 as f32,
+					world.2 + cell.2 as f32,
+				];
+				// The rectangle sits ON the cell boundary the face is: the
+				// far side of the cell for an outward-positive normal, the
+				// near side for a negative one. Centred across its span in
+				// both tangents.
+				c[an] += f32::from(u8::from(positive));
+				c[au] += span_u as f32 * 0.5;
+				c[av] += span_v as f32 * 0.5;
+				Emitter {
+					pos: c,
+					class: digblock_core::gi::gi_class(id),
+					// A vein's brightness and colour are its tier's, the
+					// same in every hand and every wall — so both come from
+					// the LUT row and neither rides the entry.
+					level: 0,
+					whitened: false,
+					face: Some(Face {
+						axis: an as u8,
+						positive,
+						ext: [span_u as f32, span_v as f32],
+					}),
+				}
+			})
+			.collect();
+		let changed = if list.is_empty() {
+			self.surfaces.remove(&pos).is_some()
+		} else {
+			self.surfaces.insert(pos, list);
+			true
+		};
+		self.lights_dirty |= changed;
+	}
+
 	/// Forget an evicted chunk's emitters.
 	///
 	/// Nothing used to prune this map: the only removal was a chunk
@@ -1572,7 +1824,7 @@ impl GiDraw {
 	/// nothing: the drill in BENCH.md 2026-08-12 rebuilt `sky_y` to the
 	/// same value with frame time unmoved.)
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
-		if self.emitters.remove(&pos).is_some() {
+		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
 		}
 	}
@@ -1593,6 +1845,7 @@ impl GiDraw {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;
 		self.emitters.clear();
+		self.surfaces.clear();
 		self.carried.clear();
 		self.lights_dirty = true;
 	}
@@ -1608,12 +1861,14 @@ impl GiDraw {
 			// Carried lights are counted too, and not for completeness:
 			// this field is how you answer "is the torch in my hand
 			// actually in the list" without a debugger.
-			(self.emitters.values().map(Vec::len).sum::<usize>() + self.carried.len()) as u32,
+			(self.emitters.values().map(Vec::len).sum::<usize>()
+				+ self.surfaces.values().map(Vec::len).sum::<usize>()
+				+ self.carried.len()) as u32,
 		)
 	}
 
 	/// Queue an edit position for probe invalidation (age reset around
-	/// it, ≤4 spheres applied per frame).
+	/// it; the uniform's sphere slots bound how many apply per frame).
 	pub fn invalidate(&mut self, pos: [f32; 3]) {
 		self.queue_invalidation(pos, false);
 	}
@@ -1630,7 +1885,7 @@ impl GiDraw {
 	}
 
 	fn queue_invalidation(&mut self, pos: [f32; 3], moving: bool) {
-		// Bounded: only 4 spheres are drained per frame, and an unbounded
+		// Bounded: only a few spheres drain per frame, and an unbounded
 		// queue grows without limit under any burst of edits (a fluid
 		// cascade, a bulk placement) and then spends minutes replaying
 		// invalidations for cells that have since changed again. Dropping
@@ -1660,23 +1915,31 @@ impl GiDraw {
 		// Every trace breaks at `gi_lateral_max` (= side/2 − 1) of the
 		// camera, so an emitter past it cannot light anything however
 		// close it sorts — and with more than MAX_LIGHTS emitters it
-		// displaces one that can. Residency runs to draw_dist + 1 chunks
-		// while the window is draw_dist chunks on a SIDE, so "resident"
-		// reaches more than twice as far as "traceable" and this is not a
-		// rare edge.
+		// displaces one that can. Residency is a RADIUS in chunks while
+		// the window is that many chunks on a SIDE, so "resident" reaches
+		// well past "traceable" and this is not a rare edge.
 		let reach = lateral_max(self.window_chunks);
-		let in_reach = |e: &(f32, f32, f32, u8)| {
-			let (dx, dz) = (e.0 - cam[0], e.2 - cam[2]);
+		let in_reach = |e: &Emitter| {
+			let (dx, dz) = (e.pos[0] - cam[0], e.pos[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		};
 		// Carried lights count toward `total` like any other: they are in
 		// the list the truncation applies to, so leaving them out of the
 		// tally would let a full world hide one.
-		let total: usize = self
-			.emitters
-			.values()
-			.map(|v| v.iter().copied().filter(&in_reach).count())
-			.sum::<usize>()
+		//
+		// Chunks outside the reach are skipped WHOLE, before their entries
+		// are touched: a vein contributes a rectangle per exposed face and
+		// caves are made of exposed faces, so the map is far larger than
+		// the torch-only one this walk was written for, and most of it is
+		// nowhere a march can go.
+		let reachable = |m: &'_ FxHashMap<ChunkPos, Vec<Emitter>>| -> usize {
+			m.iter()
+				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
+				.map(|(_, v)| v.iter().copied().filter(&in_reach).count())
+				.sum()
+		};
+		let total: usize = reachable(&self.emitters)
+			+ reachable(&self.surfaces)
 			+ carried.iter().copied().filter(&in_reach).count();
 		let moved = {
 			let d = [
@@ -1689,7 +1952,8 @@ impl GiDraw {
 		// Any real move can change WHICH emitters are in reach, not just
 		// which MAX_LIGHTS of them are nearest — so the oversubscription
 		// clause is no longer the only reason to re-flush. Under the cap
-		// this costs one walk and a ≤4 KiB write per 16 blocks walked.
+		// this costs one walk and one small buffer write each time the
+		// camera clears the refresh distance above.
 		let stale = moved && (total > MAX_LIGHTS || total != self.lights_len);
 		// A carried light moves with its carrier, so the list is stale the
 		// moment one does. EXACT equality, not an epsilon, and that is the
@@ -1698,7 +1962,7 @@ impl GiDraw {
 		// `prev + (curr - prev) * t`, which returns `prev` exactly when
 		// `prev == curr` — pinned by `a_resting_camera_does_not_drift`,
 		// because the `a*(1-t) + b*t` form it replaced does NOT and left a
-		// still player re-uploading on roughly one frame in seven — and
+		// still player re-uploading on a steady share of frames — and
 		// the reconciliation offset snaps to zero rather than decaying
 		// forever). So a player standing still with a torch keeps the
 		// early-out and a room lit by it converges as deeply as one lit
@@ -1707,8 +1971,8 @@ impl GiDraw {
 		// decide when a slow creep stops lighting the room.
 		//
 		// Compared AFTER the reach filter, which is not a detail: remotes
-		// ride snapshots out to the client's draw distance (320 blocks at
-		// 20) while `reach` is 159, so an unfiltered compare lets a
+		// ride snapshots out to the client's whole draw distance while
+		// `reach` is a fraction of it, so an unfiltered compare lets a
 		// torch-bearer nobody can be lit by defeat the early-out on every
 		// single frame and re-upload a byte-identical buffer.
 		let carried_moved = !carried
@@ -1725,14 +1989,18 @@ impl GiDraw {
 		self.lights_dirty = false;
 		self.lights_cam = cam;
 		let all = select_lights(
-			self.emitters.values().flatten().copied(),
+			self.emitters
+				.iter()
+				.chain(self.surfaces.iter())
+				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
+				.flat_map(|(_, v)| v.iter().copied()),
 			&self.carried,
 			cam,
 			reach,
 		);
 		let count = all.len() as u32;
 		self.lights_len = all.len();
-		let mut bytes = Vec::with_capacity(16 + all.len() * 16);
+		let mut bytes = Vec::with_capacity(16 + all.len() * 32);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
 		bytes.extend_from_slice(bytemuck::cast_slice(&all));
 		gpu.queue.write_buffer(&self.lights_buf, 0, &bytes);
@@ -1891,7 +2159,8 @@ impl GiDraw {
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			cam_pos[0], cam_pos[1], cam_pos[2], side,
 		]));
-		// misc.x: 1 = shade hits with the C0 probe field (DIG_GI=probes).
+		// misc.x: nonzero shades hits with the C0 probe field
+		// (DIG_GI=probes).
 		let mode = if self.debug_probes { 1.0f32 } else { 0.0 };
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			mode,
@@ -1914,6 +2183,7 @@ impl GiDraw {
 			depth_stencil_attachment: None,
 			timestamp_writes: None,
 			occlusion_query_set: None,
+			multiview_mask: None,
 		});
 		pass.set_pipeline(&self.debug_pipeline);
 		// The front atlas is the one the flip just published.
@@ -1970,10 +2240,22 @@ mod tests {
 		// A full list of placed torches, every one of them in reach and
 		// none of them at the camera.
 		let placed: Vec<_> = (0..MAX_LIGHTS)
-			.map(|i| (cam[0] + 2.0 + i as f32 * 0.01, cam[1], cam[2], class))
+			.map(|i| Emitter {
+				pos: [cam[0] + 2.0 + i as f32 * 0.01, cam[1], cam[2]],
+				class,
+				level: 0,
+				whitened: false,
+				face: None,
+			})
 			.collect();
 		let mine = digblock_core::gi::carried_origin(glam::Vec3::from_array(cam));
-		let carried = [(mine.x, mine.y, mine.z, class)];
+		let carried = [Emitter {
+			pos: mine.to_array(),
+			class,
+			level: 0,
+			whitened: false,
+			face: None,
+		}];
 		let out = select_lights(placed.iter().copied(), &carried, cam, reach);
 		assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
 		let entry = out
@@ -2005,8 +2287,60 @@ mod tests {
 		);
 		// Out past the reach every march breaks at: dropped, like any
 		// other emitter no ray could have traced.
-		let far = [(cam[0] + reach + 1.0, cam[1], cam[2], class)];
+		let far = [Emitter {
+			pos: [cam[0] + reach + 1.0, cam[1], cam[2]],
+			class,
+			level: 0,
+			whitened: false,
+			face: None,
+		}];
 		assert!(select_lights(std::iter::empty(), &far, cam, reach).is_empty());
+	}
+
+	/// A per-entry level has to reach the shader ON TOP of the class and
+	/// the carried flag, and an entry without one has to pack exactly the
+	/// word it packed before the field existed — otherwise every placed
+	/// torch in the world quietly changes brightness.
+	#[test]
+	fn a_wielders_level_rides_the_entry_and_nothing_elses() {
+		let cam = [0.0, 0.0, 0.0];
+		let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+			digblock_core::block::BlockType::ResonantPick,
+			0,
+		));
+		let held = |level, whitened| {
+			let e = [Emitter {
+				pos: [1.0, 0.0, 0.0],
+				class,
+				level,
+				whitened,
+				face: None,
+			}];
+			select_lights(std::iter::empty(), &e, cam, 8.0)[0][3].to_bits()
+		};
+		let plain = held(0, false);
+		assert_eq!(
+			plain,
+			u32::from(class) | LIGHT_CARRIED,
+			"no override, no bits"
+		);
+		let raised = held(13, true);
+		assert_eq!(raised & 255, u32::from(class), "the class is untouched");
+		assert_eq!(raised & LIGHT_CARRIED, LIGHT_CARRIED, "so is the flag");
+		assert_eq!(
+			(raised >> LIGHT_LEVEL_SHIFT) & LIGHT_LEVEL_MASK,
+			13,
+			"and the level reads back out of its own field"
+		);
+		assert_eq!(
+			raised & LIGHT_WHITENED,
+			LIGHT_WHITENED,
+			"and the tint flag out of its own bit"
+		);
+		// The two per-holder properties are independent: a light may be
+		// raised without being whitened, and the level field must not
+		// smear into the flag above it.
+		assert_eq!(held(LIGHT_LEVEL_MASK as u8, false) & LIGHT_WHITENED, 0);
 	}
 
 	/// The carried flag is packed here and unpacked in gi_dda.wgsl, which
@@ -2014,21 +2348,145 @@ mod tests {
 	/// two halves one thing, so agreement is what gets pinned.
 	#[test]
 	fn the_carried_flag_matches_the_shaders() {
-		let decl = format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;");
-		assert!(
-			digblock_assets::shader::GI_DDA.contains(&decl),
-			"gi_dda.wgsl must declare `{decl}`"
-		);
+		for decl in [
+			format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;"),
+			format!("const GI_LIGHT_LEVEL_SHIFT = {LIGHT_LEVEL_SHIFT}u;"),
+			format!("const GI_LIGHT_LEVEL_MASK = {LIGHT_LEVEL_MASK}u;"),
+			format!("const GI_LIGHT_WHITENED = {LIGHT_WHITENED}u;"),
+			format!("const GI_LIGHT_QUAD = {LIGHT_QUAD}u;"),
+		] {
+			assert!(
+				digblock_assets::shader::GI_DDA.contains(&decl),
+				"gi_dda.wgsl must declare `{decl}`"
+			);
+		}
 		// And it has to stay clear of the class byte it shares the word
 		// with, which is what makes the mask legal at all. The other side
 		// needs no assert: `Emitter`'s class is a u8.
 		assert_eq!(LIGHT_CARRIED & 255, 0);
+		// Five tenants in one word now, and the packing is only legal
+		// while none of them overlaps another.
+		let level = LIGHT_LEVEL_MASK << LIGHT_LEVEL_SHIFT;
+		assert_eq!(level & (255 | LIGHT_CARRIED), 0);
+		assert_eq!(LIGHT_WHITENED & (255 | LIGHT_CARRIED | level), 0);
+		assert_eq!(
+			LIGHT_QUAD & (255 | LIGHT_CARRIED | level | LIGHT_WHITENED),
+			0
+		);
+	}
+
+	/// The whole-chunk reach skip may only ever be CONSERVATIVE: it exists
+	/// to avoid touching entries, so admitting a chunk the per-emitter test
+	/// then rejects costs a little time, while dropping one that held a
+	/// reachable light silently puts a room out.
+	///
+	/// Swept against the per-emitter rule over every cell of a band of
+	/// chunks, which is the only way to catch the failure that matters —
+	/// the corner cells, where a chunk's nearest edge is much closer than
+	/// its centre.
+	#[test]
+	fn the_chunk_reach_skip_never_drops_a_reachable_light() {
+		let cam = [37.5, 64.0, -12.25];
+		let reach = lateral_max(20);
+		let n = digblock_core::chunk::CHUNK_SIZE as i32;
+		let mut admitted = 0;
+		let mut skipped = 0;
+		for cz in -14..14 {
+			for cx in -14..14 {
+				let pos = ChunkPos::new(cx, 4, cz);
+				let ok = chunk_in_reach(pos, cam, reach);
+				if ok {
+					admitted += 1;
+				} else {
+					skipped += 1;
+				}
+				// Every cell of the chunk, corners included.
+				for lz in 0..=n {
+					for lx in 0..=n {
+						let (x, z) = ((cx * n + lx) as f32, (cz * n + lz) as f32);
+						let (dx, dz) = (x - cam[0], z - cam[2]);
+						if dx * dx + dz * dz <= reach * reach {
+							assert!(
+								ok,
+								"chunk {cx},{cz} skipped, but ({x},{z}) is inside the reach"
+							);
+						}
+					}
+				}
+			}
+		}
+		// Anti-vacuity in both directions: a test where everything is
+		// admitted proves nothing about the skip, and one where nothing is
+		// proves nothing about the conservatism.
+		assert!(admitted > 0 && skipped > 0, "{admitted} in, {skipped} out");
+	}
+
+	/// A rectangle reaches the shader as a PAIR — position and class word,
+	/// then extents and facing — and a point source's half of that pair
+	/// stays zero.
+	///
+	/// The stride is the thing to guard. Both NEE passes index
+	/// `lights[i * 2 ...]`, so an entry that packed one vec4 or three
+	/// would not fail loudly: every light past the first would simply be
+	/// read out of the middle of its neighbour, which looks like a
+	/// lighting bug rather than a format one.
+	#[test]
+	fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
+		let cam = [0.0, 0.0, 0.0];
+		let class = digblock_core::gi::gi_class(BlockType::Emberore as u16);
+		let seam = Emitter {
+			pos: [2.0, 3.0, 4.0],
+			class,
+			level: 0,
+			whitened: false,
+			face: Some(Face {
+				axis: 1,
+				positive: true,
+				ext: [3.0, 2.0],
+			}),
+		};
+		let point = Emitter {
+			pos: [1.0, 0.0, 0.0],
+			class,
+			level: 0,
+			whitened: false,
+			face: None,
+		};
+		let out = select_lights([seam, point].into_iter(), &[], cam, 32.0);
+		assert_eq!(out.len(), 2, "one entry each, whatever their shape");
+		let e = out
+			.iter()
+			.find(|e| [e[0], e[1], e[2]] == seam.pos)
+			.expect("the seam");
+		assert_eq!(
+			e[3].to_bits() & LIGHT_QUAD,
+			LIGHT_QUAD,
+			"a rectangle has to announce itself, or it is read as a point"
+		);
+		assert_eq!(e[3].to_bits() & 255, u32::from(class), "class untouched");
+		assert_eq!([e[4], e[5]], [3.0, 2.0], "extents, in the packer's order");
+		// Facing: the axis in the low bits, the sign above it — the same
+		// decode `gi_light_sample` does.
+		let code = e[6].to_bits();
+		assert_eq!(code & 3, 1, "axis");
+		assert_eq!(code & 4, 4, "outward normal points up the axis");
+		let p = out
+			.iter()
+			.find(|e| [e[0], e[1], e[2]] == point.pos)
+			.expect("the point");
+		assert_eq!(p[3].to_bits() & LIGHT_QUAD, 0, "a torch is not a rectangle");
+		assert_eq!(
+			[p[4], p[5], p[6], p[7]],
+			[0.0; 4],
+			"and its second half stays zero, so nothing reads a stale extent"
+		);
 	}
 
 	/// The ceiling must sit at the TOP of the highest occupied brick (a
 	/// ceiling one brick low un-shadows every hilltop), and an empty
-	/// mirror must answer "nothing anywhere" rather than 255 (which
-	/// would disable the early-out forever on an ocean world).
+	/// mirror must answer "nothing anywhere" rather than the world
+	/// ceiling (which would disable the early-out forever on an ocean
+	/// world).
 	#[test]
 	fn the_sky_ceiling_tops_the_highest_brick() {
 		let (w, h, d) = (40usize, 32, 40);
@@ -2219,10 +2677,11 @@ mod tests {
 			n_prior <= n_sun && n_prior < n_moving,
 			"N_PRIOR ({n_prior}) must stay under N_SUN ({n_sun}) and N_MOVING ({n_moving})"
 		);
-		// And its two gates must exist as real gates: a margin of ≤1
-		// would mark every depth rejection as grazing (the prime never
-		// fires), a sun ceiling of ≥1 would prime fully sun-lit pixels
-		// (measured as washed-out AO across the walk and fly regimes).
+		// And its two gates must exist as real gates: a margin that admits
+		// nothing extra would mark every depth rejection as grazing (the
+		// prime never fires), a sun ceiling that admits everything would
+		// prime fully sun-lit pixels (which shows up as washed-out AO
+		// across the walk and fly regimes).
 		let margin = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "PRIME_MARGIN");
 		let sun_max = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "PRIME_SUN_MAX");
 		assert!(margin > 1.0, "PRIME_MARGIN ({margin}) gates nothing at ≤1");
@@ -2233,12 +2692,13 @@ mod tests {
 	}
 
 	/// The LUT's packed sub-box words must decode in the shader to the
-	/// twelfths the shape authored — `gi_boxes_hit` unpacks min from bits
-	/// 0/4/8 and max from 12/16/20. The core side pins the same format
-	/// from the packer's end (`box_pack_matches_the_shader_decode`); this
-	/// end pins that the LUT actually carries the boxes: every synthetic
-	/// class entry is opacity 3 with a nonzero first box, borrowing its
-	/// base block's light level.
+	/// twelfths the shape authored — `gi_boxes_hit` unpacks the min
+	/// triple and then the max triple out of one word. The core side pins
+	/// the same format from the packer's end
+	/// (`box_pack_matches_the_shader_decode`); this end pins that the LUT
+	/// actually carries the boxes: every synthetic class entry is the
+	/// PARTIAL opacity class with a nonzero first box, borrowing its base
+	/// block's light level.
 	#[test]
 	fn the_lut_carries_the_shape_covers() {
 		let lut = material_lut(&[]);
@@ -2249,12 +2709,62 @@ mod tests {
 			let e = lut[base + i];
 			assert_eq!(e[0] >> 24, 3, "synthetic class {i} is not partial");
 			assert_ne!(e[2], 0, "synthetic class {i} lost its first box");
-			assert_eq!(e[1], u32::from(sc.base.props().light));
+			assert_eq!(e[1] & 0xff, u32::from(sc.base.props().light));
 		}
 		// And the torch's emitting class is synthetic now — the light
 		// list names classes, so the level has to ride along.
 		let torch = digblock_core::gi::gi_class(BlockType::Torch as u16);
-		assert_eq!(lut[torch as usize][1], 14);
+		assert_eq!(lut[torch as usize][1] & 0xff, 14);
+	}
+
+	/// Word 1 carries the cast COLOUR above the level, and for every row
+	/// but the ore it is the row's own albedo — so nothing that lit a room
+	/// before this field existed lights it differently now.
+	///
+	/// The ores are the exception the field was added for. Their textures
+	/// mean out to stone, so a derived tint would have every tier casting
+	/// the same colourless light; they state their fleck palette instead,
+	/// and that palette must actually reach the LUT.
+	#[test]
+	fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
+		// One distinct mean per layer, so "took the right one" is
+		// checkable rather than vacuously true.
+		let means: Vec<[u8; 3]> = (0..digblock_core::block::tex::COUNT)
+			.map(|i| [i as u8, 200 - i as u8, 40 + i as u8])
+			.collect();
+		let lut = material_lut(&means);
+		let tint = |b: BlockType| {
+			let w = lut[b as usize][1] >> 8;
+			[
+				(w & 0xff) as u8,
+				((w >> 8) & 0xff) as u8,
+				((w >> 16) & 0xff) as u8,
+			]
+		};
+		for b in [
+			BlockType::Torch,
+			BlockType::Lantern,
+			BlockType::EssenceSiphon,
+		] {
+			assert_eq!(
+				tint(b),
+				means[b.props().tex_top as usize],
+				"{b:?} must still cast its own texture's colour"
+			);
+		}
+		for &ore in &digblock_core::worldgen::ore::ORES {
+			let (core, _) = ore.ore_flecks().expect("a tier");
+			assert_eq!(tint(ore), core, "{ore:?} casts its flecks, not its rock");
+			assert_ne!(
+				tint(ore),
+				means[ore.props().tex_top as usize],
+				"{ore:?}: the whole point is that this is NOT the texture mean"
+			);
+			assert!(
+				lut[ore as usize][1] & 0xff > 0,
+				"{ore:?} has a colour and no light to cast in it"
+			);
+		}
 	}
 
 	/// A contiguous cursor is what made convergence sweep as a visible

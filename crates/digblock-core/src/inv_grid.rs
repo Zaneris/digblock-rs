@@ -10,20 +10,21 @@
 //! slots hold plain [`BlockType`]s — the invariant is in the type.
 
 use crate::block::BlockType;
-use crate::hotbar::{Hotbar, HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY};
+use crate::hotbar::{HOTBAR_SLOTS, Hotbar, HotbarItem, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
-/// 6 rows of 9 (matching the hotbar's width) — comfortably above the
-/// slottable block-type count, so a full collection always fits.
+/// Whole rows of the hotbar's width, enough of them to sit comfortably
+/// above the slottable block-type count, so a full collection always
+/// fits.
 ///
 /// That claim used to be a comment and is now a TEST
 /// (`the_grid_holds_every_type_a_player_can_own`), because the catalog
-/// grew past the old four rows: 36 grid + 8 bar slots held every type
-/// exactly until §7.2's later materials landed, and a player who owned
-/// one of everything would have found sixteen of them with nowhere to
-/// go. The wire does not care — `from_wire` takes what it is given and
-/// pads, so a save written at four rows decodes into six with its
-/// arrangement intact.
+/// grew past the old four rows: grid plus bar held every type exactly
+/// until §7.2's later materials landed, and a player who owned one of
+/// everything would have found a good many of them with nowhere to go.
+/// The wire does not care — `from_wire` takes what it is given and pads,
+/// so a save written at the old height decodes into the current one with
+/// its arrangement intact.
 pub const GRID_SLOTS: usize = 54;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -106,10 +107,10 @@ impl InvGrid {
 	pub fn from_wire(wire: &[u16]) -> Self {
 		let mut grid = Self::default();
 		for (i, &w) in wire.iter().take(GRID_SLOTS).enumerate() {
-			if let Some(b) = BlockType::try_from_id(w) {
-				if !grid.contains(b) {
-					grid.slots[i] = Some(b);
-				}
+			if let Some(b) = BlockType::try_from_id(w)
+				&& !grid.contains(b)
+			{
+				grid.slots[i] = Some(b);
 			}
 		}
 		grid
@@ -148,29 +149,28 @@ pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
 	// here — the one place that sees the counts. Without it a crafted
 	// `Layout` naming the Resonant Pick is enough to swing it: the
 	// server's pick and siphon gates read `active_tool` and nothing else,
-	// so the Alch 55 unlock and the whole essence price are skipped. The
+	// so its Alchemy unlock and the whole essence price are skipped. The
 	// bucket was safe only because it is `always_owned`, and that stopped
 	// being the whole roster.
-	if !inv.owns_tool(bar.active_tool()) {
-		if let Some(t) = inv.owned_tools().next() {
-			bar.set_active_tool(t);
-		}
+	if !inv.owns_tool(bar.active_tool())
+		&& let Some(t) = inv.owned_tools().next()
+	{
+		bar.set_active_tool(t);
 	}
 	for slot in 0..HOTBAR_SLOTS {
-		if let Some(HotbarItem::Block(b)) = bar.slots()[slot] {
-			if inv.count(b) == 0 || !b.is_slottable() {
-				bar.clear_slot(slot);
-			}
+		if let Some(HotbarItem::Block(b)) = bar.slots()[slot]
+			&& (inv.count(b) == 0 || !b.is_slottable())
+		{
+			bar.clear_slot(slot);
 		}
 	}
 	for slot in 0..GRID_SLOTS {
-		if let Some(b) = grid.get(slot) {
-			if inv.count(b) == 0
+		if let Some(b) = grid.get(slot)
+			&& (inv.count(b) == 0
 				|| !b.is_slottable()
-				|| bar.slots().contains(&Some(HotbarItem::Block(b)))
-			{
-				grid.clear(slot);
-			}
+				|| bar.slots().contains(&Some(HotbarItem::Block(b))))
+		{
+			grid.clear(slot);
 		}
 	}
 	for (b, _) in inv.iter_nonzero() {
@@ -255,20 +255,20 @@ mod tests {
 			"{ownable} ownable types into {room} slots — grow GRID_SLOTS"
 		);
 		// And the headroom is nearly gone, which is worth knowing BEFORE
-		// the next wave: six rows is as tall as the alchemy screen's
-		// extract tab can be and still fit a 960×600 window at the
+		// the next wave: the grid is already as tall as the alchemy
+		// screen's extract tab can be and still fit a short window at the
 		// interface-scale ceiling (`panel_sits_above_the_hotbar_and_fits_short_windows`
-		// is the wall). A seventh row needs that screen to scroll first,
-		// so a catalog wave that outgrows this is a UI job as well as a
-		// block row.
+		// is the wall). Another row needs that screen to scroll first, so
+		// a catalog wave that outgrows this is a UI job as well as a block
+		// row.
 		assert!(
 			room - ownable <= 4,
 			"unexpected slack — did the roster shrink?"
 		);
 	}
 
-	/// A layout saved at the old four rows decodes into six with its
-	/// arrangement intact, and one from the future is simply truncated.
+	/// A layout saved at the old four-row grid decodes into today's with
+	/// its arrangement intact, and one from the future is simply truncated.
 	#[test]
 	fn a_shorter_saved_grid_decodes_and_pads() {
 		let mut wire = vec![WIRE_EMPTY; 36];

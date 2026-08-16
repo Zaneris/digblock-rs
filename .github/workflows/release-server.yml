@@ -61,18 +61,23 @@ jobs:
             *) echo "version must be MAJOR.MINOR.PATCH, got '${{ inputs.version }}'" >&2; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
 
       # Anchored edits, not a global s/0.1.0/…/ — that string also
       # appears in comments and docs. Cargo.lock records workspace
       # members' versions, so it has to move with them.
+      #
+      # ONE Cargo.toml on purpose: every member inherits the version with
+      # `version.workspace = true`, so a new crate is covered the day it is
+      # added. This used to carry a second `sed` for tools/texgen, which
+      # was the only member holding a literal — and a list of crates to
+      # remember is a list somebody eventually doesn't.
       - name: Set version
         run: |
           v='${{ inputs.version }}'
           sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" Cargo.toml
-          sed -i "/^\[package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" tools/texgen/Cargo.toml
           sed -i "\|<key>CFBundleShortVersionString</key>|{n;s|<string>.*</string>|<string>$v</string>|;}" apps/ios/xcode/Info.plist
           cargo update --workspace
           git diff --stat
@@ -94,24 +99,24 @@ jobs:
     needs: bump
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.bump.outputs.sha }}
 
       # QEMU covers only the arm64 runtime stage's apt-get; the compile
       # stages cross-compile natively on the amd64 runner (see the
       # $BUILDPLATFORM pin in docker/Dockerfile.release).
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         env:
           # Don't upload the .dockerbuild build-record artifact — the
           # release job downloads artifacts and must only see binaries.
@@ -147,7 +152,7 @@ jobs:
             artifact: digblock-server-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.bump.outputs.sha }}
 
@@ -179,7 +184,7 @@ jobs:
           [ -f "$src.exe" ] && src="$src.exe"
           cp "$src" "dist/${{ matrix.artifact }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
@@ -188,11 +193,11 @@ jobs:
     needs: [bump, image, binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.bump.outputs.sha }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: digblock-server-*

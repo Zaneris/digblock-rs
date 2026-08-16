@@ -17,7 +17,7 @@ struct Vm {
 	// xyz = light direction in item space (toward the ground);
 	// w = direct-light strength.
 	light: vec4f,
-	// rgb = the frame's direct colour; w = 1.0 when the item is
+	// rgb = the frame's direct colour; w is set when the item is
 	// fullbright ink (`glows`). Derived from the drawn item rather than
 	// plumbed in from the engine, so it is not possible to draw a torch
 	// and forget the flag.
@@ -42,8 +42,8 @@ struct CamLight {
 @group(1) @binding(0) var materials: texture_2d_array<f32>;
 @group(1) @binding(1) var mat_smp: sampler;
 
-// Indexed by digblock_core::dir::Dir's discriminants:
-// 0=West(+x) 1=North(+z) 2=South(-z) 3=Bottom(-y) 4=Top(+y) 5=East(-x).
+// Indexed by digblock_core::dir::Dir's discriminants, in their order:
+// West(+x), North(+z), South(-z), Bottom(-y), Top(+y), East(-x).
 const NORMALS = array<vec3f, 6>(
 	vec3f(1.0, 0.0, 0.0),
 	vec3f(0.0, 0.0, 1.0),
@@ -58,7 +58,15 @@ struct VsOut {
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) shade: vec3f,
+	@location(3) @interpolate(flat) ink: f32,
 }
+
+// The per-FACE ink bit, riding above the texture layer in the same
+// vertex word (viewmodel.rs's `INK_BIT`). A tool is a shaded body with
+// one lit part set into it — a glowing bulb, a resonating core — which
+// the per-DRAW flag below cannot say: it can only make the whole item
+// fullbright, and a fullbright tool has no form left.
+const ITEM_INK_BIT = 65536u;
 
 @vertex
 fn vs(
@@ -77,7 +85,8 @@ fn vs(
 	var out: VsOut;
 	out.pos = vm.mvp * vec4f(pos, 1.0);
 	out.uv = uv;
-	out.layer = layer;
+	out.layer = layer & (ITEM_INK_BIT - 1u);
+	out.ink = f32((layer & ITEM_INK_BIT) != 0u);
 	out.shade = cam_light.ambient.rgb + vm.light_color.rgb * diffuse;
 	return out;
 }
@@ -101,6 +110,10 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// point of authoring it in view space. The one honest gap that leaves
 	// — a submerged camera's hand takes no water extinction — is already
 	// true today and is not introduced here.
-	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), vm.light_color.w > 0.5);
+	//
+	// Two ways to be ink and one function to draw it: the whole item
+	// (`glows`, a torch), or this face alone (a tool's lit part).
+	let ink = vm.light_color.w > 0.5 || in.ink > 0.5;
+	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), ink);
 	return vec4f(lit, 1.0);
 }

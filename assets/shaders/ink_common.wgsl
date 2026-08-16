@@ -15,7 +15,7 @@
 //
 // Fullbright ink is a light SOURCE, and a source has to out-read what it
 // casts or the picture inverts: the flame is authored as an ordinary
-// albedo texture, so at gain 1 it renders no brighter than a well-lit
+// albedo texture, so at unity gain it renders no brighter than a well-lit
 // wall — and once the torch's near field stopped clipping (LIGHT_NEAR,
 // gi_resolve.wgsl) the pool it threw was brighter than the flame
 // throwing it.
@@ -28,10 +28,18 @@
 // id special case in a shader to do it. That is also why ONE per-draw
 // flag is enough for an item made of two materials.
 //
-// 1.6 rather than 2.4: the larger value moved the sprite 3 luminance
-// levels out of 255, because the ink is already clamped by the scene
-// target's SURFACE format and cannot be raised to follow a brighter
-// pool. That ceiling is what caps LIGHT_GAIN at 0.75, and both are
+// The corollary is a rule for the TEXTURE rather than for this function:
+// an ink texture is authored for FULLBRIGHT, not for lit. A material
+// painted near white has no headroom left to take any gain at all — it
+// clips on all three channels and reads as flat white — and the
+// weighting cannot separate it from a flame of the same luminance, which
+// is what made the torch's post out-read its own fire until the post was
+// cut from the dark timber (R29).
+//
+// This gain rather than a larger one: raising it further was tried and
+// barely moved the sprite at all, because the ink is already clamped by
+// the scene target's SURFACE format and cannot be raised to follow a
+// brighter pool. That ceiling is what caps LIGHT_GAIN, and both are
 // stopgaps for the missing tonemap (R22).
 const EMISSIVE_GAIN = 1.6;
 

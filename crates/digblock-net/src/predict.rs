@@ -26,12 +26,13 @@ use digblock_core::player::{Player, PlayerIntent, PlayerState, TICK};
 use glam::Vec3;
 use std::collections::VecDeque;
 
-/// ~2 s of unacked input; overflow drops oldest (a later snapshot then
-/// takes the divergence path and hard-corrects).
+/// How much unacked input the predictor holds, in ticks; overflow drops
+/// the oldest (a later snapshot then takes the divergence path and
+/// hard-corrects).
 const BUF_CAP: usize = 128;
 
-const POS_EPS2: f32 = 1e-6; // |Δpos| < 1e-3 blocks
-const VEL_EPS2: f32 = 1e-4; // |Δvel| < 1e-2 blocks/s
+const POS_EPS2: f32 = 1e-6; // = (1e-3 blocks)²
+const VEL_EPS2: f32 = 1e-4; // = (1e-2 blocks/s)²
 
 struct BufEntry {
 	tick: u32,
@@ -246,6 +247,7 @@ mod tests {
 	use super::*;
 	use digblock_core::block::BlockType;
 	use glam::Vec2;
+	use std::assert_matches;
 
 	fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 		Some(if y < 10 {
@@ -290,7 +292,7 @@ mod tests {
 			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
 			inputs.push((forward(), Vec3::Z));
 		}
-		// Server consumed the first 10 ticks and agrees exactly.
+		// Server consumed the leading slice of ticks and agrees exactly.
 		let server = server_run(&inputs[..10], start);
 		let r = pred.reconcile(&mut player, 109, server, &flat_world);
 		assert_eq!(r, Reconciled::InSync);
@@ -305,13 +307,13 @@ mod tests {
 			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
 			inputs.push((forward(), Vec3::Z));
 		}
-		// Server disagrees at tick 109 (e.g. envelope rejected a claim).
+		// Server disagrees at the acked tick (e.g. envelope rejected a claim).
 		let mut server = server_run(&inputs[..10], landed_player().state());
 		server.pos.x += 2.0;
 		let r = pred.reconcile(&mut player, 109, server, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
-		// Post-reconcile state must equal the reference: server state at
-		// 109 + the remaining 20 inputs, bit-exact.
+		assert_matches!(r, Reconciled::Replayed { .. });
+		// Post-reconcile state must equal the reference: the server state
+		// at that ack plus the inputs after it, bit-exact.
 		let want = server_run(&inputs[10..], server);
 		assert_eq!(player.state(), want);
 	}
@@ -345,11 +347,11 @@ mod tests {
 		for _ in 0..(BUF_CAP + 40) {
 			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
 		}
-		// Tick 10 was dropped by overflow: no buffered post to compare,
+		// That tick was dropped by overflow: no buffered post to compare,
 		// so even a "correct" server state takes the replay path.
 		let state = player.state();
 		let r = pred.reconcile(&mut player, 10, state, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 	}
 
 	#[test]
@@ -393,15 +395,15 @@ mod tests {
 			pred.predict(&mut player, PlayerIntent::default(), Vec3::Z, &flat_world);
 			pred.input_batch();
 		}
-		// Server disagrees by 5 mm (an underrun/coast seed): replay to S.
+		// Server disagrees by a hair (an underrun/coast seed): replay to S.
 		let mut s = rest;
 		s.pos.x += 0.005;
 		let r = pred.reconcile(&mut player, 109, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		let replayed = player.state();
 		// One RTT later the server has adopted our in-flight `rest` claims
-		// and echoes them. That matches what we sent for tick 115 — stay
-		// put; the server converges to us via the newer claims.
+		// and echoes them. That matches what we sent for the newer ack —
+		// stay put; the server converges to us via the newer claims.
 		let r = pred.reconcile(&mut player, 115, rest, &flat_world);
 		assert_eq!(r, Reconciled::InSync);
 		assert_eq!(player.state(), replayed, "no snap back");
@@ -421,11 +423,11 @@ mod tests {
 		let mut s = rest;
 		s.pos.x += 2.0;
 		let r = pred.reconcile(&mut player, 109, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		let mut s2 = rest;
 		s2.pos.x += 2.5;
 		let r = pred.reconcile(&mut player, 115, s2, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 	}
 
 	/// Every wire copy of a tick must carry the identical claim: under
@@ -443,7 +445,7 @@ mod tests {
 		let mut s = rest;
 		s.pos.x += 0.5;
 		let r = pred.reconcile(&mut player, 105, s, &flat_world);
-		assert!(matches!(r, Reconciled::Replayed { .. }));
+		assert_matches!(r, Reconciled::Replayed { .. });
 		// Re-sent ticks repeat the frozen claim, not the rewritten post.
 		for i in pred.input_batch().inputs {
 			assert_eq!(i.claimed_pos, rest.pos.to_array());

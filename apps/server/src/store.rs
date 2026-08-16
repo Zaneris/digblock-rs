@@ -8,9 +8,9 @@
 //! re-overlaid whenever a column regenerates.
 
 use crate::journal::JournalIndex;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use digblock_core::block::BlockType;
-use digblock_core::chunk::{split_world, BlockWorld, ChunkData, CHUNK_SIZE, WORLD_VCHUNK};
+use digblock_core::chunk::{BlockWorld, CHUNK_SIZE, ChunkData, WORLD_VCHUNK, split_world};
 use digblock_core::fluid::FluidWorld;
 use digblock_core::protect::Region;
 use digblock_core::worldgen::build_column;
@@ -99,12 +99,13 @@ impl ChunkStore {
 	/// Both halves are O(centers × r²) — the keep set is materialized ONCE
 	/// and then tested by lookup. The old shape asked a closure that
 	/// re-scanned every center, once per cell of every center's box and
-	/// again per resident column, making the whole call O(n²·r²): at 32
-	/// players and `--sim-radius 6` that was ~520 k comparisons, fired
-	/// whenever any player crossed a column boundary — i.e. on exactly the
-	/// ticks everyone is moving. It also computed `cx - px` in i32 against
-	/// an unbounded separation; deriving the cells from each center instead
-	/// keeps every delta inside the radius by construction.
+	/// again per resident column, making the whole call O(n²·r²): at a
+	/// co-located crowd on a wide sim radius that was hundreds of thousands
+	/// of comparisons, fired whenever any player crossed a column boundary —
+	/// i.e. on exactly the ticks everyone is moving. It also computed
+	/// `cx - px` in i32 against an unbounded separation; deriving the cells
+	/// from each center instead keeps every delta inside the radius by
+	/// construction.
 	pub fn set_residency(&mut self, centers: &[(i32, i32)], radius: i32) {
 		let evict_r = radius + EVICT_SLACK;
 		// Union of the evict-radius discs: what survives this pass.
@@ -276,7 +277,7 @@ impl FluidWorld for StoreWorld<'_> {
 	}
 }
 
-// CHUNK_SIZE is 16 everywhere above; keep the constant tied.
+// The column arithmetic above assumes today's CHUNK_SIZE; keep it tied.
 const _: () = assert!(CHUNK_SIZE == 16);
 
 #[cfg(test)]
@@ -337,7 +338,7 @@ mod tests {
 		});
 
 		// Walk away (evict), come back (regen + overlay). Eviction zeroes
-		// the resident count, so we wait for the origin disc's 5 again.
+		// the resident count, so we wait for the origin disc all over again.
 		store.set_residency(&[(100, 100)], 1);
 		assert!(!store.column_ready(0, 0));
 		store.set_residency(&[(0, 0)], 1);

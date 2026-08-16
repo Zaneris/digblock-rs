@@ -57,6 +57,10 @@ fn build_inner(
 		blend: desc.blend,
 		write_mask: desc.write_mask,
 	})];
+	// wgpu can leave a vertex slot unbound; this engine never wants to,
+	// so filling every slot a descriptor names is one more engine-wide
+	// policy the funnel owns and no call site spells.
+	let buffers: Vec<_> = desc.vertex_buffers.iter().cloned().map(Some).collect();
 	device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 		label: Some(desc.label),
 		layout: Some(desc.layout),
@@ -64,7 +68,7 @@ fn build_inner(
 			module: desc.module,
 			entry_point: Some(desc.vs_entry),
 			compilation_options: Default::default(),
-			buffers: desc.vertex_buffers,
+			buffers: &buffers,
 		},
 		primitive: wgpu::PrimitiveState {
 			topology: wgpu::PrimitiveTopology::TriangleList,
@@ -73,8 +77,11 @@ fn build_inner(
 		},
 		depth_stencil: depth.then(|| wgpu::DepthStencilState {
 			format: DEPTH_FORMAT,
-			depth_write_enabled: desc.depth_write,
-			depth_compare: desc.depth_compare,
+			// Both are `Some` unconditionally: wgpu wants them present
+			// whenever the attachment has a depth aspect, and this funnel
+			// only builds a depth state when there IS one.
+			depth_write_enabled: Some(desc.depth_write),
+			depth_compare: Some(desc.depth_compare),
 			stencil: Default::default(),
 			bias: desc.depth_bias,
 		}),
@@ -89,7 +96,7 @@ fn build_inner(
 				&[]
 			},
 		}),
-		multiview: None,
+		multiview_mask: None,
 		cache: None,
 	})
 }

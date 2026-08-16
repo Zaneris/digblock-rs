@@ -6,8 +6,8 @@
 use digblock_core::skills::{self, Skill, SkillSet};
 
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, Style, Ui, DIM, WHITE};
-use crate::ui::{hud, theme, InvId, Rect};
+use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
+use crate::ui::{InvId, Rect, hud, theme};
 
 /// The screen's per-frame view, derived once from the engine's
 /// `SkillSet` so the measure and emit passes read the same numbers.
@@ -16,7 +16,11 @@ pub struct CharView {
 }
 
 impl CharView {
-	pub fn build(skills: &SkillSet) -> Self {
+	/// `eye_y` is where the player is standing, for Mining's depth-reward
+	/// readout. A READOUT, not the rule: the award keys on the cell that
+	/// was dug, which is a block or two under the eye, so this says what
+	/// this depth is worth and never claims to price a particular swing.
+	pub fn build(skills: &SkillSet, eye_y: i32) -> Self {
 		let mut rows = vec![Row::Title, Row::Space];
 		let mut total_level = 0;
 		for &skill in &Skill::ALL {
@@ -40,6 +44,13 @@ impl CharView {
 			rows.push(Row::Info(info));
 			if let Some((lvl, what)) = next_unlock(skill, level) {
 				rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
+			}
+			// §5.2's depth reward, on the skill it pays into. Stated as a
+			// live number rather than a rule, because the ramp is what
+			// makes it worth reading: it answers "is it worth going down"
+			// with the figure for where you are right now.
+			if skill == Skill::Mining {
+				rows.push(Row::Info(depth_bonus_line(eye_y)));
 			}
 			rows.push(Row::Space);
 		}
@@ -75,12 +86,13 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(99, "mastery; the master's sigil"),
 ];
 
-/// Mining's teasers: the two rock gates, then the four ore reveals — the
+/// Mining's teasers: the strength wall's two rungs, then the four ore
+/// reveals — the
 /// levels the whole skill is shaped around.
 const MINING_TEASERS: &[(u32, &str)] = &[
-	(3, "sandstone opens"),
-	(5, "stone and rubble open"),
-	(10, "emberore reveals — bring a siphon"),
+	(5, "timber gives — trees and planed wood"),
+	(10, "rock gives — gravel, sandstone, stone"),
+	(15, "emberore reveals — bring a siphon"),
 	(30, "duskstone reveals"),
 	(40, "metal opens — you can break what you smelt"),
 	(55, "glowvein reveals; the resonant pick swings wide"),
@@ -90,6 +102,17 @@ const MINING_TEASERS: &[(u32, &str)] = &[
 	(90, "prospector's sense — you hear what you can't see"),
 	(99, "mastery: every vein gives one more"),
 ];
+
+/// The depth-reward readout: the live percentage once there is one to
+/// show, and the DIRECTION before that. Rounding decides which — the top of
+/// the ramp is a stretch that rounds to nothing, and "+0%" reads as a broken
+/// feature to exactly the player who most needs telling the bonus is there.
+fn depth_bonus_line(eye_y: i32) -> String {
+	match (skills::depth_xp_permille(eye_y) - 1000) / 10 {
+		0 => "depth bonus: none yet — deeper pays more".to_string(),
+		pct => format!("depth bonus: +{pct}% XP per dig"),
+	}
+}
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
 	let table = match skill {
@@ -105,7 +128,7 @@ fn group(n: u64) -> String {
 	let digits = n.to_string();
 	let mut out = String::with_capacity(digits.len() + digits.len() / 3);
 	for (i, c) in digits.chars().enumerate() {
-		if i > 0 && (digits.len() - i) % 3 == 0 {
+		if i > 0 && (digits.len() - i).is_multiple_of(3) {
 			out.push(',');
 		}
 		out.push(c);
@@ -264,12 +287,16 @@ impl CharScreen {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ui::draw::{Cmd, DrawList};
 	use crate::ui::HitMap;
+	use crate::ui::draw::{Cmd, DrawList};
 
 	const SIZE: (u32, u32) = (1280, 800);
 
 	fn emit(skills: &SkillSet) -> DrawList {
+		emit_at(skills, skills::DEPTH_XP_FROM)
+	}
+
+	fn emit_at(skills: &SkillSet, eye_y: i32) -> DrawList {
 		let mut dl = DrawList::default();
 		let mut hits: HitMap<InvId> = HitMap::default();
 		let mut screen = CharScreen::default();
@@ -281,7 +308,7 @@ mod tests {
 				style: Style::new(1.0),
 			},
 			SIZE,
-			&CharView::build(skills),
+			&CharView::build(skills, eye_y),
 			1.0,
 		);
 		assert!(hits.hit(640.0, 400.0).is_none(), "read-only: no hit rects");
@@ -303,7 +330,7 @@ mod tests {
 	#[test]
 	fn levels_bars_and_totals_derive_from_xp() {
 		let mut skills = SkillSet::default();
-		// Exactly level 10, dead on the boundary: 0 into the next step.
+		// Dead on a level boundary: nothing banked into the next step.
 		skills.set_total(Skill::Mining, skills::total_xp_for(10));
 		let dl = emit(&skills);
 		let all = texts(&dl).join("\n");
@@ -317,6 +344,47 @@ mod tests {
 		let all = texts(&emit(&skills)).join("\n");
 		assert!(all.contains("MINING   LV 99"), "{all}");
 		assert!(all.contains("1,103,585 XP — mastered"), "{all}");
+	}
+
+	/// §5.2's depth reward is READ OFF THE CORE, at the depth the player is
+	/// actually standing at — the screen never carries its own copy of the
+	/// ramp. It sits under Mining because that is the skill it pays into,
+	/// and it names a direction rather than "+0%" wherever the ramp has not
+	/// yet climbed far enough to show a whole percent.
+	#[test]
+	fn the_depth_bonus_reads_the_ramp_at_the_players_depth() {
+		let skills = SkillSet::default();
+		let deepest = (skills::DEPTH_XP_MAX_PERMILLE - 1000) / 10;
+		let all = texts(&emit_at(&skills, skills::DEPTH_XP_TO)).join("\n");
+		assert!(
+			all.contains(&format!("depth bonus: +{deepest}% XP per dig")),
+			"{all}"
+		);
+		// The line belongs to Mining, and there is exactly one of it.
+		let lines = texts(&emit_at(&skills, skills::DEPTH_XP_TO));
+		let at = lines.iter().position(|l| l.starts_with("depth bonus"));
+		assert_eq!(
+			lines
+				.iter()
+				.filter(|l| l.starts_with("depth bonus"))
+				.count(),
+			1,
+			"{lines:?}"
+		);
+		let mining = lines.iter().position(|l| l.starts_with("MINING"));
+		let alchemy = lines.iter().position(|l| l.starts_with("ALCHEMY"));
+		assert!(mining < at && at < alchemy, "{lines:?}");
+
+		// The waterline and everything above it: the rule, never a zero.
+		for y in [skills::DEPTH_XP_FROM, skills::DEPTH_XP_FROM + 60] {
+			let all = texts(&emit_at(&skills, y)).join("\n");
+			assert!(all.contains("depth bonus: none yet"), "at y {y}: {all}");
+		}
+		// And no depth anywhere in the world shows a "+0%".
+		for y in (skills::DEPTH_XP_TO..=skills::DEPTH_XP_FROM + 60).step_by(7) {
+			let all = texts(&emit_at(&skills, y)).join("\n");
+			assert!(!all.contains("+0%"), "at y {y}: {all}");
+		}
 	}
 
 	/// Every level the CORE opens something at has prose here, DERIVED
@@ -349,11 +417,12 @@ mod tests {
 				"{skill:?} teasers out of order"
 			);
 		}
-		// Mining's teasers are EXACTLY the rock gate — it opens nothing
-		// else, so an extra row here would be a promise the game breaks.
+		// Mining's teasers are EXACTLY what it opens — the strength wall's
+		// two rungs and then the reveals — so an extra row here would be a
+		// promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![3, 5, 10, 30, 40, 55, 60, 80, 85, 90, 99]
+			vec![5, 10, 15, 30, 40, 55, 60, 80, 85, 90, 99]
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste floor.
@@ -367,15 +436,19 @@ mod tests {
 			);
 		}
 
-		// And the rows actually render: a level-1 character teases the
-		// first thresholds; past the last Mining gate, Mining shows none.
+		// And the rows actually render: a fresh character teases the first
+		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
-		assert!(fresh.contains("next: LV 3 — sandstone opens"), "{fresh}");
+		assert!(
+			fresh.contains("next: LV 5 — timber gives — trees and planed wood"),
+			"{fresh}"
+		);
 		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
 		let all = texts(&emit(&leveled)).join("\n");
-		assert!(!all.contains("next: LV 3 —"), "{all}");
+		assert!(!all.contains("next: LV 5 — timber"), "{all}");
+		assert!(all.contains("next: LV 15 — emberore reveals"), "{all}");
 	}
 
 	#[test]

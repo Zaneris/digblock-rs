@@ -4,13 +4,13 @@
 //! checks and LWW replay are the shared code paths and a shard is just an
 //! ordinary journal that holds one region. localStorage over IndexedDB
 //! deliberately: `flush` runs inside the synchronous `on_suspend`
-//! contract, and after LWW compaction a save is live-cells small
-//! (~21 bytes/cell base64), comfortably inside the quota.
+//! contract, and after LWW compaction a save is live-cells small — a
+//! handful of base64 bytes per cell, comfortably inside the quota.
 //!
 //! Sharding is why the save cost is bounded. A single blob meant every
 //! write re-serialized the world's ENTIRE edit history, base64'd it and
-//! handed it to a synchronous `setItem` — inside the frame, every five
-//! seconds, growing forever with the age of the save. Now only regions
+//! handed it to a synchronous `setItem` — inside the frame, on every
+//! flush, growing forever with the age of the save. Now only regions
 //! that actually changed are rewritten, so the cost tracks recent
 //! building rather than lifetime building.
 //!
@@ -22,7 +22,7 @@
 //! with a one-time status the menu surfaces.
 
 use digblock_persist::journal::{
-	merge_snapshot, region_of_block, region_snapshot_bytes, JournalError, JournalIndex, REGION_COLS,
+	JournalError, JournalIndex, REGION_COLS, merge_snapshot, region_of_block, region_snapshot_bytes,
 };
 use digblock_persist::{EditOverlay, PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use std::collections::HashSet;
@@ -336,7 +336,7 @@ impl WorldStore for LocalStorageWorldStore {
 				}
 			})
 			.collect();
-		out.sort_by(|a, b| b.last_played_ms.cmp(&a.last_played_ms));
+		out.sort_by_key(|w| std::cmp::Reverse(w.last_played_ms));
 		out
 	}
 
@@ -499,14 +499,14 @@ impl WorldStore for LocalStorageWorldStore {
 		// Engine::close_local_save); anything still dirty here has no
 		// overlay to serialize from, so just detach.
 		self.write_state();
-		if let Some(a) = &self.active {
-			if !a.dirty.is_empty() {
-				log::warn!(
-					"world {} closed with {} unflushed region(s)",
-					a.id,
-					a.dirty.len()
-				);
-			}
+		if let Some(a) = &self.active
+			&& !a.dirty.is_empty()
+		{
+			log::warn!(
+				"world {} closed with {} unflushed region(s)",
+				a.id,
+				a.dirty.len()
+			);
 		}
 		self.active = None;
 	}

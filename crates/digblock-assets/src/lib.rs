@@ -30,9 +30,11 @@ pub mod tex {
 	pub const TORCH_SIDE: &[u8] = include_bytes!("../../../assets/textures/TorchSide.png");
 	pub const TORCH_FLAME: &[u8] = include_bytes!("../../../assets/textures/TorchFlame.png");
 	// Hand-made again: planed timber in three tones, the material crafted
-	// things are made OF. `LUMBER_LIGHT` is the joinery: the bucket, the
-	// torch post, and the Lumber block with its stairs, slab and door.
-	// `LUMBER_DARK` and `LUMBER_RED` are the second and third timbers.
+	// things are made OF. `LUMBER_LIGHT` is the joinery: the bucket, and
+	// the Lumber block with its stairs, slab and door. `LUMBER_DARK` and
+	// `LUMBER_RED` are the second and third timbers, and the dark one is
+	// also what TORCH_SIDE's post is cut from — a texture drawn
+	// fullbright has to be authored dark.
 	pub const LUMBER_LIGHT: &[u8] = include_bytes!("../../../assets/textures/LumberLight.png");
 	pub const LUMBER_DARK: &[u8] = include_bytes!("../../../assets/textures/LumberDark.png");
 	pub const LUMBER_RED: &[u8] = include_bytes!("../../../assets/textures/LumberRed.png");
@@ -56,6 +58,24 @@ pub mod tex {
 	pub const CRYSTAL: &[u8] = include_bytes!("../../../assets/textures/Crystal.png");
 	pub const LANTERN: &[u8] = include_bytes!("../../../assets/textures/Lantern.png");
 	pub const AETHERLAMP: &[u8] = include_bytes!("../../../assets/textures/Aetherlamp.png");
+	// The two tool glows (§7.3). Each is worn by a tool ROW whose block is
+	// never placed, so the layer is read in only two places — the emissive
+	// face of the tool's own geometry, and the GI material LUT, which is
+	// where the colour of the light it casts comes from.
+	pub const SIPHON_GLOW: &[u8] = include_bytes!("../../../assets/textures/SiphonGlow.png");
+	pub const PICK_GLOW: &[u8] = include_bytes!("../../../assets/textures/PickGlow.png");
+	// The four SPENT vein faces: the same rock as their tier with the
+	// flecks drained to dark inclusions, so a worked seam still reads as
+	// the seam you worked. Unlike the live rows these are drawn LIT, which
+	// is why their bodies stay at ordinary stone brightness.
+	pub const DEPLETED_EMBERORE: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedEmberore.png");
+	pub const DEPLETED_DUSKSTONE: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedDuskstone.png");
+	pub const DEPLETED_GLOWVEIN: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedGlowvein.png");
+	pub const DEPLETED_AETHEROCK: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedAetherock.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -68,7 +88,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 35] = [
+	pub const LAYERS: [&[u8]; 41] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -104,11 +124,17 @@ pub mod tex {
 		CRYSTAL,
 		LANTERN,
 		AETHERLAMP,
+		SIPHON_GLOW,
+		PICK_GLOW,
+		DEPLETED_EMBERORE,
+		DEPLETED_DUSKSTONE,
+		DEPLETED_GLOWVEIN,
+		DEPLETED_AETHEROCK,
 	];
 }
 
 pub mod sfx {
-	//! Embedded sound effects: mono 44.1 kHz Ogg Vorbis (decoding
+	//! Embedded sound effects: mono Ogg Vorbis (decoding
 	//! happens in the platform audio fillers — this crate stays
 	//! dependency-free). Provenance per file: assets/sfx/SOURCES.md.
 	//! Music is deliberately NOT here — tracks are fetched from the
@@ -129,13 +155,20 @@ pub mod sfx {
 	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
 	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
 	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
+	/// The Essence Siphon working a vein: a seamless resonant loop, played
+	/// on the hold voice in place of the dig loop's hammer blows.
+	pub const SIPHON_DRAW: &[u8] = include_bytes!("../../../assets/sfx/siphon_draw.ogg");
+	/// The draw landing — a bright glint settling onto the loop's own
+	/// upper partial. Falls where both level cues rise, so taking a seam
+	/// can never be mistaken for gaining a level.
+	pub const SIPHON_TAKE: &[u8] = include_bytes!("../../../assets/sfx/siphon_take.ogg");
 	/// The ordinary level-up chime: a rising fifth.
 	pub const LEVEL_UP: &[u8] = include_bytes!("../../../assets/sfx/level_up.ogg");
 	/// The level-up that OPENS something: a four-note fanfare on top of
 	/// the same tonic, so the two read as the same event, escalated.
 	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
 
-	pub const ALL: [(&str, &[u8]); 18] = [
+	pub const ALL: [(&str, &[u8]); 20] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -152,6 +185,8 @@ pub mod sfx {
 		("ambient_wind.ogg", AMBIENT_WIND),
 		("ambient_water.ogg", AMBIENT_WATER),
 		("ambient_cave.ogg", AMBIENT_CAVE),
+		("siphon_draw.ogg", SIPHON_DRAW),
+		("siphon_take.ogg", SIPHON_TAKE),
 		("level_up.ogg", LEVEL_UP),
 		("level_unlock.ogg", LEVEL_UNLOCK),
 	];
@@ -179,8 +214,8 @@ pub mod font {
 
 pub mod shader {
 	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time. Five of them, each the sole
-	// definition of one thing so the passes cannot silently disagree:
+	// with concat! at include time, each the sole definition of one thing
+	// so the passes cannot silently disagree:
 	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
 	// medium_common.wgsl (the participating medium and its extinction
 	// constants), sky_common.wgsl (the procedural-sky core — gradient,
@@ -233,6 +268,15 @@ pub mod shader {
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
+	);
+	/// The essence draw — the Essence Siphon's motes and face kindle. No
+	/// sky prelude, unlike its two billboard siblings: it is drawn
+	/// ADDITIVELY, so it takes the medium's transmittance halves and must
+	/// never in-scatter sky into an emissive term.
+	pub const SIPHON: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/siphon.wgsl"),
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
@@ -301,7 +345,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 20] = [
+	pub const ALL: [(&str, &str); 21] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -310,6 +354,7 @@ pub mod shader {
 		("depth_blit.wgsl", DEPTH_BLIT),
 		("spray.wgsl", SPRAY),
 		("confetti.wgsl", CONFETTI),
+		("siphon.wgsl", SIPHON),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
@@ -327,12 +372,17 @@ pub mod shader {
 
 #[cfg(test)]
 mod tests {
-	/// Validate every WGSL shader without needing a GPU, so CI catches
-	/// shader errors on any runner.
-	/// KNOWN GAP: this crate's naga is not wgpu's parser — `pass` is a
-	/// reserved word at runtime that validated fine here and killed the
-	/// resolve pipeline in the running engine (R15 follow-up). A shader
-	/// change still needs one live launch before it is believed.
+	/// Validate every WGSL shader without needing a GPU or a browser, so
+	/// this runs on any machine and inside plain `cargo test`.
+	///
+	/// naga is the PERMISSIVE front end and deliberately not the only one
+	/// asked: `pass` is a reserved word at runtime that validated fine
+	/// here and killed the resolve pipeline in the running engine (R15
+	/// follow-up), and `highlight.wgsl` once mixed `*` and `^`
+	/// unparenthesized, which naga accepts and Tint does not. That second
+	/// front end is `just check-shaders` (tools/shadercheck), which
+	/// compiles this same `ALL` in a headless Chrome — keep both reading
+	/// `ALL` so a shader cannot be in one gate and not the other.
 	#[test]
 	fn shaders_parse_and_validate() {
 		for (name, src) in super::shader::ALL {
@@ -375,9 +425,9 @@ mod tests {
 	///
 	/// It stopped holding silently once. The cap used to be a smooth
 	/// function of per-frame reprojection travel, and per-frame parallax
-	/// collapses with view distance, so the far field walked around at
-	/// n ~ 330 — above `N_CONVERGED`, where the filter switches itself off.
-	/// The band that most needed it was the band not getting it, and the
+	/// collapses with view distance, so the far field walked around with a
+	/// history longer than `N_CONVERGED`, where the filter switches itself
+	/// off. The band that most needed it was the band not getting it, and the
 	/// only symptom was a shadow ten blocks out sliding with the player
 	/// (R13). A two-state cap makes the relationship structural, and this
 	/// pins it so a future retune of either constant cannot re-open it.
@@ -434,7 +484,7 @@ mod tests {
 	///
 	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is
 	/// what makes that true. The narrower pattern misses the TYPED form
-	/// (`const EMISSIVE_GAIN: f32 = 2.4;`) that `wgsl_const` itself
+	/// (`const EMISSIVE_GAIN: f32 = …;`) that `wgsl_const` itself
 	/// supports, and comparing the value cannot catch it either, since
 	/// the prelude is prepended and its declaration is the one found
 	/// first — so a shadowing local passed every assertion here.
@@ -520,11 +570,12 @@ mod tests {
 		}
 	}
 
-	// The size bound is the real assertion: a stock Google face is
-	// 200 KB-900 KB and fontdue eagerly outlines all of it at load, so
-	// committing an unsubset TTF is a startup regression that nothing
-	// else would catch. Subset to the Latin repertoire, each face is
-	// ~23 KB — see assets/fonts/SOURCES.md for the exact recipe.
+	// The size bound is the real assertion: a stock Google face runs to
+	// hundreds of kilobytes and fontdue eagerly outlines all of it at
+	// load, so committing an unsubset TTF is a startup regression that
+	// nothing else would catch. Subset to the Latin repertoire, a face is
+	// a small fraction of that — see assets/fonts/SOURCES.md for the exact
+	// recipe.
 	#[test]
 	fn faces_are_small_subset_ttfs() {
 		for (name, bytes) in super::font::ALL {

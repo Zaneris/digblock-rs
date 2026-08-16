@@ -13,8 +13,8 @@ use web_time::Instant;
 /// difference has nothing to do with the change under test. That trap is
 /// recorded twice in GI-DESIGN.md (R19's two harness notes) and it was
 /// costing a whole parity pass per attempt: at DIG_RIVER a same-build
-/// repeat diffs at 0.69/255 while ANY cross-build pair diffs at ~6.9,
-/// entirely in the ripple bands. A fixed step makes both 0.
+/// repeat diffs an order of magnitude below ANY cross-build pair,
+/// entirely in the ripple bands. A fixed step makes both zero.
 pub struct GameClock {
 	last_tick: Option<Instant>,
 	fixed: Option<Duration>,

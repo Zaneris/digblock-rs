@@ -15,20 +15,21 @@
 
 use glam::Vec3;
 
-/// Full 360° day length in seconds (20 min real time).
+/// Full 360° day length in seconds.
 pub const DAY_SECS: f32 = 1200.0;
 pub const TOD_RATE_DEG_PER_SEC: f32 = 360.0 / DAY_SECS;
-/// Where a fresh world's clock starts: mid-morning (the Java start was
-/// tod = 80, sunrise). Shared with the server, whose authoritative clock
-/// is `tod_of_secs` over its tick counter.
+/// Where a fresh world's clock starts: mid-morning (the same angle the
+/// Java original started at, where it read as sunrise). Shared with the
+/// server, whose authoritative clock is `tod_of_secs` over its tick
+/// counter.
 pub const TOD_START: f32 = 80.0;
 
 /// The active light caster (sun by day, moon by night).
 pub struct CasterState {
 	/// Light direction, toward the ground.
 	pub dir: Vec3,
-	/// Caster strength 0..1: fades out below ~10° altitude so the
-	/// sun→moon handoff at the horizon never pops; moonlight caps at 0.6.
+	/// Caster strength 0..1: fades out at low altitude so the sun→moon
+	/// handoff at the horizon never pops; moonlight caps below full.
 	pub strength: f32,
 	pub is_moon: bool,
 }
@@ -67,11 +68,7 @@ impl Sun {
 	/// Wrap an angle into (−180, 180].
 	fn normalize(deg: f32) -> f32 {
 		let t = deg.rem_euclid(360.0);
-		if t > 180.0 {
-			t - 360.0
-		} else {
-			t
-		}
+		if t > 180.0 { t - 360.0 } else { t }
 	}
 
 	/// Advance the world clock.
@@ -115,7 +112,8 @@ impl Sun {
 	pub fn caster(&self) -> CasterState {
 		let e = self.elevation();
 		let is_moon = e < 0.0;
-		// 0 below ~2° altitude, 1 above ~10° (sin 2° ≈ 0.035, sin 10° ≈ 0.174).
+		// Smoothstep from just above the horizon up to a low altitude; the
+		// bounds are sines of those altitudes, to match `e`.
 		let t = ((e.abs() - 0.035) / (0.174 - 0.035)).clamp(0.0, 1.0);
 		let ramp = t * t * (3.0 - 2.0 * t);
 		CasterState {

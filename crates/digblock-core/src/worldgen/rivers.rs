@@ -6,7 +6,7 @@
 //! downhill flow — the level can step a block along the run — but the
 //! bands read as connected rivers that end in the ocean.
 
-use super::terrain::{smoothstep, soft_ceiling, TerrainParams, SEA_LEVEL};
+use super::terrain::{SEA_LEVEL, TerrainParams, smoothstep, soft_ceiling};
 use crate::simplex::fbm2;
 
 pub struct RiverParams {

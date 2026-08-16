@@ -89,7 +89,7 @@ fn ray_box(origin: Vec3, dir: Vec3, lo: Vec3, hi: Vec3) -> Option<(f32, (i32, i3
 	let (l, h) = (lo.to_array(), hi.to_array());
 	let mut t_near = f32::NEG_INFINITY;
 	let mut t_far = f32::INFINITY;
-	let mut axis = 3usize; // 3 = no bounding slab (ray starts inside all)
+	let mut axis = 3usize; // past the last axis: no bounding slab (inside all)
 	for a in 0..3 {
 		if d[a] == 0.0 {
 			if o[a] < l[a] || o[a] > h[a] {
@@ -144,10 +144,11 @@ fn cell_hit(
 	let mut best: Option<(f32, (i32, i32, i32))> = None;
 	for b in boxes_of(v) {
 		let (lo, hi) = b.aabb(cell);
-		if let Some((t, n)) = ray_box(origin, dir, lo, hi) {
-			if t <= max_dist && best.is_none_or(|(bt, _)| t < bt) {
-				best = Some((t, n));
-			}
+		if let Some((t, n)) = ray_box(origin, dir, lo, hi)
+			&& t <= max_dist
+			&& best.is_none_or(|(bt, _)| t < bt)
+		{
+			best = Some((t, n));
 		}
 	}
 	best.map(|(_, n)| hit(n))
@@ -209,10 +210,10 @@ fn walk(
 		if t > max_dist {
 			return None;
 		}
-		if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2)) {
-			if let Some(h) = cell_hit(origin, dir, max_dist, cell, v, normal, boxes_of) {
-				return Some(h);
-			}
+		if let Some(v) = hits(cell_at(cell.0, cell.1, cell.2))
+			&& let Some(h) = cell_hit(origin, dir, max_dist, cell, v, normal, boxes_of)
+		{
+			return Some(h);
 		}
 	}
 }
@@ -226,7 +227,7 @@ mod tests {
 		Some(b as u16)
 	}
 
-	/// Flat ground: solid dirt below y=10, air above.
+	/// Flat ground: solid dirt below the surface line, air above.
 	fn flat(_x: i32, y: i32, _z: i32) -> Option<u16> {
 		some_cell(if y < 10 { B::Dirt } else { B::Air })
 	}
@@ -288,9 +289,9 @@ mod tests {
 	// ---- shaped narrow phase --------------------------------------------
 
 	use crate::chunk::make_cell;
-	use crate::shapes::{door_state, stair_state, Facing};
+	use crate::shapes::{Facing, door_state, stair_state};
 
-	/// A +x-ascending stair at (5, 0, 0) with a stone wall at x=8, over
+	/// A +x-ascending stair with a solid wall a few cells behind it, over
 	/// air (no floor — rays only).
 	fn stair_wall(x: i32, y: i32, z: i32) -> Option<u16> {
 		if (x, y, z) == (5, 0, 0) {
@@ -304,20 +305,19 @@ mod tests {
 
 	#[test]
 	fn stair_narrow_phase_hits_and_misses() {
-		// Straight +x at tread height (y=0.5): the mid step's riser front
-		// is at x = 5 + 4/12 — hit with a −x normal.
+		// Straight +x at tread height: the ray meets the mid step's riser
+		// front — hit with a −x normal.
 		let hit = raycast(Vec3::new(3.5, 0.5, 0.5), Vec3::X, REACH, &stair_wall).unwrap();
 		assert_eq!(hit.cell, (5, 0, 0));
 		assert_eq!(hit.normal, (-1, 0, 0), "riser face");
 		assert_eq!(hit.block, B::WoodStairs);
-		// Above the top step (y=0.95 enters over the 8/12-high mid step
-		// but under nothing): still inside the cell's air region until
-		// the top step at x = 5 + 8/12.
+		// Entering over the mid step's tread but under nothing: still
+		// inside the cell's air region until the top step's riser.
 		let hit2 = raycast(Vec3::new(3.5, 0.95, 0.5), Vec3::X, REACH, &stair_wall).unwrap();
 		assert_eq!(hit2.cell, (5, 0, 0));
 		assert_eq!(hit2.normal, (-1, 0, 0));
-		// Threading the open region ABOVE the whole stair (y > 1): the
-		// ray misses the stair and lands on the wall behind.
+		// Threading the open region ABOVE the whole stair cell: the ray
+		// misses the stair and lands on the wall behind.
 		let past = raycast(Vec3::new(3.5, 1.5, 0.5), Vec3::X, 10.0, &stair_wall).unwrap();
 		assert_eq!(past.cell, (8, 1, 0), "grazed past the stair");
 		// From above onto a tread: +y normal on the stair cell.
@@ -333,8 +333,8 @@ mod tests {
 		assert_eq!(hit.normal, (0, 0, 0), "started inside the base slab");
 	}
 
-	/// Door pair at x=6 (leaf flush to the −x face when closed), wall
-	/// behind at x=9.
+	/// A door pair (leaf flush to the −x face when closed) with a solid
+	/// wall a few cells behind it.
 	fn door_world(open: bool) -> impl Fn(i32, i32, i32) -> Option<u16> {
 		move |x: i32, y: i32, z: i32| {
 			if x == 6 && (y == 0 || y == 1) && z == 0 {
@@ -364,9 +364,9 @@ mod tests {
 		let through = raycast(origin, Vec3::X, 10.0, &open).unwrap();
 		assert_eq!(through.cell, (9, 0, 0), "the doorway is clear");
 		// But the leaf itself is still there, and still a target: aim at
-		// where it swung to (set back a twelfth, z 0.083..0.25) and the
-		// pick lands on the door. Physics has no box there at all — this
-		// is exactly the case that used to be unpickable.
+		// where it swung to — flat against the jamb — and the pick lands
+		// on the door. Physics has no box there at all — this is exactly
+		// the case that used to be unpickable.
 		let toward_leaf = Vec3::new(4.5, 0.5, 0.15);
 		let leaf = raycast(toward_leaf, Vec3::X, 10.0, &open).unwrap();
 		assert_eq!(leaf.cell, (6, 0, 0), "open leaf is aimable");

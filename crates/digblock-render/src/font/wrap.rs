@@ -143,10 +143,10 @@ mod tests {
 
 	/// The property the chat column actually depends on, stated directly:
 	/// a break may only land where a space was, unless the word itself is
-	/// too wide for a whole line. Checked at the real chat geometry (a
-	/// 1280px window wraps at the midpoint, 16px UI face) over a message
-	/// at the wire's length limit, because a rule that holds for
-	/// "the quick brown fox" can still fail on a realistic sentence.
+	/// too wide for a whole line. Checked at the real chat geometry (the
+	/// column is half the window wide, in the UI face) over a message at
+	/// the wire's length limit, because a rule that holds for "the quick
+	/// brown fox" can still fail on a realistic sentence.
 	#[test]
 	fn a_full_length_chat_line_only_breaks_between_words() {
 		let px = 16.0;

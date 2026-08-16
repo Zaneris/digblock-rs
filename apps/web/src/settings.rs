@@ -66,9 +66,9 @@ pub fn save(s: &Settings) {
 	let Ok(json) = serde_json::to_string(&file) else {
 		return;
 	};
-	if let Some(storage) = storage() {
-		if storage.set_item(KEY, &json).is_err() {
-			log::warn!("could not persist settings — settings are per-session");
-		}
+	if let Some(storage) = storage()
+		&& storage.set_item(KEY, &json).is_err()
+	{
+		log::warn!("could not persist settings — settings are per-session");
 	}
 }

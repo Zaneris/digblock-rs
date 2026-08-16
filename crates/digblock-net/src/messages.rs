@@ -40,10 +40,10 @@ pub struct InputBatch {
 }
 
 /// YOUR own authoritative state. Full `f32` precision, deliberately:
-/// `predict.rs`'s `POS_EPS2` is 1e-6, so the echo of a claim the server
-/// adopted has to round-trip bit-comparably or EVERY snapshot takes the
-/// rewind-and-replay path. This is the one place in a snapshot where
-/// precision is load-bearing rather than cosmetic.
+/// `predict.rs` compares the echo against its claim within `POS_EPS2`, so
+/// a claim the server adopted has to round-trip bit-comparably or EVERY
+/// snapshot takes the rewind-and-replay path. This is the one place in a
+/// snapshot where precision is load-bearing rather than cosmetic.
 ///
 /// No `look`: the server echoes back the direction we sent it, and nothing
 /// on the client reads it. No `id` either — it is ours by construction.
@@ -53,25 +53,25 @@ pub struct SelfState {
 	pub vel: [f32; 3],
 }
 
-/// Somebody else, as the client actually consumes them. ~18 wire bytes for
-/// a walking player (28 worst case) against the flat 40 of the old shared
-/// struct (v13), which sent three f32s of `look` where only a yaw is ever
-/// read and three more of `vel` to drive a 250 ms-capped extrapolation.
+/// Somebody else, as the client actually consumes them — a fraction of
+/// the wire the old shared struct (v13) spent, which sent a whole `look`
+/// vector where only a yaw is ever read and a full-precision `vel` to
+/// drive an `EXTRAP_CAP_TICKS`-capped extrapolation.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct RemoteState {
 	pub id: PlayerId,
 	/// Still `f32`: a remote's position is drawn directly, and quantizing
 	/// it would show up as stepping under interpolation.
 	pub pos: [f32; 3],
-	/// Velocity in thousandths of a block/s, clamped to `MAX_SPEED`
-	/// (25 000 — comfortably inside `i16`). Feeds only the capped
-	/// extrapolation in `remote.rs`, so a millimetre/s of resolution is
-	/// already far past what one frame can show.
+	/// Velocity in thousandths of a block/s, clamped to `MAX_SPEED` —
+	/// which in those units stays comfortably inside `i16`. Feeds only the
+	/// capped extrapolation in `remote.rs`, so a millimetre/s of resolution
+	/// is already far past what one frame can show.
 	pub vel: [i16; 3],
 	/// Facing as a whole-turn fraction: `0..=u16::MAX` maps onto `0..2π`,
-	/// giving 0.0055° of resolution. PITCH IS NOT SENT — `remote.rs` has
-	/// only ever computed `look.x.atan2(look.z)`, and remote players are
-	/// drawn upright.
+	/// finer than a frame of motion can show. PITCH IS NOT SENT —
+	/// `remote.rs` has only ever computed `look.x.atan2(look.z)`, and
+	/// remote players are drawn upright.
 	pub yaw: u16,
 	/// What the player is holding, in hotbar wire encoding
 	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
@@ -145,8 +145,8 @@ pub struct Snapshot {
 pub enum EditKind {
 	Dig,
 	/// `block` is a full u16 CELL (id + reserved state bits) — postcard
-	/// varints keep small ids at one wire byte. The server rejects
-	/// nonzero state bits until something consumes them.
+	/// varints keep small ids narrow anyway. The server rejects nonzero
+	/// state bits until something consumes them.
 	Place {
 		block: u16,
 	},
@@ -199,9 +199,9 @@ pub enum ClientMsg {
 		sim_version: u16,
 		/// Informational build string (diagnostics only).
 		build: String,
-		/// Persistent 16-byte client identity secret; all zeros =
-		/// anonymous (no persistent inventory, no duplicate check). The
-		/// server stores only a hash of it.
+		/// Persistent client identity secret; all zeros = anonymous (no
+		/// persistent inventory, no duplicate check). The server stores
+		/// only a hash of it.
 		identity: [u8; 16],
 	},
 	EditRequest {
@@ -215,7 +215,7 @@ pub enum ClientMsg {
 		kind: EditKind,
 		/// Expected hit cell (dig) / support cell (place).
 		cell: [i32; 3],
-		/// Place face normal; (0,0,0) is invalid for placement.
+		/// Place face normal; all zeros is invalid for placement.
 		normal: [i8; 3],
 		/// The hotbar slot this edit used. Place/Collect must match the
 		/// server's copy of that slot (`WrongSlot` otherwise) — declared
@@ -302,7 +302,7 @@ pub enum RejectReason {
 	/// only picked while it's empty. Appended in v12.
 	BucketFull,
 	/// Dig refused: the block's `unlock::mine` level exceeds the
-	/// digger's Mining level (SKILLS-DESIGN §5.1's rock gate). Sent at
+	/// digger's Mining level (SKILLS-DESIGN §5.1's strength wall). Sent at
 	/// `DigStart` like `Protected`, so the player isn't left holding the
 	/// button; honest clients predict it in `diggable()` and never open
 	/// the hold. Appended in v17.
@@ -694,7 +694,7 @@ mod tests {
 	///
 	/// Each case below is built at its maximum: a name at `MAX_NAME_LEN`,
 	/// a chat line at `MAX_CHAT_LEN` in two-byte characters, a full
-	/// hotbar+grid layout of three-byte varint ids.
+	/// hotbar+grid layout of widest-varint ids.
 	#[test]
 	fn max_client_frame_fits_every_client_message() {
 		use crate::protocol::{MAX_CHAT_LEN, MAX_CLIENT_FRAME, MAX_NAME_LEN};
@@ -764,8 +764,8 @@ mod tests {
 	/// asserts the actual encoder agrees with it.
 	///
 	/// The old cliff this guards: before interest management, snapshots
-	/// silently exceeded `MAX_DATAGRAM` at ~30 players and every snapshot
-	/// stopped being sent.
+	/// silently exceeded `MAX_DATAGRAM` once enough players were in range,
+	/// and every snapshot stopped being sent.
 	#[test]
 	fn a_full_snapshot_fits_one_datagram() {
 		use crate::protocol::{MAX_DATAGRAM, MAX_SNAPSHOT_PLAYERS};
@@ -782,7 +782,7 @@ mod tests {
 					pos: [12345.6; 3],
 					vel: [i16::MIN, i16::MAX, -1],
 					yaw: u16::MAX,
-					// 3-byte varint: the widest `held` there is.
+					// The widest varint a `held` can encode to.
 					held: u16::MAX,
 				})
 				.collect(),
@@ -796,9 +796,9 @@ mod tests {
 		);
 	}
 
-	/// The wire yaw must survive a round trip to within its own resolution
-	/// (360° / 65536), including at the wrap and for a straight-down look,
-	/// where `atan2(0, 0)` has no meaningful answer but must not be NaN.
+	/// The wire yaw must survive a round trip to within one quantization
+	/// step, including at the wrap and for a straight-down look, where
+	/// `atan2(0, 0)` has no meaningful answer but must not be NaN.
 	#[test]
 	fn yaw_round_trips_within_a_step() {
 		let step = std::f32::consts::TAU / 65536.0;
@@ -826,8 +826,8 @@ mod tests {
 	/// the way back the other way.
 	#[test]
 	fn yaw_lerp_takes_the_short_arc() {
-		// A quarter turn either side of the wrap: 15/16 → 1/16 is an eighth
-		// of a turn forwards, not seven eighths backwards.
+		// Just either side of the wrap: crossing north forwards is the
+		// short arc, not almost a whole turn backwards.
 		let a = (0.9375 * 65536.0) as u16;
 		let b = (0.0625 * 65536.0) as u16;
 		let mid = yaw_lerp(a, b, 0.5);
@@ -877,8 +877,8 @@ mod tests {
 		let bytes = postcard::to_stdvec(&m).unwrap();
 		assert_eq!(
 			bytes,
-			// variant 4, seq 5, tick 300 (varint), by 2, client_seq 1,
-			// zigzag varints 10/130/-4, block 4, prev 2
+			// variant tag, seq, tick (varint), by, client_seq, then the
+			// edit's x/y/z as zigzag varints, its block, and prev
 			vec![4, 5, 172, 2, 2, 1, 20, 132, 2, 7, 4, 2]
 		);
 	}
@@ -900,9 +900,9 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&hello).unwrap(),
-			// variant 0, protocol 2, name "ab", draw_dist zigzag 8,
-			// 16 raw token bytes, sim_version 1, build "b",
-			// 16 raw identity bytes (appended in v4)
+			// variant tag, protocol, name, draw_dist (zigzag), the raw
+			// token bytes, sim_version, build, then the raw identity
+			// bytes (appended in v4)
 			vec![
 				0, 2, 2, 97, 98, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 98, 3, 3,
 				3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
@@ -924,10 +924,10 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&welcome).unwrap(),
-			// variant 1, protocol 2, seed 2.0 le f64, id 3, spawn zeros,
-			// tick 9, divisor 3, 16 raw token bytes, sim_version 1, "b",
-			// tod 80.0 le f32 (appended in v7), spawn_look zeros
-			// (appended in v13)
+			// variant tag, protocol, seed (le f64), player id, spawn,
+			// server tick, snapshot divisor, the raw token bytes,
+			// sim_version, build, then tod (le f32, appended in v7) and
+			// spawn_look (appended in v13)
 			vec![
 				1, 2, 0, 0, 0, 0, 0, 0, 0, 64, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 3, 2, 2,
 				2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98, 0, 0, 160, 66, 0, 0, 0, 0, 0,
@@ -952,13 +952,12 @@ mod tests {
 		});
 		assert_eq!(
 			postcard::to_stdvec(&snap).unwrap(),
-			// v14 shape, 47 bytes against v13's 41 for a snapshot carrying
-			// BOTH your own state and one remote (v13 sent 40 per player
-			// and no separate self entry, so its two-player equivalent was
-			// 84). variant 1, tick 6, acked 5; me = Some tag 1 + pos
-			// (x 1.0 le f32, zeros) + vel zeros; then vec len 1, and the
-			// remote: id 1, pos (x 1.0, zeros), three zigzag i16 vels,
-			// yaw 0, held 4.
+			// The v14 shape, carrying BOTH your own state and one remote in
+			// less wire than v13 spent on the pair (v13 had no separate
+			// self entry, so it sent the full shared struct twice).
+			// Variant tag, server tick, acked tick; then me = Some tag +
+			// pos + vel as le f32s; then the vec length and the remote:
+			// id, pos, its velocity components as zigzag i16, yaw, held.
 			vec![
 				1, 6, 5, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 				0, 1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4
@@ -973,7 +972,7 @@ mod tests {
 		let dig = ClientMsg::DigStart { cell: [1, 138, -3] };
 		assert_eq!(
 			postcard::to_stdvec(&dig).unwrap(),
-			// variant 3, zigzag varints 1/138/-3
+			// variant tag, then the cell's x/y/z as zigzag varints
 			vec![3, 2, 148, 2, 5]
 		);
 		assert_eq!(postcard::to_stdvec(&ClientMsg::DigCancel).unwrap(), vec![4]);
@@ -983,7 +982,7 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&inv).unwrap(),
-			// variant 8, seq len 2, pairs (2,3) (5,1) as varints
+			// variant tag, vec length, then each (id, count) pair as varints
 			vec![8, 2, 2, 3, 5, 1]
 		);
 	}
@@ -995,7 +994,7 @@ mod tests {
 		let c = ClientMsg::Chat { text: "hi".into() };
 		assert_eq!(
 			postcard::to_stdvec(&c).unwrap(),
-			// variant 5, len 2, "hi"
+			// variant tag, string length, then the text bytes
 			vec![5, 2, 104, 105]
 		);
 
@@ -1005,7 +1004,7 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&s).unwrap(),
-			// variant 9, from 4, len 2, "hi"
+			// variant tag, sender id, string length, then the text bytes
 			vec![9, 4, 2, 104, 105]
 		);
 	}
@@ -1016,7 +1015,7 @@ mod tests {
 	fn golden_return_spawn_encoding() {
 		assert_eq!(
 			postcard::to_stdvec(&ClientMsg::ReturnToSpawn).unwrap(),
-			// variant 6, no fields
+			// the variant tag alone: no fields
 			vec![6]
 		);
 
@@ -1026,9 +1025,10 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&t).unwrap(),
-			// variant 10, pos x 1.0 le f32, zeros, look z 1.0 le f32
-			// (look appended in v9)
-			vec![10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63]
+			// variant tag, pos as le f32s, then look (appended in v9)
+			vec![
+				10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
+			]
 		);
 	}
 
@@ -1043,7 +1043,8 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&c).unwrap(),
-			// variant 9, hotbar len 1 id 2, grid len 1 id 7
+			// variant tag, hotbar length then its ids, grid length then its
+			// ids
 			vec![9, 1, 2, 1, 7]
 		);
 		let s = ServerMsg::Layout {
@@ -1052,7 +1053,7 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&s).unwrap(),
-			// variant 13, hotbar len 1 id 2, grid len 1 id 7
+			// the server-side variant tag, then the same two lists
 			vec![13, 1, 2, 1, 7]
 		);
 		let r = ServerMsg::EditRejected {
@@ -1061,7 +1062,7 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&r).unwrap(),
-			// variant 5, seq 1, reason 9
+			// variant tag, client seq, then the reason's own discriminant
 			vec![5, 1, 9]
 		);
 	}
@@ -1075,13 +1076,13 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&m).unwrap(),
-			// variant 12, len 1, "/x", "y"
+			// variant tag, vec length, then each (usage, description) pair
 			vec![12, 1, 2, 47, 120, 1, 121]
 		);
 	}
 
-	/// Golden bytes for the v8 additions: `EditKind::Interact` (kind
-	/// discriminant 3) and `ClientMsg::Alchemy` (variant 8). Existing
+	/// Golden bytes for the v8 additions: `EditKind::Interact` (a new kind
+	/// discriminant) and `ClientMsg::Alchemy` (a new variant). Existing
 	/// goldens above prove the append changed nothing before it.
 	#[test]
 	fn golden_interact_and_alchemy_encoding() {
@@ -1097,8 +1098,9 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&m).unwrap(),
-			// variant 1, seq 1, tick 2, six zero f32s, KIND 3, zero cell
-			// zigzags, zero normals, slot 0 (appended in v10)
+			// variant tag, seq, tick, origin and dir as f32s, the KIND
+			// discriminant, the cell's zigzags, the normals, then slot
+			// (appended in v10)
 			vec![
 				1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
 				0, 0, 0, 0, 0, 0, 0
@@ -1113,7 +1115,7 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&c).unwrap(),
-			// variant 8, op variant 0, block 6, count 10
+			// variant tag, the op's Convert discriminant, block, count
 			vec![8, 0, 6, 10]
 		);
 		let k = ClientMsg::Alchemy {
@@ -1124,7 +1126,8 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&k).unwrap(),
-			// variant 8, op variant 1, item 24, count 999 (varint e7 07)
+			// variant tag, the op's Craft discriminant, item, then a count
+			// wide enough to need a multi-byte varint
 			vec![8, 1, 24, 231, 7]
 		);
 
@@ -1134,7 +1137,8 @@ mod tests {
 		};
 		assert_eq!(
 			postcard::to_stdvec(&inv).unwrap(),
-			// variant 8, len 1, id 0x8000 (varint 80 80 02), count 1
+			// variant tag, vec length, the flagged id as a multi-byte
+			// varint, then its count
 			vec![8, 1, 128, 128, 2, 1]
 		);
 	}

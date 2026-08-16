@@ -16,16 +16,16 @@
 //! **The air sentinel is part of the format.** A generated column shares
 //! one [`AIR_CHUNK`] `Arc` for every sky chunk, and `is_air_chunk` tests
 //! that by POINTER — the pipeline skips meshing on it, and `drain_results`
-//! skips the neighbour re-dirty cascade. Encoding those chunks as 8 KB of
-//! zeroes each would decode into sixteen distinct all-air chunks that
-//! compare equal to air but aren't *the* air, and the mesher would start
-//! meshing the sky. So an air chunk travels as one flag byte and decodes
-//! back to a clone of the shared sentinel, which is what
-//! `generated_result_keeps_the_air_sentinel` pins.
+//! skips the neighbour re-dirty cascade. Encoding those chunks as a full
+//! block of zeroes each would decode into one distinct all-air chunk per
+//! level of the column — chunks that compare equal to air but aren't *the*
+//! air, and the mesher would start meshing the sky. So an air chunk
+//! travels as one flag byte and decodes back to a clone of the shared
+//! sentinel, which is what `generated_result_keeps_the_air_sentinel` pins.
 
 use std::sync::Arc;
 
-use crate::chunk::{ChunkData, ChunkPos, AIR_CHUNK};
+use crate::chunk::{AIR_CHUNK, ChunkData, ChunkPos};
 use crate::mesher::{MeshData, MeshInput, OreStamp, PADDED_VOLUME};
 use crate::pipeline::{Job, JobResult, MeshOutput};
 
@@ -127,8 +127,8 @@ fn put_run_len(out: &mut Vec<u8>, n: usize) {
 }
 
 impl Job {
-	/// Encoded size of a mesh job — the padded snapshot dominates, and it
-	/// is a fixed 11.7 KB, so the buffer is sized exactly once.
+	/// Encoded size of a mesh job — the padded snapshot dominates, and its
+	/// size is fixed, so the buffer is sized exactly once.
 	fn encoded_hint(&self) -> usize {
 		match self {
 			Job::Generate { .. } => 17,
@@ -150,10 +150,14 @@ impl Job {
 				out.extend_from_slice(&z.to_le_bytes());
 				out.extend_from_slice(&seed.to_le_bytes());
 			}
-			Job::Mesh { pos, gen, input } => {
+			Job::Mesh {
+				pos,
+				generation,
+				input,
+			} => {
 				out.push(TAG_MESH);
 				put_pos(&mut out, *pos);
-				out.extend_from_slice(&gen.to_le_bytes());
+				out.extend_from_slice(&generation.to_le_bytes());
 				// Six face flags in one byte; `missing` suppresses a
 				// border's faces, so losing one would punch holes in the
 				// world at chunk seams.
@@ -177,7 +181,7 @@ impl Job {
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
 						out.extend_from_slice(&o.mining.to_le_bytes());
 						// The edit gate. Bounded by the edits inside one
-						// 18³ box, so a u32 count is never the limit, but
+						// padded snapshot, so a u32 count is never the limit, but
 						// dropping it would let the anti-dupe re-reveal a
 						// cell somebody has already mined.
 						out.extend_from_slice(&(o.edited.len() as u32).to_le_bytes());
@@ -200,7 +204,7 @@ impl Job {
 			}),
 			TAG_MESH => {
 				let pos = r.pos()?;
-				let gen = r.u64()?;
+				let generation = r.u64()?;
 				let mask = r.u8()?;
 				let mut missing = [false; 6];
 				for (i, m) in missing.iter_mut().enumerate() {
@@ -234,7 +238,7 @@ impl Job {
 				}
 				Some(Job::Mesh {
 					pos,
-					gen,
+					generation,
 					input: Box::new(MeshInput {
 						blocks,
 						missing,
@@ -263,7 +267,7 @@ impl JobResult {
 				out.extend_from_slice(&dur_ms.to_le_bytes());
 				put_run_len(&mut out, stack.len());
 				for chunk in stack {
-					// One byte for a sky chunk instead of 8 KB of zeroes —
+					// One byte for a sky chunk instead of a whole block of zeroes —
 					// and the decode side is what makes it *the* sentinel
 					// again rather than a look-alike (see the module doc).
 					if is_air(chunk) {
@@ -277,7 +281,7 @@ impl JobResult {
 			JobResult::Meshed { out: m, dur_ms } => {
 				out.push(TAG_MESH);
 				put_pos(&mut out, m.pos);
-				out.extend_from_slice(&m.gen.to_le_bytes());
+				out.extend_from_slice(&m.generation.to_le_bytes());
 				out.extend_from_slice(&dur_ms.to_le_bytes());
 				put_run_len(&mut out, m.mesh.solid.len());
 				put_u32s(&mut out, &m.mesh.solid);
@@ -285,6 +289,8 @@ impl JobResult {
 				put_u32s(&mut out, &m.mesh.water);
 				put_run_len(&mut out, m.mesh.impacts.len());
 				put_u16s(&mut out, &m.mesh.impacts);
+				put_run_len(&mut out, m.mesh.lights.len());
+				put_u32s(&mut out, &m.mesh.lights);
 			}
 		}
 		out
@@ -323,19 +329,21 @@ impl JobResult {
 			}
 			TAG_MESH => {
 				let pos = r.pos()?;
-				let gen = r.u64()?;
+				let generation = r.u64()?;
 				let dur_ms = r.f32()?;
 				let solid = r.run(4, |r| r.u32())?;
 				let water = r.run(4, |r| r.u32())?;
 				let impacts = r.run(2, |r| r.u16())?;
+				let lights = r.run(4, |r| r.u32())?;
 				Some(JobResult::Meshed {
 					out: MeshOutput {
 						pos,
-						gen,
+						generation,
 						mesh: MeshData {
 							solid,
 							water,
 							impacts,
+							lights,
 						},
 					},
 					dur_ms,
@@ -363,7 +371,7 @@ mod tests {
 		}
 		Job::Mesh {
 			pos: ChunkPos::new(-3, 5, 12),
-			gen: 9_000_000_001,
+			generation: 9_000_000_001,
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [true, false, false, true, false, true],
@@ -378,12 +386,17 @@ mod tests {
 	/// client meshes every chunk as though the looker had no Mining at
 	/// all — ore simply never appears, and nothing errors.
 	fn mesh_job_with_ore() -> Job {
-		let Job::Mesh { pos, gen, input } = mesh_job() else {
+		let Job::Mesh {
+			pos,
+			generation,
+			input,
+		} = mesh_job()
+		else {
 			unreachable!()
 		};
 		Job::Mesh {
 			pos,
-			gen,
+			generation,
 			input: Box::new(MeshInput {
 				ore: Some(OreStamp {
 					seed: -8123.5,
@@ -446,18 +459,23 @@ mod tests {
 
 	#[test]
 	fn mesh_job_round_trips() {
-		let Some(Job::Mesh { pos, gen, input }) = Job::decode(&mesh_job().encode()) else {
+		let Some(Job::Mesh {
+			pos,
+			generation,
+			input,
+		}) = Job::decode(&mesh_job().encode())
+		else {
 			panic!("decode");
 		};
 		let Job::Mesh {
 			input: orig,
 			pos: opos,
-			gen: ogen,
+			generation: ogen,
 		} = mesh_job()
 		else {
 			unreachable!()
 		};
-		assert_eq!((pos, gen), (opos, ogen));
+		assert_eq!((pos, generation), (opos, ogen));
 		assert_eq!(
 			input.missing, orig.missing,
 			"the face mask is not decorative"
@@ -517,7 +535,7 @@ mod tests {
 		}
 		let job = Job::Mesh {
 			pos: ChunkPos::new(0, solid_y as i32, 0),
-			gen: 7,
+			generation: 7,
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [false; 6],
@@ -532,10 +550,14 @@ mod tests {
 		let Some(JobResult::Meshed { out: after, .. }) = JobResult::decode(&result.encode()) else {
 			panic!("decode");
 		};
-		assert_eq!((after.pos, after.gen), (before.pos, before.gen));
+		assert_eq!(
+			(after.pos, after.generation),
+			(before.pos, before.generation)
+		);
 		assert_eq!(after.mesh.solid, before.mesh.solid);
 		assert_eq!(after.mesh.water, before.mesh.water);
 		assert_eq!(after.mesh.impacts, before.mesh.impacts);
+		assert_eq!(after.mesh.lights, before.mesh.lights);
 	}
 
 	/// A worker can die mid-post, and a browser message is attacker-shaped

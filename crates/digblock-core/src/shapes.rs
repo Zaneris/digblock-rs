@@ -1,5 +1,7 @@
 //! Sub-block shape registry: static geometry per (block id, state nibble)
-//! on a 12×12×12 sub-grid. Shapes are authored once as sub-box lists in a
+//! on a cubic sub-grid (`GRID` sub-cells per block edge, chosen so halves,
+//! thirds, quarters and sixths are all exact). Shapes are authored once as
+//! sub-box lists in a
 //! canonical facing and every variant (rotations, door open/half) is baked
 //! from them at first use — rasterize to a bitset, emit exposed sub-faces,
 //! greedy-merge into maximal quads — all pure integer ops, so the registry
@@ -17,8 +19,8 @@
 //! cross-check test in mesher.rs.
 
 use crate::block::{BlockType, ShapeKind};
-use crate::chunk::{cell_id, cell_state, STATE_MASK, STATE_SHIFT};
-use crate::dir::{Dir, DIRS};
+use crate::chunk::{STATE_MASK, STATE_SHIFT, cell_id, cell_state};
+use crate::dir::{DIRS, Dir};
 use glam::Vec3;
 use std::sync::LazyLock;
 
@@ -29,19 +31,20 @@ const GU: usize = GRID as usize;
 
 /// Ceiling on any variant's baked quad count — sizes the renderer's shared
 /// index buffer (`MAX_QUADS`); pinned per-variant by a test here. Worst
-/// today: the upper door half (lites + hinge) at 43.
+/// today: the upper door half (lites + hinge).
 pub const MAX_SHAPE_QUADS: usize = 48;
 
-/// Sub-units one whole block converts into (a 3×3×3 division).
+/// Sub-units one whole block converts into — an even division into thirds
+/// on each axis.
 pub const SUBS_PER_BLOCK: u32 = 27;
-/// Filled twelfths³ per sub-unit (one 4×4×4-twelfth cube).
+/// Filled twelfths³ per sub-unit: the volume of one cube of that division.
 pub const SUB_UNIT_VOLUME: u32 = 1728 / SUBS_PER_BLOCK;
 
 // --- state nibble -----------------------------------------------------
 
 /// Horizontal facing, axis-named (compass names are a trap here:
 /// `Dir::West` is +x). Values are the k in "k × 90° CCW-about-+y
-/// rotations of the canonical +x shape" — and the low 2 state bits.
+/// rotations of the canonical +x shape" — and the state nibble's low bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Facing {
 	PosX = 0,
@@ -59,8 +62,8 @@ impl Facing {
 	}
 
 	/// The unit offset of this facing (stairs ascend toward it; a closed
-	/// door's leaf sits one twelfth in from the cell face it points at,
-	/// leaving room for the handle's protrusion).
+	/// door's leaf sits set back from the cell face it points at, leaving
+	/// room for the handle's protrusion).
 	#[inline]
 	pub fn offset(self) -> (i32, i32) {
 		match self {
@@ -72,14 +75,15 @@ impl Facing {
 	}
 }
 
-/// Stairs: state = facing only (bits 2-3 stay clear on the wire —
-/// `state_valid` enforces it; decode is forgiving and masks).
+/// Stairs: state = facing only (the rest of the nibble stays clear on the
+/// wire — `state_valid` enforces it; decode is forgiving and masks).
 #[inline]
 pub fn stair_state(f: Facing) -> u8 {
 	f as u8
 }
 
-/// Door: facing | open<<2 | upper<<3 — exactly fills the nibble.
+/// Door: facing, then the open flag, then the upper flag — exactly fills
+/// the nibble.
 #[inline]
 pub fn door_state(f: Facing, open: bool, upper: bool) -> u8 {
 	f as u8 | (u8::from(open) << 2) | (u8::from(upper) << 3)
@@ -104,22 +108,22 @@ pub fn door_partner(cell: (i32, i32, i32), state: u8) -> (i32, i32, i32) {
 	(cell.0, cell.1 + if upper { -1 } else { 1 }, cell.2)
 }
 
-/// The door cell with its open bit flipped (state nibble bit 2 = cell
-/// bit 14).
+/// The door cell with its open flag flipped, in place inside the state
+/// nibble.
 #[inline]
 pub fn door_toggled(cell: u16) -> u16 {
 	cell ^ (0b0100 << STATE_SHIFT)
 }
 
-/// Slab: state bit 0 set = two-thirds fill (clear = one-third), bit 1
-/// set = anchored to the cell's ceiling instead of its floor. Bits 2-3
-/// stay clear — `state_valid` enforces it.
+/// Slab: the size bit set = two-thirds fill (clear = one third), then the
+/// anchor bit set = anchored to the cell's ceiling instead of its floor.
+/// The rest of the nibble stays clear — `state_valid` enforces it.
 #[inline]
 pub fn slab_state(two_thirds: bool, top: bool) -> u8 {
 	u8::from(two_thirds) | (u8::from(top) << 1)
 }
 
-/// Whether a slab cell hangs from its ceiling (state bit 1).
+/// Whether a slab cell hangs from its ceiling (the anchor bit).
 #[inline]
 pub fn slab_is_top(cell: u16) -> bool {
 	cell_state(cell) & 0b10 != 0
@@ -139,13 +143,14 @@ pub fn slab_grow_normal(cell: u16) -> (i32, i32, i32) {
 /// against: a slab placed onto a ceiling hangs from it, everything else
 /// (floors and side faces alike) sits on the floor. Derived, never sent
 /// — the server re-derives it from its own verified normal, so the wire
-/// still carries the canonical state-0 slab.
+/// still carries the slab in its canonical default state.
 #[inline]
 pub fn slab_place_state(normal: (i32, i32, i32)) -> u8 {
 	slab_state(false, normal.1 < 0)
 }
 
-/// A slab cell one third taller: 1/3 → 2/3, 2/3 → the plain base block.
+/// A slab cell one third taller: one third → two thirds → the plain base
+/// block.
 /// It grows into its cell from whichever end it is anchored to, so the
 /// anchor rides along. Client prediction and the server's grow write
 /// share this so they can never disagree about the grown value.
@@ -160,7 +165,8 @@ pub fn slab_grown(cell: u16) -> u16 {
 	}
 }
 
-/// A slab cell one third shorter: 2/3 → 1/3, 1/3 → Air. The dig-shrink
+/// A slab cell one third shorter: two thirds → one third → Air. The
+/// dig-shrink
 /// counterpart of [`slab_grown`], shared the same way — and it keeps the
 /// anchor for the same reason, so a dug ceiling slab stays on its
 /// ceiling instead of dropping to the floor.
@@ -176,8 +182,8 @@ pub fn slab_shrunk(cell: u16) -> u16 {
 
 // --- geometry types ---------------------------------------------------
 
-/// Axis-aligned sub-box in twelfths, min inclusive, max exclusive
-/// (coordinates 0..=12).
+/// Axis-aligned sub-box in twelfths, min inclusive and max exclusive, in
+/// sub-grid coordinates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SubBox {
 	pub min: [u8; 3],
@@ -207,7 +213,7 @@ impl SubBox {
 	}
 }
 
-/// 12×12 coverage of one block-boundary plane, in the face's NEUTRAL
+/// Sub-grid coverage of one block-boundary plane, in the face's NEUTRAL
 /// tangent frame — the same ascending-axis pairs `face_ao` uses (x-faces:
 /// (y, z), y-faces: (x, z), z-faces: (x, y)); bit = first axis, row =
 /// second. A face's dir-D mask and its neighbor's opposite(D) mask share
@@ -311,9 +317,9 @@ pub fn shape_of_cell(cell: u16) -> Option<&'static ShapeVariant> {
 ///
 /// Baking is lazy per family, and each family bakes ALL its variants at
 /// once: the first door to reach a mesher, a `neighbor_cover` probe, a
-/// physics test or the alchemy screen pays for all 16 (measured 720µs
-/// natively, several ms on wasm) in whatever frame happens to touch it
-/// first. That is a guaranteed one-frame hitch at an arbitrary moment of
+/// physics test or the alchemy screen pays for the whole family — well
+/// under a millisecond natively, several times that on wasm — in whatever
+/// frame happens to touch it first. That is a guaranteed one-frame hitch at an arbitrary moment of
 /// gameplay, so spend it where a pause is already expected instead. Warm
 /// calls are single-digit nanoseconds, so this is purely about WHEN.
 pub fn prewarm() {
@@ -361,8 +367,8 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 
 /// The cell a whole OBJECT is anchored to, plus the box of best fit
 /// around all of it, in twelfths **of that anchor cell** — so a door
-/// hands back its LOWER half and a box two cells tall (`max[1]` = 24),
-/// and every single-cell block hands back itself and [`draw_bounds`].
+/// hands back its LOWER half and a box two cells tall, and every
+/// single-cell block hands back itself and [`draw_bounds`].
 /// The caller must not assume the box fits inside one cell.
 ///
 /// This is the crosshair outline's box, and it exists because a door is
@@ -377,9 +383,8 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 /// variant they are, and this stays a pure function of one cell value.
 ///
 /// The union is a real union, not the lower half stretched: the handle
-/// protrudes a twelfth past the leaf and the lites do not, so the two
-/// halves have different x extents and only one of them reaches the box's
-/// edge.
+/// protrudes past the leaf and the lites do not, so the two halves have
+/// different x extents and only one of them reaches the box's edge.
 pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Option<SubBox>) {
 	let b = BlockType::from_id(cell_id(value));
 	if !b.is_door() {
@@ -410,7 +415,7 @@ pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Opt
 /// Whether a cell takes its per-block tint from the cell BELOW instead of
 /// its own: the upper half of a door, so a two-cell leaf wears ONE tint
 /// and reads as one object rather than as two planks sawn from different
-/// timber. Rides the mesh as solid word 1 bit 19 — see
+/// timber. Rides the mesh as a flag in the solid material word — see
 /// `mesher::solid_word1` and chunk.wgsl's `block_tint`.
 ///
 /// A cell, not a block type, because it is the door's *half* that decides
@@ -449,8 +454,10 @@ pub fn state_valid(cell: u16) -> bool {
 // --- alchemy ----------------------------------------------------------
 
 /// How many items one craft produces. Batched so a fractional-unit shape
-/// stays exact (a future half-slab at 13.5 units would craft 2-for-27);
-/// every shape authored so far is whole, so this is 1 throughout.
+/// stays exact (a future half-slab, worth half a sub-unit more than a
+/// whole number, would craft two at a time out of one block's worth of
+/// essence); every shape authored so far is whole, so the batch is one
+/// throughout.
 ///
 /// The COST is not here: it is the shape's volume
 /// ([`crate::block::ShapeFamily::units`]) prorated by the material's
@@ -462,8 +469,9 @@ pub fn craft_batch(_b: BlockType) -> u32 {
 
 // --- authored geometry ------------------------------------------------
 
-/// Canonical stairs, ascending toward +x: three plain steps, risers at
-/// 4/8/12 twelfths. (Two nosing/reveal detail passes were tried and
+/// Canonical stairs, ascending toward +x: three plain steps of equal
+/// rise, each tread running the full depth of the cell. (Two
+/// nosing/reveal detail passes were tried and
 /// reverted: an overhanging tread lip reads asymmetric — the top step
 /// has nothing overhanging it — and an inset-tread reveal didn't look
 /// right either. Plain steps it is.)
@@ -473,26 +481,26 @@ const STAIR_BOXES: [SubBox; 3] = [
 	SubBox::new([8, 8, 0], [12, 12, 12]),
 ];
 
-/// Canonical closed leaf (facing +x): 2-twelfths slab set back one
-/// twelfth from the −x face (room for the handle to protrude one
-/// twelfth on either side), full 12×12 elevation.
+/// Canonical closed leaf (facing +x): a thin slab set back from the −x
+/// face, leaving room for the handle to protrude past either leaf face,
+/// covering the cell's whole elevation.
 const LEAF: SubBox = SubBox::new([1, 0, 0], [3, 12, 12]);
 
-/// Door handle (lower half only): a 2×2 knob through the leaf near the
-/// latch stile, protruding one twelfth past each leaf face.
+/// Door handle (lower half only): a small square knob through the leaf
+/// near the latch stile, protruding past each leaf face.
 const HANDLE: SubBox = SubBox::new([0, 9, 9], [4, 11, 11]);
 
-/// Door hinges, one per half, mounted on the BACK of the closed leaf
-/// (x 3..4) at the pivot edge (z 0..1). They ride the leaf through
-/// [`swing_open`] — the open pose lands them at the corner (x 0..1,
-/// z 0..1), bridging the setback gap to whatever the open door hangs
-/// against — so the door and its knuckles read as one rigid rotation.
+/// Door hinges, one per half, mounted on the BACK of the closed leaf at
+/// the pivot edge. They ride the leaf through [`swing_open`] — the open
+/// pose lands them in the cell's corner, bridging the setback gap to
+/// whatever the open door hangs against — so the door and its knuckles
+/// read as one rigid rotation.
 const HINGE_LOWER: SubBox = SubBox::new([3, 1, 0], [4, 3, 1]);
 const HINGE_UPPER: SubBox = SubBox::new([3, 9, 0], [4, 11, 1]);
 
-/// Canonical upper-half panel: divided-lite window, 2/3/2/3/2 in both
-/// axes (w = z here) — rails, stiles, and a cross mullion leaving four
-/// 3×3 lites. Overlaps are fine; the raster unions them.
+/// Canonical upper-half panel: a divided-lite window laid out the same
+/// way in both axes (width = z here) — rails, stiles, and a cross mullion
+/// leaving four square lites. Overlaps are fine; the raster unions them.
 const DOOR_UPPER_BOXES: [SubBox; 6] = [
 	SubBox::new([1, 0, 0], [3, 2, 12]),   // bottom rail
 	SubBox::new([1, 10, 0], [3, 12, 12]), // top rail
@@ -502,10 +510,10 @@ const DOOR_UPPER_BOXES: [SubBox; 6] = [
 	SubBox::new([1, 5, 2], [3, 7, 10]),   // horizontal mullion
 ];
 
-/// Slab fills by state, indexed `two_thirds | top<<1`: one third
-/// (12×12×4) or two thirds (12×12×8), anchored to the cell's floor or to
-/// its ceiling. The 4/12 rise is deliberately one stair tread — the
-/// auto-step threshold serves both. A ceiling slab is the floor one
+/// Slab fills by state, indexed by the size bit and then the anchor bit:
+/// one third or two thirds of the cell's height, anchored to its floor or
+/// to its ceiling. The one-third rise is deliberately one stair tread —
+/// the auto-step threshold serves both. A ceiling slab is the floor one
 /// mirrored about the cell's mid-plane, which is what keeps every pair
 /// the same volume (and so the same alchemy cost and the same dig).
 const SLAB_BOXES: [SubBox; 4] = [
@@ -515,26 +523,28 @@ const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
 
-/// The torch: one centered post, 2/12 square and 10/12 tall.
-/// Floor-mounted, stateless — wall mounting is a state nibble away when
-/// wanted. Small enough that auto-step walks OVER it reads fine.
+/// The torch: one centered post, square in section and stopping short of
+/// the cell's top. Floor-mounted, stateless — wall mounting is a state
+/// nibble away when wanted. Small enough that auto-step walks OVER it
+/// reads fine.
 ///
-/// 2/12 is as slim as a CENTERED box gets on this grid (an odd width
+/// The post is as slim as a CENTERED box gets on this grid (an odd width
 /// can't straddle the middle), and the head is what came off to get
-/// here: it used to flare to 4/12 over the last 3/12 of the height,
-/// overhanging the post a twelfth on every side, which read as a mallet
-/// rather than a flame. Nothing is lost by dropping it — the flame is
-/// the TEXTURE's business, not the silhouette's: `torch_side` paints its
-/// top 5/12 of rows as glow, so the same box carries wood below and fire
-/// above, and the top face is `TORCH_FLAME` either way.
+/// here: it used to flare to twice that width over the top of the post,
+/// overhanging it on every side, which read as a mallet rather than a
+/// flame. Nothing is lost by dropping it — the flame is the TEXTURE's
+/// business, not the silhouette's: `torch_side` paints its upper rows as
+/// glow, so the same box carries wood below and fire above, and the top
+/// face is `TORCH_FLAME` either way.
 const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
 
-/// A table: a full-footprint top two twelfths thick on four corner legs.
+/// A table: a full-footprint top on four corner legs.
 /// Stateless — a square top has no facing to lose, and it means tables
 /// pushed together read as one continuous surface rather than a grid of
 /// rotations that don't line up.
 ///
-/// The top is deliberately the whole 12×12, not inset: an inset top
+/// The top is deliberately the cell's whole footprint, not inset: an
+/// inset top
 /// leaves a visible gap between adjacent tables at exactly the seam a
 /// player builds a long table across.
 const TABLE_BOXES: [SubBox; 5] = [
@@ -545,8 +555,8 @@ const TABLE_BOXES: [SubBox; 5] = [
 	SubBox::new([9, 0, 9], [11, 10, 11]),
 ];
 
-/// A chair, canonically BACKED toward +x: seat at 6/12, back rising from
-/// it, four legs. Placing uses the look direction unrotated, so a chair
+/// A chair, canonically BACKED toward +x: seat at mid-height, back rising
+/// from it, four legs. Placing uses the look direction unrotated, so a chair
 /// dropped while facing +x has its back away and its seat turned toward
 /// the placer — which is what you want when setting one at a table.
 ///
@@ -657,9 +667,9 @@ static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
 		let (facing, open, upper) = door_parts(state as u8);
 		let k = facing as u8;
 		// Closed canonical panel; the open pose swings 90° about the
-		// vertical pivot axis through (x, z) = (2, 2) — a true rigid
-		// rotation, applied BEFORE the facing rotation so every facing
-		// opens with the same handedness.
+		// leaf's vertical pivot axis — a true rigid rotation, applied
+		// BEFORE the facing rotation so every facing opens with the same
+		// handedness.
 		let mut panel: Vec<SubBox> = if upper {
 			let mut p = DOOR_UPPER_BOXES.to_vec();
 			p.push(HINGE_UPPER);
@@ -667,7 +677,7 @@ static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
 		} else {
 			vec![LEAF, HANDLE, HINGE_LOWER]
 		};
-		// Collision stays the uncut slab (the 1/12 knob is cosmetic to
+		// Collision stays the uncut slab (the knob is cosmetic to
 		// physics); the interact ray also finds the protruding handle.
 		let mut slab = vec![LEAF];
 		let mut interact = if upper {
@@ -699,7 +709,7 @@ static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
 	})
 });
 
-/// Rotate boxes k × 90° CCW about +y: point (x, z) → (12 − z, x).
+/// Rotate boxes k × 90° CCW about +y: point (x, z) → (GRID − z, x).
 fn rotate_boxes(boxes: &[SubBox], k: u8) -> Vec<SubBox> {
 	let mut out: Vec<SubBox> = boxes.to_vec();
 	for _ in 0..(k & 3) {
@@ -714,12 +724,14 @@ fn rotate_boxes(boxes: &[SubBox], k: u8) -> Vec<SubBox> {
 	out
 }
 
-/// The door swing: a rigid 90° rotation about the vertical pivot axis
-/// through (x, z) = (2, 2) — (x, z) → (z, 4 − x). Valid for door parts
-/// only (all live within x 0..4, so images stay inside the cell). The
-/// leaf/handle images match the old x↔z mirror (their x-extents are
-/// symmetric about 2); the hinge, mounted off-center on the leaf's
-/// back, is what makes the rotation visibly rigid.
+/// The door swing: a rigid 90° rotation about the leaf's vertical pivot
+/// axis, in the corner of the cell the hinge stands in. Valid for door
+/// parts only — they all live inside the swing envelope on x, so their
+/// images stay inside the cell (the `debug_assert` below IS that
+/// envelope). The leaf/handle images match the old x↔z mirror, their
+/// x-extents being symmetric about the pivot; the hinge, mounted
+/// off-center on the leaf's back, is what makes the rotation visibly
+/// rigid.
 fn swing_open(b: &SubBox) -> SubBox {
 	debug_assert!(b.max[0] <= 4, "door part outside the swing envelope");
 	SubBox {
@@ -782,8 +794,9 @@ pub fn raster_volume(boxes: &[SubBox]) -> u32 {
 
 /// The face's (u, v) frame — mirrors `face_corners` exactly. Maps a
 /// face-cell at block-local sub-cell (cx, cy, cz) to its (u, v) CELL
-/// coordinates (0..12), and back from (u, v) LATTICE coordinates
-/// (0..=12) + the plane coordinate q to a position in twelfths.
+/// coordinates, and back from (u, v) LATTICE coordinates (one more per
+/// axis than there are cells) + the plane coordinate q to a position in
+/// twelfths.
 #[inline]
 fn uv_cell(dir: Dir, c: (i32, i32, i32)) -> (i32, i32) {
 	let (x, y, z) = c;
@@ -976,7 +989,7 @@ mod tests {
 		assert!(!v.occludes_full[Dir::South as usize]);
 		assert_eq!(v.collision.len(), 3);
 		assert_eq!(v.ramp, Some(Facing::PosX));
-		// The −x boundary is the first riser's face (y 0..4, all z).
+		// The −x boundary is only the bottom step's rise, across all z.
 		let m = &v.face_masks[Dir::East as usize];
 		assert!(m.covers(0, 0, 4, 12), "riser face covers y 0..4 (all z)");
 		assert!(!m.covers(4, 0, 5, 1), "nothing above y=4 on −x");
@@ -1036,7 +1049,8 @@ mod tests {
 				assert_eq!(v.collision[0], want, "two_thirds={two_thirds} top={top}");
 				assert_eq!(v.interaction, v.collision);
 				assert_eq!(v.ramp, None, "slabs are boxes, never ramps");
-				// A plain box: 6 quads, only the anchored plane fully covered.
+				// A plain box: one quad per face, only the anchored plane
+				// fully covered.
 				assert_eq!(v.quads.len(), 6);
 				let (closed, open) = if top {
 					(Dir::Top, Dir::Bottom)
@@ -1099,9 +1113,9 @@ mod tests {
 				Some(SubBox::new([0, 12 - h, 0], [12, 12, 12]))
 			);
 		}
-		// A closed door is a plate: 4 twelfths deep on its facing axis
-		// (the leaf plus the knob protruding either side), full in the
-		// other two. Depth lands on x for a ±x facing, z for ±z.
+		// A closed door is a plate: shallow on its facing axis (the leaf
+		// plus the knob protruding either side), full in the other two.
+		// Depth lands on x for a ±x facing, z for ±z.
 		for f in Facing::ALL {
 			for upper in [false, true] {
 				let b = draw_bounds(make_cell(
@@ -1266,7 +1280,8 @@ mod tests {
 		let ceiling = make_cell(BlockType::WoodSlab, slab_state(false, true));
 		assert_eq!(slab_grow_normal(floor), (0, 1, 0));
 		assert_eq!(slab_grow_normal(ceiling), (0, -1, 0));
-		// The anchor bit survives the grow, so a 2/3 grows the same way.
+		// The anchor bit survives the grow, so a two-thirds slab grows
+		// the same way.
 		assert_eq!(slab_grow_normal(slab_grown(ceiling)), (0, -1, 0));
 		// Placed against a ceiling → hangs; against a floor or a wall →
 		// sits. A wall slab has no up/down cue, so it sits, as before.
@@ -1288,7 +1303,7 @@ mod tests {
 			for upper in [false, true] {
 				let closed = shape_of(BlockType::LumberDoor, door_state(f, false, upper)).unwrap();
 				let open = shape_of(BlockType::LumberDoor, door_state(f, true, upper)).unwrap();
-				// Closed: one uncut leaf box, set back a twelfth from the
+				// Closed: one uncut leaf box, set back from the
 				// boundary — no face of a door ever fully covers a
 				// boundary plane. The interact set adds the handle knob on
 				// the lower half. Open: no collision at all, but the
@@ -1307,26 +1322,28 @@ mod tests {
 			}
 		}
 		// The upper closed panel has see-through lites: strictly fewer
-		// filled sub-cells than the uncut lower leaf; the handle adds its
-		// two protruding twelfths and each half carries a 1×2×1 hinge on
-		// the leaf's back at the pivot edge.
+		// filled sub-cells than the uncut lower leaf. The handle adds the
+		// sub-cells it pokes out either side, and each half carries a
+		// small hinge on the leaf's back at the pivot edge.
 		let lower = raster_volume(&[LEAF, HANDLE, HINGE_LOWER]);
 		let mut up_boxes = DOOR_UPPER_BOXES.to_vec();
 		up_boxes.push(HINGE_UPPER);
 		let upper = raster_volume(&up_boxes);
 		assert_eq!(raster_volume(&[LEAF]), 288);
-		// Leaf 288 + handle knob 2×2 poking 1 out each side + hinge 2.
+		// The uncut leaf, plus the knob's protrusion either side, plus the
+		// hinge.
 		assert_eq!(lower, 298);
 		assert!(upper < lower, "lites carved: {upper} < {lower}");
-		// Four 3×3 lites, 2 deep: 288 − 4·9·2 = 216; + hinge 2.
+		// The same leaf with four square lites cut clear through, plus the
+		// hinge.
 		assert_eq!(upper, 218);
 	}
 
 	#[test]
 	fn full_cube_bakes_to_the_six_block_faces() {
 		// A debug full-cube shape must reproduce the mesher's full-block
-		// convention exactly: 6 quads, corner UVs (0,0)/(12,0)/(0,12)/
-		// (12,12), corners on the block lattice.
+		// convention exactly: one quad per face, corner UVs at the face's
+		// four extremes, every corner on the block lattice.
 		let baked = bake(&[SubBox::new([0, 0, 0], [12, 12, 12])]);
 		assert_eq!(baked.quads.len(), 6);
 		for q in &baked.quads {
@@ -1344,16 +1361,17 @@ mod tests {
 
 	/// §4.2's volume rule, now stated once per SHAPE rather than once per
 	/// authored block: every material × shape pair prorates the material's
-	/// 27-unit split by these numbers, so pinning the shape axis covers
+	/// whole-block split by these numbers, so pinning the shape axis covers
 	/// every pair the catalog will ever grow — including the ones that do
 	/// not exist yet.
 	#[test]
 	fn craft_costs_derive_from_collision_volume() {
 		use crate::block::ShapeFamily;
-		// Cost = ceil(filled volume / 64), from the canonical closed
-		// geometry; doors price BOTH halves (uncut leaves — the lites
-		// don't discount) plus the handle and both hinges; a slab prices
-		// the PLACED 1/3 item, so grows debit one item each.
+		// Cost = the filled volume over `SUB_UNIT_VOLUME`, rounded up,
+		// from the canonical closed geometry; doors price BOTH halves
+		// (uncut leaves — the lites don't discount) plus the handle and
+		// both hinges; a slab prices the PLACED one-third item, so grows
+		// debit one item each.
 		let volume = |s: ShapeFamily| match s {
 			ShapeFamily::Block => SUBS_PER_BLOCK * SUB_UNIT_VOLUME,
 			ShapeFamily::Stairs => raster_volume(&STAIR_BOXES),
@@ -1370,8 +1388,9 @@ mod tests {
 				volume(s)
 			);
 		}
-		// A whole cube is 27 units exactly — the identity the raw-block
-		// recipes prorate through, and the reason three slabs make a block.
+		// A whole cube is `SUBS_PER_BLOCK` units exactly — the identity the
+		// raw-block recipes prorate through, and the reason three slabs
+		// make a block.
 		assert_eq!(ShapeFamily::Block.units(), SUBS_PER_BLOCK);
 		assert_eq!(ShapeFamily::Slab.units() * 3, SUBS_PER_BLOCK);
 		// Functional items are priced by hand (§7.3), never by volume —
@@ -1428,9 +1447,9 @@ mod tests {
 			for d in [Dir::West, Dir::East, Dir::North, Dir::South] {
 				assert!(!v.occludes_full[d as usize], "{b:?} walls off {d:?}");
 			}
-			// `AUTO_STEP_MAX` is 4/12, so a walk mounts any top within a
-			// third of the feet. Furniture must not be walked onto — but
-			// the bed's legs top out at 3/12, and that is fine BECAUSE the
+			// A walk mounts any top within `AUTO_STEP_MAX` of the feet.
+			// Furniture must not be walked onto — but the bed's legs top
+			// out inside that window, and that is fine BECAUSE the
 			// mattress sits straight on them: the mount's headroom probe
 			// refuses. So the property is not "no low surface", it is "no
 			// low surface a capsule could actually stand on".
@@ -1471,7 +1490,7 @@ mod tests {
 		for s in 0..16u8 {
 			assert!(state_valid(make_cell(BlockType::LumberDoor, s)));
 		}
-		// Slabs: size bit 0 and anchor bit 1.
+		// Slabs: the size bit and the anchor bit.
 		for b in [BlockType::WoodSlab, BlockType::StoneSlab] {
 			for s in 0..4u8 {
 				assert!(state_valid(make_cell(b, s)));
@@ -1490,7 +1509,7 @@ mod tests {
 			assert!(!state_valid(make_cell(b, 0b0100)), "{b:?}");
 			assert!(!state_valid(make_cell(b, 0b1000)), "{b:?}");
 		}
-		// Unknown id, and spare bits 10-11, always refuse.
+		// Unknown id, and the cell's spare bits, always refuse.
 		assert!(!state_valid(999));
 		assert!(!state_valid(BlockType::Stone as u16 | 1 << 10));
 		assert!(!state_valid(BlockType::WoodStairs as u16 | 1 << 11));

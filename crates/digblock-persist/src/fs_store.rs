@@ -3,10 +3,10 @@
 //! journal (the exact server layout — a `world-<seedbits>/` directory of
 //! per-region shards; `Journal` does the legacy-file migration, boot
 //! compaction and torn-tail recovery for free), and `state.json`
-//! (inventory + player), written atomically on a 5s-if-dirty throttle
-//! (the server's InventoryStore cadence).
+//! (inventory + player), written atomically on an if-dirty throttle at
+//! the server's InventoryStore cadence.
 
-use crate::journal::{world_version, Journal};
+use crate::journal::{Journal, world_version};
 use crate::{PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use digblock_core::overlay::EditOverlay;
 use digblock_net::messages::BlockEdit;
@@ -36,7 +36,8 @@ struct StateFile {
 	hotbar: Vec<u16>,
 	/// Inventory-grid slots, same encoding; empty in older saves.
 	grid: Vec<u16>,
-	/// Per-skill XP totals; empty in pre-skills saves (level 1).
+	/// Per-skill XP totals; empty in pre-skills saves, which then derive
+	/// every skill at its base level.
 	skills: Vec<(u8, u64)>,
 	player: Option<([f32; 3], f32, f32)>,
 }
@@ -149,7 +150,7 @@ impl WorldStore for FsWorldStore {
 			});
 		}
 		// Most recently played first.
-		out.sort_by(|a, b| b.last_played_ms.cmp(&a.last_played_ms));
+		out.sort_by_key(|w| std::cmp::Reverse(w.last_played_ms));
 		out
 	}
 
@@ -441,10 +442,11 @@ mod tests {
 		assert_eq!(edits, vec![((1, 100, 1), 7), ((900, 101, 900), 8)]);
 		s.close_world();
 		assert!(!legacy.exists(), "migrated, not left behind");
-		assert!(dir
-			.join(format!("world-{:016x}", 3.0f64.to_bits()))
-			.join("r.0.0.journal")
-			.exists());
+		assert!(
+			dir.join(format!("world-{:016x}", 3.0f64.to_bits()))
+				.join("r.0.0.journal")
+				.exists()
+		);
 		let _ = std::fs::remove_dir_all(&root);
 	}
 

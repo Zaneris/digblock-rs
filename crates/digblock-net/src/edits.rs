@@ -35,8 +35,8 @@ pub struct PendingEdit {
 	pub placed: u16,
 	/// Predicted tick when applied.
 	pub tick: u32,
-	/// Predicted inventory delta applied locally with this edit:
-	/// `(block, +1)` for a dig credit, `(block, -1)` for a place debit.
+	/// Predicted inventory delta applied locally with this edit: a
+	/// positive count for a dig credit, a negative one for a place debit.
 	/// On a multi-cell entry group, only the FIRST entry carries it.
 	pub inv_delta: Option<(BlockType, i32)>,
 }

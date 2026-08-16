@@ -1,9 +1,9 @@
 //! The shared look: every spacing token and panel color the screens
 //! draw with. One module, because a screen that invents its own padding
 //! — or worse, its own text size — reads as a different program bolted
-//! onto the same window. The alchemy screen did exactly that (a 1.35×
-//! title and a continuous shrink-to-fit of its own glyph size) and the
-//! mismatch was visible at a glance next to the menu.
+//! onto the same window. The alchemy screen did exactly that (an
+//! enlarged title and a continuous shrink-to-fit of its own glyph size)
+//! and the mismatch was visible at a glance next to the menu.
 //!
 //! Two rules hold everything together:
 //!
@@ -19,19 +19,19 @@
 use super::scale;
 
 /// Panel backdrop. Every screen's panel, menu included: the two used to
-/// differ (`0xC0101010` on the in-game screens, `0x90000000` on the
-/// menu) under separate `PANEL_BG` constants, and the mismatch showed as
-/// a visibly different transparency when you tabbed between them. The
-/// alpha is the one that reads better under text, and the 6%-grey lift
-/// is what keeps [`FILL_BG`] slots and buttons distinguishable from the
-/// panel they sit on.
+/// differ (a grey-lifted panel on the in-game screens, a flat black one
+/// on the menu) under separate `PANEL_BG` constants, and the mismatch
+/// showed as a visibly different transparency when you tabbed between
+/// them. The alpha is the one that reads better under text, and the grey
+/// lift is what keeps [`FILL_BG`] slots and buttons distinguishable from
+/// the panel they sit on.
 pub const PANEL_BG: u32 = 0xC0101010;
 
 /// Full-screen dim laid under a panel, so the screen behind it recedes.
 /// Faded by the world's own darkness through
 /// [`super::widgets::scaled_dim`], and — like [`PANEL_BG`] — the same on
-/// every screen; the menu used to dim to `0xA0` and the in-game screens
-/// to `0x70`.
+/// every screen; the menu used to lay a heavier dim than the in-game
+/// screens did.
 pub const SCREEN_DIM: u32 = 0xA0000000;
 
 /// The standard translucent fill: item slots, buttons, and the HUD's
@@ -90,8 +90,8 @@ pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
 	2.0 * scale::text_pad_x(style.scale) + style.measure(text)
 }
 
-/// Step `scale` down the quarter-step ladder until the layout fits
-/// `budget`, and return the scale to draw at.
+/// Step `scale` down the fit ladder until the layout fits `budget`, and
+/// return the scale to draw at.
 ///
 /// `needed(scale)` re-measures the whole layout at a candidate scale —
 /// it has to be re-measured rather than divided, because `glyph_px`
@@ -99,11 +99,12 @@ pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
 /// function of the scale.
 ///
 /// Stepping is the point. The obvious implementation — multiply the
-/// style by `budget / needed` — produces text at 14.3px next to a menu
-/// drawn at 28px, which is exactly the mismatch this module exists to
-/// prevent. A quarter step is the same increment the derived half of
-/// [`scale::ui_scale`] moves in, so a shrunken panel is the page one
-/// smaller window would have drawn, not a differently-designed one.
+/// style by `budget / needed` — produces text at some arbitrary fraction
+/// of the size the menu beside it draws at, which is exactly the mismatch
+/// this module exists to prevent. `STEP` is the same increment the
+/// derived half of [`scale::ui_scale`] moves in, so a shrunken panel is
+/// the page one smaller window would have drawn, not a
+/// differently-designed one.
 /// Bottoms out at [`FIT_FLOOR`], which is LOWER than the interface
 /// scale's own floor on purpose — see that constant.
 pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
@@ -119,18 +120,19 @@ pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 /// [`scale::UI_SCALE_FLOOR`] — the smallest interface scale a player may
 /// CHOOSE.
 ///
-/// They were the same number until a screen stopped fitting at 0.75, and
-/// the difference matters because the two floors answer different
-/// questions. The interface floor is a taste limit: below it text is
-/// unpleasantly small, so the slider does not go there. This one is a
-/// last resort, and its alternative is not "slightly bigger text" but a
-/// page whose bottom half is behind the hotbar — which is what the
-/// alchemy screen's extract tab does in a 960×600 window at 2.5× now
-/// that the inventory grid is six rows deep.
+/// They were the same number until a screen stopped fitting at the
+/// interface floor, and the difference matters because the two floors
+/// answer different questions. The interface floor is a taste limit:
+/// below it text is unpleasantly small, so the slider does not go there.
+/// This one is a last resort, and its alternative is not "slightly
+/// bigger text" but a page whose bottom half is behind the hotbar —
+/// which is what the alchemy screen's extract tab does in a small window
+/// at a large interface scale, now that the inventory grid runs several
+/// rows deep.
 ///
 /// A cramped page you can read all of beats a comfortable one you
-/// cannot reach the bottom of, so the ladder is allowed one more rung
-/// than the slider is. It is still a ladder: the whole style steps
+/// cannot reach the bottom of, so the ladder is allowed to step below
+/// where the slider stops. It is still a ladder: the whole style steps
 /// together and the glyph never lands on a fraction.
 pub const FIT_FLOOR: f32 = 0.5;
 
@@ -140,8 +142,8 @@ mod tests {
 
 	#[test]
 	fn fit_walks_down_to_the_first_rung_that_fits() {
-		// A layout costing 400 logical px: 1.75 needs 700, 1.5 needs 600,
-		// 1.25 needs 500, 1.0 needs 400.
+		// A layout whose cost is linear in the scale, so each rung asks
+		// for that rung's multiple of the base.
 		let needed = |s: f32| 400.0 * s;
 		assert_eq!(fit_scale(1.75, 1000.0, needed), 1.75, "already fits");
 		assert_eq!(fit_scale(1.75, 620.0, needed), 1.5);

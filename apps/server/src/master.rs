@@ -56,8 +56,8 @@ pub struct MasterState {
 	registration: RwLock<Option<Registration>>,
 	/// Replay backstop: the master consumes tokens on first verify; this
 	/// stops a second connection racing the same token without HTTP. Only
-	/// successfully verified tokens land here (never pruned — 16 bytes per
-	/// join per boot).
+	/// successfully verified tokens land here (never pruned — one token's
+	/// worth of bytes per join per boot).
 	used_tokens: Mutex<rustc_hash::FxHashSet<[u8; 16]>>,
 }
 
@@ -272,7 +272,7 @@ pub fn notify_shutdown(url: &str, reg: &Registration) {
 // ---- async orchestration --------------------------------------------------
 
 /// Register (retrying forever with capped backoff — joins are refused until
-/// it lands), then heartbeat every 30 s; a heartbeat 404 means the master
+/// it lands), then heartbeat on `HEARTBEAT_INTERVAL`; a 404 means the master
 /// restarted, so drop the registration and re-register. `cert_hash` is
 /// shared with the cert-rotation task, which updates it and signals
 /// `reregister` so the master hands out the new pin; the hash is re-read on

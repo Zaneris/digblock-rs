@@ -1,10 +1,10 @@
 //! Touch controls — the Java World.processTouch scheme in normalized
 //! coordinates (0..1 of the window, y down):
 //! - left half: virtual joystick anchored at the touch-down point, never
-//!   re-anchored; ~10% of screen height = full deflection (Java 100
-//!   virtual units of 1000)
+//!   re-anchored; `JOYSTICK_FULL_DEFLECTION` of the screen height is full
+//!   deflection (the Java scheme's joystick radius in virtual units)
 //! - right half: relative drag-look
-//! - double-tap on the look side within 600 ms = jump
+//! - double-tap on the look side inside `DOUBLE_TAP_MS` = jump
 //!
 //! Edge/home-indicator conflicts are handled platform-side (the iOS window
 //! defers system edge gestures), so no inset logic is needed here.
@@ -63,25 +63,25 @@ impl TouchDriver {
 					}
 					// Java Player.jumpCount: double-tap on the look side.
 					let now = Instant::now();
-					if let Some(last) = self.last_tap {
-						if now.duration_since(last).as_millis() < DOUBLE_TAP_MS {
-							self.jump_pending = true;
-						}
+					if let Some(last) = self.last_tap
+						&& now.duration_since(last).as_millis() < DOUBLE_TAP_MS
+					{
+						self.jump_pending = true;
 					}
 					self.last_tap = Some(now);
 				}
 			}
 			Phase::Moved => {
-				if let Some((mid, _, current)) = &mut self.move_touch {
-					if *mid == id {
-						*current = p;
-					}
+				if let Some((mid, _, current)) = &mut self.move_touch
+					&& *mid == id
+				{
+					*current = p;
 				}
-				if let Some((lid, last)) = &mut self.look_touch {
-					if *lid == id {
-						self.look_accum += (p - *last) * LOOK_DEGREES_PER_SCREEN;
-						*last = p;
-					}
+				if let Some((lid, last)) = &mut self.look_touch
+					&& *lid == id
+				{
+					self.look_accum += (p - *last) * LOOK_DEGREES_PER_SCREEN;
+					*last = p;
 				}
 			}
 			Phase::Ended | Phase::Cancelled => {
@@ -131,7 +131,7 @@ mod tests {
 	fn joystick_anchored_and_scaled() {
 		let mut t = TouchDriver::new();
 		t.handle(1, Phase::Started, 0.25, 0.6);
-		t.handle(1, Phase::Moved, 0.25, 0.5); // dragged up 10% of screen
+		t.handle(1, Phase::Moved, 0.25, 0.5); // dragged up a full deflection
 		let m = t.move_axis();
 		assert!(
 			(m.y - 1.0).abs() < 1e-5,

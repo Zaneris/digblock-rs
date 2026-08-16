@@ -32,6 +32,8 @@ pub enum Sfx {
 	AmbientWind,
 	AmbientWater,
 	AmbientCave,
+	SiphonDraw,
+	SiphonTake,
 	LevelUp,
 	LevelUnlock,
 }
@@ -58,13 +60,15 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::AmbientWind => a::AMBIENT_WIND,
 		Sfx::AmbientWater => a::AMBIENT_WATER,
 		Sfx::AmbientCave => a::AMBIENT_CAVE,
+		Sfx::SiphonDraw => a::SIPHON_DRAW,
+		Sfx::SiphonTake => a::SIPHON_TAKE,
 		Sfx::LevelUp => a::LEVEL_UP,
 		Sfx::LevelUnlock => a::LEVEL_UNLOCK,
 	}
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 18] = [
+pub const ALL_SFX: [Sfx; 20] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -81,6 +85,8 @@ pub const ALL_SFX: [Sfx; 18] = [
 	Sfx::AmbientWind,
 	Sfx::AmbientWater,
 	Sfx::AmbientCave,
+	Sfx::SiphonDraw,
+	Sfx::SiphonTake,
 	Sfx::LevelUp,
 	Sfx::LevelUnlock,
 ];
@@ -119,7 +125,7 @@ pub enum Material {
 ///
 /// Both matches are EXHAUSTIVE on purpose. This used to be a hand-listed
 /// roster ending in `_ => Earth`, and it silently missed every one of the
-/// 42 rows §7.2 added: mining an Aetherock seam, breaking crystal or
+/// rows §7.2 added: mining an Aetherock seam, breaking crystal or
 /// walking a metal floor all played the sound of digging soil. With no
 /// catch-all arm, a new material or a new dig family fails the BUILD
 /// instead — which is the same protection `dig_families_are_pinned` gives
@@ -153,7 +159,11 @@ pub fn material_of(b: BlockType) -> Material {
 			| Subst::Duskstone
 			| Subst::Glowvein
 			| Subst::Aetherock
-			| Subst::DepletedStone => Material::Stone,
+			| Subst::DepletedStone
+			| Subst::DepletedEmberore
+			| Subst::DepletedDuskstone
+			| Subst::DepletedGlowvein
+			| Subst::DepletedAetherock => Material::Stone,
 			// Loose ground.
 			Subst::Dirt
 			| Subst::Sand
@@ -183,6 +193,30 @@ pub fn break_sfx(m: Material) -> Sfx {
 		Material::Stone => Sfx::BreakStone,
 		Material::Earth => Sfx::BreakEarth,
 		Material::Wood => Sfx::BreakWood,
+	}
+}
+
+/// The two sounds a hold speaks: the loop while it runs, and the one-shot
+/// it lands on. `extracting` says whether this hold is a field extraction
+/// rather than a dig.
+///
+/// One function because the pair has to agree with itself — a hold that
+/// hums and then shatters is worse than one that does neither — and
+/// because the pair is exactly what a draw has to override. Both halves
+/// used to resolve through [`material_of`], which for an ore is rock, so
+/// drawing a seam sounded precisely like quarrying one out: the same
+/// thing the dig crack says visually, and the reason `dig_progress`
+/// declines to draw one over a vein.
+///
+/// The `block` each half is asked about is still the caller's, because
+/// the two are read at different moments — the loop at the hold's start,
+/// the finish against the cell as it stood when it gave way.
+pub fn dig_voice(extracting: bool, block: BlockType) -> (Sfx, Sfx) {
+	if extracting {
+		(Sfx::SiphonDraw, Sfx::SiphonTake)
+	} else {
+		let m = material_of(block);
+		(dig_sfx(m), break_sfx(m))
 	}
 }
 
@@ -242,9 +276,10 @@ pub enum AudioCmd {
 	/// App suspended / tab hidden: silence everything, keep state.
 	Pause,
 	Resume,
-	/// User volume settings, multipliers on the authored gains (1.0 =
-	/// as-authored, range 0..=2). Applies to running voices too — a
-	/// stationary loop must not wait for its next `LoopMove`.
+	/// User volume settings, multipliers on the authored gains (unity
+	/// leaves them as authored, and they may go above it). Applies to
+	/// running voices too — a stationary loop must not wait for its next
+	/// `LoopMove`.
 	Volume {
 		music: f32,
 		sfx: f32,
@@ -297,10 +332,10 @@ pub struct Footsteps {
 	was_airborne: bool,
 }
 
-/// Horizontal distance between steps, blocks (walk speed 4 → ~3.6
-/// steps/s). Cadence, not playback rate: the samples are untouched, so
-/// stepping faster costs no pitch. Because this is a distance
-/// accumulator, a slower walk still paces itself correctly.
+/// Horizontal distance between steps, blocks — so a walk's cadence falls
+/// out of its speed. Cadence, not playback rate: the samples are
+/// untouched, so stepping faster costs no pitch. Because this is a
+/// distance accumulator, a slower walk still paces itself correctly.
 const STRIDE: f32 = 1.1;
 /// Gain of an ordinary step, and of the heavier one on landing.
 const STEP_GAIN: f32 = 0.6;
@@ -358,8 +393,8 @@ impl Default for SwimStrokes {
 }
 
 /// Distance between strokes, blocks. Longer than [`STRIDE`]: a stroke
-/// covers more ground than a footfall, and swim speed is slower, so this
-/// paces roughly one every 1.5 s of steady swimming.
+/// covers more ground than a footfall, and swim speed is slower, so
+/// strokes come well apart in steady swimming.
 const STROKE: f32 = 1.5;
 /// Quieter than a footstep — the ear is already inside the water bed.
 const STROKE_GAIN: f32 = 0.45;
@@ -554,8 +589,8 @@ mod tests {
 	/// proves the match is exhaustive, not that the arms are sane.
 	#[test]
 	fn the_catalog_sounds_like_what_it_is_made_of() {
-		use digblock_core::block::ShapeFamily;
 		use BlockType as B;
+		use digblock_core::block::ShapeFamily;
 		for b in [
 			B::StoneBrick,
 			B::PolishedStone,
@@ -588,7 +623,7 @@ mod tests {
 		// row can ever satisfy: `None` is reserved for the FUNCTIONAL
 		// shapes (torch, table, chair, bed) and every one of those is
 		// material-LESS by construction, as `material_roster_is_pinned`
-		// spells out. The predicate was unsatisfiable, so all 75 iterations
+		// spells out. The predicate was unsatisfiable, so every iteration
 		// took the `continue` and the assert never ran once.
 		let mut worked = 0;
 		for b in BlockType::ALL {
@@ -620,12 +655,46 @@ mod tests {
 		}
 	}
 
+	/// A draw and a dig speak different languages at BOTH ends, and the
+	/// two vocabularies never overlap.
+	///
+	/// The disjointness is the real assertion. An extraction reads as a
+	/// draw only for as long as nothing it plays is also what breaking
+	/// rock plays — and rock is exactly what the old mapping resolved a
+	/// vein to, so the failure mode here is not hypothetical.
+	#[test]
+	fn a_field_draw_never_sounds_like_a_dig() {
+		use digblock_core::block::BlockType as B;
+		for ore in [B::Emberore, B::Duskstone, B::Glowvein, B::Aetherock] {
+			assert_eq!(
+				dig_voice(true, ore),
+				(Sfx::SiphonDraw, Sfx::SiphonTake),
+				"{ore:?} drawn"
+			);
+			// The same block DUG — the spent rock left behind, quarried
+			// with an ordinary tool — still sounds like the rock it is.
+			assert_eq!(
+				dig_voice(false, ore),
+				(Sfx::DigStone, Sfx::BreakStone),
+				"{ore:?} dug"
+			);
+		}
+		let dig: Vec<Sfx> = [Material::Stone, Material::Earth, Material::Wood]
+			.into_iter()
+			.flat_map(|m| [dig_sfx(m), break_sfx(m)])
+			.collect();
+		for s in [Sfx::SiphonDraw, Sfx::SiphonTake] {
+			assert!(!dig.contains(&s), "{s:?} doubles as a dig sound");
+		}
+	}
+
 	#[test]
 	fn footsteps_pace_by_distance_and_stop_when_airborne() {
 		let mut f = Footsteps::default();
 		let ground = Some(BlockType::Grass);
 		let mut steps = 0;
-		// 60 frames of walking at 4 blocks/s: ~4 blocks → 3-4 steps.
+		// A second of walking at walk speed: a few blocks of ground, and
+		// the strides that pace out of it.
 		for _ in 0..60 {
 			if f.advance(4.0 / 60.0, true, ground, false).is_some() {
 				steps += 1;
@@ -649,7 +718,8 @@ mod tests {
 		// lands well inside the first stroke's worth of travel.
 		assert!(s.advance(0.0, false).is_none(), "not swimming yet");
 		assert_eq!(s.advance(STROKE * 0.5, true), Some(STROKE_GAIN));
-		// 4 s of swimming at 3 blocks/s: 12 blocks → 8 strokes.
+		// Several seconds of steady swimming, and the strokes that pace
+		// out of that much travel.
 		let mut strokes = 0;
 		for _ in 0..240 {
 			if s.advance(3.0 / 60.0, true).is_some() {

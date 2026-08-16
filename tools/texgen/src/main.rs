@@ -3,7 +3,8 @@
 //! established pixel-art style. Run manually (`cargo run -p texgen`) and
 //! commit the outputs — assets are `include_bytes!`d, so generated PNGs
 //! live in git; this tool is checked in for provenance and regeneration.
-//! Output matches the loader contract: 64×64 8-bit RGB, non-interlaced.
+//! Output matches the loader contract: `SIZE`-square 8-bit RGB,
+//! non-interlaced.
 //!
 //! A run rewrites EVERY output, so it is not a free operation: the noisy
 //! recipes below share one rng, so adding, removing or reordering a
@@ -12,10 +13,12 @@
 //! moment anyone runs this. Both are fine — a reroll of the same recipe
 //! is the same texture, and re-syncing is the point — but they mean the
 //! diff of a run is wider than the edit that prompted it. Retiring the
-//! door leaf (the door draws `LumberDark` directly now) and pointing the
-//! torch at `LumberLight` are both edits of that kind, and neither was
-//! regenerated: the committed outputs still carry the bytes they had.
+//! door leaf (the door draws `LumberDark` directly now) was an edit of
+//! that kind. Cutting the torch's post from `LumberDark` was not: the
+//! run that followed it moved `TorchSide.png` and nothing else, which is
+//! what a tree already in sync looks like.
 
+use digblock_core::block::BlockType as B;
 use image::RgbImage;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/textures");
@@ -64,47 +67,57 @@ fn main() {
 
 	// Torch: the side texture maps the post's timber to the LOWER rows and
 	// the flame glow to the top rows (a box face's v runs top-down from
-	// the cell's top, so the flame head at y 7..10 samples rows 2..5);
-	// the flame top face gets its own radial-glow layer. Planed lumber and
-	// not the log's bark, because a torch is a whittled stick.
+	// the cell's top, so the shape's flame head samples the texture's TOP
+	// rows); the flame top face gets its own radial-glow layer. Planed
+	// lumber and not the log's bark, because a torch is a whittled stick —
+	// and the DARK timber, because this texture is drawn fullbright.
 	save(
 		"TorchSide.png",
-		torch_side(&load("LumberLight.png"), &mut rng),
+		torch_side(&load("LumberDark.png"), &mut rng),
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 
-	// The four ore faces (SKILLS-DESIGN §5.3) and the tapped one. APPENDED
-	// at the end deliberately: the noisy recipes share one rng, so an
-	// insertion anywhere above rerolls every output after it and the diff
-	// of a regeneration would be the whole texture directory.
+	// The four ore faces (SKILLS-DESIGN §5.3) and the generic tapped one.
+	// APPENDED at the end deliberately: the noisy recipes share one rng, so
+	// an insertion anywhere above rerolls every output after it and the
+	// diff of a regeneration would be the whole texture directory.
 	//
 	// Each is stone with tier-coloured flecks — the gravel recipe's blob
 	// walk, but coloured rather than shaded, and with a light rim so a
 	// fleck reads as a crystal set into rock instead of a stain on it.
 	//
-	// The deep pair carry the Stage-A emissive bit, so their cores are
-	// picked BRIGHT as well as saturated: chunk.wgsl gains that ink by
-	// luminance, and a near-white fleck would glow at the cost of having
-	// no colour left to glow IN.
+	// The colours are not written here. `BlockType::ore_flecks` holds them,
+	// because the GI material LUT casts a vein's light in its core colour
+	// and the spent rocks below paint their dead flecks from the same pair:
+	// three consumers, one table, and a retint moves all of them together.
 	//
-	// They also darken their stone BODY hard (the `body` scale), and that
-	// is the load-bearing half. Emissive is a per-BLOCK flag, not a
-	// per-texel one: a glowing block renders its whole face at full
-	// albedo, so at body 1.0 a Glowvein in a black cave reads as a
+	// Cores are picked BRIGHT as well as saturated — all four rows carry
+	// the Stage-A emissive bit now, chunk.wgsl gains that ink by luminance,
+	// and a near-white fleck would glow at the cost of having no colour
+	// left to glow IN.
+	//
+	// Every tier also darkens its stone BODY hard (the `body` scale), and
+	// that is the load-bearing half. Emissive is a per-BLOCK flag, not a
+	// per-texel one: a glowing block renders its whole face at full albedo,
+	// so with the body left undarkened a vein in a black cave reads as a
 	// glowing white rock rather than as rock with glowing crystals in it.
 	// The contrast has to live in the texture, because the shader has no
-	// way to express it.
-	for (name, core, rim, body) in [
-		("Emberore.png", [214u8, 96, 34], [255u8, 176, 84], 1.0),
-		("Duskstone.png", [104, 78, 168], [172, 146, 236], 1.0),
-		("Glowvein.png", [72, 226, 214], [198, 255, 248], 0.30),
-		("Aetherock.png", [240, 214, 96], [255, 248, 200], 0.30),
+	// way to express it. The shallow pair were the exception while they did
+	// not glow; they glow now, so the exception went with it.
+	for (name, block, body) in [
+		("Emberore.png", B::Emberore, 0.34),
+		("Duskstone.png", B::Duskstone, 0.32),
+		("Glowvein.png", B::Glowvein, 0.30),
+		("Aetherock.png", B::Aetherock, 0.30),
 	] {
+		let (core, rim) = block.ore_flecks().expect("a tier");
 		save(name, ore(&stone, core, rim, body, &mut rng));
 	}
 	// A tapped vein face: the flecks are GONE and their sockets are not.
-	// Empty pockets are what makes DepletedStone read as spent rather than
-	// as one more grey rock — the miner's feedback that this face is done.
+	// Empty pockets are what makes it read as spent rather than as one more
+	// grey rock — the miner's feedback that this face is done. Superseded
+	// by the per-tier spent rocks at the end of this run and kept only
+	// because cells written before them still name it.
 	save("DepletedStone.png", depleted(&stone, &mut rng));
 
 	// The dressed stones (SKILLS-DESIGN §7.2's later materials): the same
@@ -134,6 +147,44 @@ fn main() {
 		"Aetherlamp.png",
 		lamp([186, 226, 255], [70, 74, 96], &mut rng),
 	);
+	// The two tool glows (SKILLS-DESIGN §7.3): what the siphon collects
+	// and what the pick resonates with, each drawn as one orb and used
+	// TWICE — as the emissive face of its tool's geometry, and as the
+	// tool row's texture, which is where the GI material LUT reads the
+	// colour of the light it casts. One artifact decides how the tool
+	// looks and what its light looks like, so the two cannot drift.
+	//
+	// Appended after the lamps for the reason the ores were: everything
+	// above keeps the bytes it had.
+	save(
+		"SiphonGlow.png",
+		radial_glow([48, 190, 96], [12, 84, 48], &mut rng),
+	);
+	save(
+		"PickGlow.png",
+		radial_glow([60, 140, 235], [16, 40, 120], &mut rng),
+	);
+	// The four SPENT vein faces — what a siphon leaves standing, one per
+	// tier. Appended last for the reason everything else was.
+	//
+	// Deliberately NOT the generic tapped stone above, and not empty
+	// sockets either: this is the same rock with the same flecks in the
+	// same places, drained. A worked seam should still read as the seam you
+	// worked — you can tell an emberore face you have been at from a
+	// duskstone one — and the block you break out of it is the only thing a
+	// vein ever puts in your hands, so it had better be a trophy of that
+	// tier. Telling spent from live is then a question of LIGHT rather than
+	// of shape, which is exactly what a siphon takes: the live rows glow
+	// and cast, and these do neither.
+	for (name, block) in [
+		("DepletedEmberore.png", B::Emberore),
+		("DepletedDuskstone.png", B::Duskstone),
+		("DepletedGlowvein.png", B::Glowvein),
+		("DepletedAetherock.png", B::Aetherock),
+	] {
+		let (core, rim) = block.ore_flecks().expect("a tier");
+		save(name, spent(&stone, core, rim, &mut rng));
+	}
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -143,7 +194,7 @@ fn bricks(base: &RgbImage, w: u32, h: u32, rng: &mut Rng) -> RgbImage {
 	let mut out = base.clone();
 	for (x, y, p) in out.enumerate_pixels_mut() {
 		let course = y / h;
-		let offset = if course % 2 == 0 { 0 } else { w / 2 };
+		let offset = if course.is_multiple_of(2) { 0 } else { w / 2 };
 		let bx = (x + offset) % w;
 		let by = y % h;
 		let n = rng.signed(5);
@@ -299,10 +350,10 @@ fn lamp(lit: [u8; 3], frame: [u8; 3], rng: &mut Rng) -> RgbImage {
 /// Stone with mineral flecks: a coloured core, a lighter catch rim, and a
 /// dark socket around it so each fleck sits IN the rock rather than on it.
 ///
-/// Eighteen flecks, not the gravel recipe's forty: a vein has to read as
-/// rock that HAS ore in it. At forty the stone disappeared and the face
-/// became a solid colour, which is the same mistake as a fleck with no
-/// socket, one scale up.
+/// Far fewer flecks than the gravel recipe scatters pebbles: a vein has
+/// to read as rock that HAS ore in it. At the gravel count the stone
+/// disappeared and the face became a solid colour, which is the same
+/// mistake as a fleck with no socket, one scale up.
 fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], body: f32, rng: &mut Rng) -> RgbImage {
 	let mut out = stone.clone();
 	for p in out.pixels_mut() {
@@ -376,12 +427,54 @@ fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Wood post darkened, with the top ~5/12 of rows turned to flame glow
+/// A tier's vein face with the light drawn out of it: the same rock, the
+/// same flecks in the same places, drained to dark inclusions.
+///
+/// The body is left at ordinary stone brightness, and that is the one way
+/// this differs structurally from [`ore`] rather than merely in palette.
+/// A live vein darkens its body because it is drawn FULLBRIGHT and needs
+/// the contrast to read as rock-with-crystals; a spent face is lit like
+/// any other block, so the same darkening would just make it a black rock.
+/// Which is the whole rule in one line: an ink texture is authored for
+/// fullbright, an ordinary one is not.
+fn spent(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+	// How much of the tier's colour survives the draw. The rim keeps more
+	// than the core so a drained fleck still reads as something set INTO
+	// the rock rather than a smudge on it — the same job the light catch
+	// does on a live one, at a fraction of the brightness.
+	const CORE_LEFT: f32 = 0.34;
+	const RIM_LEFT: f32 = 0.42;
+	let drain = |c: [u8; 3], k: f32| {
+		[
+			clamp8(f32::from(c[0]) * k),
+			clamp8(f32::from(c[1]) * k),
+			clamp8(f32::from(c[2]) * k),
+		]
+	};
+	ore(
+		stone,
+		drain(core, CORE_LEFT),
+		drain(rim, RIM_LEFT),
+		1.0,
+		rng,
+	)
+}
+
+/// Wood post darkened, with the top band of rows turned to flame glow
 /// (white-hot core rows fading through yellow to orange where the flame
 /// head's side faces sample).
+///
+/// The post is cut from the DARK timber, and that is not a style choice:
+/// this texture is never lit. The block `glows`, so every pixel of it
+/// goes through `emissive_ink`, whose gain rides the ink's own luminance
+/// — and a pale timber has no headroom left to take that gain. It clips
+/// on all three channels and the post reads as a white bar brighter than
+/// the fire on top of it, inverting the one relationship the gain exists
+/// to hold. Authored dark, the same weighting puts the gain where the
+/// fire is, which is what its comment always claimed it did.
 fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = wood.clone();
-	let flame_rows = SIZE * 5 / 12; // rows 0..≈26 of 64
+	let flame_rows = SIZE * 5 / 12; // the flame band, in the shape's twelfths
 	for (_, y, p) in out.enumerate_pixels_mut() {
 		if y < flame_rows {
 			// 0 at the very top (cool fringe) → 1 at the head's base.
@@ -397,6 +490,27 @@ fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 			for c in p.0.iter_mut() {
 				*c = add8(*c, -18 + g);
 			}
+		}
+	}
+	out
+}
+
+/// An orb: `core` at the centre falling to `rim` at the edge, jittered.
+/// [`torch_flame`]'s shape with the hue taken as an argument.
+///
+/// Both callers are drawn FULLBRIGHT, so both colours are authored with
+/// headroom (R29): a channel painted near white has none left to take
+/// `emissive_ink`'s gain, and an orb that clips on all three is a white
+/// blob rather than a coloured light. Only the dominant channel is meant
+/// to reach the ceiling — which is what leaves the glow a hue at all.
+fn radial_glow(core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+	let mut out = RgbImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
+		let j = rng.signed(8) as f32;
+		for (v, (&a, &b)) in p.0.iter_mut().zip(core.iter().zip(rim.iter())) {
+			*v = clamp8(f32::from(a) + (f32::from(b) - f32::from(a)) * d + j);
 		}
 	}
 	out
@@ -576,7 +690,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 	]
 }
 
-/// Green → yellow-tan: hue −30°, saturation ×0.8, value ×1.05.
+/// Green → yellow-tan: hue swung back toward yellow, a touch desaturated
+/// and a touch lighter.
 fn dry(p: [u8; 3]) -> [u8; 3] {
 	let (h, s, v) = rgb_to_hsv(p);
 	hsv_to_rgb(h - 30.0, s * 0.8, (v * 1.05).min(1.0))
@@ -608,7 +723,7 @@ fn mud(dirt: &RgbImage, rng: &mut Rng) -> RgbImage {
 
 fn sandstone(sand: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = sand.clone();
-	// Horizontal strata: darken bands of 3–6 rows by a per-band amount,
+	// Horizontal strata: darken bands of a few rows by a per-band amount,
 	// wrapped per-pixel noise keeping the grain. Row phases come from the
 	// seeded stream, so regeneration is byte-identical.
 	let mut y = 0u32;
@@ -638,8 +753,8 @@ fn gravel(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 		let n = rng.signed(8);
 		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
 	}
-	// ~40 pebbles: small lightened/darkened blobs with a darker 1px rim,
-	// wrapped modularly so the texture keeps tiling.
+	// Pebbles: small lightened/darkened blobs with a darker rim one pixel
+	// wide, wrapped modularly so the texture keeps tiling.
 	let s = SIZE as i32;
 	for _ in 0..40 {
 		let (cx, cz) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);

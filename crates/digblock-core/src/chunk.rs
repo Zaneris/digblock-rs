@@ -3,9 +3,9 @@ use crate::block::BlockType;
 pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
-/// World height in chunks (16 = 256 blocks), unbounded horizontally. The
-/// single knob for world height: columns above the terrain surface resolve
-/// to the shared AIR_CHUNK sentinel, so raising this costs almost nothing.
+/// World height in chunks, unbounded horizontally. The single knob for
+/// world height: columns above the terrain surface resolve to the shared
+/// AIR_CHUNK sentinel, so raising this costs almost nothing.
 pub const WORLD_VCHUNK: i32 = 16;
 pub const WORLD_VBLOCK: i32 = WORLD_VCHUNK * CHUNK_SIZE as i32 - 1;
 
@@ -34,10 +34,10 @@ impl ChunkPos {
 
 /// Block data, shared with mesh jobs via `Arc`; edits go through
 /// copy-on-write (`Arc::make_mut`), so a job's snapshot stays consistent.
-/// Indexed `(y*16 + z)*16 + x`.
-/// Bits of a cell that hold the block id (1024 ids). Bits 12..=15 are a
-/// reserved per-cell STATE nibble (future stairs facing×half etc.); bits
-/// 10..11 are spare. The whole u16 cell travels the wire and the journal,
+/// Indexed y-major, then z, then x (`ChunkData::index`).
+/// Bits of a cell that hold the block id. The rest of the cell is spare
+/// bits and then a reserved per-cell STATE nibble on top (stairs
+/// facing×half etc.). The whole u16 cell travels the wire and the journal,
 /// so the id/state split can be re-drawn without another format break.
 pub const ID_BITS: u32 = 10;
 pub const ID_MASK: u16 = (1 << ID_BITS) - 1;
@@ -77,8 +77,8 @@ impl Default for ChunkData {
 }
 
 /// The shared all-air chunk. Worldgen returns clones of this Arc for every
-/// chunk above the terrain, so thousands of sky chunks share one 8KB body
-/// and are recognized by pointer to skip meshing and border-plane copies.
+/// chunk above the terrain, so thousands of sky chunks share one body and
+/// are recognized by pointer to skip meshing and border-plane copies.
 /// `Arc::make_mut` in `set_block` copy-on-writes it, so editing an air
 /// chunk transparently turns it into a normal one.
 pub static AIR_CHUNK: std::sync::LazyLock<std::sync::Arc<ChunkData>> =

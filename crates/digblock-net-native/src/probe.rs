@@ -9,8 +9,9 @@
 //! session is a QUIC+TLS 1.3 handshake and then an HTTP/3 extended CONNECT
 //! over it — two round trips at best, three if address validation issues a
 //! Retry — plus DNS resolution, which is not a round trip at all and does not
-//! scale with distance. So a 30 ms server listed at 70-90 ms, and the figure
-//! could not be compared with the in-game overlay's.
+//! scale with distance. So a nearby server was listed at a multiple of its
+//! real latency, and the figure could not be compared with the in-game
+//! overlay's.
 //!
 //! `Connection::rtt` is the transport's own smoothed estimate, sampled from
 //! the acks the handshake already exchanged. It costs nothing extra and it is
@@ -55,7 +56,8 @@ pub fn probe(
 				// just not the latency one. Kept as the fallback for the
 				// case where the estimate has no sample of its own yet and
 				// quinn still reports its RFC 9002 initial default, which
-				// would read as a fixed 333 ms against every server listed.
+				// would read as one fixed figure against every server
+				// listed.
 				let handshake = start.elapsed();
 				let rtt = conn.rtt();
 				let took = if rtt.is_zero() || rtt > handshake {

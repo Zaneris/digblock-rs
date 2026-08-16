@@ -5,5 +5,5 @@
 mod channel_transport;
 mod probe;
 
-pub use channel_transport::{connect, connect_with, CertPolicy, ChannelTransport};
+pub use channel_transport::{CertPolicy, ChannelTransport, connect, connect_with};
 pub use probe::probe;

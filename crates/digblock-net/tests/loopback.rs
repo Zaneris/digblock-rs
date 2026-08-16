@@ -4,17 +4,18 @@
 use digblock_core::block::BlockType;
 use digblock_core::player::{Player, PlayerIntent};
 use digblock_net::codec::{self, FrameReader};
-use digblock_net::loopback::{loopback_pair, LoopbackEnd};
+use digblock_net::loopback::{LoopbackEnd, loopback_pair};
 use digblock_net::messages::{
 	BlockEdit, ClientMsg, Datagram, RejectReason, RemoteState, SelfState, ServerMsg, Snapshot,
 };
 use digblock_net::protocol::{
-	decode_preamble, encode_preamble, CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN,
-	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	CLIENT_TICK_LEAD, HANDSHAKE_TIMEOUT_SECS, PREAMBLE_LEN, PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	decode_preamble, encode_preamble,
 };
 use digblock_net::transport::{NetTransport, TransportEvent};
 use digblock_net::{NetClient, NetEvent};
 use glam::{Vec2, Vec3};
+use std::assert_matches;
 
 fn flat_world(_x: i32, y: i32, _z: i32) -> Option<u16> {
 	Some(if y < 10 {
@@ -37,7 +38,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 }
 
 /// Minimal scripted server: drains its loopback end, decodes, remembers.
-/// Speaks the 8-byte preamble in both directions like the real server.
+/// Speaks the fixed preamble in both directions like the real server.
 struct Stub {
 	end: LoopbackEnd,
 	frames: FrameReader,
@@ -144,10 +145,10 @@ fn configured_token_and_identity_reach_the_wire() {
 
 	client.poll(&mut events, 0.016);
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.first(),
 		Some(ClientMsg::Hello { token: t, identity: i, .. }) if *t == token && *i == identity
-	));
+	);
 }
 
 #[test]
@@ -160,12 +161,12 @@ fn full_frame_handshake_edits_snapshot() {
 	// Client connects and sends Hello.
 	client.poll(&mut events, 0.016);
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.first(),
 		Some(ClientMsg::Hello { protocol, .. }) if *protocol == PROTOCOL_VERSION
-	));
+	);
 
-	// Server welcomes at tick 600.
+	// The server welcomes from a tick well past zero.
 	server.send(&ServerMsg::Welcome {
 		protocol: PROTOCOL_VERSION,
 		seed: 42.0,
@@ -181,11 +182,11 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Welcome { seed, player_id: 1, tod, .. })
 			if *seed == 42.0 && *tod == 45.0
-	));
+	);
 	assert!(client.ready());
 	assert_eq!(client.predictor.current_tick(), 600 + CLIENT_TICK_LEAD);
 
@@ -193,10 +194,10 @@ fn full_frame_handshake_edits_snapshot() {
 	server.send(&ServerMsg::TimeOfDay { tod: 44.5 });
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::TimeOfDay { tod }) if *tod == 44.5
-	));
+	);
 
 	// Predict a few ticks and send inputs.
 	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
@@ -231,14 +232,14 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Edit {
 			cell: (3, 9, 4),
 			cell_value: 0, // Air
 			..
 		})
-	));
+	);
 
 	// Snapshot: our ack + one remote player.
 	let me = player.state();
@@ -259,10 +260,10 @@ fn full_frame_handshake_edits_snapshot() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	assert!(matches!(
+	assert_matches!(
 		events.first(),
 		Some(NetEvent::Ack { acked_input_tick, .. }) if *acked_input_tick == first
-	));
+	);
 	assert!(!client.remotes.is_empty());
 
 	// Predicted dig, then rejection → revert event with the right prev
@@ -355,9 +356,11 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		}
 		other => panic!("expected the authoritative Edit, got {other:?}"),
 	}
-	assert!(!events
-		.iter()
-		.any(|e| matches!(e, NetEvent::EditRejected { .. })));
+	assert!(
+		!events
+			.iter()
+			.any(|e| matches!(e, NetEvent::EditRejected { .. }))
+	);
 }
 
 #[test]
@@ -539,14 +542,11 @@ fn dig_start_and_cancel_reach_the_wire() {
 	client.send_dig_start((3, 9, -4));
 	client.send_dig_cancel();
 	server.pump();
-	assert!(matches!(
+	assert_matches!(
 		server.client_msgs.get(1),
 		Some(ClientMsg::DigStart { cell: [3, 9, -4] })
-	));
-	assert!(matches!(
-		server.client_msgs.get(2),
-		Some(ClientMsg::DigCancel)
-	));
+	);
+	assert_matches!(server.client_msgs.get(2), Some(ClientMsg::DigCancel));
 }
 
 #[test]
@@ -588,8 +588,8 @@ fn input_redundancy_survives_datagram_loss() {
 		client.send_inputs();
 	}
 	server.pump();
-	// Half the datagrams were dropped, but the 4-deep redundancy window
-	// delivered every tick.
+	// Half the datagrams were dropped, but the redundancy window delivered
+	// every tick.
 	let first = CLIENT_TICK_LEAD;
 	for t in first..first + 20 {
 		assert!(server.input_ticks.contains(&t), "missing tick {t}");
@@ -707,7 +707,7 @@ fn input_sends_are_throttled_to_the_stride() {
 	server.pump();
 	server.datagrams = 0;
 
-	// A 120 Hz display: send_inputs is called TWICE per predicted tick.
+	// A high-refresh display: send_inputs is called TWICE per predicted tick.
 	let mut player = Player::new(Vec3::new(0.5, 11.5, 0.5));
 	const TICKS: u32 = 20;
 	for _ in 0..TICKS {
@@ -764,7 +764,7 @@ fn a_large_journal_sync_is_spread_across_polls() {
 		spawn_look: [0.0; 3],
 	});
 
-	// 40 columns × 100 cells = 4000 edits, all arriving at once.
+	// Many columns of many cells each, all arriving at once.
 	const COLS: i32 = 40;
 	const CELLS: i32 = 100;
 	for cx in 0..COLS {
@@ -960,7 +960,7 @@ fn ongoing_traffic_keeps_the_liveness_deadline_from_firing() {
 	events.clear();
 	client.poll(&mut events, 0.016);
 
-	// Three times the deadline, with a heartbeat every simulated 5s.
+	// Several times over the deadline, with heartbeats throughout.
 	let mut elapsed = 0.0f32;
 	let mut since_beat = 0.0f32;
 	while elapsed < RECV_TIMEOUT_SECS * 3.0 {
@@ -1021,7 +1021,7 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		.predict(&mut player, intent, Vec3::Z, &flat_world);
 	client.send_inputs();
 
-	// 80 ms of frames go by before the ack comes back.
+	// A stretch of frames goes by before the ack comes back.
 	for _ in 0..8 {
 		events.clear();
 		client.poll(&mut events, 0.01);
@@ -1065,9 +1065,9 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 	// left over describes the ack BEFORE it. Sampling it re-blends a
 	// measurement already in the average — which barely moves `rtt_ms`, but
 	// collapses `jitter_ms`, because deviation is taken from the running
-	// mean and a duplicate deviates from it by nothing. On a 500 ms link
-	// half of all acks are stale, so this was most wrong exactly where the
-	// overlay is most read.
+	// mean and a duplicate deviates from it by nothing. On a high-latency
+	// link a large share of acks are stale, so this was most wrong exactly
+	// where the overlay is most read.
 	let tick3 = client
 		.predictor
 		.predict(&mut player, intent, Vec3::Z, &flat_world);

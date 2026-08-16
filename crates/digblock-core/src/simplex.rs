@@ -86,11 +86,7 @@ const GRAD3D: [(f64, f64, f64); 12] = [
 #[inline]
 fn fastfloor(x: f64) -> i32 {
 	let xi = x as i32;
-	if x < xi as f64 {
-		xi - 1
-	} else {
-		xi
-	}
+	if x < xi as f64 { xi - 1 } else { xi }
 }
 
 #[inline]
@@ -347,7 +343,7 @@ impl Noise3Column {
 /// compare against, and a mismatch is a worldgen output change.
 #[cfg(test)]
 pub(crate) mod reference {
-	use super::{fastfloor, F3, G3, GRAD3D, PERM, PERM_MOD12};
+	use super::{F3, G3, GRAD3D, PERM, PERM_MOD12, fastfloor};
 
 	#[allow(clippy::collapsible_else_if)]
 	pub(crate) fn noise3(xin: f64, yin: f64, zin: f64) -> f64 {

@@ -85,8 +85,8 @@ impl UiIcons {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("ui icons"),
-			bind_group_layouts: &[&bgl, materials_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl), Some(materials_bgl)],
+			immediate_size: 0,
 		});
 		let pipeline = crate::pipeline_builder::build_depthless(
 			device,

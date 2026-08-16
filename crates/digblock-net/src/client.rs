@@ -7,9 +7,9 @@ use crate::edits::{PendingEdit, PendingEdits};
 use crate::messages::{ClientMsg, Datagram, EditKind, RejectReason, ServerMsg};
 use crate::predict::{Predictor, Reconciled};
 use crate::protocol::{
-	decode_preamble, encode_preamble, sanitize_name, PlayerId, CLIENT_TICK_LEAD,
-	CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE, MIN_PROTOCOL, PREAMBLE_LEN,
-	PROTOCOL_VERSION, RECV_TIMEOUT_SECS,
+	CLIENT_TICK_LEAD, CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE,
+	MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, PlayerId, RECV_TIMEOUT_SECS, decode_preamble,
+	encode_preamble, sanitize_name,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
@@ -210,9 +210,9 @@ pub struct NetClient {
 	/// Predictor tick of the last input datagram (send-rate throttle).
 	last_input_send_tick: u32,
 	/// Staging buffers reused by every send, so steady-state traffic
-	/// (~30 reliable frames + 30 input datagrams a second) allocates
-	/// nothing — allocator churn on the web build's single thread lands
-	/// as frame spikes.
+	/// (reliable frames plus input datagrams, many of each a second)
+	/// allocates nothing — allocator churn on the web build's single
+	/// thread lands as frame spikes.
 	send_buf: Vec<u8>,
 	dgram_buf: Vec<u8>,
 	stats: StatsAcc,
@@ -236,8 +236,8 @@ struct StatsAcc {
 	published: digblock_core::metrics::NetStats,
 }
 
-/// Weight for the smoothed RTT and its deviation. ~1 s of acks at the
-/// 20 Hz snapshot rate.
+/// Weight for the smoothed RTT and its deviation; its reciprocal is the
+/// window in acks, which arrive at the snapshot rate.
 const RTT_ALPHA: f32 = 0.05;
 
 impl StatsAcc {
@@ -323,10 +323,10 @@ impl NetClient {
 	/// and feeding it again re-blends a measurement already in the average.
 	/// That halves the EWMA's effective response and, worse, deflates the
 	/// reported jitter: `on_rtt` derives deviation from the running mean, and
-	/// a duplicate deviates from it by nothing. Measured stale share of acks:
-	/// 0% on lan and wifi, 10% at 120 ms, 31% at 300 ms, **50% at 500 ms** —
-	/// so the overlay was least trustworthy on exactly the links a player
-	/// opens it to diagnose.
+	/// a duplicate deviates from it by nothing. The measured stale share of
+	/// acks is none at all on lan and wifi and climbs with latency until it
+	/// is half of them on the worst link — so the overlay was least
+	/// trustworthy on exactly the links a player opens it to diagnose.
 	pub fn note_reconciled(&mut self, outcome: Reconciled) {
 		if matches!(outcome, Reconciled::Replayed { .. }) {
 			self.stats.replays += 1;
@@ -747,8 +747,8 @@ impl NetClient {
 
 	/// One datagram carrying the current input redundancy window. Called
 	/// every frame; actually sends at most once per INPUT_SEND_STRIDE
-	/// predicted ticks — a 120 Hz display no longer transmits 120
-	/// datagrams/s, half of them carrying an unchanged window.
+	/// predicted ticks — a high-refresh display no longer transmits one per
+	/// frame, most of them carrying an unchanged window.
 	pub fn send_inputs(&mut self) {
 		if !self.ready() {
 			return;

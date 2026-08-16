@@ -19,12 +19,12 @@
 // simpler than the AudioParam automation equivalents.
 #![allow(deprecated)]
 
-use digblock_render::audio::{bytes, AudioCmd, AudioSink, LoopId, Sfx, ALL_SFX};
+use digblock_render::audio::{ALL_SFX, AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
 	AudioBuffer, AudioBufferSourceNode, AudioContext, DistanceModelType, GainNode, PannerNode,
@@ -219,14 +219,14 @@ async fn fetch_music(state: Rc<RefCell<State>>, master_url: String) {
 		} else {
 			format!("{base}/{}", url.trim_start_matches('/'))
 		};
-		if let Some(raw) = fetch_bytes(&url).await {
-			if let Some(buf) = decode(&ctx, &raw).await {
-				state.borrow_mut().pools[usize::from(night)].push(buf);
-				// Start on the first track that lands, not once the whole
-				// playlist has downloaded — several MB of music would
-				// otherwise mean minutes of silence. A no-op once playing.
-				play_next_track(&state);
-			}
+		if let Some(raw) = fetch_bytes(&url).await
+			&& let Some(buf) = decode(&ctx, &raw).await
+		{
+			state.borrow_mut().pools[usize::from(night)].push(buf);
+			// Start on the first track that lands, not once the whole
+			// playlist has downloaded — several MB of music would
+			// otherwise mean minutes of silence. A no-op once playing.
+			play_next_track(&state);
 		}
 	}
 }

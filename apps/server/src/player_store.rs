@@ -11,9 +11,9 @@
 //!
 //! The rewrite happens on a dedicated writer thread ([`StoreWriter`]).
 //! Encoding stays on the caller's thread — it needs the live map — but the
-//! fsync does not, and that is the expensive half: 1-10 ms on local SSD,
-//! 20-100 ms on a container or network volume, which on the sim thread is
-//! several dropped 60 Hz ticks every interval. Disconnects go through
+//! fsync does not, and that is the expensive half: milliseconds on local
+//! SSD, tens of milliseconds on a container or network volume, which on the
+//! sim thread is several dropped ticks every interval. Disconnects go through
 //! [`PlayerStore::sync_soon`], which coalesces onto the same cadence
 //! instead of forcing a write each; only shutdown
 //! ([`PlayerStore::sync`]) waits for the writer.
@@ -28,8 +28,9 @@
 //! files are still read — the archive-and-start-fresh path is reserved
 //! for actual corruption, never a routine upgrade (it would wipe every
 //! player's inventory). An older file simply has no stored position or
-//! skills, so those players resume at spawn once / start at level 1 and
-//! are stored in the current format from their next write on.
+//! skills, so those players resume at spawn once / start at the bottom of
+//! the skill curve and are stored in the current format from their next
+//! write on.
 //!
 //! The layout blob is SELF-DESCRIBING, which is what keeps growing the
 //! inventory grid out of the version field entirely. Its leading byte is
@@ -51,8 +52,8 @@ use digblock_core::skills::SkillSet;
 use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
@@ -66,9 +67,9 @@ const LAYOUT_ABSENT: u8 = 0;
 const LAYOUT_LEGACY: u8 = 1;
 const LAYOUT_SIZED: u8 = 2;
 
-/// The grid width [`LAYOUT_LEGACY`] blobs were written at — four rows of
-/// nine. FROZEN: it describes bytes already on disk, so it must never be
-/// re-pointed at [`GRID_SLOTS`], which is free to grow.
+/// The grid width [`LAYOUT_LEGACY`] blobs were written at. FROZEN: it
+/// describes bytes already on disk, so it must never be re-pointed at
+/// [`GRID_SLOTS`], which is free to grow.
 const LEGACY_GRID_SLOTS: usize = 36;
 
 /// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for
@@ -89,7 +90,8 @@ const LEGACY_HOTBAR_SLOTS: usize = 9;
 
 /// Both frozen widths describe bytes on disk, so this asserts the
 /// FORMAT, not the constants: if today's hotbar ever differs, the legacy
-/// arm must keep reading 9 and this line is the reminder that it does.
+/// arm must keep reading the LEGACY width, and this line is the reminder
+/// that it does.
 const _: () = assert!(
 	LEGACY_HOTBAR_SLOTS == 9 && LEGACY_GRID_SLOTS == 36,
 	"legacy layout widths describe bytes already written — never retune them"
@@ -126,9 +128,9 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// master's login flow (see NET-AUDIT-2.md §1.5).
 const MAX_IDENTITIES: usize = 10_000;
 
-/// The stored key: SHA-256 of the client's 16-byte identity secret,
-/// truncated. The raw secret is a bearer credential and never touches
-/// disk server-side.
+/// The stored key: SHA-256 of the client's identity secret, truncated.
+/// The raw secret is a bearer credential and never touches disk
+/// server-side.
 pub type IdentityHash = [u8; 16];
 
 pub fn hash_identity(secret: &[u8; 16]) -> IdentityHash {
@@ -167,9 +169,9 @@ pub struct PlayerRecord {
 	/// interval). That fails open across restarts, which is the safe
 	/// direction for a convenience cooldown.
 	pub last_return_tick: Option<u32>,
-	/// Per-skill XP totals. Pre-v4 records read as empty (level 1) with
-	/// their inventories intact — existing players keep their stuff and
-	/// start the skill system at the bottom like everyone else.
+	/// Per-skill XP totals. Pre-v4 records read as empty with their
+	/// inventories intact — existing players keep their stuff and start the
+	/// skill system at the bottom like everyone else.
 	pub skills: SkillSet,
 }
 
@@ -279,8 +281,8 @@ impl PlayerStore {
 	///
 	/// This used to force a flush unconditionally. Every write rebuilds and
 	/// fsyncs the WHOLE file (see `write_snapshot`), on the sim thread, so
-	/// a server emptying out — ten players dropping in one tick — paid ten
-	/// full-file rewrites and ten fsyncs inside a single 16.7 ms budget.
+	/// a server emptying out — a crowd dropping in one tick — paid a
+	/// full-file rewrite and an fsync each, inside a single tick's budget.
 	/// The module already accepts losing up to `FLUSH_INTERVAL` of changes
 	/// to a hard crash; there is no reason a disconnect should be stricter
 	/// than a crash.
@@ -391,9 +393,9 @@ fn write_atomic(path: &Path, buf: &[u8]) -> io::Result<()> {
 /// The background writer: owns the fsync, so the sim thread does not.
 ///
 /// A flush rebuilds the WHOLE file (records are tiny; the format is a
-/// snapshot) and fsyncs it. That is 1-10 ms on local SSD and 20-100 ms on
-/// a container or network volume — 1-6 dropped sim ticks every
-/// `FLUSH_INTERVAL`, taken straight out of the 60 Hz budget. Encoding
+/// snapshot) and fsyncs it. That is milliseconds on local SSD and tens of
+/// milliseconds on a container or network volume — several dropped sim ticks
+/// every `FLUSH_INTERVAL`, taken straight out of the tick budget. Encoding
 /// stays on the sim thread (it needs the live map); only the I/O moves.
 ///
 /// Submissions COALESCE: the channel holds one buffer, and a newer
@@ -414,7 +416,7 @@ struct StoreWriter {
 
 impl StoreWriter {
 	fn new(path: PathBuf) -> Self {
-		// Depth 1: one write in flight, one queued behind it.
+		// Shallow by design: a slow disk coalesces rather than queueing.
 		let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(1);
 		let (spare_tx, spare) = crossbeam_channel::bounded::<Vec<u8>>(2);
 		let failed = Arc::new(AtomicBool::new(false));
@@ -613,8 +615,9 @@ fn parse(bytes: &[u8]) -> io::Result<Vec<(IdentityHash, PlayerRecord)>> {
 		} else {
 			(None, None)
 		};
-		// v1–v3 records end here: skills read empty — level 1, with the
-		// inventory intact. Never the archive path for a routine upgrade.
+		// v1–v3 records end here: skills read empty — bottom of the curve,
+		// with the inventory intact. Never the archive path for a routine
+		// upgrade.
 		let skills = if version >= 4 {
 			let mut n = [0u8; 1];
 			r.read_exact(&mut n).map_err(|_| bad("short record"))?;
@@ -842,7 +845,7 @@ mod tests {
 		let dir = temp_dir("v1compat");
 		std::fs::create_dir_all(&dir).unwrap();
 		let id = hash_identity(&[5; 16]);
-		// Hand-built v1 snapshot: one record, one (Dirt, 7) pair.
+		// Hand-built v1 snapshot: one record, one (block, count) pair.
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);
 		buf.extend_from_slice(&1u16.to_le_bytes());
@@ -898,6 +901,21 @@ mod tests {
 		assert_ne!(h, hash_identity(&[8; 16]));
 	}
 
+	/// The stored key is the FILE FORMAT: every record in `inventories.bin`
+	/// is filed under it, so a hash that moves orphans every player's items
+	/// silently — the store still loads, it just never finds anybody. The
+	/// test above only proves the hash agrees with itself inside one build,
+	/// which a swapped digest crate would satisfy while renaming every key.
+	/// Truncated SHA-256 of the secret, against an external vector.
+	#[test]
+	fn identity_hash_is_a_pinned_wire_format() {
+		let want = [
+			0xd7, 0x61, 0xd4, 0x06, 0xaf, 0x2a, 0x4a, 0x5a, 0x15, 0xf6, 0x7c, 0x92, 0x43, 0x78,
+			0xed, 0x88,
+		];
+		assert_eq!(hash_identity(&[7; 16]), want);
+	}
+
 	/// An existing v2 file (inventory + layout, no position) keeps every
 	/// player's items and arrangement and simply reports no stored
 	/// position — those players resume at spawn once, then store one.
@@ -907,7 +925,7 @@ mod tests {
 		let dir = temp_dir("v2compat");
 		std::fs::create_dir_all(&dir).unwrap();
 		let id = hash_identity(&[6; 16]);
-		// Hand-built v2 snapshot: one record, one (Dirt, 3) pair, layout.
+		// Hand-built v2 snapshot: one record, one (block, count) pair, layout.
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);
 		buf.extend_from_slice(&2u16.to_le_bytes());
@@ -994,15 +1012,15 @@ mod tests {
 
 	/// An existing v3 file (pre-skills) keeps every player's items,
 	/// arrangement and position, and reads back with empty skills —
-	/// level 1, nothing wiped. A routine upgrade must NOT trip the
-	/// archive-and-start-fresh path.
+	/// bottom of the curve, nothing wiped. A routine upgrade must NOT trip
+	/// the archive-and-start-fresh path.
 	#[test]
 	fn v3_file_reads_with_empty_skills() {
 		use digblock_core::skills::Skill;
 		let dir = temp_dir("v3compat");
 		std::fs::create_dir_all(&dir).unwrap();
 		let id = hash_identity(&[11; 16]);
-		// Hand-built v3 snapshot: one record, one (Dirt, 9) pair, no
+		// Hand-built v3 snapshot: one record, one (block, count) pair, no
 		// layout, a position, no cooldown tick.
 		let mut buf = Vec::new();
 		buf.extend_from_slice(&MAGIC);

@@ -15,18 +15,27 @@
 //! Everything is pure integer twelfths; f32 appears only in UVs.
 
 use digblock_core::block::BlockType;
-use digblock_core::dir::{Dir, DIRS};
-use digblock_core::shapes::{self, door_state, slab_state, stair_state, Facing};
+use digblock_core::dir::{DIRS, Dir};
+use digblock_core::shapes::{self, Facing, door_state, slab_state, stair_state};
 
 use crate::ui::hud::IconKind;
 
-/// One face to draw: geometry in twelfths (y may exceed 12 for the
-/// door's stacked halves), UVs already 0..1.
+/// One face to draw: geometry in twelfths (y may run past a single cell
+/// for the door's stacked halves), UVs already 0..1.
 pub struct ItemFace {
 	pub dir: Dir,
 	pub corners: [[i32; 3]; 4],
 	pub uv: [[f32; 2]; 4],
 	pub tex_layer: u16,
+	/// Draw this face as fullbright ink, whatever the light is.
+	///
+	/// Per FACE, and that is the whole reason it exists. A block says
+	/// this once for its whole self (`glows`), which is right for a torch
+	/// — one material, and a post authored dark enough to take the gain
+	/// (R29). A tool is not one material: it is a body worth shading with
+	/// one lit part set into it, and a per-draw flag can only choose
+	/// between a tool with no form and a glow that isn't one.
+	pub emissive: bool,
 }
 
 /// An axis-aligned face of a box. Corners follow `mesher::face_corners`
@@ -98,6 +107,7 @@ fn box_face(dir: Dir, min: [i32; 3], max: [i32; 3], tex_layer: u16) -> ItemFace 
 		uv: corners.map(project),
 		corners,
 		tex_layer,
+		emissive: false,
 	}
 }
 
@@ -106,6 +116,19 @@ fn box_face(dir: Dir, min: [i32; 3], max: [i32; 3], tex_layer: u16) -> ItemFace 
 fn box_faces(min: [i32; 3], max: [i32; 3], tex_of: impl Fn(Dir) -> u16, out: &mut Vec<ItemFace>) {
 	for dir in DIRS {
 		out.push(box_face(dir, min, max, tex_of(dir)));
+	}
+}
+
+/// The same box, drawn as its own light: every face fullbright.
+///
+/// The layer passed here is also the tool row's texture, which is where
+/// the GI reads the colour of the light the tool casts — so the glow you
+/// see and the glow it throws are one authored thing.
+fn glow_faces(min: [i32; 3], max: [i32; 3], layer: u16, out: &mut Vec<ItemFace>) {
+	for dir in DIRS {
+		let mut f = box_face(dir, min, max, layer);
+		f.emissive = true;
+		out.push(f);
 	}
 }
 
@@ -124,6 +147,10 @@ fn shape_faces(b: BlockType, state: u8, y_off: i32, out: &mut Vec<ItemFace>) {
 				.map(|c| [c[0] as i32, c[1] as i32 + y_off, c[2] as i32]),
 			uv: q.uv.map(|c| [c[0] as f32 / 12.0, c[1] as f32 / 12.0]),
 			tex_layer: b.texture(q.dir) as u16,
+			// A block that glows says so for its whole self, and the draw
+			// carries that flag already (`icon_block`'s `emissive`). The
+			// per-face bit is for items with no block behind them.
+			emissive: false,
 		});
 	}
 }
@@ -141,10 +168,9 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	// block, because the bucket is an item and has no block to ask.
 	let wood = digblock_core::block::tex::LUMBER_LIGHT;
 	let water = BlockType::Water.props().tex_side;
-	// Base plate, then walls one twelfth thick. The walls were two, and
-	// the 4×4 opening that left made the charge a speck at hotbar-icon
-	// size — the wider mouth more than doubles the water you can see, for
-	// one twelfth of pail.
+	// Base plate, then thin walls. They used to be thicker, and the narrow
+	// opening that left made the charge a speck at hotbar-icon size — the
+	// wider mouth shows far more water for a sliver of pail.
 	box_faces([2, 1, 2], [10, 2, 10], |_| wood, out);
 	for (min, max) in [
 		([2, 2, 2], [3, 9, 10]),  // -x wall
@@ -161,44 +187,75 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	}
 }
 
-/// The Essence Siphon: a wide funnel that swallows the rock face, a
-/// narrow stem, and a glowing bulb where the drawn essence collects.
+/// The Essence Siphon: a funnel that swallows the rock face, a neck
+/// rising out of it, and the glowing vessel the drawn essence collects
+/// in, capped with a collar.
 ///
-/// The bulb is what makes it read at hotbar size — a plain dark tube is a
-/// silhouette nobody can name, and the glow says "this pulls something
-/// OUT" in the one place the icon has to say anything at all. The flame
-/// layer is borrowed rather than drawn: it is the only bright texture the
-/// atlas has, and a siphon full of light is the right lie.
+/// **The taper is the item.** The first version was a flat plate, a
+/// straight stem and a cube on top, and it read as a rubber stamp: three
+/// slabs of decreasing width say "pressed onto something", while a cone
+/// says "drawing out of it". The funnel is stepped rather than smooth
+/// because everything here is axis boxes in twelfths — at the size this
+/// is ever seen, three steps read as a taper and the silhouette is the
+/// whole message.
+///
+/// The vessel is what makes it name itself at hotbar size, and its glow
+/// is authored: `SIPHON_GLOW` is the siphon row's own texture, so the
+/// light this tool casts is the colour of the thing you can see it
+/// collecting.
 fn siphon_faces(out: &mut Vec<ItemFace>) {
-	let dark = digblock_core::block::tex::LUMBER_DARK;
-	let light = digblock_core::block::tex::LUMBER_LIGHT;
-	let glow = digblock_core::block::tex::TORCH_FLAME;
-	box_faces([2, 0, 2], [10, 3, 10], |_| dark, out);
-	box_faces([5, 3, 5], [7, 8, 7], |_| light, out);
-	box_faces([4, 8, 4], [8, 11, 8], |_| glow, out);
+	let metal = digblock_core::block::tex::METAL;
+	let grip = digblock_core::block::tex::LUMBER_DARK;
+	let glow = digblock_core::block::tex::SIPHON_GLOW;
+	// A small foot and a stem, not a wide mouth. A funnel hood was tried
+	// first, on the reasoning that a cone says "draws out of" — and it
+	// cannot, in this projection: both views of an item look DOWN at it,
+	// so a downward cone shows only the tops of its rings and reads as
+	// the flat pad of a rubber stamp, which is exactly what it was
+	// called.
+	box_faces([5, 0, 5], [7, 1, 7], |_| metal, out);
+	box_faces([5, 1, 5], [7, 3, 7], |_| metal, out);
+	// The barrel is the item: a tall column of what has been drawn up
+	// into it, and the one part that has to survive being an inch tall in
+	// a hotbar slot. Vertical mass reads at any angle; a base plate
+	// never did.
+	glow_faces([4, 3, 4], [8, 9, 8], glow, out);
+	// The spout, out of the barrel's side and stepping DOWN to its mouth.
+	// This is what keeps a lit vessel from reading as a lantern, and it
+	// has to be on the side: the bottom of an item is the one place
+	// neither the hand nor the icon can see.
+	box_faces([2, 4, 5], [4, 6, 7], |_| metal, out);
+	box_faces([0, 2, 5], [2, 5, 7], |_| metal, out);
+	// Collar and grip. The grip is proud of the barrel and dark against
+	// it, so the tool has a handle end and a business end — and the
+	// silhouette says which way round it is held.
+	box_faces([4, 9, 4], [8, 10, 8], |_| metal, out);
+	box_faces([3, 10, 3], [9, 12, 9], |_| grip, out);
 }
 
 /// The Resonant Pick: a timber haft with a broad metal-dark head, and a
-/// bright core at the join.
+/// resonating core at the join.
 ///
 /// The head is WIDE rather than pointed on purpose — the tool breaks a
 /// PLANE, and a narrow pick would promise a bore. The lit core is the
 /// same trick the siphon plays: at hotbar size a silhouette needs one
-/// bright thing to be recognisable at all.
+/// bright thing to be recognisable at all — and here it is the tool's
+/// own light, `PICK_GLOW` being the pick row's texture too, so what
+/// resonates and what it lights the tunnel with are the same blue.
 fn pick_faces(out: &mut Vec<ItemFace>) {
 	let haft = digblock_core::block::tex::LUMBER_LIGHT;
 	let head = digblock_core::block::tex::LUMBER_DARK;
-	let core = digblock_core::block::tex::TORCH_FLAME;
+	let core = digblock_core::block::tex::PICK_GLOW;
 	box_faces([5, 0, 5], [7, 9, 7], |_| haft, out);
 	box_faces([1, 9, 5], [11, 11, 7], |_| head, out);
-	box_faces([5, 8, 4], [7, 10, 8], |_| core, out);
+	glow_faces([5, 8, 4], [7, 10, 8], core, out);
 }
 
 /// The Master's Sigil: a crystal set in a standing metal plate on a
-/// small foot. It DOES nothing — 99 Aether for the last line of the
-/// catalog — so it is drawn as a thing you display rather than a thing
-/// you swing: an emblem, face-on, with the gem proud of the plate on
-/// both sides so the shape reads at hotbar size.
+/// small foot. It DOES nothing — an Aether price for the last line of
+/// the catalog — so it is drawn as a thing you display rather than a
+/// thing you swing: an emblem, face-on, with the gem proud of the plate
+/// on both sides so the shape reads at hotbar size.
 ///
 /// It needs authored geometry for the same reason its siblings do: a
 /// tool carries no texture layers, so the cube fallback would draw the

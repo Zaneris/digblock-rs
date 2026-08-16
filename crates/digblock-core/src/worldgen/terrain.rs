@@ -8,7 +8,7 @@ use super::lakes::{self, LakeParams};
 use super::rivers::{self, RiverParams};
 use crate::simplex::fbm2;
 
-/// Sea sits at mid-world: oceans below, up to ~112 blocks of relief above.
+/// Sea sits at mid-world: oceans below it, every land relief above it.
 pub const SEA_LEVEL: i32 = 128;
 /// Asymptotic terrain ceiling: heights above CEILING_KNEE are compressed
 /// toward this limit but never reach it, so the tallest peaks round off
@@ -27,8 +27,8 @@ pub struct TerrainParams {
 	pub rough_freq: f64,
 	pub detail_freq: f64,
 	/// Mountain forms live on their own broad field — far lower frequency
-	/// than the detail fBm, so 90 blocks of amplitude spreads over
-	/// hundreds of blocks of run instead of spiking.
+	/// than the detail fBm, so the whole mountain amplitude spreads over a
+	/// long run of ground instead of spiking.
 	pub ridge_freq: f64,
 	pub plains_amp: f64,
 	/// Extra ridged amplitude in fully mountainous regions.
@@ -38,8 +38,8 @@ pub struct TerrainParams {
 	pub ridge_seed_off: f64,
 	/// Domain warp: the continent and ridge fields sample warped
 	/// coordinates so coastlines and ridgelines wander and finger instead
-	/// of tracing the smooth blobs plain fBm produces. Amplitude is ~25%
-	/// of the continent wavelength.
+	/// of tracing the smooth blobs plain fBm produces. Amplitude is a
+	/// sizeable fraction of the continent wavelength.
 	pub warp_freq: f64,
 	pub warp_amp: f64,
 	pub warp_x_off: f64,
@@ -53,7 +53,7 @@ pub struct TerrainParams {
 	/// oriented belts instead of isotropic clusters.
 	pub orient_freq: f64,
 	pub orient_seed_off: f64,
-	/// Along-range frequency multiplier: ~3x longer than wide.
+	/// Along-range frequency multiplier: belts come out longer than wide.
 	pub ridge_stretch: f64,
 	/// Climate: a broad temperature field shifts the stone/snow lines and
 	/// picks warm/cold surface kinds; a mid-scale vegetation field decides
@@ -68,7 +68,7 @@ pub struct TerrainParams {
 	/// and risers — stepped mesa country.
 	pub terrace_freq: f64,
 	pub terrace_seed_off: f64,
-	/// Small-scale edge dither so tread edges wander (±2 blocks).
+	/// Small-scale edge dither so tread edges wander.
 	pub terrace_edge_freq: f64,
 	pub terrace_edge_off: f64,
 	pub terrace_step: f64,
@@ -82,11 +82,11 @@ pub struct TerrainParams {
 
 impl TerrainParams {
 	// Region wavelengths are tuned so distinct terrain archetypes sit
-	// farther apart than one draw distance (~640 blocks across): mountains
-	// belong to ~740-block belts, eroded flats to ~2500-block provinces,
-	// continents to ~1333-block masses — you walk between regions instead
-	// of seeing them all in one frame. Local character (detail, ridge
-	// forms, channel width) keeps its original scale.
+	// farther apart than one draw distance: mountain belts, eroded
+	// provinces and continental masses each span more world than fits on
+	// screen, so you walk between regions instead of seeing them all in
+	// one frame. Local character (detail, ridge forms, channel width)
+	// keeps its original scale.
 	pub const DEFAULT: TerrainParams = TerrainParams {
 		continent_freq: 0.00075,
 		rough_freq: 0.00135,
@@ -216,7 +216,7 @@ pub(super) struct Fields {
 }
 
 /// The terrace tread transform: heights snap toward flat treads of
-/// `step` blocks joined by short risers (70% tread, 30% riser).
+/// `step` blocks joined by risers over the short remainder of each step.
 /// Continuous and non-decreasing in `h`; output stays within
 /// `step + |edge|` of the input.
 pub(super) fn tread(step: f64, h: f64, edge: f64) -> f64 {
@@ -293,8 +293,8 @@ pub(super) fn fields(p: &TerrainParams, x: i32, z: i32, seed: f64) -> Fields {
 	let v = alt.max(0.6 * depth);
 	let base_amp = p.plains_amp * (1.0 - 0.6 * erosion) * (0.5 + 2.5 * v);
 	// Steppe gate: strongly eroded, non-mountainous, near-base-altitude
-	// columns collapse toward a 0.25-block detail floor — genuinely flat
-	// plains instead of the ~1.2-block minimum the product above allows.
+	// columns collapse toward a sub-block detail floor — genuinely flat
+	// plains instead of the residual minimum the product above allows.
 	// Any factor at 0 leaves base_amp untouched, so mountains, plateaus,
 	// and the seafloor keep their relief.
 	let flat = smoothstep((erosion - 0.55) / 0.35)

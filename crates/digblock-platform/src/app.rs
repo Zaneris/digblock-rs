@@ -5,8 +5,8 @@
 //! desktop drill. `Suspended` has no surface field, so rendering without a
 //! surface is unrepresentable.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::clock::GameClock;
-use crate::input::{map_button, map_key, map_touch_phase, InputEvent};
+use crate::input::{InputEvent, map_button, map_key, map_touch_phase};
 use crate::lifecycle::{Action, Event as LcEvent, Lifecycle};
 use crate::{Game, Gpu, RunOptions};
 
@@ -25,6 +25,39 @@ struct Running {
 	window: Arc<Window>,
 	surface: wgpu::Surface<'static>,
 	config: wgpu::SurfaceConfiguration,
+	/// `Some` under `RunOptions::offscreen`: the frame target the engine
+	/// draws into when the swapchain is deliberately left out. Sized and
+	/// formatted exactly like the surface would be, so a capture taken
+	/// here is the same pixels a windowed one would produce.
+	offscreen: Option<Offscreen>,
+}
+
+/// A frame target off the swapchain. `COPY_SRC` because the whole point
+/// of drawing here is to read it back.
+struct Offscreen {
+	texture: wgpu::Texture,
+	view: wgpu::TextureView,
+}
+
+impl Offscreen {
+	fn new(gpu: &Gpu, config: &wgpu::SurfaceConfiguration) -> Self {
+		let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+			label: Some("offscreen frame"),
+			size: wgpu::Extent3d {
+				width: config.width.max(1),
+				height: config.height.max(1),
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format: config.format,
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+			view_formats: &[],
+		});
+		let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+		Self { texture, view }
+	}
 }
 
 struct Suspended {
@@ -63,6 +96,11 @@ struct GpuReady {
 
 /// Events posted back into the winit loop from async/browser contexts
 /// (wasm only; native never constructs one).
+///
+/// One `GpuReady` is posted per GPU init — twice in a long session, if a
+/// device is lost — so the variant size spread costs nothing, the same
+/// reason [`AppState`] carries the allow.
+#[allow(clippy::large_enum_variant)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 enum UserEvent {
 	/// Async GPU init handing back its result.
@@ -110,6 +148,26 @@ struct App<G: Game> {
 /// requesting redraws sits in `ControlFlow::Wait` forever and would look
 /// hung instead of failed.
 const DRILL_WATCHDOG: Duration = Duration::from_secs(60);
+
+/// How long to idle before asking a fully-covered window for a texture
+/// again. Roughly a frame: long enough that a window nobody can see costs
+/// nothing, short enough that uncovering one is indistinguishable from
+/// never having covered it.
+#[cfg(not(target_arch = "wasm32"))]
+const OCCLUDED_RETRY: Duration = Duration::from_millis(16);
+
+/// The one place an `Arc<Gpu>` is minted.
+///
+/// On the web wgpu's handles are JS objects and carry neither `Send` nor
+/// `Sync`, which clippy reads as an `Rc` spelled wrong. It isn't: the same
+/// `Arc<Gpu>` type serves every platform — the engine borrows it, and
+/// `Running`/`Suspended` share it across a suspend — and forking it per
+/// target would fork both states with it. Nothing sends one anywhere; the
+/// browser's chunk workers take bytes.
+#[allow(clippy::arc_with_non_send_sync)]
+fn share_gpu(gpu: Gpu) -> Arc<Gpu> {
+	Arc::new(gpu)
+}
 
 pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
 	let event_loop = EventLoop::<UserEvent>::with_user_event()
@@ -166,9 +224,9 @@ fn window_attrs(
 	_el: &ActiveEventLoop,
 ) -> winit::window::WindowAttributes {
 	let attrs = Window::default_attributes().with_title(title.to_owned());
-	// LOGICAL, so a retina display doubles it to the same physical size a
-	// browser canvas reports at devicePixelRatio 2 — which is the whole
-	// point of being able to ask for one.
+	// LOGICAL, so a retina display scales it to the same physical size a
+	// browser canvas reports at the matching devicePixelRatio — which is
+	// the whole point of being able to ask for one.
 	let attrs = match size {
 		Some((w, h)) => attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h)),
 		None => attrs,
@@ -178,8 +236,8 @@ fn window_attrs(
 	// BACKING SCALE (the physical framebuffer, and with it the GI
 	// resolve's cost) and REFRESH RATE (a display-paced frame lets the GPU
 	// downclock, inflating every timestamp in the metrics CSV) between one
-	// run and the next. An interleaved before/after bracket taken across a
-	// 60 Hz and a 120 Hz screen measures the screens.
+	// run and the next. An interleaved before/after bracket taken across
+	// two screens of different refresh measures the screens.
 	//
 	// Positioned at the monitor's own origin rather than centred, because
 	// the point is repeatability, not looks; winit's coordinates are
@@ -254,7 +312,9 @@ async fn init_gpu(
 	window: Arc<Window>,
 	no_vsync: bool,
 ) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
-	let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+	// No display handle at the instance: the window carries its own, and
+	// `create_surface` is the only thing here that needs one.
+	let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 	let surface = instance
 		.create_surface(window.clone())
 		.expect("create surface");
@@ -263,6 +323,10 @@ async fn init_gpu(
 			power_preference: wgpu::PowerPreference::HighPerformance,
 			compatible_surface: Some(&surface),
 			force_fallback_adapter: false,
+			// Take the adapter's real limits rather than rounding them
+			// down to a portability tier — every limit this engine cares
+			// about is already asked for explicitly.
+			apply_limit_buckets: false,
 		})
 		.await
 		.expect("no compatible GPU adapter");
@@ -352,6 +416,10 @@ fn surface_config(
 		},
 		desired_maximum_frame_latency: 2,
 		alpha_mode: caps.alpha_modes[0],
+		// Gamma-space rendering all the way to the surface (see the format
+		// pick above); `Auto` is wgpu's own "whatever this format has
+		// always meant" and never widens the gamut behind our back.
+		color_space: wgpu::SurfaceColorSpace::Auto,
 		view_formats: vec![],
 	}
 }
@@ -366,7 +434,7 @@ impl<G: Game> App<G> {
 			flag.store(true, Ordering::Release);
 		}));
 		let flag = lost.clone();
-		device.on_uncaptured_error(Box::new(move |e| {
+		device.on_uncaptured_error(Arc::new(move |e| {
 			log::error!("uncaptured wgpu error: {e}");
 			if matches!(e, wgpu::Error::OutOfMemory { .. }) {
 				// OOM devices are lost in all but name.
@@ -414,6 +482,19 @@ impl<G: Game> App<G> {
 			}
 			Action::RetryNextFrame => {
 				if let AppState::Running(r) = &self.state {
+					r.window.request_redraw();
+				}
+			}
+			Action::IdleThenRetry => {
+				if let AppState::Running(r) = &self.state {
+					// Sleeping in the event loop is normally wrong, and is
+					// right here: an occluded window acquires nothing, so
+					// the redraw chain has no `present` left to pace it and
+					// would spin a core asking a question whose answer only
+					// a person can change. The wait is one frame's worth, so
+					// the window coming back is still felt as immediate.
+					#[cfg(not(target_arch = "wasm32"))]
+					std::thread::sleep(OCCLUDED_RETRY);
 					r.window.request_redraw();
 				}
 			}
@@ -513,7 +594,11 @@ impl<G: Game> App<G> {
 			.init(&gpu, config.format, (config.width, config.height));
 		let format = config.format;
 		self.state = AppState::Running(Running {
-			gpu: Arc::new(gpu),
+			offscreen: self
+				.options
+				.offscreen
+				.then(|| Offscreen::new(&gpu, &config)),
+			gpu: share_gpu(gpu),
 			window,
 			surface,
 			config,
@@ -538,7 +623,11 @@ impl<G: Game> App<G> {
 		self.game.resize(&gpu, (config.width, config.height));
 		self.lifecycle.note_rebuilt(config.format);
 		self.state = AppState::Running(Running {
-			gpu: Arc::new(gpu),
+			offscreen: self
+				.options
+				.offscreen
+				.then(|| Offscreen::new(&gpu, &config)),
+			gpu: share_gpu(gpu),
 			window,
 			surface,
 			config,
@@ -586,6 +675,10 @@ impl<G: Game> App<G> {
 		self.game.on_resume();
 		let format = config.format;
 		self.state = AppState::Running(Running {
+			offscreen: self
+				.options
+				.offscreen
+				.then(|| Offscreen::new(&s.gpu, &config)),
 			gpu: s.gpu,
 			window,
 			surface,
@@ -607,6 +700,9 @@ impl<G: Game> App<G> {
 			r.config.width = width;
 			r.config.height = height;
 			r.surface.configure(&r.gpu.device, &r.config);
+			if r.offscreen.is_some() {
+				r.offscreen = Some(Offscreen::new(&r.gpu, &r.config));
+			}
 			self.game.resize(&r.gpu, (width, height));
 		}
 	}
@@ -646,65 +742,94 @@ impl<G: Game> App<G> {
 		};
 
 		let t_acquire = web_time::Instant::now();
-		let frame = match r.surface.get_current_texture() {
-			Ok(f) => f,
-			Err(e) => {
-				let ev = match e {
-					wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => LcEvent::SurfaceLost,
-					wgpu::SurfaceError::Timeout => LcEvent::SurfaceTimeout,
-					other => {
-						// wgpu never fires the lost callback from the loss
-						// itself: it fires from device maintenance once the
-						// queue is EMPTY. A dead device lands here as a
-						// generic acquire error first, usually with the last
-						// frame's work still in flight — pump maintenance,
-						// give the queue a bounded moment to drain (error
-						// path; a stall is already certain), and re-check
-						// the flag before declaring the error fatal.
-						// PollType::Wait is deliberately avoided: it can
-						// block 60s on a wedged queue.
-						#[cfg(not(target_arch = "wasm32"))]
-						let lost = {
-							let mut lost = false;
-							for _ in 0..5 {
-								let _ = r.gpu.device.poll(wgpu::PollType::Poll);
-								if self.device_lost.swap(false, Ordering::Acquire) {
-									lost = true;
-									break;
+		use wgpu::CurrentSurfaceTexture as Acquired;
+		// Off the swapchain there is nothing to acquire and nothing that
+		// can refuse: the target is a texture this shell owns, so none of
+		// the triage below — occlusion included — can apply.
+		let frame = if r.offscreen.is_some() {
+			None
+		} else {
+			Some(match r.surface.get_current_texture() {
+				// A suboptimal texture is still a texture. It rode an `Ok`
+				// beside a `suboptimal` flag before wgpu split it out, and
+				// this loop has always drawn it; the size change that makes
+				// it suboptimal reaches us as a winit resize anyway.
+				Acquired::Success(f) | Acquired::Suboptimal(f) => f,
+				outcome => {
+					let ev = match outcome {
+						Acquired::Lost | Acquired::Outdated => LcEvent::SurfaceLost,
+						Acquired::Timeout => LcEvent::SurfaceTimeout,
+						Acquired::Occluded => LcEvent::SurfaceOccluded,
+						_ => {
+							// wgpu never fires the lost callback from the loss
+							// itself: it fires from device maintenance once the
+							// queue is EMPTY. A dead device lands here as a
+							// generic acquire error first, usually with the last
+							// frame's work still in flight — pump maintenance,
+							// give the queue a bounded moment to drain (error
+							// path; a stall is already certain), and re-check
+							// the flag before declaring the error fatal.
+							// A waiting poll is deliberately avoided: on a
+							// wedged queue it blocks for its whole timeout.
+							#[cfg(not(target_arch = "wasm32"))]
+							let lost = {
+								let mut lost = false;
+								for _ in 0..5 {
+									let _ = r.gpu.device.poll(wgpu::PollType::Poll);
+									if self.device_lost.swap(false, Ordering::Acquire) {
+										lost = true;
+										break;
+									}
+									std::thread::sleep(Duration::from_millis(5));
 								}
-								std::thread::sleep(Duration::from_millis(5));
+								lost
+							};
+							// No blocking waits on the web: one maintenance pump,
+							// one flag check.
+							#[cfg(target_arch = "wasm32")]
+							let lost = {
+								let _ = r.gpu.device.poll(wgpu::PollType::Poll);
+								self.device_lost.swap(false, Ordering::Acquire)
+							};
+							if lost {
+								self.dispatch(LcEvent::DeviceLost, el);
+								return;
 							}
-							lost
-						};
-						// No blocking waits on the web: one maintenance pump,
-						// one flag check.
-						#[cfg(target_arch = "wasm32")]
-						let lost = {
-							let _ = r.gpu.device.poll(wgpu::PollType::Poll);
-							self.device_lost.swap(false, Ordering::Acquire)
-						};
-						if lost {
-							self.dispatch(LcEvent::DeviceLost, el);
-							return;
+							log::error!(
+								"surface acquire failed, no device loss reported: {outcome:?}"
+							);
+							LcEvent::SurfaceFatal
 						}
-						log::error!("surface acquire failed, no device loss reported: {other}");
-						LcEvent::SurfaceFatal
-					}
-				};
-				self.dispatch(ev, el);
-				return;
-			}
+					};
+					self.dispatch(ev, el);
+					return;
+				}
+			})
 		};
 
 		self.game.frame_acquired(t_acquire.elapsed());
 		let dt = self.clock.tick();
 		self.game.update(dt);
 
-		let view = frame
-			.texture
-			.create_view(&wgpu::TextureViewDescriptor::default());
+		// One of the two is always present; which one is the whole
+		// difference between a windowed run and an offscreen capture. The
+		// swapchain's view is built per frame, so it needs a local to
+		// outlive the borrow.
+		let swap_view;
+		// `shot` feeds the screenshot path, which is native-only.
+		#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+		let (view, shot) = match (&frame, &r.offscreen) {
+			(Some(f), _) => {
+				swap_view = f
+					.texture
+					.create_view(&wgpu::TextureViewDescriptor::default());
+				(&swap_view, &f.texture)
+			}
+			(None, Some(o)) => (&o.view, &o.texture),
+			(None, None) => unreachable!("a frame target is either acquired or owned"),
+		};
 		self.game
-			.render(&r.gpu, &view, (r.config.width, r.config.height));
+			.render(&r.gpu, view, (r.config.width, r.config.height));
 
 		self.frames_rendered += 1;
 		// Screenshots are native-only: capture needs a blocking map wait
@@ -722,29 +847,32 @@ impl<G: Game> App<G> {
 						self.launched_at.elapsed().as_secs()
 					)))
 				}) {
-					crate::screenshot::capture(&r.gpu, &frame.texture, r.config.format, &path);
+					crate::screenshot::capture(&r.gpu, shot, r.config.format, &path);
 				}
 				self.screenshot_pending = false;
 				if self.options.exit_after_screenshot && self.options.screenshot.is_some() {
-					frame.present();
+					if let Some(frame) = frame {
+						r.gpu.queue.present(frame);
+					}
 					el.exit();
 					return;
 				}
 			}
 		}
 
-		frame.present();
+		if let Some(frame) = frame {
+			r.gpu.queue.present(frame);
+		}
 		// First frame is on screen: tell the page to drop its loading
 		// overlay (fixed contract with apps/web's index.html, like the
 		// canvas id).
 		#[cfg(target_arch = "wasm32")]
-		if self.frames_rendered == 1 {
-			if let (Some(w), Ok(ev)) = (
+		if self.frames_rendered == 1
+			&& let (Some(w), Ok(ev)) = (
 				web_sys::window(),
 				web_sys::Event::new("digblock-first-frame"),
 			) {
-				let _ = w.dispatch_event(&ev);
-			}
+			let _ = w.dispatch_event(&ev);
 		}
 		if self
 			.options
@@ -764,8 +892,9 @@ impl<G: Game> App<G> {
 	/// Automated lifecycle drill (`--drill`). Exercises byte-for-byte the
 	/// same transitions the OS lifecycle events use. Steps advance on a
 	/// counter, never on exact frame equality: failed frames don't
-	/// increment `frames_rendered`, so an `== 60` match would re-destroy
-	/// the freshly recovered device every retry frame.
+	/// increment `frames_rendered`, so an equality match on the step's
+	/// frame would re-destroy the freshly recovered device every retry
+	/// frame.
 	fn auto_drill(&mut self, el: &ActiveEventLoop) {
 		match (self.drill_step, self.frames_rendered) {
 			(0, 20..) => {
@@ -784,7 +913,8 @@ impl<G: Game> App<G> {
 				// callback — it only invalidates the device; the closure
 				// fires from device maintenance (the poll in the acquire-
 				// error arm pumps it) and ReinitDevice recovers. Reaching
-				// frame 100 means the app rendered on the recovered device.
+				// the final step means the app rendered on the recovered
+				// device.
 				log::info!("auto-drill: destroying the device (real loss)");
 				self.drill_step = 3;
 				if let AppState::Running(r) = &self.state {
@@ -887,8 +1017,8 @@ impl<G: Game> App<G> {
 /// events. Page-lifetime listeners: leaking the closures is deliberate.
 #[cfg(target_arch = "wasm32")]
 fn install_pointer_lock_listeners(proxy: &winit::event_loop::EventLoopProxy<UserEvent>) {
-	use wasm_bindgen::closure::Closure;
 	use wasm_bindgen::JsCast;
+	use wasm_bindgen::closure::Closure;
 	let document = web_sys::window()
 		.and_then(|w| w.document())
 		.expect("document");
@@ -1068,11 +1198,10 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 						// gameplay keys must not double as text.
 						if pressed
 							&& (!self.game.wants_cursor_grab() || self.game.wants_text_input())
+							&& let Some(text) = &k.text
 						{
-							if let Some(text) = &k.text {
-								for ch in text.chars().filter(|c| !c.is_control()) {
-									self.game.input(InputEvent::Text { ch });
-								}
+							for ch in text.chars().filter(|c| !c.is_control()) {
+								self.game.input(InputEvent::Text { ch });
 							}
 						}
 						// A key that just closed the menu (Enter, hotkeys)
@@ -1096,10 +1225,11 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 	}
 
 	fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-		if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-			if self.cursor_grabbed && matches!(self.state, AppState::Running(_)) {
-				self.game.input(InputEvent::MouseDelta { dx, dy });
-			}
+		if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+			&& self.cursor_grabbed
+			&& matches!(self.state, AppState::Running(_))
+		{
+			self.game.input(InputEvent::MouseDelta { dx, dy });
 		}
 	}
 

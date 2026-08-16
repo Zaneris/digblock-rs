@@ -4,34 +4,34 @@
 //! rodio; a dead or deviceless audio thread silently mutes the game
 //! instead of failing it.
 //!
-//! Spatialization: one rodio `SpatialSink` per positional voice. Rodio's
+//! Spatialization: one rodio `SpatialPlayer` per positional voice. Rodio's
 //! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so
 //! every world coordinate (emitters and ears) is scaled by [`ATT`] to
 //! place that curve over a useful range of world distances.
 //!
 //! The clamp is the part that matters: everything closer than `1/ATT`
 //! blocks comes back at unity, with NO falloff at all inside that ball.
-//! At the original 0.08 that plateau was 12.5 blocks wide, which is most
-//! of a scene — a waterfall one block away and one twelve blocks away
-//! were exactly as loud, and several could stack. Engine-side gains
+//! At the original scale that plateau spanned most of a scene — a
+//! waterfall at your feet and one across the room were exactly as loud,
+//! and several could stack. Engine-side gains
 //! (see `water_audio::gain_of`) taper with distance for the same reason,
 //! because relying on the panner alone is what made water ubiquitous.
 //!
 //! Music: fetched from the master server (never embedded) by a helper
 //! thread; the audio thread decodes and loops the playlist at low gain.
 
-use digblock_render::audio::{bytes, AudioCmd, AudioSink, LoopId, Sfx};
+use digblock_render::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use rodio::source::{Buffered, Source};
-use rodio::{Decoder, OutputStream, Sink, SpatialSink};
+use rodio::{Decoder, MixerDeviceSink, Player, SpatialPlayer};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// World-to-rodio coordinate scale (see module docs). 0.18 puts the
-/// unity plateau at ~5.6 blocks — close enough that a sound at your feet
-/// is still full-strength, tight enough that walking away from one is
-/// audible.
+/// World-to-rodio coordinate scale (see module docs). Tuned to put the
+/// unity plateau a few blocks wide — close enough that a sound at your
+/// feet is still full-strength, tight enough that walking away from one
+/// is audible.
 const ATT: f32 = 0.18;
 /// Ear half-spacing in world blocks.
 const EAR_HALF: f32 = 0.2;
@@ -145,8 +145,8 @@ impl Pool {
 type Cached = Buffered<Decoder<Cursor<&'static [u8]>>>;
 
 enum VoiceSink {
-	Spatial(SpatialSink),
-	Flat(Sink),
+	Spatial(SpatialPlayer),
+	Flat(Player),
 }
 
 /// A live voice plus its authored gain, kept so a later user-volume
@@ -190,7 +190,7 @@ impl Voice {
 }
 
 fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) {
-	let stream: OutputStream = match rodio::OutputStreamBuilder::open_default_stream() {
+	let stream: MixerDeviceSink = match rodio::DeviceSinkBuilder::open_default_sink() {
 		Ok(s) => s,
 		Err(e) => {
 			log::warn!("audio device unavailable ({e}) — running silent");
@@ -201,7 +201,8 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) 
 	};
 	let mixer = stream.mixer();
 
-	// Decode every embedded SFX once, up front (~0.5 MB of ogg).
+	// Decode every embedded SFX once, up front — the whole set is small
+	// enough to hold decoded for the process's life.
 	let mut cache: HashMap<Sfx, Cached> = HashMap::new();
 	for s in digblock_render::audio::ALL_SFX {
 		match Decoder::new(Cursor::new(bytes(s))) {
@@ -232,7 +233,7 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) 
 		..Pool::default()
 	};
 	let mut night = false;
-	let music = Sink::connect_new(mixer);
+	let music = Player::connect_new(mixer);
 	music.set_volume(MUSIC_GAIN);
 
 	loop {
@@ -388,7 +389,7 @@ fn play_voice(
 ) -> Voice {
 	let sink = match pos {
 		Some(p) => {
-			let s = SpatialSink::connect_new(
+			let s = SpatialPlayer::connect_new(
 				mixer,
 				(glam::Vec3::from_array(p) * ATT).to_array(),
 				left_ear,
@@ -402,7 +403,7 @@ fn play_voice(
 			VoiceSink::Spatial(s)
 		}
 		None => {
-			let s = Sink::connect_new(mixer);
+			let s = Player::connect_new(mixer);
 			if repeat {
 				s.append(src.repeat_infinite());
 			} else {
@@ -417,4 +418,36 @@ fn play_voice(
 	};
 	v.apply_volume(sfx_vol);
 	v
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Every embedded SFX decodes through the decoder this filler actually
+	/// uses, and yields real samples.
+	///
+	/// The prewarm above answers a decode failure with `log::warn!` and
+	/// carries on — which is right at runtime (one dud sound must not take
+	/// the audio thread down) and is exactly why the failure needs catching
+	/// here instead. A file that Vorbis accepts structurally but rodio
+	/// cannot decode is silent in the game and green in every other gate:
+	/// `sfx_are_nonempty_oggs` checks the container magic, and nothing else
+	/// touches the bytes at all.
+	#[test]
+	fn every_sfx_decodes_through_rodio() {
+		for s in digblock_render::audio::ALL_SFX {
+			let d = Decoder::new(Cursor::new(bytes(s)))
+				.unwrap_or_else(|e| panic!("{s:?} failed to decode: {e}"));
+			let rate = d.sample_rate().get();
+			let channels = d.channels().get();
+			let n = d.count();
+			assert_eq!(channels, 1, "{s:?} is not mono");
+			assert_eq!(rate, 44_100, "{s:?} is not 44.1 kHz");
+			// A tenth of a second is far under the shortest sound here, so
+			// this catches a file that decodes to a header and nothing else
+			// without pinning any sound's length.
+			assert!(n > rate as usize / 10, "{s:?} decoded to {n} samples");
+		}
+	}
 }

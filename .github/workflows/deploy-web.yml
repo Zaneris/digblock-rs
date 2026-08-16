@@ -4,8 +4,8 @@
 # content-addresses the glue/wasm pair (see its comment — a mismatched pair
 # is a fatal LinkError), and a hand-mirrored build here would eventually
 # skew from it. It also re-checks the wasm-bindgen version against
-# Cargo.lock, so the pin installed below (0.2.126 — prebuilt, keep in sync
-# when the lockfile bumps) fails loudly here instead of at runtime.
+# Cargo.lock, so the prebuilt pin installed below — which must be kept in
+# sync when the lockfile bumps — fails loudly here instead of at runtime.
 # The result is pure static files; Pages serves .wasm with the right MIME
 # type out of the box.
 #
@@ -32,7 +32,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
@@ -42,17 +42,17 @@ jobs:
       - name: Install just + wasm-bindgen-cli (prebuilt, lockfile-pinned)
         uses: taiki-e/install-action@v2
         with:
-          tool: just,wasm-bindgen@0.2.126
+          tool: just,wasm-bindgen@0.2.127
 
       - name: Build web bundle
         run: just build-web
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.118.0"
+          wranglerVersion: "4.123.0"
           # --commit-dirty silences the "uncommitted changes" warning: the
           # freshly built target/web is untracked by design.
           command: pages deploy target/web --project-name=digblock --branch=main --commit-dirty=true

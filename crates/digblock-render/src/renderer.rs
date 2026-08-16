@@ -2,7 +2,7 @@
 //! device-loss recovery is "build a new one and re-upload meshes".
 
 use digblock_core::chunk::ChunkPos;
-use digblock_core::mesher::{quad_indices, MeshData};
+use digblock_core::mesher::{MeshData, quad_indices};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 
@@ -18,31 +18,31 @@ use digblock_core::metrics::OverlayStats;
 use digblock_platform::Gpu;
 
 /// The depth prepass's second output: one face-normal code per pixel
-/// (chunk.wgsl's `code_of`), 255 where no solid drew. Uint, not unorm —
-/// this is an index into a table, and it has to survive the round trip
-/// bit-exactly for the bilateral upsample's equality test to mean
-/// anything.
+/// (chunk.wgsl's `code_of`), a sentinel code where no solid drew. Uint,
+/// not unorm — this is an index into a table, and it has to survive the
+/// round trip bit-exactly for the bilateral upsample's equality test to
+/// mean anything.
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
 
-/// Worst-case quads per 16³ chunk mesh: a solid chunk of the busiest
-/// shaped variant (every template quad emits when neighbors don't cover
-/// them). Dwarfs the old full-block checkerboard bound (2048 × 6). The
-/// shared index buffer this sizes is ~3.75 MiB — one-time, fine on
-/// mobile; `upload_chunk` guards the cap instead of trusting it.
+/// Worst-case quads per chunk mesh: a solid chunk of the busiest shaped
+/// variant (every template quad emits when neighbors don't cover them).
+/// Dwarfs the old full-block checkerboard bound. The shared index buffer
+/// this sizes is allocated once and stays small enough for mobile;
+/// `upload_chunk` guards the cap instead of trusting it.
 const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
 
 /// Chunk-origin stride: one `vec4f` per slot in the instance-step origin
-/// stream. Was 256 bytes — the uniform dynamic-offset alignment, not the
-/// data — back when each draw rebound a slice of a UBO.
+/// stream. Was padded out to the uniform dynamic-offset alignment rather
+/// than to the data — back when each draw rebound a slice of a UBO.
 pub(crate) const ORIGIN_STRIDE: u64 = 16;
 
-/// Chunk vertex-buffer size class. A remesh (an edit dirties up to 27
-/// neighbours; walking churns the rim continuously) nearly always lands
-/// inside the class of the mesh it replaces, so it is written over the
-/// live allocation; what does change class is recycled through the free
-/// list below. Both matter most on Chrome, where every buffer create and
-/// destroy is a GPU-process allocation plus a deferred free that wgpu
-/// batches into periodic cleanup spikes.
+/// Chunk vertex-buffer size class. A remesh (an edit dirties every
+/// neighbour whose shell it falls in; walking churns the rim continuously)
+/// nearly always lands inside the class of the mesh it replaces, so it is
+/// written over the live allocation; what does change class is recycled
+/// through the free list below. Both matter most on Chrome, where every
+/// buffer create and destroy is a GPU-process allocation plus a deferred
+/// free that wgpu batches into periodic cleanup spikes.
 const SIZE_CLASS: u64 = 16 * 1024;
 /// Ceiling on retired bytes held for reuse. Rim churn at walking speed is
 /// well under a MiB a frame, so this covers seconds of travel; past it
@@ -68,7 +68,7 @@ const DIST_BUCKETS: usize = 48;
 /// the view and hands it to the synchronous GPU copy in one step, with
 /// no wasm allocation in between.
 fn buffer_init(gpu: &Gpu, label: &str, usage: wgpu::BufferUsages, contents: &[u8]) -> wgpu::Buffer {
-	// write_buffer requires 4-byte-aligned sizes; all callers upload
+	// write_buffer requires u32-aligned sizes; all callers upload
 	// u32-packed data.
 	debug_assert_eq!(contents.len() % 4, 0, "buffer_init needs u32-aligned data");
 	let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -88,10 +88,11 @@ fn size_class(bytes: u64) -> u64 {
 
 /// Chunk-origin slot capacity for a draw distance. Sky chunks never
 /// upload, but caves can make any buried chunk non-empty, so budget the
-/// full stack of every in-range column (16B a slot — a few hundred KB).
-/// A starting estimate, not a ceiling: `grow_chunk_buf` takes over at 85%
-/// occupancy, which is what a future runtime draw-distance change will
-/// lean on.
+/// full stack of every in-range column — a slot is one `vec4f`, so even
+/// the whole stack is a rounding error against the meshes. A starting
+/// estimate, not a ceiling: `grow_chunk_buf` takes over before the buffer
+/// fills, which is what a future runtime draw-distance change will lean
+/// on.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
@@ -101,7 +102,7 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 }
 
 /// New capacity when `needed` exceeds the current slot count: round up
-/// to the 256-slot granularity, but never less than double (amortized
+/// to the allocation granularity, but never less than double (amortized
 /// growth — a handful of reallocations over a whole session).
 fn grown_slots(current: u32, needed: u32) -> u32 {
 	needed.next_multiple_of(256).max(current.saturating_mul(2))
@@ -153,7 +154,7 @@ pub struct RenderConfig {
 	/// Draw distance in chunks (sizes the chunk-origin buffer).
 	pub draw_dist: i32,
 	/// Spray droplets per waterfall-impact instance (on top of the mist
-	/// slabs): 64 desktop, 24 mobile.
+	/// slabs); the mobile config asks for fewer.
 	pub spray_droplets: u32,
 	/// Force the initial chunk-origin capacity in slots (`DIG_CHUNK_SLOTS`
 	/// via the launcher). Tiny values exercise `grow_chunk_buf` in a
@@ -184,12 +185,12 @@ pub struct RenderConfig {
 /// nothing and a stubbed one never diverges within a wave. The pass-level
 /// bits are honoured in `Renderer::render`.
 pub mod stub {
-	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is
-	/// ~120 dependent texture loads per water vertex inside C1, which is
-	/// a cost bounded by GEOMETRY rather than by pixels — the only
+	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is a long
+	/// chain of dependent texture loads per water vertex inside C1, which
+	/// is a cost bounded by GEOMETRY rather than by pixels — the only
 	/// hypothesis that survives "it is just as slow below the surface".
 	pub const WVERT: u32 = 1 << 0;
-	/// Water's per-fragment `gi_sun_vis` (12 iterations) → lit.
+	/// Water's per-fragment `gi_sun_vis` (a short march) → lit.
 	pub const WSUN: u32 = 1 << 1;
 	/// `reflection_color`'s screen-space march → sky only.
 	pub const WSSR: u32 = 1 << 2;
@@ -213,13 +214,13 @@ pub mod stub {
 	// resolve — the frame's most expensive pass — has never had one term
 	// attributed. These ride the resolve's own uniform (`jitter.w`), not
 	// `frame.misc.z`: the resolve does not bind the frame UBO.
-	/// The resolve's per-pixel sun ray (up to 320 DDA iterations) → lit.
-	/// The single largest ray budget in the frame.
+	/// The resolve's per-pixel sun ray → lit. The single largest ray budget
+	/// in the frame.
 	pub const GISUN: u32 = 1 << 8;
-	/// The resolve's cosine-hemisphere final gather (96 iterations) → the
-	/// cheap `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
+	/// The resolve's cosine-hemisphere final gather → the cheap
+	/// `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
 	pub const GIGATHER: u32 = 1 << 9;
-	/// The resolve's per-pixel NEE shadow ray (64 iterations) → skipped.
+	/// The resolve's per-pixel NEE shadow ray → skipped.
 	/// Zero in any scene with no emitter in range, by construction.
 	pub const GINEE: u32 = 1 << 10;
 	/// The whole resolve fragment → a constant on the first line: the
@@ -301,7 +302,7 @@ pub struct FrameScene<'a> {
 	pub players: &'a [[f32; 8]],
 	/// The item in each remote's hand: its `IconKind` (the geometry to
 	/// draw, from `item_geom`) plus
-	/// `[eye.xyz, yaw, emissive, height in twelfths, 0, 0]`.
+	/// `[eye.xyz, yaw, emissive, height in twelfths, spare, spare]`.
 	pub held: &'a [(crate::ui::hud::IconKind, [f32; 8])],
 	/// Lights players are CARRYING this frame — yours and every remote's
 	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI
@@ -314,6 +315,10 @@ pub struct FrameScene<'a> {
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
 	pub confetti: &'a [crate::confetti::BurstInstance],
+	/// The essence draw under the crosshair, if the siphon is working a
+	/// vein. At most one — a player holds one button — and the engine
+	/// owns its envelope, so this outlives the hold by the fade.
+	pub siphon: Option<crate::siphon::DrawInstance>,
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32, u32)],
 	/// Crosshair target for the highlight decal — cell, the shape's own
@@ -353,7 +358,8 @@ pub struct FrameUniforms {
 	/// w = caster strength 0..1 (twilight fade).
 	pub light_dir: [f32; 4],
 	/// rgb = direct light color (sun by day, moonlight by night);
-	/// w = the animation clock in seconds (wraps at 600).
+	/// w = the animation clock in seconds (periodically wrapped, so it
+	/// stays exact in f32 across a long session).
 	pub light_color: [f32; 4],
 	/// rgb = the scene-pass clear color (the sky horizon tint the sky
 	/// pass then draws over); w reserved.
@@ -382,9 +388,9 @@ pub struct FrameUniforms {
 	/// engine writes zeros) — mirror frame_common.wgsl's Frame struct.
 	/// xyz = quantized dir toward the caster, w = above horizon (0/1).
 	pub gi_sun: [f32; 4],
-	/// C0 probe dims xyz, w = spacing (2).
+	/// C0 probe dims xyz, w = that cascade's probe spacing in blocks.
 	pub gi0: [f32; 4],
-	/// C1 probe dims xyz, w = spacing (8).
+	/// C1 probe dims xyz, w = that cascade's probe spacing in blocks.
 	pub gi1: [f32; 4],
 	/// x = voxel-window side in blocks. Appended last.
 	pub gi_misc: [f32; 4],
@@ -478,8 +484,8 @@ pub struct Renderer {
 	sky: SkyDraw,
 	frame_buf: wgpu::Buffer,
 	frame_bg: wgpu::BindGroup,
-	/// Water copy of the frame UBO, alpha 0.7 (Java u_Alpha for the
-	/// transparent pass); bound through `FrameTargets::water_bg`.
+	/// Water copy of the frame UBO, carrying its own alpha (Java u_Alpha
+	/// for the transparent pass); bound through `FrameTargets::water_bg`.
 	/// Group 1: block texture array + sampler — one static bind group.
 	materials_bg: wgpu::BindGroup,
 	/// Slot-indexed chunk origins, bound as an instance-step vertex
@@ -531,6 +537,9 @@ pub struct Renderer {
 	/// Level-up confetti bursts, fed per-frame by the engine (the bursts
 	/// themselves are world state and live there).
 	confetti: crate::confetti::Confetti,
+	/// The Essence Siphon's draw — motes off a vein's face, streaming into
+	/// the tool. Fed per-frame by the engine, which owns the envelope.
+	siphon: crate::siphon::Siphon,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).
@@ -568,10 +577,10 @@ pub struct Renderer {
 ///
 /// `render` is a fraction of the surface and `gi` is a whole-integer
 /// fraction of THAT. Anchoring the GI to the surface instead would give a
-/// ratio like 0.5/0.7 at render 0.7, and `chunk.wgsl`'s 4-tap bilateral
-/// gather walks a footprint that assumes an exact integer ratio — the
-/// upsample would read texels that no longer line up with the pixels it
-/// is weighting. `gi_ratio` is the number the shader is handed.
+/// fractional ratio the moment render scale left native, and `chunk.wgsl`'s
+/// 4-tap bilateral gather walks a footprint that assumes an exact integer
+/// ratio — the upsample would read texels that no longer line up with the
+/// pixels it is weighting. `gi_ratio` is the number the shader is handed.
 #[derive(Clone, Copy, PartialEq)]
 pub struct RenderScale {
 	pub render: f32,
@@ -579,7 +588,7 @@ pub struct RenderScale {
 }
 
 impl RenderScale {
-	/// World render size for a surface size. At least 1x1 — a zero-sized
+	/// World render size for a surface size. At least one pixel — a zero-sized
 	/// attachment is a validation error, and a minimized window can ask.
 	fn render_size(self, surface: (u32, u32)) -> (u32, u32) {
 		let s = self.render.clamp(0.1, 1.0);
@@ -639,7 +648,8 @@ struct FrameTargets {
 	/// visibility + normal code + water path + history length. Format is
 	/// `gi::GI_ACC_FORMAT` because both hold a RUNNING AVERAGE — rgba8 and
 	/// then rgba16f each failed the same way, their mantissa too short to
-	/// resolve a 1/512 update, which froze every pixel where it stood.
+	/// resolve an update of one part in the longest history the accumulator
+	/// reaches, which froze every pixel where it stood.
 	///
 	/// The roles are FIXED, not ping-ponged, because the a-trous filter
 	/// gives the frame a natural cycle:
@@ -713,8 +723,8 @@ impl Renderer {
 		// targets — the pre-water solid depth copy (textureLoad, no
 		// sampler), the offscreen scene color, and a linear sampler
 		// (refraction/SSR offsets). Folding the scene targets into
-		// group 0 keeps the water pipelines within the 4-bind-group
-		// default limit while freeing group 2 for the GI world data.
+		// group 0 keeps the water pipelines within the default
+		// bind-group limit while freeing group 2 for the GI world data.
 		let water_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("water frame + scene targets"),
 			entries: &[
@@ -814,13 +824,17 @@ impl Renderer {
 		// frame+scene combo layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[&frame_bgl, &materials_bgl, gi.scene_bgl()],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&frame_bgl), Some(&materials_bgl), Some(gi.scene_bgl())],
+			immediate_size: 0,
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("water"),
-			bind_group_layouts: &[&water_frame_bgl, &materials_bgl, gi.gather_bgl()],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[
+				Some(&water_frame_bgl),
+				Some(&materials_bgl),
+				Some(gi.gather_bgl()),
+			],
+			immediate_size: 0,
 		});
 
 		let chunk_vertex_layouts = [geometry_vertex_layout(), origin_vertex_layout()];
@@ -856,8 +870,8 @@ impl Renderer {
 		// the bilateral upsample stops collapsing at edges.
 		let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth prepass"),
-			bind_group_layouts: &[&frame_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&frame_bgl)],
+			immediate_size: 0,
 		});
 		let prepass_pipeline = crate::pipeline_builder::build(
 			device,
@@ -890,8 +904,8 @@ impl Renderer {
 		});
 		let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("blit"),
-			bind_group_layouts: &[&blit_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&blit_bgl)],
+			immediate_size: 0,
 		});
 		let blit_pipeline = crate::pipeline_builder::build(
 			device,
@@ -963,8 +977,8 @@ impl Renderer {
 		});
 		let depth_blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth blit"),
-			bind_group_layouts: &[&depth_blit_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&depth_blit_bgl)],
+			immediate_size: 0,
 		});
 		let depth_blit_pipeline = crate::pipeline_builder::build_depthless(
 			device,
@@ -1072,6 +1086,7 @@ impl Renderer {
 				&frame_bgl,
 				gi.cam_light_buf(),
 			),
+			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
 				surface_format,
@@ -1100,7 +1115,7 @@ impl Renderer {
 		}
 	}
 
-	/// Latest GPU pass reading (2-3 frames latent); None when timestamps
+	/// Latest GPU pass reading (a few frames latent); None when timestamps
 	/// are unsupported or nothing has been read back yet.
 	pub fn gpu_pass_ms(&self) -> Option<digblock_core::metrics::GpuPassMs> {
 		self.gpu_timer.as_ref().and_then(|t| t.latest)
@@ -1133,10 +1148,10 @@ impl Renderer {
 	}
 
 	/// Claim an origin slot for a newly resident chunk and publish its
-	/// origin. Growth fires at 85% occupancy rather than at overflow: the
-	/// reallocate-and-repopulate lands in one frame, and the path that
-	/// reaches it — a runtime draw-distance increase — is already the
-	/// frame doing the most other work.
+	/// origin. Growth fires while there is still headroom rather than at
+	/// overflow: the reallocate-and-repopulate lands in one frame, and the
+	/// path that reaches it — a runtime draw-distance increase — is already
+	/// the frame doing the most other work.
 	fn alloc_slot(&mut self, gpu: &Gpu, pos: ChunkPos) -> u32 {
 		let slot = match self.free_slots.pop() {
 			Some(s) => s,
@@ -1258,6 +1273,12 @@ impl Renderer {
 			return;
 		}
 		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);
+		// The vein faces this mesh exposed, on the same rail and for the
+		// same reason: the mesher is the one pass that knows which of them
+		// this player can see (`mesher::lights`). Unconditionally, empty
+		// list included — a completed extraction produces exactly that,
+		// and "no faces here any more" has to reach the light list.
+		self.gi.set_chunk_lights(pos, &mesh.lights);
 		// A remesh keeps its entry, its slot (so the origin needs no
 		// rewrite) and, whenever the new mesh fits, its buffers.
 		let idx = match self.by_pos.get(&pos) {
@@ -1357,10 +1378,10 @@ impl Renderer {
 		for (i, c) in chunks.iter().enumerate() {
 			let i = i as u32;
 			let solid = c.solid.is_some();
-			if let Some(planes) = near {
-				if solid && sphere_in_frustum(c.center, planes) {
-					lists.near.push(i);
-				}
+			if let Some(planes) = near
+				&& solid && sphere_in_frustum(c.center, planes)
+			{
+				lists.near.push(i);
 			}
 			if !sphere_in_frustum(c.center, cam) {
 				culled += 1;
@@ -1477,7 +1498,7 @@ impl Renderer {
 			layout: &self.water_frame_bgl,
 			entries: &[
 				// The SAME frame UBO the solids read. Water used to get a
-				// second copy of it for one field — a 0.7 alpha — and that
+				// second copy of it for one field — a constant alpha — and that
 				// field is gone (see water.wgsl's `alpha`), so the copy and
 				// its per-frame upload went with it. The water group still
 				// needs its own bind GROUP, because it also carries the
@@ -1662,6 +1683,7 @@ impl Renderer {
 			carried,
 			overlay,
 			confetti,
+			siphon,
 			feed,
 			target: highlight_target,
 			viewmodel,
@@ -1716,6 +1738,7 @@ impl Renderer {
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
 		);
 		let confetti_n = self.confetti.prepare(gpu, confetti);
+		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
 
 		let mut encoder = gpu
 			.device
@@ -1747,9 +1770,9 @@ impl Renderer {
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("depth prepass"),
-					// Cleared to 255: a code no real face carries, so a
-					// texel the prepass never wrote can never match a
-					// surface in the upsample's equality test.
+					// Cleared to a sentinel code no real face carries,
+					// so a texel the prepass never wrote can never
+					// match a surface in the upsample's equality test.
 					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
 						view: &targets.normal_view,
 						resolve_target: None,
@@ -1774,6 +1797,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_PREPASS)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.prepass_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
@@ -1813,6 +1837,7 @@ impl Renderer {
 					depth_stencil_attachment: None,
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_DEPTH_BLIT)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.depth_blit_pipeline);
 				pass.set_bind_group(0, &targets.depth_blit_bg, &[]);
@@ -1891,6 +1916,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_MAIN)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 
 				pass.set_pipeline(&self.solid_pipeline);
@@ -1967,6 +1993,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_WATER)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 
 				pass.set_pipeline(&self.blit_pipeline);
@@ -2012,6 +2039,13 @@ impl Renderer {
 				let confetti_tris = self.confetti.draw(&mut pass, confetti_n);
 				stats.draw_calls += u32::from(confetti_tris > 0);
 				stats.triangles += confetti_tris;
+
+				// The essence draw last of the three, because it is the
+				// only ADDITIVE one: it has to land on top of whatever the
+				// alpha-blended billboards left, not underneath it.
+				let siphon_tris = self.siphon.draw(&mut pass, siphon_n);
+				stats.draw_calls += u32::from(siphon_tris > 0);
+				stats.triangles += siphon_tris;
 			}
 
 			// The item in your own hand, over the finished world. Its own
@@ -2055,6 +2089,7 @@ impl Renderer {
 					}),
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_VIEWMODEL)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				let tris = self
 					.viewmodel
@@ -2065,9 +2100,9 @@ impl Renderer {
 
 			// THE UPSCALE. Everything above rendered at RENDER resolution
 			// into `scene_view`; this is the one place it becomes the
-			// surface. At scale 1.0 it is a straight 1:1 blit — the same
-			// fullscreen draw that used to open the water pass — so the
-			// default frame gains a pass boundary and nothing else.
+			// surface. At native render scale it is a straight 1:1 blit —
+			// the same fullscreen draw that used to open the water pass —
+			// so the default frame gains a pass boundary and nothing else.
 			//
 			// The overlay deliberately comes AFTER: UI, text and name tags
 			// are drawn at native resolution straight onto the swapchain,
@@ -2088,6 +2123,7 @@ impl Renderer {
 					depth_stencil_attachment: None,
 					timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_UPSCALE)),
 					occlusion_query_set: None,
+					multiview_mask: None,
 				});
 				pass.set_pipeline(&self.upscale_pipeline);
 				pass.set_bind_group(0, &targets.upscale_bg, &[]);
@@ -2114,6 +2150,7 @@ impl Renderer {
 				depth_stencil_attachment: None,
 				timestamp_writes: self.gpu_timer.as_ref().and_then(|t| t.writes(Q_OVERLAY)),
 				occlusion_query_set: None,
+				multiview_mask: None,
 			});
 			// Sandwich: backdrops → main icons → content (counts, panel,
 			// feed, menu) → ghost icon → topmost ghost quads/text. One
@@ -2178,10 +2215,10 @@ pub(crate) fn chunk_center(pos: ChunkPos) -> glam::Vec3 {
 	)
 }
 
-/// Chunk bounding-sphere test against extracted side planes. RADIUS is
-/// 8·√3, the chunk half-diagonal (Java sphereInFrustumWithoutNearFar —
-/// near/far deliberately ignored). One definition, so the magic constant
-/// can't drift between the callers that share it.
+/// Chunk bounding-sphere test against extracted side planes. RADIUS is the
+/// chunk's half-diagonal (Java sphereInFrustumWithoutNearFar — near/far
+/// deliberately ignored). One definition, so the magic constant can't
+/// drift between the callers that share it.
 pub(crate) fn sphere_in_frustum(center: glam::Vec3, planes: &[glam::Vec4; 4]) -> bool {
 	const RADIUS: f32 = 13.86;
 	planes
@@ -2196,11 +2233,7 @@ pub(crate) fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
 	let r3 = m.row(3);
 	[r3 + r0, r3 - r0, r3 + r1, r3 - r1].map(|p| {
 		let len = p.truncate().length();
-		if len > 0.0 {
-			p / len
-		} else {
-			p
-		}
+		if len > 0.0 { p / len } else { p }
 	})
 }
 
@@ -2232,15 +2265,83 @@ mod tests {
 		);
 	}
 
+	/// Every pipeline this renderer builds, validated with no GPU present.
+	///
+	/// The shader test in `digblock-assets` parses each WGSL file ALONE, so
+	/// it can only see that a shader is well-formed. It cannot see the seam
+	/// that actually breaks: a shader's bindings against the
+	/// `BindGroupLayout` the Rust side hand-wrote for it, a vertex buffer's
+	/// formats against the attributes the vertex stage declares, a
+	/// fragment's outputs against the target formats. All three are checked
+	/// at `create_render_pipeline` and nowhere earlier, which used to mean
+	/// "when somebody runs the game".
+	///
+	/// wgpu's noop backend stubs the HAL — nothing is compiled and nothing
+	/// is allocated — but `wgpu-core` runs its full validation first,
+	/// backend-independent. So this constructs the real `Renderer` on a
+	/// device that does not exist and gets the real errors, in the time a
+	/// unit test takes.
+	///
+	/// What it does NOT cover: naga is the permissive front end, and the
+	/// browser's is Tint. A shader that passes here can still invalidate a
+	/// pipeline in Chrome (see the `highlight.wgsl` precedence bug), so
+	/// this is not a substitute for loading the page.
+	#[cfg(not(target_arch = "wasm32"))]
+	#[test]
+	fn every_pipeline_builds_without_a_gpu() {
+		let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+			backends: wgpu::Backends::NOOP,
+			backend_options: wgpu::BackendOptions {
+				noop: wgpu::NoopBackendOptions::enabled(),
+				..Default::default()
+			},
+			..wgpu::InstanceDescriptor::new_without_display_handle()
+		});
+		let adapter =
+			pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+				.expect("the noop backend always yields an adapter");
+		let (device, queue) =
+			pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+				.expect("the noop backend always yields a device");
+
+		// Validation failures are reported out-of-band — `create_*` hands
+		// back an error resource rather than panicking — so the scope is
+		// what turns them into a failing test instead of a silent pass.
+		let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+		let gpu = digblock_platform::Gpu {
+			instance,
+			adapter,
+			device,
+			queue,
+		};
+		let _renderer = super::Renderer::new(
+			&gpu,
+			// The surface format the desktop swapchain actually picks;
+			// fragment outputs are validated against it.
+			wgpu::TextureFormat::Bgra8UnormSrgb,
+			&super::RenderConfig {
+				draw_dist: 8,
+				spray_droplets: 4,
+				chunk_slots_override: None,
+				debug_gi: false,
+				debug_gi_probes: false,
+				stub: 0,
+			},
+		);
+		if let Some(err) = pollster::block_on(scope.pop()) {
+			panic!("a pipeline failed validation:\n{err}");
+		}
+	}
+
 	#[test]
 	fn grown_slots_sizing() {
-		// Min ×2 dominates just past the boundary.
+		// The doubling floor dominates just past the boundary.
 		assert_eq!(super::grown_slots(4096, 4097), 8192);
-		// 256-granularity dominates for tiny forced capacities.
+		// The granularity floor dominates for tiny forced capacities.
 		assert_eq!(super::grown_slots(8, 9), 256);
-		// A large jump lands on the next multiple of 256 past `needed`.
+		// A large jump lands on the next granularity step past `needed`.
 		assert_eq!(super::grown_slots(8192, 20000), 20224);
-		// An exact multiple stays put when it already covers ×2.
+		// An exact multiple stays put when it already covers the doubling.
 		assert_eq!(super::grown_slots(100, 512), 512);
 	}
 

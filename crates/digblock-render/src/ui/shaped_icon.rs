@@ -13,9 +13,9 @@ use digblock_core::dir::Dir;
 
 use crate::item_geom;
 
+use super::Rect;
 use super::draw::{DrawList, Layer};
 use super::hud::IconKind;
-use super::Rect;
 
 /// The implied view axis is (+x, +y, +z): exactly these faces show.
 fn visible(dir: Dir) -> bool {
@@ -67,12 +67,18 @@ pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u
 		[cx + sx * s, cy + (sy - mid_sy) * s]
 	};
 	for q in &quads {
+		// A glowing face takes no directional shading. This projection has
+		// no light in it at all — the axis factors are a convention
+		// borrowed from the mesher — so "unshaded" is the whole of what
+		// fullbright can mean here, and it is enough to keep a tool's lit
+		// part reading as the lit part at hotbar size.
+		let f = if q.emissive { 1.0 } else { face_shade(q.dir) };
 		dl.icon_quad(
 			layer,
 			q.corners.map(project),
 			q.uv,
 			q.tex_layer,
-			shade(tint, face_shade(q.dir)),
+			shade(tint, f),
 		);
 	}
 }
@@ -171,9 +177,9 @@ mod tests {
 		let (min_y, max_y) = ys
 			.iter()
 			.fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y)));
-		// The 12-unit span is shared with cubes, so a 4/12 box covers
-		// 16 of the 24 projected units: taller than 4/12 because the
-		// dimetric top face itself is 12 deep, but well short of a cube.
+		// A slab shares the cube's projected span, so it covers more of
+		// the icon than its own height alone would suggest — the dimetric
+		// top face has depth of its own — but still well short of a cube.
 		let cube = emitted(IconKind::Cube(BlockType::Wood), 0xFFFF_FFFF);
 		let cube_min = cube
 			.iter()

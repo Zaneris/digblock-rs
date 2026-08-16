@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
-use digblock_core::decoration::{structures_near, Structure, STRUCTURE_APRON};
+use digblock_core::decoration::{STRUCTURE_APRON, Structure, structures_near};
 use digblock_core::worldgen::{
-	build_chunk, carved, column_shape, terrain_height, SurfaceKind, DIRT_DEPTH, SEA_LEVEL,
+	DIRT_DEPTH, SEA_LEVEL, SurfaceKind, build_chunk, carved, column_shape, terrain_height,
 };
-use digblock_core::{BlockType, ChunkData, ChunkPos, CHUNK_SIZE};
+use digblock_core::{BlockType, CHUNK_SIZE, ChunkData, ChunkPos};
 
 /// The terrain-only expectation (no trees), re-implemented from the
 /// column rules over the public per-column shape. Validates fill_chunk's
@@ -23,8 +23,8 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 		}
 	} else {
 		// Independent re-statement of the column rules: top block, then
-		// DIRT_DEPTH of subsoil, then (for sandy floors) a 4-block
-		// sandstone stratum, then stone.
+		// DIRT_DEPTH of subsoil, then (for sandy floors) a sandstone
+		// stratum, then stone.
 		let (top, subsoil) = match shape.surface {
 			SurfaceKind::Ocean | SurfaceKind::Beach | SurfaceKind::River | SurfaceKind::Lake => {
 				(BlockType::Sand, BlockType::Sand)
@@ -74,8 +74,9 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 /// stone below DIRT_DEPTH of topsoil, sand topsoil for ocean floors and
 /// beaches, bare stone above STONE_SURFACE, grass-over-dirt otherwise,
 /// water fills to SEA_LEVEL, air above; the cave field carves terrain
-/// cells of land columns (never y=0, never water or sand). Validates
-/// fill_chunk's cell indexing and per-chunk assembly across the stack.
+/// cells of land columns (never the bedrock course, never water or sand).
+/// Validates fill_chunk's cell indexing and per-chunk assembly across the
+/// stack.
 #[test]
 fn column_rules() {
 	let seed = 1234.5678;
@@ -410,7 +411,8 @@ fn cave_slice_dump() {
 
 /// ASCII region map — run with `--nocapture` to eyeball terrain shape:
 /// `cargo test -p digblock-core heightmap_dump -- --nocapture`
-/// The window spans ~4km so continental-scale features are visible.
+/// The window spans kilometres of world, so continental-scale features
+/// are visible.
 #[test]
 fn heightmap_dump() {
 	let seed = 0.0;
@@ -458,8 +460,10 @@ fn heightmap_dump() {
 		}
 		biomes.push('\n');
 	}
-	println!("biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}");
-	// Sanity: the window contains both ocean and land at seed 0.
+	println!(
+		"biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}"
+	);
+	// Sanity: the window contains both ocean and land.
 	assert!(out.contains('~'));
 	assert!(out.chars().any(|c| c != '~' && c != '\n'));
 }

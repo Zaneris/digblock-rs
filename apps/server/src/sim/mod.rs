@@ -1,4 +1,5 @@
-//! The authoritative simulation: one instance, one thread, fixed 60 Hz.
+//! The authoritative simulation: one instance, one thread, one fixed tick
+//! rate (`TICK_RATE`).
 //! Socket-free by construction — the net layer (net.rs) feeds it
 //! [`SimEvent`]s and it emits pre-encoded [`OutMsg`]s onto per-client
 //! channels, so every behavior here is testable with plain `cargo test`.
@@ -20,12 +21,12 @@ pub(crate) mod harness;
 
 use crate::ban_store::BanStore;
 use crate::journal::Journal;
-use crate::player_store::{hash_identity, IdentityHash, PlayerLayout, PlayerRecord, PlayerStore};
+use crate::player_store::{IdentityHash, PlayerLayout, PlayerRecord, PlayerStore, hash_identity};
 use crate::spawn_store::{SpawnLock, SpawnStore};
 use crate::store::{ChunkStore, ColumnSource};
 use digblock_core::fluid::FluidSim;
 use digblock_core::hotbar::Hotbar;
-use digblock_core::inv_grid::{reconcile_layout, InvGrid};
+use digblock_core::inv_grid::{InvGrid, reconcile_layout};
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::protect::Region;
@@ -34,8 +35,8 @@ use digblock_net::messages::{
 	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
-	sanitize_chat, sanitize_name, PlayerId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION,
-	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
+	CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, PROTOCOL_VERSION, PlayerId, RETURN_SPAWN_COOLDOWN_SECS,
+	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS, sanitize_chat, sanitize_name,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -64,10 +65,10 @@ const DRAW_DIST_MIN: i32 = 2;
 const DRAW_DIST_MAX: i32 = 32;
 
 /// A connection that passes the preamble but never completes Hello is
-/// dropped after this many ticks (5s — mirrors the preamble deadline).
-/// Without it a stalled handshake camps in the lobby forever: the
-/// server's own keep-alives defeat QUIC's idle timeout, and the 255-
-/// player cap applies only post-Hello.
+/// dropped after this many ticks — mirrors the preamble deadline. Without
+/// it a stalled handshake camps in the lobby forever: the server's own
+/// keep-alives defeat QUIC's idle timeout, and the player-id cap applies
+/// only post-Hello.
 const HELLO_TIMEOUT_TICKS: u32 = 5 * TICK_RATE;
 
 pub enum SimEvent {
@@ -97,10 +98,11 @@ pub enum OutMsg {
 	///
 	/// `Arc` rather than `Vec` because the interesting sends are
 	/// broadcasts: every landed edit goes to every client whose
-	/// `synced_columns` covers it, and fluid alone lands up to 512 edits a
-	/// second. Encoding per recipient meant 3 allocations and a fresh
-	/// postcard pass each — ~49 k allocations/s at 32 co-located players
-	/// during a waterfall, all producing byte-identical output. Now the
+	/// `synced_columns` covers it, and fluid alone lands a whole
+	/// `FLOW_BUDGET` of edits every flow step. Encoding per recipient meant
+	/// several allocations and a fresh postcard pass PER RECIPIENT,
+	/// multiplied by the crowd — tens of thousands of allocations a second
+	/// around a waterfall, all producing byte-identical output. Now the
 	/// fan-out is a refcount bump.
 	Frame(std::sync::Arc<[u8]>),
 	/// Ask the net layer to close the connection (refused handshake).
@@ -227,12 +229,12 @@ struct Client {
 	inputs: BTreeMap<u32, InputTick>,
 	last_input_tick: u32,
 	/// Highest input tick ever ADMITTED to the buffer, and a bitmap of the
-	/// 64 ticks below it (bit n = `admit_hi - n`). Together they separate an
+	/// ticks below it (bit n = `admit_hi - n`). Together they separate an
 	/// ordinary redundancy copy of a tick we already held — expected, free,
-	/// every tick rides two datagrams — from a tick the buffer had already
-	/// drained past when it arrived, which is the only rejection that means
-	/// an input was lost for good. Diagnostic only: nothing reads these
-	/// back into a decision.
+	/// every tick rides `INPUT_REDUNDANCY` datagrams — from a tick the
+	/// buffer had already drained past when it arrived, which is the only
+	/// rejection that means an input was lost for good. Diagnostic only:
+	/// nothing reads these back into a decision.
 	admit_hi: u32,
 	admit_seen: u64,
 	/// Consecutive ticks the drain has been holding the current hole open.
@@ -316,7 +318,7 @@ impl Client {
 	/// does on the Layout wire.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::block::BlockType;
-		use digblock_core::hotbar::{HotbarItem, HOTBAR_SLOTS, WIRE_EMPTY, WIRE_TOOL};
+		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
 		let tool = self.hotbar.active_tool();
 		match self.hotbar.slots()[slot] {
@@ -382,9 +384,9 @@ pub struct Sim {
 	last_oversize_log: Option<u32>,
 	/// Scratch for `send_snapshots`, reused across ticks: the shared
 	/// roster, the per-client candidate list, the selected-player Vec, and
-	/// the postcard encode buffer. The pass runs 20×/s over every client,
-	/// so building these fresh was the sim thread's largest steady-state
-	/// allocation source.
+	/// the postcard encode buffer. The pass runs every `SNAPSHOT_DIVISOR`
+	/// ticks over every client, so building these fresh was the sim
+	/// thread's largest steady-state allocation source.
 	snap_roster: Vec<(RemoteState, SelfState, (i32, i32))>,
 	snap_nearby: Vec<(i64, usize)>,
 	snap_players: Vec<RemoteState>,
@@ -499,7 +501,7 @@ impl Sim {
 		self.clients.len()
 	}
 
-	/// Run one 60 Hz tick with the events drained since the last one.
+	/// Run one tick with the events drained since the last one.
 	pub fn tick_once(&mut self, events: Vec<SimEvent>) {
 		self.reap_dead();
 		for ev in events {
@@ -511,10 +513,10 @@ impl Sim {
 		self.process_edits();
 		self.step_fluid();
 		self.tick += 1;
-		if self.tick % SNAPSHOT_DIVISOR == 0 {
+		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();
 		}
-		if self.tick % TOD_SYNC_TICKS == 0 {
+		if self.tick.is_multiple_of(TOD_SYNC_TICKS) {
 			let msg = ServerMsg::TimeOfDay {
 				tod: self.current_tod(),
 			};
@@ -654,7 +656,7 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
-	/// The client's Mining level (1 for an unknown conn).
+	/// The client's Mining level (the base level for an unknown conn).
 	#[cfg(test)]
 	pub(crate) fn test_mining_level(&self, conn_id: u64) -> u32 {
 		self.clients
@@ -664,12 +666,12 @@ impl Sim {
 
 	/// Raise a client's Mining to `level` (total-XP floor — never lowers,
 	/// like the wire's max-total rule). Harness/bench support: edit-path
-	/// digs must clear the rock gate without earning through it (the
+	/// digs must clear the strength wall without earning through it (the
 	/// gate's own test drives DigStart raw). Not #[cfg(test)] because
 	/// netbench — a bin, not a test — drives a real in-process Sim whose
 	/// flat world is stone.
 	pub fn bench_set_mining_level(&mut self, conn_id: u64, level: u32) {
-		use digblock_core::skills::{total_xp_for, Skill};
+		use digblock_core::skills::{Skill, total_xp_for};
 		if let Some(c) = self.clients.get_mut(&conn_id) {
 			c.skills.set_total(Skill::Mining, total_xp_for(level));
 		}
@@ -712,12 +714,19 @@ impl Sim {
 		self.clients.get(&conn_id).map_or(0, |c| c.skills.xp(skill))
 	}
 
+	#[cfg(test)]
+	fn test_skill_level(&self, conn_id: u64, skill: digblock_core::skills::Skill) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(1, |c| c.skills.level(skill))
+	}
+
 	/// Raise a client's Alchemy to `level` — the craft gate's counterpart
 	/// of [`Self::bench_set_mining_level`], for edit-path tests that dig
 	/// craft-only blocks (slabs, stairs, doors, torches).
 	#[cfg(test)]
 	pub(crate) fn bench_set_alchemy_level(&mut self, conn_id: u64, level: u32) {
-		use digblock_core::skills::{total_xp_for, Skill};
+		use digblock_core::skills::{Skill, total_xp_for};
 		if let Some(c) = self.clients.get_mut(&conn_id) {
 			c.skills.set_total(Skill::Alchemy, total_xp_for(level));
 		}
@@ -764,6 +773,13 @@ impl Sim {
 		self.clients
 			.get(&conn_id)
 			.map_or(0, |c| c.inventory.count(b))
+	}
+
+	#[cfg(test)]
+	fn test_sub_count(&self, conn_id: u64, e: digblock_core::block::Essence) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(0, |c| c.inventory.sub_count(e))
 	}
 
 	// ---- events -------------------------------------------------------
@@ -1062,7 +1078,7 @@ impl Sim {
 			return;
 		}
 		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
-		// The skill gates (SIM v12's rock gate, v13's craft gate), refused
+		// The skill gates (§5.1's strength wall, v13's craft gate), refused
 		// at the hold's start for the same reason protection is: the
 		// refusal is useless after the player held the button through a
 		// full dig timer. Honest clients predict it and never send this.
@@ -1109,9 +1125,9 @@ impl Sim {
 		// gate will check against, or the decay clamps a resumed hold at
 		// one figure while the client's bar bleeds from another. That
 		// means the ore, not the stone the cell still holds — this arm
-		// asked `dig_block` nothing at all and read Stone's 90 for a
-		// 240-hardness seam. Resolved before the client borrow, since it
-		// reads the store.
+		// asked `dig_block` nothing at all and read Stone's hardness for a
+		// seam several times harder. Resolved before the client borrow,
+		// since it reads the store.
 		let mode = self.ore_dig_mode(conn_id, cell);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
@@ -1313,10 +1329,10 @@ impl Sim {
 		if !client.live {
 			return;
 		}
-		if let Some(t) = client.last_return_tick {
-			if self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE {
-				return;
-			}
+		if let Some(t) = client.last_return_tick
+			&& self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE
+		{
+			return;
 		}
 		let pos = self.safe_spawn();
 		let look = self.spawn_look();
@@ -1377,11 +1393,11 @@ impl Sim {
 		// Two live connections sharing one persisted inventory would stomp
 		// each other's copy — refuse the second.
 		let identity = (identity != [0; 16]).then(|| hash_identity(&identity));
-		if let Some(hash) = identity {
-			if self.clients.values().any(|c| c.identity == Some(hash)) {
-				refuse(&out, "this identity is already connected".into());
-				return;
-			}
+		if let Some(hash) = identity
+			&& self.clients.values().any(|c| c.identity == Some(hash))
+		{
+			refuse(&out, "this identity is already connected".into());
+			return;
 		}
 		let record = identity
 			.map(|hash| self.player_store.get(&hash))
@@ -1436,8 +1452,8 @@ impl Sim {
 
 		// Join sync: final cell state for every edited column in range,
 		// QUEUED rather than sent. Encoding them all here meant thousands
-		// of frames and megabytes inside one 16.7 ms tick on a mature world
-		// — a hitch for everyone else on the server, every time anyone
+		// of frames and megabytes inside one tick's budget on a mature
+		// world — a hitch for everyone else on the server, every time anyone
 		// joined — and past OUT_CAP the joiner simply lost the race and got
 		// dropped. `pump_join_sync` drains the queue a few per tick against
 		// the room the outbound queue actually has.
@@ -1491,7 +1507,8 @@ impl Sim {
 			},
 		);
 		// Per-skill XP totals — always sent, even empty (a fresh
-		// identity is level 1 everywhere), so the client never guesses.
+		// identity sits at the base level everywhere), so the client never
+		// guesses.
 		ok &= send_frame(
 			&out,
 			&ServerMsg::Skills {
@@ -1686,8 +1703,8 @@ impl Sim {
 /// match the admin check?
 ///
 /// Admin is granted by comparing against `Client::name`, which the master
-/// mints and `validate_name` constrains to 3-10 chars of `a-z A-Z 0-9 -
-/// _`. `--admin-name "big boss"` or an 11-character name can therefore
+/// mints and `validate_name` constrains to a short run of `a-z A-Z 0-9 -
+/// _`. `--admin-name "big boss"` or a name past that length can therefore
 /// never match ANYONE — the server booted with admin quietly disabled
 /// while logging a reassuring `admin: big boss`. The launcher now refuses
 /// the argument outright, which is what an operator wants from a typo in a
@@ -1709,10 +1726,10 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 
 /// Squared-distance test in i64: `col` is any edited column in the journal
 /// and `center` is any client's, so the separation is bounded only by
-/// `TP_LIMIT` (±62 500 columns). In i32 the product overflows from ~46 340
-/// columns apart — release wraps, and a wrapped negative sum passes the
-/// test, which syncs a client columns it is nowhere near and force-drops it
-/// when the queue refuses; debug panics. The subtraction is widened too:
+/// `TP_LIMIT`. In i32 the product overflows well inside that range —
+/// release wraps, and a wrapped negative sum passes the test, which syncs
+/// a client columns it is nowhere near and force-drops it when the queue
+/// refuses; debug panics. The subtraction is widened too:
 /// `col.0 - center.0` alone overflows at the i32 extremes.
 /// Squared column distance — the ordering key `in_radius` tests against,
 /// shared so "near" means the same thing to the sort and to the gate.
@@ -1790,9 +1807,10 @@ fn client_send_frame(client: &Client, frame: &std::sync::Arc<[u8]>) {
 mod tests {
 	use super::harness::*;
 	use super::{
-		ClientMsg, OutMsg, RejectReason, ServerMsg, SimEvent, MIN_PROTOCOL, PROTOCOL_VERSION,
+		ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg, SimEvent,
 	};
 	use digblock_net::codec::FrameReader;
+	use std::assert_matches;
 	use tokio::sync::mpsc::channel;
 
 	#[test]
@@ -1824,7 +1842,8 @@ mod tests {
 				_ => None,
 			})
 			.expect("heartbeat within one sync period");
-		// 10 s at 0.3°/s — the sun moved ~3° toward noon (tod falls).
+		// One `TOD_SYNC_TICKS` period at the sun's rate — it has moved
+		// toward noon (tod falls).
 		assert!(
 			(welcome_tod - beat - 3.0).abs() < 0.1,
 			"welcome {welcome_tod} → beat {beat}"
@@ -1864,10 +1883,10 @@ mod tests {
 	/// `synced_columns`) no live edits there either.
 	#[test]
 	fn growing_draw_dist_syncs_the_newly_visible_ring() {
-		// A pre-journaled edit in column (6, 0): outside the harness Hello's
-		// draw_dist of 4, inside a widened 8. The client spawns in column
-		// (0, 0) and never moves, so `needs_sync_scan` can only come from
-		// the SetDrawDist itself.
+		// A pre-journaled edit in a column outside the harness Hello's
+		// draw distance and inside the widened one. The client spawns in
+		// the origin column and never moves, so `needs_sync_scan` can only
+		// come from the SetDrawDist itself.
 		let dir = temp_dir("drawgrow");
 		let col = (6, 0);
 		{
@@ -1994,10 +2013,10 @@ mod tests {
 		for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
 			sim.tick_once(vec![]);
 		}
-		assert!(matches!(
+		assert_matches!(
 			rx.try_recv(),
 			Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-		));
+		);
 		// Crossing it: reaped with a Close so the net task ends.
 		sim.tick_once(vec![]);
 		let mut closed = false;
@@ -2057,8 +2076,8 @@ mod tests {
 		let c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		// Never drain: snapshots fill the bounded queue, then the stall
-		// clock runs. OUT_CAP fills after ~3*OUT_CAP ticks of snapshots,
-		// then DGRAM_STALL_SECS of Full escalates to dead.
+		// clock runs. OUT_CAP fills at one snapshot per SNAPSHOT_DIVISOR
+		// ticks, then DGRAM_STALL_SECS of Full escalates to dead.
 		let enough = 3 * super::OUT_CAP as u32 + (super::DGRAM_STALL_SECS + 2) * 60;
 		for _ in 0..enough {
 			sim.tick_once(vec![]);
@@ -2171,7 +2190,7 @@ mod tests {
 			// The rock rule: mined stone lands as Rubble.
 			assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
 
-			// Park the Rubble in grid slot 17 (a deliberate arrangement —
+			// Park the Rubble deep in the grid (a deliberate arrangement —
 			// it must survive reconnect and reboot verbatim).
 			let mut grid =
 				vec![digblock_core::hotbar::WIRE_EMPTY; digblock_core::inv_grid::GRID_SLOTS];
@@ -2247,13 +2266,13 @@ mod tests {
 		);
 	}
 
-	/// SIM v12's rock gate, server half: a DigStart on stone below
-	/// Mining 5 refuses with `SkillGated` and opens no hold (refused at
-	/// the START — the player must not hold the button through a dig
+	/// The strength wall, server half: a DigStart on stone below the Rock
+	/// family's wall refuses with `SkillGated` and opens no hold (refused
+	/// at the START — the player must not hold the button through a dig
 	/// timer for nothing); at the gate level the hold opens normally.
 	#[test]
 	fn gated_rock_refuses_the_dig_start() {
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use glam::Vec3;
 		let mut sim = flat_sim("rockgate");
 		let mut c = connect(&mut sim, 1);
@@ -2281,7 +2300,10 @@ mod tests {
 		);
 		assert_eq!(sim.test_digging(1), None, "no hold opened");
 
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(
+			1,
+			digblock_core::unlock::mine(digblock_core::BlockType::Stone),
+		);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
@@ -2301,9 +2323,10 @@ mod tests {
 	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with
 	///    `NeedsTool` and opens no hold — if you can see the seam, the
 	///    game will not let you spend it by accident.
-	/// 3. With the siphon, the completing dig writes DepletedStone rather
-	///    than air, credits the ORE (not the cell's Rubble), and pays BOTH
-	///    skills (§5.4's dual award).
+	/// 3. With the siphon, the completing dig writes the tier's SPENT ROCK
+	///    rather than air, credits ESSENCE (not the cell's Rubble, and not
+	///    an ore block — a siphon draws the seam out where it stands, so no
+	///    ore is ever an item), and pays BOTH skills (§5.4's dual award).
 	#[test]
 	fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 		use digblock_core::block::BlockType;
@@ -2376,10 +2399,26 @@ mod tests {
 		assert_eq!(dug, cell);
 		assert_eq!(
 			sim.test_cell_at(cell.0, cell.1, cell.2),
-			Some(BlockType::DepletedStone as u16),
-			"a tapped face, not a hole — mining ore never excavates"
+			Some(digblock_core::worldgen::ore::spent_rock(ore).expect("a tier") as u16),
+			"the TIER's tapped face, not a hole and not one generic grey \
+			 stone — mining ore never excavates, and a worked seam still \
+			 reads as the seam you worked"
 		);
-		assert_eq!(sim.test_inventory_count(1, ore), 1, "the ore itself");
+		// Essence, straight into the stocks. Every line of the ore's own
+		// yield, asked of the shared function rather than restated, so a
+		// retune of what a tier is worth moves the test with it.
+		let alchemy = sim.test_skill_level(1, Skill::Alchemy);
+		let mining = sim.test_skill_level(1, Skill::Mining);
+		let want = digblock_core::alchemy::field_yield(ore, alchemy, mining);
+		assert!(!want.is_empty(), "a vein has to be worth drawing");
+		for (e, n) in want {
+			assert_eq!(sim.test_sub_count(1, e), n, "{e:?} from the draw");
+		}
+		assert_eq!(
+			sim.test_inventory_count(1, ore),
+			0,
+			"and no ore BLOCK — a vein is never an item"
+		);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::Rubble),
 			0,
@@ -2399,9 +2438,9 @@ mod tests {
 
 		// 4. And it is timed as the ore on THIS end too. Case 3 alone
 		//    cannot show that: it holds for the ore's own length, which
-		//    satisfies a server timing the draw by either number. The
-		//    ores are 120–240 against Stone's 90, so a server reading the
-		//    cell's hardness would hand out an Aetherock for 37% of the
+		//    satisfies a server timing the draw by either number. An ore is
+		//    several times Stone's hardness, so a server reading the cell's
+		//    hardness would hand out an Aetherock for a fraction of the
 		//    intended hold — a gap `dig_grace` comes nowhere near, and one
 		//    a modified client can simply take.
 		let mut sim = super::harness::flat_sim_at("ore-short", eye);
@@ -2432,9 +2471,9 @@ mod tests {
 	/// what the swing touched.
 	///
 	/// The three properties that matter, in one test because they are one
-	/// mechanism: the width follows the level (3, then 9), every extra
-	/// cell holds the same id, and the credit is one per BLOCK broken —
-	/// which is what `begin_multi`'s single `inv_delta` describes.
+	/// mechanism: the width follows the level, every extra cell holds the
+	/// same id, and the credit is one per BLOCK broken — which is what
+	/// `begin_multi`'s single `inv_delta` describes.
 	#[test]
 	fn the_resonant_pick_breaks_the_plane_the_server_derives() {
 		use digblock_core::block::BlockType;
@@ -2483,7 +2522,7 @@ mod tests {
 	#[test]
 	fn a_protected_cell_refuses_the_whole_pick_swing() {
 		use digblock_core::block::BlockType;
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use digblock_net::messages::EditKind;
 		use glam::Vec3;
 		let mut sim = flat_sim("pick-protect");
@@ -2498,7 +2537,7 @@ mod tests {
 		// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
 		// so the aimed cell itself is free and the refusal can only come
 		// from a cell the swing reached. (`lock_region` is a box CLEAR
-		// out from the eye's column, floor at eye.y - 2.)
+		// out from the eye's column, floored just below the eye.)
 		let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
 		sim.bench_lock_spawn_at(Vec3::new(
 			lock_x as f32 + 0.5,
@@ -2549,7 +2588,7 @@ mod tests {
 	#[test]
 	fn craft_only_blocks_refuse_the_dig_start() {
 		use digblock_core::block::BlockType;
-		use digblock_core::raycast::{raycast, REACH};
+		use digblock_core::raycast::{REACH, raycast};
 		use glam::Vec3;
 		let mut sim = flat_sim("craftgate");
 		let mut c = connect(&mut sim, 1);
@@ -2559,9 +2598,9 @@ mod tests {
 		let ground = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		// Stand a torch on the flat world's surface, clear of the capsule
 		// (DigStart validates the gates and the cell, never the reach). The
-		// world is stone, so clear the rock gate too — this test is about
+		// world is stone, so clear the strength wall too — this test is about
 		// the other one.
-		sim.bench_set_mining_level(1, 5);
+		sim.bench_set_mining_level(1, digblock_core::unlock::mine(BlockType::Stone));
 		let cell = (ground.cell.0 + 3, ground.cell.1 + 1, ground.cell.2);
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Torch as u16);
 		let start = |sim: &mut super::Sim| {
@@ -2601,7 +2640,7 @@ mod tests {
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Air as u16);
 		let mut c2 = connect(&mut sim, 2);
 		wait_live(&mut sim, 2);
-		sim.bench_set_mining_level(2, 5);
+		sim.bench_set_mining_level(2, digblock_core::unlock::mine(BlockType::Stone));
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 2,
 			msg: ClientMsg::DigStart {
@@ -2618,11 +2657,11 @@ mod tests {
 	}
 
 	/// XP is server-computed at the two chokepoints and lands as new
-	/// TOTALS: a stone dig pays `ceil(90/6) = 15` Mining on top of the
-	/// harness's gate grant, converting the rubble pays 8 Alchemy, and
-	/// the totals survive reconnect and a full server reboot via the
-	/// identity store (join sync always carries a `Skills` frame, empty
-	/// for a fresh identity).
+	/// TOTALS: a stone dig pays the block's `dig_xp` on top of the
+	/// harness's gate grant, converting the rubble pays its `convert_xp`
+	/// in Alchemy, and the totals survive reconnect and a full server
+	/// reboot via the identity store (join sync always carries a `Skills`
+	/// frame, empty for a fresh identity).
 	#[test]
 	fn xp_awards_on_dig_and_alchemy_and_persists() {
 		use digblock_core::block::BlockType;
@@ -2631,6 +2670,16 @@ mod tests {
 
 		let dir = temp_dir("xp");
 		let identity = [8u8; 16];
+		// dig_hold grants whatever the target's gates ask — for stone that
+		// is the Rock family's strength wall — and the dig pays its own
+		// `dig_xp` on top of that level's total. Derived, so a retune of
+		// the wall or of the dig curve moves both halves together.
+		let granted =
+			digblock_core::skills::total_xp_for(digblock_core::unlock::mine(BlockType::Stone));
+		// Filled in from where the hold actually lands: §5.2's depth reward
+		// keys on the dug CELL, so the expected total is derived from the
+		// same call the chokepoint makes rather than from the flat table.
+		let after;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		{
 			let mut sim =
@@ -2646,24 +2695,19 @@ mod tests {
 			);
 			wait_live(&mut sim, 1);
 			let mut t = 0;
-			// dig_hold grants Mining 5 (the rock gate) = 394 total XP;
-			// the stone dig then pays its 15 on top.
-			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			after = granted + digblock_core::skills::dig_award(BlockType::Stone, None, 1, cell.1).0;
 			c.drain();
 			assert!(
-				c.msgs.iter().any(|m| matches!(
-					m,
-					ServerMsg::XpGain {
-						skill: 0,
-						total: 409
-					}
-				)),
-				"stone dig pays 15 Mining on the granted 394: {:?}",
+				c.msgs
+					.iter()
+					.any(|m| matches!(m, ServerMsg::XpGain { skill: 0, total } if *total == after)),
+				"stone dig pays its Mining award on the granted {granted}: {:?}",
 				c.msgs
 			);
 
-			// Convert the rubble the dig credited: ceil(24/3) = 8 Alchemy
-			// XP, in wire order with the InventoryFull rebase.
+			// Convert the rubble the dig credited: its `convert_xp` in
+			// Alchemy, in wire order with the InventoryFull rebase.
 			sim.tick_once(vec![SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
@@ -2689,7 +2733,7 @@ mod tests {
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
 					m,
-					ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+					ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
 				)),
 				"reconnect carries the totals: {:?}",
 				c2.msgs
@@ -2705,7 +2749,7 @@ mod tests {
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, 409), (1, 8)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
 			)),
 			"reboot carries the totals: {:?}",
 			c3.msgs
@@ -2727,10 +2771,11 @@ mod tests {
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
 		// Derived from the constants, never spelled out: the bucket's
-		// capacity is no longer two reference blocks flat — it also has to
-		// cover the single costliest extraction, or the deepest ores are
-		// refused forever (`the_bucket_can_always_afford_the_costliest_block`).
-		// A test naming "2" pins the sizing instead of the RULE, and the
+		// capacity is no longer a flat count of reference blocks — it also
+		// has to cover the single costliest extraction, or the deepest ores
+		// are refused forever
+		// (`the_bucket_can_always_afford_the_costliest_block`). A test
+		// naming that count pins the sizing instead of the RULE, and the
 		// rule is what this is about: a full bucket admits a bounded bunch
 		// and not one block more.
 		let pace = digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1);
@@ -2790,7 +2835,7 @@ mod tests {
 		sim.tick_once(vec![convert(1)]);
 		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
 		// Refused ops never paid XP: the final total reflects exactly the
-		// landed blocks (ceil(24/3) = 8 each).
+		// landed blocks, at the rubble's own `convert_xp` each.
 		c.drain();
 		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
 			ServerMsg::XpGain { skill: 1, total } => Some(*total),
@@ -2871,7 +2916,7 @@ mod tests {
 		);
 
 		// After the window it works again. (Drain as we go — an undrained
-		// outbound queue trips the snapshot-stall reaper over 60s.)
+		// outbound queue trips the snapshot-stall reaper.)
 		for _ in 0..(RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE) {
 			sim.tick_once(vec![]);
 			c.drain();
@@ -2939,10 +2984,11 @@ mod tests {
 			"joiner missing roster entry: {:?}",
 			b.msgs
 		);
-		assert!(!b
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::PlayerJoined { id: 1, .. })));
+		assert!(
+			!b.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::PlayerJoined { id: 1, .. }))
+		);
 
 		// The player already online hears the join...
 		a.drain();
@@ -2954,10 +3000,11 @@ mod tests {
 		// ...and the leave.
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
 		a.drain();
-		assert!(a
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 })));
+		assert!(
+			a.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::PlayerLeft { id: 1 }))
+		);
 	}
 
 	#[test]
@@ -3161,10 +3208,8 @@ mod tests {
 		wait_live(&mut sim, 1);
 
 		// Walk well away from spawn.
-		let mut t = 100;
-		for _ in 0..240 {
+		for t in (100..).take(240) {
 			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
-			t += 1;
 		}
 		let away = sim.test_player(1).unwrap().pos;
 		assert!(away.distance(FLAT_SPAWN) > 5.0, "test needs to be away");

@@ -12,7 +12,7 @@ struct Frame {
 	// w = caster strength 0..1 (twilight fade)
 	light_dir: vec4f,
 	// rgb = direct light color (sun by day, moonlight by night)
-	// w = animation clock in seconds (wraps at 600; water scroll/foam)
+	// w = animation clock in seconds (wraps periodically; water scroll/foam)
 	light_color: vec4f,
 	// rgb = the scene-pass clear color (sky horizon tint); w free
 	clear_color: vec4f,
@@ -26,11 +26,12 @@ struct Frame {
 	zenith: vec4f,
 	// rgb = sky horizon color
 	horizon: vec4f,
-	// x = alpha (1.0 solid / 0.7 water), y = the streaming radius in
-	// blocks (the medium's rim distance — terrain streams as a vertical
-	// cylinder, so it bounds HORIZONTAL distance), z = the cost-stub mask
-	// (DIG_STUB; renderer.rs's `stub` module owns the bits), w = the
-	// render:GI resolution divisor for chunk.wgsl's bilateral upsample.
+	// x = alpha (opaque for the solid pass, lower for water), y = the
+	// streaming radius in blocks (the medium's rim distance — terrain
+	// streams as a vertical cylinder, so it bounds HORIZONTAL distance),
+	// z = the cost-stub mask (DIG_STUB; renderer.rs's `stub` module owns
+	// the bits), w = the render:GI resolution divisor for chunk.wgsl's
+	// bilateral upsample.
 	misc: vec4f,
 	// x = camera underwater (0/1), y = SSR enabled (0/1),
 	// z = water-surface height above the camera (underwater path-length
@@ -41,9 +42,9 @@ struct Frame {
 	// xyz = quantized dir toward the sun (the GI rays' caster — moon at
 	// night), w = caster above horizon (0/1).
 	gi_sun: vec4f,
-	// C0 probe grid dims xyz, w = spacing in blocks (2).
+	// C0 probe grid dims xyz, w = spacing in blocks.
 	gi0: vec4f,
-	// C1 far-cascade dims xyz, w = spacing (8).
+	// C1 far-cascade dims xyz, w = its (coarser) spacing in blocks.
 	gi1: vec4f,
 	// x = voxel-window side in blocks (the toroidal modulus).
 	gi_misc: vec4f,
@@ -51,7 +52,7 @@ struct Frame {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 
-// INDIRECT_K is gone. It was 0.55 because probe radiance "lands brighter
+// INDIRECT_K is gone. It existed because probe radiance "lands brighter
 // than the old tuned ambient did" — a fudge against a term the M1
 // demolition deleted, so it had been calibrating the indirect half
 // against something that no longer existed. Scaling one half of the

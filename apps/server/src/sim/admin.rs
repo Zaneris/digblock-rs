@@ -4,11 +4,11 @@
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
 
-use super::{client_send, OutMsg, Sim, SpawnLock};
+use super::{OutMsg, Sim, SpawnLock, client_send};
 use digblock_core::compass::{cardinal, compass};
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{REACH, raycast};
 use digblock_net::messages::ServerMsg;
-use digblock_net::protocol::{validate_name, MAX_CHAT_LEN, SERVER_ID};
+use digblock_net::protocol::{MAX_CHAT_LEN, SERVER_ID, validate_name};
 use glam::Vec3;
 
 /// `(usage, description)` — usage's first token is the dispatch key and
@@ -94,9 +94,9 @@ pub(super) fn commands_msg() -> ServerMsg {
 	}
 }
 
-/// 24h clock → sun angle: one hour = 15°, anchored to the tod
-/// convention in `sun.rs` — 0:00 midnight (180), 6:00 sunrise (90),
-/// 12:00 noon (0), 18:00 sunset (−90).
+/// 24h clock → sun angle: the clock's hours spread evenly over the full
+/// turn, anchored to the tod convention in `sun.rs` (midnight at its wrap
+/// point, noon at its origin) and falling as the day advances.
 fn tod_of_clock(h: u32, m: u32) -> f32 {
 	180.0 - (h as f32 + m as f32 / 60.0) * 15.0
 }
@@ -242,8 +242,8 @@ impl Sim {
 				"not looking at the top of a block - aim at the surface to stand on",
 			);
 		}
-		// The hit cell is the floor; the eye sits centred two above it,
-		// exactly as `spawn::anchor` places one over a surface block.
+		// The hit cell is the floor; the eye sits centred above it, at
+		// exactly the offset `spawn::anchor` uses over a surface block.
 		let eye = Vec3::new(
 			hit.cell.0 as f32 + 0.5,
 			hit.cell.1 as f32 + 2.5,
@@ -570,6 +570,7 @@ mod tests {
 	use digblock_net::messages::{ClientMsg, ServerMsg};
 	use digblock_net::protocol::SERVER_ID;
 	use glam::Vec3;
+	use std::assert_matches;
 
 	fn chat(conn_id: u64, text: &str) -> SimEvent {
 		SimEvent::Msg {
@@ -600,14 +601,18 @@ mod tests {
 		let mut sim = admin_sim("advert");
 		let admin = connect_named(&mut sim, 1, "BOSS"); // case-insensitive
 		let other = connect_named(&mut sim, 2, "guest");
-		assert!(admin
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::AdminCommands { .. })));
-		assert!(!other
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::AdminCommands { .. })));
+		assert!(
+			admin
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
+		);
+		assert!(
+			!other
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
+		);
 	}
 
 	#[test]
@@ -626,13 +631,17 @@ mod tests {
 		// The guest's own slash line: private refusal, nothing broadcast
 		// (the admin's /help reply mentions /tp usage, so key on the
 		// guest's exact line).
-		assert!(server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("admin-only")));
-		assert!(!admin
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.contains("/tp 0 0"))));
+		assert!(
+			server_lines(&guest)
+				.iter()
+				.any(|t| t.contains("admin-only"))
+		);
+		assert!(
+			!admin
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.contains("/tp 0 0")))
+		);
 	}
 
 	#[test]
@@ -643,7 +652,7 @@ mod tests {
 			sim.tick_once(vec![chat(1, "/ban-list")]);
 		}
 		admin.drain();
-		// Burst is 3; all six commands were answered.
+		// More lines than the chat burst allows; all were answered.
 		let n = server_lines(&admin)
 			.iter()
 			.filter(|t| t.contains("no bans"))
@@ -661,13 +670,17 @@ mod tests {
 		sim.tick_once(vec![chat(1, "/ban Griefer")]);
 		admin.drain();
 		victim.drain();
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("banned griefer")));
-		assert!(victim
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Refused { reason } if reason == "banned")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("banned griefer"))
+		);
+		assert!(
+			victim
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Refused { reason } if reason == "banned"))
+		);
 		assert!(sim.test_player(2).is_none(), "victim dropped");
 		// Same address (conn 2) reconnecting: refused at Hello.
 		let again = try_connect(&mut sim, 2, [0; 16]);
@@ -683,10 +696,10 @@ mod tests {
 		drop(sim);
 		let mut sim = Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
 		let again = try_connect(&mut sim, 2, [0; 16]);
-		assert!(matches!(
+		assert_matches!(
 			again.msgs.first(),
 			Some(ServerMsg::Refused { reason }) if reason == "banned"
-		));
+		);
 		// Unbanned (by name) → welcome again.
 		sim.set_admin_name(Some("boss".into()));
 		let mut admin = connect_named(&mut sim, 1, "boss");
@@ -696,7 +709,7 @@ mod tests {
 		assert!(server_lines(&admin).iter().any(|t| t.contains("griefer")));
 		assert!(server_lines(&admin).iter().any(|t| t.contains("unbanned")));
 		let back = try_connect(&mut sim, 2, [0; 16]);
-		assert!(matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. })));
+		assert_matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. }));
 	}
 
 	#[test]
@@ -764,9 +777,11 @@ mod tests {
 		assert_eq!(look, [-1.0, 0.0, 0.0]);
 		assert_eq!(sim.test_look(1), Some(Vec3::new(-1.0, 0.0, 0.0)));
 		assert_eq!(sim.test_player(1).unwrap().pos.to_array(), pos);
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to 40 -20")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("teleported to 40 -20"))
+		);
 
 		// Relative: ~ keeps the axis, ~<d> offsets from the floor.
 		sim.tick_once(vec![chat(1, "/tp ~-10 ~ n")]);
@@ -793,9 +808,11 @@ mod tests {
 			.count();
 		sim.tick_once(vec![chat(1, "/tp up down")]);
 		admin.drain();
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("usage: /tp")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("usage: /tp"))
+		);
 		let after = sim.test_player(1).unwrap().pos;
 		assert_eq!((after.x, after.z), (before.x, before.z));
 		let teleports_after = admin
@@ -820,9 +837,11 @@ mod tests {
 		admin.drain();
 		let apos = sim.test_player(1).unwrap().pos;
 		assert_eq!((apos.x, apos.z), (gpos.x, gpos.z));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to guest")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("teleported to guest"))
+		);
 
 		// Separate again, then bring the guest to the admin.
 		sim.tick_once(vec![chat(1, "/tp 40 -20")]);
@@ -832,16 +851,22 @@ mod tests {
 		guest.drain();
 		let gpos = sim.test_player(2).unwrap().pos;
 		assert_eq!((gpos.x, gpos.z), (apos.x, apos.z));
-		assert!(guest
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Teleported { .. })));
-		assert!(server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("boss teleported you")));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("brought guest")));
+		assert!(
+			guest
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Teleported { .. }))
+		);
+		assert!(
+			server_lines(&guest)
+				.iter()
+				.any(|t| t.contains("boss teleported you"))
+		);
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("brought guest"))
+		);
 
 		// Edge cases: unknown player, self, missing arg — reply, no move.
 		let before = sim.test_player(1).unwrap().pos;
@@ -865,7 +890,8 @@ mod tests {
 		sim.tick_once(vec![chat(1, "/time 18:30")]);
 		admin.drain();
 		guest.drain();
-		// 18:30 → tod 180 − 18.5·15 = −97.5, pushed to both immediately.
+		// The evening hour maps through `tod_of_clock` and is pushed to both
+		// immediately.
 		for c in [&admin, &guest] {
 			let tod = c
 				.msgs
@@ -877,12 +903,14 @@ mod tests {
 				.expect("immediate TimeOfDay");
 			assert!((tod + 97.5).abs() < 0.01, "tod {tod}");
 		}
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("time set to 18:30")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|t| t.contains("time set to 18:30"))
+		);
 
 		// Time keeps flowing from the new anchor: the next heartbeat has
-		// fallen by the elapsed ticks (≤10 s at 0.3°/s), not reverted to
+		// fallen by the elapsed ticks at the sun's rate, not reverted to
 		// the tick clock.
 		for _ in 0..digblock_net::protocol::TOD_SYNC_TICKS {
 			sim.tick_once(vec![]);
@@ -989,12 +1017,14 @@ mod tests {
 			server_lines(&admin)
 		);
 		let region = sim.spawn_lock().expect("locked");
-		// One block down, two out, three high, around the spawn floor.
+		// A box around the spawn floor: `spawn::lock_region`'s extents.
 		let spawn = FLAT_SPAWN;
 		let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
 		let h = spawn.y.floor() as i32 - 2;
 		assert_eq!(
-			(region.x0, region.x1, region.y0, region.y1, region.z0, region.z1),
+			(
+				region.x0, region.x1, region.y0, region.y1, region.z0, region.z1
+			),
 			(sx - 2, sx + 2, h, h + 3, sz - 2, sz + 2)
 		);
 
@@ -1085,7 +1115,7 @@ mod tests {
 			"{:?}",
 			server_lines(&admin)
 		);
-		// The eye sits two over the block the ray hit — the same offset
+		// The eye sits over the block the ray hit — the same offset
 		// `spawn::anchor` puts one at over a surface block.
 		assert_eq!(
 			sim.test_spawn_point(),
@@ -1220,9 +1250,11 @@ mod tests {
 		admin.drain();
 		// East = sunrise = −x.
 		assert_eq!(sim.test_spawn_dir(), Some(Vec3::new(-1.0, 0.0, 0.0)));
-		assert!(server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("facing east")));
+		assert!(
+			server_lines(&admin)
+				.iter()
+				.any(|l| l.contains("facing east"))
+		);
 
 		// A joiner arrives facing it...
 		let guest = connect_named(&mut sim, 2, "guest");
@@ -1289,10 +1321,10 @@ mod tests {
 		// A first join under a real identity banks a position...
 		let id = [7u8; 16];
 		let first = crate::sim::harness::try_connect_as(&mut sim, 2, id, "guest");
-		assert!(matches!(
+		assert_matches!(
 			first.msgs.first(),
 			Some(ServerMsg::Welcome { spawn_look, .. }) if *spawn_look == [0.0, 0.0, -1.0]
-		));
+		);
 		wait_live(&mut sim, 2);
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);
 

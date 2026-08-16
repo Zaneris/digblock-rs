@@ -6,9 +6,10 @@
 //! item **in view space** — the camera is the origin looking down −z,
 //! so there is no camera basis to derive, no yaw/pitch to reconstruct,
 //! and the pose is a function of walk phase and swing alone. It also
-//! carries its OWN projection (a fixed 55° field, near 0.01) so the
-//! item's on-screen size never moves when the world FOV or the window
-//! does, and so nothing this close can clip the world's near plane.
+//! carries its OWN projection — a fixed field and near plane of its own
+//! — so the item's on-screen size never moves when the world FOV or the
+//! window does, and so nothing this close can clip the world's near
+//! plane.
 //!
 //! The GPU half draws [`item_geom`] faces through the shared quad index
 //! pattern in a pass of its own, over the finished frame with a freshly
@@ -16,6 +17,7 @@
 //! into a wall while still occluding itself correctly — a staircase in
 //! hand is not convex, and back-face culling alone would not sort it.
 
+use glam::camera::rh::proj::directx::perspective;
 use glam::{Mat4, Vec3};
 
 use digblock_platform::Gpu;
@@ -26,15 +28,15 @@ use crate::ui::hud::IconKind;
 // ---- pose -------------------------------------------------------------
 
 /// Vertical field of view of the viewmodel's own projection, degrees.
-/// Narrower than the world's 75° so the item reads with less distortion
-/// at this distance.
+/// Narrower than the world's so the item reads with less distortion at
+/// this distance.
 const FOV_Y_DEG: f32 = 55.0;
 /// How far in front of the eye the item sits, world units.
 const DIST: f32 = 1.0;
-/// Item size across, world units. A cube turned 45° presents its
-/// diagonal, so its silhouette is ~√2 of this — at the field and
-/// distance above that lands around a quarter of the viewport height,
-/// which is present without being in the way.
+/// Item size across, world units. A cube turned to the rest yaw presents
+/// its diagonal rather than a face, so its silhouette is the wider of the
+/// two — at the field and distance above, that lands present without
+/// being in the way.
 const SIZE: f32 = 0.18;
 /// Where the item rests, as a fraction of the frustum half-extents at
 /// `DIST`. Fractions rather than absolute offsets: the hand should keep
@@ -44,8 +46,8 @@ const SIZE: f32 = 0.18;
 const REST_X_FRAC: f32 = 0.48;
 const REST_Y_FRAC: f32 = -0.58;
 
-/// Resting orientation. Yawing −45° then tipping 20° toward the viewer
-/// puts the item's +x, +y and +z faces on screen — deliberately the
+/// Resting orientation. Yawing, then tipping toward the viewer, puts
+/// the item's +x, +y and +z faces on screen — deliberately the
 /// same three the inventory icon shows, so an item looks like itself in
 /// the hand and in the bar.
 const REST_YAW: f32 = -std::f32::consts::FRAC_PI_4;
@@ -73,7 +75,7 @@ const BOB_ATTACK: f32 = 6.0;
 /// where the distance accumulator has nothing to say. It fades out as
 /// the walk bob fades in, so the two never fight over the same axis.
 const BREATH_SECS: f32 = 4.5;
-/// Travel, as fractions of [`SIZE`]. A quarter of the bob's: this
+/// Travel, as fractions of [`SIZE`]. A fraction of the bob's: this
 /// should be noticed only when it stops.
 const BREATH_Y: f32 = 0.055;
 const BREATH_X: f32 = 0.022;
@@ -346,13 +348,14 @@ pub fn combine(a: Pose, b: Pose) -> Pose {
 }
 
 /// The full transform for the viewmodel: item twelfths → clip space.
-/// `height` is the geometry's height in twelfths (24 for a door), used
-/// to centre it, so a door hangs in the hand like a cube does.
+/// `height` is the geometry's height in twelfths — a door's spans both
+/// its cells — used to centre it, so a door hangs in the hand like a
+/// cube does.
 pub fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 	let half_h = (FOV_Y_DEG.to_radians() / 2.0).tan() * DIST;
 	let half_w = half_h * aspect.max(0.01);
 	let rest = Vec3::new(REST_X_FRAC * half_w, REST_Y_FRAC * half_h, -DIST);
-	let proj = Mat4::perspective_rh(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
+	let proj = perspective(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
 	// Right to left: centre the twelfths on the origin, shrink to
 	// SIZE, turn to the resting orientation, apply this frame's flick,
 	// then park it in the corner.
@@ -379,8 +382,8 @@ pub fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 
 // ---- geometry ---------------------------------------------------------
 
-/// One vertex: position in twelfths, uv, texture layer, face index into
-/// the shader's normal table. 28 B.
+/// One vertex, in order: position in twelfths, uv, texture layer, face
+/// index into the shader's normal table.
 ///
 /// Shared with `players.rs`, which draws the SAME geometry in a remote
 /// player's hand — so your hand and theirs are one build rather than two
@@ -405,17 +408,28 @@ pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 	out.clear();
 	for f in item_geom::faces(kind) {
 		let face = f.dir as u32;
+		// The ink bit rides above the layer index rather than taking an
+		// attribute of its own: this vertex feeds TWO pipelines (your own
+		// hand and a remote's), so a new attribute would be a format
+		// change in both, and the layer word has every bit spare.
+		let layer = u32::from(f.tex_layer) | (u32::from(f.emissive) << INK_BIT);
 		for i in 0..4 {
 			let c = f.corners[i];
 			out.push(Vert {
 				pos: [c[0] as f32, c[1] as f32, c[2] as f32],
 				uv: f.uv[i],
-				layer: u32::from(f.tex_layer),
+				layer,
 				face,
 			});
 		}
 	}
 }
+
+/// Where [`ItemFace::emissive`](item_geom::ItemFace::emissive) rides in
+/// the vertex's layer word, clear of every texture index there will ever
+/// be. Both item shaders mask it back out before they sample; pinned
+/// against the WGSL twins by `the_ink_bit_matches_the_shaders`.
+pub(crate) const INK_BIT: u32 = 16;
 
 /// Everything the viewmodel pass needs for one frame.
 #[derive(Clone, Copy)]
@@ -529,8 +543,8 @@ impl ViewmodelDraw {
 		// it for their held cubes.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("viewmodel"),
-			bind_group_layouts: &[&bgl, materials_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(&bgl), Some(materials_bgl)],
+			immediate_size: 0,
 		});
 		let pipeline = crate::pipeline_builder::build(
 			device,
@@ -650,6 +664,60 @@ mod tests {
 	use digblock_core::block::BlockType;
 
 	const ASPECT: f32 = 16.0 / 9.0;
+
+	/// One vertex word, two readers — your own hand and a remote's — and
+	/// nothing but agreement makes them one item. Both shaders must
+	/// declare the same bit, and it must sit clear of every texture layer
+	/// there will ever be, since they share the word.
+	#[test]
+	fn the_ink_bit_matches_the_shaders() {
+		let decl = format!("const ITEM_INK_BIT = {}u;", 1u32 << INK_BIT);
+		for (name, src) in [
+			("viewmodel", digblock_assets::shader::VIEWMODEL),
+			("players", digblock_assets::shader::PLAYERS),
+		] {
+			assert!(src.contains(&decl), "{name}.wgsl must declare `{decl}`");
+		}
+		assert!(
+			u32::from(digblock_core::block::tex::COUNT) < 1u32 << INK_BIT,
+			"the layer index has to fit under the bit it shares a word with"
+		);
+	}
+
+	/// A tool's lit part is a FACE, not the item: the geometry has to
+	/// carry both kinds at once, or a glowing core costs the body its
+	/// shading.
+	#[test]
+	fn a_tool_glows_in_one_place_and_is_shaded_everywhere_else() {
+		for kind in [IconKind::Siphon, IconKind::Pick] {
+			let faces = crate::item_geom::faces(kind);
+			assert!(
+				faces.iter().any(|f| f.emissive),
+				"{kind:?} has no lit part — it is a light source with nothing to see"
+			);
+			assert!(
+				faces.iter().any(|f| !f.emissive),
+				"{kind:?} is fullbright throughout, which is the flat look the \
+				 per-face bit exists to avoid"
+			);
+			// The lit part wears the row's own texture, which is where the
+			// GI takes the colour of the light from: one authored thing,
+			// so the glow you see and the glow it throws cannot drift.
+			let block = crate::ui::hud::icon_block(kind).expect("a tool has a row");
+			assert!(
+				faces
+					.iter()
+					.filter(|f| f.emissive)
+					.all(|f| f.tex_layer == block.props().tex_top),
+				"{kind:?}'s glow is not its row's texture"
+			);
+			assert!(block.props().light > 0, "{kind:?} does not cast");
+			assert!(
+				!block.props().emissive,
+				"{kind:?} is fullbright as a BLOCK, which would flatten the whole tool"
+			);
+		}
+	}
 
 	/// Project an item-space point (twelfths) to normalized device
 	/// coordinates, so the tests can ask where the thing actually is.
@@ -895,7 +963,7 @@ mod tests {
 		for _ in 0..60 {
 			s.advance(dt, Some(IconKind::Cube(BlockType::Dirt)));
 		}
-		// A new slot every ~6 frames: fast, but slower than the swap, so
+		// A new slot every few frames: fast, but slower than the swap, so
 		// each lands mid-rise — the case that used to snap.
 		let items = [BlockType::Stone, BlockType::Wood, BlockType::Gravel];
 		let mut prev = s.pose().offset.y;

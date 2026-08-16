@@ -11,9 +11,9 @@
 
 use digblock_platform::Gpu;
 
-/// Simultaneous bursts. Sixteen is far past what a session ever shows at
-/// once (a level-up is rare and a burst is under three seconds), and
-/// costs a 512-byte buffer.
+/// Simultaneous bursts. The cap is far past what a session ever shows at
+/// once (a level-up is rare and a burst is short-lived — see [`LIFE`]),
+/// and the buffer it sizes is negligible.
 pub const MAX_BURSTS: usize = 16;
 /// Flakes per burst — keep in sync with confetti.wgsl PARTICLES.
 const PARTICLES: u32 = 96;
@@ -77,8 +77,8 @@ impl Confetti {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("confetti"),
-			bind_group_layouts: &[frame_bgl, &cam_bgl],
-			push_constant_ranges: &[],
+			bind_group_layouts: &[Some(frame_bgl), Some(&cam_bgl)],
+			immediate_size: 0,
 		});
 		// Depth: occluded by terrain, never occludes anything itself —
 		// flakes are alpha-blended and drawn after the opaque world.

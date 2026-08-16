@@ -3,11 +3,11 @@
 //! sync: outbound is a tokio unbounded mpsc (sync `send`, async `recv`),
 //! inbound is a crossbeam unbounded channel (sync on both ends).
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use std::sync::atomic::{AtomicU32, Ordering};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use wtransport::{ClientConfig, Endpoint};
 
 enum Outgoing {
@@ -27,7 +27,7 @@ pub enum CertPolicy {
 }
 
 impl CertPolicy {
-	/// Parse a pinned policy from the 64-hex-char hash the server logs at
+	/// Parse a pinned policy from the hex SHA-256 hash the server logs at
 	/// startup (separators like `:` or spaces are tolerated). Shared by
 	/// every `--cert-hash` flag so the launchers can't drift.
 	pub fn pinned_from_hex(hex: &str) -> Result<CertPolicy, String> {
@@ -50,8 +50,8 @@ pub struct ChannelTransport {
 	/// QUIC's own smoothed round trip in MICROseconds, published by the
 	/// background thread. Microseconds because a LAN round trip is well
 	/// under a millisecond and would otherwise floor to zero — the probe
-	/// measures 0.66 ms on loopback. `u32::MAX` means "no estimate yet",
-	/// which is distinct from a genuine zero.
+	/// measures a fraction of one on loopback. `u32::MAX` means "no
+	/// estimate yet", which is distinct from a genuine zero.
 	wire_rtt_us: Arc<AtomicU32>,
 }
 
@@ -194,8 +194,9 @@ async fn run(
 	let mut buf = vec![0u8; 64 * 1024];
 	let reason = loop {
 		// Republish QUIC's estimate on every wake. No timer needed: the
-		// loop wakes on each datagram, and snapshots alone are 20/s, so a
-		// live connection refreshes this far faster than anyone reads it.
+		// loop wakes on each datagram, and snapshots alone arrive many
+		// times a second, so a live connection refreshes this far faster
+		// than anyone reads it.
 		// A connection quiet enough to go stale here has nothing to report.
 		wire_rtt_us.store(
 			conn.rtt().as_micros().min(u128::from(RTT_UNKNOWN - 1)) as u32,

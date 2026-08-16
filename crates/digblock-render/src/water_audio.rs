@@ -3,17 +3,17 @@
 //! voices. Pure and GPU-free — reconciliation is unit-tested with
 //! synthetic impact maps.
 
-use crate::audio::{AudioCmd, LoopId, Sfx, LOOP_WATER_BASE};
+use crate::audio::{AudioCmd, LOOP_WATER_BASE, LoopId, Sfx};
 use digblock_core::chunk::ChunkPos;
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 
-/// Hearing radius. Deliberately much tighter than spray's visual 64: you
-/// can see a cascade across a valley without standing in its noise.
+/// Hearing radius. Deliberately much tighter than spray's visual range:
+/// you can see a cascade across a valley without standing in its noise.
 const RADIUS: f32 = 32.0;
-/// Max concurrent waterfall voices. Kept low because voices sum — four
-/// mid-gain loops around the camera read as "water everywhere" even when
-/// each one is individually reasonable.
+/// Max concurrent waterfall voices. Kept low because voices sum — a
+/// handful of mid-gain loops around the camera read as "water
+/// everywhere" even when each one is individually reasonable.
 const MAX_VOICES: usize = 3;
 /// Greedy clustering: a new emitter target must be at least this far
 /// from every already-accepted target.
@@ -24,14 +24,14 @@ const MATCH_DIST: f32 = 6.0;
 /// A voice with no matching target survives this long before stopping
 /// (cap-boundary flicker, transient remesh gaps).
 const GRACE_SECS: f32 = 1.0;
-/// Reconcile at 10 Hz — voices don't need frame-rate updates.
+/// Reconcile on its own slow tick — voices don't need frame-rate updates.
 const STEP_SECS: f32 = 0.1;
 
 /// Authored gain for a cluster of `n` impact cells at `dist` blocks.
 ///
 /// Bigger clusters are louder, capped well under the mix ceiling. The
 /// distance taper is the load-bearing half: without it every voice
-/// inside [`RADIUS`] was authored at 0.3-0.6 regardless of range, and
+/// inside [`RADIUS`] played at its cluster gain regardless of range, and
 /// the *only* falloff came from the platform panner — which on desktop
 /// clamps to unity for everything close by, so a trickle across the
 /// valley and the cascade at your feet arrived at the same loudness.
@@ -39,12 +39,12 @@ const STEP_SECS: f32 = 0.1;
 /// exactly 0 at `RADIUS` also removes the pop when a voice ages in or
 /// out at the range edge.
 fn gain_of(n: u32, dist: f32) -> f32 {
-	// Cluster gains are ~1.4x their original authoring (0.3/0.1/cap 0.6):
-	// a waterfall you are standing next to was too polite. Only this term
+	// Cluster gains were raised over their original authoring: a
+	// waterfall you are standing next to was too polite. Only this term
 	// moved — the taper's SHAPE is what the test below pins, and it is
 	// scale-invariant, so loudness and falloff stay independent knobs.
-	// Headroom check: MIN_SEP keeps the 2nd and 3rd voices at least 8
-	// blocks out, so the worst realistic sum is ~0.8 + 0.45 + 0.45.
+	// Headroom check: MIN_SEP keeps the second and third voices well out,
+	// so even the worst realistic sum stays under the mix ceiling.
 	let cluster = (0.45 + 0.13 * (1.0 + n as f32).ln()).min(0.8);
 	let taper = (1.0 - dist / RADIUS).clamp(0.0, 1.0);
 	cluster * taper * taper
@@ -244,7 +244,7 @@ mod tests {
 	fn distant_clusters_get_own_voices_capped() {
 		let mut w = WaterAudio::default();
 		let mut out = Vec::new();
-		// Two clusters 20 blocks apart in different chunks.
+		// Two clusters well past MIN_SEP apart, in different chunks.
 		w.set_chunk(ChunkPos::new(0, 0, 0), ORIGIN, &[pack(1, 1, 1)]);
 		w.set_chunk(ChunkPos::new(1, 0, 0), (16.0, 0.0, 0.0), &[pack(5, 1, 1)]);
 		w.update(1.0, Vec3::ZERO, &mut out);
@@ -284,9 +284,10 @@ mod tests {
 	}
 
 	/// The bug this pins: `gain_of` used to ignore distance entirely, so
-	/// every audible waterfall was authored at 0.3-0.6 whatever its range
-	/// and the whole falloff was left to the platform panner (which on
-	/// desktop is flat inside 5.6 blocks). Water was audible everywhere.
+	/// every audible waterfall played at its cluster gain whatever its
+	/// range, and the whole falloff was left to the platform panner
+	/// (which on desktop is flat over the near field). Water was audible
+	/// everywhere.
 	#[test]
 	fn gain_falls_off_with_distance_and_reaches_zero_at_the_radius() {
 		let near = gain_of(1, 0.0);

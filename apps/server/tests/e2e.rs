@@ -9,7 +9,7 @@
 use crossbeam_channel::unbounded;
 use digblock_core::block::BlockType;
 use digblock_core::player::Player;
-use digblock_core::raycast::{raycast, REACH};
+use digblock_core::raycast::{REACH, raycast};
 use digblock_net::client::NetClientConfig;
 use digblock_net::messages::EditKind;
 use digblock_net::{NetClient, NetEvent};
@@ -19,8 +19,8 @@ use digblock_server::{net, run_sim_loop};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 // ---- containerized master harness ------------------------------------------
@@ -182,10 +182,10 @@ impl TestServer {
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&data_dir);
-		// Seed 7 spawns on GRASS: the dig flows below run at Mining 1,
-		// and seed 42's spawn disc is bare Stone, which SIM v12's rock
-		// gate refuses (a real design consequence — a stone-spawn player
-		// levels on leaves/soil off the disc first).
+		// Seed 7 spawns on GRASS, so the dig flows below run unskilled;
+		// the default seed's spawn disc is bare Stone, which SIM v12's
+		// rock gate refuses (a real design consequence — a stone-spawn
+		// player levels on leaves/soil off the disc first).
 		let sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
 		let (event_tx, event_rx) = unbounded();
 		let running = Arc::new(AtomicBool::new(true));
@@ -335,7 +335,7 @@ impl TestClient {
 
 	/// The real timed-dig flow: aim, DigStart, hold for the block's
 	/// hardness (plus margin), then the completing Dig request. Paced at
-	/// real 60 Hz — the server's aim verification tracks wall clock.
+	/// the real tick rate — the server's aim verification tracks wall clock.
 	fn timed_dig(
 		&mut self,
 		player: &mut Player,
@@ -468,7 +468,7 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	let mut player = Player::new(a.spawn);
 	// Predicted idle ticks: inputs flow, and both the server player and
 	// this local twin settle onto the same ground fixed point. Real-time
-	// paced — racing ahead of the 60 Hz server builds an input backlog
+	// paced — racing ahead of the live server builds an input backlog
 	// that leaves its look direction stale through the dig's aim checks.
 	for _ in 0..60 {
 		a.client
@@ -544,7 +544,7 @@ fn verified_join_uses_master_display_name() {
 
 	// Server names are display-only and sanitized, never rejected: the
 	// master keeps letters/digits/space/-/_, collapses space runs, and
-	// caps at 24 chars. Re-register (same host:port replaces the entry)
+	// caps the length. Re-register (same host:port replaces the entry)
 	// with a dirty name and read the listing back.
 	let cfg = server.master_config(
 		&master.url,

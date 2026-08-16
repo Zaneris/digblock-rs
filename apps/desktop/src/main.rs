@@ -33,28 +33,34 @@ fn main() {
 
 	// Deterministic-capture flags:
 	//   --screenshot out.png [--exit] [--frames N]
+	//   --offscreen (draw off the swapchain — the flag that lets a capture
+	//            run with the screen locked or the window covered; not
+	//            implied by --screenshot, since it also drops the present
+	//            wait a frame-time run measures)
 	//   --seed <f64 bits or decimal> --metrics-csv out.csv
 	//   --yaw <deg> --pitch <deg> (initial camera view; yaw 90 faces +x,
 	//            the sun azimuth plane)
-	//   --bench (scripted flight, inputs off, vsync off; defaults seed 42,
-	//            tod 45, 1800 frames, bench.csv)
+	//   --bench (scripted flight, inputs off, vsync off; supplies its own
+	//            seed, tod, frame count and CSV path)
 	//   --fly N / --warp N (fly the bench path N frames then freeze, or
 	//            arrive at that same pose with no motion behind it — the
 	//            temporal-artifact A/B; pair with --frames)
 	//   --walk (modifier on either: an eye-height oscillation, one block
-	//            forward and one back, instead of the 30 blocks/s flyover —
-	//            a screen-space artifact scales with screen motion, so the
+	//            forward and one back, instead of the flyover — a
+	//            screen-space artifact scales with screen motion, so the
 	//            two paths are two regimes)
 	//   --render-scale S (DEV/CAPTURE ONLY — no slider exposes it and it
-	//            is locked at 100% for players. World resolution as a
+	//            is locked at native for players. World resolution as a
 	//            fraction of the surface; the UI stays native)
 	//   --gi-scale D (GI resolve divisor against the render size: 1/2/3/4;
-	//            2 shipped, 3 is the interactive high-DPI default. This is
-	//            the knob that pays — see settings::density_gi_div)
-	//   --bench-speed B (flyover blocks/s, default 30 — every BENCH.md
-	//            baseline's value. 30 is 7.5x walking pace and a different
-	//            STREAMING regime; use 4 to soak at how the game is played)
-	//   --size WxH (logical window size; the GI resolve is half-res off
+	//            the interactive high-DPI default is derived from display
+	//            density. This is the knob that pays — see
+	//            settings::density_gi_div)
+	//   --bench-speed B (flyover blocks/s; the DEFAULT is every BENCH.md
+	//            baseline's value, several times walking pace and a
+	//            different STREAMING regime — drop it to walking pace to
+	//            soak at how the game is played)
+	//   --size WxH (logical window size; the GI resolve is a fraction of
 	//            the surface, so this is what a cross-platform comparison
 	//            has to hold equal)
 	//   --pos x y z (stand here instead of at the seed's spawn)
@@ -92,9 +98,9 @@ fn main() {
 			// first listed server (or the one matching --server).
 			"--join" => join = true,
 			"--server" => server_filter = Some(parse_or_die::<String>("--server", args.next())),
-			// Display name (3-10 chars: a-z A-Z 0-9 - _). Pre-fills the
-			// menu field; required for --join. Never defaulted — entering
-			// a name is mandatory.
+			// Display name, held to `validate_name`'s alphabet and length.
+			// Pre-fills the menu field; required for --join. Never
+			// defaulted — entering a name is mandatory.
 			"--name" => name = Some(parse_or_die::<String>("--name", args.next())),
 			"--mute" => mute = true,
 			"--screenshot" => {
@@ -122,11 +128,12 @@ fn main() {
 			// with screen motion, so the flyover and the walk are two
 			// regimes and a fix has to be measured in both.
 			"--walk" => config.walk = true,
-			// Flyover speed in blocks/s. The default 30 is 7.5x WALK_SPEED
-			// and is a different STREAMING regime, not just a faster one:
-			// at that pace the GI upload budget cannot keep up. Use 4 for a
-			// soak that matches how the game is played. Leave the DEFAULT
-			// alone — every BENCH.md baseline was taken at 30.
+			// Flyover speed in blocks/s. The default is several times
+			// WALK_SPEED and is a different STREAMING regime, not just a
+			// faster one: at that pace the GI upload budget cannot keep
+			// up. Drop it to walking pace for a soak that matches how the
+			// game is played. Leave the DEFAULT alone — every BENCH.md
+			// baseline was taken at it.
 			"--bench-speed" => {
 				config.bench_speed = parse_or_die("--bench-speed", args.next());
 			}
@@ -144,9 +151,9 @@ fn main() {
 				let v: f32 = parse_or_die("--render-scale", args.next());
 				cli_render_scale = Some(v.clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX));
 			}
-			// GI resolve divisor against the RENDER size: 1, 2 (default),
-			// 3 or 4. Must divide exactly — chunk.wgsl's bilateral
-			// upsample is a 4-tap gather over an integer ratio.
+			// GI resolve divisor against the RENDER size, one of
+			// `GI_SCALE_DIVISORS`. Must divide exactly — chunk.wgsl's
+			// bilateral upsample is a 4-tap gather over an integer ratio.
 			"--gi-scale" => {
 				let d: u32 = parse_or_die("--gi-scale", args.next());
 				if !GI_SCALE_DIVISORS.contains(&d) {
@@ -155,7 +162,7 @@ fn main() {
 				}
 				cli_gi_scale = Some(d);
 			}
-			// A specific window size, LOGICAL. The GI resolve is half-res off
+			// A specific window size, LOGICAL. The GI resolve is a fraction of
 			// the surface, so its cost scales with this directly — which makes
 			// it the one thing a desktop-vs-web comparison must hold equal
 			// before any of its numbers mean anything.
@@ -174,6 +181,15 @@ fn main() {
 				options.window_size = Some((parse(w), parse(h)));
 			}
 			"--no-vsync" => options.no_vsync = true,
+			// Render into a texture of our own and never touch the
+			// swapchain. What makes an unattended capture independent of
+			// the desktop: a covered or screensaver'd window is handed no
+			// surface texture on macOS, so a windowed run stops producing
+			// frames the moment the screen locks. Never implied by
+			// --screenshot — dropping the swapchain drops the present
+			// wait with it, and BENCH.md's baselines were taken through
+			// the surface.
+			"--offscreen" => options.offscreen = true,
 			// Pin the window to one monitor (index into winit's
 			// enumeration). Frame-time captures are not comparable across
 			// screens — backing scale sets the physical framebuffer and a
@@ -247,18 +263,38 @@ fn main() {
 		config.metrics_csv.get_or_insert_with(|| "bench.csv".into());
 		options.exit_after_frames = Some(u64::from(frames.unwrap_or(1800)));
 		// Vsync-paced by default: the flight looks as played and the
-		// over-12.5ms count measures real dropped frames. Add --no-vsync
+		// over-budget frame count measures real drops. Add --no-vsync
 		// for uncapped raw-cost measurement (percentiles = true frame
 		// cost; presentation judders inherently at >display rate).
+	} else if options.exit_after_screenshot && options.screenshot.is_none() {
+		// `--exit` means what the --tod guard above already calls it: a
+		// run that quits on its own. Without this it meant something much
+		// narrower — the platform's only non-bench exit is the one behind
+		// the SCREENSHOT (`exit_after_screenshot && screenshot.is_some()`),
+		// and `--frames` on its own merely says WHEN to shoot rather than
+		// when to stop.
+		//
+		// So `--metrics-csv out.csv --frames 400 --exit` armed neither
+		// path and ran until it was killed, writing CSV rows the whole
+		// time. It reads exactly like "run 400 frames and quit", which is
+		// the trap: every flag in it is real, the combination is silently
+		// inert, and the failure looks like a hang rather than a mistake.
+		let Some(n) = frames else {
+			eprintln!(
+				"--exit needs something to end the run: --frames N, a --screenshot, or --bench"
+			);
+			std::process::exit(2);
+		};
+		options.exit_after_frames = Some(u64::from(n));
 	}
 
 	// An explicit --name must be valid; a bad one is fatal like any other
 	// bad flag value (silently dropping it would surprise scripted joins).
-	if let Some(n) = &name {
-		if let Err(e) = digblock_net::protocol::validate_name(n) {
-			eprintln!("bad value for --name: {e}");
-			std::process::exit(2);
-		}
+	if let Some(n) = &name
+		&& let Err(e) = digblock_net::protocol::validate_name(n)
+	{
+		eprintln!("bad value for --name: {e}");
+		std::process::exit(2);
 	}
 	// Env-derived knobs live in the launcher; the engine stays env-free
 	// (std::env is a stub on the wasm target).
@@ -305,6 +341,14 @@ fn main() {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(0);
+	// DIG_MINING=<level>: start there. Everything a level gates is
+	// otherwise unphotographable — the strength wall's refusals, dig
+	// speed, and the Resonant Pick's ranks, the second of which brightens
+	// the tool's own glow.
+	config.debug_mining = std::env::var("DIG_MINING")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(0);
 	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
 	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
 	// 80 100`, which is the only way to see the break spread — one still
@@ -320,8 +364,8 @@ fn main() {
 	}
 	// DIG_TORCHES=<n>: the courtyard, lit by n torches. A COUNT rather than
 	// a flag, because the emitter count is the variable — the resolve's NEE
-	// covers exactly one light per pixel, so 1 vs 8 with the geometry held
-	// fixed is the whole experiment.
+	// covers one light per pixel, so a single torch against a cluster, with
+	// the geometry held fixed, is the whole experiment.
 	for (name, slot) in [
 		("DIG_TORCHES", &mut config.debug_torches),
 		("DIG_TORCHES_FAR", &mut config.debug_torches_far),
@@ -371,6 +415,47 @@ fn main() {
 	config.debug_screen = std::env::var("DIG_SCREEN")
 		.ok()
 		.and_then(|v| digblock_render::DebugScreen::parse(&v));
+	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the
+	// vein under the crosshair. A PERCENT, and meant as a SWEEP, for
+	// DIG_CRACK's reason — one still cannot tell a stream that thickens
+	// from one that merely brightens.
+	//
+	// Unlike the crack it cannot stand its own scene: a vein is derived
+	// worldgen and there is no placing one, so it rides DIG_ORE, which
+	// already hollows a chamber around a deposit of a tier and grants the
+	// level that reveals it. Without that the crosshair lands on ordinary
+	// rock and the run photographs a bare wall — the silent-wrong-scene
+	// failure every other parse here is fatal about, so this one is too.
+	// And a draw needs the tool in hand: DIG_SCREEN's own `siphon`
+	// spelling is what puts it there, defaulted rather than
+	// re-implemented, so the capture still reaches the tool by cycling the
+	// roster the way a player does.
+	if let Ok(v) = std::env::var("DIG_SIPHON") {
+		match v.parse::<f32>() {
+			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_siphon = Some(p / 100.0),
+			_ => {
+				eprintln!("DIG_SIPHON must be a percent in 0..=100, got {v:?}");
+				std::process::exit(2);
+			}
+		}
+		if config.debug_ore == 0 {
+			eprintln!("DIG_SIPHON needs a vein to draw from: set DIG_ORE=<tier 1..=4> too");
+			std::process::exit(2);
+		}
+		config.debug_screen.get_or_insert_with(|| {
+			digblock_render::DebugScreen::parse("siphon")
+				.expect("DIG_SCREEN knows the siphon by name")
+		});
+		// And it has to be AIMED at the vein, which the default camera is
+		// not: the fly camera starts pitched DOWN, so a DIG_ORE chamber
+		// photographs the floor plate in front of the seam and the draw —
+		// which exists only while the crosshair holds a vein — renders
+		// nothing at all. Level puts the ray through the deposit's middle
+		// row, since the plan already stands the eye there. An explicit
+		// `--pitch` still wins, so a shot from under the seam is one flag
+		// away.
+		config.pitch.get_or_insert(0.0);
+	}
 	// Read at the launcher edge: the engine stays env-free so wasm, which
 	// has no environment at all, can set the same flag from a query param.
 	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();
@@ -508,8 +593,8 @@ fn main() {
 	}
 }
 
-/// Load-or-create the persistent 16-byte identity secret keying the
-/// server-side persisted inventory. A bearer secret by design (there are
+/// Load-or-create the persistent identity secret keying the server-side
+/// persisted inventory. A bearer secret by design (there are
 /// no accounts): whoever holds the bytes owns the inventory, so the file
 /// lives in the user's data dir. DIG_IDENTITY_FILE overrides the path —
 /// how a second local client gets its own identity for testing.
@@ -522,10 +607,10 @@ fn load_identity() -> [u8; 16] {
 				.unwrap_or_else(|| std::path::PathBuf::from("./digblock-identity"))
 		});
 	if let Ok(bytes) = std::fs::read(&path) {
-		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice()) {
-			if id != [0; 16] {
-				return id;
-			}
+		if let Ok(id) = <[u8; 16]>::try_from(bytes.as_slice())
+			&& id != [0; 16]
+		{
+			return id;
 		}
 		log::warn!("identity file {} malformed — regenerating", path.display());
 	}

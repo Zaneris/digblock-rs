@@ -12,14 +12,14 @@
 //!   essence — extract→craft→extract is a sink, always.
 //! - **Bonus lines only on uncraftable blocks.** A bonus line on a
 //!   craftable block is an essence PUMP: craft it from its cost
-//!   essences, extract it back, pocket the bonus — at 99 that turns
-//!   2 Earth into 1 Metal, or worse, manufactures Aether, which nothing
+//!   essences, extract it back, pocket the bonus — at the cap that turns
+//!   a couple of Earth into Metal, or worse, manufactures Aether, which nothing
 //!   may. So trace minerals and the Aether lines live on MINED rock
 //!   (Rubble, Gravel) and foliage, which have no recipes.
 //!
 //! Neither table is written out block by block any more. A structural
 //! block is a MATERIAL in a SHAPE (SKILLS-DESIGN §7.2, [`crate::material`]),
-//! so both sides prorate the material's 27-unit split by the shape's
+//! so both sides prorate the material's whole-cube split by the shape's
 //! volume — and the two invariants above become properties of the axis
 //! rather than facts a test happens to check. What remains hand-written
 //! here is the FUNCTIONAL roster: torches, the bucket charge, lamps and
@@ -39,8 +39,9 @@ fn functional_extract(b: BlockType) -> &'static [(Essence, u32)] {
 	}
 }
 
-/// Base extraction yields at 100% efficiency (level 99), ≤ 27 total for a
-/// whole block — the shortfall is structure lost to the process. Empty =
+/// Base extraction yields at full efficiency (the level cap), never more
+/// than a whole block's worth — the shortfall is structure lost to the
+/// process. Empty =
 /// not extractable at the bench.
 ///
 /// Derived: the material's base ([`crate::material::Material::extract_units`])
@@ -68,14 +69,14 @@ pub fn extract_base(b: BlockType) -> Vec<(Essence, u32)> {
 /// from the recipe in one dig. Rubble carried "trace minerals" on
 /// exactly that footing — `Stone` and `Sandstone` are craftable and both
 /// `drops: Rubble` (the Rubble rule), so craft → place → dig → extract
-/// closed the loop and turned Earth into Metal and Aether at 8 Earth a
-/// unit. Both halves are pinned by
+/// closed the loop and turned Earth into Metal and Aether at a trivial
+/// price. Both halves are pinned by
 /// `bonus_lines_never_sit_on_craftable_blocks`, which now follows
 /// `dig_drop`.
 ///
 /// The two trickles the Rubble lines provided survive on hosts nothing
-/// craftable drops into: Metal on `Gravel` (60) and Aether on
-/// `PineLeaves` (75).
+/// craftable drops into: Metal on `Gravel` and Aether on `PineLeaves`,
+/// each at its own level.
 pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 	use BlockType as B;
 	use Essence as E;
@@ -92,9 +93,9 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 		// however recipe-less it looks, because craftable rock drops it.
 		//
 		// Both of Rubble's rungs moved here rather than being deleted:
-		// 90 was an Alchemy milestone (`unlock::opens` derives the
-		// level-up fanfare from a bonus line appearing, so dropping the
-		// arm made 90 a dead level, caught by
+		// its upper rung was an Alchemy milestone (`unlock::opens` derives
+		// the level-up fanfare from a bonus line appearing, so dropping the
+		// arm made that level a dead one, caught by
 		// `unlock_levels_are_the_threshold_levels`), and the Aether rung
 		// is the pre-Aetherock trickle that keeps the deep lamps
 		// reachable. Gravel is scarcer than Rubble, which is the point —
@@ -105,9 +106,9 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 	}
 }
 
-/// Level-scaled yield for one base line: 40% at level 1 → 100% at 99,
-/// floored, min 1 (a listed line never vanishes entirely).
-/// `efficiency(L) = 40% + 60%·(L−1)/98`, as integer math.
+/// Level-scaled yield for one base line: a fraction of the base at the
+/// first level rising to all of it at the cap, floored, and never below
+/// one (a listed line never vanishes entirely). Integer math throughout.
 pub fn scaled_yield(base: u32, level: u32) -> u32 {
 	let level = level.clamp(1, 99);
 	(base * (3920 + 60 * (level - 1)) / 9800).max(1)
@@ -129,8 +130,33 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	out
 }
 
+/// What one FIELD extraction pays into a player's stocks (SKILLS-DESIGN
+/// §5.3) — a seam drawn out where it stands, with no ore in between.
+///
+/// The siphon is a bench you carry, so this is deliberately the ordinary
+/// [`extract_yields`] of the ore and not a second table: the Alchemy level
+/// scales a draw at the rock face exactly as it scales one at the bench,
+/// and the ore rows' yields stay the single statement of what a tier is
+/// worth. Nothing else could reach them — no ore ever becomes an item, so
+/// the bench never sees one.
+///
+/// Mining's capstone ([`crate::unlock::ore_mastery`]) multiplies the whole
+/// split rather than adding a line to it, which is what keeps "one extra
+/// vein's worth" true of Aetherock's two essences as well as of the three
+/// tiers that pay in one.
+///
+/// The ONE answer the server's dig credit and the engine's offline arm
+/// both take, so a solo world and a server cannot pay differently.
+pub fn field_yield(ore: BlockType, alchemy: u32, mining: u32) -> Vec<(Essence, u32)> {
+	let draws = 1 + crate::unlock::ore_mastery(mining);
+	extract_yields(ore, alchemy)
+		.into_iter()
+		.map(|(e, per)| (e, per * draws))
+		.collect()
+}
+
 /// Sum of a block's base yields — the fixed value extraction XP keys on
-/// (`ceil(total / 3)`, never the level-scaled outcome).
+/// (a fixed fraction of the total, never the level-scaled outcome).
 ///
 /// Totals the split without BUILDING it. `extract_base` allocates, and
 /// this is not a cold path the way that one is: `convert_xp` reaches here,
@@ -143,18 +169,13 @@ pub fn extract_total_base(b: BlockType) -> u32 {
 	crate::material::yield_total(m.extract_units(), s.units())
 }
 
-/// Transmutation waste multiplier in permille: 1600 (1.60×) at level 1
-/// easing to 1050 (1.05×) at 99, with the level-85 unlock clamping the
-/// tail to 1100 early. Monotonically non-increasing (pinned).
+/// Transmutation waste multiplier in permille: steep at the first level,
+/// easing toward parity at the cap, with a late unlock clamping the tail
+/// early. Monotonically non-increasing (pinned).
 pub fn waste_permille(level: u32) -> u32 {
 	let level = level.clamp(1, 99);
-	// round(550·(L−1)/98)
 	let lin = 1600 - (550 * (level - 1) + 49) / 98;
-	if level >= 85 {
-		lin.min(1100)
-	} else {
-		lin
-	}
+	if level >= 85 { lin.min(1100) } else { lin }
 }
 
 /// One cost line at `level`: `ceil(ideal · waste)`.
@@ -181,8 +202,8 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// where nobody has one. Flora and Earth are what a fresh miner
 		// already has too much of.
 		B::EssenceSiphon => &[(E::Flora, 30), (E::Earth, 15)],
-		// The game's biggest sink, and the only thing that makes 240
-		// Metal a goal rather than a number. The Aether line is what
+		// The game's biggest sink, and the only thing that makes Metal a
+		// goal rather than a number. The Aether line is what
 		// keeps Aetherock worth reaching for before the lamps arrive.
 		B::ResonantPick => &[(E::Metal, 240), (E::Earth, 60), (E::Aether, 12)],
 		B::Lantern => &[(E::Metal, 8), (E::Earth, 6)],
@@ -194,10 +215,10 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Table => &[(E::Flora, 9)],
 		// The bed is the catalog's first genuinely cross-family price:
 		// a timber frame AND the bedding on it. Aqua has exactly one
-		// source (the bucket charge, extraction unlocked at 15), so this
+		// source (the bucket charge, whose extraction unlocks early), so this
 		// is what makes carrying water home worth doing.
 		B::Bed => &[(E::Flora, 21), (E::Aqua, 6)],
-		// The bucket charge: lossy against its 18-Aqua extraction — no
+		// The bucket charge: lossy against what extracting it returns — no
 		// loop. Refused while the bucket is already full.
 		B::Water => &[(E::Aqua, 27)],
 		_ => return None,
@@ -207,7 +228,7 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
 /// not craftable.
 ///
-/// Derived for every structural block: the material's 27-unit split
+/// Derived for every structural block: the material's whole-cube split
 /// ([`crate::material::Material::craft_units`]) prorated UP to the
 /// shape's volume. Rounding the cost side up where [`extract_base`]
 /// rounds down is what makes "no matter creation" hold for every shape
@@ -243,9 +264,9 @@ pub fn craft_order() -> Vec<BlockType> {
 	out
 }
 
-/// The bench's pace for a WHOLE block — one whose 27 sub-units all come
-/// out, which is the 9-XP reference every other block is priced against:
-/// 0.5 s at level 1, 0.35 s from 25, 0.25 s from 75.
+/// The bench's pace for a WHOLE block — one whose every sub-unit comes
+/// out, which is the reference every other block is priced against. It
+/// quickens at two Alchemy milestones.
 pub fn base_pace_ticks(level: u32) -> u32 {
 	if level >= 75 {
 		15
@@ -256,23 +277,23 @@ pub fn base_pace_ticks(level: u32) -> u32 {
 	}
 }
 
-/// The reference block's extraction XP (`convert_xp` of a full 27-unit
+/// The reference block's extraction XP (`convert_xp` of a full whole-block
 /// base), i.e. what [`base_pace_ticks`] is the pace OF.
 const REF_XP: u32 = 9;
 
 /// Floor on the pace, in ticks. Leaves pay a single XP, and a strictly
-/// proportional pace would run them at 3 ticks — twenty a second, which
-/// is a stream of wire ops rather than a bench.
+/// proportional pace would run them many times a second, which is a stream
+/// of wire ops rather than a bench.
 const MIN_PACE_TICKS: u32 = 6;
 
-/// Bench extraction pace in 60 Hz ticks for ONE block of `b` at `level`:
-/// the level's whole-block pace scaled by what the block is WORTH, so
-/// the bench spends its time in proportion to what it yields. A stone
-/// (9 XP) takes the full interval, a slab third (3 XP) a third of it,
-/// and leaves fall to the floor above.
+/// Bench extraction pace in sim ticks for ONE block of `b` at `level`: the
+/// level's whole-block pace scaled by what the block is WORTH, so the
+/// bench spends its time in proportion to what it yields. A whole stone
+/// takes the full interval, a slab third a third of it, and leaves fall to
+/// the floor above.
 ///
 /// Keying on `convert_xp` rather than on a second table is deliberate:
-/// extraction XP is already `ceil(base_total / 3)`, i.e. the block's
+/// extraction XP is already a fixed fraction of the base total, i.e. the block's
 /// worth at the bench, so pace and pay can never disagree about which
 /// blocks are the substantial ones. Client-paced for presentation,
 /// server-enforced via the extraction token bucket.
@@ -309,16 +330,16 @@ fn costliest_extract_block() -> BlockType {
 ///
 /// The second half is not a nicety. The bucket banks ticks and a Convert
 /// spends [`extract_pace_ticks`] of them, which scales with the block's
-/// `convert_xp` — while the burst was sized off the 9-XP reference block
-/// alone. The two deepest ores are worth 20 and 33 XP, so their pace
+/// `convert_xp` — while the burst was sized off the reference block alone.
+/// The two deepest ores are worth several times that, so their pace
 /// exceeded a FULL bucket at every level and `process_alchemy` refused
 /// them forever: no debit, no yield, no XP, just the standing rebase.
 /// Aether has exactly one source, so that silently walled off the
 /// Master's Sigil, the Aetherlamp and the Resonant Pick — online only,
 /// since offline extraction is unpaced, which is the worst way to find
 /// out. `bases_stay_under_a_block` used to make it impossible
-/// (`total <= 27` implies `convert_xp <= REF_XP` implies pace ≤ one
-/// reference interval); ore is the deliberate exception to that bound, so
+/// (a base no bigger than a whole block implies `convert_xp <= REF_XP`,
+/// which implies a pace of at most one reference interval); ore is the deliberate exception to that bound, so
 /// the guarantee has to be stated here instead, and
 /// `the_bucket_can_always_afford_the_costliest_block` pins it.
 ///
@@ -717,6 +738,45 @@ mod tests {
 	/// recipe to make it from — there is nothing to run the loop with. The
 	/// cap exists to stop a craftable substance out-yielding its own cost,
 	/// and `no_level_ever_creates_matter` is the test that actually says so.
+	/// A field draw pays the ore's own bench yield, and the capstone
+	/// multiplies the whole split rather than one line of it.
+	///
+	/// The first half is why there is no second table: a siphon is a bench
+	/// you carry, so the Alchemy level has to scale a draw at the rock
+	/// face exactly as it scales one at the bench — and since no ore ever
+	/// becomes an item, this is the ONLY thing those yields are for.
+	///
+	/// The second half is Aetherock's, and it is the reason `ore_mastery`
+	/// counts draws instead of units: it is the one tier that pays in two
+	/// essences, so a capstone that added a flat bonus would have to pick
+	/// which of them to add it to.
+	#[test]
+	fn a_field_draw_pays_the_ore_and_the_capstone_multiplies_all_of_it() {
+		for &ore in &crate::worldgen::ore::ORES {
+			for alchemy in [1, 40, crate::skills::MAX_LEVEL] {
+				let bench = extract_yields(ore, alchemy);
+				assert!(!bench.is_empty(), "{ore:?} is worth nothing to draw");
+				assert_eq!(
+					field_yield(ore, alchemy, 1),
+					bench,
+					"{ore:?} at Alchemy {alchemy}: a draw is the bench's own yield"
+				);
+				let mastered = field_yield(ore, alchemy, crate::skills::MAX_LEVEL);
+				let draws = 1 + crate::unlock::ore_mastery(crate::skills::MAX_LEVEL);
+				assert!(draws > 1, "the capstone hands out nothing");
+				for (i, &(e, n)) in mastered.iter().enumerate() {
+					assert_eq!((e, n), (bench[i].0, bench[i].1 * draws), "{ore:?} line {i}");
+				}
+			}
+		}
+		// Aetherock is the tier that makes the multiply matter — if it ever
+		// stops paying two essences, this test stops proving anything.
+		assert!(
+			extract_yields(BlockType::Aetherock, 1).len() >= 2,
+			"the two-essence tier is what the capstone rule is for"
+		);
+	}
+
 	#[test]
 	fn bases_stay_under_a_block() {
 		for &b in &BlockType::ALL {

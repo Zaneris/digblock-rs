@@ -65,9 +65,10 @@ pub fn start() -> Result<(), JsValue> {
 	// a pure function of the frame index, so `?warp=600` lands the browser
 	// on bit-identically the camera `--warp 600` lands the desktop on.
 	//
-	// ?warp is the one that measures RENDER cost: ?bench travels at 30
-	// blocks/s, which is a STREAMING regime, so a travelling flight is
-	// dominated by how fast chunks arrive and says little about the GI.
+	// ?warp is the one that measures RENDER cost: ?bench travels at the
+	// flyover's default speed, which is a STREAMING regime, so a travelling
+	// flight is dominated by how fast chunks arrive and says little about
+	// the GI.
 	// (That used to be near-total — jobs ran on the main thread here —
 	// and is merely large now that a worker pool runs them.) Pair ?bench
 	// with ?frames=N: the summary is emitted at that boundary.
@@ -138,11 +139,11 @@ pub fn start() -> Result<(), JsValue> {
 			digblock_render::settings::RENDER_SCALE_MAX,
 		);
 	}
-	if let Some(d) = param::<u32>(&params, "giscale") {
-		if digblock_render::settings::GI_SCALE_DIVISORS.contains(&d) {
-			config.gi_scale_div = d;
-			config.gfx_defaults_auto = false;
-		}
+	if let Some(d) = param::<u32>(&params, "giscale")
+		&& digblock_render::settings::GI_SCALE_DIVISORS.contains(&d)
+	{
+		config.gi_scale_div = d;
+		config.gfx_defaults_auto = false;
 	}
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(10, 32);
@@ -168,7 +169,7 @@ pub fn start() -> Result<(), JsValue> {
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
-	// ?name= is an explicit override, still held to the 3-10 char rule —
+	// ?name= is an explicit override, still held to `validate_name` —
 	// an invalid one is treated as absent; otherwise the remembered
 	// last-used name pre-fills the menu field.
 	config.player_name = params
@@ -264,8 +265,8 @@ fn worker_module_url() -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// Load-or-create the persistent identity secret (32 hex chars in
-/// localStorage). Private-mode/blocked storage degrades to a random
+/// Load-or-create the persistent identity secret, stored as hex in
+/// localStorage. Private-mode/blocked storage degrades to a random
 /// per-session identity — the game still runs, persistence doesn't.
 fn load_identity() -> [u8; 16] {
 	let fresh = |storage: Option<&web_sys::Storage>| -> [u8; 16] {

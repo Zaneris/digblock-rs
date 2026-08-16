@@ -34,7 +34,7 @@ fn view_ray(ndc: vec2f) -> vec3f {
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
 	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-	// Sun disc (~2° with a soft edge, oversized for game feel).
+	// Sun disc (soft-edged, and oversized for game feel).
 	let ds = dot(ray, frame.sun_dir.xyz);
 	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, ds) * 4.0;
 	// Moon disc: smaller, dim, slightly blue.

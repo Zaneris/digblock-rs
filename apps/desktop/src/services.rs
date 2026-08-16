@@ -172,11 +172,11 @@ fn join(
 	Ok((transport, token))
 }
 
-/// Decode the master's 32-char hex join token.
+/// Decode the master's hex join token.
 ///
 /// The ASCII-hex check is load-bearing, not belt-and-braces: `hex.len()` is
-/// BYTES, so a 32-byte string carrying a multi-byte character (`"€" +
-/// 29×"a"`) passes the length gate and then panics on
+/// BYTES, so a string of the right BYTE length carrying a multi-byte
+/// character passes the length gate and then panics on
 /// `&hex[i * 2..i * 2 + 2]`, which splits it mid-codepoint. On web that is
 /// reachable with no compromise at all — `?master=` rides in a shared link
 /// — and the panic aborts the wasm module. `parse_sha256_hex` next door has
@@ -238,8 +238,9 @@ mod tests {
 		assert!(parse_token("deadbeef").is_err());
 	}
 
-	/// A 32-BYTE token containing a multi-byte character used to panic the
-	/// slice below the length check. Reproduced before it was fixed.
+	/// A token of the right BYTE length carrying a multi-byte character
+	/// used to panic the slice below the length check. Reproduced before
+	/// it was fixed.
 	#[test]
 	fn a_non_ascii_token_is_rejected_not_a_panic() {
 		let hex = format!("{}{}", "€", "a".repeat(29));

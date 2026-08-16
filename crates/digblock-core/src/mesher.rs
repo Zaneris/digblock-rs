@@ -1,7 +1,8 @@
 //! Chunk meshing from immutable snapshots. Replaces the Java pattern of
-//! writing face bits into neighbor chunks: a mesh job gets a padded 18³
-//! copy of its chunk plus a one-block shell from all 26 neighbors — no
-//! shared mutation, no locks, and diagonal neighbors are available for
+//! writing face bits into neighbor chunks: a mesh job gets a padded copy
+//! of its chunk plus a one-block shell from every neighbor it touches —
+//! faces, edges and corners — so there is no shared mutation, no locks,
+//! and diagonal neighbors are available for
 //! per-vertex AO and water corner heights.
 //!
 //! Face rules (originally distilled from Chunk.setFlags in the Java, now
@@ -16,12 +17,13 @@
 //!   missing (the Java null) — so no bottom faces at world bottom
 
 use crate::block::{BlockType, RenderClass};
-use crate::chunk::{ChunkData, CHUNK_SIZE};
+use crate::chunk::{CHUNK_SIZE, ChunkData};
 
+pub mod lights;
 mod water;
-use water::{emit_water_face, FallLayers, WaterState};
+use water::{FallLayers, WaterState, emit_water_face};
 
-use crate::dir::{Dir, DIRS};
+use crate::dir::{DIRS, Dir};
 
 /// Padded snapshot edge: the chunk plus a one-block shell from its
 /// neighbors.
@@ -41,12 +43,12 @@ pub enum Src<'a> {
 	Missing,
 }
 
-/// A mesh job's complete input: 18³ block ids (the chunk plus a one-block
-/// shell copied from every existing neighbor — faces, edges, corners) and
-/// a missing flag per face.
+/// A mesh job's complete input: the padded block ids (the chunk plus a
+/// one-block shell copied from every existing neighbor — faces, edges,
+/// corners) and a missing flag per face.
 pub struct MeshInput {
-	/// Indexed by `pidx` over coords in -1..=16; shell cells with no
-	/// backing chunk are air (0).
+	/// Indexed by `pidx` over the padded coordinate range; shell cells
+	/// with no backing chunk read as air.
 	pub blocks: Box<[u16; PADDED_VOLUME]>,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
@@ -60,19 +62,20 @@ pub struct MeshInput {
 /// only place that knows what has been edited) and carried to the worker.
 pub struct OreStamp {
 	pub seed: f64,
-	/// World position of the padded array's `(-1, -1, -1)` corner.
+	/// World position of the padded array's low corner — the shell cell,
+	/// not the chunk's own origin.
 	pub origin: (i32, i32, i32),
 	/// The looker's Mining level. Two players standing in the same cave
 	/// mesh the same chunk differently, which is the feature.
 	pub mining: u32,
 	/// Padded indices of cells this world has ever written, SORTED — the
 	/// anti-dupe's edit gate. Almost always empty, and bounded by the
-	/// edits inside one 18³ box even in a heavily built area.
+	/// edits inside one padded box even in a heavily built area.
 	pub edited: Vec<u16>,
 }
 
-/// Padded flat index for coords in -1..=16 — same y,z,x nesting as
-/// `ChunkData::index`, x contiguous.
+/// Padded flat index over the shell-inclusive coordinate range — same
+/// y,z,x nesting as `ChunkData::index`, x contiguous.
 #[inline]
 pub fn pidx(x: i32, y: i32, z: i32) -> usize {
 	debug_assert!((-1..=16).contains(&x) && (-1..=16).contains(&y) && (-1..=16).contains(&z));
@@ -95,8 +98,8 @@ fn face_dir(dx: i32, dy: i32, dz: i32) -> Option<Dir> {
 }
 
 impl MeshInput {
-	/// Assemble from the center chunk plus a lookup over the 26 neighbor
-	/// chunk offsets. Air and Missing regions stay zero-filled (air) —
+	/// Assemble from the center chunk plus a lookup over every neighbor
+	/// chunk offset. Air and Missing regions stay zero-filled (air) —
 	/// only the face missing flags distinguish them.
 	pub fn build<'a>(
 		center: &ChunkData,
@@ -155,7 +158,7 @@ impl MeshInput {
 		input
 	}
 
-	/// Block id at padded coords (each in -1..=16) — the state nibble is
+	/// Block id at padded coords, shell included — the state nibble is
 	/// masked HERE, so every id-oriented consumer (AO, the whole water
 	/// surface system) is state-blind by construction. The shaped path
 	/// reads raw cells via [`Self::get_cell`].
@@ -182,8 +185,8 @@ impl MeshInput {
 	/// call in the worker and nothing anywhere else.
 	///
 	/// Runs deposit-major, not cell-major: a chunk sits under a few dozen
-	/// deposits and holds 5,832 cells, so walking the blobs is two orders
-	/// of magnitude less work than asking every cell.
+	/// deposits and holds thousands of padded cells, so walking the blobs
+	/// is orders of magnitude less work than asking every cell.
 	pub fn apply_ore(&mut self) {
 		use crate::worldgen::ore;
 		let Some(stamp) = self.ore.take() else {
@@ -240,21 +243,33 @@ impl MeshInput {
 pub struct MeshData {
 	/// Packed two-word vertices (see `pack`), 4 per face (TL,TR,BL,BR).
 	pub solid: Vec<u32>,
-	/// Same two-word format; word 1 additionally carries the water
-	/// payload above the layer field, shifted by 10: bits 10-13 surface
-	/// drop code d (the shader lowers the vertex by d/9 — 0 = full
-	/// height), bit 14 falling, bits 15-17 flow dir, bits 18-19 the
-	/// splash code (3 = fall impact cell, 2/1 = pool cells at Chebyshev
-	/// distance 1/2 — expanding foam rings), bits 20-23 the vertex fall
-	/// distance (blocks of falling water above; bottom-plane verts +1 so
-	/// the interpolated "blocks fallen" is continuous down a column;
-	/// saturates at 15).
+	/// Same two-word format; word 1 additionally carries the water payload
+	/// packed above the layer field, in order: the surface drop code (the
+	/// shader lowers the vertex by that fraction of a block — zero is full
+	/// height), the falling flag, the flow direction, the splash code (top
+	/// code at a fall's impact cell, one lower per ring of Chebyshev
+	/// distance out — expanding foam rings), and the vertex fall distance
+	/// (blocks of falling water above; bottom-plane verts one more so the
+	/// interpolated "blocks fallen" is continuous down a column, and it
+	/// saturates rather than wrapping its field).
 	pub water: Vec<u32>,
-	/// Water-fall impact cells (the splash-code-3 predicate), packed
-	/// chunk-local `x | y<<4 | z<<8` — spray-emitter metadata. Rides the
+	/// Water-fall impact cells (the fall-impact predicate), packed
+	/// chunk-local as x, then y, then z — spray-emitter metadata. Rides the
 	/// mesh so every fall-changing path (worldgen stream-in, dig/place,
 	/// fluid sim, remesh-all) refreshes emitters with no extra scans.
 	pub impacts: Vec<u16>,
+	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles
+	/// ([`lights::pack`]) — the GI's area lights for revealed veins.
+	///
+	/// Rides the mesh for exactly the reason `impacts` does, and for two
+	/// more that only apply here: the ore reveal has already run over this
+	/// chunk's padded array (so the list holds only tiers this player can
+	/// SEE), and face exposure is the question the mesher was already
+	/// answering (so it holds only faces this player can see AT). Every
+	/// path that changes either — streaming, a dig, a place, levelling into
+	/// a new tier — re-meshes, and the lights follow with no extra scans
+	/// and nothing to keep in step.
+	pub lights: Vec<u32>,
 }
 
 impl MeshData {
@@ -311,19 +326,20 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 	}
 }
 
-/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it).
-/// Bits 0-7 x, 8-15 y, 16-23 z in TWELFTH-block units 0..=192 (the
-/// sub-block shape grid; full-block geometry lands on multiples of 12),
-/// 24-26 normal, 27-28 corner (0=TL 1=TR 2=BL 3=BR), 29-31 free.
+/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in
+/// order: x, y and z in TWELFTH-block units (the sub-block shape grid;
+/// full-block geometry lands on its whole-block lattice points), then the
+/// normal, then the corner code (TL, TR, BL, BR), with the top of the
+/// word free.
 ///
 /// Word 1 is per-stream material, assembled by the caller:
-/// solid — [`solid_word1`]: bits 0-9 texture layer (1024 cap =
-/// MAX_TEX_LAYERS), 10-13 uv u in twelfths (0..=12), 14-17 uv v,
-/// 18 emissive (Stage-A fullbright — chunk.wgsl skips the lighting
-/// terms), 19 tint-from-below (`shapes::tint_from_below` — chunk.wgsl
-/// hashes the cell one down for its per-block tint), 20-31 free.
-/// water — bits 0-9 texture layer, 10-23 payload (see MeshData::water),
-/// 24-31 free (water reads its uv from the corner code).
+/// solid — [`solid_word1`], in order: the texture layer (capped at
+/// `MAX_TEX_LAYERS`), uv u and uv v in twelfths, the emissive flag
+/// (Stage-A fullbright — chunk.wgsl skips the lighting terms), and
+/// tint-from-below (`shapes::tint_from_below` — chunk.wgsl hashes the
+/// cell one down for its per-block tint), with the rest free.
+/// water — the texture layer, then the payload (see MeshData::water),
+/// with the rest free; water reads its uv from the corner code.
 ///
 /// This layout is what the demolition left: the AO pair, the three
 /// Stage-B light channels and the per-block tint jitter all came out
@@ -346,7 +362,7 @@ fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool, tint_below: bool)
 }
 
 /// One vertex's geometry attributes on their way into `pack`. Positions
-/// are in twelfths of a block (0..=192 across the chunk).
+/// are in twelfths of a block.
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block
 /// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
 /// offset + diagonal vector).
@@ -383,10 +399,10 @@ fn occludes(id: u16) -> bool {
 }
 
 /// Emit one face quad in `face_corners` order (TL TR BL BR), which
-/// [`quad_indices`] triangulates as the diagonal between emit slots 0
-/// and 3.
+/// [`quad_indices`] triangulates as the diagonal between the first and
+/// last emit slots.
 ///
-/// The order used to FLIP to [1,3,0,2] so that diagonal crossed the
+/// The order used to FLIP to the other diagonal so that it crossed the
 /// lower-AO-sum corner pair, turning a single dark corner into a radial
 /// gradient instead of a hard crease. With baked AO gone there is no
 /// per-corner signal left to steer it, so the winding is simply fixed —
@@ -454,7 +470,7 @@ fn emit_shaped(
 			match neighbor_cover(input.get_cell(bx + ox, by + oy, bz + oz), dir) {
 				Cover::Full => continue,
 				Cover::Partial(m) if m.covers(q.rect[0], q.rect[1], q.rect[2], q.rect[3]) => {
-					continue
+					continue;
 				}
 				_ => {}
 			}
@@ -503,6 +519,7 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 		solid: Vec::with_capacity(4096),
 		water: Vec::with_capacity(512),
 		impacts: Vec::new(),
+		lights: lights::collect(input),
 	};
 	let mut falls = FallLayers::default();
 	for y in 0..n {
@@ -569,9 +586,9 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 	mesh
 }
 
-/// The static index pattern shared by every chunk mesh: for quad q with
-/// vertex base q*4, indices [base+3, base+1, base+0, base+3, base+0,
-/// base+2] — the Java triangle order (BR,TR,TL)+(BR,TL,BL), CCW.
+/// The static index pattern shared by every chunk mesh: each quad's four
+/// vertices, triangulated in the Java order (BR,TR,TL)+(BR,TL,BL), which
+/// winds CCW.
 pub fn quad_indices(max_quads: usize) -> Vec<u32> {
 	let mut idx = Vec::with_capacity(max_quads * 6);
 	for q in 0..max_quads as u32 {
@@ -592,7 +609,7 @@ mod tests {
 		d
 	}
 
-	/// All 26 neighbors missing — the old ALL_MISSING fixture.
+	/// Every neighbor missing — the old ALL_MISSING fixture.
 	fn isolated(d: &ChunkData) -> MeshInput {
 		MeshInput::build(d, |_, _, _| Src::Missing)
 	}
@@ -655,10 +672,19 @@ mod tests {
 		}
 	}
 
-	/// The stamp only ever touches PRISTINE stone: air stays air, a
-	/// placed ore block someone is showing off stays exactly what it is
-	/// (at any level — it is ordinary chunk data), and a shaped stone cell
-	/// is not stone.
+	/// The stamp only ever touches PRISTINE stone: air stays air, a spent
+	/// rock somebody has built with stays exactly what it is, and a shaped
+	/// stone cell is not stone.
+	///
+	/// **Swept across Mining levels**, which is the half that matters and
+	/// the half this test used to skip. At the cap the second pass reverts
+	/// nothing whatever it does, so a run there cannot tell "only claimed
+	/// cells are reverted" from "everything is". The case the sweep is for
+	/// is somebody wandering into a friend's hall of tapped Aetherock at
+	/// Mining 1: those blocks are ordinary chunk data with no reveal gate,
+	/// so they must survive at EVERY level, and a stamp that swept the
+	/// array instead of its own claims would quietly turn the hall to
+	/// stone for every visitor below the tier.
 	#[test]
 	fn the_reveal_stamp_leaves_everything_else_alone() {
 		use crate::worldgen::ore;
@@ -666,42 +692,56 @@ mod tests {
 		let origin = (-24, 1, -4);
 		let others = [
 			B::Air as u16,
-			B::Aetherock as u16,
+			B::DepletedEmberore as u16,
+			B::DepletedAetherock as u16,
 			B::DepletedStone as u16,
 			B::Rubble as u16,
 			crate::chunk::make_cell(B::StoneSlab, 1),
 		];
-		let mut input = MeshInput {
-			blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
-			missing: [false; 6],
-			ore: Some(OreStamp {
-				seed,
-				origin,
-				mining: crate::skills::MAX_LEVEL,
-				edited: Vec::new(),
-			}),
-		};
-		// Salt the array so every non-stone value sits on a cell the
-		// stamp would otherwise have claimed.
-		let veins: Vec<usize> = (0..PADDED_VOLUME)
-			.filter(|&i| {
-				let (lx, lz, ly) = (i % PADDED, (i / PADDED) % PADDED, i / (PADDED * PADDED));
-				ore::ore_at(
-					origin.0 + lx as i32,
-					origin.1 + ly as i32,
-					origin.2 + lz as i32,
-					seed,
-				)
-				.is_some()
-			})
-			.collect();
-		assert!(veins.len() >= others.len(), "need vein cells to salt");
-		for (slot, &v) in veins.iter().zip(others.iter()) {
-			input.blocks[*slot] = v;
+		// Every level a reveal happens at, either side, plus both ends of
+		// the ladder — the thresholds are where a sweep-vs-claims bug
+		// would first show.
+		let mut levels = vec![1, crate::skills::MAX_LEVEL];
+		for &o in &ore::ORES {
+			let r = crate::unlock::reveal(o).expect("an ore");
+			levels.extend([r.saturating_sub(1).max(1), r]);
 		}
-		input.apply_ore();
-		for (slot, &v) in veins.iter().zip(others.iter()) {
-			assert_eq!(input.blocks[*slot], v, "the stamp rewrote a non-stone cell");
+		for mining in levels {
+			let mut input = MeshInput {
+				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
+				missing: [false; 6],
+				ore: Some(OreStamp {
+					seed,
+					origin,
+					mining,
+					edited: Vec::new(),
+				}),
+			};
+			// Salt the array so every non-stone value sits on a cell the
+			// stamp would otherwise have claimed.
+			let veins: Vec<usize> = (0..PADDED_VOLUME)
+				.filter(|&i| {
+					let (lx, lz, ly) = (i % PADDED, (i / PADDED) % PADDED, i / (PADDED * PADDED));
+					ore::ore_at(
+						origin.0 + lx as i32,
+						origin.1 + ly as i32,
+						origin.2 + lz as i32,
+						seed,
+					)
+					.is_some()
+				})
+				.collect();
+			assert!(veins.len() >= others.len(), "need vein cells to salt");
+			for (slot, &v) in veins.iter().zip(others.iter()) {
+				input.blocks[*slot] = v;
+			}
+			input.apply_ore();
+			for (slot, &v) in veins.iter().zip(others.iter()) {
+				assert_eq!(
+					input.blocks[*slot], v,
+					"the stamp rewrote a non-stone cell at mining {mining}"
+				);
+			}
 		}
 	}
 
@@ -742,8 +782,8 @@ mod tests {
 		assert_eq!(a.impacts, b.impacts);
 	}
 
-	/// A stair at each state, meshed solo (chunk-local (8,8,8), world
-	/// origin ZERO).
+	/// A stair at each state, meshed solo in the middle of an otherwise
+	/// empty chunk (world origin ZERO).
 	fn stair_mesh(facing: crate::shapes::Facing) -> MeshData {
 		let mut d = ChunkData::default();
 		d.set_cell(
@@ -775,7 +815,7 @@ mod tests {
 	#[test]
 	fn shaped_boundary_culling() {
 		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
+		use crate::shapes::{Facing, stair_state};
 		// Stair ascending +x with an opaque block at +x: the stair's full
 		// back face is culled, and the wall's −x face is culled too (the
 		// stair's back fully covers the shared plane).
@@ -820,7 +860,7 @@ mod tests {
 	#[test]
 	fn shaped_culling_works_across_chunk_borders() {
 		use crate::chunk::make_cell;
-		use crate::shapes::{stair_state, Facing};
+		use crate::shapes::{Facing, stair_state};
 		// Stair at the chunk's +x border, opaque neighbor chunk beyond:
 		// the padded shell carries the neighbor, and the stair's full
 		// back face is culled through it.
@@ -840,11 +880,7 @@ mod tests {
 		let input = MeshInput::build(
 			&d,
 			|dx, _, _| {
-				if dx == 1 {
-					Src::Chunk(&wall)
-				} else {
-					Src::Air
-				}
+				if dx == 1 { Src::Chunk(&wall) } else { Src::Air }
 			},
 		);
 		let m = mesh_chunk(&input);
@@ -881,9 +917,9 @@ mod tests {
 		d.set(8, 8, 8, B::Water);
 		d.set(8, 7, 8, B::Dirt); // below
 		let m = mesh_chunk(&isolated(&d));
-		// Water: 5 air-adjacent sides + top = faces toward air on all open
-		// sides. Dirt below: 5 visible faces (top hidden? no — top borders
-		// water, water is not solid → dirt top IS visible through water).
+		// Water faces air on every open side. The dirt below keeps every
+		// face, its top included: that face borders water, and water is
+		// not solid, so the dirt top IS visible through it.
 		let water_faces = m.water.len() / 8; // two words per water vertex
 		assert_eq!(water_faces, 5, "water faces air on 4 sides + top");
 		let solid_faces = m.solid.len() / 8;
@@ -949,11 +985,11 @@ mod tests {
 		// One marked block per source kind: a face neighbor (below), an
 		// edge neighbor (+x+z), and a corner neighbor (+x+y+z).
 		let mut below = ChunkData::default();
-		below.set(5, 15, 7, B::Stone); // → padded (5, -1, 7)
+		below.set(5, 15, 7, B::Stone); // → the shell layer underneath
 		let mut edge = ChunkData::default();
-		edge.set(0, 8, 0, B::Dirt); // offset (1,0,1) → padded (16, 8, 16)
+		edge.set(0, 8, 0, B::Dirt); // → the +x+z shell edge
 		let mut corner = ChunkData::default();
-		corner.set(0, 0, 0, B::Sand); // offset (1,1,1) → padded (16,16,16)
+		corner.set(0, 0, 0, B::Sand); // → the +x+y+z shell corner
 		let input = MeshInput::build(&ChunkData::default(), |dx, dy, dz| match (dx, dy, dz) {
 			(0, -1, 0) => Src::Chunk(&below),
 			(1, 0, 1) => Src::Chunk(&edge),
@@ -985,7 +1021,8 @@ mod tests {
 
 	#[test]
 	fn packed_vertex_roundtrip() {
-		// Layer 700 proves the 10-bit field (the old format capped at 64).
+		// A high layer index proves the widened field (the old format
+		// capped far lower).
 		let w0 = pack((16 * 12, 7 * 12, 3 * 12), Dir::East, 2);
 		assert_eq!(x_of(w0), 16);
 		assert_eq!(y_of(w0), 7);
@@ -1012,13 +1049,14 @@ mod tests {
 	}
 
 	/// The mesh is where a door's two halves agree to wear one tint: the
-	/// upper half's every vertex carries word-1 bit 19, so chunk.wgsl
+	/// upper half's every vertex carries word 1's tint-from-below flag, so
+	/// chunk.wgsl
 	/// hashes the cell below it and both halves land on the same tint.
 	/// The lower half must NOT carry it, or the leaf tints off the block
 	/// under the door.
 	#[test]
 	fn a_doors_upper_half_tints_from_the_cell_below() {
-		use crate::shapes::{door_state, Facing};
+		use crate::shapes::{Facing, door_state};
 		let tint_bits = |upper: bool| {
 			let mut d = ChunkData::default();
 			d.set_cell(
@@ -1047,8 +1085,8 @@ mod tests {
 	}
 
 	// Decode helpers — the mirror of `pack`/`solid_word1`. Positions come
-	// back in whole blocks (every full-block lattice point is a multiple
-	// of 12 twelfths).
+	// back in whole blocks, since full-block geometry lands on the
+	// twelfths grid's whole-block lattice points.
 	fn x_of(w0: u32) -> u32 {
 		(w0 & 0xff) / 12
 	}
@@ -1101,8 +1139,10 @@ mod tests {
 
 	#[test]
 	fn source_surface_drops_one_ninth() {
-		// Lone source with air above: top face all d = 9 − 8 = 1; side
-		// faces drop only their top-plane vertices; nothing is falling.
+		// Lone source with air above: a source is the strongest amount
+		// there is, so its top face sits one code under the cell top all
+		// the way across; side faces drop only their top-plane vertices;
+		// nothing is falling.
 		let m = mesh_chunk(&isolated(&solo(B::Water)));
 		let top = water_quad(&m.water, 8, 8, 8, Dir::Top);
 		for (_, w1) in top {
@@ -1158,8 +1198,8 @@ mod tests {
 	fn covered_inflow_cell_never_vanishes() {
 		// The flooded-cave regression: water under an opaque ceiling
 		// beside an air column with water directly below it (water
-		// pouring through a dug hole into a cave). The corner plunge
-		// (d = 9) collapsed every side face to zero area while the
+		// pouring through a dug hole into a cave). The corner plunge (the
+		// whole-block drop) collapsed every side face to zero area while the
 		// ceiling occluded the top — the cell rendered NOTHING and you
 		// saw straight through it into the water behind.
 		let mut d = ChunkData::default();
@@ -1195,8 +1235,9 @@ mod tests {
 	fn waterfall_top_drops_like_a_surface_cell() {
 		let m = mesh_chunk(&isolated(&solo(B::WaterFall)));
 		// Floating fall: 4 sides + top + bottom toward air. Air above, so
-		// its top-plane vertices take the corner surface (amount 8 → d=1)
-		// like any surface water; everything is flagged falling.
+		// its top-plane vertices take the corner surface like any surface
+		// water — with no feeder in reach it keeps its nominal amount —
+		// and everything is flagged falling.
 		assert_eq!(m.water.len() / 8, 6);
 		for pair in m.water.chunks(2) {
 			assert_eq!(drop_of(pair[1]), u32::from(y_of(pair[0]) == 9));
@@ -1217,8 +1258,8 @@ mod tests {
 	fn cascade_steps_ramp_into_each_other() {
 		// The fluid sim's staircase shape: flow on the upper step, flow
 		// one down and one across on the lower step. The upper surface's
-		// downhill corners plunge the whole block (d = 9, air with water
-		// below) and the lower cell's uphill corners pin full (water
+		// downhill corners plunge the whole block (air with water below)
+		// and the lower cell's uphill corners pin full (water
 		// hangs over the stone step), so the two surfaces meet exactly
 		// at the lattice — a connected ramp, no cliff sliver between.
 		let mut d = ChunkData::default();
@@ -1249,8 +1290,8 @@ mod tests {
 		// worldgen lip arrangement. The interface face is culled, so the
 		// two top surfaces must agree on their shared corners or the rim
 		// is a see-through crack. The fall surfaces one level below its
-		// feeder (amount 8 → 7), so the shared corners average to d = 1
-		// while the lip's outer edge dips to d = 2 — the surface tips
+		// feeder, so the shared corners hold the pool's own height while
+		// the lip's outer edge dips one code below it — the surface tips
 		// over the edge instead of popping back up to full height.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFall);
@@ -1309,7 +1350,7 @@ mod tests {
 	#[test]
 	fn fall_lip_steps_below_its_feeder() {
 		// A thin flow feeding a fall: the lip continues the downhill
-		// slope one level below the feeder (amount 5 → lip 4).
+		// slope one level below the feeder.
 		let mut d = ChunkData::default();
 		d.set(7, 8, 8, B::WaterFlow5);
 		d.set(8, 8, 8, B::WaterFall);
@@ -1323,7 +1364,7 @@ mod tests {
 
 	#[test]
 	fn flow_direction_points_at_the_emptiest_side() {
-		// Flow5 walled in by water except +x: flows toward +x (code 1).
+		// Flow5 walled in by water except +x: flows toward +x.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFlow5);
 		d.set(7, 8, 8, B::WaterFlow4);
@@ -1438,9 +1479,10 @@ mod tests {
 
 	#[test]
 	fn pool_cells_get_splash_rings() {
-		// Fall into the middle of a 7×7 pool: surface cells ring the
-		// impact by Chebyshev distance — 1 → code 2, 2 → code 1,
-		// further → 0. Mid-fall cells above the impact stay ring-free.
+		// Fall into the middle of a pool wide enough to hold the whole
+		// ring: surface cells score by Chebyshev distance out from the
+		// impact, one code lower per ring and nothing past the scan's
+		// reach. Mid-fall cells above the impact stay ring-free.
 		let mut d = ChunkData::default();
 		for z in 5..=11 {
 			for x in 5..=11 {
@@ -1462,7 +1504,7 @@ mod tests {
 		}
 	}
 
-	/// A coastal/ocean-shaped chunk: a full 16×16 two-deep pool on a
+	/// A coastal/ocean-shaped chunk: a chunk-wide two-deep pool on a
 	/// stone floor, two waterfalls landing in it, a flowing rim, pillars
 	/// breaking the surface, and water continuing across the +x seam.
 	/// Every open surface cell here reaches the splash ring scan.
@@ -1519,17 +1561,17 @@ mod tests {
 		(m.solid.len(), m.water.len(), m.impacts.len(), h)
 	}
 
-	/// The splash ring scan's fast path (skipping the 5×5×2 neighborhood
-	/// walk when no layer in reach holds falling water) must leave every
+	/// The splash ring scan's fast path (skipping the neighborhood walk
+	/// when no layer in reach holds falling water) must leave every
 	/// stream byte-identical — the impacts list drives spray emitters AND
 	/// waterfall audio, so a miss is silent in the mesh and audible in
 	/// the world.
 	///
 	/// Re-pinned at the M1 demolition (GI-DESIGN.md): the vertex format
-	/// repack moved the corner code from bits 29-30 to 27-28 and dropped
-	/// AO, the light nibbles and the tint, so every word changed. Quad
-	/// COUNTS are unchanged (4704 / 3224 / 2) — which is the part that
-	/// matters here, since the demolition removed shading, not geometry.
+	/// repack moved the corner code down and dropped AO, the light
+	/// nibbles and the tint, so every word changed. Quad COUNTS are
+	/// unchanged — which is the part that matters here, since the
+	/// demolition removed shading, not geometry.
 	/// A count that moves means a culling or emission change and must not
 	/// be re-pinned without finding out why.
 	#[test]
@@ -1549,8 +1591,9 @@ mod tests {
 
 	#[test]
 	fn fall_distance_counts_from_lip() {
-		// Fall column y 8..=12: each cell counts the falling cells above
-		// it; side-face top-plane verts carry that count, bottom-plane
+		// A fall column several cells tall: each cell counts the falling
+		// cells above it; side-face top-plane verts carry that count, and
+		// bottom-plane
 		// verts one more, so interpolation is continuous down the sheet.
 		let mut d = ChunkData::default();
 		for y in 8..=12 {
@@ -1573,8 +1616,8 @@ mod tests {
 
 	#[test]
 	fn fall_distance_saturates() {
-		// A full-height column: the deepest cells cap at 15 instead of
-		// wrapping the 4-bit field.
+		// A full-height column: the deepest cells saturate instead of
+		// wrapping the fall-distance field.
 		let mut d = ChunkData::default();
 		for y in 0..16 {
 			d.set(8, y, 8, B::WaterFall);
@@ -1608,9 +1651,9 @@ mod tests {
 	#[test]
 	fn adjacent_flows_share_corner_heights() {
 		// Flow3 | Flow5 side by side: no interface faces, and the two top
-		// faces agree on their shared corners (strongest amount 5 →
-		// d = 4, so the thicker cell holds its own level right up to the
-		// seam and the thinner one ramps up to meet it).
+		// faces agree on their shared corners — the strongest amount
+		// wins, so the thicker cell holds its own level right up to the
+		// seam and the thinner one ramps up to meet it.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::WaterFlow3);
 		d.set(9, 8, 8, B::WaterFlow5);
@@ -1634,7 +1677,7 @@ mod tests {
 	fn corner_heights_knit_across_chunk_borders() {
 		// Source at the +x border; the neighbor chunk holds Flow4 across
 		// the seam. The shell water IS seen — the flow's own outer face
-		// drops to d = 5 below — but the border corners it shares with
+		// drops away to its own level — but the border corners it shares with
 		// the source pin full, and the seam agrees from both sides.
 		let mut d = ChunkData::default();
 		d.set(15, 8, 8, B::Water);
@@ -1672,8 +1715,8 @@ mod tests {
 	#[test]
 	fn a_source_beside_flowing_water_stays_full() {
 		// The reported bug: the fluid sim halves on spread, so a source
-		// sits next to 4s and 2s. Averaging sank its whole top face to
-		// d = 4 (0.63 of a block) — a full block has to keep looking
+		// sits next to its own thinning flows. Averaging sank its whole
+		// top face deep into the block — a full block has to keep looking
 		// full, and the flow still slopes away from it.
 		let mut d = ChunkData::default();
 		d.set(8, 8, 8, B::Water);
@@ -1687,18 +1730,17 @@ mod tests {
 		for (_, w1) in water_quad(&m.water, 8, 8, 8, Dir::Top) {
 			assert_eq!(drop_of(w1), 1, "the source keeps its 8/9 surface");
 		}
-		// The Flow4 at +x: its uphill corners take the source's 8/9, its
-		// downhill ones its OWN 4/9 — one clean step of the sim's
-		// ladder. Averaging with the Flow2 beyond used to carry them on
-		// down to 3/9, so the surface undershot the level it was meant
-		// to be showing.
+		// The Flow4 at +x: its uphill corners take the source's height,
+		// its downhill ones its OWN — one clean step of the sim's ladder.
+		// Averaging with the Flow2 beyond used to carry them below that,
+		// so the surface undershot the level it was meant to be showing.
 		for (w0, w1) in water_quad(&m.water, 9, 8, 8, Dir::Top) {
 			let expect = if x_of(w0) == 9 { 1 } else { 5 };
 			assert_eq!(drop_of(w1), expect, "the flow ramps down and away");
 		}
 		// ...and the Flow2 on the diagonal picks up exactly where the
-		// Flow4 left off: the ladder's 8/9, 4/9, 4/9 and 2/9 rungs, one
-		// per corner, with nothing undershooting between them.
+		// Flow4 left off: one rung of the sim's ladder per corner, with
+		// nothing undershooting between them.
 		let mut corners = water_quad(&m.water, 9, 8, 7, Dir::Top).map(|(_, w1)| drop_of(w1));
 		corners.sort_unstable();
 		assert_eq!(corners, [1, 5, 5, 7], "4/9 down to 2/9, no undershoot");
@@ -1733,7 +1775,7 @@ mod tests {
 	/// with no exceptions.
 	///
 	/// This replaces the old `quad_flips_toward_dark_tr_bl_diagonal`. The
-	/// emit order used to flip to [1,3,0,2] so the triangulation diagonal
+	/// emit order used to flip to the other diagonal so the triangulation
 	/// crossed the darker AO corner pair; with baked AO gone there is no
 	/// per-corner signal left to steer it and the winding is simply fixed.
 	/// It still has to be pinned: `quad_indices` assumes this order, and a
@@ -1778,9 +1820,12 @@ mod tests {
 		let layer_of = |p: &[u32]| p[1] & 0x3ff;
 		let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 8).count() / 4;
 		let dirt_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 1).count() / 4;
-		// Leaf A: 4 (leaf neighbor culled, dirt below occludes). Leaf B: 5.
+		// Leaf A loses two faces — its leaf neighbor culls the shared one
+		// and the dirt below occludes its bottom; Leaf B loses only the
+		// shared one.
 		assert_eq!(leaf_faces, 9);
-		// Dirt: 6 — its top face shows through the non-occluding leaf.
+		// The dirt keeps every face: its top shows through the
+		// non-occluding leaf.
 		assert_eq!(dirt_faces, 6);
 	}
 

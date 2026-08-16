@@ -11,9 +11,9 @@ pub const ATLAS_W: u32 = 2048;
 pub const ATLAS_H: u32 = 2048;
 
 /// Side of the all-white block reserved at the origin for untextured
-/// quads. Four, not one: the overlay samples it with a Linear sampler, and
-/// a lone white texel would let a half-texel-off tap make every panel
-/// backdrop and the crosshair partly transparent.
+/// quads. Several texels, not one: the overlay samples it with a Linear
+/// sampler, and a lone white texel would let a half-texel-off tap make
+/// every panel backdrop and the crosshair partly transparent.
 const SOLID: u32 = 4;
 /// Transparent ring around every packed glyph, so a boundary-exact
 /// bilinear tap reads empty space instead of the neighboring glyph.

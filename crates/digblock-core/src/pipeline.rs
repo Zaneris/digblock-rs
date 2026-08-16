@@ -16,17 +16,17 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::chunk::{is_air_chunk, ChunkData, ChunkPos, WORLD_VCHUNK};
-use crate::mesher::{mesh_chunk, MeshData, MeshInput, Src};
+use crate::chunk::{ChunkData, ChunkPos, WORLD_VCHUNK, is_air_chunk};
+use crate::mesher::{MeshData, MeshInput, Src, mesh_chunk};
 use crate::metrics::JobTiming;
 use crate::worldgen::build_column;
 
 pub struct MeshOutput {
 	pub pos: ChunkPos,
-	pub gen: u64,
+	pub generation: u64,
 	pub mesh: MeshData,
 }
 
@@ -36,7 +36,7 @@ pub enum Job {
 	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,
-		gen: u64,
+		generation: u64,
 		/// Padded snapshot — the worker holds no Arc into the store, so
 		/// `set_block`'s copy-on-write almost never actually clones.
 		input: Box<MeshInput>,
@@ -68,22 +68,24 @@ pub enum JobResult {
 /// `submitted_gen == mesh_gen` and never meshes again (invisible terrain).
 ///
 /// The payload is deliberately not retained. A `Mesh` job's `MeshInput`
-/// is ~12 KB and a pool may hold dozens outstanding — real memory on the
-/// platform this exists for — and the pipeline rebuilds it from the store
-/// at redispatch anyway.
+/// is a whole padded snapshot and a pool may hold dozens outstanding —
+/// real memory on the platform this exists for — and the pipeline rebuilds
+/// it from the store at redispatch anyway.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKey {
 	Generate { x: i32, z: i32 },
-	Mesh { pos: ChunkPos, gen: u64 },
+	Mesh { pos: ChunkPos, generation: u64 },
 }
 
 impl Job {
 	pub fn key(&self) -> JobKey {
 		match self {
 			Job::Generate { x, z, .. } => JobKey::Generate { x: *x, z: *z },
-			Job::Mesh { pos, gen, .. } => JobKey::Mesh {
+			Job::Mesh {
+				pos, generation, ..
+			} => JobKey::Mesh {
 				pos: *pos,
-				gen: *gen,
+				generation: *generation,
 			},
 		}
 	}
@@ -349,11 +351,11 @@ impl Executor {
 }
 
 /// Per-`maintain` floor for the inline executor: one `Generate` ends the
-/// batch immediately (a column is ~16 chunks of uninterruptible work);
-/// otherwise up to this many mesh jobs run. A count, not a wall-clock
-/// deadline, because job granularity is what actually bounds the stall.
-/// With an `inline_allowance`, more jobs may follow (see
-/// `run_inline_jobs`); this floor always runs regardless.
+/// batch immediately (a column is a whole stack of chunks of
+/// uninterruptible work); otherwise up to this many mesh jobs run. A
+/// count, not a wall-clock deadline, because job granularity is what
+/// actually bounds the stall. With an `inline_allowance`, more jobs may
+/// follow (see `run_inline_jobs`); this floor always runs regardless.
 const INLINE_MESH_CAP: usize = 4;
 
 /// Worst-of-recent window for inline job-cost prediction.
@@ -361,7 +363,7 @@ const COST_N: usize = 8;
 
 /// Fraction of the lifetime worst that survives as a floor under the
 /// recent window. Admission control needs a PESSIMISTIC bound, not a
-/// recent average: gen cost is bimodal (a flat ocean column is ~10× cheaper
+/// recent average: gen cost is bimodal (a flat ocean column is far cheaper
 /// than a mountain one), so `COST_N` cheap samples in a row would otherwise
 /// collapse the prediction and admit a job an order of magnitude bigger
 /// than the remaining budget. Half, not all, so a genuinely one-off
@@ -415,21 +417,21 @@ impl CostRing {
 }
 
 struct JobCost {
-	gen: CostRing,
+	generation: CostRing,
 	mesh: CostRing,
 }
 
 impl JobCost {
 	fn new() -> Self {
 		Self {
-			gen: CostRing::new(12.0),
+			generation: CostRing::new(12.0),
 			mesh: CostRing::new(3.0),
 		}
 	}
 
 	fn observe(&mut self, is_gen: bool, ms: f32) {
 		let ring = if is_gen {
-			&mut self.gen
+			&mut self.generation
 		} else {
 			&mut self.mesh
 		};
@@ -437,7 +439,7 @@ impl JobCost {
 	}
 
 	fn predicted(&self, is_gen: bool) -> std::time::Duration {
-		let ring = if is_gen { &self.gen } else { &self.mesh };
+		let ring = if is_gen { &self.generation } else { &self.mesh };
 		std::time::Duration::from_secs_f32(ring.predicted_ms() / 1000.0)
 	}
 }
@@ -455,8 +457,8 @@ type DeferredCells = FxHashMap<(i32, i32, i32), u16>;
 /// Crossing one chunk boundary shifts the whole disc by one, so without a
 /// margin a player pacing back and forth over a single line evicts a
 /// crescent and immediately regenerates it, forever. One chunk of slack
-/// removes that churn for the price of the rim band's memory (~10% more
-/// resident columns at draw 20). Adds still use the exact draw distance —
+/// removes that churn for the price of the rim band's memory (a few
+/// percent more resident columns). Adds still use the exact draw distance —
 /// only eviction is lazy.
 const KEEP_MARGIN: i32 = 1;
 
@@ -499,7 +501,8 @@ fn interval_diff(a: i32, b: i32, other: Option<(i32, i32)>) -> [(i32, i32); 2] {
 /// zero-filled shell of a missing chunk, so such neighbors' existing
 /// meshes cannot be affected by this chunk's arrival. Face offsets are
 /// left false — face re-dirties are unconditional and never consult this.
-/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; ~200 byte reads total.
+/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; the whole scan is a couple of
+/// border planes' worth of byte reads.
 fn shell_affects(data: &ChunkData) -> [bool; 27] {
 	// The local cell range this chunk contributes to a neighbor at axis
 	// offset o (the neighbor sees us at -o): our high border row for +1,
@@ -635,7 +638,7 @@ impl Pipeline {
 	/// that crosses a tier's threshold and every resident chunk therefore
 	/// has to re-mesh. The caller decides what to do about it (the engine
 	/// sweeps and says so in the feed) — this only reports the crossing,
-	/// so levelling up 60 times does not re-mesh 60 times.
+	/// so a run of level-ups does not re-mesh once per level.
 	pub fn set_mining_level(&mut self, level: u32) -> bool {
 		let was = std::mem::replace(&mut self.mining_level, level);
 		crate::worldgen::ore::ORES
@@ -774,12 +777,12 @@ impl Pipeline {
 		// It used to be, because a column-gen job could outlast the whole
 		// stream budget on its own and leave the drain nothing — but paying
 		// for that by handing the drain a fresh full budget made the stages
-		// ADD UP (jobs + drain + uploads ≈ 1.5× budget plus overshoot),
-		// which is the miss the budget exists to avoid. Job slicing bounds
-		// the overrun at the source now, and each stage keeps a
-		// minimum-progress floor (the drain always pulls one result, the
-		// upload loop always does `UPLOAD_MIN`), so a blown deadline delays
-		// work without ever starving it.
+		// ADD UP (jobs, drain and uploads each spending a budget of their
+		// own, plus overshoot), which is the miss the budget exists to
+		// avoid. Job slicing bounds the overrun at the source now, and each
+		// stage keeps a minimum-progress floor (the drain always pulls one
+		// result, the upload loop always does `UPLOAD_MIN`), so a blown
+		// deadline delays work without ever starving it.
 		//
 		// An external pool's results arrived as their own event-loop tasks
 		// while this thread was elsewhere; pull them into the queue the
@@ -787,10 +790,11 @@ impl Pipeline {
 		// identical for every executor.
 		//
 		// Under the deadline, because the pull is not free: every `poll`
-		// decodes, and a `Generated` column is 16 chunks of bounds-checked
-		// u16 reads plus 16 fresh allocations on the one thread this whole
-		// change exists to protect. Always at least one, the same
-		// minimum-progress floor every other stage keeps — a frame already
+		// decodes, and a `Generated` column is a whole stack of chunks of
+		// bounds-checked u16 reads, one fresh allocation each, on the one
+		// thread this whole change exists to protect. Always at least one,
+		// the same minimum-progress floor every other stage keeps — a frame
+		// already
 		// over budget must still absorb something, or the pool's inbox only
 		// grows.
 		let mut lost: Vec<JobKey> = Vec::new();
@@ -811,7 +815,7 @@ impl Pipeline {
 				pulled += 1;
 			}
 			// Jobs the pool accepted and cannot answer for. Unbudgeted on
-			// purpose: this is a handful of 16-byte keys in a failure that
+			// purpose: this is a handful of small keys in a failure that
 			// is rare by construction, and deferring it is deferring the
 			// only record that those chunks were ever dispatched.
 			while let Some(key) = dispatch.lost() {
@@ -850,7 +854,7 @@ impl Pipeline {
 	/// boundary shifts the disc by one, which changes O(r) columns out of
 	/// O(r²), and this runs OUTSIDE the streaming deadline — a full rescan
 	/// here was an unbudgeted multi-millisecond burst arriving at walking
-	/// cadence, every 16 blocks.
+	/// cadence, once per chunk boundary crossed.
 	fn visibility_scan(&mut self, evicted: &mut Vec<ChunkPos>) {
 		let r = self.draw_dist;
 		let c = self.center;
@@ -993,8 +997,8 @@ impl Pipeline {
 					// overlay is re-applied just below); a server's edits
 					// do not, because `apply_authoritative` drops a cell
 					// from `deferred_edits` the moment it lands. The
-					// column's chunks enter and leave together, so y=0 is
-					// the probe `next_gen_job` uses too.
+					// column's chunks enter and leave together, so its
+					// bottom chunk is the probe `next_gen_job` uses too.
 					if !matches!(
 						self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
 						Some(ChunkState::Generating)
@@ -1008,18 +1012,18 @@ impl Pipeline {
 					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
 					// rather than mutating it (refcount > 1), mirroring the
 					// server's `ChunkStore::drain` overlay.
-					if self.reapply {
-						if let Some(cells) = self.edits.column(x, z) {
-							for (&(wx, wy, wz), &cell) in cells {
-								let Some(((_, cy, _), (lx, ly, lz))) =
-									crate::chunk::split_world(wx, wy, wz)
-								else {
-									continue;
-								};
-								Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, cell);
-								if crate::block::BlockType::from_id(cell).is_water() {
-									out.overlaid_water.push((wx, wy, wz));
-								}
+					if self.reapply
+						&& let Some(cells) = self.edits.column(x, z)
+					{
+						for (&(wx, wy, wz), &cell) in cells {
+							let Some(((_, cy, _), (lx, ly, lz))) =
+								crate::chunk::split_world(wx, wy, wz)
+							else {
+								continue;
+							};
+							Arc::make_mut(&mut stack[cy as usize]).set_cell(lx, ly, lz, cell);
+							if crate::block::BlockType::from_id(cell).is_water() {
+								out.overlaid_water.push((wx, wy, wz));
 							}
 						}
 					}
@@ -1130,9 +1134,9 @@ impl Pipeline {
 					out.mesh_jobs.record(dur_ms);
 					match self.store.get_mut(&m.pos) {
 						// Only the newest generation may reach the GPU.
-						Some(slot) if slot.mesh_gen == m.gen => {
+						Some(slot) if slot.mesh_gen == m.generation => {
 							slot.empty_mesh_gen =
-								(m.mesh.is_empty() && !slot.mesh_missing).then_some(m.gen);
+								(m.mesh.is_empty() && !slot.mesh_missing).then_some(m.generation);
 							out.meshed.push(m);
 						}
 						_ => out.stale_dropped += 1, // stale or evicted
@@ -1220,7 +1224,7 @@ impl Pipeline {
 	/// Shares the caller's frame deadline, with the usual one-job floor.
 	/// Handing a job to a pool is not free on every platform: the web's
 	/// `submit` encodes it and copies it into a JS buffer — two passes
-	/// over an ~12 KB `MeshInput` that native's channel send does not
+	/// over a whole `MeshInput` that native's channel send does not
 	/// make — and a pass can offer `DEPTH × workers` of them, so an
 	/// unbudgeted top-up is a millisecond-scale stage hiding inside a
 	/// budget that thinks it covers everything.
@@ -1292,7 +1296,7 @@ impl Pipeline {
 			JobKey::Generate { x, z } => {
 				// Still `Generating` means nothing else has taken the
 				// column on; an evicted or already-landed one has no work
-				// to redo. Same y=0 probe `next_gen_job` uses.
+				// to redo. Same bottom-chunk probe `next_gen_job` uses.
 				if !matches!(
 					self.store.get(&ChunkPos::new(x, 0, z)).map(|s| &s.state),
 					Some(ChunkState::Generating)
@@ -1302,12 +1306,12 @@ impl Pipeline {
 				let d = dist2(ChunkPos::new(x, 0, z), self.center);
 				self.gen_heap.push((Reverse(d), (x, z)));
 			}
-			JobKey::Mesh { pos, gen } => {
+			JobKey::Mesh { pos, generation } => {
 				let Some(slot) = self.store.get_mut(&pos) else {
 					return; // evicted
 				};
-				if slot.submitted_gen == gen {
-					slot.submitted_gen = gen.saturating_sub(1);
+				if slot.submitted_gen == generation {
+					slot.submitted_gen = generation.saturating_sub(1);
 				}
 				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
 				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
@@ -1317,7 +1321,8 @@ impl Pipeline {
 
 	fn next_gen_job(&mut self) -> Option<Job> {
 		let (_, (x, z)) = self.gen_heap.pop()?;
-		// The column's chunks enter and leave the store together; probe y=0.
+		// The column's chunks enter and leave the store together; probe the
+		// bottom one.
 		match self.store.get(&ChunkPos::new(x, 0, z)) {
 			Some(slot) if matches!(slot.state, ChunkState::Generating) => Some(Job::Generate {
 				x,
@@ -1341,13 +1346,17 @@ impl Pipeline {
 		if slot.mesh_gen <= slot.submitted_gen {
 			return None; // an equal-or-newer job is already in flight
 		}
-		let gen = slot.mesh_gen;
+		let generation = slot.mesh_gen;
 		let input = Box::new(self.build_mesh_input(pos, data));
 		let missing = input.missing.iter().any(|&m| m);
 		let slot = self.store.get_mut(&pos).expect("slot exists");
-		slot.submitted_gen = gen;
+		slot.submitted_gen = generation;
 		slot.mesh_missing = missing;
-		Some(Job::Mesh { pos, gen, input })
+		Some(Job::Mesh {
+			pos,
+			generation,
+			input,
+		})
 	}
 
 	fn build_mesh_input(&self, pos: ChunkPos, center: &ChunkData) -> MeshInput {
@@ -1397,10 +1406,10 @@ impl Pipeline {
 	///   and `EditOverlay` has no eviction; multiplayer now keeps one too,
 	///   fed by every broadcast edit including the server's fluid churn.
 	///   So in exactly the places players build, a column holds tens of
-	///   thousands of entries and the box holds 18³ — and an F7 or a
-	///   reveal-threshold `remesh_all` pays it for every resident chunk at
-	///   once. Probing the box instead is a fixed cost with the same
-	///   answer.
+	///   thousands of entries and the box holds one padded snapshot — and
+	///   an F7 or a reveal-threshold `remesh_all` pays it for every
+	///   resident chunk at once. Probing the box instead is a fixed cost
+	///   with the same answer.
 	fn ore_stamp(&self, pos: ChunkPos) -> Option<crate::mesher::OreStamp> {
 		use crate::worldgen::ore;
 		if self.mining_level < ore::lowest_reveal() {
@@ -1480,12 +1489,14 @@ impl Pipeline {
 				let d = dist2(ChunkPos::new(x, 0, z), self.center);
 				self.gen_heap.push((Reverse(d), (x, z)));
 			}
-			Job::Mesh { pos, gen, .. } => {
+			Job::Mesh {
+				pos, generation, ..
+			} => {
 				// Roll back the submitted marker so the job reschedules.
-				if let Some(slot) = self.store.get_mut(&pos) {
-					if slot.submitted_gen == gen {
-						slot.submitted_gen = gen - 1;
-					}
+				if let Some(slot) = self.store.get_mut(&pos)
+					&& slot.submitted_gen == generation
+				{
+					slot.submitted_gen = generation - 1;
 				}
 				let d = dist2(ChunkPos::new(pos.x, 0, pos.z), self.center);
 				self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
@@ -1518,9 +1529,9 @@ impl Pipeline {
 	/// this thread to be absorbed. `in_flight_min_d2` is what keeps the
 	/// question "how near is the work" independent of WHERE it is running.
 	pub fn stream_urgency(&self) -> f32 {
-		let gen = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
+		let generation = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
-		let Some(d2) = gen
+		let Some(d2) = generation
 			.into_iter()
 			.chain(mesh)
 			.chain(self.in_flight_min_d2)
@@ -1653,11 +1664,11 @@ impl Pipeline {
 		if prev == cell {
 			return None;
 		}
-		// COW: clones the 4KB array only if a worker still holds a snapshot.
+		// COW: clones the cell array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
 		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
 		// Chunk-granular: the window has no padded shell, so an edit
-		// dirties exactly its own 16³ region. Edits (unlike arrivals)
+		// dirties exactly its own chunk. Edits (unlike arrivals)
 		// also invalidate nearby probes so relight starts immediately.
 		self.gi_dirty.insert(pos);
 		self.gi_edits.push((x, y, z));
@@ -1705,14 +1716,14 @@ impl Pipeline {
 						continue;
 					}
 					let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
-					if let Some(nslot) = self.store.get_mut(&np) {
-						if matches!(nslot.state, ChunkState::Ready(_)) {
-							nslot.mesh_gen += 1;
-							self.mesh_heap.push((
-								Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
-								(np.x, np.y, np.z),
-							));
-						}
+					if let Some(nslot) = self.store.get_mut(&np)
+						&& matches!(nslot.state, ChunkState::Ready(_))
+					{
+						nslot.mesh_gen += 1;
+						self.mesh_heap.push((
+							Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
+							(np.x, np.y, np.z),
+						));
 					}
 				}
 			}
@@ -1894,7 +1905,7 @@ pub fn run_job(job: Job) -> JobResult {
 		}
 		Job::Mesh {
 			pos,
-			gen,
+			generation,
 			mut input,
 		} => {
 			// The ore reveal runs HERE, in the worker, before anything
@@ -1904,7 +1915,11 @@ pub fn run_job(job: Job) -> JobResult {
 			input.apply_ore();
 			let mesh = mesh_chunk(&input);
 			JobResult::Meshed {
-				out: MeshOutput { pos, gen, mesh },
+				out: MeshOutput {
+					pos,
+					generation,
+					mesh,
+				},
 				dur_ms: start.elapsed().as_secs_f32() * 1000.0,
 			}
 		}
@@ -2400,40 +2415,48 @@ mod tests {
 		let prev = p.set_block(8, 8, 8, new).expect("edit lands");
 		assert_ne!(prev, new);
 		assert_eq!(p.block_at(8, 8, 8), Some(new));
-		for (pos, gen) in &before {
-			let expect = gen + u64::from(*pos == ChunkPos::new(0, 0, 0));
+		for (pos, generation) in &before {
+			let expect = generation + u64::from(*pos == ChunkPos::new(0, 0, 0));
 			assert_eq!(mesh_gen(&p, *pos), expect, "{pos:?}");
 		}
 
 		// No-op returns None and bumps nothing.
 		let before = snapshot(&p);
 		assert!(p.set_block(8, 8, 8, new).is_none());
-		for (pos, gen) in &before {
-			assert_eq!(mesh_gen(&p, *pos), *gen);
+		for (pos, generation) in &before {
+			assert_eq!(mesh_gen(&p, *pos), *generation);
 		}
 
-		// Face-cell edit at world (0,8,8): local (0,8,8) touches only the
-		// −x border — self + exactly 1 neighbor.
+		// An edit on a chunk face: it touches only the −x border, so the
+		// bumped set is self + exactly 1 neighbor.
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 8, 8));
 		p.set_block(0, 8, 8, new).expect("face edit");
-		for (pos, gen) in &before {
+		for (pos, generation) in &before {
 			let bumped = *pos == ChunkPos::new(0, 0, 0) || *pos == ChunkPos::new(-1, 0, 0);
-			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+			assert_eq!(
+				mesh_gen(&p, *pos),
+				generation + u64::from(bumped),
+				"{pos:?}"
+			);
 		}
 
-		// Corner-of-world edit at (0,0,0): local (0,0,0) touches −x, −z,
-		// and −y borders; the y−1 chunks are outside the world, so the
-		// bumped set is self + the two faces + their shared diagonal.
+		// An edit in the world's bottom corner cell: it touches the −x, −z
+		// and −y borders, and the chunks below are outside the world, so
+		// the bumped set is self + the two faces + their shared diagonal.
 		let before = snapshot(&p);
 		let new = other(p.block_at(0, 0, 0));
 		p.set_block(0, 0, 0, new).expect("corner edit");
-		for (pos, gen) in &before {
+		for (pos, generation) in &before {
 			let bumped = *pos == ChunkPos::new(0, 0, 0)
 				|| *pos == ChunkPos::new(-1, 0, 0)
 				|| *pos == ChunkPos::new(0, 0, -1)
 				|| *pos == ChunkPos::new(-1, 0, -1);
-			assert_eq!(mesh_gen(&p, *pos), gen + u64::from(bumped), "{pos:?}");
+			assert_eq!(
+				mesh_gen(&p, *pos),
+				generation + u64::from(bumped),
+				"{pos:?}"
+			);
 		}
 
 		// Out-of-world y is rejected.
@@ -2443,9 +2466,9 @@ mod tests {
 
 	/// The client twin of the server's
 	/// A reveal sweep costs a re-mesh of everything resident, so it has to
-	/// fire exactly on the four thresholds and at no other level — which
-	/// also means levelling from 1 to 99 in one award sweeps ONCE, not
-	/// four times.
+	/// fire exactly on the reveal thresholds and at no other level — which
+	/// also means one award that crosses every one of them sweeps ONCE,
+	/// not once per tier.
 	#[test]
 	fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 		use crate::worldgen::ore;
@@ -2492,7 +2515,7 @@ mod tests {
 		let recorded = p.take_recorded_edits();
 		assert_eq!(recorded, vec![(8, 8, 8, new as u16)], "edit recorded");
 
-		// Walk far away: the column at (0,0) hard-evicts...
+		// Walk far away: the edited column hard-evicts...
 		let far = ChunkPos::new(40, 0, 0);
 		quiesce(&mut p, far);
 		assert!(p.block_at(8, 8, 8).is_none(), "column evicted");
@@ -2532,8 +2555,8 @@ mod tests {
 		let center = ChunkPos::new(0, 0, 0);
 		quiesce(&mut p, center);
 
-		// y=250 is far above any terrain: chunk (0, 15, 0) is a shared
-		// AIR_CHUNK sentinel.
+		// A cell far above any terrain: its chunk is a shared AIR_CHUNK
+		// sentinel.
 		let sky = ChunkPos::new(0, 15, 0);
 		assert!(
 			matches!(&p.store[&sky].state, ChunkState::Ready(d) if is_air_chunk(d)),
@@ -2873,7 +2896,7 @@ mod tests {
 				.into_iter()
 				.find(|o| o.pos == ChunkPos::new(0, 0, 0))
 			{
-				got = Some(out.gen);
+				got = Some(out.generation);
 				break;
 			}
 			std::thread::sleep(std::time::Duration::from_millis(1));
@@ -2901,7 +2924,7 @@ mod tests {
 					uploaded.remove(&pos);
 				}
 				for out in m.meshed {
-					uploaded.insert(out.pos, out.gen);
+					uploaded.insert(out.pos, out.generation);
 				}
 				if m.gen_queue + m.mesh_queue == 0 && m.in_flight == 0 {
 					// let in-flight results land
@@ -2921,7 +2944,7 @@ mod tests {
 				uploaded.remove(&pos);
 			}
 			for out in m.meshed {
-				uploaded.insert(out.pos, out.gen);
+				uploaded.insert(out.pos, out.generation);
 			}
 			// Two consecutive idle observations: results can land between
 			// the channel check and the gauges snapshot.
@@ -3182,7 +3205,8 @@ mod tests {
 		// The recent window has fully turned over, but admission control
 		// keeps a share of the lifetime worst underneath it: gen cost is
 		// bimodal, and a run of cheap ocean columns must not license
-		// starting a mountain column that costs 10× the remaining budget.
+		// starting a mountain column that costs many times the remaining
+		// budget.
 		assert_eq!(
 			c.predicted_ms(),
 			5.0 * LIFETIME_FLOOR_FRAC,

@@ -6,18 +6,19 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use web_time::Instant;
 
-const WINDOW: usize = 600; // ~10s at 60fps
-/// A frame counts as a hitch above 2× a 60 Hz frame.
+const WINDOW: usize = 600; // frames of rolling history
+/// A frame counts as a hitch above a plainly doubled standard-refresh
+/// frame.
 const HITCH_MS: f32 = 33.4;
 /// EMA weight for the smoothed per-phase timings shown on the overlay.
 const SMOOTH_ALPHA: f32 = 0.05;
 /// A frame past this multiple of the estimated display interval missed its
-/// slot outright. Below 2.0 so a SINGLE dropped frame counts, but not at
-/// 1.5: `refresh_ms` is a 10th percentile of noise that's symmetric about
-/// the true period, so it reads low (7.50 measured against a true 8.33 at
-/// 120 Hz) and 1.5× it lands at 11.25 — under the honest 12.5 bar, where
-/// ordinary jitter gets counted as a drop. 1.75 covers that bias and still
-/// sits well below a genuinely doubled frame (16.67 at 120 Hz, 33.3 at 60).
+/// slot outright. Below 2.0 so a SINGLE dropped frame counts, but not as
+/// tight as 1.5: `refresh_ms` is a low percentile of noise that's
+/// symmetric about the true period, so it reads UNDER the true interval,
+/// and a factor that tight then lands below the honest bar — where
+/// ordinary jitter gets counted as a drop. This margin covers that bias
+/// and still sits well below a genuinely doubled frame.
 ///
 /// Correcting the percentile instead would be worse: p10 is deliberate, so
 /// that an app dropping every OTHER frame can't have its own half-rate
@@ -62,8 +63,9 @@ pub struct FrameTimings {
 	pub maintain_ms: f32,
 	/// RTGI window feed: scroll, classify, voxel-window upload. Sits
 	/// between `maintain` and the mesh upload loop and used to be timed by
-	/// nothing at all — a 512-chunk classify burst (a full 4096-cell walk
-	/// each) landed only in `busy_ms`, with no phase to attribute it to.
+	/// nothing at all — a classify burst over hundreds of chunks (a full
+	/// cell walk each) landed only in `busy_ms`, with no phase to attribute
+	/// it to.
 	pub gi_ms: f32,
 	/// Evict + mesh-upload loop.
 	pub upload_ms: f32,
@@ -189,8 +191,8 @@ pub struct NetStats {
 	///
 	/// Deriving one from the other by subtracting a constant does not work
 	/// and was measured not to: on a LAN every `rtt_ms` sample is either one
-	/// tick or two (16.7 or 33.3 ms) against a 4 ms wire, so the wire is a
-	/// quarter of one quantum and simply is not present in the signal.
+	/// tick or two, and the wire itself is a small fraction of one such
+	/// quantum, so it simply is not present in the signal.
 	pub wire_rtt_ms: f32,
 	/// Mean absolute deviation of the same signal — the number that says
 	/// whether an average RTT is trustworthy.
@@ -255,8 +257,8 @@ pub struct RenderStats {
 	/// this climbs as terrain is explored and does not come back down. That
 	/// makes it the number to watch when frame time degrades over a session
 	/// — a filled window is the cost the engine actually has, and an empty
-	/// one (sky_y = -1, every ray breaking on iteration 1) is the cheapest
-	/// it can ever be.
+	/// one (the no-occupied-cell sentinel, where every ray breaks on its
+	/// first step) is the cheapest it can ever be.
 	pub sky_y: f32,
 	/// Emitter cells the GI knows about. Bounded by `MAX_LIGHTS` on the
 	/// GPU but NOT on the CPU: the map is only pruned when a chunk
@@ -264,7 +266,7 @@ pub struct RenderStats {
 	pub emitters: u32,
 }
 
-/// GPU pass durations from timestamp queries (2-3 frames latent).
+/// GPU pass durations from timestamp queries (a few frames latent).
 #[derive(Clone, Copy, Default)]
 pub struct GpuPassMs {
 	/// Depth prepass over opaque solids.
@@ -374,8 +376,8 @@ pub struct Metrics {
 	/// Seconds after the first frame when the chunk pipeline first
 	/// quiesced (initial world fill complete).
 	streamed_at: Option<f32>,
-	/// Full-run frame history (bench mode only; ~7KB per 1800 frames) so
-	/// the exit summary can compute run-level percentiles.
+	/// Full-run frame history (bench mode only; one f32 per frame) so the
+	/// exit summary can compute run-level percentiles.
 	run_history: Option<Vec<f32>>,
 	last_report: Instant,
 	report_every: Duration,
@@ -416,7 +418,7 @@ pub struct Metrics {
 	/// Streaming budget in effect (last-write gauge; see the engine's
 	/// adaptive controller).
 	pub stream_budget_ms: f32,
-	/// Log a per-phase breakdown of every frame over the 120Hz budget —
+	/// Log a per-phase breakdown of every frame past the drop bar —
 	/// attributes pacing spikes without wading through CSVs. Set by the
 	/// launcher (desktop: `DIG_SPIKELOG`; web: `?spikelog`) rather than
 	/// read from the environment here, which wasm has none of.
@@ -425,8 +427,8 @@ pub struct Metrics {
 	/// window (see [`Metrics::refresh_ms`]).
 	refresh_ms: f32,
 	/// Frames past `DROP_FACTOR` × the estimated display interval — i.e.
-	/// visibly dropped ones. `hitches` only catches ≥2× a 60Hz frame, so a
-	/// single dropped frame at 60Hz never registered at runtime.
+	/// visibly dropped ones. `HITCH_MS` is coarse enough that a single
+	/// dropped frame never registered at runtime.
 	dropped: u32,
 	dropped_total: u64,
 	csv: Option<std::io::BufWriter<std::fs::File>>,
@@ -561,9 +563,10 @@ impl Metrics {
 			// Per-spike phase attribution (see `spike_log`), on the SAME bar
 			// as `dropped` — so every counted drop gets exactly one logged
 			// breakdown and the counter leads straight to a cause. It was a
-			// separate `* 1.01`, which under vsync sat below the AVERAGE
-			// frame (see `DROP_FACTOR` for why the estimate reads low) and
-			// logged every frame instead of the anomalies.
+			// separate factor barely above the estimate, which under vsync
+			// sat below the AVERAGE frame (see `DROP_FACTOR` for why the
+			// estimate reads low) and logged every frame instead of the
+			// anomalies.
 			let spike_over = if self.refresh_ms > 0.0 {
 				self.refresh_ms * DROP_FACTOR
 			} else {
@@ -713,9 +716,10 @@ impl Metrics {
 			.unwrap_or(self.started_at)
 			.elapsed()
 			.as_secs_f32();
-		// Frame-pacing signals: over-8.3 = frames that wouldn't fit a 120Hz
-		// vsync slot (budget-fit, for uncapped runs); over-12.5 = frames
-		// 1.5× the slot — a visibly dropped frame when vsync-paced.
+		// Frame-pacing signals: the first counts frames that wouldn't fit a
+		// high-refresh vsync slot (budget-fit, for uncapped runs); the
+		// second counts frames half again past that slot — a visibly
+		// dropped frame when vsync-paced.
 		const VSYNC_120HZ_MS: f32 = 8.4;
 		const DROP_MS: f32 = 12.5;
 		let frames = self.run_frames;
@@ -737,19 +741,28 @@ impl Metrics {
 		let fill = self
 			.streamed_at
 			.map_or_else(|| "n/a".to_owned(), |t| format!("{t:.2}s"));
-		let mut gen = self.run_gen_jobs;
-		gen.merge(self.gen_jobs);
+		let mut generation = self.run_gen_jobs;
+		generation.merge(self.gen_jobs);
 		let mut mesh = self.run_mesh_jobs;
 		mesh.merge(self.mesh_jobs);
 		let per_sec = |n: u32| n as f32 / elapsed.max(0.001);
 		Some(format!(
 			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup}{miss} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
 			frames as f32 / elapsed.max(0.001),
-			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
+			s.avg_ms,
+			s.p95_ms,
+			s.p99_ms,
+			s.worst_ms,
 			self.hitches_total,
 			self.gauges.resident,
-			gen.count, gen.avg_ms(), gen.max_ms, per_sec(gen.count),
-			mesh.count, mesh.avg_ms(), mesh.max_ms, per_sec(mesh.count),
+			generation.count,
+			generation.avg_ms(),
+			generation.max_ms,
+			per_sec(generation.count),
+			mesh.count,
+			mesh.avg_ms(),
+			mesh.max_ms,
+			per_sec(mesh.count),
 		))
 	}
 
@@ -774,12 +787,28 @@ impl Metrics {
 		};
 		log::info!(
 			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
-			s.avg_ms, s.p95_ms, s.p99_ms, s.worst_ms,
-			if self.win_frames > 0 { self.win_sum.busy_ms / self.win_frames as f32 } else { 0.0 },
-			if self.win_frames > 0 { self.win_sum.outside_ms / self.win_frames as f32 } else { 0.0 },
-			self.hitches, self.dropped,
-			self.chunks_generated, self.meshes_uploaded, self.upload_kb,
-			self.gauges.gen_queue, self.gauges.mesh_queue, self.gauges.in_flight,
+			s.avg_ms,
+			s.p95_ms,
+			s.p99_ms,
+			s.worst_ms,
+			if self.win_frames > 0 {
+				self.win_sum.busy_ms / self.win_frames as f32
+			} else {
+				0.0
+			},
+			if self.win_frames > 0 {
+				self.win_sum.outside_ms / self.win_frames as f32
+			} else {
+				0.0
+			},
+			self.hitches,
+			self.dropped,
+			self.chunks_generated,
+			self.meshes_uploaded,
+			self.upload_kb,
+			self.gauges.gen_queue,
+			self.gauges.mesh_queue,
+			self.gauges.in_flight,
 			self.gauges.upload_backlog,
 			self.gauges.resident,
 			self.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
@@ -915,7 +944,7 @@ mod tests {
 		let path = std::env::temp_dir().join("digblock-metrics-csv-width.csv");
 		let _ = std::fs::remove_file(&path);
 		let mut m = Metrics::new(Some(&path), false);
-		// Report on the next frame instead of waiting out the 5s window.
+		// Report on the next frame instead of waiting out the window.
 		m.report_every = Duration::ZERO;
 		m.frame(FrameTimings::default());
 		m.frame(FrameTimings::default());

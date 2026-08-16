@@ -51,18 +51,18 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// v14: the snapshot split. `NetPlayerState` — one shape for you and for
 /// everyone else — became `SelfState` (full-precision pos/vel, no look, no
 /// id) plus `RemoteState` (f32 pos, i16 velocity in thousandths, u16 yaw,
-/// held). The old struct spent 12 bytes on a look vector whose pitch
-/// nothing has ever read and 12 more on a velocity that only drives a
-/// 250 ms-capped extrapolation: 40 wire bytes per player where 24 carries
-/// everything a client consumes. A break, not an append — `Snapshot`'s
-/// fields changed shape.
-/// v15: slabs gained a ceiling anchor — state bit 1 of a slab cell says
-/// it hangs from its cell's top instead of standing on its floor, so a
-/// slab can be built against a ceiling and grows and shrinks from the
-/// end it is NOT anchored to. Not a message change at all: cells travel
-/// as they always have, and the anchor is still server-derived from the
-/// verified normal (a placement request is the canonical state-0 slab as
-/// before). It is a break because a v14 peer masks the new bit off and
+/// held). The old struct spent a whole look vector on a pitch nothing has
+/// ever read, and a full-precision velocity on an extrapolation capped at
+/// [`EXTRAP_CAP_TICKS`]: far more wire per player than a client consumes.
+/// A break, not an append — `Snapshot`'s fields changed shape.
+/// v15: slabs gained a ceiling anchor — a slab cell's state nibble carries
+/// an anchor bit saying it hangs from its cell's top instead of standing
+/// on its floor, so a slab can be built against a ceiling and grows and
+/// shrinks from the end it is NOT anchored to. Not a message change at
+/// all: cells travel as they always have, and the anchor is still
+/// server-derived from the verified normal (a placement request carries
+/// the canonical base state as before). It is a break because a v14 peer
+/// masks the new bit off and
 /// so puts the block somewhere else — and geometry that disagrees
 /// between the two ends is collision that disagrees, which the movement
 /// adoption envelope would fight tick by tick.
@@ -104,7 +104,7 @@ pub const PROTOCOL_VERSION: u16 = 21;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
-/// simulate. Three columns is the bounded choice: at
+/// simulate. A small radius is the bounded choice: at
 /// `JOIN_SYNC_PER_TICK` the near set clears in a handful of ticks on any
 /// real world, while the rest keeps streaming in behind the player as it
 /// always has.
@@ -120,9 +120,9 @@ pub const AREA_SYNC_RADIUS: i32 = 3;
 /// A hold that can hang is worse than the artifact it removes: the marker
 /// rides the reliable stream, but a server wedged mid-sync, or one whose
 /// outbound queue never opens the room join sync reserves, would strand
-/// the player on a loading screen with no way out. Five seconds is far
-/// past the few ticks the radius needs on a healthy link, and the fallback
-/// is exactly today's behaviour.
+/// the player on a loading screen with no way out. The wait is far past
+/// the few ticks the radius needs on a healthy link, and the fallback is
+/// exactly today's behaviour.
 pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// Oldest protocol this build still speaks. The handshake refuses peers
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
@@ -132,15 +132,16 @@ pub const MIN_PROTOCOL: u16 = 19;
 
 // ---- handshake preamble ----------------------------------------------
 //
-// Both directions of the control stream start with this fixed 8-byte
+// Both directions of the control stream start with this one fixed-length
 // preamble, sent before any length-prefixed postcard frame. FROZEN
 // FOREVER — never versioned, never extended — so any two builds can
 // always exchange versions and refuse each other cleanly instead of
 // hitting a postcard decode error on a differently-shaped Hello.
 
-/// Preamble bytes 0-3.
+/// The preamble opens with this magic; anything else is not a peer.
 pub const PREAMBLE_MAGIC: [u8; 4] = *b"DIGB";
-/// magic (4) + protocol u16 LE (2) + reserved zeros (2).
+/// [`PREAMBLE_MAGIC`], then the protocol version as u16 LE, then the
+/// reserved zeros.
 pub const PREAMBLE_LEN: usize = 8;
 
 pub fn encode_preamble(protocol: u16) -> [u8; PREAMBLE_LEN] {
@@ -180,7 +181,7 @@ pub fn sanitize_name(name: &str) -> String {
 	}
 }
 
-/// Display-name rule: 3-10 chars of `a-z A-Z 0-9 - _`. One source of
+/// Display-name rule: a bounded run of `a-z A-Z 0-9 - _`. One source of
 /// truth for the menu's typing filter and join gate, the launchers'
 /// name arguments, and (mirrored as a regex) the master's /api/join
 /// backstop. Distinct from [`MAX_NAME_LEN`], which stays the wire-level
@@ -236,8 +237,9 @@ pub fn text_charset() -> impl Iterator<Item = char> {
 		.filter(|&c| is_text_char(c))
 }
 
-/// Validate a display name against the 3-10 char rule. The `Err` string
-/// is shown verbatim as the menu's status-line alert.
+/// Validate a display name against [`MIN_DISPLAY_NAME`]..=
+/// [`MAX_DISPLAY_NAME`] and [`is_name_char`]. The `Err` string is shown
+/// verbatim as the menu's status-line alert, so it spells the rule out.
 pub fn validate_name(name: &str) -> Result<(), &'static str> {
 	let n = name.chars().count();
 	if !(MIN_DISPLAY_NAME..=MAX_DISPLAY_NAME).contains(&n) || !name.chars().all(is_name_char) {
@@ -247,8 +249,8 @@ pub fn validate_name(name: &str) -> Result<(), &'static str> {
 }
 
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
-/// bytes each in UTF-8, so a full line can reach ~240 bytes — still
-/// nowhere near [`MAX_FRAME`].
+/// bytes each in UTF-8, so a full line can encode to twice the cap —
+/// still nowhere near [`MAX_FRAME`].
 pub const MAX_CHAT_LEN: usize = 120;
 
 /// Chat token bucket: sustained rate (burst [`CHAT_BURST`]).
@@ -293,16 +295,17 @@ pub const HANDSHAKE_TIMEOUT_SECS: f32 = 5.0;
 /// session with no snapshots, no error and no way back, waiting on a QUIC
 /// idle timeout that a half-dead peer may never deliver.
 ///
-/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day every
-/// 10 s to EVERY client, live or not, so even a player still waiting for
-/// their spawn column to generate has a heartbeat. More than three of
-/// those missed is unambiguous — and the margin past the third is the
-/// point, since firing exactly on it would make ordinary scheduling
-/// jitter enough to drop a healthy session.
+/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day to
+/// EVERY client, live or not, so even a player still waiting for their
+/// spawn column to generate has a heartbeat. Missing several beats in a
+/// row is unambiguous — the assert below pins how many — and the margin
+/// past the last of them is the point, since firing exactly on it would
+/// make ordinary scheduling jitter enough to drop a healthy session.
 pub const RECV_TIMEOUT_SECS: f32 = 35.0;
 const _: () = assert!(RECV_TIMEOUT_SECS > 3.0 * (TOD_SYNC_TICKS / TICK_RATE) as f32);
 
-/// Simulation rate. Fixed: `Player::tick` air control hardcodes /60.
+/// Simulation rate. Fixed: `Player::tick` air control hardcodes the
+/// matching divisor, which is what the tripwire below pins.
 pub const TICK_RATE: u32 = 60;
 
 // The adoption envelope replays the identical `Player::tick` on client and
@@ -310,10 +313,11 @@ pub const TICK_RATE: u32 = 60;
 // same clock. Compile-time tripwire, not a convention.
 const _: () = assert!(digblock_core::player::TICK == 1.0 / TICK_RATE as f32);
 
-/// Snapshots go out every Nth sim tick (3 → 20 Hz).
+/// Snapshots go out every Nth sim tick, so the snapshot rate is
+/// [`TICK_RATE`] over this.
 pub const SNAPSHOT_DIVISOR: u32 = 3;
 
-/// Time-of-day heartbeat cadence in sim ticks (10 s). The clients'
+/// Time-of-day heartbeat cadence in sim ticks. The clients'
 /// frame-integrated suns drift microscopically between beats; each
 /// `ServerMsg::TimeOfDay` re-anchors them, and it also catches clients
 /// whose clock paused entirely (backgrounded tab, suspended laptop).
@@ -323,11 +327,11 @@ pub const TOD_SYNC_TICKS: u32 = 10 * TICK_RATE;
 /// datagram loss never costs the server an input.
 pub const INPUT_REDUNDANCY: usize = 4;
 
-/// Send an input datagram at most once per this many predicted ticks
-/// (30 Hz at stride 2). The redundancy window covers a lost datagram at
-/// this spacing with 2× margin; input→adoption latency grows with the
-/// stride, so don't raise it casually. High-refresh displays used to
-/// send per FRAME (120+/s, half of them duplicates).
+/// Send an input datagram at most once per this many predicted ticks, so
+/// the send rate is [`TICK_RATE`] over this. [`INPUT_REDUNDANCY`] covers
+/// a lost datagram at this spacing with margin to spare; input→adoption
+/// latency grows with the stride, so don't raise it casually.
+/// High-refresh displays used to send per FRAME, most of them duplicates.
 pub const INPUT_SEND_STRIDE: u32 = 2;
 
 /// Datagram payload budget, safely under the QUIC minimum MTU.
@@ -341,21 +345,22 @@ pub const MAX_FRAME: usize = 1 << 20;
 ///
 /// Nothing a client legitimately sends is large — the widest is a `Layout`
 /// at a few hundred bytes, and `max_client_frame_fits_every_client_message`
-/// pins that. Sharing the server's 1 MB cap meant a client could push 1 MB
-/// `Layout` frames (a `Vec<u16>` truncated only later, during
-/// sanitization) straight into the sim's action queue: amplification, not
-/// a heap bomb, since `MSG_BUDGET` bounds the rate — but a cap three
-/// orders of magnitude past any real message is not a cap.
+/// pins that. Sharing the server's [`MAX_FRAME`] cap meant a client could
+/// push `Layout` frames of that size (a `Vec<u16>` truncated only later,
+/// during sanitization) straight into the sim's action queue:
+/// amplification, not a heap bomb, since `MSG_BUDGET` bounds the rate —
+/// but a cap orders of magnitude past any real message is not a cap.
 pub const MAX_CLIENT_FRAME: usize = 4096;
 const _: () = assert!(MAX_CLIENT_FRAME < MAX_FRAME);
 
 /// Dig/place: claimed eye origin may differ from the server's simulated
 /// position by at most this many blocks. Sized for honest divergence:
-/// the client predicts [`CLIENT_TICK_LEAD`] ticks ahead of the sim
-/// state it is compared against (~0.4 blocks at walk speed, more when
+/// the client predicts [`CLIENT_TICK_LEAD`] ticks ahead of the sim state
+/// it is compared against (a fraction of a block at walk speed, more when
 /// falling) and aims from a camera still carrying the decaying
-/// reconciliation offset (up to [`POS_TOLERANCE`]) — at 1.0 the sum
-/// occasionally rejected legitimate digs made while moving.
+/// reconciliation offset (up to [`POS_TOLERANCE`]) — at the tighter value
+/// this replaced, the sum occasionally rejected legitimate digs made
+/// while moving.
 pub const EDIT_POS_TOLERANCE: f32 = 1.5;
 
 /// Timed digging: a completing Dig/Collect is accepted when the server
@@ -364,14 +369,14 @@ pub const EDIT_POS_TOLERANCE: f32 = 1.5;
 /// kept small — but it must cover the honest shortfall, which has two
 /// parts: a CONSTANT pipeline lag every dig pays regardless of hardness
 /// (the first verify lands a tick after DigStart and the server's look
-/// trails the client's by the input jitter buffer — ~3 ticks even on
+/// trails the client's by the input jitter buffer — a few ticks even on
 /// localhost), plus transient aim misses that scale with how long the
-/// hold runs. The old `clamp(4, 12)` folded both into one floor, which
-/// left cheap blocks (leaves, water) a single tick of real slack — any
-/// one late input datagram bounced an honest dig.
+/// hold runs. The old single `clamp` folded both into one floor, which
+/// left cheap blocks (leaves, water) barely any real slack — any one late
+/// input datagram bounced an honest dig.
 pub const DIG_GRACE_BASE: u32 = 4;
-/// Cap of the proportional (hardness/5) component of [`dig_grace`]
-/// (~200 ms) — a long dig doesn't hand a cheat proportionally more.
+/// Cap on [`dig_grace`]'s hardness-proportional component — a long dig
+/// doesn't hand a cheat proportionally more.
 pub const DIG_GRACE_PROP_MAX: u32 = 12;
 
 /// Completion grace in ticks for a block of the given hardness.
@@ -383,7 +388,7 @@ pub fn dig_grace(hardness_ticks: u32) -> u32 {
 /// own simulated state. A missed tick just doesn't count toward the
 /// hold (a pause, not a reset — transient misses are expected from
 /// honest clients: look lag, reconciliation camera offsets); only this
-/// many CONSECUTIVE misses ends it (~500 ms).
+/// many CONSECUTIVE misses ends it.
 ///
 /// "Ends" no longer means "discards": the hold then bleeds away over
 /// `skills::DIG_DECAY_TICKS` exactly as a released one does, since a
@@ -396,11 +401,13 @@ pub const DIG_OFF_TARGET_RESET: u32 = 30;
 /// re-zeroing drift so honest clients never rubber-band.
 pub const POS_TOLERANCE: f32 = 0.75;
 
-/// Sanity clamp on per-tick displacement, blocks/s (terminal velocity is
-/// 20; walk is 4). Claims that move faster than this are never adopted.
+/// Sanity clamp on per-tick displacement, blocks/s — set clear of
+/// terminal velocity, which is itself well clear of a walk. Claims that
+/// move faster than this are never adopted.
 pub const MAX_SPEED: f32 = 25.0;
 
-/// Drift EWMA smoothing: ~2 s window at 60 Hz. The server keeps a moving
+/// Drift EWMA smoothing; the averaging window is its reciprocal, in
+/// ticks, which is a couple of seconds' worth. The server keeps a moving
 /// average of each adopted claim's (claim − sim) delta VECTOR. Honest
 /// deltas are zero-mean float noise and cancel; riding the envelope edge
 /// requires a persistent directional bias that accumulates instead.
@@ -408,8 +415,8 @@ pub const DRIFT_ALPHA: f32 = 1.0 / 120.0;
 
 /// Sustained-drift ceiling, blocks per tick of EWMA magnitude. Claims
 /// stop being adopted while the average sits above this, capping the
-/// exploitable envelope gain at ~1.2 blocks/s sustained (vs 4 walking) —
-/// honest noise sits orders of magnitude below.
+/// exploitable envelope gain (this times [`TICK_RATE`]) at a fraction of
+/// walking pace — honest noise sits orders of magnitude below.
 pub const DRIFT_TOLERANCE: f32 = 0.02;
 
 /// Edit token bucket: sustained rate (burst [`EDIT_BURST`]).
@@ -422,8 +429,8 @@ pub const EDIT_BURST: f32 = 5.0;
 /// above which the drain takes TWO inputs in a tick, which is what pays back
 /// the delay a hold introduces. The depth itself is set by
 /// [`INPUT_HOLD_MAX`]; raising this number alone does nothing, as the
-/// netbench's `depth` column showed (~1.5 ticks even on a clean LAN, and
-/// that 1.5 was entirely [`INPUT_SEND_STRIDE`] burstiness).
+/// netbench's `depth` column showed — barely over a tick even on a clean
+/// LAN, and that remainder was entirely [`INPUT_SEND_STRIDE`] burstiness.
 pub const JITTER_BUFFER_TICKS: u32 = 2;
 
 /// How long the input drain will hold a HOLE in the tick sequence open,
@@ -433,9 +440,9 @@ pub const JITTER_BUFFER_TICKS: u32 = 2;
 /// `handle_inputs` refuses anything at or below the consumed high-water
 /// mark, so an input that arrives after the drain has already stepped past
 /// its tick is lost for good. Heavy jitter reorders datagrams, which is
-/// exactly how a link loses 27% of its inputs at 500 ms while dropping only
-/// 12% of its packets — redundancy cannot help, because every copy of a tick
-/// is equally old.
+/// exactly how a bad link loses a far larger share of its INPUTS than of
+/// its packets — redundancy cannot help, because every copy of a tick is
+/// equally old.
 ///
 /// A hold costs latency, but only ever converts DIVERGENCE into it: held
 /// inputs are applied in order, just later, so the server still lands on the
@@ -443,27 +450,27 @@ pub const JITTER_BUFFER_TICKS: u32 = 2;
 /// Nothing happens at all on a link with no holes, which is why a clean
 /// connection pays literally zero for this.
 ///
-/// The cap is set by measurement, not taste: `just bench-net` swept it over
-/// 0/2/4/6/8/12. Two results decided it.
+/// The cap is set by measurement, not taste: `just bench-net` swept it from
+/// no hold at all up past this depth. Two results decided it.
 ///
 /// A hold does NOT simply spend `EDIT_POS_TOLERANCE`, which is what the
-/// arithmetic predicts and what the sweep refuted. Up to 4 the claimed edit
-/// origin sits CLOSER to the server's own position than with no hold at all
-/// (0.87 vs 1.02 blocks at 500 ms, 0.40 vs 0.60 at 300 ms), because the
-/// alternative to holding is coasting on stale intent, and a coast diverges
-/// faster than a delay does. Past 6 it starts climbing, and by 12 it reaches
-/// 1.79 — over the tolerance, which is where honest edits begin bouncing
-/// (the sweep's only non-zero `tol-rej/s`).
+/// arithmetic predicts and what the sweep refuted. Up to this depth the
+/// claimed edit origin sits CLOSER to the server's own position than with no
+/// hold at all, on every lossy link measured, because the alternative to
+/// holding is coasting on stale intent, and a coast diverges faster than a
+/// delay does. Deeper than this it starts climbing, and the deepest rungs of
+/// the sweep put it OVER [`EDIT_POS_TOLERANCE`], which is where honest edits
+/// begin bouncing (the sweep's only non-zero `tol-rej/s`).
 ///
-/// Delivery is also flat past here. 4 recovers three quarters of the
-/// shortfall at 300 ms (91.8% → 98.0%); 6 and 8 add two tenths of a point
-/// between them. The worst link keeps improving to 8, but buys it with a
-/// replay rate that climbs back ABOVE the no-hold baseline, which is the
-/// symptom this was meant to remove.
+/// Delivery is also flat past here. This depth recovers most of the
+/// shortfall on a mid-latency link; the next rungs up add a fraction of a
+/// point between them. The worst link keeps improving deeper still, but buys
+/// it with a replay rate that climbs back ABOVE the no-hold baseline, which
+/// is the symptom this was meant to remove.
 ///
-/// What it costs: nothing measurable below 120 ms of ping (the lan, wifi and
-/// cellular rows are unchanged to the digit — no holes, no holds), +11 ms at
-/// 300 ms and +44 ms at 500 ms.
+/// What it costs: nothing measurable on a low-ping link (the lan, wifi and
+/// cellular rows are unchanged to the digit — no holes, no holds), and a
+/// latency add on the bad ones that grows with their ping.
 ///
 /// RULE: [`EDIT_POS_TOLERANCE`] and [`dig_grace`] must never be scaled by
 /// the observed depth. A deeper buffer SPENDS those fixed budgets; making
@@ -487,37 +494,38 @@ pub const INPUT_HOLD_MAX: u32 = 4;
 pub const CLIENT_TICK_LEAD: u32 = JITTER_BUFFER_TICKS + 3;
 
 /// Remote players render this many ticks behind the estimated server
-/// clock (100 ms), interpolating between snapshots.
+/// clock, interpolating between snapshots.
 pub const INTERP_DELAY_TICKS: f64 = 6.0;
 
-/// Max extrapolation past the newest snapshot before a remote player
-/// holds position (250 ms).
+/// Max extrapolation past the newest snapshot, in ticks, before a remote
+/// player holds position.
 pub const EXTRAP_CAP_TICKS: f64 = 15.0;
 
 /// Interest management: at most this many players per snapshot — self
 /// (the reconciliation anchor) plus the nearest remotes by column
 /// distance. Sized so a full snapshot always fits one datagram.
 ///
-/// v14's narrower `RemoteState` bought the rise from 24: the same datagram
-/// now carries two thirds again as many players.
+/// v14's narrower `RemoteState` is what bought the last rise: the same
+/// datagram now carries substantially more players than it used to.
 ///
 /// This must hold for the WORST-CASE encoding, not the typical one — an
 /// oversize snapshot does not truncate, it fails to encode, and that
 /// client gets no snapshot at all. (Exactly the cliff interest management
 /// was added to close.)
 pub const MAX_SNAPSHOT_PLAYERS: usize = 40;
-// RemoteState is ≤28 wire bytes: id 1 + 3×f32 (fixed 12) + 3×i16 and yaw
-// and held, all postcard VARINTS — which cost 3 bytes each at their
-// extremes, not 2. A typical entry is far smaller (a walking velocity is
-// 2 bytes a component), but the cap has to survive the extremes.
-// SelfState is 24 + 1 for its Option tag; snapshot overhead is ≤13
-// (datagram variant, two varint ticks, vec length).
+// The assert below sizes the WORST-case encoding of each part. A
+// RemoteState is its id, a fixed-width f32 position, then velocity, yaw
+// and held as postcard VARINTS — which take their widest encoding at the
+// extremes, not their typical one. A real entry is far smaller (a walking
+// velocity encodes short), but the cap has to survive the extremes.
+// SelfState adds its Option tag on top; the snapshot itself carries the
+// datagram variant, two varint ticks and the vec length.
 const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 28 + 13 <= MAX_DATAGRAM);
 
 /// A remote whose newest snapshot lags the estimated clock by this many
-/// ticks (2 s) left our interest radius — drop it client-side so it
-/// vanishes instead of ghosting at the extrapolation cap. `PlayerLeft`
-/// still removes eagerly.
+/// ticks left our interest radius — drop it client-side so it vanishes
+/// instead of ghosting at the extrapolation cap. `PlayerLeft` still
+/// removes eagerly.
 ///
 /// Must stay comfortably above `SNAPSHOT_DIVISOR * FAR_PLAYER_STRIDE`
 /// ticks, or the distance tiering below would expire the very players it
@@ -528,22 +536,22 @@ pub const REMOTE_EXPIRE_TICKS: f64 = 120.0;
 ///
 /// Beyond it they ride one snapshot in [`FAR_PLAYER_STRIDE`] instead of
 /// being dropped, because "far" here is not "invisible": the selection
-/// radius is the client's own draw distance — 20 columns, 320 blocks, at
-/// which a 1.8-block player still subtends ~5 px at 1080p and 70° vertical
-/// FOV. Cutting the radius instead would delete people you can plainly
-/// see. At 128 blocks a player is ~12 px, which is where smooth motion
-/// starts to be worth full rate.
+/// radius is the client's own draw distance, at which a player still
+/// subtends a few pixels on an ordinary display and FOV. Cutting the
+/// radius instead would delete people you can plainly see. This nearer
+/// radius is where a player grows big enough on screen for smooth motion
+/// to be worth full rate.
 pub const PLAYER_NEAR_COLS: i32 = 8;
 
 /// How often a remote beyond [`PLAYER_NEAR_COLS`] is included: every Nth
-/// snapshot, i.e. 5 Hz at `SNAPSHOT_DIVISOR` 3 and stride 4.
+/// snapshot, so their rate is the snapshot rate over this.
 ///
-/// The client interpolates ~100 ms behind and extrapolates along velocity
-/// up to [`EXTRAP_CAP_TICKS`] (250 ms), so a 200 ms spacing degrades into
-/// mostly-extrapolation for these players — worth at most a few tenths of
-/// a block of positional error at a walk, on a figure a handful of pixels
-/// tall. Which player falls in which snapshot is phased by id, so far
-/// players spread across the cycle rather than all landing in one
+/// The client interpolates [`INTERP_DELAY_TICKS`] behind and extrapolates
+/// along velocity up to [`EXTRAP_CAP_TICKS`], so this wider spacing
+/// degrades into mostly-extrapolation for these players — worth a
+/// fraction of a block of positional error at a walk, on a figure that
+/// small on screen. Which player falls in which snapshot is phased by id,
+/// so far players spread across the cycle rather than all landing in one
 /// datagram.
 pub const FAR_PLAYER_STRIDE: u32 = 4;
 const _: () = assert!(
@@ -559,9 +567,9 @@ mod tests {
 	/// transient misses, capped so long digs don't hand a cheat more.
 	#[test]
 	fn dig_grace_scales_with_hardness() {
-		assert_eq!(dig_grace(10), 6); // leaves: base + 2
-		assert_eq!(dig_grace(20), 8); // water: base + 4
-		assert_eq!(dig_grace(30), 10); // dirt: base + 6
+		assert_eq!(dig_grace(10), 6); // leaves: base + a thin slice
+		assert_eq!(dig_grace(20), 8); // water: base + a wider one
+		assert_eq!(dig_grace(30), 10); // dirt: still climbing
 		assert_eq!(dig_grace(60), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // wood: cap
 		assert_eq!(dig_grace(90), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // stone: cap
 	}
@@ -570,10 +578,10 @@ mod tests {
 	fn name_rule_is_3_to_10_of_the_alphabet() {
 		assert!(validate_name("ted").is_ok());
 		assert!(validate_name("Ted_L-99").is_ok());
-		assert!(validate_name("abcdefghij").is_ok()); // 10: at the cap
+		assert!(validate_name("abcdefghij").is_ok()); // exactly at the cap
 		assert!(validate_name("").is_err());
 		assert!(validate_name("ab").is_err()); // too short
-		assert!(validate_name("abcdefghijk").is_err()); // 11: too long
+		assert!(validate_name("abcdefghijk").is_err()); // one past the cap
 		assert!(validate_name("has space").is_err());
 		assert!(validate_name("bang!").is_err());
 		assert!(validate_name("émile").is_err()); // non-ASCII
@@ -614,9 +622,11 @@ mod tests {
 		assert!(text_charset().count() > 300);
 		// Names stay a strict subset — widening them is a cross-service
 		// change (see is_name_char).
-		assert!("abcABC019-_"
-			.chars()
-			.all(|c| is_name_char(c) && is_text_char(c)));
+		assert!(
+			"abcABC019-_"
+				.chars()
+				.all(|c| is_name_char(c) && is_text_char(c))
+		);
 		assert!(!is_name_char('é') && is_text_char('é'));
 	}
 }

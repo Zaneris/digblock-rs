@@ -116,8 +116,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			break;
 		}
 		// Coarse gate, now the real two-level skip (gi_dda.wgsl): an
-		// empty 8-cube is left in one jump. This view exists to prove
-		// the window, the toroidal addressing and the coarse texture
+		// empty coarse brick is left in one jump. This view exists to
+		// prove the window, the toroidal addressing and the coarse texture
 		// agree with what the probe kernel sees, so it has to march the
 		// same way the probe kernel does.
 		if coarse_cell(cell >> vec3u(3u)) == 0u {
@@ -134,7 +134,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 				f32((m.x >> 8u) & 0xffu),
 				f32((m.x >> 16u) & 0xffu),
 			) / 255.0;
-			// Partial cells (opacity 3) draw as their whole cell here on
+			// Partial cells draw as their whole cell here on
 			// purpose: this view proves the WINDOW's contents, and the
 			// cell-granular picture is what the window actually stores.
 			if op >= 2u {
