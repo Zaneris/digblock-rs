@@ -142,18 +142,51 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 ///
 /// Mining's capstone ([`crate::unlock::ore_mastery`]) multiplies the whole
 /// split rather than adding a line to it, which is what keeps "one extra
-/// vein's worth" true of Aetherock's two essences as well as of the three
-/// tiers that pay in one.
+/// vein's worth" true of Aetherock's two essences as well as of the tiers
+/// that pay in one.
+///
+/// The one thing a table cannot say is the TRACE, which is why this takes
+/// a cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per
+/// draw, and the finest an essence split can be cut is a whole unit. It
+/// rides the capstone multiplier with everything else, because a trace is
+/// part of what that vein was worth and the capstone is worded as another
+/// vein's worth. Being derived from the cell rather than rolled is what
+/// lets it live in here at all — a random line would make this function
+/// two different answers on two machines.
 ///
 /// The ONE answer the server's dig credit and the engine's offline arm
 /// both take, so a solo world and a server cannot pay differently.
-pub fn field_yield(ore: BlockType, alchemy: u32, mining: u32) -> Vec<(Essence, u32)> {
+pub fn field_yield(
+	ore: BlockType,
+	alchemy: u32,
+	mining: u32,
+	at: (i32, i32, i32),
+	seed: f64,
+) -> Vec<(Essence, u32)> {
 	let draws = 1 + crate::unlock::ore_mastery(mining);
-	extract_yields(ore, alchemy)
+	let mut out: Vec<(Essence, u32)> = extract_yields(ore, alchemy)
 		.into_iter()
 		.map(|(e, per)| (e, per * draws))
-		.collect()
+		.collect();
+	if crate::worldgen::ore::traces_aether(ore, at.0, at.1, at.2, seed) {
+		let n = TRACE_AETHER * draws;
+		// Merged rather than pushed, the same way a bonus line merges: no
+		// tracing tier pays Aether of its own today, and the day one does
+		// a second line would read as two separate finds.
+		match out.iter_mut().find(|(e, _)| *e == Essence::Aether) {
+			Some((_, on)) => *on += n,
+			None => out.push((Essence::Aether, n)),
+		}
+	}
+	out
 }
+
+/// What one trace-bearing vein cell adds to a draw.
+///
+/// Tuning belongs to the RATE ([`crate::worldgen::ore::traces_aether`]),
+/// not to this: a trace is meant to be worth less per draw than any whole
+/// unit, and the only way to say that is how often it lands.
+const TRACE_AETHER: u32 = 1;
 
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (a fixed fraction of the total, never the level-scaled outcome).
@@ -750,18 +783,25 @@ mod tests {
 	/// counts draws instead of units: it is the one tier that pays in two
 	/// essences, so a capstone that added a flat bonus would have to pick
 	/// which of them to add it to.
+	///
+	/// Asked of an untraced cell throughout, because the trace is the one
+	/// thing a draw pays that the bench's table does not know about —
+	/// `a_traced_seam_pays_one_more_aether_than_the_same_seam_without_one`
+	/// is where that half is pinned.
 	#[test]
 	fn a_field_draw_pays_the_ore_and_the_capstone_multiplies_all_of_it() {
+		let (plain, _) = trace_cells(TEST_SEED);
 		for &ore in &crate::worldgen::ore::ORES {
 			for alchemy in [1, 40, crate::skills::MAX_LEVEL] {
 				let bench = extract_yields(ore, alchemy);
 				assert!(!bench.is_empty(), "{ore:?} is worth nothing to draw");
 				assert_eq!(
-					field_yield(ore, alchemy, 1),
+					field_yield(ore, alchemy, 1, plain, TEST_SEED),
 					bench,
 					"{ore:?} at Alchemy {alchemy}: a draw is the bench's own yield"
 				);
-				let mastered = field_yield(ore, alchemy, crate::skills::MAX_LEVEL);
+				let mastered =
+					field_yield(ore, alchemy, crate::skills::MAX_LEVEL, plain, TEST_SEED);
 				let draws = 1 + crate::unlock::ore_mastery(crate::skills::MAX_LEVEL);
 				assert!(draws > 1, "the capstone hands out nothing");
 				for (i, &(e, n)) in mastered.iter().enumerate() {
@@ -775,6 +815,160 @@ mod tests {
 			extract_yields(BlockType::Aetherock, 1).len() >= 2,
 			"the two-essence tier is what the capstone rule is for"
 		);
+	}
+
+	/// Any world; the trace is a function of the cell and the seed, and
+	/// every seed has both kinds of cell in it.
+	const TEST_SEED: f64 = 42.0;
+
+	/// A vein cell with no Aether trace and one with, in that order.
+	///
+	/// WALKED rather than named, so a retune of the rate moves the test
+	/// with it — a hardcoded pair of coordinates would silently land on
+	/// the wrong side of the hash and start asserting the opposite of what
+	/// it says.
+	fn trace_cells(seed: f64) -> ((i32, i32, i32), (i32, i32, i32)) {
+		let (mut plain, mut rich) = (None, None);
+		for y in 0..4096 {
+			let at = (1, y, 2);
+			let slot = if crate::worldgen::ore::traces_aether(
+				BlockType::Duskstone,
+				at.0,
+				at.1,
+				at.2,
+				seed,
+			) {
+				&mut rich
+			} else {
+				&mut plain
+			};
+			slot.get_or_insert(at);
+			if plain.is_some() && rich.is_some() {
+				break;
+			}
+		}
+		(
+			plain.expect("an untraced seam"),
+			rich.expect("a traced seam"),
+		)
+	}
+
+	/// The trace: the same tier, the same levels, one unit of Aether more
+	/// where the seam carries it — and NOTHING else different, which is
+	/// what makes it a bonus on a draw rather than a second yield table.
+	///
+	/// The middle tier is the only one that traces, and that is the point
+	/// of it: `every_functional_price_has_a_source_at_its_own_level`
+	/// proves the Resonant Pick is buildable by anyone who has earned it,
+	/// off a tier that reveals at the level the pick's own swing widens.
+	/// The trace is the luck beside that ladder — the chance of walking up
+	/// to the bench already holding what the pick wants — so it is
+	/// deliberately not something the pin is allowed to count.
+	#[test]
+	fn a_traced_seam_pays_one_more_aether_than_the_same_seam_without_one() {
+		let (plain, rich) = trace_cells(TEST_SEED);
+		let ore = BlockType::Duskstone;
+		for alchemy in [1, 40, crate::skills::MAX_LEVEL] {
+			let without = field_yield(ore, alchemy, 1, plain, TEST_SEED);
+			let with = field_yield(ore, alchemy, 1, rich, TEST_SEED);
+			let aether = |lines: &[(Essence, u32)]| {
+				lines
+					.iter()
+					.find(|&&(e, _)| e == Essence::Aether)
+					.map_or(0, |&(_, n)| n)
+			};
+			assert_eq!(
+				aether(&with) - aether(&without),
+				TRACE_AETHER,
+				"Alchemy {alchemy}: a traced seam is worth exactly one trace more"
+			);
+			for &(e, n) in &without {
+				if e == Essence::Aether {
+					continue;
+				}
+				assert_eq!(
+					with.iter().find(|&&(we, _)| we == e).map(|&(_, wn)| wn),
+					Some(n),
+					"Alchemy {alchemy}: the trace moved {e:?}, which it must not"
+				);
+			}
+		}
+		// Only the middle tier traces. If another ever does, the merge arm
+		// in `field_yield` starts mattering and this is the reminder.
+		let (plain, rich) = (plain, rich);
+		for &ore in &crate::worldgen::ore::ORES {
+			if ore == BlockType::Duskstone {
+				continue;
+			}
+			assert_eq!(
+				field_yield(ore, 40, 1, rich, TEST_SEED),
+				field_yield(ore, 40, 1, plain, TEST_SEED),
+				"{ore:?} traces, and only the middle tier is meant to"
+			);
+		}
+	}
+
+	/// **Every functional item is buildable by a player who has just
+	/// earned it.** For each essence its recipe names, some block that
+	/// player can already dig and take apart yields that essence.
+	///
+	/// This is the pin that was missing when the Resonant Pick shipped.
+	/// `functional_ideal` and `unlock::functional` were already pinned as
+	/// twins, so an item could not have a price without a level — but
+	/// nothing asked whether the price was PAYABLE at that level, and the
+	/// pick's Aether line was not: the only reliable Aether in the game
+	/// sat behind the deepest ore tier and a foliage bonus near the top of
+	/// the Alchemy ladder, both a long climb past the pick's own gate.
+	///
+	/// What counts as a source is deliberately narrow, and each exclusion
+	/// is load-bearing:
+	///
+	/// - **The block has to be one the world places.** A craft-only
+	///   substance can never be a net source — `no_level_ever_creates_matter`
+	///   guarantees making one costs more than taking it apart returns —
+	///   so Crystal, which yields more Aether than anything else per cube,
+	///   is a SINK and correctly contributes nothing here.
+	/// - **Both walls apply**: the Mining level has to clear the strength
+	///   wall (and, for ore, the tier's own reveal), and the Alchemy level
+	///   the extract gate. A source you cannot reach is not a source.
+	/// - **Only what a tier pays RELIABLY.** The Duskstone trace is a
+	///   chance, so it is not asked about — a price payable only if the
+	///   hash smiles is not payable.
+	///
+	/// Levelling both skills together is the reading of "has earned it":
+	/// the ladders are independent, but an item's price is a claim about a
+	/// player at that point in the game, not about one skill in isolation.
+	#[test]
+	fn every_functional_price_has_a_source_at_its_own_level() {
+		for &item in &BlockType::ALL {
+			let Some(level) = crate::unlock::functional(item) else {
+				continue;
+			};
+			let price = functional_ideal(item).expect("the twin pin guarantees one");
+			for &(essence, _) in price {
+				let source = BlockType::ALL.iter().copied().find(|&b| {
+					if b.is_crafted_only() || crate::unlock::mine(b) > level {
+						return false;
+					}
+					let ore = crate::worldgen::ore::ORES.contains(&b);
+					if ore && crate::unlock::reveal(b).is_some_and(|r| r > level) {
+						return false;
+					}
+					if !ore && !crate::unlock::can_extract(b, level) {
+						return false;
+					}
+					extract_yields(b, level)
+						.iter()
+						.any(|&(e, n)| e == essence && n > 0)
+				});
+				assert!(
+					source.is_some(),
+					"{item:?} costs {essence:?} and unlocks at {level}, but nothing a \
+					 player at that level can dig yields {essence:?} — the item is \
+					 unlocked and unbuildable"
+				);
+			}
+		}
 	}
 
 	#[test]

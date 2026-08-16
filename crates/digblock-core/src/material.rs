@@ -231,7 +231,15 @@ impl Material {
 			// bench, because no ore ever reaches a hand.
 			M::Emberore => &[(E::Metal, 18)],
 			M::Duskstone => &[(E::Metal, 36)],
-			M::Glowvein => &[(E::Metal, 60)],
+			// The first tier that pays Aether at all, and the reason the
+			// Resonant Pick's Aether line is payable by anyone who has
+			// earned the pick: this vein reveals at exactly the Mining
+			// level the pick's wider swing opens at, so the supply arrives
+			// with the demand instead of a whole ladder later. Before this
+			// row existed the only reliable Aether in the game sat behind
+			// the deepest tier, and the pick was unlocked for a long
+			// stretch in which it could not be built.
+			M::Glowvein => &[(E::Metal, 60), (E::Aether, 1)],
 			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
 			// Spent rock is spent: the siphon already took what was in it,
 			// and a tapped face that still paid at the bench would be a

@@ -123,13 +123,13 @@ harmlessly.
 
 Five, replacing the two `Material` sub-material families outright:
 
-| essence    | flavor        | primary sources                                                              |
-| ---------- | ------------- | ---------------------------------------------------------------------------- |
-| **Earth**  | mineral bulk  | stone, sandstone, gravel, sand, dirt                                         |
-| **Flora**  | living matter | wood, grass tops, leaves                                                     |
-| **Aqua**   | water         | bucket charge, snow, mud traces                                              |
-| **Metal**  | refined ore   | the four ore blocks (bench-processed)                                        |
-| **Aether** | the rare one  | Aetherock, high-level bonus lines only — **cannot be transmuted into, ever** |
+| essence    | flavor        | primary sources                                                                      |
+| ---------- | ------------- | ------------------------------------------------------------------------------------ |
+| **Earth**  | mineral bulk  | stone, sandstone, gravel, sand, dirt                                                 |
+| **Flora**  | living matter | wood, grass tops, leaves                                                             |
+| **Aqua**   | water         | bucket charge, snow, mud traces                                                      |
+| **Metal**  | refined ore   | the four ore blocks (bench-processed)                                                |
+| **Aether** | the rare one  | Glowvein and Aetherock, high-level bonus lines — **cannot be transmuted into, ever** |
 
 Denominated in the existing sub-block base (`SUBS_PER_BLOCK` sub-units to a block, each of `SUB_UNIT_VOLUME` — both
 unchanged).
@@ -163,8 +163,8 @@ clean rock pays the most, mined rubble a little less, and the loose materials le
 | WoodSlab / StoneSlab  | (their material's essence) | in their family                                                                                                                                    |
 | Emberore              | Metal                      | the tiers rise steeply —                                                                                                                           |
 | Duskstone             | Metal                      | each ore is worth                                                                                                                                  |
-| Glowvein              | Metal                      | markedly more than the one above it                                                                                                                |
-| Aetherock             | Metal + Aether             | the only base Aether source                                                                                                                        |
+| Glowvein              | Metal + Aether             | markedly more than the one above it; the first Aether                                                                                              |
+| Aetherock             | Metal + Aether             | the richest Aether                                                                                                                                 |
 
 ### 3.2 Level scaling
 
@@ -407,14 +407,39 @@ placeholders until they survive contact with you):
 | ----------------- | ---------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------- |
 | **Emberore**      | the first, mid-way up the Mining ladder              | the shallowest — surface caves already reach it | Metal                                               |
 | **Duskstone**     | the second                                           | deeper                                          | Metal                                               |
-| **Glowvein**      | the third, with the Resonant Pick                    | deeper still                                    | Metal                                               |
-| **Aetherock**     | the last, near the cap                               | the deepest, just off bedrock                   | Metal + the only base Aether                        |
+| **Glowvein**      | the third, with the Resonant Pick                    | deeper still                                    | Metal + the first Aether                            |
+| **Aetherock**     | the last, near the cap                               | the deepest, just off bedrock                   | Metal + the richest Aether                          |
 | **DepletedStone** | — (never revealed; it is what a tapped cell becomes) | —                                               | `drops: Some(Rubble)` — the tapped-rock face (§7.1) |
 
 Each tier is harder, richer and rarer than the one above it, and the bands overlap (see the divergence note at the top),
 so a tier a player has earned stays available all the way down. Reveal levels are `unlock::reveal`, hardness and yields
 their `blocks!` and `material.rs` rows; ids come from the append-only `blocks!` table, and the ones this section
 originally reserved were taken by later rows.
+
+**Glowvein carries the first Aether, and that is a fix rather than a flourish.** As originally built, every Aether in
+the game sat past the pick: the deepest tier reveals near the cap, the pine-resin bonus line lands high on the Alchemy
+ladder, and loose rock's Aether rung is the last one there is. Crystal is the one other row that yields Aether and it is
+a **sink** — craft-only, and §4.2 guarantees making one costs more than taking it apart returns, so it can never be a
+net source. The Resonant Pick's price names Aether and unlocks at neither of those levels, so for a long stretch of the
+ladder the pick was unlocked, advertised on the character screen, and impossible to build. Putting a reliable Aether
+line on the tier that reveals at the pick's own level closes it without moving a threshold: the supply arrives with the
+demand rather than a ladder later, and §7.3's price is left saying exactly what it always said.
+
+`every_functional_price_has_a_source_at_its_own_level` is the pin that would have caught it. `functional_ideal` and
+`unlock::functional` were already pinned as twins, so an item could not have a price without a level — but nothing asked
+whether the price was *payable* at that level. The new pin walks every functional row and, for each essence its recipe
+names, demands some block a player at that level can already dig and take apart. What counts as a source is narrow on
+purpose: the world has to place the block (a craft-only substance is a sink by §4.2), both walls apply, and only what a
+tier pays **reliably** counts — a price payable when the world happens to be generous is not payable.
+
+**The Duskstone trace is the luck beside that ladder.** A share of the middle tier's cells carry a unit of Aether, so a
+player who has been working that tier all along may walk up to the bench already holding what the pick wants. It is a
+rate rather than a yield line because the finest an essence split can be cut is a whole unit, and a unit per draw is far
+more than a middle-tier seam should be worth — the only way to price it below that is as a chance of one
+(`ore::traces_aether`). Derived from the cell and the world seed exactly as the deposit itself is, never rolled: the
+server credits it, the offline arm credits it, and a rejoin years later agrees, with nothing stored and nothing on the
+wire. It is deliberately excluded from the pin above, because a supply nobody can plan around is not one a price may
+depend on.
 
 **Placement** — `ore_at(x, y, z, seed) → Option<OreKind>`, pure, in `worldgen/`: per-family salted position hashes seed
 deposit centers (the `structures_near` pattern, so pockets span chunk borders statelessly); a pocket is the handful of
@@ -640,7 +665,7 @@ twins so an item can't have a level without a price.
 | **Framed Window**         | Earth + Flora                          | glass-in-wood-frame, the early window                                                                                                                     |
 | **Lantern**               | Metal + Earth                          | metal-and-glass; first Metal sink outside tools                                                                                                           |
 | **Water** (bucket charge) | Aqua                                   | deliberately lossy against extracting a charge — no loop                                                                                                  |
-| **Resonant Pick**         | Metal + Earth + Aether                 | tool (§5.6); the catalog's biggest single price                                                                                                           |
+| **Resonant Pick**         | Metal + Earth + Aether                 | tool (§5.6); the catalog's biggest single price, and the row whose Aether line put Glowvein's there (§5.3)                                                |
 | essence exchange          | any → any **except Aether**, at a loss |                                                                                                                                                           |
 | **Aetherlamp**            | Metal + Aether                         | brightest light; the standing Aether sink                                                                                                                 |
 | **Master's Sigil**        | Aether alone                           | cosmetic held item, and the catalog's last line                                                                                                           |
@@ -648,6 +673,13 @@ twins so an item can't have a level without a price.
 The Aetherlamp matters economically: before it, Aether's only sinks are the pick (12, once) and the Sigil (99, once) —
 two purchases in a whole game. A repeatable 3-per-lamp sink is what keeps Aetherock worth mining at the top of the
 ladder, and the contrast between those figures is the entire argument for the lamp existing.
+
+**A price has to be payable at its own level**, and a hand-priced table cannot be trusted to notice when it is not: the
+pick's Aether line was unpayable for a long stretch of the ladder and nothing caught it, because the twin pin between
+this table and `unlock::functional` only ever asked whether an item had *both* a price and a level.
+`every_functional_price_has_a_source_at_its_own_level` asks the other question — for each essence a row names, is there
+a block a player at that level can already dig and take apart that yields it — and is what stops a new row repeating it.
+See §5.3 for what the pin counts as a source and why the count is narrow.
 
 **Tools cap at one** — `inventory::cap()` returns 1 for every tool id, the exact water-charge precedent. A second craft
 refuses before any debit (the standing `InventoryFull` rebase answer), and the transmute row for an owned tool draws dim

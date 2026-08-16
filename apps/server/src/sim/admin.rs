@@ -5,6 +5,7 @@
 //! the `AdminCommands` advertisement the client autocompletes from.
 
 use super::{OutMsg, Sim, SpawnLock, client_send};
+use digblock_core::block::Essence;
 use digblock_core::compass::{cardinal, compass};
 use digblock_core::raycast::{REACH, raycast};
 use digblock_net::messages::ServerMsg;
@@ -25,6 +26,10 @@ const COMMANDS: &[(&str, &str)] = &[
 		"show or set the time of day (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)",
 	),
 	("/bring <name>", "teleport an online player to you"),
+	(
+		"/give <name> <essence> [n]",
+		"credit essence stocks: flora, earth, aqua, metal or aether; n defaults to one",
+	),
 	("/ban <name>", "ban an online player by IP and kick them"),
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
@@ -116,6 +121,18 @@ fn clock_of_tod(tod: f32) -> String {
 	format!("{:02}:{:02}", mins / 60, mins % 60)
 }
 
+/// An essence by name, case-insensitively.
+///
+/// Matched against [`Essence::name`] — the screens' own label — rather
+/// than a second list of spellings, so the command cannot come to
+/// disagree with the UI about what a currency is called, and a new
+/// essence is takeable the day its row exists.
+fn parse_essence(arg: &str) -> Option<Essence> {
+	Essence::ALL
+		.into_iter()
+		.find(|e| e.name().eq_ignore_ascii_case(arg))
+}
+
 /// Absolute integer, or `~`/`~±d` relative to `cur`. Clamped.
 ///
 /// The relative add SATURATES: `off` is an unbounded `i64` straight off the
@@ -155,6 +172,7 @@ impl Sim {
 			"/goto" => self.cmd_goto(conn_id, &args),
 			"/time" => self.cmd_time(conn_id, &args),
 			"/bring" => self.cmd_bring(conn_id, &args),
+			"/give" => self.cmd_give(conn_id, &args),
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
 			"/unban" => self.cmd_unban(conn_id, &args),
@@ -445,6 +463,70 @@ impl Sim {
 		self.reply(conn_id, &format!("brought {target_name}"));
 	}
 
+	/// `/give` — the one admin command that writes a player's stocks.
+	///
+	/// ESSENCE and not blocks, deliberately. A block handed out is an item
+	/// that can be placed, so the command would be a world edit with no
+	/// journal entry behind it and a slot assignment to reconcile; essence
+	/// is a pure economy value the standing `InventoryFull` rebase already
+	/// carries, so no screen and no wire needs to know a gift happened.
+	/// What it is FOR is the reach the economy makes expensive on purpose
+	/// — putting a late recipe in front of a tester, or repaying a player
+	/// what a server bug cost them.
+	fn cmd_give(&mut self, conn_id: u64, args: &[&str]) {
+		let usage = "usage: /give <name> <flora|earth|aqua|metal|aether> [n]";
+		if !(args.len() == 2 || args.len() == 3) {
+			return self.reply(conn_id, usage);
+		}
+		let Some(essence) = parse_essence(args[1]) else {
+			return self.reply(conn_id, &format!("{} is not an essence - {usage}", args[1]));
+		};
+		let n: u32 = match args.get(2) {
+			None => 1,
+			Some(s) => match s.parse() {
+				Ok(n) if n > 0 => n,
+				_ => return self.reply(conn_id, usage),
+			},
+		};
+		// Giving to yourself is the ordinary case here, unlike `/goto` and
+		// `/bring` where it is a no-op worth refusing.
+		let target = match self.find_live_player(args[0]) {
+			Ok(id) => id,
+			Err(msg) => return self.reply(conn_id, &msg),
+		};
+		let (gained, held, target_name) = {
+			let Some(client) = self.clients.get_mut(&target) else {
+				return;
+			};
+			// Saturating, like every other credit into a stack. So the
+			// reply is built from what LANDED rather than what was asked
+			// for — at the cap those are different numbers, and an admin
+			// told the larger one would have no way to find out.
+			let before = client.inventory.sub_count(essence);
+			client.inventory.add_sub(essence, n);
+			let held = client.inventory.sub_count(essence);
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
+			(held - before, held, client.name.clone())
+		};
+		let name = essence.name();
+		if let Some(admin) = self.clients.get(&conn_id) {
+			log::info!("admin {} gave {target_name} {gained} {name}", admin.name);
+		}
+		if target != conn_id {
+			self.reply(target, &format!("you were given {gained} {name}"));
+		}
+		let short = if gained < n {
+			format!(" ({target_name} is at the {name} cap; {n} asked)")
+		} else {
+			String::new()
+		};
+		self.reply(
+			conn_id,
+			&format!("gave {target_name} {gained} {name} - now {held}{short}"),
+		);
+	}
+
 	fn cmd_time(&mut self, conn_id: u64, args: &[&str]) {
 		let usage = "usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)";
 		let (h, m) = match args {
@@ -612,6 +694,72 @@ mod tests {
 				.msgs
 				.iter()
 				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
+		);
+	}
+
+	/// `/give` credits the TARGET and rebases them, and every essence is
+	/// spellable by the label the screens use — which is the whole reason
+	/// `parse_essence` reads `Essence::name` instead of listing spellings.
+	#[test]
+	fn give_credits_essence_and_rebases_the_player_who_got_it() {
+		use digblock_core::block::Essence;
+		let mut sim = admin_sim("give");
+		let mut admin = connect_named(&mut sim, 1, "boss");
+		let mut guest = connect_named(&mut sim, 2, "guest");
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		admin.drain();
+		guest.drain();
+
+		// Every essence, named as its own screen label, cased freely.
+		for (i, &e) in Essence::ALL.iter().enumerate() {
+			let n = i as u32 + 1;
+			sim.tick_once(vec![chat(
+				1,
+				&format!("/give guest {} {n}", e.name().to_ascii_lowercase()),
+			)]);
+			assert_eq!(sim.test_sub_count(2, e), n, "{e:?} landed in the stocks");
+		}
+		guest.drain();
+		// The standing rebase, not a bespoke message: the guest's screens
+		// learn about a gift exactly as they learn about a field draw.
+		assert!(
+			guest
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::InventoryFull { .. })),
+			"the target was never rebased"
+		);
+		assert!(
+			server_lines(&guest).iter().any(|t| t.contains("given")),
+			"the target was never told: {:?}",
+			server_lines(&guest)
+		);
+
+		// An admin gives themselves, which `/goto` and `/bring` refuse.
+		sim.tick_once(vec![chat(1, "/give boss aether 7")]);
+		assert_eq!(sim.test_sub_count(1, Essence::Aether), 7);
+
+		// Nonsense is refused before anything is credited, and says how.
+		admin.drain();
+		sim.tick_once(vec![chat(1, "/give guest sunshine 5")]);
+		sim.tick_once(vec![chat(1, "/give guest aether 0")]);
+		sim.tick_once(vec![chat(1, "/give nobody aether 5")]);
+		admin.drain();
+		let lines = server_lines(&admin);
+		assert!(
+			lines.iter().any(|t| t.contains("not an essence")),
+			"{lines:?}"
+		);
+		assert!(
+			lines.iter().filter(|t| t.contains("usage:")).count() >= 1,
+			"{lines:?}"
+		);
+		assert!(lines.iter().any(|t| t.contains("not online")), "{lines:?}");
+		assert_eq!(
+			sim.test_sub_count(2, Essence::Aether),
+			Essence::ALL.len() as u32,
+			"a refused give credited something"
 		);
 	}
 

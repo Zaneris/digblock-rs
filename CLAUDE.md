@@ -155,10 +155,14 @@ names are mandatory (a length-bounded run of `a-z A-Z 0-9 - _`; canonical `valid
 alphabet (`is_text_char`/`text_charset`, printable ASCII plus Latin-1 and Latin Extended-A so European players can type
 their own words) and rate-limits (`CHAT_*`). Admin: `--admin-name`/`DIGBLOCK_ADMIN_NAME` grants chat commands
 (`/help
-/tp /goto /bring /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`) — bans by IP in
+/tp /goto /bring /give /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`) — bans by IP in
 `data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`, advertised
-to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `just play`/`just play-web` default the admin to name
-`admin`. Compass in `/tp`: east = sunrise = −x, north = −z.
+to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `/give` is the one command that writes a player's
+stocks, and it hands out ESSENCE rather than blocks on purpose — a block is an item that can be placed, so gifting one
+would be a world edit with no journal entry behind it and a slot to reconcile, while essence rides the standing
+`InventoryFull` rebase and no screen has to know a gift happened. It parses essence names off `Essence::name`, the
+screens' own label, so the command and the UI cannot drift about what a currency is called. `just play`/`just play-web`
+default the admin to name `admin`. Compass in `/tp`: east = sunrise = −x, north = −z.
 
 Dev gotchas: use `127.0.0.1`, never `localhost` (macOS resolves it to `::1`; the server binds IPv4 only). The
 containerized master probes the host via `probeHost = host.docker.internal` — a LAN-IP hairpin breaks QUIC address
@@ -520,6 +524,12 @@ lines, waste multipliers (falling toward parity as level rises), extraction pace
    block is an essence pump. Structural now: the recipe-less set is exactly the materials whose `craft_units` is `None`.
 4. **The essence indices ARE the migration** — `Essence { Flora=0, Earth=1, … }` keeps the retired Material enum's
    numbering so legacy sub-material pairs decode 1:1. Never renumber.
+5. **A functional price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for
+   every essence a hand-priced row names, some block a player at that level can already dig and take apart yields it.
+   `functional_ideal` and `unlock::functional` were already pinned as twins so an item can't have a price without a
+   level — but nothing asked whether the price was PAYABLE, and the Resonant Pick's Aether line was not (see the ore
+   section). A source has to be a block the world PLACES (rule 2 makes a craft-only substance a sink, never a net
+   source), past both walls, paying that essence reliably.
 
 The alchemy screen (K) is two tabs. **EXTRACT**: the real inventory grid plus one extraction slot — a *pointer* to a
 block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
@@ -970,6 +980,16 @@ Three rules bite if broken:
   prediction and the server's own world. Extraction needs no new wire; only the refusal does (`RejectReason::NeedsTool`,
   protocol v21). An extraction is TIMED as the ore (`ore::dig_block`), writes the tier's own spent rock
   (`ore::spent_rock`) rather than air, pays both skills (`skills::ore_field_xp`), and shows no crack.
+- **Glowvein carries the first Aether, and the middle tier TRACES it.** Every Aether in the game used to sit past the
+  Resonant Pick — the deepest tier reveals near the cap, the pine-resin and loose-rock bonus lines land high on the
+  Alchemy ladder, and Crystal is a craft-only SINK rather than a source — so the pick was unlocked and unbuildable for a
+  long stretch. Glowvein's own Aether line closes that without moving a threshold, because it reveals at exactly the
+  level the pick's wider swing opens at. Beside it, `ore::traces_aether` gives a share of Duskstone's cells a unit of
+  Aether: a RATE and not a yield line, since the finest an essence split can be cut is a whole unit and one per draw is
+  far more than a middle-tier seam is worth. It is derived from the cell and the world seed exactly as the deposit is —
+  never rolled — which is what lets `alchemy::field_yield` own it and still be one answer for the server, the offline
+  arm and a rejoin years later. The pin is `every_functional_price_has_a_source_at_its_own_level` and it counts only
+  what a tier pays RELIABLY: a price payable when the hash smiles is not payable.
 - **A vein is world geometry and never an item.** The siphon draws the seam out where it stands: it credits ESSENCE
   (`alchemy::field_yield` — the ore's ordinary bench yield, so the Alchemy level scales a field draw exactly as it
   scales the bench, with Mining's capstone multiplying the whole split rather than a line of it), and what a player can

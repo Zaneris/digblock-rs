@@ -2409,7 +2409,11 @@ mod tests {
 		// retune of what a tier is worth moves the test with it.
 		let alchemy = sim.test_skill_level(1, Skill::Alchemy);
 		let mining = sim.test_skill_level(1, Skill::Mining);
-		let want = digblock_core::alchemy::field_yield(ore, alchemy, mining);
+		// Cell and seed included: part of a draw is derived from the vein
+		// itself (`ore::traces_aether`), so asking without them would be
+		// asking a different question than the server answered.
+		let want =
+			digblock_core::alchemy::field_yield(ore, alchemy, mining, cell, sim.store.seed());
 		assert!(!want.is_empty(), "a vein has to be worth drawing");
 		for (e, n) in want {
 			assert_eq!(sim.test_sub_count(1, e), n, "{e:?} from the draw");

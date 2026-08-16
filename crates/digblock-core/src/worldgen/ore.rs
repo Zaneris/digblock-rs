@@ -106,6 +106,19 @@ fn rim_open(x: i32, y: i32, z: i32) -> bool {
 
 const RIM_SALT: u64 = 0x5eed_1e55_1a17_e5e5;
 
+/// Salt for the Aether-trace stream, distinct from the deposit and rim
+/// streams so a rich cell correlates neither with where a pocket sits nor
+/// with the shape of its edge.
+const TRACE_SALT: u64 = 0xae74_e7ac_e51f_7b0d;
+
+/// The share of a tracing tier's cells that carry Aether, in 256ths — the
+/// same currency as [`DEPOSIT_IN_256`], and deliberately a RATE rather
+/// than another line in the tier's yield: the smallest whole unit an
+/// essence split can express is already far more Aether than a middle-tier
+/// seam should be worth, so the only way to price this below a unit per
+/// draw is to price it as a chance of one.
+const TRACE_IN_256: u64 = 13;
+
 /// Splitmix64 over a 3D cell + the world seed, salted per stream — the
 /// three-axis sibling of `decoration::hash`. Each axis rides its own odd
 /// multiplier so a change on any one of them reaches every output bit.
@@ -230,6 +243,30 @@ pub fn ore_at(x: i32, y: i32, z: i32, seed: f64) -> Option<BlockType> {
 	for_each_deposit((x, y, z), (x, y, z), seed, |d| {
 		d.contains(x, y, z).then_some(d.ore)
 	})
+}
+
+/// Does this vein cell carry a trace of Aether, on top of whatever its
+/// tier pays (`alchemy::field_yield`)?
+///
+/// Pure in the cell and the world seed, exactly like [`rim_open`] and the
+/// deposit stream above it — so the server, the engine's offline arm and
+/// a rejoin a year later all agree about which seams were rich, with
+/// nothing stored, nothing on the wire and nothing to keep in step.
+/// Rolling it per draw instead would put the answer in whichever machine
+/// happened to ask, which for a value the server credits is no answer at
+/// all.
+///
+/// **Duskstone alone traces**, and that is the whole design of it. Aether
+/// is otherwise an endgame currency: the deepest tier is the only vein
+/// that reliably carries it and the foliage lines that trickle it sit near
+/// the top of the Alchemy ladder, while the Resonant Pick asks for some at
+/// the middle of it. [`crate::unlock::reveal`] puts a reliable supply at
+/// the level the pick's own swing widens; this is the luck beside that
+/// ladder — the chance that a player who has been working the middle tier
+/// all along walks up to the bench already holding what the pick wants,
+/// rather than a supply anyone can plan around.
+pub fn traces_aether(ore: BlockType, x: i32, y: i32, z: i32, seed: f64) -> bool {
+	ore == BlockType::Duskstone && mix(x, y, z, seed.to_bits(), TRACE_SALT) & 0xFF < TRACE_IN_256
 }
 
 /// The Mining level a tier becomes visible at lives in

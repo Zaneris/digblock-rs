@@ -648,6 +648,10 @@ impl Sim {
 		};
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
 
+		// Read off the store BEFORE the client borrow below, which holds
+		// `self` for the rest of the block: a field draw's essence is
+		// partly derived from the world (`ore::traces_aether`).
+		let seed = self.store.seed();
 		// Dig/collect credit comes from the journaled truth (the actual
 		// replaced cell), not the raycast hit. One credit per door pair.
 		let client = self
@@ -676,7 +680,9 @@ impl Sim {
 			if let Some(ore) = extracting {
 				let mining = client.skills.level(digblock_core::skills::Skill::Mining);
 				let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
-				for (e, n) in digblock_core::alchemy::field_yield(ore, alchemy, mining) {
+				for (e, n) in
+					digblock_core::alchemy::field_yield(ore, alchemy, mining, req.cell, seed)
+				{
 					client.inventory.add_sub(e, n);
 				}
 				send_frame(
