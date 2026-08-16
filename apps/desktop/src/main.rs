@@ -266,6 +266,26 @@ fn main() {
 		// over-budget frame count measures real drops. Add --no-vsync
 		// for uncapped raw-cost measurement (percentiles = true frame
 		// cost; presentation judders inherently at >display rate).
+	} else if options.exit_after_screenshot && options.screenshot.is_none() {
+		// `--exit` means what the --tod guard above already calls it: a
+		// run that quits on its own. Without this it meant something much
+		// narrower — the platform's only non-bench exit is the one behind
+		// the SCREENSHOT (`exit_after_screenshot && screenshot.is_some()`),
+		// and `--frames` on its own merely says WHEN to shoot rather than
+		// when to stop.
+		//
+		// So `--metrics-csv out.csv --frames 400 --exit` armed neither
+		// path and ran until it was killed, writing CSV rows the whole
+		// time. It reads exactly like "run 400 frames and quit", which is
+		// the trap: every flag in it is real, the combination is silently
+		// inert, and the failure looks like a hang rather than a mistake.
+		let Some(n) = frames else {
+			eprintln!(
+				"--exit needs something to end the run: --frames N, a --screenshot, or --bench"
+			);
+			std::process::exit(2);
+		};
+		options.exit_after_frames = Some(u64::from(n));
 	}
 
 	// An explicit --name must be valid; a bad one is fatal like any other

@@ -178,7 +178,12 @@ For `just run`:
   rides dt, so without it two builds of different speed reach `--frames N` in different world states and the diff
   measures the speed difference.
 - **Output**: `--screenshot out.png`, `--frames N`, `--exit`, `--metrics-csv`, `--overlay` (backquote toggles),
-  `--no-vsync`.
+  `--no-vsync`. `--frames` means two different things depending on what else is on the line: WHEN to take the
+  screenshot, and — under `--bench`, or under `--exit` with no screenshot — when the run stops. `--exit` is now fatal
+  when nothing can end the run, because the combination that reads most like a capture
+  (`--metrics-csv out.csv --frames
+  N --exit`) used to arm neither exit path and ran until it was killed, writing CSV
+  rows the whole time.
 - **Motion**: `--fly N` vs `--warp N` — fly the bench path N frames then freeze, vs land on that same pose with no
   motion behind it. That pair is the only way to photograph a TEMPORAL artifact; every other capture is a still, which
   is exactly when a temporal artifact has already converged away. `--walk` swaps the flyover for an eye-height
