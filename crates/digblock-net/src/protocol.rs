@@ -394,6 +394,29 @@ pub fn legacy_identity_hash(secret: &[u8; 16]) -> [u8; 16] {
 		.expect("digest is 32 bytes")
 }
 
+/// The same key, from the form the BROWSER stored its secret in: 32
+/// lowercase hex characters in `localStorage["digblock.identity"]`.
+/// `None` for anything that is not exactly that, including the all-zero
+/// secret a blocked-storage session used to fall back to.
+///
+/// Here rather than in the web launcher because it is the only step of the
+/// client's half that can silently differ from what the old client WROTE —
+/// a slicing slip decodes a different secret, hashes to a key no server
+/// holds, and the migration quietly finds nothing on every server forever.
+/// In the launcher it is unreachable from a test; here
+/// `the_two_launchers_derive_one_key_from_one_secret` covers it.
+pub fn legacy_identity_from_hex(hex: &str) -> Option<[u8; 16]> {
+	let b = hex.as_bytes();
+	if b.len() != 32 {
+		return None;
+	}
+	let mut secret = [0u8; 16];
+	for (i, out) in secret.iter_mut().enumerate() {
+		*out = from_hex(b[i * 2])? << 4 | from_hex(b[i * 2 + 1])?;
+	}
+	(secret != [0; 16]).then(|| legacy_identity_hash(&secret))
+}
+
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
 /// bytes each in UTF-8, so a full line can encode to twice the cap —
 /// still nowhere near [`MAX_FRAME`].
@@ -730,6 +753,51 @@ mod tests {
 		// raw file contents would hand every server the old bearer
 		// credential, which is the thing v22 removed.
 		assert_ne!(legacy_identity_hash(&[7; 16]), [7; 16]);
+	}
+
+	/// Desktop reads 16 raw bytes from a file; the browser reads 32 hex
+	/// characters out of localStorage. Same player, same secret, so they
+	/// must reach the same key — a player who used both has ONE old
+	/// character per server, and two decodings would give them one key that
+	/// works and one that silently matches nothing.
+	///
+	/// The hex here is written the way the old web client wrote it
+	/// (`format!("{b:02x}")` over the secret), which is what is sitting in
+	/// browsers now.
+	#[test]
+	fn the_two_launchers_derive_one_key_from_one_secret() {
+		let secret: [u8; 16] = [
+			0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xa5, 0xff, 0x3c, 0x42, 0x99, 0xde, 0x01, 0x02,
+			0x03, 0x04,
+		];
+		let stored: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+		assert_eq!(stored.len(), 32, "the shape the old client wrote");
+		assert_eq!(
+			legacy_identity_from_hex(&stored),
+			Some(legacy_identity_hash(&secret)),
+			"the browser's stored form and the file's raw bytes are one key"
+		);
+
+		// Uppercase is not what the old client wrote, but costs nothing to
+		// accept and would otherwise strand a hand-edited entry.
+		assert_eq!(
+			legacy_identity_from_hex(&stored.to_uppercase()),
+			Some(legacy_identity_hash(&secret))
+		);
+
+		// Anything else is "nothing to claim", never a wrong key.
+		assert_eq!(legacy_identity_from_hex(""), None);
+		assert_eq!(legacy_identity_from_hex(&stored[..30]), None, "too short");
+		assert_eq!(
+			legacy_identity_from_hex(&format!("{stored}00")),
+			None,
+			"too long"
+		);
+		assert_eq!(legacy_identity_from_hex(&"g".repeat(32)), None, "not hex");
+		// The all-zero secret was the blocked-storage fallback; it names no
+		// character, and hashing it would produce a real-looking key that
+		// every such browser would send.
+		assert_eq!(legacy_identity_from_hex(&"0".repeat(32)), None);
 	}
 
 	/// The id the master prints and the id we parse have to be the same

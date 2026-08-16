@@ -330,18 +330,9 @@ fn legacy_identity() -> Option<[u8; 16]> {
 		.ok()??
 		.get_item("digblock.identity")
 		.ok()??;
-	if hex.len() != 32 {
-		return None;
-	}
-	let mut secret = [0u8; 16];
-	for (i, b) in secret.iter_mut().enumerate() {
-		*b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
-	}
-	if secret == [0; 16] {
-		return None;
-	}
+	let key = digblock_net::protocol::legacy_identity_from_hex(&hex)?;
 	log::info!("found a pre-account identity — offering it to servers for migration");
-	Some(digblock_net::protocol::legacy_identity_hash(&secret))
+	Some(key)
 }
 
 /// The Account screen's Copy ID button.
