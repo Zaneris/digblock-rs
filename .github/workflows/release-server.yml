@@ -132,65 +132,65 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # binaries:
-  #   needs: bump
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - os: ubuntu-latest
-  #           target: x86_64-unknown-linux-musl
-  #           artifact: digblock-server-linux-x86_64
-  #         # aarch64 (Raspberry Pi 4/5 on a 64-bit OS) cross-compiles via
-  #         # `cross` — Docker-based, uses the host rustup toolchain, so
-  #         # the target must still be rustup-added.
-  #         - os: ubuntu-latest
-  #           target: aarch64-unknown-linux-musl
-  #           artifact: digblock-server-linux-aarch64
-  #           cross: true
-  #         - os: windows-latest
-  #           target: x86_64-pc-windows-msvc
-  #           artifact: digblock-server-windows-x86_64.exe
-  #   runs-on: ${{ matrix.os }}
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #       with:
-  #         ref: ${{ needs.bump.outputs.sha }}
+  binaries:
+    needs: bump
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: digblock-server-linux-x86_64
+          # aarch64 (Raspberry Pi 4/5 on a 64-bit OS) cross-compiles via
+          # `cross` — Docker-based, uses the host rustup toolchain, so
+          # the target must still be rustup-added.
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: digblock-server-linux-aarch64
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: digblock-server-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
 
-  #     - name: Add target
-  #       run: rustup target add ${{ matrix.target }}
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
 
-  #     - name: Install musl toolchain
-  #       if: matrix.target == 'x86_64-unknown-linux-musl'
-  #       run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-  #     - name: Install cross
-  #       if: matrix.cross
-  #       uses: taiki-e/install-action@v2
-  #       with:
-  #         tool: cross
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         key: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-  #     - name: Build
-  #       run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release -p digblock-server --bin digblock-server --target ${{ matrix.target }}
+      - name: Build
+        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release -p digblock-server --bin digblock-server --target ${{ matrix.target }}
 
-  #     - name: Stage artifact
-  #       shell: bash
-  #       run: |
-  #         mkdir dist
-  #         src=target/${{ matrix.target }}/release/digblock-server
-  #         [ -f "$src.exe" ] && src="$src.exe"
-  #         cp "$src" "dist/${{ matrix.artifact }}"
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir dist
+          src=target/${{ matrix.target }}/release/digblock-server
+          [ -f "$src.exe" ] && src="$src.exe"
+          cp "$src" "dist/${{ matrix.artifact }}"
 
-  #     - uses: actions/upload-artifact@v7
-  #       with:
-  #         name: ${{ matrix.artifact }}
-  #         path: dist/${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [bump, image] # ,binaries
+    needs: [bump, image, binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
