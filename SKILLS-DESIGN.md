@@ -452,6 +452,22 @@ the seams decay back. The siphon's viewmodel is the other half of the effect —
 Raw ore is an ordinary slottable, placeable item — a *placed* ore block is genuine chunk data visible to everyone at any
 level and diggable at face value (dupe-safe round trip); showcase your finds.
 
+**What shipped instead, and why the paragraph above is kept.** The two sentences before this one describe the extraction
+as it was built and NOT as it was meant to work: a siphon was always supposed to draw the essence out at the rock face,
+which is the whole reason the tool is an *Essence* Siphon and the whole reason a field draw pays Alchemy XP at all. The
+implementation credited the raw ore block instead, which made ore a thing you carried to a bench that already had a
+better way to get there — and made "does a placed ore block glow?" a question with no good answer once veins started
+casting light (GI-DESIGN R31).
+
+Three corrections, and every one of them makes the section above simpler rather than adding to it. A draw credits
+**essence** (`alchemy::field_yield`: the ore's own bench yield, so the Alchemy level scales a field draw exactly as it
+scales the bench, and Mining's capstone multiplies the whole split). A tapped cell becomes the **tier's own spent rock**
+rather than one generic grey face — same rock, same flecks, the light gone out of them — which is what makes a worked
+seam still read as the seam you worked. And **that** rock is the trophy: it drops itself, it is ordinary chunk data with
+no reveal gate, so a visitor at Mining 1 sees your wall of tapped Aetherock exactly as you do. Raw ore is therefore
+never an item at all, and `is_slottable` says so, which is both the rule and the migration for saves written under the
+old behaviour.
+
 ### 5.4 Dual XP
 
 Field extraction is mechanically a mine, thematically a crude alchemical separation: full Mining XP plus a minor Alchemy

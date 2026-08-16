@@ -18,6 +18,7 @@
 //! run that followed it moved `TorchSide.png` and nothing else, which is
 //! what a tree already in sync looks like.
 
+use digblock_core::block::BlockType as B;
 use image::RgbImage;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/textures");
@@ -76,39 +77,47 @@ fn main() {
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 
-	// The four ore faces (SKILLS-DESIGN §5.3) and the tapped one. APPENDED
-	// at the end deliberately: the noisy recipes share one rng, so an
-	// insertion anywhere above rerolls every output after it and the diff
-	// of a regeneration would be the whole texture directory.
+	// The four ore faces (SKILLS-DESIGN §5.3) and the generic tapped one.
+	// APPENDED at the end deliberately: the noisy recipes share one rng, so
+	// an insertion anywhere above rerolls every output after it and the
+	// diff of a regeneration would be the whole texture directory.
 	//
 	// Each is stone with tier-coloured flecks — the gravel recipe's blob
 	// walk, but coloured rather than shaded, and with a light rim so a
 	// fleck reads as a crystal set into rock instead of a stain on it.
 	//
-	// The deep pair carry the Stage-A emissive bit, so their cores are
-	// picked BRIGHT as well as saturated: chunk.wgsl gains that ink by
-	// luminance, and a near-white fleck would glow at the cost of having
-	// no colour left to glow IN.
+	// The colours are not written here. `BlockType::ore_flecks` holds them,
+	// because the GI material LUT casts a vein's light in its core colour
+	// and the spent rocks below paint their dead flecks from the same pair:
+	// three consumers, one table, and a retint moves all of them together.
 	//
-	// They also darken their stone BODY hard (the `body` scale), and that
-	// is the load-bearing half. Emissive is a per-BLOCK flag, not a
-	// per-texel one: a glowing block renders its whole face at full
-	// albedo, so with the body left undarkened a Glowvein in a black cave
-	// reads as a glowing white rock rather than as rock with glowing
-	// crystals in it.
+	// Cores are picked BRIGHT as well as saturated — all four rows carry
+	// the Stage-A emissive bit now, chunk.wgsl gains that ink by luminance,
+	// and a near-white fleck would glow at the cost of having no colour
+	// left to glow IN.
+	//
+	// Every tier also darkens its stone BODY hard (the `body` scale), and
+	// that is the load-bearing half. Emissive is a per-BLOCK flag, not a
+	// per-texel one: a glowing block renders its whole face at full albedo,
+	// so with the body left undarkened a vein in a black cave reads as a
+	// glowing white rock rather than as rock with glowing crystals in it.
 	// The contrast has to live in the texture, because the shader has no
-	// way to express it.
-	for (name, core, rim, body) in [
-		("Emberore.png", [214u8, 96, 34], [255u8, 176, 84], 1.0),
-		("Duskstone.png", [104, 78, 168], [172, 146, 236], 1.0),
-		("Glowvein.png", [72, 226, 214], [198, 255, 248], 0.30),
-		("Aetherock.png", [240, 214, 96], [255, 248, 200], 0.30),
+	// way to express it. The shallow pair were the exception while they did
+	// not glow; they glow now, so the exception went with it.
+	for (name, block, body) in [
+		("Emberore.png", B::Emberore, 0.34),
+		("Duskstone.png", B::Duskstone, 0.32),
+		("Glowvein.png", B::Glowvein, 0.30),
+		("Aetherock.png", B::Aetherock, 0.30),
 	] {
+		let (core, rim) = block.ore_flecks().expect("a tier");
 		save(name, ore(&stone, core, rim, body, &mut rng));
 	}
 	// A tapped vein face: the flecks are GONE and their sockets are not.
-	// Empty pockets are what makes DepletedStone read as spent rather than
-	// as one more grey rock — the miner's feedback that this face is done.
+	// Empty pockets are what makes it read as spent rather than as one more
+	// grey rock — the miner's feedback that this face is done. Superseded
+	// by the per-tier spent rocks at the end of this run and kept only
+	// because cells written before them still name it.
 	save("DepletedStone.png", depleted(&stone, &mut rng));
 
 	// The dressed stones (SKILLS-DESIGN §7.2's later materials): the same
@@ -155,6 +164,27 @@ fn main() {
 		"PickGlow.png",
 		radial_glow([60, 140, 235], [16, 40, 120], &mut rng),
 	);
+	// The four SPENT vein faces — what a siphon leaves standing, one per
+	// tier. Appended last for the reason everything else was.
+	//
+	// Deliberately NOT the generic tapped stone above, and not empty
+	// sockets either: this is the same rock with the same flecks in the
+	// same places, drained. A worked seam should still read as the seam you
+	// worked — you can tell an emberore face you have been at from a
+	// duskstone one — and the block you break out of it is the only thing a
+	// vein ever puts in your hands, so it had better be a trophy of that
+	// tier. Telling spent from live is then a question of LIGHT rather than
+	// of shape, which is exactly what a siphon takes: the live rows glow
+	// and cast, and these do neither.
+	for (name, block) in [
+		("DepletedEmberore.png", B::Emberore),
+		("DepletedDuskstone.png", B::Duskstone),
+		("DepletedGlowvein.png", B::Glowvein),
+		("DepletedAetherock.png", B::Aetherock),
+	] {
+		let (core, rim) = block.ore_flecks().expect("a tier");
+		save(name, spent(&stone, core, rim, &mut rng));
+	}
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -395,6 +425,39 @@ fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 		}
 	}
 	out
+}
+
+/// A tier's vein face with the light drawn out of it: the same rock, the
+/// same flecks in the same places, drained to dark inclusions.
+///
+/// The body is left at ordinary stone brightness, and that is the one way
+/// this differs structurally from [`ore`] rather than merely in palette.
+/// A live vein darkens its body because it is drawn FULLBRIGHT and needs
+/// the contrast to read as rock-with-crystals; a spent face is lit like
+/// any other block, so the same darkening would just make it a black rock.
+/// Which is the whole rule in one line: an ink texture is authored for
+/// fullbright, an ordinary one is not.
+fn spent(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
+	// How much of the tier's colour survives the draw. The rim keeps more
+	// than the core so a drained fleck still reads as something set INTO
+	// the rock rather than a smudge on it — the same job the light catch
+	// does on a live one, at a fraction of the brightness.
+	const CORE_LEFT: f32 = 0.34;
+	const RIM_LEFT: f32 = 0.42;
+	let drain = |c: [u8; 3], k: f32| {
+		[
+			clamp8(f32::from(c[0]) * k),
+			clamp8(f32::from(c[1]) * k),
+			clamp8(f32::from(c[2]) * k),
+		]
+	};
+	ore(
+		stone,
+		drain(core, CORE_LEFT),
+		drain(rim, RIM_LEFT),
+		1.0,
+		rng,
+	)
 }
 
 /// Wood post darkened, with the top band of rows turned to flame glow

@@ -714,6 +714,13 @@ impl Sim {
 		self.clients.get(&conn_id).map_or(0, |c| c.skills.xp(skill))
 	}
 
+	#[cfg(test)]
+	fn test_skill_level(&self, conn_id: u64, skill: digblock_core::skills::Skill) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(1, |c| c.skills.level(skill))
+	}
+
 	/// Raise a client's Alchemy to `level` — the craft gate's counterpart
 	/// of [`Self::bench_set_mining_level`], for edit-path tests that dig
 	/// craft-only blocks (slabs, stairs, doors, torches).
@@ -766,6 +773,13 @@ impl Sim {
 		self.clients
 			.get(&conn_id)
 			.map_or(0, |c| c.inventory.count(b))
+	}
+
+	#[cfg(test)]
+	fn test_sub_count(&self, conn_id: u64, e: digblock_core::block::Essence) -> u32 {
+		self.clients
+			.get(&conn_id)
+			.map_or(0, |c| c.inventory.sub_count(e))
 	}
 
 	// ---- events -------------------------------------------------------
@@ -2309,9 +2323,10 @@ mod tests {
 	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with
 	///    `NeedsTool` and opens no hold — if you can see the seam, the
 	///    game will not let you spend it by accident.
-	/// 3. With the siphon, the completing dig writes DepletedStone rather
-	///    than air, credits the ORE (not the cell's Rubble), and pays BOTH
-	///    skills (§5.4's dual award).
+	/// 3. With the siphon, the completing dig writes the tier's SPENT ROCK
+	///    rather than air, credits ESSENCE (not the cell's Rubble, and not
+	///    an ore block — a siphon draws the seam out where it stands, so no
+	///    ore is ever an item), and pays BOTH skills (§5.4's dual award).
 	#[test]
 	fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 		use digblock_core::block::BlockType;
@@ -2384,10 +2399,26 @@ mod tests {
 		assert_eq!(dug, cell);
 		assert_eq!(
 			sim.test_cell_at(cell.0, cell.1, cell.2),
-			Some(BlockType::DepletedStone as u16),
-			"a tapped face, not a hole — mining ore never excavates"
+			Some(digblock_core::worldgen::ore::spent_rock(ore).expect("a tier") as u16),
+			"the TIER's tapped face, not a hole and not one generic grey \
+			 stone — mining ore never excavates, and a worked seam still \
+			 reads as the seam you worked"
 		);
-		assert_eq!(sim.test_inventory_count(1, ore), 1, "the ore itself");
+		// Essence, straight into the stocks. Every line of the ore's own
+		// yield, asked of the shared function rather than restated, so a
+		// retune of what a tier is worth moves the test with it.
+		let alchemy = sim.test_skill_level(1, Skill::Alchemy);
+		let mining = sim.test_skill_level(1, Skill::Mining);
+		let want = digblock_core::alchemy::field_yield(ore, alchemy, mining);
+		assert!(!want.is_empty(), "a vein has to be worth drawing");
+		for (e, n) in want {
+			assert_eq!(sim.test_sub_count(1, e), n, "{e:?} from the draw");
+		}
+		assert_eq!(
+			sim.test_inventory_count(1, ore),
+			0,
+			"and no ore BLOCK — a vein is never an item"
+		);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::Rubble),
 			0,

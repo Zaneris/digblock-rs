@@ -1818,6 +1818,11 @@ impl Carried {
 				cast.level
 			},
 			whitened: cast.whitened,
+			// A light in a hand is a point. The one thing that could make
+			// it otherwise is the item's own geometry, and an emissive
+			// face a few inches across is a point at any distance that
+			// matters.
+			face: None,
 		});
 		self.keys.push(key);
 	}
@@ -4111,8 +4116,9 @@ impl Engine {
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
 			digblock_core::shapes::slab_shrunk(prev_cell)
-		} else if extracting.is_some() {
-			BlockType::DepletedStone as u16
+		} else if let Some(ore) = extracting {
+			digblock_core::worldgen::ore::spent_rock(ore)
+				.expect("an Extract names one of the four tiers") as u16
 		} else {
 			air
 		};
@@ -4145,21 +4151,26 @@ impl Engine {
 		// No swing is started here: the arc that began with this hold is
 		// running out on this very frame, and re-striking it is what used
 		// to bolt a whole second stroke onto a finished scoop.
-		// One credit even for the two-cell door. An extraction credits the
-		// ORE, never the cell's own drop — the cell is Stone and Stone hands
-		// out Rubble, which is exactly what quarrying should give and
-		// exactly what drawing a seam should not.
-		let drop = extracting.or_else(|| prev.dig_drop());
-		// Mining 99's mastery: one extra raw ore per field extraction, and
-		// only there — the last level has to hand you something.
-		let credit = broken
-			+ extracting.map_or(0, |_| {
-				digblock_core::unlock::ore_mastery(
-					self.skills.level(digblock_core::skills::Skill::Mining),
-				)
-			});
+		// One credit even for the two-cell door.
+		//
+		// An extraction credits NOTHING here, and that is not an omission.
+		// A drawn seam pays essence (`alchemy::field_yield`) rather than a
+		// block — the cell is Stone and Stone hands out Rubble, which is
+		// exactly what quarrying should give and exactly what drawing a
+		// seam should not — and essence arrives as a SPLIT, which a
+		// `PendingEdit`'s single `inv_delta` cannot carry. So online it is
+		// deliberately un-predicted and the server's `InventoryFull` rebase
+		// is the answer, the same path `ClientMsg::Alchemy` already takes;
+		// offline the arm below pays it, where the engine is the authority.
+		// The CELL is predicted on both, so the vein turns spent under the
+		// player's hand with no latency either way.
+		let drop = if extracting.is_some() {
+			None
+		} else {
+			prev.dig_drop()
+		};
 		if let Some(d) = drop {
-			self.inventory.add(d, credit);
+			self.inventory.add(d, broken);
 			self.hotbar.auto_assign(d);
 		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
@@ -4187,7 +4198,7 @@ impl Engine {
 					.collect();
 				let seq = net
 					.edits
-					.begin_multi(&entries, tick, drop.map(|d| (d, credit as i32)));
+					.begin_multi(&entries, tick, drop.map(|d| (d, broken as i32)));
 				let slot = self.hotbar.selected_index() as u8;
 				net.send_edit(seq, tick, origin, dir, kind, hit.cell, (0, 0, 0), slot);
 			}
@@ -4195,10 +4206,19 @@ impl Engine {
 				for &(c, _) in &cleared {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
-				// Offline, the engine IS the award authority — and it asks
-				// the same one question the server's dig-credit chokepoint
-				// asks, so §5.2's depth reward and §5.4's dual award at the
-				// rock face reach both economies identically.
+				// Offline, the engine IS the authority — for the essence a
+				// drawn seam pays as much as for the XP, and both go
+				// through the same shared functions the server's
+				// chokepoint calls, so §5.2's depth reward, §5.4's dual
+				// award at the rock face and §5.3's field yield reach both
+				// economies identically.
+				if let Some(ore) = extracting {
+					let mining = self.skills.level(digblock_core::skills::Skill::Mining);
+					let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
+					for (e, n) in digblock_core::alchemy::field_yield(ore, alchemy, mining) {
+						self.inventory.add_sub(e, n);
+					}
+				}
 				let (mining_xp, alch_xp) =
 					digblock_core::skills::dig_award(prev, extracting, broken, hit.cell.1);
 				self.award_xp_offline(digblock_core::skills::Skill::Mining, mining_xp);

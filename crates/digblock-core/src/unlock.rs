@@ -85,7 +85,11 @@ pub fn material(m: Material) -> Option<u32> {
 		| M::Duskstone
 		| M::Glowvein
 		| M::Aetherock
-		| M::DepletedStone => return None,
+		| M::DepletedStone
+		| M::DepletedEmberore
+		| M::DepletedDuskstone
+		| M::DepletedGlowvein
+		| M::DepletedAetherock => return None,
 	})
 }
 
@@ -206,10 +210,14 @@ pub fn prospector(level: u32) -> bool {
 /// How far the prospector's sense reaches, in blocks.
 pub const PROSPECT_RANGE: i32 = 8;
 
-/// The capstone Mining mastery (§5.5): every field extraction yields one
-/// extra raw ore. The last level has to hand you something, and a flat
-/// bonus on the rarest action in the game is the smallest thing that
-/// qualifies.
+/// The capstone Mining mastery (§5.5): every field extraction draws one
+/// extra vein's worth of essence. The last level has to hand you
+/// something, and a flat bonus on the rarest action in the game is the
+/// smallest thing that qualifies.
+///
+/// Extra DRAWS rather than extra units, which is what `alchemy::field_yield`
+/// spends it as: a tier that pays in two essences has to get more of both,
+/// or the capstone would quietly favour whichever line was listed first.
 pub fn ore_mastery(level: u32) -> u32 {
 	u32::from(level >= 99)
 }
@@ -567,6 +575,14 @@ mod tests {
 				M::Leaf,
 				M::PineLeaf,
 				M::DepletedStone,
+				// Spent rock, deep tiers included. What a gate would
+				// protect is the ore, and the siphon has already taken
+				// it — somebody else's tapped Aetherock face is a rock
+				// with nothing in it, so it breaks like one.
+				M::DepletedEmberore,
+				M::DepletedDuskstone,
+				M::DepletedGlowvein,
+				M::DepletedAetherock,
 			],
 			"a material joined or left the family-only set — is that intended?"
 		);

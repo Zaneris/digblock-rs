@@ -429,13 +429,19 @@ Invariants that bite if broken:
 
 Light stays two independent block properties: `emissive` (the `glows` builder — fullbright ink, a bit of solid word 1,
 chunk.wgsl's early return) and `light` (the `emits(level)` builder — the cast level, feeding the GI material LUT and the
-light list in `gi.rs`, nothing else). The Torch (`ShapeKind::Torch`, stateless, baked in shapes.rs) glows AND emits at
-its authored level; it is hand-priced in `alchemy::functional_ideal` (a Flora-and-Earth price set by hand, at a level
-set the same way) because functional items are priced by hand, NEVER by the volume rule — it has no material and no
-`ShapeFamily`, which is exactly how a row opts out of the grid. Torch shadows are hard point-light shadows by design,
-cast from `gi::light_origin(class)` — the cell centre for anything unshaped, and for a shaped emitter the centre of its
-emissive band (a torch radiates from its flame rather than its handle, not from its handle; R26).
-`LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
+light list in `gi.rs`, nothing else). A third property says WHERE FROM rather than how much: `surface_light` (the
+`seams(level)` builder, R31) makes a block radiate from its exposed FACES instead of its cell centre — the difference
+between a lamp and a seam in a wall. `gi::classify_chunk` declines to place a point source for one, and the MESHER hands
+the renderer merged rectangles instead (`mesher::lights`, riding `MeshData::lights` on the rail `impacts` established),
+because the mesher is the one pass that has the ore reveal, face exposure and the neighbour shell all in hand at once.
+The four ore rows are the only `seams` today; buried rock must light nothing, and a point light one course behind a wall
+leaks through it, since `gi_light_margin` skips more than that course. The Torch (`ShapeKind::Torch`, stateless, baked
+in shapes.rs) glows AND emits at its authored level; it is hand-priced in `alchemy::functional_ideal` (a Flora-and-Earth
+price set by hand, at a level set the same way) because functional items are priced by hand, NEVER by the volume rule —
+it has no material and no `ShapeFamily`, which is exactly how a row opts out of the grid. Torch shadows are hard
+point-light shadows by design, cast from `gi::light_origin(class)` — the cell centre for anything unshaped, and for a
+shaped emitter the centre of its emissive band (a torch radiates from its flame rather than its handle, not from its
+handle; R26). `LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
 `resolve_and_probe_agree_on_light_calibration`; `LIGHT_NEAR` is where the point model's near field stops being taken
 literally (R22), and `emissive_ink`'s gain — quadratic in the ink's OWN luminance — keeps a source out-reading what it
 casts, barely, since that ink is already clamped by the scene target and cannot be raised to follow a brighter pool,
@@ -446,16 +452,22 @@ fullbright, not for lit**, because a pale one has no headroom left to take the g
 corner of its own cell, because a fixed margin only covers that cell while the origin is its centre — and it is asked
 through `gi_light_margin_of`, which answers **zero** for a light with no cell of its own (a flag bit of the entry's `w`
 word, `GI_LIGHT_CARRIED`; a carried light's origin is on its carrier's capsule axis, so a wall half a block away is
-meant to block it and the general formula would swallow the whole wall). Both gains are stopgaps for the missing tonemap
-— which cannot simply be appended, because the offscreen scene colour uses the SURFACE format, so radiance is already
-clamped at the scene pass. `flush_lights` re-selects once the camera has moved far enough, when emitters exceed
-MAX_LIGHTS; spray and viewmodel read a camera-light buffer. The fullbright INK is one shared function, `emissive_ink` in
-`ink_common.wgsl`, prepended to chunk/viewmodel/players so a `glows` block reads the same in the world, in your hand and
-in somebody else's (`every_pass_that_draws_ink_shares_one_gain` pins that nobody shadows it with a local const). An ITEM
-may also be ink in one place only: `ItemFace::emissive` rides above the texture index in the item vertex word
-(`viewmodel::INK_BIT`, decoded identically by viewmodel.wgsl and players.wgsl, and read by the 2D icons as "no
-directional shading"). That exists because `glows` is per BLOCK, which is right for a torch — one material — and wrong
-for a tool, which is a body worth shading with one lit part set into it (R30).
+meant to block it and the general formula would swallow the whole wall) and only `GI_LIGHT_SLACK` for a RECTANGLE, whose
+sample point already sits on the rock face with air in front of it. A light entry is a PAIR of vec4s since R31, the
+second carrying a surface emitter's extents and facing under `GI_LIGHT_QUAD`; `gi_light_sample` (the shared DDA prelude,
+so both NEE passes agree by construction) draws the point and returns what it is worth — 1 for a point,
+`cos(theta_l) * area` for a rectangle, times `GI_SURFACE_GAIN`, which is the calibration between a lamp's level as an
+INTENSITY and a seam's as a RADIANCE PER UNIT AREA. Punctual entries leave the flag clear and their second half zero, so
+a torch's word is what it always was. Both gains are stopgaps for the missing tonemap — which cannot simply be appended,
+because the offscreen scene colour uses the SURFACE format, so radiance is already clamped at the scene pass.
+`flush_lights` re-selects once the camera has moved far enough, when emitters exceed MAX_LIGHTS; spray and viewmodel
+read a camera-light buffer. The fullbright INK is one shared function, `emissive_ink` in `ink_common.wgsl`, prepended to
+chunk/viewmodel/players so a `glows` block reads the same in the world, in your hand and in somebody else's
+(`every_pass_that_draws_ink_shares_one_gain` pins that nobody shadows it with a local const). An ITEM may also be ink in
+one place only: `ItemFace::emissive` rides above the texture index in the item vertex word (`viewmodel::INK_BIT`,
+decoded identically by viewmodel.wgsl and players.wgsl, and read by the 2D icons as "no directional shading"). That
+exists because `glows` is per BLOCK, which is right for a torch — one material — and wrong for a tool, which is a body
+worth shading with one lit part set into it (R30).
 
 **A light a player CARRIES is an ordinary entry in that same list** (R28) — there is no second lighting path, and
 neither GI shader knows the difference, which is what gives a carried torch bounce, hard shadows, water response and a
@@ -947,12 +959,24 @@ Three rules bite if broken:
   emissive bit, `block_tint` and shaped culling then all see a real ore block and need no change. It runs deposit-major
   in two passes — every deposit CLAIMS its cells in the same grid order `ore_at` walks (skipping unrevealed ones would
   let a later deposit take a cell the dig path says belongs to the first), then claims by an unseen tier revert. Pass
-  two touches only the claimed indices, never a sweep, or a PLACED ore block turns to stone for every visitor below its
-  tier.
+  two touches only the claimed indices, never a sweep, or a placed SPENT rock turns to stone for every visitor below its
+  tier (`the_reveal_stamp_leaves_everything_else_alone`, swept across levels — at the cap the second pass reverts
+  nothing whatever it does, so a run there cannot tell the two apart).
 - **One question answers every dig**: `ore::dig_mode(cell, at, seed, mining, edited, tool)`, asked identically by client
   prediction and the server's own world. Extraction needs no new wire; only the refusal does (`RejectReason::NeedsTool`,
-  protocol v21). An extraction is TIMED as the ore (`ore::dig_block`), writes `DepletedStone` rather than air, credits
-  the ore rather than the cell's Rubble, pays both skills (`skills::ore_field_xp`), and shows no crack.
+  protocol v21). An extraction is TIMED as the ore (`ore::dig_block`), writes the tier's own spent rock
+  (`ore::spent_rock`) rather than air, pays both skills (`skills::ore_field_xp`), and shows no crack.
+- **A vein is world geometry and never an item.** The siphon draws the seam out where it stands: it credits ESSENCE
+  (`alchemy::field_yield` — the ore's ordinary bench yield, so the Alchemy level scales a field draw exactly as it
+  scales the bench, with Mining's capstone multiplying the whole split rather than a line of it), and what a player can
+  carry home is the SPENT rock afterwards, one per tier, which drops itself. `is_slottable` is false for all four ores,
+  which is both the rule and the migration for saves written while a siphon still handed ore over — `reconcile_layout`
+  sweeps a non-slottable type out of bar and grid, exactly as it did for Water. The essence is deliberately NOT
+  predicted: it is a split, a `PendingEdit` carries one `inv_delta`, and rather than widen the wire for the one tier
+  that pays in two, the extraction takes the path `ClientMsg::Alchemy` already takes and the standing `InventoryFull`
+  rebase carries the counts. The CELL is still predicted, so the vein turns spent under the hand. (`DepletedStone`, the
+  one grey face all four tiers used to leave, is kept and unreachable — cells written before the per-tier rocks existed
+  still name it.)
 
 The GI window's class byte is the capacity to watch: `gi::SHAPE_CLASS_BASE` splits the byte between full-cube ids and
 shaped covers, a shaped MATERIAL costs a dozen-odd covers, and the pin reports the remaining headroom.

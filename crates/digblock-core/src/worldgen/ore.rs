@@ -288,9 +288,17 @@ pub fn revealed(
 pub enum DigMode {
 	/// Ordinary: the cell breaks and drops what it drops.
 	Break,
-	/// A revealed vein with the siphon in hand: the cell becomes
-	/// [`BlockType::DepletedStone`] and the ore lands in the inventory.
-	/// Mining ore never excavates, so the mountainside keeps its shape.
+	/// A revealed vein with the siphon in hand: the cell becomes the
+	/// tier's [`spent_rock`] and the vein's ESSENCE lands in the player's
+	/// stocks. Mining ore never excavates, so the mountainside keeps its
+	/// shape.
+	///
+	/// Essence rather than an ore block, which is the whole of what the
+	/// tool is for: a siphon draws a seam out where it stands, so a vein
+	/// never becomes something you carry to a bench. What you can carry
+	/// home is the spent rock afterwards. The yield is the ore's ordinary
+	/// `alchemy::extract_yields`, so the Alchemy level scales a field draw
+	/// exactly as it scales the bench.
 	Extract(BlockType),
 	/// A revealed vein and no siphon. Refused at `DigStart`, not at the
 	/// completing edit — if you can SEE the seam, the game will not let
@@ -348,17 +356,42 @@ pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Depo
 	best.map(|(_, d)| d)
 }
 
-/// The block a dig is TIMED and CREDITED as. A vein lives in a cell that
+/// The block a dig is TIMED and paid XP as. A vein lives in a cell that
 /// still holds Stone — the reveal is a mesh stamp, not a world write — so
 /// without this an extraction would take a stone's own hold time and pay
 /// a stone's XP however deep the seam was, and the ore rows' hardnesses
 /// would be dead numbers on blocks nobody ever digs.
+///
+/// It no longer decides what the dig CREDITS: a field extraction pays
+/// essence, not ore (see [`DigMode::Extract`]).
 #[inline]
 pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
 	match mode {
 		DigMode::Extract(ore) => ore,
 		_ => cell_block,
 	}
+}
+
+/// The rock a tapped vein leaves standing — the tier's own spent face.
+///
+/// One per tier rather than one grey stone for all four: a worked seam
+/// should still read as the seam you worked, and the block you break out
+/// of it afterwards is a trophy of that tier and no other. It is also the
+/// ONLY thing a vein ever puts in a player's hands, since the ore itself
+/// is never an item ([`BlockType::is_slottable`]).
+///
+/// Total on the ores, so a caller that has a [`DigMode::Extract`] cannot
+/// be handed one it has no rock for; anything else is not a vein and
+/// answers `None`.
+#[inline]
+pub fn spent_rock(ore: BlockType) -> Option<BlockType> {
+	Some(match ore {
+		BlockType::Emberore => BlockType::DepletedEmberore,
+		BlockType::Duskstone => BlockType::DepletedDuskstone,
+		BlockType::Glowvein => BlockType::DepletedGlowvein,
+		BlockType::Aetherock => BlockType::DepletedAetherock,
+		_ => return None,
+	})
 }
 
 #[cfg(test)]
@@ -609,6 +642,73 @@ mod tests {
 			);
 			assert_eq!(revealed(stone, (x, y, z), seed, need - 1, false), None);
 			assert_eq!(revealed(stone, (x, y, z), seed, need, false), Some(ore));
+		}
+	}
+
+	/// Every tier has a spent rock, and nothing else does.
+	///
+	/// Totality is what makes the two `expect`s at the extraction sites
+	/// honest — the client's prediction and the server's write both ask
+	/// this and both would panic on a `None`, and they must agree about
+	/// the cell or the two ends draw different rock at the same
+	/// coordinate. The reverse half matters just as much: a spent rock
+	/// that answered to `spent_rock` in its own right would be a vein you
+	/// could tap twice.
+	#[test]
+	fn every_tier_has_a_spent_rock_and_nothing_else_does() {
+		let mut spent = Vec::new();
+		for &ore in &ORES {
+			let rock = spent_rock(ore).unwrap_or_else(|| panic!("{ore:?} taps out into nothing"));
+			assert_ne!(rock, ore, "{ore:?} must not tap out into itself");
+			assert!(
+				rock.dig_drop() == Some(rock),
+				"{rock:?} has to drop ITSELF — it is the only thing a vein \
+				 ever puts in a player's hands"
+			);
+			assert_eq!(rock.props().light, 0, "{rock:?} still casts");
+			assert!(!rock.props().emissive, "{rock:?} still glows");
+			spent.push(rock);
+		}
+		let mut ids: Vec<u16> = spent.iter().map(|&b| b as u16).collect();
+		ids.sort_unstable();
+		ids.dedup();
+		assert_eq!(
+			ids.len(),
+			spent.len(),
+			"two tiers share a spent rock: {spent:?}"
+		);
+		for &b in &BlockType::ALL {
+			assert_eq!(
+				spent_rock(b).is_some(),
+				ORES.contains(&b),
+				"{b:?} disagrees with the ore roster"
+			);
+		}
+	}
+
+	/// A vein is world geometry and never an item.
+	///
+	/// The siphon pays essence at the rock face, so nothing anywhere
+	/// credits an ore block — and `is_slottable` is what makes that
+	/// structural rather than a promise: `reconcile_layout` sweeps a
+	/// non-slottable type out of bar and grid whatever the count says, so
+	/// it is also the migration for saves written while a siphon still
+	/// handed ore over.
+	#[test]
+	fn raw_ore_is_never_an_item() {
+		for &ore in &ORES {
+			assert!(ore.is_raw_ore(), "{ore:?} is not in the block predicate");
+			assert!(!ore.is_slottable(), "{ore:?} can still be held");
+			assert!(
+				!ore.is_tool(),
+				"{ore:?} must be excluded as ore, not as a tool"
+			);
+		}
+		// And the spent rocks are, or there is nothing to carry home.
+		for &ore in &ORES {
+			let rock = spent_rock(ore).expect("a tier");
+			assert!(rock.is_slottable(), "{rock:?} cannot be picked up");
+			assert!(!rock.is_raw_ore(), "{rock:?} reads as a live vein");
 		}
 	}
 

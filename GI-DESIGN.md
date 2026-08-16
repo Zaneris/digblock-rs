@@ -1120,6 +1120,66 @@ coloured emitters within one `LIGHT_RANGE`; `DIG_TORCHES=8 DIG_SCREEN=siphon` is
 (new here, since a level is not a pose and the pick's second rank is otherwise unphotographable) is what puts the pick
 at the rank worth shooting.
 
+### R31 — a vein is a surface, not a lamp
+
+User ask: revealed ore should glow — dim at the shallow tier, brightest at the deep one, each tier its own colour — and,
+in their own words, "ore that has no visible faces wouldn't be emitting light, so I guess these are surface lights
+instead of point lights". That instinct is the whole design, and it is also what the literature says: emissive geometry
+has been sampled as POLYGONS for as long as path tracers have done next event estimation (Q2RTX extracts "light
+polygons" from its emissive surfaces; voxel path tracers treat an emissive voxel as an area source), and points are for
+sources that really are points.
+
+**Why it had to be a surface, concretely, and not merely tidily.** Most of a deposit is buried, and a buried point light
+LEAKS: `gi_light_margin` skips a cell's worth of ray in front of the light so it cannot shadow itself, which is wider
+than the single course of stone between a vein and the tunnel next to it. And the resolve's NEE reservoir is a pass over
+the whole light list PER PIXEL, so a thirty-cell pocket would spend thirty iterations of every shaded pixel on a source
+that mostly delivers nothing. Both arguments point the same way, which is the comfortable kind of design decision.
+
+**The mesher builds the lights, which is the part worth remembering.** Not `gi::classify_chunk`, the obvious home: that
+reads the raw chunk store, and the store holds Stone where a vein is, because ore is derived and never written. The
+mesher has already stamped the ore ids into its padded array — and already reverted every tier the player has not
+levelled into — and is already deciding, face by face, what is exposed, with the neighbour shell in hand so a seam
+across a chunk border does not go dark down one column. So BOTH halves of "if the player can see it and it has been
+unlocked" cost nothing, and a tier lighting up the moment its reveal level is crossed is free, because crossing one
+already re-meshes. The exposed faces are greedy-merged per slice into rectangles and ride out on `MeshData::lights`, the
+rail `impacts` already established for spray emitters.
+
+**The light entry is now a pair of vec4s**, the second carrying the extents and the facing, with `GI_LIGHT_QUAD` saying
+which kind it is. Punctual entries leave it clear and their second half zero, so a torch's word is bit-identical to what
+it was. `gi_light_sample` in the shared DDA prelude draws the point and returns what the sample is worth — 1 for a
+point, `cos(theta_l) * area` for a rectangle — so the two NEE passes cannot price the same seam differently, and the
+cosine at the light is a real gain a point could not have: a seam lights the tunnel in FRONT of it instead of spilling
+around the corner of the rock it is set into. `gi_light_margin_of` answers only the slack for a rectangle, which is the
+case that makes the whole margin look like the workaround it is: the sample point is already on the rock face with air
+in front of it, so there is nothing of its own to skip.
+
+The reservoir scores candidates from the rectangle's centre and draws a point on the WINNER. That keeps the
+per-candidate cost what it was, at the price of R27's exactness property holding only approximately for rectangles — the
+target used the centre, the contribution uses the drawn point, and the two differ by however much the cosine and the
+distance vary across the face. Unbiased either way; the same standing the mixed-tint pool has had since the tools
+started casting.
+
+**The cast colour had to be stated, and that is a real exception to R30.** An emitter's tint is the mean of its texture,
+which works for a torch because a torch's texture is mostly flame. Measured, all four ore textures mean out to stone —
+saturation 0.08/0.09/0.18/0.09 against TorchSide's 0.74 — because an ore face is a wide grey field with a few flecks on
+it. Weighting that mean by `emissive_ink`'s own gain moves it from 0.08 to 0.09; darkening the body cannot help, since
+Aetherock was already at body 0.30 and no more coloured for it. **The problem is the texture's composition, not the
+average taken over it**, and no derivation from a whole image recovers a hue its area does not carry. So the ore rows
+state their cast colour, packed into LUT word 1 above the level — and it stays ONE authored thing, because
+`BlockType::ore_flecks` is the same palette texgen paints the flecks and their spent siblings from.
+
+**`GI_SURFACE_GAIN` is the calibration between two different quantities**, not a fudge factor. A lamp's level is an
+intensity; a seam's is a radiance per unit area, and the area multiplies in. At unity a modest pocket lit a whole
+chamber to daylight and the four tiers were indistinguishable, because everything sat near the top of the range and the
+differences compressed away.
+
+**What the captures showed.** `DIG_ORE=<tier>` is the scene and needed no work — it already hollows a chamber around the
+nearest deposit of a tier and grants its level. Each tier reads as itself: ember orange, dusk violet, glowvein cyan,
+aetherock pale gold, with the chamber dark beyond the pool at tier 1 and lit wall to wall at tier 4. The best frame is
+tier 3's, and it was not planned: granting Aetherock's level reveals every tier below it, so a Glowvein seam and an
+Emberore seam light the same chamber cyan and orange from opposite sides and blend across the floor with no hue noise —
+the multi-emitter check R30 asked for, arriving on its own.
+
 ## Goals
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,

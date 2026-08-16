@@ -453,14 +453,15 @@ impl Sim {
 				// else clears. Collect never stops in a slab (fluid ray).
 				let new_val = if hit.block.is_slab() {
 					digblock_core::shapes::slab_shrunk(hit.cell_value)
-				} else if extracting.is_some() {
+				} else if let Some(ore) = extracting {
 					// The vein is DRAWN out, not dug out: the cell becomes
-					// a tapped face, so mining ore never excavates and the
-					// mountainside keeps its shape. Writing a different id
-					// (rather than the same Stone back) is also what makes
-					// the edit unambiguously real to the journal, LWW
-					// replay and mesh invalidation.
-					BlockType::DepletedStone as u16
+					// the tier's own tapped face, so mining ore never
+					// excavates and the mountainside keeps its shape.
+					// Writing a different id (rather than the same Stone
+					// back) is also what makes the edit unambiguously real
+					// to the journal, LWW replay and mesh invalidation.
+					digblock_core::worldgen::ore::spent_rock(ore)
+						.expect("an Extract names one of the four tiers") as u16
 				} else {
 					air
 				};
@@ -658,20 +659,34 @@ impl Sim {
 		// LIST: one action can level both skills at once.
 		let mut crossed = Vec::new();
 		if place_cell.is_none() {
-			// An extraction credits the ORE, never the cell's own drop:
-			// the cell was Stone and Stone hands out Rubble, which is the
-			// whole reason quarrying stays a Mining question and drawing a
-			// vein does not.
-			// Mining's mastery milestone pays a bonus raw ore on top of
-			// every field extraction (`unlock::ore_mastery`).
-			let credit = broken
-				+ extracting.map_or(0, |_| {
-					digblock_core::unlock::ore_mastery(
-						client.skills.level(digblock_core::skills::Skill::Mining),
-					)
-				});
-			if let Some(drop) = extracting.or_else(|| prev.dig_drop()) {
-				client.inventory.add(drop, credit);
+			// An extraction credits ESSENCE, never a block: the siphon
+			// draws the seam out where it stands, so no ore is ever an
+			// item and the cell's own drop is beside the point (it was
+			// Stone, and Stone hands out Rubble — the whole reason
+			// quarrying stays a Mining question and drawing a vein does
+			// not). What the player can carry away is the spent rock now
+			// standing in the cell, on a later ordinary dig.
+			//
+			// Un-predicted, deliberately: the essence is a SPLIT, and a
+			// `PendingEdit` carries one `inv_delta`. Rather than widen the
+			// wire for the one tier that pays in two, this takes the path
+			// `ClientMsg::Alchemy` already takes and lets the rebase below
+			// carry the counts. The CELL is still predicted, so the vein
+			// turns spent under the player's hand with no latency.
+			if let Some(ore) = extracting {
+				let mining = client.skills.level(digblock_core::skills::Skill::Mining);
+				let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
+				for (e, n) in digblock_core::alchemy::field_yield(ore, alchemy, mining) {
+					client.inventory.add_sub(e, n);
+				}
+				send_frame(
+					&client.out,
+					&ServerMsg::InventoryFull {
+						counts: client.inventory.to_wire(),
+					},
+				);
+			} else if let Some(drop) = prev.dig_drop() {
+				client.inventory.add(drop, broken);
 				// Mirror the client's auto-assign of a newly acquired type
 				// (same deterministic derivation), so the very next place
 				// from that slot validates even before the client's Layout

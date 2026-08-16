@@ -19,6 +19,7 @@
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::{CHUNK_SIZE, ChunkData};
 
+pub mod lights;
 mod water;
 use water::{FallLayers, WaterState, emit_water_face};
 
@@ -257,6 +258,18 @@ pub struct MeshData {
 	/// mesh so every fall-changing path (worldgen stream-in, dig/place,
 	/// fluid sim, remesh-all) refreshes emitters with no extra scans.
 	pub impacts: Vec<u16>,
+	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles
+	/// ([`lights::pack`]) — the GI's area lights for revealed veins.
+	///
+	/// Rides the mesh for exactly the reason `impacts` does, and for two
+	/// more that only apply here: the ore reveal has already run over this
+	/// chunk's padded array (so the list holds only tiers this player can
+	/// SEE), and face exposure is the question the mesher was already
+	/// answering (so it holds only faces this player can see AT). Every
+	/// path that changes either — streaming, a dig, a place, levelling into
+	/// a new tier — re-meshes, and the lights follow with no extra scans
+	/// and nothing to keep in step.
+	pub lights: Vec<u32>,
 }
 
 impl MeshData {
@@ -506,6 +519,7 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 		solid: Vec::with_capacity(4096),
 		water: Vec::with_capacity(512),
 		impacts: Vec::new(),
+		lights: lights::collect(input),
 	};
 	let mut falls = FallLayers::default();
 	for y in 0..n {
@@ -658,10 +672,19 @@ mod tests {
 		}
 	}
 
-	/// The stamp only ever touches PRISTINE stone: air stays air, a
-	/// placed ore block someone is showing off stays exactly what it is
-	/// (at any level — it is ordinary chunk data), and a shaped stone cell
-	/// is not stone.
+	/// The stamp only ever touches PRISTINE stone: air stays air, a spent
+	/// rock somebody has built with stays exactly what it is, and a shaped
+	/// stone cell is not stone.
+	///
+	/// **Swept across Mining levels**, which is the half that matters and
+	/// the half this test used to skip. At the cap the second pass reverts
+	/// nothing whatever it does, so a run there cannot tell "only claimed
+	/// cells are reverted" from "everything is". The case the sweep is for
+	/// is somebody wandering into a friend's hall of tapped Aetherock at
+	/// Mining 1: those blocks are ordinary chunk data with no reveal gate,
+	/// so they must survive at EVERY level, and a stamp that swept the
+	/// array instead of its own claims would quietly turn the hall to
+	/// stone for every visitor below the tier.
 	#[test]
 	fn the_reveal_stamp_leaves_everything_else_alone() {
 		use crate::worldgen::ore;
@@ -669,42 +692,56 @@ mod tests {
 		let origin = (-24, 1, -4);
 		let others = [
 			B::Air as u16,
-			B::Aetherock as u16,
+			B::DepletedEmberore as u16,
+			B::DepletedAetherock as u16,
 			B::DepletedStone as u16,
 			B::Rubble as u16,
 			crate::chunk::make_cell(B::StoneSlab, 1),
 		];
-		let mut input = MeshInput {
-			blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
-			missing: [false; 6],
-			ore: Some(OreStamp {
-				seed,
-				origin,
-				mining: crate::skills::MAX_LEVEL,
-				edited: Vec::new(),
-			}),
-		};
-		// Salt the array so every non-stone value sits on a cell the
-		// stamp would otherwise have claimed.
-		let veins: Vec<usize> = (0..PADDED_VOLUME)
-			.filter(|&i| {
-				let (lx, lz, ly) = (i % PADDED, (i / PADDED) % PADDED, i / (PADDED * PADDED));
-				ore::ore_at(
-					origin.0 + lx as i32,
-					origin.1 + ly as i32,
-					origin.2 + lz as i32,
-					seed,
-				)
-				.is_some()
-			})
-			.collect();
-		assert!(veins.len() >= others.len(), "need vein cells to salt");
-		for (slot, &v) in veins.iter().zip(others.iter()) {
-			input.blocks[*slot] = v;
+		// Every level a reveal happens at, either side, plus both ends of
+		// the ladder — the thresholds are where a sweep-vs-claims bug
+		// would first show.
+		let mut levels = vec![1, crate::skills::MAX_LEVEL];
+		for &o in &ore::ORES {
+			let r = crate::unlock::reveal(o).expect("an ore");
+			levels.extend([r.saturating_sub(1).max(1), r]);
 		}
-		input.apply_ore();
-		for (slot, &v) in veins.iter().zip(others.iter()) {
-			assert_eq!(input.blocks[*slot], v, "the stamp rewrote a non-stone cell");
+		for mining in levels {
+			let mut input = MeshInput {
+				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
+				missing: [false; 6],
+				ore: Some(OreStamp {
+					seed,
+					origin,
+					mining,
+					edited: Vec::new(),
+				}),
+			};
+			// Salt the array so every non-stone value sits on a cell the
+			// stamp would otherwise have claimed.
+			let veins: Vec<usize> = (0..PADDED_VOLUME)
+				.filter(|&i| {
+					let (lx, lz, ly) = (i % PADDED, (i / PADDED) % PADDED, i / (PADDED * PADDED));
+					ore::ore_at(
+						origin.0 + lx as i32,
+						origin.1 + ly as i32,
+						origin.2 + lz as i32,
+						seed,
+					)
+					.is_some()
+				})
+				.collect();
+			assert!(veins.len() >= others.len(), "need vein cells to salt");
+			for (slot, &v) in veins.iter().zip(others.iter()) {
+				input.blocks[*slot] = v;
+			}
+			input.apply_ore();
+			for (slot, &v) in veins.iter().zip(others.iter()) {
+				assert_eq!(
+					input.blocks[*slot], v,
+					"the stamp rewrote a non-stone cell at mining {mining}"
+				);
+			}
 		}
 	}
 

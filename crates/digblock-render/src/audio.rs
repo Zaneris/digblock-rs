@@ -153,7 +153,11 @@ pub fn material_of(b: BlockType) -> Material {
 			| Subst::Duskstone
 			| Subst::Glowvein
 			| Subst::Aetherock
-			| Subst::DepletedStone => Material::Stone,
+			| Subst::DepletedStone
+			| Subst::DepletedEmberore
+			| Subst::DepletedDuskstone
+			| Subst::DepletedGlowvein
+			| Subst::DepletedAetherock => Material::Stone,
 			// Loose ground.
 			Subst::Dirt
 			| Subst::Sand

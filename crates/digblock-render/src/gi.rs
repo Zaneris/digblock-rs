@@ -44,6 +44,13 @@ const MAX_LIGHTS: usize = 256;
 /// [`Self::level`], which only a carried light ever sets.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Emitter {
+	/// Where the light radiates from: a point for a lamp, the CENTRE of
+	/// the rectangle for a [`Self::face`] emitter.
+	///
+	/// One field for both because everything that reasons about a light
+	/// without shading it — the reach filter, the distance selection, the
+	/// reservoir's candidate score — wants a representative point and
+	/// nothing more.
 	pub pos: [f32; 3],
 	pub class: u8,
 	/// Cast level for THIS entry, or 0 to take the class's own.
@@ -61,6 +68,37 @@ pub struct Emitter {
 	/// reason the level is: the class byte is shared by every copy of the
 	/// tool in the world, and this one belongs to who is holding it.
 	pub whitened: bool,
+	/// The rectangle this light radiates from, for a SURFACE emitter — a
+	/// revealed vein's exposed face, merged by `mesher::lights`. `None`
+	/// is a point source: a torch, a lamp, a light in somebody's hand.
+	///
+	/// This is the one thing about an entry that changes how the estimator
+	/// works rather than merely what it is worth, so it is worth being
+	/// plain about what it buys. A point approximating a patch of glowing
+	/// rock is wrong in the two places you look at it from: standing at the
+	/// wall it is a hotspot rather than an even wash, and it has no cosine
+	/// at its own surface, so it spills light around the corner of the rock
+	/// it is supposed to be sitting IN. Sampling the rectangle fixes both,
+	/// which is why path tracers have extracted light polygons from
+	/// emissive geometry since NEE was new (GI-DESIGN.md R31).
+	pub face: Option<Face>,
+}
+
+/// An axis-aligned emissive rectangle: which way it faces and how big it
+/// is. Its position is the [`Emitter::pos`] it rides with.
+///
+/// Voxel faces are axis-aligned by construction, so this is four numbers
+/// rather than a basis — and the shader rebuilds the two tangents the same
+/// way `mesher::lights::tangents` does, in ascending axis order, so the
+/// packer and the sampler cannot disagree about which extent is which.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Face {
+	/// The axis the outward normal lies along: 0, 1 or 2 for x, y, z.
+	pub axis: u8,
+	/// Outward normal points UP that axis rather than down it.
+	pub positive: bool,
+	/// Full extent in blocks along the two tangent axes, ascending.
+	pub ext: [f32; 2],
 }
 
 /// The flag riding above the class byte in a light entry's packed `w`
@@ -102,6 +140,18 @@ pub(crate) const LIGHT_LEVEL_MASK: u32 = 15;
 /// has to know it reads it back out of the shader source.
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_WHITENED: u32 = 8192;
+
+/// [`Emitter::face`]'s flag: this entry is a RECTANGLE, and the second
+/// half of its pair carries the extents and the facing.
+///
+/// It is what makes the light list heterogeneous — punctual sources and
+/// area sources in one array, the way every production path tracer's is —
+/// and every reader branches on it exactly once, inside
+/// `gi_light_sample`. Punctual entries leave it clear and their second
+/// vec4 unused, so a torch's word is bit-identical to what it was before
+/// rectangles existed.
+/// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
+const LIGHT_QUAD: u32 = 16384;
 
 /// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
 /// The real sun's disc is a fraction of a degree across; this cone is
@@ -232,6 +282,17 @@ pub struct GiDraw {
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
 	emitters: FxHashMap<ChunkPos, Vec<Emitter>>,
+	/// Surface emitters per chunk — a revealed vein's exposed faces, merged
+	/// into rectangles by the MESHER and delivered on its output rather
+	/// than derived here (`mesher::lights` says why at length; the short
+	/// version is that the chunk store holds Stone where a vein is, so
+	/// `classify_chunk` cannot see one).
+	///
+	/// A second map beside `emitters` rather than entries in it, because
+	/// the two arrive on different paths and at different times: one rides
+	/// the GI classify sweep, the other the mesh job. `flush_lights` chains
+	/// them, and the light list neither knows nor cares which is which.
+	surfaces: FxHashMap<ChunkPos, Vec<Emitter>>,
 	/// The carried lights the list was last flushed with — see
 	/// `flush_lights`, which compares this frame's against it. A carried
 	/// torch is not a second kind of light: it is an entry in the ONE
@@ -324,6 +385,29 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 			.copied()
 			.unwrap_or([255, 255, 255])
 	};
+	// Word 1: the cast level in the low byte, the cast COLOUR above it.
+	//
+	// The colour is normally just the albedo — a torch glows its own warm
+	// tone, and one authored texture deciding both how a thing looks and
+	// what its light looks like is the rule R30 was built on. An ore seam
+	// is the one row that cannot honour it, and not for want of trying: an
+	// ore texture is a wide grey field with a few bright flecks on it, so
+	// its mean IS stone. Measured, all four tiers land within a few percent
+	// of colourless (an ember seam would light a tunnel white), weighting
+	// the mean by the ink gain moves it almost not at all, and darkening
+	// the body cannot help — Aetherock was already dark and no more
+	// coloured for it. The problem is the texture's composition, not the
+	// average taken over it, so the ore rows state their cast colour
+	// instead. It is still one table: `ore_flecks` is the same palette
+	// texgen paints the flecks and their spent siblings from, so a retint
+	// moves the rock and its light together (GI-DESIGN.md R31).
+	let emit_word = |b: BlockType| -> u32 {
+		let t = b.ore_flecks().map_or_else(|| albedo(b), |(core, _)| core);
+		u32::from(b.props().light)
+			| u32::from(t[0]) << 8
+			| u32::from(t[1]) << 16
+			| u32::from(t[2]) << 24
+	};
 	for b in BlockType::ALL {
 		let id = b as usize;
 		if id >= 256 || b == BlockType::Air {
@@ -337,7 +421,7 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 		};
 		lut[id] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (op << 24),
-			u32::from(b.props().light),
+			emit_word(b),
 			0,
 			0,
 		];
@@ -347,7 +431,7 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 		let boxes = sc.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
 		lut[digblock_core::gi::SHAPE_CLASS_BASE as usize + i] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (3 << 24),
-			u32::from(sc.base.props().light),
+			emit_word(sc.base),
 			boxes[0],
 			boxes[1],
 		];
@@ -401,23 +485,48 @@ fn select_lights(
 	carried: &[Emitter],
 	cam: [f32; 3],
 	reach: f32,
-) -> Vec<[f32; 4]> {
-	let word = |e: Emitter, carried: u32| {
-		u32::from(e.class)
+) -> Vec<[f32; 8]> {
+	let entry = |e: Emitter, carried: u32| {
+		let w = u32::from(e.class)
 			| carried | (u32::from(e.level) & LIGHT_LEVEL_MASK) << LIGHT_LEVEL_SHIFT
 			| if e.whitened { LIGHT_WHITENED } else { 0 }
+			| if e.face.is_some() { LIGHT_QUAD } else { 0 };
+		// The second half is the rectangle, or zero. A punctual light's
+		// pair is [pos, class] then four zeros, so the only thing that
+		// changed for a torch is the stride.
+		let f = e.face.map_or([0.0; 4], |f| {
+			[
+				f.ext[0],
+				f.ext[1],
+				f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
+				0.0,
+			]
+		});
+		(
+			e.pos,
+			[
+				e.pos[0],
+				e.pos[1],
+				e.pos[2],
+				f32::from_bits(w),
+				f[0],
+				f[1],
+				f[2],
+				f[3],
+			],
+		)
 	};
-	let placed = emitters.map(|e| (e.pos, word(e, 0)));
-	let held = carried.iter().map(|&e| (e.pos, word(e, LIGHT_CARRIED)));
-	let mut all: Vec<(f32, [f32; 4])> = placed
+	let placed = emitters.map(|e| entry(e, 0));
+	let held = carried.iter().map(|&e| entry(e, LIGHT_CARRIED));
+	let mut all: Vec<(f32, [f32; 8])> = placed
 		.chain(held)
 		.filter(|(p, _)| {
 			let (dx, dz) = (p[0] - cam[0], p[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		})
-		.map(|(p, w)| {
+		.map(|(p, e)| {
 			let d2 = (p[0] - cam[0]).powi(2) + (p[1] - cam[1]).powi(2) + (p[2] - cam[2]).powi(2);
-			(d2, [p[0], p[1], p[2], f32::from_bits(w)])
+			(d2, e)
 		})
 		.collect();
 	if all.len() > MAX_LIGHTS {
@@ -425,6 +534,30 @@ fn select_lights(
 		all.truncate(MAX_LIGHTS);
 	}
 	all.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Could any cell of this chunk be within `reach` of `cam` laterally?
+///
+/// The per-EMITTER reach test is what decides the light list; this is the
+/// same question asked of a whole chunk first, so a chunk well outside the
+/// traceable window costs one compare instead of one per entry it holds.
+///
+/// That distinction did not matter while emitters were torches. It matters
+/// now: a revealed vein contributes a rectangle per exposed face, caves are
+/// made of exposed faces, and residency reaches roughly twice as far as
+/// `gi_lateral_max` in every direction — so most of the map is chunks no
+/// march can reach, and `flush_lights` walks the map every frame anyone is
+/// moving.
+///
+/// Conservative by construction: it measures to the chunk's nearest EDGE,
+/// so it can only ever admit a chunk the per-emitter test then rejects,
+/// never drop one that held a reachable light.
+fn chunk_in_reach(pos: ChunkPos, cam: [f32; 3], reach: f32) -> bool {
+	let n = digblock_core::chunk::CHUNK_SIZE as f32;
+	let axis = |lo: f32, c: f32| (lo - c).max(c - (lo + n)).max(0.0);
+	let dx = axis(pos.x as f32 * n, cam[0]);
+	let dz = axis(pos.z as f32 * n, cam[2]);
+	dx * dx + dz * dz <= reach * reach
 }
 
 fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
@@ -523,7 +656,10 @@ impl GiDraw {
 			.write_buffer(&lut_buf, 0, bytemuck::cast_slice(&lut));
 		let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi light list"),
-			size: (16 + MAX_LIGHTS * 16) as u64,
+			// A header vec4, then TWO vec4s an entry: the position and
+			// class word, then the rectangle a surface emitter radiates
+			// from (zero for a point source).
+			size: (16 + MAX_LIGHTS * 32) as u64,
 			usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -1147,6 +1283,7 @@ impl GiDraw {
 			window_chunks,
 			stub,
 			emitters: FxHashMap::default(),
+			surfaces: FxHashMap::default(),
 			carried: Vec::new(),
 			prev_vp: [[0.0; 4]; 4],
 			prev_cam: [0.0; 3],
@@ -1579,6 +1716,11 @@ impl GiDraw {
 					// by construction.
 					level: 0,
 					whitened: false,
+					// A point source. Surface emitters never reach this
+					// list at all — `classify_chunk` declines to place one,
+					// because the cells it would place them for are mostly
+					// buried and it cannot see which are not.
+					face: None,
 				}
 			})
 			.collect();
@@ -1605,6 +1747,67 @@ impl GiDraw {
 		self.window_chunks as i32
 	}
 
+	/// Take one chunk's surface emitters from a finished mesh job
+	/// (`MeshData::lights`) — the vein rectangles this player can see.
+	///
+	/// Called on every mesh result, empty list included, because "this
+	/// chunk has no vein faces any more" is exactly what a completed
+	/// extraction produces and it has to reach the list. The same path
+	/// carries a tier lighting up the moment its reveal level is crossed:
+	/// crossing one re-meshes, the re-mesh stamps the ore, and the faces
+	/// arrive here with no threshold logic anywhere in the renderer.
+	pub fn set_chunk_lights(&mut self, pos: ChunkPos, packed: &[u32]) {
+		use digblock_core::mesher::lights;
+		let world = (
+			pos.x as f32 * 16.0,
+			pos.y as f32 * 16.0,
+			pos.z as f32 * 16.0,
+		);
+		let list: Vec<Emitter> = packed
+			.iter()
+			.map(|&w| {
+				let (cell, dir, span_u, span_v, id) = lights::unpack(w);
+				let (au, av) = lights::tangents(dir);
+				let an = 3 - au - av;
+				let off = dir.offset();
+				let positive = [off.0, off.1, off.2][an] > 0;
+				let mut c = [
+					world.0 + cell.0 as f32,
+					world.1 + cell.1 as f32,
+					world.2 + cell.2 as f32,
+				];
+				// The rectangle sits ON the cell boundary the face is: the
+				// far side of the cell for an outward-positive normal, the
+				// near side for a negative one. Centred across its span in
+				// both tangents.
+				c[an] += f32::from(u8::from(positive));
+				c[au] += span_u as f32 * 0.5;
+				c[av] += span_v as f32 * 0.5;
+				Emitter {
+					pos: c,
+					class: digblock_core::gi::gi_class(id),
+					// A vein's brightness and colour are its tier's, the
+					// same in every hand and every wall — so both come from
+					// the LUT row and neither rides the entry.
+					level: 0,
+					whitened: false,
+					face: Some(Face {
+						axis: an as u8,
+						positive,
+						ext: [span_u as f32, span_v as f32],
+					}),
+				}
+			})
+			.collect();
+		let changed = if list.is_empty() {
+			self.surfaces.remove(&pos).is_some()
+		} else {
+			self.surfaces.insert(pos, list);
+			true
+		};
+		self.lights_dirty |= changed;
+	}
+
 	/// Forget an evicted chunk's emitters.
 	///
 	/// Nothing used to prune this map: the only removal was a chunk
@@ -1621,7 +1824,7 @@ impl GiDraw {
 	/// nothing: the drill in BENCH.md 2026-08-12 rebuilt `sky_y` to the
 	/// same value with frame time unmoved.)
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
-		if self.emitters.remove(&pos).is_some() {
+		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
 		}
 	}
@@ -1642,6 +1845,7 @@ impl GiDraw {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;
 		self.emitters.clear();
+		self.surfaces.clear();
 		self.carried.clear();
 		self.lights_dirty = true;
 	}
@@ -1657,7 +1861,9 @@ impl GiDraw {
 			// Carried lights are counted too, and not for completeness:
 			// this field is how you answer "is the torch in my hand
 			// actually in the list" without a debugger.
-			(self.emitters.values().map(Vec::len).sum::<usize>() + self.carried.len()) as u32,
+			(self.emitters.values().map(Vec::len).sum::<usize>()
+				+ self.surfaces.values().map(Vec::len).sum::<usize>()
+				+ self.carried.len()) as u32,
 		)
 	}
 
@@ -1720,11 +1926,20 @@ impl GiDraw {
 		// Carried lights count toward `total` like any other: they are in
 		// the list the truncation applies to, so leaving them out of the
 		// tally would let a full world hide one.
-		let total: usize = self
-			.emitters
-			.values()
-			.map(|v| v.iter().copied().filter(&in_reach).count())
-			.sum::<usize>()
+		//
+		// Chunks outside the reach are skipped WHOLE, before their entries
+		// are touched: a vein contributes a rectangle per exposed face and
+		// caves are made of exposed faces, so the map is far larger than
+		// the torch-only one this walk was written for, and most of it is
+		// nowhere a march can go.
+		let reachable = |m: &'_ FxHashMap<ChunkPos, Vec<Emitter>>| -> usize {
+			m.iter()
+				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
+				.map(|(_, v)| v.iter().copied().filter(&in_reach).count())
+				.sum()
+		};
+		let total: usize = reachable(&self.emitters)
+			+ reachable(&self.surfaces)
 			+ carried.iter().copied().filter(&in_reach).count();
 		let moved = {
 			let d = [
@@ -1774,14 +1989,18 @@ impl GiDraw {
 		self.lights_dirty = false;
 		self.lights_cam = cam;
 		let all = select_lights(
-			self.emitters.values().flatten().copied(),
+			self.emitters
+				.iter()
+				.chain(self.surfaces.iter())
+				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
+				.flat_map(|(_, v)| v.iter().copied()),
 			&self.carried,
 			cam,
 			reach,
 		);
 		let count = all.len() as u32;
 		self.lights_len = all.len();
-		let mut bytes = Vec::with_capacity(16 + all.len() * 16);
+		let mut bytes = Vec::with_capacity(16 + all.len() * 32);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
 		bytes.extend_from_slice(bytemuck::cast_slice(&all));
 		gpu.queue.write_buffer(&self.lights_buf, 0, &bytes);
@@ -2026,6 +2245,7 @@ mod tests {
 				class,
 				level: 0,
 				whitened: false,
+				face: None,
 			})
 			.collect();
 		let mine = digblock_core::gi::carried_origin(glam::Vec3::from_array(cam));
@@ -2034,6 +2254,7 @@ mod tests {
 			class,
 			level: 0,
 			whitened: false,
+			face: None,
 		}];
 		let out = select_lights(placed.iter().copied(), &carried, cam, reach);
 		assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
@@ -2071,6 +2292,7 @@ mod tests {
 			class,
 			level: 0,
 			whitened: false,
+			face: None,
 		}];
 		assert!(select_lights(std::iter::empty(), &far, cam, reach).is_empty());
 	}
@@ -2092,6 +2314,7 @@ mod tests {
 				class,
 				level,
 				whitened,
+				face: None,
 			}];
 			select_lights(std::iter::empty(), &e, cam, 8.0)[0][3].to_bits()
 		};
@@ -2130,6 +2353,7 @@ mod tests {
 			format!("const GI_LIGHT_LEVEL_SHIFT = {LIGHT_LEVEL_SHIFT}u;"),
 			format!("const GI_LIGHT_LEVEL_MASK = {LIGHT_LEVEL_MASK}u;"),
 			format!("const GI_LIGHT_WHITENED = {LIGHT_WHITENED}u;"),
+			format!("const GI_LIGHT_QUAD = {LIGHT_QUAD}u;"),
 		] {
 			assert!(
 				digblock_assets::shader::GI_DDA.contains(&decl),
@@ -2140,11 +2364,122 @@ mod tests {
 		// with, which is what makes the mask legal at all. The other side
 		// needs no assert: `Emitter`'s class is a u8.
 		assert_eq!(LIGHT_CARRIED & 255, 0);
-		// Four tenants in one word now, and the packing is only legal
+		// Five tenants in one word now, and the packing is only legal
 		// while none of them overlaps another.
 		let level = LIGHT_LEVEL_MASK << LIGHT_LEVEL_SHIFT;
 		assert_eq!(level & (255 | LIGHT_CARRIED), 0);
 		assert_eq!(LIGHT_WHITENED & (255 | LIGHT_CARRIED | level), 0);
+		assert_eq!(
+			LIGHT_QUAD & (255 | LIGHT_CARRIED | level | LIGHT_WHITENED),
+			0
+		);
+	}
+
+	/// The whole-chunk reach skip may only ever be CONSERVATIVE: it exists
+	/// to avoid touching entries, so admitting a chunk the per-emitter test
+	/// then rejects costs a little time, while dropping one that held a
+	/// reachable light silently puts a room out.
+	///
+	/// Swept against the per-emitter rule over every cell of a band of
+	/// chunks, which is the only way to catch the failure that matters —
+	/// the corner cells, where a chunk's nearest edge is much closer than
+	/// its centre.
+	#[test]
+	fn the_chunk_reach_skip_never_drops_a_reachable_light() {
+		let cam = [37.5, 64.0, -12.25];
+		let reach = lateral_max(20);
+		let n = digblock_core::chunk::CHUNK_SIZE as i32;
+		let mut admitted = 0;
+		let mut skipped = 0;
+		for cz in -14..14 {
+			for cx in -14..14 {
+				let pos = ChunkPos::new(cx, 4, cz);
+				let ok = chunk_in_reach(pos, cam, reach);
+				if ok {
+					admitted += 1;
+				} else {
+					skipped += 1;
+				}
+				// Every cell of the chunk, corners included.
+				for lz in 0..=n {
+					for lx in 0..=n {
+						let (x, z) = ((cx * n + lx) as f32, (cz * n + lz) as f32);
+						let (dx, dz) = (x - cam[0], z - cam[2]);
+						if dx * dx + dz * dz <= reach * reach {
+							assert!(
+								ok,
+								"chunk {cx},{cz} skipped, but ({x},{z}) is inside the reach"
+							);
+						}
+					}
+				}
+			}
+		}
+		// Anti-vacuity in both directions: a test where everything is
+		// admitted proves nothing about the skip, and one where nothing is
+		// proves nothing about the conservatism.
+		assert!(admitted > 0 && skipped > 0, "{admitted} in, {skipped} out");
+	}
+
+	/// A rectangle reaches the shader as a PAIR — position and class word,
+	/// then extents and facing — and a point source's half of that pair
+	/// stays zero.
+	///
+	/// The stride is the thing to guard. Both NEE passes index
+	/// `lights[i * 2 ...]`, so an entry that packed one vec4 or three
+	/// would not fail loudly: every light past the first would simply be
+	/// read out of the middle of its neighbour, which looks like a
+	/// lighting bug rather than a format one.
+	#[test]
+	fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
+		let cam = [0.0, 0.0, 0.0];
+		let class = digblock_core::gi::gi_class(BlockType::Emberore as u16);
+		let seam = Emitter {
+			pos: [2.0, 3.0, 4.0],
+			class,
+			level: 0,
+			whitened: false,
+			face: Some(Face {
+				axis: 1,
+				positive: true,
+				ext: [3.0, 2.0],
+			}),
+		};
+		let point = Emitter {
+			pos: [1.0, 0.0, 0.0],
+			class,
+			level: 0,
+			whitened: false,
+			face: None,
+		};
+		let out = select_lights([seam, point].into_iter(), &[], cam, 32.0);
+		assert_eq!(out.len(), 2, "one entry each, whatever their shape");
+		let e = out
+			.iter()
+			.find(|e| [e[0], e[1], e[2]] == seam.pos)
+			.expect("the seam");
+		assert_eq!(
+			e[3].to_bits() & LIGHT_QUAD,
+			LIGHT_QUAD,
+			"a rectangle has to announce itself, or it is read as a point"
+		);
+		assert_eq!(e[3].to_bits() & 255, u32::from(class), "class untouched");
+		assert_eq!([e[4], e[5]], [3.0, 2.0], "extents, in the packer's order");
+		// Facing: the axis in the low bits, the sign above it — the same
+		// decode `gi_light_sample` does.
+		let code = e[6].to_bits();
+		assert_eq!(code & 3, 1, "axis");
+		assert_eq!(code & 4, 4, "outward normal points up the axis");
+		let p = out
+			.iter()
+			.find(|e| [e[0], e[1], e[2]] == point.pos)
+			.expect("the point");
+		assert_eq!(p[3].to_bits() & LIGHT_QUAD, 0, "a torch is not a rectangle");
+		assert_eq!(
+			[p[4], p[5], p[6], p[7]],
+			[0.0; 4],
+			"and its second half stays zero, so nothing reads a stale extent"
+		);
 	}
 
 	/// The ceiling must sit at the TOP of the highest occupied brick (a
@@ -2374,12 +2709,62 @@ mod tests {
 			let e = lut[base + i];
 			assert_eq!(e[0] >> 24, 3, "synthetic class {i} is not partial");
 			assert_ne!(e[2], 0, "synthetic class {i} lost its first box");
-			assert_eq!(e[1], u32::from(sc.base.props().light));
+			assert_eq!(e[1] & 0xff, u32::from(sc.base.props().light));
 		}
 		// And the torch's emitting class is synthetic now — the light
 		// list names classes, so the level has to ride along.
 		let torch = digblock_core::gi::gi_class(BlockType::Torch as u16);
-		assert_eq!(lut[torch as usize][1], 14);
+		assert_eq!(lut[torch as usize][1] & 0xff, 14);
+	}
+
+	/// Word 1 carries the cast COLOUR above the level, and for every row
+	/// but the ore it is the row's own albedo — so nothing that lit a room
+	/// before this field existed lights it differently now.
+	///
+	/// The ores are the exception the field was added for. Their textures
+	/// mean out to stone, so a derived tint would have every tier casting
+	/// the same colourless light; they state their fleck palette instead,
+	/// and that palette must actually reach the LUT.
+	#[test]
+	fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
+		// One distinct mean per layer, so "took the right one" is
+		// checkable rather than vacuously true.
+		let means: Vec<[u8; 3]> = (0..digblock_core::block::tex::COUNT)
+			.map(|i| [i as u8, 200 - i as u8, 40 + i as u8])
+			.collect();
+		let lut = material_lut(&means);
+		let tint = |b: BlockType| {
+			let w = lut[b as usize][1] >> 8;
+			[
+				(w & 0xff) as u8,
+				((w >> 8) & 0xff) as u8,
+				((w >> 16) & 0xff) as u8,
+			]
+		};
+		for b in [
+			BlockType::Torch,
+			BlockType::Lantern,
+			BlockType::EssenceSiphon,
+		] {
+			assert_eq!(
+				tint(b),
+				means[b.props().tex_top as usize],
+				"{b:?} must still cast its own texture's colour"
+			);
+		}
+		for &ore in &digblock_core::worldgen::ore::ORES {
+			let (core, _) = ore.ore_flecks().expect("a tier");
+			assert_eq!(tint(ore), core, "{ore:?} casts its flecks, not its rock");
+			assert_ne!(
+				tint(ore),
+				means[ore.props().tex_top as usize],
+				"{ore:?}: the whole point is that this is NOT the texture mean"
+			);
+			assert!(
+				lut[ore as usize][1] & 0xff > 0,
+				"{ore:?} has a colour and no light to cast in it"
+			);
+		}
 	}
 
 	/// A contiguous cursor is what made convergence sweep as a visible

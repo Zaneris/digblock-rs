@@ -289,6 +289,8 @@ impl JobResult {
 				put_u32s(&mut out, &m.mesh.water);
 				put_run_len(&mut out, m.mesh.impacts.len());
 				put_u16s(&mut out, &m.mesh.impacts);
+				put_run_len(&mut out, m.mesh.lights.len());
+				put_u32s(&mut out, &m.mesh.lights);
 			}
 		}
 		out
@@ -332,6 +334,7 @@ impl JobResult {
 				let solid = r.run(4, |r| r.u32())?;
 				let water = r.run(4, |r| r.u32())?;
 				let impacts = r.run(2, |r| r.u16())?;
+				let lights = r.run(4, |r| r.u32())?;
 				Some(JobResult::Meshed {
 					out: MeshOutput {
 						pos,
@@ -340,6 +343,7 @@ impl JobResult {
 							solid,
 							water,
 							impacts,
+							lights,
 						},
 					},
 					dur_ms,
@@ -553,6 +557,7 @@ mod tests {
 		assert_eq!(after.mesh.solid, before.mesh.solid);
 		assert_eq!(after.mesh.water, before.mesh.water);
 		assert_eq!(after.mesh.impacts, before.mesh.impacts);
+		assert_eq!(after.mesh.lights, before.mesh.lights);
 	}
 
 	/// A worker can die mid-post, and a browser message is attacker-shaped

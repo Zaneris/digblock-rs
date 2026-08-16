@@ -386,7 +386,25 @@ fn gi_albedo(v: u32) -> vec3f {
 }
 
 fn gi_emit(v: u32) -> f32 {
-	return f32(gi_lut[v].y);
+	return f32(gi_lut[v].y & 0xffu);
+}
+
+// The colour a class CASTS, which is usually the colour it is — but not
+// always, and the exception is the reason this is a second accessor
+// rather than a call to `gi_albedo`.
+//
+// An emitter's tint is normally the mean of its texture, and that works
+// for a torch because a torch's texture is mostly flame. An ore face is a
+// wide grey field with a few bright flecks on it, so its mean is STONE:
+// measured, every tier comes out within a few percent of colourless, and
+// no weighting of that image recovers the hue because the problem is the
+// composition and not the average. Left derived, an ember seam would
+// light a tunnel white. So the ore rows state their cast colour — the
+// same fleck palette texgen paints them with — and it rides the LUT word
+// above the level (GI-DESIGN.md R31).
+fn gi_emit_tint(v: u32) -> vec3f {
+	let m = gi_lut[v].y >> 8u;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 
 // Sky radiance along a direction, as a GI source: the dome colors pulled

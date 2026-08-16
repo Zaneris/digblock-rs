@@ -213,11 +213,16 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 // It is deliberately the whole cell and not the shape's own boxes: the
 // window classifies an emitter as a hit whole, so the boxes are not
 // what a gather march would test against anyway.
+// The slack every stop-short margin carries over its own exact bound —
+// the amount by which a ray must miss a surface it is allowed to reach,
+// given that every march STEPS before it tests and a boundary lands
+// exactly on a cell face. Named because two margins now want it and a
+// second literal would be a copy.
+const GI_LIGHT_SLACK = 0.035;
+
 fn gi_light_margin(p: vec3f) -> f32 {
 	let f = p - floor(p);
-	// The addend is the slack the old fixed margin carried over the bare
-	// half diagonal.
-	return length(max(f, vec3f(1.0) - f)) + 0.035;
+	return length(max(f, vec3f(1.0) - f)) + GI_LIGHT_SLACK;
 }
 
 // A light list entry's w word: the GI class byte, plus a flag set when a
@@ -254,6 +259,25 @@ const GI_LIGHT_LEVEL_MASK = 15u;
 const GI_LIGHT_WHITENED = 8192u;
 const GI_LIGHT_WHITEN = 0.35;
 
+// This entry is a RECTANGLE, not a point: the second vec4 of its pair
+// carries the two extents and the facing code, and `gi_light_sample`
+// draws a point on it.
+//
+// It exists because a glowing SURFACE is not a lamp. A revealed ore seam
+// is a flat patch of rock in a wall, and standing at one, a point source
+// at its middle is wrong twice over: it reads as a hotspot instead of an
+// even wash, and it has no cosine of its own, so it spills light around
+// the corner of the very rock it is set into. Emissive geometry has been
+// sampled as polygons for as long as path tracers have done next event
+// estimation, and the merged rectangle is CHEAPER here as well as better
+// — the reservoir below is a pass over the whole list per pixel, so a
+// seam that costs one entry instead of thirty is the difference the
+// merge in `mesher::lights` exists to make.
+//
+// Punctual entries leave this clear and their second vec4 zero, so a
+// torch's word is exactly what it was before rectangles existed.
+const GI_LIGHT_QUAD = 16384u;
+
 fn gi_light_class(w: f32) -> u32 {
 	return bitcast<u32>(w) & 255u;
 }
@@ -288,5 +312,91 @@ fn gi_light_margin_of(l: vec4f) -> f32 {
 	if (bitcast<u32>(l.w) & GI_LIGHT_CARRIED) != 0u {
 		return 0.0;
 	}
+	// A rectangle needs no cell skipped at all, and this is the case that
+	// makes the whole margin look like the workaround it is. The sample
+	// point lies exactly ON the face of the rock it belongs to, with air
+	// in front of it — so there is nothing between the shading point and
+	// the light to skip, and skipping a cell's worth would let a seam
+	// light through the wall it is set into. All it wants is the slack
+	// every stop-short bound wants: enough that a march stepping before
+	// it tests cannot register the emitting cell it is about to touch.
+	if (bitcast<u32>(l.w) & GI_LIGHT_QUAD) != 0u {
+		return GI_LIGHT_SLACK;
+	}
 	return gi_light_margin(l.xyz);
+}
+
+// One drawn sample on a light: where to run the shadow ray, and what the
+// sample is worth beyond the receiver's own cosine and falloff.
+//
+// `w` is 1 for a point source, which is what makes every existing call
+// site read the same after this arrived. For a rectangle it is the
+// light-side cosine times the area — the two factors that turn an
+// intensity model (I/d^2) into an area one (L*cosl*A/d^2) — so the
+// callers keep multiplying by `ndl / max(d2, near^2)` exactly as they did
+// and the estimator comes out right. A 1x1 face at a given level
+// therefore delivers what a point at that level delivered, and a seam
+// six cells across delivers six times as much, which is the whole reason
+// to model it as a surface.
+//
+// Shared here, in the prelude both NEE passes already include, for the
+// reason `gi_light_tint` is: the resolve and the probes must not be able
+// to disagree about the geometry of a light.
+// What one unit of `light` level means for a SURFACE emitter, measured
+// against what it already means for a point one.
+//
+// The two are not the same quantity and there is no reason one number
+// should serve both. A lamp's level is an INTENSITY: the whole source is
+// one point, and `emit / d^2` is all of it. A seam's level is a RADIANCE
+// PER UNIT AREA, and the area multiplies in — which is the right physics
+// and exactly what makes a wide seam light a room and a single revealed
+// cell barely register. This is the constant that carries between them,
+// and it is small because a vein face is many square blocks where a
+// torch is one point.
+//
+// Tuned by capture rather than derived, like LIGHT_GAIN above it and for
+// the same reason: `light` is a gameplay nibble, not a photometric
+// quantity. At unity a modest exposed pocket lit a whole chamber to
+// daylight and the four tiers were indistinguishable from one another,
+// because everything was near the top of the range and the differences
+// compressed away.
+const GI_SURFACE_GAIN = 0.35;
+
+struct GiLightSample {
+	p: vec3f,
+	w: f32,
+}
+
+fn gi_light_sample(e0: vec4f, e1: vec4f, at: vec3f, r0: f32, r1: f32) -> GiLightSample {
+	var out: GiLightSample;
+	out.p = e0.xyz;
+	out.w = 1.0;
+	if (bitcast<u32>(e0.w) & GI_LIGHT_QUAD) == 0u {
+		return out;
+	}
+	let code = bitcast<u32>(e1.z);
+	let axis = code & 3u;
+	let s = select(-1.0, 1.0, (code & 4u) != 0u);
+	// Built with selects rather than by indexing a vector: the axis is
+	// dynamic, and a dynamically-indexed vector is exactly the sort of
+	// thing one WGSL front end accepts and the other does not.
+	let n = vec3f(
+		select(0.0, s, axis == 0u),
+		select(0.0, s, axis == 1u),
+		select(0.0, s, axis == 2u),
+	);
+	// The two tangents in ASCENDING axis order — `mesher::lights::tangents`
+	// packs the extents that way, and this is the other half of that one
+	// convention.
+	let tu = vec3f(select(0.0, 1.0, axis != 0u), select(0.0, 1.0, axis == 0u), 0.0);
+	let tv = vec3f(0.0, select(0.0, 1.0, axis == 2u), select(0.0, 1.0, axis != 2u));
+	out.p = e0.xyz + tu * (e1.x * (r0 - 0.5)) + tv * (e1.y * (r1 - 0.5));
+	let d = at - out.p;
+	let dl = length(d);
+	out.w = select(
+		0.0,
+		max(dot(n, d / max(dl, 1e-6)), 0.0) * e1.x * e1.y * GI_SURFACE_GAIN,
+		dl > 1e-6,
+	);
+	return out;
 }

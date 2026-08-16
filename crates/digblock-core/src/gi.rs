@@ -363,7 +363,15 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 					continue;
 				}
 				let b = BlockType::from_id(crate::chunk::cell_id(cell));
-				let emits = b.props().light > 0;
+				// A SURFACE emitter is not a point source and does not
+				// belong in this list: a vein radiates from the faces it
+				// opens into, and most of a vein opens into nothing. The
+				// mesher — the one pass that is already deciding, face by
+				// face, what is exposed — hands the renderer those
+				// rectangles instead (GI-DESIGN.md R31). Placing a point
+				// here as well would light buried rock AND double every
+				// exposed cell.
+				let emits = b.props().light > 0 && !b.props().surface_light;
 				if emits {
 					emitters.push((x as u8, y as u8, z as u8, class));
 				}

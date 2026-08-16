@@ -154,25 +154,34 @@ blocks! {
 	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
 	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
 	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
-	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the ITEM
-	/// and for the reveal stamp; worldgen places none of them, because ore
-	/// is DERIVED — `build_column` still returns Stone and the journal
-	/// still carries Stone, which is what lets veins appear in worlds that
-	/// already exist. Not `crafted` either: the bench cannot make ore, so
-	/// gating its pickup would gate a thing with no recipe to gate it by.
-	/// A PLACED ore block is ordinary chunk data — visible to everyone at
-	/// any level, diggable at face value, and it drops itself, so showing
-	/// off a find round-trips.
-	Emberore = 48 => mat(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), Material::Emberore),
-	Duskstone = 49 => mat(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), Material::Duskstone),
-	/// The deep pair glow: Stage-A emissive INK only, no `emits` — a
-	/// revealed seam glitters in a dark cave and casts nothing, which is
-	/// the split the two light properties exist for.
-	Glowvein = 50 => mat(glows(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock)), Material::Glowvein),
-	Aetherock = 51 => mat(glows(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock)), Material::Aetherock),
-	/// The tapped-out vein face: what a field extraction leaves behind
-	/// instead of a hole, so mining ore never excavates and the mountain
-	/// keeps its shape. Crumbles to Rubble like any other rock.
+	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the reveal
+	/// stamp and for nothing else you can hold: worldgen places none of
+	/// them, because ore is DERIVED — `build_column` still returns Stone
+	/// and the journal still carries Stone, which is what lets veins appear
+	/// in worlds that already exist. Not `crafted` either: the bench cannot
+	/// make ore, so gating its pickup would gate a thing with no recipe to
+	/// gate it by.
+	///
+	/// **A vein is world geometry, never an item.** Siphoning it draws the
+	/// essence straight into your stocks and leaves the tier's own spent
+	/// rock standing (`ore::spent_rock`), and THAT is what you break and
+	/// carry home. So `is_slottable` is false for all four and nothing can
+	/// credit one — which is also why the question "does a placed ore block
+	/// glow?" has no answer to get wrong.
+	///
+	/// All four `seams`: a revealed vein lights the room it opens into,
+	/// from the faces that open into it and no others. The two deep tiers
+	/// wore the ink already; the shallow pair join them here, which is what
+	/// their darkened texture bodies are for (GI-DESIGN.md R31).
+	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
+	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
+	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock), 6)), Material::Aetherock),
+	/// The generic grey tapped face the per-tier rocks at the end of this
+	/// table replaced. Kept, and unreachable: nothing writes it any more,
+	/// but journals and saves made before those rocks existed carry cells
+	/// that hold it, and an id that stops decoding is a world that stops
+	/// loading. It still crumbles to Rubble, which is what it always did.
 	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
 	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
 	/// like the bucket, but CRAFTED rather than owned from the start.
@@ -257,6 +266,22 @@ blocks! {
 	/// the tools — never placed, never rendered in the world — because
 	/// what it is FOR is being the last line of the catalog.
 	MastersSigil = 74 => props(RenderClass::None, false, 0, 0, 0),
+	/// The tapped-out vein faces, one per tier: what a field extraction
+	/// leaves behind instead of a hole, so mining ore never excavates and
+	/// the mountain keeps its shape.
+	///
+	/// Still the rock it was — same body, same flecks, the light gone out
+	/// of them — because a spent seam should read as the vein you worked
+	/// rather than as one more grey stone, and because the block you carry
+	/// home from it is a trophy of THAT tier. Each drops ITSELF, so the
+	/// face you tapped is the thing you take; ordinary chunk data with no
+	/// reveal gate, so everyone sees it on your wall whatever they have
+	/// levelled into. Neither `glows` nor `seams`: what a siphon takes out
+	/// is exactly the light.
+	DepletedEmberore = 75 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE), 90, DigFamily::Rock), Material::DepletedEmberore),
+	DepletedDuskstone = 76 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
+	DepletedGlowvein = 77 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
+	DepletedAetherock = 78 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -546,6 +571,22 @@ pub struct BlockProps {
 	/// Agrees across a material's shapes for the same reason
 	/// [`Self::emissive`] does.
 	pub light: u8,
+	/// This block radiates from its exposed FACES, not from the middle of
+	/// its cell — the difference between a lamp and a seam in a wall.
+	///
+	/// A torch is a point: it stands in open air and throws light every way
+	/// at once, and one entry at its flame is the whole of it. A vein is
+	/// not. Most of a vein is buried, and buried rock must light nothing —
+	/// so a cell's worth of ore is a light only where it MEETS the air, and
+	/// what it lights is the room in front of that face. Setting this makes
+	/// the block's light a surface quantity: `gi::classify_chunk` declines
+	/// to place a point source for it, and the mesher — which is already
+	/// deciding, face by face, what is exposed — hands the renderer the
+	/// merged rectangles instead (GI-DESIGN.md R31).
+	///
+	/// [`Self::light`] still says how bright, and the LUT still says in
+	/// what colour. This says only WHERE FROM.
+	pub surface_light: bool,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
 	/// can never forget it. Shared client/server behavior — a family
@@ -600,6 +641,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		shape: None,
 		emissive: false,
 		light: 0,
+		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
 	}
@@ -667,6 +709,15 @@ const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
 	p
 }
 
+/// This block casts light at `level` from its exposed FACES rather than
+/// from the middle of its cell — see [`BlockProps::surface_light`]. A
+/// seam, not a lamp.
+const fn seams(mut p: BlockProps, level: u8) -> BlockProps {
+	p.light = level;
+	p.surface_light = true;
+	p
+}
+
 /// A water-family row: water bucket + fluid behavior.
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
@@ -688,6 +739,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		shape: None,
 		emissive: false,
 		light: 0,
+		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
 	}
@@ -751,11 +803,21 @@ pub mod tex {
 	/// glow authors the light.
 	pub const SIPHON_GLOW: u16 = 35;
 	pub const PICK_GLOW: u16 = 36;
+	/// The four SPENT vein faces — the same rock as their live tier, with
+	/// the light gone out of the flecks. One per tier rather than the one
+	/// grey [`DEPLETED_STONE`] they replace, because a tapped seam is still
+	/// the rock it was: you should be able to tell at a glance which vein
+	/// you worked, and the block you carry home from it is a trophy of that
+	/// tier and no other.
+	pub const DEPLETED_EMBERORE: u16 = 37;
+	pub const DEPLETED_DUSKSTONE: u16 = 38;
+	pub const DEPLETED_GLOWVEIN: u16 = 39;
+	pub const DEPLETED_AETHEROCK: u16 = 40;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = PICK_GLOW + 1;
+	pub const COUNT: u16 = DEPLETED_AETHEROCK + 1;
 }
 
 impl BlockType {
@@ -964,17 +1026,66 @@ impl BlockType {
 
 	/// Does holding this type claim a hotbar or inventory slot?
 	///
-	/// Everything does except water: the only water a player can carry is
-	/// the one charge in the water tool, and the tool has its own
-	/// permanent slot to show it in. Its count still lives in the
-	/// [`crate::inventory::Inventory`] — that is where the charge is
-	/// stored, synced and persisted — it simply never becomes an item you
-	/// arrange. [`crate::inv_grid::reconcile_layout`] is the enforcer, so
-	/// saves written while water WAS an item drop their water slots on
-	/// the first reconcile.
+	/// Two exceptions, and they are the same shape: a thing that exists in
+	/// the world but is never an item you arrange.
+	///
+	/// **Water** — the only water a player can carry is the one charge in
+	/// the water tool, and the tool has its own permanent slot to show it
+	/// in. Its count still lives in the [`crate::inventory::Inventory`],
+	/// which is where the charge is stored, synced and persisted.
+	///
+	/// **Raw ore** — a vein is world geometry. Siphoning it pays essence
+	/// straight into your stocks and leaves the tier's spent rock standing,
+	/// and the spent rock is the block you break and carry (SKILLS-DESIGN
+	/// §5.3). Nothing credits an ore block, so nothing may hold one.
+	///
+	/// [`crate::inv_grid::reconcile_layout`] is the enforcer in both cases,
+	/// which makes this the MIGRATION as well as the rule: a save written
+	/// while water was a stack, or while a siphon handed out ore, drops
+	/// those slots on the first reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water && !self.is_tool()
+		self != BlockType::Water && !self.is_tool() && !self.is_raw_ore()
+	}
+
+	/// One of the four live vein faces (SKILLS-DESIGN §5.3) — the blocks
+	/// the reveal stamp paints into pristine stone.
+	///
+	/// The roster itself is [`crate::worldgen::ore::ORES`]; this is the
+	/// membership test the block layer needs without reaching into
+	/// worldgen, and `ore_roster_matches_the_block_predicate` pins the two
+	/// against each other.
+	#[inline]
+	pub fn is_raw_ore(self) -> bool {
+		self.ore_flecks().is_some()
+	}
+
+	/// The fleck palette of a live vein: the crystal's own colour, and the
+	/// lighter rim that catches the light around it.
+	///
+	/// ONE authority for what a tier looks like. `texgen` paints the flecks
+	/// from it and paints the spent rock's dead flecks from it too, and the
+	/// GI material LUT casts the vein's light in the core colour — so a
+	/// retint moves the rock, its tapped sibling and the light it throws
+	/// together, and none of the three can drift.
+	///
+	/// It has to be stated rather than measured, and that is worth knowing
+	/// before anyone tries to derive it: an emitter's tint is normally the
+	/// mean of its texture, which works for a torch because a torch's
+	/// texture is mostly flame. An ore texture is a wide grey field with a
+	/// few flecks on it, so its mean is STONE — near enough colourless on
+	/// every tier — and no weighting of that image recovers the hue, since
+	/// the problem is the composition and not the average (GI-DESIGN.md
+	/// R31).
+	#[inline]
+	pub const fn ore_flecks(self) -> Option<([u8; 3], [u8; 3])> {
+		Some(match self {
+			BlockType::Emberore => ([214, 96, 34], [255, 176, 84]),
+			BlockType::Duskstone => ([104, 78, 168], [172, 146, 236]),
+			BlockType::Glowvein => ([72, 226, 214], [198, 255, 248]),
+			BlockType::Aetherock => ([240, 214, 96], [255, 248, 200]),
+			_ => return None,
+		})
 	}
 
 	/// A tool id: an item-only row that lives in the dedicated tool slot,
@@ -1194,6 +1305,10 @@ mod tests {
 			(BlockType::CrystalSlab, Rock),
 			(BlockType::Lantern, Rock),
 			(BlockType::Aetherlamp, Rock),
+			(BlockType::DepletedEmberore, Rock),
+			(BlockType::DepletedDuskstone, Rock),
+			(BlockType::DepletedGlowvein, Rock),
+			(BlockType::DepletedAetherock, Rock),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -1239,6 +1354,10 @@ mod tests {
 			(B::Glowvein, M::Glowvein),
 			(B::Aetherock, M::Aetherock),
 			(B::DepletedStone, M::DepletedStone),
+			(B::DepletedEmberore, M::DepletedEmberore),
+			(B::DepletedDuskstone, M::DepletedDuskstone),
+			(B::DepletedGlowvein, M::DepletedGlowvein),
+			(B::DepletedAetherock, M::DepletedAetherock),
 			(B::StoneBrick, M::StoneBrick),
 			(B::StoneBrickStairs, M::StoneBrick),
 			(B::StoneBrickSlab, M::StoneBrick),

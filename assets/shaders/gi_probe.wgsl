@@ -284,8 +284,17 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 		return vec3f(0.0);
 	}
 	let li = min(u32(rnd * f32(count)), count - 1u);
-	let l = lights[li + 1u];
-	let d = l.xyz - p;
+	// Two vec4s an entry, as in the resolve: position and class word,
+	// then the rectangle a surface emitter radiates from.
+	let l = lights[li * 2u + 1u];
+	let q = lights[li * 2u + 2u];
+	// A point on the drawn light. The probe has one uniform to spend and
+	// has already spent it choosing WHICH light, so the point on the face
+	// is taken from a hash of the two it does have — a probe's rays are
+	// averaged over a long history and a fixed point on every rectangle
+	// would bake the face's centre line into the cache.
+	let s = gi_light_sample(l, q, p, fract(rnd * 37.0), fract(rnd * 91.0));
+	let d = s.p - p;
 	let dist2 = dot(d, d);
 	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
 		return vec3f(0.0);
@@ -302,7 +311,7 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// resolve's reservoir reads it the same way, so the two NEE passes
 	// price the same light identically.
 	let ov = gi_light_level(l.w);
-	let emit = select(f32(lut[cls].y), f32(ov), ov != 0u);
+	let emit = select(f32(lut[cls].y & 0xffu), f32(ov), ov != 0u);
 	if emit <= 0.0 {
 		return vec3f(0.0);
 	}
@@ -323,13 +332,26 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// LIGHT_NEAR and holds inside it — the clamp started as "don't divide
 	// by nothing" for a probe sharing a torch's cell and is now also what
 	// keeps the near field under the white point (see the constant).
-	let radiance = gi_light_tint(l.w, albedo_of(cls)) * emit * LIGHT_GAIN;
-	return radiance * (ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
+	let radiance = gi_light_tint(l.w, emit_tint_of(cls)) * emit * LIGHT_GAIN;
+	// `s.w` is 1 for a point and cos(theta_l) * area for a rectangle —
+	// the factors that make an area source an area source, from the one
+	// shared sampler, so the probes and the resolve cannot price the same
+	// seam differently.
+	return radiance * (ndl * s.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
 		* medium_water_tr(sh.water) * f32(count);
 }
 
 fn albedo_of(v: u32) -> vec3f {
 	let m = lut[v].x;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
+}
+
+// The colour a class CASTS — gi_common's `gi_emit_tint` against this
+// shader's own binding. Usually the albedo, but an ore seam's mean is
+// stone and its light is not, so the cast colour rides the LUT word above
+// the level. See the twin for the measurement.
+fn emit_tint_of(v: u32) -> vec3f {
+	let m = lut[v].y >> 8u;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 

@@ -130,6 +130,31 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	out
 }
 
+/// What one FIELD extraction pays into a player's stocks (SKILLS-DESIGN
+/// §5.3) — a seam drawn out where it stands, with no ore in between.
+///
+/// The siphon is a bench you carry, so this is deliberately the ordinary
+/// [`extract_yields`] of the ore and not a second table: the Alchemy level
+/// scales a draw at the rock face exactly as it scales one at the bench,
+/// and the ore rows' yields stay the single statement of what a tier is
+/// worth. Nothing else could reach them — no ore ever becomes an item, so
+/// the bench never sees one.
+///
+/// Mining's capstone ([`crate::unlock::ore_mastery`]) multiplies the whole
+/// split rather than adding a line to it, which is what keeps "one extra
+/// vein's worth" true of Aetherock's two essences as well as of the three
+/// tiers that pay in one.
+///
+/// The ONE answer the server's dig credit and the engine's offline arm
+/// both take, so a solo world and a server cannot pay differently.
+pub fn field_yield(ore: BlockType, alchemy: u32, mining: u32) -> Vec<(Essence, u32)> {
+	let draws = 1 + crate::unlock::ore_mastery(mining);
+	extract_yields(ore, alchemy)
+		.into_iter()
+		.map(|(e, per)| (e, per * draws))
+		.collect()
+}
+
 /// Sum of a block's base yields — the fixed value extraction XP keys on
 /// (a fixed fraction of the total, never the level-scaled outcome).
 ///
@@ -713,6 +738,45 @@ mod tests {
 	/// recipe to make it from — there is nothing to run the loop with. The
 	/// cap exists to stop a craftable substance out-yielding its own cost,
 	/// and `no_level_ever_creates_matter` is the test that actually says so.
+	/// A field draw pays the ore's own bench yield, and the capstone
+	/// multiplies the whole split rather than one line of it.
+	///
+	/// The first half is why there is no second table: a siphon is a bench
+	/// you carry, so the Alchemy level has to scale a draw at the rock
+	/// face exactly as it scales one at the bench — and since no ore ever
+	/// becomes an item, this is the ONLY thing those yields are for.
+	///
+	/// The second half is Aetherock's, and it is the reason `ore_mastery`
+	/// counts draws instead of units: it is the one tier that pays in two
+	/// essences, so a capstone that added a flat bonus would have to pick
+	/// which of them to add it to.
+	#[test]
+	fn a_field_draw_pays_the_ore_and_the_capstone_multiplies_all_of_it() {
+		for &ore in &crate::worldgen::ore::ORES {
+			for alchemy in [1, 40, crate::skills::MAX_LEVEL] {
+				let bench = extract_yields(ore, alchemy);
+				assert!(!bench.is_empty(), "{ore:?} is worth nothing to draw");
+				assert_eq!(
+					field_yield(ore, alchemy, 1),
+					bench,
+					"{ore:?} at Alchemy {alchemy}: a draw is the bench's own yield"
+				);
+				let mastered = field_yield(ore, alchemy, crate::skills::MAX_LEVEL);
+				let draws = 1 + crate::unlock::ore_mastery(crate::skills::MAX_LEVEL);
+				assert!(draws > 1, "the capstone hands out nothing");
+				for (i, &(e, n)) in mastered.iter().enumerate() {
+					assert_eq!((e, n), (bench[i].0, bench[i].1 * draws), "{ore:?} line {i}");
+				}
+			}
+		}
+		// Aetherock is the tier that makes the multiply matter — if it ever
+		// stops paying two essences, this test stops proving anything.
+		assert!(
+			extract_yields(BlockType::Aetherock, 1).len() >= 2,
+			"the two-essence tier is what the capstone rule is for"
+		);
+	}
+
 	#[test]
 	fn bases_stay_under_a_block() {
 		for &b in &BlockType::ALL {

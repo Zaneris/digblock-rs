@@ -1265,6 +1265,12 @@ impl Renderer {
 			return;
 		}
 		self.spray.set_chunk(pos, pos.origin(), &mesh.impacts);
+		// The vein faces this mesh exposed, on the same rail and for the
+		// same reason: the mesher is the one pass that knows which of them
+		// this player can see (`mesher::lights`). Unconditionally, empty
+		// list included — a completed extraction produces exactly that,
+		// and "no faces here any more" has to reach the light list.
+		self.gi.set_chunk_lights(pos, &mesh.lights);
 		// A remesh keeps its entry, its slot (so the origin needs no
 		// rewrite) and, whenever the new mesh fits, its buffers.
 		let idx = match self.by_pos.get(&pos) {

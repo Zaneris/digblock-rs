@@ -64,6 +64,18 @@ pub mod tex {
 	// where the colour of the light it casts comes from.
 	pub const SIPHON_GLOW: &[u8] = include_bytes!("../../../assets/textures/SiphonGlow.png");
 	pub const PICK_GLOW: &[u8] = include_bytes!("../../../assets/textures/PickGlow.png");
+	// The four SPENT vein faces: the same rock as their tier with the
+	// flecks drained to dark inclusions, so a worked seam still reads as
+	// the seam you worked. Unlike the live rows these are drawn LIT, which
+	// is why their bodies stay at ordinary stone brightness.
+	pub const DEPLETED_EMBERORE: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedEmberore.png");
+	pub const DEPLETED_DUSKSTONE: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedDuskstone.png");
+	pub const DEPLETED_GLOWVEIN: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedGlowvein.png");
+	pub const DEPLETED_AETHEROCK: &[u8] =
+		include_bytes!("../../../assets/textures/DepletedAetherock.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -76,7 +88,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 37] = [
+	pub const LAYERS: [&[u8]; 41] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -114,6 +126,10 @@ pub mod tex {
 		AETHERLAMP,
 		SIPHON_GLOW,
 		PICK_GLOW,
+		DEPLETED_EMBERORE,
+		DEPLETED_DUSKSTONE,
+		DEPLETED_GLOWVEIN,
+		DEPLETED_AETHEROCK,
 	];
 }
 

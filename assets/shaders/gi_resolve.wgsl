@@ -432,8 +432,12 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 	// since the winner is the winner. The whole vec4 rather than just the
 	// position, because the margin is a question about the w word too.
 	var sel = vec4f(0.0);
+	var sel_q = vec4f(0.0);
 	for (var i = 1u; i <= count; i++) {
-		let l = lights[i];
+		// Two vec4s an entry: position and class word, then the rectangle
+		// a surface emitter radiates from (zero for a point source).
+		let l = lights[i * 2u - 1u];
+		let q = lights[i * 2u];
 		let d = l.xyz - p;
 		let dist2 = dot(d, d);
 		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
@@ -455,7 +459,15 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// every placed emitter.
 		let ov = gi_light_level(l.w);
 		let emit = select(gi_emit(cls), f32(ov), ov != 0u);
-		let score = emit * ndl / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+		// Scored from the light's CENTRE — `gi_light_sample` at the middle
+		// of its own parametrisation — which for a point source is the
+		// point and costs nothing, and for a rectangle is a cheap stand-in
+		// for the integral over it. Doing the draw here instead would put
+		// two more RNG steps on every candidate rather than on the winner,
+		// and a RIS target function is allowed to be approximate: it
+		// decides which light is picked, never what the pick is worth.
+		let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
+		let score = emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
 		if score <= 0.0 {
 			continue;
 		}
@@ -463,11 +475,18 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		if lcg_next(&rng) * wsum < score {
 			out.valid = true;
 			sel = l;
+			sel_q = q;
 			sel_cls = cls;
 		}
 	}
 	if out.valid {
-		let d = sel.xyz - p;
+		// The winner gets the actual draw. A point source lands back on
+		// its own position and this is the identity; a rectangle gets a
+		// uniform point across its face, which is what turns a seam from a
+		// hotspot into a wash and gives the shadow ray somewhere honest to
+		// aim.
+		let s = gi_light_sample(sel, sel_q, p, lcg_next(&rng), lcg_next(&rng));
+		let d = s.p - p;
 		out.dist = length(d);
 		out.dir = d / out.dist;
 		out.margin = gi_light_margin_of(sel);
@@ -476,7 +495,17 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// cancels exactly and never appears. That cancellation is the
 		// whole reason this reads as one deterministic multiply rather
 		// than as a ratio of two sampled quantities.
-		out.irradiance = gi_light_tint(sel.w, gi_albedo(sel_cls)) * LIGHT_GAIN * wsum;
+		//
+		// The cancellation is now approximate rather than exact for a
+		// RECTANGLE, and knowingly: the target used the centre and the
+		// contribution uses the drawn point, so the two differ by however
+		// much the light-side cosine and the distance vary across the
+		// face. Standing well back that is nothing; standing at the seam
+		// it is a little extra variance, which the accumulator and the
+		// a-trous pass are already there for. The estimator stays
+		// unbiased either way — the same standing the mixed-tint pool has
+		// had since the tools started casting.
+		out.irradiance = gi_light_tint(sel.w, gi_emit_tint(sel_cls)) * LIGHT_GAIN * wsum;
 	}
 	return out;
 }

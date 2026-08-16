@@ -96,11 +96,26 @@ pub enum Material {
 	Glowvein,
 	Aetherock,
 	/// A tapped-out vein face — crumbles to Rubble like any other rock.
+	/// Superseded by the four per-tier rocks below and kept only so cells
+	/// written before them still decode.
 	DepletedStone,
+	/// The four spent vein faces (§5.3) — the rock a siphon leaves and the
+	/// only thing a vein ever puts in your hands.
+	///
+	/// One material per tier rather than one shared "spent rock", because
+	/// they are what a player keeps: the whole point of carrying one home
+	/// is that it says which seam you worked. They are worth nothing at the
+	/// bench and cost nothing to make, which is the same standing the live
+	/// ores have and for the same reason — there is no recipe to run a loop
+	/// with.
+	DepletedEmberore,
+	DepletedDuskstone,
+	DepletedGlowvein,
+	DepletedAetherock,
 }
 
 impl Material {
-	pub const COUNT: usize = 27;
+	pub const COUNT: usize = 31;
 
 	/// Every material in unlock order — the transmute tab reads members in
 	/// this order, so a family's tiles run from cheapest to rarest.
@@ -132,6 +147,10 @@ impl Material {
 		Material::Glowvein,
 		Material::Aetherock,
 		Material::DepletedStone,
+		Material::DepletedEmberore,
+		Material::DepletedDuskstone,
+		Material::DepletedGlowvein,
+		Material::DepletedAetherock,
 	];
 
 	/// The whole-cube craft split — what a FULL CUBE of this substance costs
@@ -171,7 +190,11 @@ impl Material {
 			| M::Duskstone
 			| M::Glowvein
 			| M::Aetherock
-			| M::DepletedStone => return None,
+			| M::DepletedStone
+			| M::DepletedEmberore
+			| M::DepletedDuskstone
+			| M::DepletedGlowvein
+			| M::DepletedAetherock => return None,
 		})
 	}
 
@@ -202,14 +225,22 @@ impl Material {
 			M::Leaf | M::PineLeaf => &[(E::Flora, 1)],
 			M::Metal => &[(E::Metal, 24)],
 			M::Crystal => &[(E::Aether, 12), (E::Metal, 6)],
-			// Raw ore is bench-processed whole (§3.1) — it has no shapes, so
-			// the proration below is always the identity.
+			// Raw ore is drawn whole (§3.1) — it has no shapes, so the
+			// proration below is always the identity. This is what a
+			// SIPHON pays out at the rock face: no ore ever reaches the
+			// bench, because no ore ever reaches a hand.
 			M::Emberore => &[(E::Metal, 18)],
 			M::Duskstone => &[(E::Metal, 36)],
 			M::Glowvein => &[(E::Metal, 60)],
 			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
-			// A tapped face drops Rubble, so it never reaches the bench.
-			M::DepletedStone => &[],
+			// Spent rock is spent: the siphon already took what was in it,
+			// and a tapped face that still paid at the bench would be a
+			// second helping of the same vein.
+			M::DepletedStone
+			| M::DepletedEmberore
+			| M::DepletedDuskstone
+			| M::DepletedGlowvein
+			| M::DepletedAetherock => &[],
 		}
 	}
 
@@ -244,6 +275,10 @@ impl Material {
 			M::Glowvein => "GLOWVEIN",
 			M::Aetherock => "AETHEROCK",
 			M::DepletedStone => "DEPLETED STONE",
+			M::DepletedEmberore => "SPENT EMBERORE",
+			M::DepletedDuskstone => "SPENT DUSKSTONE",
+			M::DepletedGlowvein => "SPENT GLOWVEIN",
+			M::DepletedAetherock => "SPENT AETHEROCK",
 		}
 	}
 }
