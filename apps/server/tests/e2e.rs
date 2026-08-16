@@ -372,6 +372,9 @@ impl TestClient {
 			hit.cell_value,
 			BlockType::Air as u16,
 			0,
+			// The pristine answer, which is the right one here: these
+			// harnesses only ever dig terrain, never a cell somebody wrote,
+			// so `dig_credit` would return exactly this.
 			hit.block.dig_drop().map(|d| (d, 1)),
 		);
 		self.client.send_edit(

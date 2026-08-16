@@ -241,12 +241,14 @@ For `just run`:
   `diggable` and therefore outlines at all; DIG_SHAPES also stands every door variant but stands them further out behind
   stair rows sharing their x columns, which projects straight over every lower half, so the seam a door is judged on —
   one object, two cells — is the one thing that scene cannot show),
-  `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil` (opens that page
-  at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and invisible to
-  headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the viewmodel is
-  visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a torch — `hand`
-  cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the three tool names
-  cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at once).
+  `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  (opens that page at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and
+  invisible to headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the
+  viewmodel is visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a
+  torch — `hand` cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — the three
+  tool names cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at
+  once, and `transmuting` puts a BATCH on the bench mid-cycle, since a paced craft needs a press and is over in
+  seconds).
 - **Capture gotchas**: `--size` sets logical size but the physical framebuffer follows the display's backing scale —
   verify capture pixel dimensions before comparing frame-time runs. On a multi-monitor desk the window opens wherever
   the desktop last had focus, so **`--display N` (R27) is mandatory for any frame-time bracket**: refresh rate rides the
@@ -514,36 +516,58 @@ pick reads as the upgrade" lives in `texture.rs`, the one file that sees both th
 
 The economy lives in `digblock-core/src/alchemy.rs` — extraction yields (level-scaled, rising to full at the cap), bonus
 lines, waste multipliers (falling toward parity as level rises), extraction pace — all integer math, and
-`apply_alchemy(inv, op, level)` is level-aware. Four load-bearing rules:
+`apply_alchemy(inv, op, level)` is level-aware. Six load-bearing rules:
 
-1. **The Rubble rule** — Stone/Sandstone `drops: Some(Rubble)`. Clean rock is craft-only, which is what makes
-   transmutation the economy.
-2. **No matter creation** (`no_level_ever_creates_matter`): craft cost strictly exceeds extraction yield in every
+1. **Nothing the world hands you may be transmuted** (SKILLS-DESIGN §7.5). `unlock::craft` and `alchemy::craft_ideal`
+   both open on `BlockType::is_bench_only` — DERIVED, never listed: no block worldgen places crumbles or drops into this
+   one. So the loose ground, the felled log, foliage, mined rock and the scooped bucket charge have no recipes, and what
+   the bench makes is the worked stuff. Its companion is the XP half: `skills::convert_xp` answers zero for anything
+   bench-only, because extraction pays for reducing what the WORLD made and nothing for undoing your own work — without
+   it craft-then-extract was a standing converter from essence into levels. The bench's PACE deliberately does NOT
+   follow (`alchemy::extract_worth`, split out of `convert_xp` for exactly this): a lumber block is as much substance to
+   take apart as the log it was planed from.
+2. **The Rubble rule** — Stone/Sandstone `crumbles: Some(Rubble)`, and it is what lets rule 1 have an exception without
+   carving one: the world is MADE of stone and still never hands you one, so clean rock stays craftable and §7.1's
+   quarry-refine-build loop survives whole. `crumbles` and not `drops` because the conditional half is what shuts the
+   loop — a stone somebody PLACED hands itself back rather than crumbling, keyed on whether the cell has ever been
+   written (`BlockType::dig_credit`, over the journal on the server and its `EditOverlay` mirror on the client, the same
+   bit the ore reveal reads). Below the mason's own unlock it crumbles anyway, which is safe precisely because that
+   player could not have made one; `no_one_who_can_make_a_block_can_dig_it_into_xp` is the pin. Read the cell's edited
+   bit BEFORE the dig's own write on both ends, or every dig finds itself standing in an edited cell. `DepletedStone`
+   keeps unconditional `drops` — every cell naming it was written by an old siphon draw.
+3. **No matter creation** (`no_level_ever_creates_matter`): craft cost strictly exceeds extraction yield in every
    essence at every level.
-3. **Bonus lines only on recipe-less blocks** (`bonus_lines_never_sit_on_craftable_blocks`) — a bonus on a craftable
+4. **Bonus lines only on recipe-less blocks** (`bonus_lines_never_sit_on_craftable_blocks`) — a bonus on a craftable
    block is an essence pump. Structural now: the recipe-less set is exactly the materials whose `craft_units` is `None`.
-4. **The essence indices ARE the migration** — `Essence { Flora=0, Earth=1, … }` keeps the retired Material enum's
+   A material keeps that split even when no cell of it is craftable, because the split is the PRICE BASIS every shape
+   prorates from — Wood still costs what wood costs, though the felled log itself is something you chop.
+5. **The essence indices ARE the migration** — `Essence { Flora=0, Earth=1, … }` keeps the retired Material enum's
    numbering so legacy sub-material pairs decode 1:1. Never renumber.
-5. **A functional price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for
+6. **A functional price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for
    every essence a hand-priced row names, some block a player at that level can already dig and take apart yields it.
    `functional_ideal` and `unlock::functional` were already pinned as twins so an item can't have a price without a
    level — but nothing asked whether the price was PAYABLE, and the Resonant Pick's Aether line was not (see the ore
-   section). A source has to be a block the world PLACES (rule 2 makes a craft-only substance a sink, never a net
+   section). A source has to be a block the world HANDS you (rule 3 makes anything off the bench a sink, never a net
    source), past both walls, paying that essence reliably.
 
 The alchemy screen (K) is two tabs. **EXTRACT**: the real inventory grid plus one extraction slot — a *pointer* to a
 block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
 `extract_pace_ticks(block, level)` (`AlchScreen::tick`, driven from `Engine::update`) — the pace is the block's
-`convert_xp` against a whole block's worth, so the bench spends time in proportion to what comes out, floored so the
+`extract_worth` against a whole block's worth, so the bench spends time in proportion to what comes out, floored so the
 cheapest foliage isn't a wire-op stream. The server's bucket therefore banks **ticks** (one per tick, capped at
-`extract_burst_ticks(level)`) and a Convert spends the requested block's own pace. **TRANSMUTE**: family tiles whose
-icons rotate through their members on the screen's clock (the outgoing member shrinks and fades away and the incoming
-one grows in — `family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces, and never the
-hard cut it replaced); selecting a family lays out member tiles (locked ones dim but selectable, affordable ones badged)
-under a detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A §7.2 material × shape pair
-is one more member in an existing family, so the catalog grows without the screen growing
+`bench_burst_ticks(level)`) and an op spends its own pace. **TRANSMUTE**: family tiles whose icons rotate through their
+members on the screen's clock (the outgoing member shrinks and fades away and the incoming one grows in —
+`family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces, and never the hard cut it
+replaced); selecting a family lays out member tiles (locked ones dim but selectable, affordable ones badged) under a
+detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A §7.2 material × shape pair is one
+more member in an existing family, so the catalog grows without the screen growing
 (`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a fixed column
-count).
+count). **The button QUEUES that count rather than buying it**: crafting drips one `Craft{count:1}` per
+`craft_pace_ticks(item, level)`, the row under the button carries the batch's progress and what is left of it, and the
+button itself becomes its CANCEL. Both drips share ONE `progress` and one server bucket because there is one bench — the
+tabs are mutually exclusive and leaving one abandons its drip. Crafting still pays the XP it always paid; what changed
+is that it takes the time the work takes, which is what stopped the CTRL multiplier being a hundred crafts' XP in a
+frame.
 
 Polish invariants: everything sits on ONE left column; panel height is the max of both tabs, bottom-anchored
 (`panel_height_is_the_same_on_both_tabs` — a per-tab height jumped the top edge); the active tab's fill fuses into the
@@ -557,15 +581,17 @@ flag bit, with a whole block worth a fixed number of units); costs come from `al
 hand-priced for functional items) with the level's waste multiplier on top. `ClientMsg::Alchemy` is NOT client-predicted
 — the server answers every op with an `InventoryFull` rebase — and rides the edit action queue so craft-then-place in
 one tick debits in wire order; offline runs the same `apply_alchemy`. The server enforces the drip via a per-player
-extraction token bucket in `process_alchemy`, banked in ticks and charged the block's own pace × count so neither a bulk
-`Convert{count:999}` nor a stream of cheap blocks can sidestep it; refusals answer with the standing rebase (nothing
-debited, no XP). That gate lives in op validation, NOT `apply_alchemy`, so the offline economy is identical and unpaced.
-**A craft that would vanish into a type's cap is refused before any debit** — `Inventory::add` saturates, so the old
-Water-only guard let a second Resonant Pick take its full Metal price and hand back nothing, and the tab's bulk
-multipliers point at tools too. One number, `Inventory::headroom`, is both the refusal and what `AlchView::affordable`
-greys the button on, so the offer and the rule cannot drift; a full cap is not a shortfall, so the detail strip says
-ALREADY OWNED rather than naming an essence that cannot help — and it drops the COST line before the reason, since a
-three-essence price is long enough to elide the one thing that line is for.
+bench token bucket in `process_alchemy`, banked in ticks and charged the op's own pace × count — `extract_pace_ticks`
+for a Convert, `craft_pace_ticks` for a Craft — so neither a bulk `Convert{count:999}` nor a bulk `Craft{count:100}` nor
+a stream of cheap ops can sidestep it; refusals answer with the standing rebase (nothing debited, no XP). ONE bucket for
+both halves, so a client can't run the two drips at once for double the throughput. That gate lives in op validation,
+NOT `apply_alchemy`, so the offline economy is identical and unpaced. **A craft that would vanish into a type's cap is
+refused before any debit** — `Inventory::add` saturates, so the old Water-only guard let a second Resonant Pick take its
+full Metal price and hand back nothing, and the tab's bulk multipliers point at tools too. One number,
+`Inventory::headroom`, is both the refusal and what `AlchView::affordable` greys the button on, so the offer and the
+rule cannot drift; a full cap is not a shortfall, so the detail strip says ALREADY OWNED rather than naming an essence
+that cannot help — and it drops the COST line before the reason, since a three-essence price is long enough to elide the
+one thing that line is for.
 
 While ANY UI surface is open the engine synthesizes cursor + left-button from the primary touch at the top of
 `Engine::input` — one site gives iOS every screen, and no screen knows about touch.
@@ -846,6 +872,11 @@ Block behavior is data-driven via the `blocks!` macro — one row produces the `
 per-face texture layers, `MeshBucket`, and the grid's `material`; water is a block family driven by `FluidProps` data.
 Adding a block = one row + PNG + `LAYERS` entry.
 
+A row states what a dig hands back in exactly one of two ways, never both (`table_sanity`): `drops(x)` is unconditional,
+and `crumbles(x)` applies to the WORLD'S copy alone — see the economy's rule 2 for why that conditional is what keeps
+clean rock craftable. `dig_drop()` is the pristine answer and the question every economy rule means ("what can a fresh
+world put in a player's hands"); `dig_credit(edited, alchemy)` is what an actual dig pays.
+
 The layer index is RUNTIME ONLY (mesh vertex bits, never the wire or a save), so the list may be reordered — what it may
 not do is drift from `digblock_core::block::tex`, which mirrors it position for position and would silently texture
 blocks with each other's PNGs; a `const` assert in `digblock-render/src/texture.rs` (the only file that sees both
@@ -1049,11 +1080,14 @@ help, since both views of an item look DOWN at it.
 
 The pick breaks the PLANE of the face it hits — widening once at each of two Mining milestones — derived on both ends
 from the ray (`pick::cells` over each side's own world), so the client names one cell and the server decides what the
-swing touched. Two rules: every extra cell must hold the **same block id** (`begin_multi` carries ONE `inv_delta`, so
-homogeneity is what makes `(block, +N)` correct), and the hold multiplier is **level-only**
-(`skills::dig_required_with`) — a world-derived one would let the two ends disagree by the whole multiplier over a
-single differing cell, far outside `dig_grace`. A lone block therefore costs the multiplier too, which is why the spread
-penalty is set against an offsetting tool bonus.
+swing touched. Two rules: every extra cell must yield the **same credit** (`begin_multi` carries ONE `inv_delta`, so
+homogeneity is what makes `(block, +N)` correct — a matching block id stopped being enough once provenance decided a
+drop), and the hold multiplier is **level-only** (`skills::dig_required_with`) — a world-derived one would let the two
+ends disagree by the whole multiplier over a single differing cell, far outside `dig_grace`. A lone block therefore
+costs the multiplier too, which is why the spread penalty is set against an offsetting tool bonus. **The reach is a
+bonus in material, not in XP**: the aimed cell pays its whole Mining award and every cell behind it pays
+`PICK_EXTRA_PERMILLE` of one, floored at a point and capped at the aimed cell's own award (`skills::dig_award`,
+SKILLS-DESIGN §5.2).
 
 ### Spawn & protected cells (core/spawn.rs + core/protect.rs)
 

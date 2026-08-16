@@ -170,14 +170,13 @@ impl Sim {
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
 			client.chat_tokens =
 				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
-			// The extraction bucket banks TICKS — one per tick — and a
-			// Convert spends the requested block's own pace out of it, so
-			// the ceiling tracks the honest client's drip whatever it is
-			// extracting. Capacity is a short burst of whole blocks, or
-			// one costliest extraction where that is larger — see
-			// `extract_burst_ticks`.
-			client.extract_tokens =
-				(client.extract_tokens + 1.0).min(digblock_core::alchemy::extract_burst_ticks(
+			// The bench bucket banks TICKS — one per tick — and an op
+			// spends its own pace out of it, so the ceiling tracks the
+			// honest client's drip whatever it is working on. Capacity is
+			// a short burst of whole blocks, or one costliest op where
+			// that is larger — see `bench_burst_ticks`.
+			client.bench_tokens =
+				(client.bench_tokens + 1.0).min(digblock_core::alchemy::bench_burst_ticks(
 					client.skills.level(digblock_core::skills::Skill::Alchemy),
 				));
 		}
@@ -634,6 +633,12 @@ impl Sim {
 		}
 
 		let (first_cell, first_val) = writes[0];
+		// Whether this coordinate had ever been written, read BEFORE the
+		// write for the reason the client reads it before its own: it is
+		// the provenance half of `dig_credit`, and this dig is about to
+		// become an edit itself. Journal-backed, so `apply_write` at the
+		// bottom is what would flip it.
+		let was_edited = self.cell_edited(first_cell.0, first_cell.1, first_cell.2);
 		let Some(prev_cell) =
 			self.store
 				.set_cell(first_cell.0, first_cell.1, first_cell.2, first_val)
@@ -691,7 +696,15 @@ impl Sim {
 						counts: client.inventory.to_wire(),
 					},
 				);
-			} else if let Some(drop) = prev.dig_drop() {
+			} else if let Some(drop) = prev.dig_credit(
+				was_edited,
+				client.skills.level(digblock_core::skills::Skill::Alchemy),
+			) {
+				// `dig_credit`, not the block's own natural drop: the
+				// world's rock crumbles and a mason's wall comes back whole,
+				// which is what keeps clean stone craftable without opening
+				// a craft-and-extract loop. The client predicted this from
+				// its own mirror of the same journal.
 				client.inventory.add(drop, broken);
 				// Mirror the client's auto-assign of a newly acquired type
 				// (same deterministic derivation), so the very next place
@@ -898,15 +911,15 @@ impl Sim {
 	/// shared `apply_alchemy` rule, persist, and answer — success or
 	/// failure — with the authoritative `InventoryFull` rebase.
 	///
-	/// Convert ops additionally draw from the per-player EXTRACTION
-	/// bucket, charged per block — the anti-cheat half of the bench
-	/// drip. The client paces one single-block op per interval for
-	/// presentation; a modified client flooding ops (or smuggling a
-	/// `count: 999` bulk op) runs the bucket dry and refuses through the
-	/// same standing rebase: nothing debited, no XP, and the honest
-	/// client self-heals for free. The gate lives HERE, not in
-	/// `apply_alchemy` — pacing is anti-cheat, not an economy rule, and
-	/// offline worlds keep running the identical economy unpaced.
+	/// Every op additionally draws from the per-player BENCH bucket,
+	/// charged per item — the anti-cheat half of the bench drip. The
+	/// client paces one single-item op per interval for presentation; a
+	/// modified client flooding ops (or smuggling a `count: 999` bulk op)
+	/// runs the bucket dry and refuses through the same standing rebase:
+	/// nothing debited, no XP, and the honest client self-heals for free.
+	/// The gate lives HERE, not in `apply_alchemy` — pacing is anti-cheat,
+	/// not an economy rule, and offline worlds keep running the identical
+	/// economy unpaced.
 	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
 		use digblock_core::inventory::{AlchemyOp as CoreOp, apply_alchemy};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
@@ -931,22 +944,31 @@ impl Sim {
 			}
 		};
 		let level = client.skills.level(digblock_core::skills::Skill::Alchemy);
-		// The extraction bucket, charged per block BEFORE the economy
-		// runs (an op it can't cover must not debit anything).
-		let core_op = core_op.filter(|op| match *op {
-			CoreOp::Convert { block, count } => {
-				// The bucket is in ticks: a block costs its own pace, so a
-				// bulk `count` can't sidestep the drip and neither can a
-				// stream of cheap ones.
-				let cost =
-					digblock_core::alchemy::extract_pace_ticks(block, level) as f32 * count as f32;
-				if client.extract_tokens < cost {
-					return false;
+		// The bench bucket, charged per ITEM BEFORE the economy runs (an
+		// op it can't cover must not debit anything). The bucket is in
+		// ticks and an op costs its own pace, so a bulk `count` can't
+		// sidestep the drip and neither can a stream of cheap ops.
+		//
+		// Both halves draw on it, and the same rule for the same reason:
+		// a craft used to be the one bench action that answered
+		// instantly, so the transmute tab's CTRL multiplier paid a
+		// hundred crafts' XP in a frame. One bucket rather than two,
+		// because there is one bench — a client cannot extract and
+		// transmute at once for double the throughput.
+		let core_op = core_op.filter(|op| {
+			let cost = match *op {
+				CoreOp::Convert { block, count } => {
+					digblock_core::alchemy::extract_pace_ticks(block, level) * count
 				}
-				client.extract_tokens -= cost;
-				true
+				CoreOp::Craft { item, count } => {
+					digblock_core::alchemy::craft_pace_ticks(item, level) * count
+				}
+			} as f32;
+			if client.bench_tokens < cost {
+				return false;
 			}
-			CoreOp::Craft { .. } => true,
+			client.bench_tokens -= cost;
+			true
 		});
 		// As in the dig path: the crossing is announced after the client
 		// borrow ends, since the broadcast walks every client.
@@ -1645,6 +1667,78 @@ mod tests {
 			sim.test_inventory_count(1, BlockType::Rubble),
 			1,
 			"dig credited the drop (the rock rule: stone lands as rubble)"
+		);
+	}
+
+	/// §7.1's rock rule from the server's side, in both directions: the
+	/// mountain's own stone crumbles to Rubble, and one a mason PLACED
+	/// comes back whole.
+	///
+	/// The authority for "placed" is the journal — the same bit the ore
+	/// reveal reads — and it has to be sampled BEFORE the dig writes its
+	/// own entry, which is the one way this silently inverts: every dig
+	/// would then find itself standing in an edited cell and hand out clean
+	/// stone for a quarried one.
+	#[test]
+	fn a_placed_stone_comes_back_whole_and_a_quarried_one_crumbles() {
+		let mut sim = flat_sim("placedstone");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let mason = digblock_core::unlock::craft(BlockType::Stone).expect("clean stone is made");
+		sim.bench_set_alchemy_level(1, mason);
+		sim.test_grant(1, BlockType::Stone, 1);
+		place_cell(&mut sim, &mut c, 1, BlockType::Stone as u16);
+
+		let mut t = 0;
+		dig_hold(&mut sim, 1, down, 90, 2, EditKind::Dig, &mut t);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			1,
+			"a mason takes their own wall apart and gets the wall back"
+		);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 0);
+
+		// The floor it stood on was never written, so it is still the
+		// world's and still breaks.
+		dig_hold(&mut sim, 1, down, 90, 3, EditKind::Dig, &mut t);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			1,
+			"quarrying is quarrying"
+		);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			1,
+			"no second"
+		);
+	}
+
+	/// The other half of the same rule: below the mason's own unlock a
+	/// placed stone crumbles like any other rock. That is not a refusal and
+	/// not a punishment — a player who could not have MADE one is not
+	/// undoing their own work, so they get the rubble and the XP that goes
+	/// with it, and the craft-and-extract loop still cannot close, because
+	/// the levels that can make a stone are exactly the levels it comes
+	/// back whole to.
+	#[test]
+	fn below_the_masons_unlock_even_a_placed_stone_crumbles() {
+		let mut sim = flat_sim("placedstonelow");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+		let mason = digblock_core::unlock::craft(BlockType::Stone).expect("clean stone is made");
+		sim.bench_set_alchemy_level(1, mason - 1);
+		sim.test_grant(1, BlockType::Stone, 1);
+		place_cell(&mut sim, &mut c, 1, BlockType::Stone as u16);
+
+		let mut t = 0;
+		dig_hold(&mut sim, 1, down, 90, 2, EditKind::Dig, &mut t);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Rubble), 1);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Stone),
+			0,
+			"an apprentice cannot cut it out whole"
 		);
 	}
 

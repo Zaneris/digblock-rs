@@ -89,7 +89,14 @@ const HELD_SCALE = 0.35 / 12.0;
 // sat at the mirrored offset — the carrier's LEFT — under a comment that
 // said "right of the body". With a cube nobody could tell; with a torch
 // you can, and your own viewmodel rests on the right (REST_X_FRAC).
-const HAND = vec3f(-0.44, -0.62, 0.34);
+//
+// The y is a CARRY and not a rest: high enough on the body to read as
+// held out in front rather than hanging at the hip, which is also most
+// of the gap to where a carried light radiates from closed. The two
+// stay separate numbers on purpose — `gi::CARRY_DROP` is anchored on
+// the capsule axis so mouse-look cannot move the light, while the hand
+// is off to the side of the body, so they can never coincide anyway.
+const HAND = vec3f(-0.44, -0.5, 0.34);
 
 // Turn the item about its own axis so a cube presents a corner rather
 // than a flat card — the same idea as viewmodel.wgsl's REST_YAW, but a

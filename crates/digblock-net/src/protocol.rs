@@ -100,7 +100,17 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// extraction itself needs NO new wire: both ends derive it from
 /// `ore::dig_mode` over data they already share, so `EditRequest` is
 /// untouched.
-pub const PROTOCOL_VERSION: u16 = 21;
+/// v22: the bench paces BOTH halves. `AlchemyOp::Craft` now draws on the
+/// same per-player tick bucket `Convert` always did, charged the item's
+/// own `alchemy::craft_pace_ticks` — so a bulk `Craft { count: 100 }`,
+/// which a v21 client sends on one press of the transmute button, no
+/// longer fits and is refused whole. Nothing was appended and no field
+/// moved; what changed is what an existing message BUYS, which is
+/// exactly the kind of break the handshake exists to catch — a v21 peer
+/// would press TRANSMUTE and watch nothing happen, forever. The paired
+/// client sends the same op one item at a time, as it already does for
+/// `Convert`.
+pub const PROTOCOL_VERSION: u16 = 22;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -128,7 +138,16 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
-pub const MIN_PROTOCOL: u16 = 19;
+///
+/// It moves with v22, which is the first break that is not about
+/// DECODING. Every earlier one appended a variant an old peer could not
+/// read, and the range could stay wide because everything inside it still
+/// meant the same thing; a v21 peer reads every v22 frame perfectly and
+/// simply cannot transmute in bulk any more — its transmute button would
+/// work for a single press and silently do nothing under CTRL. Refusing
+/// the handshake is the honest answer to that, and a range that admits a
+/// peer whose buttons don't work is worse than a narrow one.
+pub const MIN_PROTOCOL: u16 = 22;
 
 // ---- handshake preamble ----------------------------------------------
 //

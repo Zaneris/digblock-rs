@@ -60,9 +60,10 @@ fn main() {
 	let sand = load("Sand.png");
 	save("Sandstone.png", sandstone(&sand, &mut rng));
 
-	// Broken rock — what mined stone actually drops (SKILLS-DESIGN §7.1):
-	// stone body with angular fracture cracks and chipped facets, reading
-	// as rough cobble when placed.
+	// Broken rock — the ONLY thing a natural quarry hands you now, since
+	// clean rock is bench work (SKILLS-DESIGN §7.1). It has to read as
+	// many stones rather than as one cracked face, which is a question of
+	// silhouette and not of detail; see the recipe.
 	save("Rubble.png", rubble(&stone, &mut rng));
 
 	// Torch: the side texture maps the post's timber to the LOWER rows and
@@ -532,42 +533,96 @@ fn torch_flame(rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Fractured stone: slight darkening jitter, crack walks (a dark groove
-/// with a light catch edge one pixel down-right), and a few darker
-/// chipped facets — all wrapped modularly so the texture keeps tiling.
+/// Broken rock: MANY stones, not one cracked face.
+///
+/// The distinction is the whole job. Rubble is the only thing a natural
+/// quarry hands a player now — clean rock is bench work (SKILLS-DESIGN
+/// §7.1) — so the two faces are a decision the player reads off a wall,
+/// and the recipe this replaced could not carry that. It was stone's own
+/// body with hairline fracture walks over it, which at any distance is
+/// smooth stone with scratches on it: the same value, the same grain, one
+/// surface.
+///
+/// So the silhouette changes rather than the detail. A wrapping Worley
+/// partition cuts the tile into a dozen-odd cobbles, each taking its own
+/// value offset — a face of stones at visibly different tones is the cue
+/// that survives being shrunk to an inventory icon, where every crack
+/// disappears — and the band where two sites run close darkens into the
+/// gap between them, with the body noise folded into the threshold so the
+/// gap chips rather than curving cleanly. A light catch on the gap's
+/// up-left side lifts the stones off it. Everything wraps modularly, so
+/// the tile still tiles.
 fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	for p in out.pixels_mut() {
-		let n = rng.signed(6) - 4;
-		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
-	}
 	let s = SIZE as i32;
-	const DIRS: [(i32, i32); 8] = [
-		(1, 0),
-		(1, 1),
-		(0, 1),
-		(-1, 1),
-		(-1, 0),
-		(-1, -1),
-		(0, -1),
-		(1, -1),
-	];
-	for _ in 0..7 {
-		let (mut x, mut y) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		let mut d = rng.range(8) as usize;
-		for _ in 0..(24 + rng.range(16)) {
-			let p = out.get_pixel_mut(x.rem_euclid(s) as u32, y.rem_euclid(s) as u32);
-			p.0 = [add8(p.0[0], -42), add8(p.0[1], -42), add8(p.0[2], -42)];
-			let e = out.get_pixel_mut((x + 1).rem_euclid(s) as u32, (y + 1).rem_euclid(s) as u32);
-			e.0 = [add8(e.0[0], 12), add8(e.0[1], 12), add8(e.0[2], 12)];
-			if rng.range(3) == 0 {
-				// ±1 step of eight-way turn keeps cracks angular, not wavy.
-				d = (d + 7 + 2 * rng.range(2) as usize) % 8;
+	// Sites on a jittered lattice: chunky stones rather than a fine
+	// crazing, and no cell large enough to read as a flat face of its own.
+	const CELLS: i32 = 4;
+	let step = s / CELLS;
+	let sites: Vec<(i32, i32, i32)> = (0..CELLS * CELLS)
+		.map(|i| {
+			let (gx, gy) = (i % CELLS, i / CELLS);
+			(
+				gx * step + rng.range(step as u64) as i32,
+				gy * step + rng.range(step as u64) as i32,
+				// Each stone's own tone. Biased dark: broken rock is dirtier
+				// than the face it came off.
+				rng.signed(20) - 8,
+			)
+		})
+		.collect();
+	// Wrapped separation on one axis — the near copy of the tile is what
+	// keeps a site on the left edge a neighbour of one on the right.
+	let wrap = |d: i32| {
+		let d = d.rem_euclid(s);
+		d.min(s - d)
+	};
+	let mut out = stone.clone();
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (x, y) = (x as i32, y as i32);
+		// The two nearest sites: the closest says which stone this is, and
+		// how close the second one runs says whether we are in the gap.
+		let (mut first, mut second) = (i32::MAX, i32::MAX);
+		let mut tone = 0;
+		for &(sx, sy, t) in &sites {
+			let (dx, dy) = (wrap(x - sx), wrap(y - sy));
+			let d2 = dx * dx + dy * dy;
+			if d2 < first {
+				second = first;
+				first = d2;
+				tone = t;
+			} else if d2 < second {
+				second = d2;
 			}
-			x += DIRS[d].0;
-			y += DIRS[d].1;
+		}
+		// Grubby body noise, and the same draw ragged the gap's edge — one
+		// jitter doing both is what keeps a chipped edge and a chipped
+		// surface the same size of chip.
+		let n = rng.signed(7) - 3;
+		let edge = (second as f32).sqrt() - (first as f32).sqrt() + n as f32 * 0.12;
+		let d = if edge < 1.35 {
+			// The mortar gap between two stones.
+			-52 + n
+		} else {
+			tone + n
+		};
+		p.0 = [add8(p.0[0], d), add8(p.0[1], d), add8(p.0[2], d)];
+	}
+	// The catch light: one pass over the finished field, lifting a pixel
+	// whose up-left neighbour sits in a gap. Read from a copy, so a lit
+	// pixel cannot go on to light the next one into a smear.
+	let lit = out.clone();
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let up = lit.get_pixel(
+			(x as i32 - 1).rem_euclid(s) as u32,
+			(y as i32 - 1).rem_euclid(s) as u32,
+		);
+		let here = lit.get_pixel(x, y);
+		if i32::from(here.0[0]) - i32::from(up.0[0]) > 24 {
+			p.0 = [add8(p.0[0], 14), add8(p.0[1], 14), add8(p.0[2], 14)];
 		}
 	}
+	// Chipped corners on top of the cobbles — the grit that reads at
+	// arm's length, where the partition is reading at room's length.
 	for _ in 0..12 {
 		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
 		let r = 1 + rng.range(2) as i32;

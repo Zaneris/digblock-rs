@@ -50,12 +50,18 @@ pub fn shape(s: ShapeFamily) -> u32 {
 	}
 }
 
-/// The Alchemy level that opens a MATERIAL — can you transmute this
-/// substance into block form at all? `None` = never, in any shape, which
-/// is what makes it eligible for a §3.3 bonus line.
+/// The Alchemy level that opens a MATERIAL — when does this substance
+/// become workable at all? `None` = never, in any shape.
 ///
-/// Materials with no authored block yet are still listed: the level IS
-/// the design, and a catalog wave should be a block row and a PNG.
+/// A level here is not a promise that any particular cell is craftable:
+/// [`craft`] refuses anything the world hands you, so Dirt has a level and
+/// no craftable form, because the world gives dirt away and nobody has
+/// authored a dirt slab. Both halves are deliberate — the level is what a
+/// dirt slab WOULD open at, and the grid exists so that authoring one is a
+/// block row and a PNG.
+///
+/// Materials with no authored block yet are listed for the same reason:
+/// the level IS the design.
 pub fn material(m: Material) -> Option<u32> {
 	use Material as M;
 	Some(match m {
@@ -115,8 +121,6 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// The bed waits for the Aqua economy it costs, which is the whole
 		// reason its price crosses families.
 		BlockType::Bed => 35,
-		// Crafting the bucket charge, lossy against extracting it.
-		BlockType::Water => 50,
 		// The pick: crafted here, usable at the matching MINING level
 		// (`pick_cells`) — two skills, one item, and the reason Metal is
 		// worth mining at all.
@@ -136,12 +140,30 @@ pub fn functional(b: BlockType) -> Option<u32> {
 
 /// Alchemy level that unlocks crafting `b`; `None` = never craftable.
 ///
-/// §7.2's grid rule, now enforced rather than described: a material ×
+/// **Nothing the world hands you may be transmuted.** The bench exists to
+/// make what a fresh world does not give away, so the catalog opens on
+/// [`BlockType::is_bench_only`] before it asks any table — dirt, sand,
+/// snow, grass, mud, the felled log and the bucket charge are all things
+/// you go and pick up, and a recipe for one is the bench competing with a
+/// shovel. What remains is the worked stuff: planed timber, brick,
+/// polished stone, glass, metal, crystal, every shape of every substance,
+/// and the hand-priced items.
+///
+/// Clean rock is the exception the rule is BUILT to allow rather than one
+/// carved out of it. The world is made of stone but hands you Rubble
+/// (`BlockProps::crumbles`), so it is bench-only by the same derivation as
+/// everything else here, and §7.1's whole economy — quarry, refine, build
+/// — survives untouched.
+///
+/// Then §7.2's grid rule, enforced rather than described: a material ×
 /// shape pair unlocks at `max(shape level, material level)`. StoneDoor
 /// lands where Stone does, not because anyone curated it; and reaching
 /// Stone opens clean stone in the block, slab, stairs and door forms
 /// together, because those shapes were already learned.
 pub fn craft(b: BlockType) -> Option<u32> {
+	if !b.is_bench_only() {
+		return None;
+	}
 	if let Some(level) = functional(b) {
 		return Some(level);
 	}
@@ -470,12 +492,10 @@ mod tests {
 	#[test]
 	fn craft_levels_are_pinned() {
 		use BlockType as B;
-		// The starter timber, in every form you have learned so far.
-		assert_eq!(craft(B::Wood), Some(1));
+		// The starter timber, in every form you have learned so far — but
+		// not the felled log itself, which grows on a tree.
 		assert_eq!(craft(B::WoodSlab), Some(1));
 		assert_eq!(craft(B::WoodStairs), Some(5), "the stairs SHAPE opens");
-		assert_eq!(craft(B::Dirt), Some(5));
-		assert_eq!(craft(B::Sand), Some(5));
 		assert_eq!(craft(B::Torch), Some(8));
 		// §7.2's grid rule: the whole planed-timber set opens together at
 		// its MATERIAL's level, whatever each shape's own level is.
@@ -488,11 +508,27 @@ mod tests {
 		for b in [B::Stone, B::StoneSlab, B::StoneStairs] {
 			assert_eq!(craft(b), Some(20), "{b:?}");
 		}
-		for b in [B::Sandstone, B::Snow, B::Grass, B::Mud] {
+		for b in [B::Sandstone, B::SandstoneSlab, B::Glass] {
 			assert_eq!(craft(b), Some(30), "{b:?}");
 		}
-		assert_eq!(craft(B::Water), Some(50));
-		assert_eq!(craft(B::Rubble), None, "mined rock is never crafted");
+		// Nothing the world hands you has a level, because it has no
+		// recipe: the loose ground, the felled log, and the water you scoop
+		// are all things you go and pick up. Clean rock is the one
+		// substance the world PLACES and never GIVES — it crumbles — so it
+		// keeps the mason's unlock and §7.1's economy with it.
+		for b in [
+			B::Wood,
+			B::Dirt,
+			B::Sand,
+			B::Snow,
+			B::Grass,
+			B::Mud,
+			B::Water,
+			B::Rubble,
+			B::Gravel,
+		] {
+			assert_eq!(craft(b), None, "{b:?} is the world's, not the bench's");
+		}
 		assert_eq!(extract(B::Water), 15, "the bucket charge");
 		for b in [B::Stone, B::Leaves, B::Gravel] {
 			assert_eq!(extract(b), 1, "{b:?} extracts from the start");
@@ -595,6 +631,13 @@ mod tests {
 	#[test]
 	fn grid_gates_compose() {
 		for &b in &BlockType::ALL {
+			if !b.is_bench_only() {
+				// The world's own: no level, because no recipe. The grid
+				// still prices the SUBSTANCE — a dirt slab authored tomorrow
+				// would open at dirt's level — it simply has no cell here.
+				assert_eq!(craft(b), None, "{b:?}");
+				continue;
+			}
 			let Some((m, s)) = b.grid_cell() else {
 				// Everything outside the grid is hand-gated, and every
 				// hand-gated item has a hand-written price to match.
@@ -714,11 +757,13 @@ mod tests {
 		for b in [B::StoneSlab, B::StoneStairs] {
 			assert_eq!(pickup(b), 20, "{b:?} — clean stone in any form");
 		}
-		// Craftable is NOT the question — being craft-ONLY is. Every one of
-		// these has a recipe (Stone at 20, Wood at 1, Water at 50), and
-		// every one of them also grows, erodes or pools in a fresh world.
+		// Craftable is NOT the question — being craft-ONLY is, and clean
+		// Stone is where the two come apart. It has a recipe AND the world
+		// is made of it, which is the whole shape of §7.1: a quarried one
+		// crumbles to Rubble, so the gate has nothing to protect and the
+		// dig stays open to anyone strong enough to swing at rock.
+		assert!(craft(B::Stone).is_some(), "clean stone is craftable");
 		for b in [B::Stone, B::Wood, B::Dirt, B::Sand, B::Grass, B::Water] {
-			assert!(craft(b).is_some(), "{b:?} is craftable");
 			assert_eq!(pickup(b), 1, "{b:?} is natural — never gated");
 		}
 		// And the gate reads the DROP: pristine Stone is craft-only-adjacent

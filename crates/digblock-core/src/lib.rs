@@ -176,4 +176,16 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// first stone a player can break. Same shape as v12: client prediction
 /// plus the server's DigStart backstop, so a v17 peer opens holds the new
 /// server refuses.
-pub const SIM_VERSION: u16 = 18;
+/// v19: what a dig CREDITS depends on the cell (SKILLS-DESIGN §7.1). The
+/// rock rule is now conditional — the world's own stone and sandstone
+/// crumble to Rubble, and one somebody PLACED hands itself back to any
+/// digger who could have made one (`BlockType::dig_credit`, over the same
+/// "has this cell ever been written" bit the ore reveal already reads).
+/// That is what lets clean rock stay craftable while nothing else the
+/// world hands you does, and what stops a made block laundering itself
+/// back into a world-given one for the extraction XP. Shared behaviour
+/// derived from data both ends already have, exactly like v15's veins, so
+/// a v18 peer credits rubble where the new server credits the wall — and
+/// its pick's plane picks a different set, since the extras filter now
+/// matches on the credit rather than the block id.
+pub const SIM_VERSION: u16 = 19;
