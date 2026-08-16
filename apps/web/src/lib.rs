@@ -318,12 +318,13 @@ fn worker_module_url() -> Option<String> {
 /// servers it used to play on: the truncated SHA-256 of the old identity
 /// secret, which localStorage still holds as hex.
 ///
-/// The desktop twin of this is `legacy_identity` in apps/desktop, and the
-/// two must agree byte for byte — a player who used both gets the same key
-/// only if both hash the same secret the same way. Same rules: read-only,
-/// never created, and absent/malformed/all-zeros all answer `None`.
+/// The desktop twin of this is `legacy_identity` in apps/desktop. They
+/// must agree byte for byte — a player who used both gets the same key
+/// only if both hash the same secret the same way — which is why the hash
+/// itself is `protocol::legacy_identity_hash` and only the STORAGE differs
+/// here. Same rules: read-only, never created, and absent/malformed/
+/// all-zeros all answer `None`.
 fn legacy_identity() -> Option<[u8; 16]> {
-	use sha2::{Digest, Sha256};
 	let hex = web_sys::window()?
 		.local_storage()
 		.ok()??
@@ -340,11 +341,7 @@ fn legacy_identity() -> Option<[u8; 16]> {
 		return None;
 	}
 	log::info!("found a pre-account identity — offering it to servers for migration");
-	Some(
-		Sha256::digest(secret)[..16]
-			.try_into()
-			.expect("digest is 32 bytes"),
-	)
+	Some(digblock_net::protocol::legacy_identity_hash(&secret))
 }
 
 /// The Account screen's Copy ID button.

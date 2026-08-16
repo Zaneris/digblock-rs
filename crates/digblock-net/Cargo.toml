@@ -11,6 +11,10 @@ rustc-hash = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 log = { workspace = true }
+# `legacy_identity_hash` only. Both launchers must compute the migration
+# key identically, and identically to what pre-account servers stored, so
+# the computation lives here rather than once per launcher.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

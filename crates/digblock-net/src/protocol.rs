@@ -372,6 +372,28 @@ impl core::fmt::Debug for AccountId {
 	}
 }
 
+/// The key a pre-account character is filed under: truncated SHA-256 of
+/// the device secret that owned it. What `ClientMsg::ClaimLegacy` carries.
+///
+/// **This is a FILE FORMAT, not a choice.** It reproduces exactly what
+/// pre-account servers computed over the client's identity secret, because
+/// that is what their `inventories.bin` records are keyed by. Move it by a
+/// byte and every migration silently finds nothing — the store still loads
+/// and simply never matches anybody, which is the failure mode with no
+/// symptom. Pinned against an external vector by
+/// `the_legacy_key_still_matches_what_old_servers_stored`.
+///
+/// Lives here, and not in either launcher, because BOTH launchers must
+/// agree with it and with each other: a player who used the desktop and
+/// the browser has one old character per server, and two spellings of this
+/// function would give them one key that works and one that does not.
+pub fn legacy_identity_hash(secret: &[u8; 16]) -> [u8; 16] {
+	use sha2::{Digest, Sha256};
+	Sha256::digest(secret)[..16]
+		.try_into()
+		.expect("digest is 32 bytes")
+}
+
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
 /// bytes each in UTF-8, so a full line can encode to twice the cap —
 /// still nowhere near [`MAX_FRAME`].
@@ -686,6 +708,29 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The migration key must still be the one pre-account servers filed
+	/// their records under, or every claim quietly matches nothing.
+	///
+	/// This vector is the one the old server-side `hash_identity` was
+	/// pinned to, carried over verbatim when that function was deleted —
+	/// which is the point: the value is fixed by bytes already on players'
+	/// disks, and this crate is now the only place it is computed. A
+	/// swapped digest crate, a different truncation, an accidental hash of
+	/// the hex rather than the bytes: each would still pass a test that
+	/// only checked the function agreed with itself.
+	#[test]
+	fn the_legacy_key_still_matches_what_old_servers_stored() {
+		let want = [
+			0xd7, 0x61, 0xd4, 0x06, 0xaf, 0x2a, 0x4a, 0x5a, 0x15, 0xf6, 0x7c, 0x92, 0x43, 0x78,
+			0xed, 0x88,
+		];
+		assert_eq!(legacy_identity_hash(&[7; 16]), want);
+		// And it is the hash, never the secret: a launcher that shipped the
+		// raw file contents would hand every server the old bearer
+		// credential, which is the thing v22 removed.
+		assert_ne!(legacy_identity_hash(&[7; 16]), [7; 16]);
+	}
 
 	/// The id the master prints and the id we parse have to be the same
 	/// string: an operator copies one out of the game and pastes it into

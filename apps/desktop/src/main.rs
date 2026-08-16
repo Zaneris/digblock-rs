@@ -654,7 +654,6 @@ fn main() {
 /// claim needs), but it costs nothing and it keeps the one file that used
 /// to be replayed to every server from being replayed anywhere at all.
 fn legacy_identity() -> Option<[u8; 16]> {
-	use sha2::{Digest, Sha256};
 	let path = std::env::var("DIG_IDENTITY_FILE")
 		.map(std::path::PathBuf::from)
 		.unwrap_or_else(|_| {
@@ -670,11 +669,7 @@ fn legacy_identity() -> Option<[u8; 16]> {
 		"found a pre-account identity at {} — offering it to servers for migration",
 		path.display()
 	);
-	Some(
-		Sha256::digest(secret)[..16]
-			.try_into()
-			.expect("digest is 32 bytes"),
-	)
+	Some(digblock_net::protocol::legacy_identity_hash(&secret))
 }
 
 /// The Account screen's Copy ID button.
