@@ -241,12 +241,14 @@ For `just run`:
   `diggable` and therefore outlines at all; DIG_SHAPES also stands every door variant but stands them further out behind
   stair rows sharing their x columns, which projects straight over every lower half, so the seam a door is judged on —
   one object, two cells — is the one thing that scene cannot show),
-  `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil` (opens that page
-  at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and invisible to
-  headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the viewmodel is
-  visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a torch — `hand`
-  cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the three tool names
-  cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at once).
+  `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  (opens that page at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and
+  invisible to headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the
+  viewmodel is visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a
+  torch — `hand` cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — the three
+  tool names cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at
+  once, and `transmuting` puts a BATCH on the bench mid-cycle, since a paced craft needs a press and is over in
+  seconds).
 - **Capture gotchas**: `--size` sets logical size but the physical framebuffer follows the display's backing scale —
   verify capture pixel dimensions before comparing frame-time runs. On a multi-monitor desk the window opens wherever
   the desktop last had focus, so **`--display N` (R27) is mandatory for any frame-time bracket**: refresh rate rides the
@@ -551,16 +553,21 @@ lines, waste multipliers (falling toward parity as level rises), extraction pace
 The alchemy screen (K) is two tabs. **EXTRACT**: the real inventory grid plus one extraction slot — a *pointer* to a
 block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
 `extract_pace_ticks(block, level)` (`AlchScreen::tick`, driven from `Engine::update`) — the pace is the block's
-`convert_xp` against a whole block's worth, so the bench spends time in proportion to what comes out, floored so the
+`extract_worth` against a whole block's worth, so the bench spends time in proportion to what comes out, floored so the
 cheapest foliage isn't a wire-op stream. The server's bucket therefore banks **ticks** (one per tick, capped at
-`extract_burst_ticks(level)`) and a Convert spends the requested block's own pace. **TRANSMUTE**: family tiles whose
-icons rotate through their members on the screen's clock (the outgoing member shrinks and fades away and the incoming
-one grows in — `family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces, and never the
-hard cut it replaced); selecting a family lays out member tiles (locked ones dim but selectable, affordable ones badged)
-under a detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A §7.2 material × shape pair
-is one more member in an existing family, so the catalog grows without the screen growing
+`bench_burst_ticks(level)`) and an op spends its own pace. **TRANSMUTE**: family tiles whose icons rotate through their
+members on the screen's clock (the outgoing member shrinks and fades away and the incoming one grows in —
+`family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces, and never the hard cut it
+replaced); selecting a family lays out member tiles (locked ones dim but selectable, affordable ones badged) under a
+detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A §7.2 material × shape pair is one
+more member in an existing family, so the catalog grows without the screen growing
 (`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a fixed column
-count).
+count). **The button QUEUES that count rather than buying it**: crafting drips one `Craft{count:1}` per
+`craft_pace_ticks(item, level)`, the row under the button carries the batch's progress and what is left of it, and the
+button itself becomes its CANCEL. Both drips share ONE `progress` and one server bucket because there is one bench — the
+tabs are mutually exclusive and leaving one abandons its drip. Crafting still pays the XP it always paid; what changed
+is that it takes the time the work takes, which is what stopped the CTRL multiplier being a hundred crafts' XP in a
+frame.
 
 Polish invariants: everything sits on ONE left column; panel height is the max of both tabs, bottom-anchored
 (`panel_height_is_the_same_on_both_tabs` — a per-tab height jumped the top edge); the active tab's fill fuses into the
@@ -574,15 +581,17 @@ flag bit, with a whole block worth a fixed number of units); costs come from `al
 hand-priced for functional items) with the level's waste multiplier on top. `ClientMsg::Alchemy` is NOT client-predicted
 — the server answers every op with an `InventoryFull` rebase — and rides the edit action queue so craft-then-place in
 one tick debits in wire order; offline runs the same `apply_alchemy`. The server enforces the drip via a per-player
-extraction token bucket in `process_alchemy`, banked in ticks and charged the block's own pace × count so neither a bulk
-`Convert{count:999}` nor a stream of cheap blocks can sidestep it; refusals answer with the standing rebase (nothing
-debited, no XP). That gate lives in op validation, NOT `apply_alchemy`, so the offline economy is identical and unpaced.
-**A craft that would vanish into a type's cap is refused before any debit** — `Inventory::add` saturates, so the old
-Water-only guard let a second Resonant Pick take its full Metal price and hand back nothing, and the tab's bulk
-multipliers point at tools too. One number, `Inventory::headroom`, is both the refusal and what `AlchView::affordable`
-greys the button on, so the offer and the rule cannot drift; a full cap is not a shortfall, so the detail strip says
-ALREADY OWNED rather than naming an essence that cannot help — and it drops the COST line before the reason, since a
-three-essence price is long enough to elide the one thing that line is for.
+bench token bucket in `process_alchemy`, banked in ticks and charged the op's own pace × count — `extract_pace_ticks`
+for a Convert, `craft_pace_ticks` for a Craft — so neither a bulk `Convert{count:999}` nor a bulk `Craft{count:100}` nor
+a stream of cheap ops can sidestep it; refusals answer with the standing rebase (nothing debited, no XP). ONE bucket for
+both halves, so a client can't run the two drips at once for double the throughput. That gate lives in op validation,
+NOT `apply_alchemy`, so the offline economy is identical and unpaced. **A craft that would vanish into a type's cap is
+refused before any debit** — `Inventory::add` saturates, so the old Water-only guard let a second Resonant Pick take its
+full Metal price and hand back nothing, and the tab's bulk multipliers point at tools too. One number,
+`Inventory::headroom`, is both the refusal and what `AlchView::affordable` greys the button on, so the offer and the
+rule cannot drift; a full cap is not a shortfall, so the detail strip says ALREADY OWNED rather than naming an essence
+that cannot help — and it drops the COST line before the reason, since a three-essence price is long enough to elide the
+one thing that line is for.
 
 While ANY UI surface is open the engine synthesizes cursor + left-button from the primary touch at the top of
 `Engine::input` — one site gives iOS every screen, and no screen knows about touch.

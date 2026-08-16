@@ -59,6 +59,11 @@ pub enum DebugScreen {
 	Skills,
 	/// The alchemy screen's second tab (craft rows, locked rows, costs).
 	Transmute,
+	/// The same tab with a BATCH on the bench: the progress row under the
+	/// button, part-way through a cycle. A paced craft is over in seconds
+	/// and needs a press to start, so this is the only way it reaches a
+	/// capture at all.
+	Transmuting,
 }
 
 impl DebugScreen {
@@ -78,6 +83,7 @@ impl DebugScreen {
 			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
+			"transmuting" => Some(Self::Transmuting),
 			_ => None,
 		}
 	}
@@ -2315,7 +2321,7 @@ impl Engine {
 					}
 				}
 				DebugScreen::Inventory => engine.inv_screen.open(),
-				DebugScreen::Alchemy | DebugScreen::Transmute => {
+				DebugScreen::Alchemy | DebugScreen::Transmute | DebugScreen::Transmuting => {
 					// A mid-curve level so the header's bar, the pace,
 					// and a mix of locked/unlocked rows all photograph.
 					engine
@@ -2326,6 +2332,17 @@ impl Engine {
 						engine
 							.alch_screen
 							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
+					}
+					if screen == DebugScreen::Transmuting {
+						// Stocked well past the batch, so the row reads as
+						// a batch running rather than as one about to be
+						// cut short by the holdings.
+						for e in digblock_core::block::Essence::ALL {
+							engine.inventory.add_sub(e, 5_000);
+						}
+						engine
+							.alch_screen
+							.debug_batch(BlockType::LumberSlab, 7, 0.45);
 					}
 				}
 				DebugScreen::Skills => {
@@ -5766,12 +5783,15 @@ impl Game for Engine {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
 		}
-		// The bench drip: while the extraction slot is occupied, each
-		// completed cycle sends one ordinary single-block Convert (the
-		// server paces the same rhythm with its extraction bucket).
+		// The bench drip: an occupied extraction slot sends one ordinary
+		// single-block Convert per cycle, and a queued transmute batch one
+		// single-item Craft — the server paces the same rhythm out of its
+		// one bench bucket. The view is rebuilt here rather than borrowed
+		// from the draw, so the queue's affordability check reads the same
+		// number the button greys on.
 		if self.alch_screen.is_open() {
-			let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
-			if let Some(act) = self.alch_screen.tick(dt, level, &self.inventory) {
+			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
+			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
 				self.apply_alchemy_action(act);
 			}
 		}

@@ -347,9 +347,10 @@ pub fn base_pace_ticks(level: u32) -> u32 {
 /// base), i.e. what [`base_pace_ticks`] is the pace OF.
 const REF_WORTH: u32 = 9;
 
-/// Floor on the pace, in ticks. Leaves pay a single XP, and a strictly
-/// proportional pace would run them many times a second, which is a stream
-/// of wire ops rather than a bench.
+/// Floor on either pace, in ticks. The cheapest things the bench handles
+/// — a leaf coming apart, a slab going together — are worth a fraction of
+/// the reference block, and a strictly proportional pace would run them
+/// many times a second, which is a stream of wire ops rather than a bench.
 const MIN_PACE_TICKS: u32 = 6;
 
 /// Bench extraction pace in sim ticks for ONE block of `b` at `level`: the
@@ -367,58 +368,113 @@ const MIN_PACE_TICKS: u32 = 6;
 /// faster than the wood it was planed from. Client-paced for presentation,
 /// server-enforced via the extraction token bucket.
 pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
-	let worth = extract_worth(b);
+	pace_ticks(extract_worth(b), level)
+}
+
+/// What ONE craft of `item` is worth at the bench — the same fixed
+/// fraction of its ideal (pre-waste) cost that [`extract_worth`] is of a
+/// block's yield. Zero for anything with no recipe.
+///
+/// Pre-waste on purpose, which is what makes it a property of the ITEM
+/// rather than of the player: two masons at different levels pay different
+/// prices for the same stair and spend the same time making it, exactly as
+/// they extract the same stone at the same pace whatever it yields them.
+pub fn craft_worth(item: BlockType) -> u32 {
+	craft_ideal(item).map_or(0, |lines| {
+		lines.iter().map(|&(_, n)| n).sum::<u32>().div_ceil(3)
+	})
+}
+
+/// Bench TRANSMUTATION pace in sim ticks for ONE `item` at `level` — the
+/// mirror of [`extract_pace_ticks`], off the same curve and the same
+/// reference block, so the bench runs at one rhythm whichever way the
+/// matter is going.
+///
+/// A craft used to be instant, and it was the last place in the economy
+/// where XP arrived in a click: the transmute tab's CTRL multiplier paid a
+/// hundred crafts' worth in one frame. Pacing it is not a nerf to the
+/// award (crafting still pays what it always paid) — it is what makes the
+/// award take the time the work takes, and it puts the two halves of the
+/// bench on the same clock. The catalog's biggest price is now also its
+/// longest hold, which is the reading a forge should have.
+pub fn craft_pace_ticks(item: BlockType, level: u32) -> u32 {
+	pace_ticks(craft_worth(item), level)
+}
+
+/// The shared curve behind both paces: the level's whole-block interval
+/// scaled by what one op is WORTH, floored.
+fn pace_ticks(worth: u32, level: u32) -> u32 {
 	let ticks = (base_pace_ticks(level) * worth + REF_WORTH / 2) / REF_WORTH;
 	ticks.max(MIN_PACE_TICKS)
 }
 
-/// Extraction token-bucket burst, in REFERENCE blocks — absorbs network
+/// Bench token-bucket burst, in REFERENCE blocks — absorbs network
 /// bunching exactly as `EDIT_BURST` does for edits. The bucket itself
-/// banks TICKS (the pace is per-block now), so its capacity is this many
-/// whole-block intervals: [`extract_burst_ticks`].
-pub const EXTRACT_BURST: f32 = 2.0;
+/// banks TICKS (a pace is per-op), so its capacity is this many
+/// whole-block intervals: [`bench_burst_ticks`].
+pub const BENCH_BURST: f32 = 2.0;
 
-/// The block a single extraction costs the most for — the largest
-/// [`extract_worth`] in the catalog.
+/// The most expensive SINGLE bench op a player at `level` is allowed to
+/// ask for, in ticks — an extraction or a craft, whichever is dearer.
 ///
-/// Memoized: the server's token-bucket refill asks for the bucket's
-/// capacity every tick for every connected client, and the answer is a
-/// property of the block table, not of the caller.
-fn costliest_extract_block() -> BlockType {
-	static MAX: std::sync::OnceLock<BlockType> = std::sync::OnceLock::new();
-	*MAX.get_or_init(|| {
-		BlockType::ALL
-			.into_iter()
-			.max_by_key(|&b| extract_worth(b))
-			.unwrap_or(BlockType::Stone)
-	})
+/// Gated on what that level can actually do, not on the whole catalog: a
+/// fresh player banks what a fresh player's ops cost, and the Resonant
+/// Pick's long forge only widens the allowance from the level that can
+/// forge one. Memoized per level, because the server's refill asks for the
+/// bucket's capacity every tick for every connected client and the answer
+/// is a property of the tables rather than of the caller.
+fn costliest_op_ticks(level: u32) -> u32 {
+	static MAX: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+	let table = MAX.get_or_init(|| {
+		(0..=crate::skills::MAX_LEVEL)
+			.map(|l| {
+				BlockType::ALL
+					.into_iter()
+					.map(|b| {
+						let extract = (b.is_extractable() && crate::unlock::can_extract(b, l))
+							.then(|| extract_pace_ticks(b, l));
+						let craft = crate::unlock::can_craft(b, l).then(|| craft_pace_ticks(b, l));
+						extract.into_iter().chain(craft).max().unwrap_or(0)
+					})
+					.max()
+					.unwrap_or(0)
+			})
+			.collect()
+	});
+	table[level.min(crate::skills::MAX_LEVEL) as usize]
 }
 
-/// The extraction bucket's capacity in ticks at `level`: two whole
-/// blocks' worth, or ONE costliest extraction if that is more.
+/// The bench bucket's capacity in ticks at `level`: two whole blocks'
+/// worth, or ONE costliest op if that is more.
 ///
-/// The second half is not a nicety. The bucket banks ticks and a Convert
-/// spends [`extract_pace_ticks`] of them, which scales with the block's
-/// [`extract_worth`] — while the burst was sized off the reference block
-/// alone. The two deepest ores are worth several times that, so their pace
-/// exceeded a FULL bucket at every level and `process_alchemy` refused
-/// them forever: no debit, no yield, no XP, just the standing rebase.
-/// Aether has exactly one source, so that silently walled off the
-/// Master's Sigil, the Aetherlamp and the Resonant Pick — online only,
-/// since offline extraction is unpaced, which is the worst way to find
-/// out. `bases_stay_under_a_block` used to make it impossible
-/// (a base no bigger than a whole block implies a worth of at most
-/// `REF_WORTH`, which implies a pace of at most one reference interval);
-/// ore is the deliberate exception to that bound, so
-/// the guarantee has to be stated here instead, and
-/// `the_bucket_can_always_afford_the_costliest_block` pins it.
+/// ONE bucket for both halves of the bench, because there is one bench and
+/// one pair of hands: extracting and transmuting draw on the same clock,
+/// so a client cannot run both drips at once for double the throughput.
+/// The screen could not anyway — the two live on different tabs — which is
+/// exactly why making it structural costs nothing.
+///
+/// The second half is not a nicety. The bucket banks ticks and an op
+/// spends its own pace, which scales with what that op is WORTH — while
+/// the burst was sized off the reference block alone. The two deepest ores
+/// are worth several times that, so their pace exceeded a FULL bucket at
+/// every level and `process_alchemy` refused them forever: no debit, no
+/// yield, no XP, just the standing rebase. Aether has exactly one source,
+/// so that silently walled off the Master's Sigil, the Aetherlamp and the
+/// Resonant Pick — online only, since offline is unpaced, which is the
+/// worst way to find out. `bases_stay_under_a_block` used to make it
+/// impossible (a base no bigger than a whole block implies a worth of at
+/// most `REF_WORTH`, which implies a pace of at most one reference
+/// interval); ore is the deliberate exception to that bound and the pick's
+/// forge is a second one, so the guarantee has to be stated here instead,
+/// and `the_bucket_can_always_afford_the_costliest_op` pins it.
 ///
 /// Sustained throughput is untouched: the bucket still refills one tick
-/// per tick, so the drip is exactly as slow as it always was. Only the
-/// bunching allowance grows, and only to what a single op actually costs.
-pub fn extract_burst_ticks(level: u32) -> f32 {
-	let reference = EXTRACT_BURST * base_pace_ticks(level) as f32;
-	reference.max(extract_pace_ticks(costliest_extract_block(), level) as f32)
+/// per tick, so the drip is exactly as slow as the pace says. Only the
+/// bunching allowance grows, and only to what a single op actually costs
+/// at that level.
+pub fn bench_burst_ticks(level: u32) -> f32 {
+	let reference = BENCH_BURST * base_pace_ticks(level) as f32;
+	reference.max(costliest_op_ticks(level) as f32)
 }
 
 #[cfg(test)]
@@ -848,52 +904,71 @@ mod tests {
 			}
 		}
 		// The bucket's capacity is two whole blocks' worth, or one
-		// costliest extraction where that is more — see
-		// `the_bucket_can_always_afford_the_costliest_block`.
-		assert_eq!(extract_burst_ticks(1), 110.0);
-		assert_eq!(extract_burst_ticks(99), 55.0);
+		// costliest op available at that level where that is more — see
+		// `the_bucket_can_always_afford_the_costliest_op`.
+		assert_eq!(bench_burst_ticks(1), 110.0);
 		assert_eq!(
-			extract_burst_ticks(1),
-			extract_pace_ticks(costliest_extract_block(), 1) as f32,
-			"the costliest ore is what sets it, not the reference block"
+			bench_burst_ticks(1),
+			extract_pace_ticks(BlockType::Aetherock, 1) as f32,
+			"at the first level the costliest op is still the deepest ore"
+		);
+		// And past the pick's own unlock it is the forge, which is the
+		// longest single hold in the catalog either way.
+		let pick = crate::unlock::craft(BlockType::ResonantPick).expect("a price");
+		assert_eq!(
+			bench_burst_ticks(99),
+			craft_pace_ticks(BlockType::ResonantPick, 99) as f32
+		);
+		assert!(
+			bench_burst_ticks(pick) > bench_burst_ticks(pick - 1),
+			"the allowance widens at the level that can forge one, not before"
 		);
 	}
 
-	/// A full bucket must be able to pay for the costliest single
-	/// extraction, or that block cannot be extracted AT ALL online: the
-	/// server refuses on `extract_tokens < cost` and the tokens never
-	/// reach it, so the op is dropped in silence — no debit, no yield, no
-	/// XP, just the standing rebase. Offline is unpaced, so single-player
-	/// looks perfect while the dedicated server is a wall.
+	/// A full bucket must be able to pay for the costliest single op a
+	/// player at that level may ask for — either half of the bench — or
+	/// that op cannot be done AT ALL online: the server refuses on
+	/// `bench_tokens < cost` and the tokens never reach it, so the op is
+	/// dropped in silence: no debit, no yield, no XP, just the standing
+	/// rebase. Offline is unpaced, so single-player looks perfect while
+	/// the dedicated server is a wall.
 	///
 	/// This used to follow from `bases_stay_under_a_block`: a base of at
-	/// most 27 sub-units means `convert_xp <= REF_XP`, so the pace never
-	/// exceeded one reference interval and two of them always covered it.
-	/// Ore is exempt from that bound — a vein is a concentrate — which
-	/// removed the proof without anyone noticing, and left Glowvein and
-	/// Aetherock permanently un-extractable.
+	/// most a whole block means a worth of at most `REF_WORTH`, so the
+	/// pace never exceeded one reference interval and two of them always
+	/// covered it. Ore is exempt from that bound — a vein is a
+	/// concentrate — which removed the proof without anyone noticing, and
+	/// left Glowvein and Aetherock permanently un-extractable. Crafting is
+	/// the second exemption: a price is not bounded by a block's volume at
+	/// all, and the pick's is an order of magnitude past it.
 	#[test]
-	fn the_bucket_can_always_afford_the_costliest_block() {
+	fn the_bucket_can_always_afford_the_costliest_op() {
 		for &b in &BlockType::ALL {
-			if !b.is_extractable() {
-				continue;
-			}
-			for level in 1..=99 {
-				let cost = extract_pace_ticks(b, level) as f32;
-				let burst = extract_burst_ticks(level);
-				assert!(
-					cost <= burst,
-					"{b:?} at level {level}: one Convert costs {cost} ticks \
-					 against a {burst}-tick bucket — refused forever"
-				);
+			for level in 1..=crate::skills::MAX_LEVEL {
+				let burst = bench_burst_ticks(level);
+				if b.is_extractable() && crate::unlock::can_extract(b, level) {
+					let cost = extract_pace_ticks(b, level) as f32;
+					assert!(
+						cost <= burst,
+						"{b:?} at {level}: one Convert costs {cost} ticks against a \
+						 {burst}-tick bucket — refused forever"
+					);
+				}
+				if crate::unlock::can_craft(b, level) {
+					let cost = craft_pace_ticks(b, level) as f32;
+					assert!(
+						cost <= burst,
+						"{b:?} at {level}: one Craft costs {cost} ticks against a \
+						 {burst}-tick bucket — refused forever"
+					);
+				}
 			}
 		}
-		// And the ores that broke it are genuinely the expensive end.
-		assert!(
-			extract_worth(costliest_extract_block()) > REF_WORTH,
-			"a catalog where the reference block IS the costliest would \
-			 make this test vacuous"
-		);
+		// And the ops that broke it are genuinely the expensive end — a
+		// catalog where the reference block IS the costliest would make
+		// this test vacuous.
+		assert!(extract_worth(BlockType::Aetherock) > REF_WORTH);
+		assert!(craft_worth(BlockType::ResonantPick) > REF_WORTH);
 	}
 
 	/// `extract_total_base` sums the split without building it, so the

@@ -469,14 +469,17 @@ pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
 	})
 }
 
-/// Alchemy XP per crafted batch, scaled down from the ideal cost summed
-/// across the recipe's cost lines (pre-waste — fixed for life). Zero for
-/// uncraftable items.
+/// Alchemy XP per crafted item: what the craft is worth at the bench
+/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
+/// pre-waste cost) — fixed for life. Zero for uncraftable items.
+///
+/// Transmuting still pays what it always paid; what changed is that it
+/// takes the time the work takes, since the bench now paces a craft the
+/// way it paces an extraction (`craft_pace_ticks`). The award and the
+/// pace read the same number for the same reason extraction's do: a thing
+/// worth more to make is worth more to have made.
 pub fn craft_xp(item: BlockType) -> u64 {
-	match crate::alchemy::craft_ideal(item) {
-		Some(lines) => u64::from(lines.iter().map(|&(_, n)| n).sum::<u32>()).div_ceil(3),
-		None => 0,
-	}
+	u64::from(crate::alchemy::craft_worth(item))
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after

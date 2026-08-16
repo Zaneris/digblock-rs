@@ -12,9 +12,8 @@
 //! server enforces the same pace with its extraction token bucket, so
 //! pacing here is presentation, not trust.
 //!
-//! **TRANSMUTE** stays click-based (crafting is a decision, not a
-//! grind): a row of FAMILY tiles whose icons slowly rotate through
-//! their members, the selected family's members wrapped into the
+//! **TRANSMUTE** is a row of FAMILY tiles whose icons slowly rotate
+//! through their members, the selected family's members wrapped into the
 //! inventory grid's columns beneath (locked ones dim with an unlock
 //! badge, affordable ones count-badged), a detail strip, and the tab's
 //! ONE `TRANSMUTE` button
@@ -23,6 +22,18 @@
 //! mirrored by hand, and `every_craftable_appears_in_exactly_one_family`
 //! holds the derivation to the core catalog, so a new craftable cannot
 //! silently miss the screen.
+//!
+//! The button QUEUES that count rather than buying it: crafting drips at
+//! `craft_pace_ticks` exactly as extraction drips at its own pace, with
+//! the batch's progress and what is left of it in the row beneath the
+//! button, and the button itself standing as the batch's CANCEL. It used
+//! to answer instantly, which made the bench's one immediate action also
+//! its fastest XP — a hundred crafts paid in a frame. Crafting pays what
+//! it always paid; it now takes the time the work takes.
+//!
+//! Both drips share one `progress` and one server bucket, because there
+//! is one bench: the tabs are mutually exclusive and leaving one
+//! abandons its drip.
 //!
 //! The screen never mutates game state: `handle_input`/`tick` return
 //! actions; the engine applies them locally offline or sends them to
@@ -157,8 +168,19 @@ pub struct AlchScreen {
 	/// The extraction slot: which block id is being dripped, if any.
 	/// Screen-local UI state, cleared when the screen closes.
 	extracting: Option<BlockType>,
-	/// 0..1 through the current cycle; the in-flight cycle never sends
-	/// its op when interrupted (ops are atomic per block).
+	/// The transmute queue: what the TRANSMUTE button asked for and how
+	/// many of it are still owed. A batch is a QUEUE rather than a single
+	/// bulk op — the same shape the extraction slot has, and what stops
+	/// the CTRL multiplier being a hundred crafts' XP in one frame.
+	crafting: Option<(BlockType, u32)>,
+	/// 0..1 through the current cycle, whichever drip is running; the
+	/// in-flight cycle never sends its op when interrupted (ops are
+	/// atomic per item).
+	///
+	/// ONE field for both, because there is one bench: the tabs are
+	/// mutually exclusive and `set_tab` clears whichever drip it leaves,
+	/// so the two can never be mid-cycle at once — which is the same
+	/// thing the server's single bench bucket says.
 	progress: f32,
 	/// Transmute tab: selected family / member within it. `None` until
 	/// the player picks a family — the tab opens with the family row and
@@ -183,6 +205,7 @@ impl Default for AlchScreen {
 			ctrl: false,
 			drag: DragState::default(),
 			extracting: None,
+			crafting: None,
 			progress: 0.0,
 			family: None,
 			member: 0,
@@ -311,9 +334,10 @@ impl AlchScreen {
 	pub fn close(&mut self) {
 		self.open = false;
 		self.drag.cancel();
-		// Extraction runs only while the screen is open — you stand at
+		// Both drips run only while the screen is open — you stand at
 		// the bench.
 		self.extracting = None;
+		self.crafting = None;
 		self.progress = 0.0;
 		// So does the transmute pick: the tab opens unselected every time.
 		self.family = None;
@@ -324,21 +348,46 @@ impl AlchScreen {
 		self.drag.cancel();
 	}
 
+	/// Capture hook (`DIG_SCREEN=transmuting`): select `item` in its own
+	/// family and put a batch of `count` on the bench, part-way through
+	/// its first cycle.
+	///
+	/// A running batch is a TRANSIENT state — it needs a press, and it is
+	/// over in seconds — so it is exactly the kind of thing headless
+	/// capture cannot otherwise reach, which is how two look-and-feel
+	/// regressions shipped on screens that were only ever driven by hand.
+	pub fn debug_batch(&mut self, item: BlockType, count: u32, into_cycle: f32) {
+		let Some((f, m)) = families().iter().enumerate().find_map(|(f, fam)| {
+			let m = fam.members.iter().position(|&b| b == item)?;
+			Some((f, m))
+		}) else {
+			return;
+		};
+		self.tab = AlchTab::Transmute;
+		self.family = Some(f);
+		self.member = m;
+		self.crafting = Some((item, count));
+		self.progress = into_cycle.clamp(0.0, 1.0);
+	}
+
 	/// Jump straight to a tab (capture harnesses and tests; play
 	/// switches through the tab strip).
 	pub fn set_tab(&mut self, tab: AlchTab) {
 		self.tab = tab;
-		if tab != AlchTab::Extract {
-			self.extracting = None;
-			self.progress = 0.0;
+		// Leaving a tab abandons its drip: the bench does one thing at a
+		// time, and the one shared `progress` depends on it.
+		self.progress = 0.0;
+		match tab {
+			AlchTab::Extract => self.crafting = None,
+			AlchTab::Transmute => self.extracting = None,
 		}
 	}
 
-	/// Advance the drip one frame; returns the op a completed cycle
-	/// sends. Stops (and clears the slot) when the stack runs dry or
-	/// the block stops qualifying — the in-flight cycle simply never
-	/// sends.
-	pub fn tick(&mut self, dt: f32, level: u32, inv: &Inventory) -> Option<AlchAction> {
+	/// Advance whichever drip this tab runs, one frame; returns the op a
+	/// completed cycle sends. Both stop (and clear themselves) the moment
+	/// their work stops qualifying — the stack runs dry, the queue can no
+	/// longer be paid for — and the in-flight cycle simply never sends.
+	pub fn tick(&mut self, dt: f32, view: &AlchView, inv: &Inventory) -> Option<AlchAction> {
 		// The family tiles' rotation runs whenever the screen is open
 		// (wrapped far below any f32 precision cliff).
 		self.clock = (self.clock + dt) % 3600.0;
@@ -348,27 +397,61 @@ impl AlchScreen {
 				self.hint = None;
 			}
 		}
-		if self.tab != AlchTab::Extract {
-			return None;
-		}
-		let Some(block) = self.extracting else {
-			self.progress = 0.0;
-			return None;
+		let level = view.level;
+		// What this tab is working on and how long one of them takes. A
+		// pace is the ITEM's, not just the level's: a bench spends its
+		// time in proportion to what passes through it, whichever
+		// direction the matter is going.
+		let (pace_ticks, act) = match self.tab {
+			AlchTab::Extract => {
+				let Some(block) = self.extracting else {
+					self.progress = 0.0;
+					return None;
+				};
+				if inv.count(block) == 0 || !unlock::can_extract(block, level) {
+					self.extracting = None;
+					self.progress = 0.0;
+					return None;
+				}
+				(
+					alchemy::extract_pace_ticks(block, level),
+					AlchAction::Convert { block, count: 1 },
+				)
+			}
+			AlchTab::Transmute => {
+				let Some((item, _)) = self.crafting else {
+					self.progress = 0.0;
+					return None;
+				};
+				// Re-asked every frame against the SAME number the button
+				// greys on, so a queue outliving its essence (a rebase
+				// landing, or the tool cap filling on the first one) ends
+				// where the offer would have been withdrawn.
+				if view.affordable(item) == 0 {
+					self.crafting = None;
+					self.progress = 0.0;
+					return None;
+				}
+				(
+					alchemy::craft_pace_ticks(item, level),
+					AlchAction::Craft { item, count: 1 },
+				)
+			}
 		};
-		if inv.count(block) == 0 || !unlock::can_extract(block, level) {
-			self.extracting = None;
-			self.progress = 0.0;
+		self.progress += dt / (pace_ticks as f32 / 60.0);
+		if self.progress < 1.0 {
 			return None;
 		}
-		// The pace is the BLOCK's, not just the level's: a bench spends
-		// its time in proportion to what comes out.
-		let pace_secs = alchemy::extract_pace_ticks(block, level) as f32 / 60.0;
-		self.progress += dt / pace_secs;
-		if self.progress >= 1.0 {
-			self.progress -= 1.0;
-			return Some(AlchAction::Convert { block, count: 1 });
+		self.progress -= 1.0;
+		// A finished craft is one off the queue; the last one ends it.
+		if let Some((_, left)) = &mut self.crafting {
+			*left -= 1;
+			if *left == 0 {
+				self.crafting = None;
+				self.progress = 0.0;
+			}
 		}
-		None
+		Some(act)
 	}
 
 	/// Emit the screen. The whole page shares one fitted style: this is
@@ -999,25 +1082,42 @@ impl AlchScreen {
 			if locked { DIM } else { WHITE },
 			&elide(&ui.style, &text, avail),
 		);
+		// While a batch runs the one button is its STOP — the same shape
+		// the extraction slot has, where clicking the occupied slot ends
+		// the drip.
+		let running = self.crafting;
 		widgets::button(
 			ui,
 			InvId::CraftGo,
 			btn,
-			"TRANSMUTE",
-			!locked && batches > 0,
+			if running.is_some() {
+				"CANCEL"
+			} else {
+				"TRANSMUTE"
+			},
+			running.is_some() || (!locked && batches > 0),
 			btn.contains(cx, cy),
 		);
 		y += strip_h + theme::ROW_GAP * s;
+		// The row under the button is the modifier legend when the bench
+		// is idle and the batch's own progress when it is not: a craft is
+		// paced now, so it needs somewhere to say how far along it is and
+		// how many are still owed. It names its own item rather than
+		// borrowing the strip's, which follows the SELECTION and may have
+		// moved on while the batch runs.
+		let queued = running.map(|(item, left)| format!("{}   ·   {left} LEFT", block_name(item)));
 		widgets::row(
 			ui.dl,
 			&ui.style,
 			Layer::Content,
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
-				text: "CLICK 1   ·   SHIFT 10   ·   CTRL 100",
+				text: queued
+					.as_deref()
+					.unwrap_or("CLICK 1   ·   SHIFT 10   ·   CTRL 100"),
 				right: None,
-				bar: None,
-				color: DIM,
+				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
+				color: if queued.is_some() { WHITE } else { DIM },
 				highlight: false,
 				caret: false,
 			},
@@ -1121,6 +1221,14 @@ impl AlchScreen {
 						}
 					}
 					InvId::CraftGo => {
+						// Pressing it again while a batch is running stops
+						// it, exactly as clicking the occupied extraction
+						// slot stops that drip — one control, both ways.
+						if self.crafting.is_some() {
+							self.crafting = None;
+							self.progress = 0.0;
+							return None;
+						}
 						let family = &families()[self.family?.min(families().len() - 1)];
 						let item = *family.members.get(self.member)?;
 						let want = if self.ctrl {
@@ -1130,8 +1238,18 @@ impl AlchScreen {
 						} else {
 							1
 						};
+						// QUEUED, not sent: `tick` drips one `Craft` per
+						// interval out of this, so a hundred-item batch is
+						// a hundred paced crafts rather than a frame's
+						// worth of XP. The clamp is unchanged — the offer
+						// is still what the holdings afford right now, and
+						// the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
-						return (count > 0).then_some(AlchAction::Craft { item, count });
+						if count > 0 {
+							self.crafting = Some((item, count));
+							self.progress = 0.0;
+						}
+						return None;
 					}
 				}
 				None
@@ -1457,10 +1575,10 @@ mod tests {
 
 		// Half a cycle: nothing sent.
 		let pace = alchemy::extract_pace_ticks(B::Rubble, 1) as f32 / 60.0;
-		assert_eq!(r.screen.tick(pace * 0.5, 1, &r.inv), None);
+		assert_eq!(r.screen.tick(pace * 0.5, &r.view, &r.inv), None);
 		// Completing the cycle sends exactly one single-block op.
 		assert_eq!(
-			r.screen.tick(pace * 0.6, 1, &r.inv),
+			r.screen.tick(pace * 0.6, &r.view, &r.inv),
 			Some(AlchAction::Convert {
 				block: B::Rubble,
 				count: 1
@@ -1476,7 +1594,7 @@ mod tests {
 			1
 		));
 		assert_eq!(
-			r.screen.tick(pace * 1.1, 1, &r.inv),
+			r.screen.tick(pace * 1.1, &r.view, &r.inv),
 			Some(AlchAction::Convert {
 				block: B::Rubble,
 				count: 1
@@ -1491,7 +1609,7 @@ mod tests {
 			1
 		));
 		// Dry: the slot clears and nothing more is ever sent.
-		assert_eq!(r.screen.tick(pace * 2.0, 1, &r.inv), None);
+		assert_eq!(r.screen.tick(pace * 2.0, &r.view, &r.inv), None);
 		assert_eq!(r.screen.extracting, None, "slot cleared on dry");
 	}
 
@@ -1546,7 +1664,7 @@ mod tests {
 		assert_eq!(r.screen.extracting, Some(B::Water));
 		let pace = alchemy::extract_pace_ticks(B::Water, 20) as f32 / 60.0;
 		assert_eq!(
-			r.screen.tick(pace * 1.01, 20, &r.inv),
+			r.screen.tick(pace * 1.01, &r.view, &r.inv),
 			Some(AlchAction::Convert {
 				block: B::Water,
 				count: 1
@@ -1567,8 +1685,94 @@ mod tests {
 		assert!(r.hits.rect_of(InvId::BucketTile).is_none(), "tile gone");
 	}
 
+	/// A batch DRIPS: one paced `Craft { count: 1 }` per interval, with a
+	/// progress line under the button counting what is left, until the
+	/// queue empties or the essence does.
+	///
+	/// This is the whole point of pacing a craft. The CTRL multiplier used
+	/// to pay a hundred crafts' XP in one frame, which made the bench's
+	/// one instant action also its fastest XP — the transmute half now
+	/// runs on the same clock the extraction half always did, out of the
+	/// same server bucket.
+	#[test]
+	fn a_transmute_batch_drips_instead_of_paying_at_once() {
+		let mut r = rig_at(20, |inv| inv.add_sub(Essence::Flora, 500));
+		let press = |r: &mut Rig, at: (f32, f32)| {
+			feed(r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+			feed(
+				r,
+				&InputEvent::MouseButton {
+					button: MouseButton::Left,
+					pressed: true,
+				},
+			)
+		};
+		let tab = center(r.hits.rect_of(InvId::Tab(1)).unwrap());
+		press(&mut r, tab);
+		rebuild(&mut r);
+		let slabs = families()
+			.iter()
+			.position(|f| f.name == "SLABS")
+			.expect("a SLABS family");
+		let at = center(r.hits.rect_of(InvId::Family(slabs as u8)).unwrap());
+		press(&mut r, at);
+		rebuild(&mut r);
+		feed(
+			&mut r,
+			&InputEvent::Key {
+				key: Key::Shift,
+				pressed: true,
+			},
+		);
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		press(&mut r, go);
+		assert_eq!(
+			r.screen.crafting,
+			Some((B::WoodSlab, 10)),
+			"SHIFT queues 10"
+		);
+
+		// Half a cycle pays nothing — the same shape the extract drip has.
+		let pace = alchemy::craft_pace_ticks(B::WoodSlab, 20) as f32 / 60.0;
+		assert_eq!(r.screen.tick(pace * 0.5, &r.view, &r.inv), None);
+		let one = Some(AlchAction::Craft {
+			item: B::WoodSlab,
+			count: 1,
+		});
+		assert_eq!(r.screen.tick(pace * 0.6, &r.view, &r.inv), one);
+		assert_eq!(
+			r.screen.crafting,
+			Some((B::WoodSlab, 9)),
+			"one off the queue"
+		);
+
+		// The row under the button is the batch's own progress while it
+		// runs, and the modifier legend again once it stops.
+		rebuild(&mut r);
+		let text = text_of(&r);
+		assert!(
+			text.contains("9 LEFT"),
+			"the batch says what is left: {text}"
+		);
+		assert!(!text.contains("CLICK 1"), "the legend steps aside: {text}");
+
+		// Spend the essence out from under it: the queue withdraws exactly
+		// where the button would have greyed, rather than running on
+		// against a rebase that can no longer pay.
+		let flora = r.inv.sub_count(Essence::Flora);
+		assert!(
+			r.inv.try_take_sub(Essence::Flora, flora),
+			"drain the holdings"
+		);
+		rebuild(&mut r);
+		assert_eq!(r.screen.tick(pace * 1.1, &r.view, &r.inv), None);
+		assert_eq!(r.screen.crafting, None, "a queue nobody can pay for ends");
+		rebuild(&mut r);
+		assert!(text_of(&r).contains("CLICK 1"), "the legend is back");
+	}
+
 	/// The transmute flow: pick a family tile, pick a member, and the
-	/// tab's ONE button crafts it — multipliers clamp to affordability,
+	/// tab's ONE button queues it — multipliers clamp to affordability,
 	/// and a locked selection disables the button outright (no hit).
 	#[test]
 	fn family_selection_and_the_single_transmute_button() {
@@ -1631,13 +1835,17 @@ mod tests {
 		);
 		let batches = r.view.affordable(B::WoodSlab);
 		assert!(batches > 0 && batches < 100, "clamp is meaningful");
-		assert_eq!(
-			press(&mut r, go),
-			Some(AlchAction::Craft {
-				item: B::WoodSlab,
-				count: batches
-			})
-		);
+		// The press QUEUES the batch rather than paying for it: the count
+		// is still what the holdings afford, but it is spent one paced
+		// craft at a time (`a_transmute_batch_drips_instead_of_paying_at_once`).
+		assert_eq!(press(&mut r, go), None, "the button starts a batch");
+		assert_eq!(r.screen.crafting, Some((B::WoodSlab, batches)));
+		// Pressing it again is the stop, so the bench is idle for the
+		// selection checks below.
+		rebuild(&mut r);
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		assert_eq!(press(&mut r, go), None);
+		assert_eq!(r.screen.crafting, None, "the second press cancels");
 		feed(
 			&mut r,
 			&InputEvent::Key {
@@ -1651,18 +1859,17 @@ mod tests {
 		// the material's own level and planed timber is the first
 		// substance the bench makes in cube form. (The felled log is not
 		// here: the world hands you that one, so it has no recipe.) The
-		// one button crafts THAT.
+		// one button queues THAT.
 		let blocks = center(r.hits.rect_of(family("BLOCKS")).unwrap());
 		press(&mut r, blocks);
 		rebuild(&mut r);
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
-		assert_eq!(
-			press(&mut r, go),
-			Some(AlchAction::Craft {
-				item: B::Lumber,
-				count: 1
-			})
-		);
+		assert_eq!(press(&mut r, go), None);
+		assert_eq!(r.screen.crafting, Some((B::Lumber, 1)));
+		rebuild(&mut r);
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		press(&mut r, go);
+		assert_eq!(r.screen.crafting, None, "back to idle");
 		// A member locked at this rig's level: the tile still shows (the
 		// strip names the level it wants), but the single button registers
 		// no hit — honest pixels, not a trap.
@@ -1886,13 +2093,23 @@ mod tests {
 
 		assert_eq!(r.view.affordable(B::ResonantPick), 1, "one, never a batch");
 		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		assert_eq!(press(&mut r, go), None, "the press queues the forge");
+		// And the forge takes the longest hold in the catalog — the
+		// biggest price is the biggest piece of work.
+		let pace = alchemy::craft_pace_ticks(B::ResonantPick, 99) as f32 / 60.0;
+		assert!(
+			pace > alchemy::craft_pace_ticks(B::LumberSlab, 99) as f32 / 60.0,
+			"a pick should not forge as fast as a slab"
+		);
+		assert_eq!(r.screen.tick(pace * 0.9, &r.view, &r.inv), None, "mid-hold");
 		assert_eq!(
-			press(&mut r, go),
+			r.screen.tick(pace * 0.2, &r.view, &r.inv),
 			Some(AlchAction::Craft {
 				item: B::ResonantPick,
 				count: 1
 			})
 		);
+		assert_eq!(r.screen.crafting, None, "a batch of one ends with it");
 
 		// The server's answer arrives: it's in the bag. The offer closes.
 		r.inv.add(B::ResonantPick, 1);

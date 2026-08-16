@@ -213,10 +213,17 @@ earned line).
 XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for life, RS-style. Extraction XP is
 paid for reducing what the WORLD made and nothing for undoing your own work, which is what stops the two rows above
 composing into a converter from essence into levels; the bench's PACE keeps following a block's worth either way, so a
-planed timber comes apart no faster than the log it was cut from. Extraction XP arrives **dripped**: the extract tab
-sends one `Convert { count: 1 }` per completed cycle (§8.1), so a hoard of stone is a long steady pull of Alch XP at the
-bench rather than a click — feeding the coalescing XP toast a steady pulse. `ALCHEMY_MAX_COUNT` stays in the protocol
-untouched (crafting multipliers still batch, and the wire doesn't care who paces it).
+planed timber comes apart no faster than the log it was cut from.
+
+**Both halves of the bench arrive dripped.** The extract tab sends one `Convert { count: 1 }` per completed cycle and
+the transmute tab one `Craft { count: 1 }` (§8.1), so a hoard of stone and a hundred-slab batch are each a long steady
+pull of Alch XP rather than a click — feeding the coalescing XP toast a steady pulse. Crafting was the exception until
+it wasn't: it answered instantly, which made the bench's one immediate action also its fastest XP by a wide margin, and
+one CTRL press paid a hundred crafts in a frame. The award did not change and should not — transmuting is the skill's
+main verb — but it now takes the time the work takes, off the same `base_pace_ticks` curve scaled by
+`alchemy::craft_worth`. The catalog's biggest price is therefore also its longest hold, which is the reading a forge
+should have. `ALCHEMY_MAX_COUNT` stays in the protocol untouched: the multipliers still choose a batch size, and the
+wire doesn't care who paces it.
 
 ### 4.2 Transmutation cost
 
@@ -822,16 +829,22 @@ load-bearing:
   the Aqua paid out, tile gone.
 - Extraction runs **only while the screen is open**. No AFK-extraction-while-mining; you stand at the bench.
 
-TRANSMUTE stays click-based (crafting is a decision, not a grind), structured as **families with one button** (reworked
-to this shape during the build, on feedback that the flat row list didn't read): a row of FAMILY tiles — SLABS, STAIRS,
-DOORS, BLOCKS, WATER — each slowly rotating its icon through its members (wood stairs, stone stairs, …) on a shared
-clock; selecting a family lays its member tiles out beneath (locked members visible but dim, affordable ones badged with
-their batch count); a detail strip shows the selected member's name and post-waste cost at your level; and the tab has
-exactly ONE `TRANSMUTE` button, disabled (no hit rect) for a locked or unaffordable pick.
-`CLICK 1 · SHIFT 10 · CTRL
-100` multipliers on that button. This is also the §7.2 grid's natural UI: a new material ×
-shape pair is one more member in an existing family, so the catalog grows without the screen growing.
-Tools/essence-exchange rows join as families when they land (M4+). `fit_scale` remains the overflow fallback.
+TRANSMUTE is structured as **families with one button** (reworked to this shape during the build, on feedback that the
+flat row list didn't read): a row of FAMILY tiles — SLABS, STAIRS, DOORS, BLOCKS, … — each slowly rotating its icon
+through its members (wood stairs, stone stairs, …) on a shared clock; selecting a family lays its member tiles out
+beneath (locked members visible but dim, affordable ones badged with their batch count); a detail strip shows the
+selected member's name and post-waste cost at your level; and the tab has exactly ONE `TRANSMUTE` button, disabled (no
+hit rect) for a locked or unaffordable pick. `CLICK 1 · SHIFT 10 · CTRL
+100` multipliers on that button.
+
+That button **queues** its count rather than buying it. A batch drips one paced craft at a time exactly as a stack drips
+one paced extraction, the row beneath carries the batch's progress bar and what is left of it, and the button stands as
+its CANCEL — the same shape clicking the occupied extraction slot has. It used to answer instantly, which was the last
+place in the game where XP arrived in a click (§4.1). Like extraction, a batch runs **only while the screen is open**,
+and the two never run at once: leaving a tab abandons its drip, and the server's one bench bucket says the same thing.
+This is also the §7.2 grid's natural UI: a new material × shape pair is one more member in an existing family, so the
+catalog grows without the screen growing. Tools/essence-exchange rows join as families when they land (M4+). `fit_scale`
+remains the overflow fallback.
 
 ### 8.2 Character screen
 
@@ -926,9 +939,11 @@ expand the full unlock list; v1 is the summary.
   writes its own entry.
 - `grid_gates_compose` — every authored material × shape pair unlocks at exactly `max(shape level, material level)`; no
   curated stragglers.
-- `extraction_pace_is_server_enforced` — Convert ops beyond `pace(block, level)` refuse with no debit and no XP;
-  sustained throughput of a flooding client ≤ honest throughput at the same level; `count > 1` charges the bucket per
-  block, not per op.
+- `extraction_pace_is_server_enforced` and its transmute twin `transmuting_draws_on_the_same_bench_bucket_as_extracting`
+  — ops beyond `pace(item, level)` refuse with no debit and no XP; sustained throughput of a flooding client ≤ honest
+  throughput at the same level; `count > 1` charges the bucket per item, not per op; and a craft spends the ticks an
+  extraction would have used, because there is one bench. `the_bucket_can_always_afford_the_costliest_op` covers the
+  other end: an op no full bucket can hold is an op refused forever, online only.
 - Reveal remesh: crossing a threshold bumps resident generation counters exactly once.
 - `every_screen_draws_text_at_one_size` / `..dims_and_panels_the_same_way` extended to the character screen and the
   rebuilt alchemy screen (every window size × scale pair those two sweep).
