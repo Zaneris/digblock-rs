@@ -227,18 +227,22 @@ For `just run`:
   transient, so it is otherwise invisible to capture), `DIG_CRACK=<percent>` (pins the dig-crack decal at that progress
   and stands a wall just ahead to hold it — the crack is input-driven and a hold is over in a second, so a SWEEP of
   these runs is the only way to see whether it spreads or just fades in; `--pitch` picks the row, and a run at 0 is the
-  geometry-identical control since the shader's crack branch is gated on progress), `DIG_DOORS=1` (a rank of door pairs
-  just ahead — closed, open and edge-on — with plain Lumber columns beside them as the tint reference, and Alchemy
-  raised out of `unlock::pickup` so the craft-only leaf is `diggable` and therefore outlines at all; DIG_SHAPES also
-  stands every door variant but stands them further out behind stair rows sharing their x columns, which projects
-  straight over every lower half, so the seam a door is judged on — one object, two cells — is the one thing that scene
-  cannot show), `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil`
-  (opens that page at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and
-  invisible to headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the
-  viewmodel is visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a
-  torch — `hand` cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the
-  three tool names cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail
-  at once).
+  geometry-identical control since the shader's crack branch is gated on progress), `DIG_SIPHON=<percent>` (pins the
+  essence draw at that progress on the vein under the crosshair — the same sweep argument, since one still cannot tell a
+  stream that thickens from one that merely brightens. Unlike the crack it cannot stand its own scene, because a vein is
+  derived worldgen and there is no placing one: it RIDES `DIG_ORE`, is fatal without it, and defaults
+  `DIG_SCREEN=siphon` for the tool and `--pitch` level so the ray goes through the deposit's middle row rather than the
+  floor plate in front of it), `DIG_DOORS=1` (a rank of door pairs just ahead — closed, open and edge-on — with plain
+  Lumber columns beside them as the tint reference, and Alchemy raised out of `unlock::pickup` so the craft-only leaf is
+  `diggable` and therefore outlines at all; DIG_SHAPES also stands every door variant but stands them further out behind
+  stair rows sharing their x columns, which projects straight over every lower half, so the seam a door is judged on —
+  one object, two cells — is the one thing that scene cannot show),
+  `DIG_SCREEN=menu|inventory|alchemy|transmute|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil` (opens that page
+  at startup, stocking the inventory AND the crafted tools — the pages are otherwise input-only and invisible to
+  headless capture, which is how two look-and-feel regressions shipped; `hand` just stocks the bar so the viewmodel is
+  visible, `bucket`/`bucket-full` select the water tool empty or charged, `torch` stocks AND SELECTS a torch — `hand`
+  cannot serve, because `reconcile_layout` files by block id and lands Dirt in the first slot — and the three tool names
+  cycle the roster to that tool so its authored geometry photographs in the hand, the slot and the rail at once).
 - **Capture gotchas**: `--size` sets logical size but the physical framebuffer follows the display's backing scale —
   verify capture pixel dimensions before comparing frame-time runs. On a multi-monitor desk the window opens wherever
   the desktop last had focus, so **`--display N` (R27) is mandatory for any frame-time bracket**: refresh rate rides the
@@ -977,6 +981,23 @@ Three rules bite if broken:
   rebase carries the counts. The CELL is still predicted, so the vein turns spent under the hand. (`DepletedStone`, the
   one grey face all four tiers used to leave, is kept and unreachable — cells written before the per-tier rocks existed
   still name it.)
+- **The draw has its own effect, because the crack would lie.** A dig crack is fractures spreading over rock about to
+  fall, and a drawn seam leaves the mountain standing — which is why `dig_progress` returns the outline and no crack
+  here. `siphon.rs`/`siphon.wgsl` is what it returns it in favour of: motes of the tier's own `ore_flecks` colour lift
+  off the struck face and stream into the tool, over a kindle on the face that whitens as the hold builds. Stateless in
+  spray/confetti's sense — the CPU owns one instance plus an envelope, and every mote's flight is a pure function of
+  that and the shared animation clock — and the ONE effect drawn additively, so it takes the medium's transmittance and
+  must never in-scatter sky. Two things hold it together: the motes converge on `gi::carried_origin`, handed over rather
+  than recomputed, so the stream ends exactly where the siphon's own glow hangs; and a completed draw flares by starting
+  its fade-out above full (`siphon::FLARE`), which is why `SiphonDraw` outlives the hold — the cell is spent rock by
+  then, and there is no vein left to ask where the motes were coming from.
+- **And its own two sounds, for the same reason.** `Sfx::SiphonDraw` is a resonant loop that replaces the dig loop's
+  hammer blows on the SAME hold voice (`LOOP_DIG`), so every stop path — release, cancel, completion, world swap —
+  already covers it and the existing pitch ramp reads as the resonance winding up; `Sfx::SiphonTake` replaces the
+  `break_sfx` at completion, because nothing shattered. Both were resolving through `material_of` the ore, which is
+  rock, so a field extraction used to sound exactly like quarrying one. The take FALLS where both level cues rise —
+  shape, not key, is what keeps taking a seam from reading as gaining a level. Recipes in `assets/sfx/SOURCES.md`, and
+  those two are the entries whose seeds and Ogg serial are pinned, so a re-run reproduces the committed bytes.
 
 The GI window's class byte is the capacity to watch: `gi::SHAPE_CLASS_BASE` splits the byte between full-cube ids and
 shaped covers, a shaped MATERIAL costs a dozen-odd covers, and the pin reports the remaining headroom.

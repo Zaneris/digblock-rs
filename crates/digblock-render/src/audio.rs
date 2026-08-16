@@ -32,6 +32,8 @@ pub enum Sfx {
 	AmbientWind,
 	AmbientWater,
 	AmbientCave,
+	SiphonDraw,
+	SiphonTake,
 	LevelUp,
 	LevelUnlock,
 }
@@ -58,13 +60,15 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::AmbientWind => a::AMBIENT_WIND,
 		Sfx::AmbientWater => a::AMBIENT_WATER,
 		Sfx::AmbientCave => a::AMBIENT_CAVE,
+		Sfx::SiphonDraw => a::SIPHON_DRAW,
+		Sfx::SiphonTake => a::SIPHON_TAKE,
 		Sfx::LevelUp => a::LEVEL_UP,
 		Sfx::LevelUnlock => a::LEVEL_UNLOCK,
 	}
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 18] = [
+pub const ALL_SFX: [Sfx; 20] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -81,6 +85,8 @@ pub const ALL_SFX: [Sfx; 18] = [
 	Sfx::AmbientWind,
 	Sfx::AmbientWater,
 	Sfx::AmbientCave,
+	Sfx::SiphonDraw,
+	Sfx::SiphonTake,
 	Sfx::LevelUp,
 	Sfx::LevelUnlock,
 ];
@@ -187,6 +193,30 @@ pub fn break_sfx(m: Material) -> Sfx {
 		Material::Stone => Sfx::BreakStone,
 		Material::Earth => Sfx::BreakEarth,
 		Material::Wood => Sfx::BreakWood,
+	}
+}
+
+/// The two sounds a hold speaks: the loop while it runs, and the one-shot
+/// it lands on. `extracting` says whether this hold is a field extraction
+/// rather than a dig.
+///
+/// One function because the pair has to agree with itself — a hold that
+/// hums and then shatters is worse than one that does neither — and
+/// because the pair is exactly what a draw has to override. Both halves
+/// used to resolve through [`material_of`], which for an ore is rock, so
+/// drawing a seam sounded precisely like quarrying one out: the same
+/// thing the dig crack says visually, and the reason `dig_progress`
+/// declines to draw one over a vein.
+///
+/// The `block` each half is asked about is still the caller's, because
+/// the two are read at different moments — the loop at the hold's start,
+/// the finish against the cell as it stood when it gave way.
+pub fn dig_voice(extracting: bool, block: BlockType) -> (Sfx, Sfx) {
+	if extracting {
+		(Sfx::SiphonDraw, Sfx::SiphonTake)
+	} else {
+		let m = material_of(block);
+		(dig_sfx(m), break_sfx(m))
 	}
 }
 
@@ -622,6 +652,39 @@ mod tests {
 	fn every_sfx_has_nonempty_bytes() {
 		for s in ALL_SFX {
 			assert!(!bytes(s).is_empty(), "{s:?}");
+		}
+	}
+
+	/// A draw and a dig speak different languages at BOTH ends, and the
+	/// two vocabularies never overlap.
+	///
+	/// The disjointness is the real assertion. An extraction reads as a
+	/// draw only for as long as nothing it plays is also what breaking
+	/// rock plays — and rock is exactly what the old mapping resolved a
+	/// vein to, so the failure mode here is not hypothetical.
+	#[test]
+	fn a_field_draw_never_sounds_like_a_dig() {
+		use digblock_core::block::BlockType as B;
+		for ore in [B::Emberore, B::Duskstone, B::Glowvein, B::Aetherock] {
+			assert_eq!(
+				dig_voice(true, ore),
+				(Sfx::SiphonDraw, Sfx::SiphonTake),
+				"{ore:?} drawn"
+			);
+			// The same block DUG — the spent rock left behind, quarried
+			// with an ordinary tool — still sounds like the rock it is.
+			assert_eq!(
+				dig_voice(false, ore),
+				(Sfx::DigStone, Sfx::BreakStone),
+				"{ore:?} dug"
+			);
+		}
+		let dig: Vec<Sfx> = [Material::Stone, Material::Earth, Material::Wood]
+			.into_iter()
+			.flat_map(|m| [dig_sfx(m), break_sfx(m)])
+			.collect();
+		for s in [Sfx::SiphonDraw, Sfx::SiphonTake] {
+			assert!(!dig.contains(&s), "{s:?} doubles as a dig sound");
 		}
 	}
 

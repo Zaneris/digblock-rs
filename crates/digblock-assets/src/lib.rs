@@ -155,13 +155,20 @@ pub mod sfx {
 	pub const AMBIENT_WIND: &[u8] = include_bytes!("../../../assets/sfx/ambient_wind.ogg");
 	pub const AMBIENT_WATER: &[u8] = include_bytes!("../../../assets/sfx/ambient_water.ogg");
 	pub const AMBIENT_CAVE: &[u8] = include_bytes!("../../../assets/sfx/ambient_cave.ogg");
+	/// The Essence Siphon working a vein: a seamless resonant loop, played
+	/// on the hold voice in place of the dig loop's hammer blows.
+	pub const SIPHON_DRAW: &[u8] = include_bytes!("../../../assets/sfx/siphon_draw.ogg");
+	/// The draw landing — a bright glint settling onto the loop's own
+	/// upper partial. Falls where both level cues rise, so taking a seam
+	/// can never be mistaken for gaining a level.
+	pub const SIPHON_TAKE: &[u8] = include_bytes!("../../../assets/sfx/siphon_take.ogg");
 	/// The ordinary level-up chime: a rising fifth.
 	pub const LEVEL_UP: &[u8] = include_bytes!("../../../assets/sfx/level_up.ogg");
 	/// The level-up that OPENS something: a four-note fanfare on top of
 	/// the same tonic, so the two read as the same event, escalated.
 	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
 
-	pub const ALL: [(&str, &[u8]); 18] = [
+	pub const ALL: [(&str, &[u8]); 20] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -178,6 +185,8 @@ pub mod sfx {
 		("ambient_wind.ogg", AMBIENT_WIND),
 		("ambient_water.ogg", AMBIENT_WATER),
 		("ambient_cave.ogg", AMBIENT_CAVE),
+		("siphon_draw.ogg", SIPHON_DRAW),
+		("siphon_take.ogg", SIPHON_TAKE),
 		("level_up.ogg", LEVEL_UP),
 		("level_unlock.ogg", LEVEL_UNLOCK),
 	];
@@ -260,6 +269,15 @@ pub mod shader {
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
 	);
+	/// The essence draw — the Essence Siphon's motes and face kindle. No
+	/// sky prelude, unlike its two billboard siblings: it is drawn
+	/// ADDITIVELY, so it takes the medium's transmittance halves and must
+	/// never in-scatter sky into an emissive term.
+	pub const SIPHON: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/siphon.wgsl"),
+	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
@@ -327,7 +345,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 20] = [
+	pub const ALL: [(&str, &str); 21] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("sky.wgsl", SKY),
@@ -336,6 +354,7 @@ pub mod shader {
 		("depth_blit.wgsl", DEPTH_BLIT),
 		("spray.wgsl", SPRAY),
 		("confetti.wgsl", CONFETTI),
+		("siphon.wgsl", SIPHON),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),

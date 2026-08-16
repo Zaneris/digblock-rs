@@ -19,6 +19,7 @@ mod pipeline_builder;
 mod players;
 mod renderer;
 pub mod settings;
+mod siphon;
 mod sky;
 mod smoothing;
 mod spray;

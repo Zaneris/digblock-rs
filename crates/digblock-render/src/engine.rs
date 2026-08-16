@@ -257,6 +257,16 @@ pub struct EngineConfig {
 	/// A sweep of runs over 0..1 is what shows the break spreading. Set
 	/// by the desktop launcher from DIG_CRACK.
 	pub debug_crack: Option<f32>,
+	/// Debug: pin the essence draw at this progress (0..1) on whatever
+	/// vein the crosshair is holding. `DIG_CRACK`'s argument exactly — a
+	/// draw is input-driven and over in a second or two — with one
+	/// difference that shapes the flag: this one cannot stand its own
+	/// scene, because a vein is derived worldgen and there is no placing
+	/// one. It rides `DIG_ORE`, which already hollows a chamber around a
+	/// deposit of a tier and grants the level that reveals it, and the
+	/// launcher refuses the pair unset rather than capturing an empty
+	/// wall. Set by the desktop launcher from DIG_SIPHON.
+	pub debug_siphon: Option<f32>,
 	/// Debug: open a UI screen at startup with a stocked inventory, so a
 	/// headless `--screenshot` run can capture it. Set by the desktop
 	/// launcher from DIG_SCREEN.
@@ -428,6 +438,7 @@ impl EngineConfig {
 			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
+			debug_siphon: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
@@ -490,6 +501,7 @@ impl EngineConfig {
 			debug_playerbox: None,
 			debug_confetti: false,
 			debug_crack: None,
+			debug_siphon: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
@@ -756,6 +768,10 @@ pub struct Engine {
 	/// same spot don't throw identical paper. Deliberately a counter
 	/// rather than an RNG: nothing here needs to be unpredictable.
 	confetti_seq: u32,
+	/// The live essence draw, aged by `step_siphon`. World state for the
+	/// same reason confetti is: it names a cell, and a world swap must
+	/// forget it.
+	siphon: Option<SiphonDraw>,
 	/// Reconciliation health, logged on a slow cadence while connected.
 	net_corrections: u32,
 	net_error_accum: f32,
@@ -960,6 +976,31 @@ impl DigProgress {
 			u32::from(self.idle),
 		) as u16
 	}
+}
+
+/// The essence draw the siphon is running, if any — presentation only,
+/// and the whole of what [`crate::siphon`] needs to draw a stream.
+///
+/// The geometry is kept through the fade-OUT rather than dropped with the
+/// hold, which is the only reason this is a struct and not a query. A
+/// completed extraction turns the cell to spent rock on the frame it
+/// lands, so by the time there is anything to flare about there is no
+/// vein left to ask where the motes were coming from.
+#[derive(Clone, Copy)]
+struct SiphonDraw {
+	/// Centre of the face the motes lift off: the cell's own centre,
+	/// pushed out half a block along the struck normal.
+	source: Vec3,
+	/// The face itself, as the raycast's unit normal.
+	normal: (i32, i32, i32),
+	/// The vein's own colour (`BlockType::ore_flecks`), so a tier's motes
+	/// and its cast light are the same statement.
+	tint: [f32; 3],
+	/// How far through the hold, 0..1.
+	progress: f32,
+	/// Fade in, fade out, and the flare a completed draw ends on — see
+	/// [`crate::siphon::FLARE`].
+	envelope: f32,
 }
 
 /// Stair/door placement facing from the look direction: the dominant
@@ -2105,6 +2146,7 @@ impl Engine {
 			carried: Carried::default(),
 			confetti: Vec::new(),
 			confetti_seq: 0,
+			siphon: None,
 			net_corrections: 0,
 			net_error_accum: 0.0,
 			net_log_timer: 0.0,
@@ -2690,8 +2732,10 @@ impl Engine {
 		// other clear needs the dig button held AND aimed elsewhere.
 		self.refused_cell = None;
 		// Confetti is thrown at a world position; a new world has none of
-		// them left hanging in the air.
+		// them left hanging in the air. Same for the essence draw, which
+		// names a cell in the world just left.
 		self.confetti.clear();
+		self.siphon = None;
 		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
@@ -3947,8 +3991,8 @@ impl Engine {
 			// the cell still holds, so a deep seam takes longer than a
 			// shallow one and the ore rows' hardnesses are not dead
 			// numbers on blocks nobody digs.
-			let timed =
-				digblock_core::worldgen::ore::dig_block(self.ore_dig_mode(hit.cell), hit.block);
+			let mode = self.ore_dig_mode(hit.cell);
+			let timed = digblock_core::worldgen::ore::dig_block(mode, hit.block);
 			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
@@ -3986,11 +4030,21 @@ impl Engine {
 					gain: 0.7,
 				});
 			} else {
+				// A draw rides the SAME voice as a dig, so every stop path
+				// — release, cancel, completion, world swap — already
+				// covers it, and the pitch ramp below reads as a resonance
+				// winding up rather than as a pick speeding up. WHICH sound
+				// it is belongs to `audio::dig_voice`, together with the
+				// finish it has to agree with.
+				let extracting = matches!(mode, digblock_core::worldgen::ore::DigMode::Extract(_));
 				self.emit(crate::audio::AudioCmd::LoopStart {
 					id: crate::audio::LOOP_DIG,
-					sound: crate::audio::dig_sfx(crate::audio::material_of(hit.block)),
+					sound: crate::audio::dig_voice(extracting, hit.block).0,
 					pos: Some(cell_center(hit.cell)),
-					gain: 1.0,
+					// Under the dig loop: a sustained hum at a hammer's
+					// level would wear out over a hold that runs longer
+					// than any dig.
+					gain: if extracting { 0.85 } else { 1.0 },
 				});
 			}
 			return;
@@ -4135,18 +4189,36 @@ impl Engine {
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
-		// A filled bucket splashes; a broken block breaks. Water's
-		// material class is Earth (the table's total fallback), which is
-		// right for nothing it does.
+		// A finished draw flares and then dies on the ordinary fade-out
+		// rather than blinking off with the seam it emptied. What it
+		// flares FROM is already banked in `SiphonDraw`, which is the whole
+		// reason that state outlives the hold: the cell is spent rock by
+		// the write above, so there is no vein left to ask.
+		if extracting.is_some()
+			&& let Some(s) = self.siphon.as_mut()
+		{
+			s.progress = 1.0;
+			s.envelope = crate::siphon::FLARE;
+		}
+		// A filled bucket splashes; everything else ends the way its hold
+		// began, through the pair `audio::dig_voice` owns — a drawn seam
+		// lets go, a broken block breaks. Water's material class is Earth
+		// (the table's total fallback), which is right for nothing it does,
+		// which is why it is the one case answered here.
 		let tool = self.water_tool_selected();
+		let extracted = extracting.is_some();
+		let (end, end_gain) = if tool {
+			(crate::audio::Sfx::Splash, 0.5)
+		} else {
+			(
+				crate::audio::dig_voice(extracted, prev).1,
+				if extracted { 0.9 } else { 1.0 },
+			)
+		};
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: if tool {
-				crate::audio::Sfx::Splash
-			} else {
-				crate::audio::break_sfx(crate::audio::material_of(prev))
-			},
+			sound: end,
 			pos: Some(cell_center(hit.cell)),
-			gain: if tool { 0.5 } else { 1.0 },
+			gain: end_gain,
 		});
 		// No swing is started here: the arc that began with this hold is
 		// running out on this very frame, and re-striking it is what used
@@ -4724,6 +4796,83 @@ impl Engine {
 				.map(|d| (f32::from(d.banked()) / f32::from(d.required.max(1))).min(1.0))
 		});
 		Some(boxed(progress))
+	}
+
+	/// The vein the siphon is drawing from this frame: the hit, the tier,
+	/// and how far through the hold it is.
+	///
+	/// Deliberately narrower than `dig_progress`'s extraction branch,
+	/// which answers on AIM: merely looking at a seam with the siphon out
+	/// draws nothing, because the stream is the tool working rather than
+	/// the tool being held. So it wants the button down and the hold live
+	/// — a released hold is decaying, and the draw fades out with it,
+	/// which is the same statement the retreating crack makes about a
+	/// released dig.
+	fn siphon_target(&self) -> Option<(RayHit, BlockType, f32)> {
+		let hit = self.target?;
+		if !self.diggable(&hit) {
+			return None;
+		}
+		let digblock_core::worldgen::ore::DigMode::Extract(ore) = self.ore_dig_mode(hit.cell)
+		else {
+			return None;
+		};
+		// The capture pin answers on aim alone, exactly as `debug_crack`
+		// does, and for the same reason: standing in a hold is the one
+		// thing a headless run cannot do.
+		let progress = match self.config.debug_siphon {
+			Some(p) => p,
+			None => {
+				let d = self
+					.dig
+					.as_ref()
+					.filter(|d| d.cell == hit.cell && d.idle == 0)?;
+				f32::from(d.banked()) / f32::from(d.required.max(1))
+			}
+		};
+		Some((hit, ore, progress.clamp(0.0, 1.0)))
+	}
+
+	/// Age the essence draw: in while the siphon is working a vein, out
+	/// once it stops.
+	///
+	/// Runs after the dig stepping, because what it reads is that step's
+	/// result. The geometry is rewritten every live frame rather than
+	/// latched, so following a seam from one cell to the next is one
+	/// continuous stream — the envelope carries over — instead of a
+	/// stutter of fades.
+	fn step_siphon(&mut self, dt: f32) {
+		let Some((hit, ore, progress)) = self.siphon_target() else {
+			// Nothing to draw from: run whatever was running out, and drop
+			// it at the bottom — which is also how the flare a completed
+			// draw ends on gets spent.
+			if let Some(s) = self.siphon.as_mut() {
+				s.envelope = crate::siphon::envelope_step(s.envelope, false, dt);
+			}
+			if self.siphon.is_some_and(|s| s.envelope <= 0.0) {
+				self.siphon = None;
+			}
+			return;
+		};
+		let envelope =
+			crate::siphon::envelope_step(self.siphon.map_or(0.0, |s| s.envelope), true, dt);
+		let c = cell_center(hit.cell);
+		let n = hit.normal;
+		// `Extract` names one of the four tiers, so the palette is always
+		// there; white is a visible wrong answer rather than a panic on a
+		// path that only draws pixels.
+		let (core, _) = ore.ore_flecks().unwrap_or(([255; 3], [255; 3]));
+		self.siphon = Some(SiphonDraw {
+			source: Vec3::new(
+				c[0] + n.0 as f32 * 0.5,
+				c[1] + n.1 as f32 * 0.5,
+				c[2] + n.2 as f32 * 0.5,
+			),
+			normal: n,
+			tint: core.map(|v| f32::from(v) / 255.0),
+			progress,
+			envelope,
+		});
 	}
 
 	/// Advance WHICH item is in the hand, and the swap dip between two.
@@ -5622,6 +5771,10 @@ impl Game for Engine {
 			self.dig_accum -= TICK;
 			self.step_dig();
 		}
+		// The siphon's stream reads the state those ticks just left, so it
+		// ages after them and on the FRAME clock rather than the sim one:
+		// it is presentation, and its envelope should not step in ticks.
+		self.step_siphon(dt);
 
 		// Water flow runs on its own world-tick cadence, independent of
 		// the walk/fly camera mode; idle (empty queue) it costs nothing.
@@ -6107,6 +6260,19 @@ impl Game for Engine {
 				held: &self.held_instances,
 				carried: &self.carried.lights,
 				confetti: &self.confetti,
+				// The stream ends where the tool's own light hangs, and
+				// the destination is handed over rather than derived in
+				// the shader so the two cannot drift — see `siphon`.
+				siphon: self.siphon.map(|s| {
+					crate::siphon::instance(
+						s.source.to_array(),
+						digblock_core::gi::carried_origin(self.camera.pos).to_array(),
+						s.tint,
+						s.normal,
+						s.progress,
+						s.envelope,
+					)
+				}),
 				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.history_scratch.as_slice())),

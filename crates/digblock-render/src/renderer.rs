@@ -315,6 +315,10 @@ pub struct FrameScene<'a> {
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
 	pub confetti: &'a [crate::confetti::BurstInstance],
+	/// The essence draw under the crosshair, if the siphon is working a
+	/// vein. At most one — a player holds one button — and the engine
+	/// owns its envelope, so this outlives the hold by the fade.
+	pub siphon: Option<crate::siphon::DrawInstance>,
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(String, f32, u32)],
 	/// Crosshair target for the highlight decal — cell, the shape's own
@@ -533,6 +537,9 @@ pub struct Renderer {
 	/// Level-up confetti bursts, fed per-frame by the engine (the bursts
 	/// themselves are world state and live there).
 	confetti: crate::confetti::Confetti,
+	/// The Essence Siphon's draw — motes off a vein's face, streaming into
+	/// the tool. Fed per-frame by the engine, which owns the envelope.
+	siphon: crate::siphon::Siphon,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).
@@ -1079,6 +1086,7 @@ impl Renderer {
 				&frame_bgl,
 				gi.cam_light_buf(),
 			),
+			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
 				surface_format,
@@ -1675,6 +1683,7 @@ impl Renderer {
 			carried,
 			overlay,
 			confetti,
+			siphon,
 			feed,
 			target: highlight_target,
 			viewmodel,
@@ -1729,6 +1738,7 @@ impl Renderer {
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
 		);
 		let confetti_n = self.confetti.prepare(gpu, confetti);
+		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
 
 		let mut encoder = gpu
 			.device
@@ -2029,6 +2039,13 @@ impl Renderer {
 				let confetti_tris = self.confetti.draw(&mut pass, confetti_n);
 				stats.draw_calls += u32::from(confetti_tris > 0);
 				stats.triangles += confetti_tris;
+
+				// The essence draw last of the three, because it is the
+				// only ADDITIVE one: it has to land on top of whatever the
+				// alpha-blended billboards left, not underneath it.
+				let siphon_tris = self.siphon.draw(&mut pass, siphon_n);
+				stats.draw_calls += u32::from(siphon_tris > 0);
+				stats.triangles += siphon_tris;
 			}
 
 			// The item in your own hand, over the finished world. Its own

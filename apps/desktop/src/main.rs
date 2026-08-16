@@ -415,6 +415,47 @@ fn main() {
 	config.debug_screen = std::env::var("DIG_SCREEN")
 		.ok()
 		.and_then(|v| digblock_render::DebugScreen::parse(&v));
+	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the
+	// vein under the crosshair. A PERCENT, and meant as a SWEEP, for
+	// DIG_CRACK's reason — one still cannot tell a stream that thickens
+	// from one that merely brightens.
+	//
+	// Unlike the crack it cannot stand its own scene: a vein is derived
+	// worldgen and there is no placing one, so it rides DIG_ORE, which
+	// already hollows a chamber around a deposit of a tier and grants the
+	// level that reveals it. Without that the crosshair lands on ordinary
+	// rock and the run photographs a bare wall — the silent-wrong-scene
+	// failure every other parse here is fatal about, so this one is too.
+	// And a draw needs the tool in hand: DIG_SCREEN's own `siphon`
+	// spelling is what puts it there, defaulted rather than
+	// re-implemented, so the capture still reaches the tool by cycling the
+	// roster the way a player does.
+	if let Ok(v) = std::env::var("DIG_SIPHON") {
+		match v.parse::<f32>() {
+			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_siphon = Some(p / 100.0),
+			_ => {
+				eprintln!("DIG_SIPHON must be a percent in 0..=100, got {v:?}");
+				std::process::exit(2);
+			}
+		}
+		if config.debug_ore == 0 {
+			eprintln!("DIG_SIPHON needs a vein to draw from: set DIG_ORE=<tier 1..=4> too");
+			std::process::exit(2);
+		}
+		config.debug_screen.get_or_insert_with(|| {
+			digblock_render::DebugScreen::parse("siphon")
+				.expect("DIG_SCREEN knows the siphon by name")
+		});
+		// And it has to be AIMED at the vein, which the default camera is
+		// not: the fly camera starts pitched DOWN, so a DIG_ORE chamber
+		// photographs the floor plate in front of the seam and the draw —
+		// which exists only while the crosshair holds a vein — renders
+		// nothing at all. Level puts the ray through the deposit's middle
+		// row, since the plan already stands the eye there. An explicit
+		// `--pitch` still wins, so a shot from under the seam is one flag
+		// away.
+		config.pitch.get_or_insert(0.0);
+	}
 	// Read at the launcher edge: the engine stays env-free so wasm, which
 	// has no environment at all, can set the same flag from a query param.
 	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();

@@ -419,3 +419,35 @@ fn play_voice(
 	v.apply_volume(sfx_vol);
 	v
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Every embedded SFX decodes through the decoder this filler actually
+	/// uses, and yields real samples.
+	///
+	/// The prewarm above answers a decode failure with `log::warn!` and
+	/// carries on — which is right at runtime (one dud sound must not take
+	/// the audio thread down) and is exactly why the failure needs catching
+	/// here instead. A file that Vorbis accepts structurally but rodio
+	/// cannot decode is silent in the game and green in every other gate:
+	/// `sfx_are_nonempty_oggs` checks the container magic, and nothing else
+	/// touches the bytes at all.
+	#[test]
+	fn every_sfx_decodes_through_rodio() {
+		for s in digblock_render::audio::ALL_SFX {
+			let d = Decoder::new(Cursor::new(bytes(s)))
+				.unwrap_or_else(|e| panic!("{s:?} failed to decode: {e}"));
+			let rate = d.sample_rate().get();
+			let channels = d.channels().get();
+			let n = d.count();
+			assert_eq!(channels, 1, "{s:?} is not mono");
+			assert_eq!(rate, 44_100, "{s:?} is not 44.1 kHz");
+			// A tenth of a second is far under the shortest sound here, so
+			// this catches a file that decodes to a header and nothing else
+			// without pinning any sound's length.
+			assert!(n > rate as usize / 10, "{s:?} decoded to {n} samples");
+		}
+	}
+}
