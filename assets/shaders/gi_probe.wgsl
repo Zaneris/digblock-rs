@@ -183,9 +183,15 @@ fn relocate(cell: vec3i) -> vec3i {
 
 struct Hit {
 	hit: bool,
+	// On a hit, the cell struck; on a miss, the cell where the march
+	// ended — the point an unproven answer is evaluated at (R32).
 	cell: vec3i,
 	axis: u32,
 	water: f32,
+	// Miss quality (R32) — the pinned twin of gi_common's `GiHit.sky`:
+	// true only on the PROVEN sky-ceiling exit, false when the ray merely
+	// ran out (max_t, lateral bound, iteration cap, the world's floor).
+	sky: bool,
 }
 
 // March a ray through the window. `max_t` bounds the march; water
@@ -194,6 +200,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	var out: Hit;
 	out.hit = false;
 	out.water = 0.0;
+	out.sky = false;
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(from_p, dir, inv);
@@ -202,7 +209,11 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		// gi.zenith.w carries the sky ceiling (R18): a non-descending ray
 		// above the window's highest occupied cell can hit nothing — the
 		// gi_common twin comment has the measurement.
-		if r.t > max_t || (dir.y >= 0.0 && f32(r.cell.y) > gi.zenith.w) || r.cell.y < 0 {
+		if dir.y >= 0.0 && f32(r.cell.y) > gi.zenith.w {
+			out.sky = true;
+			break;
+		}
+		if r.t > max_t || r.cell.y < 0 {
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - gi.cam.xz;
@@ -255,6 +266,8 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		}
 		r = gi_ray_step(r, step_dir, inv);
 	}
+	// Every miss path lands here; record where the march ended.
+	out.cell = r.cell;
 	return out;
 }
 
@@ -381,7 +394,10 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 		// what the fragment side falls through to, dimmed the same way —
 		// answering with a wrapped read instead is what this exists to
 		// stop, and answering with zero would darken every distant bounce.
-		return sky_radiance(n) * 0.35;
+		// Depth-faded exactly as gi_common's `gi_sky_fallback` (R32): the
+		// compute-side twin must fade with it, or the cache's bounce
+		// re-imports the very leak the fragment side removed.
+		return sky_radiance(n) * 0.35 * medium_sky_fade(p.y);
 	}
 	let g = vec3i(round(p / spacing));
 	let t = ((g % dims) + dims) % dims;
@@ -397,7 +413,7 @@ fn gather_prev(p: vec3f, n: vec3f) -> vec3f {
 	// This matters more since the cadence cut: a full sweep takes several
 	// times as many frames now, so the stale window is that much longer.
 	if (textureLoad(flags_tex, t).r & 0xffff0000u) != checksum(g) {
-		return sky_radiance(n) * 0.35;
+		return sky_radiance(n) * 0.35 * medium_sky_fade(p.y);
 	}
 	// Pinned twin of gi_common's `gi_probe_alive`. A probe buried in
 	// solid stored black, and this is the site that SPREAD it: a live
@@ -464,7 +480,12 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 			let s = max(dot(dir, gi.sun.xyz), 0.0);
 			sky += gi.sun_color.rgb * pow(s, 32.0) * 6.0;
 		}
-		return sky * water_att;
+		// A miss that PROVED sky (the ceiling test) is daylight at any
+		// depth; one that merely ran out of march is faded at the exhaust
+		// point (R32) — an exhausted deep ray must not carry the sun lobe
+		// into a probe fifty blocks down a tunnel.
+		return sky * water_att
+			* select(medium_sky_fade(f32(h.cell.y) + 0.5), 1.0, h.sky);
 	}
 	// Hit: emitted + reflected (sun NEE from the hit + last frame's
 	// probe field = the infinite bounce).
@@ -502,7 +523,11 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 		if ndl > 0.0 {
 			let sh = march(hp, gi.sun.xyz, MAX_T);
 			if !sh.hit {
-				incident += gi.sun_color.rgb * ndl * medium_water_tr(sh.water);
+				// Unproven sun (the ray ran out rather than clearing the
+				// ceiling) fades at the receiving surface — the same rule
+				// gi_sun_vis applies at its shading point (R32).
+				incident += gi.sun_color.rgb * ndl * medium_water_tr(sh.water)
+					* select(medium_sky_fade(hp.y), 1.0, sh.sky);
 			}
 		}
 	}
@@ -664,8 +689,10 @@ fn cam_light() {
 		// Every candidate was buried. The camera is inside geometry (or
 		// in a pocket smaller than the probe spacing), and the honest
 		// answer is the dome rather than black — black is what made the
-		// spray disappear.
-		amb = sky_radiance(vec3f(0.0, 1.0, 0.0)) * 0.35;
+		// spray disappear. Depth-faded like every other unproven dome
+		// answer (R32), so a hand deep underground agrees with the walls
+		// around it.
+		amb = sky_radiance(vec3f(0.0, 1.0, 0.0)) * 0.35 * medium_sky_fade(cam.y);
 	}
 	var sv = vec3f(0.0);
 	if gi.sun.w > 0.5 {
@@ -673,7 +700,8 @@ fn cam_light() {
 		// on the far side of a wall from it.
 		let h = march(cam, gi.sun.xyz, MAX_T);
 		if !h.hit {
-			sv = medium_water_tr(h.water);
+			sv = medium_water_tr(h.water)
+				* select(medium_sky_fade(cam.y), 1.0, h.sky);
 		}
 	}
 	cam_out[0] = vec4f(amb, 0.0);

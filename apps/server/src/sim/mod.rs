@@ -254,13 +254,17 @@ struct Client {
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
-	/// Bench-extraction bucket, in TICKS: refilled one per tick, capped
-	/// at `extract_burst_ticks(level)` (two whole blocks' worth, or one
-	/// costliest extraction where that is more — an op no bucket can hold
-	/// is an op that is refused forever), and
-	/// spent at the extracted block's own `extract_pace_ticks` — the
-	/// server-enforced half of the drip (see `process_alchemy`).
-	extract_tokens: f32,
+	/// THE bench bucket, in TICKS: refilled one per tick, capped at
+	/// `bench_burst_ticks(level)` (two whole blocks' worth, or one
+	/// costliest op where that is more — an op no bucket can hold is an op
+	/// that is refused forever), and spent at the op's own pace —
+	/// `extract_pace_ticks` for a Convert, `craft_pace_ticks` for a Craft.
+	/// The server-enforced half of both drips (see `process_alchemy`).
+	///
+	/// One bucket and not two: there is one bench, so extracting and
+	/// transmuting draw on the same clock and a client cannot run both at
+	/// once for double the throughput.
+	bench_tokens: f32,
 	draw_dist: i32,
 	synced_columns: FxHashSet<(i32, i32)>,
 	/// Journal columns owed to this client, drained a few per tick by
@@ -691,6 +695,17 @@ impl Sim {
 		reconcile_layout(&client.inventory, &mut client.hotbar, &mut client.grid);
 	}
 
+	/// Stock a player's essence holdings — the bench's side of
+	/// [`Self::test_grant`], for tests about crafting rather than digging.
+	#[cfg(test)]
+	fn test_grant_essence(&mut self, conn_id: u64, e: digblock_core::block::Essence, n: u32) {
+		self.clients
+			.get_mut(&conn_id)
+			.unwrap()
+			.inventory
+			.add_sub(e, n);
+	}
+
 	#[cfg(test)]
 	fn test_player(&self, conn_id: u64) -> Option<digblock_core::player::PlayerState> {
 		self.clients.get(&conn_id).map(|c| c.player.state())
@@ -1056,7 +1071,12 @@ impl Sim {
 			return Vec::new();
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let credit = hit.block.dig_credit(
+			self.cell_edited(hit.cell.0, hit.cell.1, hit.cell.2),
+			alchemy,
+		);
 		// A LOCKED cell is deliberately not filtered here: the assembled
 		// writes are scanned for protection and the whole swing is refused,
 		// which is what `a_protected_cell_refuses_the_whole_pick_swing`
@@ -1071,7 +1091,15 @@ impl Sim {
 			digblock_core::unlock::pick_cells(level),
 			|c| {
 				self.store.cell_at(c.0, c.1, c.2).is_some_and(|v| {
-					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(conn_id, c))
+					digblock_core::pick::breaks_as_extra(
+						id,
+						credit,
+						v,
+						c,
+						self.ore_dig_mode(conn_id, c),
+						self.cell_edited(c.0, c.1, c.2),
+						alchemy,
+					)
 				})
 			},
 		);
@@ -1381,7 +1409,7 @@ impl Sim {
 	}
 
 	/// One-time transfer of this server's pre-account character onto the
-	/// account that asked for it (`ClientMsg::ClaimLegacy`, protocol v23).
+	/// account that asked for it (`ClientMsg::ClaimLegacy`, protocol v24).
 	///
 	/// **Silence is the normal answer.** Every client that still has an old
 	/// identity file sends this on every join, to every server, because it
@@ -1696,7 +1724,7 @@ impl Sim {
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
-				extract_tokens: digblock_core::alchemy::extract_burst_ticks(
+				bench_tokens: digblock_core::alchemy::bench_burst_ticks(
 					record.skills.level(digblock_core::skills::Skill::Alchemy),
 				),
 				draw_dist,
@@ -3029,11 +3057,11 @@ mod tests {
 		// rule is what this is about: a full bucket admits a bounded bunch
 		// and not one block more.
 		let pace = digblock_core::alchemy::extract_pace_ticks(BlockType::Rubble, 1);
-		let admits = (digblock_core::alchemy::extract_burst_ticks(1) / pace as f32) as u32;
+		let admits = (digblock_core::alchemy::bench_burst_ticks(1) / pace as f32) as u32;
 		let over = admits + 1;
 		assert!(admits >= 2, "a burst that admits fewer than two is not one");
 		assert!(
-			(over * pace) as f32 > digblock_core::alchemy::extract_burst_ticks(1),
+			(over * pace) as f32 > digblock_core::alchemy::bench_burst_ticks(1),
 			"the over-budget op has to actually be over budget"
 		);
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
@@ -3092,6 +3120,99 @@ mod tests {
 			_ => None,
 		});
 		assert_eq!(last_alch, Some(u64::from(over) * 8), "XP only for landed");
+	}
+
+	/// The same gate over the other half of the bench: a Craft costs the
+	/// item's own `craft_pace_ticks` out of the SAME bucket, so a bulk
+	/// `count` cannot buy a batch's XP in one frame and an extraction
+	/// cannot be run alongside a transmutation for double the throughput.
+	///
+	/// Crafting still pays exactly what it always paid — this is about
+	/// when, not how much. It was the one bench action that answered
+	/// instantly, which made the transmute tab's CTRL multiplier the
+	/// fastest Alchemy XP in the game by a wide margin.
+	#[test]
+	fn transmuting_draws_on_the_same_bench_bucket_as_extracting() {
+		use digblock_core::block::{BlockType, Essence};
+		use digblock_net::messages::AlchemyOp;
+		let mut sim = flat_sim("craftpace");
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let level = digblock_core::unlock::craft(BlockType::LumberSlab).expect("a recipe");
+		sim.bench_set_alchemy_level(1, level);
+		sim.test_grant_essence(1, Essence::Flora, 100_000);
+		let pace = digblock_core::alchemy::craft_pace_ticks(BlockType::LumberSlab, level);
+		let burst = digblock_core::alchemy::bench_burst_ticks(level);
+		let admits = (burst / pace as f32) as u32;
+		assert!(admits >= 2, "a burst that admits fewer than two is not one");
+		let craft = |count: u32| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Alchemy {
+				op: AlchemyOp::Craft {
+					item: BlockType::LumberSlab as u16,
+					count,
+				},
+			},
+		};
+		// One past the burst is one too many — refused outright, nothing
+		// debited and no XP, exactly as a bulk Convert is.
+		sim.tick_once(vec![craft(admits + 1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::LumberSlab),
+			0,
+			"a bulk craft beyond the burst is refused with no debit"
+		);
+		// What it CAN cover lands, and empties the bucket.
+		sim.tick_once(vec![craft(admits)]);
+		assert_eq!(sim.test_inventory_count(1, BlockType::LumberSlab), admits);
+		sim.tick_once(vec![craft(1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::LumberSlab),
+			admits,
+			"the drip is what is left once the burst is gone"
+		);
+		// And the bucket the craft emptied is the extraction's too: one
+		// bench, one clock.
+		sim.test_grant(1, BlockType::Rubble, 4);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Alchemy {
+				op: AlchemyOp::Convert {
+					block: BlockType::Rubble as u16,
+					count: 1,
+				},
+			},
+		}]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::Rubble),
+			4,
+			"a craft spent the ticks an extraction would have used"
+		);
+		// One pace interval refills exactly one more craft's worth.
+		for _ in 0..pace {
+			sim.tick_once(vec![]);
+		}
+		sim.tick_once(vec![craft(1)]);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::LumberSlab),
+			admits + 1
+		);
+		// Refused ops paid nothing: the total is exactly the landed
+		// crafts, at the slab's own `craft_xp` each.
+		c.drain();
+		let last_alch = c.msgs.iter().rev().find_map(|m| match m {
+			ServerMsg::XpGain { skill: 1, total } => Some(*total),
+			_ => None,
+		});
+		// Against the level this rig was GRANTED, since `XpGain` carries a
+		// running total and not a delta.
+		let each = digblock_core::skills::craft_xp(BlockType::LumberSlab);
+		let granted = digblock_core::skills::total_xp_for(level);
+		assert_eq!(
+			last_alch,
+			Some(granted + u64::from(admits + 1) * each),
+			"XP only for landed crafts"
+		);
 	}
 
 	/// A live account refuses a second connection; unverified (accountless)

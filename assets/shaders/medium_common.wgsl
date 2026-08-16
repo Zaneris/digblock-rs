@@ -75,6 +75,28 @@ const WATER_SIGMA = vec3f(0.36, 0.068, 0.030);
 // blue-green haze between the eye and a submerged surface reads.
 const WATER_ALBEDO = 0.35;
 
+// The depth fade for UNPROVEN daylight (GI-DESIGN.md R32): full at the
+// top edge, gone at the bottom. Every place the lighting ANSWERS sky
+// without having proven a path to it — the cascade fallback, an
+// exhausted march, this file's own in-scatter — multiplies by this, so
+// a deep tunnel goes dark instead of glowing with sky nothing could
+// reach. A PROVEN sky escape (the R18 ceiling test) never takes it:
+// light pouring down an open shaft is real at any depth.
+//
+// `smoothstep` saturates at the top edge, which is the load-bearing
+// property: at and above SKY_FADE_FULL_Y every consumer is bit-identical
+// to the pre-R32 image, so the surface world cannot regress by retuning
+// anything else. The top edge equals `SEA_LEVEL` — open-air terrain
+// below it is essentially all underwater, where the extra darkening is
+// the point — pinned by `the_sky_fade_tops_out_at_sea_level` in
+// digblock-render.
+const SKY_FADE_FULL_Y = 128.0;
+const SKY_FADE_ZERO_Y = 64.0;
+
+fn medium_sky_fade(y: f32) -> f32 {
+	return smoothstep(SKY_FADE_ZERO_Y, SKY_FADE_FULL_Y, y);
+}
+
 fn medium_air_tr(d: f32) -> f32 {
 	return exp(-AIR_SIGMA * max(d, 0.0));
 }
@@ -138,6 +160,13 @@ fn medium_view(
 	let d = distance(cam, world);
 	var out = col;
 	var air = d;
+	// In-scatter is SKY light, and underground there is none: the medium
+	// has no occlusion term, so without this a 50-block tunnel view
+	// in-scattered a distance-proportional slice of full daylight at any
+	// depth — the dominant leak R32 removes. Faded at the FRAGMENT's
+	// altitude: a viewer underground looking out of a tunnel mouth still
+	// sees full haze on the surface beyond it.
+	let sky_f = sky * medium_sky_fade(world.y);
 	if water_misc.x > 0.5 {
 		let ray = (world - cam) / max(d, 1e-4);
 		// The submerged segment ends where the ray leaves the water —
@@ -151,10 +180,21 @@ fn medium_view(
 		// evaluation point for the whole segment, which is what makes
 		// this a single-scatter approximation rather than a march.
 		let depth = max(water_misc.z - ray.y * dw * 0.5, 0.0);
-		out = medium_water_seg(out, medium_water_light(sky_down, depth), dw);
+		// The down-welling source fades with the same ramp — deep water
+		// darkens with world depth on top of its own extinction, which is
+		// the correct direction and costs nothing extra.
+		out = medium_water_seg(
+			out,
+			medium_water_light(sky_down * medium_sky_fade(world.y), depth),
+			dw,
+		);
 		air = d - dw;
 	}
 	let tr = medium_air_tr(air);
-	out = out * tr + sky * (1.0 - tr);
-	return mix(out, sky, medium_rim(distance(cam.xz, world.xz), far));
+	out = out * tr + sky_f * (1.0 - tr);
+	// The rim fades to the same (depth-faded) in-scatter, so a deep
+	// fragment at the streaming edge fades to dark rather than to sky —
+	// consistent by construction, and invisible in practice: the rim
+	// lives at the horizon, which is surface terrain.
+	return mix(out, sky_f, medium_rim(distance(cam.xz, world.xz), far));
 }

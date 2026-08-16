@@ -271,7 +271,7 @@ Two things that will bite:
 | 1.1 admin is a self-asserted display name             | `--admin <account-id>`; `is_admin` compares accounts. `--admin-name` exits with guidance rather than being remapped |
 | 1.2 registration evicts the incumbent                 | sticky `ServerClaim` + key; 409 + temp-ban on a keyless claim of a live address                                     |
 | 1.3 client-supplied `probeHost`                       | removed from the contract; source-first probing, both addresses verified                                            |
-| 1.4 the identity secret is a global bearer credential | `Hello.identity` deleted (protocol v22); identity arrives from the master                                           |
+| 1.4 the identity secret is a global bearer credential | `Hello.identity` deleted (protocol v23); identity arrives from the master                                           |
 | 1.5 records evictable by anyone                       | records keyed on accounts; an account costs a real provider login, and `/api/join` is rate-limited per session      |
 | 1.6 ban ordering, and IP-only bans                    | bans record the account; `DEFAULT_MAX_CONNECTIONS_PER_IP` caps the amplification the ordering allowed               |
 | 1.7 unauthenticated probe with an error oracle        | `ProbeTargets` public-address filter; opaque `Detail` outside Development; per-IP rate limit + temp-ban             |

@@ -127,7 +127,7 @@ omit `probeHost`, but nothing in the master requires or constrains that.
 
 ### 1.4 The identity secret is a global bearer credential — HIGH
 
-**Closed by deletion.** `Hello.identity` is gone (protocol v22 — the one field this protocol has ever removed rather
+**Closed by deletion.** `Hello.identity` is gone (protocol v23 — the one field this protocol has ever removed rather
 than appended, which is why `MIN_PROTOCOL` moved with it). A player is identified by the `AccountId` the master returns
 from `/api/tokens/verify`, so identity reaches the server from the master and never from the client. There is no
 replayable secret left to harvest: the join token is one-time and server-scoped, and the session token is presented only

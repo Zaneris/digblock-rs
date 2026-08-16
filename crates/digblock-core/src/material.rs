@@ -13,7 +13,12 @@
 //! read back through [`crate::block::BlockType::material`]) and everything
 //! else derives:
 //!
-//! - **Unlock level** = `max(shape level, material level)` — [`crate::unlock::craft`].
+//! - **Unlock level** = `max(shape level, material level)` — [`crate::unlock::craft`],
+//!   for the cells the bench is allowed to make at all (§7.5 keeps
+//!   everything the world hands you off it, the felled log and the loose
+//!   ground included). A substance keeps its level and its price either
+//!   way: those are what a shape of it WOULD cost, and authoring one is
+//!   meant to be a block row and a PNG.
 //! - **Craft cost** = the material's whole-cube split, prorated to the shape's
 //!   volume — [`crate::alchemy::craft_ideal`].
 //! - **Extraction yield** = the material's base, prorated the same way —
@@ -29,7 +34,10 @@
 //! - [`Material::craft_units`] is `None` for everything the world only ever
 //!   hands you broken — mined rock, gravel, foliage. Those are exactly the
 //!   blocks that may carry §3.3's bonus lines, so "a bonus line never sits
-//!   on a craftable block" is now a property of the material.
+//!   on a craftable block" is now a property of the material. (The
+//!   implication runs one way only since §7.5: a substance can have a
+//!   split and still have no craftable cell, because the split is a price
+//!   basis rather than an offer.)
 //! - Every material's craft split is at least a whole cube's worth of units
 //!   and its extraction base is at most that, so prorating both by the same
 //!   shape volume preserves

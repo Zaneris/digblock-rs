@@ -48,10 +48,12 @@ blocks! {
 	Dirt = 2 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30, DigFamily::Soft), Material::Dirt),
 	Grass = 3 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft), Material::Grass),
 	Sand = 4 => mat(dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25, DigFamily::Soft), Material::Sand),
-	/// Mined stone drops Rubble (SKILLS-DESIGN §7.1): the clean block
+	/// Mined stone crumbles to Rubble (SKILLS-DESIGN §7.1): the clean block
 	/// exists only pristine in terrain or transmuted at the bench, which
 	/// is what makes transmutation the economy rather than a curiosity.
-	Stone = 5 => mat(drops(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble), Material::Stone),
+	/// `crumbles` and not `drops`, so a stone somebody MADE comes back
+	/// whole — the mountain's own is the only one that breaks.
+	Stone = 5 => mat(crumbles(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble), Material::Stone),
 	Wood = 6 => mat(dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood), Material::Wood),
 	Leaves = 7 => mat(dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed), Material::Leaf),
 	Snow = 8 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft), Material::Snow),
@@ -76,9 +78,10 @@ blocks! {
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
 	PineLeaves = 20 => mat(dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
-	/// "All broken rock": mined sandstone is Rubble too, so the clean
-	/// block is craft-only like Stone's.
-	Sandstone = 21 => mat(drops(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble), Material::Sandstone),
+	/// "All broken rock": mined sandstone crumbles to Rubble too, so clean
+	/// sandstone is bench work exactly as clean stone is, and for the same
+	/// reason it may stay craftable.
+	Sandstone = 21 => mat(crumbles(dig(carveable(props(RenderClass::Opaque, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), 70, DigFamily::Rock), BlockType::Rubble), Material::Sandstone),
 	/// Stepped stairs on the sub-grid (geometry in `shapes.rs`; facing in
 	/// the cell state nibble). Crafted via alchemy from sub-wood, never
 	/// generated.
@@ -181,7 +184,12 @@ blocks! {
 	/// table replaced. Kept, and unreachable: nothing writes it any more,
 	/// but journals and saves made before those rocks existed carry cells
 	/// that hold it, and an id that stops decoding is a world that stops
-	/// loading. It still crumbles to Rubble, which is what it always did.
+	/// loading. It still breaks into Rubble, which is what it always did.
+	///
+	/// `drops` and NOT `crumbles`, unlike the two live rocks: every cell
+	/// that names this was written by an old siphon draw, so every one of
+	/// them is edited and the conditional form would hand out a block that
+	/// has never been obtainable.
 	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
 	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
 	/// like the bucket, but CRAFTED rather than owned from the start.
@@ -530,12 +538,19 @@ pub struct BlockProps {
 	/// Cave carving may replace this block (natural terrain, not
 	/// structures) — consumed by worldgen's cave pass.
 	pub carveable: bool,
-	/// The bench is this block's ONLY source: worldgen never places one, so
-	/// every one standing in a world was crafted by somebody. That is what
-	/// lets `unlock::pickup` refuse the DIG below the block's own
-	/// `unlock::craft` level — an item you cannot make yet is an item you
-	/// cannot mine your way around either. Pinned against worldgen itself
-	/// by `worldgen_never_places_a_crafted_block`.
+	/// Worldgen never PLACES one of these, so every one standing in a world
+	/// was crafted by somebody. That is what lets `unlock::pickup` refuse
+	/// the DIG below the block's own `unlock::craft` level — an item you
+	/// cannot make yet is an item you cannot mine your way around either.
+	/// Pinned against worldgen itself by
+	/// `worldgen_never_places_a_crafted_block`.
+	///
+	/// Not the same question as [`BlockType::is_bench_only`], which asks
+	/// whether the world ever HANDS you one, and which this implies without
+	/// being implied by. Clean rock is the gap: the world is made of stone
+	/// and every dig on it yields Rubble, so the bench is its only source
+	/// and it is still not `crafted` — a natural quarry would otherwise
+	/// stand behind the craft gate.
 	pub crafted: bool,
 	/// Texture-array layer indices (order fixed by
 	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
@@ -547,9 +562,26 @@ pub struct BlockProps {
 	/// collected. Shared client/server behavior — retuning is a
 	/// SIM_VERSION bump.
 	pub hardness_ticks: u16,
-	/// Inventory credit override for a completed dig; `dig_drop()` falls
-	/// back to the block itself when diggable.
+	/// Inventory credit override for a completed dig, whoever put the block
+	/// there; `dig_drop()` falls back to the block itself when diggable.
 	pub drops: Option<BlockType>,
+	/// Inventory credit override for the WORLD'S OWN copy of this block: it
+	/// comes apart in your hands, while one somebody placed hands itself
+	/// back (`dig_credit`). The difference between rock in a mountain and a
+	/// block on a shelf.
+	///
+	/// This is what lets a substance the world is MADE of still be worked at
+	/// the bench without opening a loop. Clean stone is craftable, and a
+	/// natural one crumbles to Rubble — so the only clean stone a player can
+	/// ever hold came off the bench, which is exactly what
+	/// [`BlockType::is_bench_only`] tests and what makes its extraction pay
+	/// no XP. Were a bench stone to crumble too, craft → place → dig →
+	/// extract would launder a made block back into a world-given one and
+	/// collect the XP for it.
+	///
+	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`):
+	/// a row says either "always this" or "this, unless somebody made it".
+	pub crumbles: Option<BlockType>,
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
@@ -638,6 +670,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		tex_bottom: bottom,
 		hardness_ticks: 0,
 		drops: None,
+		crumbles: None,
 		shape: None,
 		emissive: false,
 		light: 0,
@@ -680,9 +713,18 @@ const fn dig(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
 }
 
 /// Inventory credit override: a completed dig lands `d`, not the block
-/// itself (the rock family's Rubble rule).
+/// itself, whoever put it there.
 const fn drops(mut p: BlockProps, d: BlockType) -> BlockProps {
 	p.drops = Some(d);
+	p
+}
+
+/// The rock family's Rubble rule: the WORLD'S copy lands `d`, and one
+/// somebody placed lands itself. See [`BlockProps::crumbles`] — this is
+/// what keeps a substance the world is made of craftable without opening
+/// a craft-and-extract loop.
+const fn crumbles(mut p: BlockProps, d: BlockType) -> BlockProps {
+	p.crumbles = Some(d);
 	p
 }
 
@@ -736,6 +778,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		tex_bottom: tex::WATER,
 		hardness_ticks: 0,
 		drops: None,
+		crumbles: None,
 		shape: None,
 		emissive: false,
 		light: 0,
@@ -1016,12 +1059,96 @@ impl BlockType {
 		self.hardness_ticks()
 	}
 
-	/// What a completed dig credits to the inventory: the `drops`
-	/// override, else the block itself. None for undiggable blocks.
+	/// What digging the WORLD'S own copy of this block hands you: the
+	/// `drops` or `crumbles` override, else the block itself. None for
+	/// undiggable blocks.
+	///
+	/// The question every economy rule means — [`Self::is_bench_only`],
+	/// [`crate::unlock::pickup`] and the no-matter-creation pins all ask
+	/// what a fresh world can put in a player's hands, never what one
+	/// particular cell will. That answer belongs to [`Self::dig_credit`],
+	/// of which this is the pristine case.
 	#[inline]
 	pub fn dig_drop(self) -> Option<BlockType> {
 		self.hardness_ticks()?;
-		Some(self.props().drops.unwrap_or(self))
+		let p = self.props();
+		Some(p.drops.or(p.crumbles).unwrap_or(self))
+	}
+
+	/// What a completed dig actually CREDITS: the world's own rock
+	/// crumbles, and a cell somebody wrote hands back what they put in it.
+	///
+	/// `edited` is whether that coordinate has ever been written — the
+	/// server reads its journal, the client its `EditOverlay` mirror of the
+	/// same, exactly as [`crate::worldgen::ore::revealed`] does and for the
+	/// same anti-dupe reason. An edited cell holding a `crumbles` block is
+	/// one somebody PLACED, since nothing can be written into solid rock,
+	/// so the block in it was made at the bench and comes back whole.
+	///
+	/// That is what closes the craft-and-extract loop on a substance the
+	/// world is made of: a made stone can never launder itself back into
+	/// the world-given Rubble that pays extraction XP. `alchemy` pins it as
+	/// `no_one_who_can_make_a_block_can_dig_it_into_xp`.
+	///
+	/// `alchemy` is the DIGGER'S level, and the crumble stands for anyone
+	/// who could not have made one — they are not undoing their own work,
+	/// so they get the rubble and the XP that goes with it. The loop stays
+	/// shut for a single player because the levels that can craft a block
+	/// are exactly the levels it hands back to. Asked through
+	/// [`crate::unlock::can_craft`] rather than compared here: no caller
+	/// holds an unlock number.
+	#[inline]
+	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
+		self.hardness_ticks()?;
+		let p = self.props();
+		if let Some(d) = p.drops {
+			return Some(d);
+		}
+		match p.crumbles {
+			Some(c) if !edited || !crate::unlock::can_craft(self, alchemy) => Some(c),
+			_ => Some(self),
+		}
+	}
+
+	/// Is the bench this block's only source — can no dig in an untouched
+	/// world ever put one in a player's hands?
+	///
+	/// THE question the transmutation catalog is gated on (nothing the
+	/// world hands you may be transmuted) and the one extraction XP is paid
+	/// against (what the bench made pays nothing back). Both in
+	/// `unlock`/`alchemy`; this is only the predicate.
+	///
+	/// Derived, never listed: a block is bench-only when nothing the world
+	/// PLACES ([`Self::is_crafted_only`] is the inverse claim, pinned
+	/// against worldgen itself) crumbles or drops into it. That gets the
+	/// awkward rows right without anyone remembering them — the bucket
+	/// scoop credits Water through this same path, so water falls out of
+	/// the catalog on its own; a tool is never dug, so it credits nothing
+	/// and stays bench-only; an ore credits itself and is correctly refused
+	/// a recipe.
+	///
+	/// It is also strictly weaker than [`Self::is_crafted_only`], and the
+	/// gap is the whole design: the world is MADE of stone but hands you
+	/// Rubble, so clean stone is the one block the world places and never
+	/// gives.
+	///
+	/// Memoized like [`Self::from_grid`] — a linear walk of the catalog per
+	/// call, on a question that is a property of the block table.
+	pub fn is_bench_only(self) -> bool {
+		static BENCH: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+		let bench = BENCH.get_or_init(|| {
+			let mut out = vec![true; BlockType::COUNT];
+			for n in BlockType::ALL {
+				if n.is_crafted_only() {
+					continue;
+				}
+				if let Some(d) = n.dig_drop() {
+					out[d as usize] = false;
+				}
+			}
+			out
+		});
+		bench[self as usize]
 	}
 
 	/// Does holding this type claim a hotbar or inventory slot?
@@ -1234,6 +1361,53 @@ mod tests {
 				}
 				None => assert!(b.hardness_ticks().is_none(), "{b:?}"),
 			}
+			// A row says either "always this" or "this, unless somebody
+			// made it" — never both, or the unconditional one silently wins.
+			assert!(
+				b.props().drops.is_none() || b.props().crumbles.is_none(),
+				"{b:?} sets both drops and crumbles"
+			);
+		}
+	}
+
+	/// Only the world's own rock crumbles, and it crumbles for everyone who
+	/// could not have made one.
+	///
+	/// The two halves are one rule read from either end: a pristine cell is
+	/// the mountain's whatever your level, and an edited one is somebody's
+	/// work — returned whole to a mason, and broken by anyone who has not
+	/// learned to cut it. `dig_drop` is the pristine answer and must stay
+	/// level-blind, because every economy pin means "what can a fresh world
+	/// put in a player's hands".
+	#[test]
+	fn only_the_worlds_own_rock_crumbles() {
+		use crate::skills::MAX_LEVEL;
+		for &b in &BlockType::ALL {
+			let Some(into) = b.props().crumbles else {
+				// Everything else answers the same however the cell got
+				// there — the conditional arm is opt-in, one row at a time.
+				for level in [1, MAX_LEVEL] {
+					assert_eq!(b.dig_credit(false, level), b.dig_drop(), "{b:?}");
+					assert_eq!(b.dig_credit(true, level), b.dig_drop(), "{b:?}");
+				}
+				continue;
+			};
+			assert_ne!(into, b, "{b:?} crumbles into itself, which says nothing");
+			let made = crate::unlock::craft(b).expect("a crumbling block is bench work");
+			for level in 1..=MAX_LEVEL {
+				assert_eq!(
+					b.dig_credit(false, level),
+					Some(into),
+					"{b:?} in the mountain crumbles at every level, {level} included"
+				);
+				let want = if level >= made { b } else { into };
+				assert_eq!(
+					b.dig_credit(true, level),
+					Some(want),
+					"a placed {b:?} dug at {level}"
+				);
+			}
+			assert_eq!(b.dig_drop(), Some(into), "{b:?} — the pristine answer");
 		}
 	}
 

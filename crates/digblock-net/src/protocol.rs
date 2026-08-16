@@ -100,19 +100,29 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// extraction itself needs NO new wire: both ends derive it from
 /// `ore::dig_mode` over data they already share, so `EditRequest` is
 /// untouched.
-/// v22: accounts. `Hello.identity` REMOVED — the first field this
+/// v22: the bench paces BOTH halves. `AlchemyOp::Craft` now draws on the
+/// same per-player tick bucket `Convert` always did, charged the item's
+/// own `alchemy::craft_pace_ticks` — so a bulk `Craft { count: 100 }`,
+/// which a v21 client sends on one press of the transmute button, no
+/// longer fits and is refused whole. Nothing was appended and no field
+/// moved; what changed is what an existing message BUYS, which is
+/// exactly the kind of break the handshake exists to catch — a v21 peer
+/// would press TRANSMUTE and watch nothing happen, forever. The paired
+/// client sends the same op one item at a time, as it already does for
+/// `Convert`.
+/// v23: accounts. `Hello.identity` REMOVED — the first field this
 /// protocol has ever taken away rather than appended, which is why
 /// `MIN_PROTOCOL` moves with it instead of the usual one-way ratchet.
 /// It was a client-chosen bearer secret keying the server's persisted
 /// records; a player is now identified by the account id the MASTER
 /// returns from `/api/tokens/verify`, so the wire carries no claim about
 /// who anyone is. See AUTH-DESIGN.md and NET-AUDIT-2.md §1.4.
-/// v23: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
+/// v24: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
 /// one-time transfer of a pre-account character onto the account that
-/// now owns it. An ordinary append (a v22 peer can't decode the new
-/// variant index), so `MIN_PROTOCOL` stays where v22 put it: a v22
+/// now owns it. An ordinary append (a v23 peer can't decode the new
+/// variant index), so `MIN_PROTOCOL` stays where v23 put it: a v23
 /// client can still play, it simply never migrates.
-pub const PROTOCOL_VERSION: u16 = 23;
+pub const PROTOCOL_VERSION: u16 = 24;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -141,12 +151,20 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// `Welcome` are append-only across the supported range so a decoder for
 /// version N can read any peer ≥ N (postcard tolerates trailing bytes).
 ///
-/// v22 is the one break in that rule: `Hello` LOST a field, so a v21
-/// decoder reading a v22 Hello would run off the end of the message. The
-/// floor has to rise to meet it. There is no compatibility loss worth
-/// mourning either — an older client's join token came from an
-/// unauthenticated `/api/join` that no longer exists.
-pub const MIN_PROTOCOL: u16 = 22;
+/// The floor has moved twice, and neither move was routine. v22 (the
+/// bench pacing BOTH halves) was the first break that is not about
+/// DECODING: a v21 peer reads every v22 frame perfectly and simply cannot
+/// transmute in bulk any more, its transmute button working for a single
+/// press and silently doing nothing under CTRL. Refusing the handshake is
+/// the honest answer, since a range that admits a peer whose buttons don't
+/// work is worse than a narrow one. v23 then LOST a field: `Hello` dropped
+/// `identity`, so a v22 decoder reading a v23 Hello would run off the end
+/// of the message, and the floor has to rise again to meet it. No
+/// compatibility loss worth mourning there either — an older client's join
+/// token came from an unauthenticated `/api/join` that no longer exists.
+/// v24 (the legacy claim) is an ordinary append and leaves the floor where
+/// v23 put it.
+pub const MIN_PROTOCOL: u16 = 23;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -751,7 +769,7 @@ mod tests {
 		assert_eq!(legacy_identity_hash(&[7; 16]), want);
 		// And it is the hash, never the secret: a launcher that shipped the
 		// raw file contents would hand every server the old bearer
-		// credential, which is the thing v22 removed.
+		// credential, which is the thing v23 removed.
 		assert_ne!(legacy_identity_hash(&[7; 16]), [7; 16]);
 	}
 

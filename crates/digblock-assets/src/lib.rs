@@ -340,7 +340,11 @@ pub mod shader {
 	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
 	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
 	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
+	// gi_common consumes medium_common's depth fade (R32) as well as
+	// gi_dda's steppers, so its standalone validation carries both — the
+	// same order every real consumer already concatenates them in.
 	pub const GI_COMMON: &str = concat!(
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
@@ -537,20 +541,59 @@ mod tests {
 		);
 	}
 
-	/// The resolve's per-pixel NEE (R20) and the probe pass's stochastic
-	/// one price the same torch with const twins — the two live in
-	/// shaders that cannot share bindings, so the compiler can't hold
-	/// them together. If they drift, the deterministic direct pool and
-	/// the cache's bounce of that same pool disagree about the light's
-	/// strength, and the seam moves with the camera (the near field is
-	/// the ray, the far field is the cache). Retuning is legal — in both
-	/// files at once.
+	/// The fragment-side NEE (R20, shared by the resolve and players
+	/// since R33) and the probe pass's stochastic one price the same
+	/// torch with const twins — the probe kernel lives in a shader that
+	/// cannot share bindings, so the compiler can't hold them together.
+	/// If they drift, the deterministic direct pool and the cache's
+	/// bounce of that same pool disagree about the light's strength, and
+	/// the seam moves with the camera (the near field is the ray, the far
+	/// field is the cache). Retuning is legal — in both files at once.
+	///
+	/// The resolve and players are listed even though they now share
+	/// gi_common's ONE declaration: what the loop catches for them is a
+	/// function-scope shadowing const, the same failure mode the ink pin
+	/// counts declarations for.
 	#[test]
 	fn resolve_and_probe_agree_on_light_calibration() {
 		for name in ["LIGHT_RANGE", "LIGHT_GAIN", "LIGHT_NEAR"] {
-			let r = wgsl_const(super::shader::GI_RESOLVE, name);
 			let p = wgsl_const(super::shader::GI_PROBE, name);
-			assert_eq!(r, p, "{name}: resolve {r} vs probe {p}");
+			for (consumer, src) in [
+				("resolve", super::shader::GI_RESOLVE),
+				("players", super::shader::PLAYERS),
+			] {
+				let r = wgsl_const(src, name);
+				assert_eq!(r, p, "{name}: {consumer} {r} vs probe {p}");
+				assert_eq!(
+					src.matches(&format!("const {name}")).count(),
+					1,
+					"{consumer} declares {name} more than once — a local \
+					 const shadows the shared one"
+				);
+			}
+		}
+	}
+
+	/// Every fragment pass that prices local lights does it through the
+	/// ONE `resample_light` gi_common carries (R33) — defined once (no
+	/// shadowing copy) and actually called, because a pass that takes the
+	/// prelude and never calls it is a body torches cannot light, which
+	/// is exactly the regression players shipped with.
+	#[test]
+	fn every_nee_consumer_runs_the_shared_estimator() {
+		for (name, src) in [
+			("resolve", super::shader::GI_RESOLVE),
+			("players", super::shader::PLAYERS),
+		] {
+			assert_eq!(
+				src.matches("fn resample_light(").count(),
+				1,
+				"{name} must see exactly one resample_light definition"
+			);
+			assert!(
+				src.matches("resample_light(").count() >= 2,
+				"{name} takes the shared estimator but never calls it"
+			);
 		}
 	}
 

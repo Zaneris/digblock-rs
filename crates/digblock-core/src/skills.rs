@@ -358,7 +358,7 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 /// [`dig_award`] is what puts the two together.
 pub fn dig_xp(block: BlockType) -> u64 {
 	match block.hardness_ticks() {
-		Some(h) => u64::from(h).div_ceil(6),
+		Some(h) => u64::from(h).div_ceil(12),
 		None => 0,
 	}
 }
@@ -373,15 +373,38 @@ pub const DEPTH_XP_FROM: i32 = crate::worldgen::SEA_LEVEL;
 /// rather than a limit the world approaches and never reaches.
 pub const DEPTH_XP_TO: i32 = crate::block::BEDROCK_Y + 1;
 
+/// One whole, in permille — the unit [`depth_xp_permille`] is expressed
+/// against and [`dig_award`] rounds to.
+const PERMILLE: u32 = 1000;
+
 /// The depth reward at its deepest, in permille of the flat award.
 ///
-/// Bounded from both sides. It has to clear the rounding on the SMALLEST
-/// award in the game, or the blocks at the bottom of the hardness order
-/// would be handed a bonus that floors straight back to what they already
-/// paid (`the_depth_reward_moves_every_award`). And it has to stay well
-/// under the multiple that would make depth compulsory: this is a reason to
-/// go down, not a tax on staying up.
+/// Bounded from both sides, and neither bound is arithmetic. Above: well
+/// under the multiple that would make depth compulsory — this is a reason
+/// to go down, not a tax on staying up. Below: enough to be worth
+/// noticing. What used to bind it from underneath was the rounding, and no
+/// longer does: [`dig_award`] rounds to NEAREST, so any ramp above
+/// [`PERMILLE`] moves every award in the game by construction
+/// (`the_depth_reward_moves_every_award`) — however cheap the block, and
+/// however small the award scale is retuned to be.
 pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
+
+/// What a cell the Resonant Pick's swing reached — every cell but the one
+/// under the crosshair — pays, in permille of its own flat award (§5.6).
+///
+/// A wide swing is a reach bonus, not an XP multiplier. The pick already
+/// pays for itself in **material**: one hold hands back a whole plane of
+/// blocks, and the hold is only a level-only multiple of a single-cell one
+/// rather than the whole plane's worth of time. Paying full XP per cell on
+/// top of that would make the tool the only sensible way to earn Mining at
+/// all, and would make each of its two reach milestones a step change in
+/// levelling speed rather than in what the tool DOES.
+///
+/// Floored at one whole point per cell by [`dig_award`], since a fraction
+/// of the cheap end of the hardness order is nothing at all, and an extra
+/// cell that pays literally nothing reads as a bug rather than as a
+/// discount.
+pub const PICK_EXTRA_PERMILLE: u32 = 200;
 
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
 /// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then
@@ -393,7 +416,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 /// that grid exists at all. That curve had to be quantized because ticks are
 /// fine-grained enough that a per-level change moved a hold by one or by
 /// nothing, so the reward read as noise. XP has no such problem: the awards
-/// are small integers and the flooring in [`dig_award`] quantizes them for
+/// are small integers and the rounding in [`dig_award`] quantizes them for
 /// free, leaving each block type its own ladder of whole-point steps as you
 /// descend (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top
 /// of that would add nothing a player can see and would buy cliffs — a
@@ -403,7 +426,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 pub fn depth_xp_permille(y: i32) -> u32 {
 	let depth = (DEPTH_XP_FROM - y.clamp(DEPTH_XP_TO, DEPTH_XP_FROM)) as u32;
 	let span = (DEPTH_XP_FROM - DEPTH_XP_TO) as u32;
-	1000 + (DEPTH_XP_MAX_PERMILLE - 1000) * depth / span
+	PERMILLE + (DEPTH_XP_MAX_PERMILLE - PERMILLE) * depth / span
 }
 
 /// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer
@@ -417,6 +440,10 @@ pub fn depth_xp_permille(y: i32) -> u32 {
 /// rows, and the anchor is the one cell both ends provably agree on, since
 /// the server validates the request against its own ray. The whole swing is
 /// scaled once rather than cell by cell — it is one action, and one rounding.
+///
+/// **Only the aimed cell pays in full**; every other cell the swing took
+/// pays [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and
+/// never reaches that arm, since `broken` counts blocks rather than cells.
 ///
 /// A field extraction pays §5.4's per-tier figure in BOTH skills instead,
 /// and the depth reward deliberately does not touch it. The ore tiers are
@@ -435,49 +462,106 @@ pub fn dig_award(
 	if let Some(split) = extracting.and_then(ore_field_xp) {
 		return split;
 	}
-	// Per BLOCK: a wide swing pays for what it broke, not for the swing.
-	// A door pair is still ONE block.
-	let flat = dig_xp(prev) * u64::from(broken);
-	(flat * u64::from(depth_xp_permille(y)) / 1000, 0)
+	let unit = u64::from(PERMILLE);
+	let base = dig_xp(prev);
+	// A cell the swing reached, in permille of its own award: the fraction,
+	// floored at one whole point so the cheapest blocks still pay something,
+	// and capped at the award itself — which is what keeps a block worth
+	// nothing worth nothing, and stops the floor out-paying the cell it is
+	// a fraction of.
+	let each = (base * u64::from(PICK_EXTRA_PERMILLE))
+		.max(unit)
+		.min(base * unit);
+	// Everything stays in permille to here, so the swing is ONE rounding —
+	// it is one action, and a fraction rounded per cell and then multiplied
+	// out would drift further from the fraction the further the pick
+	// reaches, which is the opposite of what a widening swing should do.
+	let flat = match broken {
+		0 => 0,
+		n => base * unit + u64::from(n - 1) * each,
+	};
+	// To NEAREST rather than truncated. The awards are small integers, so
+	// truncation quietly under-delivers both the ramp and the fraction, and
+	// it under-delivers them worst on the cheapest digs — the ones with the
+	// least room to show it. Rounding is also what makes the ramp's
+	// guarantee structural: every award moves with depth for any multiplier
+	// above unity, so neither a new cheap row nor a retune of the award
+	// scale can silently strand the bottom of the hardness order on a flat
+	// number.
+	let scale = unit * unit;
+	let mining = (flat * u64::from(depth_xp_permille(y)) + scale / 2) / scale;
+	(mining, 0)
 }
 
-/// Alchemy XP per block extracted at the bench, scaled down from the
-/// block's BASE yield — fixed for life, never the level-scaled
-/// outcome (§4.1).
+/// Alchemy XP per block extracted at the bench: the block's worth at the
+/// bench ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
+/// yield) — fixed for life, never the level-scaled outcome (§4.1).
+///
+/// **Zero for anything the bench itself can make.** Extraction XP is paid
+/// for reducing what the WORLD made; taking apart your own transmutation
+/// teaches you nothing and pays nothing, which is what stops
+/// craft-then-extract being a standing converter from essence into levels.
+/// It keys on [`BlockType::is_bench_only`] and not on craftability so the
+/// statement is about where a block CAME from rather than what the catalog
+/// happens to offer — the same predicate the catalog is gated on, so the
+/// two cannot drift.
+///
+/// The bench's PACE deliberately does not follow: a made block is as much
+/// substance to take apart as a natural one, and `extract_pace_ticks` keys
+/// on the worth for that reason.
 pub fn convert_xp(block: BlockType) -> u64 {
-	u64::from(crate::alchemy::extract_total_base(block)).div_ceil(3)
+	if block.is_bench_only() {
+		return 0;
+	}
+	u64::from(crate::alchemy::extract_worth(block))
 }
 
 /// The DUAL award for one field extraction at the rock face (§5.4):
 /// `(Mining, Alchemy)`. `None` for anything that is not an ore.
 ///
 /// Field extraction is mechanically a mine and thematically a crude
-/// alchemical separation, so it pays both — and the Alchemy cut is
-/// deliberately the small half, with the substantial Alchemy XP waiting
-/// at the bench (`convert_xp`). Each ore therefore carries a fixed total
-/// split across TWO moments, and neither skill can be levelled entirely
-/// from inside the other.
+/// alchemical separation, so it pays both: Mining the headline, Alchemy
+/// the smaller cut. Smaller than the Mining figure beside it, though —
+/// not a token half of some larger Alchemy total, because there is no
+/// second moment behind this one. Raw ore is never an item (§5.3,
+/// `raw_ore_is_never_an_item`), so no vein reaches a bench and the draw
+/// at the rock face IS the separation. `convert_xp` still answers for an
+/// ore and its answer is simply unreachable — the tier's bench worth,
+/// kept as the basis this column is set against.
+///
+/// Alchemy is still earned at the bench, taking apart what the world
+/// hands you; what a vein adds is that a miner who never opens the screen
+/// still moves the skill.
 ///
 /// Tabled rather than derived from hardness: this is a headline reward
-/// and the curve through it is a decision, not a consequence.
+/// and the curve through it is a decision, not a consequence. Which is
+/// also why it does NOT follow a retune of [`dig_xp`] — a vein is scarce
+/// and finding one is most of the work, so what a draw is worth was
+/// chosen against the tier and not against a multiple of the rock around
+/// it. A retune of the ordinary dig moves how much a vein is worth
+/// RELATIVE to quarrying, deliberately, and that is a lever rather than a
+/// drift.
 pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
 	Some(match ore {
-		BlockType::Emberore => (40, 8),
-		BlockType::Duskstone => (70, 14),
-		BlockType::Glowvein => (110, 22),
-		BlockType::Aetherock => (170, 34),
+		BlockType::Emberore => (40, 16),
+		BlockType::Duskstone => (70, 28),
+		BlockType::Glowvein => (110, 44),
+		BlockType::Aetherock => (170, 68),
 		_ => return None,
 	})
 }
 
-/// Alchemy XP per crafted batch, scaled down from the ideal cost summed
-/// across the recipe's cost lines (pre-waste — fixed for life). Zero for
-/// uncraftable items.
+/// Alchemy XP per crafted item: what the craft is worth at the bench
+/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
+/// pre-waste cost) — fixed for life. Zero for uncraftable items.
+///
+/// Transmuting still pays what it always paid; what changed is that it
+/// takes the time the work takes, since the bench now paces a craft the
+/// way it paces an extraction (`craft_pace_ticks`). The award and the
+/// pace read the same number for the same reason extraction's do: a thing
+/// worth more to make is worth more to have made.
 pub fn craft_xp(item: BlockType) -> u64 {
-	match crate::alchemy::craft_ideal(item) {
-		Some(lines) => u64::from(lines.iter().map(|&(_, n)| n).sum::<u32>()).div_ceil(3),
-		None => 0,
-	}
+	u64::from(crate::alchemy::craft_worth(item))
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after
@@ -775,16 +859,16 @@ mod tests {
 	fn dig_xp_follows_the_hardness_table() {
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Leaves, 2u64),
-			(B::Snow, 3),
-			(B::Sand, 5),
-			(B::Dirt, 5),
-			(B::Grass, 5),
-			(B::Gravel, 8),
-			(B::Wood, 10),
-			(B::Sandstone, 12),
-			(B::Stone, 15),
-			(B::WoodSlab, 4), // a slab third pays per completed hold
+			(B::Leaves, 1u64),
+			(B::Snow, 2),
+			(B::Sand, 3),
+			(B::Dirt, 3),
+			(B::Grass, 3),
+			(B::Gravel, 4),
+			(B::Wood, 5),
+			(B::Sandstone, 6),
+			(B::Stone, 8),
+			(B::WoodSlab, 2), // a slab third pays per completed hold
 		] {
 			assert_eq!(dig_xp(block), xp, "{block:?}");
 		}
@@ -804,17 +888,58 @@ mod tests {
 	}
 
 	/// The surface world is untouched: at the waterline and anywhere above
-	/// it a dig pays its flat table entry exactly, however many cells the
-	/// swing broke.
+	/// it a dig pays its flat table entry exactly, and a swing pays what a
+	/// swing pays there — depth is the only thing this ramp knows about, so
+	/// however many cells the pick took, y is not what decided it.
 	#[test]
 	fn the_depth_reward_is_flat_above_the_waterline() {
 		for y in [DEPTH_XP_FROM, DEPTH_XP_FROM + 1, DEPTH_XP_FROM + 90] {
-			assert_eq!(depth_xp_permille(y), 1000, "flat at y {y}");
+			assert_eq!(depth_xp_permille(y), PERMILLE, "flat at y {y}");
 			for b in diggables() {
 				assert_eq!(dig_award(b, None, 1, y), (dig_xp(b), 0), "{b:?} at y {y}");
-				assert_eq!(dig_award(b, None, 9, y), (dig_xp(b) * 9, 0), "swing at {y}");
+				assert_eq!(
+					dig_award(b, None, 9, y),
+					dig_award(b, None, 9, DEPTH_XP_FROM),
+					"swing at {y}"
+				);
 			}
 		}
+	}
+
+	/// §5.6: the pick's reach is a bonus in MATERIAL, not in XP. The cell
+	/// under the crosshair pays in full and every cell behind it a fraction
+	/// of one — floored at a point, because a fraction of the cheap end of
+	/// the hardness order is nothing at all, and capped at the award itself,
+	/// so the floor can never out-pay the cell it is a fraction of. Walked
+	/// over the whole diggable roster and every reach the tool has, because
+	/// both bounds bite only at the ends of the hardness order.
+	#[test]
+	fn a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction() {
+		// At the waterline the ramp is identity, so the split IS the answer.
+		let y = DEPTH_XP_FROM;
+		for b in diggables() {
+			let full = dig_xp(b);
+			assert_eq!(dig_award(b, None, 1, y).0, full, "{b:?} aimed cell");
+			let mut prev = full;
+			for broken in 2..=9u32 {
+				let got = dig_award(b, None, broken, y).0;
+				let step = got - prev;
+				assert!(step >= 1, "{b:?}: cell {broken} of the swing paid nothing");
+				assert!(step <= full, "{b:?}: cell {broken} out-paid the aimed one");
+				prev = got;
+			}
+			// And a plane is well short of paying per cell, for anything the
+			// fraction can actually cut into. At the floor of the scale it
+			// cannot: one point IS the whole award there.
+			if full > 1 {
+				assert!(dig_award(b, None, 9, y).0 < full * 9, "{b:?} pays per cell");
+			}
+		}
+		// The golden: a stone plane at the pick's widest reach, against what
+		// those same nine blocks pay as nine separate holds.
+		let stone = BlockType::Stone;
+		assert_eq!(dig_award(stone, None, 9, y).0, 21);
+		assert_eq!(dig_xp(stone) * 9, 72);
 	}
 
 	/// The ceiling lands on the deepest cell a dig can REACH, not on
@@ -844,12 +969,19 @@ mod tests {
 	}
 
 	/// The reward has to be VISIBLE, and the awards are small integers, so
-	/// "half again" is only real if it survives the flooring on the
-	/// cheapest dig in the game. Every diggable block pays strictly more at
-	/// the bottom than it does at the waterline — this is the pin that
-	/// `DEPTH_XP_MAX_PERMILLE` is set against.
+	/// a multiplier that rounded away on the cheapest dig in the game would
+	/// be no reward at all there. Every diggable block pays strictly more at
+	/// the bottom than at the waterline — including the ones at the very
+	/// floor of the award scale, which pay a single point flat and which a
+	/// truncating ramp could not have moved by any multiplier under two.
+	/// `dig_award` rounds to nearest instead, so this holds for any ramp
+	/// above unity and stays true through a retune of either end.
 	#[test]
 	fn the_depth_reward_moves_every_award() {
+		assert!(
+			diggables().iter().any(|b| dig_xp(*b) == 1),
+			"the floor of the award scale is occupied — the case this pin is for"
+		);
 		for b in diggables() {
 			let (top, _) = dig_award(b, None, 1, DEPTH_XP_FROM);
 			let (bottom, _) = dig_award(b, None, 1, DEPTH_XP_TO);
@@ -918,8 +1050,7 @@ mod tests {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Stone, 9u64),
-			(B::Wood, 9),
+			(B::Wood, 9u64),
 			(B::Grass, 9),
 			(B::Rubble, 8),
 			(B::Dirt, 6),
@@ -931,14 +1062,27 @@ mod tests {
 		}
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Convert {
-				block: B::Stone,
+				block: B::Wood,
 				count: 3
 			}),
 			27
 		);
+		// And nothing off the bench pays anything back. Clean stone is the
+		// pointed case: a quarried one is Rubble and pays, the clean block
+		// can only have been transmuted and pays nothing — which is what
+		// keeps the mason's own recipe from being an XP loop.
+		for block in [B::Stone, B::Lumber, B::StoneSlab, B::Torch] {
+			assert_eq!(convert_xp(block), 0, "{block:?} came off the bench");
+		}
+		// It is the PAY that goes, not the worth: the bench still spends its
+		// time on a stone in proportion to the substance in it.
+		assert_eq!(
+			crate::alchemy::extract_worth(B::Stone),
+			crate::alchemy::extract_worth(B::Grass)
+		);
 		// Crafts pay a fixed fraction of their IDEAL cost, rounded up.
 		assert_eq!(craft_xp(B::WoodStairs), 6);
-		assert_eq!(craft_xp(B::Dirt), 10);
+		assert_eq!(craft_xp(B::Lumber), 9);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 	}
 }

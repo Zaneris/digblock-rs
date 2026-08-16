@@ -12,13 +12,24 @@
 // their frame group is 0; the resolve leaves group 1 empty). All
 // cascade/window parameters arrive as plain arguments, because the
 // consumers carry them in different uniforms (the resolve's own block
-// vs the shared Frame's gi fields).
+// vs the shared Frame's gi fields). The group also carries the emitter
+// list and the one reservoir NEE estimator over it (`resample_light`,
+// R33), so the resolve and players cannot price a torch differently —
+// they share the declaration, not twins.
 
 @group(2) @binding(0) var gi_window: texture_3d<u32>;
 @group(2) @binding(1) var gi_coarse: texture_3d<u32>;
 @group(2) @binding(2) var<storage, read> gi_lut: array<vec4u>;
 @group(2) @binding(3) var gi_atlas0: texture_3d<f32>;
 @group(2) @binding(4) var gi_atlas1: texture_3d<f32>;
+// The emitter list (R20) — the same count-prefixed buffer the probe pass
+// NEE-samples. It moved into this shared group at R33 so every consumer
+// of the gather core can also run `resample_light` below: the resolve
+// always could, and players now do (their bodies were reachable by no
+// direct-light estimator at all). lights[0].x is the count as a bitcast
+// u32; entries are PAIRS of vec4s — (xyz world center, w class word),
+// then the rectangle a surface emitter radiates from (zero for a point).
+@group(2) @binding(5) var<storage, read> lights: array<vec4f>;
 
 // How far off a surface a ray starts. It exists only to put the origin
 // on the AIR side of a face the point lies exactly on — nothing more.
@@ -206,6 +217,14 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(o, dir, inv);
 	var water = 0.0;
+	// Did the march PROVE open sky (the R18 ceiling), or merely run out —
+	// of iterations, or of window? An unproven exit used to answer "fully
+	// lit" too, which deep underground is daylight through fifty blocks of
+	// rock; now it answers the depth fade at the shading point (R32).
+	// Above the ramp's top edge the two answers are identical, so the
+	// accepted lateral-exit tradeoff (GI-DESIGN.md "What is NOT built") is
+	// preserved verbatim where it was accepted.
+	var proven = false;
 	let lateral_max = gi_lateral_max(f32(side));
 	// The hard bound tracks the window, not a literal: with the brick skip
 	// an empty brick costs one iteration, so a ray crossing the whole
@@ -237,6 +256,7 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		// water's sun cost: proving open sky one coarse brick at a time
 		// was a whole string of dependent texture loads per fragment.
 		if r.cell.y > 255 || (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
+			proven = true;
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
@@ -286,7 +306,7 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 			}
 		}
 	}
-	return vec3f(1.0, water, 0.0);
+	return vec3f(select(medium_sky_fade(p.y), 1.0, proven), water, 0.0);
 }
 
 // A general march, for the final gather's ray — the one thing `gi_occluded`
@@ -295,11 +315,20 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 // testing, so a shaped block never occludes its own surface here either.
 struct GiHit {
 	hit: bool,
+	// On a hit, the cell struck; on a miss, the cell where the march
+	// ENDED — which a caller needs to answer an unproven miss honestly
+	// (the probe cache at the exhaust point, R32) instead of with sky.
 	cell: vec3i,
 	// Axis last crossed — the hit face's axis.
 	axis: u32,
 	// Water cells crossed on the way, as a PATH LENGTH (see gi_sun_vis).
 	water: f32,
+	// Miss quality (R32): true only when the ray PROVED open sky — the
+	// R18 ceiling test, or climbing out of the world. False on a hit, and
+	// false for the unproven exits (lateral bound, `max_t`, iteration
+	// cap, falling out of the world's floor), which used to be answered
+	// with sky radiance indistinguishably.
+	sky: bool,
 }
 
 fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i32) -> GiHit {
@@ -308,6 +337,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 	out.cell = vec3i(0);
 	out.axis = 1u;
 	out.water = 0.0;
+	out.sky = false;
 	let o = p + dir * GI_SURFACE_EPS;
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
@@ -320,8 +350,11 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 		r = gi_ray_step(r, step_dir, inv);
 		// Sky ceiling (R18): a non-descending ray above the window's
 		// highest occupied cell is a proven miss — see gi_sun_vis.
-		if r.t > max_t || r.cell.y > 255 || r.cell.y < 0
-			|| (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
+		if r.cell.y > 255 || (dir.y >= 0.0 && f32(r.cell.y) > sky_y) {
+			out.sky = true;
+			break;
+		}
+		if r.t > max_t || r.cell.y < 0 {
 			break;
 		}
 		let lat = vec2f(r.cell.xz) + 0.5 - cam_xz;
@@ -375,6 +408,8 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 			}
 		}
 	}
+	// Every miss path lands here; record where the march ended.
+	out.cell = r.cell;
 	return out;
 }
 
@@ -523,8 +558,14 @@ fn gi_cascade_gather(
 // surface normal and dimmed — it stands in for an IRRADIANCE the cascades
 // could not supply, not for the radiance arriving from one direction,
 // which is why it carries the extra factor and `gi_sky_radiance` does not.
-fn gi_sky_fallback(n: vec3f, zenith: vec3f, horizon: vec3f) -> vec3f {
-	return gi_sky_radiance(n, zenith, horizon) * 0.35;
+//
+// Depth-faded (R32): this answer is UNPROVEN — it fires exactly where no
+// probe has data — and underground the daytime dome it used to return at
+// full strength was the light leaking into every tunnel past the
+// cascades' reach. `y` is the shaded point's altitude; above the ramp's
+// top edge the fade is exactly 1 and nothing changes.
+fn gi_sky_fallback(y: f32, n: vec3f, zenith: vec3f, horizon: vec3f) -> vec3f {
+	return gi_sky_radiance(n, zenith, horizon) * 0.35 * medium_sky_fade(y);
 }
 
 // Is `p` actually inside a cascade's coverage? The atlases are toroidal,
@@ -575,7 +616,7 @@ fn gi_cache_at(
 			return gi_axis_gather(t1, d1.z, n, true);
 		}
 	}
-	return gi_sky_fallback(n, zenith, horizon);
+	return gi_sky_fallback(p.y, n, zenith, horizon);
 }
 
 // The full C0 → C1 → analytic fallthrough, exactly the resolve's rule,
@@ -603,5 +644,221 @@ fn gi_indirect(
 	if g.w >= 0.05 {
 		return g.rgb / g.w;
 	}
-	return gi_sky_fallback(n, zenith, horizon);
+	return gi_sky_fallback(p.y, n, zenith, horizon);
+}
+
+// Local-light calibration, the pinned twins of gi_probe.wgsl's — the
+// per-pixel deterministic NEE ray and the probes' stochastic one must
+// price the same torch identically or the direct pool and its bounce
+// drift apart (`resolve_and_probe_agree_on_light_calibration`). They
+// live HERE (moved from gi_resolve.wgsl at R33) so every fragment
+// consumer of this prelude prices a light the same way — the resolve
+// and players share these very declarations, not twins.
+const LIGHT_RANGE = 24.0;
+// Retuned at R26 — the reasoning and the sweep live on gi_probe's twin.
+const LIGHT_GAIN = 0.75;
+// Where the point model's near field stops being taken literally, in
+// blocks. Beyond it the falloff is exactly 1/d^2 and NOTHING about the
+// pool changes; inside, irradiance holds at 1/LIGHT_NEAR^2.
+//
+// A voxel emitter is not a point, and a point's 1/d^2 diverges: the
+// support block's top face sits a fraction of a block from the torch's
+// centre, so it took `emit * LIGHT_GAIN` whole — many times over, before
+// the surface albedo, against a display whose white is 1.0. The result
+// was a hard-edged ellipse of saturated orange under every torch, texture
+// detail gone inside it (measured: the red channel clipped across a
+// visible slice of the vault frame, with not one pixel actually white —
+// the giveaway that this is per-channel saturation, not a bright
+// surface).
+//
+// The clamp already existed, tighter, for the divide-by-nothing case;
+// this only widens it. The number is a DISPLAY fact, not a physical one,
+// and this is explicitly a stopgap: the honest fix is an HDR scene target
+// and one tonemap on the composite, which would roll the highlight off
+// instead of flattening it, and is on the backlog.
+//
+// This value is a measured trade, not the extreme. Clipping in the vault
+// pool band falls by most of an order of magnitude here and bottoms out a
+// little further along — but what is left at the bottom IS the torch's
+// own emissive sprite, which no falloff can touch (every wider clamp
+// measures identically), and buying that last sliver costs a real
+// fraction of pool brightness for a pool that already reads faint.
+// What is left here is a small hot core at the flame's base, which is
+// what a flame should do; what went away is the flat, hard-edged
+// ellipse with no floor texture in it. Rooms are unaffected either way:
+// the floor and wall bands away from the torch barely move, because
+// this cannot touch anything past the radius.
+const LIGHT_NEAR = 2.0;
+// The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
+// anyway; this covers the worst dense diagonal with margin, because a
+// tight cap silently UN-shadows whatever lies past it — the bug
+// gi_sun_vis shipped once, its cap set to half what its window demanded.
+const GI_NEE_ITERS = 64;
+
+// The per-pixel direct term for local lights: ONE shadow ray, but at a
+// light RESAMPLED over the whole in-range list rather than at the
+// brightest one (R27; R20 built the shadow ray and picked the argmax).
+//
+// R20's argmax gave one light a zero-variance estimator and left every
+// other emitter to the gather's direct-hit lottery — `alb * emit *
+// LIGHT_GAIN`, many times over a display whose white is 1.0, on
+// vanishingly small odds. Measured on the DIG_TORCHES courtyard,
+// same-pose walking flicker climbs with every emitter the argmax does NOT
+// cover, and deleting the gather's emitter term outright removes most of
+// that flicker for a small fraction of the scene's light. GI-DESIGN.md
+// R27 has the tables.
+//
+// So the gather no longer returns emitter radiance AT ALL (see
+// path_radiance in gi_resolve.wgsl) and this covers every emitter
+// instead of one. The estimator is Talbot-style RIS (resampled
+// importance sampling) in its exact discrete form: the loop already
+// visits every entry in the list, so there is no candidate SUBSET to
+// draw — one weighted-reservoir pass selects light i with probability
+// exactly p_i / sum(p), and the contribution weight is sum(p) / p_sel.
+//
+// The target function is R20's own score, `emit * ndl / max(d2,
+// LIGHT_NEAR^2)` — the unshadowed irradiance up to the emitter's tint.
+// That makes the estimator EXACT, not merely unbiased, whenever the
+// in-range emitters share a tint and are all visible: f_i = albedo *
+// LIGHT_GAIN * p_i, so f_sel / p_sel * sum(p) = albedo * LIGHT_GAIN *
+// sum(p), which does not depend on which light was drawn. Every torch
+// in the world is one class today, so in the open the pool is as steady
+// at n = 1 as the argmax was, while carrying ALL of the light instead of
+// the brightest slice of it.
+//
+// What is left is visibility, which the target function cannot see: the
+// draw is proportional to UNSHADOWED contribution, so a point that can
+// only see half of what it samples gets a Bernoulli on the pool total
+// rather than the old Bernoulli on a huge radiance spike. That residual
+// is what a temporal reservoir (ReSTIR DI: reproject the reservoir through
+// `prev_vp`, M-clamp) would remove, and it is deliberately NOT built
+// here — the measurement decides, and it needs a scene with emitters
+// occluded from each other (`DIG_TORCHES_WALL`).
+//
+// The R20 property that must not regress: this is still what lights the
+// block a torch STANDS ON. Every march steps before it tests, so a
+// gather ray leaving the support block's top face starts INSIDE the
+// torch's cell and exits without registering it — the brightest surface
+// in the room can only be lit from here. The NEE ray from that face runs
+// `max(dist - margin, 0)` = zero blocks: unoccluded by construction.
+struct NeeLight {
+	valid: bool,
+	dir: vec3f,
+	dist: f32,
+	// The WHOLE in-range pool's unshadowed irradiance, carried by the one
+	// drawn sample (f_sel / p_sel x sum(p)) — already through the falloff
+	// and the cosine, so the use site only gates it on the shadow ray.
+	// The surface albedo multiplies in the scene shader, like the rest of
+	// indirect.
+	irradiance: vec3f,
+	// How far short of the drawn light the shadow ray must stop
+	// (gi_light_margin).
+	margin: f32,
+}
+
+// One uniform per reservoir update, which is what makes the selection
+// correct. Reusing a single draw for every candidate is the tempting
+// shortcut and it is WRONG: the tests `u < p_i / sum_i` are then nested
+// events on one variable, so the last candidate keeps its exact marginal
+// while everything before it is squeezed — equal weights do not come out
+// equal. An LCG advanced per ACCEPTED candidate costs a few ALU on the
+// in-range lights only.
+fn lcg_next(state: ptr<function, u32>) -> f32 {
+	*state = *state * 1664525u + 1013904223u;
+	return f32(*state >> 8u) * (1.0 / 16777216.0);
+}
+
+fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
+	var out: NeeLight;
+	out.valid = false;
+	let count = min(bitcast<u32>(lights[0].x), 256u);
+	var rng = seed;
+	// sum(p) over every candidate, which IS the pool's total irradiance
+	// divided by the emitter tint — so it is both the reservoir's
+	// normalizer and the answer.
+	var wsum = 0.0;
+	var sel_cls = 0u;
+	// Only the ENTRY is kept per update. Everything derived from it — the
+	// distance, the direction, `gi_light_margin`'s sqrt — is computed
+	// once after the loop instead of on every candidate that happens to
+	// win the reservoir, which on a cluster is most of them. Same answer,
+	// since the winner is the winner. The whole vec4 rather than just the
+	// position, because the margin is a question about the w word too.
+	var sel = vec4f(0.0);
+	var sel_q = vec4f(0.0);
+	for (var i = 1u; i <= count; i++) {
+		// Two vec4s an entry: position and class word, then the rectangle
+		// a surface emitter radiates from (zero for a point source).
+		let l = lights[i * 2u - 1u];
+		let q = lights[i * 2u];
+		let d = l.xyz - p;
+		let dist2 = dot(d, d);
+		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
+			continue;
+		}
+		let inv_dist = inverseSqrt(dist2);
+		let ndl = dot(n, d) * inv_dist;
+		if ndl <= 0.0 {
+			continue;
+		}
+		let cls = gi_light_class(l.w);
+		// The target function, and the ONLY LUT read on the candidate
+		// path: the drawn light's tint is fetched once, below. A tint that
+		// varies between classes just makes this a slightly worse target,
+		// never a biased one.
+		//
+		// The entry may carry its own level (a tool whose wielder has
+		// earned a brighter one); zero defers to the class, which is
+		// every placed emitter.
+		let ov = gi_light_level(l.w);
+		let emit = select(gi_emit(cls), f32(ov), ov != 0u);
+		// Scored from the light's CENTRE — `gi_light_sample` at the middle
+		// of its own parametrisation — which for a point source is the
+		// point and costs nothing, and for a rectangle is a cheap stand-in
+		// for the integral over it. Doing the draw here instead would put
+		// two more RNG steps on every candidate rather than on the winner,
+		// and a RIS target function is allowed to be approximate: it
+		// decides which light is picked, never what the pick is worth.
+		let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
+		let score = emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+		if score <= 0.0 {
+			continue;
+		}
+		wsum += score;
+		if lcg_next(&rng) * wsum < score {
+			out.valid = true;
+			sel = l;
+			sel_q = q;
+			sel_cls = cls;
+		}
+	}
+	if out.valid {
+		// The winner gets the actual draw. A point source lands back on
+		// its own position and this is the identity; a rectangle gets a
+		// uniform point across its face, which is what turns a seam from a
+		// hotspot into a wash and gives the shadow ray somewhere honest to
+		// aim.
+		let s = gi_light_sample(sel, sel_q, p, lcg_next(&rng), lcg_next(&rng));
+		let d = s.p - p;
+		out.dist = length(d);
+		out.dir = d / out.dist;
+		out.margin = gi_light_margin_of(sel);
+		// f_sel / p_sel x sum(p), with the division done in closed form:
+		// the target IS the contribution up to the tint, so `score_sel`
+		// cancels exactly and never appears. That cancellation is the
+		// whole reason this reads as one deterministic multiply rather
+		// than as a ratio of two sampled quantities.
+		//
+		// The cancellation is now approximate rather than exact for a
+		// RECTANGLE, and knowingly: the target used the centre and the
+		// contribution uses the drawn point, so the two differ by however
+		// much the light-side cosine and the distance vary across the
+		// face. Standing well back that is nothing; standing at the seam
+		// it is a little extra variance, which the accumulator and the
+		// a-trous pass are already there for. The estimator stays
+		// unbiased either way — the same standing the mixed-tint pool has
+		// had since the tools started casting.
+		out.irradiance = gi_light_tint(sel.w, gi_emit_tint(sel_cls)) * LIGHT_GAIN * wsum;
+	}
+	return out;
 }

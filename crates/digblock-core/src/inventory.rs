@@ -541,43 +541,45 @@ mod tests {
 		assert_eq!(inv, before, "failed ops never mutate");
 	}
 
-	/// A multi-essence craft (Dirt = Earth + Flora) debits every line or
+	/// A multi-essence craft (a torch = Flora + Earth) debits every line or
 	/// none: short on the SECOND line must not consume the first.
 	#[test]
 	fn multi_essence_crafts_never_half_charge() {
 		let mut inv = Inventory::default();
-		inv.add_sub(Essence::Earth, 100);
-		inv.add_sub(Essence::Flora, 1); // deliberately short of Dirt's Flora line
+		inv.add_sub(Essence::Flora, 100);
+		inv.add_sub(Essence::Earth, 1); // deliberately short of the torch's Earth line
 		let before = inv.clone();
 		assert!(!apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
-				item: BlockType::Dirt,
+				item: BlockType::Torch,
 				count: 1
 			},
 			99
 		));
 		assert_eq!(inv, before, "no partial debit");
-		inv.add_sub(Essence::Flora, 5);
+		inv.add_sub(Essence::Earth, 5);
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
-				item: BlockType::Dirt,
+				item: BlockType::Torch,
 				count: 1
 			},
 			99
 		));
-		assert_eq!(inv.count(BlockType::Dirt), 1);
-		assert_eq!(inv.sub_count(Essence::Earth), 100 - 25, "ceil(23·1.05)");
-		assert_eq!(inv.sub_count(Essence::Flora), 0);
+		assert_eq!(inv.count(BlockType::Torch), 1);
+		assert_eq!(inv.sub_count(Essence::Flora), 100 - 5, "ceil(4·1.05)");
+		assert_eq!(inv.sub_count(Essence::Earth), 6 - 3, "ceil(2·1.05)");
 	}
 
 	/// The bucket-charge economy: extraction opens at water's own Alchemy
-	/// level and empties the tool; crafting a charge opens later still,
-	/// refuses on a full bucket, and is lossy against the extraction — no
-	/// loop.
+	/// level and empties the tool. There is no craft to pair it with —
+	/// water is something the world hands you, so the bench cannot make a
+	/// charge at any level, and the only way to fill the tool is to go and
+	/// scoop one. That IS the Aqua economy: the essence with the fewest
+	/// sources is the one you have to carry home.
 	#[test]
-	fn bucket_charge_extracts_and_crafts_without_a_loop() {
+	fn bucket_charge_extracts_but_is_never_crafted() {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Water, 1);
 		assert!(
@@ -602,30 +604,18 @@ mod tests {
 		assert!(!inv.bucket_full(), "extracting the charge empties the tool");
 		assert_eq!(inv.sub_count(Essence::Aqua), 18);
 
-		// Craft a fresh charge: the price plus waste comfortably exceeds
-		// what extracting one handed back.
-		inv.add_sub(Essence::Aqua, 11);
-		assert!(apply_alchemy(
-			&mut inv,
-			AlchemyOp::Craft {
-				item: BlockType::Water,
-				count: 1
-			},
-			99
-		));
-		assert!(inv.bucket_full());
-		assert_eq!(inv.sub_count(Essence::Aqua), 0);
-		// Full bucket: refused before any debit.
-		inv.add_sub(Essence::Aqua, 100);
+		// And no amount of Aqua buys the charge back, at any level.
+		inv.add_sub(Essence::Aqua, 100_000);
+		let before = inv.clone();
 		assert!(!apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
 				item: BlockType::Water,
 				count: 1
 			},
-			99
+			crate::skills::MAX_LEVEL
 		));
-		assert_eq!(inv.sub_count(Essence::Aqua), 100, "nothing paid");
+		assert_eq!(inv, before, "nothing paid, nothing filled");
 	}
 
 	/// Owning a tool is a yes/no (§7.3), so the bench sells you exactly

@@ -199,7 +199,7 @@ pub enum ClientMsg {
 		sim_version: u16,
 		/// Informational build string (diagnostics only).
 		build: String,
-		// v22 REMOVED `identity: [u8; 16]`, and removing rather than
+		// v23 REMOVED `identity: [u8; 16]`, and removing rather than
 		// deprecating was the point. It was a client-chosen bearer secret
 		// that keyed the server's persisted inventory, replayed verbatim to
 		// every server a player ever joined — so any server operator held
@@ -277,7 +277,7 @@ pub enum ClientMsg {
 		grid: Vec<u16>,
 	},
 	/// Claim the pre-account character this server holds for `legacy`, and
-	/// fold it into the account that sent this. Appended in v23.
+	/// fold it into the account that sent this. Appended in v24.
 	///
 	/// `legacy` is the LOOKUP KEY those records were filed under — the
 	/// truncated hash of the old device secret, which the client computes
@@ -929,7 +929,7 @@ mod tests {
 			postcard::to_stdvec(&hello).unwrap(),
 			// variant tag, protocol, name, draw_dist (zigzag), the raw
 			// token bytes, sim_version, build. The trailing raw identity
-			// bytes were dropped in v22 — the one field this message has
+			// bytes were dropped in v23 — the one field this message has
 			// ever LOST, which is why MIN_PROTOCOL moved with it rather
 			// than the shape staying append-only.
 			vec![

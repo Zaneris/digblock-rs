@@ -128,7 +128,7 @@ impl Stub {
 
 /// The join token is the ONLY thing the client asserts about itself now.
 /// It used to also carry an identity secret; who a player is comes from the
-/// master's answer to `/api/tokens/verify` instead (v22).
+/// master's answer to `/api/tokens/verify` instead (v23).
 #[test]
 fn the_configured_token_reaches_the_wire() {
 	let (a, b) = loopback_pair();

@@ -156,7 +156,7 @@ clean rock pays the most, mined rubble a little less, and the loose materials le
 | Wood                  | Flora                      | the Flora baseline, a whole block's worth                                                                                                          |
 | Leaves / PineLeaves   | a token Flora              | foliage is water and structure; the essence is in the trunk (cut from its first draft — against a near-instant dig it paid Flora as fast as grass) |
 | Snow                  | Aqua                       | cold biomes' economic identity                                                                                                                     |
-| Water (bucket charge) | Aqua                       | unlocked with the Aqua economy (§4.3); consumes the charge                                                                                         |
+| Water (bucket charge) | Aqua                       | unlocked with the Aqua economy (§4.3); consumes the charge. The one direction — the world hands you water, so there is no craft (§7.5)             |
 | WoodStairs            | Flora                      | shaped items extract at volume —                                                                                                                   |
 | StoneStairs           | Earth                      | crafting is no longer one-way                                                                                                                      |
 | WoodDoor              | Flora                      |                                                                                                                                                    |
@@ -205,16 +205,24 @@ earned line).
 
 | action                                           | what the XP is derived from                                                                                                                                                                             |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| bench extraction, per block                      | a fixed fraction of the block's total extraction base (`skills::convert_xp`)                                                                                                                            |
-| bench extraction, per ore                        | the same rule, so the tiers pay in proportion to what they give up                                                                                                                                      |
-| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`)                                                                                                                                        |
+| bench extraction, per block                      | the block's worth at the bench (`alchemy::extract_worth`) — and **zero for anything the bench itself can make** (`skills::convert_xp`, §7.5)                                                            |
+| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`) — and the ONLY Alchemy a vein pays, since raw ore never reaches a bench                                                                |
 | transmutation, per craft                         | a fixed fraction of the ideal cost (`skills::craft_xp`), so a slab pays least, a whole block more, and a tool most of all — pinned by `alchemy_xp_derives_from_the_base_tables`, per-line ceil included |
 
-XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for life, RS-style. Extraction XP
-arrives **dripped**: the extract tab sends one `Convert { count: 1 }` per completed cycle (§8.1), so a hoard of stone is
-a long steady pull of Alch XP at the bench rather than a click — feeding the coalescing XP toast a steady pulse.
-`ALCHEMY_MAX_COUNT` stays in the protocol untouched (crafting multipliers still batch, and the wire doesn't care who
-paces it).
+XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for life, RS-style. Extraction XP is
+paid for reducing what the WORLD made and nothing for undoing your own work, which is what stops the extraction and
+transmutation rows composing into a converter from essence into levels; the bench's PACE follows a block's worth either
+way, so a planed timber comes apart no faster than the log it was cut from.
+
+**Both halves of the bench arrive dripped.** The extract tab sends one `Convert { count: 1 }` per completed cycle and
+the transmute tab one `Craft { count: 1 }` (§8.1), so a hoard of stone and a hundred-slab batch are each a long steady
+pull of Alch XP rather than a click — feeding the coalescing XP toast a steady pulse. Crafting was the exception until
+it wasn't: it answered instantly, which made the bench's one immediate action also its fastest XP by a wide margin, and
+one CTRL press paid a hundred crafts in a frame. The award did not change and should not — transmuting is the skill's
+main verb — but it now takes the time the work takes, off the same `base_pace_ticks` curve scaled by
+`alchemy::craft_worth`. The catalog's biggest price is therefore also its longest hold, which is the reading a forge
+should have. `ALCHEMY_MAX_COUNT` stays in the protocol untouched: the multipliers still choose a batch size, and the
+wire doesn't care who paces it.
 
 ### 4.2 Transmutation cost
 
@@ -245,15 +253,15 @@ see below.)
 **The Aqua economy opens** with extraction of the bucket charge, and the **planed timber** material arrives with its
 whole joinery set — Lumber block, slab, stairs and door together, because §7.2's `max(shape, material)` rule lets the
 material dominate every shape it is worked into. The first real material wave follows: **clean Stone** (the mason's
-unlock, §7.1) with Wood, Dirt and Sand; then **Stone Bricks**; then Sandstone, Snow, **Glass**, **Grass** and **Mud**.
-Interleaved with them are the first bonus line (dew, §3.3) and the first quickening of the extraction pace, which every
-block's own pace scales with.
+unlock, §7.1) — which arrives alone, since the loose ground and the felled log beside it in the ladder are things the
+world hands you and §7.5 keeps them off the bench; then **Stone Bricks**; then Sandstone and **Glass**. Interleaved with
+them are the first bonus line (dew, §3.3) and the first quickening of the extraction pace, which every block's own pace
+scales with.
 
 **The middle** is shapes and sinks: **Fence** and **Ladder**; the trace-minerals bonus line with the **Lantern** and
 **Framed Window** to spend Metal on; **Pillar** and **Roof Wedge** alongside **Polished Stone** and **Sandstone
-Bricks**; then **crafting Water** — deliberately lossier than extracting it, so there is no loop — and **Metal**, the
-prestige material, which brings its whole grid row (MetalStairs, MetalDoor, …) with it. The **Resonant Pick** is the
-next rung, priced to be the game's biggest single essence sink.
+Bricks**; then **Metal**, the prestige material, which brings its whole grid row (MetalStairs, MetalDoor, …) with it.
+The **Resonant Pick** is the next rung, priced to be the game's biggest single essence sink.
 
 **The endgame** adds **Pane** and **Gate** (Glass Pane, Metal Bars) with the lossy essence exchange (any → any, **except
 into Aether**), then **Trapdoor**; the pine-resin bonus line and the last quickening of the pace; the **Aetherlamp**,
@@ -369,16 +377,18 @@ instead, rising steeply with the tier (+ the Alchemy cut, §5.4).
 **Then the depth reward scales it** (`skills::depth_xp_permille`): flat at and above `DEPTH_XP_FROM` — the waterline, so
 nothing about surface mining moves — then rising linearly with depth to `DEPTH_XP_MAX_PERMILLE` at `DEPTH_XP_TO`. Both
 ends are chosen rather than convenient. The far end is the deepest cell a dig can happen in **at all**, one above
-bedrock, because bedrock is undiggable and a maximum nobody can ever be handed is not a maximum. The ceiling sits in the
-band between two failures: the cheapest dig in the game pays only a couple of points, so a smaller multiplier would
-floor straight back to what it already paid and the bottom of the hardness order would get nothing
-(`the_depth_reward_moves_every_award`); a larger one stops being a reason to go down and becomes a tax on staying up.
-Half again is a pull a surface player can still decline.
+bedrock, because bedrock is undiggable and a maximum nobody can ever be handed is not a maximum. The ceiling is bounded
+from one side only: a larger one stops being a reason to go down and becomes a tax on staying up. Nothing bounds it from
+underneath any more, because `dig_award` rounds to NEAREST rather than truncating — so any ramp above unity moves every
+award in the game, including the blocks at the very floor of the scale, which pay a single point flat and which a
+truncating ramp could not have moved by any multiplier under two (`the_depth_reward_moves_every_award`). That the
+guarantee is structural rather than lucky is what lets the award scale be retuned without quietly stranding the bottom
+of the hardness order on a flat number. Half again is a pull a surface player can still decline.
 
 **It is linear per block, deliberately NOT quantized into depth layers** — the opposite of what `DIG_STEPS` does to the
 dig curve, and for the same reason that grid exists. The dig curve had to be quantized because a per-level change moved
 a hold by a single tick or by nothing, so the reward read as noise and had to be concentrated to be felt at all. XP has
-no such problem: the awards are small integers, so the flooring quantizes them for free and every block type gets its
+no such problem: the awards are small integers, so the rounding quantizes them for free and every block type gets its
 own ladder of whole-point steps — stone climbs from its flat award to its deepest one point at a time, evenly spread
 down the range, with no value in between skipped (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top of
 that would add nothing a player can see, and it would buy cliffs: a handful of depths where one more block down is worth
@@ -390,6 +400,16 @@ is worth *because* it sits just off bedrock — so scaling `ore_field_xp` would 
 authored figures back into a consequence. And an extraction excavates nothing: it leaves a DepletedStone face, and
 clearing that face is an ordinary dig that scales like any other. The miner at a deep vein is already paid for depth,
 for the rock they actually broke.
+
+**A wide swing is a bonus in reach, not in XP** (§5.6). The cell under the crosshair pays its whole award; every other
+cell the Resonant Pick's plane took pays `PICK_EXTRA_PERMILLE` of one — floored at a single point, because a fraction of
+the cheap end of the hardness order is nothing at all, and capped at the award itself, so that floor can never out-pay
+the cell it is a fraction of. The pick already pays for itself in **material**: one hold hands back a whole plane of
+blocks, and the hold is only a level-only multiple of a single-cell one rather than the plane's worth of time. Paying
+full XP per cell on top of that would make the tool the only sensible way to earn Mining at all, and would turn each of
+its two reach milestones into a step change in levelling speed rather than in what the tool *does*. The fraction stays
+in permille until the whole swing rounds once (`a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction`) — a
+per-cell rounding would drift further from the fraction the further the pick reaches, which is exactly backwards.
 
 `skills::dig_award` is the one call that puts all of it together — the flat table, the swing count, the depth reward and
 §5.4's split — so neither the server's chokepoint nor the engine's offline arm can read the tables and forget the rest.
@@ -495,9 +515,19 @@ old behaviour.
 
 ### 5.4 Dual XP
 
-Field extraction is mechanically a mine, thematically a crude alchemical separation: full Mining XP plus a minor Alchemy
-cut at the rock face, with the substantial Alchemy XP paid later at the bench (`skills::ore_field_xp` and `convert_xp`).
-Each ore carries a fixed total split across two moments; neither skill can be leveled entirely from inside the other.
+Field extraction is mechanically a mine, thematically a crude alchemical separation: full Mining XP plus an Alchemy cut
+at the rock face (`skills::ore_field_xp`), so a miner who never touches the bench still moves the other skill.
+
+**The cut at the face is the whole of it.** Raw ore is never an item (§5.3), so no ore reaches an extraction slot and
+there is no bench moment behind the field one — which is why the Alchemy column is not the token it would be if it were
+splitting a total with a later payment. `alchemy::extract_total_base` still prices a tier and `convert_xp` still answers
+for it; that answer is unreachable, and is kept as the basis the column is set against. Alchemy's bulk is still the
+bench, taking apart what the world hands you (§4.1) — a supply no seam competes with.
+
+**The tiers do not follow a retune of `dig_xp`**, and that is the point of tabling them. A vein is scarce and finding
+one is most of the work, so a draw is priced against its tier rather than as a multiple of the rock it sits in; the
+hardness-derived award and the ore table are two separate decisions, and moving one is a deliberate lever on how much a
+seam is worth *relative* to quarrying rather than a figure drifting out of step.
 
 ### 5.5 The Mining ladder
 
@@ -521,11 +551,13 @@ no ESP overlay), and mastery at the cap adds a bonus ore to every field extracti
 
 Item-only `blocks!` row (like all tools, §6). Crafted at an Alchemy level and usable at the matching Mining level — the
 flagship cross-skill dependency. Held, a dig-hold on any diggable cell also digs the cell **directly behind it along
-−normal, if it holds the same block id**; `required` carries a level-only multiplier over the single-cell time
-(`skills::dig_required_with`); both drops and both XP awards land. The pair is derived from the server's own re-raycast
-(cell + face normal), never client-chosen — no cheat surface. Writes ride `begin_multi` under one seq exactly like door
-pairs. At the later Mining threshold the reach extends by another cell (`unlock::pick_cells`). Protection checks run
-per-cell via the assembled `writes` list, as they already do.
+−normal, if it holds the same block id and would credit the same item** (§7.1 — provenance decides a drop, so id alone
+stopped being enough); `required` carries a level-only multiplier over the single-cell time
+(`skills::dig_required_with`); both drops land in full, and the XP is the aimed cell's whole award plus a fraction of
+one for everything behind it (§5.2). The pair is derived from the server's own re-raycast (cell + face normal), never
+client-chosen — no cheat surface. Writes ride `begin_multi` under one seq exactly like door pairs. At the later Mining
+threshold the reach extends by another cell (`unlock::pick_cells`). Protection checks run per-cell via the assembled
+`writes` list, as they already do.
 
 ---
 
@@ -589,22 +621,26 @@ as today. Which tool sits *in* the slot is a separate axis:
 
 ### 7.1 Rubble — why transmutation *is* the economy
 
-Digging natural rock never yields the clean block. Stone's `blocks!` row gains `drops: Some(Rubble)` — the same one-word
-machinery DepletedStone already uses — so every mined stone lands in the inventory as **Rubble** (new id, append-only):
-a cracked, ugly, fully placeable block. Clean Stone exists only two ways: pristine in the terrain, or transmuted at the
-bench. The loop this creates is the point — a builder who wants clean walls *needs* Alchemy, not just a miner's
-patience:
+Digging natural rock never yields the clean block. Stone's `blocks!` row carries `crumbles: Some(Rubble)`, so every
+mined stone lands in the inventory as **Rubble** (new id, append-only): a cracked, ugly, fully placeable block. Clean
+Stone exists only two ways: pristine in the terrain, or transmuted at the bench. The loop this creates is the point — a
+builder who wants clean walls *needs* Alchemy, not just a miner's patience:
 
 ```
 mine Stone → Rubble  →  extract (Earth)  →  craft clean Stone (whole-block ideal × waste)
 ```
 
-- **Rubble is not junk.** Placed, it reads as rough cobble/drystone — the free rustic building material. Low-level
-  builds are cobble builds; that's aesthetic progression.
-- **Sandstone drops Rubble too** ("all broken rock"), so clean Sandstone is likewise craft-only, waiting on its own
-  entry in §7.2's materials. Sand, Gravel, Dirt are already loose material and drop themselves.
-- **DepletedStone's drop changes** from `Some(Stone)` to `Some(Rubble)` — a tapped-out vein face crumbles like any other
-  rock.
+- **Rubble is not junk**, and since §7.5 it is not optional either: it is the *only* thing a natural quarry hands you,
+  because clean rock is now strictly bench work. Placed, it reads as rough cobble/drystone — the free rustic building
+  material. Low-level builds are cobble builds; that's aesthetic progression. Its texture is authored to carry that
+  weight (`tools/texgen`'s `rubble`): a wrapping Worley partition cuts the tile into cobbles at visibly different tones,
+  because the two rock faces are a decision a player reads off a wall and the earlier recipe — stone's own body with
+  fracture walks over it — could not be told from smooth stone at any distance.
+- **Sandstone crumbles to Rubble too** ("all broken rock"), so clean Sandstone is bench work in exactly the same way.
+  Sand, Gravel, Dirt are already loose material and hand themselves back.
+- **DepletedStone breaks into Rubble** — a tapped-out vein face crumbles like any other rock. It uses the unconditional
+  `drops` and not `crumbles`: every cell that names it was written by an old siphon draw, so the conditional form would
+  start handing out a legacy block that has never been obtainable.
 - **No hybrid recipes.** Refining is extract-then-craft through the existing `AlchemyOp::Convert`/`Craft` shapes — there
   is no "1 Rubble + N Earth → Stone" op, which would be new machinery for no gain. The Rubble→Stone exchange rate falls
   out of efficiency × waste and nothing else: several rubble per clean stone for a novice, barely more than one at the
@@ -658,17 +694,16 @@ economy, not parallel currencies.
 In ladder order; the prices live in `alchemy::functional_ideal` and the levels in `unlock::functional`, which are pinned
 twins so an item can't have a level without a price.
 
-| item                      | priced in                              | notes                                                                                                                                                     |
-| ------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Torch**                 | Flora + Earth                          | first light, pre-ore on purpose; emissive (§7.4)                                                                                                          |
-| **Essence Siphon**        | Flora + Earth                          | the ore-extraction tool (§5.3); **no Metal in the cost, ever** — ore needs the siphon and Metal needs ore, so a Metal-priced siphon deadlocks the economy |
-| **Framed Window**         | Earth + Flora                          | glass-in-wood-frame, the early window                                                                                                                     |
-| **Lantern**               | Metal + Earth                          | metal-and-glass; first Metal sink outside tools                                                                                                           |
-| **Water** (bucket charge) | Aqua                                   | deliberately lossy against extracting a charge — no loop                                                                                                  |
-| **Resonant Pick**         | Metal + Earth + Aether                 | tool (§5.6); the catalog's biggest single price, and the row whose Aether line put Glowvein's there (§5.3)                                                |
-| essence exchange          | any → any **except Aether**, at a loss |                                                                                                                                                           |
-| **Aetherlamp**            | Metal + Aether                         | brightest light; the standing Aether sink                                                                                                                 |
-| **Master's Sigil**        | Aether alone                           | cosmetic held item, and the catalog's last line                                                                                                           |
+| item               | priced in                              | notes                                                                                                                                                     |
+| ------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Torch**          | Flora + Earth                          | first light, pre-ore on purpose; emissive (§7.4)                                                                                                          |
+| **Essence Siphon** | Flora + Earth                          | the ore-extraction tool (§5.3); **no Metal in the cost, ever** — ore needs the siphon and Metal needs ore, so a Metal-priced siphon deadlocks the economy |
+| **Framed Window**  | Earth + Flora                          | glass-in-wood-frame, the early window                                                                                                                     |
+| **Lantern**        | Metal + Earth                          | metal-and-glass; first Metal sink outside tools                                                                                                           |
+| **Resonant Pick**  | Metal + Earth + Aether                 | tool (§5.6); the catalog's biggest single price, and the row whose Aether line put Glowvein's there (§5.3)                                                |
+| essence exchange   | any → any **except Aether**, at a loss |                                                                                                                                                           |
+| **Aetherlamp**     | Metal + Aether                         | brightest light; the standing Aether sink                                                                                                                 |
+| **Master's Sigil** | Aether alone                           | cosmetic held item, and the catalog's last line                                                                                                           |
 
 The Aetherlamp matters economically: before it, Aether's only sinks are the pick (12, once) and the Sigil (99, once) —
 two purchases in a whole game. A repeatable 3-per-lamp sink is what keeps Aetherock worth mining at the top of the
@@ -709,6 +744,40 @@ The engine has sun + shadow cascades and no point lights, so light ships in two 
 Torches are floor-mounted in v1 (one shape, no facing states); wall mounting is a state nibble away when wanted (§12).
 
 Still deliberately out of v1: container blocks (chests — the inventory is already generous) and mechanisms.
+
+### 7.5 Nothing the world hands you may be transmuted
+
+The bench exists to make what a fresh world does not give away. Dirt, sand, snow, grass, mud, the felled log and the
+scooped bucket charge are all things you walk over and pick up, and a recipe for one is the bench competing with a
+shovel — so the catalog is gated on a single derived predicate, `BlockType::is_bench_only`: *can no dig in an untouched
+world put one of these in a player's hands?* `unlock::craft` and `alchemy::craft_ideal` both open on it, and
+`nothing_the_world_hands_you_can_be_transmuted` pins it against the hand-priced table as well as against the gate, so a
+retired price cannot sit unreachable in `functional_ideal` the way the bucket charge's did.
+
+Its companion is the XP half: **extraction pays for reducing what the world made, and nothing for undoing your own
+work.** `skills::convert_xp` answers zero for anything bench-only. Without it, craft-then-extract was a standing
+converter from essence into levels — you were paid once for making a thing and again for unmaking it. The bench's PACE
+deliberately does not follow (`alchemy::extract_worth`, split out of `convert_xp` for exactly this): a lumber block is
+as much substance to take apart as the log it was planed from and must come apart just as slowly.
+
+**Clean rock is the exception the rule is built to allow, not one carved out of it.** The world is *made* of stone and
+still never hands you one, because a quarried stone arrives as Rubble — so §7.1's whole economy passes the same
+derivation as everything else. Making that true took the conditional half of `crumbles`: a stone somebody **placed**
+hands itself back rather than crumbling, keyed on whether the cell has ever been written (the journal on the server, its
+`EditOverlay` mirror on the client — the same bit §5.3's reveal already reads, and for the same anti-dupe reason). Were
+a bench stone to crumble like the mountain's, craft → place → dig → extract would launder a made block into a
+world-given one and collect the XP for it.
+
+Below the mason's own unlock a placed stone crumbles anyway, and that is not a punishment. A player who could not have
+made one is not undoing their own work, so they get the rubble and the XP that comes with it — and the loop still cannot
+close for anybody, because the levels that can craft a stone are exactly the levels it comes back whole to.
+`no_one_who_can_make_a_block_can_dig_it_into_xp` is the pin, asked at every level that can craft the block.
+
+Two consequences worth stating rather than discovering. A high-level mason can lay clean stone for a beginner to break
+for XP — it costs the mason more essence than the digger recovers, needs an accomplice, and only helps someone early, so
+it is priced rather than exploitable. And **crafting still pays**, so craft-then-extract remains a slow essence-into-XP
+grind at half its old rate; whether transmuting should pay at all is a separate question about §4.1, not a consequence
+of this one.
 
 ---
 
@@ -783,16 +852,22 @@ load-bearing:
   the Aqua paid out, tile gone.
 - Extraction runs **only while the screen is open**. No AFK-extraction-while-mining; you stand at the bench.
 
-TRANSMUTE stays click-based (crafting is a decision, not a grind), structured as **families with one button** (reworked
-to this shape during the build, on feedback that the flat row list didn't read): a row of FAMILY tiles — SLABS, STAIRS,
-DOORS, BLOCKS, WATER — each slowly rotating its icon through its members (wood stairs, stone stairs, …) on a shared
-clock; selecting a family lays its member tiles out beneath (locked members visible but dim, affordable ones badged with
-their batch count); a detail strip shows the selected member's name and post-waste cost at your level; and the tab has
-exactly ONE `TRANSMUTE` button, disabled (no hit rect) for a locked or unaffordable pick.
-`CLICK 1 · SHIFT 10 · CTRL
-100` multipliers on that button. This is also the §7.2 grid's natural UI: a new material ×
-shape pair is one more member in an existing family, so the catalog grows without the screen growing.
-Tools/essence-exchange rows join as families when they land (M4+). `fit_scale` remains the overflow fallback.
+TRANSMUTE is structured as **families with one button** (reworked to this shape during the build, on feedback that the
+flat row list didn't read): a row of FAMILY tiles — SLABS, STAIRS, DOORS, BLOCKS, … — each slowly rotating its icon
+through its members (wood stairs, stone stairs, …) on a shared clock; selecting a family lays its member tiles out
+beneath (locked members visible but dim, affordable ones badged with their batch count); a detail strip shows the
+selected member's name and post-waste cost at your level; and the tab has exactly ONE `TRANSMUTE` button, disabled (no
+hit rect) for a locked or unaffordable pick. `CLICK 1 · SHIFT 10 · CTRL
+100` multipliers on that button.
+
+That button **queues** its count rather than buying it. A batch drips one paced craft at a time exactly as a stack drips
+one paced extraction, the row beneath carries the batch's progress bar and what is left of it, and the button stands as
+its CANCEL — the same shape clicking the occupied extraction slot has. It used to answer instantly, which was the last
+place in the game where XP arrived in a click (§4.1). Like extraction, a batch runs **only while the screen is open**,
+and the two never run at once: leaving a tab abandons its drip, and the server's one bench bucket says the same thing.
+This is also the §7.2 grid's natural UI: a new material × shape pair is one more member in an existing family, so the
+catalog grows without the screen growing. Tools/essence-exchange rows join as families when they land (M4+). `fit_scale`
+remains the overflow fallback.
 
 ### 8.2 Character screen
 
@@ -874,13 +949,24 @@ expand the full unlock list; v1 is the summary.
 - `ore_positions_are_pinned` (golden per-seed, like `spawn_positions_are_pinned`) + density-histogram bounds per
   tier/depth band + `ore_never_manifests_in_edited_cells`.
 - `field_extraction_writes_depleted_never_air` and the dupe test: place Stone into a pristine deposit cell → no ore.
-- `mined_rock_is_always_rubble` — every rock-family `drops` points at Rubble, and the rubble→stone loop is a sink at
+- `mined_rock_is_always_rubble` — every rock-family `crumbles` points at Rubble, and the rubble→stone loop is a sink at
   every level (what the extraction hands back is always less than what the craft costs).
+- §7.5's four, which are one rule read from four sides: `nothing_the_world_hands_you_can_be_transmuted` (no dig in an
+  untouched world hands out something with a recipe — checked against the hand-priced table too, so a retired price
+  cannot hide behind the gate), `no_one_who_can_make_a_block_can_dig_it_into_xp` (the loop-closer: at every level that
+  can craft a block, digging one back pays nothing), `extraction_xp_is_paid_for_what_the_world_made` (and the pace still
+  is not), and `only_the_worlds_own_rock_crumbles` (the conditional drop is opt-in per row, level-blind when pristine,
+  and `dig_drop` stays the pristine answer every economy pin means). The server pair
+  `a_placed_stone_comes_back_whole_and_a_quarried_one_crumbles` / `below_the_masons_unlock_even_a_placed_stone_crumbles`
+  walks it through the real edit path, where the journal is the authority for "placed" and has to be read before the dig
+  writes its own entry.
 - `grid_gates_compose` — every authored material × shape pair unlocks at exactly `max(shape level, material level)`; no
   curated stragglers.
-- `extraction_pace_is_server_enforced` — Convert ops beyond `pace(block, level)` refuse with no debit and no XP;
-  sustained throughput of a flooding client ≤ honest throughput at the same level; `count > 1` charges the bucket per
-  block, not per op.
+- `extraction_pace_is_server_enforced` and its transmute twin `transmuting_draws_on_the_same_bench_bucket_as_extracting`
+  — ops beyond `pace(item, level)` refuse with no debit and no XP; sustained throughput of a flooding client ≤ honest
+  throughput at the same level; `count > 1` charges the bucket per item, not per op; and a craft spends the ticks an
+  extraction would have used, because there is one bench. `the_bucket_can_always_afford_the_costliest_op` covers the
+  other end: an op no full bucket can hold is an op refused forever, online only.
 - Reveal remesh: crossing a threshold bumps resident generation counters exactly once.
 - `every_screen_draws_text_at_one_size` / `..dims_and_panels_the_same_way` extended to the character screen and the
   rebuilt alchemy screen (every window size × scale pair those two sweep).

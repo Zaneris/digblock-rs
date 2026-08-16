@@ -125,10 +125,10 @@ struct GiResolve {
 // Last frame's outputs, ping-ponged (never copied).
 @group(0) @binding(3) var hist_indirect: texture_2d<f32>;
 @group(0) @binding(4) var hist_sun: texture_2d<f32>;
-// The emitter list (R20) — the same count-prefixed buffer the probe
-// pass NEE-samples, bound here for the per-pixel direct term. lights[0].x
-// is the count as a bitcast u32; entries are (xyz world center, w class).
-@group(0) @binding(5) var<storage, read> lights: array<vec4f>;
+// The emitter list rides the SHARED gather group since R33 (gi_common's
+// group(2) binding(5)), along with `resample_light` and the LIGHT_*
+// calibration — players run the same estimator now, and sharing the
+// declaration is what keeps the two from drifting.
 
 // How many frames a still camera keeps sharpening for. alpha is
 // 1/n with n climbing to here, so this constant is what "takes a few
@@ -282,50 +282,6 @@ fn cosine_hemi(n: vec3f, u: vec2f) -> vec3f {
 	return normalize(tx * (r * cos(phi)) + ty * (r * sin(phi)) + n * sqrt(max(1.0 - u.x, 0.0)));
 }
 
-// Local-light calibration, the pinned twins of gi_probe.wgsl's — the
-// resolve's deterministic NEE ray and the probes' stochastic one must
-// price the same torch identically or the direct pool and its bounce
-// drift apart (`resolve_and_probe_agree_on_light_calibration`).
-const LIGHT_RANGE = 24.0;
-// Retuned at R26 — the reasoning and the sweep live on gi_probe's twin.
-const LIGHT_GAIN = 0.75;
-// Where the point model's near field stops being taken literally, in
-// blocks. Beyond it the falloff is exactly 1/d^2 and NOTHING about the
-// pool changes; inside, irradiance holds at 1/LIGHT_NEAR^2.
-//
-// A voxel emitter is not a point, and a point's 1/d^2 diverges: the
-// support block's top face sits a fraction of a block from the torch's
-// centre, so it took `emit * LIGHT_GAIN` whole — many times over, before
-// the surface albedo, against a display whose white is 1.0. The result
-// was a hard-edged ellipse of saturated orange under every torch, texture
-// detail gone inside it (measured: the red channel clipped across a
-// visible slice of the vault frame, with not one pixel actually white —
-// the giveaway that this is per-channel saturation, not a bright
-// surface).
-//
-// The clamp already existed, tighter, for the divide-by-nothing case;
-// this only widens it. The number is a DISPLAY fact, not a physical one,
-// and this is explicitly a stopgap: the honest fix is an HDR scene target
-// and one tonemap on the composite, which would roll the highlight off
-// instead of flattening it, and is on the backlog.
-//
-// This value is a measured trade, not the extreme. Clipping in the vault
-// pool band falls by most of an order of magnitude here and bottoms out a
-// little further along — but what is left at the bottom IS the torch's
-// own emissive sprite, which no falloff can touch (every wider clamp
-// measures identically), and buying that last sliver costs a real
-// fraction of pool brightness for a pool that already reads faint.
-// What is left here is a small hot core at the flame's base, which is
-// what a flame should do; what went away is the flat, hard-edged
-// ellipse with no floor texture in it. Rooms are unaffected either way:
-// the floor and wall bands away from the torch barely move, because
-// this cannot touch anything past the radius.
-const LIGHT_NEAR = 2.0;
-// The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
-// anyway; this covers the worst dense diagonal with margin, because a
-// tight cap silently UN-shadows whatever lies past it — the bug
-// gi_sun_vis shipped once, its cap set to half what its window demanded.
-const GI_NEE_ITERS = 64;
 
 // Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
 // the bit numbers, and this is the mirror — water.wgsl is the other one).
@@ -340,174 +296,6 @@ const STUB_GIFLAT = 2048u;
 
 fn stubbed(bit: u32) -> bool {
 	return (u32(rz.jitter.w) & bit) != 0u;
-}
-
-// The per-pixel direct term for local lights: ONE shadow ray, but at a
-// light RESAMPLED over the whole in-range list rather than at the
-// brightest one (R27; R20 built the shadow ray and picked the argmax).
-//
-// R20's argmax gave one light a zero-variance estimator and left every
-// other emitter to the gather's direct-hit lottery — `alb * emit *
-// LIGHT_GAIN`, many times over a display whose white is 1.0, on
-// vanishingly small odds. Measured on the DIG_TORCHES courtyard,
-// same-pose walking flicker climbs with every emitter the argmax does NOT
-// cover, and deleting the gather's emitter term outright removes most of
-// that flicker for a small fraction of the scene's light. GI-DESIGN.md
-// R27 has the tables.
-//
-// So the gather no longer returns emitter radiance AT ALL (see
-// path_radiance) and this covers every emitter instead of one. The
-// estimator is Talbot-style RIS (resampled importance sampling) in its
-// exact discrete form: the loop already visits every entry in the list,
-// so there is no candidate SUBSET to draw — one weighted-reservoir pass
-// selects light i with probability exactly p_i / sum(p), and the
-// contribution weight is sum(p) / p_sel.
-//
-// The target function is R20's own score, `emit * ndl / max(d2,
-// LIGHT_NEAR^2)` — the unshadowed irradiance up to the emitter's tint.
-// That makes the estimator EXACT, not merely unbiased, whenever the
-// in-range emitters share a tint and are all visible: f_i = albedo *
-// LIGHT_GAIN * p_i, so f_sel / p_sel * sum(p) = albedo * LIGHT_GAIN *
-// sum(p), which does not depend on which light was drawn. Every torch
-// in the world is one class today, so in the open the pool is as steady
-// at n = 1 as the argmax was, while carrying ALL of the light instead of
-// the brightest slice of it.
-//
-// What is left is visibility, which the target function cannot see: the
-// draw is proportional to UNSHADOWED contribution, so a point that can
-// only see half of what it samples gets a Bernoulli on the pool total
-// rather than the old Bernoulli on a huge radiance spike. That residual
-// is what a temporal reservoir (ReSTIR DI: reproject the reservoir through
-// `prev_vp`, M-clamp) would remove, and it is deliberately NOT built
-// here — the measurement decides, and it needs a scene with emitters
-// occluded from each other (`DIG_TORCHES_WALL`).
-//
-// The R20 property that must not regress: this is still what lights the
-// block a torch STANDS ON. Every march steps before it tests, so a
-// gather ray leaving the support block's top face starts INSIDE the
-// torch's cell and exits without registering it — the brightest surface
-// in the room can only be lit from here. The NEE ray from that face runs
-// `max(dist - margin, 0)` = zero blocks: unoccluded by construction.
-struct NeeLight {
-	valid: bool,
-	dir: vec3f,
-	dist: f32,
-	// The WHOLE in-range pool's unshadowed irradiance, carried by the one
-	// drawn sample (f_sel / p_sel x sum(p)) — already through the falloff
-	// and the cosine, so the use site only gates it on the shadow ray.
-	// The surface albedo multiplies in the scene shader, like the rest of
-	// indirect.
-	irradiance: vec3f,
-	// How far short of the drawn light the shadow ray must stop
-	// (gi_light_margin).
-	margin: f32,
-}
-
-// One uniform per reservoir update, which is what makes the selection
-// correct. Reusing a single draw for every candidate is the tempting
-// shortcut and it is WRONG: the tests `u < p_i / sum_i` are then nested
-// events on one variable, so the last candidate keeps its exact marginal
-// while everything before it is squeezed — equal weights do not come out
-// equal. An LCG advanced per ACCEPTED candidate costs a few ALU on the
-// in-range lights only.
-fn lcg_next(state: ptr<function, u32>) -> f32 {
-	*state = *state * 1664525u + 1013904223u;
-	return f32(*state >> 8u) * (1.0 / 16777216.0);
-}
-
-fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
-	var out: NeeLight;
-	out.valid = false;
-	let count = min(bitcast<u32>(lights[0].x), 256u);
-	var rng = seed;
-	// sum(p) over every candidate, which IS the pool's total irradiance
-	// divided by the emitter tint — so it is both the reservoir's
-	// normalizer and the answer.
-	var wsum = 0.0;
-	var sel_cls = 0u;
-	// Only the ENTRY is kept per update. Everything derived from it — the
-	// distance, the direction, `gi_light_margin`'s sqrt — is computed
-	// once after the loop instead of on every candidate that happens to
-	// win the reservoir, which on a cluster is most of them. Same answer,
-	// since the winner is the winner. The whole vec4 rather than just the
-	// position, because the margin is a question about the w word too.
-	var sel = vec4f(0.0);
-	var sel_q = vec4f(0.0);
-	for (var i = 1u; i <= count; i++) {
-		// Two vec4s an entry: position and class word, then the rectangle
-		// a surface emitter radiates from (zero for a point source).
-		let l = lights[i * 2u - 1u];
-		let q = lights[i * 2u];
-		let d = l.xyz - p;
-		let dist2 = dot(d, d);
-		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
-			continue;
-		}
-		let inv_dist = inverseSqrt(dist2);
-		let ndl = dot(n, d) * inv_dist;
-		if ndl <= 0.0 {
-			continue;
-		}
-		let cls = gi_light_class(l.w);
-		// The target function, and the ONLY LUT read on the candidate
-		// path: the drawn light's tint is fetched once, below. A tint that
-		// varies between classes just makes this a slightly worse target,
-		// never a biased one.
-		//
-		// The entry may carry its own level (a tool whose wielder has
-		// earned a brighter one); zero defers to the class, which is
-		// every placed emitter.
-		let ov = gi_light_level(l.w);
-		let emit = select(gi_emit(cls), f32(ov), ov != 0u);
-		// Scored from the light's CENTRE — `gi_light_sample` at the middle
-		// of its own parametrisation — which for a point source is the
-		// point and costs nothing, and for a rectangle is a cheap stand-in
-		// for the integral over it. Doing the draw here instead would put
-		// two more RNG steps on every candidate rather than on the winner,
-		// and a RIS target function is allowed to be approximate: it
-		// decides which light is picked, never what the pick is worth.
-		let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
-		let score = emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
-		if score <= 0.0 {
-			continue;
-		}
-		wsum += score;
-		if lcg_next(&rng) * wsum < score {
-			out.valid = true;
-			sel = l;
-			sel_q = q;
-			sel_cls = cls;
-		}
-	}
-	if out.valid {
-		// The winner gets the actual draw. A point source lands back on
-		// its own position and this is the identity; a rectangle gets a
-		// uniform point across its face, which is what turns a seam from a
-		// hotspot into a wash and gives the shadow ray somewhere honest to
-		// aim.
-		let s = gi_light_sample(sel, sel_q, p, lcg_next(&rng), lcg_next(&rng));
-		let d = s.p - p;
-		out.dist = length(d);
-		out.dir = d / out.dist;
-		out.margin = gi_light_margin_of(sel);
-		// f_sel / p_sel x sum(p), with the division done in closed form:
-		// the target IS the contribution up to the tint, so `score_sel`
-		// cancels exactly and never appears. That cancellation is the
-		// whole reason this reads as one deterministic multiply rather
-		// than as a ratio of two sampled quantities.
-		//
-		// The cancellation is now approximate rather than exact for a
-		// RECTANGLE, and knowingly: the target used the centre and the
-		// contribution uses the drawn point, so the two differ by however
-		// much the light-side cosine and the distance vary across the
-		// face. Standing well back that is nothing; standing at the seam
-		// it is a little extra variance, which the accumulator and the
-		// a-trous pass are already there for. The estimator stays
-		// unbiased either way — the same standing the mixed-tint pool has
-		// had since the tools started casting.
-		out.irradiance = gi_light_tint(sel.w, gi_emit_tint(sel_cls)) * LIGHT_GAIN * wsum;
-	}
-	return out;
 }
 
 // gi_resolve's normal-code order: axis * 2 + sign bit, indexed by the
@@ -557,7 +345,39 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 		// but this pass computes direct light explicitly below, and adding
 		// it to both halves would double-count the sun on every surface
 		// facing it.
-		return gi_sky_radiance(dir, rz.zenith.rgb, rz.horizon.rgb) * tr;
+		let sky = gi_sky_radiance(dir, rz.zenith.rgb, rz.horizon.rgb);
+		if h.sky {
+			// PROVEN open — the R18 ceiling test passed. Full sky at any
+			// depth: this is what keeps a shaft's floor lit from above.
+			return sky * tr;
+		}
+		// Unproven: the ray merely ran out (GI_GATHER_T, the iteration
+		// cap, or the window's edge). At the surface that distinction is
+		// moot — the fade saturates and the answer is today's, with no
+		// cache loads spent. Deep down it was the leak (R32): a ray fired
+		// down a 50-block tunnel exhausts unobstructed and used to answer
+		// full daylight. Terminate it in the probe cache at the exhaust
+		// point instead (`dir` as the gather axis — the DDGI
+		// ray-termination pattern), mixed toward today's sky across the
+		// ramp band so the transition has no seam: in a tunnel the live C0
+		// probes still carry real mouth/torch light inward, while the
+		// cache's own fallback is now depth-faded.
+		let ep = vec3f(h.cell) + 0.5;
+		let fade = medium_sky_fade(ep.y);
+		if fade >= 1.0 {
+			return sky * tr;
+		}
+		let c = gi_cache_at(
+			side,
+			ep,
+			dir,
+			rz.cam.xyz,
+			rz.dims0,
+			rz.dims1,
+			rz.zenith.rgb,
+			rz.horizon.rgb,
+		);
+		return mix(c, sky, fade) * tr;
 	}
 	let v = gi_cell(side, h.cell);
 	let alb = gi_albedo(v);

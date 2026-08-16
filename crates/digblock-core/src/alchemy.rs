@@ -5,8 +5,19 @@
 //! recipe are not here: every threshold in the game lives in
 //! [`crate::unlock`], beside the gates that enforce it.
 //!
-//! Two invariants hold the economy shut, both pinned by tests here:
+//! Four invariants hold the economy shut, all pinned by tests here:
 //!
+//! - **Nothing the world hands you may be transmuted** (§7.5). The
+//!   catalog is what a fresh world does NOT give away, gated on
+//!   [`BlockType::is_bench_only`] — so no recipe competes with a shovel,
+//!   and the bench's own output is the only thing extraction can be asked
+//!   to un-make. Clean rock passes: the world is made of stone and still
+//!   hands you Rubble.
+//! - **Nobody who can make a block can dig one back into XP.** Extraction
+//!   XP is paid for reducing what the WORLD made
+//!   ([`crate::skills::convert_xp`] answers zero for anything bench-only),
+//!   and `BlockProps::crumbles` stops a made block laundering itself into
+//!   a world-given one to collect it.
 //! - **No matter creation**: for every craftable block at every level,
 //!   the craft cost strictly exceeds the extraction yield in every
 //!   essence — extract→craft→extract is a sink, always.
@@ -188,18 +199,33 @@ pub fn field_yield(
 /// unit, and the only way to say that is how often it lands.
 const TRACE_AETHER: u32 = 1;
 
-/// Sum of a block's base yields — the fixed value extraction XP keys on
-/// (a fixed fraction of the total, never the level-scaled outcome).
+/// Sum of a block's base yields — the fixed value a block's WORTH at the
+/// bench keys on (never the level-scaled outcome).
 ///
 /// Totals the split without BUILDING it. `extract_base` allocates, and
-/// this is not a cold path the way that one is: `convert_xp` reaches here,
-/// `extract_pace_ticks` reaches `convert_xp`, and the server's token
-/// bucket asks for the pace every tick for every connected player.
+/// this is not a cold path the way that one is: [`extract_worth`] reaches
+/// here, `extract_pace_ticks` reaches that, and the server's token bucket
+/// asks for the pace every tick for every connected player.
 pub fn extract_total_base(b: BlockType) -> u32 {
 	let Some((m, s)) = b.grid_cell() else {
 		return functional_extract(b).iter().map(|&(_, n)| n).sum();
 	};
 	crate::material::yield_total(m.extract_units(), s.units())
+}
+
+/// What ONE extraction of `b` is worth at the bench — a fixed fraction of
+/// its base yield, never the level-scaled outcome.
+///
+/// Split out from [`crate::skills::convert_xp`], which used to BE this
+/// function. Worth and pay are two questions now: the bench spends its
+/// time in proportion to what a block is worth ([`extract_pace_ticks`])
+/// whoever made it, while the XP is paid only for what the WORLD made. A
+/// lumber block is exactly as much substance to take apart as the wood it
+/// was planed from and must come apart just as slowly — keying the pace on
+/// the XP would have dropped every craftable to the pace floor the day
+/// they stopped paying.
+pub fn extract_worth(b: BlockType) -> u32 {
+	extract_total_base(b).div_ceil(3)
 }
 
 /// Transmutation waste multiplier in permille: steep at the first level,
@@ -247,13 +273,10 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Chair => &[(E::Flora, 6)],
 		B::Table => &[(E::Flora, 9)],
 		// The bed is the catalog's first genuinely cross-family price:
-		// a timber frame AND the bedding on it. Aqua has exactly one
-		// source (the bucket charge, whose extraction unlocks early), so this
-		// is what makes carrying water home worth doing.
+		// a timber frame AND the bedding on it. Aqua is the essence with the
+		// fewest sources — a scooped bucket charge, snow, and the foliage
+		// bonus lines — which is what makes carrying water home worth doing.
 		B::Bed => &[(E::Flora, 21), (E::Aqua, 6)],
-		// The bucket charge: lossy against what extracting it returns — no
-		// loop. Refused while the bucket is already full.
-		B::Water => &[(E::Aqua, 27)],
 		_ => return None,
 	})
 }
@@ -261,12 +284,22 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
 /// not craftable.
 ///
+/// Gated on [`BlockType::is_bench_only`] first, the twin of the same gate
+/// in [`crate::unlock::craft`] — nothing the world hands you has a price,
+/// because it has no recipe. A material keeps its whole-cube split either
+/// way: that split is the PRICE BASIS every shape prorates from, so Wood
+/// still costs what wood costs even though the felled log itself is
+/// something you go and chop.
+///
 /// Derived for every structural block: the material's whole-cube split
 /// ([`crate::material::Material::craft_units`]) prorated UP to the
 /// shape's volume. Rounding the cost side up where [`extract_base`]
 /// rounds down is what makes "no matter creation" hold for every shape
 /// of every material without a proof per pair.
 pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
+	if !b.is_bench_only() {
+		return None;
+	}
 	if let Some(lines) = functional_ideal(b) {
 		return Some(lines.to_vec());
 	}
@@ -310,13 +343,14 @@ pub fn base_pace_ticks(level: u32) -> u32 {
 	}
 }
 
-/// The reference block's extraction XP (`convert_xp` of a full whole-block
+/// The reference block's worth ([`extract_worth`] of a full whole-block
 /// base), i.e. what [`base_pace_ticks`] is the pace OF.
-const REF_XP: u32 = 9;
+const REF_WORTH: u32 = 9;
 
-/// Floor on the pace, in ticks. Leaves pay a single XP, and a strictly
-/// proportional pace would run them many times a second, which is a stream
-/// of wire ops rather than a bench.
+/// Floor on either pace, in ticks. The cheapest things the bench handles
+/// — a leaf coming apart, a slab going together — are worth a fraction of
+/// the reference block, and a strictly proportional pace would run them
+/// many times a second, which is a stream of wire ops rather than a bench.
 const MIN_PACE_TICKS: u32 = 6;
 
 /// Bench extraction pace in sim ticks for ONE block of `b` at `level`: the
@@ -325,63 +359,122 @@ const MIN_PACE_TICKS: u32 = 6;
 /// takes the full interval, a slab third a third of it, and leaves fall to
 /// the floor above.
 ///
-/// Keying on `convert_xp` rather than on a second table is deliberate:
-/// extraction XP is already a fixed fraction of the base total, i.e. the block's
-/// worth at the bench, so pace and pay can never disagree about which
-/// blocks are the substantial ones. Client-paced for presentation,
+/// Keying on [`extract_worth`] rather than on a second table is
+/// deliberate: worth is already a fixed fraction of the base total, so
+/// pace and yield can never disagree about which blocks are the
+/// substantial ones. It is deliberately NOT keyed on the XP, which the
+/// same fraction used to serve — what the bench makes now pays no XP, and
+/// a pace that followed would have a lumber block coming apart five times
+/// faster than the wood it was planed from. Client-paced for presentation,
 /// server-enforced via the extraction token bucket.
 pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
-	let xp = crate::skills::convert_xp(b) as u32;
-	let ticks = (base_pace_ticks(level) * xp + REF_XP / 2) / REF_XP;
-	ticks.max(MIN_PACE_TICKS)
+	pace_ticks(extract_worth(b), level)
 }
 
-/// Extraction token-bucket burst, in REFERENCE blocks — absorbs network
-/// bunching exactly as `EDIT_BURST` does for edits. The bucket itself
-/// banks TICKS (the pace is per-block now), so its capacity is this many
-/// whole-block intervals: [`extract_burst_ticks`].
-pub const EXTRACT_BURST: f32 = 2.0;
-
-/// The block a single extraction costs the most for — the largest
-/// [`crate::skills::convert_xp`] in the catalog.
+/// What ONE craft of `item` is worth at the bench — the same fixed
+/// fraction of its ideal (pre-waste) cost that [`extract_worth`] is of a
+/// block's yield. Zero for anything with no recipe.
 ///
-/// Memoized: the server's token-bucket refill asks for the bucket's
-/// capacity every tick for every connected client, and the answer is a
-/// property of the block table, not of the caller.
-fn costliest_extract_block() -> BlockType {
-	static MAX: std::sync::OnceLock<BlockType> = std::sync::OnceLock::new();
-	*MAX.get_or_init(|| {
-		BlockType::ALL
-			.into_iter()
-			.max_by_key(|&b| crate::skills::convert_xp(b))
-			.unwrap_or(BlockType::Stone)
+/// Pre-waste on purpose, which is what makes it a property of the ITEM
+/// rather than of the player: two masons at different levels pay different
+/// prices for the same stair and spend the same time making it, exactly as
+/// they extract the same stone at the same pace whatever it yields them.
+pub fn craft_worth(item: BlockType) -> u32 {
+	craft_ideal(item).map_or(0, |lines| {
+		lines.iter().map(|&(_, n)| n).sum::<u32>().div_ceil(3)
 	})
 }
 
-/// The extraction bucket's capacity in ticks at `level`: two whole
-/// blocks' worth, or ONE costliest extraction if that is more.
+/// Bench TRANSMUTATION pace in sim ticks for ONE `item` at `level` — the
+/// mirror of [`extract_pace_ticks`], off the same curve and the same
+/// reference block, so the bench runs at one rhythm whichever way the
+/// matter is going.
 ///
-/// The second half is not a nicety. The bucket banks ticks and a Convert
-/// spends [`extract_pace_ticks`] of them, which scales with the block's
-/// `convert_xp` — while the burst was sized off the reference block alone.
-/// The two deepest ores are worth several times that, so their pace
-/// exceeded a FULL bucket at every level and `process_alchemy` refused
-/// them forever: no debit, no yield, no XP, just the standing rebase.
-/// Aether has exactly one source, so that silently walled off the
-/// Master's Sigil, the Aetherlamp and the Resonant Pick — online only,
-/// since offline extraction is unpaced, which is the worst way to find
-/// out. `bases_stay_under_a_block` used to make it impossible
-/// (a base no bigger than a whole block implies `convert_xp <= REF_XP`,
-/// which implies a pace of at most one reference interval); ore is the deliberate exception to that bound, so
-/// the guarantee has to be stated here instead, and
-/// `the_bucket_can_always_afford_the_costliest_block` pins it.
+/// A craft used to be instant, and it was the last place in the economy
+/// where XP arrived in a click: the transmute tab's CTRL multiplier paid a
+/// hundred crafts' worth in one frame. Pacing it is not a nerf to the
+/// award (crafting still pays what it always paid) — it is what makes the
+/// award take the time the work takes, and it puts the two halves of the
+/// bench on the same clock. The catalog's biggest price is now also its
+/// longest hold, which is the reading a forge should have.
+pub fn craft_pace_ticks(item: BlockType, level: u32) -> u32 {
+	pace_ticks(craft_worth(item), level)
+}
+
+/// The shared curve behind both paces: the level's whole-block interval
+/// scaled by what one op is WORTH, floored.
+fn pace_ticks(worth: u32, level: u32) -> u32 {
+	let ticks = (base_pace_ticks(level) * worth + REF_WORTH / 2) / REF_WORTH;
+	ticks.max(MIN_PACE_TICKS)
+}
+
+/// Bench token-bucket burst, in REFERENCE blocks — absorbs network
+/// bunching exactly as `EDIT_BURST` does for edits. The bucket itself
+/// banks TICKS (a pace is per-op), so its capacity is this many
+/// whole-block intervals: [`bench_burst_ticks`].
+pub const BENCH_BURST: f32 = 2.0;
+
+/// The most expensive SINGLE bench op a player at `level` is allowed to
+/// ask for, in ticks — an extraction or a craft, whichever is dearer.
+///
+/// Gated on what that level can actually do, not on the whole catalog: a
+/// fresh player banks what a fresh player's ops cost, and the Resonant
+/// Pick's long forge only widens the allowance from the level that can
+/// forge one. Memoized per level, because the server's refill asks for the
+/// bucket's capacity every tick for every connected client and the answer
+/// is a property of the tables rather than of the caller.
+fn costliest_op_ticks(level: u32) -> u32 {
+	static MAX: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+	let table = MAX.get_or_init(|| {
+		(0..=crate::skills::MAX_LEVEL)
+			.map(|l| {
+				BlockType::ALL
+					.into_iter()
+					.map(|b| {
+						let extract = (b.is_extractable() && crate::unlock::can_extract(b, l))
+							.then(|| extract_pace_ticks(b, l));
+						let craft = crate::unlock::can_craft(b, l).then(|| craft_pace_ticks(b, l));
+						extract.into_iter().chain(craft).max().unwrap_or(0)
+					})
+					.max()
+					.unwrap_or(0)
+			})
+			.collect()
+	});
+	table[level.min(crate::skills::MAX_LEVEL) as usize]
+}
+
+/// The bench bucket's capacity in ticks at `level`: two whole blocks'
+/// worth, or ONE costliest op if that is more.
+///
+/// ONE bucket for both halves of the bench, because there is one bench and
+/// one pair of hands: extracting and transmuting draw on the same clock,
+/// so a client cannot run both drips at once for double the throughput.
+/// The screen could not anyway — the two live on different tabs — which is
+/// exactly why making it structural costs nothing.
+///
+/// The second half is not a nicety. The bucket banks ticks and an op
+/// spends its own pace, which scales with what that op is WORTH — while
+/// the burst was sized off the reference block alone. The two deepest ores
+/// are worth several times that, so their pace exceeded a FULL bucket at
+/// every level and `process_alchemy` refused them forever: no debit, no
+/// yield, no XP, just the standing rebase. Aether has exactly one source,
+/// so that silently walled off the Master's Sigil, the Aetherlamp and the
+/// Resonant Pick — online only, since offline is unpaced, which is the
+/// worst way to find out. `bases_stay_under_a_block` used to make it
+/// impossible (a base no bigger than a whole block implies a worth of at
+/// most `REF_WORTH`, which implies a pace of at most one reference
+/// interval); ore is the deliberate exception to that bound and the pick's
+/// forge is a second one, so the guarantee has to be stated here instead,
+/// and `the_bucket_can_always_afford_the_costliest_op` pins it.
 ///
 /// Sustained throughput is untouched: the bucket still refills one tick
-/// per tick, so the drip is exactly as slow as it always was. Only the
-/// bunching allowance grows, and only to what a single op actually costs.
-pub fn extract_burst_ticks(level: u32) -> f32 {
-	let reference = EXTRACT_BURST * base_pace_ticks(level) as f32;
-	reference.max(extract_pace_ticks(costliest_extract_block(), level) as f32)
+/// per tick, so the drip is exactly as slow as the pace says. Only the
+/// bunching allowance grows, and only to what a single op actually costs
+/// at that level.
+pub fn bench_burst_ticks(level: u32) -> f32 {
+	let reference = BENCH_BURST * base_pace_ticks(level) as f32;
+	reference.max(costliest_op_ticks(level) as f32)
 }
 
 #[cfg(test)]
@@ -440,6 +533,121 @@ mod tests {
 				}
 			}
 		}
+	}
+
+	/// **Nothing the world hands you may be transmuted.** For every block
+	/// the world places, whatever a dig on one of them puts in a player's
+	/// hands has no recipe at any price — the bench makes what a fresh
+	/// world does not give away, and a recipe for dirt is the bench
+	/// competing with a shovel.
+	///
+	/// Checked against the hand-priced TABLE as well as against
+	/// `craft_ideal`, and that is the half with teeth. `craft_ideal` gates
+	/// on `is_bench_only` before it reads anything, so a stale
+	/// `functional_ideal` row for something the world gives would be
+	/// silently unreachable rather than wrong — which is exactly how a
+	/// retired price sits in a table for a year. The bucket charge was one:
+	/// water is scooped, so the recipe went with the rule.
+	///
+	/// Clean rock passes and is meant to: the world places Stone and
+	/// Sandstone but hands out Rubble, so neither is a block a dig can
+	/// give, and §7.1's economy is untouched.
+	#[test]
+	fn nothing_the_world_hands_you_can_be_transmuted() {
+		for &n in &BlockType::ALL {
+			if n.is_crafted_only() {
+				continue;
+			}
+			let Some(given) = n.dig_drop() else {
+				continue;
+			};
+			assert!(
+				!given.is_bench_only(),
+				"{n:?} hands out {given:?}, which claims the bench is its only source"
+			);
+			assert!(
+				craft_ideal(given).is_none(),
+				"digging {n:?} hands out {given:?}, which the bench can also make"
+			);
+			assert!(
+				functional_ideal(given).is_none(),
+				"{given:?} is handed out by digging {n:?} and still carries a hand-set \
+				 price — a row the gate hides rather than a price anyone can pay"
+			);
+		}
+	}
+
+	/// **The loop-closer.** Nobody who can MAKE a block can dig one back
+	/// into something that pays extraction XP.
+	///
+	/// That is the whole reason clean rock may stay craftable while nothing
+	/// else the world is made of does. Crafting pays, extracting what the
+	/// world made pays, and the two would compose into a standing converter
+	/// from essence into levels if a transmuted block could be laundered
+	/// back into a world-given one: craft a stone, place it, break it into
+	/// Rubble, take the Rubble apart, collect. `BlockProps::crumbles` is
+	/// what shuts it — a stone somebody made comes back as a stone, worth
+	/// nothing at the bench.
+	///
+	/// Asked at every level that can craft the block, because that is
+	/// exactly the population the loop needs: a digger below the recipe's
+	/// own level still crumbles it and still gets the XP, and is welcome to
+	/// — they are not undoing their own work, and they cannot have made the
+	/// block they are breaking.
+	#[test]
+	fn no_one_who_can_make_a_block_can_dig_it_into_xp() {
+		for &b in &BlockType::ALL {
+			if craft_ideal(b).is_none() {
+				continue;
+			}
+			for level in 1..=crate::skills::MAX_LEVEL {
+				if !crate::unlock::can_craft(b, level) {
+					continue;
+				}
+				let paid = b
+					.dig_credit(true, level)
+					.map_or(0, crate::skills::convert_xp);
+				assert_eq!(
+					paid, 0,
+					"{b:?} is craftable at {level} and digging one back pays {paid} XP"
+				);
+			}
+		}
+	}
+
+	/// **Extraction XP is paid for what the world made**, and only for it:
+	/// nothing off the bench pays anything back, and everything the world
+	/// hands you that is worth taking apart does.
+	///
+	/// The second half is what stops the first from being satisfied by
+	/// paying nobody. Spent rock is the deliberate gap between them — the
+	/// siphon already took what was in it, so it is worth nothing to
+	/// extract and pays nothing, without ever having been near a bench.
+	#[test]
+	fn extraction_xp_is_paid_for_what_the_world_made() {
+		for &b in &BlockType::ALL {
+			if b.is_bench_only() {
+				assert_eq!(
+					crate::skills::convert_xp(b),
+					0,
+					"{b:?} comes off the bench and must pay nothing to take apart"
+				);
+			} else if extract_worth(b) > 0 {
+				assert_eq!(
+					crate::skills::convert_xp(b),
+					u64::from(extract_worth(b)),
+					"{b:?} is the world's own and pays what it is worth"
+				);
+			}
+		}
+		// The pace is NOT what goes: a made block is as much substance to
+		// take apart as the one it was worked from, and both spend the same
+		// time at the bench.
+		assert_eq!(
+			extract_pace_ticks(BlockType::Lumber, 1),
+			extract_pace_ticks(BlockType::Wood, 1),
+			"planed timber comes apart no faster than the log"
+		);
 	}
 
 	/// A bonus line on a craftable block is an essence pump (craft from
@@ -573,33 +781,26 @@ mod tests {
 			&'static [(Essence, u32)],
 		);
 		let cases: &[Row] = &[
-			// block, extraction base, craft ideal
+			// block, extraction base, craft ideal. An empty recipe column is
+			// a block the world HANDS you — loose ground, the felled log,
+			// foliage, mined rock, the scooped charge — and the yield column
+			// is untouched by that: you still take one apart, you just
+			// cannot make one. Clean rock keeps both, because a quarried one
+			// arrives as Rubble and never as itself.
 			(B::Stone, &[(E::Earth, 27)], &[(E::Earth, 27)]),
 			(B::Rubble, &[(E::Earth, 24)], &[]),
 			(B::Sandstone, &[(E::Earth, 21)], &[(E::Earth, 27)]),
 			(B::Gravel, &[(E::Earth, 15)], &[]),
-			(B::Sand, &[(E::Earth, 12)], &[(E::Earth, 27)]),
-			(
-				B::Dirt,
-				&[(E::Earth, 15), (E::Flora, 3)],
-				&[(E::Earth, 23), (E::Flora, 5)],
-			),
-			(
-				B::Grass,
-				&[(E::Earth, 18), (E::Flora, 9)],
-				&[(E::Earth, 18), (E::Flora, 9)],
-			),
+			(B::Sand, &[(E::Earth, 12)], &[]),
+			(B::Dirt, &[(E::Earth, 15), (E::Flora, 3)], &[]),
+			(B::Grass, &[(E::Earth, 18), (E::Flora, 9)], &[]),
 			(B::DryGrass, &[(E::Earth, 18), (E::Flora, 6)], &[]),
-			(
-				B::Mud,
-				&[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
-				&[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
-			),
-			(B::Wood, &[(E::Flora, 27)], &[(E::Flora, 27)]),
+			(B::Mud, &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)], &[]),
+			(B::Wood, &[(E::Flora, 27)], &[]),
 			(B::Leaves, &[(E::Flora, 1)], &[]),
 			(B::PineLeaves, &[(E::Flora, 1)], &[]),
-			(B::Snow, &[(E::Aqua, 9)], &[(E::Aqua, 27)]),
-			(B::Water, &[(E::Aqua, 18)], &[(E::Aqua, 27)]),
+			(B::Snow, &[(E::Aqua, 9)], &[]),
+			(B::Water, &[(E::Aqua, 18)], &[]),
 			(B::WoodStairs, &[(E::Flora, 18)], &[(E::Flora, 18)]),
 			(B::StoneStairs, &[(E::Earth, 18)], &[(E::Earth, 18)]),
 			(B::LumberDoor, &[(E::Flora, 10)], &[(E::Flora, 10)]),
@@ -691,9 +892,10 @@ mod tests {
 				assert!(extract_pace_ticks(b, level) >= MIN_PACE_TICKS, "{b:?}");
 			}
 			// A worth-more block is never quicker than a worth-less one.
+			// WORTH, not XP: what the bench makes pays no XP at all and must
+			// still come apart in proportion to its substance.
 			for &o in &BlockType::ALL {
-				if o.is_extractable() && crate::skills::convert_xp(b) > crate::skills::convert_xp(o)
-				{
+				if o.is_extractable() && extract_worth(b) > extract_worth(o) {
 					assert!(
 						extract_pace_ticks(b, 1) >= extract_pace_ticks(o, 1),
 						"{b:?} vs {o:?}"
@@ -702,52 +904,71 @@ mod tests {
 			}
 		}
 		// The bucket's capacity is two whole blocks' worth, or one
-		// costliest extraction where that is more — see
-		// `the_bucket_can_always_afford_the_costliest_block`.
-		assert_eq!(extract_burst_ticks(1), 110.0);
-		assert_eq!(extract_burst_ticks(99), 55.0);
+		// costliest op available at that level where that is more — see
+		// `the_bucket_can_always_afford_the_costliest_op`.
+		assert_eq!(bench_burst_ticks(1), 110.0);
 		assert_eq!(
-			extract_burst_ticks(1),
-			extract_pace_ticks(costliest_extract_block(), 1) as f32,
-			"the costliest ore is what sets it, not the reference block"
+			bench_burst_ticks(1),
+			extract_pace_ticks(BlockType::Aetherock, 1) as f32,
+			"at the first level the costliest op is still the deepest ore"
+		);
+		// And past the pick's own unlock it is the forge, which is the
+		// longest single hold in the catalog either way.
+		let pick = crate::unlock::craft(BlockType::ResonantPick).expect("a price");
+		assert_eq!(
+			bench_burst_ticks(99),
+			craft_pace_ticks(BlockType::ResonantPick, 99) as f32
+		);
+		assert!(
+			bench_burst_ticks(pick) > bench_burst_ticks(pick - 1),
+			"the allowance widens at the level that can forge one, not before"
 		);
 	}
 
-	/// A full bucket must be able to pay for the costliest single
-	/// extraction, or that block cannot be extracted AT ALL online: the
-	/// server refuses on `extract_tokens < cost` and the tokens never
-	/// reach it, so the op is dropped in silence — no debit, no yield, no
-	/// XP, just the standing rebase. Offline is unpaced, so single-player
-	/// looks perfect while the dedicated server is a wall.
+	/// A full bucket must be able to pay for the costliest single op a
+	/// player at that level may ask for — either half of the bench — or
+	/// that op cannot be done AT ALL online: the server refuses on
+	/// `bench_tokens < cost` and the tokens never reach it, so the op is
+	/// dropped in silence: no debit, no yield, no XP, just the standing
+	/// rebase. Offline is unpaced, so single-player looks perfect while
+	/// the dedicated server is a wall.
 	///
 	/// This used to follow from `bases_stay_under_a_block`: a base of at
-	/// most 27 sub-units means `convert_xp <= REF_XP`, so the pace never
-	/// exceeded one reference interval and two of them always covered it.
-	/// Ore is exempt from that bound — a vein is a concentrate — which
-	/// removed the proof without anyone noticing, and left Glowvein and
-	/// Aetherock permanently un-extractable.
+	/// most a whole block means a worth of at most `REF_WORTH`, so the
+	/// pace never exceeded one reference interval and two of them always
+	/// covered it. Ore is exempt from that bound — a vein is a
+	/// concentrate — which removed the proof without anyone noticing, and
+	/// left Glowvein and Aetherock permanently un-extractable. Crafting is
+	/// the second exemption: a price is not bounded by a block's volume at
+	/// all, and the pick's is an order of magnitude past it.
 	#[test]
-	fn the_bucket_can_always_afford_the_costliest_block() {
+	fn the_bucket_can_always_afford_the_costliest_op() {
 		for &b in &BlockType::ALL {
-			if !b.is_extractable() {
-				continue;
-			}
-			for level in 1..=99 {
-				let cost = extract_pace_ticks(b, level) as f32;
-				let burst = extract_burst_ticks(level);
-				assert!(
-					cost <= burst,
-					"{b:?} at level {level}: one Convert costs {cost} ticks \
-					 against a {burst}-tick bucket — refused forever"
-				);
+			for level in 1..=crate::skills::MAX_LEVEL {
+				let burst = bench_burst_ticks(level);
+				if b.is_extractable() && crate::unlock::can_extract(b, level) {
+					let cost = extract_pace_ticks(b, level) as f32;
+					assert!(
+						cost <= burst,
+						"{b:?} at {level}: one Convert costs {cost} ticks against a \
+						 {burst}-tick bucket — refused forever"
+					);
+				}
+				if crate::unlock::can_craft(b, level) {
+					let cost = craft_pace_ticks(b, level) as f32;
+					assert!(
+						cost <= burst,
+						"{b:?} at {level}: one Craft costs {cost} ticks against a \
+						 {burst}-tick bucket — refused forever"
+					);
+				}
 			}
 		}
-		// And the ores that broke it are genuinely the expensive end.
-		assert!(
-			crate::skills::convert_xp(costliest_extract_block()) > REF_XP as u64,
-			"a catalog where the reference block IS the costliest would \
-			 make this test vacuous"
-		);
+		// And the ops that broke it are genuinely the expensive end — a
+		// catalog where the reference block IS the costliest would make
+		// this test vacuous.
+		assert!(extract_worth(BlockType::Aetherock) > REF_WORTH);
+		assert!(craft_worth(BlockType::ResonantPick) > REF_WORTH);
 	}
 
 	/// `extract_total_base` sums the split without building it, so the
@@ -923,11 +1144,13 @@ mod tests {
 	/// What counts as a source is deliberately narrow, and each exclusion
 	/// is load-bearing:
 	///
-	/// - **The block has to be one the world places.** A craft-only
-	///   substance can never be a net source — `no_level_ever_creates_matter`
+	/// - **The block has to be one the world HANDS you.** Anything off the
+	///   bench can never be a net source — `no_level_ever_creates_matter`
 	///   guarantees making one costs more than taking it apart returns —
 	///   so Crystal, which yields more Aether than anything else per cube,
-	///   is a SINK and correctly contributes nothing here.
+	///   is a SINK and correctly contributes nothing here. Clean rock joins
+	///   it for the same reason and not by name: the world places Stone but
+	///   hands out Rubble, and Rubble is the source that counts.
 	/// - **Both walls apply**: the Mining level has to clear the strength
 	///   wall (and, for ore, the tier's own reveal), and the Alchemy level
 	///   the extract gate. A source you cannot reach is not a source.
@@ -947,7 +1170,7 @@ mod tests {
 			let price = functional_ideal(item).expect("the twin pin guarantees one");
 			for &(essence, _) in price {
 				let source = BlockType::ALL.iter().copied().find(|&b| {
-					if b.is_crafted_only() || crate::unlock::mine(b) > level {
+					if b.is_bench_only() || crate::unlock::mine(b) > level {
 						return false;
 					}
 					let ore = crate::worldgen::ore::ORES.contains(&b);

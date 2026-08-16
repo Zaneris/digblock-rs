@@ -373,6 +373,10 @@ fn run_bot(
 							block as u16,
 							BlockType::Air as u16,
 							t,
+							// `dig_drop` and not `dig_credit`: a bot only ever
+							// digs terrain it found, never a cell anybody
+							// wrote, so the pristine answer IS its answer and
+							// it needs no edit map of its own to know that.
 							block.dig_drop().map(|d| (d, 1)),
 						);
 						client.send_edit(seq, t, p.pos, down, EditKind::Dig, cell, (0, 0, 0), 0);

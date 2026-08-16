@@ -66,6 +66,11 @@ pub enum DebugScreen {
 	Skills,
 	/// The alchemy screen's second tab (craft rows, locked rows, costs).
 	Transmute,
+	/// The same tab with a BATCH on the bench: the progress row under the
+	/// button, part-way through a cycle. A paced craft is over in seconds
+	/// and needs a press to start, so this is the only way it reaches a
+	/// capture at all.
+	Transmuting,
 }
 
 impl DebugScreen {
@@ -85,6 +90,7 @@ impl DebugScreen {
 			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
+			"transmuting" => Some(Self::Transmuting),
 			_ => None,
 		}
 	}
@@ -318,6 +324,15 @@ pub struct EngineConfig {
 	/// reach under it exactly as the shadow map says; only the ambient
 	/// dome dims). Set by the desktop launcher from DIG_ROOF.
 	pub debug_roof: bool,
+	/// Debug: seal a long stone tunnel ahead of the spawn camera, no
+	/// torch — the unproven-daylight capture (GI-DESIGN.md R32). Its far
+	/// end sits past the probe cascades' reach and past the gather ray's
+	/// length, which is exactly where every "answer sky on no data"
+	/// fallback fires; a vault is too small to reach any of them. Pair
+	/// with `--pos` at a low y — the fade the scene photographs is
+	/// depth-gated, and the plan keys off wherever the spawn is. Set by
+	/// the desktop launcher from DIG_TUNNEL.
+	pub debug_tunnel: bool,
 	/// Debug: flood an open-topped stone tank around the spawn camera so
 	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
 	/// P4: sun transmittance through the column dims submerged terrain,
@@ -465,6 +480,7 @@ impl EngineConfig {
 			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
+			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
 			debug_torches: 0,
@@ -529,6 +545,7 @@ impl EngineConfig {
 			debug_mining: 0,
 			debug_vault_dark: false,
 			debug_roof: false,
+			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
 			debug_torches: 0,
@@ -1322,6 +1339,49 @@ fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// DIG_TUNNEL=1 layout: a long sealed stone tunnel running ahead of the
+/// spawn camera, no torch — the unproven-daylight capture (GI-DESIGN.md
+/// R32). The length is the scene: the far end sits beyond the probe
+/// cascades' coverage and beyond the gather ray's reach, so every
+/// "answer sky on no data" fallback fires along it, which no room-sized
+/// scene can reach. Combine with `--pos` at a low y for the depth-gated
+/// fade; a run above `SKY_FADE_FULL_Y` is the geometry-identical
+/// control, since the fade saturates there.
+fn debug_tunnel_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	// A one-block stone shell around a bore the player's capsule fits
+	// (eye at `by`, feet two cells down), reaching far enough ahead in z
+	// that the far wall photographs through every fallback regime at
+	// once: past C0's coverage, past the gather ray, and short of the
+	// window's edge.
+	for x in (bx - 2)..=(bx + 2) {
+		for y in (by - 3)..=(by + 1) {
+			for z in (bz - 3)..=(bz + 53) {
+				let interior = (bx - 1..=bx + 1).contains(&x)
+					&& (by - 2..=by).contains(&y)
+					&& (bz - 2..=bz + 52).contains(&z);
+				out.push((
+					x,
+					y,
+					z,
+					if interior {
+						B::Air as u16
+					} else {
+						B::Stone as u16
+					},
+				));
+			}
+		}
+	}
+	out
+}
+
 /// DIG_DIVE=1 layout: an open-topped stone tank flooded around the
 /// spawn camera, so the eye starts one block below the surface — the
 /// RTGI underwater capture. Open sky above is the light source: the
@@ -2106,6 +2166,9 @@ impl Engine {
 				if config.debug_roof {
 					plan.extend(debug_roof_plan(spawn));
 				}
+				if config.debug_tunnel {
+					plan.extend(debug_tunnel_plan(spawn));
+				}
 				if config.debug_dive {
 					plan.extend(debug_dive_plan(spawn));
 				}
@@ -2332,7 +2395,7 @@ impl Engine {
 					}
 				}
 				DebugScreen::Inventory => engine.inv_screen.open(),
-				DebugScreen::Alchemy | DebugScreen::Transmute => {
+				DebugScreen::Alchemy | DebugScreen::Transmute | DebugScreen::Transmuting => {
 					// A mid-curve level so the header's bar, the pace,
 					// and a mix of locked/unlocked rows all photograph.
 					engine
@@ -2343,6 +2406,17 @@ impl Engine {
 						engine
 							.alch_screen
 							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
+					}
+					if screen == DebugScreen::Transmuting {
+						// Stocked well past the batch, so the row reads as
+						// a batch running rather than as one about to be
+						// cut short by the holdings.
+						for e in digblock_core::block::Essence::ALL {
+							engine.inventory.add_sub(e, 5_000);
+						}
+						engine
+							.alch_screen
+							.debug_batch(BlockType::LumberSlab, 7, 0.45);
 					}
 				}
 				DebugScreen::Skills => {
@@ -3910,6 +3984,22 @@ impl Engine {
 		)
 	}
 
+	/// Has this cell ever been written — the provenance half of
+	/// `BlockType::dig_credit`, and the same bit `ore_dig_mode` above
+	/// passes to the reveal. Read off the `EditOverlay`, which MIRRORS the
+	/// server's journal in multiplayer, so both ends answer alike.
+	///
+	/// A place of one's own is recorded when the server echoes it rather
+	/// than when it is predicted (recording predictions is unfixable — a
+	/// rejection reverts through `set_cell` and `record` is insert-only),
+	/// so for one round trip a stone you just laid still reads as the
+	/// world's. That window cannot be reached by hand: a Rock-family hold
+	/// is orders of magnitude longer than a round trip, and the pick only
+	/// lengthens it.
+	fn cell_edited(&self, cell: (i32, i32, i32)) -> bool {
+		self.pipeline.cell_edited(cell.0, cell.1, cell.2)
+	}
+
 	/// The EXTRA cells a Resonant Pick hold breaks around `hit` — empty
 	/// unless the pick is in hand at its own Mining level. The set is
 	/// derived from the ray, never chosen: the server re-raycasts and
@@ -3919,7 +4009,9 @@ impl Engine {
 			return Vec::new();
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
+		let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
+		let credit = hit.block.dig_credit(self.cell_edited(hit.cell), alchemy);
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
 			hit.normal,
@@ -3931,7 +4023,15 @@ impl Engine {
 			// secret and stays unpredicted, as everywhere else.
 			|c| {
 				self.pipeline.cell_at(c.0, c.1, c.2).is_some_and(|v| {
-					digblock_core::pick::breaks_as_extra(id, v, c, self.ore_dig_mode(c))
+					digblock_core::pick::breaks_as_extra(
+						id,
+						credit,
+						v,
+						c,
+						self.ore_dig_mode(c),
+						self.cell_edited(c),
+						alchemy,
+					)
 				})
 			},
 		);
@@ -4211,6 +4311,15 @@ impl Engine {
 			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
 			_ => None,
 		};
+		// What the dig pays, resolved before the write for the same reason
+		// and one of its own: in a LOCAL world this engine is the authority,
+		// so `set_cell` records the coordinate itself — asking afterwards
+		// would find every dig standing in an edited cell and hand back
+		// clean stone for a quarried one.
+		let credit = prev.dig_credit(
+			self.cell_edited(hit.cell),
+			self.skills.level(digblock_core::skills::Skill::Alchemy),
+		);
 		// Slabs shrink one third per completed dig (2/3 → 1/3 → Air);
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
@@ -4281,11 +4390,12 @@ impl Engine {
 		// offline the arm below pays it, where the engine is the authority.
 		// The CELL is predicted on both, so the vein turns spent under the
 		// player's hand with no latency either way.
-		let drop = if extracting.is_some() {
-			None
-		} else {
-			prev.dig_drop()
-		};
+		//
+		// Everything else pays the `credit` resolved above the write: a
+		// stone somebody MADE comes back whole where the mountain's
+		// crumbles, so quarrying still hands out rubble and taking a
+		// mason's wall apart returns the wall.
+		let drop = if extracting.is_some() { None } else { credit };
 		if let Some(d) = drop {
 			self.inventory.add(d, broken);
 			self.hotbar.auto_assign(d);
@@ -5787,12 +5897,15 @@ impl Game for Engine {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
 		}
-		// The bench drip: while the extraction slot is occupied, each
-		// completed cycle sends one ordinary single-block Convert (the
-		// server paces the same rhythm with its extraction bucket).
+		// The bench drip: an occupied extraction slot sends one ordinary
+		// single-block Convert per cycle, and a queued transmute batch one
+		// single-item Craft — the server paces the same rhythm out of its
+		// one bench bucket. The view is rebuilt here rather than borrowed
+		// from the draw, so the queue's affordability check reads the same
+		// number the button greys on.
 		if self.alch_screen.is_open() {
-			let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
-			if let Some(act) = self.alch_screen.tick(dt, level, &self.inventory) {
+			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
+			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
 				self.apply_alchemy_action(act);
 			}
 		}
@@ -7587,6 +7700,51 @@ mod dig_decay_tests {
 		release(&mut engine, DIG_DECAY_TICKS);
 		assert!(engine.dig.is_none(), "a spent hold is dropped");
 		assert_eq!(web(&engine), None, "and the block outlines unbroken");
+	}
+
+	/// The conditional rock rule, client half: a stone standing in a cell
+	/// somebody WROTE comes back whole to a mason and crumbles for anyone
+	/// who could not have cut it (SKILLS-DESIGN §7.1/§7.5). Prediction has
+	/// to agree with the server here or a quarry silently drifts the two
+	/// inventories apart — there is no rebase behind an ordinary dig.
+	///
+	/// `block_ahead` stands the block through `Pipeline::set_block`, and
+	/// the engine always carries an `EditOverlay`, so the cell it leaves is
+	/// an edited one — which is exactly the case under test. The pristine
+	/// half is `only_the_worlds_own_rock_crumbles` in core and the server's
+	/// own pair over the real edit path.
+	#[test]
+	fn the_client_predicts_a_placed_stone_coming_back_whole() {
+		use digblock_core::skills::{Skill, total_xp_for};
+		let mason = digblock_core::unlock::craft(BlockType::Stone).expect("clean stone is made");
+		for (alchemy, want) in [(mason, BlockType::Stone), (mason - 1, BlockType::Rubble)] {
+			let (mut engine, cell) = block_ahead(BlockType::Stone);
+			engine.skills.set_total(Skill::Mining, total_xp_for(99));
+			engine
+				.skills
+				.set_total(Skill::Alchemy, total_xp_for(alchemy));
+			engine.update_target();
+			assert_eq!(engine.target.map(|h| h.cell), Some(cell), "aimed at it");
+			assert!(
+				engine.pipeline.cell_edited(cell.0, cell.1, cell.2),
+				"the harness stands the block through an edit"
+			);
+			hold(&mut engine, 1);
+			let need = engine.dig.as_ref().expect("hold opened").required;
+			hold(&mut engine, u32::from(need) + 1);
+			assert_eq!(
+				engine.pipeline.block_at(cell.0, cell.1, cell.2),
+				Some(BlockType::Air),
+				"the hold completed at Alchemy {alchemy}"
+			);
+			assert_eq!(engine.inventory.count(want), 1, "Alchemy {alchemy}");
+			let other = if want == BlockType::Stone {
+				BlockType::Rubble
+			} else {
+				BlockType::Stone
+			};
+			assert_eq!(engine.inventory.count(other), 0, "Alchemy {alchemy}");
+		}
 	}
 
 	/// A capture ignores the keyboard AND leaves the mouse alone.
