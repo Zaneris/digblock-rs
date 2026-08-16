@@ -211,10 +211,14 @@ pub fn light_origin(class: u8) -> [f32; 3] {
 /// How far below the eye a light a player is CARRYING hangs.
 ///
 /// The eye sits [`crate::player::EYE_TO_CROWN`] below the crown of a
-/// [`crate::player::HEIGHT`] body, so this hangs around chest height —
-/// comfortably inside the capsule, which is the whole point. See
-/// [`carried_origin`].
-pub const CARRY_DROP: f32 = 0.5;
+/// [`crate::player::HEIGHT`] body, so this hangs around shoulder height
+/// — comfortably inside the capsule, which is the whole point. The
+/// crown is the near wall and the only one worth watching: shrinking
+/// this drop thins the overlap between the light's cell and the body
+/// that proves that cell non-solid, and
+/// `a_carried_light_hangs_inside_the_body` is where the clearance is
+/// pinned. See [`carried_origin`].
+pub const CARRY_DROP: f32 = 0.25;
 
 /// Where a light carried by a player whose eye is at `eye` radiates
 /// from.
