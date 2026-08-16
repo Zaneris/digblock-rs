@@ -121,7 +121,9 @@ mod tests {
 				style,
 			},
 			size,
-			&super::character::CharView::build(&skills),
+			// Deep, so the sweep sees the depth-reward readout in its
+			// live form rather than its "none yet" placeholder.
+			&super::character::CharView::build(&skills, digblock_core::skills::DEPTH_XP_TO),
 			1.0,
 		);
 		out.push(("character", dl));

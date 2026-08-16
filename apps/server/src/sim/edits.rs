@@ -682,23 +682,20 @@ impl Sim {
 					&mut client.grid,
 				);
 			}
-			// Mining XP from the journaled truth (`prev`), the same
-			// authority as the credit; one award even for a door pair.
-			// The frame carries the new TOTAL, so a lost or reordered
-			// frame can never double-pay.
+			// XP from the journaled truth (`prev`), the same authority as
+			// the credit, and from the cell's own depth (§5.2's reward for
+			// digging deep). The frame carries the new TOTAL, so a lost or
+			// reordered frame can never double-pay.
 			//
 			// A field extraction pays BOTH skills (§5.4): full Mining, plus
 			// a minor Alchemy cut at the rock face, with the substantial
 			// Alchemy XP waiting at the bench. Each ore is a fixed total
 			// split across two moments, so neither skill can be levelled
-			// entirely from inside the other.
+			// entirely from inside the other. ONE call decides all of it —
+			// the offline arm makes the same one, so the two economies
+			// cannot drift.
 			let (mining_xp, alch_xp) =
-				match extracting.and_then(digblock_core::skills::ore_field_xp) {
-					Some((m, a)) => (m, a),
-					// Per BLOCK: a wide swing pays for what it broke, not
-					// for the swing. A door pair is still ONE block.
-					None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
-				};
+				digblock_core::skills::dig_award(prev, extracting, broken, req.cell.1);
 			for (skill, xp) in [
 				(digblock_core::skills::Skill::Mining, mining_xp),
 				(digblock_core::skills::Skill::Alchemy, alch_xp),

@@ -366,6 +366,38 @@ pay order is the hardness order: leaves least, then snow, then the soils, then g
 blocks pay by their own ticks, so a slab third pays a third's worth. Ore field-extraction pays a per-tier Mining figure
 instead, rising steeply with the tier (+ the Alchemy cut, §5.4).
 
+**Then the depth reward scales it** (`skills::depth_xp_permille`): flat at and above `DEPTH_XP_FROM` — the waterline, so
+nothing about surface mining moves — then rising linearly with depth to `DEPTH_XP_MAX_PERMILLE` at `DEPTH_XP_TO`. Both
+ends are chosen rather than convenient. The far end is the deepest cell a dig can happen in **at all**, one above
+bedrock, because bedrock is undiggable and a maximum nobody can ever be handed is not a maximum. The ceiling sits in the
+band between two failures: the cheapest dig in the game pays only a couple of points, so a smaller multiplier would
+floor straight back to what it already paid and the bottom of the hardness order would get nothing
+(`the_depth_reward_moves_every_award`); a larger one stops being a reason to go down and becomes a tax on staying up.
+Half again is a pull a surface player can still decline.
+
+**It is linear per block, deliberately NOT quantized into depth layers** — the opposite of what `DIG_STEPS` does to the
+dig curve, and for the same reason that grid exists. The dig curve had to be quantized because a per-level change moved
+a hold by a single tick or by nothing, so the reward read as noise and had to be concentrated to be felt at all. XP has
+no such problem: the awards are small integers, so the flooring quantizes them for free and every block type gets its
+own ladder of whole-point steps — stone climbs from its flat award to its deepest one point at a time, evenly spread
+down the range, with no value in between skipped (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top of
+that would add nothing a player can see, and it would buy cliffs: a handful of depths where one more block down is worth
+a permanent step and every block after it is worth nothing. A straight ramp is monotone, with no threshold worth
+standing on.
+
+**Extraction is exempt, and loses nothing by it.** The ore tiers are depth-banded already — Aetherock is worth what it
+is worth *because* it sits just off bedrock — so scaling `ore_field_xp` would count the same axis twice and turn §5.3's
+authored figures back into a consequence. And an extraction excavates nothing: it leaves a DepletedStone face, and
+clearing that face is an ordinary dig that scales like any other. The miner at a deep vein is already paid for depth,
+for the rock they actually broke.
+
+`skills::dig_award` is the one call that puts all of it together — the flat table, the swing count, the depth reward and
+§5.4's split — so neither the server's chokepoint nor the engine's offline arm can read the tables and forget the rest.
+It keys on the **anchor** cell: a wide pick swing against a vertical face spans several rows, and the anchor is the one
+cell both ends provably agree on, since the server validates the request against its own ray. The whole swing is scaled
+once rather than cell by cell — it is one action, and one rounding. The character screen carries the live figure under
+Mining, because a reward a player cannot see coming is exactly what §5.1's step grid already exists to fix.
+
 ### 5.3 Ore
 
 Four ores + a depletion block = **five new `blocks!` rows** (append-only, one PNG + `LAYERS` entry each; names are

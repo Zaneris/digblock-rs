@@ -2645,7 +2645,10 @@ mod tests {
 		// the wall or of the dig curve moves both halves together.
 		let granted =
 			digblock_core::skills::total_xp_for(digblock_core::unlock::mine(BlockType::Stone));
-		let after = granted + digblock_core::skills::dig_xp(BlockType::Stone);
+		// Filled in from where the hold actually lands: §5.2's depth reward
+		// keys on the dug CELL, so the expected total is derived from the
+		// same call the chokepoint makes rather than from the flat table.
+		let after;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		{
 			let mut sim =
@@ -2661,13 +2664,14 @@ mod tests {
 			);
 			wait_live(&mut sim, 1);
 			let mut t = 0;
-			dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
+			after = granted + digblock_core::skills::dig_award(BlockType::Stone, None, 1, cell.1).0;
 			c.drain();
 			assert!(
 				c.msgs
 					.iter()
 					.any(|m| matches!(m, ServerMsg::XpGain { skill: 0, total } if *total == after)),
-				"stone dig pays 15 Mining on the granted {granted}: {:?}",
+				"stone dig pays its Mining award on the granted {granted}: {:?}",
 				c.msgs
 			);
 

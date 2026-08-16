@@ -4145,16 +4145,12 @@ impl Engine {
 				for &(c, _) in &cleared {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
-				// Offline, the engine IS the award authority — the same
-				// tables the server's dig-credit chokepoint reads, including
-				// §5.4's dual award at the rock face.
+				// Offline, the engine IS the award authority — and it asks
+				// the same one question the server's dig-credit chokepoint
+				// asks, so §5.2's depth reward and §5.4's dual award at the
+				// rock face reach both economies identically.
 				let (mining_xp, alch_xp) =
-					match extracting.and_then(digblock_core::skills::ore_field_xp) {
-						Some((m, a)) => (m, a),
-						// Per BLOCK, so a wide swing pays for what it actually
-						// broke rather than for the swing.
-						None => (digblock_core::skills::dig_xp(prev) * u64::from(broken), 0),
-					};
+					digblock_core::skills::dig_award(prev, extracting, broken, hit.cell.1);
 				self.award_xp_offline(digblock_core::skills::Skill::Mining, mining_xp);
 				if alch_xp > 0 {
 					self.award_xp_offline(digblock_core::skills::Skill::Alchemy, alch_xp);
@@ -5972,7 +5968,10 @@ impl Game for Engine {
 					daylight,
 				);
 			} else if self.char_screen.is_open() {
-				let view = crate::ui::screens::character::CharView::build(&self.skills);
+				let view = crate::ui::screens::character::CharView::build(
+					&self.skills,
+					self.camera.pos.y.floor() as i32,
+				);
 				self.char_screen.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);

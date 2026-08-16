@@ -336,12 +336,92 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // chokepoints and the offline engine.
 
 /// Mining XP for a completed dig of `block`, scaled down from its hardness.
-/// Zero for the undiggable (which can't complete a dig anyway).
+/// Zero for the undiggable (which can't complete a dig anyway). The FLAT
+/// award — where the dig happened is [`depth_xp_permille`]'s business, and
+/// [`dig_award`] is what puts the two together.
 pub fn dig_xp(block: BlockType) -> u64 {
 	match block.hardness_ticks() {
 		Some(h) => u64::from(h).div_ceil(6),
 		None => 0,
 	}
+}
+
+/// Where the depth reward opens: the waterline. At and above it a dig pays
+/// the flat table exactly, so nothing about surface mining moves.
+pub const DEPTH_XP_FROM: i32 = crate::worldgen::SEA_LEVEL;
+
+/// Where it tops out: the deepest cell a dig can happen in at all. Bedrock
+/// itself is undiggable, so anchoring the far end one cell above it is what
+/// makes [`DEPTH_XP_MAX_PERMILLE`] a figure somebody can actually be handed,
+/// rather than a limit the world approaches and never reaches.
+pub const DEPTH_XP_TO: i32 = crate::block::BEDROCK_Y + 1;
+
+/// The depth reward at its deepest, in permille of the flat award.
+///
+/// Bounded from both sides. It has to clear the rounding on the SMALLEST
+/// award in the game, or the blocks at the bottom of the hardness order
+/// would be handed a bonus that floors straight back to what they already
+/// paid (`the_depth_reward_moves_every_award`). And it has to stay well
+/// under the multiple that would make depth compulsory: this is a reason to
+/// go down, not a tax on staying up.
+pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
+
+/// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
+/// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then
+/// rising LINEARLY with depth to [`DEPTH_XP_MAX_PERMILLE`] at
+/// [`DEPTH_XP_TO`].
+///
+/// **Linear per block rather than quantized into depth layers**, which is
+/// the opposite of what [`DIG_STEPS`] does to the dig curve, for the reason
+/// that grid exists at all. That curve had to be quantized because ticks are
+/// fine-grained enough that a per-level change moved a hold by one or by
+/// nothing, so the reward read as noise. XP has no such problem: the awards
+/// are small integers and the flooring in [`dig_award`] quantizes them for
+/// free, leaving each block type its own ladder of whole-point steps as you
+/// descend (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top
+/// of that would add nothing a player can see and would buy cliffs — a
+/// handful of depths where one more block down is worth a permanent step and
+/// every block after it is worth nothing. A straight ramp is monotone with
+/// no threshold worth standing on.
+pub fn depth_xp_permille(y: i32) -> u32 {
+	let depth = (DEPTH_XP_FROM - y.clamp(DEPTH_XP_TO, DEPTH_XP_FROM)) as u32;
+	let span = (DEPTH_XP_FROM - DEPTH_XP_TO) as u32;
+	1000 + (DEPTH_XP_MAX_PERMILLE - 1000) * depth / span
+}
+
+/// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer
+/// in one call, so no award site can read the tables and forget the depth
+/// reward. The server's dig-credit chokepoint and the engine's offline arm
+/// call this and nothing else.
+///
+/// `prev` is the journaled truth about the cell that was replaced (never the
+/// raycast hit), `broken` how many cells the one hold cleared, and `y` the
+/// ANCHOR cell's: a wide pick swing against a vertical face spans several
+/// rows, and the anchor is the one cell both ends provably agree on, since
+/// the server validates the request against its own ray. The whole swing is
+/// scaled once rather than cell by cell — it is one action, and one rounding.
+///
+/// A field extraction pays §5.4's per-tier figure in BOTH skills instead,
+/// and the depth reward deliberately does not touch it. The ore tiers are
+/// depth-banded already — Aetherock is worth what it is worth *because* it
+/// sits just off bedrock — so scaling them by depth would count the same
+/// axis twice, and §5.3 wants those figures to stay a decision rather than a
+/// consequence. Nothing is lost by leaving them out: an extraction excavates
+/// nothing, and clearing the DepletedStone face it leaves behind is an
+/// ordinary dig that scales like any other.
+pub fn dig_award(
+	prev: BlockType,
+	extracting: Option<BlockType>,
+	broken: u32,
+	y: i32,
+) -> (u64, u64) {
+	if let Some(split) = extracting.and_then(ore_field_xp) {
+		return split;
+	}
+	// Per BLOCK: a wide swing pays for what it broke, not for the swing.
+	// A door pair is still ONE block.
+	let flat = dig_xp(prev) * u64::from(broken);
+	(flat * u64::from(depth_xp_permille(y)) / 1000, 0)
 }
 
 /// Alchemy XP per block extracted at the bench, scaled down from the
@@ -665,6 +745,126 @@ mod tests {
 			assert_eq!(dig_xp(block), xp, "{block:?}");
 		}
 		assert_eq!(dig_xp(B::Air), 0, "undiggable pays nothing");
+	}
+
+	/// Every block a player can dig, at both ends of the ramp — the
+	/// diggable roster walked rather than sampled, because the pins below
+	/// are about the SMALLEST award in the game and a new cheap row is
+	/// exactly what would quietly break them.
+	fn diggables() -> Vec<BlockType> {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|b| b.hardness_ticks().is_some())
+			.collect()
+	}
+
+	/// The surface world is untouched: at the waterline and anywhere above
+	/// it a dig pays its flat table entry exactly, however many cells the
+	/// swing broke.
+	#[test]
+	fn the_depth_reward_is_flat_above_the_waterline() {
+		for y in [DEPTH_XP_FROM, DEPTH_XP_FROM + 1, DEPTH_XP_FROM + 90] {
+			assert_eq!(depth_xp_permille(y), 1000, "flat at y {y}");
+			for b in diggables() {
+				assert_eq!(dig_award(b, None, 1, y), (dig_xp(b), 0), "{b:?} at y {y}");
+				assert_eq!(dig_award(b, None, 9, y), (dig_xp(b) * 9, 0), "swing at {y}");
+			}
+		}
+	}
+
+	/// The ceiling lands on the deepest cell a dig can REACH, not on
+	/// bedrock — a maximum nobody can be handed is not a maximum. Below it
+	/// the clamp holds, so the undiggable floor and everything the world
+	/// does not have cannot push the ramp past its own end.
+	#[test]
+	fn the_depth_reward_tops_out_where_a_dig_still_reaches() {
+		assert_eq!(depth_xp_permille(DEPTH_XP_TO), DEPTH_XP_MAX_PERMILLE);
+		assert!(
+			crate::block::BlockType::Stone
+				.dig_hardness(DEPTH_XP_TO)
+				.is_some()
+		);
+		assert!(
+			crate::block::BlockType::Stone
+				.dig_hardness(crate::block::BEDROCK_Y)
+				.is_none()
+		);
+		for y in [crate::block::BEDROCK_Y, -1, -500] {
+			assert_eq!(
+				depth_xp_permille(y),
+				DEPTH_XP_MAX_PERMILLE,
+				"clamped at {y}"
+			);
+		}
+	}
+
+	/// The reward has to be VISIBLE, and the awards are small integers, so
+	/// "half again" is only real if it survives the flooring on the
+	/// cheapest dig in the game. Every diggable block pays strictly more at
+	/// the bottom than it does at the waterline — this is the pin that
+	/// `DEPTH_XP_MAX_PERMILLE` is set against.
+	#[test]
+	fn the_depth_reward_moves_every_award() {
+		for b in diggables() {
+			let (top, _) = dig_award(b, None, 1, DEPTH_XP_FROM);
+			let (bottom, _) = dig_award(b, None, 1, DEPTH_XP_TO);
+			assert!(
+				bottom > top,
+				"{b:?} pays {top} at the top and {bottom} at the bottom"
+			);
+		}
+	}
+
+	/// Descending never pays less, and the ladder has no rung missing:
+	/// stone walks from its flat award to its deepest ONE POINT AT A TIME.
+	/// That whole-point stepping is why the ramp is linear instead of
+	/// layered — the flooring already delivers the felt steps a quantized
+	/// ramp would have been added to produce, and it delivers them without
+	/// a cliff to stand on.
+	#[test]
+	fn the_depth_reward_climbs_one_point_at_a_time() {
+		let stone = BlockType::Stone;
+		let mut seen = Vec::new();
+		let mut prev = 0;
+		for y in (DEPTH_XP_TO..=DEPTH_XP_FROM).rev() {
+			let (award, _) = dig_award(stone, None, 1, y);
+			assert!(award >= prev, "never falls with depth (y {y})");
+			if award != prev {
+				assert!(
+					prev == 0 || award == prev + 1,
+					"jumped {prev} -> {award} at y {y}"
+				);
+				seen.push(award);
+			}
+			prev = award;
+		}
+		// Every value between the two ends occurs, so no depth band is a
+		// dead stretch and none is a cliff.
+		let (top, _) = dig_award(stone, None, 1, DEPTH_XP_FROM);
+		let (bottom, _) = dig_award(stone, None, 1, DEPTH_XP_TO);
+		assert_eq!(seen, (top..=bottom).collect::<Vec<_>>());
+	}
+
+	/// A field extraction pays §5.4's tabled split, and depth does not
+	/// touch it: the ore tiers are depth-banded already, so scaling them
+	/// would count the same axis twice. The excavation at a vein is the
+	/// DepletedStone face left behind, and THAT scales like any other dig.
+	#[test]
+	fn ore_extraction_ignores_the_depth_reward() {
+		let ore = BlockType::Aetherock;
+		let split = ore_field_xp(ore).expect("an ore");
+		for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
+			assert_eq!(dig_award(BlockType::Stone, Some(ore), 1, y), split, "y {y}");
+		}
+		// The tapped face is an ordinary dig and does climb.
+		let spent = BlockType::DepletedStone;
+		assert!(dig_award(spent, None, 1, DEPTH_XP_TO) > dig_award(spent, None, 1, DEPTH_XP_FROM));
+		// A non-ore never routes through the ore table, whatever is held.
+		assert_eq!(
+			dig_award(BlockType::Stone, Some(BlockType::Dirt), 1, DEPTH_XP_FROM),
+			(dig_xp(BlockType::Stone), 0),
+		);
 	}
 
 	/// §4.1's table, keyed on BASE yields/costs — fixed for life regardless

@@ -16,7 +16,11 @@ pub struct CharView {
 }
 
 impl CharView {
-	pub fn build(skills: &SkillSet) -> Self {
+	/// `eye_y` is where the player is standing, for Mining's depth-reward
+	/// readout. A READOUT, not the rule: the award keys on the cell that
+	/// was dug, which is a block or two under the eye, so this says what
+	/// this depth is worth and never claims to price a particular swing.
+	pub fn build(skills: &SkillSet, eye_y: i32) -> Self {
 		let mut rows = vec![Row::Title, Row::Space];
 		let mut total_level = 0;
 		for &skill in &Skill::ALL {
@@ -40,6 +44,13 @@ impl CharView {
 			rows.push(Row::Info(info));
 			if let Some((lvl, what)) = next_unlock(skill, level) {
 				rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
+			}
+			// §5.2's depth reward, on the skill it pays into. Stated as a
+			// live number rather than a rule, because the ramp is what
+			// makes it worth reading: it answers "is it worth going down"
+			// with the figure for where you are right now.
+			if skill == Skill::Mining {
+				rows.push(Row::Info(depth_bonus_line(eye_y)));
 			}
 			rows.push(Row::Space);
 		}
@@ -91,6 +102,17 @@ const MINING_TEASERS: &[(u32, &str)] = &[
 	(90, "prospector's sense — you hear what you can't see"),
 	(99, "mastery: every vein gives one more"),
 ];
+
+/// The depth-reward readout: the live percentage once there is one to
+/// show, and the DIRECTION before that. Rounding decides which — the top of
+/// the ramp is a stretch that rounds to nothing, and "+0%" reads as a broken
+/// feature to exactly the player who most needs telling the bonus is there.
+fn depth_bonus_line(eye_y: i32) -> String {
+	match (skills::depth_xp_permille(eye_y) - 1000) / 10 {
+		0 => "depth bonus: none yet — deeper pays more".to_string(),
+		pct => format!("depth bonus: +{pct}% XP per dig"),
+	}
+}
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
 	let table = match skill {
@@ -271,6 +293,10 @@ mod tests {
 	const SIZE: (u32, u32) = (1280, 800);
 
 	fn emit(skills: &SkillSet) -> DrawList {
+		emit_at(skills, skills::DEPTH_XP_FROM)
+	}
+
+	fn emit_at(skills: &SkillSet, eye_y: i32) -> DrawList {
 		let mut dl = DrawList::default();
 		let mut hits: HitMap<InvId> = HitMap::default();
 		let mut screen = CharScreen::default();
@@ -282,7 +308,7 @@ mod tests {
 				style: Style::new(1.0),
 			},
 			SIZE,
-			&CharView::build(skills),
+			&CharView::build(skills, eye_y),
 			1.0,
 		);
 		assert!(hits.hit(640.0, 400.0).is_none(), "read-only: no hit rects");
@@ -318,6 +344,47 @@ mod tests {
 		let all = texts(&emit(&skills)).join("\n");
 		assert!(all.contains("MINING   LV 99"), "{all}");
 		assert!(all.contains("1,103,585 XP — mastered"), "{all}");
+	}
+
+	/// §5.2's depth reward is READ OFF THE CORE, at the depth the player is
+	/// actually standing at — the screen never carries its own copy of the
+	/// ramp. It sits under Mining because that is the skill it pays into,
+	/// and it names a direction rather than "+0%" wherever the ramp has not
+	/// yet climbed far enough to show a whole percent.
+	#[test]
+	fn the_depth_bonus_reads_the_ramp_at_the_players_depth() {
+		let skills = SkillSet::default();
+		let deepest = (skills::DEPTH_XP_MAX_PERMILLE - 1000) / 10;
+		let all = texts(&emit_at(&skills, skills::DEPTH_XP_TO)).join("\n");
+		assert!(
+			all.contains(&format!("depth bonus: +{deepest}% XP per dig")),
+			"{all}"
+		);
+		// The line belongs to Mining, and there is exactly one of it.
+		let lines = texts(&emit_at(&skills, skills::DEPTH_XP_TO));
+		let at = lines.iter().position(|l| l.starts_with("depth bonus"));
+		assert_eq!(
+			lines
+				.iter()
+				.filter(|l| l.starts_with("depth bonus"))
+				.count(),
+			1,
+			"{lines:?}"
+		);
+		let mining = lines.iter().position(|l| l.starts_with("MINING"));
+		let alchemy = lines.iter().position(|l| l.starts_with("ALCHEMY"));
+		assert!(mining < at && at < alchemy, "{lines:?}");
+
+		// The waterline and everything above it: the rule, never a zero.
+		for y in [skills::DEPTH_XP_FROM, skills::DEPTH_XP_FROM + 60] {
+			let all = texts(&emit_at(&skills, y)).join("\n");
+			assert!(all.contains("depth bonus: none yet"), "at y {y}: {all}");
+		}
+		// And no depth anywhere in the world shows a "+0%".
+		for y in (skills::DEPTH_XP_TO..=skills::DEPTH_XP_FROM + 60).step_by(7) {
+			let all = texts(&emit_at(&skills, y)).join("\n");
+			assert!(!all.contains("+0%"), "at y {y}: {all}");
+		}
 	}
 
 	/// Every level the CORE opens something at has prose here, DERIVED
