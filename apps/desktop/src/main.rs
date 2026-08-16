@@ -581,6 +581,14 @@ fn main() {
 		None
 	};
 
+	// The pre-account character's lookup key, for servers this machine
+	// played on before accounts existed. Only on a path that can actually
+	// join: a capture run has no business reading it, and the migration
+	// costs a wire message per join for everyone who still has the file.
+	if interactive || join {
+		config.legacy_identity = legacy_identity();
+	}
+
 	let mut engine = Engine::new(config);
 	if interactive {
 		engine.set_settings_store(Box::new(settings::save));
@@ -629,6 +637,44 @@ fn main() {
 		log::error!("{e}");
 		std::process::exit(1);
 	}
+}
+
+/// The key this machine's pre-account character is filed under on the
+/// servers it used to play on: the truncated SHA-256 of the old identity
+/// secret, which is exactly what those servers stored.
+///
+/// **Read-only, and it never creates the file.** The secret it hashes was a
+/// bearer credential the client used to mint out of thin air; nothing does
+/// that any more, so a machine without one has no old character and must
+/// not be given a key to somebody else's. Absent, unreadable and all-zeros
+/// all answer `None`, which the migration reads as "nothing to claim".
+///
+/// The secret itself stops here — only the hash goes on the wire. That is
+/// not much of a defence (the hash is the lookup key, so it is what a
+/// claim needs), but it costs nothing and it keeps the one file that used
+/// to be replayed to every server from being replayed anywhere at all.
+fn legacy_identity() -> Option<[u8; 16]> {
+	use sha2::{Digest, Sha256};
+	let path = std::env::var("DIG_IDENTITY_FILE")
+		.map(std::path::PathBuf::from)
+		.unwrap_or_else(|_| {
+			dirs::data_dir()
+				.map(|d| d.join("digblock").join("identity"))
+				.unwrap_or_else(|| std::path::PathBuf::from("./digblock-identity"))
+		});
+	let secret = <[u8; 16]>::try_from(std::fs::read(&path).ok()?.as_slice()).ok()?;
+	if secret == [0; 16] {
+		return None;
+	}
+	log::info!(
+		"found a pre-account identity at {} — offering it to servers for migration",
+		path.display()
+	);
+	Some(
+		Sha256::digest(secret)[..16]
+			.try_into()
+			.expect("digest is 32 bytes"),
+	)
 }
 
 /// The Account screen's Copy ID button.

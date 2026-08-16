@@ -17,7 +17,8 @@ re-litigating a decision or rebuilding something:
 - `BENCH.md` — every perf measurement, including the ones that refuted a hypothesis.
 - `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones.
 - `AUTH-DESIGN.md` — accounts, sign-in, and the master's trust model: the identity model, the OAuth flows, the
-  registration algorithm and why the probe order is what it is, and an honest "what is NOT built" list.
+  registration algorithm and why the probe order is what it is, the pre-account character migration (§6, including what
+  the claim key is worth to a hostile operator), and an honest "what is NOT built" list.
 - `NET-AUDIT.md` / `NET-AUDIT-2.md`, `PERF-AUDIT.md` — netcode and frame-pacing audits. NET-AUDIT-2 §1 was the
   requirements doc for `AUTH-DESIGN.md`; all seven findings are closed there.
 
@@ -779,14 +780,17 @@ connected players are unaffected by a master outage.
 
 **The client never asserts who it is.** `Hello` carries the opaque token bytes and nothing else about identity (v22
 removed the old `identity` secret); the account arrives from the master and rides `SimEvent::Connected`, so nothing on
-the wire can be mistaken for a claim. `AccountId` (`digblock-net/src/protocol.rs`, hand-parsed UUID, wasm-clean) is the
-key for `player_store` records, the value `--admin` compares, and what a ban records. One account holds one live
-connection — a second is refused, since two would stomp each other's persisted record, which is why every deliberate
-exit calls `NetClient::disconnect` (`ClientMsg::Bye` PLUS a bounded flush: the message alone only reaches a stream
-buffer, and dropping the transport closes the connection before it drains). `Game::on_exit` is that hook at the platform
-edge, kept apart from `on_suspend` because a backgrounded phone may come back. On web the departure arrives as winit's
-`exiting` (it splits `pagehide` by `persisted`: back/forward cache → `Suspended`, an actual close → `LoopExiting`), so
-wiring a goodbye to suspend alone would miss the common case of closing a tab. `DEFAULT_MAX_CONNECTIONS_PER_IP`
+the wire can be mistaken for a claim. The one exception is deliberate, bounded and temporary: `ClientMsg::ClaimLegacy`
+(v23) offers the key a PRE-ACCOUNT character is filed under, so a player can bring one across per server — see
+AUTH-DESIGN.md §6 for the merge rules, the one-time-ness, and the operator exposure it accepts. `AccountId`
+(`digblock-net/src/protocol.rs`, hand-parsed UUID, wasm-clean) is the key for `player_store` records, the value
+`--admin` compares, and what a ban records. One account holds one live connection — a second is refused, since two would
+stomp each other's persisted record, which is why every deliberate exit calls `NetClient::disconnect` (`ClientMsg::Bye`
+PLUS a bounded flush: the message alone only reaches a stream buffer, and dropping the transport closes the connection
+before it drains). `Game::on_exit` is that hook at the platform edge, kept apart from `on_suspend` because a
+backgrounded phone may come back. On web the departure arrives as winit's `exiting` (it splits `pagehide` by
+`persisted`: back/forward cache → `Suspended`, an actual close → `LoopExiting`), so wiring a goodbye to suspend alone
+would miss the common case of closing a tab. `DEFAULT_MAX_CONNECTIONS_PER_IP`
 (`--max-conns-per-ip`/`DIGBLOCK_MAX_CONNS_PER_IP`) caps how much of the connection table one address can spend, which is
 what stops the pre-Hello window being an amplifier against the master. It is a flag because every local soak is the
 opposite case — `just bot -- --bots N` and `just compose-bots` put every client behind ONE address, and a bot refused at
@@ -815,11 +819,11 @@ old size decodes into the current one with its arrangement intact) are player-au
 count-based inventory — a type lives in exactly one slot, kept coherent by `reconcile_layout` (deterministic, run
 identically client- and server-side after every count change). The arrangement rides
 `ClientMsg::Layout`/`ServerMsg::Layout` on the reliable stream (in-order with edits, via the action queue) and persists
-per ACCOUNT in the server's `player_store` (`inventories.bin` v5 — same record body as v4, but the 16-byte key changed
-meaning from a device-secret hash to an `AccountId`, so v1–v4 files are archived rather than read forward: the one
-sanctioned use of that path for a version bump, since old keys map to nobody) and in local saves' `state.json`.
-Enforcement: `EditRequest.slot` declares the hotbar slot used, and Place/Collect must match its item
-(`RejectReason::WrongSlot`) — honest clients can't race it because Layout precedes the edit on the same stream.
+per ACCOUNT in the server's `player_store` (`inventories.bin` v6 — same record body throughout; v5 changed the 16-byte
+key's MEANING from a device-secret hash to an `AccountId`, and v6 added the second section that keeps the old ones
+readable, so the archive path is corruption-only again and every version this project wrote still loads) and in local
+saves' `state.json`. Enforcement: `EditRequest.slot` declares the hotbar slot used, and Place/Collect must match its
+item (`RejectReason::WrongSlot`) — honest clients can't race it because Layout precedes the edit on the same stream.
 Snapshots carry each player's held item (`RemoteState.held`; the struct split out of `NetPlayerState` at v14), drawn in
 a remote's hand as its REAL geometry — `held_icon` routes the wire id through the same `hud::item_icon` the hotbar uses,
 and `players.wgsl`'s second pipeline draws `item_geom` through `viewmodel::build`, so a remote's bucket shows its charge

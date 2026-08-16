@@ -276,6 +276,31 @@ pub enum ClientMsg {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
+	/// Claim the pre-account character this server holds for `legacy`, and
+	/// fold it into the account that sent this. Appended in v23.
+	///
+	/// `legacy` is the LOOKUP KEY those records were filed under — the
+	/// truncated hash of the old device secret, which the client computes
+	/// locally. The secret itself never leaves the machine; there is
+	/// nothing a server could learn here that it could present to a
+	/// different server as an identity, because no server takes an
+	/// identity from the wire any more.
+	///
+	/// It is still a bearer credential for one thing: whoever presents it
+	/// first gets those records. That is unavoidable — the server stores
+	/// only the hash, so it has nothing to run a challenge against — and
+	/// it is bounded, because a successful claim DELETES the legacy entry.
+	/// One claim per server, and the alternative was deleting every
+	/// pre-account character outright. See AUTH-DESIGN.md §6.
+	///
+	/// Sent once per connection, immediately after `Hello`, by any client
+	/// that still has an old identity file. In-order on the reliable
+	/// stream, so the server has already admitted the player and knows
+	/// which account is asking. Unmatched claims are silent: a player who
+	/// has already migrated here, or never played here, is not an error.
+	ClaimLegacy {
+		legacy: [u8; 16],
+	},
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]

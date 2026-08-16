@@ -281,7 +281,58 @@ authorization input anywhere, which was the reason its validation mattered.
 
 ---
 
-## 6. What is NOT built
+## 6. Bringing an old character across
+
+Everyone who played before accounts has a character on every server they played on, filed under a hash of the device
+secret their client used to invent. The account work orphaned all of it: the key means nothing to the master, and no
+server can say which account held which device.
+
+**The migration is per server, one time, and driven by the client.** A client that still finds an old identity file
+hashes it and sends `ClientMsg::ClaimLegacy` immediately after its `Hello`, on every join, to every server. A server
+holding a character under that key folds it into the joining account and deletes its copy; a server holding nothing says
+nothing. Per server because each dedicated server has its own `inventories.bin` and a player migrates on each
+separately; one time because deleting the source IS the one-time-ness, so there is no "claimed" flag to keep in step
+with anything and a second attempt is indistinguishable from a first attempt on a server the player never visited.
+
+The client keeps no per-server state and never deletes its old identity file. It cannot know where it has already
+migrated, and trying to remember would be a list to get wrong; silence on the far side is cheaper than bookkeeping.
+
+`player_store` grew a **quarantine** for this (format v6): pre-account records load into a second map, keyed by device
+hash, belonging to nobody. Nothing reads them at join, nothing writes into them at runtime, and the only thing that
+removes one is a claim — so the set only ever shrinks. That replaced v5's behaviour, which archived pre-account files
+and started empty; v5 shipped nowhere, and it would have deleted every old character on the first restart after an
+upgrade.
+
+A claim **merges** rather than overwrites, because the account may already have played on that server:
+
+- Stuff adds, saturating at every cap — a tool owned on both sides is still one tool.
+- XP takes the higher total per skill, never the sum. One career, walked on two keys.
+- Position and the spawn cooldown stay where the ACCOUNT left them. A claim must not teleport a player who is standing
+  somewhere, nor hand them a free return by inheriting a stale tick.
+- Whichever layout survives is reconciled against the merged counts, so what the other pile brought gets a slot.
+
+### 6.1 What the claim key is worth to a hostile operator
+
+The client sends the truncated HASH, not the secret — the server stored only the hash, so that is the lookup key and the
+secret itself never leaves the machine. That is a smaller improvement than it sounds: the hash is exactly what a claim
+needs, so an operator who logs one can present it to any OTHER server the same player used and take the character
+waiting there.
+
+Accepted, with the reasoning written down rather than waved at. A challenge-response would close it and cannot be built:
+the server holds `H(secret)` and nothing else, so it has no way to verify a signature over a nonce. The exposure is
+bounded to characters that would otherwise be **deleted outright**, it shrinks every time a legitimate claim lands, and
+it ends entirely once a player has migrated everywhere they played. Weigh that against v5's alternative, which was to
+throw all of it away, and against the pre-account status quo, where the same secret was sent to every server on every
+join as a standing identity.
+
+Two things follow for anyone changing this. The claim must stay a bearer transfer of records the account can already be
+given by other means, never a grant of anything the account did not otherwise have — no admin, no ban clearing, no
+account property. And when the migration has served its purpose, the honest end state is to delete the quarantine reader
+entirely rather than leave a permanent claim path open.
+
+---
+
+## 7. What is NOT built
 
 - **No Sign in with Apple.** iOS links no net crate and has no multiplayer, so it is not needed yet. When it gains one,
   App Store guideline 4.8 requires it alongside Google/Facebook — the provider abstraction is what keeps that a

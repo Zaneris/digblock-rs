@@ -240,6 +240,12 @@ async fn boot() -> Result<(), JsValue> {
 			id: s.account_id.clone(),
 			name: s.display_name.clone(),
 		});
+	// The pre-account character's lookup key, for servers this browser
+	// played on before accounts existed. Only where a join can happen: a
+	// capture path has no business reading it.
+	if interactive || join {
+		config.legacy_identity = legacy_identity();
+	}
 
 	let workers = config.workers;
 	let mut engine = Engine::new(config);
@@ -306,6 +312,39 @@ fn worker_module_url() -> Option<String> {
 		.ok()
 		.and_then(|v| v.as_string())
 		.filter(|s| !s.is_empty())
+}
+
+/// The key this browser's pre-account character is filed under on the
+/// servers it used to play on: the truncated SHA-256 of the old identity
+/// secret, which localStorage still holds as hex.
+///
+/// The desktop twin of this is `legacy_identity` in apps/desktop, and the
+/// two must agree byte for byte — a player who used both gets the same key
+/// only if both hash the same secret the same way. Same rules: read-only,
+/// never created, and absent/malformed/all-zeros all answer `None`.
+fn legacy_identity() -> Option<[u8; 16]> {
+	use sha2::{Digest, Sha256};
+	let hex = web_sys::window()?
+		.local_storage()
+		.ok()??
+		.get_item("digblock.identity")
+		.ok()??;
+	if hex.len() != 32 {
+		return None;
+	}
+	let mut secret = [0u8; 16];
+	for (i, b) in secret.iter_mut().enumerate() {
+		*b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+	}
+	if secret == [0; 16] {
+		return None;
+	}
+	log::info!("found a pre-account identity — offering it to servers for migration");
+	Some(
+		Sha256::digest(secret)[..16]
+			.try_into()
+			.expect("digest is 32 bytes"),
+	)
 }
 
 /// The Account screen's Copy ID button.

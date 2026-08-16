@@ -32,6 +32,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
+			legacy_identity: None,
 		},
 	)
 }
@@ -138,6 +139,7 @@ fn the_configured_token_reaches_the_wire() {
 			name: "test".into(),
 			draw_dist: 8,
 			token,
+			legacy_identity: None,
 		},
 	);
 	let mut server = Stub::new(b);
@@ -149,6 +151,58 @@ fn the_configured_token_reaches_the_wire() {
 		server.client_msgs.first(),
 		Some(ClientMsg::Hello { token: t, .. }) if *t == token
 	);
+}
+
+/// A client holding an old identity offers it on every join, unprompted
+/// and right behind the Hello.
+///
+/// Both halves are load-bearing. Unprompted, because the client cannot
+/// know which servers it has already migrated on — there is no per-server
+/// state on this side, deliberately, and a server that has nothing for it
+/// simply says nothing back. Right behind the Hello, because the two then
+/// land in the same server tick, so the corrected inventory rides out with
+/// the join sync instead of a round trip later.
+#[test]
+fn an_old_identity_is_offered_immediately_after_hello() {
+	let (a, b) = loopback_pair();
+	let legacy = [9u8; 16];
+	let mut client = NetClient::new(
+		Box::new(a),
+		digblock_net::client::NetClientConfig {
+			name: "test".into(),
+			draw_dist: 8,
+			token: [0; 16],
+			legacy_identity: Some(legacy),
+		},
+	);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert_matches!(
+		server.client_msgs.as_slice(),
+		[
+			ClientMsg::Hello { .. },
+			ClientMsg::ClaimLegacy { legacy: l }
+		] if *l == legacy,
+		"expected exactly Hello then the claim, got {:?}",
+		server.client_msgs
+	);
+}
+
+/// A client with no old identity sends no claim at all — the case every
+/// new player is in, and the reason the migration costs them nothing.
+#[test]
+fn a_client_with_no_old_identity_claims_nothing() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+
+	client.poll(&mut events, 0.016);
+	server.pump();
+	assert_matches!(server.client_msgs.as_slice(), [ClientMsg::Hello { .. }]);
 }
 
 /// Leaving on purpose says so on the wire, and says it once.

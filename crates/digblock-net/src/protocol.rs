@@ -107,7 +107,12 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// records; a player is now identified by the account id the MASTER
 /// returns from `/api/tokens/verify`, so the wire carries no claim about
 /// who anyone is. See AUTH-DESIGN.md and NET-AUDIT-2.md §1.4.
-pub const PROTOCOL_VERSION: u16 = 22;
+/// v23: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
+/// one-time transfer of a pre-account character onto the account that
+/// now owns it. An ordinary append (a v22 peer can't decode the new
+/// variant index), so `MIN_PROTOCOL` stays where v22 put it: a v22
+/// client can still play, it simply never migrates.
+pub const PROTOCOL_VERSION: u16 = 23;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or

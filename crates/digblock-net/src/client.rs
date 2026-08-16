@@ -34,6 +34,16 @@ pub struct NetClientConfig {
 	/// and verified server-side before admission. All zeros = no token
 	/// (loopback tests only — real servers refuse it).
 	pub token: [u8; 16],
+	/// The key this machine's pre-account character was filed under, if
+	/// one is still on disk — the truncated hash of the old identity
+	/// secret, computed by the LAUNCHER so the secret itself stays there.
+	///
+	/// Sent once per connection as `ClaimLegacy`, and sent to EVERY server,
+	/// because each dedicated server holds its own records and a player
+	/// migrates on each one separately. The client cannot know which
+	/// servers it has already claimed on and does not try to: an
+	/// already-claimed or never-played server answers with silence.
+	pub legacy_identity: Option<[u8; 16]>,
 }
 
 #[derive(Debug)]
@@ -539,6 +549,15 @@ impl NetClient {
 		};
 		if codec::write_frame(&hello, &mut self.send_buf).is_ok() {
 			self.transport.send_reliable(&self.send_buf);
+		}
+		// Immediately after, on the same ordered stream, so the server has
+		// already run the Hello and knows which account is asking. Sent
+		// here rather than on `Welcome` because both then land in the same
+		// server tick: the claim's corrected inventory follows the join
+		// sync in the same outbound batch, instead of a round trip later
+		// with an empty bar on screen in between.
+		if let Some(legacy) = self.config.legacy_identity {
+			self.send_msg(&ClientMsg::ClaimLegacy { legacy });
 		}
 	}
 

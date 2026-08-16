@@ -396,7 +396,7 @@ Pinned by an e2e test that registers by hand with `players: -1` — a well-behav
 
 ## 4. Still open
 
-**Nothing from §1 or §2.5.** The login flow landed on 2026-08-14 and closed all of it; see `AUTH-DESIGN.md`, whose §6 is
+**Nothing from §1 or §2.5.** The login flow landed on 2026-08-14 and closed all of it; see `AUTH-DESIGN.md`, whose §7 is
 the standing list of what that work deliberately did NOT build.
 
 One thing the accounts work surfaced, **since fixed** and recorded here because the shape of it is worth keeping:

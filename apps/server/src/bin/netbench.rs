@@ -789,6 +789,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 			name: "link".into(),
 			draw_dist: 20,
 			token: [0; 16],
+			legacy_identity: None,
 		},
 	);
 

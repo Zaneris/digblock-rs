@@ -663,6 +663,24 @@ impl Sim {
 		self.spawn_store.dir().map(Vec3::from_array)
 	}
 
+	/// Plant a pre-account character in the store's quarantine, standing in
+	/// for what a server that ran before accounts left on disk. Reading a
+	/// real v1 file is the STORE's test; this is the sim path above it.
+	#[cfg(test)]
+	fn test_put_legacy(&mut self, legacy: [u8; 16], rec: PlayerRecord) {
+		self.player_store.test_put_legacy(legacy, rec);
+	}
+
+	#[cfg(test)]
+	fn test_legacy_len(&self) -> usize {
+		self.player_store.legacy_len()
+	}
+
+	#[cfg(test)]
+	fn test_client_inventory(&self, conn_id: u64) -> &digblock_core::inventory::Inventory {
+		&self.clients[&conn_id].inventory
+	}
+
 	#[cfg(test)]
 	fn test_grant(&mut self, conn_id: u64, b: digblock_core::block::BlockType, n: u32) {
 		let client = self.clients.get_mut(&conn_id).unwrap();
@@ -862,6 +880,7 @@ impl Sim {
 					}
 				}
 				ClientMsg::Bye => self.drop_client(conn_id),
+				ClientMsg::ClaimLegacy { legacy } => self.claim_legacy(conn_id, legacy),
 				// Queued, NOT applied here: a DigStart must not overtake a
 				// same-tick completing EditRequest already in the queue
 				// (see `ClientAction`). Beyond the queue cap it drops
@@ -1359,6 +1378,81 @@ impl Sim {
 		client.last_return_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
 		self.teleport_client(conn_id, pos, look);
+	}
+
+	/// One-time transfer of this server's pre-account character onto the
+	/// account that asked for it (`ClientMsg::ClaimLegacy`, protocol v23).
+	///
+	/// **Silence is the normal answer.** Every client that still has an old
+	/// identity file sends this on every join, to every server, because it
+	/// cannot know which ones it has already migrated on — so "nothing held
+	/// under that key" is the overwhelmingly common case and is not an
+	/// error. Only a claim that actually moves something says anything.
+	///
+	/// The one-time-ness lives in the store: a successful claim deletes the
+	/// quarantined record, so a repeat is indistinguishable from a key that
+	/// was never here. Nothing tracks who has claimed what.
+	fn claim_legacy(&mut self, conn_id: u64, legacy: [u8; 16]) {
+		// An unverified connection has no account to migrate ONTO, so there
+		// is nothing this could mean. That is the offline harness and the
+		// tests; a real join always carries one.
+		let Some(account) = self.clients.get(&conn_id).and_then(|c| c.identity) else {
+			return;
+		};
+		let Some(record) = self.player_store.claim_legacy(legacy, account) else {
+			return;
+		};
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		client.inventory = record.inventory;
+		client.skills = record.skills;
+		// The merged record's layout was authored against ONE of the two
+		// piles, so it has no slot for whatever the other one brought.
+		// `reconcile_layout` is what files those — the same call every
+		// count change already runs, run here for the same reason.
+		if let Some(layout) = &record.layout {
+			client.hotbar = Hotbar::from_wire(&layout.hotbar);
+			client.grid = InvGrid::from_wire(&layout.grid);
+		}
+		reconcile_layout(&client.inventory, &mut client.hotbar, &mut client.grid);
+		// Re-send exactly the three frames join sync sent, in the same
+		// order: the client's decode path for each is the standing rebase,
+		// so a second copy is a correction rather than a special case.
+		let out = client.out.clone();
+		send_frame(
+			&out,
+			&ServerMsg::InventoryFull {
+				counts: client.inventory.to_wire(),
+			},
+		);
+		send_frame(
+			&out,
+			&ServerMsg::Layout {
+				hotbar: client.hotbar.to_wire().to_vec(),
+				grid: client.grid.to_wire().to_vec(),
+			},
+		);
+		send_frame(
+			&out,
+			&ServerMsg::Skills {
+				xp: client.skills.to_wire(),
+			},
+		);
+		send_frame(
+			&out,
+			&admin::server_reply(
+				"your pre-account character on this server has been added to your account",
+			),
+		);
+		let name = client.name.clone();
+		// No forced flush, and it needs none: the store is a whole-file
+		// snapshot, so the removal and the merge reach disk together or
+		// not at all. A crash inside the flush window leaves the file with
+		// the quarantined record still in it and the account record
+		// un-merged — the player simply claims again on their next join,
+		// which is the state they were already in.
+		log::info!("player {name} claimed a pre-account character on this server");
 	}
 
 	fn handle_hello(
@@ -2175,6 +2269,148 @@ mod tests {
 			.expect("roster entry for the hostile name");
 		assert_eq!(roster_name.len(), digblock_net::protocol::MAX_NAME_LEN);
 		assert!(roster_name.chars().all(|c| !c.is_control()));
+	}
+
+	/// The migration, end to end through the sim: a player joins a server
+	/// they used to play on before accounts, offers the key their old
+	/// character is filed under, and gets it — once.
+	///
+	/// The second join is the half worth having. A client that still has
+	/// its old identity file sends this claim on EVERY join forever,
+	/// because it cannot know which servers it has already migrated on, so
+	/// "claimed already" has to be as quiet and as harmless as "never
+	/// played here" — and above all must not pay out twice.
+	#[test]
+	fn a_legacy_character_transfers_to_the_account_once() {
+		use digblock_core::block::BlockType;
+		use digblock_core::skills::Skill;
+
+		let dir = temp_dir("legacyclaim");
+		let account = test_account(21);
+		let legacy = [0x9au8; 16];
+		{
+			// Stand in for what a pre-account server left on disk. The
+			// store's own tests cover reading a v1 FILE; what this one is
+			// about is the sim path on top of it.
+			let mut sim =
+				super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+			let mut old = crate::player_store::PlayerRecord::default();
+			old.inventory.add(BlockType::Dirt, 12);
+			old.skills.add_xp(Skill::Mining, 4_000);
+			sim.test_put_legacy(legacy, old);
+
+			let mut c = connect_as_account(&mut sim, 1, account);
+			c.drain();
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::InventoryFull { counts } if counts.is_empty()
+				)),
+				"join sync still shows the account's own empty inventory: {:?}",
+				c.msgs
+			);
+
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::ClaimLegacy { legacy },
+			}]);
+			c.drain();
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::InventoryFull { counts }
+						if counts.contains(&(BlockType::Dirt as u16, 12))
+				)),
+				"the claim rebases the inventory: {:?}",
+				c.msgs
+			);
+			assert!(
+				c.msgs.iter().any(|m| matches!(
+					m,
+					ServerMsg::Skills { xp } if xp.contains(&(Skill::Mining as u8, 4_000))
+				)),
+				"and the levels: {:?}",
+				c.msgs
+			);
+			// The live client, not just the wire — the next edit validates
+			// against this.
+			assert_eq!(sim.test_client_inventory(1).count(BlockType::Dirt), 12);
+			sim.shutdown();
+		}
+
+		// Restart on the same data dir, and claim again with the same key.
+		// The character is on the account now; the claim is a no-op.
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let mut c = connect_as_account(&mut sim, 2, account);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::InventoryFull { counts }
+					if counts.contains(&(BlockType::Dirt as u16, 12))
+			)),
+			"the migrated character survived the restart: {:?}",
+			c.msgs
+		);
+		c.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 2,
+			msg: ClientMsg::ClaimLegacy { legacy },
+		}]);
+		c.drain();
+		assert!(
+			!c.msgs.iter().any(is_claim_answer),
+			"a spent claim says nothing at all: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_client_inventory(2).count(BlockType::Dirt),
+			12,
+			"and above all does not pay out twice"
+		);
+	}
+
+	/// An unverified connection carries no account, so there is nothing a
+	/// claim could transfer ONTO. It must not consume the quarantined
+	/// record on the way to discovering that — otherwise any accountless
+	/// peer could burn every legacy character on the server by guessing.
+	#[test]
+	fn an_accountless_connection_cannot_spend_a_legacy_character() {
+		let mut sim = flat_sim("legacyanon");
+		let legacy = [0x9bu8; 16];
+		sim.test_put_legacy(legacy, crate::player_store::PlayerRecord::default());
+
+		let mut c = connect(&mut sim, 1); // AccountId::NONE
+		c.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::ClaimLegacy { legacy },
+		}]);
+		c.drain();
+		assert!(
+			!c.msgs.iter().any(is_claim_answer),
+			"no answer: {:?}",
+			c.msgs
+		);
+		assert_eq!(
+			sim.test_legacy_len(),
+			1,
+			"the character is still there for whoever actually owns it"
+		);
+	}
+
+	/// Anything the sim only ever sends in answer to a claim. Ordinary
+	/// join traffic (`AreaReady`, snapshots) keeps flowing either way, so
+	/// "said nothing" has to mean these and not "sent no frame at all".
+	fn is_claim_answer(m: &ServerMsg) -> bool {
+		matches!(
+			m,
+			ServerMsg::InventoryFull { .. }
+				| ServerMsg::Layout { .. }
+				| ServerMsg::Skills { .. }
+				| ServerMsg::Chat { .. }
+		)
 	}
 
 	/// Inventory persists across reconnect AND across a full server

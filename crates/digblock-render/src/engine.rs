@@ -390,6 +390,16 @@ pub struct EngineConfig {
 	/// the master. This is display state: who to say you are on the
 	/// account screen, and whether the menu offers Multiplayer or Sign In.
 	pub account: Option<crate::menu::AccountView>,
+	/// The key this machine's pre-account character was filed under, if an
+	/// old identity file is still on disk — see
+	/// `NetClientConfig::legacy_identity`. The LAUNCHER fills this, reading
+	/// the file and hashing it, so the secret itself never enters the
+	/// engine and there is nothing here to leak.
+	///
+	/// Read-only, and never created: a machine that has no old identity has
+	/// nothing to migrate, and minting one would invent a character out of
+	/// thin air.
+	pub legacy_identity: Option<[u8; 16]>,
 	/// Log a per-phase breakdown of every over-budget frame. The LAUNCHER
 	/// fills this (desktop: `DIG_SPIKELOG`; web: `?spikelog`) — reading the
 	/// environment inside core answers None forever on wasm, which is
@@ -469,6 +479,7 @@ impl EngineConfig {
 			menu: false,
 			auto_join: None,
 			account: None,
+			legacy_identity: None,
 			spike_log: false,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			debug_gi: false,
@@ -532,6 +543,7 @@ impl EngineConfig {
 			menu: false,
 			auto_join: None,
 			account: None,
+			legacy_identity: None,
 			spike_log: false,
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			debug_gi: false,
@@ -2374,6 +2386,7 @@ impl Engine {
 				name,
 				draw_dist: self.config.draw_dist,
 				token,
+				legacy_identity: self.config.legacy_identity,
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's

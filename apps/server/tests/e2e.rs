@@ -26,7 +26,7 @@ use digblock_server::sim::Sim;
 use digblock_server::{net, run_sim_loop};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -191,6 +191,27 @@ fn mint_token_with(master_url: &str, session: &str) -> ([u8; 16], String) {
 	(token, join["url"].as_str().unwrap().to_string())
 }
 
+/// Write a pre-account character into a server's data dir, as a v1
+/// `inventories.bin` — what a server that ran before accounts left behind.
+///
+/// Hand-built, because that is the only shape this data ever comes in: no
+/// build still writes v1, so a fixture derived from the current writer
+/// would stop standing for the thing being migrated the moment the format
+/// moved again.
+fn plant_legacy_character(data_dir: &Path, legacy: [u8; 16], block: BlockType, count: u32) {
+	std::fs::create_dir_all(data_dir).expect("data dir");
+	let mut buf = Vec::new();
+	buf.extend_from_slice(b"DBI1");
+	buf.extend_from_slice(&1u16.to_le_bytes()); // v1: inventory only
+	buf.extend_from_slice(&[0, 0]);
+	buf.extend_from_slice(&1u32.to_le_bytes());
+	buf.extend_from_slice(&legacy);
+	buf.push(1); // one (block, count) pair
+	buf.extend_from_slice(&(block as u16).to_le_bytes());
+	buf.extend_from_slice(&count.to_le_bytes());
+	std::fs::write(data_dir.join("inventories.bin"), buf).expect("plant legacy record");
+}
+
 fn parse_hex16(hex: &str) -> [u8; 16] {
 	let bytes: Vec<u8> = (0..hex.len())
 		.step_by(2)
@@ -224,6 +245,22 @@ impl TestServer {
 	/// accepting before registration. `false` leaves the server in its
 	/// pre-registration state, where every join must be refused.
 	fn start(tag: &str, master_url: &str, registered: bool) -> Self {
+		Self::start_with_legacy(tag, master_url, registered, None)
+	}
+
+	/// As `start`, but the data dir already holds a pre-account character
+	/// — a server that ran before accounts and is now being upgraded.
+	///
+	/// It has to be planted HERE, between wiping the dir and opening the
+	/// sim: the store reads its file once at open and rewrites the whole
+	/// thing on every flush, so a record written a moment later would be
+	/// erased by the first save instead of migrated.
+	fn start_with_legacy(
+		tag: &str,
+		master_url: &str,
+		registered: bool,
+		legacy: Option<([u8; 16], BlockType, u32)>,
+	) -> Self {
 		let rt = tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
 			.build()
@@ -234,6 +271,9 @@ impl TestServer {
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&data_dir);
+		if let Some((key, block, count)) = legacy {
+			plant_legacy_character(&data_dir, key, block, count);
+		}
 		// Seed 7 spawns on GRASS, so the dig flows below run unskilled;
 		// the default seed's spawn disc is bare Stone, which SIM v12's
 		// rock gate refuses (a real design consequence — a stone-spawn
@@ -326,6 +366,17 @@ struct TestClient {
 
 impl TestClient {
 	fn connect(url: &str, name: &str, token: [u8; 16]) -> Self {
+		Self::connect_with_legacy(url, name, token, None)
+	}
+
+	/// Join while also offering a pre-account character's lookup key — what
+	/// a client with an old identity file still on disk does on every join.
+	fn connect_with_legacy(
+		url: &str,
+		name: &str,
+		token: [u8; 16],
+		legacy_identity: Option<[u8; 16]>,
+	) -> Self {
 		let transport = digblock_net_native::connect(url);
 		Self {
 			client: NetClient::new(
@@ -334,6 +385,7 @@ impl TestClient {
 					name: name.into(),
 					draw_dist: 4,
 					token,
+					legacy_identity,
 				},
 			),
 			events: Vec::new(),
@@ -493,6 +545,7 @@ fn expect_refused(url: &str, token: [u8; 16], substr: &str) {
 			name: "x".into(),
 			draw_dist: 4,
 			token,
+			legacy_identity: None,
 		},
 	);
 	let deadline = Instant::now() + Duration::from_secs(30);
@@ -893,6 +946,65 @@ fn the_server_keys_a_player_on_their_account() {
 		"a claimed Hello name must never reach the roster: {:?}",
 		other.joined_names
 	);
+}
+
+/// The pre-account migration over a real connection: a player who used to
+/// play here before accounts existed offers the key their old character is
+/// filed under, and it lands on their account. Once.
+///
+/// The sim covers the transfer itself deterministically; what only a real
+/// connection can show is that the claim RIDES THE JOIN — the client sends
+/// it unprompted behind its Hello, and the corrected inventory arrives
+/// without anybody asking for it.
+#[test]
+fn a_pre_account_character_migrates_onto_the_account() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	// What a server that ran before accounts left on disk for this device.
+	let legacy = [0x5au8; 16];
+	let server = TestServer::start_with_legacy(
+		"legacymigrate",
+		&master.url,
+		true,
+		Some((legacy, BlockType::Dirt, 12)),
+	);
+
+	let (session, _, _) = dev_sign_in(&master.url, "Ada_L");
+	let (token, _) = mint_token_with(&master.url, &session);
+	let mut a = TestClient::connect_with_legacy(&server.url, "whatever", token, Some(legacy));
+	a.wait("welcome", |c| c.welcomed);
+	a.wait("the migrated inventory", |c| {
+		c.inventories
+			.iter()
+			.any(|counts| counts.contains(&(BlockType::Dirt as u16, 12)))
+	});
+
+	// Same player, same key, a second join: the character is theirs now and
+	// the claim is spent. The inventory is the migrated one, not double.
+	a.client.disconnect();
+	drop(a);
+	let (token, _) = mint_token_with(&master.url, &session);
+	// `connect` and not `try_connect`: the latter drains the handshake
+	// itself and keeps only the Welcome, so the inventory this test is
+	// about would be thrown away before it could be seen. The account
+	// being free at all is `a_goodbye_frees_the_account_at_once`'s job.
+	let mut again = TestClient::connect_with_legacy(&server.url, "whatever", token, Some(legacy));
+	again.wait("welcome on rejoin", |c| c.welcomed);
+	again.wait("the inventory", |c| !c.inventories.is_empty());
+	// Give a second payout every chance to show up before asserting it did
+	// not: several round trips past the point the first one arrived.
+	for _ in 0..100 {
+		again.pump();
+		std::thread::sleep(Duration::from_millis(5));
+	}
+	for counts in &again.inventories {
+		assert_eq!(
+			counts.iter().find(|(id, _)| *id == BlockType::Dirt as u16),
+			Some(&(BlockType::Dirt as u16, 12)),
+			"a spent claim must never pay out again: {:?}",
+			again.inventories
+		);
+	}
 }
 
 // ---- the production registration path (docker/compose.yml) -----------------
