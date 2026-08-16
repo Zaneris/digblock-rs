@@ -56,6 +56,14 @@ async fn boot() -> Result<(), JsValue> {
 	console_error_panic_hook::set_once();
 	let _ = console_log::init_with_level(log::Level::Info);
 
+	// A sign-in that came back lands here as `?code=&state=` and NOTHING
+	// else — the master replaces the redirect target's query with its own.
+	// `take_callback` puts back the query that configured this page from
+	// where `auth::begin` parked it, so it has to run BEFORE the params are
+	// read, or `?master=` is lost and the code is redeemed against the
+	// production default instead of the master that minted it.
+	let callback = auth::take_callback();
+
 	let params = web_sys::window()
 		.and_then(|w| w.location().search().ok())
 		.map(|s| web_sys::UrlSearchParams::new_with_str(&s).expect("parse query"))
@@ -198,10 +206,9 @@ async fn boot() -> Result<(), JsValue> {
 		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
 		None => None,
 	};
-	// A sign-in that came back lands here as ?code=&state=. Redeem it
-	// before the engine exists, so the menu opens already signed in and
-	// the code leaves the address bar immediately.
-	let session = match (&master_url, auth::take_callback()) {
+	// Redeem a returned sign-in before the engine exists, so the menu opens
+	// already signed in and the code leaves the address bar immediately.
+	let session = match (&master_url, callback) {
 		(Some(master_url), Some((code, verifier))) => {
 			match auth::exchange(master_url, &code, &verifier).await {
 				Ok(s) => {

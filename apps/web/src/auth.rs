@@ -15,6 +15,15 @@
 //! The PKCE verifier and the state outlive that reload in `sessionStorage`:
 //! per-tab, cleared when the tab closes, and unreadable from another
 //! origin. They are consumed on return.
+//!
+//! The page's own query rides along with them. `?master=` and its
+//! neighbours are configuration this load was started with, but the master
+//! refuses a redirect target that carries a query (it appends its own
+//! `?code=&state=`), so the query cannot survive the trip in the URL —
+//! losing it silently repointed a dev-stack session at the production
+//! master the moment sign-in succeeded. It is parked here instead and put
+//! back by `take_callback`, minus the one-shot actions (`?join`,
+//! `?devsignin`) that must not re-fire on return.
 
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -30,11 +39,13 @@ pub struct Session {
 	pub token: String,
 }
 
-/// Verifier + state, parked across the navigation.
+/// Verifier + state + the page's own query, parked across the navigation.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Pending {
 	verifier: String,
 	state: String,
+	#[serde(default)]
+	query: String,
 }
 
 fn local() -> Option<web_sys::Storage> {
@@ -69,9 +80,11 @@ pub fn begin(master_url: &str) -> Result<(), String> {
 	let state = random_b64(16)?;
 	let challenge = s256(&verifier);
 
+	let window = web_sys::window().ok_or("no window")?;
 	let pending = serde_json::to_string(&Pending {
 		verifier,
 		state: state.clone(),
+		query: surviving_query(&window),
 	})
 	.map_err(|e| e.to_string())?;
 	session_storage()
@@ -79,11 +92,10 @@ pub fn begin(master_url: &str) -> Result<(), String> {
 		.set_item(PENDING_KEY, &pending)
 		.map_err(|_| "could not stash the sign-in request".to_string())?;
 
-	let window = web_sys::window().ok_or("no window")?;
 	let here = window.location().href().map_err(|_| "no location")?;
-	// Come back to this page without whatever query brought us here: the
-	// master appends its own, and a `?join` left in place would re-fire
-	// the scripted join on return.
+	// The redirect target is this page stripped bare: the master refuses a
+	// target with a query and appends its own. The query we were started
+	// with is in `pending`, restored on return.
 	let redirect = here.split(['?', '#']).next().unwrap_or(&here).to_string();
 	let url = format!(
 		"{master_url}/auth/start?redirect_uri={}&state={}&code_challenge={}&platform=web",
@@ -114,7 +126,7 @@ pub fn take_callback() -> Option<(String, String)> {
 		.flatten()
 		.and_then(|raw| serde_json::from_str(&raw).ok())?;
 	let _ = storage.remove_item(PENDING_KEY);
-	scrub_url();
+	scrub_url(&pending.query);
 
 	// A state that does not match means this callback belongs to some
 	// other request. Refuse it rather than redeeming it.
@@ -125,19 +137,42 @@ pub fn take_callback() -> Option<(String, String)> {
 	Some((code, pending.verifier))
 }
 
-/// Drop the query string without reloading, so a refresh or a shared link
-/// does not carry the code.
-fn scrub_url() {
+/// Drop the callback's `?code=&state=` without reloading, so a refresh or
+/// a shared link does not carry the code — and put back the query that
+/// configured this page, which the redirect could not carry.
+fn scrub_url(restore: &str) {
 	let Some(window) = web_sys::window() else {
 		return;
 	};
 	let Ok(here) = window.location().href() else {
 		return;
 	};
-	let clean = here.split(['?', '#']).next().unwrap_or(&here).to_string();
+	let mut clean = here.split(['?', '#']).next().unwrap_or(&here).to_string();
+	if !restore.is_empty() {
+		clean.push('?');
+		clean.push_str(restore);
+	}
 	if let Ok(history) = window.history() {
 		let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&clean));
 	}
+}
+
+/// The page's current query, minus what must not fire twice: the one-shot
+/// actions (`join` and its `server`, `devsignin`) and any stale callback
+/// residue. What is left — `master`, the capture and settings params — is
+/// configuration, and is exactly what sign-in must hand back to the page
+/// it returns to.
+fn surviving_query(window: &web_sys::Window) -> String {
+	let Ok(search) = window.location().search() else {
+		return String::new();
+	};
+	let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+		return String::new();
+	};
+	for one_shot in ["join", "server", "devsignin", "code", "state"] {
+		params.delete(one_shot);
+	}
+	String::from(js_sys::Object::to_string(&params))
 }
 
 // ---- master calls ---------------------------------------------------------
