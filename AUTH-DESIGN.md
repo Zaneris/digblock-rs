@@ -253,12 +253,18 @@ The master's first durable state. EF Core over SQLite, with the provider as the 
 Deliberately **not** persisted: join tokens, pending auth codes, registration temp-bans, and per-server liveness. All
 short-lived, all high-churn, and losing them to a restart was already the accepted behaviour.
 
-Two things that will bite:
+Three things that will bite:
 
 - **EF Core turns WAL on by itself.** WAL needs a shared-memory file and is documented as unsupported over a network
   filesystem; the intended production filesystem is an Azure Files (SMB) mount. `JournalModeInterceptor` pins DELETE
   back on every connection, unconditionally — a mode that differs between a developer's machine and production is a mode
   nobody tests. This was found by reading the boot log, not by reasoning.
+- **SQLite's locks do not survive the SMB mount's defaults.** Over cifs, byte-range locks are forwarded to the SMB
+  server, and SQLite's lock-upgrade sequence fails there as "database is locked" — on the very first write, with no
+  other process alive, for the full busy timeout. The volume must be mounted with `nobrl`, which keeps locks on the
+  node; the single replica below is what makes that honest, since one client means node-local locking sees every writer
+  there is. Found the way WAL was: the first accounts revision died at `Database.Migrate()` over an empty database file,
+  while the rollout silently kept serving the pre-accounts image.
 - **The Container App's filesystem is ephemeral.** Without a mounted volume at `/data`, every redeploy takes every
   account with it. Single replica, too: SQLite is single-writer.
 

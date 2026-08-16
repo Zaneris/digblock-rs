@@ -18,9 +18,18 @@
 # STORAGE — accounts live in SQLite at /data/master.db (see AUTH-DESIGN.md).
 # The Container App's own filesystem is EPHEMERAL, so without these two the
 # first redeploy silently takes every account with it:
-#   - An Azure Files share mounted at /data.
+#   - An Azure Files share mounted at /data, with nobrl in the volume's
+#     mountOptions — set on the APP TEMPLATE's volume (az containerapp
+#     update --yaml), not on the environment storage, which has no such
+#     field. Without it, cifs forwards SQLite's byte-range locks to the SMB
+#     server, where its lock-upgrade sequence fails as "database is locked"
+#     on the very first write: the revision dies at Database.Migrate(), the
+#     rollout keeps serving the old image, and nothing in the deploy says
+#     so. A plain --image update preserves the option once set.
 #   - minReplicas = maxReplicas = 1. SQLite is single-writer, and two
-#     replicas over SMB is corruption, not contention.
+#     replicas over SMB is corruption, not contention. It is also what
+#     makes nobrl safe: locks stay on the node, and one replica means the
+#     node sees every writer there is.
 # The app pins the rollback journal to DELETE for the same reason (WAL does
 # not work over SMB); that part is in code, not configuration.
 #
