@@ -341,7 +341,7 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 /// [`dig_award`] is what puts the two together.
 pub fn dig_xp(block: BlockType) -> u64 {
 	match block.hardness_ticks() {
-		Some(h) => u64::from(h).div_ceil(6),
+		Some(h) => u64::from(h).div_ceil(12),
 		None => 0,
 	}
 }
@@ -356,14 +356,20 @@ pub const DEPTH_XP_FROM: i32 = crate::worldgen::SEA_LEVEL;
 /// rather than a limit the world approaches and never reaches.
 pub const DEPTH_XP_TO: i32 = crate::block::BEDROCK_Y + 1;
 
+/// One whole, in permille — the unit [`depth_xp_permille`] is expressed
+/// against and [`dig_award`] rounds to.
+const PERMILLE: u32 = 1000;
+
 /// The depth reward at its deepest, in permille of the flat award.
 ///
-/// Bounded from both sides. It has to clear the rounding on the SMALLEST
-/// award in the game, or the blocks at the bottom of the hardness order
-/// would be handed a bonus that floors straight back to what they already
-/// paid (`the_depth_reward_moves_every_award`). And it has to stay well
-/// under the multiple that would make depth compulsory: this is a reason to
-/// go down, not a tax on staying up.
+/// Bounded from both sides, and neither bound is arithmetic. Above: well
+/// under the multiple that would make depth compulsory — this is a reason
+/// to go down, not a tax on staying up. Below: enough to be worth
+/// noticing. What used to bind it from underneath was the rounding, and no
+/// longer does: [`dig_award`] rounds to NEAREST, so any ramp above
+/// [`PERMILLE`] moves every award in the game by construction
+/// (`the_depth_reward_moves_every_award`) — however cheap the block, and
+/// however small the award scale is retuned to be.
 pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
@@ -376,7 +382,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 /// that grid exists at all. That curve had to be quantized because ticks are
 /// fine-grained enough that a per-level change moved a hold by one or by
 /// nothing, so the reward read as noise. XP has no such problem: the awards
-/// are small integers and the flooring in [`dig_award`] quantizes them for
+/// are small integers and the rounding in [`dig_award`] quantizes them for
 /// free, leaving each block type its own ladder of whole-point steps as you
 /// descend (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top
 /// of that would add nothing a player can see and would buy cliffs — a
@@ -386,7 +392,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 pub fn depth_xp_permille(y: i32) -> u32 {
 	let depth = (DEPTH_XP_FROM - y.clamp(DEPTH_XP_TO, DEPTH_XP_FROM)) as u32;
 	let span = (DEPTH_XP_FROM - DEPTH_XP_TO) as u32;
-	1000 + (DEPTH_XP_MAX_PERMILLE - 1000) * depth / span
+	PERMILLE + (DEPTH_XP_MAX_PERMILLE - PERMILLE) * depth / span
 }
 
 /// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer
@@ -421,7 +427,16 @@ pub fn dig_award(
 	// Per BLOCK: a wide swing pays for what it broke, not for the swing.
 	// A door pair is still ONE block.
 	let flat = dig_xp(prev) * u64::from(broken);
-	(flat * u64::from(depth_xp_permille(y)) / 1000, 0)
+	// To NEAREST rather than truncated. The awards are small integers, so
+	// truncation quietly under-delivers the ramp, and it under-delivers it
+	// worst on the cheapest digs — the ones with the least room to show it.
+	// Rounding is also what makes the ramp's guarantee structural: every
+	// award moves with depth for any multiplier above unity, so neither a
+	// new cheap row nor a retune of the award scale can silently strand the
+	// bottom of the hardness order on a flat number.
+	let unit = u64::from(PERMILLE);
+	let mining = (flat * u64::from(depth_xp_permille(y)) + unit / 2) / unit;
+	(mining, 0)
 }
 
 /// Alchemy XP per block extracted at the bench: the block's worth at the
@@ -451,20 +466,33 @@ pub fn convert_xp(block: BlockType) -> u64 {
 /// `(Mining, Alchemy)`. `None` for anything that is not an ore.
 ///
 /// Field extraction is mechanically a mine and thematically a crude
-/// alchemical separation, so it pays both — and the Alchemy cut is
-/// deliberately the small half, with the substantial Alchemy XP waiting
-/// at the bench (`convert_xp`). Each ore therefore carries a fixed total
-/// split across TWO moments, and neither skill can be levelled entirely
-/// from inside the other.
+/// alchemical separation, so it pays both: Mining the headline, Alchemy
+/// the smaller cut. Smaller than the Mining figure beside it, though —
+/// not a token half of some larger Alchemy total, because there is no
+/// second moment behind this one. Raw ore is never an item (§5.3,
+/// `raw_ore_is_never_an_item`), so no vein reaches a bench and the draw
+/// at the rock face IS the separation. `convert_xp` still answers for an
+/// ore and its answer is simply unreachable — the tier's bench worth,
+/// kept as the basis this column is set against.
+///
+/// Alchemy is still earned at the bench, taking apart what the world
+/// hands you; what a vein adds is that a miner who never opens the screen
+/// still moves the skill.
 ///
 /// Tabled rather than derived from hardness: this is a headline reward
-/// and the curve through it is a decision, not a consequence.
+/// and the curve through it is a decision, not a consequence. Which is
+/// also why it does NOT follow a retune of [`dig_xp`] — a vein is scarce
+/// and finding one is most of the work, so what a draw is worth was
+/// chosen against the tier and not against a multiple of the rock around
+/// it. A retune of the ordinary dig moves how much a vein is worth
+/// RELATIVE to quarrying, deliberately, and that is a lever rather than a
+/// drift.
 pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
 	Some(match ore {
-		BlockType::Emberore => (40, 8),
-		BlockType::Duskstone => (70, 14),
-		BlockType::Glowvein => (110, 22),
-		BlockType::Aetherock => (170, 34),
+		BlockType::Emberore => (40, 16),
+		BlockType::Duskstone => (70, 28),
+		BlockType::Glowvein => (110, 44),
+		BlockType::Aetherock => (170, 68),
 		_ => return None,
 	})
 }
@@ -750,16 +778,16 @@ mod tests {
 	fn dig_xp_follows_the_hardness_table() {
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Leaves, 2u64),
-			(B::Snow, 3),
-			(B::Sand, 5),
-			(B::Dirt, 5),
-			(B::Grass, 5),
-			(B::Gravel, 8),
-			(B::Wood, 10),
-			(B::Sandstone, 12),
-			(B::Stone, 15),
-			(B::WoodSlab, 4), // a slab third pays per completed hold
+			(B::Leaves, 1u64),
+			(B::Snow, 2),
+			(B::Sand, 3),
+			(B::Dirt, 3),
+			(B::Grass, 3),
+			(B::Gravel, 4),
+			(B::Wood, 5),
+			(B::Sandstone, 6),
+			(B::Stone, 8),
+			(B::WoodSlab, 2), // a slab third pays per completed hold
 		] {
 			assert_eq!(dig_xp(block), xp, "{block:?}");
 		}
@@ -819,12 +847,19 @@ mod tests {
 	}
 
 	/// The reward has to be VISIBLE, and the awards are small integers, so
-	/// "half again" is only real if it survives the flooring on the
-	/// cheapest dig in the game. Every diggable block pays strictly more at
-	/// the bottom than it does at the waterline — this is the pin that
-	/// `DEPTH_XP_MAX_PERMILLE` is set against.
+	/// a multiplier that rounded away on the cheapest dig in the game would
+	/// be no reward at all there. Every diggable block pays strictly more at
+	/// the bottom than at the waterline — including the ones at the very
+	/// floor of the award scale, which pay a single point flat and which a
+	/// truncating ramp could not have moved by any multiplier under two.
+	/// `dig_award` rounds to nearest instead, so this holds for any ramp
+	/// above unity and stays true through a retune of either end.
 	#[test]
 	fn the_depth_reward_moves_every_award() {
+		assert!(
+			diggables().iter().any(|b| dig_xp(*b) == 1),
+			"the floor of the award scale is occupied — the case this pin is for"
+		);
 		for b in diggables() {
 			let (top, _) = dig_award(b, None, 1, DEPTH_XP_FROM);
 			let (bottom, _) = dig_award(b, None, 1, DEPTH_XP_TO);

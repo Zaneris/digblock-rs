@@ -206,14 +206,13 @@ earned line).
 | action                                           | what the XP is derived from                                                                                                                                                                             |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | bench extraction, per block                      | the block's worth at the bench (`alchemy::extract_worth`) — and **zero for anything the bench itself can make** (`skills::convert_xp`, §7.5)                                                            |
-| bench extraction, per ore                        | the same rule, so the tiers pay in proportion to what they give up                                                                                                                                      |
-| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`)                                                                                                                                        |
+| field ore extraction (the dual-XP cut, see §5.4) | a per-tier figure, rising with the tier (`skills::ore_field_xp`) — and the ONLY Alchemy a vein pays, since raw ore never reaches a bench                                                                |
 | transmutation, per craft                         | a fixed fraction of the ideal cost (`skills::craft_xp`), so a slab pays least, a whole block more, and a tool most of all — pinned by `alchemy_xp_derives_from_the_base_tables`, per-line ceil included |
 
 XP keys on the *base* value, never the level-scaled yield — per-action XP is fixed for life, RS-style. Extraction XP is
-paid for reducing what the WORLD made and nothing for undoing your own work, which is what stops the two rows above
-composing into a converter from essence into levels; the bench's PACE keeps following a block's worth either way, so a
-planed timber comes apart no faster than the log it was cut from.
+paid for reducing what the WORLD made and nothing for undoing your own work, which is what stops the extraction and
+transmutation rows composing into a converter from essence into levels; the bench's PACE follows a block's worth either
+way, so a planed timber comes apart no faster than the log it was cut from.
 
 **Both halves of the bench arrive dripped.** The extract tab sends one `Convert { count: 1 }` per completed cycle and
 the transmute tab one `Craft { count: 1 }` (§8.1), so a hoard of stone and a hundred-slab batch are each a long steady
@@ -378,16 +377,18 @@ instead, rising steeply with the tier (+ the Alchemy cut, §5.4).
 **Then the depth reward scales it** (`skills::depth_xp_permille`): flat at and above `DEPTH_XP_FROM` — the waterline, so
 nothing about surface mining moves — then rising linearly with depth to `DEPTH_XP_MAX_PERMILLE` at `DEPTH_XP_TO`. Both
 ends are chosen rather than convenient. The far end is the deepest cell a dig can happen in **at all**, one above
-bedrock, because bedrock is undiggable and a maximum nobody can ever be handed is not a maximum. The ceiling sits in the
-band between two failures: the cheapest dig in the game pays only a couple of points, so a smaller multiplier would
-floor straight back to what it already paid and the bottom of the hardness order would get nothing
-(`the_depth_reward_moves_every_award`); a larger one stops being a reason to go down and becomes a tax on staying up.
-Half again is a pull a surface player can still decline.
+bedrock, because bedrock is undiggable and a maximum nobody can ever be handed is not a maximum. The ceiling is bounded
+from one side only: a larger one stops being a reason to go down and becomes a tax on staying up. Nothing bounds it from
+underneath any more, because `dig_award` rounds to NEAREST rather than truncating — so any ramp above unity moves every
+award in the game, including the blocks at the very floor of the scale, which pay a single point flat and which a
+truncating ramp could not have moved by any multiplier under two (`the_depth_reward_moves_every_award`). That the
+guarantee is structural rather than lucky is what lets the award scale be retuned without quietly stranding the bottom
+of the hardness order on a flat number. Half again is a pull a surface player can still decline.
 
 **It is linear per block, deliberately NOT quantized into depth layers** — the opposite of what `DIG_STEPS` does to the
 dig curve, and for the same reason that grid exists. The dig curve had to be quantized because a per-level change moved
 a hold by a single tick or by nothing, so the reward read as noise and had to be concentrated to be felt at all. XP has
-no such problem: the awards are small integers, so the flooring quantizes them for free and every block type gets its
+no such problem: the awards are small integers, so the rounding quantizes them for free and every block type gets its
 own ladder of whole-point steps — stone climbs from its flat award to its deepest one point at a time, evenly spread
 down the range, with no value in between skipped (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top of
 that would add nothing a player can see, and it would buy cliffs: a handful of depths where one more block down is worth
@@ -504,9 +505,19 @@ old behaviour.
 
 ### 5.4 Dual XP
 
-Field extraction is mechanically a mine, thematically a crude alchemical separation: full Mining XP plus a minor Alchemy
-cut at the rock face, with the substantial Alchemy XP paid later at the bench (`skills::ore_field_xp` and `convert_xp`).
-Each ore carries a fixed total split across two moments; neither skill can be leveled entirely from inside the other.
+Field extraction is mechanically a mine, thematically a crude alchemical separation: full Mining XP plus an Alchemy cut
+at the rock face (`skills::ore_field_xp`), so a miner who never touches the bench still moves the other skill.
+
+**The cut at the face is the whole of it.** Raw ore is never an item (§5.3), so no ore reaches an extraction slot and
+there is no bench moment behind the field one — which is why the Alchemy column is not the token it would be if it were
+splitting a total with a later payment. `alchemy::extract_total_base` still prices a tier and `convert_xp` still answers
+for it; that answer is unreachable, and is kept as the basis the column is set against. Alchemy's bulk is still the
+bench, taking apart what the world hands you (§4.1) — a supply no seam competes with.
+
+**The tiers do not follow a retune of `dig_xp`**, and that is the point of tabling them. A vein is scarce and finding
+one is most of the work, so a draw is priced against its tier rather than as a multiple of the rock it sits in; the
+hardness-derived award and the ore table are two separate decisions, and moving one is a deliberate lever on how much a
+seam is worth *relative* to quarrying rather than a figure drifting out of step.
 
 ### 5.5 The Mining ladder
 
