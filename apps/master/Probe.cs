@@ -13,6 +13,10 @@ public enum ProbeFailure
     Timeout,
     Handshake,
     CertMismatch,
+
+    /// <summary>The address resolved off the public internet and
+    /// Master:Probe:AllowPrivateTargets is not set. See ProbeTargets.</summary>
+    Blocked,
 }
 
 public sealed record ProbeResult(bool Reachable, ProbeFailure? Reason = null, string? Detail = null)
@@ -22,6 +26,7 @@ public sealed record ProbeResult(bool Reachable, ProbeFailure? Reason = null, st
         ProbeFailure.Dns => "dns",
         ProbeFailure.Timeout => "timeout",
         ProbeFailure.CertMismatch => "certMismatch",
+        ProbeFailure.Blocked => "blocked",
         _ => "handshake",
     };
 }
@@ -39,7 +44,7 @@ public interface IReachabilityProbe
 // CA1416: only constructed behind the QuicConnection.IsSupported gate in
 // Program.cs, which the platform-compatibility analyzer cannot see.
 #pragma warning disable CA1416
-public sealed class QuicProbe(TimeSpan timeout) : IReachabilityProbe
+public sealed class QuicProbe(TimeSpan timeout, bool allowPrivateTargets = false) : IReachabilityProbe
 {
     public async Task<ProbeResult> ProbeAsync(string host, int port, byte[] certHash, CancellationToken ct)
     {
@@ -61,6 +66,11 @@ public sealed class QuicProbe(TimeSpan timeout) : IReachabilityProbe
             if (address is null)
                 return new ProbeResult(false, ProbeFailure.Dns, "hostname resolved to no addresses");
         }
+
+        // After resolution, never before: a hostname that resolves to
+        // 10.0.0.5 is exactly the attack this refuses.
+        if (!allowPrivateTargets && !ProbeTargets.IsPublic(address))
+            return new ProbeResult(false, ProbeFailure.Blocked, "address is not on the public internet");
 
         var certMismatch = false;
         var options = new QuicClientConnectionOptions

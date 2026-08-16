@@ -7,14 +7,22 @@
 #
 # The /udp on the port mapping is mandatory — QUIC never touches TCP.
 #
-# Joining is token-only: everything flows through the master (server list,
-# cert pins, one-time join tokens), and the master's QUIC probe is always
-# real here (linux + libmsquic). In-network runs (compose/compose-bots) the
-# game server advertises its compose DNS name, which the master probes
-# directly. `just play-docker` sets ADVERTISE_HOST=127.0.0.1 (what the host
-# client dials) with PROBE_HOST=host.docker.internal (the container's
-# stable UDP path to the published port — a LAN-IP hairpin would break
-# QUIC address validation under Docker's NAT).
+# Joining is token-only AND account-authenticated: everything flows through
+# the master (server list, cert pins, one-time join tokens), and the
+# master's QUIC probe is always real here (linux + libmsquic). In-network
+# runs (compose/compose-bots) the game server advertises its compose DNS
+# name, which the master probes directly. `just play-docker` sets
+# ADVERTISE_HOST=127.0.0.1 (what the host client dials) and the MASTER
+# redirects its own probes to host.docker.internal — the container's stable
+# UDP path to the published port, since a LAN-IP hairpin would break QUIC
+# address validation under Docker's NAT.
+#
+# The master here runs in Development with three escapes on, none of which
+# it will honour in production (and one of which it refuses to boot with):
+# development sign-in, so bots and scripted clients can get an account
+# without a browser; the private-address probe filter relaxed, since every
+# address in this rig is private; and the probe redirect above. See the
+# DEV_MASTER_ENV block in the justfile.
 #
 # A desktop client on the Mac host connects to the containerized server
 # over the published UDP port — `just play-docker [profile]` is the
@@ -30,16 +38,29 @@ services:
       context: ../apps/master
       dockerfile: Dockerfile
     ports:
-      - "5200:5200"
+      # Parameterized for the e2e rig, which brings this same file up under
+      # its own project name and needs ephemeral host ports so it cannot
+      # collide with a `just compose` someone left running. The defaults are
+      # the fixed ports every recipe and doc here refers to.
+      - "${MASTER_PORT:-5200}:5200"
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Development"
+      Master__Dev__AuthEnabled: "true"
+      Master__Probe__AllowPrivateTargets: "true"
+      Master__Dev__ProbeHostOverride: "${PROBE_HOST:-}"
 
   server:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "4433:4433/udp"
+      # See MASTER_PORT. The e2e rig also relies on being able to move this
+      # OFF 4433: its takeover case dials the host address at the server's
+      # registered port and must find nothing, which a published 4433 would
+      # hairpin straight back into this container.
+      - "${SERVER_PORT:-4433}:4433/udp"
     volumes:
-      - ./data:/data
+      - ${DATA_DIR:-./data}:/data
     cap_add:
       - NET_ADMIN
     depends_on:
@@ -49,9 +70,15 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       DIGBLOCK_MASTER_URL: "http://master:5200"
       DIGBLOCK_ADVERTISE_HOST: "${ADVERTISE_HOST:-server}"
-      DIGBLOCK_PROBE_HOST: "${PROBE_HOST:-}"
       DIGBLOCK_SERVER_NAME: "${SERVER_NAME:-Compose World}"
-      DIGBLOCK_ADMIN_NAME: "${ADMIN_NAME:-}"
+      # Account ids, comma-separated. `just play` uses the dev sign-in id
+      # for the subject "admin"; see DEV_ADMIN_ID in the justfile.
+      DIGBLOCK_ADMIN_IDS: "${ADMIN_IDS:-}"
+      # Every bot in the soak shares the bots container's address, so the
+      # internet-facing default of 8 would cap the run rather than the
+      # netcode — and a bot refused at accept is indistinguishable from a
+      # connect timeout on the client side.
+      DIGBLOCK_MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-64}"
 
   bots:
     build:
