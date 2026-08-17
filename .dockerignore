@@ -1,4 +1,12 @@
+# Anchored AND recursive, because a `.dockerignore` pattern without `**`
+# matches at the context root and nowhere else. A build tree nested one
+# level down — an agent worktree under .claude/, a vendored checkout —
+# therefore sailed straight into the context and filled the builder's
+# disk mid-copy ("no space left on device", from a path nobody put there
+# on purpose). The context is source; nothing built belongs in it.
 target/
+**/target/
+.claude/
 apps/ios/xcode/
 # The docker images' pinned rust:1-slim-* toolchain is authoritative in
 # containers. If this file reaches the build context, rustup sees
