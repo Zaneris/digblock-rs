@@ -103,7 +103,7 @@ if (masterOptions.Dev.AuthEnabled && !builder.Environment.IsDevelopment())
     Console.Error.WriteLine(
         $"""
         fatal: Master:Dev:AuthEnabled is set, but ASPNETCORE_ENVIRONMENT is "{builder.Environment.EnvironmentName}".
-          Dev sign-in bypasses Google/Facebook entirely and mints an account for any subject string.
+          Dev sign-in bypasses every OAuth provider entirely and mints an account for any subject string.
           It is honoured only in Development. Unset it, or set ASPNETCORE_ENVIRONMENT=Development.
         """);
     Environment.Exit(1);

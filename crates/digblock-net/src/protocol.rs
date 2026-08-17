@@ -122,13 +122,20 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// now owns it. An ordinary append (a v23 peer can't decode the new
 /// variant index), so `MIN_PROTOCOL` stays where v23 put it: a v23
 /// client can still play, it simply never migrates.
-/// v25: the datagram fallback — `ClientMsg::NoDatagrams`,
+/// v25: the crafted bucket (SKILLS-DESIGN §13.5). No frame changed
+/// shape — the tool slot's `WIRE_EMPTY` was always encodable — but a
+/// fresh player owns NO tool until the first vessel is crafted, and an
+/// older client assumes the bucket into every hand: it draws one, casts
+/// the scoop ray with it, and sends Collects the server refuses forever.
+/// The v22 class of break — what an existing message BUYS — so the
+/// floor rises to meet it.
+/// v26: the datagram fallback — `ClientMsg::NoDatagrams`,
 /// `ClientMsg::Unreliable` and `ServerMsg::Unreliable` appended, so a
 /// browser whose WebTransport has no datagram channel can carry its
 /// snapshots and inputs on the reliable stream instead. Three ordinary
-/// appends; the floor stays put, and a client that never announces the
-/// capability is byte-identical to a v24 one on the wire.
-pub const PROTOCOL_VERSION: u16 = 25;
+/// appends; the floor stays where v25 put it, and a client that never
+/// announces the capability is byte-identical to a v25 one on the wire.
+pub const PROTOCOL_VERSION: u16 = 26;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -169,8 +176,12 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// compatibility loss worth mourning there either — an older client's join
 /// token came from an unauthenticated `/api/join` that no longer exists.
 /// v24 (the legacy claim) is an ordinary append and leaves the floor where
-/// v23 put it.
-pub const MIN_PROTOCOL: u16 = 23;
+/// v23 put it. v25 (the crafted bucket) is another v22-class break: an
+/// older peer decodes everything and still plays a fresh character with a
+/// phantom bucket in hand and a scoop that never lands, so the floor
+/// rises again. v26 (the datagram fallback) is three ordinary appends and
+/// leaves it exactly there.
+pub const MIN_PROTOCOL: u16 = 25;
 
 // ---- handshake preamble ----------------------------------------------
 //

@@ -43,11 +43,17 @@ pub struct Confetti {
 }
 
 impl Confetti {
+	/// `gi_gather_bgl` is group 2 — the GI world data and the emitter
+	/// list, which the vertex shader runs the shared NEE over so a burst
+	/// beside a torch is lit by it (R34). Spray takes no such group: it
+	/// belongs to a waterfall, which is outdoor geometry lit by the sky,
+	/// while confetti is thrown wherever a player happens to level up.
 	pub fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
 		cam_light_buf: &wgpu::Buffer,
+		gi_gather_bgl: &wgpu::BindGroupLayout,
 	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -77,7 +83,7 @@ impl Confetti {
 		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("confetti"),
-			bind_group_layouts: &[Some(frame_bgl), Some(&cam_bgl)],
+			bind_group_layouts: &[Some(frame_bgl), Some(&cam_bgl), Some(gi_gather_bgl)],
 			immediate_size: 0,
 		});
 		// Depth: occluded by terrain, never occludes anything itself —
@@ -141,12 +147,23 @@ impl Confetti {
 
 	/// Draw alongside the spray billboards (same pass, frame bind group
 	/// already bound at 0). Returns triangles.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: u32) -> u32 {
+	///
+	/// `gi_gather_bg` is bound here rather than left to whatever the pass
+	/// happened to bind at 2: the water draw ahead of this one leaves the
+	/// same group there, and a pipeline whose layout matches would keep
+	/// reading it silently if that draw ever moved.
+	pub fn draw(
+		&self,
+		pass: &mut wgpu::RenderPass<'_>,
+		instances: u32,
+		gi_gather_bg: &wgpu::BindGroup,
+	) -> u32 {
 		if instances == 0 {
 			return 0;
 		}
 		pass.set_pipeline(&self.pipeline);
 		pass.set_bind_group(1, &self.cam_bg, &[]);
+		pass.set_bind_group(2, gi_gather_bg, &[]);
 		pass.set_vertex_buffer(0, self.instance_buf.slice(..));
 		pass.draw(0..6 * PARTICLES, 0..instances);
 		instances * PARTICLES * 2

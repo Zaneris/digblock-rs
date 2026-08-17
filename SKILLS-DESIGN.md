@@ -1,7 +1,9 @@
 # Skills, Essence & Ore — design document
 
 Status: **§11's M1–M7 are BUILT and merged. The document below is the design as written; where the implementation
-diverged, the code and CLAUDE.md are the authority and the divergences are listed here.**
+diverged, the code and CLAUDE.md are the authority and the divergences are listed here.** The 2026-08-16 design review
+then **compressed both content ladders into levels 1–60** (§13, which supersedes §4.3's and §5.5's ladder positions
+wherever they disagree — the thresholds themselves live in `unlock.rs` and `alchemy.rs` as always).
 
 **Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy screen · M3 level-scaled dig speed · M4 tool
 slot + Stage-A emissive + Torch · the RTGI rewrite (GI-DESIGN.md replaced LIGHT-DESIGN.md's Stage-B voxel lighting
@@ -56,22 +58,23 @@ see the bonus-line pump rule there. M3 (level-scaled dig speed, SIM v11, retuned
 with a rework of the transmute tab into §8.1's family model. M4 is HALF landed: the Stage-A emissive bit (a bit of the
 solid vertex's material word; chunk.wgsl returns fogged ink and skips sun/shadow/AO) and the Torch (ShapeKind::Torch —
 post + glowing head, hand-priced per §7.3, the LIGHTS family on the transmute tab, in the DIG_SHAPES showcase). M4's
-other half — §6's tool formalization — is landed too: tools are item-only `blocks!` rows (`Bucket`,
-`is_tool`/`always_owned`), the tool slot is PINNED to the bar's end (legacy layouts that parked it mid-bar migrate on
-decode), `Hotbar::active_tool` is the second axis riding the Layout wire's last entry (`WIRE_TOOL` = the bucket), tap-9
-on the selected tool slot cycles the owned roster, the faded rail draws once a second tool exists, and the server's
-Collect/pour gates check the active tool. A consolidation pass (2026-08-10) then landed **Stage-B voxel lighting**
-(LIGHT-DESIGN.md — torches illuminate, caves and roofed rooms go dark; §7.4 updated) and reconciled this document with
-the shipped code (§3.3 cumulative note, §4.1/§4.2 per-line-ceil ideals, §4.3's late rows, §5.3's ore ids, §10 pump-rule
-pin), then landed §5.1's **per-material dig families and the strength wall** (SIM v12, protocol v17; both retuned at SIM
-v18 — the curve rebuilt end to end and the wall re-keyed onto the dig family), and its Alchemy twin, the **craft gate**
-(SIM v13, protocol v19 — a craft-only block refuses to be dug below the Alchemy level that makes it, so a pickup can't
-route around an unlock; the planed-timber set moved down to the joinery material's own level with it, joining the bucket
-charge). M5, M6 and M7's first wave landed after that — the header above lists what each one brought. Originally fleshed
-out from the brainstorm of 2026-08-09, grounded in the code as it stood (protocol v15, SIM v10, `inventories.bin` v3).
-Every value in here is a tuning proposal, not a promise — and the values themselves now live only in the code that
-defines them (`skills.rs`, `alchemy.rs`, `unlock.rs`, `material.rs`) — but the *shapes* (which functions exist, where
-authority lives, what migrates how) are meant to be the real plan.
+other half — §6's tool formalization — is landed too: tools are item-only `blocks!` rows (`Bucket`, `is_tool`, and at
+the time `always_owned` — §13.5 has since made the bucket a craft like every other tool, and the flag went with it), the
+tool slot is PINNED to the bar's end (legacy layouts that parked it mid-bar migrate on decode), `Hotbar::active_tool` is
+the second axis riding the Layout wire's last entry (`WIRE_TOOL` = the bucket), tap-9 on the selected tool slot cycles
+the owned roster, the faded rail draws once a second tool exists, and the server's Collect/pour gates check the active
+tool. A consolidation pass (2026-08-10) then landed **Stage-B voxel lighting** (LIGHT-DESIGN.md — torches illuminate,
+caves and roofed rooms go dark; §7.4 updated) and reconciled this document with the shipped code (§3.3 cumulative note,
+§4.1/§4.2 per-line-ceil ideals, §4.3's late rows, §5.3's ore ids, §10 pump-rule pin), then landed §5.1's **per-material
+dig families and the strength wall** (SIM v12, protocol v17; both retuned at SIM v18 — the curve rebuilt end to end and
+the wall re-keyed onto the dig family), and its Alchemy twin, the **craft gate** (SIM v13, protocol v19 — a craft-only
+block refuses to be dug below the Alchemy level that makes it, so a pickup can't route around an unlock; the
+planed-timber set moved down to the joinery material's own level with it, joining the bucket charge). M5, M6 and M7's
+first wave landed after that — the header above lists what each one brought. Originally fleshed out from the brainstorm
+of 2026-08-09, grounded in the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every value in here is a
+tuning proposal, not a promise — and the values themselves now live only in the code that defines them (`skills.rs`,
+`alchemy.rs`, `unlock.rs`, `material.rs`) — but the *shapes* (which functions exist, where authority lives, what
+migrates how) are meant to be the real plan.
 
 ---
 
@@ -544,7 +547,7 @@ the last.
 (§5.3) — the first cross-skill handshake; then **Duskstone**; then **Glowvein**, arriving with the level that makes the
 **Resonant Pick** usable; and finally **Aetherock**, near the top. Past the last reveal the ladder pays in refinements
 rather than new substances: the pick's resonance deepens by a cell (§5.6), **prospector's sense** adds a faint audio
-shimmer within `unlock::PROSPECT_RANGE` of an unrevealed-tier deposit (a cadence emitter, like footsteps — audio only,
+shimmer within `unlock::prospect_range` of an unrevealed-tier deposit (a cadence emitter, like footsteps — audio only,
 no ESP overlay), and mastery at the cap adds a bonus ore to every field extraction.
 
 ### 5.6 The Resonant Pick
@@ -1088,9 +1091,11 @@ sweep.
   sees" for marginal gain.
 - **Extraction queue depth** — one slot in v1; the natural high-level QoL is a second queue slot (finish this stack,
   start that one) rather than any "extract all" button, which would hand the picking back to the screen — the thing the
-  slot model exists to avoid.
-- **Curve steepness** — the total to the cap lands well short of a RuneScape 99. If the game grows more endgame content,
-  revisit the curve's leading coefficient.
+  slot model exists to avoid. §13 schedules it as a mid-ladder Alchemy unlock (QoL-as-unlock).
+- **Curve steepness** — RESOLVED by §13: the curve is **frozen forever**. Level is derived from stored XP, so steepening
+  `XP_TO_NEXT` would retroactively lower every existing character's levels — a betrayal no retune is worth. Pacing is
+  tuned on the AWARD side (`dig_xp`, `convert_xp`, `ore_field_xp` — which only slow future earning) and by where
+  thresholds sit, never by repricing levels.
 - **Glass render class.** `Translucent` currently means the specialized water pass (surface payloads, its own sorting
   story); glass through that pass is unproven. Safer v1: `Cutout` with a framed/latticed texture that reads as glass
   without per-pixel alpha blending; upgrade to true translucency when the render question is answered on its own terms.
@@ -1101,3 +1106,145 @@ sweep.
   variant like slab anchors when wanted.
 - **Stage B lighting** — RESOLVED: landed as LIGHT-DESIGN.md (blocklight + skylight, §7.4). M5's ore-seam glitter still
   uses only the Stage-A ink bit, as designed.
+
+## 13. The 1–60 compression (design review, 2026-08-16)
+
+A full design review (progression cadence, economy, theme fit against "RuneScape-y in a voxel world") restructured both
+ladders: **everything the game currently offers, and everything §7.2 still plans, lives in levels 1–60.** The cap stays
+where it was; the stretch above the content is deliberately empty headroom that future expansion waves fill, and players
+may bank levels into it ahead of the content — a wave that lands at 62 pays out instantly to whoever already climbed
+there. Two companion documents came out of the same review: `DELVE-DESIGN.md` (underground dungeons, hazards, the
+Delving skill) and `SOCIAL-DESIGN.md` (hiscores, mastery items, claims, trade).
+
+### 13.1 Why compress
+
+The review's verdict, in brief. What works and stays the constitution: the no-RNG threshold philosophy (a guaranteed,
+visible, dated reward is the competence-respecting version of loot — self-determination theory's reading — and the
+goal-gradient effect works *better* when the distance to the next threshold is exact), the material × shape grid as a
+content multiplier, the cross-skill handshakes (siphon before the first reveal, the pick's two-skill gate), and
+design-as-tests. What failed: reward cadence collapsed exactly where the curve turns expensive. The curve doubles every
+ten levels, so the old ladder's long empty stretches (Mining's nineteen-level gap between the pick and the last reveal
+was the worst) sat precisely where each level costs the most — flow theory's boredom channel, challenge rising while
+novelty flatlines. Meanwhile fanfares that celebrated non-events (a door shape years before any door, a metal dig gate
+for a block no one at that level could own) taught players to discount fanfares, and the endgame's best essence loops
+had regressed to farming first-rung blocks.
+
+Compression fixes cadence without touching the curve: with the same thresholds packed into 1–60, the longest quiet
+stretch in the content range is a handful of levels, and the priciest unlocks sit at the top of the range where the
+curve has already doubled twice — threshold *placement* doing the pacing work that the curve must not.
+
+### 13.2 What moved (landed with the review)
+
+The authority is `unlock.rs` / `alchemy.rs`; this list records the *decisions*, not the numbers:
+
+- **Every material, reveal, functional item and bonus line was remapped into 1–60.** Roughly: the first fifteen levels
+  kept their shape (they were already dense), and everything above compressed by about half, nudged so that cross-skill
+  pairs land together and no two events collide. The pinned `unlock_levels_are_the_threshold_levels` lists are the
+  remapped ladders.
+- **The door shape now lands WITH the first door-bearing material** (`shape` and `material` agree), so the shape fanfare
+  and the first craftable door are one event. The old gap was the review's canonical "celebrated non-event".
+- **The Metal and Crystal strength gates equal their materials' own craft levels** (`mine_material` mirrors `material`,
+  pinned in `the_strength_wall_is_the_dig_family`). A strength gate below the craft level was provably dead weight —
+  `pickup` already refuses the drop — and its fanfare celebrated a block the player could not obtain.
+- **The prospector's sense grew a second rank** (`prospect_range`): it arrives faint just past the first reveal and
+  sharpens in the stretch before the deepest one. Both ranks are manufactured near-goals — the sense literally tells the
+  player "something is within reach" during the levels that otherwise have no threshold in sight.
+- **Ore mastery crowns the content ladder, not the cap** (`ore_mastery`): the last reveal's stretch ends at mastery, and
+  the level-cap line above it belongs to the tail policy below.
+- **The endgame Aether bonus lines moved onto the deep tiers' spent rock** (`bonus_lines` on DepletedGlowvein and
+  DepletedAetherock — "the spent stone's whisper"). The old lines sat on gravel and pine leaves, so the optimal
+  top-of-ladder loop was farming blocks a novice digs; spent deep rock is what a late-game miner's hands are already
+  full of, so the apex reward now attaches to the apex verb. Pump-clean by construction: spent rock is only ever written
+  by a siphon draw, drops itself, and nothing craftable drops into it. Gravel keeps its mid-ladder Metal line.
+- **The bench pace steps and the waste clamp compressed with everything else**, and the waste clamp's dip now lands just
+  past where the catalog tops out — announced in the teasers rather than silent, which it was.
+
+### 13.3 The tail policy
+
+The stretch between the content's top and the cap is **near-empty on purpose**, and the three things in it are each
+there by decision:
+
+- **The linear efficiency and waste curves keep running to the cap** (`scaled_yield`, `waste_permille`), so every
+  post-content level still pays a small, real, announced gain. The level-up feed should say so (the character screen's
+  efficiency readout is the surface for it).
+- **The pick's full plane stays deep in the tail** (`pick_cells`' last rank, and the carried-light step that rides it) —
+  the owner's one deliberate exception to the squish: a single long-haul functional goal out past the catalog,
+  RuneScape's "the last stretch carries the prestige" in one unlock.
+- **The Master's Sigil stays at the cap.** It does nothing, it costs everything, and that is the point — it is the
+  skillcape. Giving it a function would make it a tool with a price rather than a trophy.
+
+Future waves land IN the tail (and new early content squeezes into 1–60's remaining seams). A player who banked levels
+cashes them in the moment a wave lands; that is accepted, and it is also the retention argument — the tail is a promise
+that the climb will keep paying.
+
+### 13.4 Pacing (the workstream)
+
+Progression is currently faster than intended, and compression packs more into fewer levels. The standing rules:
+
+- **The curve is frozen** (§12's steepness question, resolved). Pacing levers, in preference order: the award tables
+  (`dig_xp`, `extract_worth`/`convert_xp`, `ore_field_xp` — `dig_xp`'s scale-down has now been halved twice, with
+  foliage and the torch zeroed by name, while the field table deliberately held still), the depth multiplier's ceiling,
+  `PICK_EXTRA_PERMILLE`, and the bench pace (a slower bench is slower Alchemy XP/hour without touching an award). All
+  award-side: they slow future earning and deflate nobody.
+- **The dig-to-vein gap is the design, not a drift.** Both halvings widened how far a field draw out-pays a plain dig,
+  and that ratio is DELIBERATE: finding ore should feel rewarding — digging is the road, veins are the pay. A future
+  balance pass may move either table, but it may not "correct" the gap toward parity; a vein that pays like rock makes
+  the reveal levels mean nothing.
+- **The background bench.** Alchemy's slowdown came as a pair, and the pair is the design: the bench pace quadrupled AND
+  the bench keeps working with its screen closed — a job runs while you play, only leaving the world abandons it, and
+  `hud::bench_tell` keeps the working bench visible. One without the other fails: a 4× pace attended is idle time, and a
+  background bench at the old pace is free levels. Because XP-per-bench-tick is a constant by construction (pace and
+  award both derive from the op's worth), the passive rate is ONE legible number to tune. It runs only while IN a world,
+  never logged off — an offline accrual would make the pace meaningless. Bench XP also halved (`convert_xp`/`craft_xp`
+  pay half the op's worth; the worth itself is untouched, since it still drives the pace), and **foliage is the
+  deliberate exception in both directions**: zero Alchemy XP, half the slowdown, one shared predicate
+  (`BlockType::is_foliage` — the same set the dig table zeroes). The two halves of that exception must move together — a
+  floored one-point award against the concessionary pace would make shoveling leaves the best XP rate at the bench.
+  Foliage is pure economy: the Aqua and the bonus lines are what a leaf is for.
+- **Design to time budgets, then measure.** Intended bands: the first reveal inside the first session; the siphon
+  shortly after; the pick a multi-session goal; the content top a long-haul goal measured in weeks; the plane and the
+  sigil in months. These are claims about hours, so they are testable.
+- **Instrument before retuning further.** The bot harness (`just bot`, `just compose-bots`) plus the metrics rail can
+  log XP/hour per activity (surface digging, deep mining, bench extraction, crafting); findings go in the BENCH.md style
+  — dated, superseded rather than edited — so the next award retune argues from measured rates instead of feel. Balance
+  was always "a workstream, not a milestone"; this gives the workstream numbers.
+
+### 13.5 Content that fills the remaining seams (design, not built)
+
+The compressed ladder still has thin stretches, and §7.2's machinery is how they fill — each item below is a tuning
+proposal in the header's sense (the level is final only when it lands in `unlock.rs`):
+
+- **The shape wave** (each a `shapes.rs` project, cheapest geometry first): Fence ~14, Ladder ~20 (decorative first,
+  §12's physics question unchanged), Pillar ~26, Roof Wedge ~32 (must prove ramp-physics reuse), Pane ~38, Gate ~44,
+  Trapdoor ~48 (a new facing axis — hardest, last). Every shape retro-fans across owned materials on arrival, which is
+  the grid doing the content-multiplying it was built for.
+- **Grid hole fills** (a `blocks!` row + PNG each, costs derived): Glass stairs/door/pane; Crystal stairs/pillar/pane —
+  Crystal across more shapes is the repeatable Aether sink the top of the ladder wants, since its craft cost is an
+  Aether sink by construction; PolishedStone and SandstoneBrick doors; Grass and Snow slabs, which redeem the
+  currently-inert material levels (a grass-slab lawn is a genuinely wanted builder block).
+- **New functional items** (hand-priced per §7.3, payability pin applies): a Framed Window ~16 (the pre-Glass window,
+  already sketched in §7.3), a Brazier ~38 (a standing Metal-and-Flora firelight between the lantern and the
+  aetherlamp), an **Aetheric Alloy material ~52** (a mostly-Metal, some-Aether whole-block split in `material.rs` — the
+  last material, the repeatable prestige building block, and the reason Aetherock mining is standing income), a
+  Chandelier ~54 (the showpiece light, the biggest repeatable Aether sink).
+- **The second extraction queue slot ~42** (QoL-as-unlock; §12's answer, scheduled).
+- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and is the catalog's first tool, gated
+  by its price alone (Flora and Earth, at the level everyone starts at, so the opening dig-and-extract loop pays for it
+  — "make your first vessel" is the game's first craft beat). Its price carries **no Aqua** (water is how a player first
+  GETS Aqua — the siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level
+  with it, and the `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely
+  needs its own extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
+  (`Hotbar::active_tool` is an `Option`; `tool_in_hand` spells the empty hand as `Air` for the shared dig questions;
+  reconciling auto-equips the first crafted vessel). Every record written while the bucket was owned by everyone keeps
+  it via a migration grant — `inventories.bin` v7 server-side, `SAVE_REV` for local saves, with a fresh world opening AT
+  the current revision so the grant can never be a windfall.
+
+### 13.6 Beyond these ladders
+
+The review's larger findings — that the game's missing half is its *sociology* (visible, comparable achievement), and
+that the world needs a place that pushes back — are designed in the two companion documents: `SOCIAL-DESIGN.md`
+(hiscores through the master, per-skill mastery items in the sigil's mold, player claims, why trade waits) and
+`DELVE-DESIGN.md` (underground ruins that heal themselves through ordinary journaled edits, deterministic telegraphed
+hazards instead of RNG combat, the Delving skill, and the governed Aether faucet). Their sequencing lives there; the one
+ordering rule worth restating here is that the social mirror ships first, because every content hour is worth more once
+someone can see it.

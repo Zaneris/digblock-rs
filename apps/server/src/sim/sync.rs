@@ -963,7 +963,7 @@ mod tests {
 
 	/// A client whose transport has no datagram channel (iOS Safari ships
 	/// `WebTransport.datagrams` with no writable side) is served over the
-	/// reliable stream in BOTH directions — protocol v25.
+	/// reliable stream in BOTH directions — protocol v26.
 	///
 	/// Both halves matter and they are separate mechanisms: the server has
 	/// to stop aiming snapshots at a channel that is not there, and it has

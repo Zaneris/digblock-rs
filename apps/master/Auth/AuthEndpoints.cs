@@ -2,6 +2,7 @@ using System.Security.Claims;
 using DigBlock.Master.Accounts;
 using DigBlock.Master.Data;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.MicrosoftAccount;
 using Microsoft.Extensions.Options;
 
 namespace DigBlock.Master.Auth;
@@ -9,12 +10,12 @@ namespace DigBlock.Master.Auth;
 /// <summary>The browser half of sign-in.
 ///
 /// Shape, and why it is this shape: the master is the authorization server
-/// as far as the game is concerned, and the client never sees a Google or
-/// Facebook token. The client opens a browser at <c>/auth/start</c> with a
-/// redirect target, a state, and a PKCE challenge; the browser does the
-/// provider round trip here; the master bounces back to that target with a
-/// one-time code, which the client redeems for a session over its own
-/// HTTPS connection.
+/// as far as the game is concerned, and the client never sees a provider
+/// token. The client opens a browser at <c>/auth/start</c> with a redirect
+/// target, a state, and a PKCE challenge; the browser does the provider
+/// round trip here; the master bounces back to that target with a one-time
+/// code, which the client redeems for a session over its own HTTPS
+/// connection.
 ///
 /// The payoff is that adding a provider — Apple, Discord — is a change
 /// here and nowhere else. No client release, no new redirect URI to ship,
@@ -81,6 +82,31 @@ public static class AuthEndpoints
                 o.Scope.Add("public_profile");
                 o.Fields.Clear();
                 o.Fields.Add("id");
+                o.SaveTokens = false;
+                FailWithAPage(o.Events);
+            });
+        }
+        if (opts.Auth.Microsoft.Enabled)
+        {
+            auth.AddMicrosoftAccount(o =>
+            {
+                o.ClientId = opts.Auth.Microsoft.ClientId!;
+                o.ClientSecret = opts.Auth.Microsoft.ClientSecret!;
+                o.SignInScheme = ExternalScheme;
+                o.UsePkce = true;
+                // The scope is left at the handler's default — the single
+                // User.Read delegated permission — and this is the one
+                // provider where that cannot be trimmed to openid the way
+                // Google's is: the handler resolves the subject by calling
+                // Graph, and Graph refuses a token without it, so dropping
+                // the scope breaks sign-in rather than narrowing it.
+                //
+                // Narrow the RESPONSE instead. $select is Graph's spelling
+                // of Facebook's Fields above, and with it the id is the only
+                // field that ever crosses the wire; the handler's stock
+                // name/email claim actions then find nothing to map, so no
+                // PII reaches the principal, let alone the database.
+                o.UserInformationEndpoint = MicrosoftAccountDefaults.UserInformationEndpoint + "?$select=id";
                 o.SaveTokens = false;
                 FailWithAPage(o.Events);
             });
@@ -219,6 +245,9 @@ public static class AuthEndpoints
             case "facebook":
                 provider = AuthProvider.Facebook;
                 return true;
+            case "microsoft":
+                provider = AuthProvider.Microsoft;
+                return true;
             default:
                 provider = default;
                 return false;
@@ -232,6 +261,8 @@ public static class AuthEndpoints
             list.Add(("google", "Google", "Google"));
         if (opts.Auth.Facebook.Enabled)
             list.Add(("facebook", "Facebook", "Facebook"));
+        if (opts.Auth.Microsoft.Enabled)
+            list.Add(("microsoft", "Microsoft", "Microsoft"));
         return list;
     }
 }

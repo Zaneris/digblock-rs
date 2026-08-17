@@ -5,9 +5,10 @@
 # A block written top-down reads fine in the file and lists as a fragment.
 
 # A git-ignored `.env` at the repo root feeds every recipe: real OAuth
-# credentials for the local master live there (Master__Auth__Google__*),
-# never in this file or appsettings.json. Nothing breaks without one —
-# the provider is simply off and dev sign-in still works.
+# credentials for the local master live there, an id and a secret per
+# provider under `Master__Auth__`, never in this file or appsettings.json.
+# Nothing breaks without one — a provider missing either half is simply
+# off, and dev sign-in still works with none of them configured at all.
 set dotenv-load := true
 
 # The scene, capture and attribution flags are catalogued in CLAUDE.md.
@@ -59,16 +60,20 @@ master *ARGS:
 #                           replaced the registrant-supplied probeHost, which
 #                           let a caller pick the only address ever verified
 #                           (NET-AUDIT-2.md §1.3).
-# The value-less `-e` pair forwards the Google OAuth credentials from the
+# The value-less `-e` pairs forward the OAuth credentials from the
 # environment (i.e. from `.env`, via dotenv-load) into the container;
 # docker passes nothing for a variable that isn't set, so a machine with
-# no `.env` runs exactly as before.
+# no `.env` runs exactly as before — and a machine that has only some of
+# them gets exactly those providers, since a provider without credentials
+# is simply off.
 DEV_MASTER_ENV := "-e ASPNETCORE_ENVIRONMENT=Development " + \
 	"-e Master__Dev__AuthEnabled=true " + \
 	"-e Master__Probe__AllowPrivateTargets=true " + \
 	"-e Master__Dev__ProbeHostOverride=host.docker.internal " + \
 	"-e Master__Auth__Google__ClientId " + \
-	"-e Master__Auth__Google__ClientSecret"
+	"-e Master__Auth__Google__ClientSecret " + \
+	"-e Master__Auth__Microsoft__ClientId " + \
+	"-e Master__Auth__Microsoft__ClientSecret"
 
 # The play recipes bind-mount ./data/master over the image's /data volume
 # (accounts DB + data-protection keys). Without it the master's only
@@ -206,9 +211,9 @@ compose-bots PROFILE="clean":
 # recognise. Needs wasm-bindgen-cli at the exact version in Cargo.lock:
 # cargo install wasm-bindgen-cli.
 # Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr=0 ?overlay
-# ?mute, plus ?devsignin=<subject> for scripted joins (the browser sign-in
-# needs a real Google or Facebook app configured on the master, and the dev
-# master has neither).
+# ?mute, plus ?devsignin=<subject> for scripted joins, which needs no
+# provider at all — the browser sign-in offers whichever providers `.env`
+# carries credentials for, and nothing if it carries none.
 #
 # Browser client: release wasm build + bindgen + tools/serve-web.py —
 # http on loopback for this machine, https on the LAN IP for a phone on

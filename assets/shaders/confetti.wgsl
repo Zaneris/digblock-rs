@@ -9,18 +9,39 @@
 // Unlike spray, this is NOT a loop: a burst has a beginning, so every
 // particle runs its arc exactly once and the whole thing fades out.
 
-// The Frame struct + group(0) binding come from frame_common.wgsl
-// (prepended by digblock-assets).
+// The Frame struct + group(0) binding come from frame_common.wgsl, and
+// the group(2) GI world bindings + the shared NEE from gi_common.wgsl
+// (both prepended by digblock-assets). Those bindings are read in the
+// VERTEX stage here, which the gather layout has allowed since water's
+// per-vertex probe gather (R17).
 
 // RTGI camera light (gi_probe.wgsl's cam_light entry) — the same
 // argument spray.wgsl makes: a flake has no surface worth gathering at,
 // and confetti is thrown within a few blocks of somebody's head, so the
 // camera's probe ambient + traced sun is theirs.
+//
+// That argument covers BOUNCE and the sun, and it does not stretch to
+// local lights: the camera's own distance to a torch is not the flake's,
+// and a level-up is celebrated indoors as often as out. So the direct
+// term is the one thing this pass computes at the flake instead of
+// inheriting — the shared `sum_lights` over group(2)'s emitter list,
+// exactly as players do (R34).
 struct CamLight {
 	ambient: vec4f,
 	sun: vec4f,
 }
 @group(1) @binding(0) var<uniform> cam_light: CamLight;
+
+// Cost-stub mirror (DIG_STUB; renderer.rs's `stub` module owns the names
+// and the bit numbers — water.wgsl, gi_resolve.wgsl and players.wgsl are
+// the others). One bit, and it must be THIS one: an attribution run that
+// removes the NEE has to remove all of it, or what is left of the term
+// is measured as if it were the whole.
+const STUB_GINEE = 1024u;
+
+fn stubbed(bit: u32) -> bool {
+	return (u32(frame.misc.z) & bit) != 0u;
+}
 
 // Flakes per burst — keep in sync with confetti.rs PARTICLES.
 const PARTICLES: u32 = 96u;
@@ -117,10 +138,31 @@ fn vs(
 	alpha *= smoothstep(0.0, 0.06, age);
 
 	let base = PALETTE[u32(hash1(seed + 6.0) * 6.0) % 6u];
-	// Lit exactly like spray: probe ambient + traced sun, twilight fading
-	// the LIGHT and never the shadow (chunk.wgsl's rule).
+	// Lit like spray: probe ambient + traced sun, twilight fading the
+	// LIGHT and never the shadow (chunk.wgsl's rule).
 	let sh = cam_light.sun.rgb * frame.light_dir.w;
-	let col = base * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh);
+	// Plus the emitter list, because bounce and sun are the two things a
+	// cave has none of: a burst thrown beside a torch used to be a cloud
+	// of BLACK paper over a lit floor, which is R33's bug in the
+	// billboard family. Priced at the flake's CENTRE — the whole quad
+	// sits inside a fraction of a block, so one answer serves its six
+	// corners and they cannot disagree across the seam — and with the
+	// ZERO normal, since a tumbling flake has no normal that holds still
+	// and paper this thin takes light from either side.
+	//
+	// The reach gate is players' (past `gi_lateral_max` a shadow ray has
+	// no window to march), and it earns its keep here: a burst is thrown
+	// over a REMOTE player's head too, and they can be most of the sync
+	// radius away.
+	var nee = vec3f(0.0);
+	let lat = center.xz - frame.cam_pos.xz;
+	let gmax = gi_lateral_max(frame.gi_misc.x);
+	if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
+		nee = sum_lights(
+			i32(frame.gi_misc.x), frame.gi_misc.y, frame.cam_pos.xz, center, vec3f(0.0),
+		);
+	}
+	let col = base * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh + nee);
 	// The participating medium, per vertex — a flake is far smaller than
 	// the segment varies over.
 	let ray = normalize(world - frame.cam_pos.xyz);

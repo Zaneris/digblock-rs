@@ -30,6 +30,9 @@ struct MetaFile {
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 #[serde(default)]
 struct StateFile {
+	/// [`crate::SAVE_REV`] at write time; absent (0) in saves from before
+	/// revisions existed.
+	rev: u32,
 	inventory: Vec<(u16, u32)>,
 	/// Hotbar slots, core wire encoding; empty in pre-arrangement saves
 	/// (`serde(default)` keeps them parsing).
@@ -203,10 +206,14 @@ impl WorldStore for FsWorldStore {
 		}
 		let journal = Journal::open(&dir, seed).map_err(|e| format!("save unreadable: {e}"))?;
 		let edits = journal.index.iter_edits().collect();
-		let state: StateFile = std::fs::read_to_string(dir.join("state.json"))
+		let state: Option<StateFile> = std::fs::read_to_string(dir.join("state.json"))
 			.ok()
-			.and_then(|text| serde_json::from_str(&text).ok())
-			.unwrap_or_default();
+			.and_then(|text| serde_json::from_str(&text).ok());
+		// A world with no state yet is FRESH, not legacy: it reports the
+		// current revision so no migration ever fires on it. Only a state
+		// actually written by an older build reads below it.
+		let rev = state.as_ref().map_or(crate::SAVE_REV, |s| s.rev);
+		let state = state.unwrap_or_default();
 		meta.last_played_ms = now_ms();
 		if let Err(e) = Self::write_meta(&dir, &meta) {
 			log::warn!("meta stamp failed: {e}");
@@ -220,6 +227,7 @@ impl WorldStore for FsWorldStore {
 				last_played_ms: meta.last_played_ms,
 				compatible: true,
 			},
+			rev,
 			edits,
 			inventory: state.inventory.clone(),
 			hotbar: state.hotbar.clone(),
@@ -263,6 +271,7 @@ impl WorldStore for FsWorldStore {
 	) {
 		if let Some(active) = &mut self.active {
 			active.pending_state = Some(StateFile {
+				rev: crate::SAVE_REV,
 				inventory: inventory.to_vec(),
 				hotbar: hotbar.to_vec(),
 				grid: grid.to_vec(),

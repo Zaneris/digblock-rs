@@ -79,7 +79,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 6;
+const VERSION: u16 = 7;
+
+/// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN
+/// §13.5). Every record below it was written when the bucket was owned by
+/// everyone — the count machinery just never stored one — so the reader
+/// grants it, writing down the ownership the old build implied. Never a
+/// windfall: records at this version and above own exactly what their
+/// counts say, and a brand-new account starts with none. The record BODY
+/// is unchanged; the version is the grant's whole trigger.
+const FIRST_CRAFTED_BUCKET_VERSION: u16 = 7;
 
 /// The version whose records are keyed by ACCOUNT rather than by a device
 /// hash. Anything below reads wholly into the quarantine; v6 and up say
@@ -157,7 +166,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// client-chosen and join tokens were free, so a stream of join/disconnect
 /// cycles evicted every real record (NET-AUDIT-2.md §1.5). That is closed
 /// upstream now rather than here — a record needs a master account, an
-/// account needs a real Google or Facebook login, and `/api/join` is
+/// account needs a real login at a third-party provider, and `/api/join` is
 /// rate-limited per session. The cap is back to being what it says it is.
 const MAX_IDENTITIES: usize = 10_000;
 
@@ -822,10 +831,14 @@ fn read_record(
 	} else {
 		SkillSet::default()
 	};
+	let mut inventory = Inventory::from_wire(&pairs);
+	if version < FIRST_CRAFTED_BUCKET_VERSION {
+		inventory.add(digblock_core::block::BlockType::Bucket, 1);
+	}
 	Ok((
 		key,
 		PlayerRecord {
-			inventory: Inventory::from_wire(&pairs),
+			inventory,
 			layout,
 			pos,
 			last_return_tick,
@@ -1144,6 +1157,23 @@ mod tests {
 				assert_eq!((accounts, legacy), (1, 0), "v{version} is account-keyed");
 			} else {
 				assert_eq!((accounts, legacy), (0, 1), "v{version} is device-keyed");
+			}
+			// The bucket migration: a record from before the vessel was
+			// crafted owned one implicitly, and the reader writes that
+			// down; a current record owns exactly what its counts say —
+			// this fixture's says nothing.
+			let record = file
+				.accounts
+				.iter()
+				.map(|(_, r)| r)
+				.chain(file.legacy.iter().map(|(_, r)| r));
+			for r in record {
+				let owned = r.inventory.count(digblock_core::block::BlockType::Bucket);
+				if version < FIRST_CRAFTED_BUCKET_VERSION {
+					assert_eq!(owned, 1, "v{version} records keep their bucket");
+				} else {
+					assert_eq!(owned, 0, "v{version} records own what they stored");
+				}
 			}
 		}
 	}

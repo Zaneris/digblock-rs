@@ -8,6 +8,7 @@ public enum AuthProvider
 {
     Google = 1,
     Facebook = 2,
+    Microsoft = 3,
 }
 
 /// <summary>Why a session stopped working. Recorded because only ONE of
@@ -97,7 +98,8 @@ public sealed class ProviderLink
     public AuthProvider Provider { get; set; }
 
     /// <summary>The provider's stable subject claim (Google <c>sub</c>,
-    /// Facebook <c>id</c>). Unique per provider — this pair IS the login.</summary>
+    /// Facebook <c>id</c>, Microsoft Graph <c>id</c>). Unique per provider —
+    /// this pair IS the login.</summary>
     public string Subject { get; set; } = "";
 
     public DateTimeOffset LinkedUtc { get; set; }

@@ -304,7 +304,7 @@ pub enum ClientMsg {
 	/// This client's transport has no datagram channel: its unreliable
 	/// traffic will arrive as [`ClientMsg::Unreliable`] on this stream,
 	/// and the server must answer in kind ([`ServerMsg::Unreliable`]).
-	/// Appended in v25.
+	/// Appended in v26.
 	///
 	/// Sent once per connection, immediately after `Hello`, by a client
 	/// whose transport says so — today only iOS Safari, whose
@@ -320,7 +320,7 @@ pub enum ClientMsg {
 	/// the client happened to say something.
 	NoDatagrams,
 	/// One datagram that could not travel as one: the encoded
-	/// [`Datagram`] payload, verbatim. Appended in v25.
+	/// [`Datagram`] payload, verbatim. Appended in v26.
 	///
 	/// The payload is bit-identical to what the datagram would have
 	/// carried, so both ends decode it through exactly the same path —
@@ -547,7 +547,7 @@ pub enum ServerMsg {
 	/// Appended in v20.
 	AreaReady,
 	/// A snapshot for a client that announced [`ClientMsg::NoDatagrams`]:
-	/// the encoded [`Datagram`] payload, verbatim. Appended in v25.
+	/// the encoded [`Datagram`] payload, verbatim. Appended in v26.
 	///
 	/// Sent only to such a client, and dropped on a full outbound queue
 	/// exactly as the datagram it stands in for would be — a snapshot

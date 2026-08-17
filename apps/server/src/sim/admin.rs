@@ -31,6 +31,10 @@ const COMMANDS: &[(&str, &str)] = &[
 		"/give <name> <essence> [n]",
 		"credit essence stocks: flora, earth, aqua, metal or aether; n defaults to one",
 	),
+	(
+		"/reset <name>",
+		"testing: zero an online player's skills and wipe their inventory, tools included",
+	),
 	("/ban <name>", "ban an online player by IP and kick them"),
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
@@ -174,6 +178,7 @@ impl Sim {
 			"/time" => self.cmd_time(conn_id, &args),
 			"/bring" => self.cmd_bring(conn_id, &args),
 			"/give" => self.cmd_give(conn_id, &args),
+			"/reset" => self.cmd_reset(conn_id, &args),
 			"/ban" => self.cmd_ban(conn_id, &args),
 			"/ban-list" => self.cmd_ban_list(conn_id),
 			"/unban" => self.cmd_unban(conn_id, &args),
@@ -557,6 +562,65 @@ impl Sim {
 		self.reply(conn_id, &format!("time set to {h:02}:{m:02}"));
 	}
 
+	/// `/reset` — the testing lever: a named player back to minute one.
+	/// Zeroes both skills and empties the inventory — essence, blocks and
+	/// every tool, the bucket included — so the fresh-player opening (a
+	/// bare tool slot, the first vessel as the first craft) can be walked
+	/// on a live server without minting a new account. The wire needs
+	/// only the standing machinery: a full `Skills` sync, which the
+	/// client adopts wholesale and re-syncs the ore reveal from (a level
+	/// DROP un-reveals veins exactly as joining at that level would), and
+	/// the `InventoryFull` rebase — both ends run the same
+	/// `reconcile_layout` over the zeroed counts, so every slot sweeps
+	/// and the tool slot goes bare with no Layout frame needed. The
+	/// persisted record follows the live state on its next write, as it
+	/// does for every other change.
+	fn cmd_reset(&mut self, conn_id: u64, args: &[&str]) {
+		let usage = "usage: /reset <name>";
+		let [name] = args else {
+			return self.reply(conn_id, usage);
+		};
+		// Resetting yourself is the ordinary case, as with /give: the
+		// tester wiping their own character is what the command is FOR.
+		let target = match self.find_live_player(name) {
+			Ok(id) => id,
+			Err(msg) => return self.reply(conn_id, &msg),
+		};
+		let target_name = {
+			let Some(client) = self.clients.get_mut(&target) else {
+				return;
+			};
+			client.skills = digblock_core::skills::SkillSet::default();
+			client.inventory = digblock_core::inventory::Inventory::default();
+			// A wiped hold has nothing left to complete against.
+			client.digging = None;
+			digblock_core::inv_grid::reconcile_layout(
+				&client.inventory,
+				&mut client.hotbar,
+				&mut client.grid,
+			);
+			client_send(
+				client,
+				&ServerMsg::Skills {
+					xp: client.skills.to_wire(),
+				},
+			);
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
+			client.name.clone()
+		};
+		if let Some(admin) = self.clients.get(&conn_id) {
+			log::info!("admin {} reset {target_name}", admin.name);
+		}
+		if target != conn_id {
+			self.reply(target, "your skills and inventory were reset");
+		}
+		self.reply(
+			conn_id,
+			&format!("reset {target_name} - skills zeroed, inventory wiped"),
+		);
+	}
+
 	fn cmd_ban(&mut self, conn_id: u64, args: &[&str]) {
 		let [name] = args else {
 			return self.reply(conn_id, "usage: /ban <name>");
@@ -763,6 +827,74 @@ mod tests {
 				.iter()
 				.any(|m| matches!(m, ServerMsg::AdminCommands { .. }))
 		);
+	}
+
+	/// `/reset` walks a levelled, stocked player back to minute one:
+	/// skills zeroed and re-synced wholesale (the client re-reveals ore
+	/// from a `Skills` frame, so a level drop un-reveals), every count
+	/// wiped — the crafted bucket included, which is the point: the
+	/// fresh-player opening can be walked without minting an account —
+	/// and the layout swept by the same reconcile both ends run.
+	#[test]
+	fn reset_returns_a_player_to_minute_one() {
+		use digblock_core::block::{BlockType, Essence};
+		use digblock_core::skills::Skill;
+		let mut sim = admin_sim("reset");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
+		let mut guest = connect_named(&mut sim, 2, "guest");
+		wait_live(&mut sim, 1);
+		wait_live(&mut sim, 2);
+		// A character worth resetting: a level, stocks, blocks, a tool.
+		sim.bench_set_mining_level(2, 33);
+		sim.test_grant(2, BlockType::Dirt, 5);
+		sim.bench_set_active_tool(2, BlockType::Bucket);
+		sim.tick_once(vec![chat(1, "/give guest aether 7")]);
+		assert!(sim.test_mining_level(2) > 1 && sim.test_sub_count(2, Essence::Aether) == 7);
+		admin.drain();
+		guest.drain();
+
+		sim.tick_once(vec![chat(1, "/reset guest")]);
+		assert_eq!(sim.test_mining_level(2), 1, "skills zeroed");
+		assert_eq!(sim.test_skill_xp(2, Skill::Mining), 0);
+		assert_eq!(sim.test_inventory_count(2, BlockType::Dirt), 0);
+		assert_eq!(sim.test_sub_count(2, Essence::Aether), 0);
+		assert_eq!(
+			sim.test_inventory_count(2, BlockType::Bucket),
+			0,
+			"the vessel is wiped with everything else"
+		);
+		guest.drain();
+		assert!(
+			guest
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::Skills { xp } if xp.is_empty())),
+			"the target's client is re-synced to the bottom of the curve"
+		);
+		assert!(
+			guest
+				.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::InventoryFull { counts } if counts.is_empty())),
+			"the standing rebase carries the wipe"
+		);
+		assert!(
+			server_lines(&guest).iter().any(|t| t.contains("reset")),
+			"the target was told"
+		);
+
+		// The admin can reset themselves — the ordinary testing loop —
+		// and nonsense is refused with the usage line.
+		sim.test_grant(1, BlockType::Stone, 3);
+		sim.tick_once(vec![chat(1, "/reset boss")]);
+		assert_eq!(sim.test_inventory_count(1, BlockType::Stone), 0);
+		admin.drain();
+		sim.tick_once(vec![chat(1, "/reset")]);
+		sim.tick_once(vec![chat(1, "/reset nobody")]);
+		admin.drain();
+		let lines = server_lines(&admin);
+		assert!(lines.iter().any(|t| t.contains("usage:")), "{lines:?}");
+		assert!(lines.iter().any(|t| t.contains("not online")), "{lines:?}");
 	}
 
 	/// `/give` credits the TARGET and rebases them, and every essence is

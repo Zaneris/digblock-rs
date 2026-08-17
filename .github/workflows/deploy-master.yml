@@ -33,17 +33,17 @@
 # The app pins the rollback journal to DELETE for the same reason (WAL does
 # not work over SMB); that part is in code, not configuration.
 #
-# SECRETS — the Google and Facebook OAuth credentials are Container App
-# secrets surfaced as Master__Auth__Google__ClientId / __ClientSecret (and
-# __Facebook__), never appsettings.json. A provider with no credentials
+# SECRETS — the OAuth credentials are Container App secrets surfaced as
+# Master__Auth__Google__ClientId / __ClientSecret (and __Facebook__,
+# __Microsoft__), never appsettings.json. A provider with no credentials
 # configured is simply off: its button never renders. That is how Facebook
-# ships dark until its App Review clears — and, with NEITHER configured,
-# how a fresh master admits nobody at all, since joining needs an account.
+# ships dark until its App Review clears — and, with NONE configured, how
+# a fresh master admits nobody at all, since joining needs an account.
 #
 # The redirect URI to register with the provider is /signin-google (and
-# /signin-facebook) on this host — ASP.NET's default callback path, which
-# the app does not override. A mismatch surfaces only as the provider's
-# own redirect_uri_mismatch, with nothing in our logs.
+# /signin-facebook, /signin-microsoft) on this host — ASP.NET's default
+# callback path, which the app does not override. A mismatch surfaces only
+# as the provider's own redirect_uri_mismatch, with nothing in our logs.
 #
 # Those are the only settings sign-in needs. The clients' redirect targets
 # need no configuration at all: desktop uses loopback (matched by shape)

@@ -3,10 +3,11 @@
 //!
 //! The shape, and why: the game opens the system browser at the master's
 //! sign-in page with a redirect back to a loopback port we are listening
-//! on. The browser does Google or Facebook; the master bounces back to
-//! `http://127.0.0.1:<port>/cb?code=…&state=…`; we redeem that code over
-//! our own HTTPS connection for a session token. The client never handles
-//! a provider token, and the master never handles our verifier.
+//! on. The browser does whichever provider the player picked; the master
+//! bounces back to `http://127.0.0.1:<port>/cb?code=…&state=…`; we redeem
+//! that code over our own HTTPS connection for a session token. The client
+//! never handles a provider token, and the master never handles our
+//! verifier.
 //!
 //! Two secrets guard the hop the browser makes, because a URL is the least
 //! private thing on a machine — it lands in history, in logs, sometimes in

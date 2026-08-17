@@ -49,6 +49,9 @@ struct MetaEntry {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 #[serde(default)]
 struct StateFile {
+	/// `digblock_persist::SAVE_REV` at write time; absent (0) in saves
+	/// from before revisions existed.
+	rev: u32,
 	inventory: Vec<(u16, u32)>,
 	/// Hotbar slots, core wire encoding; empty in pre-arrangement saves.
 	hotbar: Vec<u16>,
@@ -404,12 +407,15 @@ impl WorldStore for LocalStorageWorldStore {
 			}
 			Err(e) => return Err(format!("save unreadable: {e}")),
 		};
-		let state: StateFile = self
+		let state: Option<StateFile> = self
 			.storage
 			.as_ref()
 			.and_then(|s| s.get_item(&Self::state_key(id)).ok().flatten())
-			.and_then(|text| serde_json::from_str(&text).ok())
-			.unwrap_or_default();
+			.and_then(|text| serde_json::from_str(&text).ok());
+		// A world with no state yet is FRESH, not legacy: it reports the
+		// current revision so no migration ever fires on it.
+		let rev = state.as_ref().map_or(digblock_persist::SAVE_REV, |s| s.rev);
+		let state = state.unwrap_or_default();
 		self.stamp_last_played(id);
 		self.active = Some(Active {
 			id: id.to_string(),
@@ -428,6 +434,7 @@ impl WorldStore for LocalStorageWorldStore {
 				last_played_ms: entry.last_played_ms,
 				compatible: true,
 			},
+			rev,
 			edits,
 			inventory: state.inventory,
 			hotbar: state.hotbar,
@@ -457,6 +464,7 @@ impl WorldStore for LocalStorageWorldStore {
 	) {
 		if let Some(active) = &mut self.active {
 			active.pending_state = Some(StateFile {
+				rev: digblock_persist::SAVE_REV,
 				inventory: inventory.to_vec(),
 				hotbar: hotbar.to_vec(),
 				grid: grid.to_vec(),
