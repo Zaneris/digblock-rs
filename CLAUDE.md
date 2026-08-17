@@ -15,7 +15,13 @@ re-litigating a decision or rebuilding something:
 - `GI-DESIGN.md` — lighting: data model, pass order, tuned constants, release notes R8–R25, and an honest "What is NOT
   built" list.
 - `BENCH.md` — every perf measurement, including the ones that refuted a hypothesis.
-- `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones.
+- `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones; §13 is the 1–60 content
+  compression (the ladders' current shape, the tail policy, the pacing workstream, and the planned content waves).
+- `DELVE-DESIGN.md` — design-only: underground dungeons whose fabric heals through ordinary journaled edits (never
+  un-edits — the ore anti-dupe's monotone edited-bit survives untouched), deterministic telegraphed hazards, the
+  attunement verb, health/death, the Delving skill, and the governed Aether faucet.
+- `SOCIAL-DESIGN.md` — design-only: hiscores via the master, mastery held-items in the sigil's mold, player claims on
+  the protect.rs predicate, and why trade waits for skill specialization.
 - `AUTH-DESIGN.md` — accounts, sign-in, and the master's trust model: the identity model, the OAuth flows, the
   registration algorithm and why the probe order is what it is, the pre-account character migration (§6, including what
   the claim key is worth to a hostile operator), and an honest "what is NOT built" list.
@@ -1069,15 +1075,16 @@ Three rules bite if broken:
   protocol v21). An extraction is TIMED as the ore (`ore::dig_block`), writes the tier's own spent rock
   (`ore::spent_rock`) rather than air, pays both skills (`skills::ore_field_xp`), and shows no crack.
 - **Glowvein carries the first Aether, and the middle tier TRACES it.** Every Aether in the game used to sit past the
-  Resonant Pick — the deepest tier reveals near the cap, the pine-resin and loose-rock bonus lines land high on the
-  Alchemy ladder, and Crystal is a craft-only SINK rather than a source — so the pick was unlocked and unbuildable for a
-  long stretch. Glowvein's own Aether line closes that without moving a threshold, because it reveals at exactly the
-  level the pick's wider swing opens at. Beside it, `ore::traces_aether` gives a share of Duskstone's cells a unit of
-  Aether: a RATE and not a yield line, since the finest an essence split can be cut is a whole unit and one per draw is
-  far more than a middle-tier seam is worth. It is derived from the cell and the world seed exactly as the deposit is —
-  never rolled — which is what lets `alchemy::field_yield` own it and still be one answer for the server, the offline
-  arm and a rejoin years later. The pin is `every_functional_price_has_a_source_at_its_own_level` and it counts only
-  what a tier pays RELIABLY: a price payable when the hash smiles is not payable.
+  Resonant Pick — the deepest tier revealed far above the pick's own gate, the foliage and loose-rock bonus lines sat
+  high on the Alchemy ladder, and Crystal is a craft-only SINK rather than a source — so the pick was unlocked and
+  unbuildable for a long stretch. Glowvein's own Aether line closes that without a threshold of its own, because it
+  reveals at exactly the level the pick's wider swing opens at. Beside it, `ore::traces_aether` gives a share of
+  Duskstone's cells a unit of Aether: a RATE and not a yield line, since the finest an essence split can be cut is a
+  whole unit and one per draw is far more than a middle-tier seam is worth. It is derived from the cell and the world
+  seed exactly as the deposit is — never rolled — which is what lets `alchemy::field_yield` own it and still be one
+  answer for the server, the offline arm and a rejoin years later. The pin is
+  `every_functional_price_has_a_source_at_its_own_level` and it counts only what a tier pays RELIABLY: a price payable
+  when the hash smiles is not payable.
 - **A vein is world geometry and never an item.** The siphon draws the seam out where it stands: it credits ESSENCE
   (`alchemy::field_yield` — the ore's ordinary bench yield, so the Alchemy level scales a field draw exactly as it
   scales the bench, with Mining's capstone multiplying the whole split rather than a line of it), and what a player can
