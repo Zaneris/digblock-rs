@@ -59,16 +59,20 @@ master *ARGS:
 #                           replaced the registrant-supplied probeHost, which
 #                           let a caller pick the only address ever verified
 #                           (NET-AUDIT-2.md §1.3).
-# The value-less `-e` pair forwards the Google OAuth credentials from the
+# The value-less `-e` pairs forward the OAuth credentials from the
 # environment (i.e. from `.env`, via dotenv-load) into the container;
 # docker passes nothing for a variable that isn't set, so a machine with
-# no `.env` runs exactly as before.
+# no `.env` runs exactly as before — and a machine that has only some of
+# them gets exactly those providers, since a provider without credentials
+# is simply off.
 DEV_MASTER_ENV := "-e ASPNETCORE_ENVIRONMENT=Development " + \
 	"-e Master__Dev__AuthEnabled=true " + \
 	"-e Master__Probe__AllowPrivateTargets=true " + \
 	"-e Master__Dev__ProbeHostOverride=host.docker.internal " + \
 	"-e Master__Auth__Google__ClientId " + \
-	"-e Master__Auth__Google__ClientSecret"
+	"-e Master__Auth__Google__ClientSecret " + \
+	"-e Master__Auth__Microsoft__ClientId " + \
+	"-e Master__Auth__Microsoft__ClientSecret"
 
 # The play recipes bind-mount ./data/master over the image's /data volume
 # (accounts DB + data-protection keys). Without it the master's only
