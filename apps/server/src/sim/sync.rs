@@ -363,8 +363,9 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 
 #[cfg(test)]
 mod tests {
-	use super::super::Sim;
 	use super::super::harness::*;
+	use super::super::{Sim, column_of};
+	use digblock_core::chunk::CHUNK_SIZE;
 	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
 	use glam::Vec3;
@@ -826,11 +827,48 @@ mod tests {
 			"near remote present"
 		);
 
-		// B walks away far beyond A's draw distance plus slack.
+		// B walks away, out past A's draw distance rather than onto its edge.
 		// Server-authoritative movement: forward inputs, never-adopted
 		// claims, so the sim's own physics carries B.
-		for t in (100..).take(1500) {
-			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 2)]);
+		//
+		// A DISTANCE goal, never a tick budget. The two clocks here are
+		// unrelated — this loop advances world time as fast as the host
+		// will run it, while the ground ahead of B is laid down by a
+		// worker on the wall clock — so a fixed tick count measures the
+		// GENERATOR: on a loaded host B was left standing at the frontier,
+		// stopped dead on a column boundary still well inside A's radius,
+		// and the test failed for a reason it is not about. Hold with a
+		// stop input while the ground ahead is missing, exactly as the
+		// fluid walk above does, and yield the core while holding so the
+		// worker can lay the next column. Both clients drain every tick:
+		// the walk is now as long as it needs to be, and an undrained
+		// snapshot queue reaches `OUT_CAP` and trips the stall drop.
+		let ahead_ready = |sim: &Sim| {
+			let (cx, cz) = column_of(sim.test_player(2).expect("B still connected").pos);
+			let mid = CHUNK_SIZE as i32 / 2;
+			sim.test_block_at(
+				cx * CHUNK_SIZE as i32 + mid,
+				0,
+				(cz + 1) * CHUNK_SIZE as i32 + mid,
+			)
+			.is_some()
+		};
+		let goal = ((JOIN_DRAW_DIST + 2) * CHUNK_SIZE as i32) as f32;
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+		let mut t = 100;
+		while sim.test_player(2).expect("B still connected").pos.z < goal {
+			assert!(
+				std::time::Instant::now() < deadline,
+				"B never walked clear of A's radius"
+			);
+			let go = ahead_ready(&sim);
+			if !go {
+				std::thread::sleep(std::time::Duration::from_millis(1));
+			}
+			sim.tick_once(vec![batch(vec![input(t, go, no_claim())], 2)]);
+			t += 1;
+			a.drain();
+			b.drain();
 		}
 		a.drain();
 		a.snaps.clear();

@@ -218,6 +218,14 @@ pub(crate) fn connect_named_as(
 	c
 }
 
+/// The draw distance every harness join asks for, in columns.
+///
+/// Named because tests reason against it: a test about interest radii has
+/// to know how far "out of range" is, and one that walks a player past it
+/// has to know when to stop. Deliberately small — the sim generates every
+/// column inside it before a client goes live.
+pub(crate) const JOIN_DRAW_DIST: i32 = 4;
+
 /// Like `connect` but without asserting the handshake succeeded — for
 /// tests exercising refusals.
 pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, account: AccountId) -> TestClient {
@@ -244,7 +252,7 @@ pub(crate) fn try_connect_as(
 			msg: ClientMsg::Hello {
 				protocol: PROTOCOL_VERSION,
 				name: name.into(),
-				draw_dist: 4,
+				draw_dist: JOIN_DRAW_DIST,
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "test".into(),
