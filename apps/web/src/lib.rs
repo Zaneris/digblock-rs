@@ -204,13 +204,12 @@ async fn boot() -> Result<(), JsValue> {
 			digblock_render::settings::UI_SCALE_MAX,
 		);
 	}
-	// The menu's Fullscreen row, only where the API actually exists (it
-	// does not on iPhone Safari below the version that added element
-	// fullscreen — the row simply stays hidden there).
-	config.fullscreen_button = interactive
-		&& web_sys::window()
-			.and_then(|w| w.document())
-			.is_some_and(|d| d.fullscreen_enabled());
+	// The menu's Fullscreen row, only where the API actually exists — the
+	// shell owns that question, since the shell is what has to act on the
+	// answer. iPhone Safari has neither spelling of the API for most of its
+	// history: the row stays hidden there and an installed home-screen web
+	// app is that platform's fullscreen (see index.html).
+	config.fullscreen_button = interactive && digblock_platform::fullscreen_available();
 	config.overlay = flag(&params, "overlay");
 	// Chunk jobs run in Web Workers when the machine has cores to spare
 	// (jobs.rs); `?workers=N` overrides for A/B, and 0 is the pre-pool

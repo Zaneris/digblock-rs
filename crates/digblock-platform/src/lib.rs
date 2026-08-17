@@ -24,6 +24,12 @@ pub use input::{InputEvent, Key, MouseButton, TouchPhase};
 // synchronous stretch (the loading overlay's whole reason to exist).
 #[cfg(target_arch = "wasm32")]
 pub use app::yield_to_browser;
+// Whether the menu should offer its Fullscreen row. The shell owns the
+// answer because the shell is what would have to act on it — the two
+// spellings of the Fullscreen API are checked once, here, rather than
+// probed by the launcher and toggled by the shell against different names.
+#[cfg(target_arch = "wasm32")]
+pub use app::fullscreen_available;
 
 use std::path::PathBuf;
 

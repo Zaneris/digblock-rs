@@ -623,6 +623,40 @@ impl<G: Game> App<G> {
 		self.state = AppState::WaitingForGpu { window };
 	}
 
+	/// Re-read the window and reconfigure if it has resized since
+	/// [`init_gpu`] measured it. Runs at every hand-off from an async GPU
+	/// init, which is the whole window in which that can happen.
+	///
+	/// On the web the two routinely disagree. A freshly created canvas
+	/// reports 0×0 — winit fills its size in from a `ResizeObserver`, which
+	/// first fires at the browser's next rendering step — so an async init
+	/// that beats that callback configures the surface at the `max(1)`
+	/// floor. The `Resized` that follows arrives while the app is still
+	/// `WaitingForGpu` and is dropped there, and winit only sends one when
+	/// the size CHANGES: the next one comes with the device's next real
+	/// resize. That is a phone rendering into one stretched pixel until it
+	/// is turned sideways.
+	fn adopt_window_size(
+		window: &Window,
+		gpu: &Gpu,
+		surface: &wgpu::Surface<'static>,
+		config: &mut wgpu::SurfaceConfiguration,
+	) {
+		let size = window.inner_size();
+		let (width, height) = (size.width.max(1), size.height.max(1));
+		if (width, height) == (config.width, config.height) {
+			return;
+		}
+		log::info!(
+			"window resized during gpu init ({}x{} -> {width}x{height}) — reconfiguring",
+			config.width,
+			config.height,
+		);
+		config.width = width;
+		config.height = height;
+		surface.configure(&gpu.device, config);
+	}
+
 	/// Shared post-GPU tail of the first init: native `init_all` calls it
 	/// synchronously, the wasm path from `user_event`.
 	fn finish_init(
@@ -630,10 +664,11 @@ impl<G: Game> App<G> {
 		window: Arc<Window>,
 		gpu: Gpu,
 		surface: wgpu::Surface<'static>,
-		config: wgpu::SurfaceConfiguration,
+		mut config: wgpu::SurfaceConfiguration,
 		el: &ActiveEventLoop,
 	) {
 		Self::register_device_callbacks(&gpu.device, &self.device_lost);
+		Self::adopt_window_size(&window, &gpu, &surface, &mut config);
 		self.game.set_scale_factor(window.scale_factor() as f32);
 		self.game
 			.init(&gpu, config.format, (config.width, config.height));
@@ -661,9 +696,10 @@ impl<G: Game> App<G> {
 		window: Arc<Window>,
 		gpu: Gpu,
 		surface: wgpu::Surface<'static>,
-		config: wgpu::SurfaceConfiguration,
+		mut config: wgpu::SurfaceConfiguration,
 	) {
 		Self::register_device_callbacks(&gpu.device, &self.device_lost);
+		Self::adopt_window_size(&window, &gpu, &surface, &mut config);
 		self.game.rebuild_gpu_resources(&gpu, config.format);
 		self.game.resize(&gpu, (config.width, config.height));
 		self.lifecycle.note_rebuilt(config.format);
@@ -1152,6 +1188,50 @@ pub async fn yield_to_browser() {
 	let _ = wasm_bindgen_futures::JsFuture::from(timer).await;
 }
 
+/// A property that is present and not nullish, or `None`. Every reach into
+/// a vendor-prefixed API goes through this: the prefixed names simply do
+/// not exist on the browsers that have the standard ones, and a typed
+/// getter would throw rather than answer.
+#[cfg(target_arch = "wasm32")]
+fn prop(target: &wasm_bindgen::JsValue, name: &str) -> Option<wasm_bindgen::JsValue> {
+	js_sys::Reflect::get(target, &wasm_bindgen::JsValue::from_str(name))
+		.ok()
+		.filter(|v| !v.is_undefined() && !v.is_null())
+}
+
+/// Call a zero-argument method by name if the object has one; `false` if
+/// it does not, or if the call threw.
+#[cfg(target_arch = "wasm32")]
+fn call_method(target: &wasm_bindgen::JsValue, name: &str) -> bool {
+	use wasm_bindgen::JsCast;
+	prop(target, name)
+		.and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+		.is_some_and(|f| f.call0(target).is_ok())
+}
+
+/// Can this browser put the page fullscreen at all?
+///
+/// The unprefixed Fullscreen API first, then WebKit's prefixed one, which
+/// is the only one Safari exposed before it went unprefixed and is still
+/// what answers on some iPadOS versions. iPhone Safari has neither for
+/// most of its history — there the honest answer is `false` and the menu
+/// simply does not offer the row (an "Add to Home Screen" web app is that
+/// platform's fullscreen, and index.html declares itself capable of one).
+///
+/// The launcher asks this to decide whether to offer the row, and
+/// [`toggle_browser_fullscreen`] uses whichever half answered — so the
+/// question and the action cannot disagree about what exists.
+#[cfg(target_arch = "wasm32")]
+pub fn fullscreen_available() -> bool {
+	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+		return false;
+	};
+	if doc.fullscreen_enabled() {
+		return true;
+	}
+	prop(&doc, "webkitFullscreenEnabled").is_some_and(|v| v.as_bool().unwrap_or(false))
+}
+
 /// Toggle browser fullscreen on the whole page. Must be called inside a
 /// user gesture's own event dispatch (see `after_game_input`).
 ///
@@ -1169,13 +1249,27 @@ fn toggle_browser_fullscreen() {
 		return;
 	};
 	let orientation = window.screen().ok().map(|s| s.orientation());
-	if doc.fullscreen_element().is_some() {
+	// Both spellings on both sides of the toggle: a browser answering the
+	// prefixed `fullscreen_available` also reports its state and takes its
+	// requests under the prefixed names, and asking the standard ones
+	// there reads as "not fullscreen" forever.
+	let entered =
+		doc.fullscreen_element().is_some() || prop(&doc, "webkitFullscreenElement").is_some();
+	if entered {
 		if let Some(o) = orientation {
 			let _ = o.unlock();
 		}
-		doc.exit_fullscreen();
+		if doc.fullscreen_enabled() {
+			doc.exit_fullscreen();
+		} else {
+			call_method(&doc, "webkitExitFullscreen");
+		}
 	} else if let Some(root) = doc.document_element() {
-		let _ = root.request_fullscreen();
+		if doc.fullscreen_enabled() {
+			let _ = root.request_fullscreen();
+		} else {
+			call_method(&root, "webkitRequestFullscreen");
+		}
 		if let Some(o) = orientation {
 			wasm_bindgen_futures::spawn_local(async move {
 				yield_to_browser().await;

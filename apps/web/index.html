@@ -6,6 +6,15 @@
 	     suppress double-tap zoom heuristics (iOS ignores them for the
 	     accessibility pinch — touch-action below is the real gesture guard). -->
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+	<!-- iPhone Safari has no Fullscreen API for the menu's row to drive, so
+	     the way to play without the browser's chrome there is an installed
+	     web app: Share -> Add to Home Screen. These declare the page capable
+	     of one, and let it keep the notch area when launched that way (the
+	     same claim viewport-fit=cover makes in the tab). -->
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+	<meta name="apple-mobile-web-app-title" content="DigBlock">
+	<meta name="mobile-web-app-capable" content="yes">
 	<title>DigBlock</title>
 	<style>
 		html, body {

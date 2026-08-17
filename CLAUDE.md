@@ -724,6 +724,16 @@ loading overlay is a fixed contract with the platform layer: `digblock-gpu-ready
 before wasm instantiation begins — the double-rAF in index.html is what guarantees that on a cold mobile load, where the
 main thread never idles again until the first engine frame.
 
+**A fresh canvas reports 0×0**, which is why every async GPU init ends at `App::adopt_window_size`. winit fills the
+canvas's size in from a `ResizeObserver` that first fires at the browser's next rendering step, so an init that beats
+that callback configures the surface at the `max(1)` floor — and the `Resized` that follows lands while the app is still
+`WaitingForGpu`, where it is dropped. winit only sends one when the size CHANGES, so the next one comes with the
+device's next real resize: a phone stretching one pixel over the whole screen until it is rotated. The menu's Fullscreen
+row is the other browser-shaped hole in the same area — `fullscreen_available` (the shell, so the probe and the toggle
+cannot disagree about which spelling exists) answers for the unprefixed API and WebKit's prefixed one, and iPhone Safari
+has neither for most of its history. There the fullscreen story is an installed web app, which is what index.html's
+`apple-mobile-web-app-*` tags declare the page capable of.
+
 **Chunk jobs run in Web Workers** (`apps/web-worker` + `apps/web/src/jobs.rs`), a small default that drops to none on a
 low-core device; `?workers=N` overrides. Workers can't share linear memory, so jobs cross as bytes —
 `digblock_core::job_wire`, whose **air-chunk flag is load-bearing**: sky chunks share one `AIR_CHUNK` `Arc` recognized
@@ -740,11 +750,17 @@ stamped pairs and never gains a cacheable `.js` that can drift from the module i
 (WebGPU forbids depth32float as a copy destination); shadow taps use `textureSampleCompareLevel` (Tint's
 derivative-uniformity rule). Multiplayer: `crates/digblock-net-web` implements `NetTransport` over WebTransport with
 `serverCertificateHashes` from the master; the server's self-signed cert is short-lived, inside Chrome's cap on pinned
-certs, and rotates in-process well before it expires, re-registering so the master hands out the fresh pin.
-`apps/web/src/services.rs` is the fetch()-based `MenuServices` filler. Scripted joins go through
-`EngineConfig::auto_join`, which walks the real menu path. Screenshots, drill, and metrics CSV are native-only; `?bench`
-works here now — `?frames=N` ends the run and the summary is logged from `Game::on_exit`, because winit's exit on wasm
-unwinds through JS and `Drop` may never run, which is why `?bench` printed nothing here for so long.
+certs, and rotates in-process well before it expires, re-registering so the master hands out the fresh pin. **Every step
+of that driver names itself**, because browsers ship WebTransport in PARTS: `prop` reaches each hop by name rather than
+through a typed getter (reading `.writable` off an absent `datagrams` THROWS, and a throw inside the driver task lands
+in no `Result` at all — it unwinds out of wasm as an unhandled rejection and the session simply expires), `Connected` is
+pushed the moment the control stream is in hand so nothing after it can stop the client reporting, and a step that never
+settles is caught by a watchdog set at a fraction of `CONNECT_TIMEOUT_SECS`. The symptom all of that replaces is
+"connect timeout" beside a server log showing a session that opened and never spoke. `apps/web/src/services.rs` is the
+fetch()-based `MenuServices` filler. Scripted joins go through `EngineConfig::auto_join`, which walks the real menu
+path. Screenshots, drill, and metrics CSV are native-only; `?bench` works here now — `?frames=N` ends the run and the
+summary is logged from `Game::on_exit`, because winit's exit on wasm unwinds through JS and `Drop` may never run, which
+is why `?bench` printed nothing here for so long.
 
 Deploying: `just build-web` is the bundle, and `deploy-web.yml` runs that recipe rather than mirroring it, because the
 recipe owns a correctness invariant a copy would drift from. The glue JS and the wasm are one artifact (wasm-bindgen

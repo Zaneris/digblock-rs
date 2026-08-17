@@ -23,10 +23,12 @@ extern "C" {
 	fn ready(this: &WebTransport) -> js_sys::Promise;
 	#[wasm_bindgen(method, getter)]
 	fn closed(this: &WebTransport) -> js_sys::Promise;
-	#[wasm_bindgen(method, getter)]
-	fn datagrams(this: &WebTransport) -> WebTransportDatagramDuplexStream;
-	#[wasm_bindgen(method, js_name = createBidirectionalStream)]
-	fn create_bidirectional_stream(this: &WebTransport) -> js_sys::Promise;
+	/// `catch`, because a browser can ship the WebTransport constructor
+	/// without this method: the call then throws rather than returning a
+	/// promise that rejects, and the throw would unwind the driver task
+	/// (see `prop`).
+	#[wasm_bindgen(method, js_name = createBidirectionalStream, catch)]
+	fn create_bidirectional_stream(this: &WebTransport) -> Result<js_sys::Promise, JsValue>;
 	#[wasm_bindgen(method, catch)]
 	fn close(this: &WebTransport) -> Result<(), JsValue>;
 	/// `catch`, because `getStats` is not merely allowed to fail — it is
@@ -52,21 +54,12 @@ extern "C" {
 	#[wasm_bindgen(method, getter = smoothedRtt)]
 	fn smoothed_rtt(this: &WebTransportStats) -> JsValue;
 
-	type WebTransportDatagramDuplexStream;
-	#[wasm_bindgen(method, getter)]
-	fn readable(this: &WebTransportDatagramDuplexStream) -> ReadableStream;
-	#[wasm_bindgen(method, getter)]
-	fn writable(this: &WebTransportDatagramDuplexStream) -> WritableStream;
-
-	type WebTransportBidirectionalStream;
-	#[wasm_bindgen(method, getter)]
-	fn readable(this: &WebTransportBidirectionalStream) -> ReadableStream;
-	#[wasm_bindgen(method, getter)]
-	fn writable(this: &WebTransportBidirectionalStream) -> WritableStream;
-
 	type ReadableStream;
-	#[wasm_bindgen(method, js_name = getReader)]
-	fn get_reader(this: &ReadableStream) -> ReadableStreamDefaultReader;
+	/// `catch`, like `get_writer`: both throw on a stream that is already
+	/// locked, and a throw crossing back into wasm from the driver task
+	/// unwinds past every `Result` in it (see `prop`).
+	#[wasm_bindgen(method, js_name = getReader, catch)]
+	fn get_reader(this: &ReadableStream) -> Result<ReadableStreamDefaultReader, JsValue>;
 
 	type ReadableStreamDefaultReader;
 	#[wasm_bindgen(method)]
@@ -84,8 +77,8 @@ extern "C" {
 	fn value(this: &ReadResult) -> JsValue;
 
 	type WritableStream;
-	#[wasm_bindgen(method, js_name = getWriter)]
-	fn get_writer(this: &WritableStream) -> WritableStreamDefaultWriter;
+	#[wasm_bindgen(method, js_name = getWriter, catch)]
+	fn get_writer(this: &WritableStream) -> Result<WritableStreamDefaultWriter, JsValue>;
 
 	type WritableStreamDefaultWriter;
 	#[wasm_bindgen(method)]
@@ -177,6 +170,83 @@ fn js_reason(v: &JsValue) -> String {
 		.unwrap_or_else(|| format!("{v:?}"))
 }
 
+/// A property that is present and not nullish, or `None`.
+///
+/// Every hop through the WebTransport object graph goes through this
+/// rather than a typed getter, because a browser can implement the API in
+/// PARTS: the constructor and the session can be there while `datagrams`
+/// is `undefined`, and reading `.writable` off `undefined` throws. A throw
+/// inside the driver task lands in no `Result` at all — it unwinds out of
+/// the task and out of wasm, and surfaces as an unhandled rejection nobody
+/// is reading, so the connection simply expires at the client's connect
+/// timeout with "connect timeout" as the only evidence anything happened.
+/// That is not a diagnosis on a phone. Every step names itself instead.
+fn prop(target: &JsValue, name: &str) -> Option<JsValue> {
+	js_sys::Reflect::get(target, &JsValue::from_str(name))
+		.ok()
+		.filter(|v| !v.is_undefined() && !v.is_null())
+}
+
+/// The writable half of a duplex (a bidirectional stream, or the datagram
+/// pair), as the writer the driver needs. `what` names the duplex for the
+/// message a player sees.
+fn writer_of(duplex: &JsValue, what: &str) -> Result<WritableStreamDefaultWriter, String> {
+	prop(duplex, "writable")
+		.ok_or_else(|| format!("{what}: no writable side"))?
+		.unchecked_ref::<WritableStream>()
+		.get_writer()
+		.map_err(|e| format!("{what} writer: {}", js_reason(&e)))
+}
+
+/// The readable half of the same, as a reader for [`read_loop`].
+fn reader_of(duplex: &JsValue, what: &str) -> Result<ReadableStreamDefaultReader, String> {
+	prop(duplex, "readable")
+		.ok_or_else(|| format!("{what}: no readable side"))?
+		.unchecked_ref::<ReadableStream>()
+		.get_reader()
+		.map_err(|e| format!("{what} reader: {}", js_reason(&e)))
+}
+
+/// End the connection with a reason, logged as well as reported: the
+/// console is the only place a stage that failed BEFORE the menu could
+/// show anything leaves a trace.
+fn fail(shared: &SharedRef, reason: String) {
+	log::error!("webtransport: {reason}");
+	shared.borrow_mut().push_disconnected(reason);
+}
+
+/// How far the driver has got, in words a player can read. The stall
+/// watchdog is its only reader.
+type Stage = Rc<Cell<&'static str>>;
+
+/// Report a step that never finished, before the client's own connect
+/// deadline expires and reports nothing in particular.
+///
+/// A rejection names itself; a promise that simply never settles does
+/// not, and the two are indistinguishable from above — both end as
+/// `CONNECT_TIMEOUT_SECS` of silence. This fires at a fraction of that
+/// deadline so the stage that was pending is what the player sees, which
+/// on a phone is the only diagnosis available at all.
+fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
+	/// Of the client's connect deadline. Well short of it, so the two
+	/// cannot race for which message a player gets.
+	const OF_CONNECT_DEADLINE: f32 = 0.7;
+	let ms = (digblock_net::protocol::CONNECT_TIMEOUT_SECS * 1000.0 * OF_CONNECT_DEADLINE) as i32;
+	let (shared, stage) = (shared.clone(), stage.clone());
+	let fired = Closure::once_into_js(move || {
+		let idle = {
+			let s = shared.borrow();
+			!s.connected_sent && !s.disconnected_sent
+		};
+		if idle {
+			fail(&shared, format!("timed out {}", stage.get()));
+		}
+	});
+	if let Some(w) = web_sys::window() {
+		let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(fired.unchecked_ref(), ms);
+	}
+}
+
 fn options(cert_hash: [u8; 32]) -> JsValue {
 	let hash = js_sys::Object::new();
 	js_sys::Reflect::set(&hash, &"algorithm".into(), &"sha-256".into()).expect("set");
@@ -266,32 +336,47 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 
 	let transport_handle: JsValue = AsRef::<JsValue>::as_ref(&transport).clone();
 
-	// Driver: ready → control stream → writers → the single Connected,
+	// Driver: ready → control stream → the single Connected → datagrams,
 	// then park on `closed` while the two read loops run.
+	//
+	// Every step is fallible and says which one it was. A browser with
+	// PARTIAL WebTransport support gives out somewhere in here, and until
+	// it reports itself the only symptom is the client's connect timeout
+	// ten seconds later, with a server log showing a session that opened
+	// and never spoke.
+	let stage: Stage = Rc::new(Cell::new("opening the session"));
+	watch_for_stall(&shared, &stage);
 	{
 		let shared = shared.clone();
 		let reliable_writer = reliable_writer.clone();
 		let datagram_writer = datagram_writer.clone();
 		spawn_local(async move {
 			if let Err(e) = JsFuture::from(transport.ready()).await {
-				shared
-					.borrow_mut()
-					.push_disconnected(format!("connect: {}", js_reason(&e)));
-				return;
+				return fail(&shared, format!("connect: {}", js_reason(&e)));
 			}
-			let bi = match JsFuture::from(transport.create_bidirectional_stream()).await {
-				Ok(v) => v.unchecked_into::<WebTransportBidirectionalStream>(),
-				Err(e) => {
-					shared
-						.borrow_mut()
-						.push_disconnected(format!("open stream: {}", js_reason(&e)));
-					return;
-				}
+			stage.set("opening the control stream");
+			let bi = match transport.create_bidirectional_stream() {
+				Ok(p) => match JsFuture::from(p).await {
+					Ok(v) => v,
+					Err(e) => return fail(&shared, format!("open stream: {}", js_reason(&e))),
+				},
+				Err(e) => return fail(&shared, format!("open stream: {}", js_reason(&e))),
 			};
-			// Writers first — the engine reacts to Connected by sending
-			// the preamble + Hello, which must not be dropped.
-			*reliable_writer.borrow_mut() = Some(bi.writable().get_writer());
-			*datagram_writer.borrow_mut() = Some(transport.datagrams().writable().get_writer());
+			let control = "control stream";
+			let writer = match writer_of(&bi, control) {
+				Ok(w) => w,
+				Err(e) => return fail(&shared, e),
+			};
+			let reader = match reader_of(&bi, control) {
+				Ok(r) => r,
+				Err(e) => return fail(&shared, e),
+			};
+			// Connected the moment the control stream is in hand, and
+			// before datagrams are touched: the handshake rides the
+			// reliable stream alone, so nothing below this line may be
+			// able to prevent the client from reaching a state where it
+			// can report what went wrong.
+			*reliable_writer.borrow_mut() = Some(writer);
 			{
 				let mut s = shared.borrow_mut();
 				if !s.connected_sent {
@@ -299,12 +384,26 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 					s.events.push_back(TransportEvent::Connected);
 				}
 			}
-			spawn_local(read_loop(bi.readable().get_reader(), shared.clone(), false));
-			spawn_local(read_loop(
-				transport.datagrams().readable().get_reader(),
-				shared.clone(),
-				true,
-			));
+			spawn_local(read_loop(reader, shared.clone(), false));
+
+			// Datagrams carry movement and snapshots, so a session without
+			// them is not playable — but it IS diagnosable, which is the
+			// difference between this refusal and a silent unwind.
+			let datagrams = "datagrams";
+			let Some(pair) = prop(AsRef::<JsValue>::as_ref(&transport), "datagrams") else {
+				return fail(
+					&shared,
+					"this browser's WebTransport has no datagram support".into(),
+				);
+			};
+			match (writer_of(&pair, datagrams), reader_of(&pair, datagrams)) {
+				(Ok(w), Ok(r)) => {
+					*datagram_writer.borrow_mut() = Some(w);
+					spawn_local(read_loop(r, shared.clone(), true));
+				}
+				(Err(e), _) | (_, Err(e)) => return fail(&shared, e),
+			}
+
 			match JsFuture::from(transport.closed()).await {
 				Ok(_) => shared
 					.borrow_mut()
