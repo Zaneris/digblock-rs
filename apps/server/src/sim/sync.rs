@@ -1,6 +1,6 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
-use super::{DGRAM_STALL_SECS, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
+use super::{DGRAM_STALL_SECS, OUT_CAP, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
 use crate::journal::Journal;
 use digblock_net::codec;
 use digblock_net::messages::{
@@ -24,6 +24,21 @@ const JOIN_SYNC_PER_TICK: usize = 16;
 /// joining client's backlog can never starve edits, chat or teleports —
 /// nor trip the queue-refused drop that `send_frame` reports.
 const JOIN_SYNC_RESERVE: usize = 64;
+
+/// Outbound slots a WRAPPED snapshot may not take, for the same reason
+/// [`JOIN_SYNC_RESERVE`] exists and with more force.
+///
+/// A snapshot travelling as a datagram leaves the queue as fast as the
+/// pump can hand it to the socket, so it can never durably occupy a slot.
+/// Wrapped in a reliable frame it leaves at the speed of ONE stream's flow
+/// control, and a peer that reads slowly parks it there — which puts a
+/// lossy message class in a position to fill the queue whose refusal kills
+/// the client (`client_send_frame`). The player then loses the session
+/// over snapshots that were droppable the whole time, and the edit that
+/// happened to arrive during the stall is what does it. Half the queue is
+/// left to the traffic that dies without a slot; snapshots take the rest
+/// and are simply skipped above it.
+const WRAPPED_SNAPSHOT_RESERVE: usize = OUT_CAP / 2;
 
 /// Neighbor journal-water rescans processed per tick (each is O(that
 /// column's journaled cells)) — an initial full-radius load can't hitch the
@@ -305,9 +320,22 @@ impl Sim {
 				players = s.others;
 			}
 			match encoded {
-				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
-					Ok(()) => client.dgram_full_since.set(None),
-					Err(TrySendError::Full(_)) => {
+				// A client with no datagram channel gets the same payload
+				// wrapped in a reliable frame — and keeps every bit of the
+				// handling below it, drop-on-full included. That is the
+				// load-bearing part: `send_frame` kills a client whose
+				// queue refuses a frame, which is right for an edit and
+				// catastrophic for a snapshot, since snapshots are the one
+				// message class that has always been allowed to stall.
+				Ok(bytes) => match queue_snapshot(client, bytes) {
+					Some(Ok(())) => client.dgram_full_since.set(None),
+					// Above the reserve the snapshot is skipped rather than
+					// refused (`None`), so it never counts toward the stall
+					// below: a peer whose stream really has stopped draining
+					// is reaped by a reliable frame meeting a genuinely full
+					// queue, which is the class that cannot survive a drop.
+					None => {}
+					Some(Err(TrySendError::Full(_))) => {
 						// Lossy by contract: dropping snapshots is fine for
 						// a stall, but a queue full for seconds is a peer
 						// that stopped reading.
@@ -325,7 +353,7 @@ impl Sim {
 							Some(_) => {}
 						}
 					}
-					Err(TrySendError::Closed(_)) => client.dead.set(true),
+					Some(Err(TrySendError::Closed(_))) => client.dead.set(true),
 				},
 				Err(e) => {
 					// Losing snapshots is a game-breaking condition — never
@@ -350,6 +378,45 @@ impl Sim {
 	}
 }
 
+/// Hand one snapshot to the client's outbound queue, or `None` when it may
+/// not have a slot at all.
+///
+/// A datagram may always try: the pump hands those to the socket without
+/// ever awaiting, so one cannot sit in the queue. A WRAPPED one is held to
+/// what [`WRAPPED_SNAPSHOT_RESERVE`] leaves it, and above that is skipped
+/// rather than refused — a refusal is what the stall reaper counts, and
+/// this is a policy, not a peer that stopped reading.
+fn queue_snapshot(
+	client: &super::Client,
+	bytes: Vec<u8>,
+) -> Option<Result<(), TrySendError<OutMsg>>> {
+	let out = snapshot_out(client, bytes);
+	let wrapped = matches!(out, OutMsg::Frame(_));
+	(!wrapped || client.out.capacity() > WRAPPED_SNAPSHOT_RESERVE).then(|| client.out.try_send(out))
+}
+
+/// How one snapshot travels to one client: as a datagram, or — for a
+/// client that announced `NoDatagrams` — as the same bytes wrapped in a
+/// reliable frame.
+///
+/// An encode failure here falls back to the datagram, which that client
+/// cannot receive; that is deliberate. The wrap is a `Vec<u8>` inside an
+/// enum variant and cannot fail for any reason a retry would fix, and the
+/// alternative is dropping a client over a condition that does not exist.
+fn snapshot_out(client: &super::Client, bytes: Vec<u8>) -> OutMsg {
+	if !client.no_datagrams.get() {
+		return OutMsg::Datagram(bytes);
+	}
+	let mut frame = Vec::new();
+	match codec::write_frame(&ServerMsg::Unreliable(bytes), &mut frame) {
+		Ok(()) => OutMsg::Frame(frame.into()),
+		Err(e) => {
+			log::error!("player {}: wrapping a snapshot: {e}", client.id);
+			OutMsg::Datagram(Vec::new())
+		}
+	}
+}
+
 fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> bool {
 	let Some(cells) = journal.index.column(cx, cz) else {
 		return true;
@@ -363,10 +430,13 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 
 #[cfg(test)]
 mod tests {
-	use super::super::Sim;
 	use super::super::harness::*;
-	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
-	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
+	use super::super::{Sim, column_of};
+	use super::{DGRAM_STALL_SECS, OUT_CAP, WRAPPED_SNAPSHOT_RESERVE};
+	use digblock_core::chunk::CHUNK_SIZE;
+	use digblock_net::codec;
+	use digblock_net::messages::{ClientMsg, Datagram, EditKind, InputBatch, InputTick, ServerMsg};
+	use digblock_net::protocol::{MAX_SNAPSHOT_PLAYERS, TICK_RATE};
 	use glam::Vec3;
 
 	fn dig_under(sim: &mut super::super::Sim, conn_id: u64, seq: u32) -> (i32, i32, i32) {
@@ -826,11 +896,48 @@ mod tests {
 			"near remote present"
 		);
 
-		// B walks away far beyond A's draw distance plus slack.
+		// B walks away, out past A's draw distance rather than onto its edge.
 		// Server-authoritative movement: forward inputs, never-adopted
 		// claims, so the sim's own physics carries B.
-		for t in (100..).take(1500) {
-			sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 2)]);
+		//
+		// A DISTANCE goal, never a tick budget. The two clocks here are
+		// unrelated — this loop advances world time as fast as the host
+		// will run it, while the ground ahead of B is laid down by a
+		// worker on the wall clock — so a fixed tick count measures the
+		// GENERATOR: on a loaded host B was left standing at the frontier,
+		// stopped dead on a column boundary still well inside A's radius,
+		// and the test failed for a reason it is not about. Hold with a
+		// stop input while the ground ahead is missing, exactly as the
+		// fluid walk above does, and yield the core while holding so the
+		// worker can lay the next column. Both clients drain every tick:
+		// the walk is now as long as it needs to be, and an undrained
+		// snapshot queue reaches `OUT_CAP` and trips the stall drop.
+		let ahead_ready = |sim: &Sim| {
+			let (cx, cz) = column_of(sim.test_player(2).expect("B still connected").pos);
+			let mid = CHUNK_SIZE as i32 / 2;
+			sim.test_block_at(
+				cx * CHUNK_SIZE as i32 + mid,
+				0,
+				(cz + 1) * CHUNK_SIZE as i32 + mid,
+			)
+			.is_some()
+		};
+		let goal = ((JOIN_DRAW_DIST + 2) * CHUNK_SIZE as i32) as f32;
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+		let mut t = 100;
+		while sim.test_player(2).expect("B still connected").pos.z < goal {
+			assert!(
+				std::time::Instant::now() < deadline,
+				"B never walked clear of A's radius"
+			);
+			let go = ahead_ready(&sim);
+			if !go {
+				std::thread::sleep(std::time::Duration::from_millis(1));
+			}
+			sim.tick_once(vec![batch(vec![input(t, go, no_claim())], 2)]);
+			t += 1;
+			a.drain();
+			b.drain();
 		}
 		a.drain();
 		a.snaps.clear();
@@ -851,6 +958,102 @@ mod tests {
 		assert!(
 			b_last.me.is_some(),
 			"B keeps its own state even with nobody nearby"
+		);
+	}
+
+	/// A client whose transport has no datagram channel (iOS Safari ships
+	/// `WebTransport.datagrams` with no writable side) is served over the
+	/// reliable stream in BOTH directions — protocol v26.
+	///
+	/// Both halves matter and they are separate mechanisms: the server has
+	/// to stop aiming snapshots at a channel that is not there, and it has
+	/// to accept inputs that arrive wrapped. Either one alone leaves a
+	/// player who can see the world but not move, or move but never see
+	/// anyone.
+	#[test]
+	fn a_client_without_datagrams_is_served_over_the_reliable_stream() {
+		let mut sim = flat_sim("no-datagrams");
+		let mut c = connect(&mut sim, 1);
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::NoDatagrams,
+		}]);
+		wait_live(&mut sim, 1);
+		for _ in 0..6 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		assert!(!c.snaps.is_empty(), "snapshots still arrive");
+		assert_eq!(
+			c.dgram_snaps, 0,
+			"nothing was sent down the channel this client does not have"
+		);
+
+		// And its inputs, wrapped the way the client wraps them, drive the
+		// same physics an input datagram drives.
+		let start = sim.test_player(1).expect("connected").pos;
+		for t in 100..160 {
+			let dg = Datagram::Input(InputBatch {
+				inputs: vec![input(t, true, no_claim())],
+			});
+			let payload = codec::encode_datagram(&dg).expect("encodes");
+			sim.tick_once(vec![super::super::SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Unreliable(payload),
+			}]);
+		}
+		let moved = sim.test_player(1).expect("connected").pos;
+		assert!(
+			(moved - start).length() > 1.0,
+			"a wrapped input batch moves the player ({start} -> {moved})"
+		);
+	}
+
+	/// The stream fallback must not put a LOSSY message class in a
+	/// position to fill the queue a lossless one dies on.
+	///
+	/// A snapshot travelling as a datagram leaves the outbound queue the
+	/// moment the pump reaches it, so it cannot durably hold a slot;
+	/// wrapped in a frame it leaves at the speed of one stream's flow
+	/// control, and a peer reading slowly parks it there. Without a
+	/// reserve the queue fills with snapshots and the next edit, chat
+	/// line or teleport is refused — and `client_send_frame` drops a
+	/// client whose queue refuses a frame, so the session ends over the
+	/// one message class that was always allowed to be dropped instead.
+	///
+	/// The twin of `stalled_datagram_queue_escalates_to_drop`, which pins
+	/// the other half: a peer that has genuinely stopped reading still
+	/// goes. Here the peer is merely behind, and stays.
+	#[test]
+	fn wrapped_snapshots_leave_the_queue_reliable_frames_die_on() {
+		let mut sim = flat_sim("no-datagrams-reserve");
+		let mut c = connect(&mut sim, 1);
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::NoDatagrams,
+		}]);
+		wait_live(&mut sim, 1);
+		c.snaps.clear();
+		// Never drained, and run well past where snapshots alone would
+		// have filled the queue and escalated — the same measure the
+		// datagram half of the rule is tested at.
+		let enough = 3 * OUT_CAP as u32 + (DGRAM_STALL_SECS + 2) * TICK_RATE;
+		for _ in 0..enough {
+			sim.tick_once(vec![]);
+		}
+		assert_eq!(
+			sim.player_count(),
+			1,
+			"a client merely behind on snapshots keeps its session"
+		);
+		// Everything the run queued is still sitting in the channel, so
+		// what arrives now IS what the snapshots were allowed to hold.
+		c.drain();
+		assert!(!c.snaps.is_empty(), "snapshots were being sent at all");
+		assert!(
+			c.snaps.len() <= OUT_CAP - WRAPPED_SNAPSHOT_RESERVE,
+			"{} snapshots parked in the queue — past the share a lossy class may hold",
+			c.snaps.len()
 		);
 	}
 }

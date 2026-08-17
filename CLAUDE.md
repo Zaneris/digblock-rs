@@ -648,7 +648,13 @@ that cannot help — and it drops the COST line before the reason, since a three
 one thing that line is for.
 
 While ANY UI surface is open the engine synthesizes cursor + left-button from the primary touch at the top of
-`Engine::input` — one site gives iOS every screen, and no screen knows about touch.
+`Engine::input` — one site gives iOS every screen, and no screen knows about touch. The MENU is the exception that
+proves it: two rules there are about the input device rather than the screen, and both are swept rather than
+spot-checked (`a_touch_page_never_names_a_key`, `a_touch_page_can_always_be_backed_out_of`) because what bites is the
+page nobody thought of. A touch build drops every keyboard hint through one `hint` helper — a line naming Esc on a
+device with no Esc reads as a dead end — and gets the touch HUD's `corner_button` as its back control, drawn on
+`Menu::can_go_back`, which is derived from the same match `handle_key` runs so a page that gains a way out gains the
+button with it. The server browser had neither: its only exit was the key its hint line advertised.
 
 ## Settings & local worlds
 
@@ -681,8 +687,8 @@ which looks like a black window with no HUD rather than a bad blit.
 
 Persistence is a launcher-injected `SettingsStore` (desktop: `data_dir/digblock/settings.json`; web: `localStorage`);
 precedence is CLI/query > saved > platform default, and non-interactive runs (bench/screenshot/drill) skip load AND save
-so captures stay hermetic. The last-joined multiplayer name persists here too. `Settings`
-(digblock-render/src/settings.rs) is serde-free; each launcher owns a serde mirror.
+so captures stay hermetic. `Settings` (digblock-render/src/settings.rs) is serde-free; each launcher owns a serde
+mirror.
 
 Named local worlds live in `crates/digblock-persist`: the journal (shared `VERSION` — a worldgen retune stales server
 volumes and client saves together) plus the `WorldStore` trait. Desktop `FsWorldStore` writes the exact server-format
@@ -739,8 +745,44 @@ tracks (`/api/music`) and both fillers fetch at runtime. Mute: `--mute` / `?mute
 
 Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`). Query params mirror desktop flags:
 `?seed= ?tod= ?draw= ?ssr=0
-?overlay ?name= ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop
-quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music.
+?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams`; defaults are full
+desktop quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music. A phone or
+tablet (coarse primary pointer + touch, or `?mobile` to force either way) boots from `EngineConfig::web_mobile` instead
+— the iOS quality knobs plus the touch HUD — with saved settings and URL params still winning in the usual order. The
+page's loading overlay is a fixed contract with the platform layer: `digblock-gpu-ready`, `digblock-first-frame` and
+`digblock-fatal` events narrate startup (`dispatch_page_event` in digblock-platform), and the overlay must be PAINTED
+before wasm instantiation begins — the double-rAF in index.html is what guarantees that on a cold mobile load, where the
+main thread never idles again until the first engine frame. Every stage behind that overlay can HANG rather than fail (a
+stalled wasm fetch, an adapter request that never settles), so a watchdog names the stage that stopped and offers a
+reload once nothing has progressed for a while — advisory, since the load is still running underneath and finishing
+takes the whole overlay with it. It also reports the page's `navigation` type, because "reload" is the tell for the case
+that produces this: iOS discards a page this heavy under memory pressure and re-navigates on return, so a player who
+only rotated the phone is looking at a fresh cold load and a stuck one is otherwise indistinguishable from a slow one.
+
+**A browser TAB can reclaim the toolbar's strip, but only by being scrolled, and only the DOCUMENT counts.** iOS Safari
+collapses its toolbar for a real touch scroll and nothing else — script cannot ask, and `minimal-ui` has been gone since
+iOS 8. An inner scroll container was reported to do it on iOS 15 and index.html was built that way; on the phone it was
+written for it scrolled perfectly and moved no toolbar at all, so the page makes the DOCUMENT scrollable instead
+(`html.barswipe` plus `#barspacer`, the one thing taller than the viewport) and `#barswipe` is a visible handle to push
+against — absolutely positioned, so it travels with the scroll it starts. The canvas's `touch-action: none` is what
+makes that safe: no gameplay drag can scroll anything, so the handle is the only place a scroll can begin. It shows
+itself on a test that needs no browser sniffing: a touch device, no Fullscreen API to offer instead, and a `100lvh`
+probe taller than `innerHeight` — `lvh` being the viewport with the dynamic toolbars gone, so the difference IS the
+chrome, and the difference closing is how the page knows the swipe worked. Success keeps the scrollability and drops
+only the handle, since winding back to the top is exactly the gesture that brings the toolbar out again. Both failures
+take the whole thing away: a touch that scrolled nothing is a player saying it is in the way, and a swipe that scrolled
+and left the chrome where it was is a browser the trick does not work on — one honest attempt, because an offer that
+cannot be taken is worse than no offer.
+
+**A fresh canvas reports 0×0**, which is why every async GPU init ends at `App::adopt_window_size`. winit fills the
+canvas's size in from a `ResizeObserver` that first fires at the browser's next rendering step, so an init that beats
+that callback configures the surface at the `max(1)` floor — and the `Resized` that follows lands while the app is still
+`WaitingForGpu`, where it is dropped. winit only sends one when the size CHANGES, so the next one comes with the
+device's next real resize: a phone stretching one pixel over the whole screen until it is rotated. The menu's Fullscreen
+row is the other browser-shaped hole in the same area — `fullscreen_available` (the shell, so the probe and the toggle
+cannot disagree about which spelling exists) answers for the unprefixed API and WebKit's prefixed one, and iPhone Safari
+has neither for most of its history. There the fullscreen story is an installed web app, which is what index.html's
+`apple-mobile-web-app-*` tags declare the page capable of.
 
 **Chunk jobs run in Web Workers** (`apps/web-worker` + `apps/web/src/jobs.rs`), a small default that drops to none on a
 low-core device; `?workers=N` overrides. Workers can't share linear memory, so jobs cross as bytes —
@@ -758,11 +800,24 @@ stamped pairs and never gains a cacheable `.js` that can drift from the module i
 (WebGPU forbids depth32float as a copy destination); shadow taps use `textureSampleCompareLevel` (Tint's
 derivative-uniformity rule). Multiplayer: `crates/digblock-net-web` implements `NetTransport` over WebTransport with
 `serverCertificateHashes` from the master; the server's self-signed cert is short-lived, inside Chrome's cap on pinned
-certs, and rotates in-process well before it expires, re-registering so the master hands out the fresh pin.
-`apps/web/src/services.rs` is the fetch()-based `MenuServices` filler. Scripted joins go through
-`EngineConfig::auto_join`, which walks the real menu path. Screenshots, drill, and metrics CSV are native-only; `?bench`
-works here now — `?frames=N` ends the run and the summary is logged from `Game::on_exit`, because winit's exit on wasm
-unwinds through JS and `Drop` may never run, which is why `?bench` printed nothing here for so long.
+certs, and rotates in-process well before it expires, re-registering so the master hands out the fresh pin. **Every step
+of that driver names itself**, because browsers ship WebTransport in PARTS: `prop` reaches each hop by name rather than
+through a typed getter (reading `.writable` off an absent `datagrams` THROWS, and a throw inside the driver task lands
+in no `Result` at all — it unwinds out of wasm as an unhandled rejection and the session simply expires), `Connected` is
+pushed the moment the control stream is in hand so nothing after it can stop the client reporting, and a step that never
+settles is caught by a watchdog set at a fraction of `CONNECT_TIMEOUT_SECS`. The symptom all of that replaces is
+"connect timeout" beside a server log showing a session that opened and never spoke. **The SESSION's account of an
+ending beats a stream's**, and it has to be waited for: a connection going down rejects the pending read AND settles
+`closed`, the read is already in flight so it always wins, and what the player was shown was
+`stream read:
+WebTransportError` — a type name with an empty message — in place of "closed by server" and its code.
+`stream_failed` parks a stream's reason for `SESSION_GRACE_MS` and reports it only if the session stays up, which is
+exactly when a stream ending is the true story; `js_reason` adds the `source` and `streamErrorCode` a
+`WebTransportError` carries and its message does not. `apps/web/src/services.rs` is the fetch()-based `MenuServices`
+filler. Scripted joins go through `EngineConfig::auto_join`, which walks the real menu path. Screenshots, drill, and
+metrics CSV are native-only; `?bench` works here now — `?frames=N` ends the run and the summary is logged from
+`Game::on_exit`, because winit's exit on wasm unwinds through JS and `Drop` may never run, which is why `?bench` printed
+nothing here for so long.
 
 Deploying: `just build-web` is the bundle, and `deploy-web.yml` runs that recipe rather than mirroring it, because the
 recipe owns a correctness invariant a copy would drift from. The glue JS and the wasm are one artifact (wasm-bindgen
@@ -855,6 +910,28 @@ would miss the common case of closing a tab. `DEFAULT_MAX_CONNECTIONS_PER_IP`
 what stops the pre-Hello window being an amplifier against the master. It is a flag because every local soak is the
 opposite case — `just bot -- --bots N` and `just compose-bots` put every client behind ONE address, and a bot refused at
 accept is indistinguishable from a connect timeout.
+
+**A transport without datagrams is a first-class client** (protocol v26). iOS Safari ships `WebTransport.datagrams` with
+no writable side, which is not a degraded network but a missing API — so a client whose transport says
+`datagrams_available()` is false announces `ClientMsg::NoDatagrams` immediately after `Hello`, and both directions'
+unreliable traffic then rides the reliable stream inside `ClientMsg::Unreliable` / `ServerMsg::Unreliable`. The payload
+is the datagram's OWN bytes, decoded by the same call on both ends, so there is no second encoding of an input batch or
+a snapshot to drift. Two rules hold it up: the announcement is made rather than inferred, or the server would answer on
+a channel that was never there until the client happened to speak; and a wrapped snapshot is still DROPPED on a full
+outbound queue (`sync::queue_snapshot` keeps the datagram's own stall bookkeeping) rather than going through
+`send_frame`, which kills a client whose queue refuses a frame — right for an edit, catastrophic for the one message
+class that has always been allowed to stall. `?nodatagrams` forces the path on any browser, since the one that needs it
+is also the one hardest to attach a console to.
+
+**And a wrapped snapshot may not spend the whole queue** (`WRAPPED_SNAPSHOT_RESERVE`, the same idea as
+`JOIN_SYNC_RESERVE` and for a sharper reason). A datagram leaves the outbound queue as fast as the pump can hand it to
+the socket; wrapped, it leaves at the speed of ONE stream's flow control, so a peer reading slowly parks it there. That
+puts a LOSSY class in a position to fill the queue a LOSSLESS one dies on: the queue fills with snapshots and the next
+edit or chat line is what ends the session, over traffic that was droppable all along. Above the reserve a snapshot is
+skipped rather than refused, because a refusal is what the stall reaper counts and this is a policy rather than a peer
+that stopped reading — the peer that really has stopped is still reaped, by a reliable frame meeting a genuinely full
+queue. Pinned by `wrapped_snapshots_leave_the_queue_reliable_frames_die_on`, the twin of
+`stalled_datagram_queue_escalates_to_drop`.
 
 Server-authoritative everything, but movement uses an **adoption envelope**: clients send per-tick inputs plus claimed
 post-tick state; the server runs the same `Player::tick` and adopts claims within `POS_TOLERANCE` that aren't inside

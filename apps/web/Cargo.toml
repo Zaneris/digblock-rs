@@ -50,6 +50,15 @@ web-sys = { workspace = true, features = [
 	"Storage",
 	"Crypto",
 	"EventTarget",
+	# AudioContext resume on returning to a visible tab (audio.rs).
+	"Document",
+	"VisibilityState",
+	# Mobile-device detection (is_mobile_browser).
+	"MediaQueryList",
+	# Safe-area probe (safe_area_insets).
+	"Element",
+	"HtmlElement",
+	"CssStyleDeclaration",
 	"AudioContext",
 	"AudioContextState",
 	"BaseAudioContext",

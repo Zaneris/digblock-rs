@@ -23,10 +23,12 @@ extern "C" {
 	fn ready(this: &WebTransport) -> js_sys::Promise;
 	#[wasm_bindgen(method, getter)]
 	fn closed(this: &WebTransport) -> js_sys::Promise;
-	#[wasm_bindgen(method, getter)]
-	fn datagrams(this: &WebTransport) -> WebTransportDatagramDuplexStream;
-	#[wasm_bindgen(method, js_name = createBidirectionalStream)]
-	fn create_bidirectional_stream(this: &WebTransport) -> js_sys::Promise;
+	/// `catch`, because a browser can ship the WebTransport constructor
+	/// without this method: the call then throws rather than returning a
+	/// promise that rejects, and the throw would unwind the driver task
+	/// (see `prop`).
+	#[wasm_bindgen(method, js_name = createBidirectionalStream, catch)]
+	fn create_bidirectional_stream(this: &WebTransport) -> Result<js_sys::Promise, JsValue>;
 	#[wasm_bindgen(method, catch)]
 	fn close(this: &WebTransport) -> Result<(), JsValue>;
 	/// `catch`, because `getStats` is not merely allowed to fail — it is
@@ -52,21 +54,12 @@ extern "C" {
 	#[wasm_bindgen(method, getter = smoothedRtt)]
 	fn smoothed_rtt(this: &WebTransportStats) -> JsValue;
 
-	type WebTransportDatagramDuplexStream;
-	#[wasm_bindgen(method, getter)]
-	fn readable(this: &WebTransportDatagramDuplexStream) -> ReadableStream;
-	#[wasm_bindgen(method, getter)]
-	fn writable(this: &WebTransportDatagramDuplexStream) -> WritableStream;
-
-	type WebTransportBidirectionalStream;
-	#[wasm_bindgen(method, getter)]
-	fn readable(this: &WebTransportBidirectionalStream) -> ReadableStream;
-	#[wasm_bindgen(method, getter)]
-	fn writable(this: &WebTransportBidirectionalStream) -> WritableStream;
-
 	type ReadableStream;
-	#[wasm_bindgen(method, js_name = getReader)]
-	fn get_reader(this: &ReadableStream) -> ReadableStreamDefaultReader;
+	/// `catch`, like `get_writer`: both throw on a stream that is already
+	/// locked, and a throw crossing back into wasm from the driver task
+	/// unwinds past every `Result` in it (see `prop`).
+	#[wasm_bindgen(method, js_name = getReader, catch)]
+	fn get_reader(this: &ReadableStream) -> Result<ReadableStreamDefaultReader, JsValue>;
 
 	type ReadableStreamDefaultReader;
 	#[wasm_bindgen(method)]
@@ -84,8 +77,8 @@ extern "C" {
 	fn value(this: &ReadResult) -> JsValue;
 
 	type WritableStream;
-	#[wasm_bindgen(method, js_name = getWriter)]
-	fn get_writer(this: &WritableStream) -> WritableStreamDefaultWriter;
+	#[wasm_bindgen(method, js_name = getWriter, catch)]
+	fn get_writer(this: &WritableStream) -> Result<WritableStreamDefaultWriter, JsValue>;
 
 	type WritableStreamDefaultWriter;
 	#[wasm_bindgen(method)]
@@ -107,12 +100,18 @@ struct Shared {
 	events: VecDeque<TransportEvent>,
 	connected_sent: bool,
 	disconnected_sent: bool,
+	/// A stream ending, held back to see whether the SESSION is about to
+	/// account for itself. See [`stream_failed`].
+	stream_failure: Option<String>,
 }
 
 impl Shared {
+	/// The session's own account of the end, which always wins: it is the
+	/// one that says whether the server closed us, and with what.
 	fn push_disconnected(&mut self, reason: String) {
 		if !self.disconnected_sent {
 			self.disconnected_sent = true;
+			self.stream_failure = None;
 			self.events
 				.push_back(TransportEvent::Disconnected { reason });
 		}
@@ -131,6 +130,11 @@ pub struct WebTransportClient {
 	/// None until the bidi control stream opens.
 	reliable_writer: WriterSlot,
 	datagram_writer: WriterSlot,
+	/// This browser's WebTransport has no usable datagram channel, so the
+	/// netcode must carry its unreliable traffic on the reliable stream.
+	/// Set by the driver BEFORE it reports `Connected`, because the answer
+	/// rides the Hello that Connected triggers.
+	no_datagrams: Rc<Cell<bool>>,
 	/// Datagrams dropped at the writer's high-water mark; the first one
 	/// logs, the rest are silent.
 	dropped_datagrams: u32,
@@ -172,9 +176,155 @@ fn js_reason(v: &JsValue) -> String {
 	if let Some(s) = v.as_string() {
 		return s;
 	}
-	js_sys::Object::try_from(v)
+	let text = js_sys::Object::try_from(v)
 		.map(|o| String::from(o.to_string()))
-		.unwrap_or_else(|| format!("{v:?}"))
+		.unwrap_or_else(|| format!("{v:?}"));
+	// A `WebTransportError` carries the two things its message does not,
+	// and its message is routinely empty: WHERE it came from — the session
+	// or one stream — and, for a stream the peer reset, the code it was
+	// reset with. `Error.toString()` on an empty message is just the type
+	// name, so without this every failure on this transport reads as the
+	// same three words, which on a phone is the whole of the evidence.
+	let Some(source) = prop(v, "source").and_then(|s| s.as_string()) else {
+		return text;
+	};
+	match prop(v, "streamErrorCode").and_then(|c| c.as_f64()) {
+		Some(code) => format!("{text} [{source}, code {code}]"),
+		None => format!("{text} [{source}]"),
+	}
+}
+
+/// The peer's own account of a clean close, out of `WebTransportCloseInfo`.
+/// A session that ends politely leaves no other trace on the client, so
+/// the code and reason it carries are the only evidence there is.
+fn close_info(info: &JsValue) -> String {
+	let code = prop(info, "closeCode").and_then(|v| v.as_f64());
+	let why = prop(info, "reason")
+		.and_then(|v| v.as_string())
+		.filter(|s| !s.is_empty());
+	match (code, why) {
+		(_, Some(why)) => format!("closed by server: {why}"),
+		(Some(code), None) if code != 0.0 => format!("closed by server (code {code})"),
+		_ => "closed by server".into(),
+	}
+}
+
+/// Run `f` after `ms`, or not at all on a page with no window.
+fn set_timeout(ms: i32, f: impl FnOnce() + 'static) {
+	let fired = Closure::once_into_js(f);
+	if let Some(w) = web_sys::window() {
+		let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(fired.unchecked_ref(), ms);
+	}
+}
+
+/// A property that is present and not nullish, or `None`.
+///
+/// Every hop through the WebTransport object graph goes through this
+/// rather than a typed getter, because a browser can implement the API in
+/// PARTS: the constructor and the session can be there while `datagrams`
+/// is `undefined`, and reading `.writable` off `undefined` throws. A throw
+/// inside the driver task lands in no `Result` at all — it unwinds out of
+/// the task and out of wasm, and surfaces as an unhandled rejection nobody
+/// is reading, so the connection simply expires at the client's connect
+/// timeout with "connect timeout" as the only evidence anything happened.
+/// That is not a diagnosis on a phone. Every step names itself instead.
+fn prop(target: &JsValue, name: &str) -> Option<JsValue> {
+	js_sys::Reflect::get(target, &JsValue::from_str(name))
+		.ok()
+		.filter(|v| !v.is_undefined() && !v.is_null())
+}
+
+/// The writable half of a duplex (a bidirectional stream, or the datagram
+/// pair), as the writer the driver needs. `what` names the duplex for the
+/// message a player sees.
+fn writer_of(duplex: &JsValue, what: &str) -> Result<WritableStreamDefaultWriter, String> {
+	prop(duplex, "writable")
+		.ok_or_else(|| format!("{what}: no writable side"))?
+		.unchecked_ref::<WritableStream>()
+		.get_writer()
+		.map_err(|e| format!("{what} writer: {}", js_reason(&e)))
+}
+
+/// The readable half of the same, as a reader for [`read_loop`].
+fn reader_of(duplex: &JsValue, what: &str) -> Result<ReadableStreamDefaultReader, String> {
+	prop(duplex, "readable")
+		.ok_or_else(|| format!("{what}: no readable side"))?
+		.unchecked_ref::<ReadableStream>()
+		.get_reader()
+		.map_err(|e| format!("{what} reader: {}", js_reason(&e)))
+}
+
+/// End the connection with a reason, logged as well as reported: the
+/// console is the only place a stage that failed BEFORE the menu could
+/// show anything leaves a trace.
+fn fail(shared: &SharedRef, reason: String) {
+	log::error!("webtransport: {reason}");
+	shared.borrow_mut().push_disconnected(reason);
+}
+
+/// How long a stream's account of the end waits for the session's.
+///
+/// A connection going down settles both at once, and the read is already
+/// in flight, so it wins every time. This is only long enough for the
+/// `closed` promise to land in a later microtask; against a disconnect it
+/// is not a delay anyone can perceive.
+const SESSION_GRACE_MS: i32 = 250;
+
+/// One reader loop ending — reported only if the SESSION does not account
+/// for itself first.
+///
+/// When a QUIC connection goes away BOTH things happen: the pending read
+/// rejects and `closed` settles. The read always gets there first, so what
+/// the player was shown is `stream read: WebTransportError` — a type name
+/// with an empty message — in place of the session's own story, which is
+/// the one that says whether the server dropped us and with what code. A
+/// stream ending is the right answer only when the session outlives it,
+/// and waiting a beat is exactly what tells the two apart.
+fn stream_failed(shared: &SharedRef, reason: String) {
+	{
+		let mut s = shared.borrow_mut();
+		if s.disconnected_sent || s.stream_failure.is_some() {
+			return;
+		}
+		log::warn!("webtransport: {reason}");
+		s.stream_failure = Some(reason);
+	}
+	let shared = shared.clone();
+	set_timeout(SESSION_GRACE_MS, move || {
+		let mut s = shared.borrow_mut();
+		if let Some(reason) = s.stream_failure.take() {
+			s.push_disconnected(reason);
+		}
+	});
+}
+
+/// How far the driver has got, in words a player can read. The stall
+/// watchdog is its only reader.
+type Stage = Rc<Cell<&'static str>>;
+
+/// Report a step that never finished, before the client's own connect
+/// deadline expires and reports nothing in particular.
+///
+/// A rejection names itself; a promise that simply never settles does
+/// not, and the two are indistinguishable from above — both end as
+/// `CONNECT_TIMEOUT_SECS` of silence. This fires at a fraction of that
+/// deadline so the stage that was pending is what the player sees, which
+/// on a phone is the only diagnosis available at all.
+fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
+	/// Of the client's connect deadline. Well short of it, so the two
+	/// cannot race for which message a player gets.
+	const OF_CONNECT_DEADLINE: f32 = 0.7;
+	let ms = (digblock_net::protocol::CONNECT_TIMEOUT_SECS * 1000.0 * OF_CONNECT_DEADLINE) as i32;
+	let (shared, stage) = (shared.clone(), stage.clone());
+	set_timeout(ms, move || {
+		let idle = {
+			let s = shared.borrow();
+			!s.connected_sent && !s.disconnected_sent
+		};
+		if idle {
+			fail(&shared, format!("timed out {}", stage.get()));
+		}
+	});
 }
 
 fn options(cert_hash: [u8; 32]) -> JsValue {
@@ -204,19 +354,13 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 		let res = match JsFuture::from(reader.read()).await {
 			Ok(v) => v.unchecked_into::<ReadResult>(),
 			Err(e) => {
-				shared
-					.borrow_mut()
-					.push_disconnected(format!("stream read: {}", js_reason(&e)));
-				return;
+				return stream_failed(&shared, format!("stream read: {}", js_reason(&e)));
 			}
 		};
 		// Anything but an explicit `false` ends the connection — a result
 		// without a usable `done` is not a result we can keep reading.
 		if !matches!(res.done().as_bool(), Some(false)) {
-			shared
-				.borrow_mut()
-				.push_disconnected("stream closed by server".into());
-			return;
+			return stream_failed(&shared, "stream closed by server".into());
 		}
 		let value = res.value();
 		if value.is_undefined() || value.is_null() {
@@ -235,14 +379,22 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 /// mode a browser can express for self-signed servers). Returns
 /// immediately with `Connecting`; `url` is a WebTransport URL, e.g.
 /// `https://127.0.0.1:4433`.
-pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
+///
+/// `force_no_datagrams` pretends this browser has no datagram channel
+/// (`?nodatagrams`). Otherwise the reliable-stream fallback could only be
+/// exercised on the one browser that needs it, which is also the one
+/// hardest to attach a console to — a path with no way to run it on a dev
+/// machine is a path that rots.
+pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebTransportClient {
 	let shared: SharedRef = Rc::new(RefCell::new(Shared {
 		events: VecDeque::new(),
 		connected_sent: false,
 		disconnected_sent: false,
+		stream_failure: None,
 	}));
 	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
 	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
+	let no_datagrams: Rc<Cell<bool>> = Rc::new(Cell::new(force_no_datagrams));
 
 	let transport = match WebTransport::new(url, &options(cert_hash)) {
 		Ok(t) => t,
@@ -256,6 +408,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				transport: None,
 				reliable_writer,
 				datagram_writer,
+				no_datagrams,
 				dropped_datagrams: 0,
 				wire_rtt: Rc::new(Cell::new(None)),
 				rtt_age: 0,
@@ -266,32 +419,84 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 
 	let transport_handle: JsValue = AsRef::<JsValue>::as_ref(&transport).clone();
 
-	// Driver: ready → control stream → writers → the single Connected,
+	// Driver: ready → control stream → the single Connected → datagrams,
 	// then park on `closed` while the two read loops run.
+	//
+	// Every step is fallible and says which one it was. A browser with
+	// PARTIAL WebTransport support gives out somewhere in here, and until
+	// it reports itself the only symptom is the client's connect timeout
+	// ten seconds later, with a server log showing a session that opened
+	// and never spoke.
+	let stage: Stage = Rc::new(Cell::new("opening the session"));
+	watch_for_stall(&shared, &stage);
 	{
 		let shared = shared.clone();
 		let reliable_writer = reliable_writer.clone();
 		let datagram_writer = datagram_writer.clone();
+		let no_datagrams = no_datagrams.clone();
 		spawn_local(async move {
 			if let Err(e) = JsFuture::from(transport.ready()).await {
-				shared
-					.borrow_mut()
-					.push_disconnected(format!("connect: {}", js_reason(&e)));
-				return;
+				return fail(&shared, format!("connect: {}", js_reason(&e)));
 			}
-			let bi = match JsFuture::from(transport.create_bidirectional_stream()).await {
-				Ok(v) => v.unchecked_into::<WebTransportBidirectionalStream>(),
-				Err(e) => {
-					shared
-						.borrow_mut()
-						.push_disconnected(format!("open stream: {}", js_reason(&e)));
-					return;
-				}
+			stage.set("opening the control stream");
+			let bi = match transport.create_bidirectional_stream() {
+				Ok(p) => match JsFuture::from(p).await {
+					Ok(v) => v,
+					Err(e) => return fail(&shared, format!("open stream: {}", js_reason(&e))),
+				},
+				Err(e) => return fail(&shared, format!("open stream: {}", js_reason(&e))),
 			};
-			// Writers first — the engine reacts to Connected by sending
-			// the preamble + Hello, which must not be dropped.
-			*reliable_writer.borrow_mut() = Some(bi.writable().get_writer());
-			*datagram_writer.borrow_mut() = Some(transport.datagrams().writable().get_writer());
+			let control = "control stream";
+			let writer = match writer_of(&bi, control) {
+				Ok(w) => w,
+				Err(e) => return fail(&shared, e),
+			};
+			let reader = match reader_of(&bi, control) {
+				Ok(r) => r,
+				Err(e) => return fail(&shared, e),
+			};
+			// Datagrams BEFORE Connected, because the answer rides the
+			// Hello that Connected triggers: a client with no datagram
+			// channel has to announce it on the first frame it sends, and
+			// a probe that lands a tick later would be a tick too late.
+			//
+			// Absence is a fact about this browser, not a failure — iOS
+			// Safari ships `WebTransport.datagrams` with no writable side
+			// — so it is recorded rather than reported, and the netcode
+			// carries the traffic on the reliable stream instead.
+			let datagrams = "datagrams";
+			let pair = (!no_datagrams.get())
+				.then(|| prop(AsRef::<JsValue>::as_ref(&transport), "datagrams"))
+				.flatten();
+			let halves = pair
+				.as_ref()
+				.map(|p| (writer_of(p, datagrams), reader_of(p, datagrams)));
+			match halves {
+				Some((Ok(w), Ok(r))) => {
+					*datagram_writer.borrow_mut() = Some(w);
+					spawn_local(read_loop(r, shared.clone(), true));
+				}
+				// Either half missing takes both down: the fallback is a
+				// pair of directions, and a client receiving snapshots on
+				// one channel while sending inputs on another would leave
+				// the server guessing which it should answer on.
+				Some((w, r)) => {
+					let why = w.err().or_else(|| r.err()).unwrap_or_default();
+					log::warn!("webtransport: {why} — unreliable traffic rides the control stream");
+					no_datagrams.set(true);
+				}
+				// Absent, or refused by `?nodatagrams`.
+				None => {
+					log::warn!(
+						"webtransport: no datagrams — unreliable traffic rides the control stream"
+					);
+					no_datagrams.set(true);
+				}
+			}
+			// Connected only now: the handshake rides the reliable stream
+			// alone, so nothing above this line may be able to stop the
+			// client reaching a state where it can report what went wrong.
+			*reliable_writer.borrow_mut() = Some(writer);
 			{
 				let mut s = shared.borrow_mut();
 				if !s.connected_sent {
@@ -299,16 +504,10 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 					s.events.push_back(TransportEvent::Connected);
 				}
 			}
-			spawn_local(read_loop(bi.readable().get_reader(), shared.clone(), false));
-			spawn_local(read_loop(
-				transport.datagrams().readable().get_reader(),
-				shared.clone(),
-				true,
-			));
+			spawn_local(read_loop(reader, shared.clone(), false));
+
 			match JsFuture::from(transport.closed()).await {
-				Ok(_) => shared
-					.borrow_mut()
-					.push_disconnected("closed by server".into()),
+				Ok(info) => shared.borrow_mut().push_disconnected(close_info(&info)),
 				Err(e) => shared
 					.borrow_mut()
 					.push_disconnected(format!("connection: {}", js_reason(&e))),
@@ -322,6 +521,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		transport: Some(transport_handle),
 		reliable_writer,
 		datagram_writer,
+		no_datagrams,
 		dropped_datagrams: 0,
 		wire_rtt: Rc::new(Cell::new(None)),
 		rtt_age: 0,
@@ -419,6 +619,10 @@ impl NetTransport for WebTransportClient {
 
 	fn wire_rtt_ms(&self) -> Option<f32> {
 		self.wire_rtt.get()
+	}
+
+	fn datagrams_available(&self) -> bool {
+		!self.no_datagrams.get()
 	}
 }
 

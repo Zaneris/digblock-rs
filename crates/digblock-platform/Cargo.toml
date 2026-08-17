@@ -17,6 +17,7 @@ image.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
 web-sys = { workspace = true, features = [
 	"Window",
 	"Document",
@@ -24,6 +25,17 @@ web-sys = { workspace = true, features = [
 	"Event",
 	"EventTarget",
 	"HtmlCanvasElement",
+	"CustomEvent",
+	"CustomEventInit",
+	# Fullscreen toggle + Android's in-fullscreen orientation lock.
+	"Screen",
+	"ScreenOrientation",
+	"OrientationLockType",
+	# The soft-keyboard bridge (webtext.rs).
+	"HtmlElement",
+	"HtmlInputElement",
+	"InputEvent",
+	"KeyboardEvent",
 ] }
 
 [lints]

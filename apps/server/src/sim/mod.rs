@@ -230,6 +230,12 @@ struct Client {
 	dead: Cell<bool>,
 	/// Tick the datagram queue first reported Full, cleared on success.
 	dgram_full_since: Cell<Option<u32>>,
+	/// This client's transport has no datagram channel (`NoDatagrams`,
+	/// protocol v26), so its snapshots go out wrapped in
+	/// `ServerMsg::Unreliable` on the reliable stream and its inputs
+	/// arrive the same way. Set once, on a message that lands immediately
+	/// after Hello — before the first snapshot is due.
+	no_datagrams: Cell<bool>,
 	player: Player,
 	look: Vec3,
 	last_intent: PlayerIntent,
@@ -900,6 +906,34 @@ impl Sim {
 				}
 				ClientMsg::Bye => self.drop_client(conn_id),
 				ClientMsg::ClaimLegacy { legacy } => self.claim_legacy(conn_id, legacy),
+				// A transport with no datagram channel: answer in kind from
+				// here on. Arrives immediately after Hello, on the same
+				// ordered stream, so it is in hand before the first
+				// snapshot this client is owed.
+				ClientMsg::NoDatagrams => {
+					if let Some(client) = self.clients.get(&conn_id) {
+						client.no_datagrams.set(true);
+						log::info!(
+							"player {}: no datagram channel — snapshots ride the reliable stream",
+							client.id
+						);
+					}
+				}
+				// The datagram that could not travel as one. Decoded by the
+				// SAME call the net layer makes on a real datagram and
+				// handed to the same sim entry point, so the fallback path
+				// cannot come to mean anything different.
+				ClientMsg::Unreliable(bytes) => {
+					match digblock_net::codec::decode_datagram(&bytes) {
+						Ok(digblock_net::messages::Datagram::Input(batch)) => {
+							self.handle_inputs(conn_id, batch);
+						}
+						// Server-bound only: a client sending itself a
+						// snapshot is nonsense, and silently so.
+						Ok(digblock_net::messages::Datagram::Snapshot(_)) => {}
+						Err(e) => log::debug!("conn {conn_id}: bad wrapped datagram: {e}"),
+					}
+				}
 				// Queued, NOT applied here: a DigStart must not overtake a
 				// same-tick completing EditRequest already in the queue
 				// (see `ClientAction`). Beyond the queue cap it drops
@@ -1715,6 +1749,7 @@ impl Sim {
 				addr,
 				dead: Cell::new(false),
 				dgram_full_since: Cell::new(None),
+				no_datagrams: Cell::new(false),
 				player: Player::new(spawn),
 				look: Vec3::Z,
 				last_intent: PlayerIntent::default(),
@@ -2100,6 +2135,7 @@ mod tests {
 				frames: FrameReader::default(),
 				msgs: Vec::new(),
 				snaps: Vec::new(),
+				dgram_snaps: 0,
 			};
 			let mut closed = false;
 			while let Ok(out) = c.rx.try_recv() {

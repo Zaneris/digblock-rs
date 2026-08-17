@@ -2,13 +2,97 @@
 <html lang="en">
 <head>
 	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<!-- viewport-fit=cover claims the notch area; maximum-scale/user-scalable
+	     suppress double-tap zoom heuristics (iOS ignores them for the
+	     accessibility pinch — touch-action below is the real gesture guard). -->
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+	<!-- iPhone Safari has no Fullscreen API for the menu's row to drive, so
+	     the way to play without the browser's chrome there is an installed
+	     web app: Share -> Add to Home Screen. These declare the page capable
+	     of one, and let it keep the notch area when launched that way (the
+	     same claim viewport-fit=cover makes in the tab). -->
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+	<meta name="apple-mobile-web-app-title" content="DigBlock">
+	<meta name="mobile-web-app-capable" content="yes">
 	<title>DigBlock</title>
 	<style>
-		html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+		html, body {
+			margin: 0; height: 100%; background: #000;
+			/* Stop pull-to-refresh / rubber-banding under the game. */
+			overscroll-behavior: none;
+		}
+		/* Dynamic viewport height where supported: the plain 100% viewport
+		   is undersized under a mobile URL bar at load. (The bar's later
+		   collapse still resizes the canvas — inherent in the browser.) */
+		html, body { height: 100dvh; }
+		/* Nothing scrolls, which is what keeps the page from rubber-banding
+		   under the game. `html.barswipe` below is the single exception and
+		   the only state in which the DOCUMENT can scroll at all. */
+		html { overflow: hidden; }
 		/* winit tracks this canvas's CSS size; wgpu sets the backing size
-		   on surface configure. */
-		#digblock-canvas { width: 100%; height: 100%; display: block; outline: none; }
+		   on surface configure. touch-action is load-bearing on mobile:
+		   winit's prevent_default covers pointer events, not the browser's
+		   own pinch/double-tap gesture recognition.
+
+		   FIXED rather than in flow, because the document underneath it is
+		   allowed to scroll (see #barswipe) and the game must not travel
+		   with it. Sized in `dvh`, not `%`: a fixed box measures the LAYOUT
+		   viewport, which on iOS is the toolbar-hidden height, so a
+		   percentage would hang the bottom of the HUD behind the chrome. */
+		#digblock-canvas {
+			position: fixed; top: 0; left: 0;
+			width: 100%; height: 100%; height: 100dvh;
+			display: block; outline: none;
+			touch-action: none;
+			-webkit-touch-callout: none;
+			-webkit-user-select: none; user-select: none;
+		}
+		/* The only way a browser TAB can reclaim the strip its toolbar sits
+		   in, and a narrow one.
+
+		   iOS Safari collapses that toolbar for a real touch scroll and for
+		   nothing else — script cannot ask, and `minimal-ui` has been gone
+		   since iOS 8. What it wants is the DOCUMENT scrolling: an inner
+		   scroll container was reported to do it on iOS 15 and does not on
+		   the phone this was written for, so the page makes itself
+		   scrollable instead (`html.barswipe` plus #barspacer, which is the
+		   only thing on the page taller than the viewport) and offers one
+		   visible handle to push against. The canvas's `touch-action: none`
+		   is what keeps that safe: no gameplay drag can scroll anything, so
+		   this strip is the only place a scroll can begin.
+
+		   Deliberately clear of both top corners: the touch HUD's menu
+		   button lives in one, and the look-drag area is worth more than
+		   this is. Absolutely positioned rather than fixed, so it travels
+		   with the scroll it starts — a swipe that does nothing visible is
+		   a swipe a player stops making. It removes itself the moment it
+		   works, and the moment it demonstrably cannot. */
+		#barswipe {
+			position: absolute; z-index: 2; display: none;
+			top: calc(env(safe-area-inset-top, 0px) + 6px);
+			left: 50%; transform: translateX(-50%);
+			width: min(76%, 420px);
+			box-sizing: border-box; padding: 12px 18px 14px;
+			border-radius: 18px; background: rgba(0, 0, 0, .58);
+			color: #ddd; text-align: center;
+			font: 14px/1.4 system-ui, sans-serif;
+			touch-action: pan-y;
+			-webkit-user-select: none; user-select: none;
+			-webkit-tap-highlight-color: transparent;
+		}
+		#barswipe small { display: block; margin-top: 4px; color: #8c8c8c; }
+		/* The scroll range itself: one hairline column, taller than the
+		   viewport, that nothing can touch. Without something overflowing,
+		   the gesture scrolls nothing and the browser never hears about it. */
+		#barspacer {
+			position: absolute; z-index: 0; display: none;
+			top: 0; left: 0; width: 1px; height: 220dvh;
+			pointer-events: none;
+		}
+		html.barswipe { overflow-x: hidden; overflow-y: scroll; }
+		html.barswipe #barspacer { display: block; }
+		html.barswipe.barshow #barswipe { display: block; }
 		#loading {
 			position: fixed; inset: 0; z-index: 1; background: #000;
 			display: flex; flex-direction: column; align-items: center;
@@ -34,15 +118,29 @@
 			width: 30%; animation: sweep 1.2s ease-in-out infinite alternate;
 		}
 		@keyframes sweep { from { margin-left: 0 } to { margin-left: 70% } }
-		#status { color: #888; min-height: 1.2em; }
+		#status { color: #bbb; min-height: 1.2em; }
 		#loading pre {
 			color: #f66; white-space: pre-wrap; text-align: left;
 			max-width: 80vw; overflow: auto;
+		}
+		#retry {
+			font: inherit; color: #ddd; background: #222;
+			border: 1px solid #444; border-radius: 8px;
+			padding: 12px 28px;
+		}
+		/* The overlay is the only thing on screen for the whole cold load;
+		   the desktop sizes read as a speck on a phone at arm's length. */
+		@media (pointer: coarse) {
+			#loading { font-size: 18px; gap: 24px; }
+			#loading h1 { font-size: 36px; }
+			#bar { width: min(420px, 76vw); height: 8px; }
 		}
 	</style>
 </head>
 <body>
 	<canvas id="digblock-canvas"></canvas>
+	<div id="barspacer"></div>
+	<div id="barswipe">swipe up here to hide the browser bar<small>tap to dismiss</small></div>
 	<div id="loading">
 		<h1>DIGBLOCK</h1>
 		<div id="bar"><div></div></div>
@@ -72,7 +170,8 @@
 			status.remove();
 			const pre = document.createElement("pre");
 			pre.textContent = "DigBlock failed to start.\n"
-				+ "Chrome 113+ with WebGPU is required.\n\n" + e;
+				+ "This game needs WebGPU — an up-to-date Chrome, Edge,"
+				+ " or Safari.\n\n" + e;
 			overlay.appendChild(pre);
 		};
 		// init() resolves as soon as the event loop is spawned — GPU init is
@@ -80,10 +179,24 @@
 		// here rather than as a rejection of init().
 		addEventListener("error", (e) => fail(e.error ?? e.message));
 		addEventListener("unhandledrejection", (e) => fail(e.reason));
+		// WebKit's non-standard pinch events slip past touch-action on
+		// some iOS versions; harmless everywhere else.
+		addEventListener("gesturestart", (e) => e.preventDefault());
+		// The platform's deliberate startup failure (fixed contract with
+		// this page, like the canvas id): a panic inside a detached wasm
+		// future may never reach the listeners above, so anything that must
+		// be seen arrives as this event instead.
+		addEventListener("digblock-fatal", (e) => fail(e.detail ?? e.type));
+
+		// Startup narration from the platform (the same fixed contract).
+		// The device is in hand; what remains before the first frame is
+		// shader compilation and engine init — long on a phone's cold cache.
+		addEventListener("digblock-gpu-ready", () => {
+			status.textContent = "Preparing…";
+		}, { once: true });
 
 		// The platform layer fires this after presenting the first frame
-		// (a fixed contract with this page, like the canvas id) — only then
-		// is there actually something behind the overlay.
+		// — only then is there actually something behind the overlay.
 		addEventListener("digblock-first-frame", () => {
 			overlay.classList.add("done");
 			// Not transitionend: early inline chunk streaming can starve the
@@ -91,6 +204,122 @@
 			// A timer still fires between jobs and guarantees removal.
 			setTimeout(() => overlay.remove(), 600);
 		}, { once: true });
+
+		// ---- reclaiming the browser toolbar's strip -------------------
+		//
+		// Only ever offered when ALL of these hold, which is precisely the
+		// case it exists for and needs no browser sniffing to establish:
+		// a touch device, no Fullscreen API to offer instead, and a
+		// viewport currently shorter than the one the page would get with
+		// the chrome gone. That last test is the whole mechanism —
+		// `100lvh` is the LARGE viewport, i.e. the height with the dynamic
+		// toolbars hidden, so `lvh > innerHeight` means there is chrome
+		// taking space, and the difference closing is how we know the
+		// swipe worked. Nothing here fires on desktop, where the two are
+		// equal, or in an installed web app, which has no chrome at all.
+		{
+			// Under a few px is rounding, not a toolbar; a swipe under a
+			// few dozen never meant to be one; and a toolbar takes a beat
+			// to animate away before the probe can be believed again.
+			const CHROME_EPS = 8, SWIPE_MIN = 24, SETTLE_MS = 450;
+			const root = document.documentElement;
+			const swipe = document.getElementById("barswipe");
+			// A probe rather than a hardcoded height: the toolbar's size
+			// varies by device, by orientation, and by which of iOS 26's
+			// three toolbar layouts the player chose.
+			const probe = document.createElement("div");
+			probe.style.cssText = "position:fixed;top:0;left:0;width:0;height:100lvh;"
+				+ "visibility:hidden;pointer-events:none";
+			document.body.appendChild(probe);
+			const chromeHeight = () => probe.getBoundingClientRect().height - innerHeight;
+			const eligible = !(document.fullscreenEnabled || document.webkitFullscreenEnabled)
+				&& navigator.maxTouchPoints > 0;
+			let done = !eligible, touching = false;
+			const reconcile = () => {
+				// Never while a finger is down: taking the scroller away
+				// mid-gesture cancels the very scroll being measured.
+				if (done || touching) return;
+				if (chromeHeight() > CHROME_EPS) {
+					root.classList.add("barswipe", "barshow");
+				} else {
+					// Worked. The handle goes, but the page stays
+					// scrollable and stays scrolled — winding it back to
+					// the top is exactly the gesture that brings the
+					// toolbar out again.
+					root.classList.remove("barshow");
+				}
+			};
+			// Out of the way for good: the handle AND the scrollability,
+			// which returns the document to the top it never left.
+			const giveUp = () => {
+				done = true;
+				root.classList.remove("barswipe", "barshow");
+			};
+			swipe.addEventListener("touchstart", () => { touching = true; }, { passive: true });
+			swipe.addEventListener("touchcancel", () => { touching = false; }, { passive: true });
+			swipe.addEventListener("touchend", () => {
+				touching = false;
+				// A touch that scrolled nothing is a player telling us
+				// this is in the way.
+				if (scrollY < SWIPE_MIN) return giveUp();
+				// And a swipe that DID scroll, on a browser that left the
+				// chrome exactly where it was, is one honest attempt at a
+				// trick this browser does not do. An offer that cannot be
+				// taken is worse than no offer: it stays on screen forever
+				// asking for a gesture that never pays.
+				setTimeout(() => (chromeHeight() > CHROME_EPS ? giveUp() : reconcile()), SETTLE_MS);
+			}, { passive: true });
+			// Not before the first frame: the overlay owns the screen until
+			// then, and a hint over it would be the only thing on it. The
+			// viewport listeners arm HERE for exactly that reason, rather
+			// than at script eval — a cold load on a phone sheds its
+			// toolbar while the wasm is still downloading, which fires
+			// `resize` behind the overlay and paints the handle over it.
+			// The handle sits above the overlay, so it is then the only
+			// thing on a black screen, and a tap on it scrolls nothing and
+			// gives up: the feature is off for good before the player has
+			// seen the game.
+			addEventListener("digblock-first-frame", () => setTimeout(() => {
+				addEventListener("resize", reconcile);
+				addEventListener("orientationchange", () => setTimeout(reconcile, 300));
+				visualViewport?.addEventListener("resize", reconcile);
+				reconcile();
+			}, 400), { once: true });
+		}
+
+		// ---- a start that never finishes has to say so ----------------
+		//
+		// Every stage behind the overlay is one that can HANG rather than
+		// fail — a wasm fetch that stalls, an adapter request that never
+		// settles — and the overlay is the whole screen until the first
+		// frame. iOS is where that bites: Safari discards a page this
+		// heavy under memory pressure and re-navigates on return, so a
+		// player who only rotated the phone is looking at a fresh cold
+		// load, and a stuck one is indistinguishable from a slow one. This
+		// says which stage stopped and offers the one action that helps.
+		// Advisory, not fatal: the load is still running underneath, and
+		// finishing removes this along with the rest of the overlay.
+		const STALL_MS = 30000;
+		let stage = "downloading", progressed = performance.now();
+		const nudge = (s) => { stage = s ?? stage; progressed = performance.now(); };
+		addEventListener("digblock-gpu-ready", () => nudge("preparing"), { once: true });
+		addEventListener("digblock-first-frame", () => { stage = null; }, { once: true });
+		const watchdog = setInterval(() => {
+			// `status` leaves the overlay when `fail` takes it over, which
+			// is a diagnosis already — this one has nothing to add to it.
+			if (!stage || !status.isConnected) return clearInterval(watchdog);
+			if (performance.now() - progressed < STALL_MS) return;
+			clearInterval(watchdog);
+			// How the page got here is worth saying: "reload" is the tell
+			// for a tab the browser threw away and brought back.
+			const how = performance.getEntriesByType?.("navigation")?.[0]?.type;
+			status.textContent = `Still ${stage}${how && how !== "navigate" ? ` (page ${how})` : ""}…`;
+			const again = document.createElement("button");
+			again.id = "retry";
+			again.textContent = "Reload";
+			again.onclick = () => location.reload();
+			overlay.appendChild(again);
+		}, 1000);
 
 		// Fetch the wasm by hand so the bar tracks download progress; the
 		// re-wrapped Response keeps the original headers, so wasm-bindgen
@@ -108,19 +337,40 @@
 				transform(chunk, controller) {
 					got += chunk.byteLength;
 					fill.style.width = `${Math.min(100, (got / total) * 100)}%`;
+					// A slow download is not a stalled one.
+					nudge();
 					controller.enqueue(chunk);
 				},
 			});
 			return new Response(resp.body.pipeThrough(counted), { headers: resp.headers });
 		}
 
-		try {
-			await init({ module_or_path: fetchWasm() });
-			fill.style.width = "100%";
-			status.textContent = "Starting engine…";
-		} catch (e) {
-			fail(e);
-			throw e;
+		if (!navigator.gpu) {
+			// Don't download the whole module into a browser that cannot
+			// run it; this is also the only WebGPU check that can tell the
+			// user why (the wasm side would just fail to get an adapter).
+			fail(new Error("navigator.gpu is missing"));
+		} else {
+			// Two rAFs guarantee the overlay has actually been PAINTED
+			// before anything heavy starts. On a cold mobile load, first
+			// paint is briefly held by the browser, and from init() onward
+			// the main thread never idles long enough for one — the page
+			// stayed pure black to the first engine frame without this.
+			await new Promise(requestAnimationFrame);
+			await new Promise(requestAnimationFrame);
+			try {
+				await init({ module_or_path: fetchWasm() });
+				// No byte count tracks the stages from here to the first
+				// frame; keep the bar visibly alive instead. The inline
+				// width from the download must go, or it overrides the
+				// class's sweep.
+				fill.style.width = "";
+				bar.classList.add("indeterminate");
+				status.textContent = "Starting…";
+			} catch (e) {
+				fail(e);
+				throw e;
+			}
 		}
 	</script>
 </body>

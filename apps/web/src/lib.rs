@@ -56,6 +56,12 @@ async fn boot() -> Result<(), JsValue> {
 	console_error_panic_hook::set_once();
 	let _ = console_log::init_with_level(log::Level::Info);
 
+	// This task is queued AHEAD of the page's own `await init()`
+	// continuation, and nothing below yields before `Engine::new` — so
+	// without handing the browser one frame here, the loading overlay's
+	// "Starting…" stage could never paint before the engine was built.
+	digblock_platform::yield_to_browser().await;
+
 	// A sign-in that came back lands here as `?code=&state=` and NOTHING
 	// else — the master replaces the redirect target's query with its own.
 	// `take_callback` puts back the query that configured this page from
@@ -74,7 +80,19 @@ async fn boot() -> Result<(), JsValue> {
 	// ?join / ?server= (non-interactive join for scripted flows). The
 	// defaults are full desktop quality — these exist to opt weaker
 	// hardware down.
-	let mut config = EngineConfig::web();
+	//
+	// Except on a phone or tablet, where the base config is the mobile
+	// one: `?mobile` / `?mobile=0` overrides the detection both ways (the
+	// URL wins, as everywhere), which is also how desktop A/Bs the mobile
+	// defaults without a device in hand.
+	let mobile = params
+		.get("mobile")
+		.map_or_else(is_mobile_browser, |v| v != "0");
+	let mut config = if mobile {
+		EngineConfig::web_mobile()
+	} else {
+		EngineConfig::web()
+	};
 	config.seed = param(&params, "seed");
 	// Dev builds only (like desktop --tod): in multiplayer the server
 	// dictates the world clock. `just web` builds release, so the served
@@ -134,6 +152,7 @@ async fn boot() -> Result<(), JsValue> {
 		ui_scale: config.ui_scale,
 		render_scale: config.render_scale,
 		gi_scale_div: config.gi_scale_div,
+		touch_jump_button: config.touch_jump_button,
 	};
 	let saved = if interactive {
 		settings::load(defaults)
@@ -145,11 +164,15 @@ async fn boot() -> Result<(), JsValue> {
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
 	config.ui_scale = saved.ui_scale;
+	config.touch_jump_button = saved.touch_jump_button;
 	// Density picks both only when NEITHER was saved — the engine applies
 	// them at the first `set_scale_factor`, where the backing scale is
 	// first known (see `gfx_defaults_auto`). Never on a capture path: those
-	// keep the shipped values so no baseline moves with the display.
+	// keep the shipped values so no baseline moves with the display. Never
+	// on the mobile base either: it already IS the density decision, and a
+	// second authority re-deriving it could only agree or fight.
 	config.gfx_defaults_auto = interactive
+		&& !mobile
 		&& saved.render_scale == config.render_scale
 		&& saved.gi_scale_div == config.gi_scale_div;
 	config.render_scale = saved.render_scale;
@@ -167,7 +190,10 @@ async fn boot() -> Result<(), JsValue> {
 		config.gfx_defaults_auto = false;
 	}
 	if let Some(d) = param::<i32>(&params, "draw") {
-		config.draw_dist = d.clamp(10, 32);
+		config.draw_dist = d.clamp(
+			digblock_render::settings::DRAW_MIN,
+			digblock_render::settings::DRAW_MAX,
+		);
 	}
 	if params.get("ssr").is_some() {
 		config.ssr = flag(&params, "ssr");
@@ -178,6 +204,15 @@ async fn boot() -> Result<(), JsValue> {
 			digblock_render::settings::UI_SCALE_MAX,
 		);
 	}
+	// The menu's Fullscreen row, only where the API actually exists — the
+	// shell owns that question, since the shell is what has to act on the
+	// answer. iPhone Safari has neither spelling of the API for most of its
+	// history; there the menu says how to install the page instead (see
+	// index.html), which is that platform's fullscreen. Not while ALREADY
+	// installed, where there is no browser chrome left to shed.
+	config.fullscreen_button = interactive && digblock_platform::fullscreen_available();
+	config.fullscreen_hint =
+		interactive && mobile && !config.fullscreen_button && !installed_web_app();
 	config.overlay = flag(&params, "overlay");
 	// Chunk jobs run in Web Workers when the machine has cores to spare
 	// (jobs.rs); `?workers=N` overrides for A/B, and 0 is the pre-pool
@@ -190,6 +225,11 @@ async fn boot() -> Result<(), JsValue> {
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
+	// `?nodatagrams` makes this browser behave like the one that has no
+	// datagram channel (iOS Safari), so the reliable-stream fallback can be
+	// run on a machine with a console attached. Read here, beside the other
+	// capture knobs, and handed to the transport at connect time.
+	let no_datagrams = flag(&params, "nodatagrams");
 	let join = flag(&params, "join");
 	if join {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
@@ -256,6 +296,9 @@ async fn boot() -> Result<(), JsValue> {
 
 	let workers = config.workers;
 	let mut engine = Engine::new(config);
+	if mobile && let Some(insets) = safe_area_insets() {
+		engine.set_safe_area(insets);
+	}
 	if interactive {
 		// A capture run must not WRITE settings either: a `?renderscale=`
 		// or `?draw=` on the URL would otherwise persist into every later
@@ -292,7 +335,7 @@ async fn boot() -> Result<(), JsValue> {
 	}
 	engine.set_clipboard(Box::new(copy_to_clipboard));
 	if let Some(master_url) = master_url {
-		engine.set_menu_services(services::start(master_url, session));
+		engine.set_menu_services(services::start(master_url, session, no_datagrams));
 	}
 	digblock_platform::run(
 		engine,
@@ -303,10 +346,92 @@ async fn boot() -> Result<(), JsValue> {
 			// wasm doesn't reliably run destructors, so the platform logs
 			// the summary at that boundary rather than from `Drop`.
 			exit_after_frames: param(&params, "frames"),
+			touch: mobile,
 			..Default::default()
 		},
 	)
 	.map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// The display's safe-area insets (notch, home indicator) in PHYSICAL px
+/// — the engine's HUD coordinate space. Script cannot read `env()`
+/// directly; resolving it through a probe element's computed padding is
+/// the standard route. Read once at boot: the common mobile posture is
+/// one orientation per session, and a rotation merely costs the HUD its
+/// inset margin until reload.
+fn safe_area_insets() -> Option<digblock_render::ui::hud::SafeArea> {
+	let window = web_sys::window()?;
+	let document = window.document()?;
+	let probe = document.create_element("div").ok()?;
+	probe
+		.set_attribute(
+			"style",
+			"position:fixed;top:0;left:0;visibility:hidden;\
+			 padding-top:env(safe-area-inset-top);\
+			 padding-right:env(safe-area-inset-right);\
+			 padding-bottom:env(safe-area-inset-bottom);\
+			 padding-left:env(safe-area-inset-left);",
+		)
+		.ok()?;
+	document.body()?.append_child(&probe).ok()?;
+	let style = window.get_computed_style(&probe).ok().flatten();
+	let read = |prop: &str| -> f32 {
+		style
+			.as_ref()
+			.and_then(|s| s.get_property_value(prop).ok())
+			.and_then(|v| v.trim_end_matches("px").parse::<f32>().ok())
+			.unwrap_or(0.0)
+	};
+	let dpr = window.device_pixel_ratio() as f32;
+	let insets = digblock_render::ui::hud::SafeArea {
+		top: read("padding-top") * dpr,
+		right: read("padding-right") * dpr,
+		bottom: read("padding-bottom") * dpr,
+		left: read("padding-left") * dpr,
+	};
+	probe.remove();
+	Some(insets)
+}
+
+/// Is this page running as an installed home-screen app rather than in a
+/// browser tab?
+///
+/// Two spellings, because iOS predates the standard one: `display-mode`
+/// is the media query every other browser answers, and
+/// `navigator.standalone` is what Safari has always used. Either counts —
+/// what the caller wants to know is whether there is still browser chrome
+/// to get rid of.
+fn installed_web_app() -> bool {
+	let Some(w) = web_sys::window() else {
+		return false;
+	};
+	if w.match_media("(display-mode: standalone)")
+		.ok()
+		.flatten()
+		.is_some_and(|m| m.matches())
+	{
+		return true;
+	}
+	js_sys::Reflect::get(&w.navigator(), &JsValue::from_str("standalone"))
+		.ok()
+		.and_then(|v| v.as_bool())
+		.unwrap_or(false)
+}
+
+/// A coarse primary pointer AND a touch digitizer — phones and tablets,
+/// but not touchscreen laptops, whose primary pointer stays fine. Any API
+/// failure answers false: the desktop defaults are the safe fallback.
+fn is_mobile_browser() -> bool {
+	let Some(w) = web_sys::window() else {
+		return false;
+	};
+	if w.navigator().max_touch_points() <= 0 {
+		return false;
+	}
+	w.match_media("(pointer: coarse)")
+		.ok()
+		.flatten()
+		.is_some_and(|m| m.matches())
 }
 
 /// The stamped worker module's URL, published on the global object by

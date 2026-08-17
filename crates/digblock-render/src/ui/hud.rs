@@ -349,6 +349,287 @@ pub fn tool_rail(
 	}
 }
 
+// ---------------------------------------------------------------------
+// Touch HUD: the on-screen controls a finger-first device needs (gated on
+// `EngineConfig::touch_hud`). Layout and hit-testing are PURE functions
+// shared by the draw pass and the engine's input routing — deliberately
+// not the render-pass `ui_hits`, whose rects are one frame stale exactly
+// when a screen has just opened or closed under the finger.
+
+/// Safe-area insets in physical px (notch, home indicator, rounded
+/// corners), forwarded by shells that can measure them. Zero otherwise.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct SafeArea {
+	pub top: f32,
+	pub right: f32,
+	pub bottom: f32,
+	pub left: f32,
+}
+
+/// A tappable region of the touch HUD.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HudButton {
+	/// Top-right: opens the pause menu in-game, closes an open screen.
+	Corner,
+	/// Thumb cluster: place/use at the crosshair (an edge, one per tap).
+	Place,
+	/// Thumb cluster: hold to jump. Drawn only when the jump-mode setting
+	/// selects the button over the double-tap.
+	Jump,
+	/// A hotbar slot: tap to select (the tool slot cycles when already
+	/// selected, mirroring the digit keys).
+	Slot(u8),
+}
+
+// Logical bases, × ui_scale — local to the touch HUD, so they live here
+// rather than in theme.rs.
+const CORNER_BTN_PX: f32 = 44.0;
+/// Thumb-cluster buttons are bigger than the corner one: they are held
+/// and hammered mid-motion, not visited.
+const THUMB_BTN_PX: f32 = 64.0;
+const TOUCH_MARGIN: f32 = 10.0;
+const THUMB_GAP: f32 = 12.0;
+/// Button glyph stroke thickness.
+const GLYPH_STROKE: f32 = 4.0;
+const BTN_INK: u32 = 0xC0FFFFFF;
+
+pub fn corner_button_rect(size: (u32, u32), scale: f32, insets: &SafeArea) -> super::Rect {
+	let px = CORNER_BTN_PX * scale;
+	super::Rect::new(
+		size.0 as f32 - insets.right - TOUCH_MARGIN * scale - px,
+		insets.top + TOUCH_MARGIN * scale,
+		px,
+		px,
+	)
+}
+
+/// The place button sits at the bottom of the thumb cluster — nearest the
+/// resting thumb — anchored above the hotbar row so neither it nor the
+/// tool rail can ever collide with it.
+pub fn place_button_rect(size: (u32, u32), scale: f32, insets: &SafeArea) -> super::Rect {
+	let px = THUMB_BTN_PX * scale;
+	let bar_top = row_grid(size, scale).origin.1;
+	super::Rect::new(
+		size.0 as f32 - insets.right - TOUCH_MARGIN * scale - px,
+		bar_top - THUMB_GAP * scale - px,
+		px,
+		px,
+	)
+}
+
+/// Stacked directly above the place button.
+pub fn jump_button_rect(size: (u32, u32), scale: f32, insets: &SafeArea) -> super::Rect {
+	let place = place_button_rect(size, scale, insets);
+	super::Rect::new(
+		place.x,
+		place.y - THUMB_GAP * scale - place.h,
+		place.w,
+		place.h,
+	)
+}
+
+/// Which HUD button (if any) a touch at physical `(x, y)` lands on.
+/// `jump_button` mirrors the jump-mode setting: when the double-tap is
+/// the jump, there is no button to hit.
+pub fn touch_hit(
+	size: (u32, u32),
+	scale: f32,
+	insets: &SafeArea,
+	jump_button: bool,
+	x: f32,
+	y: f32,
+) -> Option<HudButton> {
+	if corner_button_rect(size, scale, insets).contains(x, y) {
+		return Some(HudButton::Corner);
+	}
+	if place_button_rect(size, scale, insets).contains(x, y) {
+		return Some(HudButton::Place);
+	}
+	if jump_button && jump_button_rect(size, scale, insets).contains(x, y) {
+		return Some(HudButton::Jump);
+	}
+	let grid = row_grid(size, scale);
+	(0..HOTBAR_SLOTS)
+		.find(|&i| bar_slot_rect(&grid, i, scale).contains(x, y))
+		.map(|i| HudButton::Slot(i as u8))
+}
+
+/// A horizontal bar of the glyph stroke, centered spans expressed as
+/// fractions of the button rect.
+fn glyph_bar(dl: &mut super::DrawList, r: super::Rect, fx: f32, fw: f32, fy: f32, t: f32) {
+	dl.quad(
+		Layer::Content,
+		super::Rect::new(r.x + r.w * fx, r.y + r.h * fy - t / 2.0, r.w * fw, t),
+		BTN_INK,
+	);
+}
+
+/// The corner button alone: a ✕ when `close` (an open screen, or a menu
+/// page with somewhere to go back to), a hamburger otherwise.
+///
+/// Public because the MENU draws it too, and draws nothing else of the
+/// touch HUD — a finger needs the same way out of the server browser that
+/// it has out of the inventory, and the menu's own rows are the only
+/// other navigation it has. One function so the two cannot come to look
+/// like different controls.
+pub fn corner_button(
+	dl: &mut super::DrawList,
+	scale: f32,
+	size: (u32, u32),
+	insets: &SafeArea,
+	close: bool,
+) {
+	let t = GLYPH_STROKE * scale;
+	let corner = corner_button_rect(size, scale, insets);
+	dl.quad(Layer::Backdrop, corner, super::theme::FILL_BG);
+	if close {
+		// A pixel ✕: stepped squares along both diagonals — axis-aligned
+		// quads only, in the UI's blocky idiom.
+		const STEPS: i32 = 5;
+		let (cx, cy) = (corner.x + corner.w / 2.0, corner.y + corner.h / 2.0);
+		let span = corner.w * 0.28;
+		for i in -(STEPS / 2)..=(STEPS / 2) {
+			let d = i as f32 / (STEPS / 2) as f32 * span;
+			for sx in [-1.0, 1.0] {
+				dl.quad(
+					Layer::Content,
+					super::Rect::new(cx + d * sx - t / 2.0, cy + d - t / 2.0, t, t),
+					BTN_INK,
+				);
+			}
+		}
+	} else {
+		// Hamburger: the menu lives here.
+		for fy in [0.32, 0.5, 0.68] {
+			glyph_bar(dl, corner, 0.26, 0.48, fy, t);
+		}
+	}
+}
+
+/// Draw the touch HUD's buttons. `screen_open` swaps the corner glyph to
+/// a close mark and suppresses the thumb cluster (the world verbs mean
+/// nothing under a screen); `jump_button` mirrors the jump-mode setting.
+pub fn touch_buttons(
+	dl: &mut super::DrawList,
+	scale: f32,
+	size: (u32, u32),
+	insets: &SafeArea,
+	screen_open: bool,
+	jump_button: bool,
+) {
+	let t = GLYPH_STROKE * scale;
+	corner_button(dl, scale, size, insets, screen_open);
+	if screen_open {
+		return;
+	}
+	let place = place_button_rect(size, scale, insets);
+	dl.quad(Layer::Backdrop, place, super::theme::FILL_BG);
+	// A block outline with a centred plus: "put one here".
+	let inset = place.w * 0.26;
+	let b = super::Rect::new(
+		place.x + inset,
+		place.y + inset,
+		place.w - 2.0 * inset,
+		place.h - 2.0 * inset,
+	);
+	dl.quad(Layer::Content, super::Rect::new(b.x, b.y, b.w, t), BTN_INK);
+	dl.quad(
+		Layer::Content,
+		super::Rect::new(b.x, b.y + b.h - t, b.w, t),
+		BTN_INK,
+	);
+	dl.quad(Layer::Content, super::Rect::new(b.x, b.y, t, b.h), BTN_INK);
+	dl.quad(
+		Layer::Content,
+		super::Rect::new(b.x + b.w - t, b.y, t, b.h),
+		BTN_INK,
+	);
+	glyph_bar(dl, place, 0.42, 0.16, 0.5, t);
+	dl.quad(
+		Layer::Content,
+		super::Rect::new(
+			place.x + place.w / 2.0 - t / 2.0,
+			place.y + place.h * 0.42,
+			t,
+			place.h * 0.16,
+		),
+		BTN_INK,
+	);
+	if jump_button {
+		let jump = jump_button_rect(size, scale, insets);
+		dl.quad(Layer::Backdrop, jump, super::theme::FILL_BG);
+		// A pixel chevron pointing up: three stepped rows.
+		let (cx, w) = (jump.x + jump.w / 2.0, jump.w * 0.14);
+		for (i, fy) in [0.36, 0.48, 0.6].into_iter().enumerate() {
+			let dx = i as f32 * w;
+			for sx in [-1.0, 1.0] {
+				dl.quad(
+					Layer::Content,
+					super::Rect::new(
+						cx + dx * sx - if sx < 0.0 { w } else { 0.0 },
+						jump.y + jump.h * fy,
+						w,
+						t,
+					),
+					BTN_INK,
+				);
+			}
+		}
+	}
+}
+
+/// The live joystick's visualization: an outline ring square at the
+/// anchor the touch went down on, and a filled nub at the finger, clamped
+/// to the ring. Presentation only — the driver's axes are the truth.
+pub fn joystick_overlay(
+	dl: &mut super::DrawList,
+	scale: f32,
+	anchor: (f32, f32),
+	finger: (f32, f32),
+) {
+	const RING: u32 = 0x50FFFFFF;
+	const NUB: u32 = 0x90FFFFFF;
+	/// Visual ring half-size (logical px). A picture of the stick, not
+	/// its calibration — the driver's deflection constant is the truth.
+	const JOY_VIS_R: f32 = 44.0;
+	const NUB_PX: f32 = 22.0;
+	let r = JOY_VIS_R * scale;
+	let t = 2.0 * scale;
+	let (ax, ay) = anchor;
+	dl.quad(
+		Layer::Backdrop,
+		super::Rect::new(ax - r, ay - r, 2.0 * r, t),
+		RING,
+	);
+	dl.quad(
+		Layer::Backdrop,
+		super::Rect::new(ax - r, ay + r - t, 2.0 * r, t),
+		RING,
+	);
+	dl.quad(
+		Layer::Backdrop,
+		super::Rect::new(ax - r, ay - r, t, 2.0 * r),
+		RING,
+	);
+	dl.quad(
+		Layer::Backdrop,
+		super::Rect::new(ax + r - t, ay - r, t, 2.0 * r),
+		RING,
+	);
+	let (mut dx, mut dy) = (finger.0 - ax, finger.1 - ay);
+	let len = (dx * dx + dy * dy).sqrt();
+	if len > r {
+		dx *= r / len;
+		dy *= r / len;
+	}
+	let n = NUB_PX * scale;
+	dl.quad(
+		Layer::Backdrop,
+		super::Rect::new(ax + dx - n / 2.0, ay + dy - n / 2.0, n, n),
+		NUB,
+	);
+}
+
 /// One coalescing XP toast: rapid awards to the same skill accumulate
 /// into a single "+N SKILL" line instead of a scrolling storm. Engine
 /// state — [`xp_toasts`] just draws whatever is live.
@@ -660,6 +941,114 @@ mod tests {
 				before_tool > between_blocks * 3.0,
 				"a break, not a seam: {before_tool} vs {between_blocks}"
 			);
+		}
+	}
+
+	/// Device-shaped (size, scale) pairs: on real hardware the interface
+	/// scale rides the display density, which also multiplies the physical
+	/// size, so the two grow together. A huge scale in a tiny window is
+	/// not a device, and the touch HUD is only drawn on devices.
+	const TOUCH_SWEEP: [((u32, u32), f32); 5] = [
+		((1280, 720), 1.0),
+		((1688, 780), 1.5),
+		((1920, 1080), 2.0),
+		((2532, 1170), 2.25),
+		((2778, 1284), 2.5),
+	];
+
+	fn sweep_insets() -> [SafeArea; 2] {
+		[
+			SafeArea::default(),
+			SafeArea {
+				top: 20.0,
+				right: 44.0,
+				bottom: 20.0,
+				left: 44.0,
+			},
+		]
+	}
+
+	/// The drawn buttons and the hit test are the same rect functions, so
+	/// they cannot drift — this pins that every mark `touch_buttons` makes
+	/// lands inside a rect `touch_hit` answers for, and that each rect's
+	/// center answers its own id.
+	#[test]
+	fn touch_hit_matches_the_drawn_buttons() {
+		for ((w, h), scale) in TOUCH_SWEEP {
+			for insets in sweep_insets() {
+				for jump_button in [false, true] {
+					let size = (w, h);
+					let corner = corner_button_rect(size, scale, &insets);
+					let place = place_button_rect(size, scale, &insets);
+					let jump = jump_button_rect(size, scale, &insets);
+					let center = |r: super::super::Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+					let hit = |x: f32, y: f32| touch_hit(size, scale, &insets, jump_button, x, y);
+					let (cx, cy) = center(corner);
+					assert_eq!(hit(cx, cy), Some(HudButton::Corner));
+					let (px, py) = center(place);
+					assert_eq!(hit(px, py), Some(HudButton::Place));
+					let (jx, jy) = center(jump);
+					assert_eq!(
+						hit(jx, jy),
+						jump_button.then_some(HudButton::Jump),
+						"the jump rect is only live in Button mode"
+					);
+					// The screen's middle belongs to look/dig, never a button.
+					assert_eq!(hit(w as f32 / 2.0, h as f32 / 2.0), None);
+
+					let mut dl = DrawList::default();
+					touch_buttons(&mut dl, scale, size, &insets, false, jump_button);
+					let rects = [corner, place, jump];
+					for layer in [Layer::Backdrop, Layer::Content] {
+						for cmd in dl.cmds(layer).0 {
+							let Cmd::Quad { rect, .. } = cmd else {
+								panic!("touch buttons draw quads only")
+							};
+							assert!(
+								rects.iter().any(|r| rect.x >= r.x - 0.5
+									&& rect.y >= r.y - 0.5 && rect.x + rect.w
+									<= r.x + r.w + 0.5 && rect.y + rect.h
+									<= r.y + r.h + 0.5),
+								"a mark at {rect:?} lies outside every button"
+							);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/// The thumb cluster hangs above the hotbar row and the corner button
+	/// above everything — nothing the touch HUD owns may overlap a bar
+	/// slot (whose taps mean "select"), and every button stays on screen
+	/// inside the safe area.
+	#[test]
+	fn touch_buttons_stay_on_screen_and_clear_of_the_bar() {
+		for ((w, h), scale) in TOUCH_SWEEP {
+			for insets in sweep_insets() {
+				let size = (w, h);
+				let grid = row_grid(size, scale);
+				let buttons = [
+					corner_button_rect(size, scale, &insets),
+					place_button_rect(size, scale, &insets),
+					jump_button_rect(size, scale, &insets),
+				];
+				for b in buttons {
+					assert!(b.x >= insets.left && b.y >= insets.top, "{b:?} off-screen");
+					assert!(
+						b.x + b.w <= w as f32 - insets.right
+							&& b.y + b.h <= h as f32 - insets.bottom,
+						"{b:?} crosses the safe-area edge on {size:?}/{scale}x"
+					);
+					for i in 0..HOTBAR_SLOTS {
+						let s = bar_slot_rect(&grid, i, scale);
+						let overlap = b.x < s.x + s.w
+							&& s.x < b.x + b.w && b.y < s.y + s.h
+							&& s.y < b.y + b.h;
+						assert!(!overlap, "{b:?} overlaps bar slot {i}");
+					}
+				}
+			}
 		}
 	}
 

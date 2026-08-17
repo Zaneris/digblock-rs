@@ -128,6 +128,11 @@ pub(crate) struct TestClient {
 	pub(crate) frames: FrameReader,
 	pub(crate) msgs: Vec<ServerMsg>,
 	pub(crate) snaps: Vec<Snapshot>,
+	/// How many snapshots arrived as REAL datagrams rather than wrapped
+	/// in `ServerMsg::Unreliable`. `snaps` deliberately does not
+	/// distinguish — the client cannot either — so the datagram-fallback
+	/// test needs this to tell the two carriers apart.
+	pub(crate) dgram_snaps: usize,
 }
 
 impl TestClient {
@@ -137,12 +142,25 @@ impl TestClient {
 				OutMsg::Frame(bytes) => {
 					self.frames.extend(&bytes);
 					while let Some(frame) = self.frames.next_frame().unwrap() {
-						self.msgs.push(codec::decode(&frame).unwrap());
+						match codec::decode(&frame).unwrap() {
+							// Unwrapped exactly where the real client
+							// unwraps it, so a test sees the snapshot and
+							// not its envelope.
+							ServerMsg::Unreliable(payload) => {
+								if let Datagram::Snapshot(s) =
+									codec::decode_datagram(&payload).unwrap()
+								{
+									self.snaps.push(s);
+								}
+							}
+							msg => self.msgs.push(msg),
+						}
 					}
 				}
 				OutMsg::Datagram(bytes) => {
 					if let Datagram::Snapshot(s) = codec::decode_datagram(&bytes).unwrap() {
 						self.snaps.push(s);
+						self.dgram_snaps += 1;
 					}
 				}
 				OutMsg::Close => {}
@@ -218,6 +236,14 @@ pub(crate) fn connect_named_as(
 	c
 }
 
+/// The draw distance every harness join asks for, in columns.
+///
+/// Named because tests reason against it: a test about interest radii has
+/// to know how far "out of range" is, and one that walks a player past it
+/// has to know when to stop. Deliberately small — the sim generates every
+/// column inside it before a client goes live.
+pub(crate) const JOIN_DRAW_DIST: i32 = 4;
+
 /// Like `connect` but without asserting the handshake succeeded — for
 /// tests exercising refusals.
 pub(crate) fn try_connect(sim: &mut Sim, conn_id: u64, account: AccountId) -> TestClient {
@@ -244,7 +270,7 @@ pub(crate) fn try_connect_as(
 			msg: ClientMsg::Hello {
 				protocol: PROTOCOL_VERSION,
 				name: name.into(),
-				draw_dist: 4,
+				draw_dist: JOIN_DRAW_DIST,
 				token: [0; 16],
 				sim_version: digblock_core::SIM_VERSION,
 				build: "test".into(),
@@ -256,6 +282,7 @@ pub(crate) fn try_connect_as(
 		frames: FrameReader::default(),
 		msgs: Vec::new(),
 		snaps: Vec::new(),
+		dgram_snaps: 0,
 	};
 	c.drain();
 	c
