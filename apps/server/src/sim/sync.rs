@@ -1,6 +1,6 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
-use super::{DGRAM_STALL_SECS, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
+use super::{DGRAM_STALL_SECS, OUT_CAP, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
 use crate::journal::Journal;
 use digblock_net::codec;
 use digblock_net::messages::{
@@ -24,6 +24,21 @@ const JOIN_SYNC_PER_TICK: usize = 16;
 /// joining client's backlog can never starve edits, chat or teleports —
 /// nor trip the queue-refused drop that `send_frame` reports.
 const JOIN_SYNC_RESERVE: usize = 64;
+
+/// Outbound slots a WRAPPED snapshot may not take, for the same reason
+/// [`JOIN_SYNC_RESERVE`] exists and with more force.
+///
+/// A snapshot travelling as a datagram leaves the queue as fast as the
+/// pump can hand it to the socket, so it can never durably occupy a slot.
+/// Wrapped in a reliable frame it leaves at the speed of ONE stream's flow
+/// control, and a peer that reads slowly parks it there — which puts a
+/// lossy message class in a position to fill the queue whose refusal kills
+/// the client (`client_send_frame`). The player then loses the session
+/// over snapshots that were droppable the whole time, and the edit that
+/// happened to arrive during the stall is what does it. Half the queue is
+/// left to the traffic that dies without a slot; snapshots take the rest
+/// and are simply skipped above it.
+const WRAPPED_SNAPSHOT_RESERVE: usize = OUT_CAP / 2;
 
 /// Neighbor journal-water rescans processed per tick (each is O(that
 /// column's journaled cells)) — an initial full-radius load can't hitch the
@@ -312,9 +327,15 @@ impl Sim {
 				// queue refuses a frame, which is right for an edit and
 				// catastrophic for a snapshot, since snapshots are the one
 				// message class that has always been allowed to stall.
-				Ok(bytes) => match client.out.try_send(snapshot_out(client, bytes)) {
-					Ok(()) => client.dgram_full_since.set(None),
-					Err(TrySendError::Full(_)) => {
+				Ok(bytes) => match queue_snapshot(client, bytes) {
+					Some(Ok(())) => client.dgram_full_since.set(None),
+					// Above the reserve the snapshot is skipped rather than
+					// refused (`None`), so it never counts toward the stall
+					// below: a peer whose stream really has stopped draining
+					// is reaped by a reliable frame meeting a genuinely full
+					// queue, which is the class that cannot survive a drop.
+					None => {}
+					Some(Err(TrySendError::Full(_))) => {
 						// Lossy by contract: dropping snapshots is fine for
 						// a stall, but a queue full for seconds is a peer
 						// that stopped reading.
@@ -332,7 +353,7 @@ impl Sim {
 							Some(_) => {}
 						}
 					}
-					Err(TrySendError::Closed(_)) => client.dead.set(true),
+					Some(Err(TrySendError::Closed(_))) => client.dead.set(true),
 				},
 				Err(e) => {
 					// Losing snapshots is a game-breaking condition — never
@@ -355,6 +376,23 @@ impl Sim {
 		self.snap_players = players;
 		self.snap_buf = dgram;
 	}
+}
+
+/// Hand one snapshot to the client's outbound queue, or `None` when it may
+/// not have a slot at all.
+///
+/// A datagram may always try: the pump hands those to the socket without
+/// ever awaiting, so one cannot sit in the queue. A WRAPPED one is held to
+/// what [`WRAPPED_SNAPSHOT_RESERVE`] leaves it, and above that is skipped
+/// rather than refused — a refusal is what the stall reaper counts, and
+/// this is a policy, not a peer that stopped reading.
+fn queue_snapshot(
+	client: &super::Client,
+	bytes: Vec<u8>,
+) -> Option<Result<(), TrySendError<OutMsg>>> {
+	let out = snapshot_out(client, bytes);
+	let wrapped = matches!(out, OutMsg::Frame(_));
+	(!wrapped || client.out.capacity() > WRAPPED_SNAPSHOT_RESERVE).then(|| client.out.try_send(out))
 }
 
 /// How one snapshot travels to one client: as a datagram, or — for a
@@ -394,10 +432,11 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 mod tests {
 	use super::super::harness::*;
 	use super::super::{Sim, column_of};
+	use super::{DGRAM_STALL_SECS, OUT_CAP, WRAPPED_SNAPSHOT_RESERVE};
 	use digblock_core::chunk::CHUNK_SIZE;
 	use digblock_net::codec;
 	use digblock_net::messages::{ClientMsg, Datagram, EditKind, InputBatch, InputTick, ServerMsg};
-	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
+	use digblock_net::protocol::{MAX_SNAPSHOT_PLAYERS, TICK_RATE};
 	use glam::Vec3;
 
 	fn dig_under(sim: &mut super::super::Sim, conn_id: u64, seq: u32) -> (i32, i32, i32) {
@@ -967,6 +1006,54 @@ mod tests {
 		assert!(
 			(moved - start).length() > 1.0,
 			"a wrapped input batch moves the player ({start} -> {moved})"
+		);
+	}
+
+	/// The stream fallback must not put a LOSSY message class in a
+	/// position to fill the queue a lossless one dies on.
+	///
+	/// A snapshot travelling as a datagram leaves the outbound queue the
+	/// moment the pump reaches it, so it cannot durably hold a slot;
+	/// wrapped in a frame it leaves at the speed of one stream's flow
+	/// control, and a peer reading slowly parks it there. Without a
+	/// reserve the queue fills with snapshots and the next edit, chat
+	/// line or teleport is refused — and `client_send_frame` drops a
+	/// client whose queue refuses a frame, so the session ends over the
+	/// one message class that was always allowed to be dropped instead.
+	///
+	/// The twin of `stalled_datagram_queue_escalates_to_drop`, which pins
+	/// the other half: a peer that has genuinely stopped reading still
+	/// goes. Here the peer is merely behind, and stays.
+	#[test]
+	fn wrapped_snapshots_leave_the_queue_reliable_frames_die_on() {
+		let mut sim = flat_sim("no-datagrams-reserve");
+		let mut c = connect(&mut sim, 1);
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::NoDatagrams,
+		}]);
+		wait_live(&mut sim, 1);
+		c.snaps.clear();
+		// Never drained, and run well past where snapshots alone would
+		// have filled the queue and escalated — the same measure the
+		// datagram half of the rule is tested at.
+		let enough = 3 * OUT_CAP as u32 + (DGRAM_STALL_SECS + 2) * TICK_RATE;
+		for _ in 0..enough {
+			sim.tick_once(vec![]);
+		}
+		assert_eq!(
+			sim.player_count(),
+			1,
+			"a client merely behind on snapshots keeps its session"
+		);
+		// Everything the run queued is still sitting in the channel, so
+		// what arrives now IS what the snapshots were allowed to hold.
+		c.drain();
+		assert!(!c.snaps.is_empty(), "snapshots were being sent at all");
+		assert!(
+			c.snaps.len() <= OUT_CAP - WRAPPED_SNAPSHOT_RESERVE,
+			"{} snapshots parked in the queue — past the share a lossy class may hold",
+			c.snaps.len()
 		);
 	}
 }

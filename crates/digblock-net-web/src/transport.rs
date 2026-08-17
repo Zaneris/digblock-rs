@@ -100,12 +100,18 @@ struct Shared {
 	events: VecDeque<TransportEvent>,
 	connected_sent: bool,
 	disconnected_sent: bool,
+	/// A stream ending, held back to see whether the SESSION is about to
+	/// account for itself. See [`stream_failed`].
+	stream_failure: Option<String>,
 }
 
 impl Shared {
+	/// The session's own account of the end, which always wins: it is the
+	/// one that says whether the server closed us, and with what.
 	fn push_disconnected(&mut self, reason: String) {
 		if !self.disconnected_sent {
 			self.disconnected_sent = true;
+			self.stream_failure = None;
 			self.events
 				.push_back(TransportEvent::Disconnected { reason });
 		}
@@ -170,9 +176,45 @@ fn js_reason(v: &JsValue) -> String {
 	if let Some(s) = v.as_string() {
 		return s;
 	}
-	js_sys::Object::try_from(v)
+	let text = js_sys::Object::try_from(v)
 		.map(|o| String::from(o.to_string()))
-		.unwrap_or_else(|| format!("{v:?}"))
+		.unwrap_or_else(|| format!("{v:?}"));
+	// A `WebTransportError` carries the two things its message does not,
+	// and its message is routinely empty: WHERE it came from — the session
+	// or one stream — and, for a stream the peer reset, the code it was
+	// reset with. `Error.toString()` on an empty message is just the type
+	// name, so without this every failure on this transport reads as the
+	// same three words, which on a phone is the whole of the evidence.
+	let Some(source) = prop(v, "source").and_then(|s| s.as_string()) else {
+		return text;
+	};
+	match prop(v, "streamErrorCode").and_then(|c| c.as_f64()) {
+		Some(code) => format!("{text} [{source}, code {code}]"),
+		None => format!("{text} [{source}]"),
+	}
+}
+
+/// The peer's own account of a clean close, out of `WebTransportCloseInfo`.
+/// A session that ends politely leaves no other trace on the client, so
+/// the code and reason it carries are the only evidence there is.
+fn close_info(info: &JsValue) -> String {
+	let code = prop(info, "closeCode").and_then(|v| v.as_f64());
+	let why = prop(info, "reason")
+		.and_then(|v| v.as_string())
+		.filter(|s| !s.is_empty());
+	match (code, why) {
+		(_, Some(why)) => format!("closed by server: {why}"),
+		(Some(code), None) if code != 0.0 => format!("closed by server (code {code})"),
+		_ => "closed by server".into(),
+	}
+}
+
+/// Run `f` after `ms`, or not at all on a page with no window.
+fn set_timeout(ms: i32, f: impl FnOnce() + 'static) {
+	let fired = Closure::once_into_js(f);
+	if let Some(w) = web_sys::window() {
+		let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(fired.unchecked_ref(), ms);
+	}
 }
 
 /// A property that is present and not nullish, or `None`.
@@ -220,6 +262,42 @@ fn fail(shared: &SharedRef, reason: String) {
 	shared.borrow_mut().push_disconnected(reason);
 }
 
+/// How long a stream's account of the end waits for the session's.
+///
+/// A connection going down settles both at once, and the read is already
+/// in flight, so it wins every time. This is only long enough for the
+/// `closed` promise to land in a later microtask; against a disconnect it
+/// is not a delay anyone can perceive.
+const SESSION_GRACE_MS: i32 = 250;
+
+/// One reader loop ending — reported only if the SESSION does not account
+/// for itself first.
+///
+/// When a QUIC connection goes away BOTH things happen: the pending read
+/// rejects and `closed` settles. The read always gets there first, so what
+/// the player was shown is `stream read: WebTransportError` — a type name
+/// with an empty message — in place of the session's own story, which is
+/// the one that says whether the server dropped us and with what code. A
+/// stream ending is the right answer only when the session outlives it,
+/// and waiting a beat is exactly what tells the two apart.
+fn stream_failed(shared: &SharedRef, reason: String) {
+	{
+		let mut s = shared.borrow_mut();
+		if s.disconnected_sent || s.stream_failure.is_some() {
+			return;
+		}
+		log::warn!("webtransport: {reason}");
+		s.stream_failure = Some(reason);
+	}
+	let shared = shared.clone();
+	set_timeout(SESSION_GRACE_MS, move || {
+		let mut s = shared.borrow_mut();
+		if let Some(reason) = s.stream_failure.take() {
+			s.push_disconnected(reason);
+		}
+	});
+}
+
 /// How far the driver has got, in words a player can read. The stall
 /// watchdog is its only reader.
 type Stage = Rc<Cell<&'static str>>;
@@ -238,7 +316,7 @@ fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
 	const OF_CONNECT_DEADLINE: f32 = 0.7;
 	let ms = (digblock_net::protocol::CONNECT_TIMEOUT_SECS * 1000.0 * OF_CONNECT_DEADLINE) as i32;
 	let (shared, stage) = (shared.clone(), stage.clone());
-	let fired = Closure::once_into_js(move || {
+	set_timeout(ms, move || {
 		let idle = {
 			let s = shared.borrow();
 			!s.connected_sent && !s.disconnected_sent
@@ -247,9 +325,6 @@ fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
 			fail(&shared, format!("timed out {}", stage.get()));
 		}
 	});
-	if let Some(w) = web_sys::window() {
-		let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(fired.unchecked_ref(), ms);
-	}
 }
 
 fn options(cert_hash: [u8; 32]) -> JsValue {
@@ -279,19 +354,13 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 		let res = match JsFuture::from(reader.read()).await {
 			Ok(v) => v.unchecked_into::<ReadResult>(),
 			Err(e) => {
-				shared
-					.borrow_mut()
-					.push_disconnected(format!("stream read: {}", js_reason(&e)));
-				return;
+				return stream_failed(&shared, format!("stream read: {}", js_reason(&e)));
 			}
 		};
 		// Anything but an explicit `false` ends the connection — a result
 		// without a usable `done` is not a result we can keep reading.
 		if !matches!(res.done().as_bool(), Some(false)) {
-			shared
-				.borrow_mut()
-				.push_disconnected("stream closed by server".into());
-			return;
+			return stream_failed(&shared, "stream closed by server".into());
 		}
 		let value = res.value();
 		if value.is_undefined() || value.is_null() {
@@ -321,6 +390,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebT
 		events: VecDeque::new(),
 		connected_sent: false,
 		disconnected_sent: false,
+		stream_failure: None,
 	}));
 	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
 	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
@@ -437,9 +507,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebT
 			spawn_local(read_loop(reader, shared.clone(), false));
 
 			match JsFuture::from(transport.closed()).await {
-				Ok(_) => shared
-					.borrow_mut()
-					.push_disconnected("closed by server".into()),
+				Ok(info) => shared.borrow_mut().push_disconnected(close_info(&info)),
 				Err(e) => shared
 					.borrow_mut()
 					.push_disconnected(format!("connection: {}", js_reason(&e))),

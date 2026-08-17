@@ -18,7 +18,7 @@
 	<title>DigBlock</title>
 	<style>
 		html, body {
-			margin: 0; height: 100%; overflow: hidden; background: #000;
+			margin: 0; height: 100%; background: #000;
 			/* Stop pull-to-refresh / rubber-banding under the game. */
 			overscroll-behavior: none;
 		}
@@ -26,50 +26,73 @@
 		   is undersized under a mobile URL bar at load. (The bar's later
 		   collapse still resizes the canvas — inherent in the browser.) */
 		html, body { height: 100dvh; }
+		/* Nothing scrolls, which is what keeps the page from rubber-banding
+		   under the game. `html.barswipe` below is the single exception and
+		   the only state in which the DOCUMENT can scroll at all. */
+		html { overflow: hidden; }
 		/* winit tracks this canvas's CSS size; wgpu sets the backing size
 		   on surface configure. touch-action is load-bearing on mobile:
 		   winit's prevent_default covers pointer events, not the browser's
-		   own pinch/double-tap gesture recognition. */
+		   own pinch/double-tap gesture recognition.
+
+		   FIXED rather than in flow, because the document underneath it is
+		   allowed to scroll (see #barswipe) and the game must not travel
+		   with it. Sized in `dvh`, not `%`: a fixed box measures the LAYOUT
+		   viewport, which on iOS is the toolbar-hidden height, so a
+		   percentage would hang the bottom of the HUD behind the chrome. */
 		#digblock-canvas {
-			width: 100%; height: 100%; display: block; outline: none;
+			position: fixed; top: 0; left: 0;
+			width: 100%; height: 100%; height: 100dvh;
+			display: block; outline: none;
 			touch-action: none;
 			-webkit-touch-callout: none;
 			-webkit-user-select: none; user-select: none;
 		}
-		/* The one scrollable thing on the page, and the only way a browser
-		   TAB can reclaim the strip its toolbar sits in.
+		/* The only way a browser TAB can reclaim the strip its toolbar sits
+		   in, and a narrow one.
 
 		   iOS Safari collapses that toolbar for a real touch scroll and for
 		   nothing else — script cannot ask, and `minimal-ui` has been gone
-		   since iOS 8. Since iOS 15 an inner scroll container counts, which
-		   is what makes this possible at all: the `overflow: hidden` above
-		   (there to stop the page rubber-banding under the game) is exactly
-		   what otherwise leaves the toolbar pinned open, and the canvas's
-		   `touch-action: none` means no gameplay drag can ever scroll
-		   anything. So the page keeps one small target for a finger to push
-		   against, shown only while there is chrome to shed.
+		   since iOS 8. What it wants is the DOCUMENT scrolling: an inner
+		   scroll container was reported to do it on iOS 15 and does not on
+		   the phone this was written for, so the page makes itself
+		   scrollable instead (`html.barswipe` plus #barspacer, which is the
+		   only thing on the page taller than the viewport) and offers one
+		   visible handle to push against. The canvas's `touch-action: none`
+		   is what keeps that safe: no gameplay drag can scroll anything, so
+		   this strip is the only place a scroll can begin.
 
 		   Deliberately clear of both top corners: the touch HUD's menu
 		   button lives in one, and the look-drag area is worth more than
-		   this is. It removes itself the moment it works. */
+		   this is. Absolutely positioned rather than fixed, so it travels
+		   with the scroll it starts — a swipe that does nothing visible is
+		   a swipe a player stops making. It removes itself the moment it
+		   works, and the moment it demonstrably cannot. */
 		#barswipe {
-			position: fixed; z-index: 2; display: none;
-			top: env(safe-area-inset-top, 0px);
+			position: absolute; z-index: 2; display: none;
+			top: calc(env(safe-area-inset-top, 0px) + 6px);
 			left: 50%; transform: translateX(-50%);
-			width: min(70%, 360px); height: 22vh;
-			overflow-y: scroll; -webkit-overflow-scrolling: touch;
+			width: min(76%, 420px);
+			box-sizing: border-box; padding: 12px 18px 14px;
+			border-radius: 18px; background: rgba(0, 0, 0, .58);
+			color: #ddd; text-align: center;
+			font: 14px/1.4 system-ui, sans-serif;
+			touch-action: pan-y;
+			-webkit-user-select: none; user-select: none;
+			-webkit-tap-highlight-color: transparent;
 		}
-		/* Something to scroll, or the gesture does nothing and the browser
-		   never hears about it. */
-		#barswipe > div { height: 600%; }
-		#barhint {
-			position: fixed; z-index: 3; display: none; pointer-events: none;
-			top: calc(env(safe-area-inset-top, 0px) + 8px);
-			left: 50%; transform: translateX(-50%);
-			padding: 6px 14px; border-radius: 999px;
-			background: rgba(0, 0, 0, .55); color: #ddd;
-			font: 13px system-ui, sans-serif; white-space: nowrap;
+		#barswipe small { display: block; margin-top: 4px; color: #8c8c8c; }
+		/* The scroll range itself: one hairline column, taller than the
+		   viewport, that nothing can touch. Without something overflowing,
+		   the gesture scrolls nothing and the browser never hears about it. */
+		#barspacer {
+			position: absolute; z-index: 0; display: none;
+			top: 0; left: 0; width: 1px; height: 220dvh;
+			pointer-events: none;
 		}
+		html.barswipe { overflow-x: hidden; overflow-y: scroll; }
+		html.barswipe #barspacer { display: block; }
+		html.barswipe.barshow #barswipe { display: block; }
 		#loading {
 			position: fixed; inset: 0; z-index: 1; background: #000;
 			display: flex; flex-direction: column; align-items: center;
@@ -100,6 +123,11 @@
 			color: #f66; white-space: pre-wrap; text-align: left;
 			max-width: 80vw; overflow: auto;
 		}
+		#retry {
+			font: inherit; color: #ddd; background: #222;
+			border: 1px solid #444; border-radius: 8px;
+			padding: 12px 28px;
+		}
 		/* The overlay is the only thing on screen for the whole cold load;
 		   the desktop sizes read as a speck on a phone at arm's length. */
 		@media (pointer: coarse) {
@@ -111,8 +139,8 @@
 </head>
 <body>
 	<canvas id="digblock-canvas"></canvas>
-	<div id="barswipe"><div></div></div>
-	<div id="barhint">swipe up to hide the browser bar</div>
+	<div id="barspacer"></div>
+	<div id="barswipe">swipe up here to hide the browser bar<small>tap to dismiss</small></div>
 	<div id="loading">
 		<h1>DIGBLOCK</h1>
 		<div id="bar"><div></div></div>
@@ -179,7 +207,7 @@
 
 		// ---- reclaiming the browser toolbar's strip -------------------
 		//
-		// Only ever visible when ALL of these hold, which is precisely the
+		// Only ever offered when ALL of these hold, which is precisely the
 		// case it exists for and needs no browser sniffing to establish:
 		// a touch device, no Fullscreen API to offer instead, and a
 		// viewport currently shorter than the one the page would get with
@@ -190,8 +218,12 @@
 		// swipe worked. Nothing here fires on desktop, where the two are
 		// equal, or in an installed web app, which has no chrome at all.
 		{
+			// Under a few px is rounding, not a toolbar; a swipe under a
+			// few dozen never meant to be one; and a toolbar takes a beat
+			// to animate away before the probe can be believed again.
+			const CHROME_EPS = 8, SWIPE_MIN = 24, SETTLE_MS = 450;
+			const root = document.documentElement;
 			const swipe = document.getElementById("barswipe");
-			const hint = document.getElementById("barhint");
 			// A probe rather than a hardcoded height: the toolbar's size
 			// varies by device, by orientation, and by which of iOS 26's
 			// three toolbar layouts the player chose.
@@ -199,30 +231,43 @@
 			probe.style.cssText = "position:fixed;top:0;left:0;width:0;height:100lvh;"
 				+ "visibility:hidden;pointer-events:none";
 			document.body.appendChild(probe);
-			const canFullscreen = document.fullscreenEnabled || document.webkitFullscreenEnabled;
-			let dismissed = false;
 			const chromeHeight = () => probe.getBoundingClientRect().height - innerHeight;
+			const eligible = !(document.fullscreenEnabled || document.webkitFullscreenEnabled)
+				&& navigator.maxTouchPoints > 0;
+			let done = !eligible, touching = false;
 			const reconcile = () => {
-				// Under a few px is rounding, not a toolbar.
-				const show = !dismissed && !canFullscreen && navigator.maxTouchPoints > 0
-					&& chromeHeight() > 8;
-				swipe.style.display = show ? "block" : "none";
-				hint.style.display = show ? "block" : "none";
-				// Rewound while hidden, so the next time it appears there
-				// is somewhere to scroll to. Doing it while visible would
-				// fight the finger; a programmatic scroll never moves the
-				// toolbar either way, so this is free.
-				if (!show) swipe.scrollTop = 0;
+				// Never while a finger is down: taking the scroller away
+				// mid-gesture cancels the very scroll being measured.
+				if (done || touching) return;
+				if (chromeHeight() > CHROME_EPS) {
+					root.classList.add("barswipe", "barshow");
+				} else {
+					// Worked. The handle goes, but the page stays
+					// scrollable and stays scrolled — winding it back to
+					// the top is exactly the gesture that brings the
+					// toolbar out again.
+					root.classList.remove("barshow");
+				}
 			};
-			// A tap that scrolled nothing is a player telling us this is in
-			// the way — on a browser where the trick simply doesn't work,
-			// that is the only thing left to respect.
-			let scrolled = false;
-			swipe.addEventListener("scroll", () => { scrolled = true; }, { passive: true });
-			swipe.addEventListener("touchstart", () => { scrolled = false; }, { passive: true });
+			// Out of the way for good: the handle AND the scrollability,
+			// which returns the document to the top it never left.
+			const giveUp = () => {
+				done = true;
+				root.classList.remove("barswipe", "barshow");
+			};
+			swipe.addEventListener("touchstart", () => { touching = true; }, { passive: true });
+			swipe.addEventListener("touchcancel", () => { touching = false; }, { passive: true });
 			swipe.addEventListener("touchend", () => {
-				if (!scrolled) { dismissed = true; }
-				reconcile();
+				touching = false;
+				// A touch that scrolled nothing is a player telling us
+				// this is in the way.
+				if (scrollY < SWIPE_MIN) return giveUp();
+				// And a swipe that DID scroll, on a browser that left the
+				// chrome exactly where it was, is one honest attempt at a
+				// trick this browser does not do. An offer that cannot be
+				// taken is worse than no offer: it stays on screen forever
+				// asking for a gesture that never pays.
+				setTimeout(() => (chromeHeight() > CHROME_EPS ? giveUp() : reconcile()), SETTLE_MS);
 			}, { passive: true });
 			addEventListener("resize", reconcile);
 			addEventListener("orientationchange", () => setTimeout(reconcile, 300));
@@ -231,6 +276,40 @@
 			// then, and a hint over it would be the only thing on it.
 			addEventListener("digblock-first-frame", () => setTimeout(reconcile, 400), { once: true });
 		}
+
+		// ---- a start that never finishes has to say so ----------------
+		//
+		// Every stage behind the overlay is one that can HANG rather than
+		// fail — a wasm fetch that stalls, an adapter request that never
+		// settles — and the overlay is the whole screen until the first
+		// frame. iOS is where that bites: Safari discards a page this
+		// heavy under memory pressure and re-navigates on return, so a
+		// player who only rotated the phone is looking at a fresh cold
+		// load, and a stuck one is indistinguishable from a slow one. This
+		// says which stage stopped and offers the one action that helps.
+		// Advisory, not fatal: the load is still running underneath, and
+		// finishing removes this along with the rest of the overlay.
+		const STALL_MS = 30000;
+		let stage = "downloading", progressed = performance.now();
+		const nudge = (s) => { stage = s ?? stage; progressed = performance.now(); };
+		addEventListener("digblock-gpu-ready", () => nudge("preparing"), { once: true });
+		addEventListener("digblock-first-frame", () => { stage = null; }, { once: true });
+		const watchdog = setInterval(() => {
+			// `status` leaves the overlay when `fail` takes it over, which
+			// is a diagnosis already — this one has nothing to add to it.
+			if (!stage || !status.isConnected) return clearInterval(watchdog);
+			if (performance.now() - progressed < STALL_MS) return;
+			clearInterval(watchdog);
+			// How the page got here is worth saying: "reload" is the tell
+			// for a tab the browser threw away and brought back.
+			const how = performance.getEntriesByType?.("navigation")?.[0]?.type;
+			status.textContent = `Still ${stage}${how && how !== "navigate" ? ` (page ${how})` : ""}…`;
+			const again = document.createElement("button");
+			again.id = "retry";
+			again.textContent = "Reload";
+			again.onclick = () => location.reload();
+			overlay.appendChild(again);
+		}, 1000);
 
 		// Fetch the wasm by hand so the bar tracks download progress; the
 		// re-wrapped Response keeps the original headers, so wasm-bindgen
@@ -248,6 +327,8 @@
 				transform(chunk, controller) {
 					got += chunk.byteLength;
 					fill.style.width = `${Math.min(100, (got / total) * 100)}%`;
+					// A slow download is not a stalled one.
+					nudge();
 					controller.enqueue(chunk);
 				},
 			});
