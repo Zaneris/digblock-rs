@@ -785,14 +785,14 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "digblock-assets"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "naga",
 ]
 
 [[package]]
 name = "digblock-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "glam",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-desktop"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "arboard",
  "digblock-net",
@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-ios"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-platform",
  "digblock-render",
@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-net"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-core",
  "glam",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-net-native"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "digblock-net",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-net-web"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-net",
  "js-sys",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-persist"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-core",
  "digblock-net",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-platform"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "image",
  "js-sys",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-render"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "digblock-assets",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-server"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-web"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "digblock-web-worker"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "console_error_panic_hook",
  "digblock-core",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "shadercheck"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-assets",
 ]
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "texgen"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "digblock-core",
  "image",
