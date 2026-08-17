@@ -68,7 +68,12 @@ def ensure_cert(ip):
 			capture_output=True,
 			text=True,
 		).stdout
-		if f"IP Address:{ip}" in sans:
+		# Split before comparing: openssl prints the SANs as one
+		# comma-separated line, and a substring test matches a PREFIX of a
+		# neighbouring address. DHCP hands out .5 where it used to hand out
+		# .50, the stale cert is reused, and the phone gets a name mismatch
+		# with nothing on screen pointing at the cert directory.
+		if f"IP Address:{ip}" in {e.strip() for e in sans.replace("\n", ",").split(",")}:
 			return cert, key
 	os.makedirs(CERT_DIR, exist_ok=True)
 	subprocess.run(

@@ -1919,9 +1919,23 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::dim(if n.claiming {
-						"claiming..."
+						"claiming...".to_string()
 					} else {
-						"3-10 chars: a-z A-Z 0-9 - _ , enter confirms"
+						// The rule, from the function that enforces it, and
+						// then the key — separately, because only the second
+						// half is a keyboard hint and this page is reachable
+						// on a device with no keys to name. Written as a
+						// `dim` rather than through `hint` for exactly that
+						// reason, which is the thirteenth line the helper
+						// above predicted.
+						use digblock_net::protocol::{MAX_DISPLAY_NAME, MIN_DISPLAY_NAME};
+						let rule =
+							format!("{MIN_DISPLAY_NAME}-{MAX_DISPLAY_NAME} chars: a-z A-Z 0-9 - _");
+						if touch {
+							rule
+						} else {
+							format!("{rule}, enter confirms")
+						}
 					}),
 				);
 			}
@@ -3333,6 +3347,27 @@ mod tests {
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
 	}
 
+	/// The `Screen` a page landed on, as a stable name. Exhaustive on
+	/// purpose: a new page cannot be added without being named here, and
+	/// `every_touch_page` then refuses to pass until the sweep reaches it.
+	/// That pair is what makes the sweep a sweep — the list of pages below
+	/// is hand-written, so on its own it is a spot-check wearing a loop.
+	fn screen_name(s: &Screen) -> &'static str {
+		match s {
+			Screen::Root { .. } => "root",
+			Screen::Browser(_) => "browser",
+			Screen::Connecting { .. } => "connecting",
+			Screen::Settings { .. } => "settings",
+			Screen::Worlds(_) => "worlds",
+			Screen::CreateWorld { .. } => "create world",
+			Screen::WorldActions { .. } => "world actions",
+			Screen::ConfirmDelete { .. } => "confirm delete",
+			Screen::SignIn(_) => "sign in",
+			Screen::ChooseName(_) => "choose name",
+			Screen::Account { .. } => "account",
+		}
+	}
+
 	/// Every page a finger can reach, for the two touch rules that have to
 	/// hold on all of them: it can be backed out of, and it never names a
 	/// key.
@@ -3341,18 +3376,42 @@ mod tests {
 	/// pages nobody thought of. The server browser was the one that bit —
 	/// its only exit was an Escape it advertised in a hint line, on a
 	/// device with no Escape and no hint worth reading.
+	///
+	/// The sweep proves its own completeness at the end: every `Screen`
+	/// variant `screen_name` knows about has to have been visited. A page
+	/// added later fails to compile there and fails the coverage assert
+	/// here, which is the only arrangement in which "the pages nobody
+	/// thought of" is a claim rather than a hope.
 	fn every_touch_page(mut visit: impl FnMut(&mut Menu, &str)) {
+		use std::collections::BTreeSet;
+		let mut seen: BTreeSet<&'static str> = BTreeSet::new();
 		// Reached through the menu's own actions rather than by building
 		// its state by hand, so a page that changes how it is entered is
 		// still the page this sweeps. All but the last hang off the TITLE
 		// menu, which is where a phone meets most of them.
-		let pages: [(&str, &[Act]); 6] = [
+		let pages: [(&str, &[Act]); 11] = [
 			("title root", &[]),
 			("multiplayer", &[Act::OpenMultiplayer]),
 			("settings", &[Act::OpenSettings]),
 			("worlds", &[Act::OpenWorlds]),
 			("create world", &[Act::OpenWorlds, Act::OpenCreate]),
+			("world actions", &[Act::OpenWorlds, Act::WorldRow(0)]),
+			(
+				"confirm delete",
+				&[Act::OpenWorlds, Act::WorldRow(0), Act::DeleteWorld],
+			),
 			("account", &[Act::OpenAccount]),
+			(
+				"sign in",
+				&[Act::StartSignIn {
+					then_multiplayer: true,
+				}],
+			),
+			("connecting", &[Act::OpenMultiplayer, Act::JoinRow(0)]),
+			// The rename is the reachable half of the name picker: a first
+			// pick needs a sign-in round trip, and both open the same page
+			// through the same call.
+			("choose name", &[Act::OpenAccount, Act::OpenRename]),
 		];
 		for (name, acts) in pages {
 			let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
@@ -3361,6 +3420,18 @@ mod tests {
 			menu.set_services_available();
 			for &act in acts {
 				menu.activate(act);
+				// Two lists arrive from outside rather than from a press,
+				// and the pages behind them are unreachable without one.
+				match act {
+					Act::OpenWorlds => {
+						menu.take_world_intents();
+						menu.set_world_list(vec![world_row("w1", "Home", true)]);
+					}
+					Act::OpenMultiplayer => {
+						menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+					}
+					_ => {}
+				}
 			}
 			// A sweep that silently stayed on Root would pass everything.
 			assert_eq!(
@@ -3368,6 +3439,9 @@ mod tests {
 				acts.is_empty(),
 				"{name} was not reached"
 			);
+			if let Some(s) = &menu.screen {
+				seen.insert(screen_name(s));
+			}
 			visit(&mut menu, name);
 		}
 		// The in-world root is a different page from the title one: it has
@@ -3378,12 +3452,51 @@ mod tests {
 		menu.open();
 		assert!(matches!(menu.screen, Some(Screen::Root { .. })));
 		visit(&mut menu, "in-world root");
+
+		// The claim the doc above makes, checked rather than asserted: a
+		// page `screen_name` knows and this sweep never stood on is a page
+		// neither touch rule was ever applied to.
+		let missing: Vec<_> = ALL_SCREEN_NAMES
+			.iter()
+			.filter(|n| !seen.contains(*n))
+			.collect();
+		assert!(
+			missing.is_empty(),
+			"never swept: {missing:?} — add the page above, or this is a spot-check"
+		);
 	}
+
+	/// Every name [`screen_name`] can return. Hand-written, and held to
+	/// the match by `every_touch_page`'s own coverage assert: a variant
+	/// added to one and not the other is caught the first time the sweep
+	/// runs.
+	const ALL_SCREEN_NAMES: &[&str] = &[
+		"root",
+		"browser",
+		"connecting",
+		"settings",
+		"worlds",
+		"create world",
+		"world actions",
+		"confirm delete",
+		"sign in",
+		"choose name",
+		"account",
+	];
 
 	#[test]
 	fn a_touch_page_never_names_a_key() {
 		every_touch_page(|menu, page| {
 			for row in menu.view(SIZE, 1.0, false).rows {
+				// Only the rows that are PROSE. A selectable row is a thing
+				// a finger presses and its label is a verb — the world
+				// actions page offers "Enter World", a place to go rather
+				// than a key to press, and matching on the word alone reads
+				// it as the second. An instruction to press something can
+				// only live in a row you cannot press.
+				if row.id.is_some() {
+					continue;
+				}
 				let t = row.text.to_lowercase();
 				for word in ["esc", "arrows", "enter "] {
 					assert!(

@@ -269,12 +269,22 @@
 				// asking for a gesture that never pays.
 				setTimeout(() => (chromeHeight() > CHROME_EPS ? giveUp() : reconcile()), SETTLE_MS);
 			}, { passive: true });
-			addEventListener("resize", reconcile);
-			addEventListener("orientationchange", () => setTimeout(reconcile, 300));
-			visualViewport?.addEventListener("resize", reconcile);
 			// Not before the first frame: the overlay owns the screen until
-			// then, and a hint over it would be the only thing on it.
-			addEventListener("digblock-first-frame", () => setTimeout(reconcile, 400), { once: true });
+			// then, and a hint over it would be the only thing on it. The
+			// viewport listeners arm HERE for exactly that reason, rather
+			// than at script eval — a cold load on a phone sheds its
+			// toolbar while the wasm is still downloading, which fires
+			// `resize` behind the overlay and paints the handle over it.
+			// The handle sits above the overlay, so it is then the only
+			// thing on a black screen, and a tap on it scrolls nothing and
+			// gives up: the feature is off for good before the player has
+			// seen the game.
+			addEventListener("digblock-first-frame", () => setTimeout(() => {
+				addEventListener("resize", reconcile);
+				addEventListener("orientationchange", () => setTimeout(reconcile, 300));
+				visualViewport?.addEventListener("resize", reconcile);
+				reconcile();
+			}, 400), { once: true });
 		}
 
 		// ---- a start that never finishes has to say so ----------------

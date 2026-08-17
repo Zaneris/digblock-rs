@@ -124,6 +124,16 @@ impl TouchDriver {
 						lt.past_slop = true;
 						lt.last = p;
 						self.last_tap = None;
+					} else {
+						// Still inside the slop, so this movement is not look
+						// yet — but `last` has to follow the finger anyway.
+						// A hold promotes to `digging` from `tick`, not from
+						// here, and the first Moved after that measures from
+						// `last`: leave it parked at the touch-down point and
+						// every drift the finger made while the hold armed
+						// arrives as one snap of camera, which is the exact
+						// thing the crossing branch above refuses to do.
+						lt.last = p;
 					}
 				}
 			}
@@ -327,6 +337,40 @@ mod tests {
 		t.handle(5, Phase::Moved, 0.85, 0.5, held(t0));
 		assert!(t.dig_held());
 		assert!(t.take_look().x > 10.0);
+	}
+
+	/// A finger never lands and holds perfectly still, so the drift it
+	/// makes while the dig hold arms must not be waiting to be spent as
+	/// look the moment the hold lands. It measured as a camera snap on
+	/// the first fine-aim of every dig: sub-slop movement left `last` at
+	/// the touch-down point, and the first Moved after the promotion
+	/// billed the whole of it at once.
+	///
+	/// Pinned as an inequality against the same gesture with no settling
+	/// in it rather than against a number, because what is wrong here is
+	/// double-counting, not a magnitude.
+	#[test]
+	fn settling_before_a_dig_is_not_banked_as_look() {
+		let aim = |settle: f32| {
+			let t0 = Instant::now();
+			let mut t = TouchDriver::new();
+			t.handle(5, Phase::Started, 0.8, 0.5, t0);
+			// Inside the slop: a finger settling, not a drag.
+			t.handle(5, Phase::Moved, 0.8 + settle, 0.5, t0);
+			t.tick(held(t0));
+			assert!(t.dig_held());
+			t.handle(5, Phase::Moved, 0.85, 0.5, held(t0));
+			t.take_look().x
+		};
+		// Both gestures END at the same place, so the one that got part of
+		// the way there before the dig began owes strictly less look. Equal
+		// is the bug: it means the settling was billed too.
+		let settled = aim(TAP_SLOP * 0.5);
+		let still = aim(0.0);
+		assert!(
+			settled < still,
+			"settling was billed as look: {settled} against {still}"
+		);
 	}
 
 	#[test]
