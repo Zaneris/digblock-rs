@@ -36,6 +36,40 @@
 			-webkit-touch-callout: none;
 			-webkit-user-select: none; user-select: none;
 		}
+		/* The one scrollable thing on the page, and the only way a browser
+		   TAB can reclaim the strip its toolbar sits in.
+
+		   iOS Safari collapses that toolbar for a real touch scroll and for
+		   nothing else — script cannot ask, and `minimal-ui` has been gone
+		   since iOS 8. Since iOS 15 an inner scroll container counts, which
+		   is what makes this possible at all: the `overflow: hidden` above
+		   (there to stop the page rubber-banding under the game) is exactly
+		   what otherwise leaves the toolbar pinned open, and the canvas's
+		   `touch-action: none` means no gameplay drag can ever scroll
+		   anything. So the page keeps one small target for a finger to push
+		   against, shown only while there is chrome to shed.
+
+		   Deliberately clear of both top corners: the touch HUD's menu
+		   button lives in one, and the look-drag area is worth more than
+		   this is. It removes itself the moment it works. */
+		#barswipe {
+			position: fixed; z-index: 2; display: none;
+			top: env(safe-area-inset-top, 0px);
+			left: 50%; transform: translateX(-50%);
+			width: min(70%, 360px); height: 22vh;
+			overflow-y: scroll; -webkit-overflow-scrolling: touch;
+		}
+		/* Something to scroll, or the gesture does nothing and the browser
+		   never hears about it. */
+		#barswipe > div { height: 600%; }
+		#barhint {
+			position: fixed; z-index: 3; display: none; pointer-events: none;
+			top: calc(env(safe-area-inset-top, 0px) + 8px);
+			left: 50%; transform: translateX(-50%);
+			padding: 6px 14px; border-radius: 999px;
+			background: rgba(0, 0, 0, .55); color: #ddd;
+			font: 13px system-ui, sans-serif; white-space: nowrap;
+		}
 		#loading {
 			position: fixed; inset: 0; z-index: 1; background: #000;
 			display: flex; flex-direction: column; align-items: center;
@@ -77,6 +111,8 @@
 </head>
 <body>
 	<canvas id="digblock-canvas"></canvas>
+	<div id="barswipe"><div></div></div>
+	<div id="barhint">swipe up to hide the browser bar</div>
 	<div id="loading">
 		<h1>DIGBLOCK</h1>
 		<div id="bar"><div></div></div>
@@ -140,6 +176,61 @@
 			// A timer still fires between jobs and guarantees removal.
 			setTimeout(() => overlay.remove(), 600);
 		}, { once: true });
+
+		// ---- reclaiming the browser toolbar's strip -------------------
+		//
+		// Only ever visible when ALL of these hold, which is precisely the
+		// case it exists for and needs no browser sniffing to establish:
+		// a touch device, no Fullscreen API to offer instead, and a
+		// viewport currently shorter than the one the page would get with
+		// the chrome gone. That last test is the whole mechanism —
+		// `100lvh` is the LARGE viewport, i.e. the height with the dynamic
+		// toolbars hidden, so `lvh > innerHeight` means there is chrome
+		// taking space, and the difference closing is how we know the
+		// swipe worked. Nothing here fires on desktop, where the two are
+		// equal, or in an installed web app, which has no chrome at all.
+		{
+			const swipe = document.getElementById("barswipe");
+			const hint = document.getElementById("barhint");
+			// A probe rather than a hardcoded height: the toolbar's size
+			// varies by device, by orientation, and by which of iOS 26's
+			// three toolbar layouts the player chose.
+			const probe = document.createElement("div");
+			probe.style.cssText = "position:fixed;top:0;left:0;width:0;height:100lvh;"
+				+ "visibility:hidden;pointer-events:none";
+			document.body.appendChild(probe);
+			const canFullscreen = document.fullscreenEnabled || document.webkitFullscreenEnabled;
+			let dismissed = false;
+			const chromeHeight = () => probe.getBoundingClientRect().height - innerHeight;
+			const reconcile = () => {
+				// Under a few px is rounding, not a toolbar.
+				const show = !dismissed && !canFullscreen && navigator.maxTouchPoints > 0
+					&& chromeHeight() > 8;
+				swipe.style.display = show ? "block" : "none";
+				hint.style.display = show ? "block" : "none";
+				// Rewound while hidden, so the next time it appears there
+				// is somewhere to scroll to. Doing it while visible would
+				// fight the finger; a programmatic scroll never moves the
+				// toolbar either way, so this is free.
+				if (!show) swipe.scrollTop = 0;
+			};
+			// A tap that scrolled nothing is a player telling us this is in
+			// the way — on a browser where the trick simply doesn't work,
+			// that is the only thing left to respect.
+			let scrolled = false;
+			swipe.addEventListener("scroll", () => { scrolled = true; }, { passive: true });
+			swipe.addEventListener("touchstart", () => { scrolled = false; }, { passive: true });
+			swipe.addEventListener("touchend", () => {
+				if (!scrolled) { dismissed = true; }
+				reconcile();
+			}, { passive: true });
+			addEventListener("resize", reconcile);
+			addEventListener("orientationchange", () => setTimeout(reconcile, 300));
+			visualViewport?.addEventListener("resize", reconcile);
+			// Not before the first frame: the overlay owns the screen until
+			// then, and a hint over it would be the only thing on it.
+			addEventListener("digblock-first-frame", () => setTimeout(reconcile, 400), { once: true });
+		}
 
 		// Fetch the wasm by hand so the bar tracks download progress; the
 		// re-wrapped Response keeps the original headers, so wasm-bindgen

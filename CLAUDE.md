@@ -730,6 +730,15 @@ page's loading overlay is a fixed contract with the platform layer: `digblock-gp
 before wasm instantiation begins — the double-rAF in index.html is what guarantees that on a cold mobile load, where the
 main thread never idles again until the first engine frame.
 
+**A browser TAB can reclaim the toolbar's strip, but only by being scrolled.** iOS Safari collapses its toolbar for a
+real touch scroll and nothing else — script cannot ask, and `minimal-ui` has been gone since iOS 8 — but since iOS 15 an
+inner scroll container counts. index.html's `#barswipe` is that container, and the `overflow: hidden` above it (there to
+stop the page rubber-banding under the game) is exactly what would otherwise leave the toolbar pinned open. It shows
+itself on a test that needs no browser sniffing: a touch device, no Fullscreen API to offer instead, and a `100lvh`
+probe taller than `innerHeight` — `lvh` being the viewport with the dynamic toolbars gone, so the difference IS the
+chrome, and the difference closing is how the page knows the swipe worked. A tap that scrolled nothing dismisses it,
+which is the only thing left to respect on a browser where the trick doesn't take.
+
 **A fresh canvas reports 0×0**, which is why every async GPU init ends at `App::adopt_window_size`. winit fills the
 canvas's size in from a `ResizeObserver` that first fires at the browser's next rendering step, so an init that beats
 that callback configures the surface at the `max(1)` floor — and the `Resized` that follows lands while the app is still
