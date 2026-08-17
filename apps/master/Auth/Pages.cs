@@ -96,7 +96,7 @@ public static class Pages
     // radius is the correct outcome, not a layout bug to tidy away.
     //
     // Two details there are ours, because that kit specifies neither. The
-    // border is the kit's #8C8C8C, which it draws on the LIGHT button: the
+    // border is the kit's own, which it draws on the LIGHT button: the
     // dark one is drawn for a light page and would sit on this one as a
     // near-invisible rectangle, so a stroke the kit already defines is the
     // smallest way to keep the button separable from the card behind it.

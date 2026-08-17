@@ -5,9 +5,10 @@
 # A block written top-down reads fine in the file and lists as a fragment.
 
 # A git-ignored `.env` at the repo root feeds every recipe: real OAuth
-# credentials for the local master live there (Master__Auth__Google__*),
-# never in this file or appsettings.json. Nothing breaks without one —
-# the provider is simply off and dev sign-in still works.
+# credentials for the local master live there, an id and a secret per
+# provider under `Master__Auth__`, never in this file or appsettings.json.
+# Nothing breaks without one — a provider missing either half is simply
+# off, and dev sign-in still works with none of them configured at all.
 set dotenv-load := true
 
 # The scene, capture and attribution flags are catalogued in CLAUDE.md.
@@ -210,9 +211,9 @@ compose-bots PROFILE="clean":
 # recognise. Needs wasm-bindgen-cli at the exact version in Cargo.lock:
 # cargo install wasm-bindgen-cli.
 # Query params mirror desktop flags: ?seed= ?tod= ?draw= ?ssr=0 ?overlay
-# ?mute, plus ?devsignin=<subject> for scripted joins (the browser sign-in
-# needs a real Google or Facebook app configured on the master, and the dev
-# master has neither).
+# ?mute, plus ?devsignin=<subject> for scripted joins, which needs no
+# provider at all — the browser sign-in offers whichever providers `.env`
+# carries credentials for, and nothing if it carries none.
 #
 # Browser client: release wasm build + bindgen + a static server on :8080.
 web:
