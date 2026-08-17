@@ -305,7 +305,14 @@ impl Sim {
 				players = s.others;
 			}
 			match encoded {
-				Ok(bytes) => match client.out.try_send(OutMsg::Datagram(bytes)) {
+				// A client with no datagram channel gets the same payload
+				// wrapped in a reliable frame — and keeps every bit of the
+				// handling below it, drop-on-full included. That is the
+				// load-bearing part: `send_frame` kills a client whose
+				// queue refuses a frame, which is right for an edit and
+				// catastrophic for a snapshot, since snapshots are the one
+				// message class that has always been allowed to stall.
+				Ok(bytes) => match client.out.try_send(snapshot_out(client, bytes)) {
 					Ok(()) => client.dgram_full_since.set(None),
 					Err(TrySendError::Full(_)) => {
 						// Lossy by contract: dropping snapshots is fine for
@@ -350,6 +357,28 @@ impl Sim {
 	}
 }
 
+/// How one snapshot travels to one client: as a datagram, or — for a
+/// client that announced `NoDatagrams` — as the same bytes wrapped in a
+/// reliable frame.
+///
+/// An encode failure here falls back to the datagram, which that client
+/// cannot receive; that is deliberate. The wrap is a `Vec<u8>` inside an
+/// enum variant and cannot fail for any reason a retry would fix, and the
+/// alternative is dropping a client over a condition that does not exist.
+fn snapshot_out(client: &super::Client, bytes: Vec<u8>) -> OutMsg {
+	if !client.no_datagrams.get() {
+		return OutMsg::Datagram(bytes);
+	}
+	let mut frame = Vec::new();
+	match codec::write_frame(&ServerMsg::Unreliable(bytes), &mut frame) {
+		Ok(()) => OutMsg::Frame(frame.into()),
+		Err(e) => {
+			log::error!("player {}: wrapping a snapshot: {e}", client.id);
+			OutMsg::Datagram(Vec::new())
+		}
+	}
+}
+
 fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> bool {
 	let Some(cells) = journal.index.column(cx, cz) else {
 		return true;
@@ -366,7 +395,8 @@ mod tests {
 	use super::super::harness::*;
 	use super::super::{Sim, column_of};
 	use digblock_core::chunk::CHUNK_SIZE;
-	use digblock_net::messages::{EditKind, InputTick, ServerMsg};
+	use digblock_net::codec;
+	use digblock_net::messages::{ClientMsg, Datagram, EditKind, InputBatch, InputTick, ServerMsg};
 	use digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
 	use glam::Vec3;
 
@@ -889,6 +919,54 @@ mod tests {
 		assert!(
 			b_last.me.is_some(),
 			"B keeps its own state even with nobody nearby"
+		);
+	}
+
+	/// A client whose transport has no datagram channel (iOS Safari ships
+	/// `WebTransport.datagrams` with no writable side) is served over the
+	/// reliable stream in BOTH directions — protocol v25.
+	///
+	/// Both halves matter and they are separate mechanisms: the server has
+	/// to stop aiming snapshots at a channel that is not there, and it has
+	/// to accept inputs that arrive wrapped. Either one alone leaves a
+	/// player who can see the world but not move, or move but never see
+	/// anyone.
+	#[test]
+	fn a_client_without_datagrams_is_served_over_the_reliable_stream() {
+		let mut sim = flat_sim("no-datagrams");
+		let mut c = connect(&mut sim, 1);
+		sim.tick_once(vec![super::super::SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::NoDatagrams,
+		}]);
+		wait_live(&mut sim, 1);
+		for _ in 0..6 {
+			sim.tick_once(vec![]);
+		}
+		c.drain();
+		assert!(!c.snaps.is_empty(), "snapshots still arrive");
+		assert_eq!(
+			c.dgram_snaps, 0,
+			"nothing was sent down the channel this client does not have"
+		);
+
+		// And its inputs, wrapped the way the client wraps them, drive the
+		// same physics an input datagram drives.
+		let start = sim.test_player(1).expect("connected").pos;
+		for t in 100..160 {
+			let dg = Datagram::Input(InputBatch {
+				inputs: vec![input(t, true, no_claim())],
+			});
+			let payload = codec::encode_datagram(&dg).expect("encodes");
+			sim.tick_once(vec![super::super::SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Unreliable(payload),
+			}]);
+		}
+		let moved = sim.test_player(1).expect("connected").pos;
+		assert!(
+			(moved - start).length() > 1.0,
+			"a wrapped input batch moves the player ({start} -> {moved})"
 		);
 	}
 }

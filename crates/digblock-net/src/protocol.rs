@@ -122,7 +122,13 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// now owns it. An ordinary append (a v23 peer can't decode the new
 /// variant index), so `MIN_PROTOCOL` stays where v23 put it: a v23
 /// client can still play, it simply never migrates.
-pub const PROTOCOL_VERSION: u16 = 24;
+/// v25: the datagram fallback — `ClientMsg::NoDatagrams`,
+/// `ClientMsg::Unreliable` and `ServerMsg::Unreliable` appended, so a
+/// browser whose WebTransport has no datagram channel can carry its
+/// snapshots and inputs on the reliable stream instead. Three ordinary
+/// appends; the floor stays put, and a client that never announces the
+/// capability is byte-identical to a v24 one on the wire.
+pub const PROTOCOL_VERSION: u16 = 25;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or

@@ -463,21 +463,25 @@ fn glyph_bar(dl: &mut super::DrawList, r: super::Rect, fx: f32, fw: f32, fy: f32
 	);
 }
 
-/// Draw the touch HUD's buttons. `screen_open` swaps the corner glyph to
-/// a close mark and suppresses the thumb cluster (the world verbs mean
-/// nothing under a screen); `jump_button` mirrors the jump-mode setting.
-pub fn touch_buttons(
+/// The corner button alone: a ✕ when `close` (an open screen, or a menu
+/// page with somewhere to go back to), a hamburger otherwise.
+///
+/// Public because the MENU draws it too, and draws nothing else of the
+/// touch HUD — a finger needs the same way out of the server browser that
+/// it has out of the inventory, and the menu's own rows are the only
+/// other navigation it has. One function so the two cannot come to look
+/// like different controls.
+pub fn corner_button(
 	dl: &mut super::DrawList,
 	scale: f32,
 	size: (u32, u32),
 	insets: &SafeArea,
-	screen_open: bool,
-	jump_button: bool,
+	close: bool,
 ) {
 	let t = GLYPH_STROKE * scale;
 	let corner = corner_button_rect(size, scale, insets);
 	dl.quad(Layer::Backdrop, corner, super::theme::FILL_BG);
-	if screen_open {
+	if close {
 		// A pixel ✕: stepped squares along both diagonals — axis-aligned
 		// quads only, in the UI's blocky idiom.
 		const STEPS: i32 = 5;
@@ -499,6 +503,21 @@ pub fn touch_buttons(
 			glyph_bar(dl, corner, 0.26, 0.48, fy, t);
 		}
 	}
+}
+
+/// Draw the touch HUD's buttons. `screen_open` swaps the corner glyph to
+/// a close mark and suppresses the thumb cluster (the world verbs mean
+/// nothing under a screen); `jump_button` mirrors the jump-mode setting.
+pub fn touch_buttons(
+	dl: &mut super::DrawList,
+	scale: f32,
+	size: (u32, u32),
+	insets: &SafeArea,
+	screen_open: bool,
+	jump_button: bool,
+) {
+	let t = GLYPH_STROKE * scale;
+	corner_button(dl, scale, size, insets, screen_open);
 	if screen_open {
 		return;
 	}

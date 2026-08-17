@@ -124,6 +124,11 @@ pub struct WebTransportClient {
 	/// None until the bidi control stream opens.
 	reliable_writer: WriterSlot,
 	datagram_writer: WriterSlot,
+	/// This browser's WebTransport has no usable datagram channel, so the
+	/// netcode must carry its unreliable traffic on the reliable stream.
+	/// Set by the driver BEFORE it reports `Connected`, because the answer
+	/// rides the Hello that Connected triggers.
+	no_datagrams: Rc<Cell<bool>>,
 	/// Datagrams dropped at the writer's high-water mark; the first one
 	/// logs, the rest are silent.
 	dropped_datagrams: u32,
@@ -305,7 +310,13 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 /// mode a browser can express for self-signed servers). Returns
 /// immediately with `Connecting`; `url` is a WebTransport URL, e.g.
 /// `https://127.0.0.1:4433`.
-pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
+///
+/// `force_no_datagrams` pretends this browser has no datagram channel
+/// (`?nodatagrams`). Otherwise the reliable-stream fallback could only be
+/// exercised on the one browser that needs it, which is also the one
+/// hardest to attach a console to — a path with no way to run it on a dev
+/// machine is a path that rots.
+pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebTransportClient {
 	let shared: SharedRef = Rc::new(RefCell::new(Shared {
 		events: VecDeque::new(),
 		connected_sent: false,
@@ -313,6 +324,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 	}));
 	let reliable_writer: WriterSlot = Rc::new(RefCell::new(None));
 	let datagram_writer: WriterSlot = Rc::new(RefCell::new(None));
+	let no_datagrams: Rc<Cell<bool>> = Rc::new(Cell::new(force_no_datagrams));
 
 	let transport = match WebTransport::new(url, &options(cert_hash)) {
 		Ok(t) => t,
@@ -326,6 +338,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				transport: None,
 				reliable_writer,
 				datagram_writer,
+				no_datagrams,
 				dropped_datagrams: 0,
 				wire_rtt: Rc::new(Cell::new(None)),
 				rtt_age: 0,
@@ -350,6 +363,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		let shared = shared.clone();
 		let reliable_writer = reliable_writer.clone();
 		let datagram_writer = datagram_writer.clone();
+		let no_datagrams = no_datagrams.clone();
 		spawn_local(async move {
 			if let Err(e) = JsFuture::from(transport.ready()).await {
 				return fail(&shared, format!("connect: {}", js_reason(&e)));
@@ -371,11 +385,47 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				Ok(r) => r,
 				Err(e) => return fail(&shared, e),
 			};
-			// Connected the moment the control stream is in hand, and
-			// before datagrams are touched: the handshake rides the
-			// reliable stream alone, so nothing below this line may be
-			// able to prevent the client from reaching a state where it
-			// can report what went wrong.
+			// Datagrams BEFORE Connected, because the answer rides the
+			// Hello that Connected triggers: a client with no datagram
+			// channel has to announce it on the first frame it sends, and
+			// a probe that lands a tick later would be a tick too late.
+			//
+			// Absence is a fact about this browser, not a failure — iOS
+			// Safari ships `WebTransport.datagrams` with no writable side
+			// — so it is recorded rather than reported, and the netcode
+			// carries the traffic on the reliable stream instead.
+			let datagrams = "datagrams";
+			let pair = (!no_datagrams.get())
+				.then(|| prop(AsRef::<JsValue>::as_ref(&transport), "datagrams"))
+				.flatten();
+			let halves = pair
+				.as_ref()
+				.map(|p| (writer_of(p, datagrams), reader_of(p, datagrams)));
+			match halves {
+				Some((Ok(w), Ok(r))) => {
+					*datagram_writer.borrow_mut() = Some(w);
+					spawn_local(read_loop(r, shared.clone(), true));
+				}
+				// Either half missing takes both down: the fallback is a
+				// pair of directions, and a client receiving snapshots on
+				// one channel while sending inputs on another would leave
+				// the server guessing which it should answer on.
+				Some((w, r)) => {
+					let why = w.err().or_else(|| r.err()).unwrap_or_default();
+					log::warn!("webtransport: {why} — unreliable traffic rides the control stream");
+					no_datagrams.set(true);
+				}
+				// Absent, or refused by `?nodatagrams`.
+				None => {
+					log::warn!(
+						"webtransport: no datagrams — unreliable traffic rides the control stream"
+					);
+					no_datagrams.set(true);
+				}
+			}
+			// Connected only now: the handshake rides the reliable stream
+			// alone, so nothing above this line may be able to stop the
+			// client reaching a state where it can report what went wrong.
 			*reliable_writer.borrow_mut() = Some(writer);
 			{
 				let mut s = shared.borrow_mut();
@@ -385,24 +435,6 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 				}
 			}
 			spawn_local(read_loop(reader, shared.clone(), false));
-
-			// Datagrams carry movement and snapshots, so a session without
-			// them is not playable — but it IS diagnosable, which is the
-			// difference between this refusal and a silent unwind.
-			let datagrams = "datagrams";
-			let Some(pair) = prop(AsRef::<JsValue>::as_ref(&transport), "datagrams") else {
-				return fail(
-					&shared,
-					"this browser's WebTransport has no datagram support".into(),
-				);
-			};
-			match (writer_of(&pair, datagrams), reader_of(&pair, datagrams)) {
-				(Ok(w), Ok(r)) => {
-					*datagram_writer.borrow_mut() = Some(w);
-					spawn_local(read_loop(r, shared.clone(), true));
-				}
-				(Err(e), _) | (_, Err(e)) => return fail(&shared, e),
-			}
 
 			match JsFuture::from(transport.closed()).await {
 				Ok(_) => shared
@@ -421,6 +453,7 @@ pub fn connect(url: &str, cert_hash: [u8; 32]) -> WebTransportClient {
 		transport: Some(transport_handle),
 		reliable_writer,
 		datagram_writer,
+		no_datagrams,
 		dropped_datagrams: 0,
 		wire_rtt: Rc::new(Cell::new(None)),
 		rtt_age: 0,
@@ -518,6 +551,10 @@ impl NetTransport for WebTransportClient {
 
 	fn wire_rtt_ms(&self) -> Option<f32> {
 		self.wire_rtt.get()
+	}
+
+	fn datagrams_available(&self) -> bool {
+		!self.no_datagrams.get()
 	}
 }
 

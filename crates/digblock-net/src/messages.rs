@@ -301,6 +301,36 @@ pub enum ClientMsg {
 	ClaimLegacy {
 		legacy: [u8; 16],
 	},
+	/// This client's transport has no datagram channel: its unreliable
+	/// traffic will arrive as [`ClientMsg::Unreliable`] on this stream,
+	/// and the server must answer in kind ([`ServerMsg::Unreliable`]).
+	/// Appended in v25.
+	///
+	/// Sent once per connection, immediately after `Hello`, by a client
+	/// whose transport says so — today only iOS Safari, whose
+	/// `WebTransport.datagrams` has no writable side at all. In-order on
+	/// the reliable stream, so it lands before the first snapshot the
+	/// server would otherwise send where this client cannot hear it.
+	///
+	/// A capability, deliberately not a preference: nothing chooses this,
+	/// and a client with working datagrams never sends it. Announcing it
+	/// rather than inferring it from the first `Unreliable` frame is what
+	/// keeps the two directions from disagreeing — the server would
+	/// otherwise keep talking into a channel that was never there until
+	/// the client happened to say something.
+	NoDatagrams,
+	/// One datagram that could not travel as one: the encoded
+	/// [`Datagram`] payload, verbatim. Appended in v25.
+	///
+	/// The payload is bit-identical to what the datagram would have
+	/// carried, so both ends decode it through exactly the same path —
+	/// the fallback owes its correctness to having no second encoding to
+	/// drift from. What it loses is the lossiness: these are delivered
+	/// and ordered like everything else on this stream, so a lost packet
+	/// costs a retransmit instead of a skipped frame. That is the whole
+	/// trade, and it is the right way round for a client that would
+	/// otherwise be unable to play at all.
+	Unreliable(Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -516,6 +546,16 @@ pub enum ServerMsg {
 	/// radius holds no edits at all, so an untouched world never waits.
 	/// Appended in v20.
 	AreaReady,
+	/// A snapshot for a client that announced [`ClientMsg::NoDatagrams`]:
+	/// the encoded [`Datagram`] payload, verbatim. Appended in v25.
+	///
+	/// Sent only to such a client, and dropped on a full outbound queue
+	/// exactly as the datagram it stands in for would be — a snapshot
+	/// stays lossy at the SEND, whatever carries it. That distinction is
+	/// load-bearing: every other frame on this stream drops the player
+	/// when the queue refuses it, and a stalled reader must not be killed
+	/// by the one message class that has always tolerated a stall.
+	Unreliable(Vec<u8>),
 }
 
 #[cfg(test)]
@@ -773,6 +813,15 @@ mod tests {
 						count: u32::MAX,
 					},
 				},
+			),
+			(
+				// The datagram fallback's widest frame: a whole datagram's
+				// worth of payload, since that is exactly what it carries.
+				// This is the message that made the client cap a question
+				// again — everything above it is a few hundred bytes, and
+				// this one is bounded by a DIFFERENT constant.
+				"wrapped datagram",
+				ClientMsg::Unreliable(vec![0xff; crate::protocol::MAX_DATAGRAM]),
 			),
 		];
 		for (name, msg) in widest {

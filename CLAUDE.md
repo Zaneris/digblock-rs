@@ -624,7 +624,13 @@ that cannot help — and it drops the COST line before the reason, since a three
 one thing that line is for.
 
 While ANY UI surface is open the engine synthesizes cursor + left-button from the primary touch at the top of
-`Engine::input` — one site gives iOS every screen, and no screen knows about touch.
+`Engine::input` — one site gives iOS every screen, and no screen knows about touch. The MENU is the exception that
+proves it: two rules there are about the input device rather than the screen, and both are swept rather than
+spot-checked (`a_touch_page_never_names_a_key`, `a_touch_page_can_always_be_backed_out_of`) because what bites is the
+page nobody thought of. A touch build drops every keyboard hint through one `hint` helper — a line naming Esc on a
+device with no Esc reads as a dead end — and gets the touch HUD's `corner_button` as its back control, drawn on
+`Menu::can_go_back`, which is derived from the same match `handle_key` runs so a page that gains a way out gains the
+button with it. The server browser had neither: its only exit was the key its hint line advertised.
 
 ## Settings & local worlds
 
@@ -715,11 +721,11 @@ tracks (`/api/music`) and both fillers fetch at runtime. Mute: `--mute` / `?mute
 
 Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`). Query params mirror desktop flags:
 `?seed= ?tod= ?draw= ?ssr=0
-?overlay ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop
-quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music. A phone or tablet
-(coarse primary pointer + touch, or `?mobile` to force either way) boots from `EngineConfig::web_mobile` instead — the
-iOS quality knobs plus the touch HUD — with saved settings and URL params still winning in the usual order. The page's
-loading overlay is a fixed contract with the platform layer: `digblock-gpu-ready`, `digblock-first-frame` and
+?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams`; defaults are full
+desktop quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music. A phone or
+tablet (coarse primary pointer + touch, or `?mobile` to force either way) boots from `EngineConfig::web_mobile` instead
+— the iOS quality knobs plus the touch HUD — with saved settings and URL params still winning in the usual order. The
+page's loading overlay is a fixed contract with the platform layer: `digblock-gpu-ready`, `digblock-first-frame` and
 `digblock-fatal` events narrate startup (`dispatch_page_event` in digblock-platform), and the overlay must be PAINTED
 before wasm instantiation begins — the double-rAF in index.html is what guarantees that on a cold mobile load, where the
 main thread never idles again until the first engine frame.
@@ -852,6 +858,18 @@ would miss the common case of closing a tab. `DEFAULT_MAX_CONNECTIONS_PER_IP`
 what stops the pre-Hello window being an amplifier against the master. It is a flag because every local soak is the
 opposite case — `just bot -- --bots N` and `just compose-bots` put every client behind ONE address, and a bot refused at
 accept is indistinguishable from a connect timeout.
+
+**A transport without datagrams is a first-class client** (protocol v25). iOS Safari ships `WebTransport.datagrams` with
+no writable side, which is not a degraded network but a missing API — so a client whose transport says
+`datagrams_available()` is false announces `ClientMsg::NoDatagrams` immediately after `Hello`, and both directions'
+unreliable traffic then rides the reliable stream inside `ClientMsg::Unreliable` / `ServerMsg::Unreliable`. The payload
+is the datagram's OWN bytes, decoded by the same call on both ends, so there is no second encoding of an input batch or
+a snapshot to drift. Two rules hold it up: the announcement is made rather than inferred, or the server would answer on
+a channel that was never there until the client happened to speak; and a wrapped snapshot is still DROPPED on a full
+outbound queue (`sync::snapshot_out` keeps the datagram's own stall bookkeeping) rather than going through `send_frame`,
+which kills a client whose queue refuses a frame — right for an edit, catastrophic for the one message class that has
+always been allowed to stall. `?nodatagrams` forces the path on any browser, since the one that needs it is also the one
+hardest to attach a console to.
 
 Server-authoritative everything, but movement uses an **adoption envelope**: clients send per-tick inputs plus claimed
 post-tick state; the server runs the same `Player::tick` and adopts claims within `POS_TOLERANCE` that aren't inside

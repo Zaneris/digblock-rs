@@ -347,6 +347,9 @@ pub struct Menu {
 	touch: bool,
 	/// The shell can toggle browser fullscreen: Root offers the row.
 	fullscreen_available: bool,
+	/// There is no Fullscreen API, but an installed home-screen app would
+	/// have no browser chrome: Root says so where the row would be.
+	fullscreen_hint: bool,
 	/// The Fullscreen row was picked; drained by the engine from `input`
 	/// (the shell's call needs the activating gesture — see
 	/// [`Act::ToggleFullscreen`]).
@@ -402,6 +405,7 @@ impl Menu {
 			store_available: false,
 			touch: false,
 			fullscreen_available: false,
+			fullscreen_hint: false,
 			wants_fullscreen: false,
 			pending_worlds: Vec::new(),
 			screen: enabled.then_some(Screen::Root { sel: 0 }),
@@ -443,6 +447,12 @@ impl Menu {
 		self.fullscreen_available = true;
 	}
 
+	/// No Fullscreen API, but installing the page would drop the browser's
+	/// chrome: Root says how, in place of the row it cannot offer.
+	pub fn set_fullscreen_hint(&mut self) {
+		self.fullscreen_hint = true;
+	}
+
 	/// The Fullscreen row was picked. Drained from `Engine::input` like
 	/// the clipboard — the shell's fullscreen call is only honoured inside
 	/// the same task as the activating gesture.
@@ -463,6 +473,21 @@ impl Menu {
 
 	pub fn is_open(&self) -> bool {
 		self.screen.is_some()
+	}
+
+	/// Would Escape do anything here? The touch HUD asks before drawing
+	/// its back button, so the one place that can't go back — the locked
+	/// startup menu, which has no world behind it to return to — doesn't
+	/// offer one.
+	///
+	/// Derived from the same match `handle_key` runs rather than a list
+	/// of screens: a page that gains a way out gains the button with it.
+	pub fn can_go_back(&self) -> bool {
+		match &self.screen {
+			None => false,
+			Some(Screen::Root { .. }) => self.entered_world,
+			Some(_) => true,
+		}
 	}
 
 	/// In-game Escape: reopen at the root (no-op unless enabled).
@@ -1444,6 +1469,20 @@ impl Menu {
 			specs.push((spec, *y));
 			*y += row_h;
 		};
+		// The keyboard hint under a page — "arrows + enter", "esc: back".
+		// Dropped entirely on a touch device, which has none of those keys
+		// and gets the corner button instead: instructions for hardware
+		// that is not there read as a dead end rather than as help.
+		//
+		// One helper rather than a condition per site, because there are a
+		// dozen of these lines and the next page's author will write the
+		// thirteenth without thinking about phones.
+		let touch = self.touch;
+		let hint = |specs: &mut Vec<(RowSpec, f32)>, y: &mut f32, text: &str| {
+			if !touch {
+				push(specs, y, RowSpec::dim(text));
+			}
+		};
 
 		match &self.screen {
 			None => {}
@@ -1554,6 +1593,15 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(11), "Fullscreen"),
 					);
+				} else if self.fullscreen_hint {
+					// Not a row: there is nothing here to activate. It
+					// stands where the Fullscreen row would, because that
+					// is where someone looking for fullscreen looks.
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::dim("Fullscreen: Add to Home Screen (Share menu)"),
+					);
 				}
 				push(
 					&mut specs,
@@ -1561,14 +1609,14 @@ impl Menu {
 					RowSpec::item(RowId::RootItem(4), "Settings"),
 				);
 				y += row_h * 0.5;
-				push(
+				hint(
 					&mut specs,
 					&mut y,
-					RowSpec::dim(if self.entered_world {
+					if self.entered_world {
 						"arrows + enter, esc: back to game"
 					} else {
 						"arrows + enter"
-					}),
+					},
 				);
 			}
 			Some(Screen::Settings { .. }) => {
@@ -1666,11 +1714,7 @@ impl Menu {
 					&mut y,
 					RowSpec::item(RowId::SettingsRow(SETTINGS_BACK), "Back"),
 				);
-				push(
-					&mut specs,
-					&mut y,
-					RowSpec::dim("left/right or click adjusts, esc: back"),
-				);
+				hint(&mut specs, &mut y, "left/right or click adjusts, esc: back");
 				y += row_h * 0.5;
 				push(
 					&mut specs,
@@ -1748,17 +1792,13 @@ impl Menu {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
 				y += row_h * 0.25;
-				push(
-					&mut specs,
-					&mut y,
-					RowSpec::dim("type your name, enter joins, esc: back"),
-				);
+				hint(&mut specs, &mut y, "type your name, enter joins, esc: back");
 			}
 			Some(Screen::Connecting { label, .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
 				y += row_h * 0.5;
 				push(&mut specs, &mut y, RowSpec::dim(label.clone()));
-				push(&mut specs, &mut y, RowSpec::dim("esc: cancel"));
+				hint(&mut specs, &mut y, "esc: cancel");
 			}
 			Some(Screen::Worlds(w)) => {
 				push(&mut specs, &mut y, RowSpec::title("SINGLEPLAYER"));
@@ -1792,7 +1832,7 @@ impl Menu {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
 				y += row_h * 0.25;
-				push(&mut specs, &mut y, RowSpec::dim("enter opens, esc: back"));
+				hint(&mut specs, &mut y, "enter opens, esc: back");
 			}
 			Some(Screen::CreateWorld { name, .. }) => {
 				push(&mut specs, &mut y, RowSpec::title("NEW WORLD"));
@@ -1803,11 +1843,7 @@ impl Menu {
 					RowSpec::field(Some(RowId::CreateWorld), format!("name: {name}"), blink),
 				);
 				y += row_h * 0.25;
-				push(
-					&mut specs,
-					&mut y,
-					RowSpec::dim("type a name, enter creates, esc: back"),
-				);
+				hint(&mut specs, &mut y, "type a name, enter creates, esc: back");
 			}
 			Some(Screen::SignIn(s)) => {
 				push(&mut specs, &mut y, RowSpec::title("SIGN IN"));
@@ -3295,5 +3331,82 @@ mod tests {
 		let view = menu.view(SIZE, 1.0, false);
 		assert!(!view.rows.iter().any(|r| r.text == "Back to Game"));
 		assert!(view.rows.iter().any(|r| r.text == "Singleplayer"));
+	}
+
+	/// Every page a finger can reach, for the two touch rules that have to
+	/// hold on all of them: it can be backed out of, and it never names a
+	/// key.
+	///
+	/// Swept rather than spot-checked because both rules are about the
+	/// pages nobody thought of. The server browser was the one that bit —
+	/// its only exit was an Escape it advertised in a hint line, on a
+	/// device with no Escape and no hint worth reading.
+	fn every_touch_page(mut visit: impl FnMut(&mut Menu, &str)) {
+		// Reached through the menu's own actions rather than by building
+		// its state by hand, so a page that changes how it is entered is
+		// still the page this sweeps. All but the last hang off the TITLE
+		// menu, which is where a phone meets most of them.
+		let pages: [(&str, &[Act]); 6] = [
+			("title root", &[]),
+			("multiplayer", &[Act::OpenMultiplayer]),
+			("settings", &[Act::OpenSettings]),
+			("worlds", &[Act::OpenWorlds]),
+			("create world", &[Act::OpenWorlds, Act::OpenCreate]),
+			("account", &[Act::OpenAccount]),
+		];
+		for (name, acts) in pages {
+			let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+			menu.set_touch();
+			menu.set_store_available();
+			menu.set_services_available();
+			for &act in acts {
+				menu.activate(act);
+			}
+			// A sweep that silently stayed on Root would pass everything.
+			assert_eq!(
+				matches!(menu.screen, Some(Screen::Root { .. })),
+				acts.is_empty(),
+				"{name} was not reached"
+			);
+			visit(&mut menu, name);
+		}
+		// The in-world root is a different page from the title one: it has
+		// a world behind it, which is exactly what makes it leavable.
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_touch();
+		menu.handle_key(Key::Enter); // Play Local — the only row without a store
+		menu.open();
+		assert!(matches!(menu.screen, Some(Screen::Root { .. })));
+		visit(&mut menu, "in-world root");
+	}
+
+	#[test]
+	fn a_touch_page_never_names_a_key() {
+		every_touch_page(|menu, page| {
+			for row in menu.view(SIZE, 1.0, false).rows {
+				let t = row.text.to_lowercase();
+				for word in ["esc", "arrows", "enter "] {
+					assert!(
+						!t.contains(word),
+						"{page} tells a phone about {word:?}: {:?}",
+						row.text
+					);
+				}
+			}
+		});
+	}
+
+	#[test]
+	fn a_touch_page_can_always_be_backed_out_of() {
+		// The corner button is the only way off a page on a phone, and it
+		// is drawn on exactly this answer. The one page that says no is the
+		// locked title root, which has nothing behind it to go back TO.
+		every_touch_page(|menu, page| {
+			assert_eq!(
+				menu.can_go_back(),
+				page != "title root",
+				"{page}: wrong answer for the back button"
+			);
+		});
 	}
 }

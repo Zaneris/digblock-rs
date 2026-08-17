@@ -407,6 +407,12 @@ pub struct EngineConfig {
 	/// The shell can toggle browser fullscreen (the web launcher sets it
 	/// from the Fullscreen API's availability): the menu offers the row.
 	pub fullscreen_button: bool,
+	/// There is no Fullscreen API here, but there IS a way to play without
+	/// the browser's chrome: install the page as a home-screen app. iPhone
+	/// Safari, in a tab. The menu says so where the row would have been,
+	/// because a player who wants fullscreen looks there and otherwise
+	/// finds nothing at all — twice, in this project's case.
+	pub fullscreen_hint: bool,
 	/// Scripted join (a server-name filter; empty string = first listed):
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
@@ -508,6 +514,7 @@ impl EngineConfig {
 			touch_hud: false,
 			touch_jump_button: false,
 			fullscreen_button: false,
+			fullscreen_hint: false,
 			auto_join: None,
 			account: None,
 			legacy_identity: None,
@@ -576,6 +583,7 @@ impl EngineConfig {
 			touch_hud: true,
 			touch_jump_button: false,
 			fullscreen_button: false,
+			fullscreen_hint: false,
 			auto_join: None,
 			account: None,
 			legacy_identity: None,
@@ -623,6 +631,7 @@ impl EngineConfig {
 			touch_hud: true,
 			touch_jump_button: false,
 			fullscreen_button: false,
+			fullscreen_hint: false,
 			..Self::web()
 		}
 	}
@@ -2170,6 +2179,9 @@ impl Engine {
 		}
 		if config.fullscreen_button {
 			menu.set_fullscreen_available();
+		}
+		if config.fullscreen_hint {
+			menu.set_fullscreen_hint();
 		}
 		let mut engine = Self {
 			menu,
@@ -5401,14 +5413,21 @@ impl Game for Engine {
 			// The corner button doubles as an open screen's close control:
 			// I/K/C/Escape are its only other closes, none of which a phone
 			// has. Checked ahead of the pointer synthesis so the tap cannot
-			// also land as a click inside the screen. The menu's own corner
-			// is inert — its rows already cover everything.
+			// also land as a click inside the screen.
+			//
+			// The MENU gets it too, as its back control. Its own rows do not
+			// cover this — the server browser and the world list have no Back
+			// row, and the hint under them names a key a phone does not have
+			// — which left a finger that opened Multiplayer with no way out
+			// of it at all. `can_go_back` is what keeps the button off the
+			// locked title screen, where Escape is deliberately inert.
 			if self.config.touch_hud
 				&& matches!(phase, TouchPhase::Started)
-				&& !self.menu.is_open()
-				&& (self.inv_screen.is_open()
-					|| self.alch_screen.is_open()
-					|| self.char_screen.is_open())
+				&& (self.menu.can_go_back()
+					|| (!self.menu.is_open()
+						&& (self.inv_screen.is_open()
+							|| self.alch_screen.is_open()
+							|| self.char_screen.is_open())))
 			{
 				let (px, py) = (x * self.size.0 as f32, y * self.size.1 as f32);
 				if crate::ui::hud::corner_button_rect(self.size, self.ui_scale, &self.safe_area)
@@ -5416,9 +5435,22 @@ impl Game for Engine {
 				{
 					self.hud_touches
 						.push((id, crate::ui::hud::HudButton::Corner));
-					self.inv_screen.close();
-					self.alch_screen.close();
-					self.char_screen.close();
+					if self.menu.is_open() {
+						// The same door the key opens, so a page that cancels
+						// a connect or a sign-in on the way out still does.
+						self.menu.handle_input(
+							&InputEvent::Key {
+								key: Key::Escape,
+								pressed: true,
+							},
+							self.size,
+							self.ui_scale,
+						);
+					} else {
+						self.inv_screen.close();
+						self.alch_screen.close();
+						self.char_screen.close();
+					}
 					return;
 				}
 			}
@@ -6519,6 +6551,19 @@ impl Game for Engine {
 				size,
 				daylight,
 			);
+			// The menu's back control on a touch device — the same corner
+			// button the in-game screens close with, so one control means
+			// one thing everywhere. Drawn after the panel so it sits over
+			// the dim, and only where Escape has somewhere to go.
+			if self.config.touch_hud && self.menu.can_go_back() {
+				crate::ui::hud::corner_button(
+					&mut self.ui_dl,
+					self.ui_scale,
+					size,
+					&self.safe_area,
+					true,
+				);
+			}
 		}
 		if in_game {
 			let hotbar_view =

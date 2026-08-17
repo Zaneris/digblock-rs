@@ -402,14 +402,7 @@ impl NetClient {
 						self.frames.extend(&bytes);
 					}
 				}
-				TransportEvent::Datagram(bytes) => match codec::decode_datagram(&bytes) {
-					Ok(Datagram::Snapshot(snap)) => {
-						self.stats.snapshots += 1;
-						self.on_snapshot(snap, out)
-					}
-					Ok(Datagram::Input(_)) => {} // server-bound; ignore
-					Err(e) => log::debug!("bad datagram: {e}"),
-				},
+				TransportEvent::Datagram(bytes) => self.on_datagram(&bytes, out),
 				TransportEvent::Disconnected { reason } => {
 					// Deliver what already arrived BEFORE reporting the end.
 					// Decoding moved after this loop when it gained a budget,
@@ -550,6 +543,13 @@ impl NetClient {
 		if codec::write_frame(&hello, &mut self.send_buf).is_ok() {
 			self.transport.send_reliable(&self.send_buf);
 		}
+		// Before anything else on the stream, so it lands before the first
+		// snapshot the server would otherwise aim at a channel this client
+		// does not have.
+		if !self.transport.datagrams_available() {
+			log::info!("no datagram channel — unreliable traffic rides the reliable stream");
+			self.send_msg(&ClientMsg::NoDatagrams);
+		}
 		// Immediately after, on the same ordered stream, so the server has
 		// already run the Hello and knows which account is asking. Sent
 		// here rather than on `Welcome` because both then land in the same
@@ -558,6 +558,21 @@ impl NetClient {
 		// with an empty bar on screen in between.
 		if let Some(legacy) = self.config.legacy_identity {
 			self.send_msg(&ClientMsg::ClaimLegacy { legacy });
+		}
+	}
+
+	/// One encoded [`Datagram`], however it arrived — as a real datagram,
+	/// or wrapped in `ServerMsg::Unreliable` because this transport has no
+	/// datagram channel. One decode site, so the fallback cannot come to
+	/// mean anything different from the thing it stands in for.
+	fn on_datagram(&mut self, bytes: &[u8], out: &mut Vec<NetEvent>) {
+		match codec::decode_datagram(bytes) {
+			Ok(Datagram::Snapshot(snap)) => {
+				self.stats.snapshots += 1;
+				self.on_snapshot(snap, out);
+			}
+			Ok(Datagram::Input(_)) => {} // server-bound; ignore
+			Err(e) => log::debug!("bad datagram: {e}"),
 		}
 	}
 
@@ -633,6 +648,10 @@ impl NetClient {
 			// reliable stream — so a client that has this has the
 			// columns.
 			ServerMsg::AreaReady => out.push(NetEvent::AreaReady),
+			// A snapshot for a client with no datagram channel; the payload
+			// is the datagram's own bytes, so it decodes where every other
+			// snapshot does.
+			ServerMsg::Unreliable(bytes) => self.on_datagram(&bytes, out),
 			ServerMsg::EditApplied {
 				by,
 				client_seq,
@@ -788,7 +807,15 @@ impl NetClient {
 		match codec::encode_datagram_into(&dg, &mut self.dgram_buf) {
 			Ok(bytes) => {
 				self.stats.out_bytes += bytes.len() as u32;
-				self.transport.send_datagram(bytes);
+				// The same payload either way — the fallback wraps it, it
+				// never re-encodes it, so there is no second shape of an
+				// input batch anywhere for the two paths to disagree about.
+				if self.transport.datagrams_available() {
+					self.transport.send_datagram(bytes);
+				} else {
+					let wrapped = ClientMsg::Unreliable(bytes.to_vec());
+					self.send_msg(&wrapped);
+				}
 				self.last_input_send_tick = cur;
 			}
 			Err(e) => log::warn!("input datagram: {e}"),

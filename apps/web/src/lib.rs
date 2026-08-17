@@ -207,9 +207,12 @@ async fn boot() -> Result<(), JsValue> {
 	// The menu's Fullscreen row, only where the API actually exists — the
 	// shell owns that question, since the shell is what has to act on the
 	// answer. iPhone Safari has neither spelling of the API for most of its
-	// history: the row stays hidden there and an installed home-screen web
-	// app is that platform's fullscreen (see index.html).
+	// history; there the menu says how to install the page instead (see
+	// index.html), which is that platform's fullscreen. Not while ALREADY
+	// installed, where there is no browser chrome left to shed.
 	config.fullscreen_button = interactive && digblock_platform::fullscreen_available();
+	config.fullscreen_hint =
+		interactive && mobile && !config.fullscreen_button && !installed_web_app();
 	config.overlay = flag(&params, "overlay");
 	// Chunk jobs run in Web Workers when the machine has cores to spare
 	// (jobs.rs); `?workers=N` overrides for A/B, and 0 is the pre-pool
@@ -222,6 +225,11 @@ async fn boot() -> Result<(), JsValue> {
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
+	// `?nodatagrams` makes this browser behave like the one that has no
+	// datagram channel (iOS Safari), so the reliable-stream fallback can be
+	// run on a machine with a console attached. Read here, beside the other
+	// capture knobs, and handed to the transport at connect time.
+	let no_datagrams = flag(&params, "nodatagrams");
 	let join = flag(&params, "join");
 	if join {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
@@ -327,7 +335,7 @@ async fn boot() -> Result<(), JsValue> {
 	}
 	engine.set_clipboard(Box::new(copy_to_clipboard));
 	if let Some(master_url) = master_url {
-		engine.set_menu_services(services::start(master_url, session));
+		engine.set_menu_services(services::start(master_url, session, no_datagrams));
 	}
 	digblock_platform::run(
 		engine,
@@ -383,6 +391,31 @@ fn safe_area_insets() -> Option<digblock_render::ui::hud::SafeArea> {
 	};
 	probe.remove();
 	Some(insets)
+}
+
+/// Is this page running as an installed home-screen app rather than in a
+/// browser tab?
+///
+/// Two spellings, because iOS predates the standard one: `display-mode`
+/// is the media query every other browser answers, and
+/// `navigator.standalone` is what Safari has always used. Either counts —
+/// what the caller wants to know is whether there is still browser chrome
+/// to get rid of.
+fn installed_web_app() -> bool {
+	let Some(w) = web_sys::window() else {
+		return false;
+	};
+	if w.match_media("(display-mode: standalone)")
+		.ok()
+		.flatten()
+		.is_some_and(|m| m.matches())
+	{
+		return true;
+	}
+	js_sys::Reflect::get(&w.navigator(), &JsValue::from_str("standalone"))
+		.ok()
+		.and_then(|v| v.as_bool())
+		.unwrap_or(false)
 }
 
 /// A coarse primary pointer AND a touch digitizer — phones and tablets,

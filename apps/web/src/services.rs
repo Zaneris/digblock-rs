@@ -61,10 +61,10 @@ struct JoinResponse {
 /// Start the service task. Scripted joins are the menu's job
 /// (`EngineConfig::auto_join`) — the service layer is identical for
 /// interactive and scripted flows.
-pub fn start(master_url: String, session: Option<Session>) -> MenuServices {
+pub fn start(master_url: String, session: Option<Session>, no_datagrams: bool) -> MenuServices {
 	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
 	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
-	wasm_bindgen_futures::spawn_local(run(master_url, session, cmd_rx, resp_tx));
+	wasm_bindgen_futures::spawn_local(run(master_url, session, no_datagrams, cmd_rx, resp_tx));
 	MenuServices { cmd_tx, resp_rx }
 }
 
@@ -78,6 +78,9 @@ fn view(session: &Session) -> AccountView {
 async fn run(
 	master_url: String,
 	session: Option<Session>,
+	// `?nodatagrams`: pretend this browser has no datagram channel, so the
+	// reliable-stream fallback can be exercised anywhere.
+	no_datagrams: bool,
 	cmd_rx: mpsc::Receiver<MenuCommand>,
 	resp_tx: mpsc::Sender<MenuResponse>,
 ) {
@@ -132,7 +135,7 @@ async fn run(
 				}
 				MenuCommand::Join { server_id } => {
 					let resp = match &session {
-						Some(s) => join_resp(&master_url, &server_id, &s.token).await,
+						Some(s) => join_resp(&master_url, &server_id, &s.token, no_datagrams).await,
 						None => MenuResponse::JoinFailed {
 							reason: "not signed in".into(),
 						},
@@ -186,8 +189,13 @@ async fn run(
 	}
 }
 
-async fn join_resp(master_url: &str, server_id: &str, session: &str) -> MenuResponse {
-	match join(master_url, server_id, session).await {
+async fn join_resp(
+	master_url: &str,
+	server_id: &str,
+	session: &str,
+	no_datagrams: bool,
+) -> MenuResponse {
+	match join(master_url, server_id, session, no_datagrams).await {
 		Ok((transport, token)) => MenuResponse::Connect {
 			transport: Box::new(transport),
 			token,
@@ -217,6 +225,7 @@ async fn join(
 	master_url: &str,
 	server_id: &str,
 	session: &str,
+	no_datagrams: bool,
 ) -> Result<(digblock_net_web::WebTransportClient, [u8; 16]), String> {
 	// No displayName: the master reads it off the authenticated account.
 	let body = serde_json::json!({ "serverId": server_id }).to_string();
@@ -232,7 +241,10 @@ async fn join(
 	let token = parse_token(&join.token)?;
 	let hash = digblock_net_web::parse_sha256_hex(&join.cert_hash)
 		.map_err(|e| format!("bad certHash from master: {e}"))?;
-	Ok((digblock_net_web::connect(&join.url, hash), token))
+	Ok((
+		digblock_net_web::connect(&join.url, hash, no_datagrams),
+		token,
+	))
 }
 
 /// Decode the master's hex join token.

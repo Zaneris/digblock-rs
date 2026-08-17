@@ -74,6 +74,22 @@ macro_rules! transport_trait {
 			fn wire_rtt_ms(&self) -> Option<f32> {
 				None
 			}
+
+			/// Can this transport carry datagrams at all?
+			///
+			/// Answered before the client sends its `Hello`, because the
+			/// answer rides it: a `false` here makes the client announce
+			/// `ClientMsg::NoDatagrams` and route its unreliable traffic
+			/// over the reliable stream in both directions.
+			///
+			/// True for every transport but one, and that one is not a
+			/// degraded network — it is a browser that ships
+			/// `WebTransport.datagrams` with no writable side. There is
+			/// nothing to retry and nothing that improves, so this is a
+			/// property of the transport rather than a condition on it.
+			fn datagrams_available(&self) -> bool {
+				true
+			}
 		}
 	};
 }
