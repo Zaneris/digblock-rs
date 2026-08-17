@@ -171,19 +171,21 @@ Extended-A so European players can type their own words) and rate-limits (`CHAT_
 
 Admin: `--admin <account-id>` (repeatable) / `DIGBLOCK_ADMIN_IDS` grants chat commands
 (`/help
-/tp /goto /bring /give /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn`). **Accounts, never
-names** — the name compare it replaced made joining as "admin" a complete server takeover. A display name also works and
-is resolved to an id ONCE at boot, so a rename doesn't drop admin and an unresolvable admin is fatal rather than
-silently granted to nobody. Players read their id from the in-game Account screen (Copy ID). Bans record the account AND
-the IP in `data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`,
-advertised to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `/give` is the one command that writes a
-player's stocks, and it hands out ESSENCE rather than blocks on purpose — a block is an item that can be placed, so
-gifting one would be a world edit with no journal entry behind it and a slot to reconcile, while essence rides the
-standing `InventoryFull` rebase and no screen has to know a gift happened. It parses essence names off `Essence::name`,
-the screens' own label, so the command and the UI cannot drift about what a currency is called.
-`just play`/`just
-play-web` grant `DEV_ADMIN_ID` (the dev sign-in's derived id for subject `admin`, pinned by an e2e
-test). Compass in `/tp`: east = sunrise = −x, north = −z.
+/tp /goto /bring /give /reset /time /ban /ban-list /unban /set-spawn /set-spawn-dir /lock-spawn` — `/reset` is a
+TEMPORARY testing lever, zeroing a player's skills and wiping their whole inventory, tools included, so the fresh-player
+opening can be walked without minting an account; it is slated for removal). **Accounts, never names** — the name
+compare it replaced made joining as "admin" a complete server takeover. A display name also works and is resolved to an
+id ONCE at boot, so a rename doesn't drop admin and an unresolvable admin is fatal rather than silently granted to
+nobody. Players read their id from the in-game Account screen (Copy ID). Bans record the account AND the IP in
+`data/bans.json`, spawn overrides in `data/spawn.json`, table and handlers in `apps/server/src/sim/admin.rs`, advertised
+to the client for Tab-autocomplete via `ServerMsg::AdminCommands`. `/give` is the one command that writes a player's
+stocks, and it hands out ESSENCE rather than blocks on purpose — a block is an item that can be placed, so gifting one
+would be a world edit with no journal entry behind it and a slot to reconcile, while essence rides the standing
+`InventoryFull` rebase and no screen has to know a gift happened. It parses essence names off `Essence::name`, the
+screens' own label, so the command and the UI cannot drift about what a currency is called. `just play`/`just
+play-web`
+grant `DEV_ADMIN_ID` (the dev sign-in's derived id for subject `admin`, pinned by an e2e test). Compass in `/tp`: east =
+sunrise = −x, north = −z.
 
 Dev gotchas: use `127.0.0.1`, never `localhost` (macOS resolves it to `::1`; the server binds IPv4 only — and sign-in
 redirects back to whatever origin the page is on, which the master allows by IP literal). Anything that can't open a
