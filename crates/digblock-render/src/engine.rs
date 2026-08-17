@@ -2842,6 +2842,10 @@ impl Engine {
 		// names a cell in the world just left.
 		self.confetti.clear();
 		self.siphon = None;
+		// And the bench job, which survives the SCREEN closing but not
+		// the world: it points at this world's stacks and this server's
+		// bucket, neither of which exists in whatever comes next.
+		self.alch_screen.abandon();
 		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
@@ -5917,8 +5921,12 @@ impl Game for Engine {
 		// single-item Craft — the server paces the same rhythm out of its
 		// one bench bucket. The view is rebuilt here rather than borrowed
 		// from the draw, so the queue's affordability check reads the same
-		// number the button greys on.
-		if self.alch_screen.is_open() {
+		// number the button greys on. `busy` keeps the drip alive with the
+		// SCREEN closed (§13.4's background bench): the pace is slow
+		// enough now that standing at the bench for it would be idle time,
+		// so the job runs while you play and only leaving the world
+		// abandons it.
+		if self.alch_screen.is_open() || self.alch_screen.busy() {
 			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
 				self.apply_alchemy_action(act);
@@ -6391,6 +6399,21 @@ impl Game for Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
+			// The background bench's tell: only while a job runs with the
+			// screen CLOSED — open, the screen's own progress row is the
+			// richer version of the same fact.
+			if !self.alch_screen.is_open()
+				&& let Some(job) = self.alch_screen.job()
+			{
+				use crate::ui::screens::alchemy::{BenchJob, block_name};
+				let text = match job {
+					BenchJob::Extract(b) => format!("BENCH  {}", block_name(b)),
+					BenchJob::Craft(item, left) => {
+						format!("BENCH  {} ×{left}", block_name(item))
+					}
+				};
+				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
+			}
 			crate::ui::hud::tool_rail(
 				ui.dl,
 				&ui.style,

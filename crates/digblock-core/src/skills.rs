@@ -361,12 +361,12 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 /// [`dig_award`] is what puts the two together (its cap is what keeps a
 /// zero-worth block's swing cells at zero too).
 pub fn dig_xp(block: BlockType) -> u64 {
-	match block {
-		BlockType::Leaves | BlockType::PineLeaves | BlockType::Torch => 0,
-		_ => match block.hardness_ticks() {
-			Some(h) => u64::from(h).div_ceil(24),
-			None => 0,
-		},
+	if block.is_foliage() || block == BlockType::Torch {
+		return 0;
+	}
+	match block.hardness_ticks() {
+		Some(h) => u64::from(h).div_ceil(24),
+		None => 0,
 	}
 }
 
@@ -500,9 +500,12 @@ pub fn dig_award(
 	(mining, 0)
 }
 
-/// Alchemy XP per block extracted at the bench: the block's worth at the
-/// bench ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
-/// yield) — fixed for life, never the level-scaled outcome (§4.1).
+/// Alchemy XP per block extracted at the bench: HALF the block's worth
+/// ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
+/// yield) — fixed for life, never the level-scaled outcome (§4.1). The
+/// halving is the award-side pacing lever (SKILLS-DESIGN §13.4), riding
+/// ON TOP of the worth precisely because the worth keeps a second job
+/// this must not touch: it is what the bench's pace scales by.
 ///
 /// **Zero for anything the bench itself can make.** Extraction XP is paid
 /// for reducing what the WORLD made; taking apart your own transmutation
@@ -513,14 +516,23 @@ pub fn dig_award(
 /// happens to offer — the same predicate the catalog is gated on, so the
 /// two cannot drift.
 ///
-/// The bench's PACE deliberately does not follow: a made block is as much
-/// substance to take apart as a natural one, and `extract_pace_ticks` keys
-/// on the worth for that reason.
+/// **And zero for foliage, by the shared name** ([`BlockType::is_foliage`]
+/// — the same set `dig_xp` zeroes). This is load-bearing, not symmetry:
+/// the award's `ceil` cannot pay less than a point, and against foliage's
+/// concessionary pace (`extract_pace_ticks` halves its slowdown, since a
+/// block that pays nothing should at least process quickly) a floored
+/// point per leaf would make shoveling foliage the best XP rate at the
+/// bench. Their essence — the Aqua, the bonus lines — is untouched;
+/// foliage is pure economy now.
+///
+/// The bench's PACE deliberately does not follow the bench-only zero: a
+/// made block is as much substance to take apart as a natural one, and
+/// `extract_pace_ticks` keys on the worth for that reason.
 pub fn convert_xp(block: BlockType) -> u64 {
-	if block.is_bench_only() {
+	if block.is_bench_only() || block.is_foliage() {
 		return 0;
 	}
-	u64::from(crate::alchemy::extract_worth(block))
+	u64::from(crate::alchemy::extract_worth(block).div_ceil(2))
 }
 
 /// The DUAL award for one field extraction at the rock face (§5.4):
@@ -562,13 +574,13 @@ pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
 /// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
 /// pre-waste cost) — fixed for life. Zero for uncraftable items.
 ///
-/// Transmuting still pays what it always paid; what changed is that it
-/// takes the time the work takes, since the bench now paces a craft the
-/// way it paces an extraction (`craft_pace_ticks`). The award and the
-/// pace read the same number for the same reason extraction's do: a thing
-/// worth more to make is worth more to have made.
+/// Transmuting pays HALF the item's worth — the same award-side halving
+/// as [`convert_xp`], for the same reason, and it takes the time the work
+/// takes, since the bench paces a craft the way it paces an extraction
+/// (`craft_pace_ticks`). Award and pace read the same underlying worth: a
+/// thing worth more to make is worth more to have made.
 pub fn craft_xp(item: BlockType) -> u64 {
-	u64::from(crate::alchemy::craft_worth(item))
+	u64::from(crate::alchemy::craft_worth(item).div_ceil(2))
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after
@@ -1079,22 +1091,27 @@ mod tests {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Wood, 9u64),
-			(B::Grass, 9),
-			(B::Rubble, 8),
-			(B::Dirt, 6),
-			(B::Snow, 3),
-			(B::Water, 6),
-			(B::Leaves, 1),
+			(B::Wood, 5u64),
+			(B::Grass, 5),
+			(B::Rubble, 4),
+			(B::Dirt, 3),
+			(B::Snow, 2),
+			(B::Water, 3),
 		] {
 			assert_eq!(convert_xp(block), xp, "{block:?}");
+		}
+		// Foliage pays no levels at all — the price of its half-slowdown
+		// pace concession, and the bench half of the same zero the dig
+		// table already carries.
+		for block in [B::Leaves, B::PineLeaves] {
+			assert_eq!(convert_xp(block), 0, "{block:?}");
 		}
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Convert {
 				block: B::Wood,
 				count: 3
 			}),
-			27
+			15
 		);
 		// And nothing off the bench pays anything back. Clean stone is the
 		// pointed case: a quarried one is Rubble and pays, the clean block
@@ -1109,9 +1126,10 @@ mod tests {
 			crate::alchemy::extract_worth(B::Stone),
 			crate::alchemy::extract_worth(B::Grass)
 		);
-		// Crafts pay a fixed fraction of their IDEAL cost, rounded up.
-		assert_eq!(craft_xp(B::WoodStairs), 6);
-		assert_eq!(craft_xp(B::Lumber), 9);
+		// Crafts pay half their worth — the same fixed fraction of the
+		// IDEAL cost, halved like extraction, rounded up.
+		assert_eq!(craft_xp(B::WoodStairs), 3);
+		assert_eq!(craft_xp(B::Lumber), 5);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 	}
 }

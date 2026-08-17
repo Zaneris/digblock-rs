@@ -403,6 +403,45 @@ pub fn xp_toasts(
 	}
 }
 
+/// The background bench's tell (SKILLS-DESIGN §13.4): one quiet line
+/// above the bar's TOOL end while a job runs with the screen closed. The
+/// bench working out of sight must be visible somewhere, or the first
+/// background extraction reads as "my essence changed on its own" — and
+/// it sits over the tool slot rather than in the toasts' center lane, so
+/// an XP toast and the tell never fight for the same pixels.
+pub fn bench_tell(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	text: &str,
+) {
+	let scale = style.scale;
+	let px = style.glyph;
+	let line = crate::font::face(style.face).line_h(px);
+	let pad_x = super::scale::text_pad_x(scale);
+	let grid = row_grid(size, scale);
+	// Right-aligned to the DRAWN last slot — the tool slot, a split past
+	// the lattice — for the same reason the centring test measures it:
+	// the lattice's own right edge is not where the row ends.
+	let tool = bar_slot_rect(&grid, HOTBAR_SLOTS - 1, scale);
+	let w = style.measure(text) + 2.0 * pad_x;
+	let rect = super::Rect::new(
+		tool.x + tool.w - w,
+		grid.origin.1 - super::theme::GAP_ABOVE_BAR * scale - line,
+		w,
+		line,
+	);
+	dl.quad(Layer::Backdrop, rect, super::theme::FILL_BG);
+	dl.text(
+		Layer::Content,
+		rect.x + pad_x,
+		rect.y + (line - px) / 2.0,
+		px,
+		super::widgets::DIM,
+		text,
+	);
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

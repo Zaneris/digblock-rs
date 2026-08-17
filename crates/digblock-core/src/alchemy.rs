@@ -344,11 +344,11 @@ pub fn craft_order() -> Vec<BlockType> {
 /// quickens at two Alchemy milestones.
 pub fn base_pace_ticks(level: u32) -> u32 {
 	if level >= 45 {
-		15
+		60
 	} else if level >= 25 {
-		21
+		84
 	} else {
-		30
+		120
 	}
 }
 
@@ -376,8 +376,21 @@ const MIN_PACE_TICKS: u32 = 6;
 /// a pace that followed would have a lumber block coming apart five times
 /// faster than the wood it was planed from. Client-paced for presentation,
 /// server-enforced via the extraction token bucket.
+///
+/// **Foliage takes half the slowdown** ([`BlockType::is_foliage`], the
+/// same set whose bench XP is zero): a block that pays no levels is pure
+/// economy, and making its Aqua tediously slow would punish exactly the
+/// player using the bench as a bench rather than as an XP machine. The
+/// concession is safe ONLY because the XP is zero — halved pace plus a
+/// floored one-point award was the best XP rate in the game, which is
+/// why the two arms share one predicate and cannot drift apart.
 pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
-	pace_ticks(extract_worth(b), level)
+	let ticks = pace_ticks(extract_worth(b), level);
+	if b.is_foliage() {
+		(ticks / 2).max(MIN_PACE_TICKS)
+	} else {
+		ticks
+	}
 }
 
 /// What ONE craft of `item` is worth at the bench — the same fixed
@@ -641,11 +654,17 @@ mod tests {
 					0,
 					"{b:?} comes off the bench and must pay nothing to take apart"
 				);
+			} else if b.is_foliage() {
+				// Zero by name, and the reason is the pace concession:
+				// foliage processes at half the slowdown, and a floored
+				// point per leaf against that pace would make foliage the
+				// best XP rate at the bench.
+				assert_eq!(crate::skills::convert_xp(b), 0, "{b:?} pays no levels");
 			} else if extract_worth(b) > 0 {
 				assert_eq!(
 					crate::skills::convert_xp(b),
-					u64::from(extract_worth(b)),
-					"{b:?} is the world's own and pays what it is worth"
+					u64::from(extract_worth(b).div_ceil(2)),
+					"{b:?} is the world's own and pays half its worth"
 				);
 			}
 		}
@@ -740,9 +759,9 @@ mod tests {
 	/// they feed — here we only hold the catalog to the recipe table.
 	#[test]
 	fn pace_steps_and_the_catalog_are_pinned() {
-		assert_eq!(base_pace_ticks(1), 30);
-		assert_eq!(base_pace_ticks(25), 21);
-		assert_eq!(base_pace_ticks(75), 15);
+		assert_eq!(base_pace_ticks(1), 120);
+		assert_eq!(base_pace_ticks(25), 84);
+		assert_eq!(base_pace_ticks(45), 60);
 		// The display order is derived, so it can neither list something
 		// uncraftable nor miss something craftable — but it must still be
 		// a permutation, with nothing doubled by a grid cell claimed twice.
@@ -869,26 +888,28 @@ mod tests {
 	#[test]
 	fn pace_tracks_what_a_block_is_worth() {
 		use BlockType as B;
-		// Level 1 (a 30-tick whole block), across the value range.
+		// Level 1 (a whole block takes the full base interval), across
+		// the value range.
 		for (b, ticks) in [
-			(B::Stone, 30u32),  // the 9-XP reference itself
-			(B::Grass, 30),     //
-			(B::Rubble, 27),    // 8
-			(B::Sandstone, 23), // 7
-			(B::Dirt, 20),      // 6
-			(B::Water, 20),     // the bucket charge
-			(B::Gravel, 17),    // 5
-			(B::Sand, 13),      // 4
-			(B::Snow, 10),      // 3
-			(B::WoodSlab, 10),  // a slab third
-			(B::Leaves, 6),     // 1 XP — the floor, not 3 ticks
+			(B::Stone, 120u32), // the reference worth itself
+			(B::Grass, 120),    //
+			(B::Rubble, 107),   // worth 8
+			(B::Sandstone, 93), // 7
+			(B::Dirt, 80),      // 6
+			(B::Water, 80),     // the bucket charge
+			(B::Gravel, 67),    // 5
+			(B::Sand, 53),      // 4
+			(B::Snow, 40),      // 3
+			(B::WoodSlab, 40),  // a slab third
+			(B::Leaves, 6),     // half the slowdown, then the floor
+			(B::PineLeaves, 6), // — the whole foliage set, by the name
 		] {
 			assert_eq!(extract_pace_ticks(b, 1), ticks, "{b:?}");
 		}
 		// The level curve still applies on top, and pace never rises with
 		// level for any block.
-		assert_eq!(extract_pace_ticks(B::Stone, 25), 21);
-		assert_eq!(extract_pace_ticks(B::Stone, 75), 15);
+		assert_eq!(extract_pace_ticks(B::Stone, 25), 84);
+		assert_eq!(extract_pace_ticks(B::Stone, 45), 60);
 		for &b in &BlockType::ALL {
 			if !b.is_extractable() {
 				continue;
@@ -915,7 +936,7 @@ mod tests {
 		// The bucket's capacity is two whole blocks' worth, or one
 		// costliest op available at that level where that is more — see
 		// `the_bucket_can_always_afford_the_costliest_op`.
-		assert_eq!(bench_burst_ticks(1), 110.0);
+		assert_eq!(bench_burst_ticks(1), 440.0);
 		assert_eq!(
 			bench_burst_ticks(1),
 			extract_pace_ticks(BlockType::Aetherock, 1) as f32,

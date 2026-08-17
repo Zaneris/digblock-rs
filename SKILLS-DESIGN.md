@@ -1189,6 +1189,17 @@ Progression is currently faster than intended, and compression packs more into f
   and that ratio is DELIBERATE: finding ore should feel rewarding — digging is the road, veins are the pay. A future
   balance pass may move either table, but it may not "correct" the gap toward parity; a vein that pays like rock makes
   the reveal levels mean nothing.
+- **The background bench.** Alchemy's slowdown came as a pair, and the pair is the design: the bench pace quadrupled AND
+  the bench keeps working with its screen closed — a job runs while you play, only leaving the world abandons it, and
+  `hud::bench_tell` keeps the working bench visible. One without the other fails: a 4× pace attended is idle time, and a
+  background bench at the old pace is free levels. Because XP-per-bench-tick is a constant by construction (pace and
+  award both derive from the op's worth), the passive rate is ONE legible number to tune. It runs only while IN a world,
+  never logged off — an offline accrual would make the pace meaningless. Bench XP also halved (`convert_xp`/`craft_xp`
+  pay half the op's worth; the worth itself is untouched, since it still drives the pace), and **foliage is the
+  deliberate exception in both directions**: zero Alchemy XP, half the slowdown, one shared predicate
+  (`BlockType::is_foliage` — the same set the dig table zeroes). The two halves of that exception must move together — a
+  floored one-point award against the concessionary pace would make shoveling leaves the best XP rate at the bench.
+  Foliage is pure economy: the Aqua and the bonus lines are what a leaf is for.
 - **Design to time budgets, then measure.** Intended bands: the first reveal inside the first session; the siphon
   shortly after; the pick a multi-session goal; the content top a long-haul goal measured in weeks; the plane and the
   sigil in months. These are claims about hours, so they are testable.

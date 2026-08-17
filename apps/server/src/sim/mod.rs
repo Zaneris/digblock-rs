@@ -3003,8 +3003,8 @@ mod tests {
 			assert!(
 				c.msgs
 					.iter()
-					.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total: 8 })),
-				"conversion pays 8 Alchemy: {:?}",
+					.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total: 4 })),
+				"conversion pays 4 Alchemy: {:?}",
 				c.msgs
 			);
 
@@ -3015,7 +3015,7 @@ mod tests {
 			assert!(
 				c2.msgs.iter().any(|m| matches!(
 					m,
-					ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
+					ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 4)]
 				)),
 				"reconnect carries the totals: {:?}",
 				c2.msgs
@@ -3031,7 +3031,7 @@ mod tests {
 		assert!(
 			c3.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 8)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, 4)]
 			)),
 			"reboot carries the totals: {:?}",
 			c3.msgs
@@ -3123,7 +3123,7 @@ mod tests {
 			ServerMsg::XpGain { skill: 1, total } => Some(*total),
 			_ => None,
 		});
-		assert_eq!(last_alch, Some(u64::from(over) * 8), "XP only for landed");
+		assert_eq!(last_alch, Some(u64::from(over) * 4), "XP only for landed");
 	}
 
 	/// The same gate over the other half of the bench: a Craft costs the

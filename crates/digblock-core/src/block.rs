@@ -1217,6 +1217,17 @@ impl BlockType {
 		})
 	}
 
+	/// Foliage: the trivial-break rows every award table zeroes together.
+	/// ONE definition, because three places key on the same set — dig XP
+	/// (`skills::dig_xp`), bench XP (`skills::convert_xp`) and the bench's
+	/// pace concession (`alchemy::extract_pace_ticks`) — and a row joining
+	/// the set in one of them but not the others is exactly the drift a
+	/// shared predicate exists to prevent.
+	#[inline]
+	pub fn is_foliage(self) -> bool {
+		matches!(self, BlockType::Leaves | BlockType::PineLeaves)
+	}
+
 	/// A tool id: an item-only row that lives in the dedicated tool slot,
 	/// never in a block slot or the grid, and never in the world.
 	#[inline]

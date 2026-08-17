@@ -590,24 +590,31 @@ lines, waste multipliers (falling toward parity as level rises), extraction pace
    section). A source has to be a block the world HANDS you (rule 3 makes anything off the bench a sink, never a net
    source), past both walls, paying that essence reliably.
 
-The alchemy screen (K) is two tabs. **EXTRACT**: the real inventory grid plus one extraction slot — a *pointer* to a
-block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
-`extract_pace_ticks(block, level)` (`AlchScreen::tick`, driven from `Engine::update`) — the pace is the block's
-`extract_worth` against a whole block's worth, so the bench spends time in proportion to what comes out, floored so the
-cheapest foliage isn't a wire-op stream. The server's bucket therefore banks **ticks** (one per tick, capped at
-`bench_burst_ticks(level)`) and an op spends its own pace. **TRANSMUTE**: family tiles whose icons rotate through their
-members on the screen's clock (the outgoing member shrinks and fades away and the incoming one grows in —
-`family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces, and never the hard cut it
-replaced); selecting a family lays out member tiles (locked ones dim but selectable, affordable ones badged) under a
-detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A §7.2 material × shape pair is one
-more member in an existing family, so the catalog grows without the screen growing
+The alchemy screen (K) is two tabs, and **the bench works with the screen closed** (§13.4's background bench): the pace
+is slow enough now that standing over it would be idle time, so a job runs while you play — `Engine::update` ticks
+`AlchScreen::tick` whenever the screen is open OR `busy()`, `hud::bench_tell` shows the closed-screen job as one quiet
+line over the bar's tool end, and only leaving the WORLD abandons (`AlchScreen::abandon`, in `reset_world_transients` —
+`close` deliberately keeps the job). The bench still does ONE thing at a time; what enforces it is that STARTING a job
+displaces the other one, since tabs no longer decide. **EXTRACT**: the real inventory grid plus one extraction slot — a
+*pointer* to a block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
+`extract_pace_ticks(block, level)` — the pace is the block's `extract_worth` against a whole block's worth, so the bench
+spends time in proportion to what comes out, floored so the cheapest foliage isn't a wire-op stream. Foliage
+(`BlockType::is_foliage`, the one predicate three award/pace sites share) takes HALF the slowdown and pays ZERO Alchemy
+XP — the two are a pair: a floored one-point award against a concessionary pace would make shoveling leaves the best XP
+rate at the bench, so the concession exists only where the XP is zero. Extraction and craft XP are otherwise HALF the
+op's worth (`convert_xp`/`craft_xp`; the worth itself is untouched — it still drives the pace). The server's bucket
+banks **ticks** (one per tick, capped at `bench_burst_ticks(level)`) and an op spends its own pace. **TRANSMUTE**:
+family tiles whose icons rotate through their members on the screen's clock (the outgoing member shrinks and fades away
+and the incoming one grows in — `family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces,
+and never the hard cut it replaced); selecting a family lays out member tiles (locked ones dim but selectable,
+affordable ones badged) under a detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A
+§7.2 material × shape pair is one more member in an existing family, so the catalog grows without the screen growing
 (`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a fixed column
 count). **The button QUEUES that count rather than buying it**: crafting drips one `Craft{count:1}` per
 `craft_pace_ticks(item, level)`, the row under the button carries the batch's progress and what is left of it, and the
-button itself becomes its CANCEL. Both drips share ONE `progress` and one server bucket because there is one bench — the
-tabs are mutually exclusive and leaving one abandons its drip. Crafting still pays the XP it always paid; what changed
-is that it takes the time the work takes, which is what stopped the CTRL multiplier being a hundred crafts' XP in a
-frame.
+button itself becomes its CANCEL. Both drips share ONE `progress` and one server bucket because there is one bench.
+Crafting pays half its worth in XP, like extraction, and takes the time the work takes — which is what stopped the CTRL
+multiplier being a hundred crafts' XP in a frame.
 
 Polish invariants: everything sits on ONE left column; panel height is the max of both tabs, bottom-anchored
 (`panel_height_is_the_same_on_both_tabs` — a per-tab height jumped the top edge); the active tab's fill fuses into the

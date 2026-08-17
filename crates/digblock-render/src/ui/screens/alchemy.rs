@@ -62,6 +62,17 @@ pub enum AlchAction {
 	Craft { item: BlockType, count: u32 },
 }
 
+/// What the bench is working on, for the HUD's closed-screen tell — the
+/// background bench is invisible without one, and an invisible worker is
+/// a bug report ("my essence changed on its own").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BenchJob {
+	/// Extracting this block, one per pace, until its stack runs dry.
+	Extract(BlockType),
+	/// Transmuting this item, with this many left on the queue.
+	Craft(BlockType, u32),
+}
+
 const BULK_SHIFT: u32 = 10;
 const BULK_CTRL: u32 = 100;
 
@@ -337,14 +348,44 @@ impl AlchScreen {
 	pub fn close(&mut self) {
 		self.open = false;
 		self.drag.cancel();
-		// Both drips run only while the screen is open — you stand at
-		// the bench.
+		// The bench keeps working with the screen closed (§13.4's
+		// background bench): closing is walking away from a bench that is
+		// mid-job, not cancelling it. Only leaving the WORLD abandons
+		// ([`Self::abandon`]) — the job names things in this world. The
+		// transmute pick resets only when nothing is queued, so reopening
+		// mid-batch lands back on the batch's own tile and progress row.
+		if self.crafting.is_none() {
+			self.family = None;
+			self.member = 0;
+		}
+	}
+
+	/// Drop the running job outright — the WORLD-EXIT arm, kept apart
+	/// from [`Self::close`] on purpose: closing the screen keeps the
+	/// bench working, but a job points at this world's stacks and this
+	/// server's bucket, and neither exists in whatever comes next.
+	pub fn abandon(&mut self) {
 		self.extracting = None;
 		self.crafting = None;
 		self.progress = 0.0;
-		// So does the transmute pick: the tab opens unselected every time.
 		self.family = None;
 		self.member = 0;
+	}
+
+	/// Is a job on the bench? What keeps the engine ticking this screen
+	/// after it closes, and what the HUD's closed-screen tell keys on.
+	pub fn busy(&self) -> bool {
+		self.extracting.is_some() || self.crafting.is_some()
+	}
+
+	/// The running job, for the HUD tell: what is being worked and — for
+	/// a transmute batch — how many remain.
+	pub fn job(&self) -> Option<BenchJob> {
+		if let Some(b) = self.extracting {
+			return Some(BenchJob::Extract(b));
+		}
+		self.crafting
+			.map(|(item, left)| BenchJob::Craft(item, left))
 	}
 
 	pub fn cancel_drag(&mut self) {
@@ -369,21 +410,22 @@ impl AlchScreen {
 		self.tab = AlchTab::Transmute;
 		self.family = Some(f);
 		self.member = m;
+		self.extracting = None;
 		self.crafting = Some((item, count));
 		self.progress = into_cycle.clamp(0.0, 1.0);
 	}
 
 	/// Jump straight to a tab (capture harnesses and tests; play
 	/// switches through the tab strip).
+	///
+	/// Switching tabs no longer touches the job — the bench works with
+	/// the screen closed, so it can hardly stop for a tab. The bench
+	/// still does ONE thing at a time; what enforces it now is that
+	/// STARTING a job clears its counterpart (the extract drop and the
+	/// transmute button each do), which is the only moment the shared
+	/// `progress` changes hands.
 	pub fn set_tab(&mut self, tab: AlchTab) {
 		self.tab = tab;
-		// Leaving a tab abandons its drip: the bench does one thing at a
-		// time, and the one shared `progress` depends on it.
-		self.progress = 0.0;
-		match tab {
-			AlchTab::Extract => self.crafting = None,
-			AlchTab::Transmute => self.extracting = None,
-		}
 	}
 
 	/// Advance whichever drip this tab runs, one frame; returns the op a
@@ -401,45 +443,40 @@ impl AlchScreen {
 			}
 		}
 		let level = view.level;
-		// What this tab is working on and how long one of them takes. A
-		// pace is the ITEM's, not just the level's: a bench spends its
-		// time in proportion to what passes through it, whichever
-		// direction the matter is going.
-		let (pace_ticks, act) = match self.tab {
-			AlchTab::Extract => {
-				let Some(block) = self.extracting else {
-					self.progress = 0.0;
-					return None;
-				};
-				if inv.count(block) == 0 {
-					self.extracting = None;
-					self.progress = 0.0;
-					return None;
-				}
-				(
-					alchemy::extract_pace_ticks(block, level),
-					AlchAction::Convert { block, count: 1 },
-				)
+		// What the BENCH is working on and how long one of them takes —
+		// the job, not the tab: the bench works with the screen closed,
+		// so the visible tab stopped being who decides. At most one job
+		// exists (starting one displaces the other). A pace is the
+		// ITEM's, not just the level's: a bench spends its time in
+		// proportion to what passes through it, whichever direction the
+		// matter is going.
+		let (pace_ticks, act) = if let Some(block) = self.extracting {
+			if inv.count(block) == 0 {
+				self.extracting = None;
+				self.progress = 0.0;
+				return None;
 			}
-			AlchTab::Transmute => {
-				let Some((item, _)) = self.crafting else {
-					self.progress = 0.0;
-					return None;
-				};
-				// Re-asked every frame against the SAME number the button
-				// greys on, so a queue outliving its essence (a rebase
-				// landing, or the tool cap filling on the first one) ends
-				// where the offer would have been withdrawn.
-				if view.affordable(item) == 0 {
-					self.crafting = None;
-					self.progress = 0.0;
-					return None;
-				}
-				(
-					alchemy::craft_pace_ticks(item, level),
-					AlchAction::Craft { item, count: 1 },
-				)
+			(
+				alchemy::extract_pace_ticks(block, level),
+				AlchAction::Convert { block, count: 1 },
+			)
+		} else if let Some((item, _)) = self.crafting {
+			// Re-asked every frame against the SAME number the button
+			// greys on, so a queue outliving its essence (a rebase
+			// landing, or the tool cap filling on the first one) ends
+			// where the offer would have been withdrawn.
+			if view.affordable(item) == 0 {
+				self.crafting = None;
+				self.progress = 0.0;
+				return None;
 			}
+			(
+				alchemy::craft_pace_ticks(item, level),
+				AlchAction::Craft { item, count: 1 },
+			)
+		} else {
+			self.progress = 0.0;
+			return None;
 		};
 		self.progress += dt / (pace_ticks as f32 / 60.0);
 		if self.progress < 1.0 {
@@ -1244,6 +1281,10 @@ impl AlchScreen {
 						// the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
 						if count > 0 {
+							// Starting a job is what displaces the other
+							// one — the bench does one thing at a time,
+							// and tabs alone no longer decide.
+							self.extracting = None;
 							self.crafting = Some((item, count));
 							self.progress = 0.0;
 						}
@@ -1267,6 +1308,9 @@ impl AlchScreen {
 					if !payload.is_extractable() {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
 					} else {
+						// Starting a job displaces the other one — the
+						// counterpart of the transmute button's clear.
+						self.crafting = None;
 						self.extracting = Some(payload);
 						self.progress = 0.0;
 					}
@@ -1336,7 +1380,7 @@ fn elide(style: &Style, text: &str, max_w: f32) -> String {
 /// "STAIRS" — so a new material × shape pair names itself and cannot land
 /// on the old table's `?` fallback. Only the hand-priced functional items
 /// need naming by hand, for the same reason they need pricing by hand.
-fn block_name(b: BlockType) -> String {
+pub(crate) fn block_name(b: BlockType) -> String {
 	if let Some((m, s)) = b.grid_cell() {
 		return match s.item_suffix() {
 			Some(suffix) => format!("{} {suffix}", m.name()),
@@ -1599,10 +1643,33 @@ mod tests {
 		);
 		assert_eq!(r.screen.extracting, None);
 
+		// Closing the SCREEN keeps the job — the background bench: the
+		// pace is slow enough that standing over it would be idle time,
+		// so walking away is the ordinary case and the drip keeps
+		// sending. Only leaving the WORLD abandons.
 		drag_to(&mut r, src, slot);
 		assert_eq!(r.screen.extracting, Some(B::Wood));
 		r.screen.close();
-		assert_eq!(r.screen.extracting, None, "you stand at the bench");
+		assert_eq!(
+			r.screen.extracting,
+			Some(B::Wood),
+			"the bench works with the screen closed"
+		);
+		assert!(r.screen.busy(), "what keeps the engine ticking it");
+		let pace = alchemy::extract_pace_ticks(B::Wood, 1) as f32 / 60.0;
+		assert!(
+			matches!(
+				r.screen.tick(pace * 1.1, &r.view, &r.inv),
+				Some(AlchAction::Convert {
+					block: B::Wood,
+					count: 1
+				})
+			),
+			"the closed-screen drip still sends"
+		);
+		r.screen.abandon();
+		assert_eq!(r.screen.extracting, None, "the world-exit arm clears");
+		assert!(!r.screen.busy());
 	}
 
 	/// The bucket charge appears as a single water tile whenever the tool
@@ -1611,9 +1678,9 @@ mod tests {
 	#[test]
 	fn bucket_tile_extracts_the_charge() {
 		// An EMPTY bucket offers nothing — there is no charge to point at,
-		// and that is the only condition the tile has. The level is NOT
-		// one: below the unlock the tile is drawn locked so the drop can
-		// explain itself (`a_locked_bucket_charge_still_explains_itself`).
+		// and that is the only condition the tile has: the extract gate
+		// left with the craftable bucket, so a charge extracts at any
+		// level (`a_charged_bucket_extracts_from_the_first_level`).
 		let r = rig_at(20, |_| {});
 		assert!(
 			r.hits.rect_of(InvId::BucketTile).is_none(),
