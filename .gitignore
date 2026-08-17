@@ -22,3 +22,4 @@ apps/master/*.db-journal
 # Per-machine secrets for the local master (see the dotenv-load note in
 # the justfile).
 .env
+__pycache__/

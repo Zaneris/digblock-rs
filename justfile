@@ -210,16 +210,16 @@ compose-bots PROFILE="clean":
 # needs a real Google or Facebook app configured on the master, and the dev
 # master has neither).
 #
-# Browser client: release wasm build + bindgen + a static server on :8080.
+# Browser client: release wasm build + bindgen + tools/serve-web.py —
+# http on loopback for this machine, https on the LAN IP for a phone on
+# the same wifi (WebGPU needs a secure context, and a LAN address only
+# gets one over TLS; accept the self-signed warning once per device).
 web:
 	#!/usr/bin/env bash
 	set -euo pipefail
-	just check-port-8080
+	just check-web-ports
 	just build-web
-	echo "→ http://127.0.0.1:8080"
-	python3 -c 'import http.server, functools, mimetypes; \
-		mimetypes.add_type("application/wasm", ".wasm"); \
-		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+	python3 tools/serve-web.py
 
 # `just web` already defaults to the production master; this differs only
 # by probing it FIRST, so a deploy outage fails loudly here instead of
@@ -232,24 +232,28 @@ web:
 web-live QUERY="?overlay&spikelog":
 	#!/usr/bin/env bash
 	set -euo pipefail
-	just check-port-8080
+	just check-web-ports
 	curl -sf --max-time 10 https://master.digblock.net/api/servers >/dev/null \
 		|| { echo "master.digblock.net unreachable — not starting" >&2; exit 1; }
 	just build-web
-	echo "→ http://127.0.0.1:8080/{{QUERY}}   (master: https://master.digblock.net)"
-	python3 -c 'import http.server, functools, mimetypes; \
-		mimetypes.add_type("application/wasm", ".wasm"); \
-		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+	echo "   (master: https://master.digblock.net)"
+	python3 tools/serve-web.py --query '{{QUERY}}'
 
 # Same topology as `just play`. Open the printed URL in Chrome, pick
 # Multiplayer, type a name (3-10 chars), join "Local World"; append `&join`
 # to skip the menu (scripted flows), `&name=X` for a display name.
 #
-# Browser multiplayer test: containerized master + native server + the bundle on :8080.
+# Browser multiplayer test: containerized master + native server + the bundle
+# on :8080 (loopback http) and :8443 (LAN https, for a phone on the same
+# wifi). The game server advertises the LAN IP so the phone's WebTransport
+# can reach it, and the phone URL routes the master through the page's own
+# https origin (`/master` proxy in tools/serve-web.py) — an https page may
+# not call a plain-http LAN master directly. The phone URL signs in as the
+# dev subject `phone` so no browser OAuth round trip is needed on-device.
 play-web:
 	#!/usr/bin/env bash
 	set -euo pipefail
-	just check-port-8080
+	just check-web-ports
 	just build-web
 	cargo build -p digblock-server --bin digblock-server
 	docker build -q -t digblock-master apps/master >/dev/null
@@ -260,29 +264,33 @@ play-web:
 		-p 127.0.0.1:5200:5200 digblock-master >/dev/null
 	trap 'kill $server 2>/dev/null || true; docker rm -f digblock-play-master >/dev/null 2>&1 || true' EXIT
 	until curl -sf http://127.0.0.1:5200/health >/dev/null 2>&1; do sleep 0.2; done
+	lan_ip=$(python3 tools/serve-web.py --print-lan-ip)
 	./target/debug/digblock-server --master-url http://127.0.0.1:5200 \
-		--advertise-host 127.0.0.1 \
+		--advertise-host "$lan_ip" \
 		--server-name "Local World" --admin "${DIGBLOCK_ADMIN_ID:-{{DEV_ADMIN_ID}}}" &
 	server=$!
 	until curl -s http://127.0.0.1:5200/api/servers | grep -q '"id"'; do sleep 0.2; done
-	echo "→ http://127.0.0.1:8080/?master=http://127.0.0.1:5200"
-	python3 -c 'import http.server, functools, mimetypes; \
-		mimetypes.add_type("application/wasm", ".wasm"); \
-		http.server.test(HandlerClass=functools.partial(http.server.SimpleHTTPRequestHandler, directory="target/web"), port=8080, bind="127.0.0.1")'
+	python3 tools/serve-web.py \
+		--master-proxy http://127.0.0.1:5200 \
+		--query '?master=http://127.0.0.1:5200' \
+		--phone-query '?master={master}&devsignin=phone'
 
 # Fail fast (before the wasm build) if a previous web/play-web is still
-# holding :8080 — the python bind error at the end is much less friendly.
+# holding either serving port — the python bind error at the end is much
+# less friendly.
 [private]
-check-port-8080:
+check-web-ports:
 	#!/usr/bin/env bash
 	set -euo pipefail
-	pids=$(lsof -ti tcp:8080 -sTCP:LISTEN || true)
-	if [ -n "$pids" ]; then
-		echo "error: port 8080 is already in use:" >&2
-		ps -o pid=,command= -p $pids >&2
-		echo "kill it first: kill $pids" >&2
-		exit 1
-	fi
+	for port in 8080 8443; do
+		pids=$(lsof -ti tcp:$port -sTCP:LISTEN || true)
+		if [ -n "$pids" ]; then
+			echo "error: port $port is already in use:" >&2
+			ps -o pid=,command= -p $pids >&2
+			echo "kill it first: kill $pids" >&2
+			exit 1
+		fi
+	done
 
 # The glue JS and the wasm are ONE artifact — wasm-bindgen mangles import
 # names with a per-build hash — so a browser that pairs a fresh wasm with a
