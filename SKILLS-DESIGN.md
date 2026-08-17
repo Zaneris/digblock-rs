@@ -1185,6 +1185,10 @@ Progression is currently faster than intended, and compression packs more into f
   foliage and the torch zeroed by name, while the field table deliberately held still), the depth multiplier's ceiling,
   `PICK_EXTRA_PERMILLE`, and the bench pace (a slower bench is slower Alchemy XP/hour without touching an award). All
   award-side: they slow future earning and deflate nobody.
+- **The dig-to-vein gap is the design, not a drift.** Both halvings widened how far a field draw out-pays a plain dig,
+  and that ratio is DELIBERATE: finding ore should feel rewarding — digging is the road, veins are the pay. A future
+  balance pass may move either table, but it may not "correct" the gap toward parity; a vein that pays like rock makes
+  the reveal levels mean nothing.
 - **Design to time budgets, then measure.** Intended bands: the first reveal inside the first session; the siphon
   shortly after; the pick a multi-session goal; the content top a long-haul goal measured in weeks; the plane and the
   sigil in months. These are claims about hours, so they are testable.
