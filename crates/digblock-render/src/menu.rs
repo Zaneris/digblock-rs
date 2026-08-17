@@ -247,11 +247,20 @@ enum Setting {
 	MusicVol,
 	SfxVol,
 	Ssr,
+	/// Touch jump verb (double-tap vs on-screen button). The one row that
+	/// exists only on touch-HUD builds — `acts()` and `view()` both skip
+	/// it off-touch, in lockstep, so the positional indices stay aligned.
+	TouchJump,
 }
 
 #[derive(Clone, Copy)]
 enum Act {
 	CloseMenu,
+	/// Ask the shell to toggle browser fullscreen. Only offered when the
+	/// launcher declared the API available; the shell must make the call
+	/// inside the activating gesture's own event dispatch, which is why
+	/// the engine drains it from `input`, clipboard-style.
+	ToggleFullscreen,
 	OpenMultiplayer,
 	LeaveServer,
 	/// The local-world counterpart of [`Act::LeaveServer`]: flush the
@@ -333,6 +342,15 @@ pub struct Menu {
 	/// A world store was injected: Root offers "Singleplayer" (named
 	/// saves) instead of the ephemeral "Play Local".
 	store_available: bool,
+	/// This build draws the touch HUD, so the touch-only settings rows
+	/// are surfaced. See [`Menu::set_touch`].
+	touch: bool,
+	/// The shell can toggle browser fullscreen: Root offers the row.
+	fullscreen_available: bool,
+	/// The Fullscreen row was picked; drained by the engine from `input`
+	/// (the shell's call needs the activating gesture — see
+	/// [`Act::ToggleFullscreen`]).
+	wants_fullscreen: bool,
 	pending_worlds: Vec<WorldIntent>,
 	screen: Option<Screen>,
 	/// Who we are signed in as; `None` = signed out. Set by the engine
@@ -382,6 +400,9 @@ impl Menu {
 			enabled,
 			services_available: false,
 			store_available: false,
+			touch: false,
+			fullscreen_available: false,
+			wants_fullscreen: false,
 			pending_worlds: Vec::new(),
 			screen: enabled.then_some(Screen::Root { sel: 0 }),
 			account,
@@ -408,6 +429,36 @@ impl Menu {
 		if self.enabled && self.auto_join.is_some() {
 			self.activate(Act::OpenMultiplayer);
 		}
+	}
+
+	/// This build draws the touch HUD: surface the touch-only settings
+	/// rows. Same pattern as `set_store_available` — a capability the
+	/// engine declares after construction, not a constructor parameter.
+	pub fn set_touch(&mut self) {
+		self.touch = true;
+	}
+
+	/// The shell can toggle browser fullscreen: Root offers the row.
+	pub fn set_fullscreen_available(&mut self) {
+		self.fullscreen_available = true;
+	}
+
+	/// The Fullscreen row was picked. Drained from `Engine::input` like
+	/// the clipboard — the shell's fullscreen call is only honoured inside
+	/// the same task as the activating gesture.
+	pub fn take_fullscreen(&mut self) -> bool {
+		std::mem::take(&mut self.wants_fullscreen)
+	}
+
+	/// A menu text field is accepting produced text (the display-name and
+	/// world-name screens — exactly the ones `handle_text` feeds). Drives
+	/// the shells' soft-keyboard bridges through
+	/// `Game::text_entry_active`.
+	pub(crate) fn text_field_open(&self) -> bool {
+		matches!(
+			self.screen,
+			Some(Screen::ChooseName(_)) | Some(Screen::CreateWorld { .. })
+		)
 	}
 
 	pub fn is_open(&self) -> bool {
@@ -900,6 +951,10 @@ impl Menu {
 				st.ssr = !st.ssr;
 				true
 			}
+			Setting::TouchJump => {
+				st.touch_jump_button = !st.touch_jump_button;
+				true
+			}
 		};
 		self.settings_dirty |= changed;
 	}
@@ -938,8 +993,8 @@ impl Menu {
 				let v = (frac * VOL_MAX / VOL_STEP).round() * VOL_STEP;
 				(std::mem::replace(&mut st.sfx_vol, v) - v).abs() > f32::EPSILON
 			}
-			// Not a slider; a bar click can't reach it.
-			Setting::Ssr => false,
+			// Not sliders; a bar click can't reach them.
+			Setting::Ssr | Setting::TouchJump => false,
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1150,6 +1205,7 @@ impl Menu {
 					self.pending_cmds.push(MenuCommand::RefreshServers);
 				}
 			}
+			Act::ToggleFullscreen => self.wants_fullscreen = true,
 			Act::OpenSettings => self.screen = Some(Screen::Settings { sel: 0 }),
 			Act::CloseSettings => self.screen = Some(Screen::Root { sel: 0 }),
 			Act::OpenWorlds => {
@@ -1303,6 +1359,9 @@ impl Menu {
 						}
 					}
 				}
+				if self.fullscreen_available {
+					acts.push((RowId::RootItem(11), Act::ToggleFullscreen));
+				}
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
 			}
 			Some(Screen::Browser(b)) => {
@@ -1313,6 +1372,10 @@ impl Menu {
 			}
 			Some(Screen::Settings { .. }) => {
 				for (i, s) in SETTINGS_ROWS.iter().enumerate() {
+					// Skipped in lockstep with `view()` — see Setting::TouchJump.
+					if matches!(s, Setting::TouchJump) && !self.touch {
+						continue;
+					}
 					acts.push((RowId::SettingsRow(i as u8), Act::SettingRow(*s)));
 				}
 				acts.push((RowId::SettingsRow(SETTINGS_BACK), Act::CloseSettings));
@@ -1485,6 +1548,13 @@ impl Menu {
 						);
 					}
 				}
+				if self.fullscreen_available {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(RowId::RootItem(11), "Fullscreen"),
+					);
+				}
 				push(
 					&mut specs,
 					&mut y,
@@ -1575,6 +1645,21 @@ impl Menu {
 						},
 					),
 				);
+				// Skipped in lockstep with `acts()` — see Setting::TouchJump.
+				if self.touch {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(
+							RowId::SettingsRow(6),
+							if st.touch_jump_button {
+								"Jump: On-screen Button"
+							} else {
+								"Jump: Double-tap"
+							},
+						),
+					);
+				}
 				y += row_h * 0.5;
 				push(
 					&mut specs,
@@ -1737,8 +1822,9 @@ impl Menu {
 					&mut y,
 					// Fullscreen hides the browser it just opened, and a
 					// player who does not know it is there reads the wait
-					// as a hang.
-					RowSpec::dim("(alt-tab to it if you can't see it)"),
+					// as a hang. Worded for every platform: on a phone the
+					// sign-in page is another tab, not another window.
+					RowSpec::dim("(switch to it if you can't see it)"),
 				);
 				if let Some(status) = &s.status {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
@@ -1979,7 +2065,7 @@ const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 // says why). Re-exposing it means a row here, a match arm in
 // `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
 // renumbering every row after it — the indices are positional.
-const SETTINGS_ROWS: [Setting; 6] = [
+const SETTINGS_ROWS: [Setting; 7] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
 	// frame time, and a player hunting fps should find them together
@@ -1989,6 +2075,7 @@ const SETTINGS_ROWS: [Setting; 6] = [
 	Setting::MusicVol,
 	Setting::SfxVol,
 	Setting::Ssr,
+	Setting::TouchJump,
 ];
 
 /// The slider bar's rect within a placed row — the framework's

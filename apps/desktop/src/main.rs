@@ -492,12 +492,14 @@ fn main() {
 			ui_scale: config.ui_scale,
 			render_scale: config.render_scale,
 			gi_scale_div: config.gi_scale_div,
+			touch_jump_button: config.touch_jump_button,
 		});
 		config.draw_dist = saved.draw_dist;
 		config.music_vol = saved.music_vol;
 		config.sfx_vol = saved.sfx_vol;
 		config.ssr = saved.ssr;
 		config.ui_scale = saved.ui_scale;
+		config.touch_jump_button = saved.touch_jump_button;
 		// A saved value (or a --gi-scale flag, applied after this block) is
 		// an explicit preference; only its absence lets density pick.
 		// `settings::load` leaves `base` untouched when the file has no

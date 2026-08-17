@@ -71,6 +71,11 @@ pub struct Settings {
 	/// The GI resolve runs at `render_size / gi_scale_div`. One of
 	/// [`GI_SCALE_DIVISORS`].
 	pub gi_scale_div: u32,
+	/// Touch jump verb: the on-screen button instead of the double-tap.
+	/// Only surfaced (and only meaningful) on touch-HUD configs; the row
+	/// is hidden elsewhere but the value travels with the settings like
+	/// any other, so a tablet and a desktop browser share one store.
+	pub touch_jump_button: bool,
 }
 // There is no `name` here any more. It used to be the last multiplayer
 // display name, re-typed per join and remembered as a convenience; a name
@@ -94,6 +99,8 @@ impl Default for Settings {
 			// applied by the LAUNCHER, for interactive runs only.
 			render_scale: 1.0,
 			gi_scale_div: GI_SCALE_DEFAULT,
+			// The double-tap is the shipped jump — the old Java feel.
+			touch_jump_button: false,
 		}
 	}
 }
@@ -166,6 +173,7 @@ mod tests {
 			ui_scale: 9.0,
 			render_scale: 4.0,
 			gi_scale_div: 7,
+			touch_jump_button: false,
 		}
 		.clamped();
 		assert_eq!(s.draw_dist, DRAW_MAX);
@@ -206,6 +214,7 @@ mod tests {
 			ui_scale: 1.25,
 			render_scale: 0.75,
 			gi_scale_div: 3,
+			touch_jump_button: true,
 		};
 		assert_eq!(ok.clone().clamped(), ok);
 	}

@@ -163,6 +163,22 @@ fn hook_resume_gestures(state: &Rc<RefCell<State>>) {
 		let _ = window.add_event_listener_with_callback(ev, cb.as_ref().unchecked_ref());
 	}
 	cb.forget();
+	// iOS suspends the context when the tab backgrounds and does not
+	// reliably bring it back on its own; a resume on returning to visible
+	// needs no gesture, because the context was gesture-unlocked already.
+	let Some(document) = window.document() else {
+		return;
+	};
+	let st = state.clone();
+	let doc = document.clone();
+	let vis = Closure::<dyn FnMut()>::new(move || {
+		if doc.visibility_state() == web_sys::VisibilityState::Visible {
+			let _ = st.borrow().ctx.resume();
+		}
+	});
+	let _ =
+		document.add_event_listener_with_callback("visibilitychange", vis.as_ref().unchecked_ref());
+	vis.forget();
 }
 
 async fn decode(ctx: &AudioContext, raw: &[u8]) -> Option<AudioBuffer> {

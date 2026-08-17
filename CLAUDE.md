@@ -657,8 +657,8 @@ which looks like a black window with no HUD rather than a bad blit.
 
 Persistence is a launcher-injected `SettingsStore` (desktop: `data_dir/digblock/settings.json`; web: `localStorage`);
 precedence is CLI/query > saved > platform default, and non-interactive runs (bench/screenshot/drill) skip load AND save
-so captures stay hermetic. The last-joined multiplayer name persists here too. `Settings`
-(digblock-render/src/settings.rs) is serde-free; each launcher owns a serde mirror.
+so captures stay hermetic. `Settings` (digblock-render/src/settings.rs) is serde-free; each launcher owns a serde
+mirror.
 
 Named local worlds live in `crates/digblock-persist`: the journal (shared `VERSION` — a worldgen retune stales server
 volumes and client saves together) plus the `WorldStore` trait. Desktop `FsWorldStore` writes the exact server-format
@@ -715,8 +715,14 @@ tracks (`/api/music`) and both fillers fetch at runtime. Mute: `--mute` / `?mute
 
 Chrome via wasm32-unknown-unknown + WebGPU (`apps/web`). Query params mirror desktop flags:
 `?seed= ?tod= ?draw= ?ssr=0
-?overlay ?name= ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop
-quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music.
+?overlay ?mute ?master= ?join&server= ?workers= ?frames=`; defaults are full desktop
+quality; `?master=` defaults to the production master, explicitly empty disables multiplayer + music. A phone or tablet
+(coarse primary pointer + touch, or `?mobile` to force either way) boots from `EngineConfig::web_mobile` instead — the
+iOS quality knobs plus the touch HUD — with saved settings and URL params still winning in the usual order. The page's
+loading overlay is a fixed contract with the platform layer: `digblock-gpu-ready`, `digblock-first-frame` and
+`digblock-fatal` events narrate startup (`dispatch_page_event` in digblock-platform), and the overlay must be PAINTED
+before wasm instantiation begins — the double-rAF in index.html is what guarantees that on a cold mobile load, where the
+main thread never idles again until the first engine frame.
 
 **Chunk jobs run in Web Workers** (`apps/web-worker` + `apps/web/src/jobs.rs`), a small default that drops to none on a
 low-core device; `?workers=N` overrides. Workers can't share linear memory, so jobs cross as bytes —

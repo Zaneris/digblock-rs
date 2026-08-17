@@ -9,6 +9,9 @@
 mod app;
 mod clock;
 pub mod input;
+// The web soft-keyboard bridge (a hidden <input> driven from app.rs).
+#[cfg(target_arch = "wasm32")]
+mod webtext;
 // Private: only app.rs consumes the decision core, and crate-private
 // visibility lets -D warnings give it real dead-code coverage.
 mod lifecycle;
@@ -17,6 +20,10 @@ mod lifecycle;
 mod screenshot;
 
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};
+// For launcher boot code that must let the page paint before a long
+// synchronous stretch (the loading overlay's whole reason to exist).
+#[cfg(target_arch = "wasm32")]
+pub use app::yield_to_browser;
 
 use std::path::PathBuf;
 
@@ -98,6 +105,22 @@ pub trait Game: 'static {
 	fn wants_text_input(&self) -> bool {
 		false
 	}
+	/// Drained right after each input dispatch: the game asked for a
+	/// browser-fullscreen toggle from inside the gesture still on the
+	/// stack (the only context the Fullscreen API honours). Only the web
+	/// shell acts on it; the default never asks.
+	fn take_fullscreen_request(&mut self) -> bool {
+		false
+	}
+	/// Polled after input dispatches on touch devices: some text field
+	/// currently accepts produced text (the menu's name entry, chat). The
+	/// web shell focuses its hidden input on the rising edge — inside the
+	/// tap's own dispatch, which is what raises the soft keyboard — and
+	/// blurs it on the falling edge. A native shell may drive its own
+	/// keyboard bridge from the same signal.
+	fn text_entry_active(&self) -> bool {
+		false
+	}
 	fn on_resume(&mut self) {}
 	/// F10 drill: rebuild all device-lifetime resources from scratch, as a
 	/// real device loss would require. The standing regression test for the
@@ -171,6 +194,13 @@ pub struct RunOptions {
 	/// world states and a parity capture measures the speed difference
 	/// instead of the change. See `GameClock`.
 	pub fixed_dt: Option<std::time::Duration>,
+	/// The primary pointer is a finger. The shell then never requests
+	/// pointer lock (iOS Safari lacks the API; elsewhere every tap's
+	/// re-grab would be refused without a real pointer) and, on the web,
+	/// raises the soft keyboard while the game reports a text field open.
+	/// Set by the launcher from its own device detection — the shell has
+	/// no view of that.
+	pub touch: bool,
 }
 
 /// Why `run` came back with a failure the process should report.

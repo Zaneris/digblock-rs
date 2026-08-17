@@ -86,7 +86,7 @@ enum AppState {
 /// Posted back into the event loop by the async GPU init on wasm; native
 /// init is synchronous and never sends one.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-struct GpuReady {
+pub(crate) struct GpuReady {
 	gpu: Gpu,
 	surface: wgpu::Surface<'static>,
 	config: wgpu::SurfaceConfiguration,
@@ -102,11 +102,18 @@ struct GpuReady {
 /// reason [`AppState`] carries the allow.
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-enum UserEvent {
+pub(crate) enum UserEvent {
 	/// Async GPU init handing back its result.
 	GpuReady(GpuReady),
 	/// Browser pointer-lock truth from the pointerlockchange listener.
 	PointerLock { locked: bool },
+	/// A produced character from the soft-keyboard bridge (webtext.rs).
+	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+	TextChar(char),
+	/// A named key (Enter, Backspace) from the soft-keyboard bridge,
+	/// delivered as a press+release pair.
+	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+	TextKey(crate::input::Key),
 }
 
 struct App<G: Game> {
@@ -147,6 +154,9 @@ struct App<G: Game> {
 	drill_ok: bool,
 	/// Next drill step to fire (see `auto_drill`).
 	drill_step: u8,
+	/// The soft-keyboard bridge, present on touch devices (webtext.rs).
+	#[cfg(target_arch = "wasm32")]
+	text_bridge: Option<crate::webtext::TextBridge>,
 }
 
 /// Watchdog for a stalled drill: without it a drill that stops
@@ -199,6 +209,8 @@ pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> 
 		launched_at: Instant::now(),
 		drill_ok: false,
 		drill_step: 0,
+		#[cfg(target_arch = "wasm32")]
+		text_bridge: None,
 	};
 	#[cfg(not(target_arch = "wasm32"))]
 	{
@@ -314,16 +326,20 @@ fn window_attrs(
 /// Adapter + device + configured surface. Async because the browser main
 /// thread cannot block; native callers wrap it in `pollster::block_on`
 /// (macOS requires window/surface creation on the main thread anyway).
+///
+/// Fallible because on the web "no adapter" is an ordinary runtime
+/// condition (a browser without WebGPU) that must reach the page's error
+/// UI; native callers still treat any Err as fatal.
 async fn init_gpu(
 	window: Arc<Window>,
 	no_vsync: bool,
-) -> (Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
+) -> Result<(Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration), String> {
 	// No display handle at the instance: the window carries its own, and
 	// `create_surface` is the only thing here that needs one.
 	let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 	let surface = instance
 		.create_surface(window.clone())
-		.expect("create surface");
+		.map_err(|e| format!("create surface: {e}"))?;
 	let adapter = instance
 		.request_adapter(&wgpu::RequestAdapterOptions {
 			power_preference: wgpu::PowerPreference::HighPerformance,
@@ -335,7 +351,7 @@ async fn init_gpu(
 			apply_limit_buckets: false,
 		})
 		.await
-		.expect("no compatible GPU adapter");
+		.map_err(|e| format!("no compatible GPU adapter: {e}"))?;
 	log::info!("adapter: {:?}", adapter.get_info());
 	// GPU pass timing (debug/metrics facility) when the adapter has it.
 	let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
@@ -350,7 +366,7 @@ async fn init_gpu(
 			..Default::default()
 		})
 		.await
-		.expect("request device");
+		.map_err(|e| format!("request device: {e}"))?;
 	let gpu = Gpu {
 		instance,
 		adapter,
@@ -366,7 +382,7 @@ async fn init_gpu(
 		no_vsync,
 	);
 	surface.configure(&gpu.device, &config);
-	(gpu, surface, config)
+	Ok((gpu, surface, config))
 }
 
 fn create_surface(
@@ -531,7 +547,8 @@ impl<G: Game> App<G> {
 		#[cfg(not(target_arch = "wasm32"))]
 		{
 			let (gpu, surface, config) =
-				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync));
+				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync))
+					.expect("gpu init");
 			self.finish_reinit(window, gpu, surface, config);
 		}
 		#[cfg(target_arch = "wasm32")]
@@ -552,7 +569,8 @@ impl<G: Game> App<G> {
 		#[cfg(not(target_arch = "wasm32"))]
 		{
 			let (gpu, surface, config) =
-				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync));
+				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync))
+					.expect("gpu init");
 			self.finish_init(window, gpu, surface, config, el);
 		}
 		#[cfg(target_arch = "wasm32")]
@@ -561,6 +579,9 @@ impl<G: Game> App<G> {
 			// Once per launch (reinit_device bypasses init_all, so no
 			// double install).
 			install_pointer_lock_listeners(&self.proxy);
+			if self.options.touch {
+				self.text_bridge = crate::webtext::TextBridge::new(self.proxy.clone());
+			}
 			self.spawn_gpu_init(window, false);
 		}
 	}
@@ -572,14 +593,32 @@ impl<G: Game> App<G> {
 		let no_vsync = self.options.no_vsync;
 		let w = window.clone();
 		wasm_bindgen_futures::spawn_local(async move {
-			let (gpu, surface, config) = init_gpu(w, no_vsync).await;
-			// Send fails only if the loop is gone — nothing to do then.
-			let _ = proxy.send_event(UserEvent::GpuReady(GpuReady {
-				gpu,
-				surface,
-				config,
-				reinit,
-			}));
+			match init_gpu(w, no_vsync).await {
+				Ok((gpu, surface, config)) => {
+					// Fixed contract with the apps/web page (like the canvas
+					// id): the device is in hand, and everything left before
+					// the first frame is one long synchronous engine init —
+					// yield the browser a frame so the page's status update
+					// for this stage actually paints before that stretch.
+					dispatch_page_event("digblock-gpu-ready");
+					yield_to_browser().await;
+					// Send fails only if the loop is gone — nothing to do
+					// then.
+					let _ = proxy.send_event(UserEvent::GpuReady(GpuReady {
+						gpu,
+						surface,
+						config,
+						reinit,
+					}));
+				}
+				Err(reason) => {
+					// The page owns the failure UI (fixed contract, again) —
+					// a panic in a detached future may never reach it. The
+					// app parks in WaitingForGpu behind the page's message.
+					log::error!("gpu init failed: {reason}");
+					dispatch_page_failure(&reason);
+				}
+			}
 		});
 		self.state = AppState::WaitingForGpu { window };
 	}
@@ -897,12 +936,8 @@ impl<G: Game> App<G> {
 		// overlay (fixed contract with apps/web's index.html, like the
 		// canvas id).
 		#[cfg(target_arch = "wasm32")]
-		if self.frames_rendered == 1
-			&& let (Some(w), Ok(ev)) = (
-				web_sys::window(),
-				web_sys::Event::new("digblock-first-frame"),
-			) {
-			let _ = w.dispatch_event(&ev);
+		if self.frames_rendered == 1 {
+			dispatch_page_event("digblock-first-frame");
 		}
 		if self
 			.options
@@ -961,7 +996,34 @@ impl<G: Game> App<G> {
 		}
 	}
 
+	/// Runs right after a user-gesture input dispatch (click, tap, key):
+	/// requests the game raised that can only be honoured while that
+	/// gesture is still on the stack — the fullscreen toggle, and the
+	/// text bridge's focus edge (focusing inside the tap's dispatch is
+	/// what raises the soft keyboard).
+	fn after_game_input(&mut self) {
+		let fullscreen = self.game.take_fullscreen_request();
+		#[cfg(target_arch = "wasm32")]
+		{
+			if fullscreen {
+				toggle_browser_fullscreen();
+			}
+			if let Some(bridge) = &mut self.text_bridge {
+				bridge.sync(self.game.text_entry_active());
+			}
+		}
+		#[cfg(not(target_arch = "wasm32"))]
+		let _ = fullscreen;
+	}
+
 	fn grab_cursor(&mut self, grab: bool) {
+		// A touch device has no pointer to lock: iOS Safari lacks the API
+		// entirely, and every tap's re-grab attempt would be refused and
+		// logged. One gate here covers the reconcile, click-to-grab and
+		// gesture re-grab paths alike; releases stay allowed.
+		if grab && self.options.touch {
+			return;
+		}
 		if let AppState::Running(r) = &self.state {
 			#[cfg(target_arch = "wasm32")]
 			{
@@ -1043,6 +1105,89 @@ impl<G: Game> App<G> {
 	}
 }
 
+/// One side of the fixed contract with the apps/web page (like the canvas
+/// id): named events on the window are how the platform narrates startup
+/// to the page's loading overlay — `digblock-gpu-ready`, then
+/// `digblock-first-frame`; `digblock-fatal` when startup cannot continue.
+#[cfg(target_arch = "wasm32")]
+fn dispatch_page_event(name: &str) {
+	if let (Some(w), Ok(ev)) = (web_sys::window(), web_sys::Event::new(name)) {
+		let _ = w.dispatch_event(&ev);
+	}
+}
+
+/// The fatal half of the page contract: a `digblock-fatal` CustomEvent
+/// whose detail is the reason, shown by the page's failure UI. A panic in
+/// a detached wasm future may or may not reach the page's error listener,
+/// so anything that must be seen goes through here instead.
+#[cfg(target_arch = "wasm32")]
+fn dispatch_page_failure(reason: &str) {
+	let init = web_sys::CustomEventInit::new();
+	init.set_detail(&wasm_bindgen::JsValue::from_str(reason));
+	if let (Some(w), Ok(ev)) = (
+		web_sys::window(),
+		web_sys::CustomEvent::new_with_event_init_dict("digblock-fatal", &init),
+	) {
+		let _ = w.dispatch_event(&ev);
+	}
+}
+
+/// Resume only after the browser has actually presented a frame.
+///
+/// Awaiting a rAF alone is not enough: the await's continuation runs as a
+/// microtask INSIDE the rendering task, before its paint, so heavy
+/// synchronous work scheduled there still starves the very update the
+/// caller wanted shown. The zero timer queues the continuation behind the
+/// rendering steps that follow the rAF callbacks.
+#[cfg(target_arch = "wasm32")]
+pub async fn yield_to_browser() {
+	let Some(w) = web_sys::window() else { return };
+	let raf = js_sys::Promise::new(&mut |resolve, _| {
+		let _ = w.request_animation_frame(&resolve);
+	});
+	let _ = wasm_bindgen_futures::JsFuture::from(raf).await;
+	let timer = js_sys::Promise::new(&mut |resolve, _| {
+		let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+	});
+	let _ = wasm_bindgen_futures::JsFuture::from(timer).await;
+}
+
+/// Toggle browser fullscreen on the whole page. Must be called inside a
+/// user gesture's own event dispatch (see `after_game_input`).
+///
+/// Entering also tries a landscape orientation lock — honoured by Android
+/// Chrome once fullscreen, rejected everywhere else, and the rejection IS
+/// the answer, so both calls are fire-and-forget. The lock waits a frame,
+/// since a lock requested before the fullscreen transition applies is
+/// refused even where it is supported.
+#[cfg(target_arch = "wasm32")]
+fn toggle_browser_fullscreen() {
+	let Some(window) = web_sys::window() else {
+		return;
+	};
+	let Some(doc) = window.document() else {
+		return;
+	};
+	let orientation = window.screen().ok().map(|s| s.orientation());
+	if doc.fullscreen_element().is_some() {
+		if let Some(o) = orientation {
+			let _ = o.unlock();
+		}
+		doc.exit_fullscreen();
+	} else if let Some(root) = doc.document_element() {
+		let _ = root.request_fullscreen();
+		if let Some(o) = orientation {
+			wasm_bindgen_futures::spawn_local(async move {
+				yield_to_browser().await;
+				if let Ok(p) = o.lock(web_sys::OrientationLockType::Landscape) {
+					let f = wasm_bindgen_futures::JsFuture::from(p);
+					let _ = f.await;
+				}
+			});
+		}
+	}
+}
+
 /// Browser truth for pointer lock, routed into the winit loop as user
 /// events. Page-lifetime listeners: leaking the closures is deliberate.
 #[cfg(target_arch = "wasm32")]
@@ -1103,6 +1248,17 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				}
 			}
 			UserEvent::PointerLock { locked } => self.on_pointer_lock_change(locked),
+			UserEvent::TextChar(ch) => self.game.input(InputEvent::Text { ch }),
+			UserEvent::TextKey(key) => {
+				self.game.input(InputEvent::Key { key, pressed: true });
+				self.game.input(InputEvent::Key {
+					key,
+					pressed: false,
+				});
+				// Enter may have submitted and closed the field: let the
+				// bridge blur so the keyboard follows it down.
+				self.after_game_input();
+			}
 		}
 	}
 
@@ -1169,6 +1325,7 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 					#[cfg(target_arch = "wasm32")]
 					self.gesture_regrab(false);
 				}
+				self.after_game_input();
 			}
 			WindowEvent::CursorMoved { position, .. } => {
 				// Only meaningful ungrabbed — while locked the position is
@@ -1203,6 +1360,7 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 						x: (t.location.x / f64::from(size.width.max(1))) as f32,
 						y: (t.location.y / f64::from(size.height.max(1))) as f32,
 					});
+					self.after_game_input();
 				}
 			}
 			WindowEvent::KeyboardInput { event: k, .. } => {
@@ -1260,6 +1418,7 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 						if code != KeyCode::Escape {
 							self.gesture_regrab(wants_before);
 						}
+						self.after_game_input();
 					}
 					PhysicalKey::Unidentified(_) => {}
 				}

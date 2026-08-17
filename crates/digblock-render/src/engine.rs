@@ -395,6 +395,18 @@ pub struct EngineConfig {
 	/// screenshot, drill, and iOS keep this false — those paths must not
 	/// sit on a menu screen.
 	pub menu: bool,
+	/// Draw the touch HUD (the corner menu button, the thumb-cluster
+	/// buttons, tappable hotbar) and claim touches that land on it. Set by
+	/// the configs whose primary pointer is a finger; the touch VERBS stay
+	/// unconditional, since they only ever fire from touch events.
+	pub touch_hud: bool,
+	/// The touch jump verb is the on-screen button instead of the
+	/// double-tap. A persisted user setting (like `ssr`), mirrored here so
+	/// the frame's intent read needs no settings lookup.
+	pub touch_jump_button: bool,
+	/// The shell can toggle browser fullscreen (the web launcher sets it
+	/// from the Fullscreen API's availability): the menu offers the row.
+	pub fullscreen_button: bool,
 	/// Scripted join (a server-name filter; empty string = first listed):
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
@@ -493,6 +505,9 @@ impl EngineConfig {
 			adaptive_stream: false,
 			chunk_slots_override: None,
 			menu: false,
+			touch_hud: false,
+			touch_jump_button: false,
+			fullscreen_button: false,
 			auto_join: None,
 			account: None,
 			legacy_identity: None,
@@ -558,6 +573,9 @@ impl EngineConfig {
 			adaptive_stream: false,
 			chunk_slots_override: None,
 			menu: false,
+			touch_hud: true,
+			touch_jump_button: false,
+			fullscreen_button: false,
 			auto_join: None,
 			account: None,
 			legacy_identity: None,
@@ -588,6 +606,24 @@ impl EngineConfig {
 			// to leave generous have to be real.
 			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
 			..Self::desktop()
+		}
+	}
+
+	/// Browser client on a phone or tablet: the `mobile()` quality knobs —
+	/// same hardware class as the iOS build — over the `web()` plumbing,
+	/// plus the touch HUD. Detection (and the `?mobile` override) lives in
+	/// the launcher; saved settings and URL params still win, in that
+	/// order, exactly as they do over `web()`.
+	pub fn web_mobile() -> Self {
+		Self {
+			draw_dist: 10,
+			ssr: false,
+			gi_scale_div: 3, // the Settings screen's "Medium" notch
+			spray_droplets: 48,
+			touch_hud: true,
+			touch_jump_button: false,
+			fullscreen_button: false,
+			..Self::web()
 		}
 	}
 
@@ -724,6 +760,18 @@ pub struct Engine {
 	/// The primary touch currently driving UI-surface pointer synthesis
 	/// (see the Touch arm at the top of `input`).
 	ui_touch: Option<u64>,
+	/// Touches claimed by HUD buttons (`touch_hud`), consumed to their
+	/// end so a held button never becomes look or movement. A Vec, not a
+	/// single slot: a place tap while the jump button is held is two
+	/// simultaneous claims.
+	hud_touches: Vec<(u64, crate::ui::hud::HudButton)>,
+	/// The on-screen jump button is held (Button jump mode only).
+	hud_jump_held: bool,
+	/// The menu's Fullscreen row fired; the shell drains it right after
+	/// this input dispatch, while the gesture is still on the stack.
+	fullscreen_requested: bool,
+	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
+	safe_area: crate::ui::hud::SafeArea,
 	/// Walk (player physics) vs debug fly camera; F toggles.
 	walking: bool,
 	fly_key_down: bool,
@@ -2102,7 +2150,7 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
-		let menu = crate::menu::Menu::new(
+		let mut menu = crate::menu::Menu::new(
 			config.menu,
 			crate::settings::Settings {
 				draw_dist: config.draw_dist,
@@ -2112,10 +2160,17 @@ impl Engine {
 				ui_scale: config.ui_scale,
 				render_scale: config.render_scale,
 				gi_scale_div: config.gi_scale_div,
+				touch_jump_button: config.touch_jump_button,
 			},
 			config.auto_join.clone(),
 			config.account.clone(),
 		);
+		if config.touch_hud {
+			menu.set_touch();
+		}
+		if config.fullscreen_button {
+			menu.set_fullscreen_available();
+		}
 		let mut engine = Self {
 			menu,
 			chat: crate::chat::Chat::default(),
@@ -2193,6 +2248,10 @@ impl Engine {
 			player: Player::new(spawn),
 			touch: TouchDriver::new(),
 			ui_touch: None,
+			hud_touches: Vec::new(),
+			hud_jump_held: false,
+			fullscreen_requested: false,
+			safe_area: crate::ui::hud::SafeArea::default(),
 			walking: true,
 			fly_key_down: false,
 			overlay_key_down: false,
@@ -2550,6 +2609,7 @@ impl Engine {
 	/// from the join path.
 	fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
+		self.config.touch_jump_button = s.touch_jump_button;
 		if (s.ui_scale - self.config.ui_scale).abs() > f32::EPSILON {
 			self.config.ui_scale = s.ui_scale;
 			self.recompute_ui_scale();
@@ -4069,12 +4129,38 @@ impl Engine {
 		}
 	}
 
+	/// Drop every live touch: the driver's look/move/dig state, the HUD's
+	/// claims, and the held state they were driving. The one call every
+	/// "touches are gone" site makes (focus loss, a screen opening), so a
+	/// held button can never survive its own finger.
+	fn clear_touch_state(&mut self) {
+		self.touch.clear();
+		self.hud_touches.clear();
+		self.hud_jump_held = false;
+	}
+
+	/// Physical-px display cutouts (notch, home indicator) the touch HUD
+	/// keeps its buttons clear of. Shell-forwarded; zero when the shell
+	/// cannot measure any.
+	pub fn set_safe_area(&mut self, insets: crate::ui::hud::SafeArea) {
+		self.safe_area = insets;
+	}
+
+	/// Mouse hold or touch hold — the one question the dig machinery asks.
+	/// Touch is deliberately NOT folded into `dig_held`: that flag is
+	/// force-cleared at many sites (screen opens, focus loss, slot swaps)
+	/// whose touch half the driver's own `clear` already covers, and two
+	/// writers to one flag would have to agree at every one of them.
+	fn dig_active(&self) -> bool {
+		self.dig_held || self.touch.dig_held()
+	}
+
 	/// One fixed-rate step of the hold-to-dig state machine. Purely
 	/// predictive online — the server runs its own timer and aim checks.
 	fn step_dig(&mut self) {
 		// A charged bucket has no left-click action at all — not even the
 		// "you can't dig that" complaint below, which belongs to a dig.
-		if !self.dig_held || (self.water_tool_selected() && !self.scoop_ready()) {
+		if !self.dig_active() || (self.water_tool_selected() && !self.scoop_ready()) {
 			self.release_dig();
 			return;
 		}
@@ -5298,6 +5384,44 @@ impl Game for Engine {
 		// (design-doc M2 debt) without any screen learning about touch.
 		// Gameplay touch (look/move) keeps its own arm below.
 		if let InputEvent::Touch { id, phase, x, y } = event {
+			// A HUD-claimed touch is consumed to its end wherever its later
+			// events land — the button it pressed may have rerouted them
+			// (opening the menu sends this id's Moved/Ended to the screen
+			// path, which must not treat them as a fresh pointer).
+			if let Some(i) = self.hud_touches.iter().position(|&(hid, _)| hid == id) {
+				if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+					self.hud_touches.swap_remove(i);
+					self.hud_jump_held = self
+						.hud_touches
+						.iter()
+						.any(|&(_, b)| b == crate::ui::hud::HudButton::Jump);
+				}
+				return;
+			}
+			// The corner button doubles as an open screen's close control:
+			// I/K/C/Escape are its only other closes, none of which a phone
+			// has. Checked ahead of the pointer synthesis so the tap cannot
+			// also land as a click inside the screen. The menu's own corner
+			// is inert — its rows already cover everything.
+			if self.config.touch_hud
+				&& matches!(phase, TouchPhase::Started)
+				&& !self.menu.is_open()
+				&& (self.inv_screen.is_open()
+					|| self.alch_screen.is_open()
+					|| self.char_screen.is_open())
+			{
+				let (px, py) = (x * self.size.0 as f32, y * self.size.1 as f32);
+				if crate::ui::hud::corner_button_rect(self.size, self.ui_scale, &self.safe_area)
+					.contains(px, py)
+				{
+					self.hud_touches
+						.push((id, crate::ui::hud::HudButton::Corner));
+					self.inv_screen.close();
+					self.alch_screen.close();
+					self.char_screen.close();
+					return;
+				}
+			}
 			if self.menu.is_open()
 				|| self.inv_screen.is_open()
 				|| self.alch_screen.is_open()
@@ -5342,7 +5466,7 @@ impl Game for Engine {
 			self.char_screen.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
-				self.touch.clear();
+				self.clear_touch_state();
 			} else {
 				self.menu.handle_input(&event, self.size, self.ui_scale);
 				// Drained HERE, not in `update`. A browser only honours a
@@ -5356,6 +5480,9 @@ impl Game for Engine {
 				{
 					copy(&text);
 				}
+				// Same gesture rule as the clipboard: the shell's
+				// fullscreen call is only honoured inside this task.
+				self.fullscreen_requested |= self.menu.take_fullscreen();
 			}
 			return;
 		}
@@ -5368,7 +5495,7 @@ impl Game for Engine {
 				// (a cmd-tab shouldn't slam it shut — menu parity).
 				InputEvent::FocusLost | InputEvent::PointerLockLost => {
 					self.keys = HeldKeys::default();
-					self.touch.clear();
+					self.clear_touch_state();
 					self.dig_held = false;
 					self.inv_screen.cancel_drag();
 				}
@@ -5404,7 +5531,7 @@ impl Game for Engine {
 			match event {
 				InputEvent::FocusLost | InputEvent::PointerLockLost => {
 					self.keys = HeldKeys::default();
-					self.touch.clear();
+					self.clear_touch_state();
 					self.dig_held = false;
 					let bar = crate::hotbar::HotbarView::build(
 						&self.hotbar,
@@ -5457,7 +5584,7 @@ impl Game for Engine {
 			match event {
 				InputEvent::FocusLost | InputEvent::PointerLockLost => {
 					self.keys = HeldKeys::default();
-					self.touch.clear();
+					self.clear_touch_state();
 					self.dig_held = false;
 				}
 				InputEvent::Key {
@@ -5473,7 +5600,7 @@ impl Game for Engine {
 		if self.chat.is_open() {
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.keys = HeldKeys::default();
-				self.touch.clear();
+				self.clear_touch_state();
 				// Losing the lock also surfaces the pause menu; a chat
 				// draft doesn't survive that.
 				self.chat.handle_input(&InputEvent::Key {
@@ -5628,12 +5755,12 @@ impl Game for Engine {
 			},
 			InputEvent::FocusLost => {
 				self.keys = HeldKeys::default();
-				self.touch.clear();
+				self.clear_touch_state();
 				self.dig_held = false;
 			}
 			InputEvent::PointerLockLost => {
 				self.keys = HeldKeys::default();
-				self.touch.clear();
+				self.clear_touch_state();
 				self.dig_held = false;
 				// Web parity with desktop Escape: a browser-initiated unlock
 				// pauses into the menu (no-op when the menu is disabled — the
@@ -5644,13 +5771,56 @@ impl Game for Engine {
 			// consumes them.
 			InputEvent::CursorMoved { .. } | InputEvent::Text { .. } => {}
 			InputEvent::Touch { id, phase, x, y } => {
+				// HUD buttons claim their touch before the driver can turn
+				// it into look or movement (later events of a claimed id are
+				// consumed at the top of `input`).
+				if self.config.touch_hud && matches!(phase, TouchPhase::Started) {
+					use crate::ui::hud::HudButton;
+					let (px, py) = (x * self.size.0 as f32, y * self.size.1 as f32);
+					if let Some(b) = crate::ui::hud::touch_hit(
+						self.size,
+						self.ui_scale,
+						&self.safe_area,
+						self.config.touch_jump_button,
+						px,
+						py,
+					) {
+						match b {
+							HudButton::Corner => {
+								self.dig_held = false;
+								self.clear_touch_state();
+								self.menu.open();
+							}
+							// The same edge a right-click sets; use-beats-
+							// place and the bucket pour ride along.
+							HudButton::Place => self.click_place = true,
+							HudButton::Jump => self.hud_jump_held = true,
+							HudButton::Slot(i) => {
+								// Mirror the digit keys, tool-slot cycle
+								// included (§6: reselecting the tool cycles
+								// the owned roster).
+								let i = i as usize;
+								if i == digblock_core::hotbar::HOTBAR_SLOTS - 1
+									&& self.hotbar.selected_index() == i
+								{
+									let owned = self.owned_tools();
+									self.hotbar.cycle_tool(&owned);
+								} else {
+									self.hotbar.select_digit(i as u8 + 1);
+								}
+							}
+						}
+						self.hud_touches.push((id, b));
+						return;
+					}
+				}
 				let phase = match phase {
 					TouchPhase::Started => Phase::Started,
 					TouchPhase::Moved => Phase::Moved,
 					TouchPhase::Ended => Phase::Ended,
 					TouchPhase::Cancelled => Phase::Cancelled,
 				};
-				self.touch.handle(id, phase, x, y);
+				self.touch.handle(id, phase, x, y, web_time::Instant::now());
 			}
 		}
 	}
@@ -5938,6 +6108,9 @@ impl Game for Engine {
 		// player tick (immutable), strictly sequential.
 		self.update_target();
 		self.apply_place();
+		// A stationary touch hold sends no events, so its promotion to
+		// digging has to be polled — ahead of the dig ticks that read it.
+		self.touch.tick(web_time::Instant::now());
 		self.dig_accum = (self.dig_accum + dt).min(0.25);
 		while self.dig_accum >= TICK {
 			self.dig_accum -= TICK;
@@ -6023,14 +6196,22 @@ impl Game for Engine {
 		if self.walking {
 			// Fixed-rate player simulation (Java feel was tuned per-frame at
 			// that same rate; the accumulator preserves it at any display rate).
+			// Always drained, honoured only in double-tap mode — an undrained
+			// edge would fire the moment the setting flipped back.
 			let touch_jump = self.touch.take_jump();
+			let jump = self.keys.up
+				|| if self.config.touch_jump_button {
+					self.hud_jump_held
+				} else {
+					touch_jump
+				};
 			let key_axis = Vec2::new(
 				(self.keys.d as i32 - self.keys.a as i32) as f32,
 				(self.keys.w as i32 - self.keys.s as i32) as f32,
 			);
 			let intent = PlayerIntent {
 				move_axis: key_axis + self.touch.move_axis(),
-				jump: self.keys.up || touch_jump,
+				jump,
 			};
 			let dir = self.camera.dir();
 			self.tick_accum = (self.tick_accum + dt).min(0.25);
@@ -6385,6 +6566,30 @@ impl Game for Engine {
 				self.inventory.bucket_full(),
 				self.tool_swap.present(),
 			);
+			// The touch HUD draws last so its corner button sits over an
+			// open screen's dim — it is that screen's close control.
+			if self.config.touch_hud {
+				let screen_open = self.inv_screen.is_open()
+					|| self.alch_screen.is_open()
+					|| self.char_screen.is_open();
+				crate::ui::hud::touch_buttons(
+					ui.dl,
+					ui.style.scale,
+					size,
+					&self.safe_area,
+					screen_open,
+					self.config.touch_jump_button,
+				);
+				if !screen_open && let Some((anchor, finger)) = self.touch.joystick() {
+					let to_px = |v: glam::Vec2| (v.x * size.0 as f32, v.y * size.1 as f32);
+					crate::ui::hud::joystick_overlay(
+						ui.dl,
+						ui.style.scale,
+						to_px(anchor),
+						to_px(finger),
+					);
+				}
+			}
 		}
 		// Last, and over everything: while the arrival hold is up, the
 		// world behind this is pristine worldgen the journal is about to
@@ -6493,6 +6698,14 @@ impl Game for Engine {
 
 	fn wants_text_input(&self) -> bool {
 		self.config.interactive && self.chat.is_open()
+	}
+
+	fn take_fullscreen_request(&mut self) -> bool {
+		std::mem::take(&mut self.fullscreen_requested)
+	}
+
+	fn text_entry_active(&self) -> bool {
+		self.config.interactive && (self.chat.is_open() || self.menu.text_field_open())
 	}
 
 	/// The window closed, the page is unloading, or a capture ran out its
@@ -7628,6 +7841,133 @@ mod craft_gate_tests {
 			Some(cell),
 			"the hold opens"
 		);
+	}
+}
+
+#[cfg(test)]
+mod touch_hud_tests {
+	use super::*;
+	use crate::ui::hud;
+
+	const SIZE: (u32, u32) = (1280, 720);
+
+	/// An in-game engine with the touch HUD live, sized so normalized
+	/// touch coordinates and the HUD's pixel rects agree.
+	fn touch_engine() -> Engine {
+		let mut config = EngineConfig::desktop();
+		config.workers = 0;
+		config.seed = Some(3.0);
+		config.menu = true;
+		config.touch_hud = true;
+		let mut engine = Engine::new(config);
+		engine.size = SIZE;
+		engine.ui_scale = 1.0;
+		// The title menu starts open; enter the world the way play does.
+		engine.menu.set_connected(true);
+		engine.input(InputEvent::Key {
+			key: Key::Escape,
+			pressed: true,
+		});
+		assert!(!engine.menu.is_open(), "in-game to start");
+		engine
+	}
+
+	fn touch_at(engine: &mut Engine, id: u64, phase: TouchPhase, px: f32, py: f32) {
+		engine.input(InputEvent::Touch {
+			id,
+			phase,
+			x: px / SIZE.0 as f32,
+			y: py / SIZE.1 as f32,
+		});
+	}
+
+	fn center(r: crate::ui::Rect) -> (f32, f32) {
+		(r.x + r.w / 2.0, r.y + r.h / 2.0)
+	}
+
+	#[test]
+	fn corner_tap_opens_the_menu_and_closes_a_screen() {
+		let mut engine = touch_engine();
+		let (cx, cy) = center(hud::corner_button_rect(SIZE, 1.0, &engine.safe_area));
+		touch_at(&mut engine, 1, TouchPhase::Started, cx, cy);
+		assert!(engine.menu.is_open(), "corner = pause");
+		// The claimed touch is consumed to its end even though the menu now
+		// owns the pointer path.
+		touch_at(&mut engine, 1, TouchPhase::Ended, cx, cy);
+		assert!(engine.hud_touches.is_empty(), "claim released");
+
+		// Back in-game, with a screen up: the same button is its close.
+		engine.input(InputEvent::Key {
+			key: Key::Escape,
+			pressed: true,
+		});
+		assert!(!engine.menu.is_open());
+		engine.input(InputEvent::Key {
+			key: Key::I,
+			pressed: true,
+		});
+		assert!(engine.inv_screen.is_open());
+		touch_at(&mut engine, 2, TouchPhase::Started, cx, cy);
+		assert!(!engine.inv_screen.is_open(), "corner = close");
+		assert!(!engine.menu.is_open(), "close, not pause");
+		touch_at(&mut engine, 2, TouchPhase::Ended, cx, cy);
+	}
+
+	#[test]
+	fn place_tap_is_an_edge_and_never_becomes_look() {
+		let mut engine = touch_engine();
+		let (px, py) = center(hud::place_button_rect(SIZE, 1.0, &engine.safe_area));
+		touch_at(&mut engine, 1, TouchPhase::Started, px, py);
+		assert!(engine.click_place, "one place per tap");
+		// A drag across the whole screen with the claimed finger is not a
+		// camera move.
+		touch_at(&mut engine, 1, TouchPhase::Moved, px + 300.0, py);
+		assert_eq!(engine.touch.take_look(), glam::Vec2::ZERO);
+		touch_at(&mut engine, 1, TouchPhase::Ended, px + 300.0, py);
+		assert!(engine.hud_touches.is_empty());
+	}
+
+	#[test]
+	fn the_jump_button_only_lives_in_button_mode() {
+		let mut engine = touch_engine();
+		let (jx, jy) = center(hud::jump_button_rect(SIZE, 1.0, &engine.safe_area));
+		// Double-tap mode: no button there — the touch is an ordinary
+		// look-side candidate, and no jump intent is held.
+		touch_at(&mut engine, 1, TouchPhase::Started, jx, jy);
+		assert!(!engine.hud_jump_held);
+		assert!(engine.hud_touches.is_empty());
+		touch_at(&mut engine, 1, TouchPhase::Ended, jx, jy);
+
+		engine.config.touch_jump_button = true;
+		touch_at(&mut engine, 2, TouchPhase::Started, jx, jy);
+		assert!(engine.hud_jump_held, "held while the finger is down");
+		// A second finger still looks while the button is held.
+		touch_at(&mut engine, 3, TouchPhase::Started, 900.0, 200.0);
+		touch_at(&mut engine, 3, TouchPhase::Moved, 1000.0, 200.0);
+		touch_at(&mut engine, 3, TouchPhase::Moved, 1100.0, 200.0);
+		assert!(engine.touch.take_look().x > 0.0);
+		touch_at(&mut engine, 2, TouchPhase::Ended, jx, jy);
+		assert!(!engine.hud_jump_held);
+	}
+
+	#[test]
+	fn a_bar_slot_tap_selects_it() {
+		let mut engine = touch_engine();
+		let grid = hud::row_grid(SIZE, 1.0);
+		let (sx, sy) = center(hud::bar_slot_rect(&grid, 2, 1.0));
+		touch_at(&mut engine, 1, TouchPhase::Started, sx, sy);
+		assert_eq!(engine.hotbar.selected_index(), 2);
+		touch_at(&mut engine, 1, TouchPhase::Ended, sx, sy);
+
+		// The tool slot mirrors tap-9: selecting it, then tapping it again,
+		// cycles the owned roster (a no-op roster keeps the slot selected).
+		let tool = digblock_core::hotbar::HOTBAR_SLOTS - 1;
+		let (tx, ty) = center(hud::bar_slot_rect(&grid, tool, 1.0));
+		touch_at(&mut engine, 2, TouchPhase::Started, tx, ty);
+		touch_at(&mut engine, 2, TouchPhase::Ended, tx, ty);
+		touch_at(&mut engine, 3, TouchPhase::Started, tx, ty);
+		touch_at(&mut engine, 3, TouchPhase::Ended, tx, ty);
+		assert_eq!(engine.hotbar.selected_index(), tool);
 	}
 }
 
