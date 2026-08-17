@@ -69,10 +69,7 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(10, "the essence siphon — ore needs it"),
 	(12, "planed lumber and its joinery; the door shape"),
 	(14, "furniture: the table and the chair"),
-	(
-		15,
-		"clean stone — every learned shape at once; the bucket charge",
-	),
+	(15, "clean stone — every learned shape at once"),
 	(18, "dark lumber and stone brick"),
 	(21, "sandstone and glass"),
 	(24, "the bed — timber and bedding both"),

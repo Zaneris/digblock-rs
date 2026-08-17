@@ -140,6 +140,22 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	out
 }
 
+/// Whether the bench takes `b` from a player at `level` — the ONE
+/// question the extract slot's drop gate and `apply_alchemy`'s Convert
+/// arm both ask, in the mould of `dig_blocked` and `overlaps_solid`.
+///
+/// It has to be level-aware, because a block can earn its whole yield
+/// from a bonus line: the deep tiers' spent rock has no base at all and
+/// pays only the whisper, so [`BlockType::is_extractable`]'s level-free
+/// answer is the wrong one to gate a drop with. While every host of a
+/// bonus line also had a base, the two questions happened to agree and
+/// nothing noticed they were different questions — the screen refused
+/// the drop and the server would have honoured it, so the line was
+/// unreachable by every honest client and reachable by a crafted packet.
+pub fn extractable_at(b: BlockType, level: u32) -> bool {
+	!extract_yields(b, level).is_empty()
+}
+
 /// What one FIELD extraction pays into a player's stocks (SKILLS-DESIGN
 /// §5.3) — a seam drawn out where it stands, with no ore in between.
 ///
@@ -676,6 +692,33 @@ mod tests {
 			extract_pace_ticks(BlockType::Wood, 1),
 			"planed timber comes apart no faster than the log"
 		);
+	}
+
+	/// The catalog filter may never hide a block the bench would take.
+	/// [`BlockType::is_extractable`] answers for the roster and
+	/// [`extractable_at`] answers for a player, so the first has to be
+	/// the second's envelope — a screen or a tool that filters on the
+	/// cheap one is then merely coarse, never wrong.
+	///
+	/// It shipped the other way round for the length of a review. The
+	/// deep tiers' tapped rock has no extract base, so the filter said
+	/// no while `apply_alchemy` — which totals the bonus in — said yes:
+	/// the extract slot refused the drop for every honest client, and a
+	/// crafted packet was paid out at the pace floor. The reward had a
+	/// level-up fanfare and a character-screen tease and no way to
+	/// collect it.
+	#[test]
+	fn the_catalog_filter_never_hides_an_extractable_block() {
+		for &b in &BlockType::ALL {
+			for level in 1..=crate::skills::MAX_LEVEL {
+				if extractable_at(b, level) {
+					assert!(
+						b.is_extractable(),
+						"the bench takes {b:?} at {level}, but the filter hides it"
+					);
+				}
+			}
+		}
 	}
 
 	/// A bonus line on a craftable block is an essence pump (craft from

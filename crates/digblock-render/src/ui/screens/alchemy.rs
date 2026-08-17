@@ -1303,9 +1303,13 @@ impl AlchScreen {
 					..
 				} = self.drag.on_release(hits)
 				{
-					// The one gate the drop respects: extractable at all.
-					// A refused drop SAYS why — silence read as a bug.
-					if !payload.is_extractable() {
+					// The one gate the drop respects, and it is the SERVER's:
+					// a block whose only yield is a bonus line is not
+					// extractable until the level that opens the line, so
+					// asking the catalog instead would refuse a drop the
+					// bench would have taken. A refused drop SAYS why —
+					// silence read as a bug.
+					if !alchemy::extractable_at(payload, view.level) {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
 					} else {
 						// Starting a job displaces the other one — the

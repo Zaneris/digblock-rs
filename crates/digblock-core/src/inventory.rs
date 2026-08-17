@@ -267,10 +267,10 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
 			}
-			let yields = alchemy::extract_yields(block, level);
-			if yields.is_empty() {
+			if !alchemy::extractable_at(block, level) {
 				return false;
 			}
+			let yields = alchemy::extract_yields(block, level);
 			if !inv.try_take(block, count) {
 				return false;
 			}

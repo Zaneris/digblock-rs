@@ -58,22 +58,23 @@ see the bonus-line pump rule there. M3 (level-scaled dig speed, SIM v11, retuned
 with a rework of the transmute tab into §8.1's family model. M4 is HALF landed: the Stage-A emissive bit (a bit of the
 solid vertex's material word; chunk.wgsl returns fogged ink and skips sun/shadow/AO) and the Torch (ShapeKind::Torch —
 post + glowing head, hand-priced per §7.3, the LIGHTS family on the transmute tab, in the DIG_SHAPES showcase). M4's
-other half — §6's tool formalization — is landed too: tools are item-only `blocks!` rows (`Bucket`,
-`is_tool`/`always_owned`), the tool slot is PINNED to the bar's end (legacy layouts that parked it mid-bar migrate on
-decode), `Hotbar::active_tool` is the second axis riding the Layout wire's last entry (`WIRE_TOOL` = the bucket), tap-9
-on the selected tool slot cycles the owned roster, the faded rail draws once a second tool exists, and the server's
-Collect/pour gates check the active tool. A consolidation pass (2026-08-10) then landed **Stage-B voxel lighting**
-(LIGHT-DESIGN.md — torches illuminate, caves and roofed rooms go dark; §7.4 updated) and reconciled this document with
-the shipped code (§3.3 cumulative note, §4.1/§4.2 per-line-ceil ideals, §4.3's late rows, §5.3's ore ids, §10 pump-rule
-pin), then landed §5.1's **per-material dig families and the strength wall** (SIM v12, protocol v17; both retuned at SIM
-v18 — the curve rebuilt end to end and the wall re-keyed onto the dig family), and its Alchemy twin, the **craft gate**
-(SIM v13, protocol v19 — a craft-only block refuses to be dug below the Alchemy level that makes it, so a pickup can't
-route around an unlock; the planed-timber set moved down to the joinery material's own level with it, joining the bucket
-charge). M5, M6 and M7's first wave landed after that — the header above lists what each one brought. Originally fleshed
-out from the brainstorm of 2026-08-09, grounded in the code as it stood (protocol v15, SIM v10, `inventories.bin` v3).
-Every value in here is a tuning proposal, not a promise — and the values themselves now live only in the code that
-defines them (`skills.rs`, `alchemy.rs`, `unlock.rs`, `material.rs`) — but the *shapes* (which functions exist, where
-authority lives, what migrates how) are meant to be the real plan.
+other half — §6's tool formalization — is landed too: tools are item-only `blocks!` rows (`Bucket`, `is_tool`, and at
+the time `always_owned` — §13.5 has since made the bucket a craft like every other tool, and the flag went with it), the
+tool slot is PINNED to the bar's end (legacy layouts that parked it mid-bar migrate on decode), `Hotbar::active_tool` is
+the second axis riding the Layout wire's last entry (`WIRE_TOOL` = the bucket), tap-9 on the selected tool slot cycles
+the owned roster, the faded rail draws once a second tool exists, and the server's Collect/pour gates check the active
+tool. A consolidation pass (2026-08-10) then landed **Stage-B voxel lighting** (LIGHT-DESIGN.md — torches illuminate,
+caves and roofed rooms go dark; §7.4 updated) and reconciled this document with the shipped code (§3.3 cumulative note,
+§4.1/§4.2 per-line-ceil ideals, §4.3's late rows, §5.3's ore ids, §10 pump-rule pin), then landed §5.1's **per-material
+dig families and the strength wall** (SIM v12, protocol v17; both retuned at SIM v18 — the curve rebuilt end to end and
+the wall re-keyed onto the dig family), and its Alchemy twin, the **craft gate** (SIM v13, protocol v19 — a craft-only
+block refuses to be dug below the Alchemy level that makes it, so a pickup can't route around an unlock; the
+planed-timber set moved down to the joinery material's own level with it, joining the bucket charge). M5, M6 and M7's
+first wave landed after that — the header above lists what each one brought. Originally fleshed out from the brainstorm
+of 2026-08-09, grounded in the code as it stood (protocol v15, SIM v10, `inventories.bin` v3). Every value in here is a
+tuning proposal, not a promise — and the values themselves now live only in the code that defines them (`skills.rs`,
+`alchemy.rs`, `unlock.rs`, `material.rs`) — but the *shapes* (which functions exist, where authority lives, what
+migrates how) are meant to be the real plan.
 
 ---
 
@@ -546,7 +547,7 @@ the last.
 (§5.3) — the first cross-skill handshake; then **Duskstone**; then **Glowvein**, arriving with the level that makes the
 **Resonant Pick** usable; and finally **Aetherock**, near the top. Past the last reveal the ladder pays in refinements
 rather than new substances: the pick's resonance deepens by a cell (§5.6), **prospector's sense** adds a faint audio
-shimmer within `unlock::PROSPECT_RANGE` of an unrevealed-tier deposit (a cadence emitter, like footsteps — audio only,
+shimmer within `unlock::prospect_range` of an unrevealed-tier deposit (a cadence emitter, like footsteps — audio only,
 no ESP overlay), and mastery at the cap adds a bonus ore to every field extraction.
 
 ### 5.6 The Resonant Pick

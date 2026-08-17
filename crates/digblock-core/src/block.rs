@@ -1286,13 +1286,20 @@ impl BlockType {
 		self.props().crafted
 	}
 
-	/// Can this block be broken down at the bench at all? The full
+	/// Can this block be broken down at the bench at ANY level? The full
 	/// per-essence yield table lives in [`crate::alchemy::extract_base`]
 	/// — this is just its non-empty test, kept here for callers that
 	/// only filter.
+	///
+	/// A bonus line counts, because a block can earn its whole yield from
+	/// one and have no base at all. Gating on this is still wrong for
+	/// anything that acts on a player: it answers for the catalog, not
+	/// for them, and what they may extract right now is
+	/// [`crate::alchemy::extractable_at`].
 	#[inline]
 	pub fn is_extractable(self) -> bool {
 		crate::alchemy::extract_total_base(self) > 0
+			|| !crate::alchemy::bonus_lines(self, crate::skills::MAX_LEVEL).is_empty()
 	}
 }
 

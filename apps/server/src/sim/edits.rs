@@ -1384,8 +1384,10 @@ mod tests {
 		// ---- 4. a bucket scoop out of the floor --------------------------
 		// A Collect empties its cell as surely as a dig does, and it picks
 		// its target with the FLUID ray rather than the plain one — a
-		// second entry into the same gate. The bucket is `always_owned` and
-		// its slot is pinned last, which is what `dig_hold` declares.
+		// second entry into the same gate. Its slot is pinned last, which
+		// is what `dig_hold` declares; whether this player owns a vessel
+		// at all never comes up, because protection answers at DigStart,
+		// ahead of every tool question.
 		let spring = (sx + 2, FLOOR, sz);
 		sim.test_set_cell(spring.0, spring.1, spring.2, BlockType::Water as u16);
 		let scoop_dir = (Vec3::new(
