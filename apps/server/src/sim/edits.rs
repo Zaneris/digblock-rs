@@ -275,7 +275,7 @@ impl Sim {
 					.as_ref()
 					.map(|d| (d.cell, d.cell_value, d.progress, d.idle)),
 				slot_item,
-				client.hotbar.active_tool(),
+				client.hotbar.tool_in_hand(),
 			)
 		};
 		// Is this dig a field EXTRACTION (SKILLS-DESIGN §5.3)? Resolved
@@ -2366,6 +2366,9 @@ mod tests {
 		let mut sim = flat_sim("collect");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		// The vessel is crafted now, so the rig hands one over like any
+		// other earned tool.
+		sim.bench_set_active_tool(1, BlockType::Bucket);
 		sim.clients
 			.get_mut(&1)
 			.unwrap()
@@ -2484,6 +2487,7 @@ mod tests {
 		let mut sim = flat_sim("charge");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
+		sim.bench_set_active_tool(1, BlockType::Bucket);
 		let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1;
 		let pos = sim.test_player(1).unwrap().pos;
 		let out = Vec3::new(3.0, -2.0, 0.0).normalize();
@@ -3622,6 +3626,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		wait_live(&mut sim, 2);
 		sim.test_grant(1, BlockType::Dirt, 1); // → the first bar slot
+		sim.bench_set_active_tool(1, BlockType::Bucket);
 
 		// Player 1 selects the Dirt slot.
 		let mut input0 = aim(1, Vec3::NEG_Y);

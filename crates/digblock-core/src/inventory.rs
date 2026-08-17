@@ -106,12 +106,14 @@ impl Inventory {
 	}
 
 	/// Does the player have this tool? Tools cap at one, so ownership IS
-	/// the count — except the bucket, which everyone starts with
-	/// ([`BlockType::always_owned`]). Non-tools are never owned in this
-	/// sense, whatever their stack says.
+	/// the count — the bucket included, since it joined the catalog
+	/// (SKILLS-DESIGN §13.5; records written while it was owned by
+	/// everyone are granted one on load, so nothing loses a bucket it
+	/// had). Non-tools are never owned in this sense, whatever their
+	/// stack says.
 	#[inline]
 	pub fn owns_tool(&self, b: BlockType) -> bool {
-		b.is_tool() && (b.always_owned() || self.count(b) > 0)
+		b.is_tool() && self.count(b) > 0
 	}
 
 	/// The owned tool roster, in block-id order: what tapping 9 cycles
@@ -121,7 +123,8 @@ impl Inventory {
 	/// and the server's gate disagreeing is exactly how a tool gets used
 	/// without being owned.
 	///
-	/// Never empty in practice: the bucket is `always_owned`.
+	/// EMPTY for a fresh player: the first vessel is crafted, and until it
+	/// is, the tool slot stands empty and every tool gate refuses.
 	pub fn owned_tools(&self) -> impl Iterator<Item = BlockType> + '_ {
 		BlockType::ALL
 			.iter()
@@ -262,9 +265,6 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 	match op {
 		AlchemyOp::Convert { block, count } => {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
-				return false;
-			}
-			if !unlock::can_extract(block, level) {
 				return false;
 			}
 			let yields = alchemy::extract_yields(block, level);
@@ -572,37 +572,31 @@ mod tests {
 		assert_eq!(inv.sub_count(Essence::Earth), 6 - 3, "ceil(2·1.05)");
 	}
 
-	/// The bucket-charge economy: extraction opens at water's own Alchemy
-	/// level and empties the tool. There is no craft to pair it with —
-	/// water is something the world hands you, so the bench cannot make a
-	/// charge at any level, and the only way to fill the tool is to go and
-	/// scoop one. That IS the Aqua economy: the essence with the fewest
-	/// sources is the one you have to carry home.
+	/// The bucket-charge economy: extraction empties the tool, and there
+	/// is no craft to pair it with — water is something the world hands
+	/// you, so the bench cannot make a charge at any level, and the only
+	/// way to fill the tool is to go and scoop one. That IS the Aqua
+	/// economy: the essence with the fewest sources is the one you have
+	/// to carry home. The old level gate on this op left with the
+	/// craftable bucket (§13.5): ACQUIRING water is the gate now, since
+	/// the vessel itself must be made first.
 	#[test]
 	fn bucket_charge_extracts_but_is_never_crafted() {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Water, 1);
 		assert!(
-			!apply_alchemy(
+			apply_alchemy(
 				&mut inv,
 				AlchemyOp::Convert {
 					block: BlockType::Water,
 					count: 1
 				},
-				14
+				1
 			),
-			"the Aqua economy opens at 15"
+			"a scooped charge extracts from the first level"
 		);
-		assert!(apply_alchemy(
-			&mut inv,
-			AlchemyOp::Convert {
-				block: BlockType::Water,
-				count: 1
-			},
-			99
-		));
 		assert!(!inv.bucket_full(), "extracting the charge empties the tool");
-		assert_eq!(inv.sub_count(Essence::Aqua), 18);
+		assert_eq!(inv.sub_count(Essence::Aqua), 7, "level-1 efficiency's cut");
 
 		// And no amount of Aqua buys the charge back, at any level.
 		inv.add_sub(Essence::Aqua, 100_000);

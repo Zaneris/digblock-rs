@@ -112,10 +112,12 @@ blocks! {
 	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
-	/// the count machinery untouched. The bucket is owned by everyone
-	/// always ([`BlockType::always_owned`]); its charge stays the Water
-	/// count. Its texture layers are placeholders, never sampled —
-	/// RenderClass::None.
+	/// the count machinery untouched. The bucket is the catalog's FIRST
+	/// tool (SKILLS-DESIGN §13.5): crafted like the other three, priced
+	/// so the opening dig-and-extract loop pays for it, and granted by
+	/// migration to every record written while it was still owned by
+	/// everyone. Its charge stays the Water count. Its texture layers are
+	/// placeholders, never sampled — RenderClass::None.
 	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
 	/// Planed timber (SKILLS-DESIGN §7.2's material × shape grid): the
 	/// refined counterpart of the felled `Wood` trunk, craft-only and
@@ -1226,13 +1228,6 @@ impl BlockType {
 				| BlockType::ResonantPick
 				| BlockType::MastersSigil
 		)
-	}
-
-	/// Tools every player owns unconditionally (no craft, no count):
-	/// the bucket, exactly as it has been since the water tool shipped.
-	#[inline]
-	pub fn always_owned(self) -> bool {
-		self == BlockType::Bucket
 	}
 
 	/// A "whole block" for the water-regen rule's floor check: solid

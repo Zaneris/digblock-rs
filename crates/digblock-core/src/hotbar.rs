@@ -36,10 +36,12 @@ pub struct Hotbar {
 	selected: usize,
 	scroll_accum: f32,
 	/// The tool the dedicated slot currently holds (always a
-	/// [`BlockType::is_tool`] id; the bucket by default). Rides the
-	/// `Layout` wire as its last entry, after the slots, so the server's
-	/// Collect/pour validation always sees the current pick in wire order.
-	active_tool: BlockType,
+	/// [`BlockType::is_tool`] id when present) — `None` until the first
+	/// vessel is crafted, since the bucket joined the catalog and a fresh
+	/// player owns no tool at all. Rides the `Layout` wire as its last
+	/// entry, after the slots, so the server's Collect/pour validation
+	/// always sees the current pick in wire order.
+	active_tool: Option<BlockType>,
 }
 
 impl Default for Hotbar {
@@ -59,38 +61,53 @@ impl Hotbar {
 			slots,
 			selected: 0,
 			scroll_accum: 0.0,
-			active_tool: BlockType::Bucket,
+			active_tool: None,
 		}
 	}
 
-	/// The tool the dedicated slot holds.
+	/// The tool the dedicated slot holds; `None` while the roster is
+	/// empty (the slot itself stays pinned — there is just nothing in it).
 	#[inline]
-	pub fn active_tool(&self) -> BlockType {
+	pub fn active_tool(&self) -> Option<BlockType> {
 		self.active_tool
+	}
+
+	/// The active tool as the plain id the shared dig questions take
+	/// (`ore::dig_mode`, `skills::dig_required_with`) — `Air` for a bare
+	/// slot, which those functions already read as an empty hand: it
+	/// matches no tool arm and leaves the base hold untouched. One
+	/// helper, so client prediction and the server spell the convention
+	/// identically.
+	#[inline]
+	pub fn tool_in_hand(&self) -> BlockType {
+		self.active_tool.unwrap_or(BlockType::Air)
 	}
 
 	/// Advance the active tool through `owned` (the engine's owned
 	/// roster, deterministic block-id order), wrapping. With one tool
 	/// the extra taps no-op; an active tool that fell out of the roster
-	/// snaps to its first entry.
+	/// snaps to its first entry — which for an EMPTY roster is nothing,
+	/// so taps on a fresh player's bare slot stay no-ops.
 	pub fn cycle_tool(&mut self, owned: &[BlockType]) {
-		let Some(pos) = owned.iter().position(|&t| t == self.active_tool) else {
-			if let Some(&first) = owned.first() {
-				self.active_tool = first;
-			}
+		let pos = self
+			.active_tool
+			.and_then(|active| owned.iter().position(|&t| t == active));
+		let Some(pos) = pos else {
+			self.active_tool = owned.first().copied();
 			return;
 		};
 		if owned.len() > 1 {
-			self.active_tool = owned[(pos + 1) % owned.len()];
+			self.active_tool = Some(owned[(pos + 1) % owned.len()]);
 		}
 	}
 
 	/// Force the active tool. For [`crate::inv_grid::reconcile_layout`]
 	/// only — it is the one place that sees the bar AND the counts, so it
-	/// is the only place that can tell whether a tool is actually owned.
-	/// Everything else cycles through the roster instead.
-	pub fn set_active_tool(&mut self, t: BlockType) {
-		if t.is_tool() {
+	/// is the only place that can tell whether a tool is actually owned
+	/// (and the only caller allowed to empty the slot). Everything else
+	/// cycles through the roster instead.
+	pub fn set_active_tool(&mut self, t: Option<BlockType>) {
+		if t.is_none_or(BlockType::is_tool) {
 			self.active_tool = t;
 		}
 	}
@@ -171,12 +188,16 @@ impl Hotbar {
 	/// Wire encoding: blocks are their ids, empties `WIRE_EMPTY`, and
 	/// the tool slot carries THE ACTIVE TOOL's id — except the bucket,
 	/// which keeps the `WIRE_TOOL` sentinel every stored layout already
-	/// uses (§6: the sentinel decodes as the migrated bucket id).
+	/// uses (§6: the sentinel decodes as the migrated bucket id), and a
+	/// bare slot, which encodes exactly like any other empty.
 	pub fn to_wire(&self) -> [u16; HOTBAR_SLOTS] {
 		self.slots.map(|s| match s {
 			None => WIRE_EMPTY,
-			Some(HotbarItem::WaterTool) if self.active_tool == BlockType::Bucket => WIRE_TOOL,
-			Some(HotbarItem::WaterTool) => self.active_tool as u16,
+			Some(HotbarItem::WaterTool) => match self.active_tool {
+				Some(BlockType::Bucket) => WIRE_TOOL,
+				Some(t) => t as u16,
+				None => WIRE_EMPTY,
+			},
 			Some(HotbarItem::Block(b)) => b as u16,
 		})
 	}
@@ -195,12 +216,12 @@ impl Hotbar {
 			let item = match w {
 				WIRE_EMPTY => continue,
 				WIRE_TOOL => {
-					hb.active_tool = BlockType::Bucket;
+					hb.active_tool = Some(BlockType::Bucket);
 					continue;
 				}
 				id => match BlockType::try_from_id(id) {
 					Some(b) if b.is_tool() => {
-						hb.active_tool = b;
+						hb.active_tool = Some(b);
 						continue;
 					}
 					Some(b) => HotbarItem::Block(b),
@@ -321,22 +342,33 @@ mod tests {
 
 	/// §6's second axis: WHICH tool the slot holds. Tapping 9 on the
 	/// already-selected slot cycles the owned roster, wrapping; one tool
-	/// no-ops; a roster that dropped the active tool snaps to its first.
+	/// no-ops; a roster that dropped the active tool snaps to its first —
+	/// and an EMPTY roster leaves the slot bare, since the bucket is
+	/// crafted now and a fresh player owns nothing to cycle to.
 	#[test]
 	fn cycling_walks_the_owned_roster() {
 		let mut h = Hotbar::new();
-		assert_eq!(h.active_tool(), B::Bucket, "the launch tool");
+		assert_eq!(h.active_tool(), None, "a fresh player owns no tool");
+		h.cycle_tool(&[]);
+		assert_eq!(h.active_tool(), None, "taps on a bare slot no-op");
 		h.cycle_tool(&[B::Bucket]);
-		assert_eq!(h.active_tool(), B::Bucket, "one tool: taps no-op");
-		// A future two-tool roster cycles and wraps. (Bucket is the only
-		// tool id today, so stand in a block id for the second — the
-		// cycle is pure list arithmetic.)
+		assert_eq!(h.active_tool(), Some(B::Bucket), "the first craft equips");
+		h.cycle_tool(&[B::Bucket]);
+		assert_eq!(h.active_tool(), Some(B::Bucket), "one tool: taps no-op");
+		// A two-tool roster cycles and wraps. (The cycle is pure list
+		// arithmetic, so a block id stands in fine.)
 		h.cycle_tool(&[B::Bucket, B::Stone]);
-		assert_eq!(h.active_tool(), B::Stone);
+		assert_eq!(h.active_tool(), Some(B::Stone));
 		h.cycle_tool(&[B::Bucket, B::Stone]);
-		assert_eq!(h.active_tool(), B::Bucket, "wraps");
+		assert_eq!(h.active_tool(), Some(B::Bucket), "wraps");
 		h.cycle_tool(&[B::Dirt]);
-		assert_eq!(h.active_tool(), B::Dirt, "dropped roster snaps to first");
+		assert_eq!(
+			h.active_tool(),
+			Some(B::Dirt),
+			"dropped roster snaps to first"
+		);
+		h.cycle_tool(&[]);
+		assert_eq!(h.active_tool(), None, "an emptied roster bares the slot");
 	}
 
 	#[test]
@@ -344,11 +376,25 @@ mod tests {
 		let mut h = Hotbar::new();
 		h.auto_assign(B::Dirt);
 		h.auto_assign(B::Stone);
+		h.cycle_tool(&[B::Bucket]);
 		let wire = h.to_wire();
 		assert_eq!(wire[HOTBAR_SLOTS - 1], WIRE_TOOL, "bucket = the sentinel");
 		let back = Hotbar::from_wire(&wire);
 		assert_eq!(back.slots(), h.slots());
 		assert_eq!(back.active_tool(), h.active_tool());
+
+		// A bare tool slot — the fresh-player state, now that the bucket
+		// is crafted — encodes as an ordinary empty and round-trips bare.
+		let bare = Hotbar::new();
+		let wire = bare.to_wire();
+		assert_eq!(wire[HOTBAR_SLOTS - 1], WIRE_EMPTY, "nothing to name");
+		let back = Hotbar::from_wire(&wire);
+		assert_eq!(back.active_tool(), None);
+		assert_eq!(
+			back.slots()[HOTBAR_SLOTS - 1],
+			Some(HotbarItem::WaterTool),
+			"the SLOT is pinned even with nothing in it"
+		);
 
 		// Hostile input: unknown id, duplicate block, a legacy mid-bar
 		// tool sentinel. The tool slot always comes back pinned last.
@@ -363,7 +409,7 @@ mod tests {
 		assert_eq!(hb.slots()[2], None);
 		assert_eq!(hb.slots()[3], None, "the parked spot empties");
 		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
-		assert_eq!(hb.active_tool(), B::Bucket);
+		assert_eq!(hb.active_tool(), Some(B::Bucket));
 
 		// A missing tool entry still yields the pinned slot; a tool ID in
 		// the input names the active tool instead of occupying a slot.
@@ -372,7 +418,7 @@ mod tests {
 		wire[8] = B::Bucket as u16;
 		let hb = Hotbar::from_wire(&wire);
 		assert_eq!(hb.slots()[HOTBAR_SLOTS - 1], Some(HotbarItem::WaterTool));
-		assert_eq!(hb.active_tool(), B::Bucket);
+		assert_eq!(hb.active_tool(), Some(B::Bucket));
 		assert!(
 			Hotbar::from_wire(&[WIRE_EMPTY; HOTBAR_SLOTS])
 				.slots()

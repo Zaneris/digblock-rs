@@ -258,6 +258,12 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
 	Some(match b {
+		// The first vessel, priced to be the opening loop's first goal: a
+		// couple of extractions' worth of the two essences the surface
+		// hands a brand-new player. NO AQUA, ever — the bucket is how a
+		// player first GETS Aqua, so an Aqua line here is the siphon's
+		// Metal deadlock all over again.
+		B::Bucket => &[(E::Flora, 6), (E::Earth, 3)],
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
 		// NO METAL, ever: ore needs the siphon and Metal needs ore, so a
 		// Metal-priced siphon deadlocks the economy on the first world
@@ -434,8 +440,7 @@ fn costliest_op_ticks(level: u32) -> u32 {
 				BlockType::ALL
 					.into_iter()
 					.map(|b| {
-						let extract = (b.is_extractable() && crate::unlock::can_extract(b, l))
-							.then(|| extract_pace_ticks(b, l));
+						let extract = b.is_extractable().then(|| extract_pace_ticks(b, l));
 						let craft = crate::unlock::can_craft(b, l).then(|| craft_pace_ticks(b, l));
 						extract.into_iter().chain(craft).max().unwrap_or(0)
 					})
@@ -950,7 +955,7 @@ mod tests {
 		for &b in &BlockType::ALL {
 			for level in 1..=crate::skills::MAX_LEVEL {
 				let burst = bench_burst_ticks(level);
-				if b.is_extractable() && crate::unlock::can_extract(b, level) {
+				if b.is_extractable() {
 					let cost = extract_pace_ticks(b, level) as f32;
 					assert!(
 						cost <= burst,
@@ -1155,9 +1160,9 @@ mod tests {
 	///   is a SINK and correctly contributes nothing here. Clean rock joins
 	///   it for the same reason and not by name: the world places Stone but
 	///   hands out Rubble, and Rubble is the source that counts.
-	/// - **Both walls apply**: the Mining level has to clear the strength
-	///   wall (and, for ore, the tier's own reveal), and the Alchemy level
-	///   the extract gate. A source you cannot reach is not a source.
+	/// - **The strength wall applies**: the Mining level has to clear it
+	///   (and, for ore, the tier's own reveal). A source you cannot reach
+	///   is not a source.
 	/// - **Only what a tier pays RELIABLY.** The Duskstone trace is a
 	///   chance, so it is not asked about — a price payable only if the
 	///   hash smiles is not payable.
@@ -1179,9 +1184,6 @@ mod tests {
 					}
 					let ore = crate::worldgen::ore::ORES.contains(&b);
 					if ore && crate::unlock::reveal(b).is_some_and(|r| r > level) {
-						return false;
-					}
-					if !ore && !crate::unlock::can_extract(b, level) {
 						return false;
 					}
 					extract_yields(b, level)

@@ -244,7 +244,10 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	),
 	(
 		"TOOLS",
+		// The bucket leads: the first vessel is the catalog's first tool
+		// (§13.5), and members sit in unlock order like everywhere else.
 		&[
+			BlockType::Bucket,
 			BlockType::EssenceSiphon,
 			BlockType::ResonantPick,
 			BlockType::MastersSigil,
@@ -408,7 +411,7 @@ impl AlchScreen {
 					self.progress = 0.0;
 					return None;
 				};
-				if inv.count(block) == 0 || !unlock::can_extract(block, level) {
+				if inv.count(block) == 0 {
 					self.extracting = None;
 					self.progress = 0.0;
 					return None;
@@ -776,27 +779,22 @@ impl AlchScreen {
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
 		//
-		// Gated on the CHARGE only. The unlock is deliberately NOT a
-		// condition here, because hiding the tile below the charge's own
-		// unlock hid the refusal with it: the drop handler already names
-		// that level back, and the message was unreachable for the one
-		// item it was written for. Every block in the grid can be
-		// dragged and told its level; water has no grid slot to be told
-		// from, so this tile is the only place a player can ever learn
-		// the charge is worth Aqua at all. Locked it dims and still
-		// drags, exactly as a locked transmute tile dims and still
-		// selects — pinned by `a_locked_bucket_charge_still_explains_itself`.
+		// Gated on the CHARGE only — and nothing else, since the extract
+		// gate left with the craftable bucket: a player who scooped a
+		// charge has already passed the only gate there is (owning a
+		// vessel), so the tile never dims. Water has no grid slot, which
+		// makes this tile the one place a player can learn the charge is
+		// worth Aqua at all.
 		let bucket_tile = view
 			.bucket_full
 			.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
 		if let Some(tile) = bucket_tile {
 			let (kind, tint) = hud::item_icon(HotbarItem::Block(BlockType::Water), false);
-			let locked = !unlock::can_extract(BlockType::Water, view.level);
 			widgets::slot(
 				ui,
 				InvId::BucketTile,
 				tile,
-				Some((kind, if locked { LOCKED_TINT } else { tint })),
+				Some((kind, tint)),
 				icon_px,
 				widgets::SlotRing::None,
 				tile.contains(cx, cy),
@@ -1264,20 +1262,10 @@ impl AlchScreen {
 					..
 				} = self.drag.on_release(hits)
 				{
-					// The gate the drop respects: extractable at all, and
-					// past its unlock (the bucket charge waits for Aqua's).
+					// The one gate the drop respects: extractable at all.
 					// A refused drop SAYS why — silence read as a bug.
 					if !payload.is_extractable() {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
-					} else if !unlock::can_extract(payload, view.level) {
-						self.hint = Some((
-							format!(
-								"{}   —   LV {}",
-								block_name(payload),
-								unlock::extract(payload)
-							),
-							HINT_SECS,
-						));
 					} else {
 						self.extracting = Some(payload);
 						self.progress = 0.0;
@@ -1511,53 +1499,27 @@ mod tests {
 		panic!("{b:?} neither on the bar nor in the grid");
 	}
 
-	/// A charged bucket is draggable at EVERY level, and below the Aqua
-	/// unlock the drop says so.
-	///
-	/// The tile used to be drawn only once `can_extract(Water)` passed,
-	/// which gated the same rule twice and lost the useful half: the drop
-	/// handler's "WATER CHARGE" refusal was unreachable, because the only
-	/// drag source for water was hidden until the same unlock. Water is
-	/// not slottable, so unlike every other extractable there is no grid
-	/// cell to learn it from either — a player under that level had no
-	/// way to discover the charge is worth anything at all.
-	///
-	/// Both halves are asserted: that the tile EXISTS locked (else the
-	/// message is unreachable again), and that dropping it explains
-	/// rather than silently starting a drip.
+	/// A charged bucket extracts from the very first level. The level
+	/// gate that used to stand here left with the craftable bucket
+	/// (§13.5): owning a vessel IS the gate now, so a player who scooped
+	/// a charge has already earned the right to take it apart — and
+	/// water is not slottable, so this tile is still the only place the
+	/// charge can be learned about and the only drag source for it.
 	#[test]
-	fn a_locked_bucket_charge_still_explains_itself() {
+	fn a_charged_bucket_extracts_from_the_first_level() {
 		let mut r = rig_at(1, |inv| inv.add(B::Water, 1));
 		assert!(r.view.bucket_full, "the rig has a charged bucket");
-		assert!(
-			!unlock::can_extract(B::Water, 1),
-			"level 1 is below the Aqua unlock, or this test proves nothing"
-		);
 
-		// The source exists even though the level does not allow the op.
 		let tile = r
 			.hits
 			.rect_of(InvId::BucketTile)
 			.expect("a charged bucket offers its tile at every level");
 		assert!(tile.w > 0.0 && tile.h > 0.0);
 
-		// Dropping it starts no drip and leaves an explanation naming the
-		// level, not a bare refusal and not silence.
-		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
-		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
-		let (hint, _) = r.screen.hint.clone().expect("a refused drop says why");
-		assert!(
-			hint.contains(&unlock::extract(B::Water).to_string()),
-			"the hint has to name the level: {hint:?}"
-		);
-		assert!(r.screen.extracting.is_none(), "no drip below the unlock");
-
-		// And at the unlock the same drag works, so the gate is a gate
-		// and not a wall.
-		let mut r = rig_at(unlock::extract(B::Water), |inv| inv.add(B::Water, 1));
 		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
 		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
 		assert_eq!(r.screen.extracting, Some(B::Water), "the drip starts");
+		assert!(r.screen.hint.is_none(), "nothing to refuse, nothing to say");
 	}
 
 	/// §8.1's core loop: drag a stack onto the slot, and the drip sends

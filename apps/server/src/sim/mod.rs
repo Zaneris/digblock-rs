@@ -336,14 +336,18 @@ impl Client {
 		use digblock_core::block::BlockType;
 		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem, WIRE_EMPTY, WIRE_TOOL};
 		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
-		let tool = self.hotbar.active_tool();
 		match self.hotbar.slots()[slot] {
 			None => WIRE_EMPTY,
-			Some(HotbarItem::WaterTool) if tool != BlockType::Bucket => tool as u16,
-			Some(HotbarItem::WaterTool) if self.inventory.bucket_full() => {
-				digblock_net::messages::HELD_TOOL_FULL
-			}
-			Some(HotbarItem::WaterTool) => WIRE_TOOL,
+			// A bare tool slot is an empty hand — the fresh-player state,
+			// now that the first vessel is crafted.
+			Some(HotbarItem::WaterTool) => match self.hotbar.active_tool() {
+				None => WIRE_EMPTY,
+				Some(BlockType::Bucket) if self.inventory.bucket_full() => {
+					digblock_net::messages::HELD_TOOL_FULL
+				}
+				Some(BlockType::Bucket) => WIRE_TOOL,
+				Some(t) => t as u16,
+			},
 			Some(HotbarItem::Block(b)) => b as u16,
 		}
 	}
@@ -1050,7 +1054,7 @@ impl Sim {
 			self.store.seed(),
 			client.skills.level(digblock_core::skills::Skill::Mining),
 			self.cell_edited(cell.0, cell.1, cell.2),
-			client.hotbar.active_tool(),
+			client.hotbar.tool_in_hand(),
 		)
 	}
 
@@ -1067,7 +1071,7 @@ impl Sim {
 		let Some(client) = self.clients.get(&conn_id) else {
 			return Vec::new();
 		};
-		if client.hotbar.active_tool() != digblock_core::block::BlockType::ResonantPick {
+		if client.hotbar.active_tool() != Some(digblock_core::block::BlockType::ResonantPick) {
 			return Vec::new();
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
@@ -1208,7 +1212,7 @@ impl Sim {
 		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
 		// resumer is on target, so its first verify tick zeroes this.
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
-		let tool = client.hotbar.active_tool();
+		let tool = client.hotbar.tool_in_hand();
 		let resumed = client
 			.digging
 			.as_ref()

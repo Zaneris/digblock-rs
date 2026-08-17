@@ -359,22 +359,24 @@ ever being "done"). Everything shared lives in `digblock-core/src/skills.rs`:
 - Storage is XP-only `u64` totals; level is always derived.
 
 **Every level threshold in the game lives in `digblock-core/src/unlock.rs`** — nothing else may hold an unlock number,
-and no caller compares levels itself. The tables are the two grid axes (`shape`, `material`) plus `functional`,
-`extract` and `mine`, and the questions asked of them (`can_craft`, `can_extract`, `dig_blocked`). `craft` and `pickup`
-are DERIVED, never tabled: `craft(b)` = `functional(b)` or `max(shape, material)` (§7.2's grid rule — see "the material
-× shape grid" below), and `pickup` reads `craft` of the drop. Two dig gates, one pattern: `mine` is §5.1's strength
-wall, keyed on the **`DigFamily`** — the families ordered soil → timber → rock, so every block of a family opens
-together (`RejectReason::SkillGated`, protocol v17); `mine_material` is a SECOND gate for the few substances that must
-also be earned (the ores at their own reveal, plus the late Metal and Crystal tiers) and `mine` takes the later of the
-two, so a material can only push a block later, never earlier and `pickup` (SIM v13) refuses a **craft-only** block —
-`crafted` in its `blocks!` row, meaning worldgen places none, pinned by `worldgen_never_places_a_crafted_block` — below
-its own `unlock::craft` level, so a pickup can't route around an unlock (`RejectReason::NotUnlocked`, protocol v19).
-`pickup` keys on the DROP (pristine Stone hands out Rubble, so quarrying stays a Mining question) and on craft-*only*,
-never craftability — `Wood` has a recipe and grows on trees. Client prediction, the server's DigStart backstop, the
-bot's filter and the harness all call `dig_blocked`, which returns the first unmet `Requirement` (Mining before Alchemy)
-carrying `Kind::message()` — the ONE wording each refusal speaks, which is why the wire sends a reason and never a
-sentence. `unlock::opens(skill, level)` derives what a level hands you from those same tables; the level-up fanfare and
-the character screen's teasers both key on it (`every_unlock_level_has_prose`).
+and no caller compares levels itself. The tables are the two grid axes (`shape`, `material`) plus `functional` and
+`mine`, and the questions asked of them (`can_craft`, `dig_blocked`). There is deliberately NO extraction gate —
+everything a player can hold extracts from the first level, scaled only by efficiency; the axis's one real entry (the
+bucket charge) left with the crafted bucket. `craft` and `pickup` are DERIVED, never tabled: `craft(b)` =
+`functional(b)` or `max(shape, material)` (§7.2's grid rule — see "the material × shape grid" below), and `pickup` reads
+`craft` of the drop. Two dig gates, one pattern: `mine` is §5.1's strength wall, keyed on the **`DigFamily`** — the
+families ordered soil → timber → rock, so every block of a family opens together (`RejectReason::SkillGated`, protocol
+v17); `mine_material` is a SECOND gate for the few substances that must also be earned (the ores at their own reveal,
+plus the late Metal and Crystal tiers) and `mine` takes the later of the two, so a material can only push a block later,
+never earlier and `pickup` (SIM v13) refuses a **craft-only** block — `crafted` in its `blocks!` row, meaning worldgen
+places none, pinned by `worldgen_never_places_a_crafted_block` — below its own `unlock::craft` level, so a pickup can't
+route around an unlock (`RejectReason::NotUnlocked`, protocol v19). `pickup` keys on the DROP (pristine Stone hands out
+Rubble, so quarrying stays a Mining question) and on craft-*only*, never craftability — `Wood` has a recipe and grows on
+trees. Client prediction, the server's DigStart backstop, the bot's filter and the harness all call `dig_blocked`, which
+returns the first unmet `Requirement` (Mining before Alchemy) carrying `Kind::message()` — the ONE wording each refusal
+speaks, which is why the wire sends a reason and never a sentence. `unlock::opens(skill, level)` derives what a level
+hands you from those same tables; the level-up fanfare and the character screen's teasers both key on it
+(`every_unlock_level_has_prose`).
 
 **XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
 and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe; the client takes the
@@ -872,35 +874,40 @@ and their torch is a torch that glows and lights the room. It used to be one sma
 `tex_side` the item happened to have. A slot whose count reaches zero is **released**, not greyed; that is safe only
 because the engine reconciles and mirrors the layout BEFORE the frame's clicks send edits.
 
-**Tools** (SKILLS-DESIGN §6): item-only `blocks!` rows (`BlockType::Bucket`; `is_tool`, `always_owned`) — never
-rendered, placed, or slotted. The tool slot is PINNED to the bar's last position (a legacy mid-bar layout migrates on
-`Hotbar::from_wire`); WHICH tool it holds is `Hotbar::active_tool`, carried as the Layout wire's trailing entry, so a
-cycle-then-scoop validates in wire order and the server's gates check `active_tool == Bucket`. That entry is
-CLIENT-DECLARED and `from_wire` believes any tool id, so ownership is re-asserted in `reconcile_layout` — the one place
-that sees the bar and the counts — against `Inventory::owned_tools`, the single roster the rail also reads. Without it a
-crafted Layout is enough to swing a pick you never made; the bucket was unforgeable only because it is `always_owned`,
-which stopped being the whole roster. Tapping 9 with the tool slot already selected cycles the owned roster
-(`Engine::owned_tools`, block-id order); `hud::tool_rail` draws the non-active owned tools as faded small slots right of
-the bar, only once a second tool exists. Three presentation rules hold the slot together, and each has already been
-broken once: it **stands apart** — `hud::bar_slot_rect` adds `TOOL_SPLIT` before the last slot at DRAW time, leaving
-`row_grid`'s nine columns (which every panel measures against, and the inventory grid drops into) uniform — the split
-folds into the row's **centring**, never into its spacing, so the lattice keeps one cell and one gap throughout and
-simply sits half a split further left. Centring it has to know about the split even though spacing must not: `row_grid`
-centred the bare lattice for a while and the tool slot, drawn just past its right edge, hung off the window at any size
-below a threshold — with the one test that measured the DRAWN last slot rewritten, in the same change, into
-`left - left
-== 0`; the exchange is a **handover**, not a cut — `hotbar::ToolSwap` shrinks the outgoing tool away and
-grows the incoming one in through the shared `ui::handover` curve the transmute tiles use, and everything else about the
-swap (the rail's membership) happens at the invisible midpoint; and every path that names a tool draws it through
-`hud::tool_icon`, **`item_icon` included is not enough** — `HotbarItem::WaterTool` names the SLOT, so the viewmodel has
-to ask which tool is in it or the whole roster is held as a bucket. The snapshot wire is the same trap and needed no new
-encoding: `Client::held_wire` sends the active tool's own block id (sentinels reserved for the bucket's two charges,
-exactly as `Hotbar::to_wire` does), and `held_icon` admits a tool id EXPLICITLY rather than by relaxing `is_slottable` —
-which answers a different question, whether a GRID slot may hold it — then hands it to `item_icon`, whose own tool arm
-forwards to `tool_icon`. So a remote swinging a pick draws the same authored geometry its owner's hand does, and no
-second texture-borrowing path exists to disagree with it. Tools carry no texture layers, so a row without an `IconKind`
-draws as a block of whatever sits at the first layer; `DIG_SCREEN=pick|siphon|sigil` is how each one reaches a capture
-at all, since the bucket is the only tool a fresh player owns.
+**Tools** (SKILLS-DESIGN §6): item-only `blocks!` rows (`BlockType::Bucket`; `is_tool`) — never rendered, placed, or
+slotted, and ALL crafted now, the bucket included (§13.5: ownership is the count, a fresh player owns nothing, and the
+tool slot stands bare — `Hotbar::active_tool` is an `Option`, with `tool_in_hand` spelling the empty hand as `Air` for
+the shared dig questions; protocol v25, since an older client assumes a bucket into every fresh hand). Records written
+while the bucket was owned by everyone are granted one on load — `inventories.bin` v7 server-side, `SAVE_REV` in local
+saves, and a FRESH world opens at the current rev so the grant is a migration, never a windfall. The tool slot is PINNED
+to the bar's last position (a legacy mid-bar layout migrates on `Hotbar::from_wire`); WHICH tool it holds is
+`Hotbar::active_tool`, carried as the Layout wire's trailing entry, so a cycle-then-scoop validates in wire order and
+the server's gates check `active_tool == Some(Bucket)`. That entry is CLIENT-DECLARED and `from_wire` believes any tool
+id, so ownership is re-asserted in `reconcile_layout` — the one place that sees the bar and the counts — against
+`Inventory::owned_tools`, the single roster the rail also reads, and an empty roster bares the slot (which is also what
+auto-equips the first crafted vessel). Without that re-assertion a crafted Layout is enough to swing a pick you never
+made. Tapping 9 with the tool slot already selected cycles the owned roster (`Engine::owned_tools`, block-id order);
+`hud::tool_rail` draws the non-active owned tools as faded small slots right of the bar, only once a second tool exists.
+Three presentation rules hold the slot together, and each has already been broken once: it **stands apart** —
+`hud::bar_slot_rect` adds `TOOL_SPLIT` before the last slot at DRAW time, leaving `row_grid`'s nine columns (which every
+panel measures against, and the inventory grid drops into) uniform — the split folds into the row's **centring**, never
+into its spacing, so the lattice keeps one cell and one gap throughout and simply sits half a split further left.
+Centring it has to know about the split even though spacing must not: `row_grid` centred the bare lattice for a while
+and the tool slot, drawn just past its right edge, hung off the window at any size below a threshold — with the one test
+that measured the DRAWN last slot rewritten, in the same change, into `left - left
+== 0`; the exchange is a
+**handover**, not a cut — `hotbar::ToolSwap` shrinks the outgoing tool away and grows the incoming one in through the
+shared `ui::handover` curve the transmute tiles use, and everything else about the swap (the rail's membership) happens
+at the invisible midpoint; and every path that names a tool draws it through `hud::tool_icon`, **`item_icon` included is
+not enough** — `HotbarItem::WaterTool` names the SLOT, so the viewmodel has to ask which tool is in it or the whole
+roster is held as a bucket. The snapshot wire is the same trap and needed no new encoding: `Client::held_wire` sends the
+active tool's own block id (sentinels reserved for the bucket's two charges, exactly as `Hotbar::to_wire` does), and
+`held_icon` admits a tool id EXPLICITLY rather than by relaxing `is_slottable` — which answers a different question,
+whether a GRID slot may hold it — then hands it to `item_icon`, whose own tool arm forwards to `tool_icon`. So a remote
+swinging a pick draws the same authored geometry its owner's hand does, and no second texture-borrowing path exists to
+disagree with it. Tools carry no texture layers, so a row without an `IconKind` draws as a block of whatever sits at the
+first layer; `DIG_SCREEN=pick|siphon|sigil` is how each one reaches a capture at all — the screen stocking grants every
+tool, since a fresh player owns none.
 
 **The water tool is stateful** (protocol v12), and its charge is stored as the inventory's Water count — capped at one
 by `inventory::cap`, named by `Inventory::bucket_full`. Storing the charge in the inventory rather than a field of its
@@ -1122,15 +1129,17 @@ touch the vein, or the anti-dupe deletes what is being photographed.
 
 ### Tools & the Resonant Pick (core/pick.rs)
 
-Four tools now (`is_tool`, an `inventory::cap` of one, `always_owned` only for the bucket): the bucket, the **Essence
-Siphon** (no Metal in its price, ever, or ore and Metal deadlock each other), the **Resonant Pick** (craftable and
-usable at the same level in either skill) and the **Master's Sigil** (the last thing either ladder unlocks, priced
-entirely in Aether, and it DOES nothing — the point is that it is the catalog's last line). The sigil is `is_tool` for
-the mechanics, not for any function: an item-only row you HOLD, capped at one, cycling on tap-9 and drawing in the rail,
-kept out of the block slots and the grid by the rule the other three already use. Every path that names a tool goes
-through `hud::tool_icon`, because a tool has authored geometry and `IconKind::Cube` would draw it as a cube of its row's
-layer — which used to mean WATER (layer 0) and now, for the two that glow, means a cube of bare glow; `SlotView::Tool`
-carries WHICH tool is active rather than assuming the bucket.
+Four tools now (`is_tool`, an `inventory::cap` of one, every one of them crafted): the bucket (the catalog's FIRST tool
+— priced in Flora and Earth so the opening dig-and-extract loop pays for it, and NO Aqua ever, since the bucket is how a
+player first gets Aqua — the same deadlock rule as the siphon's), the **Essence Siphon** (no Metal in its price, ever,
+or ore and Metal deadlock each other), the **Resonant Pick** (craftable and usable at the same level in either skill)
+and the **Master's Sigil** (the last thing either ladder unlocks, priced entirely in Aether, and it DOES nothing — the
+point is that it is the catalog's last line). The sigil is `is_tool` for the mechanics, not for any function: an
+item-only row you HOLD, capped at one, cycling on tap-9 and drawing in the rail, kept out of the block slots and the
+grid by the rule the other three already use. Every path that names a tool goes through `hud::tool_icon`, because a tool
+has authored geometry and `IconKind::Cube` would draw it as a cube of its row's layer — which used to mean WATER
+(layer 0) and now, for the two that glow, means a cube of bare glow; `SlotView::Tool` carries WHICH tool is active
+rather than assuming the bucket.
 
 **The siphon and the pick are light sources** (R30): each `emits` below a torch's level and wears a texgen orb — green
 for the siphon, blue for the pick — that is at once the tool row's texture (whence the GI takes the colour of the light

@@ -9,16 +9,16 @@
 //! together, and so does the question:
 //!
 //! - **The levels** — [`shape`] and [`material`] (SKILLS-DESIGN §7.2's two
-//!   grid axes), [`functional`] for the hand-priced items, plus [`extract`]
-//!   and [`mine`]. Each is the sole authority for its own axis, and the
-//!   two questions players actually ask are DERIVED from them: [`craft`] is
+//!   grid axes), [`functional`] for the hand-priced items, plus [`mine`].
+//!   Each is the sole authority for its own axis, and the two questions
+//!   players actually ask are DERIVED from them: [`craft`] is
 //!   `max(shape, material)` and [`pickup`] reads `craft` of the drop. That
 //!   is what stopped the wood slab opening nineteen levels before wood.
-//! - **The questions** — [`can_craft`], [`can_extract`], [`dig_blocked`].
-//!   Callers ask these; they do not compare levels themselves. The dig
-//!   gates in particular are asked identically by client prediction, the
-//!   server's `DigStart` backstop, the bot's target filter and the test
-//!   harness, so all four agree by construction rather than by review.
+//! - **The questions** — [`can_craft`], [`dig_blocked`]. Callers ask
+//!   these; they do not compare levels themselves. The dig gates in
+//!   particular are asked identically by client prediction, the server's
+//!   `DigStart` backstop, the bot's target filter and the test harness,
+//!   so all four agree by construction rather than by review.
 //! - **What a level opens** — [`opens`], DERIVED from the tables above
 //!   plus alchemy's own yield tables rather than restated as a list, so
 //!   retuning any threshold moves the level-up fanfare and the character
@@ -111,6 +111,11 @@ pub fn material(m: Material) -> Option<u32> {
 /// decision, pinned so neither can exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
+		// The first vessel (§13.5): the bucket sits at the level everyone
+		// starts at, so its PRICE is the gate — the opening dig-and-extract
+		// loop pays for it, and "make your first vessel" is the game's
+		// first craft beat rather than a level-up.
+		BlockType::Bucket => 1,
 		// First light, pre-ore on purpose (§7.3).
 		BlockType::Torch => 8,
 		// The ore tool, ready before the first vein reveals — the game's
@@ -262,15 +267,13 @@ pub fn ore_mastery(level: u32) -> u32 {
 	u32::from(level >= 60)
 }
 
-/// Alchemy level required to break `b` down at the bench; the first level
-/// means always. The bucket charge waits — the Aqua economy's opening
-/// move.
-pub fn extract(b: BlockType) -> u32 {
-	match b {
-		BlockType::Water => 15,
-		_ => 1,
-	}
-}
+// There is deliberately NO extraction gate. The table that stood here had
+// exactly one real entry — the bucket charge, gated because the bucket
+// itself was free — and a gating axis with one entry is a no-op wearing a
+// system's clothes. The bucket is crafted now (§13.5), so acquiring water
+// is the gate and everything a player can hold extracts from the start,
+// scaled only by efficiency. If a future substance genuinely needs its
+// own extraction level, the axis comes back with more than one row in it.
 
 /// §5.1's strength wall: the Mining level below which `b` refuses to be
 /// dug at all; the first level means ungated. Deliberately a wall — the doc's original "no
@@ -391,11 +394,6 @@ pub fn can_craft(b: BlockType, level: u32) -> bool {
 	craft(b).is_some_and(|need| level >= need)
 }
 
-/// May a player at `level` break `b` down at the bench?
-pub fn can_extract(b: BlockType, level: u32) -> bool {
-	level >= extract(b)
-}
-
 /// Which gate a dig ran into — the two read differently to a player, and
 /// each carries the wording the feed speaks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -496,11 +494,10 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					&& (prospect_range(level) != prospect_range(level - 1)
 						|| ore_mastery(level) != ore_mastery(level - 1)))
 		}
-		// A new recipe, a newly extractable block, or a bonus line that
-		// wasn't paying at the level below.
+		// A new recipe, or a bonus line that wasn't paying at the level
+		// below.
 		Skill::Alchemy => {
 			craft(b) == Some(level)
-				|| extract(b) == level
 				|| alchemy::bonus_lines(b, level) != alchemy::bonus_lines(b, level - 1)
 		}
 	})
@@ -554,10 +551,10 @@ mod tests {
 		] {
 			assert_eq!(craft(b), None, "{b:?} is the world's, not the bench's");
 		}
-		assert_eq!(extract(B::Water), 15, "the bucket charge");
-		for b in [B::Stone, B::Leaves, B::Gravel] {
-			assert_eq!(extract(b), 1, "{b:?} extracts from the start");
-		}
+		// The first vessel: available from the start, gated by its price
+		// alone — level 1 is where everyone begins, so `opens` never
+		// celebrates it and the fanfare list below is unmoved.
+		assert_eq!(craft(B::Bucket), Some(1));
 		// A level and a recipe are one decision: neither exists alone.
 		for &b in &BlockType::ALL {
 			assert_eq!(

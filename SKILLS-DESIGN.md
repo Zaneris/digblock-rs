@@ -1216,15 +1216,16 @@ proposal in the header's sense (the level is final only when it lands in `unlock
   last material, the repeatable prestige building block, and the reason Aetherock mining is standing income), a
   Chandelier ~54 (the showpiece light, the biggest repeatable Aether sink).
 - **The second extraction queue slot ~42** (QoL-as-unlock; §12's answer, scheduled).
-- **The craftable bucket** (decided, not yet built): the bucket loses `always_owned` and becomes the catalog's first
-  tool — unlocked at the very bottom of the Alchemy ladder, priced cheap in Flora and Earth so the opening
-  dig-and-extract loop pays for it, "make your first vessel" as the game's first craft beat. The Water extract gate then
-  drops to the first level like everything else, and the `extract` table — currently a one-entry axis — is deleted or
-  repurposed. Its price must carry **no Aqua** (water is how a player first GETS Aqua — the siphon's no-Metal deadlock
-  rule, applied again). Implementation notes: fresh players start with an empty tool slot (tap-9, the rail and
-  `active_tool` must all survive an empty roster; the `DIG_SCREEN` capture notes assume a bucket), `reconcile_layout`
-  already re-asserts tool ownership so retiring `always_owned` is safe, and existing saves keep their bucket via a
-  migration grant — never a windfall removal.
+- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and is the catalog's first tool, gated
+  by its price alone (Flora and Earth, at the level everyone starts at, so the opening dig-and-extract loop pays for it
+  — "make your first vessel" is the game's first craft beat). Its price carries **no Aqua** (water is how a player first
+  GETS Aqua — the siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level
+  with it, and the `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely
+  needs its own extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
+  (`Hotbar::active_tool` is an `Option`; `tool_in_hand` spells the empty hand as `Air` for the shared dig questions;
+  reconciling auto-equips the first crafted vessel). Every record written while the bucket was owned by everyone keeps
+  it via a migration grant — `inventories.bin` v7 server-side, `SAVE_REV` for local saves, with a fresh world opening AT
+  the current revision so the grant can never be a windfall.
 
 ### 13.6 Beyond these ladders
 

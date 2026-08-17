@@ -38,10 +38,26 @@ pub struct PlayerPersist {
 	pub pitch: f32,
 }
 
+/// The player-record revision — CONTENT migrations, not format ones (the
+/// journal's `VERSION` stays the format/worldgen contract, and bumping it
+/// refuses a client save outright, which is far too blunt for handing
+/// someone a bucket). A store stamps the current revision on every write
+/// and reports a FRESH world (no state written yet) as current, so the
+/// only saves below it are ones actually written by an older build.
+///
+/// rev 1: the bucket joined the catalog (SKILLS-DESIGN §13.5). A rev-0
+/// save was written when every player owned one, so the engine grants it
+/// on load — a migration, never a windfall, because a fresh world starts
+/// at the current rev and gets nothing.
+pub const SAVE_REV: u32 = 1;
+
 /// Everything needed to enter a saved world.
 #[derive(Debug)]
 pub struct WorldSave {
 	pub meta: WorldMeta,
+	/// The [`SAVE_REV`] the state was written at (0 = before revisions
+	/// existed).
+	pub rev: u32,
 	/// Final cell value per edited cell (the LWW index, flattened).
 	pub edits: Vec<((i32, i32, i32), u16)>,
 	/// Inventory as wire pairs (block id, count).
