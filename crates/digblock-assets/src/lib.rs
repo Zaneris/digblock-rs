@@ -575,23 +575,35 @@ mod tests {
 	}
 
 	/// Every fragment pass that prices local lights does it through the
-	/// ONE `resample_light` gi_common carries (R33) — defined once (no
-	/// shadowing copy) and actually called, because a pass that takes the
-	/// prelude and never calls it is a body torches cannot light, which
-	/// is exactly the regression players shipped with.
+	/// ONE `gi_light_score` gi_common carries (R33, R34) — defined once
+	/// (no shadowing copy), and each pass actually calls the estimator
+	/// built on it, because a pass that takes the prelude and never calls
+	/// it is a body torches cannot light, which is exactly the regression
+	/// players shipped with.
+	///
+	/// The two estimators differ on purpose and the pin says which is
+	/// which: the resolve resamples the pool behind an accumulator, and
+	/// players sum the brightest few in front of nothing at all. Swapping
+	/// them is the R34 bug in either direction — a dither on a body, or
+	/// four marches a pixel across the whole screen.
 	#[test]
 	fn every_nee_consumer_runs_the_shared_estimator() {
-		for (name, src) in [
-			("resolve", super::shader::GI_RESOLVE),
-			("players", super::shader::PLAYERS),
+		for (name, src, estimator) in [
+			("resolve", super::shader::GI_RESOLVE, "resample_light("),
+			("players", super::shader::PLAYERS, "sum_lights("),
 		] {
 			assert_eq!(
-				src.matches("fn resample_light(").count(),
+				src.matches("fn gi_light_score(").count(),
 				1,
-				"{name} must see exactly one resample_light definition"
+				"{name} must see exactly one gi_light_score definition"
+			);
+			assert_eq!(
+				src.matches(&format!("fn {estimator}")).count(),
+				1,
+				"{name} must see exactly one {estimator} definition"
 			);
 			assert!(
-				src.matches("resample_light(").count() >= 2,
+				src.matches(estimator).count() >= 2,
 				"{name} takes the shared estimator but never calls it"
 			);
 		}

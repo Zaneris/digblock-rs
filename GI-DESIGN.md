@@ -21,8 +21,9 @@ What lights the world now, in one sentence per stage:
   = 1/n with n climbing to `N_MAX`. Beyond the window's reach there is nothing to march, so those pixels keep the plain
   cascade gather.
 - Solids bilaterally upsample that against exact face normals rasterized by the depth prepass. Water and players gather
-  the probe field per fragment through gi_common.wgsl — and players additionally run the shared `resample_light` NEE
-  against the emitter list (R33), because the resolve's half-res direct term only covers prepass surfaces; spray and the
+  the probe field per fragment through gi_common.wgsl — and players additionally run their own NEE against the emitter
+  list (R33), because the resolve's half-res direct term only covers prepass surfaces: `sum_lights`, a ray at each of
+  the brightest few, rather than the resolve's one resampled ray, because nothing filters a body (R34). Spray and the
   viewmodel read a small camera-light buffer a 1-invocation compute writes.
 - One **participating medium** (medium_common.wgsl) replaces every fog model, in-scattering the same `sky_base` the sky
   pass draws.
@@ -1272,6 +1273,47 @@ hand, 2.03% of the frame's pixels moved and all of them on the player. In `DIG_V
 BEYOND the player) the fix reads more subtly and more correctly: the camera faces the player's shadowed side, and after
 R33 that side sits at the same near-black as the wood cube's camera face beside it, with the torch's rim wrapping both
 the same way — the player finally shades like the terrain next to them rather than like a hole in the scene.
+
+### R34 — an unfiltered estimator may not gamble
+
+User report, with a screenshot: since R33 players wear **black squares that move as the player moves** — hard-edged,
+axis-aligned patches over the body and over the block in their hand, in a base lit by several torches.
+
+R33's own note called its static seed "a stable spatial dither", and named the case where that is harmless: with ONE
+light in range the reservoir degenerates to the argmax and there is nothing to dither. Both captures it shipped with had
+exactly one light. What the reservoir actually carries is the WHOLE pool's unshadowed irradiance on ONE binary
+visibility sample, which is the right trade in front of the resolve's accumulator — the average of that Bernoulli IS the
+shadowed sum — and the wrong one in front of nothing. So each sub-block world cell of a body took either the entire
+pool, or pure black if its one draw happened to be occluded; the seed is anchored to the WORLD and a body walks through
+it, which is why the pattern crawled. The patch size is the seed's own quantization, and that is the tell: nothing else
+in the player path is quantized to a fraction of a block.
+
+**A consumer with no filter behind it has to ask every light it can afford.** `sum_lights` (gi_common.wgsl) takes the
+brightest `GI_NEE_TAPS` candidates and marches a shadow ray at EACH, summing what survives. The pricing is unchanged and
+now literally shared: `gi_light_score` — R33's target function, lifted out of `resample_light` — is what the reservoir
+selects on and what this pays, so the two cannot drift about what a torch is worth. Selection is on the score and not on
+list order, which nothing keeps stable (`flush_lights` selects, it does not sort). Where every emitter in range is
+visible the taps ARE the pool, which is the room case, so a body lights like the wall behind it.
+
+**What it costs, stated rather than hidden:** past `GI_NEE_TAPS` emitters in range a body is a little darker than the
+terrain beside it, because the tail is dropped. That is a bias traded for a dither, deliberately — it holds still, it
+shrinks as the tail does, and a capture can measure it. Measured on the seam-dense `DIG_ORE` chamber, where the light
+list is long: the shipped `GI_NEE_TAPS` against four times as many moves the body by mean 0.0032 over the frame, 1.41%
+of pixels and none of them off it. In a torch-lit room the tail is empty and the difference is nothing at all.
+
+**What the captures showed** (2026-08-17, seed 7, fixed dt, offscreen; frame times in BENCH.md). Both R33 money shots
+are **bit-identical** across the change (`DIG_VAULT_DARK=1 DIG_SCREEN=torch DIG_PLAYERBOX=1` and
+`DIG_VAULT=1
+DIG_PLAYERBOX=1`, worst channel 1/255) — one light in range, one answer, which is the calibration guarantee
+stated as a measurement. The repro is `DIG_ORE=3 DIG_PLAYERBOX=torch DIG_SCREEN=torch --yaw 90`, a corridor lit by two
+torches and a wall of Glowvein seams: before, the body is a checkerboard of warm cells and green cells — the whole pool
+wearing whichever emitter's tint that cell drew — and after it is one smoothly lit body, 1.17% of pixels moved and all
+of them on the player or its held item. Terrain is untouched by construction and measures it: a full-frame capture with
+no player in it differs by less than the same-binary repeat of itself.
+
+**The mixed-tint case is worth naming**, because it is what made the artifact so loud here: a reservoir draw carries the
+pool at the tint of whichever emitter won, so a body between a torch and a seam dithered between warm and green, not
+merely between lit and dark. A per-light sum has no such state to be wrong about — each tap arrives with its own tint.
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,
   no per-light machinery beyond a light list.

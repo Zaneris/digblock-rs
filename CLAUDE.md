@@ -410,14 +410,18 @@ normals rasterized by the depth prepass into R8Uint; water gathers its indirect 
 position-only `vs_depth` sharing the color vs's `water_world` decode so the `@invariant`/LessEqual contract holds) and
 gates its two ray marches on their own contribution (R21). Reveals prime from the probe cache rather than restarting at
 n = 1 (R15), and the per-pixel NEE **resamples every in-range emitter** through a one-pass weighted reservoir (R27; R20
-built the ray and picked the argmax) — which is what lights the block a torch stands on. Direct light has exactly ONE
-estimator: the gather returns no emitter radiance at all, and `resample_light` lives in gi_common with the light list on
-the shared gather group, because players run it too (R33 — they are not in the depth prepass, so the resolve's half-res
-direct term can never cover them; without their own call a body beside a torch read black). Unproven daylight fades with
-depth (R32): a march that PROVES open sky answers full daylight at any depth, and every answer given on no data — the
-cascades' sky fallback, an exhausted march, the medium's in-scatter — multiplies by `medium_sky_fade`, whose top edge
-equals `SEA_LEVEL` and saturates there, so the surface world is bit-identical by construction and only underground goes
-honestly dark.
+built the ray and picked the argmax) — which is what lights the block a torch stands on. Direct light has exactly one
+PRICE and the light list lives on the shared gather group so nothing can quote a different one: the gather returns no
+emitter radiance at all, and `gi_light_score` in gi_common is what every NEE selects on. What differs is how much of the
+pool one fragment dares put on a single ray. The resolve resamples (one draw carrying the whole pool) because an
+accumulator and two à-trous passes average its visibility out; players run `sum_lights`, a ray at each of the brightest
+`GI_NEE_TAPS` emitters, because **nothing** filters a body — they are not in the depth prepass, so the resolve's
+half-res direct term can never cover them (R33: without their own call a body beside a torch read black), and the
+reservoir unfiltered dithered them into world-anchored blocks of full pool and pure black that crawled as they walked
+(R34). Unproven daylight fades with depth (R32): a march that PROVES open sky answers full daylight at any depth, and
+every answer given on no data — the cascades' sky fallback, an exhausted march, the medium's in-scatter — multiplies by
+`medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there, so the surface world is bit-identical by
+construction and only underground goes honestly dark.
 
 Invariants that bite if broken:
 

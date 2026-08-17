@@ -13,9 +13,10 @@
 // cascade/window parameters arrive as plain arguments, because the
 // consumers carry them in different uniforms (the resolve's own block
 // vs the shared Frame's gi fields). The group also carries the emitter
-// list and the one reservoir NEE estimator over it (`resample_light`,
-// R33), so the resolve and players cannot price a torch differently —
-// they share the declaration, not twins.
+// list and the NEE estimators over it (R33) — one price
+// (`gi_light_score`), two ways to spend a shadow ray on it — so the
+// resolve and players cannot value a torch differently: they share the
+// declaration, not twins.
 
 @group(2) @binding(0) var gi_window: texture_3d<u32>;
 @group(2) @binding(1) var gi_coarse: texture_3d<u32>;
@@ -24,8 +25,8 @@
 @group(2) @binding(4) var gi_atlas1: texture_3d<f32>;
 // The emitter list (R20) — the same count-prefixed buffer the probe pass
 // NEE-samples. It moved into this shared group at R33 so every consumer
-// of the gather core can also run `resample_light` below: the resolve
-// always could, and players now do (their bodies were reachable by no
+// of the gather core can run an estimator over it: the resolve always
+// could, and players now do (their bodies were reachable by no
 // direct-light estimator at all). lights[0].x is the count as a bitcast
 // u32; entries are PAIRS of vec4s — (xyz world center, w class word),
 // then the rectangle a surface emitter radiates from (zero for a point).
@@ -768,6 +769,44 @@ fn lcg_next(state: ptr<function, u32>) -> f32 {
 	return f32(*state >> 8u) * (1.0 / 16777216.0);
 }
 
+// What one candidate is worth before its shadow ray: the unshadowed
+// irradiance up to the emitter's tint, and zero for anything out of
+// range or behind the surface.
+//
+// The ONE place a light is priced, which is what keeps the two
+// estimators below from drifting apart — the reservoir SELECTS on this
+// and `sum_lights` PAYS it, so a resolve pixel and the body standing in
+// front of it cannot disagree about what a torch is worth.
+//
+// The only LUT read here is the level: the tint is fetched per WINNER,
+// not per candidate. A tint that varies between classes just makes this
+// a slightly worse target for the reservoir, never a biased one.
+fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f) -> f32 {
+	let d = l.xyz - p;
+	let dist2 = dot(d, d);
+	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
+		return 0.0;
+	}
+	let ndl = dot(n, d) * inverseSqrt(dist2);
+	if ndl <= 0.0 {
+		return 0.0;
+	}
+	// The entry may carry its own level (a tool whose wielder has earned
+	// a brighter one); zero defers to the class, which is every placed
+	// emitter.
+	let ov = gi_light_level(l.w);
+	let emit = select(gi_emit(gi_light_class(l.w)), f32(ov), ov != 0u);
+	// Scored from the light's CENTRE — `gi_light_sample` at the middle of
+	// its own parametrisation — which for a point source is the point and
+	// costs nothing, and for a rectangle is a cheap stand-in for the
+	// integral over it. Drawing a random point here instead would put two
+	// more RNG steps on every candidate rather than on the winner, and a
+	// RIS target function is allowed to be approximate: it decides which
+	// light is picked, never what the pick is worth.
+	let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
+	return emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+}
+
 fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 	var out: NeeLight;
 	out.valid = false;
@@ -777,7 +816,6 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 	// divided by the emitter tint — so it is both the reservoir's
 	// normalizer and the answer.
 	var wsum = 0.0;
-	var sel_cls = 0u;
 	// Only the ENTRY is kept per update. Everything derived from it — the
 	// distance, the direction, `gi_light_margin`'s sqrt — is computed
 	// once after the loop instead of on every candidate that happens to
@@ -791,36 +829,7 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// a surface emitter radiates from (zero for a point source).
 		let l = lights[i * 2u - 1u];
 		let q = lights[i * 2u];
-		let d = l.xyz - p;
-		let dist2 = dot(d, d);
-		if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
-			continue;
-		}
-		let inv_dist = inverseSqrt(dist2);
-		let ndl = dot(n, d) * inv_dist;
-		if ndl <= 0.0 {
-			continue;
-		}
-		let cls = gi_light_class(l.w);
-		// The target function, and the ONLY LUT read on the candidate
-		// path: the drawn light's tint is fetched once, below. A tint that
-		// varies between classes just makes this a slightly worse target,
-		// never a biased one.
-		//
-		// The entry may carry its own level (a tool whose wielder has
-		// earned a brighter one); zero defers to the class, which is
-		// every placed emitter.
-		let ov = gi_light_level(l.w);
-		let emit = select(gi_emit(cls), f32(ov), ov != 0u);
-		// Scored from the light's CENTRE — `gi_light_sample` at the middle
-		// of its own parametrisation — which for a point source is the
-		// point and costs nothing, and for a rectangle is a cheap stand-in
-		// for the integral over it. Doing the draw here instead would put
-		// two more RNG steps on every candidate rather than on the winner,
-		// and a RIS target function is allowed to be approximate: it
-		// decides which light is picked, never what the pick is worth.
-		let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
-		let score = emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+		let score = gi_light_score(l, q, p, n);
 		if score <= 0.0 {
 			continue;
 		}
@@ -829,7 +838,6 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 			out.valid = true;
 			sel = l;
 			sel_q = q;
-			sel_cls = cls;
 		}
 	}
 	if out.valid {
@@ -858,7 +866,93 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// a-trous pass are already there for. The estimator stays
 		// unbiased either way — the same standing the mixed-tint pool has
 		// had since the tools started casting.
-		out.irradiance = gi_light_tint(sel.w, gi_emit_tint(sel_cls)) * LIGHT_GAIN * wsum;
+		out.irradiance =
+			gi_light_tint(sel.w, gi_emit_tint(gi_light_class(sel.w))) * LIGHT_GAIN * wsum;
 	}
 	return out;
+}
+
+// How many emitters `sum_lights` may ask about, and the cost knob of the
+// whole estimator: every tap is one more march, paid on player pixels
+// only. Enough to cover a lit room, which is what a body normally stands
+// in; a torch-dense hall or a wall of ore seams runs past it and takes
+// the bias below.
+const GI_NEE_TAPS = 4u;
+
+// The direct term for a consumer with NO accumulator and no a-trous
+// behind it: players, and the item in their hand (R34).
+//
+// Same candidates, same pricing, same shadow ray as `resample_light` —
+// what changes is how many of them are asked. Carrying the WHOLE pool on
+// one binary visibility sample is exactly right in front of a temporal
+// filter, whose average IS the shadowed sum, and exactly wrong in front
+// of nothing: a body took the entire pool wherever its one draw happened
+// to be visible and pure black a texel away, in world-anchored blocks
+// that swam across it as it walked.
+//
+// So this sums the brightest few candidates with a ray EACH. It is
+// deterministic, so a body at rest is still; it selects on the score
+// rather than on list order, which nothing keeps stable (`flush_lights`
+// selects, it does not sort); and where every emitter in range is
+// visible — a room, the common case — the taps ARE the pool, so a body
+// lights like the wall behind it instead of like a sample of it.
+//
+// What the budget drops is the dimmest of what is in range, and past
+// `GI_NEE_TAPS` emitters a body is quietly a little darker than the
+// terrain beside it. That is a bias, and a bias is the right thing to
+// trade a dither for: it holds still, it shrinks as the tail does, and a
+// capture can see it.
+fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f {
+	let count = min(bitcast<u32>(lights[0].x), 256u);
+	// The ladder: scores in descending order and the entries they came
+	// from. An insertion this short beats sorting the list, and unlike a
+	// running argmax it keeps the runners-up the budget can still afford.
+	var best = array<f32, GI_NEE_TAPS>();
+	var pick = array<u32, GI_NEE_TAPS>();
+	for (var i = 1u; i <= count; i++) {
+		let score = gi_light_score(lights[i * 2u - 1u], lights[i * 2u], p, n);
+		if score <= 0.0 {
+			continue;
+		}
+		for (var k = 0u; k < GI_NEE_TAPS; k++) {
+			if score > best[k] {
+				for (var j = GI_NEE_TAPS - 1u; j > k; j--) {
+					best[j] = best[j - 1u];
+					pick[j] = pick[j - 1u];
+				}
+				best[k] = score;
+				pick[k] = i;
+				break;
+			}
+		}
+	}
+	var sum = vec3f(0.0);
+	for (var k = 0u; k < GI_NEE_TAPS; k++) {
+		// Descending, so the first empty slot ends the list.
+		if best[k] <= 0.0 {
+			break;
+		}
+		let l = lights[pick[k] * 2u - 1u];
+		let q = lights[pick[k] * 2u];
+		// The ray goes to the point the score was priced from — the same
+		// centre `gi_light_score` used. A rectangle's stochastic area draw
+		// belongs to an estimator with a filter behind it; here it would
+		// just be one more thing to dither.
+		let s = gi_light_sample(l, q, p, 0.5, 0.5);
+		let d = s.p - p;
+		let dist = length(d);
+		// Stop short of the light's own cell (gi_light_margin, shared with
+		// both other NEE passes).
+		let sh = gi_march(
+			side, sky_y, cam_xz, p, d / dist,
+			max(dist - gi_light_margin_of(l), 0.0), GI_NEE_ITERS,
+		);
+		if !sh.hit {
+			sum += gi_light_tint(l.w, gi_emit_tint(gi_light_class(l.w)))
+				* LIGHT_GAIN
+				* best[k]
+				* medium_water_tr(sh.water);
+		}
+	}
+	return sum;
 }

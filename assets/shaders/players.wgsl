@@ -16,8 +16,8 @@
 // it is a second pipeline over the same three bind groups.
 //
 // Lighting is RTGI (GI-DESIGN.md) for both: a per-fragment probe gather
-// through gi_common, a short sun DDA, and the shared `resample_light`
-// NEE over the emitter list (R33) — players never read the half-res
+// through gi_common, a short sun DDA, and the shared `sum_lights` NEE
+// over the emitter list (R33, R34) — players never read the half-res
 // resolve buffers, whose depth prepass doesn't know them, so the direct
 // term has to be computed here or a body beside a torch reads black —
 // and then the same participating medium (medium_common) the terrain
@@ -241,43 +241,29 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
 		// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
 		let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
-		// The direct term for local lights (R33): the SAME `resample_light`
-		// the resolve runs, over the same list — a probe carries a torch
-		// only as its bounce off the room, so without this a player beside
-		// one read black while the wall behind them glowed. The resolve's
+		// The direct term for local lights (R33): the shared NEE over the
+		// same list the resolve reads — a probe carries a torch only as
+		// its bounce off the room, so without this a player beside one
+		// read black while the wall behind them glowed. The resolve's
 		// half-res NEE can never cover them: they are not in the depth
 		// prepass, so its texels under a player belong to that wall.
 		//
-		// Two deliberate differences from the resolve's call, both because
-		// players have no accumulator and no a-trous behind them. The `far`
-		// gate is the same rule (past the window's reach a shadow ray has
-		// no data to march) — the resolve's takes the cascade blend there,
-		// this simply drops the term. And the seed is STATIC and anchored
-		// to sub-block WORLD cells: the resolve's advances per frame
-		// because its temporal filter averages the visibility Bernoulli
-		// out, and unfiltered that same advance is raw flicker on a body.
-		// A static draw is a stable spatial dither; with one light in
-		// range the reservoir degenerates to the argmax deterministically.
+		// `sum_lights` and not the resolve's `resample_light` (R34),
+		// because nothing filters this: one drawn light carrying the whole
+		// pool needs an accumulator behind it to average its visibility
+		// out, and a body has none — it dithered into world-anchored
+		// blocks of full pool and pure black that swam across a walking
+		// player. Same candidates and same pricing, one ray each.
+		//
+		// The `far` gate is the resolve's own rule (past the window's
+		// reach a shadow ray has no data to march); the resolve takes the
+		// cascade blend there, this simply drops the term, and a player at
+		// that range covers a handful of pixels under the medium's fade.
 		var nee = vec3f(0.0);
 		let lat = gp.xz - frame.cam_pos.xz;
 		let gmax = gi_lateral_max(frame.gi_misc.x);
 		if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
-			let jq = vec3i(floor(gp * 8.0));
-			let seed = (bitcast<u32>(jq.x) * 73856093u)
-				^ (bitcast<u32>(jq.y) * 19349663u)
-				^ (bitcast<u32>(jq.z) * 83492791u);
-			let pick = resample_light(gp, in.wn, seed);
-			if pick.valid {
-				// Stop short of the light's own cell (gi_light_margin,
-				// shared with both other NEE passes).
-				let shadow = gi_march(
-					side, frame.gi_misc.y, frame.cam_pos.xz, gp,
-					pick.dir, max(pick.dist - pick.margin, 0.0), GI_NEE_ITERS,
-				);
-				if !shadow.hit {
-					nee = pick.irradiance * medium_water_tr(shadow.water);
-				}
-			}
+			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn);
 		}
 		col = albedo * (frame.light_color.rgb * direct * sh + indirect + nee);
 	}
