@@ -263,10 +263,17 @@ pub mod shader {
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
+	/// Level-up confetti. Takes the GI world bindings its spray sibling
+	/// does not: both inherit the camera light for bounce and sun, but a
+	/// burst is thrown where somebody is STANDING — beside a torch as
+	/// often as under the sky — so its direct term is computed at the
+	/// flake (R34) rather than inherited from the camera.
 	pub const CONFETTI: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
 	);
 	/// The essence draw — the Essence Siphon's motes and face kindle. No
@@ -561,6 +568,7 @@ mod tests {
 			for (consumer, src) in [
 				("resolve", super::shader::GI_RESOLVE),
 				("players", super::shader::PLAYERS),
+				("confetti", super::shader::CONFETTI),
 			] {
 				let r = wgsl_const(src, name);
 				assert_eq!(r, p, "{name}: {consumer} {r} vs probe {p}");
@@ -574,24 +582,38 @@ mod tests {
 		}
 	}
 
-	/// Every fragment pass that prices local lights does it through the
-	/// ONE `resample_light` gi_common carries (R33) — defined once (no
-	/// shadowing copy) and actually called, because a pass that takes the
-	/// prelude and never calls it is a body torches cannot light, which
-	/// is exactly the regression players shipped with.
+	/// Every pass that prices local lights does it through the ONE
+	/// `gi_light_score` gi_common carries (R33, R34) — defined once (no
+	/// shadowing copy), and each pass actually calls the estimator built
+	/// on it, because a pass that takes the prelude and never calls it is
+	/// a body torches cannot light, which is exactly the regression
+	/// players shipped with and confetti sat in until R34.
+	///
+	/// The two estimators differ on purpose and the pin says which pass
+	/// runs which: the resolve resamples the pool behind an accumulator,
+	/// while players and confetti sum the brightest few in front of
+	/// nothing at all. Swapping them is the R34 bug in either direction —
+	/// a dither on an unfiltered surface, or a march per tap per pixel
+	/// across the whole screen.
 	#[test]
 	fn every_nee_consumer_runs_the_shared_estimator() {
-		for (name, src) in [
-			("resolve", super::shader::GI_RESOLVE),
-			("players", super::shader::PLAYERS),
+		for (name, src, estimator) in [
+			("resolve", super::shader::GI_RESOLVE, "resample_light("),
+			("players", super::shader::PLAYERS, "sum_lights("),
+			("confetti", super::shader::CONFETTI, "sum_lights("),
 		] {
 			assert_eq!(
-				src.matches("fn resample_light(").count(),
+				src.matches("fn gi_light_score(").count(),
 				1,
-				"{name} must see exactly one resample_light definition"
+				"{name} must see exactly one gi_light_score definition"
+			);
+			assert_eq!(
+				src.matches(&format!("fn {estimator}")).count(),
+				1,
+				"{name} must see exactly one {estimator} definition"
 			);
 			assert!(
-				src.matches("resample_light(").count() >= 2,
+				src.matches(estimator).count() >= 2,
 				"{name} takes the shared estimator but never calls it"
 			);
 		}

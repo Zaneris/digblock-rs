@@ -1,5 +1,55 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-17 — a ray per light on players and confetti (R34): free where it matters, unpriceable where it might not be
+
+The dither fix (GI-DESIGN R34) trades the resolve's one resampled shadow ray for one at each of the brightest
+`GI_NEE_TAPS` emitters, on player pixels only. Release, M2 Max, `--seed 7 --fixed-dt 0.016 --size 960x540 --offscreen`.
+Frame times off the swapchain have no present wait, so they compare only with each other, never with a baseline above.
+
+**Pixels.** Every row is before-vs-after; the control is the same binary run twice, because this engine does not
+reproduce itself exactly.
+
+| scene (300 frames)                                               | moved | mean   | worst |
+| ---------------------------------------------------------------- | ----- | ------ | ----- |
+| terrain, no player (`--tod 90`)                                  | 0.19% | 0.0006 | 123   |
+| ...its own control                                               | 0.31% | 0.0010 | 123   |
+| `DIG_VAULT_DARK=1 DIG_SCREEN=torch DIG_PLAYERBOX=1` (`--tod 90`) | 0.00% | 0.0000 | 1     |
+| `DIG_VAULT=1 DIG_PLAYERBOX=1` (`--tod 90`)                       | 0.00% | 0.0000 | 1     |
+| `DIG_ORE=3 DIG_PLAYERBOX=torch DIG_SCREEN=torch --yaw 90`        | 1.17% | 0.0025 | 71    |
+
+The two vault rows are the calibration guarantee as a measurement: one light in range and the two estimators agree to
+the last bit. Terrain moved LESS than its own repeat, which is what "the resolve is untouched" looks like. The ore
+chamber is the repro, and every moved pixel is on the body or its held item. Tap count in that same chamber, shipped
+value against four times it: 1.41% of pixels, mean 0.0032, worst 22 — the dropped tail, and it is confined to the body.
+
+**Frame time, `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_PLAYERBOX=dirt`, 4000 frames**, camera parked, `gpu_main_ms` from
+the CSV rows after the scene quiesces (t ≥ 15 s):
+
+| build  | samples                      |
+| ------ | ---------------------------- |
+| before | 5.24, 5.02, 5.03, 5.00       |
+| after  | 5.50, 4.84, 4.73, 4.73, 4.82 |
+
+**No separation** — eight emitters in range, so every tap is filled and marching, and the extra rays do not come out of
+the spread. That is the bed that answers the shipped case: a body covers a small part of the frame and a room holds a
+handful of torches.
+
+**The ore chamber could not be priced and that is the finding.** Its `gpu_main_ms` ran 3.5–4.2 before and 4.1–5.4 after,
+which looks like a real cost until you notice `avg_ms` climbing monotonically through every run, both builds, and
+`DIG_STUB=ginee` (which removes the term entirely) landing inside the same range. The scene never reaches steady state:
+seams keep streaming in, so the light list keeps growing and the resolve's own scan grows with it. **Do not use
+`DIG_ORE` as a frame-time bed** — it is a picture bed. Pricing this properly wants a scene with a long, STABLE light
+list (`DIG_TORCHES_FAR` pads the list without lighting a pixel, which is the shape of it) and a body filling a known
+fraction of the frame; nobody has built that, and the courtyard result was enough to ship on.
+
+**The same estimator on the confetti costs nothing measurable**, and the reason is the unit of work: it runs per VERTEX
+on a few hundred vertices a burst, where the player term runs per fragment on tens of thousands.
+`DIG_VAULT=1
+DIG_CONFETTI=1`, 4000 frames, `gpu_water_ms` (the pass the billboards draw in) — before 0.964, 1.025,
+1.211, 1.158; after 0.944, 0.962, 1.196, 1.229, with `avg_ms` matching row for row. Pixels: the vault burst moves 1.34%
+of the frame (black paper to lit paper, worst channel saturated), and a noon capture over open terrain with a burst in
+frame is unchanged at worst 2 — nothing in range, nothing summed, and the picture is the proof rather than the argument.
+
 ## 2026-08-15 — wgpu 26 → 30 is pixel-clean, and `--offscreen` is how it was measured
 
 Four majors of wgpu at once (optional vertex slots and bind-group layouts, `multiview_mask`, `Option` depth fields,

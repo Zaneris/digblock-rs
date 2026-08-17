@@ -1085,6 +1085,7 @@ impl Renderer {
 				surface_format,
 				&frame_bgl,
 				gi.cam_light_buf(),
+				gi.gather_bgl(),
 			),
 			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
 			players: crate::players::RemotePlayersDraw::new(
@@ -2035,8 +2036,12 @@ impl Renderer {
 				stats.triangles += spray_tris;
 
 				// Level-up confetti, over the same finished world as the
-				// spray it shares a pass (and a bind group) with.
-				let confetti_tris = self.confetti.draw(&mut pass, confetti_n);
+				// spray it shares a pass (and a bind group) with. It
+				// carries one group spray does not: the GI world data its
+				// flakes run the shared NEE over.
+				let confetti_tris =
+					self.confetti
+						.draw(&mut pass, confetti_n, self.gi.gather_bind());
 				stats.draw_calls += u32::from(confetti_tris > 0);
 				stats.triangles += confetti_tris;
 
