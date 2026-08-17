@@ -362,15 +362,17 @@ pub fn dig_mode(
 	}
 }
 
-/// The nearest deposit within [`crate::unlock::PROSPECT_RANGE`] whose
-/// tier this miner cannot yet SEE — the prospector's sense (§5.5).
+/// The nearest deposit within the sense's own reach
+/// ([`crate::unlock::prospect_range`], which widens with the Mining
+/// level) whose tier this miner cannot yet SEE — the prospector's sense
+/// (§5.5). `None` below the sense's first rank.
 ///
 /// Unrevealed on purpose: a sense that also hums at veins already
 /// glittering in front of you is noise. This is the one hint the game
 /// gives about what is behind the wall, and it says only "something you
 /// have not levelled into is near", never what or exactly where.
 pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Deposit> {
-	let r = crate::unlock::PROSPECT_RANGE;
+	let r = crate::unlock::prospect_range(mining)?;
 	let mut best: Option<(i64, Deposit)> = None;
 	for d in deposits_near(
 		(at.0 - r, at.1 - r, at.2 - r),
@@ -771,18 +773,33 @@ mod tests {
 			unseen_nearby(at, seed, crate::skills::MAX_LEVEL).is_none(),
 			"silent once every tier is visible"
 		);
-		// And it does not reach past its own range.
-		let far = (at.0 + crate::unlock::PROSPECT_RANGE * 4, at.1, at.2);
+		// And it does not reach past its own range — at the level where the
+		// range is widest, since a narrower rank reaching further would
+		// only make this looser.
+		let wide = crate::unlock::prospect_range(need - 1).expect("the sense is on by then");
+		let far = (at.0 + wide * 4, at.1, at.2);
 		let heard = unseen_nearby(far, seed, need - 1);
 		assert!(
 			heard.is_none_or(|d| {
 				let dx = i64::from(d.x - far.0);
 				let dy = i64::from(d.y - far.1);
 				let dz = i64::from(d.z - far.2);
-				dx * dx + dy * dy + dz * dz <= i64::from(crate::unlock::PROSPECT_RANGE).pow(2)
+				dx * dx + dy * dy + dz * dz <= i64::from(wide).pow(2)
 			}),
 			"heard something out of range"
 		);
+		// The sense itself is ranked: silent before its first rank, and its
+		// reach only ever widens with the level.
+		assert!(
+			unseen_nearby(at, seed, 1).is_none(),
+			"heard before the sense arrives"
+		);
+		let mut last = 0;
+		for l in 1..=crate::skills::MAX_LEVEL {
+			let r = crate::unlock::prospect_range(l).unwrap_or(0);
+			assert!(r >= last, "the sense narrowed at {l}");
+			last = r;
+		}
 	}
 
 	/// The density knob, reported rather than merely bounded — the rates

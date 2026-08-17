@@ -2720,9 +2720,10 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
-		// The prospector's sense (SKILLS-DESIGN §5.5, Mining 90): a faint
-		// shimmer near a deposit whose tier you cannot yet see. Audio only
-		// — an overlay would make every reveal level meaningless.
+		// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near
+		// a deposit whose tier you cannot yet see, reaching further at the
+		// sense's second rank. Audio only — an overlay would make every
+		// reveal level meaningless.
 		//
 		// It borrows the cave bed's voice as a POSITIONAL one-shot, which
 		// is a stand-in: the design asks for its own sourced shimmer, and

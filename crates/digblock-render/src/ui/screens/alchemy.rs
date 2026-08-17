@@ -1776,7 +1776,10 @@ mod tests {
 	/// and a locked selection disables the button outright (no hit).
 	#[test]
 	fn family_selection_and_the_single_transmute_button() {
-		let mut r = rig_at(20, |inv| {
+		// A level past the mason's unlock and short of dark lumber's, so
+		// the rig holds an unlocked-but-unaffordable member (Stone, with
+		// no Earth in hand) AND a locked one (DarkLumber) at once.
+		let mut r = rig_at(15, |inv| {
 			inv.add_sub(Essence::Flora, 500);
 		});
 		let press = |r: &mut Rig, at: (f32, f32)| {

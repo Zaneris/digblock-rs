@@ -97,22 +97,21 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 		// "Resin" — the design doc's heartwood line, moved off craftable
 		// Wood (the pump rule above): pine forests are the pre-ore
 		// Aether trickle instead.
-		B::PineLeaves if level >= 75 => &[(E::Aqua, 1), (E::Aether, 1)],
+		B::PineLeaves if level >= 45 => &[(E::Aqua, 1), (E::Aether, 1)],
 		B::PineLeaves if level >= 25 => &[(E::Aqua, 1)],
 		// "Trace minerals" — loose rock that no recipe reaches. Gravel is
 		// worldgen-only and is nothing's drop; Rubble is NOT eligible,
-		// however recipe-less it looks, because craftable rock drops it.
-		//
-		// Both of Rubble's rungs moved here rather than being deleted:
-		// its upper rung was an Alchemy milestone (`unlock::opens` derives
-		// the level-up fanfare from a bonus line appearing, so dropping the
-		// arm made that level a dead one, caught by
-		// `unlock_levels_are_the_threshold_levels`), and the Aether rung
-		// is the pre-Aetherock trickle that keeps the deep lamps
-		// reachable. Gravel is scarcer than Rubble, which is the point —
-		// the trickle was never meant to scale with every stone mined.
-		B::Gravel if level >= 90 => &[(E::Metal, 2), (E::Aether, 1)],
-		B::Gravel if level >= 60 => &[(E::Metal, 2)],
+		// however recipe-less it looks, because craftable rock drops it
+		// (that pump shipped once — the doc comment above is its grave).
+		B::Gravel if level >= 35 => &[(E::Metal, 2)],
+		// "The spent stone's whisper" — the top of the ladder's Aether
+		// trickle sits on the two DEEP tiers' tapped rock, the thing a
+		// late-game miner's hands are already full of, so the endgame's
+		// best bonus loop is deep seam work rather than a return to
+		// farming a first-rung block. Pump-clean by construction: spent
+		// rock is only ever written by a siphon draw, drops itself, and
+		// nothing craftable drops into it.
+		B::DepletedGlowvein | B::DepletedAetherock if level >= 55 => &[(E::Aether, 1)],
 		_ => &[],
 	}
 }
@@ -234,7 +233,11 @@ pub fn extract_worth(b: BlockType) -> u32 {
 pub fn waste_permille(level: u32) -> u32 {
 	let level = level.clamp(1, 99);
 	let lin = 1600 - (550 * (level - 1) + 49) / 98;
-	if level >= 85 { lin.min(1100) } else { lin }
+	// The clamp is a felt STEP just past where the catalog tops out — the
+	// linear curve catches back up a handful of levels later and carries
+	// the tail from there, so the post-content levels keep their small
+	// per-level gains.
+	if level >= 56 { lin.min(1250) } else { lin }
 }
 
 /// One cost line at `level`: `ceil(ideal · waste)`.
@@ -334,7 +337,7 @@ pub fn craft_order() -> Vec<BlockType> {
 /// out, which is the reference every other block is priced against. It
 /// quickens at two Alchemy milestones.
 pub fn base_pace_ticks(level: u32) -> u32 {
-	if level >= 75 {
+	if level >= 45 {
 		15
 	} else if level >= 25 {
 		21
@@ -490,10 +493,11 @@ mod tests {
 		assert_eq!(scaled_yield(18, 99), 18);
 		assert_eq!(scaled_yield(9, 99), 9);
 		assert_eq!(scaled_yield(27, 99), 27, "100% at the cap, never more");
-		// §4.2: 1.60× at 1 → 1.05× at 99; §4.3: ≤1.10× from 85.
+		// §4.2: 1.60× at 1 → 1.05× at 99, with the clamp's dip arriving
+		// just past where the catalog tops out.
 		assert_eq!(waste_permille(1), 1600);
 		assert_eq!(waste_permille(99), 1050);
-		assert!(waste_permille(85) <= 1100);
+		assert!(waste_permille(56) <= 1250);
 		for l in 2..=99 {
 			assert!(
 				waste_permille(l) <= waste_permille(l - 1),

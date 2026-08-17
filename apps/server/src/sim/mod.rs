@@ -2757,7 +2757,7 @@ mod tests {
 		use digblock_core::block::BlockType;
 		use digblock_net::messages::EditKind;
 		use glam::Vec3;
-		for (level, want) in [(54u32, 1usize), (55, 3), (85, 9)] {
+		for (level, want) in [(32u32, 1usize), (33, 3), (85, 9)] {
 			let mut sim = flat_sim(&format!("pick{level}"));
 			let mut c = connect(&mut sim, 1);
 			wait_live(&mut sim, 1);
