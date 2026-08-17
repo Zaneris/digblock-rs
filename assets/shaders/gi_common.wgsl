@@ -769,6 +769,13 @@ fn lcg_next(state: ptr<function, u32>) -> f32 {
 	return f32(*state >> 8u) * (1.0 / 16777216.0);
 }
 
+// The cosine a receiver with no usable normal is priced at: exactly the
+// mean of |cos| over a flat, two-sided flake in a uniformly random
+// orientation, which is what a tumbling confetti billboard is. Not a
+// fudge and not a knob — it is what the integral comes to, and it is
+// also why a flake is lit from either side: paper this thin has no back.
+const GI_OMNI_COS = 0.5;
+
 // What one candidate is worth before its shadow ray: the unshadowed
 // irradiance up to the emitter's tint, and zero for anything out of
 // range or behind the surface.
@@ -781,13 +788,20 @@ fn lcg_next(state: ptr<function, u32>) -> f32 {
 // The only LUT read here is the level: the tint is fetched per WINNER,
 // not per candidate. A tint that varies between classes just makes this
 // a slightly worse target for the reservoir, never a biased one.
+//
+// `n` is the receiver's normal, and a receiver with no normal worth the
+// name passes the ZERO vector to be lit isotropically instead (see
+// `GI_OMNI_COS`). That convention lives here rather than in a second
+// scoring function, because a second function is a second price and this
+// one is shared precisely so there is only ever one.
 fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f) -> f32 {
 	let d = l.xyz - p;
 	let dist2 = dot(d, d);
 	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
 		return 0.0;
 	}
-	let ndl = dot(n, d) * inverseSqrt(dist2);
+	let facing = dot(n, d) * inverseSqrt(dist2);
+	let ndl = select(facing, GI_OMNI_COS, all(n == vec3f(0.0)));
 	if ndl <= 0.0 {
 		return 0.0;
 	}

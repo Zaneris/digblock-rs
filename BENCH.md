@@ -1,6 +1,6 @@
 # Bench baseline & hotspot analysis
 
-## 2026-08-17 — a ray per light on players (R34): free where it matters, unpriceable where it might not be
+## 2026-08-17 — a ray per light on players and confetti (R34): free where it matters, unpriceable where it might not be
 
 The dither fix (GI-DESIGN R34) trades the resolve's one resampled shadow ray for one at each of the brightest
 `GI_NEE_TAPS` emitters, on player pixels only. Release, M2 Max, `--seed 7 --fixed-dt 0.016 --size 960x540 --offscreen`.
@@ -41,6 +41,14 @@ seams keep streaming in, so the light list keeps growing and the resolve's own s
 `DIG_ORE` as a frame-time bed** — it is a picture bed. Pricing this properly wants a scene with a long, STABLE light
 list (`DIG_TORCHES_FAR` pads the list without lighting a pixel, which is the shape of it) and a body filling a known
 fraction of the frame; nobody has built that, and the courtyard result was enough to ship on.
+
+**The same estimator on the confetti costs nothing measurable**, and the reason is the unit of work: it runs per VERTEX
+on a few hundred vertices a burst, where the player term runs per fragment on tens of thousands.
+`DIG_VAULT=1
+DIG_CONFETTI=1`, 4000 frames, `gpu_water_ms` (the pass the billboards draw in) — before 0.964, 1.025,
+1.211, 1.158; after 0.944, 0.962, 1.196, 1.229, with `avg_ms` matching row for row. Pixels: the vault burst moves 1.34%
+of the frame (black paper to lit paper, worst channel saturated), and a noon capture over open terrain with a burst in
+frame is unchanged at worst 2 — nothing in range, nothing summed, and the picture is the proof rather than the argument.
 
 ## 2026-08-15 — wgpu 26 → 30 is pixel-clean, and `--offscreen` is how it was measured
 

@@ -1274,7 +1274,7 @@ BEYOND the player) the fix reads more subtly and more correctly: the camera face
 R33 that side sits at the same near-black as the wood cube's camera face beside it, with the torch's rim wrapping both
 the same way — the player finally shades like the terrain next to them rather than like a hole in the scene.
 
-### R34 — an unfiltered estimator may not gamble
+### R34 — an unfiltered estimator may not gamble, and the confetti was never lit at all
 
 User report, with a screenshot: since R33 players wear **black squares that move as the player moves** — hard-edged,
 axis-aligned patches over the body and over the block in their hand, in a base lit by several torches.
@@ -1314,6 +1314,30 @@ no player in it differs by less than the same-binary repeat of itself.
 **The mixed-tint case is worth naming**, because it is what made the artifact so loud here: a reservoir draw carries the
 pool at the tint of whichever emitter won, so a body between a torch and a seam dithered between warm and green, not
 merely between lit and dark. A per-light sum has no such state to be wrong about — each tap arrives with its own tint.
+
+**And then the same estimator went to the confetti**, which had the R33 bug and no dither because it had no estimator at
+all. Level-up flakes were lit by the camera-light buffer — probe bounce plus a traced sun — which is spray's argument
+and does not stretch to local lights: a burst is thrown where a player is STANDING, and the camera's distance to a torch
+is not the flake's. Underground it showed exactly as R33 did before it: a cloud of BLACK paper hanging in a torch-lit
+vault. So confetti.wgsl takes the gi_common prelude and the group(2) world bindings and calls `sum_lights` at each
+flake's centre, in the VERTEX stage — the gather layout has allowed vertex-stage reads since water's per-vertex gather
+(R17), a flake is a fraction of a block across so one answer serves its six corners, and a burst is a few hundred
+vertices where a body is tens of thousands of pixels. The reach gate earns its keep here rather than being copied: a
+burst is thrown over a REMOTE player's head too, and they can be most of the sync radius away.
+
+**A flake has no normal**, which is the one thing the shared price had to learn. It tumbles, it is two-sided, and paper
+that thin is lit from whichever side the light is on — so a receiver may pass the ZERO vector and be priced at
+`GI_OMNI_COS` instead of a cosine. That is the mean of |cos| over a flat flake in a uniformly random orientation, so it
+is the integral rather than a fudge, and it lives inside `gi_light_score` rather than in a second scoring function,
+because a second function is a second price. Measured: in a torch-lit vault the burst goes from black to lit with a real
+falloff across it, 1.34% of the frame moved and all of it paper; outdoors at noon, where nothing is in range, the
+capture is **unchanged** — the term is zero by construction and the picture says so. The water pass that draws it does
+not move.
+
+**Spray and the viewmodel are deliberately still on the camera light**, and this is the honest edge of the change. A
+waterfall is outdoor geometry lit by the sky, and the viewmodel carries its own rig a metre from the eye where the
+camera's answer IS the item's; neither has shown the black-paper failure. If a lamp-lit indoor waterfall ever does, this
+is the shape of its fix.
 
 - One mechanism lights everything: sun, sky, and torches are all radiance sources seen by the same rays. No shadow maps,
   no per-light machinery beyond a light list.

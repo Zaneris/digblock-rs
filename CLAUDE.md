@@ -505,13 +505,16 @@ INTENSITY and a seam's as a RADIANCE PER UNIT AREA. Punctual entries leave the f
 a torch's word is what it always was. Both gains are stopgaps for the missing tonemap — which cannot simply be appended,
 because the offscreen scene colour uses the SURFACE format, so radiance is already clamped at the scene pass.
 `flush_lights` re-selects once the camera has moved far enough, when emitters exceed MAX_LIGHTS; spray and viewmodel
-read a camera-light buffer. The fullbright INK is one shared function, `emissive_ink` in `ink_common.wgsl`, prepended to
-chunk/viewmodel/players so a `glows` block reads the same in the world, in your hand and in somebody else's
-(`every_pass_that_draws_ink_shares_one_gain` pins that nobody shadows it with a local const). An ITEM may also be ink in
-one place only: `ItemFace::emissive` rides above the texture index in the item vertex word (`viewmodel::INK_BIT`,
-decoded identically by viewmodel.wgsl and players.wgsl, and read by the 2D icons as "no directional shading"). That
-exists because `glows` is per BLOCK, which is right for a torch — one material — and wrong for a tool, which is a body
-worth shading with one lit part set into it (R30).
+read a camera-light buffer. **Confetti reads that buffer for bounce and sun and runs `sum_lights` for the rest** (R34):
+a burst is thrown where a player is STANDING rather than where the camera is, so the camera's distance to a torch is not
+the flake's — priced per flake, in the VERTEX stage, with the ZERO normal that `gi_light_score` reads as isotropic,
+because a tumbling flake has no normal that holds still and paper that thin is lit from either side. The fullbright INK
+is one shared function, `emissive_ink` in `ink_common.wgsl`, prepended to chunk/viewmodel/players so a `glows` block
+reads the same in the world, in your hand and in somebody else's (`every_pass_that_draws_ink_shares_one_gain` pins that
+nobody shadows it with a local const). An ITEM may also be ink in one place only: `ItemFace::emissive` rides above the
+texture index in the item vertex word (`viewmodel::INK_BIT`, decoded identically by viewmodel.wgsl and players.wgsl, and
+read by the 2D icons as "no directional shading"). That exists because `glows` is per BLOCK, which is right for a torch
+— one material — and wrong for a tool, which is a body worth shading with one lit part set into it (R30).
 
 **A light a player CARRIES is an ordinary entry in that same list** (R28) — there is no second lighting path, and
 neither GI shader knows the difference, which is what gives a carried torch bounce, hard shadows, water response and a
