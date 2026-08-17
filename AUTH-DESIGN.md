@@ -48,9 +48,10 @@ see.
 
 ## 2. Sign-in
 
-The master is the authorization server as far as the game is concerned. The client never touches a Google or Facebook
-token, and adding a provider — Apple, Discord — is a change in `apps/master/Auth/` and nowhere else: no client release,
-no new redirect URI to ship, no protocol bump.
+The master is the authorization server as far as the game is concerned. The client never touches a provider token, and
+adding a provider — Apple, Discord — is a change in `apps/master/Auth/` and nowhere else: no client release, no new
+redirect URI to ship, no protocol bump. Microsoft was the first one added after the flow was built, and it cost exactly
+that: a package, an options block, a row in two tables and a button. Nothing in either launcher moved.
 
 ```
 client                    browser                 master            provider
@@ -72,6 +73,12 @@ a popup blocker exists to stop, and a sign-in that silently opens nothing reads 
 
 ### 2.0 Configuring a provider
 
+Each button on the chooser is that provider's own trade dress, not ours to style: an approved logomark, an approved
+theme, and — this is the part that surprises people — an approved string. Microsoft's kit sanctions "Sign in with
+Microsoft" and nothing else, so the chooser's rows deliberately do not read alike, and the three buttons do not agree on
+height or corner radius either. Following each kit is the requirement; a house style that overrode one would be exactly
+what the kit forbids, and for Google it is a stated condition of OAuth app verification.
+
 A provider with no `ClientId`/`ClientSecret` is **off**: its button never renders, its callback 404s, and with none
 configured at all `/auth/start` answers 503. Since joining requires an account, that also means multiplayer is closed —
 which is the correct default for a master nobody has set up, and worth knowing before wondering why a fresh deployment
@@ -80,11 +87,11 @@ admits no one.
 Per provider, two Container App secrets (never `appsettings.json`):
 
 ```
-Master__Auth__Google__ClientId      Master__Auth__Facebook__ClientId
-Master__Auth__Google__ClientSecret  Master__Auth__Facebook__ClientSecret
+Master__Auth__Google__ClientId      Master__Auth__Facebook__ClientId      Master__Auth__Microsoft__ClientId
+Master__Auth__Google__ClientSecret  Master__Auth__Facebook__ClientSecret  Master__Auth__Microsoft__ClientSecret
 ```
 
-Those four are the ONLY settings a deployment needs for sign-in.
+Those pairs are the ONLY settings a deployment needs for sign-in.
 
 The redirect URI to register with the provider is ASP.NET's default callback path for that handler, which we do not
 override:
@@ -92,6 +99,7 @@ override:
 ```
 https://master.digblock.net/signin-google
 https://master.digblock.net/signin-facebook
+https://master.digblock.net/signin-microsoft
 ```
 
 Worth writing down because it is the one string that fails obscurely: a mismatch surfaces as the provider's own
@@ -107,6 +115,20 @@ on the web only, with a message about an unrecognised address and nothing to con
 Google is asked for `openid` alone — the non-sensitive scope category, which is the one that avoids a verification
 review. Confirm current requirements in the console when publishing; a project left in Testing status serves only a
 small number of named test users.
+
+**Microsoft is the one provider that cannot be trimmed that far**, and the reason is worth knowing before someone tries:
+its handler does not read the subject out of the id token, it calls Graph's `/me` with the access token, and Graph
+refuses a token that does not carry `User.Read`. Dropping the scope does not narrow the request, it breaks sign-in — the
+handler throws on a non-success from the user-information endpoint, and the player gets the same dead-end page as a
+cancelled consent. So the scope stays at the handler's default (that one permission, no more), and what is narrowed
+instead is the **response**: `$select=id` on the endpoint is Graph's spelling of the `Fields` list already used for
+Facebook, and it leaves the id as the only field that crosses the wire. The handler's stock name and email claim actions
+then have nothing to map. Registering the app under `/common` — the handler's default authority — is what lets a
+personal Microsoft account and a work or school account both sign in.
+
+An OIDC-only variant was considered and declined: pointing the endpoint at `oidc/userinfo` and mapping `sub` would allow
+`openid` alone, but Microsoft's `sub` is **pairwise** — it is derived from the app registration, so recreating that
+registration would orphan every account filed under it, silently and irreversibly. Graph's `id` is stable against that.
 
 **Two secrets guard the browser hop**, because a URL is the least private thing on a machine — history, logs, sometimes
 a clipboard. `state` proves the callback belongs to the request we started; the PKCE verifier proves the redemption
@@ -341,8 +363,8 @@ entirely rather than leave a permanent claim path open.
 ## 7. What is NOT built
 
 - **No Sign in with Apple.** iOS links no net crate and has no multiplayer, so it is not needed yet. When it gains one,
-  App Store guideline 4.8 requires it alongside Google/Facebook — the provider abstraction is what keeps that a
-  master-side change.
+  App Store guideline 4.8 requires it alongside the providers already here — the provider abstraction is what keeps that
+  a master-side change, as adding Microsoft demonstrated.
 - **No provider linking UI.** The schema supports several providers per account (that is why `ProviderLink` is a table
   and not two columns), but nothing exposes adding one.
 - **No account website.** The browser's whole job is the provider round trip. Choosing a name, reading your id, signing
