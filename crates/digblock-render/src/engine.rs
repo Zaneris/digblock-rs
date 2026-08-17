@@ -2341,13 +2341,15 @@ impl Engine {
 			if let DebugScreen::Bucket { full: true } = screen {
 				engine.inventory.add(BlockType::Water, 1);
 			}
-			// The tools. A tool is never in the grid (§6: not slottable)
-			// and the faded rail only draws once a SECOND one is owned,
-			// so a stocked bar is the only way any of this — the rail,
-			// the split before the tool slot, the authored icons that
-			// replace a cube fallback — reaches a capture at all.
+			// The tools — the bucket included, now that it is crafted
+			// like the rest. A tool is never in the grid (§6: not
+			// slottable) and the faded rail only draws once a SECOND one
+			// is owned, so a stocked bar is the only way any of this —
+			// the rail, the split before the tool slot, the authored
+			// icons that replace a cube fallback — reaches a capture at
+			// all.
 			for tool in BlockType::ALL {
-				if tool.is_tool() && !tool.always_owned() {
+				if tool.is_tool() {
 					engine.inventory.add(tool, 1);
 				}
 			}
@@ -2376,12 +2378,12 @@ impl Engine {
 					// tool it was asked for.
 					let owned = engine.owned_tools();
 					for _ in 0..owned.len() {
-						if engine.hotbar.active_tool() == want {
+						if engine.hotbar.active_tool() == Some(want) {
 							break;
 						}
 						engine.hotbar.cycle_tool(&owned);
 					}
-					assert_eq!(engine.hotbar.active_tool(), want, "DIG_SCREEN tool");
+					assert_eq!(engine.hotbar.active_tool(), Some(want), "DIG_SCREEN tool");
 				}
 				DebugScreen::Torch => {
 					// Find the slot rather than writing a number down:
@@ -2720,9 +2722,10 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
-		// The prospector's sense (SKILLS-DESIGN §5.5, Mining 90): a faint
-		// shimmer near a deposit whose tier you cannot yet see. Audio only
-		// — an overlay would make every reveal level meaningless.
+		// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near
+		// a deposit whose tier you cannot yet see, reaching further at the
+		// sense's second rank. Audio only — an overlay would make every
+		// reveal level meaningless.
 		//
 		// It borrows the cave bed's voice as a POSITIONAL one-shot, which
 		// is a stand-in: the design asks for its own sourced shimmer, and
@@ -2839,6 +2842,10 @@ impl Engine {
 		// names a cell in the world just left.
 		self.confetti.clear();
 		self.siphon = None;
+		// And the bench job, which survives the SCREEN closing but not
+		// the world: it points at this world's stacks and this server's
+		// bucket, neither of which exists in whatever comes next.
+		self.alch_screen.abandon();
 		self.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
@@ -2991,6 +2998,14 @@ impl Engine {
 			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
+		// §13.5's migration grant: a save written before the bucket
+		// joined the catalog (`SAVE_REV`) came from a build where every
+		// player owned one, so it keeps its bucket. Never a windfall —
+		// a fresh world opens AT the current revision and gets nothing,
+		// so the only saves this touches really did have the tool.
+		if save.rev < digblock_persist::SAVE_REV {
+			self.inventory.add(BlockType::Bucket, 1);
+		}
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
 		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
@@ -3880,7 +3895,7 @@ impl Engine {
 	/// True while the water tool is the selected hotbar item.
 	fn water_tool_selected(&self) -> bool {
 		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
-			&& self.hotbar.active_tool() == BlockType::Bucket
+			&& self.hotbar.active_tool() == Some(BlockType::Bucket)
 	}
 
 	/// The owned tool roster in deterministic block-id order: the
@@ -3980,7 +3995,7 @@ impl Engine {
 			self.seed,
 			self.skills.level(digblock_core::skills::Skill::Mining),
 			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
-			self.hotbar.active_tool(),
+			self.hotbar.tool_in_hand(),
 		)
 	}
 
@@ -4005,7 +4020,7 @@ impl Engine {
 	/// derived from the ray, never chosen: the server re-raycasts and
 	/// runs the same `pick::cells` over its own world.
 	fn pick_plane(&self, hit: &RayHit) -> Vec<(i32, i32, i32)> {
-		if self.hotbar.active_tool() != BlockType::ResonantPick {
+		if self.hotbar.active_tool() != Some(BlockType::ResonantPick) {
 			return Vec::new();
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
@@ -4145,7 +4160,7 @@ impl Engine {
 						timed,
 						h,
 						self.skills.level(digblock_core::skills::Skill::Mining),
-						self.hotbar.active_tool(),
+						self.hotbar.tool_in_hand(),
 					) as u16
 				})
 				.unwrap_or(u16::MAX);
@@ -4491,7 +4506,7 @@ impl Engine {
 			// vanished. Offline there was no such correction and it simply
 			// poured — a pick that puts down water.
 			Some(HotbarItem::WaterTool)
-				if self.hotbar.active_tool() == BlockType::Bucket
+				if self.hotbar.active_tool() == Some(BlockType::Bucket)
 					&& self.inventory.bucket_full() =>
 			{
 				BlockType::Water
@@ -5049,14 +5064,18 @@ impl Engine {
 	fn advance_hand(&mut self, dt: f32) {
 		let full = self.inventory.bucket_full();
 		self.tool_swap.advance(dt, self.hotbar.active_tool());
-		let selected = self.hotbar.selected_item().map(|i| match i {
+		let selected = self.hotbar.selected_item().and_then(|i| match i {
 			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
 			// so the hand has to ask which tool is active — otherwise
 			// every tool in the game is held as a bucket. `shown` rather
 			// than `active_tool`, so the hand and the slot's icon change
-			// over together.
-			HotbarItem::WaterTool => crate::ui::hud::tool_icon(self.tool_swap.shown(), full),
-			other => crate::ui::hud::item_icon(other, full).0,
+			// over together — and a BARE slot (no vessel crafted yet)
+			// holds nothing, so the hand is empty on it.
+			HotbarItem::WaterTool => self
+				.tool_swap
+				.shown()
+				.map(|t| crate::ui::hud::tool_icon(t, full)),
+			other => Some(crate::ui::hud::item_icon(other, full).0),
 		});
 		self.view_swap.advance(dt, selected);
 	}
@@ -5902,8 +5921,12 @@ impl Game for Engine {
 		// single-item Craft — the server paces the same rhythm out of its
 		// one bench bucket. The view is rebuilt here rather than borrowed
 		// from the draw, so the queue's affordability check reads the same
-		// number the button greys on.
-		if self.alch_screen.is_open() {
+		// number the button greys on. `busy` keeps the drip alive with the
+		// SCREEN closed (§13.4's background bench): the pace is slow
+		// enough now that standing at the bench for it would be idle time,
+		// so the job runs while you play and only leaving the world
+		// abandons it.
+		if self.alch_screen.is_open() || self.alch_screen.busy() {
 			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
 				self.apply_alchemy_action(act);
@@ -6376,6 +6399,21 @@ impl Game for Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
+			// The background bench's tell: only while a job runs with the
+			// screen CLOSED — open, the screen's own progress row is the
+			// richer version of the same fact.
+			if !self.alch_screen.is_open()
+				&& let Some(job) = self.alch_screen.job()
+			{
+				use crate::ui::screens::alchemy::{BenchJob, block_name};
+				let text = match job {
+					BenchJob::Extract(b) => format!("BENCH  {}", block_name(b)),
+					BenchJob::Craft(item, left) => {
+						format!("BENCH  {} ×{left}", block_name(item))
+					}
+				};
+				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
+			}
 			crate::ui::hud::tool_rail(
 				ui.dl,
 				&ui.style,
@@ -7091,6 +7129,10 @@ mod store_tests {
 					last_played_ms: 0,
 					compatible: true,
 				},
+				// A LEGACY save on purpose (rev 0): several tests here feed
+				// layouts written when the bucket was owned by everyone, and
+				// the migration grant is part of what they exercise.
+				rev: 0,
 				edits: vec![((1, 100, 1), 0)],
 				inventory: vec![(3, 5)],
 				hotbar: self.0.borrow().open_hotbar.clone(),
@@ -7304,6 +7346,7 @@ mod store_tests {
 					last_played_ms: 0,
 					compatible: true,
 				},
+				rev: digblock_persist::SAVE_REV,
 				edits: Vec::new(),
 				inventory: Vec::new(),
 				hotbar: Vec::new(),
@@ -7432,6 +7475,14 @@ mod water_tool_tests {
 		engine.camera.pos = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 - 2.5);
 		engine.camera.yaw_deg = 0.0; // +z
 		engine.camera.pitch_deg = 0.0;
+		// The rig owns its bucket like any player now — crafted rather
+		// than assumed — and reconciling is what equips a first vessel.
+		engine.inventory.add(BlockType::Bucket, 1);
+		digblock_core::inv_grid::reconcile_layout(
+			&engine.inventory,
+			&mut engine.hotbar,
+			&mut engine.inv_grid,
+		);
 		engine
 			.hotbar
 			.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8);

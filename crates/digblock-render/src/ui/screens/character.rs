@@ -67,40 +67,52 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 	(5, "the stairs shape; dirt and sand"),
 	(8, "the torch"),
 	(10, "the essence siphon — ore needs it"),
-	(15, "planed lumber and its joinery; the bucket charge"),
-	(18, "furniture: the table and the chair"),
-	(20, "clean stone — block, slab, stairs and door together"),
-	(25, "dark lumber; morning dew; a faster bench"),
-	(30, "sandstone, snow, grass, mud"),
-	(35, "the bed — timber and bedding both"),
-	(40, "red lumber; the lantern; trace minerals"),
-	(45, "polished stone and sandstone brick"),
-	(50, "craft water; METAL — the prestige block"),
-	(55, "the resonant pick"),
-	(60, "gravel's deep metal"),
-	(65, "crystal, grown from aether"),
-	(75, "pine resin; the fastest bench"),
-	(80, "the aetherlamp — the standing aether sink"),
-	(85, "the waste floor"),
-	(90, "rubble's aether"),
-	(99, "mastery; the master's sigil"),
+	(12, "planed lumber and its joinery; the door shape"),
+	(14, "furniture: the table and the chair"),
+	(15, "clean stone — every learned shape at once"),
+	(18, "dark lumber and stone brick"),
+	(21, "sandstone and glass"),
+	(24, "the bed — timber and bedding both"),
+	(25, "morning dew; a faster bench"),
+	(27, "red lumber"),
+	(28, "the lantern"),
+	(30, "polished stone and sandstone brick"),
+	(33, "METAL — the prestige block"),
+	(35, "gravel's trace minerals"),
+	(36, "the resonant pick"),
+	(40, "crystal, grown from aether"),
+	(45, "pine resin; the fastest bench"),
+	(50, "the aetherlamp — the standing aether sink"),
+	(
+		55,
+		"the spent stone's whisper — tapped deep rock holds aether",
+	),
+	(56, "the waste dip — your process tightens early"),
+	(99, "full extraction; the master's sigil"),
 ];
 
-/// Mining's teasers: the strength wall's two rungs, then the four ore
-/// reveals — the
-/// levels the whole skill is shaped around.
+/// Mining's teasers: the strength wall's two rungs, then the ore reveals
+/// and the sense that forewarns them — the levels the whole skill is
+/// shaped around. Content tops at mastery; the pick's plane stands alone
+/// in the tail on purpose.
 const MINING_TEASERS: &[(u32, &str)] = &[
 	(5, "timber gives — trees and planed wood"),
 	(10, "rock gives — gravel, sandstone, stone"),
 	(15, "emberore reveals — bring a siphon"),
-	(30, "duskstone reveals"),
-	(40, "metal opens — you can break what you smelt"),
-	(55, "glowvein reveals; the resonant pick swings wide"),
-	(60, "crystal opens"),
-	(80, "aetherock reveals"),
+	(
+		18,
+		"prospector's sense — faint, but you hear what you can't see",
+	),
+	(23, "duskstone reveals"),
+	(
+		33,
+		"glowvein reveals; the resonant pick swings wide; metal opens",
+	),
+	(40, "crystal opens"),
+	(43, "the prospector's sense sharpens"),
+	(50, "aetherock reveals"),
+	(60, "mastery: every vein gives one more"),
 	(85, "the pick's full nine"),
-	(90, "prospector's sense — you hear what you can't see"),
-	(99, "mastery: every vein gives one more"),
 ];
 
 /// The depth-reward readout: the live percentage once there is one to
@@ -422,14 +434,14 @@ mod tests {
 		// promise the game breaks.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![5, 10, 15, 30, 40, 55, 60, 80, 85, 90, 99]
+			vec![5, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85]
 		);
 		// The number-only levels, which `opens` deliberately does not
-		// report: the bench's two pace steps and the waste floor.
+		// report: the bench's two pace steps and the waste dip.
 		assert!(alchemy::base_pace_ticks(25) < alchemy::base_pace_ticks(24));
-		assert!(alchemy::base_pace_ticks(75) < alchemy::base_pace_ticks(74));
-		assert!(alchemy::waste_permille(85) < alchemy::waste_permille(84));
-		for l in [25, 75, 85] {
+		assert!(alchemy::base_pace_ticks(45) < alchemy::base_pace_ticks(44));
+		assert!(alchemy::waste_permille(56) < alchemy::waste_permille(55));
+		for l in [25, 45, 56] {
 			assert!(
 				ALCH_TEASERS.iter().any(|&(t, _)| t == l),
 				"no teaser at {l}"

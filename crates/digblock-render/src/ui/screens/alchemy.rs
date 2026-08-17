@@ -62,6 +62,17 @@ pub enum AlchAction {
 	Craft { item: BlockType, count: u32 },
 }
 
+/// What the bench is working on, for the HUD's closed-screen tell — the
+/// background bench is invisible without one, and an invisible worker is
+/// a bug report ("my essence changed on its own").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BenchJob {
+	/// Extracting this block, one per pace, until its stack runs dry.
+	Extract(BlockType),
+	/// Transmuting this item, with this many left on the queue.
+	Craft(BlockType, u32),
+}
+
 const BULK_SHIFT: u32 = 10;
 const BULK_CTRL: u32 = 100;
 
@@ -244,7 +255,10 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	),
 	(
 		"TOOLS",
+		// The bucket leads: the first vessel is the catalog's first tool
+		// (§13.5), and members sit in unlock order like everywhere else.
 		&[
+			BlockType::Bucket,
 			BlockType::EssenceSiphon,
 			BlockType::ResonantPick,
 			BlockType::MastersSigil,
@@ -334,14 +348,44 @@ impl AlchScreen {
 	pub fn close(&mut self) {
 		self.open = false;
 		self.drag.cancel();
-		// Both drips run only while the screen is open — you stand at
-		// the bench.
+		// The bench keeps working with the screen closed (§13.4's
+		// background bench): closing is walking away from a bench that is
+		// mid-job, not cancelling it. Only leaving the WORLD abandons
+		// ([`Self::abandon`]) — the job names things in this world. The
+		// transmute pick resets only when nothing is queued, so reopening
+		// mid-batch lands back on the batch's own tile and progress row.
+		if self.crafting.is_none() {
+			self.family = None;
+			self.member = 0;
+		}
+	}
+
+	/// Drop the running job outright — the WORLD-EXIT arm, kept apart
+	/// from [`Self::close`] on purpose: closing the screen keeps the
+	/// bench working, but a job points at this world's stacks and this
+	/// server's bucket, and neither exists in whatever comes next.
+	pub fn abandon(&mut self) {
 		self.extracting = None;
 		self.crafting = None;
 		self.progress = 0.0;
-		// So does the transmute pick: the tab opens unselected every time.
 		self.family = None;
 		self.member = 0;
+	}
+
+	/// Is a job on the bench? What keeps the engine ticking this screen
+	/// after it closes, and what the HUD's closed-screen tell keys on.
+	pub fn busy(&self) -> bool {
+		self.extracting.is_some() || self.crafting.is_some()
+	}
+
+	/// The running job, for the HUD tell: what is being worked and — for
+	/// a transmute batch — how many remain.
+	pub fn job(&self) -> Option<BenchJob> {
+		if let Some(b) = self.extracting {
+			return Some(BenchJob::Extract(b));
+		}
+		self.crafting
+			.map(|(item, left)| BenchJob::Craft(item, left))
 	}
 
 	pub fn cancel_drag(&mut self) {
@@ -366,21 +410,22 @@ impl AlchScreen {
 		self.tab = AlchTab::Transmute;
 		self.family = Some(f);
 		self.member = m;
+		self.extracting = None;
 		self.crafting = Some((item, count));
 		self.progress = into_cycle.clamp(0.0, 1.0);
 	}
 
 	/// Jump straight to a tab (capture harnesses and tests; play
 	/// switches through the tab strip).
+	///
+	/// Switching tabs no longer touches the job — the bench works with
+	/// the screen closed, so it can hardly stop for a tab. The bench
+	/// still does ONE thing at a time; what enforces it now is that
+	/// STARTING a job clears its counterpart (the extract drop and the
+	/// transmute button each do), which is the only moment the shared
+	/// `progress` changes hands.
 	pub fn set_tab(&mut self, tab: AlchTab) {
 		self.tab = tab;
-		// Leaving a tab abandons its drip: the bench does one thing at a
-		// time, and the one shared `progress` depends on it.
-		self.progress = 0.0;
-		match tab {
-			AlchTab::Extract => self.crafting = None,
-			AlchTab::Transmute => self.extracting = None,
-		}
 	}
 
 	/// Advance whichever drip this tab runs, one frame; returns the op a
@@ -398,45 +443,40 @@ impl AlchScreen {
 			}
 		}
 		let level = view.level;
-		// What this tab is working on and how long one of them takes. A
-		// pace is the ITEM's, not just the level's: a bench spends its
-		// time in proportion to what passes through it, whichever
-		// direction the matter is going.
-		let (pace_ticks, act) = match self.tab {
-			AlchTab::Extract => {
-				let Some(block) = self.extracting else {
-					self.progress = 0.0;
-					return None;
-				};
-				if inv.count(block) == 0 || !unlock::can_extract(block, level) {
-					self.extracting = None;
-					self.progress = 0.0;
-					return None;
-				}
-				(
-					alchemy::extract_pace_ticks(block, level),
-					AlchAction::Convert { block, count: 1 },
-				)
+		// What the BENCH is working on and how long one of them takes —
+		// the job, not the tab: the bench works with the screen closed,
+		// so the visible tab stopped being who decides. At most one job
+		// exists (starting one displaces the other). A pace is the
+		// ITEM's, not just the level's: a bench spends its time in
+		// proportion to what passes through it, whichever direction the
+		// matter is going.
+		let (pace_ticks, act) = if let Some(block) = self.extracting {
+			if inv.count(block) == 0 {
+				self.extracting = None;
+				self.progress = 0.0;
+				return None;
 			}
-			AlchTab::Transmute => {
-				let Some((item, _)) = self.crafting else {
-					self.progress = 0.0;
-					return None;
-				};
-				// Re-asked every frame against the SAME number the button
-				// greys on, so a queue outliving its essence (a rebase
-				// landing, or the tool cap filling on the first one) ends
-				// where the offer would have been withdrawn.
-				if view.affordable(item) == 0 {
-					self.crafting = None;
-					self.progress = 0.0;
-					return None;
-				}
-				(
-					alchemy::craft_pace_ticks(item, level),
-					AlchAction::Craft { item, count: 1 },
-				)
+			(
+				alchemy::extract_pace_ticks(block, level),
+				AlchAction::Convert { block, count: 1 },
+			)
+		} else if let Some((item, _)) = self.crafting {
+			// Re-asked every frame against the SAME number the button
+			// greys on, so a queue outliving its essence (a rebase
+			// landing, or the tool cap filling on the first one) ends
+			// where the offer would have been withdrawn.
+			if view.affordable(item) == 0 {
+				self.crafting = None;
+				self.progress = 0.0;
+				return None;
 			}
+			(
+				alchemy::craft_pace_ticks(item, level),
+				AlchAction::Craft { item, count: 1 },
+			)
+		} else {
+			self.progress = 0.0;
+			return None;
 		};
 		self.progress += dt / (pace_ticks as f32 / 60.0);
 		if self.progress < 1.0 {
@@ -776,27 +816,22 @@ impl AlchScreen {
 		// strip: it can't live in the grid (water is not slottable), and
 		// extracting it empties the tool.
 		//
-		// Gated on the CHARGE only. The unlock is deliberately NOT a
-		// condition here, because hiding the tile below the charge's own
-		// unlock hid the refusal with it: the drop handler already names
-		// that level back, and the message was unreachable for the one
-		// item it was written for. Every block in the grid can be
-		// dragged and told its level; water has no grid slot to be told
-		// from, so this tile is the only place a player can ever learn
-		// the charge is worth Aqua at all. Locked it dims and still
-		// drags, exactly as a locked transmute tile dims and still
-		// selects — pinned by `a_locked_bucket_charge_still_explains_itself`.
+		// Gated on the CHARGE only — and nothing else, since the extract
+		// gate left with the craftable bucket: a player who scooped a
+		// charge has already passed the only gate there is (owning a
+		// vessel), so the tile never dims. Water has no grid slot, which
+		// makes this tile the one place a player can learn the charge is
+		// worth Aqua at all.
 		let bucket_tile = view
 			.bucket_full
 			.then(|| Rect::new(row_x + row_w - text_pad - slot_px, y, slot_px, slot_px));
 		if let Some(tile) = bucket_tile {
 			let (kind, tint) = hud::item_icon(HotbarItem::Block(BlockType::Water), false);
-			let locked = !unlock::can_extract(BlockType::Water, view.level);
 			widgets::slot(
 				ui,
 				InvId::BucketTile,
 				tile,
-				Some((kind, if locked { LOCKED_TINT } else { tint })),
+				Some((kind, tint)),
 				icon_px,
 				widgets::SlotRing::None,
 				tile.contains(cx, cy),
@@ -1246,6 +1281,10 @@ impl AlchScreen {
 						// the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
 						if count > 0 {
+							// Starting a job is what displaces the other
+							// one — the bench does one thing at a time,
+							// and tabs alone no longer decide.
+							self.extracting = None;
 							self.crafting = Some((item, count));
 							self.progress = 0.0;
 						}
@@ -1264,21 +1303,18 @@ impl AlchScreen {
 					..
 				} = self.drag.on_release(hits)
 				{
-					// The gate the drop respects: extractable at all, and
-					// past its unlock (the bucket charge waits for Aqua's).
-					// A refused drop SAYS why — silence read as a bug.
-					if !payload.is_extractable() {
+					// The one gate the drop respects, and it is the SERVER's:
+					// a block whose only yield is a bonus line is not
+					// extractable until the level that opens the line, so
+					// asking the catalog instead would refuse a drop the
+					// bench would have taken. A refused drop SAYS why —
+					// silence read as a bug.
+					if !alchemy::extractable_at(payload, view.level) {
 						self.hint = Some(("CANNOT BE EXTRACTED".into(), HINT_SECS));
-					} else if !unlock::can_extract(payload, view.level) {
-						self.hint = Some((
-							format!(
-								"{}   —   LV {}",
-								block_name(payload),
-								unlock::extract(payload)
-							),
-							HINT_SECS,
-						));
 					} else {
+						// Starting a job displaces the other one — the
+						// counterpart of the transmute button's clear.
+						self.crafting = None;
 						self.extracting = Some(payload);
 						self.progress = 0.0;
 					}
@@ -1348,7 +1384,7 @@ fn elide(style: &Style, text: &str, max_w: f32) -> String {
 /// "STAIRS" — so a new material × shape pair names itself and cannot land
 /// on the old table's `?` fallback. Only the hand-priced functional items
 /// need naming by hand, for the same reason they need pricing by hand.
-fn block_name(b: BlockType) -> String {
+pub(crate) fn block_name(b: BlockType) -> String {
 	if let Some((m, s)) = b.grid_cell() {
 		return match s.item_suffix() {
 			Some(suffix) => format!("{} {suffix}", m.name()),
@@ -1511,53 +1547,27 @@ mod tests {
 		panic!("{b:?} neither on the bar nor in the grid");
 	}
 
-	/// A charged bucket is draggable at EVERY level, and below the Aqua
-	/// unlock the drop says so.
-	///
-	/// The tile used to be drawn only once `can_extract(Water)` passed,
-	/// which gated the same rule twice and lost the useful half: the drop
-	/// handler's "WATER CHARGE" refusal was unreachable, because the only
-	/// drag source for water was hidden until the same unlock. Water is
-	/// not slottable, so unlike every other extractable there is no grid
-	/// cell to learn it from either — a player under that level had no
-	/// way to discover the charge is worth anything at all.
-	///
-	/// Both halves are asserted: that the tile EXISTS locked (else the
-	/// message is unreachable again), and that dropping it explains
-	/// rather than silently starting a drip.
+	/// A charged bucket extracts from the very first level. The level
+	/// gate that used to stand here left with the craftable bucket
+	/// (§13.5): owning a vessel IS the gate now, so a player who scooped
+	/// a charge has already earned the right to take it apart — and
+	/// water is not slottable, so this tile is still the only place the
+	/// charge can be learned about and the only drag source for it.
 	#[test]
-	fn a_locked_bucket_charge_still_explains_itself() {
+	fn a_charged_bucket_extracts_from_the_first_level() {
 		let mut r = rig_at(1, |inv| inv.add(B::Water, 1));
 		assert!(r.view.bucket_full, "the rig has a charged bucket");
-		assert!(
-			!unlock::can_extract(B::Water, 1),
-			"level 1 is below the Aqua unlock, or this test proves nothing"
-		);
 
-		// The source exists even though the level does not allow the op.
 		let tile = r
 			.hits
 			.rect_of(InvId::BucketTile)
 			.expect("a charged bucket offers its tile at every level");
 		assert!(tile.w > 0.0 && tile.h > 0.0);
 
-		// Dropping it starts no drip and leaves an explanation naming the
-		// level, not a bare refusal and not silence.
-		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
-		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
-		let (hint, _) = r.screen.hint.clone().expect("a refused drop says why");
-		assert!(
-			hint.contains(&unlock::extract(B::Water).to_string()),
-			"the hint has to name the level: {hint:?}"
-		);
-		assert!(r.screen.extracting.is_none(), "no drip below the unlock");
-
-		// And at the unlock the same drag works, so the gate is a gate
-		// and not a wall.
-		let mut r = rig_at(unlock::extract(B::Water), |inv| inv.add(B::Water, 1));
 		let slot = center(r.hits.rect_of(InvId::ExtractSlot).unwrap());
 		assert_eq!(drag_to(&mut r, InvId::BucketTile, slot), None);
 		assert_eq!(r.screen.extracting, Some(B::Water), "the drip starts");
+		assert!(r.screen.hint.is_none(), "nothing to refuse, nothing to say");
 	}
 
 	/// §8.1's core loop: drag a stack onto the slot, and the drip sends
@@ -1637,10 +1647,33 @@ mod tests {
 		);
 		assert_eq!(r.screen.extracting, None);
 
+		// Closing the SCREEN keeps the job — the background bench: the
+		// pace is slow enough that standing over it would be idle time,
+		// so walking away is the ordinary case and the drip keeps
+		// sending. Only leaving the WORLD abandons.
 		drag_to(&mut r, src, slot);
 		assert_eq!(r.screen.extracting, Some(B::Wood));
 		r.screen.close();
-		assert_eq!(r.screen.extracting, None, "you stand at the bench");
+		assert_eq!(
+			r.screen.extracting,
+			Some(B::Wood),
+			"the bench works with the screen closed"
+		);
+		assert!(r.screen.busy(), "what keeps the engine ticking it");
+		let pace = alchemy::extract_pace_ticks(B::Wood, 1) as f32 / 60.0;
+		assert!(
+			matches!(
+				r.screen.tick(pace * 1.1, &r.view, &r.inv),
+				Some(AlchAction::Convert {
+					block: B::Wood,
+					count: 1
+				})
+			),
+			"the closed-screen drip still sends"
+		);
+		r.screen.abandon();
+		assert_eq!(r.screen.extracting, None, "the world-exit arm clears");
+		assert!(!r.screen.busy());
 	}
 
 	/// The bucket charge appears as a single water tile whenever the tool
@@ -1649,9 +1682,9 @@ mod tests {
 	#[test]
 	fn bucket_tile_extracts_the_charge() {
 		// An EMPTY bucket offers nothing — there is no charge to point at,
-		// and that is the only condition the tile has. The level is NOT
-		// one: below the unlock the tile is drawn locked so the drop can
-		// explain itself (`a_locked_bucket_charge_still_explains_itself`).
+		// and that is the only condition the tile has: the extract gate
+		// left with the craftable bucket, so a charge extracts at any
+		// level (`a_charged_bucket_extracts_from_the_first_level`).
 		let r = rig_at(20, |_| {});
 		assert!(
 			r.hits.rect_of(InvId::BucketTile).is_none(),
@@ -1776,7 +1809,10 @@ mod tests {
 	/// and a locked selection disables the button outright (no hit).
 	#[test]
 	fn family_selection_and_the_single_transmute_button() {
-		let mut r = rig_at(20, |inv| {
+		// A level past the mason's unlock and short of dark lumber's, so
+		// the rig holds an unlocked-but-unaffordable member (Stone, with
+		// no Earth in hand) AND a locked one (DarkLumber) at once.
+		let mut r = rig_at(15, |inv| {
 			inv.add_sub(Essence::Flora, 500);
 		});
 		let press = |r: &mut Rig, at: (f32, f32)| {

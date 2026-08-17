@@ -9,15 +9,16 @@ use digblock_core::inventory::Inventory;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SlotView {
 	Empty,
-	/// The tool slot: WHICH tool to draw, whether the bucket is charged
-	/// (the bucket's own count, so the bar shows the charge where a stack
-	/// would show its number), and how present the icon is mid-handover.
-	/// The slot always holds `HotbarItem::WaterTool` on the wire —
-	/// `active_tool` is the second axis — so the icon has to come from the
-	/// tool, not from the slot, or every tool in the game draws as a
-	/// bucket.
+	/// The tool slot: WHICH tool to draw — `None` for a fresh player's
+	/// bare slot, drawn as the slot frame with nothing in it — whether
+	/// the bucket is charged (the bucket's own count, so the bar shows
+	/// the charge where a stack would show its number), and how present
+	/// the icon is mid-handover. The slot always holds
+	/// `HotbarItem::WaterTool` on the wire — `active_tool` is the second
+	/// axis — so the icon has to come from the tool, not from the slot,
+	/// or every tool in the game draws as a bucket.
 	Tool {
-		tool: BlockType,
+		tool: Option<BlockType>,
 		full: bool,
 		present: f32,
 	},
@@ -40,7 +41,7 @@ pub enum SlotView {
 /// `Layout` rebase, a rejoin restoring a saved bar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ToolSwap {
-	shown: BlockType,
+	shown: Option<BlockType>,
 	/// Seconds left in the handover; 0 at rest.
 	left: f32,
 }
@@ -48,7 +49,7 @@ pub struct ToolSwap {
 impl Default for ToolSwap {
 	fn default() -> Self {
 		Self {
-			shown: BlockType::Bucket,
+			shown: None,
 			left: 0.0,
 		}
 	}
@@ -59,10 +60,12 @@ impl ToolSwap {
 	/// the two exchanges are the same gesture at the same speed.
 	pub const SECS: f32 = 0.30;
 
-	/// Advance by `dt`, taking `active` as the tool the hotbar holds NOW.
+	/// Advance by `dt`, taking `active` as the tool the hotbar holds NOW —
+	/// `None` for a bare slot, so the first crafted vessel GROWS IN from
+	/// nothing and a roster emptied by a rebase shrinks away to it.
 	/// Read every frame rather than latched, so the slot can never be
 	/// left drawing a tool the player doesn't have.
-	pub fn advance(&mut self, dt: f32, active: BlockType) {
+	pub fn advance(&mut self, dt: f32, active: Option<BlockType>) {
 		if active != self.shown {
 			if self.left <= 0.0 {
 				self.left = Self::SECS;
@@ -88,8 +91,9 @@ impl ToolSwap {
 		}
 	}
 
-	/// The tool to DRAW — the outgoing one until the changeover.
-	pub fn shown(&self) -> BlockType {
+	/// The tool to DRAW — the outgoing one until the changeover; `None`
+	/// draws the slot bare.
+	pub fn shown(&self) -> Option<BlockType> {
 		self.shown
 	}
 
@@ -143,7 +147,9 @@ mod tests {
 		hotbar.auto_assign(BlockType::Stone);
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 3);
-		let v = HotbarView::build(&hotbar, &inv, &ToolSwap::default());
+		let mut swap = ToolSwap::default();
+		swap.advance(ToolSwap::SECS, Some(BlockType::Bucket));
+		let v = HotbarView::build(&hotbar, &inv, &swap);
 		assert_eq!(
 			v.slots[0],
 			SlotView::Block {
@@ -162,7 +168,7 @@ mod tests {
 		assert_eq!(
 			v.slots[HOTBAR_SLOTS - 1],
 			SlotView::Tool {
-				tool: BlockType::Bucket,
+				tool: Some(BlockType::Bucket),
 				full: false,
 				present: 1.0
 			},
@@ -178,11 +184,13 @@ mod tests {
 		let hotbar = Hotbar::new();
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Water, 1);
-		let v = HotbarView::build(&hotbar, &inv, &ToolSwap::default());
+		let mut swap = ToolSwap::default();
+		swap.advance(ToolSwap::SECS, Some(BlockType::Bucket));
+		let v = HotbarView::build(&hotbar, &inv, &swap);
 		assert_eq!(
 			v.slots[HOTBAR_SLOTS - 1],
 			SlotView::Tool {
-				tool: BlockType::Bucket,
+				tool: Some(BlockType::Bucket),
 				full: true,
 				present: 1.0
 			}
@@ -197,8 +205,8 @@ mod tests {
 	fn the_tool_slot_hands_over_instead_of_cutting() {
 		const DT: f32 = 1.0 / 60.0;
 		let mut swap = ToolSwap::default();
-		swap.advance(DT, BlockType::Bucket);
-		assert_eq!(swap.shown(), BlockType::Bucket);
+		swap.advance(ToolSwap::SECS, Some(BlockType::Bucket));
+		assert_eq!(swap.shown(), Some(BlockType::Bucket));
 		assert_eq!(swap.present(), 1.0, "at rest, fully present");
 
 		// The tap: the OLD tool is still what's drawn, and it shrinks.
@@ -206,9 +214,9 @@ mod tests {
 		let mut shrinking = true;
 		let mut flipped_at = None;
 		for i in 0..24 {
-			swap.advance(DT, BlockType::ResonantPick);
+			swap.advance(DT, Some(BlockType::ResonantPick));
 			let p = swap.present();
-			if swap.shown() == BlockType::ResonantPick && flipped_at.is_none() {
+			if swap.shown() == Some(BlockType::ResonantPick) && flipped_at.is_none() {
 				flipped_at = Some(i);
 				shrinking = false;
 			}
@@ -223,7 +231,7 @@ mod tests {
 			flipped >= 6,
 			"the outgoing half is a gesture, not one frame: {flipped}"
 		);
-		assert_eq!(swap.shown(), BlockType::ResonantPick);
+		assert_eq!(swap.shown(), Some(BlockType::ResonantPick));
 		assert_eq!(swap.present(), 1.0, "and settles fully present");
 	}
 
@@ -235,13 +243,14 @@ mod tests {
 	fn a_tap_mid_handover_keeps_handing_over() {
 		const DT: f32 = 1.0 / 60.0;
 		let mut swap = ToolSwap::default();
+		swap.advance(ToolSwap::SECS, Some(BlockType::Bucket));
 		// Run until the pick is not just shown but visibly ON SCREEN.
 		// Tapping exactly at the changeover proves nothing: presence is 0
 		// there, which is the whole point of the changeover.
 		let mut grew = false;
 		for _ in 0..18 {
-			swap.advance(DT, BlockType::ResonantPick);
-			if swap.shown() == BlockType::ResonantPick && swap.present() > 0.4 {
+			swap.advance(DT, Some(BlockType::ResonantPick));
+			if swap.shown() == Some(BlockType::ResonantPick) && swap.present() > 0.4 {
 				grew = true;
 				break;
 			}
@@ -252,10 +261,10 @@ mod tests {
 
 		// The second tap. Whatever is on screen must not be replaced by a
 		// different icon at the same size.
-		swap.advance(DT, BlockType::EssenceSiphon);
+		swap.advance(DT, Some(BlockType::EssenceSiphon));
 		assert_eq!(
 			swap.shown(),
-			BlockType::ResonantPick,
+			Some(BlockType::ResonantPick),
 			"the visible icon stays put and shrinks — no swap in place"
 		);
 		assert!(
@@ -267,15 +276,15 @@ mod tests {
 		let mut lowest = swap.present();
 		let mut flipped = None;
 		for i in 0..24 {
-			swap.advance(DT, BlockType::EssenceSiphon);
+			swap.advance(DT, Some(BlockType::EssenceSiphon));
 			lowest = lowest.min(swap.present());
-			if swap.shown() == BlockType::EssenceSiphon && flipped.is_none() {
+			if swap.shown() == Some(BlockType::EssenceSiphon) && flipped.is_none() {
 				flipped = Some(i);
 			}
 		}
 		assert!(lowest < 0.06, "it still passes through nothing: {lowest}");
 		assert!(flipped.is_some(), "and the siphon does arrive");
-		assert_eq!(swap.shown(), BlockType::EssenceSiphon);
+		assert_eq!(swap.shown(), Some(BlockType::EssenceSiphon));
 		assert_eq!(swap.present(), 1.0);
 	}
 }

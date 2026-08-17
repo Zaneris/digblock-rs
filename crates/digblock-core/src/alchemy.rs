@@ -97,22 +97,21 @@ pub fn bonus_lines(b: BlockType, level: u32) -> &'static [(Essence, u32)] {
 		// "Resin" — the design doc's heartwood line, moved off craftable
 		// Wood (the pump rule above): pine forests are the pre-ore
 		// Aether trickle instead.
-		B::PineLeaves if level >= 75 => &[(E::Aqua, 1), (E::Aether, 1)],
+		B::PineLeaves if level >= 45 => &[(E::Aqua, 1), (E::Aether, 1)],
 		B::PineLeaves if level >= 25 => &[(E::Aqua, 1)],
 		// "Trace minerals" — loose rock that no recipe reaches. Gravel is
 		// worldgen-only and is nothing's drop; Rubble is NOT eligible,
-		// however recipe-less it looks, because craftable rock drops it.
-		//
-		// Both of Rubble's rungs moved here rather than being deleted:
-		// its upper rung was an Alchemy milestone (`unlock::opens` derives
-		// the level-up fanfare from a bonus line appearing, so dropping the
-		// arm made that level a dead one, caught by
-		// `unlock_levels_are_the_threshold_levels`), and the Aether rung
-		// is the pre-Aetherock trickle that keeps the deep lamps
-		// reachable. Gravel is scarcer than Rubble, which is the point —
-		// the trickle was never meant to scale with every stone mined.
-		B::Gravel if level >= 90 => &[(E::Metal, 2), (E::Aether, 1)],
-		B::Gravel if level >= 60 => &[(E::Metal, 2)],
+		// however recipe-less it looks, because craftable rock drops it
+		// (that pump shipped once — the doc comment above is its grave).
+		B::Gravel if level >= 35 => &[(E::Metal, 2)],
+		// "The spent stone's whisper" — the top of the ladder's Aether
+		// trickle sits on the two DEEP tiers' tapped rock, the thing a
+		// late-game miner's hands are already full of, so the endgame's
+		// best bonus loop is deep seam work rather than a return to
+		// farming a first-rung block. Pump-clean by construction: spent
+		// rock is only ever written by a siphon draw, drops itself, and
+		// nothing craftable drops into it.
+		B::DepletedGlowvein | B::DepletedAetherock if level >= 55 => &[(E::Aether, 1)],
 		_ => &[],
 	}
 }
@@ -139,6 +138,22 @@ pub fn extract_yields(b: BlockType, level: u32) -> Vec<(Essence, u32)> {
 		}
 	}
 	out
+}
+
+/// Whether the bench takes `b` from a player at `level` — the ONE
+/// question the extract slot's drop gate and `apply_alchemy`'s Convert
+/// arm both ask, in the mould of `dig_blocked` and `overlaps_solid`.
+///
+/// It has to be level-aware, because a block can earn its whole yield
+/// from a bonus line: the deep tiers' spent rock has no base at all and
+/// pays only the whisper, so [`BlockType::is_extractable`]'s level-free
+/// answer is the wrong one to gate a drop with. While every host of a
+/// bonus line also had a base, the two questions happened to agree and
+/// nothing noticed they were different questions — the screen refused
+/// the drop and the server would have honoured it, so the line was
+/// unreachable by every honest client and reachable by a crafted packet.
+pub fn extractable_at(b: BlockType, level: u32) -> bool {
+	!extract_yields(b, level).is_empty()
 }
 
 /// What one FIELD extraction pays into a player's stocks (SKILLS-DESIGN
@@ -234,7 +249,11 @@ pub fn extract_worth(b: BlockType) -> u32 {
 pub fn waste_permille(level: u32) -> u32 {
 	let level = level.clamp(1, 99);
 	let lin = 1600 - (550 * (level - 1) + 49) / 98;
-	if level >= 85 { lin.min(1100) } else { lin }
+	// The clamp is a felt STEP just past where the catalog tops out — the
+	// linear curve catches back up a handful of levels later and carries
+	// the tail from there, so the post-content levels keep their small
+	// per-level gains.
+	if level >= 56 { lin.min(1250) } else { lin }
 }
 
 /// One cost line at `level`: `ceil(ideal · waste)`.
@@ -255,6 +274,12 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
 	Some(match b {
+		// The first vessel, priced to be the opening loop's first goal: a
+		// couple of extractions' worth of the two essences the surface
+		// hands a brand-new player. NO AQUA, ever — the bucket is how a
+		// player first GETS Aqua, so an Aqua line here is the siphon's
+		// Metal deadlock all over again.
+		B::Bucket => &[(E::Flora, 6), (E::Earth, 3)],
 		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
 		// NO METAL, ever: ore needs the siphon and Metal needs ore, so a
 		// Metal-priced siphon deadlocks the economy on the first world
@@ -334,12 +359,12 @@ pub fn craft_order() -> Vec<BlockType> {
 /// out, which is the reference every other block is priced against. It
 /// quickens at two Alchemy milestones.
 pub fn base_pace_ticks(level: u32) -> u32 {
-	if level >= 75 {
-		15
+	if level >= 45 {
+		60
 	} else if level >= 25 {
-		21
+		84
 	} else {
-		30
+		120
 	}
 }
 
@@ -367,8 +392,21 @@ const MIN_PACE_TICKS: u32 = 6;
 /// a pace that followed would have a lumber block coming apart five times
 /// faster than the wood it was planed from. Client-paced for presentation,
 /// server-enforced via the extraction token bucket.
+///
+/// **Foliage takes half the slowdown** ([`BlockType::is_foliage`], the
+/// same set whose bench XP is zero): a block that pays no levels is pure
+/// economy, and making its Aqua tediously slow would punish exactly the
+/// player using the bench as a bench rather than as an XP machine. The
+/// concession is safe ONLY because the XP is zero — halved pace plus a
+/// floored one-point award was the best XP rate in the game, which is
+/// why the two arms share one predicate and cannot drift apart.
 pub fn extract_pace_ticks(b: BlockType, level: u32) -> u32 {
-	pace_ticks(extract_worth(b), level)
+	let ticks = pace_ticks(extract_worth(b), level);
+	if b.is_foliage() {
+		(ticks / 2).max(MIN_PACE_TICKS)
+	} else {
+		ticks
+	}
 }
 
 /// What ONE craft of `item` is worth at the bench — the same fixed
@@ -431,8 +469,7 @@ fn costliest_op_ticks(level: u32) -> u32 {
 				BlockType::ALL
 					.into_iter()
 					.map(|b| {
-						let extract = (b.is_extractable() && crate::unlock::can_extract(b, l))
-							.then(|| extract_pace_ticks(b, l));
+						let extract = b.is_extractable().then(|| extract_pace_ticks(b, l));
 						let craft = crate::unlock::can_craft(b, l).then(|| craft_pace_ticks(b, l));
 						extract.into_iter().chain(craft).max().unwrap_or(0)
 					})
@@ -490,10 +527,11 @@ mod tests {
 		assert_eq!(scaled_yield(18, 99), 18);
 		assert_eq!(scaled_yield(9, 99), 9);
 		assert_eq!(scaled_yield(27, 99), 27, "100% at the cap, never more");
-		// §4.2: 1.60× at 1 → 1.05× at 99; §4.3: ≤1.10× from 85.
+		// §4.2: 1.60× at 1 → 1.05× at 99, with the clamp's dip arriving
+		// just past where the catalog tops out.
 		assert_eq!(waste_permille(1), 1600);
 		assert_eq!(waste_permille(99), 1050);
-		assert!(waste_permille(85) <= 1100);
+		assert!(waste_permille(56) <= 1250);
 		for l in 2..=99 {
 			assert!(
 				waste_permille(l) <= waste_permille(l - 1),
@@ -632,11 +670,17 @@ mod tests {
 					0,
 					"{b:?} comes off the bench and must pay nothing to take apart"
 				);
+			} else if b.is_foliage() {
+				// Zero by name, and the reason is the pace concession:
+				// foliage processes at half the slowdown, and a floored
+				// point per leaf against that pace would make foliage the
+				// best XP rate at the bench.
+				assert_eq!(crate::skills::convert_xp(b), 0, "{b:?} pays no levels");
 			} else if extract_worth(b) > 0 {
 				assert_eq!(
 					crate::skills::convert_xp(b),
-					u64::from(extract_worth(b)),
-					"{b:?} is the world's own and pays what it is worth"
+					u64::from(extract_worth(b).div_ceil(2)),
+					"{b:?} is the world's own and pays half its worth"
 				);
 			}
 		}
@@ -648,6 +692,33 @@ mod tests {
 			extract_pace_ticks(BlockType::Wood, 1),
 			"planed timber comes apart no faster than the log"
 		);
+	}
+
+	/// The catalog filter may never hide a block the bench would take.
+	/// [`BlockType::is_extractable`] answers for the roster and
+	/// [`extractable_at`] answers for a player, so the first has to be
+	/// the second's envelope — a screen or a tool that filters on the
+	/// cheap one is then merely coarse, never wrong.
+	///
+	/// It shipped the other way round for the length of a review. The
+	/// deep tiers' tapped rock has no extract base, so the filter said
+	/// no while `apply_alchemy` — which totals the bonus in — said yes:
+	/// the extract slot refused the drop for every honest client, and a
+	/// crafted packet was paid out at the pace floor. The reward had a
+	/// level-up fanfare and a character-screen tease and no way to
+	/// collect it.
+	#[test]
+	fn the_catalog_filter_never_hides_an_extractable_block() {
+		for &b in &BlockType::ALL {
+			for level in 1..=crate::skills::MAX_LEVEL {
+				if extractable_at(b, level) {
+					assert!(
+						b.is_extractable(),
+						"the bench takes {b:?} at {level}, but the filter hides it"
+					);
+				}
+			}
+		}
 	}
 
 	/// A bonus line on a craftable block is an essence pump (craft from
@@ -731,9 +802,9 @@ mod tests {
 	/// they feed — here we only hold the catalog to the recipe table.
 	#[test]
 	fn pace_steps_and_the_catalog_are_pinned() {
-		assert_eq!(base_pace_ticks(1), 30);
-		assert_eq!(base_pace_ticks(25), 21);
-		assert_eq!(base_pace_ticks(75), 15);
+		assert_eq!(base_pace_ticks(1), 120);
+		assert_eq!(base_pace_ticks(25), 84);
+		assert_eq!(base_pace_ticks(45), 60);
 		// The display order is derived, so it can neither list something
 		// uncraftable nor miss something craftable — but it must still be
 		// a permutation, with nothing doubled by a grid cell claimed twice.
@@ -860,26 +931,28 @@ mod tests {
 	#[test]
 	fn pace_tracks_what_a_block_is_worth() {
 		use BlockType as B;
-		// Level 1 (a 30-tick whole block), across the value range.
+		// Level 1 (a whole block takes the full base interval), across
+		// the value range.
 		for (b, ticks) in [
-			(B::Stone, 30u32),  // the 9-XP reference itself
-			(B::Grass, 30),     //
-			(B::Rubble, 27),    // 8
-			(B::Sandstone, 23), // 7
-			(B::Dirt, 20),      // 6
-			(B::Water, 20),     // the bucket charge
-			(B::Gravel, 17),    // 5
-			(B::Sand, 13),      // 4
-			(B::Snow, 10),      // 3
-			(B::WoodSlab, 10),  // a slab third
-			(B::Leaves, 6),     // 1 XP — the floor, not 3 ticks
+			(B::Stone, 120u32), // the reference worth itself
+			(B::Grass, 120),    //
+			(B::Rubble, 107),   // worth 8
+			(B::Sandstone, 93), // 7
+			(B::Dirt, 80),      // 6
+			(B::Water, 80),     // the bucket charge
+			(B::Gravel, 67),    // 5
+			(B::Sand, 53),      // 4
+			(B::Snow, 40),      // 3
+			(B::WoodSlab, 40),  // a slab third
+			(B::Leaves, 6),     // half the slowdown, then the floor
+			(B::PineLeaves, 6), // — the whole foliage set, by the name
 		] {
 			assert_eq!(extract_pace_ticks(b, 1), ticks, "{b:?}");
 		}
 		// The level curve still applies on top, and pace never rises with
 		// level for any block.
-		assert_eq!(extract_pace_ticks(B::Stone, 25), 21);
-		assert_eq!(extract_pace_ticks(B::Stone, 75), 15);
+		assert_eq!(extract_pace_ticks(B::Stone, 25), 84);
+		assert_eq!(extract_pace_ticks(B::Stone, 45), 60);
 		for &b in &BlockType::ALL {
 			if !b.is_extractable() {
 				continue;
@@ -906,7 +979,7 @@ mod tests {
 		// The bucket's capacity is two whole blocks' worth, or one
 		// costliest op available at that level where that is more — see
 		// `the_bucket_can_always_afford_the_costliest_op`.
-		assert_eq!(bench_burst_ticks(1), 110.0);
+		assert_eq!(bench_burst_ticks(1), 440.0);
 		assert_eq!(
 			bench_burst_ticks(1),
 			extract_pace_ticks(BlockType::Aetherock, 1) as f32,
@@ -946,7 +1019,7 @@ mod tests {
 		for &b in &BlockType::ALL {
 			for level in 1..=crate::skills::MAX_LEVEL {
 				let burst = bench_burst_ticks(level);
-				if b.is_extractable() && crate::unlock::can_extract(b, level) {
+				if b.is_extractable() {
 					let cost = extract_pace_ticks(b, level) as f32;
 					assert!(
 						cost <= burst,
@@ -1151,9 +1224,9 @@ mod tests {
 	///   is a SINK and correctly contributes nothing here. Clean rock joins
 	///   it for the same reason and not by name: the world places Stone but
 	///   hands out Rubble, and Rubble is the source that counts.
-	/// - **Both walls apply**: the Mining level has to clear the strength
-	///   wall (and, for ore, the tier's own reveal), and the Alchemy level
-	///   the extract gate. A source you cannot reach is not a source.
+	/// - **The strength wall applies**: the Mining level has to clear it
+	///   (and, for ore, the tier's own reveal). A source you cannot reach
+	///   is not a source.
 	/// - **Only what a tier pays RELIABLY.** The Duskstone trace is a
 	///   chance, so it is not asked about — a price payable only if the
 	///   hash smiles is not payable.
@@ -1175,9 +1248,6 @@ mod tests {
 					}
 					let ore = crate::worldgen::ore::ORES.contains(&b);
 					if ore && crate::unlock::reveal(b).is_some_and(|r| r > level) {
-						return false;
-					}
-					if !ore && !crate::unlock::can_extract(b, level) {
 						return false;
 					}
 					extract_yields(b, level)

@@ -225,9 +225,10 @@ pub fn hotbar<Id: Copy + PartialEq>(
 			} => {
 				// Mid-handover the icon shrinks and fades; the SLOT
 				// itself doesn't move, so the exchange happens inside a
-				// bar that stays put.
+				// bar that stays put. A bare slot — no vessel crafted
+				// yet — draws the frame alone, with nothing in it.
 				icon_px *= present;
-				Some((tool_icon(tool, full), faded(FULL_TINT, present)))
+				tool.map(|t| (tool_icon(t, full), faded(FULL_TINT, present)))
 			}
 			SlotView::Block { block, .. } => Some(item_icon(HotbarItem::Block(block), false)),
 		};
@@ -274,7 +275,7 @@ pub fn tool_rail(
 	style: &super::widgets::Style,
 	size: (u32, u32),
 	owned: &[digblock_core::block::BlockType],
-	shown: digblock_core::block::BlockType,
+	shown: Option<digblock_core::block::BlockType>,
 	bucket_full: bool,
 	present: f32,
 ) {
@@ -301,7 +302,7 @@ pub fn tool_rail(
 	// off the edge.
 	// Squeeze the cells to fit, down to a floor where they can still be
 	// told apart, and then draw only what actually fits.
-	let n = owned.iter().filter(|&&t| t != shown).count();
+	let n = owned.iter().filter(|&&t| Some(t) != shown).count();
 	let room = (size.0 as f32 - start - SLOT_GAP * scale * 2.0).max(0.0);
 	let span = |c: f32, g: f32| n as f32 * c + (n as f32 - 1.0) * g;
 	let full = span(RAIL_CELL * scale, 6.0 * scale);
@@ -324,7 +325,7 @@ pub fn tool_rail(
 	// icon is at nothing — and no tool is ever in the slot and the rail
 	// at the same time.
 	let inset = cell * (1.0 - present) / 2.0;
-	for &tool in owned.iter().filter(|&&t| t != shown).take(fits) {
+	for &tool in owned.iter().filter(|&&t| Some(t) != shown).take(fits) {
 		let kind = tool_icon(tool, bucket_full);
 		let box_ = super::Rect::new(x, y, cell, cell);
 		// A faded slot, not a bare icon: these sit over open world, and
@@ -402,6 +403,45 @@ pub fn xp_toasts(
 	}
 }
 
+/// The background bench's tell (SKILLS-DESIGN §13.4): one quiet line
+/// above the bar's TOOL end while a job runs with the screen closed. The
+/// bench working out of sight must be visible somewhere, or the first
+/// background extraction reads as "my essence changed on its own" — and
+/// it sits over the tool slot rather than in the toasts' center lane, so
+/// an XP toast and the tell never fight for the same pixels.
+pub fn bench_tell(
+	dl: &mut super::DrawList,
+	style: &super::widgets::Style,
+	size: (u32, u32),
+	text: &str,
+) {
+	let scale = style.scale;
+	let px = style.glyph;
+	let line = crate::font::face(style.face).line_h(px);
+	let pad_x = super::scale::text_pad_x(scale);
+	let grid = row_grid(size, scale);
+	// Right-aligned to the DRAWN last slot — the tool slot, a split past
+	// the lattice — for the same reason the centring test measures it:
+	// the lattice's own right edge is not where the row ends.
+	let tool = bar_slot_rect(&grid, HOTBAR_SLOTS - 1, scale);
+	let w = style.measure(text) + 2.0 * pad_x;
+	let rect = super::Rect::new(
+		tool.x + tool.w - w,
+		grid.origin.1 - super::theme::GAP_ABOVE_BAR * scale - line,
+		w,
+		line,
+	);
+	dl.quad(Layer::Backdrop, rect, super::theme::FILL_BG);
+	dl.text(
+		Layer::Content,
+		rect.x + pad_x,
+		rect.y + (line - px) / 2.0,
+		px,
+		super::widgets::DIM,
+		text,
+	);
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -467,7 +507,12 @@ mod tests {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Dirt, 3);
 		inv.add(BlockType::Stone, 12);
-		HotbarView::build(&hotbar, &inv, &crate::hotbar::ToolSwap::default())
+		// A settled bucket in the slot, the way the engine's entry path
+		// settles it — these tests are about the drawn bar, not the
+		// fresh-player bare slot.
+		let mut swap = crate::hotbar::ToolSwap::default();
+		swap.advance(crate::hotbar::ToolSwap::SECS, Some(BlockType::Bucket));
+		HotbarView::build(&hotbar, &inv, &swap)
 	}
 
 	fn emit_at(size: (u32, u32), scale: f32) -> (DrawList, HitMap<usize>) {
@@ -560,7 +605,7 @@ mod tests {
 			for scale in [1.0f32, 1.5, 2.0, 2.5, 3.0] {
 				let mut dl = DrawList::default();
 				let style = Style::new(scale);
-				tool_rail(&mut dl, &style, size, &owned, B::Bucket, false, 1.0);
+				tool_rail(&mut dl, &style, size, &owned, Some(B::Bucket), false, 1.0);
 				// Horizontal extent of every mark the rail makes — flat
 				// quads, block icons, and the projected faces of a 3D one.
 				let spans = [Layer::Backdrop, Layer::Icons, Layer::Content, Layer::Ghost]

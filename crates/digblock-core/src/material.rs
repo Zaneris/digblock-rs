@@ -250,8 +250,11 @@ impl Material {
 			M::Glowvein => &[(E::Metal, 60), (E::Aether, 1)],
 			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
 			// Spent rock is spent: the siphon already took what was in it,
-			// and a tapped face that still paid at the bench would be a
-			// second helping of the same vein.
+			// and a tapped face that still paid a BASE at the bench would
+			// be a second helping of the same vein. The two deep tiers do
+			// carry a bonus line, which is a different thing — a trickle
+			// the top of the ladder earns, not a share of the seam, and
+			// the reason those two are extractable at all.
 			M::DepletedStone
 			| M::DepletedEmberore
 			| M::DepletedDuskstone
