@@ -38,7 +38,8 @@
 const SUN_STEPS = 12;
 
 // Cost-stub mirror (DIG_STUB; renderer.rs's `stub` module owns the names
-// and the bit numbers — water.wgsl and gi_resolve.wgsl are the others).
+// and the bit numbers — water.wgsl, gi_resolve.wgsl and confetti.wgsl
+// are the others).
 // One bit, because players compute exactly one term the resolve also
 // stubs: the NEE below must vanish with the resolve's under the same
 // knob, or an attribution run measures half of it.

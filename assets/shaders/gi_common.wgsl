@@ -1,6 +1,9 @@
 // Shared RTGI sampling core (GI-DESIGN.md), prepended by
-// digblock-assets to every FRAGMENT shader that gathers the probe
-// field directly: the GI resolve, water, and players. One definition
+// digblock-assets to every shader that gathers the probe field
+// directly: the GI resolve, water, players and the confetti. Not all of
+// them from the fragment stage — water gathers per vertex (R17) and the
+// confetti prices a whole flake there (R34), which is why group(2) is
+// bound VERTEX | FRAGMENT. One definition
 // is the point — the probe-relocation nudge, the occlusion rule, and
 // the cascade fallthrough must agree everywhere or lighting differs
 // between a surface and the water beside it. The probe COMPUTE kernel

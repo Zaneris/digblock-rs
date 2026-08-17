@@ -1039,14 +1039,16 @@ impl GiDraw {
 		});
 		// gi_common.wgsl's group(2): the GI world data plus the emitter
 		// list, everything a direct gatherer binds (the resolve here,
-		// water and players through their pipeline layouts). One per atlas
-		// ping. VERTEX visibility is for water's per-vertex probe gather
-		// (R17) — WebGPU baseline allows read-only storage and textures in
-		// the vertex stage, and the extra visibility costs the
-		// fragment-only users nothing. The lights buffer lives HERE rather
-		// than in the resolve's own group since R33, because players run
-		// the same `resample_light` the resolve does and the two must read
-		// one declaration.
+		// water, players and the confetti through their pipeline layouts).
+		// One per atlas ping. VERTEX visibility is for water's per-vertex
+		// probe gather (R17), which the confetti's per-flake direct term
+		// (R34) now rides too — WebGPU baseline allows read-only storage
+		// and textures in the vertex stage, and the extra visibility costs
+		// the fragment-only users nothing. The lights buffer lives HERE
+		// rather than in the resolve's own group since R33, because every
+		// consumer that answers for direct light reads it — the resolve's
+		// reservoir and the unfiltered passes' `sum_lights` alike — and
+		// they must read one declaration.
 		let g_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -2408,6 +2410,43 @@ mod tests {
 		assert_eq!(
 			LIGHT_QUAD & (255 | LIGHT_CARRIED | level | LIGHT_WHITENED),
 			0
+		);
+	}
+
+	/// Every estimator clamps the list's own header count to the buffer's
+	/// capacity, and that capacity is `MAX_LIGHTS` — the allocation
+	/// `flush_lights` selects into and truncates to. The shader cannot see
+	/// the Rust const, so raising one without the other silently discards
+	/// exactly the emitters the CPU took the trouble to keep: they sit in
+	/// the buffer, the header counts them, and every march walks past the
+	/// tail. This crate is the one that sees both sides.
+	///
+	/// The rule is checked as "no unclamped read" rather than against a
+	/// fixed number of loops, because R34 made a second estimator a second
+	/// copy of the clamp and there is nothing to stop a third.
+	#[test]
+	fn every_light_loop_clamps_to_the_lists_capacity() {
+		let src = digblock_assets::shader::GI_COMMON;
+		let clamp = "min(bitcast<u32>(lights[0].x), ";
+		let mut clamped = 0;
+		for tail in src.split(clamp).skip(1) {
+			let cap = tail.split("u)").next().expect("the clamp must close");
+			assert_eq!(
+				cap.parse::<usize>().ok(),
+				Some(MAX_LIGHTS),
+				"a light loop clamps to {cap}, not MAX_LIGHTS"
+			);
+			clamped += 1;
+		}
+		assert!(clamped > 0, "gi_common.wgsl declares no clamped light loop");
+		// A bare read is the failure this pin exists for, so the readers
+		// are counted rather than assumed to be the estimators. Matched on
+		// the bitcast the read needs, which the prose above them does not
+		// spell out.
+		assert_eq!(
+			src.matches("bitcast<u32>(lights[0].x)").count(),
+			clamped,
+			"a light loop reads the header count without clamping it"
 		);
 	}
 
