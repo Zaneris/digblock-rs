@@ -2,8 +2,9 @@
 
 Anyone can run a public DigBlock server — it appears automatically in the in-game server list (the master at
 master.digblock.net lists every server it can reach). No signup: your first registration claims your address and the key
-that proves it lands in `./data/master-key`, which later registrations present. Players sign in with Google or Facebook
-at the master; your server never sees their credentials, only the account id and display name the master vouches for.
+that proves it lands in `./data/master-key`, which later registrations present. Players sign in with Google, Facebook or
+Microsoft at the master; your server never sees their credentials, only the account id and display name the master
+vouches for.
 
 ## Quickstart
 

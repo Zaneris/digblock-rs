@@ -153,8 +153,8 @@ floating `1-slim` once broke a release). Bump the pins in `docker/Dockerfile*`, 
 
 Multiplayer is master-first with **no direct-connect path**: the .NET master (`apps/master`) owns accounts, lists
 servers, distributes cert pins, and mints one-time join tokens; a game server refuses any Hello it can't verify with the
-master. **Playing online needs an account** — Google or Facebook through the master, never a provider token in the
-client. Read `AUTH-DESIGN.md` before touching any of it.
+master. **Playing online needs an account** — Google, Facebook or Microsoft through the master, never a provider token
+in the client. Read `AUTH-DESIGN.md` before touching any of it.
 
 Display names are account-owned and globally unique, chosen once at sign-in and changeable on a cooldown (a
 length-bounded run of `a-z A-Z 0-9 - _`; canonical `validate_name` in `digblock-net/src/protocol.rs` owns both the
@@ -794,16 +794,17 @@ Workspace with eight crates, two thin app launchers, and a dedicated server. The
   connection), master HTTP client (`master.rs`), chunk store, append-only edit journal with boot compaction (terrain is
   never sent; join sync = seed + edits; old-version journals archive to `.vN.bak` — this destructive path is
   server-only).
-- **`apps/master`** — .NET 10 minimal API, not in the cargo workspace. Four first-party packages and no more: EF Core +
-  SQLite (accounts — the master's only durable state), its design-time tools, and the Google/Facebook auth handlers;
-  rate limiting needs none, it ships in the shared framework. In-memory registry + one-time token store beside the
-  database; verifies reachability with a mandatory QUIC probe pinned to the registered cert hash (no probe-off mode;
-  hosts without UDP egress or libmsquic fail at boot). The Rust e2e tests boot its real container. Never put `Urls` in
-  appsettings.json — it overrides `ASPNETCORE_URLS` and breaks the container bind. **EF Core turns SQLite's WAL on by
-  itself**, and WAL does not work over SMB, which is what the production volume is — `Data/JournalModeInterceptor.cs`
-  pins DELETE back unconditionally. Nothing above `Data/` may assume SQLite (no raw SQL, no SQLite-only types), so
-  `UseSqlite` is the one line that changes to move to Postgres. The HTTP contract in `Contracts.cs` is mirrored by
-  `apps/server/src/master.rs`, `apps/desktop/src/services.rs` and `apps/web/src/services.rs` — change all four together.
+- **`apps/master`** — .NET 10 minimal API, not in the cargo workspace. First-party packages only, and only these: EF
+  Core + SQLite (accounts — the master's only durable state), its design-time tools, and one auth handler per OAuth
+  provider (Google, Facebook, Microsoft); rate limiting needs none, it ships in the shared framework. In-memory
+  registry + one-time token store beside the database; verifies reachability with a mandatory QUIC probe pinned to the
+  registered cert hash (no probe-off mode; hosts without UDP egress or libmsquic fail at boot). The Rust e2e tests boot
+  its real container. Never put `Urls` in appsettings.json — it overrides `ASPNETCORE_URLS` and breaks the container
+  bind. **EF Core turns SQLite's WAL on by itself**, and WAL does not work over SMB, which is what the production volume
+  is — `Data/JournalModeInterceptor.cs` pins DELETE back unconditionally. Nothing above `Data/` may assume SQLite (no
+  raw SQL, no SQLite-only types), so `UseSqlite` is the one line that changes to move to Postgres. The HTTP contract in
+  `Contracts.cs` is mirrored by `apps/server/src/master.rs`, `apps/desktop/src/services.rs` and
+  `apps/web/src/services.rs` — change all four together.
 
 ### Multiplayer model
 

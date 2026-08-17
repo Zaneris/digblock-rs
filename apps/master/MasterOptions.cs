@@ -56,6 +56,7 @@ public sealed class AuthOptions
 {
     public ProviderOptions Google { get; set; } = new();
     public ProviderOptions Facebook { get; set; } = new();
+    public ProviderOptions Microsoft { get; set; } = new();
 
     /// <summary>EXTRA browser origins a sign-in may return to, on top of
     /// the ones built into <see cref="Auth.RedirectUris"/>.

@@ -157,7 +157,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// client-chosen and join tokens were free, so a stream of join/disconnect
 /// cycles evicted every real record (NET-AUDIT-2.md §1.5). That is closed
 /// upstream now rather than here — a record needs a master account, an
-/// account needs a real Google or Facebook login, and `/api/join` is
+/// account needs a real login at a third-party provider, and `/api/join` is
 /// rate-limited per session. The cap is back to being what it says it is.
 const MAX_IDENTITIES: usize = 10_000;
 

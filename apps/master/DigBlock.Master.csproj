@@ -16,8 +16,8 @@
     <Content Include="music/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- The master was BCL-only until accounts arrived. These four are the
-       whole dependency surface, and all of them are first-party:
+  <!-- The master was BCL-only until accounts arrived. These are the whole
+       dependency surface, and all of them are first-party:
 
        - EntityFrameworkCore.Sqlite — accounts are the master's first
          durable state. SQLite is the "for now" store; the point of going
@@ -25,16 +25,19 @@
          regenerated migration set, so nothing above Data/ may assume SQLite.
        - EntityFrameworkCore.Design — dev-time only (PrivateAssets), for
          `dotnet ef migrations`. It is deliberately NOT shipped.
-       - Authentication.Google / .Facebook — the OAuth handshake with the
-         providers. Hand-rolling the code exchange was considered and
-         declined: state, PKCE and nonce handling are exactly the parts
-         worth not reimplementing. See AUTH-DESIGN.md.
+       - Authentication.Google / .Facebook / .MicrosoftAccount — the OAuth
+         handshake with the providers, one package each. Hand-rolling the
+         code exchange was considered and declined: state, PKCE and nonce
+         handling are exactly the parts worth not reimplementing. That a
+         provider costs one package and one options block is the whole
+         reason the flow was built around handlers. See AUTH-DESIGN.md.
 
        Rate limiting needs no package — AddRateLimiter ships in the ASP.NET
        Core shared framework. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Facebook" Version="10.0.11" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Google" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.MicrosoftAccount" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
