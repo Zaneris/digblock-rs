@@ -353,13 +353,20 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // chokepoints and the offline engine.
 
 /// Mining XP for a completed dig of `block`, scaled down from its hardness.
-/// Zero for the undiggable (which can't complete a dig anyway). The FLAT
-/// award — where the dig happened is [`depth_xp_permille`]'s business, and
-/// [`dig_award`] is what puts the two together.
+/// Zero for the undiggable (which can't complete a dig anyway) — and zero,
+/// BY NAME, for foliage and the torch: a trivial break is housekeeping,
+/// not mining, and the scale-down alone cannot say so, because its
+/// rounding hands even the softest block a whole point. The FLAT award —
+/// where the dig happened is [`depth_xp_permille`]'s business, and
+/// [`dig_award`] is what puts the two together (its cap is what keeps a
+/// zero-worth block's swing cells at zero too).
 pub fn dig_xp(block: BlockType) -> u64 {
-	match block.hardness_ticks() {
-		Some(h) => u64::from(h).div_ceil(12),
-		None => 0,
+	match block {
+		BlockType::Leaves | BlockType::PineLeaves | BlockType::Torch => 0,
+		_ => match block.hardness_ticks() {
+			Some(h) => u64::from(h).div_ceil(24),
+			None => 0,
+		},
 	}
 }
 
@@ -859,20 +866,25 @@ mod tests {
 	fn dig_xp_follows_the_hardness_table() {
 		use BlockType as B;
 		for (block, xp) in [
-			(B::Leaves, 1u64),
-			(B::Snow, 2),
-			(B::Sand, 3),
-			(B::Dirt, 3),
-			(B::Grass, 3),
-			(B::Gravel, 4),
-			(B::Wood, 5),
-			(B::Sandstone, 6),
-			(B::Stone, 8),
-			(B::WoodSlab, 2), // a slab third pays per completed hold
+			(B::Snow, 1u64),
+			(B::Sand, 2),
+			(B::Dirt, 2),
+			(B::Grass, 2),
+			(B::Gravel, 2),
+			(B::Wood, 3),
+			(B::Sandstone, 3),
+			(B::Stone, 4),
+			(B::WoodSlab, 1), // a slab third pays per completed hold
 		] {
 			assert_eq!(dig_xp(block), xp, "{block:?}");
 		}
 		assert_eq!(dig_xp(B::Air), 0, "undiggable pays nothing");
+		// Foliage and the torch pay nothing at all — named in `dig_xp`,
+		// because the hardness scale-down alone rounds even the softest
+		// block up to a point.
+		for b in [B::Leaves, B::PineLeaves, B::Torch] {
+			assert_eq!(dig_xp(b), 0, "{b:?} is housekeeping, not mining");
+		}
 	}
 
 	/// Every block a player can dig, at both ends of the ramp — the
@@ -919,6 +931,15 @@ mod tests {
 		let y = DEPTH_XP_FROM;
 		for b in diggables() {
 			let full = dig_xp(b);
+			// A block worth nothing stays worth nothing however wide the
+			// swing — the cap in `dig_award` is what holds the floor at
+			// zero here, and this is the pin on that.
+			if full == 0 {
+				for broken in [1u32, 3, 9] {
+					assert_eq!(dig_award(b, None, broken, y).0, 0, "{b:?} swing");
+				}
+				continue;
+			}
 			assert_eq!(dig_award(b, None, 1, y).0, full, "{b:?} aimed cell");
 			let mut prev = full;
 			for broken in 2..=9u32 {
@@ -938,8 +959,8 @@ mod tests {
 		// The golden: a stone plane at the pick's widest reach, against what
 		// those same nine blocks pay as nine separate holds.
 		let stone = BlockType::Stone;
-		assert_eq!(dig_award(stone, None, 9, y).0, 21);
-		assert_eq!(dig_xp(stone) * 9, 72);
+		assert_eq!(dig_award(stone, None, 9, y).0, 12);
+		assert_eq!(dig_xp(stone) * 9, 36);
 	}
 
 	/// The ceiling lands on the deepest cell a dig can REACH, not on
@@ -985,6 +1006,14 @@ mod tests {
 		for b in diggables() {
 			let (top, _) = dig_award(b, None, 1, DEPTH_XP_FROM);
 			let (bottom, _) = dig_award(b, None, 1, DEPTH_XP_TO);
+			// The zeroed blocks are the one exemption, and depth must NOT
+			// move them: a multiplier that conjured a point out of a
+			// zero-worth break would be depth creating XP the table says
+			// does not exist.
+			if dig_xp(b) == 0 {
+				assert_eq!((top, bottom), (0, 0), "{b:?} moved off zero");
+				continue;
+			}
 			assert!(
 				bottom > top,
 				"{b:?} pays {top} at the top and {bottom} at the bottom"

@@ -1181,9 +1181,10 @@ that the climb will keep paying.
 Progression is currently faster than intended, and compression packs more into fewer levels. The standing rules:
 
 - **The curve is frozen** (§12's steepness question, resolved). Pacing levers, in preference order: the award tables
-  (`dig_xp`, `extract_worth`/`convert_xp`, `ore_field_xp` — a dig already pays half what it first did), the depth
-  multiplier's ceiling, `PICK_EXTRA_PERMILLE`, and the bench pace (a slower bench is slower Alchemy XP/hour without
-  touching an award). All award-side: they slow future earning and deflate nobody.
+  (`dig_xp`, `extract_worth`/`convert_xp`, `ore_field_xp` — `dig_xp`'s scale-down has now been halved twice, with
+  foliage and the torch zeroed by name, while the field table deliberately held still), the depth multiplier's ceiling,
+  `PICK_EXTRA_PERMILLE`, and the bench pace (a slower bench is slower Alchemy XP/hour without touching an award). All
+  award-side: they slow future earning and deflate nobody.
 - **Design to time budgets, then measure.** Intended bands: the first reveal inside the first session; the siphon
   shortly after; the pick a multi-session goal; the content top a long-haul goal measured in weeks; the plane and the
   sigil in months. These are claims about hours, so they are testable.
