@@ -42,6 +42,12 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// own timeout in `master.rs`, since this also covers spawn_blocking queueing.
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a broken stream waits for the CONNECTION to account for the
+/// same ending. See [`peer_reason`] — this only ever elapses when the
+/// connection is genuinely still up, and it delays the sim hearing about
+/// the departure by exactly that much, so it stays short.
+const CLOSE_REASON_WAIT: Duration = Duration::from_millis(500);
+
 /// Inbound throttling window. When a budget is exhausted the server stops
 /// reading (reliable) or drops without decoding (datagrams) until the
 /// window rolls; QUIC flow control backpressures the sender naturally.
@@ -277,29 +283,61 @@ pub async fn serve(
 				);
 			};
 			log::info!("conn {conn_id}: {}", conn.remote_address());
-			handle_connection(conn, conn_id, &events, &master).await;
+			let why = handle_connection(conn, conn_id, &events, &master).await;
 			let _ = events.send(SimEvent::Disconnected { conn_id });
-			log::info!("conn {conn_id}: closed");
+			match why {
+				Some(why) => log::info!("conn {conn_id}: closed ({why})"),
+				// Refused or failed in the lobby, which logged its own
+				// reason on the way past.
+				None => log::info!("conn {conn_id}: closed"),
+			}
 		});
 	}
 }
 
+/// `Some(reason)` = an admitted connection ended, in the words its one
+/// closing log line wants; `None` = it never got past the lobby, which
+/// said why on its own way out.
 async fn handle_connection(
 	conn: Connection,
 	conn_id: u64,
 	events: &Sender<SimEvent>,
 	master: &MasterState,
-) {
+) -> Option<String> {
 	// Everything up to the sim hearing about this connection runs under one
 	// deadline. The individual reads have their own, tighter ones; this
 	// covers the steps BETWEEN them — the control-stream accept, our own
 	// preamble write, and the master verify — none of which were bounded.
 	match tokio::time::timeout(LOBBY_TIMEOUT, lobby(&conn, conn_id, events, master)).await {
 		Ok(Some((send, recv, buf, frames, out_rx))) => {
-			serve_connection(conn, conn_id, events, send, recv, buf, frames, out_rx).await;
+			Some(serve_connection(conn, conn_id, events, send, recv, buf, frames, out_rx).await)
 		}
-		Ok(None) => {}
-		Err(_) => log::warn!("conn {conn_id}: lobby timeout"),
+		Ok(None) => None,
+		Err(_) => {
+			log::warn!("conn {conn_id}: lobby timeout");
+			None
+		}
+	}
+}
+
+/// A stream-shaped ending, resolved to the CONNECTION's own account of it.
+///
+/// wtransport's stream errors carry nothing worth reading — `not
+/// connected` is the whole of what one says — while the connection knows
+/// whether it timed out, was closed by the peer and with what code, or
+/// died of a protocol error. That is also the exact half of the story a
+/// browser cannot tell: a `WebTransportError` sourced at the session
+/// carries an empty message by the spec, so on a phone the server's copy
+/// is the only copy there is.
+///
+/// Bounded, because a stream can fail on a connection that is still up (a
+/// peer that reset just this one), and this wait sits in front of the sim
+/// hearing about the departure — which is what frees the account to
+/// reconnect.
+async fn peer_reason(conn: &Connection, what: &str) -> String {
+	match tokio::time::timeout(CLOSE_REASON_WAIT, conn.closed()).await {
+		Ok(e) => format!("{what}; {e}"),
+		Err(_) => format!("{what}; connection still up"),
 	}
 }
 
@@ -451,6 +489,14 @@ async fn lobby(
 /// The admitted connection's pump: inbound frames/datagrams to the sim,
 /// outbound messages to the peer. No overall deadline here — a joined
 /// player is expected to stay for hours; liveness is QUIC's idle timeout.
+///
+/// Returns why it stopped. Every exit hands back its own words, because
+/// they used to be indistinguishable: all but one broke out silently and
+/// that one logged at `debug`, so `conn N: closed` was the entire
+/// server-side record of a kick, a goodbye, a peer that stopped reading,
+/// an idle timeout and a wire that went away. Which of those it was is
+/// the first question asked of any disconnect report, and the server is
+/// routinely the only side that can answer it.
 #[allow(clippy::too_many_arguments)]
 async fn serve_connection(
 	conn: Connection,
@@ -461,7 +507,7 @@ async fn serve_connection(
 	mut buf: Vec<u8>,
 	mut frames: FrameReader,
 	mut out_rx: tokio::sync::mpsc::Receiver<OutMsg>,
-) {
+) -> String {
 	let mut window = tokio::time::Instant::now();
 	let mut msg_budget = MSG_BUDGET;
 	let mut dgram_budget = DGRAM_BUDGET;
@@ -483,10 +529,7 @@ async fn serve_connection(
 					}
 				}
 				Ok(None) => break,
-				Err(e) => {
-					log::warn!("conn {conn_id}: stream corrupt: {e}");
-					return;
-				}
+				Err(e) => return format!("stream corrupt: {e}"),
 			}
 		}
 		tokio::select! {
@@ -496,11 +539,15 @@ async fn serve_connection(
 					let _ = conn.send_datagram(bytes);
 				}
 				Some(OutMsg::Frame(bytes)) => {
-					if send.write_all(&bytes).await.is_err() {
-						break;
+					if let Err(e) = send.write_all(&bytes).await {
+						break peer_reason(&conn, &format!("control stream write: {e}")).await;
 					}
 				}
-				Some(OutMsg::Close) | None => break,
+				// The two endings the SERVER chose: a kick or a ban (`Close`),
+				// and the sim letting the client's sender go, which is what a
+				// reap and an ordinary goodbye both come out as.
+				Some(OutMsg::Close) => break "closed by the server".into(),
+				None => break "released by the sim".into(),
 			},
 			dgram = conn.receive_datagram() => match dgram {
 				Ok(d) => {
@@ -512,16 +559,18 @@ async fn serve_connection(
 						}
 					}
 				}
-				Err(e) => {
-					log::debug!("conn {conn_id}: {e}");
-					break;
-				}
+				// Already the connection's own error, so it needs no lookup.
+				Err(e) => break e.to_string(),
 			},
 			// Reliable reads pause while the frame budget is exhausted —
 			// QUIC flow control then backpressures the sender.
 			read = recv.read(&mut buf), if msg_budget > 0 => match read {
 				Ok(Some(n)) => frames.extend(&buf[..n]),
-				Ok(None) | Err(_) => break,
+				// A clean FIN is the whole story and asks the connection
+				// nothing: it is a page closing its writer on the way out,
+				// with the session still up behind it.
+				Ok(None) => break "control stream finished by peer".into(),
+				Err(e) => break peer_reason(&conn, &format!("control stream read: {e}")).await,
 			},
 			_ = tokio::time::sleep_until(window + THROTTLE_WINDOW) => {
 				window = tokio::time::Instant::now();

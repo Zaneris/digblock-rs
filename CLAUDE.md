@@ -195,9 +195,12 @@ needs `Master__Probe__AllowPrivateTargets` (the SSRF filter refuses non-public a
 `Master__Dev__ProbeHostOverride=host.docker.internal` (the master redirects its OWN probes; this replaced the
 registrant-supplied `probeHost`, which let a caller name the only address anyone verified). The justfile's
 `DEV_MASTER_ENV` is the one copy of all three. If a client times out against the docker stack, read the server
-container's logs before blaming the network: a server dead at boot looks identical. Extra windows:
-`just
-run -- --master-url http://127.0.0.1:5200`, add `--join --dev-signin <subject>` for scripted flows.
+container's logs before blaming the network: a server dead at boot looks identical. **The server's `conn N: closed` line
+names why**, and it is usually the only side that can: a browser's `WebTransportError` carries an empty message when the
+session itself failed, so a phone reports nothing but the type name while the server still knows whether it was a kick,
+a goodbye, an idle timeout or a wire that went away. Extra windows: `just
+run -- --master-url http://127.0.0.1:5200`,
+add `--join --dev-signin <subject>` for scripted flows.
 
 ### Capture, bench & metrics flags
 
