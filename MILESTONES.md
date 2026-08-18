@@ -51,8 +51,15 @@ while bench extraction still pays would open a craft-cheap/extract-full matter p
       matter, screen affordability/shortfall names feedstock; server/screen tests scaled to batches
 - [x] **3.4 Gate** — clippy + fmt + full non-Docker test sweep green
 
-## Stage 4 — identity, docs, captures (placeholder)
+## Stage 4 — identity, docs, captures
 
-- [ ] Essence display renames (all five, Metal included), SKILLS-DESIGN §14 + CLAUDE.md rewrite, `DIG_NODE` capture
-      scenes, balance instrumentation notes
-- [ ] Gate: `just check` + `just check-ios` + `just check-web`
+- [x] **4.1 Reagent identities** — display renames (VITAE / TERRA / UNDA / FERRUM / AETHER, indices frozen), teasers
+      re-pinned, `/give` vocabulary follows by construction
+- [x] **4.2 Captures** — `DIG_NODE=<heartwood|leystone|springstone>` scenes (ore chamber generalized; surface scenes
+      write nothing); smoke-captured headlessly: heartwood trunk, springstone bed, and the reworked transmute page all
+      photograph correctly
+- [x] **4.3 Docs** — SKILLS-DESIGN §14 (the redesign: what landed, what it supersedes, open ends), CLAUDE.md
+      economy/nodes/grid/tools/unlock rewrite, stale extraction comments swept from code
+- [x] **4.4 Gate** — fmt + clippy + full non-Docker test sweep + `just check-ios` + check-web's wasm clippy green;
+      `just check-md` green. NOT run here: the server e2e suite (Docker isn't running on this machine) and the Chrome
+      shader check (no WGSL changed in the entire redesign)
