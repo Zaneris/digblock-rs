@@ -400,7 +400,7 @@ fn run_bot(
 									.is_none()
 							{
 								let hardness = hit.block.dig_hardness(hit.cell.1).unwrap();
-								client.send_dig_start(hit.cell);
+								client.send_dig_start(hit.cell, 0);
 								// Family-scaled hold (bots assume they are
 								// unskilled — a leveled-up bot just
 								// over-holds), plus a margin over the

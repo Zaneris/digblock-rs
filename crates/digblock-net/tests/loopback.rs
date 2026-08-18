@@ -636,12 +636,15 @@ fn dig_start_and_cancel_reach_the_wire() {
 	let mut server = Stub::new(b);
 	let mut events = Vec::new();
 	client.poll(&mut events, 0.016);
-	client.send_dig_start((3, 9, -4));
+	client.send_dig_start((3, 9, -4), 8);
 	client.send_dig_cancel();
 	server.pump();
 	assert_matches!(
 		server.client_msgs.get(1),
-		Some(ClientMsg::DigStart { cell: [3, 9, -4] })
+		Some(ClientMsg::DigStart {
+			cell: [3, 9, -4],
+			slot: 8
+		})
 	);
 	assert_matches!(server.client_msgs.get(2), Some(ClientMsg::DigCancel));
 }

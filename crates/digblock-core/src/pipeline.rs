@@ -172,18 +172,30 @@ pub struct Pipeline {
 	deferred_count: usize,
 	/// Every cell this world has ever written, local or authoritative.
 	///
-	/// Two jobs, and they used to be one: re-applying edits onto a column
-	/// that regenerated (single-player only — the server's journal owns a
-	/// multiplayer world, so `reapply` is false there), and answering
-	/// "has this cell been touched?" for the ORE reveal, which BOTH modes
-	/// need. Multiplayer had no map at all, and without one a player's own
-	/// underground stone wall sprouts phantom veins the server does not
-	/// agree exist. So the map is always kept; only re-application is
-	/// conditional.
+	/// Three jobs. **Re-applying** edits onto a column that regenerated,
+	/// which is what makes hard eviction safe; **answering "has this cell
+	/// been touched?"** for the ORE reveal; and, locally, **reporting**
+	/// what to persist. All three run in multiplayer except the last —
+	/// what differs is only where the map comes from, since `set_cell`
+	/// stops recording there (`record_local`) and `apply_authoritative`
+	/// takes over, so the map holds the JOURNAL rather than this client's
+	/// guesses.
+	///
+	/// Re-application used to be local-only, and that was the hole behind
+	/// "I came back and the chunk was pristine again". A multiplayer
+	/// column that hard-evicts loses its cells, and the only thing that
+	/// could put them back was the server noticing and re-sending —
+	/// which it does not, because it prunes a client's synced set on a
+	/// radius of its own that is WIDER than the client's residency. The
+	/// map is the client's own copy of everything it was ever told, so
+	/// re-applying it needs no round trip and cannot be lost.
 	edits: crate::overlay::EditOverlay,
-	/// Re-apply `edits` onto a regenerating column, and report them for
-	/// persistence. False in multiplayer.
-	reapply: bool,
+	/// Record local writes into `edits` and report them for persistence:
+	/// the single-player save path. False in multiplayer, where a local
+	/// write is a PREDICTION and `apply_authoritative` records the
+	/// server's answer instead — recording a guess is unfixable, since a
+	/// rejection reverts through `set_cell` and `record` is insert-only.
+	record_local: bool,
 	/// The looker's Mining level, which decides which ore tiers the mesh
 	/// stamp reveals (SKILLS-DESIGN §5.3). Crossing a threshold re-meshes
 	/// everything resident — see [`Pipeline::set_mining_level`].
@@ -607,7 +619,7 @@ impl Pipeline {
 			center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			deferred_edits: FxHashMap::default(),
 			deferred_count: 0,
-			reapply: overlay.is_some(),
+			record_local: overlay.is_some(),
 			edits: overlay.unwrap_or_default(),
 			mining_level: 0,
 			recorded: Vec::new(),
@@ -627,11 +639,13 @@ impl Pipeline {
 		std::mem::take(&mut self.recorded)
 	}
 
-	/// The persistent edit overlay, when this world re-applies one — the
-	/// single-player save path. Multiplayer still KEEPS the map (the ore
-	/// reveal reads it); it simply has no store to hand it to.
+	/// The persistent edit overlay, when this world OWNS one — the
+	/// single-player save path. Multiplayer keeps and re-applies the same
+	/// map (the ore reveal reads it, and eviction would otherwise lose
+	/// the server's edits), but it is a mirror of somebody else's
+	/// journal, so there is nothing here to hand a store.
 	pub fn overlay(&self) -> Option<&crate::overlay::EditOverlay> {
-		self.reapply.then_some(&self.edits)
+		self.record_local.then_some(&self.edits)
 	}
 
 	/// Set the Mining level the ore reveal stamps at, returning true when
@@ -1012,9 +1026,16 @@ impl Pipeline {
 					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
 					// rather than mutating it (refcount > 1), mirroring the
 					// server's `ChunkStore::drain` overlay.
-					if self.reapply
-						&& let Some(cells) = self.edits.column(x, z)
-					{
+					//
+					// Multiplayer included, and deliberately: the map there
+					// is this client's mirror of the server's journal, so
+					// re-applying it restores exactly the cells the server
+					// already told us about. Without it a column that
+					// hard-evicted came back as pristine worldgen and
+					// STAYED that way, because `apply_authoritative` drops
+					// a cell from `deferred_edits` the moment it lands and
+					// the server has no reason to send it twice.
+					if let Some(cells) = self.edits.column(x, z) {
 						for (&(wx, wy, wz), &cell) in cells {
 							let Some(((_, cy, _), (lx, ly, lz))) =
 								crate::chunk::split_world(wx, wy, wz)
@@ -1688,7 +1709,7 @@ impl Pipeline {
 		// the refusal, the cell became permanently un-minable. Every
 		// rejection reason reaches here: Protected, InsidePlayer, Occluded,
 		// DigIncomplete, or a cell simply dropped by the rate limiter.
-		if self.reapply {
+		if self.record_local {
 			self.edits.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));
 		}
@@ -2524,6 +2545,59 @@ mod tests {
 		assert_eq!(p.block_at(8, 8, 8), Some(new), "edit survived eviction");
 		// Regeneration re-applies the overlay but records nothing new.
 		assert!(p.take_recorded_edits().is_empty());
+	}
+
+	/// The multiplayer half of the same guarantee, and the reason it is
+	/// its own test: a client with NO overlay installed still keeps a
+	/// mirror of everything the server told it, and still re-applies it.
+	///
+	/// This is the bug behind "I walked back and the chunk was pristine
+	/// again". Nothing else can put those cells back — `apply_authoritative`
+	/// drops a cell from `deferred_edits` the moment it lands, and the
+	/// server prunes its own record of what a client has synced on a
+	/// radius WIDER than the client's residency, so re-entry gets no
+	/// resend. A local write is still not recorded here, which is what
+	/// keeps a rejected prediction from marking a cell edited forever.
+	#[test]
+	fn authoritative_edits_survive_evict_and_regen_without_an_overlay() {
+		let mut p = Pipeline::new(0.0, 4, 2);
+		let center = ChunkPos::new(0, 0, 0);
+		quiesce(&mut p, center);
+
+		let old = p.block_at(8, 8, 8).expect("chunk ready");
+		let new = if old == BlockType::Stone {
+			BlockType::Dirt
+		} else {
+			BlockType::Stone
+		};
+		assert_eq!(
+			p.apply_authoritative(8, 8, 8, new as u16),
+			ApplyEdit::Applied
+		);
+		// A PREDICTION is still not recorded: only the server's answer is.
+		let beside = p.block_at(9, 8, 8).expect("chunk ready");
+		let guess = if beside == BlockType::Sand {
+			BlockType::Gravel
+		} else {
+			BlockType::Sand
+		};
+		p.set_block(9, 8, 8, guess).expect("prediction lands");
+		assert!(p.take_recorded_edits().is_empty(), "no local save path");
+
+		let far = ChunkPos::new(40, 0, 0);
+		quiesce(&mut p, far);
+		assert!(p.block_at(8, 8, 8).is_none(), "column evicted");
+		quiesce(&mut p, center);
+		assert_eq!(
+			p.block_at(8, 8, 8),
+			Some(new),
+			"the server's edit survived eviction"
+		);
+		assert_eq!(
+			p.block_at(9, 8, 8),
+			Some(beside),
+			"the prediction did not: the server never confirmed it"
+		);
 	}
 
 	/// An overlay passed at construction lands in the very first

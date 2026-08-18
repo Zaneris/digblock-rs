@@ -802,6 +802,16 @@ pub struct Engine {
 	/// re-opening a hold the server just refused, which would re-send
 	/// `DigStart` every frame for as long as the button was down.
 	refused_cell: Option<(i32, i32, i32)>,
+	/// Cell a siphon draw just emptied, held until the button comes up.
+	///
+	/// A draw leaves the mountain standing — the cell turns to the tier's
+	/// spent rock — so the very next tick the same hold is aimed at an
+	/// ordinary block and used to roll straight on into quarrying it. Two
+	/// actions on one press, and the second one destroys the trophy the
+	/// first one earned. Drawing the NEXT seam still needs no release,
+	/// because the latch names one cell and an extraction is never
+	/// refused by it.
+	drawn_cell: Option<(i32, i32, i32)>,
 	click_place: bool,
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
@@ -2275,6 +2285,7 @@ impl Engine {
 			look_accum: (0.0, 0.0),
 			dig_held: false,
 			refused_cell: None,
+			drawn_cell: None,
 			click_place: false,
 			dig: None,
 			dig_accum: 0.0,
@@ -2909,6 +2920,7 @@ impl Engine {
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.
 		self.refused_cell = None;
+		self.drawn_cell = None;
 		// Confetti is thrown at a world position; a new world has none of
 		// them left hanging in the air. Same for the essence draw, which
 		// names a cell in the world just left.
@@ -3848,7 +3860,10 @@ impl Engine {
 		}
 		self.pending.gi_ms = ms_since(t_gi);
 		// Overlay-restored water resumes flowing (the client twin of the
-		// sim's ReadyColumn handling); server worlds have no overlay.
+		// sim's ReadyColumn handling). A server world restores the same
+		// cells — the overlay is re-applied there too — but its fluid is
+		// the server's, and relaxing it here would predict a flow nobody
+		// asked us to.
 		if self.net.is_none() {
 			for &(x, y, z) in &m.overlaid_water {
 				self.fluid.schedule_around(x, y, z);
@@ -3965,9 +3980,11 @@ impl Engine {
 	}
 
 	/// True while the water tool is the selected hotbar item.
+	/// `tool_in_hand` asks both halves at once — the slot is selected AND
+	/// the tool in it is the bucket — which is the same predicate every
+	/// other tool gate now reads.
 	fn water_tool_selected(&self) -> bool {
-		self.hotbar.selected_item() == Some(HotbarItem::WaterTool)
-			&& self.hotbar.active_tool() == Some(BlockType::Bucket)
+		self.hotbar.tool_in_hand() == BlockType::Bucket
 	}
 
 	/// The owned tool roster in deterministic block-id order: the
@@ -4092,7 +4109,11 @@ impl Engine {
 	/// derived from the ray, never chosen: the server re-raycasts and
 	/// runs the same `pick::cells` over its own world.
 	fn pick_plane(&self, hit: &RayHit) -> Vec<(i32, i32, i32)> {
-		if self.hotbar.active_tool() != Some(BlockType::ResonantPick) {
+		// `tool_in_hand`, not `active_tool`: the plane belongs to the pick
+		// being SWUNG. The hold multiplier reads the same answer, so a
+		// block dug with dirt in hand can never be priced as a pick swing
+		// and broken as a bare one.
+		if self.hotbar.tool_in_hand() != BlockType::ResonantPick {
 			return Vec::new();
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
@@ -4188,6 +4209,10 @@ impl Engine {
 		// A charged bucket has no left-click action at all — not even the
 		// "you can't dig that" complaint below, which belongs to a dig.
 		if !self.dig_active() || (self.water_tool_selected() && !self.scoop_ready()) {
+			// The button coming up is what arms the drawn cell again: the
+			// latch exists to break ONE press into two, so it can only be
+			// cleared by the press ending.
+			self.drawn_cell = None;
 			self.release_dig();
 			return;
 		}
@@ -4221,6 +4246,15 @@ impl Engine {
 			self.release_dig();
 			return;
 		};
+		// The seam this press already drew: the spent rock standing where
+		// it was is not what the player was aiming at, so this press does
+		// not get to break it too. Aiming off it and back re-arms nothing
+		// — only the button coming up does — but any OTHER cell, seam or
+		// stone, digs from here as it always did.
+		if self.drawn_cell == Some(hit.cell) {
+			self.release_dig();
+			return;
+		}
 		// Three cases, and only the first advances a tick this step: an
 		// already-live hold on this exact cell, a DECAYING one on it
 		// (resumed, inheriting whatever the decay left), or a fresh one.
@@ -4269,10 +4303,14 @@ impl Engine {
 				required,
 				idle: 0,
 			});
+			// The hand this hold is made with rides along: the server's
+			// tool gates read it, and the input path that otherwise
+			// carries the selection is jitter-buffered behind this frame.
+			let slot = self.hotbar.selected_index() as u8;
 			if let Some(net) = self.net.as_mut()
 				&& net.ready()
 			{
-				net.send_dig_start(hit.cell);
+				net.send_dig_start(hit.cell, slot);
 			}
 			// A scoop is a swing, not a mining hold: one stroke, no
 			// grinding loop. (Water has no sound material of its own, so
@@ -4466,6 +4504,13 @@ impl Engine {
 		{
 			s.progress = 1.0;
 			s.envelope = crate::siphon::FLARE;
+		}
+		// And the cell is latched until the button comes up. A draw is one
+		// action; the spent rock it leaves is another, and a press that
+		// rolled from the first into the second quarried away the trophy
+		// on the same hold that earned it.
+		if extracting.is_some() {
+			self.drawn_cell = Some(hit.cell);
 		}
 		// A filled bucket splashes; everything else ends the way its hold
 		// began, through the pair `audio::dig_voice` owns — a drawn seam
@@ -8136,6 +8181,41 @@ mod dig_decay_tests {
 		release(&mut engine, DIG_DECAY_TICKS);
 		assert!(engine.dig.is_none(), "a spent hold is dropped");
 		assert_eq!(web(&engine), None, "and the block outlines unbroken");
+	}
+
+	/// A siphon draw ENDS the press that made it. The cell it emptied now
+	/// holds the tier's spent rock, and quarrying that is a second action
+	/// — one the same press used to roll straight into, destroying the
+	/// trophy on the hold that earned it. The latch names one cell, so a
+	/// seam next to it still draws without letting go, and only the button
+	/// coming up re-arms the drawn one.
+	#[test]
+	fn a_drawn_cell_needs_a_fresh_press_before_it_breaks() {
+		let (mut engine, cell) = block_ahead(BlockType::Dirt);
+		engine.update_target();
+		assert_eq!(engine.target.map(|h| h.cell), Some(cell), "aimed at it");
+
+		// What `complete_dig` leaves behind after a draw.
+		engine.drawn_cell = Some(cell);
+		hold(&mut engine, 4);
+		assert!(engine.dig.is_none(), "the same press cannot break it");
+		assert_eq!(web(&engine), None, "and nothing cracks");
+
+		// Aiming away and back is NOT a release — the latch is about the
+		// press, not the aim.
+		engine.dig_held = false;
+		engine.drawn_cell = Some(cell);
+		hold(&mut engine, 1);
+		assert!(engine.dig.is_none(), "still latched");
+
+		// The button coming up re-arms it, and the next press digs.
+		release(&mut engine, 1);
+		assert_eq!(engine.drawn_cell, None, "the release re-arms the cell");
+		hold(&mut engine, 2);
+		assert!(
+			engine.dig.is_some(),
+			"a fresh press opens a hold on the spent rock"
+		);
 	}
 
 	/// The conditional rock rule, client half: a stone standing in a cell

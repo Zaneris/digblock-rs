@@ -188,4 +188,18 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// a v18 peer credits rubble where the new server credits the wall — and
 /// its pick's plane picks a different set, since the extras filter now
 /// matches on the credit rather than the block id.
-pub const SIM_VERSION: u16 = 19;
+/// v20: two changes, both to questions the two ends answer separately.
+/// **A tool only counts while the hand is ON it** (`Hotbar::tool_in_hand`).
+/// Holding a tool was two facts — which one the tool slot holds, and
+/// whether that slot is selected — and everything but the bucket asked
+/// only the first, so a player with dirt in hand drew veins with the
+/// siphon and paid the Resonant Pick's hold multiplier while breaking its
+/// plane. Both `ore::dig_mode` and `skills::dig_required_with` take the
+/// answer, so a v19 peer calls a dig an extraction where the new server
+/// calls it a dig, and times it by a multiplier the server never applied.
+/// **And the dig curve is slower at both ends** (SKILLS-DESIGN §5.1), the
+/// mastery endpoint by more than the opening — the shape, the taper and
+/// the sampling grid are untouched, but every family's two endpoints
+/// moved, so a v19 peer's completions arrive early against a v20 server
+/// at every level.
+pub const SIM_VERSION: u16 = 20;

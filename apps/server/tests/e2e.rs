@@ -494,7 +494,7 @@ impl TestClient {
 			self.pump();
 			std::thread::sleep(Duration::from_millis(16));
 		}
-		self.client.send_dig_start(hit.cell);
+		self.client.send_dig_start(hit.cell, 0);
 		let hold = digblock_core::skills::dig_required(
 			hit.block,
 			hit.block.hardness_ticks().expect("diggable target"),

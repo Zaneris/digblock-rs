@@ -235,6 +235,16 @@ pub enum ClientMsg {
 	/// the hold). Replaces any prior hold for this client.
 	DigStart {
 		cell: [i32; 3],
+		/// The hotbar slot the hold is being made with, for the same
+		/// reason [`ClientMsg::EditRequest::slot`] carries one: this
+		/// rides the reliable stream while the selection otherwise
+		/// reaches the server on the jitter-buffered input path, so a
+		/// player who picks up the siphon and immediately holds on a
+		/// vein would be refused `NeedsTool` for the buffer's depth.
+		/// Appended in v27, which is why the floor moved with it — a
+		/// decoder expecting this byte runs off the end of an older
+		/// peer's frame.
+		slot: u8,
 	},
 	/// Hold released or retargeted before completing. Hygiene only — the
 	/// server also self-resets via its per-tick aim check.
@@ -595,7 +605,10 @@ mod tests {
 				slot: 8,
 			},
 			ClientMsg::Bye,
-			ClientMsg::DigStart { cell: [1, 138, -3] },
+			ClientMsg::DigStart {
+				cell: [1, 138, -3],
+				slot: 8,
+			},
 			ClientMsg::DigCancel,
 			ClientMsg::Chat { text: "hi".into() },
 			ClientMsg::ReturnToSpawn,
@@ -1046,11 +1059,15 @@ mod tests {
 	/// the inventory snapshot. Same contract as the goldens above.
 	#[test]
 	fn golden_dig_and_inventory_encoding() {
-		let dig = ClientMsg::DigStart { cell: [1, 138, -3] };
+		let dig = ClientMsg::DigStart {
+			cell: [1, 138, -3],
+			slot: 8,
+		};
 		assert_eq!(
 			postcard::to_stdvec(&dig).unwrap(),
-			// variant tag, then the cell's x/y/z as zigzag varints
-			vec![3, 2, 148, 2, 5]
+			// variant tag, the cell's x/y/z as zigzag varints, then v27's
+			// declared hotbar slot
+			vec![3, 2, 148, 2, 5, 8]
 		);
 		assert_eq!(postcard::to_stdvec(&ClientMsg::DigCancel).unwrap(), vec![4]);
 

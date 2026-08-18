@@ -135,7 +135,16 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// snapshots and inputs on the reliable stream instead. Three ordinary
 /// appends; the floor stays where v25 put it, and a client that never
 /// announces the capability is byte-identical to a v25 one on the wire.
-pub const PROTOCOL_VERSION: u16 = 26;
+/// v27: `ClientMsg::DigStart` gains the hotbar `slot` the hold is made
+/// with, the twin of `EditRequest.slot` and for the same reason — the
+/// server's tool gates now ask whether the hand is ON the tool
+/// (SIM v20's `Hotbar::tool_in_hand`), and the selection otherwise
+/// reaches it on the jitter-buffered input path, so switching to the
+/// siphon and holding on a vein in one motion met a `NeedsTool` refusal
+/// aimed at the previous hand. A field appended INSIDE an existing
+/// variant rather than a new variant, so an older peer's `DigStart` is a
+/// byte short and the floor rises with it.
+pub const PROTOCOL_VERSION: u16 = 27;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -180,8 +189,11 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// older peer decodes everything and still plays a fresh character with a
 /// phantom bucket in hand and a scoop that never lands, so the floor
 /// rises again. v26 (the datagram fallback) is three ordinary appends and
-/// leaves it exactly there.
-pub const MIN_PROTOCOL: u16 = 25;
+/// leaves it exactly there. v27 is the v23 class rather than the v22 one:
+/// `DigStart` gained a field INSIDE the variant, so a v27 decoder reading
+/// a v26 hold runs off the end of the frame, and the floor has to rise to
+/// meet it.
+pub const MIN_PROTOCOL: u16 = 27;
 
 // ---- handshake preamble ----------------------------------------------
 //

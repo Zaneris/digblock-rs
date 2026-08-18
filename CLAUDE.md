@@ -704,8 +704,12 @@ Alchemy, one exit row, Settings — with Leave World standing where Leave Server
 to the locked title menu, so switching worlds or joining a server goes back through the exit. Both exits share
 `Engine::return_to_title` (fresh backdrop seed, relocked startup menu); Leave World calls `close_local_save` first and,
 unlike the disconnect path, runs unconditionally, since even a store-less ephemeral world has a title to return to.
-`Pipeline`'s optional `EditOverlay` records every `set_block` and re-applies cells before air classification, so local
-edits survive hard eviction even in unsaved worlds (restored water re-schedules fluid).
+`Pipeline`'s `EditOverlay` re-applies cells before air classification, so edits survive hard eviction even in unsaved
+worlds (restored water re-schedules fluid) — **in multiplayer too**, where the map is the client's mirror of the
+server's journal rather than its own writes. That half is not a nicety: a re-entered column has no other way back, since
+`apply_authoritative` drops a cell from `deferred_edits` the moment it lands and the server prunes its record of what a
+client holds on a radius wider than the client's own residency. What stays local-only is `record_local` — whether
+`set_cell` records, which in multiplayer would be recording a guess.
 
 ## Text
 
@@ -936,6 +940,17 @@ that stopped reading — the peer that really has stopped is still reaped, by a 
 queue. Pinned by `wrapped_snapshots_leave_the_queue_reliable_frames_die_on`, the twin of
 `stalled_datagram_queue_escalates_to_drop`.
 
+**Journal sync is a push with no acknowledgement**, so nothing in the protocol can notice a column a client somehow
+lacks — the symptom is a chunk that renders as pristine worldgen forever. Three things stand behind it and they are
+deliberately in that order: the client's own `EditOverlay` mirror, which restores an evicted column with no network at
+all; a sync scan on any draw-distance change, GROWING OR SHRINKING, since a deferred prune leaves `synced_columns`
+claiming columns the client has already evicted; and `sync::pump_resync`, a rotation that hands a SETTLED client its
+in-range edited columns back one at a time, nearest first. Idle-gated (`RESYNC_SETTLE_TICKS`) because a walking client
+is already being handed what it enters and repeating it behind them would be a standing bandwidth floor on every
+built-up world — and because standing still is what a player does while noticing a chunk is wrong. Journal replay is
+LWW, so a repeat costs only its bytes; the one thing it must not do is stomp an in-flight prediction, which is why
+`JournalColumn` skips cells `PendingEdits::pending_at` still owns.
+
 Server-authoritative everything, but movement uses an **adoption envelope**: clients send per-tick inputs plus claimed
 post-tick state; the server runs the same `Player::tick` and adopts claims within `POS_TOLERANCE` that aren't inside
 geometry — honest clients never drift or rubber-band. A time-integrated EWMA of claim−sim deltas
@@ -979,32 +994,42 @@ while the bucket was owned by everyone are granted one on load — `inventories.
 saves, and a FRESH world opens at the current rev so the grant is a migration, never a windfall. The tool slot is PINNED
 to the bar's last position (a legacy mid-bar layout migrates on `Hotbar::from_wire`); WHICH tool it holds is
 `Hotbar::active_tool`, carried as the Layout wire's trailing entry, so a cycle-then-scoop validates in wire order and
-the server's gates check `active_tool == Some(Bucket)`. That entry is CLIENT-DECLARED and `from_wire` believes any tool
-id, so ownership is re-asserted in `reconcile_layout` — the one place that sees the bar and the counts — against
-`Inventory::owned_tools`, the single roster the rail also reads, and an empty roster bares the slot (which is also what
-auto-equips the first crafted vessel). Without that re-assertion a crafted Layout is enough to swing a pick you never
-made. Tapping 9 with the tool slot already selected cycles the owned roster (`Engine::owned_tools`, block-id order);
-`hud::tool_rail` draws the non-active owned tools as faded small slots right of the bar, only once a second tool exists.
-Three presentation rules hold the slot together, and each has already been broken once: it **stands apart** —
-`hud::bar_slot_rect` adds `TOOL_SPLIT` before the last slot at DRAW time, leaving `row_grid`'s nine columns (which every
-panel measures against, and the inventory grid drops into) uniform — the split folds into the row's **centring**, never
-into its spacing, so the lattice keeps one cell and one gap throughout and simply sits half a split further left.
-Centring it has to know about the split even though spacing must not: `row_grid` centred the bare lattice for a while
-and the tool slot, drawn just past its right edge, hung off the window at any size below a threshold — with the one test
-that measured the DRAWN last slot rewritten, in the same change, into `left - left
-== 0`; the exchange is a
-**handover**, not a cut — `hotbar::ToolSwap` shrinks the outgoing tool away and grows the incoming one in through the
-shared `ui::handover` curve the transmute tiles use, and everything else about the swap (the rail's membership) happens
-at the invisible midpoint; and every path that names a tool draws it through `hud::tool_icon`, **`item_icon` included is
-not enough** — `HotbarItem::WaterTool` names the SLOT, so the viewmodel has to ask which tool is in it or the whole
-roster is held as a bucket. The snapshot wire is the same trap and needed no new encoding: `Client::held_wire` sends the
-active tool's own block id (sentinels reserved for the bucket's two charges, exactly as `Hotbar::to_wire` does), and
-`held_icon` admits a tool id EXPLICITLY rather than by relaxing `is_slottable` — which answers a different question,
-whether a GRID slot may hold it — then hands it to `item_icon`, whose own tool arm forwards to `tool_icon`. So a remote
-swinging a pick draws the same authored geometry its owner's hand does, and no second texture-borrowing path exists to
-disagree with it. Tools carry no texture layers, so a row without an `IconKind` draws as a block of whatever sits at the
-first layer; `DIG_SCREEN=pick|siphon|sigil` is how each one reaches a capture at all — the screen stocking grants every
-tool, since a fresh player owns none.
+the server's gates check `active_tool == Some(Bucket)`. **Holding a tool is that axis AND the selection** — SIM v20 —
+and `Hotbar::tool_in_hand` is the one function that asks both, answering `Air` whenever the bar is not pointing at the
+tool slot. Everything but the bucket used to ask `active_tool` alone, so a player with dirt in hand drew veins with the
+siphon and paid the pick's hold multiplier while breaking its plane. The server therefore keeps the selection ON THE BAR
+(`Hotbar::set_selected`) rather than in a field beside it, since a two-place answer is one that can drift from the
+client's — and `process_layout` carries it across `from_wire`, which would otherwise move a rearranging player's hand
+back to slot one. It is fed by `InputTick.active_slot`, and re-declared on the RELIABLE stream by every action that asks
+a tool question: `EditRequest.slot` already did, and **`DigStart` now carries one too** (protocol v27, which is why the
+floor moved — the field sits inside an existing variant). Both for the same reason: the input path is jitter-buffered,
+so without it a player who picks up the siphon and holds on a vein in one motion is refused `NeedsTool` against the hand
+they had a moment ago. That entry is CLIENT-DECLARED and `from_wire` believes any tool id, so ownership is re-asserted
+in `reconcile_layout` — the one place that sees the bar and the counts — against `Inventory::owned_tools`, the single
+roster the rail also reads, and an empty roster bares the slot (which is also what auto-equips the first crafted
+vessel). Without that re-assertion a crafted Layout is enough to swing a pick you never made. Tapping 9 with the tool
+slot already selected cycles the owned roster (`Engine::owned_tools`, block-id order); `hud::tool_rail` draws the
+non-active owned tools as faded small slots right of the bar, only once a second tool exists. Three presentation rules
+hold the slot together, and each has already been broken once: it **stands apart** — `hud::bar_slot_rect` adds
+`TOOL_SPLIT` before the last slot at DRAW time, leaving `row_grid`'s nine columns (which every panel measures against,
+and the inventory grid drops into) uniform — the split folds into the row's **centring**, never into its spacing, so the
+lattice keeps one cell and one gap throughout and simply sits half a split further left. Centring it has to know about
+the split even though spacing must not: `row_grid` centred the bare lattice for a while and the tool slot, drawn just
+past its right edge, hung off the window at any size below a threshold — with the one test that measured the DRAWN last
+slot rewritten, in the same change, into `left - left
+== 0`; the exchange is a **handover**, not a cut —
+`hotbar::ToolSwap` shrinks the outgoing tool away and grows the incoming one in through the shared `ui::handover` curve
+the transmute tiles use, and everything else about the swap (the rail's membership) happens at the invisible midpoint;
+and every path that names a tool draws it through `hud::tool_icon`, **`item_icon` included is not enough** —
+`HotbarItem::WaterTool` names the SLOT, so the viewmodel has to ask which tool is in it or the whole roster is held as a
+bucket. The snapshot wire is the same trap and needed no new encoding: `Client::held_wire` sends the active tool's own
+block id (sentinels reserved for the bucket's two charges, exactly as `Hotbar::to_wire` does), and `held_icon` admits a
+tool id EXPLICITLY rather than by relaxing `is_slottable` — which answers a different question, whether a GRID slot may
+hold it — then hands it to `item_icon`, whose own tool arm forwards to `tool_icon`. So a remote swinging a pick draws
+the same authored geometry its owner's hand does, and no second texture-borrowing path exists to disagree with it. Tools
+carry no texture layers, so a row without an `IconKind` draws as a block of whatever sits at the first layer;
+`DIG_SCREEN=pick|siphon|sigil` is how each one reaches a capture at all — the screen stocking grants every tool, since a
+fresh player owns none.
 
 **The water tool is stateful** (protocol v12), and its charge is stored as the inventory's Water count — capped at one
 by `inventory::cap`, named by `Inventory::bucket_full`. Storing the charge in the inventory rather than a field of its
@@ -1161,9 +1186,9 @@ Three rules bite if broken:
   `JournalIndex::record` only ever inserts, so "touched" is monotone. The client needs the same answer, which is why
   `Pipeline` keeps its `EditOverlay` in MULTIPLAYER too — but there it MIRRORS the journal rather than the client's
   guesses: `apply_authoritative` records (before the applied/deferred split, so a deferred edit still counts), and
-  `set_cell` records only where it is itself the authority (`reapply`, i.e. local worlds). Recording predictions instead
-  is unfixable, because a rejection reverts through that same `set_cell` and `record` is insert-only — the cell stays
-  edited on the client and pristine on the server, forever. Because a record can change what a chunk DRAWS without
+  `set_cell` records only where it is itself the authority (`record_local`, i.e. local worlds). Recording predictions
+  instead is unfixable, because a rejection reverts through that same `set_cell` and `record` is insert-only — the cell
+  stays edited on the client and pristine on the server, forever. Because a record can change what a chunk DRAWS without
   changing a cell (the reveal keys on "edited"), `apply_authoritative` re-meshes when a first record lands on a value
   that already matched — journal replay re-sending Stone over Stone otherwise leaves a seam glittering in a chunk whose
   dig path calls it spent.
@@ -1210,6 +1235,10 @@ Three rules bite if broken:
   than recomputed, so the stream ends exactly where the siphon's own glow hangs; and a completed draw flares by starting
   its fade-out above full (`siphon::FLARE`), which is why `SiphonDraw` outlives the hold — the cell is spent rock by
   then, and there is no vein left to ask where the motes were coming from.
+- **And a draw ENDS the press that made it** (`Engine::drawn_cell`). The cell it emptied holds the tier's spent rock,
+  and quarrying that is a second action — one the same press used to roll straight into, destroying the trophy on the
+  hold that earned it. The latch names ONE cell and is cleared only by the button coming up, never by the aim moving, so
+  the seam beside it still draws without letting go and re-aiming is not a way around it.
 - **And its own two sounds, for the same reason.** `Sfx::SiphonDraw` is a resonant loop that replaces the dig loop's
   hammer blows on the SAME hold voice (`LOOP_DIG`), so every stop path — release, cancel, completion, world swap —
   already covers it and the existing pitch ramp reads as the resonance winding up; `Sfx::SiphonTake` replaces the

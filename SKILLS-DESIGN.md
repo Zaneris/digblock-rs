@@ -300,8 +300,8 @@ must agree on to the unit, and a float would let two platforms round a hold apar
 floor (no second clamp knob), and the flat Fixed family gets its flatness for free from a zero-width range, which is
 what keeps leaves/torches/the scoop from ever speeding up.
 
-Everything below argues about what a dig *feels* like, so the absolute scale it argues from: Stone runs 3.83 s at level
-1, 1.90 s by 30 and 0.63 s at the cap; Wood 2.03 s → 1.10 s → 0.50 s; Dirt 0.93 s → 0.50 s → 0.22 s. Those durations are
+Everything below argues about what a dig *feels* like, so the absolute scale it argues from: Stone runs 4.20 s at level
+1, 2.15 s by 30 and 0.82 s at the cap; Wood 2.23 s → 1.28 s → 0.65 s; Dirt 1.03 s → 0.57 s → 0.27 s. Those durations are
 the subject of every claim in this section — the code is still the authority on what the curve returns.
 
 **The curve is sampled every fifth level, plus the cap — and every jump is smaller than the one before it.** Those are
@@ -313,7 +313,7 @@ is what makes it legible. The taper then spends that budget front-loaded — eac
 its predecessor — so **the first step is the biggest speedup a player will ever feel**, and every later one lands a
 little softer. Both halves earn their keep: the early game is where a slow dig is most discouraging, and diminishing
 returns are what stop the last rungs from being rounding errors. The relative gain falls too, not just the absolute one
-(on stone, 11.7% off the hold at the first step against 2.6% at the last), so the easing is felt and not merely counted.
+(on stone, 11.2% off the hold at the first step against 4.1% at the last), so the easing is felt and not merely counted.
 Only the two endpoints are anchors and both must sit on the sampling grid, which is why the cap is a step of its own
 instead of the grid ending a rung short. `dig_speed_step` is the ONE place the step size lives, and
 `dig_speed_step(l) == l` is exactly the question "does this level make me faster" — which is what the UI has to ask to
@@ -325,6 +325,13 @@ exactly 1× for every family, which made that level reproduce the shipped hardne
 — markedly slower at level 1, the cap untouched — so every level is now an ordinary sample of the taper and that
 assertion is gone with it. The consequence worth remembering: **no test may hardcode a hold length**; derive it from
 `skills::dig_required` (two server dig tests carried a literal one and broke on the retune).
+
+**SIM v20 slowed both ends, mastery hardest.** v18 had lengthened the opening and left the cap where it stood, which
+made a mastered dig fast enough that the material under it stopped registering — every family converged on "instant" and
+the last third of the ladder bought nothing worth feeling. v20 lengthens the whole curve and takes proportionally more
+off the top end than the bottom, so a mastered hold still reads as work and the span a life of levelling buys shrinks to
+something the taper can spend legibly. Nothing about the SHAPE moved: `DIG_TAPER` and `DIG_STEPS` are untouched, so the
+first jump is still the biggest and every later one still lands softer.
 
 **Letting go decays, it does not reset** (`skills::dig_decayed`). A released hold keeps its banked ticks and bleeds them
 back to untouched at **one whole bar per `DIG_DECAY_TICKS`** — so that window is the *ceiling*, paid only by a block a
