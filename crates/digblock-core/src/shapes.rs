@@ -453,18 +453,18 @@ pub fn state_valid(cell: u16) -> bool {
 
 // --- alchemy ----------------------------------------------------------
 
-/// How many items one craft produces. Batched so a fractional-unit shape
-/// stays exact (a future half-slab, worth half a sub-unit more than a
-/// whole number, would craft two at a time out of one block's worth of
-/// essence); every shape authored so far is whole, so the batch is one
-/// throughout.
-///
-/// The COST is not here: it is the shape's volume
-/// ([`crate::block::ShapeFamily::units`]) prorated by the material's
-/// essence split (`crate::material`), which is what makes a new
-/// material × shape pair a block row rather than another table entry.
-pub fn craft_batch(_b: BlockType) -> u32 {
-	1
+/// How many items one craft produces (the essence redesign's
+/// feedstock-and-catalyst shape). A feedstock recipe consumes ONE cube of
+/// matter, so it yields as many of the shape as the cube's volume cuts
+/// into — floored, the remainder being the waste of the cut — which is
+/// what makes matter conservation structural: a craft can only ever
+/// output at most the volume it consumed. Essence-only recipes buy one
+/// at a time, exactly as they always did.
+pub fn craft_batch(b: BlockType) -> u32 {
+	match b.grid_cell() {
+		Some((m, s)) if m.feedstock().is_some() => (SUBS_PER_BLOCK / s.units()).max(1),
+		_ => 1,
+	}
 }
 
 // --- authored geometry ------------------------------------------------
@@ -1397,7 +1397,20 @@ mod tests {
 		// the torch has no shape FAMILY at all, which is how it opts out.
 		assert_eq!(BlockType::Torch.shape_family(), None);
 		for &b in &BlockType::ALL {
-			assert_eq!(craft_batch(b), 1, "{b:?} — launch shapes craft singly");
+			let batch = craft_batch(b);
+			match b.grid_cell() {
+				// Matter conservation, per pair: a cube in, at most a
+				// cube's volume out.
+				Some((m, s)) if m.feedstock().is_some() => {
+					assert!(batch >= 1, "{b:?}");
+					assert!(
+						batch * s.units() <= SUBS_PER_BLOCK,
+						"{b:?}: one cube cannot cut {batch} pieces of {} units",
+						s.units()
+					);
+				}
+				_ => assert_eq!(batch, 1, "{b:?} — essence recipes buy singly"),
+			}
 		}
 		assert_eq!(SUBS_PER_BLOCK * SUB_UNIT_VOLUME, 1728, "exact division");
 	}

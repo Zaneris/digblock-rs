@@ -292,7 +292,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 					return false;
 				}
 			}
-			for &(f, n) in feedstock {
+			for &(f, n) in &feedstock {
 				if inv.count(f) < n * count {
 					return false;
 				}
@@ -301,7 +301,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				let taken = inv.try_take_sub(e, alchemy::craft_cost(n, level) * count);
 				debug_assert!(taken, "checked above");
 			}
-			for &(f, n) in feedstock {
+			for &(f, n) in &feedstock {
 				let taken = inv.try_take(f, n * count);
 				debug_assert!(taken, "checked above");
 			}
@@ -435,11 +435,12 @@ mod tests {
 	#[test]
 	fn alchemy_craft_scales_with_level() {
 		let mut inv = Inventory::default();
-		inv.add_sub(Essence::Flora, 54);
+		inv.add(BlockType::Wood, 3);
+		inv.add_sub(Essence::Flora, 20);
 
-		// Craft a door and two stairs; at mastery the ideal costs carry
-		// only the smallest waste markup, and the remainder is what the
-		// assertions below pin.
+		// Craft a door batch and two stairs: each craft consumes one
+		// timber cube and the catalyst at mastery's smallest waste markup;
+		// the door's cube cuts TWO leaves, the stairs' one flight each.
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
@@ -456,14 +457,20 @@ mod tests {
 			},
 			99
 		));
-		assert_eq!(inv.count(BlockType::LumberDoor), 1);
+		assert_eq!(inv.count(BlockType::LumberDoor), 2, "one cube, two leaves");
 		assert_eq!(inv.count(BlockType::WoodStairs), 2);
-		assert_eq!(inv.sub_count(Essence::Flora), 5);
+		assert_eq!(inv.count(BlockType::Wood), 0, "three cubes consumed");
+		assert_eq!(
+			inv.sub_count(Essence::Flora),
+			20 - 3 * 4,
+			"ceil(3·1.05) each"
+		);
 
 		// The bottom of the curve: the steepest waste, so the same essence
-		// buys less.
+		// buys less — and no timber refuses outright.
 		let mut low = Inventory::default();
-		low.add_sub(Essence::Flora, 10);
+		low.add(BlockType::Wood, 1);
+		low.add_sub(Essence::Flora, 4);
 		assert!(
 			!apply_alchemy(
 				&mut low,
@@ -473,8 +480,19 @@ mod tests {
 				},
 				1
 			),
-			"slab costs ceil(9·1.60) = 15 > 10"
+			"the catalyst costs ceil(3·1.60) = 5 > 4"
 		);
+		low.add_sub(Essence::Flora, 1);
+		assert!(apply_alchemy(
+			&mut low,
+			AlchemyOp::Craft {
+				item: BlockType::WoodSlab,
+				count: 1
+			},
+			1
+		));
+		assert_eq!(low.count(BlockType::WoodSlab), 3, "a cube cuts three slabs");
+		assert_eq!(low.count(BlockType::Wood), 0);
 
 		// Unaffordable, level-locked, invalid, zero/oversized counts:
 		// refused with no mutation.
@@ -561,6 +579,7 @@ mod tests {
 	#[test]
 	fn multi_essence_crafts_never_half_charge() {
 		let mut inv = Inventory::default();
+		inv.add(BlockType::Wood, 1);
 		inv.add_sub(Essence::Flora, 100);
 		inv.add_sub(Essence::Earth, 1); // deliberately short of the torch's Earth line
 		let before = inv.clone();
@@ -572,7 +591,7 @@ mod tests {
 			},
 			99
 		));
-		assert_eq!(inv, before, "no partial debit");
+		assert_eq!(inv, before, "no partial debit — the timber included");
 		inv.add_sub(Essence::Earth, 5);
 		assert!(apply_alchemy(
 			&mut inv,
@@ -583,7 +602,8 @@ mod tests {
 			99
 		));
 		assert_eq!(inv.count(BlockType::Torch), 1);
-		assert_eq!(inv.sub_count(Essence::Flora), 100 - 5, "ceil(4·1.05)");
+		assert_eq!(inv.count(BlockType::Wood), 0, "the stick is spent");
+		assert_eq!(inv.sub_count(Essence::Flora), 100 - 3, "ceil(2·1.05)");
 		assert_eq!(inv.sub_count(Essence::Earth), 6 - 3, "ceil(2·1.05)");
 	}
 

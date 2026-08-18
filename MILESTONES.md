@@ -41,13 +41,18 @@ while bench extraction still pays would open a craft-cheap/extract-full matter p
 - [x] **2.4 Protocol** — v27 + `MIN_PROTOCOL` raise + SIM bump, history comments
 - [x] **2.5 Gate** — workspace tests green
 
-## Stage 3 — recipe rebuild: feedstock + catalyst (placeholder)
+## Stage 3 — recipe rebuild: feedstock + catalyst
 
-- [ ] `Material::feedstock` + `catalyst_units`, `shapes::craft_batch`, `CraftPrice` through
-      `craft_ideal`/`apply_alchemy`/paces, functional reprices (siphon & bucket feedstock-only —
-      the essence tool never costs essence), new pins (no-craft-creates-essence, feedstock
-      conservation, payability v2), screen affordability/detail strip
-- [ ] Gate: core + net + render + server tests green
+- [x] **3.1 Material axes** — `Material::feedstock` (timbers ← Wood, masonry ← Rubble, sand-likes ←
+      Sand, soils ← themselves; Metal/Crystal essence-only) and `craft_units` recast as the per-cube
+      CATALYST for feedstock substances
+- [x] **3.2 Batch + derivation** — `shapes::craft_batch` (one feedstock cube cuts a batch of the
+      shape; conservation structural), `craft_ideal`/`craft_feedstock` derive the pair, functional
+      reprices (torch/furniture/lamps gain feedstock lines), golden recipes re-pinned
+- [x] **3.3 Rules + screen** — `apply_alchemy` debits feedstock all-or-nothing beside the catalyst,
+      `craft_worth` prices matter, screen affordability/shortfall names feedstock; server/screen
+      tests scaled to batches
+- [x] **3.4 Gate** — clippy + fmt + full non-Docker test sweep green
 
 ## Stage 4 — identity, docs, captures (placeholder)
 

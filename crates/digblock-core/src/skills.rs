@@ -1082,15 +1082,15 @@ mod tests {
 		use BlockType as B;
 		// Crafts pay half their worth — a fixed fraction of the IDEAL
 		// cost, feedstock included, rounded up.
-		assert_eq!(craft_xp(B::WoodStairs), 3);
-		assert_eq!(craft_xp(B::Lumber), 5);
+		assert_eq!(craft_xp(B::WoodStairs), 2);
+		assert_eq!(craft_xp(B::Lumber), 2);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Craft {
 				item: B::Lumber,
 				count: 3
 			}),
-			15
+			6
 		);
 		// The two feedstock-priced vessels still pay: their timber carries
 		// the worth, so the first craft beat is also the first Alchemy XP

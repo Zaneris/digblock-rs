@@ -38,7 +38,7 @@
 //! volume and function is priced by hand, so they are gated and costed by
 //! their own small tables in `unlock` and `alchemy`.
 
-use crate::block::Essence;
+use crate::block::{BlockType, Essence};
 
 /// A substance the bench can work, in unlock order (which is also the
 /// order members appear on the transmute tab).
@@ -166,9 +166,41 @@ impl Material {
 		Material::SpentSpringstone,
 	];
 
-	/// The whole-cube craft split — what a FULL CUBE of this substance costs
-	/// before waste, in the block's own essence ratio. `None` = the bench
-	/// cannot make this substance in any shape.
+	/// The blocks a craft of this substance consumes — the MATTER half of a
+	/// feedstock-and-catalyst recipe (the essence redesign's craft shape).
+	/// One cube of feedstock per craft; the shape's batch
+	/// ([`crate::shapes::craft_batch`]) says how many pieces that cube
+	/// cuts into. `None` = the substance is transmuted from essence alone
+	/// (Metal, Crystal — nothing in the world IS them yet).
+	///
+	/// Bulk building stays affordable because of this split: the weight of
+	/// a wall's price is the rock you quarried for it, and the essence line
+	/// beside it is a CATALYST — small, universal, and the whole reason the
+	/// currency has purpose.
+	pub fn feedstock(self) -> Option<BlockType> {
+		use Material as M;
+		Some(match self {
+			// The timbers are worked from the felled log.
+			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => BlockType::Wood,
+			// The mason's loop (§7.1): broken rock back into clean forms.
+			M::Stone | M::StoneBrick | M::PolishedStone => BlockType::Rubble,
+			// The sand-flavoured substances fuse from sand itself.
+			M::Sand | M::Sandstone | M::SandstoneBrick | M::Glass => BlockType::Sand,
+			// The loose grounds reshape from their own loose block.
+			M::Dirt => BlockType::Dirt,
+			M::Grass => BlockType::Grass,
+			M::Mud => BlockType::Mud,
+			M::Snow => BlockType::Snow,
+			_ => return None,
+		})
+	}
+
+	/// The essence half of a cube's price, before waste. For a substance
+	/// with [`Self::feedstock`] this is the CATALYST — a small per-cube
+	/// line, never prorated by the shape, since a craft consumes a whole
+	/// feedstock cube whatever it cuts it into. For the essence-only
+	/// substances it is the whole price. `None` = the bench cannot make
+	/// this substance in any shape.
 	///
 	/// With bench extraction gone this is a pure SINK price: essence only
 	/// ever enters the world at a node draw ([`Self::node_units`]) and only
@@ -177,17 +209,17 @@ impl Material {
 		use Essence as E;
 		use Material as M;
 		Some(match self {
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Flora, 27)],
-			M::Stone | M::Sand | M::Sandstone => &[(E::Earth, 27)],
-			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Earth, 27)],
-			// Sand-flavored Earth, fused: the same bulk, a different form.
-			M::Glass => &[(E::Earth, 27)],
-			// A whole cube's volume in the extraction ratio, each line ceiled
-			// separately — which is why the total overshoots a cube by a unit.
-			M::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
-			M::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-			M::Mud => &[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
-			M::Snow => &[(E::Aqua, 27)],
+			// Catalysts, matching each substance's essence identity.
+			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Flora, 3)],
+			M::Stone | M::Sand | M::Sandstone => &[(E::Earth, 3)],
+			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Earth, 3)],
+			M::Glass => &[(E::Earth, 3)],
+			M::Dirt => &[(E::Earth, 3), (E::Flora, 1)],
+			M::Grass => &[(E::Earth, 2), (E::Flora, 1)],
+			M::Mud => &[(E::Earth, 2), (E::Flora, 1), (E::Aqua, 1)],
+			M::Snow => &[(E::Aqua, 3)],
+			// The essence-only substances: transmutation proper, a whole
+			// cube's worth of the currency.
 			M::Metal => &[(E::Metal, 27)],
 			// Aether-bound, with a metal lattice to hold it: the only
 			// repeatable Aether sink big enough to matter in the endgame.
@@ -362,8 +394,8 @@ mod tests {
 		}
 	}
 
-	/// A whole cube prorates to itself — which is what makes the grid a
-	/// refactor rather than a retune for every raw-block recipe.
+	/// A whole cube prorates to itself — which is what keeps the
+	/// essence-only substances' cube recipes exactly their split.
 	#[test]
 	fn a_whole_cube_prorates_to_itself() {
 		for &m in &Material::ALL {
@@ -374,14 +406,40 @@ mod tests {
 		}
 	}
 
-	/// The shipped shape volumes, prorated — these are the numbers the
-	/// launch roster had hand-tabled, and they must not move.
+	/// The feedstock-and-catalyst shape, held together: every craftable
+	/// substance either names a world-handed feedstock cube plus a SMALL
+	/// catalyst, or transmutes from essence alone at a whole cube's worth
+	/// — never both readings at once, and never a feedstock the bench
+	/// itself is the only source of (which would nest the bootstrap
+	/// deadlock one table deeper).
 	#[test]
-	fn shipped_shape_splits_are_unchanged() {
-		use Essence as E;
-		let wood = Material::Wood.craft_units().unwrap();
-		assert_eq!(cost_split(wood, 18), vec![(E::Flora, 18)], "stairs");
-		assert_eq!(cost_split(wood, 10), vec![(E::Flora, 10)], "door");
-		assert_eq!(cost_split(wood, 9), vec![(E::Flora, 9)], "slab");
+	fn feedstock_recipes_carry_catalysts_and_essence_recipes_carry_cubes() {
+		for &m in &Material::ALL {
+			let Some(units) = m.craft_units() else {
+				assert!(m.feedstock().is_none(), "{m:?} feeds an uncraftable");
+				continue;
+			};
+			let total: u32 = units.iter().map(|&(_, n)| n).sum();
+			match m.feedstock() {
+				Some(f) => {
+					assert!(!f.is_bench_only(), "{m:?} feeds on bench-only {f:?}");
+					assert!(f.is_slottable(), "{m:?} feeds on unholdable {f:?}");
+					assert!(
+						total < crate::shapes::SUBS_PER_BLOCK / 3,
+						"{m:?}'s catalyst is a price, not a pinch"
+					);
+				}
+				None => assert!(
+					total >= crate::shapes::SUBS_PER_BLOCK,
+					"{m:?} transmutes from essence alone and must cost a cube's worth"
+				),
+			}
+		}
+		// The rosters that make the split meaningful, named.
+		assert_eq!(Material::Stone.feedstock(), Some(BlockType::Rubble));
+		assert_eq!(Material::Lumber.feedstock(), Some(BlockType::Wood));
+		assert_eq!(Material::Glass.feedstock(), Some(BlockType::Sand));
+		assert_eq!(Material::Metal.feedstock(), None);
+		assert_eq!(Material::Crystal.feedstock(), None);
 	}
 }

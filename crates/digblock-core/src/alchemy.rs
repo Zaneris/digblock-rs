@@ -154,7 +154,7 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// empty splits stay in this table because the twin pin reads it:
 		// a level and a price are one decision.
 		B::Bucket | B::EssenceSiphon => &[],
-		B::Torch => &[(E::Flora, 4), (E::Earth, 2)],
+		B::Torch => &[(E::Flora, 2), (E::Earth, 2)],
 		// The game's biggest sink, and the only thing that makes Metal a
 		// goal rather than a number. The Aether line is what
 		// keeps Aetherock worth reaching for before the lamps arrive.
@@ -162,15 +162,15 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Lantern => &[(E::Metal, 8), (E::Earth, 6)],
 		B::Aetherlamp => &[(E::Metal, 12), (E::Aether, 3)],
 		B::MastersSigil => &[(E::Aether, 99)],
-		// Furniture is timber and joinery — near its volume, but chosen,
+		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
-		B::Chair => &[(E::Flora, 6)],
-		B::Table => &[(E::Flora, 9)],
+		B::Chair => &[(E::Flora, 2)],
+		B::Table => &[(E::Flora, 2)],
 		// The bed is the catalog's first genuinely cross-family price:
 		// a timber frame AND the bedding on it. Aqua is the essence with
 		// the fewest sources — the springstone node is the whole of it —
 		// which is what makes diving for one worth doing.
-		B::Bed => &[(E::Flora, 21), (E::Aqua, 6)],
+		B::Bed => &[(E::Flora, 4), (E::Aqua, 6)],
 		_ => return None,
 	})
 }
@@ -194,16 +194,38 @@ pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
 		BlockType::EssenceSiphon => &[(BlockType::Wood, 8)],
+		// A torch is a whittled stick with a treated head.
+		BlockType::Torch => &[(BlockType::Wood, 1)],
+		// Furniture is joinery: planed timber, worked. `pickup` gates the
+		// LUMBER below the furniture's own levels, so the feedstock is
+		// always makable first.
+		BlockType::Chair => &[(BlockType::Lumber, 1)],
+		BlockType::Table => &[(BlockType::Lumber, 2)],
+		BlockType::Bed => &[(BlockType::Lumber, 2)],
+		// The lamps are a lit pane in a housing: glass, plus the metal
+		// and light priced in their essence lines.
+		BlockType::Lantern => &[(BlockType::Glass, 1)],
+		BlockType::Aetherlamp => &[(BlockType::Glass, 1)],
 		_ => &[],
 	}
 }
 
 /// Feedstock lines for anything craftable — the block half of a price.
-/// Grid items carry none yet (their whole price is still the essence
-/// split); the functional table above is the start of the
-/// feedstock-and-catalyst shape the recipe rebuild finishes.
-pub fn craft_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
-	functional_feedstock(b)
+/// A grid item consumes ONE cube of its material's feedstock (see
+/// [`crate::material::Material::feedstock`] and
+/// [`crate::shapes::craft_batch`], which says how many pieces that cube
+/// cuts into); functional items carry their hand-set lines.
+pub fn craft_feedstock(b: BlockType) -> Vec<(BlockType, u32)> {
+	if !b.is_bench_only() {
+		return Vec::new();
+	}
+	if functional_ideal(b).is_some() {
+		return functional_feedstock(b).to_vec();
+	}
+	b.grid_cell()
+		.and_then(|(m, _)| m.feedstock())
+		.map(|f| vec![(f, 1)])
+		.unwrap_or_default()
 }
 
 /// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
@@ -227,7 +249,16 @@ pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 		return Some(lines.to_vec());
 	}
 	let (m, s) = b.grid_cell()?;
-	Some(cost_split(m.craft_units()?, s.units()))
+	let units = m.craft_units()?;
+	Some(match m.feedstock() {
+		// A feedstock recipe consumes a whole cube of matter per craft
+		// whatever shape it cuts (`craft_batch` says how many pieces), so
+		// its catalyst is the cube's own, never prorated by the shape.
+		Some(_) => units.to_vec(),
+		// Essence-only substances keep the volume rule: the shape's share
+		// of a cube's worth of the currency.
+		None => cost_split(units, s.units()),
+	})
 }
 
 /// Everything craftable, in the transmute tab's display order: by shape
@@ -488,7 +519,7 @@ mod tests {
 				!craft_feedstock(b).is_empty(),
 				"{b:?} must cost SOMETHING — feedstock is its whole price"
 			);
-			for &(f, n) in craft_feedstock(b) {
+			for (f, n) in craft_feedstock(b) {
 				assert!(n > 0, "{b:?}: a zero-count feedstock line");
 				assert!(
 					!f.is_bench_only(),
@@ -501,12 +532,17 @@ mod tests {
 				);
 			}
 		}
-		// And feedstock never sneaks onto a row that also pays essence
-		// backwards — there is no extraction, so this is about the craft
-		// side only: every feedstock line names a world-handed block.
+		// Every feedstock line anywhere names a block a player can hold,
+		// and a bench-made feedstock (furniture's planed timber, the
+		// lamps' glass) must itself be craftable — a feedstock with no
+		// recipe and no world source is a deadlock one table deeper.
 		for &b in &BlockType::ALL {
-			for &(f, _) in craft_feedstock(b) {
-				assert!(!f.is_bench_only(), "{b:?} feeds on bench-only {f:?}");
+			for (f, _) in craft_feedstock(b) {
+				assert!(f.is_slottable(), "{b:?} feeds on unholdable {f:?}");
+				assert!(
+					!f.is_bench_only() || crate::unlock::craft(f).is_some(),
+					"{b:?} feeds on unobtainable {f:?}"
+				);
 			}
 		}
 	}
@@ -565,28 +601,54 @@ mod tests {
 		}
 	}
 
-	/// The grid's craft prices, block by block — the derivation must keep
-	/// reproducing the shipped numbers.
+	/// The grid's craft prices, block by block — the feedstock-and-catalyst
+	/// derivation, golden-pinned: a cube of the material's feedstock plus
+	/// its small catalyst for every shape (the batch varies, the price per
+	/// CRAFT does not), and a cube's worth of pure essence for the
+	/// substances nothing in the world is made of.
 	#[test]
 	fn the_grid_reproduces_the_shipped_recipes() {
 		use BlockType as B;
 		use Essence as E;
-		let cases: &[(BlockType, &[(Essence, u32)])] = &[
-			(B::WoodStairs, &[(E::Flora, 18)]),
-			(B::StoneStairs, &[(E::Earth, 18)]),
-			(B::LumberDoor, &[(E::Flora, 10)]),
-			(B::WoodSlab, &[(E::Flora, 9)]),
-			(B::StoneSlab, &[(E::Earth, 9)]),
-			(B::Lumber, &[(E::Flora, 27)]),
-			(B::Stone, &[(E::Earth, 27)]),
-			(B::Sandstone, &[(E::Earth, 27)]),
-			(B::Torch, &[(E::Flora, 4), (E::Earth, 2)]),
-			(B::StoneDoor, &[(E::Earth, 10)]),
-			(B::DarkLumber, &[(E::Flora, 27)]),
-			(B::RedLumberStairs, &[(E::Flora, 18)]),
+		type Row = (
+			BlockType,
+			&'static [(BlockType, u32)],
+			&'static [(Essence, u32)],
+			u32,
+		);
+		// block, feedstock, catalyst, batch.
+		let cases: &[Row] = &[
+			(B::WoodStairs, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
+			(B::StoneStairs, &[(B::Rubble, 1)], &[(E::Earth, 3)], 1),
+			(B::LumberDoor, &[(B::Wood, 1)], &[(E::Flora, 3)], 2),
+			(B::WoodSlab, &[(B::Wood, 1)], &[(E::Flora, 3)], 3),
+			(B::StoneSlab, &[(B::Rubble, 1)], &[(E::Earth, 3)], 3),
+			(B::Lumber, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
+			(B::Stone, &[(B::Rubble, 1)], &[(E::Earth, 3)], 1),
+			(B::Sandstone, &[(B::Sand, 1)], &[(E::Earth, 3)], 1),
+			(B::Glass, &[(B::Sand, 1)], &[(E::Earth, 3)], 1),
+			(B::StoneDoor, &[(B::Rubble, 1)], &[(E::Earth, 3)], 2),
+			(B::DarkLumber, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
+			(B::RedLumberStairs, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
+			// The essence-only substances: no feedstock, the volume rule.
+			(B::Metal, &[], &[(E::Metal, 27)], 1),
+			(B::MetalSlab, &[], &[(E::Metal, 9)], 1),
+			(B::Crystal, &[], &[(E::Aether, 18), (E::Metal, 9)], 1),
+			// And the vessels, feedstock alone.
+			(B::Bucket, &[(B::Wood, 6)], &[], 1),
+			(B::EssenceSiphon, &[(B::Wood, 8)], &[], 1),
+			// The torch: a stick with a treated head.
+			(
+				B::Torch,
+				&[(B::Wood, 1)],
+				&[(E::Flora, 2), (E::Earth, 2)],
+				1,
+			),
 		];
-		for &(b, ideal) in cases {
-			assert_eq!(craft_ideal(b), Some(ideal.to_vec()), "{b:?} recipe");
+		for &(b, feed, ideal, batch) in cases {
+			assert_eq!(craft_feedstock(b), feed.to_vec(), "{b:?} feedstock");
+			assert_eq!(craft_ideal(b), Some(ideal.to_vec()), "{b:?} catalyst");
+			assert_eq!(crate::shapes::craft_batch(b), batch, "{b:?} batch");
 		}
 		// Nothing gains an economy by accident: a block crafts only
 		// through a material it declared or a hand-priced entry, both of
@@ -598,6 +660,9 @@ mod tests {
 					functional_ideal(b).is_some(),
 					"{b:?} crafts without a material or a hand-set price"
 				);
+			}
+			if craft_ideal(b).is_none() {
+				assert!(craft_feedstock(b).is_empty(), "{b:?} feeds with no recipe");
 			}
 		}
 	}
@@ -852,7 +917,7 @@ mod tests {
 					 unlocked and unbuildable"
 				);
 			}
-			for &(f, _) in craft_feedstock(item) {
+			for (f, _) in craft_feedstock(item) {
 				assert!(
 					crate::unlock::pickup(f) <= level,
 					"{item:?} feeds on {f:?}, gated past the item itself"

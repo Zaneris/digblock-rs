@@ -3140,6 +3140,7 @@ mod tests {
 		wait_live(&mut sim, 1);
 		let level = digblock_core::unlock::craft(BlockType::LumberSlab).expect("a recipe");
 		sim.bench_set_alchemy_level(1, level);
+		sim.test_grant(1, BlockType::Wood, 100_000);
 		sim.test_grant_essence(1, Essence::Flora, 100_000);
 		let pace = digblock_core::alchemy::craft_pace_ticks(BlockType::LumberSlab, level);
 		let burst = digblock_core::alchemy::bench_burst_ticks(level);
@@ -3158,6 +3159,7 @@ mod tests {
 		// EDIT token, so bunching several into one tick measures that
 		// bucket instead of this one. One past the burst is one too many —
 		// refused outright, nothing debited and no XP.
+		let batch = digblock_core::shapes::craft_batch(BlockType::LumberSlab);
 		sim.tick_once(vec![craft(admits + 1)]);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::LumberSlab),
@@ -3166,11 +3168,14 @@ mod tests {
 		);
 		// What it CAN cover lands, and empties the bucket.
 		sim.tick_once(vec![craft(admits)]);
-		assert_eq!(sim.test_inventory_count(1, BlockType::LumberSlab), admits);
+		assert_eq!(
+			sim.test_inventory_count(1, BlockType::LumberSlab),
+			admits * batch
+		);
 		sim.tick_once(vec![craft(1)]);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::LumberSlab),
-			admits,
+			admits * batch,
 			"the drip is what is left once the burst is gone"
 		);
 		// One pace interval refills exactly one more craft's worth.
@@ -3180,7 +3185,7 @@ mod tests {
 		sim.tick_once(vec![craft(1)]);
 		assert_eq!(
 			sim.test_inventory_count(1, BlockType::LumberSlab),
-			admits + 1
+			(admits + 1) * batch
 		);
 		// Refused ops paid nothing: the total is exactly the landed
 		// crafts, at the slab's own `craft_xp` each.

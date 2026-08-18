@@ -1107,7 +1107,10 @@ mod tests {
 	/// one instant action also its fastest XP.
 	#[test]
 	fn a_transmute_batch_drips_instead_of_paying_at_once() {
-		let mut r = rig_at(20, |inv| inv.add_sub(Essence::Flora, 500));
+		let mut r = rig_at(20, |inv| {
+			inv.add(B::Wood, 50);
+			inv.add_sub(Essence::Flora, 500);
+		});
 		let slabs = center(r.hits.rect_of(family(&r, "SLABS")).unwrap());
 		press(&mut r, slabs);
 		rebuild(&mut r);
@@ -1192,6 +1195,7 @@ mod tests {
 		// the rig holds an unlocked-but-unaffordable member (Stone, with
 		// no Earth in hand) AND a locked one (DarkLumber) at once.
 		let mut r = rig_at(15, |inv| {
+			inv.add(B::Wood, 50);
 			inv.add_sub(Essence::Flora, 500);
 		});
 
