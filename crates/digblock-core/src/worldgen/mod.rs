@@ -19,6 +19,7 @@
 mod caves;
 mod classify;
 mod lakes;
+pub mod nodes;
 pub mod ore;
 mod rivers;
 mod terrain;

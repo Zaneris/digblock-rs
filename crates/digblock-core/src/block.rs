@@ -292,6 +292,32 @@ blocks! {
 	DepletedDuskstone = 76 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
 	DepletedGlowvein = 77 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
 	DepletedAetherock = 78 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
+	/// The three SURFACE nodes (the essence redesign: essence is found,
+	/// not ground). Exactly the ore rows' standing, in a different host:
+	/// worldgen still places Wood, Stone and Sand — a node is DERIVED
+	/// (`worldgen::nodes`), revealed by the mesh stamp at an ALCHEMY
+	/// level, drawn in place with the siphon, and anti-duped by the same
+	/// edited-bit the ore reveal reads. So nodes appear retroactively in
+	/// worlds that already exist, and no journal or golden moves.
+	///
+	/// **A node is world geometry, never an item** — `is_slottable` is
+	/// false for all three, a draw credits essence, and what you carry
+	/// home is the spent face below, which drops itself: the trophy rule.
+	///
+	/// Heartwood is the living core of a worldgen tree — the first node a
+	/// fresh player can see, since the whole essence economy starts here.
+	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80, DigFamily::Wood), 2)), Material::Heartwood),
+	DrainedHeartwood = 80 => mat(dig(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
+	/// Leystone rides the ore deposit stream as its SURFACE tier — the
+	/// shallow band the deep tiers vacate — and manifests in pristine
+	/// Stone exactly as they do; only its reveal keys on Alchemy.
+	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110, DigFamily::Rock), 3)), Material::Leystone),
+	SpentLeystone = 82 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE), 90, DigFamily::Rock), Material::SpentLeystone),
+	/// Springstone manifests in the pristine sand bed of a lake or river
+	/// — the one node you dig through water to reach, which is what makes
+	/// water features destinations.
+	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60, DigFamily::Soft), 3)), Material::Springstone),
+	SpentSpringstone = 84 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -858,11 +884,20 @@ pub mod tex {
 	pub const DEPLETED_DUSKSTONE: u16 = 38;
 	pub const DEPLETED_GLOWVEIN: u16 = 39;
 	pub const DEPLETED_AETHEROCK: u16 = 40;
+	/// The three surface-node faces and their spent siblings — the same
+	/// live/spent pairing the ore tiers wear, in the hosts' own bodies
+	/// (bark, stone, wet sand).
+	pub const HEARTWOOD: u16 = 41;
+	pub const DRAINED_HEARTWOOD: u16 = 42;
+	pub const LEYSTONE: u16 = 43;
+	pub const SPENT_LEYSTONE: u16 = 44;
+	pub const SPRINGSTONE: u16 = 45;
+	pub const SPENT_SPRINGSTONE: u16 = 46;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-render, the one crate that can see both.
-	pub const COUNT: u16 = DEPLETED_AETHEROCK + 1;
+	pub const COUNT: u16 = SPENT_SPRINGSTONE + 1;
 }
 
 impl BlockType {
@@ -1163,10 +1198,11 @@ impl BlockType {
 	/// in. Its count still lives in the [`crate::inventory::Inventory`],
 	/// which is where the charge is stored, synced and persisted.
 	///
-	/// **Raw ore** — a vein is world geometry. Siphoning it pays essence
-	/// straight into your stocks and leaves the tier's spent rock standing,
-	/// and the spent rock is the block you break and carry (SKILLS-DESIGN
-	/// §5.3). Nothing credits an ore block, so nothing may hold one.
+	/// **A live node** — a vein or a surface node is world geometry.
+	/// Siphoning it pays essence straight into your stocks and leaves the
+	/// kind's spent face standing, and the spent face is the block you
+	/// break and carry (SKILLS-DESIGN §5.3). Nothing credits a node block,
+	/// so nothing may hold one.
 	///
 	/// [`crate::inv_grid::reconcile_layout`] is the enforcer in both cases,
 	/// which makes this the MIGRATION as well as the rule: a save written
@@ -1174,22 +1210,23 @@ impl BlockType {
 	/// those slots on the first reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water && !self.is_tool() && !self.is_raw_ore()
+		self != BlockType::Water && !self.is_tool() && !self.is_node_block()
 	}
 
-	/// One of the four live vein faces (SKILLS-DESIGN §5.3) — the blocks
-	/// the reveal stamp paints into pristine stone.
+	/// One of the LIVE node faces — an ore tier or a surface node, the
+	/// blocks the reveal stamp paints into pristine host cells. None is
+	/// ever an item.
 	///
-	/// The roster itself is [`crate::worldgen::ore::ORES`]; this is the
+	/// The roster itself is [`crate::worldgen::nodes`]'s; this is the
 	/// membership test the block layer needs without reaching into
-	/// worldgen, and `ore_roster_matches_the_block_predicate` pins the two
-	/// against each other.
+	/// worldgen, and `node_roster_matches_the_block_predicate` pins the
+	/// two against each other.
 	#[inline]
-	pub fn is_raw_ore(self) -> bool {
-		self.ore_flecks().is_some()
+	pub fn is_node_block(self) -> bool {
+		self.node_flecks().is_some()
 	}
 
-	/// The fleck palette of a live vein: the crystal's own colour, and the
+	/// The fleck palette of a live node: the crystal's own colour, and the
 	/// lighter rim that catches the light around it.
 	///
 	/// ONE authority for what a tier looks like. `texgen` paints the flecks
@@ -1207,12 +1244,17 @@ impl BlockType {
 	/// the problem is the composition and not the average (GI-DESIGN.md
 	/// R31).
 	#[inline]
-	pub const fn ore_flecks(self) -> Option<([u8; 3], [u8; 3])> {
+	pub const fn node_flecks(self) -> Option<([u8; 3], [u8; 3])> {
 		Some(match self {
 			BlockType::Emberore => ([214, 96, 34], [255, 176, 84]),
 			BlockType::Duskstone => ([104, 78, 168], [172, 146, 236]),
 			BlockType::Glowvein => ([72, 226, 214], [198, 255, 248]),
 			BlockType::Aetherock => ([240, 214, 96], [255, 248, 200]),
+			// The surface nodes wear their essence's own colour: living
+			// green, earthen amber, spring blue.
+			BlockType::Heartwood => ([118, 196, 84], [204, 255, 164]),
+			BlockType::Leystone => ([198, 150, 70], [244, 208, 140]),
+			BlockType::Springstone => ([62, 158, 224], [172, 224, 255]),
 			_ => return None,
 		})
 	}
@@ -1496,6 +1538,15 @@ mod tests {
 			(BlockType::DepletedDuskstone, Rock),
 			(BlockType::DepletedGlowvein, Rock),
 			(BlockType::DepletedAetherock, Rock),
+			// Surface nodes dig as their HOST digs: heartwood is timber,
+			// leystone is rock, a spring bed is loose ground — the node
+			// changes what a hold pays, never what family swings at it.
+			(BlockType::Heartwood, Wood),
+			(BlockType::DrainedHeartwood, Wood),
+			(BlockType::Leystone, Rock),
+			(BlockType::SpentLeystone, Rock),
+			(BlockType::Springstone, Soft),
+			(BlockType::SpentSpringstone, Soft),
 		];
 		for (b, f) in expect {
 			assert_eq!(b.dig_family(), f, "{b:?}");
@@ -1545,6 +1596,12 @@ mod tests {
 			(B::DepletedDuskstone, M::DepletedDuskstone),
 			(B::DepletedGlowvein, M::DepletedGlowvein),
 			(B::DepletedAetherock, M::DepletedAetherock),
+			(B::Heartwood, M::Heartwood),
+			(B::DrainedHeartwood, M::DrainedHeartwood),
+			(B::Leystone, M::Leystone),
+			(B::SpentLeystone, M::SpentLeystone),
+			(B::Springstone, M::Springstone),
+			(B::SpentSpringstone, M::SpentSpringstone),
 			(B::StoneBrick, M::StoneBrick),
 			(B::StoneBrickStairs, M::StoneBrick),
 			(B::StoneBrickSlab, M::StoneBrick),

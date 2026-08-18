@@ -99,7 +99,13 @@ pub fn material(m: Material) -> Option<u32> {
 		| M::DepletedEmberore
 		| M::DepletedDuskstone
 		| M::DepletedGlowvein
-		| M::DepletedAetherock => return None,
+		| M::DepletedAetherock
+		| M::Heartwood
+		| M::DrainedHeartwood
+		| M::Leystone
+		| M::SpentLeystone
+		| M::Springstone
+		| M::SpentSpringstone => return None,
 	})
 }
 
@@ -116,12 +122,17 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// loop pays for it, and "make your first vessel" is the game's
 		// first craft beat rather than a level-up.
 		BlockType::Bucket => 1,
-		// First light, pre-ore on purpose (§7.3).
-		BlockType::Torch => 8,
-		// The ore tool, ready before the first vein reveals — the game's
-		// first cross-skill handshake, and the reason neither
-		// skill can be levelled entirely from inside the other.
-		BlockType::EssenceSiphon => 10,
+		// First light, pre-ore on purpose (§7.3) — and past the leystone
+		// reveal, since its price names Earth and Earth is a leystone draw
+		// now.
+		BlockType::Torch => 10,
+		// THE essence tool (the redesign made it the skill's identity):
+		// every essence in the game is a siphon draw, so the siphon sits
+		// at the level everyone starts at, gated by its feedstock price
+		// alone — "make your siphon" is the game's first craft beat. Its
+		// price may never name an essence, the no-Metal deadlock rule
+		// generalized to the whole currency.
+		BlockType::EssenceSiphon => 1,
 		// Furniture: the first things you make because you want them
 		// rather than because you need them, so they sit just past the
 		// timber set that supplies them.
@@ -203,6 +214,31 @@ pub fn reveal(b: BlockType) -> Option<u32> {
 		BlockType::Duskstone => 23,
 		BlockType::Glowvein => 33,
 		BlockType::Aetherock => 50,
+		_ => return None,
+	})
+}
+
+/// The ALCHEMY level a SURFACE node becomes visible at — [`reveal`]'s
+/// twin on the other skill, so Alchemy owns the surface hunt the way
+/// Mining owns the deep one (the essence redesign). Same stranger-gate
+/// semantics: below it the cell is its host in every respect, and you
+/// draw what you can see.
+///
+/// A node answers to exactly ONE of the two reveal tables (pinned in
+/// `worldgen::nodes`).
+pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
+	Some(match b {
+		// The day-one node, and necessarily so: every essence in the game
+		// now starts as a draw, so the first node must be visible at the
+		// level everyone starts at or the economy cannot begin. The craft
+		// beat it feeds is the siphon, whose feedstock-only price is what
+		// actually gates the first draw.
+		BlockType::Heartwood => 1,
+		// The Earth node — early, but past the first heartwood draws, so
+		// the surface ladder has an actual first reveal event.
+		BlockType::Leystone => 5,
+		// The Aqua node, under water on purpose: reaching it is the trip.
+		BlockType::Springstone => 12,
 		_ => return None,
 	})
 }
@@ -494,10 +530,11 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					&& (prospect_range(level) != prospect_range(level - 1)
 						|| ore_mastery(level) != ore_mastery(level - 1)))
 		}
-		// A new recipe, or a bonus line that wasn't paying at the level
-		// below.
+		// A new recipe, a surface node fading into view, or a bonus line
+		// that wasn't paying at the level below.
 		Skill::Alchemy => {
 			craft(b) == Some(level)
+				|| alchemy_reveal(b) == Some(level)
 				|| alchemy::bonus_lines(b, level) != alchemy::bonus_lines(b, level - 1)
 		}
 	})
@@ -516,7 +553,12 @@ mod tests {
 		// not the felled log itself, which grows on a tree.
 		assert_eq!(craft(B::WoodSlab), Some(1));
 		assert_eq!(craft(B::WoodStairs), Some(5), "the stairs SHAPE opens");
-		assert_eq!(craft(B::Torch), Some(8));
+		assert_eq!(craft(B::Torch), Some(10), "light waits for the Earth node");
+		assert_eq!(
+			craft(B::EssenceSiphon),
+			Some(1),
+			"the essence tool is the first craft beat"
+		);
 		// §7.2's grid rule: the whole planed-timber set opens together at
 		// its MATERIAL's level, whatever each shape's own level is — and
 		// the door SHAPE lands at the same level, so the first door fanfare
@@ -641,6 +683,16 @@ mod tests {
 				M::DepletedDuskstone,
 				M::DepletedGlowvein,
 				M::DepletedAetherock,
+				// The surface nodes and their spent faces: a live surface
+				// node can never be placed (never an item), so the reveal
+				// and the family wall are the only gates it needs — and a
+				// spent face is a find already taken.
+				M::Heartwood,
+				M::DrainedHeartwood,
+				M::Leystone,
+				M::SpentLeystone,
+				M::Springstone,
+				M::SpentSpringstone,
 			],
 			"a material joined or left the family-only set — is that intended?"
 		);
@@ -775,7 +827,7 @@ mod tests {
 		// mason's unlock rather than for the shape's own.
 		assert_eq!(pickup(B::WoodSlab), 1, "a level-1 recipe");
 		assert_eq!(pickup(B::WoodStairs), 5);
-		assert_eq!(pickup(B::Torch), 8);
+		assert_eq!(pickup(B::Torch), 10);
 		for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
 			assert_eq!(pickup(b), 12, "{b:?} — the timber set");
 		}
@@ -904,7 +956,7 @@ mod tests {
 		}
 		assert_eq!(
 			dig_blocked(B::Torch, &fresh).map(|r| (r.skill, r.level, r.kind)),
-			Some((Skill::Alchemy, 8, Kind::Recipe))
+			Some((Skill::Alchemy, 10, Kind::Recipe))
 		);
 		// A stone stair asks BOTH; strength is reported first, and clearing
 		// it exposes the recipe underneath rather than opening the dig.
@@ -973,10 +1025,13 @@ mod tests {
 		assert_eq!(
 			alchemy,
 			vec![
-				5, 8, 10, 12, 14, 15, 18, 21, 24, 25, 27, 28, 30, 33, 35, 36, 40, 45, 50, 55, 99
+				5, 10, 12, 14, 15, 18, 21, 24, 25, 27, 28, 30, 33, 35, 36, 40, 45, 50, 55, 99
 			],
 			"the catalog tops at 50 and the bonus lines at 55; 99 is the \
-			 sigil alone — the tail is expansion headroom"
+			 sigil alone — the tail is expansion headroom. 5 and 12 carry \
+			 the leystone and springstone reveals beside their recipes; \
+			 heartwood and the siphon sit at the first level, which is \
+			 never an unlock"
 		);
 		// The first level is where everyone starts — you never level up into
 		// it, and the slabs sitting at that unlock must not say otherwise.

@@ -25,7 +25,7 @@ use crate::inventory::Inventory;
 /// The wire does not care — `from_wire` takes what it is given and pads,
 /// so a save written at the old height decodes into the current one with
 /// its arrangement intact.
-pub const GRID_SLOTS: usize = 54;
+pub const GRID_SLOTS: usize = 63;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InvGrid {
@@ -261,9 +261,11 @@ mod tests {
 		// is the wall). Another row needs that screen to scroll first, so
 		// a catalog wave that outgrows this is a UI job as well as a block
 		// row.
+		// Less than a whole spare row: rows come nine at a time, so this is
+		// as tight as the grid can sit without dropping below the roster.
 		assert!(
-			room - ownable <= 4,
-			"unexpected slack — did the roster shrink?"
+			room - ownable < 9,
+			"a whole spare row of slack — did the roster shrink?"
 		);
 	}
 

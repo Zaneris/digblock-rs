@@ -27,7 +27,7 @@
 
 use crate::block::BlockType;
 use crate::chunk::cell_id;
-use crate::worldgen::ore::DigMode;
+use crate::worldgen::nodes::DigMode;
 
 /// May this cell join the plane as an EXTRA? Asked of every candidate by
 /// both ends over their own worlds, so the two swings touch the same set

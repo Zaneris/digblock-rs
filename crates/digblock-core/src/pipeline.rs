@@ -184,10 +184,11 @@ pub struct Pipeline {
 	/// Re-apply `edits` onto a regenerating column, and report them for
 	/// persistence. False in multiplayer.
 	reapply: bool,
-	/// The looker's Mining level, which decides which ore tiers the mesh
-	/// stamp reveals (SKILLS-DESIGN §5.3). Crossing a threshold re-meshes
-	/// everything resident — see [`Pipeline::set_mining_level`].
-	mining_level: u32,
+	/// The looker's skill levels, which decide which node kinds the mesh
+	/// stamp reveals (SKILLS-DESIGN §5.3 — Mining for the ore tiers,
+	/// Alchemy for the surface nodes). Crossing a threshold re-meshes
+	/// everything resident — see [`Pipeline::set_levels`].
+	levels: crate::worldgen::nodes::Levels,
 	/// Edits recorded since the last `take_recorded_edits` drain (the
 	/// engine forwards them to the world store).
 	recorded: Vec<(i32, i32, i32, u16)>,
@@ -609,7 +610,7 @@ impl Pipeline {
 			deferred_count: 0,
 			reapply: overlay.is_some(),
 			edits: overlay.unwrap_or_default(),
-			mining_level: 0,
+			levels: crate::worldgen::nodes::Levels::default(),
 			recorded: Vec::new(),
 			scanned: None,
 			in_flight: 0,
@@ -634,20 +635,24 @@ impl Pipeline {
 		self.reapply.then_some(&self.edits)
 	}
 
-	/// Set the Mining level the ore reveal stamps at, returning true when
-	/// that crosses a tier's threshold and every resident chunk therefore
-	/// has to re-mesh. The caller decides what to do about it (the engine
-	/// sweeps and says so in the feed) — this only reports the crossing,
-	/// so a run of level-ups does not re-mesh once per level.
-	pub fn set_mining_level(&mut self, level: u32) -> bool {
-		let was = std::mem::replace(&mut self.mining_level, level);
-		crate::worldgen::ore::ORES
-			.iter()
-			.any(|&o| crate::unlock::reveal(o).is_some_and(|need| (was < need) != (level < need)))
+	/// Set the skill levels the node reveal stamps at, returning true when
+	/// that crosses some node's reveal threshold — on either axis — and
+	/// every resident chunk therefore has to re-mesh. The caller decides
+	/// what to do about it (the engine sweeps and says so in the feed) —
+	/// this only reports the crossing, so a run of level-ups does not
+	/// re-mesh once per level.
+	pub fn set_levels(&mut self, levels: crate::worldgen::nodes::Levels) -> bool {
+		let was = std::mem::replace(&mut self.levels, levels);
+		crate::worldgen::nodes::NODES.iter().any(|&n| {
+			crate::unlock::reveal(n)
+				.is_some_and(|need| (was.mining < need) != (levels.mining < need))
+				|| crate::unlock::alchemy_reveal(n)
+					.is_some_and(|need| (was.alchemy < need) != (levels.alchemy < need))
+		})
 	}
 
-	pub fn mining_level(&self) -> u32 {
-		self.mining_level
+	pub fn levels(&self) -> crate::worldgen::nodes::Levels {
+		self.levels
 	}
 
 	/// Has this cell ever been written in this world? The ore reveal's
@@ -1382,12 +1387,12 @@ impl Pipeline {
 				_ => Src::Missing,
 			}
 		});
-		input.ore = self.ore_stamp(pos);
+		input.nodes = self.node_stamp(pos, &input.blocks);
 		input
 	}
 
-	/// The ore reveal's per-job parcel (SKILLS-DESIGN §5.3), or `None`
-	/// when this chunk cannot show a vein at all.
+	/// The node reveal's per-job parcel (SKILLS-DESIGN §5.3, generalized),
+	/// or `None` when this chunk cannot show a node at all.
 	///
 	/// The edited-cell list is gathered HERE because this is the only
 	/// place that has the map — the worker holds a snapshot of block ids
@@ -1397,33 +1402,53 @@ impl Pipeline {
 	/// spent out of the same budget streaming is, and both of its guards
 	/// exist for that reason:
 	///
-	/// - No deposit reaching the box means nothing to reveal and nothing
-	///   to suppress, so there is no stamp at all. That is what keeps the
-	///   gather off the overwhelming majority of chunks — which the code
-	///   used to CLAIM while walking the map regardless.
-	/// - For the rest, the walk is whichever of the two is smaller. The
-	///   map walk is O(every edit ever made in the overlapping columns),
-	///   and `EditOverlay` has no eviction; multiplayer now keeps one too,
-	///   fed by every broadcast edit including the server's fluid churn.
-	///   So in exactly the places players build, a column holds tens of
-	///   thousands of entries and the box holds one padded snapshot — and
-	///   an F7 or a reveal-threshold `remesh_all` pays it for every
-	///   resident chunk at once. Probing the box instead is a fixed cost
-	///   with the same answer.
-	fn ore_stamp(&self, pos: ChunkPos) -> Option<crate::mesher::OreStamp> {
+	/// - No node source reaching the box means nothing to reveal and
+	///   nothing to suppress, so there is no stamp at all. The deposit
+	///   half asks worldgen (the same box `apply_nodes` walks, so the two
+	///   agree by construction); the surface halves ask the freshly built
+	///   SNAPSHOT for host blocks, because a chunk with no Wood holds no
+	///   trunk and a chunk with no Sand holds no bed — a scan of the box
+	///   is fixed-cost where the worldgen queries are not.
+	/// - For the rest, the edited-cell walk is whichever of the two is
+	///   smaller. The map walk is O(every edit ever made in the
+	///   overlapping columns), and `EditOverlay` has no eviction;
+	///   multiplayer keeps one too, fed by every broadcast edit including
+	///   the server's fluid churn. So in exactly the places players
+	///   build, a column holds tens of thousands of entries and the box
+	///   holds one padded snapshot — and an F7 or a reveal-threshold
+	///   `remesh_all` pays it for every resident chunk at once. Probing
+	///   the box instead is a fixed cost with the same answer.
+	fn node_stamp(
+		&self,
+		pos: ChunkPos,
+		blocks: &[u16; crate::mesher::PADDED_VOLUME],
+	) -> Option<crate::mesher::NodeStamp> {
 		use crate::worldgen::ore;
-		if self.mining_level < ore::lowest_reveal() {
-			return None;
-		}
 		let n = crate::chunk::CHUNK_SIZE as i32;
 		let origin = (pos.x * n - 1, pos.y * n - 1, pos.z * n - 1);
-		if origin.1 > ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS {
-			return None;
-		}
 		let span = crate::mesher::PADDED as i32 - 1;
 		let far = (origin.0 + span, origin.1 + span, origin.2 + span);
-		// The same box `apply_ore` walks, so the two agree by construction.
-		if ore::deposits_near(origin, far, self.seed).is_empty() {
+		let reveal_met = |b: crate::block::BlockType| {
+			crate::unlock::reveal(b).is_some_and(|need| self.levels.mining >= need)
+				|| crate::unlock::alchemy_reveal(b).is_some_and(|need| self.levels.alchemy >= need)
+		};
+		let (mut stone, mut wood, mut sand) = (false, false, false);
+		for &cell in blocks.iter() {
+			match cell & crate::chunk::ID_MASK {
+				id if id == crate::block::BlockType::Stone as u16 => stone = true,
+				id if id == crate::block::BlockType::Wood as u16 => wood = true,
+				id if id == crate::block::BlockType::Sand as u16 => sand = true,
+				_ => {}
+			}
+		}
+		let deposits = stone
+			&& origin.1 <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
+			&& (self.levels.mining >= ore::lowest_reveal()
+				|| reveal_met(crate::block::BlockType::Leystone))
+			&& !ore::deposits_near(origin, far, self.seed).is_empty();
+		let heartwood = wood && reveal_met(crate::block::BlockType::Heartwood);
+		let springs = sand && reveal_met(crate::block::BlockType::Springstone);
+		if !deposits && !heartwood && !springs {
 			return None;
 		}
 		let mut cols = Vec::new();
@@ -1475,10 +1500,11 @@ impl Pipeline {
 			}
 		}
 		edited.sort_unstable();
-		Some(crate::mesher::OreStamp {
+		Some(crate::mesher::NodeStamp {
 			seed: self.seed,
 			origin,
-			mining: self.mining_level,
+			mining: self.levels.mining,
+			alchemy: self.levels.alchemy,
 			edited,
 		})
 	}
@@ -1908,11 +1934,11 @@ pub fn run_job(job: Job) -> JobResult {
 			generation,
 			mut input,
 		} => {
-			// The ore reveal runs HERE, in the worker, before anything
-			// reads the array: it rewrites qualifying pristine Stone to
-			// its ore's block id, so the mesher, the texture path and the
-			// emissive bit all just see a real ore block (§5.3).
-			input.apply_ore();
+			// The node reveal runs HERE, in the worker, before anything
+			// reads the array: it rewrites qualifying pristine host cells
+			// to their node's block id, so the mesher, the texture path
+			// and the emissive bit all just see a real node block (§5.3).
+			input.apply_nodes();
 			let mesh = mesh_chunk(&input);
 			JobResult::Meshed {
 				out: MeshOutput {
@@ -2471,29 +2497,44 @@ mod tests {
 	/// not once per tier.
 	#[test]
 	fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
-		use crate::worldgen::ore;
-		let thresholds: Vec<u32> = ore::ORES
+		use crate::worldgen::nodes::{Levels, NODES};
+		let mining_thresholds: Vec<u32> = NODES
 			.iter()
 			.filter_map(|&o| crate::unlock::reveal(o))
 			.collect();
+		let alchemy_thresholds: Vec<u32> = NODES
+			.iter()
+			.filter_map(|&o| crate::unlock::alchemy_reveal(o))
+			.collect();
+		let at = |mining, alchemy| Levels { mining, alchemy };
 		let mut p = Pipeline::new(0.0, 4, 0);
-		for level in 1..=crate::skills::MAX_LEVEL {
+		p.set_levels(at(1, 1));
+		for level in 2..=crate::skills::MAX_LEVEL {
 			assert_eq!(
-				p.set_mining_level(level),
-				thresholds.contains(&level),
-				"stepping to {level}"
+				p.set_levels(at(level, 1)),
+				mining_thresholds.contains(&level),
+				"Mining stepping to {level}"
 			);
 		}
-		// Re-setting the same level is not a crossing, so a per-frame
+		for level in 2..=crate::skills::MAX_LEVEL {
+			assert_eq!(
+				p.set_levels(at(crate::skills::MAX_LEVEL, level)),
+				alchemy_thresholds.contains(&level),
+				"Alchemy stepping to {level}"
+			);
+		}
+		// Re-setting the same levels is not a crossing, so a per-frame
 		// caller costs nothing.
-		assert!(!p.set_mining_level(crate::skills::MAX_LEVEL));
-		// And a single jump over all four sweeps exactly once.
+		let max = at(crate::skills::MAX_LEVEL, crate::skills::MAX_LEVEL);
+		assert!(!p.set_levels(max));
+		// And a single jump over every threshold on both axes sweeps
+		// exactly once.
 		let mut q = Pipeline::new(0.0, 4, 0);
-		assert!(q.set_mining_level(crate::skills::MAX_LEVEL));
-		assert!(!q.set_mining_level(crate::skills::MAX_LEVEL));
+		assert!(q.set_levels(max));
+		assert!(!q.set_levels(max));
 		// Losing levels (a fresh world, a rejoin as somebody else) crosses
 		// back down and re-meshes too — the veins have to go away.
-		assert!(q.set_mining_level(1));
+		assert!(q.set_levels(at(1, 1)));
 	}
 
 	/// `journal_overlay_survives_evict_and_regen`: with an overlay

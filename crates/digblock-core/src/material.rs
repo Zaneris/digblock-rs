@@ -120,10 +120,19 @@ pub enum Material {
 	DepletedDuskstone,
 	DepletedGlowvein,
 	DepletedAetherock,
+	/// The three surface nodes and their spent faces (the essence
+	/// redesign): the ores' standing exactly — never crafted in any shape,
+	/// drawn where they stand, and the spent face is the trophy.
+	Heartwood,
+	DrainedHeartwood,
+	Leystone,
+	SpentLeystone,
+	Springstone,
+	SpentSpringstone,
 }
 
 impl Material {
-	pub const COUNT: usize = 31;
+	pub const COUNT: usize = 37;
 
 	/// Every material in unlock order — the transmute tab reads members in
 	/// this order, so a family's tiles run from cheapest to rarest.
@@ -159,6 +168,12 @@ impl Material {
 		Material::DepletedDuskstone,
 		Material::DepletedGlowvein,
 		Material::DepletedAetherock,
+		Material::Heartwood,
+		Material::DrainedHeartwood,
+		Material::Leystone,
+		Material::SpentLeystone,
+		Material::Springstone,
+		Material::SpentSpringstone,
 	];
 
 	/// The whole-cube craft split — what a FULL CUBE of this substance costs
@@ -202,7 +217,13 @@ impl Material {
 			| M::DepletedEmberore
 			| M::DepletedDuskstone
 			| M::DepletedGlowvein
-			| M::DepletedAetherock => return None,
+			| M::DepletedAetherock
+			| M::Heartwood
+			| M::DrainedHeartwood
+			| M::Leystone
+			| M::SpentLeystone
+			| M::Springstone
+			| M::SpentSpringstone => return None,
 		})
 	}
 
@@ -249,6 +270,13 @@ impl Material {
 			// stretch in which it could not be built.
 			M::Glowvein => &[(E::Metal, 60), (E::Aether, 1)],
 			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
+			// The surface nodes: concentrates like the ore tiers, each in
+			// its own single essence. A little above a whole block's worth
+			// on purpose — a node is a find, and a find must out-pay the
+			// bulk matter around it or it is not one.
+			M::Heartwood => &[(E::Flora, 36)],
+			M::Leystone => &[(E::Earth, 36)],
+			M::Springstone => &[(E::Aqua, 36)],
 			// Spent rock is spent: the siphon already took what was in it,
 			// and a tapped face that still paid a BASE at the bench would
 			// be a second helping of the same vein. The two deep tiers do
@@ -259,7 +287,10 @@ impl Material {
 			| M::DepletedEmberore
 			| M::DepletedDuskstone
 			| M::DepletedGlowvein
-			| M::DepletedAetherock => &[],
+			| M::DepletedAetherock
+			| M::DrainedHeartwood
+			| M::SpentLeystone
+			| M::SpentSpringstone => &[],
 		}
 	}
 
@@ -298,6 +329,12 @@ impl Material {
 			M::DepletedDuskstone => "SPENT DUSKSTONE",
 			M::DepletedGlowvein => "SPENT GLOWVEIN",
 			M::DepletedAetherock => "SPENT AETHEROCK",
+			M::Heartwood => "HEARTWOOD",
+			M::DrainedHeartwood => "DRAINED HEARTWOOD",
+			M::Leystone => "LEYSTONE",
+			M::SpentLeystone => "SPENT LEYSTONE",
+			M::Springstone => "SPRINGSTONE",
+			M::SpentSpringstone => "SPENT SPRINGSTONE",
 		}
 	}
 }
@@ -397,19 +434,27 @@ mod tests {
 	}
 
 	/// Extraction never exceeds a whole block — the §3.1 cap, and the other
-	/// half of what makes the proration safe. Ore is the deliberate
-	/// exception: it is a concentrate, not a substance you shape, so it has
-	/// no craft recipe to pump and no shapes to prorate.
+	/// half of what makes the proration safe. NODES are the deliberate
+	/// exception: an ore tier or a surface node is a concentrate, not a
+	/// substance you shape, so it has no craft recipe to pump and no shapes
+	/// to prorate.
 	#[test]
 	fn extraction_bases_stay_under_a_block() {
 		for &m in &Material::ALL {
 			let total: u32 = m.extract_units().iter().map(|&(_, n)| n).sum();
-			let is_ore = matches!(
+			let is_node = matches!(
 				m,
-				Material::Emberore | Material::Duskstone | Material::Glowvein | Material::Aetherock
+				Material::Emberore
+					| Material::Duskstone
+					| Material::Glowvein
+					| Material::Aetherock
+					| Material::Heartwood
+					| Material::Leystone
+					| Material::Springstone
 			);
-			if is_ore {
+			if is_node {
 				assert!(m.craft_units().is_none(), "{m:?} must never be craftable");
+				assert!(total > 0, "{m:?} is a find and must pay something");
 			} else {
 				assert!(
 					total <= crate::shapes::SUBS_PER_BLOCK,

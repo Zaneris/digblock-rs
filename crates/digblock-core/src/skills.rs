@@ -466,7 +466,7 @@ pub fn dig_award(
 	broken: u32,
 	y: i32,
 ) -> (u64, u64) {
-	if let Some(split) = extracting.and_then(ore_field_xp) {
+	if let Some(split) = extracting.and_then(field_xp) {
 		return split;
 	}
 	let unit = u64::from(PERMILLE);
@@ -535,37 +535,37 @@ pub fn convert_xp(block: BlockType) -> u64 {
 	u64::from(crate::alchemy::extract_worth(block).div_ceil(2))
 }
 
-/// The DUAL award for one field extraction at the rock face (§5.4):
-/// `(Mining, Alchemy)`. `None` for anything that is not an ore.
+/// The DUAL award for one field draw — a siphon taking a node where it
+/// stands: `(Mining, Alchemy)`. `None` for anything that is not a node.
 ///
-/// Field extraction is mechanically a mine and thematically a crude
-/// alchemical separation, so it pays both: Mining the headline, Alchemy
-/// the smaller cut. Smaller than the Mining figure beside it, though —
-/// not a token half of some larger Alchemy total, because there is no
-/// second moment behind this one. Raw ore is never an item (§5.3,
-/// `raw_ore_is_never_an_item`), so no vein reaches a bench and the draw
-/// at the rock face IS the separation. `convert_xp` still answers for an
-/// ore and its answer is simply unreachable — the tier's bench worth,
-/// kept as the basis this column is set against.
+/// A draw is mechanically a dig and thematically an alchemical
+/// separation, so it pays both — and WHICH skill takes the headline
+/// follows which skill found the node. The ore tiers pay Mining first
+/// with an Alchemy cut (§5.4: the find was a Mining reveal, deep in
+/// Mining's half of the world); the surface nodes invert it, Alchemy
+/// first with a Mining cut, because the surface hunt is Alchemy's and a
+/// forager who never opens a mine still moves the skill that revealed
+/// the find. There is no second moment behind either: a node is never an
+/// item, so no draw is ever "finished at the bench" later.
 ///
-/// Alchemy is still earned at the bench, taking apart what the world
-/// hands you; what a vein adds is that a miner who never opens the screen
-/// still moves the skill.
-///
-/// Tabled rather than derived from hardness: this is a headline reward
-/// and the curve through it is a decision, not a consequence. Which is
-/// also why it does NOT follow a retune of [`dig_xp`] — a vein is scarce
-/// and finding one is most of the work, so what a draw is worth was
-/// chosen against the tier and not against a multiple of the rock around
-/// it. A retune of the ordinary dig moves how much a vein is worth
-/// RELATIVE to quarrying, deliberately, and that is a lever rather than a
-/// drift.
-pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
-	Some(match ore {
+/// Tabled rather than derived from hardness: these are headline rewards
+/// and the curve through them is a decision, not a consequence. Which is
+/// also why the table does NOT follow a retune of [`dig_xp`] — a node is
+/// scarce and finding one is most of the work, so what a draw is worth
+/// was chosen against the kind and not against a multiple of the host
+/// around it. A retune of the ordinary dig moves how much a find is
+/// worth RELATIVE to plain digging, deliberately: a lever, not a drift.
+pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
+	Some(match node {
 		BlockType::Emberore => (40, 16),
 		BlockType::Duskstone => (70, 28),
 		BlockType::Glowvein => (110, 44),
 		BlockType::Aetherock => (170, 68),
+		// The surface ladder, Alchemy-primary, rising with the reveal
+		// order — heartwood is the day-one node and pays like one.
+		BlockType::Heartwood => (6, 16),
+		BlockType::Leystone => (8, 22),
+		BlockType::Springstone => (10, 30),
 		_ => return None,
 	})
 }
@@ -1063,25 +1063,39 @@ mod tests {
 		assert_eq!(seen, (top..=bottom).collect::<Vec<_>>());
 	}
 
-	/// A field extraction pays §5.4's tabled split, and depth does not
-	/// touch it: the ore tiers are depth-banded already, so scaling them
-	/// would count the same axis twice. The excavation at a vein is the
-	/// DepletedStone face left behind, and THAT scales like any other dig.
+	/// A field draw pays the tabled split, and depth does not touch it:
+	/// the ore tiers are depth-banded already, so scaling them would count
+	/// the same axis twice — and a surface node has no depth story at all.
+	/// The excavation at a vein is the spent face left behind, and THAT
+	/// scales like any other dig.
 	#[test]
-	fn ore_extraction_ignores_the_depth_reward() {
-		let ore = BlockType::Aetherock;
-		let split = ore_field_xp(ore).expect("an ore");
-		for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
-			assert_eq!(dig_award(BlockType::Stone, Some(ore), 1, y), split, "y {y}");
+	fn a_field_draw_ignores_the_depth_reward() {
+		for node in [BlockType::Aetherock, BlockType::Heartwood] {
+			let split = field_xp(node).expect("a node");
+			for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
+				assert_eq!(dig_award(BlockType::Stone, Some(node), 1, y), split, "y {y}");
+			}
 		}
 		// The tapped face is an ordinary dig and does climb.
 		let spent = BlockType::DepletedStone;
 		assert!(dig_award(spent, None, 1, DEPTH_XP_TO) > dig_award(spent, None, 1, DEPTH_XP_FROM));
-		// A non-ore never routes through the ore table, whatever is held.
+		// A non-node never routes through the field table, whatever is held.
 		assert_eq!(
 			dig_award(BlockType::Stone, Some(BlockType::Dirt), 1, DEPTH_XP_FROM),
 			(dig_xp(BlockType::Stone), 0),
 		);
+		// Every node kind has a split, and the headline skill follows the
+		// skill that revealed the find: Mining first at a vein, Alchemy
+		// first at a surface node.
+		for &node in &crate::worldgen::nodes::NODES {
+			let (mining, alchemy) = field_xp(node).unwrap_or_else(|| panic!("{node:?} pays nothing"));
+			assert!(mining > 0 && alchemy > 0, "{node:?} pays both skills");
+			if crate::unlock::reveal(node).is_some() {
+				assert!(mining > alchemy, "{node:?} is Mining's find");
+			} else {
+				assert!(alchemy > mining, "{node:?} is Alchemy's find");
+			}
+		}
 	}
 
 	/// §4.1's table, keyed on BASE yields/costs — fixed for life regardless

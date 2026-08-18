@@ -156,20 +156,23 @@ pub fn extractable_at(b: BlockType, level: u32) -> bool {
 	!extract_yields(b, level).is_empty()
 }
 
-/// What one FIELD extraction pays into a player's stocks (SKILLS-DESIGN
-/// §5.3) — a seam drawn out where it stands, with no ore in between.
+/// What one FIELD draw pays into a player's stocks (SKILLS-DESIGN §5.3,
+/// generalized by the essence redesign) — a NODE drawn out where it
+/// stands, vein or heartwood or spring alike, with no item in between.
 ///
 /// The siphon is a bench you carry, so this is deliberately the ordinary
-/// [`extract_yields`] of the ore and not a second table: the Alchemy level
-/// scales a draw at the rock face exactly as it scales one at the bench,
-/// and the ore rows' yields stay the single statement of what a tier is
-/// worth. Nothing else could reach them — no ore ever becomes an item, so
-/// the bench never sees one.
+/// [`extract_yields`] of the node and not a second table: the Alchemy
+/// level scales a draw in the field exactly as it scales anything else,
+/// and the node rows' yields stay the single statement of what a kind is
+/// worth. Nothing else could reach them — no node ever becomes an item.
 ///
 /// Mining's capstone ([`crate::unlock::ore_mastery`]) multiplies the whole
 /// split rather than adding a line to it, which is what keeps "one extra
-/// vein's worth" true of Aetherock's two essences as well as of the tiers
-/// that pay in one.
+/// vein's worth" true of Aetherock's two essences as well as of the kinds
+/// that pay in one. It multiplies SURFACE draws too, deliberately: the
+/// capstone is mastery of extraction itself, and a second table for where
+/// the extraction happened is exactly the drift this function exists to
+/// prevent.
 ///
 /// The one thing a table cannot say is the TRACE, which is why this takes
 /// a cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per
@@ -183,18 +186,18 @@ pub fn extractable_at(b: BlockType, level: u32) -> bool {
 /// The ONE answer the server's dig credit and the engine's offline arm
 /// both take, so a solo world and a server cannot pay differently.
 pub fn field_yield(
-	ore: BlockType,
+	node: BlockType,
 	alchemy: u32,
 	mining: u32,
 	at: (i32, i32, i32),
 	seed: f64,
 ) -> Vec<(Essence, u32)> {
 	let draws = 1 + crate::unlock::ore_mastery(mining);
-	let mut out: Vec<(Essence, u32)> = extract_yields(ore, alchemy)
+	let mut out: Vec<(Essence, u32)> = extract_yields(node, alchemy)
 		.into_iter()
 		.map(|(e, per)| (e, per * draws))
 		.collect();
-	if crate::worldgen::ore::traces_aether(ore, at.0, at.1, at.2, seed) {
+	if crate::worldgen::ore::traces_aether(node, at.0, at.1, at.2, seed) {
 		let n = TRACE_AETHER * draws;
 		// Merged rather than pushed, the same way a bonus line merges: no
 		// tracing tier pays Aether of its own today, and the day one does
@@ -1085,21 +1088,21 @@ mod tests {
 	#[test]
 	fn a_field_draw_pays_the_ore_and_the_capstone_multiplies_all_of_it() {
 		let (plain, _) = trace_cells(TEST_SEED);
-		for &ore in &crate::worldgen::ore::ORES {
+		for &node in &crate::worldgen::nodes::NODES {
 			for alchemy in [1, 40, crate::skills::MAX_LEVEL] {
-				let bench = extract_yields(ore, alchemy);
-				assert!(!bench.is_empty(), "{ore:?} is worth nothing to draw");
+				let bench = extract_yields(node, alchemy);
+				assert!(!bench.is_empty(), "{node:?} is worth nothing to draw");
 				assert_eq!(
-					field_yield(ore, alchemy, 1, plain, TEST_SEED),
+					field_yield(node, alchemy, 1, plain, TEST_SEED),
 					bench,
-					"{ore:?} at Alchemy {alchemy}: a draw is the bench's own yield"
+					"{node:?} at Alchemy {alchemy}: a draw is the yield table's own answer"
 				);
 				let mastered =
-					field_yield(ore, alchemy, crate::skills::MAX_LEVEL, plain, TEST_SEED);
+					field_yield(node, alchemy, crate::skills::MAX_LEVEL, plain, TEST_SEED);
 				let draws = 1 + crate::unlock::ore_mastery(crate::skills::MAX_LEVEL);
 				assert!(draws > 1, "the capstone hands out nothing");
 				for (i, &(e, n)) in mastered.iter().enumerate() {
-					assert_eq!((e, n), (bench[i].0, bench[i].1 * draws), "{ore:?} line {i}");
+					assert_eq!((e, n), (bench[i].0, bench[i].1 * draws), "{node:?} line {i}");
 				}
 			}
 		}
@@ -1246,8 +1249,11 @@ mod tests {
 					if b.is_bench_only() || crate::unlock::mine(b) > level {
 						return false;
 					}
-					let ore = crate::worldgen::ore::ORES.contains(&b);
-					if ore && crate::unlock::reveal(b).is_some_and(|r| r > level) {
+					// A node you cannot yet SEE is not a source, whichever
+					// skill's reveal hides it.
+					if crate::unlock::reveal(b).is_some_and(|r| r > level)
+						|| crate::unlock::alchemy_reveal(b).is_some_and(|r| r > level)
+					{
 						return false;
 					}
 					extract_yields(b, level)
@@ -1268,8 +1274,8 @@ mod tests {
 	fn bases_stay_under_a_block() {
 		for &b in &BlockType::ALL {
 			let total = extract_total_base(b);
-			if crate::worldgen::ore::ORES.contains(&b) {
-				assert!(total > 0, "{b:?} must be worth taking to the bench");
+			if crate::worldgen::nodes::NODES.contains(&b) {
+				assert!(total > 0, "{b:?} must be worth drawing");
 				assert!(craft_ideal(b).is_none(), "{b:?} must have no recipe");
 				continue;
 			}
