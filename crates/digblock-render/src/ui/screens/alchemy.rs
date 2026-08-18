@@ -9,7 +9,15 @@
 //! inventory grid's columns beneath (locked ones dim with an unlock
 //! badge, affordable ones count-badged), a detail strip, and the page's
 //! ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what
-//! the holdings afford. The families are DERIVED from §7.2's shape axis
+//! the holdings afford.
+//!
+//! **The page shows what you have and one tier of what is coming, and
+//! nothing else** ([`member_visible`]): a member is drawn only if its
+//! recipe is unlocked or sits at the catalog's NEXT unlock level — every
+//! item sharing that level shows together — and a family with nothing on
+//! the page hides entirely. A fresh player reads three tiles, not the
+//! whole catalog as a wall of locks; the hidden depth is the character
+//! screen's job to tease. The families are DERIVED from §7.2's shape axis
 //! rather than mirrored by hand, and
 //! `every_craftable_appears_in_exactly_one_family` holds the derivation
 //! to the core catalog, so a new craftable cannot silently miss the
@@ -251,6 +259,27 @@ pub fn families() -> &'static [Family] {
 		}));
 		out
 	})
+}
+
+/// The next Alchemy level ABOVE `level` at which anything in the catalog
+/// unlocks — the page's one teaser tier.
+fn next_unlock_level(level: u32) -> Option<u32> {
+	families()
+		.iter()
+		.flat_map(|f| f.members.iter())
+		.filter_map(|&b| unlock::craft(b))
+		.filter(|&l| l > level)
+		.min()
+}
+
+/// Is this member on the page at all? Already unlocked, or part of the
+/// NEXT unlock — everything past that stays hidden, so a fresh player
+/// reads a short page of what they can do and one tier of what is coming
+/// instead of the whole catalog as a wall of locks. Several items sharing
+/// the next level all show together, since the tier is a LEVEL and not an
+/// item.
+fn member_visible(b: BlockType, level: u32, next: Option<u32>) -> bool {
+	unlock::craft(b).is_some_and(|l| l <= level || Some(l) == next)
 }
 
 /// Seconds one cycle of the family tile's member rotation takes. A
@@ -562,20 +591,35 @@ impl AlchScreen {
 		// Family tiles, previews rotating on the shared clock. The
 		// selected family wears the WEAK ring — it's context; the chosen
 		// member below is what the button acts on and gets the strong
-		// one. A family whose every member is locked dims like a locked
-		// tile and badges its earliest unlock.
+		// one.
+		//
+		// Only families with something ON the page draw at all — packed
+		// left, but keeping their TRUE index in `InvId::Family`, so hiding
+		// never shifts selection state or hit identity. A family whose
+		// only visible members are next-unlock teasers dims like a locked
+		// tile and badges that level.
+		let next = next_unlock_level(view.level);
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
+		let mut col = 0usize;
 		for (i, fam) in families().iter().enumerate() {
-			let rect = fam_spec.rect(i);
-			let all_locked = fam
+			let visible: Vec<BlockType> = fam
 				.members
 				.iter()
-				.all(|&m| !unlock::can_craft(m, view.level));
+				.copied()
+				.filter(|&m| member_visible(m, view.level, next))
+				.collect();
+			if visible.is_empty() {
+				continue;
+			}
+			let rect = fam_spec.rect(col);
+			col += 1;
+			let all_locked = visible.iter().all(|&m| !unlock::can_craft(m, view.level));
 			// The tile trades one member for the next by shrinking the
 			// outgoing one away and growing the incoming one in, rather
-			// than cutting between them.
-			let (mi, present) = family_preview(self.clock, fam.members.len());
-			let preview = fam.members[mi];
+			// than cutting between them — rotating over the VISIBLE
+			// members only, or the tile would advertise hidden items.
+			let (mi, present) = family_preview(self.clock, visible.len());
+			let preview = visible[mi];
 			let (kind, tint) = hud::item_icon(HotbarItem::Block(preview), false);
 			widgets::slot(
 				ui,
@@ -594,8 +638,7 @@ impl AlchScreen {
 				rect.contains(cx, cy),
 			);
 			if all_locked {
-				let earliest = fam
-					.members
+				let earliest = visible
 					.iter()
 					.filter_map(|&m| unlock::craft(m))
 					.min()
@@ -617,8 +660,13 @@ impl AlchScreen {
 			let family = &families()[f];
 			let member = self.member.min(family.members.len() - 1);
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
+			let mut col = 0usize;
 			for (j, &item) in family.members.iter().enumerate() {
-				let rect = mem_spec.rect(j);
+				if !member_visible(item, view.level, next) {
+					continue;
+				}
+				let rect = mem_spec.rect(col);
+				col += 1;
 				let locked = !unlock::can_craft(item, view.level);
 				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 				widgets::slot(
@@ -1434,6 +1482,86 @@ mod tests {
 				appearances,
 				usize::from(craftable),
 				"{b:?}: craftable blocks sit in exactly one family, others in none"
+			);
+		}
+	}
+
+	/// The page shows what is unlocked plus ONE teaser tier — the next
+	/// unlock level, all of whose items show together — and hides the
+	/// rest, families included. Hiding must not shift identity: tiles
+	/// pack left but keep their true indices, so a member's hit id is the
+	/// same at every level it is visible at.
+	#[test]
+	fn the_page_hides_everything_past_the_next_unlock() {
+		// A fresh player: the slab and the two vessels are unlocked, the
+		// stairs shape is the next tier — and that is the WHOLE page.
+		let mut r = rig_at(1, |inv| inv.add(B::Wood, 20));
+		let idx = |name: &str| {
+			families()
+				.iter()
+				.position(|f| f.name == name)
+				.unwrap_or_else(|| panic!("no {name} family")) as u8
+		};
+		for name in ["SLABS", "STAIRS", "TOOLS"] {
+			assert!(
+				r.hits.rect_of(InvId::Family(idx(name))).is_some(),
+				"{name} belongs on a fresh page"
+			);
+		}
+		for name in ["DOORS", "BLOCKS", "LIGHTS", "FURNITURE"] {
+			assert!(
+				r.hits.rect_of(InvId::Family(idx(name))).is_none(),
+				"{name} is past the next unlock and must hide"
+			);
+		}
+		// Inside TOOLS: the vessels show, the pick and the sigil do not —
+		// the sigil at the cap is exactly the tile a fresh player must
+		// not be stared down by.
+		let tools = center(r.hits.rect_of(InvId::Family(idx("TOOLS"))).unwrap());
+		press(&mut r, tools);
+		rebuild(&mut r);
+		assert!(r.hits.rect_of(InvId::Craft(0)).is_some(), "the bucket");
+		assert!(r.hits.rect_of(InvId::Craft(1)).is_some(), "the siphon");
+		assert!(r.hits.rect_of(InvId::Craft(2)).is_none(), "the pick hides");
+		assert!(r.hits.rect_of(InvId::Craft(3)).is_none(), "the sigil hides");
+
+		// Two things sharing the next level BOTH show: at the mason's
+		// unlock the next tier holds dark lumber and stone brick, and the
+		// true member indices survive the packing.
+		let mut r = rig_at(15, |_| {});
+		let blocks = center(r.hits.rect_of(InvId::Family(idx("BLOCKS"))).unwrap());
+		press(&mut r, blocks);
+		rebuild(&mut r);
+		let members = &families()[idx("BLOCKS") as usize].members;
+		let at = |b: B| members.iter().position(|&m| m == b).unwrap() as u8;
+		assert!(r.hits.rect_of(InvId::Craft(at(B::Lumber))).is_some());
+		assert!(r.hits.rect_of(InvId::Craft(at(B::Stone))).is_some());
+		assert!(
+			r.hits.rect_of(InvId::Craft(at(B::DarkLumber))).is_some(),
+			"the next tier shows"
+		);
+		assert!(
+			r.hits.rect_of(InvId::Craft(at(B::StoneBrick))).is_some(),
+			"BOTH of the next tier's items show"
+		);
+		assert!(
+			r.hits.rect_of(InvId::Craft(at(B::Sandstone))).is_none(),
+			"one tier past the next stays hidden"
+		);
+		// And at the cap nothing hides at all.
+		let r = rig_at(99, |_| {});
+		for name in [
+			"SLABS",
+			"STAIRS",
+			"DOORS",
+			"BLOCKS",
+			"LIGHTS",
+			"FURNITURE",
+			"TOOLS",
+		] {
+			assert!(
+				r.hits.rect_of(InvId::Family(idx(name))).is_some(),
+				"{name} at the cap"
 			);
 		}
 	}

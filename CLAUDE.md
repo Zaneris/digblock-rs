@@ -614,7 +614,10 @@ cross-fade, which double-exposes two 3D icons' internal faces); selecting a fami
 dim but selectable, affordable ones badged) under a detail strip and the page's ONE `TRANSMUTE` button — CLICK 1 · SHIFT
 10 · CTRL 100. A §7.2 material × shape pair is one more member in an existing family, so the catalog grows without the
 screen growing (`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a
-fixed column count). **The button QUEUES that count rather than buying it**: crafting drips one `Craft{count:1}` per
+fixed column count). **The page shows the unlocked catalog plus ONE teaser tier** — the next unlock level, all of whose
+items show together — and hides everything past it, empty families included; tiles pack left but keep their true
+indices, so hiding never shifts hit identity (`the_page_hides_everything_past_the_next_unlock`). **The button QUEUES
+that count rather than buying it**: crafting drips one `Craft{count:1}` per
 `craft_pace_ticks(item, level)` — the pace scales with `craft_worth`, catalyst and feedstock both, so the biggest price
 is the longest hold — with the batch's progress in the row under the button, which is also its CANCEL. Craft XP is HALF
 the worth (`craft_xp`), and with extraction gone it is the bench's only award; the rest of Alchemy's XP is field draws
