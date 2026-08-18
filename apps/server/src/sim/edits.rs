@@ -283,7 +283,7 @@ impl Sim {
 		// tool — the same `ore::dig_mode` the client predicted with, so
 		// neither end can decide alone what an action was.
 		let extracting = match self.ore_dig_mode(req.conn_id, req.cell) {
-			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+			digblock_core::worldgen::nodes::DigMode::Extract(ore) => Some(ore),
 			_ => None,
 		};
 		// A refused push here just drops the reply; a stalled peer is
@@ -402,7 +402,7 @@ impl Sim {
 				// long past the requirement and a modified one completed the
 				// draw in a fraction of the intended time with the server
 				// agreeing.
-				let timed = digblock_core::worldgen::ore::dig_block(
+				let timed = digblock_core::worldgen::nodes::dig_block(
 					self.ore_dig_mode(req.conn_id, req.cell),
 					hit.block,
 				);
@@ -459,7 +459,7 @@ impl Sim {
 					// Writing a different id (rather than the same Stone
 					// back) is also what makes the edit unambiguously real
 					// to the journal, LWW replay and mesh invalidation.
-					digblock_core::worldgen::ore::spent_rock(ore)
+					digblock_core::worldgen::nodes::spent_block(ore)
 						.expect("an Extract names one of the four tiers") as u16
 				} else {
 					air
@@ -1510,8 +1510,8 @@ mod tests {
 		// hardness.
 		for &ore in &BlockType::ALL {
 			assert!(
-				digblock_core::worldgen::ore::dig_block(
-					digblock_core::worldgen::ore::DigMode::Extract(ore),
+				digblock_core::worldgen::nodes::dig_block(
+					digblock_core::worldgen::nodes::DigMode::Extract(ore),
 					BlockType::Stone,
 				)
 				.dig_hardness(FLOOR)

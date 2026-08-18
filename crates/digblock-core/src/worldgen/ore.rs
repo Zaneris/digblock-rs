@@ -192,7 +192,7 @@ fn tier_at(y: i32, roll: u64) -> Option<BlockType> {
 		return None;
 	}
 	let mut pick = roll % total;
-	for t in TIERS.iter().filter(|t| open(&t)) {
+	for t in TIERS.iter().filter(|t| open(t)) {
 		let (ore, _, _, w) = *t;
 		if pick < w {
 			return Some(ore);

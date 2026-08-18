@@ -1102,7 +1102,11 @@ mod tests {
 				let draws = 1 + crate::unlock::ore_mastery(crate::skills::MAX_LEVEL);
 				assert!(draws > 1, "the capstone hands out nothing");
 				for (i, &(e, n)) in mastered.iter().enumerate() {
-					assert_eq!((e, n), (bench[i].0, bench[i].1 * draws), "{node:?} line {i}");
+					assert_eq!(
+						(e, n),
+						(bench[i].0, bench[i].1 * draws),
+						"{node:?} line {i}"
+					);
 				}
 			}
 		}

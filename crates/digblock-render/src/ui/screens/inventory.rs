@@ -536,9 +536,13 @@ mod tests {
 	fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 		// Only where the fit ladder has NOT stepped: at a smaller cell
 		// size there is no column alignment left to hold, which is exactly
-		// why a fitted page centres instead.
-		for size in [(1280u32, 800u32), (1600, 900)] {
-			for scale in [0.75f32, 1.0, 1.5] {
+		// why a fitted page centres instead. The seventh grid row took
+		// 1.5x at 800 tall off this list — the ladder steps there now.
+		for (size, scales) in [
+			((1280u32, 800u32), [0.75f32, 1.0].as_slice()),
+			((1600, 900), [0.75, 1.0, 1.5].as_slice()),
+		] {
+			for &scale in scales {
 				let mut inv = Inventory::default();
 				inv.add(B::Dirt, 5);
 				inv.add(B::Stone, 2);

@@ -1074,19 +1074,19 @@ impl Sim {
 		&self,
 		conn_id: u64,
 		cell: (i32, i32, i32),
-	) -> digblock_core::worldgen::ore::DigMode {
-		use digblock_core::worldgen::ore::DigMode;
+	) -> digblock_core::worldgen::nodes::DigMode {
+		use digblock_core::worldgen::nodes::DigMode;
 		let Some(client) = self.clients.get(&conn_id) else {
 			return DigMode::Break;
 		};
 		let Some(v) = self.store.cell_at(cell.0, cell.1, cell.2) else {
 			return DigMode::Break;
 		};
-		digblock_core::worldgen::ore::dig_mode(
+		digblock_core::worldgen::nodes::dig_mode(
 			v,
 			cell,
 			self.store.seed(),
-			client.skills.level(digblock_core::skills::Skill::Mining),
+			digblock_core::worldgen::nodes::Levels::of(&client.skills),
 			self.cell_edited(cell.0, cell.1, cell.2),
 			client.hotbar.tool_in_hand(),
 		)
@@ -1211,7 +1211,8 @@ impl Sim {
 		// after a two-second hold is not a refusal, it is a punishment.
 		// Below the reveal this never fires: that player's world has no
 		// vein in it, so the cell digs as the stone it appears to be.
-		if self.ore_dig_mode(conn_id, cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
+		if self.ore_dig_mode(conn_id, cell) == digblock_core::worldgen::nodes::DigMode::NeedsSiphon
+		{
 			if let Some(client) = self.clients.get_mut(&conn_id) {
 				client.digging = None;
 				client_send(
@@ -1252,7 +1253,7 @@ impl Sim {
 			.as_ref()
 			.filter(|d| d.cell == cell && Some(d.cell_value) == cell_value)
 			.map(|d| {
-				let b = digblock_core::worldgen::ore::dig_block(
+				let b = digblock_core::worldgen::nodes::dig_block(
 					mode,
 					digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
 						d.cell_value,
@@ -2713,7 +2714,7 @@ mod tests {
 		assert_eq!(dug, cell);
 		assert_eq!(
 			sim.test_cell_at(cell.0, cell.1, cell.2),
-			Some(digblock_core::worldgen::ore::spent_rock(ore).expect("a tier") as u16),
+			Some(digblock_core::worldgen::nodes::spent_block(ore).expect("a tier") as u16),
 			"the TIER's tapped face, not a hole and not one generic grey \
 			 stone — mining ore never excavates, and a worked seam still \
 			 reads as the seam you worked"
@@ -2742,7 +2743,7 @@ mod tests {
 			0,
 			"never the stone's own drop"
 		);
-		let (mining_xp, alch_xp) = digblock_core::skills::ore_field_xp(ore).expect("an ore");
+		let (mining_xp, alch_xp) = digblock_core::skills::field_xp(ore).expect("an ore");
 		assert_eq!(
 			sim.test_skill_xp(1, Skill::Mining) - before.0,
 			mining_xp,
@@ -2946,13 +2947,13 @@ mod tests {
 		assert_eq!(sim.test_digging(1), None, "no hold opened");
 
 		// One level short is still short — the gate is the recipe's level.
-		sim.bench_set_alchemy_level(1, 7);
+		sim.bench_set_alchemy_level(1, 9);
 		start(&mut sim);
-		assert_eq!(sim.test_digging(1), None, "still gated at Alchemy 7");
+		assert_eq!(sim.test_digging(1), None, "still gated at Alchemy 9");
 
-		sim.bench_set_alchemy_level(1, 8);
+		sim.bench_set_alchemy_level(1, 10);
 		start(&mut sim);
-		assert_eq!(sim.test_digging(1), Some(cell), "gate cleared at 8");
+		assert_eq!(sim.test_digging(1), Some(cell), "gate cleared at 10");
 
 		// The stone underneath was never the craft gate's business.
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Air as u16);

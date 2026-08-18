@@ -2362,7 +2362,7 @@ impl Engine {
 			// The scene exists to photograph a tier, so it grants exactly
 			// the level that reveals that tier — read out of the unlock
 			// table rather than written down, so retuning a reveal moves
-			// the capture with it. `sync_mining_reveal` then hands the
+			// the capture with it. `sync_node_reveal` then hands the
 			// level to the pipeline, which is what makes the stamp fire.
 			let ore = digblock_core::worldgen::ore::ORES[engine.config.debug_ore.clamp(1, 4) - 1];
 			let need = digblock_core::unlock::reveal(ore).unwrap_or(1);
@@ -2370,7 +2370,7 @@ impl Engine {
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(need),
 			);
-			engine.sync_mining_reveal(false);
+			engine.sync_node_reveal(false);
 		}
 		if engine.config.debug_mining > 0 {
 			// Last, so an explicit level overrides the one `debug_ore`
@@ -2381,7 +2381,7 @@ impl Engine {
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(engine.config.debug_mining),
 			);
-			engine.sync_mining_reveal(false);
+			engine.sync_node_reveal(false);
 		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
@@ -2871,7 +2871,7 @@ impl Engine {
 		// kind of base, and clearing these is not about the stale NUMBER
 		// — it is about who reads it before the real one lands.
 		// `reset_world_transients` below hands the Mining level straight
-		// to the pipeline we just installed (`sync_mining_reveal`), so a
+		// to the pipeline we just installed (`sync_node_reveal`), so a
 		// previous world's level would stamp veins into THIS world's
 		// terrain for the whole window between `Welcome` and `Skills`. In
 		// that window `ore_dig_mode` answers `NeedsSiphon` on cells the
@@ -2970,7 +2970,7 @@ impl Engine {
 		// world entry has to hand it the level again or a high-level miner
 		// walks into plain stone until the next level-up. Silent: the
 		// discovery was made long ago.
-		self.sync_mining_reveal(false);
+		self.sync_node_reveal(false);
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -3557,7 +3557,7 @@ impl Engine {
 					// joins a server and sees plain stone until the next
 					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
-					self.sync_mining_reveal(false);
+					self.sync_node_reveal(false);
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -4056,16 +4056,16 @@ impl Engine {
 	/// The chunk store still holds Stone here: the reveal is a stamp on
 	/// the MESH input, never a world write, which is what keeps ore out of
 	/// the journal and out of everyone else's world.
-	fn ore_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::ore::DigMode {
-		use digblock_core::worldgen::ore::DigMode;
+	fn node_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::nodes::DigMode {
+		use digblock_core::worldgen::nodes::DigMode;
 		let Some(v) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
 			return DigMode::Break;
 		};
-		digblock_core::worldgen::ore::dig_mode(
+		digblock_core::worldgen::nodes::dig_mode(
 			v,
 			cell,
 			self.seed,
-			self.skills.level(digblock_core::skills::Skill::Mining),
+			digblock_core::worldgen::nodes::Levels::of(&self.skills),
 			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
 			self.hotbar.tool_in_hand(),
 		)
@@ -4115,7 +4115,7 @@ impl Engine {
 						credit,
 						v,
 						c,
-						self.ore_dig_mode(c),
+						self.node_dig_mode(c),
 						self.cell_edited(c),
 						alchemy,
 					)
@@ -4144,7 +4144,7 @@ impl Engine {
 		}
 		// A revealed vein and the wrong tool: predicted here so the hold
 		// never opens, exactly as the server refuses it at `DigStart`.
-		if self.ore_dig_mode(hit.cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
+		if self.node_dig_mode(hit.cell) == digblock_core::worldgen::nodes::DigMode::NeedsSiphon {
 			return false;
 		}
 		if self.water_tool_selected() {
@@ -4203,8 +4203,8 @@ impl Engine {
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
 				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
-			} else if self.ore_dig_mode(h.cell)
-				== digblock_core::worldgen::ore::DigMode::NeedsSiphon
+			} else if self.node_dig_mode(h.cell)
+				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
 			{
 				Some((h.cell, digblock_core::unlock::Kind::Tool.message()))
 			} else {
@@ -4249,8 +4249,8 @@ impl Engine {
 			// the cell still holds, so a deep seam takes longer than a
 			// shallow one and the ore rows' hardnesses are not dead
 			// numbers on blocks nobody digs.
-			let mode = self.ore_dig_mode(hit.cell);
-			let timed = digblock_core::worldgen::ore::dig_block(mode, hit.block);
+			let mode = self.node_dig_mode(hit.cell);
+			let timed = digblock_core::worldgen::nodes::dig_block(mode, hit.block);
 			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
@@ -4294,7 +4294,8 @@ impl Engine {
 				// winding up rather than as a pick speeding up. WHICH sound
 				// it is belongs to `audio::dig_voice`, together with the
 				// finish it has to agree with.
-				let extracting = matches!(mode, digblock_core::worldgen::ore::DigMode::Extract(_));
+				let extracting =
+					matches!(mode, digblock_core::worldgen::nodes::DigMode::Extract(_));
 				self.emit(crate::audio::AudioCmd::LoopStart {
 					id: crate::audio::LOOP_DIG,
 					sound: crate::audio::dig_voice(extracting, hit.block).0,
@@ -4420,8 +4421,8 @@ impl Engine {
 		// not dug out, so the cell becomes a tapped face and the mountain
 		// keeps its shape. Resolved before the write, because it changes
 		// both what is written and what is credited.
-		let extracting = match self.ore_dig_mode(hit.cell) {
-			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+		let extracting = match self.node_dig_mode(hit.cell) {
+			digblock_core::worldgen::nodes::DigMode::Extract(node) => Some(node),
 			_ => None,
 		};
 		// What the dig pays, resolved before the write for the same reason
@@ -4437,9 +4438,9 @@ impl Engine {
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
 			digblock_core::shapes::slab_shrunk(prev_cell)
-		} else if let Some(ore) = extracting {
-			digblock_core::worldgen::ore::spent_rock(ore)
-				.expect("an Extract names one of the four tiers") as u16
+		} else if let Some(node) = extracting {
+			digblock_core::worldgen::nodes::spent_block(node).expect("an Extract names a node kind")
+				as u16
 		} else {
 			air
 		};
@@ -4950,21 +4951,22 @@ impl Engine {
 			// from the server's `LevelUp` broadcast.
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
-			self.sync_mining_reveal(true);
+			self.sync_node_reveal(true);
 		}
 	}
 
-	/// Hand the pipeline the Mining level its ore stamp reveals at, and
-	/// sweep every resident chunk when that crosses a tier (§5.3).
+	/// Hand the pipeline the skill levels its node stamp reveals at, and
+	/// sweep every resident chunk when that crosses a threshold on either
+	/// axis (§5.3 — Mining for the ore tiers, Alchemy for the surface
+	/// nodes).
 	///
 	/// The sweep is `remesh_all`, which only ENQUEUES — the mesh heap
 	/// drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in
 	/// around you over a second or two instead of hitching the frame that
 	/// levelled you up.
-	fn sync_mining_reveal(&mut self, announce: bool) {
-		use digblock_core::skills::Skill;
-		let level = self.skills.level(Skill::Mining);
-		if !self.pipeline.set_mining_level(level) {
+	fn sync_node_reveal(&mut self, announce: bool) {
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills);
+		if !self.pipeline.set_levels(levels) {
 			return;
 		}
 		self.pipeline.remesh_all();
@@ -5051,8 +5053,8 @@ impl Engine {
 		// out of rock that stays standing, and a spreading web would say
 		// the opposite of what is happening.
 		if matches!(
-			self.ore_dig_mode(hit.cell),
-			digblock_core::worldgen::ore::DigMode::Extract(_)
+			self.node_dig_mode(hit.cell),
+			digblock_core::worldgen::nodes::DigMode::Extract(_)
 		) {
 			return Some(boxed(None));
 		}
@@ -5083,7 +5085,7 @@ impl Engine {
 		if !self.diggable(&hit) {
 			return None;
 		}
-		let digblock_core::worldgen::ore::DigMode::Extract(ore) = self.ore_dig_mode(hit.cell)
+		let digblock_core::worldgen::nodes::DigMode::Extract(ore) = self.node_dig_mode(hit.cell)
 		else {
 			return None;
 		};
@@ -5131,7 +5133,7 @@ impl Engine {
 		// `Extract` names one of the four tiers, so the palette is always
 		// there; white is a visible wrong answer rather than a panic on a
 		// path that only draws pixels.
-		let (core, _) = ore.ore_flecks().unwrap_or(([255; 3], [255; 3]));
+		let (core, _) = ore.node_flecks().unwrap_or(([255; 3], [255; 3]));
 		self.siphon = Some(SiphonDraw {
 			source: Vec3::new(
 				c[0] + n.0 as f32 * 0.5,
@@ -7912,18 +7914,18 @@ mod craft_gate_tests {
 		engine.dig_held = false;
 		engine.refused_cell = None;
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(7));
+		engine.skills.set_total(Skill::Alchemy, total_xp_for(9));
 		engine.update_target();
 		assert!(
 			!engine.diggable(&engine.target.unwrap()),
 			"one level short of the recipe is still short"
 		);
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(8));
+		engine.skills.set_total(Skill::Alchemy, total_xp_for(10));
 		engine.update_target();
 		assert!(
 			engine.diggable(&engine.target.unwrap()),
-			"Alchemy 8 makes torches, so it takes them too"
+			"the Alchemy level that makes torches takes them too"
 		);
 		assert_eq!(
 			engine.dig_progress().map(|t| t.cell),

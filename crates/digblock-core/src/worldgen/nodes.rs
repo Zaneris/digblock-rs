@@ -233,7 +233,8 @@ pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	}
 	let heart = (t.y0 + 1)..=(t.y0 + HEART_CELLS).min(t.y1);
 	heart.contains(&y)
-		&& ore::mix(t.anchor.0, 0, t.anchor.1, seed.to_bits(), HEARTWOOD_SALT) % 100 < HEARTWOOD_IN_100
+		&& ore::mix(t.anchor.0, 0, t.anchor.1, seed.to_bits(), HEARTWOOD_SALT) % 100
+			< HEARTWOOD_IN_100
 }
 
 /// Salt for the springstone stream.
@@ -257,7 +258,9 @@ pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	}
 	let s = crate::worldgen::column_shape(x, z, seed);
 	use crate::worldgen::SurfaceKind;
-	matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River) && s.water > s.height && y == s.height
+	matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River)
+		&& s.water > s.height
+		&& y == s.height
 }
 
 #[cfg(test)]
@@ -302,7 +305,8 @@ mod tests {
 		for x in (-2048..2048).step_by(3) {
 			for z in (-2048..2048).step_by(3) {
 				let s = crate::worldgen::column_shape(x, z, seed);
-				if !matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River) || s.water <= s.height
+				if !matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River)
+					|| s.water <= s.height
 				{
 					continue;
 				}
@@ -336,7 +340,11 @@ mod tests {
 	fn no_node_manifests_in_an_edited_cell() {
 		let cases = [
 			(BlockType::Wood, find_heartwood(SEED), BlockType::Heartwood),
-			(BlockType::Sand, find_springstone(SEED), BlockType::Springstone),
+			(
+				BlockType::Sand,
+				find_springstone(SEED),
+				BlockType::Springstone,
+			),
 		];
 		for (host, at, node) in cases {
 			let cell = host as u16;
@@ -369,12 +377,17 @@ mod tests {
 	fn surface_nodes_reveal_on_alchemy_alone() {
 		let cases = [
 			(BlockType::Wood, find_heartwood(SEED), BlockType::Heartwood),
-			(BlockType::Sand, find_springstone(SEED), BlockType::Springstone),
+			(
+				BlockType::Sand,
+				find_springstone(SEED),
+				BlockType::Springstone,
+			),
 		];
 		for (host, at, node) in cases {
 			let need = crate::unlock::alchemy_reveal(node).expect("a surface node");
 			let cell = host as u16;
-			let at_lvl = |mining, alchemy| revealed(cell, at, SEED, Levels { mining, alchemy }, false);
+			let at_lvl =
+				|mining, alchemy| revealed(cell, at, SEED, Levels { mining, alchemy }, false);
 			if need > 1 {
 				assert_eq!(at_lvl(crate::skills::MAX_LEVEL, need - 1), None, "{node:?}");
 			}
@@ -524,10 +537,7 @@ mod tests {
 	fn springs_stand_only_in_fresh_beds() {
 		let (x, y, z) = find_springstone(SEED);
 		let s = crate::worldgen::column_shape(x, z, SEED);
-		assert!(matches!(
-			s.surface,
-			SurfaceKind::Lake | SurfaceKind::River
-		));
+		assert!(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River));
 		assert!(s.water > s.height, "under standing water");
 		assert!(!springstone_at(x, y - 1, z, SEED), "not below the bed");
 		assert!(!springstone_at(x, y + 1, z, SEED), "not in the water");

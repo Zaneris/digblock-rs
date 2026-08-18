@@ -228,7 +228,8 @@ impl MeshInput {
 			{
 				for y in inside(d.y - ore::MAX_RADIUS, oy)..=inside(d.y + ore::MAX_RADIUS, oy) {
 					for z in inside(d.z - ore::MAX_RADIUS, oz)..=inside(d.z + ore::MAX_RADIUS, oz) {
-						for x in inside(d.x - ore::MAX_RADIUS, ox)..=inside(d.x + ore::MAX_RADIUS, ox)
+						for x in
+							inside(d.x - ore::MAX_RADIUS, ox)..=inside(d.x + ore::MAX_RADIUS, ox)
 						{
 							let i = idx(x, y, z);
 							if self.blocks[i] != stone
@@ -296,8 +297,7 @@ impl MeshInput {
 				for z in 0..=span {
 					for x in 0..=span {
 						let i = idx(x, y, z);
-						if self.blocks[i] != sand
-							|| stamp.edited.binary_search(&(i as u16)).is_ok()
+						if self.blocks[i] != sand || stamp.edited.binary_search(&(i as u16)).is_ok()
 						{
 							continue;
 						}
@@ -305,8 +305,8 @@ impl MeshInput {
 							true
 						} else {
 							let above = idx(x, y + 1, z);
-							BlockType::from_id(self.blocks[above] & crate::chunk::ID_MASK).is_water()
-								|| stamp.edited.binary_search(&(above as u16)).is_ok()
+							BlockType::from_id(self.blocks[above] & crate::chunk::ID_MASK)
+								.is_water() || stamp.edited.binary_search(&(above as u16)).is_ok()
 						};
 						if watery && nodes::springstone_at(ox + x, oy + y, oz + z, stamp.seed) {
 							self.blocks[i] = BlockType::Springstone as u16;

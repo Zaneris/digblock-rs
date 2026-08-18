@@ -134,7 +134,14 @@ pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 /// cannot reach the bottom of, so the ladder is allowed to step below
 /// where the slider stops. It is still a ladder: the whole style steps
 /// together and the glyph never lands on a fraction.
-pub const FIT_FLOOR: f32 = 0.5;
+///
+/// Half a rung lower again since the inventory grid grew its seventh row
+/// (the node redesign's spent faces pushed the ownable roster past six):
+/// the smallest window at the largest interface scale needs one more
+/// step before the page clears the hotbar. The real fix that comment has
+/// always promised is a scrolling grid, and this floor is the ladder
+/// buying time until someone builds it.
+pub const FIT_FLOOR: f32 = 0.375;
 
 #[cfg(test)]
 mod tests {

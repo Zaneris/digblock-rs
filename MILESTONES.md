@@ -23,6 +23,10 @@ placeholders for the stages to come (expanded on entry). I check items off as th
 - [x] **1.7 Reveal stamp** — `NodeStamp` carries both skill levels, mesher claims Wood/Sand hosts,
       pipeline `set_skill_levels`, `job_wire` roundtrip; stamp tests
 - [x] **1.8 Stage gate** — `cargo test -p digblock-core` fully green, goldens deliberately re-pinned
+- [x] **1.9 Call-site propagation** — engine prediction / GI LUT / audio materials / server sim moved
+      onto the node layer (`node_dig_mode`, `Levels`, `spent_block`, `sync_node_reveal`); inventory
+      grid grew a seventh row (`GRID_SLOTS`, `FIT_FLOOR` one rung lower); workspace check + clippy +
+      fmt clean, core/net/render/server/persist tests green
 
 ## Stage 2 — recipe rebuild (placeholder)
 

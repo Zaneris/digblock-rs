@@ -402,7 +402,7 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 	// texgen paints the flecks and their spent siblings from, so a retint
 	// moves the rock and its light together (GI-DESIGN.md R31).
 	let emit_word = |b: BlockType| -> u32 {
-		let t = b.ore_flecks().map_or_else(|| albedo(b), |(core, _)| core);
+		let t = b.node_flecks().map_or_else(|| albedo(b), |(core, _)| core);
 		u32::from(b.props().light)
 			| u32::from(t[0]) << 8
 			| u32::from(t[1]) << 16
@@ -2828,7 +2828,7 @@ mod tests {
 			);
 		}
 		for &ore in &digblock_core::worldgen::ore::ORES {
-			let (core, _) = ore.ore_flecks().expect("a tier");
+			let (core, _) = ore.node_flecks().expect("a tier");
 			assert_eq!(tint(ore), core, "{ore:?} casts its flecks, not its rock");
 			assert_ne!(
 				tint(ore),

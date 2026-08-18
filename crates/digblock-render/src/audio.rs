@@ -142,7 +142,9 @@ pub fn material_of(b: BlockType) -> Material {
 			| Subst::DarkLumber
 			| Subst::RedLumber
 			| Subst::Leaf
-			| Subst::PineLeaf => Material::Wood,
+			| Subst::PineLeaf
+			| Subst::Heartwood
+			| Subst::DrainedHeartwood => Material::Wood,
 			// Rock and everything won from it: dressed stone, glass, the
 			// refined substances, and the ores in the wall.
 			Subst::Stone
@@ -163,14 +165,18 @@ pub fn material_of(b: BlockType) -> Material {
 			| Subst::DepletedEmberore
 			| Subst::DepletedDuskstone
 			| Subst::DepletedGlowvein
-			| Subst::DepletedAetherock => Material::Stone,
-			// Loose ground.
+			| Subst::DepletedAetherock
+			| Subst::Leystone
+			| Subst::SpentLeystone => Material::Stone,
+			// Loose ground — the spring bed included, sand that it is.
 			Subst::Dirt
 			| Subst::Sand
 			| Subst::Snow
 			| Subst::Grass
 			| Subst::DryGrass
-			| Subst::Mud => Material::Earth,
+			| Subst::Mud
+			| Subst::Springstone
+			| Subst::SpentSpringstone => Material::Earth,
 		};
 	}
 	match b.dig_family() {

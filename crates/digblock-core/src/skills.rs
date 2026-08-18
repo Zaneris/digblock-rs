@@ -1073,7 +1073,11 @@ mod tests {
 		for node in [BlockType::Aetherock, BlockType::Heartwood] {
 			let split = field_xp(node).expect("a node");
 			for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
-				assert_eq!(dig_award(BlockType::Stone, Some(node), 1, y), split, "y {y}");
+				assert_eq!(
+					dig_award(BlockType::Stone, Some(node), 1, y),
+					split,
+					"y {y}"
+				);
 			}
 		}
 		// The tapped face is an ordinary dig and does climb.
@@ -1088,7 +1092,8 @@ mod tests {
 		// skill that revealed the find: Mining first at a vein, Alchemy
 		// first at a surface node.
 		for &node in &crate::worldgen::nodes::NODES {
-			let (mining, alchemy) = field_xp(node).unwrap_or_else(|| panic!("{node:?} pays nothing"));
+			let (mining, alchemy) =
+				field_xp(node).unwrap_or_else(|| panic!("{node:?} pays nothing"));
 			assert!(mining > 0 && alchemy > 0, "{node:?} pays both skills");
 			if crate::unlock::reveal(node).is_some() {
 				assert!(mining > alchemy, "{node:?} is Mining's find");
