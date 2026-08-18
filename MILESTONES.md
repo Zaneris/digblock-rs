@@ -8,7 +8,7 @@ placeholders for the stages to come (expanded on entry). I check items off as th
 - [x] **1.1 Block & material rows** — six new blocks (Heartwood/DrainedHeartwood,
       Leystone/SpentLeystone, Springstone/SpentSpringstone), texture layer ids, `Material` variants,
       fleck palettes (`node_flecks`), rosters/dig-family pins updated
-- [ ] **1.2 Textures** — texgen recipes appended, PNGs committed, assets `LAYERS` entries; texture pin
+- [x] **1.2 Textures** — texgen recipes appended, PNGs committed, assets `LAYERS` entries; texture pin
       green
 - [x] **1.3 Ore rebanding** — every tier gets a floor beside its ceiling (depth predicts tier;
       Emberore confined to surface-cave depths), Leystone joins the deposit stream as the surface

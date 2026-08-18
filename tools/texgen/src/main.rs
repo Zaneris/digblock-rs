@@ -87,7 +87,7 @@ fn main() {
 	// walk, but coloured rather than shaded, and with a light rim so a
 	// fleck reads as a crystal set into rock instead of a stain on it.
 	//
-	// The colours are not written here. `BlockType::ore_flecks` holds them,
+	// The colours are not written here. `BlockType::node_flecks` holds them,
 	// because the GI material LUT casts a vein's light in its core colour
 	// and the spent rocks below paint their dead flecks from the same pair:
 	// three consumers, one table, and a retint moves all of them together.
@@ -111,7 +111,7 @@ fn main() {
 		("Glowvein.png", B::Glowvein, 0.30),
 		("Aetherock.png", B::Aetherock, 0.30),
 	] {
-		let (core, rim) = block.ore_flecks().expect("a tier");
+		let (core, rim) = block.node_flecks().expect("a tier");
 		save(name, ore(&stone, core, rim, body, &mut rng));
 	}
 	// A tapped vein face: the flecks are GONE and their sockets are not.
@@ -183,8 +183,32 @@ fn main() {
 		("DepletedGlowvein.png", B::Glowvein),
 		("DepletedAetherock.png", B::Aetherock),
 	] {
-		let (core, rim) = block.ore_flecks().expect("a tier");
+		let (core, rim) = block.node_flecks().expect("a tier");
 		save(name, spent(&stone, core, rim, &mut rng));
+	}
+
+	// The three SURFACE nodes (the essence redesign) and their spent
+	// faces — the ore recipe pointed at the hosts' own bodies, so a node
+	// reads as its host WITH something in it: living green in bark,
+	// earthen amber in stone, spring blue in wet sand. Live faces darken
+	// their bodies because they glow (the ore contrast rule); spent faces
+	// stay at ordinary brightness because they are lit like any block.
+	// Appended last for the reason everything above was.
+	let log = load("Log.png");
+	{
+		let (core, rim) = B::Heartwood.node_flecks().expect("a node");
+		save("Heartwood.png", ore(&log, core, rim, 0.42, &mut rng));
+		save("DrainedHeartwood.png", spent(&log, core, rim, &mut rng));
+	}
+	{
+		let (core, rim) = B::Leystone.node_flecks().expect("a node");
+		save("Leystone.png", ore(&stone, core, rim, 0.34, &mut rng));
+		save("SpentLeystone.png", spent(&stone, core, rim, &mut rng));
+	}
+	{
+		let (core, rim) = B::Springstone.node_flecks().expect("a node");
+		save("Springstone.png", ore(&sand, core, rim, 0.42, &mut rng));
+		save("SpentSpringstone.png", spent(&sand, core, rim, &mut rng));
 	}
 }
 
