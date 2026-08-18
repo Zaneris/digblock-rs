@@ -256,7 +256,7 @@ mod tests {
 		);
 		// And the headroom is nearly gone, which is worth knowing BEFORE
 		// the next wave: the grid is already as tall as the alchemy
-		// screen's extract tab can be and still fit a short window at the
+		// screen's grid page can be and still fit a short window at the
 		// interface-scale ceiling (`panel_sits_above_the_hotbar_and_fits_short_windows`
 		// is the wall). Another row needs that screen to scroll first, so
 		// a catalog wave that outgrows this is a UI job as well as a block

@@ -3,7 +3,10 @@
 Status: **§11's M1–M7 are BUILT and merged. The document below is the design as written; where the implementation
 diverged, the code and CLAUDE.md are the authority and the divergences are listed here.** The 2026-08-16 design review
 then **compressed both content ladders into levels 1–60** (§13, which supersedes §4.3's and §5.5's ladder positions
-wherever they disagree — the thresholds themselves live in `unlock.rs` and `alchemy.rs` as always).
+wherever they disagree — the thresholds themselves live in `unlock.rs` and `alchemy.rs` as always). The 2026-08-18
+essence redesign (**§14 — essence is found, not ground**) then REMOVED bench extraction outright and rebuilt the craft
+economy around nodes, feedstock and catalysts; §3.1–§3.3, §4.1's extraction rows, §4.2's closure argument and §8.1's
+EXTRACT tab are superseded wherever they disagree with §14, and are kept as the record of what the redesign replaced.
 
 **Done:** M1 skills skeleton · M2 essence economy + the two-tab alchemy screen · M3 level-scaled dig speed · M4 tool
 slot + Stage-A emissive + Torch · the RTGI rewrite (GI-DESIGN.md replaced LIGHT-DESIGN.md's Stage-B voxel lighting
@@ -1248,3 +1251,83 @@ that the world needs a place that pushes back — are designed in the two compan
 hazards instead of RNG combat, the Delving skill, and the governed Aether faucet). Their sequencing lives there; the one
 ordering rule worth restating here is that the social mirror ships first, because every content hour is worth more once
 someone can see it.
+
+## 14. The essence redesign — essence is found, not ground (2026-08-18)
+
+The owner's verdict on the shipped economy: Metal and Aether felt right and the rest did not. The difference was not the
+numbers — it was WHERE the currency came from. A vein is a place: derived, hunted, revealed at a level, drawn as an
+occasion. Earth, Flora and Aqua were verbs: put the block you were already mining in the extract slot and hold still.
+Supply was unbounded, so every common-essence price was really a statement about time at the bench, and the Alchemy XP
+attached to extraction was a tax paid by standing there. §13.4's pacing work slowed that faucet without closing it,
+because the problem was the source, not the rate.
+
+The redesign is one principle applied everywhere: **essence should be found, not ground.** Every essence now has world
+sources (nodes) on exactly ore's machinery — salted hashes or pure worldgen queries, manifesting only in pristine
+unedited host cells, revealed by a skill level in the mesh stamp, drawn in place with the siphon, leaving a spent face
+that drops itself, anti-duped by the journal's monotone edited bit. Retroactive in existing worlds, no worldgen bump,
+golden hashes untouched.
+
+### 14.1 What landed
+
+- **Bench extraction is GONE.** `AlchemyOp::Convert` is a refused legacy frame (protocol v27, `MIN_PROTOCOL` raised; SIM
+  v20 pairs with it), the extract tab left the alchemy screen, and the bucket charge stopped being an Aqua source. A
+  siphon draw is the currency's only faucet, which is what makes "no craft creates essence" structural rather than a
+  per-level proof.
+- **Seven node kinds, two reveal axes.** The four ore tiers keep Mining's reveals; the three SURFACE nodes reveal on
+  ALCHEMY (`unlock::alchemy_reveal`), so Alchemy owns the surface hunt the way Mining owns the deep one: **Heartwood**
+  in the trunks of worldgen trees (the day-one node — the economy must be able to begin, so its reveal is the level
+  everyone starts at; landmark trees always carry a heart, trunk entire), **Leystone** riding the ore deposit stream's
+  new shallow band in pristine Stone, and **Springstone** in the pristine sand beds of lakes and rivers — under water on
+  purpose, since reaching it is the trip. The unified question set lives in `worldgen/nodes.rs`
+  (`revealed`/`dig_mode`/`spent_block` over `NODES`), and the fleck palettes, spent faces and textures follow the ore
+  tiers' pattern exactly.
+- **The ore bands gained FLOORS.** §5.3's overlap divergence is re-decided: every tier now has a floor as well as a
+  ceiling, adjacent bands overlapping only at their seams, with the first tier confined to surface-cave depths — so
+  depth predicts tier and a find at the bottom of the world is never common ore again. The old "exclusive bands strand a
+  low-level miner at depth" concern is answered by the reveal ladder itself: you mine where your tier lives.
+- **Crafts are feedstock + catalyst.** A recipe consumes MATTER (one cube of the material's feedstock: timber from the
+  felled log, masonry from Rubble, the sand-likes from Sand, the soils from themselves) plus a small essence CATALYST,
+  and yields `shapes::craft_batch` pieces — as many as the shape's volume cuts from a cube, so matter conservation is
+  structural. Metal and Crystal stay essence-only at a cube's worth: nothing in the world is made of them, and
+  transmutation proper is what they are for. Bulk building therefore costs mostly the rock you quarried, and essence
+  taxes lightly but universally — the purpose it lacked. Waste still applies, to the catalyst alone.
+- **The deadlock rule generalized: the essence tool costs no essence, ever.** Every essence is a siphon draw now, so the
+  siphon — and the bucket, which shares its day-one footing — is priced in feedstock alone (felled timber), pinned by
+  `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make your vessels" is the opening loop;
+  the heartwood you can already see is the first draw, and leystone at its early reveal supplies the torch.
+- **XP follows the finds.** Alchemy XP is field draws (`skills::field_xp`, now covering every node kind — the surface
+  kinds pay Alchemy-primary with a Mining cut, inverting the ore tiers' split, because the headline follows the skill
+  that revealed the find) plus craft XP, and nothing repeatable against an unbounded supply. The bonus lines died with
+  the bench; their flavors are free to return as node tiers in later waves.
+- **The reagent identities.** The five essences kept their frozen wire indices and took display names that read as
+  reagents now that each one is a find: VITAE (heartwood), TERRA (leystone), UNDA (springstone), FERRUM (the ore tiers),
+  AETHER unchanged. §12's "display name for Metal" question closes with this.
+- **Captures**: `DIG_NODE=<heartwood|leystone|springstone>` is `DIG_ORE`'s surface twin — pose at the nearest node with
+  its reveal granted; leystone reuses the generalized ore chamber, and the surface kinds deliberately write nothing.
+
+### 14.2 What it supersedes, and what stands
+
+Superseded: §3.1's extraction table and §3.2's efficiency-as-extraction reading (the curve survives as the DRAW's
+scaling), §3.3's bonus lines, §4.1's extraction XP row, §4.2's extract-side closure arguments, §7.1's extract-then-craft
+loop wording (the Rubble rule itself STANDS — Rubble is now the mason's feedstock, which is a sharper version of the
+same idea), §7.5's XP half (`convert_xp` is gone with the verb it policed; the catalog gate on `is_bench_only` stands),
+§8.1's EXTRACT tab, and §13.5's "dig-and-extract pays for the bucket" beat.
+
+Standing, unchanged in spirit: the no-RNG constitution (the Duskstone trace is still derived, never rolled), the
+material × shape grid as the content multiplier, threshold unlocks as the reward language, the reveal-as-event rule, the
+payability pin (now asked over nodes and feedstock — `every_functional_price_has_a_source_at_its_own_level`), the
+anti-dupe's edited-bit, and the background bench (which now paces only crafts).
+
+### 14.3 Open ends this creates
+
+- **Balance is unmeasured.** Node densities, draw yields, field-XP figures, catalyst sizes and the two vessels'
+  feedstock prices are first-guess numbers in `nodes.rs`/`ore.rs`/`material.rs`/`alchemy.rs`/`skills.rs`; §13.4's
+  instrument-before-retuning rule applies with fresh force, and the first bot-soak should log essence/hour per node kind
+  alongside XP/hour.
+- **Node tiers.** The surface kinds ship one tier each. Richer variants at later Alchemy reveals (the pattern the ore
+  ladder proves out), an Alchemy prospector's sense, and a proper DELVE-DESIGN handshake — its governed Aether faucet is
+  the underground twin of the surface nodes and should speak this vocabulary — are the obvious next waves.
+- **The inventory grid gained its seventh row** for the spent-face trophies, and `theme::FIT_FLOOR` stepped once to hold
+  the smallest windows; the scrolling grid remains the real fix on record.
+- **The essence exchange** (§4.3's any → any, never into Aether) reads differently now that essence is scarce — it may
+  deserve to arrive earlier than the endgame slot the old ladder gave it.

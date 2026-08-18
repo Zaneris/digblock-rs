@@ -302,13 +302,12 @@ pub fn ore_mastery(level: u32) -> u32 {
 	u32::from(level >= 60)
 }
 
-// There is deliberately NO extraction gate. The table that stood here had
-// exactly one real entry — the bucket charge, gated because the bucket
-// itself was free — and a gating axis with one entry is a no-op wearing a
-// system's clothes. The bucket is crafted now (§13.5), so acquiring water
-// is the gate and everything a player can hold extracts from the start,
-// scaled only by efficiency. If a future substance genuinely needs its
-// own extraction level, the axis comes back with more than one row in it.
+// There is deliberately NO per-substance draw gate. The reveal IS the
+// gate: a node you cannot see draws as its host, and one you can needs
+// only the siphon — a second level axis on top of the reveal would be
+// two gates telling one story. (The extraction-level axis this note once
+// defended died twice over: first to a single-entry table, then with
+// bench extraction itself.)
 
 /// §5.1's strength wall: the Mining level below which `b` refuses to be
 /// dug at all; the first level means ungated. Deliberately a wall — the doc's original "no
@@ -1011,8 +1010,8 @@ mod tests {
 			 prospector's two ranks, mastery — the content tops at 60, and \
 			 the pick's plane at 85 is the tail's one deliberate exception"
 		);
-		// Alchemy: the shape and material unlocks, the hand-priced items, the
-		// bucket charge's extraction, and the bonus lines.
+		// Alchemy: the shape and material unlocks, the hand-priced items,
+		// and the surface-node reveals.
 		let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 			.filter(|&l| opens(Skill::Alchemy, l))
 			.collect();

@@ -75,20 +75,19 @@ pub enum Material {
 	/// Grown from Aether: the endgame material, and it glows.
 	Crystal,
 
-	// ---- recipe-less: extract only, never crafted in any shape --------
+	// ---- recipe-less: never crafted in any shape ----------------------
 	/// What mined rock actually is (§7.1) — the mass Earth feedstock.
 	Rubble,
 	Gravel,
 	DryGrass,
-	/// Broadleaf canopy: filler, and the first bonus line (§3.3's dew).
+	/// Broadleaf canopy: filler.
 	Leaf,
-	/// Conifer canopy. A separate material from [`Self::Leaf`] even though
-	/// the two extract identically, because they are separate SUBSTANCES —
-	/// pine resin is the pre-ore Aether trickle and broadleaf never carries
-	/// it — and because one grid cell holds one block.
+	/// Conifer canopy. A separate material from [`Self::Leaf`] because
+	/// they are separate SUBSTANCES, and because one grid cell holds one
+	/// block.
 	PineLeaf,
-	/// Revealed and extracted at the rock face, never at the bench in any
-	/// shape (§5.3).
+	/// Revealed and drawn at the rock face, never crafted in any shape
+	/// (§5.3).
 	Emberore,
 	Duskstone,
 	Glowvein,

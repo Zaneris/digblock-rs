@@ -264,7 +264,8 @@ struct Client {
 	/// `bench_burst_ticks(level)` (two whole blocks' worth, or one
 	/// costliest op where that is more — an op no bucket can hold is an op
 	/// that is refused forever), and spent at the op's own pace —
-	/// `extract_pace_ticks` for a Convert, `craft_pace_ticks` for a Craft.
+	/// `craft_pace_ticks`, per item — the bench's one verb since the
+	/// essence redesign retired extraction.
 	/// The server-enforced half of both drips (see `process_alchemy`).
 	///
 	/// One bucket and not two: there is one bench, so extracting and

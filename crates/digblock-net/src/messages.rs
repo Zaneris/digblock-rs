@@ -167,9 +167,14 @@ pub enum EditKind {
 /// the core tables). Appended in v8.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum AlchemyOp {
-	/// Break `count` whole blocks of `block` into sub-material units.
+	/// RETIRED (v27, the essence redesign): bench extraction is gone, so
+	/// the server refuses this outright — nothing debited, the standing
+	/// `InventoryFull` rebase as the whole answer. The variant stays
+	/// because the wire is append-only: a frame that stops decoding is a
+	/// session that dies mid-parse instead of a verb that stopped working.
 	Convert { block: u16, count: u32 },
-	/// Craft `count` batches of the shaped item `item` from sub-material.
+	/// Craft `count` batches of the shaped item `item` from essence and
+	/// feedstock.
 	Craft { item: u16, count: u32 },
 }
 
