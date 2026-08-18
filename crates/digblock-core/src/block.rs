@@ -518,13 +518,21 @@ impl Essence {
 		Self::ALL.get(v as usize).copied()
 	}
 
-	/// The screens' all-caps label.
+	/// The screens' all-caps label — and, via `/give`'s parser, the name
+	/// an operator types, so the command and the UI cannot drift.
+	///
+	/// The essence redesign renamed the DISPLAY identities (the variant
+	/// names and their wire indices are frozen forever): the currencies
+	/// read as reagents now that each is a FIND — Vitae in heartwood,
+	/// Terra in leystone, Unda in springstone, Ferrum in the ore tiers —
+	/// rather than as categories of stuff a bench dissolved. Aether keeps
+	/// the name that was always right.
 	pub fn name(self) -> &'static str {
 		match self {
-			Essence::Flora => "FLORA",
-			Essence::Earth => "EARTH",
-			Essence::Aqua => "AQUA",
-			Essence::Metal => "METAL",
+			Essence::Flora => "VITAE",
+			Essence::Earth => "TERRA",
+			Essence::Aqua => "UNDA",
+			Essence::Metal => "FERRUM",
 			Essence::Aether => "AETHER",
 		}
 	}

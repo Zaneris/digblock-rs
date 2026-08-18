@@ -299,6 +299,12 @@ pub struct EngineConfig {
 	/// roofed room goes DARK and torchlight is what makes it readable;
 	/// GI-DESIGN.md). Set by the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// DIG_NODE=<heartwood|leystone|springstone>: pose at the nearest
+	/// node of that kind with its Alchemy reveal granted — the surface
+	/// counterpart of `DIG_ORE`, and like it a SCENE rather than a pose,
+	/// since a node is derived and invisible below its level. Validated
+	/// at the launcher; an unknown kind is fatal there.
+	pub debug_node: Option<BlockType>,
 	/// DIG_ORE=<tier 1..=4>: hollow a chamber around the nearest deposit
 	/// of that tier and stand in it, with the Mining level that reveals
 	/// it. Ore is derived and invisible below its level, so there is no
@@ -494,6 +500,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_node: None,
 			debug_ore: 0,
 			debug_mining: 0,
 			debug_vault_dark: false,
@@ -563,6 +570,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_node: None,
 			debug_ore: 0,
 			debug_mining: 0,
 			debug_vault_dark: false,
@@ -1246,15 +1254,14 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// cell never shows ore (that is the anti-dupe), so hollowing the box
 /// naively would delete the very thing being photographed. Every cell the
 /// deposit claims is left exactly as worldgen made it.
-fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+fn debug_ore_plan(spawn: Vec3, seed: f64, want: BlockType) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
 	use digblock_core::worldgen::ore;
-	let want = ore::ORES[tier.clamp(1, ore::ORES.len()) - 1];
 	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
 	// Nearest deposit of the tier, horizontally — a search box wide
 	// enough that even Aetherock (one deposit in fifteen, and only in the
 	// bottom two grid rows) is found from any spawn.
 	let mut best: Option<(i64, ore::Deposit)> = None;
-	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 140, sz + 320), seed) {
+	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 200, sz + 320), seed) {
 		if d.ore != want {
 			continue;
 		}
@@ -1337,6 +1344,114 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 		),
 		plan,
 	)
+}
+
+/// `DIG_NODE`'s launcher-side parser, beside [`parse_held_item`] for the
+/// same reason: the launchers do not link core, and the roster belongs
+/// with the scene that consumes it.
+pub fn parse_node_kind(v: &str) -> Option<BlockType> {
+	Some(match v {
+		"heartwood" => BlockType::Heartwood,
+		"leystone" => BlockType::Leystone,
+		"springstone" => BlockType::Springstone,
+		_ => return None,
+	})
+}
+
+/// DIG_NODE=<heartwood|leystone|springstone>: pose the camera at the
+/// nearest node of that kind, with the reveal granted so the stamp shows
+/// it. Leystone rides the deposit stream and reuses the ore chamber; the
+/// two surface kinds are outdoor finds, so their scenes WRITE nothing —
+/// a node is exactly as photographable as the world makes it, which is
+/// the point of the capture.
+fn debug_node_plan(spawn: Vec3, seed: f64, node: BlockType) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+	use digblock_core::worldgen::nodes;
+	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+	let eye = digblock_core::player::EYE_TO_FEET;
+	match node {
+		BlockType::Leystone => debug_ore_plan(spawn, seed, BlockType::Leystone),
+		BlockType::Heartwood => {
+			// The nearest heart-bearing trunk cell: trunks are a pure
+			// candidate rule, so this is a column walk over the memoized
+			// decoration cells — a one-time startup cost.
+			let mut best: Option<(i64, (i32, i32, i32))> = None;
+			for z in (sz - 160)..(sz + 160) {
+				for x in (sx - 160)..(sx + 160) {
+					let Some(t) = digblock_core::decoration::trunk_at(x, z, seed) else {
+						continue;
+					};
+					if !nodes::heartwood_at(x, t.y0 + 1, z, seed) {
+						continue;
+					}
+					let (dx, dz) = (i64::from(x - sx), i64::from(z - sz));
+					let d2 = dx * dx + dz * dz;
+					if best.is_none_or(|(b, _)| d2 < b) {
+						best = Some((d2, (x, t.y0 + 1, z)));
+					}
+				}
+			}
+			let Some((_, (x, y, z))) = best else {
+				log::warn!("DIG_NODE: no heartwood within reach of spawn");
+				return (spawn, Vec::new());
+			};
+			log::info!("DIG_NODE: heartwood at {x},{y},{z}");
+			// Stand a few blocks south of the trunk on the tree's own
+			// ground, eye level with the heart.
+			let ground = digblock_core::worldgen::terrain_height(x, z - 3, seed);
+			(
+				Vec3::new(x as f32 + 0.5, ground as f32 + 1.0 + eye, z as f32 - 2.5),
+				Vec::new(),
+			)
+		}
+		BlockType::Springstone => {
+			let mut best: Option<(i64, (i32, i32, i32))> = None;
+			for z in (sz - 512)..(sz + 512) {
+				for x in (sx - 512)..(sx + 512) {
+					// The rate first — it prunes all but a few percent
+					// before any field evaluation runs.
+					let shape = digblock_core::worldgen::column_shape(x, z, seed);
+					if shape.water <= shape.height {
+						continue;
+					}
+					if !nodes::springstone_at(x, shape.height, z, seed) {
+						continue;
+					}
+					let (dx, dz) = (i64::from(x - sx), i64::from(z - sz));
+					let d2 = dx * dx + dz * dz;
+					if best.is_none_or(|(b, _)| d2 < b) {
+						best = Some((d2, (x, shape.height, z)));
+					}
+				}
+			}
+			let Some((_, (x, y, z))) = best else {
+				log::warn!("DIG_NODE: no springstone within reach of spawn");
+				return (spawn, Vec::new());
+			};
+			log::info!("DIG_NODE: springstone at {x},{y},{z}");
+			// Stand on the nearest dry column shoreward of the spring,
+			// looking over the water at the glint in the bed.
+			let stand = (1..=12)
+				.map(|d| (x, z - d))
+				.find(|&(cx, cz)| {
+					let s = digblock_core::worldgen::column_shape(cx, cz, seed);
+					s.height >= s.water
+				})
+				.unwrap_or((x, z - 4));
+			let ground = digblock_core::worldgen::terrain_height(stand.0, stand.1, seed);
+			(
+				Vec3::new(
+					stand.0 as f32 + 0.5,
+					ground as f32 + 1.0 + eye,
+					stand.1 as f32 + 0.5,
+				),
+				Vec::new(),
+			)
+		}
+		other => {
+			log::warn!("DIG_NODE: {other:?} is not a surface node kind");
+			(spawn, Vec::new())
+		}
+	}
 }
 
 /// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
@@ -2143,7 +2258,13 @@ impl Engine {
 		// `--pos` still wins: the scene only moves a camera that had
 		// nowhere particular to be.
 		let ore_scene = if config.debug_ore > 0 {
-			debug_ore_plan(spawn, seed, config.debug_ore)
+			let want = digblock_core::worldgen::ore::ORES[config
+				.debug_ore
+				.clamp(1, digblock_core::worldgen::ore::ORES.len())
+				- 1];
+			debug_ore_plan(spawn, seed, want)
+		} else if let Some(node) = config.debug_node {
+			debug_node_plan(spawn, seed, node)
 		} else {
 			(spawn, Vec::new())
 		};
@@ -2227,7 +2348,7 @@ impl Engine {
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn, !config.debug_vault_dark));
 				}
-				if config.debug_ore > 0 {
+				if config.debug_ore > 0 || config.debug_node.is_some() {
 					plan.extend(ore_scene.1.clone());
 				}
 				if config.debug_roof {
@@ -2369,6 +2490,22 @@ impl Engine {
 			engine.skills.set_total(
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(need),
+			);
+			engine.sync_node_reveal(false);
+		}
+		if let Some(node) = engine.config.debug_node {
+			// The surface twin of the DIG_ORE grant: exactly the Alchemy
+			// level that reveals the kind, read out of the unlock table.
+			// Leystone's chamber needs the ROCK wall cleared too, or the
+			// capture stands in front of a find it cannot legally swing at.
+			let need = digblock_core::unlock::alchemy_reveal(node).unwrap_or(1);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Alchemy,
+				digblock_core::skills::total_xp_for(need),
+			);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Mining,
+				digblock_core::skills::total_xp_for(digblock_core::unlock::mine(node)),
 			);
 			engine.sync_node_reveal(false);
 		}
@@ -8325,8 +8462,8 @@ mod ore_capture_tests {
 			// nearest deposit of the tier. Skipping the worldgen spawn
 			// search keeps this a pure ore-geometry test.
 			let spawn = Vec3::new(0.0, 90.0, 0.0);
-			for tier in 1..=ore::ORES.len() {
-				let (pos, plan) = debug_ore_plan(spawn, seed, tier);
+			for &want in ore::ORES.iter().chain([BlockType::Leystone].iter()) {
+				let (pos, plan) = debug_ore_plan(spawn, seed, want);
 				if plan.is_empty() {
 					continue;
 				}
@@ -8334,7 +8471,7 @@ mod ore_capture_tests {
 				for &(x, y, z, cell) in &plan {
 					assert!(
 						ore::ore_at(x, y, z, seed).is_none(),
-						"seed {seed} tier {tier}: plan writes {cell} over the vein \
+						"seed {seed} tier {want:?}: plan writes {cell} over the vein \
 						 at {x},{y},{z}"
 					);
 				}
@@ -8348,7 +8485,7 @@ mod ore_capture_tests {
 				let floor = plate[0].1;
 				assert!(
 					plate.iter().all(|c| c.1 == floor),
-					"seed {seed} tier {tier}: the plate is one plane"
+					"seed {seed} tier {want:?}: the plate is one plane"
 				);
 				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
 				let mut vein = 0usize;
@@ -8361,7 +8498,7 @@ mod ore_capture_tests {
 				assert_eq!(
 					plate.len() + vein,
 					square,
-					"seed {seed} tier {tier}: the plate is the plane minus the vein"
+					"seed {seed} tier {want:?}: the plate is the plane minus the vein"
 				);
 				crossings += vein;
 			}
