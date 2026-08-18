@@ -188,4 +188,11 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// a v18 peer credits rubble where the new server credits the wall — and
 /// its pick's plane picks a different set, since the extras filter now
 /// matches on the credit rather than the block id.
-pub const SIM_VERSION: u16 = 19;
+///
+/// v20: the essence redesign — the ore bands gained floors and the
+/// surface nodes joined the reveal (heartwood in trunks, leystone in the
+/// deposit stream's shallow band, springstone in fresh beds, all on the
+/// Alchemy axis), so what a dig IS at a given cell moved for both ends
+/// at once: a v19 peer digs wood where a v20 server refuses a revealed
+/// heart, and its deep tunnels meet different tiers entirely.
+pub const SIM_VERSION: u16 = 20;

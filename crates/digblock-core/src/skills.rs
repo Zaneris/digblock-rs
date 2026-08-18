@@ -500,41 +500,6 @@ pub fn dig_award(
 	(mining, 0)
 }
 
-/// Alchemy XP per block extracted at the bench: HALF the block's worth
-/// ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
-/// yield) — fixed for life, never the level-scaled outcome (§4.1). The
-/// halving is the award-side pacing lever (SKILLS-DESIGN §13.4), riding
-/// ON TOP of the worth precisely because the worth keeps a second job
-/// this must not touch: it is what the bench's pace scales by.
-///
-/// **Zero for anything the bench itself can make.** Extraction XP is paid
-/// for reducing what the WORLD made; taking apart your own transmutation
-/// teaches you nothing and pays nothing, which is what stops
-/// craft-then-extract being a standing converter from essence into levels.
-/// It keys on [`BlockType::is_bench_only`] and not on craftability so the
-/// statement is about where a block CAME from rather than what the catalog
-/// happens to offer — the same predicate the catalog is gated on, so the
-/// two cannot drift.
-///
-/// **And zero for foliage, by the shared name** ([`BlockType::is_foliage`]
-/// — the same set `dig_xp` zeroes). This is load-bearing, not symmetry:
-/// the award's `ceil` cannot pay less than a point, and against foliage's
-/// concessionary pace (`extract_pace_ticks` halves its slowdown, since a
-/// block that pays nothing should at least process quickly) a floored
-/// point per leaf would make shoveling foliage the best XP rate at the
-/// bench. Their essence — the Aqua, the bonus lines — is untouched;
-/// foliage is pure economy now.
-///
-/// The bench's PACE deliberately does not follow the bench-only zero: a
-/// made block is as much substance to take apart as a natural one, and
-/// `extract_pace_ticks` keys on the worth for that reason.
-pub fn convert_xp(block: BlockType) -> u64 {
-	if block.is_bench_only() || block.is_foliage() {
-		return 0;
-	}
-	u64::from(crate::alchemy::extract_worth(block).div_ceil(2))
-}
-
 /// The DUAL award for one field draw — a siphon taking a node where it
 /// stands: `(Mining, Alchemy)`. `None` for anything that is not a node.
 ///
@@ -570,15 +535,21 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 	})
 }
 
-/// Alchemy XP per crafted item: what the craft is worth at the bench
+/// Alchemy XP per crafted item: HALF what the craft is worth at the bench
 /// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
-/// pre-waste cost) — fixed for life. Zero for uncraftable items.
+/// pre-waste cost, feedstock included) — fixed for life. Zero for
+/// uncraftable items.
 ///
-/// Transmuting pays HALF the item's worth — the same award-side halving
-/// as [`convert_xp`], for the same reason, and it takes the time the work
-/// takes, since the bench paces a craft the way it paces an extraction
-/// (`craft_pace_ticks`). Award and pace read the same underlying worth: a
-/// thing worth more to make is worth more to have made.
+/// The halving is the award-side pacing lever (SKILLS-DESIGN §13.4),
+/// riding ON TOP of the worth precisely because the worth keeps a second
+/// job this must not touch: it is what the bench's pace scales by. Award
+/// and pace read the same underlying worth, so a thing worth more to make
+/// is worth more to have made — and takes the time the work takes.
+///
+/// With bench extraction gone this is the bench's ONLY award: Alchemy is
+/// earned by drawing nodes in the field ([`field_xp`]) and by making
+/// things here, and by nothing that can be repeated against an unbounded
+/// supply.
 pub fn craft_xp(item: BlockType) -> u64 {
 	u64::from(crate::alchemy::craft_worth(item).div_ceil(2))
 }
@@ -588,7 +559,6 @@ pub fn craft_xp(item: BlockType) -> u64 {
 pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {
 	use crate::inventory::AlchemyOp;
 	match *op {
-		AlchemyOp::Convert { block, count } => convert_xp(block) * u64::from(count),
 		AlchemyOp::Craft { item, count } => craft_xp(item) * u64::from(count),
 	}
 }
@@ -1103,52 +1073,29 @@ mod tests {
 		}
 	}
 
-	/// §4.1's table, keyed on BASE yields/costs — fixed for life regardless
-	/// of level-scaled outcomes.
+	/// §4.1's table, keyed on BASE costs — fixed for life regardless of
+	/// level-scaled outcomes. With extraction gone, crafting is the whole
+	/// of the bench's XP.
 	#[test]
 	fn alchemy_xp_derives_from_the_base_tables() {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
-		for (block, xp) in [
-			(B::Wood, 5u64),
-			(B::Grass, 5),
-			(B::Rubble, 4),
-			(B::Dirt, 3),
-			(B::Snow, 2),
-			(B::Water, 3),
-		] {
-			assert_eq!(convert_xp(block), xp, "{block:?}");
-		}
-		// Foliage pays no levels at all — the price of its half-slowdown
-		// pace concession, and the bench half of the same zero the dig
-		// table already carries.
-		for block in [B::Leaves, B::PineLeaves] {
-			assert_eq!(convert_xp(block), 0, "{block:?}");
-		}
+		// Crafts pay half their worth — a fixed fraction of the IDEAL
+		// cost, feedstock included, rounded up.
+		assert_eq!(craft_xp(B::WoodStairs), 3);
+		assert_eq!(craft_xp(B::Lumber), 5);
+		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 		assert_eq!(
-			alchemy_xp(&AlchemyOp::Convert {
-				block: B::Wood,
+			alchemy_xp(&AlchemyOp::Craft {
+				item: B::Lumber,
 				count: 3
 			}),
 			15
 		);
-		// And nothing off the bench pays anything back. Clean stone is the
-		// pointed case: a quarried one is Rubble and pays, the clean block
-		// can only have been transmuted and pays nothing — which is what
-		// keeps the mason's own recipe from being an XP loop.
-		for block in [B::Stone, B::Lumber, B::StoneSlab, B::Torch] {
-			assert_eq!(convert_xp(block), 0, "{block:?} came off the bench");
-		}
-		// It is the PAY that goes, not the worth: the bench still spends its
-		// time on a stone in proportion to the substance in it.
-		assert_eq!(
-			crate::alchemy::extract_worth(B::Stone),
-			crate::alchemy::extract_worth(B::Grass)
-		);
-		// Crafts pay half their worth — the same fixed fraction of the
-		// IDEAL cost, halved like extraction, rounded up.
-		assert_eq!(craft_xp(B::WoodStairs), 3);
-		assert_eq!(craft_xp(B::Lumber), 5);
-		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
+		// The two feedstock-priced vessels still pay: their timber carries
+		// the worth, so the first craft beat is also the first Alchemy XP
+		// a fresh player earns at a bench.
+		assert!(craft_xp(B::Bucket) > 0);
+		assert!(craft_xp(B::EssenceSiphon) > craft_xp(B::Bucket));
 	}
 }

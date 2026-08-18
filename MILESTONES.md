@@ -28,18 +28,26 @@ placeholders for the stages to come (expanded on entry). I check items off as th
       grid grew a seventh row (`GRID_SLOTS`, `FIT_FLOOR` one rung lower); workspace check + clippy +
       fmt clean, core/net/render/server/persist tests green
 
-## Stage 2 — recipe rebuild (placeholder)
+## Stage 2 — extraction removal (current; swapped ahead of the recipe rebuild — repricing crafts
+while bench extraction still pays would open a craft-cheap/extract-full matter pump)
 
-- [ ] Feedstock + catalyst recipes (`Material::feedstock`, small essence lines, `craft_batch`),
-      `apply_alchemy` rework, pace/worth rebuild, functional reprices (siphon/bucket feedstock-only —
-      the essence tool never costs essence)
-- [ ] Gate: core + net tests green
+- [x] **2.1 Core** — `Convert` leaves the core op; bench-extraction tables/paces/XP deleted
+      (`bonus_lines`, `extract_worth`, `convert_xp`, the bucket-charge Aqua row); `node_yields` stays
+      as the draw's table; extraction pins retired, payability pin rewritten over node sources
+- [x] **2.2 Server** — `process_alchemy` refuses `Convert` with the standing rebase; bench bucket
+      craft-only; sim tests rewritten (Craft-based XP test)
+- [x] **2.3 Client** — EXTRACT tab and bucket tile removed (screen is transmute-only),
+      `bench_tell` craft-only, engine/offline arm follows
+- [x] **2.4 Protocol** — v27 + `MIN_PROTOCOL` raise + SIM bump, history comments
+- [x] **2.5 Gate** — workspace tests green
 
-## Stage 3 — extraction removal (placeholder)
+## Stage 3 — recipe rebuild: feedstock + catalyst (placeholder)
 
-- [ ] Extract tab removed (screen becomes transmute-only), server refuses `Convert`, offline mirror,
-      dig-credit node-draw arm generalized, protocol v27 + `MIN_PROTOCOL` raise, SIM bump
-- [ ] Gate: workspace tests + `just check-web`
+- [ ] `Material::feedstock` + `catalyst_units`, `shapes::craft_batch`, `CraftPrice` through
+      `craft_ideal`/`apply_alchemy`/paces, functional reprices (siphon & bucket feedstock-only —
+      the essence tool never costs essence), new pins (no-craft-creates-essence, feedstock
+      conservation, payability v2), screen affordability/detail strip
+- [ ] Gate: core + net + render + server tests green
 
 ## Stage 4 — identity, docs, captures (placeholder)
 

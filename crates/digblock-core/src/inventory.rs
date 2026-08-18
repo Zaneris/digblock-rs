@@ -240,12 +240,13 @@ impl Inventory {
 
 /// One validated alchemy operation, in core vocabulary (the wire enum in
 /// digblock-net decodes u16 ids into this strictly).
+///
+/// One variant now: bench EXTRACTION left with the essence redesign — the
+/// wire's legacy `Convert` still decodes as a frame and the server refuses
+/// it with the standing rebase, but no core rule exists for it any more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AlchemyOp {
-	/// Break whole blocks into their sub-material: `count` blocks →
-	/// `count × SUBS_PER_BLOCK` units. One-way — a strict sink.
-	Convert { block: BlockType, count: u32 },
-	/// Craft `count` batches of a shaped item from sub-material.
+	/// Craft `count` batches of a shaped item from essence and feedstock.
 	Craft { item: BlockType, count: u32 },
 }
 
@@ -255,7 +256,7 @@ pub const ALCHEMY_MAX_COUNT: u32 = 999;
 
 /// THE alchemy rule, shared verbatim by the server's validation and the
 /// offline engine (single-player must match multiplayer bit-for-bit).
-/// `level` is the actor's Alchemy level — yields and costs key on it
+/// `level` is the actor's Alchemy level — costs key on it
 /// ([`crate::alchemy`]), and so does whether the op is open at all
 /// ([`crate::unlock`]). Returns false — with the inventory untouched —
 /// on any invalid, locked, or unaffordable op.
@@ -263,22 +264,6 @@ pub const ALCHEMY_MAX_COUNT: u32 = 999;
 pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 	use crate::{alchemy, unlock};
 	match op {
-		AlchemyOp::Convert { block, count } => {
-			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
-				return false;
-			}
-			if !alchemy::extractable_at(block, level) {
-				return false;
-			}
-			let yields = alchemy::extract_yields(block, level);
-			if !inv.try_take(block, count) {
-				return false;
-			}
-			for (e, per_block) in yields {
-				inv.add_sub(e, per_block * count);
-			}
-			true
-		}
 		AlchemyOp::Craft { item, count } => {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
@@ -287,9 +272,10 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				return false;
 			}
 			let ideal = alchemy::craft_ideal(item).expect("unlock implies a recipe");
+			let feedstock = alchemy::craft_feedstock(item);
 			let per_batch = crate::shapes::craft_batch(item);
 			// A craft that would VANISH into the type's cap is refused,
-			// never silently paid for — `add` saturates, so the essence
+			// never silently paid for — `add` saturates, so the price
 			// would go and nothing would come back. Two capped kinds
 			// today: the bucket's one charge, and tools, where owning one
 			// is a yes/no (§7.3) — which is also what makes the transmute
@@ -297,15 +283,26 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			if inv.headroom(item) < per_batch.saturating_mul(count) {
 				return false;
 			}
-			// All-or-nothing across the cost lines: check everything,
-			// then debit — a multi-essence craft never half-charges.
+			// All-or-nothing across every cost line, essence and feedstock
+			// alike: check everything, then debit — a multi-line craft
+			// never half-charges. Waste applies to the essence half only;
+			// matter is matter, and a block in is a block in.
 			for &(e, n) in &ideal {
 				if inv.sub_count(e) < alchemy::craft_cost(n, level) * count {
 					return false;
 				}
 			}
+			for &(f, n) in feedstock {
+				if inv.count(f) < n * count {
+					return false;
+				}
+			}
 			for &(e, n) in &ideal {
 				let taken = inv.try_take_sub(e, alchemy::craft_cost(n, level) * count);
+				debug_assert!(taken, "checked above");
+			}
+			for &(f, n) in feedstock {
+				let taken = inv.try_take(f, n * count);
 				debug_assert!(taken, "checked above");
 			}
 			inv.add(item, per_batch * count);
@@ -436,21 +433,9 @@ mod tests {
 	}
 
 	#[test]
-	fn alchemy_convert_and_craft_scale_with_level() {
+	fn alchemy_craft_scales_with_level() {
 		let mut inv = Inventory::default();
-		inv.add(BlockType::Wood, 2);
-
-		// Convert both blocks at mastery → the whole block's Flora each.
-		assert!(apply_alchemy(
-			&mut inv,
-			AlchemyOp::Convert {
-				block: BlockType::Wood,
-				count: 2
-			},
-			99
-		));
-		assert_eq!(inv.count(BlockType::Wood), 0);
-		assert_eq!(inv.sub_count(Essence::Flora), 54);
+		inv.add_sub(Essence::Flora, 54);
 
 		// Craft a door and two stairs; at mastery the ideal costs carry
 		// only the smallest waste markup, and the remainder is what the
@@ -475,19 +460,10 @@ mod tests {
 		assert_eq!(inv.count(BlockType::WoodStairs), 2);
 		assert_eq!(inv.sub_count(Essence::Flora), 5);
 
-		// The bottom of the curve: the poorest yields against the steepest
-		// waste, so the same wood buys less.
+		// The bottom of the curve: the steepest waste, so the same essence
+		// buys less.
 		let mut low = Inventory::default();
-		low.add(BlockType::Wood, 1);
-		assert!(apply_alchemy(
-			&mut low,
-			AlchemyOp::Convert {
-				block: BlockType::Wood,
-				count: 1
-			},
-			1
-		));
-		assert_eq!(low.sub_count(Essence::Flora), 10, "floor(27·0.40)");
+		low.add_sub(Essence::Flora, 10);
 		assert!(
 			!apply_alchemy(
 				&mut low,
@@ -518,14 +494,14 @@ mod tests {
 					item: BlockType::Stone,
 					count: 1
 				},
-				19
+				14
 			),
-			"clean Stone is locked below 20"
+			"clean Stone is locked below the mason's unlock"
 		);
 		assert!(!apply_alchemy(
 			&mut inv,
-			AlchemyOp::Convert {
-				block: BlockType::Wood,
+			AlchemyOp::Craft {
+				item: BlockType::LumberDoor,
 				count: 0
 			},
 			99
@@ -539,6 +515,45 @@ mod tests {
 			99
 		));
 		assert_eq!(inv, before, "failed ops never mutate");
+	}
+
+	/// The feedstock half of a price: the two vessels cost blocks and no
+	/// essence, the debit is all-or-nothing beside the essence lines, and
+	/// a fresh player's first craft is exactly this.
+	#[test]
+	fn a_vessel_is_crafted_from_feedstock_alone() {
+		let need: u32 = crate::alchemy::craft_feedstock(BlockType::Bucket)
+			.iter()
+			.map(|&(_, n)| n)
+			.sum();
+		let mut inv = Inventory::default();
+		inv.add(BlockType::Wood, need - 1);
+		assert!(
+			!apply_alchemy(
+				&mut inv,
+				AlchemyOp::Craft {
+					item: BlockType::Bucket,
+					count: 1
+				},
+				1
+			),
+			"one log short is short"
+		);
+		assert_eq!(inv.count(BlockType::Wood), need - 1, "no partial debit");
+		inv.add(BlockType::Wood, 1);
+		assert!(apply_alchemy(
+			&mut inv,
+			AlchemyOp::Craft {
+				item: BlockType::Bucket,
+				count: 1
+			},
+			1
+		));
+		assert_eq!(inv.count(BlockType::Bucket), 1, "the vessel is owned");
+		assert_eq!(inv.count(BlockType::Wood), 0, "the timber is spent");
+		for &e in &Essence::ALL {
+			assert_eq!(inv.sub_count(e), 0, "no essence moved");
+		}
 	}
 
 	/// A multi-essence craft (a torch = Flora + Earth) debits every line or
@@ -572,33 +587,14 @@ mod tests {
 		assert_eq!(inv.sub_count(Essence::Earth), 6 - 3, "ceil(2·1.05)");
 	}
 
-	/// The bucket-charge economy: extraction empties the tool, and there
-	/// is no craft to pair it with — water is something the world hands
-	/// you, so the bench cannot make a charge at any level, and the only
-	/// way to fill the tool is to go and scoop one. That IS the Aqua
-	/// economy: the essence with the fewest sources is the one you have
-	/// to carry home. The old level gate on this op left with the
-	/// craftable bucket (§13.5): ACQUIRING water is the gate now, since
-	/// the vessel itself must be made first.
+	/// The bucket charge is never crafted: water is something the world
+	/// hands you, so no amount of Aqua buys a charge at any level — the
+	/// only way to fill the tool is to go and scoop one. (Its old
+	/// extraction half left with the bench's extract slot: the springstone
+	/// node is the Aqua economy now.)
 	#[test]
-	fn bucket_charge_extracts_but_is_never_crafted() {
+	fn the_bucket_charge_is_never_crafted() {
 		let mut inv = Inventory::default();
-		inv.add(BlockType::Water, 1);
-		assert!(
-			apply_alchemy(
-				&mut inv,
-				AlchemyOp::Convert {
-					block: BlockType::Water,
-					count: 1
-				},
-				1
-			),
-			"a scooped charge extracts from the first level"
-		);
-		assert!(!inv.bucket_full(), "extracting the charge empties the tool");
-		assert_eq!(inv.sub_count(Essence::Aqua), 7, "level-1 efficiency's cut");
-
-		// And no amount of Aqua buys the charge back, at any level.
 		inv.add_sub(Essence::Aqua, 100_000);
 		let before = inv.clone();
 		assert!(!apply_alchemy(

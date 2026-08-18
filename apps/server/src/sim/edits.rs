@@ -907,11 +907,16 @@ impl Sim {
 		}
 	}
 
-	/// Alchemy convert/craft: validate against the core tables, apply the
-	/// shared `apply_alchemy` rule, persist, and answer — success or
-	/// failure — with the authoritative `InventoryFull` rebase.
+	/// Alchemy craft: validate against the core tables, apply the shared
+	/// `apply_alchemy` rule, persist, and answer — success or failure —
+	/// with the authoritative `InventoryFull` rebase.
 	///
-	/// Every op additionally draws from the per-player BENCH bucket,
+	/// The wire's legacy `Convert` decodes and is REFUSED here (nothing
+	/// debited, the standing rebase as the answer): bench extraction left
+	/// with the essence redesign, and a frame kept decodable is how an
+	/// append-only wire retires a verb.
+	///
+	/// Every craft additionally draws from the per-player BENCH bucket,
 	/// charged per item — the anti-cheat half of the bench drip. The
 	/// client paces one single-item op per interval for presentation; a
 	/// modified client flooding ops (or smuggling a `count: 999` bulk op)
@@ -936,9 +941,9 @@ impl Sim {
 		}
 		client.edit_tokens -= 1.0;
 		let core_op = match op {
-			digblock_net::messages::AlchemyOp::Convert { block, count } => {
-				BlockType::try_from_id(block).map(|b| CoreOp::Convert { block: b, count })
-			}
+			// The retired verb: refused, but still answered with the
+			// rebase below, so an out-of-date client at least resyncs.
+			digblock_net::messages::AlchemyOp::Convert { .. } => None,
 			digblock_net::messages::AlchemyOp::Craft { item, count } => {
 				BlockType::try_from_id(item).map(|b| CoreOp::Craft { item: b, count })
 			}
@@ -946,24 +951,14 @@ impl Sim {
 		let level = client.skills.level(digblock_core::skills::Skill::Alchemy);
 		// The bench bucket, charged per ITEM BEFORE the economy runs (an
 		// op it can't cover must not debit anything). The bucket is in
-		// ticks and an op costs its own pace, so a bulk `count` can't
-		// sidestep the drip and neither can a stream of cheap ops.
-		//
-		// Both halves draw on it, and the same rule for the same reason:
-		// a craft used to be the one bench action that answered
-		// instantly, so the transmute tab's CTRL multiplier paid a
-		// hundred crafts' XP in a frame. One bucket rather than two,
-		// because there is one bench — a client cannot extract and
-		// transmute at once for double the throughput.
+		// ticks and a craft costs its own pace, so a bulk `count` can't
+		// sidestep the drip and neither can a stream of cheap ops — a
+		// craft used to be the one bench action that answered instantly,
+		// and the transmute tab's CTRL multiplier paid a hundred crafts'
+		// XP in a frame.
 		let core_op = core_op.filter(|op| {
-			let cost = match *op {
-				CoreOp::Convert { block, count } => {
-					digblock_core::alchemy::extract_pace_ticks(block, level) * count
-				}
-				CoreOp::Craft { item, count } => {
-					digblock_core::alchemy::craft_pace_ticks(item, level) * count
-				}
-			} as f32;
+			let CoreOp::Craft { item, count } = *op;
+			let cost = (digblock_core::alchemy::craft_pace_ticks(item, level) * count) as f32;
 			if client.bench_tokens < cost {
 				return false;
 			}
@@ -3417,33 +3412,26 @@ mod tests {
 	}
 
 	#[test]
-	fn alchemy_convert_craft_and_same_tick_place() {
+	fn alchemy_craft_and_same_tick_place() {
+		use digblock_core::block::Essence;
 		use digblock_net::messages::AlchemyOp;
 		let mut sim = flat_sim("alchemy");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		sim.test_grant(1, BlockType::Wood, 2);
+		// Enough Flora for one slab at the level-1 waste, with the
+		// remainder asserted below.
+		sim.test_grant_essence(1, Essence::Flora, 20);
 
-		// Convert + craft + place, all queued in ONE tick: wire order
-		// must debit before the place's stock gate runs. The WOOD slab is
-		// the craft a fresh player can afford — under §7.2's grid the
-		// material carries the progression, so clean stone in any shape
-		// waits for its own material unlock — and this convert fits inside
-		// the extraction bucket's burst.
+		// Craft + place, both queued in ONE tick: wire order must debit
+		// before the place's stock gate runs. The WOOD slab is the craft a
+		// fresh player can afford — under §7.2's grid the material carries
+		// the progression, so clean stone in any shape waits for its own
+		// material unlock.
 		let pos = sim.test_player(1).unwrap().pos;
 		let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 		let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 		let slab = make_cell(BlockType::WoodSlab, 0);
 		sim.tick_once(vec![
-			SimEvent::Msg {
-				conn_id: 1,
-				msg: ClientMsg::Alchemy {
-					op: AlchemyOp::Convert {
-						block: BlockType::Wood as u16,
-						count: 2,
-					},
-				},
-			},
 			SimEvent::Msg {
 				conn_id: 1,
 				msg: ClientMsg::Alchemy {
@@ -3463,10 +3451,9 @@ mod tests {
 					kind: EditKind::Place { block: slab },
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 					normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-					// Converting spent every Wood, so its slot was
-					// released in the same reconcile that filed the
-					// crafted slab — it lands in the first bar slot.
-					// The same derivation an honest client runs.
+					// The crafted slab is the only item, so the reconcile
+					// files it in the first bar slot — the same derivation
+					// an honest client runs.
 					slot: 0,
 				},
 			},
@@ -3483,9 +3470,9 @@ mod tests {
 			"craft-then-place landed in one tick: {:?}",
 			c.msgs
 		);
-		// The level-1 economy: each log extracts at that level's yield and
-		// the slab costs its grid price with that level's waste multiplier
-		// on top, leaving the Flora remainder asserted below.
+		// The level-1 economy: the slab costs its grid price with that
+		// level's waste multiplier on top, leaving the Flora remainder
+		// asserted below.
 		assert!(
 			c.msgs.iter().any(|m| matches!(
 				m,

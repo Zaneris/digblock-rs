@@ -59,15 +59,8 @@ pub enum InvId {
 	Craft(u8),
 	/// Alchemy: one transmute family tile (index into `FAMILIES`).
 	Family(u8),
-	/// Alchemy: the transmute tab's single TRANSMUTE button.
+	/// Alchemy: the screen's single TRANSMUTE button.
 	CraftGo,
-	/// Alchemy: one of the two tab-strip buttons (0 extract, 1 transmute).
-	Tab(u8),
-	/// Alchemy: the extraction drop target (a pointer, not a container).
-	ExtractSlot,
-	/// Alchemy: the bucket-charge tile beside the grid (drag source; the
-	/// charge can't live in the grid — water is not slottable).
-	BucketTile,
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

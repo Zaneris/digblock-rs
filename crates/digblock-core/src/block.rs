@@ -1259,12 +1259,9 @@ impl BlockType {
 		})
 	}
 
-	/// Foliage: the trivial-break rows every award table zeroes together.
-	/// ONE definition, because three places key on the same set — dig XP
-	/// (`skills::dig_xp`), bench XP (`skills::convert_xp`) and the bench's
-	/// pace concession (`alchemy::extract_pace_ticks`) — and a row joining
-	/// the set in one of them but not the others is exactly the drift a
-	/// shared predicate exists to prevent.
+	/// Foliage: the trivial-break rows the dig award zeroes
+	/// (`skills::dig_xp`) — kept as one named predicate so anything else
+	/// that ever keys on "the trivial canopy set" shares the same roster.
 	#[inline]
 	pub fn is_foliage(self) -> bool {
 		matches!(self, BlockType::Leaves | BlockType::PineLeaves)
@@ -1326,22 +1323,6 @@ impl BlockType {
 	#[inline]
 	pub fn is_crafted_only(self) -> bool {
 		self.props().crafted
-	}
-
-	/// Can this block be broken down at the bench at ANY level? The full
-	/// per-essence yield table lives in [`crate::alchemy::extract_base`]
-	/// — this is just its non-empty test, kept here for callers that
-	/// only filter.
-	///
-	/// A bonus line counts, because a block can earn its whole yield from
-	/// one and have no base at all. Gating on this is still wrong for
-	/// anything that acts on a player: it answers for the catalog, not
-	/// for them, and what they may extract right now is
-	/// [`crate::alchemy::extractable_at`].
-	#[inline]
-	pub fn is_extractable(self) -> bool {
-		crate::alchemy::extract_total_base(self) > 0
-			|| !crate::alchemy::bonus_lines(self, crate::skills::MAX_LEVEL).is_empty()
 	}
 }
 

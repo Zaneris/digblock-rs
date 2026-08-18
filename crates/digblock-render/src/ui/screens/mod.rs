@@ -46,23 +46,20 @@ mod tests {
 		let inv = stocked();
 		let mut out = Vec::new();
 
-		// A grid arrangement + mid-curve skills, so both alchemy tabs
-		// have real content (counts, costs, an XP bar).
+		// Mid-curve skills, so the alchemy page has real content (counts,
+		// costs, an XP bar). Two states of the ONE page: freshly opened
+		// (the family row alone), and mid-batch with a family picked.
 		let mut skills = digblock_core::skills::SkillSet::default();
 		skills.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
-		let mut hotbar = digblock_core::hotbar::Hotbar::new();
-		let mut inv_grid = InvGrid::default();
-		digblock_core::inv_grid::reconcile_layout(&inv, &mut hotbar, &mut inv_grid);
 
-		for (name, tab) in [
-			("alchemy", super::alchemy::AlchTab::Extract),
-			("alchemy-transmute", super::alchemy::AlchTab::Transmute),
-		] {
+		for (name, batch) in [("alchemy", false), ("alchemy-transmuting", true)] {
 			let mut dl = DrawList::default();
 			let mut hits: HitMap<InvId> = HitMap::default();
 			let mut alch = super::alchemy::AlchScreen::default();
 			alch.open();
-			alch.set_tab(tab);
+			if batch {
+				alch.debug_batch(B::WoodSlab, 5, 0.4);
+			}
 			alch.build(
 				&mut Ui {
 					dl: &mut dl,
@@ -71,8 +68,6 @@ mod tests {
 				},
 				size,
 				&super::alchemy::AlchView::build(&inv, &skills),
-				&inv_grid,
-				&inv,
 				1.0,
 			);
 			out.push((name, dl));

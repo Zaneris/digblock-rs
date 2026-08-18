@@ -2475,11 +2475,6 @@ impl Engine {
 						.skills
 						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
 					engine.alch_screen.open();
-					if screen == DebugScreen::Transmute {
-						engine
-							.alch_screen
-							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
-					}
 					if screen == DebugScreen::Transmuting {
 						// Stocked well past the batch, so the row reads as
 						// a batch running rather than as one about to be
@@ -4871,30 +4866,18 @@ impl Engine {
 	fn apply_alchemy_action(&mut self, act: crate::ui::screens::alchemy::AlchAction) {
 		use crate::ui::screens::alchemy::AlchAction;
 		use digblock_core::inventory::{AlchemyOp, apply_alchemy};
-		let (core_op, wire_op) = match act {
-			AlchAction::Convert { block, count } => (
-				AlchemyOp::Convert { block, count },
-				digblock_net::messages::AlchemyOp::Convert {
-					block: block as u16,
-					count,
-				},
-			),
-			AlchAction::Craft { item, count } => (
-				AlchemyOp::Craft { item, count },
-				digblock_net::messages::AlchemyOp::Craft {
-					item: item as u16,
-					count,
-				},
-			),
+		let AlchAction::Craft { item, count } = act;
+		let core_op = AlchemyOp::Craft { item, count };
+		let wire_op = digblock_net::messages::AlchemyOp::Craft {
+			item: item as u16,
+			count,
 		};
 		match self.net.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
 				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
 				if apply_alchemy(&mut self.inventory, core_op, level) {
-					if let AlchAction::Craft { item, .. } = act {
-						self.hotbar.auto_assign(item);
-					}
+					self.hotbar.auto_assign(item);
 					self.award_xp_offline(
 						digblock_core::skills::Skill::Alchemy,
 						digblock_core::skills::alchemy_xp(&core_op),
@@ -5586,43 +5569,19 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.clear_touch_state();
 					self.dig_held = false;
-					let bar = crate::hotbar::HotbarView::build(
-						&self.hotbar,
-						&self.inventory,
-						&self.tool_swap,
-					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-					self.alch_screen.handle_input(
-						&InputEvent::FocusLost,
-						&self.ui_hits,
-						&crate::ui::Style::new(self.ui_scale),
-						&view,
-						&self.inv_grid,
-						&bar,
-					);
+					self.alch_screen
+						.handle_input(&InputEvent::FocusLost, &self.ui_hits, &view);
 				}
 				InputEvent::Key {
 					key: Key::K | Key::Escape,
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(
-						&self.hotbar,
-						&self.inventory,
-						&self.tool_swap,
-					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-					let style = crate::ui::Style::new(self.ui_scale);
-					let act = self.alch_screen.handle_input(
-						&event,
-						&self.ui_hits,
-						&style,
-						&view,
-						&self.inv_grid,
-						&bar,
-					);
+					let act = self.alch_screen.handle_input(&event, &self.ui_hits, &view);
 					if let Some(act) = act {
 						self.apply_alchemy_action(act);
 					}
@@ -6120,19 +6079,18 @@ impl Game for Engine {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
 		}
-		// The bench drip: an occupied extraction slot sends one ordinary
-		// single-block Convert per cycle, and a queued transmute batch one
-		// single-item Craft — the server paces the same rhythm out of its
-		// one bench bucket. The view is rebuilt here rather than borrowed
+		// The bench drip: a queued transmute batch sends one single-item
+		// Craft per cycle — the server paces the same rhythm out of its
+		// bench bucket. The view is rebuilt here rather than borrowed
 		// from the draw, so the queue's affordability check reads the same
 		// number the button greys on. `busy` keeps the drip alive with the
 		// SCREEN closed (§13.4's background bench): the pace is slow
-		// enough now that standing at the bench for it would be idle time,
+		// enough that standing at the bench for it would be idle time,
 		// so the job runs while you play and only leaving the world
 		// abandons it.
 		if self.alch_screen.is_open() || self.alch_screen.busy() {
 			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
+			if let Some(act) = self.alch_screen.tick(dt, &view) {
 				self.apply_alchemy_action(act);
 			}
 		}
@@ -6606,14 +6564,7 @@ impl Game for Engine {
 			} else if self.alch_screen.is_open() {
 				let view =
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-				self.alch_screen.build(
-					&mut ui,
-					size,
-					&view,
-					&self.inv_grid,
-					&self.inventory,
-					daylight,
-				);
+				self.alch_screen.build(&mut ui, size, &view, daylight);
 			} else if self.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
@@ -6634,12 +6585,8 @@ impl Game for Engine {
 				&& let Some(job) = self.alch_screen.job()
 			{
 				use crate::ui::screens::alchemy::{BenchJob, block_name};
-				let text = match job {
-					BenchJob::Extract(b) => format!("BENCH  {}", block_name(b)),
-					BenchJob::Craft(item, left) => {
-						format!("BENCH  {} ×{left}", block_name(item))
-					}
-				};
+				let BenchJob::Craft(item, left) = job;
+				let text = format!("BENCH  {} ×{left}", block_name(item));
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(

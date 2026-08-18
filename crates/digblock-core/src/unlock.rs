@@ -27,7 +27,6 @@
 //! The refusal wording lives here too ([`Kind::message`]): prediction and
 //! the server's verdict speak the same sentence because there is only one.
 
-use crate::alchemy;
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;
 use crate::skills::{MAX_LEVEL, Skill, SkillSet};
@@ -530,13 +529,8 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					&& (prospect_range(level) != prospect_range(level - 1)
 						|| ore_mastery(level) != ore_mastery(level - 1)))
 		}
-		// A new recipe, a surface node fading into view, or a bonus line
-		// that wasn't paying at the level below.
-		Skill::Alchemy => {
-			craft(b) == Some(level)
-				|| alchemy_reveal(b) == Some(level)
-				|| alchemy::bonus_lines(b, level) != alchemy::bonus_lines(b, level - 1)
-		}
+		// A new recipe, or a surface node fading into view.
+		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
 	})
 }
 
@@ -601,7 +595,7 @@ mod tests {
 		for &b in &BlockType::ALL {
 			assert_eq!(
 				craft(b).is_some(),
-				alchemy::craft_ideal(b).is_some(),
+				crate::alchemy::craft_ideal(b).is_some(),
 				"{b:?}: an unlock level and a recipe come as a pair"
 			);
 		}
@@ -722,7 +716,7 @@ mod tests {
 				);
 				assert_eq!(
 					functional(b).is_some(),
-					alchemy::functional_ideal(b).is_some(),
+					crate::alchemy::functional_ideal(b).is_some(),
 					"{b:?}: a hand-priced item needs a hand-set level"
 				);
 				continue;
@@ -1025,13 +1019,13 @@ mod tests {
 		assert_eq!(
 			alchemy,
 			vec![
-				5, 10, 12, 14, 15, 18, 21, 24, 25, 27, 28, 30, 33, 35, 36, 40, 45, 50, 55, 99
+				5, 10, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
 			],
-			"the catalog tops at 50 and the bonus lines at 55; 99 is the \
-			 sigil alone — the tail is expansion headroom. 5 and 12 carry \
-			 the leystone and springstone reveals beside their recipes; \
-			 heartwood and the siphon sit at the first level, which is \
-			 never an unlock"
+			"the catalog tops at 50; 99 is the sigil alone — the tail is \
+			 expansion headroom. 5 and 12 carry the leystone and springstone \
+			 reveals beside their recipes; heartwood and the siphon sit at \
+			 the first level, which is never an unlock, and the old bonus \
+			 lines left with bench extraction"
 		);
 		// The first level is where everyone starts — you never level up into
 		// it, and the slabs sitting at that unlock must not say otherwise.
