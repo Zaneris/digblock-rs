@@ -49,7 +49,19 @@ pub struct PlayerPersist {
 /// save was written when every player owned one, so the engine grants it
 /// on load — a migration, never a windfall, because a fresh world starts
 /// at the current rev and gets nothing.
-pub const SAVE_REV: u32 = 1;
+pub const REV_CRAFTED_BUCKET: u32 = 1;
+
+/// rev 2: the essence redesign (SKILLS-DESIGN §14). A save below this
+/// holds essence earned against the unbounded bench the redesign
+/// removed, so the engine clears every balance but Aether on load — the
+/// same one-time reset the server's record reader runs, keyed the same
+/// way: on the VERSION, never on the contents.
+pub const REV_FOUND_ESSENCE: u32 = 2;
+
+/// The rev fresh saves are written at — always the newest, so every
+/// migration above is a statement about older builds' saves and nothing
+/// a new world can trigger.
+pub const SAVE_REV: u32 = REV_FOUND_ESSENCE;
 
 /// Everything needed to enter a saved world.
 #[derive(Debug)]

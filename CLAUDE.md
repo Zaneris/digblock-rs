@@ -617,11 +617,10 @@ screen growing (`every_craftable_appears_in_exactly_one_family` pins the mirror;
 fixed column count). **The page shows the unlocked catalog plus ONE teaser tier** — the next unlock level, all of whose
 items show together — and hides everything past it, empty families included; tiles pack left but keep their true
 indices, so hiding never shifts hit identity (`the_page_hides_everything_past_the_next_unlock`). **The button QUEUES
-that count rather than buying it**: crafting drips one `Craft{count:1}` per
-`craft_pace_ticks(item, level)` — the pace scales with `craft_worth`, catalyst and feedstock both, so the biggest price
-is the longest hold — with the batch's progress in the row under the button, which is also its CANCEL. Craft XP is HALF
-the worth (`craft_xp`), and with extraction gone it is the bench's only award; the rest of Alchemy's XP is field draws
-(`skills::field_xp`).
+that count rather than buying it**: crafting drips one `Craft{count:1}` per `craft_pace_ticks(item, level)` — the pace
+scales with `craft_worth`, catalyst and feedstock both, so the biggest price is the longest hold — with the batch's
+progress in the row under the button, which is also its CANCEL. Craft XP is HALF the worth (`craft_xp`), and with
+extraction gone it is the bench's only award; the rest of Alchemy's XP is field draws (`skills::field_xp`).
 
 Polish invariants: everything sits on ONE left column; `widgets::slot` carries hover plus a two-weight ring
 (`SlotRing::Weak` = selected family context, `Strong` = the acted-on member); locked tiles dim with an unlock badge

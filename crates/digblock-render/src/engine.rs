@@ -3203,12 +3203,20 @@ impl Engine {
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
 		// §13.5's migration grant: a save written before the bucket
-		// joined the catalog (`SAVE_REV`) came from a build where every
-		// player owned one, so it keeps its bucket. Never a windfall —
-		// a fresh world opens AT the current revision and gets nothing,
-		// so the only saves this touches really did have the tool.
-		if save.rev < digblock_persist::SAVE_REV {
+		// joined the catalog came from a build where every player owned
+		// one, so it keeps its bucket. Never a windfall — a fresh world
+		// opens AT the current revision and gets nothing, so the only
+		// saves this touches really did have the tool.
+		if save.rev < digblock_persist::REV_CRAFTED_BUCKET {
 			self.inventory.add(BlockType::Bucket, 1);
+		}
+		// §14's one-time balance reset: essence below this rev was earned
+		// against the unbounded bench the redesign removed, so everything
+		// but Aether clears — the server's record reader runs the same
+		// reset at its own version, so online and local careers cross the
+		// redesign identically.
+		if save.rev < digblock_persist::REV_FOUND_ESSENCE {
+			self.inventory.clear_pre_redesign_essence();
 		}
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
@@ -7475,10 +7483,15 @@ mod store_tests {
 				},
 				// A LEGACY save on purpose (rev 0): several tests here feed
 				// layouts written when the bucket was owned by everyone, and
-				// the migration grant is part of what they exercise.
+				// the migration grant is part of what they exercise — as is
+				// §14's essence reset, which the flagged pairs below are for.
 				rev: 0,
 				edits: vec![((1, 100, 1), 0)],
-				inventory: vec![(3, 5)],
+				inventory: vec![
+					(3, 5),
+					(digblock_core::inventory::SUB_WIRE_FLAG, 500),
+					(digblock_core::inventory::SUB_WIRE_FLAG | 4, 7),
+				],
 				hotbar: self.0.borrow().open_hotbar.clone(),
 				grid: Vec::new(),
 				skills: Vec::new(),
@@ -7575,6 +7588,40 @@ mod store_tests {
 		let c = calls.borrow();
 		assert!(c.flushed >= 1, "suspend flushes");
 		assert!(c.saved_player >= 2, "suspend snapshots the player");
+	}
+
+	/// The two save-rev migrations, off one rev-0 fixture: the bucket
+	/// grant (rev 1) and §14's essence reset (rev 2) — every balance but
+	/// Aether clears, once, on load. The server's record reader runs the
+	/// same reset at its own version, so the two careers cross the
+	/// redesign identically.
+	#[test]
+	fn a_legacy_save_grants_the_bucket_and_resets_pre_redesign_essence() {
+		use digblock_core::block::Essence;
+		let calls = Rc::new(RefCell::new(Calls::default()));
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(MockStore(calls.clone())));
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+		assert_eq!(
+			engine.inventory.count(BlockType::Bucket),
+			1,
+			"a rev-0 save keeps its implicit bucket"
+		);
+		assert_eq!(
+			engine.inventory.sub_count(Essence::Flora),
+			0,
+			"pre-redesign balances clear"
+		);
+		assert_eq!(
+			engine.inventory.sub_count(Essence::Aether),
+			7,
+			"Aether alone survives the reset"
+		);
+		assert_eq!(engine.inventory.count(BlockType::Grass), 5, "stacks stay");
 	}
 
 	#[test]

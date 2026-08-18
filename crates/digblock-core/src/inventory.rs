@@ -178,6 +178,29 @@ impl Inventory {
 		self.subs[m as usize]
 	}
 
+	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14):
+	/// clear every essence EXCEPT Aether.
+	///
+	/// Pre-redesign balances were earned against an unbounded bench —
+	/// extraction against infinite matter — and carrying them into an
+	/// economy where essence is FOUND would hand exactly the players who
+	/// ground the old faucet hardest a head start over everyone who plays
+	/// the new game. Aether stays: it was always the scarce one, and
+	/// wiping the currency the sigil and the pick are saved up in would
+	/// punish the earning the redesign wants more of.
+	///
+	/// Called from the two persistence migrations only (the server's
+	/// record reader below its version, the local save load below its
+	/// rev), never from live play — the trigger is the VERSION, so a
+	/// balance is cleared at most once and a fresh world never sees it.
+	pub fn clear_pre_redesign_essence(&mut self) {
+		for e in Essence::ALL {
+			if e != Essence::Aether {
+				self.subs[e as usize] = 0;
+			}
+		}
+	}
+
 	/// Credit sub-material units, saturating at [`MAX_STACK`].
 	pub fn add_sub(&mut self, m: Essence, n: u32) {
 		let c = &mut self.subs[m as usize];

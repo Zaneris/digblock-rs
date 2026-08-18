@@ -1303,6 +1303,12 @@ golden hashes untouched.
   bench, and the bench is bounded now), the ore tiers' Alchemy cuts sit high against their Mining headlines, and the
   surface draws are sized so a handful of heartwood hearts reaches the leystone reveal inside the first session. The
   bonus lines died with the bench; their flavors are free to return as node tiers in later waves.
+- **One-time balance reset, all but Aether.** Pre-redesign essence was earned against the unbounded bench, and carrying
+  it forward would hand exactly the players who ground the old faucet hardest a head start over everyone who plays the
+  new game — so both persistence layers clear every balance except Aether, ONCE, keyed on their format versions
+  (`inventories.bin`'s reader server-side, `SAVE_REV` in local saves; `Inventory::clear_pre_redesign_essence` is the one
+  shared rule). Aether stays because it was always the scarce, honestly-earned one, and it is the currency the sigil and
+  the pick are saved up in. Stacks, tools, XP and arrangements are untouched.
 - **The reagent identities.** The five essences kept their frozen wire indices and took display names that read as
   reagents now that each one is a find: VITAE (heartwood), TERRA (leystone), UNDA (springstone), FERRUM (the ore tiers),
   AETHER unchanged. §12's "display name for Metal" question closes with this.
