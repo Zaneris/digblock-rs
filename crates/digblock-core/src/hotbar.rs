@@ -73,14 +73,26 @@ impl Hotbar {
 	}
 
 	/// The active tool as the plain id the shared dig questions take
-	/// (`ore::dig_mode`, `skills::dig_required_with`) — `Air` for a bare
-	/// slot, which those functions already read as an empty hand: it
-	/// matches no tool arm and leaves the base hold untouched. One
-	/// helper, so client prediction and the server spell the convention
-	/// identically.
+	/// (`ore::dig_mode`, `skills::dig_required_with`) — `Air` whenever the
+	/// hand is not on the tool, which those functions already read as an
+	/// empty hand: it matches no tool arm and leaves the base hold
+	/// untouched. One helper, so client prediction and the server spell
+	/// the convention identically.
+	///
+	/// Holding a tool is TWO questions — which one the slot holds
+	/// ([`Self::active_tool`]), and whether that slot is the selected one
+	/// — and every gate but the bucket's used to ask only the first. The
+	/// tool axis persists across a block selection, so a player with dirt
+	/// in hand still drew veins with the siphon, still paid the pick's
+	/// hold multiplier and still broke its plane. `active_tool` answers
+	/// what the slot HOLDS; this answers what the player is SWINGING, and
+	/// the dig questions want the second.
 	#[inline]
 	pub fn tool_in_hand(&self) -> BlockType {
-		self.active_tool.unwrap_or(BlockType::Air)
+		match self.selected_item() {
+			Some(HotbarItem::WaterTool) => self.active_tool.unwrap_or(BlockType::Air),
+			_ => BlockType::Air,
+		}
 	}
 
 	/// Advance the active tool through `owned` (the engine's owned
@@ -236,6 +248,16 @@ impl Hotbar {
 		hb
 	}
 
+	/// Select a slot by index — the server's mirror of a selection that
+	/// reaches it as an index (`InputTick.active_slot`,
+	/// `EditRequest.slot`) rather than as a keystroke. Out of range
+	/// clamps rather than being ignored: both of those are wire fields,
+	/// and a bar whose selection is stale answers [`Self::tool_in_hand`]
+	/// for the wrong hand.
+	pub fn set_selected(&mut self, slot: usize) {
+		self.selected = slot.min(HOTBAR_SLOTS - 1);
+	}
+
 	/// Number-key selection: digits 1..=9 map to slots 0..=8.
 	pub fn select_digit(&mut self, digit: u8) {
 		if (1..=HOTBAR_SLOTS as u8).contains(&digit) {
@@ -369,6 +391,43 @@ mod tests {
 		);
 		h.cycle_tool(&[]);
 		assert_eq!(h.active_tool(), None, "an emptied roster bares the slot");
+	}
+
+	/// A tool only swings when the hand is ON it. Both ends ask this one
+	/// function — `ore::dig_mode`, `dig_required_with` and both
+	/// `pick_plane`s — so a bar pointing at a block cannot draw a vein,
+	/// widen a swing or lengthen a hold on the strength of a tool the
+	/// slot merely remembers.
+	#[test]
+	fn a_tool_only_swings_from_its_own_slot() {
+		let tool = HOTBAR_SLOTS - 1;
+		let mut h = Hotbar::new();
+		h.auto_assign(B::Dirt);
+		h.cycle_tool(&[B::EssenceSiphon]);
+		assert_eq!(h.active_tool(), Some(B::EssenceSiphon), "the slot holds it");
+
+		h.set_selected(0);
+		assert_eq!(h.tool_in_hand(), B::Air, "a block slot is an empty hand");
+		h.set_selected(tool);
+		assert_eq!(h.tool_in_hand(), B::EssenceSiphon, "and now it is held");
+
+		// An empty block slot is still not the tool slot.
+		h.set_selected(1);
+		assert_eq!(h.selected_item(), None);
+		assert_eq!(h.tool_in_hand(), B::Air);
+
+		// A bare tool slot is an empty hand however it is selected.
+		h.set_active_tool(None);
+		h.set_selected(tool);
+		assert_eq!(h.tool_in_hand(), B::Air, "nothing crafted yet");
+
+		// Out of range clamps onto the last slot, which IS the tool's —
+		// the wire fields this arrives on are not to be trusted, and
+		// clamping somewhere arbitrary would answer for the wrong hand.
+		h.cycle_tool(&[B::Bucket]);
+		h.set_selected(usize::MAX);
+		assert_eq!(h.selected_index(), tool);
+		assert_eq!(h.tool_in_hand(), B::Bucket);
 	}
 
 	#[test]

@@ -286,11 +286,18 @@ impl MeshInput {
 			}
 		}
 		// ---- springstone (Sand hosts). Cell-major over the Sand cells,
-		// pre-filtered hard: the bed test costs five field evaluations, so
-		// only sand under standing water (or under an edit, where
-		// worldgen's word no longer stands, or under the box's rim, where
-		// there is no word to read) rolls the rate, and only the rate's
-		// survivors pay for the classification.
+		// asking `springstone_bed` and nothing else.
+		//
+		// It used to pre-filter on the cell ABOVE being water — cheaper
+		// than the rate hash, and true of every bed worldgen makes. But
+		// that reads the SNAPSHOT where `nodes::revealed` reads worldgen,
+		// so the two answered differently the moment anything moved the
+		// water: a client's own predicted bucket scoop over a bed made the
+		// spring vanish from the picture while the dig path still called
+		// it a draw. A guard the dig path does not share cannot be a
+		// guard. The rate hash inside `springstone_bed` runs before its
+		// own five field evaluations and prunes nearly everything, which
+		// is what makes asking the real question affordable here.
 		let sand = BlockType::Sand as u16;
 		if !hidden(BlockType::Springstone) {
 			for y in 0..=span {
@@ -301,14 +308,7 @@ impl MeshInput {
 						{
 							continue;
 						}
-						let watery = if y == span {
-							true
-						} else {
-							let above = idx(x, y + 1, z);
-							BlockType::from_id(self.blocks[above] & crate::chunk::ID_MASK)
-								.is_water() || stamp.edited.binary_search(&(above as u16)).is_ok()
-						};
-						if watery && nodes::springstone_at(ox + x, oy + y, oz + z, stamp.seed) {
+						if nodes::springstone_bed(ox + x, oz + z, stamp.seed) == Some(oy + y) {
 							self.blocks[i] = BlockType::Springstone as u16;
 						}
 					}
@@ -703,12 +703,25 @@ mod tests {
 	/// revealed one at a shared cell; a claim on the shell the dig path
 	/// would refuse) both live in specific cells nobody would think to
 	/// pick.
+	///
+	/// Swept over every HOST too, and that half is not optional: the box
+	/// used to be filled with Stone alone, so the Wood and Sand passes —
+	/// two thirds of the node layer — were never executed by the one test
+	/// that pins stamp/dig agreement. A springstone prefilter that read
+	/// the snapshot where the dig path reads worldgen lived through that
+	/// gap.
 	#[test]
 	fn the_reveal_stamp_and_the_dig_path_agree() {
 		use crate::worldgen::nodes::{self, Levels};
 		let seed = 42.0;
 		let span = PADDED as i32 - 1;
 		let max = crate::skills::MAX_LEVEL;
+		// Every host a node can manifest in, each filling a whole box.
+		let hosts = [B::Stone, B::Wood, B::Sand];
+		// Did the sweep actually STAMP a surface node anywhere? An
+		// agreement test over boxes that hold none is green for the wrong
+		// reason, which is what let a Sand-pass divergence live here.
+		let mut seen_surface = false;
 		// Boxes straddling the bands' edges, both reveal axes stepped —
 		// mixed tiers, edited cells, and the leystone band's seam with the
 		// deep tiers all in one sweep.
@@ -725,39 +738,55 @@ mod tests {
 			((0, 100, -16), max, 1, vec![]),
 			((0, 120, -16), 1, max, vec![]),
 			((0, 40, -24), 55, 3, vec![]),
+			// A box holding real SPRINGSTONE beds — found by walking the
+			// seed, and asserted below to still hold one, because a
+			// coordinate that quietly stopped covering the Sand pass is
+			// exactly how the snapshot prefilter survived this test.
+			((8, 146, -400), max, max, vec![]),
+			((8, 146, -400), max, 11, vec![]),
 			// Below every reveal on both axes nothing may be stamped.
 			((-24, 1, -4), 9, 1, vec![]),
 		] {
-			let mut input = MeshInput {
-				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
-				missing: [false; 6],
-				nodes: Some(NodeStamp {
-					seed,
-					origin,
-					mining,
-					alchemy,
-					edited: edited.clone(),
-				}),
-			};
-			input.apply_nodes();
-			let levels = Levels { mining, alchemy };
-			for ly in 0..=span {
-				for lz in 0..=span {
-					for lx in 0..=span {
-						let i = ((ly * PADDED as i32 + lz) * PADDED as i32 + lx) as usize;
-						let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
-						let was_edited = edited.contains(&(i as u16));
-						let want =
-							nodes::revealed(B::Stone as u16, (x, y, z), seed, levels, was_edited)
-								.map_or(B::Stone as u16, |o| o as u16);
-						assert_eq!(
-							input.blocks[i], want,
-							"({x},{y},{z}) at mining {mining} / alchemy {alchemy}"
-						);
+			for host in hosts {
+				let mut input = MeshInput {
+					blocks: Box::new([host as u16; PADDED_VOLUME]),
+					missing: [false; 6],
+					nodes: Some(NodeStamp {
+						seed,
+						origin,
+						mining,
+						alchemy,
+						edited: edited.clone(),
+					}),
+				};
+				input.apply_nodes();
+				if host != B::Stone {
+					seen_surface |= input.blocks.iter().any(|&c| c != host as u16);
+				}
+				let levels = Levels { mining, alchemy };
+				for ly in 0..=span {
+					for lz in 0..=span {
+						for lx in 0..=span {
+							let i = ((ly * PADDED as i32 + lz) * PADDED as i32 + lx) as usize;
+							let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
+							let was_edited = edited.contains(&(i as u16));
+							let want =
+								nodes::revealed(host as u16, (x, y, z), seed, levels, was_edited)
+									.map_or(host as u16, |o| o as u16);
+							assert_eq!(
+								input.blocks[i], want,
+								"{host:?} ({x},{y},{z}) at mining {mining} / alchemy {alchemy}"
+							);
+						}
 					}
 				}
 			}
 		}
+		assert!(
+			seen_surface,
+			"the sweep stamped no surface node — the Wood and Sand passes \
+			 are not being exercised, so this test proves nothing about them"
+		);
 	}
 
 	/// The stamp only ever touches PRISTINE stone: air stays air, a spent

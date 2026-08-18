@@ -108,6 +108,20 @@ impl PendingEdits {
 		dropped
 	}
 
+	/// Is a prediction of ours still in flight on this cell?
+	///
+	/// For the JOURNAL sync alone, which is a bulk restatement of what the
+	/// server had rather than news about a cell. A restatement must not
+	/// overwrite a cell we are waiting on: the server's own answer is
+	/// coming, as `EditApplied` or `EditRejected`, and either settles it —
+	/// whereas the restatement would flick the block back to its old value
+	/// for a round trip. Nothing else needs this: a real authoritative
+	/// edit IS the news, and supersedes through
+	/// [`Self::on_authoritative`].
+	pub fn pending_at(&self, cell: (i32, i32, i32)) -> bool {
+		self.pending.iter().any(|e| e.cell == cell)
+	}
+
 	/// An authoritative edit landed on `cell`: all pending entries there
 	/// are superseded. Returns them so the caller reverts their
 	/// `inv_delta`s — never their cells.

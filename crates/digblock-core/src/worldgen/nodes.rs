@@ -140,14 +140,19 @@ pub fn dig_mode(
 	seed: f64,
 	levels: Levels,
 	edited: bool,
-	active_tool: BlockType,
+	// Named for the question the callers ask, which is `tool_in_hand`
+	// and not `active_tool`: holding a tool is which one the tool slot
+	// holds AND whether that slot is selected, and the two used to be
+	// conflated here — a player with dirt in hand drew veins with the
+	// siphon (SIM v20).
+	tool_in_hand: BlockType,
 ) -> DigMode {
 	match revealed(cell, at, seed, levels, edited) {
 		// Below the reveal there is nothing here to protect: that player's
 		// client and server agree the cell is its host, so it digs as the
 		// host and the node is spent. You dig what you can see.
 		None => DigMode::Break,
-		Some(node) if active_tool == BlockType::EssenceSiphon => DigMode::Extract(node),
+		Some(node) if tool_in_hand == BlockType::EssenceSiphon => DigMode::Extract(node),
 		Some(_) => DigMode::NeedsSiphon,
 	}
 }
@@ -253,14 +258,28 @@ const SPRING_IN_256: u64 = 18;
 /// surface cell itself, which is what puts the find under water and makes
 /// water features destinations.
 pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
+	springstone_bed(x, z, seed) == Some(y)
+}
+
+/// The bed cell this column's spring occupies, or `None` for a column
+/// that carries none.
+///
+/// The column-level half of [`springstone_at`], separate because a
+/// caller that wants to FIND springs — the `DIG_NODE` capture scene —
+/// otherwise has to evaluate [`crate::worldgen::column_shape`] itself
+/// just to learn the height to ask about, and then pays for it a second
+/// time in here. Sharing one answer is also what keeps the rate test
+/// genuinely first: it is a hash, the classification behind it is five
+/// field evaluations, and the hash rejects all but a small share of
+/// columns before any of them run.
+pub fn springstone_bed(x: i32, z: i32, seed: f64) -> Option<i32> {
 	if ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF >= SPRING_IN_256 {
-		return false;
+		return None;
 	}
 	let s = crate::worldgen::column_shape(x, z, seed);
 	use crate::worldgen::SurfaceKind;
-	matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River)
-		&& s.water > s.height
-		&& y == s.height
+	(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River) && s.water > s.height)
+		.then_some(s.height)
 }
 
 #[cfg(test)]

@@ -630,11 +630,22 @@ impl NetClient {
 					spawn_look: Vec3::from_array(spawn_look).normalize_or_zero(),
 				});
 			}
+			// A column of the journal as it stands. Not news about any one
+			// cell — a restatement, which the server also repeats on a slow
+			// rotation as its only way of healing a column a client somehow
+			// lacks. So a cell we have a prediction in flight on is left
+			// alone: the server's own answer for it is already on its way
+			// and settles it either way, while restating the old value here
+			// would bounce the block back for a round trip.
 			ServerMsg::JournalColumn { cells, .. } => {
 				for c in cells {
+					let cell = (c.x, c.y, c.z);
+					if self.edits.pending_at(cell) {
+						continue;
+					}
 					if let Some(cell_value) = valid_cell(c.block) {
 						out.push(NetEvent::Edit {
-							cell: (c.x, c.y, c.z),
+							cell,
 							cell_value,
 							superseded: Vec::new(),
 							remote_author: None,
@@ -853,9 +864,12 @@ impl NetClient {
 
 	/// Announce a hold-to-dig beginning on `cell` (reliable, in-order
 	/// with the completing `send_edit` — the server times the interval).
-	pub fn send_dig_start(&mut self, cell: (i32, i32, i32)) {
+	/// `slot` is the hand it is being made with, declared here for the
+	/// same reason `send_edit` declares one.
+	pub fn send_dig_start(&mut self, cell: (i32, i32, i32), slot: u8) {
 		self.send_msg(&ClientMsg::DigStart {
 			cell: [cell.0, cell.1, cell.2],
+			slot,
 		});
 	}
 

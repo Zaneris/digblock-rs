@@ -14,8 +14,8 @@ stages to come (expanded on entry). I check items off as they land.
       re-pinned at the 1.8 gate)*
 - [x] **1.4 Unified node layer** — `worldgen/nodes.rs`: `heartwood_at` / `springstone_at`, `revealed` / `dig_mode` /
       `spent_block` over all seven node kinds; `decoration::trunk_at`; purity + anti-dupe + roster tests
-- [x] **1.5 Unlock axes** — `alchemy_reveal` (Heartwood 1 / Leystone 5 / Springstone 12), siphon → 1, torch → 10,
-      `opens` counts surface reveals; unlock pins updated
+- [x] **1.5 Unlock axes** — `alchemy_reveal` gives each surface kind its level, and the siphon and torch moved to sit
+      around them; `opens` counts surface reveals; unlock pins updated
 - [x] **1.6 Yields + XP** — node yield bases *(done in 1.1)*, `field_yield` generalized to every node kind, `skills`
       field-XP table covering surface nodes; tests
 - [x] **1.7 Reveal stamp** — `NodeStamp` carries both skill levels, mesher claims Wood/Sand hosts, pipeline
@@ -37,7 +37,7 @@ while bench extraction still pays would open a craft-cheap/extract-full matter p
       rewritten (Craft-based XP test)
 - [x] **2.3 Client** — EXTRACT tab and bucket tile removed (screen is transmute-only), `bench_tell` craft-only,
       engine/offline arm follows
-- [x] **2.4 Protocol** — v27 + `MIN_PROTOCOL` raise + SIM bump, history comments
+- [x] **2.4 Protocol** — v28 + `MIN_PROTOCOL` raise + SIM bump, history comments
 - [x] **2.5 Gate** — workspace tests green
 
 ## Stage 3 — recipe rebuild: feedstock + catalyst

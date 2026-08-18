@@ -280,6 +280,14 @@ struct Client {
 	/// keeps a re-scan from queueing the same column twice.
 	sync_queue: std::collections::VecDeque<(i32, i32)>,
 	sync_queue_set: FxHashSet<(i32, i32)>,
+	/// The background re-sync's rotation: in-range edited columns,
+	/// nearest first, handed back one at a time and refilled when spent
+	/// (`pump_resync`). Nothing is OWED here — every column on it has
+	/// already been sent — so it is kept apart from `sync_queue`, whose
+	/// front is what releases the arrival hold.
+	resync_queue: std::collections::VecDeque<(i32, i32)>,
+	/// Ticks until this client's next background re-sync.
+	resync_countdown: u32,
 	/// Run the full edited-column sync scan for this client next tick.
 	/// Set on center change and on going live; steady state does ZERO
 	/// journal scans (fresh columns arrive via the first-edit broadcast).
@@ -302,12 +310,17 @@ struct Client {
 	/// The client's item arrangement (sanitized from `ClientMsg::Layout`,
 	/// kept current on the reliable stream) — the enforcement source for
 	/// "a place must use the item in its declared slot".
+	///
+	/// It carries the SELECTED slot too ([`Hotbar::set_selected`], fed
+	/// from `InputTick.active_slot` and re-declared on the reliable
+	/// stream by every edit and every `DigStart`). That used to be a
+	/// field of its own beside the bar,
+	/// which was fine while it only chose the held-item icon — but
+	/// `Hotbar::tool_in_hand` now asks whether the hand is on the tool
+	/// slot at all, and an answer split across two places is one that can
+	/// drift from the client's.
 	hotbar: Hotbar,
 	grid: InvGrid,
-	/// Selected hotbar slot from the newest consumed input — feeds the
-	/// held-item field in snapshots (display only; enforcement reads the
-	/// edit's own declared slot).
-	active_slot: u8,
 	/// `Some` = the master-vouched account this session belongs to, which is
 	/// the key its records persist under; `None` = unverified, session-only
 	/// inventory (offline harness and tests only).
@@ -341,9 +354,8 @@ impl Client {
 	/// does on the Layout wire.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::block::BlockType;
-		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem, WIRE_EMPTY, WIRE_TOOL};
-		let slot = (self.active_slot as usize).min(HOTBAR_SLOTS - 1);
-		match self.hotbar.slots()[slot] {
+		use digblock_core::hotbar::{HotbarItem, WIRE_EMPTY, WIRE_TOOL};
+		match self.hotbar.selected_item() {
 			None => WIRE_EMPTY,
 			// A bare tool slot is an empty hand — the fresh-player state,
 			// now that the first vessel is crafted.
@@ -722,6 +734,16 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
+	/// The hotbar slot this client is pointing at — what a real client
+	/// declares on every input tick and every edit, and what decides
+	/// whether the tool slot's contents are in hand at all.
+	#[cfg(test)]
+	pub(crate) fn test_selected_slot(&self, conn_id: u64) -> u8 {
+		self.clients
+			.get(&conn_id)
+			.map_or(0, |c| c.hotbar.selected_index() as u8)
+	}
+
 	/// The client's Mining level (the base level for an unknown conn).
 	#[cfg(test)]
 	pub(crate) fn test_mining_level(&self, conn_id: u64) -> u32 {
@@ -760,6 +782,11 @@ impl Sim {
 			// craft that would have earned it.
 			c.inventory.add(tool, 1);
 			c.hotbar.cycle_tool(&[tool]);
+			// And SELECT the slot: since `tool_in_hand` asks whether the
+			// hand is on the tool, a granted tool the bar is not pointing
+			// at is no more in hand here than it is for a player.
+			c.hotbar
+				.set_selected(digblock_core::hotbar::HOTBAR_SLOTS - 1);
 		}
 	}
 
@@ -939,11 +966,12 @@ impl Sim {
 				// same-tick completing EditRequest already in the queue
 				// (see `ClientAction`). Beyond the queue cap it drops
 				// silently.
-				ClientMsg::DigStart { cell } => {
+				ClientMsg::DigStart { cell, slot } => {
 					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
 						self.action_queue.push(ClientAction::DigStart {
 							conn_id,
 							cell: (cell[0], cell[1], cell[2]),
+							slot,
 						});
 					}
 				}
@@ -1011,7 +1039,7 @@ impl Sim {
 				// Inline like chat: sync radius is read fresh each tick, so
 				// the change simply applies from the next sync pass.
 				//
-				// Growing the radius must also REQUEST a scan. The full
+				// Either direction must REQUEST a scan. The full
 				// edited-column walk is event-driven off `needs_sync_scan`,
 				// which otherwise only rises when the center column moves —
 				// so a player who widened their draw distance standing
@@ -1019,12 +1047,18 @@ impl Sim {
 				// and no live edits there either (`broadcast_edit` gates on
 				// `synced_columns`). Other players' builds rendered as
 				// pristine terrain until they walked across a column
-				// border. Shrinking needs no scan: the prune rides the same
-				// flag and costs nothing to defer.
+				// border.
+				//
+				// SHRINKING used to skip the scan, on the grounds that the
+				// prune costs nothing to defer. It does, but a deferred
+				// prune leaves `synced_columns` claiming columns the client
+				// has just evicted — and widening again finds them already
+				// "synced" and sends nothing, which is the same pristine
+				// ring by a longer road.
 				ClientMsg::SetDrawDist { draw_dist } => {
 					if let Some(client) = self.clients.get_mut(&conn_id) {
 						let want = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
-						if want > client.draw_dist {
+						if want != client.draw_dist {
 							client.needs_sync_scan = true;
 						}
 						client.draw_dist = want;
@@ -1106,7 +1140,11 @@ impl Sim {
 		let Some(client) = self.clients.get(&conn_id) else {
 			return Vec::new();
 		};
-		if client.hotbar.active_tool() != Some(digblock_core::block::BlockType::ResonantPick) {
+		// `tool_in_hand`, not `active_tool`: the plane belongs to the pick
+		// being SWUNG, and the client's own `pick_plane` asks the same
+		// question of the same bar. The edit's declared slot has already
+		// been mirrored onto the bar by the time this runs.
+		if client.hotbar.tool_in_hand() != digblock_core::block::BlockType::ResonantPick {
 			return Vec::new();
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
@@ -1157,7 +1195,7 @@ impl Sim {
 	/// same cell can only ever RE-READ what the decay has left (see
 	/// below) — never add to it. The action-queue cap bounds the
 	/// per-tick volume.
-	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32)) {
+	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
 		// Before the client borrow: `spawn_lock` reads all of `self`.
 		let lock = self.spawn_lock();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
@@ -1166,6 +1204,14 @@ impl Sim {
 		if !client.live {
 			return;
 		}
+		// The hand this hold is being made with, mirrored onto the bar
+		// before any tool question is asked of it. It travels with the
+		// start for the reason `EditRequest.slot` travels with an edit:
+		// the selection otherwise arrives on the jitter-buffered input
+		// path, and a player who picks up the siphon and holds on a vein
+		// in the same breath would meet a `NeedsTool` refusal made
+		// against the hand they had a moment ago.
+		client.hotbar.set_selected(slot as usize);
 		// Refuse a protected cell up front. The completing edit would
 		// reject it anyway, but only after the player held the button
 		// through the block's full dig time for nothing — the refusal is
@@ -1772,6 +1818,8 @@ impl Sim {
 				synced_columns: FxHashSet::default(),
 				sync_queue,
 				sync_queue_set,
+				resync_queue: std::collections::VecDeque::new(),
+				resync_countdown: 0,
 				needs_sync_scan: false,
 				live: false,
 				center,
@@ -1783,7 +1831,6 @@ impl Sim {
 				inventory,
 				hotbar,
 				grid,
-				active_slot: 0,
 				identity,
 				account,
 				digging: None,
@@ -2600,6 +2647,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -2624,6 +2672,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				slot: 0,
 			},
 		}]);
 		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
@@ -2680,6 +2729,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [cell.0, cell.1, cell.2],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -2783,6 +2833,52 @@ mod tests {
 			"a stone-length hold does not draw the vein"
 		);
 		assert_eq!(sim.test_inventory_count(1, ore), 0, "and credits nothing");
+
+		// 5. Owning the siphon is not holding it (SIM v20). With the bar
+		//    on a block slot the tool axis still names the siphon — that
+		//    is what it is FOR, it survives a block selection — and the
+		//    server must answer exactly as it does for the bare hand
+		//    above, or a player carrying a siphon draws every seam they
+		//    look at while holding dirt.
+		let mut sim = super::harness::flat_sim_at("ore-stowed", eye);
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		sim.bench_set_mining_level(1, reveal);
+		sim.test_grant(1, BlockType::EssenceSiphon, 1);
+		sim.bench_set_active_tool(1, BlockType::EssenceSiphon);
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [cell.0, cell.1, cell.2],
+				slot: 0,
+			},
+		}]);
+		c.drain();
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::DigRefused {
+					reason: digblock_net::messages::RejectReason::NeedsTool,
+					..
+				}
+			)),
+			"a stowed siphon is no siphon: {:?}",
+			c.msgs
+		);
+		assert_eq!(sim.test_digging(1), None, "no hold opened");
+		// And the declared slot is what decides it — the same client, the
+		// same tick, now with the hand on the tool.
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::DigStart {
+				cell: [cell.0, cell.1, cell.2],
+				slot: digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1,
+			},
+		}]);
+		assert!(
+			sim.test_digging(1).is_some(),
+			"the hold opens the moment the siphon is in hand"
+		);
 	}
 
 	/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the
@@ -2928,6 +3024,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [cell.0, cell.1, cell.2],
+					slot: 0,
 				},
 			}]);
 		};
@@ -2965,6 +3062,7 @@ mod tests {
 			conn_id: 2,
 			msg: ClientMsg::DigStart {
 				cell: [ground.cell.0, ground.cell.1, ground.cell.2],
+				slot: 0,
 			},
 		}]);
 		c2.drain();

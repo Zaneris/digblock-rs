@@ -42,6 +42,7 @@ use digblock_core::hotbar::HotbarItem;
 use digblock_core::inv_grid::GRID_SLOTS;
 use digblock_core::inventory::Inventory;
 use digblock_core::material::Material;
+use digblock_core::shapes;
 use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -149,7 +150,14 @@ impl AlchView {
 			// Capped types buy what they can hold and no more: one
 			// bucket charge, one of any tool. Affordability is not the
 			// only ceiling.
-			.min(self.headroom[item as usize])
+			//
+			// Headroom counts ITEMS and this function counts BATCHES, so
+			// it has to be divided by the batch before the two can be
+			// compared — `apply_alchemy` refuses on `headroom < batch *
+			// count`, and offering a count it will refuse leaves the drip
+			// queued against a bench that never moves. One number, so the
+			// offer and the rule cannot drift.
+			.min(self.headroom[item as usize] / shapes::craft_batch(item).max(1))
 	}
 }
 
@@ -452,7 +460,7 @@ impl AlchScreen {
 		let s = ui.style.scale;
 		let pad = theme::PAD * s;
 
-		let (width, height) = (self.content_w(&ui.style), self.content_h(&ui.style));
+		let (width, height) = (self.content_w(&ui.style, view), self.content_h(&ui.style));
 		let row_w = width
 			.max(theme::MIN_PANEL_W * s)
 			.min(size.0 as f32 - 4.0 * pad);
@@ -488,11 +496,32 @@ impl AlchScreen {
 		}
 	}
 
-	fn content_w(&self, style: &Style) -> f32 {
+	/// The essence readout, which is also the widest text the page draws.
+	///
+	/// One function so the width the panel is MEASURED at and the string
+	/// the header EMITS cannot drift — the reason `text_row_w` exists at
+	/// all, and the reason a width is never counted in characters.
+	fn holdings_text(view: &AlchView) -> String {
+		Essence::ALL
+			.iter()
+			.map(|&e| format!("{} {}", e.name(), view.subs[e as usize]))
+			.collect::<Vec<_>>()
+			.join("   ")
+	}
+
+	fn content_w(&self, style: &Style, view: &AlchView) -> f32 {
 		// The inventory grid's own width, which is also what every other
 		// screen measures against — the page keeps its column.
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
-		spec.extent(GRID_SLOTS).0
+		let grid = spec.extent(GRID_SLOTS).0;
+		// ...but the holdings row is TEXT, and text does not shrink with
+		// the panel: `glyph_px` floors, so the bottom rungs of the fit
+		// ladder take a quarter off every box while the readout stays the
+		// size it was. Folding it in is what keeps the row inside the
+		// panel it is drawn in — it used to be drawn at the grid's width
+		// and spill past the edge onto the dimmed world, with nothing
+		// clipping it, and the spill grew with the digits.
+		grid.max(theme::text_row_w(style, &Self::holdings_text(view)))
 	}
 
 	/// The tallest member row any family lays out (wrapped at the grid's
@@ -545,12 +574,20 @@ impl AlchScreen {
 			},
 		);
 		*y += row_h;
-		// Essence readout, always visible.
-		let holdings = Essence::ALL
-			.iter()
-			.map(|&e| format!("{} {}", e.name(), view.subs[e as usize]))
-			.collect::<Vec<_>>()
-			.join("   ");
+		// Essence readout, always visible — and the row `content_w` sizes
+		// the panel against, through this same function.
+		//
+		// Elided against the width it is actually drawn at, because the
+		// panel cannot always be as wide as the readout wants: `row_w` is
+		// clamped to the window, so a player holding near the stack cap
+		// on a phone asks for more width than exists. `widgets::row` does
+		// not clip, so without this the tail is drawn past the panel edge
+		// onto the dimmed world.
+		let holdings = elide(
+			&ui.style,
+			&Self::holdings_text(view),
+			row_w - 2.0 * scale::text_pad_x(s),
+		);
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -1415,6 +1452,83 @@ mod tests {
 				panel.y + panel.h <= bar_top + 0.5,
 				"panel under the bar at {size:?}/{scale}: {} vs {bar_top}",
 				panel.y + panel.h
+			);
+		}
+	}
+
+	/// The essence readout stays INSIDE the panel, at every rung of the
+	/// fit ladder and with the holdings at their widest.
+	///
+	/// It is the one row on the page whose width is data, and it does not
+	/// shrink with the panel: `glyph_px` floors at a whole pixel, so the
+	/// ladder's bottom rungs take a quarter off every box while the text
+	/// stays where it is. The page used to size itself on the inventory
+	/// grid's extent alone and draw this row at that width, so on a small
+	/// window at a large interface scale it spilled past the panel edge
+	/// onto the dimmed world — unclipped, and growing with the digits.
+	///
+	/// Swept at the scales the fit ladder actually reaches, and with a
+	/// full stack of every essence so the string is as long as the game
+	/// can make it.
+	#[test]
+	fn the_essence_readout_never_spills_out_of_its_panel() {
+		let mut inv = Inventory::default();
+		for &e in &Essence::ALL {
+			inv.add_sub(e, u32::MAX);
+		}
+		let view = AlchView::build(&inv, &skills_at(41));
+		for (size, scale) in [
+			((1280u32, 800u32), 1.0f32),
+			((844, 390), 2.25),
+			((844, 390), 3.0),
+			((667, 375), 3.0),
+			((932, 430), 3.0),
+			// Portrait, where `row_w`'s clamp to the window bites and
+			// widening the panel cannot be the whole answer.
+			((390, 844), 3.0),
+		] {
+			let mut screen = AlchScreen::default();
+			screen.open();
+			let mut dl = DrawList::default();
+			let mut hits = HitMap::default();
+			let mut ui = Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: Style::new(scale),
+			};
+			screen.build(&mut ui, size, &view, 1.0);
+			let panel = dl
+				.cmds(Layer::Backdrop)
+				.0
+				.iter()
+				.find_map(|c| match c {
+					crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
+						Some(*rect)
+					}
+					_ => None,
+				})
+				.expect("panel quad");
+			// The readout is the text run that opens with an essence name.
+			// Measured at the command's OWN face and px — the page draws
+			// at the fitted scale, not the window scale this loop set.
+			let (cmds, arena) = dl.cmds(Layer::Content);
+			let right = cmds
+				.iter()
+				.find_map(|c| match c {
+					crate::ui::draw::Cmd::Text {
+						face, x, px, range, ..
+					} => {
+						let t = &arena[range.0 as usize..range.1 as usize];
+						t.starts_with(Essence::ALL[0].name())
+							.then(|| x + crate::font::face(*face).measure(t, *px))
+					}
+					_ => None,
+				})
+				.expect("the essence readout is drawn");
+			assert!(
+				right <= panel.x + panel.w + 0.5,
+				"readout spills past the panel at {size:?}/{scale}: {right} vs {}",
+				panel.x + panel.w
 			);
 		}
 	}

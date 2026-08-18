@@ -256,13 +256,20 @@ pub fn dig_speed_step(level: u32) -> u32 {
 /// SIM v18 dropped it. So `hardness_ticks` is a BASE the curve scales at
 /// every level, and outside `Fixed` no level spends it unscaled — don't
 /// reintroduce an assertion that some level returns the raw hardness.
+///
+/// SIM v20 lengthened both endpoints of every non-Fixed family, mastery
+/// by rather more than the opening. So digging is slower everywhere, and
+/// the RATIO between the two ends — what a whole life of levelling is
+/// worth as a multiple — shrank with it. That second part is the
+/// deliberate one: mastery was fast enough that the ladder's top was
+/// where the material stopped mattering.
 pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	use crate::block::DigFamily;
 	let (start, end) = match family {
 		DigFamily::Fixed => (1000, 1000),
-		DigFamily::Soft => (1875, 417),
-		DigFamily::Wood => (2025, 500),
-		DigFamily::Rock => (2550, 417),
+		DigFamily::Soft => (2063, 542),
+		DigFamily::Wood => (2228, 650),
+		DigFamily::Rock => (2805, 542),
 	};
 	start - (DIG_TAPER[dig_step_index(level)] * (start - end) + 500) / 1000
 }
@@ -682,9 +689,9 @@ mod tests {
 		// The two design inputs per family: its novice and mastery endpoints.
 		for (family, start, end) in [
 			(F::Fixed, 1000, 1000),
-			(F::Soft, 1875, 417),
-			(F::Wood, 2025, 500),
-			(F::Rock, 2550, 417),
+			(F::Soft, 2063, 542),
+			(F::Wood, 2228, 650),
+			(F::Rock, 2805, 542),
 		] {
 			assert_eq!(dig_speed_permille(family, 1), start, "{family:?} at 1");
 			assert_eq!(dig_speed_permille(family, 99), end, "{family:?} at 99");
@@ -692,9 +699,9 @@ mod tests {
 		// Derived goldens along the way, one early / mid / late.
 		for (family, at15, at30, at60) in [
 			(F::Fixed, 1000, 1000, 1000),
-			(F::Soft, 1344, 994, 614),
-			(F::Wood, 1470, 1104, 706),
-			(F::Rock, 1774, 1262, 705),
+			(F::Soft, 1509, 1144, 747),
+			(F::Wood, 1654, 1275, 863),
+			(F::Rock, 1981, 1438, 848),
 		] {
 			assert_eq!(dig_speed_permille(family, 15), at15, "{family:?} at 15");
 			assert_eq!(dig_speed_permille(family, 30), at30, "{family:?} at 30");
@@ -713,14 +720,14 @@ mod tests {
 		}
 		// The §5.1 table's spot values, in sim ticks.
 		use BlockType as B;
-		assert_eq!(dig_required(B::Stone, 90, 1), 230, "stone 3.83s at level 1");
-		assert_eq!(dig_required(B::Stone, 90, 30), 114, "stone 1.90s at 30");
-		assert_eq!(dig_required(B::Stone, 90, 99), 38, "stone 0.63s at 99");
-		assert_eq!(dig_required(B::Wood, 60, 1), 122, "wood 2.03s at level 1");
-		assert_eq!(dig_required(B::Wood, 60, 30), 66, "wood 1.10s at 30");
-		assert_eq!(dig_required(B::Wood, 60, 99), 30, "wood 0.50s at 99");
-		assert_eq!(dig_required(B::Dirt, 30, 1), 56, "dirt 0.93s at level 1");
-		assert_eq!(dig_required(B::Dirt, 30, 30), 30, "dirt 0.50s at 30");
+		assert_eq!(dig_required(B::Stone, 90, 1), 252, "stone at level 1");
+		assert_eq!(dig_required(B::Stone, 90, 30), 129, "stone mid-ladder");
+		assert_eq!(dig_required(B::Stone, 90, 99), 49, "stone at mastery");
+		assert_eq!(dig_required(B::Wood, 60, 1), 134, "wood at level 1");
+		assert_eq!(dig_required(B::Wood, 60, 30), 77, "wood mid-ladder");
+		assert_eq!(dig_required(B::Wood, 60, 99), 39, "wood at mastery");
+		assert_eq!(dig_required(B::Dirt, 30, 1), 62, "dirt at level 1");
+		assert_eq!(dig_required(B::Dirt, 30, 30), 34, "dirt mid-ladder");
 		// Fixed never scales: leaves and the scoop hold all the way up.
 		for level in [1, 30, 99] {
 			assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
@@ -794,16 +801,12 @@ mod tests {
 		// A stone dig gets faster on the stride and nowhere else, and the
 		// first jump dwarfs the last.
 		use BlockType as B;
-		assert_eq!(dig_required(B::Stone, 90, 4), 230, "still the level-1 hold");
-		assert_eq!(
-			dig_required(B::Stone, 90, 5),
-			203,
-			"the biggest jump: 27 ticks"
-		);
-		assert_eq!(dig_required(B::Stone, 90, 9), 203, "held to the next step");
-		assert_eq!(dig_required(B::Stone, 90, 95), 39, "the 95 step");
-		assert_eq!(dig_required(B::Stone, 90, 98), 39, "held at the 95 step");
-		assert_eq!(dig_required(B::Stone, 90, 99), 38, "the last jump: 1 tick");
+		assert_eq!(dig_required(B::Stone, 90, 4), 252, "still the level-1 hold");
+		assert_eq!(dig_required(B::Stone, 90, 5), 224, "the biggest jump");
+		assert_eq!(dig_required(B::Stone, 90, 9), 224, "held to the next step");
+		assert_eq!(dig_required(B::Stone, 90, 95), 51, "the 95 step");
+		assert_eq!(dig_required(B::Stone, 90, 98), 51, "held at the 95 step");
+		assert_eq!(dig_required(B::Stone, 90, 99), 49, "the last jump");
 	}
 
 	/// The decay is a FRACTION of the bar per tick, not a tick count:
@@ -842,7 +845,7 @@ mod tests {
 		}
 		// A part-filled bar empties proportionally sooner — that is what
 		// makes "one second" a ceiling rather than a flat wait.
-		let need = dig_required(BlockType::Stone, 90, 1); // 153
+		let need = dig_required(BlockType::Stone, 90, 1);
 		assert_eq!(dig_decayed(need / 4, need, DIG_DECAY_TICKS / 4), 0);
 		// And a single banked tick on a long hold is gone on the first.
 		assert_eq!(dig_decayed(1, need, 1), 0);

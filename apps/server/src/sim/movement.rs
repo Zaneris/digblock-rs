@@ -119,7 +119,7 @@ impl Sim {
 						jump: false,
 						move_axis: glam::Vec2::from_array(last.move_axis),
 					};
-					client.active_slot = last.active_slot;
+					client.hotbar.set_selected(last.active_slot as usize);
 					client.last_input_tick = client.admit_hi;
 				}
 				client.hold_ticks = 0;
@@ -218,7 +218,7 @@ fn step_client(
 			client.player.tick(TICK, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
 			client.stats.consumed += 1;
-			client.active_slot = input.active_slot;
+			client.hotbar.set_selected(input.active_slot as usize);
 
 			// Adoption envelope.
 			let claimed = PlayerState {

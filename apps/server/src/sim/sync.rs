@@ -40,6 +40,37 @@ const JOIN_SYNC_RESERVE: usize = 64;
 /// and are simply skipped above it.
 const WRAPPED_SNAPSHOT_RESERVE: usize = OUT_CAP / 2;
 
+/// The background re-sync: one already-synced column handed back to one
+/// settled client at a time, nearest first, going round for as long as
+/// they stay put.
+///
+/// The push sync has no acknowledgement — the server marks a column
+/// synced when it hands the frame to the outbound queue and never hears
+/// another word about it — so nothing in the protocol can NOTICE a client
+/// whose copy of a column went astray, and the symptom is a chunk that
+/// renders as pristine worldgen forever. Rather than pay an ack per
+/// column, for every column of every disc, for the life of the session,
+/// the loop simply comes round again: journal replay is last-write-wins,
+/// so a repeat costs nothing but its bytes, and a column that did go
+/// astray heals within a rotation instead of never.
+///
+/// [`RESYNC_SETTLE_TICKS`] is what a client must spend in one column
+/// before any of this starts, and it is what keeps the cost off the
+/// common case: a MOVING client is already being handed the columns it is
+/// entering, and repeating them behind it would be a permanent bandwidth
+/// floor on every built-up world. The case this exists for is somebody
+/// standing in front of a chunk that came back wrong, and standing still
+/// is exactly what a player does while noticing that.
+///
+/// Deliberately unhurried even then, because it is the SECOND line and
+/// not the first: the client's own mirror of the journal is re-applied
+/// whenever a column regenerates (`Pipeline`'s overlay, multiplayer
+/// included), so eviction — the one cause anybody has reproduced — no
+/// longer needs the network at all.
+const RESYNC_SETTLE_TICKS: u32 = TICK_RATE * 10;
+/// Ticks between two columns of one rotation. See [`RESYNC_SETTLE_TICKS`].
+const RESYNC_INTERVAL_TICKS: u32 = TICK_RATE;
+
 /// Neighbor journal-water rescans processed per tick (each is O(that
 /// column's journaled cells)) — an initial full-radius load can't hitch the
 /// sim thread.
@@ -117,6 +148,11 @@ impl Sim {
 				continue;
 			}
 			client.needs_sync_scan = false;
+			// This client is not settled: restart the background rotation's
+			// wait, and drop what was left of it — the next one will be
+			// built around wherever they stop.
+			client.resync_countdown = RESYNC_SETTLE_TICKS;
+			client.resync_queue.clear();
 			// Columns only leave the slack radius when the center moves,
 			// so the prune rides the same trigger.
 			client
@@ -150,6 +186,68 @@ impl Sim {
 			}
 		}
 		self.pump_join_sync();
+		self.pump_resync();
+	}
+
+	/// Hand each settled client one already-synced column back, on the
+	/// rotation [`RESYNC_SETTLE_TICKS`] describes — the push sync's retry
+	/// loop. See that constant for what it is for.
+	fn pump_resync(&mut self) {
+		let journal = &self.journal;
+		for client in self.clients.values_mut() {
+			if client.dead.get() || !client.live {
+				continue;
+			}
+			// Never while anything is genuinely OWED. That queue carries
+			// the same columns, fresher, and an arriving client is waiting
+			// on its front — spending the budget on a repeat would delay
+			// the world the player is standing in.
+			if client.arrival_hold || !client.sync_queue.is_empty() {
+				continue;
+			}
+			if client.resync_countdown > 0 {
+				client.resync_countdown -= 1;
+				continue;
+			}
+			// Charged before the work, not after it: an unedited disc
+			// finds nothing to send, and re-deciding that every tick is
+			// the per-tick journal scan the steady state exists without.
+			client.resync_countdown = RESYNC_INTERVAL_TICKS;
+			// The same head-room live traffic gets from the join pump: a
+			// backstop must never be the thing that fills the queue an
+			// edit dies on.
+			if client.out.capacity() <= JOIN_SYNC_RESERVE {
+				continue;
+			}
+			if client.resync_queue.is_empty() {
+				// One rotation's worth, nearest first — so the ground the
+				// player is standing on heals in seconds and the rim takes
+				// as long as it takes. Region-indexed like the sync scan,
+				// and paid once per rotation rather than per column.
+				let center = client.center;
+				let mut cols: Vec<(i32, i32)> = journal
+					.index
+					.columns_near(center, client.draw_dist)
+					.filter(|&col| in_radius(col, center, client.draw_dist))
+					.collect();
+				cols.sort_by_key(|&col| super::radius_key(col, center));
+				client.resync_queue = cols.into();
+			}
+			// A rotation outlives the odd sub-column shuffle that does not
+			// count as moving, so skip past anything now out of range
+			// rather than spending the interval on an invisible column.
+			while let Some(col) = client.resync_queue.pop_front() {
+				if !in_radius(col, client.center, client.draw_dist) {
+					continue;
+				}
+				if send_journal_column_to(journal, &client.out, col.0, col.1) {
+					client.synced_columns.insert(col);
+				} else {
+					client.dead.set(true);
+				}
+				break;
+			}
+		}
 	}
 
 	/// Hand each client a few queued journal columns per tick, never more
@@ -432,7 +530,10 @@ fn send_journal_column_to(journal: &Journal, out: &OutTx, cx: i32, cz: i32) -> b
 mod tests {
 	use super::super::harness::*;
 	use super::super::{Sim, column_of};
-	use super::{DGRAM_STALL_SECS, OUT_CAP, WRAPPED_SNAPSHOT_RESERVE};
+	use super::{
+		DGRAM_STALL_SECS, OUT_CAP, RESYNC_INTERVAL_TICKS, RESYNC_SETTLE_TICKS,
+		WRAPPED_SNAPSHOT_RESERVE,
+	};
 	use digblock_core::chunk::CHUNK_SIZE;
 	use digblock_net::codec;
 	use digblock_net::messages::{ClientMsg, Datagram, EditKind, InputBatch, InputTick, ServerMsg};
@@ -720,8 +821,65 @@ mod tests {
 		);
 	}
 
+	/// The retry loop: a client that stays put is handed its own edited
+	/// columns again, so a column it somehow lacks heals without anyone
+	/// having to notice — the push sync has no acknowledgement and can
+	/// notice nothing.
+	///
+	/// The walking half is pinned by
+	/// `evict_and_reenter_resyncs_column_exactly_once` below, which counts
+	/// JournalColumns across a long walk and would see these as extras.
+	#[test]
+	fn a_settled_client_is_handed_its_columns_again() {
+		let mut sim = flat_sim("resync");
+		let mut a = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let cell = dig_under(&mut sim, 1, 1);
+		let col = (cell.0.div_euclid(16), cell.2.div_euclid(16));
+		a.drain();
+		a.msgs.clear();
+
+		// Nothing at one INTERVAL: the rotation waits out the whole settle
+		// first, which is what keeps it off a player crossing a column
+		// boundary at walking pace. Measured in intervals rather than as a
+		// fraction of the settle, so the dig above can lengthen without
+		// eating the margin.
+		for _ in 0..RESYNC_INTERVAL_TICKS {
+			sim.tick_once(vec![]);
+		}
+		a.drain();
+		assert!(
+			!a.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::JournalColumn { .. })),
+			"the rotation must not start on a client that just arrived"
+		);
+
+		// Stay put through the wait and one interval: the column comes
+		// back, unasked.
+		for _ in 0..RESYNC_SETTLE_TICKS + RESYNC_INTERVAL_TICKS {
+			sim.tick_once(vec![]);
+		}
+		a.drain();
+		assert!(
+			a.msgs
+				.iter()
+				.any(|m| matches!(m, ServerMsg::JournalColumn { cx, cz, cells }
+					if (*cx, *cz) == col
+						&& cells.iter().any(|e| (e.x, e.y, e.z) == cell))),
+			"a settled client is handed its edited column again: {:?}",
+			a.msgs
+		);
+	}
+
 	/// Trigger A: leaving prunes the synced set; re-entering re-syncs the
 	/// edited column exactly once via JournalColumn.
+	///
+	/// The background rotation cannot contribute to that count: the walk
+	/// crosses a column boundary — which restarts its wait — far more
+	/// often than `RESYNC_SETTLE_TICKS`, and the settle at the end is a
+	/// fraction of it. A stall long enough to change that would fail
+	/// loudly here rather than quietly, which is why the count is exact.
 	#[test]
 	fn evict_and_reenter_resyncs_column_exactly_once() {
 		// A generous residency radius: columns generate well ahead of a

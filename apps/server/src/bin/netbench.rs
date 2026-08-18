@@ -718,7 +718,7 @@ fn drive_edits(
 		d.aim = aim;
 		d.holding = hardness;
 		d.attempts += 1;
-		client.send_dig_start(cell);
+		client.send_dig_start(cell, 0);
 		return;
 	}
 	// Residual probe, only while walking. `Interact` deliberately, not a

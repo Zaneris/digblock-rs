@@ -302,6 +302,15 @@ pub(crate) fn wait_live(sim: &mut Sim, conn_id: u64) {
 
 /// One aim-holding input: stand still, look along `dir`, claim nothing.
 pub(crate) fn aim(tick: u32, dir: Vec3) -> InputTick {
+	aim_from(tick, dir, 0)
+}
+
+/// The same, declaring which hotbar slot the hand is on. Every input
+/// tick carries that (a real client mirrors `Hotbar::selected_index`
+/// into it), and the server's bar follows — so a hold driven by plain
+/// `aim` walks the selection back to the first slot, which is a bare
+/// hand however the test set the tool up.
+pub(crate) fn aim_from(tick: u32, dir: Vec3, slot: u8) -> InputTick {
 	InputTick {
 		tick,
 		move_axis: [0.0, 0.0],
@@ -309,7 +318,7 @@ pub(crate) fn aim(tick: u32, dir: Vec3) -> InputTick {
 		look: dir.to_array(),
 		claimed_pos: [0.0, -500.0, 0.0], // never adopted: server physics
 		claimed_vel: [0.0; 3],
-		active_slot: 0,
+		active_slot: slot,
 	}
 }
 
@@ -355,19 +364,31 @@ pub(crate) fn dig_hold(
 	}
 	let permille = digblock_core::skills::dig_speed_permille(hit.block.dig_family(), level);
 	let hold_ticks = (hold_ticks * permille).div_ceil(1000);
+	// The slot a real client would declare, on the inputs AND on the
+	// completing edit: whatever the bar is pointing at, which
+	// `bench_set_active_tool` moves to the tool slot exactly as selecting
+	// a tool does for a player. A Collect can only come from there by the
+	// server's own gate, so it says so outright rather than depending on
+	// a vessel having been granted.
+	let slot = if kind == digblock_net::messages::EditKind::Collect {
+		digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1
+	} else {
+		sim.test_selected_slot(conn_id)
+	};
 	*t += 1;
 	sim.tick_once(vec![
 		SimEvent::Msg {
 			conn_id,
 			msg: ClientMsg::DigStart {
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				slot,
 			},
 		},
-		batch(vec![aim(*t, dir)], conn_id),
+		batch(vec![aim_from(*t, dir, slot)], conn_id),
 	]);
 	for _ in 0..hold_ticks {
 		*t += 1;
-		sim.tick_once(vec![batch(vec![aim(*t, dir)], conn_id)]);
+		sim.tick_once(vec![batch(vec![aim_from(*t, dir, slot)], conn_id)]);
 	}
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id,
@@ -379,12 +400,7 @@ pub(crate) fn dig_hold(
 			kind,
 			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
 			normal: [0, 0, 0],
-			// Collect needs the WaterTool's slot (fresh bars pin it last).
-			slot: if kind == digblock_net::messages::EditKind::Collect {
-				digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1
-			} else {
-				0
-			},
+			slot,
 		},
 	}]);
 	hit.cell

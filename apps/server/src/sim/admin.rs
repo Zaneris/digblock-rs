@@ -29,7 +29,8 @@ const COMMANDS: &[(&str, &str)] = &[
 	("/bring <name>", "teleport an online player to you"),
 	(
 		"/give <name> <essence> [n]",
-		"credit essence stocks: flora, earth, aqua, metal or aether; n defaults to one",
+		"credit essence stocks; the reagent names are the ones the screens \
+		 print, and /give with no essence lists them. n defaults to one",
 	),
 	(
 		"/reset <name>",
@@ -480,7 +481,17 @@ impl Sim {
 	/// — putting a late recipe in front of a tester, or repaying a player
 	/// what a server bug cost them.
 	fn cmd_give(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /give <name> <flora|earth|aqua|metal|aether> [n]";
+		// Spelled from `Essence::name` like `parse_essence` is, rather
+		// than typed out again: the usage line and the parser were two
+		// copies of one vocabulary, and the rename that gave the essences
+		// their reagent names moved only the parser — leaving `/help` and
+		// this line advertising four words the command now refuses, in a
+		// refusal that repeated the word it had just rejected.
+		let names = Essence::ALL
+			.map(|e| e.name().to_ascii_lowercase())
+			.join("|");
+		let usage = format!("usage: /give <name> <{names}> [n]");
+		let usage = usage.as_str();
 		if !(args.len() == 2 || args.len() == 3) {
 			return self.reply(conn_id, usage);
 		}
@@ -895,6 +906,55 @@ mod tests {
 		let lines = server_lines(&admin);
 		assert!(lines.iter().any(|t| t.contains("usage:")), "{lines:?}");
 		assert!(lines.iter().any(|t| t.contains("not online")), "{lines:?}");
+	}
+
+	/// Every word `/give`'s refusal ADVERTISES is a word it accepts.
+	///
+	/// The usage line used to be a third copy of the vocabulary beside
+	/// `parse_essence` and `Essence::name`, and when the essences took
+	/// their reagent names only the parser moved: `/give bob earth 100`
+	/// answered "earth is not an essence" and then offered `earth`. A
+	/// refusal that repeats the word it just refused is the failure this
+	/// pins — so the assertion reads the advertised list back through the
+	/// parser rather than comparing it to a spelling written here, which
+	/// would be a fourth copy.
+	#[test]
+	fn give_only_advertises_essences_it_accepts() {
+		use super::parse_essence;
+		use digblock_core::block::Essence;
+		let mut sim = admin_sim("giveusage");
+		let mut admin = connect_admin(&mut sim, 1, "boss");
+		wait_live(&mut sim, 1);
+		sim.tick_once(vec![chat(1, "/give")]);
+		admin.drain();
+		let usage = admin
+			.msgs
+			.iter()
+			.find_map(|m| match m {
+				ServerMsg::Chat { text, .. } if text.contains("usage:") => Some(text.clone()),
+				_ => None,
+			})
+			.expect("a bare /give answers with its usage line");
+		// The second angle-bracket group: `/give <name> <essences> [n]`.
+		let listed: Vec<&str> = usage
+			.split('<')
+			.nth(2)
+			.and_then(|r| r.split_once('>'))
+			.map(|(w, _)| w)
+			.expect("the usage line names an essence alternation")
+			.split('|')
+			.collect();
+		assert_eq!(
+			listed.len(),
+			Essence::COUNT,
+			"every essence is offered: {usage}"
+		);
+		for word in listed {
+			assert!(
+				parse_essence(word).is_some(),
+				"{word:?} is advertised but refused: {usage}"
+			);
+		}
 	}
 
 	/// `/give` credits the TARGET and rebases them, and every essence is

@@ -37,6 +37,7 @@ pub(super) enum ClientAction {
 	DigStart {
 		conn_id: u64,
 		cell: (i32, i32, i32),
+		slot: u8,
 	},
 	DigCancel {
 		conn_id: u64,
@@ -187,7 +188,11 @@ impl Sim {
 					self.process_interact(req)
 				}
 				ClientAction::Edit(req) => self.process_one_edit(req),
-				ClientAction::DigStart { conn_id, cell } => self.handle_dig_start(conn_id, cell),
+				ClientAction::DigStart {
+					conn_id,
+					cell,
+					slot,
+				} => self.handle_dig_start(conn_id, cell, slot),
 				ClientAction::DigCancel { conn_id } => {
 					// The button came up. Stop banking, but start the same
 					// decay the client started when it sent this — a hold
@@ -232,7 +237,13 @@ impl Sim {
 		for (d, s) in bar_wire.iter_mut().zip(hotbar.iter()) {
 			*d = *s;
 		}
+		// The wire carries the arrangement, never the selection — that
+		// rides `InputTick.active_slot` and the slot every edit and every
+		// hold declares — so a rearrangement must not silently move the
+		// hand back to slot one, which is what a bare `from_wire` does.
+		let selected = client.hotbar.selected_index();
 		client.hotbar = Hotbar::from_wire(&bar_wire);
+		client.hotbar.set_selected(selected);
 		client.grid = digblock_core::inv_grid::InvGrid::from_wire(grid);
 		digblock_core::inv_grid::reconcile_layout(
 			&client.inventory,
@@ -259,9 +270,11 @@ impl Sim {
 			// The declared slot's item (None for an out-of-range slot).
 			// An edit is also evidence of selection — mirror it so the
 			// held-item broadcast tracks a click that outran the
-			// jitter-buffered input path.
+			// jitter-buffered input path, and so `tool_in_hand` below
+			// answers for the hand this very edit was made with rather
+			// than for whatever the last consumed input tick claimed.
 			let slot_item = ((req.slot as usize) < HOTBAR_SLOTS).then(|| {
-				client.active_slot = req.slot;
+				client.hotbar.set_selected(req.slot as usize);
 				client.hotbar.slots()[req.slot as usize]
 			});
 			(
@@ -958,7 +971,15 @@ impl Sim {
 		// XP in a frame.
 		let core_op = core_op.filter(|op| {
 			let CoreOp::Craft { item, count } = *op;
-			let cost = (digblock_core::alchemy::craft_pace_ticks(item, level) * count) as f32;
+			// Saturating, because `count` is an unvalidated wire u32 and
+			// this multiply runs BEFORE `apply_alchemy`'s own range check.
+			// Debug builds have overflow checks on and `just server` and
+			// `just play` build debug, so a crafted `count` near the
+			// type's ceiling panicked the sim thread while the process
+			// stayed up. A saturated cost is unaffordable, which is the
+			// right answer anyway.
+			let cost =
+				digblock_core::alchemy::craft_pace_ticks(item, level).saturating_mul(count) as f32;
 			if client.bench_tokens < cost {
 				return false;
 			}
@@ -1762,6 +1783,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -1853,6 +1875,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				slot: 0,
 			},
 		};
 		let state = |sim: &super::super::Sim| {
@@ -1968,6 +1991,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -1998,6 +2022,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -2069,6 +2094,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -2160,6 +2186,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -2193,6 +2220,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [below.0, below.1, below.2],
+					slot: 0,
 				},
 			},
 		]);
@@ -2238,6 +2266,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -2635,6 +2664,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [cell.0, cell.1, cell.2],
+				slot: 0,
 			},
 		};
 		let cancel = || SimEvent::Msg {
@@ -3145,6 +3175,7 @@ mod tests {
 				conn_id: 1,
 				msg: ClientMsg::DigStart {
 					cell: [cell.0, cell.1, cell.2],
+					slot: 0,
 				},
 			},
 			batch(vec![aim(t, down)], 1),
@@ -3870,6 +3901,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [cell.0, cell.1, cell.2],
+				slot: 0,
 			},
 		}]);
 		c.drain();
@@ -3904,6 +3936,7 @@ mod tests {
 			conn_id: 1,
 			msg: ClientMsg::DigStart {
 				cell: [8, FLAT_GROUND_TOP as i32 + 40, 8],
+				slot: 0,
 			},
 		}]);
 		c.drain();
