@@ -522,36 +522,42 @@ pub fn dig_award(
 /// worth RELATIVE to plain digging, deliberately: a lever, not a drift.
 pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 	Some(match node {
-		BlockType::Emberore => (40, 16),
-		BlockType::Duskstone => (70, 28),
-		BlockType::Glowvein => (110, 44),
-		BlockType::Aetherock => (170, 68),
+		// The Alchemy cuts sit high against their Mining headlines on
+		// purpose: with bench extraction gone, a draw is one of exactly
+		// two ways the skill earns at all, so each has to carry what the
+		// retired drip used to spread over a hoard.
+		BlockType::Emberore => (40, 30),
+		BlockType::Duskstone => (70, 55),
+		BlockType::Glowvein => (110, 85),
+		BlockType::Aetherock => (170, 130),
 		// The surface ladder, Alchemy-primary, rising with the reveal
-		// order — heartwood is the day-one node and pays like one.
-		BlockType::Heartwood => (6, 16),
-		BlockType::Leystone => (8, 22),
-		BlockType::Springstone => (10, 30),
+		// order — heartwood is the day-one node, and a handful of hearts
+		// should reach the leystone reveal within the first session.
+		BlockType::Heartwood => (8, 40),
+		BlockType::Leystone => (10, 55),
+		BlockType::Springstone => (12, 75),
 		_ => return None,
 	})
 }
 
-/// Alchemy XP per crafted item: HALF what the craft is worth at the bench
+/// Alchemy XP per crafted item: the craft's full worth at the bench
 /// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
 /// pre-waste cost, feedstock included) — fixed for life. Zero for
 /// uncraftable items.
 ///
-/// The halving is the award-side pacing lever (SKILLS-DESIGN §13.4),
-/// riding ON TOP of the worth precisely because the worth keeps a second
-/// job this must not touch: it is what the bench's pace scales by. Award
-/// and pace read the same underlying worth, so a thing worth more to make
-/// is worth more to have made — and takes the time the work takes.
+/// §13.4's award-side HALVING is deliberately gone. It existed because
+/// the bench was an unbounded XP machine — extraction against infinite
+/// matter — and the lever un-pulls with the machine: a craft is now
+/// bounded by essence that had to be found and matter that had to be
+/// quarried, so it may pay what it is worth. Award and pace still read
+/// the same underlying worth, so a thing worth more to make is worth
+/// more to have made — and takes the time the work takes.
 ///
-/// With bench extraction gone this is the bench's ONLY award: Alchemy is
-/// earned by drawing nodes in the field ([`field_xp`]) and by making
-/// things here, and by nothing that can be repeated against an unbounded
-/// supply.
+/// This is the bench's ONLY award: Alchemy is earned by drawing nodes in
+/// the field ([`field_xp`]) and by making things here, and by nothing
+/// that can be repeated against an unbounded supply.
 pub fn craft_xp(item: BlockType) -> u64 {
-	u64::from(crate::alchemy::craft_worth(item).div_ceil(2))
+	u64::from(crate::alchemy::craft_worth(item))
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after
@@ -1080,17 +1086,18 @@ mod tests {
 	fn alchemy_xp_derives_from_the_base_tables() {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
-		// Crafts pay half their worth — a fixed fraction of the IDEAL
-		// cost, feedstock included, rounded up.
-		assert_eq!(craft_xp(B::WoodStairs), 2);
-		assert_eq!(craft_xp(B::Lumber), 2);
+		// Crafts pay their FULL worth — a fixed fraction of the IDEAL
+		// cost, feedstock included. The old halving un-pulled with the
+		// unbounded bench it existed to pace.
+		assert_eq!(craft_xp(B::WoodStairs), 4);
+		assert_eq!(craft_xp(B::Lumber), 4);
 		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 		assert_eq!(
 			alchemy_xp(&AlchemyOp::Craft {
 				item: B::Lumber,
 				count: 3
 			}),
-			6
+			12
 		);
 		// The two feedstock-priced vessels still pay: their timber carries
 		// the worth, so the first craft beat is also the first Alchemy XP

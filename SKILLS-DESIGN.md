@@ -1295,10 +1295,14 @@ golden hashes untouched.
   siphon — and the bucket, which shares its day-one footing — is priced in feedstock alone (felled timber), pinned by
   `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make your vessels" is the opening loop;
   the heartwood you can already see is the first draw, and leystone at its early reveal supplies the torch.
-- **XP follows the finds.** Alchemy XP is field draws (`skills::field_xp`, now covering every node kind — the surface
-  kinds pay Alchemy-primary with a Mining cut, inverting the ore tiers' split, because the headline follows the skill
-  that revealed the find) plus craft XP, and nothing repeatable against an unbounded supply. The bonus lines died with
-  the bench; their flavors are free to return as node tiers in later waves.
+- **XP follows the finds, and each award carries more.** Alchemy XP is field draws (`skills::field_xp`, now covering
+  every node kind — the surface kinds pay Alchemy-primary with a Mining cut, inverting the ore tiers' split, because the
+  headline follows the skill that revealed the find) plus craft XP, and nothing repeatable against an unbounded supply.
+  Because the skill earns far less OFTEN than under the extraction drip, the award side rose to meet it: §13.4's
+  craft-XP halving is deliberately un-pulled (`craft_xp` pays the full worth — the halving existed to pace an unbounded
+  bench, and the bench is bounded now), the ore tiers' Alchemy cuts sit high against their Mining headlines, and the
+  surface draws are sized so a handful of heartwood hearts reaches the leystone reveal inside the first session. The
+  bonus lines died with the bench; their flavors are free to return as node tiers in later waves.
 - **The reagent identities.** The five essences kept their frozen wire indices and took display names that read as
   reagents now that each one is a find: VITAE (heartwood), TERRA (leystone), UNDA (springstone), FERRUM (the ore tiers),
   AETHER unchanged. §12's "display name for Metal" question closes with this.
