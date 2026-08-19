@@ -21,7 +21,7 @@ impl Sim {
 				pos,
 				vel: Vec3::ZERO,
 			});
-			c.center = column_of(pos);
+			c.residency.center = column_of(pos);
 		}
 	}
 
@@ -217,7 +217,7 @@ impl Sim {
 
 	#[cfg(test)]
 	pub(super) fn test_draw_dist(&self, conn_id: u64) -> Option<i32> {
-		self.clients.get(&conn_id).map(|c| c.draw_dist)
+		self.clients.get(&conn_id).map(|c| c.residency.draw_dist)
 	}
 
 	#[cfg(test)]

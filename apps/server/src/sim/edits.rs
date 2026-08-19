@@ -1027,8 +1027,8 @@ impl Sim {
 	fn enroll_new_column(&mut self, edit: BlockEdit) {
 		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
 		for c in self.clients.values_mut() {
-			if in_radius(col, c.center, c.draw_dist) {
-				c.synced_columns.insert(col);
+			if in_radius(col, c.residency.center, c.residency.draw_dist) {
+				c.residency.synced_columns.insert(col);
 			}
 		}
 	}
@@ -1053,7 +1053,9 @@ impl Sim {
 		// Encoded once for the whole fan-out: fluid alone lands a whole
 		// `FLOW_BUDGET` of edits every flow step, each going to every
 		// client synced to the column.
-		self.broadcast_where(&msg, |c| c.synced_columns.contains(&col) || c.id == by);
+		self.broadcast_where(&msg, |c| {
+			c.residency.synced_columns.contains(&col) || c.id == by
+		});
 	}
 
 	pub(super) fn step_fluid(&mut self) {

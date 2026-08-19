@@ -321,15 +321,17 @@ impl Sim {
 				bench_tokens: digblock_core::alchemy::bench_burst_ticks(
 					record.skills.level(digblock_core::skills::Skill::Alchemy),
 				),
-				draw_dist,
-				synced_columns: FxHashSet::default(),
-				sync_queue,
-				sync_queue_set,
-				resync_queue: std::collections::VecDeque::new(),
-				resync_countdown: 0,
-				needs_sync_scan: false,
+				residency: Residency {
+					draw_dist,
+					synced_columns: FxHashSet::default(),
+					sync_queue,
+					sync_queue_set,
+					resync_queue: std::collections::VecDeque::new(),
+					resync_countdown: 0,
+					needs_sync_scan: false,
+					center,
+				},
 				live: false,
-				center,
 				// A join is the first arrival. The queue above is already
 				// sorted nearest-first and `live` gates the release, so
 				// this holds until the spawn's own columns have landed —

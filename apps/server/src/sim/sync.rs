@@ -73,14 +73,15 @@ impl Sim {
 	pub(super) fn update_residency(&mut self) {
 		for client in self.clients.values_mut() {
 			let center = column_of(client.player.pos);
-			if center != client.center {
-				client.center = center;
-				client.needs_sync_scan = true;
+			if center != client.residency.center {
+				client.residency.center = center;
+				client.residency.needs_sync_scan = true;
 				self.residency_dirty = true;
 			}
 		}
 		if self.residency_dirty {
-			let centers: Vec<(i32, i32)> = self.clients.values().map(|c| c.center).collect();
+			let centers: Vec<(i32, i32)> =
+				self.clients.values().map(|c| c.residency.center).collect();
 			self.store.set_residency(&centers, self.sim_radius);
 			self.residency_dirty = false;
 		}
@@ -130,38 +131,47 @@ impl Sim {
 		let journal = &self.journal;
 		let store = &self.store;
 		for client in self.clients.values_mut() {
-			if !client.live && store.column_ready(client.center.0, client.center.1) {
+			if !client.live
+				&& store.column_ready(client.residency.center.0, client.residency.center.1)
+			{
 				client.live = true;
-				client.needs_sync_scan = true;
+				client.residency.needs_sync_scan = true;
 				log::debug!("player {} live", client.id);
 			}
-			if !client.needs_sync_scan {
+			if !client.residency.needs_sync_scan {
 				continue;
 			}
-			client.needs_sync_scan = false;
+			client.residency.needs_sync_scan = false;
 			// This client is not settled: restart the background rotation's
 			// wait, and drop what was left of it — the next one will be
 			// built around wherever they stop.
-			client.resync_countdown = RESYNC_SETTLE_TICKS;
-			client.resync_queue.clear();
+			client.residency.resync_countdown = RESYNC_SETTLE_TICKS;
+			client.residency.resync_queue.clear();
 			// Columns only leave the slack radius when the center moves,
 			// so the prune rides the same trigger.
-			client
-				.synced_columns
-				.retain(|&col| in_radius(col, client.center, client.draw_dist + SYNC_SLACK));
+			client.residency.synced_columns.retain(|&col| {
+				in_radius(
+					col,
+					client.residency.center,
+					client.residency.draw_dist + SYNC_SLACK,
+				)
+			});
 			// Region-indexed, not a walk of every edited column in the
 			// world: this fires per client every time their center moves —
 			// once per column crossed — and `edited_columns` grows for the
 			// life of the world while everything around it stays O(active).
 			// The result is a superset (whole regions), so the radius test
 			// below still does the real filtering.
-			for col in journal.index.columns_near(client.center, client.draw_dist) {
-				if in_radius(col, client.center, client.draw_dist)
-					&& !client.synced_columns.contains(&col)
-					&& !client.sync_queue_set.contains(&col)
+			for col in journal
+				.index
+				.columns_near(client.residency.center, client.residency.draw_dist)
+			{
+				if in_radius(col, client.residency.center, client.residency.draw_dist)
+					&& !client.residency.synced_columns.contains(&col)
+					&& !client.residency.sync_queue_set.contains(&col)
 				{
-					client.sync_queue.push_back(col);
-					client.sync_queue_set.insert(col);
+					client.residency.sync_queue.push_back(col);
+					client.residency.sync_queue_set.insert(col);
 				}
 			}
 			// A client mid-arrival is waiting on the columns nearest its
@@ -170,10 +180,10 @@ impl Sim {
 			// path, where the scan appends to whatever was already owed.
 			// `AreaReady` below then reads the front and nothing else.
 			if client.arrival_hold {
-				let center = client.center;
-				let mut cols: Vec<(i32, i32)> = client.sync_queue.drain(..).collect();
+				let center = client.residency.center;
+				let mut cols: Vec<(i32, i32)> = client.residency.sync_queue.drain(..).collect();
 				cols.sort_by_key(|&col| super::radius_key(col, center));
-				client.sync_queue = cols.into();
+				client.residency.sync_queue = cols.into();
 			}
 		}
 		self.pump_join_sync();
@@ -193,46 +203,46 @@ impl Sim {
 			// the same columns, fresher, and an arriving client is waiting
 			// on its front — spending the budget on a repeat would delay
 			// the world the player is standing in.
-			if client.arrival_hold || !client.sync_queue.is_empty() {
+			if client.arrival_hold || !client.residency.sync_queue.is_empty() {
 				continue;
 			}
-			if client.resync_countdown > 0 {
-				client.resync_countdown -= 1;
+			if client.residency.resync_countdown > 0 {
+				client.residency.resync_countdown -= 1;
 				continue;
 			}
 			// Charged before the work, not after it: an unedited disc
 			// finds nothing to send, and re-deciding that every tick is
 			// the per-tick journal scan the steady state exists without.
-			client.resync_countdown = RESYNC_INTERVAL_TICKS;
+			client.residency.resync_countdown = RESYNC_INTERVAL_TICKS;
 			// The same head-room live traffic gets from the join pump: a
 			// backstop must never be the thing that fills the queue an
 			// edit dies on.
 			if client.out.capacity() <= JOIN_SYNC_RESERVE {
 				continue;
 			}
-			if client.resync_queue.is_empty() {
+			if client.residency.resync_queue.is_empty() {
 				// One rotation's worth, nearest first — so the ground the
 				// player is standing on heals in seconds and the rim takes
 				// as long as it takes. Region-indexed like the sync scan,
 				// and paid once per rotation rather than per column.
-				let center = client.center;
+				let center = client.residency.center;
 				let mut cols: Vec<(i32, i32)> = journal
 					.index
-					.columns_near(center, client.draw_dist)
-					.filter(|&col| in_radius(col, center, client.draw_dist))
+					.columns_near(center, client.residency.draw_dist)
+					.filter(|&col| in_radius(col, center, client.residency.draw_dist))
 					.collect();
 				cols.sort_by_key(|&col| super::radius_key(col, center));
-				client.resync_queue = cols.into();
+				client.residency.resync_queue = cols.into();
 			}
 			// A rotation outlives the odd sub-column shuffle that does not
 			// count as moving, so skip past anything now out of range
 			// rather than spending the interval on an invisible column.
-			while let Some(col) = client.resync_queue.pop_front() {
-				if !in_radius(col, client.center, client.draw_dist) {
+			while let Some(col) = client.residency.resync_queue.pop_front() {
+				if !in_radius(col, client.residency.center, client.residency.draw_dist) {
 					continue;
 				}
 				if send_journal_column_to(journal, &client.out, col.0, col.1) {
-					client.synced_columns.insert(col);
+					client.residency.synced_columns.insert(col);
 				} else {
 					client.dead.set(true);
 				}
@@ -259,26 +269,26 @@ impl Sim {
 			if client.dead.get() {
 				continue;
 			}
-			if !client.sync_queue.is_empty() {
+			if !client.residency.sync_queue.is_empty() {
 				let room = client
 					.out
 					.capacity()
 					.saturating_sub(JOIN_SYNC_RESERVE)
 					.min(JOIN_SYNC_PER_TICK);
 				for _ in 0..room {
-					let Some(col) = client.sync_queue.pop_front() else {
+					let Some(col) = client.residency.sync_queue.pop_front() else {
 						break;
 					};
-					client.sync_queue_set.remove(&col);
+					client.residency.sync_queue_set.remove(&col);
 					// It may have left range while it sat in the queue.
-					if !in_radius(col, client.center, client.draw_dist) {
+					if !in_radius(col, client.residency.center, client.residency.draw_dist) {
 						continue;
 					}
 					if !send_journal_column_to(journal, &client.out, col.0, col.1) {
 						client.dead.set(true);
 						break;
 					}
-					client.synced_columns.insert(col);
+					client.residency.synced_columns.insert(col);
 				}
 			}
 			// Release the arrival hold once nothing within `AREA_SYNC_RADIUS`
@@ -294,11 +304,12 @@ impl Sim {
 			// this sits outside the emptiness check above.
 			if client.arrival_hold
 				&& client.live
-				&& !client.needs_sync_scan
+				&& !client.residency.needs_sync_scan
 				&& client
+					.residency
 					.sync_queue
 					.front()
-					.is_none_or(|&col| !in_radius(col, client.center, AREA_SYNC_RADIUS))
+					.is_none_or(|&col| !in_radius(col, client.residency.center, AREA_SYNC_RADIUS))
 			{
 				client.arrival_hold = false;
 				if !send_frame(&client.out, &ServerMsg::AreaReady) {
@@ -340,7 +351,7 @@ impl Sim {
 					pos: s.pos.to_array(),
 					vel: s.vel.to_array(),
 				},
-				c.center,
+				c.residency.center,
 			)
 		}));
 		// Counts snapshots, not ticks — the tiering phase must advance once
@@ -368,12 +379,12 @@ impl Sim {
 					me = Some(*own);
 					continue;
 				}
-				if !in_radius(*col, client.center, client.draw_dist) {
+				if !in_radius(*col, client.residency.center, client.residency.draw_dist) {
 					continue;
 				}
 				let (dx, dz) = (
-					col.0 as i64 - client.center.0 as i64,
-					col.1 as i64 - client.center.1 as i64,
+					col.0 as i64 - client.residency.center.0 as i64,
+					col.1 as i64 - client.residency.center.1 as i64,
 				);
 				let d2 = dx * dx + dz * dz;
 				let near = d2 <= (PLAYER_NEAR_COLS as i64).pow(2);

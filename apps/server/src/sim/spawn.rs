@@ -117,7 +117,7 @@ impl Sim {
 		// within one column still resolves (its scan finds nothing owed and
 		// the hold releases the same tick).
 		client.arrival_hold = true;
-		client.needs_sync_scan = true;
+		client.residency.needs_sync_scan = true;
 		if look != Vec3::ZERO {
 			// The client adopts this facing; mirror it so the server's
 			// aim raycasts agree until the next input overwrites it.

@@ -222,6 +222,41 @@ impl EditStats {
 	}
 }
 
+/// What this client is being streamed, and where from. Journal sync is
+/// a push with NO acknowledgement, so nothing here notices a column a
+/// client lacks — the scan on any draw-distance change and the
+/// idle-gated `pump_resync` are what stand behind it.
+struct Residency {
+	draw_dist: i32,
+
+	synced_columns: FxHashSet<(i32, i32)>,
+
+	/// Journal columns owed to this client, drained a few per tick by
+	/// `pump_join_sync`. A join enqueues its whole in-range set here rather
+	/// than encoding it inline; `sync_queue_set` is the membership test that
+	/// keeps a re-scan from queueing the same column twice.
+	sync_queue: std::collections::VecDeque<(i32, i32)>,
+
+	sync_queue_set: FxHashSet<(i32, i32)>,
+
+	/// The background re-sync's rotation: in-range edited columns,
+	/// nearest first, handed back one at a time and refilled when spent
+	/// (`pump_resync`). Nothing is OWED here — every column on it has
+	/// already been sent — so it is kept apart from `sync_queue`, whose
+	/// front is what releases the arrival hold.
+	resync_queue: std::collections::VecDeque<(i32, i32)>,
+
+	/// Ticks until this client's next background re-sync.
+	resync_countdown: u32,
+
+	/// Run the full edited-column sync scan for this client next tick.
+	/// Set on center change and on going live; steady state does ZERO
+	/// journal scans (fresh columns arrive via the first-edit broadcast).
+	needs_sync_scan: bool,
+
+	center: (i32, i32),
+}
+
 struct Client {
 	id: PlayerId,
 	name: String,
@@ -276,28 +311,9 @@ struct Client {
 	/// transmuting draw on the same clock and a client cannot run both at
 	/// once for double the throughput.
 	bench_tokens: f32,
-	draw_dist: i32,
-	synced_columns: FxHashSet<(i32, i32)>,
-	/// Journal columns owed to this client, drained a few per tick by
-	/// `pump_join_sync`. A join enqueues its whole in-range set here rather
-	/// than encoding it inline; `sync_queue_set` is the membership test that
-	/// keeps a re-scan from queueing the same column twice.
-	sync_queue: std::collections::VecDeque<(i32, i32)>,
-	sync_queue_set: FxHashSet<(i32, i32)>,
-	/// The background re-sync's rotation: in-range edited columns,
-	/// nearest first, handed back one at a time and refilled when spent
-	/// (`pump_resync`). Nothing is OWED here — every column on it has
-	/// already been sent — so it is kept apart from `sync_queue`, whose
-	/// front is what releases the arrival hold.
-	resync_queue: std::collections::VecDeque<(i32, i32)>,
-	/// Ticks until this client's next background re-sync.
-	resync_countdown: u32,
-	/// Run the full edited-column sync scan for this client next tick.
-	/// Set on center change and on going live; steady state does ZERO
-	/// journal scans (fresh columns arrive via the first-edit broadcast).
-	needs_sync_scan: bool,
+	/// See [`Residency`].
+	residency: Residency,
 	live: bool,
-	center: (i32, i32),
 	/// This client is mid-ARRIVAL — it joined or was teleported and is
 	/// holding its world (no render, no player sim) until every journaled
 	/// column within `AREA_SYNC_RADIUS` of the new centre has been sent.
@@ -841,10 +857,10 @@ impl Sim {
 				ClientMsg::SetDrawDist { draw_dist } => {
 					if let Some(client) = self.clients.get_mut(&conn_id) {
 						let want = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
-						if want != client.draw_dist {
-							client.needs_sync_scan = true;
+						if want != client.residency.draw_dist {
+							client.residency.needs_sync_scan = true;
 						}
-						client.draw_dist = want;
+						client.residency.draw_dist = want;
 					}
 				}
 				// Queued: a craft-then-place in one tick must debit the
