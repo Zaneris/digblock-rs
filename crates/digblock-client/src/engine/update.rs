@@ -9,6 +9,8 @@ impl Engine {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
 		self.time_secs = (self.time_secs + dt) % 600.0;
+		// The scheduler's clock, never the wrapping shader one above.
+		self.world_secs += f64::from(dt);
 		// The F7 GI drill on a timer, so the ratchet is measurable WITHOUT a
 		// human at the keyboard. Pair with `--fly N --frames M` (N < drill <
 		// M): the camera freezes at N, the drill fires mid-freeze, and the

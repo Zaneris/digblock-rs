@@ -1,0 +1,254 @@
+use super::*;
+use rustc_hash::FxHashMap;
+
+const SEED: f64 = 7.0;
+
+/// A hand-built pocket of cells. `airy` answers Air everywhere unset, so
+/// rays stay inside the pocket; `sealed` answers `None` there, so a ray
+/// falls through to the worldgen synth.
+struct Pocket {
+	cells: FxHashMap<(i32, i32, i32), u16>,
+	fill: Option<u16>,
+}
+
+impl Pocket {
+	fn airy() -> Self {
+		Self {
+			cells: FxHashMap::default(),
+			fill: Some(BlockType::Air as u16),
+		}
+	}
+	fn sealed() -> Self {
+		Self {
+			cells: FxHashMap::default(),
+			fill: None,
+		}
+	}
+	fn set(&mut self, at: (i32, i32, i32), b: BlockType) {
+		self.cells.insert(at, b as u16);
+	}
+}
+
+impl CellSource for Pocket {
+	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.cells.get(&(x, y, z)).copied().or(self.fill)
+	}
+}
+
+const AT: (i32, i32, i32) = (0, 64, 0);
+
+/// Dirt at `AT` with one exposed Grass beside it — the smallest world
+/// the rule says yes to.
+fn seeded() -> Pocket {
+	let mut w = Pocket::airy();
+	w.set(AT, BlockType::Dirt);
+	w.set((1, 64, 0), BlockType::Grass);
+	w
+}
+
+fn noon() -> GrassSpread {
+	let [_, noon, _] = SPREAD_HOURS;
+	GrassSpread::at_hour(noon, "t-noon")
+}
+
+#[test]
+fn spreads_beside_exposed_grass() {
+	assert_eq!(
+		noon().apply(AT, &seeded(), SEED, 0),
+		Some(BlockType::Grass as u16)
+	);
+}
+
+#[test]
+fn no_grass_neighbor_no_spread() {
+	let mut w = Pocket::airy();
+	w.set(AT, BlockType::Dirt);
+	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+}
+
+#[test]
+fn a_covered_target_never_grasses() {
+	for lid in [BlockType::Stone, BlockType::Water] {
+		let mut w = seeded();
+		w.set((AT.0, AT.1 + 1, AT.2), lid);
+		assert_eq!(noon().apply(AT, &w, SEED, 0), None, "{lid:?} lid");
+	}
+}
+
+#[test]
+fn a_buried_neighbor_does_not_count() {
+	let mut w = seeded();
+	w.set((1, 65, 0), BlockType::Stone);
+	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+}
+
+/// Exactly the threshold spreads; one fewer does not — for both kinds,
+/// with the counts DERIVED from the consts.
+#[test]
+fn thresholds_bind_exactly() {
+	// Distinct neighbor slots in the 26-box around AT.
+	let slots = [
+		(1, 64, 0),
+		(-1, 64, 0),
+		(0, 64, 1),
+		(0, 64, -1),
+		(1, 64, 1),
+		(-1, 64, -1),
+	];
+	for (kind, min) in [
+		(BlockType::Grass, GRASS_MIN_NEIGHBORS),
+		(BlockType::DryGrass, DRY_MIN_NEIGHBORS),
+	] {
+		assert!((min as usize) <= slots.len(), "add slots for the sweep");
+		for n in [min - 1, min] {
+			let mut w = Pocket::airy();
+			w.set(AT, BlockType::Dirt);
+			for s in &slots[..n as usize] {
+				w.set(*s, kind);
+			}
+			let want = (n >= min).then_some(kind as u16);
+			assert_eq!(noon().apply(AT, &w, SEED, 0), want, "{kind:?} × {n}");
+		}
+	}
+}
+
+#[test]
+fn green_wins_when_both_thresholds_are_met() {
+	let mut w = Pocket::airy();
+	w.set(AT, BlockType::Dirt);
+	let grass_slots = [(1, 64, 0), (-1, 64, 0), (0, 64, 1)];
+	let dry_slots = [
+		(0, 64, -1),
+		(1, 64, 1),
+		(-1, 64, 1),
+		(1, 64, -1),
+		(-1, 64, -1),
+	];
+	assert!(grass_slots.len() as u32 >= GRASS_MIN_NEIGHBORS);
+	assert!(dry_slots.len() as u32 >= DRY_MIN_NEIGHBORS);
+	for s in &grass_slots[..GRASS_MIN_NEIGHBORS as usize] {
+		w.set(*s, BlockType::Grass);
+	}
+	for s in &dry_slots[..DRY_MIN_NEIGHBORS as usize] {
+		w.set(*s, BlockType::DryGrass);
+	}
+	assert_eq!(noon().apply(AT, &w, SEED, 0), Some(BlockType::Grass as u16));
+}
+
+#[test]
+fn a_roof_blocks_noon() {
+	let mut w = seeded();
+	for dz in -1..=1 {
+		for dx in -1..=1 {
+			w.set((AT.0 + dx, 70, AT.2 + dz), BlockType::Stone);
+		}
+	}
+	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+}
+
+/// A wall on the sun's side of the sky blocks the morning ray; the same
+/// wall mirrored does not. The side is DERIVED from the caster, never
+/// assumed — compass names are a trap.
+#[test]
+fn morning_light_comes_from_the_sunrise_side() {
+	let [morning, _, _] = SPREAD_HOURS;
+	let job = GrassSpread::at_hour(morning, "t-9am");
+	let toward_sun = -Sun::with_tod(tod_of_hour(morning)).sun_dir();
+	assert!(toward_sun.x != 0.0, "a morning sun cannot be overhead");
+	let wall = |side: f32| {
+		let mut w = seeded();
+		let x0 = if side < 0.0 { -5 } else { 3 };
+		for x in x0..=(x0 + 2) {
+			for y in 64..=75 {
+				for z in -2..=2 {
+					w.set((x, y, z), BlockType::Stone);
+				}
+			}
+		}
+		w
+	};
+	assert_eq!(
+		job.apply(AT, &wall(toward_sun.x), SEED, 0),
+		None,
+		"sun-side wall must shade"
+	);
+	assert_eq!(
+		job.apply(AT, &wall(-toward_sun.x), SEED, 0),
+		Some(BlockType::Grass as u16),
+		"far-side wall must not"
+	);
+}
+
+#[test]
+fn leaves_block_sun_and_water_passes_it() {
+	for (canopy, want) in [
+		(BlockType::Leaves, None),
+		(BlockType::Water, Some(BlockType::Grass as u16)),
+	] {
+		let mut w = seeded();
+		for dz in -1..=1 {
+			for dx in -1..=1 {
+				w.set((AT.0 + dx, 70, AT.2 + dz), canopy);
+			}
+		}
+		assert_eq!(noon().apply(AT, &w, SEED, 0), want, "{canopy:?} canopy");
+	}
+}
+
+/// Beyond loaded cells the ray reads pure worldgen: below the column's
+/// height it is buried, above it is sky — expectations derived from
+/// `terrain_height` at this seed, not from a chosen y.
+#[test]
+fn unloaded_columns_judge_by_worldgen() {
+	let h = worldgen::terrain_height(AT.0, AT.2, SEED);
+	for (y, want) in [(h - 5, None), (h + 5, Some(BlockType::Grass as u16))] {
+		assert!(y > 1, "seed put the surface too low for this test");
+		let mut w = Pocket::sealed();
+		w.set((0, y, 0), BlockType::Dirt);
+		w.set((0, y + 1, 0), BlockType::Air);
+		w.set((1, y, 0), BlockType::Grass);
+		w.set((1, y + 1, 0), BlockType::Air);
+		assert_eq!(
+			noon().apply((0, y, 0), &w, SEED, 0),
+			want,
+			"y = h{:+}",
+			y - h
+		);
+	}
+}
+
+#[test]
+fn the_answer_is_a_pure_function_of_seed_cell_run() {
+	let w = seeded();
+	let [morning, _, _] = SPREAD_HOURS;
+	for run in 0..20 {
+		let a = GrassSpread::at_hour(morning, "t-a").apply(AT, &w, SEED, run);
+		let b = GrassSpread::at_hour(morning, "t-b").apply(AT, &w, SEED, run);
+		assert_eq!(a, b, "run {run}");
+	}
+}
+
+/// Sweeping the production roster: every offset is a day fraction and
+/// every registration survived `at_hour`'s horizon assert by being
+/// constructed at all.
+#[test]
+fn every_registration_keeps_the_sun_above_the_horizon() {
+	let roster = jobs();
+	for job in &roster {
+		let off = job.schedule().offset;
+		assert!((0.0..1.0).contains(&off), "{}: offset {off}", job.name());
+		assert_eq!(job.schedule().per_day, 1, "{}", job.name());
+		assert_eq!(
+			job.scope().candidates,
+			Candidates::Frontier {
+				surface_shell: true
+			},
+			"{}",
+			job.name()
+		);
+	}
+	let mut names: Vec<_> = roster.iter().map(|j| j.name()).collect();
+	names.sort_unstable();
+	names.dedup();
+	assert_eq!(names.len(), roster.len(), "registrations share a name");
+}

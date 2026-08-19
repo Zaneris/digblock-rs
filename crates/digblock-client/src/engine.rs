@@ -196,6 +196,10 @@ pub struct Engine {
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).
 	time_secs: f32,
+	/// Unwrapped world clock feeding the job scheduler. The shader clock
+	/// above wraps on a period shorter than a game day, and a Schedule
+	/// slot never advances again against a wrapped clock.
+	world_secs: f64,
 	/// See [`NetSession`].
 	session: NetSession,
 	/// See [`Vfx`].
@@ -895,7 +899,27 @@ struct PipelineWorld<'a>(&'a mut Pipeline);
 
 impl digblock_core::worldjob::CellSource for PipelineWorld<'_> {
 	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
-		self.0.cell_at(x, y, z)
+		// Overlay fallback for evicted-but-edited cells, mirroring the
+		// server sweep's journal fallback — the arms must answer alike
+		// or one rule judges the same world two ways.
+		self.0.cell_at(x, y, z).or_else(|| {
+			let s = digblock_core::chunk::CHUNK_SIZE as i32;
+			self.0.overlay().and_then(|o| {
+				o.column(x.div_euclid(s), z.div_euclid(s))
+					.and_then(|cells| cells.get(&(x, y, z)).copied())
+			})
+		})
+	}
+
+	fn edited_cells(&self, cx: i32, cz: i32, f: &mut dyn FnMut(i32, i32, i32)) {
+		// The overlay is the offline world's whole edit record — and it
+		// records the sweep's own writes, which is what keeps a spread
+		// self-sustaining across runs. Multiplayer never reaches here.
+		if let Some(cells) = self.0.overlay().and_then(|o| o.column(cx, cz)) {
+			for &(x, y, z) in cells.keys() {
+				f(x, y, z);
+			}
+		}
 	}
 }
 

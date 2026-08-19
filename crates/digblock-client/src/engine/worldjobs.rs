@@ -16,7 +16,7 @@ impl Engine {
 	pub(super) fn step_world_jobs(&mut self) {
 		let p = self.player.pos;
 		let eye = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-		let (secs, seed) = (f64::from(self.time_secs), self.seed);
+		let (secs, seed) = (self.world_secs, self.seed);
 		let writes = {
 			let world = PipelineWorld(&mut self.pipeline);
 			self.world_jobs.tick(secs, seed, &[eye], &world)

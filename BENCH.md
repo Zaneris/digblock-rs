@@ -1,5 +1,33 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-19 — a grass sweep costs a player half a millisecond per tick, one at a cave mouth
+
+The scheduled grass spread (three frontier sweeps a day, `RADIUS_CHUNKS` around each player, subsoil shell on), measured
+against REAL worldgen rather than the flat test harness. Release, M2 Max, working tree on e757148; scratch harness over
+`digblock-core` alone: 81 chunk columns of `build_column` terrain at seed 7, one eye, ~300 journaled edits (a dug 12x12
+clearing plus a grass border), each registration's sweep run to completion through the production `Scheduler`, its
+writes re-recorded as the hosts journal them.
+
+Two spots. A plains clearing (eye at the origin), and the caviest dirt-subsoil neighborhood a 128-chunk scan could find
+(chunk column (-61,0) at this seed) — mountain caves don't count, their carved span is stone all the way, which the
+first attempt at this capture proved by writing nothing.
+
+| spot       | sweep      | ticks | total ms | ms/tick | writes |
+| ---------- | ---------- | ----- | -------- | ------- | ------ |
+| clearing   | grass-9am  | 50    | 33.3     | 0.67    | 46     |
+| clearing   | grass-noon | 50    | 24.8     | 0.50    | 57     |
+| clearing   | grass-3pm  | 50    | 26.4     | 0.53    | 11     |
+| cave mouth | grass-9am  | 50    | 49.9     | 1.00    | 113    |
+| cave mouth | grass-noon | 50    | 27.0     | 0.54    | 139    |
+| cave mouth | grass-3pm  | 50    | 35.3     | 0.71    | 52     |
+
+Of the cave spot's 304 writes, 242 landed with no player edit within 2 cells — the pristine shell path greening cave
+mouths on its own, which is the half the frontier alone cannot see. The per-tick floor is the shell judgment (one chunk
+column per tick, 256 `terrain_height` evaluations each), flat in edit count and scaling with the square of
+`RADIUS_CHUNKS`, additively per player where their squares don't overlap; the cave premium is candidates surviving
+deeper into the cascade, and the angled 9am run pays the most because its rays graze terrain. Against the 16.7 ms tick
+budget a sweep in flight costs 3-6% of one tick for ~0.8 s of wall time, three times a game day.
+
 ## 2026-08-19 — the structure refactor moves nothing
 
 `pre-cleanup` (68ffdc9) against `a170bfe`: the comment sweep, the impl splits, the `Engine` field grouping, the

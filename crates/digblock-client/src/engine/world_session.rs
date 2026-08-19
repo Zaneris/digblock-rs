@@ -50,6 +50,12 @@ impl Engine {
 		self.flow_accum = 0.0;
 		// A sweep in flight names columns of the world being left.
 		self.world_jobs.abandon();
+		if world_replaced {
+			// A fresh world's day starts at zero; a retained last_run
+			// against the rewound clock would starve every job for a day.
+			self.world_secs = 0.0;
+			self.world_jobs.reset();
+		}
 		self.tick_accum = 0.0;
 		self.session.pending_ack = None;
 		self.session.correction_offset = Vec3::ZERO;

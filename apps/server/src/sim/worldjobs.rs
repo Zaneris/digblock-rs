@@ -26,6 +26,17 @@ impl CellSource for SweepWorld<'_> {
 				.and_then(|cells| cells.get(&(x, y, z)).copied())
 		})
 	}
+
+	fn edited_cells(&self, cx: i32, cz: i32, f: &mut dyn FnMut(i32, i32, i32)) {
+		// The index is the complete edit record — a frontier sweep's own
+		// writes land back in it through `apply_write`, which is what
+		// keeps a spread self-sustaining across runs.
+		if let Some(cells) = self.journal.index.column(cx, cz) {
+			for &(x, y, z) in cells.keys() {
+				f(x, y, z);
+			}
+		}
+	}
 }
 
 impl Sim {

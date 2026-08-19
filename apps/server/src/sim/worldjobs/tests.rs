@@ -1,7 +1,7 @@
 use super::super::harness::*;
 use super::*;
 use digblock_core::block::BlockType;
-use digblock_core::worldjob::{CellSource, Schedule, Scope, WorldJob};
+use digblock_core::worldjob::{Candidates, CellSource, Schedule, Scope, WorldJob};
 
 /// Caps the flat world's Stone floor with Dirt, so a job has a legal
 /// target — Stone is a node host and a sweep may never touch it.
@@ -16,16 +16,16 @@ fn sow_dirt(sim: &mut Sim, y: i32, span: i32) -> Vec<(i32, i32, i32)> {
 	cells
 }
 
-/// The archetype from the design note: dirt turns to grass, twice a day,
-/// near whoever is online.
-struct GrassSpread {
+/// A band-mode stand-in: dirt turns to grass unconditionally. The real
+/// rule is `worldjob::grass`, exercised by the frontier test below.
+struct Sprout {
 	radius_chunks: i32,
 	y: i32,
 }
 
-impl WorldJob for GrassSpread {
+impl WorldJob for Sprout {
 	fn name(&self) -> &'static str {
-		"grass-spread"
+		"sprout"
 	}
 	fn schedule(&self) -> Schedule {
 		Schedule {
@@ -38,6 +38,7 @@ impl WorldJob for GrassSpread {
 			blocks: &[BlockType::Dirt],
 			radius_chunks: self.radius_chunks,
 			y: (self.y, self.y),
+			candidates: Candidates::Band,
 		}
 	}
 	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
@@ -84,7 +85,7 @@ fn a_sweep_reaches_a_client_as_an_ordinary_edit() {
 	wait_live(&mut sim, 1);
 	let sown = sow_dirt(&mut sim, y, 2);
 	c.drain();
-	sim.register_world_job(Box::new(GrassSpread {
+	sim.register_world_job(Box::new(Sprout {
 		radius_chunks: 0,
 		y,
 	}));
@@ -124,7 +125,7 @@ fn a_locked_spawn_refuses_a_sweep() {
 	wait_live(&mut sim, 1);
 	let sown = sow_dirt(&mut sim, y, 8);
 	sim.bench_lock_spawn_at(FLAT_SPAWN);
-	sim.register_world_job(Box::new(GrassSpread {
+	sim.register_world_job(Box::new(Sprout {
 		radius_chunks: 0,
 		y,
 	}));
@@ -151,4 +152,71 @@ fn a_locked_spawn_refuses_a_sweep() {
 	}
 	assert!(refused > 0, "the lock covered none of the sown band");
 	assert!(swept > 0, "the lock covered ALL of it — nothing was proven");
+}
+
+/// The frontier feeds itself: run 1's writes are journaled edits, so run
+/// 2's candidates include their neighbors — grass advances exactly one
+/// ring per run with no rule-side bookkeeping. The noon registration
+/// only: its ray is vertical, and the flat harness world is one real
+/// worldgen knows nothing about, so an angled ray leaving residency
+/// would be judged against terrain that is not there.
+#[test]
+fn the_grass_frontier_sustains_itself() {
+	let mut sim = flat_sim("wj-frontier");
+	let y = FLAT_GROUND_TOP as i32;
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sow_dirt(&mut sim, y, 8);
+	// The seed goes through the real edit path — journaled, so the
+	// frontier can see it. `test_set_cell`'s store-only writes cannot be.
+	// Mid-chunk: `sow_dirt` reaches past residency and those cells are
+	// silently dropped, so the pad under audit is the resident 0..=8
+	// quarter and both rings must fit inside it.
+	let seed_cell = (4, y, 4);
+	let grass = BlockType::Grass as u16;
+	let prev = sim
+		.store
+		.set_cell(seed_cell.0, seed_cell.1, seed_cell.2, grass)
+		.expect("seed cell resident");
+	sim.apply_write(seed_cell, grass, prev, SERVER_ID, 0, true);
+	for job in digblock_core::worldjob::grass::jobs() {
+		if job.name().contains("noon") {
+			sim.register_world_job(job);
+		}
+	}
+	c.drain();
+
+	// The pad is graded by ring: in-plane Chebyshev distance from the
+	// seed, one ring per completed run.
+	let check = |sim: &Sim, runs: i32| {
+		let (mut green, mut brown) = (0, 0);
+		for z in 0i32..=8 {
+			for x in 0i32..=8 {
+				let d = (x - seed_cell.0).abs().max((z - seed_cell.2).abs());
+				let want = if d <= runs {
+					BlockType::Grass
+				} else {
+					BlockType::Dirt
+				};
+				assert_eq!(
+					sim.cell_at(x, y, z),
+					Some(want as u16),
+					"({x},{z}) is {d} rings out after {runs} runs"
+				);
+				if d <= runs { green += 1 } else { brown += 1 }
+			}
+		}
+		assert!(green > 0 && brown > 0, "the pad proves nothing");
+	};
+
+	run_sweep(&mut sim, &mut c, 120);
+	check(&sim, 1);
+
+	// Later the next slot is owed; ring 2 is reachable only through
+	// ring 1's journaled writes. Two days, not one: slot indices clamp
+	// at zero, so the boot catch-up consumed slot 0 BEFORE its nominal
+	// window, and one day past boot the index is still 0.
+	sim.tod_offset_secs += 2.0 * f64::from(digblock_core::sun::DAY_SECS);
+	run_sweep(&mut sim, &mut c, 120);
+	check(&sim, 2);
 }

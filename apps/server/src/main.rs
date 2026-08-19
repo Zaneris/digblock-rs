@@ -185,6 +185,12 @@ fn main() {
 			std::process::exit(1);
 		}
 	};
+	// Registered here rather than in Sim::new so the test harness's
+	// hand-dressed worlds stay free of production rules; the rule itself
+	// still gets its own end-to-end test against a real Sim.
+	for job in digblock_core::worldjob::grass::jobs() {
+		sim.register_world_job(job);
+	}
 	// Resolve every admin to an account id before the first player can
 	// connect. A name is looked up ONCE, against the master, and only the
 	// resulting id is kept — so renaming does not drop admin, and a name

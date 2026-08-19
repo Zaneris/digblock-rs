@@ -245,6 +245,7 @@ impl Engine {
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
+			world_secs: 0.0,
 			session: NetSession {
 				client: None,
 				net_events: Vec::new(),
@@ -457,6 +458,12 @@ impl Engine {
 		// is above this line, so a new scene is covered by standing where the
 		// others do. Silent: a capture is not a discovery.
 		engine.sync_node_reveal(false);
+		// The same production rules the server registers, from the same
+		// constructor — offline is not allowed to fork them. They only run
+		// in local worlds; hosted, the results arrive as ordinary edits.
+		for job in digblock_core::worldjob::grass::jobs() {
+			engine.register_world_job(job);
+		}
 		engine
 	}
 
