@@ -166,7 +166,8 @@ Admin is **accounts, never names** — the name compare it replaced made joining
 display name resolves to an id ONCE at boot, so a rename doesn't drop admin and an unresolvable admin is fatal rather
 than silently granted to nobody. `/reset` is a TEMPORARY testing lever. `/give` hands out ESSENCE rather than blocks on
 purpose — a block would be a world edit with no journal entry behind it, while essence rides the standing rebase; it
-parses `Essence::name` so command and UI cannot drift. Compass in `/tp`: east = sunrise = −x.
+parses `Essence::ident` — the untranslated operator's word, deliberately NOT the screens' label, so an admin types the
+same thing whatever language the client shows. Compass in `/tp`: east = sunrise = −x.
 
 - Use `127.0.0.1`, **never `localhost`** (macOS resolves it to `::1`; the server binds IPv4 only).
 - Anything that can't open a browser signs in through `POST /api/dev/signin`, honoured only under

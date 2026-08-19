@@ -129,14 +129,15 @@ fn clock_of_tod(tod: f32) -> String {
 
 /// An essence by name, case-insensitively.
 ///
-/// Matched against [`Essence::name`] — the screens' own label — rather
-/// than a second list of spellings, so the command cannot come to
-/// disagree with the UI about what a currency is called, and a new
-/// essence is takeable the day its row exists.
+/// Matched against [`Essence::ident`] — the untranslated operator's word
+/// — rather than a second list of spellings, so the command and the
+/// usage line cannot come to disagree, and a new essence is takeable the
+/// day its row exists. Not the screens' LABEL: an admin types the same
+/// word whatever language the client is showing.
 fn parse_essence(arg: &str) -> Option<Essence> {
 	Essence::ALL
 		.into_iter()
-		.find(|e| e.name().eq_ignore_ascii_case(arg))
+		.find(|e| e.ident().eq_ignore_ascii_case(arg))
 }
 
 /// Absolute integer, or `~`/`~±d` relative to `cur`. Clamped.
@@ -479,15 +480,13 @@ impl Sim {
 	/// — putting a late recipe in front of a tester, or repaying a player
 	/// what a server bug cost them.
 	fn cmd_give(&mut self, conn_id: u64, args: &[&str]) {
-		// Spelled from `Essence::name` like `parse_essence` is, rather
+		// Spelled from `Essence::ident` like `parse_essence` is, rather
 		// than typed out again: the usage line and the parser were two
 		// copies of one vocabulary, and the rename that gave the essences
 		// their reagent names moved only the parser — leaving `/help` and
 		// this line advertising four words the command now refuses, in a
 		// refusal that repeated the word it had just rejected.
-		let names = Essence::ALL
-			.map(|e| e.name().to_ascii_lowercase())
-			.join("|");
+		let names = Essence::ALL.map(|e| e.ident()).join("|");
 		let usage = format!("usage: /give <name> <{names}> [n]");
 		let usage = usage.as_str();
 		if !(args.len() == 2 || args.len() == 3) {

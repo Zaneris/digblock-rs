@@ -182,7 +182,7 @@ fn reset_returns_a_player_to_minute_one() {
 /// Every word `/give`'s refusal ADVERTISES is a word it accepts.
 ///
 /// The usage line used to be a third copy of the vocabulary beside
-/// `parse_essence` and `Essence::name`, and when the essences took
+/// `parse_essence` and `Essence::ident`, and when the essences took
 /// their reagent names only the parser moved: `/give bob earth 100`
 /// answered "earth is not an essence" and then offered `earth`. A
 /// refusal that repeats the word it just refused is the failure this
@@ -229,8 +229,9 @@ fn give_only_advertises_essences_it_accepts() {
 }
 
 /// `/give` credits the TARGET and rebases them, and every essence is
-/// spellable by the label the screens use — which is the whole reason
-/// `parse_essence` reads `Essence::name` instead of listing spellings.
+/// spellable by the word the usage line advertises — which is the whole
+/// reason `parse_essence` reads `Essence::ident` instead of listing
+/// spellings.
 #[test]
 fn give_credits_essence_and_rebases_the_player_who_got_it() {
 	use digblock_core::block::Essence;
@@ -242,13 +243,10 @@ fn give_credits_essence_and_rebases_the_player_who_got_it() {
 	admin.drain();
 	guest.drain();
 
-	// Every essence, named as its own screen label, cased freely.
+	// Every essence, named as its own identifier, cased freely.
 	for (i, &e) in Essence::ALL.iter().enumerate() {
 		let n = i as u32 + 1;
-		sim.tick_once(vec![chat(
-			1,
-			&format!("/give guest {} {n}", e.name().to_ascii_lowercase()),
-		)]);
+		sim.tick_once(vec![chat(1, &format!("/give guest {} {n}", e.ident()))]);
 		assert_eq!(sim.test_sub_count(2, e), n, "{e:?} landed in the stocks");
 	}
 	guest.drain();

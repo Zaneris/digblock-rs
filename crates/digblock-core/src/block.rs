@@ -470,7 +470,7 @@ impl ShapeFamily {
 /// **The indices are frozen; the names are not.** Renaming a variant moves no
 /// byte: the discriminants are explicit, nothing serializes an `Essence` by
 /// name (no serde, no `FromStr`), and the one place a name is parsed —
-/// `/give` — reads [`Essence::name`].
+/// `/give` — reads [`Essence::ident`], which is not the label.
 ///
 /// The first two indices deliberately keep the retired `Material` enum's
 /// numbering — Vitae sits where sub-wood lived and Terra where sub-stone did —
@@ -511,13 +511,14 @@ impl Essence {
 		Self::ALL.get(v as usize).copied()
 	}
 
-	/// The screens' label — and, via `/give`'s parser, the name an
-	/// operator types, so the command and the UI cannot drift.
+	/// The screens' label, stored in one case ([`Material::name`]'s rule).
 	///
 	/// Still a function rather than a `Debug` of the variant: letting a
 	/// screen derive it from the identifier would make the identifier a
 	/// display format, which is the coupling that stopped these being
 	/// renamed for a release in the first place.
+	///
+	/// NOT what `/give` parses — see [`Essence::ident`].
 	pub fn name(self) -> &'static str {
 		match self {
 			Essence::Vitae => "Vitae",
@@ -525,6 +526,24 @@ impl Essence {
 			Essence::Unda => "Unda",
 			Essence::Ferrum => "Ferrum",
 			Essence::Aether => "Aether",
+		}
+	}
+
+	/// What an OPERATOR types — ASCII, lower case, and never translated.
+	///
+	/// The same spelling as the label today, and a separate function all
+	/// the same: the moment the label is translated, a shared one would
+	/// have an admin typing Japanese to hand out a reagent. `/give`'s
+	/// parser and the usage line it advertises both read THIS, so the two
+	/// still cannot drift from each other — which was the point of
+	/// sharing in the first place.
+	pub fn ident(self) -> &'static str {
+		match self {
+			Essence::Vitae => "vitae",
+			Essence::Terra => "terra",
+			Essence::Unda => "unda",
+			Essence::Ferrum => "ferrum",
+			Essence::Aether => "aether",
 		}
 	}
 }

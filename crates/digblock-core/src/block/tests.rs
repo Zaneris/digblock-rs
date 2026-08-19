@@ -524,3 +524,22 @@ fn fluid_table_matches_legacy_variant_semantics() {
 		assert_eq!((f.amount, f.source, f.falling), (a, false, false));
 	}
 }
+
+/// An identifier is not a label. `Essence::ident` is what an operator
+/// types at `/give`, so it stays ASCII, lower case and unique — a label
+/// may be translated one day and would take the command with it.
+#[test]
+fn an_essence_identifier_is_ascii_and_its_own() {
+	for (i, &e) in Essence::ALL.iter().enumerate() {
+		let id = e.ident();
+		assert!(
+			id.chars().all(|c| c.is_ascii_lowercase()),
+			"{e:?} identifier {id:?} is not typeable ASCII"
+		);
+		assert!(
+			!Essence::ALL[..i].iter().any(|o| o.ident() == id),
+			"{e:?} shares its identifier with an earlier essence"
+		);
+		assert!(!e.name().is_empty(), "{e:?} has no label");
+	}
+}
