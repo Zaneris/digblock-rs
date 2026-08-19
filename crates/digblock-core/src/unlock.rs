@@ -12,8 +12,8 @@
 //! - **What a level opens** — [`opens`], DERIVED from those tables, so retuning
 //!   a threshold moves the fanfare and the character screen's teasers with it.
 //!
-//! The refusal wording lives here too ([`Kind::message`]): prediction and the
-//! server's verdict speak the same sentence because there is only one.
+//! The refusal wording lives here too ([`Requirement::message`]): prediction
+//! and the server's verdict speak the same sentence because there is only one.
 
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;
@@ -320,7 +320,7 @@ fn mine_family(f: crate::block::DigFamily) -> u32 {
 	use crate::block::DigFamily as F;
 	match f {
 		F::Fixed | F::Soft => 1,
-		F::Wood => 5,
+		F::Wood => 3,
 		F::Rock => 10,
 	}
 }
@@ -414,31 +414,46 @@ pub enum Kind {
 	Recipe,
 	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
 	/// other two this is not about a LEVEL at all — it is the one refusal
-	/// a player can clear without gaining anything, by switching tools.
+	/// a player can clear without gaining anything, by switching tools,
+	/// which is why its wording is a constant and not a sentence about a
+	/// level ([`NEEDS_SIPHON_MSG`]).
 	Tool,
 }
 
-impl Kind {
-	/// The feed line this refusal speaks — beside `protect::REFUSE_*_MSG`
-	/// in spirit: one wording shared by prediction and the server verdict,
-	/// which is why the server sends a REASON and never a sentence.
-	pub fn message(self) -> &'static str {
-		match self {
-			Kind::Strength => "this rock defies your mining level",
-			Kind::Recipe => "you haven't unlocked this yet",
-			Kind::Tool => "this vein needs an essence siphon",
-		}
-	}
-}
+/// The tool gate's line, beside `protect::REFUSE_*_MSG` in spirit: the one
+/// refusal with no level in it, so it is the one that can be a constant.
+pub const NEEDS_SIPHON_MSG: &str = "this vein needs an essence siphon";
 
-/// One thing a dig needs before it may start.
+/// One thing a dig needs before it may start, and the block it is about —
+/// carried so a refusal can name what it refused without a caller handing
+/// back a block it might get wrong.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Requirement {
+	pub block: BlockType,
 	pub skill: Skill,
 	/// The level `skill` must have reached; the first level means no
 	/// requirement at all.
 	pub level: u32,
 	pub kind: Kind,
+}
+
+impl Requirement {
+	/// The feed line this refusal speaks: one wording shared by prediction
+	/// and the server's verdict, which is why the wire sends a REASON and
+	/// never a sentence. It names the block and the level that opens it —
+	/// a refusal that only says no is one the player has to go and look up.
+	///
+	/// Which SKILL it names is what tells the two level gates apart, so one
+	/// sentence serves both: Mining is "too hard for you", Alchemy "you
+	/// could not make one". Lower case — the feed speaks, the screens shout.
+	pub fn message(self) -> String {
+		format!(
+			"{} needs {} level {}",
+			self.block.name().to_lowercase(),
+			self.skill.display(),
+			self.level
+		)
+	}
 }
 
 /// Everything digging `b` asks for, in refusal priority order. Level 1
@@ -447,11 +462,13 @@ pub struct Requirement {
 pub fn dig_requirements(b: BlockType) -> [Requirement; 2] {
 	[
 		Requirement {
+			block: b,
 			skill: Skill::Mining,
 			level: mine(b),
 			kind: Kind::Strength,
 		},
 		Requirement {
+			block: b,
 			skill: Skill::Alchemy,
 			level: pickup(b),
 			kind: Kind::Recipe,
@@ -470,6 +487,16 @@ pub fn dig_blocked(b: BlockType, skills: &SkillSet) -> Option<Requirement> {
 	dig_requirements(b)
 		.into_iter()
 		.find(|r| skills.level(r.skill) < r.level)
+}
+
+/// The requirement of this KIND that `b` actually carries, if any — how a
+/// verdict that names a GATE (all the wire carries) becomes the sentence
+/// prediction would have spoken. `None` where the block has no such gate,
+/// which is the one case a listener has nothing of its own to say.
+pub fn requirement(b: BlockType, kind: Kind) -> Option<Requirement> {
+	dig_requirements(b)
+		.into_iter()
+		.find(|r| r.kind == kind && r.level > 1)
 }
 
 // ---- what a level opens ----------------------------------------------

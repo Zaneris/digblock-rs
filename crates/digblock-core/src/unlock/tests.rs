@@ -242,7 +242,7 @@ fn the_strength_wall_is_the_dig_family() {
 		B::Lumber,
 		B::LumberDoor,
 	] {
-		assert_eq!(mine(b), 5, "{b:?} is Wood family");
+		assert_eq!(mine(b), 3, "{b:?} is Wood family");
 	}
 	// Rock last, gravel and sandstone included: gravel used to be the
 	// ungated entry rock and timber has taken that job.
@@ -400,7 +400,7 @@ fn one_question_answers_every_dig_gate() {
 	assert_eq!(dig_blocked(B::Dirt, &fresh), None);
 	assert_eq!(
 		dig_blocked(B::Wood, &fresh).map(|r| (r.skill, r.level, r.kind)),
-		Some((Skill::Mining, 5, Kind::Strength)),
+		Some((Skill::Mining, 3, Kind::Strength)),
 		"timber is the second rung"
 	);
 	for b in [B::Gravel, B::Stone] {
@@ -451,8 +451,27 @@ fn one_question_answers_every_dig_gate() {
 		}
 		assert_eq!(dig_blocked(b, &maxed), None, "{b:?}");
 	}
-	// And the two gates never share a sentence.
-	assert_ne!(Kind::Strength.message(), Kind::Recipe.message());
+	// The sentence a refusal speaks names the block and the level that
+	// opens it — a refusal that only says no is one a player has to go
+	// and look up — and the two gates never share one, because each
+	// names its own skill.
+	let strength = dig_blocked(B::Wood, &fresh).expect("gated").message();
+	assert_eq!(strength, "wood needs Mining level 3");
+	let recipe = dig_blocked(B::StoneStairs, &at(10, 1))
+		.expect("gated")
+		.message();
+	assert_eq!(recipe, "stone stairs needs Alchemy level 15");
+	// And a verdict that names only a GATE recovers the same sentence,
+	// which is what lets the wire send a reason and never a sentence.
+	assert_eq!(
+		requirement(B::Wood, Kind::Strength).map(|r| r.message()),
+		Some(strength)
+	);
+	assert_eq!(
+		requirement(B::Wood, Kind::Recipe),
+		None,
+		"wood has no recipe gate"
+	);
 }
 
 /// The fanfare's question, derived from the tables: the levels that
@@ -468,7 +487,7 @@ fn unlock_levels_are_the_threshold_levels() {
 		.collect();
 	assert_eq!(
 		mining,
-		vec![5, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
+		vec![3, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
 		"timber and rock, the reveals, metal and crystal, the pick, the \
 			 prospector's two ranks, mastery — the content tops at 60, and \
 			 the pick's plane at 85 is the tail's one deliberate exception"

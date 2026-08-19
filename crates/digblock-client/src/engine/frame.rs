@@ -231,9 +231,9 @@ impl Engine {
 			if !self.ui.alch_screen.is_open()
 				&& let Some(job) = self.ui.alch_screen.job()
 			{
-				use crate::ui::screens::alchemy::{BenchJob, block_name};
+				use crate::ui::screens::alchemy::BenchJob;
 				let BenchJob::Craft(item, left) = job;
-				let text = format!("BENCH  {} ×{left}", block_name(item));
+				let text = format!("BENCH  {} ×{left}", item.name());
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(

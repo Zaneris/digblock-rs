@@ -96,7 +96,7 @@ const ALCH_TEASERS: &[(u32, &str)] = &[
 /// shaped around. Content tops at mastery; the pick's plane stands alone
 /// in the tail on purpose.
 const MINING_TEASERS: &[(u32, &str)] = &[
-	(5, "timber gives — trees and planed wood"),
+	(3, "timber gives — trees and planed wood"),
 	(10, "rock gives — gravel, sandstone, stone"),
 	(15, "emberore reveals — bring a siphon"),
 	(
@@ -431,10 +431,13 @@ mod tests {
 		}
 		// Mining's teasers are EXACTLY what it opens — the strength wall's
 		// two rungs and then the reveals — so an extra row here would be a
-		// promise the game breaks.
+		// promise the game breaks. Read off `opens` rather than written
+		// down: the levels live in `unlock`, this table owns the wording.
 		assert_eq!(
 			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
-			vec![5, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85]
+			(1..=skills::MAX_LEVEL)
+				.filter(|&l| unlock::opens(Skill::Mining, l))
+				.collect::<Vec<_>>()
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste dip.
@@ -452,14 +455,14 @@ mod tests {
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		assert!(
-			fresh.contains("next: LV 5 — timber gives — trees and planed wood"),
+			fresh.contains("next: LV 3 — timber gives — trees and planed wood"),
 			"{fresh}"
 		);
 		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
 		let all = texts(&emit(&leveled)).join("\n");
-		assert!(!all.contains("next: LV 5 — timber"), "{all}");
+		assert!(!all.contains("next: LV 3 — timber"), "{all}");
 		assert!(all.contains("next: LV 15 — emberore reveals"), "{all}");
 	}
 

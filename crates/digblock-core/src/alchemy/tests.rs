@@ -541,7 +541,7 @@ fn essence_faucets_open_where_they_always_did() {
 	assert_eq!(
 		opens,
 		vec![
-			(Essence::Vitae, 5),
+			(Essence::Vitae, 3),
 			(Essence::Terra, 10),
 			(Essence::Unda, 12),
 			(Essence::Ferrum, 15),

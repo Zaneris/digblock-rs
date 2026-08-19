@@ -77,13 +77,13 @@ fn a_craft_only_block_refuses_the_dig_until_its_recipe_opens() {
 	engine.step_dig();
 	engine.step_dig();
 	assert!(engine.dig.is_none(), "no hold opened");
-	let spoken = |e: &Engine| {
-		e.session
-			.feed
-			.iter()
-			.filter(|(t, ..)| t.as_str() == Kind::Recipe.message())
-			.count()
-	};
+	// The sentence the refusal speaks, read out of the unlock table
+	// rather than written down here — it names the block and the level
+	// that opens it, and both follow the torch when it moves.
+	let line = digblock_core::unlock::requirement(BlockType::Torch, Kind::Recipe)
+		.expect("the torch is craft-only")
+		.message();
+	let spoken = |e: &Engine| e.session.feed.iter().filter(|(t, ..)| *t == line).count();
 	assert_eq!(spoken(&engine), 1, "latched: {:?}", engine.session.feed);
 
 	// Aiming away and back is what clears the latch in play.

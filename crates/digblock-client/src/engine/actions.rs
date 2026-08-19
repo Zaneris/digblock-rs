@@ -256,19 +256,19 @@ impl Engine {
 		// line per aim, same as the server path.
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
-				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
+				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG.to_string()))
 			} else if self.node_dig_mode(h.cell)
 				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
 			{
-				Some((h.cell, digblock_core::unlock::Kind::Tool.message()))
+				Some((h.cell, digblock_core::unlock::NEEDS_SIPHON_MSG.to_string()))
 			} else {
 				digblock_core::unlock::dig_blocked(h.block, &self.skills)
-					.map(|req| (h.cell, req.kind.message()))
+					.map(|req| (h.cell, req.message()))
 			}
 		}) && self.refused_cell != Some(cell)
 		{
 			self.refused_cell = Some(cell);
-			self.push_feed(msg.into());
+			self.push_feed(msg);
 		}
 		let valid = self.target.filter(|h| self.diggable(h));
 		let Some(hit) = valid else {

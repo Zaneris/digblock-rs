@@ -272,15 +272,30 @@ impl Engine {
 					}
 					if self.refused_cell != Some(cell) {
 						self.refused_cell = Some(cell);
+						use digblock_core::unlock::{self, Kind};
 						use digblock_net::messages::RejectReason as R;
-						let msg = match reason {
-							R::Protected => digblock_core::protect::REFUSE_DIG_MSG,
-							R::SkillGated => digblock_core::unlock::Kind::Strength.message(),
-							R::NotUnlocked => digblock_core::unlock::Kind::Recipe.message(),
-							R::NeedsTool => digblock_core::unlock::Kind::Tool.message(),
-							_ => "the server refused that dig",
+						// The wire carries a REASON and never a sentence, so
+						// the line is composed here — over the block still
+						// under the crosshair, so a verdict speaks exactly
+						// what prediction would have. A cell this client can
+						// no longer see is the one case with nothing of its
+						// own to say.
+						let msg = {
+							let named = |kind| {
+								self.pipeline
+									.block_at(cell.0, cell.1, cell.2)
+									.and_then(|b| unlock::requirement(b, kind))
+									.map(|req| req.message())
+							};
+							match reason {
+								R::Protected => Some(digblock_core::protect::REFUSE_DIG_MSG.into()),
+								R::SkillGated => named(Kind::Strength),
+								R::NotUnlocked => named(Kind::Recipe),
+								R::NeedsTool => Some(unlock::NEEDS_SIPHON_MSG.into()),
+								_ => None,
+							}
 						};
-						self.push_feed(msg.into());
+						self.push_feed(msg.unwrap_or_else(|| "the server refused that dig".into()));
 					}
 				}
 				NetEvent::Inventory { counts, pending } => {

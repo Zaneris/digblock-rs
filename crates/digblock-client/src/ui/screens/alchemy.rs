@@ -781,7 +781,7 @@ impl AlchScreen {
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
 		let text = if locked {
-			format!("{}   —   LV {need}", block_name(item))
+			format!("{}   —   LV {need}", item.name())
 		} else {
 			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
 			let feedstock = alchemy::craft_feedstock(item);
@@ -790,7 +790,7 @@ impl AlchScreen {
 			let costs =
 				feedstock
 					.iter()
-					.map(|&(f, n)| format!("{n} {}", block_name(f)))
+					.map(|&(f, n)| format!("{n} {}", f.name()))
 					.chain(ideal.iter().map(|&(e, n)| {
 						format!("{} {}", alchemy::craft_cost(n, view.level), e.name())
 					}))
@@ -814,7 +814,7 @@ impl AlchScreen {
 					.iter()
 					.find_map(|&(f, n)| {
 						let have = view.counts[f as usize];
-						(have < n).then(|| format!("NEED {} MORE {}", n - have, block_name(f)))
+						(have < n).then(|| format!("NEED {} MORE {}", n - have, f.name()))
 					})
 					.or_else(|| {
 						ideal.iter().find_map(|&(e, n)| {
@@ -831,11 +831,11 @@ impl AlchScreen {
 			// line's whole job — and the long prices at the end of the
 			// catalog are long enough to push it off the end. Drop the
 			// costs before letting that happen.
-			let full = format!("{}   —   {costs}   ·   {tail}", block_name(item));
+			let full = format!("{}   —   {costs}   ·   {tail}", item.name());
 			if ui.style.measure(&full) <= avail {
 				full
 			} else {
-				format!("{}   —   {tail}", block_name(item))
+				format!("{}   —   {tail}", item.name())
 			}
 		};
 		widgets::label(
@@ -868,7 +868,7 @@ impl AlchScreen {
 		// how many are still owed. It names its own item rather than
 		// borrowing the strip's, which follows the SELECTION and may have
 		// moved on while the batch runs.
-		let queued = running.map(|(item, left)| format!("{}   ·   {left} LEFT", block_name(item)));
+		let queued = running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name()));
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -1028,36 +1028,6 @@ fn elide(style: &Style, text: &str, max_w: f32) -> String {
 		}
 	}
 	String::new()
-}
-
-/// Display names for the transmute rows (blocks have no Display impl —
-/// debug names like "WoodStairs" are not UI text).
-///
-/// A grid item is its substance and its form, in that order — "STONE" +
-/// "STAIRS" — so a new material × shape pair names itself and cannot land
-/// on the old table's `?` fallback. Only the hand-priced functional items
-/// need naming by hand, for the same reason they need pricing by hand.
-pub(crate) fn block_name(b: BlockType) -> String {
-	if let Some((m, s)) = b.grid_cell() {
-		return match s.item_suffix() {
-			Some(suffix) => format!("{} {suffix}", m.name()),
-			None => m.name().into(),
-		};
-	}
-	match b {
-		BlockType::Water => "WATER CHARGE".into(),
-		BlockType::Torch => "TORCH".into(),
-		BlockType::Table => "TABLE".into(),
-		BlockType::Chair => "CHAIR".into(),
-		BlockType::Bed => "BED".into(),
-		BlockType::Bucket => "BUCKET".into(),
-		BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
-		BlockType::ResonantPick => "RESONANT PICK".into(),
-		BlockType::Lantern => "LANTERN".into(),
-		BlockType::Aetherlamp => "AETHERLAMP".into(),
-		BlockType::MastersSigil => "MASTER'S SIGIL".into(),
-		_ => "?".into(),
-	}
 }
 
 #[cfg(test)]

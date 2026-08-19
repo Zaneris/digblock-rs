@@ -989,6 +989,37 @@ impl BlockType {
 		Some((self.material()?, self.shape_family()?))
 	}
 
+	/// What this block is CALLED — the label every screen shows and the
+	/// name a refusal speaks (a `Debug` name like "WoodStairs" is not UI
+	/// text). All-caps, because the UI is.
+	///
+	/// A grid item is its substance then its form — "STONE" + "STAIRS" —
+	/// so a new material × shape pair names itself and cannot land on the
+	/// `?`. Only the hand-priced functional items are named by hand, for
+	/// the same reason they are priced by hand.
+	pub fn name(self) -> String {
+		if let Some((m, s)) = self.grid_cell() {
+			return match s.item_suffix() {
+				Some(suffix) => format!("{} {suffix}", m.name()),
+				None => m.name().into(),
+			};
+		}
+		match self {
+			BlockType::Water => "WATER CHARGE".into(),
+			BlockType::Torch => "TORCH".into(),
+			BlockType::Table => "TABLE".into(),
+			BlockType::Chair => "CHAIR".into(),
+			BlockType::Bed => "BED".into(),
+			BlockType::Bucket => "BUCKET".into(),
+			BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
+			BlockType::ResonantPick => "RESONANT PICK".into(),
+			BlockType::Lantern => "LANTERN".into(),
+			BlockType::Aetherlamp => "AETHERLAMP".into(),
+			BlockType::MastersSigil => "MASTER'S SIGIL".into(),
+			_ => "?".into(),
+		}
+	}
+
 	/// The authored block for a grid cell, or `None` where the catalog has
 	/// no such pair. The grid is a GATING rule, not a promise that every
 	/// cell exists — nobody is owed snow stairs.
