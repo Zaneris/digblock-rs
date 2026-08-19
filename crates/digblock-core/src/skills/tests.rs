@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// The legacy-character migration's XP rule: the higher total per

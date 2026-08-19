@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::skills::total_xp_for;
 

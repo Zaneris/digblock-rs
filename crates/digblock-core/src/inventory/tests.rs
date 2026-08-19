@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// A price naming one key twice costs the SUM of its lines. Checking

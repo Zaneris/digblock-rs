@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::worldgen::column_shape;
 
