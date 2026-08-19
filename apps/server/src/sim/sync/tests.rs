@@ -1,4 +1,3 @@
-
 use super::super::harness::*;
 use super::super::{Sim, column_of};
 use super::{

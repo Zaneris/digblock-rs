@@ -1,4 +1,3 @@
-
 use super::super::Sim;
 use super::super::harness::*;
 use digblock_core::player::{Player, PlayerIntent, PlayerState, TICK};

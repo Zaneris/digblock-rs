@@ -1,4 +1,3 @@
-
 use crate::sim::harness::*;
 use crate::sim::{Sim, SimEvent};
 use digblock_core::block::BlockType;

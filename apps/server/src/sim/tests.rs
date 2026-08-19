@@ -1,4 +1,3 @@
-
 use super::harness::*;
 use super::{
 	AccountId, ClientMsg, MIN_PROTOCOL, OutMsg, PROTOCOL_VERSION, RejectReason, ServerMsg, SimEvent,

@@ -1,4 +1,3 @@
-
 use super::*;
 use digblock_core::block::BlockType;
 use digblock_core::hotbar::WIRE_TOOL;

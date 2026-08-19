@@ -1,11 +1,12 @@
 //! Edit validation (re-raycast from the claimed origin) and the fluid
 //! step, which turns settled flow into ordinary journaled edits.
 
-use super::{Sim, in_radius, send_frame};
+use super::{Sim, client_send, in_radius, send_frame};
 use crate::store::StoreWorld;
 use digblock_core::block::BlockType;
 use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
 use digblock_core::player::TICK;
+use digblock_core::protect::Region;
 use digblock_core::raycast::{REACH, raycast, raycast_fluid};
 use digblock_net::messages::{BlockEdit, EditKind, RejectReason, ServerMsg};
 use digblock_net::protocol::{
@@ -1080,6 +1081,161 @@ impl Sim {
 				self.broadcast_edit(seq, SERVER_ID, 0, edit, prev);
 			}
 		}
+	}
+
+	/// Record a hold-to-dig start (called from the ordered queue drain):
+	/// capture the cell's CURRENT block — the client never gets to claim
+	/// what it is digging. Within a tick the LAST start wins, exactly
+	/// like the client's retarget stream — an old first-wins per-tick cap
+	/// silently dropped the restart of a cancel+restart pair bunched into
+	/// one tick drain, leaving an honest hold with no server record
+	/// (DigIncomplete pop-back on completion). Floods still can't spin
+	/// the timer: a start on a new cell zeroes progress, and one on the
+	/// same cell can only ever RE-READ what the decay has left (see
+	/// below) — never add to it. The action-queue cap bounds the
+	/// per-tick volume.
+	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
+		// Before the client borrow: `spawn_lock` reads all of `self`.
+		let lock = self.spawn_lock();
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		// The hand this hold is being made with, mirrored onto the bar
+		// before any tool question is asked of it. It travels with the
+		// start for the reason `EditRequest.slot` travels with an edit:
+		// the selection otherwise arrives on the jitter-buffered input
+		// path, and a player who picks up the siphon and holds on a vein
+		// in the same breath would meet a `NeedsTool` refusal made
+		// against the hand they had a moment ago.
+		client.hotbar.set_selected(slot as usize);
+		// Refuse a protected cell up front. The completing edit would
+		// reject it anyway, but only after the player held the button
+		// through the block's full dig time for nothing — the refusal is
+		// only useful if it arrives when the hold starts.
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, lock.as_ref()) {
+			client.digging = None;
+			client_send(
+				client,
+				&ServerMsg::DigRefused {
+					cell: [cell.0, cell.1, cell.2],
+					reason: RejectReason::Protected,
+				},
+			);
+			return;
+		}
+		let cell_value = self.store.cell_at(cell.0, cell.1, cell.2);
+		// The skill gates (§5.1's strength wall, v13's craft gate), refused
+		// at the hold's start for the same reason protection is: the
+		// refusal is useless after the player held the button through a
+		// full dig timer. Honest clients predict it and never send this.
+		if let Some(v) = cell_value {
+			let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
+			// One question, the same one the client predicted with; the
+			// wire reason is all this end adds.
+			if let Some(req) = digblock_core::unlock::dig_blocked(b, &client.skills) {
+				use digblock_core::unlock::Kind;
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: match req.kind {
+							Kind::Strength => RejectReason::SkillGated,
+							Kind::Recipe => RejectReason::NotUnlocked,
+							Kind::Tool => RejectReason::NeedsTool,
+						},
+					},
+				);
+				return;
+			}
+		}
+		// A revealed vein with the wrong tool refuses here too, for
+		// exactly the reason the skill gates do — a refusal that arrives
+		// after a two-second hold is not a refusal, it is a punishment.
+		// Below the reveal this never fires: that player's world has no
+		// vein in it, so the cell digs as the stone it appears to be.
+		if self.ore_dig_mode(conn_id, cell) == digblock_core::worldgen::nodes::DigMode::NeedsSiphon
+		{
+			if let Some(client) = self.clients.get_mut(&conn_id) {
+				client.digging = None;
+				client_send(
+					client,
+					&ServerMsg::DigRefused {
+						cell: [cell.0, cell.1, cell.2],
+						reason: RejectReason::NeedsTool,
+					},
+				);
+			}
+			return;
+		}
+		// The resume's `required` has to be the SAME number the completion
+		// gate will check against, or the decay clamps a resumed hold at
+		// one figure while the client's bar bleeds from another. That
+		// means the ore, not the stone the cell still holds — this arm
+		// asked `dig_block` nothing at all and read Stone's hardness for a
+		// seam several times harder. Resolved before the client borrow,
+		// since it reads the store.
+		let mode = self.ore_dig_mode(conn_id, cell);
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		// Re-opening a hold on the SAME unchanged cell resumes it: it is
+		// worth whatever the decay has left, which is the number the
+		// client's own bar is showing. Everything else starts at zero.
+		//
+		// `off_target` is deliberately carried across the resume rather
+		// than cleared. It is what still limits a start FLOOD: a client
+		// spamming DigStart to freeze the decay on a nearly-broken block
+		// while looking elsewhere goes on accumulating misses, trips
+		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
+		// resumer is on target, so its first verify tick zeroes this.
+		let level = client.skills.level(digblock_core::skills::Skill::Mining);
+		let tool = client.hotbar.tool_in_hand();
+		let resumed = client
+			.digging
+			.as_ref()
+			.filter(|d| d.cell == cell && Some(d.cell_value) == cell_value)
+			.map(|d| {
+				let b = digblock_core::worldgen::nodes::dig_block(
+					mode,
+					digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(
+						d.cell_value,
+					)),
+				);
+				let need = b.dig_hardness(cell.1).map_or(0, |h| {
+					digblock_core::skills::dig_required_with(b, h, level, tool)
+				});
+				(d.banked(need), d.off_target)
+			});
+		client.digging = match cell_value {
+			Some(v)
+				if digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
+					.dig_hardness(cell.1)
+					.is_some() =>
+			{
+				let (progress, off_target) = resumed.unwrap_or((0, 0));
+				Some(DigState {
+					cell,
+					cell_value: v,
+					progress,
+					off_target,
+					idle: 0,
+				})
+			}
+			// Undiggable/unloaded target: no hold. The completing edit
+			// will fail its DigIncomplete check.
+			_ => None,
+		};
+	}
+
+	/// The active spawn lock's protected region, if any.
+	pub(super) fn spawn_lock(&self) -> Option<Region> {
+		self.spawn_store
+			.lock()
+			.map(|l| digblock_core::spawn::lock_region(Vec3::from_array(l.eye)))
 	}
 }
 
