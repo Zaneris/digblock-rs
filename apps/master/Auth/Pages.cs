@@ -33,19 +33,15 @@ public static class Pages
             """);
 
     // A provider's sign-in button is trade dress the provider dictates, not
-    // ours to style: Google's branding guidelines are a stated requirement
-    // of OAuth app verification (the G logo, an approved theme and one of
-    // three text strings), and Facebook's and Microsoft's brand kits make
-    // the same shape of demand. So the known providers get their own markup
-    // and only a provider without a kit falls back to the plain house
-    // button.
+    // ours to style: Google's branding guidelines are a stated requirement of
+    // OAuth app verification, and Facebook's and Microsoft's brand kits make
+    // the same shape of demand. So the known providers get their own markup and
+    // only a provider without a kit falls back to the house button.
     //
-    // The wording is per provider for the same reason and is not ours to
-    // unify: Microsoft's guidelines approve "Sign in with Microsoft" and
-    // "Sign up with Microsoft" and nothing else, so the row that reads
-    // "Continue with" everywhere else cannot read that way here. A house
-    // style that overrode a brand kit would be the one thing the kit
-    // forbids.
+    // The WORDING is per provider for the same reason: Microsoft's guidelines
+    // approve "Sign in with Microsoft" and "Sign up with Microsoft" and nothing
+    // else, so the row that reads "Continue with" everywhere else cannot read
+    // that way here.
     private static string ProviderButton(string slug, string label, string handle)
     {
         var href = $"/auth/go/{Esc(slug)}?h={Esc(handle)}";
@@ -83,29 +79,24 @@ public static class Pages
 
     private static string Esc(string s) => WebUtility.HtmlEncode(s);
 
-    // $$ so that CSS braces are plain content and interpolation is {{...}}:
-    // a raw string literal has no brace-doubling escape, it raises the
+    // $$ so that CSS braces are plain content and interpolation is {{...}}: a
+    // raw string literal has no brace-doubling escape, it raises the
     // interpolation delimiter instead.
     //
-    // The .google metrics and palette are Google's dark-theme button spec
-    // copied from the branding guidelines' downloadable kit; .facebook's
-    // blue and its hover are Facebook's; .microsoft's fill, text, metrics
-    // and mark size are Microsoft's, whose spec is the most prescriptive of
-    // the three — its own height, square corners, and Segoe UI at its own
-    // size. That the three buttons therefore do not agree on height or
-    // radius is the correct outcome, not a layout bug to tidy away.
+    // The .google, .facebook and .microsoft metrics and palettes are copied
+    // from those providers' own brand kits. Microsoft's is the most
+    // prescriptive — its own height, square corners, Segoe UI at its own size —
+    // so the three buttons do NOT agree on height or radius, and that is the
+    // correct outcome rather than a layout bug to tidy away.
     //
-    // Two details there are ours, because that kit specifies neither. The
-    // border is the kit's own, which it draws on the LIGHT button: the
-    // dark one is drawn for a light page and would sit on this one as a
-    // near-invisible rectangle, so a stroke the kit already defines is the
-    // smallest way to keep the button separable from the card behind it.
-    // The hover is a plain lift of the fill, matching what the other two
-    // rows do.
+    // Two details are ours, because the kit specifies neither. The border is
+    // the kit's own, which it draws on the LIGHT button: the dark one is drawn
+    // for a light page and would sit here as a near-invisible rectangle. The
+    // hover is a plain lift of the fill, matching the other two rows.
     //
-    // Roboto (Google) and Segoe UI (Microsoft) are the faces those specs
-    // name — first in their stacks so they are used where installed, but
-    // never fetched, because self-contained outranks pixel-perfect here.
+    // Roboto and Segoe UI are the faces those specs name — first in their
+    // stacks so they are used where installed, but never fetched, because
+    // self-contained outranks pixel-perfect here.
     private static string Shell(string title, string body) => $$"""
         <!doctype html>
         <html lang="en">

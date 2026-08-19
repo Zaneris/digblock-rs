@@ -126,27 +126,22 @@ var app = builder.Build();
     app.Logger.LogInformation("accounts database ready at {Path}", Path.GetFullPath(dbPath));
 }
 
-// Registration's observed-address default (a server that omits Host is
-// listed at whatever address registered) needs the REAL client address,
-// and in production this app sits behind Azure Container Apps ingress —
-// RemoteIpAddress there is the envoy proxy.
+// Registration's observed-address default needs the REAL client address, and
+// in production this app sits behind Azure Container Apps ingress, where
+// RemoteIpAddress is the envoy proxy.
 //
-// This used to trust X-Forwarded-For from any proxy at any depth, on the
-// grounds that the observed address was never a security input. That is no
-// longer true: it is the address the registration probe dials first, the
-// key rate limits are cut by, and what a registration temp-ban applies to.
-//
-// TWO things are needed, and ForwardLimit alone is only one of them.
-// ForwardLimit = 1 bounds how many hops are walked, so a client cannot
-// prepend a fake origin behind a real ingress. KnownIPNetworks is what says
-// there WAS an ingress: without it the header is believed from any peer,
-// including a direct caller to a master nobody put a proxy in front of. See
-// TrustedProxies for the rule and why the framework's loopback-only default
-// does not cover Container Apps.
+// The observed address is no longer cosmetic: it is what the registration
+// probe dials first, the partition rate limits are cut by, and the subject of
+// a registration temp-ban. TWO settings are needed and ForwardLimit alone is
+// only one. ForwardLimit = 1 bounds how many hops are walked, so a client
+// cannot prepend a fake origin behind a real ingress; KnownIPNetworks is what
+// says there WAS an ingress, without which the header is believed from any
+// peer. See TrustedProxies for the rule and why the framework's loopback-only
+// default does not cover Container Apps.
 //
 // XForwardedProto joins it because the External auth cookie's
-// SecurePolicy.SameAsRequest reads Request.Scheme: without the real scheme,
-// the sign-in cookie would ship without Secure in production.
+// SecurePolicy.SameAsRequest reads Request.Scheme: without the real scheme the
+// sign-in cookie would ship without Secure in production.
 var forwarded = new ForwardedHeadersOptions
 {
     ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
@@ -184,33 +179,27 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 // property. In full, because this is the most attacked endpoint here:
 //
 //  1. A source address serving a temp-ban is refused outright.
-//  2. The SOURCE address is probed first. Passing it proves the registrant
-//     really is a live QUIC endpoint at that address serving that
-//     certificate — the strongest evidence available, and the only one an
-//     attacker elsewhere on the internet cannot manufacture.
-//  3. An advertised address that differs (a DNS name, --advertise-host) is
-//     probed TOO. Both must pass on the normal path: an address clients will
-//     be aimed at is never published unprobed, which is §1.3.
-//  4. If the source probe fails, the advertised address is accepted only
-//     when it probes clean AND nothing already claims it. That is the
-//     NAT-hairpin / reverse-proxy escape, and confining it to unclaimed
-//     addresses is what stops it being a redirect primitive.
+//  2. The SOURCE address is probed first. Passing proves the registrant is a
+//     live QUIC endpoint at that address serving that certificate — the only
+//     evidence an attacker elsewhere on the internet cannot manufacture.
+//  3. An advertised address that differs is probed TOO, and on the normal
+//     path both must pass: an address clients will be aimed at is never
+//     published unprobed.
+//  4. If the source probe fails, the advertised address is accepted only when
+//     it probes clean AND nothing already claims it. That is the NAT-hairpin
+//     escape, and confining it to unclaimed addresses is what stops it being
+//     a redirect primitive.
 //  5. An address that is claimed AND live may only be re-registered by
 //     whoever presents its key, or by a registrant that passes the SOURCE
-//     probe. Anyone else gets 409 and their source address banned for a
-//     while — that is the takeover attempt in §1.2. The source probe is the
-//     discriminator and it is checked before the ban, because "live" comes
-//     from the in-memory registry and lags a restart by up to
-//     Registry:IdleTimeoutSeconds — an operator recovering a lost key would
-//     otherwise be banned by their own stale entry. Under
-//     Master:Dev:ProbeHostOverride there is no such discriminator (both
-//     probes dial the configured host), so that case refuses on `live`
-//     alone, exactly as before.
+//     probe; anyone else gets 409 and a temp-ban. The source probe is the
+//     discriminator and is checked BEFORE the ban — see the comment at the
+//     409 below. Under Master:Dev:ProbeHostOverride both probes dial the
+//     configured host, so there is no discriminator and that case refuses on
+//     `live` alone.
 //  6. A claimed address may be re-keyed by a registrant that passes the
-//     probes. This is the recovery path for an operator who lost ./data,
-//     and it is safe precisely because passing the source probe means being
-//     the machine at that address — serving that certificate, which needs
-//     the incumbent's private key.
+//     probes: the recovery path for an operator who lost ./data, safe
+//     precisely because passing the source probe means being the machine at
+//     that address, serving a certificate that needs the incumbent's key.
 app.MapPost("/api/servers/register", async (
     RegisterRequest req, HttpContext http, ServerRegistry registry, ServerClaims claims,
     RegistrationBans bans, IReachabilityProbe probe, IOptions<MasterOptions> opts,
@@ -250,23 +239,21 @@ app.MapPost("/api/servers/register", async (
     var presented = Bearer.From(http);
     var keyOk = claim is not null && ServerClaims.KeyMatches(claim, presented);
 
-    // Someone is claiming an address that another key holds and that still
-    // looks live. Two very different callers land here — the §1.2 takeover,
-    // and an operator who lost ./data and restarted — and the ONLY thing
-    // that separates them is the source probe, so the refusal has to wait
-    // for it rather than fire on `live` alone.
+    // Someone is claiming an address another key holds and that still looks
+    // live. Two very different callers land here — the takeover attempt, and
+    // an operator who lost ./data and restarted — and the ONLY thing that
+    // separates them is the source probe, so the refusal has to WAIT for it
+    // rather than fire on `live` alone.
     //
-    // Firing early was wrong in a way that only showed up in the recovery
-    // path: `live` is the in-memory registry, which outlives the process it
-    // describes by up to Registry:IdleTimeoutSeconds. So a restarting
-    // operator was refused AND temp-banned by their own stale entry — for
-    // 15 minutes, on the very address their server registers from, taking
-    // every other server behind that address with it.
+    // `live` is the in-memory registry, which outlives the process it
+    // describes by up to Registry:IdleTimeoutSeconds, so firing early
+    // refused AND temp-banned a restarting operator by their own stale
+    // entry — on the very address their server registers from, taking every
+    // other server behind that address with it.
     //
-    // The cost of waiting is that a takeover attempt now spends a probe
-    // before it is refused. That is the same probe every unclaimed
-    // registration already spends, it is capped by RateLimits.Register, and
-    // the ban still lands on the attempt that fails.
+    // The cost is that a takeover attempt now spends a probe before it is
+    // refused. Same probe every unclaimed registration spends, capped by
+    // RateLimits.Register, and the ban still lands on the attempt.
     var contested = claim is not null && !keyOk && live is not null;
 
     // Master-side probe redirection for the containerized dev stack. This

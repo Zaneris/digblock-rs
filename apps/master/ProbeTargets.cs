@@ -8,15 +8,12 @@ namespace DigBlock.Master;
 /// Registration is anonymous, so <c>/api/servers/register</c> is an
 /// unauthenticated way to make the master open a connection to an address of
 /// the caller's choosing and report what happened — an SSRF probe with a
-/// four-value error oracle. The oracle itself is worth
-/// keeping: a self-hoster genuinely needs to know <c>certMismatch</c> from
-/// <c>timeout</c> to debug a port forward. What is NOT worth keeping is the
-/// set of interesting targets, and that is what this removes — everything
-/// off the public internet, which is where a hosted master's neighbours
-/// live.
+/// four-value error oracle. The oracle is worth keeping (a self-hoster needs
+/// <c>certMismatch</c> apart from <c>timeout</c>); the set of interesting
+/// TARGETS is not, so everything off the public internet is refused.
 ///
-/// The check has to happen after DNS resolution, not on the string: a
-/// hostname that resolves to 10.0.0.5 is the whole trick.</summary>
+/// The check must happen after DNS resolution, never on the string: a hostname
+/// that resolves to 10.0.0.5 is the whole trick.</summary>
 public static class ProbeTargets
 {
     /// <summary>Is this an address on the public internet?</summary>

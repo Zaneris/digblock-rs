@@ -5,10 +5,6 @@ namespace DigBlock.Master;
 
 /// <summary>Per-endpoint rate limits.
 ///
-/// The master had none at all, which is half of why record eviction and
-/// token flooding were open: tokens were free at any
-/// rate. Accounts fixed the identity half; these cap the volume half.
-///
 /// Deliberately no global limiter. Every caller here sits behind something
 /// that aggregates addresses — a NAT'd household, a container host running
 /// several game servers, the ingress itself — so one bucket for everything
@@ -16,7 +12,8 @@ namespace DigBlock.Master;
 /// limits are per endpoint and partitioned by whatever identifies the actual
 /// abuser of THAT endpoint.
 ///
-/// No package: AddRateLimiter ships in the ASP.NET Core shared framework.</summary>
+/// No package: AddRateLimiter ships in the ASP.NET Core shared
+/// framework.</summary>
 public static class RateLimits
 {
     /// <summary>Starting a sign-in. Per source address; a human does this

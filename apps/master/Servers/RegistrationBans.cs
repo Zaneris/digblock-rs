@@ -8,14 +8,14 @@ namespace DigBlock.Master.Servers;
 ///
 /// The attempt this exists for: read a live server's <c>host</c>, <c>port</c>
 /// and <c>certHash</c> out of the public listing, POST them back as your own
-/// registration, and — before stickiness — inherit its id and key while the
-/// victim went dark. Refusing that is the fix; banning the source for a
-/// while is what makes retrying it pointless, since the interesting version
-/// of the attack is a loop that re-fires every time the victim re-registers.
+/// registration, and inherit its id and key while the victim goes dark.
+/// Refusing that is the fix; banning the source is what makes retrying it
+/// pointless, since the interesting version is a loop that re-fires every time
+/// the victim re-registers.
 ///
-/// In memory, like every other short-lived thing here. Losing the bans on a
-/// restart costs an attacker one more attempt, and persisting them would
-/// mean writing attacker-controlled rows to disk on demand.</summary>
+/// In memory, like every other short-lived thing here: losing the bans on a
+/// restart costs an attacker one more attempt, and persisting them would mean
+/// writing attacker-controlled rows to disk on demand.</summary>
 public sealed class RegistrationBans
 {
     /// <summary>First offence. Doubles per repeat while the ban is still

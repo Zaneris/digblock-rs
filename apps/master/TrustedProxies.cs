@@ -4,35 +4,31 @@ namespace DigBlock.Master;
 
 /// <summary>Which peers may set <c>X-Forwarded-For</c> and be believed.
 ///
-/// The observed source address used to be cosmetic — the default host for a
-/// server that registered without one — so the forwarded-headers middleware
-/// ran with its known-proxy lists CLEARED, trusting the header from anybody.
-/// That is no longer safe: the source address is now the first address the
-/// registration probe dials, the partition every rate limit is cut by, and
-/// the subject of a registration temp-ban. Left open, a direct caller could
-/// send <c>X-Forwarded-For: 1.2.3.4</c> to serve someone else's ban, evade
-/// their own, or pick a fresh rate-limit bucket per request.
+/// The observed source address used to be cosmetic, so the forwarded-headers
+/// middleware ran with its known-proxy lists CLEARED. That is no longer safe:
+/// the source address is the first address the registration probe dials, the
+/// partition every rate limit is cut by, and the subject of a registration
+/// temp-ban. Left open, a direct caller could send
+/// <c>X-Forwarded-For: 1.2.3.4</c> to serve someone else's ban, evade their
+/// own, or pick a fresh rate-limit bucket per request.
 ///
-/// <c>ForwardLimit = 1</c> does NOT close that. It bounds how many hops are
-/// walked, which stops a client PREPENDING entries behind a real ingress; it
-/// says nothing about whether the immediate peer was an ingress at all.
-/// Only a known-proxy list answers that.
+/// <c>ForwardLimit = 1</c> does NOT close that — it bounds how many hops are
+/// walked, and says nothing about whether the immediate peer was an ingress at
+/// all. Only a known-proxy list answers that.
 ///
 /// The rule: believe the header only from a peer whose own address cannot
-/// appear as a caller on the public internet — an ingress, a reverse proxy,
-/// a Docker bridge. That is the same partition <see cref="ProbeTargets"/>
-/// draws for SSRF, from the other side, and the two lists must keep saying
-/// the same thing: every network here is one <see cref="ProbeTargets.IsPublic"/>
-/// rejects.
+/// appear as a caller on the public internet. That is the same partition
+/// <see cref="ProbeTargets"/> draws for SSRF, from the other side, and the two
+/// must keep saying the same thing: every network here is one
+/// <see cref="ProbeTargets.IsPublic"/> rejects.
 ///
-/// Azure Container Apps is the reason the loopback-only framework default
-/// will not do — its ingress reaches the app from the platform's own
-/// 100.64.0.0/10 space, which is carrier-NAT and unroutable from outside.
+/// Azure Container Apps is why the loopback-only framework default will not
+/// do — its ingress reaches the app from the platform's own 100.64.0.0/10
+/// carrier-NAT space.
 ///
-/// Residual, and accepted: on a LAN or a Docker network, a peer that is
-/// already inside can still spoof the header. That is the same trust
-/// boundary <c>Master:Probe:AllowPrivateTargets</c> draws — an operator's
-/// own network is theirs.</summary>
+/// Residual, and accepted: on a LAN or a Docker network a peer that is already
+/// inside can still spoof the header. That is the same trust boundary
+/// <c>Master:Probe:AllowPrivateTargets</c> draws.</summary>
 public static class TrustedProxies
 {
     /// <summary>Ranges that never appear as a public-internet caller, so a

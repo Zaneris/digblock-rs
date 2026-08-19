@@ -7,17 +7,14 @@ namespace DigBlock.Master.Data;
 /// connection.
 ///
 /// EF Core's SQLite provider issues <c>PRAGMA journal_mode = 'wal'</c> itself
-/// on open — a good default on a local disk and a broken one on the
-/// filesystem this is deployed to. WAL needs a shared-memory <c>-shm</c>
-/// file and SQLite documents it as unsupported over a network filesystem;
-/// Azure Files is SMB. Left alone, the master would work perfectly in
-/// development and corrupt or lock up in production, which is the worst
-/// possible failure shape.
+/// on open — a good default on a local disk and a broken one here. WAL needs a
+/// shared-memory <c>-shm</c> file and SQLite documents it as unsupported over a
+/// network filesystem; Azure Files is SMB. Left alone, the master works
+/// perfectly in development and corrupts or locks up in production.
 ///
-/// The pragma runs AFTER the provider's, so this one is the one that
-/// sticks. It is unconditional rather than configurable on purpose: a mode
-/// that differs between a developer's machine and production is a mode
-/// nobody tests.</summary>
+/// The pragma runs AFTER the provider's, so this one sticks. Unconditional
+/// rather than configurable on purpose: a mode that differs between a
+/// developer's machine and production is a mode nobody tests.</summary>
 public sealed class JournalModeInterceptor : DbConnectionInterceptor
 {
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)

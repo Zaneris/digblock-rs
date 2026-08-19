@@ -9,17 +9,15 @@ namespace DigBlock.Master.Auth;
 
 /// <summary>The browser half of sign-in.
 ///
-/// Shape, and why it is this shape: the master is the authorization server
-/// as far as the game is concerned, and the client never sees a provider
-/// token. The client opens a browser at <c>/auth/start</c> with a redirect
-/// target, a state, and a PKCE challenge; the browser does the provider
-/// round trip here; the master bounces back to that target with a one-time
-/// code, which the client redeems for a session over its own HTTPS
-/// connection.
+/// The master is the authorization server as far as the game is concerned, and
+/// the client never sees a provider token: the client opens a browser at
+/// <c>/auth/start</c> with a redirect target, a state and a PKCE challenge; the
+/// browser does the provider round trip here; the master bounces back to that
+/// target with a one-time code, which the client redeems for a session over its
+/// own HTTPS connection.
 ///
-/// The payoff is that adding a provider — Apple, Discord — is a change
-/// here and nowhere else. No client release, no new redirect URI to ship,
-/// no protocol bump.</summary>
+/// The payoff is that adding a provider is a change here and nowhere else — no
+/// client release, no new redirect URI, no protocol bump.</summary>
 public static class AuthEndpoints
 {
     /// <summary>The cookie scheme that carries the provider identity across
