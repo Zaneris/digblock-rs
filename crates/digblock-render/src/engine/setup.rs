@@ -201,6 +201,7 @@ impl Engine {
 			hotbar: Hotbar::new(),
 			tool_swap: crate::hotbar::ToolSwap::default(),
 			fluid: digblock_core::fluid::FluidSim::new(),
+			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
 			net: None,

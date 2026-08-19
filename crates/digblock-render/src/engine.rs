@@ -32,6 +32,7 @@ mod setup;
 mod streaming;
 mod update;
 mod world_session;
+mod worldjobs;
 
 mod carried;
 use carried::{CARRIER_DEBUG, CARRIER_SELF, Carried, Remote, cell_center, pack_rgb, push_remote};
@@ -216,6 +217,9 @@ pub struct Engine {
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
+	/// Clock-scheduled sweeps, run here only OFFLINE — connected, the
+	/// server owns them and their results arrive as ordinary edits.
+	world_jobs: digblock_core::worldjob::Scheduler,
 	flow_accum: f32,
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).
@@ -745,6 +749,12 @@ impl Game for Engine {
 /// cells, which the sim treats as a dropped write.
 struct PipelineWorld<'a>(&'a mut Pipeline);
 
+impl digblock_core::worldjob::CellSource for PipelineWorld<'_> {
+	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+		self.0.cell_at(x, y, z)
+	}
+}
+
 impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 	fn get(&self, x: i32, y: i32, z: i32) -> Option<BlockType> {
 		self.0.block_at(x, y, z)
@@ -771,6 +781,9 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 
 #[cfg(test)]
 mod net_budget_tests;
+
+#[cfg(test)]
+mod worldjob_tests;
 
 #[cfg(test)]
 mod stream_budget_gate_tests;

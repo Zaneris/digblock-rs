@@ -308,6 +308,7 @@ impl Engine {
 				let mut world = PipelineWorld(&mut self.pipeline);
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
+			self.step_world_jobs();
 		}
 		self.pending.sim_ms = ms_since(t_sim);
 

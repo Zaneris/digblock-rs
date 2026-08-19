@@ -48,6 +48,8 @@ impl Engine {
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
 		self.flow_accum = 0.0;
+		// A sweep in flight names columns of the world being left.
+		self.world_jobs.abandon();
 		self.tick_accum = 0.0;
 		self.pending_ack = None;
 		self.correction_offset = Vec3::ZERO;
