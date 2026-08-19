@@ -20,7 +20,7 @@ a decision or rebuilding something:
   NOT built" list, and §5's standing record of the seven trust-model findings.
 - `DELVE-DESIGN.md`, `SOCIAL-DESIGN.md` — design-only, not built.
 
-## Two writing rules
+## Three writing rules
 
 **A number lives in exactly one place: the code that defines it.** Comments, doc comments and Markdown name constants
 and describe relationships; they never restate what a constant equals, so a retune touches the `const` and nothing else.
@@ -33,6 +33,13 @@ Exempt, because they are identifiers or inputs rather than documented quantities
 format versions, names containing a number (`Latin-1`, `wasm32`, `R8Uint`), runnable commands and their arguments, and a
 trailing annotation decoding its own literal on the definition line. `BENCH.md` keeps its figures — a baseline with its
 numbers removed cannot be compared against. A design doc may quote a value when the value **is** the argument.
+
+**A sentence the player reads lives in exactly one place: `digblock-client/src/voice`.** One `Msg` variant carrying
+typed arguments, one template row in `voice::en`, rendered at DRAW time — `Engine::push_feed` takes a `Msg`, so a string
+literal cannot reach the feed, and a locale can reorder or re-case what a call site could not. Core NAMES things
+(`BlockType::name`, `Skill::name`, `Essence::name`) in ONE stored case and a screen that shouts calls `to_uppercase`
+where it draws; screens still own their own labels, which are layout as much as text. An identifier is not a label
+(`Essence::ident`), and a design doc names the message rather than quoting the sentence.
 
 **Comments carry invariants, not history.** Say what breaks if the reader changes this, and what alternative was
 rejected — in a sentence, not a story. `crates/digblock-core/src/stream_budget.rs` is the house style. Do not write: the
@@ -47,7 +54,10 @@ just run                  # desktop app
 just run --drill          # lifecycle drill (suspend/resume + device-loss)
 just bench                # deterministic perf run: release, scripted flight, CSV + summary
                           # --no-vsync for uncapped raw-cost percentiles; findings in BENCH.md
-just check                # the gate: fmt --check, clippy -D warnings, cargo test --workspace
+just test [FILTER]        # the whole suite, --no-fail-fast: one run lists every golden a
+                          # change moved, instead of one per run
+just gate                 # check + check-ios + check-web, the three-command habit in one word
+just check                # the gate: fmt --check, clippy -D warnings, `just test`
                           # (needs Docker: server e2e boots the apps/master container)
 just check-ios            # cargo check for aarch64-apple-ios (no Xcode needed)
 just web                  # wasm build + serve at http://localhost:8080 (Chrome/WebGPU; needs
@@ -292,13 +302,17 @@ Two skills (Mining, Alchemy), designed in `SKILLS-DESIGN.md`. Everything shared 
   favour, so an honest completion is never short.
 
 **Every level threshold in the game lives in `digblock-core/src/unlock.rs`** — nothing else may hold an unlock number,
-and no caller compares levels itself. `craft` and `pickup` are DERIVED, never tabled. Two dig gates, one pattern: `mine`
-is the strength wall keyed on the `DigFamily`, so every block of a family opens together; `mine_material` is a SECOND
-gate, and `mine` takes the later of the two, so a material can only push a block later, never earlier. `pickup` refuses
-a **craft-only** block below its own craft level, keying on the DROP and on craft-*only*, never craftability — `Wood`
-has a recipe and grows on trees. Everything asks `dig_blocked`, which returns the first unmet `Requirement` — the block,
-the skill and the level. No wording lives in core: the client's `voice` turns one into the ONE sentence that gate
-speaks, naming the block and the level that opens it, which is why the wire sends a reason and never a sentence.
+and no caller compares levels itself, including the step ones a match arm used to hide (`PICK_PLANE_AT`,
+`PROSPECT_FAINT_AT`, `MASTERY_AT`, `BENCH_FASTER_AT`, `WASTE_DIP_AT`). Retuning one is that line plus whatever
+deliberate pins fire — `unlock/tests.rs`, and the faucet golden in `alchemy/tests.rs` for a Mining level — and one
+`just test` names all of them at once. Nothing else should move: the character screen's teasers READ their levels.
+`craft` and `pickup` are DERIVED, never tabled. Two dig gates, one pattern: `mine` is the strength wall keyed on the
+`DigFamily`, so every block of a family opens together; `mine_material` is a SECOND gate, and `mine` takes the later of
+the two, so a material can only push a block later, never earlier. `pickup` refuses a **craft-only** block below its own
+craft level, keying on the DROP and on craft-*only*, never craftability — `Wood` has a recipe and grows on trees.
+Everything asks `dig_blocked`, which returns the first unmet `Requirement` — the block, the skill and the level. No
+wording lives in core: the client's `voice` turns one into the ONE sentence that gate speaks, naming the block and the
+level that opens it, which is why the wire sends a reason and never a sentence.
 
 **XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
 and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe). Join sync always
@@ -476,7 +490,7 @@ on whole-pixel origins; that 1:1-ness is why the Linear sampler costs nothing. S
 an em, and a text `y` is the box's TOP, which is what keeps every `(rect.h - glyph) / 2.0` centring site working.
 `Face::run` is the single advance walk behind `measure`, `wrap` and `push_text` — **never compute a width from a
 character count.** The atlas's white block is the UV of *every* untextured overlay quad and only ever repacks in
-`begin_frame`.
+`begin_frame`. This half is glyphs and boxes — what the game SAYS is `voice`, one module over (the third writing rule).
 
 **Audio** — the engine emits `AudioCmd`s into an injected `Box<dyn AudioSink>` (a `None` sink covers
 bench/screenshot/drill/iOS). Cadence emitters pace by DISTANCE, not time, so a slow walk still sounds right; strokes
