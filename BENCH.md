@@ -122,9 +122,9 @@ costing.
 
 **Per-job cost is ordinary, and an earlier scare was a misreading.** A run taken while the pool was feed-starved
 reported gen avg 5.85 ms and looked like a 5× wasm penalty. It was the menu BACKDROP world's terrain — cave noise makes
-column cost bimodal (PERF-AUDIT §2), and the earlier 1.17 ms web figure was taken there too, not at the seed-42 spawn.
-At the same pose it is 1.29 ms in a worker against 0.83–1.01 ms native, i.e. wasm costs ~1.4×. Workers also beat the
-main thread per job (1.29 vs 2.29 ms) because an inline job's wall clock includes competing with the render loop.
+column cost bimodal, and the earlier 1.17 ms web figure was taken there too, not at the seed-42 spawn. At the same pose
+it is 1.29 ms in a worker against 0.83–1.01 ms native, i.e. wasm costs ~1.4×. Workers also beat the main thread per job
+(1.29 vs 2.29 ms) because an inline job's wall clock includes competing with the render loop.
 
 **Read the `workers=0` arm as floor-only, not as the shipped client.** `?bench` disables the adaptive allowance
 (`adaptive_effective`), so that arm runs the fixed floor — and the tell is in the table: 451 mesh/s is `INLINE_MESH_CAP`
@@ -168,7 +168,7 @@ ms while streaming (see the 2026-08-06 web readings) ≈ 0.67 core-seconds/s, wh
 its real fill in the 8–10 s range — i.e. roughly where 2 workers land, not where 113 s does. **On a machine with
 headroom the adaptive budget already buys most of what a worker pool would.** The case for the pool is the hardware
 WITHOUT headroom, where the controller collapses to its 3.0 ms floor while job costs rise 3–4×, plus the floor batch
-that no controller can shed at all (PERF-AUDIT §1).
+that no controller can shed at all.
 
 **A retraction.** A first pass of this bracket, taken on a thermally loaded machine right after a release build, read
 340 over-12.5 ms frames at 4 workers against 30 at 2, and was briefly used to argue a hard pacing knee at 2. Re-measured

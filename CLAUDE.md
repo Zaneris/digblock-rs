@@ -27,8 +27,6 @@ re-litigating a decision or rebuilding something:
 - `AUTH-DESIGN.md` — accounts, sign-in, and the master's trust model: the identity model, the OAuth flows, the
   registration algorithm and why the probe order is what it is, the pre-account character migration (§6, including what
   the claim key is worth to a hostile operator), and an honest "what is NOT built" list.
-- `NET-AUDIT.md` / `NET-AUDIT-2.md`, `PERF-AUDIT.md` — netcode and frame-pacing audits. NET-AUDIT-2 §1 was the
-  requirements doc for `AUTH-DESIGN.md`; all seven findings are closed there.
 
 ## Never write a value into prose
 
@@ -952,12 +950,11 @@ never a snap.
 
 The camera is presentation-only in two more ways, both visual-only — gameplay (occupancy via `body_pos()`, the wire,
 saves) always reads the authoritative `Player::pos`: it interpolates between the last two tick states (`smoothing.rs`;
-without it frame-pacing jitter *is* position jitter, measurably the dominant stutter source — see NET-AUDIT.md), and a
-rewind must carry the lerp anchor with it. `NetEvent::Ack` is dispatched ahead of `pump_net`'s edit-budgeted queue: it
-has no ordering dependency on edits, and an ack delayed past the predictor's `BUF_CAP` forces every later snapshot down
-the replay path. Dig/place is predicted locally and validated server-side by re-raycasting from the claimed origin.
-Fluid runs only on the server; results broadcast as ordinary edits. Protocol constants live in
-`digblock-net/src/protocol.rs`.
+without it frame-pacing jitter *is* position jitter, measurably the dominant stutter source), and a rewind must carry
+the lerp anchor with it. `NetEvent::Ack` is dispatched ahead of `pump_net`'s edit-budgeted queue: it has no ordering
+dependency on edits, and an ack delayed past the predictor's `BUF_CAP` forces every later snapshot down the replay path.
+Dig/place is predicted locally and validated server-side by re-raycasting from the claimed origin. Fluid runs only on
+the server; results broadcast as ordinary edits. Protocol constants live in `digblock-net/src/protocol.rs`.
 
 **Items** (protocol v10, extended in v12): the hotbar plus a fixed-size inventory grid (`digblock-core/src/inv_grid.rs`;
 the size is a TEST — `the_grid_holds_every_type_a_player_can_own` — because §7.2's materials pushed the roster past the

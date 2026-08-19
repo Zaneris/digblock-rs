@@ -3,9 +3,9 @@
 Date: 2026-08-14. Scope: `apps/master` in full, the identity-facing parts of `apps/server`, `crates/digblock-net`'s
 account type, and the sign-in flows in both launchers.
 
-Companion to `NET-AUDIT-2.md`, whose §1 is the requirements document this implements: seven findings that were all one
-bug wearing seven hats — *the master mints an identity for anybody who asks for one*. They are closed together, because
-fixing any one of them alone just moved the hole.
+This implements the findings of a security audit of the master's trust model: seven findings that were all one bug
+wearing seven hats — *the master mints an identity for anybody who asks for one*. They were closed together, because
+fixing any one of them alone just moved the hole. §5 is the standing record of what each became.
 
 **Read this before changing anything under `apps/master`, `Hello`, or the `--admin` path.**
 
@@ -294,7 +294,7 @@ Three things that will bite:
 
 ## 5. What the seven findings became
 
-| NET-AUDIT-2 §1                                        | Closed by                                                                                                           |
+| Finding                                               | Closed by                                                                                                           |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | 1.1 admin is a self-asserted display name             | `--admin <account-id>`; `is_admin` compares accounts. `--admin-name` exits with guidance rather than being remapped |
 | 1.2 registration evicts the incumbent                 | sticky `ServerClaim` + key; 409 + temp-ban on a keyless claim of a live address                                     |
@@ -304,8 +304,8 @@ Three things that will bite:
 | 1.6 ban ordering, and IP-only bans                    | bans record the account; `DEFAULT_MAX_CONNECTIONS_PER_IP` caps the amplification the ordering allowed               |
 | 1.7 unauthenticated probe with an error oracle        | `ProbeTargets` public-address filter; opaque `Detail` outside Development; per-IP rate limit + temp-ban             |
 
-§2.5's leftovers: `ProtocolVersion`/`SimVersion` now ride `ServerSummary`, and the display name is no longer an
-authorization input anywhere, which was the reason its validation mattered.
+Two leftovers from the same audit: `ProtocolVersion`/`SimVersion` now ride `ServerSummary`, and the display name is no
+longer an authorization input anywhere, which was the reason its validation mattered.
 
 ---
 
