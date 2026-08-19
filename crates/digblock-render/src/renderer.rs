@@ -218,7 +218,8 @@ pub mod stub {
 	/// in the frame.
 	pub const GISUN: u32 = 1 << 8;
 	/// The resolve's cosine-hemisphere final gather → the cheap
-	/// `gi_cache_at` lookup, i.e. the pre-R8 cascade-blend answer.
+	/// `gi_cache_at` lookup, i.e. the cascade-blend answer the final gather
+	/// replaced.
 	pub const GIGATHER: u32 = 1 << 9;
 	/// The resolve's per-pixel NEE shadow ray → skipped.
 	/// Zero in any scene with no emitter in range, by construction.

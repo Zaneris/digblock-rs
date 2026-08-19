@@ -447,7 +447,7 @@ mod tests {
 	}
 
 	/// The spatial filter has to run on every pixel the temporal one cut
-	/// short. That is the whole trade R9 made — give up temporal samples,
+	/// short. That is the whole trade — give up temporal samples,
 	/// let `gi_atrous` hand them back — and it holds only while a moving
 	/// pixel's history stays under the length at which the filter decides
 	/// the pixel is converged and skips it.
@@ -480,8 +480,8 @@ mod tests {
 	/// too short to smear: a k-frame average can only be dragged k frames
 	/// far, whatever the resampling does. That guarantee lives in one
 	/// constant, and someone "fixing" residual edge shimmer by raising it
-	/// back toward N_MAX would silently re-open the artifact R9 and R13
-	/// spent weeks measuring. It must also not exceed N_MOVING — the sun's
+	/// back toward N_MAX would silently re-open the artifact R13 spent
+	/// weeks measuring. It must also not exceed N_MOVING — the sun's
 	/// cap is the tighter of the two by design, so a moving pixel's shared
 	/// counter never makes the sun blend SLOWER than the indirect it rides
 	/// with.
