@@ -864,7 +864,7 @@ pub struct Engine {
 	/// draws between the last two tick states instead of snapping to the
 	/// newest one. Without it frame-pacing jitter IS position jitter —
 	/// measurably the dominant stutter source, well ahead of anything the
-	/// network does (see NET-AUDIT.md).
+	/// network does.
 	tick_lerp: crate::smoothing::TickLerp,
 	/// Per-frame remote-player sampling scratch.
 	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,

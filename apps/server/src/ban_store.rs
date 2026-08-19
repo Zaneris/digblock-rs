@@ -10,7 +10,7 @@
 //! A ban records BOTH the account and the IP, and either one enforces.
 //! They do different jobs. The account is the durable half: bans used to
 //! be IP-only, so evasion was a new address while the evader's inventory
-//! and position survived intact (NET-AUDIT-2.md §1.6). The IP is still
+//! and position survived intact. The IP is still
 //! worth keeping because it also catches an unauthenticated peer and
 //! because kicking an address is what an operator reaches for when someone
 //! is actively griefing — it just is no longer the only key.
@@ -203,7 +203,7 @@ mod tests {
 	}
 
 	/// The durable half of a ban: a new address does not get you back in.
-	/// This is what IP-only bans could not do (NET-AUDIT-2.md §1.6).
+	/// This is what IP-only bans could not do.
 	#[test]
 	fn an_account_ban_follows_the_player_to_a_new_address() {
 		let dir = temp_dir("acctban");

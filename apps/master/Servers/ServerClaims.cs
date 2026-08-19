@@ -10,8 +10,8 @@ namespace DigBlock.Master.Servers;
 /// self-hoster still just runs the container. What changed is that the
 /// FIRST registration of an address mints a key and the address remembers
 /// it, so a later registration has to present it. That is the whole of
-/// "anonymous but sticky", and it closes the takeover in NET-AUDIT-2.md
-/// §1.2 without adding a step to anybody's day.
+/// "anonymous but sticky", and it closes the registration takeover
+/// without adding a step to anybody's day.
 ///
 /// Persisted (unlike the liveness registry) for two reasons: the key has to
 /// outlive a master restart or the sticky check would reset every deploy,

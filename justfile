@@ -58,8 +58,7 @@ master *ARGS:
 #                           by default, and every address here is private
 #   Dev:ProbeHostOverride — the master dials the docker host itself. This
 #                           replaced the registrant-supplied probeHost, which
-#                           let a caller pick the only address ever verified
-#                           (NET-AUDIT-2.md §1.3).
+#                           let a caller pick the only address ever verified.
 # The value-less `-e` pairs forward the OAuth credentials from the
 # environment (i.e. from `.env`, via dotenv-load) into the container;
 # docker passes nothing for a variable that isn't set, so a machine with

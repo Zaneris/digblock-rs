@@ -99,7 +99,7 @@ impl MasterProc {
 				"Master__Dev__AuthEnabled=true",
 				// Replaces the registrant-supplied probeHost: the master
 				// dials the docker host itself rather than believing an
-				// address it was handed (NET-AUDIT-2.md §1.3).
+				// address it was handed.
 				"-e",
 				&format!("Master__Dev__ProbeHostOverride={HOST_FROM_CONTAINER}"),
 				MASTER_IMAGE,
@@ -730,7 +730,7 @@ fn a_dirty_server_name_is_sanitized_not_rejected() {
 	);
 }
 
-/// The takeover NET-AUDIT-2.md §1.2 describes: read a live server's host,
+/// The registration takeover: read a live server's host,
 /// port and certHash out of the public listing, POST them back as your own
 /// registration, and inherit its entry. The probe passes — it dials the
 /// victim — so the probe was never the thing standing in the way.
@@ -802,7 +802,7 @@ fn a_keyless_registration_cannot_take_a_live_address() {
 
 /// The listing carries the versions a server registered with, so a client
 /// can tell an incompatible one apart before spending a QUIC connect on it.
-/// They were accepted and read by nobody (NET-AUDIT-2.md §2.5).
+/// They were accepted and read by nobody.
 #[test]
 fn the_listing_carries_protocol_and_sim_versions() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1148,7 +1148,7 @@ impl Drop for ComposeRig {
 ///    ungraceful, because a clean shutdown de-registers and the stale entry
 ///    is the whole point.
 ///
-/// 2. The NET-AUDIT-2.md §1.2 takeover must still be refused. Passing the
+/// 2. The registration takeover must still be refused. Passing the
 ///    source probe means serving the pinned certificate from the
 ///    registrant's OWN address, which needs the incumbent's private key —
 ///    so a caller elsewhere cannot reach the recovery branch.

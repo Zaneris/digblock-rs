@@ -22,7 +22,7 @@ public sealed record RegisterRequest(
     int SimVersion);
 // ProbeHost is gone. It let an anonymous caller choose the only address the
 // master ever dialed while clients were handed a different one, which voided
-// the guarantee the probe exists to give (NET-AUDIT-2.md §1.3). The dev
+// the guarantee the probe exists to give. The dev
 // NAT-hairpin case it existed for is Master:Dev:ProbeHostOverride now —
 // master-side configuration rather than a request field.
 
@@ -42,7 +42,7 @@ public sealed record HeartbeatRequest(int Players, int MaxPlayers);
 // ProtocolVersion/SimVersion were accepted at registration and read by
 // nobody, so an incompatible server listed indistinguishably from a
 // compatible one and the client only found out after a full QUIC connect
-// and Hello (NET-AUDIT-2.md §2.5). Surfacing them lets the list say so.
+// and Hello. Surfacing them lets the list say so.
 public sealed record ServerSummary(
     Guid Id, string Name, string Url, string CertHash, int Players, int MaxPlayers,
     int ProtocolVersion, int SimVersion);
@@ -52,7 +52,7 @@ public sealed record ServerListResponse(IReadOnlyList<ServerSummary> Servers);
 // Authenticated with the player's session token (Authorization: Bearer).
 // There is deliberately no display name here any more: the master owns the
 // name, so a joiner cannot pick one per request. That single removal is
-// what closed admin impersonation (NET-AUDIT-2.md §1.1) — admin is keyed on
+// what closed admin impersonation — admin is keyed on
 // the account id, and a name is no longer an authorization input at all.
 public sealed record JoinRequest(Guid ServerId);
 

@@ -6,7 +6,7 @@ namespace DigBlock.Master;
 /// <summary>Per-endpoint rate limits.
 ///
 /// The master had none at all, which is half of why record eviction and
-/// token flooding were open (NET-AUDIT-2.md §1.5): tokens were free at any
+/// token flooding were open: tokens were free at any
 /// rate. Accounts fixed the identity half; these cap the volume half.
 ///
 /// Deliberately no global limiter. Every caller here sits behind something

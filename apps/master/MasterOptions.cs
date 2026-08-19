@@ -48,7 +48,7 @@ public sealed class DevOptions
     /// This replaced RegisterRequest.ProbeHost. Same effect, different
     /// authority: the master operator sets it, not an anonymous caller, so
     /// it can no longer be used to publish an address nobody verified
-    /// (NET-AUDIT-2.md §1.3).</summary>
+    /// at all.</summary>
     public string? ProbeHostOverride { get; set; }
 }
 

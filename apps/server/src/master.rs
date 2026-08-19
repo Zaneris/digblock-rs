@@ -44,7 +44,7 @@ pub struct MasterConfig {
 }
 // probe_host is gone from this struct as well as the wire. The master
 // redirects its own probes now (Master:Dev:ProbeHostOverride) — letting the
-// registrant choose the only address ever dialed was NET-AUDIT-2.md §1.3.
+// registrant choose the only address ever dialed is what that closed.
 
 #[derive(Clone)]
 pub struct Registration {

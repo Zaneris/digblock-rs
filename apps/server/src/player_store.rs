@@ -172,7 +172,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 ///
 /// This used to bound the file without bounding the ABUSE: the key was
 /// client-chosen and join tokens were free, so a stream of join/disconnect
-/// cycles evicted every real record (NET-AUDIT-2.md §1.5). That is closed
+/// cycles evicted every real record. That is closed
 /// upstream now rather than here — a record needs a master account, an
 /// account needs a real login at a third-party provider, and `/api/join` is
 /// rate-limited per session. The cap is back to being what it says it is.

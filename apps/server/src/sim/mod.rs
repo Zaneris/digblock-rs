@@ -443,7 +443,7 @@ pub struct Sim {
 	/// against `client.name`, which the master would hand to whoever asked
 	/// for it — so `--admin-name admin` plus a join under the name "admin"
 	/// was a complete server takeover, executable by anyone who read the
-	/// roster (NET-AUDIT-2.md §1.1). Names are display strings; this is an
+	/// roster. Names are display strings; this is an
 	/// authorization decision, and it keys on the one identifier the master
 	/// vouches for.
 	admin_accounts: FxHashSet<AccountId>,

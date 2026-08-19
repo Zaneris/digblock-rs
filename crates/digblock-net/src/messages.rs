@@ -208,8 +208,8 @@ pub enum ClientMsg {
 		// deprecating was the point. It was a client-chosen bearer secret
 		// that keyed the server's persisted inventory, replayed verbatim to
 		// every server a player ever joined — so any server operator held
-		// the credential to that player's records everywhere else
-		// (NET-AUDIT-2.md §1.4). Identity now arrives from the MASTER, via
+		// the credential to that player's records everywhere else.
+		// Identity now arrives from the MASTER, via
 		// /api/tokens/verify, and the client asserts nothing about who it
 		// is. A dead 16-byte field that used to mean "trust me" is exactly
 		// the kind of thing that gets rewired by accident, so it is gone.

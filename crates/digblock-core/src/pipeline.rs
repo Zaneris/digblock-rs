@@ -33,6 +33,14 @@ pub struct MeshOutput {
 pub enum Job {
 	/// Generate the whole vertical chunk stack of column (x, z) — one
 	/// heightmap evaluation serves every chunk in the stack.
+	///
+	/// Deliberately NOT sliced into resumable continuations. Measured in
+	/// Chrome on Apple Silicon at draw 20, a gen job fits inside a frame
+	/// with room to spare, so slicing would refactor worldgen's column path
+	/// for a possibly unmeasurable win. Revisit only if gen shows up as the
+	/// tall pole on weaker hardware — `?spikelog` attributes it and
+	/// `maintain_ms` bounds it. Do not do this refactor without that
+	/// evidence first.
 	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,

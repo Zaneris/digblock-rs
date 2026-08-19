@@ -24,8 +24,8 @@ public sealed class ServerEntry
     /// dev stack (a LAN-IP hairpin breaks QUIC address validation behind
     /// Docker's NAT). This used to be a field of the registration REQUEST,
     /// which meant an anonymous caller chose the only address the master ever
-    /// dialed while clients were handed a different one — see NET-AUDIT-2.md
-    /// §1.3. It is master-side configuration now.</summary>
+    /// dialed while clients were handed a different one. It is master-side
+    /// configuration now.</summary>
     public required string ProbeHost { get; init; }
 
     public required int Port { get; init; }

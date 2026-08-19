@@ -170,7 +170,7 @@ public sealed class Session
 /// after a restart. Persisting the claim buys two things: a server keeps its
 /// <see cref="Id"/> across a master redeploy, and — the security half — the
 /// key needed to re-register survives, so a restart cannot be used as a
-/// window to steal an address (NET-AUDIT-2.md §1.2).</summary>
+/// window to steal an address.</summary>
 public sealed class ServerClaim
 {
     public Guid Id { get; set; }

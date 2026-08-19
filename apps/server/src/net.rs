@@ -187,7 +187,7 @@ type IpCounts = Arc<std::sync::Mutex<rustc_hash::FxHashMap<std::net::IpAddr, usi
 /// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an
 /// outbound token verify per slot per [`VERIFY_TIMEOUT`] window, turning
 /// this server into an unauthenticated amplifier against its own master
-/// (NET-AUDIT-2.md §1.6). The ordering that allows it is unavoidable — a
+/// The ordering that allows it is unavoidable — a
 /// connection's account is not known until the verify answers — so the cap
 /// goes on the thing that actually identifies the abuser at that point,
 /// which is the address.

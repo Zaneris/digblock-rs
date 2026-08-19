@@ -8,7 +8,7 @@ namespace DigBlock.Master;
 /// Registration is anonymous, so <c>/api/servers/register</c> is an
 /// unauthenticated way to make the master open a connection to an address of
 /// the caller's choosing and report what happened — an SSRF probe with a
-/// four-value error oracle (NET-AUDIT-2.md §1.7). The oracle itself is worth
+/// four-value error oracle. The oracle itself is worth
 /// keeping: a self-hoster genuinely needs to know <c>certMismatch</c> from
 /// <c>timeout</c> to debug a port forward. What is NOT worth keeping is the
 /// set of interesting targets, and that is what this removes — everything

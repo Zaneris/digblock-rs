@@ -40,6 +40,11 @@ pub struct RemotePlayers {
 	players: FxHashMap<PlayerId, VecDeque<RemoteSnap>>,
 	/// Estimated server clock in ticks: lifted by snapshots, advanced by
 	/// wall time in between.
+	///
+	/// A one-way ratchet (`max`), so it can only ever run fast — a latent
+	/// bug rather than a tuning choice, left unbuilt because the fix is a
+	/// slewed/PLL estimator and there is no way to test clock skew end to
+	/// end yet. Harmless at the skews measured so far.
 	est_server_tick: f64,
 	seen_any: bool,
 }

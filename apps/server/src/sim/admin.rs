@@ -753,8 +753,8 @@ mod tests {
 	/// admin keeps their commands after a rename.
 	///
 	/// The name compare this replaced made `--admin-name admin` plus a join
-	/// under the name "admin" a complete server takeover (NET-AUDIT-2.md
-	/// §1.1). The impersonation half of that is what the second assertion
+	/// under the name "admin" a complete server takeover. The
+	/// impersonation half of that is what the second assertion
 	/// here pins.
 	#[test]
 	fn admin_keys_on_the_account_not_the_name() {

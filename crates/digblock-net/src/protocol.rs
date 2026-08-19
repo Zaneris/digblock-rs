@@ -116,7 +116,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// It was a client-chosen bearer secret keying the server's persisted
 /// records; a player is now identified by the account id the MASTER
 /// returns from `/api/tokens/verify`, so the wire carries no claim about
-/// who anyone is. See AUTH-DESIGN.md and NET-AUDIT-2.md §1.4.
+/// who anyone is. See AUTH-DESIGN.md.
 /// v24: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
 /// one-time transfer of a pre-account character onto the account that
 /// now owns it. An ordinary append (a v23 peer can't decode the new
