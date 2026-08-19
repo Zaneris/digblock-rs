@@ -21,6 +21,7 @@
 //! put back by `take_callback`, minus the one-shot actions (`?join`,
 //! `?devsignin`) that must not re-fire on return.
 
+use digblock_net::pkce::{b64url, s256, urlencode};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
@@ -364,55 +365,4 @@ fn random_b64(bytes: usize) -> Result<String, String> {
 		.and_then(|c| c.get_random_values_with_u8_array(&mut buf).ok())
 		.ok_or("this browser exposes no secure randomness, so sign-in cannot be made safe here")?;
 	Ok(b64url(&buf))
-}
-
-fn s256(verifier: &str) -> String {
-	use sha2::{Digest, Sha256};
-	b64url(&Sha256::digest(verifier.as_bytes()))
-}
-
-fn b64url(bytes: &[u8]) -> String {
-	const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-	let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-	for chunk in bytes.chunks(3) {
-		let b = [
-			chunk[0],
-			*chunk.get(1).unwrap_or(&0),
-			*chunk.get(2).unwrap_or(&0),
-		];
-		let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
-		for i in 0..chunk.len() + 1 {
-			out.push(ALPHABET[(n >> (18 - 6 * i) & 0x3F) as usize] as char);
-		}
-	}
-	out
-}
-
-fn urlencode(s: &str) -> String {
-	let mut out = String::with_capacity(s.len());
-	for b in s.bytes() {
-		match b {
-			b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-				out.push(b as char);
-			}
-			_ => out.push_str(&format!("%{b:02X}")),
-		}
-	}
-	out
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// The same RFC 7636 Appendix B vector the desktop launcher pins. Both
-	/// have to agree with the master, and with each other.
-	#[test]
-	fn the_pkce_challenge_matches_the_rfc_test_vector() {
-		let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-		assert_eq!(
-			s256(verifier),
-			"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-		);
-	}
 }

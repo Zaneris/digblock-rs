@@ -820,7 +820,6 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
- "sha2",
  "ureq",
 ]
 
@@ -958,7 +957,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "sha2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

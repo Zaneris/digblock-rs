@@ -26,7 +26,6 @@ serde.workspace = true
 serde_json.workspace = true
 # The PKCE challenge for sign-in. Same computation as the desktop
 # launcher's, pinned to the same RFC test vector in both.
-sha2.workspace = true
 web-sys = { workspace = true, features = [
 	"Window",
 	"Location",

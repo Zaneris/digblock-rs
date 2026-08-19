@@ -9,6 +9,7 @@ pub mod codec;
 pub mod edits;
 pub mod loopback;
 pub mod messages;
+pub mod pkce;
 pub mod predict;
 pub mod protocol;
 pub mod remote;

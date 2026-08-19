@@ -12,6 +12,7 @@
 //! proves the callback belongs to the request we started; the PKCE verifier
 //! proves the redemption does (RFC 7636).
 
+use digblock_net::pkce::{b64url, s256, urlencode};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -361,48 +362,6 @@ fn random_b64(bytes: usize) -> String {
 	b64url(&buf)
 }
 
-fn s256(verifier: &str) -> String {
-	use sha2::{Digest, Sha256};
-	b64url(&Sha256::digest(verifier.as_bytes()))
-}
-
-/// base64url, unpadded — the encoding RFC 7636 specifies for a PKCE
-/// challenge. Hand-rolled because it is twenty lines and this is the only
-/// place the client needs base64 at all.
-fn b64url(bytes: &[u8]) -> String {
-	const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-	let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-	for chunk in bytes.chunks(3) {
-		let b = [
-			chunk[0],
-			*chunk.get(1).unwrap_or(&0),
-			*chunk.get(2).unwrap_or(&0),
-		];
-		let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
-		// 3 bytes → 4 chars; a short final chunk emits only the characters
-		// its bits actually reach, which is what "unpadded" means.
-		for i in 0..chunk.len() + 1 {
-			out.push(ALPHABET[(n >> (18 - 6 * i) & 0x3F) as usize] as char);
-		}
-	}
-	out
-}
-
-/// Percent-encode for a query value. RFC 3986 unreserved set only —
-/// encoding a little more than necessary is always safe here.
-fn urlencode(s: &str) -> String {
-	let mut out = String::with_capacity(s.len());
-	for b in s.bytes() {
-		match b {
-			b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-				out.push(b as char);
-			}
-			_ => out.push_str(&format!("%{b:02X}")),
-		}
-	}
-	out
-}
-
 fn query_param(query: &str, key: &str) -> Option<String> {
 	query.split('&').find_map(|pair| {
 		let (k, v) = pair.split_once('=')?;
@@ -442,30 +401,6 @@ fn urldecode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	/// The PKCE challenge has to match what the master computes, or every
-	/// sign-in fails at redemption with nothing to see. RFC 7636 Appendix B
-	/// publishes this exact pair.
-	#[test]
-	fn the_pkce_challenge_matches_the_rfc_test_vector() {
-		let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-		assert_eq!(
-			s256(verifier),
-			"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-		);
-	}
-
-	#[test]
-	fn base64url_is_unpadded_and_url_safe() {
-		assert_eq!(b64url(b""), "");
-		assert_eq!(b64url(b"f"), "Zg");
-		assert_eq!(b64url(b"fo"), "Zm8");
-		assert_eq!(b64url(b"foo"), "Zm9v");
-		assert_eq!(b64url(b"foob"), "Zm9vYg");
-		// The two bytes that differ from standard base64: no '+' or '/'.
-		assert_eq!(b64url(&[0xfb, 0xff]), "-_8");
-		assert!(!b64url(&[0xfb, 0xff, 0xfe]).contains('='));
-	}
 
 	/// The callback arrives as a raw request line, so the query parser is
 	/// the only thing standing between a browser and a panic.
