@@ -15,7 +15,7 @@ use super::*;
 
 impl Menu {
 	/// Build the frame's view. `blink` drives the name-field caret.
-	pub fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
+	pub(crate) fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
 		use crate::ui::theme;
 		let row_h = theme::ROW_H * scale;
 		// The panel never shrinks below this (short screens would jitter

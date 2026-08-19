@@ -11,7 +11,7 @@
 //!   POST /api/join { serverId } + Bearer session → { token, url, certHash }
 
 use crate::auth::{self, Session};
-use digblock_render::menu::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_render::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
 use serde::Deserialize as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

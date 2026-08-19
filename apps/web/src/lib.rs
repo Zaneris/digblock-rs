@@ -281,12 +281,10 @@ async fn boot() -> Result<(), JsValue> {
 		_ => session,
 	};
 	config.player_name = session.as_ref().and_then(|s| s.display_name.clone());
-	config.account = session
-		.as_ref()
-		.map(|s| digblock_render::menu::AccountView {
-			id: s.account_id.clone(),
-			name: s.display_name.clone(),
-		});
+	config.account = session.as_ref().map(|s| digblock_render::AccountView {
+		id: s.account_id.clone(),
+		name: s.display_name.clone(),
+	});
 	// The pre-account character's lookup key, for servers this browser
 	// played on before accounts existed. Only where a join can happen: a
 	// capture path has no business reading it.

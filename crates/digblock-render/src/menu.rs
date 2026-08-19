@@ -119,7 +119,7 @@ pub struct MenuServices {
 /// Menu → engine intents for named local worlds (take-pattern, not
 /// `MenuServices` — the world store is engine-local and synchronous).
 #[derive(Debug)]
-pub enum WorldIntent {
+pub(crate) enum WorldIntent {
 	Refresh,
 	Create { name: String },
 	Enter { id: String },
@@ -130,7 +130,7 @@ pub enum WorldIntent {
 /// the store's `WorldMeta` (formatting the last-played label — the menu
 /// stays clock-free).
 #[derive(Clone)]
-pub struct WorldRow {
+pub(crate) struct WorldRow {
 	pub id: String,
 	pub name: String,
 	/// Right-column label: last-played age, or an incompatibility note.
@@ -315,7 +315,7 @@ enum Act {
 /// Stable identity linking selectable actions to laid-out rows, so
 /// hit-testing and rendering can't drift.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RowId {
+pub(crate) enum RowId {
 	RootItem(u8),
 	Server(usize),
 	Refresh,
@@ -336,7 +336,7 @@ pub enum RowId {
 	AccountRow(u8),
 }
 
-pub struct Menu {
+pub(crate) struct Menu {
 	/// Config gate: false (bench/screenshot/drill/iOS) = never opens.
 	enabled: bool,
 	/// A master URL is configured and the launcher wired services.
@@ -395,7 +395,7 @@ pub struct Menu {
 }
 
 impl Menu {
-	pub fn new(
+	pub(crate) fn new(
 		enabled: bool,
 		settings: Settings,
 		auto_join: Option<String>,
@@ -430,7 +430,7 @@ impl Menu {
 		}
 	}
 
-	pub fn set_services_available(&mut self) {
+	pub(crate) fn set_services_available(&mut self) {
 		self.services_available = true;
 		if self.enabled && self.auto_join.is_some() {
 			self.activate(Act::OpenMultiplayer);
@@ -440,25 +440,25 @@ impl Menu {
 	/// This build draws the touch HUD: surface the touch-only settings
 	/// rows. Same pattern as `set_store_available` — a capability the
 	/// engine declares after construction, not a constructor parameter.
-	pub fn set_touch(&mut self) {
+	pub(crate) fn set_touch(&mut self) {
 		self.touch = true;
 	}
 
 	/// The shell can toggle browser fullscreen: Root offers the row.
-	pub fn set_fullscreen_available(&mut self) {
+	pub(crate) fn set_fullscreen_available(&mut self) {
 		self.fullscreen_available = true;
 	}
 
 	/// No Fullscreen API, but installing the page would drop the browser's
 	/// chrome: Root says how, in place of the row it cannot offer.
-	pub fn set_fullscreen_hint(&mut self) {
+	pub(crate) fn set_fullscreen_hint(&mut self) {
 		self.fullscreen_hint = true;
 	}
 
 	/// The Fullscreen row was picked. Drained from `Engine::input` like
 	/// the clipboard — the shell's fullscreen call is only honoured inside
 	/// the same task as the activating gesture.
-	pub fn take_fullscreen(&mut self) -> bool {
+	pub(crate) fn take_fullscreen(&mut self) -> bool {
 		std::mem::take(&mut self.wants_fullscreen)
 	}
 
@@ -473,7 +473,7 @@ impl Menu {
 		)
 	}
 
-	pub fn is_open(&self) -> bool {
+	pub(crate) fn is_open(&self) -> bool {
 		self.screen.is_some()
 	}
 
@@ -484,7 +484,7 @@ impl Menu {
 	///
 	/// Derived from the same match `handle_key` runs rather than a list
 	/// of screens: a page that gains a way out gains the button with it.
-	pub fn can_go_back(&self) -> bool {
+	pub(crate) fn can_go_back(&self) -> bool {
 		match &self.screen {
 			None => false,
 			Some(Screen::Root { .. }) => self.entered_world,
@@ -493,59 +493,59 @@ impl Menu {
 	}
 
 	/// In-game Escape: reopen at the root (no-op unless enabled).
-	pub fn open(&mut self) {
+	pub(crate) fn open(&mut self) {
 		if self.enabled && self.screen.is_none() {
 			self.screen = Some(Screen::Root { sel: 0 });
 		}
 	}
 
-	pub fn set_connected(&mut self, connected: bool) {
+	pub(crate) fn set_connected(&mut self, connected: bool) {
 		self.connected = connected;
 		// Being on a server implies the startup menu is behind us.
 		self.entered_world |= connected;
 	}
 
 	/// Seconds left on the return-to-spawn cooldown (0 = ready).
-	pub fn set_spawn_cooldown(&mut self, secs: u32) {
+	pub(crate) fn set_spawn_cooldown(&mut self, secs: u32) {
 		self.spawn_cooldown_secs = secs;
 	}
 
-	pub fn take_commands(&mut self) -> Vec<MenuCommand> {
+	pub(crate) fn take_commands(&mut self) -> Vec<MenuCommand> {
 		std::mem::take(&mut self.pending_cmds)
 	}
 
-	pub fn take_disconnect(&mut self) -> bool {
+	pub(crate) fn take_disconnect(&mut self) -> bool {
 		std::mem::take(&mut self.wants_disconnect)
 	}
 
 	/// The Leave World row was picked: the engine closes the local save
 	/// and returns to the title.
-	pub fn take_leave_world(&mut self) -> bool {
+	pub(crate) fn take_leave_world(&mut self) -> bool {
 		std::mem::take(&mut self.wants_leave_world)
 	}
 
-	pub fn take_return_spawn(&mut self) -> bool {
+	pub(crate) fn take_return_spawn(&mut self) -> bool {
 		std::mem::take(&mut self.wants_return_spawn)
 	}
 
 	/// The Inventory row was picked: the engine opens the screen.
-	pub fn take_inventory(&mut self) -> bool {
+	pub(crate) fn take_inventory(&mut self) -> bool {
 		std::mem::take(&mut self.wants_inventory)
 	}
 
 	/// The Alchemy row was picked: the engine opens the screen.
-	pub fn take_alchemy(&mut self) -> bool {
+	pub(crate) fn take_alchemy(&mut self) -> bool {
 		std::mem::take(&mut self.wants_alchemy)
 	}
 
 	/// The Character row was picked: the engine opens the screen.
-	pub fn take_character(&mut self) -> bool {
+	pub(crate) fn take_character(&mut self) -> bool {
 		std::mem::take(&mut self.wants_character)
 	}
 
 	/// The full settings snapshot, once per change batch. The engine
 	/// applies runtime effects (draw dist, SSR, volume) and persists.
-	pub fn take_settings_change(&mut self) -> Option<Settings> {
+	pub(crate) fn take_settings_change(&mut self) -> Option<Settings> {
 		std::mem::take(&mut self.settings_dirty).then(|| self.settings.clone())
 	}
 
@@ -556,17 +556,11 @@ impl Menu {
 	/// write has to happen inside the same task as the click that asked
 	/// for it, or the browser treats it as unprompted and refuses;
 	/// `update` runs in a later animation frame, which loses the gesture.
-	pub fn take_clipboard(&mut self) -> Option<String> {
+	pub(crate) fn take_clipboard(&mut self) -> Option<String> {
 		self.wants_copy.take()
 	}
 
-	/// Who the launcher says we are. Also the startup path: a restored
-	/// session arrives this way.
-	pub fn set_account(&mut self, account: Option<AccountView>) {
-		self.account = account;
-	}
-
-	pub fn account(&self) -> Option<&AccountView> {
+	pub(crate) fn account(&self) -> Option<&AccountView> {
 		self.account.as_ref()
 	}
 
@@ -606,23 +600,23 @@ impl Menu {
 	/// chosen, so there is nothing to persist — the derived default should
 	/// follow the display if the player later moves the window to another
 	/// one, and a saved value would freeze it.
-	pub fn set_gi_scale(&mut self, gi_scale_div: u32) {
+	pub(crate) fn set_gi_scale(&mut self, gi_scale_div: u32) {
 		self.settings.gi_scale_div = gi_scale_div;
 	}
 
 	/// World-store intents raised since the last drain.
-	pub fn take_world_intents(&mut self) -> Vec<WorldIntent> {
+	pub(crate) fn take_world_intents(&mut self) -> Vec<WorldIntent> {
 		std::mem::take(&mut self.pending_worlds)
 	}
 
 	/// A world store was injected: Root offers named saves.
-	pub fn set_store_available(&mut self) {
+	pub(crate) fn set_store_available(&mut self) {
 		self.store_available = true;
 	}
 
 	/// The store's world list (engine answers a `WorldIntent::Refresh`,
 	/// and re-sends after create/delete).
-	pub fn set_world_list(&mut self, rows: Vec<WorldRow>) {
+	pub(crate) fn set_world_list(&mut self, rows: Vec<WorldRow>) {
 		match &mut self.screen {
 			Some(Screen::Worlds(w)) => {
 				w.sel = w.sel.min(rows.len()); // create row keeps it valid
@@ -636,7 +630,7 @@ impl Menu {
 	}
 
 	/// A store error for the worlds status line (open failed, quota...).
-	pub fn set_worlds_status(&mut self, status: String) {
+	pub(crate) fn set_worlds_status(&mut self, status: String) {
 		match &mut self.screen {
 			Some(Screen::Worlds(w)) => w.status = Some(status),
 			Some(Screen::CreateWorld { prev, .. })
@@ -647,7 +641,7 @@ impl Menu {
 	}
 
 	/// A local save opened: the menu's job here is done.
-	pub fn on_world_entered(&mut self) {
+	pub(crate) fn on_world_entered(&mut self) {
 		self.entered_world = true;
 		self.screen = None;
 	}
@@ -655,7 +649,7 @@ impl Menu {
 	/// Left a server or a local world for a fresh backdrop: back to the
 	/// locked startup menu — there is no game to "go back" to until the
 	/// player picks a save or a server again.
-	pub fn on_returned_to_title(&mut self) {
+	pub(crate) fn on_returned_to_title(&mut self) {
 		self.connected = false;
 		self.entered_world = false;
 		if self.enabled {
@@ -666,7 +660,7 @@ impl Menu {
 	// ---- engine hooks -----------------------------------------------------
 
 	/// Welcome landed: the join finished, close the menu.
-	pub fn on_welcome(&mut self) {
+	pub(crate) fn on_welcome(&mut self) {
 		if matches!(self.screen, Some(Screen::Connecting { .. })) {
 			self.entered_world = true;
 			self.screen = None;
@@ -675,7 +669,7 @@ impl Menu {
 
 	/// Refused/Disconnected while a join was in flight: back to the browser
 	/// with the reason on the status line.
-	pub fn on_net_failed(&mut self, reason: &str) {
+	pub(crate) fn on_net_failed(&mut self, reason: &str) {
 		if matches!(self.screen, Some(Screen::Connecting { .. })) {
 			let Some(Screen::Connecting { mut prev, .. }) = self.screen.take() else {
 				return;
@@ -687,7 +681,10 @@ impl Menu {
 
 	/// Feed one service response in; a `Connect` hands the transport+token
 	/// back for the engine to install.
-	pub fn on_response(&mut self, resp: MenuResponse) -> Option<(Box<dyn NetTransport>, [u8; 16])> {
+	pub(crate) fn on_response(
+		&mut self,
+		resp: MenuResponse,
+	) -> Option<(Box<dyn NetTransport>, [u8; 16])> {
 		match resp {
 			MenuResponse::ServerList(result) => {
 				if let Some(Screen::Browser(b)) = &mut self.screen {
@@ -801,7 +798,7 @@ impl Menu {
 
 	// ---- input ------------------------------------------------------------
 
-	pub fn handle_input(&mut self, event: &InputEvent, size: (u32, u32), scale: f32) {
+	pub(crate) fn handle_input(&mut self, event: &InputEvent, size: (u32, u32), scale: f32) {
 		match *event {
 			InputEvent::Key { key, pressed } if pressed => self.handle_key(key),
 			InputEvent::Text { ch } => self.handle_text(ch),
@@ -1580,7 +1577,7 @@ impl RowSpec {
 }
 
 /// One laid-out menu row for the overlay.
-pub struct PlacedRow {
+pub(crate) struct PlacedRow {
 	pub rect: [f32; 4],
 	pub id: Option<RowId>,
 	pub text: String,
@@ -1595,7 +1592,7 @@ pub struct PlacedRow {
 	pub caret: bool,
 }
 
-pub struct MenuView {
+pub(crate) struct MenuView {
 	/// Backdrop rect enclosing all rows.
 	pub panel: [f32; 4],
 	pub rows: Vec<PlacedRow>,
@@ -1608,7 +1605,7 @@ impl MenuView {
 	/// Emit the menu into the frame's draw list: full-screen dim (faded
 	/// with the world's darkness — the panel keeps its fixed backdrop),
 	/// panel backdrop, then rows through the framework's row widget.
-	pub fn emit(
+	pub(crate) fn emit(
 		&self,
 		dl: &mut crate::ui::DrawList,
 		style: &crate::ui::Style,
