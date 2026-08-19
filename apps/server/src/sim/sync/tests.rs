@@ -570,16 +570,41 @@ fn far_player_excluded_from_snapshots_until_near_again() {
 	}
 	a.drain();
 	b.drain();
-	let a_last = a.snaps.last().expect("A still snapshotted");
-	assert!(
-		!a_last.others.iter().any(|p| p.id == 1),
-		"far remote filtered: {:?}",
-		a_last.others
-	);
+	// Every snapshot of the settled window excludes B — a single-frame
+	// check would let stride tiering (slower, not dropped) masquerade as
+	// exclusion whenever the last frame missed B's stride.
+	assert!(!a.snaps.is_empty(), "A still snapshotted");
+	for snap in &a.snaps {
+		assert!(
+			!snap.others.iter().any(|p| p.id == 1),
+			"far remote filtered: {:?}",
+			snap.others
+		);
+	}
 	let b_last = b.snaps.last().expect("B still snapshotted");
 	assert!(
 		b_last.me.is_some(),
 		"B keeps its own state even with nobody nearby"
+	);
+
+	// And NEAR AGAIN is the other half of the contract: interest is a
+	// per-snapshot read of where the players stand now, not a latch.
+	let near = sim.test_player(1).expect("A still connected").pos + Vec3::new(2.0, 0.0, 0.0);
+	sim.test_teleport(2, near);
+	a.drain();
+	a.snaps.clear();
+	for _ in 0..6 {
+		sim.tick_once(vec![]);
+	}
+	a.drain();
+	assert!(
+		a.snaps
+			.last()
+			.expect("A still snapshotted")
+			.others
+			.iter()
+			.any(|p| p.id == 1),
+		"a returned remote reappears in snapshots"
 	);
 }
 

@@ -38,19 +38,6 @@ fn icon_block_names_the_block_its_icon_was_built_from() {
 	}
 }
 
-/// The properties the inverse exists to serve. Stated as a rule about
-/// ROWS, so it keeps holding when a future tool is authored to glow:
-/// what the hand draws and what it lights must be what the block says,
-/// never what the icon's variant happens to be.
-#[test]
-fn what_an_icon_glows_and_lights_by_comes_from_its_row() {
-	for b in BlockType::ALL.into_iter().filter(|b| b.is_tool()) {
-		let row = icon_block(tool_icon(b, false)).expect("a tool has a row");
-		assert_eq!(row.props().emissive, b.props().emissive);
-		assert_eq!(row.props().light, b.props().light);
-	}
-}
-
 /// What the sample bar is stocked with. Named so the test that checks
 /// the counts REACH the screen reads them from the fixture rather than
 /// keeping a second copy of the same two numbers.

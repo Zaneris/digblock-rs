@@ -299,24 +299,51 @@ fn a_node_host_scope_is_refused_at_registration() {
 }
 
 /// `node_host` and `nodes::revealed` must name the same set, or the guard
-/// above is guarding the wrong thing.
+/// above is guarding the wrong thing. Asserted as a biconditional over a
+/// scanned region: every host REVEALS somewhere in it, and nothing else
+/// reveals anywhere in it — so dropping a host from `node_host` fails on
+/// the block's own witnesses, and adding one fails on their absence.
+///
+/// The candidates are cells a node could plausibly occupy (spring beds,
+/// trunk spans, an underground stripe), located by the column helpers so
+/// the scan is cheap — but every verdict is `revealed`'s own. A fixed
+/// list of probe positions is NOT enough here: nodes are sparse salted
+/// hashes, and a list that happens to dodge every node passes whatever
+/// `node_host` says.
 #[test]
 fn a_node_host_is_never_sweepable() {
+	use crate::decoration;
 	use crate::worldgen::nodes;
 	let levels = nodes::Levels {
 		mining: 99,
 		alchemy: 99,
 	};
+	let mut candidates: Vec<(i32, i32, i32)> = Vec::new();
+	for x in -400i32..400 {
+		for z in -400i32..400 {
+			if let Some(y) = nodes::springstone_bed(x, z, SEED) {
+				candidates.push((x, y, z));
+			}
+			if let Some(t) = decoration::trunk_at(x, z, SEED) {
+				candidates.extend((t.y0 + 1..=t.y1).map(|y| (x, y, z)));
+			}
+		}
+	}
+	for x in 0..32 {
+		for z in 0..32 {
+			candidates.extend((1..100).map(|y| (x, y, z)));
+		}
+	}
 	for b in BlockType::ALL {
-		if node_host(b) {
-			continue;
-		}
-		// A non-host must be unable to reveal anything, anywhere.
-		for at in [(0, 20, 0), (13, 60, -7), (128, 100, 256), (-64, 8, 31)] {
-			assert!(
-				nodes::revealed(b as u16, at, SEED, levels, false).is_none(),
-				"{b:?} can host a node but `node_host` says otherwise"
-			);
-		}
+		let cell = crate::chunk::make_cell(b, 0);
+		let witnesses = candidates
+			.iter()
+			.filter(|&&at| nodes::revealed(cell, at, SEED, levels, false).is_some())
+			.count();
+		assert_eq!(
+			witnesses > 0,
+			node_host(b),
+			"{b:?}: node_host and revealed disagree ({witnesses} witnesses)"
+		);
 	}
 }

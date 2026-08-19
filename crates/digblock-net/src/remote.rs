@@ -168,19 +168,22 @@ mod tests {
 
 	#[test]
 	fn extrapolation_capped_then_holds() {
+		let vx = 6.0f32;
 		let mut r = RemotePlayers::default();
-		r.push(1, snap(0, 0.0, 6.0)); // a steady velocity along +x
+		r.push(1, snap(0, 0.0, vx)); // a steady velocity along +x
 		let mut out = Vec::new();
 
 		// A short way past the newest snap → extrapolated along velocity.
 		r.est_server_tick = 10.0 + INTERP_DELAY_TICKS;
 		r.sample(&mut out);
-		assert!((out[0].pos.x - 1.0).abs() < 1e-5, "x = {}", out[0].pos.x);
+		let want = vx * 10.0 / TICK_RATE as f32;
+		assert!((out[0].pos.x - want).abs() < 1e-5, "x = {}", out[0].pos.x);
 
 		// Far past it → the extrapolation clamps at EXTRAP_CAP_TICKS.
 		r.est_server_tick = 100.0 + INTERP_DELAY_TICKS;
 		r.sample(&mut out);
-		assert!((out[0].pos.x - 1.5).abs() < 1e-5, "x = {}", out[0].pos.x);
+		let cap = vx * EXTRAP_CAP_TICKS as f32 / TICK_RATE as f32;
+		assert!((out[0].pos.x - cap).abs() < 1e-5, "x = {}", out[0].pos.x);
 	}
 
 	#[test]

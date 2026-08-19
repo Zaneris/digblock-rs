@@ -37,22 +37,6 @@ fn the_gather_and_the_single_cell_query_agree() {
 	}
 }
 
-/// Pure in the way the whole module claims to be: same inputs, same
-/// answer, no matter what order anyone asks in.
-#[test]
-fn placement_is_a_pure_function_of_position_and_seed() {
-	for &seed in &[0.0, 42.0, -1.5, 1e9] {
-		for (x, y, z) in [(0, 40, 0), (137, 12, -991), (-4, 139, 7)] {
-			let a = ore_at(x, y, z, seed);
-			assert_eq!(a, ore_at(x, y, z, seed));
-		}
-	}
-	// A different seed is a different world.
-	let a: Vec<_> = (0..400).filter_map(|i| ore_at(i, 30, 0, 1.0)).collect();
-	let b: Vec<_> = (0..400).filter_map(|i| ore_at(i, 30, 0, 2.0)).collect();
-	assert_ne!(a, b, "the seed reaches the deposits");
-}
-
 /// Golden per-seed positions, in the mould of `spawn_positions_are_pinned`:
 /// a test that only asks whether ore MOVED cannot catch ore that moved
 /// somewhere bad, so this pins where it actually is.

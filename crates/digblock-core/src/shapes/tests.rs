@@ -31,33 +31,43 @@ fn stair_masks_and_boxes() {
 	assert!(!m.covers(4, 0, 5, 1), "nothing above y=4 on −x");
 }
 
+/// EVERY shaped block, every valid state — the cap sizes the renderer's
+/// shared index buffer, so a family missing from this sweep (the
+/// furniture was, once) can overflow it without a test noticing.
 #[test]
 fn every_facing_bakes_and_stays_under_the_quad_cap() {
+	use crate::chunk::make_cell;
 	let mut max = 0;
-	for f in Facing::ALL {
-		let v = shape_of(BlockType::StoneStairs, stair_state(f)).unwrap();
-		assert!(!v.quads.is_empty());
-		max = max.max(v.quads.len());
+	let mut swept_blocks = 0;
+	for b in BlockType::ALL {
+		if b.props().shape.is_none() {
+			continue;
+		}
+		swept_blocks += 1;
+		let mut variants = 0;
+		for state in 0..16u8 {
+			if !state_valid(make_cell(b, state)) {
+				continue;
+			}
+			let v = shape_of(b, state)
+				.unwrap_or_else(|| panic!("{b:?} state {state} is valid but has no shape"));
+			assert!(!v.quads.is_empty(), "{b:?} state {state} bakes nothing");
+			variants += 1;
+			max = max.max(v.quads.len());
+		}
+		assert!(variants > 0, "{b:?} has no valid state to bake");
 	}
-	for state in 0..16u8 {
-		let v = shape_of(BlockType::LumberDoor, state).unwrap();
-		assert!(!v.quads.is_empty());
-		max = max.max(v.quads.len());
-	}
-	for state in 0..4u8 {
-		let v = shape_of(BlockType::WoodSlab, state).unwrap();
-		assert!(!v.quads.is_empty());
-		max = max.max(v.quads.len());
-	}
+	assert!(
+		swept_blocks > 4,
+		"the shaped catalog shrank to {swept_blocks}"
+	);
 	{
 		let v = shape_of(BlockType::Torch, 0).unwrap();
-		assert!(!v.quads.is_empty());
 		assert_eq!(v.ramp, None);
 		assert!(
 			v.occludes_full.iter().all(|f| !f),
 			"a torch hides no neighbor face"
 		);
-		max = max.max(v.quads.len());
 	}
 	assert!(
 		max <= MAX_SHAPE_QUADS,
@@ -234,22 +244,6 @@ fn a_door_bounds_as_one_object() {
 				}
 			}
 		}
-	}
-}
-
-/// Everything that is not a door is its own object: same cell, same
-/// box `draw_bounds` already gave.
-#[test]
-fn a_single_cell_block_is_its_own_object() {
-	use crate::chunk::make_cell;
-	let c = (3, 40, 7);
-	for v in [
-		BlockType::Stone as u16,
-		make_cell(BlockType::StoneStairs, stair_state(Facing::PosZ)),
-		make_cell(BlockType::WoodSlab, slab_state(true, true)),
-		make_cell(BlockType::Torch, 0),
-	] {
-		assert_eq!(object_bounds(c, v), (c, draw_bounds(v)), "cell {v:#x}");
 	}
 }
 

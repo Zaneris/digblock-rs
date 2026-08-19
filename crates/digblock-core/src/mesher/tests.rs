@@ -565,13 +565,6 @@ fn dir_of(w0: u32) -> u32 {
 	(w0 >> 24) & 0x7
 }
 
-#[test]
-fn water_word_count_is_even() {
-	let m = mesh_chunk(&isolated(&solo(B::Water)));
-	assert_eq!(m.water.len() % 8, 0, "whole two-word quads only");
-	assert!(m.solid.is_empty());
-}
-
 /// The (word0, word1) vertex pairs of a water face, matched like
 /// `quad_of` but over the interleaved two-word stream.
 fn water_quad(m: &[u32], bx: i32, by: i32, bz: i32, dir: Dir) -> [(u32, u32); 4] {

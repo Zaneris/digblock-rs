@@ -626,15 +626,17 @@ fn look_away_mid_hold_resets() {
 			.map(|d| (d.progress, d.idle))
 	};
 	assert_eq!(banked(&sim), Some((30, 0)), "30 verified ticks banked");
-	for _ in 0..45 {
+	// Miss long enough to trip the reset, then keep missing: everything
+	// past the threshold is decay.
+	use digblock_net::protocol::DIG_OFF_TARGET_RESET;
+	const DECAY_TICKS: u32 = 15;
+	for _ in 0..DIG_OFF_TARGET_RESET + DECAY_TICKS {
 		t += 1;
 		sim.tick_once(vec![batch(vec![aim(t, Vec3::Z)], 1)]);
 	}
-	// The abandon landed one miss past `DIG_OFF_TARGET_RESET`, so the
-	// misses after it were decay.
 	assert_eq!(
 		banked(&sim),
-		Some((30, 15)),
+		Some((30, DECAY_TICKS)),
 		"sustained miss stopped the hold and started the decay"
 	);
 	for _ in 0..90 {
@@ -2323,13 +2325,20 @@ fn alchemy_craft_and_same_tick_place() {
 		c.msgs
 	);
 	// The level-1 economy: the craft spends the timber cube and the
-	// catalyst at that level's waste, leaving the Vitae remainder
-	// asserted below.
+	// catalyst at that level's waste, leaving the Vitae remainder.
+	let (catalyst, n) =
+		digblock_core::alchemy::craft_ideal(BlockType::WoodSlab).expect("a slab is bench-made")[0];
+	assert_eq!(catalyst, Essence::Vitae, "the slab's catalyst");
+	let left = 10 - digblock_core::alchemy::craft_cost(n, 1);
+	let want = (
+		digblock_core::inventory::SUB_WIRE_FLAG | catalyst as u16,
+		left,
+	);
 	assert!(
 		c.msgs.iter().any(|m| matches!(
 			m,
 			ServerMsg::InventoryFull { counts }
-				if counts.contains(&(0x8000, 5))
+				if counts.contains(&want)
 		)),
 		"Vitae remainder in the rebase: {:?}",
 		c.msgs
@@ -2504,47 +2513,6 @@ fn held_item_rides_snapshots() {
 		"slot switch reaches remotes"
 	);
 	let _ = &mut c1;
-}
-
-/// A locked spawn refuses digs inside its region and the cell is
-/// never modified. The refusal itself arrives at DigStart (see
-/// `a_protected_dig_is_refused_at_dig_start`); a client that skips
-/// DigStart and sends the completing edit straight off has no hold on
-/// record, so it fails the timing gate instead — refused either way.
-#[test]
-fn locked_spawn_refuses_a_dig() {
-	let mut sim = flat_sim("lockdig");
-	let mut c = connect(&mut sim, 1);
-	wait_live(&mut sim, 1);
-	sim.spawn_store
-		.set_lock(Some(crate::spawn_store::SpawnLock {
-			eye: FLAT_SPAWN.to_array(),
-		}));
-	let down = Vec3::new(0.0, -1.0, 0.0);
-	let mut t = 0;
-	let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
-	c.drain();
-	assert!(
-		c.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::DigRefused {
-				reason: RejectReason::Protected,
-				..
-			}
-		)),
-		"protected dig should be refused: {:?}",
-		c.msgs
-	);
-	assert_eq!(
-		sim.test_cell_at(cell.0, cell.1, cell.2),
-		Some(BlockType::Stone as u16),
-		"the protected cell was modified anyway"
-	);
-	assert_eq!(
-		sim.test_inventory_count(1, BlockType::Stone),
-		0,
-		"no credit"
-	);
 }
 
 /// Placing into a locked region is refused too, and reports

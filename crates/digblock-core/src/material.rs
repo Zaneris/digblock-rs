@@ -335,8 +335,51 @@ mod tests {
 	/// vanish from the transmute tab.
 	#[test]
 	fn all_lists_every_material_once() {
-		assert_eq!(Material::ALL.len(), Material::COUNT);
+		// `COUNT` is written by hand, so `ALL`'s length proves nothing —
+		// what the type cannot catch is a duplicate squeezing a material
+		// out, and a NEW variant never added at all. The exhaustive match
+		// is the compile gate for the second: a 38th material fails to
+		// build here until this test — the `ALL` sweep — is touched.
 		for (i, &m) in Material::ALL.iter().enumerate() {
+			match m {
+				Material::Wood
+				| Material::Dirt
+				| Material::Sand
+				| Material::Lumber
+				| Material::Stone
+				| Material::DarkLumber
+				| Material::StoneBrick
+				| Material::Sandstone
+				| Material::Snow
+				| Material::Grass
+				| Material::Mud
+				| Material::Glass
+				| Material::RedLumber
+				| Material::PolishedStone
+				| Material::SandstoneBrick
+				| Material::Metal
+				| Material::Crystal
+				| Material::Rubble
+				| Material::Gravel
+				| Material::DryGrass
+				| Material::Leaf
+				| Material::PineLeaf
+				| Material::Emberore
+				| Material::Duskstone
+				| Material::Glowvein
+				| Material::Aetherock
+				| Material::DepletedStone
+				| Material::DepletedEmberore
+				| Material::DepletedDuskstone
+				| Material::DepletedGlowvein
+				| Material::DepletedAetherock
+				| Material::Heartwood
+				| Material::DrainedHeartwood
+				| Material::Leystone
+				| Material::SpentLeystone
+				| Material::Springstone
+				| Material::SpentSpringstone => {}
+			}
 			assert!(
 				!Material::ALL[..i].contains(&m),
 				"{m:?} listed twice in ALL"

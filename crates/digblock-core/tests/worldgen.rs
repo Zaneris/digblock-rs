@@ -176,33 +176,46 @@ fn structures_span_chunk_borders_seamlessly() {
 				if !crosses {
 					continue;
 				}
-				let mut chunks_touched = std::collections::HashSet::new();
-				st.for_each_block(|x, y, z, b| {
+				let mut cells = Vec::new();
+				st.for_each_block(|x, y, z, b| cells.push((x, y, z, b)));
+				let mut touched = std::collections::HashSet::new();
+				let mut exact: HashMap<(i32, i32), u32> = HashMap::new();
+				for &(x, y, z, b) in &cells {
 					let pos = ChunkPos::new(x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
-					chunks_touched.insert((pos.x, pos.z));
+					touched.insert((pos.x, pos.z));
 					let chunk = cache.entry(pos).or_insert_with(|| build_chunk(pos, seed));
 					let got = chunk.get(
 						x.rem_euclid(16) as usize,
 						y.rem_euclid(16) as usize,
 						z.rem_euclid(16) as usize,
 					);
-					// The cell holds this structure's block unless terrain or
-					// an earlier structure already occupied it — never air.
-					assert!(
-						got == b || got != BlockType::Air,
-						"({x},{y},{z}) empty in {pos:?}"
-					);
-				});
+					// A cell may be overridden by terrain or an earlier
+					// structure, but a HOLE means the apron dropped it.
+					assert!(got != BlockType::Air, "({x},{y},{z}) empty in {pos:?}");
+					if got == b {
+						*exact.entry((pos.x, pos.z)).or_default() += 1;
+					}
+				}
 				assert!(
-					chunks_touched.len() > 1,
+					touched.len() > 1,
 					"structure at {:?} spans chunks",
 					st.origin()
 				);
-				return; // one verified border structure is the property
+				// "Identically" has to mean the structure's OWN blocks, not
+				// merely non-air: every chunk it spills into must hold at
+				// least one of them, or a neighbour stamping the WRONG
+				// block would pass. A structure fully overridden on one
+				// side proves nothing either way — keep scanning.
+				if touched
+					.iter()
+					.all(|c| exact.get(c).copied().unwrap_or(0) > 0)
+				{
+					return;
+				}
 			}
 		}
 	}
-	panic!("no border-crossing structure found in the sample area");
+	panic!("no border-crossing structure appears identically on every side it spills into");
 }
 
 /// Structural cave invariants, independent of the carve function: the

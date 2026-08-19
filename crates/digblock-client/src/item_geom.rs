@@ -369,8 +369,14 @@ mod tests {
 			IconKind::Shaped(BlockType::WoodStairs),
 			IconKind::Shaped(BlockType::WoodSlab),
 			IconKind::Shaped(BlockType::LumberDoor),
+			IconKind::Shaped(BlockType::Chair),
+			IconKind::Shaped(BlockType::Table),
+			IconKind::Shaped(BlockType::Bed),
 			IconKind::WaterTool { full: true },
 			IconKind::WaterTool { full: false },
+			IconKind::Siphon,
+			IconKind::Pick,
+			IconKind::Sigil,
 		];
 		for kind in kinds {
 			let f = faces(kind);

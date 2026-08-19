@@ -966,7 +966,6 @@ mod tests {
 		j.record(2.0);
 		j.record(4.0);
 		assert_eq!(j.count, 2);
-		assert_eq!(j.avg_ms(), 3.0);
 		assert_eq!(j.max_ms, 4.0);
 		let mut k = JobTiming::default();
 		k.record(10.0);

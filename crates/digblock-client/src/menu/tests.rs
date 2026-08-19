@@ -228,8 +228,10 @@ fn disabled_menu_never_opens() {
 	assert!(!menu.is_open());
 }
 
+/// Reopening is `open()` — the Escape that triggers it lives in the
+/// engine's input routing, which the menu never sees while closed.
 #[test]
-fn root_play_local_closes_and_escape_reopens() {
+fn root_play_local_closes_and_the_menu_reopens() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	assert!(menu.is_open());
 	menu.handle_key(Key::Enter); // Play Local
@@ -389,7 +391,7 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 		.iter()
 		.find(|r| r.text.starts_with("name:"))
 		.unwrap();
-	assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME + 1);
+	assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
 }
 
 /// Typing a name is one availability check at a time, not one per
@@ -803,7 +805,7 @@ fn ui_scale_slider_walks_its_whole_range_without_drift() {
 	// same number — which is the drift this exists to catch. Asserted as
 	// that property rather than as the percentages themselves, so a finer
 	// step is a retune of one constant and not of this list.
-	let mut printed: Vec<i32> = seen
+	let printed: Vec<i32> = seen
 		.iter()
 		.map(|v| format!("{:.0}", v * 100.0).parse::<i32>().unwrap())
 		.collect();
@@ -817,10 +819,8 @@ fn ui_scale_slider_walks_its_whole_range_without_drift() {
 		printed.len(),
 		"two notches print alike: {printed:?}"
 	);
-	let sorted = {
-		printed.sort_unstable();
-		printed.clone()
-	};
+	let mut sorted = printed.clone();
+	sorted.sort_unstable();
 	assert_eq!(sorted, printed, "the labels do not climb with the notches");
 }
 

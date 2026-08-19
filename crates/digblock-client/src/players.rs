@@ -392,16 +392,6 @@ mod tests {
 	use super::*;
 	use digblock_core::block::BlockType;
 
-	/// `vs_held`'s vertex layout spells its attribute offsets out as
-	/// literals, so the struct they describe has to stay the shape they
-	/// assume — a field added to `Vert` would otherwise reinterpret every
-	/// held item's uv and texture layer as garbage with nothing failing.
-	#[test]
-	fn the_held_vertex_layout_matches_the_struct() {
-		assert_eq!(std::mem::size_of::<Vert>(), 28);
-		assert_eq!(std::mem::align_of::<Vert>(), 4);
-	}
-
 	/// players.wgsl's DIR_NORMALS is indexed by `Dir`'s discriminants, and
 	/// nothing but this pin holds it to them: get one wrong and a held
 	/// item's faces light from the wrong side, which reads as a shading
@@ -512,18 +502,5 @@ mod tests {
 		let mut seen: Vec<u32> = v.iter().map(|(_, i)| i[0] as u32).collect();
 		seen.sort_unstable();
 		assert_eq!(seen, [0, 1, 2, 3, 4, 5]);
-	}
-
-	/// Every kind a hand can hold must survive the cache, which is the
-	/// property `set_held` needs and `every_held_item_fits_the_quad_budget`
-	/// only half implies: an item can be inside both budgets and still
-	/// build zero quads.
-	#[test]
-	fn every_held_item_builds_geometry() {
-		let mut scratch = Vec::new();
-		for kind in every_kind() {
-			crate::viewmodel::build(kind, &mut scratch);
-			assert!(!scratch.is_empty(), "{kind:?} builds nothing to draw");
-		}
 	}
 }

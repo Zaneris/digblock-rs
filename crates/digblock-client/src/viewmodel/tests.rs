@@ -403,11 +403,13 @@ fn the_bob_stops_swinging_in_the_air() {
 	assert!(peak <= BREATH_Y + 1e-5, "only the breath is left: {peak}");
 }
 
-/// The shading rig has to survive the trip into item space: a light
-/// coming from above the camera must still read as "from above" in
-/// whatever frame the shader dots it against.
+/// The shading rig has to survive the trip into item space: rotating
+/// the answer BACK by the pose's forward rotation must land on the
+/// view-space light exactly. A round trip, because the bug this frame
+/// change invites — inverting the wrong way, so "from above" shades
+/// from below — preserves length and passes any magnitude check.
 #[test]
-fn the_light_direction_keeps_its_length_through_the_rotation() {
+fn the_item_space_light_round_trips_through_the_pose_rotation() {
 	let d = Vec3::new(0.3, -0.9, 0.2).normalize();
 	for pose in [
 		Pose::default(),
@@ -418,6 +420,25 @@ fn the_light_direction_keeps_its_length_through_the_rotation() {
 		},
 	] {
 		let l = light_in_item_space(d, pose);
-		assert!((l.length() - 1.0).abs() < 1e-5, "{}", l.length());
+		let forward = Mat4::from_rotation_z(pose.roll)
+			* Mat4::from_rotation_x(REST_PITCH + pose.pitch)
+			* Mat4::from_rotation_y(REST_YAW);
+		let back = forward.transform_vector3(l);
+		assert!((back - d).length() < 1e-5, "{back} back vs {d}");
 	}
+}
+
+/// players.rs's pipeline describes `Vert` as four attributes at byte
+/// offsets it writes as literals — a WGSL-mirror-style contract, so the
+/// offsets are pinned HERE, where the fields are visible. Size and
+/// alignment alone once stood for this, and they cannot see two fields
+/// swapping places.
+#[test]
+fn the_held_vertex_layout_matches_the_pipeline() {
+	assert_eq!(std::mem::size_of::<Vert>(), 28);
+	assert_eq!(std::mem::align_of::<Vert>(), 4);
+	assert_eq!(std::mem::offset_of!(Vert, pos), 0);
+	assert_eq!(std::mem::offset_of!(Vert, uv), 12);
+	assert_eq!(std::mem::offset_of!(Vert, layer), 20);
+	assert_eq!(std::mem::offset_of!(Vert, face), 24);
 }

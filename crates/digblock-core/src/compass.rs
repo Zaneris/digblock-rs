@@ -122,14 +122,25 @@ mod tests {
 	/// reply can never name different directions.
 	#[test]
 	fn abbreviations_track_the_names() {
+		// A name is exactly its abbreviation spelled out, letter by
+		// letter — so the two tables cannot be transposed against each
+		// other anywhere, diagonals included.
 		for (i, name) in NAMES.iter().enumerate() {
-			assert!(
-				name.starts_with(&ABBREV[i].to_lowercase()[..1]),
-				"{name} / {}",
-				ABBREV[i]
-			);
+			let spelled: String = ABBREV[i]
+				.chars()
+				.map(|c| match c {
+					'N' => "north",
+					'S' => "south",
+					'E' => "east",
+					'W' => "west",
+					_ => panic!("{c} is not a cardinal letter"),
+				})
+				.collect();
+			assert_eq!(*name, spelled, "row {i}");
 		}
 		assert_eq!(compass_abbrev(Vec3::NEG_Z), "N");
+		// east = -x: the sun's convention, the trap the header warns of.
+		assert_eq!(compass_abbrev(Vec3::new(-1.0, 0.0, -1.0)), "NE");
 		assert_eq!(compass_abbrev(Vec3::Y), "--", "straight up has no heading");
 		assert_eq!(compass(Vec3::Y), "");
 	}

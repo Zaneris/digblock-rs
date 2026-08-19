@@ -686,7 +686,7 @@ mod tests {
 				"{current}->{needed} gave {got}, short of need"
 			);
 			assert!(
-				got >= current.saturating_mul(2) || got >= needed,
+				got >= current.saturating_mul(2),
 				"{current}->{needed} gave {got}, under the doubling floor"
 			);
 			assert_eq!(

@@ -191,14 +191,15 @@ fn dig_speed_anchors_are_pinned() {
 #[test]
 fn every_dig_speedup_is_smaller_than_the_one_before() {
 	use crate::block::DigFamily as F;
-	// The grid: the earliest levels hold at the first step, then the
-	// stride, then the cap on its own.
-	for level in 1..=99 {
-		let expect = match level {
-			1..=4 => 1,
-			99 => 99,
-			_ => level / 5 * 5,
-		};
+	// The step is the last entry of the PINNED table the level has
+	// reached — derived from the table rather than restating the
+	// stride arithmetic, so this is a table-vs-index cross-check and an
+	// indexing off-by-one fails it.
+	for level in 1..=MAX_LEVEL {
+		let expect = *DIG_STEPS
+			.iter()
+			.rfind(|&&step| step <= level)
+			.expect("level 1 is a step");
 		assert_eq!(dig_speed_step(level), expect, "step of {level}");
 	}
 	assert_eq!(dig_speed_step(0), 1, "clamps up");

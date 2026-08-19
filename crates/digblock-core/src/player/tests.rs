@@ -232,6 +232,47 @@ fn walking_off_an_edge_keeps_momentum() {
 
 #[test]
 fn wall_blocks_and_slides() {
+	// The slide half: walking diagonally into the wall keeps the
+	// tangential component moving while the normal one is refused —
+	// losing it would glue a player to every wall they brush.
+	{
+		let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
+			some_cell(if y < 10 || (z >= 12 && y < 13) {
+				BlockType::Dirt
+			} else {
+				BlockType::Air
+			})
+		};
+		let mut p = new_player();
+		for _ in 0..600 {
+			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		}
+		let x0 = p.pos.x;
+		for _ in 0..180 {
+			p.tick(
+				TICK,
+				Vec3::Z,
+				PlayerIntent {
+					move_axis: Vec2::new(1.0, 1.0),
+					jump: false,
+				},
+				&world,
+			);
+		}
+		assert!(
+			p.pos.z < 12.0,
+			"diagonal stopped at the wall, z = {}",
+			p.pos.z
+		);
+		// The free diagonal covers this much along x; the wall must not
+		// eat more than half of it.
+		let diag_x = WALK_SPEED * 180.0 * TICK / std::f32::consts::SQRT_2;
+		assert!(
+			(p.pos.x - x0).abs() > diag_x * 0.5,
+			"slide lost: moved {} of {diag_x}",
+			p.pos.x - x0
+		);
+	}
 	// A solid wall ahead, taller than the capsule, over flat ground.
 	let world = |_x: i32, y: i32, z: i32| -> Option<u16> {
 		some_cell(if y < 10 || (z >= 12 && y < 13) {
@@ -493,9 +534,25 @@ fn sinks_slowly_in_water() {
 	}
 	assert!(min_vy >= WATER_SINK_SPEED - 1e-3, "sink capped: {min_vy}");
 	let dropped = 15.0 - p.pos.y;
-	// Ramp to the sink target then coast — a gentle sink, nothing
-	// like the drop dry gravity gives over the same second.
-	assert!((1.1..=1.5).contains(&dropped), "dropped {dropped}");
+	// Ramp to the sink target then coast: the drop can approach but
+	// never outrun the sink cap over the window, and it must be a
+	// fraction of what dry gravity takes in the same second.
+	assert!(dropped > 0.0, "never sank");
+	assert!(
+		dropped <= -WATER_SINK_SPEED * 60.0 * TICK + 1e-3,
+		"outran the sink cap: {dropped}"
+	);
+	let mut dry = Player::new(Vec3::new(0.5, 15.0, 0.5));
+	for _ in 0..60 {
+		dry.tick(TICK, Vec3::Z, PlayerIntent::default(), &|_, _, _| {
+			some_cell(BlockType::Air)
+		});
+	}
+	let dry_drop = 15.0 - dry.pos.y;
+	assert!(
+		dropped < dry_drop / 2.0,
+		"water hardly slowed the fall: {dropped} vs {dry_drop} dry"
+	);
 }
 
 #[test]
@@ -604,8 +661,9 @@ fn built_flight(x: i32, y: i32, z: i32) -> Option<u16> {
 	some_cell(BlockType::Air)
 }
 
-/// The per-tick rise a walk covers on a 45° ramp.
-const RAMP_DY: f32 = 4.0 * TICK;
+/// The per-tick rise a walk covers on a 45° ramp — the mount budget,
+/// spent continuously.
+const RAMP_DY: f32 = super::MOUNT_RATE * TICK;
 
 /// Walking a flight is ONE continuous climb, not a series of hops: the
 /// feet move at the rate the ramp under them carries the walk, every

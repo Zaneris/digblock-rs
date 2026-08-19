@@ -228,10 +228,16 @@ fn every_message_has_words_of_its_own() {
 /// template consumes the argument without this test knowing a single
 /// word of it, so any rewording is free and a dropped `{}` is not.
 ///
-/// A template that ignored an argument would otherwise pass everything
-/// above: it renders, and it is distinct from the others.
+/// One pair per ARGUMENT, not per variant: a template that keeps the
+/// name but drops the count passes any single mixed-variation pair.
+/// `DigRefused` is covered by `a_refusal_names_the_block_and_the_level`
+/// instead, which pins its arguments by containment.
 #[test]
 fn every_argument_reaches_the_words() {
+	use AdminReply as A;
+	let a = Msg::Admin;
+	let e0 = Essence::ALL[0] as u16;
+	let e1 = Essence::ALL[1] as u16;
 	let pairs: Vec<(Msg, Msg)> = vec![
 		(
 			Msg::LevelUp {
@@ -244,48 +250,483 @@ fn every_argument_reaches_the_words() {
 			},
 		),
 		(
+			Msg::LevelUp {
+				skill: Skill::Mining,
+				level: 7,
+			},
+			Msg::LevelUp {
+				skill: Skill::Alchemy,
+				level: 7,
+			},
+		),
+		(
+			Msg::RemoteLevelUp {
+				who: "ada".into(),
+				skill: Skill::Mining,
+				level: 7,
+			},
+			Msg::RemoteLevelUp {
+				who: "bo".into(),
+				skill: Skill::Mining,
+				level: 7,
+			},
+		),
+		(
+			Msg::RemoteLevelUp {
+				who: "ada".into(),
+				skill: Skill::Mining,
+				level: 7,
+			},
+			Msg::RemoteLevelUp {
+				who: "ada".into(),
+				skill: Skill::Alchemy,
+				level: 7,
+			},
+		),
+		(
+			Msg::RemoteLevelUp {
+				who: "ada".into(),
+				skill: Skill::Mining,
+				level: 7,
+			},
+			Msg::RemoteLevelUp {
+				who: "ada".into(),
+				skill: Skill::Mining,
+				level: 8,
+			},
+		),
+		(
 			Msg::Joined { name: "ada".into() },
 			Msg::Joined { name: "bo".into() },
 		),
 		(
-			Msg::Admin(AdminReply::Teleported { x: 1, z: 2 }),
-			Msg::Admin(AdminReply::Teleported { x: 3, z: 4 }),
+			Msg::Left { name: "ada".into() },
+			Msg::Left { name: "bo".into() },
 		),
 		(
-			Msg::Admin(AdminReply::TimeSet { hour: 6, minute: 0 }),
-			Msg::Admin(AdminReply::TimeSet {
-				hour: 18,
-				minute: 30,
-			}),
+			Msg::ConnectRefused {
+				reason: "full".into(),
+			},
+			Msg::ConnectRefused {
+				reason: "banned".into(),
+			},
 		),
 		(
-			Msg::Admin(AdminReply::Banned {
+			Msg::Disconnected {
+				reason: "timeout".into(),
+			},
+			Msg::Disconnected {
+				reason: "kicked".into(),
+			},
+		),
+		(
+			Msg::ServerNotice {
+				text: "restarting".into(),
+			},
+			Msg::ServerNotice {
+				text: "welcome".into(),
+			},
+		),
+		(
+			Msg::Chat {
 				name: "ada".into(),
-				ip: "10.0.0.1".into(),
-			}),
-			Msg::Admin(AdminReply::Banned {
+				text: "hello".into(),
+			},
+			Msg::Chat {
 				name: "bo".into(),
-				ip: "10.0.0.2".into(),
+				text: "hello".into(),
+			},
+		),
+		(
+			Msg::Chat {
+				name: "ada".into(),
+				text: "hello".into(),
+			},
+			Msg::Chat {
+				name: "ada".into(),
+				text: "bye".into(),
+			},
+		),
+		(
+			Msg::CommandHint {
+				usage: "/ban <name>".into(),
+				desc: "ban by IP".into(),
+			},
+			Msg::CommandHint {
+				usage: "/tp <x> <z>".into(),
+				desc: "ban by IP".into(),
+			},
+		),
+		(
+			Msg::CommandHint {
+				usage: "/ban <name>".into(),
+				desc: "ban by IP".into(),
+			},
+			Msg::CommandHint {
+				usage: "/ban <name>".into(),
+				desc: "teleport".into(),
+			},
+		),
+		(a(A::Usage(AdminUsage::Tp)), a(A::Usage(AdminUsage::Give))),
+		(
+			a(A::CommandHint {
+				usage: "/tp".into(),
+				desc: "teleport".into(),
+			}),
+			a(A::CommandHint {
+				usage: "/goto".into(),
+				desc: "teleport".into(),
 			}),
 		),
 		(
-			Msg::Admin(AdminReply::SpawnLocked {
+			a(A::CommandHint {
+				usage: "/tp".into(),
+				desc: "teleport".into(),
+			}),
+			a(A::CommandHint {
+				usage: "/tp".into(),
+				desc: "go somewhere".into(),
+			}),
+		),
+		(
+			a(A::UnknownCommand {
+				typed: "/nope".into(),
+			}),
+			a(A::UnknownCommand {
+				typed: "/what".into(),
+			}),
+		),
+		(
+			a(A::NoSuchPlayer {
+				name: "ada".into(),
+				why: NoPlayer::NotOnline,
+			}),
+			a(A::NoSuchPlayer {
+				name: "bo".into(),
+				why: NoPlayer::NotOnline,
+			}),
+		),
+		(
+			a(A::NoSuchPlayer {
+				name: "ada".into(),
+				why: NoPlayer::NotOnline,
+			}),
+			a(A::NoSuchPlayer {
+				name: "ada".into(),
+				why: NoPlayer::StillJoining,
+			}),
+		),
+		(
+			a(A::Teleported { x: 1, z: 2 }),
+			a(A::Teleported { x: 3, z: 2 }),
+		),
+		(
+			a(A::Teleported { x: 1, z: 2 }),
+			a(A::Teleported { x: 1, z: 4 }),
+		),
+		(
+			a(A::TeleportedTo { name: "ada".into() }),
+			a(A::TeleportedTo { name: "bo".into() }),
+		),
+		(
+			a(A::Brought { name: "ada".into() }),
+			a(A::Brought { name: "bo".into() }),
+		),
+		(
+			a(A::TeleportedYouBy {
+				admin: "boss".into(),
+			}),
+			a(A::TeleportedYouBy {
+				admin: "chief".into(),
+			}),
+		),
+		(
+			a(A::SpawnNotClear {
+				clear: 2,
+				capsule: 3,
+			}),
+			a(A::SpawnNotClear {
+				clear: 4,
+				capsule: 3,
+			}),
+		),
+		(
+			a(A::SpawnNotClear {
+				clear: 2,
+				capsule: 3,
+			}),
+			a(A::SpawnNotClear {
+				clear: 2,
+				capsule: 5,
+			}),
+		),
+		(
+			a(A::SpawnPointSet { cell: [1, 2, 3] }),
+			a(A::SpawnPointSet { cell: [4, 5, 6] }),
+		),
+		(
+			a(A::SpawnFacingSet {
+				compass: "north".into(),
+			}),
+			a(A::SpawnFacingSet {
+				compass: "east".into(),
+			}),
+		),
+		(
+			a(A::SpawnLocked {
 				cell: [1, 2, 3],
 				region: [0, 4, 1, 5, 2, 6],
 				already: false,
 			}),
-			Msg::Admin(AdminReply::SpawnLocked {
+			a(A::SpawnLocked {
 				cell: [7, 8, 9],
+				region: [0, 4, 1, 5, 2, 6],
+				already: false,
+			}),
+		),
+		(
+			a(A::SpawnLocked {
+				cell: [1, 2, 3],
+				region: [0, 4, 1, 5, 2, 6],
+				already: false,
+			}),
+			a(A::SpawnLocked {
+				cell: [1, 2, 3],
 				region: [6, 10, 7, 11, 8, 12],
+				already: false,
+			}),
+		),
+		(
+			a(A::SpawnLocked {
+				cell: [1, 2, 3],
+				region: [0, 4, 1, 5, 2, 6],
+				already: false,
+			}),
+			a(A::SpawnLocked {
+				cell: [1, 2, 3],
+				region: [0, 4, 1, 5, 2, 6],
 				already: true,
 			}),
 		),
+		(
+			a(A::SpawnSetButUnlocked { cell: [1, 2, 3] }),
+			a(A::SpawnSetButUnlocked { cell: [4, 5, 6] }),
+		),
+		(
+			a(A::NotAnEssence {
+				typed: "gold".into(),
+			}),
+			a(A::NotAnEssence {
+				typed: "lead".into(),
+			}),
+		),
+		(
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+			a(A::Gave {
+				name: "bo".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+		),
+		(
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e1,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+		),
+		(
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 4,
+				asked: 4,
+				held: 9,
+			}),
+		),
+		(
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 9,
+			}),
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 3,
+				held: 12,
+			}),
+		),
+		// `asked` speaks only in the capped case, so both sides cap.
+		(
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 8,
+				held: 9,
+			}),
+			a(A::Gave {
+				name: "ada".into(),
+				essence: e0,
+				gained: 3,
+				asked: 6,
+				held: 9,
+			}),
+		),
+		(
+			a(A::WereGiven {
+				essence: e0,
+				gained: 3,
+			}),
+			a(A::WereGiven {
+				essence: e1,
+				gained: 3,
+			}),
+		),
+		(
+			a(A::WereGiven {
+				essence: e0,
+				gained: 3,
+			}),
+			a(A::WereGiven {
+				essence: e0,
+				gained: 5,
+			}),
+		),
+		(
+			a(A::TimeIs { hour: 6, minute: 0 }),
+			a(A::TimeIs {
+				hour: 18,
+				minute: 0,
+			}),
+		),
+		(
+			a(A::TimeIs { hour: 6, minute: 0 }),
+			a(A::TimeIs {
+				hour: 6,
+				minute: 30,
+			}),
+		),
+		(
+			a(A::TimeSet { hour: 6, minute: 0 }),
+			a(A::TimeSet {
+				hour: 18,
+				minute: 0,
+			}),
+		),
+		(
+			a(A::TimeSet { hour: 6, minute: 0 }),
+			a(A::TimeSet {
+				hour: 6,
+				minute: 30,
+			}),
+		),
+		(
+			a(A::ResetPlayer { name: "ada".into() }),
+			a(A::ResetPlayer { name: "bo".into() }),
+		),
+		(
+			a(A::SharesYourIp { name: "ada".into() }),
+			a(A::SharesYourIp { name: "bo".into() }),
+		),
+		(
+			a(A::Banned {
+				name: "ada".into(),
+				ip: "10.0.0.1".into(),
+			}),
+			a(A::Banned {
+				name: "bo".into(),
+				ip: "10.0.0.1".into(),
+			}),
+		),
+		(
+			a(A::Banned {
+				name: "ada".into(),
+				ip: "10.0.0.1".into(),
+			}),
+			a(A::Banned {
+				name: "ada".into(),
+				ip: "10.0.0.2".into(),
+			}),
+		),
+		(
+			a(A::BanEntry {
+				name: "ada".into(),
+				ip: "10.0.0.1".into(),
+			}),
+			a(A::BanEntry {
+				name: "bo".into(),
+				ip: "10.0.0.1".into(),
+			}),
+		),
+		(
+			a(A::BanEntry {
+				name: "ada".into(),
+				ip: "10.0.0.1".into(),
+			}),
+			a(A::BanEntry {
+				name: "ada".into(),
+				ip: "10.0.0.2".into(),
+			}),
+		),
+		(
+			a(A::Unbanned {
+				arg: "ada".into(),
+				removed: 1,
+			}),
+			a(A::Unbanned {
+				arg: "bo".into(),
+				removed: 1,
+			}),
+		),
+		(
+			a(A::Unbanned {
+				arg: "ada".into(),
+				removed: 1,
+			}),
+			a(A::Unbanned {
+				arg: "ada".into(),
+				removed: 2,
+			}),
+		),
+		(
+			a(A::NoBanMatches { arg: "ada".into() }),
+			a(A::NoBanMatches { arg: "bo".into() }),
+		),
 	];
-	for (a, b) in pairs {
+	for (x, y) in pairs {
 		assert_ne!(
-			render(&a),
-			render(&b),
-			"{a:?} and {b:?} render alike, so an argument never reaches the words"
+			render(&x),
+			render(&y),
+			"{x:?} and {y:?} render alike, so an argument never reaches the words"
 		);
 	}
 }

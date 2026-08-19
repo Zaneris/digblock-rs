@@ -37,9 +37,12 @@ fn welcome_anchors_tod_and_heartbeat_advances_it() {
 		.expect("heartbeat within one sync period");
 	// One `TOD_SYNC_TICKS` period at the sun's rate — it has moved
 	// toward noon (tod falls).
+	use digblock_net::protocol::TICK_RATE;
+	let advance =
+		360.0 / digblock_core::sun::DAY_SECS * (super::TOD_SYNC_TICKS as f32 / TICK_RATE as f32);
 	assert!(
-		(welcome_tod - beat - 3.0).abs() < 0.1,
-		"welcome {welcome_tod} → beat {beat}"
+		(welcome_tod - beat - advance).abs() < 0.1,
+		"welcome {welcome_tod} → beat {beat} (expected a {advance} fall)"
 	);
 }
 

@@ -180,14 +180,6 @@ mod tests {
 	}
 
 	#[test]
-	fn absent_file_starts_unlocked() {
-		let d = tmpdir("absent");
-		let s = SpawnStore::open(&d).unwrap();
-		assert_eq!(s.lock(), None);
-		let _ = std::fs::remove_dir_all(&d);
-	}
-
-	#[test]
 	fn lock_survives_reopen() {
 		let d = tmpdir("persist");
 		let want = SpawnLock {

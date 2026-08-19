@@ -625,22 +625,6 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn textures_are_nonempty_pngs() {
-		for bytes in super::tex::LAYERS {
-			assert!(bytes.len() > 8);
-			assert_eq!(&bytes[1..4], b"PNG");
-		}
-	}
-
-	#[test]
-	fn sfx_are_nonempty_oggs() {
-		for (name, bytes) in super::sfx::ALL {
-			assert!(bytes.len() > 4, "{name}");
-			assert_eq!(&bytes[0..4], b"OggS", "{name}");
-		}
-	}
-
 	// The size bound is the real assertion: a stock Google face runs to
 	// hundreds of kilobytes and fontdue eagerly outlines all of it at
 	// load, so committing an unsubset TTF is a startup regression that

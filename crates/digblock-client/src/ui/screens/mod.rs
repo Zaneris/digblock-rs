@@ -143,6 +143,45 @@ mod tests {
 		out
 	}
 
+	/// The sweep's roster is hand-kept, and what keeps it honest is the
+	/// capture roster every page joins anyway: a new `DebugScreen`
+	/// variant fails to COMPILE here until this map says which fixture
+	/// draws it — or says, explicitly, that it is a held-item state and
+	/// not a page. Without this, a new screen escapes the one-text-size
+	/// and dim/panel sweeps below without anyone choosing that.
+	fn fixture_of(d: crate::DebugScreen) -> Option<&'static str> {
+		use crate::DebugScreen as D;
+		match d {
+			D::Menu => Some("menu"),
+			D::Inventory => Some("inventory"),
+			D::Alchemy => Some("alchemy"),
+			D::Skills => Some("character"),
+			D::Transmute | D::Transmuting => Some("alchemy-transmuting"),
+			// Held-item states, not pages: nothing draws a panel.
+			D::Hand | D::Bucket { .. } | D::Tool(_) | D::Torch => None,
+		}
+	}
+
+	#[test]
+	fn the_sweep_covers_every_page_the_capture_roster_names() {
+		use crate::DebugScreen as D;
+		let drawn: Vec<&str> = each_screen((800, 600), 1.0)
+			.iter()
+			.map(|(n, _)| *n)
+			.collect();
+		for d in [
+			D::Menu,
+			D::Inventory,
+			D::Alchemy,
+			D::Skills,
+			D::Transmute,
+			D::Transmuting,
+		] {
+			let name = fixture_of(d).expect("a page maps to a fixture");
+			assert!(drawn.contains(&name), "{name} missing from the sweep");
+		}
+	}
+
 	/// A screen is a panel over a dimmed world, and every screen should
 	/// present that the same way. The menu laid a heavier dim behind a
 	/// lighter panel while the in-game screens did the opposite — two

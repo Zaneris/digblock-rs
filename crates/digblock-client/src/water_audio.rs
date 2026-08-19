@@ -249,6 +249,21 @@ mod tests {
 		w.set_chunk(ChunkPos::new(1, 0, 0), (16.0, 0.0, 0.0), &[pack(5, 1, 1)]);
 		w.update(1.0, Vec3::ZERO, &mut out);
 		assert_eq!(starts(&out), 2);
+
+		// And the CAP: one cluster per chunk of a 2x2 square — all four
+		// inside RADIUS, all past MIN_SEP of each other, one more than
+		// there are voices. The surplus cluster gets no voice.
+		let mut w = WaterAudio::default();
+		let mut out = Vec::new();
+		for (cx, cz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+			w.set_chunk(
+				ChunkPos::new(cx, 0, cz),
+				(cx as f32 * 16.0, 0.0, cz as f32 * 16.0),
+				&[pack(1, 1, 1)],
+			);
+		}
+		w.update(1.0, Vec3::ZERO, &mut out);
+		assert_eq!(starts(&out), MAX_VOICES, "the cap holds");
 	}
 
 	#[test]

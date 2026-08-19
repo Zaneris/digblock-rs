@@ -1,16 +1,35 @@
 use super::*;
 
-/// §3.2's yield curve and §4.2's waste curve, asserted as the shape a
-/// player feels rather than as their arithmetic: mastery keeps
-/// everything, the first level keeps less, neither curve ever moves the
-/// wrong way, and a craft never returns MORE than its ideal. The
-/// endpoint values themselves are the curve's own expressions evaluated
-/// by hand — writing them down here restates the formula and moves on
-/// every retune without catching anything.
+/// §3.2's yield curve and §4.2's waste curve: the relationships a
+/// player feels — mastery keeps everything, a novice keeps less,
+/// neither curve ever moves the wrong way, a craft never returns MORE
+/// than its ideal — plus derived-output goldens along both curves.
+///
+/// The goldens are the deliberate-pin exemption at work: monotone
+/// bounds cannot notice a curve changing SLOPE, and these two ARE the
+/// player-facing economy. A retune moves these rows knowingly; an
+/// accidental reshape fails them.
 #[test]
 fn efficiency_and_waste_hit_their_pinned_endpoints() {
 	use crate::skills::MAX_LEVEL;
 	const BASES: [u32; 4] = [3, 9, 18, 27];
+
+	// Derived goldens: the novice keeps two fifths, the midpoint seven
+	// tenths; waste starts, steps down at the dip, holds its plateau,
+	// and resumes the linear tail to the mastery floor.
+	for (level, yield100, waste) in [
+		(1, 40, 1600),
+		(2, 40, 1594),
+		(50, 70, 1325),
+		(55, 73, 1297),
+		(56, 73, 1250),
+		(63, 77, 1250),
+		(64, 78, 1246),
+		(MAX_LEVEL, 100, 1050),
+	] {
+		assert_eq!(scaled_yield(100, level), yield100, "yield at {level}");
+		assert_eq!(waste_permille(level), waste, "waste at {level}");
+	}
 
 	for base in BASES {
 		assert_eq!(

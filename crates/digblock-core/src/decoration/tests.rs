@@ -62,7 +62,7 @@ fn memo_hits_match_misses() {
 }
 
 #[test]
-fn candidates_are_deterministic_and_spaced() {
+fn candidates_are_deterministic_and_shared_across_the_apron() {
 	let seed = 1234.5678;
 	let a = structures_near(0, 0, seed);
 	let b = structures_near(0, 0, seed);

@@ -465,9 +465,11 @@ mod tests {
 			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
 		}
 		let first = pred.input_batch();
+		// The last INPUT_REDUNDANCY ticks of the 10 predicted from 100.
+		let window: Vec<u32> = (110 - INPUT_REDUNDANCY as u32..110).collect();
 		assert_eq!(
 			first.inputs.iter().map(|i| i.tick).collect::<Vec<_>>(),
-			vec![106, 107, 108, 109]
+			window
 		);
 		pred.recycle_batch(first);
 		let server = player.state();

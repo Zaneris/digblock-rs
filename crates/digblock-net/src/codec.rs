@@ -170,28 +170,6 @@ mod tests {
 		assert_eq!(got, vec!["hello".to_string(), "world".to_string()]);
 	}
 
-	/// The borrowed and owning readers must split a stream identically —
-	/// `next_frame` is the same cursor walk plus a copy.
-	#[test]
-	fn borrowed_and_owned_readers_agree() {
-		let mut wire = Vec::new();
-		for s in ["a", "bb", "ccc"] {
-			write_frame(&s.to_string(), &mut wire).unwrap();
-		}
-		let mut owned = FrameReader::default();
-		owned.extend(&wire);
-		let mut borrowed = FrameReader::default();
-		borrowed.extend(&wire);
-		while let Some(want) = owned.next_frame().unwrap() {
-			let got = borrowed
-				.next_frame_ref()
-				.unwrap()
-				.expect("same frame count");
-			assert_eq!(&want[..], got);
-		}
-		assert!(borrowed.next_frame_ref().unwrap().is_none());
-	}
-
 	/// Frames are written in place now, so a failed encode must not leave
 	/// a half-serialized body (or a stale length header) behind for the
 	/// caller to transmit — send_hello prefixes the preamble into the

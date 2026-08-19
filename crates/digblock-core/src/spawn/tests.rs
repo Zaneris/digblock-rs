@@ -123,6 +123,7 @@ fn lock_region_covers_what_the_test_reads() {
 	let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
 	let h = a.y.floor() as i32 - 2;
 	// Every cell an edit could be placed in to break this spawn.
+	let mut moved = 0u32;
 	for cz in az - CLEAR..=az + CLEAR {
 		for cx in ax - CLEAR..=ax + CLEAR {
 			for cy in h..=h + CAPSULE {
@@ -136,6 +137,7 @@ fn lock_region_covers_what_the_test_reads() {
 				};
 				cells.insert((cx, cy, cz), cell);
 				if resolve(a, SEED, &overlay(cells)) != a {
+					moved += 1;
 					assert!(
 						region.contains(cx, cy, cz),
 						"edit at ({cx},{cy},{cz}) moves spawn but is not protected"
@@ -144,6 +146,8 @@ fn lock_region_covers_what_the_test_reads() {
 			}
 		}
 	}
+	// A sweep that never saw the spawn move proved nothing.
+	assert!(moved > 0, "no probed edit moved the spawn");
 }
 
 /// The property the whole module exists to provide, asserted against

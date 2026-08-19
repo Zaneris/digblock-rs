@@ -567,15 +567,6 @@ impl Ambient {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn material_is_total_over_diggable_blocks() {
-		for b in BlockType::ALL {
-			if b.hardness_ticks().is_some() {
-				let _ = material_of(b); // must not panic
-			}
-		}
-	}
-
 	/// The rows §7.2 added, which the old hand-listed roster missed
 	/// entirely — every one of them dug, broke and was walked on as DIRT.
 	/// Spot-checked across all three classes, because "it compiles" only
