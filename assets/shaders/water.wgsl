@@ -1,33 +1,27 @@
-// Water shader — fork of chunk.wgsl with the shared two-word vertex:
-// word 0 is the solid geometry packing (position/normal/corner; ao and
-// tint bits unused), word 1 holds the texture layer with the per-vertex
-// surface payload packed above it, in this order: the drop code, the
-// falling-water flag, the horizontal flow dir, the splash code, and the
-// vertex fall distance.
+// Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0
+// is the solid geometry packing, word 1 the texture layer with the
+// per-vertex surface payload packed above it (drop code, falling flag, flow
+// dir, splash code, fall distance).
 //
-// The drop code d is DROP_LEVELS minus the strongest water amount at the
-// corner, and the vertex sinks that many levels below its lattice
-// height — so a surface corner sits at exactly the water level the sim
-// computed there, with corner heights shared between adjacent cells (no
-// cracks). Falling water scrolls its side faces downward; the flow dir
-// (FLOW_DIRS below) scrolls top faces along the current; the splash code
-// ranks the fall's impact cell above the pool cells around it by
-// Chebyshev distance — a static foam wash fading outward, and every rank
-// boosts ripple turbulence; the fall distance counts blocks below the
-// lip (bottom-plane verts carry one more so interpolation is continuous)
-// and drives gravity stretch and aeration whitening.
-// The animation clock rides in frame.light_color.w. Lighting is RTGI
-// (GI-DESIGN.md): a probe gather at the surface world position through
-// gi_common's shared cascade fallthrough — evaluated PER VERTEX and
-// interpolated (R17: water quads are strictly per-cell, so vertices sit
-// at most a cell apart against a probe field spaced wider than that and
-// smooth by construction; the full blend is a burst of loads, and
-// running it per fragment at full res was the river frame spike) — plus
-// a short per-fragment sun DDA, which stays per pixel because shadow
-// edges on the surface are the one lighting signal sharper than the
+// The drop code sinks a vertex below its lattice height by the strongest
+// water amount at that CORNER, so a surface corner sits at exactly the level
+// the sim computed and adjacent cells share it — no cracks. Falling water
+// scrolls its side faces downward; the flow dir scrolls top faces along the
+// current; the splash code ranks the fall's impact cell above the pool
+// around it by Chebyshev distance, a static foam wash that also boosts
+// ripple turbulence; the fall distance drives gravity stretch and aeration
+// whitening.
+//
+// Lighting is RTGI: a probe gather at the surface world position, evaluated
+// PER VERTEX and interpolated (R17 — water quads are strictly per-cell, so
+// vertices sit at most a cell apart against a probe field spaced wider and
+// smooth by construction; per fragment at full res was the river frame
+// spike), plus a short per-fragment sun DDA, which stays per pixel because
+// shadow edges on the surface are the one lighting signal sharper than the
 // lattice.
-// Water never reads the half-res resolve buffers, whose depth belongs
-// to the solids BEHIND it. It writes OPAQUE — the fragment owns its own
+//
+// Water never reads the half-res resolve buffers, whose depth belongs to the
+// solids BEHIND it. **It writes OPAQUE** — the fragment owns its own
 // backdrop (see the alpha note in `fs`).
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl

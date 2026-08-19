@@ -1,81 +1,42 @@
 // RTGI resolve (GI-DESIGN.md): the half-res fullscreen pass that turns
-// probes into per-pixel lighting. World position from the R32F depth
-// copy, face normal from derivatives (exact on a blocky world), then:
-// indirect = the shared gi_common cascade fallthrough (8 surrounding
-// C0 probes, trilinear x backface x exact short-DDA occlusion through
-// the voxel window — the blocky-world replacement for DDGI's
-// visibility maps — then C1, then the analytic dome); direct = ONE
-// sun-visibility DDA per pixel — the entire replacement for the
-// shadow-map system.
+// probes into per-pixel lighting. World position from the R32F depth copy,
+// face normal from derivatives (exact on a blocky world), then indirect =
+// the shared gi_common cascade fallthrough, direct = ONE sun-visibility DDA
+// per pixel — the entire replacement for the shadow-map system.
 //
-// M4 made that sun ray STOCHASTIC and averaged it through a reprojected
-// history; the smear fixes that followed (R9, R13) established that the
-// screen history's RESAMPLING is the one artifact no validation can
-// remove — repeated off-lattice bilinear fetches drag the accumulated
-// image along the direction of travel, and the only signal sharp enough
-// to show it is this pass's sun visibility. So the sun ray is now
-// DETERMINISTIC per world point and the penumbra is reconstructed
-// SPATIALLY (the SIGMA / FidelityFX-shadow pattern): the cone jitter
-// still exists but is STATIC, hashed from sub-block world cells — so
-// a world point asks the same question every frame from every camera,
-// and its history has nothing stochastic left to average (per PIXEL was
-// tried first and shimmered under rotation — see the jitter's comment in
-// fs below). `gi_sun_vis` returns the occluder
-// distance, occluder_t x tan(cone) is the physical penumbra width, and
-// gi_atrous blurs exactly that many texels. Sun history is then capped
-// at N_SUN frames (see below) purely to antialias the dithered edge, and
-// the smear is bounded by construction.
+// The sun ray is DETERMINISTIC per world point and the penumbra is
+// reconstructed SPATIALLY (the SIGMA / FidelityFX pattern): `gi_sun_vis`
+// returns the occluder distance, occluder_t x tan(cone) is the physical
+// width, and gi_atrous blurs exactly that many texels. Sun history caps at
+// N_SUN purely to antialias the dithered edge, so smear is bounded by
+// construction (R13, R14).
 //
-// The jitter cannot be dropped outright. Quantization exists so PROBES
-// hold still between updates; on a per-pixel ray it is bug 1 — sun.rs
-// pins the caster to dir.z == 0 and gi.rs snaps it to a small rational, so
-// every shadow ray is an exactly-planar, exactly-rational line through a
-// cubic lattice, which aliases identically in every z-slice and
-// periodically in x/y. That is the streaking, and it is pinned to the
-// WORLD, not the screen. A per-pixel cone offset breaks the rational
-// slope pixel by pixel; making it static in TIME is what turns the old
-// temporal noise into a fixed dither the spatial filter resolves. The
-// offset also self-scales as a penumbra sampler: at contact range the
-// direction spread displaces the tested edge by well under a texel
-// (contact shadows stay hard), and far from the occluder it dithers
-// exactly the band the true penumbra spans.
+// The cone jitter cannot be dropped: sun.rs pins the caster to dir.z == 0
+// and gi.rs snaps it to a small rational, so every shadow ray is an
+// exactly-planar rational line through a cubic lattice and aliases
+// identically in every z-slice. That is the streaking. The offset breaks
+// the rational slope, and it is hashed from sub-block WORLD cells rather
+// than pixels — per-pixel was tried first and shimmered under rotation,
+// because a moving camera re-asks a different fixed question every frame.
+// It also self-scales as a penumbra sampler: at contact range the spread
+// displaces the tested edge by well under a texel, so contact stays hard.
 //
-// MRT, both rgba32f (gi::GI_ACC_FORMAT): indirect rgb + view distance,
-// and sun visibility + (face-normal code packed with the history length
-// into one channel — WebGPU's baseline attachment budget is exactly
-// spent, so the penumbra width earned its channel by the pack, and the
-// packed pair sits well inside f32's mantissa; every reader is a
-// textureLoad, nothing ever hardware-filters these) + sun-ray water path
-// + penumbra width in half-res texels.
+// MRT, both rgba32f (gi::GI_ACC_FORMAT): indirect rgb + view distance; sun
+// visibility + the face-normal code packed with history length into one
+// channel + sun-ray water path + penumbra width in half-res texels. Every
+// reader is a textureLoad — nothing ever hardware-filters these.
 //
-// BOTH targets hold a running average, and that is what dictates the
-// format. rgba8 was first and could not: at full history length each
-// frame contributes 1/N of a difference, and in 8 bits that rounds to
-// zero, so the average stopped moving. rgba16f replaced it and failed the
-// SAME way — half-float's mantissa is short enough that near a stored
-// value of 1.0 the update `hi + (indirect - hi)/N` rounds away unless the
-// difference is a large fraction of the range. Much of the signal range
-// never converged: every pixel froze where it stood when the camera
-// stopped, leaving a stale pattern locked to the path the player walked,
-// permanently. That is what "weirdness that moves with you" was.
+// **The format is load-bearing, not a preference.** Both targets hold a
+// running average, so each frame contributes 1/N of a difference; rgba8 and
+// then rgba16f both rounded that to zero at full history length, and every
+// pixel froze where it stood when the camera stopped. The rule is that the
+// mantissa must carry the smallest increment the history length asks for.
+// `history_format_resolves_the_accumulator` in gi.rs pins N_MAX against the
+// format, so raising one without the other fails the build rather than the
+// picture.
 //
-// It survived because every capture in this engine was a still, which is
-// exactly when a temporal artifact has already converged away. `--fly` vs
-// `--warp` (GI-DESIGN.md "Measuring motion") is what finally photographed
-// it: a large mean difference over a substantial slice of the screen even
-// after a long spell of stillness, falling on f32 to the same floor as
-// switching accumulation off entirely. Frame-to-frame stability at rest
-// improved several times over with it.
-//
-// The rule is therefore not "use a float format" but that the mantissa has
-// to carry the smallest increment the history length asks for: alpha of
-// 1/N stalls once the residual falls under about N ulps, which f32 puts
-// far under one output LSB. `history_format_resolves_
-// the_accumulator` in gi.rs pins N_MAX against the format so raising one
-// without the other fails the build rather than the picture.
-//
-// The gather core and the group(2) world bindings come from
-// gi_common.wgsl (prepended by digblock-assets); group 1 is empty.
+// The gather core and the group(2) world bindings come from gi_common.wgsl
+// (prepended by digblock-assets); group 1 is empty.
 
 struct GiResolve {
 	inv_view_proj: mat4x4f,
@@ -509,48 +470,30 @@ fn fs(i: VsOut) -> FsOut {
 	// THE FINAL GATHER. One cosine-weighted ray from this pixel, resolved
 	// against the voxel window and terminated in the probe cache.
 	//
-	// The indirect term used to be the cascade blend at `sp` and nothing
-	// else, which is why this engine had no ambient occlusion and could
-	// not have had any: C0 samples irradiance at its own spacing and
-	// interpolates, so it is smooth by construction and cannot represent
-	// darkening at contact scale. The per-probe occlusion DDA stops light
-	// leaking THROUGH a wall; it does not darken the corner where two meet.
+	// This is where contact darkening comes from, and it is not a separate
+	// term: C0 samples irradiance at its own spacing and interpolates, so
+	// the cascade blend is smooth by construction and cannot represent
+	// darkening at contact scale — the per-probe occlusion DDA stops light
+	// leaking THROUGH a wall but does not darken the corner where two meet.
 	// A ray that travels a fraction of a block and returns a wall's dim
-	// bounce instead of the sky does, for free — contact darkening is not a
-	// separate term here, it is what a gather ray does when something is
-	// close.
+	// bounce instead of the sky does, for free.
 	//
-	// It also demotes the cache, which is the other half of the point. The
-	// probe field's convergence transient was measured (GI-DESIGN.md
-	// "Measuring motion") to be inherent to its cadence and immune to both
-	// better restarts and a vastly larger sweep budget; the way out was
-	// never to sweep harder but to stop making the near field depend on it.
+	// It also demotes the cache, which is the other half of the point: the
+	// probe field's convergence transient was measured to be inherent to
+	// its cadence and immune to both better restarts and a vastly larger
+	// sweep budget, so the way out was to stop making the near field depend
+	// on it.
 	//
-	// Beyond the window's reach the ray has no voxel data to march, so
-	// those pixels keep the cascade blend — which is also where a per-pixel
-	// answer is worth least.
-	//
-	// "The window's reach" is `gi_lateral_max` and nothing narrower. This
-	// used to subtract GI_GATHER_T as well, reserving a whole gather ray's
-	// length as margin so that a ray launched at the limit could still run
-	// its full length inside the data. That margin was unnecessary and it
-	// was expensive: `gi_march` ALREADY breaks on the same bound and
-	// returns a miss, so a ray leaving the window reads nothing invalid —
-	// it answers sky, which is what the fallback was going to say anyway.
-	// All the margin bought was a ring where a pixel that COULD have
-	// traced took the cascade blend instead.
-	//
-	// It cost more than it looks. Past C1's coverage the blend is the
-	// analytic sky dome, so distant grass was lit by desaturated sky rather
-	// than by its own bounce and came out BLUE: measured over a distant
-	// hillside, its green-blue balance recovered most of the way to what a
-	// window with real data out there gets when the margin came off — for
-	// no memory and no frame time. The change is confined to the horizon
-	// band and follows terrain silhouettes rather than a
-	// camera-centred arc, so it moves the existing hard switch outward
-	// rather than adding a new one, and it lands where the participating
-	// medium has already faded the surface. See the R8 note in GI-DESIGN.md
-	// for why widening the window itself was measured and declined.
+	// **The reach is `gi_lateral_max` and nothing narrower.** It used to
+	// subtract GI_GATHER_T as margin so a ray launched at the limit could
+	// run its full length inside the data — unnecessary, because `gi_march`
+	// already breaks on the same bound and answers sky, which is what the
+	// fallback would have said anyway. All the margin bought was a ring
+	// where a pixel that COULD have traced took the cascade blend instead,
+	// and past C1's coverage that blend is the analytic sky dome, so
+	// distant grass was lit by desaturated sky and came out BLUE. Removing
+	// it recovered most of that for no memory and no frame time. See R18 in
+	// GI-DESIGN.md for why widening the window itself was declined.
 	let lat = sp.xz - rz.cam.xz;
 	let gather_max = gi_lateral_max(f32(side));
 	let far = dot(lat, lat) > gather_max * gather_max;

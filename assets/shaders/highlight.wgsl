@@ -131,47 +131,34 @@ fn hash11(x0: u32) -> f32 {
 // ---------------------------------------------------------------------
 // The crack: a TREE of jagged polylines, not a radial web.
 //
-// Root branches leave a hash-placed origin; each root throws off one
-// branch partway along, and whatever slots remain carry one more
-// generation. Every polyline's heading random-walks at every joint, so
-// no part of the pattern is a rotation of any other part. That is the
-// whole difference from the spoke web this replaced: a spoke is a ray
-// from the centre and enough of them read as a pinwheel however hard you
-// wobble them, whereas a line that wanders and splits reads as something
-// giving way.
+// Root branches leave a hash-placed origin; each root throws off one branch
+// partway along, and whatever slots remain carry one more generation. Every
+// polyline's heading random-walks at every joint, so no part of the pattern
+// is a rotation of any other. A spoke web reads as a pinwheel however hard
+// you wobble it; a line that wanders and splits reads as something giving
+// way.
 //
-// Growth is by ARC LENGTH from the origin, not by radius: a point is
-// drawn only once the hold has propagated past it. So the break spreads
-// outward as you dig and retreats back into the origin as a released
-// hold decays (`skills::dig_decayed`), which is the same motion run
-// backwards rather than a fade.
+// Growth is by ARC LENGTH from the origin, not by radius, so the break
+// spreads outward as you dig and RETREATS into the origin as a released
+// hold decays (`skills::dig_decayed`) — the same motion run backwards
+// rather than a fade.
 //
-// The tree is walked ONCE per pixel and children are written into FIXED
-// slots — `nroot + i` for root i, `2·nroot + j` for j's child. A
+// The tree is walked ONCE per pixel and children go into FIXED slots. A
 // next-free-slot counter would reshuffle the slots, and therefore the
 // per-branch hashes, and therefore the whole pattern, as growth reached
-// spawn points in a different order. That pops mid-hold.
+// spawn points in a different order — that pops mid-hold.
 //
-// Roots each fork ONCE, rather than a few of them forking twice. Both
-// spend the same slot budget, but a fork lands beside its parent,
-// so the wide-and-shallow tree covers the face while the narrow-and-deep
-// one piles into one quadrant and leaves the opposite one bare — which
-// is what made the first two cuts read as a twig stuck to a block rather
-// than a block coming apart.
+// Roots each fork ONCE rather than a few forking twice: both spend the same
+// budget, but a fork lands beside its parent, so wide-and-shallow covers the
+// face while narrow-and-deep piles into one quadrant and leaves the opposite
+// one bare.
 //
-// EVERY KNOB BELOW MARKED `per cell` IS A RANGE, NOT A VALUE, and is
-// drawn from the cell's own hash. That is the difference between blocks
-// whose cracks differ and blocks that crack DIFFERENTLY: with the shape
-// of the tree fixed and only its angles jittered, a fixed count of lines
-// from a point with one fork each is a signature, and the eye reads the
-// signature, not the angles. Rolling the root count, the jag, the fork
-// angle, the segment length and the weight per cell is what makes one
-// block split into four long heavy pieces and its neighbour craze into a
-// dense fine web.
-//
-// They come off the CELL hash, not the (cell, face) one that places the
-// individual lines — so all six faces of a block fail the same WAY with
-// different lines, which is what a single block coming apart looks like.
+// **Every knob below marked `per cell` is a RANGE, not a value**, drawn from
+// the cell's own hash. With the tree's shape fixed and only its angles
+// jittered, a fixed count of lines with one fork each is a signature, and
+// the eye reads the signature rather than the angles. They come off the CELL
+// hash, not the (cell, face) one that places individual lines, so all six
+// faces of a block fail the same WAY with different lines.
 const CR_BRANCH = 16u; // slots; the ceiling on roots × 2 + their forks
 const CR_STEP = 4u;    // loop bound; deeper generations stop earlier
 const CR_ROOT_LO = 4u; // per cell: fewest roots...

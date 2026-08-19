@@ -1,39 +1,30 @@
-// One participating medium — the whole atmosphere in one function, and
-// the replacement for `apply_fog` (deleted at the M1 demolition).
+// One participating medium — the whole atmosphere in one function, and the
+// replacement for the two hand-tuned models it deleted.
 //
-// `apply_fog` was two hand-tuned models bolted together: a submerged
-// Beer-Lambert single-scatter, and an above-water
-// `mix(col, fog_color, smoothstep(near, far, d))`. The second is why the
-// horizon haze never read as distance. It fogged toward ONE flat colour
-// regardless of view direction, so far terrain sat behind a grey curtain
-// instead of behind air, and no amount of retuning the smoothstep could
-// fix it — the quantity was wrong, not the curve.
-//
-// The right quantity is radiative transfer along a segment of length d
-// through a medium of extinction sigma:
+// Radiative transfer along a segment of length d through a medium of
+// extinction sigma:
 //
 //     L = L_surface * exp(-sigma*d)  +  L_in * (1 - exp(-sigma*d))
 //
-// and the entire design is in where L_in comes from: `sky_base`, the
-// SAME function the sky pass draws. That makes the medium
-// self-consistent at infinity — as d grows a surface fades to exactly
-// the sky pixel that would be behind it, in that direction, sunset glow
-// included. Haze and sky cannot drift apart because there is only one
-// of them. It is also what lets the draw-distance rim disappear: fading
-// terrain into the literal sky behind it leaves nothing to see.
+// **The entire design is in where L_in comes from: `sky_base`, the SAME
+// function the sky pass draws.** That makes the medium self-consistent at
+// infinity — as d grows a surface fades to exactly the sky pixel that would
+// be behind it, in that direction, sunset glow included. Haze and sky cannot
+// drift apart because there is only one of them, and it is what lets the
+// draw-distance rim disappear. The old `mix(col, fog_color, smoothstep(...))`
+// fogged toward one flat colour regardless of view direction, so no retuning
+// of the curve could have fixed it — the quantity was wrong, not the shape.
 //
 // Water is the same equation with a different sigma and a different
-// in-scatter DIRECTION (down-welling, not along the view ray), which is
-// exactly why water tints by depth while air tints by distance. That one
-// difference subsumes the old underwater murk, the old water-thickness
-// tint and the old alpha ramp together.
+// in-scatter DIRECTION (down-welling, not along the view ray), which is why
+// water tints by depth while air tints by distance. That one difference
+// subsumes the old underwater murk, water-thickness tint and alpha ramp
+// together.
 //
-// This prelude is deliberately dependency-free — no `frame`, no
-// `sky_base`, every input an argument — so it can be prepended to the GI
-// compute kernels, which carry their own uniform blocks and cannot take
-// the Frame prelude. That is what makes it possible for the view ray and
-// the sun ray to share one water extinction constant instead of the two
-// that used to drift.
+// Deliberately dependency-free — no `frame`, no `sky_base`, every input an
+// argument — so it can be prepended to the GI compute kernels, which carry
+// their own uniform blocks. That is what lets the view ray and the sun ray
+// share one water extinction constant instead of the two that used to drift.
 
 // Air extinction, expressed as a VISIBILITY DISTANCE rather than a raw
 // coefficient: Koschmieder's relation, sigma = ln(1/0.02)/V, at the

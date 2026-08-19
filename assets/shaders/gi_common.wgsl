@@ -661,37 +661,24 @@ fn gi_indirect(
 const LIGHT_RANGE = 24.0;
 // Retuned at R26 — the reasoning and the sweep live on gi_probe's twin.
 const LIGHT_GAIN = 0.75;
-// Where the point model's near field stops being taken literally, in
-// blocks. Beyond it the falloff is exactly 1/d^2 and NOTHING about the
-// pool changes; inside, irradiance holds at 1/LIGHT_NEAR^2.
+// Where the point model's near field stops being taken literally, in blocks.
+// Beyond it the falloff is exactly 1/d^2 and NOTHING about the pool changes;
+// inside, irradiance holds at 1/LIGHT_NEAR^2.
 //
-// A voxel emitter is not a point, and a point's 1/d^2 diverges: the
-// support block's top face sits a fraction of a block from the torch's
-// centre, so it took `emit * LIGHT_GAIN` whole — many times over, before
-// the surface albedo, against a display whose white is 1.0. The result
-// was a hard-edged ellipse of saturated orange under every torch, texture
-// detail gone inside it (measured: the red channel clipped across a
-// visible slice of the vault frame, with not one pixel actually white —
-// the giveaway that this is per-channel saturation, not a bright
-// surface).
+// A voxel emitter is not a point, and a point's 1/d^2 diverges: the support
+// block's top face sits a fraction of a block from the torch's centre, so it
+// took `emit * LIGHT_GAIN` whole against a display whose white is 1.0. The
+// result was a hard-edged ellipse of saturated orange with the floor texture
+// gone inside it — per-channel saturation shifting hue to the light's, not a
+// bright surface.
 //
-// The clamp already existed, tighter, for the divide-by-nothing case;
-// this only widens it. The number is a DISPLAY fact, not a physical one,
-// and this is explicitly a stopgap: the honest fix is an HDR scene target
-// and one tonemap on the composite, which would roll the highlight off
-// instead of flattening it, and is on the backlog.
-//
-// This value is a measured trade, not the extreme. Clipping in the vault
-// pool band falls by most of an order of magnitude here and bottoms out a
-// little further along — but what is left at the bottom IS the torch's
-// own emissive sprite, which no falloff can touch (every wider clamp
-// measures identically), and buying that last sliver costs a real
-// fraction of pool brightness for a pool that already reads faint.
-// What is left here is a small hot core at the flame's base, which is
-// what a flame should do; what went away is the flat, hard-edged
-// ellipse with no floor texture in it. Rooms are unaffected either way:
-// the floor and wall bands away from the torch barely move, because
-// this cannot touch anything past the radius.
+// A measured trade, not the extreme: clipping bottoms out a little further
+// along, but what survives there IS the torch's own emissive sprite, which
+// no falloff can touch, and buying that last sliver costs real pool
+// brightness on a pool that already reads faint. **A DISPLAY fact, not a
+// physical one, and explicitly a stopgap** — the honest fix is an HDR scene
+// target and one tonemap, which would roll the highlight off instead of
+// flattening it.
 const LIGHT_NEAR = 2.0;
 // The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
 // anyway; this covers the worst dense diagonal with margin, because a
@@ -699,52 +686,36 @@ const LIGHT_NEAR = 2.0;
 // gi_sun_vis shipped once, its cap set to half what its window demanded.
 const GI_NEE_ITERS = 64;
 
-// The per-pixel direct term for local lights: ONE shadow ray, but at a
-// light RESAMPLED over the whole in-range list rather than at the
-// brightest one (R27; R20 built the shadow ray and picked the argmax).
+// The per-pixel direct term for local lights: ONE shadow ray, at a light
+// RESAMPLED over the whole in-range list rather than at the brightest one
+// (R27; R20 built the ray and picked the argmax).
 //
-// R20's argmax gave one light a zero-variance estimator and left every
-// other emitter to the gather's direct-hit lottery — `alb * emit *
-// LIGHT_GAIN`, many times over a display whose white is 1.0, on
-// vanishingly small odds. Measured on the DIG_TORCHES courtyard,
-// same-pose walking flicker climbs with every emitter the argmax does NOT
-// cover, and deleting the gather's emitter term outright removes most of
-// that flicker for a small fraction of the scene's light. GI-DESIGN.md
-// R27 has the tables.
+// The argmax gave one light a zero-variance estimator and left every other
+// emitter to the gather's direct-hit lottery. So the gather no longer
+// returns emitter radiance AT ALL, and this covers every emitter instead.
+// The estimator is Talbot-style RIS in its exact discrete form: the loop
+// already visits every entry, so there is no candidate SUBSET to draw — one
+// weighted-reservoir pass selects light i with probability exactly
+// p_i / sum(p), and the contribution weight is sum(p) / p_sel.
 //
-// So the gather no longer returns emitter radiance AT ALL (see
-// path_radiance in gi_resolve.wgsl) and this covers every emitter
-// instead of one. The estimator is Talbot-style RIS (resampled
-// importance sampling) in its exact discrete form: the loop already
-// visits every entry in the list, so there is no candidate SUBSET to
-// draw — one weighted-reservoir pass selects light i with probability
-// exactly p_i / sum(p), and the contribution weight is sum(p) / p_sel.
+// The target function is `gi_light_score`, the unshadowed irradiance up to
+// the emitter's tint. That makes the estimator EXACT, not merely unbiased,
+// whenever the in-range emitters share a tint and are all visible — so in
+// the open the pool is as steady at n = 1 as the argmax was, while carrying
+// ALL of the light rather than the brightest slice.
 //
-// The target function is R20's own score, `emit * ndl / max(d2,
-// LIGHT_NEAR^2)` — the unshadowed irradiance up to the emitter's tint.
-// That makes the estimator EXACT, not merely unbiased, whenever the
-// in-range emitters share a tint and are all visible: f_i = albedo *
-// LIGHT_GAIN * p_i, so f_sel / p_sel * sum(p) = albedo * LIGHT_GAIN *
-// sum(p), which does not depend on which light was drawn. Every torch
-// in the world is one class today, so in the open the pool is as steady
-// at n = 1 as the argmax was, while carrying ALL of the light instead of
-// the brightest slice of it.
-//
-// What is left is visibility, which the target function cannot see: the
-// draw is proportional to UNSHADOWED contribution, so a point that can
-// only see half of what it samples gets a Bernoulli on the pool total
-// rather than the old Bernoulli on a huge radiance spike. That residual
-// is what a temporal reservoir (ReSTIR DI: reproject the reservoir through
-// `prev_vp`, M-clamp) would remove, and it is deliberately NOT built
-// here — the measurement decides, and it needs a scene with emitters
+// What is left is visibility, which the target function cannot see: a point
+// that can only see half of what it samples gets a Bernoulli on the pool
+// TOTAL rather than the old Bernoulli on a huge radiance spike. A temporal
+// reservoir (ReSTIR DI) would remove that residual and is deliberately NOT
+// built — the measurement decides, and it needs a scene with emitters
 // occluded from each other (`DIG_TORCHES_WALL`).
 //
-// The R20 property that must not regress: this is still what lights the
-// block a torch STANDS ON. Every march steps before it tests, so a
-// gather ray leaving the support block's top face starts INSIDE the
-// torch's cell and exits without registering it — the brightest surface
-// in the room can only be lit from here. The NEE ray from that face runs
-// `max(dist - margin, 0)` = zero blocks: unoccluded by construction.
+// **The R20 property that must not regress**: this is still what lights the
+// block a torch STANDS ON. Every march steps before it tests, so a gather
+// ray leaving the support block's top face starts INSIDE the torch's cell
+// and exits without registering it — the brightest surface in the room can
+// only be lit from here, and its NEE ray runs zero blocks.
 struct NeeLight {
 	valid: bool,
 	dir: vec3f,

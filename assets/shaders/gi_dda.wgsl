@@ -329,37 +329,30 @@ fn gi_light_margin_of(l: vec4f) -> f32 {
 // One drawn sample on a light: where to run the shadow ray, and what the
 // sample is worth beyond the receiver's own cosine and falloff.
 //
-// `w` is 1 for a point source, which is what makes every existing call
-// site read the same after this arrived. For a rectangle it is the
-// light-side cosine times the area — the two factors that turn an
-// intensity model (I/d^2) into an area one (L*cosl*A/d^2) — so the
-// callers keep multiplying by `ndl / max(d2, near^2)` exactly as they did
-// and the estimator comes out right. A 1x1 face at a given level
-// therefore delivers what a point at that level delivered, and a seam
-// six cells across delivers six times as much, which is the whole reason
-// to model it as a surface.
+// `w` is 1 for a point source, which is what makes every existing call site
+// read the same. For a rectangle it is the light-side cosine times the area
+// — the two factors that turn an intensity model (I/d^2) into an area one
+// (L*cosl*A/d^2) — so callers keep multiplying by `ndl / max(d2, near^2)`
+// exactly as they did. A 1x1 face at a given level delivers what a point at
+// that level delivered, and a seam six cells across delivers six times as
+// much, which is the whole reason to model it as a surface.
 //
-// Shared here, in the prelude both NEE passes already include, for the
-// reason `gi_light_tint` is: the resolve and the probes must not be able
-// to disagree about the geometry of a light.
-// What one unit of `light` level means for a SURFACE emitter, measured
-// against what it already means for a point one.
-//
-// The two are not the same quantity and there is no reason one number
-// should serve both. A lamp's level is an INTENSITY: the whole source is
-// one point, and `emit / d^2` is all of it. A seam's level is a RADIANCE
-// PER UNIT AREA, and the area multiplies in — which is the right physics
-// and exactly what makes a wide seam light a room and a single revealed
-// cell barely register. This is the constant that carries between them,
-// and it is small because a vein face is many square blocks where a
+// Shared here, in the prelude both NEE passes include, for the same reason
+// `gi_light_tint` is: the resolve and the probes must not be able to
+// disagree about the geometry of a light.
+
+// What one unit of `light` level means for a SURFACE emitter. The two are
+// not the same quantity: a lamp's level is an INTENSITY, where the whole
+// source is one point and `emit / d^2` is all of it; a seam's is a RADIANCE
+// PER UNIT AREA, and the area multiplies in. That is the right physics and
+// exactly what makes a wide seam light a room while a single revealed cell
+// barely registers. Small, because a vein face is many square blocks where a
 // torch is one point.
 //
-// Tuned by capture rather than derived, like LIGHT_GAIN above it and for
-// the same reason: `light` is a gameplay nibble, not a photometric
-// quantity. At unity a modest exposed pocket lit a whole chamber to
-// daylight and the four tiers were indistinguishable from one another,
-// because everything was near the top of the range and the differences
-// compressed away.
+// Tuned by capture rather than derived, like LIGHT_GAIN and for the same
+// reason: `light` is a gameplay nibble, not a photometric quantity. At unity
+// a modest pocket lit a whole chamber to daylight and the four tiers were
+// indistinguishable, everything compressed against the top of the range.
 const GI_SURFACE_GAIN = 0.35;
 
 struct GiLightSample {
