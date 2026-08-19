@@ -17,6 +17,7 @@ use glam::{Vec2, Vec3};
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
+use crate::voice::Msg;
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
@@ -495,7 +496,7 @@ struct NetSession {
 	/// Server-message feed (join/leave/disconnect/chat) as
 	/// (text, ttl, 0xAABBGGRR color), drawn by the overlay
 	/// above the HUD; (text, seconds left) — fades over the last second.
-	feed: Vec<(String, f32, u32)>,
+	feed: Vec<(crate::voice::Msg, f32, u32)>,
 
 	/// id → name, learned from PlayerJoined (roster + live joins), so
 	/// PlayerLeft (id-only on the wire) can be displayed by name.

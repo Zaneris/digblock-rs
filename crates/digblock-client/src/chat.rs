@@ -14,8 +14,11 @@ pub(crate) enum ChatAction {
 	Send(String),
 	/// The box closed without sending (Escape, or Enter on empty).
 	Closed,
-	/// Tab completed a command: show this usage line as a feed hint.
-	Hint(String),
+	/// Tab completed a command: both halves of the server-advertised
+	/// pair, for the feed to speak. Joined by `voice` rather than here —
+	/// a sentence composed at its call site is one nothing can
+	/// translate.
+	Hint { usage: String, desc: String },
 }
 
 /// Immutable per-frame view for the overlay.
@@ -152,7 +155,10 @@ impl Chat {
 		let name = usage.split_ascii_whitespace().next().unwrap_or(usage);
 		self.buffer = name.to_string();
 		self.cycle = Some((stem, idx + 1));
-		Some(ChatAction::Hint(format!("{usage} - {desc}")))
+		Some(ChatAction::Hint {
+			usage: usage.clone(),
+			desc: desc.clone(),
+		})
 	}
 }
 
@@ -260,7 +266,10 @@ mod tests {
 		assert_eq!(c.view(false).line, "/ban");
 		assert_eq!(
 			hint,
-			Some(ChatAction::Hint("/ban <name> - ban by IP".into()))
+			Some(ChatAction::Hint {
+				usage: "/ban <name>".into(),
+				desc: "ban by IP".into(),
+			})
 		);
 		// Repeated Tab cycles the ORIGINAL stem's matches.
 		key(&mut c, Key::Tab);

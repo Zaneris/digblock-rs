@@ -41,11 +41,11 @@ impl Engine {
 			self.face(look);
 		}
 		let line = if std::mem::take(&mut self.save.spawn_return_pending) {
-			"Returned to spawn."
+			Msg::ReturnedToSpawn
 		} else {
-			"Teleported."
+			Msg::Teleported
 		};
-		self.push_feed(line.into());
+		self.push_feed(line);
 	}
 
 	/// Apply an authoritative block value; the Pipeline holds edits whose
@@ -57,17 +57,17 @@ impl Engine {
 
 	/// Newest-last message feed; oldest drops when full so a join wave
 	/// can't grow the overlay unboundedly.
-	pub(super) fn push_feed(&mut self, text: String) {
-		self.push_feed_colored(text, 0xFFFF_FFFF);
+	pub(super) fn push_feed(&mut self, msg: crate::voice::Msg) {
+		self.push_feed_colored(msg, 0xFFFF_FFFF);
 	}
 
 	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
 	/// player, matching the sender's body color).
-	pub(super) fn push_feed_colored(&mut self, text: String, color: u32) {
+	pub(super) fn push_feed_colored(&mut self, msg: crate::voice::Msg, color: u32) {
 		if self.session.feed.len() >= FEED_MAX {
 			self.session.feed.remove(0);
 		}
-		self.session.feed.push((text, FEED_TTL_SECS, color));
+		self.session.feed.push((msg, FEED_TTL_SECS, color));
 	}
 
 	/// Hang up deliberately: say goodbye, then drop the connection.
@@ -248,12 +248,8 @@ impl Engine {
 					// than once per cell.
 					if reason == Some(digblock_net::messages::RejectReason::Protected) {
 						match e.inv_delta {
-							Some((_, n)) if n > 0 => {
-								self.push_feed(digblock_core::protect::REFUSE_DIG_MSG.into())
-							}
-							Some((_, n)) if n < 0 => {
-								self.push_feed(digblock_core::protect::REFUSE_PLACE_MSG.into())
-							}
+							Some((_, n)) if n > 0 => self.push_feed(Msg::DigProtected),
+							Some((_, n)) if n < 0 => self.push_feed(Msg::PlaceProtected),
 							_ => {}
 						}
 					}
@@ -275,7 +271,7 @@ impl Engine {
 						use digblock_core::unlock::{self, Kind};
 						use digblock_net::messages::RejectReason as R;
 						// The wire carries a REASON and never a sentence, so
-						// the line is composed here — over the block still
+						// the message is built here — over the block still
 						// under the crosshair, so a verdict speaks exactly
 						// what prediction would have. A cell this client can
 						// no longer see is the one case with nothing of its
@@ -285,17 +281,17 @@ impl Engine {
 								self.pipeline
 									.block_at(cell.0, cell.1, cell.2)
 									.and_then(|b| unlock::requirement(b, kind))
-									.map(|req| req.message())
+									.map(Msg::DigRefused)
 							};
 							match reason {
-								R::Protected => Some(digblock_core::protect::REFUSE_DIG_MSG.into()),
+								R::Protected => Some(Msg::DigProtected),
 								R::SkillGated => named(Kind::Strength),
 								R::NotUnlocked => named(Kind::Recipe),
-								R::NeedsTool => Some(unlock::NEEDS_SIPHON_MSG.into()),
+								R::NeedsTool => Some(Msg::NeedsSiphon),
 								_ => None,
 							}
 						};
-						self.push_feed(msg.unwrap_or_else(|| "the server refused that dig".into()));
+						self.push_feed(msg.unwrap_or(Msg::DigRefusedByServer));
 					}
 				}
 				NetEvent::Inventory { counts, pending } => {
@@ -385,12 +381,16 @@ impl Engine {
 							.player_names
 							.get(&player)
 							.cloned()
-							.unwrap_or_else(|| format!("player {player}"));
-						self.push_feed(format!("{who} reached {} level {level}.", s.display()));
+							.unwrap_or_else(|| crate::voice::unknown_player(player));
+						self.push_feed(Msg::RemoteLevelUp {
+							who,
+							skill: s,
+							level,
+						});
 					}
 				}
 				NetEvent::PlayerJoined { id, name } => {
-					self.push_feed(format!("{name} joined the server."));
+					self.push_feed(Msg::Joined { name: name.clone() });
 					self.session.player_names.insert(id, name);
 				}
 				NetEvent::PlayerLeft { id } => {
@@ -398,8 +398,8 @@ impl Engine {
 						.session
 						.player_names
 						.remove(&id)
-						.unwrap_or_else(|| format!("player {id}"));
-					self.push_feed(format!("{name} left the server."));
+						.unwrap_or_else(|| crate::voice::unknown_player(id));
+					self.push_feed(Msg::Left { name });
 				}
 				NetEvent::Teleported { pos, look } => {
 					self.apply_teleport(pos, look);
@@ -416,7 +416,7 @@ impl Engine {
 					if from == digblock_net::protocol::SERVER_ID {
 						// Server-authored line (admin command replies):
 						// bracketed, neutral white — not a player voice.
-						self.push_feed(format!("[server] {text}"));
+						self.push_feed(Msg::ServerNotice { text });
 						continue;
 					}
 					// Our own echo: the roster never carries ourselves, so
@@ -425,25 +425,29 @@ impl Engine {
 						self.config
 							.player_name
 							.clone()
-							.unwrap_or_else(|| "me".into())
+							.unwrap_or_else(crate::voice::me)
 					} else {
 						self.session
 							.player_names
 							.get(&from)
 							.cloned()
-							.unwrap_or_else(|| format!("player {from}"))
+							.unwrap_or_else(|| crate::voice::unknown_player(from))
 					};
 					let c = player_color(from);
-					self.push_feed_colored(format!("{name}: {text}"), pack_rgb(c));
+					self.push_feed_colored(Msg::Chat { name, text }, pack_rgb(c));
 				}
 				NetEvent::Refused { reason } => {
-					self.push_feed(format!("Server refused: {reason}."));
+					self.push_feed(Msg::ConnectRefused {
+						reason: reason.clone(),
+					});
 					log::warn!("server refused: {reason}; continuing single-player");
 					self.ui.menu.on_net_failed(&reason);
 					drop_net = true;
 				}
 				NetEvent::Disconnected { reason } => {
-					self.push_feed(format!("Disconnected: {reason}."));
+					self.push_feed(Msg::Disconnected {
+						reason: reason.clone(),
+					});
 					log::warn!("disconnected: {reason}; continuing single-player");
 					self.ui.menu.on_net_failed(&reason);
 					drop_net = true;

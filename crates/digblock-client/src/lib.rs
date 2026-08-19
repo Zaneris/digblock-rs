@@ -26,6 +26,7 @@ mod spray;
 mod texture;
 pub mod ui;
 mod viewmodel;
+mod voice;
 mod water;
 mod water_audio;
 

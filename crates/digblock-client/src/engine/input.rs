@@ -274,7 +274,9 @@ impl Engine {
 							net.send_chat(&text);
 						}
 					}
-					Some(crate::chat::ChatAction::Hint(usage)) => self.push_feed(usage),
+					Some(crate::chat::ChatAction::Hint { usage, desc }) => {
+						self.push_feed(crate::voice::Msg::CommandHint { usage, desc })
+					}
 					Some(crate::chat::ChatAction::Closed) | None => {}
 				}
 			}

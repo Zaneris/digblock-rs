@@ -89,17 +89,17 @@ const HISTORY_ALPHA: f32 = 0.45;
 /// reverse visits strictly decreasing ttls — every live entry precedes
 /// every expired one and `map_while` can stop at the first entry that
 /// isn't being shown.
-fn visible_feed(
-	feed: &[(String, f32, u32)],
+fn visible_feed<T>(
+	feed: &[(T, f32, u32)],
 	chat_open: bool,
-) -> impl Iterator<Item = (&str, f32, u32)> {
+) -> impl Iterator<Item = (&T, f32, u32)> {
 	let mut history = 0usize;
-	feed.iter().rev().map_while(move |(text, ttl, color)| {
+	feed.iter().rev().map_while(move |(line, ttl, color)| {
 		if *ttl > 0.0 {
-			Some((text.as_str(), ttl.clamp(0.0, 1.0), *color))
+			Some((line, ttl.clamp(0.0, 1.0), *color))
 		} else if chat_open && history < CHAT_HISTORY_LINES {
 			history += 1;
-			Some((text.as_str(), HISTORY_ALPHA, *color))
+			Some((line, HISTORY_ALPHA, *color))
 		} else {
 			None
 		}
@@ -661,7 +661,7 @@ impl Overlay {
 		ui_scale: f32,
 		ui: &crate::ui::DrawList,
 		stats: Option<(&OverlayStats, &[f32])>,
-		feed: &[(String, f32, u32)],
+		feed: &[(crate::voice::Msg, f32, u32)],
 		chat: Option<&crate::chat::ChatView<'_>>,
 		nametags: &[crate::renderer::NameTag],
 	) {
@@ -807,7 +807,7 @@ impl Overlay {
 	fn push_feed(
 		&mut self,
 		size: (u32, u32),
-		feed: &[(String, f32, u32)],
+		feed: &[(crate::voice::Msg, f32, u32)],
 		top: f32,
 		chat_open: bool,
 	) {
@@ -816,8 +816,12 @@ impl Overlay {
 		let wrap_w = self.wrap_w(size);
 		let mut y = top;
 		let mut scratch = std::mem::take(&mut self.wrap_scratch);
-		for (text, a, color) in visible_feed(feed, chat_open) {
-			font::wrap(font::ui(), text, glyph, wrap_w, &mut scratch);
+		for (msg, a, color) in visible_feed(feed, chat_open) {
+			// Rendered HERE, not where it was pushed: a message keeps its
+			// arguments until the frame that draws it, which is what lets
+			// a language change re-word lines already on screen.
+			let text = crate::voice::render(msg);
+			font::wrap(font::ui(), &text, glyph, wrap_w, &mut scratch);
 			for r in &scratch {
 				let chunk = &text[r.clone()];
 				let w = font::ui().measure(chunk, glyph) + pad * 2.0;
@@ -935,7 +939,9 @@ mod tests {
 	}
 
 	fn texts(feed: &[(String, f32, u32)], open: bool) -> Vec<&str> {
-		visible_feed(feed, open).map(|(t, _, _)| t).collect()
+		visible_feed(feed, open)
+			.map(|(t, _, _)| t.as_str())
+			.collect()
 	}
 
 	/// With the box shut the feed looks exactly as it always did: live

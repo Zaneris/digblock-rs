@@ -460,27 +460,13 @@ fn one_question_answers_every_dig_gate() {
 		}
 		assert_eq!(dig_blocked(b, &maxed), None, "{b:?}");
 	}
-	// The sentence a refusal speaks names the block and the level that
-	// opens it — a refusal that only says no is one a player has to go
-	// and look up — and the two gates never share one, because each
-	// names its own skill.
-	let strength = dig_blocked(B::Wood, &fresh).expect("gated").message();
+	// A verdict that names only a GATE — all the wire carries — recovers
+	// the very requirement prediction raised, which is what lets one
+	// sentence serve both. What that sentence IS belongs to the client's
+	// `voice`, and is pinned there.
 	assert_eq!(
-		strength,
-		format!("wood needs Mining level {}", mine(B::Wood))
-	);
-	let recipe_line = dig_blocked(B::StoneStairs, &at(rock, 1))
-		.expect("gated")
-		.message();
-	assert_eq!(
-		recipe_line,
-		format!("stone stairs needs Alchemy level {recipe}")
-	);
-	// And a verdict that names only a GATE recovers the same sentence,
-	// which is what lets the wire send a reason and never a sentence.
-	assert_eq!(
-		requirement(B::Wood, Kind::Strength).map(|r| r.message()),
-		Some(strength)
+		requirement(B::Wood, Kind::Strength),
+		dig_blocked(B::Wood, &fresh)
 	);
 	assert_eq!(
 		requirement(B::Wood, Kind::Recipe),

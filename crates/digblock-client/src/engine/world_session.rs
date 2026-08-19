@@ -11,7 +11,7 @@ impl Engine {
 		log::info!("joining server world: seed {seed}");
 		self.close_local_save();
 		self.session.player_names.clear();
-		self.push_feed("Connected to server.".into());
+		self.push_feed(crate::voice::Msg::Connected);
 		self.seed = seed;
 		self.save.spawn_pos = spawn;
 		// No overlay: the server's journal owns this world's edits.

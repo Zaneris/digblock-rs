@@ -54,12 +54,8 @@ pub fn immutable(x: i32, y: i32, z: i32, region: Option<&Region>) -> bool {
 	y <= WORLD_FLOOR || region.is_some_and(|r| r.contains(x, y, z))
 }
 
-/// Player-facing refusals, shared by every rejection path so the wording
-/// can't drift between the server's verdict and local prediction. Two of
-/// them: "won't break" and "can't build here" are different situations
-/// and one sentence for both reads as a bug.
-pub const REFUSE_DIG_MSG: &str = "this block is holding firm";
-pub const REFUSE_PLACE_MSG: &str = "nothing will stay put here";
+// The refusals a player READS live in the client's `voice`, with every
+// other sentence in the game: this module owns the rule, not the wording.
 
 #[cfg(test)]
 mod tests {

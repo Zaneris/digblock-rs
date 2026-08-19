@@ -112,7 +112,7 @@ impl Engine {
 			self.session.pending_ack = None;
 			self.session.correction_offset = Vec3::ZERO;
 			self.session.my_player_id = None;
-			self.push_feed("Left the server.".into());
+			self.push_feed(crate::voice::Msg::LeftServer);
 			// Without a store there is no save list to return to, so a
 			// store-less run keeps playing the server's seed offline
 			// rather than dropping into a menu it can't leave.
@@ -125,7 +125,7 @@ impl Engine {
 		// ephemeral "Play Local" world has a title menu to go back to.
 		if self.ui.menu.take_leave_world() {
 			self.close_local_save();
-			self.push_feed("Left the world.".into());
+			self.push_feed(crate::voice::Msg::LeftWorld);
 			self.return_to_title();
 		}
 		// Return to spawn: one shared cooldown gates the menu row.

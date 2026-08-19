@@ -12,8 +12,10 @@
 //! - **What a level opens** — [`opens`], DERIVED from those tables, so retuning
 //!   a threshold moves the fanfare and the character screen's teasers with it.
 //!
-//! The refusal wording lives here too ([`Requirement::message`]): prediction
-//! and the server's verdict speak the same sentence because there is only one.
+//! No wording lives here. A gate answers with a [`Requirement`] — the
+//! block, the skill and the level — and the client's `voice` is what turns
+//! one into a sentence, which is why the wire sends a REASON and never a
+//! sentence and why a translation never touches this file.
 
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;
@@ -451,14 +453,9 @@ pub enum Kind {
 	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
 	/// other two this is not about a LEVEL at all — it is the one refusal
 	/// a player can clear without gaining anything, by switching tools,
-	/// which is why its wording is a constant and not a sentence about a
-	/// level ([`NEEDS_SIPHON_MSG`]).
+	/// and the one that never appears in a [`Requirement`].
 	Tool,
 }
-
-/// The tool gate's line, beside `protect::REFUSE_*_MSG` in spirit: the one
-/// refusal with no level in it, so it is the one that can be a constant.
-pub const NEEDS_SIPHON_MSG: &str = "this vein needs an essence siphon";
 
 /// One thing a dig needs before it may start, and the block it is about —
 /// carried so a refusal can name what it refused without a caller handing
@@ -471,25 +468,6 @@ pub struct Requirement {
 	/// requirement at all.
 	pub level: u32,
 	pub kind: Kind,
-}
-
-impl Requirement {
-	/// The feed line this refusal speaks: one wording shared by prediction
-	/// and the server's verdict, which is why the wire sends a REASON and
-	/// never a sentence. It names the block and the level that opens it —
-	/// a refusal that only says no is one the player has to go and look up.
-	///
-	/// Which SKILL it names is what tells the two level gates apart, so one
-	/// sentence serves both: Mining is "too hard for you", Alchemy "you
-	/// could not make one". Lower case — the feed speaks, the screens shout.
-	pub fn message(self) -> String {
-		format!(
-			"{} needs {} level {}",
-			self.block.name().to_lowercase(),
-			self.skill.display(),
-			self.level
-		)
-	}
 }
 
 /// Everything digging `b` asks for, in refusal priority order. Level 1

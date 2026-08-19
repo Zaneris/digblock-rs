@@ -105,7 +105,10 @@ impl Engine {
 			digblock_core::skills::level_for_xp(total),
 		);
 		if new_level > old_level {
-			self.push_feed(format!("{} is now level {new_level}.", skill.display()));
+			self.push_feed(crate::voice::Msg::LevelUp {
+				skill,
+				level: new_level,
+			});
 			// A level that OPENS something speaks with the bigger voice —
 			// derived from the gate tables, so the two sounds can't drift
 			// from what the level actually did. A multi-level jump (a big
@@ -147,7 +150,7 @@ impl Engine {
 		// thresholds against a fresh pipeline and would announce a
 		// discovery you made an hour ago.
 		if announce {
-			self.push_feed("New veins shimmer into view.".into());
+			self.push_feed(crate::voice::Msg::VeinsRevealed);
 		}
 	}
 

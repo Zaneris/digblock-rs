@@ -293,8 +293,8 @@ what now stands between bare ground and the quarry. A handful of substances must
 (`mine_material`: the four ores at their own reveal, Metal and Crystal at their own later levels) and a block waits for
 the later of the two — the material table can only ever push a block later, never earlier. Refusal happens at `DigStart`
 via `RejectReason::SkillGated` (protocol v17) — the `Protected` pattern, so nobody holds a button through a dig timer
-for nothing — and the client predicts it in `diggable()` (it knows its own level; `unlock::Requirement::message` is the
-shared wording). Ore (§5.3) stays gated by *visibility* on top of this.
+for nothing — and the client predicts it in `diggable()` (it knows its own level; the client's `voice::Msg::DigRefused`
+is the shared wording). Ore (§5.3) stays gated by *visibility* on top of this.
 
 **The craft gate** (`unlock::pickup`, SIM v13 / protocol v19) is the same refusal on the other skill: a **craft-only**
 block — one worldgen never places, marked `crafted` in its `blocks!` row and pinned against worldgen itself by
@@ -305,8 +305,8 @@ set for its material (slabs sit at the bottom of the shape axis, i.e. ungated in
 not the cell, which is what keeps pristine Stone a Mining question — it hands out Rubble, and Rubble has no recipe at
 all — and on craft-*only* rather than craftable, or `Wood`'s own recipe level would shut a fresh player out of the first
 tree they see. Same machinery as the strength wall: refused at `DigStart` with `RejectReason::NotUnlocked`, predicted in
-`diggable()`, one shared wording in `unlock::Requirement::message`, which names the block and the level that opens it —
-the SKILL it names is what tells the two gates apart, so one sentence serves both without either reading like the other.
+`diggable()`, one shared wording in `voice::Msg::DigRefused`, which names the block and the level that opens it — the
+SKILL it names is what tells the two gates apart, so one sentence serves both without either reading like the other.
 Placing, opening and walking on other people's builds are all untouched — only the pickup is refused.
 
 The server's completion gate already carries `dig_grace(need)`, a few ticks of slack that widens with the hold; a

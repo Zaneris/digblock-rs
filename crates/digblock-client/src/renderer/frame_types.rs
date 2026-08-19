@@ -179,7 +179,7 @@ pub(crate) struct FrameScene<'a> {
 	/// owns its envelope, so this outlives the hold by the fade.
 	pub siphon: Option<crate::siphon::DrawInstance>,
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
-	pub feed: &'a [(String, f32, u32)],
+	pub feed: &'a [(crate::voice::Msg, f32, u32)],
 	/// Crosshair target for the highlight decal — cell, the shape's own
 	/// box within it, and dig progress (`None` = idle outline).
 	pub target: Option<crate::highlight::HighlightTarget>,

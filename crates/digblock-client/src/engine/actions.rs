@@ -256,14 +256,14 @@ impl Engine {
 		// line per aim, same as the server path.
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
-				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG.to_string()))
+				Some((h.cell, Msg::DigProtected))
 			} else if self.node_dig_mode(h.cell)
 				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
 			{
-				Some((h.cell, digblock_core::unlock::NEEDS_SIPHON_MSG.to_string()))
+				Some((h.cell, Msg::NeedsSiphon))
 			} else {
 				digblock_core::unlock::dig_blocked(h.block, &self.skills)
-					.map(|req| (h.cell, req.message()))
+					.map(|req| (h.cell, Msg::DigRefused(req)))
 			}
 		}) && self.refused_cell != Some(cell)
 		{
@@ -752,7 +752,7 @@ impl Engine {
 			.iter()
 			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
 		{
-			self.push_feed(digblock_core::protect::REFUSE_PLACE_MSG.into());
+			self.push_feed(Msg::PlaceProtected);
 			return;
 		}
 		if placements

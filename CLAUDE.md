@@ -295,9 +295,9 @@ and no caller compares levels itself. `craft` and `pickup` are DERIVED, never ta
 is the strength wall keyed on the `DigFamily`, so every block of a family opens together; `mine_material` is a SECOND
 gate, and `mine` takes the later of the two, so a material can only push a block later, never earlier. `pickup` refuses
 a **craft-only** block below its own craft level, keying on the DROP and on craft-*only*, never craftability — `Wood`
-has a recipe and grows on trees. Everything asks `dig_blocked`, which returns the first unmet `Requirement`, and the
-`Requirement` speaks its own refusal — naming the block and the level that opens it, in the ONE wording each gate has,
-which is why the wire sends a reason and never a sentence.
+has a recipe and grows on trees. Everything asks `dig_blocked`, which returns the first unmet `Requirement` — the block,
+the skill and the level. No wording lives in core: the client's `voice` turns one into the ONE sentence that gate
+speaks, naming the block and the level that opens it, which is why the wire sends a reason and never a sentence.
 
 **XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
 and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe). Join sync always
