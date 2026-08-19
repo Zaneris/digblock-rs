@@ -299,6 +299,12 @@ pub struct EngineConfig {
 	/// roofed room goes DARK and torchlight is what makes it readable;
 	/// GI-DESIGN.md). Set by the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
+	/// DIG_NODE=<heartwood|leystone|springstone>: pose at the nearest
+	/// node of that kind with its Alchemy reveal granted — the surface
+	/// counterpart of `DIG_ORE`, and like it a SCENE rather than a pose,
+	/// since a node is derived and invisible below its level. Validated
+	/// at the launcher; an unknown kind is fatal there.
+	pub debug_node: Option<BlockType>,
 	/// DIG_ORE=<tier 1..=4>: hollow a chamber around the nearest deposit
 	/// of that tier and stand in it, with the Mining level that reveals
 	/// it. Ore is derived and invisible below its level, so there is no
@@ -494,6 +500,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_node: None,
 			debug_ore: 0,
 			debug_mining: 0,
 			debug_vault_dark: false,
@@ -563,6 +570,7 @@ impl EngineConfig {
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,
+			debug_node: None,
 			debug_ore: 0,
 			debug_mining: 0,
 			debug_vault_dark: false,
@@ -1256,31 +1264,62 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// cell never shows ore (that is the anti-dupe), so hollowing the box
 /// naively would delete the very thing being photographed. Every cell the
 /// deposit claims is left exactly as worldgen made it.
-fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
-	use digblock_core::worldgen::ore;
-	let want = ore::ORES[tier.clamp(1, ore::ORES.len()) - 1];
+fn debug_ore_plan(spawn: Vec3, seed: f64, want: BlockType) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+	use digblock_core::worldgen::{self, ore};
 	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
-	// Nearest deposit of the tier, horizontally — a search box wide
-	// enough that even Aetherock (one deposit in fifteen, and only in the
-	// bottom two grid rows) is found from any spawn.
+	// Nearest deposit of the tier — a search box wide enough that even
+	// Aetherock (one deposit in fifteen, and only in the bottom two grid
+	// rows) is found from any spawn.
+	//
+	// It has to be BURIED, and that is not automatic: a deposit is placed
+	// by a hash over a grid that knows nothing about terrain, so a shallow
+	// band routinely rolls one into open air above the surface — or under
+	// a lake. `apply_nodes` stamps only cells that hold pristine Stone, so
+	// such a deposit reveals nothing whatever level is granted, and the
+	// capture is an empty stone-plated box that looks like a stamp bug.
+	// Every band grew a floor in the redesign, which is what made this
+	// common enough to notice: probed across four seeds, the nearest
+	// leystone was in air or water on all four.
+	//
+	// Distance is 3D for the same reason it is a scene at all: with the
+	// vertical term the pick prefers a deposit at eye height over one the
+	// same distance away and 80 blocks down, and the two are otherwise
+	// indistinguishable to a search that only reads x and z.
+	// The chamber: a box around the vein, minus the vein itself. Stood
+	// off far enough on -z that the camera is outside it looking in.
+	const R: i32 = 5;
+	let buried = |d: &ore::Deposit| {
+		// Clear of the surface by the CHAMBER's reach, not the blob's: the
+		// carve is what would open the room to the sky, and it reaches
+		// further than the vein does.
+		//
+		// Against `height` alone, which is the whole of the question.
+		// Water fills `height + 1 ..= water` and never below, so a cell
+		// under the surface is under rock whatever the column's water
+		// says — testing `min(height, water)` instead would refuse every
+		// dry deposit inside a hill standing above SEA_LEVEL, which is
+		// most of the shallow band.
+		d.y + R < worldgen::column_shape(d.x, d.z, seed).height
+	};
 	let mut best: Option<(i64, ore::Deposit)> = None;
-	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 140, sz + 320), seed) {
-		if d.ore != want {
+	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 200, sz + 320), seed) {
+		if d.ore != want || !buried(&d) {
 			continue;
 		}
-		let (dx, dz) = (i64::from(d.x - sx), i64::from(d.z - sz));
-		let d2 = dx * dx + dz * dz;
+		let (dx, dy, dz) = (
+			i64::from(d.x - sx),
+			i64::from(d.y - spawn.y.floor() as i32),
+			i64::from(d.z - sz),
+		);
+		let d2 = dx * dx + dy * dy + dz * dz;
 		if best.is_none_or(|(b, _)| d2 < b) {
 			best = Some((d2, d));
 		}
 	}
 	let Some((_, d)) = best else {
-		log::warn!("DIG_ORE: no {want:?} within reach of spawn");
+		log::warn!("DIG_ORE: no buried {want:?} within reach of spawn");
 		return (spawn, Vec::new());
 	};
-	// The chamber: a box around the vein, minus the vein itself. Stood
-	// off far enough on -z that the camera is outside it looking in.
-	const R: i32 = 5;
 	let mut plan = Vec::new();
 	for y in (d.y - R)..=(d.y + R) {
 		for z in (d.z - R)..=(d.z + R) {
@@ -1347,6 +1386,113 @@ fn debug_ore_plan(spawn: Vec3, seed: f64, tier: usize) -> (Vec3, Vec<(i32, i32, 
 		),
 		plan,
 	)
+}
+
+/// `DIG_NODE`'s launcher-side parser, beside [`parse_held_item`] for the
+/// same reason: the launchers do not link core, and the roster belongs
+/// with the scene that consumes it.
+pub fn parse_node_kind(v: &str) -> Option<BlockType> {
+	Some(match v {
+		"heartwood" => BlockType::Heartwood,
+		"leystone" => BlockType::Leystone,
+		"springstone" => BlockType::Springstone,
+		_ => return None,
+	})
+}
+
+/// DIG_NODE=<heartwood|leystone|springstone>: pose the camera at the
+/// nearest node of that kind, with the reveal granted so the stamp shows
+/// it. Leystone rides the deposit stream and reuses the ore chamber; the
+/// two surface kinds are outdoor finds, so their scenes WRITE nothing —
+/// a node is exactly as photographable as the world makes it, which is
+/// the point of the capture.
+fn debug_node_plan(spawn: Vec3, seed: f64, node: BlockType) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
+	use digblock_core::worldgen::nodes;
+	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+	let eye = digblock_core::player::EYE_TO_FEET;
+	match node {
+		BlockType::Leystone => debug_ore_plan(spawn, seed, BlockType::Leystone),
+		BlockType::Heartwood => {
+			// The nearest heart-bearing trunk cell: trunks are a pure
+			// candidate rule, so this is a column walk over the memoized
+			// decoration cells — a one-time startup cost.
+			let mut best: Option<(i64, (i32, i32, i32))> = None;
+			for z in (sz - 160)..(sz + 160) {
+				for x in (sx - 160)..(sx + 160) {
+					let Some(t) = digblock_core::decoration::trunk_at(x, z, seed) else {
+						continue;
+					};
+					if !nodes::heartwood_at(x, t.y0 + 1, z, seed) {
+						continue;
+					}
+					let (dx, dz) = (i64::from(x - sx), i64::from(z - sz));
+					let d2 = dx * dx + dz * dz;
+					if best.is_none_or(|(b, _)| d2 < b) {
+						best = Some((d2, (x, t.y0 + 1, z)));
+					}
+				}
+			}
+			let Some((_, (x, y, z))) = best else {
+				log::warn!("DIG_NODE: no heartwood within reach of spawn");
+				return (spawn, Vec::new());
+			};
+			log::info!("DIG_NODE: heartwood at {x},{y},{z}");
+			// Stand a few blocks south of the trunk on the tree's own
+			// ground, eye level with the heart.
+			let ground = digblock_core::worldgen::terrain_height(x, z - 3, seed);
+			(
+				Vec3::new(x as f32 + 0.5, ground as f32 + 1.0 + eye, z as f32 - 2.5),
+				Vec::new(),
+			)
+		}
+		BlockType::Springstone => {
+			let mut best: Option<(i64, (i32, i32, i32))> = None;
+			for z in (sz - 512)..(sz + 512) {
+				for x in (sx - 512)..(sx + 512) {
+					// `springstone_bed` puts the rate hash genuinely first
+					// and answers the bed height in the same call — this
+					// loop used to evaluate `column_shape` for every
+					// column of the box BEFORE the hash, and then pay for
+					// it a second time inside `springstone_at`.
+					let Some(y) = nodes::springstone_bed(x, z, seed) else {
+						continue;
+					};
+					let (dx, dz) = (i64::from(x - sx), i64::from(z - sz));
+					let d2 = dx * dx + dz * dz;
+					if best.is_none_or(|(b, _)| d2 < b) {
+						best = Some((d2, (x, y, z)));
+					}
+				}
+			}
+			let Some((_, (x, y, z))) = best else {
+				log::warn!("DIG_NODE: no springstone within reach of spawn");
+				return (spawn, Vec::new());
+			};
+			log::info!("DIG_NODE: springstone at {x},{y},{z}");
+			// Stand on the nearest dry column shoreward of the spring,
+			// looking over the water at the glint in the bed.
+			let stand = (1..=12)
+				.map(|d| (x, z - d))
+				.find(|&(cx, cz)| {
+					let s = digblock_core::worldgen::column_shape(cx, cz, seed);
+					s.height >= s.water
+				})
+				.unwrap_or((x, z - 4));
+			let ground = digblock_core::worldgen::terrain_height(stand.0, stand.1, seed);
+			(
+				Vec3::new(
+					stand.0 as f32 + 0.5,
+					ground as f32 + 1.0 + eye,
+					stand.1 as f32 + 0.5,
+				),
+				Vec::new(),
+			)
+		}
+		other => {
+			log::warn!("DIG_NODE: {other:?} is not a surface node kind");
+			(spawn, Vec::new())
+		}
+	}
 }
 
 /// DIG_VAULT=1 layout: a sealed stone vault enclosing the spawn camera,
@@ -2153,7 +2299,13 @@ impl Engine {
 		// `--pos` still wins: the scene only moves a camera that had
 		// nowhere particular to be.
 		let ore_scene = if config.debug_ore > 0 {
-			debug_ore_plan(spawn, seed, config.debug_ore)
+			let want = digblock_core::worldgen::ore::ORES[config
+				.debug_ore
+				.clamp(1, digblock_core::worldgen::ore::ORES.len())
+				- 1];
+			debug_ore_plan(spawn, seed, want)
+		} else if let Some(node) = config.debug_node {
+			debug_node_plan(spawn, seed, node)
 		} else {
 			(spawn, Vec::new())
 		};
@@ -2237,7 +2389,7 @@ impl Engine {
 				if config.debug_vault {
 					plan.extend(debug_vault_plan(spawn, !config.debug_vault_dark));
 				}
-				if config.debug_ore > 0 {
+				if config.debug_ore > 0 || config.debug_node.is_some() {
 					plan.extend(ore_scene.1.clone());
 				}
 				if config.debug_roof {
@@ -2373,15 +2525,29 @@ impl Engine {
 			// The scene exists to photograph a tier, so it grants exactly
 			// the level that reveals that tier — read out of the unlock
 			// table rather than written down, so retuning a reveal moves
-			// the capture with it. `sync_mining_reveal` then hands the
-			// level to the pipeline, which is what makes the stamp fire.
+			// the capture with it. The sync below every scene is what then
+			// hands the level to the pipeline and makes the stamp fire.
 			let ore = digblock_core::worldgen::ore::ORES[engine.config.debug_ore.clamp(1, 4) - 1];
 			let need = digblock_core::unlock::reveal(ore).unwrap_or(1);
 			engine.skills.set_total(
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(need),
 			);
-			engine.sync_mining_reveal(false);
+		}
+		if let Some(node) = engine.config.debug_node {
+			// The surface twin of the DIG_ORE grant: exactly the Alchemy
+			// level that reveals the kind, read out of the unlock table.
+			// Leystone's chamber needs the ROCK wall cleared too, or the
+			// capture stands in front of a find it cannot legally swing at.
+			let need = digblock_core::unlock::alchemy_reveal(node).unwrap_or(1);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Alchemy,
+				digblock_core::skills::total_xp_for(need),
+			);
+			engine.skills.set_total(
+				digblock_core::skills::Skill::Mining,
+				digblock_core::skills::total_xp_for(digblock_core::unlock::mine(node)),
+			);
 		}
 		if engine.config.debug_mining > 0 {
 			// Last, so an explicit level overrides the one `debug_ore`
@@ -2392,7 +2558,6 @@ impl Engine {
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(engine.config.debug_mining),
 			);
-			engine.sync_mining_reveal(false);
 		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
@@ -2405,18 +2570,18 @@ impl Engine {
 			engine.inventory.add(BlockType::Rubble, 24);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Flora, 54);
+				.add_sub(digblock_core::block::Essence::Vitae, 54);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Earth, 120);
+				.add_sub(digblock_core::block::Essence::Terra, 120);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Aqua, 7);
+				.add_sub(digblock_core::block::Essence::Unda, 7);
 			// Metal/Aether too, so the header's five columns photograph
 			// populated — two dead zeros read as a layout bug in shots.
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Metal, 12);
+				.add_sub(digblock_core::block::Essence::Ferrum, 12);
 			engine
 				.inventory
 				.add_sub(digblock_core::block::Essence::Aether, 3);
@@ -2486,11 +2651,6 @@ impl Engine {
 						.skills
 						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
 					engine.alch_screen.open();
-					if screen == DebugScreen::Transmute {
-						engine
-							.alch_screen
-							.set_tab(crate::ui::screens::alchemy::AlchTab::Transmute);
-					}
 					if screen == DebugScreen::Transmuting {
 						// Stocked well past the batch, so the row reads as
 						// a batch running rather than as one about to be
@@ -2512,6 +2672,20 @@ impl Engine {
 				}
 			}
 		}
+		// ONE sync, after every scene has had its say. The pipeline stamps
+		// nodes at the levels it was last handed, and `nodes::revealed`
+		// answers at the live ones, so a grant the pipeline never hears
+		// about meshes a cell as its host while the dig path calls it a
+		// node — the mesh and the dig disagreeing, which is the failure
+		// this whole layer is built to make impossible.
+		//
+		// Here rather than in each block because it kept being forgotten:
+		// three scenes called it, and `debug_doors` and half the
+		// `DIG_SCREEN` roster did not, which is exactly the split you get
+		// when the call belongs to whoever remembers it. Every grant is
+		// above this line, so a new scene is covered by standing where the
+		// others do. Silent: a capture is not a discovery.
+		engine.sync_node_reveal(false);
 		engine
 	}
 
@@ -2882,7 +3056,7 @@ impl Engine {
 		// kind of base, and clearing these is not about the stale NUMBER
 		// — it is about who reads it before the real one lands.
 		// `reset_world_transients` below hands the Mining level straight
-		// to the pipeline we just installed (`sync_mining_reveal`), so a
+		// to the pipeline we just installed (`sync_node_reveal`), so a
 		// previous world's level would stamp veins into THIS world's
 		// terrain for the whole window between `Welcome` and `Skills`. In
 		// that window `ore_dig_mode` answers `NeedsSiphon` on cells the
@@ -2982,7 +3156,7 @@ impl Engine {
 		// world entry has to hand it the level again or a high-level miner
 		// walks into plain stone until the next level-up. Silent: the
 		// discovery was made long ago.
-		self.sync_mining_reveal(false);
+		self.sync_node_reveal(false);
 		self.prev_player_pos = pos;
 		self.prev_wet = true;
 		self.fall_from_y = pos.y;
@@ -3083,12 +3257,20 @@ impl Engine {
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
 		// §13.5's migration grant: a save written before the bucket
-		// joined the catalog (`SAVE_REV`) came from a build where every
-		// player owned one, so it keeps its bucket. Never a windfall —
-		// a fresh world opens AT the current revision and gets nothing,
-		// so the only saves this touches really did have the tool.
-		if save.rev < digblock_persist::SAVE_REV {
+		// joined the catalog came from a build where every player owned
+		// one, so it keeps its bucket. Never a windfall — a fresh world
+		// opens AT the current revision and gets nothing, so the only
+		// saves this touches really did have the tool.
+		if save.rev < digblock_persist::REV_CRAFTED_BUCKET {
 			self.inventory.add(BlockType::Bucket, 1);
+		}
+		// §14's one-time balance reset: essence below this rev was earned
+		// against the unbounded bench the redesign removed, so everything
+		// but Aether clears — the server's record reader runs the same
+		// reset at its own version, so online and local careers cross the
+		// redesign identically.
+		if save.rev < digblock_persist::REV_FOUND_ESSENCE {
+			self.inventory.clear_pre_redesign_essence();
 		}
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
@@ -3569,7 +3751,7 @@ impl Engine {
 					// joins a server and sees plain stone until the next
 					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
-					self.sync_mining_reveal(false);
+					self.sync_node_reveal(false);
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -4073,16 +4255,16 @@ impl Engine {
 	/// The chunk store still holds Stone here: the reveal is a stamp on
 	/// the MESH input, never a world write, which is what keeps ore out of
 	/// the journal and out of everyone else's world.
-	fn ore_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::ore::DigMode {
-		use digblock_core::worldgen::ore::DigMode;
+	fn node_dig_mode(&self, cell: (i32, i32, i32)) -> digblock_core::worldgen::nodes::DigMode {
+		use digblock_core::worldgen::nodes::DigMode;
 		let Some(v) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
 			return DigMode::Break;
 		};
-		digblock_core::worldgen::ore::dig_mode(
+		digblock_core::worldgen::nodes::dig_mode(
 			v,
 			cell,
 			self.seed,
-			self.skills.level(digblock_core::skills::Skill::Mining),
+			digblock_core::worldgen::nodes::Levels::of(&self.skills),
 			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
 			self.hotbar.tool_in_hand(),
 		)
@@ -4136,7 +4318,7 @@ impl Engine {
 						credit,
 						v,
 						c,
-						self.ore_dig_mode(c),
+						self.node_dig_mode(c),
 						self.cell_edited(c),
 						alchemy,
 					)
@@ -4165,7 +4347,7 @@ impl Engine {
 		}
 		// A revealed vein and the wrong tool: predicted here so the hold
 		// never opens, exactly as the server refuses it at `DigStart`.
-		if self.ore_dig_mode(hit.cell) == digblock_core::worldgen::ore::DigMode::NeedsSiphon {
+		if self.node_dig_mode(hit.cell) == digblock_core::worldgen::nodes::DigMode::NeedsSiphon {
 			return false;
 		}
 		if self.water_tool_selected() {
@@ -4228,8 +4410,8 @@ impl Engine {
 		if let Some((cell, msg)) = self.target.and_then(|h| {
 			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
 				Some((h.cell, digblock_core::protect::REFUSE_DIG_MSG))
-			} else if self.ore_dig_mode(h.cell)
-				== digblock_core::worldgen::ore::DigMode::NeedsSiphon
+			} else if self.node_dig_mode(h.cell)
+				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
 			{
 				Some((h.cell, digblock_core::unlock::Kind::Tool.message()))
 			} else {
@@ -4283,8 +4465,8 @@ impl Engine {
 			// the cell still holds, so a deep seam takes longer than a
 			// shallow one and the ore rows' hardnesses are not dead
 			// numbers on blocks nobody digs.
-			let mode = self.ore_dig_mode(hit.cell);
-			let timed = digblock_core::worldgen::ore::dig_block(mode, hit.block);
+			let mode = self.node_dig_mode(hit.cell);
+			let timed = digblock_core::worldgen::nodes::dig_block(mode, hit.block);
 			let required = timed
 				.dig_hardness(hit.cell.1)
 				.map(|h| {
@@ -4332,7 +4514,8 @@ impl Engine {
 				// winding up rather than as a pick speeding up. WHICH sound
 				// it is belongs to `audio::dig_voice`, together with the
 				// finish it has to agree with.
-				let extracting = matches!(mode, digblock_core::worldgen::ore::DigMode::Extract(_));
+				let extracting =
+					matches!(mode, digblock_core::worldgen::nodes::DigMode::Extract(_));
 				self.emit(crate::audio::AudioCmd::LoopStart {
 					id: crate::audio::LOOP_DIG,
 					sound: crate::audio::dig_voice(extracting, hit.block).0,
@@ -4458,8 +4641,8 @@ impl Engine {
 		// not dug out, so the cell becomes a tapped face and the mountain
 		// keeps its shape. Resolved before the write, because it changes
 		// both what is written and what is credited.
-		let extracting = match self.ore_dig_mode(hit.cell) {
-			digblock_core::worldgen::ore::DigMode::Extract(ore) => Some(ore),
+		let extracting = match self.node_dig_mode(hit.cell) {
+			digblock_core::worldgen::nodes::DigMode::Extract(node) => Some(node),
 			_ => None,
 		};
 		// What the dig pays, resolved before the write for the same reason
@@ -4475,9 +4658,9 @@ impl Engine {
 		// everything else clears. Door partners always clear.
 		let new_val = if prev.is_slab() {
 			digblock_core::shapes::slab_shrunk(prev_cell)
-		} else if let Some(ore) = extracting {
-			digblock_core::worldgen::ore::spent_rock(ore)
-				.expect("an Extract names one of the four tiers") as u16
+		} else if let Some(node) = extracting {
+			digblock_core::worldgen::nodes::spent_block(node).expect("an Extract names a node kind")
+				as u16
 		} else {
 			air
 		};
@@ -4915,30 +5098,18 @@ impl Engine {
 	fn apply_alchemy_action(&mut self, act: crate::ui::screens::alchemy::AlchAction) {
 		use crate::ui::screens::alchemy::AlchAction;
 		use digblock_core::inventory::{AlchemyOp, apply_alchemy};
-		let (core_op, wire_op) = match act {
-			AlchAction::Convert { block, count } => (
-				AlchemyOp::Convert { block, count },
-				digblock_net::messages::AlchemyOp::Convert {
-					block: block as u16,
-					count,
-				},
-			),
-			AlchAction::Craft { item, count } => (
-				AlchemyOp::Craft { item, count },
-				digblock_net::messages::AlchemyOp::Craft {
-					item: item as u16,
-					count,
-				},
-			),
+		let AlchAction::Craft { item, count } = act;
+		let core_op = AlchemyOp::Craft { item, count };
+		let wire_op = digblock_net::messages::AlchemyOp::Craft {
+			item: item as u16,
+			count,
 		};
 		match self.net.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
 				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
 				if apply_alchemy(&mut self.inventory, core_op, level) {
-					if let AlchAction::Craft { item, .. } = act {
-						self.hotbar.auto_assign(item);
-					}
+					self.hotbar.auto_assign(item);
 					self.award_xp_offline(
 						digblock_core::skills::Skill::Alchemy,
 						digblock_core::skills::alchemy_xp(&core_op),
@@ -4995,21 +5166,22 @@ impl Engine {
 			// from the server's `LevelUp` broadcast.
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
-			self.sync_mining_reveal(true);
+			self.sync_node_reveal(true);
 		}
 	}
 
-	/// Hand the pipeline the Mining level its ore stamp reveals at, and
-	/// sweep every resident chunk when that crosses a tier (§5.3).
+	/// Hand the pipeline the skill levels its node stamp reveals at, and
+	/// sweep every resident chunk when that crosses a threshold on either
+	/// axis (§5.3 — Mining for the ore tiers, Alchemy for the surface
+	/// nodes).
 	///
 	/// The sweep is `remesh_all`, which only ENQUEUES — the mesh heap
 	/// drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in
 	/// around you over a second or two instead of hitching the frame that
 	/// levelled you up.
-	fn sync_mining_reveal(&mut self, announce: bool) {
-		use digblock_core::skills::Skill;
-		let level = self.skills.level(Skill::Mining);
-		if !self.pipeline.set_mining_level(level) {
+	fn sync_node_reveal(&mut self, announce: bool) {
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills);
+		if !self.pipeline.set_levels(levels) {
 			return;
 		}
 		self.pipeline.remesh_all();
@@ -5096,8 +5268,8 @@ impl Engine {
 		// out of rock that stays standing, and a spreading web would say
 		// the opposite of what is happening.
 		if matches!(
-			self.ore_dig_mode(hit.cell),
-			digblock_core::worldgen::ore::DigMode::Extract(_)
+			self.node_dig_mode(hit.cell),
+			digblock_core::worldgen::nodes::DigMode::Extract(_)
 		) {
 			return Some(boxed(None));
 		}
@@ -5128,7 +5300,7 @@ impl Engine {
 		if !self.diggable(&hit) {
 			return None;
 		}
-		let digblock_core::worldgen::ore::DigMode::Extract(ore) = self.ore_dig_mode(hit.cell)
+		let digblock_core::worldgen::nodes::DigMode::Extract(ore) = self.node_dig_mode(hit.cell)
 		else {
 			return None;
 		};
@@ -5176,7 +5348,7 @@ impl Engine {
 		// `Extract` names one of the four tiers, so the palette is always
 		// there; white is a visible wrong answer rather than a panic on a
 		// path that only draws pixels.
-		let (core, _) = ore.ore_flecks().unwrap_or(([255; 3], [255; 3]));
+		let (core, _) = ore.node_flecks().unwrap_or(([255; 3], [255; 3]));
 		self.siphon = Some(SiphonDraw {
 			source: Vec3::new(
 				c[0] + n.0 as f32 * 0.5,
@@ -5629,43 +5801,19 @@ impl Game for Engine {
 					self.keys = HeldKeys::default();
 					self.clear_touch_state();
 					self.dig_held = false;
-					let bar = crate::hotbar::HotbarView::build(
-						&self.hotbar,
-						&self.inventory,
-						&self.tool_swap,
-					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-					self.alch_screen.handle_input(
-						&InputEvent::FocusLost,
-						&self.ui_hits,
-						&crate::ui::Style::new(self.ui_scale),
-						&view,
-						&self.inv_grid,
-						&bar,
-					);
+					self.alch_screen
+						.handle_input(&InputEvent::FocusLost, &self.ui_hits, &view);
 				}
 				InputEvent::Key {
 					key: Key::K | Key::Escape,
 					pressed: true,
 				} => self.alch_screen.close(),
 				_ => {
-					let bar = crate::hotbar::HotbarView::build(
-						&self.hotbar,
-						&self.inventory,
-						&self.tool_swap,
-					);
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-					let style = crate::ui::Style::new(self.ui_scale);
-					let act = self.alch_screen.handle_input(
-						&event,
-						&self.ui_hits,
-						&style,
-						&view,
-						&self.inv_grid,
-						&bar,
-					);
+					let act = self.alch_screen.handle_input(&event, &self.ui_hits, &view);
 					if let Some(act) = act {
 						self.apply_alchemy_action(act);
 					}
@@ -6163,19 +6311,18 @@ impl Game for Engine {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
 		}
-		// The bench drip: an occupied extraction slot sends one ordinary
-		// single-block Convert per cycle, and a queued transmute batch one
-		// single-item Craft — the server paces the same rhythm out of its
-		// one bench bucket. The view is rebuilt here rather than borrowed
+		// The bench drip: a queued transmute batch sends one single-item
+		// Craft per cycle — the server paces the same rhythm out of its
+		// bench bucket. The view is rebuilt here rather than borrowed
 		// from the draw, so the queue's affordability check reads the same
 		// number the button greys on. `busy` keeps the drip alive with the
 		// SCREEN closed (§13.4's background bench): the pace is slow
-		// enough now that standing at the bench for it would be idle time,
+		// enough that standing at the bench for it would be idle time,
 		// so the job runs while you play and only leaving the world
 		// abandons it.
 		if self.alch_screen.is_open() || self.alch_screen.busy() {
 			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-			if let Some(act) = self.alch_screen.tick(dt, &view, &self.inventory) {
+			if let Some(act) = self.alch_screen.tick(dt, &view) {
 				self.apply_alchemy_action(act);
 			}
 		}
@@ -6649,14 +6796,7 @@ impl Game for Engine {
 			} else if self.alch_screen.is_open() {
 				let view =
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-				self.alch_screen.build(
-					&mut ui,
-					size,
-					&view,
-					&self.inv_grid,
-					&self.inventory,
-					daylight,
-				);
+				self.alch_screen.build(&mut ui, size, &view, daylight);
 			} else if self.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
@@ -6677,12 +6817,8 @@ impl Game for Engine {
 				&& let Some(job) = self.alch_screen.job()
 			{
 				use crate::ui::screens::alchemy::{BenchJob, block_name};
-				let text = match job {
-					BenchJob::Extract(b) => format!("BENCH  {}", block_name(b)),
-					BenchJob::Craft(item, left) => {
-						format!("BENCH  {} ×{left}", block_name(item))
-					}
-				};
+				let BenchJob::Craft(item, left) = job;
+				let text = format!("BENCH  {} ×{left}", block_name(item));
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(
@@ -7434,10 +7570,15 @@ mod store_tests {
 				},
 				// A LEGACY save on purpose (rev 0): several tests here feed
 				// layouts written when the bucket was owned by everyone, and
-				// the migration grant is part of what they exercise.
+				// the migration grant is part of what they exercise — as is
+				// §14's essence reset, which the flagged pairs below are for.
 				rev: 0,
 				edits: vec![((1, 100, 1), 0)],
-				inventory: vec![(3, 5)],
+				inventory: vec![
+					(3, 5),
+					(digblock_core::inventory::SUB_WIRE_FLAG, 500),
+					(digblock_core::inventory::SUB_WIRE_FLAG | 4, 7),
+				],
 				hotbar: self.0.borrow().open_hotbar.clone(),
 				grid: Vec::new(),
 				skills: Vec::new(),
@@ -7534,6 +7675,40 @@ mod store_tests {
 		let c = calls.borrow();
 		assert!(c.flushed >= 1, "suspend flushes");
 		assert!(c.saved_player >= 2, "suspend snapshots the player");
+	}
+
+	/// The two save-rev migrations, off one rev-0 fixture: the bucket
+	/// grant (rev 1) and §14's essence reset (rev 2) — every balance but
+	/// Aether clears, once, on load. The server's record reader runs the
+	/// same reset at its own version, so the two careers cross the
+	/// redesign identically.
+	#[test]
+	fn a_legacy_save_grants_the_bucket_and_resets_pre_redesign_essence() {
+		use digblock_core::block::Essence;
+		let calls = Rc::new(RefCell::new(Calls::default()));
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+		engine.set_world_store(Box::new(MockStore(calls.clone())));
+		engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
+		assert_eq!(
+			engine.inventory.count(BlockType::Bucket),
+			1,
+			"a rev-0 save keeps its implicit bucket"
+		);
+		assert_eq!(
+			engine.inventory.sub_count(Essence::Vitae),
+			0,
+			"pre-redesign balances clear"
+		);
+		assert_eq!(
+			engine.inventory.sub_count(Essence::Aether),
+			7,
+			"Aether alone survives the reset"
+		);
+		assert_eq!(engine.inventory.count(BlockType::Grass), 5, "stacks stay");
 	}
 
 	#[test]
@@ -7957,18 +8132,24 @@ mod craft_gate_tests {
 		engine.dig_held = false;
 		engine.refused_cell = None;
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(7));
+		// Read out of the unlock table, never written down: every
+		// threshold in the game lives in `unlock`, and this pair had to be
+		// hand-edited the last time the torch moved.
+		let need = digblock_core::unlock::pickup(BlockType::Torch);
+		engine
+			.skills
+			.set_total(Skill::Alchemy, total_xp_for(need - 1));
 		engine.update_target();
 		assert!(
 			!engine.diggable(&engine.target.unwrap()),
 			"one level short of the recipe is still short"
 		);
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(8));
+		engine.skills.set_total(Skill::Alchemy, total_xp_for(need));
 		engine.update_target();
 		assert!(
 			engine.diggable(&engine.target.unwrap()),
-			"Alchemy 8 makes torches, so it takes them too"
+			"the Alchemy level that makes torches takes them too"
 		);
 		assert_eq!(
 			engine.dig_progress().map(|t| t.cell),
@@ -8456,8 +8637,8 @@ mod ore_capture_tests {
 			// nearest deposit of the tier. Skipping the worldgen spawn
 			// search keeps this a pure ore-geometry test.
 			let spawn = Vec3::new(0.0, 90.0, 0.0);
-			for tier in 1..=ore::ORES.len() {
-				let (pos, plan) = debug_ore_plan(spawn, seed, tier);
+			for &want in ore::ORES.iter().chain([BlockType::Leystone].iter()) {
+				let (pos, plan) = debug_ore_plan(spawn, seed, want);
 				if plan.is_empty() {
 					continue;
 				}
@@ -8465,7 +8646,7 @@ mod ore_capture_tests {
 				for &(x, y, z, cell) in &plan {
 					assert!(
 						ore::ore_at(x, y, z, seed).is_none(),
-						"seed {seed} tier {tier}: plan writes {cell} over the vein \
+						"seed {seed} tier {want:?}: plan writes {cell} over the vein \
 						 at {x},{y},{z}"
 					);
 				}
@@ -8479,7 +8660,7 @@ mod ore_capture_tests {
 				let floor = plate[0].1;
 				assert!(
 					plate.iter().all(|c| c.1 == floor),
-					"seed {seed} tier {tier}: the plate is one plane"
+					"seed {seed} tier {want:?}: the plate is one plane"
 				);
 				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
 				let mut vein = 0usize;
@@ -8492,7 +8673,7 @@ mod ore_capture_tests {
 				assert_eq!(
 					plate.len() + vein,
 					square,
-					"seed {seed} tier {tier}: the plate is the plane minus the vein"
+					"seed {seed} tier {want:?}: the plate is the plane minus the vein"
 				);
 				crossings += vein;
 			}
@@ -8503,5 +8684,51 @@ mod ore_capture_tests {
 			"no vein crossed a floor plane in {plans} plans — this sample \
 			 cannot tell a guarded plate from an unguarded one"
 		);
+	}
+
+	/// **The deposit the scene picks is one the stamp can actually
+	/// reveal.** A vein manifests only in pristine STONE, so a deposit
+	/// rolled into open air — or under a lake — reveals nothing at any
+	/// level, and DIG_ORE photographs an empty stone-plated box that reads
+	/// as a bug in the reveal rather than in the scene.
+	///
+	/// Nothing above catches it: `the_ore_capture_plan_never_writes_over_the_vein`
+	/// asserts only that the carve spares the vein's cells, which is just
+	/// as true when there is no rock around them.
+	///
+	/// The search picked by horizontal distance alone, which was survivable
+	/// while every band ran to the bottom of the world; the redesign gave
+	/// each band a FLOOR, and shallow tiers then routinely rolled above the
+	/// terrain. Both live surface-hosted kinds are swept, since the same
+	/// search serves DIG_NODE=leystone.
+	#[test]
+	fn every_capture_deposit_stands_in_rock() {
+		let mut checked = 0usize;
+		for i in 0..20 {
+			let seed = 1000.0 + f64::from(i) * 37.5;
+			let spawn = Vec3::new(0.0, 90.0, 0.0);
+			for &want in ore::ORES.iter().chain([BlockType::Leystone].iter()) {
+				let (pos, plan) = debug_ore_plan(spawn, seed, want);
+				if plan.is_empty() {
+					continue;
+				}
+				// The pose is authored off the deposit centre, so the
+				// centre column is recoverable from it — and the centre is
+				// in the blob by construction.
+				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
+				let col = digblock_core::worldgen::column_shape(cx, cz, seed);
+				let cy = (0..digblock_core::chunk::WORLD_VBLOCK)
+					.find(|&y| ore::ore_at(cx, y, cz, seed) == Some(want))
+					.unwrap_or_else(|| panic!("seed {seed} {want:?}: no vein under the pose"));
+				assert!(
+					cy < col.height,
+					"seed {seed} {want:?}: the scene stands at y {cy} under a surface \
+					 at {} — the vein is in open air and the stamp will never fire",
+					col.height
+				);
+				checked += 1;
+			}
+		}
+		assert!(checked > 50, "the sample found deposits to photograph");
 	}
 }

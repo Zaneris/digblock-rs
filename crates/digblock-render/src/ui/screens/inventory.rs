@@ -73,12 +73,46 @@ impl InvScreen {
 	/// than the frame's, and the measure pass has to ask about candidate
 	/// scales; `origin` is set per-build (see [`InvScreen::build`]).
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
+		Self::grid_spec_cols(style, origin, HOTBAR_SLOTS)
+	}
+
+	/// The same grid at a chosen column count — see [`InvScreen::reflow`]
+	/// for the one case that is not the bar's.
+	fn grid_spec_cols(style: &Style, origin: (f32, f32), cols: usize) -> GridSpec {
 		GridSpec {
 			origin,
-			cols: HOTBAR_SLOTS,
+			cols,
 			cell: hud::SLOT_PX * style.scale,
 			gap: hud::SLOT_GAP * style.scale,
 		}
+	}
+
+	/// How many columns to lay `GRID_SLOTS` out in, given the height
+	/// actually available for the grid.
+	///
+	/// Normally the bar's own count, which is what puts each column over
+	/// the slot it drops into. But the ladder bottoms out
+	/// ([`theme::FIT_FLOOR`]) and a small enough window at a large enough
+	/// interface scale still has no room for seven rows — and the page has
+	/// already given up bar alignment by then, because a fitted page
+	/// CENTRES (there is nothing left to align to once the two scales
+	/// differ). So the same slots go into fewer, longer rows instead.
+	///
+	/// Fewer rows and not smaller boxes, which is the whole argument: the
+	/// glyph size has a floor, so buying height by stepping the style
+	/// below that floor shrinks every box around text that cannot follow.
+	/// Re-shaping the grid costs nothing but the aspect of a page that is
+	/// already in an extreme configuration.
+	///
+	/// Never NARROWER than the bar: a page with room to spare must lay out
+	/// exactly as it always did, so the normal case has to come out of the
+	/// same expression rather than being special-cased around it.
+	fn reflow(style: &Style, grid_budget: f32) -> usize {
+		let (cell, gap) = (hud::SLOT_PX * style.scale, hud::SLOT_GAP * style.scale);
+		let full_rows = GRID_SLOTS.div_ceil(HOTBAR_SLOTS);
+		let fits = ((grid_budget + gap) / (cell + gap)).floor().max(1.0) as usize;
+		let rows = fits.min(full_rows);
+		HOTBAR_SLOTS.max(GRID_SLOTS.div_ceil(rows))
 	}
 
 	/// The panel's content height: one title row over the grid. The
@@ -86,6 +120,11 @@ impl InvScreen {
 	/// it at candidate scales, so it must derive everything from the
 	/// style it is handed and read nothing already committed at the
 	/// frame's own.
+	///
+	/// Measured at the BAR's column count, never a reflowed one: this is
+	/// what the ladder steps against, and a height that shrank as the grid
+	/// re-shaped would stop the ladder stepping at all. Reflow is the last
+	/// resort AFTER the ladder has spent itself, not an alternative to it.
 	fn content_h(style: &Style) -> f32 {
 		theme::ROW_H * style.scale + Self::grid_spec_at(style, (0.0, 0.0)).extent(GRID_SLOTS).1
 	}
@@ -139,7 +178,13 @@ impl InvScreen {
 		// One shared text row for the title band — the same box, and so
 		// the same leading, every other screen's rows sit in.
 		let title_h = theme::ROW_H * s;
-		let (row_w, grid_h) = Self::grid_spec_at(&ui.style, (0.0, 0.0)).extent(GRID_SLOTS);
+		// What is left for the grid once the title and the panel's own
+		// padding are paid, at the scale the ladder settled on. Equal to
+		// the full seven rows in every ordinary window, so `reflow`
+		// answers the bar's column count and nothing below here changes.
+		let grid_budget = budget - title_h - 2.0 * pad;
+		let cols = Self::reflow(&ui.style, grid_budget);
+		let (row_w, grid_h) = Self::grid_spec_cols(&ui.style, (0.0, 0.0), cols).extent(GRID_SLOTS);
 		// The left column is the BAR's, so the grid's cells land on the
 		// slots they drop into. That alignment only exists while the two
 		// share a scale, though: once the ladder has stepped there is
@@ -161,7 +206,7 @@ impl InvScreen {
 			(bar.origin.1 - theme::GAP_ABOVE_BAR * window_scale - (title_h + grid_h + 2.0 * pad))
 				.max(theme::TOP_MARGIN * window_scale);
 		let panel = theme::panel_of(row_x, panel_y + pad, row_w, title_h + grid_h, s);
-		let spec = Self::grid_spec_at(&ui.style, (row_x, panel_y + pad + title_h));
+		let spec = Self::grid_spec_cols(&ui.style, (row_x, panel_y + pad + title_h), cols);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 		// Title text left-aligns with the first slot column, not at the
 		// row widget's inset: this panel's content is a grid, and a title
@@ -247,12 +292,7 @@ impl InvScreen {
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Alchemy ids never appear while this screen is open.
-					InvId::Craft(_)
-					| InvId::Family(_)
-					| InvId::CraftGo
-					| InvId::Tab(_)
-					| InvId::ExtractSlot
-					| InvId::BucketTile => return None,
+					InvId::Craft(_) | InvId::Family(_) | InvId::CraftGo => return None,
 				};
 				self.drag.on_press(pos, id, payload);
 				None
@@ -532,13 +572,26 @@ mod tests {
 	/// block slots are what the claim is about. Both sides read the one
 	/// `hud::row_grid`, which is what makes the bar's re-centring move the
 	/// grid with it rather than away from it.
+	///
+	/// Alignment holds exactly when the page draws at the frame's own
+	/// scale AND in the bar's own columns; the two escape hatches for a
+	/// page with no room — stepping the style, and `reflow`ing to longer
+	/// rows — each abandon it deliberately, and a fitted page centres
+	/// instead precisely because there is nothing left to align to.
+	///
+	/// So the sweep is EVERY window and scale and the expectation is
+	/// DERIVED, rather than a hand-kept list of the configurations that
+	/// happen to have room. The list was the fragile part: the seventh
+	/// grid row pushed one entry over, and the entry was removed — which
+	/// reads as the rule still holding everywhere it is checked while the
+	/// place it stopped holding is simply no longer checked. Deriving it
+	/// means a layout change can move WHICH configurations align, and
+	/// still cannot quietly move whether they align when they should.
 	#[test]
 	fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
-		// Only where the fit ladder has NOT stepped: at a smaller cell
-		// size there is no column alignment left to hold, which is exactly
-		// why a fitted page centres instead.
-		for size in [(1280u32, 800u32), (1600, 900)] {
-			for scale in [0.75f32, 1.0, 1.5] {
+		let mut aligned = 0usize;
+		for size in WINDOWS {
+			for scale in SCALES {
 				let mut inv = Inventory::default();
 				inv.add(B::Dirt, 5);
 				inv.add(B::Stone, 2);
@@ -559,10 +612,19 @@ mod tests {
 				// one hit map serving both.
 				screen.build(&mut ui, size, &grid, &inv, 1.0);
 				crate::ui::hud::hotbar(&mut ui, size, &bar, |i| InvId::Bar(i as u8));
-				assert!(
-					(drawn_scale(&hits) - scale).abs() < 1e-4,
-					"{size:?} at {scale}x was supposed to be a case with room"
-				);
+				// The two conditions, read off the layout rather than
+				// guessed: the ladder did not step, and the grid kept the
+				// bar's column count.
+				let drawn = drawn_scale(&hits);
+				let budget = crate::ui::hud::row_grid(size, scale).origin.1
+					- (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * scale;
+				let style = Style::new(drawn);
+				let grid_budget = budget - theme::ROW_H * drawn - 2.0 * theme::PAD * drawn;
+				let bar_columns = InvScreen::reflow(&style, grid_budget) == HOTBAR_SLOTS;
+				if (drawn - scale).abs() > 1e-4 || !bar_columns {
+					continue;
+				}
+				aligned += 1;
 				for i in 0..HOTBAR_SLOTS - 1 {
 					let slot = hits.rect_of(InvId::Bar(i as u8)).unwrap();
 					let cell = hits.rect_of(InvId::Grid(i as u16)).unwrap();
@@ -573,6 +635,61 @@ mod tests {
 					assert_eq!(cell.w, slot.w, "{size:?} at {scale}x: column {i} width");
 				}
 			}
+		}
+		// Without this the derivation could exclude everything and the
+		// test would pass by checking nothing — which is the failure mode
+		// the hand-kept list actually had.
+		assert!(
+			aligned >= WINDOWS.len(),
+			"only {aligned} configurations kept the bar's geometry — the \
+			 ordinary window is supposed to be one of them"
+		);
+	}
+
+	/// The grid re-shapes only as a LAST resort, and when it does the page
+	/// still holds every slot on screen.
+	///
+	/// Two halves, and the first is the one that guards the ordinary
+	/// window: at the reference size the grid must be the bar's own nine
+	/// columns, because `reflow` is expressed as a `max` against them and
+	/// an off-by-one in the row arithmetic would silently widen every
+	/// page rather than only the cramped ones.
+	#[test]
+	fn the_grid_only_reshapes_when_the_ladder_has_run_out() {
+		let full_rows = GRID_SLOTS.div_ceil(HOTBAR_SLOTS);
+		let style = Style::new(1.0);
+		let spec = InvScreen::grid_spec_at(&style, (0.0, 0.0));
+		let full = spec.extent(GRID_SLOTS).1;
+		assert_eq!(
+			InvScreen::reflow(&style, full),
+			HOTBAR_SLOTS,
+			"a page with room for every row keeps the bar's columns"
+		);
+		assert_eq!(
+			InvScreen::reflow(&style, full * 4.0),
+			HOTBAR_SLOTS,
+			"and so does one with room to spare — never NARROWER than the bar"
+		);
+		// One row short of the full height: the slots have to go somewhere,
+		// and the only direction left is sideways.
+		let one_row = spec.cell + spec.gap;
+		let cols = InvScreen::reflow(&style, full - one_row);
+		assert!(
+			cols > HOTBAR_SLOTS,
+			"a page one row short still laid out in {cols} columns"
+		);
+		assert!(
+			GRID_SLOTS.div_ceil(cols) < full_rows,
+			"the reshape has to actually save the row it was asked for"
+		);
+		// Every rung the ladder can reach still holds the whole roster.
+		for rows in 1..=full_rows {
+			let budget = rows as f32 * (spec.cell + spec.gap) - spec.gap;
+			let cols = InvScreen::reflow(&style, budget);
+			assert!(
+				GRID_SLOTS.div_ceil(cols) <= rows.max(1),
+				"{rows} rows of room laid out in {cols} columns — a slot is off the page"
+			);
 		}
 	}
 

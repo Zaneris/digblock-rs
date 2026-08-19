@@ -79,7 +79,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 7;
+const VERSION: u16 = 8;
 
 /// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN
 /// §13.5). Every record below it was written when the bucket was owned by
@@ -89,6 +89,14 @@ const VERSION: u16 = 7;
 /// counts say, and a brand-new account starts with none. The record BODY
 /// is unchanged; the version is the grant's whole trigger.
 const FIRST_CRAFTED_BUCKET_VERSION: u16 = 7;
+
+/// The version from which essence is FOUND, not ground (SKILLS-DESIGN
+/// §14). Every record below it holds balances earned against the
+/// unbounded bench the redesign removed, so the reader clears them —
+/// all but Aether, which was always the scarce one. The record BODY is
+/// unchanged; the version is the reset's whole trigger, so it runs at
+/// most once per record and a fresh account never sees it.
+const FIRST_FOUND_ESSENCE_VERSION: u16 = 8;
 
 /// The version whose records are keyed by ACCOUNT rather than by a device
 /// hash. Anything below reads wholly into the quarantine; v6 and up say
@@ -835,6 +843,9 @@ fn read_record(
 	if version < FIRST_CRAFTED_BUCKET_VERSION {
 		inventory.add(digblock_core::block::BlockType::Bucket, 1);
 	}
+	if version < FIRST_FOUND_ESSENCE_VERSION {
+		inventory.clear_pre_redesign_essence();
+	}
 	Ok((
 		key,
 		PlayerRecord {
@@ -1135,7 +1146,13 @@ mod tests {
 			bytes.extend_from_slice(&[0, 0]);
 			bytes.extend_from_slice(&1u32.to_le_bytes());
 			bytes.extend_from_slice(&device(7));
-			bytes.push(0); // no inventory pairs
+			// Two essence pairs — a common balance and an Aether one — so
+			// the §14 reset below has something to bite on.
+			bytes.push(2);
+			bytes.extend_from_slice(&digblock_core::inventory::SUB_WIRE_FLAG.to_le_bytes());
+			bytes.extend_from_slice(&500u32.to_le_bytes());
+			bytes.extend_from_slice(&(digblock_core::inventory::SUB_WIRE_FLAG | 4).to_le_bytes());
+			bytes.extend_from_slice(&7u32.to_le_bytes());
 			if version >= 2 {
 				bytes.push(LAYOUT_ABSENT);
 			}
@@ -1174,6 +1191,18 @@ mod tests {
 				} else {
 					assert_eq!(owned, 0, "v{version} records own what they stored");
 				}
+				// §14's essence reset: balances from before the redesign
+				// clear — all but Aether — and records at the current
+				// version keep exactly what they stored.
+				use digblock_core::block::Essence;
+				let flora = r.inventory.sub_count(Essence::Vitae);
+				let aether = r.inventory.sub_count(Essence::Aether);
+				if version < FIRST_FOUND_ESSENCE_VERSION {
+					assert_eq!(flora, 0, "v{version}: pre-redesign balances clear");
+				} else {
+					assert_eq!(flora, 500, "v{version}: current records keep theirs");
+				}
+				assert_eq!(aether, 7, "v{version}: Aether survives either way");
 			}
 		}
 	}

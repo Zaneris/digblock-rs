@@ -76,6 +76,18 @@ pub mod tex {
 		include_bytes!("../../../assets/textures/DepletedGlowvein.png");
 	pub const DEPLETED_AETHEROCK: &[u8] =
 		include_bytes!("../../../assets/textures/DepletedAetherock.png");
+	// The three SURFACE node faces and their spent siblings (the essence
+	// redesign) — the ore pairing in the hosts' own bodies: heartwood in
+	// bark, leystone in stone, springstone in wet sand, each with its
+	// essence-coloured flecks live and drained.
+	pub const HEARTWOOD: &[u8] = include_bytes!("../../../assets/textures/Heartwood.png");
+	pub const DRAINED_HEARTWOOD: &[u8] =
+		include_bytes!("../../../assets/textures/DrainedHeartwood.png");
+	pub const LEYSTONE: &[u8] = include_bytes!("../../../assets/textures/Leystone.png");
+	pub const SPENT_LEYSTONE: &[u8] = include_bytes!("../../../assets/textures/SpentLeystone.png");
+	pub const SPRINGSTONE: &[u8] = include_bytes!("../../../assets/textures/Springstone.png");
+	pub const SPENT_SPRINGSTONE: &[u8] =
+		include_bytes!("../../../assets/textures/SpentSpringstone.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -88,7 +100,7 @@ pub mod tex {
 	/// assert in digblock-render (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 41] = [
+	pub const LAYERS: [&[u8]; 47] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -130,6 +142,12 @@ pub mod tex {
 		DEPLETED_DUSKSTONE,
 		DEPLETED_GLOWVEIN,
 		DEPLETED_AETHEROCK,
+		HEARTWOOD,
+		DRAINED_HEARTWOOD,
+		LEYSTONE,
+		SPENT_LEYSTONE,
+		SPRINGSTONE,
+		SPENT_SPRINGSTONE,
 	];
 }
 

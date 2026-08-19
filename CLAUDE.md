@@ -16,7 +16,9 @@ re-litigating a decision or rebuilding something:
   built" list.
 - `BENCH.md` — every perf measurement, including the ones that refuted a hypothesis.
 - `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones; §13 is the 1–60 content
-  compression (the ladders' current shape, the tail policy, the pacing workstream, and the planned content waves).
+  compression (the ladders' current shape, the tail policy, the pacing workstream, and the planned content waves), and
+  §14 is the essence redesign — essence is found, not ground: the node roster, the extraction removal, and the
+  feedstock-and-catalyst craft shape, superseding the earlier economy sections where they disagree.
 - `DELVE-DESIGN.md` — design-only: underground dungeons whose fabric heals through ordinary journaled edits (never
   un-edits — the ore anti-dupe's monotone edited-bit survives untouched), deterministic telegraphed hazards, the
   attunement verb, health/death, the Delving skill, and the governed Aether faucet.
@@ -364,10 +366,10 @@ ever being "done"). Everything shared lives in `digblock-core/src/skills.rs`:
 - Storage is XP-only `u64` totals; level is always derived.
 
 **Every level threshold in the game lives in `digblock-core/src/unlock.rs`** — nothing else may hold an unlock number,
-and no caller compares levels itself. The tables are the two grid axes (`shape`, `material`) plus `functional` and
-`mine`, and the questions asked of them (`can_craft`, `dig_blocked`). There is deliberately NO extraction gate —
-everything a player can hold extracts from the first level, scaled only by efficiency; the axis's one real entry (the
-bucket charge) left with the crafted bucket. `craft` and `pickup` are DERIVED, never tabled: `craft(b)` =
+and no caller compares levels itself. The tables are the two grid axes (`shape`, `material`) plus `functional`, `mine`,
+and the two REVEAL axes — `reveal` (Mining, the ore tiers) and `alchemy_reveal` (Alchemy, the surface nodes) — plus the
+questions asked of them (`can_craft`, `dig_blocked`). A node needs no draw gate beyond its reveal: one you cannot see
+draws as its host, and one you can needs only the siphon. `craft` and `pickup` are DERIVED, never tabled: `craft(b)` =
 `functional(b)` or `max(shape, material)` (§7.2's grid rule — see "the material × shape grid" below), and `pickup` reads
 `craft` of the drop. Two dig gates, one pattern: `mine` is §5.1's strength wall, keyed on the **`DigFamily`** — the
 families ordered soil → timber → rock, so every block of a family opens together (`RejectReason::SkillGated`, protocol
@@ -383,11 +385,12 @@ speaks, which is why the wire sends a reason and never a sentence. `unlock::open
 hands you from those same tables; the level-up fanfare and the character screen's teasers both key on it
 (`every_unlock_level_has_prose`).
 
-**XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
-and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe; the client takes the
-max and animates the delta). Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play
-awards through the same core functions in the engine's offline arms only (`complete_dig`'s `_ =>`,
-`apply_alchemy_action`'s `_ =>`) — never award in the shared prediction path, or multiplayer double-pays.
+**XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` (which is also where a
+node draw pays `skills::field_xp`'s dual split) and `process_alchemy` — and reaches the client as `ServerMsg::XpGain`
+carrying the new **TOTAL** (idempotent, reorder-safe; the client takes the max and animates the delta). Join sync always
+sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core functions in the
+engine's offline arms only (`complete_dig`'s `_ =>`, `apply_alchemy_action`'s `_ =>`) — never award in the shared
+prediction path, or multiplayer double-pays.
 
 Persistence: `inventories.bin` carries a skills blob per record (added in v4, and unconditional from v5 on — the version
 floor rose with the key change, so nothing older reaches the reader); local saves carry `skills` in
@@ -491,14 +494,15 @@ light list in `gi.rs`, nothing else). A third property says WHERE FROM rather th
 between a lamp and a seam in a wall. `gi::classify_chunk` declines to place a point source for one, and the MESHER hands
 the renderer merged rectangles instead (`mesher::lights`, riding `MeshData::lights` on the rail `impacts` established),
 because the mesher is the one pass that has the ore reveal, face exposure and the neighbour shell all in hand at once.
-The four ore rows are the only `seams` today; buried rock must light nothing, and a point light one course behind a wall
-leaks through it, since `gi_light_margin` skips more than that course. The Torch (`ShapeKind::Torch`, stateless, baked
-in shapes.rs) glows AND emits at its authored level; it is hand-priced in `alchemy::functional_ideal` (a Flora-and-Earth
-price set by hand, at a level set the same way) because functional items are priced by hand, NEVER by the volume rule —
-it has no material and no `ShapeFamily`, which is exactly how a row opts out of the grid. Torch shadows are hard
-point-light shadows by design, cast from `gi::light_origin(class)` — the cell centre for anything unshaped, and for a
-shaped emitter the centre of its emissive band (a torch radiates from its flame rather than its handle, not from its
-handle; R26). `LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
+Every node row is `seams` and nothing else is — the four ore tiers and the three surface kinds, all of them finds that
+sit inside a host block; buried rock must light nothing, and a point light one course behind a wall leaks through it,
+since `gi_light_margin` skips more than that course. The Torch (`ShapeKind::Torch`, stateless, baked in shapes.rs) glows
+AND emits at its authored level; it is hand-priced in `alchemy::functional_ideal` (a Flora-and-Earth price set by hand,
+at a level set the same way) because functional items are priced by hand, NEVER by the volume rule — it has no material
+and no `ShapeFamily`, which is exactly how a row opts out of the grid. Torch shadows are hard point-light shadows by
+design, cast from `gi::light_origin(class)` — the cell centre for anything unshaped, and for a shaped emitter the centre
+of its emissive band (a torch radiates from its flame rather than its handle, not from its handle; R26).
+`LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
 `resolve_and_probe_agree_on_light_calibration`; `LIGHT_NEAR` is where the point model's near field stops being taken
 literally (R22), and `emissive_ink`'s gain — quadratic in the ink's OWN luminance — keeps a source out-reading what it
 casts, barely, since that ink is already clamped by the scene target and cannot be raised to follow a brighter pool,
@@ -564,91 +568,79 @@ pick reads as the upgrade" lives in `texture.rs`, the one file that sees both th
 
 ## Alchemy & the economy
 
-The economy lives in `digblock-core/src/alchemy.rs` — extraction yields (level-scaled, rising to full at the cap), bonus
-lines, waste multipliers (falling toward parity as level rises), extraction pace — all integer math, and
-`apply_alchemy(inv, op, level)` is level-aware. Six load-bearing rules:
+**Essence is found, not ground** (SKILLS-DESIGN §14): bench extraction is GONE, and the siphon's field draw over the
+NODE layer (`worldgen/nodes.rs`, below) is the currency's only faucet. The economy lives in
+`digblock-core/src/alchemy.rs` — node-draw yields (level-scaled through `scaled_yield`, rising to full at the cap),
+waste multipliers on the catalyst half (falling toward parity as level rises), and the craft pace — all integer math,
+and `apply_alchemy(inv, op, level)` is level-aware. Six load-bearing rules:
 
 1. **Nothing the world hands you may be transmuted** (SKILLS-DESIGN §7.5). `unlock::craft` and `alchemy::craft_ideal`
    both open on `BlockType::is_bench_only` — DERIVED, never listed: no block worldgen places crumbles or drops into this
-   one. So the loose ground, the felled log, foliage, mined rock and the scooped bucket charge have no recipes, and what
-   the bench makes is the worked stuff. Its companion is the XP half: `skills::convert_xp` answers zero for anything
-   bench-only, because extraction pays for reducing what the WORLD made and nothing for undoing your own work — without
-   it craft-then-extract was a standing converter from essence into levels. The bench's PACE deliberately does NOT
-   follow (`alchemy::extract_worth`, split out of `convert_xp` for exactly this): a lumber block is as much substance to
-   take apart as the log it was planed from.
-2. **The Rubble rule** — Stone/Sandstone `crumbles: Some(Rubble)`, and it is what lets rule 1 have an exception without
-   carving one: the world is MADE of stone and still never hands you one, so clean rock stays craftable and §7.1's
-   quarry-refine-build loop survives whole. `crumbles` and not `drops` because the conditional half is what shuts the
-   loop — a stone somebody PLACED hands itself back rather than crumbling, keyed on whether the cell has ever been
-   written (`BlockType::dig_credit`, over the journal on the server and its `EditOverlay` mirror on the client, the same
-   bit the ore reveal reads). Below the mason's own unlock it crumbles anyway, which is safe precisely because that
-   player could not have made one; `no_one_who_can_make_a_block_can_dig_it_into_xp` is the pin. Read the cell's edited
-   bit BEFORE the dig's own write on both ends, or every dig finds itself standing in an edited cell. `DepletedStone`
-   keeps unconditional `drops` — every cell naming it was written by an old siphon draw.
-3. **No matter creation** (`no_level_ever_creates_matter`): craft cost strictly exceeds extraction yield in every
-   essence at every level.
-4. **Bonus lines only on recipe-less blocks** (`bonus_lines_never_sit_on_craftable_blocks`) — a bonus on a craftable
-   block is an essence pump. Structural now: the recipe-less set is exactly the materials whose `craft_units` is `None`.
-   A material keeps that split even when no cell of it is craftable, because the split is the PRICE BASIS every shape
-   prorates from — Wood still costs what wood costs, though the felled log itself is something you chop.
-5. **The essence indices ARE the migration** — `Essence { Flora=0, Earth=1, … }` keeps the retired Material enum's
-   numbering so legacy sub-material pairs decode 1:1. Never renumber.
-6. **A functional price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for
-   every essence a hand-priced row names, some block a player at that level can already dig and take apart yields it.
-   `functional_ideal` and `unlock::functional` were already pinned as twins so an item can't have a price without a
-   level — but nothing asked whether the price was PAYABLE, and the Resonant Pick's Aether line was not (see the ore
-   section). A source has to be a block the world HANDS you (rule 3 makes anything off the bench a sink, never a net
-   source), past both walls, paying that essence reliably.
+   one. So the loose ground, the felled log, foliage and mined rock have no recipes, and what the bench makes is the
+   worked stuff.
+2. **The Rubble rule** — Stone/Sandstone `crumbles: Some(Rubble)`, and Rubble is now the mason's FEEDSTOCK: the world is
+   MADE of stone and still never hands you a clean one, so §7.1's quarry-refine-build loop survives with the refine step
+   reading "a cube of rubble plus a Terra catalyst". `crumbles` and not `drops` because a stone somebody PLACED hands
+   itself back, keyed on whether the cell has ever been written (`BlockType::dig_credit`, over the journal on the server
+   and its `EditOverlay` mirror on the client, the same bit the node reveal reads). Read the cell's edited bit BEFORE
+   the dig's own write on both ends, or every dig finds itself standing in an edited cell. `DepletedStone` keeps
+   unconditional `drops` — every cell naming it was written by an old siphon draw.
+3. **No craft creates essence** (`no_craft_creates_essence`): the pool has one faucet (a draw on a live node) and one
+   drain (a craft's catalyst), in different modules, so essence cannot be manufactured from essence by construction —
+   nothing craftable pays a node yield, and neither does anything a craftable block digs back into.
+4. **Crafts are feedstock + catalyst.** A grid recipe consumes ONE cube of its material's feedstock
+   (`Material::feedstock`: timbers ← Wood, masonry ← Rubble, sand-likes ← Sand, soils ← themselves) plus the material's
+   small catalyst (`craft_units`, never prorated by the shape — the craft consumes a whole cube whatever it cuts), and
+   yields `shapes::craft_batch` pieces, as many as the shape's volume fits in a cube — so matter conservation is
+   structural, and bulk building costs mostly the rock you quarried. Metal and Crystal are the essence-only exceptions
+   (no feedstock, a cube's worth of currency, shapes prorated as ever): transmutation proper, for the substances nothing
+   in the world is made of. Waste (`waste_permille`) applies to the catalyst alone.
+5. **The essence indices ARE the migration** — `Essence { Vitae=0, Terra=1, … }` keeps the retired Material enum's
+   numbering so legacy pairs decode 1:1. **Never renumber; renaming is free.** The two are independent and were
+   conflated for a release: the indices are a wire and persistence format, while the identifiers are a format nowhere —
+   no serde, no `FromStr`, explicit discriminants, and `/give` parses `Essence::name` (VITAE, TERRA, UNDA, FERRUM,
+   AETHER) so command and UI move together. The redesign's one-time balance reset is NOT what licenses a rename and
+   could not be: Aether survives it and must still decode at its own index.
+6. **A price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for every
+   essence a hand-priced row names, some NODE a player at that level can see pays it (each kind's reveal checked on its
+   own axis; Mining walls are self-serve by digging), and every feedstock line names a block whose `pickup` gate sits at
+   or below the item. Its sharpest corollary is pinned separately: **the essence tool costs no essence, ever**
+   (`the_essence_tool_costs_no_essence`) — every essence is a siphon draw, so the siphon (and the bucket, on the same
+   day-one footing) is priced in felled timber alone, or the currency could never bootstrap.
 
-The alchemy screen (K) is two tabs, and **the bench works with the screen closed** (§13.4's background bench): the pace
-is slow enough now that standing over it would be idle time, so a job runs while you play — `Engine::update` ticks
-`AlchScreen::tick` whenever the screen is open OR `busy()`, `hud::bench_tell` shows the closed-screen job as one quiet
-line over the bar's tool end, and only leaving the WORLD abandons (`AlchScreen::abandon`, in `reset_world_transients` —
-`close` deliberately keeps the job). The bench still does ONE thing at a time; what enforces it is that STARTING a job
-displaces the other one, since tabs no longer decide. **EXTRACT**: the real inventory grid plus one extraction slot — a
-*pointer* to a block id, never a container; drag a stack on and it drips one client-paced `Convert{count:1}` per
-`extract_pace_ticks(block, level)` — the pace is the block's `extract_worth` against a whole block's worth, so the bench
-spends time in proportion to what comes out, floored so the cheapest foliage isn't a wire-op stream. Foliage
-(`BlockType::is_foliage`, the one predicate three award/pace sites share) takes HALF the slowdown and pays ZERO Alchemy
-XP — the two are a pair: a floored one-point award against a concessionary pace would make shoveling leaves the best XP
-rate at the bench, so the concession exists only where the XP is zero. Extraction and craft XP are otherwise HALF the
-op's worth (`convert_xp`/`craft_xp`; the worth itself is untouched — it still drives the pace). The server's bucket
-banks **ticks** (one per tick, capped at `bench_burst_ticks(level)`) and an op spends its own pace. **TRANSMUTE**:
-family tiles whose icons rotate through their members on the screen's clock (the outgoing member shrinks and fades away
-and the incoming one grows in — `family_preview`; never a cross-fade, which double-exposes two 3D icons' internal faces,
-and never the hard cut it replaced); selecting a family lays out member tiles (locked ones dim but selectable,
-affordable ones badged) under a detail strip and the tab's ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100. A
-§7.2 material × shape pair is one more member in an existing family, so the catalog grows without the screen growing
-(`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a fixed column
-count). **The button QUEUES that count rather than buying it**: crafting drips one `Craft{count:1}` per
-`craft_pace_ticks(item, level)`, the row under the button carries the batch's progress and what is left of it, and the
-button itself becomes its CANCEL. Both drips share ONE `progress` and one server bucket because there is one bench.
-Crafting pays half its worth in XP, like extraction, and takes the time the work takes — which is what stopped the CTRL
-multiplier being a hundred crafts' XP in a frame.
+The alchemy screen (K) is ONE page now — the transmute view under the standing header (level, XP bar, essence readout) —
+and **the bench works with the screen closed** (§13.4's background bench): `Engine::update` ticks `AlchScreen::tick`
+whenever the screen is open OR `busy()`, `hud::bench_tell` shows the closed-screen job as one quiet line over the bar's
+tool end, and only leaving the WORLD abandons (`AlchScreen::abandon`, in `reset_world_transients` — `close` deliberately
+keeps the job). Family tiles rotate their members on the screen's clock (`family_preview` — a handover, never a
+cross-fade, which double-exposes two 3D icons' internal faces); selecting a family lays out member tiles (locked ones
+dim but selectable, affordable ones badged) under a detail strip and the page's ONE `TRANSMUTE` button — CLICK 1 · SHIFT
+10 · CTRL 100. A §7.2 material × shape pair is one more member in an existing family, so the catalog grows without the
+screen growing (`every_craftable_appears_in_exactly_one_family` pins the mirror; tile rows wrap through `GridSpec` at a
+fixed column count). **The page shows the unlocked catalog plus ONE teaser tier** — the next unlock level, all of whose
+items show together — and hides everything past it, empty families included; tiles pack left but keep their true
+indices, so hiding never shifts hit identity (`the_page_hides_everything_past_the_next_unlock`). **The button QUEUES
+that count rather than buying it**: crafting drips one `Craft{count:1}` per `craft_pace_ticks(item, level)` — the pace
+scales with `craft_worth`, catalyst and feedstock both, so the biggest price is the longest hold — with the batch's
+progress in the row under the button, which is also its CANCEL. A craft pays its full worth (`craft_xp`), and with
+extraction gone it is the bench's only award; the rest of Alchemy's XP is field draws (`skills::field_xp`).
 
-Polish invariants: everything sits on ONE left column; panel height is the max of both tabs, bottom-anchored
-(`panel_height_is_the_same_on_both_tabs` — a per-tab height jumped the top edge); the active tab's fill fuses into the
-content and the strip's rule breaks beneath it; `widgets::slot` carries hover plus a two-weight ring (`SlotRing::Weak` =
-selected family context, `Strong` = the acted-on member); locked tiles dim with an unlock badge while unaffordable ones
-stay full-color and the detail strip names the shortfall; a rejected drop explains itself on the preview line for a
-couple of seconds.
+Polish invariants: everything sits on ONE left column; `widgets::slot` carries hover plus a two-weight ring
+(`SlotRing::Weak` = selected family context, `Strong` = the acted-on member); locked tiles dim with an unlock badge
+while unaffordable ones stay full-color and the detail strip names the shortfall — a missing feedstock block by name
+before a missing essence, and a full cap says ALREADY OWNED rather than naming a cost that cannot help, dropping the
+COST line before the reason when the row runs long.
 
-Wire facts: sub-materials ride every wire/save format as flagged ids (the essence index under `alchemy`'s sub-material
-flag bit, with a whole block worth a fixed number of units); costs come from `alchemy::craft_ideal` (grid-derived,
-hand-priced for functional items) with the level's waste multiplier on top. `ClientMsg::Alchemy` is NOT client-predicted
-— the server answers every op with an `InventoryFull` rebase — and rides the edit action queue so craft-then-place in
-one tick debits in wire order; offline runs the same `apply_alchemy`. The server enforces the drip via a per-player
-bench token bucket in `process_alchemy`, banked in ticks and charged the op's own pace × count — `extract_pace_ticks`
-for a Convert, `craft_pace_ticks` for a Craft — so neither a bulk `Convert{count:999}` nor a bulk `Craft{count:100}` nor
-a stream of cheap ops can sidestep it; refusals answer with the standing rebase (nothing debited, no XP). ONE bucket for
-both halves, so a client can't run the two drips at once for double the throughput. That gate lives in op validation,
-NOT `apply_alchemy`, so the offline economy is identical and unpaced. **A craft that would vanish into a type's cap is
-refused before any debit** — `Inventory::add` saturates, so the old Water-only guard let a second Resonant Pick take its
-full Metal price and hand back nothing, and the tab's bulk multipliers point at tools too. One number,
-`Inventory::headroom`, is both the refusal and what `AlchView::affordable` greys the button on, so the offer and the
-rule cannot drift; a full cap is not a shortfall, so the detail strip says ALREADY OWNED rather than naming an essence
-that cannot help — and it drops the COST line before the reason, since a three-essence price is long enough to elide the
-one thing that line is for.
+Wire facts: essences ride every wire/save format as flagged ids (the essence index under the sub-material flag bit).
+`AlchemyOp::Convert` is a RETIRED verb kept decodable (protocol v28): the server refuses it outright with the standing
+rebase — nothing debited, no XP. `ClientMsg::Alchemy` is NOT client-predicted — the server answers every op with an
+`InventoryFull` rebase — and rides the edit action queue so craft-then-place in one tick debits in wire order; offline
+runs the same `apply_alchemy`. The server paces crafts via the per-player bench token bucket in `process_alchemy`,
+banked in ticks and charged `craft_pace_ticks × count`, so neither a bulk `Craft{count:100}` nor a stream of cheap ops
+can sidestep the drip; that gate lives in op validation, NOT `apply_alchemy`, so the offline economy is identical and
+unpaced. **A craft that would vanish into a type's cap is refused before any debit** — `Inventory::add` saturates, and
+one number, `Inventory::headroom`, is both the refusal and what `AlchView::affordable` greys the button on (feedstock
+counts included), so the offer and the rule cannot drift.
 
 While ANY UI surface is open the engine synthesizes cursor + left-button from the primary touch at the top of
 `Engine::input` — one site gives iOS every screen, and no screen knows about touch. The MENU is the exception that
@@ -1142,20 +1134,21 @@ the rename is source-only).
 
 `digblock-core/src/material.rs` is §7.2's substance axis and `block::ShapeFamily` its form axis; a row declares its
 substance with the `mat(...)` builder beside `shaped(...)`, and **five things then derive from the pair** rather than
-being tabled four times over: the unlock level (`max(shape, material)`), the craft cost (the material's whole-block
-essence split prorated UP to the shape's `units()`), the extraction yield (the same split prorated DOWN), the earned
-half of the strength wall (`mine_material`, layered over the dig family's), and the transmute tab's families. Rounding
-the two sides in opposite directions is what makes "no matter creation" hold for every shape of every material without a
-proof per pair, and `craft_units: None` — mined rock, gravel, foliage, ore — IS the recipe-less set the bonus lines are
-allowed to sit on.
+being tabled four times over: the unlock level (`max(shape, material)`), the craft price (a cube of the material's
+`feedstock` plus its `craft_units` catalyst, or the catalyst prorated by the shape's `units()` for the essence-only
+substances), the craft BATCH (`shapes::craft_batch` — how many pieces one feedstock cube cuts), the earned half of the
+strength wall (`mine_material`, layered over the dig family's), and the transmute tab's families. `craft_units: None` —
+mined rock, gravel, foliage, the node kinds — IS the recipe-less set, and `node_units` is its opposite number: what a
+LIVE node of the substance pays a draw, non-empty exactly for the seven node kinds, so no material can both cost and pay
+essence.
 
 The BLOCKS shape sits at the very first level on purpose: the progression belongs to the materials, so a substance
 arrives in every form you have already learned (Lumber's pieces all together, then every clean Stone form together), and
 reaching a shape later hands it to you in every material you already own. `grid_gates_compose` enforces both halves.
-Functional items — tools, torches, lamps, the bucket charge — have NO material: §7.3 prices function by hand, and
-`unlock::functional`/`alchemy::functional_ideal` are pinned twins so an item can't have a level without a price.
-`material_roster_is_pinned` spells out both sets, because a row picking up a material by accident moves four numbers
-silently.
+Functional items — tools, torches, lamps — have NO material: §7.3 prices function by hand (feedstock lines in
+`functional_feedstock` beside the essence lines), and `unlock::functional`/`alchemy::functional_ideal` are pinned twins
+so an item can't have a level without a price. `material_roster_is_pinned` spells out both sets, because a row picking
+up a material by accident moves four numbers silently.
 
 **Stackable slabs** (Wood/Stone/LumberSlab): thirds anchored to one end of their cell — one state bit selects the
 two-thirds height, another anchors to the ceiling instead of the floor (`slab_state`/`slab_is_top`). `slab_place_state`
@@ -1171,63 +1164,72 @@ credit each; `DigState`/`DigProgress` track the FULL cell, so a grow landing mid
 closes exactly: three slabs are worth precisely one whole block. You can't grow the cell you stand in (InsidePlayer —
 step off first).
 
-### Ore (core/worldgen/ore.rs)
+### Nodes & ore (core/worldgen/nodes.rs + ore.rs)
 
-**Derived, never stored.** A deposit is a salted 3D position hash over a coarse grid (`structures_near`'s apron pattern
-in three dimensions), so `build_column` returns the bytes it always returned, the journal carries Stone,
-`worldgen_golden_hash_pins_sim_version` does not move, and veins appear retroactively in worlds that already exist.
-Depth bands OVERLAP — every tier stays available all the way down and the deep ones are rarer — because exclusive bands
-would leave a player at the earliest mining tier finding nothing at all near the surface.
+**Derived, never stored — and every essence source is a NODE now** (SKILLS-DESIGN §14). `worldgen/nodes.rs` is the
+unified layer: `revealed`/`dig_mode`/`spent_block` over the `NODES` roster, asked with a `Levels` pair because the seven
+kinds split across two reveal axes — the four ore tiers on Mining (`unlock::reveal`), and the three SURFACE nodes on
+Alchemy (`unlock::alchemy_reveal`): **Heartwood** in pristine worldgen trunk cells (`decoration::trunk_at` plus a
+per-tree salted roll; landmark giants always carry a heart, trunk entire — heartwood is the day-one node, revealed at
+the level everyone starts at, because the economy has to be able to begin), **Leystone** riding the ore deposit stream
+in pristine Stone, and **Springstone** in the pristine sand bed of lakes and rivers (`column_shape`-derived, fresh water
+only). `is_node_block`/`node_flecks` are the block layer's mirror of the roster — never slottable, essence-coloured
+flecks, a spent face per kind that drops itself.
 
-Three rules bite if broken:
+A deposit is a salted 3D position hash over a coarse grid (`structures_near`'s apron pattern in three dimensions), so
+`build_column` returns the bytes it always returned, the journal carries the hosts, the worldgen goldens do not move,
+and nodes appear retroactively in worlds that already exist. **Depth bands have FLOORS as well as ceilings** — adjacent
+tiers overlap only at their seams, the first tier is confined to surface-cave depths, and Leystone takes the shallow
+band the deep tiers vacate — so depth predicts tier and a find at the bottom of the world is never common ore. The old
+"exclusive bands strand a low-level miner" concern is answered by the reveal ladder itself: you mine where your tier
+lives.
 
-- **The unedited rule is the anti-dupe.** Ore manifests only in pristine Stone; without it, placing crafted Stone back
-  into a spent vein turns a modest Earth cost into far more Metal than it should, and Metal has no other source.
-  `JournalIndex::record` only ever inserts, so "touched" is monotone. The client needs the same answer, which is why
-  `Pipeline` keeps its `EditOverlay` in MULTIPLAYER too — but there it MIRRORS the journal rather than the client's
-  guesses: `apply_authoritative` records (before the applied/deferred split, so a deferred edit still counts), and
-  `set_cell` records only where it is itself the authority (`record_local`, i.e. local worlds). Recording predictions
-  instead is unfixable, because a rejection reverts through that same `set_cell` and `record` is insert-only — the cell
-  stays edited on the client and pristine on the server, forever. Because a record can change what a chunk DRAWS without
-  changing a cell (the reveal keys on "edited"), `apply_authoritative` re-meshes when a first record lands on a value
-  that already matched — journal replay re-sending Stone over Stone otherwise leaves a seam glittering in a chunk whose
-  dig path calls it spent.
-- **The reveal stamps block IDS into `MeshInput`, in the worker.** Not texture layers: the mesher, the texture path, the
-  emissive bit, `block_tint` and shaped culling then all see a real ore block and need no change. It runs deposit-major
-  in two passes — every deposit CLAIMS its cells in the same grid order `ore_at` walks (skipping unrevealed ones would
-  let a later deposit take a cell the dig path says belongs to the first), then claims by an unseen tier revert. Pass
-  two touches only the claimed indices, never a sweep, or a placed SPENT rock turns to stone for every visitor below its
-  tier (`the_reveal_stamp_leaves_everything_else_alone`, swept across levels — at the cap the second pass reverts
-  nothing whatever it does, so a run there cannot tell the two apart).
-- **One question answers every dig**: `ore::dig_mode(cell, at, seed, mining, edited, tool)`, asked identically by client
-  prediction and the server's own world. Extraction needs no new wire; only the refusal does (`RejectReason::NeedsTool`,
-  protocol v21). An extraction is TIMED as the ore (`ore::dig_block`), writes the tier's own spent rock
-  (`ore::spent_rock`) rather than air, pays both skills (`skills::ore_field_xp`), and shows no crack.
-- **Glowvein carries the first Aether, and the middle tier TRACES it.** Every Aether in the game used to sit past the
-  Resonant Pick — the deepest tier revealed far above the pick's own gate, the foliage and loose-rock bonus lines sat
-  high on the Alchemy ladder, and Crystal is a craft-only SINK rather than a source — so the pick was unlocked and
-  unbuildable for a long stretch. Glowvein's own Aether line closes that without a threshold of its own, because it
-  reveals at exactly the level the pick's wider swing opens at. Beside it, `ore::traces_aether` gives a share of
-  Duskstone's cells a unit of Aether: a RATE and not a yield line, since the finest an essence split can be cut is a
-  whole unit and one per draw is far more than a middle-tier seam is worth. It is derived from the cell and the world
-  seed exactly as the deposit is — never rolled — which is what lets `alchemy::field_yield` own it and still be one
-  answer for the server, the offline arm and a rejoin years later. The pin is
-  `every_functional_price_has_a_source_at_its_own_level` and it counts only what a tier pays RELIABLY: a price payable
-  when the hash smiles is not payable.
-- **A vein is world geometry and never an item.** The siphon draws the seam out where it stands: it credits ESSENCE
-  (`alchemy::field_yield` — the ore's ordinary bench yield, so the Alchemy level scales a field draw exactly as it
-  scales the bench, with Mining's capstone multiplying the whole split rather than a line of it), and what a player can
-  carry home is the SPENT rock afterwards, one per tier, which drops itself. `is_slottable` is false for all four ores,
-  which is both the rule and the migration for saves written while a siphon still handed ore over — `reconcile_layout`
-  sweeps a non-slottable type out of bar and grid, exactly as it did for Water. The essence is deliberately NOT
-  predicted: it is a split, a `PendingEdit` carries one `inv_delta`, and rather than widen the wire for the one tier
-  that pays in two, the extraction takes the path `ClientMsg::Alchemy` already takes and the standing `InventoryFull`
-  rebase carries the counts. The CELL is still predicted, so the vein turns spent under the hand. (`DepletedStone`, the
-  one grey face all four tiers used to leave, is kept and unreachable — cells written before the per-tier rocks existed
-  still name it.)
+The rules that bite if broken:
+
+- **The unedited rule is the anti-dupe.** A node manifests only in its pristine HOST (Stone for the deposit stream, Wood
+  for heartwood, Sand for springstone); without it, placing the host back into a spent cell would regrow the find, and
+  essence has no other source at all now. `JournalIndex::record` only ever inserts, so "touched" is monotone. The client
+  needs the same answer, which is why `Pipeline` keeps its `EditOverlay` in MULTIPLAYER too — but there it MIRRORS the
+  journal rather than the client's guesses: `apply_authoritative` records (before the applied/deferred split, so a
+  deferred edit still counts), and `set_cell` records only where it is itself the authority (`record_local`, i.e. local
+  worlds). Recording predictions instead is unfixable, because a rejection reverts through that same `set_cell` and
+  `record` is insert-only — the cell stays edited on the client and pristine on the server, forever. Because a record
+  can change what a chunk DRAWS without changing a cell (the reveal keys on "edited"), `apply_authoritative` re-meshes
+  when a first record lands on a value that already matched — journal replay re-sending Stone over Stone otherwise
+  leaves a seam glittering in a chunk whose dig path calls it spent.
+- **The reveal stamps block IDS into `MeshInput`, in the worker** (`apply_nodes`, fed by the `NodeStamp` the pipeline
+  builds with BOTH skill levels — `Pipeline::set_levels` sweeps a re-mesh when either axis crosses a reveal). Not
+  texture layers: the mesher, the texture path, the emissive bit, `block_tint` and shaped culling then all see a real
+  node block and need no change. The deposit half runs deposit-major in two passes — every deposit CLAIMS its cells in
+  the same grid order `ore_at` walks, then claims by an unseen tier revert; pass two touches only the claimed indices,
+  never a sweep, or a placed SPENT rock turns to stone for every visitor below its tier
+  (`the_reveal_stamp_leaves_everything_else_alone`). Heartwood claims trunk Wood column-major and springstone claims
+  Sand cells behind a water-or-edited-above prefilter, both against the same edited list.
+- **One question answers every dig**: `nodes::dig_mode(cell, at, seed, levels, edited, tool)`, asked identically by
+  client prediction and the server's own world. A draw needs no new wire; only the refusal does
+  (`RejectReason::NeedsTool`, protocol v21). A draw is TIMED as the node (`nodes::dig_block`), writes the kind's own
+  spent face (`nodes::spent_block`) rather than air, pays both skills (`skills::field_xp` — Mining-primary at the ore
+  tiers, Alchemy-primary at the surface kinds, the headline following the skill that revealed the find), and shows no
+  crack.
+- **Glowvein carries the first Aether, and the middle tier TRACES it.** Glowvein's Aether line reveals at exactly the
+  level the pick's wider swing opens at, so the pick's supply arrives with its demand. Beside it, `ore::traces_aether`
+  gives a share of Duskstone's cells a unit of Aether: a RATE and not a yield line, since the finest an essence split
+  can be cut is a whole unit and one per draw is far more than a middle-tier seam is worth. It is derived from the cell
+  and the world seed exactly as the deposit is — never rolled — which is what lets `alchemy::field_yield` own it and
+  still be one answer for the server, the offline arm and a rejoin years later. The payability pin counts only what a
+  kind pays RELIABLY: a price payable when the hash smiles is not payable.
+- **A node is world geometry and never an item.** The siphon draws the find out where it stands: it credits ESSENCE
+  (`alchemy::field_yield` over `node_yields` — the kind's one table, level-scaled, with Mining's capstone multiplying
+  the whole split rather than a line of it, surface draws included), and what a player can carry home is the SPENT face
+  afterwards, one per kind, which drops itself. `is_slottable` is false for every live node, which is both the rule and
+  the migration for saves written while a siphon still handed ore over — `reconcile_layout` sweeps a non-slottable type
+  out of bar and grid, exactly as it did for Water. The essence is deliberately NOT predicted: it is a split, a
+  `PendingEdit` carries one `inv_delta`, so the draw takes the standing `InventoryFull` rebase. The CELL is still
+  predicted, so the find turns spent under the hand. (`DepletedStone`, the one grey face all four ore tiers used to
+  leave, is kept and unreachable — cells written before the per-tier rocks existed still name it.)
 - **The draw has its own effect, because the crack would lie.** A dig crack is fractures spreading over rock about to
   fall, and a drawn seam leaves the mountain standing — which is why `dig_progress` returns the outline and no crack
-  here. `siphon.rs`/`siphon.wgsl` is what it returns it in favour of: motes of the tier's own `ore_flecks` colour lift
+  here. `siphon.rs`/`siphon.wgsl` is what it returns it in favour of: motes of the kind's own `node_flecks` colour lift
   off the struck face and stream into the tool, over a kindle on the face that whitens as the hold builds. Stateless in
   spray/confetti's sense — the CPU owns one instance plus an envelope, and every mote's flight is a pure function of
   that and the shared animation clock — and the ONE effect drawn additively, so it takes the medium's transmittance and
@@ -1249,23 +1251,24 @@ Three rules bite if broken:
 
 The GI window's class byte is the capacity to watch: `gi::SHAPE_CLASS_BASE` splits the byte between full-cube ids and
 shaped covers, a shaped MATERIAL costs a dozen-odd covers, and the pin reports the remaining headroom.
-`DIG_ORE=<tier
-1..=4>` hollows a chamber around the nearest deposit of a tier and grants its level — the carve must not
-touch the vein, or the anti-dupe deletes what is being photographed.
+`DIG_ORE=<tier 1..=4>` hollows a chamber around the nearest deposit of a tier and grants its level — the carve must not
+touch the vein, or the anti-dupe deletes what is being photographed; `DIG_NODE=<heartwood|leystone|springstone>` is its
+surface twin, posing at the nearest node with its Alchemy reveal (and host wall) granted — leystone reuses the chamber,
+and the surface kinds deliberately write nothing.
 
 ### Tools & the Resonant Pick (core/pick.rs)
 
-Four tools now (`is_tool`, an `inventory::cap` of one, every one of them crafted): the bucket (the catalog's FIRST tool
-— priced in Flora and Earth so the opening dig-and-extract loop pays for it, and NO Aqua ever, since the bucket is how a
-player first gets Aqua — the same deadlock rule as the siphon's), the **Essence Siphon** (no Metal in its price, ever,
-or ore and Metal deadlock each other), the **Resonant Pick** (craftable and usable at the same level in either skill)
-and the **Master's Sigil** (the last thing either ladder unlocks, priced entirely in Aether, and it DOES nothing — the
-point is that it is the catalog's last line). The sigil is `is_tool` for the mechanics, not for any function: an
-item-only row you HOLD, capped at one, cycling on tap-9 and drawing in the rail, kept out of the block slots and the
-grid by the rule the other three already use. Every path that names a tool goes through `hud::tool_icon`, because a tool
-has authored geometry and `IconKind::Cube` would draw it as a cube of its row's layer — which used to mean WATER
-(layer 0) and now, for the two that glow, means a cube of bare glow; `SlotView::Tool` carries WHICH tool is active
-rather than assuming the bucket.
+Four tools now (`is_tool`, an `inventory::cap` of one, every one of them crafted): the two vessels — the bucket and the
+**Essence Siphon**, both level-1 crafts priced in felled timber ALONE, because **the essence tool may never cost
+essence** (`the_essence_tool_costs_no_essence`): every essence is a siphon draw now, so an essence-priced siphon
+deadlocks the whole currency, and the bucket shares its day-one footing — the **Resonant Pick** (craftable and usable at
+the same level in either skill) and the **Master's Sigil** (the last thing either ladder unlocks, priced entirely in
+Aether, and it DOES nothing — the point is that it is the catalog's last line). The sigil is `is_tool` for the
+mechanics, not for any function: an item-only row you HOLD, capped at one, cycling on tap-9 and drawing in the rail,
+kept out of the block slots and the grid by the rule the other three already use. Every path that names a tool goes
+through `hud::tool_icon`, because a tool has authored geometry and `IconKind::Cube` would draw it as a cube of its row's
+layer — which used to mean WATER (layer 0) and now, for the two that glow, means a cube of bare glow; `SlotView::Tool`
+carries WHICH tool is active rather than assuming the bucket.
 
 **The siphon and the pick are light sources** (R30): each `emits` below a torch's level and wears a texgen orb — green
 for the siphon, blue for the pick — that is at once the tool row's texture (whence the GI takes the colour of the light

@@ -552,6 +552,62 @@ fn structures_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<Structure
 	out
 }
 
+/// A worldgen trunk standing at one column: its inclusive y-span (root
+/// cell included) and the tree's identity — what `worldgen::nodes` needs
+/// to derive heartwood the way `ore_at` derives a vein.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TrunkInfo {
+	/// Inclusive world-y span of the trunk cells in this column, the root
+	/// cell at the bottom.
+	pub y0: i32,
+	pub y1: i32,
+	/// The column that identifies the TREE (a landmark's north-west trunk
+	/// column) — one coordinate per tree, whatever column of it is asked
+	/// about, so a per-tree roll hashes the same input from every cell.
+	pub anchor: (i32, i32),
+	pub landmark: bool,
+}
+
+/// The trunk whose cells stand in column `(x, z)`, if any — landmarks
+/// first, matching `decorate_chunk`'s write order, so where a landmark and
+/// a fine tree could both claim a column the answer is the one whose wood
+/// actually stands there. A pure function of `(x, z, seed)` like every
+/// candidate rule here; callers that need the CELL to really hold wood
+/// (a canopy may have covered a trunk cell first, a cliff may have left it
+/// unwritten) must check the live cell themselves — the `ore::revealed`
+/// shape.
+pub fn trunk_at(x: i32, z: i32, seed: f64) -> Option<TrunkInfo> {
+	for cell_z in (z - 1).div_euclid(LANDMARK_CELL)..=z.div_euclid(LANDMARK_CELL) {
+		for cell_x in (x - 1).div_euclid(LANDMARK_CELL)..=x.div_euclid(LANDMARK_CELL) {
+			let l = memoized(&LANDMARK_MEMO, cell_x, cell_z, seed, || {
+				cell_landmark(cell_x, cell_z, seed)
+			});
+			if let Some(l) = l
+				&& (0..=1).contains(&(x - l.x))
+				&& (0..=1).contains(&(z - l.z))
+			{
+				return Some(TrunkInfo {
+					y0: l.y - 1,
+					y1: l.y + l.trunk_h - 1,
+					anchor: (l.x, l.z),
+					landmark: true,
+				});
+			}
+		}
+	}
+	let (cell_x, cell_z) = (x.div_euclid(CELL), z.div_euclid(CELL));
+	let c = memoized(&FINE_MEMO, cell_x, cell_z, seed, || {
+		cell_candidates(cell_x, cell_z, seed)
+	});
+	let t = c.tree?;
+	((t.x, t.z) == (x, z)).then_some(TrunkInfo {
+		y0: t.y - 1,
+		y1: t.y + t.trunk_h - 1,
+		anchor: (t.x, t.z),
+		landmark: false,
+	})
+}
+
 /// Whether any decoration block lands in the inclusive box
 /// [x0, x1] × [y0, y1] × [z0, z1] — the spawn walk's clearance probe.
 /// Pristine terrain never reaches a spawn candidate's capsule cells;

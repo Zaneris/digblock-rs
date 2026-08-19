@@ -144,7 +144,17 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// aimed at the previous hand. A field appended INSIDE an existing
 /// variant rather than a new variant, so an older peer's `DigStart` is a
 /// byte short and the floor rises with it.
-pub const PROTOCOL_VERSION: u16 = 27;
+/// v28: the essence redesign — bench extraction retired. No frame
+/// changed shape: `AlchemyOp::Convert` still decodes and the server now
+/// refuses it outright (nothing debited, the standing rebase as the
+/// answer), essence enters the world only through the siphon's field
+/// draw, and the surface nodes reveal on the ALCHEMY level, which now
+/// rides the mesh stamp beside Mining's. The v22 class of break — what
+/// existing messages BUY — twice over: a v27 client extracts into a wall
+/// of silent refusals and never sees a surface node at all, so the
+/// floor rises to meet it. SIM v21 pairs with it (node cells change what
+/// a dig IS).
+pub const PROTOCOL_VERSION: u16 = 28;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -192,8 +202,10 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// leaves it exactly there. v27 is the v23 class rather than the v22 one:
 /// `DigStart` gained a field INSIDE the variant, so a v27 decoder reading
 /// a v26 hold runs off the end of the frame, and the floor has to rise to
-/// meet it.
-pub const MIN_PROTOCOL: u16 = 27;
+/// meet it. v28 (the essence redesign) is the v22 class once more — an
+/// older peer's whole extract tab buys nothing — so the floor rises
+/// again.
+pub const MIN_PROTOCOL: u16 = 28;
 
 // ---- handshake preamble ----------------------------------------------
 //

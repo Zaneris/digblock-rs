@@ -64,31 +64,31 @@ impl CharView {
 /// holds every named level to the function that enforces it, so the
 /// strings can't drift from the tables.
 const ALCH_TEASERS: &[(u32, &str)] = &[
-	(5, "the stairs shape; dirt and sand"),
-	(8, "the torch"),
-	(10, "the essence siphon — ore needs it"),
-	(12, "planed lumber and its joinery; the door shape"),
+	(
+		5,
+		"the stairs shape; leystone reveals — terra in shallow rock",
+	),
+	(10, "the torch"),
+	(
+		12,
+		"planed lumber and its joinery; springstone reveals — unda under fresh water",
+	),
 	(14, "furniture: the table and the chair"),
 	(15, "clean stone — every learned shape at once"),
 	(18, "dark lumber and stone brick"),
 	(21, "sandstone and glass"),
 	(24, "the bed — timber and bedding both"),
-	(25, "morning dew; a faster bench"),
+	(25, "a faster bench"),
 	(27, "red lumber"),
 	(28, "the lantern"),
 	(30, "polished stone and sandstone brick"),
-	(33, "METAL — the prestige block"),
-	(35, "gravel's trace minerals"),
+	(33, "FERRUM's block — the prestige material"),
 	(36, "the resonant pick"),
 	(40, "crystal, grown from aether"),
-	(45, "pine resin; the fastest bench"),
+	(45, "the fastest bench"),
 	(50, "the aetherlamp — the standing aether sink"),
-	(
-		55,
-		"the spent stone's whisper — tapped deep rock holds aether",
-	),
 	(56, "the waste dip — your process tightens early"),
-	(99, "full extraction; the master's sigil"),
+	(99, "the master's sigil"),
 ];
 
 /// Mining's teasers: the strength wall's two rungs, then the ore reveals
@@ -106,7 +106,7 @@ const MINING_TEASERS: &[(u32, &str)] = &[
 	(23, "duskstone reveals"),
 	(
 		33,
-		"glowvein reveals; the resonant pick swings wide; metal opens",
+		"glowvein reveals; the resonant pick swings wide; ferrum's block opens",
 	),
 	(40, "crystal opens"),
 	(43, "the prospector's sense sharpens"),

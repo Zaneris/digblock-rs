@@ -52,20 +52,31 @@ const DEPOSIT_SALT: u64 = 0x0e5e_ee45_1c3d_b10b;
 /// measures what falls out of the pair and reports it.
 const DEPOSIT_IN_256: u64 = 200;
 
-/// The four tiers, deepest-first, with the greatest depth each may appear
-/// at and its share among the tiers available there.
+/// The tiers, shallowest-first: `(block, floor, ceiling, weight)` — a
+/// deposit's CENTRE rolls a tier whose band contains its y, weighted among
+/// the bands open there.
 ///
-/// Bands OVERLAP on purpose. Making each band exclusive would mean a
-/// player who tunnels deep with only the shallow tiers revealed finds
-/// nothing at all — every deposit down there would be Aetherock, which
-/// they cannot see. Instead every tier stays available all the way down
-/// and the deep ones are simply rarer, so digging deeper raises what you
-/// MIGHT find without taking away what you can.
-const TIERS: [(BlockType, i32, u64); 4] = [
-	(BlockType::Emberore, 140, 8),
-	(BlockType::Duskstone, 96, 4),
-	(BlockType::Glowvein, 56, 2),
-	(BlockType::Aetherock, 24, 1),
+/// Every band has a FLOOR as well as a ceiling, and adjacent bands overlap
+/// only at their seams. Bands used to run to bedrock (deep tiers merely
+/// rarer), which made the bottom of the world mostly first-tier ore again
+/// — a disappointment at the end of the longest dig in the game. With
+/// floors, depth predicts tier: Emberore is confined to surface-cave
+/// depths, and a find at the bottom is never common ore. The old
+/// "exclusive bands strand a shallow-tier miner at depth" concern is
+/// answered by the reveal ladder itself — you mine where your tier lives,
+/// and the seams still overlap.
+///
+/// Leystone is the SURFACE tier and not a Mining ore at all: it rides
+/// this same deposit stream and manifests in pristine Stone exactly as
+/// the ore tiers do, but its reveal keys on ALCHEMY
+/// (`unlock::alchemy_reveal`) — it is the Earth-essence node, the shallow
+/// find the deep tiers vacate their band for.
+const TIERS: [(BlockType, i32, i32, u64); 5] = [
+	(BlockType::Leystone, 96, 200, 10),
+	(BlockType::Emberore, 64, 140, 8),
+	(BlockType::Duskstone, 28, 96, 4),
+	(BlockType::Glowvein, 8, 56, 2),
+	(BlockType::Aetherock, 1, 24, 1),
 ];
 
 /// One deposit: a centre and the squared radius of its blob.
@@ -122,8 +133,10 @@ const TRACE_IN_256: u64 = 13;
 /// Splitmix64 over a 3D cell + the world seed, salted per stream — the
 /// three-axis sibling of `decoration::hash`. Each axis rides its own odd
 /// multiplier so a change on any one of them reaches every output bit.
+/// `pub(super)` so the surface-node streams in [`super::nodes`] draw from
+/// the same mixer with salts of their own.
 #[inline]
-fn mix(cx: i32, cy: i32, cz: i32, seed_bits: u64, salt: u64) -> u64 {
+pub(super) fn mix(cx: i32, cy: i32, cz: i32, seed_bits: u64, salt: u64) -> u64 {
 	let mut h = u64::from(cx as u32).wrapping_mul(0x9e37_79b9_7f4a_7c15);
 	h ^= u64::from(cy as u32).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
 	h ^= u64::from(cz as u32).wrapping_mul(0x1656_67b1_9e37_79f9);
@@ -170,21 +183,17 @@ fn deposit_in(gx: i32, gy: i32, gz: i32, seed: f64) -> Option<Deposit> {
 	Some(Deposit { x, y, z, ore, r2 })
 }
 
-/// Which tier a deposit at height `y` rolls, given a hash stream.
+/// Which tier a deposit at height `y` rolls, given a hash stream — among
+/// the bands whose floor-to-ceiling span contains `y`.
 fn tier_at(y: i32, roll: u64) -> Option<BlockType> {
-	let total: u64 = TIERS
-		.iter()
-		.filter(|&&(_, max_y, _)| y <= max_y)
-		.map(|&(_, _, w)| w)
-		.sum();
+	let open = |&&(_, lo, hi, _): &&(BlockType, i32, i32, u64)| (lo..=hi).contains(&y);
+	let total: u64 = TIERS.iter().filter(open).map(|&(_, _, _, w)| w).sum();
 	if total == 0 {
 		return None;
 	}
 	let mut pick = roll % total;
-	for &(ore, max_y, w) in &TIERS {
-		if y > max_y {
-			continue;
-		}
+	for t in TIERS.iter().filter(|t| open(t)) {
+		let (ore, _, _, w) = *t;
 		if pick < w {
 			return Some(ore);
 		}
@@ -269,9 +278,9 @@ pub fn traces_aether(ore: BlockType, x: i32, y: i32, z: i32, seed: f64) -> bool 
 	ore == BlockType::Duskstone && mix(x, y, z, seed.to_bits(), TRACE_SALT) & 0xFF < TRACE_IN_256
 }
 
-/// The Mining level a tier becomes visible at lives in
-/// [`crate::unlock::reveal`] with every other threshold; this is only the
-/// roster it is asked about.
+/// The four MINING tiers — the deposits [`crate::unlock::reveal`] gates.
+/// Leystone rides the same stream but is a surface node revealed by
+/// Alchemy; the full live roster is [`super::nodes::NODES`].
 pub const ORES: [BlockType; 4] = [
 	BlockType::Emberore,
 	BlockType::Duskstone,
@@ -280,9 +289,19 @@ pub const ORES: [BlockType; 4] = [
 ];
 
 /// No deposit's centre sits above this, so a chunk that starts above it
-/// can skip the whole reveal stamp. (A blob reaches [`MAX_RADIUS`] past
-/// its centre, which the callers' box already covers.)
-pub const MAX_DEPOSIT_Y: i32 = TIERS[0].1;
+/// can skip the whole DEPOSIT half of the reveal stamp. (A blob reaches
+/// [`MAX_RADIUS`] past its centre, which the callers' box already covers.)
+pub const MAX_DEPOSIT_Y: i32 = {
+	let mut max = i32::MIN;
+	let mut i = 0;
+	while i < TIERS.len() {
+		if TIERS[i].2 > max {
+			max = TIERS[i].2;
+		}
+		i += 1;
+	}
+	max
+};
 
 /// The lowest Mining level at which ANY tier is visible — below it the
 /// stamp has nothing to do at all, which is the cheap early-out for every
@@ -294,72 +313,25 @@ pub fn lowest_reveal() -> u32 {
 		.expect("four tiers")
 }
 
-/// THE visibility question, asked identically by the mesh stamp, the
-/// client's dig prediction and the server's validation: what ore does this
-/// cell show to a miner of this level?
+/// The same question on the other axis: the lowest ALCHEMY level at which
+/// any tier in the deposit stream is visible. Its twin above walks
+/// [`ORES`] because Mining's tiers are exactly that list; this one walks
+/// [`TIERS`], because the stream also carries surface nodes that [`ORES`]
+/// deliberately excludes.
 ///
-/// `cell` is the world's CURRENT cell value and `edited` says whether that
-/// coordinate has ever been written. Both gates matter and neither is
-/// redundant: the id test is what makes a spent vein (now DepletedStone)
-/// stay spent, and the edit test is what stops someone placing clean Stone
-/// back into the coordinate to regrow it.
-pub fn revealed(
-	cell: u16,
-	at: (i32, i32, i32),
-	seed: f64,
-	mining: u32,
-	edited: bool,
-) -> Option<BlockType> {
-	if edited || crate::chunk::cell_id(cell) != BlockType::Stone as u16 {
-		return None;
-	}
-	let ore = ore_at(at.0, at.1, at.2, seed)?;
-	(mining >= crate::unlock::reveal(ore)?).then_some(ore)
-}
-
-/// What a dig on one cell actually IS, for this player with this tool in
-/// hand (SKILLS-DESIGN §5.3). The one question the client's prediction and
-/// the server's validation both ask, so they cannot disagree about whether
-/// an action was a dig, a draw, or a refusal.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DigMode {
-	/// Ordinary: the cell breaks and drops what it drops.
-	Break,
-	/// A revealed vein with the siphon in hand: the cell becomes the
-	/// tier's [`spent_rock`] and the vein's ESSENCE lands in the player's
-	/// stocks. Mining ore never excavates, so the mountainside keeps its
-	/// shape.
-	///
-	/// Essence rather than an ore block, which is the whole of what the
-	/// tool is for: a siphon draws a seam out where it stands, so a vein
-	/// never becomes something you carry to a bench. What you can carry
-	/// home is the spent rock afterwards. The yield is the ore's ordinary
-	/// `alchemy::extract_yields`, so the Alchemy level scales a field draw
-	/// exactly as it scales the bench.
-	Extract(BlockType),
-	/// A revealed vein and no siphon. Refused at `DigStart`, not at the
-	/// completing edit — if you can SEE the seam, the game will not let
-	/// you spend it on a stone dig by accident, and it says so before you
-	/// hold the button through a two-second timer for nothing.
-	NeedsSiphon,
-}
-
-pub fn dig_mode(
-	cell: u16,
-	at: (i32, i32, i32),
-	seed: f64,
-	mining: u32,
-	edited: bool,
-	active_tool: BlockType,
-) -> DigMode {
-	match revealed(cell, at, seed, mining, edited) {
-		// Below the reveal there is nothing here to protect: that player's
-		// client and server agree the cell is stone, so it digs as stone
-		// and the vein is spent. You dig what you can see.
-		None => DigMode::Break,
-		Some(ore) if active_tool == BlockType::EssenceSiphon => DigMode::Extract(ore),
-		Some(_) => DigMode::NeedsSiphon,
-	}
+/// Derived rather than naming the one tier that qualifies today. Both
+/// callers used to hardcode it, so a second Alchemy-revealed tier would
+/// have been stamped by nobody while the dig path revealed it anyway —
+/// a find you can see and cannot extract, from a one-word table edit.
+///
+/// [`u32::MAX`] when no tier answers to Alchemy at all, which reads
+/// correctly at every call site: no level reaches it.
+pub fn lowest_alchemy_reveal() -> u32 {
+	TIERS
+		.iter()
+		.filter_map(|&(b, ..)| crate::unlock::alchemy_reveal(b))
+		.min()
+		.unwrap_or(u32::MAX)
 }
 
 /// The nearest deposit within the sense's own reach
@@ -393,44 +365,6 @@ pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Depo
 		}
 	}
 	best.map(|(_, d)| d)
-}
-
-/// The block a dig is TIMED and paid XP as. A vein lives in a cell that
-/// still holds Stone — the reveal is a mesh stamp, not a world write — so
-/// without this an extraction would take a stone's own hold time and pay
-/// a stone's XP however deep the seam was, and the ore rows' hardnesses
-/// would be dead numbers on blocks nobody ever digs.
-///
-/// It no longer decides what the dig CREDITS: a field extraction pays
-/// essence, not ore (see [`DigMode::Extract`]).
-#[inline]
-pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
-	match mode {
-		DigMode::Extract(ore) => ore,
-		_ => cell_block,
-	}
-}
-
-/// The rock a tapped vein leaves standing — the tier's own spent face.
-///
-/// One per tier rather than one grey stone for all four: a worked seam
-/// should still read as the seam you worked, and the block you break out
-/// of it afterwards is a trophy of that tier and no other. It is also the
-/// ONLY thing a vein ever puts in a player's hands, since the ore itself
-/// is never an item ([`BlockType::is_slottable`]).
-///
-/// Total on the ores, so a caller that has a [`DigMode::Extract`] cannot
-/// be handed one it has no rock for; anything else is not a vein and
-/// answers `None`.
-#[inline]
-pub fn spent_rock(ore: BlockType) -> Option<BlockType> {
-	Some(match ore {
-		BlockType::Emberore => BlockType::DepletedEmberore,
-		BlockType::Duskstone => BlockType::DepletedDuskstone,
-		BlockType::Glowvein => BlockType::DepletedGlowvein,
-		BlockType::Aetherock => BlockType::DepletedAetherock,
-		_ => return None,
-	})
 }
 
 #[cfg(test)]
@@ -507,15 +441,19 @@ mod tests {
 	fn ore_positions_are_pinned() {
 		let found: Vec<_> = ore_cells(42.0).into_iter().take(6).collect();
 		use BlockType as B;
+		// Re-pinned at the rebanding (floors + the Leystone tier): the same
+		// deposit stream, but a pocket at y 3–4 now rolls the DEEPEST tier,
+		// which is the whole point — the bottom of the world is never
+		// common ore again.
 		assert_eq!(
 			found,
 			vec![
-				(46, 3, 6, B::Emberore),
-				(47, 3, 6, B::Emberore),
-				(48, 3, 6, B::Emberore),
-				(46, 4, 5, B::Emberore),
-				(47, 4, 5, B::Emberore),
-				(48, 4, 5, B::Emberore),
+				(46, 3, 6, B::Aetherock),
+				(47, 3, 6, B::Aetherock),
+				(48, 3, 6, B::Aetherock),
+				(46, 4, 5, B::Aetherock),
+				(47, 4, 5, B::Aetherock),
+				(48, 4, 5, B::Aetherock),
 			]
 		);
 		// The floor rule, restated against the golden itself, so a future
@@ -572,25 +510,30 @@ mod tests {
 		);
 	}
 
-	/// Depth bands: every tier stays reachable all the way down (the
-	/// overlap that keeps a low-level miner in business deep down), but
-	/// none appears above its own ceiling.
+	/// Depth bands, both edges: no tier appears above its ceiling OR below
+	/// its floor — depth predicts tier, which is the whole point of the
+	/// rebanding: a find at the bottom of the world is never common ore.
 	#[test]
 	fn tiers_respect_their_depth_bands() {
 		let seed = 7.0;
-		let mut seen = [0u32; 4];
+		let mut seen = [0u32; TIERS.len()];
 		for gy in 0..24 {
 			for gz in -40..40 {
 				for gx in -40..40 {
 					let Some(d) = deposit_in(gx, gy, gz, seed) else {
 						continue;
 					};
-					let (i, &(_, max_y, _)) = TIERS
+					let (i, &(_, lo, hi, _)) = TIERS
 						.iter()
 						.enumerate()
-						.find(|&(_, &(o, _, _))| o == d.ore)
+						.find(|&(_, &(o, _, _, _))| o == d.ore)
 						.expect("a listed tier");
-					assert!(d.y <= max_y, "{:?} at y {}", d.ore, d.y);
+					assert!(
+						(lo..=hi).contains(&d.y),
+						"{:?} at y {} outside its band",
+						d.ore,
+						d.y
+					);
 					// The BLOB, not the centre: a deposit reaches
 					// MAX_RADIUS below itself, and the cell it would
 					// reach into is an ordinary Stone the floor rule
@@ -605,24 +548,43 @@ mod tests {
 				}
 			}
 		}
-		for (i, &(ore, _, _)) in TIERS.iter().enumerate() {
+		for (i, &(ore, _, _, _)) in TIERS.iter().enumerate() {
 			assert!(seen[i] > 0, "{ore:?} never appears");
 		}
-		// Rarer with depth, in the order the tier weights declare.
+		// The deepest tier stays the rarest find in the world overall.
 		assert!(
-			seen[0] > seen[1] && seen[1] > seen[2] && seen[2] > seen[3],
-			"{seen:?}"
+			seen[TIERS.len() - 1] < seen[0],
+			"Aetherock out-numbers the surface tier: {seen:?}"
 		);
+		// And the bands genuinely exclude: the bottom rows of the world
+		// hold no shallow tier at all.
+		for gz in -40..40 {
+			for gx in -40..40 {
+				if let Some(d) = deposit_in(gx, 0, gz, seed) {
+					assert!(
+						matches!(d.ore, BlockType::Glowvein | BlockType::Aetherock),
+						"{:?} at the world floor",
+						d.ore
+					);
+				}
+			}
+		}
 	}
 
 	/// The anti-dupe, both halves. A vein is spent by the write that took
-	/// it, and cannot be regrown by putting stone back.
+	/// it, and cannot be regrown by putting stone back. (The unified
+	/// question lives in [`super::super::nodes`]; this exercises it over
+	/// the DEPOSIT stream specifically.)
 	#[test]
 	fn ore_never_manifests_in_an_edited_cell() {
+		use crate::worldgen::nodes::{Levels, revealed};
 		let seed = 42.0;
 		let stone = BlockType::Stone as u16;
 		let (x, y, z, _) = ore_cells(seed)[0];
-		let max = crate::skills::MAX_LEVEL;
+		let max = Levels {
+			mining: crate::skills::MAX_LEVEL,
+			alchemy: crate::skills::MAX_LEVEL,
+		};
 		assert!(
 			revealed(stone, (x, y, z), seed, max, false).is_some(),
 			"pristine"
@@ -656,21 +618,24 @@ mod tests {
 	}
 
 	/// You dig what you can see: below a tier's reveal level the cell is
-	/// stone to that player, and stays stone through the dig.
+	/// stone to that player, and stays stone through the dig. The Mining
+	/// tiers gate on Mining alone, and the surface tier riding this same
+	/// stream gates on Alchemy alone.
 	#[test]
 	fn a_tier_is_invisible_below_its_level() {
+		use crate::worldgen::nodes::{Levels, revealed};
 		let seed = 42.0;
 		let stone = BlockType::Stone as u16;
 		// Found through the DEPOSITS rather than by sweeping cells: a
 		// deposit's centre is always inside its own blob, and Aetherock is
-		// one deposit in fifteen in the bottom two grid rows — rare enough
-		// that a cell sweep small enough to run in a test can honestly
-		// miss it, which is how this test first "passed" by finding
-		// nothing at all.
+		// rare enough that a cell sweep small enough to run in a test can
+		// honestly miss it, which is how this test first "passed" by
+		// finding nothing at all.
+		let all = deposits_near((-400, 1, -400), (400, 200, 400), seed);
 		for &ore in &ORES {
 			let need = crate::unlock::reveal(ore).expect("an ore");
-			let d = deposits_near((-400, 1, -400), (400, 140, 400), seed)
-				.into_iter()
+			let d = all
+				.iter()
 				.find(|d| d.ore == ore)
 				.unwrap_or_else(|| panic!("no {ore:?} anywhere in the sampled world"));
 			let (x, y, z) = (d.x, d.y, d.z);
@@ -679,75 +644,55 @@ mod tests {
 				Some(ore),
 				"the centre is in the blob"
 			);
-			assert_eq!(revealed(stone, (x, y, z), seed, need - 1, false), None);
-			assert_eq!(revealed(stone, (x, y, z), seed, need, false), Some(ore));
+			let at = |mining, alchemy| {
+				revealed(stone, (x, y, z), seed, Levels { mining, alchemy }, false)
+			};
+			assert_eq!(at(need - 1, crate::skills::MAX_LEVEL), None, "{ore:?}");
+			assert_eq!(at(need, 1), Some(ore), "{ore:?}");
 		}
+		// Leystone: the same stream, the OTHER skill's gate.
+		let ley = all
+			.iter()
+			.find(|d| d.ore == BlockType::Leystone)
+			.expect("no leystone in the sampled world");
+		let (x, y, z) = (ley.x, ley.y, ley.z);
+		let need = crate::unlock::alchemy_reveal(BlockType::Leystone).expect("a surface node");
+		let at =
+			|mining, alchemy| revealed(stone, (x, y, z), seed, Levels { mining, alchemy }, false);
+		assert_eq!(at(crate::skills::MAX_LEVEL, need - 1), None, "leystone");
+		assert_eq!(at(1, need), Some(BlockType::Leystone), "leystone");
 	}
 
-	/// Every tier has a spent rock, and nothing else does.
+	/// **Every tier in the stream is reachable by the gate that decides
+	/// whether the stamp runs at all.** A player standing at exactly a
+	/// tier's reveal level, and nothing else, must get past
+	/// [`lowest_reveal`] / [`lowest_alchemy_reveal`] — or the mesh stamp
+	/// skips the whole deposit pass while `nodes::revealed` reveals the
+	/// tier anyway, which is a find you can see and cannot extract.
 	///
-	/// Totality is what makes the two `expect`s at the extraction sites
-	/// honest — the client's prediction and the server's write both ask
-	/// this and both would panic on a `None`, and they must agree about
-	/// the cell or the two ends draw different rock at the same
-	/// coordinate. The reverse half matters just as much: a spent rock
-	/// that answered to `spent_rock` in its own right would be a vein you
-	/// could tap twice.
+	/// Both gates used to name Leystone by hand, in two files, because
+	/// [`ORES`] is the Mining roster and [`TIERS`] is the stream. A second
+	/// Alchemy-revealed tier would have been stamped by nobody, and the
+	/// only symptom is rock that looks ordinary and refuses every hold.
 	#[test]
-	fn every_tier_has_a_spent_rock_and_nothing_else_does() {
-		let mut spent = Vec::new();
-		for &ore in &ORES {
-			let rock = spent_rock(ore).unwrap_or_else(|| panic!("{ore:?} taps out into nothing"));
-			assert_ne!(rock, ore, "{ore:?} must not tap out into itself");
+	fn the_stamps_gate_admits_every_tier_at_its_own_reveal() {
+		for &(tier, ..) in &TIERS {
+			let (mining, alchemy) = (
+				crate::unlock::reveal(tier),
+				crate::unlock::alchemy_reveal(tier),
+			);
 			assert!(
-				rock.dig_drop() == Some(rock),
-				"{rock:?} has to drop ITSELF — it is the only thing a vein \
-				 ever puts in a player's hands"
+				mining.is_some() != alchemy.is_some(),
+				"{tier:?} must answer to exactly one reveal skill"
 			);
-			assert_eq!(rock.props().light, 0, "{rock:?} still casts");
-			assert!(!rock.props().emissive, "{rock:?} still glows");
-			spent.push(rock);
-		}
-		let mut ids: Vec<u16> = spent.iter().map(|&b| b as u16).collect();
-		ids.sort_unstable();
-		ids.dedup();
-		assert_eq!(
-			ids.len(),
-			spent.len(),
-			"two tiers share a spent rock: {spent:?}"
-		);
-		for &b in &BlockType::ALL {
-			assert_eq!(
-				spent_rock(b).is_some(),
-				ORES.contains(&b),
-				"{b:?} disagrees with the ore roster"
-			);
-		}
-	}
-
-	/// A vein is world geometry and never an item.
-	///
-	/// The siphon pays essence at the rock face, so nothing anywhere
-	/// credits an ore block — and `is_slottable` is what makes that
-	/// structural rather than a promise: `reconcile_layout` sweeps a
-	/// non-slottable type out of bar and grid whatever the count says, so
-	/// it is also the migration for saves written while a siphon still
-	/// handed ore over.
-	#[test]
-	fn raw_ore_is_never_an_item() {
-		for &ore in &ORES {
-			assert!(ore.is_raw_ore(), "{ore:?} is not in the block predicate");
-			assert!(!ore.is_slottable(), "{ore:?} can still be held");
+			// Level 1 on the axis this tier does NOT use: the gate has to
+			// open on the tier's own axis alone.
+			let opens = mining.is_some_and(|need| need >= lowest_reveal())
+				|| alchemy.is_some_and(|need| need >= lowest_alchemy_reveal());
 			assert!(
-				!ore.is_tool(),
-				"{ore:?} must be excluded as ore, not as a tool"
+				opens,
+				"{tier:?} reveals at a level the stamp's own gate refuses"
 			);
-		}
-		// And the spent rocks are, or there is nothing to carry home.
-		for &ore in &ORES {
-			let rock = spent_rock(ore).expect("a tier");
-			assert!(rock.is_slottable(), "{rock:?} cannot be picked up");
-			assert!(!rock.is_raw_ore(), "{rock:?} reads as a live vein");
 		}
 	}
 

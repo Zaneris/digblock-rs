@@ -202,4 +202,11 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// the sampling grid are untouched, but every family's two endpoints
 /// moved, so a v19 peer's completions arrive early against a v20 server
 /// at every level.
-pub const SIM_VERSION: u16 = 20;
+///
+/// v21: the essence redesign — the ore bands gained floors and the
+/// surface nodes joined the reveal (heartwood in trunks, leystone in the
+/// deposit stream's shallow band, springstone in fresh beds, all on the
+/// Alchemy axis), so what a dig IS at a given cell moved for both ends
+/// at once: a v20 peer digs wood where a v21 server refuses a revealed
+/// heart, and its deep tunnels meet different tiers entirely.
+pub const SIM_VERSION: u16 = 21;

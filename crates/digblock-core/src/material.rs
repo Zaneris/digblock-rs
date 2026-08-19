@@ -21,34 +21,24 @@
 //!   meant to be a block row and a PNG.
 //! - **Craft cost** = the material's whole-cube split, prorated to the shape's
 //!   volume — [`crate::alchemy::craft_ideal`].
-//! - **Extraction yield** = the material's base, prorated the same way —
-//!   [`crate::alchemy::extract_base`].
 //! - **The earned half of the strength wall** = the material's own Mining
 //!   level, layered over its dig family's — [`crate::unlock::mine`].
 //! - **The transmute tab's families** = one per shape, members in material
 //!   order.
 //!
-//! Two rules keep the economy shut, and both become STRUCTURAL here rather
-//! than a test's opinion:
-//!
-//! - [`Material::craft_units`] is `None` for everything the world only ever
-//!   hands you broken — mined rock, gravel, foliage. Those are exactly the
-//!   blocks that may carry §3.3's bonus lines, so "a bonus line never sits
-//!   on a craftable block" is now a property of the material. (The
-//!   implication runs one way only since §7.5: a substance can have a
-//!   split and still have no craftable cell, because the split is a price
-//!   basis rather than an offer.)
-//! - Every material's craft split is at least a whole cube's worth of units
-//!   and its extraction base is at most that, so prorating both by the same
-//!   shape volume preserves
-//!   `no_level_ever_creates_matter` at every shape for free.
+//! The essence redesign retired the extraction side of this axis: matter
+//! never becomes essence at the bench any more. What remains structural
+//! here is the split between prices and payouts — [`Material::craft_units`]
+//! is what a substance COSTS and [`Material::node_units`] is what a live
+//! NODE of it pays at a siphon draw, and no material carries both, so
+//! essence cannot be manufactured from essence by construction.
 //!
 //! Functional items — torches, lamps, tools, the bucket charge, the bed —
 //! have NO material. §7.3's standing rule is that matter is priced by
 //! volume and function is priced by hand, so they are gated and costed by
 //! their own small tables in `unlock` and `alchemy`.
 
-use crate::block::Essence;
+use crate::block::{BlockType, Essence};
 
 /// A substance the bench can work, in unlock order (which is also the
 /// order members appear on the transmute tab).
@@ -85,20 +75,19 @@ pub enum Material {
 	/// Grown from Aether: the endgame material, and it glows.
 	Crystal,
 
-	// ---- recipe-less: extract only, never crafted in any shape --------
+	// ---- recipe-less: never crafted in any shape ----------------------
 	/// What mined rock actually is (§7.1) — the mass Earth feedstock.
 	Rubble,
 	Gravel,
 	DryGrass,
-	/// Broadleaf canopy: filler, and the first bonus line (§3.3's dew).
+	/// Broadleaf canopy: filler.
 	Leaf,
-	/// Conifer canopy. A separate material from [`Self::Leaf`] even though
-	/// the two extract identically, because they are separate SUBSTANCES —
-	/// pine resin is the pre-ore Aether trickle and broadleaf never carries
-	/// it — and because one grid cell holds one block.
+	/// Conifer canopy. A separate material from [`Self::Leaf`] because
+	/// they are separate SUBSTANCES, and because one grid cell holds one
+	/// block.
 	PineLeaf,
-	/// Revealed and extracted at the rock face, never at the bench in any
-	/// shape (§5.3).
+	/// Revealed and drawn at the rock face, never crafted in any shape
+	/// (§5.3).
 	Emberore,
 	Duskstone,
 	Glowvein,
@@ -120,10 +109,19 @@ pub enum Material {
 	DepletedDuskstone,
 	DepletedGlowvein,
 	DepletedAetherock,
+	/// The three surface nodes and their spent faces (the essence
+	/// redesign): the ores' standing exactly — never crafted in any shape,
+	/// drawn where they stand, and the spent face is the trophy.
+	Heartwood,
+	DrainedHeartwood,
+	Leystone,
+	SpentLeystone,
+	Springstone,
+	SpentSpringstone,
 }
 
 impl Material {
-	pub const COUNT: usize = 31;
+	pub const COUNT: usize = 37;
 
 	/// Every material in unlock order — the transmute tab reads members in
 	/// this order, so a family's tiles run from cheapest to rarest.
@@ -159,36 +157,72 @@ impl Material {
 		Material::DepletedDuskstone,
 		Material::DepletedGlowvein,
 		Material::DepletedAetherock,
+		Material::Heartwood,
+		Material::DrainedHeartwood,
+		Material::Leystone,
+		Material::SpentLeystone,
+		Material::Springstone,
+		Material::SpentSpringstone,
 	];
 
-	/// The whole-cube craft split — what a FULL CUBE of this substance costs
-	/// before waste, in the block's own essence ratio. `None` = the bench
-	/// cannot make this substance in any shape, which is also what makes it
-	/// eligible for a bonus line.
+	/// The blocks a craft of this substance consumes — the MATTER half of a
+	/// feedstock-and-catalyst recipe (the essence redesign's craft shape).
+	/// One cube of feedstock per craft; the shape's batch
+	/// ([`crate::shapes::craft_batch`]) says how many pieces that cube
+	/// cuts into. `None` = the substance is transmuted from essence alone
+	/// (Metal, Crystal — nothing in the world IS them yet).
 	///
-	/// Totals sit at or above a whole cube's worth on purpose: the shortfall
-	/// against
-	/// [`Self::extract_units`] is the loss that keeps extract→craft→extract
-	/// a sink (§4.2).
+	/// Bulk building stays affordable because of this split: the weight of
+	/// a wall's price is the rock you quarried for it, and the essence line
+	/// beside it is a CATALYST — small, universal, and the whole reason the
+	/// currency has purpose.
+	pub fn feedstock(self) -> Option<BlockType> {
+		use Material as M;
+		Some(match self {
+			// The timbers are worked from the felled log.
+			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => BlockType::Wood,
+			// The mason's loop (§7.1): broken rock back into clean forms.
+			M::Stone | M::StoneBrick | M::PolishedStone => BlockType::Rubble,
+			// The sand-flavoured substances fuse from sand itself.
+			M::Sand | M::Sandstone | M::SandstoneBrick | M::Glass => BlockType::Sand,
+			// The loose grounds reshape from their own loose block.
+			M::Dirt => BlockType::Dirt,
+			M::Grass => BlockType::Grass,
+			M::Mud => BlockType::Mud,
+			M::Snow => BlockType::Snow,
+			_ => return None,
+		})
+	}
+
+	/// The essence half of a cube's price, before waste. For a substance
+	/// with [`Self::feedstock`] this is the CATALYST — a small per-cube
+	/// line, never prorated by the shape, since a craft consumes a whole
+	/// feedstock cube whatever it cuts it into. For the essence-only
+	/// substances it is the whole price. `None` = the bench cannot make
+	/// this substance in any shape.
+	///
+	/// With bench extraction gone this is a pure SINK price: essence only
+	/// ever enters the world at a node draw ([`Self::node_units`]) and only
+	/// ever leaves it here, so no split can loop back on itself.
 	pub fn craft_units(self) -> Option<&'static [(Essence, u32)]> {
 		use Essence as E;
 		use Material as M;
 		Some(match self {
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Flora, 27)],
-			M::Stone | M::Sand | M::Sandstone => &[(E::Earth, 27)],
-			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Earth, 27)],
-			// Sand-flavored Earth, fused: the same bulk, a different form.
-			M::Glass => &[(E::Earth, 27)],
-			// A whole cube's volume in the extraction ratio, each line ceiled
-			// separately — which is why the total overshoots a cube by a unit.
-			M::Dirt => &[(E::Earth, 23), (E::Flora, 5)],
-			M::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-			M::Mud => &[(E::Earth, 18), (E::Flora, 5), (E::Aqua, 5)],
-			M::Snow => &[(E::Aqua, 27)],
-			M::Metal => &[(E::Metal, 27)],
+			// Catalysts, matching each substance's essence identity.
+			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Vitae, 3)],
+			M::Stone | M::Sand | M::Sandstone => &[(E::Terra, 3)],
+			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Terra, 3)],
+			M::Glass => &[(E::Terra, 3)],
+			M::Dirt => &[(E::Terra, 3), (E::Vitae, 1)],
+			M::Grass => &[(E::Terra, 2), (E::Vitae, 1)],
+			M::Mud => &[(E::Terra, 2), (E::Vitae, 1), (E::Unda, 1)],
+			M::Snow => &[(E::Unda, 3)],
+			// The essence-only substances: transmutation proper, a whole
+			// cube's worth of the currency.
+			M::Metal => &[(E::Ferrum, 27)],
 			// Aether-bound, with a metal lattice to hold it: the only
 			// repeatable Aether sink big enough to matter in the endgame.
-			M::Crystal => &[(E::Aether, 18), (E::Metal, 9)],
+			M::Crystal => &[(E::Aether, 18), (E::Ferrum, 9)],
 			M::Rubble
 			| M::Gravel
 			| M::DryGrass
@@ -202,43 +236,29 @@ impl Material {
 			| M::DepletedEmberore
 			| M::DepletedDuskstone
 			| M::DepletedGlowvein
-			| M::DepletedAetherock => return None,
+			| M::DepletedAetherock
+			| M::Heartwood
+			| M::DrainedHeartwood
+			| M::Leystone
+			| M::SpentLeystone
+			| M::Springstone
+			| M::SpentSpringstone => return None,
 		})
 	}
 
-	/// Base extraction yield for a FULL CUBE at full efficiency, never more
-	/// than the craft split — the shortfall is structure lost to the
-	/// process (§3.1).
-	pub fn extract_units(self) -> &'static [(Essence, u32)] {
+	/// What one DRAW of this substance pays, per node cell, at full
+	/// efficiency — the NODE yield basis (the essence redesign: essence is
+	/// found, not ground). Non-empty exactly for the live node kinds;
+	/// everything else answers empty, because bench extraction is gone and
+	/// a siphon draw is the only way matter becomes essence.
+	pub fn node_units(self) -> &'static [(Essence, u32)] {
 		use Essence as E;
 		use Material as M;
 		match self {
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Flora, 27)],
-			M::Stone => &[(E::Earth, 27)],
-			M::StoneBrick | M::PolishedStone => &[(E::Earth, 24)],
-			M::Rubble => &[(E::Earth, 24)],
-			M::Sandstone | M::SandstoneBrick | M::Glass => &[(E::Earth, 21)],
-			M::Gravel => &[(E::Earth, 15)],
-			M::Sand => &[(E::Earth, 12)],
-			M::Dirt => &[(E::Earth, 15), (E::Flora, 3)],
-			M::Grass => &[(E::Earth, 18), (E::Flora, 9)],
-			M::DryGrass => &[(E::Earth, 18), (E::Flora, 6)],
-			M::Mud => &[(E::Earth, 12), (E::Flora, 3), (E::Aqua, 3)],
-			M::Snow => &[(E::Aqua, 9)],
-			// Foliage is mostly water and structure — the timber's essence
-			// is in the trunk. One unit, not three: a leaf digs almost
-			// instantly and there are hundreds per tree, so at three it paid
-			// Flora as fast
-			// as grass from the block the world gives away with every log.
-			M::Leaf | M::PineLeaf => &[(E::Flora, 1)],
-			M::Metal => &[(E::Metal, 24)],
-			M::Crystal => &[(E::Aether, 12), (E::Metal, 6)],
-			// Raw ore is drawn whole (§3.1) — it has no shapes, so the
-			// proration below is always the identity. This is what a
-			// SIPHON pays out at the rock face: no ore ever reaches the
-			// bench, because no ore ever reaches a hand.
-			M::Emberore => &[(E::Metal, 18)],
-			M::Duskstone => &[(E::Metal, 36)],
+			// The ore tiers, drawn whole at the rock face: concentrates,
+			// rising steeply with depth.
+			M::Emberore => &[(E::Ferrum, 18)],
+			M::Duskstone => &[(E::Ferrum, 36)],
 			// The first tier that pays Aether at all, and the reason the
 			// Resonant Pick's Aether line is payable by anyone who has
 			// earned the pick: this vein reveals at exactly the Mining
@@ -247,19 +267,19 @@ impl Material {
 			// row existed the only reliable Aether in the game sat behind
 			// the deepest tier, and the pick was unlocked for a long
 			// stretch in which it could not be built.
-			M::Glowvein => &[(E::Metal, 60), (E::Aether, 1)],
-			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
-			// Spent rock is spent: the siphon already took what was in it,
-			// and a tapped face that still paid a BASE at the bench would
-			// be a second helping of the same vein. The two deep tiers do
-			// carry a bonus line, which is a different thing — a trickle
-			// the top of the ladder earns, not a share of the seam, and
-			// the reason those two are extractable at all.
-			M::DepletedStone
-			| M::DepletedEmberore
-			| M::DepletedDuskstone
-			| M::DepletedGlowvein
-			| M::DepletedAetherock => &[],
+			M::Glowvein => &[(E::Ferrum, 60), (E::Aether, 1)],
+			M::Aetherock => &[(E::Ferrum, 90), (E::Aether, 9)],
+			// The surface nodes: concentrates like the ore tiers, each in
+			// its own single essence — a find must out-pay the bulk matter
+			// around it or it is not one.
+			M::Heartwood => &[(E::Vitae, 36)],
+			M::Leystone => &[(E::Terra, 36)],
+			M::Springstone => &[(E::Unda, 36)],
+			// Everything else — bulk matter, worked blocks, spent faces —
+			// yields nothing: a spent node is a find already taken, and a
+			// block is a block. The bench transmutes; only the siphon
+			// makes essence.
+			_ => &[],
 		}
 	}
 
@@ -298,6 +318,12 @@ impl Material {
 			M::DepletedDuskstone => "SPENT DUSKSTONE",
 			M::DepletedGlowvein => "SPENT GLOWVEIN",
 			M::DepletedAetherock => "SPENT AETHEROCK",
+			M::Heartwood => "HEARTWOOD",
+			M::DrainedHeartwood => "DRAINED HEARTWOOD",
+			M::Leystone => "LEYSTONE",
+			M::SpentLeystone => "SPENT LEYSTONE",
+			M::Springstone => "SPRINGSTONE",
+			M::SpentSpringstone => "SPENT SPRINGSTONE",
 		}
 	}
 }
@@ -306,43 +332,17 @@ impl Material {
 /// each line UP — the craft side, where the player pays.
 ///
 /// A whole cube is the identity, which is what keeps every
-/// raw-block recipe exactly what it was before the grid.
+/// raw-block recipe exactly what it was before the grid. (The DOWN-rounded
+/// yield twin retired with bench extraction: nothing is prorated for a
+/// payout any more — a node is drawn whole, and only a node pays.)
 pub fn cost_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> {
-	prorate(lines, units, true)
-}
-
-/// Prorate a whole-cube essence split down to a shape's `units`, rounding
-/// each line DOWN — the extraction side, where the player is paid.
-///
-/// Rounding the two sides in opposite directions is what makes
-/// "no matter creation" hold for a shape without a second proof: a shape
-/// can never extract for more than its share, nor craft for less.
-pub fn yield_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> {
-	prorate(lines, units, false)
-}
-
-/// The SUM of [`yield_split`] without building it. Same arithmetic, line
-/// by line, so it cannot drift from the split it totals — and no
-/// allocation, which matters because the extraction pace asks for this
-/// every tick for every connected player.
-pub fn yield_total(lines: &[(Essence, u32)], units: u32) -> u32 {
-	let subs = crate::shapes::SUBS_PER_BLOCK;
-	lines.iter().map(|&(_, n)| (n * units / subs).max(1)).sum()
-}
-
-fn prorate(lines: &[(Essence, u32)], units: u32, up: bool) -> Vec<(Essence, u32)> {
 	let subs = crate::shapes::SUBS_PER_BLOCK;
 	lines
 		.iter()
 		.map(|&(e, n)| {
-			let scaled = if up {
-				(n * units).div_ceil(subs)
-			} else {
-				n * units / subs
-			};
 			// A listed line never vanishes: the thinnest shape of a
-			// one-unit material still pays its one unit.
-			(e, scaled.max(1))
+			// one-unit material still costs its one unit.
+			(e, (n * units).div_ceil(subs).max(1))
 		})
 		.collect()
 }
@@ -366,61 +366,35 @@ mod tests {
 		}
 	}
 
-	/// The grid's economic floor, proved once for the axis instead of once
-	/// per authored pair: a material always costs more to make than it
-	/// yields, in every essence, at the full-cube scale the shapes prorate
-	/// from. §4.2's waste multiplier and §3.2's efficiency then only widen
-	/// the gap.
+	/// The node yield basis is exactly the live node roster: only a find
+	/// pays essence, a spent face pays nothing, and nothing with a yield
+	/// has a recipe — which is what makes essence un-manufacturable by
+	/// construction now that the bench only ever consumes it.
 	#[test]
-	fn craft_always_costs_more_than_extraction_pays() {
+	fn only_nodes_pay_and_no_node_is_craftable() {
 		for &m in &Material::ALL {
-			let Some(cost) = m.craft_units() else {
-				continue;
-			};
-			let total: u32 = cost.iter().map(|&(_, n)| n).sum();
-			assert!(
-				total >= crate::shapes::SUBS_PER_BLOCK,
-				"{m:?} craft total {total} is below a whole block"
-			);
-			for &(e, got) in m.extract_units() {
-				let paid: u32 = cost
-					.iter()
-					.filter(|(ce, _)| *ce == e)
-					.map(|&(_, n)| n)
-					.sum();
-				assert!(
-					paid >= got,
-					"{m:?}: {e:?} yields {got} but costs only {paid}"
-				);
-			}
-		}
-	}
-
-	/// Extraction never exceeds a whole block — the §3.1 cap, and the other
-	/// half of what makes the proration safe. Ore is the deliberate
-	/// exception: it is a concentrate, not a substance you shape, so it has
-	/// no craft recipe to pump and no shapes to prorate.
-	#[test]
-	fn extraction_bases_stay_under_a_block() {
-		for &m in &Material::ALL {
-			let total: u32 = m.extract_units().iter().map(|&(_, n)| n).sum();
-			let is_ore = matches!(
+			let total: u32 = m.node_units().iter().map(|&(_, n)| n).sum();
+			let is_node = matches!(
 				m,
-				Material::Emberore | Material::Duskstone | Material::Glowvein | Material::Aetherock
+				Material::Emberore
+					| Material::Duskstone
+					| Material::Glowvein
+					| Material::Aetherock
+					| Material::Heartwood
+					| Material::Leystone
+					| Material::Springstone
 			);
-			if is_ore {
+			if is_node {
 				assert!(m.craft_units().is_none(), "{m:?} must never be craftable");
+				assert!(total > 0, "{m:?} is a find and must pay something");
 			} else {
-				assert!(
-					total <= crate::shapes::SUBS_PER_BLOCK,
-					"{m:?} base {total} exceeds a whole block"
-				);
+				assert_eq!(total, 0, "{m:?} pays essence without being a node");
 			}
 		}
 	}
 
-	/// A whole cube prorates to itself — which is what makes the grid a
-	/// refactor rather than a retune for every raw-block recipe.
+	/// A whole cube prorates to itself — which is what keeps the
+	/// essence-only substances' cube recipes exactly their split.
 	#[test]
 	fn a_whole_cube_prorates_to_itself() {
 		for &m in &Material::ALL {
@@ -428,24 +402,43 @@ mod tests {
 			if let Some(c) = m.craft_units() {
 				assert_eq!(cost_split(c, subs), c.to_vec(), "{m:?} cost");
 			}
-			let e = m.extract_units();
-			if !e.is_empty() {
-				assert_eq!(yield_split(e, subs), e.to_vec(), "{m:?} yield");
-			}
 		}
 	}
 
-	/// The shipped shape volumes, prorated — these are the numbers the
-	/// launch roster had hand-tabled, and they must not move.
+	/// The feedstock-and-catalyst shape, held together: every craftable
+	/// substance either names a world-handed feedstock cube plus a SMALL
+	/// catalyst, or transmutes from essence alone at a whole cube's worth
+	/// — never both readings at once, and never a feedstock the bench
+	/// itself is the only source of (which would nest the bootstrap
+	/// deadlock one table deeper).
 	#[test]
-	fn shipped_shape_splits_are_unchanged() {
-		use Essence as E;
-		let wood = Material::Wood.craft_units().unwrap();
-		assert_eq!(cost_split(wood, 18), vec![(E::Flora, 18)], "stairs");
-		assert_eq!(cost_split(wood, 10), vec![(E::Flora, 10)], "door");
-		assert_eq!(cost_split(wood, 9), vec![(E::Flora, 9)], "slab");
-		let stone = Material::Stone.extract_units();
-		assert_eq!(yield_split(stone, 18), vec![(E::Earth, 18)]);
-		assert_eq!(yield_split(stone, 9), vec![(E::Earth, 9)]);
+	fn feedstock_recipes_carry_catalysts_and_essence_recipes_carry_cubes() {
+		for &m in &Material::ALL {
+			let Some(units) = m.craft_units() else {
+				assert!(m.feedstock().is_none(), "{m:?} feeds an uncraftable");
+				continue;
+			};
+			let total: u32 = units.iter().map(|&(_, n)| n).sum();
+			match m.feedstock() {
+				Some(f) => {
+					assert!(!f.is_bench_only(), "{m:?} feeds on bench-only {f:?}");
+					assert!(f.is_slottable(), "{m:?} feeds on unholdable {f:?}");
+					assert!(
+						total < crate::shapes::SUBS_PER_BLOCK / 3,
+						"{m:?}'s catalyst is a price, not a pinch"
+					);
+				}
+				None => assert!(
+					total >= crate::shapes::SUBS_PER_BLOCK,
+					"{m:?} transmutes from essence alone and must cost a cube's worth"
+				),
+			}
+		}
+		// The rosters that make the split meaningful, named.
+		assert_eq!(Material::Stone.feedstock(), Some(BlockType::Rubble));
+		assert_eq!(Material::Lumber.feedstock(), Some(BlockType::Wood));
+		assert_eq!(Material::Glass.feedstock(), Some(BlockType::Sand));
+		assert_eq!(Material::Metal.feedstock(), None);
+		assert_eq!(Material::Crystal.feedstock(), None);
 	}
 }

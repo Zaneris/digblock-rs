@@ -347,6 +347,14 @@ fn main() {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(0);
+	// DIG_NODE=<heartwood|leystone|springstone>: the surface counterpart —
+	// pose at the nearest node of that kind, its Alchemy reveal granted.
+	// An unknown kind is FATAL rather than a silent open-terrain capture,
+	// like every other capture flag here.
+	config.debug_node = std::env::var("DIG_NODE").ok().map(|v| {
+		digblock_render::parse_node_kind(&v)
+			.unwrap_or_else(|| panic!("DIG_NODE: unknown node kind {v:?}"))
+	});
 	// DIG_MINING=<level>: start there. Everything a level gates is
 	// otherwise unphotographable — the strength wall's refusals, dig
 	// speed, and the Resonant Pick's ranks, the second of which brightens

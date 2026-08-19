@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use crate::chunk::{AIR_CHUNK, ChunkData, ChunkPos};
-use crate::mesher::{MeshData, MeshInput, OreStamp, PADDED_VOLUME};
+use crate::mesher::{MeshData, MeshInput, NodeHosts, NodeStamp, PADDED_VOLUME};
 use crate::pipeline::{Job, JobResult, MeshOutput};
 
 const TAG_GENERATE: u8 = 0;
@@ -132,11 +132,12 @@ impl Job {
 	fn encoded_hint(&self) -> usize {
 		match self {
 			Job::Generate { .. } => 17,
-			// The ore stamp is a flag byte when absent, and otherwise
-			// seed + origin + level + count + two bytes an edited cell.
+			// The node stamp is a flag byte when absent, and otherwise
+			// seed + origin + both levels + the host mask + count + two
+			// bytes an edited cell.
 			Job::Mesh { input, .. } => {
-				let ore = input.ore.as_ref().map_or(1, |o| 29 + o.edited.len() * 2);
-				26 + ore + PADDED_VOLUME * 2
+				let nodes = input.nodes.as_ref().map_or(1, |o| 34 + o.edited.len() * 2);
+				26 + nodes + PADDED_VOLUME * 2
 			}
 		}
 	}
@@ -166,12 +167,12 @@ impl Job {
 					mask |= u8::from(m) << i;
 				}
 				out.push(mask);
-				// The ore reveal, when this job carries one. Present-flag
+				// The node reveal, when this job carries one. Present-flag
 				// first: it is `None` for every chunk meshed for a reason
 				// other than a reveal, which is most of them, and a level
 				// that reveals nothing still has to cross as itself rather
-				// than as absence — `apply_ore` is what decides.
-				match &input.ore {
+				// than as absence — `apply_nodes` is what decides.
+				match &input.nodes {
 					None => out.push(0),
 					Some(o) => {
 						out.push(1);
@@ -179,7 +180,17 @@ impl Job {
 						out.extend_from_slice(&o.origin.0.to_le_bytes());
 						out.extend_from_slice(&o.origin.1.to_le_bytes());
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
-						out.extend_from_slice(&o.mining.to_le_bytes());
+						out.extend_from_slice(&o.levels.mining.to_le_bytes());
+						out.extend_from_slice(&o.levels.alchemy.to_le_bytes());
+						// Which hosts the main thread found in the box, one
+						// bit each — the only thing that prunes a pass, so
+						// it has to cross with the levels rather than being
+						// asked again over the same array in the worker.
+						out.push(
+							u8::from(o.hosts.deposits)
+								| u8::from(o.hosts.heartwood) << 1
+								| u8::from(o.hosts.springs) << 2,
+						);
 						// The edit gate. Bounded by the edits inside one
 						// padded snapshot, so a u32 count is never the limit, but
 						// dropping it would let the anti-dupe re-reveal a
@@ -210,21 +221,31 @@ impl Job {
 				for (i, m) in missing.iter_mut().enumerate() {
 					*m = mask & (1 << i) != 0;
 				}
-				let ore = match r.u8()? {
+				let nodes = match r.u8()? {
 					0 => None,
 					1 => {
 						let seed = r.f64()?;
 						let origin = (r.i32()?, r.i32()?, r.i32()?);
-						let mining = r.u32()?;
+						let levels = crate::worldgen::nodes::Levels {
+							mining: r.u32()?,
+							alchemy: r.u32()?,
+						};
+						let mask = r.u8()?;
+						let hosts = NodeHosts {
+							deposits: mask & 1 != 0,
+							heartwood: mask & 2 != 0,
+							springs: mask & 4 != 0,
+						};
 						let n = r.u32()? as usize;
 						let mut edited = Vec::with_capacity(n.min(PADDED_VOLUME));
 						for _ in 0..n {
 							edited.push(r.u16()?);
 						}
-						Some(OreStamp {
+						Some(NodeStamp {
 							seed,
 							origin,
-							mining,
+							levels,
+							hosts,
 							edited,
 						})
 					}
@@ -242,7 +263,7 @@ impl Job {
 					input: Box::new(MeshInput {
 						blocks,
 						missing,
-						ore,
+						nodes,
 					}),
 				})
 			}
@@ -375,7 +396,7 @@ mod tests {
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [true, false, false, true, false, true],
-				ore: None,
+				nodes: None,
 			}),
 		}
 	}
@@ -385,7 +406,7 @@ mod tests {
 	/// consumed inside `run_job`, so if it does not cross, a browser
 	/// client meshes every chunk as though the looker had no Mining at
 	/// all — ore simply never appears, and nothing errors.
-	fn mesh_job_with_ore() -> Job {
+	fn mesh_job_with_nodes() -> Job {
 		let Job::Mesh {
 			pos,
 			generation,
@@ -398,10 +419,20 @@ mod tests {
 			pos,
 			generation,
 			input: Box::new(MeshInput {
-				ore: Some(OreStamp {
+				nodes: Some(NodeStamp {
 					seed: -8123.5,
 					origin: (-32, 64, 4096),
-					mining: 47,
+					levels: crate::worldgen::nodes::Levels {
+						mining: 47,
+						alchemy: 12,
+					},
+					// A mixed mask, so a bit dropped or shifted in the
+					// codec cannot pass as the value beside it.
+					hosts: NodeHosts {
+						deposits: true,
+						heartwood: false,
+						springs: true,
+					},
 					edited: vec![3, 17, 2044, 5831],
 				}),
 				..*input
@@ -410,19 +441,31 @@ mod tests {
 	}
 
 	#[test]
-	fn a_mesh_job_carries_its_ore_stamp() {
-		let Some(Job::Mesh { input, .. }) = Job::decode(&mesh_job_with_ore().encode()) else {
+	fn a_mesh_job_carries_its_node_stamp() {
+		let Some(Job::Mesh { input, .. }) = Job::decode(&mesh_job_with_nodes().encode()) else {
 			panic!("decode");
 		};
-		let ore = input.ore.expect("the stamp survived the crossing");
-		assert_eq!(ore.seed, -8123.5);
-		assert_eq!(ore.origin, (-32, 64, 4096));
+		let nodes = input.nodes.expect("the stamp survived the crossing");
+		assert_eq!(nodes.seed, -8123.5);
+		assert_eq!(nodes.origin, (-32, 64, 4096));
 		assert_eq!(
-			ore.mining, 47,
-			"two lookers mesh the same chunk differently"
+			(nodes.levels.mining, nodes.levels.alchemy),
+			(47, 12),
+			"two lookers mesh the same chunk differently, on either axis"
 		);
 		assert_eq!(
-			ore.edited,
+			nodes.hosts,
+			NodeHosts {
+				deposits: true,
+				heartwood: false,
+				springs: true,
+			},
+			"the host mask is the only thing that prunes a pass — a chunk \
+			 that arrives claiming hosts it has not got pays every one of \
+			 them for nothing"
+		);
+		assert_eq!(
+			nodes.edited,
 			vec![3, 17, 2044, 5831],
 			"the anti-dupe's edit gate is not decorative: without it a \
 			 mined cell reveals again"
@@ -437,11 +480,11 @@ mod tests {
 
 	/// Absence has to survive too, and it is the common case.
 	#[test]
-	fn a_mesh_job_without_ore_stays_without() {
+	fn a_mesh_job_without_nodes_stays_without() {
 		let Some(Job::Mesh { input, .. }) = Job::decode(&mesh_job().encode()) else {
 			panic!("decode");
 		};
-		assert!(input.ore.is_none());
+		assert!(input.nodes.is_none());
 	}
 
 	#[test]
@@ -539,7 +582,7 @@ mod tests {
 			input: Box::new(MeshInput {
 				blocks,
 				missing: [false; 6],
-				ore: None,
+				nodes: None,
 			}),
 		};
 		let result = run_job(job);

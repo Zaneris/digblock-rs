@@ -52,26 +52,56 @@ pub struct MeshInput {
 	pub blocks: Box<[u16; PADDED_VOLUME]>,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
-	/// The ore reveal (SKILLS-DESIGN §5.3), when this job's owner wants
-	/// one. Consumed by [`MeshInput::apply_ore`] in the WORKER, before any
-	/// meshing — see that method for why the stamp writes block ids.
-	pub ore: Option<OreStamp>,
+	/// The node reveal (SKILLS-DESIGN §5.3, generalized to every node
+	/// kind), when this job's owner wants one. Consumed by
+	/// [`MeshInput::apply_nodes`] in the WORKER, before any meshing — see
+	/// that method for why the stamp writes block ids.
+	pub nodes: Option<NodeStamp>,
 }
 
 /// Everything the reveal needs, gathered on the main thread (which is the
 /// only place that knows what has been edited) and carried to the worker.
-pub struct OreStamp {
+pub struct NodeStamp {
 	pub seed: f64,
 	/// World position of the padded array's low corner — the shell cell,
 	/// not the chunk's own origin.
 	pub origin: (i32, i32, i32),
-	/// The looker's Mining level. Two players standing in the same cave
-	/// mesh the same chunk differently, which is the feature.
-	pub mining: u32,
+	/// The looker's two reveal levels — Mining for the ore tiers, Alchemy
+	/// for the surface nodes. Two players standing in the same cave mesh
+	/// the same chunk differently, which is the feature.
+	pub levels: crate::worldgen::nodes::Levels,
+	/// Which host families this box was found to hold, decided on the
+	/// main thread while the snapshot was being assembled.
+	///
+	/// Carried rather than re-derived because the answer is already in
+	/// hand: `Pipeline::node_stamp` has to walk the ids to know whether a
+	/// stamp is worth making at all, so asking again in the worker is a
+	/// second full scan of the same array for a question already
+	/// answered. It is also the ONLY gate that prunes anything — the
+	/// reveal levels cannot, now that the first surface node reveals at
+	/// the level everyone starts at.
+	pub hosts: NodeHosts,
 	/// Padded indices of cells this world has ever written, SORTED — the
 	/// anti-dupe's edit gate. Almost always empty, and bounded by the
 	/// edits inside one padded box even in a heavily built area.
 	pub edited: Vec<u16>,
+}
+
+/// Which of the node layer's three HOST families a padded box holds: only
+/// a Stone cell can carry a deposit, only Wood a heart, only Sand a
+/// spring. Every false is a whole pass [`MeshInput::apply_nodes`] skips.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct NodeHosts {
+	pub deposits: bool,
+	pub heartwood: bool,
+	pub springs: bool,
+}
+
+impl NodeHosts {
+	/// Nothing to stamp: the caller should make no stamp at all.
+	pub fn is_empty(self) -> bool {
+		!self.deposits && !self.heartwood && !self.springs
+	}
 }
 
 /// Padded flat index over the shell-inclusive coordinate range — same
@@ -109,7 +139,7 @@ impl MeshInput {
 		let mut input = MeshInput {
 			blocks: Box::new([0u16; PADDED_VOLUME]),
 			missing: [false; 6],
-			ore: None,
+			nodes: None,
 		};
 		for y in 0..n {
 			for z in 0..n {
@@ -173,68 +203,159 @@ impl MeshInput {
 		self.blocks[pidx(x, y, z)]
 	}
 
-	/// The ore reveal (SKILLS-DESIGN §5.3): rewrite qualifying pristine
-	/// Stone cells to their ore's BLOCK ID, before anything looks at this
-	/// array.
+	/// The node reveal (SKILLS-DESIGN §5.3, generalized): rewrite
+	/// qualifying pristine HOST cells to their node's BLOCK ID, before
+	/// anything looks at this array — deposits in Stone, heartwood in
+	/// trunk Wood, springstone in bed Sand.
 	///
 	/// Stamping ids rather than texture layers is the whole trick. The
 	/// design doc proposed teaching the mesher about ore and swapping the
 	/// layer it picks; instead the mesher, the texture path, the emissive
-	/// bit, `block_tint` and shaped culling all simply see a real ore
-	/// block and need no change whatsoever. The reveal costs one function
-	/// call in the worker and nothing anywhere else.
-	///
-	/// Runs deposit-major, not cell-major: a chunk sits under a few dozen
-	/// deposits and holds thousands of padded cells, so walking the blobs
-	/// is orders of magnitude less work than asking every cell.
-	pub fn apply_ore(&mut self) {
-		use crate::worldgen::ore;
-		let Some(stamp) = self.ore.take() else {
+	/// bit, `block_tint` and shaped culling all simply see a real node
+	/// block and need no change whatsoever. The reveal costs a few
+	/// function calls in the worker and nothing anywhere else.
+	pub fn apply_nodes(&mut self) {
+		use crate::worldgen::{nodes, ore};
+		let Some(stamp) = self.nodes.take() else {
 			return;
 		};
 		let (ox, oy, oz) = stamp.origin;
 		let span = PADDED as i32 - 1;
-		if stamp.mining < ore::lowest_reveal() || oy > ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS {
-			return;
-		}
 		let stone = BlockType::Stone as u16;
 		let inside = |v: i32, base: i32| (v - base).clamp(0, span);
-		// Pass one: every deposit CLAIMS its cells, revealed or not, in
-		// the same grid order `ore::ore_at` walks — so the first deposit
-		// to reach a shared cell wins on both sides. A claim that turns
-		// out to be invisible is undone below; skipping unrevealed
-		// deposits here would let a later one stamp a cell the dig path
-		// says belongs to the first, and a vein you can see and cannot
-		// extract is the worst outcome this whole system has.
-		let mut claimed: Vec<u16> = Vec::new();
-		for d in ore::deposits_near((ox, oy, oz), (ox + span, oy + span, oz + span), stamp.seed) {
-			for y in inside(d.y - ore::MAX_RADIUS, oy)..=inside(d.y + ore::MAX_RADIUS, oy) {
-				for z in inside(d.z - ore::MAX_RADIUS, oz)..=inside(d.z + ore::MAX_RADIUS, oz) {
-					for x in inside(d.x - ore::MAX_RADIUS, ox)..=inside(d.x + ore::MAX_RADIUS, ox) {
-						let i = ((y * PADDED as i32 + z) * PADDED as i32 + x) as usize;
-						if self.blocks[i] != stone
-							|| !d.contains(ox + x, oy + y, oz + z)
-							|| stamp.edited.binary_search(&(i as u16)).is_ok()
+		let idx = |x: i32, y: i32, z: i32| ((y * PADDED as i32 + z) * PADDED as i32 + x) as usize;
+		// ONE reveal predicate, shared with the dig path — see
+		// `nodes::reveal_met`, which is the authority precisely so a
+		// second spelling here cannot answer differently about a block in
+		// neither table. Pass two below reverts a claim on this answer,
+		// and a claim left standing that the dig path calls plain stone is
+		// the worst outcome this whole system has.
+		let hidden = |b: BlockType| !nodes::reveal_met(b, stamp.levels);
+		// ---- the deposit stream (Stone hosts: the ore tiers + leystone).
+		//
+		// Runs deposit-major, not cell-major: a chunk sits under a few
+		// dozen deposits and holds thousands of padded cells, so walking
+		// the blobs is orders of magnitude less work than asking every
+		// cell. The lowest reveal across the whole TIERS table still
+		// early-outs the walk for a player who has reached none of them on
+		// either axis; the surface tier's own reveal is low enough that
+		// this is mostly the fresh-account case.
+		let any_deposit_visible = stamp.levels.mining >= ore::lowest_reveal()
+			|| stamp.levels.alchemy >= ore::lowest_alchemy_reveal();
+		if stamp.hosts.deposits && any_deposit_visible && oy <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
+		{
+			// Pass one: every deposit CLAIMS its cells, revealed or not, in
+			// the same grid order `ore::ore_at` walks — so the first deposit
+			// to reach a shared cell wins on both sides. A claim that turns
+			// out to be invisible is undone below; skipping unrevealed
+			// deposits here would let a later one stamp a cell the dig path
+			// says belongs to the first, and a node you can see and cannot
+			// extract is the worst outcome this whole system has.
+			let mut claimed: Vec<u16> = Vec::new();
+			for d in ore::deposits_near((ox, oy, oz), (ox + span, oy + span, oz + span), stamp.seed)
+			{
+				for y in inside(d.y - ore::MAX_RADIUS, oy)..=inside(d.y + ore::MAX_RADIUS, oy) {
+					for z in inside(d.z - ore::MAX_RADIUS, oz)..=inside(d.z + ore::MAX_RADIUS, oz) {
+						for x in
+							inside(d.x - ore::MAX_RADIUS, ox)..=inside(d.x + ore::MAX_RADIUS, ox)
 						{
-							continue;
+							let i = idx(x, y, z);
+							if self.blocks[i] != stone
+								|| !d.contains(ox + x, oy + y, oz + z)
+								|| stamp.edited.binary_search(&(i as u16)).is_ok()
+							{
+								continue;
+							}
+							self.blocks[i] = d.ore as u16;
+							claimed.push(i as u16);
 						}
-						self.blocks[i] = d.ore as u16;
-						claimed.push(i as u16);
+					}
+				}
+			}
+			// Pass two: anything claimed by a tier this looker cannot see
+			// goes back to being stone, which is exactly what they dig.
+			//
+			// Only the CLAIMED indices, never a sweep of the array: a
+			// PLACED block is ordinary chunk data that everyone can see at
+			// any level, and a sweep would quietly turn somebody's trophy
+			// wall into stone for every visitor below the tier.
+			for i in claimed {
+				let b = BlockType::from_id(self.blocks[i as usize]);
+				if hidden(b) {
+					self.blocks[i as usize] = stone;
+				}
+			}
+		}
+		// ---- heartwood (Wood hosts). Column-major: a trunk is a column,
+		// and `trunk_at` is memoized per candidate cell, so the walk costs
+		// a few hundred memo hits — and only for columns that hold Wood at
+		// all, which prunes everything but forest.
+		let wood = BlockType::Wood as u16;
+		if stamp.hosts.heartwood && !hidden(BlockType::Heartwood) {
+			for z in 0..=span {
+				for x in 0..=span {
+					if !(0..=span).any(|y| self.blocks[idx(x, y, z)] == wood) {
+						continue;
+					}
+					let (wx, wz) = (ox + x, oz + z);
+					let Some(t) = crate::decoration::trunk_at(wx, wz, stamp.seed) else {
+						continue;
+					};
+					for wy in t.y0.max(oy)..=t.y1.min(oy + span) {
+						let i = idx(x, wy - oy, z);
+						if self.blocks[i] == wood
+							&& stamp.edited.binary_search(&(i as u16)).is_err()
+							&& nodes::heartwood_at(wx, wy, wz, stamp.seed)
+						{
+							self.blocks[i] = BlockType::Heartwood as u16;
+						}
 					}
 				}
 			}
 		}
-		// Pass two: anything claimed by a tier this miner cannot see goes
-		// back to being stone, which is exactly what they dig.
+		// ---- springstone (Sand hosts). Column-major, exactly like the
+		// heartwood pass above it: a bed is a property of the COLUMN, so
+		// one `springstone_bed` answers for the whole of it and the only
+		// question left is whether the y it names is in this box.
 		//
-		// Only the CLAIMED indices, never a sweep of the array: a PLACED
-		// ore block is ordinary chunk data that everyone can see at any
-		// level, and a sweep would quietly turn somebody's trophy wall
-		// into stone for every visitor below the tier.
-		for i in claimed {
-			let b = BlockType::from_id(self.blocks[i as usize]);
-			if crate::unlock::reveal(b).is_some_and(|need| stamp.mining < need) {
-				self.blocks[i as usize] = stone;
+		// Cell-major is what this was, and it asked `springstone_bed` once
+		// per SAND CELL for an answer keyed on (x, z) alone — so a beach
+		// chunk re-ran the classification's field evaluations for every
+		// cell of every column it had already classified.
+		//
+		// It used to pre-filter on the cell ABOVE being water — cheaper
+		// than the rate hash, and true of every bed worldgen makes. But
+		// that reads the SNAPSHOT where `nodes::revealed` reads worldgen,
+		// so the two answered differently the moment anything moved the
+		// water: a client's own predicted bucket scoop over a bed made the
+		// spring vanish from the picture while the dig path still called
+		// it a draw. A guard the dig path does not share cannot be a
+		// guard. The rate hash inside `springstone_bed` runs before its
+		// own five field evaluations and prunes nearly everything, which
+		// is what makes asking the real question affordable here.
+		let sand = BlockType::Sand as u16;
+		if stamp.hosts.springs && !hidden(BlockType::Springstone) {
+			for z in 0..=span {
+				for x in 0..=span {
+					// The host prefilter first, so an unsanded column
+					// never reaches worldgen at all — the same shape the
+					// heartwood pass uses, and cheap array reads either
+					// way.
+					if !(0..=span).any(|y| self.blocks[idx(x, y, z)] == sand) {
+						continue;
+					}
+					let Some(bed) = nodes::springstone_bed(ox + x, oz + z, stamp.seed) else {
+						continue;
+					};
+					let y = bed - oy;
+					if !(0..=span).contains(&y) {
+						continue;
+					}
+					let i = idx(x, y, z);
+					if self.blocks[i] == sand && stamp.edited.binary_search(&(i as u16)).is_err() {
+						self.blocks[i] = BlockType::Springstone as u16;
+					}
+				}
 			}
 		}
 	}
@@ -609,6 +730,16 @@ mod tests {
 		d
 	}
 
+	/// The host mask `Pipeline::node_stamp` would hand a padded box filled
+	/// with one block — the tests stand in for the main thread's scan.
+	fn hosts_of(host: B) -> NodeHosts {
+		NodeHosts {
+			deposits: host == B::Stone,
+			heartwood: host == B::Wood,
+			springs: host == B::Sand,
+		}
+	}
+
 	/// Every neighbor missing — the old ALL_MISSING fixture.
 	fn isolated(d: &ChunkData) -> MeshInput {
 		MeshInput::build(d, |_, _, _| Src::Missing)
@@ -616,8 +747,8 @@ mod tests {
 
 	/// The reveal stamp and the DIG path must answer identically for
 	/// every cell — one is a worker rewriting block ids, the other is
-	/// `ore::revealed` asked once at a dig, and a disagreement is either a
-	/// vein you can see and cannot extract or one you cannot see and
+	/// `nodes::revealed` asked once at a dig, and a disagreement is either
+	/// a node you can see and cannot extract or one you cannot see and
 	/// accidentally do.
 	///
 	/// Swept over a whole padded box rather than spot-checked, because the
@@ -625,50 +756,105 @@ mod tests {
 	/// revealed one at a shared cell; a claim on the shell the dig path
 	/// would refuse) both live in specific cells nobody would think to
 	/// pick.
+	///
+	/// Swept over every HOST too, and that half is not optional: the box
+	/// used to be filled with Stone alone, so the Wood and Sand passes —
+	/// two thirds of the node layer — were never executed by the one test
+	/// that pins stamp/dig agreement. A springstone prefilter that read
+	/// the snapshot where the dig path reads worldgen lived through that
+	/// gap.
 	#[test]
 	fn the_reveal_stamp_and_the_dig_path_agree() {
-		use crate::worldgen::ore;
+		use crate::worldgen::nodes::{self, Levels};
 		let seed = 42.0;
 		let span = PADDED as i32 - 1;
-		// A box straddling every tier's ceiling, so the sweep sees mixed
-		// tiers, edited cells and the bands' edges in one pass.
-		for (origin, mining, edited) in [
-			((-24, 1, -4), crate::skills::MAX_LEVEL, vec![]),
-			((-24, 1, -4), 10, vec![]),
+		let max = crate::skills::MAX_LEVEL;
+		// Every host a node can manifest in, each filling a whole box.
+		let hosts = [B::Stone, B::Wood, B::Sand];
+		// Which hosts the sweep actually STAMPED something in. An
+		// agreement test over boxes that hold none is green for the wrong
+		// reason, which is what let a Sand-pass divergence live here.
+		//
+		// Per host, and that is the whole point: it was one bool OR-ed
+		// across all three, so the springstone box satisfied it alone and
+		// the Wood pass — which stamped nothing anywhere in the sweep —
+		// was covered by a guard written to prove it was covered.
+		let mut stamped_host = std::collections::HashSet::new();
+		// Boxes straddling the bands' edges, both reveal axes stepped —
+		// mixed tiers, edited cells, and the leystone band's seam with the
+		// deep tiers all in one sweep.
+		for (origin, mining, alchemy, edited) in [
+			((-24, 1, -4), max, max, vec![]),
+			((-24, 1, -4), 10, 1, vec![]),
 			(
 				(-24, 1, -4),
 				30,
+				7,
 				vec![pidx(0, 0, 0) as u16, pidx(3, 4, 5) as u16],
 			),
-			((0, 100, -16), crate::skills::MAX_LEVEL, vec![]),
-			((0, 40, -24), 55, vec![]),
-			// Below the first reveal nothing may be stamped at all.
-			((-24, 1, -4), 9, vec![]),
+			((0, 100, -16), max, max, vec![]),
+			((0, 100, -16), max, 1, vec![]),
+			((0, 120, -16), 1, max, vec![]),
+			((0, 40, -24), 55, 3, vec![]),
+			// A box holding real SPRINGSTONE beds — found by walking the
+			// seed, and asserted below to still hold one, because a
+			// coordinate that quietly stopped covering the Sand pass is
+			// exactly how the snapshot prefilter survived this test.
+			((8, 146, -400), max, max, vec![]),
+			((8, 146, -400), max, 11, vec![]),
+			// And one holding a real HEARTWOOD trunk, for the same
+			// reason and found the same way. Without it the Wood pass
+			// stamped nothing anywhere in this sweep, so every case
+			// agreed trivially at "neither side sees a node" and the
+			// pass was untested by the test that claims to cover it.
+			// The second entry is the day-one reveal: heartwood is
+			// visible at the level everyone starts at.
+			((-481, 127, -481), max, max, vec![]),
+			((-481, 127, -481), 1, 1, vec![]),
+			// Below every reveal on both axes nothing may be stamped.
+			((-24, 1, -4), 9, 1, vec![]),
 		] {
-			let mut input = MeshInput {
-				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
-				missing: [false; 6],
-				ore: Some(OreStamp {
-					seed,
-					origin,
-					mining,
-					edited: edited.clone(),
-				}),
-			};
-			input.apply_ore();
-			for ly in 0..=span {
-				for lz in 0..=span {
-					for lx in 0..=span {
-						let i = ((ly * PADDED as i32 + lz) * PADDED as i32 + lx) as usize;
-						let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
-						let was_edited = edited.contains(&(i as u16));
-						let want =
-							ore::revealed(B::Stone as u16, (x, y, z), seed, mining, was_edited)
-								.map_or(B::Stone as u16, |o| o as u16);
-						assert_eq!(input.blocks[i], want, "({x},{y},{z}) at mining {mining}");
+			for host in hosts {
+				let mut input = MeshInput {
+					blocks: Box::new([host as u16; PADDED_VOLUME]),
+					missing: [false; 6],
+					nodes: Some(NodeStamp {
+						seed,
+						origin,
+						levels: Levels { mining, alchemy },
+						hosts: hosts_of(host),
+						edited: edited.clone(),
+					}),
+				};
+				input.apply_nodes();
+				if input.blocks.iter().any(|&c| c != host as u16) {
+					stamped_host.insert(host as u16);
+				}
+				let levels = Levels { mining, alchemy };
+				for ly in 0..=span {
+					for lz in 0..=span {
+						for lx in 0..=span {
+							let i = ((ly * PADDED as i32 + lz) * PADDED as i32 + lx) as usize;
+							let (x, y, z) = (origin.0 + lx, origin.1 + ly, origin.2 + lz);
+							let was_edited = edited.contains(&(i as u16));
+							let want =
+								nodes::revealed(host as u16, (x, y, z), seed, levels, was_edited)
+									.map_or(host as u16, |o| o as u16);
+							assert_eq!(
+								input.blocks[i], want,
+								"{host:?} ({x},{y},{z}) at mining {mining} / alchemy {alchemy}"
+							);
+						}
 					}
 				}
 			}
+		}
+		for host in hosts {
+			assert!(
+				stamped_host.contains(&(host as u16)),
+				"the sweep stamped nothing in {host:?} — that pass is not \
+				 being exercised, so this test proves nothing about it"
+			);
 		}
 	}
 
@@ -687,7 +873,7 @@ mod tests {
 	/// stone for every visitor below the tier.
 	#[test]
 	fn the_reveal_stamp_leaves_everything_else_alone() {
-		use crate::worldgen::ore;
+		use crate::worldgen::{nodes::Levels, ore};
 		let seed = 42.0;
 		let origin = (-24, 1, -4);
 		let others = [
@@ -710,10 +896,14 @@ mod tests {
 			let mut input = MeshInput {
 				blocks: Box::new([B::Stone as u16; PADDED_VOLUME]),
 				missing: [false; 6],
-				ore: Some(OreStamp {
+				nodes: Some(NodeStamp {
 					seed,
 					origin,
-					mining,
+					levels: Levels {
+						mining,
+						alchemy: crate::skills::MAX_LEVEL,
+					},
+					hosts: hosts_of(B::Stone),
 					edited: Vec::new(),
 				}),
 			};
@@ -735,7 +925,7 @@ mod tests {
 			for (slot, &v) in veins.iter().zip(others.iter()) {
 				input.blocks[*slot] = v;
 			}
-			input.apply_ore();
+			input.apply_nodes();
 			for (slot, &v) in veins.iter().zip(others.iter()) {
 				assert_eq!(
 					input.blocks[*slot], v,

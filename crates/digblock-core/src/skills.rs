@@ -473,7 +473,7 @@ pub fn dig_award(
 	broken: u32,
 	y: i32,
 ) -> (u64, u64) {
-	if let Some(split) = extracting.and_then(ore_field_xp) {
+	if let Some(split) = extracting.and_then(field_xp) {
 		return split;
 	}
 	let unit = u64::from(PERMILLE);
@@ -507,87 +507,64 @@ pub fn dig_award(
 	(mining, 0)
 }
 
-/// Alchemy XP per block extracted at the bench: HALF the block's worth
-/// ([`crate::alchemy::extract_worth`], a fixed fraction of its BASE
-/// yield) — fixed for life, never the level-scaled outcome (§4.1). The
-/// halving is the award-side pacing lever (SKILLS-DESIGN §13.4), riding
-/// ON TOP of the worth precisely because the worth keeps a second job
-/// this must not touch: it is what the bench's pace scales by.
+/// The DUAL award for one field draw — a siphon taking a node where it
+/// stands: `(Mining, Alchemy)`. `None` for anything that is not a node.
 ///
-/// **Zero for anything the bench itself can make.** Extraction XP is paid
-/// for reducing what the WORLD made; taking apart your own transmutation
-/// teaches you nothing and pays nothing, which is what stops
-/// craft-then-extract being a standing converter from essence into levels.
-/// It keys on [`BlockType::is_bench_only`] and not on craftability so the
-/// statement is about where a block CAME from rather than what the catalog
-/// happens to offer — the same predicate the catalog is gated on, so the
-/// two cannot drift.
+/// A draw is mechanically a dig and thematically an alchemical
+/// separation, so it pays both — and WHICH skill takes the headline
+/// follows which skill found the node. The ore tiers pay Mining first
+/// with an Alchemy cut (§5.4: the find was a Mining reveal, deep in
+/// Mining's half of the world); the surface nodes invert it, Alchemy
+/// first with a Mining cut, because the surface hunt is Alchemy's and a
+/// forager who never opens a mine still moves the skill that revealed
+/// the find. There is no second moment behind either: a node is never an
+/// item, so no draw is ever "finished at the bench" later.
 ///
-/// **And zero for foliage, by the shared name** ([`BlockType::is_foliage`]
-/// — the same set `dig_xp` zeroes). This is load-bearing, not symmetry:
-/// the award's `ceil` cannot pay less than a point, and against foliage's
-/// concessionary pace (`extract_pace_ticks` halves its slowdown, since a
-/// block that pays nothing should at least process quickly) a floored
-/// point per leaf would make shoveling foliage the best XP rate at the
-/// bench. Their essence — the Aqua, the bonus lines — is untouched;
-/// foliage is pure economy now.
-///
-/// The bench's PACE deliberately does not follow the bench-only zero: a
-/// made block is as much substance to take apart as a natural one, and
-/// `extract_pace_ticks` keys on the worth for that reason.
-pub fn convert_xp(block: BlockType) -> u64 {
-	if block.is_bench_only() || block.is_foliage() {
-		return 0;
-	}
-	u64::from(crate::alchemy::extract_worth(block).div_ceil(2))
-}
-
-/// The DUAL award for one field extraction at the rock face (§5.4):
-/// `(Mining, Alchemy)`. `None` for anything that is not an ore.
-///
-/// Field extraction is mechanically a mine and thematically a crude
-/// alchemical separation, so it pays both: Mining the headline, Alchemy
-/// the smaller cut. Smaller than the Mining figure beside it, though —
-/// not a token half of some larger Alchemy total, because there is no
-/// second moment behind this one. Raw ore is never an item (§5.3,
-/// `raw_ore_is_never_an_item`), so no vein reaches a bench and the draw
-/// at the rock face IS the separation. `convert_xp` still answers for an
-/// ore and its answer is simply unreachable — the tier's bench worth,
-/// kept as the basis this column is set against.
-///
-/// Alchemy is still earned at the bench, taking apart what the world
-/// hands you; what a vein adds is that a miner who never opens the screen
-/// still moves the skill.
-///
-/// Tabled rather than derived from hardness: this is a headline reward
-/// and the curve through it is a decision, not a consequence. Which is
-/// also why it does NOT follow a retune of [`dig_xp`] — a vein is scarce
-/// and finding one is most of the work, so what a draw is worth was
-/// chosen against the tier and not against a multiple of the rock around
-/// it. A retune of the ordinary dig moves how much a vein is worth
-/// RELATIVE to quarrying, deliberately, and that is a lever rather than a
-/// drift.
-pub fn ore_field_xp(ore: BlockType) -> Option<(u64, u64)> {
-	Some(match ore {
-		BlockType::Emberore => (40, 16),
-		BlockType::Duskstone => (70, 28),
-		BlockType::Glowvein => (110, 44),
-		BlockType::Aetherock => (170, 68),
+/// Tabled rather than derived from hardness: these are headline rewards
+/// and the curve through them is a decision, not a consequence. Which is
+/// also why the table does NOT follow a retune of [`dig_xp`] — a node is
+/// scarce and finding one is most of the work, so what a draw is worth
+/// was chosen against the kind and not against a multiple of the host
+/// around it. A retune of the ordinary dig moves how much a find is
+/// worth RELATIVE to plain digging, deliberately: a lever, not a drift.
+pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
+	Some(match node {
+		// The Alchemy cuts sit high against their Mining headlines on
+		// purpose: with bench extraction gone, a draw is one of exactly
+		// two ways the skill earns at all, so each has to carry what the
+		// retired drip used to spread over a hoard.
+		BlockType::Emberore => (40, 30),
+		BlockType::Duskstone => (70, 55),
+		BlockType::Glowvein => (110, 85),
+		BlockType::Aetherock => (170, 130),
+		// The surface ladder, Alchemy-primary, rising with the reveal
+		// order — heartwood is the day-one node, and a handful of hearts
+		// should reach the leystone reveal within the first session.
+		BlockType::Heartwood => (8, 40),
+		BlockType::Leystone => (10, 55),
+		BlockType::Springstone => (12, 75),
 		_ => return None,
 	})
 }
 
-/// Alchemy XP per crafted item: what the craft is worth at the bench
+/// Alchemy XP per crafted item: the craft's full worth at the bench
 /// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
-/// pre-waste cost) — fixed for life. Zero for uncraftable items.
+/// pre-waste cost, feedstock included) — fixed for life. Zero for
+/// uncraftable items.
 ///
-/// Transmuting pays HALF the item's worth — the same award-side halving
-/// as [`convert_xp`], for the same reason, and it takes the time the work
-/// takes, since the bench paces a craft the way it paces an extraction
-/// (`craft_pace_ticks`). Award and pace read the same underlying worth: a
-/// thing worth more to make is worth more to have made.
+/// §13.4's award-side HALVING is deliberately gone. It existed because
+/// the bench was an unbounded XP machine — extraction against infinite
+/// matter — and the lever un-pulls with the machine: a craft is now
+/// bounded by essence that had to be found and matter that had to be
+/// quarried, so it may pay what it is worth. Award and pace still read
+/// the same underlying worth, so a thing worth more to make is worth
+/// more to have made — and takes the time the work takes.
+///
+/// This is the bench's ONLY award: Alchemy is earned by drawing nodes in
+/// the field ([`field_xp`]) and by making things here, and by nothing
+/// that can be repeated against an unbounded supply.
 pub fn craft_xp(item: BlockType) -> u64 {
-	u64::from(crate::alchemy::craft_worth(item).div_ceil(2))
+	u64::from(crate::alchemy::craft_worth(item))
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after
@@ -595,7 +572,6 @@ pub fn craft_xp(item: BlockType) -> u64 {
 pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {
 	use crate::inventory::AlchemyOp;
 	match *op {
-		AlchemyOp::Convert { block, count } => convert_xp(block) * u64::from(count),
 		AlchemyOp::Craft { item, count } => craft_xp(item) * u64::from(count),
 	}
 }
@@ -1066,73 +1042,70 @@ mod tests {
 		assert_eq!(seen, (top..=bottom).collect::<Vec<_>>());
 	}
 
-	/// A field extraction pays §5.4's tabled split, and depth does not
-	/// touch it: the ore tiers are depth-banded already, so scaling them
-	/// would count the same axis twice. The excavation at a vein is the
-	/// DepletedStone face left behind, and THAT scales like any other dig.
+	/// A field draw pays the tabled split, and depth does not touch it:
+	/// the ore tiers are depth-banded already, so scaling them would count
+	/// the same axis twice — and a surface node has no depth story at all.
+	/// The excavation at a vein is the spent face left behind, and THAT
+	/// scales like any other dig.
 	#[test]
-	fn ore_extraction_ignores_the_depth_reward() {
-		let ore = BlockType::Aetherock;
-		let split = ore_field_xp(ore).expect("an ore");
-		for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
-			assert_eq!(dig_award(BlockType::Stone, Some(ore), 1, y), split, "y {y}");
+	fn a_field_draw_ignores_the_depth_reward() {
+		for node in [BlockType::Aetherock, BlockType::Heartwood] {
+			let split = field_xp(node).expect("a node");
+			for y in [DEPTH_XP_FROM + 40, DEPTH_XP_FROM, 64, DEPTH_XP_TO] {
+				assert_eq!(
+					dig_award(BlockType::Stone, Some(node), 1, y),
+					split,
+					"y {y}"
+				);
+			}
 		}
 		// The tapped face is an ordinary dig and does climb.
 		let spent = BlockType::DepletedStone;
 		assert!(dig_award(spent, None, 1, DEPTH_XP_TO) > dig_award(spent, None, 1, DEPTH_XP_FROM));
-		// A non-ore never routes through the ore table, whatever is held.
+		// A non-node never routes through the field table, whatever is held.
 		assert_eq!(
 			dig_award(BlockType::Stone, Some(BlockType::Dirt), 1, DEPTH_XP_FROM),
 			(dig_xp(BlockType::Stone), 0),
 		);
+		// Every node kind has a split, and the headline skill follows the
+		// skill that revealed the find: Mining first at a vein, Alchemy
+		// first at a surface node.
+		for &node in &crate::worldgen::nodes::NODES {
+			let (mining, alchemy) =
+				field_xp(node).unwrap_or_else(|| panic!("{node:?} pays nothing"));
+			assert!(mining > 0 && alchemy > 0, "{node:?} pays both skills");
+			if crate::unlock::reveal(node).is_some() {
+				assert!(mining > alchemy, "{node:?} is Mining's find");
+			} else {
+				assert!(alchemy > mining, "{node:?} is Alchemy's find");
+			}
+		}
 	}
 
-	/// §4.1's table, keyed on BASE yields/costs — fixed for life regardless
-	/// of level-scaled outcomes.
+	/// §4.1's table, keyed on BASE costs — fixed for life regardless of
+	/// level-scaled outcomes. With extraction gone, crafting is the whole
+	/// of the bench's XP.
 	#[test]
 	fn alchemy_xp_derives_from_the_base_tables() {
 		use crate::inventory::AlchemyOp;
 		use BlockType as B;
-		for (block, xp) in [
-			(B::Wood, 5u64),
-			(B::Grass, 5),
-			(B::Rubble, 4),
-			(B::Dirt, 3),
-			(B::Snow, 2),
-			(B::Water, 3),
-		] {
-			assert_eq!(convert_xp(block), xp, "{block:?}");
-		}
-		// Foliage pays no levels at all — the price of its half-slowdown
-		// pace concession, and the bench half of the same zero the dig
-		// table already carries.
-		for block in [B::Leaves, B::PineLeaves] {
-			assert_eq!(convert_xp(block), 0, "{block:?}");
-		}
+		// Crafts pay their FULL worth — a fixed fraction of the IDEAL
+		// cost, feedstock included. The old halving un-pulled with the
+		// unbounded bench it existed to pace.
+		assert_eq!(craft_xp(B::WoodStairs), 4);
+		assert_eq!(craft_xp(B::Lumber), 4);
+		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 		assert_eq!(
-			alchemy_xp(&AlchemyOp::Convert {
-				block: B::Wood,
+			alchemy_xp(&AlchemyOp::Craft {
+				item: B::Lumber,
 				count: 3
 			}),
-			15
+			12
 		);
-		// And nothing off the bench pays anything back. Clean stone is the
-		// pointed case: a quarried one is Rubble and pays, the clean block
-		// can only have been transmuted and pays nothing — which is what
-		// keeps the mason's own recipe from being an XP loop.
-		for block in [B::Stone, B::Lumber, B::StoneSlab, B::Torch] {
-			assert_eq!(convert_xp(block), 0, "{block:?} came off the bench");
-		}
-		// It is the PAY that goes, not the worth: the bench still spends its
-		// time on a stone in proportion to the substance in it.
-		assert_eq!(
-			crate::alchemy::extract_worth(B::Stone),
-			crate::alchemy::extract_worth(B::Grass)
-		);
-		// Crafts pay half their worth — the same fixed fraction of the
-		// IDEAL cost, halved like extraction, rounded up.
-		assert_eq!(craft_xp(B::WoodStairs), 3);
-		assert_eq!(craft_xp(B::Lumber), 5);
-		assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
+		// The two feedstock-priced vessels still pay: their timber carries
+		// the worth, so the first craft beat is also the first Alchemy XP
+		// a fresh player earns at a bench.
+		assert!(craft_xp(B::Bucket) > 0);
+		assert!(craft_xp(B::EssenceSiphon) > craft_xp(B::Bucket));
 	}
 }
